@@ -109,6 +109,14 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           pip install huggingface-hub
-          huggingface-cli upload buckeyeguy/kd-gat-paper reports/_site/ . \
-            --repo-type space \
-            --commit-message "Deploy from ${{ github.sha }}"
+          python -c "
+          from huggingface_hub import HfApi
+          api = HfApi()
+          api.upload_folder(
+              repo_id='buckeyeguy/kd-gat-paper',
+              folder_path='reports/_site',
+              repo_type='space',
+              commit_message='Deploy from ${{ github.sha }}',
+          )
+          print('HF Space deploy complete')
+          "
