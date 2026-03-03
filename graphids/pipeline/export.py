@@ -15,14 +15,16 @@ import argparse
 import csv
 import json
 import logging
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
 log = logging.getLogger(__name__)
 
 DEFAULT_OUTPUT_DIR = Path("reports/data")
-EXPERIMENT_ROOT = Path("experimentruns")
-_DATALAKE_ROOT = Path("data/datalake")
+EXPERIMENT_ROOT = Path(os.environ.get("KD_GAT_EXPERIMENT_ROOT", "experimentruns"))
+_data_root = os.environ.get("KD_GAT_DATA_ROOT")
+_DATALAKE_ROOT = Path(_data_root) / "datalake" if _data_root else Path("data/datalake")
 
 
 def _versioned_envelope(data: list | dict) -> dict:
@@ -482,6 +484,37 @@ def export_model_sizes(output_dir: Path) -> Path:
     return out
 
 
+def export_loss_landscape(output_dir: Path) -> Path | None:
+    """Copy loss landscape Parquet files to reports/data/ as a single merged file.
+
+    Reads individual per-model Parquet files from datalake and merges into
+    a single ``loss_landscape.parquet`` with columns:
+    x, y, loss, model_type, scale, dataset, direction_seed.
+    """
+    landscape_dir = _DATALAKE_ROOT / "loss_landscapes"
+    if not landscape_dir.is_dir():
+        log.info("No loss landscape data found at %s — skipping", landscape_dir)
+        return None
+
+    parquet_files = sorted(landscape_dir.glob("*.parquet"))
+    if not parquet_files:
+        log.info("No loss landscape Parquet files found — skipping")
+        return None
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    tables = []
+    for f in parquet_files:
+        tables.append(pq.read_table(f))
+    merged = pa.concat_tables(tables)
+
+    out = output_dir / "loss_landscape.parquet"
+    pq.write_table(merged, out)
+    log.info("Exported loss landscape (%d rows, %d files) → %s", merged.num_rows, len(tables), out)
+    return out
+
+
 def export_data_for_reports(reports_data_dir: Path | None = None) -> None:
     """Copy datalake Parquet + artifact Parquet to reports/data/ for Quarto.
 
@@ -552,6 +585,11 @@ def export_all(output_dir: Path, *, include_reports: bool = False) -> None:
         export_model_sizes(output_dir)
     except Exception as e:
         log.warning("Export model_sizes failed (non-fatal): %s", e)
+
+    try:
+        export_loss_landscape(output_dir)
+    except Exception as e:
+        log.warning("Export loss_landscape failed (non-fatal): %s", e)
 
     # Optionally copy everything to reports/data/ for Quarto
     if include_reports:

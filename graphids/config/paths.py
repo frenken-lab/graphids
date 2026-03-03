@@ -10,6 +10,7 @@ Two interfaces:
   - PipelineConfig-based (stage_dir, checkpoint_path, etc.) -- used by Python stages
   - String-based (_str variants) -- convenience for raw-string path construction
 """
+
 from __future__ import annotations
 
 import os
@@ -19,7 +20,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .schema import PipelineConfig
 
-EXPERIMENT_ROOT = "experimentruns"
+EXPERIMENT_ROOT = os.environ.get("KD_GAT_EXPERIMENT_ROOT", "experimentruns")
 
 # Data storage root — overridable via env var for easy migration between
 # home dir (dev) and project storage (production).
@@ -30,11 +31,11 @@ _CACHE_ROOT: str | None = os.environ.get("KD_GAT_CACHE_ROOT")
 # run_id() overrides model_arch to "eval" for the evaluation stage.
 STAGES = {
     "autoencoder": ("unsupervised", "vgae", "autoencoder"),
-    "curriculum":  ("supervised",   "gat",  "curriculum"),
-    "normal":      ("supervised",   "gat",  "normal"),
-    "fusion":      ("rl_fusion",    "dqn",  "fusion"),
-    "evaluation":  ("evaluation",   "eval", "evaluation"),
-    "temporal":    ("temporal",     "gat",  "temporal"),
+    "curriculum": ("supervised", "gat", "curriculum"),
+    "normal": ("supervised", "gat", "normal"),
+    "fusion": ("rl_fusion", "dqn", "fusion"),
+    "evaluation": ("evaluation", "eval", "evaluation"),
+    "temporal": ("temporal", "gat", "temporal"),
 }
 
 from .constants import CATALOG_PATH  # noqa: F401  # re-exported via config/__init__
@@ -50,6 +51,7 @@ def get_datasets() -> list[str]:
     global _datasets_cache
     if _datasets_cache is None:
         from .catalog import load_catalog
+
         catalog = load_catalog()
         _datasets_cache = list(catalog.keys())
     return _datasets_cache
@@ -143,6 +145,7 @@ def cache_dir(cfg: PipelineConfig) -> Path:
 # String-based path functions (no PipelineConfig needed)
 # ---------------------------------------------------------------------------
 
+
 def run_id_str(dataset: str, model_type: str, scale: str, stage: str, aux: str = "") -> str:
     """Deterministic run ID from raw strings."""
     suffix = f"_{aux}" if aux else ""
@@ -150,7 +153,9 @@ def run_id_str(dataset: str, model_type: str, scale: str, stage: str, aux: str =
     return f"{dataset}/{model}_{scale}_{stage}{suffix}"
 
 
-def checkpoint_path_str(dataset: str, model_type: str, scale: str, stage: str, aux: str = "") -> str:
+def checkpoint_path_str(
+    dataset: str, model_type: str, scale: str, stage: str, aux: str = ""
+) -> str:
     """Checkpoint path from raw strings."""
     return f"{EXPERIMENT_ROOT}/{run_id_str(dataset, model_type, scale, stage, aux)}/best_model.pt"
 
@@ -165,7 +170,9 @@ def benchmark_path_str(dataset: str, model_type: str, scale: str, stage: str, au
     return f"{EXPERIMENT_ROOT}/{run_id_str(dataset, model_type, scale, stage, aux)}/benchmark.tsv"
 
 
-def log_path_str(dataset: str, model_type: str, scale: str, stage: str, aux: str = "", stream: str = "out") -> str:
+def log_path_str(
+    dataset: str, model_type: str, scale: str, stage: str, aux: str = "", stream: str = "out"
+) -> str:
     """SLURM log path from raw strings."""
     return f"{EXPERIMENT_ROOT}/{run_id_str(dataset, model_type, scale, stage, aux)}/slurm.{stream}"
 
@@ -173,5 +180,3 @@ def log_path_str(dataset: str, model_type: str, scale: str, stage: str, aux: str
 def done_path_str(dataset: str, model_type: str, scale: str, stage: str, aux: str = "") -> str:
     """Sentinel file path from raw strings."""
     return f"{EXPERIMENT_ROOT}/{run_id_str(dataset, model_type, scale, stage, aux)}/.done"
-
-

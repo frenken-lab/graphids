@@ -16,15 +16,18 @@ Example queries:
     SELECT * FROM v_leaderboard ORDER BY best_f1 DESC;
     SELECT * FROM v_kd_impact ORDER BY f1_delta DESC;
 """
+
 from __future__ import annotations
 
 import argparse
 import logging
+import os
 from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-DATALAKE_ROOT = Path("data/datalake")
+_data_root = os.environ.get("KD_GAT_DATA_ROOT")
+DATALAKE_ROOT = Path(_data_root) / "datalake" if _data_root else Path("data/datalake")
 
 
 def build(dry_run: bool = False) -> Path:
@@ -44,7 +47,9 @@ def build(dry_run: bool = False) -> Path:
         metrics = con.execute(f"SELECT COUNT(*) FROM '{datalake}/metrics.parquet'").fetchone()[0]
         datasets = con.execute(f"SELECT COUNT(*) FROM '{datalake}/datasets.parquet'").fetchone()[0]
         configs = con.execute(f"SELECT COUNT(*) FROM '{datalake}/configs.parquet'").fetchone()[0]
-        artifacts = con.execute(f"SELECT COUNT(*) FROM '{datalake}/artifacts.parquet'").fetchone()[0]
+        artifacts = con.execute(f"SELECT COUNT(*) FROM '{datalake}/artifacts.parquet'").fetchone()[
+            0
+        ]
         con.close()
         print(f"Would rebuild: {db_path}")
         print(f"  runs: {runs}, metrics: {metrics}, datasets: {datasets}")
@@ -60,10 +65,18 @@ def build(dry_run: bool = False) -> Path:
     try:
         # Core views over Parquet
         con.execute(f"CREATE VIEW runs AS SELECT * FROM read_parquet('{datalake}/runs.parquet')")
-        con.execute(f"CREATE VIEW metrics AS SELECT * FROM read_parquet('{datalake}/metrics.parquet')")
-        con.execute(f"CREATE VIEW configs AS SELECT * FROM read_parquet('{datalake}/configs.parquet')")
-        con.execute(f"CREATE VIEW datasets AS SELECT * FROM read_parquet('{datalake}/datasets.parquet')")
-        con.execute(f"CREATE VIEW artifacts AS SELECT * FROM read_parquet('{datalake}/artifacts.parquet')")
+        con.execute(
+            f"CREATE VIEW metrics AS SELECT * FROM read_parquet('{datalake}/metrics.parquet')"
+        )
+        con.execute(
+            f"CREATE VIEW configs AS SELECT * FROM read_parquet('{datalake}/configs.parquet')"
+        )
+        con.execute(
+            f"CREATE VIEW datasets AS SELECT * FROM read_parquet('{datalake}/datasets.parquet')"
+        )
+        con.execute(
+            f"CREATE VIEW artifacts AS SELECT * FROM read_parquet('{datalake}/artifacts.parquet')"
+        )
 
         # Leaderboard: best metrics per dataset × model × scale × kd
         con.execute("""

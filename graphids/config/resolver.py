@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 import yaml
@@ -64,6 +65,11 @@ def resolve(
     # 5. Set identity fields
     merged["model_type"] = model_type
     merged["scale"] = scale
+
+    # 5b. Env var overrides for storage paths (shared project storage)
+    exp_root = os.environ.get("KD_GAT_EXPERIMENT_ROOT")
+    if exp_root:
+        merged["experiment_root"] = exp_root
 
     # 6. Warn on unknown keys (possible typos silently ignored by Pydantic)
     _warn_unused_keys(merged, PipelineConfig)

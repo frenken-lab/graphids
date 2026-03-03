@@ -12,12 +12,14 @@ Downstream consumption:
 from __future__ import annotations
 
 import logging
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-_DATALAKE_ROOT = Path("data/datalake")
+_data_root = os.environ.get("KD_GAT_DATA_ROOT")
+_DATALAKE_ROOT = Path(_data_root) / "datalake" if _data_root else Path("data/datalake")
 
 # Core metrics to extract from nested metrics.json
 _CORE_METRIC_COLS = [
@@ -67,7 +69,9 @@ def _append_to_datalake(
         return False
 
     if not (_DATALAKE_ROOT / "runs.parquet").exists():
-        log.debug("Datalake not initialized — run `python -m graphids.pipeline.migrate_datalake` first")
+        log.debug(
+            "Datalake not initialized — run `python -m graphids.pipeline.migrate_datalake` first"
+        )
         return False
 
     try:
