@@ -56,6 +56,33 @@ async function loadParquetTable(tableName, url) {
 }
 
 /**
+ * Load a Parquet file with graceful fallback on failure.
+ * If the file is missing or corrupt, creates an empty placeholder table
+ * so charts for available data still render.
+ *
+ * @param {string} tableName - DuckDB table name
+ * @param {string} url - URL to Parquet file (from FileAttachment.url())
+ * @returns {Promise<boolean>} true if loaded successfully, false if fallback was used
+ */
+async function safeLoadParquetTable(tableName, url) {
+  try {
+    await vg.coordinator().exec(
+      vg.loadParquet(tableName, url)
+    );
+    return true;
+  } catch (error) {
+    console.warn(
+      `[mosaic-setup] Failed to load ${tableName} from ${url}: ${error.message}. ` +
+      `Creating empty placeholder table.`
+    );
+    await vg.coordinator().exec(
+      `CREATE TABLE IF NOT EXISTS ${tableName} AS SELECT 1 AS _placeholder WHERE false`
+    );
+    return false;
+  }
+}
+
+/**
  * List all tables currently loaded in DuckDB-WASM.
  * @returns {Promise<Array<{name: string}>>} Array of table objects
  */
@@ -78,4 +105,4 @@ async function describeTable(tableName) {
   return Array.from(result);
 }
 
-export { vg, loadParquetTable, listTables, describeTable };
+export { vg, loadParquetTable, safeLoadParquetTable, listTables, describeTable };

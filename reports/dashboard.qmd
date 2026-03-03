@@ -14,21 +14,35 @@ format:
 //| output: false
 
 // --- Mosaic vgplot + DuckDB-WASM init ---
-import { vg, loadParquetTable } from "./_ojs/mosaic-setup.js"
+import { vg, safeLoadParquetTable } from "./_ojs/mosaic-setup.js"
+import { filteredChart, colorDirectives } from "./_ojs/chart-helpers.js"
+import {
+  MODEL_DOMAIN, MODEL_RANGE, MODEL_DOMAIN_FULL, MODEL_RANGE_FULL,
+  LABEL_DOMAIN, LABEL_RANGE, STAGE_MODEL_DOMAIN, STAGE_MODEL_RANGE,
+  TRAINING_MODEL_DOMAIN, TRAINING_MODEL_RANGE,
+} from "./_ojs/theme.js"
+import { paretoFront, kdGap } from "./_ojs/aggregations.js"
 
 async function loadTable(name, attachment) {
   const url = await attachment.url();
-  await loadParquetTable(name, url);
+  return safeLoadParquetTable(name, url);
 }
 
-await loadTable("metrics", FileAttachment("data/metrics.parquet"));
-await loadTable("runs", FileAttachment("data/runs.parquet"));
-await loadTable("training_curves", FileAttachment("data/training_curves.parquet"));
-await loadTable("recon_errors", FileAttachment("data/recon_errors.parquet"));
-await loadTable("attention_weights", FileAttachment("data/attention_weights.parquet"));
-await loadTable("dqn_policy", FileAttachment("data/dqn_policy.parquet"));
-await loadTable("cka_similarity", FileAttachment("data/cka_similarity.parquet"));
-await loadTable("embeddings", FileAttachment("data/embeddings.parquet"));
+// Track which tables loaded successfully for conditional rendering
+tableStatus = {
+  const status = {};
+  status.metrics = await loadTable("metrics", FileAttachment("data/metrics.parquet"));
+  status.runs = await loadTable("runs", FileAttachment("data/runs.parquet"));
+  status.training_curves = await loadTable("training_curves", FileAttachment("data/training_curves.parquet"));
+  status.recon_errors = await loadTable("recon_errors", FileAttachment("data/recon_errors.parquet"));
+  status.attention_weights = await loadTable("attention_weights", FileAttachment("data/attention_weights.parquet"));
+  status.dqn_policy = await loadTable("dqn_policy", FileAttachment("data/dqn_policy.parquet"));
+  status.cka_similarity = await loadTable("cka_similarity", FileAttachment("data/cka_similarity.parquet"));
+  status.embeddings = await loadTable("embeddings", FileAttachment("data/embeddings.parquet"));
+  const failed = Object.entries(status).filter(([, ok]) => !ok).map(([name]) => name);
+  if (failed.length > 0) console.warn(`[dashboard] Missing tables: ${failed.join(", ")}`);
+  return status;
+}
 
 // --- Static JSON data ---
 datasets_json = FileAttachment("data/datasets.json").json()
@@ -48,12 +62,7 @@ summary_stats = {
   );
   const best_f1_row = Array.from(best_f1_result)[0];
 
-  const kd_data = kd_transfer_json.data.filter(d => d.metric_name === "f1");
-  let kd_gap = null;
-  if (kd_data.length > 0) {
-    const gaps = kd_data.map(d => d.teacher_value - d.student_value);
-    kd_gap = gaps.reduce((a, b) => a + b, 0) / gaps.length;
-  }
+  const kd_gap_val = kdGap(kd_transfer_json.data, "f1");
 
   const dataset_result = await vg.coordinator().query(
     vg.sql`SELECT COUNT(DISTINCT dataset) AS n_datasets FROM runs`
@@ -64,7 +73,7 @@ summary_stats = {
     total_runs,
     best_f1: best_f1_row?.best_f1,
     best_model: best_f1_row?.model,
-    kd_gap,
+    kd_gap: kd_gap_val,
     n_datasets,
   };
 }
@@ -172,11 +181,7 @@ viewof selectedDatasetMetric = Inputs.select(
     marginLeft: 80,
     x: { label: metric.toUpperCase(), domain: [0, 1.01] },
     y: { label: null },
-    color: {
-      legend: true,
-      domain: ["gat", "vgae", "fusion"],
-      range: ["#3fb950", "#58a6ff", "#bc8cff"],
-    },
+    color: { legend: true, domain: MODEL_DOMAIN, range: MODEL_RANGE },
     marks: [
       Plot.barX(data, Plot.groupY(
         { x: "max" },
@@ -205,9 +210,7 @@ vg.plot(
   ),
   vg.width(680),
   vg.height(260),
-  vg.colorLegend(true),
-  vg.colorDomain(["gat", "vgae", "fusion"]),
-  vg.colorRange(["#3fb950", "#58a6ff", "#bc8cff"]),
+  ...colorDirectives(MODEL_DOMAIN, MODEL_RANGE),
   vg.xLabel("Dataset"),
   vg.xTickRotate(-30),
   vg.yLabel("F1 Score"),
@@ -274,11 +277,7 @@ vg.plot(
   return Plot.plot({
     width: 680,
     height: 400,
-    color: {
-      legend: true,
-      domain: ["gat", "vgae", "fusion"],
-      range: ["#3fb950", "#58a6ff", "#bc8cff"],
-    },
+    color: { legend: true, domain: MODEL_DOMAIN, range: MODEL_RANGE },
     r: { range: [4, 30] },
     x: { label: "F1 Score", domain: [0.4, 1.01] },
     y: { label: "Accuracy", domain: [0.4, 1.01] },
@@ -337,28 +336,14 @@ vg.plot(
     }
   }
   const data = Array.from(grouped.values());
-
-  // Compute Pareto front (minimize params, maximize F1)
-  const sorted = [...data].sort((a, b) => a.param_count_M - b.param_count_M);
-  const pareto = [];
-  let bestF1 = -Infinity;
-  for (let i = sorted.length - 1; i >= 0; i--) {
-    if (sorted[i].f1 >= bestF1) {
-      bestF1 = sorted[i].f1;
-      pareto.unshift(sorted[i]);
-    }
-  }
+  const pareto = paretoFront(data, "param_count_M", "f1");
 
   return Plot.plot({
     width: 680,
     height: 400,
     x: { label: "Parameters (millions)", type: "log" },
     y: { label: "Best F1 Score", domain: [0.5, 1.01] },
-    color: {
-      legend: true,
-      domain: ["gat", "vgae", "dqn", "fusion"],
-      range: ["#3fb950", "#58a6ff", "#d29922", "#bc8cff"],
-    },
+    color: { legend: true, domain: MODEL_DOMAIN_FULL, range: MODEL_RANGE_FULL },
     marks: [
       Plot.dot(data, {
         x: "param_count_M",
@@ -406,9 +391,7 @@ vg.plot(
   ),
   vg.width(500),
   vg.height(320),
-  vg.colorLegend(true),
-  vg.colorDomain(["gat", "vgae", "fusion"]),
-  vg.colorRange(["#3fb950", "#58a6ff", "#bc8cff"]),
+  ...colorDirectives(MODEL_DOMAIN, MODEL_RANGE),
   vg.xLabel("AUC"),
   vg.xDomain([0.8, 1.01]),
   vg.yLabel("F1 Score"),
@@ -436,7 +419,7 @@ vg.plot(
     marginLeft: 60,
     x: { label: "Number of Runs" },
     y: { label: null },
-    color: { legend: true, domain: ["vgae", "gat", "dqn", "eval"], range: ["#58a6ff", "#3fb950", "#d29922", "#bc8cff"] },
+    color: { legend: true, domain: STAGE_MODEL_DOMAIN, range: STAGE_MODEL_RANGE },
     marks: [
       Plot.barX(data, Plot.stackX({
         y: "dataset",
@@ -484,11 +467,7 @@ vg.plot(
     marginLeft: 220,
     x: { label: "Duration (minutes)" },
     y: { label: null },
-    color: {
-      legend: true,
-      domain: ["vgae", "gat", "dqn"],
-      range: ["#58a6ff", "#3fb950", "#d29922"],
-    },
+    color: { legend: true, domain: TRAINING_MODEL_DOMAIN, range: TRAINING_MODEL_RANGE },
     marks: [
       Plot.barX(data, {
         y: "run_id",
@@ -558,25 +537,19 @@ viewof compareRun2 = {
 
 ```{ojs}
 //| title: "Training Carpet (Metric × Epoch Heatmap)"
-{
-  const sel = vg.Selection.single();
-  return vg.vconcat(
-    vg.menu({ from: "training_curves", column: "run_id", label: "Run", as: sel }),
-    vg.plot(
-      vg.cell(
-        vg.from("training_curves", { filterBy: sel }),
-        { x: "epoch", y: "metric_name", fill: "value", inset: 0.5 }
-      ),
-      vg.width(900),
-      vg.height(200),
-      vg.colorScheme("viridis"),
-      vg.colorLegend(true),
-      vg.colorLabel("Value"),
-      vg.xLabel("Epoch"),
-      vg.yLabel(null)
-    )
-  );
-}
+filteredChart("training_curves", sel => vg.plot(
+  vg.cell(
+    vg.from("training_curves", { filterBy: sel }),
+    { x: "epoch", y: "metric_name", fill: "value", inset: 0.5 }
+  ),
+  vg.width(900),
+  vg.height(200),
+  vg.colorScheme("viridis"),
+  vg.colorLegend(true),
+  vg.colorLabel("Value"),
+  vg.xLabel("Epoch"),
+  vg.yLabel(null)
+))
 ```
 
 # GAT & DQN
@@ -585,103 +558,77 @@ viewof compareRun2 = {
 
 ```{ojs}
 //| title: "GAT Attention Weights by Layer"
-{
-  const sel = vg.Selection.single();
-  return vg.vconcat(
-    vg.menu({ from: "attention_weights", column: "run_id", label: "Run", as: sel }),
-    vg.plot(
-      vg.cell(
-        vg.from("attention_weights", { filterBy: sel }),
-        {
-          x: vg.sql`'Head ' || head`,
-          y: vg.sql`'Layer ' || layer`,
-          fill: "mean_alpha",
-          inset: 0.5
-        }
-      ),
-      vg.width(500),
-      vg.height(280),
-      vg.colorScheme("blues"),
-      vg.colorLegend(true),
-      vg.colorLabel("Mean Attention"),
-      vg.xLabel("Attention Head"),
-      vg.yLabel("GAT Layer")
-    )
-  );
-}
+filteredChart("attention_weights", sel => vg.plot(
+  vg.cell(
+    vg.from("attention_weights", { filterBy: sel }),
+    {
+      x: vg.sql`'Head ' || head`,
+      y: vg.sql`'Layer ' || layer`,
+      fill: "mean_alpha",
+      inset: 0.5
+    }
+  ),
+  vg.width(500),
+  vg.height(280),
+  vg.colorScheme("blues"),
+  vg.colorLegend(true),
+  vg.colorLabel("Mean Attention"),
+  vg.xLabel("Attention Head"),
+  vg.yLabel("GAT Layer")
+))
 ```
 
 ```{ojs}
 //| title: "DQN Fusion Policy (Alpha Distribution)"
-{
-  const sel = vg.Selection.single();
-  return vg.vconcat(
-    vg.menu({ from: "dqn_policy", column: "run_id", label: "Run", as: sel }),
-    vg.plot(
-      vg.rectY(
-        vg.from("dqn_policy", { filterBy: sel }),
-        {x: vg.bin("alpha"), y: vg.count(), fill: "steelblue", insetLeft: 0.5, insetRight: 0.5}
-      ),
-      vg.width(500),
-      vg.height(280),
-      vg.colorScheme("oranges"),
-      vg.xLabel("Alpha (GAT weight in fusion)"),
-      vg.yLabel("Count")
-    )
-  );
-}
+filteredChart("dqn_policy", sel => vg.plot(
+  vg.rectY(
+    vg.from("dqn_policy", { filterBy: sel }),
+    {x: vg.bin("alpha"), y: vg.count(), fill: "steelblue", insetLeft: 0.5, insetRight: 0.5}
+  ),
+  vg.width(500),
+  vg.height(280),
+  vg.colorScheme("oranges"),
+  vg.xLabel("Alpha (GAT weight in fusion)"),
+  vg.yLabel("Count")
+))
 ```
 
 ## Row {height=50%}
 
 ```{ojs}
 //| title: "Training Curves (single run)"
-{
-  const sel = vg.Selection.single();
-  return vg.vconcat(
-    vg.menu({ from: "training_curves", column: "run_id", label: "Run", as: sel }),
-    vg.plot(
-      vg.lineY(
-        vg.from("training_curves", { filterBy: sel }),
-        { x: "epoch", y: "value", stroke: "metric_name" }
-      ),
-      vg.width(680),
-      vg.height(350),
-      vg.colorLegend(true),
-      vg.xLabel("Epoch"),
-      vg.yLabel("Value")
-    )
-  );
-}
+filteredChart("training_curves", sel => vg.plot(
+  vg.lineY(
+    vg.from("training_curves", { filterBy: sel }),
+    { x: "epoch", y: "value", stroke: "metric_name" }
+  ),
+  vg.width(680),
+  vg.height(350),
+  vg.colorLegend(true),
+  vg.xLabel("Epoch"),
+  vg.yLabel("Value")
+))
 ```
 
 ```{ojs}
 //| title: "VGAE Reconstruction Errors"
-{
-  const sel = vg.Selection.single();
-  return vg.vconcat(
-    vg.menu({ from: "recon_errors", column: "run_id", label: "Run", as: sel }),
-    vg.plot(
-      vg.rectY(
-        vg.from("recon_errors", { filterBy: sel }),
-        {
-          x: vg.bin("error"),
-          y: vg.count(),
-          fill: vg.sql`CASE WHEN label = 0 THEN 'normal' ELSE 'attack' END`,
-          insetLeft: 0.5,
-          insetRight: 0.5
-        }
-      ),
-      vg.width(680),
-      vg.height(350),
-      vg.colorLegend(true),
-      vg.colorDomain(["normal", "attack"]),
-      vg.colorRange(["#3fb950", "#f85149"]),
-      vg.xLabel("Reconstruction Error"),
-      vg.yLabel("Count")
-    )
-  );
-}
+filteredChart("recon_errors", sel => vg.plot(
+  vg.rectY(
+    vg.from("recon_errors", { filterBy: sel }),
+    {
+      x: vg.bin("error"),
+      y: vg.count(),
+      fill: vg.sql`CASE WHEN label = 0 THEN 'normal' ELSE 'attack' END`,
+      insetLeft: 0.5,
+      insetRight: 0.5
+    }
+  ),
+  vg.width(680),
+  vg.height(350),
+  ...colorDirectives(LABEL_DOMAIN, LABEL_RANGE),
+  vg.xLabel("Reconstruction Error"),
+  vg.yLabel("Count")
+))
 ```
 
 # Knowledge Distillation
@@ -730,94 +677,79 @@ viewof selectedKdMetric = Inputs.select(
 
 ```{ojs}
 //| title: "CKA Similarity (Teacher-Student Layer Alignment)"
-{
-  const sel = vg.Selection.single();
-  return vg.vconcat(
-    vg.menu({ from: "cka_similarity", column: "run_id", label: "Run", as: sel }),
-    vg.plot(
-      vg.cell(
-        vg.from("cka_similarity", { filterBy: sel }),
-        {
-          x: "student_layer",
-          y: "teacher_layer",
-          fill: "similarity",
-          inset: 0.5
-        }
-      ),
-      vg.width(400),
-      vg.height(300),
-      vg.colorScheme("viridis"),
-      vg.colorLegend(true),
-      vg.colorLabel("CKA Similarity"),
-      vg.xLabel("Student Layer"),
-      vg.yLabel("Teacher Layer")
-    )
-  );
-}
+filteredChart("cka_similarity", sel => vg.plot(
+  vg.cell(
+    vg.from("cka_similarity", { filterBy: sel }),
+    {
+      x: "student_layer",
+      y: "teacher_layer",
+      fill: "similarity",
+      inset: 0.5
+    }
+  ),
+  vg.width(400),
+  vg.height(300),
+  vg.colorScheme("viridis"),
+  vg.colorLegend(true),
+  vg.colorLabel("CKA Similarity"),
+  vg.xLabel("Student Layer"),
+  vg.yLabel("Teacher Layer")
+))
 ```
 
 ## Row {height=50%}
 
 ```{ojs}
+//| output: false
+// Shared selection for UMAP embeddings — both charts filter the same table
+umapSel = vg.Selection.single()
+```
+
+```{ojs}
 //| title: "UMAP Embeddings (VGAE)"
-{
-  const sel = vg.Selection.single();
-  return vg.vconcat(
-    vg.menu({ from: "embeddings", column: "run_id", label: "Run", as: sel }),
-    vg.plot(
-      vg.dot(
-        vg.from("embeddings", { filterBy: sel }),
-        {
-          x: "x",
-          y: "y",
-          fill: vg.sql`CASE WHEN label = 0 THEN 'normal' ELSE 'attack' END`,
-          r: 2,
-          opacity: 0.5
-        }
-      ),
-      vg.width(600),
-      vg.height(350),
-      vg.colorLegend(true),
-      vg.colorDomain(["normal", "attack"]),
-      vg.colorRange(["#3fb950", "#f85149"]),
-      vg.xLabel("UMAP 1"),
-      vg.xAxis(null),
-      vg.yLabel("UMAP 2"),
-      vg.yAxis(null)
-    )
-  );
-}
+filteredChart("embeddings", sel => vg.plot(
+  vg.dot(
+    vg.from("embeddings", { filterBy: sel }),
+    {
+      x: "x",
+      y: "y",
+      fill: vg.sql`CASE WHEN label = 0 THEN 'normal' ELSE 'attack' END`,
+      r: 2,
+      opacity: 0.5
+    }
+  ),
+  vg.width(600),
+  vg.height(350),
+  ...colorDirectives(LABEL_DOMAIN, LABEL_RANGE),
+  vg.xLabel("UMAP 1"),
+  vg.xAxis(null),
+  vg.yLabel("UMAP 2"),
+  vg.yAxis(null)
+), { selection: umapSel })
 ```
 
 ```{ojs}
 //| title: "UMAP Embeddings (GAT)"
-{
-  const sel = vg.Selection.single();
-  return vg.vconcat(
-    vg.menu({ from: "embeddings", column: "run_id", label: "Run", as: sel }),
-    vg.plot(
-      vg.dot(
-        vg.from("embeddings", { filterBy: sel }),
-        {
-          x: "x",
-          y: "y",
-          fill: vg.sql`CASE WHEN label = 0 THEN 'normal' ELSE 'attack' END`,
-          r: 2,
-          opacity: 0.5
-        }
-      ),
-      vg.width(600),
-      vg.height(350),
-      vg.colorLegend(true),
-      vg.colorDomain(["normal", "attack"]),
-      vg.colorRange(["#3fb950", "#f85149"]),
-      vg.xLabel("UMAP 1"),
-      vg.xAxis(null),
-      vg.yLabel("UMAP 2"),
-      vg.yAxis(null)
-    )
-  );
-}
+// Uses the same shared selection as VGAE — selecting a run in either dropdown updates both
+filteredChart("embeddings", sel => vg.plot(
+  vg.dot(
+    vg.from("embeddings", { filterBy: sel }),
+    {
+      x: "x",
+      y: "y",
+      fill: vg.sql`CASE WHEN label = 0 THEN 'normal' ELSE 'attack' END`,
+      r: 2,
+      opacity: 0.5
+    }
+  ),
+  vg.width(600),
+  vg.height(350),
+  ...colorDirectives(LABEL_DOMAIN, LABEL_RANGE),
+  vg.xLabel("UMAP 1"),
+  vg.xAxis(null),
+  vg.yLabel("UMAP 2"),
+  vg.yAxis(null)
+), { selection: umapSel })
 ```
 
 # Graph Structure
@@ -935,11 +867,7 @@ viewof graphColorBy = Inputs.select(
     marginLeft: 220,
     x: { label: "Time", type: "utc" },
     y: { label: null },
-    color: {
-      legend: true,
-      domain: ["vgae", "gat", "dqn", "eval"],
-      range: ["#58a6ff", "#3fb950", "#d29922", "#bc8cff"],
-    },
+    color: { legend: true, domain: STAGE_MODEL_DOMAIN, range: STAGE_MODEL_RANGE },
     marks: [
       Plot.barX(data, {
         y: "run_id",
@@ -1027,11 +955,7 @@ viewof predRun = {
     height: 350,
     x: { label: "False Positive Rate (FPR)", domain: [0, 0.5] },
     y: { label: "False Negative Rate (FNR)", domain: [0, 0.5] },
-    color: {
-      legend: true,
-      domain: ["gat", "vgae", "fusion"],
-      range: ["#3fb950", "#58a6ff", "#bc8cff"],
-    },
+    color: { legend: true, domain: MODEL_DOMAIN, range: MODEL_RANGE },
     marks: [
       Plot.dot(data, {
         x: "fpr",

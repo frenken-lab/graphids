@@ -60,6 +60,29 @@ export const METRIC_COLORS = {
 
 export const MARGIN = { top: 20, right: 30, bottom: 50, left: 60 };
 
+// --- Pre-built domain/range arrays for common chart color scales ---
+// Use these with Observable Plot `color: { domain, range }` or Mosaic `vg.colorDomain/Range`.
+
+/** 3-model domain (most common — excludes dqn) */
+export const MODEL_DOMAIN = ["gat", "vgae", "fusion"];
+export const MODEL_RANGE = ["#3fb950", "#58a6ff", "#bc8cff"];
+
+/** 4-model domain (includes dqn) */
+export const MODEL_DOMAIN_FULL = ["gat", "vgae", "dqn", "fusion"];
+export const MODEL_RANGE_FULL = ["#3fb950", "#58a6ff", "#d29922", "#bc8cff"];
+
+/** Binary normal/attack labels */
+export const LABEL_DOMAIN = ["normal", "attack"];
+export const LABEL_RANGE = ["#3fb950", "#f85149"];
+
+/** Stage-level model types (includes eval) */
+export const STAGE_MODEL_DOMAIN = ["vgae", "gat", "dqn", "eval"];
+export const STAGE_MODEL_RANGE = ["#58a6ff", "#3fb950", "#d29922", "#bc8cff"];
+
+/** Training model types (no eval) */
+export const TRAINING_MODEL_DOMAIN = ["vgae", "gat", "dqn"];
+export const TRAINING_MODEL_RANGE = ["#58a6ff", "#3fb950", "#d29922"];
+
 /**
  * Build a color range from a semantic map, falling back to COLORS.
  * @param {string[]} domain - ordinal domain values
