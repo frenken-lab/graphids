@@ -5,6 +5,8 @@ vgae:
   heads: 4
   embedding_dim: 32
   dropout: 0.15
+  conv_type: "gatv2"
+  edge_dim: 11
 training:
   lr: 0.002
   safety_factor: 0.55

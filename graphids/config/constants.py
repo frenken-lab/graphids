@@ -9,7 +9,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Versioning
 # ---------------------------------------------------------------------------
-PREPROCESSING_VERSION = "1.2.0"  # Bump when graph construction logic changes
+PREPROCESSING_VERSION = "2.0.0"  # Bump when graph construction logic changes
 
 # ---------------------------------------------------------------------------
 # Filesystem paths
@@ -23,7 +23,7 @@ DEFAULT_WINDOW_SIZE = 100
 DEFAULT_STRIDE = 100
 EXCLUDED_ATTACK_TYPES = ["suppress", "masquerade"]
 MAX_DATA_BYTES = 8
-NODE_FEATURE_COUNT = 11  # CAN_ID + 8 data bytes + count + position
+NODE_FEATURE_COUNT = 26  # CAN_ID + 8 means + 8 stds + entropy + 2 change_rate + skew + kurt + clustering + split_half + count + position
 EDGE_FEATURE_COUNT = 11  # Streamlined edge features
 
 # ---------------------------------------------------------------------------
@@ -45,6 +45,6 @@ FRAGMENTATION_BUFFER = 0.10
 # ---------------------------------------------------------------------------
 import os
 
-SLURM_ACCOUNT = os.getenv("KD_GAT_SLURM_ACCOUNT", "PAS3209")
+SLURM_ACCOUNT = os.getenv("KD_GAT_SLURM_ACCOUNT", "PAS1266")
 SLURM_PARTITION = os.getenv("KD_GAT_SLURM_PARTITION", "gpu")
 SLURM_GPU_TYPE = os.getenv("KD_GAT_GPU_TYPE", "v100")

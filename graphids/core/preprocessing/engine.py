@@ -9,6 +9,10 @@ domain — it only operates on the standardized column layout.
 Phase 3.3: Edge and node feature computation is fully vectorized using
 ``np.unique(return_inverse=True)`` + ``np.add.at`` scatter operations,
 replacing the O(E×W) and O(N×W) Python loops.
+
+Phase 4: Extended node features (26-D) with per-byte std, payload entropy,
+payload change rate, skewness/kurtosis, split-half ratio, and clustering
+coefficient.  Aljabri et al. (2025) validated entropy features via SHAP.
 """
 
 from __future__ import annotations
@@ -52,7 +56,12 @@ class GraphEngine:
         self.schema = schema
         self.window_size = window_size
         self.stride = stride
-        self.node_feature_count = schema.num_features + 3  # entity_id + features + count + position
+        # 26-D node features:
+        #   entity_id(1) + byte_means(num_features) + byte_stds(num_features)
+        #   + payload_entropy(1) + change_rate_mean(1) + change_rate_max(1)
+        #   + skewness(1) + kurtosis(1) + clustering_coeff(1) + split_half(1)
+        #   + occurrence_count(1) + last_position(1)
+        self.node_feature_count = 1 + schema.num_features * 2 + 7 + 2
 
     def create_graphs(self, ir_df) -> list[Data]:
         """Transform an IR DataFrame into a list of PyG Data objects.
@@ -104,9 +113,13 @@ class GraphEngine:
         # Node mapping (dense re-indexing)
         nodes = np.unique(np.concatenate((source, target)))
         node_to_idx = {node: idx for idx, node in enumerate(nodes)}
+        num_nodes = len(nodes)
 
         edge_index = np.array([[node_to_idx[src], node_to_idx[tgt]] for src, tgt in unique_edges]).T
         edge_index = torch.tensor(edge_index, dtype=torch.long)
+
+        # Build edge set for bidirectionality + clustering coefficient
+        edge_set = set(map(tuple, unique_edges))
 
         # Features (vectorized)
         edge_features = self._compute_edge_features_vectorized(
@@ -117,11 +130,14 @@ class GraphEngine:
             edge_counts,
             edge_inverse,
             nodes,
+            edge_set=edge_set,
         )
         node_features = self._compute_node_features_vectorized(
             window,
             nodes,
             source,
+            edge_index_np=edge_index.numpy(),
+            num_nodes=num_nodes,
         )
 
         edge_attr = torch.tensor(edge_features, dtype=torch.float)
@@ -131,9 +147,17 @@ class GraphEngine:
 
         data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y)
 
+        # ID sequence entropy (graph-level attribute)
+        entity_ids = window[:, 0].astype(np.int64)
+        id_counts = np.bincount(entity_ids)
+        id_counts = id_counts[id_counts > 0]
+        id_probs = id_counts / id_counts.sum()
+        data.id_entropy = torch.tensor(
+            float(-np.sum(id_probs * np.log2(id_probs + 1e-12))),
+            dtype=torch.float,
+        )
+
         # Per-node binary labels (attack=1, normal=0) via scatter-max
-        node_to_idx = {node: idx for idx, node in enumerate(nodes)}
-        num_nodes = len(nodes)
         node_labels = np.zeros(num_nodes, dtype=np.int64)
         for row_idx in range(len(source)):
             nidx = node_to_idx[source[row_idx]]
@@ -179,6 +203,8 @@ class GraphEngine:
         edge_counts: np.ndarray,
         edge_inverse: np.ndarray,
         nodes: np.ndarray,
+        *,
+        edge_set: set[tuple] | None = None,
     ) -> np.ndarray:
         """Compute 11-D edge features using vectorized operations.
 
@@ -275,8 +301,8 @@ class GraphEngine:
                 features[multi_mask, 4] = reg[multi_mask]
 
         # [8] Bidirectionality: check if reverse edge exists
-        # Build set of (src, tgt) tuples for reverse lookup
-        edge_set = set(map(tuple, unique_edges))
+        if edge_set is None:
+            edge_set = set(map(tuple, unique_edges))
         features[:, 8] = np.array(
             [float((tgt, src) in edge_set) for src, tgt in unique_edges],
             dtype=np.float32,
@@ -301,60 +327,222 @@ class GraphEngine:
         window: np.ndarray,
         nodes: np.ndarray,
         source: np.ndarray,
+        *,
+        edge_index_np: np.ndarray | None = None,
+        num_nodes: int | None = None,
     ) -> np.ndarray:
-        """Compute node features using vectorized operations.
+        """Compute 26-D node features using vectorized scatter operations.
 
-        Replaces the O(N×W) Python loop with scatter-based aggregation.
+        Feature layout (for CAN bus with num_features=8, total 26):
+            [0]        entity_id mean
+            [1:9]      per-byte mean of payload bytes
+            [9:17]     per-byte std of payload bytes
+            [17]       payload entropy (Shannon, over byte values)
+            [18]       payload change rate — mean abs change
+            [19]       payload change rate — max abs change
+            [20]       skewness (scalar avg across bytes)
+            [21]       kurtosis (scalar avg across bytes)
+            [22]       clustering coefficient (local)
+            [23]       split-half ratio (first-half mean / second-half mean)
+            [24]       normalized occurrence count
+            [25]       last temporal position (normalized)
 
-        Feature layout (``num_features + 3`` columns total):
-            [0]        entity_id mean (CAN ID or IP)
-            [1:n+1]    mean of continuous features (payload bytes / flow stats)
-            [n+1]      normalized occurrence count
-            [n+2]      last temporal position (normalized)
-
-        Where n = schema.num_features.
+        For non-CAN domains with different num_features, the layout scales:
+            entity_id(1) + means(n) + stds(n) + 7 scalar features + count + position
         """
         s = self.schema
+        n_feat = s.num_features
         N = len(nodes)
+        if num_nodes is None:
+            num_nodes = N
         W = len(source)
-        feat_end = 1 + s.num_features  # columns 0..feat_end (exclusive)
-        node_feat_count = s.num_features + 3  # entity_id + features + count + position
+        feat_end = 1 + n_feat  # columns 0..feat_end (exclusive)
 
-        node_features = np.zeros((N, node_feat_count), dtype=np.float32)
+        node_features = np.zeros((N, self.node_feature_count), dtype=np.float32)
 
         # Map source values to node indices
         node_to_idx = {node: idx for idx, node in enumerate(nodes)}
-        source_node_idx = np.array([node_to_idx[s] for s in source], dtype=np.int64)
+        source_node_idx = np.array([node_to_idx[sv] for sv in source], dtype=np.int64)
 
-        # --- Scatter-sum for feature means ---
-        # Sum entity_id + continuous features per node
+        # --- Scatter-sum for means, sum-of-squares for stds ---
+        row_features = window[:, :feat_end].astype(np.float64)
         feature_sums = np.zeros((N, feat_end), dtype=np.float64)
+        feature_sq_sums = np.zeros((N, n_feat), dtype=np.float64)
+        # For skewness (sum of cubes) and kurtosis (sum of fourth powers)
+        feature_cube_sums = np.zeros((N, n_feat), dtype=np.float64)
+        feature_quad_sums = np.zeros((N, n_feat), dtype=np.float64)
         occurrence_counts = np.zeros(N, dtype=np.float64)
 
-        # Scatter: add each row's features to the corresponding node
-        row_features = window[:, :feat_end].astype(np.float64)
+        # Scatter: accumulate per-node statistics
         for col in range(feat_end):
             np.add.at(feature_sums[:, col], source_node_idx, row_features[:, col])
+        payload_cols = row_features[:, 1:feat_end]  # feature_0..feature_N
+        for col in range(n_feat):
+            np.add.at(feature_sq_sums[:, col], source_node_idx, payload_cols[:, col] ** 2)
+            np.add.at(feature_cube_sums[:, col], source_node_idx, payload_cols[:, col] ** 3)
+            np.add.at(feature_quad_sums[:, col], source_node_idx, payload_cols[:, col] ** 4)
         np.add.at(occurrence_counts, source_node_idx, 1.0)
 
-        # Compute means where count > 0
         has_data = occurrence_counts > 0
-        for col in range(feat_end):
-            node_features[has_data, col] = feature_sums[has_data, col] / occurrence_counts[has_data]
+        counts_safe = np.where(has_data, occurrence_counts, 1.0)
+
+        # [0] entity_id mean
+        node_features[has_data, 0] = feature_sums[has_data, 0] / counts_safe[has_data]
+
+        # [1:1+n_feat] per-byte means
+        for col in range(n_feat):
+            node_features[has_data, 1 + col] = (
+                feature_sums[has_data, 1 + col] / counts_safe[has_data]
+            )
+
+        # [1+n_feat:1+2*n_feat] per-byte stds: sqrt(E[X²] - E[X]²)
+        std_offset = 1 + n_feat
+        for col in range(n_feat):
+            mean_val = feature_sums[has_data, 1 + col] / counts_safe[has_data]
+            mean_sq = feature_sq_sums[has_data, col] / counts_safe[has_data]
+            variance = np.maximum(mean_sq - mean_val**2, 0.0)
+            node_features[has_data, std_offset + col] = np.sqrt(variance)
 
         # For target-only nodes (no source occurrences), set entity_id directly
         target_only = ~has_data
         if np.any(target_only):
             node_features[target_only, 0] = nodes[target_only]
 
-        # --- Last temporal position per node (vectorized) ---
+        # --- [1+2*n_feat] Payload entropy per node ---
+        entropy_idx = 1 + 2 * n_feat
+        # Collect byte value distributions per node. Payload bytes are normalized [0,1],
+        # so we quantize to 256 bins for entropy computation.
+        byte_counts_per_node = np.zeros((N, 256), dtype=np.float64)
+        for col in range(n_feat):
+            byte_vals = np.clip((payload_cols[:, col] * 255).astype(np.int32), 0, 255)
+            for row_idx in range(W):
+                nidx = source_node_idx[row_idx]
+                byte_counts_per_node[nidx, byte_vals[row_idx]] += 1
+        for i in range(N):
+            total = byte_counts_per_node[i].sum()
+            if total > 0:
+                probs = byte_counts_per_node[i] / total
+                probs = probs[probs > 0]
+                node_features[i, entropy_idx] = -np.sum(probs * np.log2(probs))
+
+        # --- [entropy_idx+1:entropy_idx+3] Payload change rate (mean/max abs change) ---
+        change_mean_idx = entropy_idx + 1
+        change_max_idx = entropy_idx + 2
         positions = np.arange(W, dtype=np.float64)
+        # Sort by (node, position) to get consecutive appearances per node
+        sort_order = np.lexsort((positions, source_node_idx))
+        sorted_nodes = source_node_idx[sort_order]
+        sorted_payload = payload_cols[sort_order]
+        # Find consecutive same-node pairs
+        same_node = sorted_nodes[:-1] == sorted_nodes[1:]
+        if np.any(same_node):
+            payload_diff = np.abs(sorted_payload[1:] - sorted_payload[:-1])
+            # Mean abs change across all bytes per transition
+            per_transition_mean = payload_diff[same_node].mean(axis=1)
+            per_transition_max = payload_diff[same_node].max(axis=1)
+            groups = sorted_nodes[:-1][same_node]
+
+            change_sum = np.zeros(N, dtype=np.float64)
+            change_max = np.zeros(N, dtype=np.float64)
+            change_count = np.zeros(N, dtype=np.float64)
+            np.add.at(change_sum, groups, per_transition_mean)
+            np.maximum.at(change_max, groups, per_transition_max)
+            np.add.at(change_count, groups, 1.0)
+
+            has_changes = change_count > 0
+            node_features[has_changes, change_mean_idx] = (
+                change_sum[has_changes] / change_count[has_changes]
+            )
+            node_features[has_changes, change_max_idx] = change_max[has_changes]
+
+        # --- [change_max_idx+1:change_max_idx+3] Skewness and Kurtosis (scalar avg) ---
+        skew_idx = change_max_idx + 1
+        kurt_idx = change_max_idx + 2
+        # Skewness = E[(X-μ)³] / σ³, Kurtosis = E[(X-μ)⁴] / σ⁴ - 3 (excess)
+        # Using raw moments: skew = (E[X³] - 3μσ² - μ³) / σ³
+        for i in range(N):
+            if not has_data[i]:
+                continue
+            cnt = counts_safe[i]
+            per_byte_skew = np.zeros(n_feat, dtype=np.float64)
+            per_byte_kurt = np.zeros(n_feat, dtype=np.float64)
+            valid_bytes = 0
+            for col in range(n_feat):
+                mean_val = feature_sums[i, 1 + col] / cnt
+                mean_sq = feature_sq_sums[i, col] / cnt
+                var = max(mean_sq - mean_val**2, 0.0)
+                std = np.sqrt(var)
+                if std < 1e-8:
+                    continue
+                mean_cube = feature_cube_sums[i, col] / cnt
+                mean_quad = feature_quad_sums[i, col] / cnt
+                # Central moments from raw moments
+                m3 = mean_cube - 3 * mean_val * mean_sq + 2 * mean_val**3
+                m4 = (
+                    mean_quad
+                    - 4 * mean_val * mean_cube
+                    + 6 * mean_val**2 * mean_sq
+                    - 3 * mean_val**4
+                )
+                per_byte_skew[col] = m3 / (std**3)
+                per_byte_kurt[col] = m4 / (std**4) - 3.0  # excess kurtosis
+                valid_bytes += 1
+            if valid_bytes > 0:
+                node_features[i, skew_idx] = per_byte_skew.sum() / valid_bytes
+                node_features[i, kurt_idx] = per_byte_kurt.sum() / valid_bytes
+
+        # --- [kurt_idx+1] Clustering coefficient ---
+        clust_idx = kurt_idx + 1
+        if edge_index_np is not None and edge_index_np.shape[1] > 0:
+            # Build adjacency sets per node (undirected for triangle counting)
+            adj = [set() for _ in range(num_nodes)]
+            for e in range(edge_index_np.shape[1]):
+                u, v = int(edge_index_np[0, e]), int(edge_index_np[1, e])
+                adj[u].add(v)
+                adj[v].add(u)
+            for i in range(num_nodes):
+                neighbors = adj[i]
+                k = len(neighbors)
+                if k < 2:
+                    continue
+                triangles = 0
+                neighbor_list = list(neighbors)
+                for ni in range(k):
+                    for nj in range(ni + 1, k):
+                        if neighbor_list[nj] in adj[neighbor_list[ni]]:
+                            triangles += 1
+                node_features[i, clust_idx] = 2.0 * triangles / (k * (k - 1))
+
+        # --- [clust_idx+1] Split-half ratio ---
+        split_idx = clust_idx + 1
+        half_w = W / 2.0
+        # First-half and second-half mean payload per node
+        first_half_sum = np.zeros(N, dtype=np.float64)
+        first_half_count = np.zeros(N, dtype=np.float64)
+        second_half_sum = np.zeros(N, dtype=np.float64)
+        second_half_count = np.zeros(N, dtype=np.float64)
+        # Average across all payload bytes per row
+        row_payload_mean = payload_cols.mean(axis=1)
+        first_mask = positions < half_w
+        second_mask = ~first_mask
+        np.add.at(first_half_sum, source_node_idx[first_mask], row_payload_mean[first_mask])
+        np.add.at(first_half_count, source_node_idx[first_mask], 1.0)
+        np.add.at(second_half_sum, source_node_idx[second_mask], row_payload_mean[second_mask])
+        np.add.at(second_half_count, source_node_idx[second_mask], 1.0)
+        both_halves = (first_half_count > 0) & (second_half_count > 0)
+        if np.any(both_halves):
+            first_mean = first_half_sum[both_halves] / first_half_count[both_halves]
+            second_mean = second_half_sum[both_halves] / second_half_count[both_halves]
+            # Ratio with small epsilon to avoid division by zero
+            node_features[both_halves, split_idx] = first_mean / (second_mean + 1e-8)
+
+        # --- [-1] Last temporal position per node (vectorized) ---
         last_pos = np.full(N, -1.0, dtype=np.float64)
         np.maximum.at(last_pos, source_node_idx, positions)
         has_pos = last_pos >= 0
         node_features[has_pos, -1] = last_pos[has_pos] / max(W - 1, 1)
 
-        # --- Normalized occurrence counts ---
+        # --- [-2] Normalized occurrence counts ---
         c_min, c_max = occurrence_counts.min(), occurrence_counts.max()
         if c_max > c_min:
             node_features[:, -2] = ((occurrence_counts - c_min) / (c_max - c_min)).astype(
