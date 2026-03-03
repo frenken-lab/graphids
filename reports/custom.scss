@@ -1,11 +1,7 @@
 /*-- scss:defaults --*/
 
-$font-family-sans-serif: 'Source Sans Pro', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-$body-color: #1a1a2e;
-$body-bg: #ffffff;
-$font-size-base: 1.0625rem; /* 17px */
-$line-height-base: 1.7;
-$link-color: #2563eb;
+/* brand.yml handles fonts + link colors; $primary must stay in SCSS to override Bootswatch */
+$primary: #2563eb;
 $headings-color: #0f0f23;
 
 /*-- scss:rules --*/

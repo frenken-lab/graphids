@@ -1,0 +1,27 @@
+meta:
+  name: KD-GAT
+
+color:
+  palette:
+    body-dark: "#1a1a2e"
+    heading-dark: "#0f0f23"
+    blue: "#2563eb"
+    slate: "#64748b"
+    gray-700: "#374151"
+    gray-400: "#9ca3af"
+    gray-200: "#e5e7eb"
+    tooltip-bg: "#1f2937"
+    tooltip-fg: "#f9fafb"
+  foreground: body-dark
+  background: "#ffffff"
+  primary: blue
+  link: blue
+
+typography:
+  fonts:
+    - family: Source Sans Pro
+      source: google
+  base:
+    family: Source Sans Pro
+    size: 1.0625rem
+    line-height: 1.7
