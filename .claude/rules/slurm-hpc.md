@@ -3,7 +3,7 @@
 ## Environment
 
 - **Cluster**: OSC Pitzer (Ohio Supercomputer Center), RHEL 9, SLURM
-- **GPU**: 2x V100 per node, ~362 GB RAM (account PAS3209, gpu partition)
+- **GPU**: 2x V100 per node, ~362 GB RAM (account from `$KD_GAT_SLURM_ACCOUNT` in `.env`, gpu partition)
 - **Python**: 3.12 via `module load python/3.12`, uv venv `.venv/`
 - **Home**: `/users/PAS2022/rf15/` (NFS, permanent)
 - **Scratch**: `/fs/scratch/PAS1266/` (GPFS, 90-day purge)

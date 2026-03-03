@@ -1,5 +1,6 @@
 #!/bin/bash
-#SBATCH --account=PAS3209
+# Account comes from .env (KD_GAT_SLURM_ACCOUNT). Submit with:
+#   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/sweep.sh
 #SBATCH --partition=gpu
 #SBATCH --gpus-per-node=4
 #SBATCH --ntasks=5

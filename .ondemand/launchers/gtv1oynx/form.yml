@@ -9,8 +9,8 @@ form:
 attributes:
   auto_accounts:
     options:
-    - PAS3209
-    value: PAS3209
+    - PAS1266
+    value: PAS1266
     label: Account
     help: ''
     required: false

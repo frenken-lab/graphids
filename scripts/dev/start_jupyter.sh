@@ -7,7 +7,9 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 PROJECT_ROOT="/users/PAS2022/rf15/KD-GAT"
 VENV="/users/PAS2022/rf15/KD-GAT/.venv"
-SLURM_ACCOUNT="PAS3209"
+# Source .env for KD_GAT_SLURM_ACCOUNT
+set -a; source "$PROJECT_ROOT/.env" 2>/dev/null; set +a
+SLURM_ACCOUNT="${KD_GAT_SLURM_ACCOUNT:?Set KD_GAT_SLURM_ACCOUNT in .env}"
 JUPYTER="$VENV/bin/jupyter"
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-#SBATCH --account=PAS3209
+# Account comes from .env (KD_GAT_SLURM_ACCOUNT). Submit with:
+#   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/profiling/benchmark_orchestration.sh
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:v100:1
 #SBATCH --nodes=1

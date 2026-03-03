@@ -198,4 +198,4 @@ experimentruns/{dataset}/{model_type}_{scale}_{stage}[_{aux}]/
 - **Python**: uv venv `.venv/` (`source ~/KD-GAT/.venv/bin/activate`)
 - **Key packages**: PyTorch 2.8.0+cu128, PyG 2.7.0, Lightning, Pydantic v2, W&B, Ray
 - **Package manager**: uv (lockfile: `uv.lock`, config: `pyproject.toml [tool.uv]`)
-- **SLURM account**: PAS3209, gpu partition, V100 GPUs
+- **SLURM account**: PAS1266 (set via `KD_GAT_SLURM_ACCOUNT` in `.env`), gpu partition, V100 GPUs

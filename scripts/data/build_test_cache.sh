@@ -8,6 +8,9 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 mkdir -p "$PROJECT_DIR/slurm_logs"
 
+# Source .env for KD_GAT_SLURM_ACCOUNT
+set -a; source "$PROJECT_DIR/.env" 2>/dev/null; set +a
+
 if [ $# -gt 0 ]; then
     DATASETS="$@"
 else
@@ -15,7 +18,7 @@ else
 fi
 
 for ds in $DATASETS; do
-    sbatch --account=PAS3209 --partition=cpu \
+    sbatch --account="${KD_GAT_SLURM_ACCOUNT:?Set KD_GAT_SLURM_ACCOUNT in .env}" --partition=cpu \
       --time=240 --mem=85G --cpus-per-task=8 \
       --job-name="test-cache-${ds}" \
       --output="$PROJECT_DIR/slurm_logs/%j-test-cache-${ds}.out" \

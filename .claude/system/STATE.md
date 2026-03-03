@@ -12,7 +12,7 @@
 | **Config system** | Pydantic v2 frozen models + YAML composition. `resolve(model_type, scale, auxiliaries, **overrides)` → frozen `PipelineConfig`. 6 datasets in `graphids/config/datasets.yaml`. |
 | **Training pipeline** | 72 legacy validation runs archived to `data/datalake_archive/`. CLI: `python -m graphids.pipeline.cli <stage> --model <type> --scale <size> --dataset <name>` |
 | **Ray orchestration** | `train_pipeline()` and `eval_pipeline()` via Ray remote tasks + SLURM. `--local` flag for Ray local mode. Subprocess-per-stage dispatch (intentional — CUDA context isolation). `small_nokd` runs concurrently with `large`. Benchmark mode via `KD_GAT_BENCHMARK=1`. |
-| **SLURM integration** | Pitzer cluster. GPU (2x V100 per node, 362GB RAM, PAS3209) + CPU partitions. |
+| **SLURM integration** | Pitzer cluster. GPU (2x V100 per node, 362GB RAM, PAS1266) + CPU partitions. Account set in `.env` (`KD_GAT_SLURM_ACCOUNT`). |
 | **Graph caching** | All 6 datasets cached with test scenarios (`processed_graphs.pt` + `test_*.pt`). DynamicBatchSampler for variable-size graphs. |
 | **DVC tracking** | Raw data + cache tracked. S3 remote + local scratch remote configured. |
 | **Export pipeline** | 8 lightweight exporters (~2s, login node safe) → `reports/data/`. Heavy analysis in notebooks. |
