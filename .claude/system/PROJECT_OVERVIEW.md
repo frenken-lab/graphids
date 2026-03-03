@@ -1,4 +1,4 @@
-# CAN-Graph KD-GAT: Project Context
+# KD-GAT: Project Context
 
 **Updated**: 2026-02-23
 
@@ -48,7 +48,7 @@ Three-layer import hierarchy (enforced by `tests/test_layer_boundaries.py`):
 - `validate.py` — Config validation (simplified — Pydantic handles field constraints)
 - `tracking.py` — Memory monitoring utilities
 - `memory.py` — GPU memory management: static estimation, measured (forward hooks), trial-based (binary search with forward+backward passes)
-- `lakehouse.py` — Fire-and-forget sync to S3 (structured metrics as JSON)
+- `lakehouse.py` — Fire-and-forget Parquet append to data/datalake/
 - `export.py` — Filesystem scanning → static JSON/Parquet export for Quarto reports
 
 ### Layer 3: `graphids/core/` (domain — imports graphids.config.constants, never imports graphids.pipeline)
