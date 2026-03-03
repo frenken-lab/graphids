@@ -109,6 +109,6 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           pip install huggingface-hub
-          huggingface-cli upload rf15/kd-gat-paper reports/_site/ . \
+          huggingface-cli upload buckeyeguy/kd-gat-paper reports/_site/ . \
             --repo-type space \
             --commit-message "Deploy from ${{ github.sha }}"
