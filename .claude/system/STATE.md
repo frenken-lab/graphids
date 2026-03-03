@@ -1,6 +1,6 @@
 # Current State
 
-**Date**: 2026-03-01
+**Date**: 2026-03-03
 **Branch**: `main`
 
 ## Ecosystem Status
@@ -13,7 +13,7 @@
 | **Training pipeline** | 72 legacy validation runs archived to `data/datalake_archive/`. CLI: `python -m graphids.pipeline.cli <stage> --model <type> --scale <size> --dataset <name>` |
 | **Ray orchestration** | `train_pipeline()` and `eval_pipeline()` via Ray remote tasks + SLURM. `--local` flag for Ray local mode. Subprocess-per-stage dispatch (intentional — CUDA context isolation). `small_nokd` runs concurrently with `large`. Benchmark mode via `KD_GAT_BENCHMARK=1`. |
 | **SLURM integration** | Pitzer cluster. GPU (2x V100 per node, 362GB RAM, PAS1266) + CPU partitions. Account set in `.env` (`KD_GAT_SLURM_ACCOUNT`). |
-| **Graph caching** | All 6 datasets cached with test scenarios (`processed_graphs.pt` + `test_*.pt`). DynamicBatchSampler for variable-size graphs. |
+| **Graph caching** | **STALE** — preprocessing v2.0.0 (26-D node features) invalidates all caches. Must rebuild all 6 datasets before training. DynamicBatchSampler for variable-size graphs. |
 | **DVC tracking** | Raw data + cache tracked. S3 remote + local scratch remote configured. |
 | **Export pipeline** | 8 lightweight exporters (~2s, login node safe) → `reports/data/`. Heavy analysis in notebooks. |
 | **Datalake** | Parquet-based structured storage in `data/datalake/` (runs, metrics, configs, artifacts, training curves). DuckDB analytics views. S3 backup via SLURM epilog. |
@@ -35,6 +35,16 @@
 |-----------|--------|
 | **RAPIDS GPU acceleration** | Removed. pip wheels conflict with PyTorch cu128 + PyG cu126. Single uv env is the answer. |
 
+## Immediate Priority: Cache Rebuild + Retrain
+
+Preprocessing v2.0.0 shipped (2026-03-03). Changes:
+- **Node features**: 11-D → 26-D (+8 byte stds, entropy, change rate, skewness/kurtosis, clustering coeff, split-half ratio)
+- **Graph attribute**: `data.id_entropy` (CAN ID distribution entropy)
+- **Conv type**: GAT → GATv2 (all 4 model configs) — edge features now used in message passing
+- **Version bump**: `PREPROCESSING_VERSION` 1.2.0 → 2.0.0 (auto-invalidates old caches)
+
+**All 6 dataset caches must be rebuilt, then all models retrained.** See `PLAN.md` for checklist.
+
 ## Next Phase: Research Platform
 
 The codebase is transitioning from validation (72 runs, binary classification) to a research platform with expanded scope:
@@ -44,6 +54,7 @@ The codebase is transitioning from validation (72 runs, binary classification) t
 - **Pluggable fusion** — DQN, MLP, and weighted average fusion methods selectable via config (Phase 4)
 - **Resource tracking** — Every run self-documents wall-clock time, GPU peak memory, SLURM job ID (Phase 5)
 - **Profiling jobs** — Orchestration benchmark + conv_type profiling to close cuGraph decision gate (Phase 6)
+- **Loss landscape** — Stage + dashboard tab added (2026-03-03). Run after retraining.
 
 ## Archived Legacy Runs
 
