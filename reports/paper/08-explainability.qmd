@@ -6,13 +6,15 @@ title: "Explainability"
 
 ## Explainability
 
-### UMAP Analysis
+### Embedding Analysis
+
+::: {.panel-tabset}
+
+#### VGAE Embeddings
 
 To understand the representations learned by our model, we perform UMAP-based feature analysis using both raw input statistics and learned graph embeddings. We sample 10% of graphs from the HCRL Car-Hacking dataset.
 
-Raw CAN-graph data projected via UMAP shows loose clustering that indicates limited separability between normal and attack types. In contrast, UMAP projections of graph-level embeddings from the trained GAT classifier's penultimate layer reveal well-separated clusters.
-
-Despite binary supervision (attack vs. normal), the learned embedding space forms well-separated clusters aligned with specific attack types (DoS, Fuzzy, Gear, RPM). This emergent multi-class structure demonstrates that our model captures high-level semantic patterns in CAN traffic and generalizes across attack categories without explicit multi-class labels. The clear cluster separation in embedding space, absent in raw features, validates the GAT's ability to learn discriminative representations from graph-structured temporal data.
+Raw CAN-graph data projected via UMAP shows loose clustering that indicates limited separability between normal and attack types. In contrast, VGAE latent embeddings show clear separation learned without explicit labels.
 
 ```{ojs}
 //| label: fig-umap-vgae
@@ -47,6 +49,10 @@ Despite binary supervision (attack vs. normal), the learned embedding space form
 }
 ```
 
+#### GAT Embeddings
+
+UMAP projections of graph-level embeddings from the trained GAT classifier's penultimate layer reveal well-separated clusters. Despite binary supervision (attack vs. normal), the learned embedding space forms well-separated clusters aligned with specific attack types (DoS, Fuzzy, Gear, RPM). This emergent multi-class structure demonstrates that our model captures high-level semantic patterns in CAN traffic and generalizes across attack categories without explicit multi-class labels.
+
 ```{ojs}
 //| label: fig-umap-gat
 //| fig-cap: "UMAP projection of GAT penultimate-layer embeddings. The supervised classifier produces well-separated clusters, with emergent multi-class structure despite binary training."
@@ -78,6 +84,12 @@ Despite binary supervision (attack vs. normal), the learned embedding space form
   );
 }
 ```
+
+#### Teacher vs Student
+
+The clear cluster separation in embedding space, absent in raw features, validates the GAT's ability to learn discriminative representations from graph-structured temporal data. Comparing teacher (large) and student (small+KD) embeddings reveals that knowledge distillation successfully transfers the teacher's representation structure to the smaller student model, maintaining cluster quality despite reduced parameter count.
+
+:::
 
 ### Composite VGAE Reconstruction Error
 
@@ -125,7 +137,11 @@ This approach enables the detection of subtle anomalies by jointly evaluating no
 }
 ```
 
-### Attention Weight Analysis
+### Knowledge Transfer Analysis
+
+::: {.panel-tabset}
+
+#### Attention Heatmap
 
 To understand which graph structural features the GAT prioritizes, we analyze the learned attention weights across layers and heads. @fig-attention-heatmap shows the mean attention weight distribution, revealing how different heads specialize in capturing distinct message relationship patterns.
 
@@ -160,37 +176,7 @@ To understand which graph structural features the GAT prioritizes, we analyze th
 }
 ```
 
-### DQN-Fusion Analysis
-
-The learned DQN fusion policy exhibits interpretable, context-specific weighting that validates adaptive expert selection. Analysis reveals a strong correlation between VGAE anomaly scores and fusion weights: low VGAE scores cluster at $\alpha \approx 0$ (favoring the robust expert), while higher scores transition to intermediate weights, demonstrating the policy learned to default to VGAE's out-of-distribution detection while conditionally leveraging GAT's strength on known attacks. The multimodal distribution with peaks at $\alpha \approx 0, 0.2, 0.4, 0.6, 0.8$ indicates the DQN discovered distinct attack-type-specific strategies rather than learning fixed averaging ($\alpha = 0.5$). Critically, the divergence between normal and attack distributions validates meaningful anomaly detection logic.
-
-@fig-dqn-policy shows the learned DQN fusion weight distribution, confirming the multimodal policy structure.
-
-```{ojs}
-//| label: fig-dqn-policy
-//| fig-cap: "DQN fusion weight (alpha) distribution. The multimodal pattern with peaks at distinct alpha values indicates the policy learned context-specific fusion strategies rather than simple averaging."
-
-{
-  await loadTable("dqn_policy", FileAttachment("../data/dqn_policy.parquet"));
-  const sel = vg.Selection.single();
-  return vg.vconcat(
-    vg.menu({ from: "dqn_policy", column: "run_id", label: "Run", as: sel }),
-    vg.plot(
-      vg.rectY(
-        vg.from("dqn_policy", { filterBy: sel }),
-        {x: vg.bin("alpha"), y: vg.count(), fill: "steelblue", insetLeft: 0.5, insetRight: 0.5}
-      ),
-      vg.width(500),
-      vg.height(280),
-      vg.colorScheme("oranges"),
-      vg.xLabel("Alpha (GAT weight in fusion)"),
-      vg.yLabel("Count")
-    )
-  );
-}
-```
-
-### Layer-wise Knowledge Transfer
+#### CKA Similarity
 
 To quantify how well the student model replicates the teacher's internal representations, we compute Centered Kernel Alignment (CKA) between corresponding layers. @fig-cka-heatmap shows the layer-wise similarity matrix, where high values along the diagonal indicate successful representation alignment at each depth.
 
@@ -220,6 +206,75 @@ To quantify how well the student model replicates the teacher's internal represe
       vg.colorLabel("CKA Similarity"),
       vg.xLabel("Student Layer"),
       vg.yLabel("Teacher Layer")
+    )
+  );
+}
+```
+
+#### Loss Landscapes
+
+Loss landscape contour plots reveal the geometry of the optimization surface around trained minima. Smoother, wider basins indicate better generalization. We visualize 2D cross-sections by perturbing model weights along two filter-normalized random directions (Li et al., 2018) and evaluating loss on a 51×51 grid.
+
+```{ojs}
+//| label: fig-loss-landscape-paper
+//| fig-cap: "2D loss landscape contour plots for VGAE, GAT, and DQN models. Contours show loss values around the trained minimum (center). Wider, smoother basins suggest better generalization properties."
+
+{
+  await loadTable("loss_landscape", FileAttachment("../data/loss_landscape.parquet"));
+  const sel = vg.Selection.single();
+  return vg.vconcat(
+    vg.menu({ from: "loss_landscape", column: "model_type", label: "Model", as: sel }),
+    vg.plot(
+      vg.raster(
+        vg.from("loss_landscape", { filterBy: sel }),
+        {
+          x: "x",
+          y: "y",
+          fill: vg.avg("loss"),
+          interpolate: "linear",
+          bandwidth: 0,
+          pixelSize: 2
+        }
+      ),
+      vg.width(500),
+      vg.height(450),
+      vg.colorScheme("viridis"),
+      vg.colorLegend(true),
+      vg.colorLabel("Loss"),
+      vg.xLabel("Direction 1"),
+      vg.yLabel("Direction 2")
+    )
+  );
+}
+```
+
+:::
+
+### DQN-Fusion Analysis
+
+The learned DQN fusion policy exhibits interpretable, context-specific weighting that validates adaptive expert selection. Analysis reveals a strong correlation between VGAE anomaly scores and fusion weights: low VGAE scores cluster at $\alpha \approx 0$ (favoring the robust expert), while higher scores transition to intermediate weights, demonstrating the policy learned to default to VGAE's out-of-distribution detection while conditionally leveraging GAT's strength on known attacks. The multimodal distribution with peaks at $\alpha \approx 0, 0.2, 0.4, 0.6, 0.8$ indicates the DQN discovered distinct attack-type-specific strategies rather than learning fixed averaging ($\alpha = 0.5$). Critically, the divergence between normal and attack distributions validates meaningful anomaly detection logic.
+
+@fig-dqn-policy shows the learned DQN fusion weight distribution, confirming the multimodal policy structure.
+
+```{ojs}
+//| label: fig-dqn-policy
+//| fig-cap: "DQN fusion weight (alpha) distribution. The multimodal pattern with peaks at distinct alpha values indicates the policy learned context-specific fusion strategies rather than simple averaging."
+
+{
+  await loadTable("dqn_policy", FileAttachment("../data/dqn_policy.parquet"));
+  const sel = vg.Selection.single();
+  return vg.vconcat(
+    vg.menu({ from: "dqn_policy", column: "run_id", label: "Run", as: sel }),
+    vg.plot(
+      vg.rectY(
+        vg.from("dqn_policy", { filterBy: sel }),
+        {x: vg.bin("alpha"), y: vg.count(), fill: "steelblue", insetLeft: 0.5, insetRight: 0.5}
+      ),
+      vg.width(500),
+      vg.height(280),
+      vg.colorScheme("oranges"),
+      vg.xLabel("Alpha (GAT weight in fusion)"),
+      vg.yLabel("Count")
     )
   );
 }

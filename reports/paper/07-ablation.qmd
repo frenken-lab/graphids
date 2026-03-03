@@ -4,9 +4,11 @@ title: "Ablation Study"
 
 ## Ablation Study
 
-To assess the contribution of different model configurations, we perform ablation experiments investigating three key variables: Knowledge Distillation, supervised learning training strategies (curriculum learning and hard sample mining), and fusion effectiveness, comparing standalone and fused architectures. @tbl-ablation-kd, @tbl-ablation-gat, and @tbl-ablation-fusion test different configurations across two of the six datasets.
+To assess the contribution of different model configurations, we perform ablation experiments investigating three key variables: Knowledge Distillation, supervised learning training strategies (curriculum learning and hard sample mining), and fusion effectiveness, comparing standalone and fused architectures. The following tabs present results across two of the six datasets.
 
-### Knowledge Distillation Effects
+::: {.panel-tabset}
+
+### Knowledge Distillation
 
 | Model | Expert | Dataset | KD Enabled | F1 Score | Accuracy |
 |-------|--------|---------|------------|----------|----------|
@@ -21,7 +23,9 @@ To assess the contribution of different model configurations, we perform ablatio
 
 : Ablation Study: Knowledge Distillation Effects {#tbl-ablation-kd}
 
-### GAT Training Strategy
+KD consistently improves both F1 and accuracy across models and datasets, with an average improvement of +2.6% F1 for GAT and +2.5% for VGAE.
+
+### Training Strategy
 
 | Model | Strategy | Dataset | F1 Score | Accuracy |
 |-------|----------|---------|----------|----------|
@@ -34,7 +38,9 @@ To assess the contribution of different model configurations, we perform ablatio
 
 : Ablation Study: GAT Training Strategy Comparison {#tbl-ablation-gat}
 
-### DQN Fusion vs. Baseline Strategies
+Curriculum learning outperforms both random and VGAE-based undersampling. VGAE undersampling provides an intermediate improvement by retaining harder negatives.
+
+### Fusion Method
 
 | Model | Fusion Strategy | CarH F1 | CarH Acc | CarS F1 | CarS Acc |
 |-------|-----------------|---------|----------|---------|----------|
@@ -44,3 +50,7 @@ To assess the contribution of different model configurations, we perform ablatio
 | DQN-4 | VGAE Only | 0.906 | 0.915 | 0.923 | 0.933 |
 
 : Ablation Study: DQN Fusion vs. Baseline Strategies {#tbl-ablation-fusion}
+
+DQN-learned adaptive fusion outperforms fixed-weight baselines and single-model approaches. The learned policy discovers context-specific fusion weights rather than simple averaging.
+
+:::

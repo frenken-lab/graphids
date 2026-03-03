@@ -39,6 +39,7 @@ tableStatus = {
   status.dqn_policy = await loadTable("dqn_policy", FileAttachment("data/dqn_policy.parquet"));
   status.cka_similarity = await loadTable("cka_similarity", FileAttachment("data/cka_similarity.parquet"));
   status.embeddings = await loadTable("embeddings", FileAttachment("data/embeddings.parquet"));
+  status.loss_landscape = await loadTable("loss_landscape", FileAttachment("data/loss_landscape.parquet"));
   const failed = Object.entries(status).filter(([, ok]) => !ok).map(([name]) => name);
   if (failed.length > 0) console.warn(`[dashboard] Missing tables: ${failed.join(", ")}`);
   return status;
@@ -750,6 +751,145 @@ filteredChart("embeddings", sel => vg.plot(
   vg.yLabel("UMAP 2"),
   vg.yAxis(null)
 ), { selection: umapSel })
+```
+
+# Loss Landscape
+
+## Row {height=60%}
+
+```{ojs}
+//| title: "2D Loss Landscape Contour"
+
+viewof landscapeModel = {
+  const result = await vg.coordinator().query(
+    vg.sql`SELECT DISTINCT model_type FROM loss_landscape ORDER BY model_type`
+  );
+  const models = Array.from(result, d => d.model_type);
+  return models.length > 0
+    ? Inputs.select(models, { label: "Model", value: models[0] })
+    : Inputs.text({ label: "Model", value: "(no data)", disabled: true });
+}
+
+viewof landscapeDataset = {
+  const result = await vg.coordinator().query(
+    vg.sql`SELECT DISTINCT dataset FROM loss_landscape ORDER BY dataset`
+  );
+  const datasets = Array.from(result, d => d.dataset);
+  return datasets.length > 0
+    ? Inputs.select(datasets, { label: "Dataset", value: datasets[0] })
+    : Inputs.text({ label: "Dataset", value: "(no data)", disabled: true });
+}
+
+{
+  const sel = vg.Selection.intersect(
+    vg.Selection.single({ init: { model_type: landscapeModel } }),
+    vg.Selection.single({ init: { dataset: landscapeDataset } })
+  );
+
+  return vg.plot(
+    vg.raster(
+      vg.from("loss_landscape", { filterBy: sel }),
+      {
+        x: "x",
+        y: "y",
+        fill: vg.avg("loss"),
+        interpolate: "linear",
+        bandwidth: 0,
+        pixelSize: 2
+      }
+    ),
+    vg.width(600),
+    vg.height(500),
+    vg.colorScheme("viridis"),
+    vg.colorLegend(true),
+    vg.colorLabel("Loss"),
+    vg.xLabel("Direction 1"),
+    vg.yLabel("Direction 2")
+  );
+}
+```
+
+```{ojs}
+//| title: "Loss Profile (1D Slice Through Minimum)"
+
+{
+  const result = await vg.coordinator().query(
+    vg.sql`
+      SELECT x, AVG(loss) AS loss, model_type
+      FROM loss_landscape
+      WHERE ABS(y) < 0.05
+      GROUP BY x, model_type
+      ORDER BY model_type, x
+    `
+  );
+  const data = Array.from(result);
+
+  if (data.length === 0) {
+    return html`<p style="color: #8b949e; text-align: center; padding: 2rem;">No loss landscape data available. Run SLURM job first.</p>`;
+  }
+
+  return Plot.plot({
+    width: 600,
+    height: 400,
+    color: { legend: true },
+    x: { label: "Perturbation (Direction 1)" },
+    y: { label: "Loss" },
+    marks: [
+      Plot.line(data, {
+        x: "x",
+        y: "loss",
+        stroke: "model_type",
+        strokeWidth: 2,
+        tip: true,
+      }),
+      Plot.ruleX([0], { stroke: "#8b949e", strokeDasharray: "4,4" }),
+    ],
+  });
+}
+```
+
+## Row {height=40%}
+
+```{ojs}
+//| title: "Loss Landscape Summary Statistics"
+
+{
+  const result = await vg.coordinator().query(
+    vg.sql`
+      SELECT
+        model_type AS model,
+        dataset,
+        MIN(loss) AS min_loss,
+        MAX(loss) AS max_loss,
+        AVG(loss) AS avg_loss,
+        STDDEV(loss) AS std_loss,
+        COUNT(*) AS grid_points
+      FROM loss_landscape
+      GROUP BY model_type, dataset
+      ORDER BY model_type, dataset
+    `
+  );
+  const data = Array.from(result);
+
+  if (data.length === 0) {
+    return html`<p style="color: #8b949e; text-align: center; padding: 1rem;">No data. Submit SLURM job: <code>sbatch scripts/slurm/loss_landscape.sh all hcrl_sa</code></p>`;
+  }
+
+  return Inputs.table(data, {
+    columns: ["model", "dataset", "min_loss", "max_loss", "avg_loss", "std_loss", "grid_points"],
+    format: {
+      min_loss: d => d?.toFixed(4),
+      max_loss: d => d?.toFixed(4),
+      avg_loss: d => d?.toFixed(4),
+      std_loss: d => d?.toFixed(4),
+    },
+    header: {
+      model: "Model", dataset: "Dataset", min_loss: "Min Loss",
+      max_loss: "Max Loss", avg_loss: "Avg Loss", std_loss: "Std Loss",
+      grid_points: "Grid Points",
+    },
+  });
+}
 ```
 
 # Graph Structure

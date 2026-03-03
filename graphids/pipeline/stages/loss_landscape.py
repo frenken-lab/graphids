@@ -75,9 +75,10 @@ def _filter_normalize(
 
 def _random_direction(model: torch.nn.Module, seed: int) -> list[torch.Tensor]:
     """Generate a single filter-normalized random direction."""
-    rng = torch.Generator().manual_seed(seed)
+    rng = torch.Generator(device="cpu").manual_seed(seed)
     params = [p.data for p in model.parameters()]
-    raw = [torch.randn_like(p, generator=rng) for p in params]
+    # Generate on CPU (generator only works on CPU), then move to param device
+    raw = [torch.randn(p.shape, generator=rng, dtype=p.dtype).to(p.device) for p in params]
     return _filter_normalize(raw, params)
 
 
@@ -175,9 +176,10 @@ _LOSS_FN = {
 
 def _load_graph_data(dataset: str, model_type: str, cfg, max_graphs: int = 500):
     """Load preprocessed graph data for loss evaluation."""
-    from graphids.pipeline.stages.data_loading import load_dataset
+    from graphids.pipeline.stages.data_loading import load_data
 
-    graphs = load_dataset(cfg, dataset)
+    train_graphs, val_graphs, _num_ids, _in_ch = load_data(cfg)
+    graphs = train_graphs + val_graphs
     # Subsample for efficiency
     if len(graphs) > max_graphs:
         rng = np.random.default_rng(42)
@@ -260,22 +262,36 @@ def compute_loss_landscape(
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     run_name, model_scale = _MODEL_RUN_MAP[model_type]
-    checkpoint_path = EXPERIMENT_ROOT / dataset / run_name / "best_model.pt"
-    if not checkpoint_path.exists():
-        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+    run_dir = EXPERIMENT_ROOT / dataset / run_name
+    checkpoint_file = run_dir / "best_model.pt"
+    if not checkpoint_file.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_file}")
 
-    log.info("Loading model %s from %s", model_type, checkpoint_path)
-    cfg = resolve(model_type, model_scale, dataset=dataset)
+    log.info("Loading model %s from %s", model_type, checkpoint_file)
+
+    # Load config from checkpoint dir (preserves exact architecture used during training)
+    from graphids.config.schema import PipelineConfig
+
+    config_file = run_dir / "config.json"
+    if config_file.exists():
+        cfg = PipelineConfig.load(config_file)
+        log.info("Loaded config from %s", config_file)
+    else:
+        cfg = resolve(model_type, model_scale, dataset=dataset)
+        log.warning("No config.json in %s — using resolve() defaults", run_dir)
 
     # Build model and load weights
     from graphids.core.models.registry import get as get_model
 
-    state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    state_dict = torch.load(checkpoint_file, map_location="cpu", weights_only=True)
 
     if model_type == "dqn":
         from graphids.core.models.dqn import QNetwork
 
         model = QNetwork.from_config(cfg)
+        # DQN checkpoint stores full agent state; extract Q-network weights
+        if "q_network" in state_dict:
+            state_dict = state_dict["q_network"]
     else:
         # Infer num_ids from checkpoint embedding weight shape
         num_ids = state_dict["id_embedding.weight"].shape[0]
