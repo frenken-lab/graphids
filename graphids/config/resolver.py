@@ -1,4 +1,5 @@
 """Compose config from YAML layers: defaults -> model_def -> auxiliaries -> CLI overrides."""
+
 from __future__ import annotations
 
 import logging
@@ -31,7 +32,7 @@ def _warn_unused_keys(merged: dict, model_cls, prefix: str = "") -> None:
         elif isinstance(merged[key], dict):
             # Recurse into nested sub-config models
             field_info = model_cls.model_fields.get(key)
-            if field_info and hasattr(field_info.annotation, 'model_fields'):
+            if field_info and hasattr(field_info.annotation, "model_fields"):
                 _warn_unused_keys(merged[key], field_info.annotation, prefix=full_key)
 
 
@@ -72,16 +73,34 @@ def resolve(
 
 
 def list_models() -> dict[str, list[str]]:
-    """Discover available model types and scales from filesystem."""
+    """Discover available model types and scales from filesystem.
+
+    Only includes directories whose name matches a valid model_type (vgae, gat, dqn).
+    The ``fusion/`` directory contains method-variant configs (dqn.yaml, mlp.yaml, ...),
+    not model-type configs, so it is excluded.
+    """
+    valid_model_types = {"vgae", "gat", "dqn"}
     models = {}
     models_dir = CONFIG_DIR / "models"
     if models_dir.exists():
         for model_dir in sorted(models_dir.iterdir()):
-            if model_dir.is_dir():
+            if model_dir.is_dir() and model_dir.name in valid_model_types:
                 scales = [f.stem for f in sorted(model_dir.glob("*.yaml"))]
                 if scales:
                     models[model_dir.name] = scales
     return models
+
+
+def list_fusion_methods() -> list[str]:
+    """Discover available fusion method configs from filesystem.
+
+    Fusion methods (dqn, mlp, weighted_avg) are config overlays in
+    ``models/fusion/``, not standalone model types.
+    """
+    fusion_dir = CONFIG_DIR / "models" / "fusion"
+    if fusion_dir.exists():
+        return [f.stem for f in sorted(fusion_dir.glob("*.yaml"))]
+    return []
 
 
 def list_auxiliaries() -> list[str]:
