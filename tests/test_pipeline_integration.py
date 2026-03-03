@@ -137,6 +137,7 @@ class TestModelMatchesConfig:
 
         for scale in ("large", "small"):
             cfg = resolve("vgae", scale)
+            conv_type = cfg.vgae.conv_type
             model = GraphAutoencoderNeighborhood(
                 num_ids=NUM_IDS,
                 in_channels=IN_CHANNELS,
@@ -145,12 +146,14 @@ class TestModelMatchesConfig:
                 encoder_heads=cfg.vgae.heads,
                 embedding_dim=cfg.vgae.embedding_dim,
                 dropout=cfg.vgae.dropout,
+                conv_type=conv_type,
+                edge_dim=cfg.vgae.edge_dim if conv_type in ("gatv2", "transformer") else None,
             )
             g = _make_graph()
             batch = torch.zeros(g.x.size(0), dtype=torch.long)
             model.eval()
             with torch.no_grad():
-                out = model(g.x, g.edge_index, batch)
+                out = model(g.x, g.edge_index, batch, edge_attr=g.edge_attr)
             z = out[3]
             assert z.shape[1] == cfg.vgae.latent_dim, (
                 f"{scale} VGAE latent dim mismatch: got {z.shape[1]}, expected {cfg.vgae.latent_dim}"
@@ -162,6 +165,7 @@ class TestModelMatchesConfig:
 
         for scale in ("large", "small"):
             cfg = resolve("gat", scale)
+            conv_type = cfg.gat.conv_type
             model = GATWithJK(
                 num_ids=NUM_IDS,
                 in_channels=IN_CHANNELS,
@@ -172,6 +176,8 @@ class TestModelMatchesConfig:
                 dropout=cfg.gat.dropout,
                 num_fc_layers=cfg.gat.fc_layers,
                 embedding_dim=cfg.gat.embedding_dim,
+                conv_type=conv_type,
+                edge_dim=cfg.gat.edge_dim if conv_type in ("gatv2", "transformer") else None,
             )
             g = _make_graph()
             g.batch = torch.zeros(g.x.size(0), dtype=torch.long)
@@ -237,6 +243,7 @@ class TestCheckpointRoundTrip:
         from graphids.core.models.vgae import GraphAutoencoderNeighborhood
 
         cfg = resolve("vgae", "small")
+        conv_type = cfg.vgae.conv_type
         model = GraphAutoencoderNeighborhood(
             num_ids=NUM_IDS,
             in_channels=IN_CHANNELS,
@@ -245,12 +252,15 @@ class TestCheckpointRoundTrip:
             encoder_heads=cfg.vgae.heads,
             embedding_dim=cfg.vgae.embedding_dim,
             dropout=cfg.vgae.dropout,
+            conv_type=conv_type,
+            edge_dim=cfg.vgae.edge_dim if conv_type in ("gatv2", "transformer") else None,
         )
         ckpt = tmp_path / "best_model.pt"
         torch.save(model.state_dict(), ckpt)
         cfg.save(tmp_path / "config.json")
 
         loaded_cfg = PipelineConfig.load(tmp_path / "config.json")
+        loaded_conv = loaded_cfg.vgae.conv_type
         model2 = GraphAutoencoderNeighborhood(
             num_ids=NUM_IDS,
             in_channels=IN_CHANNELS,
@@ -259,6 +269,8 @@ class TestCheckpointRoundTrip:
             encoder_heads=loaded_cfg.vgae.heads,
             embedding_dim=loaded_cfg.vgae.embedding_dim,
             dropout=loaded_cfg.vgae.dropout,
+            conv_type=loaded_conv,
+            edge_dim=loaded_cfg.vgae.edge_dim if loaded_conv in ("gatv2", "transformer") else None,
         )
         model2.load_state_dict(torch.load(ckpt, map_location="cpu", weights_only=True))
 
@@ -270,6 +282,7 @@ class TestCheckpointRoundTrip:
         from graphids.core.models.gat import GATWithJK
 
         cfg = resolve("gat", "large")
+        conv_type = cfg.gat.conv_type
         model = GATWithJK(
             num_ids=NUM_IDS,
             in_channels=IN_CHANNELS,
@@ -280,6 +293,8 @@ class TestCheckpointRoundTrip:
             dropout=cfg.gat.dropout,
             num_fc_layers=cfg.gat.fc_layers,
             embedding_dim=cfg.gat.embedding_dim,
+            conv_type=conv_type,
+            edge_dim=cfg.gat.edge_dim if conv_type in ("gatv2", "transformer") else None,
         )
         ckpt = tmp_path / "best_model.pt"
         torch.save(model.state_dict(), ckpt)
@@ -294,6 +309,8 @@ class TestCheckpointRoundTrip:
             dropout=cfg.gat.dropout,
             num_fc_layers=cfg.gat.fc_layers,
             embedding_dim=cfg.gat.embedding_dim,
+            conv_type=conv_type,
+            edge_dim=cfg.gat.edge_dim if conv_type in ("gatv2", "transformer") else None,
         )
         model2.load_state_dict(torch.load(ckpt, map_location="cpu", weights_only=True))
 
@@ -328,6 +345,7 @@ class TestCheckpointRoundTrip:
 
         large_cfg = resolve("vgae", "large")
         small_cfg = resolve("vgae", "small")
+        conv_type = large_cfg.vgae.conv_type
 
         teacher = GraphAutoencoderNeighborhood(
             num_ids=NUM_IDS,
@@ -336,6 +354,8 @@ class TestCheckpointRoundTrip:
             latent_dim=large_cfg.vgae.latent_dim,
             encoder_heads=large_cfg.vgae.heads,
             embedding_dim=large_cfg.vgae.embedding_dim,
+            conv_type=conv_type,
+            edge_dim=large_cfg.vgae.edge_dim if conv_type in ("gatv2", "transformer") else None,
         )
         ckpt = tmp_path / "teacher.pt"
         torch.save(teacher.state_dict(), ckpt)
@@ -347,6 +367,8 @@ class TestCheckpointRoundTrip:
             latent_dim=small_cfg.vgae.latent_dim,
             encoder_heads=small_cfg.vgae.heads,
             embedding_dim=small_cfg.vgae.embedding_dim,
+            conv_type=conv_type,
+            edge_dim=small_cfg.vgae.edge_dim if conv_type in ("gatv2", "transformer") else None,
         )
 
         with pytest.raises(RuntimeError, match="size mismatch"):
@@ -384,6 +406,10 @@ class TestTeacherLoading:
                 encoder_heads=cfg.vgae.heads,
                 embedding_dim=cfg.vgae.embedding_dim,
                 dropout=cfg.vgae.dropout,
+                conv_type=cfg.vgae.conv_type,
+                edge_dim=cfg.vgae.edge_dim
+                if cfg.vgae.conv_type in ("gatv2", "transformer")
+                else None,
             )
             torch.save(model.state_dict(), checkpoint_path(cfg, stage))
         elif model_type == "gat":
@@ -399,6 +425,10 @@ class TestTeacherLoading:
                 dropout=cfg.gat.dropout,
                 num_fc_layers=cfg.gat.fc_layers,
                 embedding_dim=cfg.gat.embedding_dim,
+                conv_type=cfg.gat.conv_type,
+                edge_dim=cfg.gat.edge_dim
+                if cfg.gat.conv_type in ("gatv2", "transformer")
+                else None,
             )
             torch.save(model.state_dict(), checkpoint_path(cfg, stage))
         elif model_type == "dqn":
@@ -459,6 +489,8 @@ class TestTeacherLoading:
             latent_dim=cfg.vgae.latent_dim,
             encoder_heads=cfg.vgae.heads,
             embedding_dim=cfg.vgae.embedding_dim,
+            conv_type=cfg.vgae.conv_type,
+            edge_dim=cfg.vgae.edge_dim if cfg.vgae.conv_type in ("gatv2", "transformer") else None,
         )
         ckpt = tmp_path / "orphan" / "best_model.pt"
         ckpt.parent.mkdir(parents=True)
