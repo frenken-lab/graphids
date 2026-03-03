@@ -76,3 +76,39 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+  deploy-hf:
+    if: github.ref == 'refs/heads/main'
+    needs: [lint, test, quarto-build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: quarto-dev/quarto-actions/setup@v2
+      - uses: quarto-dev/quarto-actions/render@v2
+        with:
+          path: reports/
+      - name: Create Space README
+        run: |
+          cat > reports/_site/README.md << 'EOF'
+          ---
+          title: "KD-GAT: CAN Bus Intrusion Detection"
+          sdk: static
+          app_file: index.html
+          pinned: true
+          colorFrom: green
+          colorTo: blue
+          private: true
+          custom_headers:
+            cross-origin-embedder-policy: require-corp
+            cross-origin-opener-policy: same-origin
+            cross-origin-resource-policy: cross-origin
+          ---
+          EOF
+      - name: Deploy to HF Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          pip install huggingface-hub
+          huggingface-cli upload rf15/kd-gat-paper reports/_site/ . \
+            --repo-type space \
+            --commit-message "Deploy from ${{ github.sha }}"

@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0.0",
+  "exported_at": "2026-03-03T05:29:49.439767+00:00",
+  "data": [
+    "accuracy",
+    "auc",
+    "balanced_accuracy",
+    "detection_rate",
+    "f1",
+    "fnr",
+    "fpr",
+    "kappa",
+    "mcc",
+    "miss_rate",
+    "n_samples",
+    "optimal_threshold",
+    "pr_auc",
+    "precision",
+    "recall",
+    "specificity",
+    "tnr",
+    "tpr",
+    "youden_j"
+  ]
+}

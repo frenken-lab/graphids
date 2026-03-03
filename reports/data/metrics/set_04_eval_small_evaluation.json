@@ -1,0 +1,324 @@
+{
+  "schema_version": "1.0.0",
+  "exported_at": "2026-03-03T05:29:47.040120+00:00",
+  "data": [
+    {
+      "model": "gat",
+      "scenario": "val",
+      "metric_name": "accuracy",
+      "value": 0.7033209427719456
+    },
+    {
+      "model": "gat",
+      "scenario": "val",
+      "metric_name": "precision",
+      "value": 0.05736958501365942
+    },
+    {
+      "model": "gat",
+      "scenario": "val",
+      "metric_name": "recall",
+      "value": 0.962882096069869
+    },
+    {
+      "model": "gat",
+      "scenario": "val",
+      "metric_name": "f1",
+      "value": 0.10828729281767956
+    },
+    {
+      "model": "gat",
+      "scenario": "val",
+      "metric_name": "specificity",
+      "value": 0.6983723931232568
+    },
+    {
+      "model": "gat",
+      "scenario": "val",
+      "metric_name": "balanced_accuracy",
+      "value": 0.8306272445965629
+    },
+    {
+      "model": "gat",
+      "scenario": "val",
+      "metric_name": "mcc",
+      "value": 0.19304540918610716
+    },
+    {
+      "model": "gat",
+      "scenario": "val",
+      "metric_name": "fpr",
+      "value": 0.3016276068767431
+    },
+    {
+      "model": "gat",
+      "scenario": "val",
+      "metric_name": "fnr",
+      "value": 0.03711790393013101
+    },
+    {
+      "model": "gat",
+      "scenario": "val",
+      "metric_name": "n_samples",
+      "value": 24481
+    },
+    {
+      "model": "gat",
+      "scenario": "val",
+      "metric_name": "auc",
+      "value": 0.9590672475995076
+    },
+    {
+      "model": "gat",
+      "scenario": "val",
+      "metric_name": "kappa",
+      "value": 0.07564575959403874
+    },
+    {
+      "model": "gat",
+      "scenario": "val",
+      "metric_name": "tpr",
+      "value": 0.962882096069869
+    },
+    {
+      "model": "gat",
+      "scenario": "val",
+      "metric_name": "tnr",
+      "value": 0.6983723931232568
+    },
+    {
+      "model": "gat",
+      "scenario": "val",
+      "metric_name": "detection_rate",
+      "value": 0.962882096069869
+    },
+    {
+      "model": "gat",
+      "scenario": "val",
+      "metric_name": "miss_rate",
+      "value": 0.03711790393013101
+    },
+    {
+      "model": "gat",
+      "scenario": "val",
+      "metric_name": "pr_auc",
+      "value": 0.6972949089512586
+    },
+    {
+      "model": "vgae",
+      "scenario": "val",
+      "metric_name": "accuracy",
+      "value": 0.8836648829704669
+    },
+    {
+      "model": "vgae",
+      "scenario": "val",
+      "metric_name": "precision",
+      "value": 0.09131326949384405
+    },
+    {
+      "model": "vgae",
+      "scenario": "val",
+      "metric_name": "recall",
+      "value": 0.5829694323144105
+    },
+    {
+      "model": "vgae",
+      "scenario": "val",
+      "metric_name": "f1",
+      "value": 0.15789473684210525
+    },
+    {
+      "model": "vgae",
+      "scenario": "val",
+      "metric_name": "specificity",
+      "value": 0.889397660575282
+    },
+    {
+      "model": "vgae",
+      "scenario": "val",
+      "metric_name": "balanced_accuracy",
+      "value": 0.7361835464448463
+    },
+    {
+      "model": "vgae",
+      "scenario": "val",
+      "metric_name": "mcc",
+      "value": 0.19735273518743582
+    },
+    {
+      "model": "vgae",
+      "scenario": "val",
+      "metric_name": "fpr",
+      "value": 0.11060233942471798
+    },
+    {
+      "model": "vgae",
+      "scenario": "val",
+      "metric_name": "fnr",
+      "value": 0.4170305676855895
+    },
+    {
+      "model": "vgae",
+      "scenario": "val",
+      "metric_name": "n_samples",
+      "value": 24481
+    },
+    {
+      "model": "vgae",
+      "scenario": "val",
+      "metric_name": "auc",
+      "value": 0.7788123172352842
+    },
+    {
+      "model": "vgae",
+      "scenario": "val",
+      "metric_name": "optimal_threshold",
+      "value": 0.05407818779349327
+    },
+    {
+      "model": "vgae",
+      "scenario": "val",
+      "metric_name": "youden_j",
+      "value": 0.47455049900322965
+    },
+    {
+      "model": "vgae",
+      "scenario": "val",
+      "metric_name": "kappa",
+      "value": 0.12974216825982032
+    },
+    {
+      "model": "vgae",
+      "scenario": "val",
+      "metric_name": "tpr",
+      "value": 0.5829694323144105
+    },
+    {
+      "model": "vgae",
+      "scenario": "val",
+      "metric_name": "tnr",
+      "value": 0.889397660575282
+    },
+    {
+      "model": "vgae",
+      "scenario": "val",
+      "metric_name": "detection_rate",
+      "value": 0.5829694323144105
+    },
+    {
+      "model": "vgae",
+      "scenario": "val",
+      "metric_name": "miss_rate",
+      "value": 0.4170305676855895
+    },
+    {
+      "model": "vgae",
+      "scenario": "val",
+      "metric_name": "pr_auc",
+      "value": 0.19993956234874644
+    },
+    {
+      "model": "fusion",
+      "scenario": "val",
+      "metric_name": "accuracy",
+      "value": 0.9904007189248806
+    },
+    {
+      "model": "fusion",
+      "scenario": "val",
+      "metric_name": "precision",
+      "value": 0.9477911646586346
+    },
+    {
+      "model": "fusion",
+      "scenario": "val",
+      "metric_name": "recall",
+      "value": 0.5152838427947598
+    },
+    {
+      "model": "fusion",
+      "scenario": "val",
+      "metric_name": "f1",
+      "value": 0.6676096181046676
+    },
+    {
+      "model": "fusion",
+      "scenario": "val",
+      "metric_name": "specificity",
+      "value": 0.9994588519335637
+    },
+    {
+      "model": "fusion",
+      "scenario": "val",
+      "metric_name": "balanced_accuracy",
+      "value": 0.7573713473641617
+    },
+    {
+      "model": "fusion",
+      "scenario": "val",
+      "metric_name": "mcc",
+      "value": 0.6950919321370239
+    },
+    {
+      "model": "fusion",
+      "scenario": "val",
+      "metric_name": "fpr",
+      "value": 0.0005411480664363319
+    },
+    {
+      "model": "fusion",
+      "scenario": "val",
+      "metric_name": "fnr",
+      "value": 0.4847161572052402
+    },
+    {
+      "model": "fusion",
+      "scenario": "val",
+      "metric_name": "n_samples",
+      "value": 24481
+    },
+    {
+      "model": "fusion",
+      "scenario": "val",
+      "metric_name": "auc",
+      "value": 0.753010988195992
+    },
+    {
+      "model": "fusion",
+      "scenario": "val",
+      "metric_name": "kappa",
+      "value": 0.6631709176759719
+    },
+    {
+      "model": "fusion",
+      "scenario": "val",
+      "metric_name": "tpr",
+      "value": 0.5152838427947598
+    },
+    {
+      "model": "fusion",
+      "scenario": "val",
+      "metric_name": "tnr",
+      "value": 0.9994588519335637
+    },
+    {
+      "model": "fusion",
+      "scenario": "val",
+      "metric_name": "detection_rate",
+      "value": 0.5152838427947598
+    },
+    {
+      "model": "fusion",
+      "scenario": "val",
+      "metric_name": "miss_rate",
+      "value": 0.4847161572052402
+    },
+    {
+      "model": "fusion",
+      "scenario": "val",
+      "metric_name": "pr_auc",
+      "value": 0.2962833577865105
+    }
+  ]
+}
