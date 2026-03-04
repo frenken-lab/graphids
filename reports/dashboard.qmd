@@ -53,6 +53,7 @@ graph_samples_json = FileAttachment("data/graph_samples.json").json()
 
 // --- Precompute shared summaries ---
 summary_stats = {
+  void tableStatus; // ensure all DuckDB tables are loaded before querying
   const runs_result = await vg.coordinator().query(
     vg.sql`SELECT COUNT(*) AS total_runs FROM runs`
   );
@@ -81,6 +82,7 @@ summary_stats = {
 
 // --- Leaderboard data from metrics parquet ---
 leaderboard_data = {
+  void tableStatus;
   const result = await vg.coordinator().query(
     vg.sql`
       SELECT
@@ -198,7 +200,7 @@ viewof selectedDatasetMetric = Inputs.select(
 
 ```{ojs}
 //| title: "F1 Scores by Dataset and Model"
-vg.plot(
+{ void tableStatus; return vg.plot(
   vg.dot(
     vg.from("metrics"),
     {
@@ -216,7 +218,7 @@ vg.plot(
   vg.xTickRotate(-30),
   vg.yLabel("F1 Score"),
   vg.yDomain([0.5, 1.01])
-)
+); }
 ```
 
 ```{ojs}
@@ -258,6 +260,7 @@ vg.plot(
 ```{ojs}
 //| title: "Bubble Chart: F1 vs Accuracy (size = parameters)"
 {
+  void tableStatus;
   const sizes = new Map(model_sizes_json.data.map(d => [d.model_type, d.param_count_M]));
 
   const result = await vg.coordinator().query(
@@ -306,6 +309,7 @@ vg.plot(
 ```{ojs}
 //| title: "Pareto Frontier: F1 vs Parameter Count"
 {
+  void tableStatus;
   const sizes = new Map(model_sizes_json.data.map(d => [
     `${d.model_type}_${d.scale}`,
     d.param_count_M,
@@ -378,7 +382,7 @@ vg.plot(
 
 ```{ojs}
 //| title: "F1 vs AUC by Model"
-vg.plot(
+{ void tableStatus; return vg.plot(
   vg.dot(
     vg.from("metrics"),
     {
@@ -397,12 +401,13 @@ vg.plot(
   vg.xDomain([0.8, 1.01]),
   vg.yLabel("F1 Score"),
   vg.yDomain([0.5, 1.01])
-)
+); }
 ```
 
 ```{ojs}
 //| title: "Runs by Dataset"
 {
+  void tableStatus;
   const result = await vg.coordinator().query(
     vg.sql`
       SELECT split_part(run_id, '/', 1) AS dataset,
@@ -441,6 +446,7 @@ vg.plot(
 ```{ojs}
 //| title: "Training Duration by Run"
 {
+  void tableStatus;
   const result = await vg.coordinator().query(
     vg.sql`
       SELECT
@@ -490,6 +496,7 @@ vg.plot(
 //| title: "Training Curve Comparison"
 
 viewof compareRun1 = {
+  void tableStatus;
   const result = await vg.coordinator().query(
     vg.sql`SELECT DISTINCT run_id FROM training_curves ORDER BY run_id`
   );
@@ -498,6 +505,7 @@ viewof compareRun1 = {
 }
 
 viewof compareRun2 = {
+  void tableStatus;
   const result = await vg.coordinator().query(
     vg.sql`SELECT DISTINCT run_id FROM training_curves ORDER BY run_id`
   );
@@ -506,6 +514,7 @@ viewof compareRun2 = {
 }
 
 {
+  void tableStatus;
   const r1 = await vg.coordinator().query(
     vg.sql`SELECT epoch, metric_name, value, run_id FROM training_curves WHERE run_id = '${compareRun1}'`
   );
@@ -538,7 +547,7 @@ viewof compareRun2 = {
 
 ```{ojs}
 //| title: "Training Carpet (Metric × Epoch Heatmap)"
-filteredChart("training_curves", sel => vg.plot(
+{ void tableStatus; return filteredChart("training_curves", sel => vg.plot(
   vg.cell(
     vg.from("training_curves", { filterBy: sel }),
     { x: "epoch", y: "metric_name", fill: "value", inset: 0.5 }
@@ -550,7 +559,7 @@ filteredChart("training_curves", sel => vg.plot(
   vg.colorLabel("Value"),
   vg.xLabel("Epoch"),
   vg.yLabel(null)
-))
+)); }
 ```
 
 # GAT & DQN
@@ -559,7 +568,7 @@ filteredChart("training_curves", sel => vg.plot(
 
 ```{ojs}
 //| title: "GAT Attention Weights by Layer"
-filteredChart("attention_weights", sel => vg.plot(
+{ void tableStatus; return filteredChart("attention_weights", sel => vg.plot(
   vg.cell(
     vg.from("attention_weights", { filterBy: sel }),
     {
@@ -576,12 +585,12 @@ filteredChart("attention_weights", sel => vg.plot(
   vg.colorLabel("Mean Attention"),
   vg.xLabel("Attention Head"),
   vg.yLabel("GAT Layer")
-))
+)); }
 ```
 
 ```{ojs}
 //| title: "DQN Fusion Policy (Alpha Distribution)"
-filteredChart("dqn_policy", sel => vg.plot(
+{ void tableStatus; return filteredChart("dqn_policy", sel => vg.plot(
   vg.rectY(
     vg.from("dqn_policy", { filterBy: sel }),
     {x: vg.bin("alpha"), y: vg.count(), fill: "steelblue", insetLeft: 0.5, insetRight: 0.5}
@@ -591,14 +600,14 @@ filteredChart("dqn_policy", sel => vg.plot(
   vg.colorScheme("oranges"),
   vg.xLabel("Alpha (GAT weight in fusion)"),
   vg.yLabel("Count")
-))
+)); }
 ```
 
 ## Row {height=50%}
 
 ```{ojs}
 //| title: "Training Curves (single run)"
-filteredChart("training_curves", sel => vg.plot(
+{ void tableStatus; return filteredChart("training_curves", sel => vg.plot(
   vg.lineY(
     vg.from("training_curves", { filterBy: sel }),
     { x: "epoch", y: "value", stroke: "metric_name" }
@@ -608,12 +617,12 @@ filteredChart("training_curves", sel => vg.plot(
   vg.colorLegend(true),
   vg.xLabel("Epoch"),
   vg.yLabel("Value")
-))
+)); }
 ```
 
 ```{ojs}
 //| title: "VGAE Reconstruction Errors"
-filteredChart("recon_errors", sel => vg.plot(
+{ void tableStatus; return filteredChart("recon_errors", sel => vg.plot(
   vg.rectY(
     vg.from("recon_errors", { filterBy: sel }),
     {
@@ -629,7 +638,7 @@ filteredChart("recon_errors", sel => vg.plot(
   ...colorDirectives(LABEL_DOMAIN, LABEL_RANGE),
   vg.xLabel("Reconstruction Error"),
   vg.yLabel("Count")
-))
+)); }
 ```
 
 # Knowledge Distillation
@@ -678,7 +687,7 @@ viewof selectedKdMetric = Inputs.select(
 
 ```{ojs}
 //| title: "CKA Similarity (Teacher-Student Layer Alignment)"
-filteredChart("cka_similarity", sel => vg.plot(
+{ void tableStatus; return filteredChart("cka_similarity", sel => vg.plot(
   vg.cell(
     vg.from("cka_similarity", { filterBy: sel }),
     {
@@ -695,7 +704,7 @@ filteredChart("cka_similarity", sel => vg.plot(
   vg.colorLabel("CKA Similarity"),
   vg.xLabel("Student Layer"),
   vg.yLabel("Teacher Layer")
-))
+)); }
 ```
 
 ## Row {height=50%}
@@ -708,7 +717,7 @@ umapSel = vg.Selection.single()
 
 ```{ojs}
 //| title: "UMAP Embeddings (VGAE)"
-filteredChart("embeddings", sel => vg.plot(
+{ void tableStatus; return filteredChart("embeddings", sel => vg.plot(
   vg.dot(
     vg.from("embeddings", { filterBy: sel }),
     {
@@ -726,13 +735,13 @@ filteredChart("embeddings", sel => vg.plot(
   vg.xAxis(null),
   vg.yLabel("UMAP 2"),
   vg.yAxis(null)
-), { selection: umapSel })
+), { selection: umapSel }); }
 ```
 
 ```{ojs}
 //| title: "UMAP Embeddings (GAT)"
 // Uses the same shared selection as VGAE — selecting a run in either dropdown updates both
-filteredChart("embeddings", sel => vg.plot(
+{ void tableStatus; return filteredChart("embeddings", sel => vg.plot(
   vg.dot(
     vg.from("embeddings", { filterBy: sel }),
     {
@@ -750,7 +759,7 @@ filteredChart("embeddings", sel => vg.plot(
   vg.xAxis(null),
   vg.yLabel("UMAP 2"),
   vg.yAxis(null)
-), { selection: umapSel })
+), { selection: umapSel }); }
 ```
 
 # Loss Landscape
@@ -761,6 +770,7 @@ filteredChart("embeddings", sel => vg.plot(
 //| title: "2D Loss Landscape Contour"
 
 viewof landscapeModel = {
+  void tableStatus;
   const result = await vg.coordinator().query(
     vg.sql`SELECT DISTINCT model_type FROM loss_landscape ORDER BY model_type`
   );
@@ -771,6 +781,7 @@ viewof landscapeModel = {
 }
 
 viewof landscapeDataset = {
+  void tableStatus;
   const result = await vg.coordinator().query(
     vg.sql`SELECT DISTINCT dataset FROM loss_landscape ORDER BY dataset`
   );
@@ -781,31 +792,36 @@ viewof landscapeDataset = {
 }
 
 {
-  const sel = vg.Selection.intersect(
-    vg.Selection.single({ init: { model_type: landscapeModel } }),
-    vg.Selection.single({ init: { dataset: landscapeDataset } })
+  void tableStatus;
+  const result = await vg.coordinator().query(
+    vg.sql`SELECT x, y, loss FROM loss_landscape
+            WHERE model_type = '${landscapeModel}' AND dataset = '${landscapeDataset}'`
   );
+  const data = Array.from(result);
 
-  return vg.plot(
-    vg.raster(
-      vg.from("loss_landscape", { filterBy: sel }),
-      {
-        x: "x",
-        y: "y",
-        fill: vg.avg("loss"),
-        interpolate: "linear",
-        bandwidth: 0,
-        pixelSize: 2
-      }
-    ),
-    vg.width(600),
-    vg.height(500),
-    vg.colorScheme("viridis"),
-    vg.colorLegend(true),
-    vg.colorLabel("Loss"),
-    vg.xLabel("Direction 1"),
-    vg.yLabel("Direction 2")
-  );
+  if (data.length === 0) {
+    return html`<p style="color: #8b949e; text-align: center; padding: 2rem;">No data for ${landscapeModel} / ${landscapeDataset}.</p>`;
+  }
+
+  const step = 0.02; // half grid step (grid is 51 points over [-1, 1])
+  return Plot.plot({
+    width: 500,
+    height: 400,
+    color: { scheme: "viridis", legend: true, label: "Loss" },
+    x: { label: "Direction 1" },
+    y: { label: "Direction 2" },
+    marks: [
+      Plot.rect(data, {
+        x1: d => d.x - step,
+        x2: d => d.x + step,
+        y1: d => d.y - step,
+        y2: d => d.y + step,
+        fill: "loss",
+        tip: true,
+        title: d => `(${d.x.toFixed(2)}, ${d.y.toFixed(2)})\nLoss: ${d.loss.toFixed(4)}`,
+      }),
+    ],
+  });
 }
 ```
 
@@ -813,6 +829,7 @@ viewof landscapeDataset = {
 //| title: "Loss Profile (1D Slice Through Minimum)"
 
 {
+  void tableStatus;
   const result = await vg.coordinator().query(
     vg.sql`
       SELECT x, AVG(loss) AS loss, model_type
@@ -854,6 +871,7 @@ viewof landscapeDataset = {
 //| title: "Loss Landscape Summary Statistics"
 
 {
+  void tableStatus;
   const result = await vg.coordinator().query(
     vg.sql`
       SELECT
@@ -982,6 +1000,7 @@ viewof graphColorBy = Inputs.select(
 ```{ojs}
 //| title: "Run Timeline"
 {
+  void tableStatus;
   const result = await vg.coordinator().query(
     vg.sql`
       SELECT
@@ -1029,6 +1048,7 @@ viewof graphColorBy = Inputs.select(
 //| title: "Model Predictions Summary"
 
 viewof predRun = {
+  void tableStatus;
   const result = await vg.coordinator().query(
     vg.sql`SELECT DISTINCT run_id FROM metrics ORDER BY run_id`
   );
@@ -1077,6 +1097,7 @@ viewof predRun = {
 //| title: "Confusion Matrix Proxy (FPR vs FNR)"
 
 {
+  void tableStatus;
   const result = await vg.coordinator().query(
     vg.sql`
       SELECT

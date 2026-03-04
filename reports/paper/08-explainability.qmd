@@ -221,30 +221,35 @@ Loss landscape contour plots reveal the geometry of the optimization surface aro
 
 {
   await loadTable("loss_landscape", FileAttachment("../data/loss_landscape.parquet"));
-  const sel = vg.Selection.single();
-  return vg.vconcat(
-    vg.menu({ from: "loss_landscape", column: "model_type", label: "Model", as: sel }),
-    vg.plot(
-      vg.raster(
-        vg.from("loss_landscape", { filterBy: sel }),
-        {
-          x: "x",
-          y: "y",
-          fill: vg.avg("loss"),
-          interpolate: "linear",
-          bandwidth: 0,
-          pixelSize: 2
-        }
-      ),
-      vg.width(500),
-      vg.height(450),
-      vg.colorScheme("viridis"),
-      vg.colorLegend(true),
-      vg.colorLabel("Loss"),
-      vg.xLabel("Direction 1"),
-      vg.yLabel("Direction 2")
-    )
+
+  // Get available models for dropdown
+  const modelsResult = await vg.coordinator().query(
+    vg.sql`SELECT DISTINCT model_type FROM loss_landscape ORDER BY model_type`
   );
+  const models = Array.from(modelsResult, d => d.model_type);
+  const modelSelect = Inputs.select(models, { label: "Model", value: models[0] });
+
+  // Fetch data for selected model (default: first)
+  const result = await vg.coordinator().query(
+    vg.sql`SELECT x, y, loss FROM loss_landscape WHERE model_type = '${models[0]}'`
+  );
+  const data = Array.from(result);
+
+  const plot = Plot.plot({
+    width: 500,
+    height: 450,
+    color: { scheme: "viridis", legend: true, label: "Loss" },
+    x: { label: "Direction 1" },
+    y: { label: "Direction 2" },
+    marks: [
+      Plot.cell(data, { x: "x", y: "y", fill: "loss" }),
+    ],
+  });
+
+  const container = document.createElement("div");
+  container.appendChild(modelSelect);
+  container.appendChild(plot);
+  return container;
 }
 ```
 
