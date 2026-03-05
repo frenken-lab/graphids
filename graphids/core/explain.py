@@ -5,6 +5,7 @@ producing per-node and per-edge importance masks that reveal
 *which features* drive predictions (complementing attention weights
 which show *which edges* the model attends to).
 """
+
 from __future__ import annotations
 
 import logging
@@ -12,6 +13,8 @@ import logging
 import numpy as np
 import torch
 import torch.nn as nn
+
+from graphids.config.constants import get_batch_index
 
 log = logging.getLogger(__name__)
 
@@ -114,19 +117,26 @@ def explain_graphs(
 
     for idx in sample_indices:
         g = graphs[idx].clone().to(device)
-        batch = (
-            g.batch
-            if hasattr(g, "batch") and g.batch is not None
-            else torch.zeros(g.x.size(0), dtype=torch.long, device=device)
-        )
+        batch = get_batch_index(g, device)
         edge_attr = getattr(g, "edge_attr", None)
 
         try:
             explanation = explainer(
-                g.x, g.edge_index, batch=batch, edge_attr=edge_attr,
+                g.x,
+                g.edge_index,
+                batch=batch,
+                edge_attr=edge_attr,
             )
-            nm = explanation.node_mask.detach().cpu().numpy() if explanation.node_mask is not None else None
-            em = explanation.edge_mask.detach().cpu().numpy() if explanation.edge_mask is not None else None
+            nm = (
+                explanation.node_mask.detach().cpu().numpy()
+                if explanation.node_mask is not None
+                else None
+            )
+            em = (
+                explanation.edge_mask.detach().cpu().numpy()
+                if explanation.edge_mask is not None
+                else None
+            )
 
             node_masks.append(nm)
             edge_masks.append(em)

@@ -484,8 +484,8 @@ class GraphEngine:
                     + 6 * mean_val**2 * mean_sq
                     - 3 * mean_val**4
                 )
-                per_byte_skew[col] = m3 / (std**3)
-                per_byte_kurt[col] = m4 / (std**4) - 3.0  # excess kurtosis
+                per_byte_skew[col] = np.clip(m3 / (std**3), -10.0, 10.0)
+                per_byte_kurt[col] = np.clip(m4 / (std**4) - 3.0, -10.0, 10.0)
                 valid_bytes += 1
             if valid_bytes > 0:
                 node_features[i, skew_idx] = per_byte_skew.sum() / valid_bytes
@@ -550,5 +550,16 @@ class GraphEngine:
             )
         else:
             node_features[:, -2] = occurrence_counts.astype(np.float32)
+
+        # --- Normalize features to [0, 1] for sigmoid-based VGAE decoder ---
+        # Payload_Entropy: [0, ~8] → [0, 1] (max_entropy = log2(256) = 8)
+        entropy_idx = 1 + 2 * n_feat  # After byte means and stds
+        node_features[:, entropy_idx] = np.clip(node_features[:, entropy_idx] / 8.0, 0.0, 1.0)
+        # Skewness: [-10, 10] → [0, 1]
+        node_features[:, skew_idx] = (node_features[:, skew_idx] + 10.0) / 20.0
+        # Kurtosis: [-10, 10] → [0, 1]
+        node_features[:, kurt_idx] = (node_features[:, kurt_idx] + 10.0) / 20.0
+        # Split_Half_Ratio: clamp to [0, 10] then normalize to [0, 1]
+        node_features[:, split_idx] = np.clip(node_features[:, split_idx] / 10.0, 0.0, 1.0)
 
         return node_features

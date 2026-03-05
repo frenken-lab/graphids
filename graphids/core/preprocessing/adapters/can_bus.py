@@ -257,7 +257,11 @@ class CANBusAdapter(DomainAdapter):
         return chunks
 
     def _chunk_to_ir(self, chunk: pd.DataFrame, vocab: EntityVocabulary) -> pd.DataFrame:
-        """Convert a raw CAN bus chunk to IR format."""
+        """Convert a raw CAN bus chunk to IR format.
+
+        Returns the base IR columns (without attack_type). The attack_type
+        column is added by ``read_and_convert`` after all chunks are processed.
+        """
         # Parse hex data_field into byte columns
         chunk["data_field"] = chunk["data_field"].astype(str).fillna("").str.strip()
         chunk["DLC"] = chunk["data_field"].str.len() // 2
@@ -308,4 +312,6 @@ class CANBusAdapter(DomainAdapter):
         rename_map["Target"] = "target_id"
         chunk.rename(columns=rename_map, inplace=True)
 
-        return chunk[self.schema.columns]
+        # Use base schema columns (without attack_type) — attack_type is
+        # appended by read_and_convert() after chunk processing.
+        return chunk[CAN_BUS_SCHEMA.columns]

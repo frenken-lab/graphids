@@ -240,7 +240,7 @@ class GraphAutoencoderNeighborhood(nn.Module):
                     x = self.dropout(F.relu(bn(x)))
                 else:
                     x = self.dropout(F.relu(x))
-            else:
+            else:  # Last decoder layer — sigmoid constrains output to [0,1]
                 if self.use_checkpointing and x.requires_grad:
                     x = torch.sigmoid(checkpoint_conv(conv, x, edge_index, edge_attr))
                 else:

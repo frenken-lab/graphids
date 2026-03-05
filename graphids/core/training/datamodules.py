@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 # Dataset Loading and Caching
 # ============================================================================
 
+
 def load_dataset(
     dataset_name: str,
     dataset_path: Path,
@@ -52,7 +53,7 @@ def load_dataset(
     """
     cache_file = cache_dir_path / "processed_graphs.pt"
     id_mapping_file = cache_dir_path / "id_mapping.pkl"
-    
+
     graphs, id_mapping = None, None
 
     if not force_rebuild_cache:
@@ -71,9 +72,9 @@ def load_dataset(
             id_mapping_file,
             force_rebuild_cache,
         )
-    
+
     # Unwrap GraphDataset to plain list if needed (avoid double-wrapping)
-    if hasattr(graphs, 'data_list'):
+    if hasattr(graphs, "data_list"):
         graphs = graphs.data_list
 
     # Create dataset and split
@@ -87,12 +88,9 @@ def load_dataset(
         [train_size, val_size],
         generator=torch.Generator().manual_seed(seed),
     )
-    
-    logger.info(
-        f"Dataset split: {len(train_dataset)} training, "
-        f"{len(val_dataset)} validation"
-    )
-    
+
+    logger.info(f"Dataset split: {len(train_dataset)} training, {len(val_dataset)} validation")
+
     num_ids = len(id_mapping) if id_mapping else 1000
     return train_dataset, val_dataset, num_ids
 
@@ -117,33 +115,34 @@ def _load_cached_data(cache_file, id_mapping_file, dataset_name):
 
     try:
         import pickle
+
         # Memory-mapped loading: graphs are loaded on-demand from disk
         # instead of fully deserializing into RAM. Requires PyTorch 2.1+.
         # This significantly reduces memory for large datasets.
         try:
             graphs = torch.load(
                 cache_file,
-                map_location='cpu',
+                map_location="cpu",
                 weights_only=False,
                 mmap=True,  # Memory-map for reduced RAM usage
             )
         except TypeError:
             # Fallback for older PyTorch versions without mmap support
             logger.warning("mmap not supported (PyTorch < 2.1), using standard load")
-            graphs = torch.load(cache_file, map_location='cpu', weights_only=False)
+            graphs = torch.load(cache_file, map_location="cpu", weights_only=False)
         except Exception as e:
             logger.warning(f"Cache load failed (possibly corrupted): {e}")
             return None, None
-            
-        with open(id_mapping_file, 'rb') as f:
+
+        with open(id_mapping_file, "rb") as f:
             id_mapping = pickle.load(f)
-        
+
         # Validate loaded data
         if not isinstance(id_mapping, dict):
             logger.warning("Invalid cache format: id_mapping is not a dict.")
             return None, None
         # Handle GraphDataset objects saved as cache
-        if hasattr(graphs, 'data_list'):
+        if hasattr(graphs, "data_list"):
             graphs = graphs.data_list
         if not isinstance(graphs, (list, tuple)):
             try:
@@ -151,7 +150,7 @@ def _load_cached_data(cache_file, id_mapping_file, dataset_name):
             except (TypeError, ValueError):
                 logger.warning("Invalid cache format: graphs is not list-like.")
                 return None, None
-        
+
         logger.info(f"Loaded {len(graphs)} cached graphs with {len(id_mapping)} unique IDs")
 
         # Validate cache using metadata if available
@@ -179,7 +178,11 @@ def _load_cached_data(cache_file, id_mapping_file, dataset_name):
                     }
                     actual_const = const_map.get(const_name, const_name)
                     current_val = getattr(constants, actual_const, None)
-                    if cached_val is not None and current_val is not None and cached_val != current_val:
+                    if (
+                        cached_val is not None
+                        and current_val is not None
+                        and cached_val != current_val
+                    ):
                         stale_reasons.append(f"{key}: {cached_val} != {current_val}")
                 if stale_reasons:
                     logger.warning("Cache stale (%s). Rebuilding.", "; ".join(stale_reasons))
@@ -197,14 +200,16 @@ def _load_cached_data(cache_file, id_mapping_file, dataset_name):
                         "Use --force-rebuild to recreate."
                     )
                 else:
-                    logger.info(f"Cache validated: {actual} graphs (expected {expected}, v{version})")
+                    logger.info(
+                        f"Cache validated: {actual} graphs (expected {expected}, v{version})"
+                    )
             except (json.JSONDecodeError, KeyError) as e:
                 logger.warning(f"Cache metadata unreadable: {e}. Proceeding with loaded data.")
         else:
             logger.info(f"No cache metadata found. Loaded {len(graphs)} graphs.")
 
         return graphs, id_mapping
-        
+
     except (pickle.UnpicklingError, AttributeError, EOFError) as e:
         logger.warning(f"Cache file corrupted ({type(e).__name__}). Deleting and rebuilding.")
         try:
@@ -227,8 +232,7 @@ def _process_dataset_from_scratch(
 ):
     """Process dataset from CSV files using the new adapter/engine pipeline."""
     logger.info(
-        f"Processing dataset: "
-        f"{'forced rebuild' if force_rebuild else 'processing from scratch'}..."
+        f"Processing dataset: {'forced rebuild' if force_rebuild else 'processing from scratch'}..."
     )
     logger.info(f"Dataset path: {dataset_path}")
 
@@ -238,7 +242,7 @@ def _process_dataset_from_scratch(
     from graphids.core.preprocessing.adapters.can_bus import CANBusAdapter
     from graphids.core.preprocessing.parallel import process_dataset
 
-    adapter = CANBusAdapter()
+    adapter = CANBusAdapter(include_attack_type=True)
     csv_files = adapter.discover_files(str(dataset_path), "train_")
     logger.info("Found %d CSV files in %s", len(csv_files), dataset_path)
 
@@ -251,6 +255,7 @@ def _process_dataset_from_scratch(
         split="train_",
         return_vocab=True,
         verbose=True,
+        include_attack_type=True,
     )
 
     # Unwrap GraphDataset if returned
@@ -261,20 +266,21 @@ def _process_dataset_from_scratch(
 
     # Save cache atomically
     import pickle
+
     cache_file.parent.mkdir(parents=True, exist_ok=True)
     logger.info(f"Saving processed data to cache: {cache_file}")
 
-    temp_cache = cache_file.with_suffix('.tmp')
-    temp_mapping = id_mapping_file.with_suffix('.tmp')
+    temp_cache = cache_file.with_suffix(".tmp")
+    temp_mapping = id_mapping_file.with_suffix(".tmp")
 
     try:
         torch.save(graphs, temp_cache, pickle_protocol=4)
-        with open(temp_mapping, 'wb') as f:
+        with open(temp_mapping, "wb") as f:
             pickle.dump(id_mapping, f, protocol=4)
 
         # Flush to disk to ensure NFS visibility before rename
         for tmp in (temp_cache, temp_mapping):
-            with open(tmp, 'rb') as f:
+            with open(tmp, "rb") as f:
                 os.fsync(f.fileno())
 
         # Retry rename with backoff (NFS may delay visibility)
@@ -285,16 +291,16 @@ def _process_dataset_from_scratch(
                     break
                 except OSError as e:
                     if attempt < 2:
-                        logger.warning("Cache rename attempt %d failed: %s. Retrying...", attempt + 1, e)
+                        logger.warning(
+                            "Cache rename attempt %d failed: %s. Retrying...", attempt + 1, e
+                        )
                         time.sleep(1)
                     else:
                         raise
         logger.info(f"Cache saved: {len(graphs)} graphs")
 
         # Write cache metadata for validation on future loads
-        _write_cache_metadata(
-            cache_file.parent, dataset_name, graphs, id_mapping, csv_files
-        )
+        _write_cache_metadata(cache_file.parent, dataset_name, graphs, id_mapping, csv_files)
     except Exception as e:
         logger.error(f"Failed to save cache: {e}")
         temp_cache.unlink(missing_ok=True)
@@ -398,7 +404,7 @@ def _compute_graph_stats(graphs) -> dict:
     import numpy as np
 
     # Unwrap GraphDataset to plain list if needed
-    if hasattr(graphs, 'data_list'):
+    if hasattr(graphs, "data_list"):
         graphs = graphs.data_list
 
     node_counts = []
@@ -409,7 +415,7 @@ def _compute_graph_stats(graphs) -> dict:
         node_counts.append(g.x.size(0) if g.x is not None else 0)
         edge_counts.append(g.edge_index.size(1) if g.edge_index is not None else 0)
         byte_count = 0
-        for attr in ('x', 'edge_index', 'edge_attr', 'y'):
+        for attr in ("x", "edge_index", "edge_attr", "y"):
             t = getattr(g, attr, None)
             if t is not None:
                 byte_count += t.numel() * t.element_size()

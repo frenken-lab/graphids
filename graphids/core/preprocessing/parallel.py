@@ -9,6 +9,7 @@ Each file is processed independently via ``@ray.remote``, making this
 embarrassingly parallel. Falls back to sequential processing when Ray
 is not available or when running in local mode with few files.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -53,6 +54,7 @@ def _process_single_file(
     schema: IRSchema,
     window_size: int,
     stride: int,
+    include_attack_type: bool = True,
 ) -> list[Data]:
     """Process one CSV file → list of PyG Data objects.
 
@@ -60,7 +62,7 @@ def _process_single_file(
     It receives a plain dict (not EntityVocabulary) to avoid pickling issues.
     """
     vocab = EntityVocabulary(vocab_dict)
-    adapter = CANBusAdapter()
+    adapter = CANBusAdapter(include_attack_type=include_attack_type)
     engine = GraphEngine(schema, window_size=window_size, stride=stride)
 
     ir_df = adapter.read_and_convert(file_path, vocab)
@@ -82,6 +84,7 @@ def process_dataset(
     stride: int = DEFAULT_STRIDE,
     return_vocab: bool = False,
     verbose: bool = False,
+    include_attack_type: bool = True,
 ) -> list[Data] | tuple[list[Data], dict]:
     """Process a dataset directory into PyG graphs using the new pipeline.
 
@@ -99,13 +102,15 @@ def process_dataset(
         If True, return ``(graphs, vocab_dict)`` tuple.
     verbose : bool
         Log progress details.
+    include_attack_type : bool
+        If True, include attack_type metadata on each graph (default True).
 
     Returns
     -------
     list[Data] or (list[Data], dict)
         Graphs, and optionally the vocabulary dict for caching.
     """
-    adapter = CANBusAdapter()
+    adapter = CANBusAdapter(include_attack_type=include_attack_type)
     files = adapter.discover_files(root, split)
 
     if not files:
@@ -129,6 +134,7 @@ def process_dataset(
         window_size=window_size,
         stride=stride,
         verbose=verbose,
+        include_attack_type=include_attack_type,
     )
 
     log.info("Total graphs created: %d", len(all_graphs))
@@ -145,19 +151,25 @@ def _dispatch(
     window_size: int,
     stride: int,
     verbose: bool,
+    include_attack_type: bool = True,
 ) -> list[Data]:
     """Choose between Ray parallel and sequential processing."""
     use_ray = len(files) >= _RAY_FILE_THRESHOLD and _ray_available()
 
     if use_ray:
-        return _process_ray(files, vocab_dict, schema, window_size, stride, verbose)
-    return _process_sequential(files, vocab_dict, schema, window_size, stride, verbose)
+        return _process_ray(
+            files, vocab_dict, schema, window_size, stride, verbose, include_attack_type
+        )
+    return _process_sequential(
+        files, vocab_dict, schema, window_size, stride, verbose, include_attack_type
+    )
 
 
 def _ray_available() -> bool:
     """Check if Ray is initialized or can be initialized."""
     try:
         import ray
+
         if ray.is_initialized():
             return True
         # Don't auto-initialize Ray; let the caller decide
@@ -173,6 +185,7 @@ def _process_sequential(
     window_size: int,
     stride: int,
     verbose: bool,
+    include_attack_type: bool = True,
 ) -> list[Data]:
     """Sequential fallback: process files one at a time."""
     all_graphs: list[Data] = []
@@ -183,7 +196,12 @@ def _process_sequential(
 
         try:
             graphs = _process_single_file(
-                str(f), vocab_dict, schema, window_size, stride,
+                str(f),
+                vocab_dict,
+                schema,
+                window_size,
+                stride,
+                include_attack_type,
             )
             all_graphs.extend(graphs)
             log.info("  Created %d graphs (%d total)", len(graphs), len(all_graphs))
@@ -200,6 +218,7 @@ def _process_ray(
     window_size: int,
     stride: int,
     verbose: bool,
+    include_attack_type: bool = True,
 ) -> list[Data]:
     """Ray parallel processing: one task per file."""
     import ray
@@ -208,15 +227,22 @@ def _process_ray(
     vocab_ref = ray.put(vocab_dict)
 
     @ray.remote
-    def _remote_process(file_path: str, v_ref, ws: int, st: int, nf: int):
+    def _remote_process(file_path: str, v_ref, ws: int, st: int, nf: int, iat: bool):
         """Ray remote task wrapping _process_single_file."""
-        schema_local = IRSchema(num_features=nf)
+        schema_local = IRSchema(num_features=nf, include_attack_type=iat)
         v = ray.get(v_ref) if not isinstance(v_ref, dict) else v_ref
-        return _process_single_file(file_path, v, schema_local, ws, st)
+        return _process_single_file(file_path, v, schema_local, ws, st, iat)
 
     log.info("Submitting %d files to Ray...", len(files))
     futures = [
-        _remote_process.remote(str(f), vocab_ref, window_size, stride, schema.num_features)
+        _remote_process.remote(
+            str(f),
+            vocab_ref,
+            window_size,
+            stride,
+            schema.num_features,
+            include_attack_type,
+        )
         for f in files
     ]
 
@@ -228,7 +254,10 @@ def _process_ray(
             if verbose or (i + 1) % 10 == 0:
                 log.info(
                     "Completed file %d/%d: %d graphs (%d total)",
-                    i + 1, len(files), len(graphs), len(all_graphs),
+                    i + 1,
+                    len(files),
+                    len(graphs),
+                    len(all_graphs),
                 )
         except Exception as e:
             log.warning("Ray task %d failed: %s", i, e)
