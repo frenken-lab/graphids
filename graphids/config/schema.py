@@ -21,6 +21,7 @@ class VGAEArchitecture(BaseModel, frozen=True):
     dropout: float = Field(0.15, ge=0, le=1)
     conv_type: Literal["gat", "gatv2", "transformer"] = "gat"
     edge_dim: int = Field(11, ge=1)
+    proj_dim: int = Field(0, ge=0)
 
 
 class GATArchitecture(BaseModel, frozen=True):
@@ -33,6 +34,7 @@ class GATArchitecture(BaseModel, frozen=True):
     conv_type: Literal["gat", "gatv2", "transformer"] = "gat"
     edge_dim: int = Field(11, ge=1)
     pool_aggrs: tuple[str, ...] = ("mean",)
+    proj_dim: int = Field(0, ge=0)
 
 
 class DQNArchitecture(BaseModel, frozen=True):

@@ -7,6 +7,7 @@ vgae:
   dropout: 0.15
   conv_type: "gatv2"
   edge_dim: 11
+  proj_dim: 48
 training:
   lr: 0.002
   safety_factor: 0.55

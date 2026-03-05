@@ -11,6 +11,7 @@ gat:
   dropout: 0.2
   conv_type: "gatv2"
   edge_dim: 11
+  proj_dim: 48
 training:
   lr: 0.003
   safety_factor: 0.5
