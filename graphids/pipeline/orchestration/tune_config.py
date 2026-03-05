@@ -85,7 +85,10 @@ def _trainable(
     import json
     from pathlib import Path
 
-    from ray import train as ray_train
+    from ray import tune as ray_tune
+
+    # Project root — subprocess must run from here for relative paths
+    project_root = Path(__file__).resolve().parents[3]
 
     model = _STAGE_MODEL[stage]
 
@@ -111,27 +114,183 @@ def _trainable(
     if patience > 0:
         cmd.extend(["-O", "training.patience", str(patience)])
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=project_root)
 
     if result.returncode != 0:
-        log.warning("Trial failed: %s", result.stderr[-500:] if result.stderr else "unknown")
-        ray_train.report({"val_loss": float("inf")})
+        err_tail = result.stderr[-1000:] if result.stderr else "unknown"
+        log.warning("Trial failed (exit %d): %s", result.returncode, err_tail)
+        # Print to stdout so it appears in SLURM logs
+        print(f"[TRIAL FAILED] exit={result.returncode}\n{err_tail}", flush=True)
+        ray_tune.report({"val_loss": float("inf")})
         return
 
-    # Read metrics from the stage output
-    from graphids.config import metrics_path, stage_dir
+    # Read metrics from the stage output (use absolute path — Ray worker cwd differs)
+    from graphids.config import stage_dir
     from graphids.config.resolver import resolve
 
     overrides = {"dataset": dataset}
     cfg = resolve(model, scale, **overrides)
-    mpath = stage_dir(cfg, stage) / "metrics.json"
+    mpath = project_root / stage_dir(cfg, stage) / "metrics.json"
 
     if mpath.exists():
         metrics = json.loads(mpath.read_text())
         val_loss = metrics.get("val_loss", metrics.get("best_val_loss", float("inf")))
-        ray_train.report({"val_loss": val_loss})
+        ray_tune.report({"val_loss": val_loss})
     else:
-        ray_train.report({"val_loss": float("inf")})
+        ray_tune.report({"val_loss": float("inf")})
+
+
+# ---------------------------------------------------------------------------
+# Dry-run validation (login node safe, no GPU required)
+# ---------------------------------------------------------------------------
+
+
+def dry_run_tune(
+    stage: str,
+    dataset: str = "hcrl_sa",
+    scale: str = "large",
+    num_samples: int = 20,
+    max_concurrent: int = 1,
+    max_epochs: int = 0,
+    patience: int = 0,
+) -> bool:
+    """Validate the full tune setup without actually running trials.
+
+    Checks: imports, config resolution, search space construction, Tuner
+    instantiation, subprocess command construction, and data path resolution.
+    Safe to run on login nodes (no GPU required).
+
+    Returns True if all checks pass, raises on failure.
+    """
+    from pathlib import Path
+
+    checks_passed = 0
+    total_checks = 0
+
+    def _check(name: str, fn):
+        nonlocal checks_passed, total_checks
+        total_checks += 1
+        try:
+            result = fn()
+            log.info("  [PASS] %s", name)
+            checks_passed += 1
+            return result
+        except Exception as e:
+            log.error("  [FAIL] %s: %s", name, e)
+            raise
+
+    log.info(
+        "=== Dry-run validation for tune: stage=%s, dataset=%s, scale=%s ===", stage, dataset, scale
+    )
+
+    # 1. Stage validation
+    _check("Stage in search space", lambda: _STAGE_MODEL[stage])
+    model = _STAGE_MODEL[stage]
+
+    # 2. Config resolution
+    from graphids.config.resolver import resolve
+
+    cfg = _check("Config resolution", lambda: resolve(model, scale, dataset=dataset))
+
+    # 3. Data directory exists
+    from graphids.config import data_dir
+
+    def _check_data():
+        d = data_dir(cfg)
+        if not d.exists():
+            raise FileNotFoundError(f"Data directory not found: {d}")
+        return d
+
+    _check("Data directory exists", _check_data)
+
+    # 4. Search space builds
+    _check("Search space construction", lambda: _build_search_space(stage))
+
+    # 5. Ray imports
+    def _check_ray_imports():
+        from ray import tune  # noqa: F811
+        from ray.tune.schedulers import ASHAScheduler  # noqa: F401
+        from ray.tune.search.optuna import OptunaSearch  # noqa: F401
+
+        return tune
+
+    tune = _check("Ray Tune imports", _check_ray_imports)
+
+    # 6. Tuner construction (no fit)
+    def _check_tuner():
+        from ray.tune.schedulers import ASHAScheduler
+        from ray.tune.search.optuna import OptunaSearch
+
+        search_space = _build_search_space(stage)
+        scheduler = ASHAScheduler(
+            metric="val_loss", mode="min", grace_period=10, reduction_factor=3
+        )
+        search_alg = OptunaSearch(metric="val_loss", mode="min")
+
+        tuner = tune.Tuner(
+            tune.with_resources(
+                tune.with_parameters(
+                    _trainable,
+                    stage=stage,
+                    dataset=dataset,
+                    scale=scale,
+                    max_epochs=max_epochs,
+                    patience=patience,
+                ),
+                resources={"gpu": 1},
+            ),
+            param_space=search_space,
+            tune_config=tune.TuneConfig(
+                scheduler=scheduler,
+                search_alg=search_alg,
+                num_samples=num_samples,
+                max_concurrent_trials=max_concurrent,
+            ),
+            run_config=tune.RunConfig(
+                name=f"tune_{stage}_{dataset}_{scale}",
+            ),
+        )
+        return tuner
+
+    _check("Tuner construction", _check_tuner)
+
+    # 7. Subprocess command construction
+    def _check_subprocess_cmd():
+        project_root = Path(__file__).resolve().parents[3]
+        sample_config = {"training.lr": 0.001, f"{model}.dropout": 0.2}
+        cmd = [
+            sys.executable,
+            "-m",
+            "graphids.pipeline.cli",
+            stage,
+            "--model",
+            model,
+            "--scale",
+            scale,
+            "--dataset",
+            dataset,
+        ]
+        for key, value in sample_config.items():
+            cmd.extend(["-O", key, str(value)])
+        if max_epochs > 0:
+            cmd.extend(["-O", "training.max_epochs", str(max_epochs)])
+        if patience > 0:
+            cmd.extend(["-O", "training.patience", str(patience)])
+
+        # Verify project root exists and has the expected structure
+        if not (project_root / "graphids").exists():
+            raise FileNotFoundError(f"Project root missing graphids/: {project_root}")
+        return {"cmd": cmd, "cwd": str(project_root)}
+
+    cmd_info = _check("Subprocess command", _check_subprocess_cmd)
+
+    log.info("=== Dry-run complete: %d/%d checks passed ===", checks_passed, total_checks)
+    log.info(
+        "Subprocess command preview:\n  %s\n  cwd=%s",
+        " \\\n    ".join(cmd_info["cmd"]),
+        cmd_info["cwd"],
+    )
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +393,7 @@ def run_tune(
             num_samples=num_samples,
             max_concurrent_trials=max_concurrent,
         ),
-        run_config=ray.train.RunConfig(
+        run_config=tune.RunConfig(
             name=f"tune_{stage}_{dataset}_{scale}",
         ),
     )
@@ -250,6 +409,9 @@ def run_tune(
     )
 
     export_best_config(best, stage, dataset, scale)
+
+    # Shutdown Ray so the caller (e.g. sweep_pipeline) can reinitialize cleanly
+    ray.shutdown()
 
     return results
 

@@ -42,8 +42,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "stage",
-        choices=list(STAGES.keys()) + ["flow"],
-        help="Training stage to run, or 'flow' to run full pipeline via Ray",
+        choices=list(STAGES.keys()) + ["flow", "tune", "sweep-pipeline"],
+        help="Training stage, 'flow' for Ray pipeline, 'tune' for HPO sweep, or 'sweep-pipeline' for full DAG",
     )
 
     # Config source
@@ -97,6 +97,46 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="(flow) Print the stage chain without executing",
+    )
+
+    # Tune subcommand options
+    p.add_argument(
+        "--num-samples",
+        type=int,
+        default=20,
+        help="(tune) Number of HPO trials",
+    )
+    p.add_argument(
+        "--max-concurrent",
+        type=int,
+        default=1,
+        help="(tune) Max concurrent trials",
+    )
+    p.add_argument(
+        "--grace-period",
+        type=int,
+        default=10,
+        help="(tune) ASHA grace period (epochs before early stopping a trial)",
+    )
+    p.add_argument(
+        "--tune-epochs",
+        type=int,
+        default=50,
+        help="(tune) Max epochs per trial",
+    )
+    p.add_argument(
+        "--tune-patience",
+        type=int,
+        default=15,
+        help="(tune) Early stopping patience per trial",
+    )
+
+    # Sweep-pipeline options
+    p.add_argument(
+        "--resume",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="(sweep-pipeline) Resume from previous state file (default: True)",
     )
 
     # Nested overrides via dot-path: --training.lr 0.001, --vgae.latent-dim 16
@@ -281,6 +321,100 @@ def _finish_wandb() -> None:
         pass
 
 
+def _resolve_tune_stage(args: argparse.Namespace, log: logging.Logger) -> str | None:
+    """Resolve tune stage name from --model argument."""
+    from .orchestration.tune_config import _STAGE_MODEL
+
+    _model_to_stage = {"vgae": "autoencoder", "gat": "curriculum", "dqn": "fusion"}
+
+    if args.model in _STAGE_MODEL:
+        return args.model
+    elif args.model in _model_to_stage:
+        return _model_to_stage[args.model]
+    else:
+        log.error(
+            "For 'tune', --model must be a stage name (autoencoder, curriculum, fusion) "
+            "or model type (vgae, gat, dqn). Got: %s",
+            args.model,
+        )
+        return None
+
+
+def _run_tune(args: argparse.Namespace, log: logging.Logger) -> None:
+    """Dispatch HPO sweep via Ray Tune."""
+    tune_stage = _resolve_tune_stage(args, log)
+    if tune_stage is None:
+        return
+
+    # Dry-run: validate everything without running trials
+    if args.dry_run:
+        from .orchestration.tune_config import dry_run_tune
+
+        dry_run_tune(
+            stage=tune_stage,
+            dataset=args.dataset or "hcrl_sa",
+            scale=args.scale,
+            num_samples=args.num_samples,
+            max_concurrent=args.max_concurrent,
+            max_epochs=args.tune_epochs,
+            patience=args.tune_patience,
+        )
+        return
+
+    from .orchestration.tune_config import run_tune
+
+    log.info(
+        "Starting tune: stage=%s, dataset=%s, scale=%s, samples=%d, epochs=%d, patience=%d",
+        tune_stage,
+        args.dataset or "hcrl_sa",
+        args.scale,
+        args.num_samples,
+        args.tune_epochs,
+        args.tune_patience,
+    )
+
+    results = run_tune(
+        stage=tune_stage,
+        dataset=args.dataset or "hcrl_sa",
+        scale=args.scale,
+        num_samples=args.num_samples,
+        max_concurrent=args.max_concurrent,
+        grace_period=args.grace_period,
+        local=args.local,
+        max_epochs=args.tune_epochs,
+        patience=args.tune_patience,
+    )
+
+    best = results.get_best_result(metric="val_loss", mode="min")
+    log.info("Tune complete. Best val_loss=%.6f", best.metrics.get("val_loss", float("inf")))
+    log.info("Best config: %s", best.config)
+
+
+def _run_sweep_pipeline(args: argparse.Namespace, log: logging.Logger) -> None:
+    """Dispatch full sweep pipeline DAG."""
+    from .orchestration.sweep_pipeline import run_sweep_pipeline
+
+    log.info(
+        "Starting sweep pipeline: dataset=%s, scale=%s, samples=%d, resume=%s, dry_run=%s",
+        args.dataset or "hcrl_sa",
+        args.scale,
+        args.num_samples,
+        args.resume,
+        args.dry_run,
+    )
+
+    run_sweep_pipeline(
+        dataset=args.dataset or "hcrl_sa",
+        scale=args.scale,
+        num_samples=args.num_samples,
+        max_concurrent=args.max_concurrent,
+        tune_epochs=args.tune_epochs,
+        tune_patience=args.tune_patience,
+        resume=args.resume,
+        dry_run=args.dry_run,
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -294,6 +428,14 @@ def main(argv: list[str] | None = None) -> None:
     # ---- Handle non-training subcommands ----
     if args.stage == "flow":
         _run_flow(args, log)
+        return
+
+    if args.stage == "tune":
+        _run_tune(args, log)
+        return
+
+    if args.stage == "sweep-pipeline":
+        _run_sweep_pipeline(args, log)
         return
 
     # ---- Build config ----
