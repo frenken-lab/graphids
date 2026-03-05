@@ -23,16 +23,9 @@
 - Archive restore: `graphids/pipeline/cli.py` archives previous runs before re-running, restores on failure.
 - **Benchmark mode**: Set `KD_GAT_BENCHMARK=1` to log per-stage spawn overhead, execution time, inter-stage gaps, and GPU utilization to JSONL. See `scripts/profiling/benchmark_orchestration.sh`.
 
-### Orchestration Design Rationale (2026-02-25)
-
-The subprocess-per-stage dispatch pattern is intentional, not legacy debt. It was evaluated against five alternatives and kept for these reasons:
-
-1. **CUDA context isolation** — Each stage gets a fresh CUDA context. In-process execution accumulates 300-500 MB of unreclaimable GPU memory per model, losing ~1.5 GB across a full pipeline. Subprocess overhead (~3-5s) is <0.1% of typical pipeline wall time.
-2. **Fault isolation** — A segfault in one stage doesn't crash the Ray orchestrator or other in-flight tasks.
-3. **Stage-level restartability** — Each stage produces a filesystem checkpoint. Failed stages can be re-run individually without replaying the entire variant.
-4. **Debuggability** — Filesystem checkpoint paths are inspectable, copyable, and survive Ray restarts. Object store references are ephemeral.
-
-Full decision document: `~/plans/orchestration-redesign-decision.md`
+### Orchestration Design Rationale
+Subprocess-per-stage kept for CUDA context isolation (~300-500 MB per model), fault isolation, and stage-level restartability. Overhead (~3-5s) is <0.1% of pipeline wall time.
+Full analysis: `~/plans/orchestration-redesign-decision.md`
 
 ## Inference Serving
 

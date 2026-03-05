@@ -21,7 +21,7 @@ PyTorch version ←→ PyG extension wheels (torch-scatter, torch-sparse, torch-
 2. **PyG extensions** compiled against specific `torch+cu` combo. Wheels at `https://data.pyg.org/whl/torch-{VERSION}+cu{CUDA}.html`. Only C++ extensions need the flat index.
 3. **PyTorch version on PyPI ≠ PyG's torch version tag.** PyPI may ship torch 2.10.0 but PyG only has wheels up to 2.8.0. Mismatched versions **segfault at runtime**.
 
-## Current Pinned Versions (2026-02-22)
+## Current Pinned Versions (2026-03-04)
 
 | Component | Version | Source |
 |-----------|---------|--------|

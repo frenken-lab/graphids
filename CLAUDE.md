@@ -54,16 +54,7 @@ Always read `PLAN.md` before starting work. Update it after completing any task.
 
 ## Rules (auto-loaded from `.claude/rules/`)
 
-All project conventions, architecture decisions, and constraints are in modular rule files:
-- `project-structure.md` — directory tree, layer hierarchy
-- `config-system.md` — Pydantic + YAML resolution
-- `critical-constraints.md` — crash-prevention rules (DO NOT VIOLATE)
-- `architecture.md` — 3-layer hierarchy, orchestration, dashboard
-- `code-style.md` — imports, iteration hygiene, git
-- `shell-environment.md` — uv + `.venv/` setup (CANONICAL — not conda)
-- `slurm-hpc.md` — SLURM conventions, login node safety
-- `experiment-tracking.md` — W&B, lakehouse, DuckDB analytics
-- `pytorch-compat.md` — uv + PyTorch + PyG version pinning
+9 modular rule files covering architecture, config, constraints, code style, SLURM, experiment tracking, PyTorch compat, shell environment, and project structure. See `.claude/rules/` directly.
 
 > Cross-repo propagation: See `~/.claude/rules/cross-repo-propagation.md`
 > Environment variables: See `~/.claude/rules/secrets-and-env-vars.md`
