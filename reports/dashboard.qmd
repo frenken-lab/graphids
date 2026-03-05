@@ -930,9 +930,22 @@ viewof graphLabel = Inputs.select(
 )
 
 viewof graphColorBy = Inputs.select(
-  ["can_id", "degree"],
-  { label: "Color by", value: "can_id" }
+  ["can_id", "degree", "label", "attack_type", "node_attack_type", "entropy", "clustering"],
+  { label: "Color by", value: "can_id", format: d => ({
+    can_id: "CAN ID", degree: "Degree", label: "Normal/Attack",
+    attack_type: "Attack Type (graph)", node_attack_type: "Attack Type (node)",
+    entropy: "Payload Entropy", clustering: "Clustering Coeff",
+  })[d] || d }
 )
+
+viewof graphAttackType = {
+  const types = [...new Set(graph_samples_json.data.map(d => d.attack_type_name).filter(Boolean))].sort();
+  return Inputs.select([null, ...types], {
+    label: "Attack type",
+    value: null,
+    format: d => d === null ? "All" : d,
+  });
+}
 
 {
   const d3 = await import("https://cdn.jsdelivr.net/npm/d3@7/+esm");
@@ -955,17 +968,38 @@ viewof graphColorBy = Inputs.select(
       opacity: 0;
       transition: opacity 0.15s;
       z-index: 10;
+      max-height: 400px;
+      overflow-y: auto;
     }
   `;
   container.appendChild(style);
 
-  renderForceGraph(d3, container, graph_samples_json.data, {
+  const result = renderForceGraph(d3, container, graph_samples_json.data, {
     dataset: graphDataset,
     label: graphLabel,
+    attackType: graphAttackType,
     colorBy: graphColorBy,
     width: 900,
     height: 500,
   });
+
+  // Metadata card (v2 only)
+  const filtered = graph_samples_json.data.filter(d => {
+    if (graphDataset && d.dataset !== graphDataset) return false;
+    if (graphLabel !== null && graphLabel !== undefined && d.label !== graphLabel) return false;
+    if (graphAttackType && d.attack_type_name !== graphAttackType) return false;
+    return true;
+  });
+  if (filtered.length > 0) {
+    const s = filtered[0];
+    const meta = document.createElement("div");
+    meta.style.cssText = "font-size:11px;color:#8b949e;margin-top:6px;";
+    const parts = [`${s.num_nodes ?? s.nodes.length} nodes`, `${s.num_edges ?? s.links.length} edges`];
+    if (s.id_entropy !== undefined) parts.push(`H(ID)=${s.id_entropy.toFixed(3)}`);
+    if (s.attack_type_name) parts.push(`Type: ${s.attack_type_name}`);
+    meta.textContent = parts.join(" · ");
+    container.appendChild(meta);
+  }
 
   return container;
 }

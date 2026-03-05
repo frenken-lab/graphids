@@ -82,7 +82,7 @@ def _window_to_graph(self, window: np.ndarray) -> Data:
 
 ```{ojs}
 //| label: fig-can-graph
-//| fig-cap: "Force-directed CAN bus graph structure. Nodes represent unique CAN IDs within a traffic window; edges encode sequential message transitions. Node size reflects degree centrality."
+//| fig-cap: "Force-directed CAN bus graph structure. Nodes represent unique CAN IDs within a traffic window; edges encode sequential message transitions. Node color indicates attack type (green = normal, red = DoS, gold = fuzzing, purple = gear spoofing, pink = RPM spoofing). Node size reflects degree centrality."
 
 import { renderForceGraph } from "../_ojs/force-graph.js"
 
@@ -108,14 +108,18 @@ graph_samples_json = FileAttachment("../data/graph_samples.json").json()
       opacity: 0;
       transition: opacity 0.15s;
       z-index: 10;
+      max-height: 400px;
+      overflow-y: auto;
     }
   `;
   container.appendChild(style);
 
-  const datasets = [...new Set(graph_samples_json.data.map(d => d.dataset))].sort();
+  // Show attack graph if available, else first graph
+  const attackSample = graph_samples_json.data.find(d => d.attack_type > 0) || graph_samples_json.data[0];
+  const hasV2 = attackSample && attackSample.attack_type !== undefined;
   renderForceGraph(d3, container, graph_samples_json.data, {
-    dataset: datasets[0],
-    colorBy: "can_id",
+    dataset: attackSample?.dataset,
+    colorBy: hasV2 ? "node_attack_type" : "can_id",
     width: 700,
     height: 450,
   });

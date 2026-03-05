@@ -75,6 +75,31 @@ export const MODEL_RANGE_FULL = ["#3fb950", "#58a6ff", "#d29922", "#bc8cff"];
 export const LABEL_DOMAIN = ["normal", "attack"];
 export const LABEL_RANGE = ["#3fb950", "#f85149"];
 
+/** Attack type categorical colors (9 categories) */
+export const ATTACK_TYPE_COLORS = {
+  normal: '#3fb950',
+  dos: '#f85149',
+  fuzzing: '#d29922',
+  gear_spoofing: '#bc8cff',
+  rpm_spoofing: '#f778ba',
+  suppress: '#79c0ff',
+  masquerade: '#56d364',
+  mixed: '#ff9a5c',
+  unknown: '#8b949e',
+};
+export const ATTACK_TYPE_DOMAIN = [
+  "normal", "dos", "fuzzing", "gear_spoofing", "rpm_spoofing",
+  "suppress", "masquerade", "mixed", "unknown",
+];
+export const ATTACK_TYPE_RANGE = [
+  '#3fb950', '#f85149', '#d29922', '#bc8cff', '#f778ba',
+  '#79c0ff', '#56d364', '#ff9a5c', '#8b949e',
+];
+export const ATTACK_TYPE_NAMES = {
+  0: "normal", 1: "dos", 2: "fuzzing", 3: "gear_spoofing",
+  4: "rpm_spoofing", 5: "suppress", 6: "masquerade", 7: "mixed", 8: "unknown",
+};
+
 /** Stage-level model types (includes eval) */
 export const STAGE_MODEL_DOMAIN = ["vgae", "gat", "dqn", "eval"];
 export const STAGE_MODEL_RANGE = ["#58a6ff", "#3fb950", "#d29922", "#bc8cff"];
