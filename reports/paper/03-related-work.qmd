@@ -1,7 +1,3 @@
----
-title: "Related Work"
----
-
 ## Related Work
 
 Intrusion detection systems (IDS) for in-vehicle CAN networks can be classified by detection scope, data type, and underlying detection paradigm. We organize prior work along these dimensions to highlight the unique contributions of our approach.

@@ -410,6 +410,17 @@ def run_tune(
 
     export_best_config(best, stage, dataset, scale)
 
+    # Auto-ingest sweep results to lakehouse + HF Dataset
+    try:
+        from pathlib import Path
+
+        from graphids.pipeline.sweep_export import ingest_and_push
+
+        experiment_dir = Path(results.experiment_path)
+        ingest_and_push(experiment_dir, stage, dataset, scale)
+    except Exception as e:
+        log.warning("Sweep export failed (non-fatal): %s", e)
+
     # Shutdown Ray so the caller (e.g. sweep_pipeline) can reinitialize cleanly
     ray.shutdown()
 

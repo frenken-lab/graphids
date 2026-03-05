@@ -1,7 +1,3 @@
----
-title: "Conclusion"
----
-
 ## Conclusion
 
 We introduced a novel multi-stage CAN intrusion detection framework combining Variational Graph Autoencoder and Graph Attention Network modules for robust anomaly detection and classification. Knowledge distillation enables a compact student model achieving 96% parameter reduction while maintaining strong performance. Extensive experiments across six benchmark datasets demonstrate significant improvements over existing methods, with average F1-score gains of 16.2% and exceptional performance on class-imbalanced scenarios. Our ablation study reveals that the standalone GAT classifier achieves comparable performance to fusion approaches with greater computational efficiency, making it ideal for resource-constrained automotive environments. These results highlight the promise of graph-based, multi-stage deep learning combined with knowledge distillation for practical automotive cybersecurity deployment.

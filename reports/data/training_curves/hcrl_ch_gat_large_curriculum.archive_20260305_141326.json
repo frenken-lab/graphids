@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0.0",
+  "exported_at": "2026-03-05T22:01:19.870696+00:00",
+  "data": [
+    {
+      "epoch": 0,
+      "metric_name": "val_acc",
+      "value": 0.992514967918396
+    },
+    {
+      "epoch": 0,
+      "metric_name": "val_loss",
+      "value": 0.4232770800590515
+    },
+    {
+      "epoch": 1,
+      "metric_name": "val_acc",
+      "value": 0.9981191754341125
+    },
+    {
+      "epoch": 1,
+      "metric_name": "val_loss",
+      "value": 0.019057057797908783
+    }
+  ]
+}

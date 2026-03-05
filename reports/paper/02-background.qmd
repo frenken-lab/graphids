@@ -1,7 +1,3 @@
----
-title: "Background"
----
-
 ## Background
 
 This section covers fundamental concepts of the CAN protocol, GNNs, VGAE, DQN, and knowledge distillation.

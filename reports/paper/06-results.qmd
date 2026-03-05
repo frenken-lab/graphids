@@ -1,9 +1,3 @@
----
-title: "Results and Discussion"
----
-
-{{< include _setup.qmd >}}
-
 ## Results and Discussion
 
 ### Test Set Performance

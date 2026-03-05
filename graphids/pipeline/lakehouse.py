@@ -11,12 +11,19 @@ Downstream consumption:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 from datetime import UTC, datetime
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+
+def _make_run_uuid(run_id: str) -> str:
+    """Deterministic short UUID from run_id."""
+    return hashlib.sha256(run_id.encode()).hexdigest()[:16]
+
 
 _data_root = os.environ.get("KD_GAT_DATA_ROOT")
 _DATALAKE_ROOT = Path(_data_root) / "datalake" if _data_root else Path("data/datalake")
@@ -61,6 +68,11 @@ def _append_to_datalake(
     gpu_name: str | None = None,
     batch_size_used: int | None = None,
     data_version: str | None = None,
+    run_type: str = "production",
+    sweep_id: str | None = None,
+    teacher_run_id: str | None = None,
+    config_hash: str | None = None,
+    tags: str | None = None,
 ) -> bool:
     """Append run + metrics to datalake Parquet files via DuckDB."""
     try:
@@ -81,6 +93,7 @@ def _append_to_datalake(
         con = duckdb.connect()
 
         # Upsert run record
+        run_uuid = _make_run_uuid(run_id)
         con.execute(
             f"""
             INSERT INTO '{datalake}/runs.parquet'
@@ -89,8 +102,10 @@ def _append_to_datalake(
                 ? AS stage, ? AS has_kd, '' AS auxiliaries, ? AS success,
                 ? AS completed_at, ? AS started_at, ? AS duration_seconds,
                 ? AS peak_gpu_mb, ? AS slurm_job_id, ? AS gpu_name,
-                ? AS batch_size_used,
-                ? AS data_version, NULL AS wandb_run_id, 'pipeline' AS source
+                ? AS batch_size_used, ? AS failure_reason,
+                ? AS data_version, NULL AS wandb_run_id, 'pipeline' AS source,
+                ? AS run_uuid, ? AS run_type, ? AS sweep_id,
+                ? AS teacher_run_id, ? AS config_hash, ? AS tags
             )
         """,
             [
@@ -108,7 +123,14 @@ def _append_to_datalake(
                 slurm_job_id,
                 gpu_name,
                 batch_size_used,
+                failure_reason,
                 data_version,
+                run_uuid,
+                run_type,
+                sweep_id,
+                teacher_run_id,
+                config_hash,
+                tags,
             ],
         )
 
@@ -120,12 +142,12 @@ def _append_to_datalake(
                 if not isinstance(model_data, dict) or "core" not in model_data:
                     continue
                 core = model_data["core"]
-                values = [run_id, model_key]
+                values = [run_id, dataset, model_key]
                 for col in _CORE_METRIC_COLS:
                     val = core.get(col)
                     values.append(float(val) if isinstance(val, (int, float)) else None)
                 placeholders = ", ".join(["?"] * len(values))
-                cols = "run_id, model, " + ", ".join(
+                cols = "run_id, dataset, model, " + ", ".join(
                     f'"{c}"' if c == "precision" else c for c in _CORE_METRIC_COLS
                 )
                 con.execute(
@@ -210,6 +232,11 @@ def sync_to_lakehouse(
     gpu_name: str | None = None,
     batch_size_used: int | None = None,
     data_version: str | None = None,
+    run_type: str = "production",
+    sweep_id: str | None = None,
+    teacher_run_id: str | None = None,
+    config_hash: str | None = None,
+    tags: str | None = None,
 ) -> bool:
     """Append run results to datalake (Parquet). Returns True on success.
 
@@ -241,4 +268,9 @@ def sync_to_lakehouse(
         gpu_name=gpu_name,
         batch_size_used=batch_size_used,
         data_version=data_version,
+        run_type=run_type,
+        sweep_id=sweep_id,
+        teacher_run_id=teacher_run_id,
+        config_hash=config_hash,
+        tags=tags,
     )

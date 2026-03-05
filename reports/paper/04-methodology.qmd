@@ -1,9 +1,3 @@
----
-title: "Methodology"
----
-
-{{< include _setup.qmd >}}
-
 ## Methodology Overview
 
 The proposed framework employs a three-stage pipeline for robust intrusion detection in Controller Area Network (CAN) bus systems. Stage 1 uses a Variational Graph Autoencoder (VGAE) to identify hard examples; Stage 2 trains a Graph Attention Network (GAT) with curriculum learning on filtered samples; Stage 3 leverages a Deep Q-Network (DQN) to learn dynamic fusion weights combining VGAE and GAT predictions. The workflow supports both training (sequential stages) and inference (parallel GAT/VGAE outputs fused by DQN).

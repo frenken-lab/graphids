@@ -103,15 +103,15 @@ def _sweep_result_path(stage: str, dataset: str, scale: str) -> Path:
 
 
 def _checkpoint_path(model: str, scale: str, stage: str, dataset: str) -> Path:
-    from graphids.config.paths import EXPERIMENT_ROOT
+    from graphids.config.paths import checkpoint_path_str
 
-    return PROJECT_ROOT / EXPERIMENT_ROOT / dataset / f"{model}_{scale}_{stage}" / "best_model.pt"
+    return PROJECT_ROOT / checkpoint_path_str(dataset, model, scale, stage)
 
 
 def _metrics_path(scale: str, dataset: str) -> Path:
-    from graphids.config.paths import EXPERIMENT_ROOT
+    from graphids.config.paths import metrics_path_str
 
-    return PROJECT_ROOT / EXPERIMENT_ROOT / dataset / f"eval_{scale}_evaluation" / "metrics.json"
+    return PROJECT_ROOT / metrics_path_str(dataset, "vgae", scale, "evaluation")
 
 
 def _verify_step_output(step: SweepStep, dataset: str, scale: str) -> bool:
@@ -196,6 +196,7 @@ def _run_train_step(step: SweepStep, dataset: str, scale: str) -> None:
     for key, value in config.items():
         cmd.extend(["-O", key, str(value)])
 
+    cmd.extend(["--sweep-id", f"tune_{step.stage}_{dataset}_{scale}"])
     log.info("Training best %s: %s", step.stage, " ".join(cmd))
     result = subprocess.run(cmd, cwd=PROJECT_ROOT)
     if result.returncode != 0:

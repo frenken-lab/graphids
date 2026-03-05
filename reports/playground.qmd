@@ -72,7 +72,7 @@ Inputs.table(preview, {maxWidth: 900})
 viewof sqlQuery = Inputs.textarea({
   label: "SQL",
   rows: 4,
-  value: "SELECT split_part(run_id, '/', 1) AS dataset, model, f1, accuracy\nFROM metrics\nORDER BY f1 DESC",
+  value: "SELECT dataset, model, f1, accuracy\nFROM metrics\nORDER BY f1 DESC",
   width: "100%",
   submit: "Run"
 })

@@ -43,7 +43,7 @@ Dashboard data: `graphids/pipeline/export.py` exports leaderboard, runs, metrics
 
 **Deployment:** GitHub Actions renders Quarto on push to main and deploys via `actions/deploy-pages` (not gh-pages branch). CI: lint → test → quarto-build → deploy. Mosaic/vgplot loaded from jsdelivr CDN (`@uwdata/vgplot@0.21.1`).
 
-**Verification caveat:** `quarto render` only proves `.qmd` → HTML compilation — it does NOT execute OJS/JS. Mosaic/vgplot bugs (DuckDB-WASM init, CDN failures, API misuse) are runtime-only. On headless OSC, these CANNOT be verified. Must use `quarto preview` in a browser (WSL or post-deploy) to confirm charts render. Never treat `quarto render` success as proof that OJS code works.
+**Verification caveat:** `quarto render` only proves `.qmd` → HTML compilation — it does NOT execute OJS/JS. Mosaic/vgplot bugs (DuckDB-WASM init, CDN failures, API misuse) are runtime-only. **Use Playwright MCP** for headless verification on OSC: render → `python3 -m http.server` from `_site/` → `browser_navigate` → `browser_console_messages(level="error")` → `browser_take_screenshot`. See `~/.claude/rules/tooling.md` → Playwright Capabilities.
 
 ## General Principles
 

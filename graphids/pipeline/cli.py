@@ -139,6 +139,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="(sweep-pipeline) Resume from previous state file (default: True)",
     )
 
+    # Metadata for datalake enrichment
+    p.add_argument(
+        "--tags", type=str, default="", help="Comma-separated tags for run classification"
+    )
+    p.add_argument(
+        "--sweep-id", type=str, default="", help="Parent sweep ID (set by sweep_pipeline)"
+    )
+
     # Nested overrides via dot-path: --training.lr 0.001, --vgae.latent-dim 16
     p.add_argument(
         "--override",
@@ -283,6 +291,11 @@ def _sync_lakehouse(
     slurm_job_id: str | None = None,
     gpu_name: str | None = None,
     batch_size_used: int | None = None,
+    run_type: str = "production",
+    sweep_id: str | None = None,
+    teacher_run_id: str | None = None,
+    config_hash: str | None = None,
+    tags: str | None = None,
 ) -> None:
     """Fire-and-forget sync to datalake (Parquet)."""
     try:
@@ -305,6 +318,11 @@ def _sync_lakehouse(
             slurm_job_id=slurm_job_id,
             gpu_name=gpu_name,
             batch_size_used=batch_size_used,
+            run_type=run_type,
+            sweep_id=sweep_id,
+            teacher_run_id=teacher_run_id,
+            config_hash=config_hash,
+            tags=tags,
         )
     except Exception as e:
         logging.getLogger("pipeline").debug("Lakehouse sync skipped: %s", e)
@@ -508,6 +526,34 @@ def main(argv: list[str] | None = None) -> None:
     except Exception:
         pass
 
+    # ---- Compute datalake enrichment fields ----
+    import hashlib
+    import json
+
+    config_hash = hashlib.sha256(
+        json.dumps(cfg.model_dump(), sort_keys=True, default=str).encode()
+    ).hexdigest()[:12]
+
+    # Detect run_type
+    sweep_id = args.sweep_id or None
+    tags_str = args.tags or None
+    if sweep_id:
+        run_type = "sweep_best"
+    elif cfg.training.max_epochs < 10:
+        run_type = "smoke_test"
+    else:
+        run_type = "production"
+
+    # Extract teacher lineage for KD runs
+    teacher_run_id = None
+    if cfg.has_kd and cfg.kd and cfg.kd.model_path:
+        teacher_path = cfg.kd.model_path
+        # model_path points to a checkpoint; extract the run_id from its parent dirs
+        # e.g. "experimentruns/hcrl_ch/vgae_large_autoencoder/best_model.pt" → "hcrl_ch/vgae_large_autoencoder"
+        tp = Path(teacher_path)
+        if tp.parent.parent.name and tp.parent.name:
+            teacher_run_id = f"{tp.parent.parent.name}/{tp.parent.name}"
+
     # ---- Dispatch ----
     started_at = datetime.now(UTC).isoformat()
     t_start = time.monotonic()
@@ -555,6 +601,11 @@ def main(argv: list[str] | None = None) -> None:
             slurm_job_id=slurm_job_id,
             gpu_name=gpu_name,
             batch_size_used=cfg.training.batch_size,
+            run_type=run_type,
+            sweep_id=sweep_id,
+            teacher_run_id=teacher_run_id,
+            config_hash=config_hash,
+            tags=tags_str,
         )
 
         # Register artifacts in datalake (fire-and-forget)
@@ -597,6 +648,11 @@ def main(argv: list[str] | None = None) -> None:
             duration_seconds=duration_seconds,
             slurm_job_id=slurm_job_id,
             gpu_name=gpu_name,
+            run_type=run_type,
+            sweep_id=sweep_id,
+            teacher_run_id=teacher_run_id,
+            config_hash=config_hash,
+            tags=tags_str,
         )
         log.error("Run failed: %s", str(e))
         raise

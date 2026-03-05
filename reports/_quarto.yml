@@ -3,7 +3,7 @@ project:
   output-dir: _site
   render:
     - "*.qmd"
-    - "paper/*.qmd"
+    - "paper/paper.qmd"
     - "!pipeline_report.qmd"
     - "!workflow.rst"
   resources:
@@ -17,27 +17,7 @@ website:
       - text: "Dashboard"
         href: dashboard.qmd
       - text: "Paper"
-        menu:
-          - text: "Introduction"
-            href: paper/index.qmd
-          - text: "Background"
-            href: paper/02-background.qmd
-          - text: "Related Work"
-            href: paper/03-related-work.qmd
-          - text: "Methodology"
-            href: paper/04-methodology.qmd
-          - text: "Experiments"
-            href: paper/05-experiments.qmd
-          - text: "Results"
-            href: paper/06-results.qmd
-          - text: "Ablation"
-            href: paper/07-ablation.qmd
-          - text: "Explainability"
-            href: paper/08-explainability.qmd
-          - text: "Conclusion"
-            href: paper/09-conclusion.qmd
-          - text: "Appendix"
-            href: paper/10-appendix.qmd
+        href: paper/paper.qmd
       - text: "Slides"
         href: slides.qmd
       - text: "Playground"

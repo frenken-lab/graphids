@@ -1,7 +1,3 @@
----
-title: "Introduction"
----
-
 ## Introduction
 
 Modern vehicles rely on networks of electronic control units (ECUs) to manage everything from engine functions to advanced driver assistance systems (ADAS). Communication between ECUs is typically handled by the Controller Area Network (CAN) protocol, valued for its reliability and cost-effectiveness in in-vehicle networks (IVNs). However, CAN lacks built-in security mechanisms like encryption and authentication, as it was designed under the assumption of a closed, isolated network. With the introduction of on-board diagnostics (OBD) ports and wireless connectivity (e.g., Wi-Fi, cellular, V2X), access to the CAN bus has expanded significantly, opening new attack surfaces. Attacks may now originate from both physical interfaces (OBD-II, USB) and remote channels (Bluetooth, mobile networks), allowing adversaries to inject malicious messages and potentially disrupt or take control of safety-critical vehicle systems.

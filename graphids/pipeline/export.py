@@ -117,22 +117,10 @@ def _scan_runs_from_filesystem() -> list[dict]:
             except Exception:
                 continue
 
-            parts = run_dir.name.split("_")
-            model_type = cfg.get("model_type") or (parts[0] if parts else "")
-            scale = cfg.get("scale") or (parts[1] if len(parts) > 1 else "")
-
-            _AUX_SUFFIXES = {"kd", "nokd"}
-            if cfg.get("stage"):
-                stage = cfg["stage"]
-            else:
-                remaining = parts[2:]
-                if remaining and remaining[-1] in _AUX_SUFFIXES:
-                    remaining = remaining[:-1]
-                stage = "_".join(remaining)
-
-            has_kd = bool(cfg.get("auxiliaries")) or (
-                "_kd" in run_dir.name and "nokd" not in run_dir.name
-            )
+            model_type = cfg.get("model_type", "")
+            scale = cfg.get("scale", "")
+            stage = cfg.get("stage", "")
+            has_kd = bool(cfg.get("auxiliaries"))
 
             run_id = f"{ds_dir.name}/{run_dir.name}"
             has_metrics = (run_dir / "metrics.json").exists()

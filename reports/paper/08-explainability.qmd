@@ -1,9 +1,3 @@
----
-title: "Explainability"
----
-
-{{< include _setup.qmd >}}
-
 ## Explainability
 
 ### Embedding Analysis

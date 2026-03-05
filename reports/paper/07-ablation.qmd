@@ -1,7 +1,3 @@
----
-title: "Ablation Study"
----
-
 ## Ablation Study
 
 To assess the contribution of different model configurations, we perform ablation experiments investigating three key variables: Knowledge Distillation, supervised learning training strategies (curriculum learning and hard sample mining), and fusion effectiveness, comparing standalone and fused architectures. The following tabs present results across two of the six datasets.

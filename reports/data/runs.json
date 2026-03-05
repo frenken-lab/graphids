@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0.0",
-  "exported_at": "2026-03-04T06:37:27.886556+00:00",
+  "exported_at": "2026-03-05T22:01:19.612601+00:00",
   "data": [
     {
       "run_id": "hcrl_ch/dqn_large_fusion",
@@ -11,8 +11,8 @@
       "has_kd": 0,
       "status": "complete",
       "teacher_run": "",
-      "started_at": "2026-02-06T20:41:04.854376+00:00",
-      "completed_at": "2026-02-16T20:09:17.673275+00:00"
+      "started_at": "2026-03-05T19:55:29.805947+00:00",
+      "completed_at": "2026-03-05T20:35:40.151878+00:00"
     },
     {
       "run_id": "hcrl_ch/dqn_small_fusion",
@@ -83,8 +83,8 @@
       "has_kd": 0,
       "status": "complete",
       "teacher_run": "",
-      "started_at": "2026-02-06T18:58:20.930692+00:00",
-      "completed_at": "2026-02-16T20:09:16.276823+00:00"
+      "started_at": "2026-03-05T19:54:52.876876+00:00",
+      "completed_at": "2026-03-05T19:54:52.874881+00:00"
     },
     {
       "run_id": "hcrl_ch/gat_small_curriculum",
@@ -119,8 +119,8 @@
       "has_kd": 0,
       "status": "complete",
       "teacher_run": "",
-      "started_at": "2026-02-06T18:31:41.241101+00:00",
-      "completed_at": "2026-02-16T20:08:53.458080+00:00"
+      "started_at": "2026-03-05T19:01:42.697185+00:00",
+      "completed_at": "2026-03-05T19:01:42.695145+00:00"
     },
     {
       "run_id": "hcrl_ch/vgae_small_autoencoder",
@@ -299,7 +299,7 @@
       "has_kd": 0,
       "status": "complete",
       "teacher_run": "",
-      "started_at": "2026-02-06T20:34:30.331529+00:00",
+      "started_at": "2026-03-05T16:58:36.760502+00:00",
       "completed_at": "2026-02-16T20:09:18.987180+00:00"
     },
     {
@@ -311,7 +311,7 @@
       "has_kd": 0,
       "status": "complete",
       "teacher_run": "",
-      "started_at": "2026-02-04T05:48:50.125993+00:00",
+      "started_at": "2026-03-05T17:01:06.165698+00:00",
       "completed_at": "2026-02-16T20:09:17.458261+00:00"
     },
     {
@@ -371,7 +371,7 @@
       "has_kd": 0,
       "status": "complete",
       "teacher_run": "",
-      "started_at": "2026-02-06T18:52:53.991804+00:00",
+      "started_at": "2026-03-05T16:58:36.789520+00:00",
       "completed_at": "2026-02-16T20:09:16.814791+00:00"
     },
     {
@@ -383,7 +383,7 @@
       "has_kd": 0,
       "status": "complete",
       "teacher_run": "",
-      "started_at": "2026-02-04T04:12:26.537576+00:00",
+      "started_at": "2026-03-05T17:01:02.340412+00:00",
       "completed_at": "2026-02-16T20:09:17.350263+00:00"
     },
     {
@@ -407,8 +407,8 @@
       "has_kd": 0,
       "status": "complete",
       "teacher_run": "",
-      "started_at": "2026-02-06T18:32:53.893772+00:00",
-      "completed_at": "2026-02-16T20:08:53.519058+00:00"
+      "started_at": "2026-03-05T21:26:00.003377+00:00",
+      "completed_at": "2026-03-05T21:26:00.001367+00:00"
     },
     {
       "run_id": "set_01/vgae_small_autoencoder",
@@ -419,8 +419,8 @@
       "has_kd": 0,
       "status": "complete",
       "teacher_run": "",
-      "started_at": "2026-02-04T03:40:20.704620+00:00",
-      "completed_at": "2026-02-16T20:08:53.539013+00:00"
+      "started_at": "2026-03-05T19:34:07.911967+00:00",
+      "completed_at": "2026-03-05T19:34:07.910955+00:00"
     },
     {
       "run_id": "set_01/vgae_small_autoencoder_kd",

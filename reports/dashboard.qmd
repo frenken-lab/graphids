@@ -86,7 +86,7 @@ leaderboard_data = {
   const result = await vg.coordinator().query(
     vg.sql`
       SELECT
-        split_part(run_id, '/', 1) AS dataset,
+        dataset,
         model,
         f1, accuracy, precision, recall, auc, mcc
       FROM metrics
@@ -204,7 +204,7 @@ viewof selectedDatasetMetric = Inputs.select(
   vg.dot(
     vg.from("metrics"),
     {
-      x: vg.sql`split_part(run_id, '/', 1)`,
+      x: "dataset",
       y: "f1",
       fill: "model",
       r: 7,
@@ -266,7 +266,7 @@ viewof selectedDatasetMetric = Inputs.select(
   const result = await vg.coordinator().query(
     vg.sql`
       SELECT
-        split_part(run_id, '/', 1) AS dataset,
+        dataset,
         model,
         f1, accuracy, auc
       FROM metrics
@@ -318,7 +318,7 @@ viewof selectedDatasetMetric = Inputs.select(
   const result = await vg.coordinator().query(
     vg.sql`
       SELECT
-        split_part(run_id, '/', 1) AS dataset,
+        dataset,
         model,
         f1
       FROM metrics
@@ -410,7 +410,7 @@ viewof selectedDatasetMetric = Inputs.select(
   void tableStatus;
   const result = await vg.coordinator().query(
     vg.sql`
-      SELECT split_part(run_id, '/', 1) AS dataset,
+      SELECT dataset,
              model_type,
              COUNT(*) AS n
       FROM runs
@@ -451,7 +451,7 @@ viewof selectedDatasetMetric = Inputs.select(
     vg.sql`
       SELECT
         run_id,
-        split_part(run_id, '/', 1) AS dataset,
+        dataset,
         model_type,
         scale,
         stage,
@@ -1135,7 +1135,7 @@ viewof predRun = {
   const result = await vg.coordinator().query(
     vg.sql`
       SELECT
-        split_part(run_id, '/', 1) AS dataset,
+        dataset,
         model,
         fpr,
         fnr

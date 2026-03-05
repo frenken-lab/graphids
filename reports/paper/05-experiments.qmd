@@ -1,9 +1,3 @@
----
-title: "Experiments"
----
-
-{{< include _setup.qmd >}}
-
 ## Experiments
 
 This section presents the experimental setup, evaluation metrics, and insights into the datasets used in this study.

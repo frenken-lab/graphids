@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0.0",
-  "exported_at": "2026-03-04T06:37:28.339721+00:00",
+  "exported_at": "2026-03-05T22:01:19.858939+00:00",
   "data": [
     {
       "student_run": "hcrl_ch/eval_small_evaluation_kd",
@@ -18,9 +18,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "hcrl_ch/eval_large_evaluation",
-      "metric_name": "accuracy",
-      "student_value": 0.999759,
-      "teacher_value": 0.999725
+      "metric_name": "f1",
+      "student_value": 0.999598,
+      "teacher_value": 0.99954
     },
     {
       "student_run": "hcrl_ch/eval_small_evaluation_kd",
@@ -28,9 +28,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "hcrl_ch/eval_large_evaluation",
-      "metric_name": "f1",
-      "student_value": 0.999598,
-      "teacher_value": 0.99954
+      "metric_name": "accuracy",
+      "student_value": 0.999759,
+      "teacher_value": 0.999725
     },
     {
       "student_run": "hcrl_ch/eval_small_evaluation_kd",
@@ -48,9 +48,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "hcrl_ch/eval_large_evaluation",
-      "metric_name": "accuracy",
-      "student_value": 0.737589,
-      "teacher_value": 0.755397
+      "metric_name": "f1",
+      "student_value": 0.659985,
+      "teacher_value": 0.677923
     },
     {
       "student_run": "hcrl_ch/eval_small_evaluation_kd",
@@ -58,9 +58,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "hcrl_ch/eval_large_evaluation",
-      "metric_name": "f1",
-      "student_value": 0.659985,
-      "teacher_value": 0.677923
+      "metric_name": "accuracy",
+      "student_value": 0.737589,
+      "teacher_value": 0.755397
     },
     {
       "student_run": "hcrl_ch/eval_small_evaluation_kd",
@@ -78,9 +78,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "hcrl_ch/eval_large_evaluation",
-      "metric_name": "accuracy",
-      "student_value": 0.999759,
-      "teacher_value": 0.999725
+      "metric_name": "f1",
+      "student_value": 0.999598,
+      "teacher_value": 0.99954
     },
     {
       "student_run": "hcrl_ch/eval_small_evaluation_kd",
@@ -88,9 +88,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "hcrl_ch/eval_large_evaluation",
-      "metric_name": "f1",
-      "student_value": 0.999598,
-      "teacher_value": 0.99954
+      "metric_name": "accuracy",
+      "student_value": 0.999759,
+      "teacher_value": 0.999725
     },
     {
       "student_run": "hcrl_sa/eval_small_evaluation_kd",
@@ -108,9 +108,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "hcrl_sa/eval_large_evaluation",
-      "metric_name": "accuracy",
+      "metric_name": "f1",
       "student_value": 1.0,
-      "teacher_value": 0.999466
+      "teacher_value": 0.998004
     },
     {
       "student_run": "hcrl_sa/eval_small_evaluation_kd",
@@ -118,9 +118,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "hcrl_sa/eval_large_evaluation",
-      "metric_name": "f1",
+      "metric_name": "accuracy",
       "student_value": 1.0,
-      "teacher_value": 0.998004
+      "teacher_value": 0.999466
     },
     {
       "student_run": "hcrl_sa/eval_small_evaluation_kd",
@@ -138,9 +138,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "hcrl_sa/eval_large_evaluation",
-      "metric_name": "accuracy",
-      "student_value": 0.838761,
-      "teacher_value": 0.81527
+      "metric_name": "f1",
+      "student_value": 0.603675,
+      "teacher_value": 0.57072
     },
     {
       "student_run": "hcrl_sa/eval_small_evaluation_kd",
@@ -148,9 +148,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "hcrl_sa/eval_large_evaluation",
-      "metric_name": "f1",
-      "student_value": 0.603675,
-      "teacher_value": 0.57072
+      "metric_name": "accuracy",
+      "student_value": 0.838761,
+      "teacher_value": 0.81527
     },
     {
       "student_run": "hcrl_sa/eval_small_evaluation_kd",
@@ -168,9 +168,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "hcrl_sa/eval_large_evaluation",
-      "metric_name": "accuracy",
-      "student_value": 0.996263,
-      "teacher_value": 0.999466
+      "metric_name": "f1",
+      "student_value": 0.985859,
+      "teacher_value": 0.998004
     },
     {
       "student_run": "hcrl_sa/eval_small_evaluation_kd",
@@ -178,9 +178,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "hcrl_sa/eval_large_evaluation",
-      "metric_name": "f1",
-      "student_value": 0.985859,
-      "teacher_value": 0.998004
+      "metric_name": "accuracy",
+      "student_value": 0.996263,
+      "teacher_value": 0.999466
     },
     {
       "student_run": "set_01/eval_small_evaluation_kd",
@@ -198,9 +198,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "set_01/eval_large_evaluation",
-      "metric_name": "accuracy",
-      "student_value": 0.94864,
-      "teacher_value": 0.980343
+      "metric_name": "f1",
+      "student_value": 0.419162,
+      "teacher_value": 0.664786
     },
     {
       "student_run": "set_01/eval_small_evaluation_kd",
@@ -208,9 +208,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "set_01/eval_large_evaluation",
-      "metric_name": "f1",
-      "student_value": 0.419162,
-      "teacher_value": 0.664786
+      "metric_name": "accuracy",
+      "student_value": 0.94864,
+      "teacher_value": 0.980343
     },
     {
       "student_run": "set_01/eval_small_evaluation_kd",
@@ -228,9 +228,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "set_01/eval_large_evaluation",
-      "metric_name": "accuracy",
-      "student_value": 0.828083,
-      "teacher_value": 0.828976
+      "metric_name": "f1",
+      "student_value": 0.113632,
+      "teacher_value": 0.120789
     },
     {
       "student_run": "set_01/eval_small_evaluation_kd",
@@ -238,9 +238,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "set_01/eval_large_evaluation",
-      "metric_name": "f1",
-      "student_value": 0.113632,
-      "teacher_value": 0.120789
+      "metric_name": "accuracy",
+      "student_value": 0.828083,
+      "teacher_value": 0.828976
     },
     {
       "student_run": "set_01/eval_small_evaluation_kd",
@@ -258,9 +258,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "set_01/eval_large_evaluation",
-      "metric_name": "accuracy",
-      "student_value": 0.973033,
-      "teacher_value": 0.997467
+      "metric_name": "f1",
+      "student_value": 0.53047,
+      "teacher_value": 0.932862
     },
     {
       "student_run": "set_01/eval_small_evaluation_kd",
@@ -268,9 +268,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "set_01/eval_large_evaluation",
-      "metric_name": "f1",
-      "student_value": 0.53047,
-      "teacher_value": 0.932862
+      "metric_name": "accuracy",
+      "student_value": 0.973033,
+      "teacher_value": 0.997467
     },
     {
       "student_run": "set_02/eval_small_evaluation_kd",
@@ -288,9 +288,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "set_02/eval_large_evaluation",
-      "metric_name": "accuracy",
-      "student_value": 0.997199,
-      "teacher_value": 0.998624
+      "metric_name": "f1",
+      "student_value": 0.983907,
+      "teacher_value": 0.992077
     },
     {
       "student_run": "set_02/eval_small_evaluation_kd",
@@ -298,9 +298,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "set_02/eval_large_evaluation",
-      "metric_name": "f1",
-      "student_value": 0.983907,
-      "teacher_value": 0.992077
+      "metric_name": "accuracy",
+      "student_value": 0.997199,
+      "teacher_value": 0.998624
     },
     {
       "student_run": "set_02/eval_small_evaluation_kd",
@@ -318,9 +318,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "set_02/eval_large_evaluation",
-      "metric_name": "accuracy",
-      "student_value": 0.855823,
-      "teacher_value": 0.838378
+      "metric_name": "f1",
+      "student_value": 0.411906,
+      "teacher_value": 0.401347
     },
     {
       "student_run": "set_02/eval_small_evaluation_kd",
@@ -328,9 +328,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "set_02/eval_large_evaluation",
-      "metric_name": "f1",
-      "student_value": 0.411906,
-      "teacher_value": 0.401347
+      "metric_name": "accuracy",
+      "student_value": 0.855823,
+      "teacher_value": 0.838378
     },
     {
       "student_run": "set_02/eval_small_evaluation_kd",
@@ -348,9 +348,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "set_02/eval_large_evaluation",
-      "metric_name": "accuracy",
-      "student_value": 0.997767,
-      "teacher_value": 0.9989
+      "metric_name": "f1",
+      "student_value": 0.986845,
+      "teacher_value": 0.993513
     },
     {
       "student_run": "set_02/eval_small_evaluation_kd",
@@ -358,9 +358,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "set_02/eval_large_evaluation",
-      "metric_name": "f1",
-      "student_value": 0.986845,
-      "teacher_value": 0.993513
+      "metric_name": "accuracy",
+      "student_value": 0.997767,
+      "teacher_value": 0.9989
     },
     {
       "student_run": "set_03/eval_small_evaluation_kd",
@@ -378,9 +378,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "set_03/eval_large_evaluation",
-      "metric_name": "accuracy",
-      "student_value": 0.953251,
-      "teacher_value": 0.968272
+      "metric_name": "f1",
+      "student_value": 0.592495,
+      "teacher_value": 0.686683
     },
     {
       "student_run": "set_03/eval_small_evaluation_kd",
@@ -388,9 +388,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "set_03/eval_large_evaluation",
-      "metric_name": "f1",
-      "student_value": 0.592495,
-      "teacher_value": 0.686683
+      "metric_name": "accuracy",
+      "student_value": 0.953251,
+      "teacher_value": 0.968272
     },
     {
       "student_run": "set_03/eval_small_evaluation_kd",
@@ -408,9 +408,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "set_03/eval_large_evaluation",
-      "metric_name": "accuracy",
-      "student_value": 0.915954,
-      "teacher_value": 0.621945
+      "metric_name": "f1",
+      "student_value": 0.415165,
+      "teacher_value": 0.120826
     },
     {
       "student_run": "set_03/eval_small_evaluation_kd",
@@ -418,9 +418,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "set_03/eval_large_evaluation",
-      "metric_name": "f1",
-      "student_value": 0.415165,
-      "teacher_value": 0.120826
+      "metric_name": "accuracy",
+      "student_value": 0.915954,
+      "teacher_value": 0.621945
     },
     {
       "student_run": "set_03/eval_small_evaluation_kd",
@@ -438,9 +438,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "set_03/eval_large_evaluation",
-      "metric_name": "accuracy",
-      "student_value": 0.993133,
-      "teacher_value": 0.9967
+      "metric_name": "f1",
+      "student_value": 0.900097,
+      "teacher_value": 0.952563
     },
     {
       "student_run": "set_03/eval_small_evaluation_kd",
@@ -448,9 +448,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "set_03/eval_large_evaluation",
-      "metric_name": "f1",
-      "student_value": 0.900097,
-      "teacher_value": 0.952563
+      "metric_name": "accuracy",
+      "student_value": 0.993133,
+      "teacher_value": 0.9967
     },
     {
       "student_run": "set_04/eval_small_evaluation_kd",
@@ -468,9 +468,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "set_04/eval_large_evaluation",
-      "metric_name": "accuracy",
-      "student_value": 0.694171,
-      "teacher_value": 0.957763
+      "metric_name": "f1",
+      "student_value": 0.095008,
+      "teacher_value": 0.460897
     },
     {
       "student_run": "set_04/eval_small_evaluation_kd",
@@ -478,9 +478,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "set_04/eval_large_evaluation",
-      "metric_name": "f1",
-      "student_value": 0.095008,
-      "teacher_value": 0.460897
+      "metric_name": "accuracy",
+      "student_value": 0.694171,
+      "teacher_value": 0.957763
     },
     {
       "student_run": "set_04/eval_small_evaluation_kd",
@@ -498,9 +498,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "set_04/eval_large_evaluation",
-      "metric_name": "accuracy",
-      "student_value": 0.892692,
-      "teacher_value": 0.866917
+      "metric_name": "f1",
+      "student_value": 0.184415,
+      "teacher_value": 0.162898
     },
     {
       "student_run": "set_04/eval_small_evaluation_kd",
@@ -508,9 +508,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "set_04/eval_large_evaluation",
-      "metric_name": "f1",
-      "student_value": 0.184415,
-      "teacher_value": 0.162898
+      "metric_name": "accuracy",
+      "student_value": 0.892692,
+      "teacher_value": 0.866917
     },
     {
       "student_run": "set_04/eval_small_evaluation_kd",
@@ -528,9 +528,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "set_04/eval_large_evaluation",
-      "metric_name": "accuracy",
-      "student_value": 0.989134,
-      "teacher_value": 0.993587
+      "metric_name": "f1",
+      "student_value": 0.604167,
+      "teacher_value": 0.807834
     },
     {
       "student_run": "set_04/eval_small_evaluation_kd",
@@ -538,9 +538,9 @@
       "model_type": "vgae",
       "student_scale": "small",
       "teacher_run": "set_04/eval_large_evaluation",
-      "metric_name": "f1",
-      "student_value": 0.604167,
-      "teacher_value": 0.807834
+      "metric_name": "accuracy",
+      "student_value": 0.989134,
+      "teacher_value": 0.993587
     }
   ]
 }
