@@ -1,6 +1,8 @@
 """Training stages: autoencoder, curriculum, normal."""
+
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -8,7 +10,8 @@ import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 
-from graphids.config import PipelineConfig, checkpoint_path, config_path
+from graphids.config import PipelineConfig, checkpoint_path, config_path, stage_dir
+from graphids.config.constants import get_batch_index
 
 from ..memory import log_memory_state
 from .modules import CurriculumDataModule, GATModule, VGAEModule
@@ -51,8 +54,42 @@ def _resolve_batch_config(cfg, model, train_data, teacher=None):
         if max_nodes:
             log.info("Dynamic batching: max_num_nodes=%d (batch_size=%d × p95)", max_nodes, bs)
         else:
-            log.info("Dynamic batching: no cache metadata, falling back to static batch_size=%d", bs)
+            log.info(
+                "Dynamic batching: no cache metadata, falling back to static batch_size=%d", bs
+            )
     return bs, max_nodes
+
+
+def _save_training_metrics(trainer: pl.Trainer, cfg: PipelineConfig, stage: str) -> None:
+    """Write metrics.json from trainer's callback state after training.
+
+    Non-fatal: exceptions are logged but do not crash training.
+    """
+    try:
+        metrics: dict = {}
+
+        # Extract best score from ModelCheckpoint callback
+        for cb in trainer.callbacks:
+            if isinstance(cb, pl.callbacks.ModelCheckpoint) and cb.best_model_score is not None:
+                metrics["val_loss"] = float(cb.best_model_score)
+                break
+
+        # Add final logged scalar metrics
+        if trainer.callback_metrics:
+            for k, v in trainer.callback_metrics.items():
+                if k not in metrics:
+                    try:
+                        metrics[k] = float(v) if hasattr(v, "item") else v
+                    except (TypeError, ValueError):
+                        pass  # skip non-scalar values
+
+        metrics["epochs_run"] = trainer.current_epoch + 1
+
+        out = stage_dir(cfg, stage) / "metrics.json"
+        out.write_text(json.dumps(metrics, indent=2))
+        log.info("Saved training metrics: %s", out)
+    except Exception as e:
+        log.warning("Failed to save training metrics: %s", e)
 
 
 def train_autoencoder(cfg: PipelineConfig) -> Path:
@@ -64,6 +101,7 @@ def train_autoencoder(cfg: PipelineConfig) -> Path:
     if cfg.has_kd and cfg.kd.model_path:
         teacher = load_teacher(cfg.kd.model_path, "vgae", cfg, num_ids, in_ch, device)
         from graphids.core.models.registry import get as registry_get
+
         _tmp_student = registry_get("vgae").factory(cfg, num_ids, in_ch)
         projection = make_projection(_tmp_student, teacher, "vgae", device)
         del _tmp_student
@@ -77,6 +115,7 @@ def train_autoencoder(cfg: PipelineConfig) -> Path:
 
     trainer = make_trainer(cfg, "autoencoder")
     trainer.fit(module, train_dl, val_dl)
+    _save_training_metrics(trainer, cfg, "autoencoder")
 
     ckpt = checkpoint_path(cfg, "autoencoder")
     ckpt.parent.mkdir(parents=True, exist_ok=True)
@@ -111,6 +150,7 @@ def train_curriculum(cfg: PipelineConfig) -> Path:
 
     dm = CurriculumDataModule(normals, attacks, scores, val_data, cfg)
     trainer.fit(module, datamodule=dm)
+    _save_training_metrics(trainer, cfg, "curriculum")
 
     ckpt = checkpoint_path(cfg, "curriculum")
     ckpt.parent.mkdir(parents=True, exist_ok=True)
@@ -139,6 +179,7 @@ def train_normal(cfg: PipelineConfig) -> Path:
 
     trainer = make_trainer(cfg, "normal")
     trainer.fit(module, train_dl, val_dl)
+    _save_training_metrics(trainer, cfg, "normal")
 
     ckpt = checkpoint_path(cfg, "normal")
     ckpt.parent.mkdir(parents=True, exist_ok=True)
@@ -167,10 +208,11 @@ def _score_difficulty(vgae_model, graphs, device, chunk_size: int = 500) -> list
         with torch.no_grad():
             for g in chunk_graphs:
                 g = g.clone().to(device)
-                batch_idx = (g.batch if hasattr(g, "batch") and g.batch is not None
-                             else torch.zeros(g.x.size(0), dtype=torch.long, device=device))
-                edge_attr = getattr(g, 'edge_attr', None)
-                cont, canid_logits, _, _, _ = vgae_model(g.x, g.edge_index, batch_idx, edge_attr=edge_attr)
+                batch_idx = get_batch_index(g, device)
+                edge_attr = getattr(g, "edge_attr", None)
+                cont, canid_logits, _, _, _ = vgae_model(
+                    g.x, g.edge_index, batch_idx, edge_attr=edge_attr
+                )
                 recon = F.mse_loss(cont, g.x[:, 1:]).item()
                 canid = F.cross_entropy(canid_logits, g.x[:, 0].long()).item()
                 scores.append(recon + 0.1 * canid)

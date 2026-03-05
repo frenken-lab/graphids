@@ -12,6 +12,7 @@ import torch
 import torch.nn.functional as F
 
 from graphids.config import PipelineConfig, cache_dir, data_dir, metrics_path, stage_dir
+from graphids.config.constants import get_batch_index, graph_attack_type
 
 from .utils import (
     _cross_model_path,
@@ -64,7 +65,7 @@ def evaluate(cfg: PipelineConfig) -> dict:
     if gat_ckpt.exists():
         gat = load_model(cfg, "gat", gat_stage, num_ids, in_ch, device)
 
-        p, l, s, gat_emb, gat_attn = _run_gat_inference(
+        p, l, s, gat_emb, gat_attn, gat_at = _run_gat_inference(
             gat,
             val_data,
             device,
@@ -75,6 +76,7 @@ def evaluate(cfg: PipelineConfig) -> dict:
         if gat_emb is not None:
             artifacts["gat_emb"] = gat_emb
             artifacts["gat_labels"] = l
+            artifacts["gat_attack_types"] = gat_at
         if gat_attn:
             artifacts["gat_attention"] = gat_attn
         log.info(
@@ -85,7 +87,7 @@ def evaluate(cfg: PipelineConfig) -> dict:
         if test_scenarios:
             test_metrics["gat"] = {}
             for scenario, tdata in test_scenarios.items():
-                tp, tl, ts, _, _ = _run_gat_inference(gat, tdata, device)
+                tp, tl, ts, _, _, _ = _run_gat_inference(gat, tdata, device)
                 test_metrics["gat"][scenario] = _compute_metrics(tl, tp, ts)
                 log.info(
                     "GAT %s  acc=%.4f f1=%.4f",
@@ -102,7 +104,7 @@ def evaluate(cfg: PipelineConfig) -> dict:
     if vgae_ckpt.exists():
         vgae = load_model(cfg, "vgae", vgae_stage, num_ids, in_ch, device)
 
-        errors_np, labels_np, vgae_z = _run_vgae_inference(
+        errors_np, labels_np, vgae_z, vgae_at = _run_vgae_inference(
             vgae, val_data, device, capture_embeddings=True
         )
         best_thresh, youden_j, vgae_preds = _vgae_threshold(labels_np, errors_np)
@@ -111,6 +113,7 @@ def evaluate(cfg: PipelineConfig) -> dict:
             artifacts["vgae_z"] = vgae_z
             artifacts["vgae_labels"] = labels_np
             artifacts["vgae_errors"] = errors_np
+            artifacts["vgae_attack_types"] = vgae_at
         all_metrics["vgae"]["core"]["optimal_threshold"] = best_thresh
         all_metrics["vgae"]["core"]["youden_j"] = youden_j
         log.info(
@@ -121,7 +124,7 @@ def evaluate(cfg: PipelineConfig) -> dict:
         if test_scenarios:
             test_metrics["vgae"] = {}
             for scenario, tdata in test_scenarios.items():
-                te, tl, _ = _run_vgae_inference(vgae, tdata, device)
+                te, tl, _, _ = _run_vgae_inference(vgae, tdata, device)
                 tp = (te > best_thresh).astype(int)
                 test_metrics["vgae"][scenario] = _compute_metrics(tl, tp, te)
                 test_metrics["vgae"][scenario]["core"]["threshold_from_val"] = best_thresh
@@ -208,9 +211,17 @@ def evaluate(cfg: PipelineConfig) -> dict:
     mp.write_text(json.dumps(all_metrics, indent=2))
     log.info("All metrics saved to %s", mp)
 
-    # Save embeddings artifact (VGAE latent + GAT hidden)
+    # Save embeddings artifact (VGAE latent + GAT hidden + attack types)
     embed_data = {}
-    for key in ("vgae_z", "gat_emb", "vgae_labels", "gat_labels", "vgae_errors"):
+    for key in (
+        "vgae_z",
+        "gat_emb",
+        "vgae_labels",
+        "gat_labels",
+        "vgae_errors",
+        "vgae_attack_types",
+        "gat_attack_types",
+    ):
         if key in artifacts:
             embed_data[key] = artifacts[key]
     if embed_data:
@@ -372,7 +383,7 @@ ATTENTION_SAMPLE_LIMIT = 50  # Max graphs to capture attention for (export size)
 
 
 def _run_gat_inference(gat, data, device, capture_embeddings=False, capture_attention=False):
-    """Run GAT inference. Returns (preds, labels, scores, embeddings) as numpy arrays.
+    """Run GAT inference. Returns (preds, labels, scores, embeddings, attn_data, attack_types).
 
     When capture_embeddings=True, captures the hidden representation before
     the final classification layer via the forward_embedding() method.
@@ -380,6 +391,7 @@ def _run_gat_inference(gat, data, device, capture_embeddings=False, capture_atte
     sampled subset of graphs.
     """
     preds, labels, scores = [], [], []
+    attack_types = []
     embeddings = [] if capture_embeddings else None
     attn_data = [] if capture_attention else None
     with torch.no_grad():
@@ -394,6 +406,7 @@ def _run_gat_inference(gat, data, device, capture_embeddings=False, capture_atte
             preds.append(logits.argmax(1)[0].item())
             labels.append(graph_label(g))
             scores.append(probs[0, 1].item())
+            attack_types.append(graph_attack_type(g))
             # Attention capture (separate pass, sampled subset only)
             if capture_attention and idx < ATTENTION_SAMPLE_LIMIT:
                 _, att_weights = gat(g, return_attention_weights=True)
@@ -407,25 +420,29 @@ def _run_gat_inference(gat, data, device, capture_embeddings=False, capture_atte
                     }
                 )
     emb_array = np.array(embeddings) if capture_embeddings and embeddings else None
-    return np.array(preds), np.array(labels), np.array(scores), emb_array, attn_data
+    return (
+        np.array(preds),
+        np.array(labels),
+        np.array(scores),
+        emb_array,
+        attn_data,
+        np.array(attack_types),
+    )
 
 
 def _run_vgae_inference(vgae, data, device, capture_embeddings=False):
-    """Run VGAE reconstruction-error inference. Returns (errors, labels, embeddings).
+    """Run VGAE reconstruction-error inference. Returns (errors, labels, embeddings, attack_types).
 
     When capture_embeddings=True, captures z.mean(dim=0) (graph-level latent
     embedding) per sample from the encoder's latent representation.
     """
     errors, labels = [], []
+    attack_types = []
     embeddings = [] if capture_embeddings else None
     with torch.no_grad():
         for g in data:
             g = g.clone().to(device)
-            batch_idx = (
-                g.batch
-                if hasattr(g, "batch") and g.batch is not None
-                else torch.zeros(g.x.size(0), dtype=torch.long, device=device)
-            )
+            batch_idx = get_batch_index(g, device)
             edge_attr = getattr(g, "edge_attr", None)
             cont, canid_logits, z_mean, z_logstd, _ = vgae(
                 g.x, g.edge_index, batch_idx, edge_attr=edge_attr
@@ -433,11 +450,12 @@ def _run_vgae_inference(vgae, data, device, capture_embeddings=False):
             err = F.mse_loss(cont, g.x[:, 1:]).item()
             errors.append(err)
             labels.append(graph_label(g))
+            attack_types.append(graph_attack_type(g))
             if capture_embeddings and z_mean is not None:
                 # Graph-level embedding: mean pool over nodes
                 embeddings.append(z_mean.mean(dim=0).cpu().numpy())
     emb_array = np.array(embeddings) if capture_embeddings and embeddings else None
-    return np.array(errors), np.array(labels), emb_array
+    return np.array(errors), np.array(labels), emb_array, np.array(attack_types)
 
 
 def _run_fusion_inference(agent, cache):

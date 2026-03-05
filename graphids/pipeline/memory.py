@@ -24,7 +24,7 @@ import torch.nn.functional as F
 if TYPE_CHECKING:
     from torch_geometric.data import Data
 
-from graphids.config.constants import CUDA_CONTEXT_MB, FRAGMENTATION_BUFFER
+from graphids.config.constants import CUDA_CONTEXT_MB, FRAGMENTATION_BUFFER, get_batch_index
 
 log = logging.getLogger(__name__)
 
@@ -170,15 +170,13 @@ def _measure_activation_memory_mb(
     for module in model.modules():
         hooks.append(module.register_forward_hook(hook_fn))
 
+    was_training = model.training
     try:
         model.eval()
         sample = sample_graph.clone().to(device)
 
         with torch.no_grad():
-            if hasattr(sample, "batch") and sample.batch is not None:
-                batch_idx = sample.batch
-            else:
-                batch_idx = torch.zeros(sample.x.size(0), dtype=torch.long, device=device)
+            batch_idx = get_batch_index(sample, device)
 
             if hasattr(model, "encode"):
                 model(sample.x, sample.edge_index, batch_idx)
@@ -190,6 +188,8 @@ def _measure_activation_memory_mb(
     finally:
         for h in hooks:
             h.remove()
+        if was_training:
+            model.train()
 
     # 2.5x for backward pass storage
     return sum(activation_bytes) * 2.5 / (1024**2)

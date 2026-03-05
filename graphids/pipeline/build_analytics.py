@@ -78,23 +78,23 @@ def build(dry_run: bool = False) -> Path:
             f"CREATE VIEW artifacts AS SELECT * FROM read_parquet('{datalake}/artifacts.parquet')"
         )
 
-        # Leaderboard: best metrics per dataset × model × scale × kd
+        # Leaderboard: best metrics per dataset × model × scale × kd × data_version
         con.execute("""
             CREATE VIEW v_leaderboard AS
-            SELECT r.dataset, r.model_type, r.scale, r.has_kd,
+            SELECT r.dataset, r.model_type, r.scale, r.has_kd, r.data_version,
                    m.model, MAX(m.f1) AS best_f1, MAX(m.accuracy) AS best_accuracy,
                    MAX(m.auc) AS best_auc, MAX(m.mcc) AS best_mcc
             FROM runs r
             JOIN metrics m USING (run_id)
             WHERE r.stage = 'evaluation' AND r.success
-            GROUP BY r.dataset, r.model_type, r.scale, r.has_kd, m.model
+            GROUP BY r.dataset, r.model_type, r.scale, r.has_kd, r.data_version, m.model
         """)
 
-        # KD impact: small+KD vs small+noKD vs large teacher
+        # KD impact: small+KD vs small+noKD vs large teacher (grouped by data_version)
         con.execute("""
             CREATE VIEW v_kd_impact AS
             SELECT
-                kd.dataset, kd.model,
+                kd.dataset, kd.model, kd.data_version,
                 kd.best_f1 AS kd_f1, nokd.best_f1 AS nokd_f1,
                 kd.best_f1 - nokd.best_f1 AS f1_delta,
                 teacher.best_f1 AS teacher_f1
@@ -102,11 +102,13 @@ def build(dry_run: bool = False) -> Path:
             JOIN v_leaderboard nokd
                 ON kd.dataset = nokd.dataset
                 AND kd.model = nokd.model
+                AND kd.data_version IS NOT DISTINCT FROM nokd.data_version
                 AND kd.scale = 'small' AND kd.has_kd = true
                 AND nokd.scale = 'small' AND nokd.has_kd = false
             LEFT JOIN v_leaderboard teacher
                 ON teacher.dataset = kd.dataset
                 AND teacher.model = kd.model
+                AND teacher.data_version IS NOT DISTINCT FROM kd.data_version
                 AND teacher.scale = 'large'
         """)
 

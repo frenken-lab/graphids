@@ -19,6 +19,8 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
+from graphids.config.constants import graph_attack_type, graph_node_attack_type
+
 log = logging.getLogger(__name__)
 
 DEFAULT_OUTPUT_DIR = Path("reports/data")
@@ -515,6 +517,167 @@ def export_loss_landscape(output_dir: Path) -> Path | None:
     return out
 
 
+def export_graph_samples(output_dir: Path) -> Path | None:
+    """Export diverse graph samples from cached .pt files for force-directed visualization.
+
+    Samples 3 normal + up to 2 per attack type per dataset. Produces v2 JSON schema
+    with attack_type metadata, 26-D node features, 11-D edge features.
+    """
+    import torch
+
+    from graphids.config.catalog import load_catalog
+    from graphids.config.constants import (
+        EDGE_FEATURE_NAMES,
+        NODE_FEATURE_NAMES,
+    )
+
+    # Import attack type name mapping
+    try:
+        from graphids.core.preprocessing.adapters.can_bus import ATTACK_TYPE_NAMES
+    except ImportError:
+        ATTACK_TYPE_NAMES = {
+            0: "normal",
+            1: "dos",
+            2: "fuzzing",
+            3: "gear_spoofing",
+            4: "rpm_spoofing",
+            5: "suppress",
+            6: "masquerade",
+            7: "mixed",
+            8: "unknown",
+        }
+
+    catalog = load_catalog()
+    _data_root_str = os.environ.get("KD_GAT_DATA_ROOT")
+    cache_base = Path(_data_root_str) / "cache" if _data_root_str else Path("data/cache")
+
+    samples = []
+
+    for ds_name in sorted(catalog.keys()):
+        cache_dir = cache_base / ds_name
+
+        # Collect all .pt files (train + test scenarios)
+        pt_files = sorted(cache_dir.glob("*.pt")) if cache_dir.is_dir() else []
+        if not pt_files:
+            log.info("No cached graphs for %s — skipping", ds_name)
+            continue
+
+        all_graphs = []
+        for pt_file in pt_files:
+            try:
+                graphs = torch.load(pt_file, map_location="cpu", weights_only=False)
+                if hasattr(graphs, "data_list"):
+                    graphs = graphs.data_list
+                if not isinstance(graphs, list):
+                    graphs = list(graphs)
+                all_graphs.extend(graphs)
+            except Exception as e:
+                log.warning("Failed to load %s: %s", pt_file, e)
+
+        if not all_graphs:
+            continue
+
+        # Partition by attack type
+        normal_graphs = []
+        attack_graphs: dict[int, list] = {}  # attack_type_code -> graphs
+        for g in all_graphs:
+            label = g.y.item() if hasattr(g, "y") else 0
+            at = graph_attack_type(g, default=0 if label == 0 else -1)
+            if label == 0 or at == 0:
+                normal_graphs.append(g)
+            else:
+                attack_graphs.setdefault(at, []).append(g)
+
+        # Sample: 3 normal + 2 per attack type
+        import random
+
+        rng = random.Random(42)
+        selected = rng.sample(normal_graphs, min(3, len(normal_graphs)))
+        for at_code, at_graphs in sorted(attack_graphs.items()):
+            selected.extend(rng.sample(at_graphs, min(2, len(at_graphs))))
+
+        for g in selected:
+            sample = _graph_to_json(
+                g, ds_name, NODE_FEATURE_NAMES, EDGE_FEATURE_NAMES, ATTACK_TYPE_NAMES
+            )
+            if sample:
+                samples.append(sample)
+
+    if not samples:
+        log.warning("No graph samples exported — caches may be empty or missing")
+        return None
+
+    out = output_dir / "graph_samples.json"
+    envelope = _versioned_envelope(samples)
+    envelope["schema_version"] = "2.0.0"
+    envelope["feature_names"] = {
+        "node": list(NODE_FEATURE_NAMES),
+        "edge": list(EDGE_FEATURE_NAMES),
+    }
+    out.write_text(json.dumps(envelope, indent=2))
+    log.info("Exported %d graph samples → %s", len(samples), out)
+    return out
+
+
+def _graph_to_json(
+    g,
+    dataset_name: str,
+    node_feature_names: list[str],
+    edge_feature_names: list[str],
+    attack_type_names: dict[int, str],
+) -> dict | None:
+    """Convert a single PyG Data object to JSON-serializable dict."""
+    try:
+        x = g.x.numpy()
+        edge_index = g.edge_index.numpy()
+        label = g.y.item() if hasattr(g, "y") else 0
+
+        # Node data
+        nodes = []
+        for i in range(x.shape[0]):
+            node = {"id": i, "features": [round(float(v), 6) for v in x[i]]}
+            if hasattr(g, "node_y") and g.node_y is not None:
+                node["node_y"] = int(g.node_y[i].item())
+            nat = graph_node_attack_type(g, i)
+            if nat is not None:
+                node["node_attack_type"] = nat
+                node["node_attack_type_name"] = attack_type_names.get(nat, "unknown")
+            nodes.append(node)
+
+        # Edge data
+        edge_attr = (
+            g.edge_attr.numpy() if hasattr(g, "edge_attr") and g.edge_attr is not None else None
+        )
+        links = []
+        for j in range(edge_index.shape[1]):
+            link = {"source": int(edge_index[0, j]), "target": int(edge_index[1, j])}
+            if edge_attr is not None and j < edge_attr.shape[0]:
+                link["edge_features"] = [round(float(v), 6) for v in edge_attr[j]]
+            links.append(link)
+
+        result = {
+            "dataset": dataset_name,
+            "label": label,
+            "nodes": nodes,
+            "links": links,
+            "num_nodes": len(nodes),
+            "num_edges": len(links),
+        }
+
+        # v2 metadata
+        at = graph_attack_type(g, default=None)
+        if at is not None:
+            result["attack_type"] = at
+            result["attack_type_name"] = attack_type_names.get(at, "unknown")
+        if hasattr(g, "id_entropy") and g.id_entropy is not None:
+            result["id_entropy"] = round(float(g.id_entropy.item()), 4)
+
+        return result
+    except Exception as e:
+        log.warning("Failed to serialize graph: %s", e)
+        return None
+
+
 def export_data_for_reports(reports_data_dir: Path | None = None) -> None:
     """Copy datalake Parquet + artifact Parquet to reports/data/ for Quarto.
 
@@ -590,6 +753,11 @@ def export_all(output_dir: Path, *, include_reports: bool = False) -> None:
         export_loss_landscape(output_dir)
     except Exception as e:
         log.warning("Export loss_landscape failed (non-fatal): %s", e)
+
+    try:
+        export_graph_samples(output_dir)
+    except Exception as e:
+        log.warning("Export graph_samples failed (non-fatal): %s", e)
 
     # Optionally copy everything to reports/data/ for Quarto
     if include_reports:

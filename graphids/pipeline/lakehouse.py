@@ -60,6 +60,7 @@ def _append_to_datalake(
     slurm_job_id: str | None = None,
     gpu_name: str | None = None,
     batch_size_used: int | None = None,
+    data_version: str | None = None,
 ) -> bool:
     """Append run + metrics to datalake Parquet files via DuckDB."""
     try:
@@ -89,7 +90,7 @@ def _append_to_datalake(
                 ? AS completed_at, ? AS started_at, ? AS duration_seconds,
                 ? AS peak_gpu_mb, ? AS slurm_job_id, ? AS gpu_name,
                 ? AS batch_size_used,
-                NULL AS data_version, NULL AS wandb_run_id, 'pipeline' AS source
+                ? AS data_version, NULL AS wandb_run_id, 'pipeline' AS source
             )
         """,
             [
@@ -107,6 +108,7 @@ def _append_to_datalake(
                 slurm_job_id,
                 gpu_name,
                 batch_size_used,
+                data_version,
             ],
         )
 
@@ -207,6 +209,7 @@ def sync_to_lakehouse(
     slurm_job_id: str | None = None,
     gpu_name: str | None = None,
     batch_size_used: int | None = None,
+    data_version: str | None = None,
 ) -> bool:
     """Append run results to datalake (Parquet). Returns True on success.
 
@@ -214,6 +217,12 @@ def sync_to_lakehouse(
     exceptions and logs warnings instead of raising.  Training must
     never fail because of a lakehouse sync issue.
     """
+    # Default to current preprocessing version if not specified
+    if data_version is None:
+        from graphids.config.constants import PREPROCESSING_VERSION
+
+        data_version = PREPROCESSING_VERSION
+
     return _append_to_datalake(
         run_id,
         dataset,
@@ -231,4 +240,5 @@ def sync_to_lakehouse(
         slurm_job_id=slurm_job_id,
         gpu_name=gpu_name,
         batch_size_used=batch_size_used,
+        data_version=data_version,
     )

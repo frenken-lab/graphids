@@ -275,11 +275,13 @@ def make_trainer(
             monitor=t.monitor_metric,
             mode=t.monitor_mode,
             save_top_k=t.save_top_k,
+            save_on_train_epoch_end=False,
         ),
         EarlyStopping(
             monitor=t.monitor_metric,
             patience=t.patience,
             mode=t.monitor_mode,
+            check_on_train_epoch_end=False,
         ),
         MemoryMonitorCallback(
             log_every_n_epochs=t.test_every_n_epochs,

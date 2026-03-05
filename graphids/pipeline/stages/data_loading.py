@@ -9,7 +9,7 @@ import torch.nn as nn
 from torch_geometric.loader import DataLoader, DynamicBatchSampler
 
 from graphids.config import PipelineConfig, cache_dir, data_dir
-from graphids.config.constants import MMAP_TENSOR_LIMIT
+from graphids.config.constants import MMAP_TENSOR_LIMIT, get_batch_index
 
 log = logging.getLogger(__name__)
 
@@ -88,6 +88,24 @@ def compute_node_budget(batch_size: int, cfg: PipelineConfig) -> int | None:
         return None
 
 
+def _estimate_dynamic_steps(data, max_num_nodes: int, batch_size: int) -> int:
+    """Estimate actual batch count for DynamicBatchSampler.
+
+    Samples a subset of graphs to compute mean node count, then estimates
+    how many batches the sampler will yield given the node budget.
+    Falls back to len(data) // batch_size if sampling fails.
+    """
+    try:
+        # Sample up to 500 graphs for mean node count
+        n_sample = min(500, len(data))
+        total_nodes = sum(data[i].num_nodes for i in range(n_sample))
+        mean_nodes = total_nodes / n_sample
+        estimated_steps = max(1, int(len(data) * mean_nodes / max_num_nodes))
+        return estimated_steps
+    except Exception:
+        return max(1, len(data) // max(1, batch_size))
+
+
 def make_dataloader(
     data,
     cfg: PipelineConfig,
@@ -105,8 +123,11 @@ def make_dataloader(
     nw = _safe_num_workers(data, cfg)
 
     if max_num_nodes is not None:
-        # num_steps required so Lightning can call len(dataloader)
-        num_steps = max(1, len(data) // max(1, batch_size))
+        # num_steps required so Lightning can call len(dataloader).
+        # Must reflect actual iteration count, not len(data)//batch_size.
+        # DynamicBatchSampler packs graphs by node budget, so each batch
+        # holds many more graphs than batch_size when graphs are small.
+        num_steps = _estimate_dynamic_steps(data, max_num_nodes, batch_size)
         sampler = DynamicBatchSampler(
             data,
             max_num=max_num_nodes,
@@ -154,11 +175,7 @@ def cache_predictions(models: dict[str, nn.Module], data, device, max_samples: i
     with torch.no_grad():
         for i in range(n_samples):
             g = data[i].clone().to(device)
-            batch_idx = (
-                g.batch
-                if hasattr(g, "batch") and g.batch is not None
-                else torch.zeros(g.x.size(0), dtype=torch.long, device=device)
-            )
+            batch_idx = get_batch_index(g, device)
 
             features = [ext.extract(models[name], g, batch_idx, device) for name, ext in active]
             states.append(torch.cat(features))
