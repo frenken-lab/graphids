@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+PROJECT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 mkdir -p "$PROJECT_DIR/slurm_logs"
 
 # Source .env for KD_GAT_SLURM_ACCOUNT
@@ -23,8 +23,8 @@ for ds in $DATASETS; do
       --job-name="test-cache-${ds}" \
       --output="$PROJECT_DIR/slurm_logs/%j-test-cache-${ds}.out" \
       --error="$PROJECT_DIR/slurm_logs/%j-test-cache-${ds}.err" \
-      --wrap="source ~/KD-GAT/.venv/bin/activate && cd $PROJECT_DIR && python -c \"
-from src.training.datamodules import load_test_scenarios
+      --wrap="source $PROJECT_DIR/.venv/bin/activate && cd $PROJECT_DIR && python -c \"
+from graphids.core.training.datamodules import load_test_scenarios
 from pathlib import Path
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)s %(levelname)s %(message)s')

@@ -2,15 +2,16 @@
 # Account comes from .env (KD_GAT_SLURM_ACCOUNT). Submit with:
 #   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/ray_slurm.sh ...
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:v100:1
+#SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=85G
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=48G
 #SBATCH --time=08:00:00
 #SBATCH --job-name=kd-gat-ray
 #SBATCH --output=slurm_logs/ray_%j.out
 #SBATCH --error=slurm_logs/ray_%j.err
+#SBATCH --signal=B:USR1@300
 
 # Ray-based pipeline execution on SLURM.
 #
@@ -38,6 +39,9 @@ source .venv/bin/activate
 set -a
 source .env
 set +a
+
+# CUDA memory optimization
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # Stage data to fast storage
 source scripts/data/stage_data.sh --cache
@@ -74,10 +78,11 @@ if [[ -d data/datalake ]] && command -v aws &>/dev/null; then
         --exclude "analytics.duckdb" 2>/dev/null || true
 fi
 
-# Sync offline W&B runs
+# Sync offline W&B runs (only from this job, not all historical runs)
 if command -v wandb &>/dev/null; then
     echo "Syncing offline W&B runs..."
-    wandb sync wandb/run-* 2>/dev/null || true
+    find wandb/ -maxdepth 1 -name "run-*" -newer slurm_logs/ray_${SLURM_JOB_ID}.out \
+        -exec wandb sync {} \; 2>/dev/null || true
 fi
 
 # Report orphaned/failed runs (informational only)
