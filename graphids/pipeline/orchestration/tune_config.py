@@ -30,6 +30,7 @@ _SEARCH_SPACES: dict[str, dict[str, tuple]] = {
         "vgae.dropout": ("uniform", 0.05, 0.4),
         "vgae.heads": ("choice", [1, 2, 4, 8]),
         "vgae.embedding_dim": ("choice", [8, 16, 32]),
+        "vgae.proj_dim": ("choice", [32, 48, 64]),
     },
     "gat": {
         "training.lr": ("loguniform", 1e-4, 1e-2),
@@ -40,6 +41,7 @@ _SEARCH_SPACES: dict[str, dict[str, tuple]] = {
         "gat.dropout": ("uniform", 0.1, 0.4),
         "gat.embedding_dim": ("choice", [8, 16, 32]),
         "gat.fc_layers": ("choice", [2, 3, 4]),
+        "gat.proj_dim": ("choice", [32, 48, 64]),
     },
     "dqn": {
         "fusion.lr": ("loguniform", 1e-4, 1e-2),
@@ -73,7 +75,9 @@ def _build_search_space(stage: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _trainable(config: dict, stage: str, dataset: str, scale: str) -> None:
+def _trainable(
+    config: dict, stage: str, dataset: str, scale: str, max_epochs: int = 0, patience: int = 0
+) -> None:
     """Ray Tune trainable that runs a pipeline stage as subprocess.
 
     Reports val_loss from the stage's metrics.json.
@@ -100,6 +104,12 @@ def _trainable(config: dict, stage: str, dataset: str, scale: str) -> None:
     ]
     for key, value in config.items():
         cmd.extend(["-O", key, str(value)])
+
+    # Inject epoch/patience overrides for shorter tune trials
+    if max_epochs > 0:
+        cmd.extend(["-O", "training.max_epochs", str(max_epochs)])
+    if patience > 0:
+        cmd.extend(["-O", "training.patience", str(patience)])
 
     result = subprocess.run(cmd, capture_output=True, text=True)
 
@@ -139,6 +149,8 @@ def run_tune(
     mode: str = "min",
     grace_period: int = 10,
     local: bool = False,
+    max_epochs: int = 0,
+    patience: int = 0,
 ) -> Any:
     """Run Ray Tune HPO for a pipeline stage.
 
@@ -162,6 +174,10 @@ def run_tune(
         ASHA grace period (epochs before early stopping a trial).
     local : bool
         Use Ray local mode.
+    max_epochs : int
+        Override training.max_epochs per trial (0 = use config default).
+    patience : int
+        Override training.patience per trial (0 = use config default).
 
     Returns
     -------
@@ -195,26 +211,9 @@ def run_tune(
 
     search_alg = OptunaSearch(metric=metric, mode=mode)
 
-    # WandbLoggerCallback if wandb is available
-    callbacks = []
-    try:
-        from ray.tune.logger import TBXLoggerCallback
-
-        callbacks.append(TBXLoggerCallback())
-    except ImportError:
-        pass
-
-    try:
-        from ray.air.integrations.wandb import WandbLoggerCallback
-
-        callbacks.append(
-            WandbLoggerCallback(
-                project="kd-gat-tune",
-                group=f"{stage}_{dataset}_{scale}",
-            )
-        )
-    except ImportError:
-        pass
+    # Note: Ray 2.54+ RunConfig only accepts ray.train.UserCallback instances,
+    # not ray.tune callbacks (TBXLoggerCallback, WandbLoggerCallback).
+    # W&B logging is handled inside the trainable via the CLI's W&B init.
 
     tuner = tune.Tuner(
         tune.with_resources(
@@ -223,6 +222,8 @@ def run_tune(
                 stage=stage,
                 dataset=dataset,
                 scale=scale,
+                max_epochs=max_epochs,
+                patience=patience,
             ),
             resources={"gpu": 1},
         ),
@@ -235,7 +236,6 @@ def run_tune(
         ),
         run_config=ray.train.RunConfig(
             name=f"tune_{stage}_{dataset}_{scale}",
-            callbacks=callbacks,
         ),
     )
 
@@ -249,4 +249,37 @@ def run_tune(
         best.metrics.get(metric, float("inf")),
     )
 
+    export_best_config(best, stage, dataset, scale)
+
     return results
+
+
+def export_best_config(best_result, stage: str, dataset: str, scale: str) -> None:
+    """Export best trial config to YAML and print CLI override flags."""
+    from pathlib import Path
+
+    import yaml
+
+    out_dir = Path("data/sweep_results")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    config = best_result.config
+    val_loss = best_result.metrics.get("val_loss", float("inf"))
+
+    # Write YAML
+    out_path = out_dir / f"{stage}_{dataset}_{scale}_best.yaml"
+    payload = {
+        "stage": stage,
+        "dataset": dataset,
+        "scale": scale,
+        "val_loss": float(val_loss),
+        "config": config,
+    }
+    out_path.write_text(yaml.safe_dump(payload, default_flow_style=False, sort_keys=False))
+    log.info("Best config saved to %s", out_path)
+
+    # Print CLI override flags for easy copy-paste into Phase B
+    cli_parts = []
+    for key, value in sorted(config.items()):
+        cli_parts.append(f"-O {key} {value}")
+    log.info("CLI overrides for Phase B:\n  %s", " \\\n  ".join(cli_parts))
