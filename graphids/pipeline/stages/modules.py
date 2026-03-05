@@ -1,4 +1,5 @@
 """Lightning modules for VGAE and GAT training."""
+
 from __future__ import annotations
 
 import logging
@@ -44,33 +45,20 @@ class VGAEModule(pl.LightningModule):
         from graphids.core.models.vgae import GraphAutoencoderNeighborhood
 
         self.cfg = cfg
-        conv_type = cfg.vgae.conv_type
-        self.model = GraphAutoencoderNeighborhood(
-            num_ids=num_ids,
-            in_channels=in_channels,
-            hidden_dims=list(cfg.vgae.hidden_dims),
-            latent_dim=cfg.vgae.latent_dim,
-            encoder_heads=cfg.vgae.heads,
-            embedding_dim=cfg.vgae.embedding_dim,
-            dropout=cfg.vgae.dropout,
-            use_checkpointing=cfg.training.gradient_checkpointing,
-            conv_type=conv_type,
-            edge_dim=cfg.vgae.edge_dim if conv_type in ("transformer", "gatv2") else None,
-        )
+        self.model = GraphAutoencoderNeighborhood.from_config(cfg, num_ids, in_channels)
         self.teacher = teacher
         self.projection = projection
         self._teacher_on_cpu = False
 
     def forward(self, batch):
-        edge_attr = getattr(batch, 'edge_attr', None)
+        edge_attr = getattr(batch, "edge_attr", None)
         return self.model(batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr)
 
     def _task_loss(self, batch):
         cont_out, canid_logits, nbr_logits, z, kl_loss = self(batch)
         recon = F.mse_loss(cont_out, batch.x[:, 1:])
         canid = F.cross_entropy(canid_logits, batch.x[:, 0].long())
-        nbr_targets = self.model.create_neighborhood_targets(
-            batch.x, batch.edge_index, batch.batch)
+        nbr_targets = self.model.create_neighborhood_targets(batch.x, batch.edge_index, batch.batch)
         nbr_loss = F.binary_cross_entropy_with_logits(nbr_logits, nbr_targets)
         task_loss = recon + 0.1 * canid + 0.05 * nbr_loss + 0.01 * kl_loss
         return task_loss, cont_out, z
@@ -85,13 +73,18 @@ class VGAEModule(pl.LightningModule):
                 self._teacher_on_cpu = False
 
             with torch.no_grad():
-                batch_idx = batch.batch if batch.batch is not None else \
-                    torch.zeros(batch.x.size(0), dtype=torch.long, device=batch.x.device)
-                t_edge_attr = getattr(batch, 'edge_attr', None)
-                t_cont, _, _, t_z, _ = self.teacher(batch.x, batch.edge_index, batch_idx, edge_attr=t_edge_attr)
+                batch_idx = (
+                    batch.batch
+                    if batch.batch is not None
+                    else torch.zeros(batch.x.size(0), dtype=torch.long, device=batch.x.device)
+                )
+                t_edge_attr = getattr(batch, "edge_attr", None)
+                t_cont, _, _, t_z, _ = self.teacher(
+                    batch.x, batch.edge_index, batch_idx, edge_attr=t_edge_attr
+                )
 
             if self.cfg.training.offload_teacher_to_cpu:
-                self.teacher.to('cpu')
+                self.teacher.to("cpu")
                 torch.cuda.empty_cache()
                 self._teacher_on_cpu = True
 
@@ -102,8 +95,7 @@ class VGAEModule(pl.LightningModule):
             min_r = min(cont_out.size(0), t_cont.size(0))
             recon_kd = F.mse_loss(cont_out[:min_r], t_cont[:min_r])
 
-            kd_loss = (kd.vgae_latent_weight * latent_kd
-                       + kd.vgae_recon_weight * recon_kd)
+            kd_loss = kd.vgae_latent_weight * latent_kd + kd.vgae_recon_weight * recon_kd
             return kd.alpha * kd_loss + (1 - kd.alpha) * task_loss
 
         return task_loss
@@ -121,7 +113,9 @@ class VGAEModule(pl.LightningModule):
         params = list(self.model.parameters())
         if self.projection is not None:
             params += list(self.projection.parameters())
-        opt = torch.optim.Adam(params, lr=self.cfg.training.lr, weight_decay=self.cfg.training.weight_decay)
+        opt = torch.optim.Adam(
+            params, lr=self.cfg.training.lr, weight_decay=self.cfg.training.weight_decay
+        )
         return build_optimizer_dict(opt, self.cfg)
 
 
@@ -148,18 +142,7 @@ class GATModule(pl.LightningModule):
         from graphids.core.models.gat import GATWithJK
 
         self.cfg = cfg
-        self.model = GATWithJK(
-            num_ids=num_ids,
-            in_channels=in_channels,
-            hidden_channels=cfg.gat.hidden,
-            out_channels=num_classes,
-            num_layers=cfg.gat.layers,
-            heads=cfg.gat.heads,
-            dropout=cfg.gat.dropout,
-            num_fc_layers=cfg.gat.fc_layers,
-            embedding_dim=cfg.gat.embedding_dim,
-            use_checkpointing=cfg.training.gradient_checkpointing,
-        )
+        self.model = GATWithJK.from_config(cfg, num_ids, in_channels)
         self.teacher = teacher
         self._teacher_on_cpu = False
 
@@ -181,7 +164,7 @@ class GATModule(pl.LightningModule):
                 t_logits = self.teacher(batch)
 
             if self.cfg.training.offload_teacher_to_cpu:
-                self.teacher.to('cpu')
+                self.teacher.to("cpu")
                 torch.cuda.empty_cache()
                 self._teacher_on_cpu = True
 
@@ -190,7 +173,7 @@ class GATModule(pl.LightningModule):
                 F.log_softmax(logits / T, dim=-1),
                 F.softmax(t_logits / T, dim=-1),
                 reduction="batchmean",
-            ) * (T ** 2)
+            ) * (T**2)
             loss = kd.alpha * kd_loss + (1 - kd.alpha) * task_loss
         else:
             loss = task_loss
@@ -210,7 +193,9 @@ class GATModule(pl.LightningModule):
 
     def configure_optimizers(self):
         opt = torch.optim.Adam(
-            self.parameters(), lr=self.cfg.training.lr, weight_decay=self.cfg.training.weight_decay,
+            self.parameters(),
+            lr=self.cfg.training.lr,
+            weight_decay=self.cfg.training.weight_decay,
         )
         return build_optimizer_dict(opt, self.cfg)
 
@@ -229,8 +214,11 @@ class CurriculumDataModule(pl.LightningDataModule):
 
     def train_dataloader(self):
         sampled = _curriculum_sample(
-            self.normals, self.attacks, self.scores,
-            self._current_epoch, self.cfg,
+            self.normals,
+            self.attacks,
+            self.scores,
+            self._current_epoch,
+            self.cfg,
         )
         self._current_epoch += 1
         bs = effective_batch_size(self.cfg)
@@ -253,7 +241,9 @@ def _curriculum_sample(normals, attacks, scores, epoch, cfg: PipelineConfig):
     ratio = cfg.training.curriculum_start_ratio + progress * (
         cfg.training.curriculum_end_ratio - cfg.training.curriculum_start_ratio
     )
-    percentile = cfg.training.difficulty_percentile + progress * (95 - cfg.training.difficulty_percentile)
+    percentile = cfg.training.difficulty_percentile + progress * (
+        95 - cfg.training.difficulty_percentile
+    )
 
     if scores:
         threshold = sorted(scores)[int(len(scores) * percentile / 100)]

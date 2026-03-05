@@ -7,7 +7,7 @@
 #   bash scripts/slurm/run_tests_slurm.sh -m slurm              # only slurm-marked
 set -euo pipefail
 
-PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+PROJECT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 mkdir -p "$PROJECT_DIR/slurm_logs"
 
 # Source .env for KD_GAT_SLURM_ACCOUNT
@@ -17,6 +17,6 @@ sbatch --account="${KD_GAT_SLURM_ACCOUNT:?Set KD_GAT_SLURM_ACCOUNT in .env}" --p
   --time=120 --mem=64G --cpus-per-task=8 \
   --job-name=pytest --output="$PROJECT_DIR/slurm_logs/%j-pytest.out" \
   --error="$PROJECT_DIR/slurm_logs/%j-pytest.err" \
-  --wrap="cd $PROJECT_DIR && PYTHONPATH=$PROJECT_DIR python -m pytest tests/ -v --run-slurm $*"
+  --wrap="cd $PROJECT_DIR && module load python/3.12 && source .venv/bin/activate && python -m pytest tests/ -v --run-slurm $*"
 
 echo "Submitted pytest job. Check slurm_logs/ for output."

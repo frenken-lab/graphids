@@ -1,6 +1,7 @@
 """Tests for newly added modules: GAT return_embedding, DQN compute_fusion_reward,
 generate_sweep.py, CLI archive/restore, and FastAPI serve.py.
 """
+
 from __future__ import annotations
 
 import json
@@ -22,6 +23,7 @@ from tests.conftest import IN_CHANNELS, NUM_IDS, SMOKE_OVERRIDES, _make_graph
 # P1: GAT return_embedding
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.slurm
 class TestGATReturnEmbedding:
     """Test the return_embedding flag on GATWithJK.forward()."""
@@ -29,8 +31,10 @@ class TestGATReturnEmbedding:
     @pytest.fixture
     def gat_model(self):
         from graphids.config.resolver import resolve
+
         cfg = resolve("gat", "small", dataset="hcrl_sa", **SMOKE_OVERRIDES)
         from graphids.core.models.gat import GATWithJK
+
         return GATWithJK.from_config(cfg, NUM_IDS, IN_CHANNELS)
 
     def test_return_embedding_tuple(self, gat_model):
@@ -71,6 +75,7 @@ class TestGATReturnEmbedding:
 # P1: DQN compute_fusion_reward
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.slurm
 class TestDQNComputeFusionReward:
     """Test EnhancedDQNFusionAgent.compute_fusion_reward()."""
@@ -79,10 +84,14 @@ class TestDQNComputeFusionReward:
     def agent(self):
         from graphids.core.models.dqn import EnhancedDQNFusionAgent
         from graphids.core.models.registry import fusion_state_dim
+
         return EnhancedDQNFusionAgent(
-            alpha_steps=11, lr=1e-3, gamma=0.9,
+            alpha_steps=11,
+            lr=1e-3,
+            gamma=0.9,
             state_dim=fusion_state_dim(),
-            hidden_dim=32, num_layers=2,
+            hidden_dim=32,
+            num_layers=2,
             device="cpu",
         )
 
@@ -94,7 +103,10 @@ class TestDQNComputeFusionReward:
         """Correct prediction should yield positive total reward."""
         state = self._make_state(agent)
         reward = agent.compute_fusion_reward(
-            prediction=1, true_label=1, state_features=state, alpha=0.5,
+            prediction=1,
+            true_label=1,
+            state_features=state,
+            alpha=0.5,
         )
         assert reward > 0, f"Correct prediction should have positive reward, got {reward}"
 
@@ -102,7 +114,10 @@ class TestDQNComputeFusionReward:
         """Wrong prediction should yield negative total reward."""
         state = self._make_state(agent)
         reward = agent.compute_fusion_reward(
-            prediction=0, true_label=1, state_features=state, alpha=0.5,
+            prediction=0,
+            true_label=1,
+            state_features=state,
+            alpha=0.5,
         )
         assert reward < 0, f"Wrong prediction should have negative reward, got {reward}"
 
@@ -112,6 +127,7 @@ class TestDQNComputeFusionReward:
         high_conf = np.zeros(agent.state_dim, dtype=np.float32)
         # Set GAT logits to strongly predict attack (indices from layout)
         from graphids.core.models.registry import feature_layout
+
         layout = feature_layout()
         gat_start = layout["gat"][0]
         # class 0 prob low, class 1 prob high
@@ -119,7 +135,7 @@ class TestDQNComputeFusionReward:
         high_conf[gat_start + 1] = 0.9
         # Set confidence indices
         high_conf[layout["vgae"][2]] = 0.5  # moderate vgae confidence
-        high_conf[layout["gat"][2]] = 0.95   # high gat confidence
+        high_conf[layout["gat"][2]] = 0.95  # high gat confidence
 
         low_conf = high_conf.copy()
         low_conf[gat_start] = 0.45
@@ -144,23 +160,27 @@ class TestDQNComputeFusionReward:
 # P2: generate_sweep.py
 # ---------------------------------------------------------------------------
 
+
 class TestGenerateSweep:
     """Test sweep command generation (pure functions, no fixtures needed)."""
 
     def test_parse_sweep_spec_basic(self):
-        from scripts.generate_sweep import parse_sweep_spec
+        from scripts.dev.generate_sweep import parse_sweep_spec
+
         key, vals = parse_sweep_spec("training.lr=0.001,0.0005")
         assert key == "training.lr"
         assert vals == ["0.001", "0.0005"]
 
     def test_parse_sweep_spec_single_value(self):
-        from scripts.generate_sweep import parse_sweep_spec
+        from scripts.dev.generate_sweep import parse_sweep_spec
+
         key, vals = parse_sweep_spec("vgae.latent_dim=16")
         assert key == "vgae.latent_dim"
         assert vals == ["16"]
 
     def test_parse_sweep_spec_invalid_raises(self):
-        from scripts.generate_sweep import parse_sweep_spec
+        from scripts.dev.generate_sweep import parse_sweep_spec
+
         with pytest.raises(ValueError, match="Invalid sweep spec"):
             parse_sweep_spec("no_equals_sign")
         with pytest.raises(ValueError, match="Invalid sweep spec"):
@@ -170,7 +190,7 @@ class TestGenerateSweep:
         """2 params x (2, 3) values = 6 commands."""
         import itertools
 
-        from scripts.generate_sweep import parse_sweep_spec
+        from scripts.dev.generate_sweep import parse_sweep_spec
 
         specs = ["training.lr=0.001,0.0005", "vgae.latent_dim=8,16,32"]
         keys, value_lists = [], []
@@ -186,14 +206,26 @@ class TestGenerateSweep:
         """Generated commands should match expected CLI syntax."""
         output_file = tmp_path / "commands.txt"
         monkeypatch.setattr(
-            sys, "argv",
-            ["generate_sweep.py",
-             "--stage", "autoencoder", "--model", "vgae",
-             "--scale", "large", "--dataset", "hcrl_sa",
-             "--sweep", "training.lr=0.001,0.0005",
-             "--output", str(output_file)],
+            sys,
+            "argv",
+            [
+                "generate_sweep.py",
+                "--stage",
+                "autoencoder",
+                "--model",
+                "vgae",
+                "--scale",
+                "large",
+                "--dataset",
+                "hcrl_sa",
+                "--sweep",
+                "training.lr=0.001,0.0005",
+                "--output",
+                str(output_file),
+            ],
         )
-        from scripts.generate_sweep import main
+        from scripts.dev.generate_sweep import main
+
         main()
 
         lines = output_file.read_text().strip().split("\n")
@@ -208,6 +240,7 @@ class TestGenerateSweep:
 # P2: CLI archive/restore
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.slurm
 class TestCLIArchiveRestore:
     """Test archive-on-rerun and restore-on-failure logic from cli.py."""
@@ -219,8 +252,7 @@ class TestCLIArchiveRestore:
         from graphids.config import stage_dir
         from graphids.config.resolver import resolve
 
-        cfg = resolve("vgae", "large", dataset="hcrl_sa",
-                       experiment_root=str(tmp_path))
+        cfg = resolve("vgae", "large", dataset="hcrl_sa", experiment_root=str(tmp_path))
         sdir = stage_dir(cfg, "autoencoder")
         sdir.mkdir(parents=True)
         (sdir / "metrics.json").write_text('{"loss": 0.5}')
@@ -246,8 +278,7 @@ class TestCLIArchiveRestore:
         from graphids.config import stage_dir
         from graphids.config.resolver import resolve
 
-        cfg = resolve("vgae", "large", dataset="hcrl_sa",
-                       experiment_root=str(tmp_path))
+        cfg = resolve("vgae", "large", dataset="hcrl_sa", experiment_root=str(tmp_path))
         sdir = stage_dir(cfg, "autoencoder")
         sdir.mkdir(parents=True)
         (sdir / "metrics.json").write_text('{"loss": 0.5}')
@@ -279,8 +310,7 @@ class TestCLIArchiveRestore:
         from graphids.config import stage_dir
         from graphids.config.resolver import resolve
 
-        cfg = resolve("vgae", "large", dataset="hcrl_sa",
-                       experiment_root=str(tmp_path))
+        cfg = resolve("vgae", "large", dataset="hcrl_sa", experiment_root=str(tmp_path))
         sdir = stage_dir(cfg, "autoencoder")
         sdir.mkdir(parents=True)
         (sdir / "metrics.json").write_text('{"loss": 0.5}')
@@ -301,6 +331,7 @@ class TestCLIArchiveRestore:
 # P3: FastAPI serve.py (smoke test)
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.slow
 class TestServeSmokeTest:
     """Smoke tests for the FastAPI inference server."""
@@ -311,6 +342,7 @@ class TestServeSmokeTest:
         from starlette.testclient import TestClient
 
         from graphids.pipeline.serve import app
+
         return TestClient(app)
 
     def test_health_returns_200(self, client):
@@ -323,10 +355,13 @@ class TestServeSmokeTest:
 
     def test_predict_no_models_returns_503(self, client):
         """POST /predict with no models loaded should return 503."""
-        resp = client.post("/predict", json={
-            "node_features": [[0.0] * IN_CHANNELS] * 5,
-            "edge_index": [[0, 1, 2, 3], [1, 2, 3, 4]],
-            "dataset": "nonexistent",
-            "scale": "large",
-        })
+        resp = client.post(
+            "/predict",
+            json={
+                "node_features": [[0.0] * IN_CHANNELS] * 5,
+                "edge_index": [[0, 1, 2, 3], [1, 2, 3, 4]],
+                "dataset": "nonexistent",
+                "scale": "large",
+            },
+        )
         assert resp.status_code == 503

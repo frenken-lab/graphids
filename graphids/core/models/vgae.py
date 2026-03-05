@@ -6,14 +6,19 @@ from torch_geometric.nn import GATConv, GATv2Conv, TransformerConv
 from ._utils import checkpoint_conv
 
 
-def _make_conv(conv_type: str, in_dim: int, out_dim: int, heads: int, edge_dim: int | None = None, **kwargs):
+def _make_conv(
+    conv_type: str, in_dim: int, out_dim: int, heads: int, edge_dim: int | None = None, **kwargs
+):
     """Factory for graph attention convolution layers."""
     if conv_type == "transformer":
-        return TransformerConv(in_dim, out_dim, heads=heads, edge_dim=edge_dim, concat=True, **kwargs)
+        return TransformerConv(
+            in_dim, out_dim, heads=heads, edge_dim=edge_dim, concat=True, **kwargs
+        )
     elif conv_type == "gatv2":
         return GATv2Conv(in_dim, out_dim, heads=heads, edge_dim=edge_dim, concat=True, **kwargs)
     else:
         return GATConv(in_dim, out_dim, heads=heads, concat=True, **kwargs)
+
 
 class GraphAutoencoderNeighborhood(nn.Module):
     """
@@ -40,10 +45,24 @@ class GraphAutoencoderNeighborhood(nn.Module):
       - dropout: dropout probability
       - mlp_hidden: hidden dimension for neighborhood decoder MLP (if None, uses latent_dim)
     """
-    def __init__(self, num_ids, in_channels, hidden_dims=None, latent_dim=32,
-                 encoder_heads=4, decoder_heads=4,
-                 embedding_dim=8, dropout=0.35, batch_norm=True, mlp_hidden=None,
-                 use_checkpointing=False, conv_type="gat", edge_dim=None):
+
+    def __init__(
+        self,
+        num_ids,
+        in_channels,
+        hidden_dims=None,
+        latent_dim=32,
+        encoder_heads=4,
+        decoder_heads=4,
+        embedding_dim=8,
+        dropout=0.35,
+        batch_norm=True,
+        mlp_hidden=None,
+        use_checkpointing=False,
+        conv_type="gat",
+        edge_dim=None,
+        proj_dim=0,
+    ):
         super().__init__()
         # ID embedding: expect real torch.nn.Embedding to be available in test env
         self.id_embedding = nn.Embedding(num_ids, embedding_dim)
@@ -54,6 +73,13 @@ class GraphAutoencoderNeighborhood(nn.Module):
         self.conv_type = conv_type
         self._uses_edge_attr = conv_type in ("transformer", "gatv2")
         self._edge_dim = edge_dim if self._uses_edge_attr else None
+        self._proj_dim = proj_dim
+
+        # Optional input projection: decouple feature count from architecture
+        if proj_dim > 0:
+            self.feat_proj = nn.Linear(in_channels - 1, proj_dim)
+        else:
+            self.feat_proj = None
 
         # Hidden dims schedule: interpret list; if last equals latent_dim assume the
         # list includes latent entry and use hidden_dims[:-1] as encoder targets.
@@ -66,8 +92,9 @@ class GraphAutoencoderNeighborhood(nn.Module):
         else:
             encoder_targets = hidden_dims
 
-        # Input dim to first GAT combines ID embedding and other continuous features
-        gat_in_dim = embedding_dim + (in_channels - 1)
+        # Input dim to first GAT combines ID embedding and continuous features
+        cont_dim = proj_dim if proj_dim > 0 else (in_channels - 1)
+        gat_in_dim = embedding_dim + cont_dim
         self.gat_in_dim = gat_in_dim
 
         # Encoder: build progressive GAT layers matching encoder_targets
@@ -82,9 +109,15 @@ class GraphAutoencoderNeighborhood(nn.Module):
             else:
                 heads = 1
                 out_per_head = target_dim
-            self.encoder_layers.append(_make_conv(
-                conv_type, in_dim, out_per_head, heads=heads, edge_dim=self._edge_dim,
-            ))
+            self.encoder_layers.append(
+                _make_conv(
+                    conv_type,
+                    in_dim,
+                    out_per_head,
+                    heads=heads,
+                    edge_dim=self._edge_dim,
+                )
+            )
             if self.batch_norm:
                 self.encoder_bns.append(nn.BatchNorm1d(target_dim))
             in_dim = target_dim
@@ -102,10 +135,12 @@ class GraphAutoencoderNeighborhood(nn.Module):
 
         # Validate: first decoder layer must accept latent_dim input
         if len(decoder_targets) == 0:
-            raise ValueError(f"decoder_targets is empty! hidden_dims={hidden_dims}, encoder_targets={encoder_targets}")
+            raise ValueError(
+                f"decoder_targets is empty! hidden_dims={hidden_dims}, encoder_targets={encoder_targets}"
+            )
         for i, target_dim in enumerate(decoder_targets):
             # For intermediate decoder layers we may use multiple heads; final layer maps to continuous features
-            is_last = (i == len(decoder_targets) - 1)
+            is_last = i == len(decoder_targets) - 1
             heads = decoder_heads if (not is_last and decoder_heads > 1) else 1
             if heads > 1 and target_dim % heads == 0 and not is_last:
                 out_per_head = target_dim // heads
@@ -113,9 +148,15 @@ class GraphAutoencoderNeighborhood(nn.Module):
                 heads = 1
                 out_per_head = target_dim if not is_last else (in_channels - 1)
 
-            self.decoder_layers.append(_make_conv(
-                conv_type, in_dim, out_per_head, heads=heads, edge_dim=self._edge_dim,
-            ))
+            self.decoder_layers.append(
+                _make_conv(
+                    conv_type,
+                    in_dim,
+                    out_per_head,
+                    heads=heads,
+                    edge_dim=self._edge_dim,
+                )
+            )
             if (not is_last) and self.batch_norm:
                 self.decoder_bns.append(nn.BatchNorm1d(out_per_head * heads))
             # next in_dim for following layer
@@ -134,17 +175,18 @@ class GraphAutoencoderNeighborhood(nn.Module):
             nn.Linear(mlp_hidden, mlp_hidden),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(mlp_hidden, num_ids)
+            nn.Linear(mlp_hidden, num_ids),
         )
 
         self.dropout = nn.Dropout(p=dropout)
         self.latent_dim = latent_dim
 
-
     def encode(self, x, edge_index, edge_attr=None):
         # Use the embedding's forward interface (works for real Embedding and SimpleEmbedding)
         id_emb = self.id_embedding(x[:, 0].long())
         other_feats = x[:, 1:]
+        if self.feat_proj is not None:
+            other_feats = self.feat_proj(other_feats)
         x = torch.cat([id_emb, other_feats], dim=1)
         # Apply encoder layers; handle optional batchnorm safely
         for i, conv in enumerate(self.encoder_layers):
@@ -188,7 +230,11 @@ class GraphAutoencoderNeighborhood(nn.Module):
                 if self.use_checkpointing and x.requires_grad:
                     x = checkpoint_conv(conv, x, edge_index, edge_attr)
                 else:
-                    x = conv(x, edge_index, edge_attr) if edge_attr is not None else conv(x, edge_index)
+                    x = (
+                        conv(x, edge_index, edge_attr)
+                        if edge_attr is not None
+                        else conv(x, edge_index)
+                    )
                 if self.batch_norm:
                     bn = self.decoder_bns[i]
                     x = self.dropout(F.relu(bn(x)))
@@ -198,24 +244,28 @@ class GraphAutoencoderNeighborhood(nn.Module):
                 if self.use_checkpointing and x.requires_grad:
                     x = torch.sigmoid(checkpoint_conv(conv, x, edge_index, edge_attr))
                 else:
-                    x = torch.sigmoid(conv(x, edge_index, edge_attr) if edge_attr is not None else conv(x, edge_index))
+                    x = torch.sigmoid(
+                        conv(x, edge_index, edge_attr)
+                        if edge_attr is not None
+                        else conv(x, edge_index)
+                    )
         cont_out = x  # shape: [num_nodes, in_channels-1]
         canid_logits = self.canid_classifier(z)
 
         return cont_out, canid_logits
-    
+
     def decode_neighborhood(self, z):
         """Decode latent representation to neighborhood predictions.
-        
+
         Args:
             z (torch.Tensor): Latent node embeddings with shape [num_nodes, latent_dim].
-            
+
         Returns:
             torch.Tensor: Neighborhood logits with shape [num_nodes, num_ids].
         """
         neighbor_logits = self.neighborhood_decoder(z)
         return neighbor_logits
-    
+
     def create_neighborhood_targets(self, x, edge_index, batch):
         """Create neighborhood target matrix for training.
 
@@ -248,12 +298,17 @@ class GraphAutoencoderNeighborhood(nn.Module):
         """Construct from a PipelineConfig."""
         conv_type = cfg.vgae.conv_type
         return cls(
-            num_ids=num_ids, in_channels=in_ch,
-            hidden_dims=list(cfg.vgae.hidden_dims), latent_dim=cfg.vgae.latent_dim,
-            encoder_heads=cfg.vgae.heads, embedding_dim=cfg.vgae.embedding_dim,
+            num_ids=num_ids,
+            in_channels=in_ch,
+            hidden_dims=list(cfg.vgae.hidden_dims),
+            latent_dim=cfg.vgae.latent_dim,
+            encoder_heads=cfg.vgae.heads,
+            embedding_dim=cfg.vgae.embedding_dim,
             dropout=cfg.vgae.dropout,
             conv_type=conv_type,
             edge_dim=cfg.vgae.edge_dim if conv_type in ("transformer", "gatv2") else None,
+            proj_dim=cfg.vgae.proj_dim,
+            use_checkpointing=cfg.training.gradient_checkpointing,
         )
 
     def forward(self, x, edge_index, batch, edge_attr=None):

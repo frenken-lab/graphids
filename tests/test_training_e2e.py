@@ -77,18 +77,7 @@ class TestAutoencoderE2E:
         loaded_cfg = PipelineConfig.load(config_path(cfg, "autoencoder"))
         from graphids.core.models.vgae import GraphAutoencoderNeighborhood
 
-        lc = loaded_cfg.vgae.conv_type
-        model = GraphAutoencoderNeighborhood(
-            num_ids=NUM_IDS,
-            in_channels=IN_CHANNELS,
-            hidden_dims=list(loaded_cfg.vgae.hidden_dims),
-            latent_dim=loaded_cfg.vgae.latent_dim,
-            encoder_heads=loaded_cfg.vgae.heads,
-            embedding_dim=loaded_cfg.vgae.embedding_dim,
-            dropout=loaded_cfg.vgae.dropout,
-            conv_type=lc,
-            edge_dim=loaded_cfg.vgae.edge_dim if lc in ("gatv2", "transformer") else None,
-        )
+        model = GraphAutoencoderNeighborhood.from_config(loaded_cfg, NUM_IDS, IN_CHANNELS)
         model.load_state_dict(torch.load(ckpt, map_location="cpu", weights_only=True))
 
 
@@ -131,20 +120,7 @@ class TestCurriculumE2E:
         loaded_cfg = PipelineConfig.load(config_path(gat_cfg, "curriculum"))
         from graphids.core.models.gat import GATWithJK
 
-        lc = loaded_cfg.gat.conv_type
-        model = GATWithJK(
-            num_ids=NUM_IDS,
-            in_channels=IN_CHANNELS,
-            hidden_channels=loaded_cfg.gat.hidden,
-            out_channels=2,
-            num_layers=loaded_cfg.gat.layers,
-            heads=loaded_cfg.gat.heads,
-            dropout=loaded_cfg.gat.dropout,
-            num_fc_layers=loaded_cfg.gat.fc_layers,
-            embedding_dim=loaded_cfg.gat.embedding_dim,
-            conv_type=lc,
-            edge_dim=loaded_cfg.gat.edge_dim if lc in ("gatv2", "transformer") else None,
-        )
+        model = GATWithJK.from_config(loaded_cfg, NUM_IDS, IN_CHANNELS)
         model.load_state_dict(torch.load(ckpt, map_location="cpu", weights_only=True))
 
 

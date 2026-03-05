@@ -395,41 +395,10 @@ class TestTeacherLoading:
         sd = stage_dir(cfg, stage)
         sd.mkdir(parents=True, exist_ok=True)
 
-        if model_type == "vgae":
-            from graphids.core.models.vgae import GraphAutoencoderNeighborhood
+        if model_type in ("vgae", "gat"):
+            from graphids.core.models.registry import get as registry_get
 
-            model = GraphAutoencoderNeighborhood(
-                num_ids=NUM_IDS,
-                in_channels=IN_CHANNELS,
-                hidden_dims=list(cfg.vgae.hidden_dims),
-                latent_dim=cfg.vgae.latent_dim,
-                encoder_heads=cfg.vgae.heads,
-                embedding_dim=cfg.vgae.embedding_dim,
-                dropout=cfg.vgae.dropout,
-                conv_type=cfg.vgae.conv_type,
-                edge_dim=cfg.vgae.edge_dim
-                if cfg.vgae.conv_type in ("gatv2", "transformer")
-                else None,
-            )
-            torch.save(model.state_dict(), checkpoint_path(cfg, stage))
-        elif model_type == "gat":
-            from graphids.core.models.gat import GATWithJK
-
-            model = GATWithJK(
-                num_ids=NUM_IDS,
-                in_channels=IN_CHANNELS,
-                hidden_channels=cfg.gat.hidden,
-                out_channels=2,
-                num_layers=cfg.gat.layers,
-                heads=cfg.gat.heads,
-                dropout=cfg.gat.dropout,
-                num_fc_layers=cfg.gat.fc_layers,
-                embedding_dim=cfg.gat.embedding_dim,
-                conv_type=cfg.gat.conv_type,
-                edge_dim=cfg.gat.edge_dim
-                if cfg.gat.conv_type in ("gatv2", "transformer")
-                else None,
-            )
+            model = registry_get(model_type).factory(cfg, NUM_IDS, IN_CHANNELS)
             torch.save(model.state_dict(), checkpoint_path(cfg, stage))
         elif model_type == "dqn":
             from graphids.core.models.dqn import QNetwork
