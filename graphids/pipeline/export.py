@@ -785,7 +785,7 @@ def export_graph_samples(
         selected = _select_representative_normal(normal_graphs, num_normal, rng)
 
         # Representative selection for each attack type
-        for at_code, at_graphs in sorted(attack_graphs.items()):
+        for _at_code, at_graphs in sorted(attack_graphs.items()):
             selected.extend(_select_representative_attack(at_graphs, num_per_attack))
 
         for g in selected:
@@ -868,7 +868,7 @@ def export_graph_statistics(output_dir: Path, *, max_per_dataset: int = 500) -> 
 
         sampled_indices = []
         total = len(all_graphs)
-        for label, indices in by_label.items():
+        for _label, indices in by_label.items():
             n_sample = max(1, int(max_per_dataset * len(indices) / total))
             n_sample = min(n_sample, len(indices))
             sampled_indices.extend(rng.sample(indices, n_sample))

@@ -15,16 +15,17 @@ import json as _json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch_geometric.data import Data  # noqa: TC002
 
-if TYPE_CHECKING:
-    from torch_geometric.data import Data
-
-from graphids.config.constants import CUDA_CONTEXT_MB, FRAGMENTATION_BUFFER, get_batch_index
+from graphids.config.constants import (
+    CUDA_CONTEXT_MB,
+    FRAGMENTATION_BUFFER,
+    get_batch_index,
+)
 
 log = logging.getLogger(__name__)
 

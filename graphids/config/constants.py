@@ -83,7 +83,7 @@ EDGE_FEATURE_NAMES: list[str] = [
 # ---------------------------------------------------------------------------
 # Batch index utilities
 # ---------------------------------------------------------------------------
-def get_batch_index(g, device: "torch.device") -> "torch.Tensor":
+def get_batch_index(g, device: torch.device) -> torch.Tensor:  # noqa: F821
     """Get batch index from graph, creating a single-graph default if absent."""
     import torch
 
