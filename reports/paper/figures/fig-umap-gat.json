@@ -1,15 +1,15 @@
 {
   "data": {
-    "embeddings": { "file": "data/embeddings.parquet" }
+    "embeddings_gat": { "file": "data/embeddings.parquet", "where": "model = 'gat'" }
   },
-  "params": { "sel": { "select": "single" } },
+  "params": { "selUmapGat": { "select": "single" } },
   "vconcat": [
-    { "input": "menu", "from": "embeddings", "column": "run_id", "label": "Run", "as": "$sel" },
+    { "input": "menu", "from": "embeddings_gat", "column": "run_id", "label": "Run", "as": "$selUmapGat" },
     {
       "plot": [
         {
           "mark": "dot",
-          "data": { "from": "embeddings", "filterBy": "$sel" },
+          "data": { "from": "embeddings_gat", "filterBy": "$selUmapGat" },
           "x": "x",
           "y": "y",
           "fill": { "sql": "CASE WHEN label = 0 THEN 'normal' ELSE 'attack' END" },

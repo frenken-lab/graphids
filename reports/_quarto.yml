@@ -4,6 +4,9 @@ project:
   render:
     - "*.qmd"
     - "paper/paper.qmd"
+    - "!paper/[0-9]*.qmd"
+    - "!paper/index.qmd"
+    - "!paper/_setup.qmd"
     - "!pipeline_report.qmd"
     - "!workflow.rst"
   resources:

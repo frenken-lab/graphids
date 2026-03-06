@@ -2,14 +2,14 @@
   "data": {
     "recon_errors": { "file": "data/recon_errors.parquet" }
   },
-  "params": { "sel": { "select": "single" } },
+  "params": { "selRecon": { "select": "single" } },
   "vconcat": [
-    { "input": "menu", "from": "recon_errors", "column": "run_id", "label": "Run", "as": "$sel" },
+    { "input": "menu", "from": "recon_errors", "column": "run_id", "label": "Run", "as": "$selRecon" },
     {
       "plot": [
         {
           "mark": "rectY",
-          "data": { "from": "recon_errors", "filterBy": "$sel" },
+          "data": { "from": "recon_errors", "filterBy": "$selRecon" },
           "x": { "bin": "error" },
           "y": { "count": true },
           "fill": { "sql": "CASE WHEN label = 0 THEN 'normal' ELSE 'attack' END" },

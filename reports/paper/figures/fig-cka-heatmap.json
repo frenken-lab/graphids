@@ -3,15 +3,15 @@
     "cka_similarity": { "file": "data/cka_similarity.parquet" }
   },
   "params": {
-    "sel": { "select": "single" }
+    "selCka": { "select": "single" }
   },
   "vconcat": [
-    { "input": "menu", "from": "cka_similarity", "column": "run_id", "label": "Run", "as": "$sel" },
+    { "input": "menu", "from": "cka_similarity", "column": "run_id", "label": "Run", "as": "$selCka" },
     {
       "plot": [
         {
           "mark": "cell",
-          "data": { "from": "cka_similarity", "filterBy": "$sel" },
+          "data": { "from": "cka_similarity", "filterBy": "$selCka" },
           "x": "student_layer",
           "y": "teacher_layer",
           "fill": "similarity",

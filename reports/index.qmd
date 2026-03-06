@@ -26,18 +26,18 @@ Large teacher models are compressed into small student models via knowledge dist
 | Section | Description |
 |---------|-------------|
 | [Dashboard](dashboard.qmd) | Interactive experiment dashboard with Mosaic/vgplot visualizations |
-| [Paper](paper/index.qmd) | Full research paper (10 chapters) |
+| [Paper](paper/paper.qmd) | Full research paper (10 chapters) |
 | [Slides](slides.qmd) | Revealjs presentation |
 
 ## Paper Chapters
 
-1. [Introduction](paper/index.qmd)
-2. [Background](paper/02-background.qmd)
-3. [Related Work](paper/03-related-work.qmd)
-4. [Methodology](paper/04-methodology.qmd)
-5. [Experiments](paper/05-experiments.qmd)
-6. [Results](paper/06-results.qmd)
-7. [Ablation](paper/07-ablation.qmd)
-8. [Explainability](paper/08-explainability.qmd)
-9. [Conclusion](paper/09-conclusion.qmd)
-10. [Appendix](paper/10-appendix.qmd)
+1. [Introduction](paper/paper.qmd#introduction)
+2. [Background](paper/paper.qmd#background)
+3. [Related Work](paper/paper.qmd#related-work)
+4. [Methodology](paper/paper.qmd#methodology-overview)
+5. [Experiments](paper/paper.qmd#experiments)
+6. [Results](paper/paper.qmd#results-and-discussion)
+7. [Ablation](paper/paper.qmd#ablation-study)
+8. [Explainability](paper/paper.qmd#explainability)
+9. [Conclusion](paper/paper.qmd#conclusion)
+10. [Appendix](paper/paper.qmd#experimental-setup)

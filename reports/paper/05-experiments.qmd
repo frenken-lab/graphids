@@ -10,9 +10,10 @@ This section presents the experimental setup, evaluation metrics, and insights i
 //| label: fig-training-curves
 //| fig-cap: "Training curve comparison across two selected runs. Solid lines represent Run A; dashed lines represent Run B. Each metric is tracked per epoch."
 
-await loadTable("training_curves", FileAttachment("../data/training_curves.parquet"));
+trainingCurvesReady = loadTable("training_curves", FileAttachment("../data/training_curves.parquet"))
 
 viewof compareRun1 = {
+  await trainingCurvesReady;
   const result = await vg.coordinator().query(
     vg.sql`SELECT DISTINCT run_id FROM training_curves ORDER BY run_id`
   );
@@ -21,6 +22,7 @@ viewof compareRun1 = {
 }
 
 viewof compareRun2 = {
+  await trainingCurvesReady;
   const result = await vg.coordinator().query(
     vg.sql`SELECT DISTINCT run_id FROM training_curves ORDER BY run_id`
   );

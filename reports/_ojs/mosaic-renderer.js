@@ -14,7 +14,11 @@ let initialized = false;
 
 function ensureInit() {
   if (!initialized) {
-    coordinator().databaseConnector(wasmConnector());
+    // Skip if mosaic-setup.js already initialized the coordinator (Quarto context).
+    // Only initialize when running standalone (e.g., TMLR export HTML).
+    if (!globalThis.__mosaicConnectorReady) {
+      coordinator().databaseConnector(wasmConnector());
+    }
     initialized = true;
   }
 }

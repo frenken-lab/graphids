@@ -2,14 +2,14 @@
   "data": {
     "attention_weights": { "file": "data/attention_weights.parquet" }
   },
-  "params": { "sel": { "select": "single" } },
+  "params": { "selAttn": { "select": "single" } },
   "vconcat": [
-    { "input": "menu", "from": "attention_weights", "column": "run_id", "label": "Run", "as": "$sel" },
+    { "input": "menu", "from": "attention_weights", "column": "run_id", "label": "Run", "as": "$selAttn" },
     {
       "plot": [
         {
           "mark": "cell",
-          "data": { "from": "attention_weights", "filterBy": "$sel" },
+          "data": { "from": "attention_weights", "filterBy": "$selAttn" },
           "x": { "sql": "'Head ' || head" },
           "y": { "sql": "'Layer ' || layer" },
           "fill": "mean_alpha",

@@ -16,6 +16,7 @@ async function initMosaic() {
   const mod = await import(CDN_URL);
   console.log("[mosaic-setup] vgplot module loaded, connecting coordinator...");
   mod.coordinator().databaseConnector(mod.wasmConnector());
+  globalThis.__mosaicConnectorReady = true;
   console.log("[mosaic-setup] Mosaic ready (DuckDB-WASM will init on first query)");
   return mod;
 }

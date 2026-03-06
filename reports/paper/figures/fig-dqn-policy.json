@@ -2,14 +2,14 @@
   "data": {
     "dqn_policy": { "file": "data/dqn_policy.parquet" }
   },
-  "params": { "sel": { "select": "single" } },
+  "params": { "selDqn": { "select": "single" } },
   "vconcat": [
-    { "input": "menu", "from": "dqn_policy", "column": "run_id", "label": "Run", "as": "$sel" },
+    { "input": "menu", "from": "dqn_policy", "column": "run_id", "label": "Run", "as": "$selDqn" },
     {
       "plot": [
         {
           "mark": "rectY",
-          "data": { "from": "dqn_policy", "filterBy": "$sel" },
+          "data": { "from": "dqn_policy", "filterBy": "$selDqn" },
           "x": { "bin": "alpha" },
           "y": { "count": true },
           "fill": "steelblue",

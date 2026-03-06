@@ -1,15 +1,15 @@
 {
   "data": {
-    "embeddings": { "file": "data/embeddings.parquet" }
+    "embeddings_vgae": { "file": "data/embeddings.parquet", "where": "model = 'vgae'" }
   },
-  "params": { "sel": { "select": "single" } },
+  "params": { "selUmapVgae": { "select": "single" } },
   "vconcat": [
-    { "input": "menu", "from": "embeddings", "column": "run_id", "label": "Run", "as": "$sel" },
+    { "input": "menu", "from": "embeddings_vgae", "column": "run_id", "label": "Run", "as": "$selUmapVgae" },
     {
       "plot": [
         {
           "mark": "dot",
-          "data": { "from": "embeddings", "filterBy": "$sel" },
+          "data": { "from": "embeddings_vgae", "filterBy": "$selUmapVgae" },
           "x": "x",
           "y": "y",
           "fill": { "sql": "CASE WHEN label = 0 THEN 'normal' ELSE 'attack' END" },
