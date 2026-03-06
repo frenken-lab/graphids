@@ -21,23 +21,7 @@
 # All three sequentially on GPU (simplest):
 #   sbatch --partition=gpu --gres=gpu:v100:1 --mem=32G scripts/slurm/loss_landscape.sh all set_01
 
-set -euo pipefail
-
-PROJECT_ROOT="/users/PAS2022/rf15/KD-GAT"
-cd "$PROJECT_ROOT"
-mkdir -p slurm_logs
-
-# --- Environment ---
-module load python/3.12
-source .venv/bin/activate
-
-# Source project env vars
-set -a
-source .env
-set +a
-
-# Stage data to fast storage (needed for graph loading)
-source scripts/data/stage_data.sh --cache
+source "$(dirname "$0")/_preamble.sh"
 
 MODEL="${1:?Usage: loss_landscape.sh <model|all> <dataset>}"
 DATASET="${2:?Usage: loss_landscape.sh <model|all> <dataset>}"

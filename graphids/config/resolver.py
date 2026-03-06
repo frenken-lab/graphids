@@ -97,18 +97,6 @@ def list_models() -> dict[str, list[str]]:
     return models
 
 
-def list_fusion_methods() -> list[str]:
-    """Discover available fusion method configs from filesystem.
-
-    Fusion methods (dqn, mlp, weighted_avg) are config overlays in
-    ``models/fusion/``, not standalone model types.
-    """
-    fusion_dir = CONFIG_DIR / "models" / "fusion"
-    if fusion_dir.exists():
-        return [f.stem for f in sorted(fusion_dir.glob("*.yaml"))]
-    return []
-
-
 def list_auxiliaries() -> list[str]:
     """Discover available auxiliary configs from filesystem."""
     aux_dir = CONFIG_DIR / "auxiliaries"

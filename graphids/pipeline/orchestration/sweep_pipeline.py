@@ -22,6 +22,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from graphids.config.constants import STAGE_MODEL_MAP, SWEEP_RESULTS_DIR, SWEEP_STATE_DIR
+
 log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -36,12 +38,12 @@ class SweepStep:
 
 
 SWEEP_DAG: list[SweepStep] = [
-    SweepStep("sweep_autoencoder", "sweep", "autoencoder", "vgae"),
-    SweepStep("train_best_autoencoder", "train", "autoencoder", "vgae"),
-    SweepStep("sweep_curriculum", "sweep", "curriculum", "gat"),
-    SweepStep("train_best_curriculum", "train", "curriculum", "gat"),
-    SweepStep("sweep_fusion", "sweep", "fusion", "dqn"),
-    SweepStep("train_best_fusion", "train", "fusion", "dqn"),
+    SweepStep("sweep_autoencoder", "sweep", "autoencoder", STAGE_MODEL_MAP["autoencoder"]),
+    SweepStep("train_best_autoencoder", "train", "autoencoder", STAGE_MODEL_MAP["autoencoder"]),
+    SweepStep("sweep_curriculum", "sweep", "curriculum", STAGE_MODEL_MAP["curriculum"]),
+    SweepStep("train_best_curriculum", "train", "curriculum", STAGE_MODEL_MAP["curriculum"]),
+    SweepStep("sweep_fusion", "sweep", "fusion", STAGE_MODEL_MAP["fusion"]),
+    SweepStep("train_best_fusion", "train", "fusion", STAGE_MODEL_MAP["fusion"]),
     SweepStep("evaluate", "evaluate", "evaluation", "eval"),
 ]
 
@@ -54,7 +56,7 @@ _STATUS = Literal["pending", "running", "completed", "failed"]
 
 
 def _state_path(dataset: str, scale: str) -> Path:
-    return PROJECT_ROOT / "data" / "sweep_state" / f"{dataset}_{scale}_state.json"
+    return PROJECT_ROOT / SWEEP_STATE_DIR / f"{dataset}_{scale}_state.json"
 
 
 def _load_state(dataset: str, scale: str) -> dict[str, Any]:
@@ -99,7 +101,7 @@ def _update_step_state(
 
 
 def _sweep_result_path(stage: str, dataset: str, scale: str) -> Path:
-    return PROJECT_ROOT / "data" / "sweep_results" / f"{stage}_{dataset}_{scale}_best.yaml"
+    return PROJECT_ROOT / SWEEP_RESULTS_DIR / f"{stage}_{dataset}_{scale}_best.yaml"
 
 
 def _checkpoint_path(model: str, scale: str, stage: str, dataset: str) -> Path:
@@ -154,16 +156,27 @@ def _run_sweep_step(
     max_concurrent: int,
     tune_epochs: int,
     tune_patience: int,
+    inprocess: bool = False,
+    warm_start_from: str | None = None,
 ) -> None:
     """Run a Ray Tune sweep for a single stage."""
     from .tune_config import run_tune
 
+    # Auto-warm-start from set_01 if sweeping a different dataset and results exist
+    if warm_start_from is None and dataset != "set_01":
+        ref_path = _sweep_result_path(step.stage, "set_01", scale)
+        if ref_path.exists():
+            warm_start_from = "set_01"
+            log.info("Auto warm-starting %s from set_01 results", step.stage)
+
     log.info(
-        "Running sweep: stage=%s, dataset=%s, scale=%s, samples=%d",
+        "Running sweep: stage=%s, dataset=%s, scale=%s, samples=%d, inprocess=%s, warm_start_from=%s",
         step.stage,
         dataset,
         scale,
         num_samples,
+        inprocess,
+        warm_start_from,
     )
 
     run_tune(
@@ -174,6 +187,8 @@ def _run_sweep_step(
         max_concurrent=max_concurrent,
         max_epochs=tune_epochs,
         patience=tune_patience,
+        inprocess=inprocess,
+        warm_start_from=warm_start_from,
     )
 
 
@@ -238,6 +253,7 @@ def run_sweep_pipeline(
     tune_patience: int = 15,
     resume: bool = True,
     dry_run: bool = False,
+    inprocess: bool = False,
 ) -> None:
     """Execute the 7-step sweep pipeline DAG."""
     if dry_run:
@@ -304,6 +320,7 @@ def run_sweep_pipeline(
                     max_concurrent=max_concurrent,
                     tune_epochs=tune_epochs,
                     tune_patience=tune_patience,
+                    inprocess=inprocess,
                 )
                 # Shutdown Ray between sweeps to prevent state leakage
                 try:

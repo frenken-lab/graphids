@@ -51,27 +51,29 @@ Every GPU job script must include:
 
 ### Required Environment Setup
 
+All boilerplate is in shared sourced scripts:
+
 ```bash
-set -euo pipefail
-cd "/users/PAS2022/rf15/KD-GAT"
-mkdir -p slurm_logs
+# Preamble: env setup, venv, .env, CUDA config, data staging
+source "$(dirname "$0")/_preamble.sh"
 
-module load python/3.12
-source .venv/bin/activate
+# Override before sourcing:
+#   SKIP_CUDA_CONF=1   — for CPU-only jobs
+#   SKIP_STAGE_DATA=1  — skip data staging
+#   STAGE_DATA_ARGS="--raw"  — for preprocessing jobs
+```
 
-set -a; source .env; set +a
-
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-
-source scripts/data/stage_data.sh --cache  # or --raw for preprocessing
+```bash
+# Epilog: S3 sync, W&B sync, GPU utilization report
+JOB_LOG_PREFIX="ray" source "$(dirname "$0")/_epilog.sh"
 ```
 
 ### Key Patterns
 
 - **`--signal=B:USR1@300`** — sends USR1 five minutes before wall time for graceful shutdown
-- **`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`** — reduces GPU memory fragmentation (PyTorch 2.1+)
-- **W&B sync** — only sync runs created during this job, not all historical: `find wandb/ -name "run-*" -newer slurm_logs/<prefix>_${SLURM_JOB_ID}.out -exec wandb sync {} \;`
-- **Post-job epilog** — always end with `source scripts/slurm/job_epilog.sh` for GPU utilization report
+- **`_preamble.sh`** — sets up Python 3.12, venv, .env, CUDA memory config, data staging
+- **`_epilog.sh`** — S3 sync (datalake/sweep_results/sweep_state), W&B sync (job-scoped), GPU utilization report
+- **W&B cleanup** — `bash scripts/data/cleanup_wandb.sh --days 14 --delete` for periodic pruning
 
 ## Data Staging Protocol
 

@@ -1,6 +1,0 @@
-[core]
-    remote = scratch
-['remote "scratch"']
-    url = /fs/scratch/PAS1266/can-graph-dvc
-['remote "s3"']
-    url = s3://kd-gat/dvc

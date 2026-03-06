@@ -31,10 +31,13 @@ slurm_logs/
 results/
 **/.done
 experimentruns/
+*.archive_*
 
 # ===== PROJECT DATABASE =====
 data/project.db
+data/project.db.backup
 data/datalake/
+data/datalake_archive/
 data/sweep_state/
 data/sweep_results/
 

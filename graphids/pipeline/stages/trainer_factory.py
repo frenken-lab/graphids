@@ -130,13 +130,7 @@ def _cross_model_path(cfg: PipelineConfig, model_type: str, stage: str, filename
     )
 
 
-# Stage → canonical model_type that owns that stage's artifacts.
-_STAGE_MODEL_TYPE = {
-    "autoencoder": "vgae",
-    "curriculum": "gat",
-    "normal": "gat",
-    "fusion": "dqn",
-}
+from graphids.config.constants import STAGE_MODEL_MAP as _STAGE_MODEL_TYPE
 
 
 def load_frozen_cfg(
@@ -257,6 +251,7 @@ def make_trainer(
     stage: str,
     predicted_peak_mb: float = 0.0,
     run_id_str: str = "",
+    extra_callbacks: list | None = None,
 ) -> pl.Trainer:
     """Create a Lightning Trainer with standard callbacks."""
     from graphids.config import run_id as _run_id
@@ -298,6 +293,9 @@ def make_trainer(
                 active_steps=t.profile_steps,
             )
         )
+
+    if extra_callbacks:
+        callbacks.extend(extra_callbacks)
 
     return pl.Trainer(
         default_root_dir=str(out),

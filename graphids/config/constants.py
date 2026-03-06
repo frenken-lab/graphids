@@ -135,3 +135,19 @@ import os
 SLURM_ACCOUNT = os.getenv("KD_GAT_SLURM_ACCOUNT", "PAS1266")
 SLURM_PARTITION = os.getenv("KD_GAT_SLURM_PARTITION", "gpu")
 SLURM_GPU_TYPE = os.getenv("KD_GAT_GPU_TYPE", "v100")
+
+# ---------------------------------------------------------------------------
+# Stage → model type mapping (single source of truth)
+# ---------------------------------------------------------------------------
+STAGE_MODEL_MAP: dict[str, str] = {
+    "autoencoder": "vgae",
+    "curriculum": "gat",
+    "normal": "gat",
+    "fusion": "dqn",
+}
+
+# ---------------------------------------------------------------------------
+# Sweep / state output paths
+# ---------------------------------------------------------------------------
+SWEEP_RESULTS_DIR = "data/sweep_results"
+SWEEP_STATE_DIR = "data/sweep_state"

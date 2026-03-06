@@ -106,6 +106,10 @@ variants:
     auxiliaries: none
     needs_teacher: false
 
+tune:
+  grace_period: 10
+  reduction_factor: 3
+
 experiment_root: experimentruns
 device: cuda
 num_workers: 8

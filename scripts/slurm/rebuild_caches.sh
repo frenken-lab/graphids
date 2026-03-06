@@ -11,12 +11,7 @@
 #SBATCH --output=slurm_logs/cache_%j.out
 #SBATCH --error=slurm_logs/cache_%j.err
 
-set -euo pipefail
-cd "/users/PAS2022/rf15/KD-GAT"
-mkdir -p slurm_logs
-module load python/3.12
-source .venv/bin/activate
-set -a; source .env; set +a
+SKIP_CUDA_CONF=1 source "$(dirname "$0")/_preamble.sh"
 
 DATASETS=(hcrl_ch hcrl_sa set_01 set_02 set_03 set_04)
 

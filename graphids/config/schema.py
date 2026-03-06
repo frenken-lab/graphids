@@ -138,6 +138,13 @@ class TemporalConfig(BaseModel, frozen=True):
     spatial_lr_factor: float = Field(0.1, gt=0, le=1.0)
 
 
+class TuneConfig(BaseModel, frozen=True):
+    """ASHA scheduler defaults for Ray Tune HPO."""
+
+    grace_period: int = Field(10, ge=1)
+    reduction_factor: int = Field(3, ge=2)
+
+
 class VariantConfig(BaseModel, frozen=True):
     """A pipeline variant (e.g. large teacher, small KD, small ablation)."""
 
@@ -170,6 +177,7 @@ class PipelineConfig(BaseModel, frozen=True):
     fusion: FusionConfig = FusionConfig()
     preprocessing: PreprocessingConfig = PreprocessingConfig()
     temporal: TemporalConfig = TemporalConfig()
+    tune: TuneConfig = TuneConfig()
 
     # --- Pipeline DAG ---
     stages: list[str] = Field(

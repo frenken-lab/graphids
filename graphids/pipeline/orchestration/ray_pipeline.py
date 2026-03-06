@@ -45,13 +45,11 @@ _BENCHMARK_LOG = os.environ.get("KD_GAT_BENCHMARK_LOG", "benchmark_timing.jsonl"
 # Track when the last stage ended so we can measure inter-stage gaps.
 _last_stage_end: float | None = None
 
-# Stage name → (model_type, stage_cli_name)
-_STAGE_DISPATCH = {
-    "autoencoder": ("vgae", "autoencoder"),
-    "curriculum": ("gat", "curriculum"),
-    "fusion": ("dqn", "fusion"),
-    "evaluation": ("vgae", "evaluation"),
-}
+from graphids.config.constants import STAGE_MODEL_MAP
+
+# Stage name → (model_type, stage_cli_name). Derived from STAGE_MODEL_MAP + evaluation.
+_STAGE_DISPATCH = {stage: (model, stage) for stage, model in STAGE_MODEL_MAP.items()}
+_STAGE_DISPATCH["evaluation"] = ("vgae", "evaluation")
 
 
 def _query_gpu_utilization() -> dict[str, float | None]:

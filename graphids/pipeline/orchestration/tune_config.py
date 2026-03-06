@@ -3,9 +3,16 @@
 Replaces scripts/generate_sweep.py parallel-command approach with
 Ray Tune + OptunaSearch + ASHAScheduler for efficient hyperparameter search.
 
+Two trainable modes:
+  - subprocess (default): Each trial spawns `cli.py` — CUDA-isolated but ASHA-inert
+    (single val_loss report at end).
+  - inprocess: Each trial trains in the same process with per-epoch reporting —
+    enables ASHA multi-fidelity pruning (~2.5x speedup). Data loaded once and cached.
+
 Usage:
     from graphids.pipeline.orchestration.tune_config import run_tune
     run_tune("autoencoder", dataset="hcrl_sa", num_samples=20)
+    run_tune("curriculum", dataset="set_01", num_samples=20, inprocess=True)
 """
 
 from __future__ import annotations
@@ -19,47 +26,41 @@ log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Search spaces per model (declarative: type + args → Ray Tune sampler)
+# Search spaces per model (loaded from YAML: graphids/config/search_spaces/)
 # ---------------------------------------------------------------------------
 
-_SEARCH_SPACES: dict[str, dict[str, tuple]] = {
-    "vgae": {
-        "training.lr": ("loguniform", 1e-4, 1e-2),
-        "training.weight_decay": ("loguniform", 1e-6, 1e-3),
-        "vgae.latent_dim": ("choice", [16, 32, 48, 64]),
-        "vgae.dropout": ("uniform", 0.05, 0.4),
-        "vgae.heads": ("choice", [1, 2, 4, 8]),
-        "vgae.embedding_dim": ("choice", [8, 16, 32]),
-        "vgae.proj_dim": ("choice", [32, 48, 64]),
-    },
-    "gat": {
-        "training.lr": ("loguniform", 1e-4, 1e-2),
-        "training.weight_decay": ("loguniform", 1e-6, 1e-3),
-        "gat.hidden": ("choice", [32, 48, 64, 96]),
-        "gat.layers": ("choice", [2, 3, 4]),
-        "gat.heads": ("choice", [4, 8]),
-        "gat.dropout": ("uniform", 0.1, 0.4),
-        "gat.embedding_dim": ("choice", [8, 16, 32]),
-        "gat.fc_layers": ("choice", [2, 3, 4]),
-        "gat.proj_dim": ("choice", [32, 48, 64]),
-    },
-    "dqn": {
-        "fusion.lr": ("loguniform", 1e-4, 1e-2),
-        "dqn.hidden": ("choice", [256, 512, 576, 768]),
-        "dqn.layers": ("choice", [2, 3, 4]),
-        "dqn.gamma": ("uniform", 0.95, 0.999),
-        "dqn.epsilon": ("uniform", 0.05, 0.2),
-        "dqn.epsilon_decay": ("uniform", 0.99, 0.999),
-        "fusion.episodes": ("choice", [300, 500, 750]),
-    },
-}
+from pathlib import Path
 
-_STAGE_MODEL = {
-    "autoencoder": "vgae",
-    "curriculum": "gat",
-    "normal": "gat",
-    "fusion": "dqn",
-}
+import yaml
+
+from graphids.config.constants import STAGE_MODEL_MAP as _STAGE_MODEL
+from graphids.config.constants import SWEEP_RESULTS_DIR
+
+_SEARCH_SPACES_DIR = Path(__file__).resolve().parents[2] / "config" / "search_spaces"
+
+
+def _load_search_spaces() -> dict[str, dict[str, tuple]]:
+    """Load search space definitions from YAML files."""
+    spaces: dict[str, dict[str, tuple]] = {}
+    for yaml_path in _SEARCH_SPACES_DIR.glob("*.yaml"):
+        raw = yaml.safe_load(yaml_path.read_text())
+        model = yaml_path.stem
+        parsed: dict[str, tuple] = {}
+        for param_name, spec in raw.items():
+            stype = spec["type"]
+            if stype == "choice":
+                parsed[param_name] = ("choice", spec["values"])
+            elif stype in ("uniform", "loguniform"):
+                parsed[param_name] = (stype, spec["low"], spec["high"])
+            else:
+                raise ValueError(
+                    f"Unknown search space type '{stype}' for {param_name} in {yaml_path}"
+                )
+        spaces[model] = parsed
+    return spaces
+
+
+_SEARCH_SPACES = _load_search_spaces()
 
 
 def _build_search_space(stage: str) -> dict[str, Any]:
@@ -68,6 +69,43 @@ def _build_search_space(stage: str) -> dict[str, Any]:
 
     _BUILDERS = {"loguniform": tune.loguniform, "choice": tune.choice, "uniform": tune.uniform}
     return {k: _BUILDERS[t](*args) for k, (t, *args) in _SEARCH_SPACES[_STAGE_MODEL[stage]].items()}
+
+
+def _build_optuna_space(stage: str) -> dict:
+    """Build Optuna distributions dict (required for evaluated_rewards warm-start)."""
+    import optuna
+
+    _BUILDERS = {
+        "loguniform": lambda lo, hi: optuna.distributions.FloatDistribution(lo, hi, log=True),
+        "uniform": lambda lo, hi: optuna.distributions.FloatDistribution(lo, hi),
+        "choice": lambda vals: optuna.distributions.CategoricalDistribution(vals),
+    }
+    return {k: _BUILDERS[t](*args) for k, (t, *args) in _SEARCH_SPACES[_STAGE_MODEL[stage]].items()}
+
+
+def _load_warm_start_configs(
+    stage: str, source_dataset: str, source_scale: str
+) -> tuple[list[dict], list[float]]:
+    """Load prior sweep results for warm-starting OptunaSearch.
+
+    Returns (points_to_evaluate, evaluated_rewards) from a completed sweep's
+    best config YAML.
+    """
+    from pathlib import Path
+
+    import yaml
+
+    path = Path(SWEEP_RESULTS_DIR) / f"{stage}_{source_dataset}_{source_scale}_best.yaml"
+    if not path.exists():
+        log.info("No prior sweep results at %s — starting cold", path)
+        return [], []
+
+    payload = yaml.safe_load(path.read_text())
+    config = payload["config"]
+    val_loss = payload["val_loss"]
+
+    log.info("Warm-starting from %s (val_loss=%.6f)", path, val_loss)
+    return [config], [val_loss]
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +176,215 @@ def _trainable(
         ray_tune.report({"val_loss": val_loss})
     else:
         ray_tune.report({"val_loss": float("inf")})
+
+
+# ---------------------------------------------------------------------------
+# In-process trainable (per-epoch reporting for ASHA multi-fidelity)
+# ---------------------------------------------------------------------------
+
+# Module-level cache: data is read-only and shared across trials
+_DATA_CACHE: dict[tuple, Any] = {}
+_CURRICULUM_CACHE: dict[tuple, Any] = {}
+
+
+def _dot_to_nested(config: dict) -> dict:
+    """Convert dot-path keys (e.g. 'gat.hidden') to nested dicts for resolve()."""
+    result: dict = {}
+    for key, value in config.items():
+        parts = key.split(".")
+        d = result
+        for p in parts[:-1]:
+            d = d.setdefault(p, {})
+        d[parts[-1]] = value
+    return result
+
+
+def _load_data_once(stage: str, dataset: str, scale: str):
+    """Load and cache data across trials. Data is read-only — safe to share."""
+    key = (dataset, scale)
+    if key not in _DATA_CACHE:
+        from graphids.config.resolver import resolve
+
+        model = _STAGE_MODEL[stage]
+        cfg = resolve(model, scale, dataset=dataset)
+        from ..stages.data_loading import load_data
+
+        train_data, val_data, num_ids, in_ch = load_data(cfg)
+        _DATA_CACHE[key] = (train_data, val_data, num_ids, in_ch)
+        log.info(
+            "Data cached for %s/%s: %d train, %d val graphs",
+            dataset,
+            scale,
+            len(train_data),
+            len(val_data),
+        )
+    return _DATA_CACHE[key]
+
+
+def _load_curriculum_extras(dataset: str, scale: str, train_data, cfg):
+    """Load and cache curriculum-specific data (difficulty scores, splits)."""
+    key = (dataset, scale)
+    if key not in _CURRICULUM_CACHE:
+        import torch
+
+        from ..stages.data_loading import graph_label
+        from ..stages.trainer_factory import load_model
+        from ..stages.utils import cleanup
+
+        device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+        num_ids = train_data[0].x[:, 0].long().max().item() + 1 if train_data else 100
+        in_ch = train_data[0].x.shape[1] if train_data else 11
+
+        # Load VGAE for difficulty scoring
+        vgae = load_model(cfg, "vgae", "autoencoder", num_ids, in_ch, device)
+        normals = [g for g in train_data if graph_label(g) == 0]
+        attacks = [g for g in train_data if graph_label(g) == 1]
+
+        from ..stages.training import _score_difficulty
+
+        scores = _score_difficulty(vgae, normals, device)
+        del vgae
+        cleanup()
+
+        _CURRICULUM_CACHE[key] = (normals, attacks, scores)
+        log.info(
+            "Curriculum cache for %s/%s: %d normals, %d attacks, %d scores",
+            dataset,
+            scale,
+            len(normals),
+            len(attacks),
+            len(scores),
+        )
+    return _CURRICULUM_CACHE[key]
+
+
+def _trainable_inprocess(
+    config: dict, stage: str, dataset: str, scale: str, max_epochs: int = 0, patience: int = 0
+) -> None:
+    """In-process trainable with per-epoch val_loss reporting for ASHA.
+
+    Key differences from _trainable (subprocess):
+    - Data loaded once and cached across trials
+    - Model built fresh each trial (no state bleeding)
+    - val_loss reported after every validation epoch (ASHA can prune early)
+    - No subprocess overhead (~40-60s saved per trial)
+    """
+    import gc
+
+    import pytorch_lightning as pl
+    import torch
+    from ray import tune as ray_tune
+
+    train_data, val_data, num_ids, in_ch = _load_data_once(stage, dataset, scale)
+
+    # Build config with HP overrides from Ray
+    from graphids.config.resolver import resolve
+
+    model_type = _STAGE_MODEL[stage]
+    nested = _dot_to_nested(config)
+    nested["dataset"] = dataset
+    if max_epochs > 0:
+        nested.setdefault("training", {})["max_epochs"] = max_epochs
+    if patience > 0:
+        nested.setdefault("training", {})["patience"] = patience
+    cfg = resolve(model_type, scale, **nested)
+
+    pl.seed_everything(cfg.seed)
+
+    # TuneReportCallback: reports val_loss each epoch so ASHA can prune
+    class _TuneReportCallback(pl.Callback):
+        def on_validation_epoch_end(self, trainer, pl_module):
+            val_loss = trainer.callback_metrics.get("val_loss")
+            if val_loss is not None:
+                ray_tune.report({"val_loss": float(val_loss), "epoch": trainer.current_epoch})
+
+    try:
+        if stage == "autoencoder":
+            from ..stages.modules import VGAEModule
+            from ..stages.utils import (
+                compute_optimal_batch_size,
+                make_dataloader,
+                make_trainer,
+            )
+
+            module = VGAEModule(cfg, num_ids, in_ch)
+            if cfg.training.optimize_batch_size:
+                from ..stages.batch_sizing import compute_optimal_batch_size
+
+                bs = compute_optimal_batch_size(module.model, train_data, cfg)
+            else:
+                from ..stages.batch_sizing import effective_batch_size
+
+                bs = effective_batch_size(cfg)
+            max_nodes = None
+            if cfg.training.dynamic_batching:
+                from ..stages.data_loading import compute_node_budget
+
+                max_nodes = compute_node_budget(bs, cfg)
+            train_dl = make_dataloader(train_data, cfg, bs, shuffle=True, max_num_nodes=max_nodes)
+            val_dl = make_dataloader(val_data, cfg, bs, shuffle=False, max_num_nodes=max_nodes)
+            trainer = make_trainer(cfg, "autoencoder", extra_callbacks=[_TuneReportCallback()])
+            trainer.fit(module, train_dl, val_dl)
+
+        elif stage in ("curriculum", "normal"):
+            from ..stages.modules import CurriculumDataModule, GATModule
+            from ..stages.utils import make_trainer
+
+            module = GATModule(cfg, num_ids, in_ch)
+
+            if stage == "curriculum":
+                normals, attacks, scores = _load_curriculum_extras(dataset, scale, train_data, cfg)
+                dm = CurriculumDataModule(normals, attacks, scores, val_data, cfg)
+                trainer = make_trainer(cfg, "curriculum", extra_callbacks=[_TuneReportCallback()])
+                trainer.fit(module, datamodule=dm)
+            else:
+                from ..stages.batch_sizing import (
+                    compute_optimal_batch_size,
+                    effective_batch_size,
+                )
+                from ..stages.data_loading import compute_node_budget, make_dataloader
+
+                if cfg.training.optimize_batch_size:
+                    bs = compute_optimal_batch_size(module.model, train_data, cfg)
+                else:
+                    bs = effective_batch_size(cfg)
+                max_nodes = None
+                if cfg.training.dynamic_batching:
+                    max_nodes = compute_node_budget(bs, cfg)
+                train_dl = make_dataloader(
+                    train_data, cfg, bs, shuffle=True, max_num_nodes=max_nodes
+                )
+                val_dl = make_dataloader(val_data, cfg, bs, shuffle=False, max_num_nodes=max_nodes)
+                trainer = make_trainer(cfg, "normal", extra_callbacks=[_TuneReportCallback()])
+                trainer.fit(module, train_dl, val_dl)
+
+        elif stage == "fusion":
+            # Fusion uses episodes, not epochs — fallback to subprocess trainable
+            # (no Lightning trainer, no per-epoch reporting)
+            log.warning("Fusion stage does not support inprocess mode; falling back to subprocess")
+            _trainable(config, stage, dataset, scale, max_epochs, patience)
+            return
+
+        else:
+            raise ValueError(f"Unknown stage for inprocess trainable: {stage}")
+
+    except Exception as e:
+        log.warning("In-process trial failed: %s", e)
+        print(f"[TRIAL FAILED] {e}", flush=True)
+        ray_tune.report({"val_loss": float("inf")})
+        return
+    finally:
+        # Cleanup between trials — prevent GPU memory leaks
+        try:
+            del module  # noqa: F821
+        except NameError:
+            pass
+        torch.cuda.empty_cache()
+        gc.collect()
+        peak_mb = torch.cuda.max_memory_allocated() / (1024**2) if torch.cuda.is_available() else 0
+        log.info("Trial cleanup: peak GPU %.0f MB", peak_mb)
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +470,10 @@ def dry_run_tune(
 
         search_space = _build_search_space(stage)
         scheduler = ASHAScheduler(
-            metric="val_loss", mode="min", grace_period=10, reduction_factor=3
+            metric="val_loss",
+            mode="min",
+            grace_period=cfg.tune.grace_period,
+            reduction_factor=cfg.tune.reduction_factor,
         )
         search_alg = OptunaSearch(metric="val_loss", mode="min")
 
@@ -306,10 +556,12 @@ def run_tune(
     max_concurrent: int = 1,
     metric: str = "val_loss",
     mode: str = "min",
-    grace_period: int = 10,
+    grace_period: int = 0,
     local: bool = False,
     max_epochs: int = 0,
     patience: int = 0,
+    inprocess: bool = False,
+    warm_start_from: str | None = None,
 ) -> Any:
     """Run Ray Tune HPO for a pipeline stage.
 
@@ -337,6 +589,12 @@ def run_tune(
         Override training.max_epochs per trial (0 = use config default).
     patience : int
         Override training.patience per trial (0 = use config default).
+    inprocess : bool
+        Use in-process trainable with per-epoch ASHA reporting (default: False).
+        Enables multi-fidelity pruning (~2.5x speedup). Fusion always uses subprocess.
+    warm_start_from : str | None
+        Dataset name to warm-start from (e.g. "set_01"). Loads prior sweep results
+        as points_to_evaluate + evaluated_rewards for OptunaSearch.
 
     Returns
     -------
@@ -353,31 +611,61 @@ def run_tune(
     if stage not in _STAGE_MODEL:
         raise ValueError(f"No search space defined for stage '{stage}'")
 
+    # Load config for tune defaults (grace_period, reduction_factor)
+    from graphids.config.resolver import resolve as _resolve
+
+    cfg = _resolve(_STAGE_MODEL[stage], scale, dataset=dataset)
+    if grace_period <= 0:
+        grace_period = cfg.tune.grace_period
+
+    # Fusion can't use inprocess (no Lightning trainer / no epochs)
+    use_inprocess = inprocess and stage != "fusion"
+    if inprocess and stage == "fusion":
+        log.info("Fusion stage: falling back to subprocess trainable (no epoch-based training)")
+
+    trainable_fn = _trainable_inprocess if use_inprocess else _trainable
+    trainable_label = "inprocess" if use_inprocess else "subprocess"
+    log.info(
+        "Trainable mode: %s (ASHA %s)", trainable_label, "active" if use_inprocess else "inert"
+    )
+
     if not ray.is_initialized():
         kwargs = ray_init_kwargs()
         if local:
             kwargs["num_gpus"] = 0
         ray.init(**kwargs)
 
-    search_space = _build_search_space(stage)
-
     scheduler = ASHAScheduler(
         metric=metric,
         mode=mode,
+        max_t=max_epochs if max_epochs > 0 else 200,
         grace_period=grace_period,
-        reduction_factor=3,
+        reduction_factor=cfg.tune.reduction_factor,
     )
 
-    search_alg = OptunaSearch(metric=metric, mode=mode)
+    # Warm-start: seed OptunaSearch with prior results if available
+    points, rewards = [], []
+    if warm_start_from:
+        points, rewards = _load_warm_start_configs(stage, warm_start_from, scale)
 
-    # Note: Ray 2.54+ RunConfig only accepts ray.train.UserCallback instances,
-    # not ray.tune callbacks (TBXLoggerCallback, WandbLoggerCallback).
-    # W&B logging is handled inside the trainable via the CLI's W&B init.
+    if points and rewards:
+        optuna_space = _build_optuna_space(stage)
+        search_alg = OptunaSearch(
+            space=optuna_space,
+            metric=metric,
+            mode=mode,
+            points_to_evaluate=points,
+            evaluated_rewards=rewards,
+        )
+        search_space: dict[str, Any] = {}  # space is in the searcher
+    else:
+        search_alg = OptunaSearch(metric=metric, mode=mode)
+        search_space = _build_search_space(stage)
 
     tuner = tune.Tuner(
         tune.with_resources(
             tune.with_parameters(
-                _trainable,
+                trainable_fn,
                 stage=stage,
                 dataset=dataset,
                 scale=scale,
@@ -399,6 +687,17 @@ def run_tune(
     )
 
     results = tuner.fit()
+
+    # Save searcher state (fitted Optuna TPE model) for future warm-starts
+    from pathlib import Path
+
+    searcher_path = Path(SWEEP_RESULTS_DIR) / f"{stage}_{dataset}_{scale}_searcher.pkl"
+    searcher_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        search_alg.save(str(searcher_path))
+        log.info("Searcher state saved to %s", searcher_path)
+    except Exception as e:
+        log.warning("Failed to save searcher state: %s", e)
 
     best = results.get_best_result(metric=metric, mode=mode)
     log.info(
@@ -433,7 +732,7 @@ def export_best_config(best_result, stage: str, dataset: str, scale: str) -> Non
 
     import yaml
 
-    out_dir = Path("data/sweep_results")
+    out_dir = Path(SWEEP_RESULTS_DIR)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     config = best_result.config

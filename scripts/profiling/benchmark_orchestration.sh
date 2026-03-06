@@ -109,4 +109,4 @@ print(f'Stages: {len(records)}')
 fi
 
 # --- Post-job ---
-source scripts/slurm/job_epilog.sh
+JOB_LOG_PREFIX="benchmark" source scripts/slurm/_epilog.sh
