@@ -1,0 +1,28 @@
+{
+  "data": {
+    "recon_errors": { "file": "data/recon_errors.parquet" }
+  },
+  "params": { "sel": { "select": "single" } },
+  "vconcat": [
+    { "input": "menu", "from": "recon_errors", "column": "run_id", "label": "Run", "as": "$sel" },
+    {
+      "plot": [
+        {
+          "mark": "rectY",
+          "data": { "from": "recon_errors", "filterBy": "$sel" },
+          "x": { "bin": "error" },
+          "y": { "count": true },
+          "fill": { "sql": "CASE WHEN label = 0 THEN 'normal' ELSE 'attack' END" },
+          "insetLeft": 0.5,
+          "insetRight": 0.5
+        },
+        { "legend": "color" }
+      ],
+      "width": 650, "height": 320,
+      "colorDomain": ["normal", "attack"],
+      "colorRange": ["#3fb950", "#f85149"],
+      "xLabel": "Reconstruction Error",
+      "yLabel": "Count"
+    }
+  ]
+}

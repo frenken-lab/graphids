@@ -1,0 +1,28 @@
+{
+  "data": {
+    "embeddings": { "file": "data/embeddings.parquet" }
+  },
+  "params": { "sel": { "select": "single" } },
+  "vconcat": [
+    { "input": "menu", "from": "embeddings", "column": "run_id", "label": "Run", "as": "$sel" },
+    {
+      "plot": [
+        {
+          "mark": "dot",
+          "data": { "from": "embeddings", "filterBy": "$sel" },
+          "x": "x",
+          "y": "y",
+          "fill": { "sql": "CASE WHEN label = 0 THEN 'normal' ELSE 'attack' END" },
+          "r": 2,
+          "opacity": 0.5
+        },
+        { "legend": "color" }
+      ],
+      "width": 600, "height": 350,
+      "colorDomain": ["normal", "attack"],
+      "colorRange": ["#3fb950", "#f85149"],
+      "xLabel": "UMAP 1", "xAxis": null,
+      "yLabel": "UMAP 2", "yAxis": null
+    }
+  ]
+}

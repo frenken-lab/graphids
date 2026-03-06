@@ -13,34 +13,7 @@ Raw CAN-graph data projected via UMAP shows loose clustering that indicates limi
 ```{ojs}
 //| label: fig-umap-vgae
 //| fig-cap: "UMAP projection of VGAE latent embeddings. Normal samples (green) and attack samples (red) show separation patterns learned by the autoencoder without explicit labels."
-{
-  await loadTable("embeddings", FileAttachment("../data/embeddings.parquet"));
-  const sel = vg.Selection.single();
-  return vg.vconcat(
-    vg.menu({ from: "embeddings", column: "run_id", label: "Run", as: sel }),
-    vg.plot(
-      vg.dot(
-        vg.from("embeddings", { filterBy: sel }),
-        {
-          x: "x",
-          y: "y",
-          fill: vg.sql`CASE WHEN label = 0 THEN 'normal' ELSE 'attack' END`,
-          r: 2,
-          opacity: 0.5
-        }
-      ),
-      vg.width(600),
-      vg.height(350),
-      vg.colorLegend(true),
-      vg.colorDomain(["normal", "attack"]),
-      vg.colorRange(["#3fb950", "#f85149"]),
-      vg.xLabel("UMAP 1"),
-      vg.xAxis(null),
-      vg.yLabel("UMAP 2"),
-      vg.yAxis(null)
-    )
-  );
-}
+renderSpec(await FileAttachment("figures/fig-umap-vgae.json").url())
 ```
 
 #### GAT Embeddings
@@ -50,33 +23,7 @@ UMAP projections of graph-level embeddings from the trained GAT classifier's pen
 ```{ojs}
 //| label: fig-umap-gat
 //| fig-cap: "UMAP projection of GAT penultimate-layer embeddings. The supervised classifier produces well-separated clusters, with emergent multi-class structure despite binary training."
-{
-  const sel = vg.Selection.single();
-  return vg.vconcat(
-    vg.menu({ from: "embeddings", column: "run_id", label: "Run", as: sel }),
-    vg.plot(
-      vg.dot(
-        vg.from("embeddings", { filterBy: sel }),
-        {
-          x: "x",
-          y: "y",
-          fill: vg.sql`CASE WHEN label = 0 THEN 'normal' ELSE 'attack' END`,
-          r: 2,
-          opacity: 0.5
-        }
-      ),
-      vg.width(600),
-      vg.height(350),
-      vg.colorLegend(true),
-      vg.colorDomain(["normal", "attack"]),
-      vg.colorRange(["#3fb950", "#f85149"]),
-      vg.xLabel("UMAP 1"),
-      vg.xAxis(null),
-      vg.yLabel("UMAP 2"),
-      vg.yAxis(null)
-    )
-  );
-}
+renderSpec(await FileAttachment("figures/fig-umap-gat.json").url())
 ```
 
 #### Teacher vs Student
@@ -102,33 +49,7 @@ This approach enables the detection of subtle anomalies by jointly evaluating no
 ```{ojs}
 //| label: fig-recon-errors
 //| fig-cap: "Distribution of VGAE composite reconstruction errors. Normal samples (green) concentrate at low error values, while attack samples (red) exhibit higher reconstruction errors, enabling threshold-based anomaly detection."
-
-{
-  await loadTable("recon_errors", FileAttachment("../data/recon_errors.parquet"));
-  const sel = vg.Selection.single();
-  return vg.vconcat(
-    vg.menu({ from: "recon_errors", column: "run_id", label: "Run", as: sel }),
-    vg.plot(
-      vg.rectY(
-        vg.from("recon_errors", { filterBy: sel }),
-        {
-          x: vg.bin("error"),
-          y: vg.count(),
-          fill: vg.sql`CASE WHEN label = 0 THEN 'normal' ELSE 'attack' END`,
-          insetLeft: 0.5,
-          insetRight: 0.5
-        }
-      ),
-      vg.width(650),
-      vg.height(320),
-      vg.colorLegend(true),
-      vg.colorDomain(["normal", "attack"]),
-      vg.colorRange(["#3fb950", "#f85149"]),
-      vg.xLabel("Reconstruction Error"),
-      vg.yLabel("Count")
-    )
-  );
-}
+renderSpec(await FileAttachment("figures/fig-recon-errors.json").url())
 ```
 
 ### Knowledge Transfer Analysis
@@ -142,32 +63,7 @@ To understand which graph structural features the GAT prioritizes, we analyze th
 ```{ojs}
 //| label: fig-attention-heatmap
 //| fig-cap: "GAT attention weight heatmap across layers and heads. Color intensity indicates mean attention magnitude. Different heads learn to attend to different structural patterns in the CAN bus graph."
-
-{
-  await loadTable("attention_weights", FileAttachment("../data/attention_weights.parquet"));
-  const sel = vg.Selection.single();
-  return vg.vconcat(
-    vg.menu({ from: "attention_weights", column: "run_id", label: "Run", as: sel }),
-    vg.plot(
-      vg.cell(
-        vg.from("attention_weights", { filterBy: sel }),
-        {
-          x: vg.sql`'Head ' || head`,
-          y: vg.sql`'Layer ' || layer`,
-          fill: "mean_alpha",
-          inset: 0.5
-        }
-      ),
-      vg.width(500),
-      vg.height(280),
-      vg.colorScheme("blues"),
-      vg.colorLegend(true),
-      vg.colorLabel("Mean Attention"),
-      vg.xLabel("Attention Head"),
-      vg.yLabel("GAT Layer")
-    )
-  );
-}
+renderSpec(await FileAttachment("figures/fig-attention-heatmap.json").url())
 ```
 
 #### CKA Similarity
@@ -177,32 +73,7 @@ To quantify how well the student model replicates the teacher's internal represe
 ```{ojs}
 //| label: fig-cka-heatmap
 //| fig-cap: "CKA similarity between teacher and student layers. High diagonal values indicate the student successfully learns representations aligned with the teacher at each network depth."
-
-{
-  await loadTable("cka_similarity", FileAttachment("../data/cka_similarity.parquet"));
-  const sel = vg.Selection.single();
-  return vg.vconcat(
-    vg.menu({ from: "cka_similarity", column: "run_id", label: "Run", as: sel }),
-    vg.plot(
-      vg.cell(
-        vg.from("cka_similarity", { filterBy: sel }),
-        {
-          x: "student_layer",
-          y: "teacher_layer",
-          fill: "similarity",
-          inset: 0.5
-        }
-      ),
-      vg.width(400),
-      vg.height(300),
-      vg.colorScheme("viridis"),
-      vg.colorLegend(true),
-      vg.colorLabel("CKA Similarity"),
-      vg.xLabel("Student Layer"),
-      vg.yLabel("Teacher Layer")
-    )
-  );
-}
+renderSpec(await FileAttachment("figures/fig-cka-heatmap.json").url())
 ```
 
 #### Loss Landscapes
@@ -258,23 +129,5 @@ The learned DQN fusion policy exhibits interpretable, context-specific weighting
 ```{ojs}
 //| label: fig-dqn-policy
 //| fig-cap: "DQN fusion weight (alpha) distribution. The multimodal pattern with peaks at distinct alpha values indicates the policy learned context-specific fusion strategies rather than simple averaging."
-
-{
-  await loadTable("dqn_policy", FileAttachment("../data/dqn_policy.parquet"));
-  const sel = vg.Selection.single();
-  return vg.vconcat(
-    vg.menu({ from: "dqn_policy", column: "run_id", label: "Run", as: sel }),
-    vg.plot(
-      vg.rectY(
-        vg.from("dqn_policy", { filterBy: sel }),
-        {x: vg.bin("alpha"), y: vg.count(), fill: "steelblue", insetLeft: 0.5, insetRight: 0.5}
-      ),
-      vg.width(500),
-      vg.height(280),
-      vg.colorScheme("oranges"),
-      vg.xLabel("Alpha (GAT weight in fusion)"),
-      vg.yLabel("Count")
-    )
-  );
-}
+renderSpec(await FileAttachment("figures/fig-dqn-policy.json").url())
 ```

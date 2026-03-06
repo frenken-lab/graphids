@@ -9,4 +9,7 @@ async function loadTable(name, attachment) {
   const url = await attachment.url();
   await loadParquetTable(name, url);
 }
+
+// --- Declarative JSON spec renderer (Tier A figures) ---
+import { renderSpec } from "../_ojs/mosaic-renderer.js"
 ```

@@ -35,7 +35,11 @@ Full analysis: `~/plans/orchestration-redesign-decision.md`
 
 **Dashboard: Quarto** (`reports/dashboard.qmd`). Single-file, multi-page Quarto dashboard using OJS + Mosaic/vgplot + DuckDB-WASM. Data loaded from `reports/data/` (Parquet + JSON). Pages: Overview, Performance, Training, GAT & DQN, Knowledge Distillation, Graph Structure, Datasets, Staging.
 
-**Paper:** `reports/paper/` contains the full research paper (10 chapters). Chapters with OJS figures use `{{< include _setup.qmd >}}` (Quarto shortcode) to initialize Mosaic/vgplot — NOT `include-before-body` (which inserts raw HTML and skips OJS compilation). Paper data lives in `reports/paper/data/` (CSVs) and `reports/data/` (Parquet + JSON).
+**Paper:** `reports/paper/` contains the full research paper (10 chapters). Chapters use `{{< include _setup.qmd >}}` (Quarto shortcode) to initialize Mosaic/vgplot — NOT `include-before-body` (which inserts raw HTML and skips OJS compilation). Paper data lives in `reports/paper/data/` (CSVs) and `reports/data/` (Parquet + JSON).
+
+**Paper figures — two patterns:**
+- **Tier A (6 figures):** Declarative JSON specs in `reports/paper/figures/`, rendered by `renderSpec()` from `_ojs/mosaic-renderer.js`. Uses `@uwdata/mosaic-spec`'s `parseSpec()` → `astToDOM()`. Specs define `data`, `params`, `vconcat` with `plot` arrays. Color legends use `{ "legend": "color" }` inside the `plot` array (NOT `colorLegend` as a plot attribute). Data file paths resolved to absolute URLs from site root.
+- **Tier B/C (5 figures):** Legacy OJS + imperative vgplot API (Observable Plot, D3 force graph). Dashboard uses the same legacy pattern.
 
 Dashboard data: `graphids/pipeline/export.py` exports leaderboard, runs, metrics, training curves, datasets, KD transfer, model sizes, and graph samples (~2s, login node safe) directly to `reports/data/`. `export_data_for_reports()` copies datalake Parquet to `reports/data/`. Heavy analysis (UMAP, attention, CKA, etc.) lives in `notebooks/analysis/`.
 

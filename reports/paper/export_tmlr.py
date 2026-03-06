@@ -55,6 +55,7 @@ class TMLRConverter:
         self.eq_counter = 0
         self.alg_counter = 0
         self.ojs_blocks: list[dict[str, str]] = []  # extracted OJS blocks
+        self.spec_figures: list[dict[str, str]] = []  # extracted JSON spec figures
 
     def convert(self) -> None:
         """Orchestrate the full conversion pipeline."""
@@ -64,7 +65,8 @@ class TMLRConverter:
         # Build cross-reference registry before converting
         self._build_xref_registry(combined)
 
-        # Extract OJS blocks (must happen before other conversions)
+        # Extract spec-based figures and OJS blocks (must happen before other conversions)
+        combined = self._extract_spec_figures(combined)
         combined = self._extract_ojs_blocks(combined)
 
         # Apply conversions in order
@@ -290,6 +292,68 @@ class TMLRConverter:
         )
         return text
 
+    def _extract_spec_figures(self, text: str) -> str:
+        """Extract renderSpec() OJS blocks and replace with iframe references."""
+
+        def spec_replace(m: re.Match) -> str:
+            block = m.group(1)
+
+            # Match renderSpec calls
+            spec_m = re.search(r'renderSpec\(.*?"(figures/[^"]+\.json)"', block)
+            if not spec_m:
+                return m.group(0)  # Not a spec figure, leave for _extract_ojs_blocks
+
+            spec_path = spec_m.group(1)
+
+            # Extract label
+            label_m = re.search(r"//\|\s*label:\s*([\w-]+)", block)
+            if not label_m:
+                return ""
+            label = label_m.group(1)
+
+            # Extract fig-cap
+            cap_m = re.search(r'//\|\s*fig-cap:\s*"([^"]*)"', block)
+            caption = cap_m.group(1) if cap_m else ""
+
+            self.spec_figures.append(
+                {
+                    "label": label,
+                    "spec_path": spec_path,
+                    "caption": caption,
+                }
+            )
+
+            html_file = f"{label}.html"
+            anchor = f'<a id="{label}"></a>'
+
+            # Get figure number
+            num_str = ""
+            if label in self.xref_registry:
+                type_name, num = self.xref_registry[label]
+                num_str = f"**{type_name} {num}.** " if num > 0 else ""
+
+            iframe = textwrap.dedent(f"""\
+                {anchor}
+                <figure style="text-align: center; margin: 20px 0;">
+                    <iframe
+                        src="{{{{ 'assets/html/submission/{html_file}' | relative_url }}}}"
+                        width="100%"
+                        height="500"
+                        style="border: none; overflow: hidden; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);"
+                        title="{label}">
+                    </iframe>
+                    <figcaption>{num_str}{caption}</figcaption>
+                </figure>""")
+            return iframe
+
+        text = re.sub(
+            r"```\{ojs\}\n(.*?)\n```",
+            spec_replace,
+            text,
+            flags=re.DOTALL,
+        )
+        return text
+
     def _extract_ojs_blocks(self, text: str) -> str:
         """Extract OJS code blocks, replace with iframe references."""
 
@@ -452,10 +516,36 @@ class TMLRConverter:
         (self.output_dir / "assets" / "gif" / "submission").mkdir(parents=True, exist_ok=True)
 
     def _generate_interactive_htmls(self) -> None:
-        """Generate standalone HTML files for each OJS figure."""
+        """Generate standalone HTML files for each OJS and spec-based figure."""
         html_dir = self.output_dir / "assets" / "html" / "submission"
         html_dir.mkdir(parents=True, exist_ok=True)
 
+        # Generate spec-based figure HTMLs
+        figures_dir = html_dir / "figures"
+        figures_dir.mkdir(parents=True, exist_ok=True)
+
+        for fig in self.spec_figures:
+            label = fig["label"]
+            spec_path = fig["spec_path"]
+            caption = fig["caption"]
+
+            # Copy JSON spec file
+            src_spec = self.paper_dir / spec_path
+            if src_spec.exists():
+                shutil.copy2(src_spec, figures_dir / src_spec.name)
+
+            # Generate HTML wrapper
+            html = self._build_spec_html(label, caption, spec_path)
+            html_path = html_dir / f"{label}.html"
+            html_path.write_text(html, encoding="utf-8")
+
+        if self.spec_figures:
+            print(
+                f"  Generated: {len(self.spec_figures)} spec-based HTML files "
+                f"in assets/html/submission/"
+            )
+
+        # Generate legacy OJS figure HTMLs
         for block in self.ojs_blocks:
             label = block["label"]
             caption = block["caption"]
@@ -471,9 +561,35 @@ class TMLRConverter:
 
         if self.ojs_blocks:
             print(
-                f"  Generated: {len(self.ojs_blocks)} interactive HTML files "
+                f"  Generated: {len(self.ojs_blocks)} OJS interactive HTML files "
                 f"in assets/html/submission/"
             )
+
+    def _build_spec_html(self, label: str, caption: str, spec_path: str) -> str:
+        """Build a standalone HTML file for a Mosaic JSON spec figure."""
+        spec_filename = Path(spec_path).name
+        return textwrap.dedent(f"""\
+            <!DOCTYPE html>
+            <html lang="en"><head>
+            <meta charset="utf-8">
+            <title>{label}</title>
+            <style>body {{ font-family: system-ui, sans-serif; margin: 20px; }}</style>
+            </head><body>
+            <div id="figure"></div>
+            <p style="font-size: 0.9em; color: #666; margin-top: 8px;">{caption}</p>
+            <script type="module">
+            import {{ parseSpec, astToDOM }} from "https://cdn.jsdelivr.net/npm/@uwdata/mosaic-spec@0.21.1/+esm";
+            import {{ coordinator, wasmConnector }} from "https://cdn.jsdelivr.net/npm/@uwdata/vgplot@0.21.1/+esm";
+
+            coordinator().databaseConnector(wasmConnector());
+            const spec = await fetch("figures/{spec_filename}").then(r => r.json());
+            for (const def of Object.values(spec.data || {{}})) {{
+              if (def.file) def.file = def.file.replace(/^data\\//, "data/");
+            }}
+            const el = await astToDOM(parseSpec(spec));
+            document.getElementById("figure").append(el.element);
+            </script>
+            </body></html>""")
 
     def _build_standalone_html(self, label: str, caption: str, ojs_code: str) -> str:
         """Build a standalone HTML file for an OJS figure.
