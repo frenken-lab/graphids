@@ -64,7 +64,7 @@ source "$(dirname "$0")/_preamble.sh"
 ```
 
 ```bash
-# Epilog: S3 sync, W&B sync, GPU utilization report
+# Epilog: GPU utilization report
 JOB_LOG_PREFIX="ray" source "$(dirname "$0")/_epilog.sh"
 ```
 
@@ -72,8 +72,7 @@ JOB_LOG_PREFIX="ray" source "$(dirname "$0")/_epilog.sh"
 
 - **`--signal=B:USR1@300`** — sends USR1 five minutes before wall time for graceful shutdown
 - **`_preamble.sh`** — sets up Python 3.12, venv, .env, CUDA memory config, data staging
-- **`_epilog.sh`** — S3 sync (datalake/sweep_results/sweep_state), W&B sync (job-scoped), GPU utilization report
-- **W&B cleanup** — `bash scripts/data/cleanup_wandb.sh --days 14 --delete` for periodic pruning
+- **`_epilog.sh`** — GPU utilization report (resource right-sizing)
 
 ## Data Staging Protocol
 
@@ -142,7 +141,7 @@ Only after Layer 2 passes. Submit the real job with full dataset/samples.
 - Exports: `python -m graphids.pipeline.export`
 - DuckDB queries: `duckdb < data/datalake/queries/leaderboard.sql`
 - Quarto: `quarto render`, `quarto preview`
-- Git, DVC, W&B sync, ruff
+- Git, DVC, ruff
 
 **Must go through SLURM:**
 - `python -m graphids.pipeline.cli <any stage>` — all training/evaluation

@@ -46,6 +46,6 @@ python -m graphids.pipeline.cli tune \
 EXIT_CODE=$?
 
 # --- Post-job ---
-JOB_LOG_PREFIX="tune" source "$(dirname "$0")/_epilog.sh"
+source "$(dirname "$0")/_epilog.sh"
 
 exit $EXIT_CODE

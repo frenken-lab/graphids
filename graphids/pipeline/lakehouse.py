@@ -112,7 +112,7 @@ def _append_to_datalake(
                 ? AS completed_at, ? AS started_at, ? AS duration_seconds,
                 ? AS peak_gpu_mb, ? AS slurm_job_id, ? AS gpu_name,
                 ? AS batch_size_used, ? AS failure_reason,
-                ? AS data_version, NULL AS wandb_run_id, 'pipeline' AS source,
+                ? AS data_version, NULL AS wandb_run_id, 'pipeline' AS source,  -- wandb_run_id: legacy column, always NULL
                 ? AS run_uuid, ? AS run_type, ? AS sweep_id,
                 ? AS teacher_run_id, ? AS config_hash, ? AS tags,
                 ? AS input_checkpoint_uri

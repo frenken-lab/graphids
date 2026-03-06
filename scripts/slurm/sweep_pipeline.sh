@@ -47,6 +47,6 @@ python -m graphids.pipeline.cli sweep-pipeline \
 EXIT_CODE=$?
 
 # --- Post-job ---
-JOB_LOG_PREFIX="sweep_pipeline" source "$(dirname "$0")/_epilog.sh"
+source "$(dirname "$0")/_epilog.sh"
 
 exit $EXIT_CODE

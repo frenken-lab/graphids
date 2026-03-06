@@ -28,8 +28,6 @@ from graphids.config.resolver import resolve
 
 from .validate import validate
 
-_ON_COMPUTE_NODE = bool(os.environ.get("SLURM_JOB_ID"))
-
 
 def _parse_bool(v: str) -> bool:
     return v.lower() in ("true", "1", "yes")
@@ -243,51 +241,6 @@ def _run_flow(args: argparse.Namespace, log: logging.Logger) -> None:
         train_pipeline(datasets=datasets, scale=scale, local=args.local)
 
 
-def _init_wandb(cfg: PipelineConfig, stage: str, run_name: str):
-    """Initialize a W&B run. Returns the run object, or None on failure."""
-    try:
-        import wandb
-    except ImportError:
-        return None
-
-    # Offline mode on SLURM compute nodes (no internet); sync later via onsuccess
-    if _ON_COMPUTE_NODE and not os.environ.get("WANDB_MODE"):
-        os.environ["WANDB_MODE"] = "offline"
-
-    try:
-        return wandb.init(
-            project="kd-gat",
-            name=run_name,
-            config=cfg.model_dump(),
-            tags=[cfg.dataset, cfg.model_type, cfg.scale, stage],
-            reinit=True,
-        )
-    except Exception as e:
-        logging.getLogger("pipeline").warning("wandb.init() failed: %s", e)
-        return None
-
-
-def _wandb_log_metrics(result: dict) -> None:
-    """Log final result metrics to the active W&B run."""
-    try:
-        import wandb
-
-        if wandb.run is None:
-            return
-        flat: dict[str, float] = {}
-        for model_key, model_metrics in result.items():
-            if model_key == "test":
-                continue  # test metrics are nested differently
-            if isinstance(model_metrics, dict) and "core" in model_metrics:
-                for k, v in model_metrics["core"].items():
-                    if isinstance(v, (int, float)):
-                        flat[f"{model_key}/{k}"] = v
-        if flat:
-            wandb.log(flat)
-    except Exception:
-        pass
-
-
 def _sync_lakehouse(
     cfg: PipelineConfig,
     stage: str,
@@ -340,17 +293,6 @@ def _sync_lakehouse(
         )
     except Exception as e:
         logging.getLogger("pipeline").debug("Lakehouse sync skipped: %s", e)
-
-
-def _finish_wandb() -> None:
-    """Finish the active W&B run if one exists."""
-    try:
-        import wandb
-
-        if wandb.run is not None:
-            wandb.finish()
-    except Exception:
-        pass
 
 
 def _resolve_tune_stage(args: argparse.Namespace, log: logging.Logger) -> str | None:
@@ -531,9 +473,6 @@ def main(argv: list[str] | None = None) -> None:
     run_name = run_id(cfg, args.stage)
     log.info("Run started: %s", run_name)
 
-    # ---- W&B init ----
-    _wandb_run = _init_wandb(cfg, args.stage, run_name)
-
     # ---- Collect environment metadata ----
     slurm_job_id = os.environ.get("SLURM_JOB_ID")
     gpu_name = None
@@ -603,10 +542,6 @@ def main(argv: list[str] | None = None) -> None:
             peak_gpu_mb or 0.0,
             result,
         )
-
-        # Log final metrics to W&B
-        if _wandb_run is not None and isinstance(result, dict):
-            _wandb_log_metrics(result)
 
         # Sync to datalake (fire-and-forget)
         _input_ckpt = cfg.kd.model_path if cfg.has_kd and cfg.kd else None
@@ -678,9 +613,6 @@ def main(argv: list[str] | None = None) -> None:
         )
         log.error("Run failed: %s", str(e))
         raise
-
-    finally:
-        _finish_wandb()
 
 
 if __name__ == "__main__":

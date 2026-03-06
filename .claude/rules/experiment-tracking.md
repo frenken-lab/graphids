@@ -10,7 +10,7 @@ paths:
 
 ## Architecture: Two-Tier (Metadata Catalog + Artifact Store)
 
-Design decision: custom Parquet datalake, not MLflow/W&B. See `~/plans/experiment-tracking-design-decision.md`.
+Design decision: custom Parquet datalake, not MLflow. See `~/plans/experiment-tracking-design-decision.md`. W&B integration removed (was write-only dead weight).
 
 **Metadata catalog** (`data/datalake/`): All structured, queryable data lives here as Parquet files.
 **Artifact store** (`experimentruns/`): Binary blobs (checkpoints, embeddings, attention weights) live here, referenced by URI in the catalog.

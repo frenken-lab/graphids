@@ -9,7 +9,7 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
-from pytorch_lightning.loggers import CSVLogger, WandbLogger
+from pytorch_lightning.loggers import CSVLogger
 
 from graphids.config import PipelineConfig, stage_dir
 
@@ -225,25 +225,8 @@ def _make_loggers(
     out: Path,
     run_id_str: str,
 ) -> list:
-    """Build Lightning loggers: CSV (always) + W&B (when available).
-
-    If a W&B run is already active (initialized by cli.py), the WandbLogger
-    attaches to it instead of creating a new run.
-    """
-    loggers: list = [CSVLogger(save_dir=str(out), name="csv_logs")]
-
-    try:
-        import wandb
-
-        if wandb.run is not None:
-            # Attach to existing run started by cli.py
-            loggers.append(WandbLogger(experiment=wandb.run))
-        else:
-            log.debug("No active wandb run — WandbLogger skipped in trainer")
-    except ImportError:
-        log.debug("wandb not installed — skipping WandbLogger")
-
-    return loggers
+    """Build Lightning loggers (CSV only)."""
+    return [CSVLogger(save_dir=str(out), name="csv_logs")]
 
 
 def make_trainer(

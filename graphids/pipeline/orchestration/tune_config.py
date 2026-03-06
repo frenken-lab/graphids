@@ -498,6 +498,7 @@ def dry_run_tune(
             ),
             run_config=tune.RunConfig(
                 name=f"tune_{stage}_{dataset}_{scale}",
+                storage_path=str(Path(__file__).resolve().parents[3] / "ray_results"),
             ),
         )
         return tuner
@@ -683,6 +684,7 @@ def run_tune(
         ),
         run_config=tune.RunConfig(
             name=f"tune_{stage}_{dataset}_{scale}",
+            storage_path=str(Path(__file__).resolve().parents[3] / "ray_results"),
         ),
     )
 

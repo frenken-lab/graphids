@@ -8,7 +8,7 @@ A comprehensive mental model of the entire KD-GAT system: where data lives, how 
 
 ## Diagram 1: The Big Picture (30,000-foot view)
 
-Everything lives inside four zones: the OSC cluster (all compute), AWS (storage + hosting), GitHub (code + CI + Pages), and W&B (experiment tracking). Arrows show data flow direction.
+Everything lives inside three zones: the OSC cluster (all compute), AWS (storage + hosting), and GitHub (code + CI + Pages). Arrows show data flow direction.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -46,13 +46,9 @@ Everything lives inside four zones: the OSC cluster (all compute), AWS (storage 
     │ CI (lint+test)   │                        │ (code + docs/)   │
     └──────────────────┘                        └──────────────────┘
 
-    ┌──────────────────┐
-    │ W&B (wandb.ai)   │ ◄──online/offline sync── training stages
-    │ project: kd-gat  │
-    └──────────────────┘
 ```
 
-**Key takeaway**: The OSC cluster is the single source of truth. Everything else (S3, GitHub Pages, W&B) is a downstream consumer of artifacts produced on the cluster.
+**Key takeaway**: The OSC cluster is the single source of truth. Everything else (S3, GitHub Pages) is a downstream consumer of artifacts produced on the cluster.
 
 ---
 
@@ -198,10 +194,7 @@ flowchart LR
         Pages["GitHub Pages<br/>(D3.js Dashboard)"]
     end
 
-    WandB["W&B<br/>project: kd-gat"]
-
     Pipeline -->|"boto3: run JSON"| S3_Lake
-    Pipeline -->|"offline sync"| WandB
     Pipeline -->|"dvc push"| S3_DVC
     Export -->|"aws s3 sync"| S3_Dash
     Export -->|"git push docs/"| Pages
@@ -216,7 +209,6 @@ flowchart LR
 | Service | Protocol | Direction | What Flows | When |
 |---------|----------|-----------|------------|------|
 | **SLURM** (OSC) | `sbatch` / `srun` | Local | Job submission (GPU training, CPU testing/export) | Every training/eval/test run |
-| **W&B** (wandb.ai) | Python SDK | Outbound | Per-epoch metrics, config, tags | During training (offline on compute, sync later) |
 | **S3** (`kd-gat` bucket) | boto3 / AWS CLI | Bidirectional | Lakehouse JSON, dashboard data, DVC blobs | After each stage (lakehouse), after export (dashboard) |
 | **DVC** (scratch GPFS) | `dvc push/pull` | Bidirectional | Raw data + cache blobs | Data versioning |
 | **GitHub Actions** | Webhook | Triggered by push/PR | Ruff lint, JS syntax check, pytest (3 test files) | On push to main (filtered by path) |
@@ -262,7 +254,6 @@ flowchart LR
       paper/                                   <- 10-chapter research paper
       _ojs/                                    <- Observable JS modules
     scripts/                                   <- SLURM job scripts
-    wandb/                                     <- Offline W&B runs (.gitignored)
     .dvc/                                      <- DVC config
 
 /fs/scratch/PAS1266/                           <- GPFS scratch (90-day purge)
@@ -415,7 +406,6 @@ The teacher is frozen during student training — its weights never update. The 
 | Architecture definitions | `config/models/{type}/{scale}.yaml` |
 | KD settings | `config/auxiliaries/kd_standard.yaml` |
 | SLURM job scripts | `scripts/` |
-| W&B offline runs | `wandb/` (gitignored) |
 | Datalake (Parquet) | `data/datalake/*.parquet` |
 | Ad-hoc queries | `data/datalake/queries/*.sql` |
 | Quarto site (live) | https://robertfrenken.github.io/DQN-Fusion/ (gh-pages) |

@@ -50,6 +50,6 @@ echo "Checking for orphaned runs..."
 bash scripts/data/cleanup_orphans.sh --dry-run || true
 
 # --- Post-job ---
-JOB_LOG_PREFIX="ray" source "$(dirname "$0")/_epilog.sh"
+source "$(dirname "$0")/_epilog.sh"
 
 exit $EXIT_CODE
