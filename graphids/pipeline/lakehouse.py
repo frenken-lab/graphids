@@ -91,9 +91,7 @@ def _append_to_datalake(
         return False
 
     if not (_DATALAKE_ROOT / "runs.parquet").exists():
-        log.debug(
-            "Datalake not initialized — run `python -m graphids.pipeline.migrate_datalake` first"
-        )
+        log.debug("Datalake not initialized — runs.parquet not found at %s", _DATALAKE_ROOT)
         return False
 
     try:

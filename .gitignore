@@ -25,8 +25,6 @@ dist/
 *.egg
 
 # ===== EXPERIMENT OUTPUTS =====
-mlruns/
-wandb/
 slurm_logs/
 results/
 **/.done
@@ -42,8 +40,10 @@ data/sweep_state/
 data/sweep_results/
 
 # ===== RAY / LIGHTNING =====
-lightning_logs/
 ray_results/
+
+# ===== OSC OnDemand =====
+.ondemand/
 
 # ===== IDE & EDITOR FILES =====
 .vscode/
