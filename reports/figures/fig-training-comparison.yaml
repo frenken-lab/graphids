@@ -1,0 +1,34 @@
+data:
+  training_curves:
+    file: data/training_curves.parquet
+params:
+  selA: { select: single }
+  selB: { select: single }
+vconcat:
+  - input: menu
+    from: training_curves
+    column: run_id
+    label: "Run A"
+    as: $selA
+  - input: menu
+    from: training_curves
+    column: run_id
+    label: "Run B"
+    as: $selB
+  - plot:
+      - mark: lineY
+        data: { from: training_curves, filterBy: $selA }
+        x: epoch
+        y: value
+        stroke: metric_name
+      - mark: lineY
+        data: { from: training_curves, filterBy: $selB }
+        x: epoch
+        y: value
+        stroke: metric_name
+        strokeDash: [4, 3]
+      - legend: color
+    width: 900
+    height: 320
+    xLabel: Epoch
+    yLabel: Value

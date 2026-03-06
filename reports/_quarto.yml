@@ -11,6 +11,7 @@ project:
     - "!workflow.rst"
   resources:
     - "data/**"
+    - "figures/**"
     - "paper/data/**"
     - "paper/figures/**"
 

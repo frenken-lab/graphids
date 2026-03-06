@@ -299,11 +299,11 @@ class TMLRConverter:
             block = m.group(1)
 
             # Match renderSpec calls
-            spec_m = re.search(r'renderSpec\(.*?"(figures/[^"]+\.json)"', block)
+            spec_m = re.search(r'renderSpec\(.*?"(\.\./)?(figures/[^"]+\.(?:json|yaml))"', block)
             if not spec_m:
                 return m.group(0)  # Not a spec figure, leave for _extract_ojs_blocks
 
-            spec_path = spec_m.group(1)
+            spec_path = spec_m.group(2)
 
             # Extract label
             label_m = re.search(r"//\|\s*label:\s*([\w-]+)", block)
@@ -529,8 +529,10 @@ class TMLRConverter:
             spec_path = fig["spec_path"]
             caption = fig["caption"]
 
-            # Copy JSON spec file
+            # Copy spec file (YAML or JSON) — specs may be in parent figures/ dir
             src_spec = self.paper_dir / spec_path
+            if not src_spec.exists():
+                src_spec = self.paper_dir.parent / spec_path
             if src_spec.exists():
                 shutil.copy2(src_spec, figures_dir / src_spec.name)
 
@@ -566,8 +568,17 @@ class TMLRConverter:
             )
 
     def _build_spec_html(self, label: str, caption: str, spec_path: str) -> str:
-        """Build a standalone HTML file for a Mosaic JSON spec figure."""
+        """Build a standalone HTML file for a Mosaic spec figure (JSON or YAML)."""
         spec_filename = Path(spec_path).name
+        is_yaml = spec_filename.endswith((".yaml", ".yml"))
+        parse_line = (
+            f'const spec = jsyaml.load(await fetch("figures/{spec_filename}").then(r => r.text()));'
+            if is_yaml
+            else f'const spec = await fetch("figures/{spec_filename}").then(r => r.json());'
+        )
+        yaml_import = (
+            '\nimport jsyaml from "https://cdn.jsdelivr.net/npm/js-yaml@4/+esm";' if is_yaml else ""
+        )
         return textwrap.dedent(f"""\
             <!DOCTYPE html>
             <html lang="en"><head>
@@ -579,10 +590,11 @@ class TMLRConverter:
             <p style="font-size: 0.9em; color: #666; margin-top: 8px;">{caption}</p>
             <script type="module">
             import {{ parseSpec, astToDOM }} from "https://cdn.jsdelivr.net/npm/@uwdata/mosaic-spec@0.21.1/+esm";
-            import {{ coordinator, wasmConnector }} from "https://cdn.jsdelivr.net/npm/@uwdata/vgplot@0.21.1/+esm";
+            import {{ coordinator, wasmConnector }} from "https://cdn.jsdelivr.net/npm/@uwdata/vgplot@0.21.1/+esm";{yaml_import}
 
             coordinator().databaseConnector(wasmConnector());
-            const spec = await fetch("figures/{spec_filename}").then(r => r.json());
+            {parse_line}
+            delete spec._palette;
             for (const def of Object.values(spec.data || {{}})) {{
               if (def.file) def.file = def.file.replace(/^data\\//, "data/");
             }}

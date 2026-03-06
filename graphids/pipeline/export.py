@@ -371,6 +371,15 @@ def export_kd_transfer(output_dir: Path) -> Path:
 
     out = output_dir / "kd_transfer.json"
     out.write_text(json.dumps(_versioned_envelope(rows), indent=2))
+
+    # Also export as Parquet for dashboard specs
+    if rows:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        pq.write_table(pa.Table.from_pylist(rows), output_dir / "kd_transfer.parquet")
+        log.info("Exported kd_transfer.parquet (%d rows)", len(rows))
+
     log.info("Exported %d KD transfer pairs → %s", len(rows), out)
     return out
 
@@ -470,7 +479,75 @@ def export_model_sizes(output_dir: Path) -> Path:
 
     out = output_dir / "model_sizes.json"
     out.write_text(json.dumps(_versioned_envelope(sizes), indent=2))
+
+    # Also export as Parquet with pre-computed label for specs
+    if sizes:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        for s in sizes:
+            s["label"] = f"{s['model_type']} ({s['scale']})"
+        pq.write_table(pa.Table.from_pylist(sizes), output_dir / "model_sizes.parquet")
+        log.info("Exported model_sizes.parquet (%d rows)", len(sizes))
+
     log.info("Exported %d model size entries → %s", len(sizes), out)
+    return out
+
+
+def export_pareto(output_dir: Path) -> Path | None:
+    """Pre-compute Pareto frontier data for the dashboard spec.
+
+    JOINs metrics (best F1 per model) with model_sizes (param_count_M),
+    then marks Pareto-optimal points. Outputs pareto.parquet.
+    """
+    import duckdb
+
+    metrics_parquet = _DATALAKE_ROOT / "metrics.parquet"
+    model_sizes_parquet = output_dir / "model_sizes.parquet"
+    if not metrics_parquet.exists() or not model_sizes_parquet.exists():
+        log.info("Missing metrics or model_sizes Parquet — skipping Pareto export")
+        return None
+
+    con = duckdb.connect()
+    con.execute(f"CREATE TABLE metrics AS SELECT * FROM '{metrics_parquet}'")
+    con.execute(f"CREATE TABLE model_sizes AS SELECT * FROM '{model_sizes_parquet}'")
+
+    result = con.execute("""
+        WITH best_per_config AS (
+            SELECT m.model, s.scale, s.param_count_M, MAX(m.f1) AS f1,
+                   m.model || '_' || s.scale AS label
+            FROM metrics m
+            JOIN model_sizes s ON m.model = s.model_type
+            WHERE m.f1 IS NOT NULL
+            GROUP BY m.model, s.scale, s.param_count_M
+        ),
+        ranked AS (
+            SELECT *,
+                MAX(f1) OVER (ORDER BY param_count_M DESC
+                    ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS best_right
+            FROM best_per_config
+        )
+        SELECT model, scale, param_count_M, f1, label,
+               CASE WHEN f1 >= best_right THEN true ELSE false END AS is_pareto
+        FROM ranked
+        ORDER BY param_count_M
+    """).fetchdf()
+    con.close()
+
+    if result.empty:
+        log.info("No Pareto data computed — skipping")
+        return None
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    out = output_dir / "pareto.parquet"
+    pq.write_table(pa.Table.from_pandas(result), out)
+    log.info(
+        "Exported pareto.parquet (%d rows, %d Pareto-optimal)",
+        len(result),
+        result["is_pareto"].sum(),
+    )
     return out
 
 
@@ -915,6 +992,93 @@ def export_graph_statistics(output_dir: Path, *, max_per_dataset: int = 500) -> 
     return out
 
 
+def export_graph_layout(output_dir: Path) -> tuple[Path, Path] | None:
+    """Export pre-computed graph layouts as Parquet for spec-based visualization.
+
+    Creates graph_nodes.parquet and graph_edges.parquet with spring_layout positions.
+    Replaces the D3 force-directed simulation with pre-computed coordinates.
+    """
+    graph_samples_path = output_dir / "graph_samples.json"
+    if not graph_samples_path.exists():
+        log.info("No graph_samples.json — skipping layout export")
+        return None
+
+    import networkx as nx
+    import numpy as np
+
+    samples = json.loads(graph_samples_path.read_text())["data"]
+    node_rows: list[dict] = []
+    edge_rows: list[dict] = []
+
+    for i, sample in enumerate(samples):
+        graph_id = f"{sample['dataset']}_{i}"
+        nodes = sample["nodes"]
+        links = sample["links"]
+
+        # Build networkx graph and compute layout
+        G = nx.Graph()
+        G.add_nodes_from(range(len(nodes)))
+        for link in links:
+            G.add_edge(link["source"], link["target"])
+
+        pos = nx.spring_layout(G, seed=42, k=1.5 / max(np.sqrt(len(nodes)), 1))
+
+        # Node rows
+        for node in nodes:
+            nid = node["id"]
+            x, y = pos.get(nid, (0, 0))
+            degree = G.degree(nid) if nid in G else 0
+            can_id = int(node["features"][0]) if node.get("features") else 0
+            node_row = {
+                "graph_id": graph_id,
+                "dataset": sample["dataset"],
+                "node_id": nid,
+                "x": round(float(x), 6),
+                "y": round(float(y), 6),
+                "can_id": can_id,
+                "degree": degree,
+                "label": sample.get("label", 0),
+                "attack_type_name": sample.get("attack_type_name", "normal"),
+            }
+            node_rows.append(node_row)
+
+        # Edge rows with pre-computed endpoint positions
+        for link in links:
+            src, tgt = link["source"], link["target"]
+            sx, sy = pos.get(src, (0, 0))
+            tx, ty = pos.get(tgt, (0, 0))
+            edge_rows.append(
+                {
+                    "graph_id": graph_id,
+                    "dataset": sample["dataset"],
+                    "source_x": round(float(sx), 6),
+                    "source_y": round(float(sy), 6),
+                    "target_x": round(float(tx), 6),
+                    "target_y": round(float(ty), 6),
+                }
+            )
+
+    if not node_rows:
+        log.warning("No graph layout data to export")
+        return None
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    nodes_out = output_dir / "graph_nodes.parquet"
+    edges_out = output_dir / "graph_edges.parquet"
+    pq.write_table(pa.Table.from_pylist(node_rows), nodes_out)
+    pq.write_table(pa.Table.from_pylist(edge_rows), edges_out)
+    log.info(
+        "Exported graph layout: %d nodes, %d edges → %s, %s",
+        len(node_rows),
+        len(edge_rows),
+        nodes_out,
+        edges_out,
+    )
+    return nodes_out, edges_out
+
+
 def _graph_to_json(
     g,
     dataset_name: str,
@@ -972,6 +1136,56 @@ def _graph_to_json(
     except Exception as e:
         log.warning("Failed to serialize graph: %s", e)
         return None
+
+
+def export_summary(output_dir: Path) -> Path:
+    """Pre-compute dashboard summary stats to avoid runtime SQL in OJS.
+
+    Outputs summary.json with: total_runs, best_f1, best_model, kd_gap, n_datasets.
+    """
+    runs = _scan_runs()
+    total_runs = len(runs)
+    n_datasets = len({r["dataset"] for r in runs})
+
+    # Best F1 across all evaluation metrics
+    best_f1 = None
+    best_model = None
+    for run in runs:
+        if run["stage"] != "evaluation":
+            continue
+        metrics = _load_eval_metrics(run["dir"])
+        if not metrics:
+            continue
+        for model_key in _MODEL_KEYS:
+            f1 = metrics.get(model_key, {}).get("core", {}).get("f1")
+            if f1 is not None and (best_f1 is None or f1 > best_f1):
+                best_f1 = round(f1, 6)
+                best_model = model_key
+
+    # KD gap: average (teacher_f1 - student_f1) from kd_transfer data
+    kd_transfer_path = output_dir / "kd_transfer.json"
+    kd_gap = None
+    if kd_transfer_path.exists():
+        kd_data = json.loads(kd_transfer_path.read_text()).get("data", [])
+        f1_pairs = [d for d in kd_data if d.get("metric_name") == "f1"]
+        if f1_pairs:
+            kd_gap = round(
+                sum(d["teacher_value"] - d["student_value"] for d in f1_pairs) / len(f1_pairs),
+                6,
+            )
+
+    summary = {
+        "total_runs": total_runs,
+        "best_f1": best_f1,
+        "best_model": best_model,
+        "kd_gap": kd_gap,
+        "n_datasets": n_datasets,
+    }
+
+    out = output_dir / "summary.json"
+    out.write_text(json.dumps(summary, indent=2))
+    log.info("Exported summary stats → %s", out)
+    return out
 
 
 def export_data_for_reports(reports_data_dir: Path | None = None) -> None:
@@ -1041,9 +1255,19 @@ def export_all(output_dir: Path, *, include_reports: bool = False) -> None:
             log.warning("EMPTY EXPORT: %s (%s)", name, path)
 
     try:
+        export_summary(output_dir)
+    except Exception as e:
+        log.warning("Export summary failed (non-fatal): %s", e)
+
+    try:
         export_model_sizes(output_dir)
     except Exception as e:
         log.warning("Export model_sizes failed (non-fatal): %s", e)
+
+    try:
+        export_pareto(output_dir)
+    except Exception as e:
+        log.warning("Export pareto failed (non-fatal): %s", e)
 
     try:
         export_loss_landscape(output_dir)
@@ -1059,6 +1283,11 @@ def export_all(output_dir: Path, *, include_reports: bool = False) -> None:
         export_graph_statistics(output_dir)
     except Exception as e:
         log.warning("Export graph_statistics failed (non-fatal): %s", e)
+
+    try:
+        export_graph_layout(output_dir)
+    except Exception as e:
+        log.warning("Export graph_layout failed (non-fatal): %s", e)
 
     # Optionally copy everything to reports/data/ for Quarto
     if include_reports:

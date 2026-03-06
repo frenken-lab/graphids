@@ -1,0 +1,32 @@
+data:
+  metrics_long:
+    query: >
+      SELECT dataset, model, metric_name, metric_value
+      FROM (UNPIVOT metrics ON (f1, accuracy, precision, recall, auc, mcc)
+            INTO NAME metric_name VALUE metric_value)
+      WHERE metric_value IS NOT NULL
+params:
+  sel: { select: single }
+vconcat:
+  - input: menu
+    from: metrics_long
+    column: metric_name
+    label: Metric
+    as: $sel
+  - plot:
+      - mark: barX
+        data: { from: metrics_long, filterBy: $sel }
+        y: dataset
+        x: metric_value
+        fill: model
+        sort: { y: "-x" }
+      - mark: ruleX
+        data: [0]
+      - legend: color
+    width: 600
+    height: 300
+    marginLeft: 80
+    _palette: model-3
+    xLabel: Value
+    xDomain: [0, 1.01]
+    yLabel: null

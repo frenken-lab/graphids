@@ -3,11 +3,11 @@
 //| output: false
 
 // --- Mosaic vgplot + DuckDB-WASM init (shared across paper chapters) ---
-import { vg, loadParquetTable } from "../_ojs/mosaic-setup.js"
+import { vg, safeLoadParquetTable } from "../_ojs/mosaic-setup.js"
 
 async function loadTable(name, attachment) {
   const url = await attachment.url();
-  await loadParquetTable(name, url);
+  return safeLoadParquetTable(name, url);
 }
 
 // --- Declarative JSON spec renderer (Tier A figures) ---

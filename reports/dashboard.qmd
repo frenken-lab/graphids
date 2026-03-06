@@ -15,85 +15,45 @@ format:
 
 // --- Mosaic vgplot + DuckDB-WASM init ---
 import { vg, safeLoadParquetTable } from "./_ojs/mosaic-setup.js"
-import { filteredChart, colorDirectives } from "./_ojs/chart-helpers.js"
-import {
-  MODEL_DOMAIN, MODEL_RANGE, MODEL_DOMAIN_FULL, MODEL_RANGE_FULL,
-  LABEL_DOMAIN, LABEL_RANGE, STAGE_MODEL_DOMAIN, STAGE_MODEL_RANGE,
-  TRAINING_MODEL_DOMAIN, TRAINING_MODEL_RANGE,
-} from "./_ojs/theme.js"
-import { paretoFront, kdGap } from "./_ojs/aggregations.js"
+import { renderSpec } from "./_ojs/mosaic-renderer.js"
+import { renderTable } from "./_ojs/table-renderer.js"
+import { safeEq } from "./_ojs/query-utils.js"
 
 async function loadTable(name, attachment) {
   const url = await attachment.url();
   return safeLoadParquetTable(name, url);
 }
 
-// Track which tables loaded successfully for conditional rendering
-tableStatus = {
-  const status = {};
-  status.metrics = await loadTable("metrics", FileAttachment("data/metrics.parquet"));
-  status.runs = await loadTable("runs", FileAttachment("data/runs.parquet"));
-  status.training_curves = await loadTable("training_curves", FileAttachment("data/training_curves.parquet"));
-  status.recon_errors = await loadTable("recon_errors", FileAttachment("data/recon_errors.parquet"));
-  status.attention_weights = await loadTable("attention_weights", FileAttachment("data/attention_weights.parquet"));
-  status.dqn_policy = await loadTable("dqn_policy", FileAttachment("data/dqn_policy.parquet"));
-  status.cka_similarity = await loadTable("cka_similarity", FileAttachment("data/cka_similarity.parquet"));
-  status.embeddings = await loadTable("embeddings", FileAttachment("data/embeddings.parquet"));
-  status.loss_landscape = await loadTable("loss_landscape", FileAttachment("data/loss_landscape.parquet"));
-  const failed = Object.entries(status).filter(([, ok]) => !ok).map(([name]) => name);
-  if (failed.length > 0) console.warn(`[dashboard] Missing tables: ${failed.join(", ")}`);
-  return status;
+// Load all Parquet tables into DuckDB-WASM
+tablesReady = {
+  await loadTable("metrics", FileAttachment("data/metrics.parquet"));
+  await loadTable("runs", FileAttachment("data/runs.parquet"));
+  await loadTable("training_curves", FileAttachment("data/training_curves.parquet"));
+  await loadTable("recon_errors", FileAttachment("data/recon_errors.parquet"));
+  await loadTable("attention_weights", FileAttachment("data/attention_weights.parquet"));
+  await loadTable("dqn_policy", FileAttachment("data/dqn_policy.parquet"));
+  await loadTable("cka_similarity", FileAttachment("data/cka_similarity.parquet"));
+  await loadTable("embeddings", FileAttachment("data/embeddings.parquet"));
+  await loadTable("loss_landscape", FileAttachment("data/loss_landscape.parquet"));
+  await loadTable("graph_stats", FileAttachment("data/graph_statistics.parquet"));
+  await loadTable("model_sizes", FileAttachment("data/model_sizes.parquet"));
+  await loadTable("kd_transfer", FileAttachment("data/kd_transfer.parquet"));
+  await loadTable("pareto", FileAttachment("data/pareto.parquet"));
+  await loadTable("graph_nodes", FileAttachment("data/graph_nodes.parquet"));
+  await loadTable("graph_edges", FileAttachment("data/graph_edges.parquet"));
+  return true;
 }
 
-// --- Static JSON data ---
+// --- Pre-computed summary (from export pipeline) ---
+summary_stats = FileAttachment("data/summary.json").json()
+
+// --- Static JSON data (for dataset catalog table) ---
 datasets_json = FileAttachment("data/datasets.json").json()
-kd_transfer_json = FileAttachment("data/kd_transfer.json").json()
-model_sizes_json = FileAttachment("data/model_sizes.json").json()
-graph_samples_json = FileAttachment("data/graph_samples.json").json()
 
-// --- Precompute shared summaries ---
-summary_stats = {
-  void tableStatus; // ensure all DuckDB tables are loaded before querying
-  const runs_result = await vg.coordinator().query(
-    vg.sql`SELECT COUNT(*) AS total_runs FROM runs`
-  );
-  const total_runs = Array.from(runs_result)[0].total_runs;
-
-  const best_f1_result = await vg.coordinator().query(
-    vg.sql`SELECT MAX(f1) AS best_f1, model FROM metrics GROUP BY model ORDER BY best_f1 DESC LIMIT 1`
-  );
-  const best_f1_row = Array.from(best_f1_result)[0];
-
-  const kd_gap_val = kdGap(kd_transfer_json.data, "f1");
-
-  const dataset_result = await vg.coordinator().query(
-    vg.sql`SELECT COUNT(DISTINCT dataset) AS n_datasets FROM runs`
-  );
-  const n_datasets = Array.from(dataset_result)[0].n_datasets;
-
-  return {
-    total_runs,
-    best_f1: best_f1_row?.best_f1,
-    best_model: best_f1_row?.model,
-    kd_gap: kd_gap_val,
-    n_datasets,
-  };
-}
-
-// --- Leaderboard data from metrics parquet ---
-leaderboard_data = {
-  void tableStatus;
-  const result = await vg.coordinator().query(
-    vg.sql`
-      SELECT
-        dataset,
-        model,
-        f1, accuracy, precision, recall, auc, mcc
-      FROM metrics
-      ORDER BY dataset, model
-    `
-  );
-  return Array.from(result);
+// --- Spec base URL ---
+specBase = {
+  const url = await FileAttachment("figures/fig-f1-by-dataset.yaml").url();
+  return url.replace(/fig-f1-by-dataset\.yaml$/, "");
 }
 ```
 
@@ -114,7 +74,9 @@ summary_stats.total_runs
 //| title: "Best F1 Score"
 //| icon: award
 //| color: success
-`${summary_stats.best_f1?.toFixed(4)} (${summary_stats.best_model})`
+summary_stats.best_f1 != null
+  ? `${summary_stats.best_f1.toFixed(4)} (${summary_stats.best_model})`
+  : "N/A"
 ```
 
 ```{ojs}
@@ -144,113 +106,39 @@ viewof selectedLeaderboardMetric = Inputs.select(
 )
 
 {
-  const metric = selectedLeaderboardMetric;
-  const data = leaderboard_data.map(d => ({
-    dataset: d.dataset,
-    model: d.model,
-    value: d[metric],
-  })).filter(d => d.value != null);
-
-  return Inputs.table(data, {
-    columns: ["dataset", "model", "value"],
-    header: { dataset: "Dataset", model: "Model", value: metric.toUpperCase() },
-    sort: "value",
-    reverse: true,
-    format: { value: d => d?.toFixed(4) },
-    width: { dataset: 120, model: 80, value: 100 },
-  });
+  void tablesReady;
+  const metric = safeEq(selectedLeaderboardMetric);
+  return renderTable(
+    `SELECT dataset, model, metric_value AS value
+     FROM (UNPIVOT metrics ON (f1, accuracy, precision, recall, auc, mcc)
+           INTO NAME metric_name VALUE metric_value)
+     WHERE metric_name = '${metric}' AND metric_value IS NOT NULL
+     ORDER BY metric_value DESC`,
+    {
+      columns: ["dataset", "model", "value"],
+      header: { dataset: "Dataset", model: "Model", value: selectedLeaderboardMetric.toUpperCase() },
+      format: { value: d => d?.toFixed(4) },
+      width: { dataset: 120, model: 80, value: 100 },
+    }
+  );
 }
 ```
 
 ```{ojs}
 //| title: "Dataset Comparison"
-
-viewof selectedDatasetMetric = Inputs.select(
-  ["f1", "accuracy", "precision", "recall", "auc", "mcc"],
-  { label: "Metric", value: "f1" }
-)
-
-{
-  const metric = selectedDatasetMetric;
-  const data = leaderboard_data.map(d => ({
-    dataset: d.dataset,
-    model: d.model,
-    value: d[metric],
-  })).filter(d => d.value != null);
-
-  return Plot.plot({
-    width: 600,
-    height: 300,
-    marginLeft: 80,
-    x: { label: metric.toUpperCase(), domain: [0, 1.01] },
-    y: { label: null },
-    color: { legend: true, domain: MODEL_DOMAIN, range: MODEL_RANGE },
-    marks: [
-      Plot.barX(data, Plot.groupY(
-        { x: "max" },
-        { y: "dataset", x: "value", fill: "model", sort: { y: "-x" } }
-      )),
-      Plot.ruleX([0]),
-    ],
-  });
-}
+{ void tablesReady; return renderSpec(specBase + "fig-dataset-comparison.yaml"); }
 ```
 
 ## Row {height=40%}
 
 ```{ojs}
 //| title: "F1 Scores by Dataset and Model"
-{ void tableStatus; return vg.plot(
-  vg.dot(
-    vg.from("metrics"),
-    {
-      x: "dataset",
-      y: "f1",
-      fill: "model",
-      r: 7,
-      opacity: 0.8
-    }
-  ),
-  vg.width(680),
-  vg.height(260),
-  ...colorDirectives(MODEL_DOMAIN, MODEL_RANGE),
-  vg.xLabel("Dataset"),
-  vg.xTickRotate(-30),
-  vg.yLabel("F1 Score"),
-  vg.yDomain([0.5, 1.01])
-); }
+{ void tablesReady; return renderSpec(specBase + "fig-f1-by-dataset.yaml", { skipDataLoad: true }); }
 ```
 
 ```{ojs}
 //| title: "Model Parameter Counts"
-{
-  const data = model_sizes_json.data;
-  return Plot.plot({
-    width: 400,
-    height: 260,
-    marginLeft: 80,
-    x: { label: "Parameters (millions)" },
-    y: { label: null },
-    color: { legend: true, domain: ["large", "small"], range: ["#58a6ff", "#79c0ff"] },
-    marks: [
-      Plot.barX(data, {
-        y: d => `${d.model_type} (${d.scale})`,
-        x: "param_count_M",
-        fill: "scale",
-        sort: { y: "-x" }
-      }),
-      Plot.text(data, {
-        y: d => `${d.model_type} (${d.scale})`,
-        x: "param_count_M",
-        text: d => `${d.param_count_M}M`,
-        dx: 5,
-        textAnchor: "start",
-        fontSize: 11
-      }),
-      Plot.ruleX([0])
-    ]
-  });
-}
+{ void tablesReady; return renderSpec(specBase + "fig-model-params.yaml"); }
 ```
 
 # Performance
@@ -259,184 +147,24 @@ viewof selectedDatasetMetric = Inputs.select(
 
 ```{ojs}
 //| title: "Bubble Chart: F1 vs Accuracy (size = parameters)"
-{
-  void tableStatus;
-  const sizes = new Map(model_sizes_json.data.map(d => [d.model_type, d.param_count_M]));
-
-  const result = await vg.coordinator().query(
-    vg.sql`
-      SELECT
-        dataset,
-        model,
-        f1, accuracy, auc
-      FROM metrics
-      WHERE f1 IS NOT NULL AND accuracy IS NOT NULL
-    `
-  );
-  const data = Array.from(result).map(d => ({
-    ...d,
-    param_count_M: sizes.get(d.model) || 0.1,
-  }));
-
-  return Plot.plot({
-    width: 680,
-    height: 400,
-    color: { legend: true, domain: MODEL_DOMAIN, range: MODEL_RANGE },
-    r: { range: [4, 30] },
-    x: { label: "F1 Score", domain: [0.4, 1.01] },
-    y: { label: "Accuracy", domain: [0.4, 1.01] },
-    marks: [
-      Plot.dot(data, {
-        x: "f1",
-        y: "accuracy",
-        r: "param_count_M",
-        fill: "model",
-        fillOpacity: 0.6,
-        stroke: "model",
-        tip: true,
-        title: d => `${d.dataset} / ${d.model}\nF1: ${d.f1.toFixed(4)}\nAcc: ${d.accuracy.toFixed(4)}\nParams: ${d.param_count_M}M`,
-      }),
-      Plot.line([[0.4, 0.4], [1, 1]], {
-        stroke: "#8b949e",
-        strokeDasharray: "4,4",
-        strokeWidth: 1,
-      }),
-    ],
-  });
-}
+{ void tablesReady; return renderSpec(specBase + "fig-bubble-f1-accuracy.yaml"); }
 ```
 
 ```{ojs}
 //| title: "Pareto Frontier: F1 vs Parameter Count"
-{
-  void tableStatus;
-  const sizes = new Map(model_sizes_json.data.map(d => [
-    `${d.model_type}_${d.scale}`,
-    d.param_count_M,
-  ]));
-
-  const result = await vg.coordinator().query(
-    vg.sql`
-      SELECT
-        dataset,
-        model,
-        f1
-      FROM metrics
-      WHERE f1 IS NOT NULL
-    `
-  );
-  const raw = Array.from(result);
-
-  // Aggregate: best F1 per model (across datasets)
-  const grouped = new Map();
-  for (const d of raw) {
-    for (const scale of ["large", "small"]) {
-      const key = `${d.model}_${scale}`;
-      const params = sizes.get(key);
-      if (params == null) continue;
-      const prev = grouped.get(key);
-      if (!prev || d.f1 > prev.f1) {
-        grouped.set(key, { model: d.model, scale, param_count_M: params, f1: d.f1, label: key });
-      }
-    }
-  }
-  const data = Array.from(grouped.values());
-  const pareto = paretoFront(data, "param_count_M", "f1");
-
-  return Plot.plot({
-    width: 680,
-    height: 400,
-    x: { label: "Parameters (millions)", type: "log" },
-    y: { label: "Best F1 Score", domain: [0.5, 1.01] },
-    color: { legend: true, domain: MODEL_DOMAIN_FULL, range: MODEL_RANGE_FULL },
-    marks: [
-      Plot.dot(data, {
-        x: "param_count_M",
-        y: "f1",
-        fill: "model",
-        stroke: "model",
-        r: 8,
-        tip: true,
-        title: d => `${d.label}\nF1: ${d.f1.toFixed(4)}\nParams: ${d.param_count_M}M`,
-      }),
-      Plot.line(pareto, {
-        x: "param_count_M",
-        y: "f1",
-        stroke: "#f85149",
-        strokeWidth: 2,
-        strokeDasharray: "6,3",
-      }),
-      Plot.text(data, {
-        x: "param_count_M",
-        y: "f1",
-        text: "label",
-        dy: -14,
-        fontSize: 10,
-      }),
-    ],
-  });
-}
+{ void tablesReady; return renderSpec(specBase + "fig-pareto-frontier.yaml"); }
 ```
 
 ## Row {height=50%}
 
 ```{ojs}
 //| title: "F1 vs AUC by Model"
-{ void tableStatus; return vg.plot(
-  vg.dot(
-    vg.from("metrics"),
-    {
-      x: "auc",
-      y: "f1",
-      fill: "model",
-      stroke: "model",
-      r: 6,
-      opacity: 0.7
-    }
-  ),
-  vg.width(500),
-  vg.height(320),
-  ...colorDirectives(MODEL_DOMAIN, MODEL_RANGE),
-  vg.xLabel("AUC"),
-  vg.xDomain([0.8, 1.01]),
-  vg.yLabel("F1 Score"),
-  vg.yDomain([0.5, 1.01])
-); }
+{ void tablesReady; return renderSpec(specBase + "fig-f1-vs-auc.yaml", { skipDataLoad: true }); }
 ```
 
 ```{ojs}
 //| title: "Runs by Dataset"
-{
-  void tableStatus;
-  const result = await vg.coordinator().query(
-    vg.sql`
-      SELECT dataset,
-             model_type,
-             COUNT(*) AS n
-      FROM runs
-      GROUP BY 1, 2
-      ORDER BY 1, 2
-    `
-  );
-  const data = Array.from(result);
-  return Plot.plot({
-    width: 500,
-    height: 320,
-    marginLeft: 60,
-    x: { label: "Number of Runs" },
-    y: { label: null },
-    color: { legend: true, domain: STAGE_MODEL_DOMAIN, range: STAGE_MODEL_RANGE },
-    marks: [
-      Plot.barX(data, Plot.stackX({
-        y: "dataset",
-        x: "n",
-        fill: "model_type",
-        sort: { y: "-x" }
-      })),
-      Plot.ruleX([0])
-    ]
-  });
-}
+{ void tablesReady; return renderSpec(specBase + "fig-runs-stacked.yaml"); }
 ```
 
 # Training
@@ -445,121 +173,21 @@ viewof selectedDatasetMetric = Inputs.select(
 
 ```{ojs}
 //| title: "Training Duration by Run"
-{
-  void tableStatus;
-  const result = await vg.coordinator().query(
-    vg.sql`
-      SELECT
-        run_id,
-        dataset,
-        model_type,
-        scale,
-        stage,
-        CASE
-          WHEN duration_seconds IS NOT NULL AND duration_seconds > 0
-          THEN duration_seconds / 60.0
-          WHEN started_at IS NOT NULL AND completed_at IS NOT NULL
-          THEN EXTRACT(EPOCH FROM (CAST(completed_at AS TIMESTAMP) - CAST(started_at AS TIMESTAMP))) / 60.0
-          ELSE NULL
-        END AS duration_min
-      FROM runs
-      WHERE stage NOT IN ('evaluation')
-    `
-  );
-  const data = Array.from(result).filter(d => d.duration_min != null && d.duration_min > 0);
-
-  return Plot.plot({
-    width: 900,
-    height: Math.max(200, data.length * 18),
-    marginLeft: 220,
-    x: { label: "Duration (minutes)" },
-    y: { label: null },
-    color: { legend: true, domain: TRAINING_MODEL_DOMAIN, range: TRAINING_MODEL_RANGE },
-    marks: [
-      Plot.barX(data, {
-        y: "run_id",
-        x: "duration_min",
-        fill: "model_type",
-        sort: { y: "-x" },
-        tip: true,
-        title: d => `${d.run_id}\n${d.duration_min.toFixed(1)} min`,
-      }),
-      Plot.ruleX([0]),
-    ],
-  });
-}
+{ void tablesReady; return renderSpec(specBase + "fig-training-duration.yaml"); }
 ```
 
 ## Row {height=35%}
 
 ```{ojs}
 //| title: "Training Curve Comparison"
-
-viewof compareRun1 = {
-  void tableStatus;
-  const result = await vg.coordinator().query(
-    vg.sql`SELECT DISTINCT run_id FROM training_curves ORDER BY run_id`
-  );
-  const runs = Array.from(result, d => d.run_id);
-  return Inputs.select(runs, { label: "Run A", value: runs[0] });
-}
-
-viewof compareRun2 = {
-  void tableStatus;
-  const result = await vg.coordinator().query(
-    vg.sql`SELECT DISTINCT run_id FROM training_curves ORDER BY run_id`
-  );
-  const runs = Array.from(result, d => d.run_id);
-  return Inputs.select(runs, { label: "Run B", value: runs.length > 1 ? runs[1] : runs[0] });
-}
-
-{
-  void tableStatus;
-  const r1 = await vg.coordinator().query(
-    vg.sql`SELECT epoch, metric_name, value, run_id FROM training_curves WHERE run_id = '${compareRun1}'`
-  );
-  const r2 = await vg.coordinator().query(
-    vg.sql`SELECT epoch, metric_name, value, run_id FROM training_curves WHERE run_id = '${compareRun2}'`
-  );
-  const data = [...Array.from(r1), ...Array.from(r2)];
-
-  return Plot.plot({
-    width: 900,
-    height: 320,
-    color: { legend: true },
-    symbol: { legend: true },
-    x: { label: "Epoch" },
-    y: { label: "Value" },
-    marks: [
-      Plot.line(data, {
-        x: "epoch",
-        y: "value",
-        stroke: "metric_name",
-        strokeDasharray: d => d.run_id === compareRun1 ? null : "4,3",
-        tip: true,
-      }),
-    ],
-  });
-}
+{ void tablesReady; return renderSpec(specBase + "fig-training-comparison.yaml", { skipDataLoad: true }); }
 ```
 
 ## Row {height=30%}
 
 ```{ojs}
-//| title: "Training Carpet (Metric × Epoch Heatmap)"
-{ void tableStatus; return filteredChart("training_curves", sel => vg.plot(
-  vg.cell(
-    vg.from("training_curves", { filterBy: sel }),
-    { x: "epoch", y: "metric_name", fill: "value", inset: 0.5 }
-  ),
-  vg.width(900),
-  vg.height(200),
-  vg.colorScheme("viridis"),
-  vg.colorLegend(true),
-  vg.colorLabel("Value"),
-  vg.xLabel("Epoch"),
-  vg.yLabel(null)
-)); }
+//| title: "Training Carpet (Metric x Epoch Heatmap)"
+{ void tablesReady; return renderSpec(specBase + "fig-training-carpet.yaml", { skipDataLoad: true }); }
 ```
 
 # GAT & DQN
@@ -568,77 +196,24 @@ viewof compareRun2 = {
 
 ```{ojs}
 //| title: "GAT Attention Weights by Layer"
-{ void tableStatus; return filteredChart("attention_weights", sel => vg.plot(
-  vg.cell(
-    vg.from("attention_weights", { filterBy: sel }),
-    {
-      x: vg.sql`'Head ' || head`,
-      y: vg.sql`'Layer ' || layer`,
-      fill: "mean_alpha",
-      inset: 0.5
-    }
-  ),
-  vg.width(500),
-  vg.height(280),
-  vg.colorScheme("blues"),
-  vg.colorLegend(true),
-  vg.colorLabel("Mean Attention"),
-  vg.xLabel("Attention Head"),
-  vg.yLabel("GAT Layer")
-)); }
+{ void tablesReady; return renderSpec(specBase + "fig-attention-heatmap.yaml", { skipDataLoad: true }); }
 ```
 
 ```{ojs}
 //| title: "DQN Fusion Policy (Alpha Distribution)"
-{ void tableStatus; return filteredChart("dqn_policy", sel => vg.plot(
-  vg.rectY(
-    vg.from("dqn_policy", { filterBy: sel }),
-    {x: vg.bin("alpha"), y: vg.count(), fill: "steelblue", insetLeft: 0.5, insetRight: 0.5}
-  ),
-  vg.width(500),
-  vg.height(280),
-  vg.colorScheme("oranges"),
-  vg.xLabel("Alpha (GAT weight in fusion)"),
-  vg.yLabel("Count")
-)); }
+{ void tablesReady; return renderSpec(specBase + "fig-dqn-policy.yaml", { skipDataLoad: true }); }
 ```
 
 ## Row {height=50%}
 
 ```{ojs}
 //| title: "Training Curves (single run)"
-{ void tableStatus; return filteredChart("training_curves", sel => vg.plot(
-  vg.lineY(
-    vg.from("training_curves", { filterBy: sel }),
-    { x: "epoch", y: "value", stroke: "metric_name" }
-  ),
-  vg.width(680),
-  vg.height(350),
-  vg.colorLegend(true),
-  vg.xLabel("Epoch"),
-  vg.yLabel("Value")
-)); }
+{ void tablesReady; return renderSpec(specBase + "fig-training-curves-single.yaml", { skipDataLoad: true }); }
 ```
 
 ```{ojs}
 //| title: "VGAE Reconstruction Errors"
-{ void tableStatus; return filteredChart("recon_errors", sel => vg.plot(
-  vg.rectY(
-    vg.from("recon_errors", { filterBy: sel }),
-    {
-      x: vg.bin("error"),
-      y: vg.count(),
-      fill: vg.sql`CASE WHEN label = 0 THEN 'normal' ELSE 'attack' END`,
-      insetLeft: 0.5,
-      insetRight: 0.5
-    }
-  ),
-  vg.width(680),
-  vg.height(350),
-  ...colorDirectives(LABEL_DOMAIN, LABEL_RANGE),
-  vg.xLabel("Reconstruction Error"),
-  vg.yLabel("Count")
-)); }
+{ void tablesReady; return renderSpec(specBase + "fig-recon-errors.yaml", { skipDataLoad: true }); }
 ```
 
 # Knowledge Distillation
@@ -647,119 +222,24 @@ viewof compareRun2 = {
 
 ```{ojs}
 //| title: "KD Transfer: Teacher vs Student"
-
-viewof selectedKdMetric = Inputs.select(
-  ["f1", "accuracy", "auc"],
-  { label: "Metric", value: "f1" }
-)
-
-{
-  const data = kd_transfer_json.data.filter(d => d.metric_name === selectedKdMetric);
-  const metricLabel = selectedKdMetric.toUpperCase();
-  return Plot.plot({
-    width: 600,
-    height: 320,
-    x: { label: `Teacher ${metricLabel} (Large)`, domain: [0.5, 1.01] },
-    y: { label: `Student ${metricLabel} (Small + KD)`, domain: [0.5, 1.01] },
-    color: { legend: true },
-    marks: [
-      Plot.line([[0.5, 0.5], [1, 1]], { stroke: "#8b949e", strokeDasharray: "4,4", strokeWidth: 1 }),
-      Plot.dot(data, {
-        x: "teacher_value",
-        y: "student_value",
-        fill: "dataset",
-        stroke: "dataset",
-        r: 7,
-        tip: true,
-        title: d => `${d.dataset} / ${d.model_type}\nTeacher: ${d.teacher_value.toFixed(4)}\nStudent: ${d.student_value.toFixed(4)}`
-      }),
-      Plot.text(data, {
-        x: "teacher_value",
-        y: "student_value",
-        text: d => d.model_type.slice(0, 3),
-        dy: -12,
-        fontSize: 10
-      })
-    ]
-  });
-}
+{ void tablesReady; return renderSpec(specBase + "fig-kd-transfer.yaml", { skipDataLoad: true }); }
 ```
 
 ```{ojs}
 //| title: "CKA Similarity (Teacher-Student Layer Alignment)"
-{ void tableStatus; return filteredChart("cka_similarity", sel => vg.plot(
-  vg.cell(
-    vg.from("cka_similarity", { filterBy: sel }),
-    {
-      x: "student_layer",
-      y: "teacher_layer",
-      fill: "similarity",
-      inset: 0.5
-    }
-  ),
-  vg.width(400),
-  vg.height(300),
-  vg.colorScheme("viridis"),
-  vg.colorLegend(true),
-  vg.colorLabel("CKA Similarity"),
-  vg.xLabel("Student Layer"),
-  vg.yLabel("Teacher Layer")
-)); }
+{ void tablesReady; return renderSpec(specBase + "fig-cka-heatmap.yaml", { skipDataLoad: true }); }
 ```
 
 ## Row {height=50%}
 
 ```{ojs}
-//| output: false
-// Shared selection for UMAP embeddings — both charts filter the same table
-umapSel = vg.Selection.single()
-```
-
-```{ojs}
 //| title: "UMAP Embeddings (VGAE)"
-{ void tableStatus; return filteredChart("embeddings", sel => vg.plot(
-  vg.dot(
-    vg.from("embeddings", { filterBy: sel }),
-    {
-      x: "x",
-      y: "y",
-      fill: vg.sql`CASE WHEN label = 0 THEN 'normal' ELSE 'attack' END`,
-      r: 2,
-      opacity: 0.5
-    }
-  ),
-  vg.width(600),
-  vg.height(350),
-  ...colorDirectives(LABEL_DOMAIN, LABEL_RANGE),
-  vg.xLabel("UMAP 1"),
-  vg.xAxis(null),
-  vg.yLabel("UMAP 2"),
-  vg.yAxis(null)
-), { selection: umapSel }); }
+{ void tablesReady; return renderSpec(specBase + "fig-umap-vgae.yaml", { skipDataLoad: true }); }
 ```
 
 ```{ojs}
 //| title: "UMAP Embeddings (GAT)"
-// Uses the same shared selection as VGAE — selecting a run in either dropdown updates both
-{ void tableStatus; return filteredChart("embeddings", sel => vg.plot(
-  vg.dot(
-    vg.from("embeddings", { filterBy: sel }),
-    {
-      x: "x",
-      y: "y",
-      fill: vg.sql`CASE WHEN label = 0 THEN 'normal' ELSE 'attack' END`,
-      r: 2,
-      opacity: 0.5
-    }
-  ),
-  vg.width(600),
-  vg.height(350),
-  ...colorDirectives(LABEL_DOMAIN, LABEL_RANGE),
-  vg.xLabel("UMAP 1"),
-  vg.xAxis(null),
-  vg.yLabel("UMAP 2"),
-  vg.yAxis(null)
-), { selection: umapSel }); }
+{ void tablesReady; return renderSpec(specBase + "fig-umap-gat.yaml", { skipDataLoad: true }); }
 ```
 
 # Loss Landscape
@@ -768,258 +248,56 @@ umapSel = vg.Selection.single()
 
 ```{ojs}
 //| title: "2D Loss Landscape Contour"
-
-viewof landscapeModel = {
-  void tableStatus;
-  const result = await vg.coordinator().query(
-    vg.sql`SELECT DISTINCT model_type FROM loss_landscape ORDER BY model_type`
-  );
-  const models = Array.from(result, d => d.model_type);
-  return models.length > 0
-    ? Inputs.select(models, { label: "Model", value: models[0] })
-    : Inputs.text({ label: "Model", value: "(no data)", disabled: true });
-}
-
-viewof landscapeDataset = {
-  void tableStatus;
-  const result = await vg.coordinator().query(
-    vg.sql`SELECT DISTINCT dataset FROM loss_landscape ORDER BY dataset`
-  );
-  const datasets = Array.from(result, d => d.dataset);
-  return datasets.length > 0
-    ? Inputs.select(datasets, { label: "Dataset", value: datasets[0] })
-    : Inputs.text({ label: "Dataset", value: "(no data)", disabled: true });
-}
-
-{
-  void tableStatus;
-  const result = await vg.coordinator().query(
-    vg.sql`SELECT x, y, loss FROM loss_landscape
-            WHERE model_type = '${landscapeModel}' AND dataset = '${landscapeDataset}'`
-  );
-  const data = Array.from(result);
-
-  if (data.length === 0) {
-    return html`<p style="color: #8b949e; text-align: center; padding: 2rem;">No data for ${landscapeModel} / ${landscapeDataset}.</p>`;
-  }
-
-  const step = 0.02; // half grid step (grid is 51 points over [-1, 1])
-  return Plot.plot({
-    width: 500,
-    height: 400,
-    color: { scheme: "viridis", legend: true, label: "Loss" },
-    x: { label: "Direction 1" },
-    y: { label: "Direction 2" },
-    marks: [
-      Plot.rect(data, {
-        x1: d => d.x - step,
-        x2: d => d.x + step,
-        y1: d => d.y - step,
-        y2: d => d.y + step,
-        fill: "loss",
-        tip: true,
-        title: d => `(${d.x.toFixed(2)}, ${d.y.toFixed(2)})\nLoss: ${d.loss.toFixed(4)}`,
-      }),
-    ],
-  });
-}
+{ void tablesReady; return renderSpec(specBase + "fig-loss-landscape-2d.yaml", { skipDataLoad: true }); }
 ```
 
 ```{ojs}
 //| title: "Loss Profile (1D Slice Through Minimum)"
-
-{
-  void tableStatus;
-  const result = await vg.coordinator().query(
-    vg.sql`
-      SELECT x, AVG(loss) AS loss, model_type
-      FROM loss_landscape
-      WHERE ABS(y) < 0.05
-      GROUP BY x, model_type
-      ORDER BY model_type, x
-    `
-  );
-  const data = Array.from(result);
-
-  if (data.length === 0) {
-    return html`<p style="color: #8b949e; text-align: center; padding: 2rem;">No loss landscape data available. Run SLURM job first.</p>`;
-  }
-
-  return Plot.plot({
-    width: 600,
-    height: 400,
-    color: { legend: true },
-    x: { label: "Perturbation (Direction 1)" },
-    y: { label: "Loss" },
-    marks: [
-      Plot.line(data, {
-        x: "x",
-        y: "loss",
-        stroke: "model_type",
-        strokeWidth: 2,
-        tip: true,
-      }),
-      Plot.ruleX([0], { stroke: "#8b949e", strokeDasharray: "4,4" }),
-    ],
-  });
-}
+{ void tablesReady; return renderSpec(specBase + "fig-loss-profile-1d.yaml"); }
 ```
 
 ## Row {height=40%}
 
 ```{ojs}
 //| title: "Loss Landscape Summary Statistics"
-
 {
-  void tableStatus;
-  const result = await vg.coordinator().query(
+  void tablesReady;
+  return renderTable(
     vg.sql`
       SELECT
-        model_type AS model,
-        dataset,
-        MIN(loss) AS min_loss,
-        MAX(loss) AS max_loss,
-        AVG(loss) AS avg_loss,
-        STDDEV(loss) AS std_loss,
+        model_type AS model, dataset,
+        MIN(loss) AS min_loss, MAX(loss) AS max_loss,
+        AVG(loss) AS avg_loss, STDDEV(loss) AS std_loss,
         COUNT(*) AS grid_points
       FROM loss_landscape
       GROUP BY model_type, dataset
       ORDER BY model_type, dataset
-    `
+    `,
+    {
+      columns: ["model", "dataset", "min_loss", "max_loss", "avg_loss", "std_loss", "grid_points"],
+      format: {
+        min_loss: d => d?.toFixed(4), max_loss: d => d?.toFixed(4),
+        avg_loss: d => d?.toFixed(4), std_loss: d => d?.toFixed(4),
+      },
+      header: {
+        model: "Model", dataset: "Dataset", min_loss: "Min Loss",
+        max_loss: "Max Loss", avg_loss: "Avg Loss", std_loss: "Std Loss",
+        grid_points: "Grid Points",
+      },
+    }
   );
-  const data = Array.from(result);
-
-  if (data.length === 0) {
-    return html`<p style="color: #8b949e; text-align: center; padding: 1rem;">No data. Submit SLURM job: <code>sbatch scripts/slurm/loss_landscape.sh all hcrl_sa</code></p>`;
-  }
-
-  return Inputs.table(data, {
-    columns: ["model", "dataset", "min_loss", "max_loss", "avg_loss", "std_loss", "grid_points"],
-    format: {
-      min_loss: d => d?.toFixed(4),
-      max_loss: d => d?.toFixed(4),
-      avg_loss: d => d?.toFixed(4),
-      std_loss: d => d?.toFixed(4),
-    },
-    header: {
-      model: "Model", dataset: "Dataset", min_loss: "Min Loss",
-      max_loss: "Max Loss", avg_loss: "Avg Loss", std_loss: "Std Loss",
-      grid_points: "Grid Points",
-    },
-  });
 }
 ```
 
 # Graph Structure {.tabset}
 
-## Force Graph
+## Network
 
 ### Row
 
 ```{ojs}
-//| title: "CAN Bus Graph Structure (Force-Directed)"
-
-import { renderForceGraph } from "./_ojs/force-graph.js"
-
-viewof graphDataset = {
-  const datasets = [...new Set(graph_samples_json.data.map(d => d.dataset))].sort();
-  return Inputs.select(datasets, { label: "Dataset", value: datasets[0] });
-}
-
-viewof graphAttackType = {
-  const types = [...new Set(graph_samples_json.data.map(d => d.attack_type_name).filter(Boolean))].sort();
-  return Inputs.select([null, ...types], {
-    label: "Attack type",
-    value: null,
-    format: d => d === null ? "All" : d,
-  });
-}
-
-viewof graphLabel = Inputs.select(
-  [null, 0, 1],
-  { label: "Class", value: null, format: d => d === null ? "All" : d === 0 ? "Normal" : "Attack" }
-)
-
-viewof graphColorBy = Inputs.select(
-  ["can_id", "degree", "label", "attack_type", "node_attack_type", "entropy", "clustering"],
-  { label: "Color by", value: "can_id", format: d => ({
-    can_id: "CAN ID", degree: "Degree", label: "Normal/Attack",
-    attack_type: "Attack Type (graph)", node_attack_type: "Attack Type (node)",
-    entropy: "Payload Entropy", clustering: "Clustering Coeff",
-  })[d] || d }
-)
-
-viewof graphEdgeFeature = Inputs.select(
-  [null, "Count", "Frequency", "Mean_Interval", "Temporal_Span", "Regularity", "Degree_Product"],
-  { label: "Edge weight", value: null, format: d => d === null ? "None" : d }
-)
-
-viewof graphSizeBy = Inputs.select(
-  [null, "degree", "Payload_Entropy", "Clustering_Coeff", "Occurrence_Count", "Change_Rate_Mean"],
-  { label: "Node size", value: null, format: d => d === null ? "Uniform" : d === "degree" ? "Degree" : d }
-)
-
-viewof graphShowStats = Inputs.toggle({ label: "Show stats", value: true })
-
-{
-  const d3 = await import("https://cdn.jsdelivr.net/npm/d3@7/+esm");
-  const container = document.createElement("div");
-  container.style.position = "relative";
-  container.style.width = "100%";
-
-  const style = document.createElement("style");
-  style.textContent = `
-    .tooltip {
-      position: absolute;
-      pointer-events: none;
-      background: rgba(13, 17, 23, 0.95);
-      color: #e6edf3;
-      border: 1px solid #30363d;
-      border-radius: 6px;
-      padding: 8px 12px;
-      font-size: 12px;
-      opacity: 0;
-      transition: opacity 0.15s;
-      z-index: 10;
-      max-height: 400px;
-      overflow-y: auto;
-    }
-  `;
-  container.appendChild(style);
-
-  const result = renderForceGraph(d3, container, graph_samples_json.data, {
-    dataset: graphDataset,
-    label: graphLabel,
-    attackType: graphAttackType,
-    colorBy: graphColorBy,
-    edgeFeature: graphEdgeFeature,
-    sizeBy: graphSizeBy,
-    showStats: graphShowStats,
-    width: 900,
-    height: 500,
-  });
-
-  // Metadata card
-  const filtered = graph_samples_json.data.filter(d => {
-    if (graphDataset && d.dataset !== graphDataset) return false;
-    if (graphLabel !== null && graphLabel !== undefined && d.label !== graphLabel) return false;
-    if (graphAttackType && d.attack_type_name !== graphAttackType) return false;
-    return true;
-  });
-  if (filtered.length > 0) {
-    const s = filtered[0];
-    const meta = document.createElement("div");
-    meta.style.cssText = "font-size:11px;color:#8b949e;margin-top:6px;";
-    const parts = [`${s.num_nodes ?? s.nodes.length} nodes`, `${s.num_edges ?? s.links.length} edges`];
-    if (s.id_entropy !== undefined) parts.push(`H(ID)=${s.id_entropy.toFixed(3)}`);
-    if (s.attack_type_name) parts.push(`Type: ${s.attack_type_name}`);
-    if (s.stats) parts.push(`Density: ${s.stats.density?.toFixed(4)}`);
-    meta.textContent = parts.join(" · ");
-    container.appendChild(meta);
-  }
-
-  return container;
-}
+//| title: "CAN Bus Graph Structure (Pre-computed Layout)"
+{ void tablesReady; return renderSpec(specBase + "fig-graph-network.yaml", { skipDataLoad: true }); }
 ```
 
 ## Graph Analysis
@@ -1028,43 +306,19 @@ viewof graphShowStats = Inputs.toggle({ label: "Show stats", value: true })
 
 ```{ojs}
 //| title: "Degree Distribution: Normal vs Attack"
-import { renderDegreeDistribution, renderFeatureRadar, renderAdjacencyMatrices } from "./_ojs/graph-analysis.js"
-
-{
-  return renderDegreeDistribution(Plot, graph_samples_json.data, { width: 900, height: 350 });
-}
+{ void tablesReady; return renderSpec(specBase + "fig-degree-distribution.yaml", { skipDataLoad: true }); }
 ```
 
 ### Row {height=50%}
 
 ```{ojs}
 //| title: "Feature Comparison by Attack Type"
-{
-  void tableStatus;
-  // Load graph statistics Parquet if available
-  const statsLoaded = await safeLoadParquetTable(
-    "graph_stats",
-    await FileAttachment("data/graph_statistics.parquet").url()
-  );
-
-  if (!statsLoaded) {
-    return html`<p style="color: #8b949e; text-align: center; padding: 2rem;">No graph statistics data. Run: <code>python -m graphids.pipeline.export --graphs</code></p>`;
-  }
-
-  const result = await vg.coordinator().query(
-    vg.sql`SELECT * FROM graph_stats`
-  );
-  const statsData = Array.from(result);
-
-  return renderFeatureRadar(Plot, statsData, { width: 900, height: 400 });
-}
+{ void tablesReady; return renderSpec(specBase + "fig-feature-heatmap.yaml"); }
 ```
 
 ```{ojs}
-//| title: "Adjacency Matrices by Attack Type"
-{
-  return renderAdjacencyMatrices(Plot, graph_samples_json.data, { width: 900 });
-}
+//| title: "Adjacency Pattern by Dataset"
+{ void tablesReady; return renderSpec(specBase + "fig-adjacency-matrix.yaml", { skipDataLoad: true }); }
 ```
 
 ## Statistics
@@ -1073,47 +327,12 @@ import { renderDegreeDistribution, renderFeatureRadar, renderAdjacencyMatrices }
 
 ```{ojs}
 //| title: "Graph Statistics by Attack Type"
-{ void tableStatus;
-  const statsLoaded = await safeLoadParquetTable(
-    "graph_stats",
-    await FileAttachment("data/graph_statistics.parquet").url()
-  );
-
-  if (!statsLoaded) {
-    return html`<p style="color: #8b949e; text-align: center; padding: 2rem;">No graph statistics data. Run: <code>python -m graphids.pipeline.export --graphs</code></p>`;
-  }
-
-  return vg.plot(
-    vg.dotX(
-      vg.from("graph_stats"),
-      { x: "density", y: "attack_type_name", fill: "attack_type_name", r: 3 }
-    ),
-    vg.width(400),
-    vg.height(280),
-    vg.colorScheme("tableau10"),
-    vg.xLabel("Graph Density"),
-    vg.yLabel(null),
-    vg.marginLeft(120)
-  );
-}
+{ void tablesReady; return renderSpec(specBase + "fig-graph-stats-boxplot.yaml", { skipDataLoad: true }); }
 ```
 
 ```{ojs}
 //| title: "Clustering Coefficient by Attack Type"
-{ void tableStatus;
-  return vg.plot(
-    vg.dotX(
-      vg.from("graph_stats"),
-      { x: "clustering_coeff", y: "attack_type_name", fill: "attack_type_name", r: 3 }
-    ),
-    vg.width(400),
-    vg.height(280),
-    vg.colorScheme("tableau10"),
-    vg.xLabel("Clustering Coefficient"),
-    vg.yLabel(null),
-    vg.marginLeft(120)
-  );
-}
+{ void tablesReady; return renderSpec(specBase + "fig-clustering-coeff.yaml", { skipDataLoad: true }); }
 ```
 
 ### Row {height=50%}
@@ -1121,8 +340,8 @@ import { renderDegreeDistribution, renderFeatureRadar, renderAdjacencyMatrices }
 ```{ojs}
 //| title: "Summary Statistics by Attack Type"
 {
-  void tableStatus;
-  const result = await vg.coordinator().query(
+  void tablesReady;
+  return renderTable(
     vg.sql`
       SELECT
         attack_type_name,
@@ -1136,43 +355,23 @@ import { renderDegreeDistribution, renderFeatureRadar, renderAdjacencyMatrices }
       FROM graph_stats
       GROUP BY attack_type_name
       ORDER BY attack_type_name
-    `
+    `,
+    {
+      columns: ["attack_type_name", "n", "mean_density", "std_density", "mean_degree", "mean_clustering", "mean_components", "mean_bc_max"],
+      header: {
+        attack_type_name: "Attack Type", n: "Count",
+        mean_density: "Density (u)", std_density: "Density (s)",
+        mean_degree: "Degree (u)", mean_clustering: "Clustering (u)",
+        mean_components: "Components (u)", mean_bc_max: "BC Max (u)",
+      },
+    }
   );
-  const data = Array.from(result);
-
-  return Inputs.table(data, {
-    columns: ["attack_type_name", "n", "mean_density", "std_density", "mean_degree", "mean_clustering", "mean_components", "mean_bc_max"],
-    header: {
-      attack_type_name: "Attack Type", n: "Count",
-      mean_density: "Density (μ)", std_density: "Density (σ)",
-      mean_degree: "Degree (μ)", mean_clustering: "Clustering (μ)",
-      mean_components: "Components (μ)", mean_bc_max: "BC Max (μ)",
-    },
-  });
 }
 ```
 
 ```{ojs}
-//| title: "Parallel Coordinates: Graph Features"
-import { renderParallelCoordinates } from "./_ojs/graph-analysis.js"
-
-{
-  void tableStatus;
-  const result = await vg.coordinator().query(
-    vg.sql`SELECT * FROM graph_stats`
-  );
-  const statsData = Array.from(result);
-
-  if (statsData.length === 0) {
-    return html`<p style="color: #8b949e; text-align: center; padding: 2rem;">No graph statistics data available.</p>`;
-  }
-
-  const d3 = await import("https://cdn.jsdelivr.net/npm/d3@7/+esm");
-  const container = document.createElement("div");
-  container.style.width = "100%";
-  renderParallelCoordinates(d3, container, statsData, { width: 900, height: 400 });
-  return container;
-}
+//| title: "Graph Feature Overview"
+{ void tablesReady; return renderSpec(specBase + "fig-graph-parallel.yaml", { skipDataLoad: true }); }
 ```
 
 # Datasets
@@ -1186,11 +385,8 @@ import { renderParallelCoordinates } from "./_ojs/graph-analysis.js"
   return Inputs.table(data, {
     columns: ["name", "domain", "protocol", "source", "description"],
     header: {
-      name: "Dataset",
-      domain: "Domain",
-      protocol: "Protocol",
-      source: "Source",
-      description: "Description"
+      name: "Dataset", domain: "Domain", protocol: "Protocol",
+      source: "Source", description: "Description"
     },
     width: { name: 100, domain: 100, protocol: 80, source: 120, description: 300 }
   });
@@ -1203,47 +399,7 @@ import { renderParallelCoordinates } from "./_ojs/graph-analysis.js"
 
 ```{ojs}
 //| title: "Run Timeline"
-{
-  void tableStatus;
-  const result = await vg.coordinator().query(
-    vg.sql`
-      SELECT
-        run_id,
-        model_type,
-        stage,
-        started_at,
-        completed_at
-      FROM runs
-      WHERE started_at IS NOT NULL AND completed_at IS NOT NULL
-      ORDER BY started_at
-    `
-  );
-  const data = Array.from(result).filter(d => d.started_at && d.completed_at);
-
-  if (data.length === 0) {
-    return html`<p style="color: #8b949e; text-align: center; padding: 2rem;">No runs with timing data available.</p>`;
-  }
-
-  return Plot.plot({
-    width: 900,
-    height: Math.max(200, data.length * 16),
-    marginLeft: 220,
-    x: { label: "Time", type: "utc" },
-    y: { label: null },
-    color: { legend: true, domain: STAGE_MODEL_DOMAIN, range: STAGE_MODEL_RANGE },
-    marks: [
-      Plot.barX(data, {
-        y: "run_id",
-        x1: "started_at",
-        x2: "completed_at",
-        fill: "model_type",
-        sort: { y: "x1" },
-        tip: true,
-        title: d => `${d.run_id}\n${d.stage}\n${d.started_at} → ${d.completed_at}`,
-      }),
-    ],
-  });
-}
+{ void tablesReady; return renderSpec(specBase + "fig-run-timeline.yaml"); }
 ```
 
 ## Row {height=30%}
@@ -1252,7 +408,7 @@ import { renderParallelCoordinates } from "./_ojs/graph-analysis.js"
 //| title: "Model Predictions Summary"
 
 viewof predRun = {
-  void tableStatus;
+  void tablesReady;
   const result = await vg.coordinator().query(
     vg.sql`SELECT DISTINCT run_id FROM metrics ORDER BY run_id`
   );
@@ -1261,37 +417,24 @@ viewof predRun = {
 }
 
 {
-  const result = await vg.coordinator().query(
-    vg.sql`
-      SELECT
-        model,
-        f1, accuracy, precision, recall, auc, mcc, n_samples
-      FROM metrics
-      WHERE run_id = '${predRun}'
-    `
+  const escaped = safeEq(predRun);
+  return renderTable(
+    `SELECT model, f1, accuracy, precision, recall, auc, mcc, n_samples
+     FROM metrics WHERE run_id = '${escaped}'`,
+    {
+      columns: ["model", "f1", "accuracy", "precision", "recall", "auc", "mcc", "n_samples"],
+      format: {
+        f1: d => d?.toFixed(4), accuracy: d => d?.toFixed(4),
+        precision: d => d?.toFixed(4), recall: d => d?.toFixed(4),
+        auc: d => d?.toFixed(4), mcc: d => d?.toFixed(4),
+      },
+      header: {
+        model: "Model", f1: "F1", accuracy: "Accuracy",
+        precision: "Precision", recall: "Recall", auc: "AUC",
+        mcc: "MCC", n_samples: "Samples",
+      },
+    }
   );
-  const data = Array.from(result);
-
-  if (data.length === 0) {
-    return html`<p style="color: #8b949e; text-align: center; padding: 1rem;">No metrics for this run.</p>`;
-  }
-
-  return Inputs.table(data, {
-    columns: ["model", "f1", "accuracy", "precision", "recall", "auc", "mcc", "n_samples"],
-    format: {
-      f1: d => d?.toFixed(4),
-      accuracy: d => d?.toFixed(4),
-      precision: d => d?.toFixed(4),
-      recall: d => d?.toFixed(4),
-      auc: d => d?.toFixed(4),
-      mcc: d => d?.toFixed(4),
-    },
-    header: {
-      model: "Model", f1: "F1", accuracy: "Accuracy",
-      precision: "Precision", recall: "Recall", auc: "AUC",
-      mcc: "MCC", n_samples: "Samples",
-    },
-  });
 }
 ```
 
@@ -1299,56 +442,5 @@ viewof predRun = {
 
 ```{ojs}
 //| title: "Confusion Matrix Proxy (FPR vs FNR)"
-
-{
-  void tableStatus;
-  const result = await vg.coordinator().query(
-    vg.sql`
-      SELECT
-        dataset,
-        model,
-        fpr,
-        fnr
-      FROM metrics
-      WHERE fpr IS NOT NULL AND fnr IS NOT NULL
-    `
-  );
-  const data = Array.from(result);
-
-  return Plot.plot({
-    width: 600,
-    height: 350,
-    x: { label: "False Positive Rate (FPR)", domain: [0, 0.5] },
-    y: { label: "False Negative Rate (FNR)", domain: [0, 0.5] },
-    color: { legend: true, domain: MODEL_DOMAIN, range: MODEL_RANGE },
-    marks: [
-      Plot.dot(data, {
-        x: "fpr",
-        y: "fnr",
-        fill: "model",
-        stroke: "model",
-        r: 7,
-        tip: true,
-        title: d => `${d.dataset} / ${d.model}\nFPR: ${d.fpr.toFixed(4)}\nFNR: ${d.fnr.toFixed(4)}`,
-      }),
-      // Perfect classifier marker
-      Plot.dot([{ x: 0, y: 0 }], {
-        x: "x",
-        y: "y",
-        r: 10,
-        stroke: "#3fb950",
-        strokeWidth: 2,
-        fill: "none",
-      }),
-      Plot.text([{ x: 0, y: 0 }], {
-        x: "x",
-        y: "y",
-        text: ["ideal"],
-        dy: 16,
-        fontSize: 10,
-        fill: "#8b949e",
-      }),
-    ],
-  });
-}
+{ void tablesReady; return renderSpec(specBase + "fig-confusion-proxy.yaml"); }
 ```

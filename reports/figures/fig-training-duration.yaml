@@ -1,0 +1,29 @@
+data:
+  training_duration:
+    query: >
+      SELECT run_id, dataset, model_type, scale, stage,
+        CASE
+          WHEN duration_seconds IS NOT NULL AND duration_seconds > 0
+          THEN duration_seconds / 60.0
+          WHEN started_at IS NOT NULL AND completed_at IS NOT NULL
+          THEN EXTRACT(EPOCH FROM (CAST(completed_at AS TIMESTAMP) - CAST(started_at AS TIMESTAMP))) / 60.0
+          ELSE NULL
+        END AS duration_min
+      FROM runs
+      WHERE stage NOT IN ('evaluation')
+plot:
+  - mark: barX
+    data: { from: training_duration }
+    y: run_id
+    x: duration_min
+    fill: model_type
+    sort: { y: "-x" }
+  - mark: ruleX
+    data: [0]
+  - legend: color
+width: 900
+height: 500
+marginLeft: 220
+_palette: training
+xLabel: Duration (minutes)
+yLabel: null

@@ -1,0 +1,19 @@
+# Shared color palettes and sizing tokens for Mosaic specs.
+# Specs reference palettes via `_palette: name` — resolved by renderSpec().
+
+palettes:
+  model-3:
+    colorDomain: [gat, vgae, fusion]
+    colorRange: ["#3fb950", "#58a6ff", "#bc8cff"]
+  model-4:
+    colorDomain: [vgae, gat, dqn, eval]
+    colorRange: ["#58a6ff", "#3fb950", "#d29922", "#bc8cff"]
+  training:
+    colorDomain: [vgae, gat, dqn]
+    colorRange: ["#58a6ff", "#3fb950", "#d29922"]
+  binary-label:
+    colorDomain: [normal, attack]
+    colorRange: ["#3fb950", "#f85149"]
+  scale:
+    colorDomain: [large, small]
+    colorRange: ["#58a6ff", "#79c0ff"]

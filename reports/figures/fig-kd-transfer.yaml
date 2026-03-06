@@ -1,0 +1,27 @@
+data:
+  kd_transfer:
+    file: data/kd_transfer.parquet
+params:
+  sel: { select: single }
+vconcat:
+  - input: menu
+    from: kd_transfer
+    column: metric_name
+    label: Metric
+    as: $sel
+  - plot:
+      - mark: dot
+        data: { from: kd_transfer, filterBy: $sel }
+        x: teacher_value
+        y: student_value
+        fill: dataset
+        stroke: dataset
+        r: 7
+        opacity: 0.8
+      - legend: color
+    width: 600
+    height: 320
+    xLabel: Teacher (Large)
+    xDomain: [0.5, 1.01]
+    yLabel: Student (Small + KD)
+    yDomain: [0.5, 1.01]

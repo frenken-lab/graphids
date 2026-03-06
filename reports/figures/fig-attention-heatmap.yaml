@@ -1,0 +1,25 @@
+data:
+  attention_weights:
+    file: data/attention_weights.parquet
+params:
+  sel: { select: single }
+vconcat:
+  - input: menu
+    from: attention_weights
+    column: run_id
+    label: Run
+    as: $sel
+  - plot:
+      - mark: cell
+        data: { from: attention_weights, filterBy: $sel }
+        x: { sql: "'Head ' || head" }
+        y: { sql: "'Layer ' || layer" }
+        fill: mean_alpha
+        inset: 0.5
+      - legend: color
+    width: 500
+    height: 280
+    colorScheme: blues
+    colorLabel: Mean Attention
+    xLabel: Attention Head
+    yLabel: GAT Layer

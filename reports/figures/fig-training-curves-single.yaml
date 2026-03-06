@@ -1,0 +1,22 @@
+data:
+  training_curves:
+    file: data/training_curves.parquet
+params:
+  sel: { select: single }
+vconcat:
+  - input: menu
+    from: training_curves
+    column: run_id
+    label: Run
+    as: $sel
+  - plot:
+      - mark: lineY
+        data: { from: training_curves, filterBy: $sel }
+        x: epoch
+        y: value
+        stroke: metric_name
+      - legend: color
+    width: 680
+    height: 350
+    xLabel: Epoch
+    yLabel: Value

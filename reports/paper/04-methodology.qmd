@@ -78,48 +78,7 @@ def _window_to_graph(self, window: np.ndarray) -> Data:
 //| label: fig-can-graph
 //| fig-cap: "Force-directed CAN bus graph structure. Nodes represent unique CAN IDs within a traffic window; edges encode sequential message transitions. Per-node coloring shows individual attack labels (green = normal, red = DoS, gold = fuzzing, purple = gear spoofing, pink = RPM spoofing), revealing mixed attack patterns within a single graph. Node size reflects degree centrality. Representative samples selected by structural diversity (density, clustering, node count)."
 
-import { renderForceGraph } from "../_ojs/force-graph.js"
-
-graph_samples_json = FileAttachment("../data/graph_samples.json").json()
-
-{
-  const d3 = await import("https://cdn.jsdelivr.net/npm/d3@7/+esm");
-  const container = document.createElement("div");
-  container.style.position = "relative";
-  container.style.width = "100%";
-
-  const style = document.createElement("style");
-  style.textContent = `
-    .tooltip {
-      position: absolute;
-      pointer-events: none;
-      background: rgba(13, 17, 23, 0.95);
-      color: #e6edf3;
-      border: 1px solid #30363d;
-      border-radius: 6px;
-      padding: 8px 12px;
-      font-size: 12px;
-      opacity: 0;
-      transition: opacity 0.15s;
-      z-index: 10;
-      max-height: 400px;
-      overflow-y: auto;
-    }
-  `;
-  container.appendChild(style);
-
-  // Show attack graph if available, else first graph
-  const attackSample = graph_samples_json.data.find(d => d.attack_type > 0) || graph_samples_json.data[0];
-  const hasV2 = attackSample && attackSample.attack_type !== undefined;
-  renderForceGraph(d3, container, graph_samples_json.data, {
-    dataset: attackSample?.dataset,
-    colorBy: hasV2 ? "node_attack_type" : "can_id",
-    width: 700,
-    height: 450,
-  });
-
-  return container;
-}
+renderSpec(await FileAttachment("../figures/fig-graph-network.yaml").url())
 ```
 
 Node features (26 dimensions) comprise four groups of aggregated statistics per CAN ID within each window. **Payload statistics** (17 features): CAN ID, per-byte mean and standard deviation of payload bytes across occurrences [@aljabri2025entropy], and Shannon entropy of the byte value distribution. The standard deviation captures payload variability lost by mean-only aggregation---normal ECU signals have low std (structured sensor data), while DoS and fuzzing attacks produce high std from random injection. **Temporal dynamics** (4 features): mean and maximum absolute payload change between consecutive appearances of each CAN ID (capturing injection transients), a split-half ratio comparing first-half to second-half mean payload (detecting within-window non-stationarity), and last temporal position in the window. **Structural features** (2 features): local clustering coefficient per node (measuring triangle density in the 1-hop neighborhood, which decreases under DoS flooding that creates star-like topology) and min-max normalized occurrence count. **Graph-level attribute**: Shannon entropy of the CAN ID distribution ($H_{\text{ID}}$), stored as a graph attribute rather than a node feature---DoS attacks concentrate on single IDs (low $H_{\text{ID}}$), while fuzzing randomizes IDs (high $H_{\text{ID}}$). **Higher-order moments** (2 features): scalar average skewness and kurtosis across payload bytes, capturing distribution asymmetry and tail heaviness from attack injections.

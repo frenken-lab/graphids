@@ -13,7 +13,7 @@ Raw CAN-graph data projected via UMAP shows loose clustering that indicates limi
 ```{ojs}
 //| label: fig-umap-vgae
 //| fig-cap: "UMAP projection of VGAE latent embeddings. Normal samples (green) and attack samples (red) show separation patterns learned by the autoencoder without explicit labels."
-renderSpec(await FileAttachment("figures/fig-umap-vgae.json").url())
+renderSpec(await FileAttachment("../figures/fig-umap-vgae.yaml").url())
 ```
 
 #### GAT Embeddings
@@ -23,7 +23,7 @@ UMAP projections of graph-level embeddings from the trained GAT classifier's pen
 ```{ojs}
 //| label: fig-umap-gat
 //| fig-cap: "UMAP projection of GAT penultimate-layer embeddings. The supervised classifier produces well-separated clusters, with emergent multi-class structure despite binary training."
-renderSpec(await FileAttachment("figures/fig-umap-gat.json").url())
+renderSpec(await FileAttachment("../figures/fig-umap-gat.yaml").url())
 ```
 
 #### Teacher vs Student
@@ -49,7 +49,7 @@ This approach enables the detection of subtle anomalies by jointly evaluating no
 ```{ojs}
 //| label: fig-recon-errors
 //| fig-cap: "Distribution of VGAE composite reconstruction errors. Normal samples (green) concentrate at low error values, while attack samples (red) exhibit higher reconstruction errors, enabling threshold-based anomaly detection."
-renderSpec(await FileAttachment("figures/fig-recon-errors.json").url())
+renderSpec(await FileAttachment("../figures/fig-recon-errors.yaml").url())
 ```
 
 ### Graph Structure Analysis
@@ -59,7 +59,7 @@ To quantify structural differences between normal and attack graphs, we compute 
 ```{ojs}
 //| label: fig-graph-stats-boxplot
 //| fig-cap: "Distribution of graph-level structural metrics by attack type. Box plots show density, clustering coefficient, average degree, and degree standard deviation. Clear distributional differences validate that attack types produce structurally distinct CAN bus graphs."
-renderSpec(await FileAttachment("figures/fig-graph-stats-boxplot.json").url())
+renderSpec(await FileAttachment("../figures/fig-graph-stats-boxplot.yaml").url())
 ```
 
 @fig-adjacency-matrix presents adjacency matrix heatmaps for representative normal and attack graphs, with rows and columns ordered by CAN ID. The structural differences are visually apparent: normal graphs show regular, sparse patterns reflecting legitimate ECU communication, while DoS attacks produce dense rows/columns (high-frequency injection), fuzzing creates scattered connections (random ID injection), and spoofing targets specific CAN IDs.
@@ -68,12 +68,8 @@ renderSpec(await FileAttachment("figures/fig-graph-stats-boxplot.json").url())
 //| label: fig-adjacency-matrix
 //| fig-cap: "Adjacency matrix heatmaps for representative CAN bus graphs. Rows and columns represent CAN IDs sorted numerically; filled cells indicate message transitions. Normal graphs show sparse, structured patterns. Attack graphs exhibit distinct structural signatures: DoS creates dense rows, fuzzing produces scattered connections, spoofing targets specific IDs."
 
-import { renderAdjacencyMatrices as renderAdjMat } from "../_ojs/graph-analysis.js"
-adj_graph_samples = FileAttachment("../data/graph_samples.json").json()
-
-{
-  return renderAdjMat(Plot, adj_graph_samples.data, { width: 700, maxGraphs: 4 });
-}
+// Adjacency matrix visualization replaced by spec-based approach
+renderSpec(await FileAttachment("../figures/fig-adjacency-matrix.yaml").url())
 ```
 
 ### Knowledge Transfer Analysis
@@ -87,7 +83,7 @@ To understand which graph structural features the GAT prioritizes, we analyze th
 ```{ojs}
 //| label: fig-attention-heatmap
 //| fig-cap: "GAT attention weight heatmap across layers and heads. Color intensity indicates mean attention magnitude. Different heads learn to attend to different structural patterns in the CAN bus graph."
-renderSpec(await FileAttachment("figures/fig-attention-heatmap.json").url())
+renderSpec(await FileAttachment("../figures/fig-attention-heatmap.yaml").url())
 ```
 
 #### CKA Similarity
@@ -97,7 +93,7 @@ To quantify how well the student model replicates the teacher's internal represe
 ```{ojs}
 //| label: fig-cka-heatmap
 //| fig-cap: "CKA similarity between teacher and student layers. High diagonal values indicate the student successfully learns representations aligned with the teacher at each network depth."
-renderSpec(await FileAttachment("figures/fig-cka-heatmap.json").url())
+renderSpec(await FileAttachment("../figures/fig-cka-heatmap.yaml").url())
 ```
 
 #### Loss Landscapes
@@ -108,38 +104,7 @@ Loss landscape contour plots reveal the geometry of the optimization surface aro
 //| label: fig-loss-landscape-paper
 //| fig-cap: "2D loss landscape contour plots for VGAE, GAT, and DQN models. Contours show loss values around the trained minimum (center). Wider, smoother basins suggest better generalization properties."
 
-{
-  await loadTable("loss_landscape", FileAttachment("../data/loss_landscape.parquet"));
-
-  // Get available models for dropdown
-  const modelsResult = await vg.coordinator().query(
-    vg.sql`SELECT DISTINCT model_type FROM loss_landscape ORDER BY model_type`
-  );
-  const models = Array.from(modelsResult, d => d.model_type);
-  const modelSelect = Inputs.select(models, { label: "Model", value: models[0] });
-
-  // Fetch data for selected model (default: first)
-  const result = await vg.coordinator().query(
-    vg.sql`SELECT x, y, loss FROM loss_landscape WHERE model_type = '${models[0]}'`
-  );
-  const data = Array.from(result);
-
-  const plot = Plot.plot({
-    width: 500,
-    height: 450,
-    color: { scheme: "viridis", legend: true, label: "Loss" },
-    x: { label: "Direction 1" },
-    y: { label: "Direction 2" },
-    marks: [
-      Plot.cell(data, { x: "x", y: "y", fill: "loss" }),
-    ],
-  });
-
-  const container = document.createElement("div");
-  container.appendChild(modelSelect);
-  container.appendChild(plot);
-  return container;
-}
+renderSpec(await FileAttachment("../figures/fig-loss-landscape-2d.yaml").url())
 ```
 
 :::
@@ -153,5 +118,5 @@ The learned DQN fusion policy exhibits interpretable, context-specific weighting
 ```{ojs}
 //| label: fig-dqn-policy
 //| fig-cap: "DQN fusion weight (alpha) distribution. The multimodal pattern with peaks at distinct alpha values indicates the policy learned context-specific fusion strategies rather than simple averaging."
-renderSpec(await FileAttachment("figures/fig-dqn-policy.json").url())
+renderSpec(await FileAttachment("../figures/fig-dqn-policy.yaml").url())
 ```

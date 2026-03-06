@@ -33,21 +33,21 @@ Full analysis: `~/plans/orchestration-redesign-decision.md`
 
 ## Dashboard & Reports
 
-**Dashboard: Quarto** (`reports/dashboard.qmd`). Single-file, multi-page Quarto dashboard using OJS + Mosaic/vgplot + DuckDB-WASM. Data loaded from `reports/data/` (Parquet + JSON). Pages: Overview, Performance, Training, GAT & DQN, Knowledge Distillation, Graph Structure, Datasets, Staging.
+**Dashboard: Quarto** (`reports/dashboard.qmd`, ~570 lines). Spec-driven multi-page dashboard. ~25 charts rendered declaratively from YAML specs in `reports/figures/` via `renderSpec()`. Remaining charts use `renderTable()` (SQL → table) or thin OJS stubs (reactive logic). Data loaded from `reports/data/` (Parquet + JSON) into DuckDB-WASM. Pages: Overview, Performance, Training, GAT & DQN, Knowledge Distillation, Loss Landscape, Graph Structure, Datasets, Staging. See `reports/FIGURES.md` for the full chart registry.
 
-**Paper:** `reports/paper/` contains the full research paper (10 chapters). Chapters use `{{< include _setup.qmd >}}` (Quarto shortcode) to initialize Mosaic/vgplot — NOT `include-before-body` (which inserts raw HTML and skips OJS compilation). Paper data lives in `reports/paper/data/` (CSVs) and `reports/data/` (Parquet + JSON).
+**YAML specs:** Declarative Mosaic vgplot specs in `reports/figures/*.yaml`, rendered by `renderSpec()` from `_ojs/mosaic-renderer.js`. Supports YAML (via js-yaml CDN) and JSON. Specs define `data` (file or SQL query), `params` (selections), `vconcat`/`plot` arrays. The `skipDataLoad: true` option skips file-based data loading when tables are already in DuckDB (dashboard init block). Specs with SQL-derived tables (`data.*.query`) use default mode (no skipDataLoad).
 
-**Paper figures — two patterns:**
-- **Tier A (6 figures):** Declarative JSON specs in `reports/paper/figures/`, rendered by `renderSpec()` from `_ojs/mosaic-renderer.js`. Uses `@uwdata/mosaic-spec`'s `parseSpec()` → `astToDOM()`. Specs define `data`, `params`, `vconcat` with `plot` arrays. Color legends use `{ "legend": "color" }` inside the `plot` array (NOT `colorLegend` as a plot attribute). Data file paths resolved to absolute URLs from site root.
-- **Tier B/C (5 figures):** Legacy OJS + imperative vgplot API (Observable Plot, D3 force graph). Dashboard uses the same legacy pattern.
+**Paper:** `reports/paper/` contains the full research paper (10 chapters). Chapters use `{{< include _setup.qmd >}}` (Quarto shortcode) to initialize Mosaic/vgplot. Paper figures now reference shared YAML specs in `reports/figures/` (via `../figures/fig-*.yaml`). Paper data lives in `reports/paper/data/` (CSVs) and `reports/data/` (Parquet + JSON).
 
-Dashboard data: `graphids/pipeline/export.py` exports leaderboard, runs, metrics, training curves, datasets, KD transfer, model sizes, and graph samples (~2s, login node safe) directly to `reports/data/`. `export_data_for_reports()` copies datalake Parquet to `reports/data/`. Heavy analysis (UMAP, attention, CKA, etc.) lives in `notebooks/analysis/`.
+Dashboard data: `graphids/pipeline/export.py` exports leaderboard, runs, metrics, training curves, datasets, KD transfer, model sizes (JSON + Parquet), graph samples, graph statistics, and pre-computed graph layouts (`graph_nodes.parquet`, `graph_edges.parquet` via `spring_layout`) (~2s, login node safe) directly to `reports/data/`. `export_data_for_reports()` copies datalake Parquet to `reports/data/`. Heavy analysis (UMAP, attention, CKA, etc.) lives in `notebooks/analysis/`.
 
 **Playground:** Two-tier prototyping — `notebooks/playground.ipynb` (pyobsplot + DuckDB Python, rapid inline iteration) → `reports/playground.qmd` (Mosaic/vgplot + DuckDB-WASM, production preview). See `~/plans/playground-conventions.md` for shared patterns.
 
 **Deployment:** GitHub Actions renders Quarto on push to main and deploys via `actions/deploy-pages` (not gh-pages branch). CI: lint → test → quarto-build → deploy. Mosaic/vgplot loaded from jsdelivr CDN (`@uwdata/vgplot@0.21.1`).
 
-**Verification caveat:** `quarto render` only proves `.qmd` → HTML compilation — it does NOT execute OJS/JS. Mosaic/vgplot bugs (DuckDB-WASM init, CDN failures, API misuse) are runtime-only. **Use Playwright MCP** for headless verification on OSC: render → `python3 -m http.server` from `_site/` → `browser_navigate` → `browser_console_messages(level="error")` → `browser_take_screenshot`. See `~/.claude/rules/tooling.md` → Playwright Capabilities.
+**Verification caveat:** `quarto render` only proves `.qmd` → HTML compilation — it does NOT execute OJS/JS. Mosaic/vgplot bugs (DuckDB-WASM init, CDN failures, API misuse) are runtime-only. **Use `/verify-site` skill** for comprehensive Playwright-based verification. Key gotchas: (1) dashboard tabs lazy-load — must click all 9 tabs; (2) restart HTTP server on a new port after each re-render; (3) paper needs 15s wait for async OJS. See `~/.claude/rules/tooling.md` → Playwright Capabilities.
+
+**Mosaic mark constraint:** vgplot@0.21.1 does NOT have `boxX`/`boxY`. Use `dotX`/`dotY` for distribution plots. `tickX`/`tickY` parse OK but crash during render. Always test new mark types in browser before committing.
 
 ## General Principles
 

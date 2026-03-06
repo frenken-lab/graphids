@@ -1,0 +1,24 @@
+data:
+  dqn_policy:
+    file: data/dqn_policy.parquet
+params:
+  sel: { select: single }
+vconcat:
+  - input: menu
+    from: dqn_policy
+    column: run_id
+    label: Run
+    as: $sel
+  - plot:
+      - mark: rectY
+        data: { from: dqn_policy, filterBy: $sel }
+        x: { bin: alpha }
+        y: { count: true }
+        fill: steelblue
+        insetLeft: 0.5
+        insetRight: 0.5
+    width: 500
+    height: 280
+    colorScheme: oranges
+    xLabel: Alpha (GAT weight in fusion)
+    yLabel: Count

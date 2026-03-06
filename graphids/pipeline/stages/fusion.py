@@ -178,6 +178,17 @@ def train_fusion(cfg: PipelineConfig) -> Path:
 
     ckpt = checkpoint_path(cfg, "fusion")
     cfg.save(config_path(cfg, "fusion"))
+
+    # Write metrics.json (consistent with training.py stages, needed by tune trainable)
+    import json
+
+    metrics_out = out / "metrics.json"
+    metrics_out.write_text(
+        json.dumps(
+            {"best_acc": best_acc, "val_loss": 1.0 - best_acc, "fusion_method": method},
+            indent=2,
+        )
+    )
     log.info("Saved %s fusion: %s (best_acc=%.4f)", method, ckpt, best_acc)
     cleanup()
     return ckpt

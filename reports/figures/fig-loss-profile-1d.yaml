@@ -1,0 +1,20 @@
+data:
+  loss_profile:
+    query: >
+      SELECT x, AVG(loss) AS loss, model_type
+      FROM loss_landscape
+      WHERE ABS(y) < 0.05
+      GROUP BY x, model_type
+      ORDER BY model_type, x
+plot:
+  - mark: lineY
+    data: { from: loss_profile }
+    x: x
+    y: loss
+    stroke: model_type
+    strokeWidth: 2
+  - legend: color
+width: 600
+height: 400
+xLabel: Perturbation (Direction 1)
+yLabel: Loss

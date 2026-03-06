@@ -1,0 +1,23 @@
+data:
+  confusion_data:
+    query: >
+      SELECT dataset, model, fpr, fnr
+      FROM metrics
+      WHERE fpr IS NOT NULL AND fnr IS NOT NULL
+plot:
+  - mark: dot
+    data: { from: confusion_data }
+    x: fpr
+    y: fnr
+    fill: model
+    stroke: model
+    r: 7
+    opacity: 0.8
+  - legend: color
+width: 600
+height: 350
+_palette: model-3
+xLabel: False Positive Rate (FPR)
+xDomain: [0, 0.5]
+yLabel: False Negative Rate (FNR)
+yDomain: [0, 0.5]

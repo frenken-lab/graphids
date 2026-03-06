@@ -1,0 +1,37 @@
+data:
+  pareto_all:
+    query: >
+      SELECT * FROM pareto
+  pareto_front:
+    query: >
+      SELECT * FROM pareto WHERE is_pareto = true ORDER BY param_count_M
+plot:
+  - mark: dot
+    data: { from: pareto_all }
+    x: param_count_M
+    y: f1
+    fill: model
+    stroke: model
+    r: 8
+  - mark: line
+    data: { from: pareto_front }
+    x: param_count_M
+    y: f1
+    stroke: "#f85149"
+    strokeWidth: 2
+    strokeDash: [6, 3]
+  - mark: text
+    data: { from: pareto_all }
+    x: param_count_M
+    y: f1
+    text: label
+    dy: -14
+    fontSize: 10
+  - legend: color
+width: 680
+height: 400
+xScale: log
+xLabel: Parameters (millions)
+yLabel: Best F1 Score
+yDomain: [0.5, 1.01]
+_palette: model-4

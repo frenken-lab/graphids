@@ -1,0 +1,41 @@
+data:
+  graph_nodes:
+    file: data/graph_nodes.parquet
+  graph_edges:
+    file: data/graph_edges.parquet
+params:
+  sel:
+    select: crossfilter
+vconcat:
+  - input: menu
+    from: graph_nodes
+    column: dataset
+    label: Dataset
+    as: $sel
+  - input: menu
+    from: graph_nodes
+    column: attack_type_name
+    label: Attack Type
+    as: $sel
+  - plot:
+      - mark: link
+        data: { from: graph_edges, filterBy: $sel }
+        x1: source_x
+        y1: source_y
+        x2: target_x
+        y2: target_y
+        stroke: "#30363d"
+        strokeOpacity: 0.3
+      - mark: dot
+        data: { from: graph_nodes, filterBy: $sel }
+        x: x
+        y: y
+        fill: can_id
+        r: 5
+        opacity: 0.8
+      - legend: color
+    width: 900
+    height: 500
+    colorScheme: tableau10
+    xAxis: null
+    yAxis: null
