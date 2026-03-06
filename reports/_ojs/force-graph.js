@@ -54,7 +54,7 @@ const FEATURE_GROUPS = [
  * @param {object} d3 - D3 module
  * @param {HTMLElement} container - DOM element to render into
  * @param {Array} data - Array of graph samples (v1 or v2 schema)
- * @param {object} options - {dataset, label, attackType, colorBy, edgeWeights, width, height}
+ * @param {object} options - {dataset, label, attackType, colorBy, edgeFeature, sizeBy, showStats, edgeWeights, width, height}
  * @returns {{ simulation: object, destroy: function }} cleanup handle
  */
 export function renderForceGraph(d3, container, data, options = {}) {
@@ -62,6 +62,9 @@ export function renderForceGraph(d3, container, data, options = {}) {
   const labelFilter = options.label;
   const attackTypeFilter = options.attackType;
   const colorBy = options.colorBy || 'can_id';
+  const edgeFeature = options.edgeFeature || null;  // index into EDGE_FEATURE_NAMES
+  const sizeBy = options.sizeBy || null;  // index into NODE_FEATURE_NAMES or 'degree'
+  const showStats = options.showStats ?? false;
   const width = options.width || 680;
   const height = options.height || 500;
 
@@ -101,7 +104,22 @@ export function renderForceGraph(d3, container, data, options = {}) {
     degree.set(l.target, (degree.get(l.target) || 0) + 1);
   });
   const maxDeg = Math.max(...degree.values(), 1);
-  const rScale = d3.scaleSqrt().domain([0, maxDeg]).range([3, 12]);
+
+  // Node size: by feature value or degree (default)
+  let rScale;
+  if (sizeBy === 'degree' || sizeBy === null) {
+    rScale = d => d3.scaleSqrt().domain([0, maxDeg]).range([3, 12])(degree.get(d.id) || 0);
+  } else {
+    const featureIdx = typeof sizeBy === 'number' ? sizeBy : NODE_FEATURE_NAMES.indexOf(sizeBy);
+    if (featureIdx >= 0) {
+      const vals = nodes.map(n => n.features?.[featureIdx] ?? 0);
+      const ext = d3.extent(vals);
+      const scale = d3.scaleSqrt().domain(ext[0] === ext[1] ? [0, 1] : ext).range([3, 12]);
+      rScale = d => scale(d.features?.[featureIdx] ?? 0);
+    } else {
+      rScale = d => d3.scaleSqrt().domain([0, maxDeg]).range([3, 12])(degree.get(d.id) || 0);
+    }
+  }
 
   // --- Color function based on colorBy mode ---
   const colorFn = buildColorFn(d3, colorBy, nodes, degree, maxDeg, sample, isV2);
@@ -110,15 +128,32 @@ export function renderForceGraph(d3, container, data, options = {}) {
     .force('link', d3.forceLink(links).id(d => d.id).distance(30))
     .force('charge', d3.forceManyBody().strength(-40))
     .force('center', d3.forceCenter(width / 2, height / 2))
-    .force('collision', d3.forceCollide().radius(d => rScale(degree.get(d.id) || 0) + 2));
+    .force('collision', d3.forceCollide().radius(d => rScale(d) + 2));
 
-  // Edge styling
+  // Edge styling: by edge feature or external weights
   const edgeWeights = options.edgeWeights || null;
   let edgeWidthFn = () => 1;
   let edgeColorFn = () => '#d1d5db';
   let edgeOpacityFn = () => 0.4;
 
-  if (edgeWeights && edgeWeights.length === links.length) {
+  if (edgeFeature !== null && edgeFeature !== undefined) {
+    // Edge feature index-based styling
+    const featureIdx = typeof edgeFeature === 'number' ? edgeFeature : EDGE_FEATURE_NAMES.indexOf(edgeFeature);
+    if (featureIdx >= 0) {
+      const edgeVals = links.map(l => l.edge_features?.[featureIdx] ?? 0);
+      const wExtent = d3.extent(edgeVals);
+      if (wExtent[0] !== wExtent[1]) {
+        const widthScale = d3.scaleLinear().domain(wExtent).range([0.5, 4]);
+        const colorInterp = d3.scaleSequential(d3.interpolateOrRd).domain(wExtent);
+        edgeWidthFn = (d) => widthScale(d.edge_features?.[featureIdx] ?? 0);
+        edgeColorFn = (d) => colorInterp(d.edge_features?.[featureIdx] ?? 0);
+        edgeOpacityFn = (d) => {
+          const val = d.edge_features?.[featureIdx] ?? 0;
+          return 0.3 + 0.6 * ((val - wExtent[0]) / (wExtent[1] - wExtent[0]));
+        };
+      }
+    }
+  } else if (edgeWeights && edgeWeights.length === links.length) {
     const wExtent = d3.extent(edgeWeights);
     const widthScale = d3.scaleLinear().domain(wExtent).range([0.5, 4]);
     const colorInterp = d3.scaleSequential(d3.interpolateOrRd).domain(wExtent);
@@ -160,7 +195,7 @@ export function renderForceGraph(d3, container, data, options = {}) {
     .selectAll('circle')
     .data(nodes)
     .join('circle')
-    .attr('r', d => rScale(degree.get(d.id) || 0))
+    .attr('r', d => rScale(d))
     .attr('fill', colorFn)
     .attr('stroke', '#fff')
     .attr('stroke-width', 0.5)
@@ -226,6 +261,11 @@ export function renderForceGraph(d3, container, data, options = {}) {
 
   // Color legend
   renderLegend(d3, g, colorBy, colorFn, nodes, sample, isV2, width);
+
+  // Stats overlay panel (Task 2.4)
+  if (showStats && sample.stats) {
+    renderStatsPanel(d3, container, sample.stats, width);
+  }
 
   simulation.on('tick', () => {
     link
@@ -398,6 +438,73 @@ function buildNodeTooltip(d, degree, isV2) {
     }
   }
   return html;
+}
+
+// ---------------------------------------------------------------------------
+// Stats overlay panel
+// ---------------------------------------------------------------------------
+
+function renderStatsPanel(d3, container, stats, width) {
+  const panel = d3.select(container)
+    .append('div')
+    .attr('class', 'stats-panel')
+    .style('position', 'absolute')
+    .style('top', '8px')
+    .style('right', '8px')
+    .style('background', 'rgba(13, 17, 23, 0.9)')
+    .style('border', '1px solid #30363d')
+    .style('border-radius', '6px')
+    .style('padding', '8px 12px')
+    .style('font-size', '11px')
+    .style('color', '#c9d1d9')
+    .style('max-width', '200px')
+    .style('z-index', '5');
+
+  const header = panel.append('div')
+    .style('display', 'flex')
+    .style('justify-content', 'space-between')
+    .style('align-items', 'center')
+    .style('margin-bottom', '4px');
+
+  header.append('span')
+    .style('font-weight', '600')
+    .style('font-size', '11px')
+    .text('Graph Stats');
+
+  const body = panel.append('div').attr('class', 'stats-body');
+
+  const metrics = [
+    ['Nodes', stats.num_nodes],
+    ['Edges', stats.num_edges],
+    ['Density', stats.density?.toFixed(4)],
+    ['Avg Degree', stats.avg_degree?.toFixed(2)],
+    ['Degree Std', stats.degree_std?.toFixed(2)],
+    ['Clustering', stats.clustering_coeff?.toFixed(4)],
+    ['Components', stats.num_components],
+    ['Diameter', stats.diameter],
+    ['Assortativity', stats.degree_assortativity?.toFixed(4)],
+    ['BC Mean', stats.betweenness_centrality_mean?.toFixed(4)],
+    ['BC Max', stats.betweenness_centrality_max?.toFixed(4)],
+    ['Attack Node %', stats.attack_node_ratio != null ? (stats.attack_node_ratio * 100).toFixed(1) + '%' : 'N/A'],
+    ['Attack Edge %', stats.attack_edge_ratio != null ? (stats.attack_edge_ratio * 100).toFixed(1) + '%' : 'N/A'],
+  ];
+
+  metrics.forEach(([label, value]) => {
+    if (value === undefined || value === null) return;
+    const row = body.append('div')
+      .style('display', 'flex')
+      .style('justify-content', 'space-between')
+      .style('padding', '1px 0');
+    row.append('span').style('color', '#8b949e').text(label);
+    row.append('span').style('font-family', 'monospace').text(value);
+  });
+
+  // Toggle collapse
+  let collapsed = false;
+  header.style('cursor', 'pointer').on('click', () => {
+    collapsed = !collapsed;
+    body.style('display', collapsed ? 'none' : 'block');
+  });
 }
 
 function buildEdgeTooltip(d) {

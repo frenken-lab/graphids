@@ -52,6 +52,30 @@ This approach enables the detection of subtle anomalies by jointly evaluating no
 renderSpec(await FileAttachment("figures/fig-recon-errors.json").url())
 ```
 
+### Graph Structure Analysis
+
+To quantify structural differences between normal and attack graphs, we compute graph-level statistics (density, clustering coefficient, average degree, degree standard deviation) across stratified samples of each dataset. @fig-graph-stats-boxplot shows the distributions grouped by attack type, providing quantitative evidence that attack graphs exhibit distinct structural properties --- supporting the graph-based detection approach.
+
+```{ojs}
+//| label: fig-graph-stats-boxplot
+//| fig-cap: "Distribution of graph-level structural metrics by attack type. Box plots show density, clustering coefficient, average degree, and degree standard deviation. Clear distributional differences validate that attack types produce structurally distinct CAN bus graphs."
+renderSpec(await FileAttachment("figures/fig-graph-stats-boxplot.json").url())
+```
+
+@fig-adjacency-matrix presents adjacency matrix heatmaps for representative normal and attack graphs, with rows and columns ordered by CAN ID. The structural differences are visually apparent: normal graphs show regular, sparse patterns reflecting legitimate ECU communication, while DoS attacks produce dense rows/columns (high-frequency injection), fuzzing creates scattered connections (random ID injection), and spoofing targets specific CAN IDs.
+
+```{ojs}
+//| label: fig-adjacency-matrix
+//| fig-cap: "Adjacency matrix heatmaps for representative CAN bus graphs. Rows and columns represent CAN IDs sorted numerically; filled cells indicate message transitions. Normal graphs show sparse, structured patterns. Attack graphs exhibit distinct structural signatures: DoS creates dense rows, fuzzing produces scattered connections, spoofing targets specific IDs."
+
+import { renderAdjacencyMatrices as renderAdjMat } from "../_ojs/graph-analysis.js"
+adj_graph_samples = FileAttachment("../data/graph_samples.json").json()
+
+{
+  return renderAdjMat(Plot, adj_graph_samples.data, { width: 700, maxGraphs: 4 });
+}
+```
+
 ### Knowledge Transfer Analysis
 
 ::: {.panel-tabset}

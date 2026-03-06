@@ -505,21 +505,232 @@ def export_loss_landscape(output_dir: Path) -> Path | None:
     return out
 
 
-def export_graph_samples(output_dir: Path) -> Path | None:
-    """Export diverse graph samples from cached .pt files for force-directed visualization.
+def _compute_graph_stats(g) -> dict:
+    """Compute structural statistics for a single PyG graph using NetworkX."""
+    import networkx as nx
 
-    Samples 3 normal + up to 2 per attack type per dataset. Produces v2 JSON schema
-    with attack_type metadata, 26-D node features, 11-D edge features.
-    """
+    edge_index = g.edge_index.numpy()
+    num_nodes = g.x.size(0)
+    num_edges = edge_index.shape[1]
+
+    # Build NetworkX graph
+    G = nx.DiGraph()
+    G.add_nodes_from(range(num_nodes))
+    for j in range(num_edges):
+        G.add_edge(int(edge_index[0, j]), int(edge_index[1, j]))
+
+    G_undirected = G.to_undirected()
+
+    density = nx.density(G)
+    degrees = [d for _, d in G.degree()]
+    avg_degree = sum(degrees) / max(len(degrees), 1)
+    import numpy as np
+
+    degree_std = float(np.std(degrees)) if degrees else 0.0
+    clustering_coeff = nx.average_clustering(G_undirected)
+    components = nx.number_connected_components(G_undirected)
+
+    # Diameter (largest component only, skip if trivial)
+    diameter = 0
+    if components > 0:
+        largest_cc = max(nx.connected_components(G_undirected), key=len)
+        if len(largest_cc) > 1:
+            subgraph = G_undirected.subgraph(largest_cc)
+            try:
+                diameter = nx.diameter(subgraph)
+            except nx.NetworkXError:
+                diameter = 0
+
+    # Degree assortativity
+    try:
+        degree_assortativity = nx.degree_assortativity_coefficient(G)
+    except (ValueError, nx.NetworkXError):
+        degree_assortativity = 0.0
+
+    # Betweenness centrality
+    bc = nx.betweenness_centrality(G_undirected)
+    bc_values = list(bc.values())
+    bc_mean = sum(bc_values) / max(len(bc_values), 1)
+    bc_max = max(bc_values) if bc_values else 0.0
+
+    # Attack ratios
+    attack_node_ratio = 0.0
+    if hasattr(g, "node_attack_type") and g.node_attack_type is not None:
+        attack_nodes = (g.node_attack_type > 0).sum().item()
+        attack_node_ratio = attack_nodes / max(num_nodes, 1)
+    elif hasattr(g, "node_y") and g.node_y is not None:
+        attack_nodes = (g.node_y > 0).sum().item()
+        attack_node_ratio = attack_nodes / max(num_nodes, 1)
+
+    # Attack edge ratio: edges touching at least one attack node
+    attack_edge_ratio = 0.0
+    if attack_node_ratio > 0:
+        if hasattr(g, "node_attack_type") and g.node_attack_type is not None:
+            attack_mask = g.node_attack_type > 0
+        elif hasattr(g, "node_y") and g.node_y is not None:
+            attack_mask = g.node_y > 0
+        else:
+            attack_mask = None
+        if attack_mask is not None:
+            either_attack = (attack_mask[edge_index[0]] | attack_mask[edge_index[1]]).sum().item()
+            attack_edge_ratio = either_attack / max(num_edges, 1)
+
+    return {
+        "num_nodes": num_nodes,
+        "num_edges": num_edges,
+        "density": round(density, 6),
+        "avg_degree": round(avg_degree, 4),
+        "degree_std": round(degree_std, 4),
+        "clustering_coeff": round(clustering_coeff, 6),
+        "num_components": components,
+        "diameter": diameter,
+        "degree_assortativity": round(degree_assortativity, 6),
+        "betweenness_centrality_mean": round(bc_mean, 6),
+        "betweenness_centrality_max": round(bc_max, 6),
+        "attack_node_ratio": round(attack_node_ratio, 4),
+        "attack_edge_ratio": round(attack_edge_ratio, 4),
+    }
+
+
+def _select_representative_normal(graphs: list, n: int, rng) -> list:
+    """Select diverse normal graphs spanning density/node-count/clustering range."""
+    if len(graphs) <= n:
+        return list(graphs)
+
+    import numpy as np
+
+    # Compute lightweight metrics for selection (no NetworkX needed)
+    metrics = []
+    for g in graphs:
+        num_nodes = g.x.size(0)
+        num_edges = g.edge_index.size(1)
+        density = 2 * num_edges / max(num_nodes * (num_nodes - 1), 1)
+        # Approximate clustering from node features (index 22)
+        clustering = float(g.x[:, 22].mean().item()) if g.x.size(1) > 22 else 0.0
+        metrics.append([num_nodes, density, clustering])
+    metrics = np.array(metrics, dtype=np.float64)
+
+    # Normalize to [0,1]
+    mins = metrics.min(axis=0)
+    maxs = metrics.max(axis=0)
+    ranges = maxs - mins
+    ranges[ranges == 0] = 1.0
+    normalized = (metrics - mins) / ranges
+
+    # Greedy spread-based selection: pick most distant points
+    selected_idx = [rng.randrange(len(graphs))]  # random seed point
+    for _ in range(n - 1):
+        best_dist = -1
+        best_idx = 0
+        for i in range(len(graphs)):
+            if i in selected_idx:
+                continue
+            min_dist = min(
+                float(np.linalg.norm(normalized[i] - normalized[j])) for j in selected_idx
+            )
+            if min_dist > best_dist:
+                best_dist = min_dist
+                best_idx = i
+        selected_idx.append(best_idx)
+
+    return [graphs[i] for i in selected_idx]
+
+
+def _select_representative_attack(graphs: list, n: int) -> list:
+    """Select attack graphs: highest/lowest/median attack ratio."""
+    if len(graphs) <= n:
+        return list(graphs)
+
+    # Compute attack node ratios
+    ratios = []
+    for g in graphs:
+        if hasattr(g, "node_attack_type") and g.node_attack_type is not None:
+            ratio = (g.node_attack_type > 0).float().mean().item()
+        elif hasattr(g, "node_y") and g.node_y is not None:
+            ratio = (g.node_y > 0).float().mean().item()
+        else:
+            ratio = 1.0  # graph-level attack label only
+        ratios.append(ratio)
+
+    indexed = sorted(enumerate(ratios), key=lambda x: x[1])
+    selected_idx = []
+
+    # Lowest non-zero attack ratio
+    for i, r in indexed:
+        if r > 0:
+            selected_idx.append(i)
+            break
+    if not selected_idx:
+        selected_idx.append(indexed[0][0])
+
+    # Highest attack ratio
+    if len(indexed) > 1:
+        selected_idx.append(indexed[-1][0])
+
+    # Median attack ratio
+    if n >= 3 and len(indexed) > 2:
+        mid = len(indexed) // 2
+        mid_idx = indexed[mid][0]
+        if mid_idx not in selected_idx:
+            selected_idx.append(mid_idx)
+
+    # Fill remaining slots if n > 3
+    import random
+
+    rng = random.Random(42)
+    remaining = [i for i in range(len(graphs)) if i not in selected_idx]
+    while len(selected_idx) < n and remaining:
+        pick = rng.choice(remaining)
+        remaining.remove(pick)
+        selected_idx.append(pick)
+
+    return [graphs[i] for i in selected_idx[:n]]
+
+
+def _load_dataset_graphs(ds_name: str, cache_base: Path) -> list:
+    """Load cached graphs for a single dataset. Caller should free after use."""
     import torch
 
+    cache_dir = cache_base / ds_name
+    pt_files = sorted(cache_dir.glob("*.pt")) if cache_dir.is_dir() else []
+    if not pt_files:
+        log.info("No cached graphs for %s — skipping", ds_name)
+        return []
+
+    graphs = []
+    for pt_file in pt_files:
+        try:
+            loaded = torch.load(pt_file, map_location="cpu", weights_only=False)
+            if hasattr(loaded, "data_list"):
+                loaded = loaded.data_list
+            if not isinstance(loaded, list):
+                loaded = list(loaded)
+            graphs.extend(loaded)
+        except Exception as e:
+            log.warning("Failed to load %s: %s", pt_file, e)
+
+    return graphs
+
+
+def export_graph_samples(
+    output_dir: Path,
+    *,
+    attack_type_filter: str | None = None,
+    num_normal: int = 3,
+    num_per_attack: int = 3,
+) -> Path | None:
+    """Export representative graph samples from cached .pt files for force-directed visualization.
+
+    Uses spread-based selection for normal graphs (diversity across density/nodes/clustering)
+    and attack-ratio-based selection for attack graphs (highest/lowest/median attack ratio).
+    Computes per-graph structural statistics embedded in JSON output.
+    """
     from graphids.config.catalog import load_catalog
     from graphids.config.constants import (
         EDGE_FEATURE_NAMES,
         NODE_FEATURE_NAMES,
     )
 
-    # Import attack type name mapping
     try:
         from graphids.core.preprocessing.adapters.can_bus import ATTACK_TYPE_NAMES
     except ImportError:
@@ -539,35 +750,19 @@ def export_graph_samples(output_dir: Path) -> Path | None:
     _data_root_str = os.environ.get("KD_GAT_DATA_ROOT")
     cache_base = Path(_data_root_str) / "cache" if _data_root_str else Path("data/cache")
 
+    import gc
+    import random
+
+    rng = random.Random(42)
     samples = []
 
     for ds_name in sorted(catalog.keys()):
-        cache_dir = cache_base / ds_name
-
-        # Collect all .pt files (train + test scenarios)
-        pt_files = sorted(cache_dir.glob("*.pt")) if cache_dir.is_dir() else []
-        if not pt_files:
-            log.info("No cached graphs for %s — skipping", ds_name)
-            continue
-
-        all_graphs = []
-        for pt_file in pt_files:
-            try:
-                graphs = torch.load(pt_file, map_location="cpu", weights_only=False)
-                if hasattr(graphs, "data_list"):
-                    graphs = graphs.data_list
-                if not isinstance(graphs, list):
-                    graphs = list(graphs)
-                all_graphs.extend(graphs)
-            except Exception as e:
-                log.warning("Failed to load %s: %s", pt_file, e)
-
+        all_graphs = _load_dataset_graphs(ds_name, cache_base)
         if not all_graphs:
             continue
-
         # Partition by attack type
         normal_graphs = []
-        attack_graphs: dict[int, list] = {}  # attack_type_code -> graphs
+        attack_graphs: dict[int, list] = {}
         for g in all_graphs:
             label = g.y.item() if hasattr(g, "y") else 0
             at = graph_attack_type(g, default=0 if label == 0 else -1)
@@ -576,20 +771,39 @@ def export_graph_samples(output_dir: Path) -> Path | None:
             else:
                 attack_graphs.setdefault(at, []).append(g)
 
-        # Sample: 3 normal + 2 per attack type
-        import random
+        # Apply attack type filter if specified
+        if attack_type_filter:
+            filter_code = None
+            for code, name in ATTACK_TYPE_NAMES.items():
+                if name == attack_type_filter:
+                    filter_code = code
+                    break
+            if filter_code is not None:
+                attack_graphs = {k: v for k, v in attack_graphs.items() if k == filter_code}
 
-        rng = random.Random(42)
-        selected = rng.sample(normal_graphs, min(3, len(normal_graphs)))
+        # Representative selection for normal graphs
+        selected = _select_representative_normal(normal_graphs, num_normal, rng)
+
+        # Representative selection for each attack type
         for at_code, at_graphs in sorted(attack_graphs.items()):
-            selected.extend(rng.sample(at_graphs, min(2, len(at_graphs))))
+            selected.extend(_select_representative_attack(at_graphs, num_per_attack))
 
         for g in selected:
             sample = _graph_to_json(
                 g, ds_name, NODE_FEATURE_NAMES, EDGE_FEATURE_NAMES, ATTACK_TYPE_NAMES
             )
             if sample:
+                # Compute and embed per-graph statistics (Task 1.2)
+                try:
+                    sample["stats"] = _compute_graph_stats(g)
+                except Exception as e:
+                    log.warning("Failed to compute stats for graph in %s: %s", ds_name, e)
                 samples.append(sample)
+
+        # Free memory before loading next dataset
+        del all_graphs, normal_graphs, attack_graphs, selected
+        gc.collect()
+        log.info("Processed %s — %d samples so far", ds_name, len(samples))
 
     if not samples:
         log.warning("No graph samples exported — caches may be empty or missing")
@@ -597,13 +811,107 @@ def export_graph_samples(output_dir: Path) -> Path | None:
 
     out = output_dir / "graph_samples.json"
     envelope = _versioned_envelope(samples)
-    envelope["schema_version"] = "2.0.0"
+    envelope["schema_version"] = "3.0.0"
     envelope["feature_names"] = {
         "node": list(NODE_FEATURE_NAMES),
         "edge": list(EDGE_FEATURE_NAMES),
     }
     out.write_text(json.dumps(envelope, indent=2))
     log.info("Exported %d graph samples → %s", len(samples), out)
+    return out
+
+
+def export_graph_statistics(output_dir: Path, *, max_per_dataset: int = 500) -> Path | None:
+    """Export dataset-level graph statistics to Parquet for dashboard visualizations.
+
+    Computes structural metrics across ALL graphs per dataset (stratified sample
+    up to max_per_dataset), outputting to graph_statistics.parquet.
+    """
+    import random
+
+    from graphids.config.catalog import load_catalog
+
+    try:
+        from graphids.core.preprocessing.adapters.can_bus import ATTACK_TYPE_NAMES
+    except ImportError:
+        ATTACK_TYPE_NAMES = {
+            0: "normal",
+            1: "dos",
+            2: "fuzzing",
+            3: "gear_spoofing",
+            4: "rpm_spoofing",
+            5: "suppress",
+            6: "masquerade",
+            7: "mixed",
+            8: "unknown",
+        }
+
+    catalog = load_catalog()
+    _data_root_str = os.environ.get("KD_GAT_DATA_ROOT")
+    cache_base = Path(_data_root_str) / "cache" if _data_root_str else Path("data/cache")
+
+    import gc
+
+    rng = random.Random(42)
+    rows = []
+
+    for ds_name in sorted(catalog.keys()):
+        all_graphs = _load_dataset_graphs(ds_name, cache_base)
+        if not all_graphs:
+            continue
+
+        # Stratified sampling: group by label, sample proportionally
+        by_label: dict[int, list] = {}
+        for i, g in enumerate(all_graphs):
+            label = g.y.item() if hasattr(g, "y") else 0
+            by_label.setdefault(label, []).append(i)
+
+        sampled_indices = []
+        total = len(all_graphs)
+        for label, indices in by_label.items():
+            n_sample = max(1, int(max_per_dataset * len(indices) / total))
+            n_sample = min(n_sample, len(indices))
+            sampled_indices.extend(rng.sample(indices, n_sample))
+
+        log.info("Computing stats for %d/%d graphs in %s", len(sampled_indices), total, ds_name)
+
+        for idx in sampled_indices:
+            g = all_graphs[idx]
+            label = g.y.item() if hasattr(g, "y") else 0
+            at = graph_attack_type(g, default=0 if label == 0 else -1)
+            at_name = ATTACK_TYPE_NAMES.get(at, "unknown") if at is not None else "unknown"
+
+            try:
+                stats = _compute_graph_stats(g)
+                rows.append(
+                    {
+                        "dataset": ds_name,
+                        "graph_idx": idx,
+                        "label": label,
+                        "attack_type": at if at is not None else -1,
+                        "attack_type_name": at_name,
+                        **stats,
+                    }
+                )
+            except Exception as e:
+                log.warning("Failed to compute stats for graph %d in %s: %s", idx, ds_name, e)
+
+        # Free memory before loading next dataset
+        del all_graphs
+        gc.collect()
+        log.info("Processed %s — %d stats rows so far", ds_name, len(rows))
+
+    if not rows:
+        log.warning("No graph statistics computed")
+        return None
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    table = pa.Table.from_pylist(rows)
+    out = output_dir / "graph_statistics.parquet"
+    pq.write_table(table, out)
+    log.info("Exported %d graph statistics → %s", len(rows), out)
     return out
 
 
@@ -700,10 +1008,10 @@ def export_data_for_reports(reports_data_dir: Path | None = None) -> None:
             pq.write_table(merged, out)
             log.info("Merged %d training curve files → %s", len(tables), out)
 
-    # Graph samples for force-directed visualization
-    graph_src = reports_data_dir / "graph_samples.json"
-    if not graph_src.exists():
-        log.info("graph_samples.json already in reports/data/ or not yet exported")
+    # Graph statistics Parquet
+    graph_stats_src = reports_data_dir / "graph_statistics.parquet"
+    if not graph_stats_src.exists():
+        log.info("graph_statistics.parquet not yet exported — run with --graphs first")
 
 
 # ---------------------------------------------------------------------------
@@ -747,6 +1055,11 @@ def export_all(output_dir: Path, *, include_reports: bool = False) -> None:
     except Exception as e:
         log.warning("Export graph_samples failed (non-fatal): %s", e)
 
+    try:
+        export_graph_statistics(output_dir)
+    except Exception as e:
+        log.warning("Export graph_statistics failed (non-fatal): %s", e)
+
     # Optionally copy everything to reports/data/ for Quarto
     if include_reports:
         export_data_for_reports()
@@ -770,6 +1083,23 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Also copy datalake Parquet data to reports/data/ for Quarto site",
     )
+    parser.add_argument(
+        "--graphs",
+        action="store_true",
+        help="Only export graph samples and statistics (skip other exports)",
+    )
+    parser.add_argument(
+        "--attack-type",
+        type=str,
+        default=None,
+        help="Filter graph export to a specific attack type (e.g., 'dos', 'fuzzing')",
+    )
+    parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=None,
+        help="Number of samples per category (default: 3 normal + 3 per attack type)",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -777,7 +1107,18 @@ def main(argv: list[str] | None = None) -> None:
         format="%(asctime)s  %(name)-20s  %(levelname)-7s  %(message)s",
     )
 
-    export_all(args.output_dir, include_reports=args.reports)
+    if args.graphs:
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        n = args.num_samples or 3
+        export_graph_samples(
+            args.output_dir,
+            attack_type_filter=args.attack_type,
+            num_normal=n,
+            num_per_attack=n,
+        )
+        export_graph_statistics(args.output_dir)
+    else:
+        export_all(args.output_dir, include_reports=args.reports)
 
 
 if __name__ == "__main__":

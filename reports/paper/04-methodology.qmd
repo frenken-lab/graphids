@@ -76,7 +76,7 @@ def _window_to_graph(self, window: np.ndarray) -> Data:
 
 ```{ojs}
 //| label: fig-can-graph
-//| fig-cap: "Force-directed CAN bus graph structure. Nodes represent unique CAN IDs within a traffic window; edges encode sequential message transitions. Node color indicates attack type (green = normal, red = DoS, gold = fuzzing, purple = gear spoofing, pink = RPM spoofing). Node size reflects degree centrality."
+//| fig-cap: "Force-directed CAN bus graph structure. Nodes represent unique CAN IDs within a traffic window; edges encode sequential message transitions. Per-node coloring shows individual attack labels (green = normal, red = DoS, gold = fuzzing, purple = gear spoofing, pink = RPM spoofing), revealing mixed attack patterns within a single graph. Node size reflects degree centrality. Representative samples selected by structural diversity (density, clustering, node count)."
 
 import { renderForceGraph } from "../_ojs/force-graph.js"
 

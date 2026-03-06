@@ -910,9 +910,11 @@ viewof landscapeDataset = {
 }
 ```
 
-# Graph Structure
+# Graph Structure {.tabset}
 
-## Row
+## Force Graph
+
+### Row
 
 ```{ojs}
 //| title: "CAN Bus Graph Structure (Force-Directed)"
@@ -922,6 +924,15 @@ import { renderForceGraph } from "./_ojs/force-graph.js"
 viewof graphDataset = {
   const datasets = [...new Set(graph_samples_json.data.map(d => d.dataset))].sort();
   return Inputs.select(datasets, { label: "Dataset", value: datasets[0] });
+}
+
+viewof graphAttackType = {
+  const types = [...new Set(graph_samples_json.data.map(d => d.attack_type_name).filter(Boolean))].sort();
+  return Inputs.select([null, ...types], {
+    label: "Attack type",
+    value: null,
+    format: d => d === null ? "All" : d,
+  });
 }
 
 viewof graphLabel = Inputs.select(
@@ -938,14 +949,17 @@ viewof graphColorBy = Inputs.select(
   })[d] || d }
 )
 
-viewof graphAttackType = {
-  const types = [...new Set(graph_samples_json.data.map(d => d.attack_type_name).filter(Boolean))].sort();
-  return Inputs.select([null, ...types], {
-    label: "Attack type",
-    value: null,
-    format: d => d === null ? "All" : d,
-  });
-}
+viewof graphEdgeFeature = Inputs.select(
+  [null, "Count", "Frequency", "Mean_Interval", "Temporal_Span", "Regularity", "Degree_Product"],
+  { label: "Edge weight", value: null, format: d => d === null ? "None" : d }
+)
+
+viewof graphSizeBy = Inputs.select(
+  [null, "degree", "Payload_Entropy", "Clustering_Coeff", "Occurrence_Count", "Change_Rate_Mean"],
+  { label: "Node size", value: null, format: d => d === null ? "Uniform" : d === "degree" ? "Degree" : d }
+)
+
+viewof graphShowStats = Inputs.toggle({ label: "Show stats", value: true })
 
 {
   const d3 = await import("https://cdn.jsdelivr.net/npm/d3@7/+esm");
@@ -953,7 +967,6 @@ viewof graphAttackType = {
   container.style.position = "relative";
   container.style.width = "100%";
 
-  // Style the tooltip
   const style = document.createElement("style");
   style.textContent = `
     .tooltip {
@@ -979,11 +992,14 @@ viewof graphAttackType = {
     label: graphLabel,
     attackType: graphAttackType,
     colorBy: graphColorBy,
+    edgeFeature: graphEdgeFeature,
+    sizeBy: graphSizeBy,
+    showStats: graphShowStats,
     width: 900,
     height: 500,
   });
 
-  // Metadata card (v2 only)
+  // Metadata card
   const filtered = graph_samples_json.data.filter(d => {
     if (graphDataset && d.dataset !== graphDataset) return false;
     if (graphLabel !== null && graphLabel !== undefined && d.label !== graphLabel) return false;
@@ -997,10 +1013,166 @@ viewof graphAttackType = {
     const parts = [`${s.num_nodes ?? s.nodes.length} nodes`, `${s.num_edges ?? s.links.length} edges`];
     if (s.id_entropy !== undefined) parts.push(`H(ID)=${s.id_entropy.toFixed(3)}`);
     if (s.attack_type_name) parts.push(`Type: ${s.attack_type_name}`);
+    if (s.stats) parts.push(`Density: ${s.stats.density?.toFixed(4)}`);
     meta.textContent = parts.join(" · ");
     container.appendChild(meta);
   }
 
+  return container;
+}
+```
+
+## Graph Analysis
+
+### Row {height=50%}
+
+```{ojs}
+//| title: "Degree Distribution: Normal vs Attack"
+import { renderDegreeDistribution, renderFeatureRadar, renderAdjacencyMatrices } from "./_ojs/graph-analysis.js"
+
+{
+  return renderDegreeDistribution(Plot, graph_samples_json.data, { width: 900, height: 350 });
+}
+```
+
+### Row {height=50%}
+
+```{ojs}
+//| title: "Feature Comparison by Attack Type"
+{
+  void tableStatus;
+  // Load graph statistics Parquet if available
+  const statsLoaded = await safeLoadParquetTable(
+    "graph_stats",
+    await FileAttachment("data/graph_statistics.parquet").url()
+  );
+
+  if (!statsLoaded) {
+    return html`<p style="color: #8b949e; text-align: center; padding: 2rem;">No graph statistics data. Run: <code>python -m graphids.pipeline.export --graphs</code></p>`;
+  }
+
+  const result = await vg.coordinator().query(
+    vg.sql`SELECT * FROM graph_stats`
+  );
+  const statsData = Array.from(result);
+
+  return renderFeatureRadar(Plot, statsData, { width: 900, height: 400 });
+}
+```
+
+```{ojs}
+//| title: "Adjacency Matrices by Attack Type"
+{
+  return renderAdjacencyMatrices(Plot, graph_samples_json.data, { width: 900 });
+}
+```
+
+## Statistics
+
+### Row {height=50%}
+
+```{ojs}
+//| title: "Graph Statistics by Attack Type"
+{ void tableStatus;
+  const statsLoaded = await safeLoadParquetTable(
+    "graph_stats",
+    await FileAttachment("data/graph_statistics.parquet").url()
+  );
+
+  if (!statsLoaded) {
+    return html`<p style="color: #8b949e; text-align: center; padding: 2rem;">No graph statistics data. Run: <code>python -m graphids.pipeline.export --graphs</code></p>`;
+  }
+
+  return vg.plot(
+    vg.boxX(
+      vg.from("graph_stats"),
+      { x: "density", y: "attack_type_name", fill: "attack_type_name" }
+    ),
+    vg.width(400),
+    vg.height(280),
+    vg.colorScheme("tableau10"),
+    vg.colorLegend(true),
+    vg.xLabel("Graph Density"),
+    vg.yLabel(null),
+    vg.marginLeft(120)
+  );
+}
+```
+
+```{ojs}
+//| title: "Clustering Coefficient by Attack Type"
+{ void tableStatus;
+  return vg.plot(
+    vg.boxX(
+      vg.from("graph_stats"),
+      { x: "clustering_coeff", y: "attack_type_name", fill: "attack_type_name" }
+    ),
+    vg.width(400),
+    vg.height(280),
+    vg.colorScheme("tableau10"),
+    vg.colorLegend(true),
+    vg.xLabel("Clustering Coefficient"),
+    vg.yLabel(null),
+    vg.marginLeft(120)
+  );
+}
+```
+
+### Row {height=50%}
+
+```{ojs}
+//| title: "Summary Statistics by Attack Type"
+{
+  void tableStatus;
+  const result = await vg.coordinator().query(
+    vg.sql`
+      SELECT
+        attack_type_name,
+        COUNT(*) AS n,
+        ROUND(AVG(density), 4) AS mean_density,
+        ROUND(STDDEV(density), 4) AS std_density,
+        ROUND(AVG(avg_degree), 2) AS mean_degree,
+        ROUND(AVG(clustering_coeff), 4) AS mean_clustering,
+        ROUND(AVG(num_components), 2) AS mean_components,
+        ROUND(AVG(betweenness_centrality_max), 4) AS mean_bc_max
+      FROM graph_stats
+      GROUP BY attack_type_name
+      ORDER BY attack_type_name
+    `
+  );
+  const data = Array.from(result);
+
+  return Inputs.table(data, {
+    columns: ["attack_type_name", "n", "mean_density", "std_density", "mean_degree", "mean_clustering", "mean_components", "mean_bc_max"],
+    header: {
+      attack_type_name: "Attack Type", n: "Count",
+      mean_density: "Density (μ)", std_density: "Density (σ)",
+      mean_degree: "Degree (μ)", mean_clustering: "Clustering (μ)",
+      mean_components: "Components (μ)", mean_bc_max: "BC Max (μ)",
+    },
+  });
+}
+```
+
+```{ojs}
+//| title: "Parallel Coordinates: Graph Features"
+import { renderParallelCoordinates } from "./_ojs/graph-analysis.js"
+
+{
+  void tableStatus;
+  const result = await vg.coordinator().query(
+    vg.sql`SELECT * FROM graph_stats`
+  );
+  const statsData = Array.from(result);
+
+  if (statsData.length === 0) {
+    return html`<p style="color: #8b949e; text-align: center; padding: 2rem;">No graph statistics data available.</p>`;
+  }
+
+  const d3 = await import("https://cdn.jsdelivr.net/npm/d3@7/+esm");
+  const container = document.createElement("div");
+  container.style.width = "100%";
+  renderParallelCoordinates(d3, container, statsData, { width: 900, height: 400 });
   return container;
 }
 ```
