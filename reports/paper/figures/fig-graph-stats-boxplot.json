@@ -8,7 +8,7 @@
     {
       "plot": [
         {
-          "mark": "boxX",
+          "mark": "dotX",
           "data": { "from": "graph_stats" },
           "x": "density",
           "y": "attack_type_name",
@@ -27,7 +27,7 @@
     {
       "plot": [
         {
-          "mark": "boxX",
+          "mark": "dotX",
           "data": { "from": "graph_stats" },
           "x": "clustering_coeff",
           "y": "attack_type_name",
@@ -45,7 +45,7 @@
     {
       "plot": [
         {
-          "mark": "boxX",
+          "mark": "dotX",
           "data": { "from": "graph_stats" },
           "x": "avg_degree",
           "y": "attack_type_name",
@@ -63,7 +63,7 @@
     {
       "plot": [
         {
-          "mark": "boxX",
+          "mark": "dotX",
           "data": { "from": "graph_stats" },
           "x": "degree_std",
           "y": "attack_type_name",

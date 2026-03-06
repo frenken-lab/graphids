@@ -1084,14 +1084,13 @@ import { renderDegreeDistribution, renderFeatureRadar, renderAdjacencyMatrices }
   }
 
   return vg.plot(
-    vg.boxX(
+    vg.dotX(
       vg.from("graph_stats"),
-      { x: "density", y: "attack_type_name", fill: "attack_type_name" }
+      { x: "density", y: "attack_type_name", fill: "attack_type_name", r: 3 }
     ),
     vg.width(400),
     vg.height(280),
     vg.colorScheme("tableau10"),
-    vg.colorLegend(true),
     vg.xLabel("Graph Density"),
     vg.yLabel(null),
     vg.marginLeft(120)
@@ -1103,14 +1102,13 @@ import { renderDegreeDistribution, renderFeatureRadar, renderAdjacencyMatrices }
 //| title: "Clustering Coefficient by Attack Type"
 { void tableStatus;
   return vg.plot(
-    vg.boxX(
+    vg.dotX(
       vg.from("graph_stats"),
-      { x: "clustering_coeff", y: "attack_type_name", fill: "attack_type_name" }
+      { x: "clustering_coeff", y: "attack_type_name", fill: "attack_type_name", r: 3 }
     ),
     vg.width(400),
     vg.height(280),
     vg.colorScheme("tableau10"),
-    vg.colorLegend(true),
     vg.xLabel("Clustering Coefficient"),
     vg.yLabel(null),
     vg.marginLeft(120)
