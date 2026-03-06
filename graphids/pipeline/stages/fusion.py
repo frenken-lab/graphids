@@ -16,7 +16,11 @@ log = logging.getLogger(__name__)
 
 
 def _train_dqn_fusion(cfg, train_cache, val_cache, device, out) -> float:
-    """Original DQN RL fusion training loop. Returns best validation accuracy."""
+    """Vectorized DQN RL fusion training loop. Returns best validation accuracy.
+
+    Each episode: batch forward pass -> batch reward -> store in tensor buffer
+    -> gradient steps from buffer. No Python-level per-sample loop.
+    """
     from graphids.core.models.dqn import EnhancedDQNFusionAgent
     from graphids.core.models.registry import fusion_state_dim
 
@@ -36,43 +40,40 @@ def _train_dqn_fusion(cfg, train_cache, val_cache, device, out) -> float:
     )
 
     best_acc = 0.0
+    val_states = val_cache["states"][: min(5000, len(val_cache["states"]))]
+    val_labels = val_cache["labels"][: min(5000, len(val_cache["labels"]))]
 
     for ep in range(cfg.fusion.episodes):
         idx = torch.randperm(len(train_cache["states"]))[: cfg.fusion.episode_sample_size]
         batch_states = train_cache["states"][idx]
         batch_labels = train_cache["labels"][idx]
 
-        total_reward = 0.0
-        for i in range(len(batch_states)):
-            state_np = batch_states[i].numpy()
-            alpha, action_idx, proc_state = agent.select_action(state_np, training=True)
-            pred = 1 if alpha > 0.5 else 0
-            reward = agent.compute_fusion_reward(
-                prediction=pred,
-                true_label=batch_labels[i].item(),
-                state_features=state_np,
-                alpha=alpha,
-            )
-            agent.store_experience(proc_state, action_idx, reward, proc_state, False)
-            total_reward += reward
+        # Vectorized: one forward pass for all samples, batch reward, batch store
+        actions, alphas, norm_states = agent.select_action_batch(batch_states, training=True)
+        # TODO(open-question): Training uses (alpha > 0.5) as prediction, but
+        # validation uses the proper fused score. See dqn.py top-level comment.
+        preds = (alphas > 0.5).long()
+        rewards = agent.compute_fusion_reward_batch(preds, batch_labels, norm_states, alphas)
+        agent.store_experiences_batch(norm_states, actions, rewards)
 
-        if len(agent.replay_buffer) >= cfg.dqn.batch_size:
+        # Gradient steps from replay buffer
+        if agent.buffer_size_current >= cfg.dqn.batch_size:
             for _ in range(cfg.fusion.gpu_training_steps):
                 agent.train_step()
 
+        # Epsilon decay
+        agent.epsilon = max(agent.min_epsilon, agent.epsilon * agent.epsilon_decay)
+
         if (ep + 1) % 50 == 0:
-            val_pairs = [
-                (val_cache["states"][i].numpy(), val_cache["labels"][i].item())
-                for i in range(min(5000, len(val_cache["states"])))
-            ]
-            metrics = agent.validate_agent(val_pairs, num_samples=len(val_pairs))
+            metrics = agent.validate_batch(val_states, val_labels)
             acc = metrics.get("accuracy", 0)
             log.info(
-                "Episode %d/%d  reward=%.1f  val_acc=%.4f",
+                "Episode %d/%d  avg_reward=%.2f  val_acc=%.4f  eps=%.3f",
                 ep + 1,
                 cfg.fusion.episodes,
-                total_reward,
+                rewards.mean().item(),
                 acc,
+                agent.epsilon,
             )
 
             if acc > best_acc:

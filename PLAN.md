@@ -53,10 +53,34 @@ quarto preview reports/
 
 (none)
 
+## Open Questions
+
+### Is RL justified for fusion? (dqn.py, fusion.py)
+
+The DQN fusion agent is a **contextual bandit**, not a sequential MDP:
+- `next_state == state` (no transitions), `done == False` always
+- Bellman target `r + gamma * max Q(s, a')` is self-referential (s' = s)
+- 15-D states are pre-cached, i.i.d. — no environment dynamics
+
+**Experiment needed**: Compare F1/accuracy across all three fusion methods on held-out test sets:
+1. DQN (vectorized, current) — RL with gamma=0.99, replay buffer, target network
+2. DQN with gamma=0 — proper bandit, target = immediate reward, no target network
+3. MLPFusionAgent — supervised BCE, already vectorized
+4. WeightedAvgFusionAgent — single learned alpha
+
+If MLP matches DQN, drop the RL framing entirely. This saves code complexity and
+training time (~100x faster even after vectorization).
+
+**Additional fix needed**: Training uses `(alpha > 0.5)` as prediction (alpha is a
+fusion weight, not a score). Validation uses the proper fused score
+`(1-alpha)*anomaly + alpha*gat_prob > 0.5`. The training reward signal is based on
+a semantically wrong prediction. If DQN is kept, this should be fixed.
+
 ## Next Up
 
 - Run full pipeline retrain on rebuilt caches
 - Run tests: `bash scripts/slurm/run_tests_slurm.sh`
+- Fusion method comparison experiment (see Open Questions above)
 - Loss landscape analysis on retrained models
 - Evaluate research questions R1–R3
 
