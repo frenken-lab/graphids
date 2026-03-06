@@ -236,12 +236,11 @@ class TestDQNSmoke:
             num_layers=2,
         )
 
-        # Fill replay buffer
-        for _ in range(100):
-            state = np.random.randn(15).astype(np.float32)
-            alpha, action_idx, proc_state = agent.select_action(state, training=True)
-            reward = 1.0 if np.random.random() > 0.5 else -1.0
-            agent.store_experience(proc_state, action_idx, reward, proc_state, False)
+        # Fill replay buffer (vectorized)
+        states = torch.from_numpy(np.random.randn(100, 15).astype(np.float32))
+        actions, alphas, norm_states = agent.select_action_batch(states, training=True)
+        rewards = torch.where(torch.rand(100) > 0.5, 1.0, -1.0)
+        agent.store_experiences_batch(norm_states, actions, rewards)
 
         # Train a few steps
         losses = []

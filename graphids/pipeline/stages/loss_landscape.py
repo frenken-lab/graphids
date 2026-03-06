@@ -138,12 +138,11 @@ def _evaluate_gat_loss(model, dataloader, device: torch.device) -> float:
 
 
 def _evaluate_dqn_loss(model, dataloader, device: torch.device) -> float:
-    """Evaluate DQN Huber loss using cached replay experiences.
+    """Evaluate DQN Q-surface smoothness for loss landscape visualization.
 
-    For DQN, we evaluate the Q-network on stored state-action pairs.
-    Since we don't have a replay buffer at evaluation time, we compute
-    the MSE between Q-values and a fixed target (the Q-value at the minimum).
-    This measures how the Q-surface changes around the trained minimum.
+    Computes a self-consistency surrogate: Huber loss between Q-values and
+    their own per-state max (the greedy target). This measures how the
+    Q-surface varies around the trained minimum, not the actual training loss.
     """
     model.eval()
     total_loss = 0.0
