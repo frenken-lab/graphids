@@ -6,7 +6,6 @@ Failures are logged but never crash the training pipeline.
 
 Downstream consumption:
     duckdb -c "SELECT * FROM 'data/datalake/runs.parquet'"
-    duckdb data/datalake/analytics.duckdb  # pre-built views
 """
 
 from __future__ import annotations
@@ -18,6 +17,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+
+def _fast_hash(path: Path) -> str:
+    """Fast content fingerprint: SHA-256 of first 1MB + file size."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        h.update(f.read(1_048_576))
+    h.update(str(path.stat().st_size).encode())
+    return h.hexdigest()[:16]
 
 
 def _make_run_uuid(run_id: str) -> str:
@@ -73,6 +81,7 @@ def _append_to_datalake(
     teacher_run_id: str | None = None,
     config_hash: str | None = None,
     tags: str | None = None,
+    input_checkpoint_uri: str | None = None,
 ) -> bool:
     """Append run + metrics to datalake Parquet files via DuckDB."""
     try:
@@ -105,7 +114,8 @@ def _append_to_datalake(
                 ? AS batch_size_used, ? AS failure_reason,
                 ? AS data_version, NULL AS wandb_run_id, 'pipeline' AS source,
                 ? AS run_uuid, ? AS run_type, ? AS sweep_id,
-                ? AS teacher_run_id, ? AS config_hash, ? AS tags
+                ? AS teacher_run_id, ? AS config_hash, ? AS tags,
+                ? AS input_checkpoint_uri
             )
         """,
             [
@@ -131,6 +141,7 @@ def _append_to_datalake(
                 teacher_run_id,
                 config_hash,
                 tags,
+                input_checkpoint_uri,
             ],
         )
 
@@ -185,11 +196,22 @@ def register_artifacts(run_id: str, run_dir: Path) -> bool:
     }
 
     try:
+        now = datetime.now(UTC).isoformat()
         records = []
         for filename, artifact_type in ARTIFACT_TYPES.items():
             fpath = run_dir / filename
             if fpath.exists():
-                records.append((run_id, artifact_type, str(fpath), fpath.stat().st_size))
+                records.append(
+                    (
+                        run_id,
+                        artifact_type,
+                        str(fpath),
+                        fpath.stat().st_size,
+                        _fast_hash(fpath),
+                        run_id,
+                        now,
+                    )
+                )
 
         if not records:
             return True
@@ -197,7 +219,10 @@ def register_artifacts(run_id: str, run_dir: Path) -> bool:
         datalake = str(_DATALAKE_ROOT)
         con = duckdb.connect()
         con.executemany(
-            f"INSERT INTO '{datalake}/artifacts.parquet' VALUES (?, ?, ?, ?)",
+            f"INSERT INTO '{datalake}/artifacts.parquet' "
+            "(run_id, artifact_type, file_path, file_size_bytes, "
+            "content_hash, produced_by_run_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             records,
         )
         con.close()
@@ -237,6 +262,7 @@ def sync_to_lakehouse(
     teacher_run_id: str | None = None,
     config_hash: str | None = None,
     tags: str | None = None,
+    input_checkpoint_uri: str | None = None,
 ) -> bool:
     """Append run results to datalake (Parquet). Returns True on success.
 
@@ -273,4 +299,5 @@ def sync_to_lakehouse(
         teacher_run_id=teacher_run_id,
         config_hash=config_hash,
         tags=tags,
+        input_checkpoint_uri=input_checkpoint_uri,
     )

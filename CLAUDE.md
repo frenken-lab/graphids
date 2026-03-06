@@ -27,8 +27,6 @@ python -m graphids.pipeline.cli flow --dataset hcrl_sa --local  # No SLURM
 # Export + analytics
 python -m graphids.pipeline.export                      # All exports → reports/data/ (~2s, login node OK)
 python -m graphids.pipeline.export --reports            # Also copy datalake Parquet to reports/data/
-python -m graphids.pipeline.build_analytics             # DuckDB rebuild (sub-second, views over Parquet)
-
 # Tests — ALWAYS submit to SLURM
 bash scripts/slurm/run_tests_slurm.sh
 bash scripts/slurm/run_tests_slurm.sh -k "test_full_pipeline"
@@ -51,6 +49,7 @@ Always read `PLAN.md` before starting work. Update it after completing any task.
 | `/check-status` | `/check-status hcrl_sa` | Check SLURM queue, checkpoints, W&B |
 | `/run-tests` | `/run-tests` or `/run-tests test_config` | Run pytest suite |
 | `/sync-state` | `/sync-state` | Update STATE.md from current outputs |
+| `/verify-site` | `/verify-site` or `/verify-site dashboard` | Playwright verification of Quarto site |
 
 ## Rules (auto-loaded from `.claude/rules/`)
 

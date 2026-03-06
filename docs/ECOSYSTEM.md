@@ -247,7 +247,7 @@ flowchart LR
         artifacts.parquet                      <- Manifest: run_id → file path, type, size
         datasets.parquet                       <- Dataset catalog with cache stats
         training_curves/{run_id}.parquet       <- Per-epoch metrics from Lightning CSV logs
-        analytics.duckdb                       <- Views over Parquet (rebuildable)
+        queries/                               <- SQL query files (leaderboard, kd_impact)
     experimentruns/                            <- All training outputs
       {dataset}/
         vgae_large_autoencoder/
@@ -417,9 +417,7 @@ The teacher is frozen during student training — its weights never update. The 
 | SLURM job scripts | `scripts/` |
 | W&B offline runs | `wandb/` (gitignored) |
 | Datalake (Parquet) | `data/datalake/*.parquet` |
-| Analytics DuckDB | `data/datalake/analytics.duckdb` |
-| DVC cache (local fast) | `/fs/scratch/PAS1266/can-graph-dvc/` |
-| Lakehouse (S3, legacy) | `s3://kd-gat/lakehouse/runs/*.json` |
+| Ad-hoc queries | `data/datalake/queries/*.sql` |
 | Quarto site (live) | https://robertfrenken.github.io/DQN-Fusion/ (gh-pages) |
 
 ---

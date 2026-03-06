@@ -31,8 +31,6 @@ from .paths import (
     checkpoint_path_str,
     config_path,
     data_dir,
-    done_path,
-    done_path_str,
     get_datasets,
     log_dir,
     log_path_str,

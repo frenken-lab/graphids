@@ -29,7 +29,7 @@ graphids/               # Top-level package (pyproject.toml: packages = ["graphi
     export.py           # Datalake/filesystem → static JSON/Parquet export for Quarto reports
     memory.py           # GPU memory management (static, measured, trial-based batch sizing)
     lakehouse.py        # Datalake Parquet append (fire-and-forget)
-    build_analytics.py  # DuckDB views over datalake Parquet
+    sweep_export.py     # Ray Tune results → datalake + HF Dataset
     stages/             # Stage implementations
       training.py       # Training loop (autoencoder, curriculum, normal stages)
       evaluation.py     # Multi-model eval; captures embeddings.npz + dqn_policy.json + explanations.npz
@@ -70,7 +70,7 @@ data/
   ethernet/             # Network flow datasets (MachineLearningCSV, GeneratedLabelledFlows)
   cache/                # Preprocessed graph cache (.pt, .pkl, metadata)
   datalake/             # Parquet structured storage (runs, metrics, configs, artifacts, training_curves/)
-                        # analytics.duckdb (views over Parquet)
+                        # queries/ (leaderboard.sql, kd_impact.sql)
 experimentruns/         # Outputs: best_model.pt, config.json, metrics.json, embeddings.npz, dqn_policy.json, explanations.npz
 tests/
   conftest.py           # Shared fixtures (tiny architectures, temp dirs, E2E_OVERRIDES)
@@ -129,7 +129,8 @@ reports/                # Quarto website — paper chapters + interactive dashbo
   custom.scss           # Theme overrides
   references.bib        # BibTeX bibliography
   data/                 # Report data (Parquet + JSON from export pipeline, incl. graph_samples.json)
-  _ojs/                 # Observable JS modules (force-graph.js, mosaic-setup.js, theme.js)
+  figures/              # YAML specs for Mosaic vgplot (28 declarative chart definitions)
+  _ojs/                 # Observable JS modules (mosaic-setup.js, mosaic-renderer.js, theme.js, table-renderer.js, query-utils.js)
   paper/                # Research paper (10 chapters with interactive Mosaic figures)
     index.qmd           # Paper introduction
     02-background.qmd through 09-conclusion.qmd  # Paper body

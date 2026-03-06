@@ -124,11 +124,6 @@ def metrics_path(cfg: PipelineConfig, stage: str) -> Path:
     return stage_dir(cfg, stage) / "metrics.json"
 
 
-def done_path(cfg: PipelineConfig, stage: str) -> Path:
-    """Sentinel file marking stage completion."""
-    return stage_dir(cfg, stage) / ".done"
-
-
 def cache_dir(cfg: PipelineConfig) -> Path:
     """Processed-graph cache directory.
 
@@ -175,8 +170,3 @@ def log_path_str(
 ) -> str:
     """SLURM log path from raw strings."""
     return f"{EXPERIMENT_ROOT}/{run_id_str(dataset, model_type, scale, stage, aux)}/slurm.{stream}"
-
-
-def done_path_str(dataset: str, model_type: str, scale: str, stage: str, aux: str = "") -> str:
-    """Sentinel file path from raw strings."""
-    return f"{EXPERIMENT_ROOT}/{run_id_str(dataset, model_type, scale, stage, aux)}/.done"

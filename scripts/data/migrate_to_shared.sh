@@ -67,5 +67,4 @@ du -sh "$SHARED/data/raw" "$SHARED/data/cache" "$SHARED/data/datalake" "$SHARED/
 echo ""
 echo "Next steps:"
 echo "  1. source .env  (picks up KD_GAT_SHARED_ROOT)"
-echo "  2. python -m graphids.pipeline.build_analytics  (rebuild DuckDB)"
-echo "  3. Verify: python -c \"import duckdb; print(duckdb.connect('$SHARED/data/datalake/analytics.duckdb').execute('SELECT COUNT(*) FROM runs').fetchone())\""
+echo "  2. Verify: duckdb -c \"SELECT COUNT(*) FROM '$SHARED/data/datalake/runs.parquet'\""

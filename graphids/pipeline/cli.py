@@ -130,6 +130,18 @@ def _build_parser() -> argparse.ArgumentParser:
         default=15,
         help="(tune) Early stopping patience per trial",
     )
+    p.add_argument(
+        "--inprocess",
+        action="store_true",
+        default=False,
+        help="(tune) Use in-process trainable with per-epoch ASHA reporting (~2.5x faster)",
+    )
+    p.add_argument(
+        "--warm-start-from",
+        type=str,
+        default=None,
+        help="(tune) Dataset name to warm-start from (loads prior sweep results)",
+    )
 
     # Sweep-pipeline options
     p.add_argument(
@@ -296,6 +308,7 @@ def _sync_lakehouse(
     teacher_run_id: str | None = None,
     config_hash: str | None = None,
     tags: str | None = None,
+    input_checkpoint_uri: str | None = None,
 ) -> None:
     """Fire-and-forget sync to datalake (Parquet)."""
     try:
@@ -323,6 +336,7 @@ def _sync_lakehouse(
             teacher_run_id=teacher_run_id,
             config_hash=config_hash,
             tags=tags,
+            input_checkpoint_uri=input_checkpoint_uri,
         )
     except Exception as e:
         logging.getLogger("pipeline").debug("Lakehouse sync skipped: %s", e)
@@ -381,14 +395,17 @@ def _run_tune(args: argparse.Namespace, log: logging.Logger) -> None:
 
     from .orchestration.tune_config import run_tune
 
+    warm_start = getattr(args, "warm_start_from", None)
     log.info(
-        "Starting tune: stage=%s, dataset=%s, scale=%s, samples=%d, epochs=%d, patience=%d",
+        "Starting tune: stage=%s, dataset=%s, scale=%s, samples=%d, epochs=%d, patience=%d, inprocess=%s, warm_start_from=%s",
         tune_stage,
         args.dataset or "hcrl_sa",
         args.scale,
         args.num_samples,
         args.tune_epochs,
         args.tune_patience,
+        args.inprocess,
+        warm_start,
     )
 
     results = run_tune(
@@ -401,6 +418,8 @@ def _run_tune(args: argparse.Namespace, log: logging.Logger) -> None:
         local=args.local,
         max_epochs=args.tune_epochs,
         patience=args.tune_patience,
+        inprocess=args.inprocess,
+        warm_start_from=warm_start,
     )
 
     best = results.get_best_result(metric="val_loss", mode="min")
@@ -430,6 +449,7 @@ def _run_sweep_pipeline(args: argparse.Namespace, log: logging.Logger) -> None:
         tune_patience=args.tune_patience,
         resume=args.resume,
         dry_run=args.dry_run,
+        inprocess=args.inprocess,
     )
 
 
@@ -589,6 +609,7 @@ def main(argv: list[str] | None = None) -> None:
             _wandb_log_metrics(result)
 
         # Sync to datalake (fire-and-forget)
+        _input_ckpt = cfg.kd.model_path if cfg.has_kd and cfg.kd else None
         _sync_lakehouse(
             cfg,
             args.stage,
@@ -606,6 +627,7 @@ def main(argv: list[str] | None = None) -> None:
             teacher_run_id=teacher_run_id,
             config_hash=config_hash,
             tags=tags_str,
+            input_checkpoint_uri=_input_ckpt,
         )
 
         # Register artifacts in datalake (fire-and-forget)

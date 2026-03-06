@@ -15,7 +15,7 @@ if command -v aws &>/dev/null; then
             echo "Syncing data/$subdir to S3..."
             aws s3 sync "data/$subdir/" \
                 "s3://${KD_GAT_S3_BUCKET:-kd-gat}/$subdir/" \
-                --exclude "analytics.duckdb" 2>/dev/null || true
+                2>/dev/null || true
         fi
     done
 fi

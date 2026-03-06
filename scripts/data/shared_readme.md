@@ -8,7 +8,7 @@ All PAS1266 members have read access.
 ```bash
 # Use the bundled DuckDB CLI (no Python env needed)
 SHARED="/fs/scratch/PAS1266/kd-gat-shared"
-$SHARED/tools/duckdb $SHARED/data/datalake/analytics.duckdb
+$SHARED/tools/duckdb < $SHARED/data/datalake/queries/leaderboard.sql
 ```
 
 ## Example Queries
@@ -40,7 +40,7 @@ data/
   cache/         # Preprocessed graph tensors (.pt)
   datalake/      # Parquet structured storage (query with DuckDB)
     runs.parquet, metrics.parquet, configs.parquet, datasets.parquet, artifacts.parquet
-    analytics.duckdb   # Pre-built views over Parquet
+    queries/           # SQL query files (leaderboard, kd_impact)
     training_curves/   # Per-run training loss/metric curves
     loss_landscapes/   # 2D loss surface visualizations
     artifacts/         # Registered model artifacts
@@ -52,5 +52,4 @@ tools/           # Bundled CLI tools (DuckDB)
 
 - This data lives on scratch (`/fs/scratch/PAS1266/`) which has a 90-day purge policy.
   A weekly cron job touches all files to prevent purging.
-- Datalake Parquet files are also backed up to S3 (`s3://kd-gat/`).
-- To rebuild the DuckDB analytics views: `cd ~/KD-GAT && source .env && python -m graphids.pipeline.build_analytics`
+- Ad-hoc queries: `duckdb < data/datalake/queries/leaderboard.sql`

@@ -23,4 +23,4 @@ echo "DuckDB installed:"
 "$TOOLS_DIR/duckdb" --version
 
 echo ""
-echo "Usage: $TOOLS_DIR/duckdb $SHARED/data/datalake/analytics.duckdb"
+echo "Usage: $TOOLS_DIR/duckdb -c \"SELECT * FROM '$SHARED/data/datalake/runs.parquet' LIMIT 10\""
