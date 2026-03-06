@@ -1,8 +1,7 @@
 {
   "schema_version": "1.0.0",
-  "exported_at": "2026-03-05T22:01:20.084038+00:00",
+  "exported_at": "2026-03-06T21:54:40.466726+00:00",
   "data": [
-    "hcrl_ch_gat_large_curriculum.archive_20260305_141326.json",
     "hcrl_ch_gat_large_curriculum.json",
     "hcrl_ch_gat_small_curriculum.json",
     "hcrl_ch_gat_small_curriculum_kd.json",
@@ -15,12 +14,9 @@
     "hcrl_sa_vgae_large_autoencoder.json",
     "hcrl_sa_vgae_small_autoencoder.json",
     "hcrl_sa_vgae_small_autoencoder_kd.json",
-    "set_01_gat_large_curriculum.json",
     "set_01_gat_small_curriculum.json",
     "set_01_gat_small_curriculum_kd.json",
-    "set_01_vgae_large_autoencoder.archive_20260305_010021.json",
     "set_01_vgae_large_autoencoder.json",
-    "set_01_vgae_small_autoencoder.archive_20260305_010431.json",
     "set_01_vgae_small_autoencoder.json",
     "set_01_vgae_small_autoencoder_kd.json",
     "set_02_gat_large_curriculum.json",

@@ -3,7 +3,8 @@
 ## Environment
 
 - **Cluster**: OSC Pitzer (Ohio Supercomputer Center), RHEL 9, SLURM
-- **GPU**: 2x V100 per node, ~362 GB RAM (account from `$KD_GAT_SLURM_ACCOUNT` in `.env`, gpu partition)
+- **Account**: PAS1266 (`$KD_GAT_SLURM_ACCOUNT` in `.env`). Must `source .env` before `sbatch` on login node.
+- **GPU**: 2x V100 per node, ~362 GB RAM, gpu partition
 - **Python**: 3.12 via `module load python/3.12`, uv venv `.venv/`
 - **Home**: `/users/PAS2022/rf15/` (NFS, permanent)
 - **Scratch**: `/fs/scratch/PAS1266/` (GPFS, 90-day purge)
@@ -31,9 +32,20 @@ When creating or modifying a SLURM `.sh` script, follow these conventions:
 
 **Right-size resources.** Over-requesting memory/CPUs increases your scheduler footprint and slows queue priority. Check actual usage with `sacct -j <JOBID> -o MaxRSS,ReqMem`. Historical: training jobs use 8-20G RAM; tune sweeps use 5-15G.
 
+### Available Partitions
+
+| Partition | Use | Max time | Notes |
+|-----------|-----|----------|-------|
+| `gpu` | Training, sweeps, evaluation | 7 days | 2x V100 per node |
+| `gpudebug` | Smoke tests (Layer 2) | 1 hour | Priority scheduling |
+| `cpu` | Tests, export, preprocessing | 7 days | No GPU |
+| `debug-cpu` | Quick CPU validation | 1 hour | Priority scheduling |
+
+**There is NO `serial` partition on Pitzer.** CPU jobs use `--partition=cpu`.
+
 ### Required SBATCH Directives
 
-Every GPU job script must include:
+**GPU jobs:**
 
 ```bash
 #SBATCH --partition=gpu
@@ -49,13 +61,29 @@ Every GPU job script must include:
 #SBATCH --signal=B:USR1@300
 ```
 
+**CPU jobs** (tests, export, preprocessing):
+
+```bash
+#SBATCH --partition=cpu
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
+#SBATCH --time=00:30:00
+#SBATCH --job-name=kd-gat-<descriptive>
+#SBATCH --output=slurm_logs/<prefix>_%j.out
+#SBATCH --error=slurm_logs/<prefix>_%j.err
+```
+
+CPU preamble: `SKIP_CUDA_CONF=1 SKIP_STAGE_DATA=1 source "/users/PAS2022/rf15/KD-GAT/scripts/slurm/_preamble.sh"`
+
 ### Required Environment Setup
 
 All boilerplate is in shared sourced scripts:
 
 ```bash
 # Preamble: env setup, venv, .env, CUDA config, data staging
-source "$(dirname "$0")/_preamble.sh"
+source "/users/PAS2022/rf15/KD-GAT/scripts/slurm/_preamble.sh"
 
 # Override before sourcing:
 #   SKIP_CUDA_CONF=1   — for CPU-only jobs
@@ -65,7 +93,7 @@ source "$(dirname "$0")/_preamble.sh"
 
 ```bash
 # Epilog: GPU utilization report
-JOB_LOG_PREFIX="ray" source "$(dirname "$0")/_epilog.sh"
+JOB_LOG_PREFIX="ray" source "/users/PAS2022/rf15/KD-GAT/scripts/slurm/_epilog.sh"
 ```
 
 ### Key Patterns

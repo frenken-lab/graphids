@@ -1,0 +1,28 @@
+{
+  "os":  "Linux-5.14.0-427.102.1.el9_4.x86_64-x86_64-with-glibc2.34",
+  "python":  "CPython 3.10.19",
+  "startedAt":  "2026-02-17T19:04:08.812533Z",
+  "program":  "/users/PAS2022/rf15/CAN-Graph-Test/KD-GAT/scripts/backfill_wandb.py",
+  "codePath":  "scripts/backfill_wandb.py",
+  "codePathLocal":  "scripts/backfill_wandb.py",
+  "git":  {
+    "remote":  "git@github.com:RobertFrenken/DQN-Fusion.git",
+    "commit":  "172d7d7a9c5f35540bee9d132e5dabe98def2b3e"
+  },
+  "email":  "frenken.2@osu.edu",
+  "root":  "/users/PAS2022/rf15/CAN-Graph-Test/KD-GAT",
+  "host":  "pitzer-login02.hpc.osc.edu",
+  "executable":  "/users/PAS2022/rf15/.conda/envs/gnn-experiments/bin/python",
+  "cpu_count":  40,
+  "cpu_count_logical":  40,
+  "disk":  {
+    "/":  {
+      "total":  "204010946560",
+      "used":  "31555452928"
+    }
+  },
+  "memory":  {
+    "total":  "403354591232"
+  },
+  "writerId":  "g9ull6fotzw6l67dw2gpnyfnvy7wpper"
+}

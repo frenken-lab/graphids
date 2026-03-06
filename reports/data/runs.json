@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0.0",
-  "exported_at": "2026-03-05T22:01:19.612601+00:00",
+  "exported_at": "2026-03-06T21:54:37.557991+00:00",
   "data": [
     {
       "run_id": "hcrl_ch/dqn_large_fusion",
@@ -11,8 +11,8 @@
       "has_kd": 0,
       "status": "complete",
       "teacher_run": "",
-      "started_at": "2026-03-05T19:55:29.805947+00:00",
-      "completed_at": "2026-03-05T20:35:40.151878+00:00"
+      "started_at": "2026-03-06T00:05:17.497115+00:00",
+      "completed_at": "2026-03-05T22:51:17.693042+00:00"
     },
     {
       "run_id": "hcrl_ch/dqn_small_fusion",
@@ -47,8 +47,8 @@
       "has_kd": 0,
       "status": "complete",
       "teacher_run": "",
-      "started_at": "2026-02-16T22:51:06.444140+00:00",
-      "completed_at": "2026-02-16T23:17:30.147259+00:00"
+      "started_at": "2026-03-06T00:05:24.082706+00:00",
+      "completed_at": "2026-03-06T00:43:10.226683+00:00"
     },
     {
       "run_id": "hcrl_ch/eval_small_evaluation",
@@ -369,10 +369,10 @@
       "scale": "large",
       "stage": "curriculum",
       "has_kd": 0,
-      "status": "complete",
+      "status": "running",
       "teacher_run": "",
-      "started_at": "2026-03-05T16:58:36.789520+00:00",
-      "completed_at": "2026-02-16T20:09:16.814791+00:00"
+      "started_at": "2026-03-06T04:57:52.048517+00:00",
+      "completed_at": null
     },
     {
       "run_id": "set_01/gat_small_curriculum",
