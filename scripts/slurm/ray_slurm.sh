@@ -24,13 +24,10 @@
 
 source "$(dirname "$0")/_preamble.sh"
 
-echo "=== Ray Pipeline ==="
-echo "Job ID:    ${SLURM_JOB_ID}"
+log_job_header "Ray Pipeline"
 echo "Nodes:     ${SLURM_NNODES:-1}"
 echo "GPUs:      ${SLURM_GPUS_ON_NODE:-1}"
-echo "Python:    $(which python)"
 echo "Ray:       $(python -c 'import ray; print(ray.__version__)')"
-echo ""
 
 # --- Launch ---
 ENTRYPOINT_ARGS=("$@")

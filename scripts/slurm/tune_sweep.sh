@@ -30,13 +30,10 @@ source "$(dirname "$0")/_preamble.sh"
 TUNE_STAGE="${1:?Usage: tune_sweep.sh <stage> [--dataset ...] [--scale ...] [--num-samples ...]}"
 shift
 
-echo "=== Ray Tune Sweep ==="
-echo "Job ID:    ${SLURM_JOB_ID}"
+log_job_header "Ray Tune Sweep"
 echo "Stage:     ${TUNE_STAGE}"
 echo "Args:      $*"
-echo "Python:    $(which python)"
 echo "Ray:       $(python -c 'import ray; print(ray.__version__)')"
-echo ""
 
 # Run tune via CLI
 python -m graphids.pipeline.cli tune \

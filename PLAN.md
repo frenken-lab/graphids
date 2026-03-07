@@ -55,26 +55,9 @@ quarto preview reports/
 
 ## Open Questions
 
-### Is RL justified for fusion? (dqn.py, fusion.py)
+### Is RL justified for fusion?
 
-The DQN fusion agent is a **contextual bandit**, not a sequential MDP:
-- `next_state == state` (no transitions), `done == False` always
-- Bellman target `r + gamma * max Q(s, a')` is self-referential (s' = s)
-- 15-D states are pre-cached, i.i.d. — no environment dynamics
-
-**Experiment needed**: Compare F1/accuracy across all three fusion methods on held-out test sets:
-1. DQN (vectorized, current) — RL with gamma=0.99, replay buffer, target network
-2. DQN with gamma=0 — proper bandit, target = immediate reward, no target network
-3. MLPFusionAgent — supervised BCE, already vectorized
-4. WeightedAvgFusionAgent — single learned alpha
-
-If MLP matches DQN, drop the RL framing entirely. This saves code complexity and
-training time (~100x faster even after vectorization).
-
-**Additional fix needed**: Training uses `(alpha > 0.5)` as prediction (alpha is a
-fusion weight, not a score). Validation uses the proper fused score
-`(1-alpha)*anomaly + alpha*gat_prob > 0.5`. The training reward signal is based on
-a semantically wrong prediction. If DQN is kept, this should be fixed.
+See `~/plans/fusion-redesign.md` for full analysis.
 
 ## Next Up
 
@@ -86,6 +69,7 @@ a semantically wrong prediction. If DQN is kept, this should be fixed.
 
 ## Completed
 
+- Codebase simplification: dedup `_make_conv` to `_utils.py`, extract shared `training_preamble`/`resolve_batch_config`, delete dead `_encode_spatial`, move DQN TODO to `~/plans/fusion-redesign.md`, STAGE_DEPENDENCIES constant, SLURM `log_job_header`/`log_job_footer`, clean bare exceptions in export.py, remove unused `log_path_str`, deprecation warning on legacy flat config (2026-03-07)
 - MLflow cleanup: removed datalake/lakehouse/W&B/S3 dead code, rewrote export.py + sweep_export.py to MLflow-only, updated all docs (2026-03-06)
 - MLflow consolidation: replaced W&B + lakehouse.py + CSVLogger with MLflow single store (2026-03-06)
 - Spec-driven visualization migration: dashboard.qmd 1354→445 lines, 29 YAML specs (2026-03-06)

@@ -24,6 +24,7 @@ from .constants import (
 from .paths import (
     CATALOG_PATH,
     EXPERIMENT_ROOT,
+    MLFLOW_TRACKING_URI,
     STAGES,
     benchmark_path_str,
     cache_dir,
@@ -33,7 +34,6 @@ from .paths import (
     data_dir,
     get_datasets,
     log_dir,
-    log_path_str,
     metrics_path,
     metrics_path_str,
     run_id,

@@ -85,7 +85,8 @@ def _scan_runs_from_mlflow() -> list[dict]:
         cfg_path = run_dir / "config.json"
         try:
             cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
-        except Exception:
+        except Exception as e:
+            log.debug("Failed to parse config %s: %s", cfg_path, e)
             cfg = {}
 
         has_metrics = (run_dir / "metrics.json").exists()
@@ -124,7 +125,8 @@ def _scan_runs_from_filesystem() -> list[dict]:
                 continue
             try:
                 cfg = json.loads(cfg_path.read_text())
-            except Exception:
+            except Exception as e:
+                log.debug("Failed to parse config %s: %s", cfg_path, e)
                 continue
 
             model_type = cfg.get("model_type", "")
@@ -159,7 +161,8 @@ def _load_eval_metrics(run_dir: Path) -> dict | None:
         return None
     try:
         return json.loads(mp.read_text())
-    except Exception:
+    except Exception as e:
+        log.debug("Failed to parse metrics %s: %s", mp, e)
         return None
 
 

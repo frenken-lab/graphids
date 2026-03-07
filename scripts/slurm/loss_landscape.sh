@@ -28,16 +28,13 @@ DATASET="${2:?Usage: loss_landscape.sh <model|all> <dataset>}"
 RESOLUTION="${3:-51}"
 SCALE="${4:-1.0}"
 
-echo "=== Loss Landscape Computation ==="
-echo "Job ID:     ${SLURM_JOB_ID}"
+log_job_header "Loss Landscape Computation"
 echo "Model:      ${MODEL}"
 echo "Dataset:    ${DATASET}"
 echo "Resolution: ${RESOLUTION}"
 echo "Scale:      ${SCALE}"
 echo "GPU:        ${CUDA_VISIBLE_DEVICES:-none}"
 echo "Memory:     ${SLURM_MEM_PER_NODE:-unknown}MB"
-echo "Python:     $(which python)"
-echo ""
 
 MODELS=()
 if [[ "$MODEL" == "all" ]]; then

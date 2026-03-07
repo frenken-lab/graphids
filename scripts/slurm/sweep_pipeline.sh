@@ -30,13 +30,10 @@ shift 2
 # SIGUSR1 handler: log warning, Python orchestrator handles state persistence
 trap 'echo "SIGUSR1 received — wall time approaching. State file is safe for resume on resubmit."' USR1
 
-echo "=== Sweep Pipeline DAG ==="
-echo "Job ID:    ${SLURM_JOB_ID}"
+log_job_header "Sweep Pipeline DAG"
 echo "Dataset:   ${DATASET}"
 echo "Scale:     ${SCALE}"
 echo "Extra args: $*"
-echo "Python:    $(which python)"
-echo ""
 
 # Run the sweep pipeline (--resume is default)
 python -m graphids.pipeline.cli sweep-pipeline \

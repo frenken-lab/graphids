@@ -7,19 +7,18 @@ import logging
 from pathlib import Path
 
 import numpy as np
-import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 
 from graphids.config import PipelineConfig, cache_dir, data_dir, metrics_path, stage_dir
 from graphids.config.constants import get_batch_index, graph_attack_type
 
+from .data_loading import training_preamble
 from .utils import (
     _cross_model_path,
     cache_predictions,
     cleanup,
     graph_label,
-    load_data,
     load_frozen_cfg,
     load_model,
 )
@@ -42,11 +41,7 @@ def evaluate(cfg: PipelineConfig) -> dict:
             }
         }
     """
-    log.info("=== EVALUATION: %s / %s_%s ===", cfg.dataset, cfg.model_type, cfg.scale)
-    pl.seed_everything(cfg.seed)
-
-    train_data, val_data, num_ids, in_ch = load_data(cfg)
-    device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+    train_data, val_data, num_ids, in_ch, device = training_preamble(cfg, "EVALUATION")
 
     test_scenarios = _load_test_data(cfg)
 

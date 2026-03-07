@@ -1,23 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GATConv, GATv2Conv, TransformerConv
 
-from ._utils import checkpoint_conv
-
-
-def _make_conv(
-    conv_type: str, in_dim: int, out_dim: int, heads: int, edge_dim: int | None = None, **kwargs
-):
-    """Factory for graph attention convolution layers."""
-    if conv_type == "transformer":
-        return TransformerConv(
-            in_dim, out_dim, heads=heads, edge_dim=edge_dim, concat=True, **kwargs
-        )
-    elif conv_type == "gatv2":
-        return GATv2Conv(in_dim, out_dim, heads=heads, edge_dim=edge_dim, concat=True, **kwargs)
-    else:
-        return GATConv(in_dim, out_dim, heads=heads, concat=True, **kwargs)
+from ._utils import _make_conv, checkpoint_conv
 
 
 class GraphAutoencoderNeighborhood(nn.Module):

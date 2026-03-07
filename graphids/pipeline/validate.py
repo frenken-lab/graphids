@@ -3,6 +3,7 @@
 Most field-level checks are now handled by Pydantic Field() constraints.
 This module handles filesystem checks and cross-stage prerequisite checks.
 """
+
 from __future__ import annotations
 
 import logging
@@ -47,24 +48,15 @@ def validate(cfg: PipelineConfig, stage: str) -> None:
             errors.append(f"Teacher config not found: {teacher_cfg}")
 
     # --- prerequisite checkpoints + frozen configs ---
-    def _check_prereq(model_type: str, prereq_stage: str, needed_by: str) -> None:
+    if stage in STAGE_DEPENDENCIES:
         exp = Path(cfg.experiment_root) / cfg.dataset
         aux_suffix = f"_{cfg.auxiliaries[0].type}" if cfg.auxiliaries else ""
-        base = exp / f"{model_type}_{cfg.scale}_{prereq_stage}{aux_suffix}"
-        if not (base / "best_model.pt").exists():
-            errors.append(f"{needed_by} needs {prereq_stage} checkpoint: {base / 'best_model.pt'}")
-        if not (base / "config.json").exists():
-            errors.append(f"{needed_by} needs {prereq_stage} config: {base / 'config.json'}")
-
-    if stage == "curriculum":
-        _check_prereq("vgae", "autoencoder", "Curriculum")
-
-    if stage == "fusion":
-        _check_prereq("vgae", "autoencoder", "Fusion")
-        _check_prereq("gat", "curriculum", "Fusion")
-
-    if stage == "temporal":
-        _check_prereq("gat", "curriculum", "Temporal")
+        for model_type, prereq_stage in STAGE_DEPENDENCIES[stage]:
+            base = exp / f"{model_type}_{cfg.scale}_{prereq_stage}{aux_suffix}"
+            if not (base / "best_model.pt").exists():
+                errors.append(f"{stage} needs {prereq_stage} checkpoint: {base / 'best_model.pt'}")
+            if not (base / "config.json").exists():
+                errors.append(f"{stage} needs {prereq_stage} config: {base / 'config.json'}")
 
     if stage == "evaluation":
         exp = Path(cfg.experiment_root) / cfg.dataset
@@ -75,6 +67,4 @@ def validate(cfg: PipelineConfig, stage: str) -> None:
             errors.append("Evaluation needs at least one checkpoint (GAT or VGAE)")
 
     if errors:
-        raise ValueError(
-            "Config validation failed:\n  " + "\n  ".join(errors)
-        )
+        raise ValueError("Config validation failed:\n  " + "\n  ".join(errors))

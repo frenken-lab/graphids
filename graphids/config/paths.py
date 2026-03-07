@@ -22,6 +22,12 @@ if TYPE_CHECKING:
 
 EXPERIMENT_ROOT = os.environ.get("KD_GAT_EXPERIMENT_ROOT", "experimentruns")
 
+# MLflow tracking URI — defaults to SQLite in data/mlflow/
+MLFLOW_TRACKING_URI = os.environ.get(
+    "MLFLOW_TRACKING_URI",
+    f"sqlite:///{Path(__file__).resolve().parents[2] / 'data' / 'mlflow' / 'mlflow.db'}",
+)
+
 # Data storage root — overridable via env var for easy migration between
 # home dir (dev) and project storage (production).
 _DATA_ROOT: str | None = os.environ.get("KD_GAT_DATA_ROOT")
@@ -75,7 +81,7 @@ def run_id(cfg: PipelineConfig, stage: str) -> str:
 
     This ID is used for:
     - Filesystem directory names (via stage_dir)
-    - W&B run names (for tracking)
+    - MLflow run names (for tracking)
     """
     aux_suffix = f"_{cfg.auxiliaries[0].type}" if cfg.auxiliaries else ""
     model = "eval" if stage == "evaluation" else cfg.model_type
@@ -163,10 +169,3 @@ def metrics_path_str(dataset: str, model_type: str, scale: str, stage: str, aux:
 def benchmark_path_str(dataset: str, model_type: str, scale: str, stage: str, aux: str = "") -> str:
     """Benchmark TSV path from raw strings."""
     return f"{EXPERIMENT_ROOT}/{run_id_str(dataset, model_type, scale, stage, aux)}/benchmark.tsv"
-
-
-def log_path_str(
-    dataset: str, model_type: str, scale: str, stage: str, aux: str = "", stream: str = "out"
-) -> str:
-    """SLURM log path from raw strings."""
-    return f"{EXPERIMENT_ROOT}/{run_id_str(dataset, model_type, scale, stage, aux)}/slurm.{stream}"

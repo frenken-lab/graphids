@@ -20,16 +20,13 @@
 
 SKIP_CUDA_CONF=1 SKIP_STAGE_DATA=1 source "/users/PAS2022/rf15/KD-GAT/scripts/slurm/_preamble.sh"
 
-echo "=== Export Pipeline ==="
-echo "Job ID: ${SLURM_JOB_ID}"
+log_job_header "Export Pipeline"
 echo "Args:   ${*:-<none>}"
-echo ""
 
 python -m graphids.pipeline.export "$@"
 
 EXIT_CODE=$?
 
-echo ""
-echo "=== Export $([ $EXIT_CODE -eq 0 ] && echo 'COMPLETE' || echo "FAILED (exit $EXIT_CODE)") ==="
+log_job_footer $EXIT_CODE
 
 exit $EXIT_CODE

@@ -5,12 +5,12 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-import pytorch_lightning as pl
 import torch
 
 from graphids.config import PipelineConfig, checkpoint_path, config_path, stage_dir
 
-from .utils import cache_predictions, cleanup, load_data, load_model
+from .data_loading import training_preamble
+from .utils import cache_predictions, cleanup, load_model
 
 log = logging.getLogger(__name__)
 
@@ -142,13 +142,9 @@ def _train_weighted_avg_fusion(cfg, train_cache, val_cache, device) -> float:
 
 def train_fusion(cfg: PipelineConfig) -> Path:
     """Train fusion agent on cached VGAE+GAT predictions. Returns checkpoint path."""
-    log.info(
-        "=== FUSION (%s): %s / %s_%s ===", cfg.fusion.method, cfg.dataset, cfg.model_type, cfg.scale
+    train_data, val_data, num_ids, in_ch, device = training_preamble(
+        cfg, f"FUSION ({cfg.fusion.method})"
     )
-    pl.seed_everything(cfg.seed)
-
-    train_data, val_data, num_ids, in_ch = load_data(cfg)
-    device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
 
     # Load frozen VGAE + GAT
     vgae = load_model(cfg, "vgae", "autoencoder", num_ids, in_ch, device)

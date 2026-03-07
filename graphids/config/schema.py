@@ -240,7 +240,18 @@ class PipelineConfig(BaseModel, frozen=True):
 
     @classmethod
     def _from_legacy_flat(cls, flat: dict) -> PipelineConfig:
-        """Convert legacy flat config.json to nested format."""
+        """Convert legacy flat config.json to nested format.
+
+        Deprecated: kept only for backward compatibility with old experimentruns/
+        config.json files. All new configs use nested format.
+        """
+        import warnings
+
+        warnings.warn(
+            "Loading legacy flat config format — migrate to nested format",
+            DeprecationWarning,
+            stacklevel=3,
+        )
         nested: dict[str, Any] = {}
         vgae: dict[str, Any] = {}
         gat: dict[str, Any] = {}

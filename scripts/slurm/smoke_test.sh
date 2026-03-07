@@ -27,13 +27,10 @@ source "$(dirname "$0")/_preamble.sh"
 # Extract stage from first positional arg
 SMOKE_STAGE="${1:?Usage: smoke_test.sh <stage>}"
 
-echo "=== GPU Smoke Test ==="
-echo "Job ID:    ${SLURM_JOB_ID}"
+log_job_header "GPU Smoke Test"
 echo "Stage:     ${SMOKE_STAGE}"
 echo "Partition: gpudebug (1hr max)"
-echo "Python:    $(which python)"
 echo "GPU:       $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'N/A')"
-echo ""
 
 # Run 1 trial, 2 epochs, smallest dataset
 python -m graphids.pipeline.cli tune \

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 from torch_geometric.loader import DataLoader, DynamicBatchSampler
@@ -12,6 +13,15 @@ from graphids.config import PipelineConfig, cache_dir, data_dir
 from graphids.config.constants import MMAP_TENSOR_LIMIT, get_batch_index
 
 log = logging.getLogger(__name__)
+
+
+def training_preamble(cfg: PipelineConfig, stage_name: str):
+    """Shared setup for all training/eval stages: log, seed, load data, resolve device."""
+    log.info("=== %s: %s / %s_%s ===", stage_name, cfg.dataset, cfg.model_type, cfg.scale)
+    pl.seed_everything(cfg.seed)
+    train_data, val_data, num_ids, in_ch = load_data(cfg)
+    device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+    return train_data, val_data, num_ids, in_ch, device
 
 
 def graph_label(g) -> int:

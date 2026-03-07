@@ -26,6 +26,26 @@ def effective_batch_size(cfg: PipelineConfig) -> int:
     return max(8, int(cfg.training.batch_size * cfg.training.safety_factor))
 
 
+def resolve_batch_config(cfg, model, train_data, teacher=None):
+    """Compute batch size and optional dynamic batching node budget."""
+    from .data_loading import compute_node_budget
+
+    if cfg.training.optimize_batch_size:
+        bs = compute_optimal_batch_size(model, train_data, cfg, teacher=teacher)
+    else:
+        bs = effective_batch_size(cfg)
+    max_nodes = None
+    if cfg.training.dynamic_batching:
+        max_nodes = compute_node_budget(bs, cfg)
+        if max_nodes:
+            log.info("Dynamic batching: max_num_nodes=%d (batch_size=%d × p95)", max_nodes, bs)
+        else:
+            log.info(
+                "Dynamic batching: no cache metadata, falling back to static batch_size=%d", bs
+            )
+    return bs, max_nodes
+
+
 def _get_representative_graph(train_data, cfg: PipelineConfig):
     """Get the p95 graph by node count for conservative batch sizing.
 

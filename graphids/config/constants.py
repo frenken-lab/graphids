@@ -146,6 +146,14 @@ STAGE_MODEL_MAP: dict[str, str] = {
     "fusion": "dqn",
 }
 
+# Stage prerequisite dependencies: stage → list of (model_type, prereq_stage) pairs
+STAGE_DEPENDENCIES: dict[str, list[tuple[str, str]]] = {
+    "curriculum": [("vgae", "autoencoder")],
+    "normal": [("vgae", "autoencoder")],
+    "fusion": [("vgae", "autoencoder"), ("gat", "curriculum")],
+    "temporal": [("gat", "curriculum")],
+}
+
 # ---------------------------------------------------------------------------
 # Sweep / state output paths
 # ---------------------------------------------------------------------------

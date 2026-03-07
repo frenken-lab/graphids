@@ -8,6 +8,7 @@ Architecture:
 
 No new dependencies — uses PyTorch native nn.TransformerEncoder.
 """
+
 from __future__ import annotations
 
 import torch
@@ -76,22 +77,6 @@ class TemporalGraphClassifier(nn.Module):
             nn.Dropout(0.1),
             nn.Linear(temporal_hidden, num_classes),
         )
-
-    def _encode_spatial(self, graphs: list) -> torch.Tensor:
-        """Encode a list of PyG Data objects into graph embeddings.
-
-        Returns: [batch_size, seq_len, spatial_dim]
-        """
-        embeddings = []
-        ctx = torch.no_grad() if self.freeze_spatial else torch.enable_grad()
-        with ctx:
-            if self.freeze_spatial:
-                self.spatial_encoder.eval()
-            for g in graphs:
-                _, emb = self.spatial_encoder(g, return_embedding=True)
-                # emb is [1, spatial_dim] for single graphs
-                embeddings.append(emb)
-        return torch.stack(embeddings, dim=0)  # [seq_len, 1, spatial_dim]
 
     def forward(self, graph_sequences: list[list]) -> torch.Tensor:
         """Forward pass on a batch of graph sequences.

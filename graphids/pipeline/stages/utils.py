@@ -14,6 +14,7 @@ import torch
 from .batch_sizing import (
     compute_optimal_batch_size,
     effective_batch_size,
+    resolve_batch_config,
 )
 from .callbacks import (
     MemoryMonitorCallback,
@@ -25,6 +26,7 @@ from .data_loading import (
     graph_label,
     load_data,
     make_dataloader,
+    training_preamble,
 )
 from .trainer_factory import (
     _cross_model_path,
@@ -43,7 +45,6 @@ __all__ = [
     "MemoryMonitorCallback",
     "ProfilerCallback",
     "_cross_model_path",
-    "_extract_state_dict",
     "build_optimizer_dict",
     "cache_predictions",
     "cleanup",
@@ -58,6 +59,8 @@ __all__ = [
     "make_dataloader",
     "make_projection",
     "make_trainer",
+    "resolve_batch_config",
+    "training_preamble",
 ]
 
 

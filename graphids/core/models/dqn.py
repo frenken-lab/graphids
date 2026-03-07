@@ -136,33 +136,7 @@ class TensorReplayBuffer:
 
 # ---------------------------------------------------------------------------
 # DQN Fusion Agent (vectorized training)
-# ---------------------------------------------------------------------------
-# TODO(open-question): Is RL the right formulation for fusion?
-#
-# The current setup is a contextual bandit, NOT a sequential MDP:
-#   - next_state == state (no state transitions)
-#   - done == False always (no terminal states)
-#   - Samples are i.i.d. from a pre-cached dataset (no environment dynamics)
-#
-# The Bellman target r + gamma * max Q(s', a') degenerates into
-# r + gamma * max Q(s, a'), a self-referential loop. The discount factor
-# just inflates Q-values without adding information.
-#
-# Alternatives to evaluate (compare F1/accuracy on held-out data):
-#   1. gamma=0 (proper bandit): target = r, no target network needed
-#   2. MLPFusionAgent (already implemented): supervised BCE, trains in seconds
-#   3. WeightedAvgFusionAgent: single learned alpha, simplest baseline
-#   4. Contextual Thompson Sampling or Neural UCB for principled exploration
-#
-# If MLP matches or beats DQN F1, the RL framing should be dropped entirely.
-# See also: WeightedAvgFusionAgent docstring ("if this matches DQN's F1,
-# the RL approach is unjustified").
-#
-# Additional issue: during training, prediction = (alpha > 0.5), but during
-# validation, prediction = (fused_score > 0.5). These differ because alpha
-# is a fusion weight, not a score. The training reward signal is based on
-# a semantically wrong "prediction". This is preserved for compatibility
-# but should be fixed if the DQN path is kept.
+# See ~/plans/fusion-redesign.md for RL vs supervised analysis
 # ---------------------------------------------------------------------------
 
 

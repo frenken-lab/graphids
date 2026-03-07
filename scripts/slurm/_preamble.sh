@@ -18,6 +18,9 @@ source .venv/bin/activate
 
 set -a; source .env; set +a
 
+# MLflow tracking URI (sourced from .env, but ensure it's set for all jobs)
+export MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI:-sqlite:///$PROJECT_ROOT/data/mlflow/mlflow.db}"
+
 if [[ "${SKIP_CUDA_CONF:-0}" != "1" ]]; then
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 fi
@@ -25,3 +28,19 @@ fi
 if [[ "${SKIP_STAGE_DATA:-0}" != "1" ]]; then
     source scripts/data/stage_data.sh ${STAGE_DATA_ARGS:---cache}
 fi
+
+# Shared job header/footer for consistent log formatting
+log_job_header() {
+    echo "=== $1 ==="
+    echo "Job ID:    ${SLURM_JOB_ID:-interactive}"
+    echo "Node:      ${SLURMD_NODENAME:-$(hostname)}"
+    echo "Started:   $(date)"
+    echo "Python:    $(which python)"
+    echo ""
+}
+
+log_job_footer() {
+    local exit_code=$1
+    echo ""
+    echo "=== $([ "$exit_code" -eq 0 ] && echo 'COMPLETE' || echo "FAILED (exit $exit_code)") ==="
+}
