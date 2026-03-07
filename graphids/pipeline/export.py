@@ -1,7 +1,7 @@
 """Export experiment results to static JSON for the Quarto reports site.
 
 Data sources:
-  - Datalake: data/datalake/*.parquet (primary — metadata + metrics)
+  - MLflow: experiment tracking store (primary — metadata + metrics)
   - Filesystem: experimentruns/{ds}/{run}/ (binary artifacts)
   - Catalog: config/datasets.yaml
 
@@ -25,8 +25,6 @@ log = logging.getLogger(__name__)
 
 DEFAULT_OUTPUT_DIR = Path("reports/data")
 EXPERIMENT_ROOT = Path(os.environ.get("KD_GAT_EXPERIMENT_ROOT", "experimentruns"))
-_data_root = os.environ.get("KD_GAT_DATA_ROOT")
-_DATALAKE_ROOT = Path(_data_root) / "datalake" if _data_root else Path("data/datalake")
 
 
 def _versioned_envelope(data: list | dict) -> dict:
@@ -39,39 +37,51 @@ def _versioned_envelope(data: list | dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Data source: datalake Parquet (primary) with filesystem fallback
+# Data source: MLflow (primary) with filesystem fallback
 # ---------------------------------------------------------------------------
 
 
 def _scan_runs() -> list[dict]:
-    """Load run metadata from datalake Parquet, with filesystem dir paths.
+    """Load run metadata from MLflow, with filesystem dir paths.
 
-    Falls back to filesystem scan if datalake doesn't exist.
+    Falls back to filesystem scan if MLflow has no runs.
     """
-    runs_parquet = _DATALAKE_ROOT / "runs.parquet"
-    if runs_parquet.exists():
-        return _scan_runs_from_datalake()
+    runs = _scan_runs_from_mlflow()
+    if runs:
+        return runs
     return _scan_runs_from_filesystem()
 
 
-def _scan_runs_from_datalake() -> list[dict]:
-    """Read run metadata from datalake Parquet, attach filesystem paths."""
-    import duckdb
+def _scan_runs_from_mlflow() -> list[dict]:
+    """Read run metadata from MLflow tracking store."""
+    try:
+        import mlflow
 
-    datalake = str(_DATALAKE_ROOT)
-    con = duckdb.connect()
-    rows = con.execute(f"""
-        SELECT run_id, dataset, model_type, scale, stage, has_kd, success
-        FROM '{datalake}/runs.parquet'
-        ORDER BY dataset, run_id
-    """).fetchall()
-    con.close()
+        from graphids.config import MLFLOW_TRACKING_URI
+
+        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+        df = mlflow.search_runs(search_all_experiments=True)
+    except Exception as e:
+        log.info("MLflow scan failed (%s) — falling back to filesystem", e)
+        return []
+
+    if df.empty:
+        return []
 
     runs = []
-    for run_id, dataset, model_type, scale, stage, has_kd, _success in rows:
-        run_dir = EXPERIMENT_ROOT / run_id
+    for _, row in df.iterrows():
+        dataset = row.get("tags.dataset", "")
+        model_type = row.get("tags.model_type", "")
+        scale = row.get("tags.scale", "")
+        stage = row.get("tags.stage", "")
+        has_kd = row.get("tags.has_kd", "False") == "True"
+
+        run_dir = (
+            EXPERIMENT_ROOT / dataset / f"{model_type}_{scale}_{stage}{'_kd' if has_kd else ''}"
+        )
         if not run_dir.is_dir():
             continue
+
         cfg_path = run_dir / "config.json"
         try:
             cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
@@ -83,7 +93,7 @@ def _scan_runs_from_datalake() -> list[dict]:
 
         runs.append(
             {
-                "run_id": run_id,
+                "run_id": f"{dataset}/{run_dir.name}",
                 "dataset": dataset,
                 "model_type": model_type,
                 "scale": scale,
@@ -98,7 +108,7 @@ def _scan_runs_from_datalake() -> list[dict]:
 
 
 def _scan_runs_from_filesystem() -> list[dict]:
-    """Legacy filesystem scan (fallback when datalake doesn't exist)."""
+    """Filesystem scan (fallback when MLflow has no runs)."""
     runs = []
     if not EXPERIMENT_ROOT.is_dir():
         return runs
@@ -497,57 +507,72 @@ def export_model_sizes(output_dir: Path) -> Path:
 def export_pareto(output_dir: Path) -> Path | None:
     """Pre-compute Pareto frontier data for the dashboard spec.
 
-    JOINs metrics (best F1 per model) with model_sizes (param_count_M),
+    Computes best F1 per model from evaluation metrics, joins with model_sizes,
     then marks Pareto-optimal points. Outputs pareto.parquet.
     """
-    import duckdb
-
-    metrics_parquet = _DATALAKE_ROOT / "metrics.parquet"
     model_sizes_parquet = output_dir / "model_sizes.parquet"
-    if not metrics_parquet.exists() or not model_sizes_parquet.exists():
-        log.info("Missing metrics or model_sizes Parquet — skipping Pareto export")
+    if not model_sizes_parquet.exists():
+        log.info("Missing model_sizes Parquet — skipping Pareto export")
         return None
 
-    con = duckdb.connect()
-    con.execute(f"CREATE TABLE metrics AS SELECT * FROM '{metrics_parquet}'")
-    con.execute(f"CREATE TABLE model_sizes AS SELECT * FROM '{model_sizes_parquet}'")
+    # Collect best F1 per model from evaluation runs
+    best_f1: dict[str, float] = {}
+    for run in _scan_runs():
+        if run["stage"] != "evaluation":
+            continue
+        metrics = _load_eval_metrics(run["dir"])
+        if not metrics:
+            continue
+        for model_key in _MODEL_KEYS:
+            f1 = metrics.get(model_key, {}).get("core", {}).get("f1")
+            if f1 is not None:
+                key = f"{model_key}_{run['scale']}"
+                best_f1[key] = max(best_f1.get(key, 0.0), f1)
 
-    result = con.execute("""
-        WITH best_per_config AS (
-            SELECT m.model, s.scale, s.param_count_M, MAX(m.f1) AS f1,
-                   m.model || '_' || s.scale AS label
-            FROM metrics m
-            JOIN model_sizes s ON m.model = s.model_type
-            WHERE m.f1 IS NOT NULL
-            GROUP BY m.model, s.scale, s.param_count_M
-        ),
-        ranked AS (
-            SELECT *,
-                MAX(f1) OVER (ORDER BY param_count_M DESC
-                    ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS best_right
-            FROM best_per_config
-        )
-        SELECT model, scale, param_count_M, f1, label,
-               CASE WHEN f1 >= best_right THEN true ELSE false END AS is_pareto
-        FROM ranked
-        ORDER BY param_count_M
-    """).fetchdf()
-    con.close()
+    if not best_f1:
+        log.info("No F1 metrics found — skipping Pareto export")
+        return None
 
-    if result.empty:
+    import pyarrow.parquet as pq
+
+    sizes_table = pq.read_table(model_sizes_parquet)
+    sizes_df = sizes_table.to_pydict()
+
+    rows = []
+    for i in range(len(sizes_df["model_type"])):
+        mt = sizes_df["model_type"][i]
+        sc = sizes_df["scale"][i]
+        key = f"{mt}_{sc}"
+        f1 = best_f1.get(key)
+        if f1 is not None:
+            rows.append(
+                {
+                    "model": mt,
+                    "scale": sc,
+                    "param_count_M": sizes_df["param_count_M"][i],
+                    "f1": round(f1, 6),
+                    "label": f"{mt}_{sc}",
+                    "is_pareto": False,
+                }
+            )
+
+    if not rows:
         log.info("No Pareto data computed — skipping")
         return None
 
+    # Mark Pareto-optimal: best F1 for each param count level
+    rows.sort(key=lambda r: r["param_count_M"])
+    best_right = 0.0
+    for r in reversed(rows):
+        best_right = max(best_right, r["f1"])
+        r["is_pareto"] = r["f1"] >= best_right
+
     import pyarrow as pa
-    import pyarrow.parquet as pq
 
     out = output_dir / "pareto.parquet"
-    pq.write_table(pa.Table.from_pandas(result), out)
-    log.info(
-        "Exported pareto.parquet (%d rows, %d Pareto-optimal)",
-        len(result),
-        result["is_pareto"].sum(),
-    )
+    pq.write_table(pa.Table.from_pylist(rows), out)
+    n_pareto = sum(1 for r in rows if r["is_pareto"])
+    log.info("Exported pareto.parquet (%d rows, %d Pareto-optimal)", len(rows), n_pareto)
     return out
 
 
@@ -558,7 +583,10 @@ def export_loss_landscape(output_dir: Path) -> Path | None:
     a single ``loss_landscape.parquet`` with columns:
     x, y, loss, model_type, scale, dataset, direction_seed.
     """
-    landscape_dir = _DATALAKE_ROOT / "loss_landscapes"
+    _data_root_str = os.environ.get("KD_GAT_DATA_ROOT")
+    landscape_dir = (
+        Path(_data_root_str) / "loss_landscapes" if _data_root_str else Path("data/loss_landscapes")
+    )
     if not landscape_dir.is_dir():
         log.info("No loss landscape data found at %s — skipping", landscape_dir)
         return None
@@ -1189,43 +1217,15 @@ def export_summary(output_dir: Path) -> Path:
 
 
 def export_data_for_reports(reports_data_dir: Path | None = None) -> None:
-    """Copy datalake Parquet + artifact Parquet to reports/data/ for Quarto.
+    """Ensure reports/data/ has all needed files for Quarto.
 
-    This is the bridge between the pipeline datalake and the Quarto site.
-    FileAttachment in OJS cells loads from reports/data/.
+    All exports already write directly to reports/data/ (the output_dir).
+    This function is kept for the --reports flag compatibility.
     """
-    import shutil
-
     if reports_data_dir is None:
         reports_data_dir = Path("reports/data")
     reports_data_dir.mkdir(parents=True, exist_ok=True)
-
-    # Core datalake files
-    for name in ["metrics.parquet", "runs.parquet", "datasets.parquet"]:
-        src = _DATALAKE_ROOT / name
-        if src.exists():
-            shutil.copy2(src, reports_data_dir / name)
-            log.info("Copied %s → reports/data/", name)
-
-    # Training curves: merge all into a single file for easy DuckDB-WASM loading
-    tc_dir = _DATALAKE_ROOT / "training_curves"
-    if tc_dir.is_dir():
-        import pyarrow as pa
-        import pyarrow.parquet as pq
-
-        tables = []
-        for f in sorted(tc_dir.glob("*.parquet")):
-            tables.append(pq.read_table(f))
-        if tables:
-            merged = pa.concat_tables(tables)
-            out = reports_data_dir / "training_curves.parquet"
-            pq.write_table(merged, out)
-            log.info("Merged %d training curve files → %s", len(tables), out)
-
-    # Graph statistics Parquet
-    graph_stats_src = reports_data_dir / "graph_statistics.parquet"
-    if not graph_stats_src.exists():
-        log.info("graph_statistics.parquet not yet exported — run with --graphs first")
+    log.info("Reports data directory ready: %s", reports_data_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -1310,7 +1310,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--reports",
         action="store_true",
-        help="Also copy datalake Parquet data to reports/data/ for Quarto site",
+        help="Ensure reports/data/ is ready for Quarto site",
     )
     parser.add_argument(
         "--graphs",

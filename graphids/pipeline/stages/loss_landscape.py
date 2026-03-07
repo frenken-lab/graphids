@@ -30,11 +30,7 @@ log = logging.getLogger(__name__)
 
 EXPERIMENT_ROOT = Path(os.environ.get("KD_GAT_EXPERIMENT_ROOT", "experimentruns"))
 _data_root = os.environ.get("KD_GAT_DATA_ROOT")
-OUTPUT_ROOT = (
-    Path(_data_root) / "datalake" / "loss_landscapes"
-    if _data_root
-    else Path("data/datalake/loss_landscapes")
-)
+OUTPUT_ROOT = Path(_data_root) / "loss_landscapes" if _data_root else Path("data/loss_landscapes")
 
 # Map model_type → (stage subdirectory suffix, scale)
 _MODEL_RUN_MAP = {

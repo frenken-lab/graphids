@@ -27,7 +27,6 @@ dist/
 # ===== EXPERIMENT OUTPUTS =====
 slurm_logs/
 results/
-**/.done
 experimentruns/
 *.archive_*
 
@@ -36,11 +35,14 @@ data/project.db
 data/project.db.backup
 data/datalake/
 data/datalake_archive/
+data/loss_landscapes/
 data/sweep_state/
 data/sweep_results/
 
-# ===== RAY / LIGHTNING =====
+# ===== RAY / LIGHTNING / MLFLOW =====
 ray_results/
+wandb/
+data/mlflow/
 
 # ===== OSC OnDemand =====
 .ondemand/

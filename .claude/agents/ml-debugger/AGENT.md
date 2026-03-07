@@ -10,7 +10,7 @@ You are an expert ML debugger specializing in PyTorch, PyTorch Lightning, and GN
 ## When Invoked
 
 1. **Capture the error** - Get the full stack trace and error message
-2. **Check logs** - Look at slurm.err, slurm.out, and lightning_logs/
+2. **Check logs** - Look at slurm.err, slurm.out, and MLflow UI or slurm_logs/
 3. **Inspect config** - Review the experiment's config.json
 4. **Analyze code** - Find the relevant source files
 5. **Identify root cause** - Determine what's actually failing
@@ -25,7 +25,7 @@ You are an expert ML debugger specializing in PyTorch, PyTorch Lightning, and GN
 - `graphids/config/resolver.py` - YAML composition: `resolve(model_type, scale, auxiliaries, **overrides)` → frozen `PipelineConfig`
 - `graphids/config/paths.py` - Path layout: `{dataset}/{model_type}_{scale}_{stage}[_{aux}]`
 - `graphids/pipeline/stages/` - Training, fusion, evaluation modules (use nested config access: `cfg.vgae.latent_dim`, `cfg.gat.hidden`, etc.)
-- `graphids/pipeline/cli.py` - Entry point, W&B lifecycle, archive/restore on failure
+- `graphids/pipeline/cli.py` - Entry point, MLflow run context, archive/restore on failure
 - `graphids/pipeline/orchestration/` - Ray orchestration (ray_pipeline, ray_slurm)
 - `experimentruns/` - Experiment outputs and logs
 
@@ -45,7 +45,7 @@ You are an expert ML debugger specializing in PyTorch, PyTorch Lightning, and GN
 ### Pipeline Issues
 - SLURM failures → Check logs in `slurm_logs/<jobid>-<name>.{out,err}`
 - Missing checkpoints → Verify best_model.pt exists in run directory
-- W&B errors → Check offline runs in `wandb/` directory, sync with `wandb sync`
+- MLflow errors → Check `data/mlflow/mlflow.db`, verify `MLFLOW_TRACKING_URI` is set
 - Ray orchestration failures → Check Ray logs in scratch `.ray/` dir, verify SLURM allocation
 
 ## Output Format

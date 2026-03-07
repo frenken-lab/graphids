@@ -2,9 +2,9 @@
 
 Data flow:
     ~/ray_results/tune_{stage}_{dataset}_{scale}/
-    → data/datalake/sweeps.parquet (local, DuckDB-queryable)
+    → temp Parquet file
     → HF Dataset: buckeyeguy/kd-gat-sweeps (private)
-    → HF Space: buckeyeguy/kd-gat-sweep-dashboard (Streamlit)
+    → HF Space: buckeyeguy/kd-gat-dashboard (Streamlit)
 
 Usage:
     from graphids.pipeline.sweep_export import ingest_and_push
@@ -16,16 +16,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
 
 log = logging.getLogger(__name__)
-
-_data_root = os.environ.get("KD_GAT_DATA_ROOT")
-_DATALAKE_ROOT = Path(_data_root) / "datalake" if _data_root else Path("data/datalake")
-_SWEEPS_PARQUET = _DATALAKE_ROOT / "sweeps.parquet"
 
 HF_DATASET_REPO = "buckeyeguy/kd-gat-sweeps"
 
@@ -99,35 +96,6 @@ def ingest_sweep(experiment_dir: Path, stage: str, dataset: str, scale: str) -> 
     return df
 
 
-def append_to_lakehouse(df: pd.DataFrame) -> Path:
-    """Append trial data to data/datalake/sweeps.parquet."""
-    if df.empty:
-        return _SWEEPS_PARQUET
-
-    import duckdb
-
-    _DATALAKE_ROOT.mkdir(parents=True, exist_ok=True)
-
-    con = duckdb.connect()
-
-    if _SWEEPS_PARQUET.exists():
-        # Deduplicate: remove existing rows with same sweep_id + trial_id
-        existing = con.execute(
-            f"SELECT * FROM '{_SWEEPS_PARQUET}' "
-            "WHERE (sweep_id, trial_id) NOT IN "
-            "(SELECT sweep_id, trial_id FROM df)"
-        ).fetchdf()
-        combined = pd.concat([existing, df], ignore_index=True)
-    else:
-        combined = df
-
-    con.execute(f"COPY combined TO '{_SWEEPS_PARQUET}' (FORMAT PARQUET, OVERWRITE)")
-    con.close()
-
-    log.info("Lakehouse updated: %s (%d total rows)", _SWEEPS_PARQUET, len(combined))
-    return _SWEEPS_PARQUET
-
-
 def push_to_hf(parquet_path: Path) -> None:
     """Upload sweeps.parquet to private HF Dataset."""
     from huggingface_hub import HfApi
@@ -158,10 +126,16 @@ def push_to_hf(parquet_path: Path) -> None:
 
 
 def ingest_and_push(experiment_dir: Path, stage: str, dataset: str, scale: str) -> None:
-    """Full pipeline: parse → lakehouse → HF push."""
+    """Full pipeline: parse → temp Parquet → HF push."""
     df = ingest_sweep(experiment_dir, stage, dataset, scale)
     if df.empty:
         log.warning("No trials to export from %s", experiment_dir)
         return
-    parquet_path = append_to_lakehouse(df)
-    push_to_hf(parquet_path)
+
+    with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        df.to_parquet(tmp_path, index=False)
+        push_to_hf(tmp_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)

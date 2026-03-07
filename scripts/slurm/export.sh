@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Export datalake + experiment data to reports/data/ for Quarto site.
-# CPU-only job — scans experimentruns/ and datalake Parquet.
+# Export experiment data to reports/data/ for Quarto site.
+# CPU-only job — scans MLflow + experimentruns/ filesystem.
 #
 # Usage:
 #   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/export.sh
 #   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/export.sh --reports
 #
-# --reports: also copy datalake Parquet to reports/data/ (for local Quarto preview)
+# --reports: ensure reports/data/ is ready for Quarto preview
 
 #SBATCH --partition=cpu
 #SBATCH --nodes=1

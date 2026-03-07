@@ -24,9 +24,7 @@ echo ""
 
 # Ensure target dirs exist (should already from setup, but be safe)
 mkdir -p "$SHARED/data/raw" "$SHARED/data/cache" \
-         "$SHARED/data/datalake/artifacts" \
-         "$SHARED/data/datalake/training_curves" \
-         "$SHARED/data/datalake/loss_landscapes" \
+         "$SHARED/data/mlflow" \
          "$SHARED/experimentruns"
 
 # 1. Raw CAN data (automotive/ → raw/ to match paths.py convention)
@@ -37,9 +35,15 @@ rsync -av --progress "$SRC/data/automotive/" "$SHARED/data/raw/"
 echo "--- Syncing graph cache ---"
 rsync -av --progress "$SRC/data/cache/" "$SHARED/data/cache/"
 
-# 3. Datalake (Parquet — small but critical for undergrad queries)
-echo "--- Syncing datalake ---"
-rsync -av --progress "$SRC/data/datalake/" "$SHARED/data/datalake/"
+# 3. Datalake (legacy — kept for historical reference)
+echo "--- Syncing datalake (legacy) ---"
+if [ -d "$SRC/data/datalake" ]; then
+    rsync -av --progress "$SRC/data/datalake/" "$SHARED/data/datalake/"
+fi
+
+# 3b. MLflow tracking store
+echo "--- Syncing MLflow ---"
+rsync -av --progress "$SRC/data/mlflow/" "$SHARED/data/mlflow/"
 
 # 4. Experiment runs (checkpoints + configs + metrics)
 echo "--- Syncing experiment runs ---"
@@ -67,4 +71,4 @@ du -sh "$SHARED/data/raw" "$SHARED/data/cache" "$SHARED/data/datalake" "$SHARED/
 echo ""
 echo "Next steps:"
 echo "  1. source .env  (picks up KD_GAT_SHARED_ROOT)"
-echo "  2. Verify: duckdb -c \"SELECT COUNT(*) FROM '$SHARED/data/datalake/runs.parquet'\""
+echo "  2. Verify: python -c \"import mlflow; mlflow.set_tracking_uri('sqlite:///$SHARED/data/mlflow/mlflow.db'); print(len(mlflow.search_runs(search_all_experiments=True)))\""

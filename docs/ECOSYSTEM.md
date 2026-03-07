@@ -8,7 +8,7 @@ A comprehensive mental model of the entire KD-GAT system: where data lives, how 
 
 ## Diagram 1: The Big Picture (30,000-foot view)
 
-Everything lives inside three zones: the OSC cluster (all compute), AWS (storage + hosting), and GitHub (code + CI + Pages). Arrows show data flow direction.
+Everything lives inside three zones: the OSC cluster (all compute), HF Hub (datasets + dashboards), and GitHub (code + CI + Pages). Arrows show data flow direction.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -23,23 +23,24 @@ Everything lives inside three zones: the OSC cluster (all compute), AWS (storage
 │         │                    ┌──────────────────────────┤                    │
 │         │                    │                          │                    │
 │         │              ┌─────▼──────┐          ┌────────▼─────────┐         │
-│         │              │ Lakehouse  │          │ Export Pipeline   │         │
-│         │              │ sync       │          │ (filesystem→JSON) │         │
+│         │              │ MLflow     │          │ Export Pipeline   │         │
+│         │              │ (SQLite)   │          │ (MLflow→JSON)    │         │
 │         │              └─────┬──────┘          └────────┬─────────┘         │
 │         │                    │                          │                    │
 └─────────┼────────────────────┼──────────────────────────┼────────────────────┘
           │                    │                          │
           ▼                    ▼                          ▼
     ┌───────────┐     ┌──────────────┐          ┌──────────────────┐
-    │ S3: DVC   │     │ S3: Lakehouse│          │ S3: Dashboard    │
-    │ remote    │     │ (queryable)  │          │ static JSON      │
-    └───────────┘     └──────────────┘          └────────┬─────────┘
-                                                         │
-                                                         ▼
-                                                ┌──────────────────┐
-                                                │ GitHub Pages     │
-                                                │ D3.js Dashboard  │
-                                                └──────────────────┘
+    │ S3: DVC   │     │ HF Dataset   │          │ GitHub Pages     │
+    │ remote    │     │ (experiments │          │ Quarto site      │
+    └───────────┘     │  + sweeps)   │          └──────────────────┘
+                      └──────┬───────┘
+                             │
+                             ▼
+                      ┌──────────────┐
+                      │ HF Spaces    │
+                      │ Streamlit    │
+                      └──────────────┘
 
     ┌──────────────────┐                        ┌──────────────────┐
     │ GitHub Actions   │ ◄──push/PR──────────── │ GitHub Repo      │
@@ -48,7 +49,7 @@ Everything lives inside three zones: the OSC cluster (all compute), AWS (storage
 
 ```
 
-**Key takeaway**: The OSC cluster is the single source of truth. Everything else (S3, GitHub Pages) is a downstream consumer of artifacts produced on the cluster.
+**Key takeaway**: The OSC cluster is the single source of truth. Everything else (HF Hub, GitHub Pages) is a downstream consumer of artifacts produced on the cluster.
 
 ---
 
@@ -127,7 +128,7 @@ data/automotive/{dataset}/
   train_02_with_attacks/*.csv       <- DVC-tracked (pointer files in git, blobs on scratch/S3)
   test_01_*/ ... test_06_*/
         |
-        |  src/preprocessing/preprocessing.py
+        |  graphids/core/preprocessing/
         |  - hex decode + 8-byte padding + normalize [0,1]
         |  - sliding windows (size=100, stride=100)
         |  - PyG Data(x=[N,11], edge_index=[2,E], edge_attr=[E,11], y=0|1)
@@ -153,10 +154,9 @@ experimentruns/{dataset}/eval_{scale}_evaluation[_kd]/
   attention_weights.npz             <- per-layer GAT attention alphas
   dqn_policy.json                   <- alpha distribution by class
         |
-        +---> pipeline/lakehouse.py ---> data/datalake/*.parquet (primary)
-        |     (append to runs.parquet + metrics.parquet + artifacts.parquet)
-        |     Queryable: SELECT * FROM 'data/datalake/runs.parquet'
-        |     Also writes legacy JSON to s3://kd-gat/lakehouse/runs/ (deprecated)
+        +---> MLflow (data/mlflow/mlflow.db) --- tags, params, metrics, artifacts
+        |     Queryable: mlflow.search_runs(search_all_experiments=True)
+        |     Auto-pushed to HF Dataset by SLURM epilog
         |
         +---> pipeline/export.py ---> reports/data/
               Light (~2s):  leaderboard.json, runs.json, datasets.json, kd_transfer.json,
@@ -182,26 +182,29 @@ flowchart LR
         Serve["FastAPI Server"]
     end
 
+    subgraph HF["Hugging Face Hub"]
+        HF_DS["HF Dataset<br/>(experiments + sweeps)"]
+        HF_Space["HF Spaces<br/>(Streamlit dashboards)"]
+    end
+
     subgraph AWS["AWS"]
         S3_DVC["S3: DVC Remote"]
-        S3_Lake["S3: Lakehouse<br/>(queryable JSON)"]
-        S3_Dash["S3: Dashboard<br/>(static JSON)"]
     end
 
     subgraph GitHub["GitHub"]
         Repo["Git Repo"]
         Actions["GitHub Actions<br/>(lint + test)"]
-        Pages["GitHub Pages<br/>(D3.js Dashboard)"]
+        Pages["GitHub Pages<br/>(Quarto site)"]
     end
 
-    Pipeline -->|"boto3: run JSON"| S3_Lake
+    Pipeline -->|"MLflow autolog"| Pipeline
+    Pipeline -->|"push_experiments_to_hf.py"| HF_DS
     Pipeline -->|"dvc push"| S3_DVC
-    Export -->|"aws s3 sync"| S3_Dash
-    Export -->|"git push docs/"| Pages
+    Export -->|"git push → Actions"| Pages
     Repo -->|"push / PR"| Actions
     Ray -->|"subprocess per stage"| Pipeline
     Serve -->|"HTTP /predict"| Serve
-    S3_Dash -.->|"fetch JSON"| Pages
+    HF_DS -.->|"read Parquet"| HF_Space
 ```
 
 ### Connection Reference Table
@@ -209,13 +212,14 @@ flowchart LR
 | Service | Protocol | Direction | What Flows | When |
 |---------|----------|-----------|------------|------|
 | **SLURM** (OSC) | `sbatch` / `srun` | Local | Job submission (GPU training, CPU testing/export) | Every training/eval/test run |
-| **S3** (`kd-gat` bucket) | boto3 / AWS CLI | Bidirectional | Lakehouse JSON, dashboard data, DVC blobs | After each stage (lakehouse), after export (dashboard) |
+| **MLflow** | SQLite | Local | Params, metrics, tags, artifacts | Every training run (via `mlflow.start_run()`) |
+| **HF Dataset** | `huggingface_hub` | Outbound | Experiment Parquet, sweep Parquet | SLURM epilog auto-push |
+| **HF Spaces** | Streamlit | Outbound (read by browser) | Live dashboards (experiments + sweeps) | Always-on |
 | **DVC** (scratch GPFS) | `dvc push/pull` | Bidirectional | Raw data + cache blobs | Data versioning |
 | **GitHub Actions** | Webhook | Triggered by push/PR | Ruff lint, JS syntax check, pytest (3 test files) | On push to main (filtered by path) |
-| **GitHub Pages** | `git push` to `docs/` | Outbound | Static HTML/JS/JSON dashboard | After export script |
+| **GitHub Pages** | Actions deploy | Outbound | Quarto site (HTML/JS/Parquet) | After push to main |
 | **Ray** | Python SDK | Local orchestration | DAG scheduling, per-dataset fan-out, subprocess dispatch | `pipeline.cli flow` |
 | **FastAPI** | HTTP REST | Inbound | `/predict` (graph->label), `/health` | When serving (`uvicorn`) |
-| **D3.js CDN** | `<script>` in browser | Inbound (browser) | Visualization library | Dashboard page load |
 
 ---
 
@@ -224,22 +228,19 @@ flowchart LR
 ```
 /users/PAS2022/rf15/                           <- NFS home (permanent)
   KD-GAT/                                      <- Git repo root
-    config/                                    <- Layer 1: declarative config
-    pipeline/                                  <- Layer 2: orchestration
-    src/                                       <- Layer 3: domain (models, training)
+    graphids/
+      config/                                  <- Layer 1: declarative config
+      pipeline/                                <- Layer 2: orchestration
+      core/                                    <- Layer 3: domain (models, training)
     data/
       automotive/                              <- Raw datasets (DVC-tracked)
         hcrl_ch/, hcrl_sa/, set_01-04/
       cache/                                   <- Preprocessed graphs (DVC-tracked)
         {dataset}/processed_graphs.pt
-      datalake/                                <- Parquet structured storage
-        runs.parquet                           <- Run-level metadata
-        metrics.parquet                        <- Per-run per-model metrics
-        configs.parquet                        <- Key hyperparams + full config JSON
-        artifacts.parquet                      <- Manifest: run_id → file path, type, size
-        datasets.parquet                       <- Dataset catalog with cache stats
-        training_curves/{run_id}.parquet       <- Per-epoch metrics from Lightning CSV logs
-        queries/                               <- SQL query files (leaderboard, kd_impact)
+      mlflow/                                  <- MLflow SQLite backend
+        mlflow.db                              <- Experiment tracking store
+      datalake/                                <- Legacy Parquet (historical data, .gitignored)
+      loss_landscapes/                         <- Loss landscape Parquet files
     experimentruns/                            <- All training outputs
       {dataset}/
         vgae_large_autoencoder/
@@ -348,7 +349,7 @@ Prediction:
 
 **Why DQN for fusion?** A fixed weighted average can't adapt to different attack types. The DQN learns per-graph fusion weights: for subtle attacks where the GAT is uncertain, it leans on VGAE anomaly scores; for obvious attacks, it trusts the GAT classifier.
 
-**Source files**: [`src/models/dqn.py`](../src/models/dqn.py), [`src/training/dqn_training.py`](../src/training/dqn_training.py)
+**Source files**: [`graphids/core/models/dqn.py`](../graphids/core/models/dqn.py), [`graphids/pipeline/stages/fusion.py`](../graphids/pipeline/stages/fusion.py)
 
 ---
 
@@ -386,7 +387,7 @@ L_student = (1 - alpha) * L_task + alpha * L_KD
 
 The teacher is frozen during student training — its weights never update. The student learns to both solve the task AND mimic the teacher's internal representations.
 
-**Source files**: [`config/auxiliaries/kd_standard.yaml`](../config/auxiliaries/kd_standard.yaml), [`src/training/`](../src/training/)
+**Source files**: [`graphids/config/auxiliaries/kd_standard.yaml`](../graphids/config/auxiliaries/kd_standard.yaml), [`graphids/pipeline/stages/`](../graphids/pipeline/stages/)
 
 ---
 
@@ -402,12 +403,11 @@ The teacher is frozen during student training — its weights never update. The 
 | Embeddings for visualization | `experimentruns/.../eval_*/embeddings.npz` |
 | DQN policy (alpha values) | `experimentruns/.../eval_*/dqn_policy.json` |
 | Report data (exports) | `reports/data/` |
-| Config defaults | `config/defaults.yaml` |
-| Architecture definitions | `config/models/{type}/{scale}.yaml` |
-| KD settings | `config/auxiliaries/kd_standard.yaml` |
+| Config defaults | `graphids/config/defaults.yaml` |
+| Architecture definitions | `graphids/config/models/{type}/{scale}.yaml` |
+| KD settings | `graphids/config/auxiliaries/kd_standard.yaml` |
 | SLURM job scripts | `scripts/` |
-| Datalake (Parquet) | `data/datalake/*.parquet` |
-| Ad-hoc queries | `data/datalake/queries/*.sql` |
+| MLflow tracking | `data/mlflow/mlflow.db` (SQLite) |
 | Quarto site (live) | https://robertfrenken.github.io/DQN-Fusion/ (gh-pages) |
 
 ---
@@ -417,14 +417,14 @@ The teacher is frozen during student training — its weights never update. The 
 The codebase enforces strict import boundaries (tested by `tests/test_layer_boundaries.py`):
 
 ```
-config/      Layer 1: Inert, declarative. NEVER imports from pipeline/ or src/.
+graphids/config/      Layer 1: Inert, declarative. NEVER imports from pipeline/ or core/.
   |
   v
-pipeline/    Layer 2: Orchestration. Imports config/ at top level.
-  |          Imports src/ only inside functions (lazy).
+graphids/pipeline/    Layer 2: Orchestration. Imports config/ at top level.
+  |                   Imports core/ only inside functions (lazy).
   v
-src/         Layer 3: Domain (models, training, preprocessing).
-             Imports config/ (constants). NEVER imports from pipeline/.
+graphids/core/        Layer 3: Domain (models, training, preprocessing).
+                      Imports config/ (constants). NEVER imports from pipeline/.
 ```
 
 This ensures config can be used anywhere without side effects, and the training code has no knowledge of orchestration concerns.

@@ -51,6 +51,5 @@ Parse the dataset and scale from `$ARGUMENTS`. If only one word is provided, it 
 ## Notes
 
 - Pipeline runs on SLURM with GPU resources (V100) via Ray remote tasks
-- W&B tracking is automatic (offline on compute nodes, sync later)
-- S3 lakehouse sync is fire-and-forget on run completion
+- MLflow tracking is automatic (SQLite backend, auto-pushed to HF by SLURM epilog)
 - Each stage runs as a subprocess for clean CUDA context

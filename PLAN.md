@@ -86,6 +86,9 @@ a semantically wrong prediction. If DQN is kept, this should be fixed.
 
 ## Completed
 
+- MLflow cleanup: removed datalake/lakehouse/W&B/S3 dead code, rewrote export.py + sweep_export.py to MLflow-only, updated all docs (2026-03-06)
+- MLflow consolidation: replaced W&B + lakehouse.py + CSVLogger with MLflow single store (2026-03-06)
+- Spec-driven visualization migration: dashboard.qmd 1354→445 lines, 29 YAML specs (2026-03-06)
 - Force graph & visualization rework: 7 color modes, edge tooltips, attack_type support (2026-03-04)
 - `export_graph_samples()` + v2 JSON schema (2026-03-04)
 - `include_attack_type=True` default in preprocessing pipeline (2026-03-04)

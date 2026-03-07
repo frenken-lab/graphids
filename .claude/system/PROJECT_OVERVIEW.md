@@ -4,7 +4,7 @@
 
 ## What This Is
 
-CAN bus intrusion detection via knowledge distillation. Large models (VGAE → GAT → DQN fusion) are compressed into small models via KD auxiliaries. Optional temporal stage adds cross-window sequence classification. Runs on OSC HPC via Ray/SLURM with W&B tracking.
+CAN bus intrusion detection via knowledge distillation. Large models (VGAE → GAT → DQN fusion) are compressed into small models via KD auxiliaries. Optional temporal stage adds cross-window sequence classification. Runs on OSC HPC via Ray/SLURM with MLflow tracking.
 
 ## Architecture
 
@@ -34,22 +34,21 @@ Three-layer import hierarchy (enforced by `tests/test_layer_boundaries.py`):
 
 ### Layer 2: `graphids/pipeline/` (orchestration — imports graphids.config freely, lazy imports from graphids.core)
 
-- `cli.py` — Arg parser (`--model`/`--scale`/`--auxiliaries`), W&B run lifecycle (`wandb.init`/`wandb.finish`), S3 lakehouse sync, `STAGE_FNS` dispatch
+- `cli.py` — Arg parser (`--model`/`--scale`/`--auxiliaries`), MLflow run context (`mlflow.start_run()`), artifact logging, `STAGE_FNS` dispatch
 - `stages/` — Training logic split into modules:
   - `training.py` — VGAE (autoencoder) and GAT (curriculum) training
   - `fusion.py` — DQN fusion training (uses `cfg.dqn.*`, `cfg.fusion.*`)
   - `evaluation.py` — Multi-model evaluation and metrics; captures `embeddings.npz`, `dqn_policy.json`, `explanations.npz` (when `run_explainer=True`) as artifacts; optional temporal model evaluation
   - `temporal.py` — Temporal graph classification stage (GAT spatial encoder + Transformer temporal head)
   - `modules.py` — PyTorch Lightning modules (uses `cfg.vgae.*`, `cfg.gat.*`, `cfg.training.*`)
-  - `utils.py` — Shared utilities: model loading with cross-model path resolution (`_cross_model_path`, `_STAGE_MODEL_TYPE`), batch size optimization (static/measured/trial), trainer construction, WandbLogger setup
+  - `utils.py` — Shared utilities: model loading with cross-model path resolution (`_cross_model_path`, `_STAGE_MODEL_TYPE`), batch size optimization (static/measured/trial), trainer construction, `_setup_mlflow_autolog()`
 - `orchestration/` — Ray orchestration:
   - `ray_pipeline.py` — Full training DAG via Ray remote tasks
   - `ray_slurm.py` — Ray cluster bootstrap on SLURM
 - `validate.py` — Config validation (simplified — Pydantic handles field constraints)
 - `tracking.py` — Memory monitoring utilities
 - `memory.py` — GPU memory management: static estimation, measured (forward hooks), trial-based (binary search with forward+backward passes)
-- `lakehouse.py` — Fire-and-forget Parquet append to data/datalake/
-- `export.py` — Filesystem scanning → static JSON/Parquet export for Quarto reports
+- `export.py` — MLflow/filesystem scanning → static JSON/Parquet export for Quarto reports
 
 ### Layer 3: `graphids/core/` (domain — imports graphids.config.constants, never imports graphids.pipeline)
 
@@ -155,7 +154,14 @@ Default config enables memory-efficient training:
 
 ## Experiment Management
 
-**Two-layer architecture**: W&B owns live tracking (params/metrics/UI), filesystem owns artifacts and frozen configs.
+**Single-store architecture**: MLflow owns experiment tracking (params/metrics/tags), filesystem owns artifacts and frozen configs.
+
+**MLflow** (SQLite backend at `data/mlflow/mlflow.db`):
+- `cli.py` wraps each training stage in `mlflow.start_run()` with dataset/model/stage/scale tags
+- `trainer_factory.py` uses `mlflow.pytorch.autolog()` for per-epoch metrics
+- Artifacts (checkpoints, embeddings, metrics) logged via `mlflow.log_artifact()`
+- Export to HF Dataset: `scripts/data/push_experiments_to_hf.py` (MLflow→Parquet→HF Dataset)
+- SLURM epilog auto-pushes to HF after jobs complete
 
 **Filesystem** (NFS home, permanent):
 ```
@@ -166,16 +172,8 @@ experimentruns/{dataset}/{model_type}_{scale}_{stage}[_{aux}]/
 ├── embeddings.npz      # Evaluation artifact: VGAE z-mean + GAT hidden representations
 ├── dqn_policy.json     # Evaluation artifact: DQN alpha values + class breakdown
 ├── explanations.npz    # Evaluation artifact: GNNExplainer feature importance (when run_explainer=True)
-├── lightning_logs/     # Training logs (per-epoch metrics CSVs)
+├── csv_logs/           # Training logs (per-epoch metrics CSVs)
 ```
-
-**W&B** (project `kd-gat`):
-- Online runs when network available, offline on SLURM compute nodes
-- Sync offline runs: `wandb sync wandb/run-*`
-
-**S3 Lakehouse** (AWS):
-- Structured metrics as JSON at `s3://kd-gat/lakehouse/runs/`, queryable via DuckDB
-- Fire-and-forget sync from `graphids/pipeline/lakehouse.py`
 
 ## Quarto Reports & Dashboard
 
@@ -196,6 +194,6 @@ experimentruns/{dataset}/{model_type}_{scale}_{stage}[_{aux}]/
 - **Scratch**: `/fs/scratch/PAS1266/` — GPFS (IBM Spectrum Scale), 90-day purge
 - **Git remote**: `git@github.com:RobertFrenken/DQN-Fusion.git` (SSH)
 - **Python**: uv venv `.venv/` (`source ~/KD-GAT/.venv/bin/activate`)
-- **Key packages**: PyTorch 2.8.0+cu128, PyG 2.7.0, Lightning, Pydantic v2, W&B, Ray
+- **Key packages**: PyTorch 2.8.0+cu128, PyG 2.7.0, Lightning, Pydantic v2, MLflow, Ray
 - **Package manager**: uv (lockfile: `uv.lock`, config: `pyproject.toml [tool.uv]`)
 - **SLURM account**: PAS1266 (set via `KD_GAT_SLURM_ACCOUNT` in `.env`), gpu partition, V100 GPUs
