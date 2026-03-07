@@ -24,17 +24,11 @@ python -m graphids.pipeline.cli flow --dataset hcrl_sa
 sbatch scripts/slurm/ray_slurm.sh flow --dataset hcrl_sa
 python -m graphids.pipeline.cli flow --dataset hcrl_sa --local  # No SLURM
 
-# Export + analytics
-python -m graphids.pipeline.export                      # All exports → reports/data/ (~2s, login node OK)
-python -m graphids.pipeline.export --reports            # Also copy datalake Parquet to reports/data/
+# Analytics
+python scripts/data/push_experiments_to_hf.py           # MLflow → HF Dataset for dashboard
 # Tests — ALWAYS submit to SLURM
 bash scripts/slurm/run_tests_slurm.sh
 bash scripts/slurm/run_tests_slurm.sh -k "test_full_pipeline"
-
-# Reports (Quarto) — site auto-deploys via GitHub Actions on push to main
-quarto preview reports/                     # Dev server
-quarto render reports/                      # Build → reports/_site/
-quarto render reports/paper/ --to typst     # PDF output via Typst
 ```
 
 ## Session Start
@@ -46,10 +40,9 @@ Always read `PLAN.md` before starting work. Update it after completing any task.
 | Skill | Usage | Description |
 |-------|-------|-------------|
 | `/run-pipeline` | `/run-pipeline hcrl_sa large` | Submit Ray pipeline to SLURM |
-| `/check-status` | `/check-status hcrl_sa` | Check SLURM queue, checkpoints, W&B |
+| `/check-status` | `/check-status hcrl_sa` | Check SLURM queue, checkpoints, MLflow |
 | `/run-tests` | `/run-tests` or `/run-tests test_config` | Run pytest suite |
 | `/sync-state` | `/sync-state` | Update STATE.md from current outputs |
-| `/verify-site` | `/verify-site` or `/verify-site dashboard` | Playwright verification of Quarto site |
 
 ## Rules (auto-loaded from `.claude/rules/`)
 
@@ -60,5 +53,5 @@ Always read `PLAN.md` before starting work. Update it after completing any task.
 
 ## Detailed Documentation
 
-- `.claude/system/PROJECT_OVERVIEW.md` — full architecture, models, memory optimization
-- `.claude/system/STATE.md` — current session state (updated each session)
+- `.claude/system/PROJECT_OVERVIEW.md` — full architecture, models, memory optimization (updated 2026-03-07)
+- `.claude/system/STATE.md` — current session state (updated 2026-03-07)

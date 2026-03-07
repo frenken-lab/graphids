@@ -143,27 +143,10 @@ def evaluate(cfg: PipelineConfig) -> dict:
         val_cache = cache_predictions(models, val_data, device, cfg.fusion.max_val_samples)
 
         from graphids.core.models.dqn import EnhancedDQNFusionAgent
-        from graphids.core.models.registry import fusion_state_dim
 
         fusion_cfg = load_frozen_cfg(cfg, "fusion")
-        agent = EnhancedDQNFusionAgent(
-            lr=fusion_cfg.fusion.lr,
-            gamma=fusion_cfg.dqn.gamma,
-            epsilon=0.0,
-            epsilon_decay=1.0,
-            min_epsilon=0.0,
-            buffer_size=fusion_cfg.dqn.buffer_size,
-            batch_size=fusion_cfg.dqn.batch_size,
-            target_update_freq=fusion_cfg.dqn.target_update,
-            device=str(device),
-            state_dim=fusion_state_dim(),
-            alpha_steps=fusion_cfg.fusion.alpha_steps,
-            hidden_dim=fusion_cfg.dqn.hidden,
-            num_layers=fusion_cfg.dqn.layers,
-        )
-        fusion_sd = torch.load(fusion_ckpt, map_location="cpu", weights_only=True)
-        agent.q_network.load_state_dict(fusion_sd["q_network"])
-        agent.target_network.load_state_dict(fusion_sd["target_network"])
+        agent = EnhancedDQNFusionAgent.from_config(fusion_cfg, device=str(device), inference=True)
+        agent.load_checkpoint(fusion_ckpt)
 
         fp, fl, fs, fq = _run_fusion_inference(agent, val_cache)
         all_metrics["fusion"] = _compute_metrics(fl, fp, fs)
@@ -306,29 +289,6 @@ def evaluate(cfg: PipelineConfig) -> dict:
                 cleanup()
             except Exception as e:
                 log.warning("Temporal evaluation failed (non-fatal): %s", e)
-
-    # GNNExplainer feature importance
-    if cfg.training.run_explainer:
-        gat_ckpt_for_explain = _cross_model_path(cfg, "gat", gat_stage, "best_model.pt")
-        if gat_ckpt_for_explain.exists():
-            try:
-                from graphids.core.explain import explain_graphs
-
-                gat_for_explain = load_model(cfg, "gat", gat_stage, num_ids, in_ch, device)
-                explanations = explain_graphs(
-                    gat_for_explain,
-                    "gat",
-                    val_data[: cfg.training.explainer_samples],
-                    device,
-                    n_samples=cfg.training.explainer_samples,
-                    epochs=cfg.training.explainer_epochs,
-                )
-                np.savez_compressed(out / "explanations.npz", **explanations)
-                log.info("Saved explanations for %d graphs", len(explanations["graph_indices"]))
-                del gat_for_explain
-                cleanup()
-            except Exception as e:
-                log.warning("GNNExplainer failed (non-fatal): %s", e)
 
     # CKA computation for KD runs (teacher vs student layer similarity)
     if cfg.has_kd:
@@ -489,39 +449,33 @@ def _vgae_threshold(labels, errors):
 
 
 def _compute_metrics(labels, preds, scores=None) -> dict:
-    """Compute comprehensive classification metrics."""
+    """Compute classification metrics using sklearn.classification_report."""
+    from sklearn.metrics import auc as sk_auc
     from sklearn.metrics import (
-        accuracy_score,
-        balanced_accuracy_score,
+        classification_report,
         cohen_kappa_score,
         confusion_matrix,
-        f1_score,
         matthews_corrcoef,
         precision_recall_curve,
-        precision_score,
-        recall_score,
         roc_auc_score,
         roc_curve,
     )
-    from sklearn.metrics import (
-        auc as sk_auc,
-    )
 
+    report = classification_report(labels, preds, output_dict=True, zero_division=0)
     cm = confusion_matrix(labels, preds, labels=[0, 1])
     tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
 
     specificity = float(tn / (tn + fp)) if (tn + fp) > 0 else 0.0
-    tpr = float(tp / (tp + fn)) if (tp + fn) > 0 else 0.0
     fpr = float(fp / (fp + tn)) if (fp + tn) > 0 else 0.0
     fnr = float(fn / (fn + tp)) if (fn + tp) > 0 else 0.0
 
     core = {
-        "accuracy": float(accuracy_score(labels, preds)),
-        "precision": float(precision_score(labels, preds, zero_division=0)),
-        "recall": float(recall_score(labels, preds, zero_division=0)),
-        "f1": float(f1_score(labels, preds, zero_division=0)),
+        "accuracy": float(report["accuracy"]),
+        "precision": float(report["1"]["precision"]) if "1" in report else 0.0,
+        "recall": float(report["1"]["recall"]) if "1" in report else 0.0,
+        "f1": float(report["1"]["f1-score"]) if "1" in report else 0.0,
         "specificity": specificity,
-        "balanced_accuracy": float(balanced_accuracy_score(labels, preds)),
+        "balanced_accuracy": float(report.get("macro avg", {}).get("recall", 0.0)),
         "mcc": float(matthews_corrcoef(labels, preds)),
         "fpr": fpr,
         "fnr": fnr,
@@ -531,27 +485,18 @@ def _compute_metrics(labels, preds, scores=None) -> dict:
 
     additional = {
         "kappa": float(cohen_kappa_score(labels, preds)),
-        "tpr": tpr,
-        "tnr": specificity,
-        "detection_rate": tpr,
-        "miss_rate": fnr,
+        "per_class": {
+            k: v for k, v in report.items() if k not in ("accuracy", "macro avg", "weighted avg")
+        },
     }
 
     if scores is not None and len(set(labels)) > 1:
         core["auc"] = float(roc_auc_score(labels, scores))
-
         try:
             prec_vals, rec_vals, _ = precision_recall_curve(labels, scores)
             additional["pr_auc"] = float(sk_auc(rec_vals, prec_vals))
-            # Downsample PR curve for export
-            step = max(1, len(prec_vals) // 200)
-            additional["pr_curve"] = {
-                "precision": prec_vals[::step].tolist(),
-                "recall": rec_vals[::step].tolist(),
-            }
         except ValueError:
             additional["pr_auc"] = 0.0
-
         try:
             fpr_curve, tpr_curve, _ = roc_curve(labels, scores)
             det_at_fpr = {}
@@ -559,12 +504,6 @@ def _compute_metrics(labels, preds, scores=None) -> dict:
                 idx = np.argmin(np.abs(fpr_curve - fpr_target))
                 det_at_fpr[str(fpr_target)] = float(tpr_curve[idx])
             additional["detection_at_fpr"] = det_at_fpr
-            # Downsample ROC curve for export
-            step = max(1, len(fpr_curve) // 200)
-            additional["roc_curve"] = {
-                "fpr": fpr_curve[::step].tolist(),
-                "tpr": tpr_curve[::step].tolist(),
-            }
         except ValueError:
             additional["detection_at_fpr"] = {}
 
@@ -622,19 +561,10 @@ def _collect_layer_representations(model, data, device, max_samples=500):
 
 def _save_cka(cfg, val_data, device, num_ids, in_ch, out_dir):
     """Compute and save CKA matrix between teacher and student GAT layers."""
-    from graphids.config import stage_dir
-
-    # Teacher is large-scale, same dataset, no KD
-    teacher_gat_stage = "curriculum"
-    teacher_ckpt = _cross_model_path(cfg, "gat", teacher_gat_stage, "best_model.pt")
-
-    # For KD runs, we need the teacher (large, no-KD) model
-    # The teacher path is the large-scale GAT without KD auxiliary
     from graphids.config import checkpoint_path, resolve
 
     teacher_cfg = resolve("gat", "large", dataset=cfg.dataset)
-    teacher_ckpt = checkpoint_path(teacher_cfg, teacher_gat_stage)
-
+    teacher_ckpt = checkpoint_path(teacher_cfg, "curriculum")
     if not teacher_ckpt.exists():
         log.warning("CKA: teacher checkpoint not found at %s", teacher_ckpt)
         return
@@ -644,7 +574,7 @@ def _save_cka(cfg, val_data, device, num_ids, in_ch, out_dir):
         log.warning("CKA: student checkpoint not found at %s", student_ckpt)
         return
 
-    teacher = load_model(teacher_cfg, "gat", teacher_gat_stage, num_ids, in_ch, device)
+    teacher = load_model(teacher_cfg, "gat", "curriculum", num_ids, in_ch, device)
     student = load_model(cfg, "gat", "curriculum", num_ids, in_ch, device)
 
     teacher_layers = _collect_layer_representations(teacher, val_data, device)

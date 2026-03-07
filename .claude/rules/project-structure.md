@@ -21,37 +21,34 @@ graphids/               # Top-level package (pyproject.toml: packages = ["graphi
     auxiliaries/        # Loss modifier YAML files (composable)
       none.yaml, kd_standard.yaml
   pipeline/             # Layer 2: Orchestration (imports graphids.config/, lazy imports from graphids.core/)
-    cli.py              # Entry point + W&B init + lakehouse sync + archive restore on failure
+    cli.py              # Entry point + MLflow run context + artifact logging + archive restore on failure
     serve.py            # FastAPI inference server (/predict, /health)
     validate.py         # Config + environment validation utilities
-    errors.py           # Custom exception classes
-    tracking.py         # Memory monitoring utilities
-    export.py           # Datalake/filesystem → static JSON/Parquet export for Quarto reports
-    memory.py           # GPU memory management (static, measured, trial-based batch sizing)
-    lakehouse.py        # Datalake Parquet append (fire-and-forget)
-    sweep_export.py     # Ray Tune results → datalake + HF Dataset
     stages/             # Stage implementations
       training.py       # Training loop (autoencoder, curriculum, normal stages)
-      evaluation.py     # Multi-model eval; captures embeddings.npz + dqn_policy.json + explanations.npz
+      evaluation.py     # Multi-model eval; captures embeddings.npz + dqn_policy.json
       fusion.py         # Multi-model fusion stage (DQN, MLP, weighted avg)
       temporal.py       # Temporal graph classification (GAT encoder + Transformer over time)
-      data_loading.py   # Dataset loading + graph caching pipeline
-      batch_sizing.py   # Dynamic batch size optimization
-      trainer_factory.py # Lightning Trainer construction
-      callbacks.py      # Training callbacks (checkpointing, early stopping, etc.)
-      modules.py        # Shared Lightning module base classes
-      utils.py          # Stage utility functions
-    orchestration/      # Ray orchestration (ray_pipeline, ray_slurm, tune_config)
+      data_loading.py   # Dataset loading + graph caching + training_preamble()
+      batch_sizing.py   # Batch size resolution (safety_factor × configured batch_size)
+      trainer_factory.py # Lightning Trainer + ModelCheckpoint + EarlyStopping + DeviceStatsMonitor + MLflow autolog
+      modules.py        # Lightning modules: VGAEModule, GATModule, CurriculumDataModule + teacher offload helpers
+      loss_landscape.py # Loss landscape visualization (standalone analysis tool)
+      utils.py          # Re-exports from submodules (convenience imports)
+    orchestration/      # Ray orchestration
+      ray_pipeline.py   # Config-driven variant pipeline, subprocess dispatch, benchmark mode
+      ray_slurm.py      # SLURM ↔ Ray bridge
+      sweep_pipeline.py # Hyperparameter sweep orchestration
+      tune_config.py    # Ray Tune search space + OptunaSearch + ASHAScheduler
   core/                 # Layer 3: Domain (models, training, preprocessing; imports graphids.config/)
     models/             # Model architectures
-      vgae.py           # Variational Graph Autoencoder
-      gat.py            # Graph Attention Network
-      dqn.py            # Deep Q-Network
+      vgae.py           # Variational Graph Autoencoder (GraphAutoencoderNeighborhood)
+      gat.py            # Graph Attention Network (GATWithJK)
+      dqn.py            # DQN fusion agent (EnhancedDQNFusionAgent) + MLP/WeightedAvg baselines
       temporal.py       # Temporal model (GAT encoder + Transformer)
       fusion_features.py # Feature extraction for fusion models
-      registry.py       # Model registry (type → class mapping)
-      _utils.py         # Shared model utilities
-    explain.py          # GNNExplainer integration (feature importance analysis)
+      registry.py       # Model registry (type → class mapping + feature extractors)
+      _utils.py         # Shared model utilities (checkpoint_conv)
     training/           # Data management
       datamodules.py    # Lightning DataModule: dataset loading, splits, DataLoader construction
     preprocessing/      # Graph construction from raw data
@@ -64,14 +61,12 @@ graphids/               # Top-level package (pyproject.toml: packages = ["graphi
       adapters/         # Data source adapters
         base.py         # Abstract base adapter
         can_bus.py      # CAN bus CSV → PyG graph adapter
-        network_flow.py # Network flow → PyG graph adapter
 data/
   automotive/           # 6 datasets (DVC-tracked): hcrl_ch, hcrl_sa, set_01-04
   ethernet/             # Network flow datasets (MachineLearningCSV, GeneratedLabelledFlows)
   cache/                # Preprocessed graph cache (.pt, .pkl, metadata)
-  datalake/             # Parquet structured storage (runs, metrics, configs, artifacts, training_curves/)
-                        # queries/ (leaderboard.sql, kd_impact.sql)
-experimentruns/         # Outputs: best_model.pt, config.json, metrics.json, embeddings.npz, dqn_policy.json, explanations.npz
+  mlflow/               # MLflow SQLite backend (mlflow.db + artifacts/)
+experimentruns/         # Outputs: best_model.pt, config.json, metrics.json, embeddings.npz, dqn_policy.json
 tests/
   conftest.py           # Shared fixtures (tiny architectures, temp dirs, E2E_OVERRIDES)
   test_layer_boundaries.py  # Import hierarchy enforcement (config ← pipeline ← core)
@@ -95,6 +90,7 @@ scripts/
     stage_data.sh       # Stage datasets from scratch/archive
     build_test_cache.sh # Build preprocessed test cache
     cleanup_orphans.sh  # Clean orphaned cache/output files
+    push_experiments_to_hf.py # MLflow → Parquet → HF Dataset
   profiling/            # Profiling and benchmarking
     analyze_profile.py  # Profile analysis
     benchmark_orchestration.sh # Orchestration overhead benchmarks
@@ -104,8 +100,6 @@ scripts/
     generate_sweep.py   # Hyperparameter sweep config generator
     setup_tmux.sh       # tmux session setup
     start_jupyter.sh    # Jupyter server launcher
-    s3_bucket_policy.json # S3 bucket policy template
-    s3_cors.json        # S3 CORS config template
 notebooks/
   analysis/             # Analysis notebooks
     01_training_curves.ipynb    # Training performance visualization
@@ -118,26 +112,9 @@ notebooks/
     sample_bubble_chart.ipynb   # Bubble chart prototype
 docs/
   ECOSYSTEM.md          # Dependency ecosystem documentation
-  memory_optimization.md  # Memory optimization strategies
-reports/                # Quarto website — paper chapters + interactive dashboard (PRIMARY)
-  _quarto.yml           # Project config (website, HTML + Typst + Revealjs)
-  index.qmd             # Landing page
-  dashboard.qmd         # Multi-page dashboard (Overview, Performance, Training, GAT & DQN, KD, Graph, Datasets, Staging)
-  playground.qmd        # Visualization playground (SQL console, chart builder, scratch cells)
-  slides.qmd            # Revealjs presentation
-  pipeline_dag.svg      # Pipeline DAG visualization
-  custom.scss           # Theme overrides
-  references.bib        # BibTeX bibliography
-  data/                 # Report data (Parquet + JSON from export pipeline, incl. graph_samples.json)
-  figures/              # YAML specs for Mosaic vgplot (28 declarative chart definitions)
-  _ojs/                 # Observable JS modules (mosaic-setup.js, mosaic-renderer.js, theme.js, table-renderer.js, query-utils.js)
-  paper/                # Research paper (10 chapters with interactive Mosaic figures)
-    index.qmd           # Paper introduction
-    02-background.qmd through 09-conclusion.qmd  # Paper body
-    10-appendix.qmd     # Appendix with model sizing details
-    _metadata.yml       # Paper-specific metadata + shared _setup.qmd include
-    _setup.qmd          # Shared Mosaic/vgplot + DuckDB-WASM init for figures
-    references.bib      # Paper bibliography
-    data/               # Paper-specific CSV data (ablation, datasets, model params)
-  _site/                # Build output (.gitignored)
+  memory_optimization.md  # Memory optimization strategies (DeviceStatsMonitor + DynamicBatchSampler)
 ```
+
+## File Count
+
+48 Python files under `graphids/` (down from 55 after Mar 2026 simplification).

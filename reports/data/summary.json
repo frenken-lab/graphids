@@ -1,7 +1,0 @@
-{
-  "total_runs": 72,
-  "best_f1": 1.0,
-  "best_model": "gat",
-  "kd_gap": 0.063176,
-  "n_datasets": 6
-}

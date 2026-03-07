@@ -229,6 +229,39 @@ class EnhancedDQNFusionAgent:
 
         log.info("DQN Agent initialized: %d actions, state_dim=%d", alpha_steps, self.state_dim)
 
+    @classmethod
+    def from_config(
+        cls,
+        cfg: "PipelineConfig",
+        device: str = "cpu",
+        *,
+        inference: bool = False,
+    ) -> "EnhancedDQNFusionAgent":
+        """Create agent from PipelineConfig. Set inference=True for eval/serve (no exploration)."""
+        from .registry import fusion_state_dim
+
+        kwargs = dict(
+            lr=cfg.fusion.lr,
+            gamma=cfg.dqn.gamma,
+            buffer_size=cfg.dqn.buffer_size,
+            batch_size=cfg.dqn.batch_size,
+            target_update_freq=cfg.dqn.target_update,
+            device=device,
+            state_dim=fusion_state_dim(),
+            alpha_steps=cfg.fusion.alpha_steps,
+            hidden_dim=cfg.dqn.hidden,
+            num_layers=cfg.dqn.layers,
+        )
+        if inference:
+            kwargs.update(epsilon=0.0, epsilon_decay=1.0, min_epsilon=0.0)
+        else:
+            kwargs.update(
+                epsilon=cfg.dqn.epsilon,
+                epsilon_decay=cfg.dqn.epsilon_decay,
+                min_epsilon=cfg.dqn.min_epsilon,
+            )
+        return cls(**kwargs)
+
     # ------------------------------------------------------------------
     # Single-sample methods (inference / serve.py)
     # ------------------------------------------------------------------
@@ -264,13 +297,14 @@ class EnhancedDQNFusionAgent:
     def _derive_scores(self, state_features: np.ndarray) -> tuple[float, float]:
         """Derive anomaly_score and gat_prob from a single state (numpy)."""
         vgae_errors = state_features[self._vgae_error_slice]
-        vgae_weights = np.array([0.4, 0.35, 0.25])
-        anomaly_score = float(np.clip(np.sum(vgae_errors * vgae_weights), 0.0, 1.0))
+        weights = self._vgae_weights.numpy()
+        anomaly_score = float(np.clip(np.sum(vgae_errors * weights), 0.0, 1.0))
 
         gat_logits = state_features[self._gat_logit_slice]
-        shifted = gat_logits - np.max(gat_logits)
-        gat_probs = np.exp(shifted) / np.sum(np.exp(shifted))
-        gat_prob = float(gat_probs[1])
+        # Stable softmax (consistent with batch path's torch.softmax)
+        shifted = gat_logits - gat_logits.max()
+        exp_shifted = np.exp(shifted)
+        gat_prob = float(exp_shifted[1] / exp_shifted.sum())
 
         return anomaly_score, gat_prob
 
@@ -511,56 +545,13 @@ class EnhancedDQNFusionAgent:
         self.validation_scores.append(result)
         return result
 
-    def validate_agent(self, validation_data: list[tuple], num_samples: int = 1000) -> dict:
-        """Legacy single-sample validation. Prefer validate_batch for training."""
-        self.q_network.eval()
-
-        correct = 0
-        total_reward = 0
-        alpha_values_used = []
-
-        sample_data = (
-            validation_data[:num_samples]
-            if len(validation_data) >= num_samples
-            else validation_data
-        )
-
-        if not sample_data:
-            self.q_network.train()
-            return {"accuracy": 0.0, "avg_reward": 0.0, "avg_alpha": 0.0, "alpha_std": 0.0}
-
-        for state_features, true_label in sample_data:
-            alpha, _, _ = self.select_action(state_features, training=False)
-            alpha_values_used.append(alpha)
-
-            anomaly_score, gat_prob = self._derive_scores(state_features)
-            fused_score = (1 - alpha) * anomaly_score + alpha * gat_prob
-            prediction = 1 if fused_score > 0.5 else 0
-
-            correct += prediction == true_label
-            reward = self.compute_fusion_reward(prediction, true_label, state_features, alpha)
-            total_reward += reward
-
-        self.q_network.train()
-
-        validation_results = {
-            "accuracy": correct / len(sample_data),
-            "avg_reward": total_reward / len(sample_data),
-            "avg_alpha": np.mean(alpha_values_used),
-            "alpha_std": np.std(alpha_values_used),
-        }
-
-        self.scheduler.step(validation_results["avg_reward"])
-
-        current_score = validation_results["accuracy"] + 0.1 * validation_results["avg_reward"]
-        if current_score > self.best_validation_score:
-            self.best_validation_score = current_score
-            self.patience_counter = 0
-        else:
-            self.patience_counter += 1
-
-        self.validation_scores.append(validation_results)
-        return validation_results
+    def load_checkpoint(self, checkpoint_path: str | torch.Tensor) -> None:
+        """Load Q-network and target network weights from a checkpoint file."""
+        sd = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+        self.q_network.load_state_dict(sd["q_network"])
+        self.target_network.load_state_dict(sd["target_network"])
+        if "epsilon" in sd:
+            self.epsilon = sd["epsilon"]
 
     @property
     def buffer_size_current(self) -> int:

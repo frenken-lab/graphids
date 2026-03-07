@@ -22,22 +22,8 @@ def _train_dqn_fusion(cfg, train_cache, val_cache, device, out) -> float:
     -> gradient steps from buffer. No Python-level per-sample loop.
     """
     from graphids.core.models.dqn import EnhancedDQNFusionAgent
-    from graphids.core.models.registry import fusion_state_dim
 
-    agent = EnhancedDQNFusionAgent(
-        lr=cfg.fusion.lr,
-        gamma=cfg.dqn.gamma,
-        epsilon=cfg.dqn.epsilon,
-        epsilon_decay=cfg.dqn.epsilon_decay,
-        min_epsilon=cfg.dqn.min_epsilon,
-        buffer_size=cfg.dqn.buffer_size,
-        batch_size=cfg.dqn.batch_size,
-        target_update_freq=cfg.dqn.target_update,
-        device=str(device),
-        state_dim=fusion_state_dim(),
-        hidden_dim=cfg.dqn.hidden,
-        num_layers=cfg.dqn.layers,
-    )
+    agent = EnhancedDQNFusionAgent.from_config(cfg, device=str(device))
 
     best_acc = 0.0
     val_states = val_cache["states"][: min(5000, len(val_cache["states"]))]

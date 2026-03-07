@@ -21,3 +21,8 @@ if [[ -n "${SLURM_JOB_ID:-}" ]]; then
         --noheader 2>/dev/null || echo "  (sacct not available)"
 fi
 echo "=== End Report ==="
+
+# --- Push experiment data to HF Dataset for dashboard ---
+echo ""
+echo "Pushing experiment data to HF Dataset..."
+python scripts/data/push_experiments_to_hf.py 2>&1 || echo "  (HF push failed — non-fatal)"

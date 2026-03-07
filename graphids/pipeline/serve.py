@@ -102,25 +102,9 @@ def _load_models(dataset: str, scale: str) -> dict:
     dqn_ckpt = checkpoint_path(dqn_cfg, "fusion")
     if dqn_ckpt.exists():
         from graphids.core.models.dqn import EnhancedDQNFusionAgent
-        from graphids.core.models.registry import fusion_state_dim
 
-        agent = EnhancedDQNFusionAgent(
-            lr=dqn_cfg.fusion.lr,
-            gamma=dqn_cfg.dqn.gamma,
-            epsilon=0.0,
-            epsilon_decay=1.0,
-            min_epsilon=0.0,
-            buffer_size=dqn_cfg.dqn.buffer_size,
-            batch_size=dqn_cfg.dqn.batch_size,
-            target_update_freq=dqn_cfg.dqn.target_update,
-            device=str(_device),
-            state_dim=fusion_state_dim(),
-            hidden_dim=dqn_cfg.dqn.hidden,
-            num_layers=dqn_cfg.dqn.layers,
-        )
-        sd = torch.load(dqn_ckpt, map_location="cpu", weights_only=True)
-        agent.q_network.load_state_dict(sd["q_network"])
-        agent.target_network.load_state_dict(sd["target_network"])
+        agent = EnhancedDQNFusionAgent.from_config(dqn_cfg, device=str(_device), inference=True)
+        agent.load_checkpoint(dqn_ckpt)
         models["dqn"] = agent
 
     _models[cache_key] = models
@@ -203,16 +187,11 @@ async def predict(req: PredictRequest):
         state = torch.cat(features).numpy()
 
     # DQN fusion
-    if "dqn" in models:
-        agent = models["dqn"]
-        alpha, _, _ = agent.select_action(state, training=False)
-        anomaly_score, gat_prob = agent._derive_scores(state)
-    else:
-        alpha = 0.5
-        # Derive scores directly from state features
-        # VGAE recon error at index 0, GAT class-1 prob at index 9
-        anomaly_score = float(state[0])
-        gat_prob = float(state[9])
+    if "dqn" not in models:
+        raise HTTPException(status_code=503, detail="DQN model not available for fusion")
+    agent = models["dqn"]
+    alpha, _, _ = agent.select_action(state, training=False)
+    anomaly_score, gat_prob = agent._derive_scores(state)
 
     fused_score = (1 - alpha) * anomaly_score + alpha * gat_prob
     prediction = 1 if fused_score > 0.5 else 0

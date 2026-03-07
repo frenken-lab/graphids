@@ -8,12 +8,9 @@ from pathlib import Path
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
-from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
-from pytorch_lightning.loggers import CSVLogger
+from pytorch_lightning.callbacks import DeviceStatsMonitor, EarlyStopping, ModelCheckpoint
 
-from graphids.config import PipelineConfig, stage_dir
-
-from .callbacks import MemoryMonitorCallback, ProfilerCallback
+from graphids.config import MLFLOW_TRACKING_URI, PipelineConfig, stage_dir
 
 log = logging.getLogger(__name__)
 
@@ -103,16 +100,10 @@ def make_projection(
 
 
 def _extract_state_dict(checkpoint) -> dict:
-    """Handle different checkpoint formats, return clean state dict."""
-    if isinstance(checkpoint, dict):
-        if "state_dict" in checkpoint:
-            sd = checkpoint["state_dict"]
-            return {
-                k.replace("model.", ""): v for k, v in sd.items() if k.startswith("model.")
-            } or sd
-        if "model_state_dict" in checkpoint:
-            return checkpoint["model_state_dict"]
-        return checkpoint
+    """Handle Lightning checkpoint format, return clean state dict."""
+    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+        sd = checkpoint["state_dict"]
+        return {k.replace("model.", ""): v for k, v in sd.items() if k.startswith("model.")} or sd
     return checkpoint
 
 
@@ -219,32 +210,35 @@ def build_optimizer_dict(optimizer, cfg: PipelineConfig):
     return {"optimizer": optimizer, "lr_scheduler": sched}
 
 
-def _make_loggers(
-    cfg: PipelineConfig,
-    stage: str,
-    out: Path,
-    run_id_str: str,
-) -> list:
-    """Build Lightning loggers (CSV only)."""
-    return [CSVLogger(save_dir=str(out), name="csv_logs")]
+def _setup_mlflow_autolog() -> None:
+    """Enable MLflow autolog for PyTorch Lightning.
+
+    Called once per training process. Sets tracking URI and enables
+    automatic logging of metrics, params, and checkpoints.
+    """
+    import mlflow
+
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    mlflow.pytorch.autolog(
+        checkpoint=True,
+        log_every_n_epoch=1,
+        log_models=False,  # We save checkpoints via ModelCheckpoint callback
+    )
 
 
 def make_trainer(
     cfg: PipelineConfig,
     stage: str,
-    predicted_peak_mb: float = 0.0,
-    run_id_str: str = "",
     extra_callbacks: list | None = None,
 ) -> pl.Trainer:
     """Create a Lightning Trainer with standard callbacks."""
-    from graphids.config import run_id as _run_id
-
     t = cfg.training
     out = stage_dir(cfg, stage)
     out.mkdir(parents=True, exist_ok=True)
     torch.backends.cudnn.benchmark = t.cudnn_benchmark
 
-    rid = run_id_str or _run_id(cfg, stage)
+    # Enable MLflow autolog (idempotent — safe to call multiple times)
+    _setup_mlflow_autolog()
 
     callbacks = [
         ModelCheckpoint(
@@ -261,21 +255,8 @@ def make_trainer(
             mode=t.monitor_mode,
             check_on_train_epoch_end=False,
         ),
-        MemoryMonitorCallback(
-            log_every_n_epochs=t.test_every_n_epochs,
-            predicted_peak_mb=predicted_peak_mb,
-            run_id=rid,
-        ),
+        DeviceStatsMonitor(cpu_stats=False),
     ]
-
-    if t.profile:
-        profiler_dir = str(out / "profiler_traces")
-        callbacks.append(
-            ProfilerCallback(
-                output_dir=profiler_dir,
-                active_steps=t.profile_steps,
-            )
-        )
 
     if extra_callbacks:
         callbacks.extend(extra_callbacks)
@@ -289,7 +270,6 @@ def make_trainer(
         gradient_clip_val=t.gradient_clip,
         accumulate_grad_batches=t.accumulate_grad_batches,
         callbacks=callbacks,
-        logger=_make_loggers(cfg, stage, out, rid),
         log_every_n_steps=t.log_every_n_steps,
         enable_progress_bar=True,
         deterministic=t.deterministic,

@@ -52,6 +52,22 @@ _STAGE_DISPATCH = {stage: (model, stage) for stage, model in STAGE_MODEL_MAP.ite
 _STAGE_DISPATCH["evaluation"] = ("vgae", "evaluation")
 
 
+def _init_ray(datasets: list[str] | None, local: bool) -> list[str]:
+    """Resolve datasets and initialize Ray if needed."""
+    from .ray_slurm import ray_init_kwargs
+
+    if datasets is None:
+        from graphids.config.paths import get_datasets
+
+        datasets = get_datasets()
+    if not ray.is_initialized():
+        kwargs = ray_init_kwargs()
+        if local:
+            kwargs["num_gpus"] = 0
+        ray.init(**kwargs)
+    return datasets
+
+
 def _query_gpu_utilization() -> dict[str, float | None]:
     """Sample GPU utilization and memory via nvidia-smi. Returns {} on failure."""
     if not shutil.which("nvidia-smi"):
@@ -441,19 +457,7 @@ def train_pipeline(
     local : bool
         If True, use Ray local mode (no cluster).
     """
-    from .ray_slurm import ray_init_kwargs
-
-    if datasets is None:
-        from graphids.config.paths import get_datasets
-
-        datasets = get_datasets()
-
-    # Initialize Ray
-    if not ray.is_initialized():
-        kwargs = ray_init_kwargs()
-        if local:
-            kwargs["num_gpus"] = 0
-        ray.init(**kwargs)
+    datasets = _init_ray(datasets, local)
 
     # Fan out per-dataset work — each dataset is independent
     refs = [dataset_pipeline.remote(ds, scale) for ds in datasets]
@@ -468,31 +472,21 @@ def eval_pipeline(
     local: bool = False,
 ) -> None:
     """Re-run evaluation for existing trained models."""
-    from .ray_slurm import ray_init_kwargs
+    datasets = _init_ray(datasets, local)
 
-    if datasets is None:
-        from graphids.config.paths import get_datasets
-
-        datasets = get_datasets()
-
-    if not ray.is_initialized():
-        kwargs = ray_init_kwargs()
-        if local:
-            kwargs["num_gpus"] = 0
-        ray.init(**kwargs)
+    _EVAL_VARIANTS = [
+        ("large", "large", "none"),
+        ("small_kd", "small", "kd_standard"),
+        ("small_nokd", "small", "none"),
+    ]
 
     refs = []
     for ds in datasets:
         log.info("=== Evaluation for dataset: %s ===", ds)
-
-        if scale is None or scale == "large":
-            refs.append(task_eval.remote(ds, "large"))
-
-        if scale is None or scale == "small_kd":
-            refs.append(task_eval.remote(ds, "small", auxiliaries="kd_standard"))
-
-        if scale is None or scale == "small_nokd":
-            refs.append(task_eval.remote(ds, "small"))
+        for name, sz, aux in _EVAL_VARIANTS:
+            if scale is None or scale == name:
+                kwargs = {"auxiliaries": aux} if aux != "none" else {}
+                refs.append(task_eval.remote(ds, sz, **kwargs))
 
     ray.get(refs)
     log.info("=== Evaluation complete for %d dataset(s) ===", len(datasets))

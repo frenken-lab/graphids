@@ -74,8 +74,6 @@ class TrainingConfig(BaseModel, frozen=True):
     use_teacher_cache: bool = True
     clear_cache_every_n: int = 100
     offload_teacher_to_cpu: bool = False
-    optimize_batch_size: bool = True
-    memory_estimation: Literal["static", "measured", "trial"] = "measured"
     accumulate_grad_batches: int = 1
     save_top_k: int = 1
     monitor_metric: str = "val_loss"
@@ -99,12 +97,6 @@ class TrainingConfig(BaseModel, frozen=True):
     curriculum_memory_multiplier: float = 1.0
     log_teacher_student_comparison: bool = True
     dynamic_batching: bool = True
-    profile: bool = False
-    profile_steps: int = 5
-    # GNNExplainer
-    run_explainer: bool = False
-    explainer_samples: int = 50
-    explainer_epochs: int = 200
 
 
 class FusionConfig(BaseModel, frozen=True):
@@ -372,9 +364,7 @@ class PipelineConfig(BaseModel, frozen=True):
                 "use_teacher_cache",
                 "clear_cache_every_n",
                 "offload_teacher_to_cpu",
-                "optimize_batch_size",
                 "safety_factor",
-                "memory_estimation",
                 "accumulate_grad_batches",
                 "save_top_k",
                 "monitor_metric",

@@ -94,23 +94,15 @@ slurm-*.out
 # Snakemake working directory
 .snakemake/
 
-# ===== REPORT DATA =====
-# Tracked: Quarto site needs these at build time (~5 MB total)
-# Regenerate locally: python -m graphids.pipeline.export
-
-# Generated figures
+# ===== GENERATED FIGURES =====
 *.png
 *.jpg
 *.jpeg
 *.pdf
 *.svg
 
-# ===== QUARTO REPORTS =====
-reports/_site/
-reports/_output/
-reports/.quarto/
-
 # ===== DENO NOTEBOOKS =====
 notebooks/node_modules/
 notebooks/deno.lock
 tmlr_output/
+users/

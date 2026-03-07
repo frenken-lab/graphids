@@ -122,12 +122,6 @@ def graph_node_attack_type(g, node_idx: int, default: int | None = None) -> int 
 MMAP_TENSOR_LIMIT = 60000
 
 # ---------------------------------------------------------------------------
-# GPU memory estimation
-# ---------------------------------------------------------------------------
-CUDA_CONTEXT_MB = 500.0
-FRAGMENTATION_BUFFER = 0.10
-
-# ---------------------------------------------------------------------------
 # SLURM defaults (override via environment for cluster migration)
 # ---------------------------------------------------------------------------
 import os

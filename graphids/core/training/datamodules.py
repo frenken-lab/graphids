@@ -27,6 +27,13 @@ from graphids.core.preprocessing.dataset import GraphDataset
 logger = logging.getLogger(__name__)
 
 
+def _unwrap_graphs(graphs) -> list:
+    """Unwrap GraphDataset to plain list if needed (avoid double-wrapping)."""
+    if hasattr(graphs, "data_list"):
+        graphs = graphs.data_list
+    return graphs
+
+
 # ============================================================================
 # Dataset Loading and Caching
 # ============================================================================
@@ -73,9 +80,7 @@ def load_dataset(
             force_rebuild_cache,
         )
 
-    # Unwrap GraphDataset to plain list if needed (avoid double-wrapping)
-    if hasattr(graphs, "data_list"):
-        graphs = graphs.data_list
+    graphs = _unwrap_graphs(graphs)
 
     # Create dataset and split
     dataset = GraphDataset(graphs)
@@ -142,8 +147,7 @@ def _load_cached_data(cache_file, id_mapping_file, dataset_name):
             logger.warning("Invalid cache format: id_mapping is not a dict.")
             return None, None
         # Handle GraphDataset objects saved as cache
-        if hasattr(graphs, "data_list"):
-            graphs = graphs.data_list
+        graphs = _unwrap_graphs(graphs)
         if not isinstance(graphs, (list, tuple)):
             try:
                 graphs = list(graphs)
@@ -258,9 +262,7 @@ def _process_dataset_from_scratch(
         include_attack_type=True,
     )
 
-    # Unwrap GraphDataset if returned
-    if hasattr(graphs, "data_list"):
-        graphs = graphs.data_list
+    graphs = _unwrap_graphs(graphs)
     if not isinstance(graphs, list):
         graphs = list(graphs)
 
@@ -355,8 +357,7 @@ def load_test_scenarios(
         if not force_rebuild_cache and cache_file.exists():
             try:
                 graphs = torch.load(cache_file, map_location="cpu", weights_only=False)
-                if hasattr(graphs, "data_list"):
-                    graphs = graphs.data_list
+                graphs = _unwrap_graphs(graphs)
                 if not isinstance(graphs, list):
                     graphs = list(graphs)
                 logger.info("Loaded %d cached test graphs for %s", len(graphs), name)
@@ -373,8 +374,7 @@ def load_test_scenarios(
             vocab=vocab,
             return_vocab=False,
         )
-        if hasattr(graphs, "data_list"):
-            graphs = graphs.data_list
+        graphs = _unwrap_graphs(graphs)
         if not isinstance(graphs, list):
             graphs = list(graphs)
 
@@ -403,9 +403,7 @@ def _compute_graph_stats(graphs) -> dict:
     """Compute per-graph statistics for batch size estimation."""
     import numpy as np
 
-    # Unwrap GraphDataset to plain list if needed
-    if hasattr(graphs, "data_list"):
-        graphs = graphs.data_list
+    graphs = _unwrap_graphs(graphs)
 
     node_counts = []
     edge_counts = []

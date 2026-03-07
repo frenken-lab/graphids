@@ -166,9 +166,7 @@ Only after Layer 2 passes. Submit the real job with full dataset/samples.
 
 **Safe on login node:**
 - Import checks: `python -c "from graphids.config import resolve; print('OK')"`
-- Exports: `python -m graphids.pipeline.export`
 - DuckDB queries: `duckdb < data/datalake/queries/leaderboard.sql`
-- Quarto: `quarto render`, `quarto preview`
 - Git, DVC, ruff
 
 **Must go through SLURM:**

@@ -13,7 +13,6 @@ import torch.nn.functional as F
 from graphids.config import PipelineConfig, checkpoint_path, config_path, stage_dir
 from graphids.config.constants import get_batch_index
 
-from ..memory import log_memory_state
 from .batch_sizing import resolve_batch_config
 from .data_loading import training_preamble
 from .modules import CurriculumDataModule, GATModule, VGAEModule
@@ -81,7 +80,6 @@ def train_autoencoder(cfg: PipelineConfig) -> Path:
     module = VGAEModule(cfg, num_ids, in_ch, teacher=teacher, projection=projection)
     bs, max_nodes = resolve_batch_config(cfg, module.model, train_data, teacher=teacher)
 
-    log_memory_state("pre-dataloader")
     train_dl = make_dataloader(train_data, cfg, bs, shuffle=True, max_num_nodes=max_nodes)
     val_dl = make_dataloader(val_data, cfg, bs, shuffle=False, max_num_nodes=max_nodes)
 
@@ -145,7 +143,6 @@ def train_normal(cfg: PipelineConfig) -> Path:
     module = GATModule(cfg, num_ids, in_ch, teacher=teacher)
     bs, max_nodes = resolve_batch_config(cfg, module.model, train_data, teacher=teacher)
 
-    log_memory_state("pre-dataloader")
     train_dl = make_dataloader(train_data, cfg, bs, shuffle=True, max_num_nodes=max_nodes)
     val_dl = make_dataloader(val_data, cfg, bs, shuffle=False, max_num_nodes=max_nodes)
 

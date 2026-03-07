@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Scan experimentruns/ for orphaned/failed run directories.
 #
-# An "orphan" is a run directory that has no .done sentinel file,
+# An "orphan" is a run directory that has no best_model.pt or metrics.json,
 # indicating the stage never completed successfully.
 #
 # Modes:
-#   --dry-run  (default)  List orphaned dirs and failed lakehouse records
-#   --archive             Move orphaned dirs to $KD_GAT_DATA_ROOT/archive/
+#   --dry-run  (default)  List orphaned dirs
+#   --archive             Move orphaned dirs to archive/
 #   --delete              Permanently remove orphaned dirs (destructive!)
 #
 # Usage:
@@ -16,13 +16,9 @@
 
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 EXPERIMENT_ROOT="${PROJECT_ROOT}/experimentruns"
-DATA_ROOT="${KD_GAT_DATA_ROOT:-}"
-LAKEHOUSE_DIR="${DATA_ROOT:+${DATA_ROOT}/lakehouse/runs}"
-LAKEHOUSE_DIR="${LAKEHOUSE_DIR:-${EXPERIMENT_ROOT}/lakehouse}"
-ARCHIVE_DIR="${DATA_ROOT:+${DATA_ROOT}/archive}"
-ARCHIVE_DIR="${ARCHIVE_DIR:-${EXPERIMENT_ROOT}/archive}"
+ARCHIVE_DIR="${EXPERIMENT_ROOT}/archive"
 
 MODE="dry-run"
 if [[ "${1:-}" == "--archive" ]]; then
@@ -33,66 +29,33 @@ fi
 
 echo "=== Cleanup Orphaned Runs ==="
 echo "Experiment root: ${EXPERIMENT_ROOT}"
-echo "Lakehouse dir:   ${LAKEHOUSE_DIR}"
 echo "Mode:            ${MODE}"
 echo ""
 
-# --- Find orphaned run directories (no .done sentinel) ---
+# --- Find orphaned run directories (no best_model.pt or metrics.json) ---
 orphans=()
 if [[ -d "$EXPERIMENT_ROOT" ]]; then
-    # Run dirs are two levels deep: experimentruns/{dataset}/{run_name}/
     for dataset_dir in "$EXPERIMENT_ROOT"/*/; do
         [[ -d "$dataset_dir" ]] || continue
         dataset_name="$(basename "$dataset_dir")"
-        # Skip non-run directories (lakehouse, archive)
-        [[ "$dataset_name" == "lakehouse" || "$dataset_name" == "archive" ]] && continue
+        [[ "$dataset_name" == "archive" || "$dataset_name" == "baselines" ]] && continue
 
         for run_dir in "$dataset_dir"*/; do
             [[ -d "$run_dir" ]] || continue
-            # Skip archived runs
             [[ "$(basename "$run_dir")" == *.archive_* ]] && continue
-            # Check for .done sentinel
-            if [[ ! -f "${run_dir}.done" ]]; then
+            # A completed run has at least a checkpoint or metrics file
+            if [[ ! -f "${run_dir}best_model.pt" && ! -f "${run_dir}metrics.json" ]]; then
                 orphans+=("$run_dir")
             fi
         done
     done
 fi
 
-echo "Orphaned directories (no .done sentinel): ${#orphans[@]}"
+echo "Orphaned directories: ${#orphans[@]}"
 for d in "${orphans[@]:-}"; do
     [[ -z "$d" ]] && continue
     size=$(du -sh "$d" 2>/dev/null | cut -f1)
     echo "  ${d} (${size})"
-done
-echo ""
-
-# --- Cross-reference lakehouse JSON for failed runs ---
-failed_runs=()
-if [[ -d "$LAKEHOUSE_DIR" ]]; then
-    for json_file in "$LAKEHOUSE_DIR"/*.json; do
-        [[ -f "$json_file" ]] || continue
-        # Use python for reliable JSON parsing
-        is_failed=$(python3 -c "
-import json, sys
-with open('$json_file') as f:
-    d = json.load(f)
-if not d.get('success', True):
-    reason = d.get('failure_reason', 'unknown')
-    print(f\"{d['run_id']}|{reason}\")
-" 2>/dev/null || true)
-        if [[ -n "$is_failed" ]]; then
-            failed_runs+=("$is_failed")
-        fi
-    done
-fi
-
-echo "Failed runs in lakehouse: ${#failed_runs[@]}"
-for entry in "${failed_runs[@]:-}"; do
-    [[ -z "$entry" ]] && continue
-    run_id="${entry%%|*}"
-    reason="${entry#*|}"
-    echo "  ${run_id}: ${reason}"
 done
 echo ""
 
@@ -118,7 +81,7 @@ if [[ "$MODE" == "archive" ]]; then
 elif [[ "$MODE" == "delete" ]]; then
     for d in "${orphans[@]}"; do
         echo "Deleting: $d"
-        rm -rf "$d"
+        rm -r "$d"
     done
     echo "Deleted ${#orphans[@]} orphaned directories."
 fi
