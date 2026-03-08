@@ -414,24 +414,24 @@ def _run_vgae_inference(vgae, data, device, capture_embeddings=False):
 
 
 def _run_fusion_inference(agent, cache):
-    """Run DQN fusion inference. Returns (preds, labels, scores, q_values_list)."""
-    preds, labels, scores, q_values_list = [], [], [], []
-    for i in range(len(cache["states"])):
-        state_np = cache["states"][i].numpy()
-        # Capture raw Q-values before action selection
-        state_t = (
-            torch.tensor(agent.normalize_state(state_np), dtype=torch.float32)
-            .unsqueeze(0)
-            .to(agent.device)
-        )
-        with torch.no_grad():
-            q_vals = agent.q_network(state_t).squeeze(0).cpu().numpy()
-        q_values_list.append(q_vals.tolist())
-        alpha, _, _ = agent.select_action(state_np, training=False)
-        preds.append(1 if alpha > 0.5 else 0)
-        labels.append(cache["labels"][i].item())
-        scores.append(float(alpha))
-    return np.array(preds), np.array(labels), np.array(scores), q_values_list
+    """Run DQN fusion inference (vectorized). Returns (preds, labels, scores, q_values_list)."""
+    states = cache["states"]  # [N, D] tensor
+    labels_t = cache["labels"]  # [N] tensor
+
+    actions, alphas, norm_states = agent.select_action_batch(states, training=False)
+    anomaly_scores, gat_probs = agent._derive_scores_batch(norm_states)
+    fused_scores = (1 - alphas) * anomaly_scores + alphas * gat_probs
+    preds = (fused_scores > 0.5).long()
+
+    with torch.no_grad():
+        q_values = agent.q_network(norm_states.to(agent.device)).cpu()
+
+    return (
+        preds.numpy(),
+        labels_t.numpy(),
+        fused_scores.numpy(),
+        q_values.numpy().tolist(),
+    )
 
 
 def _vgae_threshold(labels, errors):

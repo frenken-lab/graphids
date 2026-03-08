@@ -21,12 +21,8 @@ def effective_batch_size(cfg: PipelineConfig) -> int:
     return max(8, int(cfg.training.batch_size * cfg.training.safety_factor))
 
 
-def resolve_batch_config(cfg: PipelineConfig, model=None, train_data=None, teacher=None):
-    """Compute batch size and optional dynamic batching node budget.
-
-    The model and teacher args are accepted for API compatibility but no longer
-    used for memory estimation — batch size comes from config + safety_factor.
-    """
+def resolve_batch_config(cfg: PipelineConfig):
+    """Compute batch size and optional dynamic batching node budget."""
     from .data_loading import compute_node_budget
 
     bs = effective_batch_size(cfg)

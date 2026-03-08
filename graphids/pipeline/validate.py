@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from graphids.config import PipelineConfig
 
 from graphids.config import STAGES, data_dir, get_datasets
+from graphids.config.constants import STAGE_DEPENDENCIES
 
 _log = logging.getLogger(__name__)
 

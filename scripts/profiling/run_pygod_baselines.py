@@ -55,7 +55,9 @@ def _load_graphs(dataset: str):
 
 
 def _graph_label(g) -> int:
-    return g.y.item() if g.y.dim() == 0 else int(g.y[0].item())
+    from graphids.pipeline.stages.data_loading import graph_label
+
+    return graph_label(g)
 
 
 def _run_model(model_name: str, train_data, val_data, device: str) -> dict:
@@ -101,16 +103,10 @@ def _run_model(model_name: str, train_data, val_data, device: str) -> dict:
     elapsed = time.time() - t0
     log.info("%s: finished %d graphs in %.1fs", model_name, len(all_graphs), elapsed)
 
-    # Threshold via Youden's J
-    from sklearn.metrics import roc_curve
+    # Threshold via Youden's J (reuse shared implementation)
+    from graphids.pipeline.stages.evaluation import _vgae_threshold
 
-    fpr, tpr, thresholds = roc_curve(labels, scores)
-    j_scores = tpr - fpr
-    best_idx = np.argmax(j_scores)
-    best_thresh = (
-        float(thresholds[best_idx]) if best_idx < len(thresholds) else float(np.median(scores))
-    )
-    preds = (scores > best_thresh).astype(int)
+    best_thresh, _, preds = _vgae_threshold(labels, scores)
 
     metrics = {
         "model": model_name,

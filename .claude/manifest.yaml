@@ -1,0 +1,153 @@
+# Auto-generated navigation manifest
+# Regenerate: python3 ~/.claude/scripts/generate_manifests.py --all
+
+name: kd-gat
+path: ~/KD-GAT
+summary: CAN bus intrusion detection via 3-stage knowledge distillation pipeline. PyTorch/PyG, Ray orchestration,
+  SLURM-based training.
+modules:
+- id: artifacts
+  node_count: 10
+  summary: 10 nodes. Per-run persistent data stores and outputs. Includes preprocessed graph cache (.pt/.pkl
+    with versioned metadata), sweep state (resumable JSON) and results (best-config YAML), model checkpoints
+    (best_model.pt per stage), frozen configs, evaluation metrics, VGAE/GAT embeddings, attention weights,
+    DQN fusion policy exports, and loss landscape Parquet files. All paths are parameterized by dataset,
+    model type, scale, and stage.
+  entry_files:
+  - docs/memory_optimization.md
+  health:
+    fan_in: 36
+    fan_out: 0
+    cycles: 0
+- id: config
+  node_count: 7
+  summary: '7 nodes. Defines all pipeline configuration via Pydantic v2 frozen models and YAML composition.
+    Resolution order: defaults.yaml -> model/{type}/{scale}.yaml -> auxiliaries -> CLI overrides. No imports
+    from pipeline/ or core/ (enforced by tests). Consumed by every downstream layer as the single source
+    of truth for hyperparameters, paths, constants, and dataset catalog.'
+  entry_files:
+  - graphids/config/schema.py
+  - graphids/config/resolver.py
+  - graphids/config/paths.py
+  health:
+    fan_in: 41
+    fan_out: 0
+    cycles: 0
+- id: core
+  node_count: 18
+  summary: '18 nodes. Domain layer containing model architectures (VGAE, GAT, DQN, Temporal), preprocessing
+    (sliding-window graph construction from CAN bus CSVs via adapters), and data loading (PyG InMemoryDataset
+    with versioned cache). Upstream: reads raw CSV data and config constants. Downstream: consumed by
+    pipeline stages for training and evaluation. Never imports from pipeline/.'
+  entry_files:
+  - graphids/core/models/registry.py
+  - graphids/core/models/vgae.py
+  - graphids/core/models/gat.py
+  health:
+    fan_in: 39
+    fan_out: 11
+    cycles: 1
+  depends_on:
+  - artifacts
+  - config
+  - external
+  health_note: 1 cycle; fan_out=11
+- id: external
+  node_count: 4
+  summary: '4 nodes. External outputs: HF Datasets (kd-gat-experiments, kd-gat-sweeps) storing Parquet
+    exports of MLflow runs and sweep results, plus the consolidated Streamlit dashboard on HF Spaces.
+    Fed by epilog_sh auto-push after SLURM jobs. Raw CAN bus CSV data (DVC-tracked) also lives here as
+    the ultimate upstream data source.'
+  entry_files:
+  - scripts/data/push_experiments_to_hf.py
+  health:
+    fan_in: 4
+    fan_out: 0
+    cycles: 0
+- id: pipeline
+  node_count: 18
+  summary: 18 nodes. Orchestrates training, evaluation, and sweeps via subprocess dispatch for CUDA context
+    isolation (~300-500 MB per model). CLI entry point dispatches to stage functions (training, fusion,
+    evaluation, temporal) or to Ray/sweep orchestration. Each stage runs as a separate process for fault
+    isolation and GPU memory reclamation. Imports config/ at top level, core/ only lazily inside functions.
+  entry_files:
+  - graphids/pipeline/cli.py
+  - graphids/pipeline/stages/training.py
+  - graphids/pipeline/orchestration/ray_pipeline.py
+  health:
+    fan_in: 15
+    fan_out: 75
+    cycles: 3
+  depends_on:
+  - artifacts
+  - config
+  - core
+  - tracking
+  health_note: 3 cycles; fan_out=75
+- id: slurm
+  node_count: 14
+  summary: 14 nodes. SLURM job scripts for dispatching work to the cluster. All share _preamble.sh (module
+    load, venv activate, source .env, stage data) and _epilog.sh (GPU report, sacct, HF push). Covers
+    pipeline runs (ray_slurm.sh), sweeps (sweep_pipeline.sh, tune_sweep.sh), testing (run_tests_slurm.sh,
+    run_tests_parallel.sh), smoke tests (gpudebug partition), cache rebuilds, loss landscape, and full
+    reproduction. stage_data.sh handles 3-tier storage staging (shared -> scratch -> TMPDIR).
+  entry_files:
+  - scripts/slurm/_preamble.sh
+  - scripts/slurm/ray_slurm.sh
+  - scripts/slurm/run_tests_slurm.sh
+  health:
+    fan_in: 0
+    fan_out: 8
+    cycles: 0
+  depends_on:
+  - pipeline
+  - tests
+  - tracking
+- id: tests
+  node_count: 10
+  summary: 10 nodes. Test suite with 10 test files covering layer boundary enforcement (AST-based import
+    checks), preprocessing (adapters, engine, vocabulary), model registry, fusion extractors, FastAPI
+    serving, training smoke tests, end-to-end stage contracts (VGAE->GAT->DQN->eval), pipeline integration,
+    and new feature regression. Shared fixtures in conftest.py define tiny architectures and E2E_OVERRIDES.
+    Must always run via SLURM, never on login nodes.
+  entry_files:
+  - tests/conftest.py
+  - tests/test_layer_boundaries.py
+  - tests/test_training_e2e.py
+  health:
+    fan_in: 2
+    fan_out: 39
+    cycles: 0
+  depends_on:
+  - config
+  - core
+  - pipeline
+  health_note: fan_out=39
+- id: tracking
+  node_count: 5
+  summary: '5 nodes. Experiment tracking infrastructure: MLflow SQLite backend (mlflow.db) stores run
+    metadata and metrics, with an artifact store directory for logged configs. push_experiments_to_hf.py
+    exports MLflow runs as Parquet to HF Dataset for the consolidated dashboard. Also includes profiling
+    scripts (analyze_profile.py for Chrome trace analysis, run_pygod_baselines.py for baseline comparisons).'
+  entry_files:
+  - scripts/data/push_experiments_to_hf.py
+  - scripts/profiling/analyze_profile.py
+  health:
+    fan_in: 3
+    fan_out: 7
+    cycles: 0
+  depends_on:
+  - artifacts
+  - config
+  - core
+  - external
+key_paths:
+  config_entry: graphids/config/__init__.py
+  cli_entry: graphids/pipeline/cli.py
+  test_entry: tests/conftest.py
+stats:
+  total_nodes: 86
+  total_edges: 214
+  total_lines: 12949
+  health_score: 0.55
+  health_note: 4 cycles; fan_out=75

@@ -18,3 +18,8 @@ cfg.active_arch        # Architecture config for active model_type
 **Path layout**: `experimentruns/{dataset}/{model_type}_{scale}_{stage}[_{aux}]`
 
 **Legacy config loading**: Old flat JSON config files still load via `PipelineConfig.load()` with automatic migration.
+
+## Config Discipline
+
+- **Version-gate at the boundary, not inline.** When adding optional fields to data objects, add a single normalization step at load time that fills defaults. Don't scatter `hasattr` checks through business logic.
+- **Always use `from_config()`**. ALL model construction sites must use `Model.from_config(cfg, ...)` — never manual `Model(param1=...)`. Manual construction silently diverges. `from_config()` must include all training-time params.

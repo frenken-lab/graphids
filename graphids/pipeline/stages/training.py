@@ -63,6 +63,18 @@ def _save_training_metrics(trainer: pl.Trainer, cfg: PipelineConfig, stage: str)
         log.warning("Failed to save training metrics: %s", e)
 
 
+def _save_and_cleanup(module, trainer, cfg, stage: str, label: str | None = None) -> Path:
+    """Save checkpoint, config, metrics. Returns checkpoint path."""
+    _save_training_metrics(trainer, cfg, stage)
+    ckpt = checkpoint_path(cfg, stage)
+    ckpt.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(module.model.state_dict(), ckpt)
+    cfg.save(config_path(cfg, stage))
+    log.info("Saved %s: %s", label or stage, ckpt)
+    cleanup()
+    return ckpt
+
+
 def train_autoencoder(cfg: PipelineConfig) -> Path:
     """Train VGAE on graph reconstruction. Returns checkpoint path."""
     train_data, val_data, num_ids, in_ch, device = training_preamble(cfg, "AUTOENCODER")
@@ -78,22 +90,14 @@ def train_autoencoder(cfg: PipelineConfig) -> Path:
         del _tmp_student
 
     module = VGAEModule(cfg, num_ids, in_ch, teacher=teacher, projection=projection)
-    bs, max_nodes = resolve_batch_config(cfg, module.model, train_data, teacher=teacher)
+    bs, max_nodes = resolve_batch_config(cfg)
 
     train_dl = make_dataloader(train_data, cfg, bs, shuffle=True, max_num_nodes=max_nodes)
     val_dl = make_dataloader(val_data, cfg, bs, shuffle=False, max_num_nodes=max_nodes)
 
     trainer = make_trainer(cfg, "autoencoder")
     trainer.fit(module, train_dl, val_dl)
-    _save_training_metrics(trainer, cfg, "autoencoder")
-
-    ckpt = checkpoint_path(cfg, "autoencoder")
-    ckpt.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(module.model.state_dict(), ckpt)
-    cfg.save(config_path(cfg, "autoencoder"))
-    log.info("Saved VGAE: %s", ckpt)
-    cleanup()
-    return ckpt
+    return _save_and_cleanup(module, trainer, cfg, "autoencoder", "VGAE")
 
 
 def train_curriculum(cfg: PipelineConfig) -> Path:
@@ -120,15 +124,7 @@ def train_curriculum(cfg: PipelineConfig) -> Path:
 
     dm = CurriculumDataModule(normals, attacks, scores, val_data, cfg)
     trainer.fit(module, datamodule=dm)
-    _save_training_metrics(trainer, cfg, "curriculum")
-
-    ckpt = checkpoint_path(cfg, "curriculum")
-    ckpt.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(module.model.state_dict(), ckpt)
-    cfg.save(config_path(cfg, "curriculum"))
-    log.info("Saved GAT: %s", ckpt)
-    cleanup()
-    return ckpt
+    return _save_and_cleanup(module, trainer, cfg, "curriculum", "GAT")
 
 
 def train_normal(cfg: PipelineConfig) -> Path:
@@ -141,22 +137,14 @@ def train_normal(cfg: PipelineConfig) -> Path:
         teacher = load_teacher(cfg.kd.model_path, "gat", cfg, num_ids, in_ch, device)
 
     module = GATModule(cfg, num_ids, in_ch, teacher=teacher)
-    bs, max_nodes = resolve_batch_config(cfg, module.model, train_data, teacher=teacher)
+    bs, max_nodes = resolve_batch_config(cfg)
 
     train_dl = make_dataloader(train_data, cfg, bs, shuffle=True, max_num_nodes=max_nodes)
     val_dl = make_dataloader(val_data, cfg, bs, shuffle=False, max_num_nodes=max_nodes)
 
     trainer = make_trainer(cfg, "normal")
     trainer.fit(module, train_dl, val_dl)
-    _save_training_metrics(trainer, cfg, "normal")
-
-    ckpt = checkpoint_path(cfg, "normal")
-    ckpt.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(module.model.state_dict(), ckpt)
-    cfg.save(config_path(cfg, "normal"))
-    log.info("Saved GAT (normal): %s", ckpt)
-    cleanup()
-    return ckpt
+    return _save_and_cleanup(module, trainer, cfg, "normal", "GAT (normal)")
 
 
 def _score_difficulty(vgae_model, graphs, device, chunk_size: int = 500) -> list[float]:

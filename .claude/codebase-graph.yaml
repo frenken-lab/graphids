@@ -1,0 +1,1662 @@
+# KD-GAT Codebase Meta-Database
+# Source of truth for file inventory, dependencies, and data flow.
+# Updated: 2026-03-07
+#
+# Node types: source | database | artifact | output | config | script | test
+# Edge rels:  imports | calls | reads | writes | produces | consumes | dispatches
+
+nodes:
+  # ── Config Layer ──────────────────────────────────────────────────────
+- id: config_schema
+  type: source
+  path: graphids/config/schema.py
+  format: py
+  layer: config
+  status: stable
+  lines: 414
+  notes: "Pydantic v2 frozen models (PipelineConfig, VGAEArchitecture, etc.)"
+
+- id: config_resolver
+  type: source
+  path: graphids/config/resolver.py
+  format: py
+  layer: config
+  status: stable
+  lines: 88
+  notes: "YAML composition engine — resolve() merges defaults + model + aux + overrides"
+
+- id: config_paths
+  type: source
+  path: graphids/config/paths.py
+  format: py
+  layer: config
+  status: stable
+  lines: 171
+  notes: "Path layout functions (checkpoint_path, config_path, stage_dir, etc.)"
+
+- id: config_constants
+  type: source
+  path: graphids/config/constants.py
+  format: py
+  layer: config
+  status: stable
+  lines: 155
+  notes: "Domain/infra constants (NODE_FEATURE_COUNT, SLURM vars, STAGE_MODEL_MAP)"
+
+- id: config_catalog
+  type: source
+  path: graphids/config/catalog.py
+  format: py
+  layer: config
+  status: stable
+  lines: 39
+  notes: "Dataset registry validator — validates dataset names against datasets.yaml"
+
+- id: config_init
+  type: source
+  path: graphids/config/__init__.py
+  format: py
+  layer: config
+  status: stable
+  lines: 56
+  notes: "Re-export hub for config submodules"
+
+- id: config_yamls
+  type: config
+  path: graphids/config/
+  format: yaml
+  layer: config
+  status: stable
+  notes: "16 YAML files: defaults.yaml, datasets.yaml, models/{vgae,gat,dqn}/{small,large}.yaml, models/fusion/{dqn,mlp,weighted_avg}.yaml,\
+    \ auxiliaries/{kd_standard,none}.yaml, search_spaces/{vgae,gat,dqn}.yaml"
+
+  # ── Pipeline Layer — Stages ───────────────────────────────────────────
+- id: cli
+  type: source
+  path: graphids/pipeline/cli.py
+  format: py
+  layer: pipeline
+  status: active
+  lines: 600
+  notes: "Entry point (python -m graphids.pipeline.cli). MLflow context, archive/restore, stage dispatch"
+
+- id: validate
+  type: source
+  path: graphids/pipeline/validate.py
+  format: py
+  layer: pipeline
+  status: stable
+  lines: 70
+  notes: "Pre-run config + env checks (data exists, KD teacher exists, etc.)"
+
+- id: serve
+  type: source
+  path: graphids/pipeline/serve.py
+  format: py
+  layer: pipeline
+  status: stable
+  lines: 206
+  notes: "FastAPI inference server (/health, /predict endpoints)"
+
+- id: stages_init
+  type: source
+  path: graphids/pipeline/stages/__init__.py
+  format: py
+  layer: pipeline
+  status: stable
+  lines: 20
+  notes: "STAGE_FNS dispatch dict — maps stage names to training functions"
+
+- id: training
+  type: source
+  path: graphids/pipeline/stages/training.py
+  format: py
+  layer: pipeline
+  status: active
+  lines: 184
+  notes: "train_autoencoder, train_curriculum, train_normal — core training loops"
+
+- id: fusion_stage
+  type: source
+  path: graphids/pipeline/stages/fusion.py
+  format: py
+  layer: pipeline
+  status: active
+  lines: 176
+  notes: "train_fusion — DQN/MLP/WeightedAvg fusion training"
+
+- id: evaluation
+  type: source
+  path: graphids/pipeline/stages/evaluation.py
+  format: py
+  layer: pipeline
+  status: active
+  lines: 605
+  notes: "Multi-model eval, artifact export (embeddings, attention, DQN policy, CKA)"
+
+- id: temporal_stage
+  type: source
+  path: graphids/pipeline/stages/temporal.py
+  format: py
+  layer: pipeline
+  status: active
+  lines: 292
+  notes: "Temporal graph classification training + eval"
+
+- id: modules
+  type: source
+  path: graphids/pipeline/stages/modules.py
+  format: py
+  layer: pipeline
+  status: stable
+  lines: 268
+  notes: "Lightning modules: VGAEModule, GATModule, CurriculumDataModule"
+
+- id: trainer_factory
+  type: source
+  path: graphids/pipeline/stages/trainer_factory.py
+  format: py
+  layer: pipeline
+  status: stable
+  lines: 276
+  notes: "Lightning Trainer construction + callbacks (EarlyStopping, DeviceStatsMonitor)"
+
+- id: data_loading
+  type: source
+  path: graphids/pipeline/stages/data_loading.py
+  format: py
+  layer: pipeline
+  status: stable
+  lines: 194
+  notes: "training_preamble(), dataset caching, DynamicBatchSampler setup"
+
+- id: batch_sizing
+  type: source
+  path: graphids/pipeline/stages/batch_sizing.py
+  format: py
+  layer: pipeline
+  status: stable
+  lines: 39
+  notes: "Batch size resolution from config"
+
+- id: stage_utils
+  type: source
+  path: graphids/pipeline/stages/utils.py
+  format: py
+  layer: pipeline
+  status: stable
+  lines: 60
+  notes: "Re-exports from batch_sizing, data_loading, trainer_factory + cleanup()"
+
+- id: loss_landscape
+  type: source
+  path: graphids/pipeline/stages/loss_landscape.py
+  format: py
+  layer: pipeline
+  status: stable
+  lines: 415
+  notes: "Loss landscape visualization — Parquet output for dashboard"
+
+  # ── Pipeline Layer — Orchestration ────────────────────────────────────
+- id: ray_pipeline
+  type: source
+  path: graphids/pipeline/orchestration/ray_pipeline.py
+  format: py
+  layer: pipeline
+  status: active
+  lines: 492
+  notes: "Ray DAG orchestration — train/eval pipelines via subprocess dispatch"
+
+- id: ray_slurm
+  type: source
+  path: graphids/pipeline/orchestration/ray_slurm.py
+  format: py
+  layer: pipeline
+  status: stable
+  lines: 64
+  notes: "SLURM-Ray bridge — ray_init_kwargs() for cluster setup"
+
+- id: sweep_pipeline
+  type: source
+  path: graphids/pipeline/orchestration/sweep_pipeline.py
+  format: py
+  layer: pipeline
+  status: active
+  lines: 425
+  notes: "HPO sweep orchestration — resumable state, subprocess CLI dispatch"
+
+- id: tune_config
+  type: source
+  path: graphids/pipeline/orchestration/tune_config.py
+  format: py
+  layer: pipeline
+  status: active
+  lines: 756
+  notes: "Ray Tune search space + ASHA scheduler — reads search_spaces/*.yaml"
+
+  # ── Core Layer — Models ───────────────────────────────────────────────
+- id: registry
+  type: source
+  path: graphids/core/models/registry.py
+  format: py
+  layer: core
+  status: stable
+  lines: 111
+  notes: "Model registry — name->factory mapping, extractors(), fusion_state_dim()"
+
+- id: vgae
+  type: source
+  path: graphids/core/models/vgae.py
+  format: py
+  layer: core
+  status: stable
+  lines: 315
+  notes: "GraphAutoencoderNeighborhood — VGAE with neighbor reconstruction"
+
+- id: gat
+  type: source
+  path: graphids/core/models/gat.py
+  format: py
+  layer: core
+  status: stable
+  lines: 160
+  notes: "GATWithJK — GATv2 with JumpingKnowledge aggregation"
+
+- id: dqn
+  type: source
+  path: graphids/core/models/dqn.py
+  format: py
+  layer: core
+  status: stable
+  lines: 672
+  notes: "QNetwork + EnhancedDQNFusionAgent + MLPFusionAgent + WeightedAvgFusionAgent"
+
+- id: temporal_model
+  type: source
+  path: graphids/core/models/temporal.py
+  format: py
+  layer: core
+  status: stable
+  lines: 125
+  notes: "TemporalGraphClassifier — sequence of graph embeddings -> classification"
+
+- id: fusion_features
+  type: source
+  path: graphids/core/models/fusion_features.py
+  format: py
+  layer: core
+  status: stable
+  lines: 119
+  notes: "VGAEFusionExtractor + GATFusionExtractor — extract fusion state vectors"
+
+- id: model_utils
+  type: source
+  path: graphids/core/models/_utils.py
+  format: py
+  layer: core
+  status: stable
+  lines: 31
+  notes: "_make_conv() factory, checkpoint_conv() for gradient checkpointing"
+
+- id: models_init
+  type: source
+  path: graphids/core/models/__init__.py
+  format: py
+  layer: core
+  status: stable
+  lines: 20
+  notes: "Re-exports from registry and fusion_features"
+
+  # ── Core Layer — Preprocessing ────────────────────────────────────────
+- id: dataset
+  type: source
+  path: graphids/core/preprocessing/dataset.py
+  format: py
+  layer: core
+  status: stable
+  lines: 123
+  notes: "GraphDataset — PyG InMemoryDataset wrapper"
+
+- id: engine
+  type: source
+  path: graphids/core/preprocessing/engine.py
+  format: py
+  layer: core
+  status: stable
+  lines: 565
+  notes: "GraphEngine — domain-agnostic sliding-window graph builder"
+
+- id: vocab
+  type: source
+  path: graphids/core/preprocessing/vocabulary.py
+  format: py
+  layer: core
+  status: stable
+  lines: 177
+  notes: "EntityVocabulary — ID-to-index mapping, pickle persistence"
+
+- id: preproc_schema
+  type: source
+  path: graphids/core/preprocessing/schema.py
+  format: py
+  layer: core
+  status: stable
+  lines: 175
+  notes: "IRSchema — intermediate representation column definitions (CAN_BUS_SCHEMA etc.)"
+
+- id: can_bus_adapter
+  type: source
+  path: graphids/core/preprocessing/adapters/can_bus.py
+  format: py
+  layer: core
+  status: stable
+  lines: 317
+  notes: "CANBusAdapter — CAN bus CSV -> IR DataFrames via pd.read_csv"
+
+- id: adapter_base
+  type: source
+  path: graphids/core/preprocessing/adapters/base.py
+  format: py
+  layer: core
+  status: stable
+  lines: 92
+  notes: "DomainAdapter ABC — interface for dataset-specific adapters"
+
+- id: preproc_temporal
+  type: source
+  path: graphids/core/preprocessing/temporal.py
+  format: py
+  layer: core
+  status: stable
+  lines: 63
+  notes: "TemporalGrouper — groups graphs into time windows"
+
+- id: parallel
+  type: source
+  path: graphids/core/preprocessing/parallel.py
+  format: py
+  layer: core
+  status: stable
+  lines: 265
+  notes: "Ray-parallel preprocessing workers — process_dataset()"
+
+- id: preproc_init
+  type: source
+  path: graphids/core/preprocessing/__init__.py
+  format: py
+  layer: core
+  status: stable
+  lines: 25
+  notes: "Re-exports: GraphDataset, GraphEngine, process_dataset, schemas, vocab"
+
+  # ── Core Layer — Training ─────────────────────────────────────────────
+- id: datamodules
+  type: source
+  path: graphids/core/training/datamodules.py
+  format: py
+  layer: core
+  status: stable
+  lines: 468
+  notes: "load_dataset(), load_test_scenarios() — cache management with torch.save/load + pickle"
+
+  # ── Databases (persistent stores) ────────────────────────────────────
+- id: mlflow_db
+  type: database
+  path: data/mlflow/mlflow.db
+  format: sqlite
+  layer: tracking
+  status: active
+  notes: "MLflow SQLite backend — experiment tracking, run metadata, metrics"
+
+- id: mlflow_artifacts
+  type: database
+  path: data/mlflow/mlruns/
+  layer: tracking
+  status: active
+  notes: "MLflow artifact store directory — logged configs, artifacts per run"
+
+- id: graph_cache
+  type: database
+  path: "{cache_dir}/{dataset}/graphs_v*.pt + id_mapping_v*.pkl + cache_metadata.json"
+  layer: artifacts
+  status: active
+  notes: "Preprocessed graph cache — torch.save .pt, pickle .pkl, JSON metadata"
+
+- id: sweep_state
+  type: database
+  path: "{SWEEP_STATE_DIR}/*.json"
+  layer: artifacts
+  status: active
+  notes: "Sweep state files — resumable sweep progress (atomic writes)"
+
+- id: sweep_results
+  type: database
+  path: "{SWEEP_RESULTS_DIR}/*.yaml"
+  layer: artifacts
+  status: active
+  notes: "Sweep best-config YAML files — warm-start for subsequent sweeps"
+
+  # ── Artifacts (per-run outputs) ──────────────────────────────────────
+- id: checkpoints
+  type: artifact
+  path: "experimentruns/{dataset}/{model}_{scale}_{stage}[_{aux}]/best_model.pt"
+  format: pt
+  layer: artifacts
+  status: active
+  notes: "Best model state_dict per stage"
+
+- id: frozen_configs
+  type: artifact
+  path: "experimentruns/{dataset}/{model}_{scale}_{stage}[_{aux}]/config.json"
+  format: json
+  layer: artifacts
+  status: active
+  notes: "Frozen PipelineConfig per run — downstream stages read upstream configs"
+
+- id: metrics_json
+  type: artifact
+  path: "experimentruns/{dataset}/{model}_{scale}_{stage}[_{aux}]/metrics.json"
+  format: json
+  layer: artifacts
+  status: active
+  notes: "Per-run evaluation metrics (F1, AUC, accuracy, etc.)"
+
+- id: embeddings
+  type: artifact
+  path: "experimentruns/{dataset}/.../embeddings.npz"
+  format: npz
+  layer: artifacts
+  status: active
+  notes: "VGAE/GAT embeddings — np.savez_compressed"
+
+- id: attention_weights
+  type: artifact
+  path: "experimentruns/{dataset}/.../attention_weights.npz"
+  format: npz
+  layer: artifacts
+  status: active
+  notes: "GAT attention weight export"
+
+- id: dqn_policy
+  type: artifact
+  path: "experimentruns/{dataset}/.../dqn_policy.json"
+  format: json
+  layer: artifacts
+  status: active
+  notes: "DQN fusion policy export (weights, actions, rewards)"
+
+- id: loss_landscape_parquet
+  type: artifact
+  path: "experimentruns/{dataset}/.../loss_landscape.parquet"
+  format: parquet
+  layer: artifacts
+  status: active
+  notes: "Loss landscape grid — Parquet for dashboard visualization"
+
+  # ── External Outputs ─────────────────────────────────────────────────
+- id: hf_experiments
+  type: output
+  location: "huggingface.co/datasets/buckeyeguy/kd-gat-experiments"
+  format: parquet
+  layer: external
+  status: active
+  notes: "HF Dataset — MLflow runs exported as Parquet"
+
+- id: hf_sweeps
+  type: output
+  location: "huggingface.co/datasets/buckeyeguy/kd-gat-sweeps"
+  format: parquet
+  layer: external
+  status: active
+  notes: "HF Dataset — sweep results exported as Parquet"
+
+- id: dashboard
+  type: output
+  location: "huggingface.co/spaces/buckeyeguy/kd-gat-dashboard"
+  layer: external
+  status: active
+  notes: "Consolidated Streamlit dashboard — experiments + sweeps"
+
+- id: raw_csv
+  type: database
+  path: "data/automotive/{dataset}/"
+  format: csv
+  layer: external
+  status: stable
+  notes: "Source CAN bus CSV data (DVC-tracked)"
+
+  # ── Scripts ──────────────────────────────────────────────────────────
+- id: preamble_sh
+  type: script
+  path: scripts/slurm/_preamble.sh
+  format: sh
+  layer: slurm
+  status: stable
+  notes: "SLURM env setup — module load, venv activate, source .env, stage data"
+
+- id: epilog_sh
+  type: script
+  path: scripts/slurm/_epilog.sh
+  format: sh
+  layer: slurm
+  status: stable
+  notes: "Post-job cleanup — GPU report, sacct, push experiments to HF"
+
+- id: ray_slurm_sh
+  type: script
+  path: scripts/slurm/ray_slurm.sh
+  format: sh
+  layer: slurm
+  status: active
+  notes: "Ray pipeline SLURM submission — single/multi-node dispatch"
+
+- id: run_tests_sh
+  type: script
+  path: scripts/slurm/run_tests_slurm.sh
+  format: sh
+  layer: slurm
+  status: stable
+  notes: "Test submission to SLURM CPU partition"
+
+- id: smoke_test_sh
+  type: script
+  path: scripts/slurm/smoke_test.sh
+  format: sh
+  layer: slurm
+  status: stable
+  notes: "Quick 1-trial GPU validation on gpudebug partition"
+
+- id: sweep_sh
+  type: script
+  path: scripts/slurm/sweep_pipeline.sh
+  format: sh
+  layer: slurm
+  status: active
+  notes: "Sweep SLURM submission — resumable via SIGUSR1"
+
+- id: tune_sweep_sh
+  type: script
+  path: scripts/slurm/tune_sweep.sh
+  format: sh
+  layer: slurm
+  status: active
+  notes: "Ray Tune sweep SLURM submission"
+
+- id: push_hf
+  type: script
+  path: scripts/data/push_experiments_to_hf.py
+  format: py
+  layer: tracking
+  status: active
+  notes: "MLflow -> Parquet -> HF upload script"
+
+- id: stage_data_sh
+  type: script
+  path: scripts/data/stage_data.sh
+  format: sh
+  layer: slurm
+  status: stable
+  notes: "3-tier storage staging (shared -> scratch -> TMPDIR)"
+
+- id: run_tests_parallel_sh
+  type: script
+  path: scripts/slurm/run_tests_parallel.sh
+  format: sh
+  layer: slurm
+  status: stable
+  notes: "Parallel test runner — distributes test files across workers"
+
+- id: cleanup_orphans_sh
+  type: script
+  path: scripts/data/cleanup_orphans.sh
+  format: sh
+  layer: slurm
+  status: stable
+  notes: "Scan experimentruns/ for orphaned/failed run directories"
+
+- id: rebuild_all_caches_sh
+  type: script
+  path: scripts/data/rebuild_all_caches.sh
+  format: sh
+  layer: slurm
+  status: stable
+  notes: "Rebuild ALL graph caches (train + test) via SLURM, forces clean rebuild"
+
+- id: rebuild_caches_sh
+  type: script
+  path: scripts/slurm/rebuild_caches.sh
+  format: sh
+  layer: slurm
+  status: stable
+  notes: "Batch cache rebuild SLURM submission"
+
+- id: loss_landscape_sh
+  type: script
+  path: scripts/slurm/loss_landscape.sh
+  format: sh
+  layer: slurm
+  status: stable
+  notes: "Loss landscape SLURM submission"
+
+- id: analyze_profile
+  type: script
+  path: scripts/profiling/analyze_profile.py
+  format: py
+  layer: tracking
+  status: stable
+  lines: 203
+  notes: "Chrome trace profiler analysis — reads profiler JSON, outputs decision doc"
+
+- id: run_pygod_baselines
+  type: script
+  path: scripts/profiling/run_pygod_baselines.py
+  format: py
+  layer: tracking
+  status: stable
+  lines: 220
+  notes: "PyGOD baseline comparison — requires pygod package"
+
+- id: reproduce_sh
+  type: script
+  path: scripts/reproduce.sh
+  format: sh
+  layer: slurm
+  status: stable
+  notes: "Full pipeline reproduction script"
+
+  # ── Tests ────────────────────────────────────────────────────────────
+- id: conftest
+  type: test
+  path: tests/conftest.py
+  format: py
+  layer: tests
+  status: stable
+  lines: 103
+  notes: "Fixtures: _make_graph, _make_dataset, SMOKE/E2E_OVERRIDES, slurm marker"
+
+- id: test_boundaries
+  type: test
+  path: tests/test_layer_boundaries.py
+  format: py
+  layer: tests
+  status: stable
+  lines: 155
+  notes: "AST-based layer boundary enforcement — config/pipeline/core isolation"
+
+- id: test_preprocessing
+  type: test
+  path: tests/test_preprocessing.py
+  format: py
+  layer: tests
+  status: stable
+  lines: 321
+  notes: "Adapter, engine, vocabulary, dataset, parallel processing tests"
+
+- id: test_registry
+  type: test
+  path: tests/test_registry.py
+  format: py
+  layer: tests
+  status: stable
+  lines: 103
+  notes: "Model registry entries, default registrations, fusion dims"
+
+- id: test_fusion_ext
+  type: test
+  path: tests/test_fusion_extractors.py
+  format: py
+  layer: tests
+  status: stable
+  lines: 165
+  notes: "Fusion extractor output dims, value ranges, determinism"
+
+- id: test_serve
+  type: test
+  path: tests/test_serve.py
+  format: py
+  layer: tests
+  status: stable
+  lines: 162
+  notes: "FastAPI endpoint tests (mocked models)"
+
+- id: test_smoke
+  type: test
+  path: tests/test_training_smoke.py
+  format: py
+  layer: tests
+  status: stable
+  lines: 253
+  notes: "VGAE/GAT/DQN train without NaN, FC layer shape tests"
+
+- id: test_e2e
+  type: test
+  path: tests/test_training_e2e.py
+  format: py
+  layer: tests
+  status: stable
+  lines: 233
+  notes: "Full stage-to-stage contract (VGAE->GAT->DQN->eval)"
+
+- id: test_integration
+  type: test
+  path: tests/test_pipeline_integration.py
+  format: py
+  layer: tests
+  status: stable
+  lines: 776
+  notes: "Config roundtrip, model construction, checkpoint roundtrip, validation"
+
+- id: test_new_features
+  type: test
+  path: tests/test_new_features.py
+  format: py
+  layer: tests
+  status: stable
+  lines: 367
+  notes: "GAT embedding flag, DQN reward, sweep gen, archive/restore, serve endpoints"
+
+edges:
+  # ── Config internal ──────────────────────────────────────────────────
+- from: config_init
+  to: config_schema
+  rel: imports
+  notes: "re-exports PipelineConfig, all architecture types"
+- from: config_init
+  to: config_resolver
+  rel: imports
+  notes: "re-exports resolve()"
+- from: config_init
+  to: config_paths
+  rel: imports
+  notes: "re-exports checkpoint_path, config_path, stage_dir, etc."
+- from: config_init
+  to: config_constants
+  rel: imports
+  notes: "re-exports MLFLOW_TRACKING_URI, STAGES"
+- from: config_init
+  to: config_catalog
+  rel: imports
+  notes: "re-exports get_datasets, list_models, etc."
+- from: config_resolver
+  to: config_yamls
+  rel: reads
+  notes: "yaml.safe_load for defaults + model + aux YAML files"
+- from: config_resolver
+  to: config_schema
+  rel: imports
+  notes: "constructs PipelineConfig from merged dict"
+- from: config_catalog
+  to: config_yamls
+  rel: reads
+  notes: "reads datasets.yaml for validation"
+
+  # ── CLI dispatch ─────────────────────────────────────────────────────
+- from: cli
+  to: config_init
+  rel: imports
+  notes: "PipelineConfig, MLFLOW_TRACKING_URI, config_path, run_id, stage_dir"
+- from: cli
+  to: config_resolver
+  rel: imports
+  notes: "lazy: resolve(), _deep_merge()"
+- from: cli
+  to: validate
+  rel: imports
+- from: cli
+  to: stages_init
+  rel: imports
+  notes: "lazy: STAGE_FNS dispatch dict"
+- from: cli
+  to: ray_pipeline
+  rel: imports
+  notes: "lazy: eval_pipeline, train_pipeline"
+- from: cli
+  to: tune_config
+  rel: imports
+  notes: "lazy: _STAGE_MODEL, dry_run_tune, run_tune"
+- from: cli
+  to: sweep_pipeline
+  rel: imports
+  notes: "lazy: run_sweep_pipeline"
+- from: cli
+  to: mlflow_db
+  rel: writes
+  notes: "mlflow.start_run, log_params, log_metrics, log_artifact"
+- from: cli
+  to: frozen_configs
+  rel: writes
+  notes: "cfg.save(config_path)"
+
+  # ── Stages __init__ dispatch ─────────────────────────────────────────
+- from: stages_init
+  to: training
+  rel: imports
+  notes: "train_autoencoder, train_curriculum, train_normal"
+- from: stages_init
+  to: fusion_stage
+  rel: imports
+  notes: "train_fusion"
+- from: stages_init
+  to: evaluation
+  rel: imports
+  notes: "evaluate"
+- from: stages_init
+  to: temporal_stage
+  rel: imports
+  notes: "train_temporal"
+
+  # ── Training stage ───────────────────────────────────────────────────
+- from: training
+  to: config_init
+  rel: imports
+  notes: "PipelineConfig, checkpoint_path, config_path, stage_dir"
+- from: training
+  to: config_constants
+  rel: imports
+  notes: "get_batch_index"
+- from: training
+  to: batch_sizing
+  rel: imports
+  notes: "resolve_batch_config"
+- from: training
+  to: data_loading
+  rel: imports
+  notes: "training_preamble"
+- from: training
+  to: modules
+  rel: imports
+  notes: "VGAEModule, GATModule, CurriculumDataModule"
+- from: training
+  to: stage_utils
+  rel: imports
+  notes: "cleanup, graph_label, load_data, load_frozen_cfg, load_model, load_teacher, make_dataloader, make_projection, make_trainer"
+- from: training
+  to: registry
+  rel: imports
+  notes: "lazy: get() for model construction"
+- from: training
+  to: checkpoints
+  rel: writes
+  notes: "torch.save(model.state_dict(), ckpt)"
+- from: training
+  to: frozen_configs
+  rel: writes
+  notes: "cfg.save(config_path)"
+- from: training
+  to: metrics_json
+  rel: writes
+  notes: "json.dumps(metrics) -> write_text"
+
+  # ── Evaluation stage ─────────────────────────────────────────────────
+- from: evaluation
+  to: config_init
+  rel: imports
+  notes: "PipelineConfig, cache_dir, data_dir, metrics_path, stage_dir"
+- from: evaluation
+  to: config_constants
+  rel: imports
+  notes: "get_batch_index, graph_attack_type"
+- from: evaluation
+  to: data_loading
+  rel: imports
+  notes: "training_preamble"
+- from: evaluation
+  to: stage_utils
+  rel: imports
+  notes: "_cross_model_path, cache_predictions, cleanup, graph_label, load_frozen_cfg, load_model"
+- from: evaluation
+  to: dqn
+  rel: imports
+  notes: "EnhancedDQNFusionAgent"
+- from: evaluation
+  to: datamodules
+  rel: imports
+  notes: "load_test_scenarios"
+- from: evaluation
+  to: preproc_temporal
+  rel: imports
+  notes: "TemporalGrouper"
+- from: evaluation
+  to: temporal_model
+  rel: imports
+  notes: "TemporalGraphClassifier"
+- from: evaluation
+  to: checkpoints
+  rel: reads
+  notes: "torch.load for temporal model checkpoint"
+- from: evaluation
+  to: metrics_json
+  rel: writes
+  notes: "json.dumps(all_metrics) -> write_text"
+- from: evaluation
+  to: embeddings
+  rel: writes
+  notes: "np.savez_compressed(embeddings.npz)"
+- from: evaluation
+  to: attention_weights
+  rel: writes
+  notes: "np.savez_compressed(attention_weights.npz)"
+- from: evaluation
+  to: dqn_policy
+  rel: writes
+  notes: "json.dumps(policy_data) -> write_text"
+
+  # ── Fusion stage ─────────────────────────────────────────────────────
+- from: fusion_stage
+  to: config_init
+  rel: imports
+  notes: "PipelineConfig, checkpoint_path, config_path, stage_dir"
+- from: fusion_stage
+  to: data_loading
+  rel: imports
+  notes: "training_preamble"
+- from: fusion_stage
+  to: stage_utils
+  rel: imports
+  notes: "cache_predictions, cleanup, load_model"
+- from: fusion_stage
+  to: dqn
+  rel: imports
+  notes: "EnhancedDQNFusionAgent, MLPFusionAgent, WeightedAvgFusionAgent"
+- from: fusion_stage
+  to: registry
+  rel: imports
+  notes: "fusion_state_dim"
+- from: fusion_stage
+  to: checkpoints
+  rel: writes
+  notes: "torch.save fusion state dict"
+- from: fusion_stage
+  to: frozen_configs
+  rel: writes
+- from: fusion_stage
+  to: metrics_json
+  rel: writes
+
+  # ── Temporal stage ───────────────────────────────────────────────────
+- from: temporal_stage
+  to: config_init
+  rel: imports
+  notes: "PipelineConfig, checkpoint_path, config_path, metrics_path, stage_dir"
+- from: temporal_stage
+  to: stage_utils
+  rel: imports
+  notes: "cleanup, graph_label, load_data, load_model, make_trainer"
+- from: temporal_stage
+  to: preproc_temporal
+  rel: imports
+  notes: "TemporalGrouper"
+- from: temporal_stage
+  to: temporal_model
+  rel: imports
+  notes: "TemporalGraphClassifier"
+- from: temporal_stage
+  to: checkpoints
+  rel: writes
+  notes: "torch.save temporal model state_dict"
+- from: temporal_stage
+  to: frozen_configs
+  rel: writes
+- from: temporal_stage
+  to: metrics_json
+  rel: writes
+
+  # ── Modules (Lightning) ─────────────────────────────────────────────
+- from: modules
+  to: config_init
+  rel: imports
+  notes: "PipelineConfig"
+- from: modules
+  to: stage_utils
+  rel: imports
+  notes: "build_optimizer_dict, compute_node_budget, effective_batch_size, make_dataloader"
+- from: modules
+  to: vgae
+  rel: imports
+  notes: "GraphAutoencoderNeighborhood"
+
+  # ── Trainer factory ──────────────────────────────────────────────────
+- from: trainer_factory
+  to: config_init
+  rel: imports
+  notes: "MLFLOW_TRACKING_URI, PipelineConfig, stage_dir"
+- from: trainer_factory
+  to: registry
+  rel: imports
+  notes: "lazy: get() for model loading"
+- from: trainer_factory
+  to: checkpoints
+  rel: reads
+  notes: "torch.load for teacher/model checkpoints"
+- from: trainer_factory
+  to: frozen_configs
+  rel: reads
+  notes: "Path.exists() checks for teacher config"
+
+  # ── Data loading ─────────────────────────────────────────────────────
+- from: data_loading
+  to: config_init
+  rel: imports
+  notes: "PipelineConfig, cache_dir, data_dir"
+- from: data_loading
+  to: config_constants
+  rel: imports
+  notes: "MMAP_TENSOR_LIMIT, get_batch_index"
+- from: data_loading
+  to: datamodules
+  rel: imports
+  notes: "lazy: load_dataset()"
+- from: data_loading
+  to: registry
+  rel: imports
+  notes: "extractors()"
+- from: data_loading
+  to: graph_cache
+  rel: reads
+  notes: "cache_metadata.json for node budget"
+
+  # ── Stage utils re-exports ──────────────────────────────────────────
+- from: stage_utils
+  to: batch_sizing
+  rel: imports
+  notes: "effective_batch_size, resolve_batch_config"
+- from: stage_utils
+  to: data_loading
+  rel: imports
+  notes: "cache_predictions, compute_node_budget, graph_label, load_data, make_dataloader, training_preamble"
+- from: stage_utils
+  to: trainer_factory
+  rel: imports
+  notes: "_cross_model_path, build_optimizer_dict, load_frozen_cfg, load_model, load_teacher, make_projection, make_trainer"
+
+  # ── Batch sizing ─────────────────────────────────────────────────────
+- from: batch_sizing
+  to: config_init
+  rel: imports
+  notes: "PipelineConfig"
+- from: batch_sizing
+  to: data_loading
+  rel: imports
+  notes: "compute_node_budget"
+
+  # ── Loss landscape ──────────────────────────────────────────────────
+- from: loss_landscape
+  to: config_resolver
+  rel: imports
+  notes: "resolve()"
+- from: loss_landscape
+  to: config_constants
+  rel: imports
+  notes: "NODE_FEATURE_COUNT"
+- from: loss_landscape
+  to: config_schema
+  rel: imports
+  notes: "lazy: PipelineConfig"
+- from: loss_landscape
+  to: registry
+  rel: imports
+  notes: "get()"
+- from: loss_landscape
+  to: dqn
+  rel: imports
+  notes: "lazy: QNetwork"
+- from: loss_landscape
+  to: data_loading
+  rel: imports
+  notes: "lazy: load_data"
+- from: loss_landscape
+  to: checkpoints
+  rel: reads
+  notes: "torch.load checkpoint"
+- from: loss_landscape
+  to: loss_landscape_parquet
+  rel: writes
+  notes: "pq.write_table()"
+
+  # ── Validate ─────────────────────────────────────────────────────────
+- from: validate
+  to: config_init
+  rel: imports
+  notes: "STAGES, data_dir, get_datasets"
+- from: validate
+  to: checkpoints
+  rel: reads
+  notes: "Path.exists() for prerequisite checkpoints"
+- from: validate
+  to: frozen_configs
+  rel: reads
+  notes: "Path.exists() for prerequisite configs"
+
+  # ── Serve ────────────────────────────────────────────────────────────
+- from: serve
+  to: config_init
+  rel: imports
+  notes: "checkpoint_path"
+- from: serve
+  to: config_resolver
+  rel: imports
+  notes: "resolve()"
+- from: serve
+  to: stage_utils
+  rel: imports
+  notes: "load_data, load_model"
+- from: serve
+  to: dqn
+  rel: imports
+  notes: "EnhancedDQNFusionAgent"
+- from: serve
+  to: registry
+  rel: imports
+  notes: "lazy: extractors"
+- from: serve
+  to: checkpoints
+  rel: reads
+  notes: "loads model checkpoints via load_model"
+
+  # ── Orchestration — Ray pipeline ─────────────────────────────────────
+- from: ray_pipeline
+  to: config_constants
+  rel: imports
+  notes: "STAGE_MODEL_MAP"
+- from: ray_pipeline
+  to: config_paths
+  rel: imports
+  notes: "lazy: get_datasets"
+- from: ray_pipeline
+  to: ray_slurm
+  rel: imports
+  notes: "ray_init_kwargs"
+- from: ray_pipeline
+  to: cli
+  rel: dispatches
+  notes: "subprocess.run python -m graphids.pipeline.cli"
+
+  # ── Orchestration — Sweep pipeline ──────────────────────────────────
+- from: sweep_pipeline
+  to: config_constants
+  rel: imports
+  notes: "STAGE_MODEL_MAP, SWEEP_RESULTS_DIR, SWEEP_STATE_DIR"
+- from: sweep_pipeline
+  to: config_paths
+  rel: imports
+  notes: "lazy: checkpoint_path_str, metrics_path_str"
+- from: sweep_pipeline
+  to: cli
+  rel: dispatches
+  notes: "subprocess.run python -m graphids.pipeline.cli"
+- from: sweep_pipeline
+  to: sweep_state
+  rel: writes
+  notes: "atomic JSON state persistence"
+- from: sweep_pipeline
+  to: sweep_state
+  rel: reads
+  notes: "resume from state file"
+- from: sweep_pipeline
+  to: sweep_results
+  rel: reads
+  notes: "best config YAML for warm-start"
+- from: sweep_pipeline
+  to: metrics_json
+  rel: reads
+  notes: "reads metrics to determine best trial"
+- from: sweep_pipeline
+  to: checkpoints
+  rel: reads
+  notes: "Path.exists() for checkpoint validation"
+
+  # ── Orchestration — Tune config ─────────────────────────────────────
+- from: tune_config
+  to: config_constants
+  rel: imports
+  notes: "STAGE_MODEL_MAP, SWEEP_RESULTS_DIR"
+- from: tune_config
+  to: config_paths
+  rel: imports
+  notes: "lazy: checkpoint_path_str, metrics_path_str"
+- from: tune_config
+  to: config_yamls
+  rel: reads
+  notes: "yaml.safe_load search_spaces/*.yaml"
+- from: tune_config
+  to: cli
+  rel: dispatches
+  notes: "subprocess.run python -m graphids.pipeline.cli (trainable)"
+- from: tune_config
+  to: metrics_json
+  rel: reads
+  notes: "json.loads for trial metric reporting"
+
+  # ── Orchestration — Ray SLURM ───────────────────────────────────────
+- from: ray_slurm
+  to: config_constants
+  rel: imports
+  notes: "SLURM_ACCOUNT, SLURM_GPU_TYPE, SLURM_PARTITION"
+
+  # ── Core — Model registry ───────────────────────────────────────────
+- from: registry
+  to: fusion_features
+  rel: imports
+  notes: "FusionFeatureExtractor, GATFusionExtractor, VGAEFusionExtractor"
+- from: registry
+  to: vgae
+  rel: imports
+  notes: "lazy: GraphAutoencoderNeighborhood (inside _vgae_factory)"
+- from: registry
+  to: gat
+  rel: imports
+  notes: "lazy: GATWithJK (inside _gat_factory)"
+- from: registry
+  to: dqn
+  rel: imports
+  notes: "lazy: QNetwork (inside _dqn_factory)"
+
+  # ── Core — Model internals ─────────────────────────────────────────
+- from: vgae
+  to: model_utils
+  rel: imports
+  notes: "_make_conv, checkpoint_conv"
+- from: gat
+  to: model_utils
+  rel: imports
+  notes: "_make_conv, checkpoint_conv"
+- from: dqn
+  to: registry
+  rel: imports
+  notes: "lazy: fusion_state_dim, feature_layout (inside __init__/from_config)"
+- from: dqn
+  to: checkpoints
+  rel: reads
+  notes: "torch.load in load_checkpoint()"
+
+- from: models_init
+  to: fusion_features
+  rel: imports
+- from: models_init
+  to: registry
+  rel: imports
+
+  # ── Core — Preprocessing ────────────────────────────────────────────
+- from: engine
+  to: config_constants
+  rel: imports
+  notes: "DEFAULT_STRIDE, DEFAULT_WINDOW_SIZE, EDGE_FEATURE_COUNT"
+- from: engine
+  to: preproc_schema
+  rel: imports
+  notes: "IRSchema"
+
+- from: can_bus_adapter
+  to: config_constants
+  rel: imports
+  notes: "EXCLUDED_ATTACK_TYPES, MAX_DATA_BYTES"
+- from: can_bus_adapter
+  to: preproc_schema
+  rel: imports
+  notes: "CAN_BUS_SCHEMA, CAN_BUS_SCHEMA_WITH_ATTACK_TYPE, COL_ATTACK_TYPE, feature_columns"
+- from: can_bus_adapter
+  to: vocab
+  rel: imports
+  notes: "EntityVocabulary"
+- from: can_bus_adapter
+  to: adapter_base
+  rel: imports
+  notes: "DomainAdapter (extends)"
+- from: can_bus_adapter
+  to: raw_csv
+  rel: reads
+  notes: "pd.read_csv for CAN bus data files"
+
+- from: adapter_base
+  to: vocab
+  rel: imports
+  notes: "EntityVocabulary"
+
+- from: parallel
+  to: config_constants
+  rel: imports
+  notes: "DEFAULT_STRIDE, DEFAULT_WINDOW_SIZE, PREPROCESSING_VERSION"
+- from: parallel
+  to: can_bus_adapter
+  rel: imports
+  notes: "CANBusAdapter"
+- from: parallel
+  to: engine
+  rel: imports
+  notes: "GraphEngine"
+- from: parallel
+  to: preproc_schema
+  rel: imports
+  notes: "IRSchema"
+- from: parallel
+  to: vocab
+  rel: imports
+  notes: "EntityVocabulary"
+
+- from: preproc_init
+  to: dataset
+  rel: imports
+- from: preproc_init
+  to: engine
+  rel: imports
+- from: preproc_init
+  to: parallel
+  rel: imports
+- from: preproc_init
+  to: preproc_schema
+  rel: imports
+- from: preproc_init
+  to: vocab
+  rel: imports
+
+- from: vocab
+  to: raw_csv
+  rel: reads
+  notes: "pd.read_csv for vocabulary building from CSV columns"
+
+  # ── Core — Training / Datamodules ───────────────────────────────────
+- from: datamodules
+  to: config_constants
+  rel: imports
+  notes: "DEFAULT_STRIDE, DEFAULT_WINDOW_SIZE, EDGE_FEATURE_COUNT, NODE_FEATURE_COUNT, PREPROCESSING_VERSION"
+- from: datamodules
+  to: dataset
+  rel: imports
+  notes: "GraphDataset"
+- from: datamodules
+  to: graph_cache
+  rel: reads
+  notes: "torch.load .pt + pickle .pkl cache files"
+- from: datamodules
+  to: graph_cache
+  rel: writes
+  notes: "torch.save + pickle.dump for cache persistence"
+
+  # ── Data pipeline (end-to-end) ──────────────────────────────────────
+- from: parallel
+  to: raw_csv
+  rel: reads
+  notes: "via CANBusAdapter -> pd.read_csv"
+- from: parallel
+  to: graph_cache
+  rel: writes
+  notes: "process_dataset() produces cached graphs"
+
+  # ── Tracking pipeline ──────────────────────────────────────────────
+- from: push_hf
+  to: config_init
+  rel: imports
+  notes: "MLFLOW_TRACKING_URI"
+- from: push_hf
+  to: mlflow_db
+  rel: reads
+  notes: "mlflow.search_runs() queries SQLite"
+- from: push_hf
+  to: hf_experiments
+  rel: produces
+  notes: "Parquet upload to HF Dataset"
+
+- from: dashboard
+  to: hf_experiments
+  rel: consumes
+  notes: "reads experiment Parquet from HF Dataset"
+- from: dashboard
+  to: hf_sweeps
+  rel: consumes
+  notes: "reads sweep Parquet from HF Dataset"
+
+  # ── SLURM orchestration ────────────────────────────────────────────
+- from: ray_slurm_sh
+  to: preamble_sh
+  rel: calls
+  notes: "source _preamble.sh"
+- from: ray_slurm_sh
+  to: cli
+  rel: dispatches
+  notes: "python -m graphids.pipeline.cli {entrypoint}"
+- from: ray_slurm_sh
+  to: epilog_sh
+  rel: calls
+  notes: "source _epilog.sh"
+
+- from: sweep_sh
+  to: preamble_sh
+  rel: calls
+  notes: "source _preamble.sh"
+- from: sweep_sh
+  to: cli
+  rel: dispatches
+  notes: "python -m graphids.pipeline.cli sweep-pipeline"
+- from: sweep_sh
+  to: epilog_sh
+  rel: calls
+  notes: "source _epilog.sh"
+
+- from: smoke_test_sh
+  to: preamble_sh
+  rel: calls
+  notes: "source _preamble.sh"
+- from: smoke_test_sh
+  to: cli
+  rel: dispatches
+  notes: "python -m graphids.pipeline.cli tune (1-trial smoke)"
+
+- from: tune_sweep_sh
+  to: preamble_sh
+  rel: calls
+  notes: "source _preamble.sh"
+- from: tune_sweep_sh
+  to: cli
+  rel: dispatches
+  notes: "python -m graphids.pipeline.cli tune"
+
+- from: epilog_sh
+  to: push_hf
+  rel: dispatches
+  notes: "python scripts/data/push_experiments_to_hf.py"
+
+- from: preamble_sh
+  to: stage_data_sh
+  rel: calls
+  notes: "source scripts/data/stage_data.sh"
+
+- from: run_tests_sh
+  to: conftest
+  rel: dispatches
+  notes: "python -m pytest tests/"
+
+- from: run_tests_parallel_sh
+  to: conftest
+  rel: dispatches
+  notes: "parallel pytest across test files"
+
+- from: rebuild_caches_sh
+  to: preamble_sh
+  rel: calls
+- from: loss_landscape_sh
+  to: preamble_sh
+  rel: calls
+
+  # ── Profiling scripts ──────────────────────────────────────────────
+- from: analyze_profile
+  to: frozen_configs
+  rel: reads
+  notes: "reads config.json for conv_type"
+- from: analyze_profile
+  to: metrics_json
+  rel: reads
+  notes: "reads metrics.json for evaluation metrics"
+
+- from: run_pygod_baselines
+  to: config_init
+  rel: imports
+  notes: "cache_dir, data_dir, resolve, MLFLOW_TRACKING_URI"
+- from: run_pygod_baselines
+  to: datamodules
+  rel: imports
+  notes: "load_dataset()"
+- from: run_pygod_baselines
+  to: graph_cache
+  rel: reads
+  notes: "via load_dataset()"
+
+  # ── Test edges ─────────────────────────────────────────────────────
+- from: test_boundaries
+  to: config_init
+  rel: reads
+  notes: "AST parse of all graphids/ .py files"
+- from: test_boundaries
+  to: cli
+  rel: reads
+  notes: "AST parse"
+
+- from: test_preprocessing
+  to: can_bus_adapter
+  rel: imports
+- from: test_preprocessing
+  to: dataset
+  rel: imports
+- from: test_preprocessing
+  to: engine
+  rel: imports
+- from: test_preprocessing
+  to: parallel
+  rel: imports
+- from: test_preprocessing
+  to: preproc_schema
+  rel: imports
+- from: test_preprocessing
+  to: vocab
+  rel: imports
+- from: test_preprocessing
+  to: config_constants
+  rel: imports
+
+- from: test_registry
+  to: fusion_features
+  rel: imports
+- from: test_registry
+  to: registry
+  rel: imports
+
+- from: test_fusion_ext
+  to: config_resolver
+  rel: imports
+  notes: "resolve()"
+- from: test_fusion_ext
+  to: fusion_features
+  rel: imports
+- from: test_fusion_ext
+  to: registry
+  rel: imports
+
+- from: test_serve
+  to: serve
+  rel: imports
+  notes: "app, _models"
+
+- from: test_smoke
+  to: config_resolver
+  rel: imports
+  notes: "resolve()"
+- from: test_smoke
+  to: modules
+  rel: imports
+  notes: "VGAEModule, GATModule"
+- from: test_smoke
+  to: vgae
+  rel: imports
+- from: test_smoke
+  to: gat
+  rel: imports
+- from: test_smoke
+  to: dqn
+  rel: imports
+- from: test_smoke
+  to: stage_utils
+  rel: imports
+  notes: "make_projection"
+
+- from: test_e2e
+  to: config_init
+  rel: imports
+  notes: "config_path, resolve, PipelineConfig, stage_dir, checkpoint_path"
+- from: test_e2e
+  to: training
+  rel: imports
+  notes: "train_autoencoder, train_curriculum"
+- from: test_e2e
+  to: fusion_stage
+  rel: imports
+  notes: "train_fusion"
+- from: test_e2e
+  to: evaluation
+  rel: imports
+  notes: "evaluate"
+- from: test_e2e
+  to: vgae
+  rel: imports
+- from: test_e2e
+  to: gat
+  rel: imports
+
+- from: test_integration
+  to: config_init
+  rel: imports
+  notes: "PipelineConfig, resolve, many path functions"
+- from: test_integration
+  to: config_schema
+  rel: imports
+  notes: "VGAEArchitecture, AuxiliaryConfig, TrainingConfig"
+- from: test_integration
+  to: vgae
+  rel: imports
+- from: test_integration
+  to: gat
+  rel: imports
+- from: test_integration
+  to: dqn
+  rel: imports
+  notes: "QNetwork"
+- from: test_integration
+  to: stage_utils
+  rel: imports
+  notes: "load_teacher, load_frozen_cfg"
+- from: test_integration
+  to: validate
+  rel: imports
+
+- from: test_new_features
+  to: config_init
+  rel: imports
+  notes: "resolve, config_path, stage_dir, checkpoint_path"
+- from: test_new_features
+  to: gat
+  rel: imports
+- from: test_new_features
+  to: dqn
+  rel: imports
+  notes: "EnhancedDQNFusionAgent, QNetwork"
+- from: test_new_features
+  to: registry
+  rel: imports
+  notes: "fusion_state_dim, feature_layout"
+- from: test_new_features
+  to: serve
+  rel: imports
+  notes: "app"
+
+  # ── Orphan fixups ──────────────────────────────────────────────────
+- from: cli
+  to: mlflow_artifacts
+  rel: writes
+  notes: "mlflow.log_artifact() stores configs in artifact store"
+
+- from: reproduce_sh
+  to: preamble_sh
+  rel: calls
+  notes: "source _preamble.sh"
+- from: reproduce_sh
+  to: cli
+  rel: dispatches
+  notes: "full pipeline reproduction via CLI"

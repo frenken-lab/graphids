@@ -1,5 +1,4 @@
 import logging
-from abc import ABC, abstractmethod
 
 import numpy as np
 import torch
@@ -7,38 +6,6 @@ import torch.nn as nn
 import torch.optim as optim
 
 log = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Fusion Agent ABC
-# ---------------------------------------------------------------------------
-
-
-class FusionAgent(ABC):
-    """Abstract base class for fusion agents.
-
-    All fusion agents operate on the same N-D state vector produced by
-    the model registry's extractors (VGAE 8-D + GAT 7-D = 15-D).
-    """
-
-    @abstractmethod
-    def train_on_cache(
-        self,
-        train_states: torch.Tensor,
-        train_labels: torch.Tensor,
-        val_states: torch.Tensor,
-        val_labels: torch.Tensor,
-        cfg,
-    ) -> float:
-        """Train the agent on cached predictions. Returns best validation accuracy."""
-
-    @abstractmethod
-    def state_dict(self) -> dict:
-        """Return serializable state dict for checkpointing."""
-
-    @abstractmethod
-    def fuse(self, state_features: np.ndarray) -> int:
-        """Given a state vector, return a fused binary prediction (0 or 1)."""
 
 
 class QNetwork(nn.Module):
@@ -267,15 +234,13 @@ class EnhancedDQNFusionAgent:
     # ------------------------------------------------------------------
 
     def normalize_state(self, state_features: np.ndarray) -> np.ndarray:
-        """Normalize a single state (numpy). Used for inference."""
+        """Normalize a single state (numpy). Delegates to batch path."""
         if not isinstance(state_features, np.ndarray):
             state_features = np.array(state_features, dtype=np.float32)
         if len(state_features) != self.state_dim:
             raise ValueError(f"Expected {self.state_dim}D state, got {len(state_features)}D")
-        state_features = state_features.copy()
-        for idx in self._confidence_indices:
-            state_features[idx] = np.clip(state_features[idx], 0.0, 1.0)
-        return state_features.astype(np.float32)
+        t = torch.tensor(state_features, dtype=torch.float32).unsqueeze(0)
+        return self._normalize_batch(t).squeeze(0).numpy()
 
     def select_action(
         self, state_features: np.ndarray, training: bool = True
@@ -295,51 +260,21 @@ class EnhancedDQNFusionAgent:
         return alpha_value, action_idx, state
 
     def _derive_scores(self, state_features: np.ndarray) -> tuple[float, float]:
-        """Derive anomaly_score and gat_prob from a single state (numpy)."""
-        vgae_errors = state_features[self._vgae_error_slice]
-        weights = self._vgae_weights.numpy()
-        anomaly_score = float(np.clip(np.sum(vgae_errors * weights), 0.0, 1.0))
-
-        gat_logits = state_features[self._gat_logit_slice]
-        # Stable softmax (consistent with batch path's torch.softmax)
-        shifted = gat_logits - gat_logits.max()
-        exp_shifted = np.exp(shifted)
-        gat_prob = float(exp_shifted[1] / exp_shifted.sum())
-
-        return anomaly_score, gat_prob
+        """Derive anomaly_score and gat_prob from a single state (numpy). Delegates to batch path."""
+        t = torch.tensor(state_features, dtype=torch.float32).unsqueeze(0)
+        anomaly, gat_prob = self._derive_scores_batch(t)
+        return float(anomaly[0]), float(gat_prob[0])
 
     def compute_fusion_reward(
         self, prediction: int, true_label: int, state_features: np.ndarray, alpha: float
     ) -> float:
-        """Compute reward for a single sample (numpy). Used for inference/analysis."""
-        anomaly_score, gat_prob = self._derive_scores(state_features)
-
-        vgae_confidence = float(state_features[self._vgae_conf_idx])
-        gat_confidence = float(state_features[self._gat_conf_idx])
-        combined_confidence = max(vgae_confidence, gat_confidence)
-
-        base_reward = 3.0 if prediction == true_label else -3.0
-        model_agreement = 1.0 - abs(anomaly_score - gat_prob)
-
-        if prediction == true_label:
-            agreement_bonus = 1.0 * model_agreement
-            if true_label == 1:
-                confidence = max(anomaly_score, gat_prob)
-            else:
-                confidence = 1.0 - max(anomaly_score, gat_prob)
-            confidence_bonus = 0.5 * confidence + 0.3 * combined_confidence
-            total_reward = base_reward + agreement_bonus + confidence_bonus
-        else:
-            disagreement_penalty = -1.0 * (1.0 - model_agreement)
-            fused_confidence = alpha * gat_prob + (1 - alpha) * anomaly_score
-            if prediction == 1:
-                overconf_penalty = -1.5 * fused_confidence
-            else:
-                overconf_penalty = -1.5 * (1.0 - fused_confidence)
-            total_reward = base_reward + disagreement_penalty + overconf_penalty
-
-        balance_bonus = 0.3 * (1.0 - abs(alpha - 0.5) * 2)
-        return total_reward + balance_bonus
+        """Compute reward for a single sample. Delegates to batch method."""
+        t_state = torch.tensor(state_features, dtype=torch.float32).unsqueeze(0)
+        t_pred = torch.tensor([prediction], dtype=torch.long)
+        t_label = torch.tensor([true_label], dtype=torch.long)
+        t_alpha = torch.tensor([alpha], dtype=torch.float32)
+        reward = self.compute_fusion_reward_batch(t_pred, t_label, t_state, t_alpha)
+        return float(reward[0])
 
     # ------------------------------------------------------------------
     # Batch methods (training)
@@ -581,7 +516,7 @@ class MLPFusionNetwork(nn.Module):
         return self.net(x).squeeze(-1)
 
 
-class MLPFusionAgent(FusionAgent):
+class MLPFusionAgent:
     """Supervised MLP baseline: learns binary classification directly from state vectors.
 
     Same 15-D state as DQN, but trained with BCE loss instead of RL episodes.
@@ -663,7 +598,7 @@ class MLPFusionAgent(FusionAgent):
 # ---------------------------------------------------------------------------
 
 
-class WeightedAvgFusionAgent(FusionAgent):
+class WeightedAvgFusionAgent:
     """Simplest baseline: learns a single scalar alpha per model.
 
     If this matches DQN's F1, the RL approach is unjustified.

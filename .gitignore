@@ -106,3 +106,4 @@ notebooks/node_modules/
 notebooks/deno.lock
 tmlr_output/
 users/
+.gitnexus

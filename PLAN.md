@@ -10,7 +10,7 @@ Branch `simplify-codebase` removes legacy code and reduces custom infrastructure
 
 ```bash
 # 1. Import check (login node safe)
-python -c "from graphids.pipeline.memory import log_memory_state; print('memory OK')"
+python -c "from graphids.core.models.dqn import EnhancedDQNFusionAgent, MLPFusionAgent; print('dqn OK')"
 python -c "from graphids.pipeline.stages.batch_sizing import resolve_batch_config; print('batch OK')"
 python -c "from graphids.pipeline.stages.evaluation import evaluate; print('eval OK')"
 

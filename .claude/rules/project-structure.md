@@ -88,7 +88,6 @@ scripts/
     job_epilog.sh       # Post-job cleanup
   data/                 # Data management scripts
     stage_data.sh       # Stage datasets from scratch/archive
-    build_test_cache.sh # Build preprocessed test cache
     cleanup_orphans.sh  # Clean orphaned cache/output files
     push_experiments_to_hf.py # MLflow → Parquet → HF Dataset
   profiling/            # Profiling and benchmarking
@@ -97,7 +96,6 @@ scripts/
     profile_conv_type.sh # Convolution type profiling
     run_pygod_baselines.py # PyGOD baseline comparisons
   dev/                  # Developer utilities
-    generate_sweep.py   # Hyperparameter sweep config generator
     setup_tmux.sh       # tmux session setup
     start_jupyter.sh    # Jupyter server launcher
 notebooks/

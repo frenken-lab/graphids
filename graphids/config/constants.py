@@ -4,6 +4,7 @@ These are NOT hyperparameters (those live in PipelineConfig).
 These are structural/environmental constants that rarely change.
 """
 
+import os
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -124,7 +125,6 @@ MMAP_TENSOR_LIMIT = 60000
 # ---------------------------------------------------------------------------
 # SLURM defaults (override via environment for cluster migration)
 # ---------------------------------------------------------------------------
-import os
 
 SLURM_ACCOUNT = os.getenv("KD_GAT_SLURM_ACCOUNT", "PAS1266")
 SLURM_PARTITION = os.getenv("KD_GAT_SLURM_PARTITION", "gpu")
