@@ -616,9 +616,10 @@ class TestValidation:
         vgae_dir.mkdir(parents=True)
         (vgae_dir / "best_model.pt").write_bytes(b"fake")
 
-        # Disable MLflow fallback so test only checks filesystem paths
-        resolver = paths.get_resolver()
-        monkeypatch.setattr(resolver, "_find_run", lambda *a, **kw: None)
+        # Use isolated resolver: fresh cache dir + no MLflow fallback
+        isolated_resolver = paths.ArtifactResolver(cache_root=tmp_path / ".cache")
+        isolated_resolver._find_run = lambda *a, **kw: None
+        monkeypatch.setattr(paths, "_resolver", isolated_resolver)
 
         with pytest.raises(ValueError, match="config"):
             validate(cfg, "curriculum")
