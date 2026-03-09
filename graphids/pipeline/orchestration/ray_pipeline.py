@@ -33,6 +33,8 @@ import time
 
 import ray
 
+from graphids.pipeline.subprocess_utils import build_cli_cmd
+
 log = logging.getLogger(__name__)
 
 _PY = sys.executable
@@ -128,22 +130,7 @@ def _run_stage(
     """
     global _last_stage_end
 
-    cmd = [
-        _PY,
-        "-m",
-        "graphids.pipeline.cli",
-        stage,
-        "--model",
-        model,
-        "--scale",
-        scale,
-        "--dataset",
-        dataset,
-        "--auxiliaries",
-        auxiliaries,
-    ]
-    if seed is not None:
-        cmd.extend(["--seed", str(seed)])
+    cmd = build_cli_cmd(stage, model, scale, dataset, seed=seed, auxiliaries=auxiliaries)
 
     log.info("Running: %s", " ".join(cmd))
 
