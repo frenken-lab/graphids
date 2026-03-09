@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 from pytorch_lightning.callbacks import DeviceStatsMonitor, EarlyStopping, ModelCheckpoint
 
-from graphids.config import MLFLOW_TRACKING_URI, PipelineConfig, get_resolver, stage_dir
+from graphids.config import MLFLOW_TRACKING_URI, PipelineConfig, get_resolver, run_id, stage_dir
 
 log = logging.getLogger(__name__)
 
@@ -287,6 +287,12 @@ def make_trainer(
     out.mkdir(parents=True, exist_ok=True)
     torch.backends.cudnn.benchmark = t.cudnn_benchmark
 
+    # Persistent NFS path for Lightning auto-checkpoints (SIGUSR1 timeout saves).
+    # stage_dir() may be $TMPDIR (node-local SSD, lost after job ends).
+    # default_root_dir must survive job termination for checkpoint-aware resume.
+    persistent_root = Path(cfg.experiment_root) / run_id(cfg, stage)
+    persistent_root.mkdir(parents=True, exist_ok=True)
+
     # Enable MLflow autolog (idempotent — safe to call multiple times)
     _setup_mlflow_autolog()
 
@@ -312,7 +318,7 @@ def make_trainer(
         callbacks.extend(extra_callbacks)
 
     return pl.Trainer(
-        default_root_dir=str(out),
+        default_root_dir=str(persistent_root),
         max_epochs=t.max_epochs,
         accelerator="auto",
         devices="auto",

@@ -21,6 +21,7 @@ def build_cli_cmd(
     auxiliaries: str = "none",
     overrides: list[tuple[str, str]] | None = None,
     sweep_id: str | None = None,
+    ckpt_path: str | None = None,
 ) -> list[str]:
     """Build a CLI command list for ``python -m graphids.pipeline.cli``.
 
@@ -79,5 +80,8 @@ def build_cli_cmd(
 
     if sweep_id is not None:
         cmd.extend(["--sweep-id", sweep_id])
+
+    if ckpt_path is not None:
+        cmd.extend(["--ckpt-path", str(ckpt_path)])
 
     return cmd

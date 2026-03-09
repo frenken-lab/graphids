@@ -192,6 +192,23 @@ def _build_parser() -> argparse.ArgumentParser:
         help="(sweep-pipeline) Resume from previous state file (default: True)",
     )
 
+    # Coordinator options
+    p.add_argument(
+        "--resume-state",
+        type=str,
+        default="",
+        help="(coordinator) Resume from state JSON file path",
+    )
+    p.add_argument("--poll-interval", type=int, default=30, help="(coordinator) Polling interval")
+
+    # Checkpoint resume (set by coordinator on TIMEOUT resubmit)
+    p.add_argument(
+        "--ckpt-path",
+        type=str,
+        default=None,
+        help="Lightning .ckpt path to resume training from (set by coordinator on TIMEOUT)",
+    )
+
     # Metadata tags
     p.add_argument(
         "--tags", type=str, default="", help="Comma-separated tags for run classification"
@@ -394,30 +411,54 @@ def _run_sweep_pipeline(args: argparse.Namespace, log: logging.Logger) -> None:
 
 def _run_coordinator(args: argparse.Namespace, log: logging.Logger) -> None:
     """Dispatch stateful SLURM coordinator."""
+    from pathlib import Path
+
     from .coordinator import PipelineCoordinator
+    from .state import load_state
 
-    if not args.dataset:
-        log.error("--dataset is required for coordinator mode")
-        return
+    if args.resume_state:
+        # Resume from existing state file
+        state_path = Path(args.resume_state)
+        state = load_state(state_path)
+        if not state or "stages" not in state:
+            log.error("Invalid or empty state file: %s", state_path)
+            return
 
-    datasets = [d.strip() for d in args.dataset.split(",")]
-    seeds = _parse_seeds(args.seeds) if args.seeds else [42]
+        log.info("Resuming coordinator from %s (%d stages)", state_path, len(state["stages"]))
+        coordinator = PipelineCoordinator(
+            datasets=state["datasets"],
+            seeds=state["seeds"],
+            scale=state.get("scale", "large"),
+            auxiliaries=state.get("auxiliaries", "none"),
+            state_path=state_path,
+            poll_interval=args.poll_interval,
+            dry_run=args.dry_run,
+        )
+    else:
+        if not args.dataset:
+            log.error("--dataset is required for coordinator mode (or use --resume-state)")
+            return
 
-    log.info(
-        "Starting coordinator: datasets=%s, seeds=%s, scale=%s, dry_run=%s",
-        datasets,
-        seeds,
-        args.scale,
-        args.dry_run,
-    )
+        datasets = [d.strip() for d in args.dataset.split(",")]
+        seeds = _parse_seeds(args.seeds) if args.seeds else [42]
 
-    coordinator = PipelineCoordinator(
-        datasets=datasets,
-        seeds=seeds,
-        scale=args.scale,
-        auxiliaries=args.auxiliaries,
-        dry_run=args.dry_run,
-    )
+        log.info(
+            "Starting coordinator: datasets=%s, seeds=%s, scale=%s, dry_run=%s",
+            datasets,
+            seeds,
+            args.scale,
+            args.dry_run,
+        )
+
+        coordinator = PipelineCoordinator(
+            datasets=datasets,
+            seeds=seeds,
+            scale=args.scale,
+            auxiliaries=args.auxiliaries,
+            poll_interval=args.poll_interval,
+            dry_run=args.dry_run,
+        )
+
     coordinator.run()
 
 
@@ -491,6 +532,11 @@ def _run_single_stage(
         extra_tags["user_tags"] = tags_str
     if teacher_run_id_str:
         extra_tags["teacher_run_id"] = teacher_run_id_str
+
+    # ---- Checkpoint resume (coordinator TIMEOUT resubmit) ----
+    ckpt_path = getattr(args, "ckpt_path", None)
+    if ckpt_path:
+        os.environ["KD_GAT_CKPT_PATH"] = str(ckpt_path)
 
     # ---- Dispatch ----
     t_start = time.monotonic()

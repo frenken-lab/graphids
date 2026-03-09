@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 
 import pytorch_lightning as pl
@@ -61,6 +62,21 @@ def _save_training_metrics(trainer: pl.Trainer, cfg: PipelineConfig, stage: str)
         log.warning("Failed to save training metrics: %s", e)
 
 
+def _resume_ckpt_path() -> str | None:
+    """Read and consume the resume checkpoint path from environment.
+
+    Set by the coordinator (via CLI --ckpt-path) when resubmitting a
+    timed-out stage that saved a Lightning auto-checkpoint.
+    """
+    path = os.environ.pop("KD_GAT_CKPT_PATH", None)
+    if path and Path(path).exists():
+        log.info("Resuming from Lightning checkpoint: %s", path)
+        return path
+    if path:
+        log.warning("Checkpoint path set but not found: %s", path)
+    return None
+
+
 def _save_and_cleanup(module, trainer, cfg, stage: str, label: str | None = None) -> Path:
     """Save checkpoint, config, metrics. Returns checkpoint path."""
     _save_training_metrics(trainer, cfg, stage)
@@ -85,7 +101,7 @@ def train_autoencoder(cfg: PipelineConfig) -> Path:
     val_dl = make_dataloader(val_data, cfg, bs, shuffle=False, max_num_nodes=max_nodes)
 
     trainer = make_trainer(cfg, "autoencoder")
-    trainer.fit(module, train_dl, val_dl)
+    trainer.fit(module, train_dl, val_dl, ckpt_path=_resume_ckpt_path())
     return _save_and_cleanup(module, trainer, cfg, "autoencoder", "VGAE")
 
 
@@ -108,7 +124,7 @@ def train_curriculum(cfg: PipelineConfig) -> Path:
     trainer = make_trainer(cfg, "curriculum")
 
     dm = CurriculumDataModule(normals, attacks, scores, val_data, cfg)
-    trainer.fit(module, datamodule=dm)
+    trainer.fit(module, datamodule=dm, ckpt_path=_resume_ckpt_path())
     return _save_and_cleanup(module, trainer, cfg, "curriculum", "GAT")
 
 
@@ -124,7 +140,7 @@ def train_normal(cfg: PipelineConfig) -> Path:
     val_dl = make_dataloader(val_data, cfg, bs, shuffle=False, max_num_nodes=max_nodes)
 
     trainer = make_trainer(cfg, "normal")
-    trainer.fit(module, train_dl, val_dl)
+    trainer.fit(module, train_dl, val_dl, ckpt_path=_resume_ckpt_path())
     return _save_and_cleanup(module, trainer, cfg, "normal", "GAT (normal)")
 
 
