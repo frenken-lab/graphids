@@ -4,9 +4,9 @@
 # Validates GPU access, data loading, model construction, and training loop.
 #
 # Usage:
-#   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/smoke_test.sh autoencoder
-#   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/smoke_test.sh curriculum
-#   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/smoke_test.sh fusion
+#   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/smoke_test.sbatch autoencoder
+#   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/smoke_test.sbatch curriculum
+#   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/smoke_test.sbatch fusion
 #
 # Expected: starts within minutes (priority scheduling), completes in <10 min.
 # If this fails, do NOT submit to gpu partition — fix the error first.
@@ -22,10 +22,11 @@
 #SBATCH --output=slurm_logs/smoke_%j.out
 #SBATCH --error=slurm_logs/smoke_%j.err
 
-source "$(dirname "$0")/_preamble.sh"
+SCRIPT_DIR="/users/PAS2022/rf15/KD-GAT/scripts/slurm"
+source "$SCRIPT_DIR/_preamble.sh"
 
 # Extract stage from first positional arg
-SMOKE_STAGE="${1:?Usage: smoke_test.sh <stage>}"
+SMOKE_STAGE="${1:?Usage: smoke_test.sbatch <stage>}"
 
 log_job_header "GPU Smoke Test"
 echo "Stage:     ${SMOKE_STAGE}"

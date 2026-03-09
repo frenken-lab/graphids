@@ -289,12 +289,20 @@ def _run_flow(args: argparse.Namespace, log: logging.Logger) -> None:
 
     from .orchestration.ray_pipeline import eval_pipeline, train_pipeline
 
+    # Parse seeds for multi-seed flow dispatch
+    seeds = _parse_seeds(args.seeds) if args.seeds else None
+
     if args.eval_only:
         log.info("Starting Ray evaluation flow (datasets=%s, scale=%s)", datasets, scale)
         eval_pipeline(datasets=datasets, scale=scale, local=args.local)
     else:
-        log.info("Starting Ray training flow (datasets=%s, scale=%s)", datasets, scale)
-        train_pipeline(datasets=datasets, scale=scale, local=args.local)
+        log.info(
+            "Starting Ray training flow (datasets=%s, scale=%s, seeds=%s)",
+            datasets,
+            scale,
+            seeds,
+        )
+        train_pipeline(datasets=datasets, scale=scale, local=args.local, seeds=seeds)
 
 
 def _resolve_tune_stage(args: argparse.Namespace, log: logging.Logger) -> str | None:

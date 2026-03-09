@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Account comes from .env (KD_GAT_SLURM_ACCOUNT). Submit with:
-#   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/ray_slurm.sh ...
+#   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/ray_slurm.sbatch ...
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=48G
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=85G
 #SBATCH --time=08:00:00
 #SBATCH --job-name=kd-gat-ray
 #SBATCH --output=slurm_logs/ray_%j.out
@@ -16,13 +16,14 @@
 # Ray-based pipeline execution on SLURM.
 #
 # For single-node (default):
-#   sbatch scripts/slurm/ray_slurm.sh flow --dataset hcrl_sa
-#   sbatch scripts/slurm/ray_slurm.sh autoencoder --model vgae --scale large --dataset hcrl_sa
+#   sbatch scripts/slurm/ray_slurm.sbatch flow --dataset hcrl_sa
+#   sbatch scripts/slurm/ray_slurm.sbatch autoencoder --model vgae --scale large --dataset hcrl_sa
 #
 # For multi-node (pass extra #SBATCH --nodes=N):
-#   sbatch --nodes=2 scripts/slurm/ray_slurm.sh flow --dataset hcrl_sa
+#   sbatch --nodes=2 scripts/slurm/ray_slurm.sbatch flow --dataset hcrl_sa
 
-source "$(dirname "$0")/_preamble.sh"
+SCRIPT_DIR="/users/PAS2022/rf15/KD-GAT/scripts/slurm"
+source "$SCRIPT_DIR/_preamble.sh"
 
 log_job_header "Ray Pipeline"
 echo "Nodes:     ${SLURM_NNODES:-1}"
@@ -47,6 +48,6 @@ echo "Checking for orphaned runs..."
 bash scripts/data/cleanup_orphans.sh --dry-run || true
 
 # --- Post-job ---
-source "$(dirname "$0")/_epilog.sh"
+source "$SCRIPT_DIR/_epilog.sh"
 
 exit $EXIT_CODE

@@ -542,9 +542,9 @@ nodes:
   status: stable
   notes: "Post-job cleanup — GPU report, sacct, push experiments to HF"
 
-- id: ray_slurm_sh
+- id: ray_slurm_sbatch
   type: script
-  path: scripts/slurm/ray_slurm.sh
+  path: scripts/slurm/ray_slurm.sbatch
   format: sh
   layer: slurm
   status: active
@@ -558,9 +558,9 @@ nodes:
   status: stable
   notes: "Test submission to SLURM CPU partition"
 
-- id: smoke_test_sh
+- id: smoke_test_sbatch
   type: script
-  path: scripts/slurm/smoke_test.sh
+  path: scripts/slurm/smoke_test.sbatch
   format: sh
   layer: slurm
   status: stable
@@ -568,15 +568,15 @@ nodes:
 
 - id: sweep_sh
   type: script
-  path: scripts/slurm/sweep_pipeline.sh
+  path: scripts/slurm/sweep_pipeline.sbatch
   format: sh
   layer: slurm
   status: active
   notes: "Sweep SLURM submission — resumable via SIGUSR1"
 
-- id: tune_sweep_sh
+- id: tune_sweep_sbatch
   type: script
-  path: scripts/slurm/tune_sweep.sh
+  path: scripts/slurm/tune_sweep.sbatch
   format: sh
   layer: slurm
   status: active
@@ -622,17 +622,17 @@ nodes:
   status: stable
   notes: "Rebuild ALL graph caches (train + test) via SLURM, forces clean rebuild"
 
-- id: rebuild_caches_sh
+- id: rebuild_caches_sbatch
   type: script
-  path: scripts/slurm/rebuild_caches.sh
+  path: scripts/slurm/rebuild_caches.sbatch
   format: sh
   layer: slurm
   status: stable
   notes: "Batch cache rebuild SLURM submission"
 
-- id: loss_landscape_sh
+- id: loss_landscape_sbatch
   type: script
-  path: scripts/slurm/loss_landscape.sh
+  path: scripts/slurm/loss_landscape.sbatch
   format: sh
   layer: slurm
   status: stable
@@ -1406,15 +1406,15 @@ edges:
   notes: "reads sweep Parquet from HF Dataset"
 
   # ── SLURM orchestration ────────────────────────────────────────────
-- from: ray_slurm_sh
+- from: ray_slurm_sbatch
   to: preamble_sh
   rel: calls
   notes: "source _preamble.sh"
-- from: ray_slurm_sh
+- from: ray_slurm_sbatch
   to: cli
   rel: dispatches
   notes: "python -m graphids.pipeline.cli {entrypoint}"
-- from: ray_slurm_sh
+- from: ray_slurm_sbatch
   to: epilog_sh
   rel: calls
   notes: "source _epilog.sh"
@@ -1432,20 +1432,20 @@ edges:
   rel: calls
   notes: "source _epilog.sh"
 
-- from: smoke_test_sh
+- from: smoke_test_sbatch
   to: preamble_sh
   rel: calls
   notes: "source _preamble.sh"
-- from: smoke_test_sh
+- from: smoke_test_sbatch
   to: cli
   rel: dispatches
   notes: "python -m graphids.pipeline.cli tune (1-trial smoke)"
 
-- from: tune_sweep_sh
+- from: tune_sweep_sbatch
   to: preamble_sh
   rel: calls
   notes: "source _preamble.sh"
-- from: tune_sweep_sh
+- from: tune_sweep_sbatch
   to: cli
   rel: dispatches
   notes: "python -m graphids.pipeline.cli tune"
@@ -1470,10 +1470,10 @@ edges:
   rel: dispatches
   notes: "parallel pytest across test files"
 
-- from: rebuild_caches_sh
+- from: rebuild_caches_sbatch
   to: preamble_sh
   rel: calls
-- from: loss_landscape_sh
+- from: loss_landscape_sbatch
   to: preamble_sh
   rel: calls
 

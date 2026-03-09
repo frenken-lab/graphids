@@ -81,7 +81,7 @@ tests/
 scripts/
   reproduce.sh          # Full reproduction script
   slurm/                # SLURM job scripts
-    ray_slurm.sh        # Ray + SLURM pipeline submission
+    ray_slurm.sbatch        # Ray + SLURM pipeline submission
     run_tests_slurm.sh  # Submit pytest to SLURM
     run_tests_parallel.sh # Parallel test runner
     sweep.sh            # Hyperparameter sweep submission
@@ -92,8 +92,8 @@ scripts/
     push_experiments_to_hf.py # MLflow → Parquet → HF Dataset
   profiling/            # Profiling and benchmarking
     analyze_profile.py  # Profile analysis
-    benchmark_orchestration.sh # Orchestration overhead benchmarks
-    profile_conv_type.sh # Convolution type profiling
+    benchmark_orchestration.sbatch # Orchestration overhead benchmarks
+    profile_conv_type.sbatch # Convolution type profiling
     run_pygod_baselines.py # PyGOD baseline comparisons
   dev/                  # Developer utilities
     setup_tmux.sh       # tmux session setup

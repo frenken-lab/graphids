@@ -11,7 +11,8 @@
 #SBATCH --output=slurm_logs/cache_%j.out
 #SBATCH --error=slurm_logs/cache_%j.err
 
-SKIP_CUDA_CONF=1 source "$(dirname "$0")/_preamble.sh"
+SCRIPT_DIR="/users/PAS2022/rf15/KD-GAT/scripts/slurm"
+SKIP_CUDA_CONF=1 source "$SCRIPT_DIR/_preamble.sh"
 
 DATASETS=(hcrl_ch hcrl_sa set_01 set_02 set_03 set_04)
 

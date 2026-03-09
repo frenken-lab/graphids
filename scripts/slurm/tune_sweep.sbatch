@@ -2,15 +2,15 @@
 # Ray Tune HPO sweep on SLURM.
 #
 # Usage:
-#   sbatch scripts/slurm/tune_sweep.sh autoencoder --dataset set_01 --scale large --num-samples 20
-#   sbatch scripts/slurm/tune_sweep.sh curriculum  --dataset set_01 --scale large --num-samples 20
-#   sbatch scripts/slurm/tune_sweep.sh fusion      --dataset set_01 --scale large --num-samples 15
+#   sbatch scripts/slurm/tune_sweep.sbatch autoencoder --dataset set_01 --scale large --num-samples 20
+#   sbatch scripts/slurm/tune_sweep.sbatch curriculum  --dataset set_01 --scale large --num-samples 20
+#   sbatch scripts/slurm/tune_sweep.sbatch fusion      --dataset set_01 --scale large --num-samples 15
 #
 # The first positional arg is the stage name (autoencoder, curriculum, fusion).
 # All subsequent args are forwarded to `python -m graphids.pipeline.cli tune`.
 #
 # Account comes from .env (KD_GAT_SLURM_ACCOUNT). Submit with:
-#   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/tune_sweep.sh ...
+#   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/tune_sweep.sbatch ...
 
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
@@ -24,10 +24,11 @@
 #SBATCH --error=slurm_logs/tune_%j.err
 #SBATCH --signal=B:USR1@300
 
-source "$(dirname "$0")/_preamble.sh"
+SCRIPT_DIR="/users/PAS2022/rf15/KD-GAT/scripts/slurm"
+source "$SCRIPT_DIR/_preamble.sh"
 
 # Extract stage from first positional arg, forward the rest
-TUNE_STAGE="${1:?Usage: tune_sweep.sh <stage> [--dataset ...] [--scale ...] [--num-samples ...]}"
+TUNE_STAGE="${1:?Usage: tune_sweep.sbatch <stage> [--dataset ...] [--scale ...] [--num-samples ...]}"
 shift
 
 log_job_header "Ray Tune Sweep"
@@ -43,6 +44,6 @@ python -m graphids.pipeline.cli tune \
 EXIT_CODE=$?
 
 # --- Post-job ---
-source "$(dirname "$0")/_epilog.sh"
+source "$SCRIPT_DIR/_epilog.sh"
 
 exit $EXIT_CODE

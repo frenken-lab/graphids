@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Account comes from .env (KD_GAT_SLURM_ACCOUNT). Submit with:
-#   sbatch --account=$KD_GAT_SLURM_ACCOUNT --partition=gpu --gres=gpu:v100:1 --mem=32G scripts/slurm/loss_landscape.sh ...
+#   sbatch --account=$KD_GAT_SLURM_ACCOUNT --partition=gpu --gres=gpu:v100:1 --mem=32G scripts/slurm/loss_landscape.sbatch ...
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
@@ -12,19 +12,20 @@
 # Compute 2D loss landscapes for trained models.
 #
 # VGAE/GAT need GPU (graph neural network forward passes):
-#   sbatch --partition=gpu --gres=gpu:v100:1 --mem=32G scripts/slurm/loss_landscape.sh vgae set_01
-#   sbatch --partition=gpu --gres=gpu:v100:1 --mem=32G scripts/slurm/loss_landscape.sh gat set_01
+#   sbatch --partition=gpu --gres=gpu:v100:1 --mem=32G scripts/slurm/loss_landscape.sbatch vgae set_01
+#   sbatch --partition=gpu --gres=gpu:v100:1 --mem=32G scripts/slurm/loss_landscape.sbatch gat set_01
 #
 # DQN is a small MLP — CPU-only, minimal memory:
-#   sbatch --partition=serial --mem=8G scripts/slurm/loss_landscape.sh dqn set_01
+#   sbatch --partition=serial --mem=8G scripts/slurm/loss_landscape.sbatch dqn set_01
 #
 # All three sequentially on GPU (simplest):
-#   sbatch --partition=gpu --gres=gpu:v100:1 --mem=32G scripts/slurm/loss_landscape.sh all set_01
+#   sbatch --partition=gpu --gres=gpu:v100:1 --mem=32G scripts/slurm/loss_landscape.sbatch all set_01
 
-source "$(dirname "$0")/_preamble.sh"
+SCRIPT_DIR="/users/PAS2022/rf15/KD-GAT/scripts/slurm"
+source "$SCRIPT_DIR/_preamble.sh"
 
-MODEL="${1:?Usage: loss_landscape.sh <model|all> <dataset>}"
-DATASET="${2:?Usage: loss_landscape.sh <model|all> <dataset>}"
+MODEL="${1:?Usage: loss_landscape.sbatch <model|all> <dataset>}"
+DATASET="${2:?Usage: loss_landscape.sbatch <model|all> <dataset>}"
 RESOLUTION="${3:-51}"
 SCALE="${4:-1.0}"
 

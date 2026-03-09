@@ -8,9 +8,10 @@ Large models are compressed into small models via KD auxiliaries for edge deploy
 
 ```bash
 # Run a single stage
-python -m graphids.pipeline.cli <stage> --model <type> --scale <size> --dataset <name>
+python -m graphids.pipeline.cli <stage> --model <type> --scale <size> --dataset <name> [--seeds <csv|count>]
 # Stages: autoencoder, curriculum, normal, fusion, evaluation, temporal
 # Models: vgae, gat, dqn | Scales: large, small | Auxiliaries: none, kd_standard
+# Seeds: comma-separated (42,123,456) or integer count (5 = first 5 defaults)
 
 # Examples
 python -m graphids.pipeline.cli autoencoder --model vgae --scale large --dataset hcrl_sa
@@ -21,8 +22,13 @@ python -m graphids.pipeline.cli autoencoder --model vgae --scale large -O traini
 
 # Full pipeline via Ray + SLURM
 python -m graphids.pipeline.cli flow --dataset hcrl_sa
-sbatch scripts/slurm/ray_slurm.sh flow --dataset hcrl_sa
+sbatch scripts/slurm/ray_slurm.sbatch flow --dataset hcrl_sa
 python -m graphids.pipeline.cli flow --dataset hcrl_sa --local  # No SLURM
+
+# Multi-seed pipeline (for statistical significance)
+python -m graphids.pipeline.cli flow --dataset hcrl_sa --seeds 42,123,456
+sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/ray_slurm.sbatch flow --dataset hcrl_sa --seeds 42,123
+python -m graphids.pipeline.cli autoencoder --model vgae --scale large --seeds 5 --dataset hcrl_sa  # first 5 default seeds
 
 # Analytics
 python scripts/data/push_experiments_to_hf.py           # MLflow → HF Dataset for dashboard
@@ -59,7 +65,7 @@ Always read `PLAN.md` before starting work. Update it after completing any task.
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **KD-GAT** (2659 symbols, 4198 relationships, 99 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **KD-GAT** (2669 symbols, 4217 relationships, 100 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

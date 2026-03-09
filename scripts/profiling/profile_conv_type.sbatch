@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Account comes from .env (KD_GAT_SLURM_ACCOUNT). Submit with:
-#   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/profiling/profile_conv_type.sh
+#   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/profiling/profile_conv_type.sbatch
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:v100:1
 #SBATCH --nodes=1
@@ -15,7 +15,7 @@
 # Profile GAT (no edge_attr) vs TransformerConv (with edge_attr) to decide
 # whether cuGraph acceleration is worthwhile.
 #
-# Usage: sbatch scripts/profiling/profile_conv_type.sh [dataset] [scale]
+# Usage: sbatch scripts/profiling/profile_conv_type.sbatch [dataset] [scale]
 # Then:  python scripts/profiling/analyze_profile.py
 
 set -euo pipefail

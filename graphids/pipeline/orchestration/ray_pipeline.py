@@ -148,7 +148,7 @@ def _run_stage(
     if teacher_path:
         cmd.extend(["--teacher-path", teacher_path])
     if seed is not None:
-        cmd.extend(["--seeds", str(seed)])
+        cmd.extend(["--seed", str(seed)])
 
     log.info("Running: %s", " ".join(cmd))
 

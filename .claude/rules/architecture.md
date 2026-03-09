@@ -22,7 +22,7 @@
 - **Concurrent variants**: `small_nokd_pipeline` launches concurrently with `large_pipeline` (no teacher checkpoint dependency). On single-GPU, Ray serializes GPU tasks automatically; on multi-GPU, enables true parallelism.
 - **No Ray Data**: Datasets fit in memory and PyG's heterogeneous graph `Data` objects are incompatible with Ray Data's Arrow-based tabular format.
 - Archive restore: `graphids/pipeline/cli.py` archives previous runs before re-running, restores on failure.
-- **Benchmark mode**: Set `KD_GAT_BENCHMARK=1` to log per-stage spawn overhead, execution time, inter-stage gaps, and GPU utilization to JSONL. See `scripts/profiling/benchmark_orchestration.sh`.
+- **Benchmark mode**: Set `KD_GAT_BENCHMARK=1` to log per-stage spawn overhead, execution time, inter-stage gaps, and GPU utilization to JSONL. See `scripts/profiling/benchmark_orchestration.sbatch`.
 
 ### Orchestration Design Rationale
 Subprocess-per-stage kept for CUDA context isolation (~300-500 MB per model), fault isolation, and stage-level restartability. Overhead (~3-5s) is <0.1% of pipeline wall time.
@@ -41,7 +41,7 @@ Full analysis: `~/plans/orchestration-redesign-decision.md`
 
 ## Dashboard
 
-Consolidated Streamlit app at `~/kd-gat-dashboard/` reads from HF Datasets (auto-pushed by SLURM epilog via `scripts/data/push_experiments_to_hf.py`). Two data sources: `buckeyeguy/kd-gat-experiments` (MLflow push) + `buckeyeguy/kd-gat-sweeps` (sweep results).
+Consolidated Streamlit app at `dashboard/` (in-repo) reads from HF Datasets (auto-pushed by SLURM epilog via `scripts/data/push_experiments_to_hf.py`). Two data sources: `buckeyeguy/kd-gat-experiments` (MLflow push) + `buckeyeguy/kd-gat-sweeps` (sweep results).
 
 Heavy analysis (UMAP, attention, CKA, etc.) lives in `notebooks/analysis/`.
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Account comes from .env (KD_GAT_SLURM_ACCOUNT). Submit with:
-#   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/profiling/benchmark_orchestration.sh
+#   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/profiling/benchmark_orchestration.sbatch
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:v100:1
 #SBATCH --nodes=1
@@ -16,8 +16,8 @@
 # GPU idle gaps, and per-stage wall times.
 #
 # Usage:
-#   sbatch scripts/profiling/benchmark_orchestration.sh
-#   sbatch scripts/profiling/benchmark_orchestration.sh hcrl_ch   # smaller dataset
+#   sbatch scripts/profiling/benchmark_orchestration.sbatch
+#   sbatch scripts/profiling/benchmark_orchestration.sbatch hcrl_ch   # smaller dataset
 #
 # Produces benchmark_timing.jsonl with per-stage JSONL records.
 # Phase R2 analysis is pending R1 benchmark data from this script.

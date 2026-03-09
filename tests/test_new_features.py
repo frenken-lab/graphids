@@ -1,10 +1,9 @@
 """Tests for newly added modules: GAT return_embedding, DQN compute_fusion_reward,
-generate_sweep.py, CLI archive/restore, and FastAPI serve.py.
+CLI archive/restore, and FastAPI serve.py.
 """
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -154,86 +153,6 @@ class TestDQNComputeFusionReward:
         for pred, label in [(0, 0), (0, 1), (1, 0), (1, 1)]:
             reward = agent.compute_fusion_reward(pred, label, state, 0.5)
             assert np.isfinite(reward), f"Reward not finite for pred={pred}, label={label}"
-
-
-# ---------------------------------------------------------------------------
-# P2: generate_sweep.py
-# ---------------------------------------------------------------------------
-
-
-class TestGenerateSweep:
-    """Test sweep command generation (pure functions, no fixtures needed)."""
-
-    def test_parse_sweep_spec_basic(self):
-        from scripts.dev.generate_sweep import parse_sweep_spec
-
-        key, vals = parse_sweep_spec("training.lr=0.001,0.0005")
-        assert key == "training.lr"
-        assert vals == ["0.001", "0.0005"]
-
-    def test_parse_sweep_spec_single_value(self):
-        from scripts.dev.generate_sweep import parse_sweep_spec
-
-        key, vals = parse_sweep_spec("vgae.latent_dim=16")
-        assert key == "vgae.latent_dim"
-        assert vals == ["16"]
-
-    def test_parse_sweep_spec_invalid_raises(self):
-        from scripts.dev.generate_sweep import parse_sweep_spec
-
-        with pytest.raises(ValueError, match="Invalid sweep spec"):
-            parse_sweep_spec("no_equals_sign")
-        with pytest.raises(ValueError, match="Invalid sweep spec"):
-            parse_sweep_spec("=just_values")
-
-    def test_cartesian_product_count(self, tmp_path):
-        """2 params x (2, 3) values = 6 commands."""
-        import itertools
-
-        from scripts.dev.generate_sweep import parse_sweep_spec
-
-        specs = ["training.lr=0.001,0.0005", "vgae.latent_dim=8,16,32"]
-        keys, value_lists = [], []
-        for spec in specs:
-            k, v = parse_sweep_spec(spec)
-            keys.append(k)
-            value_lists.append(v)
-
-        combos = list(itertools.product(*value_lists))
-        assert len(combos) == 6
-
-    def test_cli_output_format(self, tmp_path, monkeypatch):
-        """Generated commands should match expected CLI syntax."""
-        output_file = tmp_path / "commands.txt"
-        monkeypatch.setattr(
-            sys,
-            "argv",
-            [
-                "generate_sweep.py",
-                "--stage",
-                "autoencoder",
-                "--model",
-                "vgae",
-                "--scale",
-                "large",
-                "--dataset",
-                "hcrl_sa",
-                "--sweep",
-                "training.lr=0.001,0.0005",
-                "--output",
-                str(output_file),
-            ],
-        )
-        from scripts.dev.generate_sweep import main
-
-        main()
-
-        lines = output_file.read_text().strip().split("\n")
-        assert len(lines) == 2
-        for line in lines:
-            assert "pipeline.cli" in line
-            assert "--model vgae" in line
-            assert "-O training.lr" in line
 
 
 # ---------------------------------------------------------------------------

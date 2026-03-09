@@ -2,11 +2,11 @@
 # Full sweep pipeline DAG on SLURM (7 steps: 3 sweeps + 3 trains + 1 eval).
 #
 # Usage:
-#   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/sweep_pipeline.sh <dataset> <scale> [--num-samples 20]
+#   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/sweep_pipeline.sbatch <dataset> <scale> [--num-samples 20]
 #
 # Examples:
-#   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/sweep_pipeline.sh set_01 large --num-samples 20
-#   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/sweep_pipeline.sh hcrl_ch large --num-samples 1 --tune-epochs 2
+#   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/sweep_pipeline.sbatch set_01 large --num-samples 20
+#   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/sweep_pipeline.sbatch hcrl_ch large --num-samples 1 --tune-epochs 2
 
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
@@ -20,11 +20,12 @@
 #SBATCH --error=slurm_logs/sweep_pipeline_%j.err
 #SBATCH --signal=B:USR1@300
 
-source "$(dirname "$0")/_preamble.sh"
+SCRIPT_DIR="/users/PAS2022/rf15/KD-GAT/scripts/slurm"
+source "$SCRIPT_DIR/_preamble.sh"
 
 # Extract dataset and scale from positional args, forward the rest
-DATASET="${1:?Usage: sweep_pipeline.sh <dataset> <scale> [--num-samples N] [--tune-epochs N]}"
-SCALE="${2:?Usage: sweep_pipeline.sh <dataset> <scale> [--num-samples N] [--tune-epochs N]}"
+DATASET="${1:?Usage: sweep_pipeline.sbatch <dataset> <scale> [--num-samples N] [--tune-epochs N]}"
+SCALE="${2:?Usage: sweep_pipeline.sbatch <dataset> <scale> [--num-samples N] [--tune-epochs N]}"
 shift 2
 
 # SIGUSR1 handler: log warning, Python orchestrator handles state persistence
@@ -44,6 +45,6 @@ python -m graphids.pipeline.cli sweep-pipeline \
 EXIT_CODE=$?
 
 # --- Post-job ---
-source "$(dirname "$0")/_epilog.sh"
+source "$SCRIPT_DIR/_epilog.sh"
 
 exit $EXIT_CODE

@@ -60,17 +60,23 @@ def _safe_num_workers(data, cfg: PipelineConfig) -> int:
     """Return num_workers, falling back to 0 if dataset exceeds mmap limits.
 
     With spawn multiprocessing, every tensor storage needs a separate mmap
-    entry.  Calling share_memory_() does NOT help -- it also creates one mmap
-    per tensor.  The only safe option for large datasets is num_workers=0.
+    entry per worker process.  The total mmap count is approximately
+    tensor_count × num_workers, which must stay under vm.max_map_count
+    (typically 65530).  The only safe option for large datasets is
+    num_workers=0.
     """
     nw = cfg.num_workers
     if nw > 0 and cfg.mp_start_method == "spawn":
         tensor_count = _estimate_tensor_count(data)
-        if tensor_count > MMAP_TENSOR_LIMIT:
+        effective_count = tensor_count * nw
+        if effective_count > MMAP_TENSOR_LIMIT:
             log.warning(
-                "Dataset has %d tensor storages (limit %d for vm.max_map_count). "
+                "Dataset has %d tensor storages × %d workers = %d effective mmaps "
+                "(limit %d for vm.max_map_count). "
                 "Falling back to num_workers=0 to avoid mmap OOM.",
                 tensor_count,
+                nw,
+                effective_count,
                 MMAP_TENSOR_LIMIT,
             )
             return 0

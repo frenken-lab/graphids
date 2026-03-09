@@ -39,12 +39,12 @@ modules:
   slurm:
     entry_files:
       - scripts/slurm/_preamble.sh
-      - scripts/slurm/ray_slurm.sh
+      - scripts/slurm/ray_slurm.sbatch
       - scripts/slurm/run_tests_slurm.sh
     summary: >-
       SLURM job scripts for dispatching work to the cluster. All share _preamble.sh (module load,
       venv activate, source .env, stage data) and _epilog.sh (GPU report, sacct, HF push).
-      Covers pipeline runs (ray_slurm.sh), sweeps (sweep_pipeline.sh, tune_sweep.sh), testing
+      Covers pipeline runs (ray_slurm.sbatch), sweeps (sweep_pipeline.sbatch, tune_sweep.sbatch), testing
       (run_tests_slurm.sh, run_tests_parallel.sh), smoke tests (gpudebug partition), cache
       rebuilds, loss landscape, and full reproduction. stage_data.sh handles 3-tier storage
       staging (shared -> scratch -> TMPDIR).
