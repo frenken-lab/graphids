@@ -1,26 +1,20 @@
 # KD-GAT Session Plan
 
-> Last updated: 2026-03-07
+> Last updated: 2026-03-09
 
-## Priority: Verify Simplification Branch → Tests → Merge
+## Priority: Pre-Sweep Infrastructure Testing
 
-Branch `simplify-codebase` removes legacy code and reduces custom infrastructure by leveraging library features.
+Branch `pre-sweep-infrastructure` adds a stateful SLURM coordinator for multi-stage pipeline execution. The coordinator is implemented; next steps are validation before using it for the actual sweep.
 
-### Verification Steps
+### Next Steps
 
-```bash
-# 1. Import check (login node safe)
-python -c "from graphids.core.models.dqn import EnhancedDQNFusionAgent, MLPFusionAgent; print('dqn OK')"
-python -c "from graphids.pipeline.stages.batch_sizing import resolve_batch_config; print('batch OK')"
-python -c "from graphids.pipeline.stages.evaluation import evaluate; print('eval OK')"
-
-# 2. Tests via SLURM (required)
-bash scripts/slurm/run_tests_slurm.sh
-```
+1. **Test coordinator with `--dry-run`** — verify job submission plan, stage ordering, and state persistence without actually submitting SLURM jobs
+2. **Run `smoke_collated.sbatch`** — validate collated tensor storage on GPU (end-to-end load → train → checkpoint cycle)
+3. **Use coordinator for the actual sweep** — submit full multi-dataset, multi-seed sweep via the coordinator
 
 ## In Progress
 
-- Simplification branch: ready for test + merge (see Completed below)
+- Pre-sweep infrastructure validation (see Next Steps above)
 
 ## Blocked
 
@@ -34,13 +28,13 @@ See `~/plans/fusion-redesign.md` for full analysis.
 
 ## Next Up
 
-- Run full pipeline retrain on rebuilt caches
-- Run tests: `bash scripts/slurm/run_tests_slurm.sh`
+- Run full sweep via coordinator (all datasets × 2 seeds)
 - Fusion method comparison experiment (see Open Questions above)
 - Evaluate research questions R1–R3
 
 ## Completed
 
+- Stateful SLURM coordinator: submits pipeline stages as individual jobs, polls for completion, adjusts resources on failure (OOM → more memory, timeout → more time). Shared state persistence via state.py. SIGUSR1 graceful timeout trap in _preamble.sh. Collated storage smoke test. CLI wiring. (2026-03-09)
 - Memory/batch sizing simplification: memory.py 471→25 lines, batch_sizing.py 169→43 lines. Deleted custom GPU memory estimation (static, measured, trial modes, forward hooks, binary search, budget caching). Batch size now config-driven with safety_factor. `_compute_metrics()` simplified with `classification_report()`. CKA `_save_cka()` deduplicated. tune_config.py batch sizing inlined to `resolve_batch_config()`. ~600 lines removed (2026-03-07)
 - Legacy removal: deleted export.py, sweep_export.py, tracking.py, reports/ (Quarto), verify-site skill, SLURM export scripts. Removed Quarto CI jobs. Updated all docs/rules (2026-03-07)
 - DQN `from_config()` factory: replaces 3 verbose 15-param construction sites in evaluation.py, serve.py, fusion.py (2026-03-07)
