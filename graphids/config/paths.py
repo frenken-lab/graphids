@@ -6,19 +6,29 @@ No second implementation. No disagreement possible.
 
 Path layout: {root}/{dataset}/{model_type}_{scale}_{stage}[_{aux}]
 
-Two interfaces:
+Two write/read interfaces:
   - PipelineConfig-based (stage_dir, checkpoint_path, etc.) -- used by Python stages
   - String-based (_str variants) -- convenience for raw-string path construction
+
+Artifact resolution:
+  - ArtifactResolver -- cache-first, MLflow-fallback for cross-stage reads
+  - run_group() / run_metadata() -- seed-independent identity for aggregation
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
 import os
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .schema import PipelineConfig
+
+log = logging.getLogger(__name__)
 
 EXPERIMENT_ROOT = os.environ.get("KD_GAT_EXPERIMENT_ROOT", "experimentruns")
 
@@ -32,6 +42,9 @@ MLFLOW_TRACKING_URI = os.environ.get(
 # home dir (dev) and project storage (production).
 _DATA_ROOT: str | None = os.environ.get("KD_GAT_DATA_ROOT")
 _CACHE_ROOT: str | None = os.environ.get("KD_GAT_CACHE_ROOT")
+
+# Artifact cache root — disposable, rm -rf safe
+_ARTIFACT_CACHE_ROOT: str = os.environ.get("KD_GAT_ARTIFACT_CACHE", ".cache/kd-gat")
 
 # stage_name -> (learning_type, model_arch, training_mode)
 # run_id() overrides model_arch to "eval" for the evaluation stage.
@@ -70,6 +83,11 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+# ---------------------------------------------------------------------------
+# Run identity helpers
+# ---------------------------------------------------------------------------
+
+
 def run_id(cfg: PipelineConfig, stage: str) -> str:
     """Deterministic run ID from config and stage.
 
@@ -88,12 +106,56 @@ def run_id(cfg: PipelineConfig, stage: str) -> str:
     return f"{cfg.dataset}/{model}_{cfg.scale}_{stage}{aux_suffix}"
 
 
-def stage_dir(cfg: PipelineConfig, stage: str) -> Path:
-    """Canonical experiment directory.
+def run_group(cfg: PipelineConfig, stage: str) -> str:
+    """Seed-independent run identity for aggregation across seeds.
 
-    Layout: {root}/{dataset}/{model_type}_{scale}_{stage}[_{aux}]
+    Format: {dataset}/{model_type}_{scale}_{stage}[_{aux}]
+    Same as run_id() — the seed is NOT part of the group key.
+    Used to query MLflow for all seeds of a given configuration.
     """
-    return Path(cfg.experiment_root) / run_id(cfg, stage)
+    aux_suffix = f"_{cfg.auxiliaries[0].type}" if cfg.auxiliaries else ""
+    model = "eval" if stage == "evaluation" else cfg.model_type
+    return f"{cfg.dataset}/{model}_{cfg.scale}_{stage}{aux_suffix}"
+
+
+def run_metadata(cfg: PipelineConfig, stage: str) -> dict[str, str]:
+    """Single source of truth for all MLflow tags on a run.
+
+    Every run gets these tags. They serve as the run's identity in MLflow
+    and are used by ArtifactResolver to find runs.
+    """
+    return {
+        "dataset": cfg.dataset,
+        "model_type": cfg.model_type,
+        "scale": cfg.scale,
+        "stage": stage,
+        "auxiliaries": cfg.auxiliaries[0].type if cfg.auxiliaries else "none",
+        "seed": str(cfg.seed),
+        "run_group": run_group(cfg, stage),
+        "config_hash": _config_hash(cfg),
+    }
+
+
+def _config_hash(cfg: PipelineConfig) -> str:
+    """Deterministic short hash of config for deduplication."""
+    return hashlib.sha256(
+        json.dumps(cfg.model_dump(), sort_keys=True, default=str).encode()
+    ).hexdigest()[:12]
+
+
+# ---------------------------------------------------------------------------
+# Write paths (for current stage output)
+# ---------------------------------------------------------------------------
+
+
+def stage_dir(cfg: PipelineConfig, stage: str) -> Path:
+    """Canonical experiment directory for writing stage output.
+
+    When KD_GAT_STAGE_DIR is set (e.g. $TMPDIR in SLURM jobs), writes go to
+    fast node-local storage. Otherwise falls back to experiment_root.
+    """
+    stage_root = os.environ.get("KD_GAT_STAGE_DIR", cfg.experiment_root)
+    return Path(stage_root) / run_id(cfg, stage)
 
 
 def checkpoint_path(cfg: PipelineConfig, stage: str) -> Path:
@@ -169,3 +231,171 @@ def metrics_path_str(dataset: str, model_type: str, scale: str, stage: str, aux:
 def benchmark_path_str(dataset: str, model_type: str, scale: str, stage: str, aux: str = "") -> str:
     """Benchmark TSV path from raw strings."""
     return f"{EXPERIMENT_ROOT}/{run_id_str(dataset, model_type, scale, stage, aux)}/benchmark.tsv"
+
+
+# ---------------------------------------------------------------------------
+# ArtifactResolver — cache-first, MLflow-fallback for cross-stage reads
+# ---------------------------------------------------------------------------
+
+
+class ArtifactResolver:
+    """Resolves artifact locations: cache-first, MLflow-fallback.
+
+    Used for loading artifacts from OTHER stages (e.g. loading VGAE checkpoint
+    while training GAT). Same-stage writes use stage_dir() directly.
+
+    Cache layout: .cache/kd-gat/{run_group}/seed_{seed}/{artifact_name}
+    """
+
+    def __init__(self, cache_root: Path | None = None):
+        self.cache_root = Path(cache_root or _ARTIFACT_CACHE_ROOT)
+        self._client = None  # lazy MlflowClient
+
+    @property
+    def client(self):
+        if self._client is None:
+            from mlflow import MlflowClient
+
+            self._client = MlflowClient(tracking_uri=MLFLOW_TRACKING_URI)
+        return self._client
+
+    def get(
+        self,
+        cfg: PipelineConfig,
+        stage: str,
+        artifact_name: str,
+        model_type: str | None = None,
+    ) -> Path:
+        """Get artifact path. Downloads from MLflow if not cached.
+
+        For cross-model reads (e.g. loading VGAE from GAT config), pass
+        model_type to override cfg.model_type.
+        """
+        # Build the effective config identity for this artifact
+        mt = model_type or cfg.model_type
+        group = self._run_group_str(cfg, stage, mt)
+        cache_path = self.cache_root / group / f"seed_{cfg.seed}" / artifact_name
+
+        if cache_path.exists():
+            return cache_path
+
+        # Fall back to legacy experimentruns/ path (transitional)
+        legacy_path = self._legacy_path(cfg, stage, artifact_name, mt)
+        if legacy_path.exists():
+            # Populate cache from legacy location
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(legacy_path, cache_path)
+            log.debug("Cached legacy artifact: %s → %s", legacy_path, cache_path)
+            return cache_path
+
+        # Try MLflow download
+        try:
+            run = self._find_run(cfg, stage, mt)
+            if run is not None:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                self.client.download_artifacts(
+                    run.info.run_id, artifact_name, str(cache_path.parent)
+                )
+                if cache_path.exists():
+                    log.info("Downloaded from MLflow: %s", cache_path)
+                    return cache_path
+        except Exception as e:
+            log.debug("MLflow download failed for %s/%s: %s", group, artifact_name, e)
+
+        raise FileNotFoundError(
+            f"Artifact not found: {artifact_name} for {group}/seed_{cfg.seed}. "
+            f"Checked: cache ({cache_path}), legacy ({legacy_path}), MLflow."
+        )
+
+    def put(
+        self,
+        cfg: PipelineConfig,
+        stage: str,
+        local_path: Path,
+    ) -> None:
+        """Log artifact to MLflow and populate cache.
+
+        Called after training writes artifacts to stage_dir().
+        """
+        import mlflow
+
+        if local_path.exists():
+            mlflow.log_artifact(str(local_path))
+
+            # Populate cache
+            group = run_group(cfg, stage)
+            cache_dest = self.cache_root / group / f"seed_{cfg.seed}" / local_path.name
+            cache_dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(local_path, cache_dest)
+            log.debug("Cached artifact: %s → %s", local_path, cache_dest)
+
+    def exists(
+        self,
+        cfg: PipelineConfig,
+        stage: str,
+        artifact_name: str,
+        model_type: str | None = None,
+    ) -> bool:
+        """Check if an artifact exists without downloading."""
+        mt = model_type or cfg.model_type
+        group = self._run_group_str(cfg, stage, mt)
+        cache_path = self.cache_root / group / f"seed_{cfg.seed}" / artifact_name
+        if cache_path.exists():
+            return True
+
+        legacy_path = self._legacy_path(cfg, stage, artifact_name, mt)
+        return legacy_path.exists()
+
+    def _run_group_str(self, cfg: PipelineConfig, stage: str, model_type: str) -> str:
+        """Build run group string, possibly with overridden model_type."""
+        aux_suffix = f"_{cfg.auxiliaries[0].type}" if cfg.auxiliaries else ""
+        model = "eval" if stage == "evaluation" else model_type
+        return f"{cfg.dataset}/{model}_{cfg.scale}_{stage}{aux_suffix}"
+
+    def _legacy_path(
+        self, cfg: PipelineConfig, stage: str, artifact_name: str, model_type: str
+    ) -> Path:
+        """Build legacy experimentruns/ path for transitional compatibility."""
+        aux_suffix = f"_{cfg.auxiliaries[0].type}" if cfg.auxiliaries else ""
+        return (
+            Path(cfg.experiment_root)
+            / cfg.dataset
+            / f"{model_type}_{cfg.scale}_{stage}{aux_suffix}"
+            / artifact_name
+        )
+
+    def _find_run(self, cfg: PipelineConfig, stage: str, model_type: str):
+        """Find MLflow run by tags. Returns None if not found."""
+        aux = cfg.auxiliaries[0].type if cfg.auxiliaries else "none"
+        filter_parts = [
+            f"tags.dataset = '{cfg.dataset}'",
+            f"tags.model_type = '{model_type}'",
+            f"tags.scale = '{cfg.scale}'",
+            f"tags.stage = '{stage}'",
+            f"tags.seed = '{cfg.seed}'",
+        ]
+        if aux != "none":
+            filter_parts.append(f"tags.auxiliaries = '{aux}'")
+
+        try:
+            runs = self.client.search_runs(
+                experiment_ids=[],  # search all experiments
+                filter_string=" AND ".join(filter_parts),
+                max_results=1,
+                order_by=["start_time DESC"],
+            )
+            return runs[0] if runs else None
+        except Exception:
+            return None
+
+
+# Module-level resolver singleton
+_resolver: ArtifactResolver | None = None
+
+
+def get_resolver() -> ArtifactResolver:
+    """Get the module-level ArtifactResolver singleton."""
+    global _resolver
+    if _resolver is None:
+        _resolver = ArtifactResolver()
+    return _resolver

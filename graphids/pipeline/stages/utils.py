@@ -31,7 +31,6 @@ from .data_loading import (
     training_preamble,
 )
 from .trainer_factory import (
-    _cross_model_path,
     build_optimizer_dict,
     load_frozen_cfg,
     load_model,
@@ -41,7 +40,6 @@ from .trainer_factory import (
 )
 
 __all__ = [
-    "_cross_model_path",
     "build_optimizer_dict",
     "cache_predictions",
     "cleanup",

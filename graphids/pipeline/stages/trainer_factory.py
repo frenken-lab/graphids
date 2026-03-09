@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 from pytorch_lightning.callbacks import DeviceStatsMonitor, EarlyStopping, ModelCheckpoint
 
-from graphids.config import MLFLOW_TRACKING_URI, PipelineConfig, stage_dir
+from graphids.config import MLFLOW_TRACKING_URI, PipelineConfig, get_resolver, stage_dir
 
 log = logging.getLogger(__name__)
 
@@ -107,20 +107,6 @@ def _extract_state_dict(checkpoint) -> dict:
     return checkpoint
 
 
-def _cross_model_path(cfg: PipelineConfig, model_type: str, stage: str, filename: str) -> Path:
-    """Build a path for a specific model_type (may differ from cfg.model_type).
-
-    Used when loading another model's artifacts (e.g. loading VGAE checkpoint from GAT config).
-    """
-    aux_suffix = f"_{cfg.auxiliaries[0].type}" if cfg.auxiliaries else ""
-    return (
-        Path(cfg.experiment_root)
-        / cfg.dataset
-        / f"{model_type}_{cfg.scale}_{stage}{aux_suffix}"
-        / filename
-    )
-
-
 from graphids.config.constants import STAGE_MODEL_MAP as _STAGE_MODEL_TYPE
 
 
@@ -130,20 +116,17 @@ def load_frozen_cfg(
     """Load the frozen config.json saved during training for *stage*.
 
     model_type defaults to the canonical owner of the stage (e.g. "autoencoder" → "vgae").
-    When cfg.model_type already matches the stage owner, this is equivalent to config_path(cfg, stage).
+    Uses the ArtifactResolver for cache-first, MLflow-fallback resolution.
 
     Raises FileNotFoundError if the frozen config doesn't exist.
     """
-    from graphids.config import config_path
-
     mt = model_type or _STAGE_MODEL_TYPE.get(stage, cfg.model_type)
-    if mt == cfg.model_type:
-        p = config_path(cfg, stage)
-    else:
-        p = _cross_model_path(cfg, mt, stage, "config.json")
-    if not p.exists():
+    resolver = get_resolver()
+    try:
+        p = resolver.get(cfg, stage, "config.json", model_type=mt)
+    except FileNotFoundError:
         raise FileNotFoundError(
-            f"Frozen config not found: {p}. "
+            f"Frozen config not found for stage '{stage}' (model_type={mt}). "
             f"The '{stage}' stage must be trained first (with config saved) "
             f"before dependent stages can load it."
         )
@@ -163,13 +146,13 @@ def load_model(
 ) -> nn.Module:
     """Load a trained model using its frozen config and the registry.
 
-    Replaces the old ``load_vgae`` / ``load_gat`` helpers with a single
-    generic loader that works for any registered model type.
+    Uses the ArtifactResolver for cache-first, MLflow-fallback resolution.
     """
     from graphids.core.models.registry import get as registry_get
 
+    resolver = get_resolver()
     frozen_cfg = load_frozen_cfg(cfg, stage, model_type=model_type)
-    ckpt = _cross_model_path(cfg, model_type, stage, "best_model.pt")
+    ckpt = resolver.get(cfg, stage, "best_model.pt", model_type=model_type)
     model = registry_get(model_type).factory(frozen_cfg, num_ids, in_channels)
     model.load_state_dict(torch.load(ckpt, map_location="cpu", weights_only=True))
     model.to(device)

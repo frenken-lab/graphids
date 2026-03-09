@@ -114,6 +114,7 @@ def _run_stage(
     dataset: str,
     auxiliaries: str = "none",
     teacher_path: str | None = None,
+    seed: int | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a pipeline stage as a subprocess via the CLI.
 
@@ -146,6 +147,8 @@ def _run_stage(
     ]
     if teacher_path:
         cmd.extend(["--teacher-path", teacher_path])
+    if seed is not None:
+        cmd.extend(["--seeds", str(seed)])
 
     log.info("Running: %s", " ".join(cmd))
 
@@ -242,9 +245,13 @@ def _make_stage_task(stage: str, model: str):
 
     @ray.remote(num_gpus=1)
     def task(
-        dataset: str, scale: str, auxiliaries: str = "none", teacher_path: str | None = None
+        dataset: str,
+        scale: str,
+        auxiliaries: str = "none",
+        teacher_path: str | None = None,
+        seed: int | None = None,
     ) -> str:
-        _run_stage(stage, model, scale, dataset, auxiliaries, teacher_path)
+        _run_stage(stage, model, scale, dataset, auxiliaries, teacher_path, seed=seed)
         from graphids.config import checkpoint_path
         from graphids.config.resolver import resolve
 
@@ -267,9 +274,9 @@ _STAGE_TASKS = {
 
 
 @ray.remote(num_gpus=1)
-def task_eval(dataset: str, scale: str, auxiliaries: str = "none") -> None:
+def task_eval(dataset: str, scale: str, auxiliaries: str = "none", seed: int | None = None) -> None:
     """Run evaluation on all trained models for a variant."""
-    _run_stage("evaluation", "vgae", scale, dataset, auxiliaries)
+    _run_stage("evaluation", "vgae", scale, dataset, auxiliaries, seed=seed)
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +308,7 @@ def variant_pipeline(
     stages: list[str],
     auxiliaries: str = "none",
     teacher_ckpts: dict[str, str] | None = None,
+    seed: int | None = None,
 ) -> dict[str, str]:
     """Execute a config-driven stage chain for a single variant.
 
@@ -311,7 +319,7 @@ def variant_pipeline(
 
     for stage_name in stages:
         if stage_name == "evaluation":
-            ray.get(task_eval.remote(dataset, scale, auxiliaries=auxiliaries))
+            ray.get(task_eval.remote(dataset, scale, auxiliaries=auxiliaries, seed=seed))
             continue
 
         task = _STAGE_TASKS.get(stage_name)
@@ -325,7 +333,7 @@ def variant_pipeline(
             model_type, _ = _STAGE_DISPATCH[stage_name]
             teacher_path = teacher_ckpts.get(model_type)
 
-        ckpt = ray.get(task.remote(dataset, scale, auxiliaries, teacher_path))
+        ckpt = ray.get(task.remote(dataset, scale, auxiliaries, teacher_path, seed=seed))
         ckpts[stage_name] = ckpt
 
     return ckpts
@@ -339,9 +347,10 @@ def _variant_pipeline_remote(
     stages: list[str],
     auxiliaries: str = "none",
     teacher_ckpts: dict[str, str] | None = None,
+    seed: int | None = None,
 ) -> dict[str, str]:
     """Remote wrapper for variant_pipeline."""
-    return variant_pipeline(dataset, variant_name, scale, stages, auxiliaries, teacher_ckpts)
+    return variant_pipeline(dataset, variant_name, scale, stages, auxiliaries, teacher_ckpts, seed)
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +359,7 @@ def _variant_pipeline_remote(
 
 
 @ray.remote
-def dataset_pipeline(dataset: str, scale: str | None = None) -> None:
+def dataset_pipeline(dataset: str, scale: str | None = None, seed: int | None = None) -> None:
     """All variants for a single dataset, driven by PipelineConfig.variants.
 
     When running all variants (scale=None), variants with needs_teacher=False
@@ -359,7 +368,7 @@ def dataset_pipeline(dataset: str, scale: str | None = None) -> None:
     """
     from graphids.config.resolver import resolve
 
-    log.info("=== Pipeline for dataset: %s ===", dataset)
+    log.info("=== Pipeline for dataset: %s (seed=%s) ===", dataset, seed)
 
     # Load variant config from defaults
     cfg = resolve("vgae", "large", dataset=dataset)
@@ -401,6 +410,7 @@ def dataset_pipeline(dataset: str, scale: str | None = None) -> None:
             v.scale,
             v.stages,
             v.auxiliaries,
+            seed=seed,
         )
         independent_refs.append(ref)
         log.info("Launched %s concurrently for %s", v.name, dataset)
@@ -414,6 +424,7 @@ def dataset_pipeline(dataset: str, scale: str | None = None) -> None:
             teacher_variant.scale,
             teacher_variant.stages,
             teacher_variant.auxiliaries,
+            seed=seed,
         )
 
     # Run dependent variants (they need teacher checkpoints)
@@ -428,6 +439,7 @@ def dataset_pipeline(dataset: str, scale: str | None = None) -> None:
             v.stages,
             v.auxiliaries,
             teacher_ckpts=teacher_ckpts,
+            seed=seed,
         )
 
     # Join independent variants
@@ -444,6 +456,7 @@ def train_pipeline(
     datasets: list[str] | None = None,
     scale: str | None = None,
     local: bool = False,
+    seeds: list[int] | None = None,
 ) -> None:
     """Full KD-GAT training pipeline.
 
@@ -456,12 +469,21 @@ def train_pipeline(
         ("large", "small_kd", "small_nokd").  None = all.
     local : bool
         If True, use Ray local mode (no cluster).
+    seeds : list[int] | None
+        Seeds to train with. None = single run with default seed.
     """
     datasets = _init_ray(datasets, local)
 
-    # Fan out per-dataset work — each dataset is independent
-    refs = [dataset_pipeline.remote(ds, scale) for ds in datasets]
-    ray.get(refs)
+    if seeds:
+        # Multi-seed: run full pipeline per seed sequentially
+        for seed in seeds:
+            log.info("=== Seed %d ===", seed)
+            refs = [dataset_pipeline.remote(ds, scale, seed=seed) for ds in datasets]
+            ray.get(refs)
+    else:
+        # Single seed (default)
+        refs = [dataset_pipeline.remote(ds, scale) for ds in datasets]
+        ray.get(refs)
 
     log.info("=== Pipeline complete for %d dataset(s) ===", len(datasets))
 

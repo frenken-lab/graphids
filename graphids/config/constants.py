@@ -153,3 +153,8 @@ STAGE_DEPENDENCIES: dict[str, list[tuple[str, str]]] = {
 # ---------------------------------------------------------------------------
 SWEEP_RESULTS_DIR = "data/sweep_results"
 SWEEP_STATE_DIR = "data/sweep_state"
+
+# ---------------------------------------------------------------------------
+# Multi-seed defaults (for statistical significance in TMLR submission)
+# ---------------------------------------------------------------------------
+DEFAULT_SEEDS: list[int] = [42, 123, 456, 789, 1024]

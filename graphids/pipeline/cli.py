@@ -4,6 +4,7 @@ Usage:
     python -m graphids.pipeline.cli autoencoder --model vgae --scale large --dataset hcrl_ch
     python -m graphids.pipeline.cli curriculum  --model gat --scale small --auxiliaries kd_standard --dataset hcrl_sa
     python -m graphids.pipeline.cli fusion      --config path/to/config.json
+    python -m graphids.pipeline.cli autoencoder --model vgae --scale large --seeds 42,123,456
 """
 
 from __future__ import annotations
@@ -28,7 +29,9 @@ from graphids.config import (
     STAGES,
     PipelineConfig,
     config_path,
+    get_resolver,
     run_id,
+    run_metadata,
     stage_dir,
 )
 from graphids.config.resolver import resolve
@@ -43,13 +46,8 @@ def _setup_mlflow(run_name: str, cfg: PipelineConfig, stage: str, tags: dict | N
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     mlflow.set_experiment(f"kd-gat-{stage}")
 
-    mlflow_tags = {
-        "dataset": cfg.dataset,
-        "model_type": cfg.model_type,
-        "scale": cfg.scale,
-        "stage": stage,
-        "has_kd": str(cfg.has_kd),
-    }
+    # Use run_metadata() as the base tags — single source of truth
+    mlflow_tags = run_metadata(cfg, stage)
     if tags:
         mlflow_tags.update(tags)
 
@@ -58,6 +56,29 @@ def _setup_mlflow(run_name: str, cfg: PipelineConfig, stage: str, tags: dict | N
 
 def _parse_bool(v: str) -> bool:
     return v.lower() in ("true", "1", "yes")
+
+
+def _parse_seeds(value: str) -> list[int]:
+    """Parse --seeds argument: comma-separated ints or a count for random seeds."""
+    from graphids.config.constants import DEFAULT_SEEDS
+
+    if value is None:
+        return []
+
+    # Single integer → use first N default seeds
+    try:
+        n = int(value)
+        if n <= 0:
+            raise ValueError("Seed count must be positive")
+        return DEFAULT_SEEDS[:n] if n <= len(DEFAULT_SEEDS) else DEFAULT_SEEDS
+    except ValueError:
+        pass
+
+    # Comma-separated list
+    try:
+        return [int(s.strip()) for s in value.split(",")]
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(f"Invalid --seeds value '{value}': {e}") from e
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -88,6 +109,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--dataset", type=str, default=None)
     p.add_argument("--seed", type=int, default=None)
+
+    # Multi-seed support
+    p.add_argument(
+        "--seeds",
+        type=str,
+        default=None,
+        help="Multi-seed dispatch: comma-separated (42,123,456) or count (5 = first 5 defaults)",
+    )
 
     # Infrastructure overrides
     p.add_argument("--experiment-root", type=str, default=None)
@@ -368,6 +397,180 @@ def _run_sweep_pipeline(args: argparse.Namespace, log: logging.Logger) -> None:
     )
 
 
+def _run_single_stage(
+    cfg: PipelineConfig,
+    stage: str,
+    args: argparse.Namespace,
+    log: logging.Logger,
+) -> None:
+    """Execute a single training stage with MLflow tracking and artifact caching."""
+    # ---- Validate ----
+    validate(cfg, stage)
+
+    # ---- Archive completed run if re-running same config ----
+    sdir = stage_dir(cfg, stage)
+    archive = None
+    if (sdir / "metrics.json").exists():
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        archive = sdir.parent / f"{sdir.name}.archive_{ts}"
+        sdir.rename(archive)
+        log.warning("Archived completed run → %s", archive)
+
+    # ---- Save frozen config ----
+    cfg_out = config_path(cfg, stage)
+    cfg.save(cfg_out)
+    log.info("Frozen config: %s", cfg_out)
+
+    # ---- Run ID ----
+    run_name = run_id(cfg, stage)
+    log.info("Run started: %s (seed=%d)", run_name, cfg.seed)
+
+    # ---- Collect environment metadata ----
+    slurm_job_id = os.environ.get("SLURM_JOB_ID")
+    gpu_name = None
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            gpu_name = torch.cuda.get_device_name(0)
+            torch.cuda.reset_peak_memory_stats()
+    except Exception:
+        pass
+
+    # ---- Enrichment tags (beyond run_metadata) ----
+    sweep_id = args.sweep_id or None
+    tags_str = args.tags or None
+    if sweep_id:
+        run_type = "sweep_best"
+    elif cfg.training.max_epochs < 10:
+        run_type = "smoke_test"
+    else:
+        run_type = "production"
+
+    teacher_run_id_str = None
+    if cfg.has_kd and cfg.kd and cfg.kd.model_path:
+        tp = Path(cfg.kd.model_path)
+        if tp.parent.parent.name and tp.parent.name:
+            teacher_run_id_str = f"{tp.parent.parent.name}/{tp.parent.name}"
+
+    # ---- MLflow run context ----
+    import mlflow
+
+    extra_tags = {
+        "slurm_job_id": slurm_job_id or "",
+        "gpu_name": gpu_name or "",
+        "run_type": run_type,
+    }
+    if sweep_id:
+        extra_tags["sweep_id"] = sweep_id
+    if tags_str:
+        extra_tags["user_tags"] = tags_str
+    if teacher_run_id_str:
+        extra_tags["teacher_run_id"] = teacher_run_id_str
+
+    # ---- Dispatch ----
+    t_start = time.monotonic()
+    resolver = get_resolver()
+
+    with _setup_mlflow(run_name, cfg, stage, tags=extra_tags):
+        try:
+            # Log config as params
+            mlflow.log_params(
+                {
+                    "dataset": cfg.dataset,
+                    "model_type": cfg.model_type,
+                    "scale": cfg.scale,
+                    "stage": stage,
+                    "has_kd": cfg.has_kd,
+                    "seed": cfg.seed,
+                    "batch_size": cfg.training.batch_size,
+                    "max_epochs": cfg.training.max_epochs,
+                    "lr": cfg.training.lr,
+                }
+            )
+
+            # Log frozen config as artifact
+            mlflow.log_artifact(str(cfg_out))
+
+            from .stages import STAGE_FNS
+
+            result = STAGE_FNS[stage](cfg)
+
+            t_end = time.monotonic()
+            duration_seconds = t_end - t_start
+
+            # Capture GPU peak memory
+            peak_gpu_mb = None
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    peak_gpu_mb = torch.cuda.max_memory_allocated() / (1024**2)
+            except Exception:
+                pass
+
+            log.info(
+                "Stage '%s' complete (%.1fs, peak_gpu=%.0fMB). Result: %s",
+                stage,
+                duration_seconds,
+                peak_gpu_mb or 0.0,
+                result,
+            )
+
+            # Log post-training metrics to MLflow
+            post_metrics = {"duration_seconds": duration_seconds}
+            if peak_gpu_mb is not None:
+                post_metrics["peak_gpu_mb"] = peak_gpu_mb
+            if isinstance(result, dict):
+                for k, v in result.items():
+                    if isinstance(v, (int, float)):
+                        post_metrics[k] = v
+            mlflow.log_metrics(post_metrics)
+
+            # Log artifacts to MLflow AND populate cache via resolver.put()
+            for artifact_name in [
+                "best_model.pt",
+                "config.json",
+                "metrics.json",
+                "embeddings.npz",
+                "attention_weights.npz",
+                "dqn_policy.json",
+                "explanations.npz",
+            ]:
+                artifact_path = sdir / artifact_name
+                if artifact_path.exists():
+                    resolver.put(cfg, stage, artifact_path)
+
+            # Success → delete archive
+            if archive and archive.exists():
+                import shutil
+
+                shutil.rmtree(archive, ignore_errors=True)
+
+            mlflow.set_tag("status", "success")
+            log.info("Run completed successfully")
+
+        except Exception as e:
+            t_end = time.monotonic()
+            duration_seconds = t_end - t_start
+
+            # Failure → restore archive
+            if archive and archive.exists():
+                if sdir.exists():
+                    import shutil
+
+                    shutil.rmtree(sdir, ignore_errors=True)
+                archive.rename(sdir)
+                log.warning("Restored archive after failure: %s", sdir)
+
+            mlflow.set_tag("status", "failed")
+            mlflow.set_tag("failure_reason", str(e)[:250])
+            mlflow.log_metrics({"duration_seconds": duration_seconds})
+
+            log.error("Run failed: %s", str(e))
+            raise
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -425,175 +628,19 @@ def main(argv: list[str] | None = None) -> None:
         cfg = resolve(args.model, args.scale, auxiliaries=aux_name, **overrides)
         log.info("Resolved config: model=%s, scale=%s, aux=%s", args.model, args.scale, aux_name)
 
-    # ---- Validate ----
-    validate(cfg, args.stage)
+    # ---- Multi-seed dispatch ----
+    if args.seeds:
+        seeds = _parse_seeds(args.seeds)
+        log.info("Multi-seed dispatch: seeds=%s, stage=%s", seeds, args.stage)
+        for i, seed in enumerate(seeds):
+            log.info("=== Seed %d/%d: %d ===", i + 1, len(seeds), seed)
+            seed_cfg = cfg.model_copy(update={"seed": seed})
+            _run_single_stage(seed_cfg, args.stage, args, log)
+        log.info("All %d seeds completed for stage '%s'", len(seeds), args.stage)
+        return
 
-    # ---- Archive completed run if re-running same config ----
-    sdir = stage_dir(cfg, args.stage)
-    archive = None
-    if (sdir / "metrics.json").exists():
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        archive = sdir.parent / f"{sdir.name}.archive_{ts}"
-        sdir.rename(archive)
-        log.warning("Archived completed run → %s", archive)
-
-    # ---- Save frozen config ----
-    cfg_out = config_path(cfg, args.stage)
-    cfg.save(cfg_out)
-    log.info("Frozen config: %s", cfg_out)
-
-    # ---- Run ID ----
-    run_name = run_id(cfg, args.stage)
-    log.info("Run started: %s", run_name)
-
-    # ---- Collect environment metadata ----
-    slurm_job_id = os.environ.get("SLURM_JOB_ID")
-    gpu_name = None
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            gpu_name = torch.cuda.get_device_name(0)
-            torch.cuda.reset_peak_memory_stats()
-    except Exception:
-        pass
-
-    # ---- Compute enrichment fields ----
-    import hashlib
-    import json
-
-    config_hash = hashlib.sha256(
-        json.dumps(cfg.model_dump(), sort_keys=True, default=str).encode()
-    ).hexdigest()[:12]
-
-    sweep_id = args.sweep_id or None
-    tags_str = args.tags or None
-    if sweep_id:
-        run_type = "sweep_best"
-    elif cfg.training.max_epochs < 10:
-        run_type = "smoke_test"
-    else:
-        run_type = "production"
-
-    teacher_run_id_str = None
-    if cfg.has_kd and cfg.kd and cfg.kd.model_path:
-        tp = Path(cfg.kd.model_path)
-        if tp.parent.parent.name and tp.parent.name:
-            teacher_run_id_str = f"{tp.parent.parent.name}/{tp.parent.name}"
-
-    # ---- MLflow run context ----
-    import mlflow
-
-    mlflow_tags = {
-        "slurm_job_id": slurm_job_id or "",
-        "gpu_name": gpu_name or "",
-        "run_type": run_type,
-        "config_hash": config_hash,
-    }
-    if sweep_id:
-        mlflow_tags["sweep_id"] = sweep_id
-    if tags_str:
-        mlflow_tags["user_tags"] = tags_str
-    if teacher_run_id_str:
-        mlflow_tags["teacher_run_id"] = teacher_run_id_str
-
-    # ---- Dispatch ----
-    t_start = time.monotonic()
-    with _setup_mlflow(run_name, cfg, args.stage, tags=mlflow_tags):
-        try:
-            # Log config as params
-            mlflow.log_params(
-                {
-                    "dataset": cfg.dataset,
-                    "model_type": cfg.model_type,
-                    "scale": cfg.scale,
-                    "stage": args.stage,
-                    "has_kd": cfg.has_kd,
-                    "batch_size": cfg.training.batch_size,
-                    "max_epochs": cfg.training.max_epochs,
-                    "lr": cfg.training.lr,
-                }
-            )
-
-            # Log frozen config as artifact
-            mlflow.log_artifact(str(cfg_out))
-
-            from .stages import STAGE_FNS
-
-            result = STAGE_FNS[args.stage](cfg)
-
-            t_end = time.monotonic()
-            duration_seconds = t_end - t_start
-
-            # Capture GPU peak memory
-            peak_gpu_mb = None
-            try:
-                import torch
-
-                if torch.cuda.is_available():
-                    peak_gpu_mb = torch.cuda.max_memory_allocated() / (1024**2)
-            except Exception:
-                pass
-
-            log.info(
-                "Stage '%s' complete (%.1fs, peak_gpu=%.0fMB). Result: %s",
-                args.stage,
-                duration_seconds,
-                peak_gpu_mb or 0.0,
-                result,
-            )
-
-            # Log post-training metrics to MLflow
-            post_metrics = {"duration_seconds": duration_seconds}
-            if peak_gpu_mb is not None:
-                post_metrics["peak_gpu_mb"] = peak_gpu_mb
-            if isinstance(result, dict):
-                for k, v in result.items():
-                    if isinstance(v, (int, float)):
-                        post_metrics[k] = v
-            mlflow.log_metrics(post_metrics)
-
-            # Log artifacts (checkpoint, embeddings, etc.)
-            for artifact_name in [
-                "best_model.pt",
-                "embeddings.npz",
-                "attention_weights.npz",
-                "dqn_policy.json",
-                "metrics.json",
-                "explanations.npz",
-            ]:
-                artifact_path = sdir / artifact_name
-                if artifact_path.exists():
-                    mlflow.log_artifact(str(artifact_path))
-
-            # Success → delete archive
-            if archive and archive.exists():
-                import shutil
-
-                shutil.rmtree(archive, ignore_errors=True)
-
-            mlflow.set_tag("status", "success")
-            log.info("Run completed successfully")
-
-        except Exception as e:
-            t_end = time.monotonic()
-            duration_seconds = t_end - t_start
-
-            # Failure → restore archive
-            if archive and archive.exists():
-                if sdir.exists():
-                    import shutil
-
-                    shutil.rmtree(sdir, ignore_errors=True)
-                archive.rename(sdir)
-                log.warning("Restored archive after failure: %s", sdir)
-
-            mlflow.set_tag("status", "failed")
-            mlflow.set_tag("failure_reason", str(e)[:250])
-            mlflow.log_metrics({"duration_seconds": duration_seconds})
-
-            log.error("Run failed: %s", str(e))
-            raise
+    # ---- Single-seed dispatch ----
+    _run_single_stage(cfg, args.stage, args, log)
 
 
 if __name__ == "__main__":

@@ -22,6 +22,9 @@ if [[ -n "${SLURM_JOB_ID:-}" ]]; then
 fi
 echo "=== End Report ==="
 
+# --- Rotate old SLURM logs (30-day retention) ---
+find "$PROJECT_ROOT/slurm_logs/" \( -name "*.out" -o -name "*.err" \) -mtime +30 -delete 2>/dev/null || true
+
 # --- Push experiment data to HF Dataset for dashboard ---
 echo ""
 echo "Pushing experiment data to HF Dataset..."

@@ -679,7 +679,10 @@ class TestFrozenConfigPropagation:
         assert frozen.vgae.latent_dim == 16
 
     def test_missing_frozen_config_raises(self, tmp_path):
+        from unittest.mock import patch
+
         from graphids.config import PipelineConfig
+        from graphids.config.paths import ArtifactResolver
         from graphids.config.schema import AuxiliaryConfig
         from graphids.pipeline.stages.utils import load_frozen_cfg
 
@@ -690,7 +693,16 @@ class TestFrozenConfigPropagation:
             auxiliaries=[AuxiliaryConfig(type="kd")],
             experiment_root=str(tmp_path),
         )
-        with pytest.raises(FileNotFoundError, match="Frozen config not found"):
+        # Use isolated resolver with empty cache + no MLflow
+        test_resolver = ArtifactResolver(cache_root=tmp_path / "empty_cache")
+        with (
+            patch("graphids.config.get_resolver", return_value=test_resolver),
+            patch(
+                "graphids.pipeline.stages.trainer_factory.get_resolver", return_value=test_resolver
+            ),
+            patch.object(test_resolver, "_find_run", return_value=None),
+            pytest.raises(FileNotFoundError, match="Frozen config not found"),
+        ):
             load_frozen_cfg(cfg, "autoencoder")
 
 

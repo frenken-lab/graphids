@@ -35,6 +35,14 @@ def push():
 
     log.info("Found %d MLflow runs", len(runs))
 
+    # Ensure run_group and seed columns exist (derived from tags)
+    for tag_col in ["tags.run_group", "tags.seed"]:
+        short_name = tag_col.split(".")[-1]
+        if tag_col in runs.columns:
+            runs[short_name] = runs[tag_col]
+        elif short_name not in runs.columns:
+            runs[short_name] = None
+
     # Write to temp parquet
     out_path = "/tmp/kd_gat_experiments.parquet"
     runs.to_parquet(out_path, index=False)

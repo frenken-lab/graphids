@@ -29,6 +29,12 @@ if [[ "${SKIP_STAGE_DATA:-0}" != "1" ]]; then
     source scripts/data/stage_data.sh ${STAGE_DATA_ARGS:---cache}
 fi
 
+# Redirect training artifacts to node-local SSD when running under SLURM
+if [[ -n "${TMPDIR:-}" ]]; then
+    export KD_GAT_STAGE_DIR="$TMPDIR/kd-gat-stage"
+    mkdir -p "$KD_GAT_STAGE_DIR"
+fi
+
 # Shared job header/footer for consistent log formatting
 log_job_header() {
     echo "=== $1 ==="

@@ -254,8 +254,13 @@ def run_sweep_pipeline(
     resume: bool = True,
     dry_run: bool = False,
     inprocess: bool = False,
+    multi_seed: bool = False,
 ) -> None:
-    """Execute the 7-step sweep pipeline DAG."""
+    """Execute the 7-step sweep pipeline DAG.
+
+    When multi_seed=True, after the sweep DAG completes, re-trains the best
+    config with all DEFAULT_SEEDS for statistical significance reporting.
+    """
     if dry_run:
         _dry_run(dataset, scale)
         return
@@ -362,6 +367,60 @@ def run_sweep_pipeline(
             raise
 
     log.info("Sweep pipeline complete for %s/%s", dataset, scale)
+
+    # Multi-seed re-training with best config for statistical significance
+    if multi_seed:
+        _run_multi_seed_final(dataset, scale)
+
+
+# ---------------------------------------------------------------------------
+# Multi-seed final training
+# ---------------------------------------------------------------------------
+
+
+def _run_multi_seed_final(dataset: str, scale: str) -> None:
+    """Re-train best config with all DEFAULT_SEEDS for statistical significance."""
+    from graphids.config.constants import DEFAULT_SEEDS
+
+    log.info("=== Multi-seed training for %s/%s with seeds %s ===", dataset, scale, DEFAULT_SEEDS)
+
+    for step in SWEEP_DAG:
+        if step.kind != "train":
+            continue
+
+        config = load_best_config(step.stage, dataset, scale)
+        for seed in DEFAULT_SEEDS:
+            cmd = [
+                sys.executable,
+                "-m",
+                "graphids.pipeline.cli",
+                step.stage,
+                "--model",
+                step.model,
+                "--scale",
+                scale,
+                "--dataset",
+                dataset,
+                "--seeds",
+                str(seed),
+            ]
+            for key, value in config.items():
+                cmd.extend(["-O", key, str(value)])
+
+            log.info("Multi-seed %s (seed=%d): %s", step.stage, seed, " ".join(cmd))
+            result = subprocess.run(cmd, cwd=PROJECT_ROOT)
+            if result.returncode != 0:
+                log.error("Multi-seed training failed: %s seed=%d", step.stage, seed)
+                raise RuntimeError(
+                    f"Multi-seed training '{step.stage}' seed={seed} failed "
+                    f"with exit code {result.returncode}"
+                )
+
+    # Final multi-seed evaluation
+    for seed in DEFAULT_SEEDS:
+        _run_evaluate_step(dataset, scale)
+
+    log.info("=== Multi-seed training complete for %s/%s ===", dataset, scale)
 
 
 # ---------------------------------------------------------------------------

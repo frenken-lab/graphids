@@ -20,7 +20,6 @@ from .utils import (
     cleanup,
     graph_label,
     load_data,
-    load_frozen_cfg,
     load_model,
     load_teacher,
     make_dataloader,
