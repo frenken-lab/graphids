@@ -1,8 +1,7 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-from ._utils import _make_conv, checkpoint_conv
+from ._utils import _make_conv
 
 
 class GraphAutoencoderNeighborhood(nn.Module):
@@ -169,18 +168,22 @@ class GraphAutoencoderNeighborhood(nn.Module):
         self.latent_dim = latent_dim
 
     def encode(self, x, edge_index, edge_attr=None):
+        from ._utils import conv_forward
+
         x = self.input_encoder(x)
-        # Apply encoder layers; handle optional batchnorm safely
+        # Apply encoder layers
         for i, conv in enumerate(self.encoder_layers):
-            if self.use_checkpointing and x.requires_grad:
-                x = checkpoint_conv(conv, x, edge_index, edge_attr)
-            else:
-                x = conv(x, edge_index, edge_attr) if edge_attr is not None else conv(x, edge_index)
-            if self.batch_norm:
-                bn = self.encoder_bns[i]
-                x = self.dropout(F.relu(bn(x)))
-            else:
-                x = self.dropout(F.relu(x))
+            bn = self.encoder_bns[i] if self.batch_norm else None
+            x = conv_forward(
+                conv,
+                x,
+                edge_index,
+                edge_attr,
+                bn=bn,
+                dropout_p=self.dropout_rate,
+                training=self.training,
+                use_checkpointing=self.use_checkpointing,
+            )
         mu = self.z_mean(x)
         logvar = self.z_logvar(x).clamp(-20, 20)
         std = torch.exp(0.5 * logvar)
@@ -207,30 +210,32 @@ class GraphAutoencoderNeighborhood(nn.Module):
                 f"Decoder layers: {[(l.in_channels, l.out_channels, l.heads) for l in self.decoder_layers]}"
             )
 
+        from ._utils import conv_forward
+
         for i, conv in enumerate(self.decoder_layers):
             if i < len(self.decoder_layers) - 1:
-                if self.use_checkpointing and x.requires_grad:
-                    x = checkpoint_conv(conv, x, edge_index, edge_attr)
-                else:
-                    x = (
-                        conv(x, edge_index, edge_attr)
-                        if edge_attr is not None
-                        else conv(x, edge_index)
-                    )
-                if self.batch_norm:
-                    bn = self.decoder_bns[i]
-                    x = self.dropout(F.relu(bn(x)))
-                else:
-                    x = self.dropout(F.relu(x))
+                bn = self.decoder_bns[i] if self.batch_norm else None
+                x = conv_forward(
+                    conv,
+                    x,
+                    edge_index,
+                    edge_attr,
+                    bn=bn,
+                    dropout_p=self.dropout_rate,
+                    training=self.training,
+                    use_checkpointing=self.use_checkpointing,
+                )
             else:  # Last decoder layer — sigmoid constrains output to [0,1]
-                if self.use_checkpointing and x.requires_grad:
-                    x = torch.sigmoid(checkpoint_conv(conv, x, edge_index, edge_attr))
-                else:
-                    x = torch.sigmoid(
-                        conv(x, edge_index, edge_attr)
-                        if edge_attr is not None
-                        else conv(x, edge_index)
+                x = torch.sigmoid(
+                    conv_forward(
+                        conv,
+                        x,
+                        edge_index,
+                        edge_attr,
+                        activation=None,
+                        use_checkpointing=self.use_checkpointing,
                     )
+                )
         cont_out = x  # shape: [num_nodes, in_channels-1]
         canid_logits = self.canid_classifier(z)
 

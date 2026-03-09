@@ -85,3 +85,47 @@ def checkpoint_conv(conv, x: Tensor, edge_index: Tensor, edge_attr: Tensor | Non
             lambda xi, c=conv, ei=edge_index, ea=edge_attr: c(xi, ei, ea), x, use_reentrant=False
         )
     return checkpoint(lambda xi, c=conv, ei=edge_index: c(xi, ei), x, use_reentrant=False)
+
+
+def conv_forward(
+    conv,
+    x: Tensor,
+    edge_index: Tensor,
+    edge_attr: Tensor | None = None,
+    bn: nn.Module | None = None,
+    activation=torch.nn.functional.relu,
+    dropout_p: float = 0.0,
+    training: bool = True,
+    use_checkpointing: bool = False,
+) -> Tensor:
+    """Apply a graph conv layer with optional batch norm, activation, and dropout.
+
+    Consolidates the repeated pattern across VGAE encoder, VGAE decoder,
+    and GAT conv loops. Does NOT handle attention weight extraction — the
+    GAT attention-weight path should call the conv directly.
+
+    Args:
+        conv: Graph convolution layer (GATConv, GATv2Conv, TransformerConv).
+        x: Node features ``[num_nodes, in_dim]``.
+        edge_index: Edge indices ``[2, num_edges]``.
+        edge_attr: Optional edge features.
+        bn: Optional BatchNorm1d layer.
+        activation: Activation function (default: F.relu). Pass None to skip.
+        dropout_p: Dropout probability (0.0 = no dropout).
+        training: Whether in training mode (affects dropout).
+        use_checkpointing: Use gradient checkpointing for the conv layer.
+
+    Returns:
+        Transformed node features.
+    """
+    if use_checkpointing and x.requires_grad:
+        x = checkpoint_conv(conv, x, edge_index, edge_attr)
+    else:
+        x = conv(x, edge_index, edge_attr) if edge_attr is not None else conv(x, edge_index)
+    if bn is not None:
+        x = bn(x)
+    if activation is not None:
+        x = activation(x)
+    if dropout_p > 0.0:
+        x = torch.nn.functional.dropout(x, p=dropout_p, training=training)
+    return x
