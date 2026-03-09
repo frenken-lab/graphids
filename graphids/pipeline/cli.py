@@ -60,23 +60,10 @@ def _parse_bool(v: str) -> bool:
 
 def _parse_seeds(value: str) -> list[int]:
     """Parse --seeds argument: comma-separated ints or a count for random seeds."""
-    from graphids.config.constants import DEFAULT_SEEDS
+    from graphids.config.constants import parse_seeds
 
-    if value is None:
-        return []
-
-    # Single integer → use first N default seeds
     try:
-        n = int(value)
-        if n <= 0:
-            raise ValueError("Seed count must be positive")
-        return DEFAULT_SEEDS[:n] if n <= len(DEFAULT_SEEDS) else DEFAULT_SEEDS
-    except ValueError:
-        pass
-
-    # Comma-separated list
-    try:
-        return [int(s.strip()) for s in value.split(",")]
+        return parse_seeds(value)
     except ValueError as e:
         raise argparse.ArgumentTypeError(f"Invalid --seeds value '{value}': {e}") from e
 

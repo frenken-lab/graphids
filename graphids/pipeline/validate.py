@@ -20,6 +20,25 @@ from graphids.config.constants import STAGE_DEPENDENCIES
 _log = logging.getLogger(__name__)
 
 
+def validate_datasets(datasets: list[str], scale: str) -> list[str]:
+    """Validate that datasets resolve and have data directories.
+
+    Returns a list of error strings (empty if all OK).
+    """
+    from graphids.config.resolver import resolve
+
+    errors: list[str] = []
+    for dataset in datasets:
+        try:
+            cfg = resolve("vgae", scale, dataset=dataset)
+            ddir = data_dir(cfg)
+            if not ddir.exists():
+                errors.append(f"Data dir missing for {dataset}: {ddir}")
+        except Exception as e:
+            errors.append(f"Config resolution failed for {dataset}: {e}")
+    return errors
+
+
 def _artifact_exists(cfg: PipelineConfig, stage: str, name: str, model_type: str) -> bool:
     """Check if a stage artifact exists via the resolver (cache → legacy → MLflow)."""
     try:

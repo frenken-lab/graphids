@@ -25,6 +25,11 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .constants import (  # noqa: F401  # re-exported via config/__init__
+    CATALOG_PATH,
+    STAGES,
+)
+
 if TYPE_CHECKING:
     from .schema import PipelineConfig
 
@@ -46,18 +51,6 @@ _CACHE_ROOT: str | None = os.environ.get("KD_GAT_CACHE_ROOT")
 # Artifact cache root — disposable, rm -rf safe
 _ARTIFACT_CACHE_ROOT: str = os.environ.get("KD_GAT_ARTIFACT_CACHE", ".cache/kd-gat")
 
-# stage_name -> (learning_type, model_arch, training_mode)
-# run_id() overrides model_arch to "eval" for the evaluation stage.
-STAGES = {
-    "autoencoder": ("unsupervised", "vgae", "autoencoder"),
-    "curriculum": ("supervised", "gat", "curriculum"),
-    "normal": ("supervised", "gat", "normal"),
-    "fusion": ("rl_fusion", "dqn", "fusion"),
-    "evaluation": ("evaluation", "eval", "evaluation"),
-    "temporal": ("temporal", "gat", "temporal"),
-}
-
-from .constants import CATALOG_PATH  # noqa: F401  # re-exported via config/__init__
 
 _datasets_cache: list[str] | None = None
 
@@ -88,6 +81,21 @@ def __getattr__(name: str):
 # ---------------------------------------------------------------------------
 
 
+def _run_id_parts(
+    cfg: PipelineConfig,
+    stage: str | None = None,
+) -> tuple[str, str, str]:
+    """Extract the three variable parts of a run ID from config.
+
+    Returns ``(model_type, scale, aux_suffix)`` where *model_type* is
+    overridden to ``"eval"`` for the evaluation stage and *aux_suffix*
+    is the underscore-prefixed auxiliary type (or ``""``).
+    """
+    aux_suffix = f"_{cfg.auxiliaries[0].type}" if cfg.auxiliaries else ""
+    model = "eval" if stage == "evaluation" else cfg.model_type
+    return model, cfg.scale, aux_suffix
+
+
 def run_id(cfg: PipelineConfig, stage: str) -> str:
     """Deterministic run ID from config and stage.
 
@@ -101,21 +109,14 @@ def run_id(cfg: PipelineConfig, stage: str) -> str:
     - Filesystem directory names (via stage_dir)
     - MLflow run names (for tracking)
     """
-    aux_suffix = f"_{cfg.auxiliaries[0].type}" if cfg.auxiliaries else ""
-    model = "eval" if stage == "evaluation" else cfg.model_type
-    return f"{cfg.dataset}/{model}_{cfg.scale}_{stage}{aux_suffix}"
+    model, scale, aux_suffix = _run_id_parts(cfg, stage)
+    return f"{cfg.dataset}/{model}_{scale}_{stage}{aux_suffix}"
 
 
-def run_group(cfg: PipelineConfig, stage: str) -> str:
-    """Seed-independent run identity for aggregation across seeds.
-
-    Format: {dataset}/{model_type}_{scale}_{stage}[_{aux}]
-    Same as run_id() — the seed is NOT part of the group key.
-    Used to query MLflow for all seeds of a given configuration.
-    """
-    aux_suffix = f"_{cfg.auxiliaries[0].type}" if cfg.auxiliaries else ""
-    model = "eval" if stage == "evaluation" else cfg.model_type
-    return f"{cfg.dataset}/{model}_{cfg.scale}_{stage}{aux_suffix}"
+#: Seed-independent run identity for aggregation across seeds.
+#: Same as :func:`run_id` — the seed is NOT part of the group key.
+#: Used to query MLflow for all seeds of a given configuration.
+run_group = run_id
 
 
 def run_metadata(cfg: PipelineConfig, stage: str) -> dict[str, str]:
@@ -348,19 +349,19 @@ class ArtifactResolver:
 
     def _run_group_str(self, cfg: PipelineConfig, stage: str, model_type: str) -> str:
         """Build run group string, possibly with overridden model_type."""
-        aux_suffix = f"_{cfg.auxiliaries[0].type}" if cfg.auxiliaries else ""
+        _, scale, aux_suffix = _run_id_parts(cfg, stage)
         model = "eval" if stage == "evaluation" else model_type
-        return f"{cfg.dataset}/{model}_{cfg.scale}_{stage}{aux_suffix}"
+        return f"{cfg.dataset}/{model}_{scale}_{stage}{aux_suffix}"
 
     def _legacy_path(
         self, cfg: PipelineConfig, stage: str, artifact_name: str, model_type: str
     ) -> Path:
         """Build legacy experimentruns/ path for transitional compatibility."""
-        aux_suffix = f"_{cfg.auxiliaries[0].type}" if cfg.auxiliaries else ""
+        _, scale, aux_suffix = _run_id_parts(cfg, stage)
         return (
             Path(cfg.experiment_root)
             / cfg.dataset
-            / f"{model_type}_{cfg.scale}_{stage}{aux_suffix}"
+            / f"{model_type}_{scale}_{stage}{aux_suffix}"
             / artifact_name
         )
 

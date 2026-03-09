@@ -13,19 +13,22 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from graphids.config.constants import STAGE_MODEL_MAP, SWEEP_RESULTS_DIR, SWEEP_STATE_DIR
+from graphids.config.constants import (
+    PROJECT_ROOT,
+    STAGE_MODEL_MAP,
+    SWEEP_RESULTS_DIR,
+    SWEEP_STATE_DIR,
+)
 from graphids.pipeline.state import load_state, save_state
+from graphids.pipeline.subprocess_utils import build_cli_cmd
 
 log = logging.getLogger(__name__)
-
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 @dataclass(frozen=True)
@@ -184,22 +187,14 @@ def _run_train_step(step: SweepStep, dataset: str, scale: str) -> None:
     """Train with best HPs from a completed sweep, using subprocess for CUDA isolation."""
     config = load_best_config(step.stage, dataset, scale)
 
-    cmd = [
-        sys.executable,
-        "-m",
-        "graphids.pipeline.cli",
+    cmd = build_cli_cmd(
         step.stage,
-        "--model",
         step.model,
-        "--scale",
         scale,
-        "--dataset",
         dataset,
-    ]
-    for key, value in config.items():
-        cmd.extend(["-O", key, str(value)])
-
-    cmd.extend(["--sweep-id", f"tune_{step.stage}_{dataset}_{scale}"])
+        overrides=list(config.items()),
+        sweep_id=f"tune_{step.stage}_{dataset}_{scale}",
+    )
     log.info("Training best %s: %s", step.stage, " ".join(cmd))
     result = subprocess.run(cmd, cwd=PROJECT_ROOT)
     if result.returncode != 0:
@@ -208,18 +203,7 @@ def _run_train_step(step: SweepStep, dataset: str, scale: str) -> None:
 
 def _run_evaluate_step(dataset: str, scale: str) -> None:
     """Run evaluation stage via subprocess."""
-    cmd = [
-        sys.executable,
-        "-m",
-        "graphids.pipeline.cli",
-        "evaluation",
-        "--model",
-        "vgae",
-        "--scale",
-        scale,
-        "--dataset",
-        dataset,
-    ]
+    cmd = build_cli_cmd("evaluation", "vgae", scale, dataset)
     log.info("Running evaluation: %s", " ".join(cmd))
     result = subprocess.run(cmd, cwd=PROJECT_ROOT)
     if result.returncode != 0:
@@ -378,23 +362,14 @@ def _run_multi_seed_final(dataset: str, scale: str) -> None:
 
         config = load_best_config(step.stage, dataset, scale)
         for seed in DEFAULT_SEEDS:
-            cmd = [
-                sys.executable,
-                "-m",
-                "graphids.pipeline.cli",
+            cmd = build_cli_cmd(
                 step.stage,
-                "--model",
                 step.model,
-                "--scale",
                 scale,
-                "--dataset",
                 dataset,
-                "--seeds",
-                str(seed),
-            ]
-            for key, value in config.items():
-                cmd.extend(["-O", key, str(value)])
-
+                seeds=str(seed),
+                overrides=list(config.items()),
+            )
             log.info("Multi-seed %s (seed=%d): %s", step.stage, seed, " ".join(cmd))
             result = subprocess.run(cmd, cwd=PROJECT_ROOT)
             if result.returncode != 0:
@@ -420,18 +395,21 @@ def _dry_run(dataset: str, scale: str) -> None:
     """Print DAG state and verify configs without executing."""
     from graphids.config import data_dir
     from graphids.config.resolver import resolve
+    from graphids.pipeline.validate import validate_datasets
 
     log.info("=== Sweep Pipeline Dry Run: dataset=%s, scale=%s ===", dataset, scale)
 
-    # Verify config resolution
-    try:
-        cfg = resolve("vgae", scale, dataset=dataset)
-        ddir = data_dir(cfg)
-        log.info("Config resolution: OK")
-        log.info("Data directory: %s (exists=%s)", ddir, ddir.exists())
-    except Exception as e:
-        log.error("Config resolution FAILED: %s", e)
+    # Verify config resolution + data directory
+    ds_errors = validate_datasets([dataset], scale)
+    if ds_errors:
+        for err in ds_errors:
+            log.error("Validation FAILED: %s", err)
         return
+
+    cfg = resolve("vgae", scale, dataset=dataset)
+    ddir = data_dir(cfg)
+    log.info("Config resolution: OK")
+    log.info("Data directory: %s (exists=%s)", ddir, ddir.exists())
 
     # Load existing state
     state = _load_state(dataset, scale)

@@ -8,7 +8,6 @@ Core function:
 import json
 import logging
 import os
-import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -29,6 +28,35 @@ from graphids.core.preprocessing.dataset import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Atomic save helpers (NFS-safe)
+# ============================================================================
+
+
+def _atomic_rename(tmp: Path, final: Path, retries: int = 3) -> None:
+    """Rename tmp → final with retry for NFS visibility delays."""
+    import time
+
+    for attempt in range(retries):
+        try:
+            tmp.rename(final)
+            return
+        except OSError as e:
+            if attempt < retries - 1:
+                logger.warning("Rename attempt %d failed: %s. Retrying...", attempt + 1, e)
+                time.sleep(1)
+            else:
+                raise
+
+
+def _atomic_save_collated(graphs: list, tmp_path: Path, target_path: Path) -> None:
+    """Save collated graphs atomically: write to tmp, fsync, rename to target."""
+    save_collated(graphs, tmp_path)
+    with open(tmp_path, "rb") as f:
+        os.fsync(f.fileno())
+    _atomic_rename(tmp_path, target_path)
 
 
 # ============================================================================
@@ -242,29 +270,13 @@ def _process_dataset_from_scratch(
     temp_mapping = id_mapping_file.with_suffix(".tmp")
 
     try:
-        slices = save_collated(graphs, temp_cache)
+        _atomic_save_collated(graphs, temp_cache, cache_file)
         with open(temp_mapping, "wb") as f:
             pickle.dump(id_mapping, f, protocol=4)
+        with open(temp_mapping, "rb") as f:
+            os.fsync(f.fileno())
+        _atomic_rename(temp_mapping, id_mapping_file)
 
-        # Flush to disk to ensure NFS visibility before rename
-        for tmp in (temp_cache, temp_mapping):
-            with open(tmp, "rb") as f:
-                os.fsync(f.fileno())
-
-        # Retry rename with backoff (NFS may delay visibility)
-        for tmp, final in ((temp_cache, cache_file), (temp_mapping, id_mapping_file)):
-            for attempt in range(3):
-                try:
-                    tmp.rename(final)
-                    break
-                except OSError as e:
-                    if attempt < 2:
-                        logger.warning(
-                            "Cache rename attempt %d failed: %s. Retrying...", attempt + 1, e
-                        )
-                        time.sleep(1)
-                    else:
-                        raise
         logger.info(f"Cache saved (collated): {len(graphs)} graphs")
 
         # Write cache metadata for validation on future loads
@@ -348,10 +360,7 @@ def load_test_scenarios(
             cache_dir_path.mkdir(parents=True, exist_ok=True)
             tmp = cache_file.with_suffix(".tmp")
             try:
-                save_collated(graphs, tmp)
-                with open(tmp, "rb") as fh:
-                    os.fsync(fh.fileno())
-                tmp.rename(cache_file)
+                _atomic_save_collated(graphs, tmp, cache_file)
                 logger.info(
                     "Cached %d test graphs (collated) for %s → %s", len(graphs), name, cache_file
                 )

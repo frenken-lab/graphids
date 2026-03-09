@@ -24,16 +24,15 @@ from pathlib import Path
 from typing import Any
 
 from graphids.config.constants import (
-    DEFAULT_SEEDS,
+    PROJECT_ROOT,
     SLURM_ACCOUNT,
     STAGE_DEPENDENCIES,
+    parse_seeds,
 )
 
 from .state import StageStatus, load_state, now_iso, save_state, update_stage
 
 log = logging.getLogger(__name__)
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # ---------------------------------------------------------------------------
 # Resource profiles per stage type
@@ -283,26 +282,18 @@ def _sbatch(stage_key: str, stage_info: dict[str, Any]) -> int:
     res = stage_info["resources"]
     cli = stage_info["cli_args"]
 
-    # Build the python command
-    py_cmd_parts = [
-        "source scripts/slurm/_preamble.sh &&",
-        sys.executable,
-        "-m",
-        "graphids.pipeline.cli",
-        cli["stage"],
-        "--model",
-        cli["model"],
-        "--scale",
-        cli["scale"],
-        "--dataset",
-        cli["dataset"],
-        "--seed",
-        str(cli["seed"]),
-    ]
-    if cli.get("auxiliaries", "none") != "none":
-        py_cmd_parts.extend(["--auxiliaries", cli["auxiliaries"]])
+    # Build the python command via shared builder, then prepend preamble for SLURM
+    from graphids.pipeline.subprocess_utils import build_cli_cmd
 
-    wrap_cmd = " ".join(str(p) for p in py_cmd_parts)
+    cli_cmd = build_cli_cmd(
+        cli["stage"],
+        cli["model"],
+        cli["scale"],
+        cli["dataset"],
+        seed=cli.get("seed"),
+        auxiliaries=cli.get("auxiliaries", "none"),
+    )
+    wrap_cmd = "source scripts/slurm/_preamble.sh && " + " ".join(str(p) for p in cli_cmd)
 
     # Sanitize stage key for filenames
     safe_key = stage_key.replace("/", "_")
@@ -671,17 +662,9 @@ class PipelineCoordinator:
             errors.append("sacct not found — needed for job status polling")
 
         # Data directories
-        from graphids.config import data_dir
-        from graphids.config.resolver import resolve
+        from graphids.pipeline.validate import validate_datasets
 
-        for dataset in self.datasets:
-            try:
-                cfg = resolve("vgae", self.scale, dataset=dataset)
-                ddir = data_dir(cfg)
-                if not ddir.exists():
-                    errors.append(f"Data dir missing for {dataset}: {ddir}")
-            except Exception as e:
-                errors.append(f"Config resolution failed for {dataset}: {e}")
+        errors.extend(validate_datasets(self.datasets, self.scale))
 
         # Disk space
         cache_dir = self.state_path.parent
@@ -774,16 +757,6 @@ class PipelineCoordinator:
 # ---------------------------------------------------------------------------
 
 
-def _parse_seeds(value: str) -> list[int]:
-    """Parse seeds: comma-separated ints or count for default seeds."""
-    try:
-        n = int(value)
-        return DEFAULT_SEEDS[:n] if 0 < n <= len(DEFAULT_SEEDS) else DEFAULT_SEEDS
-    except ValueError:
-        pass
-    return [int(s.strip()) for s in value.split(",")]
-
-
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="coordinator",
@@ -844,7 +817,7 @@ def main(argv: list[str] | None = None) -> None:
             parser.error("--dataset is required (unless --resume is used)")
 
         datasets = [d.strip() for d in args.dataset.split(",")]
-        seeds = _parse_seeds(args.seeds)
+        seeds = parse_seeds(args.seeds)
 
         coordinator = PipelineCoordinator(
             datasets=datasets,

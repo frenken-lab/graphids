@@ -17,6 +17,9 @@ PREPROCESSING_VERSION = "3.0.0"  # Collated tensor storage (was list[Data] in 2.
 # ---------------------------------------------------------------------------
 CATALOG_PATH = Path(__file__).parent / "datasets.yaml"
 
+# Repository root (graphids/config/ is 2 levels deep)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 # ---------------------------------------------------------------------------
 # Preprocessing
 # ---------------------------------------------------------------------------
@@ -131,13 +134,22 @@ SLURM_PARTITION = os.getenv("KD_GAT_SLURM_PARTITION", "gpu")
 SLURM_GPU_TYPE = os.getenv("KD_GAT_GPU_TYPE", "v100")
 
 # ---------------------------------------------------------------------------
-# Stage → model type mapping (single source of truth)
+# Stage definitions (single source of truth)
 # ---------------------------------------------------------------------------
+# stage_name -> (learning_type, model_arch, training_mode)
+# run_id() overrides model_arch to "eval" for the evaluation stage.
+STAGES: dict[str, tuple[str, str, str]] = {
+    "autoencoder": ("unsupervised", "vgae", "autoencoder"),
+    "curriculum": ("supervised", "gat", "curriculum"),
+    "normal": ("supervised", "gat", "normal"),
+    "fusion": ("rl_fusion", "dqn", "fusion"),
+    "evaluation": ("evaluation", "eval", "evaluation"),
+    "temporal": ("temporal", "gat", "temporal"),
+}
+
+# Derived: stage → model type (excludes evaluation/temporal which don't train standalone)
 STAGE_MODEL_MAP: dict[str, str] = {
-    "autoencoder": "vgae",
-    "curriculum": "gat",
-    "normal": "gat",
-    "fusion": "dqn",
+    k: v[1] for k, v in STAGES.items() if k in ("autoencoder", "curriculum", "normal", "fusion")
 }
 
 # Stage prerequisite dependencies: stage → list of (model_type, prereq_stage) pairs
@@ -158,3 +170,27 @@ SWEEP_STATE_DIR = "data/sweep_state"
 # Multi-seed defaults (for statistical significance in TMLR submission)
 # ---------------------------------------------------------------------------
 DEFAULT_SEEDS: list[int] = [42, 123, 456, 789, 1024]
+
+
+def parse_seeds(value: str) -> list[int]:
+    """Parse seeds: comma-separated ints or count for default seeds.
+
+    Raises ValueError on invalid input (callers like argparse can wrap this).
+    """
+    if value is None:
+        return []
+
+    # Single integer → use first N default seeds
+    try:
+        n = int(value)
+        if n <= 0:
+            raise ValueError("Seed count must be positive")
+        return DEFAULT_SEEDS[:n] if n <= len(DEFAULT_SEEDS) else DEFAULT_SEEDS
+    except ValueError:
+        pass
+
+    # Comma-separated list
+    try:
+        return [int(s.strip()) for s in value.split(",")]
+    except ValueError as e:
+        raise ValueError(f"Invalid seeds value '{value}': {e}") from e
