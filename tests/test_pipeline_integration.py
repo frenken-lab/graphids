@@ -600,8 +600,8 @@ class TestValidation:
         with pytest.raises(ValueError, match="Teacher config not found"):
             validate(cfg, "autoencoder")
 
-    def test_missing_prerequisite_config(self, tmp_path):
-        from graphids.config import PipelineConfig
+    def test_missing_prerequisite_config(self, tmp_path, monkeypatch):
+        from graphids.config import PipelineConfig, paths
         from graphids.pipeline.validate import validate
 
         cfg = PipelineConfig(
@@ -615,6 +615,10 @@ class TestValidation:
         vgae_dir = tmp_path / "hcrl_sa" / "vgae_large_autoencoder"
         vgae_dir.mkdir(parents=True)
         (vgae_dir / "best_model.pt").write_bytes(b"fake")
+
+        # Disable MLflow fallback so test only checks filesystem paths
+        resolver = paths.get_resolver()
+        monkeypatch.setattr(resolver, "_find_run", lambda *a, **kw: None)
 
         with pytest.raises(ValueError, match="config"):
             validate(cfg, "curriculum")
