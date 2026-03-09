@@ -14,8 +14,85 @@ from graphids.config import MLFLOW_TRACKING_URI, PipelineConfig, get_resolver, s
 
 log = logging.getLogger(__name__)
 
+# model_type → the canonical stage that produces the teacher checkpoint.
+# "curriculum" is preferred over "normal" for GAT since the teacher (large) always
+# trains via curriculum. Derived from STAGE_MODEL_MAP with first-wins semantics.
+from graphids.config.constants import STAGE_MODEL_MAP
 
-def load_teacher(
+_TEACHER_STAGE: dict[str, str] = {}
+for _stage, _model in STAGE_MODEL_MAP.items():
+    _TEACHER_STAGE.setdefault(_model, _stage)
+
+
+def resolve_teacher_path(cfg: PipelineConfig, model_type: str) -> Path:
+    """Auto-resolve teacher checkpoint path for KD.
+
+    Resolution order:
+    1. Explicit ``cfg.kd.model_path`` (manual override)
+    2. Auto-resolve from ``cfg.kd.teacher_scale`` via the artifact resolver
+
+    The ``teacher_scale`` field (default ``"large"``) makes the teacher
+    reference scale-agnostic — today it's "large", but could be any
+    variant that produces a checkpoint for the given model_type.
+    """
+    from graphids.config import checkpoint_path
+    from graphids.config.resolver import resolve
+
+    if cfg.kd and cfg.kd.model_path:
+        return Path(cfg.kd.model_path)
+
+    teacher_scale = cfg.kd.teacher_scale if cfg.kd else "large"
+    stage = _TEACHER_STAGE.get(model_type)
+    if stage is None:
+        raise ValueError(f"No teacher stage mapping for model_type '{model_type}'")
+
+    teacher_cfg = resolve(model_type, teacher_scale, dataset=cfg.dataset, seed=cfg.seed)
+    path = checkpoint_path(teacher_cfg, stage)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Teacher checkpoint not found: {path}. "
+            f"Train {model_type}/{teacher_scale} first, or set model_path explicitly."
+        )
+    log.info("Auto-resolved teacher (%s/%s): %s", model_type, teacher_scale, path)
+    return path
+
+
+def prepare_kd(
+    cfg: PipelineConfig,
+    model_type: str,
+    num_ids: int,
+    in_channels: int,
+    device: torch.device,
+) -> tuple[nn.Module | None, nn.Linear | None]:
+    """Resolve, load, and prepare all KD components for a training stage.
+
+    Returns ``(teacher, projection)`` when KD is active, or
+    ``(None, None)`` when KD is disabled.  Centralizes the entire
+    teacher lifecycle so training functions need only::
+
+        teacher, projection = prepare_kd(cfg, "vgae", num_ids, in_ch, device)
+
+    No if/else branching required in calling code.
+    """
+    if not cfg.has_kd:
+        return None, None
+
+    teacher_path = resolve_teacher_path(cfg, model_type)
+    teacher = _load_teacher(str(teacher_path), model_type, cfg, num_ids, in_channels, device)
+
+    # Projection layer only needed for VGAE (latent space alignment)
+    projection = None
+    if model_type == "vgae":
+        from graphids.core.models.registry import get as registry_get
+
+        tmp_student = registry_get("vgae").factory(cfg, num_ids, in_channels)
+        projection = make_projection(tmp_student, teacher, "vgae", device)
+        del tmp_student
+
+    return teacher, projection
+
+
+def _load_teacher(
     teacher_path: str,
     model_type: str,
     cfg: PipelineConfig,
@@ -23,17 +100,7 @@ def load_teacher(
     in_channels: int,
     device: torch.device,
 ) -> nn.Module:
-    """Load a teacher model from its checkpoint for knowledge distillation.
-
-    Uses the model registry (``registry.get(model_type).factory()``) to
-    construct the architecture, then loads weights from *teacher_path*.
-    Dimensions come from the **frozen config.json** saved alongside the
-    checkpoint — never from the student config — preventing shape mismatches
-    when teacher and student have different hidden sizes.
-
-    The returned model is moved to *device*, set to eval mode, and has all
-    parameters frozen (``requires_grad=False``).
-    """
+    """Load and freeze a teacher model from checkpoint.  Internal to prepare_kd()."""
     from graphids.core.models.registry import get as registry_get
 
     checkpoint = torch.load(teacher_path, map_location="cpu", weights_only=True)

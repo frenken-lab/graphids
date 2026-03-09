@@ -30,13 +30,14 @@ from .data_loading import (
     make_dataloader,
     training_preamble,
 )
+from .trainer_factory import _load_teacher as load_teacher
 from .trainer_factory import (
     build_optimizer_dict,
     load_frozen_cfg,
     load_model,
-    load_teacher,
     make_projection,
     make_trainer,
+    prepare_kd,
 )
 
 __all__ = [
@@ -53,6 +54,7 @@ __all__ = [
     "make_dataloader",
     "make_projection",
     "make_trainer",
+    "prepare_kd",
     "resolve_batch_config",
     "training_preamble",
 ]

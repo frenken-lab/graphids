@@ -53,7 +53,8 @@ class AuxiliaryConfig(BaseModel, frozen=True):
     """One auxiliary loss modifier (KD, PINN, etc.). Flat with defaults."""
 
     type: Literal["kd"] = "kd"  # Extend Literal as new auxiliaries are added
-    model_path: str = ""
+    model_path: str = ""  # Explicit override; empty = auto-resolve from teacher_scale
+    teacher_scale: str = "large"  # Scale of teacher model (auto-resolved when model_path empty)
     alpha: float = Field(0.7, ge=0, le=1)
     # KD-specific (defaults are safe no-ops for non-KD types)
     temperature: float = Field(4.0, gt=0)

@@ -45,12 +45,6 @@ _BENCHMARK_LOG = os.environ.get("KD_GAT_BENCHMARK_LOG", "benchmark_timing.jsonl"
 # Track when the last stage ended so we can measure inter-stage gaps.
 _last_stage_end: float | None = None
 
-from graphids.config.constants import STAGE_MODEL_MAP
-
-# Stage name → (model_type, stage_cli_name). Derived from STAGE_MODEL_MAP + evaluation.
-_STAGE_DISPATCH = {stage: (model, stage) for stage, model in STAGE_MODEL_MAP.items()}
-_STAGE_DISPATCH["evaluation"] = ("vgae", "evaluation")
-
 
 def _init_ray(datasets: list[str] | None, local: bool) -> list[str]:
     """Resolve datasets and initialize Ray if needed."""
@@ -113,7 +107,6 @@ def _run_stage(
     scale: str,
     dataset: str,
     auxiliaries: str = "none",
-    teacher_path: str | None = None,
     seed: int | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a pipeline stage as a subprocess via the CLI.
@@ -121,6 +114,10 @@ def _run_stage(
     Using subprocess ensures each stage gets a clean CUDA context
     (critical for spawn multiprocessing). Logs wall-clock timing
     for benchmarking subprocess overhead vs training time.
+
+    KD teacher resolution is handled automatically by the training code
+    via ``prepare_kd()`` — no need to pass teacher paths through the
+    subprocess boundary.
 
     When KD_GAT_BENCHMARK=1, writes detailed timing to a JSONL log:
     - spawn_overhead_s: time for subprocess to start (Popen → first poll)
@@ -145,8 +142,6 @@ def _run_stage(
         "--auxiliaries",
         auxiliaries,
     ]
-    if teacher_path:
-        cmd.extend(["--teacher-path", teacher_path])
     if seed is not None:
         cmd.extend(["--seed", str(seed)])
 
@@ -248,10 +243,9 @@ def _make_stage_task(stage: str, model: str):
         dataset: str,
         scale: str,
         auxiliaries: str = "none",
-        teacher_path: str | None = None,
         seed: int | None = None,
     ) -> str:
-        _run_stage(stage, model, scale, dataset, auxiliaries, teacher_path, seed=seed)
+        _run_stage(stage, model, scale, dataset, auxiliaries, seed=seed)
         from graphids.config import checkpoint_path
         from graphids.config.resolver import resolve
 
@@ -284,36 +278,22 @@ def task_eval(dataset: str, scale: str, auxiliaries: str = "none", seed: int | N
 # ---------------------------------------------------------------------------
 
 
-def _get_teacher_ckpts(dataset: str) -> dict[str, str]:
-    """Load teacher checkpoint paths from existing large variant runs."""
-    from graphids.config import checkpoint_path
-    from graphids.config.resolver import resolve
-
-    teacher_paths = {}
-    for model, stage in [("vgae", "autoencoder"), ("gat", "curriculum"), ("dqn", "fusion")]:
-        cfg = resolve(model, "large", dataset=dataset)
-        tp = checkpoint_path(cfg, stage)
-        if not tp.exists():
-            raise FileNotFoundError(
-                f"Teacher checkpoint not found: {tp}. Run with --scale large first."
-            )
-        teacher_paths[model] = str(tp)
-    return teacher_paths
-
-
 def variant_pipeline(
     dataset: str,
     variant_name: str,
     scale: str,
     stages: list[str],
     auxiliaries: str = "none",
-    teacher_ckpts: dict[str, str] | None = None,
     seed: int | None = None,
 ) -> dict[str, str]:
     """Execute a config-driven stage chain for a single variant.
 
     Returns a dict of {stage_name: checkpoint_path} for stages that
     produce checkpoints (autoencoder, curriculum, fusion).
+
+    KD teacher resolution is automatic — each stage's training code
+    calls ``prepare_kd()`` which resolves the teacher from
+    ``cfg.kd.teacher_scale`` via the artifact resolver.
     """
     ckpts: dict[str, str] = {}
 
@@ -327,13 +307,7 @@ def variant_pipeline(
             log.warning("Unknown stage '%s' in variant '%s', skipping", stage_name, variant_name)
             continue
 
-        # Determine teacher path for this stage's model type
-        teacher_path = None
-        if teacher_ckpts and auxiliaries != "none":
-            model_type, _ = _STAGE_DISPATCH[stage_name]
-            teacher_path = teacher_ckpts.get(model_type)
-
-        ckpt = ray.get(task.remote(dataset, scale, auxiliaries, teacher_path, seed=seed))
+        ckpt = ray.get(task.remote(dataset, scale, auxiliaries, seed=seed))
         ckpts[stage_name] = ckpt
 
     return ckpts
@@ -346,11 +320,10 @@ def _variant_pipeline_remote(
     scale: str,
     stages: list[str],
     auxiliaries: str = "none",
-    teacher_ckpts: dict[str, str] | None = None,
     seed: int | None = None,
 ) -> dict[str, str]:
     """Remote wrapper for variant_pipeline."""
-    return variant_pipeline(dataset, variant_name, scale, stages, auxiliaries, teacher_ckpts, seed)
+    return variant_pipeline(dataset, variant_name, scale, stages, auxiliaries, seed)
 
 
 # ---------------------------------------------------------------------------
@@ -415,10 +388,10 @@ def dataset_pipeline(dataset: str, scale: str | None = None, seed: int | None = 
         independent_refs.append(ref)
         log.info("Launched %s concurrently for %s", v.name, dataset)
 
-    # Run teacher variant (blocking — dependent variants need its checkpoints)
-    teacher_ckpts = None
+    # Run teacher variant first (blocking — dependent variants need its checkpoints
+    # to exist on disk so prepare_kd() can resolve them)
     if teacher_variant is not None:
-        teacher_ckpts = variant_pipeline(
+        variant_pipeline(
             dataset,
             teacher_variant.name,
             teacher_variant.scale,
@@ -427,18 +400,14 @@ def dataset_pipeline(dataset: str, scale: str | None = None, seed: int | None = 
             seed=seed,
         )
 
-    # Run dependent variants (they need teacher checkpoints)
+    # Run dependent variants (teacher checkpoints auto-resolved by prepare_kd)
     for v in dependent_variants:
-        if teacher_ckpts is None:
-            # Teacher must already exist on disk
-            teacher_ckpts = _get_teacher_ckpts(dataset)
         variant_pipeline(
             dataset,
             v.name,
             v.scale,
             v.stages,
             v.auxiliaries,
-            teacher_ckpts=teacher_ckpts,
             seed=seed,
         )
 

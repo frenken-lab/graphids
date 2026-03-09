@@ -16,14 +16,13 @@ from graphids.config.constants import get_batch_index
 from .batch_sizing import resolve_batch_config
 from .data_loading import training_preamble
 from .modules import CurriculumDataModule, GATModule, VGAEModule
+from .trainer_factory import prepare_kd
 from .utils import (
     cleanup,
     graph_label,
     load_data,
     load_model,
-    load_teacher,
     make_dataloader,
-    make_projection,
     make_trainer,
 )
 
@@ -78,16 +77,7 @@ def train_autoencoder(cfg: PipelineConfig) -> Path:
     """Train VGAE on graph reconstruction. Returns checkpoint path."""
     train_data, val_data, num_ids, in_ch, device = training_preamble(cfg, "AUTOENCODER")
 
-    # Optional KD: load teacher
-    teacher, projection = None, None
-    if cfg.has_kd and cfg.kd.model_path:
-        teacher = load_teacher(cfg.kd.model_path, "vgae", cfg, num_ids, in_ch, device)
-        from graphids.core.models.registry import get as registry_get
-
-        _tmp_student = registry_get("vgae").factory(cfg, num_ids, in_ch)
-        projection = make_projection(_tmp_student, teacher, "vgae", device)
-        del _tmp_student
-
+    teacher, projection = prepare_kd(cfg, "vgae", num_ids, in_ch, device)
     module = VGAEModule(cfg, num_ids, in_ch, teacher=teacher, projection=projection)
     bs, max_nodes = resolve_batch_config(cfg)
 
@@ -113,11 +103,7 @@ def train_curriculum(cfg: PipelineConfig) -> Path:
     del vgae
     cleanup()
 
-    # Optional KD: load teacher GAT
-    teacher = None
-    if cfg.has_kd and cfg.kd.model_path:
-        teacher = load_teacher(cfg.kd.model_path, "gat", cfg, num_ids, in_ch, device)
-
+    teacher, _ = prepare_kd(cfg, "gat", num_ids, in_ch, device)
     module = GATModule(cfg, num_ids, in_ch, teacher=teacher)
     trainer = make_trainer(cfg, "curriculum")
 
@@ -130,11 +116,7 @@ def train_normal(cfg: PipelineConfig) -> Path:
     """Train GAT with standard cross-entropy (no curriculum). Returns checkpoint path."""
     train_data, val_data, num_ids, in_ch, device = training_preamble(cfg, "NORMAL")
 
-    # Optional KD: load teacher GAT
-    teacher = None
-    if cfg.has_kd and cfg.kd.model_path:
-        teacher = load_teacher(cfg.kd.model_path, "gat", cfg, num_ids, in_ch, device)
-
+    teacher, _ = prepare_kd(cfg, "gat", num_ids, in_ch, device)
     module = GATModule(cfg, num_ids, in_ch, teacher=teacher)
     bs, max_nodes = resolve_batch_config(cfg)
 
