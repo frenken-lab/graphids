@@ -10,12 +10,10 @@ Usage (via CLI):
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -23,6 +21,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from graphids.config.constants import STAGE_MODEL_MAP, SWEEP_RESULTS_DIR, SWEEP_STATE_DIR
+from graphids.pipeline.state import load_state, save_state
 
 log = logging.getLogger(__name__)
 
@@ -49,7 +48,7 @@ SWEEP_DAG: list[SweepStep] = [
 
 
 # ---------------------------------------------------------------------------
-# State management
+# State management (delegates to graphids.pipeline.state)
 # ---------------------------------------------------------------------------
 
 _STATUS = Literal["pending", "running", "completed", "failed"]
@@ -61,23 +60,12 @@ def _state_path(dataset: str, scale: str) -> Path:
 
 def _load_state(dataset: str, scale: str) -> dict[str, Any]:
     path = _state_path(dataset, scale)
-    if path.exists():
-        return json.loads(path.read_text())
-    return {"dataset": dataset, "scale": scale, "steps": {}}
+    state = load_state(path)
+    return state if state else {"dataset": dataset, "scale": scale, "steps": {}}
 
 
 def _save_state(state: dict[str, Any], dataset: str, scale: str) -> None:
-    path = _state_path(dataset, scale)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Atomic write via tmp + rename
-    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(state, f, indent=2)
-        os.replace(tmp, path)
-    except BaseException:
-        os.unlink(tmp)
-        raise
+    save_state(state, _state_path(dataset, scale))
 
 
 def _update_step_state(

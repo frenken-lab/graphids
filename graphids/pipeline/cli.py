@@ -88,8 +88,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "stage",
-        choices=list(STAGES.keys()) + ["flow", "tune", "sweep-pipeline"],
-        help="Training stage, 'flow' for Ray pipeline, 'tune' for HPO sweep, or 'sweep-pipeline' for full DAG",
+        choices=list(STAGES.keys()) + ["flow", "tune", "sweep-pipeline", "coordinator"],
+        help="Training stage, 'flow' for Ray pipeline, 'tune' for HPO, 'sweep-pipeline' for full DAG, or 'coordinator' for SLURM orchestration",
     )
 
     # Config source
@@ -405,6 +405,35 @@ def _run_sweep_pipeline(args: argparse.Namespace, log: logging.Logger) -> None:
     )
 
 
+def _run_coordinator(args: argparse.Namespace, log: logging.Logger) -> None:
+    """Dispatch stateful SLURM coordinator."""
+    from .coordinator import PipelineCoordinator
+
+    if not args.dataset:
+        log.error("--dataset is required for coordinator mode")
+        return
+
+    datasets = [d.strip() for d in args.dataset.split(",")]
+    seeds = _parse_seeds(args.seeds) if args.seeds else [42]
+
+    log.info(
+        "Starting coordinator: datasets=%s, seeds=%s, scale=%s, dry_run=%s",
+        datasets,
+        seeds,
+        args.scale,
+        args.dry_run,
+    )
+
+    coordinator = PipelineCoordinator(
+        datasets=datasets,
+        seeds=seeds,
+        scale=args.scale,
+        auxiliaries=args.auxiliaries,
+        dry_run=args.dry_run,
+    )
+    coordinator.run()
+
+
 def _run_single_stage(
     cfg: PipelineConfig,
     stage: str,
@@ -600,6 +629,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.stage == "sweep-pipeline":
         _run_sweep_pipeline(args, log)
+        return
+
+    if args.stage == "coordinator":
+        _run_coordinator(args, log)
         return
 
     # ---- Build config ----

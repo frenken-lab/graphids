@@ -35,6 +35,23 @@ if [[ -n "${TMPDIR:-}" ]]; then
     mkdir -p "$KD_GAT_STAGE_DIR"
 fi
 
+# SIGUSR1 trap for graceful timeout (SLURM sends USR1 before killing)
+# When coordinator submits with --signal=B:USR1@180, this fires 180s before timeout.
+# The trap forwards USR1 to the child process (Python training), which lets
+# Lightning's SLURMEnvironment save a checkpoint before exit.
+_KD_CHILD_PID=""
+handle_timeout() {
+    echo "[$(date)] SIGUSR1 received — forwarding to training process (PID=$_KD_CHILD_PID)..."
+    if [[ -n "$_KD_CHILD_PID" ]]; then
+        kill -USR1 "$_KD_CHILD_PID" 2>/dev/null || true
+        wait "$_KD_CHILD_PID" 2>/dev/null
+        EXIT_CODE=$?
+        echo "[$(date)] Training process exited with code $EXIT_CODE"
+        exit $EXIT_CODE
+    fi
+}
+trap handle_timeout USR1
+
 # Shared job header/footer for consistent log formatting
 log_job_header() {
     echo "=== $1 ==="
