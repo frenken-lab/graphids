@@ -86,6 +86,7 @@ class TrainingConfig(BaseModel, frozen=True):
     test_every_n_epochs: int = 5
     deterministic: bool = False
     cudnn_benchmark: bool = True
+    compile_model: bool = False
     # LR scheduling
     use_scheduler: bool = False
     scheduler_type: str = "cosine"

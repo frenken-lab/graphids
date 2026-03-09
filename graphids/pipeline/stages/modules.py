@@ -62,6 +62,8 @@ class VGAEModule(pl.LightningModule):
 
         self.cfg = cfg
         self.model = GraphAutoencoderNeighborhood.from_config(cfg, num_ids, in_channels)
+        if cfg.training.compile_model and hasattr(torch, "compile"):
+            self.model = torch.compile(self.model)
         self.teacher = teacher
         self.projection = projection
         self._teacher_on_cpu = False
@@ -156,6 +158,8 @@ class GATModule(pl.LightningModule):
 
         self.cfg = cfg
         self.model = GATWithJK.from_config(cfg, num_ids, in_channels)
+        if cfg.training.compile_model and hasattr(torch, "compile"):
+            self.model = torch.compile(self.model)
         self.teacher = teacher
         self._teacher_on_cpu = False
 
