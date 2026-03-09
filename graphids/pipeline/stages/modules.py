@@ -264,5 +264,10 @@ def _curriculum_sample(normals, attacks, scores, epoch, cfg: PipelineConfig):
         hard_normals = normals
 
     n_normals = min(int(len(attacks) * ratio), len(hard_normals))
-    sampled_normals = hard_normals[:n_normals] if n_normals else hard_normals
+    if n_normals and n_normals < len(hard_normals):
+        import random
+
+        sampled_normals = random.sample(hard_normals, n_normals)
+    else:
+        sampled_normals = hard_normals
     return sampled_normals + attacks

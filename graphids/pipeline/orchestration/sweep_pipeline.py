@@ -201,9 +201,9 @@ def _run_train_step(step: SweepStep, dataset: str, scale: str) -> None:
         raise RuntimeError(f"Training step '{step.name}' failed with exit code {result.returncode}")
 
 
-def _run_evaluate_step(dataset: str, scale: str) -> None:
+def _run_evaluate_step(dataset: str, scale: str, *, seed: int | None = None) -> None:
     """Run evaluation stage via subprocess."""
-    cmd = build_cli_cmd("evaluation", "vgae", scale, dataset)
+    cmd = build_cli_cmd("evaluation", "vgae", scale, dataset, seeds=str(seed) if seed else None)
     log.info("Running evaluation: %s", " ".join(cmd))
     result = subprocess.run(cmd, cwd=PROJECT_ROOT)
     if result.returncode != 0:
@@ -381,7 +381,7 @@ def _run_multi_seed_final(dataset: str, scale: str) -> None:
 
     # Final multi-seed evaluation
     for seed in DEFAULT_SEEDS:
-        _run_evaluate_step(dataset, scale)
+        _run_evaluate_step(dataset, scale, seed=seed)
 
     log.info("=== Multi-seed training complete for %s/%s ===", dataset, scale)
 
