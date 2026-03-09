@@ -601,7 +601,7 @@ class TestValidation:
             validate(cfg, "autoencoder")
 
     def test_missing_prerequisite_config(self, tmp_path):
-        from graphids.config import PipelineConfig, stage_dir
+        from graphids.config import PipelineConfig
         from graphids.pipeline.validate import validate
 
         cfg = PipelineConfig(
@@ -610,9 +610,11 @@ class TestValidation:
             scale="large",
             experiment_root=str(tmp_path),
         )
-        sd = stage_dir(cfg, "autoencoder")
-        sd.mkdir(parents=True)
-        (sd / "best_model.pt").write_bytes(b"fake")
+        # Curriculum depends on ("vgae", "autoencoder") — create VGAE dir
+        # with best_model.pt but no config.json
+        vgae_dir = tmp_path / "hcrl_sa" / "vgae_large_autoencoder"
+        vgae_dir.mkdir(parents=True)
+        (vgae_dir / "best_model.pt").write_bytes(b"fake")
 
         with pytest.raises(ValueError, match="config"):
             validate(cfg, "curriculum")

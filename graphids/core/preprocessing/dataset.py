@@ -30,7 +30,10 @@ def GraphDataset(data_list: list[Data]) -> CollatedGraphDataset:
     Drop-in replacement for the old list-based GraphDataset class.
     Callers that did ``GraphDataset(graphs)`` continue to work unchanged.
     """
-    data, slices = InMemoryDataset.collate(data_list)
+    try:
+        data, slices = InMemoryDataset.collate(data_list)
+    except RuntimeError as e:
+        raise ValueError(str(e)) from e
     ds = CollatedGraphDataset(data, slices)
     ds.validate_consistency()
     return ds
