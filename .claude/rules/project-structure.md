@@ -52,7 +52,7 @@ graphids/               # Top-level package (pyproject.toml: packages = ["graphi
     training/           # Data management
       datamodules.py    # Lightning DataModule: dataset loading, splits, DataLoader construction
     preprocessing/      # Graph construction from raw data
-      dataset.py        # PyG InMemoryDataset wrapper
+      dataset.py        # CollatedGraphDataset: collated tensor storage (zero-copy __getitem__)
       engine.py         # Preprocessing orchestration engine
       temporal.py       # TemporalGrouper (sliding window → temporal graphs)
       vocabulary.py     # Feature vocabulary building

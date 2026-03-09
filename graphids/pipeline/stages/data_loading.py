@@ -44,9 +44,21 @@ def load_data(cfg: PipelineConfig):
 
 
 def _estimate_tensor_count(data) -> int:
-    """Estimate number of tensor storages in a graph dataset."""
+    """Estimate number of mmap-relevant tensor storages in a dataset.
+
+    With collated storage (CollatedGraphDataset), all graphs share ~10
+    concatenated tensors regardless of dataset size.  With legacy list[Data],
+    each graph has its own tensor storages (N × tensors_per_graph).
+    """
     if not data:
         return 0
+    # CollatedGraphDataset exposes actual storage count directly
+    if hasattr(data, "tensor_storage_count"):
+        return data.tensor_storage_count
+    # Subset from random_split wraps the original dataset
+    if hasattr(data, "dataset") and hasattr(data.dataset, "tensor_storage_count"):
+        return data.dataset.tensor_storage_count
+    # Legacy fallback: list[Data]
     sample = data[0]
     tensors_per_graph = sum(
         1

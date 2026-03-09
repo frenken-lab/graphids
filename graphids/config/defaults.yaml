@@ -110,6 +110,6 @@ tune:
 
 experiment_root: experimentruns
 device: cuda
-num_workers: 0
+num_workers: 2
 mp_start_method: spawn
 run_test: true

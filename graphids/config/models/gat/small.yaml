@@ -15,4 +15,4 @@ gat:
 training:
   lr: 0.001
   patience: 50
-  safety_factor: 0.55
+  safety_factor: 0.90

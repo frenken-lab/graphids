@@ -10,4 +10,4 @@ vgae:
   proj_dim: 32
 training:
   lr: 0.002
-  safety_factor: 0.6
+  safety_factor: 0.85

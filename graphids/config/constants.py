@@ -10,7 +10,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Versioning
 # ---------------------------------------------------------------------------
-PREPROCESSING_VERSION = "2.2.0"  # Bump when graph construction logic changes
+PREPROCESSING_VERSION = "3.0.0"  # Collated tensor storage (was list[Data] in 2.x)
 
 # ---------------------------------------------------------------------------
 # Filesystem paths

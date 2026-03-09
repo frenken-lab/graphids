@@ -190,7 +190,7 @@ class PipelineConfig(BaseModel, frozen=True):
     schema_version: str = "1.0.0"
     experiment_root: str = "experimentruns"
     device: str = "cuda"
-    num_workers: int = 0
+    num_workers: int = 2
     mp_start_method: str = "spawn"
     run_test: bool = True
 

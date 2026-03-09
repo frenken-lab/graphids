@@ -5,8 +5,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=85G
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=50G
 #SBATCH --time=08:00:00
 #SBATCH --job-name=kd-gat-ray
 #SBATCH --output=slurm_logs/ray_%j.out
