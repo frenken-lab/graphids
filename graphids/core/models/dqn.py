@@ -130,6 +130,9 @@ class EnhancedDQNFusionAgent:
         state_dim,
         hidden_dim=128,
         num_layers=3,
+        weight_decay=1e-5,
+        scheduler_patience=1000,
+        max_patience=5000,
     ):
         # Action and state space
         self.alpha_values = np.linspace(0, 1, alpha_steps)
@@ -158,9 +161,9 @@ class EnhancedDQNFusionAgent:
         self.target_network.load_state_dict(self.q_network.state_dict())
 
         # Optimizer and loss
-        self.optimizer = optim.AdamW(self.q_network.parameters(), lr=lr, weight_decay=1e-5)
+        self.optimizer = optim.AdamW(self.q_network.parameters(), lr=lr, weight_decay=weight_decay)
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, patience=1000, factor=0.8
+            self.optimizer, patience=scheduler_patience, factor=0.8
         )
         self.loss_fn = nn.SmoothL1Loss()  # Huber loss for stability
 
@@ -177,7 +180,7 @@ class EnhancedDQNFusionAgent:
         self.validation_scores: list[dict] = []
         self.best_validation_score = -float("inf")
         self.patience_counter = 0
-        self.max_patience = 5000
+        self.max_patience = max_patience
 
         # Derive feature indices from registry (no hardcoded offsets)
         from .registry import feature_layout
@@ -218,6 +221,9 @@ class EnhancedDQNFusionAgent:
             alpha_steps=cfg.fusion.alpha_steps,
             hidden_dim=cfg.dqn.hidden,
             num_layers=cfg.dqn.layers,
+            weight_decay=cfg.dqn.weight_decay,
+            scheduler_patience=cfg.dqn.scheduler_patience,
+            max_patience=cfg.dqn.max_patience,
         )
         if inference:
             kwargs.update(epsilon=0.0, epsilon_decay=1.0, min_epsilon=0.0)

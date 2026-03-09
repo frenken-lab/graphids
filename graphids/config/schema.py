@@ -47,6 +47,9 @@ class DQNArchitecture(BaseModel, frozen=True):
     buffer_size: int = Field(100_000, ge=1)
     batch_size: int = Field(128, ge=1)
     target_update: int = Field(100, ge=1)
+    weight_decay: float = Field(1e-5, ge=0)
+    scheduler_patience: int = Field(1000, ge=1)
+    max_patience: int = Field(5000, ge=1)
 
 
 class AuxiliaryConfig(BaseModel, frozen=True):
