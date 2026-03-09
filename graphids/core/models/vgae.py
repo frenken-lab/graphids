@@ -49,22 +49,25 @@ class GraphAutoencoderNeighborhood(nn.Module):
         proj_dim=0,
     ):
         super().__init__()
-        # ID embedding: expect real torch.nn.Embedding to be available in test env
-        self.id_embedding = nn.Embedding(num_ids, embedding_dim)
+        from ._utils import InputEncoder
+
+        # Shared input encoding (ID embedding + optional projection)
+        self.input_encoder = InputEncoder(
+            num_ids=num_ids,
+            in_channels=in_channels,
+            embedding_dim=embedding_dim,
+            conv_type=conv_type,
+            edge_dim=edge_dim,
+            proj_dim=proj_dim,
+        )
         self.num_ids = num_ids
         self.dropout_rate = dropout
         self.batch_norm = batch_norm
         self.use_checkpointing = use_checkpointing
         self.conv_type = conv_type
-        self._uses_edge_attr = conv_type in ("transformer", "gatv2")
-        self._edge_dim = edge_dim if self._uses_edge_attr else None
+        self._uses_edge_attr = self.input_encoder._uses_edge_attr
+        self._edge_dim = self.input_encoder._edge_dim
         self._proj_dim = proj_dim
-
-        # Optional input projection: decouple feature count from architecture
-        if proj_dim > 0:
-            self.feat_proj = nn.Linear(in_channels - 1, proj_dim)
-        else:
-            self.feat_proj = None
 
         # Hidden dims schedule: interpret list; if last equals latent_dim assume the
         # list includes latent entry and use hidden_dims[:-1] as encoder targets.
@@ -78,8 +81,7 @@ class GraphAutoencoderNeighborhood(nn.Module):
             encoder_targets = hidden_dims
 
         # Input dim to first GAT combines ID embedding and continuous features
-        cont_dim = proj_dim if proj_dim > 0 else (in_channels - 1)
-        gat_in_dim = embedding_dim + cont_dim
+        gat_in_dim = self.input_encoder.out_dim
         self.gat_in_dim = gat_in_dim
 
         # Encoder: build progressive GAT layers matching encoder_targets
@@ -167,12 +169,7 @@ class GraphAutoencoderNeighborhood(nn.Module):
         self.latent_dim = latent_dim
 
     def encode(self, x, edge_index, edge_attr=None):
-        # Use the embedding's forward interface (works for real Embedding and SimpleEmbedding)
-        id_emb = self.id_embedding(x[:, 0].long())
-        other_feats = x[:, 1:]
-        if self.feat_proj is not None:
-            other_feats = self.feat_proj(other_feats)
-        x = torch.cat([id_emb, other_feats], dim=1)
+        x = self.input_encoder(x)
         # Apply encoder layers; handle optional batchnorm safely
         for i, conv in enumerate(self.encoder_layers):
             if self.use_checkpointing and x.requires_grad:

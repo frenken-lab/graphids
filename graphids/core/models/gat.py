@@ -1,4 +1,3 @@
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import (
@@ -37,24 +36,27 @@ class GATWithJK(nn.Module):
         proj_dim=0,
     ):
         super().__init__()
-        self.id_embedding = nn.Embedding(num_ids, embedding_dim)
+        from ._utils import InputEncoder
+
+        # Shared input encoding (ID embedding + optional projection)
+        self.input_encoder = InputEncoder(
+            num_ids=num_ids,
+            in_channels=in_channels,
+            embedding_dim=embedding_dim,
+            conv_type=conv_type,
+            edge_dim=edge_dim,
+            proj_dim=proj_dim,
+        )
         self.dropout = dropout
         self.use_checkpointing = use_checkpointing
         self.conv_type = conv_type
-        self._uses_edge_attr = conv_type in ("transformer", "gatv2")
+        self._uses_edge_attr = self.input_encoder._uses_edge_attr
         self._proj_dim = proj_dim
 
-        # Optional input projection: decouple feature count from architecture
-        if proj_dim > 0:
-            self.feat_proj = nn.Linear(in_channels - 1, proj_dim)
-        else:
-            self.feat_proj = None
-
         # GAT layers
-        cont_dim = proj_dim if proj_dim > 0 else (in_channels - 1)
         self.convs = nn.ModuleList()
         for i in range(num_layers):
-            in_dim = embedding_dim + cont_dim if i == 0 else hidden_channels * heads
+            in_dim = self.input_encoder.out_dim if i == 0 else hidden_channels * heads
             self.convs.append(
                 _make_conv(
                     conv_type,
@@ -121,12 +123,7 @@ class GATWithJK(nn.Module):
         x, edge_index, batch = data.x, data.edge_index, data.batch
         edge_attr = getattr(data, "edge_attr", None) if self._uses_edge_attr else None
 
-        # x shape: [num_nodes, in_channels], where x[:,0] is CAN ID index
-        id_emb = self.id_embedding(x[:, 0].long())  # [num_nodes, embedding_dim]
-        other_feats = x[:, 1:]  # [num_nodes, in_channels-1]
-        if self.feat_proj is not None:
-            other_feats = self.feat_proj(other_feats)
-        x = torch.cat([id_emb, other_feats], dim=1)
+        x = self.input_encoder(x)
 
         attention_weights = [] if return_attention_weights else None
 
