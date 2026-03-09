@@ -61,8 +61,16 @@ def evaluate(cfg: PipelineConfig) -> dict:
     # Artifact collectors for embeddings/policy export
     artifacts: dict = {}
 
-    # ---- GAT evaluation ----
+    # Check upfront whether fusion eval will need VGAE+GAT (avoid redundant reload)
     resolver = get_resolver()
+    fusion_needs_models = (
+        resolver.exists(cfg, "fusion", "best_model.pt", model_type="dqn")
+        and resolver.exists(cfg, vgae_stage, "best_model.pt", model_type="vgae")
+        and resolver.exists(cfg, gat_stage, "best_model.pt", model_type="gat")
+    )
+
+    # ---- GAT evaluation ----
+    gat = None
     if resolver.exists(cfg, gat_stage, "best_model.pt", model_type="gat"):
         gat = load_model(cfg, "gat", gat_stage, num_ids, in_ch, device)
 
@@ -97,10 +105,13 @@ def evaluate(cfg: PipelineConfig) -> dict:
                     test_metrics["gat"][scenario]["core"]["f1"],
                 )
 
-        del gat
-        cleanup()
+        if not fusion_needs_models:
+            del gat
+            gat = None
+            cleanup()
 
     # ---- VGAE evaluation ----
+    vgae = None
     if resolver.exists(cfg, vgae_stage, "best_model.pt", model_type="vgae"):
         vgae = load_model(cfg, "vgae", vgae_stage, num_ids, in_ch, device)
 
@@ -135,17 +146,13 @@ def evaluate(cfg: PipelineConfig) -> dict:
                     test_metrics["vgae"][scenario]["core"]["f1"],
                 )
 
-        del vgae
-        cleanup()
+        if not fusion_needs_models:
+            del vgae
+            vgae = None
+            cleanup()
 
     # ---- DQN Fusion evaluation ----
-    fusion_exists = resolver.exists(cfg, "fusion", "best_model.pt", model_type="dqn")
-    vgae_exists = resolver.exists(cfg, vgae_stage, "best_model.pt", model_type="vgae")
-    gat_exists = resolver.exists(cfg, gat_stage, "best_model.pt", model_type="gat")
-    if fusion_exists and vgae_exists and gat_exists:
-        vgae = load_model(cfg, "vgae", vgae_stage, num_ids, in_ch, device)
-        gat = load_model(cfg, "gat", gat_stage, num_ids, in_ch, device)
-
+    if fusion_needs_models and vgae is not None and gat is not None:
         models = {"vgae": vgae, "gat": gat}
         val_cache = cache_predictions(models, val_data, device, cfg.fusion.max_val_samples)
 

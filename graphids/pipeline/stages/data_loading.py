@@ -124,9 +124,12 @@ def _estimate_dynamic_steps(data, max_num_nodes: int, batch_size: int) -> int:
     Falls back to len(data) // batch_size if sampling fails.
     """
     try:
-        # Sample up to 500 graphs for mean node count
+        # Sample up to 500 graphs randomly for mean node count
+        import random
+
         n_sample = min(500, len(data))
-        total_nodes = sum(data[i].num_nodes for i in range(n_sample))
+        indices = random.sample(range(len(data)), n_sample)
+        total_nodes = sum(data[i].num_nodes for i in indices)
         mean_nodes = total_nodes / n_sample
         estimated_steps = max(1, int(len(data) * mean_nodes / max_num_nodes))
         return estimated_steps
@@ -167,7 +170,7 @@ def make_dataloader(
             data,
             batch_sampler=sampler,
             num_workers=nw,
-            pin_memory=True,
+            pin_memory=nw > 0,
             persistent_workers=nw > 0,
             multiprocessing_context=cfg.mp_start_method if nw > 0 else None,
         )

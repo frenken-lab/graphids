@@ -1,4 +1,5 @@
 """SLURM configuration helpers for Ray on OSC."""
+
 from __future__ import annotations
 
 import os
@@ -42,8 +43,8 @@ def sbatch_header(
     job_name: str = "kd-gat-ray",
     nodes: int = 1,
     gpus_per_node: int = 1,
-    cpus_per_task: int = 8,
-    mem: str = "85G",
+    cpus_per_task: int = 4,
+    mem: str = "50G",
     time: str = "08:00:00",
 ) -> str:
     """Generate SBATCH header lines for a Ray job."""

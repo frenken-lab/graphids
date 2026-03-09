@@ -210,9 +210,9 @@ def _run_stage(
 # ---------------------------------------------------------------------------
 
 
-@ray.remote(num_gpus=1)
+@ray.remote(num_gpus=0)
 def task_preprocess(dataset: str) -> None:
-    """Ensure preprocessed graph cache exists for a dataset."""
+    """Ensure preprocessed graph cache exists for a dataset (CPU-only)."""
     from graphids.config import cache_dir, data_dir
     from graphids.config.resolver import resolve
     from graphids.core.training.datamodules import load_dataset
@@ -431,11 +431,12 @@ def train_pipeline(
     datasets = _init_ray(datasets, local)
 
     if seeds:
-        # Multi-seed: run full pipeline per seed sequentially
+        # Multi-seed: fan out all dataset×seed combos; Ray serializes on single-GPU
+        refs = []
         for seed in seeds:
-            log.info("=== Seed %d ===", seed)
-            refs = [dataset_pipeline.remote(ds, scale, seed=seed) for ds in datasets]
-            ray.get(refs)
+            log.info("=== Queuing seed %d ===", seed)
+            refs.extend(dataset_pipeline.remote(ds, scale, seed=seed) for ds in datasets)
+        ray.get(refs)
     else:
         # Single seed (default)
         refs = [dataset_pipeline.remote(ds, scale) for ds in datasets]
