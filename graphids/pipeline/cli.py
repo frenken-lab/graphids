@@ -75,8 +75,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "stage",
-        choices=list(STAGES.keys()) + ["flow", "tune", "sweep-pipeline", "coordinator"],
-        help="Training stage, 'flow' for Ray pipeline, 'tune' for HPO, 'sweep-pipeline' for full DAG, or 'coordinator' for SLURM orchestration",
+        choices=list(STAGES.keys())
+        + ["flow", "tune", "sweep-pipeline", "coordinator", "orchestrate"],
+        help="Training stage, 'flow' for Ray pipeline, 'tune' for HPO, 'sweep-pipeline' for full DAG, 'coordinator' for legacy SLURM orchestration, or 'orchestrate' for new scheduler-agnostic orchestration",
     )
 
     # Config source
@@ -200,6 +201,32 @@ def _build_parser() -> argparse.ArgumentParser:
         help="(coordinator) Resume from state JSON file path",
     )
     p.add_argument("--poll-interval", type=int, default=30, help="(coordinator) Polling interval")
+    p.add_argument(
+        "--variants",
+        type=str,
+        default=None,
+        help="(coordinator) Comma-separated variant filter (e.g. large,small_kd). Default: all from config",
+    )
+
+    # Orchestrate options (new scheduler-agnostic system)
+    p.add_argument(
+        "--fire-and-forget",
+        action="store_true",
+        default=False,
+        help="(orchestrate) Submit all jobs with scheduler deps and exit immediately",
+    )
+    p.add_argument(
+        "--resume-run",
+        type=str,
+        default=None,
+        help="(orchestrate) Resume a previous run by run_id",
+    )
+    p.add_argument(
+        "--backend",
+        type=str,
+        default=None,
+        help="(orchestrate) Scheduler backend: slurm, flux, dry_run (default: env or slurm)",
+    )
 
     # Checkpoint resume (set by coordinator on TIMEOUT resubmit)
     p.add_argument(
@@ -425,11 +452,12 @@ def _run_coordinator(args: argparse.Namespace, log: logging.Logger) -> None:
             return
 
         log.info("Resuming coordinator from %s (%d stages)", state_path, len(state["stages"]))
+        # On resume, variant_filter comes from state (already resolved at creation)
+        variant_filter = state.get("variants")
         coordinator = PipelineCoordinator(
             datasets=state["datasets"],
             seeds=state["seeds"],
-            scale=state.get("scale", "large"),
-            auxiliaries=state.get("auxiliaries", "none"),
+            variant_filter=variant_filter,
             state_path=state_path,
             poll_interval=args.poll_interval,
             dry_run=args.dry_run,
@@ -441,25 +469,70 @@ def _run_coordinator(args: argparse.Namespace, log: logging.Logger) -> None:
 
         datasets = [d.strip() for d in args.dataset.split(",")]
         seeds = _parse_seeds(args.seeds) if args.seeds else [42]
+        variant_filter = [v.strip() for v in args.variants.split(",")] if args.variants else None
 
         log.info(
-            "Starting coordinator: datasets=%s, seeds=%s, scale=%s, dry_run=%s",
+            "Starting coordinator: datasets=%s, seeds=%s, variants=%s, dry_run=%s",
             datasets,
             seeds,
-            args.scale,
+            variant_filter or "all",
             args.dry_run,
         )
 
         coordinator = PipelineCoordinator(
             datasets=datasets,
             seeds=seeds,
-            scale=args.scale,
-            auxiliaries=args.auxiliaries,
+            variant_filter=variant_filter,
             poll_interval=args.poll_interval,
             dry_run=args.dry_run,
         )
 
     coordinator.run()
+
+
+def _run_orchestrate(args: argparse.Namespace, log: logging.Logger) -> None:
+    """Dispatch new scheduler-agnostic orchestrator."""
+    from .orchestration.driver import run_orchestrate
+
+    if args.resume_run:
+        success = run_orchestrate(
+            datasets=[],
+            seeds=[],
+            resume_run=args.resume_run,
+            poll_interval=args.poll_interval,
+            dry_run=args.dry_run,
+            fire_and_forget=args.fire_and_forget,
+            backend=args.backend,
+        )
+    else:
+        if not args.dataset:
+            log.error("--dataset is required for orchestrate mode (or use --resume-run)")
+            return
+
+        datasets = [d.strip() for d in args.dataset.split(",")]
+        seeds = _parse_seeds(args.seeds) if args.seeds else [42]
+        variant_filter = [v.strip() for v in args.variants.split(",")] if args.variants else None
+
+        log.info(
+            "Starting orchestrator: datasets=%s, seeds=%s, variants=%s, dry_run=%s",
+            datasets,
+            seeds,
+            variant_filter or "all",
+            args.dry_run,
+        )
+
+        success = run_orchestrate(
+            datasets=datasets,
+            seeds=seeds,
+            variant_filter=variant_filter,
+            poll_interval=args.poll_interval,
+            dry_run=args.dry_run,
+            fire_and_forget=args.fire_and_forget,
+            backend=args.backend,
+        )
+
+    if not success:
+        raise SystemExit(1)
 
 
 def _run_single_stage(
@@ -666,6 +739,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.stage == "coordinator":
         _run_coordinator(args, log)
+        return
+
+    if args.stage == "orchestrate":
+        _run_orchestrate(args, log)
         return
 
     # ---- Build config ----

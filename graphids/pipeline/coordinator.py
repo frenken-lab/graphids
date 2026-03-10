@@ -4,10 +4,23 @@ Submits pipeline stages as individual SLURM jobs (GPU stages to gpu partition,
 CPU stages to cpu partition), polls sacct for completion, reacts to failures
 with adjusted resources, and verifies artifacts after each stage completes.
 
+The coordinator is **variant-aware**: it reads ``PipelineConfig.variants`` to
+build a multi-variant DAG where cross-variant dependencies (e.g. KD students
+depending on teacher checkpoints) are expressed explicitly.  Any change to
+``defaults.yaml`` variants automatically changes the scheduled work.
+
 Usage (via cli.py):
-    python -m graphids.pipeline.cli coordinator --dataset hcrl_sa --seeds 42,123
+    # All variants × all datasets × 3 seeds
+    python -m graphids.pipeline.cli coordinator --dataset hcrl_sa,hcrl_ch --seeds 42,123,456
+
+    # Only specific variants
+    python -m graphids.pipeline.cli coordinator --dataset hcrl_sa --variants large,small_nokd
+
+    # Resume from saved state
     python -m graphids.pipeline.cli coordinator --resume-state .cache/kd-gat/pipeline_state.json
-    python -m graphids.pipeline.cli coordinator --dataset hcrl_sa --seeds 42 --dry-run
+
+    # Dry-run to preview the DAG
+    python -m graphids.pipeline.cli coordinator --dataset hcrl_sa --seeds 42,123,456 --dry-run
 """
 
 from __future__ import annotations
@@ -332,8 +345,18 @@ def apply_resource_history() -> int:
 
 
 # ---------------------------------------------------------------------------
-# Stage plan builder
+# Stage plan builder (variant-aware)
 # ---------------------------------------------------------------------------
+
+# Stage name → (model_type, is_training_stage)
+# Evaluation is special: model="eval", not a training stage.
+_STAGE_MODEL: dict[str, str] = {
+    "autoencoder": "vgae",
+    "curriculum": "gat",
+    "normal": "gat",
+    "fusion": "dqn",
+    "temporal": "gat",
+}
 
 
 def _get_resources(model_type: str, scale: str, stage: str) -> dict[str, Any]:
@@ -344,67 +367,145 @@ def _get_resources(model_type: str, scale: str, stage: str) -> dict[str, Any]:
     return dict(_DEFAULT_RESOURCE)
 
 
+def _resolve_variants(
+    variant_filter: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Load variant definitions from PipelineConfig, optionally filtering by name.
+
+    Returns plain dicts (not frozen Pydantic models) so the coordinator
+    doesn't depend on PipelineConfig at runtime beyond this call.
+    """
+    from graphids.config.resolver import resolve
+
+    cfg = resolve("vgae", "large")  # Just to read the variants list
+    variants = [
+        {
+            "name": v.name,
+            "scale": v.scale,
+            "auxiliaries": v.auxiliaries,
+            "needs_teacher": v.needs_teacher,
+            "stages": list(v.stages),
+        }
+        for v in cfg.variants
+    ]
+    if variant_filter:
+        known = {v["name"] for v in variants}
+        unknown = set(variant_filter) - known
+        if unknown:
+            raise ValueError(f"Unknown variant(s): {unknown}. Available: {known}")
+        variants = [v for v in variants if v["name"] in variant_filter]
+    return variants
+
+
+def _find_teacher_variant(variants: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Identify the teacher variant: first variant where needs_teacher=False.
+
+    Variants with needs_teacher=True will have their stages depend on the
+    corresponding teacher variant stages.
+    """
+    for v in variants:
+        if not v["needs_teacher"]:
+            return v
+    return None
+
+
 def build_stage_plan(
     datasets: list[str],
     seeds: list[int],
-    scale: str = "large",
-    auxiliaries: str = "none",
+    variants: list[dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
-    """Build the complete stage plan with dependencies and resources.
+    """Build the complete stage plan from variant definitions.
 
-    Each key is: {dataset}/{model}_{scale}_{stage}/seed_{seed}
+    Each key is: ``{dataset}/{variant}/{model}_{stage}/seed_{seed}``
 
-    The plan covers the standard pipeline:
-      autoencoder (VGAE) → curriculum (GAT) → fusion (DQN) → evaluation
+    Cross-variant dependencies: for variants with ``needs_teacher=True``,
+    each stage that has intra-variant prerequisites (from STAGE_DEPENDENCIES)
+    also depends on the teacher variant's version of those prerequisite stages.
+    This ensures teacher checkpoints exist before KD students start.
     """
     plan: dict[str, dict[str, Any]] = {}
+    teacher = _find_teacher_variant(variants)
 
-    pipeline_stages = [
-        ("vgae", "autoencoder"),
-        ("gat", "curriculum"),
-        ("dqn", "fusion"),
-    ]
-
-    def _make_key(ds: str, model: str, stg: str, sd: int) -> str:
-        return f"{ds}/{model}_{scale}_{stg}/seed_{sd}"
-
-    def _deps_for(ds: str, sd: int, stg: str) -> list[str]:
-        return [
-            _make_key(ds, dep_model, dep_stage, sd)
-            for dep_model, dep_stage in STAGE_DEPENDENCIES.get(stg, [])
-        ]
-
-    def _add_stage(key: str, stg: str, model: str, ds: str, sd: int, max_ret: int = 2) -> None:
-        plan[key] = {
-            "status": "pending",
-            "depends_on": _deps_for(ds, sd, stg),
-            "resources": _get_resources(model, scale, stg),
-            "cli_args": {
-                "stage": stg,
-                "model": model,
-                "scale": scale,
-                "dataset": ds,
-                "seed": sd,
-                "auxiliaries": auxiliaries,
-            },
-            "attempts": 0,
-            "max_retries": max_ret,
-        }
+    def _key(ds: str, var_name: str, model: str, stage: str, sd: int) -> str:
+        return f"{ds}/{var_name}/{model}_{stage}/seed_{sd}"
 
     for dataset in datasets:
         for seed in seeds:
-            for model_type, stage in pipeline_stages:
-                _add_stage(
-                    _make_key(dataset, model_type, stage, seed), stage, model_type, dataset, seed
-                )
+            for variant in variants:
+                vname = variant["name"]
+                vscale = variant["scale"]
+                vaux = variant["auxiliaries"]
+                vstages = variant["stages"]
 
-            # Evaluation depends on all three training stages
-            eval_key = _make_key(dataset, "eval", "evaluation", seed)
-            _add_stage(eval_key, "evaluation", "vgae", dataset, seed, max_ret=1)
-            # Override deps: evaluation needs all three, not just STAGE_DEPENDENCIES
-            plan[eval_key]["depends_on"] = [
-                _make_key(dataset, m, s, seed) for m, s in pipeline_stages
-            ]
+                # Build training stages from the variant's stage list
+                training_stages: list[tuple[str, str]] = []  # (model, stage)
+                for stage_name in vstages:
+                    if stage_name == "evaluation":
+                        continue  # handled separately below
+                    model = _STAGE_MODEL.get(stage_name)
+                    if model is None:
+                        log.warning(
+                            "Unknown stage '%s' in variant '%s', skipping", stage_name, vname
+                        )
+                        continue
+                    training_stages.append((model, stage_name))
+
+                for model, stage_name in training_stages:
+                    key = _key(dataset, vname, model, stage_name, seed)
+
+                    # Intra-variant dependencies (same variant, same seed)
+                    deps = [
+                        _key(dataset, vname, dep_model, dep_stage, seed)
+                        for dep_model, dep_stage in STAGE_DEPENDENCIES.get(stage_name, [])
+                    ]
+
+                    # Cross-variant dependencies for KD variants:
+                    # Each intra-variant prerequisite also requires the teacher
+                    # variant's corresponding stage to be complete.
+                    if variant["needs_teacher"] and teacher and teacher["name"] != vname:
+                        for dep_model, dep_stage in STAGE_DEPENDENCIES.get(stage_name, []):
+                            teacher_key = _key(dataset, teacher["name"], dep_model, dep_stage, seed)
+                            if teacher_key not in deps:
+                                deps.append(teacher_key)
+
+                    plan[key] = {
+                        "status": "pending",
+                        "depends_on": deps,
+                        "resources": _get_resources(model, vscale, stage_name),
+                        "cli_args": {
+                            "stage": stage_name,
+                            "model": model,
+                            "scale": vscale,
+                            "dataset": dataset,
+                            "seed": seed,
+                            "auxiliaries": vaux,
+                        },
+                        "variant": vname,
+                        "attempts": 0,
+                        "max_retries": 2,
+                    }
+
+                # Evaluation stage (if in variant's stage list)
+                if "evaluation" in vstages and training_stages:
+                    eval_key = _key(dataset, vname, "eval", "evaluation", seed)
+                    plan[eval_key] = {
+                        "status": "pending",
+                        "depends_on": [
+                            _key(dataset, vname, m, s, seed) for m, s in training_stages
+                        ],
+                        "resources": _get_resources("eval", vscale, "evaluation"),
+                        "cli_args": {
+                            "stage": "evaluation",
+                            "model": "vgae",  # evaluation uses vgae model arg
+                            "scale": vscale,
+                            "dataset": dataset,
+                            "seed": seed,
+                            "auxiliaries": vaux,
+                        },
+                        "variant": vname,
+                        "attempts": 0,
+                        "max_retries": 1,
+                    }
 
     return plan
 
@@ -478,14 +579,17 @@ class PipelineCoordinator:
     pipeline stages as SLURM sub-jobs, polls for completion, reacts to
     failures, and verifies artifacts. State is persisted to JSON for
     resume after coordinator restart.
+
+    The coordinator is variant-aware: it reads ``PipelineConfig.variants``
+    (filtered by ``variant_filter``) and builds a multi-variant DAG with
+    cross-variant dependencies for KD students that need teacher checkpoints.
     """
 
     def __init__(
         self,
         datasets: list[str],
         seeds: list[int],
-        scale: str = "large",
-        auxiliaries: str = "none",
+        variant_filter: list[str] | None = None,
         state_path: Path | None = None,
         poll_interval: int = 30,
         dry_run: bool = False,
@@ -493,13 +597,15 @@ class PipelineCoordinator:
     ):
         self.datasets = datasets
         self.seeds = seeds
-        self.scale = scale
-        self.auxiliaries = auxiliaries
         self.poll_interval = poll_interval
         self.dry_run = dry_run
         self.exit_hooks = exit_hooks or []
 
         self.state_path = state_path or (PROJECT_ROOT / ".cache" / "kd-gat" / "pipeline_state.json")
+
+        # Resolve variant definitions from config
+        self.variants = _resolve_variants(variant_filter)
+        self.variant_names = [v["name"] for v in self.variants]
 
         # Right-size resource profiles from historical data (before building plan)
         n_adjusted = apply_resource_history()
@@ -514,7 +620,7 @@ class PipelineCoordinator:
             )
             self.state = existing
             # Reconcile: add any new stages not already in state
-            plan = build_stage_plan(datasets, seeds, scale, auxiliaries)
+            plan = build_stage_plan(datasets, seeds, self.variants)
             for key, info in plan.items():
                 if key not in self.state["stages"]:
                     self.state["stages"][key] = info
@@ -524,9 +630,9 @@ class PipelineCoordinator:
                 "created": now_iso(),
                 "datasets": datasets,
                 "seeds": seeds,
-                "scale": scale,
-                "auxiliaries": auxiliaries,
-                "stages": build_stage_plan(datasets, seeds, scale, auxiliaries),
+                "variants": [v["name"] for v in self.variants],
+                "variant_defs": self.variants,
+                "stages": build_stage_plan(datasets, seeds, self.variants),
             }
             save_state(self.state, self.state_path)
             log.info("Created new pipeline state: %d stages", len(self.stages))
@@ -718,7 +824,7 @@ class PipelineCoordinator:
                     rid = run_id_str(
                         cli.get("dataset", ""),
                         cli.get("model", "vgae"),
-                        cli.get("scale", self.scale),
+                        cli.get("scale", "large"),
                         cli.get("stage", ""),
                     )
                     ckpt = _find_checkpoint(EXPERIMENT_ROOT, rid)
@@ -827,7 +933,7 @@ class PipelineCoordinator:
             try:
                 cfg = resolve(
                     cli.get("model", "vgae"),
-                    cli.get("scale", self.scale),
+                    cli.get("scale", "large"),
                     dataset=cli.get("dataset", ""),
                     seed=cli.get("seed", 42),
                 )
@@ -895,7 +1001,10 @@ class PipelineCoordinator:
 
         from graphids.pipeline.validate import validate_datasets
 
-        errors.extend(validate_datasets(self.datasets, self.scale))
+        # Validate datasets for every scale referenced by selected variants
+        scales = {v["scale"] for v in self.variants}
+        for scale in sorted(scales):
+            errors.extend(validate_datasets(self.datasets, scale))
 
         cache_dir = self.state_path.parent
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -912,9 +1021,10 @@ class PipelineCoordinator:
             raise ValueError("Pre-flight validation failed:\n  " + "\n  ".join(errors))
 
         log.info(
-            "Pre-flight validation passed (%d datasets, %d seeds, %d stages)",
+            "Pre-flight validation passed (%d datasets, %d seeds, %d variants, %d stages)",
             len(self.datasets),
             len(self.seeds),
+            len(self.variants),
             len(self.stages),
         )
 
@@ -925,29 +1035,40 @@ class PipelineCoordinator:
         log.info("=== Coordinator Dry Run ===")
         log.info("Datasets: %s", self.datasets)
         log.info("Seeds: %s", self.seeds)
-        log.info("Scale: %s", self.scale)
+        log.info("Variants: %s", self.variant_names)
         log.info("")
 
-        by_dataset: dict[str, list[tuple[str, dict]]] = {}
+        # Group by dataset → variant
+        by_ds_var: dict[str, dict[str, list[tuple[str, dict]]]] = {}
         for key, info in sorted(self.stages.items()):
-            by_dataset.setdefault(key.split("/")[0], []).append((key, info))
+            parts = key.split("/")
+            ds = parts[0]
+            var = info.get("variant", parts[1] if len(parts) > 2 else "unknown")
+            by_ds_var.setdefault(ds, {}).setdefault(var, []).append((key, info))
 
-        for dataset, stage_list in by_dataset.items():
+        for dataset, variants in by_ds_var.items():
             log.info("--- %s ---", dataset)
-            for key, info in stage_list:
-                res = info.get("resources", {})
-                deps = info.get("depends_on", [])
-                dep_str = f" (after: {', '.join(d.split('/')[-2] for d in deps)})" if deps else ""
-                log.info(
-                    "  %-50s  %s/%s  mem=%-4s time=%-8s gpu=%d%s",
-                    key,
-                    res.get("partition", "?"),
-                    res.get("cpus", "?"),
-                    res.get("mem", "?"),
-                    res.get("time", "?"),
-                    res.get("gpu", 0),
-                    dep_str,
-                )
+            for var_name, stage_list in variants.items():
+                log.info("  [%s]", var_name)
+                for key, info in stage_list:
+                    res = info.get("resources", {})
+                    deps = info.get("depends_on", [])
+                    dep_names = []
+                    for d in deps:
+                        # Show short dep name: variant/model_stage
+                        dp = d.split("/")
+                        dep_names.append(f"{dp[1]}/{dp[2]}" if len(dp) >= 3 else d)
+                    dep_str = f" (after: {', '.join(dep_names)})" if dep_names else ""
+                    log.info(
+                        "    %-45s  %s/%s  mem=%-4s time=%-8s gpu=%d%s",
+                        "/".join(key.split("/")[2:]),  # model_stage/seed_N
+                        res.get("partition", "?"),
+                        res.get("cpus", "?"),
+                        res.get("mem", "?"),
+                        res.get("time", "?"),
+                        res.get("gpu", 0),
+                        dep_str,
+                    )
 
         total_gpu = sum(
             _time_to_hours(s.get("resources", {}).get("time", "0:00:00"))
@@ -996,7 +1117,7 @@ class PipelineCoordinator:
             entries.append(
                 {
                     "stage_type": stage_type,
-                    "scale": cli.get("scale", self.scale),
+                    "scale": cli.get("scale", "large"),
                     "dataset": cli.get("dataset", ""),
                     "requested": info.get("resources", {}),
                     "actual": actual,
