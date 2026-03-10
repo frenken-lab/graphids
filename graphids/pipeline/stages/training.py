@@ -68,7 +68,13 @@ def _resume_ckpt_path() -> str | None:
     Set by the coordinator (via CLI --ckpt-path) when resubmitting a
     timed-out stage that saved a Lightning auto-checkpoint.
     """
-    path = os.environ.pop("KD_GAT_CKPT_PATH", None)
+    path = os.environ.get("KD_GAT_CKPT_PATH")
+    # Best-effort cleanup: remove the env var after reading without relying on pop,
+    # which is not thread-safe on process-global state.
+    try:
+        del os.environ["KD_GAT_CKPT_PATH"]
+    except KeyError:
+        pass
     if path and Path(path).exists():
         log.info("Resuming from Lightning checkpoint: %s", path)
         return path
