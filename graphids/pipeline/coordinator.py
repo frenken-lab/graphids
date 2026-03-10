@@ -432,15 +432,14 @@ def _sbatch(stage_key: str, stage_info: dict[str, Any]) -> int:
     )
     # Background Python so _preamble.sh's SIGUSR1 trap can fire
     py_cmd = " ".join(str(p) for p in cli_cmd)
-    wrap_cmd = (
-        f"source scripts/slurm/_preamble.sh && {py_cmd} & _KD_CHILD_PID=$!; wait $_KD_CHILD_PID"
-    )
+    wrap_cmd = f"bash -c 'source scripts/slurm/_preamble.sh && {py_cmd} & _KD_CHILD_PID=$!; wait $_KD_CHILD_PID'"
 
     safe_key = stage_key.replace("/", "_")
     cmd = [
         "sbatch",
         "--parsable",
         f"--account={SLURM_ACCOUNT}",
+        f"--chdir={PROJECT_ROOT}",
         f"--partition={res['partition']}",
         f"--mem={res['mem']}",
         f"--time={res['time']}",

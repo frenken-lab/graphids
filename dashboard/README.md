@@ -3,7 +3,9 @@ title: KD-GAT Experiment Dashboard
 emoji: 🔬
 colorFrom: blue
 colorTo: green
-sdk: docker
-app_port: 8501
+sdk: streamlit
+sdk_version: "1.40.0"
+python_version: "3.12"
+app_file: app.py
 pinned: false
 ---

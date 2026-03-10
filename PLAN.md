@@ -8,13 +8,15 @@ Branch `pre-sweep-infrastructure` adds a stateful SLURM coordinator for multi-st
 
 ### Next Steps
 
-1. **Test coordinator with `--dry-run`** — verify job submission plan, stage ordering, and state persistence without actually submitting SLURM jobs
-2. **Run `smoke_collated.sbatch`** — validate collated tensor storage on GPU (end-to-end load → train → checkpoint cycle)
-3. **Use coordinator for the actual sweep** — submit full multi-dataset, multi-seed sweep via the coordinator
+1. ~~**Test coordinator with `--dry-run`**~~ — done (2026-03-09)
+2. ~~**Run `smoke_collated.sbatch`**~~ — passed, 8 min (2026-03-09)
+3. **Live coordinator validation** — single dataset/seed run in progress (hcrl_sa, seed 42). Fixed `--wrap` shell bug (needed `bash -c` + `--chdir`).
+4. **Use coordinator for the actual sweep** — submit full multi-dataset, multi-seed (×3) sweep via the coordinator
 
 ## In Progress
 
 - Pre-sweep infrastructure validation (see Next Steps above)
+- Ops dashboard (`buckeyeguy/kd-gat-dashboard`) — fixed and running on HF Spaces (Streamlit SDK). Shows 181 experiment runs + 37 sweep trials.
 
 ## Blocked
 
@@ -28,9 +30,16 @@ See `~/plans/fusion-redesign.md` for full analysis.
 
 ## Next Up
 
-- Run full sweep via coordinator (all datasets × 2 seeds)
+- Run full sweep via coordinator (all datasets × 3 seeds)
 - Fusion method comparison experiment (see Open Questions above)
 - Evaluate research questions R1–R3
+- **Research visualization Space** — plan and build a second HF Space (`buckeyeguy/kd-gat-research`) for paper-ready figures. Replaces the deleted Quarto `reports/` dashboard with a Streamlit + Plotly stack. Needs a dedicated planning session covering:
+  - Which old Quarto pages to rebuild (Performance, Training, GAT & DQN, KD Transfer, Loss Landscape, Graph Structure — skip Staging/Datasets)
+  - What additional artifacts `push_experiments_to_hf.py` must export (attention weights, embeddings, CKA similarity, DQN policy, loss landscape, graph samples — currently only flat metrics are pushed)
+  - Data schema: single expanded Parquet vs multiple files on HF Dataset
+  - Plotly equivalents for each Mosaic/vgplot spec (most are straightforward; loss landscape 3D surface and force-directed graph need care)
+  - Whether `notebooks/analysis/` code can be directly adapted or needs rewrite
+  - Separation of concerns: ops dashboard (existing) vs research dashboard (new)
 
 ## Completed
 

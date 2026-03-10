@@ -28,7 +28,7 @@ python -m graphids.pipeline.cli flow --dataset hcrl_sa --local  # No SLURM
 # Multi-seed pipeline (for statistical significance)
 python -m graphids.pipeline.cli flow --dataset hcrl_sa --seeds 42,123,456
 sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/ray_slurm.sbatch flow --dataset hcrl_sa --seeds 42,123
-python -m graphids.pipeline.cli autoencoder --model vgae --scale large --seeds 5 --dataset hcrl_sa  # first 5 default seeds
+python -m graphids.pipeline.cli autoencoder --model vgae --scale large --seeds 42,123,456 --dataset hcrl_sa
 
 # Analytics
 python scripts/data/push_experiments_to_hf.py           # MLflow → HF Dataset for dashboard

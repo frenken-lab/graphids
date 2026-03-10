@@ -169,27 +169,17 @@ SWEEP_STATE_DIR = "data/sweep_state"
 # ---------------------------------------------------------------------------
 # Multi-seed defaults (for statistical significance in TMLR submission)
 # ---------------------------------------------------------------------------
-DEFAULT_SEEDS: list[int] = [42, 123, 456, 789, 1024]
+DEFAULT_SEEDS: list[int] = [42, 123, 456]
 
 
 def parse_seeds(value: str) -> list[int]:
-    """Parse seeds: comma-separated ints or count for default seeds.
+    """Parse seeds: single int or comma-separated ints.
 
     Raises ValueError on invalid input (callers like argparse can wrap this).
     """
     if value is None:
         return []
 
-    # Single integer → use first N default seeds
-    try:
-        n = int(value)
-        if n <= 0:
-            raise ValueError("Seed count must be positive")
-        return DEFAULT_SEEDS[:n] if n <= len(DEFAULT_SEEDS) else DEFAULT_SEEDS
-    except ValueError:
-        pass
-
-    # Comma-separated list
     try:
         return [int(s.strip()) for s in value.split(",")]
     except ValueError as e:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pandas as pd
 import plotly.express as px
 import streamlit as st
 from data_loader import filter_df, get_hp_columns, load_experiments, load_sweeps
@@ -51,7 +52,7 @@ if page == "Experiments":
     # --- Metric cards ---
     total = len(filtered)
     success = (
-        filtered[filtered.get("status", pd.Series()) == "success"]
+        filtered[filtered["status"].isin(["FINISHED", "success"])]
         if "status" in filtered.columns
         else filtered
     )
@@ -102,6 +103,7 @@ if page == "Experiments":
                 "has_kd",
                 "best_val_loss",
                 "val_loss",
+                "val_acc",
                 "f1",
                 "accuracy",
                 "duration_seconds",
@@ -124,8 +126,6 @@ if page == "Experiments":
         if "run_group" not in filtered.columns:
             st.info("No run_group data available. Run with --seeds to generate multi-seed data.")
         else:
-            import pandas as pd
-
             groups = filtered.dropna(subset=["run_group"]).groupby("run_group")
             agg_rows = []
             metric_candidates = ["best_val_loss", "val_loss", "f1", "accuracy"]
@@ -202,8 +202,6 @@ if page == "Experiments":
                                 metric_col: row.get(metric_col),
                             }
                         )
-
-                    import pandas as pd
 
                     compare_df = pd.DataFrame(compare_data).dropna(subset=[metric_col])
                     if not compare_df.empty:

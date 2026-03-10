@@ -102,7 +102,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--seeds",
         type=str,
         default=None,
-        help="Multi-seed dispatch: comma-separated (42,123,456) or count (5 = first 5 defaults)",
+        help="Multi-seed dispatch: single seed (42) or comma-separated (42,123,456)",
     )
 
     # Infrastructure overrides

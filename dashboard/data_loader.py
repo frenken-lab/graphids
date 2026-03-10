@@ -18,15 +18,23 @@ def load_experiments() -> pd.DataFrame:
             repo_id=EXPERIMENTS_REPO, filename="experiments.parquet", repo_type="dataset"
         )
         df = pd.read_parquet(path)
+        # Flatten MLflow prefixed columns to short names
+        rename = {}
+        for col in df.columns:
+            for prefix in ("params.", "metrics.", "tags."):
+                if col.startswith(prefix):
+                    short = col[len(prefix) :]
+                    # Only rename if short name doesn't already exist
+                    if short not in df.columns and short not in rename.values():
+                        rename[col] = short
+        if rename:
+            df = df.rename(columns=rename)
+        # Friendly aliases for MLflow-specific tag names
+        if "mlflow.runName" in df.columns and "run_name" not in df.columns:
+            df = df.rename(columns={"mlflow.runName": "run_name"})
         for col in ["duration_seconds", "peak_gpu_mb", "val_loss", "best_val_loss"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
-        # Ensure run_group and seed columns exist for aggregation views
-        for col in ["run_group", "seed"]:
-            if col not in df.columns:
-                tag_col = f"tags.{col}"
-                if tag_col in df.columns:
-                    df[col] = df[tag_col]
         return df
     except Exception:
         return pd.DataFrame()
