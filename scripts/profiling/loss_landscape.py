@@ -5,7 +5,7 @@ weights along two filter-normalized random directions (Li et al., 2018).
 Output is a Parquet file suitable for contour/heatmap visualization.
 
 Usage:
-    python -m graphids.pipeline.stages.loss_landscape \
+    python scripts/profiling/loss_landscape.py \
         --model vgae --dataset hcrl_sa [--resolution 51] [--scale 1.0]
 
 Must run on GPU node (SLURM).
@@ -14,7 +14,6 @@ Must run on GPU node (SLURM).
 from __future__ import annotations
 
 import argparse
-import copy
 import logging
 import os
 from pathlib import Path

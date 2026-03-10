@@ -75,8 +75,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "stage",
-        choices=list(STAGES.keys()) + ["flow", "tune", "sweep-pipeline", "orchestrate"],
-        help="Training stage, 'flow' for Ray pipeline, 'tune' for HPO, 'sweep-pipeline' for full DAG, or 'orchestrate' for scheduler-agnostic orchestration",
+        choices=list(STAGES.keys()) + ["flow", "tune", "sweep-pipeline"],
+        help="Training stage, 'flow' for Ray pipeline, 'tune' for HPO, or 'sweep-pipeline' for full DAG",
     )
 
     # Config source
@@ -172,12 +172,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="(tune) Early stopping patience per trial",
     )
     p.add_argument(
-        "--inprocess",
-        action="store_true",
-        default=False,
-        help="(tune) Use in-process trainable with per-epoch ASHA reporting (~2.5x faster)",
-    )
-    p.add_argument(
         "--warm-start-from",
         type=str,
         default=None,
@@ -192,39 +186,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="(sweep-pipeline) Resume from previous state file (default: True)",
     )
 
-    # Orchestrate options (scheduler-agnostic system)
-    p.add_argument("--poll-interval", type=int, default=30, help="(orchestrate) Polling interval")
-    p.add_argument(
-        "--variants",
-        type=str,
-        default=None,
-        help="(orchestrate) Comma-separated variant filter (e.g. large,small_kd). Default: all from config",
-    )
-    p.add_argument(
-        "--fire-and-forget",
-        action="store_true",
-        default=False,
-        help="(orchestrate) Submit all jobs with scheduler deps and exit immediately",
-    )
-    p.add_argument(
-        "--resume-run",
-        type=str,
-        default=None,
-        help="(orchestrate) Resume a previous run by run_id",
-    )
-    p.add_argument(
-        "--backend",
-        type=str,
-        default=None,
-        help="(orchestrate) Scheduler backend: slurm, flux, dry_run (default: env or slurm)",
-    )
-
     # Checkpoint resume (set by orchestrator on TIMEOUT resubmit)
     p.add_argument(
         "--ckpt-path",
         type=str,
         default=None,
-        help="Lightning .ckpt path to resume training from (set by orchestrator on TIMEOUT)",
+        help="Lightning .ckpt path to resume training from",
     )
 
     # Metadata tags
@@ -352,33 +319,17 @@ def _run_tune(args: argparse.Namespace, log: logging.Logger) -> None:
     if tune_stage is None:
         return
 
-    # Dry-run: validate everything without running trials
-    if args.dry_run:
-        from .orchestration.tune_config import dry_run_tune
-
-        dry_run_tune(
-            stage=tune_stage,
-            dataset=args.dataset or "hcrl_sa",
-            scale=args.scale,
-            num_samples=args.num_samples,
-            max_concurrent=args.max_concurrent,
-            max_epochs=args.tune_epochs,
-            patience=args.tune_patience,
-        )
-        return
-
     from .orchestration.tune_config import run_tune
 
     warm_start = getattr(args, "warm_start_from", None)
     log.info(
-        "Starting tune: stage=%s, dataset=%s, scale=%s, samples=%d, epochs=%d, patience=%d, inprocess=%s, warm_start_from=%s",
+        "Starting tune: stage=%s, dataset=%s, scale=%s, samples=%d, epochs=%d, patience=%d, warm_start_from=%s",
         tune_stage,
         args.dataset or "hcrl_sa",
         args.scale,
         args.num_samples,
         args.tune_epochs,
         args.tune_patience,
-        args.inprocess,
         warm_start,
     )
 
@@ -392,7 +343,6 @@ def _run_tune(args: argparse.Namespace, log: logging.Logger) -> None:
         local=args.local,
         max_epochs=args.tune_epochs,
         patience=args.tune_patience,
-        inprocess=args.inprocess,
         warm_start_from=warm_start,
     )
 
@@ -423,53 +373,7 @@ def _run_sweep_pipeline(args: argparse.Namespace, log: logging.Logger) -> None:
         tune_patience=args.tune_patience,
         resume=args.resume,
         dry_run=args.dry_run,
-        inprocess=args.inprocess,
     )
-
-
-def _run_orchestrate(args: argparse.Namespace, log: logging.Logger) -> None:
-    """Dispatch new scheduler-agnostic orchestrator."""
-    from .orchestration.driver import run_orchestrate
-
-    if args.resume_run:
-        success = run_orchestrate(
-            datasets=[],
-            seeds=[],
-            resume_run=args.resume_run,
-            poll_interval=args.poll_interval,
-            dry_run=args.dry_run,
-            fire_and_forget=args.fire_and_forget,
-            backend=args.backend,
-        )
-    else:
-        if not args.dataset:
-            log.error("--dataset is required for orchestrate mode (or use --resume-run)")
-            return
-
-        datasets = [d.strip() for d in args.dataset.split(",")]
-        seeds = _parse_seeds(args.seeds) if args.seeds else [42]
-        variant_filter = [v.strip() for v in args.variants.split(",")] if args.variants else None
-
-        log.info(
-            "Starting orchestrator: datasets=%s, seeds=%s, variants=%s, dry_run=%s",
-            datasets,
-            seeds,
-            variant_filter or "all",
-            args.dry_run,
-        )
-
-        success = run_orchestrate(
-            datasets=datasets,
-            seeds=seeds,
-            variant_filter=variant_filter,
-            poll_interval=args.poll_interval,
-            dry_run=args.dry_run,
-            fire_and_forget=args.fire_and_forget,
-            backend=args.backend,
-        )
-
-    if not success:
-        raise SystemExit(1)
 
 
 def _run_single_stage(
@@ -672,10 +576,6 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.stage == "sweep-pipeline":
         _run_sweep_pipeline(args, log)
-        return
-
-    if args.stage == "orchestrate":
-        _run_orchestrate(args, log)
         return
 
     # ---- Build config ----

@@ -23,10 +23,8 @@ Usage:
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -38,14 +36,6 @@ from graphids.pipeline.subprocess_utils import build_cli_cmd
 log = logging.getLogger(__name__)
 
 _PY = sys.executable
-
-# Set KD_GAT_BENCHMARK=1 to enable detailed orchestration timing.
-# Output written to KD_GAT_BENCHMARK_LOG (default: benchmark_timing.jsonl).
-_BENCHMARK = os.environ.get("KD_GAT_BENCHMARK", "") == "1"
-_BENCHMARK_LOG = os.environ.get("KD_GAT_BENCHMARK_LOG", "benchmark_timing.jsonl")
-
-# Track when the last stage ended so we can measure inter-stage gaps.
-_last_stage_end: float | None = None
 
 
 def _init_ray(datasets: list[str] | None, local: bool) -> list[str]:
@@ -64,40 +54,6 @@ def _init_ray(datasets: list[str] | None, local: bool) -> list[str]:
     return datasets
 
 
-def _query_gpu_utilization() -> dict[str, float | None]:
-    """Sample GPU utilization and memory via nvidia-smi. Returns {} on failure."""
-    if not shutil.which("nvidia-smi"):
-        return {}
-    try:
-        out = subprocess.run(
-            [
-                "nvidia-smi",
-                "--query-gpu=utilization.gpu,memory.used,memory.total",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if out.returncode != 0:
-            return {}
-        # Take the first GPU line (single-GPU jobs).
-        parts = out.stdout.strip().split("\n")[0].split(",")
-        return {
-            "gpu_util_pct": float(parts[0].strip()),
-            "gpu_mem_used_mib": float(parts[1].strip()),
-            "gpu_mem_total_mib": float(parts[2].strip()),
-        }
-    except Exception:
-        return {}
-
-
-def _write_benchmark_record(record: dict) -> None:
-    """Append a JSONL timing record to the benchmark log."""
-    with open(_BENCHMARK_LOG, "a") as f:
-        f.write(json.dumps(record) + "\n")
-
-
 # ---------------------------------------------------------------------------
 # Subprocess dispatch
 # ---------------------------------------------------------------------------
@@ -114,95 +70,28 @@ def _run_stage(
     """Run a pipeline stage as a subprocess via the CLI.
 
     Using subprocess ensures each stage gets a clean CUDA context
-    (critical for spawn multiprocessing). Logs wall-clock timing
-    for benchmarking subprocess overhead vs training time.
+    (critical for spawn multiprocessing).
 
     KD teacher resolution is handled automatically by the training code
     via ``prepare_kd()`` — no need to pass teacher paths through the
     subprocess boundary.
-
-    When KD_GAT_BENCHMARK=1, writes detailed timing to a JSONL log:
-    - spawn_overhead_s: time for subprocess to start (Popen → first poll)
-    - execution_s: wall-clock time of the subprocess itself
-    - total_s: full wall time including spawn + teardown
-    - inter_stage_gap_s: idle time since the previous stage ended
-    - gpu_pre/gpu_post: nvidia-smi snapshots before/after
     """
-    global _last_stage_end
-
     cmd = build_cli_cmd(stage, model, scale, dataset, seed=seed, auxiliaries=auxiliaries)
 
     log.info("Running: %s", " ".join(cmd))
 
-    if not _BENCHMARK:
-        # Fast path: original behavior, no extra overhead.
-        t0 = time.monotonic()
-        result = subprocess.run(cmd, check=True, capture_output=False)
-        elapsed = time.monotonic() - t0
-        log.info(
-            "Stage %s/%s/%s completed in %.1fs (dataset=%s)",
-            model,
-            scale,
-            stage,
-            elapsed,
-            dataset,
-        )
-        return result
-
-    # --- Benchmark path: detailed timing instrumentation ---
-    gpu_pre = _query_gpu_utilization()
-    inter_stage_gap = None
-    if _last_stage_end is not None:
-        inter_stage_gap = time.monotonic() - _last_stage_end
-
-    t_call = time.monotonic()
-
-    # Use Popen to measure spawn overhead separately from execution.
-    proc = subprocess.Popen(cmd)
-    t_spawned = time.monotonic()
-    spawn_overhead = t_spawned - t_call
-
-    proc.wait()
-    t_done = time.monotonic()
-
-    _last_stage_end = t_done
-
-    execution_time = t_done - t_spawned
-    total_time = t_done - t_call
-
-    gpu_post = _query_gpu_utilization()
-
-    if proc.returncode != 0:
-        raise subprocess.CalledProcessError(proc.returncode, cmd)
-
-    record = {
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "dataset": dataset,
-        "model": model,
-        "scale": scale,
-        "stage": stage,
-        "auxiliaries": auxiliaries,
-        "spawn_overhead_s": round(spawn_overhead, 3),
-        "execution_s": round(execution_time, 3),
-        "total_s": round(total_time, 3),
-        "inter_stage_gap_s": round(inter_stage_gap, 3) if inter_stage_gap is not None else None,
-        "gpu_pre": gpu_pre,
-        "gpu_post": gpu_post,
-    }
-    _write_benchmark_record(record)
-
+    t0 = time.monotonic()
+    result = subprocess.run(cmd, check=True, capture_output=False)
+    elapsed = time.monotonic() - t0
     log.info(
-        "Stage %s/%s/%s completed in %.1fs (spawn=%.3fs, exec=%.1fs, gap=%.3fs, dataset=%s)",
+        "Stage %s/%s/%s completed in %.1fs (dataset=%s)",
         model,
         scale,
         stage,
-        total_time,
-        spawn_overhead,
-        execution_time,
-        inter_stage_gap if inter_stage_gap is not None else 0.0,
+        elapsed,
         dataset,
     )
-    return subprocess.CompletedProcess(cmd, proc.returncode)
+    return result
 
 
 # ---------------------------------------------------------------------------

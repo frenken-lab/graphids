@@ -12,7 +12,6 @@ is not available or when running in local mode with few files.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from collections.abc import Sequence
 from pathlib import Path
@@ -21,7 +20,6 @@ from typing import TYPE_CHECKING
 from graphids.config.constants import (
     DEFAULT_STRIDE,
     DEFAULT_WINDOW_SIZE,
-    PREPROCESSING_VERSION,
 )
 
 from .adapters.can_bus import CANBusAdapter
@@ -36,16 +34,6 @@ log = logging.getLogger(__name__)
 
 # Threshold: use Ray only when there are enough files to justify overhead
 _RAY_FILE_THRESHOLD = 4
-
-
-def _config_hash(
-    window_size: int,
-    stride: int,
-    version: str = PREPROCESSING_VERSION,
-) -> str:
-    """Deterministic hash of preprocessing config for cache keying."""
-    key = f"ws={window_size}_st={stride}_v={version}"
-    return hashlib.sha256(key.encode()).hexdigest()[:12]
 
 
 def _process_single_file(

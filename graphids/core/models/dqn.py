@@ -173,11 +173,8 @@ class EnhancedDQNFusionAgent:
         # Training tracking
         self.training_step = 0
         self.update_counter = 0
-        self.reward_history: list[float] = []
-        self.loss_history: list[float] = []
 
         # Validation tracking
-        self.validation_scores: list[dict] = []
         self.best_validation_score = -float("inf")
         self.patience_counter = 0
         self.max_patience = max_patience
@@ -423,8 +420,6 @@ class EnhancedDQNFusionAgent:
             self.update_target_network()
 
         self.training_step += 1
-        self.loss_history.append(loss.item())
-        self.reward_history.append(rewards.mean().item())
 
         return loss.item()
 
@@ -483,7 +478,6 @@ class EnhancedDQNFusionAgent:
         else:
             self.patience_counter += 1
 
-        self.validation_scores.append(result)
         return result
 
     def load_checkpoint(self, checkpoint_path: str | torch.Tensor) -> None:

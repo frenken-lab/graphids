@@ -79,49 +79,6 @@ class TestConfigRoundTrip:
         assert isinstance(loaded.vgae.hidden_dims, tuple)
         assert loaded.vgae.hidden_dims == (100, 50, 25)
 
-    def test_legacy_flat_json_loads(self, tmp_path):
-        """Old flat config.json files must still load correctly."""
-        import json
-
-        from graphids.config import PipelineConfig
-
-        flat = {
-            "dataset": "hcrl_sa",
-            "model_size": "student",
-            "seed": 42,
-            "lr": 0.001,
-            "max_epochs": 300,
-            "batch_size": 4096,
-            "patience": 50,
-            "vgae_hidden_dims": [80, 40, 16],
-            "vgae_latent_dim": 16,
-            "vgae_heads": 1,
-            "vgae_embedding_dim": 4,
-            "vgae_dropout": 0.1,
-            "gat_hidden": 24,
-            "gat_layers": 2,
-            "gat_heads": 4,
-            "gat_dropout": 0.1,
-            "gat_embedding_dim": 8,
-            "gat_fc_layers": 3,
-            "dqn_hidden": 160,
-            "dqn_layers": 2,
-            "dqn_gamma": 0.99,
-            "use_kd": True,
-            "teacher_path": "/some/path",
-            "kd_temperature": 4.0,
-            "kd_alpha": 0.7,
-            "experiment_root": "experimentruns",
-            "device": "cuda",
-        }
-        p = tmp_path / "legacy.json"
-        p.write_text(json.dumps(flat))
-        cfg = PipelineConfig.load(p)
-        assert cfg.scale == "small"
-        assert cfg.vgae.hidden_dims == (80, 40, 16)
-        assert cfg.has_kd is True
-        assert cfg.kd.temperature == 4.0
-
 
 # ---------------------------------------------------------------------------
 # 2. Model construction matches config
@@ -540,18 +497,6 @@ class TestPathConstruction:
             py_path = str(metrics_path(cfg, "evaluation"))
             str_path = metrics_path_str("hcrl_sa", model_type, scale, "evaluation", aux=aux_str)
             assert py_path == str_path
-
-    def test_benchmark_path_str(self):
-        from graphids.config import benchmark_path_str
-
-        assert (
-            benchmark_path_str("hcrl_sa", "vgae", "large", "autoencoder")
-            == "experimentruns/hcrl_sa/vgae_large_autoencoder/benchmark.tsv"
-        )
-        assert (
-            benchmark_path_str("set_01", "dqn", "small", "fusion", aux="kd")
-            == "experimentruns/set_01/dqn_small_fusion_kd/benchmark.tsv"
-        )
 
 
 # ---------------------------------------------------------------------------

@@ -30,59 +30,6 @@ MAX_DATA_BYTES = 8
 NODE_FEATURE_COUNT = 26  # CAN_ID + 8 means + 8 stds + entropy + 2 change_rate + skew + kurt + clustering + split_half + count + position
 EDGE_FEATURE_COUNT = 11  # Streamlined edge features
 
-# Ordered feature names matching engine.py computation order (for export/visualization)
-NODE_FEATURE_NAMES: list[str] = [
-    # [0] Entity ID
-    "CAN_ID",
-    # [1:9] Per-byte payload means
-    "Byte0_Mean",
-    "Byte1_Mean",
-    "Byte2_Mean",
-    "Byte3_Mean",
-    "Byte4_Mean",
-    "Byte5_Mean",
-    "Byte6_Mean",
-    "Byte7_Mean",
-    # [9:17] Per-byte payload standard deviations
-    "Byte0_Std",
-    "Byte1_Std",
-    "Byte2_Std",
-    "Byte3_Std",
-    "Byte4_Std",
-    "Byte5_Std",
-    "Byte6_Std",
-    "Byte7_Std",
-    # [17] Shannon entropy of byte values
-    "Payload_Entropy",
-    # [18:20] Payload change rates
-    "Change_Rate_Mean",
-    "Change_Rate_Max",
-    # [20:22] Higher-order moments
-    "Skewness",
-    "Kurtosis",
-    # [22] Local clustering coefficient
-    "Clustering_Coeff",
-    # [23] Split-half ratio
-    "Split_Half_Ratio",
-    # [24:26] Occurrence stats
-    "Occurrence_Count",
-    "Last_Position",
-]
-
-EDGE_FEATURE_NAMES: list[str] = [
-    "Count",  # [0] Raw transition count
-    "Frequency",  # [1] Relative frequency (count/window)
-    "Mean_Interval",  # [2] Mean inter-arrival interval
-    "Std_Interval",  # [3] Std inter-arrival interval
-    "Regularity",  # [4] 1/(1+std)
-    "First_Position",  # [5] First occurrence (normalized)
-    "Last_Position",  # [6] Last occurrence (normalized)
-    "Temporal_Span",  # [7] Last - first (normalized)
-    "Bidirectional",  # [8] Reverse edge exists flag
-    "Degree_Product",  # [9] src_deg × tgt_deg
-    "Degree_Ratio",  # [10] src_deg / tgt_deg
-]
-
 
 # ---------------------------------------------------------------------------
 # Batch index utilities
@@ -107,13 +54,6 @@ def graph_attack_type(g, default: int | None = -1) -> int | None:
     """
     if hasattr(g, "attack_type") and g.attack_type is not None:
         return g.attack_type.item()
-    return default
-
-
-def graph_node_attack_type(g, node_idx: int, default: int | None = None) -> int | None:
-    """Get per-node attack_type for a single node, or *default* if unavailable."""
-    if hasattr(g, "node_attack_type") and g.node_attack_type is not None:
-        return int(g.node_attack_type[node_idx].item())
     return default
 
 

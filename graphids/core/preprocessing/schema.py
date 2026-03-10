@@ -20,9 +20,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-import numpy as np
-import pandas as pd
-
 log = logging.getLogger(__name__)
 
 # Column name constants used throughout the preprocessing pipeline
@@ -69,12 +66,6 @@ class IRSchema:
         return self._required_prefix + self._required_suffix
 
     @property
-    def feature_slice(self) -> slice:
-        """Numpy column slice for the feature block."""
-        start = 1  # after entity_id
-        return slice(start, start + self.num_features)
-
-    @property
     def col_source(self) -> int:
         """Numpy column index for source_id."""
         return len(self._required_prefix)
@@ -96,80 +87,9 @@ class IRSchema:
             return None
         return len(self._required_prefix) + 3
 
-    def validate(self, df: pd.DataFrame, *, strict: bool = True) -> pd.DataFrame:
-        """Validate that *df* conforms to the IR schema.
-
-        Parameters
-        ----------
-        df : pd.DataFrame
-            Intermediate representation DataFrame.
-        strict : bool
-            If True, raise on any violation. If False, log warnings and return.
-
-        Returns
-        -------
-        pd.DataFrame
-            The validated (unchanged) DataFrame.
-
-        Raises
-        ------
-        ValueError
-            If strict=True and validation fails.
-        """
-        errors: list[str] = []
-        expected = self.columns
-
-        # Column presence and order
-        if list(df.columns) != expected:
-            missing = set(expected) - set(df.columns)
-            extra = set(df.columns) - set(expected)
-            if missing:
-                errors.append(f"Missing columns: {sorted(missing)}")
-            if extra:
-                errors.append(f"Unexpected columns: {sorted(extra)}")
-            if not missing and not extra:
-                errors.append(f"Column order mismatch: expected {expected}, got {list(df.columns)}")
-
-        if errors:
-            msg = "IR schema validation failed:\n  " + "\n  ".join(errors)
-            if strict:
-                raise ValueError(msg)
-            log.warning(msg)
-            return df
-
-        # Null check
-        null_counts = df.isnull().sum()
-        null_cols = null_counts[null_counts > 0]
-        if len(null_cols) > 0:
-            msg = f"IR contains nulls: {dict(null_cols)}"
-            if strict:
-                raise ValueError(msg)
-            log.warning(msg)
-
-        # Numeric dtype check
-        for col in expected:
-            if not np.issubdtype(df[col].dtype, np.number):
-                msg = f"Column '{col}' has non-numeric dtype: {df[col].dtype}"
-                if strict:
-                    raise ValueError(msg)
-                log.warning(msg)
-
-        # Label values
-        unique_labels = df[COL_LABEL].unique()
-        if not set(unique_labels).issubset({0, 1}):
-            msg = f"Label column has values outside {{0, 1}}: {sorted(unique_labels)}"
-            if strict:
-                raise ValueError(msg)
-            log.warning(msg)
-
-        return df
-
 
 # Default schema for the CAN bus domain (8 data bytes → 8 features)
 CAN_BUS_SCHEMA = IRSchema(num_features=8)
 
 # CAN bus schema with attack type metadata
 CAN_BUS_SCHEMA_WITH_ATTACK_TYPE = IRSchema(num_features=8, include_attack_type=True)
-
-# Default schema for network flow domain (35 flow features)
-NETWORK_FLOW_SCHEMA = IRSchema(num_features=35)

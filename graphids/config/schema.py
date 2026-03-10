@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -191,7 +191,6 @@ class PipelineConfig(BaseModel, frozen=True):
     )
 
     # --- Infrastructure ---
-    schema_version: str = "1.0.0"
     experiment_root: str = "experimentruns"
     device: str = "cuda"
     num_workers: int = 2
@@ -229,191 +228,6 @@ class PipelineConfig(BaseModel, frozen=True):
 
     @classmethod
     def load(cls, path: str | Path) -> PipelineConfig:
-        """Load config. Handles nested (new) and flat (legacy) JSON."""
+        """Load config from JSON file."""
         raw = json.loads(Path(path).read_text())
-        if "vgae" in raw and isinstance(raw.get("vgae"), dict):
-            return cls.model_validate(raw)
-        return cls._from_legacy_flat(raw)
-
-    @classmethod
-    def _from_legacy_flat(cls, flat: dict) -> PipelineConfig:
-        """Convert legacy flat config.json to nested format.
-
-        Deprecated: kept only for backward compatibility with old experimentruns/
-        config.json files. All new configs use nested format.
-        """
-        import warnings
-
-        warnings.warn(
-            "Loading legacy flat config format — migrate to nested format",
-            DeprecationWarning,
-            stacklevel=3,
-        )
-        nested: dict[str, Any] = {}
-        vgae: dict[str, Any] = {}
-        gat: dict[str, Any] = {}
-        dqn_arch: dict[str, Any] = {}
-        training: dict[str, Any] = {}
-        fusion: dict[str, Any] = {}
-        kd_fields: dict[str, Any] = {}
-
-        # Training fields that map to TrainingConfig
-        training_field_names = set(TrainingConfig.model_fields.keys())
-
-        # Fusion fields (with fusion_ prefix stripped)
-        fusion_field_names = set(FusionConfig.model_fields.keys())
-
-        for k, v in flat.items():
-            # VGAE architecture
-            if k.startswith("vgae_"):
-                vgae[k.removeprefix("vgae_")] = v
-            # GAT architecture
-            elif k.startswith("gat_"):
-                gat[k.removeprefix("gat_")] = v
-            # DQN architecture
-            elif k.startswith("dqn_"):
-                dqn_arch[k.removeprefix("dqn_")] = v
-            # KD fields
-            elif k.startswith("kd_"):
-                kd_fields[k.removeprefix("kd_")] = v
-            # Fusion fields (fusion_ prefix)
-            elif k.startswith("fusion_"):
-                suffix = k.removeprefix("fusion_")
-                if suffix in fusion_field_names:
-                    fusion[suffix] = v
-                else:
-                    # fusion_episodes -> episodes, fusion_max_samples -> max_samples, etc.
-                    training[k] = v  # will be filtered later
-            # Training-level fields
-            elif k in training_field_names:
-                training[k] = v
-            # Identity / infrastructure fields
-            elif k == "model_size":
-                # Map legacy "teacher"/"student" to "large"/"small"
-                scale_map = {"teacher": "large", "student": "small"}
-                nested["scale"] = scale_map.get(v, v)
-            elif k == "use_kd":
-                pass  # handled below
-            elif k == "teacher_path":
-                pass  # handled below
-            elif k == "modality":
-                pass  # dropped (no longer in schema)
-            elif k in {
-                "dataset",
-                "model_type",
-                "scale",
-                "seed",
-                "experiment_root",
-                "device",
-                "num_workers",
-                "mp_start_method",
-                "run_test",
-            }:
-                nested[k] = v
-            else:
-                # Remaining training fields not caught above
-                if k in training_field_names:
-                    training[k] = v
-                # Fusion fields without prefix (from old flat format)
-                elif k in {
-                    "episode_sample_size",
-                    "training_step_interval",
-                    "gpu_training_steps",
-                    "max_val_samples",
-                    "alpha_steps",
-                }:
-                    fusion[k] = v
-
-        # Map old fusion_ prefix fields
-        if "episodes" not in fusion and "fusion_episodes" in flat:
-            fusion["episodes"] = flat["fusion_episodes"]
-        if "max_samples" not in fusion and "fusion_max_samples" in flat:
-            fusion["max_samples"] = flat["fusion_max_samples"]
-        if "lr" not in fusion and "fusion_lr" in flat:
-            fusion["lr"] = flat["fusion_lr"]
-
-        def _migrate_fields(src: dict, dest: dict, fields: tuple[str, ...]) -> None:
-            for f in fields:
-                if f in src and f not in dest:
-                    dest[f] = src[f]
-
-        _migrate_fields(
-            flat,
-            training,
-            (
-                "curriculum_start_ratio",
-                "curriculum_end_ratio",
-                "difficulty_percentile",
-                "use_vgae_mining",
-                "difficulty_cache_update",
-                "curriculum_memory_multiplier",
-                "log_teacher_student_comparison",
-            ),
-        )
-        _migrate_fields(
-            flat,
-            training,
-            (
-                "use_scheduler",
-                "scheduler_type",
-                "scheduler_t_max",
-                "scheduler_step_size",
-                "scheduler_gamma",
-            ),
-        )
-        _migrate_fields(
-            flat,
-            training,
-            (
-                "gradient_checkpointing",
-                "use_teacher_cache",
-                "clear_cache_every_n",
-                "offload_teacher_to_cpu",
-                "safety_factor",
-                "accumulate_grad_batches",
-                "save_top_k",
-                "monitor_metric",
-                "monitor_mode",
-                "log_every_n_steps",
-                "test_every_n_epochs",
-                "deterministic",
-                "cudnn_benchmark",
-            ),
-        )
-        _migrate_fields(
-            flat,
-            training,
-            (
-                "lr",
-                "max_epochs",
-                "batch_size",
-                "patience",
-                "weight_decay",
-                "gradient_clip",
-                "precision",
-            ),
-        )
-
-        if vgae:
-            nested["vgae"] = vgae
-        if gat:
-            nested["gat"] = gat
-        if dqn_arch:
-            nested["dqn"] = dqn_arch
-        if training:
-            nested["training"] = training
-        if fusion:
-            nested["fusion"] = fusion
-
-        # KD → auxiliaries
-        if flat.get("use_kd"):
-            kd_aux = {"type": "kd"} | {
-                k: kd_fields[k]
-                for k in ("temperature", "alpha", "vgae_latent_weight", "vgae_recon_weight")
-                if k in kd_fields
-            }
-            if flat.get("teacher_path"):
-                kd_aux["model_path"] = flat["teacher_path"]
-            nested["auxiliaries"] = [kd_aux]
-
-        return cls.model_validate(nested)
+        return cls.model_validate(raw)

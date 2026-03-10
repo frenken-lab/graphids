@@ -11,7 +11,6 @@ from .paths import (
     MLFLOW_TRACKING_URI,
     STAGES,
     ArtifactResolver,
-    benchmark_path_str,
     cache_dir,
     checkpoint_path,
     checkpoint_path_str,
@@ -19,7 +18,6 @@ from .paths import (
     data_dir,
     get_datasets,
     get_resolver,
-    log_dir,
     metrics_path,
     metrics_path_str,
     run_group,
@@ -31,12 +29,6 @@ from .paths import (
 from .resolver import resolve
 from .schema import (
     AuxiliaryConfig,
-    DQNArchitecture,
-    FusionConfig,
-    GATArchitecture,
     PipelineConfig,
-    PreprocessingConfig,
     TrainingConfig,
-    VariantConfig,
-    VGAEArchitecture,
 )

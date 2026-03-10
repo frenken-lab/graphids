@@ -53,7 +53,7 @@ fi
 FAILURES=0
 for m in "${MODELS[@]}"; do
     echo "--- Computing loss landscape for ${m} on ${DATASET} ---"
-    if python -m graphids.pipeline.stages.loss_landscape \
+    if python scripts/profiling/loss_landscape.py \
         --model "$m" \
         --dataset "$DATASET" \
         --resolution "$RESOLUTION" \

@@ -414,42 +414,7 @@ def _compute_graph_stats(graphs) -> dict:
             "per_graph_bytes": _stats(per_graph_bytes),
         }
 
-    # Legacy list[Data] path
-    if hasattr(graphs, "data_list"):
-        graphs = graphs.data_list
-    if not isinstance(graphs, list):
-        graphs = list(graphs)
-
-    import numpy as np
-
-    node_counts = []
-    edge_counts = []
-    per_graph_bytes = []
-
-    for g in graphs:
-        node_counts.append(g.x.size(0) if g.x is not None else 0)
-        edge_counts.append(g.edge_index.size(1) if g.edge_index is not None else 0)
-        byte_count = 0
-        for attr in ("x", "edge_index", "edge_attr", "y"):
-            t = getattr(g, attr, None)
-            if t is not None:
-                byte_count += t.numel() * t.element_size()
-        per_graph_bytes.append(byte_count)
-
-    def _stats(values):
-        arr = np.array(values)
-        return {
-            "mean": round(float(arr.mean()), 1),
-            "median": int(np.median(arr)),
-            "p95": int(np.percentile(arr, 95)),
-            "max": int(arr.max()),
-        }
-
-    return {
-        "node_count": _stats(node_counts),
-        "edge_count": _stats(edge_counts),
-        "per_graph_bytes": _stats(per_graph_bytes),
-    }
+    raise TypeError(f"Expected CollatedGraphDataset, got {type(graphs).__name__}")
 
 
 def _write_cache_metadata(cache_dir, dataset_name, graphs, id_mapping, csv_files):

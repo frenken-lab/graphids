@@ -3,6 +3,7 @@
 Replaces the old ``build_lightweight_id_mapping`` / ``build_id_mapping_from_normal``
 functions with a single class that handles building, encoding, persistence, and OOV.
 """
+
 from __future__ import annotations
 
 import logging
@@ -52,7 +53,6 @@ class EntityVocabulary:
         if OOV_KEY not in id_to_index:
             raise ValueError(f"Vocabulary must contain '{OOV_KEY}' sentinel")
         self._id_to_index = dict(id_to_index)
-        self._index_to_id = {v: k for k, v in self._id_to_index.items()}
 
     # ------------------------------------------------------------------
     # Construction
@@ -127,10 +127,6 @@ class EntityVocabulary:
     def encode_series(self, series: pd.Series) -> pd.Series:
         """Vectorized encoding of a pandas Series."""
         return series.map(self._id_to_index).fillna(self.oov_index).astype(int)
-
-    def decode(self, index: int):
-        """Map a dense index back to the raw ID."""
-        return self._index_to_id.get(index)
 
     def __len__(self) -> int:
         """Number of entries including OOV."""

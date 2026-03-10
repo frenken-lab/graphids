@@ -171,7 +171,6 @@ def _run_sweep_step(
     max_concurrent: int,
     tune_epochs: int,
     tune_patience: int,
-    inprocess: bool = False,
     warm_start_from: str | None = None,
 ) -> None:
     """Run a Ray Tune sweep for a single stage."""
@@ -185,12 +184,11 @@ def _run_sweep_step(
             log.info("Auto warm-starting %s from set_01 results", step.stage)
 
     log.info(
-        "Running sweep: stage=%s, dataset=%s, scale=%s, samples=%d, inprocess=%s, warm_start_from=%s",
+        "Running sweep: stage=%s, dataset=%s, scale=%s, samples=%d, warm_start_from=%s",
         step.stage,
         dataset,
         scale,
         num_samples,
-        inprocess,
         warm_start_from,
     )
 
@@ -202,7 +200,6 @@ def _run_sweep_step(
         max_concurrent=max_concurrent,
         max_epochs=tune_epochs,
         patience=tune_patience,
-        inprocess=inprocess,
         warm_start_from=warm_start_from,
     )
 
@@ -249,7 +246,6 @@ def run_sweep_pipeline(
     tune_patience: int = 15,
     resume: bool = True,
     dry_run: bool = False,
-    inprocess: bool = False,
     multi_seed: bool = False,
 ) -> None:
     """Execute the 7-step sweep pipeline DAG.
@@ -313,7 +309,6 @@ def run_sweep_pipeline(
                     max_concurrent=max_concurrent,
                     tune_epochs=tune_epochs,
                     tune_patience=tune_patience,
-                    inprocess=inprocess,
                 )
                 # Shutdown Ray between sweeps to prevent state leakage
                 try:

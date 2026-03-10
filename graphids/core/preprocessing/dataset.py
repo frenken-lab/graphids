@@ -173,39 +173,3 @@ class CollatedGraphDataset(torch.utils.data.Dataset):
             "node_features": node_features,
             "edge_features": edge_features,
         }
-
-    def print_stats(self) -> None:
-        """Log comprehensive dataset statistics."""
-        stats = self.get_stats()
-        log.info("=" * 60)
-        log.info("DATASET STATISTICS")
-        log.info("=" * 60)
-        log.info("Total graphs: %d", stats["num_graphs"])
-        log.info(
-            "Normal graphs: %d (%.1f%%)",
-            stats["normal_graphs"],
-            stats["normal_graphs"] / stats["num_graphs"] * 100,
-        )
-        log.info(
-            "Attack graphs: %d (%.1f%%)",
-            stats["attack_graphs"],
-            stats["attack_graphs"] / stats["num_graphs"] * 100,
-        )
-        log.info("Graph Structure:")
-        log.info(
-            "  Nodes per graph: %.1f +/- %.1f [%d-%d]",
-            stats["avg_nodes"],
-            stats["std_nodes"],
-            stats["min_nodes"],
-            stats["max_nodes"],
-        )
-        log.info(
-            "  Edges per graph: %.1f +/- %.1f [%d-%d]",
-            stats["avg_edges"],
-            stats["std_edges"],
-            stats["min_edges"],
-            stats["max_edges"],
-        )
-        log.info("Feature Dimensions:")
-        log.info("  Node features: %d", stats["node_features"])
-        log.info("  Edge features: %d", stats["edge_features"])

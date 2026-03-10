@@ -30,13 +30,10 @@ from ..schema import (
     IRSchema,
     feature_columns,
 )
-from ..vocabulary import EntityVocabulary
+from ..vocabulary import EntityVocabulary, _safe_hex_to_int
 from .base import DomainAdapter
 
 log = logging.getLogger(__name__)
-
-# Sentinel for hex character validation
-_HEX_CHARS = frozenset("0123456789abcdefABCDEF")
 
 # Attack type string → integer code mapping
 ATTACK_TYPE_CODES: dict[str, int] = {
@@ -51,21 +48,6 @@ ATTACK_TYPE_CODES: dict[str, int] = {
     "unknown": 8,
 }
 ATTACK_TYPE_NAMES: dict[int, str] = {v: k for k, v in ATTACK_TYPE_CODES.items()}
-
-
-def _safe_hex_to_int(value) -> int | None:
-    """Safely convert hex string or numeric value to integer."""
-    if pd.isna(value):
-        return None
-    try:
-        if isinstance(value, str):
-            value = value.strip()
-            if all(c in _HEX_CHARS for c in value):
-                return int(value, 16)
-            return int(value)
-        return int(value)
-    except (ValueError, TypeError):
-        return None
 
 
 class CANBusAdapter(DomainAdapter):

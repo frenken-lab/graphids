@@ -69,13 +69,6 @@ def get_datasets() -> list[str]:
     return _datasets_cache
 
 
-# Backwards-compatible module-level name (lazy property via __getattr__)
-def __getattr__(name: str):
-    if name == "DATASETS":
-        return get_datasets()
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
 # ---------------------------------------------------------------------------
 # Run identity helpers
 # ---------------------------------------------------------------------------
@@ -169,11 +162,6 @@ def config_path(cfg: PipelineConfig, stage: str) -> Path:
     return stage_dir(cfg, stage) / "config.json"
 
 
-def log_dir(cfg: PipelineConfig, stage: str) -> Path:
-    """Lightning / CSV log directory for a stage."""
-    return stage_dir(cfg, stage) / "logs"
-
-
 def data_dir(cfg: PipelineConfig) -> Path:
     """Raw data directory for a dataset.
 
@@ -227,11 +215,6 @@ def checkpoint_path_str(
 def metrics_path_str(dataset: str, model_type: str, scale: str, stage: str, aux: str = "") -> str:
     """Metrics JSON path from raw strings."""
     return f"{EXPERIMENT_ROOT}/{run_id_str(dataset, model_type, scale, stage, aux)}/metrics.json"
-
-
-def benchmark_path_str(dataset: str, model_type: str, scale: str, stage: str, aux: str = "") -> str:
-    """Benchmark TSV path from raw strings."""
-    return f"{EXPERIMENT_ROOT}/{run_id_str(dataset, model_type, scale, stage, aux)}/benchmark.tsv"
 
 
 # ---------------------------------------------------------------------------
