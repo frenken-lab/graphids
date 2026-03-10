@@ -269,9 +269,9 @@ def _curriculum_sample(normals, attacks, scores, epoch, cfg: PipelineConfig):
 
     n_normals = min(int(len(attacks) * ratio), len(hard_normals))
     if n_normals and n_normals < len(hard_normals):
-        import random
-
-        sampled_normals = random.sample(hard_normals, n_normals)
+        # Use torch RNG for reproducible sampling controlled by pl.seed_everything()
+        perm = torch.randperm(len(hard_normals))[:n_normals]
+        sampled_normals = [hard_normals[i] for i in perm.tolist()]
     else:
         sampled_normals = hard_normals
     return sampled_normals + attacks
