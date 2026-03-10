@@ -14,4 +14,5 @@ gat:
   proj_dim: 48
 training:
   lr: 0.003
-  safety_factor: 0.5
+  batch_size: 8192
+  safety_factor: 0.85

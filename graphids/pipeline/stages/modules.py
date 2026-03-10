@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import pytorch_lightning as pl
 import torch
@@ -20,6 +19,23 @@ from .utils import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def _teacher_to_device(teacher, device, on_cpu_flag, cfg):
+    """Move teacher to device if offloaded, return updated on_cpu flag."""
+    if cfg.training.offload_teacher_to_cpu and on_cpu_flag:
+        teacher.to(device)
+        return False
+    return on_cpu_flag
+
+
+def _teacher_offload(teacher, cfg):
+    """Offload teacher to CPU after forward pass, return on_cpu=True."""
+    if cfg.training.offload_teacher_to_cpu:
+        teacher.to("cpu")
+        torch.cuda.empty_cache()
+        return True
+    return False
 
 
 class VGAEModule(pl.LightningModule):
@@ -46,6 +62,8 @@ class VGAEModule(pl.LightningModule):
 
         self.cfg = cfg
         self.model = GraphAutoencoderNeighborhood.from_config(cfg, num_ids, in_channels)
+        if cfg.training.compile_model and hasattr(torch, "compile"):
+            self.model = torch.compile(self.model)
         self.teacher = teacher
         self.projection = projection
         self._teacher_on_cpu = False
@@ -68,9 +86,9 @@ class VGAEModule(pl.LightningModule):
 
         if self.teacher is not None:
             kd = self.cfg.kd
-            if self.cfg.training.offload_teacher_to_cpu and self._teacher_on_cpu:
-                self.teacher.to(batch.x.device)
-                self._teacher_on_cpu = False
+            self._teacher_on_cpu = _teacher_to_device(
+                self.teacher, batch.x.device, self._teacher_on_cpu, self.cfg
+            )
 
             with torch.no_grad():
                 batch_idx = (
@@ -83,10 +101,7 @@ class VGAEModule(pl.LightningModule):
                     batch.x, batch.edge_index, batch_idx, edge_attr=t_edge_attr
                 )
 
-            if self.cfg.training.offload_teacher_to_cpu:
-                self.teacher.to("cpu")
-                torch.cuda.empty_cache()
-                self._teacher_on_cpu = True
+            self._teacher_on_cpu = _teacher_offload(self.teacher, self.cfg)
 
             z_s = self.projection(z) if self.projection is not None else z
             min_n = min(z_s.size(0), t_z.size(0))
@@ -143,6 +158,8 @@ class GATModule(pl.LightningModule):
 
         self.cfg = cfg
         self.model = GATWithJK.from_config(cfg, num_ids, in_channels)
+        if cfg.training.compile_model and hasattr(torch, "compile"):
+            self.model = torch.compile(self.model)
         self.teacher = teacher
         self._teacher_on_cpu = False
 
@@ -156,17 +173,14 @@ class GATModule(pl.LightningModule):
 
         if self.teacher is not None:
             kd = self.cfg.kd
-            if self.cfg.training.offload_teacher_to_cpu and self._teacher_on_cpu:
-                self.teacher.to(batch.x.device)
-                self._teacher_on_cpu = False
+            self._teacher_on_cpu = _teacher_to_device(
+                self.teacher, batch.x.device, self._teacher_on_cpu, self.cfg
+            )
 
             with torch.no_grad():
                 t_logits = self.teacher(batch)
 
-            if self.cfg.training.offload_teacher_to_cpu:
-                self.teacher.to("cpu")
-                torch.cuda.empty_cache()
-                self._teacher_on_cpu = True
+            self._teacher_on_cpu = _teacher_offload(self.teacher, self.cfg)
 
             T = kd.temperature
             kd_loss = F.kl_div(
@@ -254,5 +268,10 @@ def _curriculum_sample(normals, attacks, scores, epoch, cfg: PipelineConfig):
         hard_normals = normals
 
     n_normals = min(int(len(attacks) * ratio), len(hard_normals))
-    sampled_normals = hard_normals[:n_normals] if n_normals else hard_normals
+    if n_normals and n_normals < len(hard_normals):
+        # Use torch RNG for reproducible sampling controlled by pl.seed_everything()
+        perm = torch.randperm(len(hard_normals))[:n_normals]
+        sampled_normals = [hard_normals[i] for i in perm.tolist()]
+    else:
+        sampled_normals = hard_normals
     return sampled_normals + attacks

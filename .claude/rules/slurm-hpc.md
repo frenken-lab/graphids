@@ -1,3 +1,10 @@
+---
+paths:
+  - "**/*.sbatch"
+  - "scripts/slurm/**"
+  - "scripts/*.sh"
+---
+
 # KD-GAT SLURM / HPC Conventions
 
 ## Environment
@@ -143,7 +150,7 @@ Validates: config resolution, data directory existence, search space constructio
 ### Layer 2: GPU Smoke Test (gpudebug partition, ~5-10 min)
 
 ```bash
-sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/smoke_test.sh <stage>
+sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/smoke_test.sbatch <stage>
 ```
 
 Runs 1 trial, 2 epochs, on `hcrl_ch` (smallest dataset). Uses `gpudebug` partition (1hr max, priority scheduling — starts within minutes). Validates: GPU access, CUDA context, data loading, model forward/backward pass, checkpoint save, metrics reporting.
@@ -166,9 +173,7 @@ Only after Layer 2 passes. Submit the real job with full dataset/samples.
 
 **Safe on login node:**
 - Import checks: `python -c "from graphids.config import resolve; print('OK')"`
-- Exports: `python -m graphids.pipeline.export`
 - DuckDB queries: `duckdb < data/datalake/queries/leaderboard.sql`
-- Quarto: `quarto render`, `quarto preview`
 - Git, DVC, ruff
 
 **Must go through SLURM:**

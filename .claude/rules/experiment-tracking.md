@@ -1,58 +1,52 @@
 ---
 paths:
-  - "graphids/pipeline/lakehouse.py"
-  - "graphids/pipeline/export.py"
   - "graphids/pipeline/cli.py"
-  - "data/datalake/**"
+  - "graphids/pipeline/stages/trainer_factory.py"
+  - "data/mlflow/**"
 ---
 
 # KD-GAT Experiment Tracking
 
-## Architecture: Two-Tier (Metadata Catalog + Artifact Store)
+## Architecture: MLflow SQLite Backend
 
-Design decision: custom Parquet datalake, not MLflow. See `~/plans/experiment-tracking-design-decision.md`. W&B integration removed (was write-only dead weight).
+Single store for metrics, params, tags, AND artifacts — all under one run ID.
 
-**Metadata catalog** (`data/datalake/`): All structured, queryable data lives here as Parquet files.
-**Artifact store** (`experimentruns/`): Binary blobs (checkpoints, embeddings, attention weights) live here, referenced by URI in the catalog.
+```
+Training (Lightning)
+    → mlflow.pytorch.autolog() for per-epoch metrics
+    → mlflow.log_artifact() for checkpoints, embeddings, configs
+    → MLflow SQLite DB (data/mlflow/mlflow.db)
 
-## Datalake (Primary)
+Consumers:
+    ├── Streamlit dashboard → mlflow.search_runs() → DataFrame → Plotly
+    ├── DuckDB CLI         → ATTACH 'mlflow.db' AS mlflow (TYPE sqlite)
+    └── OSC OnDemand       → MLflow UI (mlflow ui --backend-store-uri ...)
+```
 
-Parquet-based structured storage in `data/datalake/`:
+## MLflow Integration Points
 
-| File | Contents |
-|------|----------|
-| `runs.parquet` | Run metadata (dataset, model, scale, stage, KD, success, timestamps, lineage) |
-| `metrics.parquet` | Per-run per-model core metrics (F1, accuracy, AUC, etc.) |
-| `configs.parquet` | Key hyperparameters + full frozen config JSON |
-| `datasets.parquet` | Dataset catalog with cache stats |
-| `artifacts.parquet` | Artifact catalog: run_id, type, URI, size, content_hash, producer, timestamp |
-| `sweeps.parquet` | Ray Tune HPO trial results |
-| `training_curves/{run_id}.parquet` | Per-epoch metrics from Lightning CSV logs |
-| `queries/leaderboard.sql` | Best metrics per config (ad-hoc: `duckdb < queries/leaderboard.sql`) |
-| `queries/kd_impact.sql` | KD transfer analysis |
+| Component | How it logs |
+|-----------|-----------|
+| `cli.py` | `mlflow.start_run()` context wraps dispatch; logs params, tags, post-training metrics, artifacts |
+| `trainer_factory.py` | `mlflow.pytorch.autolog()` + DeviceStatsMonitor for per-epoch metrics + GPU stats |
+| `tune_config.py` | Sweep summary run with best config, val_loss, trial counts |
+| `run_pygod_baselines.py` | Optional `--mlflow` flag for baseline metrics |
 
-**Write path**: `graphids/pipeline/lakehouse.py` appends to Parquet on run completion. `register_artifacts()` scans run directories and catalogs files with content hashes.
+## Key Environment
 
-**Read path**: `graphids/pipeline/export.py` reads datalake Parquet for report generation. DuckDB CLI for ad-hoc queries: `duckdb -c "SELECT * FROM 'data/datalake/runs.parquet'"`.
-
-**Lineage**: `runs.parquet.input_checkpoint_uri` tracks which teacher checkpoint a KD run consumed. `artifacts.parquet.produced_by_run_id` tracks which run created each artifact.
+- `MLFLOW_TRACKING_URI` — set in `.env` and `_preamble.sh` (default: `sqlite:///data/mlflow/mlflow.db`)
+- `data/mlflow/` — gitignored, contains SQLite DB and artifact store
 
 ## Artifacts
 
-Binary artifacts stored in `experimentruns/{dataset}/{run}/`:
-- `best_model.pt` — model checkpoint (loaded for inference, evaluation, next-stage training)
+Binary artifacts stored in `experimentruns/{dataset}/{run}/` AND logged to MLflow:
+- `best_model.pt` — model checkpoint
 - `embeddings.npz` — VGAE z-mean + GAT hidden layers
 - `attention_weights.npz` — GAT attention head weights
-- `explanations.npz` — GNNExplainer feature importance (when `run_explainer=True`)
 - `dqn_policy.json` — DQN alpha values by class
-- `cka_matrix.json` — CKA similarity (teacher vs student)
+- `config.json` — frozen PipelineConfig
+- `metrics.json` — training metrics summary
 
-All artifacts are indexed in `artifacts.parquet` with content hashes for deduplication tracking.
+## HF Dataset Push
 
-## Report Export
-
-`python -m graphids.pipeline.export` reads datalake Parquet → static JSON/Parquet in `reports/data/` (leaderboard, runs, metrics, training curves, datasets, KD transfer, model sizes). ~2s, login node safe. Quarto site auto-deploys via GitHub Actions on push to main.
-
-## Sweep Tracking
-
-Ray Tune results → `sweep_export.ingest_and_push()` → `data/datalake/sweeps.parquet` → HF Dataset (`buckeyeguy/kd-gat-sweeps`) → public Streamlit dashboard.
+`scripts/data/push_experiments_to_hf.py` reads MLflow → Parquet → HF Dataset (`buckeyeguy/kd-gat-experiments`). Auto-triggered by `_epilog.sh` after SLURM jobs.

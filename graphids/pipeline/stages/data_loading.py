@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 from torch_geometric.loader import DataLoader, DynamicBatchSampler
@@ -12,6 +13,15 @@ from graphids.config import PipelineConfig, cache_dir, data_dir
 from graphids.config.constants import MMAP_TENSOR_LIMIT, get_batch_index
 
 log = logging.getLogger(__name__)
+
+
+def training_preamble(cfg: PipelineConfig, stage_name: str):
+    """Shared setup for all training/eval stages: log, seed, load data, resolve device."""
+    log.info("=== %s: %s / %s_%s ===", stage_name, cfg.dataset, cfg.model_type, cfg.scale)
+    pl.seed_everything(cfg.seed)
+    train_data, val_data, num_ids, in_ch = load_data(cfg)
+    device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+    return train_data, val_data, num_ids, in_ch, device
 
 
 def graph_label(g) -> int:
@@ -34,9 +44,21 @@ def load_data(cfg: PipelineConfig):
 
 
 def _estimate_tensor_count(data) -> int:
-    """Estimate number of tensor storages in a graph dataset."""
+    """Estimate number of mmap-relevant tensor storages in a dataset.
+
+    With collated storage (CollatedGraphDataset), all graphs share ~10
+    concatenated tensors regardless of dataset size.  With legacy list[Data],
+    each graph has its own tensor storages (N × tensors_per_graph).
+    """
     if not data:
         return 0
+    # CollatedGraphDataset exposes actual storage count directly
+    if hasattr(data, "tensor_storage_count"):
+        return data.tensor_storage_count
+    # Subset from random_split wraps the original dataset
+    if hasattr(data, "dataset") and hasattr(data.dataset, "tensor_storage_count"):
+        return data.dataset.tensor_storage_count
+    # Legacy fallback: list[Data]
     sample = data[0]
     tensors_per_graph = sum(
         1
@@ -50,17 +72,23 @@ def _safe_num_workers(data, cfg: PipelineConfig) -> int:
     """Return num_workers, falling back to 0 if dataset exceeds mmap limits.
 
     With spawn multiprocessing, every tensor storage needs a separate mmap
-    entry.  Calling share_memory_() does NOT help -- it also creates one mmap
-    per tensor.  The only safe option for large datasets is num_workers=0.
+    entry per worker process.  The total mmap count is approximately
+    tensor_count × num_workers, which must stay under vm.max_map_count
+    (typically 65530).  The only safe option for large datasets is
+    num_workers=0.
     """
     nw = cfg.num_workers
     if nw > 0 and cfg.mp_start_method == "spawn":
         tensor_count = _estimate_tensor_count(data)
-        if tensor_count > MMAP_TENSOR_LIMIT:
+        effective_count = tensor_count * nw
+        if effective_count > MMAP_TENSOR_LIMIT:
             log.warning(
-                "Dataset has %d tensor storages (limit %d for vm.max_map_count). "
+                "Dataset has %d tensor storages × %d workers = %d effective mmaps "
+                "(limit %d for vm.max_map_count). "
                 "Falling back to num_workers=0 to avoid mmap OOM.",
                 tensor_count,
+                nw,
+                effective_count,
                 MMAP_TENSOR_LIMIT,
             )
             return 0
@@ -96,9 +124,12 @@ def _estimate_dynamic_steps(data, max_num_nodes: int, batch_size: int) -> int:
     Falls back to len(data) // batch_size if sampling fails.
     """
     try:
-        # Sample up to 500 graphs for mean node count
+        # Sample up to 500 graphs randomly for mean node count
+        import random
+
         n_sample = min(500, len(data))
-        total_nodes = sum(data[i].num_nodes for i in range(n_sample))
+        indices = random.sample(range(len(data)), n_sample)
+        total_nodes = sum(data[i].num_nodes for i in indices)
         mean_nodes = total_nodes / n_sample
         estimated_steps = max(1, int(len(data) * mean_nodes / max_num_nodes))
         return estimated_steps
@@ -139,7 +170,7 @@ def make_dataloader(
             data,
             batch_sampler=sampler,
             num_workers=nw,
-            pin_memory=True,
+            pin_memory=nw > 0,
             persistent_workers=nw > 0,
             multiprocessing_context=cfg.mp_start_method if nw > 0 else None,
         )

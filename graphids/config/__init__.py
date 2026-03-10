@@ -1,30 +1,16 @@
 """Configuration layer: inert, declarative, no imports from pipeline/ or src/.
 
 Usage:
-    from graphids.config import PipelineConfig, STAGES, checkpoint_path
-    from graphids.config.resolver import resolve, list_models, list_auxiliaries
+    from graphids.config import PipelineConfig, STAGES, checkpoint_path, resolve
     from graphids.config.constants import NODE_FEATURE_COUNT, MMAP_TENSOR_LIMIT
 """
 
-from .constants import (
-    CUDA_CONTEXT_MB,
-    DEFAULT_STRIDE,
-    DEFAULT_WINDOW_SIZE,
-    EDGE_FEATURE_COUNT,
-    EXCLUDED_ATTACK_TYPES,
-    FRAGMENTATION_BUFFER,
-    MAX_DATA_BYTES,
-    MMAP_TENSOR_LIMIT,
-    NODE_FEATURE_COUNT,
-    PREPROCESSING_VERSION,
-    SLURM_ACCOUNT,
-    SLURM_GPU_TYPE,
-    SLURM_PARTITION,
-)
+from .constants import parse_seeds
 from .paths import (
-    CATALOG_PATH,
     EXPERIMENT_ROOT,
+    MLFLOW_TRACKING_URI,
     STAGES,
+    ArtifactResolver,
     benchmark_path_str,
     cache_dir,
     checkpoint_path,
@@ -32,19 +18,17 @@ from .paths import (
     config_path,
     data_dir,
     get_datasets,
+    get_resolver,
     log_dir,
-    log_path_str,
     metrics_path,
     metrics_path_str,
+    run_group,
     run_id,
     run_id_str,
+    run_metadata,
     stage_dir,
 )
-from .resolver import (
-    list_auxiliaries,
-    list_models,
-    resolve,
-)
+from .resolver import resolve
 from .schema import (
     AuxiliaryConfig,
     DQNArchitecture,

@@ -4,6 +4,7 @@ Usage:
     python -m graphids.pipeline.cli autoencoder --model vgae --scale large --dataset hcrl_ch
     python -m graphids.pipeline.cli curriculum  --model gat --scale small --auxiliaries kd_standard --dataset hcrl_sa
     python -m graphids.pipeline.cli fusion      --config path/to/config.json
+    python -m graphids.pipeline.cli autoencoder --model vgae --scale large --seeds 42,123,456
 """
 
 from __future__ import annotations
@@ -20,17 +21,51 @@ import argparse
 import logging
 import os
 import time
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 
-from graphids.config import STAGES, PipelineConfig, config_path, run_id, stage_dir
+from graphids.config import (
+    MLFLOW_TRACKING_URI,
+    STAGES,
+    PipelineConfig,
+    config_path,
+    get_resolver,
+    run_id,
+    run_metadata,
+    stage_dir,
+)
 from graphids.config.resolver import resolve
 
 from .validate import validate
 
 
+def _setup_mlflow(run_name: str, cfg: PipelineConfig, stage: str, tags: dict | None = None):
+    """Set up MLflow tracking and start a run. Returns the active run."""
+    import mlflow
+
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    mlflow.set_experiment(f"kd-gat-{stage}")
+
+    # Use run_metadata() as the base tags — single source of truth
+    mlflow_tags = run_metadata(cfg, stage)
+    if tags:
+        mlflow_tags.update(tags)
+
+    return mlflow.start_run(run_name=run_name, tags=mlflow_tags)
+
+
 def _parse_bool(v: str) -> bool:
     return v.lower() in ("true", "1", "yes")
+
+
+def _parse_seeds(value: str) -> list[int]:
+    """Parse --seeds argument: comma-separated ints or a count for random seeds."""
+    from graphids.config.constants import parse_seeds
+
+    try:
+        return parse_seeds(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(f"Invalid --seeds value '{value}': {e}") from e
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -40,8 +75,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "stage",
-        choices=list(STAGES.keys()) + ["flow", "tune", "sweep-pipeline"],
-        help="Training stage, 'flow' for Ray pipeline, 'tune' for HPO sweep, or 'sweep-pipeline' for full DAG",
+        choices=list(STAGES.keys()) + ["flow", "tune", "sweep-pipeline", "coordinator"],
+        help="Training stage, 'flow' for Ray pipeline, 'tune' for HPO, 'sweep-pipeline' for full DAG, or 'coordinator' for SLURM orchestration",
     )
 
     # Config source
@@ -61,6 +96,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--dataset", type=str, default=None)
     p.add_argument("--seed", type=int, default=None)
+
+    # Multi-seed support
+    p.add_argument(
+        "--seeds",
+        type=str,
+        default=None,
+        help="Multi-seed dispatch: single seed (42) or comma-separated (42,123,456)",
+    )
 
     # Infrastructure overrides
     p.add_argument("--experiment-root", type=str, default=None)
@@ -149,7 +192,24 @@ def _build_parser() -> argparse.ArgumentParser:
         help="(sweep-pipeline) Resume from previous state file (default: True)",
     )
 
-    # Metadata for datalake enrichment
+    # Coordinator options
+    p.add_argument(
+        "--resume-state",
+        type=str,
+        default="",
+        help="(coordinator) Resume from state JSON file path",
+    )
+    p.add_argument("--poll-interval", type=int, default=30, help="(coordinator) Polling interval")
+
+    # Checkpoint resume (set by coordinator on TIMEOUT resubmit)
+    p.add_argument(
+        "--ckpt-path",
+        type=str,
+        default=None,
+        help="Lightning .ckpt path to resume training from (set by coordinator on TIMEOUT)",
+    )
+
+    # Metadata tags
     p.add_argument(
         "--tags", type=str, default="", help="Comma-separated tags for run classification"
     )
@@ -233,66 +293,20 @@ def _run_flow(args: argparse.Namespace, log: logging.Logger) -> None:
 
     from .orchestration.ray_pipeline import eval_pipeline, train_pipeline
 
+    # Parse seeds for multi-seed flow dispatch
+    seeds = _parse_seeds(args.seeds) if args.seeds else None
+
     if args.eval_only:
         log.info("Starting Ray evaluation flow (datasets=%s, scale=%s)", datasets, scale)
         eval_pipeline(datasets=datasets, scale=scale, local=args.local)
     else:
-        log.info("Starting Ray training flow (datasets=%s, scale=%s)", datasets, scale)
-        train_pipeline(datasets=datasets, scale=scale, local=args.local)
-
-
-def _sync_lakehouse(
-    cfg: PipelineConfig,
-    stage: str,
-    run_name: str,
-    result: object = None,
-    success: bool = True,
-    failure_reason: str | None = None,
-    *,
-    started_at: str | None = None,
-    completed_at: str | None = None,
-    duration_seconds: float | None = None,
-    peak_gpu_mb: float | None = None,
-    slurm_job_id: str | None = None,
-    gpu_name: str | None = None,
-    batch_size_used: int | None = None,
-    run_type: str = "production",
-    sweep_id: str | None = None,
-    teacher_run_id: str | None = None,
-    config_hash: str | None = None,
-    tags: str | None = None,
-    input_checkpoint_uri: str | None = None,
-) -> None:
-    """Fire-and-forget sync to datalake (Parquet)."""
-    try:
-        from .lakehouse import sync_to_lakehouse
-
-        sync_to_lakehouse(
-            run_id=run_name,
-            dataset=cfg.dataset,
-            model_type=cfg.model_type,
-            scale=cfg.scale,
-            stage=stage,
-            has_kd=cfg.has_kd,
-            metrics=result if isinstance(result, dict) else None,
-            success=success,
-            failure_reason=failure_reason,
-            started_at=started_at,
-            completed_at=completed_at,
-            duration_seconds=duration_seconds,
-            peak_gpu_mb=peak_gpu_mb,
-            slurm_job_id=slurm_job_id,
-            gpu_name=gpu_name,
-            batch_size_used=batch_size_used,
-            run_type=run_type,
-            sweep_id=sweep_id,
-            teacher_run_id=teacher_run_id,
-            config_hash=config_hash,
-            tags=tags,
-            input_checkpoint_uri=input_checkpoint_uri,
+        log.info(
+            "Starting Ray training flow (datasets=%s, scale=%s, seeds=%s)",
+            datasets,
+            scale,
+            seeds,
         )
-    except Exception as e:
-        logging.getLogger("pipeline").debug("Lakehouse sync skipped: %s", e)
+        train_pipeline(datasets=datasets, scale=scale, local=args.local, seeds=seeds)
 
 
 def _resolve_tune_stage(args: argparse.Namespace, log: logging.Logger) -> str | None:
@@ -395,6 +409,238 @@ def _run_sweep_pipeline(args: argparse.Namespace, log: logging.Logger) -> None:
     )
 
 
+def _run_coordinator(args: argparse.Namespace, log: logging.Logger) -> None:
+    """Dispatch stateful SLURM coordinator."""
+    from pathlib import Path
+
+    from .coordinator import PipelineCoordinator
+    from .state import load_state
+
+    if args.resume_state:
+        # Resume from existing state file
+        state_path = Path(args.resume_state)
+        state = load_state(state_path)
+        if not state or "stages" not in state:
+            log.error("Invalid or empty state file: %s", state_path)
+            return
+
+        log.info("Resuming coordinator from %s (%d stages)", state_path, len(state["stages"]))
+        coordinator = PipelineCoordinator(
+            datasets=state["datasets"],
+            seeds=state["seeds"],
+            scale=state.get("scale", "large"),
+            auxiliaries=state.get("auxiliaries", "none"),
+            state_path=state_path,
+            poll_interval=args.poll_interval,
+            dry_run=args.dry_run,
+        )
+    else:
+        if not args.dataset:
+            log.error("--dataset is required for coordinator mode (or use --resume-state)")
+            return
+
+        datasets = [d.strip() for d in args.dataset.split(",")]
+        seeds = _parse_seeds(args.seeds) if args.seeds else [42]
+
+        log.info(
+            "Starting coordinator: datasets=%s, seeds=%s, scale=%s, dry_run=%s",
+            datasets,
+            seeds,
+            args.scale,
+            args.dry_run,
+        )
+
+        coordinator = PipelineCoordinator(
+            datasets=datasets,
+            seeds=seeds,
+            scale=args.scale,
+            auxiliaries=args.auxiliaries,
+            poll_interval=args.poll_interval,
+            dry_run=args.dry_run,
+        )
+
+    coordinator.run()
+
+
+def _run_single_stage(
+    cfg: PipelineConfig,
+    stage: str,
+    args: argparse.Namespace,
+    log: logging.Logger,
+) -> None:
+    """Execute a single training stage with MLflow tracking and artifact caching."""
+    # ---- Validate ----
+    validate(cfg, stage)
+
+    # ---- Archive completed run if re-running same config ----
+    sdir = stage_dir(cfg, stage)
+    archive = None
+    if (sdir / "metrics.json").exists():
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        archive = sdir.parent / f"{sdir.name}.archive_{ts}"
+        sdir.rename(archive)
+        log.warning("Archived completed run → %s", archive)
+
+    # ---- Save frozen config ----
+    cfg_out = config_path(cfg, stage)
+    cfg.save(cfg_out)
+    log.info("Frozen config: %s", cfg_out)
+
+    # ---- Run ID ----
+    run_name = run_id(cfg, stage)
+    log.info("Run started: %s (seed=%d)", run_name, cfg.seed)
+
+    # ---- Collect environment metadata ----
+    slurm_job_id = os.environ.get("SLURM_JOB_ID")
+    gpu_name = None
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            gpu_name = torch.cuda.get_device_name(0)
+            torch.cuda.reset_peak_memory_stats()
+    except Exception:
+        pass
+
+    # ---- Enrichment tags (beyond run_metadata) ----
+    sweep_id = args.sweep_id or None
+    tags_str = args.tags or None
+    if sweep_id:
+        run_type = "sweep_best"
+    elif cfg.training.max_epochs < 10:
+        run_type = "smoke_test"
+    else:
+        run_type = "production"
+
+    teacher_run_id_str = None
+    if cfg.has_kd and cfg.kd and cfg.kd.model_path:
+        tp = Path(cfg.kd.model_path)
+        if tp.parent.parent.name and tp.parent.name:
+            teacher_run_id_str = f"{tp.parent.parent.name}/{tp.parent.name}"
+
+    # ---- MLflow run context ----
+    import mlflow
+
+    extra_tags = {
+        "slurm_job_id": slurm_job_id or "",
+        "gpu_name": gpu_name or "",
+        "run_type": run_type,
+    }
+    if sweep_id:
+        extra_tags["sweep_id"] = sweep_id
+    if tags_str:
+        extra_tags["user_tags"] = tags_str
+    if teacher_run_id_str:
+        extra_tags["teacher_run_id"] = teacher_run_id_str
+
+    # ---- Checkpoint resume (coordinator TIMEOUT resubmit) ----
+    ckpt_path = getattr(args, "ckpt_path", None)
+    if ckpt_path:
+        os.environ["KD_GAT_CKPT_PATH"] = str(ckpt_path)
+
+    # ---- Dispatch ----
+    t_start = time.monotonic()
+    resolver = get_resolver()
+
+    with _setup_mlflow(run_name, cfg, stage, tags=extra_tags):
+        try:
+            # Log config as params
+            mlflow.log_params(
+                {
+                    "dataset": cfg.dataset,
+                    "model_type": cfg.model_type,
+                    "scale": cfg.scale,
+                    "stage": stage,
+                    "has_kd": cfg.has_kd,
+                    "seed": cfg.seed,
+                    "batch_size": cfg.training.batch_size,
+                    "max_epochs": cfg.training.max_epochs,
+                    "lr": cfg.training.lr,
+                }
+            )
+
+            # Log frozen config as artifact
+            mlflow.log_artifact(str(cfg_out))
+
+            from .stages import STAGE_FNS
+
+            result = STAGE_FNS[stage](cfg)
+
+            t_end = time.monotonic()
+            duration_seconds = t_end - t_start
+
+            # Capture GPU peak memory
+            peak_gpu_mb = None
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    peak_gpu_mb = torch.cuda.max_memory_allocated() / (1024**2)
+            except Exception:
+                pass
+
+            log.info(
+                "Stage '%s' complete (%.1fs, peak_gpu=%.0fMB). Result: %s",
+                stage,
+                duration_seconds,
+                peak_gpu_mb or 0.0,
+                result,
+            )
+
+            # Log post-training metrics to MLflow
+            post_metrics = {"duration_seconds": duration_seconds}
+            if peak_gpu_mb is not None:
+                post_metrics["peak_gpu_mb"] = peak_gpu_mb
+            if isinstance(result, dict):
+                for k, v in result.items():
+                    if isinstance(v, (int, float)):
+                        post_metrics[k] = v
+            mlflow.log_metrics(post_metrics)
+
+            # Log artifacts to MLflow AND populate cache via resolver.put()
+            for artifact_name in [
+                "best_model.pt",
+                "config.json",
+                "metrics.json",
+                "embeddings.npz",
+                "attention_weights.npz",
+                "dqn_policy.json",
+                "explanations.npz",
+            ]:
+                artifact_path = sdir / artifact_name
+                if artifact_path.exists():
+                    resolver.put(cfg, stage, artifact_path)
+
+            # Success → delete archive
+            if archive and archive.exists():
+                import shutil
+
+                shutil.rmtree(archive, ignore_errors=True)
+
+            mlflow.set_tag("status", "success")
+            log.info("Run completed successfully")
+
+        except Exception as e:
+            t_end = time.monotonic()
+            duration_seconds = t_end - t_start
+
+            # Failure → restore archive
+            if archive and archive.exists():
+                if sdir.exists():
+                    import shutil
+
+                    shutil.rmtree(sdir, ignore_errors=True)
+                archive.rename(sdir)
+                log.warning("Restored archive after failure: %s", sdir)
+
+            mlflow.set_tag("status", "failed")
+            mlflow.set_tag("failure_reason", str(e)[:250])
+            mlflow.log_metrics({"duration_seconds": duration_seconds})
+
+            log.error("Run failed: %s", str(e))
+            raise
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -416,6 +662,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.stage == "sweep-pipeline":
         _run_sweep_pipeline(args, log)
+        return
+
+    if args.stage == "coordinator":
+        _run_coordinator(args, log)
         return
 
     # ---- Build config ----
@@ -452,167 +702,19 @@ def main(argv: list[str] | None = None) -> None:
         cfg = resolve(args.model, args.scale, auxiliaries=aux_name, **overrides)
         log.info("Resolved config: model=%s, scale=%s, aux=%s", args.model, args.scale, aux_name)
 
-    # ---- Validate ----
-    validate(cfg, args.stage)
+    # ---- Multi-seed dispatch ----
+    if args.seeds:
+        seeds = _parse_seeds(args.seeds)
+        log.info("Multi-seed dispatch: seeds=%s, stage=%s", seeds, args.stage)
+        for i, seed in enumerate(seeds):
+            log.info("=== Seed %d/%d: %d ===", i + 1, len(seeds), seed)
+            seed_cfg = cfg.model_copy(update={"seed": seed})
+            _run_single_stage(seed_cfg, args.stage, args, log)
+        log.info("All %d seeds completed for stage '%s'", len(seeds), args.stage)
+        return
 
-    # ---- Archive completed run if re-running same config ----
-    sdir = stage_dir(cfg, args.stage)
-    archive = None
-    if (sdir / "metrics.json").exists():
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        archive = sdir.parent / f"{sdir.name}.archive_{ts}"
-        sdir.rename(archive)
-        log.warning("Archived completed run → %s", archive)
-
-    # ---- Save frozen config ----
-    cfg_out = config_path(cfg, args.stage)
-    cfg.save(cfg_out)
-    log.info("Frozen config: %s", cfg_out)
-
-    # ---- Run ID ----
-    run_name = run_id(cfg, args.stage)
-    log.info("Run started: %s", run_name)
-
-    # ---- Collect environment metadata ----
-    slurm_job_id = os.environ.get("SLURM_JOB_ID")
-    gpu_name = None
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            gpu_name = torch.cuda.get_device_name(0)
-            torch.cuda.reset_peak_memory_stats()
-    except Exception:
-        pass
-
-    # ---- Compute datalake enrichment fields ----
-    import hashlib
-    import json
-
-    config_hash = hashlib.sha256(
-        json.dumps(cfg.model_dump(), sort_keys=True, default=str).encode()
-    ).hexdigest()[:12]
-
-    # Detect run_type
-    sweep_id = args.sweep_id or None
-    tags_str = args.tags or None
-    if sweep_id:
-        run_type = "sweep_best"
-    elif cfg.training.max_epochs < 10:
-        run_type = "smoke_test"
-    else:
-        run_type = "production"
-
-    # Extract teacher lineage for KD runs
-    teacher_run_id = None
-    if cfg.has_kd and cfg.kd and cfg.kd.model_path:
-        teacher_path = cfg.kd.model_path
-        # model_path points to a checkpoint; extract the run_id from its parent dirs
-        # e.g. "experimentruns/hcrl_ch/vgae_large_autoencoder/best_model.pt" → "hcrl_ch/vgae_large_autoencoder"
-        tp = Path(teacher_path)
-        if tp.parent.parent.name and tp.parent.name:
-            teacher_run_id = f"{tp.parent.parent.name}/{tp.parent.name}"
-
-    # ---- Dispatch ----
-    started_at = datetime.now(UTC).isoformat()
-    t_start = time.monotonic()
-    try:
-        from .stages import STAGE_FNS
-
-        result = STAGE_FNS[args.stage](cfg)
-
-        t_end = time.monotonic()
-        completed_at = datetime.now(UTC).isoformat()
-        duration_seconds = t_end - t_start
-
-        # Capture GPU peak memory
-        peak_gpu_mb = None
-        try:
-            import torch
-
-            if torch.cuda.is_available():
-                peak_gpu_mb = torch.cuda.max_memory_allocated() / (1024**2)
-        except Exception:
-            pass
-
-        log.info(
-            "Stage '%s' complete (%.1fs, peak_gpu=%.0fMB). Result: %s",
-            args.stage,
-            duration_seconds,
-            peak_gpu_mb or 0.0,
-            result,
-        )
-
-        # Sync to datalake (fire-and-forget)
-        _input_ckpt = cfg.kd.model_path if cfg.has_kd and cfg.kd else None
-        _sync_lakehouse(
-            cfg,
-            args.stage,
-            run_name,
-            result,
-            started_at=started_at,
-            completed_at=completed_at,
-            duration_seconds=duration_seconds,
-            peak_gpu_mb=peak_gpu_mb,
-            slurm_job_id=slurm_job_id,
-            gpu_name=gpu_name,
-            batch_size_used=cfg.training.batch_size,
-            run_type=run_type,
-            sweep_id=sweep_id,
-            teacher_run_id=teacher_run_id,
-            config_hash=config_hash,
-            tags=tags_str,
-            input_checkpoint_uri=_input_ckpt,
-        )
-
-        # Register artifacts in datalake (fire-and-forget)
-        try:
-            from .lakehouse import register_artifacts
-
-            register_artifacts(run_name, sdir)
-        except Exception as e:
-            log.debug("Artifact registration skipped: %s", e)
-
-        # Success → delete archive
-        if archive and archive.exists():
-            import shutil
-
-            shutil.rmtree(archive, ignore_errors=True)
-
-        log.info("Run completed successfully")
-
-    except Exception as e:
-        t_end = time.monotonic()
-        completed_at = datetime.now(UTC).isoformat()
-        duration_seconds = t_end - t_start
-        # Failure → restore archive
-        if archive and archive.exists():
-            if sdir.exists():
-                import shutil
-
-                shutil.rmtree(sdir, ignore_errors=True)
-            archive.rename(sdir)
-            log.warning("Restored archive after failure: %s", sdir)
-        _sync_lakehouse(
-            cfg,
-            args.stage,
-            run_name,
-            None,
-            success=False,
-            failure_reason=str(e),
-            started_at=started_at,
-            completed_at=completed_at,
-            duration_seconds=duration_seconds,
-            slurm_job_id=slurm_job_id,
-            gpu_name=gpu_name,
-            run_type=run_type,
-            sweep_id=sweep_id,
-            teacher_run_id=teacher_run_id,
-            config_hash=config_hash,
-            tags=tags_str,
-        )
-        log.error("Run failed: %s", str(e))
-        raise
+    # ---- Single-seed dispatch ----
+    _run_single_stage(cfg, args.stage, args, log)
 
 
 if __name__ == "__main__":

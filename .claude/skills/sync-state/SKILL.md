@@ -17,9 +17,17 @@ Manually regenerate STATE.md from current experiment outputs.
    done
    ```
 
-2. **Check W&B status**:
+2. **Check MLflow status**:
    ```bash
-   ls -dt wandb/run-* 2>/dev/null | wc -l
+   python -c "
+   import mlflow
+   from graphids.config import MLFLOW_TRACKING_URI
+   mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+   runs = mlflow.search_runs(search_all_experiments=True)
+   print(f'MLflow runs: {len(runs)}')
+   if not runs.empty:
+       print(runs.groupby('status').size())
+   " 2>/dev/null || echo "No MLflow data yet"
    ```
 
 3. **Update `.claude/system/STATE.md`** with current findings:
@@ -34,4 +42,4 @@ Manually regenerate STATE.md from current experiment outputs.
 
 - STATE.md is the primary context file for session awareness.
 - Run this at the start of each session or after significant pipeline activity.
-- Scans `experimentruns/` filesystem and W&B offline runs for current state.
+- Scans `experimentruns/` filesystem and MLflow for current state.

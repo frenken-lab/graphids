@@ -47,13 +47,17 @@ class DQNArchitecture(BaseModel, frozen=True):
     buffer_size: int = Field(100_000, ge=1)
     batch_size: int = Field(128, ge=1)
     target_update: int = Field(100, ge=1)
+    weight_decay: float = Field(1e-5, ge=0)
+    scheduler_patience: int = Field(1000, ge=1)
+    max_patience: int = Field(5000, ge=1)
 
 
 class AuxiliaryConfig(BaseModel, frozen=True):
     """One auxiliary loss modifier (KD, PINN, etc.). Flat with defaults."""
 
     type: Literal["kd"] = "kd"  # Extend Literal as new auxiliaries are added
-    model_path: str = ""
+    model_path: str = ""  # Explicit override; empty = auto-resolve from teacher_scale
+    teacher_scale: str = "large"  # Scale of teacher model (auto-resolved when model_path empty)
     alpha: float = Field(0.7, ge=0, le=1)
     # KD-specific (defaults are safe no-ops for non-KD types)
     temperature: float = Field(4.0, gt=0)
@@ -74,8 +78,6 @@ class TrainingConfig(BaseModel, frozen=True):
     use_teacher_cache: bool = True
     clear_cache_every_n: int = 100
     offload_teacher_to_cpu: bool = False
-    optimize_batch_size: bool = True
-    memory_estimation: Literal["static", "measured", "trial"] = "measured"
     accumulate_grad_batches: int = 1
     save_top_k: int = 1
     monitor_metric: str = "val_loss"
@@ -84,6 +86,7 @@ class TrainingConfig(BaseModel, frozen=True):
     test_every_n_epochs: int = 5
     deterministic: bool = False
     cudnn_benchmark: bool = True
+    compile_model: bool = False
     # LR scheduling
     use_scheduler: bool = False
     scheduler_type: str = "cosine"
@@ -99,12 +102,6 @@ class TrainingConfig(BaseModel, frozen=True):
     curriculum_memory_multiplier: float = 1.0
     log_teacher_student_comparison: bool = True
     dynamic_batching: bool = True
-    profile: bool = False
-    profile_steps: int = 5
-    # GNNExplainer
-    run_explainer: bool = False
-    explainer_samples: int = 50
-    explainer_epochs: int = 200
 
 
 class FusionConfig(BaseModel, frozen=True):
@@ -197,7 +194,7 @@ class PipelineConfig(BaseModel, frozen=True):
     schema_version: str = "1.0.0"
     experiment_root: str = "experimentruns"
     device: str = "cuda"
-    num_workers: int = 8
+    num_workers: int = 2
     mp_start_method: str = "spawn"
     run_test: bool = True
 
@@ -240,7 +237,18 @@ class PipelineConfig(BaseModel, frozen=True):
 
     @classmethod
     def _from_legacy_flat(cls, flat: dict) -> PipelineConfig:
-        """Convert legacy flat config.json to nested format."""
+        """Convert legacy flat config.json to nested format.
+
+        Deprecated: kept only for backward compatibility with old experimentruns/
+        config.json files. All new configs use nested format.
+        """
+        import warnings
+
+        warnings.warn(
+            "Loading legacy flat config format — migrate to nested format",
+            DeprecationWarning,
+            stacklevel=3,
+        )
         nested: dict[str, Any] = {}
         vgae: dict[str, Any] = {}
         gat: dict[str, Any] = {}
@@ -361,9 +369,7 @@ class PipelineConfig(BaseModel, frozen=True):
                 "use_teacher_cache",
                 "clear_cache_every_n",
                 "offload_teacher_to_cpu",
-                "optimize_batch_size",
                 "safety_factor",
-                "memory_estimation",
                 "accumulate_grad_batches",
                 "save_top_k",
                 "monitor_metric",

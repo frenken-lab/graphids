@@ -1,23 +1,7 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch_geometric.nn import GATConv, GATv2Conv, TransformerConv
 
-from ._utils import checkpoint_conv
-
-
-def _make_conv(
-    conv_type: str, in_dim: int, out_dim: int, heads: int, edge_dim: int | None = None, **kwargs
-):
-    """Factory for graph attention convolution layers."""
-    if conv_type == "transformer":
-        return TransformerConv(
-            in_dim, out_dim, heads=heads, edge_dim=edge_dim, concat=True, **kwargs
-        )
-    elif conv_type == "gatv2":
-        return GATv2Conv(in_dim, out_dim, heads=heads, edge_dim=edge_dim, concat=True, **kwargs)
-    else:
-        return GATConv(in_dim, out_dim, heads=heads, concat=True, **kwargs)
+from ._utils import _make_conv
 
 
 class GraphAutoencoderNeighborhood(nn.Module):
@@ -64,22 +48,25 @@ class GraphAutoencoderNeighborhood(nn.Module):
         proj_dim=0,
     ):
         super().__init__()
-        # ID embedding: expect real torch.nn.Embedding to be available in test env
-        self.id_embedding = nn.Embedding(num_ids, embedding_dim)
+        from ._utils import InputEncoder
+
+        # Shared input encoding (ID embedding + optional projection)
+        self.input_encoder = InputEncoder(
+            num_ids=num_ids,
+            in_channels=in_channels,
+            embedding_dim=embedding_dim,
+            conv_type=conv_type,
+            edge_dim=edge_dim,
+            proj_dim=proj_dim,
+        )
         self.num_ids = num_ids
         self.dropout_rate = dropout
         self.batch_norm = batch_norm
         self.use_checkpointing = use_checkpointing
         self.conv_type = conv_type
-        self._uses_edge_attr = conv_type in ("transformer", "gatv2")
-        self._edge_dim = edge_dim if self._uses_edge_attr else None
+        self._uses_edge_attr = self.input_encoder._uses_edge_attr
+        self._edge_dim = self.input_encoder._edge_dim
         self._proj_dim = proj_dim
-
-        # Optional input projection: decouple feature count from architecture
-        if proj_dim > 0:
-            self.feat_proj = nn.Linear(in_channels - 1, proj_dim)
-        else:
-            self.feat_proj = None
 
         # Hidden dims schedule: interpret list; if last equals latent_dim assume the
         # list includes latent entry and use hidden_dims[:-1] as encoder targets.
@@ -93,8 +80,7 @@ class GraphAutoencoderNeighborhood(nn.Module):
             encoder_targets = hidden_dims
 
         # Input dim to first GAT combines ID embedding and continuous features
-        cont_dim = proj_dim if proj_dim > 0 else (in_channels - 1)
-        gat_in_dim = embedding_dim + cont_dim
+        gat_in_dim = self.input_encoder.out_dim
         self.gat_in_dim = gat_in_dim
 
         # Encoder: build progressive GAT layers matching encoder_targets
@@ -182,23 +168,22 @@ class GraphAutoencoderNeighborhood(nn.Module):
         self.latent_dim = latent_dim
 
     def encode(self, x, edge_index, edge_attr=None):
-        # Use the embedding's forward interface (works for real Embedding and SimpleEmbedding)
-        id_emb = self.id_embedding(x[:, 0].long())
-        other_feats = x[:, 1:]
-        if self.feat_proj is not None:
-            other_feats = self.feat_proj(other_feats)
-        x = torch.cat([id_emb, other_feats], dim=1)
-        # Apply encoder layers; handle optional batchnorm safely
+        from ._utils import conv_forward
+
+        x = self.input_encoder(x)
+        # Apply encoder layers
         for i, conv in enumerate(self.encoder_layers):
-            if self.use_checkpointing and x.requires_grad:
-                x = checkpoint_conv(conv, x, edge_index, edge_attr)
-            else:
-                x = conv(x, edge_index, edge_attr) if edge_attr is not None else conv(x, edge_index)
-            if self.batch_norm:
-                bn = self.encoder_bns[i]
-                x = self.dropout(F.relu(bn(x)))
-            else:
-                x = self.dropout(F.relu(x))
+            bn = self.encoder_bns[i] if self.batch_norm else None
+            x = conv_forward(
+                conv,
+                x,
+                edge_index,
+                edge_attr,
+                bn=bn,
+                dropout_p=self.dropout_rate,
+                training=self.training,
+                use_checkpointing=self.use_checkpointing,
+            )
         mu = self.z_mean(x)
         logvar = self.z_logvar(x).clamp(-20, 20)
         std = torch.exp(0.5 * logvar)
@@ -225,30 +210,32 @@ class GraphAutoencoderNeighborhood(nn.Module):
                 f"Decoder layers: {[(l.in_channels, l.out_channels, l.heads) for l in self.decoder_layers]}"
             )
 
+        from ._utils import conv_forward
+
         for i, conv in enumerate(self.decoder_layers):
             if i < len(self.decoder_layers) - 1:
-                if self.use_checkpointing and x.requires_grad:
-                    x = checkpoint_conv(conv, x, edge_index, edge_attr)
-                else:
-                    x = (
-                        conv(x, edge_index, edge_attr)
-                        if edge_attr is not None
-                        else conv(x, edge_index)
-                    )
-                if self.batch_norm:
-                    bn = self.decoder_bns[i]
-                    x = self.dropout(F.relu(bn(x)))
-                else:
-                    x = self.dropout(F.relu(x))
+                bn = self.decoder_bns[i] if self.batch_norm else None
+                x = conv_forward(
+                    conv,
+                    x,
+                    edge_index,
+                    edge_attr,
+                    bn=bn,
+                    dropout_p=self.dropout_rate,
+                    training=self.training,
+                    use_checkpointing=self.use_checkpointing,
+                )
             else:  # Last decoder layer — sigmoid constrains output to [0,1]
-                if self.use_checkpointing and x.requires_grad:
-                    x = torch.sigmoid(checkpoint_conv(conv, x, edge_index, edge_attr))
-                else:
-                    x = torch.sigmoid(
-                        conv(x, edge_index, edge_attr)
-                        if edge_attr is not None
-                        else conv(x, edge_index)
+                x = torch.sigmoid(
+                    conv_forward(
+                        conv,
+                        x,
+                        edge_index,
+                        edge_attr,
+                        activation=None,
+                        use_checkpointing=self.use_checkpointing,
                     )
+                )
         cont_out = x  # shape: [num_nodes, in_channels-1]
         canid_logits = self.canid_classifier(z)
 

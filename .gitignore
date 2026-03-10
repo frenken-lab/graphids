@@ -14,6 +14,7 @@ data/automotive/
 *.bin
 
 # ===== CACHE & TEMPORARY FILES =====
+.cache/
 __pycache__/
 *.pyc
 *.pyo
@@ -27,7 +28,6 @@ dist/
 # ===== EXPERIMENT OUTPUTS =====
 slurm_logs/
 results/
-**/.done
 experimentruns/
 *.archive_*
 
@@ -36,11 +36,14 @@ data/project.db
 data/project.db.backup
 data/datalake/
 data/datalake_archive/
+data/loss_landscapes/
 data/sweep_state/
 data/sweep_results/
 
-# ===== RAY / LIGHTNING =====
+# ===== RAY / LIGHTNING / MLFLOW =====
 ray_results/
+wandb/
+data/mlflow/
 
 # ===== OSC OnDemand =====
 .ondemand/
@@ -92,23 +95,16 @@ slurm-*.out
 # Snakemake working directory
 .snakemake/
 
-# ===== REPORT DATA =====
-# Tracked: Quarto site needs these at build time (~5 MB total)
-# Regenerate locally: python -m graphids.pipeline.export
-
-# Generated figures
+# ===== GENERATED FIGURES =====
 *.png
 *.jpg
 *.jpeg
 *.pdf
 *.svg
 
-# ===== QUARTO REPORTS =====
-reports/_site/
-reports/_output/
-reports/.quarto/
-
 # ===== DENO NOTEBOOKS =====
 notebooks/node_modules/
 notebooks/deno.lock
 tmlr_output/
+users/
+.gitnexus

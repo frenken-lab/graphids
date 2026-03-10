@@ -23,20 +23,6 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return base
 
 
-def _warn_unused_keys(merged: dict, model_cls, prefix: str = "") -> None:
-    """Warn about config keys not recognized by the Pydantic model."""
-    known = set(model_cls.model_fields.keys())
-    for key in merged:
-        full_key = f"{prefix}.{key}" if prefix else key
-        if key not in known:
-            log.warning("Unknown config key '%s' — possible typo (ignored by Pydantic)", full_key)
-        elif isinstance(merged[key], dict):
-            # Recurse into nested sub-config models
-            field_info = model_cls.model_fields.get(key)
-            if field_info and hasattr(field_info.annotation, "model_fields"):
-                _warn_unused_keys(merged[key], field_info.annotation, prefix=full_key)
-
-
 def resolve(
     model_type: str,
     scale: str,
@@ -71,10 +57,7 @@ def resolve(
     if exp_root:
         merged["experiment_root"] = exp_root
 
-    # 6. Warn on unknown keys (possible typos silently ignored by Pydantic)
-    _warn_unused_keys(merged, PipelineConfig)
-
-    # 7. Pydantic validates + freezes
+    # 6. Pydantic validates + freezes
     return PipelineConfig.model_validate(merged)
 
 

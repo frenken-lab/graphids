@@ -1,53 +1,22 @@
 # KD-GAT Session Plan
 
-> Last updated: 2026-03-04
+> Last updated: 2026-03-09
 
-## Priority: Wait for Cache Rebuild → Export → Verify
+## Priority: Pre-Sweep Infrastructure Testing
 
-Cache rebuild jobs submitted (SLURM 44485258-63) with `include_attack_type=True`.
-Once complete, run export and verify visualizations.
+Branch `pre-sweep-infrastructure` adds a stateful SLURM coordinator for multi-stage pipeline execution. The coordinator is implemented; next steps are validation before using it for the actual sweep.
 
-### Post-Cache Steps
+### Next Steps
 
-```bash
-# 1. Check job status
-squeue -u $USER
-
-# 2. Verify caches have attack_type metadata
-.venv/bin/python -c "
-import torch
-g = torch.load('data/cache/hcrl_ch/processed_graphs.pt', map_location='cpu', weights_only=False)
-g0 = g[0] if isinstance(g, list) else g.data_list[0]
-print(f'x: {g0.x.shape}, edge_attr: {g0.edge_attr.shape}')
-print(f'attack_type: {g0.attack_type}, node_y: {g0.node_y.shape}')
-print(f'id_entropy: {g0.id_entropy}')
-"
-
-# 3. Run export (generates graph_samples.json v2)
-.venv/bin/python -m graphids.pipeline.export
-
-# 4. Render reports
-quarto render reports/
-
-# 5. Verify in browser (WSL only)
-quarto preview reports/
-```
-
-### Verification Checklist
-
-- [ ] Cache rebuild completes for all 6 datasets (check SLURM logs)
-- [ ] Cached graphs have `attack_type`, `node_attack_type`, `node_y`, `id_entropy`, 26-D `x`, 11-D `edge_attr`
-- [ ] `python -m graphids.pipeline.export` produces `graph_samples.json` v2 schema
-- [ ] `quarto render reports/` succeeds (16/16 pages)
-- [ ] Browser: force graph renders with all 7 color modes
-- [ ] Browser: edge tooltips show 11-D features
-- [ ] Browser: color legend correct per mode
-- [ ] Browser: 0 JS console errors
-- [ ] Paper figure renders with attack_type coloring
+1. ~~**Test coordinator with `--dry-run`**~~ — done (2026-03-09)
+2. ~~**Run `smoke_collated.sbatch`**~~ — passed, 8 min (2026-03-09)
+3. **Live coordinator validation** — single dataset/seed run in progress (hcrl_sa, seed 42). Fixed `--wrap` shell bug (needed `bash -c` + `--chdir`).
+4. **Use coordinator for the actual sweep** — submit full multi-dataset, multi-seed (×3) sweep via the coordinator
 
 ## In Progress
 
-- Cache rebuild (SLURM jobs 44485258-63, CPU partition, ~5-20 min each)
+- Pre-sweep infrastructure validation (see Next Steps above)
+- Ops dashboard (`buckeyeguy/kd-gat-dashboard`) — fixed and running on HF Spaces (Streamlit SDK). Shows 181 experiment runs + 37 sweep trials.
 
 ## Blocked
 
@@ -55,37 +24,34 @@ quarto preview reports/
 
 ## Open Questions
 
-### Is RL justified for fusion? (dqn.py, fusion.py)
+### Is RL justified for fusion?
 
-The DQN fusion agent is a **contextual bandit**, not a sequential MDP:
-- `next_state == state` (no transitions), `done == False` always
-- Bellman target `r + gamma * max Q(s, a')` is self-referential (s' = s)
-- 15-D states are pre-cached, i.i.d. — no environment dynamics
-
-**Experiment needed**: Compare F1/accuracy across all three fusion methods on held-out test sets:
-1. DQN (vectorized, current) — RL with gamma=0.99, replay buffer, target network
-2. DQN with gamma=0 — proper bandit, target = immediate reward, no target network
-3. MLPFusionAgent — supervised BCE, already vectorized
-4. WeightedAvgFusionAgent — single learned alpha
-
-If MLP matches DQN, drop the RL framing entirely. This saves code complexity and
-training time (~100x faster even after vectorization).
-
-**Additional fix needed**: Training uses `(alpha > 0.5)` as prediction (alpha is a
-fusion weight, not a score). Validation uses the proper fused score
-`(1-alpha)*anomaly + alpha*gat_prob > 0.5`. The training reward signal is based on
-a semantically wrong prediction. If DQN is kept, this should be fixed.
+See `~/plans/fusion-redesign.md` for full analysis.
 
 ## Next Up
 
-- Run full pipeline retrain on rebuilt caches
-- Run tests: `bash scripts/slurm/run_tests_slurm.sh`
+- Run full sweep via coordinator (all datasets × 3 seeds)
 - Fusion method comparison experiment (see Open Questions above)
-- Loss landscape analysis on retrained models
 - Evaluate research questions R1–R3
+- **Research visualization Space** — plan and build a second HF Space (`buckeyeguy/kd-gat-research`) for paper-ready figures. Replaces the deleted Quarto `reports/` dashboard with a Streamlit + Plotly stack. Needs a dedicated planning session covering:
+  - Which old Quarto pages to rebuild (Performance, Training, GAT & DQN, KD Transfer, Loss Landscape, Graph Structure — skip Staging/Datasets)
+  - What additional artifacts `push_experiments_to_hf.py` must export (attention weights, embeddings, CKA similarity, DQN policy, loss landscape, graph samples — currently only flat metrics are pushed)
+  - Data schema: single expanded Parquet vs multiple files on HF Dataset
+  - Plotly equivalents for each Mosaic/vgplot spec (most are straightforward; loss landscape 3D surface and force-directed graph need care)
+  - Whether `notebooks/analysis/` code can be directly adapted or needs rewrite
+  - Separation of concerns: ops dashboard (existing) vs research dashboard (new)
 
 ## Completed
 
+- Stateful SLURM coordinator: submits pipeline stages as individual jobs, polls for completion, adjusts resources on failure (OOM → more memory, timeout → more time). Shared state persistence via state.py. SIGUSR1 graceful timeout trap in _preamble.sh. Collated storage smoke test. CLI wiring. (2026-03-09)
+- Memory/batch sizing simplification: memory.py 471→25 lines, batch_sizing.py 169→43 lines. Deleted custom GPU memory estimation (static, measured, trial modes, forward hooks, binary search, budget caching). Batch size now config-driven with safety_factor. `_compute_metrics()` simplified with `classification_report()`. CKA `_save_cka()` deduplicated. tune_config.py batch sizing inlined to `resolve_batch_config()`. ~600 lines removed (2026-03-07)
+- Legacy removal: deleted export.py, sweep_export.py, tracking.py, reports/ (Quarto), verify-site skill, SLURM export scripts. Removed Quarto CI jobs. Updated all docs/rules (2026-03-07)
+- DQN `from_config()` factory: replaces 3 verbose 15-param construction sites in evaluation.py, serve.py, fusion.py (2026-03-07)
+- Inlined `get_memory_summary()` into callbacks.py (was only caller of tracking.py) (2026-03-07)
+- Codebase simplification: dedup `_make_conv` to `_utils.py`, extract shared `training_preamble`/`resolve_batch_config`, delete dead `_encode_spatial`, move DQN TODO to `~/plans/fusion-redesign.md`, STAGE_DEPENDENCIES constant, SLURM `log_job_header`/`log_job_footer`, clean bare exceptions in export.py, remove unused `log_path_str`, deprecation warning on legacy flat config (2026-03-07)
+- MLflow cleanup: removed datalake/lakehouse/W&B/S3 dead code, rewrote export.py + sweep_export.py to MLflow-only, updated all docs (2026-03-06)
+- MLflow consolidation: replaced W&B + lakehouse.py + CSVLogger with MLflow single store (2026-03-06)
+- Spec-driven visualization migration: dashboard.qmd 1354→445 lines, 29 YAML specs (2026-03-06)
 - Force graph & visualization rework: 7 color modes, edge tooltips, attack_type support (2026-03-04)
 - `export_graph_samples()` + v2 JSON schema (2026-03-04)
 - `include_attack_type=True` default in preprocessing pipeline (2026-03-04)

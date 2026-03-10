@@ -300,27 +300,12 @@ def _trainable_inprocess(
 
     try:
         if stage == "autoencoder":
+            from ..stages.batch_sizing import resolve_batch_config
             from ..stages.modules import VGAEModule
-            from ..stages.utils import (
-                compute_optimal_batch_size,
-                make_dataloader,
-                make_trainer,
-            )
+            from ..stages.utils import make_dataloader, make_trainer
 
             module = VGAEModule(cfg, num_ids, in_ch)
-            if cfg.training.optimize_batch_size:
-                from ..stages.batch_sizing import compute_optimal_batch_size
-
-                bs = compute_optimal_batch_size(module.model, train_data, cfg)
-            else:
-                from ..stages.batch_sizing import effective_batch_size
-
-                bs = effective_batch_size(cfg)
-            max_nodes = None
-            if cfg.training.dynamic_batching:
-                from ..stages.data_loading import compute_node_budget
-
-                max_nodes = compute_node_budget(bs, cfg)
+            bs, max_nodes = resolve_batch_config(cfg)
             train_dl = make_dataloader(train_data, cfg, bs, shuffle=True, max_num_nodes=max_nodes)
             val_dl = make_dataloader(val_data, cfg, bs, shuffle=False, max_num_nodes=max_nodes)
             trainer = make_trainer(cfg, "autoencoder", extra_callbacks=[_TuneReportCallback()])
@@ -328,7 +313,7 @@ def _trainable_inprocess(
 
         elif stage in ("curriculum", "normal"):
             from ..stages.modules import CurriculumDataModule, GATModule
-            from ..stages.utils import make_trainer
+            from ..stages.utils import make_dataloader, make_trainer
 
             module = GATModule(cfg, num_ids, in_ch)
 
@@ -338,19 +323,9 @@ def _trainable_inprocess(
                 trainer = make_trainer(cfg, "curriculum", extra_callbacks=[_TuneReportCallback()])
                 trainer.fit(module, datamodule=dm)
             else:
-                from ..stages.batch_sizing import (
-                    compute_optimal_batch_size,
-                    effective_batch_size,
-                )
-                from ..stages.data_loading import compute_node_budget, make_dataloader
+                from ..stages.batch_sizing import resolve_batch_config
 
-                if cfg.training.optimize_batch_size:
-                    bs = compute_optimal_batch_size(module.model, train_data, cfg)
-                else:
-                    bs = effective_batch_size(cfg)
-                max_nodes = None
-                if cfg.training.dynamic_batching:
-                    max_nodes = compute_node_budget(bs, cfg)
+                bs, max_nodes = resolve_batch_config(cfg)
                 train_dl = make_dataloader(
                     train_data, cfg, bs, shuffle=True, max_num_nodes=max_nodes
                 )
@@ -711,16 +686,38 @@ def run_tune(
 
     export_best_config(best, stage, dataset, scale)
 
-    # Auto-ingest sweep results to lakehouse + HF Dataset
+    # Log sweep summary to MLflow as a parent run
     try:
-        from pathlib import Path
+        import mlflow
 
-        from graphids.pipeline.sweep_export import ingest_and_push
+        from graphids.config import MLFLOW_TRACKING_URI
 
-        experiment_dir = Path(results.experiment_path)
-        ingest_and_push(experiment_dir, stage, dataset, scale)
+        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+        mlflow.set_experiment(f"kd-gat-sweep-{stage}")
+        with mlflow.start_run(
+            run_name=f"sweep_{stage}_{dataset}_{scale}",
+            tags={
+                "stage": stage,
+                "dataset": dataset,
+                "scale": scale,
+                "num_samples": str(num_samples),
+                "trainable_mode": trainable_label,
+            },
+        ):
+            mlflow.log_metrics(
+                {
+                    "best_val_loss": float(best.metrics.get(metric, float("inf"))),
+                    "num_trials": len(results),
+                    "num_errors": sum(1 for r in results if r.error),
+                }
+            )
+            mlflow.log_params(best.config)
+            # Log best config YAML as artifact
+            best_yaml = Path(SWEEP_RESULTS_DIR) / f"{stage}_{dataset}_{scale}_best.yaml"
+            if best_yaml.exists():
+                mlflow.log_artifact(str(best_yaml))
     except Exception as e:
-        log.warning("Sweep export failed (non-fatal): %s", e)
+        log.warning("MLflow sweep logging failed (non-fatal): %s", e)
 
     # Shutdown Ray so the caller (e.g. sweep_pipeline) can reinitialize cleanly
     ray.shutdown()

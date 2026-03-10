@@ -108,7 +108,7 @@ def test_predict_mocked(client):
 
 
 def test_predict_without_dqn(client):
-    """Without DQN, alpha defaults to 0.5."""
+    """Without DQN, prediction returns 503 (DQN required for fusion)."""
     models = {"vgae": MagicMock(), "gat": MagicMock()}
 
     mock_extractors = [
@@ -126,8 +126,8 @@ def test_predict_without_dqn(client):
     ):
         resp = client.post("/predict", json=_sample_request())
 
-    assert resp.status_code == 200
-    assert resp.json()["alpha"] == 0.5
+    assert resp.status_code == 503
+    assert "DQN" in resp.json()["detail"]
 
 
 def test_predict_edge_index_transpose(client):

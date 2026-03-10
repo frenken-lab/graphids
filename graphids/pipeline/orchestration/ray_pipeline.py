@@ -33,6 +33,8 @@ import time
 
 import ray
 
+from graphids.pipeline.subprocess_utils import build_cli_cmd
+
 log = logging.getLogger(__name__)
 
 _PY = sys.executable
@@ -45,11 +47,21 @@ _BENCHMARK_LOG = os.environ.get("KD_GAT_BENCHMARK_LOG", "benchmark_timing.jsonl"
 # Track when the last stage ended so we can measure inter-stage gaps.
 _last_stage_end: float | None = None
 
-from graphids.config.constants import STAGE_MODEL_MAP
 
-# Stage name → (model_type, stage_cli_name). Derived from STAGE_MODEL_MAP + evaluation.
-_STAGE_DISPATCH = {stage: (model, stage) for stage, model in STAGE_MODEL_MAP.items()}
-_STAGE_DISPATCH["evaluation"] = ("vgae", "evaluation")
+def _init_ray(datasets: list[str] | None, local: bool) -> list[str]:
+    """Resolve datasets and initialize Ray if needed."""
+    from .ray_slurm import ray_init_kwargs
+
+    if datasets is None:
+        from graphids.config.paths import get_datasets
+
+        datasets = get_datasets()
+    if not ray.is_initialized():
+        kwargs = ray_init_kwargs()
+        if local:
+            kwargs["num_gpus"] = 0
+        ray.init(**kwargs)
+    return datasets
 
 
 def _query_gpu_utilization() -> dict[str, float | None]:
@@ -97,13 +109,17 @@ def _run_stage(
     scale: str,
     dataset: str,
     auxiliaries: str = "none",
-    teacher_path: str | None = None,
+    seed: int | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a pipeline stage as a subprocess via the CLI.
 
     Using subprocess ensures each stage gets a clean CUDA context
     (critical for spawn multiprocessing). Logs wall-clock timing
     for benchmarking subprocess overhead vs training time.
+
+    KD teacher resolution is handled automatically by the training code
+    via ``prepare_kd()`` — no need to pass teacher paths through the
+    subprocess boundary.
 
     When KD_GAT_BENCHMARK=1, writes detailed timing to a JSONL log:
     - spawn_overhead_s: time for subprocess to start (Popen → first poll)
@@ -114,22 +130,7 @@ def _run_stage(
     """
     global _last_stage_end
 
-    cmd = [
-        _PY,
-        "-m",
-        "graphids.pipeline.cli",
-        stage,
-        "--model",
-        model,
-        "--scale",
-        scale,
-        "--dataset",
-        dataset,
-        "--auxiliaries",
-        auxiliaries,
-    ]
-    if teacher_path:
-        cmd.extend(["--teacher-path", teacher_path])
+    cmd = build_cli_cmd(stage, model, scale, dataset, seed=seed, auxiliaries=auxiliaries)
 
     log.info("Running: %s", " ".join(cmd))
 
@@ -209,9 +210,9 @@ def _run_stage(
 # ---------------------------------------------------------------------------
 
 
-@ray.remote(num_gpus=1)
+@ray.remote(num_gpus=0)
 def task_preprocess(dataset: str) -> None:
-    """Ensure preprocessed graph cache exists for a dataset."""
+    """Ensure preprocessed graph cache exists for a dataset (CPU-only)."""
     from graphids.config import cache_dir, data_dir
     from graphids.config.resolver import resolve
     from graphids.core.training.datamodules import load_dataset
@@ -226,9 +227,12 @@ def _make_stage_task(stage: str, model: str):
 
     @ray.remote(num_gpus=1)
     def task(
-        dataset: str, scale: str, auxiliaries: str = "none", teacher_path: str | None = None
+        dataset: str,
+        scale: str,
+        auxiliaries: str = "none",
+        seed: int | None = None,
     ) -> str:
-        _run_stage(stage, model, scale, dataset, auxiliaries, teacher_path)
+        _run_stage(stage, model, scale, dataset, auxiliaries, seed=seed)
         from graphids.config import checkpoint_path
         from graphids.config.resolver import resolve
 
@@ -251,31 +255,14 @@ _STAGE_TASKS = {
 
 
 @ray.remote(num_gpus=1)
-def task_eval(dataset: str, scale: str, auxiliaries: str = "none") -> None:
+def task_eval(dataset: str, scale: str, auxiliaries: str = "none", seed: int | None = None) -> None:
     """Run evaluation on all trained models for a variant."""
-    _run_stage("evaluation", "vgae", scale, dataset, auxiliaries)
+    _run_stage("evaluation", "vgae", scale, dataset, auxiliaries, seed=seed)
 
 
 # ---------------------------------------------------------------------------
 # Config-driven variant pipeline
 # ---------------------------------------------------------------------------
-
-
-def _get_teacher_ckpts(dataset: str) -> dict[str, str]:
-    """Load teacher checkpoint paths from existing large variant runs."""
-    from graphids.config import checkpoint_path
-    from graphids.config.resolver import resolve
-
-    teacher_paths = {}
-    for model, stage in [("vgae", "autoencoder"), ("gat", "curriculum"), ("dqn", "fusion")]:
-        cfg = resolve(model, "large", dataset=dataset)
-        tp = checkpoint_path(cfg, stage)
-        if not tp.exists():
-            raise FileNotFoundError(
-                f"Teacher checkpoint not found: {tp}. Run with --scale large first."
-            )
-        teacher_paths[model] = str(tp)
-    return teacher_paths
 
 
 def variant_pipeline(
@@ -284,18 +271,22 @@ def variant_pipeline(
     scale: str,
     stages: list[str],
     auxiliaries: str = "none",
-    teacher_ckpts: dict[str, str] | None = None,
+    seed: int | None = None,
 ) -> dict[str, str]:
     """Execute a config-driven stage chain for a single variant.
 
     Returns a dict of {stage_name: checkpoint_path} for stages that
     produce checkpoints (autoencoder, curriculum, fusion).
+
+    KD teacher resolution is automatic — each stage's training code
+    calls ``prepare_kd()`` which resolves the teacher from
+    ``cfg.kd.teacher_scale`` via the artifact resolver.
     """
     ckpts: dict[str, str] = {}
 
     for stage_name in stages:
         if stage_name == "evaluation":
-            ray.get(task_eval.remote(dataset, scale, auxiliaries=auxiliaries))
+            ray.get(task_eval.remote(dataset, scale, auxiliaries=auxiliaries, seed=seed))
             continue
 
         task = _STAGE_TASKS.get(stage_name)
@@ -303,13 +294,7 @@ def variant_pipeline(
             log.warning("Unknown stage '%s' in variant '%s', skipping", stage_name, variant_name)
             continue
 
-        # Determine teacher path for this stage's model type
-        teacher_path = None
-        if teacher_ckpts and auxiliaries != "none":
-            model_type, _ = _STAGE_DISPATCH[stage_name]
-            teacher_path = teacher_ckpts.get(model_type)
-
-        ckpt = ray.get(task.remote(dataset, scale, auxiliaries, teacher_path))
+        ckpt = ray.get(task.remote(dataset, scale, auxiliaries, seed=seed))
         ckpts[stage_name] = ckpt
 
     return ckpts
@@ -322,10 +307,10 @@ def _variant_pipeline_remote(
     scale: str,
     stages: list[str],
     auxiliaries: str = "none",
-    teacher_ckpts: dict[str, str] | None = None,
+    seed: int | None = None,
 ) -> dict[str, str]:
     """Remote wrapper for variant_pipeline."""
-    return variant_pipeline(dataset, variant_name, scale, stages, auxiliaries, teacher_ckpts)
+    return variant_pipeline(dataset, variant_name, scale, stages, auxiliaries, seed)
 
 
 # ---------------------------------------------------------------------------
@@ -334,7 +319,7 @@ def _variant_pipeline_remote(
 
 
 @ray.remote
-def dataset_pipeline(dataset: str, scale: str | None = None) -> None:
+def dataset_pipeline(dataset: str, scale: str | None = None, seed: int | None = None) -> None:
     """All variants for a single dataset, driven by PipelineConfig.variants.
 
     When running all variants (scale=None), variants with needs_teacher=False
@@ -343,7 +328,7 @@ def dataset_pipeline(dataset: str, scale: str | None = None) -> None:
     """
     from graphids.config.resolver import resolve
 
-    log.info("=== Pipeline for dataset: %s ===", dataset)
+    log.info("=== Pipeline for dataset: %s (seed=%s) ===", dataset, seed)
 
     # Load variant config from defaults
     cfg = resolve("vgae", "large", dataset=dataset)
@@ -385,33 +370,32 @@ def dataset_pipeline(dataset: str, scale: str | None = None) -> None:
             v.scale,
             v.stages,
             v.auxiliaries,
+            seed=seed,
         )
         independent_refs.append(ref)
         log.info("Launched %s concurrently for %s", v.name, dataset)
 
-    # Run teacher variant (blocking — dependent variants need its checkpoints)
-    teacher_ckpts = None
+    # Run teacher variant first (blocking — dependent variants need its checkpoints
+    # to exist on disk so prepare_kd() can resolve them)
     if teacher_variant is not None:
-        teacher_ckpts = variant_pipeline(
+        variant_pipeline(
             dataset,
             teacher_variant.name,
             teacher_variant.scale,
             teacher_variant.stages,
             teacher_variant.auxiliaries,
+            seed=seed,
         )
 
-    # Run dependent variants (they need teacher checkpoints)
+    # Run dependent variants (teacher checkpoints auto-resolved by prepare_kd)
     for v in dependent_variants:
-        if teacher_ckpts is None:
-            # Teacher must already exist on disk
-            teacher_ckpts = _get_teacher_ckpts(dataset)
         variant_pipeline(
             dataset,
             v.name,
             v.scale,
             v.stages,
             v.auxiliaries,
-            teacher_ckpts=teacher_ckpts,
+            seed=seed,
         )
 
     # Join independent variants
@@ -428,6 +412,7 @@ def train_pipeline(
     datasets: list[str] | None = None,
     scale: str | None = None,
     local: bool = False,
+    seeds: list[int] | None = None,
 ) -> None:
     """Full KD-GAT training pipeline.
 
@@ -440,24 +425,22 @@ def train_pipeline(
         ("large", "small_kd", "small_nokd").  None = all.
     local : bool
         If True, use Ray local mode (no cluster).
+    seeds : list[int] | None
+        Seeds to train with. None = single run with default seed.
     """
-    from .ray_slurm import ray_init_kwargs
+    datasets = _init_ray(datasets, local)
 
-    if datasets is None:
-        from graphids.config.paths import get_datasets
-
-        datasets = get_datasets()
-
-    # Initialize Ray
-    if not ray.is_initialized():
-        kwargs = ray_init_kwargs()
-        if local:
-            kwargs["num_gpus"] = 0
-        ray.init(**kwargs)
-
-    # Fan out per-dataset work — each dataset is independent
-    refs = [dataset_pipeline.remote(ds, scale) for ds in datasets]
-    ray.get(refs)
+    if seeds:
+        # Multi-seed: fan out all dataset×seed combos; Ray serializes on single-GPU
+        refs = []
+        for seed in seeds:
+            log.info("=== Queuing seed %d ===", seed)
+            refs.extend(dataset_pipeline.remote(ds, scale, seed=seed) for ds in datasets)
+        ray.get(refs)
+    else:
+        # Single seed (default)
+        refs = [dataset_pipeline.remote(ds, scale) for ds in datasets]
+        ray.get(refs)
 
     log.info("=== Pipeline complete for %d dataset(s) ===", len(datasets))
 
@@ -468,31 +451,21 @@ def eval_pipeline(
     local: bool = False,
 ) -> None:
     """Re-run evaluation for existing trained models."""
-    from .ray_slurm import ray_init_kwargs
+    datasets = _init_ray(datasets, local)
 
-    if datasets is None:
-        from graphids.config.paths import get_datasets
-
-        datasets = get_datasets()
-
-    if not ray.is_initialized():
-        kwargs = ray_init_kwargs()
-        if local:
-            kwargs["num_gpus"] = 0
-        ray.init(**kwargs)
+    _EVAL_VARIANTS = [
+        ("large", "large", "none"),
+        ("small_kd", "small", "kd_standard"),
+        ("small_nokd", "small", "none"),
+    ]
 
     refs = []
     for ds in datasets:
         log.info("=== Evaluation for dataset: %s ===", ds)
-
-        if scale is None or scale == "large":
-            refs.append(task_eval.remote(ds, "large"))
-
-        if scale is None or scale == "small_kd":
-            refs.append(task_eval.remote(ds, "small", auxiliaries="kd_standard"))
-
-        if scale is None or scale == "small_nokd":
-            refs.append(task_eval.remote(ds, "small"))
+        for name, sz, aux in _EVAL_VARIANTS:
+            if scale is None or scale == name:
+                kwargs = {"auxiliaries": aux} if aux != "none" else {}
+                refs.append(task_eval.remote(ds, sz, **kwargs))
 
     ray.get(refs)
     log.info("=== Evaluation complete for %d dataset(s) ===", len(datasets))

@@ -194,7 +194,7 @@ def main(argv: list[str] | None = None) -> None:
         f"**Recommendation**: {recommendation}\n"
         if gat_profile and transformer_profile else
         f"# cuGraph Decision Gate\n\n"
-        f"Profiling data incomplete. Re-run `sbatch scripts/profiling/profile_conv_type.sh`.\n"
+        f"Profiling data incomplete. Re-run `sbatch scripts/profiling/profile_conv_type.sbatch`.\n"
     )
     print(f"Decision document: {decision_path}")
 

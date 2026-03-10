@@ -8,7 +8,6 @@ Core function:
 import json
 import logging
 import os
-import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -22,9 +21,42 @@ from graphids.config.constants import (
     NODE_FEATURE_COUNT,
     PREPROCESSING_VERSION,
 )
-from graphids.core.preprocessing.dataset import GraphDataset
+from graphids.core.preprocessing.dataset import (
+    CollatedGraphDataset,
+    load_collated,
+    save_collated,
+)
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Atomic save helpers (NFS-safe)
+# ============================================================================
+
+
+def _atomic_rename(tmp: Path, final: Path, retries: int = 3) -> None:
+    """Rename tmp → final with retry for NFS visibility delays."""
+    import time
+
+    for attempt in range(retries):
+        try:
+            tmp.rename(final)
+            return
+        except OSError as e:
+            if attempt < retries - 1:
+                logger.warning("Rename attempt %d failed: %s. Retrying...", attempt + 1, e)
+                time.sleep(1)
+            else:
+                raise
+
+
+def _atomic_save_collated(graphs: list, tmp_path: Path, target_path: Path) -> None:
+    """Save collated graphs atomically: write to tmp, fsync, rename to target."""
+    save_collated(graphs, tmp_path)
+    with open(tmp_path, "rb") as f:
+        os.fsync(f.fileno())
+    _atomic_rename(tmp_path, target_path)
 
 
 # ============================================================================
@@ -54,18 +86,18 @@ def load_dataset(
     cache_file = cache_dir_path / "processed_graphs.pt"
     id_mapping_file = cache_dir_path / "id_mapping.pkl"
 
-    graphs, id_mapping = None, None
+    dataset, id_mapping = None, None
 
     if not force_rebuild_cache:
-        graphs, id_mapping = _load_cached_data(
+        dataset, id_mapping = _load_cached_data(
             cache_file,
             id_mapping_file,
             dataset_name,
         )
 
     # Process from scratch if needed
-    if graphs is None or id_mapping is None:
-        graphs, id_mapping = _process_dataset_from_scratch(
+    if dataset is None or id_mapping is None:
+        dataset, id_mapping = _process_dataset_from_scratch(
             dataset_path,
             dataset_name,
             cache_file,
@@ -73,12 +105,6 @@ def load_dataset(
             force_rebuild_cache,
         )
 
-    # Unwrap GraphDataset to plain list if needed (avoid double-wrapping)
-    if hasattr(graphs, "data_list"):
-        graphs = graphs.data_list
-
-    # Create dataset and split
-    dataset = GraphDataset(graphs)
     logger.info(f"Created dataset with {len(dataset)} total graphs")
 
     train_size = int(0.8 * len(dataset))
@@ -101,14 +127,10 @@ def load_dataset(
 
 
 def _load_cached_data(cache_file, id_mapping_file, dataset_name):
-    """Load cached graphs and ID mapping with robust error handling.
+    """Load cached collated graphs and ID mapping with robust error handling.
 
-    Note: Uses weights_only=False to support PyTorch Geometric Data objects.
-    This is safe for our own cached data but should not be used with untrusted files.
-
-    Memory optimization (PyTorch 2.1+): Uses mmap=True to memory-map the cache file,
-    reducing RAM usage by loading graph data on-demand rather than all at once.
-    This is especially important for large datasets (set_01-04, hcrl_ch).
+    Supports both the new collated format (data_dict + slices) and legacy
+    list[Data] format (auto-converted on load, rebuilt on next preprocessing).
     """
     if not (cache_file.exists() and id_mapping_file.exists()):
         return None, None
@@ -116,23 +138,7 @@ def _load_cached_data(cache_file, id_mapping_file, dataset_name):
     try:
         import pickle
 
-        # Memory-mapped loading: graphs are loaded on-demand from disk
-        # instead of fully deserializing into RAM. Requires PyTorch 2.1+.
-        # This significantly reduces memory for large datasets.
-        try:
-            graphs = torch.load(
-                cache_file,
-                map_location="cpu",
-                weights_only=False,
-                mmap=True,  # Memory-map for reduced RAM usage
-            )
-        except TypeError:
-            # Fallback for older PyTorch versions without mmap support
-            logger.warning("mmap not supported (PyTorch < 2.1), using standard load")
-            graphs = torch.load(cache_file, map_location="cpu", weights_only=False)
-        except Exception as e:
-            logger.warning(f"Cache load failed (possibly corrupted): {e}")
-            return None, None
+        dataset = load_collated(cache_file)
 
         with open(id_mapping_file, "rb") as f:
             id_mapping = pickle.load(f)
@@ -141,17 +147,8 @@ def _load_cached_data(cache_file, id_mapping_file, dataset_name):
         if not isinstance(id_mapping, dict):
             logger.warning("Invalid cache format: id_mapping is not a dict.")
             return None, None
-        # Handle GraphDataset objects saved as cache
-        if hasattr(graphs, "data_list"):
-            graphs = graphs.data_list
-        if not isinstance(graphs, (list, tuple)):
-            try:
-                graphs = list(graphs)
-            except (TypeError, ValueError):
-                logger.warning("Invalid cache format: graphs is not list-like.")
-                return None, None
 
-        logger.info(f"Loaded {len(graphs)} cached graphs with {len(id_mapping)} unique IDs")
+        logger.info(f"Loaded {len(dataset)} cached graphs with {len(id_mapping)} unique IDs")
 
         # Validate cache using metadata if available
         metadata_file = cache_file.parent / "cache_metadata.json"
@@ -159,7 +156,7 @@ def _load_cached_data(cache_file, id_mapping_file, dataset_name):
             try:
                 metadata = json.loads(metadata_file.read_text())
                 expected = metadata.get("num_graphs", 0)
-                actual = len(graphs)
+                actual = len(dataset)
                 version = metadata.get("preprocessing_version", "unknown")
 
                 # Check preprocessing params match current config
@@ -206,11 +203,11 @@ def _load_cached_data(cache_file, id_mapping_file, dataset_name):
             except (json.JSONDecodeError, KeyError) as e:
                 logger.warning(f"Cache metadata unreadable: {e}. Proceeding with loaded data.")
         else:
-            logger.info(f"No cache metadata found. Loaded {len(graphs)} graphs.")
+            logger.info(f"No cache metadata found. Loaded {len(dataset)} graphs.")
 
-        return graphs, id_mapping
+        return dataset, id_mapping
 
-    except (pickle.UnpicklingError, AttributeError, EOFError) as e:
+    except (EOFError, AttributeError) as e:
         logger.warning(f"Cache file corrupted ({type(e).__name__}). Deleting and rebuilding.")
         try:
             cache_file.unlink(missing_ok=True)
@@ -230,7 +227,7 @@ def _process_dataset_from_scratch(
     id_mapping_file,
     force_rebuild,
 ):
-    """Process dataset from CSV files using the new adapter/engine pipeline."""
+    """Process dataset from CSV files and save in collated format."""
     logger.info(
         f"Processing dataset: {'forced rebuild' if force_rebuild else 'processing from scratch'}..."
     )
@@ -258,46 +255,29 @@ def _process_dataset_from_scratch(
         include_attack_type=True,
     )
 
-    # Unwrap GraphDataset if returned
     if hasattr(graphs, "data_list"):
         graphs = graphs.data_list
     if not isinstance(graphs, list):
         graphs = list(graphs)
 
-    # Save cache atomically
+    # Save cache atomically in collated format
     import pickle
 
     cache_file.parent.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Saving processed data to cache: {cache_file}")
+    logger.info(f"Saving processed data to cache (collated format): {cache_file}")
 
     temp_cache = cache_file.with_suffix(".tmp")
     temp_mapping = id_mapping_file.with_suffix(".tmp")
 
     try:
-        torch.save(graphs, temp_cache, pickle_protocol=4)
+        _atomic_save_collated(graphs, temp_cache, cache_file)
         with open(temp_mapping, "wb") as f:
             pickle.dump(id_mapping, f, protocol=4)
+        with open(temp_mapping, "rb") as f:
+            os.fsync(f.fileno())
+        _atomic_rename(temp_mapping, id_mapping_file)
 
-        # Flush to disk to ensure NFS visibility before rename
-        for tmp in (temp_cache, temp_mapping):
-            with open(tmp, "rb") as f:
-                os.fsync(f.fileno())
-
-        # Retry rename with backoff (NFS may delay visibility)
-        for tmp, final in ((temp_cache, cache_file), (temp_mapping, id_mapping_file)):
-            for attempt in range(3):
-                try:
-                    tmp.rename(final)
-                    break
-                except OSError as e:
-                    if attempt < 2:
-                        logger.warning(
-                            "Cache rename attempt %d failed: %s. Retrying...", attempt + 1, e
-                        )
-                        time.sleep(1)
-                    else:
-                        raise
-        logger.info(f"Cache saved: {len(graphs)} graphs")
+        logger.info(f"Cache saved (collated): {len(graphs)} graphs")
 
         # Write cache metadata for validation on future loads
         _write_cache_metadata(cache_file.parent, dataset_name, graphs, id_mapping, csv_files)
@@ -306,7 +286,8 @@ def _process_dataset_from_scratch(
         temp_cache.unlink(missing_ok=True)
         temp_mapping.unlink(missing_ok=True)
 
-    return graphs, id_mapping
+    # Return a CollatedGraphDataset (reload from saved file for mmap)
+    return load_collated(cache_file), id_mapping
 
 
 def load_test_scenarios(
@@ -314,15 +295,15 @@ def load_test_scenarios(
     dataset_path: Path,
     cache_dir_path: Path,
     force_rebuild_cache: bool = False,
-) -> dict[str, list]:
-    """Load held-out test scenarios with per-scenario caching.
+) -> dict[str, CollatedGraphDataset]:
+    """Load held-out test scenarios with per-scenario caching (collated format).
 
     Each test scenario (test_01_..., test_02_..., etc.) is cached as a
-    separate .pt file in the cache directory, using the training id_mapping
-    for consistent CAN ID encoding.
+    separate collated .pt file in the cache directory, using the training
+    id_mapping for consistent CAN ID encoding.
 
     Returns:
-        Dict mapping scenario name → list of PyG Data objects.
+        Dict mapping scenario name → CollatedGraphDataset.
     """
     import pickle
 
@@ -343,7 +324,7 @@ def load_test_scenarios(
         logger.warning("Dataset path %s not found -- skipping test data", dataset_path)
         return {}
 
-    scenarios: dict[str, list] = {}
+    scenarios: dict[str, CollatedGraphDataset] = {}
     for folder in sorted(dataset_path.iterdir()):
         if not (folder.is_dir() and folder.name.startswith("test_")):
             continue
@@ -354,13 +335,9 @@ def load_test_scenarios(
         # Try loading from cache
         if not force_rebuild_cache and cache_file.exists():
             try:
-                graphs = torch.load(cache_file, map_location="cpu", weights_only=False)
-                if hasattr(graphs, "data_list"):
-                    graphs = graphs.data_list
-                if not isinstance(graphs, list):
-                    graphs = list(graphs)
-                logger.info("Loaded %d cached test graphs for %s", len(graphs), name)
-                scenarios[name] = graphs
+                dataset = load_collated(cache_file)
+                logger.info("Loaded %d cached test graphs for %s", len(dataset), name)
+                scenarios[name] = dataset
                 continue
             except Exception as e:
                 logger.warning("Test cache load failed for %s: %s. Rebuilding.", name, e)
@@ -379,20 +356,19 @@ def load_test_scenarios(
             graphs = list(graphs)
 
         if graphs:
-            # Save cache atomically
+            # Save cache atomically in collated format
             cache_dir_path.mkdir(parents=True, exist_ok=True)
             tmp = cache_file.with_suffix(".tmp")
             try:
-                torch.save(graphs, tmp, pickle_protocol=4)
-                with open(tmp, "rb") as fh:
-                    os.fsync(fh.fileno())
-                tmp.rename(cache_file)
-                logger.info("Cached %d test graphs for %s → %s", len(graphs), name, cache_file)
+                _atomic_save_collated(graphs, tmp, cache_file)
+                logger.info(
+                    "Cached %d test graphs (collated) for %s → %s", len(graphs), name, cache_file
+                )
             except Exception as e:
                 logger.warning("Failed to cache test graphs for %s: %s", name, e)
                 tmp.unlink(missing_ok=True)
 
-            scenarios[name] = graphs
+            scenarios[name] = load_collated(cache_file)
         else:
             logger.warning("No graphs created for test scenario %s", name)
 
@@ -403,9 +379,48 @@ def _compute_graph_stats(graphs) -> dict:
     """Compute per-graph statistics for batch size estimation."""
     import numpy as np
 
-    # Unwrap GraphDataset to plain list if needed
+    # Handle both CollatedGraphDataset and list[Data]
+    if isinstance(graphs, CollatedGraphDataset):
+        stats = graphs.get_stats()
+        node_counts = []
+        edge_counts = []
+        x_slices = graphs._slices.get("x")
+        ei_slices = graphs._slices.get("edge_index")
+        if x_slices is not None:
+            nc = (x_slices[1:] - x_slices[:-1]).numpy()
+        else:
+            nc = np.zeros(len(graphs))
+        if ei_slices is not None:
+            ec = (ei_slices[1:] - ei_slices[:-1]).numpy()
+        else:
+            ec = np.zeros(len(graphs))
+
+        # Estimate per-graph bytes from node/edge counts and feature dims
+        nf = graphs._data.x.size(1) if graphs._data.x is not None else 0
+        ef = graphs._data.edge_attr.size(1) if graphs._data.edge_attr is not None else 0
+        per_graph_bytes = (nc * nf * 4 + ec * 2 * 8 + ec * ef * 4 + 4).astype(float)
+
+        def _stats(values):
+            return {
+                "mean": round(float(np.mean(values)), 1),
+                "median": int(np.median(values)),
+                "p95": int(np.percentile(values, 95)),
+                "max": int(np.max(values)),
+            }
+
+        return {
+            "node_count": _stats(nc),
+            "edge_count": _stats(ec),
+            "per_graph_bytes": _stats(per_graph_bytes),
+        }
+
+    # Legacy list[Data] path
     if hasattr(graphs, "data_list"):
         graphs = graphs.data_list
+    if not isinstance(graphs, list):
+        graphs = list(graphs)
+
+    import numpy as np
 
     node_counts = []
     edge_counts = []
@@ -454,6 +469,7 @@ def _write_cache_metadata(cache_dir, dataset_name, graphs, id_mapping, csv_files
         "preprocessing_version": PREPROCESSING_VERSION,
         "torch_version": torch.__version__,
         "pyg_version": torch_geometric.__version__,
+        "storage_format": "collated",
     }
 
     try:

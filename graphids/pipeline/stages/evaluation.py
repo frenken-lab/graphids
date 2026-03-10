@@ -7,19 +7,24 @@ import logging
 from pathlib import Path
 
 import numpy as np
-import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 
-from graphids.config import PipelineConfig, cache_dir, data_dir, metrics_path, stage_dir
+from graphids.config import (
+    PipelineConfig,
+    cache_dir,
+    data_dir,
+    get_resolver,
+    metrics_path,
+    stage_dir,
+)
 from graphids.config.constants import get_batch_index, graph_attack_type
 
+from .data_loading import training_preamble
 from .utils import (
-    _cross_model_path,
     cache_predictions,
     cleanup,
     graph_label,
-    load_data,
     load_frozen_cfg,
     load_model,
 )
@@ -42,11 +47,7 @@ def evaluate(cfg: PipelineConfig) -> dict:
             }
         }
     """
-    log.info("=== EVALUATION: %s / %s_%s ===", cfg.dataset, cfg.model_type, cfg.scale)
-    pl.seed_everything(cfg.seed)
-
-    train_data, val_data, num_ids, in_ch = load_data(cfg)
-    device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+    train_data, val_data, num_ids, in_ch, device = training_preamble(cfg, "EVALUATION")
 
     test_scenarios = _load_test_data(cfg)
 
@@ -60,9 +61,17 @@ def evaluate(cfg: PipelineConfig) -> dict:
     # Artifact collectors for embeddings/policy export
     artifacts: dict = {}
 
+    # Check upfront whether fusion eval will need VGAE+GAT (avoid redundant reload)
+    resolver = get_resolver()
+    fusion_needs_models = (
+        resolver.exists(cfg, "fusion", "best_model.pt", model_type="dqn")
+        and resolver.exists(cfg, vgae_stage, "best_model.pt", model_type="vgae")
+        and resolver.exists(cfg, gat_stage, "best_model.pt", model_type="gat")
+    )
+
     # ---- GAT evaluation ----
-    gat_ckpt = _cross_model_path(cfg, "gat", gat_stage, "best_model.pt")
-    if gat_ckpt.exists():
+    gat = None
+    if resolver.exists(cfg, gat_stage, "best_model.pt", model_type="gat"):
         gat = load_model(cfg, "gat", gat_stage, num_ids, in_ch, device)
 
         p, l, s, gat_emb, gat_attn, gat_at = _run_gat_inference(
@@ -96,12 +105,14 @@ def evaluate(cfg: PipelineConfig) -> dict:
                     test_metrics["gat"][scenario]["core"]["f1"],
                 )
 
-        del gat
-        cleanup()
+        if not fusion_needs_models:
+            del gat
+            gat = None
+            cleanup()
 
     # ---- VGAE evaluation ----
-    vgae_ckpt = _cross_model_path(cfg, "vgae", vgae_stage, "best_model.pt")
-    if vgae_ckpt.exists():
+    vgae = None
+    if resolver.exists(cfg, vgae_stage, "best_model.pt", model_type="vgae"):
         vgae = load_model(cfg, "vgae", vgae_stage, num_ids, in_ch, device)
 
         errors_np, labels_np, vgae_z, vgae_at = _run_vgae_inference(
@@ -135,40 +146,22 @@ def evaluate(cfg: PipelineConfig) -> dict:
                     test_metrics["vgae"][scenario]["core"]["f1"],
                 )
 
-        del vgae
-        cleanup()
+        if not fusion_needs_models:
+            del vgae
+            vgae = None
+            cleanup()
 
     # ---- DQN Fusion evaluation ----
-    fusion_ckpt = _cross_model_path(cfg, "dqn", "fusion", "best_model.pt")
-    if fusion_ckpt.exists() and vgae_ckpt.exists() and gat_ckpt.exists():
-        vgae = load_model(cfg, "vgae", vgae_stage, num_ids, in_ch, device)
-        gat = load_model(cfg, "gat", gat_stage, num_ids, in_ch, device)
-
+    if fusion_needs_models and vgae is not None and gat is not None:
         models = {"vgae": vgae, "gat": gat}
         val_cache = cache_predictions(models, val_data, device, cfg.fusion.max_val_samples)
 
         from graphids.core.models.dqn import EnhancedDQNFusionAgent
-        from graphids.core.models.registry import fusion_state_dim
 
         fusion_cfg = load_frozen_cfg(cfg, "fusion")
-        agent = EnhancedDQNFusionAgent(
-            lr=fusion_cfg.fusion.lr,
-            gamma=fusion_cfg.dqn.gamma,
-            epsilon=0.0,
-            epsilon_decay=1.0,
-            min_epsilon=0.0,
-            buffer_size=fusion_cfg.dqn.buffer_size,
-            batch_size=fusion_cfg.dqn.batch_size,
-            target_update_freq=fusion_cfg.dqn.target_update,
-            device=str(device),
-            state_dim=fusion_state_dim(),
-            alpha_steps=fusion_cfg.fusion.alpha_steps,
-            hidden_dim=fusion_cfg.dqn.hidden,
-            num_layers=fusion_cfg.dqn.layers,
-        )
-        fusion_sd = torch.load(fusion_ckpt, map_location="cpu", weights_only=True)
-        agent.q_network.load_state_dict(fusion_sd["q_network"])
-        agent.target_network.load_state_dict(fusion_sd["target_network"])
+        fusion_ckpt = resolver.get(cfg, "fusion", "best_model.pt", model_type="dqn")
+        agent = EnhancedDQNFusionAgent.from_config(fusion_cfg, device=str(device), inference=True)
+        agent.load_checkpoint(fusion_ckpt)
 
         fp, fl, fs, fq = _run_fusion_inference(agent, val_cache)
         all_metrics["fusion"] = _compute_metrics(fl, fp, fs)
@@ -247,93 +240,69 @@ def evaluate(cfg: PipelineConfig) -> dict:
         log.info("Saved attention weights (%d samples) → %s", len(attn_list), attn_path)
 
     # Temporal model evaluation
-    if cfg.temporal.enabled:
-        temporal_ckpt = _cross_model_path(cfg, "gat", "temporal", "best_model.pt")
-        if temporal_ckpt.exists():
-            try:
-                from graphids.core.models.temporal import TemporalGraphClassifier
-                from graphids.core.preprocessing.temporal import TemporalGrouper
+    if cfg.temporal.enabled and resolver.exists(cfg, "temporal", "best_model.pt", model_type="gat"):
+        try:
+            from graphids.core.models.temporal import TemporalGraphClassifier
+            from graphids.core.preprocessing.temporal import TemporalGrouper
 
-                # Load spatial encoder
-                gat_for_temporal = load_model(cfg, "gat", gat_stage, num_ids, in_ch, device)
+            # Load spatial encoder
+            gat_for_temporal = load_model(cfg, "gat", gat_stage, num_ids, in_ch, device)
 
-                # Probe spatial dim
+            # Probe spatial dim
+            with torch.no_grad():
+                probe = val_data[0].clone().to(device)
+                _, probe_emb = gat_for_temporal(probe, return_embedding=True)
+                spatial_dim = probe_emb.shape[-1]
+
+            tc = cfg.temporal
+            temporal_model = TemporalGraphClassifier(
+                spatial_encoder=gat_for_temporal,
+                spatial_dim=spatial_dim,
+                temporal_hidden=tc.temporal_hidden,
+                temporal_heads=tc.temporal_heads,
+                temporal_layers=tc.temporal_layers,
+                max_seq_len=tc.temporal_window,
+                freeze_spatial=True,
+                num_classes=2,
+            ).to(device)
+            temporal_ckpt = resolver.get(cfg, "temporal", "best_model.pt", model_type="gat")
+            temporal_model.load_state_dict(
+                torch.load(temporal_ckpt, map_location="cpu", weights_only=True)
+            )
+            temporal_model.eval()
+
+            grouper = TemporalGrouper(
+                window=tc.temporal_window,
+                stride=tc.temporal_stride,
+            )
+            val_sequences = grouper.group(val_data)
+
+            if val_sequences:
+                t_preds, t_labels = [], []
                 with torch.no_grad():
-                    probe = val_data[0].clone().to(device)
-                    _, probe_emb = gat_for_temporal(probe, return_embedding=True)
-                    spatial_dim = probe_emb.shape[-1]
+                    for seq_obj in val_sequences:
+                        moved = [g.clone().to(device) for g in seq_obj.graphs]
+                        logits = temporal_model([[g for g in moved]])
+                        t_preds.append(logits.argmax(dim=1)[0].item())
+                        t_labels.append(seq_obj.y)
 
-                tc = cfg.temporal
-                temporal_model = TemporalGraphClassifier(
-                    spatial_encoder=gat_for_temporal,
-                    spatial_dim=spatial_dim,
-                    temporal_hidden=tc.temporal_hidden,
-                    temporal_heads=tc.temporal_heads,
-                    temporal_layers=tc.temporal_layers,
-                    max_seq_len=tc.temporal_window,
-                    freeze_spatial=True,
-                    num_classes=2,
-                ).to(device)
-                temporal_model.load_state_dict(
-                    torch.load(temporal_ckpt, map_location="cpu", weights_only=True)
+                all_metrics["temporal"] = _compute_metrics(
+                    np.array(t_labels),
+                    np.array(t_preds),
                 )
-                temporal_model.eval()
-
-                grouper = TemporalGrouper(
-                    window=tc.temporal_window,
-                    stride=tc.temporal_stride,
+                log.info(
+                    "Temporal val metrics: %s",
+                    {
+                        k: f"{v:.4f}"
+                        for k, v in all_metrics["temporal"]["core"].items()
+                        if isinstance(v, float)
+                    },
                 )
-                val_sequences = grouper.group(val_data)
 
-                if val_sequences:
-                    t_preds, t_labels = [], []
-                    with torch.no_grad():
-                        for seq_obj in val_sequences:
-                            moved = [g.clone().to(device) for g in seq_obj.graphs]
-                            logits = temporal_model([[g for g in moved]])
-                            t_preds.append(logits.argmax(dim=1)[0].item())
-                            t_labels.append(seq_obj.y)
-
-                    all_metrics["temporal"] = _compute_metrics(
-                        np.array(t_labels),
-                        np.array(t_preds),
-                    )
-                    log.info(
-                        "Temporal val metrics: %s",
-                        {
-                            k: f"{v:.4f}"
-                            for k, v in all_metrics["temporal"]["core"].items()
-                            if isinstance(v, float)
-                        },
-                    )
-
-                del temporal_model, gat_for_temporal
-                cleanup()
-            except Exception as e:
-                log.warning("Temporal evaluation failed (non-fatal): %s", e)
-
-    # GNNExplainer feature importance
-    if cfg.training.run_explainer:
-        gat_ckpt_for_explain = _cross_model_path(cfg, "gat", gat_stage, "best_model.pt")
-        if gat_ckpt_for_explain.exists():
-            try:
-                from graphids.core.explain import explain_graphs
-
-                gat_for_explain = load_model(cfg, "gat", gat_stage, num_ids, in_ch, device)
-                explanations = explain_graphs(
-                    gat_for_explain,
-                    "gat",
-                    val_data[: cfg.training.explainer_samples],
-                    device,
-                    n_samples=cfg.training.explainer_samples,
-                    epochs=cfg.training.explainer_epochs,
-                )
-                np.savez_compressed(out / "explanations.npz", **explanations)
-                log.info("Saved explanations for %d graphs", len(explanations["graph_indices"]))
-                del gat_for_explain
-                cleanup()
-            except Exception as e:
-                log.warning("GNNExplainer failed (non-fatal): %s", e)
+            del temporal_model, gat_for_temporal
+            cleanup()
+        except Exception as e:
+            log.warning("Temporal evaluation failed (non-fatal): %s", e)
 
     # CKA computation for KD runs (teacher vs student layer similarity)
     if cfg.has_kd:
@@ -459,24 +428,24 @@ def _run_vgae_inference(vgae, data, device, capture_embeddings=False):
 
 
 def _run_fusion_inference(agent, cache):
-    """Run DQN fusion inference. Returns (preds, labels, scores, q_values_list)."""
-    preds, labels, scores, q_values_list = [], [], [], []
-    for i in range(len(cache["states"])):
-        state_np = cache["states"][i].numpy()
-        # Capture raw Q-values before action selection
-        state_t = (
-            torch.tensor(agent.normalize_state(state_np), dtype=torch.float32)
-            .unsqueeze(0)
-            .to(agent.device)
-        )
-        with torch.no_grad():
-            q_vals = agent.q_network(state_t).squeeze(0).cpu().numpy()
-        q_values_list.append(q_vals.tolist())
-        alpha, _, _ = agent.select_action(state_np, training=False)
-        preds.append(1 if alpha > 0.5 else 0)
-        labels.append(cache["labels"][i].item())
-        scores.append(float(alpha))
-    return np.array(preds), np.array(labels), np.array(scores), q_values_list
+    """Run DQN fusion inference (vectorized). Returns (preds, labels, scores, q_values_list)."""
+    states = cache["states"]  # [N, D] tensor
+    labels_t = cache["labels"]  # [N] tensor
+
+    actions, alphas, norm_states = agent.select_action_batch(states, training=False)
+    anomaly_scores, gat_probs = agent._derive_scores_batch(norm_states)
+    fused_scores = (1 - alphas) * anomaly_scores + alphas * gat_probs
+    preds = (fused_scores > 0.5).long()
+
+    with torch.no_grad():
+        q_values = agent.q_network(norm_states.to(agent.device)).cpu()
+
+    return (
+        preds.numpy(),
+        labels_t.numpy(),
+        fused_scores.numpy(),
+        q_values.numpy().tolist(),
+    )
 
 
 def _vgae_threshold(labels, errors):
@@ -494,39 +463,33 @@ def _vgae_threshold(labels, errors):
 
 
 def _compute_metrics(labels, preds, scores=None) -> dict:
-    """Compute comprehensive classification metrics."""
+    """Compute classification metrics using sklearn.classification_report."""
+    from sklearn.metrics import auc as sk_auc
     from sklearn.metrics import (
-        accuracy_score,
-        balanced_accuracy_score,
+        classification_report,
         cohen_kappa_score,
         confusion_matrix,
-        f1_score,
         matthews_corrcoef,
         precision_recall_curve,
-        precision_score,
-        recall_score,
         roc_auc_score,
         roc_curve,
     )
-    from sklearn.metrics import (
-        auc as sk_auc,
-    )
 
+    report = classification_report(labels, preds, output_dict=True, zero_division=0)
     cm = confusion_matrix(labels, preds, labels=[0, 1])
     tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
 
     specificity = float(tn / (tn + fp)) if (tn + fp) > 0 else 0.0
-    tpr = float(tp / (tp + fn)) if (tp + fn) > 0 else 0.0
     fpr = float(fp / (fp + tn)) if (fp + tn) > 0 else 0.0
     fnr = float(fn / (fn + tp)) if (fn + tp) > 0 else 0.0
 
     core = {
-        "accuracy": float(accuracy_score(labels, preds)),
-        "precision": float(precision_score(labels, preds, zero_division=0)),
-        "recall": float(recall_score(labels, preds, zero_division=0)),
-        "f1": float(f1_score(labels, preds, zero_division=0)),
+        "accuracy": float(report["accuracy"]),
+        "precision": float(report["1"]["precision"]) if "1" in report else 0.0,
+        "recall": float(report["1"]["recall"]) if "1" in report else 0.0,
+        "f1": float(report["1"]["f1-score"]) if "1" in report else 0.0,
         "specificity": specificity,
-        "balanced_accuracy": float(balanced_accuracy_score(labels, preds)),
+        "balanced_accuracy": float(report.get("macro avg", {}).get("recall", 0.0)),
         "mcc": float(matthews_corrcoef(labels, preds)),
         "fpr": fpr,
         "fnr": fnr,
@@ -536,27 +499,18 @@ def _compute_metrics(labels, preds, scores=None) -> dict:
 
     additional = {
         "kappa": float(cohen_kappa_score(labels, preds)),
-        "tpr": tpr,
-        "tnr": specificity,
-        "detection_rate": tpr,
-        "miss_rate": fnr,
+        "per_class": {
+            k: v for k, v in report.items() if k not in ("accuracy", "macro avg", "weighted avg")
+        },
     }
 
     if scores is not None and len(set(labels)) > 1:
         core["auc"] = float(roc_auc_score(labels, scores))
-
         try:
             prec_vals, rec_vals, _ = precision_recall_curve(labels, scores)
             additional["pr_auc"] = float(sk_auc(rec_vals, prec_vals))
-            # Downsample PR curve for export
-            step = max(1, len(prec_vals) // 200)
-            additional["pr_curve"] = {
-                "precision": prec_vals[::step].tolist(),
-                "recall": rec_vals[::step].tolist(),
-            }
         except ValueError:
             additional["pr_auc"] = 0.0
-
         try:
             fpr_curve, tpr_curve, _ = roc_curve(labels, scores)
             det_at_fpr = {}
@@ -564,12 +518,6 @@ def _compute_metrics(labels, preds, scores=None) -> dict:
                 idx = np.argmin(np.abs(fpr_curve - fpr_target))
                 det_at_fpr[str(fpr_target)] = float(tpr_curve[idx])
             additional["detection_at_fpr"] = det_at_fpr
-            # Downsample ROC curve for export
-            step = max(1, len(fpr_curve) // 200)
-            additional["roc_curve"] = {
-                "fpr": fpr_curve[::step].tolist(),
-                "tpr": tpr_curve[::step].tolist(),
-            }
         except ValueError:
             additional["detection_at_fpr"] = {}
 
@@ -627,29 +575,19 @@ def _collect_layer_representations(model, data, device, max_samples=500):
 
 def _save_cka(cfg, val_data, device, num_ids, in_ch, out_dir):
     """Compute and save CKA matrix between teacher and student GAT layers."""
-    from graphids.config import stage_dir
+    from graphids.config import get_resolver, resolve
 
-    # Teacher is large-scale, same dataset, no KD
-    teacher_gat_stage = "curriculum"
-    teacher_ckpt = _cross_model_path(cfg, "gat", teacher_gat_stage, "best_model.pt")
-
-    # For KD runs, we need the teacher (large, no-KD) model
-    # The teacher path is the large-scale GAT without KD auxiliary
-    from graphids.config import checkpoint_path, resolve
-
+    resolver = get_resolver()
     teacher_cfg = resolve("gat", "large", dataset=cfg.dataset)
-    teacher_ckpt = checkpoint_path(teacher_cfg, teacher_gat_stage)
-
-    if not teacher_ckpt.exists():
-        log.warning("CKA: teacher checkpoint not found at %s", teacher_ckpt)
+    if not resolver.exists(teacher_cfg, "curriculum", "best_model.pt", model_type="gat"):
+        log.warning("CKA: teacher checkpoint not found")
         return
 
-    student_ckpt = _cross_model_path(cfg, "gat", "curriculum", "best_model.pt")
-    if not student_ckpt.exists():
-        log.warning("CKA: student checkpoint not found at %s", student_ckpt)
+    if not resolver.exists(cfg, "curriculum", "best_model.pt", model_type="gat"):
+        log.warning("CKA: student checkpoint not found")
         return
 
-    teacher = load_model(teacher_cfg, "gat", teacher_gat_stage, num_ids, in_ch, device)
+    teacher = load_model(teacher_cfg, "gat", "curriculum", num_ids, in_ch, device)
     student = load_model(cfg, "gat", "curriculum", num_ids, in_ch, device)
 
     teacher_layers = _collect_layer_representations(teacher, val_data, device)

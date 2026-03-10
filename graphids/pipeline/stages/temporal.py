@@ -6,6 +6,7 @@ temporal head, and trains on sequences of consecutive graph snapshots.
 Uses contiguous time split (not random): first 80% train, last 20% val
 because temporal ordering matters for this task.
 """
+
 from __future__ import annotations
 
 import json
@@ -42,6 +43,7 @@ log = logging.getLogger(__name__)
 # Dataset for temporal sequences
 # ---------------------------------------------------------------------------
 
+
 class TemporalGraphDataset(Dataset):
     """PyTorch Dataset wrapping a list of GraphSequence objects."""
 
@@ -72,6 +74,7 @@ def collate_temporal(batch):
 # ---------------------------------------------------------------------------
 # Lightning module
 # ---------------------------------------------------------------------------
+
 
 class TemporalLightningModule(pl.LightningModule):
     """Lightning wrapper for TemporalGraphClassifier."""
@@ -116,21 +119,26 @@ class TemporalLightningModule(pl.LightningModule):
         # Separate param groups for spatial encoder (low LR) and temporal head (full LR)
         spatial_params = list(self.model.spatial_encoder.parameters())
         temporal_params = [
-            p for n, p in self.model.named_parameters()
+            p
+            for n, p in self.model.named_parameters()
             if not n.startswith("spatial_encoder") and p.requires_grad
         ]
 
         param_groups = []
         if not tc.freeze_spatial and spatial_params:
-            param_groups.append({
-                "params": spatial_params,
-                "lr": t.lr * tc.spatial_lr_factor,
-            })
+            param_groups.append(
+                {
+                    "params": spatial_params,
+                    "lr": t.lr * tc.spatial_lr_factor,
+                }
+            )
         if temporal_params:
-            param_groups.append({
-                "params": temporal_params,
-                "lr": t.lr,
-            })
+            param_groups.append(
+                {
+                    "params": temporal_params,
+                    "lr": t.lr,
+                }
+            )
 
         optimizer = torch.optim.AdamW(
             param_groups if param_groups else self.model.parameters(),
@@ -144,6 +152,7 @@ class TemporalLightningModule(pl.LightningModule):
 # Main entry point
 # ---------------------------------------------------------------------------
 
+
 def train_temporal(cfg: PipelineConfig) -> dict:
     """Train temporal graph classifier.
 
@@ -155,8 +164,14 @@ def train_temporal(cfg: PipelineConfig) -> dict:
         log.warning("Temporal training called but temporal.enabled=False. Skipping.")
         return {"status": "skipped", "reason": "temporal.enabled=False"}
 
-    log.info("=== TEMPORAL: %s / %s_%s (window=%d, stride=%d) ===",
-             cfg.dataset, cfg.model_type, cfg.scale, tc.temporal_window, tc.temporal_stride)
+    log.info(
+        "=== TEMPORAL: %s / %s_%s (window=%d, stride=%d) ===",
+        cfg.dataset,
+        cfg.model_type,
+        cfg.scale,
+        tc.temporal_window,
+        tc.temporal_stride,
+    )
     pl.seed_everything(cfg.seed)
 
     # Load data (same as other stages)
@@ -190,8 +205,12 @@ def train_temporal(cfg: PipelineConfig) -> dict:
     train_sequences = grouper.group(temporal_train_graphs)
     val_sequences = grouper.group(temporal_val_graphs)
 
-    log.info("Temporal sequences: train=%d, val=%d (from %d total graphs)",
-             len(train_sequences), len(val_sequences), len(all_graphs))
+    log.info(
+        "Temporal sequences: train=%d, val=%d (from %d total graphs)",
+        len(train_sequences),
+        len(val_sequences),
+        len(all_graphs),
+    )
 
     if not train_sequences or not val_sequences:
         log.error("Not enough graphs for temporal windowing")
@@ -205,12 +224,18 @@ def train_temporal(cfg: PipelineConfig) -> dict:
     temporal_batch_size = max(1, min(32, len(train_sequences) // 10))
 
     train_loader = DataLoader(
-        train_ds, batch_size=temporal_batch_size, shuffle=True,
-        collate_fn=collate_temporal, num_workers=0,
+        train_ds,
+        batch_size=temporal_batch_size,
+        shuffle=True,
+        collate_fn=collate_temporal,
+        num_workers=0,
     )
     val_loader = DataLoader(
-        val_ds, batch_size=temporal_batch_size, shuffle=False,
-        collate_fn=collate_temporal, num_workers=0,
+        val_ds,
+        batch_size=temporal_batch_size,
+        shuffle=False,
+        collate_fn=collate_temporal,
+        num_workers=0,
     )
 
     # Build temporal model
@@ -258,35 +283,20 @@ def train_temporal(cfg: PipelineConfig) -> dict:
             all_preds.extend(preds.cpu().tolist())
             all_labels.extend(labels.tolist())
 
-    from sklearn.metrics import (
-        accuracy_score,
-        balanced_accuracy_score,
-        f1_score,
-        matthews_corrcoef,
-        precision_score,
-        recall_score,
-    )
+    from .evaluation import _compute_metrics
 
-    result = {
-        "temporal": {
-            "core": {
-                "accuracy": float(accuracy_score(all_labels, all_preds)),
-                "f1": float(f1_score(all_labels, all_preds, zero_division=0)),
-                "precision": float(precision_score(all_labels, all_preds, zero_division=0)),
-                "recall": float(recall_score(all_labels, all_preds, zero_division=0)),
-                "mcc": float(matthews_corrcoef(all_labels, all_preds)),
-                "balanced_accuracy": float(balanced_accuracy_score(all_labels, all_preds)),
-                "n_sequences": len(all_labels),
-                "window": tc.temporal_window,
-                "stride": tc.temporal_stride,
-            }
-        }
-    }
+    metrics = _compute_metrics(all_labels, all_preds)
+    metrics["core"]["n_sequences"] = len(all_labels)
+    metrics["core"]["window"] = tc.temporal_window
+    metrics["core"]["stride"] = tc.temporal_stride
+    result = {"temporal": metrics}
 
     mp = metrics_path(cfg, "temporal")
     mp.write_text(json.dumps(result, indent=2))
-    log.info("Temporal metrics: %s", {k: f"{v:.4f}" for k, v in result["temporal"]["core"].items()
-                                       if isinstance(v, float)})
+    log.info(
+        "Temporal metrics: %s",
+        {k: f"{v:.4f}" for k, v in result["temporal"]["core"].items() if isinstance(v, float)},
+    )
 
     cleanup()
     return result

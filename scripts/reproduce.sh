@@ -18,7 +18,7 @@ if [[ "${1:-}" == "--dry-run" ]]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SLURM_SCRIPT="${SCRIPT_DIR}/slurm/ray_slurm.sh"
+SLURM_SCRIPT="${SCRIPT_DIR}/slurm/ray_slurm.sbatch"
 
 if [[ ! -f "$SLURM_SCRIPT" ]]; then
     echo "ERROR: SLURM script not found: $SLURM_SCRIPT" >&2

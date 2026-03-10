@@ -8,17 +8,91 @@ from pathlib import Path
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
-from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
-from pytorch_lightning.loggers import CSVLogger
+from pytorch_lightning.callbacks import DeviceStatsMonitor, EarlyStopping, ModelCheckpoint
 
-from graphids.config import PipelineConfig, stage_dir
-
-from .callbacks import MemoryMonitorCallback, ProfilerCallback
+from graphids.config import MLFLOW_TRACKING_URI, PipelineConfig, get_resolver, run_id, stage_dir
 
 log = logging.getLogger(__name__)
 
+# model_type → the canonical stage that produces the teacher checkpoint.
+# "curriculum" is preferred over "normal" for GAT since the teacher (large) always
+# trains via curriculum. Derived from STAGE_MODEL_MAP with first-wins semantics.
+from graphids.config.constants import STAGE_MODEL_MAP
 
-def load_teacher(
+_TEACHER_STAGE: dict[str, str] = {}
+for _stage, _model in STAGE_MODEL_MAP.items():
+    _TEACHER_STAGE.setdefault(_model, _stage)
+
+
+def resolve_teacher_path(cfg: PipelineConfig, model_type: str) -> Path:
+    """Auto-resolve teacher checkpoint path for KD.
+
+    Resolution order:
+    1. Explicit ``cfg.kd.model_path`` (manual override)
+    2. Auto-resolve from ``cfg.kd.teacher_scale`` via the artifact resolver
+
+    The ``teacher_scale`` field (default ``"large"``) makes the teacher
+    reference scale-agnostic — today it's "large", but could be any
+    variant that produces a checkpoint for the given model_type.
+    """
+    from graphids.config import checkpoint_path
+    from graphids.config.resolver import resolve
+
+    if cfg.kd and cfg.kd.model_path:
+        return Path(cfg.kd.model_path)
+
+    teacher_scale = cfg.kd.teacher_scale if cfg.kd else "large"
+    stage = _TEACHER_STAGE.get(model_type)
+    if stage is None:
+        raise ValueError(f"No teacher stage mapping for model_type '{model_type}'")
+
+    teacher_cfg = resolve(model_type, teacher_scale, dataset=cfg.dataset, seed=cfg.seed)
+    path = checkpoint_path(teacher_cfg, stage)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Teacher checkpoint not found: {path}. "
+            f"Train {model_type}/{teacher_scale} first, or set model_path explicitly."
+        )
+    log.info("Auto-resolved teacher (%s/%s): %s", model_type, teacher_scale, path)
+    return path
+
+
+def prepare_kd(
+    cfg: PipelineConfig,
+    model_type: str,
+    num_ids: int,
+    in_channels: int,
+    device: torch.device,
+) -> tuple[nn.Module | None, nn.Linear | None]:
+    """Resolve, load, and prepare all KD components for a training stage.
+
+    Returns ``(teacher, projection)`` when KD is active, or
+    ``(None, None)`` when KD is disabled.  Centralizes the entire
+    teacher lifecycle so training functions need only::
+
+        teacher, projection = prepare_kd(cfg, "vgae", num_ids, in_ch, device)
+
+    No if/else branching required in calling code.
+    """
+    if not cfg.has_kd:
+        return None, None
+
+    teacher_path = resolve_teacher_path(cfg, model_type)
+    teacher = _load_teacher(str(teacher_path), model_type, cfg, num_ids, in_channels, device)
+
+    # Projection layer only needed for VGAE (latent space alignment)
+    projection = None
+    if model_type == "vgae":
+        from graphids.core.models.registry import get as registry_get
+
+        tmp_student = registry_get("vgae").factory(cfg, num_ids, in_channels)
+        projection = make_projection(tmp_student, teacher, "vgae", device)
+        del tmp_student
+
+    return teacher, projection
+
+
+def _load_teacher(
     teacher_path: str,
     model_type: str,
     cfg: PipelineConfig,
@@ -26,17 +100,7 @@ def load_teacher(
     in_channels: int,
     device: torch.device,
 ) -> nn.Module:
-    """Load a teacher model from its checkpoint for knowledge distillation.
-
-    Uses the model registry (``registry.get(model_type).factory()``) to
-    construct the architecture, then loads weights from *teacher_path*.
-    Dimensions come from the **frozen config.json** saved alongside the
-    checkpoint — never from the student config — preventing shape mismatches
-    when teacher and student have different hidden sizes.
-
-    The returned model is moved to *device*, set to eval mode, and has all
-    parameters frozen (``requires_grad=False``).
-    """
+    """Load and freeze a teacher model from checkpoint.  Internal to prepare_kd()."""
     from graphids.core.models.registry import get as registry_get
 
     checkpoint = torch.load(teacher_path, map_location="cpu", weights_only=True)
@@ -103,31 +167,11 @@ def make_projection(
 
 
 def _extract_state_dict(checkpoint) -> dict:
-    """Handle different checkpoint formats, return clean state dict."""
-    if isinstance(checkpoint, dict):
-        if "state_dict" in checkpoint:
-            sd = checkpoint["state_dict"]
-            return {
-                k.replace("model.", ""): v for k, v in sd.items() if k.startswith("model.")
-            } or sd
-        if "model_state_dict" in checkpoint:
-            return checkpoint["model_state_dict"]
-        return checkpoint
+    """Handle Lightning checkpoint format, return clean state dict."""
+    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+        sd = checkpoint["state_dict"]
+        return {k.replace("model.", ""): v for k, v in sd.items() if k.startswith("model.")} or sd
     return checkpoint
-
-
-def _cross_model_path(cfg: PipelineConfig, model_type: str, stage: str, filename: str) -> Path:
-    """Build a path for a specific model_type (may differ from cfg.model_type).
-
-    Used when loading another model's artifacts (e.g. loading VGAE checkpoint from GAT config).
-    """
-    aux_suffix = f"_{cfg.auxiliaries[0].type}" if cfg.auxiliaries else ""
-    return (
-        Path(cfg.experiment_root)
-        / cfg.dataset
-        / f"{model_type}_{cfg.scale}_{stage}{aux_suffix}"
-        / filename
-    )
 
 
 from graphids.config.constants import STAGE_MODEL_MAP as _STAGE_MODEL_TYPE
@@ -139,20 +183,17 @@ def load_frozen_cfg(
     """Load the frozen config.json saved during training for *stage*.
 
     model_type defaults to the canonical owner of the stage (e.g. "autoencoder" → "vgae").
-    When cfg.model_type already matches the stage owner, this is equivalent to config_path(cfg, stage).
+    Uses the ArtifactResolver for cache-first, MLflow-fallback resolution.
 
     Raises FileNotFoundError if the frozen config doesn't exist.
     """
-    from graphids.config import config_path
-
     mt = model_type or _STAGE_MODEL_TYPE.get(stage, cfg.model_type)
-    if mt == cfg.model_type:
-        p = config_path(cfg, stage)
-    else:
-        p = _cross_model_path(cfg, mt, stage, "config.json")
-    if not p.exists():
+    resolver = get_resolver()
+    try:
+        p = resolver.get(cfg, stage, "config.json", model_type=mt)
+    except FileNotFoundError:
         raise FileNotFoundError(
-            f"Frozen config not found: {p}. "
+            f"Frozen config not found for stage '{stage}' (model_type={mt}). "
             f"The '{stage}' stage must be trained first (with config saved) "
             f"before dependent stages can load it."
         )
@@ -172,13 +213,13 @@ def load_model(
 ) -> nn.Module:
     """Load a trained model using its frozen config and the registry.
 
-    Replaces the old ``load_vgae`` / ``load_gat`` helpers with a single
-    generic loader that works for any registered model type.
+    Uses the ArtifactResolver for cache-first, MLflow-fallback resolution.
     """
     from graphids.core.models.registry import get as registry_get
 
+    resolver = get_resolver()
     frozen_cfg = load_frozen_cfg(cfg, stage, model_type=model_type)
-    ckpt = _cross_model_path(cfg, model_type, stage, "best_model.pt")
+    ckpt = resolver.get(cfg, stage, "best_model.pt", model_type=model_type)
     model = registry_get(model_type).factory(frozen_cfg, num_ids, in_channels)
     model.load_state_dict(torch.load(ckpt, map_location="cpu", weights_only=True))
     model.to(device)
@@ -219,32 +260,41 @@ def build_optimizer_dict(optimizer, cfg: PipelineConfig):
     return {"optimizer": optimizer, "lr_scheduler": sched}
 
 
-def _make_loggers(
-    cfg: PipelineConfig,
-    stage: str,
-    out: Path,
-    run_id_str: str,
-) -> list:
-    """Build Lightning loggers (CSV only)."""
-    return [CSVLogger(save_dir=str(out), name="csv_logs")]
+def _setup_mlflow_autolog() -> None:
+    """Enable MLflow autolog for PyTorch Lightning.
+
+    Called once per training process. Sets tracking URI and enables
+    automatic logging of metrics, params, and checkpoints.
+    """
+    import mlflow
+
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    mlflow.pytorch.autolog(
+        checkpoint=True,
+        log_every_n_epoch=1,
+        log_models=False,  # We save checkpoints via ModelCheckpoint callback
+    )
 
 
 def make_trainer(
     cfg: PipelineConfig,
     stage: str,
-    predicted_peak_mb: float = 0.0,
-    run_id_str: str = "",
     extra_callbacks: list | None = None,
 ) -> pl.Trainer:
     """Create a Lightning Trainer with standard callbacks."""
-    from graphids.config import run_id as _run_id
-
     t = cfg.training
     out = stage_dir(cfg, stage)
     out.mkdir(parents=True, exist_ok=True)
     torch.backends.cudnn.benchmark = t.cudnn_benchmark
 
-    rid = run_id_str or _run_id(cfg, stage)
+    # Persistent NFS path for Lightning auto-checkpoints (SIGUSR1 timeout saves).
+    # stage_dir() may be $TMPDIR (node-local SSD, lost after job ends).
+    # default_root_dir must survive job termination for checkpoint-aware resume.
+    persistent_root = Path(cfg.experiment_root) / run_id(cfg, stage)
+    persistent_root.mkdir(parents=True, exist_ok=True)
+
+    # Enable MLflow autolog (idempotent — safe to call multiple times)
+    _setup_mlflow_autolog()
 
     callbacks = [
         ModelCheckpoint(
@@ -261,27 +311,14 @@ def make_trainer(
             mode=t.monitor_mode,
             check_on_train_epoch_end=False,
         ),
-        MemoryMonitorCallback(
-            log_every_n_epochs=t.test_every_n_epochs,
-            predicted_peak_mb=predicted_peak_mb,
-            run_id=rid,
-        ),
+        DeviceStatsMonitor(cpu_stats=False),
     ]
-
-    if t.profile:
-        profiler_dir = str(out / "profiler_traces")
-        callbacks.append(
-            ProfilerCallback(
-                output_dir=profiler_dir,
-                active_steps=t.profile_steps,
-            )
-        )
 
     if extra_callbacks:
         callbacks.extend(extra_callbacks)
 
     return pl.Trainer(
-        default_root_dir=str(out),
+        default_root_dir=str(persistent_root),
         max_epochs=t.max_epochs,
         accelerator="auto",
         devices="auto",
@@ -289,7 +326,6 @@ def make_trainer(
         gradient_clip_val=t.gradient_clip,
         accumulate_grad_batches=t.accumulate_grad_batches,
         callbacks=callbacks,
-        logger=_make_loggers(cfg, stage, out, rid),
         log_every_n_steps=t.log_every_n_steps,
         enable_progress_bar=True,
         deterministic=t.deterministic,

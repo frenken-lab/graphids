@@ -10,23 +10,25 @@ Usage (via CLI):
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import subprocess
-import sys
-import tempfile
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from graphids.config.constants import STAGE_MODEL_MAP, SWEEP_RESULTS_DIR, SWEEP_STATE_DIR
+from graphids.config.constants import (
+    PROJECT_ROOT,
+    STAGE_MODEL_MAP,
+    SWEEP_RESULTS_DIR,
+    SWEEP_STATE_DIR,
+)
+from graphids.pipeline.state import load_state, save_state
+from graphids.pipeline.subprocess_utils import build_cli_cmd
 
 log = logging.getLogger(__name__)
-
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 @dataclass(frozen=True)
@@ -49,7 +51,7 @@ SWEEP_DAG: list[SweepStep] = [
 
 
 # ---------------------------------------------------------------------------
-# State management
+# State management (delegates to graphids.pipeline.state)
 # ---------------------------------------------------------------------------
 
 _STATUS = Literal["pending", "running", "completed", "failed"]
@@ -61,23 +63,12 @@ def _state_path(dataset: str, scale: str) -> Path:
 
 def _load_state(dataset: str, scale: str) -> dict[str, Any]:
     path = _state_path(dataset, scale)
-    if path.exists():
-        return json.loads(path.read_text())
-    return {"dataset": dataset, "scale": scale, "steps": {}}
+    state = load_state(path)
+    return state if state else {"dataset": dataset, "scale": scale, "steps": {}}
 
 
 def _save_state(state: dict[str, Any], dataset: str, scale: str) -> None:
-    path = _state_path(dataset, scale)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Atomic write via tmp + rename
-    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(state, f, indent=2)
-        os.replace(tmp, path)
-    except BaseException:
-        os.unlink(tmp)
-        raise
+    save_state(state, _state_path(dataset, scale))
 
 
 def _update_step_state(
@@ -196,42 +187,23 @@ def _run_train_step(step: SweepStep, dataset: str, scale: str) -> None:
     """Train with best HPs from a completed sweep, using subprocess for CUDA isolation."""
     config = load_best_config(step.stage, dataset, scale)
 
-    cmd = [
-        sys.executable,
-        "-m",
-        "graphids.pipeline.cli",
+    cmd = build_cli_cmd(
         step.stage,
-        "--model",
         step.model,
-        "--scale",
         scale,
-        "--dataset",
         dataset,
-    ]
-    for key, value in config.items():
-        cmd.extend(["-O", key, str(value)])
-
-    cmd.extend(["--sweep-id", f"tune_{step.stage}_{dataset}_{scale}"])
+        overrides=list(config.items()),
+        sweep_id=f"tune_{step.stage}_{dataset}_{scale}",
+    )
     log.info("Training best %s: %s", step.stage, " ".join(cmd))
     result = subprocess.run(cmd, cwd=PROJECT_ROOT)
     if result.returncode != 0:
         raise RuntimeError(f"Training step '{step.name}' failed with exit code {result.returncode}")
 
 
-def _run_evaluate_step(dataset: str, scale: str) -> None:
+def _run_evaluate_step(dataset: str, scale: str, *, seed: int | None = None) -> None:
     """Run evaluation stage via subprocess."""
-    cmd = [
-        sys.executable,
-        "-m",
-        "graphids.pipeline.cli",
-        "evaluation",
-        "--model",
-        "vgae",
-        "--scale",
-        scale,
-        "--dataset",
-        dataset,
-    ]
+    cmd = build_cli_cmd("evaluation", "vgae", scale, dataset, seeds=str(seed) if seed else None)
     log.info("Running evaluation: %s", " ".join(cmd))
     result = subprocess.run(cmd, cwd=PROJECT_ROOT)
     if result.returncode != 0:
@@ -254,8 +226,13 @@ def run_sweep_pipeline(
     resume: bool = True,
     dry_run: bool = False,
     inprocess: bool = False,
+    multi_seed: bool = False,
 ) -> None:
-    """Execute the 7-step sweep pipeline DAG."""
+    """Execute the 7-step sweep pipeline DAG.
+
+    When multi_seed=True, after the sweep DAG completes, re-trains the best
+    config with all DEFAULT_SEEDS for statistical significance reporting.
+    """
     if dry_run:
         _dry_run(dataset, scale)
         return
@@ -363,6 +340,51 @@ def run_sweep_pipeline(
 
     log.info("Sweep pipeline complete for %s/%s", dataset, scale)
 
+    # Multi-seed re-training with best config for statistical significance
+    if multi_seed:
+        _run_multi_seed_final(dataset, scale)
+
+
+# ---------------------------------------------------------------------------
+# Multi-seed final training
+# ---------------------------------------------------------------------------
+
+
+def _run_multi_seed_final(dataset: str, scale: str) -> None:
+    """Re-train best config with all DEFAULT_SEEDS for statistical significance."""
+    from graphids.config.constants import DEFAULT_SEEDS
+
+    log.info("=== Multi-seed training for %s/%s with seeds %s ===", dataset, scale, DEFAULT_SEEDS)
+
+    for step in SWEEP_DAG:
+        if step.kind != "train":
+            continue
+
+        config = load_best_config(step.stage, dataset, scale)
+        for seed in DEFAULT_SEEDS:
+            cmd = build_cli_cmd(
+                step.stage,
+                step.model,
+                scale,
+                dataset,
+                seeds=str(seed),
+                overrides=list(config.items()),
+            )
+            log.info("Multi-seed %s (seed=%d): %s", step.stage, seed, " ".join(cmd))
+            result = subprocess.run(cmd, cwd=PROJECT_ROOT)
+            if result.returncode != 0:
+                log.error("Multi-seed training failed: %s seed=%d", step.stage, seed)
+                raise RuntimeError(
+                    f"Multi-seed training '{step.stage}' seed={seed} failed "
+                    f"with exit code {result.returncode}"
+                )
+
+    # Final multi-seed evaluation
+    for seed in DEFAULT_SEEDS:
+        _run_evaluate_step(dataset, scale, seed=seed)
+
+    log.info("=== Multi-seed training complete for %s/%s ===", dataset, scale)
+
 
 # ---------------------------------------------------------------------------
 # Dry run
@@ -373,18 +395,21 @@ def _dry_run(dataset: str, scale: str) -> None:
     """Print DAG state and verify configs without executing."""
     from graphids.config import data_dir
     from graphids.config.resolver import resolve
+    from graphids.pipeline.validate import validate_datasets
 
     log.info("=== Sweep Pipeline Dry Run: dataset=%s, scale=%s ===", dataset, scale)
 
-    # Verify config resolution
-    try:
-        cfg = resolve("vgae", scale, dataset=dataset)
-        ddir = data_dir(cfg)
-        log.info("Config resolution: OK")
-        log.info("Data directory: %s (exists=%s)", ddir, ddir.exists())
-    except Exception as e:
-        log.error("Config resolution FAILED: %s", e)
+    # Verify config resolution + data directory
+    ds_errors = validate_datasets([dataset], scale)
+    if ds_errors:
+        for err in ds_errors:
+            log.error("Validation FAILED: %s", err)
         return
+
+    cfg = resolve("vgae", scale, dataset=dataset)
+    ddir = data_dir(cfg)
+    log.info("Config resolution: OK")
+    log.info("Data directory: %s (exists=%s)", ddir, ddir.exists())
 
     # Load existing state
     state = _load_state(dataset, scale)

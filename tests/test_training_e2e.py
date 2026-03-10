@@ -41,11 +41,10 @@ def exp_root(tmp_path):
 
 
 def _apply_load_data_patches(stack, data):
-    """Patch load_data in all modules that import it."""
+    """Patch load_data at canonical source + all re-import sites."""
     fake = _patch_load_data(data)
+    stack.enter_context(patch("graphids.pipeline.stages.data_loading.load_data", fake))
     stack.enter_context(patch("graphids.pipeline.stages.training.load_data", fake))
-    stack.enter_context(patch("graphids.pipeline.stages.fusion.load_data", fake))
-    stack.enter_context(patch("graphids.pipeline.stages.evaluation.load_data", fake))
 
 
 @pytest.mark.slurm

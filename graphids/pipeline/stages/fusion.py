@@ -5,12 +5,12 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-import pytorch_lightning as pl
 import torch
 
 from graphids.config import PipelineConfig, checkpoint_path, config_path, stage_dir
 
-from .utils import cache_predictions, cleanup, load_data, load_model
+from .data_loading import training_preamble
+from .utils import cache_predictions, cleanup, load_model
 
 log = logging.getLogger(__name__)
 
@@ -22,22 +22,8 @@ def _train_dqn_fusion(cfg, train_cache, val_cache, device, out) -> float:
     -> gradient steps from buffer. No Python-level per-sample loop.
     """
     from graphids.core.models.dqn import EnhancedDQNFusionAgent
-    from graphids.core.models.registry import fusion_state_dim
 
-    agent = EnhancedDQNFusionAgent(
-        lr=cfg.fusion.lr,
-        gamma=cfg.dqn.gamma,
-        epsilon=cfg.dqn.epsilon,
-        epsilon_decay=cfg.dqn.epsilon_decay,
-        min_epsilon=cfg.dqn.min_epsilon,
-        buffer_size=cfg.dqn.buffer_size,
-        batch_size=cfg.dqn.batch_size,
-        target_update_freq=cfg.dqn.target_update,
-        device=str(device),
-        state_dim=fusion_state_dim(),
-        hidden_dim=cfg.dqn.hidden,
-        num_layers=cfg.dqn.layers,
-    )
+    agent = EnhancedDQNFusionAgent.from_config(cfg, device=str(device))
 
     best_acc = 0.0
     val_states = val_cache["states"][: min(5000, len(val_cache["states"]))]
@@ -142,13 +128,9 @@ def _train_weighted_avg_fusion(cfg, train_cache, val_cache, device) -> float:
 
 def train_fusion(cfg: PipelineConfig) -> Path:
     """Train fusion agent on cached VGAE+GAT predictions. Returns checkpoint path."""
-    log.info(
-        "=== FUSION (%s): %s / %s_%s ===", cfg.fusion.method, cfg.dataset, cfg.model_type, cfg.scale
+    train_data, val_data, num_ids, in_ch, device = training_preamble(
+        cfg, f"FUSION ({cfg.fusion.method})"
     )
-    pl.seed_everything(cfg.seed)
-
-    train_data, val_data, num_ids, in_ch = load_data(cfg)
-    device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
 
     # Load frozen VGAE + GAT
     vgae = load_model(cfg, "vgae", "autoencoder", num_ids, in_ch, device)

@@ -30,10 +30,18 @@ Check the status of experiments and running jobs.
    ls -lt slurm_logs/*.err 2>/dev/null | head -10
    ```
 
-4. **Check W&B for recent runs** (if available)
+4. **Check MLflow for recent runs**
    ```bash
-   # List offline W&B runs pending sync
-   ls -dt wandb/run-* 2>/dev/null | head -5
+   python -c "
+   import mlflow
+   from graphids.config import MLFLOW_TRACKING_URI
+   mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+   runs = mlflow.search_runs(max_results=5, order_by=['start_time DESC'])
+   if runs.empty:
+       print('  (no MLflow runs)')
+   else:
+       print(runs[['run_id','tags.mlflow.runName','status','start_time']].to_string())
+   " 2>/dev/null || echo "  (MLflow not available)"
    ```
 
 5. **If dataset specified via `$ARGUMENTS`**, show detailed status:
@@ -64,6 +72,6 @@ watch -n 5 'squeue -u $USER'
 # Follow specific SLURM log
 tail -f slurm_logs/<jobid>.err
 
-# Sync offline W&B runs
-wandb sync wandb/run-*
+# Browse MLflow runs
+mlflow ui --backend-store-uri sqlite:///data/mlflow/mlflow.db
 ```

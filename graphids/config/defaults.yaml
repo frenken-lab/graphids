@@ -45,8 +45,6 @@ training:
   use_teacher_cache: true
   clear_cache_every_n: 100
   offload_teacher_to_cpu: false
-  optimize_batch_size: true
-  memory_estimation: measured
   accumulate_grad_batches: 1
   save_top_k: 1
   monitor_metric: val_loss
@@ -112,6 +110,6 @@ tune:
 
 experiment_root: experimentruns
 device: cuda
-num_workers: 8
+num_workers: 2
 mp_start_method: spawn
 run_test: true

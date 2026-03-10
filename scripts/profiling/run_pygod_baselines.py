@@ -7,8 +7,9 @@ optional dependency group: ``uv pip install -e ".[baselines]"``
 Usage:
     python scripts/profiling/run_pygod_baselines.py --dataset hcrl_sa
     python scripts/profiling/run_pygod_baselines.py --dataset hcrl_sa --models dominant,ocgnn
-    python scripts/profiling/run_pygod_baselines.py --dataset hcrl_sa --wandb
+    python scripts/profiling/run_pygod_baselines.py --dataset hcrl_sa --mlflow
 """
+
 from __future__ import annotations
 
 import argparse
@@ -21,10 +22,10 @@ from pathlib import Path
 import numpy as np
 import torch
 from sklearn.metrics import (
-    roc_auc_score,
     f1_score,
     precision_score,
     recall_score,
+    roc_auc_score,
 )
 
 # Ensure project root is importable
@@ -32,7 +33,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from graphids.config import resolve, data_dir, cache_dir
+from graphids.config import cache_dir, data_dir, resolve
 
 log = logging.getLogger(__name__)
 
@@ -54,7 +55,9 @@ def _load_graphs(dataset: str):
 
 
 def _graph_label(g) -> int:
-    return g.y.item() if g.y.dim() == 0 else int(g.y[0].item())
+    from graphids.pipeline.stages.data_loading import graph_label
+
+    return graph_label(g)
 
 
 def _run_model(model_name: str, train_data, val_data, device: str) -> dict:
@@ -62,16 +65,13 @@ def _run_model(model_name: str, train_data, val_data, device: str) -> dict:
     try:
         from pygod.detector import DOMINANT, OCGNN
     except ImportError:
-        log.error(
-            "pygod not installed. Install with: uv pip install -e '.[baselines]'"
-        )
+        log.error("pygod not installed. Install with: uv pip install -e '.[baselines]'")
         raise
 
     model_cls = {"dominant": DOMINANT, "ocgnn": OCGNN}[model_name]
 
     # Merge train + val for node-level anomaly detection
     # PyGOD expects a single PyG Data object
-    from torch_geometric.data import Batch
 
     all_graphs = list(train_data) + list(val_data)
     labels = np.array([_graph_label(g) for g in all_graphs])
@@ -103,14 +103,10 @@ def _run_model(model_name: str, train_data, val_data, device: str) -> dict:
     elapsed = time.time() - t0
     log.info("%s: finished %d graphs in %.1fs", model_name, len(all_graphs), elapsed)
 
-    # Threshold via Youden's J
-    from sklearn.metrics import roc_curve
+    # Threshold via Youden's J (reuse shared implementation)
+    from graphids.pipeline.stages.evaluation import _vgae_threshold
 
-    fpr, tpr, thresholds = roc_curve(labels, scores)
-    j_scores = tpr - fpr
-    best_idx = np.argmax(j_scores)
-    best_thresh = float(thresholds[best_idx]) if best_idx < len(thresholds) else float(np.median(scores))
-    preds = (scores > best_thresh).astype(int)
+    best_thresh, _, preds = _vgae_threshold(labels, scores)
 
     metrics = {
         "model": model_name,
@@ -128,12 +124,16 @@ def _run_model(model_name: str, train_data, val_data, device: str) -> dict:
 def main():
     parser = argparse.ArgumentParser(description="Run PyGOD baselines")
     parser.add_argument("--dataset", required=True, help="Dataset name (e.g. hcrl_sa)")
-    parser.add_argument("--models", default="dominant,ocgnn",
-                        help="Comma-separated model names (default: dominant,ocgnn)")
+    parser.add_argument(
+        "--models",
+        default="dominant,ocgnn",
+        help="Comma-separated model names (default: dominant,ocgnn)",
+    )
     parser.add_argument("--device", default="cuda", help="Device (cuda or cpu)")
-    parser.add_argument("--output-dir", default=None,
-                        help="Output directory (default: experimentruns/baselines/)")
-    parser.add_argument("--wandb", action="store_true", help="Log results to W&B")
+    parser.add_argument(
+        "--output-dir", default=None, help="Output directory (default: experimentruns/baselines/)"
+    )
+    parser.add_argument("--mlflow", action="store_true", help="Log results to MLflow")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -144,25 +144,30 @@ def main():
             log.error("Unsupported model: %s (choose from %s)", m, SUPPORTED_MODELS)
             sys.exit(1)
 
-    output_dir = Path(args.output_dir) if args.output_dir else _ROOT / "experimentruns" / "baselines"
+    output_dir = (
+        Path(args.output_dir) if args.output_dir else _ROOT / "experimentruns" / "baselines"
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     log.info("Loading dataset: %s", args.dataset)
     train_data, val_data, num_ids = _load_graphs(args.dataset)
-    log.info("Loaded %d train + %d val graphs, %d CAN IDs",
-             len(train_data), len(val_data), num_ids)
+    log.info("Loaded %d train + %d val graphs, %d CAN IDs", len(train_data), len(val_data), num_ids)
 
-    wandb_run = None
-    if args.wandb:
+    mlflow_run = None
+    if args.mlflow:
         try:
-            import wandb
-            wandb_run = wandb.init(
-                project="kd-gat",
-                name=f"pygod-baselines-{args.dataset}",
-                tags=["baseline", "pygod", args.dataset],
+            import mlflow
+
+            from graphids.config import MLFLOW_TRACKING_URI
+
+            mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+            mlflow.set_experiment("kd-gat-baselines")
+            mlflow_run = mlflow.start_run(
+                run_name=f"pygod-baselines-{args.dataset}",
+                tags={"type": "baseline", "framework": "pygod", "dataset": args.dataset},
             )
         except ImportError:
-            log.warning("wandb not installed, skipping W&B logging")
+            log.warning("mlflow not installed, skipping MLflow logging")
 
     all_results = {}
     for model_name in models:
@@ -172,19 +177,27 @@ def main():
         out_path = output_dir / f"pygod_{model_name}_{args.dataset}.json"
         out_path.write_text(json.dumps(metrics, indent=2))
         log.info("Saved results to %s", out_path)
-        log.info("  AUC-ROC: %.4f  F1: %.4f  Precision: %.4f  Recall: %.4f",
-                 metrics["auc_roc"], metrics["f1"], metrics["precision"], metrics["recall"])
+        log.info(
+            "  AUC-ROC: %.4f  F1: %.4f  Precision: %.4f  Recall: %.4f",
+            metrics["auc_roc"],
+            metrics["f1"],
+            metrics["precision"],
+            metrics["recall"],
+        )
 
         all_results[model_name] = metrics
 
-        if wandb_run is not None:
-            import wandb
-            wandb.log({f"{model_name}/{k}": v for k, v in metrics.items()
-                       if isinstance(v, (int, float))})
+        if mlflow_run is not None:
+            import mlflow
 
-    if wandb_run is not None:
-        import wandb
-        wandb.finish()
+            mlflow.log_metrics(
+                {f"{model_name}/{k}": v for k, v in metrics.items() if isinstance(v, (int, float))}
+            )
+
+    if mlflow_run is not None:
+        import mlflow
+
+        mlflow.end_run()
 
     # Print summary table
     print("\n" + "=" * 60)
@@ -193,7 +206,9 @@ def main():
     print(f"{'Model':<12} {'AUC-ROC':>8} {'F1':>8} {'Prec':>8} {'Recall':>8}")
     print("-" * 60)
     for name, m in all_results.items():
-        print(f"{name:<12} {m['auc_roc']:>8.4f} {m['f1']:>8.4f} {m['precision']:>8.4f} {m['recall']:>8.4f}")
+        print(
+            f"{name:<12} {m['auc_roc']:>8.4f} {m['f1']:>8.4f} {m['precision']:>8.4f} {m['recall']:>8.4f}"
+        )
     print("=" * 60)
 
 

@@ -4,17 +4,21 @@ These are NOT hyperparameters (those live in PipelineConfig).
 These are structural/environmental constants that rarely change.
 """
 
+import os
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Versioning
 # ---------------------------------------------------------------------------
-PREPROCESSING_VERSION = "2.2.0"  # Bump when graph construction logic changes
+PREPROCESSING_VERSION = "3.0.0"  # Collated tensor storage (was list[Data] in 2.x)
 
 # ---------------------------------------------------------------------------
 # Filesystem paths
 # ---------------------------------------------------------------------------
 CATALOG_PATH = Path(__file__).parent / "datasets.yaml"
+
+# Repository root (graphids/config/ is 2 levels deep)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # ---------------------------------------------------------------------------
 # Preprocessing
@@ -122,28 +126,38 @@ def graph_node_attack_type(g, node_idx: int, default: int | None = None) -> int 
 MMAP_TENSOR_LIMIT = 60000
 
 # ---------------------------------------------------------------------------
-# GPU memory estimation
-# ---------------------------------------------------------------------------
-CUDA_CONTEXT_MB = 500.0
-FRAGMENTATION_BUFFER = 0.10
-
-# ---------------------------------------------------------------------------
 # SLURM defaults (override via environment for cluster migration)
 # ---------------------------------------------------------------------------
-import os
 
 SLURM_ACCOUNT = os.getenv("KD_GAT_SLURM_ACCOUNT", "PAS1266")
 SLURM_PARTITION = os.getenv("KD_GAT_SLURM_PARTITION", "gpu")
 SLURM_GPU_TYPE = os.getenv("KD_GAT_GPU_TYPE", "v100")
 
 # ---------------------------------------------------------------------------
-# Stage → model type mapping (single source of truth)
+# Stage definitions (single source of truth)
 # ---------------------------------------------------------------------------
+# stage_name -> (learning_type, model_arch, training_mode)
+# run_id() overrides model_arch to "eval" for the evaluation stage.
+STAGES: dict[str, tuple[str, str, str]] = {
+    "autoencoder": ("unsupervised", "vgae", "autoencoder"),
+    "curriculum": ("supervised", "gat", "curriculum"),
+    "normal": ("supervised", "gat", "normal"),
+    "fusion": ("rl_fusion", "dqn", "fusion"),
+    "evaluation": ("evaluation", "eval", "evaluation"),
+    "temporal": ("temporal", "gat", "temporal"),
+}
+
+# Derived: stage → model type (excludes evaluation/temporal which don't train standalone)
 STAGE_MODEL_MAP: dict[str, str] = {
-    "autoencoder": "vgae",
-    "curriculum": "gat",
-    "normal": "gat",
-    "fusion": "dqn",
+    k: v[1] for k, v in STAGES.items() if k in ("autoencoder", "curriculum", "normal", "fusion")
+}
+
+# Stage prerequisite dependencies: stage → list of (model_type, prereq_stage) pairs
+STAGE_DEPENDENCIES: dict[str, list[tuple[str, str]]] = {
+    "curriculum": [("vgae", "autoencoder")],
+    "normal": [("vgae", "autoencoder")],
+    "fusion": [("vgae", "autoencoder"), ("gat", "curriculum")],
+    "temporal": [("gat", "curriculum")],
 }
 
 # ---------------------------------------------------------------------------
@@ -151,3 +165,22 @@ STAGE_MODEL_MAP: dict[str, str] = {
 # ---------------------------------------------------------------------------
 SWEEP_RESULTS_DIR = "data/sweep_results"
 SWEEP_STATE_DIR = "data/sweep_state"
+
+# ---------------------------------------------------------------------------
+# Multi-seed defaults (for statistical significance in TMLR submission)
+# ---------------------------------------------------------------------------
+DEFAULT_SEEDS: list[int] = [42, 123, 456]
+
+
+def parse_seeds(value: str) -> list[int]:
+    """Parse seeds: single int or comma-separated ints.
+
+    Raises ValueError on invalid input (callers like argparse can wrap this).
+    """
+    if value is None:
+        return []
+
+    try:
+        return [int(s.strip()) for s in value.split(",")]
+    except ValueError as e:
+        raise ValueError(f"Invalid seeds value '{value}': {e}") from e

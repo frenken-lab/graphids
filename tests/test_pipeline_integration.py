@@ -600,8 +600,8 @@ class TestValidation:
         with pytest.raises(ValueError, match="Teacher config not found"):
             validate(cfg, "autoencoder")
 
-    def test_missing_prerequisite_config(self, tmp_path):
-        from graphids.config import PipelineConfig, stage_dir
+    def test_missing_prerequisite_config(self, tmp_path, monkeypatch):
+        from graphids.config import PipelineConfig, paths
         from graphids.pipeline.validate import validate
 
         cfg = PipelineConfig(
@@ -610,9 +610,16 @@ class TestValidation:
             scale="large",
             experiment_root=str(tmp_path),
         )
-        sd = stage_dir(cfg, "autoencoder")
-        sd.mkdir(parents=True)
-        (sd / "best_model.pt").write_bytes(b"fake")
+        # Curriculum depends on ("vgae", "autoencoder") — create VGAE dir
+        # with best_model.pt but no config.json
+        vgae_dir = tmp_path / "hcrl_sa" / "vgae_large_autoencoder"
+        vgae_dir.mkdir(parents=True)
+        (vgae_dir / "best_model.pt").write_bytes(b"fake")
+
+        # Use isolated resolver: fresh cache dir + no MLflow fallback
+        isolated_resolver = paths.ArtifactResolver(cache_root=tmp_path / ".cache")
+        isolated_resolver._find_run = lambda *a, **kw: None
+        monkeypatch.setattr(paths, "_resolver", isolated_resolver)
 
         with pytest.raises(ValueError, match="config"):
             validate(cfg, "curriculum")
@@ -679,7 +686,10 @@ class TestFrozenConfigPropagation:
         assert frozen.vgae.latent_dim == 16
 
     def test_missing_frozen_config_raises(self, tmp_path):
+        from unittest.mock import patch
+
         from graphids.config import PipelineConfig
+        from graphids.config.paths import ArtifactResolver
         from graphids.config.schema import AuxiliaryConfig
         from graphids.pipeline.stages.utils import load_frozen_cfg
 
@@ -690,7 +700,16 @@ class TestFrozenConfigPropagation:
             auxiliaries=[AuxiliaryConfig(type="kd")],
             experiment_root=str(tmp_path),
         )
-        with pytest.raises(FileNotFoundError, match="Frozen config not found"):
+        # Use isolated resolver with empty cache + no MLflow
+        test_resolver = ArtifactResolver(cache_root=tmp_path / "empty_cache")
+        with (
+            patch("graphids.config.get_resolver", return_value=test_resolver),
+            patch(
+                "graphids.pipeline.stages.trainer_factory.get_resolver", return_value=test_resolver
+            ),
+            patch.object(test_resolver, "_find_run", return_value=None),
+            pytest.raises(FileNotFoundError, match="Frozen config not found"),
+        ):
             load_frozen_cfg(cfg, "autoencoder")
 
 
