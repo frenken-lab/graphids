@@ -125,10 +125,9 @@ def _estimate_dynamic_steps(data, max_num_nodes: int, batch_size: int) -> int:
     """
     try:
         # Sample up to 500 graphs randomly for mean node count
-        import random
-
+        # Use torch RNG for reproducible sampling controlled by pl.seed_everything()
         n_sample = min(500, len(data))
-        indices = random.sample(range(len(data)), n_sample)
+        indices = torch.randperm(len(data))[:n_sample].tolist()
         total_nodes = sum(data[i].num_nodes for i in indices)
         mean_nodes = total_nodes / n_sample
         estimated_steps = max(1, int(len(data) * mean_nodes / max_num_nodes))
