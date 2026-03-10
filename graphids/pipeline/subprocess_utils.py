@@ -42,7 +42,7 @@ def build_cli_cmd(
     auxiliaries : str
         Auxiliary loss modifier (default ``"none"``).
     overrides : list[tuple[str, str]] | None
-        Config overrides as ``[("-O", "key", "value"), ...]`` style pairs.
+        Config overrides as ``[("key", "value"), ...]`` style pairs.
         Each tuple is ``(key, value)`` and is emitted as ``-O key value``.
     sweep_id : str | None
         Sweep identifier (``--sweep-id``).
