@@ -35,10 +35,15 @@ graphids/               # Top-level package (pyproject.toml: packages = ["graphi
       modules.py        # Lightning modules: VGAEModule, GATModule, CurriculumDataModule + teacher offload helpers
       loss_landscape.py # Loss landscape visualization (standalone analysis tool)
       utils.py          # Re-exports from submodules (convenience imports)
-    orchestration/      # Ray orchestration
+    orchestration/      # Pipeline orchestration (Ray + scheduler-agnostic)
+      job.py            # Pydantic v2 frozen models: JobSpec, ResourceSpec, JobState (UUID-based DAG)
+      planner.py        # Domain-aware DAG builder: datasets × seeds × variants → JobSpec list
+      store.py          # Dual-backend state store (SQLite WAL or PostgreSQL): run/job/attempt/transition tables
+      executor.py       # Scheduler backends: SlurmExecutor, FluxExecutor, LocalExecutor, DryRunExecutor
+      driver.py         # Submit-and-poll loop + fire-and-forget mode + retry/failure propagation
       ray_pipeline.py   # Config-driven variant pipeline, subprocess dispatch, benchmark mode
       ray_slurm.py      # SLURM ↔ Ray bridge
-      sweep_pipeline.py # Hyperparameter sweep orchestration
+      sweep_pipeline.py # Hyperparameter sweep orchestration (SQLite-backed state)
       tune_config.py    # Ray Tune search space + OptunaSearch + ASHAScheduler
   core/                 # Layer 3: Domain (models, training, preprocessing; imports graphids.config/)
     models/             # Model architectures
@@ -80,6 +85,9 @@ tests/
   test_new_features.py      # New feature regression tests
 scripts/
   reproduce.sh          # Full reproduction script
+  lab-db/               # Shared PostgreSQL infrastructure
+    pg-server.sbatch    # Apptainer PostgreSQL 16 SLURM job (local SSD PGDATA, NFS backup)
+    ensure_pg.sh        # Sourceable launcher: submit/poll/export KD_GAT_DB_URI
   slurm/                # SLURM job scripts
     ray_slurm.sbatch        # Ray + SLURM pipeline submission
     run_tests_slurm.sh  # Submit pytest to SLURM
@@ -115,4 +123,4 @@ docs/
 
 ## File Count
 
-48 Python files under `graphids/` (down from 55 after Mar 2026 simplification).
+55 Python files under `graphids/` (was 48 after Mar 2026 simplification; +5 new orchestration files, +2 other additions).

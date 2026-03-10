@@ -65,7 +65,7 @@ def _save_training_metrics(trainer: pl.Trainer, cfg: PipelineConfig, stage: str)
 def _resume_ckpt_path() -> str | None:
     """Read and consume the resume checkpoint path from environment.
 
-    Set by the coordinator (via CLI --ckpt-path) when resubmitting a
+    Set by the orchestrator (via CLI --ckpt-path) when resubmitting a
     timed-out stage that saved a Lightning auto-checkpoint.
     """
     path = os.environ.get("KD_GAT_CKPT_PATH")

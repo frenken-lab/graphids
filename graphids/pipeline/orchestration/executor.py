@@ -67,6 +67,8 @@ class JobExecutor(ABC):
             return SlurmExecutor()
         if backend == "flux":
             return FluxExecutor()
+        if backend == "local":
+            return LocalExecutor()
         if backend == "dry_run":
             return DryRunExecutor()
         raise ValueError(f"Unknown executor backend: {backend}")
@@ -79,7 +81,7 @@ class SlurmExecutor(JobExecutor):
         self,
         account: str | None = None,
         partition_gpu: str = "gpu",
-        partition_cpu: str = "serial",
+        partition_cpu: str = "cpu",
         gpu_type: str | None = None,
         workdir: str | None = None,
         log_dir: str = "slurm_logs",
@@ -273,6 +275,63 @@ class FluxExecutor(JobExecutor):
     def cancel(self, native_id: str) -> None:
         subprocess.run(["flux", "cancel", native_id], capture_output=True, text=True)
         log.info("Cancelled Flux job %s", native_id)
+
+
+class LocalExecutor(JobExecutor):
+    """Executor that runs jobs as local subprocesses. For development without a scheduler."""
+
+    _counter = 0
+
+    def __init__(self, workdir: str | None = None):
+        self.workdir = workdir or os.getcwd()
+        self._processes: dict[str, subprocess.Popen] = {}
+
+    def submit(
+        self,
+        job: JobSpec,
+        dependency_ids: list[str] | None = None,
+        extra_flags: list[str] | None = None,
+    ) -> str:
+        LocalExecutor._counter += 1
+        native_id = f"LOCAL_{LocalExecutor._counter}"
+
+        cmd = [job.executable, *job.arguments] if job.executable else list(job.arguments)
+        env = {**os.environ, **(job.environment or {})}
+
+        log.info("[LOCAL] Running: %s", " ".join(cmd))
+        proc = subprocess.Popen(
+            cmd,
+            cwd=self.workdir,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self._processes[native_id] = proc
+        log.info("Submitted %s → local process %s (pid %d)", job.name, native_id, proc.pid)
+        return native_id
+
+    def poll(self, native_id: str) -> tuple[JobState, dict[str, Any]]:
+        proc = self._processes.get(native_id)
+        if proc is None:
+            return JobState.COMPLETED, {}
+
+        returncode = proc.poll()
+        if returncode is None:
+            return JobState.RUNNING, {"pid": proc.pid}
+
+        meta: dict[str, Any] = {"pid": proc.pid, "returncode": returncode}
+        if returncode != 0:
+            stderr = proc.stderr.read().decode() if proc.stderr else ""
+            meta["failure_reason"] = stderr[-500:] if stderr else f"exit code {returncode}"
+            return JobState.FAILED, meta
+
+        return JobState.COMPLETED, meta
+
+    def cancel(self, native_id: str) -> None:
+        proc = self._processes.get(native_id)
+        if proc and proc.poll() is None:
+            proc.terminate()
+            log.info("[LOCAL] Terminated process %s (pid %d)", native_id, proc.pid)
 
 
 class DryRunExecutor(JobExecutor):

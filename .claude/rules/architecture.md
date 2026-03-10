@@ -14,19 +14,44 @@
 
 ## Orchestration
 
-- Ray (`graphids/pipeline/orchestration/`) with `@ray.remote` tasks. `train_pipeline()` fans out per-dataset work concurrently.
-- `--local` flag uses Ray local mode. HPO via Ray Tune with OptunaSearch + ASHAScheduler.
-- **Subprocess dispatch**: Each stage runs as `subprocess.run()` for clean CUDA context. Overhead (~3-5s) is negligible vs training time (minutes-hours). CUDA contexts (~300-500 MB) are not reclaimable without process restart.
-- **Per-stage granularity**: Finer (per-epoch) has massive scheduling overhead; coarser (per-variant) loses ability to re-run single stages.
-- **Checkpoint passing**: Filesystem paths, not Ray object store (subprocesses can't access object store; checkpoints are small; path-based is debuggable).
-- **Concurrent variants**: `small_nokd_pipeline` launches concurrently with `large_pipeline` (no teacher checkpoint dependency). On single-GPU, Ray serializes GPU tasks automatically; on multi-GPU, enables true parallelism.
-- **No Ray Data**: Datasets fit in memory and PyG's heterogeneous graph `Data` objects are incompatible with Ray Data's Arrow-based tabular format.
-- Archive restore: `graphids/pipeline/cli.py` archives previous runs before re-running, restores on failure.
-- **Benchmark mode**: Set `KD_GAT_BENCHMARK=1` to log per-stage spawn overhead, execution time, inter-stage gaps, and GPU utilization to JSONL. See `scripts/profiling/benchmark_orchestration.sbatch`.
+Two orchestration systems coexist for different use cases:
 
-### Orchestration Design Rationale
-Subprocess-per-stage kept for CUDA context isolation (~300-500 MB per model), fault isolation, and stage-level restartability. Overhead (~3-5s) is <0.1% of pipeline wall time.
-Full analysis: `~/plans/orchestration-redesign-decision.md`
+### Ray Orchestration (in-process, interactive)
+- `ray_pipeline.py`: `@ray.remote` tasks, `train_pipeline()` fans out per-dataset work concurrently.
+- `--local` flag uses Ray local mode. HPO via Ray Tune with OptunaSearch + ASHAScheduler.
+- **Concurrent variants**: `small_nokd_pipeline` launches concurrently with `large_pipeline` (no teacher checkpoint dependency).
+- **No Ray Data**: PyG's heterogeneous graph `Data` objects are incompatible with Arrow-based tabular format.
+- **Benchmark mode**: `KD_GAT_BENCHMARK=1` logs per-stage overhead to JSONL.
+
+### Scheduler-Agnostic Orchestration (SLURM/Flux, production)
+5 decoupled components in `graphids/pipeline/orchestration/`:
+
+| Component | File | Role |
+|-----------|------|------|
+| **Job Definition** | `job.py` | Pydantic v2 frozen `JobSpec`, `ResourceSpec`, `JobState` enum. Opaque UUID IDs. |
+| **Planner** | `planner.py` | Domain-aware DAG builder: `build_plan(datasets, seeds, variants) → list[JobSpec]`. Tuple-keyed resource profiles. Cross-variant KD dependencies. Cycle detection via `graphlib.TopologicalSorter`. |
+| **State Store** | `store.py` | Dual-backend (SQLite WAL or PostgreSQL). 4 tables: `run`, `job`, `attempt`, `transition`. Append-only transitions. Parameter queries via `json_extract()`/`->>`. Backend auto-detected from URI (`sqlite:///` or `postgresql://`). |
+| **Executor** | `executor.py` | Abstract `JobExecutor` with `submit/poll/cancel`. Backends: `SlurmExecutor` (sbatch/sacct/scancel), `FluxExecutor` (flux batch/jobs/cancel), `LocalExecutor`, `DryRunExecutor`. Factory: `JobExecutor.create(backend)` + `ORCHESTRATOR_BACKEND` env var. |
+| **Driver** | `driver.py` | `PipelineDriver`: submit-and-poll loop. Retry with resource scaling (2× mem on OOM, 1.5× time on TIMEOUT). Failure propagation (children → ABANDONED). Deadlock detection. Fire-and-forget mode (submit all with `--dependency` upfront). |
+
+CLI: `python -m graphids.pipeline.cli orchestrate --dataset hcrl_sa --seeds 42,123,456`
+
+Design rationale: `~/plans/slurm-orchestration-redesign.md`
+
+### Shared PostgreSQL (lab-db)
+
+On-demand PostgreSQL 16 in Apptainer on SLURM for concurrent pipeline writers (SQLite is unsafe on NFS with multiple writers). Components:
+- `scripts/lab-db/pg-server.sbatch` — SLURM job: builds SIF once, PGDATA on `$TMPDIR` (local SSD, not NFS), backup/restore via `pg_dumpall` to NFS, idle auto-shutdown (2h), graceful shutdown trap.
+- `scripts/lab-db/ensure_pg.sh` — sourceable launcher: checks `squeue`, submits if needed, polls endpoint, exports `KD_GAT_DB_URI` + `MLFLOW_TRACKING_URI`.
+- `_preamble.sh` sources `ensure_pg.sh` before each pipeline stage.
+- `KD_GAT_DB_URI` env var selects backend: set → PostgreSQL, unset → SQLite fallback.
+- Optional dep: `psycopg[binary]` via `uv pip install -e '.[db]'`.
+
+### Shared Principles
+- **Subprocess dispatch**: Each stage runs as `subprocess.run()` for CUDA context isolation (~300-500 MB per model). Overhead (~3-5s) is <0.1% of pipeline wall time.
+- **Per-stage granularity**: Finer (per-epoch) has massive scheduling overhead; coarser (per-variant) loses restartability.
+- **Checkpoint passing**: Filesystem paths, not object store (debuggable, subprocess-compatible).
+- Archive restore: `cli.py` archives previous runs before re-running, restores on failure.
 
 ## Memory & Batch Sizing
 

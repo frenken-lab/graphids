@@ -11,12 +11,12 @@ that emits the same JobSpec objects.
 from __future__ import annotations
 
 import logging
-import sys
 from datetime import timedelta
 from graphlib import CycleError, TopologicalSorter
 from typing import Any
 
 from graphids.config.constants import STAGE_DEPENDENCIES, STAGE_MODEL_MAP
+from graphids.pipeline.subprocess_utils import build_cli_cmd
 
 from .job import JobSpec, ResourceSpec
 
@@ -66,15 +66,6 @@ _RESOURCE_PROFILES: dict[tuple[str, str, str], ResourceSpec] = {
 }
 
 _DEFAULT_RESOURCE = ResourceSpec(gpus=1, cpus=4, memory_gb=20, walltime=timedelta(hours=3))
-
-# Stage name → model type
-_STAGE_MODEL: dict[str, str] = {
-    "autoencoder": "vgae",
-    "curriculum": "gat",
-    "normal": "gat",
-    "fusion": "dqn",
-    "temporal": "gat",
-}
 
 
 def _get_resources(model: str, scale: str, stage: str) -> ResourceSpec:
@@ -130,7 +121,7 @@ def build_plan(
                 for stage_name in variant["stages"]:
                     if stage_name == "evaluation":
                         continue
-                    model = _STAGE_MODEL.get(stage_name)
+                    model = STAGE_MODEL_MAP.get(stage_name)
                     if model is None:
                         log.warning(
                             "Unknown stage '%s' in variant '%s', skipping", stage_name, vname
@@ -158,23 +149,18 @@ def build_plan(
                             ):
                                 parent_ids.append(job_index[teacher_key].id)
 
+                    cmd = build_cli_cmd(
+                        stage=stage_name,
+                        model=model,
+                        scale=vscale,
+                        dataset=dataset,
+                        seed=seed,
+                        auxiliaries=vaux,
+                    )
                     job = JobSpec(
                         name=f"{dataset}/{vname}/{model}_{stage_name}/seed_{seed}",
-                        executable=sys.executable,
-                        arguments=[
-                            "-m",
-                            "graphids.pipeline.cli",
-                            stage_name,
-                            "--model",
-                            model,
-                            "--scale",
-                            vscale,
-                            "--dataset",
-                            dataset,
-                            "--seed",
-                            str(seed),
-                            *(["--auxiliaries", vaux] if vaux != "none" else []),
-                        ],
+                        executable=cmd[0],
+                        arguments=cmd[1:],
                         parameters={
                             "dataset": dataset,
                             "seed": seed,
@@ -199,23 +185,18 @@ def build_plan(
                         for m, s in training_stages
                         if (dataset, vname, m, s, seed) in job_index
                     ]
+                    eval_cmd = build_cli_cmd(
+                        stage="evaluation",
+                        model="vgae",
+                        scale=vscale,
+                        dataset=dataset,
+                        seed=seed,
+                        auxiliaries=vaux,
+                    )
                     eval_job = JobSpec(
                         name=f"{dataset}/{vname}/eval_evaluation/seed_{seed}",
-                        executable=sys.executable,
-                        arguments=[
-                            "-m",
-                            "graphids.pipeline.cli",
-                            "evaluation",
-                            "--model",
-                            "vgae",
-                            "--scale",
-                            vscale,
-                            "--dataset",
-                            dataset,
-                            "--seed",
-                            str(seed),
-                            *(["--auxiliaries", vaux] if vaux != "none" else []),
-                        ],
+                        executable=eval_cmd[0],
+                        arguments=eval_cmd[1:],
                         parameters={
                             "dataset": dataset,
                             "seed": seed,

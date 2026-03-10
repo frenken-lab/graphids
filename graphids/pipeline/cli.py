@@ -75,9 +75,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "stage",
-        choices=list(STAGES.keys())
-        + ["flow", "tune", "sweep-pipeline", "coordinator", "orchestrate"],
-        help="Training stage, 'flow' for Ray pipeline, 'tune' for HPO, 'sweep-pipeline' for full DAG, 'coordinator' for legacy SLURM orchestration, or 'orchestrate' for new scheduler-agnostic orchestration",
+        choices=list(STAGES.keys()) + ["flow", "tune", "sweep-pipeline", "orchestrate"],
+        help="Training stage, 'flow' for Ray pipeline, 'tune' for HPO, 'sweep-pipeline' for full DAG, or 'orchestrate' for scheduler-agnostic orchestration",
     )
 
     # Config source
@@ -193,22 +192,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="(sweep-pipeline) Resume from previous state file (default: True)",
     )
 
-    # Coordinator options
-    p.add_argument(
-        "--resume-state",
-        type=str,
-        default="",
-        help="(coordinator) Resume from state JSON file path",
-    )
-    p.add_argument("--poll-interval", type=int, default=30, help="(coordinator) Polling interval")
+    # Orchestrate options (scheduler-agnostic system)
+    p.add_argument("--poll-interval", type=int, default=30, help="(orchestrate) Polling interval")
     p.add_argument(
         "--variants",
         type=str,
         default=None,
-        help="(coordinator) Comma-separated variant filter (e.g. large,small_kd). Default: all from config",
+        help="(orchestrate) Comma-separated variant filter (e.g. large,small_kd). Default: all from config",
     )
-
-    # Orchestrate options (new scheduler-agnostic system)
     p.add_argument(
         "--fire-and-forget",
         action="store_true",
@@ -228,12 +219,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="(orchestrate) Scheduler backend: slurm, flux, dry_run (default: env or slurm)",
     )
 
-    # Checkpoint resume (set by coordinator on TIMEOUT resubmit)
+    # Checkpoint resume (set by orchestrator on TIMEOUT resubmit)
     p.add_argument(
         "--ckpt-path",
         type=str,
         default=None,
-        help="Lightning .ckpt path to resume training from (set by coordinator on TIMEOUT)",
+        help="Lightning .ckpt path to resume training from (set by orchestrator on TIMEOUT)",
     )
 
     # Metadata tags
@@ -436,60 +427,6 @@ def _run_sweep_pipeline(args: argparse.Namespace, log: logging.Logger) -> None:
     )
 
 
-def _run_coordinator(args: argparse.Namespace, log: logging.Logger) -> None:
-    """Dispatch stateful SLURM coordinator."""
-    from pathlib import Path
-
-    from .coordinator import PipelineCoordinator
-    from .state import load_state
-
-    if args.resume_state:
-        # Resume from existing state file
-        state_path = Path(args.resume_state)
-        state = load_state(state_path)
-        if not state or "stages" not in state:
-            log.error("Invalid or empty state file: %s", state_path)
-            return
-
-        log.info("Resuming coordinator from %s (%d stages)", state_path, len(state["stages"]))
-        # On resume, variant_filter comes from state (already resolved at creation)
-        variant_filter = state.get("variants")
-        coordinator = PipelineCoordinator(
-            datasets=state["datasets"],
-            seeds=state["seeds"],
-            variant_filter=variant_filter,
-            state_path=state_path,
-            poll_interval=args.poll_interval,
-            dry_run=args.dry_run,
-        )
-    else:
-        if not args.dataset:
-            log.error("--dataset is required for coordinator mode (or use --resume-state)")
-            return
-
-        datasets = [d.strip() for d in args.dataset.split(",")]
-        seeds = _parse_seeds(args.seeds) if args.seeds else [42]
-        variant_filter = [v.strip() for v in args.variants.split(",")] if args.variants else None
-
-        log.info(
-            "Starting coordinator: datasets=%s, seeds=%s, variants=%s, dry_run=%s",
-            datasets,
-            seeds,
-            variant_filter or "all",
-            args.dry_run,
-        )
-
-        coordinator = PipelineCoordinator(
-            datasets=datasets,
-            seeds=seeds,
-            variant_filter=variant_filter,
-            poll_interval=args.poll_interval,
-            dry_run=args.dry_run,
-        )
-
-    coordinator.run()
-
-
 def _run_orchestrate(args: argparse.Namespace, log: logging.Logger) -> None:
     """Dispatch new scheduler-agnostic orchestrator."""
     from .orchestration.driver import run_orchestrate
@@ -606,7 +543,7 @@ def _run_single_stage(
     if teacher_run_id_str:
         extra_tags["teacher_run_id"] = teacher_run_id_str
 
-    # ---- Checkpoint resume (coordinator TIMEOUT resubmit) ----
+    # ---- Checkpoint resume (orchestrator TIMEOUT resubmit) ----
     ckpt_path = getattr(args, "ckpt_path", None)
     if ckpt_path:
         os.environ["KD_GAT_CKPT_PATH"] = str(ckpt_path)
@@ -735,10 +672,6 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.stage == "sweep-pipeline":
         _run_sweep_pipeline(args, log)
-        return
-
-    if args.stage == "coordinator":
-        _run_coordinator(args, log)
         return
 
     if args.stage == "orchestrate":

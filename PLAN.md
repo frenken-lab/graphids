@@ -1,22 +1,25 @@
 # KD-GAT Session Plan
 
-> Last updated: 2026-03-09
+> Last updated: 2026-03-10
 
-## Priority: Pre-Sweep Infrastructure Testing
+## Priority: Scheduler-Agnostic Orchestration Validation
 
-Branch `pre-sweep-infrastructure` adds a stateful SLURM coordinator for multi-stage pipeline execution. The coordinator is implemented; next steps are validation before using it for the actual sweep.
+Replaced monolithic `coordinator.py` + JSON `state.py` with a 5-component scheduler-agnostic orchestration system (job.py, planner.py, store.py, executor.py, driver.py). CLI: `python -m graphids.pipeline.cli orchestrate`.
 
 ### Next Steps
 
-1. ~~**Test coordinator with `--dry-run`**~~ — done (2026-03-09)
-2. ~~**Run `smoke_collated.sbatch`**~~ — passed, 8 min (2026-03-09)
-3. **Live coordinator validation** — single dataset/seed run in progress (hcrl_sa, seed 42). Fixed `--wrap` shell bug (needed `bash -c` + `--chdir`).
-4. **Use coordinator for the actual sweep** — submit full multi-dataset, multi-seed (×3) sweep via the coordinator
+1. ~~**Orchestration architecture + implementation (Phases 1-4)**~~ — done (2026-03-10)
+2. ~~**Migrate sweep_pipeline.py off state.py**~~ — done (2026-03-10)
+3. ~~**Delete stale coordinator.py + state.py**~~ — done (2026-03-10)
+4. **Write orchestration tests** — unit tests for store.py, planner.py, driver.py (DryRun backend)
+5. **Dry-run validation** — `python -m graphids.pipeline.cli orchestrate --dataset hcrl_sa --seeds 42 --dry-run`
+6. **Live single-dataset validation** — single dataset/seed via `orchestrate` on SLURM
+7. **Full sweep** — all datasets × 3 seeds × 3 variants via orchestrate
+8. **Flux backend** — implement at LLNL internship (summer 2026)
 
 ## In Progress
 
-- Pre-sweep infrastructure validation (see Next Steps above)
-- Ops dashboard (`buckeyeguy/kd-gat-dashboard`) — fixed and running on HF Spaces (Streamlit SDK). Shows 181 experiment runs + 37 sweep trials.
+- Ops dashboard (`buckeyeguy/kd-gat-dashboard`) — running on HF Spaces (Streamlit SDK). Shows 181 experiment runs + 37 sweep trials.
 
 ## Blocked
 
@@ -43,7 +46,8 @@ See `~/plans/fusion-redesign.md` for full analysis.
 
 ## Completed
 
-- Stateful SLURM coordinator: submits pipeline stages as individual jobs, polls for completion, adjusts resources on failure (OOM → more memory, timeout → more time). Shared state persistence via state.py. SIGUSR1 graceful timeout trap in _preamble.sh. Collated storage smoke test. CLI wiring. (2026-03-09)
+- Shared PostgreSQL backend for pipeline state: Apptainer-containerized PostgreSQL 16 on SLURM (`scripts/lab-db/pg-server.sbatch`), on-demand launcher (`scripts/lab-db/ensure_pg.sh`), dual-backend PipelineStore (SQLite + PostgreSQL). PGDATA on node-local SSD, NFS backup/restore, idle auto-shutdown, `psycopg[binary]` optional dep. Fixes NFS-unsafe SQLite for concurrent writers. (2026-03-10)
+- Scheduler-agnostic orchestration: 5-component system (job/planner/store/executor/driver) replacing monolithic coordinator.py + JSON state.py. UUID-based DAG, SQLite state, SLURM+Flux+DryRun backends, retry scaling, fire-and-forget mode. (2026-03-10, supersedes coordinator from 2026-03-09)
 - Memory/batch sizing simplification: memory.py 471→25 lines, batch_sizing.py 169→43 lines. Deleted custom GPU memory estimation (static, measured, trial modes, forward hooks, binary search, budget caching). Batch size now config-driven with safety_factor. `_compute_metrics()` simplified with `classification_report()`. CKA `_save_cka()` deduplicated. tune_config.py batch sizing inlined to `resolve_batch_config()`. ~600 lines removed (2026-03-07)
 - Legacy removal: deleted export.py, sweep_export.py, tracking.py, reports/ (Quarto), verify-site skill, SLURM export scripts. Removed Quarto CI jobs. Updated all docs/rules (2026-03-07)
 - DQN `from_config()` factory: replaces 3 verbose 15-param construction sites in evaluation.py, serve.py, fusion.py (2026-03-07)

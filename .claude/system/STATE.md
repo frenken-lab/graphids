@@ -1,7 +1,7 @@
 # Current State
 
-**Date**: 2026-03-07
-**Branch**: `simplify-codebase` (uncommitted changes — 29 files changed, net -3,381 lines)
+**Date**: 2026-03-10
+**Branch**: `simplify-codebase`
 
 ## Ecosystem Status
 
@@ -12,6 +12,7 @@
 | **Config system** | Pydantic v2 frozen models + YAML composition. `resolve()` → frozen `PipelineConfig`. 6 datasets. Pydantic handles schema validation (no custom key-checking). |
 | **Training pipeline** | CLI: `python -m graphids.pipeline.cli <stage> --model <type> --scale <size> --dataset <name>`. DeviceStatsMonitor for GPU logging. |
 | **Ray orchestration** | `train_pipeline()` and `eval_pipeline()` via Ray remote tasks + SLURM. Config-driven variant pipeline. Benchmark mode via `KD_GAT_BENCHMARK=1`. |
+| **Scheduler-agnostic orchestration** | 5-component system (job/planner/store/executor/driver). SQLite state, UUID-based DAG, SLURM+Flux+DryRun backends. CLI: `orchestrate`. Fire-and-forget or submit-and-poll modes. |
 | **SLURM integration** | Pitzer cluster. GPU (2x V100 per node, PAS1266) + CPU partitions. |
 | **Graph caching** | Preprocessing v2.0.0 (26-D node features). DynamicBatchSampler for variable-size graphs. |
 | **DVC tracking** | Raw data + cache tracked. S3 remote + local scratch remote configured. |
@@ -26,9 +27,31 @@
 |-----------|-------|
 | **Inference server** | `pipeline/serve.py` exists (`/predict`, `/health`). Uses DQN `_derive_scores()`. Untested with current checkpoints. |
 
+## Orchestration Redesign (Mar 10, 2026)
+
+Replaced monolithic `coordinator.py` + JSON-based `state.py` with a 5-component scheduler-agnostic orchestration system:
+
+**New files** (in `graphids/pipeline/orchestration/`):
+- `job.py` (~85 lines) — `JobSpec` (Pydantic v2 frozen, UUID IDs), `ResourceSpec`, `JobState` enum
+- `planner.py` (~200 lines) — `build_plan()`: datasets × seeds × variants → topologically validated `JobSpec` DAG
+- `store.py` (~250 lines) — SQLite (WAL mode) with run/job/attempt/transition tables, parameter queries via `json_extract()`
+- `executor.py` (~230 lines) — Abstract `JobExecutor` with SLURM, Flux (LLNL), DryRun backends
+- `driver.py` (~330 lines) — `PipelineDriver` submit-and-poll loop + fire-and-forget + retry scaling + failure propagation
+
+**Deleted files:**
+- `graphids/pipeline/coordinator.py` (~900 lines) — replaced by driver.py + planner.py + executor.py
+- `graphids/pipeline/state.py` (~74 lines) — replaced by store.py
+
+**Key design decisions:**
+- UUID-based DAG (not fragile string keys like `{dataset}/{variant}/{model}_{stage}/seed_{seed}`)
+- Scheduler portability via abstract `JobExecutor` (swap `ORCHESTRATOR_BACKEND=flux` at LLNL)
+- SQLite with append-only transitions (not JSON file with atomic rewrite)
+- Retry with resource scaling: 2× memory on OOM, 1.5× walltime on TIMEOUT
+- Fire-and-forget mode: submit all jobs with `--dependency=afterok:JOBID` upfront
+
 ## Recent Simplification (Mar 2026)
 
-Codebase reduced from 55 → 48 Python files under `graphids/`:
+Codebase reduced from 55 → 48 Python files under `graphids/` (now 55 with orchestration additions):
 
 **Deleted files:**
 - `graphids/pipeline/export.py` (1,357 lines) — replaced by MLflow + HF push

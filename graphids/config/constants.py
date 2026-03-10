@@ -147,10 +147,8 @@ STAGES: dict[str, tuple[str, str, str]] = {
     "temporal": ("temporal", "gat", "temporal"),
 }
 
-# Derived: stage → model type (excludes evaluation/temporal which don't train standalone)
-STAGE_MODEL_MAP: dict[str, str] = {
-    k: v[1] for k, v in STAGES.items() if k in ("autoencoder", "curriculum", "normal", "fusion")
-}
+# Derived: stage → model type (all stages including evaluation/temporal)
+STAGE_MODEL_MAP: dict[str, str] = {k: v[1] for k, v in STAGES.items()}
 
 # Stage prerequisite dependencies: stage → list of (model_type, prereq_stage) pairs
 STAGE_DEPENDENCIES: dict[str, list[tuple[str, str]]] = {

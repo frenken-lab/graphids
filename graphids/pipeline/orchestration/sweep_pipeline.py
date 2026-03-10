@@ -2,7 +2,7 @@
 
 Executes sweeps and full training across all 3 stages (autoencoder → curriculum → fusion),
 then evaluates. Each step depends on the previous, with checkpoint dependencies enforced
-by the DAG ordering. State is persisted to JSON for fault-tolerant resume across SLURM restarts.
+by the DAG ordering. State is persisted to SQLite for fault-tolerant resume across SLURM restarts.
 
 Usage (via CLI):
     python -m graphids.pipeline.cli sweep-pipeline --dataset set_01 --scale large --num-samples 20
@@ -17,15 +17,15 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from graphids.config.constants import (
     PROJECT_ROOT,
     STAGE_MODEL_MAP,
     SWEEP_RESULTS_DIR,
-    SWEEP_STATE_DIR,
 )
-from graphids.pipeline.state import load_state, save_state
+from graphids.pipeline.orchestration.job import JobSpec, JobState, ResourceSpec
+from graphids.pipeline.orchestration.store import PipelineStore
 from graphids.pipeline.subprocess_utils import build_cli_cmd
 
 log = logging.getLogger(__name__)
@@ -51,39 +51,63 @@ SWEEP_DAG: list[SweepStep] = [
 
 
 # ---------------------------------------------------------------------------
-# State management (delegates to graphids.pipeline.state)
+# State management (SQLite via PipelineStore)
 # ---------------------------------------------------------------------------
 
-_STATUS = Literal["pending", "running", "completed", "failed"]
+_DB_PATH = PROJECT_ROOT / ".cache" / "kd-gat" / "pipeline.db"
 
 
-def _state_path(dataset: str, scale: str) -> Path:
-    return PROJECT_ROOT / SWEEP_STATE_DIR / f"{dataset}_{scale}_state.json"
+def _sweep_run_id(dataset: str, scale: str) -> str:
+    return f"sweep_{dataset}_{scale}"
 
 
-def _load_state(dataset: str, scale: str) -> dict[str, Any]:
-    path = _state_path(dataset, scale)
-    state = load_state(path)
-    return state if state else {"dataset": dataset, "scale": scale, "steps": {}}
+def _get_store() -> PipelineStore:
+    uri = os.getenv("KD_GAT_DB_URI", f"sqlite:///{_DB_PATH}")
+    return PipelineStore(uri)
 
 
-def _save_state(state: dict[str, Any], dataset: str, scale: str) -> None:
-    save_state(state, _state_path(dataset, scale))
+def _ensure_sweep_run(store: PipelineStore, dataset: str, scale: str) -> str:
+    """Ensure a sweep run exists in the store, creating jobs for each step."""
+    run_id = _sweep_run_id(dataset, scale)
+    store.create_run(run_id, {"dataset": dataset, "scale": scale, "kind": "sweep"})
+
+    # Insert jobs for each sweep step if not already present
+    jobs = []
+    prev_id = None
+    for step in SWEEP_DAG:
+        job = JobSpec(
+            name=f"sweep/{dataset}/{scale}/{step.name}",
+            parameters={
+                "dataset": dataset,
+                "scale": scale,
+                "step": step.name,
+                "kind": step.kind,
+                "stage": step.stage,
+                "model": step.model,
+            },
+            resources=ResourceSpec(gpus=0, cpus=4, memory_gb=16),
+            parents=[prev_id] if prev_id else [],
+            tags={"pipeline": "sweep"},
+        )
+        jobs.append(job)
+        prev_id = job.id
+
+    store.insert_jobs(run_id, jobs)
+    return run_id
 
 
-def _update_step_state(
-    state: dict[str, Any],
-    step_name: str,
-    status: _STATUS,
-    dataset: str,
-    scale: str,
-    **extra: Any,
-) -> None:
-    if step_name not in state["steps"]:
-        state["steps"][step_name] = {}
-    state["steps"][step_name]["status"] = status
-    state["steps"][step_name].update(extra)
-    _save_state(state, dataset, scale)
+def _step_job_id(store: PipelineStore, run_id: str, step_name: str) -> str | None:
+    """Find the job ID for a sweep step by name."""
+    rows = store.jobs_by_parameter(run_id, "step", step_name)
+    return rows[0]["id"] if rows else None
+
+
+def _step_status(store: PipelineStore, run_id: str, step_name: str) -> str:
+    """Get current status of a sweep step."""
+    job_id = _step_job_id(store, run_id, step_name)
+    if not job_id:
+        return "pending"
+    return store.current_state(job_id).value
 
 
 # ---------------------------------------------------------------------------
@@ -237,13 +261,12 @@ def run_sweep_pipeline(
         _dry_run(dataset, scale)
         return
 
-    state = (
-        _load_state(dataset, scale) if resume else {"dataset": dataset, "scale": scale, "steps": {}}
-    )
+    store = _get_store()
+    run_id = _ensure_sweep_run(store, dataset, scale)
 
     for i, step in enumerate(SWEEP_DAG, 1):
-        step_state = state.get("steps", {}).get(step.name, {})
-        status = step_state.get("status", "pending")
+        job_id = _step_job_id(store, run_id, step.name)
+        status = store.current_state(job_id).value if job_id else "pending"
 
         # Skip completed steps with verified output
         if status == "completed" and _verify_step_output(step, dataset, scale):
@@ -268,14 +291,7 @@ def run_sweep_pipeline(
                     len(SWEEP_DAG),
                     step.name,
                 )
-                _update_step_state(
-                    state,
-                    step.name,
-                    "completed",
-                    dataset,
-                    scale,
-                    completed_at=datetime.now(UTC).isoformat(),
-                )
+                store.transition(job_id, JobState.COMPLETED, detail="output verified on resume")
                 continue
             log.warning(
                 "[%d/%d] %s — was running (stale), re-running", i, len(SWEEP_DAG), step.name
@@ -283,8 +299,8 @@ def run_sweep_pipeline(
 
         # Execute step
         log.info("[%d/%d] %s — RUNNING", i, len(SWEEP_DAG), step.name)
-        started_at = datetime.now(UTC).isoformat()
-        _update_step_state(state, step.name, "running", dataset, scale, started_at=started_at)
+        attempt_id = store.create_attempt(job_id)
+        store.transition(job_id, JobState.RUNNING, attempt_id)
 
         t0 = time.monotonic()
         try:
@@ -313,31 +329,28 @@ def run_sweep_pipeline(
                 _run_evaluate_step(dataset, scale)
 
             duration = time.monotonic() - t0
-            _update_step_state(
-                state,
-                step.name,
-                "completed",
-                dataset,
-                scale,
-                completed_at=datetime.now(UTC).isoformat(),
-                duration_s=round(duration, 1),
+            store.update_attempt(attempt_id, finished_at=datetime.now(UTC).isoformat())
+            store.transition(
+                job_id,
+                JobState.COMPLETED,
+                attempt_id,
+                detail=f"duration={round(duration, 1)}s",
             )
             log.info("[%d/%d] %s — COMPLETED (%.1fs)", i, len(SWEEP_DAG), step.name, duration)
 
         except Exception:
             duration = time.monotonic() - t0
-            _update_step_state(
-                state,
-                step.name,
-                "failed",
-                dataset,
-                scale,
-                completed_at=datetime.now(UTC).isoformat(),
-                duration_s=round(duration, 1),
+            store.update_attempt(attempt_id, finished_at=datetime.now(UTC).isoformat())
+            store.transition(
+                job_id,
+                JobState.FAILED,
+                attempt_id,
+                detail=f"duration={round(duration, 1)}s",
             )
             log.error("[%d/%d] %s — FAILED after %.1fs", i, len(SWEEP_DAG), step.name, duration)
             raise
 
+    store.close()
     log.info("Sweep pipeline complete for %s/%s", dataset, scale)
 
     # Multi-seed re-training with best config for statistical significance
@@ -411,15 +424,15 @@ def _dry_run(dataset: str, scale: str) -> None:
     log.info("Config resolution: OK")
     log.info("Data directory: %s (exists=%s)", ddir, ddir.exists())
 
-    # Load existing state
-    state = _load_state(dataset, scale)
+    # Load existing state from SQLite store
+    store = _get_store()
+    run_id = _sweep_run_id(dataset, scale)
 
     # Print DAG
     log.info("")
     log.info("DAG Steps:")
     for i, step in enumerate(SWEEP_DAG, 1):
-        step_state = state.get("steps", {}).get(step.name, {})
-        status = step_state.get("status", "pending")
+        status = _step_status(store, run_id, step.name)
         output_exists = _verify_step_output(step, dataset, scale)
         marker = "OK" if (status == "completed" and output_exists) else status
         log.info(
@@ -446,5 +459,6 @@ def _dry_run(dataset: str, scale: str) -> None:
             p = _metrics_path(scale, dataset)
             log.info("  eval:  %s (exists=%s)", p.relative_to(PROJECT_ROOT), p.exists())
 
+    store.close()
     log.info("")
     log.info("=== Dry run complete ===")

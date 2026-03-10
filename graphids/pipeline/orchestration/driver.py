@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -381,9 +382,12 @@ def run_orchestrate(
     """
     from graphids.config.resolver import resolve
 
-    db_path = Path(db_path or PROJECT_ROOT / ".cache" / "kd-gat" / "pipeline.db")
+    db_uri = db_path or os.getenv(
+        "KD_GAT_DB_URI",
+        f"sqlite:///{PROJECT_ROOT / '.cache' / 'kd-gat' / 'pipeline.db'}",
+    )
 
-    with PipelineStore(db_path) as store:
+    with PipelineStore(db_uri) as store:
         if resume_run:
             run_id = resume_run
             total = store.total_jobs(run_id)

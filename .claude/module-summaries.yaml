@@ -12,12 +12,15 @@ modules:
       - graphids/pipeline/cli.py
       - graphids/pipeline/stages/training.py
       - graphids/pipeline/orchestration/ray_pipeline.py
+      - graphids/pipeline/orchestration/driver.py
     summary: >-
       Orchestrates training, evaluation, and sweeps via subprocess dispatch for CUDA context
       isolation (~300-500 MB per model). CLI entry point dispatches to stage functions (training,
-      fusion, evaluation, temporal) or to Ray/sweep orchestration. Each stage runs as a separate
-      process for fault isolation and GPU memory reclamation. Imports config/ at top level,
-      core/ only lazily inside functions.
+      fusion, evaluation, temporal) or to orchestration. Two orchestration systems: (1) Ray-based
+      for interactive/local work (ray_pipeline.py), (2) scheduler-agnostic for production HPC
+      (driver.py + planner.py + store.py + executor.py + job.py) supporting SLURM, Flux, and
+      DryRun backends with SQLite state, UUID-based DAG, retry scaling, and fire-and-forget mode.
+      Imports config/ at top level, core/ only lazily inside functions.
   core:
     summary: >-
       Domain layer containing model architectures (VGAE, GAT, DQN, Temporal), preprocessing

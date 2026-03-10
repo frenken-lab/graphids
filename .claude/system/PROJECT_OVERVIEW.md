@@ -48,10 +48,15 @@ Three-layer import hierarchy (enforced by `tests/test_layer_boundaries.py`):
   - `modules.py` — Lightning modules: VGAEModule, GATModule, CurriculumDataModule + teacher offload helpers
   - `loss_landscape.py` — Loss landscape visualization (standalone analysis tool)
   - `utils.py` — Re-exports from submodules
-- `orchestration/` — Ray orchestration:
+- `orchestration/` — Pipeline orchestration (Ray + scheduler-agnostic):
+  - `job.py` — Pydantic v2 frozen models: `JobSpec` (UUID-based DAG), `ResourceSpec`, `JobState`
+  - `planner.py` — Domain-aware DAG builder: `build_plan(datasets, seeds, variants) → list[JobSpec]`
+  - `store.py` — SQLite state store (WAL mode): run/job/attempt/transition tables
+  - `executor.py` — Scheduler backends: `SlurmExecutor`, `FluxExecutor`, `DryRunExecutor`
+  - `driver.py` — `PipelineDriver`: submit-and-poll loop, fire-and-forget, retry with resource scaling
   - `ray_pipeline.py` — Config-driven variant pipeline, subprocess dispatch, benchmark mode
   - `ray_slurm.py` — Ray cluster bootstrap on SLURM
-  - `sweep_pipeline.py` — Hyperparameter sweep orchestration
+  - `sweep_pipeline.py` — Hyperparameter sweep orchestration (SQLite-backed state)
   - `tune_config.py` — Ray Tune search space + OptunaSearch + ASHAScheduler
 
 ### Layer 3: `graphids/core/` (domain — imports graphids.config.constants, never imports graphids.pipeline)

@@ -2,8 +2,8 @@
 
 All subprocess-based stage invocations go through build_cli_cmd() to ensure
 consistent argument formatting. The returned list is suitable for subprocess.run()
-or subprocess.Popen(). SLURM wrappers (coordinator) join the result into a string
-and wrap with sbatch separately.
+or subprocess.Popen(). SLURM wrappers join the result into a string and wrap
+with sbatch separately.
 """
 
 from __future__ import annotations

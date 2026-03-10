@@ -198,6 +198,51 @@ nodes:
   notes: "Loss landscape visualization — Parquet output for dashboard"
 
   # ── Pipeline Layer — Orchestration ────────────────────────────────────
+- id: orch_job
+  type: source
+  path: graphids/pipeline/orchestration/job.py
+  format: py
+  layer: pipeline
+  status: active
+  lines: 85
+  notes: "Pydantic v2 frozen models — JobSpec (UUID DAG), ResourceSpec, JobState enum"
+
+- id: orch_planner
+  type: source
+  path: graphids/pipeline/orchestration/planner.py
+  format: py
+  layer: pipeline
+  status: active
+  lines: 291
+  notes: "Domain-aware DAG builder — build_plan(datasets, seeds, variants) with cross-variant KD deps"
+
+- id: orch_store
+  type: source
+  path: graphids/pipeline/orchestration/store.py
+  format: py
+  layer: pipeline
+  status: active
+  lines: 300
+  notes: "SQLite state store (WAL) — run/job/attempt/transition tables, parameter queries"
+
+- id: orch_executor
+  type: source
+  path: graphids/pipeline/orchestration/executor.py
+  format: py
+  layer: pipeline
+  status: active
+  lines: 308
+  notes: "Scheduler backends — SlurmExecutor, FluxExecutor, DryRunExecutor with submit/poll/cancel"
+
+- id: orch_driver
+  type: source
+  path: graphids/pipeline/orchestration/driver.py
+  format: py
+  layer: pipeline
+  status: active
+  lines: 460
+  notes: "PipelineDriver — submit-and-poll loop, fire-and-forget, retry scaling, failure propagation"
+
 - id: ray_pipeline
   type: source
   path: graphids/pipeline/orchestration/ray_pipeline.py
@@ -422,12 +467,13 @@ nodes:
   status: active
   notes: "Preprocessed graph cache — torch.save .pt, pickle .pkl, JSON metadata"
 
-- id: sweep_state
+- id: pipeline_db
   type: database
-  path: "{SWEEP_STATE_DIR}/*.json"
+  path: ".cache/kd-gat/pipeline.db"
+  format: sqlite
   layer: artifacts
   status: active
-  notes: "Sweep state files — resumable sweep progress (atomic writes)"
+  notes: "Pipeline orchestration SQLite store — run/job/attempt/transition tables (WAL mode)"
 
 - id: sweep_results
   type: database
@@ -818,6 +864,44 @@ edges:
   to: sweep_pipeline
   rel: imports
   notes: "lazy: run_sweep_pipeline"
+- from: cli
+  to: orch_driver
+  rel: imports
+  notes: "lazy: run_orchestrate"
+- from: orch_driver
+  to: orch_store
+  rel: imports
+- from: orch_driver
+  to: orch_executor
+  rel: imports
+- from: orch_driver
+  to: orch_planner
+  rel: imports
+- from: orch_driver
+  to: orch_job
+  rel: imports
+- from: orch_planner
+  to: orch_job
+  rel: imports
+- from: orch_planner
+  to: config_constants
+  rel: imports
+  notes: "STAGE_DEPENDENCIES, STAGE_MODEL_MAP"
+- from: orch_store
+  to: orch_job
+  rel: imports
+- from: orch_store
+  to: pipeline_db
+  rel: writes
+  notes: "SQLite at .cache/kd-gat/pipeline.db"
+- from: sweep_pipeline
+  to: orch_store
+  rel: imports
+  notes: "PipelineStore for state persistence"
+- from: sweep_pipeline
+  to: orch_job
+  rel: imports
+  notes: "JobSpec, JobState, ResourceSpec"
 - from: cli
   to: mlflow_db
   rel: writes
