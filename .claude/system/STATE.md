@@ -1,7 +1,7 @@
 # Current State
 
-**Date**: 2026-03-10
-**Branch**: `simplify-codebase`
+**Date**: 2026-03-11
+**Branch**: `main`
 
 ## Ecosystem Status
 
@@ -9,68 +9,68 @@
 
 | Component | Details |
 |-----------|---------|
-| **Config system** | Pydantic v2 frozen models + YAML composition. `resolve()` → frozen `PipelineConfig`. 6 datasets. Pydantic handles schema validation (no custom key-checking). |
+| **Config system** | Pydantic v2 frozen models + YAML composition. `resolve()` → frozen `PipelineConfig`. 6 datasets. |
 | **Training pipeline** | CLI: `python -m graphids.pipeline.cli <stage> --model <type> --scale <size> --dataset <name>`. DeviceStatsMonitor for GPU logging. |
-| **Ray orchestration** | `train_pipeline()` and `eval_pipeline()` via Ray remote tasks + SLURM. Config-driven variant pipeline. Benchmark mode via `KD_GAT_BENCHMARK=1`. |
-| **Scheduler-agnostic orchestration** | 5-component system (job/planner/store/executor/driver). SQLite state, UUID-based DAG, SLURM+Flux+DryRun backends. CLI: `orchestrate`. Fire-and-forget or submit-and-poll modes. |
+| **Ray orchestration** | `train_pipeline()` via Ray remote tasks + subprocess dispatch. Config-driven variants. Single SLURM allocation model. |
 | **SLURM integration** | Pitzer cluster. GPU (2x V100 per node, PAS1266) + CPU partitions. |
-| **Graph caching** | Preprocessing v2.0.0 (26-D node features). DynamicBatchSampler for variable-size graphs. |
-| **DVC tracking** | Raw data + cache tracked. S3 remote + local scratch remote configured. |
-| **MLflow tracking** | SQLite backend at `data/mlflow/mlflow.db`. `cli.py` wraps dispatch in `mlflow.start_run()`. `trainer_factory.py` uses `mlflow.pytorch.autolog()`. |
-| **HF Dashboard** | Consolidated Streamlit app at `~/kd-gat-dashboard/`. Data pushed via `scripts/data/push_experiments_to_hf.py`. |
-| **Test suite** | All passing on CPU fallback. Needs SLURM verification after simplification work. |
-| **CI/CD** | GitHub Actions CI: lint → test. |
+| **Graph caching** | Preprocessing v2.0.0 (26-D node features). DynamicBatchSampler. Version-gated rebuild. |
+| **DVC tracking** | 6 datasets tracked. S3 + local scratch remotes. |
+| **MLflow tracking** | SQLite backend at `data/mlflow/mlflow.db`. Lightning autolog. 181 runs + 37 sweep trials. |
+| **HF Dashboard** | Streamlit on HF Spaces. Data pushed via `push_experiments_to_hf.py`. |
+| **Test suite** | 10 modules, 2,417 lines. All passing on CPU. Needs SLURM verification. |
 
 ### Partially Working (Yellow)
 
 | Component | Issue |
 |-----------|-------|
-| **Inference server** | `pipeline/serve.py` exists (`/predict`, `/health`). Uses DQN `_derive_scores()`. Untested with current checkpoints. |
+| **Inference server** | `serve.py` exists (`/predict`, `/health`). Prototype only, untested with current checkpoints. |
+| **Sweep pipeline** | `sweep_pipeline.py` + `tune_config.py` functional but tightly coupled to Ray Tune. |
+| **State management** | `store.py` + `job.py` exist but only used by sweep_pipeline. Ray pipeline has NO persistent state. |
 
-## Orchestration Redesign (Mar 10, 2026)
+### Not Implemented (Red)
 
-Replaced monolithic `coordinator.py` + JSON-based `state.py` with a 5-component scheduler-agnostic orchestration system:
+| Component | Status |
+|-----------|--------|
+| **Per-stage SLURM jobs** | Entire pipeline runs in single allocation. Deleted coordinator/executor had this. |
+| **Dry-run / plan mode** | Cannot preview pipeline before execution. Deleted planner.py had this. |
+| **Statistical significance** | No automated bootstrap CI or paired t-test across seeds. |
+| **CI/CD** | No GitHub Actions. Tests run manually via SLURM. |
+| **Monitoring** | No drift detection or production monitoring. |
 
-**New files** (in `graphids/pipeline/orchestration/`):
-- `job.py` (~85 lines) — `JobSpec` (Pydantic v2 frozen, UUID IDs), `ResourceSpec`, `JobState` enum
-- `planner.py` (~200 lines) — `build_plan()`: datasets × seeds × variants → topologically validated `JobSpec` DAG
-- `store.py` (~250 lines) — SQLite (WAL mode) with run/job/attempt/transition tables, parameter queries via `json_extract()`
-- `executor.py` (~230 lines) — Abstract `JobExecutor` with SLURM, Flux (LLNL), DryRun backends
-- `driver.py` (~330 lines) — `PipelineDriver` submit-and-poll loop + fire-and-forget + retry scaling + failure propagation
+## Orchestration Status
 
-**Deleted files:**
-- `graphids/pipeline/coordinator.py` (~900 lines) — replaced by driver.py + planner.py + executor.py
-- `graphids/pipeline/state.py` (~74 lines) — replaced by store.py
+The orchestration layer has gone through three iterations, all within Mar 9-10:
 
-**Key design decisions:**
-- UUID-based DAG (not fragile string keys like `{dataset}/{variant}/{model}_{stage}/seed_{seed}`)
-- Scheduler portability via abstract `JobExecutor` (swap `ORCHESTRATOR_BACKEND=flux` at LLNL)
-- SQLite with append-only transitions (not JSON file with atomic rewrite)
-- Retry with resource scaling: 2× memory on OOM, 1.5× walltime on TIMEOUT
-- Fire-and-forget mode: submit all jobs with `--dependency=afterok:JOBID` upfront
+1. **coordinator.py** (862→915 lines) — stateful SLURM coordinator with per-stage sbatch, checkpoint-aware resume, adaptive resource scaling. Built and deleted.
+2. **5-component system** (planner, executor, driver, store, job — 1,751 lines) — scheduler-agnostic with SLURM/Flux/DryRun backends. Built and deleted.
+3. **Current: Ray wrapper** (ray_pipeline.py 360 lines + ray_slurm.py 65 lines) — subprocess dispatch within single SLURM allocation. Functionally a sequential shell script.
 
-## Recent Simplification (Mar 2026)
+All deleted code is in git history. Key commits: `188f13c`, `3ba9111`, `123845f`, `971dd6e`, `c697b63`.
 
-Codebase reduced from 55 → 48 Python files under `graphids/` (now 55 with orchestration additions):
+Decision pending: Path A (Keep Ray + add Submitit), Path B (Parsl), or Path C (custom coordinator + Submitit). See `~/plans/orchestration-tool-evaluation.md`.
 
-**Deleted files:**
-- `graphids/pipeline/export.py` (1,357 lines) — replaced by MLflow + HF push
-- `graphids/pipeline/lakehouse.py` (301 lines) — replaced by MLflow
-- `graphids/pipeline/sweep_export.py` (141 lines) — replaced by MLflow
-- `graphids/pipeline/tracking.py` (60 lines) — replaced by MLflow autolog
-- `graphids/pipeline/errors.py` (25 lines) — custom exceptions unused
-- `graphids/pipeline/memory.py` (471→0 lines) — DeviceStatsMonitor replaces custom GPU tracking
-- `graphids/pipeline/stages/callbacks.py` (104 lines) — DeviceStatsMonitor replaces custom callbacks
-- `graphids/core/explain.py` (170 lines) — rarely-used GNNExplainer gated behind disabled flag
-- `graphids/core/preprocessing/adapters/network_flow.py` (291 lines) — dead code, never instantiated
+## Codebase Metrics (Mar 11 2026)
 
-**Simplified files:**
-- `batch_sizing.py`: 169→43 lines (config-driven `safety_factor × batch_size` replaces GPU probing)
-- `modules.py`: Extracted shared `_teacher_to_device()` / `_teacher_offload()` helpers
-- `resolver.py`: Removed `_warn_unused_keys()` (Pydantic handles it)
-- `dqn.py`: Fixed hardcoded weights bug in `_derive_scores()`, uses `self._vgae_weights`
-- `serve.py`: Proper HTTP 503 instead of dead DQN fallback code
-- `ray_pipeline.py`: Extracted `_init_ray()`, data-driven eval variant dispatch
+| Subpackage | Files | Lines | Role |
+|---|---|---|---|
+| config/ | 6 | 903 | Schema, resolution, paths, catalog, constants |
+| core/models/ | 8 | 1,652 | VGAE, GAT, DQN, temporal, fusion, registry |
+| core/preprocessing/ | 10 | 1,746 | Graph construction, adapters, vocabulary |
+| core/training/ | 2 | 454 | Lightning DataModule + dataset loading |
+| pipeline/cli.py | 1 | 631 | Entry point, MLflow context, archive logic |
+| pipeline/stages/ | 10 | 2,225 | Training, evaluation, fusion, temporal |
+| pipeline/orchestration/ | 7 | 1,526 | Ray, sweep, tune, store, job, SLURM bridge |
+| pipeline/ (other) | 3 | 396 | serve, validate, subprocess_utils |
+| **Total** | **50** | **9,540** | |
+
+Import hierarchy verified clean: pipeline→config: 40, pipeline→core: 20, core→config: 5. No violations.
+
+## Critical Gaps (from ecosystem registry)
+
+1. **State loss on SLURM timeout** — Ray pipeline has no persistent state
+2. **Single-allocation bottleneck** — no per-stage SLURM job submission
+3. **No reproducibility metadata** — no git SHA or lockfile in MLflow/artifacts
+4. **No SU cost tracking** — cannot answer "how much did this sweep cost?"
 
 ## Data Flow
 
