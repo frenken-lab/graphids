@@ -20,15 +20,16 @@ python -m graphids.pipeline.cli fusion --model dqn --scale large --dataset hcrl_
 python -m graphids.pipeline.cli temporal --model gat --scale large --dataset hcrl_sa -O temporal.enabled true
 python -m graphids.pipeline.cli autoencoder --model vgae --scale large -O training.lr 0.001 -O vgae.latent_dim 16
 
-# Full pipeline via Ray + SLURM
-python -m graphids.pipeline.cli flow --dataset hcrl_sa
-sbatch scripts/slurm/ray_slurm.sbatch flow --dataset hcrl_sa
-python -m graphids.pipeline.cli flow --dataset hcrl_sa --local  # No SLURM
+# Full pipeline via Dagster + SLURM (fire-and-forget dependency chains)
+python -m graphids.pipeline.cli orchestrate --dataset hcrl_sa
+python -m graphids.pipeline.cli orchestrate --dataset hcrl_sa --dry-run  # Preview DAG
 
 # Multi-seed pipeline (for statistical significance)
-python -m graphids.pipeline.cli flow --dataset hcrl_sa --seeds 42,123,456
-sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/ray_slurm.sbatch flow --dataset hcrl_sa --seeds 42,123
+python -m graphids.pipeline.cli orchestrate --dataset hcrl_sa --seeds 42,123,456
 python -m graphids.pipeline.cli autoencoder --model vgae --scale large --seeds 42,123,456 --dataset hcrl_sa
+
+# Preprocess graph cache
+python -m graphids.pipeline.cli preprocess --dataset hcrl_sa
 
 # Analytics
 python scripts/data/push_experiments_to_hf.py           # MLflow → HF Dataset for dashboard
@@ -45,7 +46,7 @@ Always read `PLAN.md` before starting work. Update it after completing any task.
 
 | Skill | Usage | Description |
 |-------|-------|-------------|
-| `/run-pipeline` | `/run-pipeline hcrl_sa large` | Submit Ray pipeline to SLURM |
+| `/run-pipeline` | `/run-pipeline hcrl_sa large` | Submit Dagster pipeline to SLURM |
 | `/check-status` | `/check-status hcrl_sa` | Check SLURM queue, checkpoints, MLflow |
 | `/run-tests` | `/run-tests` or `/run-tests test_config` | Run pytest suite |
 | `/sync-state` | `/sync-state` | Update STATE.md from current outputs |
@@ -65,7 +66,7 @@ Always read `PLAN.md` before starting work. Update it after completing any task.
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **KD-GAT** (3930 symbols, 5727 relationships, 153 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **KD-GAT** (4112 symbols, 6235 relationships, 168 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

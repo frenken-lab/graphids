@@ -2,7 +2,7 @@
 
 Config is defined by four orthogonal concerns: **model_type** (architecture), **scale** (capacity), **auxiliaries** (loss modifiers like KD), and **dataset**. Adding a new value along any axis = adding a YAML file.
 
-**Resolution order**: `defaults.yaml` → `models/{type}/{scale}.yaml` → `auxiliaries/{aux}.yaml` → CLI overrides → Pydantic validation → frozen.
+**Resolution order**: Pydantic defaults (baseline) → `models/{type}/{scale}.yaml` (overrides only) → `auxiliaries/{aux}.yaml` → CLI overrides → Pydantic validation → frozen.
 
 ```python
 from graphids.config import resolve, PipelineConfig

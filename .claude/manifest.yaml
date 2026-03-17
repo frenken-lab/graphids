@@ -16,7 +16,7 @@ modules:
   entry_files:
   - docs/memory_optimization.md
   health:
-    fan_in: 36
+    fan_in: 35
     fan_out: 0
     cycles: 0
 - id: config
@@ -30,7 +30,7 @@ modules:
   - graphids/config/resolver.py
   - graphids/config/paths.py
   health:
-    fan_in: 41
+    fan_in: 42
     fan_out: 0
     cycles: 0
 - id: core
@@ -65,25 +65,29 @@ modules:
     fan_out: 0
     cycles: 0
 - id: pipeline
-  node_count: 18
-  summary: 18 nodes. Orchestrates training, evaluation, and sweeps via subprocess dispatch for CUDA context
+  node_count: 23
+  summary: '23 nodes. Orchestrates training, evaluation, and sweeps via subprocess dispatch for CUDA context
     isolation (~300-500 MB per model). CLI entry point dispatches to stage functions (training, fusion,
-    evaluation, temporal) or to Ray/sweep orchestration. Each stage runs as a separate process for fault
-    isolation and GPU memory reclamation. Imports config/ at top level, core/ only lazily inside functions.
+    evaluation, temporal) or to orchestration. Two orchestration systems: (1) Ray-based for interactive/local
+    work (ray_pipeline.py), (2) scheduler-agnostic for production HPC (driver.py + planner.py + store.py
+    + executor.py + job.py) supporting SLURM, Flux, and DryRun backends with SQLite state, UUID-based
+    DAG, retry scaling, and fire-and-forget mode. Imports config/ at top level, core/ only lazily inside
+    functions.'
   entry_files:
   - graphids/pipeline/cli.py
   - graphids/pipeline/stages/training.py
   - graphids/pipeline/orchestration/ray_pipeline.py
+  - graphids/pipeline/orchestration/driver.py
   health:
     fan_in: 15
-    fan_out: 75
+    fan_out: 77
     cycles: 3
   depends_on:
   - artifacts
   - config
   - core
   - tracking
-  health_note: 3 cycles; fan_out=75
+  health_note: 3 cycles; fan_out=77
 - id: slurm
   node_count: 14
   summary: 14 nodes. SLURM job scripts for dispatching work to the cluster. All share _preamble.sh (module
@@ -146,8 +150,8 @@ key_paths:
   cli_entry: graphids/pipeline/cli.py
   test_entry: tests/conftest.py
 stats:
-  total_nodes: 86
-  total_edges: 214
-  total_lines: 12949
+  total_nodes: 91
+  total_edges: 225
+  total_lines: 14393
   health_score: 0.55
-  health_note: 4 cycles; fan_out=75
+  health_note: 4 cycles; fan_out=77

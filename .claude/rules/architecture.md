@@ -14,29 +14,26 @@
 
 ## Orchestration
 
-Two orchestration systems coexist for different use cases:
-
-### Ray Orchestration (in-process, interactive)
-- `ray_pipeline.py`: `@ray.remote` tasks, `train_pipeline()` fans out per-dataset work concurrently.
-- `--local` flag uses Ray local mode. HPO via Ray Tune with OptunaSearch + ASHAScheduler.
-- **Concurrent variants**: `small_nokd_pipeline` launches concurrently with `large_pipeline` (no teacher checkpoint dependency).
-- **No Ray Data**: PyG's heterogeneous graph `Data` objects are incompatible with Arrow-based tabular format.
-- **Benchmark mode**: `KD_GAT_BENCHMARK=1` logs per-stage overhead to JSONL.
-
-### Scheduler-Agnostic Orchestration (SLURM/Flux, production)
-5 decoupled components in `graphids/pipeline/orchestration/`:
+### Dagster + SLURM (production pipeline)
+Per-stage sbatch submission via Dagster assets. Each stage is a separate SLURM job with typed resource profiles from `resources.yaml`. 4 components in `graphids/pipeline/orchestration/`:
 
 | Component | File | Role |
 |-----------|------|------|
-| **Job Definition** | `job.py` | Pydantic v2 frozen `JobSpec`, `ResourceSpec`, `JobState` enum. Opaque UUID IDs. |
-| **Planner** | `planner.py` | Domain-aware DAG builder: `build_plan(datasets, seeds, variants) → list[JobSpec]`. Tuple-keyed resource profiles. Cross-variant KD dependencies. Cycle detection via `graphlib.TopologicalSorter`. |
-| **State Store** | `store.py` | Dual-backend (SQLite WAL or PostgreSQL). 4 tables: `run`, `job`, `attempt`, `transition`. Append-only transitions. Parameter queries via `json_extract()`/`->>`. Backend auto-detected from URI (`sqlite:///` or `postgresql://`). |
-| **Executor** | `executor.py` | Abstract `JobExecutor` with `submit/poll/cancel`. Backends: `SlurmExecutor` (sbatch/sacct/scancel), `FluxExecutor` (flux batch/jobs/cancel), `LocalExecutor`, `DryRunExecutor`. Factory: `JobExecutor.create(backend)` + `ORCHESTRATOR_BACKEND` env var. |
-| **Driver** | `driver.py` | `PipelineDriver`: submit-and-poll loop. Retry with resource scaling (2× mem on OOM, 1.5× time on TIMEOUT). Failure propagation (children → ABANDONED). Deadlock detection. Fire-and-forget mode (submit all with `--dependency` upfront). |
+| **Job Definition** | `job.py` | Pydantic v2 frozen `ResourceSpec` (partition, GPUs, memory, walltime). |
+| **DAG Topology** | `dagster_defs.py` | `build_dag_topology() → dict[str, DagNode]` — single source of truth for pipeline DAG. Used by both `build_dagster_assets()` (Dagster entry point) and `fire_and_forget()` (SLURM dependency chains). |
+| **SLURM Client** | `pipes_slurm.py` | `PipesSlurmClient`: script gen via `build_cli_cmd()`, sbatch submit, sacct poll, artifact validation via Pydantic contracts. Resource profiles + failure reactions from `resources.yaml`. |
+| **Retry State** | `dagster_resources.py` | Per-asset retry metadata (failure reason, node, checkpoint path) persisted to JSON for resource scaling on retry. |
+
+**Fire-and-forget mode**: `fire_and_forget()` submits all jobs with `--dependency=afterok` chains — no polling, SLURM handles ordering. Topological sort via `graphlib.TopologicalSorter`.
+
+**Adaptive retry**: OOM → 2× memory, TIMEOUT → 1.5× time + checkpoint resume, NODE_FAIL → exclude node. Configured in `resources.yaml` `failure_reactions` section.
 
 CLI: `python -m graphids.pipeline.cli orchestrate --dataset hcrl_sa --seeds 42,123,456`
 
-Design rationale: `~/plans/slurm-orchestration-redesign.md`
+### HPO (Ray Tune, inside SLURM jobs)
+- `tune_config.py`: Subprocess-based trainable (each trial spawns `cli.py` for CUDA isolation).
+- `sweep_pipeline.py`: Multi-stage HPO sweep DAG (SQLite-backed state).
+- Future: Dagster-managed Ray Tune (outer orchestration via Dagster, inner trial scheduling via Ray Tune).
 
 ### Shared PostgreSQL (lab-db)
 
