@@ -115,8 +115,8 @@ def evaluate(cfg: PipelineConfig) -> dict:
     if resolver.exists(cfg, vgae_stage, "best_model.pt", model_type="vgae"):
         vgae = load_model(cfg, "vgae", vgae_stage, num_ids, in_ch, device)
 
-        errors_np, labels_np, vgae_z, vgae_at = _run_vgae_inference(
-            vgae, val_data, device, capture_embeddings=True
+        errors_np, labels_np, vgae_z, vgae_at, vgae_components = _run_vgae_inference(
+            vgae, val_data, device, capture_embeddings=True, capture_components=True
         )
         best_thresh, youden_j, vgae_preds = _vgae_threshold(labels_np, errors_np)
         all_metrics["vgae"] = _compute_metrics(labels_np, vgae_preds, errors_np)
@@ -125,6 +125,9 @@ def evaluate(cfg: PipelineConfig) -> dict:
             artifacts["vgae_labels"] = labels_np
             artifacts["vgae_errors"] = errors_np
             artifacts["vgae_attack_types"] = vgae_at
+        if vgae_components is not None:
+            for comp_name, comp_arr in vgae_components.items():
+                artifacts[f"vgae_error_{comp_name}"] = comp_arr
         all_metrics["vgae"]["core"]["optimal_threshold"] = best_thresh
         all_metrics["vgae"]["core"]["youden_j"] = youden_j
         log.info(
@@ -135,7 +138,7 @@ def evaluate(cfg: PipelineConfig) -> dict:
         if test_scenarios:
             test_metrics["vgae"] = {}
             for scenario, tdata in test_scenarios.items():
-                te, tl, _, _ = _run_vgae_inference(vgae, tdata, device)
+                te, tl, _, _, _ = _run_vgae_inference(vgae, tdata, device)
                 tp = (te > best_thresh).astype(int)
                 test_metrics["vgae"][scenario] = _compute_metrics(tl, tp, te)
                 test_metrics["vgae"][scenario]["core"]["threshold_from_val"] = best_thresh
@@ -212,6 +215,10 @@ def evaluate(cfg: PipelineConfig) -> dict:
         "vgae_labels",
         "gat_labels",
         "vgae_errors",
+        "vgae_error_recon",
+        "vgae_error_canid",
+        "vgae_error_nbr",
+        "vgae_error_kl",
         "vgae_attack_types",
         "gat_attack_types",
     ):
@@ -399,32 +406,49 @@ def _run_gat_inference(gat, data, device, capture_embeddings=False, capture_atte
     )
 
 
-def _run_vgae_inference(vgae, data, device, capture_embeddings=False):
-    """Run VGAE reconstruction-error inference. Returns (errors, labels, embeddings, attack_types).
+def _run_vgae_inference(vgae, data, device, capture_embeddings=False, capture_components=False):
+    """Run VGAE reconstruction-error inference.
+
+    Returns (errors, labels, embeddings, attack_types, component_errors).
 
     When capture_embeddings=True, captures z.mean(dim=0) (graph-level latent
     embedding) per sample from the encoder's latent representation.
+
+    When capture_components=True, computes per-component loss values:
+    recon (MSE), canid (CE), neighborhood (BCE), and KL divergence.
     """
     errors, labels = [], []
     attack_types = []
     embeddings = [] if capture_embeddings else None
+    components = {"recon": [], "canid": [], "nbr": [], "kl": []} if capture_components else None
     with torch.no_grad():
         for g in data:
             g = g.clone().to(device)
             batch_idx = get_batch_index(g, device)
             edge_attr = getattr(g, "edge_attr", None)
-            cont, canid_logits, z_mean, z_logstd, _ = vgae(
+            cont, canid_logits, nbr_logits, z, kl_loss = vgae(
                 g.x, g.edge_index, batch_idx, edge_attr=edge_attr
             )
             err = F.mse_loss(cont, g.x[:, 1:]).item()
             errors.append(err)
             labels.append(graph_label(g))
             attack_types.append(graph_attack_type(g))
-            if capture_embeddings and z_mean is not None:
+            if capture_embeddings and z is not None:
                 # Graph-level embedding: mean pool over nodes
-                embeddings.append(z_mean.mean(dim=0).cpu().numpy())
+                embeddings.append(z.mean(dim=0).cpu().numpy())
+            if capture_components:
+                components["recon"].append(err)
+                components["canid"].append(F.cross_entropy(canid_logits, g.x[:, 0].long()).item())
+                nbr_targets = vgae.create_neighborhood_targets(g.x, g.edge_index, batch_idx)
+                components["nbr"].append(
+                    F.binary_cross_entropy_with_logits(nbr_logits, nbr_targets).item()
+                )
+                components["kl"].append(
+                    kl_loss.item() if torch.is_tensor(kl_loss) else float(kl_loss)
+                )
     emb_array = np.array(embeddings) if capture_embeddings and embeddings else None
-    return np.array(errors), np.array(labels), emb_array, np.array(attack_types)
+    comp_arrays = {k: np.array(v) for k, v in components.items()} if capture_components else None
+    return np.array(errors), np.array(labels), emb_array, np.array(attack_types), comp_arrays
 
 
 def _run_fusion_inference(agent, cache):

@@ -45,6 +45,10 @@ _mkdir "${LAKE_ROOT}/cache"
 _mkdir "${LAKE_ROOT}/production"
 _mkdir "${LAKE_ROOT}/dev"
 _mkdir "${LAKE_ROOT}/exports"
+_mkdir "${LAKE_ROOT}/exports/paper"
+_mkdir "${LAKE_ROOT}/exports/paper/metadata"
+_mkdir "${LAKE_ROOT}/exports/paper/csv"
+_mkdir "${LAKE_ROOT}/exports/paper/figures"
 _mkdir "${LAKE_ROOT}/catalog"
 _mkdir "${LAKE_ROOT}/mlflow"
 
@@ -105,6 +109,11 @@ db.sql("SELECT dataset, model_type, scale, f1_macro FROM experiments ORDER BY f1
   exports/              # Dashboard datasets
     experiments.parquet  #   Flattened experiment results
     sweeps.parquet       #   Sweep results
+    paper/               #   Paper-ready exports (CSVs + figure JSONs)
+      _manifest.json     #     Artifact inventory + SHA-256 checksums
+      metadata/          #     Dataset metadata (attack_type mappings)
+      csv/               #     Result table CSVs (6 files)
+      figures/           #     Interactive figure data.json files (5 files)
   catalog/              # DuckDB index (rebuilt from files)
     kd_gat.duckdb
   mlflow/               # MLflow SQLite backend
