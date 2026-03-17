@@ -1,0 +1,88 @@
+# Resource profiles and failure reactions for Dagster SLURM orchestration.
+#
+# Structure: resource_profiles[model_type][scale][stage] -> ResourceSpec
+# Adding a new stage or variant = edit this YAML + add to STAGE_DEPENDENCIES in constants.py.
+
+resource_profiles:
+  preprocess:
+    "":
+      preprocess:
+        partition: serial
+        gpus: 0
+        cpus: 8
+        mem: "32G"
+        walltime: "1:00:00"
+  vgae:
+    large:
+      autoencoder:
+        partition: gpu
+        gpus: 1
+        cpus: 4
+        mem: "20G"
+        walltime: "3:00:00"
+    small:
+      autoencoder:
+        partition: gpu
+        gpus: 1
+        cpus: 4
+        mem: "16G"
+        walltime: "2:00:00"
+  gat:
+    large:
+      curriculum:
+        partition: gpu
+        gpus: 1
+        cpus: 4
+        mem: "16G"
+        walltime: "3:00:00"
+    small:
+      curriculum:
+        partition: gpu
+        gpus: 1
+        cpus: 4
+        mem: "12G"
+        walltime: "2:00:00"
+  dqn:
+    large:
+      fusion:
+        partition: serial
+        gpus: 0
+        cpus: 4
+        mem: "16G"
+        walltime: "0:30:00"
+    small:
+      fusion:
+        partition: serial
+        gpus: 0
+        cpus: 4
+        mem: "12G"
+        walltime: "0:30:00"
+  eval:
+    large:
+      evaluation:
+        partition: serial
+        gpus: 0
+        cpus: 4
+        mem: "16G"
+        walltime: "0:30:00"
+    small:
+      evaluation:
+        partition: serial
+        gpus: 0
+        cpus: 4
+        mem: "12G"
+        walltime: "0:30:00"
+
+failure_reactions:
+  OUT_OF_MEMORY:
+    scale_mem: 2.0
+    max_retries: 2
+  TIMEOUT:
+    scale_time: 1.5
+    max_retries: 2
+    ckpt_resume: true
+  NODE_FAIL:
+    exclude_node: true
+    max_retries: 3
+  FAILED:
+    max_retries: 1
