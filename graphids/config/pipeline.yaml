@@ -1,0 +1,98 @@
+# pipeline.yaml — Single source of truth for pipeline topology.
+#
+# Defines what model types, scales, stages, and variants exist.
+# Python code discovers implementations via registries; this file
+# defines the vocabulary and DAG structure.
+#
+# To add a new model type:  add to models: + create models/{type}/*.yaml + register nn.Module
+# To add a new scale:       add to scales: + create models/{type}/{scale}.yaml + add resource profile
+# To add a new stage:       add to stages: with depends_on + register stage function + add resource profile
+# To add a new variant:     add to variants: (YAML only, no Python changes)
+
+# --- Model types (keys must match models/{type}/ directories) ---
+models:
+  vgae:
+    learning_type: unsupervised
+    architecture: VGAEArchitecture
+  gat:
+    learning_type: supervised
+    architecture: GATArchitecture
+  dqn:
+    learning_type: rl_fusion
+    architecture: DQNArchitecture
+
+# --- Valid scales (must have corresponding models/{type}/{scale}.yaml) ---
+scales:
+  - large
+  - small
+
+# --- Stage definitions + DAG dependencies ---
+# Each stage maps to a model type and training mode.
+# depends_on is a list of {model, stage} pairs (empty = root node).
+# run_id() overrides model to "eval" for the evaluation stage.
+stages:
+  autoencoder:
+    learning_type: unsupervised
+    model: vgae
+    mode: autoencoder
+    depends_on: []
+
+  curriculum:
+    learning_type: supervised
+    model: gat
+    mode: curriculum
+    depends_on:
+      - { model: vgae, stage: autoencoder }
+
+  normal:
+    learning_type: supervised
+    model: gat
+    mode: normal
+    depends_on:
+      - { model: vgae, stage: autoencoder }
+
+  fusion:
+    learning_type: rl_fusion
+    model: dqn
+    mode: fusion
+    depends_on:
+      - { model: vgae, stage: autoencoder }
+      - { model: gat, stage: curriculum }
+
+  evaluation:
+    learning_type: evaluation
+    model: eval
+    mode: evaluation
+    depends_on: []
+
+  temporal:
+    learning_type: temporal
+    model: gat
+    mode: temporal
+    depends_on:
+      - { model: gat, stage: curriculum }
+
+# --- Pipeline variants (what the orchestrator runs) ---
+# Each variant defines a scale + auxiliary + stage list.
+# Adding a variant here = Dagster picks it up automatically.
+variants:
+  large:
+    scale: large
+    auxiliaries: none
+    needs_teacher: false
+    stages: [autoencoder, curriculum, fusion, evaluation]
+
+  small_kd:
+    scale: small
+    auxiliaries: kd_standard
+    needs_teacher: true
+    stages: [autoencoder, curriculum, fusion, evaluation]
+
+  small_nokd:
+    scale: small
+    auxiliaries: none
+    needs_teacher: false
+    stages: [autoencoder, curriculum, fusion, evaluation]
+
+# --- Default stage list (for single-run PipelineConfig) ---
+default_stages: [autoencoder, curriculum, fusion, evaluation]

@@ -47,6 +47,15 @@ def push():
     out_path = "/tmp/kd_gat_experiments.parquet"
     runs.to_parquet(out_path, index=False)
 
+    # Also write to ESS exports/ if lake root is configured
+    lake_root = os.environ.get("KD_GAT_LAKE_ROOT")
+    if lake_root:
+        exports_dir = os.path.join(lake_root, "exports")
+        os.makedirs(exports_dir, exist_ok=True)
+        lake_parquet = os.path.join(exports_dir, "experiments.parquet")
+        runs.to_parquet(lake_parquet, index=False)
+        log.info("Wrote lake export: %s", lake_parquet)
+
     token = os.environ.get("HF_TOKEN")
     if not token:
         log.warning("HF_TOKEN not set — skipping HF push")

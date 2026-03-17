@@ -20,9 +20,16 @@
 set -euo pipefail
 
 # --- Config ---
+LAKE_ROOT="${KD_GAT_LAKE_ROOT:-}"
 DATA_ROOT="${KD_GAT_DATA_ROOT:-/users/PAS2022/rf15/kd-gat-data}"
 SCRATCH="${KD_GAT_SCRATCH:-/fs/scratch/PAS1266}"
 SCRATCH_DATA="${SCRATCH}/kd-gat-data"
+
+# If lake root is set and has data, prefer it as source
+if [[ -n "$LAKE_ROOT" && -d "${LAKE_ROOT}/raw" ]]; then
+    DATA_ROOT="${LAKE_ROOT}"
+    echo "Using ESS lake as data source: ${DATA_ROOT}"
+fi
 
 STAGE_RAW=true
 STAGE_CACHE=true

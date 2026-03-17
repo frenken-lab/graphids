@@ -400,9 +400,9 @@ def _find(assets, name):
 
 class TestDAGStructure:
     def test_total_asset_count(self):
-        """3 variants × 4 stages + preprocess + hf_push = 14."""
+        """3 variants × 4 stages + preprocess + hf_push + rebuild_catalog = 15."""
         assets = _get_assets()
-        assert len(assets) == 14
+        assert len(assets) == 15
 
     def test_all_expected_assets_present(self):
         assets = _get_assets()
@@ -426,6 +426,7 @@ class TestDAGStructure:
             "eval_small_evaluation",
             # Final
             "hf_push",
+            "rebuild_catalog",
         }
         assert names == expected
 

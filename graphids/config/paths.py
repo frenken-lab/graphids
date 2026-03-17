@@ -51,6 +51,31 @@ _CACHE_ROOT: str | None = os.environ.get("KD_GAT_CACHE_ROOT")
 # Artifact cache root — disposable, rm -rf safe
 _ARTIFACT_CACHE_ROOT: str = os.environ.get("KD_GAT_ARTIFACT_CACHE", ".cache/kd-gat")
 
+# ESS data lake root — when set, lake paths take priority
+_LAKE_ROOT: str | None = os.environ.get("KD_GAT_LAKE_ROOT")
+
+
+def _lake_run_dir(
+    lake_root: Path,
+    dataset: str,
+    model_type: str,
+    scale: str,
+    stage: str,
+    aux: str = "",
+    seed: int = 42,
+) -> Path:
+    """Derive lake run directory from identity dimensions (no lake module import).
+
+    Defaults to dev/{user}/ unless KD_GAT_PRODUCTION=1.
+    """
+    import getpass
+
+    production = os.environ.get("KD_GAT_PRODUCTION", "").lower() in ("1", "true")
+    tier = "production" if production else f"dev/{getpass.getuser()}"
+    model = "eval" if stage == "evaluation" else model_type
+    suffix = f"_{aux}" if aux else ""
+    return lake_root / tier / dataset / f"{model}_{scale}_{stage}{suffix}" / f"seed_{seed}"
+
 
 _datasets_cache: list[str] | None = None
 
@@ -145,11 +170,31 @@ def _config_hash(cfg: PipelineConfig) -> str:
 def stage_dir(cfg: PipelineConfig, stage: str) -> Path:
     """Canonical experiment directory for writing stage output.
 
-    When KD_GAT_STAGE_DIR is set (e.g. $TMPDIR in SLURM jobs), writes go to
-    fast node-local storage. Otherwise falls back to experiment_root.
+    Resolution order:
+    1. KD_GAT_STAGE_DIR (node-local SSD in SLURM jobs)
+    2. Lake root (if KD_GAT_LAKE_ROOT set, writes to dev/{user}/ by default)
+    3. experiment_root (legacy, in-repo experimentruns/)
+
+    When writing to the lake, adds seed_{N}/ subdirectory.
     """
-    stage_root = os.environ.get("KD_GAT_STAGE_DIR", cfg.experiment_root)
-    return Path(stage_root) / run_id(cfg, stage)
+    stage_root = os.environ.get("KD_GAT_STAGE_DIR")
+    if stage_root:
+        return Path(stage_root) / run_id(cfg, stage) / f"seed_{cfg.seed}"
+
+    if _LAKE_ROOT:
+        aux = cfg.auxiliaries[0].type if cfg.auxiliaries else ""
+        return _lake_run_dir(
+            Path(_LAKE_ROOT),
+            cfg.dataset,
+            cfg.model_type,
+            cfg.scale,
+            stage,
+            aux=aux,
+            seed=cfg.seed,
+        )
+
+    # Legacy: no lake, no STAGE_DIR
+    return Path(cfg.experiment_root) / run_id(cfg, stage) / f"seed_{cfg.seed}"
 
 
 def checkpoint_path(cfg: PipelineConfig, stage: str) -> Path:
@@ -165,14 +210,21 @@ def config_path(cfg: PipelineConfig, stage: str) -> Path:
 def data_dir(cfg: PipelineConfig) -> Path:
     """Raw data directory for a dataset.
 
-    When KD_GAT_DATA_ROOT is set, looks for raw data under
-    ``$KD_GAT_DATA_ROOT/raw/{dataset}``, falling back to the in-repo
-    ``data/automotive/{dataset}`` for backwards compatibility.
+    Resolution order:
+    1. KD_GAT_DATA_ROOT/raw/{dataset} (explicit override)
+    2. Lake root/raw/{dataset} (ESS data lake)
+    3. data/automotive/{dataset} (in-repo legacy)
     """
     if _DATA_ROOT:
         candidate = Path(_DATA_ROOT) / "raw" / cfg.dataset
         if candidate.exists():
             return candidate
+
+    if _LAKE_ROOT:
+        candidate = Path(_LAKE_ROOT) / "raw" / cfg.dataset
+        if candidate.exists():
+            return candidate
+
     return Path("data") / "automotive" / cfg.dataset
 
 
@@ -184,10 +236,16 @@ def metrics_path(cfg: PipelineConfig, stage: str) -> Path:
 def cache_dir(cfg: PipelineConfig) -> Path:
     """Processed-graph cache directory.
 
-    Priority: KD_GAT_CACHE_ROOT > KD_GAT_DATA_ROOT/cache > data/cache (in-repo).
+    Priority: KD_GAT_CACHE_ROOT > Lake root > KD_GAT_DATA_ROOT/cache > data/cache (in-repo).
     """
     if _CACHE_ROOT:
         return Path(_CACHE_ROOT) / cfg.dataset
+
+    if _LAKE_ROOT:
+        from .constants import PREPROCESSING_VERSION
+
+        return Path(_LAKE_ROOT) / "cache" / f"v{PREPROCESSING_VERSION}" / cfg.dataset
+
     if _DATA_ROOT:
         return Path(_DATA_ROOT) / "cache" / cfg.dataset
     return Path("data") / "cache" / cfg.dataset
@@ -206,15 +264,17 @@ def run_id_str(dataset: str, model_type: str, scale: str, stage: str, aux: str =
 
 
 def checkpoint_path_str(
-    dataset: str, model_type: str, scale: str, stage: str, aux: str = ""
+    dataset: str, model_type: str, scale: str, stage: str, aux: str = "", seed: int = 42
 ) -> str:
-    """Checkpoint path from raw strings."""
-    return f"{EXPERIMENT_ROOT}/{run_id_str(dataset, model_type, scale, stage, aux)}/best_model.pt"
+    """Checkpoint path from raw strings (with seed subdirectory)."""
+    return f"{EXPERIMENT_ROOT}/{run_id_str(dataset, model_type, scale, stage, aux)}/seed_{seed}/best_model.pt"
 
 
-def metrics_path_str(dataset: str, model_type: str, scale: str, stage: str, aux: str = "") -> str:
-    """Metrics JSON path from raw strings."""
-    return f"{EXPERIMENT_ROOT}/{run_id_str(dataset, model_type, scale, stage, aux)}/metrics.json"
+def metrics_path_str(
+    dataset: str, model_type: str, scale: str, stage: str, aux: str = "", seed: int = 42
+) -> str:
+    """Metrics JSON path from raw strings (with seed subdirectory)."""
+    return f"{EXPERIMENT_ROOT}/{run_id_str(dataset, model_type, scale, stage, aux)}/seed_{seed}/metrics.json"
 
 
 # ---------------------------------------------------------------------------
@@ -339,14 +399,15 @@ class ArtifactResolver:
     def _legacy_path(
         self, cfg: PipelineConfig, stage: str, artifact_name: str, model_type: str
     ) -> Path:
-        """Build legacy experimentruns/ path for transitional compatibility."""
+        """Build experimentruns/ path, checking seed subdir then flat layout."""
         _, scale, aux_suffix = _run_id_parts(cfg, stage)
-        return (
-            Path(cfg.experiment_root)
-            / cfg.dataset
-            / f"{model_type}_{scale}_{stage}{aux_suffix}"
-            / artifact_name
-        )
+        base = Path(cfg.experiment_root) / cfg.dataset / f"{model_type}_{scale}_{stage}{aux_suffix}"
+        # New layout: seed subdirectory
+        seed_path = base / f"seed_{cfg.seed}" / artifact_name
+        if seed_path.exists():
+            return seed_path
+        # Legacy: flat (no seed subdirectory)
+        return base / artifact_name
 
     def _find_run(self, cfg: PipelineConfig, stage: str, model_type: str):
         """Find MLflow run by tags. Returns None if not found."""

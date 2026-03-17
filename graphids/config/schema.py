@@ -176,19 +176,27 @@ class PipelineConfig(BaseModel, frozen=True):
     temporal: TemporalConfig = TemporalConfig()
     tune: TuneConfig = TuneConfig()
 
-    # --- Pipeline DAG ---
-    stages: list[str] = Field(
-        default=["autoencoder", "curriculum", "fusion", "evaluation"],
-    )
-    variants: list[VariantConfig] = Field(
-        default=[
-            VariantConfig(name="large", scale="large", needs_teacher=False),
-            VariantConfig(
-                name="small_kd", scale="small", auxiliaries="kd_standard", needs_teacher=True
-            ),
-            VariantConfig(name="small_nokd", scale="small", needs_teacher=False),
-        ]
-    )
+    # --- Pipeline DAG (defaults from pipeline.yaml) ---
+    stages: list[str] = Field(default=None)
+    variants: list[VariantConfig] = Field(default=None)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_pipeline_defaults(cls, data):
+        """Fill stages and variants from pipeline.yaml when not provided."""
+        if isinstance(data, dict):
+            from .constants import _load_pipeline_yaml
+
+            pipeline = _load_pipeline_yaml()
+            if data.get("stages") is None:
+                data["stages"] = pipeline.get(
+                    "default_stages", ["autoencoder", "curriculum", "fusion", "evaluation"]
+                )
+            if data.get("variants") is None:
+                data["variants"] = [
+                    {"name": name, **v} for name, v in pipeline.get("variants", {}).items()
+                ]
+        return data
 
     # --- Infrastructure ---
     experiment_root: str = "experimentruns"
@@ -211,13 +219,17 @@ class PipelineConfig(BaseModel, frozen=True):
         """Return the architecture config for the active model_type."""
         return getattr(self, self.model_type)
 
-    # --- Cross-field validation ---
+    # --- Cross-field validation (reads valid values from pipeline.yaml) ---
     @model_validator(mode="after")
     def _check_cross_field(self) -> PipelineConfig:
-        if self.model_type not in ("vgae", "gat", "dqn"):
-            raise ValueError(f"model_type must be vgae/gat/dqn, got '{self.model_type}'")
-        if self.scale not in ("large", "small"):
-            raise ValueError(f"scale must be large/small, got '{self.scale}'")
+        from .constants import VALID_MODEL_TYPES, VALID_SCALES
+
+        if self.model_type not in VALID_MODEL_TYPES:
+            raise ValueError(
+                f"model_type must be one of {sorted(VALID_MODEL_TYPES)}, got '{self.model_type}'"
+            )
+        if self.scale not in VALID_SCALES:
+            raise ValueError(f"scale must be one of {sorted(VALID_SCALES)}, got '{self.scale}'")
         return self
 
     # --- Serialization ---

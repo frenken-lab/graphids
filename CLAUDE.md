@@ -31,6 +31,13 @@ python -m graphids.pipeline.cli autoencoder --model vgae --scale large --seeds 4
 # Preprocess graph cache
 python -m graphids.pipeline.cli preprocess --dataset hcrl_sa
 
+# Data lake management
+python -m graphids.pipeline.cli lake --lake-action status            # Lake status
+python -m graphids.pipeline.cli lake --lake-action rebuild-catalog   # Rebuild DuckDB catalog
+python -m graphids.pipeline.cli lake --lake-action verify            # Verify artifact checksums
+bash scripts/lake/setup_ess.sh                                       # Create ESS directory tree
+bash scripts/lake/migrate_to_ess.sh --dry-run                        # Preview migration
+
 # Analytics
 python scripts/data/push_experiments_to_hf.py           # MLflow → HF Dataset for dashboard
 # Tests — ALWAYS submit to SLURM

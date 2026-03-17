@@ -63,16 +63,15 @@ def resolve(
 def list_models() -> dict[str, list[str]]:
     """Discover available model types and scales from filesystem.
 
-    Only includes directories whose name matches a valid model_type (vgae, gat, dqn).
-    The ``fusion/`` directory contains method-variant configs (dqn.yaml, mlp.yaml, ...),
-    not model-type configs, so it is excluded.
+    Only includes directories whose name matches a valid model_type from pipeline.yaml.
     """
-    valid_model_types = {"vgae", "gat", "dqn"}
+    from .constants import VALID_MODEL_TYPES
+
     models = {}
     models_dir = CONFIG_DIR / "models"
     if models_dir.exists():
         for model_dir in sorted(models_dir.iterdir()):
-            if model_dir.is_dir() and model_dir.name in valid_model_types:
+            if model_dir.is_dir() and model_dir.name in VALID_MODEL_TYPES:
                 scales = [f.stem for f in sorted(model_dir.glob("*.yaml"))]
                 if scales:
                     models[model_dir.name] = scales

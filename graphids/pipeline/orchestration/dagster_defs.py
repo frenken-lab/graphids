@@ -252,6 +252,34 @@ def _make_hf_push_asset(eval_dep_names: list[str]):
     return _asset
 
 
+def _make_rebuild_catalog_asset(hf_push_dep: str = "hf_push"):
+    """Create the rebuild_catalog asset that rebuilds the DuckDB catalog."""
+
+    @dg.asset(
+        name="rebuild_catalog",
+        deps=[dg.AssetKey(hf_push_dep)],
+        partitions_def=pipeline_partitions,
+        metadata={"stage": "rebuild_catalog"},
+    )
+    def _asset(context: dg.AssetExecutionContext):
+        import os
+
+        lake_root = os.environ.get("KD_GAT_LAKE_ROOT")
+        if not lake_root:
+            context.log.info("KD_GAT_LAKE_ROOT not set — skipping catalog rebuild")
+            return dg.MaterializeResult(metadata={"skipped": True})
+
+        from pathlib import Path
+
+        from graphids.lake.catalog import rebuild_catalog
+
+        catalog_path = rebuild_catalog(Path(lake_root))
+        context.log.info("Catalog rebuilt: %s", catalog_path)
+        return dg.MaterializeResult(metadata={"catalog_path": str(catalog_path)})
+
+    return _asset
+
+
 # ---------------------------------------------------------------------------
 # DAG builder (planner)
 # ---------------------------------------------------------------------------
@@ -365,6 +393,9 @@ def build_dagster_assets(datasets: list[str] | None = None) -> list:
 
     # HF push asset (depends on all evaluation assets)
     assets.append(_make_hf_push_asset(list(variant_asset_names.keys())))
+
+    # Catalog rebuild asset (depends on hf_push)
+    assets.append(_make_rebuild_catalog_asset())
 
     return assets
 

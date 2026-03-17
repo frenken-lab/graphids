@@ -76,8 +76,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "stage",
-        choices=list(STAGES.keys()) + ["preprocess", "tune", "sweep-pipeline", "orchestrate"],
-        help="Training stage, 'preprocess' for graph cache, 'tune' for HPO, 'sweep-pipeline' for full DAG, or 'orchestrate' for Dagster pipeline",
+        choices=list(STAGES.keys())
+        + ["preprocess", "tune", "sweep-pipeline", "orchestrate", "lake"],
+        help="Training stage, 'preprocess' for graph cache, 'tune' for HPO, 'sweep-pipeline' for full DAG, 'orchestrate' for Dagster pipeline, or 'lake' for data lake commands",
     )
 
     # Config source
@@ -187,6 +188,15 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="(orchestrate) Submit all jobs with --dependency chains, no polling",
+    )
+
+    # Lake subcommand options
+    p.add_argument(
+        "--lake-action",
+        type=str,
+        default="status",
+        choices=["rebuild-catalog", "verify", "status"],
+        help="(lake) Action: rebuild-catalog, verify, or status",
     )
 
     # Checkpoint resume (set by orchestrator on TIMEOUT resubmit)
@@ -342,6 +352,57 @@ def _run_sweep_pipeline(args: argparse.Namespace, log: logging.Logger) -> None:
         resume=args.resume,
         dry_run=args.dry_run,
     )
+
+
+def _run_lake(args: argparse.Namespace, log: logging.Logger) -> None:
+    """Dispatch lake management commands."""
+    from graphids.lake.config import LakeConfig
+
+    lake = LakeConfig.from_env()
+    if lake is None:
+        log.error("KD_GAT_LAKE_ROOT not set. Run: export KD_GAT_LAKE_ROOT=/fs/ess/PAS1266/kd-gat")
+        return
+
+    action = args.lake_action
+
+    if action == "rebuild-catalog":
+        from graphids.lake.catalog import rebuild_catalog
+
+        catalog_path = rebuild_catalog(lake.lake_root)
+        log.info("Catalog rebuilt: %s", catalog_path)
+
+    elif action == "verify":
+        from graphids.lake.manifest import verify_manifest
+
+        errors_total = 0
+        run_count = 0
+        for tier_dir in [lake.lake_root / "production", lake.lake_root / "dev"]:
+            if not tier_dir.exists():
+                continue
+            for manifest_file in tier_dir.rglob("_manifest.json"):
+                run_dir = manifest_file.parent
+                ok, errors = verify_manifest(run_dir)
+                run_count += 1
+                if not ok:
+                    errors_total += len(errors)
+                    log.warning("FAILED: %s — %s", run_dir, "; ".join(errors))
+        log.info("Verified %d runs, %d errors", run_count, errors_total)
+
+    elif action == "status":
+        from graphids.lake.catalog import catalog_status
+
+        catalog_path = lake.catalog_path()
+        status = catalog_status(catalog_path)
+        if not status.get("exists"):
+            log.info("Lake root: %s", lake.lake_root)
+            log.info(
+                "Catalog: not built yet. Run: python -m graphids.pipeline.cli lake --lake-action rebuild-catalog"
+            )
+            return
+        log.info("Lake root: %s", lake.lake_root)
+        log.info("Total runs: %d", status["total_runs"])
+        log.info("By stage: %s", status["by_stage"])
+        log.info("By dataset: %s", status["by_dataset"])
 
 
 def _run_orchestrate(args: argparse.Namespace, log: logging.Logger) -> None:
@@ -518,6 +579,23 @@ def _run_single_stage(
                 if artifact_path.exists():
                     resolver.put(cfg, stage, artifact_path)
 
+            # Write _manifest.json for data lake
+            try:
+                from graphids.lake.manifest import write_manifest
+
+                aux_type = cfg.auxiliaries[0].type if cfg.auxiliaries else "none"
+                write_manifest(
+                    sdir,
+                    dataset=cfg.dataset,
+                    model_type=cfg.model_type,
+                    scale=cfg.scale,
+                    stage=stage,
+                    auxiliaries=aux_type,
+                    seed=cfg.seed,
+                )
+            except Exception as e:
+                log.warning("Failed to write manifest: %s", e)
+
             # Success → delete archive
             if archive and archive.exists():
                 import shutil
@@ -559,6 +637,10 @@ def main(argv: list[str] | None = None) -> None:
     log = logging.getLogger("pipeline")
 
     # ---- Handle non-training subcommands ----
+    if args.stage == "lake":
+        _run_lake(args, log)
+        return
+
     if args.stage == "preprocess":
         _run_preprocess(args, log)
         return

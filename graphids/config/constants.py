@@ -11,6 +11,7 @@ from pathlib import Path
 # Versioning
 # ---------------------------------------------------------------------------
 PREPROCESSING_VERSION = "3.0.0"  # Collated tensor storage (was list[Data] in 2.x)
+LAKE_LAYOUT_VERSION = 1  # ESS data lake path layout version
 
 # ---------------------------------------------------------------------------
 # Filesystem paths
@@ -73,29 +74,56 @@ SLURM_PARTITION = os.getenv("KD_GAT_SLURM_PARTITION", "gpu")
 SLURM_GPU_TYPE = os.getenv("KD_GAT_GPU_TYPE", "v100")
 
 # ---------------------------------------------------------------------------
-# Stage definitions (single source of truth)
+# Pipeline topology (loaded from pipeline.yaml — single source of truth)
 # ---------------------------------------------------------------------------
+
+import yaml as _yaml
+
+PIPELINE_YAML_PATH = Path(__file__).parent / "pipeline.yaml"
+
+_pipeline_cache: dict | None = None
+
+
+def _load_pipeline_yaml() -> dict:
+    """Load and cache pipeline.yaml."""
+    global _pipeline_cache
+    if _pipeline_cache is None:
+        _pipeline_cache = _yaml.safe_load(PIPELINE_YAML_PATH.read_text())
+    return _pipeline_cache
+
+
+def _build_stages() -> dict[str, tuple[str, str, str]]:
+    """Build STAGES dict from pipeline.yaml stages section."""
+    pipeline = _load_pipeline_yaml()
+    return {
+        name: (s["learning_type"], s["model"], s["mode"]) for name, s in pipeline["stages"].items()
+    }
+
+
+def _build_stage_dependencies() -> dict[str, list[tuple[str, str]]]:
+    """Build STAGE_DEPENDENCIES from pipeline.yaml stages.depends_on."""
+    pipeline = _load_pipeline_yaml()
+    deps = {}
+    for name, s in pipeline["stages"].items():
+        dep_list = s.get("depends_on", [])
+        if dep_list:
+            deps[name] = [(d["model"], d["stage"]) for d in dep_list]
+    return deps
+
+
 # stage_name -> (learning_type, model_arch, training_mode)
 # run_id() overrides model_arch to "eval" for the evaluation stage.
-STAGES: dict[str, tuple[str, str, str]] = {
-    "autoencoder": ("unsupervised", "vgae", "autoencoder"),
-    "curriculum": ("supervised", "gat", "curriculum"),
-    "normal": ("supervised", "gat", "normal"),
-    "fusion": ("rl_fusion", "dqn", "fusion"),
-    "evaluation": ("evaluation", "eval", "evaluation"),
-    "temporal": ("temporal", "gat", "temporal"),
-}
+STAGES: dict[str, tuple[str, str, str]] = _build_stages()
 
 # Derived: stage → model type (all stages including evaluation/temporal)
 STAGE_MODEL_MAP: dict[str, str] = {k: v[1] for k, v in STAGES.items()}
 
 # Stage prerequisite dependencies: stage → list of (model_type, prereq_stage) pairs
-STAGE_DEPENDENCIES: dict[str, list[tuple[str, str]]] = {
-    "curriculum": [("vgae", "autoencoder")],
-    "normal": [("vgae", "autoencoder")],
-    "fusion": [("vgae", "autoencoder"), ("gat", "curriculum")],
-    "temporal": [("gat", "curriculum")],
-}
+STAGE_DEPENDENCIES: dict[str, list[tuple[str, str]]] = _build_stage_dependencies()
+
+# Valid model types and scales (from pipeline.yaml)
+VALID_MODEL_TYPES: frozenset[str] = frozenset(_load_pipeline_yaml()["models"].keys())
+VALID_SCALES: frozenset[str] = frozenset(_load_pipeline_yaml()["scales"])
 
 # ---------------------------------------------------------------------------
 # Sweep / state output paths

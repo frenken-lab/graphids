@@ -8,6 +8,7 @@
 - Sub-configs: `cfg.vgae`, `cfg.gat`, `cfg.dqn`, `cfg.training`, `cfg.fusion`, `cfg.temporal` — nested Pydantic models. Always use nested access, never flat.
 - Auxiliaries: `cfg.auxiliaries` is a list of `AuxiliaryConfig`. KD is a composable loss modifier, not a model identity. Use `cfg.has_kd` / `cfg.kd` properties.
 - Constants: domain/infrastructure constants live in `config/constants.py` (not in PipelineConfig). Hyperparameters live in PipelineConfig.
+- Pipeline topology: `config/pipeline.yaml` defines model types, scales, stages, DAG dependencies, and variants. `constants.py` loads this at import time → `STAGES`, `STAGE_DEPENDENCIES`, `VALID_MODEL_TYPES`, `VALID_SCALES`. `PipelineConfig.variants` defaults from this YAML too.
 - Resolver: Pydantic v2's `model_validate()` handles schema validation — no custom key-checking needed.
 
 > Experiment tracking (MLflow): See experiment-tracking.md.

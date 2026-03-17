@@ -120,15 +120,19 @@ def _sweep_result_path(stage: str, dataset: str, scale: str) -> Path:
 
 
 def _checkpoint_path(model: str, scale: str, stage: str, dataset: str) -> Path:
-    from graphids.config.paths import checkpoint_path_str
+    from graphids.config.paths import checkpoint_path
+    from graphids.config.resolver import resolve
 
-    return PROJECT_ROOT / checkpoint_path_str(dataset, model, scale, stage)
+    cfg = resolve(model, scale, dataset=dataset)
+    return checkpoint_path(cfg, stage)
 
 
 def _metrics_path(scale: str, dataset: str) -> Path:
-    from graphids.config.paths import metrics_path_str
+    from graphids.config.paths import metrics_path
+    from graphids.config.resolver import resolve
 
-    return PROJECT_ROOT / metrics_path_str(dataset, "vgae", scale, "evaluation")
+    cfg = resolve("vgae", scale, dataset=dataset)
+    return metrics_path(cfg, "evaluation")
 
 
 def _verify_step_output(step: SweepStep, dataset: str, scale: str) -> bool:

@@ -198,6 +198,10 @@ def generate_sbatch_script(
         ]
     )
 
+    # Dagster-orchestrated jobs write to production/ in the data lake
+    lines.append("export KD_GAT_PRODUCTION=1")
+    lines.append("")
+
     # Dagster Pipes env vars (NFS temp file transport)
     if pipes_context_path:
         lines.append(f'export DAGSTER_PIPES_CONTEXT="{pipes_context_path}"')
@@ -441,27 +445,37 @@ class PipesSlurmClient:
         scale: str,
         stage: str,
         auxiliaries: str,
+        seed: int = 42,
     ) -> bool:
-        """Check that expected artifacts exist after stage completion."""
+        """Check that expected artifacts exist after stage completion.
+
+        Checks seed subdirectory first, then falls back to flat layout.
+        """
         from pydantic import ValidationError
 
         from graphids.config.contracts import EvaluationArtifact, TrainingArtifact
         from graphids.config.paths import EXPERIMENT_ROOT, run_id_str
 
-        aux = auxiliaries if auxiliaries != "none" else ""
-        rid = run_id_str(dataset, model, scale, stage, aux)
-        stage_path = Path(EXPERIMENT_ROOT) / rid
-
         if stage == "preprocess":
             return True
 
-        contract = EvaluationArtifact if stage == "evaluation" else TrainingArtifact
-        try:
-            contract.from_stage_dir(stage_path)
-            return True
-        except (ValidationError, ValueError) as e:
-            log.warning("Artifact validation failed for %s: %s", stage_path, e)
-            return False
+        aux = auxiliaries if auxiliaries != "none" else ""
+        rid = run_id_str(dataset, model, scale, stage, aux)
+        base_path = Path(EXPERIMENT_ROOT) / rid
+
+        # Check seed subdirectory first, then flat
+        for stage_path in [base_path / f"seed_{seed}", base_path]:
+            if not stage_path.exists():
+                continue
+            contract = EvaluationArtifact if stage == "evaluation" else TrainingArtifact
+            try:
+                contract.from_stage_dir(stage_path)
+                return True
+            except (ValidationError, ValueError):
+                continue
+
+        log.warning("Artifact validation failed for %s (seed=%d)", base_path, seed)
+        return False
 
     def _find_checkpoint(
         self,
@@ -470,14 +484,19 @@ class PipesSlurmClient:
         scale: str,
         stage: str,
         auxiliaries: str,
+        seed: int = 42,
     ) -> str | None:
         """Look for a Lightning auto-save checkpoint after TIMEOUT."""
         from graphids.config.paths import EXPERIMENT_ROOT, run_id_str
 
         aux = auxiliaries if auxiliaries != "none" else ""
         rid = run_id_str(dataset, model, scale, stage, aux)
-        ckpt = Path(EXPERIMENT_ROOT) / rid / ".pl_auto_save.ckpt"
-        return str(ckpt) if ckpt.exists() else None
+        # Check seed subdir first, then flat
+        for subdir in [f"seed_{seed}", ""]:
+            ckpt = Path(EXPERIMENT_ROOT) / rid / subdir / ".pl_auto_save.ckpt"
+            if ckpt.exists():
+                return str(ckpt)
+        return None
 
     def submit_no_poll(
         self,

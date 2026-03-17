@@ -253,8 +253,10 @@ def _process_dataset_from_scratch(
     if not isinstance(graphs, list):
         graphs = list(graphs)
 
-    # Save cache atomically in collated format
+    # Save cache atomically in collated format, with advisory lock
     import pickle
+
+    from graphids.lake.locking import cache_lock
 
     cache_file.parent.mkdir(parents=True, exist_ok=True)
     logger.info(f"Saving processed data to cache (collated format): {cache_file}")
@@ -263,12 +265,13 @@ def _process_dataset_from_scratch(
     temp_mapping = id_mapping_file.with_suffix(".tmp")
 
     try:
-        _atomic_save_collated(graphs, temp_cache, cache_file)
-        with open(temp_mapping, "wb") as f:
-            pickle.dump(id_mapping, f, protocol=4)
-        with open(temp_mapping, "rb") as f:
-            os.fsync(f.fileno())
-        _atomic_rename(temp_mapping, id_mapping_file)
+        with cache_lock(cache_file.parent):
+            _atomic_save_collated(graphs, temp_cache, cache_file)
+            with open(temp_mapping, "wb") as f:
+                pickle.dump(id_mapping, f, protocol=4)
+            with open(temp_mapping, "rb") as f:
+                os.fsync(f.fileno())
+            _atomic_rename(temp_mapping, id_mapping_file)
 
         logger.info(f"Cache saved (collated): {len(graphs)} graphs")
 

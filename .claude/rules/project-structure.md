@@ -3,17 +3,24 @@
 ## 3-Layer Hierarchy
 
 ```
-graphids/               # Top-level package — __getattr__ lazy gateway for core/, pipeline/
-  __init__.py          # Lazy gateway: PipelineConfig, resolve, checkpoint_path (eager); core/pipeline (lazy)
+graphids/               # Top-level package — __getattr__ lazy gateway for core/, pipeline/, lake/
+  __init__.py          # Lazy gateway: PipelineConfig, resolve, checkpoint_path (eager); core/pipeline/lake (lazy)
   api.py               # Programmatic facade: train(), evaluate(), orchestrate() — for notebooks/Dagster
-  config/               # Layer 1: Inert, declarative (no imports from pipeline/ or core/)
+  lake/                 # Layer 1b: ESS data lake (imports config/ only, no pipeline/ or core/)
+    __init__.py         # Gateway: LakeConfig, write_manifest, cache_lock, rebuild_catalog (lazy)
+    config.py           # LakeConfig Pydantic model + env var resolution ($KD_GAT_LAKE_ROOT)
+    catalog.py          # DuckDB catalog rebuild from _manifest.json + config.json + metrics.json
+    manifest.py         # _manifest.json writer/reader + SHA-256 checksum verification
+    locking.py          # GPFS-safe advisory file locking (fcntl.flock) for cache writes
+  config/               # Layer 1: Inert, declarative (no imports from pipeline/, core/, or lake/)
     schema.py           # Pydantic v2 frozen models: PipelineConfig, VGAEArchitecture, etc.
     resolver.py         # YAML composition: model_def → auxiliaries → CLI → Pydantic validation
     paths.py            # Path layout: {dataset}/{model_type}_{scale}_{stage}[_{aux}]
     catalog.py          # Data catalog: dataset registry + validation
-    constants.py        # Domain/infrastructure constants (feature counts, stages, seeds, SLURM defaults)
+    constants.py        # Domain/infrastructure constants (loads STAGES, VALID_MODEL_TYPES from pipeline.yaml)
     contracts.py        # Pydantic data contracts: TrainingArtifact, EvaluationArtifact, PreprocessingArtifact
     __init__.py         # Re-exports: PipelineConfig, resolve, checkpoint_path, DEFAULT_DATASET, ...
+    pipeline.yaml       # Pipeline topology: model types, scales, stages, DAG deps, variants (single source of truth)
     datasets.yaml       # Dataset catalog (add entries here for new datasets)
     resources.yaml      # SLURM resource profiles + failure reactions (for Dagster orchestration)
     models/             # Architecture × Scale YAML files (only overrides; Pydantic defaults are baseline)
@@ -90,6 +97,7 @@ tests/
   test_training_e2e.py      # End-to-end training tests (full pipeline, SLURM only)
   test_pipeline_integration.py # Pipeline integration tests
   test_new_features.py      # New feature regression tests
+  test_lake.py              # Lake module tests (config, manifest, locking, catalog)
 scripts/
   reproduce.sh          # Full reproduction script
   lab-db/               # Shared PostgreSQL infrastructure
@@ -104,7 +112,10 @@ scripts/
   data/                 # Data management scripts
     stage_data.sh       # Stage datasets from scratch/archive
     cleanup_orphans.sh  # Clean orphaned cache/output files
-    push_experiments_to_hf.py # MLflow → Parquet → HF Dataset
+    push_experiments_to_hf.py # MLflow → Parquet → HF Dataset + ESS exports
+  lake/                 # ESS data lake management
+    setup_ess.sh        # Create ESS directory tree + layout files
+    migrate_to_ess.sh   # rsync + restructure migration (adds seed subdirs)
   profiling/            # Profiling and benchmarking
     analyze_profile.py  # Profile analysis
     benchmark_orchestration.sbatch # Orchestration overhead benchmarks
@@ -130,4 +141,4 @@ docs/
 
 ## File Count
 
-54 Python files, 10,483 lines under `graphids/` (was 55; -5 deleted Ray/old orchestration, +4 new: api.py, contracts.py, _protocols.py, dagster_*.py, pipes_slurm.py).
+59 Python files, 11,182 lines under `graphids/` (+5 new: lake/{__init__, config, catalog, manifest, locking}.py).

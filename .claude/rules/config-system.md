@@ -2,6 +2,8 @@
 
 Config is defined by four orthogonal concerns: **model_type** (architecture), **scale** (capacity), **auxiliaries** (loss modifiers like KD), and **dataset**. Adding a new value along any axis = adding a YAML file.
 
+**Pipeline topology**: `config/pipeline.yaml` is the single source of truth for what model types, scales, stages, variants, and DAG dependencies exist. `STAGES`, `STAGE_DEPENDENCIES`, `VALID_MODEL_TYPES`, `VALID_SCALES`, and default `PipelineConfig.variants` all derive from this file. To add a new model/stage/variant, edit `pipeline.yaml` + register the implementation.
+
 **Resolution order**: Pydantic defaults (baseline) → `models/{type}/{scale}.yaml` (overrides only) → `auxiliaries/{aux}.yaml` → CLI overrides → Pydantic validation → frozen.
 
 ```python
