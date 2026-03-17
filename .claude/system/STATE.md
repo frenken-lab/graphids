@@ -1,6 +1,6 @@
 # Current State
 
-**Date**: 2026-03-11
+**Date**: 2026-03-16
 **Branch**: `main`
 
 ## Ecosystem Status
@@ -9,76 +9,60 @@
 
 | Component | Details |
 |-----------|---------|
-| **Config system** | Pydantic v2 frozen models + YAML composition. `resolve()` → frozen `PipelineConfig`. 6 datasets. |
+| **Config system** | Pydantic v2 frozen models + YAML composition. `resolve()` → frozen `PipelineConfig`. 6 datasets. Pydantic defaults are baseline; YAMLs contain only overrides. |
 | **Training pipeline** | CLI: `python -m graphids.pipeline.cli <stage> --model <type> --scale <size> --dataset <name>`. DeviceStatsMonitor for GPU logging. |
-| **Ray orchestration** | `train_pipeline()` via Ray remote tasks + subprocess dispatch. Config-driven variants. Single SLURM allocation model. |
-| **SLURM integration** | Pitzer cluster. GPU (2x V100 per node, PAS1266) + CPU partitions. |
-| **Graph caching** | Preprocessing v2.0.0 (26-D node features). DynamicBatchSampler. Version-gated rebuild. |
+| **Dagster orchestration** | Per-stage SLURM jobs via `dagster_defs.py` + `pipes_slurm.py`. Fire-and-forget mode with `--dependency=afterok` chains. Adaptive retry (OOM→2× mem, TIMEOUT→ckpt resume). 62 tests. |
+| **SLURM integration** | Pitzer cluster. GPU (2x V100 per node, PAS1266) + CPU partitions. Resource profiles in `resources.yaml`. |
+| **Graph caching** | Preprocessing v3.0.0 (26-D node features). DynamicBatchSampler. Content-addressable hash validation. |
 | **DVC tracking** | 6 datasets tracked. S3 + local scratch remotes. |
 | **MLflow tracking** | SQLite backend at `data/mlflow/mlflow.db`. Lightning autolog. 181 runs + 37 sweep trials. |
 | **HF Dashboard** | Streamlit on HF Spaces. Data pushed via `push_experiments_to_hf.py`. |
-| **Test suite** | 10 modules, 2,417 lines. All passing on CPU. Needs SLURM verification. |
+| **Test suite** | 11 modules, 125+ tests passing locally. Needs SLURM for GPU tests. |
+| **Package gateways** | Enforced API gateways for `graphids/`, `core/`, `pipeline/`, `orchestration/`. `TestGatewayEnforcement` blocks new deep imports. |
+| **Data contracts** | Pydantic artifact models (`TrainingArtifact`, `EvaluationArtifact`, `PreprocessingArtifact`) validate stage outputs. |
+| **Programmatic API** | `graphids/api.py`: `train()`, `evaluate()`, `orchestrate()` for notebooks/Dagster. |
 
 ### Partially Working (Yellow)
 
 | Component | Issue |
 |-----------|-------|
 | **Inference server** | `serve.py` exists (`/predict`, `/health`). Prototype only, untested with current checkpoints. |
-| **Sweep pipeline** | `sweep_pipeline.py` + `tune_config.py` functional but tightly coupled to Ray Tune. |
-| **State management** | `store.py` + `job.py` exist but only used by sweep_pipeline. Ray pipeline has NO persistent state. |
+| **Sweep pipeline** | `sweep_pipeline.py` + `tune_config.py` functional but tightly coupled to Ray Tune. Future: Dagster-managed. |
 
 ### Not Implemented (Red)
 
 | Component | Status |
 |-----------|--------|
-| **Per-stage SLURM jobs** | Entire pipeline runs in single allocation. Deleted coordinator/executor had this. |
-| **Dry-run / plan mode** | Cannot preview pipeline before execution. Deleted planner.py had this. |
 | **Statistical significance** | No automated bootstrap CI or paired t-test across seeds. |
 | **CI/CD** | No GitHub Actions. Tests run manually via SLURM. |
 | **Monitoring** | No drift detection or production monitoring. |
+| **Reproducibility metadata** | No git SHA or lockfile in MLflow/artifacts. |
+| **SU cost tracking** | Cannot answer "how much did this sweep cost?" |
 
-## Orchestration Status
+## Codebase Metrics (Mar 16 2026)
 
-The orchestration layer has gone through three iterations, all within Mar 9-10:
+| Subpackage | Files | Role |
+|---|---|---|
+| config/ | 7 | Schema, resolution, paths, catalog, constants, contracts + YAML files |
+| core/ | 1 | data.py (dataset loading, NFS-safe caching) |
+| core/models/ | 9 | VGAE, GAT, DQN, temporal, fusion, registry, protocols |
+| core/preprocessing/ | 10 | Graph construction, adapters, vocabulary |
+| pipeline/ | 5 | CLI, serve, validate, subprocess_utils, api.py |
+| pipeline/stages/ | 10 | Training, evaluation, fusion, temporal |
+| pipeline/orchestration/ | 6 | Dagster defs, pipes_slurm, sweep, tune, job |
+| **Total** | **54** | **10,483 lines** |
 
-1. **coordinator.py** (862→915 lines) — stateful SLURM coordinator with per-stage sbatch, checkpoint-aware resume, adaptive resource scaling. Built and deleted.
-2. **5-component system** (planner, executor, driver, store, job — 1,751 lines) — scheduler-agnostic with SLURM/Flux/DryRun backends. Built and deleted.
-3. **Current: Ray wrapper** (ray_pipeline.py 360 lines + ray_slurm.py 65 lines) — subprocess dispatch within single SLURM allocation. Functionally a sequential shell script.
-
-All deleted code is in git history. Key commits: `188f13c`, `3ba9111`, `123845f`, `971dd6e`, `c697b63`.
-
-Decision pending: Path A (Keep Ray + add Submitit), Path B (Parsl), or Path C (custom coordinator + Submitit). See `~/plans/orchestration-tool-evaluation.md`.
-
-## Codebase Metrics (Mar 11 2026)
-
-| Subpackage | Files | Lines | Role |
-|---|---|---|---|
-| config/ | 6 | 903 | Schema, resolution, paths, catalog, constants |
-| core/models/ | 8 | 1,652 | VGAE, GAT, DQN, temporal, fusion, registry |
-| core/preprocessing/ | 10 | 1,746 | Graph construction, adapters, vocabulary |
-| core/training/ | 2 | 454 | Lightning DataModule + dataset loading |
-| pipeline/cli.py | 1 | 631 | Entry point, MLflow context, archive logic |
-| pipeline/stages/ | 10 | 2,225 | Training, evaluation, fusion, temporal |
-| pipeline/orchestration/ | 7 | 1,526 | Ray, sweep, tune, store, job, SLURM bridge |
-| pipeline/ (other) | 3 | 396 | serve, validate, subprocess_utils |
-| **Total** | **50** | **9,540** | |
-
-Import hierarchy verified clean: pipeline→config: 40, pipeline→core: 20, core→config: 5. No violations.
-
-## Critical Gaps (from ecosystem registry)
-
-1. **State loss on SLURM timeout** — Ray pipeline has no persistent state
-2. **Single-allocation bottleneck** — no per-stage SLURM job submission
-3. **No reproducibility metadata** — no git SHA or lockfile in MLflow/artifacts
-4. **No SU cost tracking** — cannot answer "how much did this sweep cost?"
+GitNexus: 4,112 nodes, 6,235 edges, 168 execution flows.
+Import hierarchy verified clean. Gateway enforcement test passing.
 
 ## Data Flow
 
 ```
 Raw CAN CSVs (6 datasets, DVC)
-  → Graph Cache (processed_graphs.pt, DVC)
+  → Graph Cache (processed_graphs.pt, content-hash validated)
     → Training Pipeline (VGAE → GAT → DQN, large + small + small-KD)
       → Evaluation (metrics + embeddings + attention + policy)
-        → MLflow (sqlite) | experimentruns/ (on disk)
-          → push_experiments_to_hf.py → HF Dataset → Streamlit Dashboard
+        → Artifact validation (Pydantic contracts)
+          → MLflow (sqlite) | experimentruns/ (on disk)
+            → push_experiments_to_hf.py → HF Dataset → Streamlit Dashboard
 ```

@@ -1,10 +1,10 @@
 # KD-GAT: Project Context
 
-**Updated**: 2026-03-07
+**Updated**: 2026-03-16
 
 ## What This Is
 
-CAN bus intrusion detection via knowledge distillation. Large models (VGAE → GAT → DQN fusion) are compressed into small models via KD auxiliaries. Optional temporal stage adds cross-window sequence classification. Runs on OSC HPC via Ray/SLURM with MLflow tracking.
+CAN bus intrusion detection via knowledge distillation. Large models (VGAE → GAT → DQN fusion) are compressed into small models via KD auxiliaries. Optional temporal stage adds cross-window sequence classification. Runs on OSC HPC via Dagster + SLURM with MLflow tracking.
 
 ## Architecture
 
@@ -25,18 +25,23 @@ Three-layer import hierarchy (enforced by `tests/test_layer_boundaries.py`):
 - `schema.py` — Pydantic v2 frozen models: `PipelineConfig`, `VGAEArchitecture`, `GATArchitecture`, `DQNArchitecture`, `AuxiliaryConfig`, `TrainingConfig`, `FusionConfig`, `PreprocessingConfig`, `TemporalConfig`. Legacy flat JSON loading via `_from_legacy_flat()`.
 - `resolver.py` — YAML composition: `resolve(model_type, scale, auxiliaries="none", **cli_overrides)`. Merge order: defaults → model_def → auxiliaries → CLI. Pydantic v2 `model_validate()` handles schema validation.
 - `paths.py` — Path layout: `{dataset}/{model_type}_{scale}_{stage}[_{aux}]`. String-based variants for flow tasks.
-- `constants.py` — Domain/infrastructure constants: feature counts, window sizes, stage→model mappings
-- `__init__.py` — Re-exports for clean `from graphids.config import PipelineConfig, resolve, checkpoint_path` usage
-- `defaults.yaml` — Global baseline config values
+- `constants.py` — Domain/infrastructure constants: feature counts, stage→model mappings, SLURM defaults, DEFAULT_DATASET
+- `contracts.py` — Pydantic data contracts: `TrainingArtifact`, `EvaluationArtifact`, `PreprocessingArtifact`, `compute_preprocessing_hash()`
+- `__init__.py` — Re-exports for clean `from graphids.config import PipelineConfig, resolve, checkpoint_path, DEFAULT_DATASET` usage
+- `resources.yaml` — SLURM resource profiles + failure reactions (for Dagster orchestration)
 - `datasets.yaml` — Dataset catalog (6 automotive datasets)
-- `models/{vgae,gat,dqn}/{large,small}.yaml` — Architecture × Scale definitions
+- `models/{vgae,gat,dqn}/{large,small}.yaml` — Architecture × Scale overrides (Pydantic defaults are baseline)
 - `auxiliaries/{none,kd_standard}.yaml` — Loss modifier configs (composable)
+- `search_spaces/{vgae,gat,dqn}.yaml` — HPO search space definitions (for Ray Tune)
 
 ### Layer 2: `graphids/pipeline/` (orchestration — imports graphids.config freely, lazy imports from graphids.core)
 
-- `cli.py` — Arg parser, MLflow run context (`mlflow.start_run()`), artifact logging, `STAGE_FNS` dispatch, archive restore on failure
+- `__init__.py` — Gateway: `build_cli_cmd`, `STAGE_FNS`
+- `cli.py` — Arg parser, MLflow run context, artifact logging, `STAGE_FNS` dispatch, archive restore on failure
+- `api.py` — Programmatic facade: `train()`, `evaluate()`, `orchestrate()` (for notebooks/Dagster)
 - `serve.py` — FastAPI inference server (`/predict`, `/health`) with DQN fusion scoring
 - `validate.py` — Config + environment validation utilities
+- `subprocess_utils.py` — Shared CLI command builder for subprocess dispatch
 - `stages/` — Training logic split into modules:
   - `training.py` — VGAE (autoencoder) and GAT (curriculum/normal) training
   - `evaluation.py` — Multi-model eval; captures `embeddings.npz`, `dqn_policy.json`
@@ -46,23 +51,22 @@ Three-layer import hierarchy (enforced by `tests/test_layer_boundaries.py`):
   - `batch_sizing.py` — Batch size resolution (`safety_factor × batch_size`)
   - `trainer_factory.py` — Lightning Trainer + ModelCheckpoint + EarlyStopping + DeviceStatsMonitor + MLflow autolog
   - `modules.py` — Lightning modules: VGAEModule, GATModule, CurriculumDataModule + teacher offload helpers
-  - `loss_landscape.py` — Loss landscape visualization (standalone analysis tool)
   - `utils.py` — Re-exports from submodules
-- `orchestration/` — Pipeline orchestration (Ray + scheduler-agnostic):
-  - `job.py` — Pydantic v2 frozen models: `JobSpec` (UUID-based DAG), `ResourceSpec`, `JobState`
-  - `planner.py` — Domain-aware DAG builder: `build_plan(datasets, seeds, variants) → list[JobSpec]`
-  - `store.py` — SQLite state store (WAL mode): run/job/attempt/transition tables
-  - `executor.py` — Scheduler backends: `SlurmExecutor`, `FluxExecutor`, `DryRunExecutor`
-  - `driver.py` — `PipelineDriver`: submit-and-poll loop, fire-and-forget, retry with resource scaling
-  - `ray_pipeline.py` — Config-driven variant pipeline, subprocess dispatch, benchmark mode
-  - `ray_slurm.py` — Ray cluster bootstrap on SLURM
+- `orchestration/` — Pipeline orchestration (Dagster + SLURM):
+  - `__init__.py` — Gateway: `ResourceSpec`, `PipesSlurmClient`, `SlurmJobFailed`; lazy Dagster imports
+  - `job.py` — Pydantic v2 frozen `ResourceSpec` (partition, GPUs, memory, walltime)
+  - `dagster_defs.py` — Dagster asset definitions + `build_dag_topology()` + `fire_and_forget()`
+  - `dagster_resources.py` — Per-asset retry state helpers
+  - `pipes_slurm.py` — SLURM sbatch/sacct wrapper: script gen, submit, poll, artifact validation via contracts
   - `sweep_pipeline.py` — Hyperparameter sweep orchestration (SQLite-backed state)
   - `tune_config.py` — Ray Tune search space + OptunaSearch + ASHAScheduler
 
 ### Layer 3: `graphids/core/` (domain — imports graphids.config.constants, never imports graphids.pipeline)
 
-- `models/` — vgae.py, gat.py, dqn.py, temporal.py, fusion_features.py, registry.py, _utils.py
-- `training/datamodules.py` — Lightning DataModule: dataset loading, splits, DataLoader construction
+- `__init__.py` — Gateway: `load_dataset`, `load_test_scenarios`, `get_model`, `process_dataset`
+- `data.py` — Dataset loading with NFS-safe caching (moved from training/datamodules.py)
+- `models/` — vgae.py, gat.py, dqn.py, temporal.py, fusion_features.py, registry.py, _protocols.py, _utils.py
+- `training/` — Backward-compat re-exports from core/data.py
 - `preprocessing/` — Graph construction: dataset.py, engine.py, temporal.py, vocabulary.py, parallel.py, schema.py
 - `preprocessing/adapters/` — base.py, can_bus.py (pluggable data source adapters)
 
