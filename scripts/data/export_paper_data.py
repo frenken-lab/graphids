@@ -24,7 +24,6 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from graphids.config import resolve, stage_dir
 from graphids.core.preprocessing.adapters.can_bus import ATTACK_TYPE_NAMES
 from graphids.lake.config import LakeConfig
 
@@ -252,8 +251,11 @@ def export_attention(attn_path: Path, fig_dir: Path) -> None:
             rec = {"source": int(edge_index[0, e]), "target": int(edge_index[1, e])}
             for lk in layer_keys:
                 ln = int(lk.split("_layer_")[1].split("_alpha")[0])
-                if e < len(data[lk]):
-                    rec[f"layer_{ln}_attention"] = round(float(data[lk][e]), 4)
+                attn = data[lk]
+                if e < attn.shape[0]:
+                    # Average across attention heads if multi-head (shape: [E, H])
+                    val = float(attn[e].mean()) if attn.ndim > 1 else float(attn[e])
+                    rec[f"layer_{ln}_attention"] = round(val, 4)
             edges.append(rec)
 
         samples.append(
@@ -312,6 +314,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Export paper data from KD-GAT eval artifacts")
     p.add_argument("--dataset", default="hcrl_sa")
     p.add_argument("--scale", default="large")
+    p.add_argument("--seed", type=int, default=42)
     p.add_argument("--figures-only", action="store_true")
     p.add_argument("--tables-only", action="store_true")
     args = p.parse_args()
@@ -324,8 +327,14 @@ def main() -> None:
     paper_dir = lake.lake_root / "exports" / "paper"
     csv_dir, fig_dir = paper_dir / "csv", paper_dir / "figures"
 
-    cfg = resolve("gat", args.scale, dataset=args.dataset)
-    eval_dir = stage_dir(cfg, "evaluation")
+    # Read from ESS production — the data lake is the single source of truth
+    eval_dir = lake.run_dir(
+        args.dataset, "gat", args.scale, "evaluation", seed=args.seed, production=True
+    )
+    if not eval_dir.exists():
+        log.error("No eval artifacts on ESS: %s", eval_dir)
+        log.error("Run evaluation first, then migrate to ESS.")
+        sys.exit(1)
 
     # Load artifacts
     metrics_path = eval_dir / "metrics.json"
@@ -333,9 +342,22 @@ def main() -> None:
     npz = np.load(npz_path, allow_pickle=True) if npz_path.exists() else None
 
     if not metrics_path.exists() and npz is None:
-        log.error("No artifacts in %s", eval_dir)
+        log.error("No metrics.json or embeddings.npz in %s", eval_dir)
         sys.exit(1)
     log.info("Reading from %s", eval_dir)
+
+    # Report missing artifacts that need re-run
+    missing = []
+    if "vgae_error_recon" not in (npz or {}):
+        missing.append("per-component VGAE errors (re-run eval with updated evaluation.py)")
+    if not (eval_dir / "cka_matrix.json").exists():
+        missing.append("CKA matrix (run eval on KD variant: --auxiliaries kd_standard)")
+    if "vgae_attack_types" not in (npz or {}):
+        missing.append("attack_type arrays (re-run eval with updated evaluation.py)")
+    if missing:
+        log.warning("Missing artifacts (figures will have partial data):")
+        for m in missing:
+            log.warning("  - %s", m)
 
     if not args.figures_only and metrics_path.exists():
         export_tables(json.loads(metrics_path.read_text()), csv_dir)
