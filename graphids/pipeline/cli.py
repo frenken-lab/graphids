@@ -25,6 +25,7 @@ from datetime import datetime
 from pathlib import Path
 
 from graphids.config import (
+    DEFAULT_DATASET,
     MLFLOW_TRACKING_URI,
     STAGES,
     PipelineConfig,
@@ -75,8 +76,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "stage",
-        choices=list(STAGES.keys()) + ["flow", "tune", "sweep-pipeline"],
-        help="Training stage, 'flow' for Ray pipeline, 'tune' for HPO, or 'sweep-pipeline' for full DAG",
+        choices=list(STAGES.keys()) + ["preprocess", "tune", "sweep-pipeline", "orchestrate"],
+        help="Training stage, 'preprocess' for graph cache, 'tune' for HPO, 'sweep-pipeline' for full DAG, or 'orchestrate' for Dagster pipeline",
     )
 
     # Config source
@@ -120,27 +121,21 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Shorthand: implies kd_standard aux with given model_path",
     )
 
-    # Flow subcommand options
-    p.add_argument(
-        "--eval-only",
-        action="store_true",
-        default=False,
-        help="(flow) Re-run evaluation only, skip training",
-    )
-    p.add_argument(
-        "--local",
-        action="store_true",
-        default=False,
-        help="(flow) Use Ray local mode instead of cluster",
-    )
+    # General options
     p.add_argument(
         "--dry-run",
         action="store_true",
         default=False,
-        help="(flow) Print the stage chain without executing",
+        help="Print plan without executing",
     )
 
     # Tune subcommand options
+    p.add_argument(
+        "--local",
+        action="store_true",
+        default=False,
+        help="(tune) Use Ray local mode instead of cluster",
+    )
     p.add_argument(
         "--num-samples",
         type=int,
@@ -184,6 +179,14 @@ def _build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="(sweep-pipeline) Resume from previous state file (default: True)",
+    )
+
+    # Orchestrate options (Dagster fire-and-forget)
+    p.add_argument(
+        "--fire-and-forget",
+        action="store_true",
+        default=False,
+        help="(orchestrate) Submit all jobs with --dependency chains, no polling",
     )
 
     # Checkpoint resume (set by orchestrator on TIMEOUT resubmit)
@@ -240,58 +243,23 @@ def _parse_dot_overrides(pairs: list[list[str]]) -> dict:
     return result
 
 
-def _run_flow(args: argparse.Namespace, log: logging.Logger) -> None:
-    """Dispatch pipeline flow via Ray.
+def _run_preprocess(args: argparse.Namespace, log: logging.Logger) -> None:
+    """Build preprocessed graph cache for a dataset.
 
-    --scale filters to a single variant (large, small_kd, small_nokd).
-    Without --scale, all variants run.  The argparse default "large" is
-    for single-stage dispatch; for flows, we treat it as "run all" unless
-    the user explicitly passes a flow-relevant scale value.
+    Calls load_dataset() which checks cache validity (version, feature dims)
+    and rebuilds if needed.
     """
-    datasets = [args.dataset] if args.dataset else None
+    from graphids.config import cache_dir, data_dir
+    from graphids.config.resolver import resolve
 
-    # Detect if --scale was explicitly provided on the CLI
-    # (argparse default is "large", which we ignore for flow mode)
-    _flow_scales = ("large", "small_kd", "small_nokd")
-    scale = args.scale if args.scale in _flow_scales else None
-    # Check if user actually passed --scale or if it's the default
-    import sys
+    dataset = args.dataset or DEFAULT_DATASET
+    cfg = resolve("vgae", "large", dataset=dataset)
 
-    if "--scale" not in sys.argv:
-        scale = None
+    log.info("Preprocessing dataset: %s", dataset)
+    from graphids.core.data import load_dataset
 
-    # Dry-run: print the stage chain without executing
-    if args.dry_run:
-        from graphids.config.resolver import resolve
-
-        cfg = resolve("vgae", "large", dataset=args.dataset or "hcrl_ch")
-        variants = cfg.variants
-        if scale is not None:
-            variants = [v for v in variants if v.name == scale]
-        log.info("Dry-run: datasets=%s, scale=%s", datasets, scale)
-        for v in variants:
-            dep = " (needs teacher)" if v.needs_teacher else ""
-            log.info("  Variant '%s' (scale=%s, aux=%s)%s:", v.name, v.scale, v.auxiliaries, dep)
-            for s in v.stages:
-                log.info("    → %s", s)
-        return
-
-    from .orchestration.ray_pipeline import eval_pipeline, train_pipeline
-
-    # Parse seeds for multi-seed flow dispatch
-    seeds = _parse_seeds(args.seeds) if args.seeds else None
-
-    if args.eval_only:
-        log.info("Starting Ray evaluation flow (datasets=%s, scale=%s)", datasets, scale)
-        eval_pipeline(datasets=datasets, scale=scale, local=args.local)
-    else:
-        log.info(
-            "Starting Ray training flow (datasets=%s, scale=%s, seeds=%s)",
-            datasets,
-            scale,
-            seeds,
-        )
-        train_pipeline(datasets=datasets, scale=scale, local=args.local, seeds=seeds)
+    load_dataset(dataset, data_dir(cfg), cache_dir(cfg), seed=cfg.seed)
+    log.info("Preprocessed cache ready for %s", dataset)
 
 
 def _resolve_tune_stage(args: argparse.Namespace, log: logging.Logger) -> str | None:
@@ -325,7 +293,7 @@ def _run_tune(args: argparse.Namespace, log: logging.Logger) -> None:
     log.info(
         "Starting tune: stage=%s, dataset=%s, scale=%s, samples=%d, epochs=%d, patience=%d, warm_start_from=%s",
         tune_stage,
-        args.dataset or "hcrl_sa",
+        args.dataset or DEFAULT_DATASET,
         args.scale,
         args.num_samples,
         args.tune_epochs,
@@ -335,7 +303,7 @@ def _run_tune(args: argparse.Namespace, log: logging.Logger) -> None:
 
     results = run_tune(
         stage=tune_stage,
-        dataset=args.dataset or "hcrl_sa",
+        dataset=args.dataset or DEFAULT_DATASET,
         scale=args.scale,
         num_samples=args.num_samples,
         max_concurrent=args.max_concurrent,
@@ -357,7 +325,7 @@ def _run_sweep_pipeline(args: argparse.Namespace, log: logging.Logger) -> None:
 
     log.info(
         "Starting sweep pipeline: dataset=%s, scale=%s, samples=%d, resume=%s, dry_run=%s",
-        args.dataset or "hcrl_sa",
+        args.dataset or DEFAULT_DATASET,
         args.scale,
         args.num_samples,
         args.resume,
@@ -365,7 +333,7 @@ def _run_sweep_pipeline(args: argparse.Namespace, log: logging.Logger) -> None:
     )
 
     run_sweep_pipeline(
-        dataset=args.dataset or "hcrl_sa",
+        dataset=args.dataset or DEFAULT_DATASET,
         scale=args.scale,
         num_samples=args.num_samples,
         max_concurrent=args.max_concurrent,
@@ -374,6 +342,31 @@ def _run_sweep_pipeline(args: argparse.Namespace, log: logging.Logger) -> None:
         resume=args.resume,
         dry_run=args.dry_run,
     )
+
+
+def _run_orchestrate(args: argparse.Namespace, log: logging.Logger) -> None:
+    """Dispatch pipeline via Dagster fire-and-forget (SLURM dependency chains)."""
+    from .orchestration.dagster_defs import fire_and_forget
+
+    dataset = args.dataset or DEFAULT_DATASET
+    seeds = None
+    if args.seeds:
+        from graphids.config.constants import parse_seeds
+
+        seeds = parse_seeds(args.seeds)
+
+    log.info(
+        "Orchestrate (fire-and-forget): dataset=%s, seeds=%s, dry_run=%s",
+        dataset,
+        seeds,
+        args.dry_run,
+    )
+
+    job_ids = fire_and_forget(dataset=dataset, seeds=seeds, dry_run=args.dry_run)
+
+    log.info("Submitted %d jobs:", len(job_ids))
+    for name, jid in job_ids.items():
+        log.info("  %s: %s", name, jid)
 
 
 def _run_single_stage(
@@ -566,8 +559,8 @@ def main(argv: list[str] | None = None) -> None:
     log = logging.getLogger("pipeline")
 
     # ---- Handle non-training subcommands ----
-    if args.stage == "flow":
-        _run_flow(args, log)
+    if args.stage == "preprocess":
+        _run_preprocess(args, log)
         return
 
     if args.stage == "tune":
@@ -576,6 +569,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.stage == "sweep-pipeline":
         _run_sweep_pipeline(args, log)
+        return
+
+    if args.stage == "orchestrate":
+        _run_orchestrate(args, log)
         return
 
     # ---- Build config ----

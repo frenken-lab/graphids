@@ -31,7 +31,7 @@ def graph_label(g) -> int:
 
 def load_data(cfg: PipelineConfig):
     """Load graph dataset. Returns (train_graphs, val_graphs, num_ids, in_channels)."""
-    from graphids.core.training.datamodules import load_dataset
+    from graphids.core.data import load_dataset
 
     train_data, val_data, num_ids = load_dataset(
         cfg.dataset,

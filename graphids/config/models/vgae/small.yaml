@@ -6,7 +6,6 @@ vgae:
   embedding_dim: 4
   dropout: 0.1
   conv_type: "gatv2"
-  edge_dim: 11
   proj_dim: 32
 training:
   lr: 0.002

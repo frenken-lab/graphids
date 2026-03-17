@@ -339,7 +339,7 @@ def evaluate(cfg: PipelineConfig) -> dict:
 
 def _load_test_data(cfg: PipelineConfig) -> dict:
     """Load held-out test graphs per scenario (cached)."""
-    from graphids.core.training.datamodules import load_test_scenarios
+    from graphids.core.data import load_test_scenarios
 
     return load_test_scenarios(
         cfg.dataset,

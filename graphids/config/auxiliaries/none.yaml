@@ -1,0 +1,2 @@
+# No auxiliary losses (baseline). This is the identity config.
+# The resolver skips loading this file when auxiliaries="none".

@@ -1,12 +1,7 @@
 # VGAE large (was: teacher preset)
+# Only intentional overrides (Pydantic defaults are the baseline)
 vgae:
-  hidden_dims: [480, 240, 48]
-  latent_dim: 48
-  heads: 4
-  embedding_dim: 32
-  dropout: 0.15
   conv_type: "gatv2"
-  edge_dim: 11
   proj_dim: 48
 training:
   lr: 0.002

@@ -17,14 +17,13 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from graphids.config.constants import (
-    DEFAULT_STRIDE,
-    DEFAULT_WINDOW_SIZE,
-)
+from graphids.config.schema import PreprocessingConfig
 
 from .adapters.can_bus import CANBusAdapter
 from .engine import GraphEngine
 from .schema import IRSchema
+
+_PREP_DEFAULTS = PreprocessingConfig()
 
 if TYPE_CHECKING:
     from torch_geometric.data import Data
@@ -68,8 +67,8 @@ def process_dataset(
     root: str | Path,
     split: str = "train_",
     vocab: EntityVocabulary | None = None,
-    window_size: int = DEFAULT_WINDOW_SIZE,
-    stride: int = DEFAULT_STRIDE,
+    window_size: int = _PREP_DEFAULTS.window_size,
+    stride: int = _PREP_DEFAULTS.stride,
     return_vocab: bool = False,
     verbose: bool = False,
     include_attack_type: bool = True,

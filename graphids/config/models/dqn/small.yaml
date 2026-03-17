@@ -5,8 +5,3 @@ dqn:
   buffer_size: 50000
   batch_size: 64
   target_update: 50
-  gamma: 0.99
-training:
-  safety_factor: 0.5
-fusion:
-  episodes: 500

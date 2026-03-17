@@ -10,7 +10,6 @@ gat:
   fc_layers: 2
   dropout: 0.1
   conv_type: "gatv2"
-  edge_dim: 11
   proj_dim: 32
 training:
   lr: 0.001

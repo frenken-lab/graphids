@@ -1,7 +1,4 @@
 # Standard knowledge distillation
+# All values match AuxiliaryConfig defaults — only the list entry is needed.
 auxiliaries:
   - type: kd
-    temperature: 4.0
-    alpha: 0.7
-    vgae_latent_weight: 0.5
-    vgae_recon_weight: 0.5

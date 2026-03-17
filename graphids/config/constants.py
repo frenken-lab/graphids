@@ -23,9 +23,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # ---------------------------------------------------------------------------
 # Preprocessing
 # ---------------------------------------------------------------------------
-DEFAULT_WINDOW_SIZE = 100
-DEFAULT_STRIDE = 100
 EXCLUDED_ATTACK_TYPES = ["suppress", "masquerade"]
+DEFAULT_DATASET = "hcrl_sa"
 MAX_DATA_BYTES = 8
 NODE_FEATURE_COUNT = 26  # CAN_ID + 8 means + 8 stds + entropy + 2 change_rate + skew + kurt + clustering + split_half + count + position
 EDGE_FEATURE_COUNT = 11  # Streamlined edge features

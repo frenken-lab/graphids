@@ -158,7 +158,7 @@ class PipelineConfig(BaseModel, frozen=True):
     """Every tunable parameter lives here. Nowhere else."""
 
     # --- Identity (the four concerns) ---
-    dataset: str = "hcrl_ch"
+    dataset: str = "hcrl_sa"
     model_type: str = "vgae"
     scale: str = "large"
     seed: int = 42

@@ -10,6 +10,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import sys
 from typing import Any
@@ -117,32 +118,27 @@ def _trainable(
 
     from ray import tune as ray_tune
 
+    from graphids.pipeline.subprocess_utils import build_cli_cmd
+
     # Project root — subprocess must run from here for relative paths
     project_root = Path(__file__).resolve().parents[3]
 
     model = _STAGE_MODEL[stage]
 
-    # Build CLI overrides from tune config
-    cmd = [
-        sys.executable,
-        "-m",
-        "graphids.pipeline.cli",
-        stage,
-        "--model",
-        model,
-        "--scale",
-        scale,
-        "--dataset",
-        dataset,
-    ]
-    for key, value in config.items():
-        cmd.extend(["-O", key, str(value)])
-
-    # Inject epoch/patience overrides for shorter tune trials
+    # Build overrides from tune config + epoch/patience
+    overrides = [(key, str(value)) for key, value in config.items()]
     if max_epochs > 0:
-        cmd.extend(["-O", "training.max_epochs", str(max_epochs)])
+        overrides.append(("training.max_epochs", str(max_epochs)))
     if patience > 0:
-        cmd.extend(["-O", "training.patience", str(patience)])
+        overrides.append(("training.patience", str(patience)))
+
+    cmd = build_cli_cmd(
+        stage=stage,
+        model=model,
+        scale=scale,
+        dataset=dataset,
+        overrides=overrides,
+    )
 
     result = subprocess.run(cmd, capture_output=True, text=True, cwd=project_root)
 
@@ -215,8 +211,6 @@ def run_tune(
     from ray.tune.schedulers import ASHAScheduler
     from ray.tune.search.optuna import OptunaSearch
 
-    from .ray_slurm import ray_init_kwargs
-
     if stage not in _STAGE_MODEL:
         raise ValueError(f"No search space defined for stage '{stage}'")
 
@@ -228,10 +222,16 @@ def run_tune(
         grace_period = cfg.tune.grace_period
 
     if not ray.is_initialized():
-        kwargs = ray_init_kwargs()
-        if local:
-            kwargs["num_gpus"] = 0
-        ray.init(**kwargs)
+        # Ray init (inlined from deleted ray_slurm.py)
+        scratch = os.getenv("KD_GAT_SCRATCH", "/fs/scratch/PAS1266")
+        ray_tmp = f"{scratch}/.ray"
+        os.makedirs(ray_tmp, exist_ok=True)
+        on_compute = bool(os.environ.get("SLURM_JOB_ID"))
+        ray.init(
+            _temp_dir=ray_tmp,
+            logging_level="info",
+            num_gpus=0 if (local or not on_compute) else 1,
+        )
 
     scheduler = ASHAScheduler(
         metric=metric,

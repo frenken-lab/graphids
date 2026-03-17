@@ -9,12 +9,15 @@ Registration order determines feature concatenation order in
 ``cache_predictions``.  VGAE is registered first to preserve the existing
 15-D state layout (VGAE features then GAT features).
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
 
 import torch.nn as nn
+
+from graphids.config.schema import PipelineConfig
 
 from .fusion_features import (
     FusionFeatureExtractor,
@@ -28,7 +31,7 @@ _REGISTRY: dict[str, ModelEntry] = {}
 @dataclass
 class ModelEntry:
     model_type: str
-    factory: Callable  # (cfg, num_ids, in_ch) -> nn.Module
+    factory: Callable[[PipelineConfig, int, int], nn.Module]
     extractor: FusionFeatureExtractor | None
 
 
@@ -47,9 +50,7 @@ def get(model_type: str) -> ModelEntry:
 def fusion_state_dim() -> int:
     """Sum of all registered extractors' feature_dim values."""
     return sum(
-        entry.extractor.feature_dim
-        for entry in _REGISTRY.values()
-        if entry.extractor is not None
+        entry.extractor.feature_dim for entry in _REGISTRY.values() if entry.extractor is not None
     )
 
 
@@ -77,9 +78,7 @@ def extractors() -> list[tuple[str, FusionFeatureExtractor]]:
     layout used by trained DQN checkpoints.
     """
     return [
-        (name, entry.extractor)
-        for name, entry in _REGISTRY.items()
-        if entry.extractor is not None
+        (name, entry.extractor) for name, entry in _REGISTRY.items() if entry.extractor is not None
     ]
 
 
@@ -87,18 +86,22 @@ def extractors() -> list[tuple[str, FusionFeatureExtractor]]:
 # Factory functions (lazy imports to avoid circular dependencies)
 # ---------------------------------------------------------------------------
 
+
 def _vgae_factory(cfg, num_ids: int, in_ch: int) -> nn.Module:
     from .vgae import GraphAutoencoderNeighborhood
+
     return GraphAutoencoderNeighborhood.from_config(cfg, num_ids, in_ch)
 
 
 def _gat_factory(cfg, num_ids: int, in_ch: int) -> nn.Module:
     from .gat import GATWithJK
+
     return GATWithJK.from_config(cfg, num_ids, in_ch)
 
 
 def _dqn_factory(cfg, num_ids: int, in_ch: int) -> nn.Module:
     from .dqn import QNetwork
+
     return QNetwork.from_config(cfg)
 
 

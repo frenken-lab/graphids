@@ -13,14 +13,14 @@ from pathlib import Path
 
 import torch
 
-import graphids.config.constants as constants
 from graphids.config.constants import (
-    DEFAULT_STRIDE,
-    DEFAULT_WINDOW_SIZE,
     EDGE_FEATURE_COUNT,
     NODE_FEATURE_COUNT,
     PREPROCESSING_VERSION,
 )
+from graphids.config.schema import PreprocessingConfig
+
+_PREP_DEFAULTS = PreprocessingConfig()
 from graphids.core.preprocessing.dataset import (
     CollatedGraphDataset,
     load_collated,
@@ -163,23 +163,16 @@ def _load_cached_data(cache_file, id_mapping_file, dataset_name):
                 stale_reasons = []
                 if version != PREPROCESSING_VERSION:
                     stale_reasons.append(f"version {version} != {PREPROCESSING_VERSION}")
-                for key in ("window_size", "stride", "node_feature_dim", "edge_feature_dim"):
+                # Map metadata keys to current expected values
+                expected_vals = {
+                    "window_size": _PREP_DEFAULTS.window_size,
+                    "stride": _PREP_DEFAULTS.stride,
+                    "node_feature_dim": NODE_FEATURE_COUNT,
+                    "edge_feature_dim": EDGE_FEATURE_COUNT,
+                }
+                for key, current_val in expected_vals.items():
                     cached_val = metadata.get(key)
-                    const_name = key.upper()
-                    # Map metadata keys to constant names
-                    const_map = {
-                        "WINDOW_SIZE": "DEFAULT_WINDOW_SIZE",
-                        "STRIDE": "DEFAULT_STRIDE",
-                        "NODE_FEATURE_DIM": "NODE_FEATURE_COUNT",
-                        "EDGE_FEATURE_DIM": "EDGE_FEATURE_COUNT",
-                    }
-                    actual_const = const_map.get(const_name, const_name)
-                    current_val = getattr(constants, actual_const, None)
-                    if (
-                        cached_val is not None
-                        and current_val is not None
-                        and cached_val != current_val
-                    ):
+                    if cached_val is not None and cached_val != current_val:
                         stale_reasons.append(f"{key}: {cached_val} != {current_val}")
                 if stale_reasons:
                     logger.warning("Cache stale (%s). Rebuilding.", "; ".join(stale_reasons))
@@ -421,17 +414,20 @@ def _write_cache_metadata(cache_dir, dataset_name, graphs, id_mapping, csv_files
     """Write cache_metadata.json alongside processed cache files."""
     import torch_geometric
 
+    from graphids.config.contracts import compute_preprocessing_hash
+
     metadata = {
         "dataset": dataset_name,
         "created_at": datetime.now(UTC).isoformat(),
-        "window_size": DEFAULT_WINDOW_SIZE,
-        "stride": DEFAULT_STRIDE,
+        "window_size": _PREP_DEFAULTS.window_size,
+        "stride": _PREP_DEFAULTS.stride,
         "num_graphs": len(graphs),
         "num_unique_ids": len(id_mapping) if id_mapping else 0,
         "node_feature_dim": NODE_FEATURE_COUNT,
         "edge_feature_dim": EDGE_FEATURE_COUNT,
         "source_csv_count": len(csv_files),
         "preprocessing_version": PREPROCESSING_VERSION,
+        "config_hash": compute_preprocessing_hash(),
         "torch_version": torch.__version__,
         "pyg_version": torch_geometric.__version__,
         "storage_format": "collated",

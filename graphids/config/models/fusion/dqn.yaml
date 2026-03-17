@@ -1,8 +1,0 @@
-# DQN reinforcement-learning fusion (default)
-fusion:
-  method: dqn
-  episodes: 500
-  episode_sample_size: 20000
-  gpu_training_steps: 16
-  lr: 0.001
-  alpha_steps: 21

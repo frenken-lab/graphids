@@ -29,9 +29,8 @@ def resolve(
     auxiliaries: str = "none",
     **cli_overrides,
 ) -> PipelineConfig:
-    # 1. Global defaults
-    defaults_path = CONFIG_DIR / "defaults.yaml"
-    merged = yaml.safe_load(defaults_path.read_text()) if defaults_path.exists() else {}
+    # 1. Start with empty dict (Pydantic defaults are the baseline)
+    merged: dict = {}
 
     # 2. Model definition (architecture + scale-specific overrides)
     model_path = CONFIG_DIR / "models" / model_type / f"{scale}.yaml"

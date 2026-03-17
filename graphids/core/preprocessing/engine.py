@@ -23,15 +23,14 @@ import numpy as np
 import torch
 from torch_geometric.data import Data
 
-from graphids.config.constants import (
-    DEFAULT_STRIDE,
-    DEFAULT_WINDOW_SIZE,
-    EDGE_FEATURE_COUNT,
-)
+from graphids.config.constants import EDGE_FEATURE_COUNT
+from graphids.config.schema import PreprocessingConfig
 
 from .schema import IRSchema
 
 log = logging.getLogger(__name__)
+
+_PREP_DEFAULTS = PreprocessingConfig()
 
 
 class GraphEngine:
@@ -50,8 +49,8 @@ class GraphEngine:
     def __init__(
         self,
         schema: IRSchema,
-        window_size: int = DEFAULT_WINDOW_SIZE,
-        stride: int = DEFAULT_STRIDE,
+        window_size: int = _PREP_DEFAULTS.window_size,
+        stride: int = _PREP_DEFAULTS.stride,
     ):
         self.schema = schema
         self.window_size = window_size

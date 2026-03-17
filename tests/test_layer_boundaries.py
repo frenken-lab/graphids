@@ -153,3 +153,46 @@ class TestPipelineLayerBoundary:
             f"pipeline/ has top-level imports from core/ (should be lazy/function-local):\n  "
             + "\n  ".join(violations)
         )
+
+
+class TestGatewayEnforcement:
+    """External callers must use package gateways, not deep submodule imports."""
+
+    def _extract_deep_core_imports(self, filepath: Path) -> list[str]:
+        """Find imports like 'from graphids.core.X.Y import ...' (3+ levels deep)."""
+        imports = _extract_imports(filepath)
+        deep = []
+        for mod, _is_top_level in imports:
+            parts = mod.split(".")
+            # graphids.core.X.Y = 4+ parts, meaning depth > 2 under graphids.core
+            if len(parts) >= 4 and parts[0] == "graphids" and parts[1] == "core":
+                deep.append(mod)
+        return deep
+
+    def test_pipeline_uses_core_gateway(self):
+        """Pipeline layer should import from graphids.core or graphids.core.X,
+        not graphids.core.X.Y (with exceptions for backward-compat re-exports)."""
+        # Allow these specific deep imports (lazy, inside functions)
+        allowed_deep = {
+            "graphids.core.data",  # Dataset loading gateway
+            "graphids.core.models.registry",  # Registry functions
+            "graphids.core.models.dqn",  # DQN model classes (fusion/eval/serve)
+            "graphids.core.models.vgae",  # VGAE Lightning module
+            "graphids.core.models.gat",  # GAT Lightning module
+            "graphids.core.models.temporal",  # Temporal model
+            "graphids.core.preprocessing.dataset",  # CollatedGraphDataset
+            "graphids.core.preprocessing.parallel",  # process_dataset
+            "graphids.core.preprocessing.temporal",  # TemporalGrouper
+            "graphids.core.preprocessing.vocabulary",  # EntityVocabulary
+            "graphids.core.preprocessing.adapters.can_bus",  # CANBusAdapter
+            "graphids.core.training.datamodules",  # Backward-compat (re-exports)
+        }
+        violations = []
+        for f in _collect_python_files(PIPELINE_DIR):
+            for mod in self._extract_deep_core_imports(f):
+                if mod not in allowed_deep:
+                    violations.append(f"{f.relative_to(PROJECT_ROOT)}: {mod}")
+        assert not violations, (
+            "Pipeline imports from deep core submodules (use gateway instead):\n  "
+            + "\n  ".join(violations)
+        )

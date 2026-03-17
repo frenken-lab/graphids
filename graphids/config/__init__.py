@@ -5,7 +5,7 @@ Usage:
     from graphids.config.constants import NODE_FEATURE_COUNT, MMAP_TENSOR_LIMIT
 """
 
-from .constants import parse_seeds
+from .constants import DEFAULT_DATASET, parse_seeds
 from .paths import (
     EXPERIMENT_ROOT,
     MLFLOW_TRACKING_URI,
