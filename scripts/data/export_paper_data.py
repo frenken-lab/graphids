@@ -182,28 +182,69 @@ def export_umap(npz, fig_dir: Path) -> None:
 
 
 def export_reconstruction(npz, fig_dir: Path) -> None:
-    required = ["vgae_errors", "vgae_labels", "vgae_attack_types"]
+    """Export plot-ready reconstruction data: {kde, heatmap, roc} panels."""
+    required = ["vgae_errors", "vgae_labels"]
     if not all(k in npz for k in required):
         log.warning("Skipping reconstruction — missing keys")
         return
-    errors, labels, at = npz["vgae_errors"], npz["vgae_labels"], npz["vgae_attack_types"]
+    errors, labels = npz["vgae_errors"], npz["vgae_labels"]
+    has_at = "vgae_attack_types" in npz
     has_comp = all(f"vgae_error_{c}" in npz for c in ("recon", "canid", "nbr", "kl"))
+
+    if not has_comp:
+        log.warning("Skipping reconstruction — no per-component errors")
+        return
+
+    comp_names = [("recon", "Node Recon"), ("canid", "CAN ID"), ("nbr", "Neighbor"), ("kl", "KL")]
     idx = _sample_idx(len(errors))
 
-    records = []
+    # Panel 1: KDE — flatten to {value, component, class}
+    kde = []
     for i in idx:
-        rec = {
-            "composite_error": round(float(errors[i]), 6),
-            "label": int(labels[i]),
-            "attack_type": _atk_name(int(at[i])),
-        }
-        if has_comp:
-            rec |= {
-                f"{c}_error": round(float(npz[f"vgae_error_{c}"][i]), 6)
-                for c in ("node", "canid", "neighbor", "kl")
-            }
-        records.append(rec)
-    _write_json(records, fig_dir / "reconstruction" / "data.json")
+        cls = "Normal" if labels[i] == 0 else "Attack"
+        for key, label in comp_names:
+            kde.append(
+                {
+                    "value": round(float(npz[f"vgae_error_{key}"][i]), 6),
+                    "component": label,
+                    "class": cls,
+                }
+            )
+
+    # Panel 2: Heatmap — sort by composite, sample 200, flatten to {row, component, value}
+    order = np.argsort(errors)
+    step = max(1, len(order) // 200)
+    heatmap = []
+    for rank, i in enumerate(order[::step]):
+        for key, label in comp_names:
+            heatmap.append(
+                {
+                    "row": str(rank),
+                    "component": label,
+                    "value": round(float(npz[f"vgae_error_{key}"][i]), 6),
+                }
+            )
+
+    # Panel 3: ROC — pre-compute per component
+    from sklearn.metrics import roc_curve as _roc_curve
+
+    roc = []
+    for key, label in comp_names:
+        scores = npz[f"vgae_error_{key}"]
+        if len(set(labels)) < 2:
+            continue
+        fpr, tpr, _ = _roc_curve(labels, scores)
+        # Sample ~100 points
+        step = max(1, len(fpr) // 100)
+        for j in range(0, len(fpr), step):
+            roc.append(
+                {"fpr": round(float(fpr[j]), 4), "tpr": round(float(tpr[j]), 4), "component": label}
+            )
+        roc.append({"fpr": 1.0, "tpr": 1.0, "component": label})
+
+    _write_json(
+        {"kde": kde, "heatmap": heatmap, "roc": roc}, fig_dir / "reconstruction" / "data.json"
+    )
 
 
 def export_fusion(policy_path: Path, npz, fig_dir: Path) -> None:
@@ -232,6 +273,9 @@ def export_cka(cka_path: Path, fig_dir: Path) -> None:
 
 
 def export_attention(attn_path: Path, fig_dir: Path) -> None:
+    """Export attention with pre-computed node positions (spring layout)."""
+    import networkx as nx
+
     data = np.load(attn_path, allow_pickle=True)
     n = int(data.get("n_samples", 0))
     if n == 0:
@@ -246,6 +290,18 @@ def export_attention(attn_path: Path, fig_dir: Path) -> None:
             k for k in data.files if k.startswith(f"{pfx}_layer_") and k.endswith("_alpha")
         )
 
+        # Build networkx graph for layout
+        G = nx.DiGraph()
+        G.add_nodes_from(range(len(nf)))
+        for e in range(edge_index.shape[1]):
+            G.add_edge(int(edge_index[0, e]), int(edge_index[1, e]))
+        pos = nx.spring_layout(G, seed=42, scale=150)
+
+        nodes = [
+            {"id": j, "can_id": hex(int(nf[j])), "x": round(pos[j][0], 1), "y": round(pos[j][1], 1)}
+            for j in range(len(nf))
+        ]
+
         edges = []
         for e in range(edge_index.shape[1]):
             rec = {"source": int(edge_index[0, e]), "target": int(edge_index[1, e])}
@@ -253,7 +309,6 @@ def export_attention(attn_path: Path, fig_dir: Path) -> None:
                 ln = int(lk.split("_layer_")[1].split("_alpha")[0])
                 attn = data[lk]
                 if e < attn.shape[0]:
-                    # Average across attention heads if multi-head (shape: [E, H])
                     val = float(attn[e].mean()) if attn.ndim > 1 else float(attn[e])
                     rec[f"layer_{ln}_attention"] = round(val, 4)
             edges.append(rec)
@@ -263,7 +318,7 @@ def export_attention(attn_path: Path, fig_dir: Path) -> None:
                 "graph_idx": int(data[f"{pfx}_graph_idx"]),
                 "label": int(data[f"{pfx}_label"]),
                 "attack_type": "Normal" if int(data[f"{pfx}_label"]) == 0 else "Attack",
-                "nodes": [{"id": j, "can_id": hex(int(nf[j]))} for j in range(len(nf))],
+                "nodes": nodes,
                 "edges": edges,
             }
         )
