@@ -1,8 +1,13 @@
 """Hydra Compose API bridge — config composition via resolve().
 
-Responsibilities:
-1. Hydra Compose API context manager
-2. resolve() — single entry point for config composition
+Architecture: schema-merge approach.
+1. Compose Hydra config with ONLY config group selections (model=X, dataset=Y)
+2. Build full-field schema from PipelineConfig Pydantic defaults
+3. Merge: schema (base) + Hydra config (YAML overrides)
+4. Apply nested overrides via OmegaConf.update(force_add=False) for typo detection
+5. Convert to dict → PipelineConfig.model_validate() → frozen
+
+No ++, no _flatten_dict, no _to_hydra_value.
 """
 
 from __future__ import annotations
@@ -12,19 +17,24 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 if TYPE_CHECKING:
-
     from .schema import PipelineConfig
 
 log = logging.getLogger(__name__)
 
 CONF_DIR = str((Path(__file__).parent / "conf").resolve())
 
+# Config group keys — these select YAML files, not nested values
+_CONFIG_GROUPS = frozenset({"model", "auxiliary", "dataset"})
+
+# Keys in Hydra config but not in PipelineConfig — stripped before validation
+_HYDRA_ONLY_KEYS = frozenset({"stage"})
+
 
 # ---------------------------------------------------------------------------
-# Hydra Compose API
+# Hydra Compose API (private)
 # ---------------------------------------------------------------------------
 
 
@@ -44,30 +54,102 @@ def _hydra_compose(overrides: list[str]):
 
 
 # ---------------------------------------------------------------------------
-# Override list builder
+# Schema + merge
 # ---------------------------------------------------------------------------
 
 
-def _to_hydra_value(v: Any) -> str:
-    """Convert a Python value to Hydra override grammar."""
-    if isinstance(v, (list, tuple)):
-        inner = ",".join(str(x) for x in v)
-        return f"[{inner}]"
-    if isinstance(v, bool):
-        return str(v).lower()
-    return str(v)
+def _build_schema() -> DictConfig:
+    """Full-field DictConfig from PipelineConfig defaults.
+
+    Every Pydantic field is present with its default value. This is the base
+    that makes OmegaConf.update(force_add=False) work for typo detection.
+    """
+    from .schema import PipelineConfig
+
+    return OmegaConf.create(PipelineConfig().model_dump())
 
 
-def _flatten_dict(d: dict[str, Any], prefix: str = "") -> list[str]:
-    """Flatten nested dict into Hydra dot-path overrides."""
-    items: list[str] = []
+def _coerce(raw: str) -> Any:
+    """Coerce a CLI string to a Python value for OmegaConf.update."""
+    if raw.lower() == "true":
+        return True
+    if raw.lower() == "false":
+        return False
+    if raw.lower() in ("null", "~"):
+        return None
+    if raw.startswith("[") and raw.endswith("]"):
+        inner = raw[1:-1].strip()
+        return [_coerce(x.strip()) for x in inner.split(",")] if inner else []
+    try:
+        return int(raw)
+    except ValueError:
+        pass
+    try:
+        return float(raw)
+    except ValueError:
+        pass
+    return raw
+
+
+def _flatten(d: dict[str, Any], prefix: str = "") -> list[tuple[str, Any]]:
+    """Flatten a nested dict to (dot.path, value) pairs."""
+    items: list[tuple[str, Any]] = []
     for k, v in d.items():
         key = f"{prefix}.{k}" if prefix else k
         if isinstance(v, dict):
-            items.extend(_flatten_dict(v, key))
+            items.extend(_flatten(v, key))
         else:
-            items.append(f"++{key}={_to_hydra_value(v)}")
+            items.append((key, v))
     return items
+
+
+# ---------------------------------------------------------------------------
+# compose() — internal API for CLI
+# ---------------------------------------------------------------------------
+
+
+def compose_config(
+    overrides: list[str] | None = None,
+) -> tuple[DictConfig, str | None]:
+    """Compose config from CLI overrides, returning (merged DictConfig, stage).
+
+    Used by cli.py's _run_training() and _show_config(). Returns the DictConfig
+    before Pydantic validation so the CLI can extract 'stage' and print YAML.
+    """
+    overrides = overrides or []
+
+    # Split: config group selections go to Hydra, nested overrides applied after merge
+    group_overrides: list[str] = []
+    nested_overrides: list[tuple[str, str]] = []
+
+    for ov in overrides:
+        clean = ov.lstrip("+")
+        if "=" not in clean:
+            group_overrides.append(clean)
+            continue
+        key, value = clean.split("=", 1)
+        if key in _CONFIG_GROUPS:
+            group_overrides.append(f"{key}={value}")
+        else:
+            nested_overrides.append((key, value))
+
+    # 1. Hydra compose (config groups only)
+    with _hydra_compose(group_overrides) as hydra_cfg:
+        pass
+
+    # 2. Schema (all fields with defaults)
+    schema = _build_schema()
+
+    # 3. Merge: schema base + Hydra YAML on top
+    OmegaConf.set_struct(schema, False)
+    merged = OmegaConf.merge(schema, hydra_cfg)
+
+    # 4. Apply nested overrides with typo detection
+    for key, raw_value in nested_overrides:
+        OmegaConf.update(merged, key, _coerce(raw_value), force_add=False)
+
+    stage = merged.get("stage", None)
+    return merged, stage
 
 
 # ---------------------------------------------------------------------------
@@ -84,49 +166,48 @@ def resolve(
     seed: int | None = None,
     **config_overrides: Any,
 ) -> PipelineConfig:
-    """Compose config via Hydra → Pydantic validation.
+    """Compose config via Hydra → schema merge → Pydantic validation.
 
-    Args:
-        model_type: Architecture type (vgae, gat, dqn).
-        scale: Model capacity (large, small).
-        auxiliaries: Loss modifier name or "none".
-        dataset: Dataset name override.
-        seed: Random seed override.
-        **config_overrides: Nested dicts or dot-path overrides passed to Hydra.
+    Signature unchanged — zero downstream breakage.
     """
     from .schema import PipelineConfig
 
-    # Build Hydra override list
-    override_list = [
+    # Config group overrides for Hydra
+    group_overrides: list[str] = [
         f"model={model_type}_{scale}",
         f"auxiliary={auxiliaries}",
     ]
-    # For known datasets, use config group selection. Unknown datasets
-    # (e.g. test fixtures) are handled after composition via OmegaConf.
-    _unknown_dataset = None
+
+    # Known datasets use config group selection; unknown set after merge
+    _unknown_dataset: str | None = None
     if dataset is not None:
         ds_yaml = Path(__file__).parent / "conf" / "dataset" / f"{dataset}.yaml"
         if ds_yaml.exists():
-            override_list.append(f"dataset={dataset}")
+            group_overrides.append(f"dataset={dataset}")
         else:
             _unknown_dataset = dataset
+
+    # 1. Hydra compose (config groups only)
+    with _hydra_compose(group_overrides) as hydra_cfg:
+        pass
+
+    # 2. Schema (all fields with defaults)
+    schema = _build_schema()
+
+    # 3. Merge: schema base + Hydra YAML on top
+    OmegaConf.set_struct(schema, False)
+    merged = OmegaConf.merge(schema, hydra_cfg)
+
+    # 4. Apply programmatic overrides (from kwargs)
     if seed is not None:
-        override_list.append(f"seed={seed}")
+        OmegaConf.update(merged, "seed", seed)
+    for key, value in _flatten(config_overrides):
+        OmegaConf.update(merged, key, value, force_add=False)
 
-    # Flatten nested dicts (preserves E2E_OVERRIDES, SMOKE_OVERRIDES patterns)
-    for key, value in config_overrides.items():
-        if isinstance(value, dict):
-            override_list.extend(_flatten_dict(value, key))
-        else:
-            override_list.append(f"++{key}={value}")
-
-    with _hydra_compose(override_list) as hydra_cfg:
-        raw: dict = OmegaConf.to_object(hydra_cfg)
-
-    # Remove Hydra-only keys that aren't PipelineConfig fields
-    raw.pop("stage", None)
-
-    # For unknown datasets (no config group file), set after composition
+    # 5. Convert to dict, strip Hydra-only keys, validate
+    raw: dict = OmegaConf.to_object(merged)
+    for key in _HYDRA_ONLY_KEYS:
+        raw.pop(key, None)
     if _unknown_dataset is not None:
         raw["dataset"] = _unknown_dataset
 

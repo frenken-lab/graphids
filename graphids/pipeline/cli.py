@@ -83,18 +83,18 @@ def _setup_mlflow(run_name: str, cfg: PipelineConfig, stage: str, tags: dict | N
 
 def _run_training(overrides: list[str]) -> None:
     """Compose config from Hydra overrides and dispatch a training stage."""
-    from omegaconf import OmegaConf
+    from graphids.config._hydra_bridge import compose_config
 
-    from graphids.config._hydra_bridge import _hydra_compose
+    merged, stage = compose_config(overrides)
 
-    with _hydra_compose(overrides) as hydra_cfg:
-        raw = OmegaConf.to_object(hydra_cfg)
-
-    stage = raw.pop("stage")
-    if stage not in STAGES:
+    if stage is None or stage not in STAGES:
         log.error("Unknown training stage: %s. Valid: %s", stage, list(STAGES.keys()))
         raise SystemExit(1)
 
+    from omegaconf import OmegaConf
+
+    raw = OmegaConf.to_object(merged)
+    raw.pop("stage", None)
     cfg = PipelineConfig.model_validate(raw)
     log.info("Resolved config: model=%s, scale=%s, dataset=%s", cfg.model_type, cfg.scale, cfg.dataset)
     _run_single_stage(cfg, stage)
@@ -104,10 +104,10 @@ def _show_config(overrides: list[str]) -> None:
     """Print resolved config as YAML without running."""
     from omegaconf import OmegaConf
 
-    from graphids.config._hydra_bridge import _hydra_compose
+    from graphids.config._hydra_bridge import compose_config
 
-    with _hydra_compose(overrides) as hydra_cfg:
-        print(OmegaConf.to_yaml(hydra_cfg))
+    merged, _stage = compose_config(overrides)
+    print(OmegaConf.to_yaml(merged))
 
 
 # ---------------------------------------------------------------------------
