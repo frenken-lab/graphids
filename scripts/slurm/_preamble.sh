@@ -21,11 +21,6 @@ set -a; source .env; set +a
 # Group-writable umask for shared ESS data lake
 umask 002
 
-# Launch shared PostgreSQL if launcher exists (sets KD_GAT_DB_URI + MLFLOW_TRACKING_URI)
-if [[ -f "$PROJECT_ROOT/scripts/lab-db/ensure_pg.sh" ]]; then
-    source "$PROJECT_ROOT/scripts/lab-db/ensure_pg.sh" 2>/dev/null || true
-fi
-
 # MLflow tracking URI (sourced from .env, but ensure it's set for all jobs)
 export MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI:-sqlite:///$PROJECT_ROOT/data/mlflow/mlflow.db}"
 

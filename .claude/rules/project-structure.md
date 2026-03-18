@@ -13,27 +13,24 @@ graphids/               # Top-level package — __getattr__ lazy gateway for cor
     manifest.py         # _manifest.json writer/reader + SHA-256 checksum verification
     locking.py          # GPFS-safe advisory file locking (fcntl.flock) for cache writes
   config/               # Layer 1: Inert, declarative (no imports from pipeline/, core/, or lake/)
-    schema.py           # Pydantic v2 frozen models: PipelineConfig, VGAEArchitecture, etc.
-    resolver.py         # YAML composition: model_def → auxiliaries → CLI → Pydantic validation
-    paths.py            # Path layout: {dataset}/{model_type}_{scale}_{stage}[_{aux}]
-    catalog.py          # Data catalog: dataset registry + validation
-    constants.py        # Domain/infrastructure constants (loads STAGES, VALID_MODEL_TYPES from pipeline.yaml)
-    contracts.py        # Pydantic data contracts: TrainingArtifact, EvaluationArtifact, PreprocessingArtifact
-    __init__.py         # Re-exports: PipelineConfig, resolve, checkpoint_path, DEFAULT_DATASET, ...
-    pipeline.yaml       # Pipeline topology: model types, scales, stages, DAG deps, variants (single source of truth)
+    handler.py          # ConfigHandler class + EnvironmentSettings (pydantic-settings) — YAML loading, resolution, paths
+    schema.py           # All Pydantic models: PipelineConfig, architectures, DatasetEntry, artifact contracts
+    __init__.py         # Singleton _api = ConfigHandler() + re-exports. All external: `from graphids.config import X`
+    pipeline.yaml       # Pipeline topology + preprocessing constants + defaults + path defaults (single source of truth)
     datasets.yaml       # Dataset catalog (add entries here for new datasets)
-    resources.yaml      # SLURM resource profiles + failure reactions (for Dagster orchestration)
+    resources.yaml      # SLURM resource profiles + slurm_defaults + failure reactions
     models/             # Architecture × Scale YAML files (only overrides; Pydantic defaults are baseline)
       vgae/large.yaml, small.yaml
       gat/large.yaml, small.yaml
       dqn/large.yaml, small.yaml
     auxiliaries/        # Loss modifier YAML files (composable)
-      none.yaml, kd_standard.yaml
+      kd_standard.yaml
     search_spaces/      # HPO search space definitions (for Ray Tune)
       vgae.yaml, gat.yaml, dqn.yaml
   pipeline/             # Layer 2: Orchestration (imports graphids.config/, lazy imports from graphids.core/)
     __init__.py         # Gateway: build_cli_cmd, STAGE_FNS
     cli.py              # Entry point + MLflow run context + artifact logging + archive restore on failure
+    artifacts.py        # Artifact store: get/put/exists with cache → filesystem → MLflow fallback
     serve.py            # FastAPI inference server (/predict, /health)
     validate.py         # Config + environment validation utilities
     subprocess_utils.py # Shared CLI command builder for subprocess dispatch
@@ -59,6 +56,7 @@ graphids/               # Top-level package — __getattr__ lazy gateway for cor
   core/                 # Layer 3: Domain (models, data loading, preprocessing; imports graphids.config/)
     __init__.py         # Gateway: load_dataset, load_test_scenarios, get_model, process_dataset
     data.py             # Dataset loading with NFS-safe caching (was core/training/datamodules.py)
+    graph_utils.py      # PyG graph utilities: get_batch_index(), graph_attack_type()
     models/             # Model architectures
       vgae.py           # Variational Graph Autoencoder (GraphAutoencoderNeighborhood)
       gat.py            # Graph Attention Network (GATWithJK)
@@ -80,11 +78,8 @@ graphids/               # Top-level package — __getattr__ lazy gateway for cor
         base.py         # Abstract base adapter
         can_bus.py      # CAN bus CSV → PyG graph adapter
 data/
-  automotive/           # 6 datasets (DVC-tracked): hcrl_ch, hcrl_sa, set_01-04
   ethernet/             # Network flow datasets (MachineLearningCSV, GeneratedLabelledFlows)
-  cache/                # Preprocessed graph cache (.pt, .pkl, metadata)
-  mlflow/               # MLflow SQLite backend (mlflow.db + artifacts/)
-experimentruns/         # Outputs: best_model.pt, config.json, metrics.json, embeddings.npz, dqn_policy.json
+experimentruns/         # Legacy outputs (migrated to ESS data lake)
 tests/
   conftest.py           # Shared fixtures (tiny architectures, temp dirs, E2E_OVERRIDES)
   test_layer_boundaries.py  # Import hierarchy + gateway enforcement (config ← pipeline ← core)
@@ -100,11 +95,8 @@ tests/
   test_lake.py              # Lake module tests (config, manifest, locking, catalog)
 scripts/
   reproduce.sh          # Full reproduction script
-  lab-db/               # Shared PostgreSQL infrastructure
-    pg-server.sbatch    # Apptainer PostgreSQL 16 SLURM job (local SSD PGDATA, NFS backup)
-    ensure_pg.sh        # Sourceable launcher: submit/poll/export KD_GAT_DB_URI
   slurm/                # SLURM job scripts
-    _preamble.sh            # Env setup (modules, venv, CUDA, ensure_pg.sh)
+    _preamble.sh            # Env setup (modules, venv, CUDA, MLflow)
     run_tests_slurm.sh  # Submit pytest to SLURM
     run_tests_parallel.sh # Parallel test runner
     sweep.sh            # Hyperparameter sweep submission
@@ -141,4 +133,4 @@ docs/
 
 ## File Count
 
-59 Python files, 11,182 lines under `graphids/` (+5 new: lake/{__init__, config, catalog, manifest, locking}.py).
+57 Python files under `graphids/` (config: 3, pipeline: 15 incl. artifacts.py, core: 16, lake: 5, top-level: 2).

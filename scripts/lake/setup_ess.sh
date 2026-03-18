@@ -49,6 +49,7 @@ _mkdir "${LAKE_ROOT}/exports/paper"
 _mkdir "${LAKE_ROOT}/exports/paper/metadata"
 _mkdir "${LAKE_ROOT}/exports/paper/csv"
 _mkdir "${LAKE_ROOT}/exports/paper/figures"
+_mkdir "${LAKE_ROOT}/sweeps"
 _mkdir "${LAKE_ROOT}/catalog"
 _mkdir "${LAKE_ROOT}/mlflow"
 
@@ -71,6 +72,7 @@ if ! $DRY_RUN; then
         "production": "Production experiment runs (Dagster orchestration)",
         "dev": "Per-user development sandboxes (same structure as production)",
         "exports": "Derived datasets for dashboards (parquet files)",
+        "sweeps": "HPO sweep best-config YAMLs and searcher state",
         "catalog": "DuckDB index (disposable, rebuilt from files)",
         "mlflow": "MLflow tracking backend (SQLite on GPFS)"
     }
@@ -106,6 +108,10 @@ db.sql("SELECT dataset, model_type, scale, f1_macro FROM experiments ORDER BY f1
       best_model.pt     #   Model checkpoint
       _manifest.json    #   Artifact inventory + checksums
   dev/{username}/       # Development sandboxes (same structure)
+  sweeps/               # HPO sweep results
+    {dataset}/          #   Per-dataset sweep outputs
+      {stage}_{scale}_best.yaml    # Best config from Ray Tune
+      {stage}_{scale}_searcher.pkl # Optuna searcher state (warm-start)
   exports/              # Dashboard datasets
     experiments.parquet  #   Flattened experiment results
     sweeps.parquet       #   Sweep results

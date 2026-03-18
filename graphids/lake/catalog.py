@@ -44,7 +44,7 @@ def rebuild_catalog(lake_root: Path, catalog_path: Path | None = None) -> Path:
 
     # Collect all run directories that have a manifest
     manifest_files = []
-    for tier_dir in [lake_root / "production", lake_root / "dev"]:
+    for tier_dir in [lake_root / "production", lake_root / "dev", lake_root / "sweeps"]:
         if tier_dir.exists():
             manifest_files.extend(tier_dir.rglob("_manifest.json"))
 

@@ -4,14 +4,36 @@
 
 ## Config Architecture
 
+3 files, single API entry point:
+
+| File | Role |
+|------|------|
+| `handler.py` | `ConfigHandler` class — YAML loading, resolution, path derivation. `EnvironmentSettings` (pydantic-settings) for env var overrides. |
+| `schema.py` | All Pydantic models — pipeline config, architecture sub-configs, dataset catalog entries, artifact validation contracts. |
+| `__init__.py` | Singleton `_api = ConfigHandler()` + re-exports. All external code uses `from graphids.config import X`. |
+
 - Pydantic v2 frozen BaseModels + YAML composition + JSON serialization.
 - Sub-configs: `cfg.vgae`, `cfg.gat`, `cfg.dqn`, `cfg.training`, `cfg.fusion`, `cfg.temporal` — nested Pydantic models. Always use nested access, never flat.
 - Auxiliaries: `cfg.auxiliaries` is a list of `AuxiliaryConfig`. KD is a composable loss modifier, not a model identity. Use `cfg.has_kd` / `cfg.kd` properties.
-- Constants: domain/infrastructure constants live in `config/constants.py` (not in PipelineConfig). Hyperparameters live in PipelineConfig.
-- Pipeline topology: `config/pipeline.yaml` defines model types, scales, stages, DAG dependencies, and variants. `constants.py` loads this at import time → `STAGES`, `STAGE_DEPENDENCIES`, `VALID_MODEL_TYPES`, `VALID_SCALES`. `PipelineConfig.variants` defaults from this YAML too.
-- Resolver: Pydantic v2's `model_validate()` handles schema validation — no custom key-checking needed.
+- Constants: all data lives in YAML (`pipeline.yaml`, `resources.yaml`, `datasets.yaml`). Python loads and exposes via `ConfigHandler`.
+- Env vars: declared in `EnvironmentSettings(BaseSettings)` with `env_prefix="KD_GAT_"`. pydantic-settings handles type validation and override priority.
+- Pipeline topology: `config/pipeline.yaml` defines model types, scales, stages, DAG dependencies, variants, preprocessing constants, path defaults, and seed defaults.
+- Resolver: `ConfigHandler.resolve()` merges YAML layers (model_def → auxiliaries → CLI overrides) → `PipelineConfig.model_validate()`.
+- **Config layer is inert**: no mlflow, shutil, or I/O imports. Artifact management lives in `pipeline/artifacts.py`.
 
 > Experiment tracking (MLflow): See experiment-tracking.md.
+
+## Artifact Management
+
+`graphids/pipeline/artifacts.py` — cache-first lookup with filesystem and MLflow fallback.
+
+| Function | Purpose |
+|----------|---------|
+| `get_artifact(cfg, stage, name, model_type=)` | Locate artifact: cache → experimentruns → MLflow download |
+| `put_artifact(cfg, stage, local_path)` | Log to MLflow + populate cache |
+| `artifact_exists(cfg, stage, name, model_type=)` | Check without downloading |
+
+Used for cross-stage reads (e.g. loading VGAE checkpoint while training GAT). Same-stage writes use `stage_dir()` directly.
 
 ## Orchestration
 
@@ -35,15 +57,6 @@ CLI: `python -m graphids.pipeline.cli orchestrate --dataset hcrl_sa --seeds 42,1
 - `tune_config.py`: Subprocess-based trainable (each trial spawns `cli.py` for CUDA isolation).
 - `sweep_pipeline.py`: Multi-stage HPO sweep DAG (SQLite-backed state).
 - Future: Dagster-managed Ray Tune (outer orchestration via Dagster, inner trial scheduling via Ray Tune).
-
-### Shared PostgreSQL (lab-db)
-
-On-demand PostgreSQL 16 in Apptainer on SLURM for concurrent pipeline writers (SQLite is unsafe on NFS with multiple writers). Components:
-- `scripts/lab-db/pg-server.sbatch` — SLURM job: builds SIF once, PGDATA on `$TMPDIR` (local SSD, not NFS), backup/restore via `pg_dumpall` to NFS, idle auto-shutdown (2h), graceful shutdown trap.
-- `scripts/lab-db/ensure_pg.sh` — sourceable launcher: checks `squeue`, submits if needed, polls endpoint, exports `KD_GAT_DB_URI` + `MLFLOW_TRACKING_URI`.
-- `_preamble.sh` sources `ensure_pg.sh` before each pipeline stage.
-- `KD_GAT_DB_URI` env var selects backend: set → PostgreSQL, unset → SQLite fallback.
-- Optional dep: `psycopg[binary]` via `uv pip install -e '.[db]'`.
 
 ### Shared Principles
 - **Subprocess dispatch**: Each stage runs as `subprocess.run()` for CUDA context isolation (~300-500 MB per model). Overhead (~3-5s) is <0.1% of pipeline wall time.
