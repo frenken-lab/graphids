@@ -101,16 +101,15 @@ def resolve(
         f"model={model_type}_{scale}",
         f"auxiliary={auxiliaries}",
     ]
+    # For known datasets, use config group selection. Unknown datasets
+    # (e.g. test fixtures) are handled after composition via OmegaConf.
+    _unknown_dataset = None
     if dataset is not None:
-        # Config group selection for known datasets; for unknown datasets
-        # (e.g. test fixtures), use ~dataset to remove the group default
-        # and ++dataset to force-set the name as a plain value.
         ds_yaml = Path(__file__).parent / "conf" / "dataset" / f"{dataset}.yaml"
         if ds_yaml.exists():
             override_list.append(f"dataset={dataset}")
         else:
-            override_list.append("~dataset")
-            override_list.append(f"++dataset={dataset}")
+            _unknown_dataset = dataset
     if seed is not None:
         override_list.append(f"seed={seed}")
 
@@ -126,5 +125,9 @@ def resolve(
 
     # Remove Hydra-only keys that aren't PipelineConfig fields
     raw.pop("stage", None)
+
+    # For unknown datasets (no config group file), set after composition
+    if _unknown_dataset is not None:
+        raw["dataset"] = _unknown_dataset
 
     return PipelineConfig.model_validate(raw)
