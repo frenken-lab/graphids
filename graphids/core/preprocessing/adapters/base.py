@@ -10,6 +10,7 @@ The adapter encapsulates all domain-specific knowledge (CAN bus hex parsing,
 network flow IP extraction, etc.) so that the GraphEngine can remain
 domain-agnostic.
 """
+
 from __future__ import annotations
 
 import abc
@@ -18,7 +19,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from ..vocabulary import EntityVocabulary
+from .._vocabulary import EntityVocabulary
 
 
 class DomainAdapter(abc.ABC):
@@ -84,6 +85,14 @@ class DomainAdapter(abc.ABC):
         -------
         pd.DataFrame
             IR-conformant DataFrame (may be empty if file is invalid).
+        """
+
+    @abc.abstractmethod
+    def to_init_kwargs(self) -> dict:
+        """Return kwargs that can reconstruct this adapter via ``cls(**kwargs)``.
+
+        Used by the parallel driver to serialize the adapter for Ray remote
+        tasks. Each concrete adapter must return its own init parameters.
         """
 
     @property

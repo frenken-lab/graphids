@@ -1,0 +1,114 @@
+"""Cache metadata and graph statistics for preprocessing cache validation."""
+
+from __future__ import annotations
+
+import json
+import logging
+from datetime import UTC, datetime
+from pathlib import Path
+
+import numpy as np
+import torch
+
+from graphids.config import (
+    EDGE_FEATURE_COUNT,
+    NODE_FEATURE_COUNT,
+    PREPROCESSING_VERSION,
+    compute_preprocessing_hash,
+)
+
+from ._dataset import CollatedGraphDataset
+from ._schema import EDGE_MANIFEST, NODE_MANIFEST
+
+logger = logging.getLogger(__name__)
+
+
+def compute_graph_stats(graphs) -> dict:
+    """Compute per-graph statistics for batch size estimation."""
+    if isinstance(graphs, CollatedGraphDataset):
+        x_slices = graphs._slices.get("x")
+        ei_slices = graphs._slices.get("edge_index")
+        if x_slices is not None:
+            nc = (x_slices[1:] - x_slices[:-1]).numpy()
+        else:
+            nc = np.zeros(len(graphs))
+        if ei_slices is not None:
+            ec = (ei_slices[1:] - ei_slices[:-1]).numpy()
+        else:
+            ec = np.zeros(len(graphs))
+
+        nf = graphs._data.x.size(1) if graphs._data.x is not None else 0
+        ef = graphs._data.edge_attr.size(1) if graphs._data.edge_attr is not None else 0
+        per_graph_bytes = (nc * nf * 4 + ec * 2 * 8 + ec * ef * 4 + 4).astype(float)
+
+        def _stats(values):
+            return {
+                "mean": round(float(np.mean(values)), 1),
+                "median": int(np.median(values)),
+                "p95": int(np.percentile(values, 95)),
+                "max": int(np.max(values)),
+            }
+
+        return {
+            "node_count": _stats(nc),
+            "edge_count": _stats(ec),
+            "per_graph_bytes": _stats(per_graph_bytes),
+        }
+
+    raise TypeError(f"Expected CollatedGraphDataset, got {type(graphs).__name__}")
+
+
+def write_cache_metadata(
+    cache_dir,
+    dataset_name,
+    graphs,
+    id_mapping,
+    csv_files,
+    window_size: int,
+    stride: int,
+):
+    """Write cache_metadata.json and feature_manifest.json alongside processed cache files."""
+    import torch_geometric
+
+    metadata = {
+        "dataset": dataset_name,
+        "created_at": datetime.now(UTC).isoformat(),
+        "window_size": window_size,
+        "stride": stride,
+        "num_graphs": len(graphs),
+        "num_unique_ids": len(id_mapping) if id_mapping else 0,
+        "node_feature_dim": NODE_FEATURE_COUNT,
+        "edge_feature_dim": EDGE_FEATURE_COUNT,
+        "source_csv_count": len(csv_files),
+        "preprocessing_version": PREPROCESSING_VERSION,
+        "config_hash": compute_preprocessing_hash(),
+        "torch_version": torch.__version__,
+        "pyg_version": torch_geometric.__version__,
+        "storage_format": "collated",
+    }
+
+    try:
+        metadata["graph_stats"] = compute_graph_stats(graphs)
+        logger.info("Graph stats: %s", metadata["graph_stats"]["node_count"])
+    except Exception as e:
+        logger.warning("Failed to compute graph stats: %s", e)
+
+    cache_path = Path(cache_dir)
+    metadata_file = cache_path / "cache_metadata.json"
+    try:
+        metadata_file.write_text(json.dumps(metadata, indent=2))
+        logger.info("Cache metadata written to %s", metadata_file)
+    except Exception as e:
+        logger.warning("Failed to write cache metadata: %s", e)
+
+    # Write feature manifest alongside cache
+    manifest_file = cache_path / "feature_manifest.json"
+    try:
+        manifest_data = {
+            "node_features": NODE_MANIFEST.to_json(),
+            "edge_features": EDGE_MANIFEST.to_json(),
+        }
+        manifest_file.write_text(json.dumps(manifest_data, indent=2))
+        logger.info("Feature manifest written to %s", manifest_file)
+    except Exception as e:
+        logger.warning("Failed to write feature manifest: %s", e)

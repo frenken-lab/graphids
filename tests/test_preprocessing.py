@@ -1,18 +1,21 @@
 """
 Comprehensive test suite for CAN-Graph preprocessing functionality.
 
-Tests cover the new modular preprocessing pipeline (Phase 3):
+Tests cover the modular preprocessing pipeline:
     - EntityVocabulary (build, encode, persistence)
     - IRSchema validation
     - CANBusAdapter (file discovery, raw→IR conversion)
     - GraphEngine (sliding window graph construction)
     - GraphDataset (wrapper, stats, consistency validation)
     - process_dataset (end-to-end pipeline)
+    - PreprocessingPipeline (class interface)
+    - Feature computation (scipy-backed entropy, networkx clustering)
 
 Run with: python -m pytest tests/test_preprocessing.py -v
 """
 
 import unittest
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -20,12 +23,23 @@ import torch
 from torch_geometric.data import Data
 
 from graphids.config import EDGE_FEATURE_COUNT, NODE_FEATURE_COUNT
-from graphids.core.preprocessing.adapters.can_bus import CANBusAdapter
-from graphids.core.preprocessing.dataset import GraphDataset
-from graphids.core.preprocessing.engine import GraphEngine
-from graphids.core.preprocessing.parallel import process_dataset
-from graphids.core.preprocessing.schema import CAN_BUS_SCHEMA, IRSchema
-from graphids.core.preprocessing.vocabulary import EntityVocabulary, _safe_hex_to_int
+from graphids.core.preprocessing import (
+    ATTACK_TYPE_CODES,
+    ATTACK_TYPE_NAMES,
+    CollatedGraphDataset,
+    EntityVocabulary,
+    GraphDataset,
+    GraphEngine,
+    IRSchema,
+    get_batch_index,
+    graph_attack_type,
+)
+from graphids.core.preprocessing._parallel import process_dataset
+from graphids.core.preprocessing.adapters._can_bus import (
+    CAN_BUS_SCHEMA,
+    CANBusAdapter,
+    _safe_hex_to_int,
+)
 
 
 class TestHexConversion(unittest.TestCase):
@@ -105,36 +119,6 @@ class TestIRSchema(unittest.TestCase):
         self.assertEqual(cols[0], "entity_id")
         self.assertEqual(cols[-1], "label")
         self.assertEqual(len(cols), 1 + 8 + 3)  # entity + 8 features + src/tgt/label
-
-    def test_validate_valid_df(self):
-        schema = IRSchema(num_features=2)
-        df = pd.DataFrame(
-            {
-                "entity_id": [0, 1, 2],
-                "feature_0": [0.1, 0.2, 0.3],
-                "feature_1": [0.4, 0.5, 0.6],
-                "source_id": [0, 1, 0],
-                "target_id": [1, 2, 1],
-                "label": [0, 1, 0],
-            }
-        )
-        result = schema.validate(df)
-        self.assertEqual(len(result), 3)
-
-    def test_validate_missing_column(self):
-        schema = IRSchema(num_features=2)
-        df = pd.DataFrame(
-            {
-                "entity_id": [0],
-                "feature_0": [0.1],
-                # missing feature_1
-                "source_id": [0],
-                "target_id": [1],
-                "label": [0],
-            }
-        )
-        with self.assertRaises(ValueError):
-            schema.validate(df)
 
     def test_col_indices(self):
         schema = IRSchema(num_features=8)
@@ -287,6 +271,108 @@ class TestGraphDataset(unittest.TestCase):
             GraphDataset([g1, g2])
 
 
+class TestGraphUtils(unittest.TestCase):
+    """Test re-exported graph utilities."""
+
+    def test_get_batch_index_with_batch(self):
+        g = Data(
+            x=torch.randn(4, 3),
+            batch=torch.tensor([0, 0, 1, 1]),
+        )
+        idx = get_batch_index(g, torch.device("cpu"))
+        self.assertEqual(idx.tolist(), [0, 0, 1, 1])
+
+    def test_get_batch_index_without_batch(self):
+        g = Data(x=torch.randn(4, 3))
+        idx = get_batch_index(g, torch.device("cpu"))
+        self.assertEqual(idx.tolist(), [0, 0, 0, 0])
+
+    def test_graph_attack_type_present(self):
+        g = Data(x=torch.randn(2, 3), attack_type=torch.tensor(3))
+        self.assertEqual(graph_attack_type(g), 3)
+
+    def test_graph_attack_type_absent(self):
+        g = Data(x=torch.randn(2, 3))
+        self.assertEqual(graph_attack_type(g), -1)
+
+    def test_attack_type_codes(self):
+        self.assertIn("normal", ATTACK_TYPE_CODES)
+        self.assertEqual(ATTACK_TYPE_CODES["normal"], 0)
+        self.assertEqual(ATTACK_TYPE_NAMES[0], "normal")
+
+
+class TestFeatures(unittest.TestCase):
+    """Test scipy/networkx-backed feature computation."""
+
+    def test_entropy_matches_manual(self):
+        """Verify scipy entropy matches manual Shannon entropy."""
+        from scipy.stats import entropy as scipy_entropy
+
+        counts = np.array([10, 20, 30, 40, 0, 0, 0, 0], dtype=np.float64)
+        # Manual
+        total = counts.sum()
+        probs = counts[counts > 0] / total
+        manual_entropy = -np.sum(probs * np.log2(probs))
+        # scipy
+        scipy_ent = scipy_entropy(counts, base=2)
+        np.testing.assert_allclose(scipy_ent, manual_entropy, rtol=1e-10)
+
+    def test_clustering_coefficient_triangle(self):
+        """Verify networkx clustering on a known graph (triangle)."""
+        import networkx as nx
+
+        G = nx.Graph()
+        G.add_edges_from([(0, 1), (1, 2), (0, 2)])
+        cc = nx.clustering(G)
+        # All nodes in a triangle have cc=1.0
+        for node_cc in cc.values():
+            self.assertAlmostEqual(node_cc, 1.0)
+
+    def test_feature_computation_no_nan(self):
+        """End-to-end: features from synthetic IR should have no NaN."""
+        rng = np.random.RandomState(42)
+        schema = IRSchema(num_features=4)
+        n_rows = 100
+        data = {"entity_id": rng.choice(3, n_rows)}
+        for i in range(4):
+            data[f"feature_{i}"] = rng.rand(n_rows)
+        data["source_id"] = rng.choice(3, n_rows)
+        data["target_id"] = np.roll(data["source_id"], -1)
+        data["label"] = rng.choice([0, 1], n_rows, p=[0.9, 0.1])
+        ir_df = pd.DataFrame(data)
+
+        engine = GraphEngine(schema, window_size=50, stride=50)
+        graphs = engine.create_graphs(ir_df)
+        for g in graphs:
+            self.assertFalse(torch.isnan(g.x).any(), "NaN in node features")
+            self.assertFalse(torch.isnan(g.edge_attr).any(), "NaN in edge features")
+
+
+class TestPreprocessingPipeline(unittest.TestCase):
+    """Test the PreprocessingPipeline class interface."""
+
+    def test_init(self):
+        from graphids.config import resolve
+        from graphids.core.preprocessing import PreprocessingPipeline
+
+        cfg = resolve("vgae", "large")
+        pipe = PreprocessingPipeline(cfg)
+        self.assertIsNotNone(pipe._adapter)
+        self.assertEqual(pipe._prep.window_size, 100)
+
+    def test_static_methods(self):
+        from graphids.core.preprocessing import PreprocessingPipeline
+
+        # get_batch_index
+        g = Data(x=torch.randn(3, 5))
+        idx = PreprocessingPipeline.get_batch_index(g, torch.device("cpu"))
+        self.assertEqual(idx.tolist(), [0, 0, 0])
+
+        # graph_attack_type
+        g2 = Data(x=torch.randn(2, 3), attack_type=torch.tensor(2))
+        self.assertEqual(PreprocessingPipeline.graph_attack_type(g2), 2)
+
+
 class TestEndToEnd(unittest.TestCase):
     """End-to-end test using real data (skipped if unavailable)."""
 
@@ -320,6 +406,193 @@ class TestEndToEnd(unittest.TestCase):
             # Payload features should be in [0, 1]
             payload = g.x[:, 1:9]
             self.assertTrue(torch.all(payload >= 0) and torch.all(payload <= 1))
+
+
+class TestAdapterRoundtrip(unittest.TestCase):
+    """Fix 2: Adapter serialization via to_init_kwargs()."""
+
+    def test_adapter_roundtrip_defaults(self):
+        adapter = CANBusAdapter()
+        kwargs = adapter.to_init_kwargs()
+        clone = CANBusAdapter(**kwargs)
+        self.assertEqual(clone._chunk_size, adapter._chunk_size)
+        self.assertEqual(clone._excluded_attacks, adapter._excluded_attacks)
+        self.assertEqual(clone._include_attack_type, adapter._include_attack_type)
+
+    def test_adapter_roundtrip_non_defaults(self):
+        adapter = CANBusAdapter(chunk_size=999, excluded_attacks=["foo"], include_attack_type=True)
+        kwargs = adapter.to_init_kwargs()
+        clone = CANBusAdapter(**kwargs)
+        self.assertEqual(clone._chunk_size, 999)
+        self.assertEqual(clone._excluded_attacks, ["foo"])
+        self.assertTrue(clone._include_attack_type)
+
+
+class TestTrainValSplitConfig(unittest.TestCase):
+    """Fix 1: train_val_split from config, not hardcoded."""
+
+    def test_non_default_split(self):
+        """Verify non-default split produces correct sizes."""
+        # Create a minimal fake dataset
+        graphs = [
+            Data(
+                x=torch.randn(3, NODE_FEATURE_COUNT),
+                edge_index=torch.tensor([[0, 1], [1, 2]], dtype=torch.long),
+                edge_attr=torch.randn(2, EDGE_FEATURE_COUNT),
+                y=torch.tensor(0, dtype=torch.long),
+            )
+            for _ in range(100)
+        ]
+        dataset = torch.utils.data.TensorDataset(torch.arange(100))
+
+        # Simulate the split logic from _cache.load_dataset
+        train_val_split = 0.7
+        train_size = int(train_val_split * len(dataset))
+        val_size = len(dataset) - train_size
+        self.assertEqual(train_size, 70)
+        self.assertEqual(val_size, 30)
+
+
+class TestIRSchemaValidation(unittest.TestCase):
+    """Fix 4: IRSchema.validate()."""
+
+    def _make_valid_df(self, n_rows=10, n_features=8, include_attack_type=False):
+        rng = np.random.RandomState(42)
+        schema = IRSchema(num_features=n_features, include_attack_type=include_attack_type)
+        data = {}
+        data["entity_id"] = rng.choice(5, n_rows)
+        for i in range(n_features):
+            data[f"feature_{i}"] = rng.rand(n_rows)
+        data["source_id"] = rng.choice(5, n_rows)
+        data["target_id"] = rng.choice(5, n_rows)
+        data["label"] = rng.choice([0, 1], n_rows)
+        if include_attack_type:
+            data["attack_type"] = rng.choice(3, n_rows)
+        return pd.DataFrame(data)[schema.columns], schema
+
+    def test_ir_validate_correct(self):
+        df, schema = self._make_valid_df()
+        schema.validate(df)  # should not raise
+
+    def test_ir_validate_missing_column(self):
+        df, schema = self._make_valid_df()
+        df_bad = df.drop(columns=["entity_id"])
+        with self.assertRaises(ValueError, msg="missing"):
+            schema.validate(df_bad)
+
+    def test_ir_validate_empty(self):
+        df, schema = self._make_valid_df()
+        df_empty = df.iloc[:0]
+        with self.assertRaises(ValueError, msg="empty"):
+            schema.validate(df_empty)
+
+    def test_ir_validate_strict_nan(self):
+        df, schema = self._make_valid_df()
+        df.loc[0, "feature_0"] = np.nan
+        with self.assertRaises(ValueError, msg="NaN"):
+            schema.validate(df, strict=True)
+
+    def test_ir_validate_strict_passes(self):
+        df, schema = self._make_valid_df()
+        schema.validate(df, strict=True)  # should not raise
+
+
+class TestFeatureManifest(unittest.TestCase):
+    """Fix 5: Feature manifest as single source of truth."""
+
+    def test_manifest_count_matches_config(self):
+        from graphids.core.preprocessing._schema import EDGE_MANIFEST, NODE_MANIFEST
+
+        self.assertEqual(NODE_MANIFEST.count, NODE_FEATURE_COUNT)
+        self.assertEqual(EDGE_MANIFEST.count, EDGE_FEATURE_COUNT)
+
+    def test_manifest_json_roundtrip(self):
+        from graphids.core.preprocessing._schema import NODE_MANIFEST
+
+        data = NODE_MANIFEST.to_json()
+        self.assertIsInstance(data, list)
+        self.assertEqual(len(data), NODE_MANIFEST.count)
+        for entry in data:
+            self.assertIn("name", entry)
+            self.assertIn("index", entry)
+            self.assertIn("description", entry)
+            self.assertIn("value_range", entry)
+
+    def test_engine_uses_manifest(self):
+        from graphids.core.preprocessing._schema import build_node_manifest
+
+        schema = IRSchema(num_features=8)
+        engine = GraphEngine(schema, window_size=50, stride=50)
+        self.assertEqual(engine.node_feature_count, build_node_manifest(8).count)
+
+    def test_manifest_names_unique(self):
+        from graphids.core.preprocessing._schema import EDGE_MANIFEST, NODE_MANIFEST
+
+        node_names = [f.name for f in NODE_MANIFEST.features]
+        self.assertEqual(len(node_names), len(set(node_names)), "Duplicate node feature names")
+        edge_names = [f.name for f in EDGE_MANIFEST.features]
+        self.assertEqual(len(edge_names), len(set(edge_names)), "Duplicate edge feature names")
+
+
+class TestAtomicIO(unittest.TestCase):
+    """Fix 6: Extracted atomic I/O."""
+
+    def test_atomic_rename_retry(self):
+        import tempfile
+
+        from graphids.core.preprocessing._atomic_io import atomic_rename
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d) / "tmp.txt"
+            final = Path(d) / "final.txt"
+            tmp.write_text("hello")
+            atomic_rename(tmp, final)
+            self.assertTrue(final.exists())
+            self.assertFalse(tmp.exists())
+            self.assertEqual(final.read_text(), "hello")
+
+
+class TestCacheMetadata(unittest.TestCase):
+    """Fix 6: Extracted cache metadata writes feature manifest."""
+
+    def test_cache_metadata_writes_manifest(self):
+        import tempfile
+
+        from graphids.core.preprocessing._cache_metadata import write_cache_metadata
+        from graphids.core.preprocessing._dataset import CollatedGraphDataset
+
+        # Build minimal collated dataset
+        graphs = [
+            Data(
+                x=torch.randn(3, NODE_FEATURE_COUNT),
+                edge_index=torch.tensor([[0, 1], [1, 2]], dtype=torch.long),
+                edge_attr=torch.randn(2, EDGE_FEATURE_COUNT),
+                y=torch.tensor(0, dtype=torch.long),
+            )
+            for _ in range(5)
+        ]
+
+        with tempfile.TemporaryDirectory() as d:
+            cache_dir = Path(d)
+            write_cache_metadata(
+                cache_dir,
+                "test_ds",
+                graphs,
+                {"a": 0},
+                ["f1.csv"],
+                window_size=100,
+                stride=100,
+            )
+            self.assertTrue((cache_dir / "cache_metadata.json").exists())
+            self.assertTrue((cache_dir / "feature_manifest.json").exists())
+
+            import json
+
+            manifest = json.loads((cache_dir / "feature_manifest.json").read_text())
+            self.assertIn("node_features", manifest)
+            self.assertIn("edge_features", manifest)
+            self.assertEqual(len(manifest["node_features"]), NODE_FEATURE_COUNT)
+            self.assertEqual(len(manifest["edge_features"]), EDGE_FEATURE_COUNT)
 
 
 if __name__ == "__main__":

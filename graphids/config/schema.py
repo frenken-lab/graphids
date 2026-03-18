@@ -125,6 +125,9 @@ class FusionConfig(BaseModel, frozen=True):
 class PreprocessingConfig(BaseModel, frozen=True):
     window_size: int = Field(100, ge=1)
     stride: int = Field(100, ge=1)
+    train_val_split: float = Field(0.8, gt=0.0, lt=1.0)
+    chunk_size: int = Field(5000, ge=100)
+    ray_file_threshold: int = Field(4, ge=1)
 
 
 class TemporalConfig(BaseModel, frozen=True):
@@ -405,5 +408,6 @@ def compute_preprocessing_hash() -> str:
         str(prep["edge_feature_count"]),
         str(defaults.window_size),
         str(defaults.stride),
+        str(defaults.train_val_split),
     ]
     return hashlib.sha256("|".join(components).encode()).hexdigest()[:16]

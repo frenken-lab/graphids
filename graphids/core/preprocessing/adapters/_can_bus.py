@@ -23,17 +23,37 @@ import pandas as pd
 
 from graphids.config import EXCLUDED_ATTACK_TYPES, MAX_DATA_BYTES
 
-from ..schema import (
-    CAN_BUS_SCHEMA,
-    CAN_BUS_SCHEMA_WITH_ATTACK_TYPE,
+from .._schema import (
     COL_ATTACK_TYPE,
     IRSchema,
     feature_columns,
 )
-from ..vocabulary import EntityVocabulary, _safe_hex_to_int
+from .._vocabulary import EntityVocabulary
 from .base import DomainAdapter
 
 log = logging.getLogger(__name__)
+
+# CAN bus IR schemas (8 data bytes → 8 features)
+CAN_BUS_SCHEMA = IRSchema(num_features=8)
+CAN_BUS_SCHEMA_WITH_ATTACK_TYPE = IRSchema(num_features=8, include_attack_type=True)
+
+_HEX_CHARS = frozenset("0123456789abcdefABCDEF")
+
+
+def _safe_hex_to_int(value) -> int | None:
+    """Safely convert hex string or numeric value to integer."""
+    if pd.isna(value):
+        return None
+    try:
+        if isinstance(value, str):
+            value = value.strip()
+            if all(c in _HEX_CHARS for c in value):
+                return int(value, 16)
+            return int(value)
+        return int(value)
+    except (ValueError, TypeError):
+        return None
+
 
 # Attack type string → integer code mapping
 ATTACK_TYPE_CODES: dict[str, int] = {
@@ -66,13 +86,24 @@ class CANBusAdapter(DomainAdapter):
 
     def __init__(
         self,
-        chunk_size: int = 5000,
+        chunk_size: int | None = None,
         excluded_attacks: Sequence[str] = EXCLUDED_ATTACK_TYPES,
         include_attack_type: bool = False,
     ):
+        from graphids.config.schema import PreprocessingConfig
+
+        if chunk_size is None:
+            chunk_size = PreprocessingConfig().chunk_size
         self._chunk_size = chunk_size
         self._excluded_attacks = list(excluded_attacks)
         self._include_attack_type = include_attack_type
+
+    def to_init_kwargs(self) -> dict:
+        return {
+            "chunk_size": self._chunk_size,
+            "excluded_attacks": self._excluded_attacks,
+            "include_attack_type": self._include_attack_type,
+        }
 
     @property
     def schema(self) -> IRSchema:
@@ -207,7 +238,9 @@ class CANBusAdapter(DomainAdapter):
             return pd.DataFrame(columns=self.schema.columns)
 
         result = pd.concat(ir_chunks, ignore_index=True)
-        return result[self.schema.columns]
+        result = result[self.schema.columns]
+        self.schema.validate(result)
+        return result
 
     # ------------------------------------------------------------------
     # Internal helpers

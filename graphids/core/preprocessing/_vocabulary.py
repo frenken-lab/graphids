@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import pickle
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 
 import pandas as pd
@@ -17,23 +17,6 @@ log = logging.getLogger(__name__)
 
 # Sentinel key for out-of-vocabulary entities
 OOV_KEY = "OOV"
-
-_HEX_CHARS = frozenset("0123456789abcdefABCDEF")
-
-
-def _safe_hex_to_int(value) -> int | None:
-    """Safely convert hex string or numeric value to integer."""
-    if pd.isna(value):
-        return None
-    try:
-        if isinstance(value, str):
-            value = value.strip()
-            if all(c in _HEX_CHARS for c in value):
-                return int(value, 16)
-            return int(value)
-        return int(value)
-    except (ValueError, TypeError):
-        return None
 
 
 class EntityVocabulary:
@@ -72,6 +55,7 @@ class EntityVocabulary:
         csv_files: Sequence[str | Path],
         id_column: int = 1,
         hex_convert: bool = True,
+        converter: Callable | None = None,
     ) -> EntityVocabulary:
         """Build vocabulary by scanning the ID column of CSV files.
 
@@ -86,7 +70,16 @@ class EntityVocabulary:
             0-based column index containing entity IDs.
         hex_convert : bool
             If True, treat column values as hex strings and convert to int.
+            Ignored when *converter* is provided.
+        converter : callable, optional
+            Custom value → int|None converter. When provided, *hex_convert*
+            is ignored and this callable is used for every raw value.
         """
+        if converter is None and hex_convert:
+            from graphids.core.preprocessing.adapters._can_bus import _safe_hex_to_int
+
+            converter = _safe_hex_to_int
+
         unique_ids: set[int] = set()
 
         for i, csv_file in enumerate(csv_files):
@@ -96,9 +89,9 @@ class EntityVocabulary:
                 df_col = pd.read_csv(csv_file, usecols=[id_column])
                 raw_values = df_col.iloc[:, 0].dropna().unique()
 
-                if hex_convert:
+                if converter is not None:
                     for val in raw_values:
-                        converted = _safe_hex_to_int(val)
+                        converted = converter(val)
                         if converted is not None:
                             unique_ids.add(converted)
                 else:

@@ -8,7 +8,6 @@ Core function:
 import json
 import logging
 import os
-from datetime import UTC, datetime
 from pathlib import Path
 
 import torch
@@ -17,46 +16,16 @@ from graphids.config import (
     EDGE_FEATURE_COUNT,
     NODE_FEATURE_COUNT,
     PREPROCESSING_VERSION,
-    PreprocessingConfig,
 )
 
-_PREP_DEFAULTS = PreprocessingConfig()
-from graphids.core.preprocessing.dataset import (
+from ._atomic_io import atomic_rename, atomic_save_collated
+from ._cache_metadata import write_cache_metadata
+from ._dataset import (
     CollatedGraphDataset,
     load_collated,
-    save_collated,
 )
 
 logger = logging.getLogger(__name__)
-
-
-# ============================================================================
-# Atomic save helpers (NFS-safe)
-# ============================================================================
-
-
-def _atomic_rename(tmp: Path, final: Path, retries: int = 3) -> None:
-    """Rename tmp → final with retry for NFS visibility delays."""
-    import time
-
-    for attempt in range(retries):
-        try:
-            tmp.rename(final)
-            return
-        except OSError as e:
-            if attempt < retries - 1:
-                logger.warning("Rename attempt %d failed: %s. Retrying...", attempt + 1, e)
-                time.sleep(1)
-            else:
-                raise
-
-
-def _atomic_save_collated(graphs: list, tmp_path: Path, target_path: Path) -> None:
-    """Save collated graphs atomically: write to tmp, fsync, rename to target."""
-    save_collated(graphs, tmp_path)
-    with open(tmp_path, "rb") as f:
-        os.fsync(f.fileno())
-    _atomic_rename(tmp_path, target_path)
 
 
 # ============================================================================
@@ -70,6 +39,10 @@ def load_dataset(
     cache_dir_path: Path,
     force_rebuild_cache: bool = False,
     seed: int = 42,
+    train_val_split: float = 0.8,
+    adapter=None,
+    window_size: int | None = None,
+    stride: int | None = None,
 ):
     """
     Load and prepare dataset with intelligent caching.
@@ -79,10 +52,24 @@ def load_dataset(
         dataset_path: Path to the raw dataset directory
         cache_dir_path: Path to the cache directory for processed graphs
         force_rebuild_cache: Force rebuild cached data
+        seed: Random seed for train/val split
+        train_val_split: Fraction of data for training
+        adapter: Domain adapter (defaults to CANBusAdapter)
+        window_size: Sliding window size (for cache validation; defaults from config)
+        stride: Sliding window stride (for cache validation; defaults from config)
 
     Returns:
         Tuple of (train_dataset, val_dataset, num_unique_ids)
     """
+    if window_size is None or stride is None:
+        from graphids.config import PreprocessingConfig
+
+        _defaults = PreprocessingConfig()
+        if window_size is None:
+            window_size = _defaults.window_size
+        if stride is None:
+            stride = _defaults.stride
+
     cache_file = cache_dir_path / "processed_graphs.pt"
     id_mapping_file = cache_dir_path / "id_mapping.pkl"
 
@@ -93,6 +80,8 @@ def load_dataset(
             cache_file,
             id_mapping_file,
             dataset_name,
+            window_size=window_size,
+            stride=stride,
         )
 
     # Process from scratch if needed
@@ -103,11 +92,14 @@ def load_dataset(
             cache_file,
             id_mapping_file,
             force_rebuild_cache,
+            adapter=adapter,
+            window_size=window_size,
+            stride=stride,
         )
 
     logger.info(f"Created dataset with {len(dataset)} total graphs")
 
-    train_size = int(0.8 * len(dataset))
+    train_size = int(train_val_split * len(dataset))
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = torch.utils.data.random_split(
         dataset,
@@ -126,7 +118,14 @@ def load_dataset(
 # ============================================================================
 
 
-def _load_cached_data(cache_file, id_mapping_file, dataset_name):
+def _load_cached_data(
+    cache_file,
+    id_mapping_file,
+    dataset_name,
+    *,
+    window_size: int,
+    stride: int,
+):
     """Load cached collated graphs and ID mapping with robust error handling.
 
     Supports both the new collated format (data_dict + slices) and legacy
@@ -165,8 +164,8 @@ def _load_cached_data(cache_file, id_mapping_file, dataset_name):
                     stale_reasons.append(f"version {version} != {PREPROCESSING_VERSION}")
                 # Map metadata keys to current expected values
                 expected_vals = {
-                    "window_size": _PREP_DEFAULTS.window_size,
-                    "stride": _PREP_DEFAULTS.stride,
+                    "window_size": window_size,
+                    "stride": stride,
                     "node_feature_dim": NODE_FEATURE_COUNT,
                     "edge_feature_dim": EDGE_FEATURE_COUNT,
                 }
@@ -219,6 +218,9 @@ def _process_dataset_from_scratch(
     cache_file,
     id_mapping_file,
     force_rebuild,
+    adapter=None,
+    window_size: int = 100,
+    stride: int = 100,
 ):
     """Process dataset from CSV files and save in collated format."""
     logger.info(
@@ -229,10 +231,12 @@ def _process_dataset_from_scratch(
     if not os.path.exists(dataset_path):
         raise FileNotFoundError(f"Dataset path does not exist: {dataset_path}")
 
-    from graphids.core.preprocessing.adapters.can_bus import CANBusAdapter
-    from graphids.core.preprocessing.parallel import process_dataset
+    from ._parallel import process_dataset
 
-    adapter = CANBusAdapter(include_attack_type=True)
+    if adapter is None:
+        from .adapters._can_bus import CANBusAdapter
+
+        adapter = CANBusAdapter(include_attack_type=True)
     csv_files = adapter.discover_files(str(dataset_path), "train_")
     logger.info("Found %d CSV files in %s", len(csv_files), dataset_path)
 
@@ -245,7 +249,7 @@ def _process_dataset_from_scratch(
         split="train_",
         return_vocab=True,
         verbose=True,
-        include_attack_type=True,
+        adapter=adapter,
     )
 
     if hasattr(graphs, "data_list"):
@@ -266,17 +270,25 @@ def _process_dataset_from_scratch(
 
     try:
         with cache_lock(cache_file.parent):
-            _atomic_save_collated(graphs, temp_cache, cache_file)
+            atomic_save_collated(graphs, temp_cache, cache_file)
             with open(temp_mapping, "wb") as f:
                 pickle.dump(id_mapping, f, protocol=4)
             with open(temp_mapping, "rb") as f:
                 os.fsync(f.fileno())
-            _atomic_rename(temp_mapping, id_mapping_file)
+            atomic_rename(temp_mapping, id_mapping_file)
 
         logger.info(f"Cache saved (collated): {len(graphs)} graphs")
 
         # Write cache metadata for validation on future loads
-        _write_cache_metadata(cache_file.parent, dataset_name, graphs, id_mapping, csv_files)
+        write_cache_metadata(
+            cache_file.parent,
+            dataset_name,
+            graphs,
+            id_mapping,
+            csv_files,
+            window_size=window_size,
+            stride=stride,
+        )
     except Exception as e:
         logger.error(f"Failed to save cache: {e}")
         temp_cache.unlink(missing_ok=True)
@@ -291,6 +303,7 @@ def load_test_scenarios(
     dataset_path: Path,
     cache_dir_path: Path,
     force_rebuild_cache: bool = False,
+    adapter=None,
 ) -> dict[str, CollatedGraphDataset]:
     """Load held-out test scenarios with per-scenario caching (collated format).
 
@@ -299,12 +312,12 @@ def load_test_scenarios(
     id_mapping for consistent CAN ID encoding.
 
     Returns:
-        Dict mapping scenario name → CollatedGraphDataset.
+        Dict mapping scenario name -> CollatedGraphDataset.
     """
     import pickle
 
-    from graphids.core.preprocessing.parallel import process_dataset
-    from graphids.core.preprocessing.vocabulary import EntityVocabulary
+    from ._parallel import process_dataset
+    from ._vocabulary import EntityVocabulary
 
     id_mapping_file = cache_dir_path / "id_mapping.pkl"
     if not id_mapping_file.exists():
@@ -345,6 +358,7 @@ def load_test_scenarios(
             split=name,
             vocab=vocab,
             return_vocab=False,
+            adapter=adapter,
         )
         if hasattr(graphs, "data_list"):
             graphs = graphs.data_list
@@ -356,9 +370,9 @@ def load_test_scenarios(
             cache_dir_path.mkdir(parents=True, exist_ok=True)
             tmp = cache_file.with_suffix(".tmp")
             try:
-                _atomic_save_collated(graphs, tmp, cache_file)
+                atomic_save_collated(graphs, tmp, cache_file)
                 logger.info(
-                    "Cached %d test graphs (collated) for %s → %s", len(graphs), name, cache_file
+                    "Cached %d test graphs (collated) for %s -> %s", len(graphs), name, cache_file
                 )
             except Exception as e:
                 logger.warning("Failed to cache test graphs for %s: %s", name, e)
@@ -369,82 +383,3 @@ def load_test_scenarios(
             logger.warning("No graphs created for test scenario %s", name)
 
     return scenarios
-
-
-def _compute_graph_stats(graphs) -> dict:
-    """Compute per-graph statistics for batch size estimation."""
-    import numpy as np
-
-    # Handle both CollatedGraphDataset and list[Data]
-    if isinstance(graphs, CollatedGraphDataset):
-        stats = graphs.get_stats()
-        node_counts = []
-        edge_counts = []
-        x_slices = graphs._slices.get("x")
-        ei_slices = graphs._slices.get("edge_index")
-        if x_slices is not None:
-            nc = (x_slices[1:] - x_slices[:-1]).numpy()
-        else:
-            nc = np.zeros(len(graphs))
-        if ei_slices is not None:
-            ec = (ei_slices[1:] - ei_slices[:-1]).numpy()
-        else:
-            ec = np.zeros(len(graphs))
-
-        # Estimate per-graph bytes from node/edge counts and feature dims
-        nf = graphs._data.x.size(1) if graphs._data.x is not None else 0
-        ef = graphs._data.edge_attr.size(1) if graphs._data.edge_attr is not None else 0
-        per_graph_bytes = (nc * nf * 4 + ec * 2 * 8 + ec * ef * 4 + 4).astype(float)
-
-        def _stats(values):
-            return {
-                "mean": round(float(np.mean(values)), 1),
-                "median": int(np.median(values)),
-                "p95": int(np.percentile(values, 95)),
-                "max": int(np.max(values)),
-            }
-
-        return {
-            "node_count": _stats(nc),
-            "edge_count": _stats(ec),
-            "per_graph_bytes": _stats(per_graph_bytes),
-        }
-
-    raise TypeError(f"Expected CollatedGraphDataset, got {type(graphs).__name__}")
-
-
-def _write_cache_metadata(cache_dir, dataset_name, graphs, id_mapping, csv_files):
-    """Write cache_metadata.json alongside processed cache files."""
-    import torch_geometric
-
-    from graphids.config import compute_preprocessing_hash
-
-    metadata = {
-        "dataset": dataset_name,
-        "created_at": datetime.now(UTC).isoformat(),
-        "window_size": _PREP_DEFAULTS.window_size,
-        "stride": _PREP_DEFAULTS.stride,
-        "num_graphs": len(graphs),
-        "num_unique_ids": len(id_mapping) if id_mapping else 0,
-        "node_feature_dim": NODE_FEATURE_COUNT,
-        "edge_feature_dim": EDGE_FEATURE_COUNT,
-        "source_csv_count": len(csv_files),
-        "preprocessing_version": PREPROCESSING_VERSION,
-        "config_hash": compute_preprocessing_hash(),
-        "torch_version": torch.__version__,
-        "pyg_version": torch_geometric.__version__,
-        "storage_format": "collated",
-    }
-
-    try:
-        metadata["graph_stats"] = _compute_graph_stats(graphs)
-        logger.info("Graph stats: %s", metadata["graph_stats"]["node_count"])
-    except Exception as e:
-        logger.warning("Failed to compute graph stats: %s", e)
-
-    metadata_file = Path(cache_dir) / "cache_metadata.json"
-    try:
-        metadata_file.write_text(json.dumps(metadata, indent=2))
-        logger.info(f"Cache metadata written to {metadata_file}")
-    except Exception as e:
-        logger.warning(f"Failed to write cache metadata: {e}")
