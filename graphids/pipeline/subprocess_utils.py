@@ -4,6 +4,8 @@ All subprocess-based stage invocations go through build_cli_cmd() to ensure
 consistent argument formatting. The returned list is suitable for subprocess.run()
 or subprocess.Popen(). SLURM wrappers join the result into a string and wrap
 with sbatch separately.
+
+Emits Hydra override grammar: ``stage=X model=Y dataset=Z key=value``.
 """
 
 from __future__ import annotations
@@ -16,14 +18,14 @@ def build_cli_cmd(
     model: str,
     scale: str,
     dataset: str,
+    *,
     seed: int | None = None,
-    seeds: str | None = None,
     auxiliaries: str = "none",
     overrides: list[tuple[str, str]] | None = None,
-    sweep_id: str | None = None,
-    ckpt_path: str | None = None,
 ) -> list[str]:
     """Build a CLI command list for ``python -m graphids.pipeline.cli``.
+
+    Emits Hydra override grammar (``key=value``).
 
     Parameters
     ----------
@@ -36,16 +38,11 @@ def build_cli_cmd(
     dataset : str
         Dataset name.
     seed : int | None
-        Single seed value (``--seed``).
-    seeds : str | None
-        Seeds string for multi-seed (``--seeds``).
+        Single seed value.
     auxiliaries : str
         Auxiliary loss modifier (default ``"none"``).
     overrides : list[tuple[str, str]] | None
-        Config overrides as ``[("key", "value"), ...]`` style pairs.
-        Each tuple is ``(key, value)`` and is emitted as ``-O key value``.
-    sweep_id : str | None
-        Sweep identifier (``--sweep-id``).
+        Config overrides as ``[("key", "value"), ...]`` pairs.
 
     Returns
     -------
@@ -56,32 +53,23 @@ def build_cli_cmd(
         sys.executable,
         "-m",
         "graphids.pipeline.cli",
-        stage,
-        "--model",
-        model,
-        "--scale",
-        scale,
-        "--dataset",
-        dataset,
+        f"stage={stage}",
     ]
 
+    # Compound model name for Hydra config group (e.g., model=vgae_large)
+    if model and scale:
+        cmd.append(f"model={model}_{scale}")
+
+    cmd.append(f"dataset={dataset}")
+
     if auxiliaries != "none":
-        cmd.extend(["--auxiliaries", auxiliaries])
+        cmd.append(f"auxiliary={auxiliaries}")
 
     if seed is not None:
-        cmd.extend(["--seed", str(seed)])
-
-    if seeds is not None:
-        cmd.extend(["--seeds", str(seeds)])
+        cmd.append(f"seed={seed}")
 
     if overrides:
         for key, value in overrides:
-            cmd.extend(["-O", key, str(value)])
-
-    if sweep_id is not None:
-        cmd.extend(["--sweep-id", sweep_id])
-
-    if ckpt_path is not None:
-        cmd.extend(["--ckpt-path", str(ckpt_path)])
+            cmd.append(f"{key}={value}")
 
     return cmd

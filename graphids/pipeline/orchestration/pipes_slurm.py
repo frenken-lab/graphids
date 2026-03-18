@@ -156,7 +156,6 @@ def generate_sbatch_script(
         dataset=dataset,
         seed=seed,
         auxiliaries=auxiliaries,
-        ckpt_path=ckpt_path,
     )
     cli_command = " ".join(cmd_list)
 
@@ -201,6 +200,11 @@ def generate_sbatch_script(
 
     # Dagster-orchestrated jobs write to production/ in the data lake
     lines.append("export KD_GAT_PRODUCTION=1")
+
+    # Checkpoint resume (set by orchestrator on TIMEOUT resubmit)
+    if ckpt_path:
+        lines.append(f'export KD_GAT_CKPT_PATH="{ckpt_path}"')
+
     lines.append("")
 
     # Dagster Pipes env vars (NFS temp file transport)

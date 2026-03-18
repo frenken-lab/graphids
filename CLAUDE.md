@@ -7,26 +7,23 @@ Large models are compressed into small models via KD auxiliaries for edge deploy
 ## Key Commands
 
 ```bash
-# Run a single stage
-python -m graphids.pipeline.cli <stage> --model <type> --scale <size> --dataset <name> [--seeds <csv|count>]
+# Run a single stage (Hydra override grammar)
+python -m graphids.pipeline.cli stage=autoencoder model=vgae_large dataset=hcrl_sa
+python -m graphids.pipeline.cli stage=curriculum model=gat_small auxiliary=kd_standard dataset=hcrl_sa
+python -m graphids.pipeline.cli stage=fusion model=dqn_large dataset=hcrl_ch
+python -m graphids.pipeline.cli stage=autoencoder model=vgae_large dataset=hcrl_sa training.lr=0.001 vgae.latent_dim=16
+python -m graphids.pipeline.cli stage=autoencoder model=vgae_large dataset=hcrl_sa seed=123
 # Stages: autoencoder, curriculum, normal, fusion, evaluation, temporal
-# Models: vgae, gat, dqn | Scales: large, small | Auxiliaries: none, kd_standard
-# Seeds: comma-separated (42,123,456) or integer count (5 = first 5 defaults)
+# Models: vgae_large, vgae_small, gat_large, gat_small, dqn_large, dqn_small
+# Auxiliaries: none, kd_standard
 
-# Examples
-python -m graphids.pipeline.cli autoencoder --model vgae --scale large --dataset hcrl_sa
-python -m graphids.pipeline.cli curriculum --model gat --scale small --auxiliaries kd_standard --teacher-path <path> --dataset hcrl_sa
-python -m graphids.pipeline.cli fusion --model dqn --scale large --dataset hcrl_ch
-python -m graphids.pipeline.cli temporal --model gat --scale large --dataset hcrl_sa -O temporal.enabled true
-python -m graphids.pipeline.cli autoencoder --model vgae --scale large -O training.lr 0.001 -O vgae.latent_dim 16
+# Show resolved config without running
+python -m graphids.pipeline.cli show-config model=vgae_large dataset=hcrl_sa
 
 # Full pipeline via Dagster + SLURM (fire-and-forget dependency chains)
 python -m graphids.pipeline.cli orchestrate --dataset hcrl_sa
 python -m graphids.pipeline.cli orchestrate --dataset hcrl_sa --dry-run  # Preview DAG
-
-# Multi-seed pipeline (for statistical significance)
 python -m graphids.pipeline.cli orchestrate --dataset hcrl_sa --seeds 42,123,456
-python -m graphids.pipeline.cli autoencoder --model vgae --scale large --seeds 42,123,456 --dataset hcrl_sa
 
 # Preprocess graph cache
 python -m graphids.pipeline.cli preprocess --dataset hcrl_sa

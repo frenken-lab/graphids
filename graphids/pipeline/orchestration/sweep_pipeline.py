@@ -202,17 +202,17 @@ def _run_train_step(step: SweepStep, dataset: str, scale: str) -> None:
         scale,
         dataset,
         overrides=list(config.items()),
-        sweep_id=f"tune_{step.stage}_{dataset}_{scale}",
     )
     log.info("Training best %s: %s", step.stage, " ".join(cmd))
-    result = subprocess.run(cmd, cwd=PROJECT_ROOT)
+    env = {**os.environ, "KD_GAT_SWEEP_ID": f"tune_{step.stage}_{dataset}_{scale}"}
+    result = subprocess.run(cmd, cwd=PROJECT_ROOT, env=env)
     if result.returncode != 0:
         raise RuntimeError(f"Training step '{step.name}' failed with exit code {result.returncode}")
 
 
 def _run_evaluate_step(dataset: str, scale: str, *, seed: int | None = None) -> None:
     """Run evaluation stage via subprocess."""
-    cmd = build_cli_cmd("evaluation", "vgae", scale, dataset, seeds=str(seed) if seed else None)
+    cmd = build_cli_cmd("evaluation", "vgae", scale, dataset, seed=seed)
     log.info("Running evaluation: %s", " ".join(cmd))
     result = subprocess.run(cmd, cwd=PROJECT_ROOT)
     if result.returncode != 0:
@@ -363,7 +363,7 @@ def _run_multi_seed_final(dataset: str, scale: str) -> None:
                 step.model,
                 scale,
                 dataset,
-                seeds=str(seed),
+                seed=seed,
                 overrides=list(config.items()),
             )
             log.info("Multi-seed %s (seed=%d): %s", step.stage, seed, " ".join(cmd))

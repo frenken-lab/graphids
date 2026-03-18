@@ -211,9 +211,9 @@ class TestScriptGeneration:
         assert "source scripts/slurm/_preamble.sh" in script
         assert "source scripts/slurm/_epilog.sh" in script
         assert "graphids.pipeline.cli" in script
-        assert "--model vgae" in script
-        assert "--scale large" in script
-        assert "--dataset hcrl_sa" in script
+        assert "stage=autoencoder" in script
+        assert "model=vgae_large" in script
+        assert "dataset=hcrl_sa" in script
         assert "SKIP_CUDA_CONF" not in script  # GPU job
 
     def test_cpu_script_skips_cuda_and_gpu(self):
@@ -261,7 +261,7 @@ class TestScriptGeneration:
             resources=res,
             auxiliaries="kd_standard",
         )
-        assert "--auxiliaries kd_standard" in script
+        assert "auxiliary=kd_standard" in script
 
     def test_ckpt_path_in_command(self):
         res = _gpu()
@@ -273,7 +273,7 @@ class TestScriptGeneration:
             resources=res,
             ckpt_path="/tmp/ckpt.pt",
         )
-        assert "--ckpt-path /tmp/ckpt.pt" in script
+        assert 'KD_GAT_CKPT_PATH="/tmp/ckpt.pt"' in script
 
     def test_seed_in_command(self):
         res = _gpu()
@@ -285,7 +285,7 @@ class TestScriptGeneration:
             resources=res,
             seed=42,
         )
-        assert "--seed 42" in script
+        assert "seed=42" in script
 
     def test_sigusr1_signal(self):
         res = _gpu()
@@ -635,18 +635,17 @@ class TestSubmitNoPoll:
 
 
 class TestCLI:
-    def _get_stage_choices(self):
-        from graphids.pipeline.cli import _build_parser
+    def test_orchestrate_is_subcommand(self):
+        from graphids.pipeline.cli import _SUBCOMMANDS
 
-        parser = _build_parser()
-        stage_action = next(a for a in parser._actions if hasattr(a, "choices") and a.choices)
-        return stage_action.choices
+        assert "orchestrate" in _SUBCOMMANDS
 
-    def test_orchestrate_in_parser_choices(self):
-        assert "orchestrate" in self._get_stage_choices()
+    def test_preprocess_is_subcommand(self):
+        from graphids.pipeline.cli import _SUBCOMMANDS
 
-    def test_preprocess_in_parser_choices(self):
-        assert "preprocess" in self._get_stage_choices()
+        assert "preprocess" in _SUBCOMMANDS
 
-    def test_flow_removed_from_parser(self):
-        assert "flow" not in self._get_stage_choices()
+    def test_flow_not_a_subcommand(self):
+        from graphids.pipeline.cli import _SUBCOMMANDS
+
+        assert "flow" not in _SUBCOMMANDS

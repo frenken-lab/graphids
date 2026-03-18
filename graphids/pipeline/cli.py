@@ -1,10 +1,13 @@
 """Single CLI entry point.
 
-Usage:
-    python -m graphids.pipeline.cli autoencoder --model vgae --scale large --dataset hcrl_ch
-    python -m graphids.pipeline.cli curriculum  --model gat --scale small --auxiliaries kd_standard --dataset hcrl_sa
-    python -m graphids.pipeline.cli fusion      --config path/to/config.json
-    python -m graphids.pipeline.cli autoencoder --model vgae --scale large --seeds 42,123,456
+Training stages use Hydra override grammar (key=value):
+    python -m graphids.pipeline.cli stage=autoencoder model=vgae_large dataset=hcrl_sa
+    python -m graphids.pipeline.cli stage=curriculum model=gat_small auxiliary=kd_standard training.lr=0.001
+    python -m graphids.pipeline.cli show-config model=vgae_large dataset=hcrl_sa
+
+Non-training subcommands use argparse:
+    python -m graphids.pipeline.cli orchestrate --dataset hcrl_sa --seeds 42,123,456 --dry-run
+    python -m graphids.pipeline.cli lake --lake-action status
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ mp.set_start_method("spawn", force=True)
 import argparse
 import logging
 import os
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -28,15 +32,33 @@ from graphids.config import (
     DEFAULT_DATASET,
     MLFLOW_TRACKING_URI,
     STAGES,
+    SWEEP_ID,
     PipelineConfig,
     config_path,
-    resolve,
     run_id,
     run_metadata,
     stage_dir,
 )
 
 from .validate import validate
+
+log = logging.getLogger("pipeline")
+
+# Subcommands that bypass Hydra config composition
+_SUBCOMMANDS = frozenset({
+    "orchestrate",
+    "preprocess",
+    "tune",
+    "sweep-pipeline",
+    "plan",
+    "lake",
+    "show-config",
+})
+
+
+# ---------------------------------------------------------------------------
+# MLflow setup
+# ---------------------------------------------------------------------------
 
 
 def _setup_mlflow(run_name: str, cfg: PipelineConfig, stage: str, tags: dict | None = None):
@@ -54,224 +76,74 @@ def _setup_mlflow(run_name: str, cfg: PipelineConfig, stage: str, tags: dict | N
     return mlflow.start_run(run_name=run_name, tags=mlflow_tags)
 
 
-def _parse_bool(v: str) -> bool:
-    return v.lower() in ("true", "1", "yes")
+# ---------------------------------------------------------------------------
+# Training entry point (Hydra Compose API)
+# ---------------------------------------------------------------------------
 
 
-def _parse_seeds(value: str) -> list[int]:
-    """Parse --seeds argument: comma-separated ints or a count for random seeds."""
-    from graphids.config import parse_seeds
+def _prepare_overrides(raw_overrides: list[str]) -> list[str]:
+    """Ensure nested-key overrides use Hydra's ++ (force-set) prefix.
 
-    try:
-        return parse_seeds(value)
-    except ValueError as e:
-        raise argparse.ArgumentTypeError(f"Invalid --seeds value '{value}': {e}") from e
-
-
-def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        prog="pipeline",
-        description="KD-GAT training pipeline",
-    )
-    p.add_argument(
-        "stage",
-        choices=list(STAGES.keys())
-        + ["preprocess", "tune", "sweep-pipeline", "orchestrate", "plan", "lake"],
-        help="Training stage, 'preprocess' for graph cache, 'tune' for HPO, 'sweep-pipeline' for full DAG, 'orchestrate' for Dagster pipeline, 'plan' for execution plan, or 'lake' for data lake commands",
-    )
-
-    # Config source
-    src = p.add_mutually_exclusive_group()
-    src.add_argument(
-        "--config",
-        type=Path,
-        default=None,
-        help="Load a frozen config JSON (e.g. from a previous run)",
-    )
-
-    # Identity flags (used by resolver)
-    p.add_argument("--model", type=str, default="vgae", help="Model type: vgae, gat, dqn")
-    p.add_argument("--scale", type=str, default="large", help="Model scale: large, small")
-    p.add_argument(
-        "--auxiliaries", type=str, default="none", help="Auxiliary config: none, kd_standard"
-    )
-    p.add_argument("--dataset", type=str, default=None)
-    p.add_argument("--seed", type=int, default=None)
-
-    # Multi-seed support
-    p.add_argument(
-        "--seeds",
-        type=str,
-        default=None,
-        help="Multi-seed dispatch: single seed (42) or comma-separated (42,123,456)",
-    )
-
-    # Infrastructure overrides
-    p.add_argument("--lake-root", type=str, default=None)
-    p.add_argument("--device", type=str, default=None)
-    p.add_argument("--num-workers", type=int, default=None)
-    p.add_argument("--mp-start-method", type=str, default=None)
-    p.add_argument("--run-test", type=_parse_bool, default=None)
-
-    # KD shorthand: --teacher-path sets auxiliaries + model_path
-    p.add_argument(
-        "--teacher-path",
-        type=str,
-        default=None,
-        help="Shorthand: implies kd_standard aux with given model_path",
-    )
-
-    # General options
-    p.add_argument(
-        "--dry-run",
-        action="store_true",
-        default=False,
-        help="Print plan without executing",
-    )
-
-    # Tune subcommand options
-    p.add_argument(
-        "--local",
-        action="store_true",
-        default=False,
-        help="(tune) Use Ray local mode instead of cluster",
-    )
-    p.add_argument(
-        "--num-samples",
-        type=int,
-        default=20,
-        help="(tune) Number of HPO trials",
-    )
-    p.add_argument(
-        "--max-concurrent",
-        type=int,
-        default=1,
-        help="(tune) Max concurrent trials",
-    )
-    p.add_argument(
-        "--grace-period",
-        type=int,
-        default=10,
-        help="(tune) ASHA grace period (epochs before early stopping a trial)",
-    )
-    p.add_argument(
-        "--tune-epochs",
-        type=int,
-        default=50,
-        help="(tune) Max epochs per trial",
-    )
-    p.add_argument(
-        "--tune-patience",
-        type=int,
-        default=15,
-        help="(tune) Early stopping patience per trial",
-    )
-    p.add_argument(
-        "--warm-start-from",
-        type=str,
-        default=None,
-        help="(tune) Dataset name to warm-start from (loads prior sweep results)",
-    )
-
-    # Sweep-pipeline options
-    p.add_argument(
-        "--resume",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="(sweep-pipeline) Resume from previous state file (default: True)",
-    )
-
-    # Plan options
-    p.add_argument(
-        "--variant",
-        type=str,
-        default="large",
-        help="(plan) Pipeline variant: large, small, small_kd (default: large)",
-    )
-    p.add_argument(
-        "--plan-output",
-        type=str,
-        default=None,
-        help="(plan) Output path for plan.json (default: experimentruns/{dataset}/plan.json)",
-    )
-
-    # Orchestrate options (Dagster fire-and-forget)
-    p.add_argument(
-        "--fire-and-forget",
-        action="store_true",
-        default=False,
-        help="(orchestrate) Submit all jobs with --dependency chains, no polling",
-    )
-
-    # Lake subcommand options
-    p.add_argument(
-        "--lake-action",
-        type=str,
-        default="status",
-        choices=["rebuild-catalog", "verify", "status"],
-        help="(lake) Action: rebuild-catalog, verify, or status",
-    )
-
-    # Checkpoint resume (set by orchestrator on TIMEOUT resubmit)
-    p.add_argument(
-        "--ckpt-path",
-        type=str,
-        default=None,
-        help="Lightning .ckpt path to resume training from",
-    )
-
-    # Metadata tags
-    p.add_argument(
-        "--tags", type=str, default="", help="Comma-separated tags for run classification"
-    )
-    p.add_argument(
-        "--sweep-id", type=str, default="", help="Parent sweep ID (set by sweep_pipeline)"
-    )
-
-    # Nested overrides via dot-path: --training.lr 0.001, --vgae.latent-dim 16
-    p.add_argument(
-        "--override",
-        "-O",
-        nargs=2,
-        action="append",
-        default=[],
-        metavar=("KEY", "VALUE"),
-        help="Nested override as 'section.field value' (e.g. -O training.lr 0.001)",
-    )
-
-    return p
-
-
-def _parse_dot_overrides(pairs: list[list[str]]) -> dict:
-    """Parse -O key value pairs into a nested dict."""
-    result: dict = {}
-    for key, value in pairs:
-        parts = key.replace("-", "_").split(".")
-        # Auto-coerce types
-        try:
-            typed_value: object = int(value)
-        except ValueError:
-            try:
-                typed_value = float(value)
-            except ValueError:
-                if value.lower() in ("true", "false"):
-                    typed_value = value.lower() == "true"
-                else:
-                    typed_value = value
-
-        d = result
-        for p in parts[:-1]:
-            d = d.setdefault(p, {})
-        d[parts[-1]] = typed_value
-    return result
-
-
-def _run_preprocess(args: argparse.Namespace, log: logging.Logger) -> None:
-    """Build preprocessed graph cache for a dataset.
-
-    Calls load_dataset() which checks cache validity (version, feature dims)
-    and rebuilds if needed.
+    Config group selections (model=X, dataset=X, etc.) and top-level keys
+    (stage=X, seed=X) pass through unchanged. Nested dot-path overrides
+    like training.lr=0.001 need ++ because config.yaml has empty anchors.
     """
+    _PASSTHROUGH_KEYS = {"model", "auxiliary", "dataset", "stage", "seed"}
+    prepared = []
+    for ov in raw_overrides:
+        if "=" not in ov:
+            prepared.append(ov)
+            continue
+        key = ov.split("=", 1)[0].lstrip("+~")
+        if key in _PASSTHROUGH_KEYS:
+            prepared.append(ov)
+        elif not ov.startswith(("+", "~")):
+            prepared.append(f"++{ov}")
+        else:
+            prepared.append(ov)
+    return prepared
+
+
+def _run_training(overrides: list[str]) -> None:
+    """Compose config from Hydra overrides and dispatch a training stage."""
+    from omegaconf import OmegaConf
+
+    from graphids.config._hydra_bridge import _hydra_compose
+
+    with _hydra_compose(_prepare_overrides(overrides)) as hydra_cfg:
+        raw = OmegaConf.to_object(hydra_cfg)
+
+    stage = raw.pop("stage")
+    if stage not in STAGES:
+        log.error("Unknown training stage: %s. Valid: %s", stage, list(STAGES.keys()))
+        raise SystemExit(1)
+
+    cfg = PipelineConfig.model_validate(raw)
+    log.info("Resolved config: model=%s, scale=%s, dataset=%s", cfg.model_type, cfg.scale, cfg.dataset)
+    _run_single_stage(cfg, stage)
+
+
+def _show_config(overrides: list[str]) -> None:
+    """Print resolved config as YAML without running."""
+    from omegaconf import OmegaConf
+
+    from graphids.config._hydra_bridge import _hydra_compose
+
+    with _hydra_compose(_prepare_overrides(overrides)) as hydra_cfg:
+        print(OmegaConf.to_yaml(hydra_cfg))
+
+
+# ---------------------------------------------------------------------------
+# Non-training subcommands
+# ---------------------------------------------------------------------------
+
+
+def _run_preprocess(argv: list[str]) -> None:
+    """Build preprocessed graph cache for a dataset."""
+    p = argparse.ArgumentParser(prog="pipeline preprocess")
+    p.add_argument("--dataset", type=str, default=None)
+    args = p.parse_args(argv)
+
     from graphids.config import resolve
 
     dataset = args.dataset or DEFAULT_DATASET
@@ -284,43 +156,43 @@ def _run_preprocess(args: argparse.Namespace, log: logging.Logger) -> None:
     log.info("Preprocessed cache ready for %s", dataset)
 
 
-def _resolve_tune_stage(args: argparse.Namespace, log: logging.Logger) -> str | None:
-    """Resolve tune stage name from --model argument."""
-    from .orchestration.tune_config import _STAGE_MODEL
+def _run_tune(argv: list[str]) -> None:
+    """Dispatch HPO sweep via Ray Tune."""
+    p = argparse.ArgumentParser(prog="pipeline tune")
+    p.add_argument("--model", type=str, default="vgae")
+    p.add_argument("--scale", type=str, default="large")
+    p.add_argument("--dataset", type=str, default=None)
+    p.add_argument("--num-samples", type=int, default=20)
+    p.add_argument("--max-concurrent", type=int, default=1)
+    p.add_argument("--grace-period", type=int, default=10)
+    p.add_argument("--tune-epochs", type=int, default=50)
+    p.add_argument("--tune-patience", type=int, default=15)
+    p.add_argument("--local", action="store_true", default=False)
+    p.add_argument("--warm-start-from", type=str, default=None)
+    args = p.parse_args(argv)
+
+    from .orchestration.tune_config import _STAGE_MODEL, run_tune
 
     _model_to_stage = {"vgae": "autoencoder", "gat": "curriculum", "dqn": "fusion"}
 
     if args.model in _STAGE_MODEL:
-        return args.model
+        tune_stage = args.model
     elif args.model in _model_to_stage:
-        return _model_to_stage[args.model]
+        tune_stage = _model_to_stage[args.model]
     else:
         log.error(
             "For 'tune', --model must be a stage name (autoencoder, curriculum, fusion) "
             "or model type (vgae, gat, dqn). Got: %s",
             args.model,
         )
-        return None
-
-
-def _run_tune(args: argparse.Namespace, log: logging.Logger) -> None:
-    """Dispatch HPO sweep via Ray Tune."""
-    tune_stage = _resolve_tune_stage(args, log)
-    if tune_stage is None:
         return
 
-    from .orchestration.tune_config import run_tune
-
-    warm_start = getattr(args, "warm_start_from", None)
     log.info(
-        "Starting tune: stage=%s, dataset=%s, scale=%s, samples=%d, epochs=%d, patience=%d, warm_start_from=%s",
+        "Starting tune: stage=%s, dataset=%s, scale=%s, samples=%d",
         tune_stage,
         args.dataset or DEFAULT_DATASET,
         args.scale,
         args.num_samples,
-        args.tune_epochs,
-        args.tune_patience,
-        warm_start,
     )
 
     results = run_tune(
@@ -333,7 +205,7 @@ def _run_tune(args: argparse.Namespace, log: logging.Logger) -> None:
         local=args.local,
         max_epochs=args.tune_epochs,
         patience=args.tune_patience,
-        warm_start_from=warm_start,
+        warm_start_from=args.warm_start_from,
     )
 
     best = results.get_best_result(metric="val_loss", mode="min")
@@ -341,8 +213,19 @@ def _run_tune(args: argparse.Namespace, log: logging.Logger) -> None:
     log.info("Best config: %s", best.config)
 
 
-def _run_sweep_pipeline(args: argparse.Namespace, log: logging.Logger) -> None:
+def _run_sweep_pipeline(argv: list[str]) -> None:
     """Dispatch full sweep pipeline DAG."""
+    p = argparse.ArgumentParser(prog="pipeline sweep-pipeline")
+    p.add_argument("--dataset", type=str, default=None)
+    p.add_argument("--scale", type=str, default="large")
+    p.add_argument("--num-samples", type=int, default=20)
+    p.add_argument("--max-concurrent", type=int, default=1)
+    p.add_argument("--tune-epochs", type=int, default=50)
+    p.add_argument("--tune-patience", type=int, default=15)
+    p.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--dry-run", action="store_true", default=False)
+    args = p.parse_args(argv)
+
     from .orchestration.sweep_pipeline import run_sweep_pipeline
 
     log.info(
@@ -366,8 +249,17 @@ def _run_sweep_pipeline(args: argparse.Namespace, log: logging.Logger) -> None:
     )
 
 
-def _run_lake(args: argparse.Namespace, log: logging.Logger) -> None:
+def _run_lake(argv: list[str]) -> None:
     """Dispatch lake management commands."""
+    p = argparse.ArgumentParser(prog="pipeline lake")
+    p.add_argument(
+        "--lake-action",
+        type=str,
+        default="status",
+        choices=["rebuild-catalog", "verify", "status"],
+    )
+    args = p.parse_args(argv)
+
     from graphids.config import lake_catalog_path, lake_root_from_env
 
     lake_root = lake_root_from_env()
@@ -417,8 +309,16 @@ def _run_lake(args: argparse.Namespace, log: logging.Logger) -> None:
         log.info("By dataset: %s", status["by_dataset"])
 
 
-def _run_plan(args: argparse.Namespace, log: logging.Logger) -> None:
+def _run_plan(argv: list[str]) -> None:
     """Build and save (or preview) an execution plan."""
+    p = argparse.ArgumentParser(prog="pipeline plan")
+    p.add_argument("--dataset", type=str, default=None)
+    p.add_argument("--seeds", type=str, default=None)
+    p.add_argument("--variant", type=str, default="large")
+    p.add_argument("--dry-run", action="store_true", default=False)
+    p.add_argument("--plan-output", type=str, default=None)
+    args = p.parse_args(argv)
+
     from graphids.config import parse_seeds
 
     from .orchestration.plan import build_plan
@@ -430,7 +330,6 @@ def _run_plan(args: argparse.Namespace, log: logging.Logger) -> None:
     plan = build_plan(dataset=dataset, seeds=seeds, variant=variant)
 
     if args.dry_run:
-        # Preview mode: print plan summary to stdout
         log.info(
             "Plan: %s | variant=%s | %d seeds | %d jobs | hash=%s",
             dataset,
@@ -452,7 +351,6 @@ def _run_plan(args: argparse.Namespace, log: logging.Logger) -> None:
             )
         return
 
-    # Save plan to file
     if args.plan_output:
         out_path = Path(args.plan_output)
     else:
@@ -465,8 +363,15 @@ def _run_plan(args: argparse.Namespace, log: logging.Logger) -> None:
     log.info("Plan saved: %s (%d jobs, hash=%s)", out_path, len(plan.jobs), plan.plan_hash)
 
 
-def _run_orchestrate(args: argparse.Namespace, log: logging.Logger) -> None:
+def _run_orchestrate(argv: list[str]) -> None:
     """Dispatch pipeline via Dagster fire-and-forget (SLURM dependency chains)."""
+    p = argparse.ArgumentParser(prog="pipeline orchestrate")
+    p.add_argument("--dataset", type=str, default=None)
+    p.add_argument("--seeds", type=str, default=None)
+    p.add_argument("--dry-run", action="store_true", default=False)
+    p.add_argument("--fire-and-forget", action="store_true", default=False)
+    args = p.parse_args(argv)
+
     from .orchestration.dagster_defs import fire_and_forget
 
     dataset = args.dataset or DEFAULT_DATASET
@@ -488,6 +393,26 @@ def _run_orchestrate(args: argparse.Namespace, log: logging.Logger) -> None:
     log.info("Submitted %d jobs:", len(job_ids))
     for name, jid in job_ids.items():
         log.info("  %s: %s", name, jid)
+
+
+# ---------------------------------------------------------------------------
+# Subcommand dispatch
+# ---------------------------------------------------------------------------
+
+_DISPATCH = {
+    "show-config": _show_config,
+    "preprocess": _run_preprocess,
+    "tune": _run_tune,
+    "sweep-pipeline": _run_sweep_pipeline,
+    "lake": _run_lake,
+    "plan": _run_plan,
+    "orchestrate": _run_orchestrate,
+}
+
+
+# ---------------------------------------------------------------------------
+# Stage lifecycle helpers
+# ---------------------------------------------------------------------------
 
 
 def _archive_previous(sdir: Path, log: logging.Logger) -> Path | None:
@@ -544,11 +469,14 @@ def _write_lake_manifest(
         log.warning("Failed to write manifest: %s", e)
 
 
+# ---------------------------------------------------------------------------
+# Single stage execution
+# ---------------------------------------------------------------------------
+
+
 def _run_single_stage(
     cfg: PipelineConfig,
     stage: str,
-    args: argparse.Namespace,
-    log: logging.Logger,
 ) -> None:
     """Execute a single training stage with MLflow tracking and artifact caching."""
     # ---- Validate ----
@@ -580,9 +508,8 @@ def _run_single_stage(
         pass
 
     # ---- Enrichment tags (beyond run_metadata) ----
-    sweep_id = args.sweep_id or None
-    tags_str = args.tags or None
-    if sweep_id:
+    # sweep_id and user_tags are now in run_metadata() via EnvironmentSettings
+    if SWEEP_ID:
         run_type = "sweep_best"
     elif cfg.training.max_epochs < 10:
         run_type = "smoke_test"
@@ -603,17 +530,8 @@ def _run_single_stage(
         "gpu_name": gpu_name or "",
         "run_type": run_type,
     }
-    if sweep_id:
-        extra_tags["sweep_id"] = sweep_id
-    if tags_str:
-        extra_tags["user_tags"] = tags_str
     if teacher_run_id_str:
         extra_tags["teacher_run_id"] = teacher_run_id_str
-
-    # ---- Checkpoint resume (orchestrator TIMEOUT resubmit) ----
-    ckpt_path = getattr(args, "ckpt_path", None)
-    if ckpt_path:
-        os.environ["KD_GAT_CKPT_PATH"] = str(ckpt_path)
 
     # ---- Dispatch ----
     t_start = time.monotonic()
@@ -714,89 +632,23 @@ def _run_single_stage(
             raise
 
 
-def main(argv: list[str] | None = None) -> None:
-    parser = _build_parser()
-    args = parser.parse_args(argv)
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
+
+def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s  %(name)-20s  %(levelname)-7s  %(message)s",
     )
-    log = logging.getLogger("pipeline")
 
-    # ---- Handle non-training subcommands ----
-    if args.stage == "lake":
-        _run_lake(args, log)
-        return
+    args = argv if argv is not None else sys.argv[1:]
 
-    if args.stage == "preprocess":
-        _run_preprocess(args, log)
-        return
-
-    if args.stage == "tune":
-        _run_tune(args, log)
-        return
-
-    if args.stage == "sweep-pipeline":
-        _run_sweep_pipeline(args, log)
-        return
-
-    if args.stage == "plan":
-        _run_plan(args, log)
-        return
-
-    if args.stage == "orchestrate":
-        _run_orchestrate(args, log)
-        return
-
-    # ---- Build config ----
-    if args.config:
-        cfg = PipelineConfig.load(args.config)
-        log.info("Loaded frozen config: %s", args.config)
+    if args and args[0] in _SUBCOMMANDS:
+        _DISPATCH[args[0]](args[1:])
     else:
-        # Build overrides dict
-        _OVERRIDE_FIELDS = (
-            "dataset",
-            "seed",
-            "lake_root",
-            "device",
-            "num_workers",
-            "mp_start_method",
-            "run_test",
-        )
-        overrides = {f: getattr(args, f) for f in _OVERRIDE_FIELDS if getattr(args, f) is not None}
-
-        # Handle --teacher-path shorthand
-        aux_name = args.auxiliaries
-        if args.teacher_path:
-            if aux_name == "none":
-                aux_name = "kd_standard"
-            overrides.setdefault("auxiliaries", [{"type": "kd", "model_path": args.teacher_path}])
-
-        # Parse dot-path overrides — merge into overrides dict
-        dot_overrides = _parse_dot_overrides(args.override)
-        for k, v in dot_overrides.items():
-            if isinstance(v, dict) and isinstance(overrides.get(k), dict):
-                overrides[k].update(v)
-            else:
-                overrides[k] = v
-
-        cfg = resolve(args.model, args.scale, auxiliaries=aux_name, **overrides)
-        log.info("Resolved config: model=%s, scale=%s, aux=%s", args.model, args.scale, aux_name)
-
-    # ---- Multi-seed dispatch ----
-    if args.seeds:
-        seeds = _parse_seeds(args.seeds)
-        log.info("Multi-seed dispatch: seeds=%s, stage=%s", seeds, args.stage)
-        for i, seed in enumerate(seeds):
-            log.info("=== Seed %d/%d: %d ===", i + 1, len(seeds), seed)
-            seed_cfg = cfg.model_copy(update={"seed": seed})
-            _run_single_stage(seed_cfg, args.stage, args, log)
-        log.info("All %d seeds completed for stage '%s'", len(seeds), args.stage)
-        return
-
-    # ---- Single-seed dispatch ----
-    _run_single_stage(cfg, args.stage, args, log)
+        _run_training(args)
 
 
 if __name__ == "__main__":

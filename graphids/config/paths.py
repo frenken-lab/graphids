@@ -45,6 +45,11 @@ class EnvironmentSettings(BaseSettings):
     # MLFLOW_TRACKING_URI doesn't have KD_GAT_ prefix — handled separately
     mlflow_tracking_uri: str | None = Field(None, validation_alias="MLFLOW_TRACKING_URI")
 
+    # Run metadata (not config identity — never on PipelineConfig)
+    sweep_id: str = ""
+    tags: str = ""
+    ckpt_path: str = ""
+
 
 # Module-level singleton (read once at import)
 _env = EnvironmentSettings()
@@ -56,6 +61,9 @@ SLURM_GPU_TYPE: str = _env.gpu_type
 MLFLOW_TRACKING_URI: str = (
     _env.mlflow_tracking_uri or f"sqlite:///{PROJECT_ROOT / 'data' / 'mlflow' / 'mlflow.db'}"
 )
+SWEEP_ID: str = _env.sweep_id
+USER_TAGS: str = _env.tags
+CKPT_PATH: str = _env.ckpt_path
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +92,7 @@ def run_id_str(dataset: str, model_type: str, scale: str, stage: str, aux: str =
 
 def run_metadata(cfg: PipelineConfig, stage: str) -> dict[str, str]:
     """MLflow tags for a run."""
-    return {
+    tags = {
         "dataset": cfg.dataset,
         "model_type": cfg.model_type,
         "scale": cfg.scale,
@@ -94,6 +102,11 @@ def run_metadata(cfg: PipelineConfig, stage: str) -> dict[str, str]:
         "run_group": run_id(cfg, stage),
         "config_hash": _config_hash(cfg),
     }
+    if SWEEP_ID:
+        tags["sweep_id"] = SWEEP_ID
+    if USER_TAGS:
+        tags["user_tags"] = USER_TAGS
+    return tags
 
 
 def _config_hash(cfg: PipelineConfig) -> str:

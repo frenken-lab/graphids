@@ -26,10 +26,13 @@ from .constants import (  # noqa: F401
     load_pipeline_yaml,
 )
 from .paths import (  # noqa: F401
+    CKPT_PATH,
     MLFLOW_TRACKING_URI,
     SLURM_ACCOUNT,
     SLURM_GPU_TYPE,
     SLURM_PARTITION,
+    SWEEP_ID,
+    USER_TAGS,
     cache_dir,
     checkpoint_path,
     config_path,
