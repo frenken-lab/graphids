@@ -26,7 +26,6 @@ from .constants import (  # noqa: F401
     load_pipeline_yaml,
 )
 from .paths import (  # noqa: F401
-    EXPERIMENT_ROOT,
     MLFLOW_TRACKING_URI,
     SLURM_ACCOUNT,
     SLURM_GPU_TYPE,
@@ -36,6 +35,13 @@ from .paths import (  # noqa: F401
     config_path,
     data_dir,
     get_datasets,
+    lake_cache_dir,
+    lake_catalog_path,
+    lake_exports_dir,
+    lake_raw_dir,
+    lake_root_from_env,
+    lake_run_dir,
+    lake_sweep_dir,
     load_catalog,
     parse_seeds,
     run_id,

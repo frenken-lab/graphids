@@ -59,7 +59,7 @@ class TestAutoencoderE2E:
             "vgae",
             "large",
             dataset="test_ds",
-            experiment_root=exp_root,
+            lake_root=exp_root,
             **E2E_OVERRIDES,
         )
 
@@ -95,14 +95,14 @@ class TestCurriculumE2E:
             "vgae",
             "large",
             dataset="test_ds",
-            experiment_root=exp_root,
+            lake_root=exp_root,
             **E2E_OVERRIDES,
         )
         gat_cfg = resolve(
             "gat",
             "large",
             dataset="test_ds",
-            experiment_root=exp_root,
+            lake_root=exp_root,
             **E2E_OVERRIDES,
         )
 
@@ -139,21 +139,21 @@ class TestFusionE2E:
             "vgae",
             "large",
             dataset="test_ds",
-            experiment_root=exp_root,
+            lake_root=exp_root,
             **E2E_OVERRIDES,
         )
         gat_cfg = resolve(
             "gat",
             "large",
             dataset="test_ds",
-            experiment_root=exp_root,
+            lake_root=exp_root,
             **E2E_OVERRIDES,
         )
         dqn_cfg = resolve(
             "dqn",
             "large",
             dataset="test_ds",
-            experiment_root=exp_root,
+            lake_root=exp_root,
             fusion=dict(
                 episodes=5,
                 episode_sample_size=20,
@@ -193,7 +193,7 @@ class TestFullPipelineE2E:
 
         common = dict(
             dataset="test_ds",
-            experiment_root=exp_root,
+            lake_root=exp_root,
             **E2E_OVERRIDES,
         )
         fusion_overrides = dict(
@@ -216,7 +216,7 @@ class TestFullPipelineE2E:
                 "vgae",
                 "large",
                 dataset="test_ds",
-                experiment_root=exp_root,
+                lake_root=exp_root,
                 **E2E_OVERRIDES,
             )
 

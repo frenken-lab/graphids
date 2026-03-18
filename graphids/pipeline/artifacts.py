@@ -50,11 +50,15 @@ def _artifact_group(cfg: PipelineConfig, stage: str, model_type: str) -> str:
 
 
 def _fs_artifact_path(cfg: PipelineConfig, stage: str, artifact_name: str, model_type: str) -> Path:
-    """Check experimentruns/ path with seed subdirectory."""
-    _, scale, aux_suffix = _id_parts(cfg, stage)
-    model = _resolve_stage_model(stage, model_type)
-    base = Path(cfg.experiment_root) / cfg.dataset / f"{model}_{scale}_{stage}{aux_suffix}"
-    return base / f"seed_{cfg.seed}" / artifact_name
+    """Check filesystem path using lake layout via stage_dir."""
+    from graphids.config import stage_dir
+
+    # Build a temporary config with the correct model_type for cross-model lookups
+    if model_type != cfg.model_type:
+        sd = stage_dir(cfg.model_copy(update={"model_type": model_type}), stage)
+    else:
+        sd = stage_dir(cfg, stage)
+    return sd / artifact_name
 
 
 def get_artifact(

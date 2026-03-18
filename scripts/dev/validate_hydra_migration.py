@@ -98,9 +98,9 @@ def main() -> int:
         errors.append(f"seed override: {cfg.seed}")
 
     # --- 6. Top-level overrides ---
-    cfg = resolve("vgae", "large", experiment_root="/tmp/test")
-    if cfg.experiment_root != "/tmp/test":
-        errors.append(f"experiment_root override: {cfg.experiment_root}")
+    cfg = resolve("vgae", "large", lake_root="/tmp/test")
+    if cfg.lake_root != "/tmp/test":
+        errors.append(f"lake_root override: {cfg.lake_root}")
 
     # --- 7. Defaults preserved (fields not in YAML use Pydantic defaults) ---
     cfg = resolve("dqn", "large")

@@ -1,6 +1,6 @@
 """Tests for graphids.lake module.
 
-Tests cover LakeConfig, manifest read/write/verify, cache locking,
+Tests cover lake path functions, manifest read/write/verify, cache locking,
 and catalog rebuild (with DuckDB).
 """
 
@@ -14,76 +14,75 @@ from unittest.mock import patch
 import pytest
 
 # ============================================================================
-# LakeConfig
+# Lake path functions (formerly LakeConfig)
 # ============================================================================
 
 
-class TestLakeConfig:
-    def test_from_env_returns_none_when_unset(self):
+class TestLakePathFunctions:
+    def test_lake_root_from_env_returns_none_when_unset(self):
         with patch.dict(os.environ, {}, clear=True):
             os.environ.pop("KD_GAT_LAKE_ROOT", None)
-            from graphids.lake.config import LakeConfig
+            from graphids.config import lake_root_from_env
 
-            assert LakeConfig.from_env() is None
+            assert lake_root_from_env() is None
 
-    def test_from_env_returns_config_when_set(self, tmp_path):
+    def test_lake_root_from_env_returns_path_when_set(self, tmp_path):
         with patch.dict(os.environ, {"KD_GAT_LAKE_ROOT": str(tmp_path)}):
-            from graphids.lake.config import LakeConfig
+            from graphids.config import lake_root_from_env
 
-            cfg = LakeConfig.from_env()
-            assert cfg is not None
-            assert cfg.lake_root == tmp_path
+            root = lake_root_from_env()
+            assert root is not None
+            assert root == tmp_path
 
-    def test_run_dir_production(self, tmp_path):
-        from graphids.lake.config import LakeConfig
+    def test_lake_run_dir_production(self, tmp_path):
+        from graphids.config import lake_run_dir
 
-        cfg = LakeConfig(lake_root=tmp_path)
-        d = cfg.run_dir("hcrl_sa", "vgae", "large", "autoencoder", seed=42, production=True)
+        d = lake_run_dir(tmp_path, "hcrl_sa", "vgae", "large", "autoencoder", seed=42, production=True)
         assert d == tmp_path / "production" / "hcrl_sa" / "vgae_large_autoencoder" / "seed_42"
 
-    def test_run_dir_with_aux(self, tmp_path):
-        from graphids.lake.config import LakeConfig
+    def test_lake_run_dir_with_aux(self, tmp_path):
+        from graphids.config import lake_run_dir
 
-        cfg = LakeConfig(lake_root=tmp_path)
-        d = cfg.run_dir("hcrl_sa", "gat", "small", "curriculum", aux="kd_standard", seed=123)
+        d = lake_run_dir(
+            tmp_path, "hcrl_sa", "gat", "small", "curriculum", aux="kd_standard", seed=123
+        )
         assert (
             d
             == tmp_path / "production" / "hcrl_sa" / "gat_small_curriculum_kd_standard" / "seed_123"
         )
 
-    def test_run_dir_evaluation_uses_eval(self, tmp_path):
-        from graphids.lake.config import LakeConfig
+    def test_lake_run_dir_evaluation_uses_eval(self, tmp_path):
+        from graphids.config import lake_run_dir
 
-        cfg = LakeConfig(lake_root=tmp_path)
-        d = cfg.run_dir("hcrl_sa", "vgae", "large", "evaluation", seed=42)
+        d = lake_run_dir(tmp_path, "hcrl_sa", "vgae", "large", "evaluation", seed=42)
         assert "eval_large_evaluation" in str(d)
 
-    def test_run_dir_dev(self, tmp_path):
-        from graphids.lake.config import LakeConfig
+    def test_lake_run_dir_dev(self, tmp_path):
+        from graphids.config import lake_run_dir
 
-        cfg = LakeConfig(lake_root=tmp_path)
-        d = cfg.run_dir("hcrl_sa", "vgae", "large", "autoencoder", production=False)
+        d = lake_run_dir(tmp_path, "hcrl_sa", "vgae", "large", "autoencoder", production=False)
         assert "dev/" in str(d)
 
-    def test_cache_dir(self, tmp_path):
-        from graphids.lake.config import LakeConfig
+    def test_lake_cache_dir(self, tmp_path):
+        from graphids.config import lake_cache_dir
 
-        cfg = LakeConfig(lake_root=tmp_path)
-        d = cfg.cache_dir("hcrl_sa", version="3.0.0")
+        d = lake_cache_dir(tmp_path, "hcrl_sa", version="3.0.0")
         assert d == tmp_path / "cache" / "v3.0.0" / "hcrl_sa"
 
-    def test_catalog_path(self, tmp_path):
-        from graphids.lake.config import LakeConfig
+    def test_lake_catalog_path(self, tmp_path):
+        from graphids.config import lake_catalog_path
 
-        cfg = LakeConfig(lake_root=tmp_path)
-        assert cfg.catalog_path() == tmp_path / "catalog" / "kd_gat.duckdb"
+        assert lake_catalog_path(tmp_path) == tmp_path / "catalog" / "kd_gat.duckdb"
 
-    def test_frozen(self, tmp_path):
-        from graphids.lake.config import LakeConfig
+    def test_lake_sweep_dir(self, tmp_path):
+        from graphids.config import lake_sweep_dir
 
-        cfg = LakeConfig(lake_root=tmp_path)
-        with pytest.raises(Exception):
-            cfg.lake_root = tmp_path / "other"
+        assert lake_sweep_dir(tmp_path, "hcrl_sa") == tmp_path / "sweeps" / "hcrl_sa"
+
+    def test_lake_exports_dir(self, tmp_path):
+        from graphids.config import lake_exports_dir
+
+        assert lake_exports_dir(tmp_path) == tmp_path / "exports"
 
 
 # ============================================================================

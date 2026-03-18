@@ -170,7 +170,7 @@ class TestCLIArchiveRestore:
 
         from graphids.config import resolve, stage_dir
 
-        cfg = resolve("vgae", "large", dataset="hcrl_sa", experiment_root=str(tmp_path))
+        cfg = resolve("vgae", "large", dataset="hcrl_sa", lake_root=str(tmp_path))
         sdir = stage_dir(cfg, "autoencoder")
         sdir.mkdir(parents=True)
         (sdir / "config.json").write_text('{"dataset": "hcrl_sa"}')
@@ -195,7 +195,7 @@ class TestCLIArchiveRestore:
 
         from graphids.config import resolve, stage_dir
 
-        cfg = resolve("vgae", "large", dataset="hcrl_sa", experiment_root=str(tmp_path))
+        cfg = resolve("vgae", "large", dataset="hcrl_sa", lake_root=str(tmp_path))
         sdir = stage_dir(cfg, "autoencoder")
         sdir.mkdir(parents=True)
         (sdir / "config.json").write_text('{"dataset": "hcrl_sa"}')
@@ -226,7 +226,7 @@ class TestCLIArchiveRestore:
 
         from graphids.config import resolve, stage_dir
 
-        cfg = resolve("vgae", "large", dataset="hcrl_sa", experiment_root=str(tmp_path))
+        cfg = resolve("vgae", "large", dataset="hcrl_sa", lake_root=str(tmp_path))
         sdir = stage_dir(cfg, "autoencoder")
         sdir.mkdir(parents=True)
         (sdir / "config.json").write_text('{"dataset": "hcrl_sa"}')

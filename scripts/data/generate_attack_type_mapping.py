@@ -23,7 +23,7 @@ from graphids.core.preprocessing import (
     ATTACK_TYPE_CODES,
     ATTACK_TYPE_NAMES,
 )
-from graphids.lake.config import LakeConfig
+from graphids.config import lake_exports_dir, lake_root_from_env
 
 
 def main() -> None:
@@ -31,12 +31,12 @@ def main() -> None:
     parser.add_argument("--dataset", default="hcrl_sa", help="Dataset name (default: hcrl_sa)")
     args = parser.parse_args()
 
-    lake = LakeConfig.from_env()
-    if lake is None:
+    lake_root = lake_root_from_env()
+    if lake_root is None:
         print("ERROR: KD_GAT_LAKE_ROOT not set", file=sys.stderr)
         sys.exit(1)
 
-    out_dir = lake.lake_root / "exports" / "paper" / "metadata"
+    out_dir = lake_exports_dir(lake_root) / "paper" / "metadata"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     mapping = {

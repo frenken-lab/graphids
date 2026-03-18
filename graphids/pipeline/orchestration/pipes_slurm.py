@@ -14,6 +14,7 @@ Reuses:
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import time
 from datetime import timedelta
@@ -454,32 +455,37 @@ class PipesSlurmClient:
         from pydantic import ValidationError
 
         from graphids.config import (
-            EXPERIMENT_ROOT,
             EvaluationArtifact,
             TrainingArtifact,
-            run_id_str,
+            lake_run_dir,
         )
 
         if stage == "preprocess":
             return True
 
         aux = auxiliaries if auxiliaries != "none" else ""
-        rid = run_id_str(dataset, model, scale, stage, aux)
-        base_path = Path(EXPERIMENT_ROOT) / rid
+        stage_path = lake_run_dir(
+            lake_root=os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns"),
+            dataset=dataset,
+            model_type=model,
+            scale=scale,
+            stage=stage,
+            aux=aux,
+            seed=seed,
+            production=True,  # Dagster jobs write to production tier
+        )
 
-        # Check seed subdirectory first, then flat
-        for stage_path in [base_path / f"seed_{seed}", base_path]:
-            if not stage_path.exists():
-                continue
-            contract = EvaluationArtifact if stage == "evaluation" else TrainingArtifact
-            try:
-                contract.from_stage_dir(stage_path)
-                return True
-            except (ValidationError, ValueError):
-                continue
+        if not stage_path.exists():
+            log.warning("Artifact validation failed for %s (seed=%d)", stage_path, seed)
+            return False
 
-        log.warning("Artifact validation failed for %s (seed=%d)", base_path, seed)
-        return False
+        contract = EvaluationArtifact if stage == "evaluation" else TrainingArtifact
+        try:
+            contract.from_stage_dir(stage_path)
+            return True
+        except (ValidationError, ValueError):
+            log.warning("Artifact validation failed for %s (seed=%d)", stage_path, seed)
+            return False
 
     def _find_checkpoint(
         self,
@@ -491,15 +497,22 @@ class PipesSlurmClient:
         seed: int = 42,
     ) -> str | None:
         """Look for a Lightning auto-save checkpoint after TIMEOUT."""
-        from graphids.config import EXPERIMENT_ROOT, run_id_str
+        from graphids.config import lake_run_dir
 
         aux = auxiliaries if auxiliaries != "none" else ""
-        rid = run_id_str(dataset, model, scale, stage, aux)
-        # Check seed subdir first, then flat
-        for subdir in [f"seed_{seed}", ""]:
-            ckpt = Path(EXPERIMENT_ROOT) / rid / subdir / ".pl_auto_save.ckpt"
-            if ckpt.exists():
-                return str(ckpt)
+        stage_path = lake_run_dir(
+            lake_root=os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns"),
+            dataset=dataset,
+            model_type=model,
+            scale=scale,
+            stage=stage,
+            aux=aux,
+            seed=seed,
+            production=True,
+        )
+        ckpt = stage_path / ".pl_auto_save.ckpt"
+        if ckpt.exists():
+            return str(ckpt)
         return None
 
     def submit_no_poll(

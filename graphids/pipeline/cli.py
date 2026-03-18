@@ -107,7 +107,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     # Infrastructure overrides
-    p.add_argument("--experiment-root", type=str, default=None)
+    p.add_argument("--lake-root", type=str, default=None)
     p.add_argument("--device", type=str, default=None)
     p.add_argument("--num-workers", type=int, default=None)
     p.add_argument("--mp-start-method", type=str, default=None)
@@ -368,10 +368,10 @@ def _run_sweep_pipeline(args: argparse.Namespace, log: logging.Logger) -> None:
 
 def _run_lake(args: argparse.Namespace, log: logging.Logger) -> None:
     """Dispatch lake management commands."""
-    from graphids.lake.config import LakeConfig
+    from graphids.config import lake_catalog_path, lake_root_from_env
 
-    lake = LakeConfig.from_env()
-    if lake is None:
+    lake_root = lake_root_from_env()
+    if lake_root is None:
         log.error("KD_GAT_LAKE_ROOT not set. Run: export KD_GAT_LAKE_ROOT=/fs/ess/PAS1266/kd-gat")
         return
 
@@ -380,7 +380,7 @@ def _run_lake(args: argparse.Namespace, log: logging.Logger) -> None:
     if action == "rebuild-catalog":
         from graphids.lake.catalog import rebuild_catalog
 
-        catalog_path = rebuild_catalog(lake.lake_root)
+        catalog_path = rebuild_catalog(lake_root)
         log.info("Catalog rebuilt: %s", catalog_path)
 
     elif action == "verify":
@@ -388,7 +388,7 @@ def _run_lake(args: argparse.Namespace, log: logging.Logger) -> None:
 
         errors_total = 0
         run_count = 0
-        for tier_dir in [lake.lake_root / "production", lake.lake_root / "dev"]:
+        for tier_dir in [lake_root / "production", lake_root / "dev"]:
             if not tier_dir.exists():
                 continue
             for manifest_file in tier_dir.rglob("_manifest.json"):
@@ -403,15 +403,15 @@ def _run_lake(args: argparse.Namespace, log: logging.Logger) -> None:
     elif action == "status":
         from graphids.lake.catalog import catalog_status
 
-        catalog_path = lake.catalog_path()
-        status = catalog_status(catalog_path)
+        cat_path = lake_catalog_path(lake_root)
+        status = catalog_status(cat_path)
         if not status.get("exists"):
-            log.info("Lake root: %s", lake.lake_root)
+            log.info("Lake root: %s", lake_root)
             log.info(
                 "Catalog: not built yet. Run: python -m graphids.pipeline.cli lake --lake-action rebuild-catalog"
             )
             return
-        log.info("Lake root: %s", lake.lake_root)
+        log.info("Lake root: %s", lake_root)
         log.info("Total runs: %d", status["total_runs"])
         log.info("By stage: %s", status["by_stage"])
         log.info("By dataset: %s", status["by_dataset"])
@@ -456,9 +456,10 @@ def _run_plan(args: argparse.Namespace, log: logging.Logger) -> None:
     if args.plan_output:
         out_path = Path(args.plan_output)
     else:
-        from graphids.config import EXPERIMENT_ROOT
+        from graphids.config import lake_root_from_env
 
-        out_path = Path(EXPERIMENT_ROOT) / dataset / "plan.json"
+        lake = lake_root_from_env() or Path("experimentruns")
+        out_path = lake / dataset / "plan.json"
 
     plan.save(out_path)
     log.info("Plan saved: %s (%d jobs, hash=%s)", out_path, len(plan.jobs), plan.plan_hash)
@@ -757,7 +758,7 @@ def main(argv: list[str] | None = None) -> None:
         _OVERRIDE_FIELDS = (
             "dataset",
             "seed",
-            "experiment_root",
+            "lake_root",
             "device",
             "num_workers",
             "mp_start_method",

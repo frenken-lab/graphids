@@ -15,7 +15,9 @@ import sys
 from pathlib import Path
 
 
-EXPERIMENT_ROOT = Path("experimentruns")
+import os
+
+LAKE_ROOT = Path(os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns"))
 
 # Keywords indicating message passing operations in trace events
 MP_KEYWORDS = {
@@ -32,7 +34,7 @@ def find_trace_files(dataset: str, scale: str) -> dict[str, Path | None]:
     for conv_type in ("gat", "transformer"):
         # Try to find the most recent profiler trace
         pattern = f"{dataset}/gat_{scale}_curriculum*"
-        for run_dir in sorted(EXPERIMENT_ROOT.glob(pattern), reverse=True):
+        for run_dir in sorted(LAKE_ROOT.glob(pattern), reverse=True):
             traces_dir = run_dir / "profiler_traces"
             if not traces_dir.is_dir():
                 continue
@@ -81,7 +83,7 @@ def parse_trace(trace_path: Path) -> dict:
 def load_metrics(dataset: str, scale: str, conv_type: str) -> dict | None:
     """Load evaluation metrics for a given conv_type run."""
     pattern = f"{dataset}/eval_{scale}_evaluation*"
-    for run_dir in sorted(EXPERIMENT_ROOT.glob(pattern), reverse=True):
+    for run_dir in sorted(LAKE_ROOT.glob(pattern), reverse=True):
         mp = run_dir / "metrics.json"
         if not mp.exists():
             continue
@@ -92,7 +94,7 @@ def load_metrics(dataset: str, scale: str, conv_type: str) -> dict | None:
 
     # Also try loading from the curriculum run's directory parent eval
     pattern2 = f"{dataset}/gat_{scale}_curriculum*"
-    for run_dir in sorted(EXPERIMENT_ROOT.glob(pattern2), reverse=True):
+    for run_dir in sorted(LAKE_ROOT.glob(pattern2), reverse=True):
         cfg_path = run_dir / "config.json"
         if cfg_path.exists():
             cfg = json.loads(cfg_path.read_text())

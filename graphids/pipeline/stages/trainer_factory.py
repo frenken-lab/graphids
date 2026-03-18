@@ -293,7 +293,7 @@ def make_trainer(
     # Persistent NFS path for Lightning auto-checkpoints (SIGUSR1 timeout saves).
     # stage_dir() may be $TMPDIR (node-local SSD, lost after job ends).
     # default_root_dir must survive job termination for checkpoint-aware resume.
-    persistent_root = Path(cfg.experiment_root) / run_id(cfg, stage)
+    persistent_root = Path(cfg.lake_root) / run_id(cfg, stage)
     persistent_root.mkdir(parents=True, exist_ok=True)
 
     # Enable MLflow autolog (idempotent — safe to call multiple times)

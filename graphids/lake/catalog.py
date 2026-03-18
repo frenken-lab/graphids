@@ -152,18 +152,6 @@ def rebuild_catalog(lake_root: Path, catalog_path: Path | None = None) -> Path:
     return catalog_path
 
 
-def query_catalog(catalog_path: Path, sql: str) -> list[dict]:
-    """Run a SQL query against the catalog and return results as dicts."""
-    import duckdb
-
-    db = duckdb.connect(str(catalog_path), read_only=True)
-    try:
-        result = db.execute(sql)
-        columns = [desc[0] for desc in result.description]
-        return [dict(zip(columns, row)) for row in result.fetchall()]
-    finally:
-        db.close()
-
 
 def catalog_status(catalog_path: Path) -> dict:
     """Get summary statistics from the catalog."""

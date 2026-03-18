@@ -16,7 +16,7 @@ log = logging.getLogger(__name__)
 
 
 @contextmanager
-def cache_lock(cache_dir: Path, timeout_msg: str = ""):
+def cache_lock(cache_dir: Path):
     """Advisory file lock for cache directory writes.
 
     Creates a .lock file in the cache directory parent and holds an

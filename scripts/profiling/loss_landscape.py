@@ -26,9 +26,8 @@ from graphids.config import NODE_FEATURE_COUNT, resolve
 
 log = logging.getLogger(__name__)
 
-EXPERIMENT_ROOT = Path(os.environ.get("KD_GAT_EXPERIMENT_ROOT", "experimentruns"))
-_data_root = os.environ.get("KD_GAT_DATA_ROOT")
-OUTPUT_ROOT = Path(_data_root) / "loss_landscapes" if _data_root else Path("data/loss_landscapes")
+LAKE_ROOT = Path(os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns"))
+OUTPUT_ROOT = Path("data/loss_landscapes")
 
 # Map model_type → (stage subdirectory suffix, scale)
 _MODEL_RUN_MAP = {
@@ -196,7 +195,7 @@ def _make_dataloader(graphs, cfg):
 def _load_dqn_data(dataset: str, max_samples: int = 2000) -> torch.Tensor:
     """Load cached DQN state features for Q-network evaluation."""
     # Look for cached predictions from the fusion stage
-    run_dir = EXPERIMENT_ROOT / dataset / "dqn_large_fusion"
+    run_dir = LAKE_ROOT / dataset / "dqn_large_fusion"
     cached = run_dir / "cached_predictions.npz"
     if cached.exists():
         data = np.load(cached)
@@ -255,7 +254,7 @@ def compute_loss_landscape(
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     run_name, model_scale = _MODEL_RUN_MAP[model_type]
-    run_dir = EXPERIMENT_ROOT / dataset / run_name
+    run_dir = LAKE_ROOT / dataset / run_name
     checkpoint_file = run_dir / "best_model.pt"
     if not checkpoint_file.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_file}")

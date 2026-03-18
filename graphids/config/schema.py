@@ -194,17 +194,11 @@ class PipelineConfig(BaseModel, frozen=True):
     variants: list[VariantConfig] = Field(default_factory=list)
 
     # --- Infrastructure ---
-    experiment_root: str = "experimentruns"
+    lake_root: str = "experimentruns"
     device: str = "cuda"
     num_workers: int = 2
     mp_start_method: str = "spawn"
     run_test: bool = True
-
-    # --- Path env overrides (populated by Hydra oc.env, None = not set) ---
-    lake_root: str | None = None
-    data_root: str | None = None
-    cache_root: str | None = None
-    stage_dir_override: str | None = None
     production: bool = False
 
     # --- Convenience properties ---

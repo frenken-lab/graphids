@@ -25,7 +25,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from graphids.core.preprocessing import ATTACK_TYPE_NAMES
-from graphids.lake.config import LakeConfig
+from graphids.config import lake_exports_dir, lake_root_from_env, lake_run_dir
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -374,17 +374,17 @@ def main() -> None:
     p.add_argument("--tables-only", action="store_true")
     args = p.parse_args()
 
-    lake = LakeConfig.from_env()
-    if not lake:
+    lake_root = lake_root_from_env()
+    if not lake_root:
         log.error("KD_GAT_LAKE_ROOT not set")
         sys.exit(1)
 
-    paper_dir = lake.lake_root / "exports" / "paper"
+    paper_dir = lake_exports_dir(lake_root) / "paper"
     csv_dir, fig_dir = paper_dir / "csv", paper_dir / "figures"
 
     # Read from ESS production — the data lake is the single source of truth
-    eval_dir = lake.run_dir(
-        args.dataset, "gat", args.scale, "evaluation", seed=args.seed, production=True
+    eval_dir = lake_run_dir(
+        lake_root, args.dataset, "gat", args.scale, "evaluation", seed=args.seed, production=True
     )
     if not eval_dir.exists():
         log.error("No eval artifacts on ESS: %s", eval_dir)

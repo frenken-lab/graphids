@@ -343,7 +343,7 @@ class TestTeacherLoading:
 
         stage_map = {"vgae": "autoencoder", "gat": "curriculum", "dqn": "fusion"}
         stage = stage_map[model_type]
-        cfg = resolve(model_type, "large", experiment_root=str(tmp_path))
+        cfg = resolve(model_type, "large", lake_root=str(tmp_path))
 
         sd = stage_dir(cfg, stage)
         sd.mkdir(parents=True, exist_ok=True)
@@ -501,7 +501,7 @@ class TestValidation:
                     type="kd", model_path=str(tmp_path / "nonexistent" / "best_model.pt")
                 )
             ],
-            experiment_root=str(tmp_path),
+            lake_root=str(tmp_path),
         )
         with pytest.raises(ValueError, match="Teacher checkpoint not found"):
             validate(cfg, "autoencoder")
@@ -520,7 +520,7 @@ class TestValidation:
             model_type="vgae",
             scale="small",
             auxiliaries=[AuxiliaryConfig(type="kd", model_path=str(teacher_dir / "best_model.pt"))],
-            experiment_root=str(tmp_path),
+            lake_root=str(tmp_path),
         )
         with pytest.raises(ValueError, match="Teacher config not found"):
             validate(cfg, "autoencoder")
@@ -535,7 +535,7 @@ class TestValidation:
             dataset="hcrl_sa",
             model_type="gat",
             scale="large",
-            experiment_root=str(tmp_path),
+            lake_root=str(tmp_path),
         )
         # Curriculum depends on ("vgae", "autoencoder") — create VGAE dir
         # with best_model.pt but no config.json
@@ -560,7 +560,7 @@ class TestValidation:
             dataset="hcrl_sa",
             model_type="vgae",
             scale="large",
-            experiment_root=str(tmp_path),
+            lake_root=str(tmp_path),
         )
         validate(cfg, "autoencoder")
 
@@ -588,7 +588,7 @@ class TestFrozenConfigPropagation:
             "small",
             auxiliaries="kd_standard",
             dataset="hcrl_sa",
-            experiment_root=str(tmp_path),
+            lake_root=str(tmp_path),
         )
         sd = stage_dir(vgae_cfg, "autoencoder")
         sd.mkdir(parents=True)
@@ -600,7 +600,7 @@ class TestFrozenConfigPropagation:
             "small",
             auxiliaries="kd_standard",
             dataset="hcrl_sa",
-            experiment_root=str(tmp_path),
+            lake_root=str(tmp_path),
         )
         frozen = load_frozen_cfg(curr_cfg, "autoencoder")
         assert frozen.vgae.hidden_dims == (80, 40, 16), (
@@ -619,7 +619,7 @@ class TestFrozenConfigPropagation:
             model_type="vgae",
             scale="small",
             auxiliaries=[AuxiliaryConfig(type="kd")],
-            experiment_root=str(tmp_path),
+            lake_root=str(tmp_path),
         )
         # get_artifact will raise FileNotFoundError since no artifacts exist
         with pytest.raises(FileNotFoundError, match="Frozen config not found"):

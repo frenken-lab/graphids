@@ -19,17 +19,11 @@ temporal: {}
 tune: {}
 
 # --- Infrastructure (env vars via oc.env with defaults) ---
-experiment_root: ${oc.env:KD_GAT_EXPERIMENT_ROOT,experimentruns}
+lake_root: ${oc.env:KD_GAT_LAKE_ROOT,experimentruns}
 device: cuda
 num_workers: 2
 mp_start_method: spawn
 run_test: true
-
-# --- Path env overrides (null = not set) ---
-lake_root: ${oc.env:KD_GAT_LAKE_ROOT,null}
-data_root: ${oc.env:KD_GAT_DATA_ROOT,null}
-cache_root: ${oc.env:KD_GAT_CACHE_ROOT,null}
-stage_dir_override: ${oc.env:KD_GAT_STAGE_DIR,null}
 production: ${oc.env:KD_GAT_PRODUCTION,false}
 
 # --- Pipeline DAG defaults (from pipeline.yaml topology) ---
