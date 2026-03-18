@@ -1,8 +1,9 @@
 """DuckDB catalog rebuild + query helpers.
 
-Scans production/ and dev/ for _manifest.json, config.json, and metrics.json,
+Scans production/ and dev/ for _manifest.json and config.json,
 then builds a queryable DuckDB database. The catalog is disposable —
-rebuilt from files in seconds.
+rebuilt from files in seconds. Metrics live in _manifest.json (SoT),
+with fallback to metrics.json for pre-convergence runs.
 
 Requires: duckdb>=1.0.0 (optional dependency).
 """
@@ -20,8 +21,8 @@ def rebuild_catalog(lake_root: Path, catalog_path: Path | None = None) -> Path:
     """Rebuild the DuckDB catalog from manifest/config/metrics files.
 
     Scans ``production/`` and ``dev/`` under ``lake_root`` for run directories
-    containing ``_manifest.json``. Joins with ``config.json`` and ``metrics.json``
-    for a flat queryable table.
+    containing ``_manifest.json``. Joins with ``config.json`` for a flat
+    queryable table. Metrics come from the manifest's ``metrics`` field.
 
     Parameters
     ----------

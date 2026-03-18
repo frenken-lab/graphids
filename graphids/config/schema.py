@@ -286,19 +286,22 @@ class DatasetEntry(BaseModel, frozen=True):
 
 
 class StageArtifact(BaseModel, frozen=True):
-    """Base contract for pipeline stage outputs."""
+    """Base contract for pipeline stage outputs.
+
+    Metrics live in _manifest.json (single source of truth), not as a separate file.
+    """
 
     stage_dir: Path
     config_json: Path
-    metrics_json: Path
+    manifest_json: Path
 
     @model_validator(mode="after")
     def _validate_files_exist(self) -> StageArtifact:
         missing = []
         if not self.config_json.exists():
             missing.append(str(self.config_json))
-        if not self.metrics_json.exists():
-            missing.append(str(self.metrics_json))
+        if not self.manifest_json.exists():
+            missing.append(str(self.manifest_json))
         if missing:
             raise ValueError(f"Missing required files: {missing}")
         return self
@@ -308,7 +311,7 @@ class StageArtifact(BaseModel, frozen=True):
         return cls(
             stage_dir=path,
             config_json=path / "config.json",
-            metrics_json=path / "metrics.json",
+            manifest_json=path / "_manifest.json",
         )
 
 
@@ -328,7 +331,7 @@ class TrainingArtifact(StageArtifact, frozen=True):
         return cls(
             stage_dir=path,
             config_json=path / "config.json",
-            metrics_json=path / "metrics.json",
+            manifest_json=path / "_manifest.json",
             best_model_pt=path / "best_model.pt",
         )
 
@@ -346,7 +349,7 @@ class EvaluationArtifact(StageArtifact, frozen=True):
         return cls(
             stage_dir=path,
             config_json=path / "config.json",
-            metrics_json=path / "metrics.json",
+            manifest_json=path / "_manifest.json",
             embeddings_npz=emb if emb.exists() else None,
             dqn_policy_json=pol if pol.exists() else None,
         )

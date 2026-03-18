@@ -111,7 +111,7 @@ def _trainable(
 ) -> None:
     """Ray Tune trainable that runs a pipeline stage as subprocess.
 
-    Reports val_loss from the stage's metrics.json.
+    Reports val_loss from the stage's _manifest.json metrics.
     """
     import json
     from pathlib import Path
@@ -150,15 +150,16 @@ def _trainable(
         ray_tune.report({"val_loss": float("inf")})
         return
 
-    # Read metrics from the stage output (use absolute path — Ray worker cwd differs)
+    # Read metrics from the manifest (single source of truth)
     from graphids.config import resolve, stage_dir
 
     overrides = {"dataset": dataset}
     cfg = resolve(model, scale, **overrides)
-    mpath = project_root / stage_dir(cfg, stage) / "metrics.json"
+    manifest_path = project_root / stage_dir(cfg, stage) / "_manifest.json"
 
-    if mpath.exists():
-        metrics = json.loads(mpath.read_text())
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text())
+        metrics = manifest.get("metrics", {})
         val_loss = metrics.get("val_loss", metrics.get("best_val_loss", float("inf")))
         ray_tune.report({"val_loss": val_loss})
     else:

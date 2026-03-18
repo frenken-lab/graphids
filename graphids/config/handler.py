@@ -251,10 +251,6 @@ class ConfigHandler:
         """Where the frozen config JSON is saved alongside the model."""
         return self.stage_dir(cfg, stage) / "config.json"
 
-    def metrics_path(self, cfg: PipelineConfig, stage: str) -> Path:
-        """Where the evaluation metrics JSON is saved."""
-        return self.stage_dir(cfg, stage) / "metrics.json"
-
     def data_dir(self, cfg: PipelineConfig) -> Path:
         """Raw data directory for a dataset."""
         if self.env.data_root:

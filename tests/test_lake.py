@@ -93,11 +93,10 @@ class TestLakeConfig:
 
 class TestManifest:
     def _make_run_dir(self, tmp_path: Path) -> Path:
-        """Create a minimal run directory with config.json and metrics.json."""
+        """Create a minimal run directory with config.json and best_model.pt."""
         run_dir = tmp_path / "hcrl_sa" / "vgae_large_autoencoder" / "seed_42"
         run_dir.mkdir(parents=True)
         (run_dir / "config.json").write_text('{"model_type": "vgae"}')
-        (run_dir / "metrics.json").write_text('{"val_loss": 0.01}')
         (run_dir / "best_model.pt").write_bytes(b"fake model data")
         return run_dir
 
@@ -120,7 +119,7 @@ class TestManifest:
         assert manifest is not None
         assert manifest.dataset == "hcrl_sa"
         assert manifest.model_type == "vgae"
-        assert len(manifest.artifacts) == 3  # config, metrics, best_model
+        assert len(manifest.artifacts) == 2  # config, best_model
 
     def test_verify_manifest_ok(self, tmp_path):
         from graphids.lake.manifest import verify_manifest, write_manifest

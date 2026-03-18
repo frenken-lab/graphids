@@ -116,7 +116,7 @@ def _step_status(store: PipelineStore, run_id: str, step_name: str) -> str:
 
 
 def _verify_step_output(step: SweepStep, dataset: str, scale: str) -> bool:
-    from graphids.config import checkpoint_path, metrics_path, resolve
+    from graphids.config import checkpoint_path, resolve, stage_dir
 
     if step.kind == "sweep":
         return sweep_result_path(step.stage, dataset, scale).exists()
@@ -125,7 +125,7 @@ def _verify_step_output(step: SweepStep, dataset: str, scale: str) -> bool:
         return checkpoint_path(cfg, step.stage).exists()
     elif step.kind == "evaluate":
         cfg = resolve("vgae", scale, dataset=dataset)
-        return metrics_path(cfg, "evaluation").exists()
+        return (stage_dir(cfg, "evaluation") / "_manifest.json").exists()
     return False
 
 
@@ -428,6 +428,8 @@ def _dry_run(dataset: str, scale: str) -> None:
         )
 
     # Check sweep result paths
+    from graphids.config import checkpoint_path, resolve, stage_dir
+
     log.info("")
     log.info("Expected outputs:")
     for step in SWEEP_DAG:
@@ -435,10 +437,12 @@ def _dry_run(dataset: str, scale: str) -> None:
             p = sweep_result_path(step.stage, dataset, scale)
             log.info("  sweep: %s (exists=%s)", p.relative_to(PROJECT_ROOT), p.exists())
         elif step.kind == "train":
-            p = _checkpoint_path(step.model, scale, step.stage, dataset)
+            step_cfg = resolve(step.model, scale, dataset=dataset)
+            p = checkpoint_path(step_cfg, step.stage)
             log.info("  train: %s (exists=%s)", p.relative_to(PROJECT_ROOT), p.exists())
         elif step.kind == "evaluate":
-            p = _metrics_path(scale, dataset)
+            eval_cfg = resolve("vgae", scale, dataset=dataset)
+            p = stage_dir(eval_cfg, "evaluation") / "_manifest.json"
             log.info("  eval:  %s (exists=%s)", p.relative_to(PROJECT_ROOT), p.exists())
 
     store.close()

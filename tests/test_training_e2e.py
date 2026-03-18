@@ -229,4 +229,4 @@ class TestFullPipelineE2E:
         assert "vgae" in metrics, "VGAE metrics missing"
         assert "fusion" in metrics, "Fusion metrics missing"
         assert metrics["gat"]["core"]["accuracy"] >= 0.0
-        assert (stage_dir(eval_cfg, "evaluation") / "metrics.json").exists()
+        assert (stage_dir(eval_cfg, "evaluation") / "_manifest.json").exists()

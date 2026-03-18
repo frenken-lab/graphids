@@ -19,10 +19,9 @@ import graphids
 
 log = logging.getLogger(__name__)
 
-# Artifacts that may exist in a run directory
+# Artifacts that may exist in a run directory (metrics live in manifest, not as separate file)
 _KNOWN_ARTIFACTS = [
     "config.json",
-    "metrics.json",
     "best_model.pt",
     "embeddings.npz",
     "attention_weights.npz",
@@ -106,8 +105,6 @@ def write_manifest(
     """Write _manifest.json to a completed run directory.
 
     Scans for known artifacts, computes checksums, writes atomically.
-    If ``metrics`` is None, reads from ``metrics.json`` in stage_dir
-    (backward compat). Pass an explicit dict to skip the file read.
     Returns the manifest path.
     """
     entries = []
@@ -122,19 +119,8 @@ def write_manifest(
                 )
             )
 
-    # Resolve metrics: explicit dict > metrics.json file > empty
     if metrics is None:
-        metrics_path = stage_dir / "metrics.json"
-        if metrics_path.exists():
-            try:
-                import json
-
-                metrics = json.loads(metrics_path.read_text())
-            except (json.JSONDecodeError, OSError) as e:
-                log.warning("Failed to read metrics.json for manifest: %s", e)
-                metrics = {}
-        else:
-            metrics = {}
+        metrics = {}
 
     manifest = Manifest(
         dataset=dataset,

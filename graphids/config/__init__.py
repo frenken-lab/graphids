@@ -25,7 +25,6 @@ resolve = _api.resolve
 stage_dir = _api.stage_dir
 checkpoint_path = _api.checkpoint_path
 config_path = _api.config_path
-metrics_path = _api.metrics_path
 data_dir = _api.data_dir
 cache_dir = _api.cache_dir
 run_id = _api.run_id

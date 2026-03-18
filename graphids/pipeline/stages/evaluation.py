@@ -14,7 +14,6 @@ from graphids.config import (
     PipelineConfig,
     cache_dir,
     data_dir,
-    metrics_path,
     stage_dir,
 )
 from graphids.pipeline.artifacts import artifact_exists, get_artifact
@@ -34,7 +33,8 @@ log = logging.getLogger(__name__)
 def evaluate(cfg: PipelineConfig) -> dict:
     """Evaluate trained model(s) on validation and held-out test data.
 
-    Output metrics.json layout:
+    Returns ``{"metrics": {...}}`` where metrics has the structure::
+
         {
             "gat":    {"core": {...}, "additional": {...}},
             "vgae":   {"core": {...}, "additional": {...}},
@@ -45,6 +45,8 @@ def evaluate(cfg: PipelineConfig) -> dict:
                 "fusion": {"test_01_...": {"core": ...}, ...}
             }
         }
+
+    cli.py passes this to the manifest (single source of truth for metrics).
     """
     train_data, val_data, num_ids, in_ch, device = training_preamble(cfg, "EVALUATION")
     test_scenarios = _load_test_data(cfg)
@@ -108,21 +110,17 @@ def evaluate(cfg: PipelineConfig) -> dict:
         except Exception as e:
             log.warning("CKA computation failed (non-fatal): %s", e)
 
-    # ---- Persist ----
+    # ---- Persist artifacts ----
     test_metrics = {k: v for k, v in test_metrics.items() if v}
     if test_metrics:
         all_metrics["test"] = test_metrics
-
-    mp = metrics_path(cfg, "evaluation")
-    mp.write_text(json.dumps(all_metrics, indent=2))
-    log.info("All metrics saved to %s", mp)
 
     _save_embedding_artifacts(artifacts, out)
     _save_attention_artifacts(artifacts, out)
     _save_dqn_policy_artifact(artifacts, out)
 
     cleanup()
-    return all_metrics
+    return {"metrics": all_metrics}
 
 
 # ---------------------------------------------------------------------------

@@ -45,11 +45,12 @@ def evaluate(
     seed: int = 42,
     **overrides,
 ) -> dict:
-    """Evaluate all trained models. Returns stage result dict."""
+    """Evaluate all trained models. Returns metrics dict."""
     from graphids.pipeline.stages import STAGE_FNS
 
     cfg = resolve("vgae", scale, dataset=dataset, seed=seed, **overrides)
-    return STAGE_FNS["evaluation"](cfg)
+    result = STAGE_FNS["evaluation"](cfg)
+    return result.get("metrics", result) if isinstance(result, dict) else result
 
 
 def orchestrate(

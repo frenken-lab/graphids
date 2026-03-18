@@ -9,7 +9,6 @@ because temporal ordering matters for this task.
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 
@@ -24,7 +23,6 @@ from graphids.config import (
     PipelineConfig,
     checkpoint_path,
     config_path,
-    metrics_path,
     stage_dir,
 )
 
@@ -286,14 +284,16 @@ def train_temporal(cfg: PipelineConfig) -> dict:
     metrics["core"]["n_sequences"] = len(all_labels)
     metrics["core"]["window"] = tc.temporal_window
     metrics["core"]["stride"] = tc.temporal_stride
-    result = {"temporal": metrics}
+    result_metrics = {"temporal": metrics}
 
-    mp = metrics_path(cfg, "temporal")
-    mp.write_text(json.dumps(result, indent=2))
     log.info(
         "Temporal metrics: %s",
-        {k: f"{v:.4f}" for k, v in result["temporal"]["core"].items() if isinstance(v, float)},
+        {
+            k: f"{v:.4f}"
+            for k, v in result_metrics["temporal"]["core"].items()
+            if isinstance(v, float)
+        },
     )
 
     cleanup()
-    return result
+    return {"metrics": result_metrics}

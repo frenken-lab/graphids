@@ -60,7 +60,7 @@ class PlanJob(BaseModel, frozen=True):
 
     # Expected outputs
     outputs: list[str] = Field(
-        default=["best_model.pt", "config.json", "metrics.json"],
+        default=["best_model.pt", "config.json", "_manifest.json"],
     )
 
 

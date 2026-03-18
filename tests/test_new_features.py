@@ -165,7 +165,7 @@ class TestCLIArchiveRestore:
     """Test archive-on-rerun and restore-on-failure logic from cli.py."""
 
     def test_archive_created_on_rerun(self, tmp_path):
-        """When a stage dir has metrics.json, re-running should archive it."""
+        """When a stage dir has config.json, re-running should archive it."""
         from datetime import datetime
 
         from graphids.config import resolve, stage_dir
@@ -173,11 +173,11 @@ class TestCLIArchiveRestore:
         cfg = resolve("vgae", "large", dataset="hcrl_sa", experiment_root=str(tmp_path))
         sdir = stage_dir(cfg, "autoencoder")
         sdir.mkdir(parents=True)
-        (sdir / "metrics.json").write_text('{"loss": 0.5}')
+        (sdir / "config.json").write_text('{"dataset": "hcrl_sa"}')
         (sdir / "best_model.pt").write_text("fake")
 
-        # Simulate archive logic from cli.py
-        if (sdir / "metrics.json").exists():
+        # Simulate archive logic from cli.py (uses config.json as completion marker)
+        if (sdir / "config.json").exists():
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             archive = sdir.parent / f"{sdir.name}.archive_{ts}"
             sdir.rename(archive)
@@ -185,7 +185,7 @@ class TestCLIArchiveRestore:
         assert not sdir.exists(), "Original dir should be gone"
         archives = list(sdir.parent.glob("*.archive_*"))
         assert len(archives) == 1
-        assert (archives[0] / "metrics.json").exists()
+        assert (archives[0] / "config.json").exists()
         assert (archives[0] / "best_model.pt").exists()
 
     def test_restore_on_failure(self, tmp_path):
@@ -198,7 +198,7 @@ class TestCLIArchiveRestore:
         cfg = resolve("vgae", "large", dataset="hcrl_sa", experiment_root=str(tmp_path))
         sdir = stage_dir(cfg, "autoencoder")
         sdir.mkdir(parents=True)
-        (sdir / "metrics.json").write_text('{"loss": 0.5}')
+        (sdir / "config.json").write_text('{"dataset": "hcrl_sa"}')
 
         # Archive
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -216,7 +216,7 @@ class TestCLIArchiveRestore:
             archive.rename(sdir)
 
         assert sdir.exists()
-        assert (sdir / "metrics.json").exists()
+        assert (sdir / "config.json").exists()
         assert not (sdir / "partial.txt").exists()
 
     def test_archive_deleted_on_success(self, tmp_path):
@@ -229,7 +229,7 @@ class TestCLIArchiveRestore:
         cfg = resolve("vgae", "large", dataset="hcrl_sa", experiment_root=str(tmp_path))
         sdir = stage_dir(cfg, "autoencoder")
         sdir.mkdir(parents=True)
-        (sdir / "metrics.json").write_text('{"loss": 0.5}')
+        (sdir / "config.json").write_text('{"dataset": "hcrl_sa"}')
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         archive = sdir.parent / f"{sdir.name}.archive_{ts}"

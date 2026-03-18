@@ -124,8 +124,8 @@ def _train_weighted_avg_fusion(cfg, train_cache, val_cache, device) -> float:
     return best_acc
 
 
-def train_fusion(cfg: PipelineConfig) -> Path:
-    """Train fusion agent on cached VGAE+GAT predictions. Returns checkpoint path."""
+def train_fusion(cfg: PipelineConfig) -> dict:
+    """Train fusion agent on cached VGAE+GAT predictions. Returns result dict with checkpoint and metrics."""
     train_data, val_data, num_ids, in_ch, device = training_preamble(
         cfg, f"FUSION ({cfg.fusion.method})"
     )
@@ -159,16 +159,7 @@ def train_fusion(cfg: PipelineConfig) -> Path:
     ckpt = checkpoint_path(cfg, "fusion")
     cfg.save(config_path(cfg, "fusion"))
 
-    # Write metrics.json (consistent with training.py stages, needed by tune trainable)
-    import json
-
-    metrics_out = out / "metrics.json"
-    metrics_out.write_text(
-        json.dumps(
-            {"best_acc": best_acc, "val_loss": 1.0 - best_acc, "fusion_method": method},
-            indent=2,
-        )
-    )
+    metrics = {"best_acc": best_acc, "val_loss": 1.0 - best_acc, "fusion_method": method}
     log.info("Saved %s fusion: %s (best_acc=%.4f)", method, ckpt, best_acc)
     cleanup()
-    return ckpt
+    return {"checkpoint": str(ckpt), "metrics": metrics}
