@@ -53,6 +53,7 @@ class DQNArchitecture(BaseModel, frozen=True):
     weight_decay: float = Field(1e-5, ge=0)
     scheduler_patience: int = Field(1000, ge=1)
     max_patience: int = Field(5000, ge=1)
+    vgae_error_weights: tuple[float, ...] = (0.4, 0.35, 0.25)
 
 
 class AuxiliaryConfig(BaseModel, frozen=True):

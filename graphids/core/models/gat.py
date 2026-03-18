@@ -6,7 +6,7 @@ from torch_geometric.nn import (
 )
 from torch_geometric.nn.aggr import MultiAggregation
 
-from ._utils import _make_conv, checkpoint_conv
+from ._utils import InputEncoder, _make_conv, conv_forward
 
 
 class GATWithJK(nn.Module):
@@ -36,7 +36,6 @@ class GATWithJK(nn.Module):
         proj_dim=0,
     ):
         super().__init__()
-        from ._utils import InputEncoder
 
         # Shared input encoding (ID embedding + optional projection)
         self.input_encoder = InputEncoder(
@@ -130,16 +129,21 @@ class GATWithJK(nn.Module):
         xs = []
         for conv in self.convs:
             if return_attention_weights and self.conv_type == "gat":
+                # Attention weight extraction requires direct conv call
                 x, (ei, alpha) = conv(x, edge_index, return_attention_weights=True)
                 x = x.relu()
+                x = F.dropout(x, p=self.dropout, training=self.training)
                 attention_weights.append(alpha.detach().cpu())
-            elif self.use_checkpointing and x.requires_grad:
-                x = checkpoint_conv(conv, x, edge_index, edge_attr).relu()
             else:
-                x = (
-                    conv(x, edge_index, edge_attr) if edge_attr is not None else conv(x, edge_index)
-                ).relu()
-            x = F.dropout(x, p=self.dropout, training=self.training)
+                x = conv_forward(
+                    conv,
+                    x,
+                    edge_index,
+                    edge_attr,
+                    dropout_p=self.dropout,
+                    training=self.training,
+                    use_checkpointing=self.use_checkpointing,
+                )
             xs.append(x)
         if return_attention_weights:
             return xs, attention_weights

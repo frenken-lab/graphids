@@ -183,18 +183,22 @@ class EnhancedDQNFusionAgent:
         from .registry import feature_layout
 
         layout = feature_layout()
-        vgae_start, vgae_dim, _ = layout["vgae"]
-        gat_start, gat_dim, _ = layout["gat"]
-        self._confidence_indices = [layout[n][2] for n in layout]
-        self._vgae_error_slice = slice(vgae_start, vgae_start + 3)
-        self._gat_logit_slice = slice(gat_start, gat_start + 2)
-        self._vgae_conf_idx = layout["vgae"][2]
-        self._gat_conf_idx = layout["gat"][2]
+        vgae = layout["vgae"]
+        gat = layout["gat"]
+        self._confidence_indices = [fl.confidence_idx for fl in layout.values()]
+        self._vgae_error_slice = slice(vgae.offset, vgae.offset + 3)
+        self._gat_logit_slice = slice(gat.offset, gat.offset + 2)
+        self._vgae_conf_idx = vgae.confidence_idx
+        self._gat_conf_idx = gat.confidence_idx
 
         # Weights for VGAE anomaly score (used in batch reward computation)
-        self._vgae_weights = torch.tensor([0.4, 0.35, 0.25], dtype=torch.float32)
+        self._vgae_weights = None  # Set via from_config() or set_vgae_weights()
 
         log.info("DQN Agent initialized: %d actions, state_dim=%d", alpha_steps, self.state_dim)
+
+    def set_vgae_weights(self, weights: tuple[float, ...]) -> None:
+        """Set VGAE error weights for anomaly score derivation."""
+        self._vgae_weights = torch.tensor(weights, dtype=torch.float32)
 
     @classmethod
     def from_config(
@@ -230,7 +234,9 @@ class EnhancedDQNFusionAgent:
                 epsilon_decay=cfg.dqn.epsilon_decay,
                 min_epsilon=cfg.dqn.min_epsilon,
             )
-        return cls(**kwargs)
+        agent = cls(**kwargs)
+        agent.set_vgae_weights(cfg.dqn.vgae_error_weights)
+        return agent
 
     # ------------------------------------------------------------------
     # Single-sample methods (inference / serve.py)
@@ -322,6 +328,8 @@ class EnhancedDQNFusionAgent:
 
     def _derive_scores_batch(self, states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Batch derive anomaly_score and gat_prob. states: [N, D] tensor."""
+        if self._vgae_weights is None:
+            self._vgae_weights = torch.tensor([0.4, 0.35, 0.25], dtype=torch.float32)
         vgae_errors = states[:, self._vgae_error_slice]  # [N, 3]
         anomaly_scores = (vgae_errors * self._vgae_weights).sum(dim=1).clamp(0.0, 1.0)
 
@@ -614,8 +622,8 @@ class WeightedAvgFusionAgent:
         from .registry import feature_layout
 
         layout = feature_layout()
-        self._vgae_conf_idx = layout["vgae"][2]
-        self._gat_conf_idx = layout["gat"][2]
+        self._vgae_conf_idx = layout["vgae"].confidence_idx
+        self._gat_conf_idx = layout["gat"].confidence_idx
 
     def train_on_cache(self, train_states, train_labels, val_states, val_labels, cfg) -> float:
         max_epochs = cfg.fusion.mlp_max_epochs

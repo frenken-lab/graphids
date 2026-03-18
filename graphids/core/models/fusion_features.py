@@ -4,6 +4,7 @@ Each extractor knows how to derive a fixed-size feature vector from one
 model's output.  Extractors are stateless and registered in the model
 registry so that ``cache_predictions`` can iterate them generically.
 """
+
 from __future__ import annotations
 
 import math
@@ -58,8 +59,12 @@ class VGAEFusionExtractor:
         batch_idx: torch.Tensor,
         device: torch.device,
     ) -> torch.Tensor:
-        edge_attr = getattr(graph, 'edge_attr', None) if getattr(model, '_uses_edge_attr', False) else None
-        cont, canid_logits, nbr_logits, z, _ = model(graph.x, graph.edge_index, batch_idx, edge_attr=edge_attr)
+        edge_attr = (
+            getattr(graph, "edge_attr", None) if getattr(model, "_uses_edge_attr", False) else None
+        )
+        cont, canid_logits, nbr_logits, z, _ = model(
+            graph.x, graph.edge_index, batch_idx, edge_attr=edge_attr
+        )
         recon_err = F.mse_loss(cont, graph.x[:, 1:], reduction="none").mean().item()
         canid_err = F.cross_entropy(canid_logits, graph.x[:, 0].long()).item()
         nbr_targets = model.create_neighborhood_targets(graph.x, graph.edge_index, batch_idx)
@@ -70,11 +75,18 @@ class VGAEFusionExtractor:
         z_max, z_min = z.max().item(), z.min().item()
         vgae_conf = 1.0 / (1.0 + recon_err)
 
-        return torch.tensor([
-            recon_err, nbr_err, canid_err,
-            z_mean, z_std, z_max, z_min,
-            vgae_conf,
-        ])
+        return torch.tensor(
+            [
+                recon_err,
+                nbr_err,
+                canid_err,
+                z_mean,
+                z_std,
+                z_max,
+                z_min,
+                vgae_conf,
+            ]
+        )
 
 
 class GATFusionExtractor:
@@ -101,17 +113,12 @@ class GATFusionExtractor:
         batch_idx: torch.Tensor,
         device: torch.device,
     ) -> torch.Tensor:
-        xs = model(graph, return_intermediate=True)
-        jk_out = model.jk(xs)
-        pooled = model._pool(jk_out, batch_idx)
-        emb_mean = pooled.mean().item()
-        emb_std = pooled.std().item() if pooled.numel() > 1 else 0.0
-        emb_max, emb_min = pooled.max().item(), pooled.min().item()
+        logits, emb = model(graph, return_embedding=True)
+        emb_mean = emb.mean().item()
+        emb_std = emb.std().item() if emb.numel() > 1 else 0.0
+        emb_max, emb_min = emb.max().item(), emb.min().item()
 
-        x = pooled
-        for layer in model.fc_layers:
-            x = layer(x)
-        probs = F.softmax(x, dim=1)
+        probs = F.softmax(logits, dim=1)
         p0, p1 = probs[0, 0].item(), probs[0, 1].item()
         entropy = -(probs * (probs + 1e-8).log()).sum().item()
         gat_conf = max(0.0, min(1.0, 1.0 - entropy / math.log(2)))

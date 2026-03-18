@@ -5,12 +5,14 @@ Public API re-exported from submodules:
     from graphids.core.models import get, register, fusion_state_dim, feature_layout, extractors
     from graphids.core.models import FusionFeatureExtractor, VGAEFusionExtractor, GATFusionExtractor
 """
+
 from .fusion_features import (
     FusionFeatureExtractor,
     GATFusionExtractor,
     VGAEFusionExtractor,
 )
 from .registry import (
+    FeatureLayout,
     ModelEntry,
     extractors,
     feature_layout,

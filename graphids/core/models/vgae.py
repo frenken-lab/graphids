@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from ._utils import _make_conv
+from ._utils import InputEncoder, _make_conv, conv_forward
 
 
 class GraphAutoencoderNeighborhood(nn.Module):
@@ -48,7 +48,6 @@ class GraphAutoencoderNeighborhood(nn.Module):
         proj_dim=0,
     ):
         super().__init__()
-        from ._utils import InputEncoder
 
         # Shared input encoding (ID embedding + optional projection)
         self.input_encoder = InputEncoder(
@@ -168,7 +167,6 @@ class GraphAutoencoderNeighborhood(nn.Module):
         self.latent_dim = latent_dim
 
     def encode(self, x, edge_index, edge_attr=None):
-        from ._utils import conv_forward
 
         x = self.input_encoder(x)
         # Apply encoder layers
@@ -210,7 +208,6 @@ class GraphAutoencoderNeighborhood(nn.Module):
                 f"Decoder layers: {[(l.in_channels, l.out_channels, l.heads) for l in self.decoder_layers]}"
             )
 
-        from ._utils import conv_forward
 
         for i, conv in enumerate(self.decoder_layers):
             if i < len(self.decoder_layers) - 1:

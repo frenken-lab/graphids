@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import torch.nn as nn
 
@@ -24,6 +25,15 @@ from .fusion_features import (
     GATFusionExtractor,
     VGAEFusionExtractor,
 )
+
+
+class FeatureLayout(NamedTuple):
+    """Layout of one extractor's features within the fusion state vector."""
+
+    offset: int
+    dim: int
+    confidence_idx: int
+
 
 _REGISTRY: dict[str, ModelEntry] = {}
 
@@ -54,19 +64,19 @@ def fusion_state_dim() -> int:
     )
 
 
-def feature_layout() -> dict[str, tuple[int, int, int]]:
-    """Return ``{name: (start, dim, confidence_abs_idx)}`` for each extractor.
+def feature_layout() -> dict[str, FeatureLayout]:
+    """Return ``{name: FeatureLayout(offset, dim, confidence_idx)}`` for each extractor.
 
     Offsets are computed from registration order so the DQN agent can
     look up slices by name instead of hardcoding indices.
     """
-    layout: dict[str, tuple[int, int, int]] = {}
+    layout: dict[str, FeatureLayout] = {}
     offset = 0
     for name, entry in _REGISTRY.items():
         if entry.extractor is not None:
             dim = entry.extractor.feature_dim
             conf_abs = offset + entry.extractor.confidence_index
-            layout[name] = (offset, dim, conf_abs)
+            layout[name] = FeatureLayout(offset, dim, conf_abs)
             offset += dim
     return layout
 
