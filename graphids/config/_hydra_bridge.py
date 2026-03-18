@@ -48,6 +48,16 @@ def _hydra_compose(overrides: list[str]):
 # ---------------------------------------------------------------------------
 
 
+def _to_hydra_value(v: Any) -> str:
+    """Convert a Python value to Hydra override grammar."""
+    if isinstance(v, (list, tuple)):
+        inner = ",".join(str(x) for x in v)
+        return f"[{inner}]"
+    if isinstance(v, bool):
+        return str(v).lower()
+    return str(v)
+
+
 def _flatten_dict(d: dict[str, Any], prefix: str = "") -> list[str]:
     """Flatten nested dict into Hydra dot-path overrides."""
     items: list[str] = []
@@ -56,7 +66,7 @@ def _flatten_dict(d: dict[str, Any], prefix: str = "") -> list[str]:
         if isinstance(v, dict):
             items.extend(_flatten_dict(v, key))
         else:
-            items.append(f"++{key}={v}")
+            items.append(f"++{key}={_to_hydra_value(v)}")
     return items
 
 
@@ -92,7 +102,15 @@ def resolve(
         f"auxiliary={auxiliaries}",
     ]
     if dataset is not None:
-        override_list.append(f"dataset={dataset}")
+        # Config group selection for known datasets; for unknown datasets
+        # (e.g. test fixtures), use ~dataset to remove the group default
+        # and ++dataset to force-set the name as a plain value.
+        ds_yaml = Path(__file__).parent / "conf" / "dataset" / f"{dataset}.yaml"
+        if ds_yaml.exists():
+            override_list.append(f"dataset={dataset}")
+        else:
+            override_list.append("~dataset")
+            override_list.append(f"++dataset={dataset}")
     if seed is not None:
         override_list.append(f"seed={seed}")
 
