@@ -33,7 +33,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from graphids.config import cache_dir, data_dir, resolve
+from graphids.config import resolve
 
 log = logging.getLogger(__name__)
 
@@ -43,14 +43,10 @@ SUPPORTED_MODELS = ("dominant", "ocgnn")
 def _load_graphs(dataset: str):
     """Load cached graph data via the project's data loading utils."""
     cfg = resolve("vgae", "large", dataset=dataset)
-    from graphids.core.training.datamodules import load_dataset
+    from graphids.core.preprocessing import PreprocessingPipeline
 
-    train_data, val_data, num_ids = load_dataset(
-        cfg.dataset,
-        dataset_path=data_dir(cfg),
-        cache_dir_path=cache_dir(cfg),
-        seed=cfg.seed,
-    )
+    pipe = PreprocessingPipeline(cfg)
+    train_data, val_data, num_ids = pipe.load_dataset()
     return train_data, val_data, num_ids
 
 

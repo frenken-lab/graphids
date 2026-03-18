@@ -258,15 +258,15 @@ def _run_preprocess(args: argparse.Namespace, log: logging.Logger) -> None:
     Calls load_dataset() which checks cache validity (version, feature dims)
     and rebuilds if needed.
     """
-    from graphids.config import cache_dir, data_dir, resolve
+    from graphids.config import resolve
 
     dataset = args.dataset or DEFAULT_DATASET
     cfg = resolve("vgae", "large", dataset=dataset)
 
     log.info("Preprocessing dataset: %s", dataset)
-    from graphids.core.data import load_dataset
+    from graphids.core.preprocessing import PreprocessingPipeline
 
-    load_dataset(dataset, data_dir(cfg), cache_dir(cfg), seed=cfg.seed)
+    PreprocessingPipeline(cfg).load_dataset()
     log.info("Preprocessed cache ready for %s", dataset)
 
 

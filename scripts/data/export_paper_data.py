@@ -24,7 +24,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from graphids.core.preprocessing.adapters.can_bus import ATTACK_TYPE_NAMES
+from graphids.core.preprocessing import ATTACK_TYPE_NAMES
 from graphids.lake.config import LakeConfig
 
 log = logging.getLogger(__name__)

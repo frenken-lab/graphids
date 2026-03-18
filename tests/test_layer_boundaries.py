@@ -210,18 +210,14 @@ class TestGatewayEnforcement:
         not graphids.core.X.Y (with exceptions for backward-compat re-exports)."""
         # Allow these specific deep imports (lazy, inside functions)
         allowed_deep = {
-            "graphids.core.data",  # Dataset loading gateway
             "graphids.core.models.registry",  # Registry functions
             "graphids.core.models.dqn",  # DQN model classes (fusion/eval/serve)
             "graphids.core.models.vgae",  # VGAE Lightning module
             "graphids.core.models.gat",  # GAT Lightning module
             "graphids.core.models.temporal",  # Temporal model
-            "graphids.core.preprocessing.dataset",  # CollatedGraphDataset
-            "graphids.core.preprocessing.parallel",  # process_dataset
-            "graphids.core.preprocessing.temporal",  # TemporalGrouper
-            "graphids.core.preprocessing.vocabulary",  # EntityVocabulary
-            "graphids.core.preprocessing.adapters.can_bus",  # CANBusAdapter
-            "graphids.core.training.datamodules",  # Backward-compat (re-exports)
+            "graphids.core.preprocessing._cache",  # Dataset caching
+            "graphids.core.preprocessing._dataset",  # CollatedGraphDataset
+            "graphids.core.preprocessing._temporal",  # TemporalGrouper
         }
         violations = []
         for f in _collect_python_files(PIPELINE_DIR):

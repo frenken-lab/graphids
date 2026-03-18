@@ -10,7 +10,6 @@ import torch.nn as nn
 from torch_geometric.loader import DataLoader, DynamicBatchSampler
 
 from graphids.config import MMAP_TENSOR_LIMIT, PipelineConfig, cache_dir, data_dir
-from graphids.core.graph_utils import get_batch_index
 
 log = logging.getLogger(__name__)
 
@@ -31,14 +30,10 @@ def graph_label(g) -> int:
 
 def load_data(cfg: PipelineConfig):
     """Load graph dataset. Returns (train_graphs, val_graphs, num_ids, in_channels)."""
-    from graphids.core.data import load_dataset
+    from graphids.core.preprocessing import PreprocessingPipeline
 
-    train_data, val_data, num_ids = load_dataset(
-        cfg.dataset,
-        dataset_path=data_dir(cfg),
-        cache_dir_path=cache_dir(cfg),
-        seed=cfg.seed,
-    )
+    pipe = PreprocessingPipeline(cfg)
+    train_data, val_data, num_ids = pipe.load_dataset()
     in_channels = train_data[0].x.shape[1] if train_data else 11
     return train_data, val_data, num_ids, in_channels
 
@@ -205,6 +200,8 @@ def cache_predictions(models: dict[str, nn.Module], data, device, max_samples: i
     with torch.no_grad():
         for i in range(n_samples):
             g = data[i].clone().to(device)
+            from graphids.core.preprocessing import get_batch_index
+
             batch_idx = get_batch_index(g, device)
 
             features = [ext.extract(models[name], g, batch_idx, device) for name, ext in active]

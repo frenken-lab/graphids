@@ -19,7 +19,7 @@ from pathlib import Path
 # Ensure graphids is importable
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from graphids.core.preprocessing.adapters.can_bus import (
+from graphids.core.preprocessing import (
     ATTACK_TYPE_CODES,
     ATTACK_TYPE_NAMES,
 )

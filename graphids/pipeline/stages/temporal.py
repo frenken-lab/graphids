@@ -192,7 +192,7 @@ def train_temporal(cfg: PipelineConfig) -> dict:
     log.info("Spatial embedding dim: %d", spatial_dim)
 
     # Group into temporal sequences
-    from graphids.core.preprocessing.temporal import TemporalGrouper
+    from graphids.core.preprocessing._temporal import TemporalGrouper
 
     grouper = TemporalGrouper(window=tc.temporal_window, stride=tc.temporal_stride)
 

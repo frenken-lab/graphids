@@ -12,7 +12,6 @@ import torch
 import torch.nn.functional as F
 
 from graphids.config import PipelineConfig, checkpoint_path, config_path, stage_dir
-from graphids.core.graph_utils import get_batch_index
 
 from .batch_sizing import resolve_batch_config
 from .data_loading import training_preamble
@@ -168,6 +167,8 @@ def _score_difficulty(vgae_model, graphs, device, chunk_size: int = 500) -> list
         with torch.no_grad():
             for g in chunk_graphs:
                 g = g.clone().to(device)
+                from graphids.core.preprocessing import get_batch_index
+
                 batch_idx = get_batch_index(g, device)
                 edge_attr = getattr(g, "edge_attr", None)
                 cont, canid_logits, _, _, _ = vgae_model(

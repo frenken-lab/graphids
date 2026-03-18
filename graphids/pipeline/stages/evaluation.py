@@ -17,7 +17,6 @@ from graphids.config import (
     metrics_path,
     stage_dir,
 )
-from graphids.core.graph_utils import get_batch_index, graph_attack_type
 from graphids.pipeline.artifacts import artifact_exists, get_artifact
 
 from .data_loading import training_preamble
@@ -250,7 +249,7 @@ def evaluate(cfg: PipelineConfig) -> dict:
     if cfg.temporal.enabled and artifact_exists(cfg, "temporal", "best_model.pt", model_type="gat"):
         try:
             from graphids.core.models.temporal import TemporalGraphClassifier
-            from graphids.core.preprocessing.temporal import TemporalGrouper
+            from graphids.core.preprocessing._temporal import TemporalGrouper
 
             # Load spatial encoder
             gat_for_temporal = load_model(cfg, "gat", gat_stage, num_ids, in_ch, device)
@@ -346,13 +345,9 @@ def evaluate(cfg: PipelineConfig) -> dict:
 
 def _load_test_data(cfg: PipelineConfig) -> dict:
     """Load held-out test graphs per scenario (cached)."""
-    from graphids.core.data import load_test_scenarios
+    from graphids.core.preprocessing import PreprocessingPipeline
 
-    return load_test_scenarios(
-        cfg.dataset,
-        data_dir(cfg),
-        cache_dir(cfg),
-    )
+    return PreprocessingPipeline(cfg).load_test_scenarios()
 
 
 ATTENTION_SAMPLE_LIMIT = 50  # Max graphs to capture attention for (export size)
@@ -366,6 +361,8 @@ def _run_gat_inference(gat, data, device, capture_embeddings=False, capture_atte
     When capture_attention=True, captures per-layer attention weights for a
     sampled subset of graphs.
     """
+    from graphids.core.preprocessing import graph_attack_type
+
     preds, labels, scores = [], [], []
     attack_types = []
     embeddings = [] if capture_embeddings else None
@@ -417,6 +414,8 @@ def _run_vgae_inference(vgae, data, device, capture_embeddings=False, capture_co
     When capture_components=True, computes per-component loss values:
     recon (MSE), canid (CE), neighborhood (BCE), and KL divergence.
     """
+    from graphids.core.preprocessing import get_batch_index, graph_attack_type
+
     errors, labels = [], []
     attack_types = []
     embeddings = [] if capture_embeddings else None
