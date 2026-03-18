@@ -260,7 +260,7 @@ def _process_dataset_from_scratch(
     # Save cache atomically in collated format, with advisory lock
     import pickle
 
-    from graphids.lake.locking import cache_lock
+    from graphids.core.preprocessing._locking import cache_lock
 
     cache_file.parent.mkdir(parents=True, exist_ok=True)
     logger.info(f"Saving processed data to cache (collated format): {cache_file}")

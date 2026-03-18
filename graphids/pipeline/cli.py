@@ -378,13 +378,13 @@ def _run_lake(args: argparse.Namespace, log: logging.Logger) -> None:
     action = args.lake_action
 
     if action == "rebuild-catalog":
-        from graphids.lake.catalog import rebuild_catalog
+        from graphids.pipeline.catalog import rebuild_catalog
 
         catalog_path = rebuild_catalog(lake_root)
         log.info("Catalog rebuilt: %s", catalog_path)
 
     elif action == "verify":
-        from graphids.lake.manifest import verify_manifest
+        from graphids.pipeline.manifest import verify_manifest
 
         errors_total = 0
         run_count = 0
@@ -401,7 +401,7 @@ def _run_lake(args: argparse.Namespace, log: logging.Logger) -> None:
         log.info("Verified %d runs, %d errors", run_count, errors_total)
 
     elif action == "status":
-        from graphids.lake.catalog import catalog_status
+        from graphids.pipeline.catalog import catalog_status
 
         cat_path = lake_catalog_path(lake_root)
         status = catalog_status(cat_path)
@@ -527,7 +527,7 @@ def _write_lake_manifest(
 ) -> None:
     """Write _manifest.json for the ESS data lake."""
     try:
-        from graphids.lake.manifest import write_manifest
+        from graphids.pipeline.manifest import write_manifest
 
         aux_type = cfg.auxiliaries[0].type if cfg.auxiliaries else "none"
         write_manifest(

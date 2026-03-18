@@ -271,7 +271,7 @@ def _make_rebuild_catalog_asset(hf_push_dep: str = "hf_push"):
 
         from pathlib import Path
 
-        from graphids.lake.catalog import rebuild_catalog
+        from graphids.pipeline.catalog import rebuild_catalog
 
         catalog_path = rebuild_catalog(Path(lake_root))
         context.log.info("Catalog rebuilt: %s", catalog_path)

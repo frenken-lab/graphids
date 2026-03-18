@@ -21,7 +21,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PACKAGE_ROOT = PROJECT_ROOT / "graphids"
 
 CONFIG_DIR = PACKAGE_ROOT / "config"
-LAKE_DIR = PACKAGE_ROOT / "lake"
 PIPELINE_DIR = PACKAGE_ROOT / "pipeline"
 CORE_DIR = PACKAGE_ROOT / "core"
 
@@ -126,40 +125,6 @@ class TestConfigLayerBoundary:
             f"config/ imports from core/ (violates layer boundary):\n  " + "\n  ".join(violations)
         )
 
-    def test_config_no_lake_imports(self):
-        """config/ must not import from lake/ (lake imports config, not vice versa)."""
-        violations = []
-        for f in _collect_python_files(CONFIG_DIR):
-            mods = _subpackage_imported(f)
-            if "lake" in mods:
-                violations.append(str(f.relative_to(PROJECT_ROOT)))
-        assert not violations, (
-            f"config/ imports from lake/ (violates layer boundary):\n  " + "\n  ".join(violations)
-        )
-
-
-class TestLakeLayerBoundary:
-    """lake/ must never import from pipeline/ or core/ (same layer as config/)."""
-
-    def test_lake_no_pipeline_imports(self):
-        violations = []
-        for f in _collect_python_files(LAKE_DIR):
-            mods = _subpackage_imported(f)
-            if "pipeline" in mods:
-                violations.append(str(f.relative_to(PROJECT_ROOT)))
-        assert not violations, (
-            f"lake/ imports from pipeline/ (violates layer boundary):\n  " + "\n  ".join(violations)
-        )
-
-    def test_lake_no_core_imports(self):
-        violations = []
-        for f in _collect_python_files(LAKE_DIR):
-            mods = _subpackage_imported(f)
-            if "core" in mods:
-                violations.append(str(f.relative_to(PROJECT_ROOT)))
-        assert not violations, (
-            f"lake/ imports from core/ (violates layer boundary):\n  " + "\n  ".join(violations)
-        )
 
 
 class TestCoreLayerBoundary:

@@ -4,21 +4,24 @@
 
 ## Config Architecture
 
-3 files, single API entry point:
+5 files, Hydra Compose API:
 
 | File | Role |
 |------|------|
-| `handler.py` | `ConfigHandler` class — YAML loading, resolution, path derivation. `EnvironmentSettings` (pydantic-settings) for env var overrides. |
-| `schema.py` | All Pydantic models — pipeline config, architecture sub-configs, dataset catalog entries, artifact validation contracts. |
-| `__init__.py` | Singleton `_api = ConfigHandler()` + re-exports. All external code uses `from graphids.config import X`. |
+| `_hydra_bridge.py` | `resolve()` via Hydra Compose API — config group selection + overrides → `PipelineConfig`. |
+| `constants.py` | Project constants, `load_pipeline_yaml()`, topology derivation (`STAGES`, `STAGE_DEPENDENCIES`, etc.). Leaf dependency — no config submodule imports. |
+| `paths.py` | Path derivation (`stage_dir`, `checkpoint_path`, lake path primitives). `EnvironmentSettings` for SLURM + MLflow env vars only. |
+| `schema.py` | All Pydantic models — pipeline config, architecture sub-configs, dataset catalog entries, artifact validation contracts. `Literal`-validated `model_type`/`scale`. |
+| `__init__.py` | Re-exports from all submodules. All external code uses `from graphids.config import X`. |
 
-- Pydantic v2 frozen BaseModels + YAML composition + JSON serialization.
+- Pydantic v2 frozen BaseModels + Hydra config groups + JSON serialization.
 - Sub-configs: `cfg.vgae`, `cfg.gat`, `cfg.dqn`, `cfg.training`, `cfg.fusion`, `cfg.temporal` — nested Pydantic models. Always use nested access, never flat.
 - Auxiliaries: `cfg.auxiliaries` is a list of `AuxiliaryConfig`. KD is a composable loss modifier, not a model identity. Use `cfg.has_kd` / `cfg.kd` properties.
-- Constants: all data lives in YAML (`pipeline.yaml`, `resources.yaml`, `datasets.yaml`). Python loads and exposes via `ConfigHandler`.
-- Env vars: declared in `EnvironmentSettings(BaseSettings)` with `env_prefix="KD_GAT_"`. pydantic-settings handles type validation and override priority.
-- Pipeline topology: `config/pipeline.yaml` defines model types, scales, stages, DAG dependencies, variants, preprocessing constants, path defaults, and seed defaults.
-- Resolver: `ConfigHandler.resolve()` merges YAML layers (model_def → auxiliaries → CLI overrides) → `PipelineConfig.model_validate()`.
+- Constants: topology data lives in `pipeline.yaml`, loaded by `constants.py`. Preprocessing constants are module-level in `constants.py`.
+- Env vars: Path vars (`lake_root`) flow through Hydra `oc.env` → `PipelineConfig`. SLURM/MLflow vars use `EnvironmentSettings` in `paths.py` (`env_prefix="KD_GAT_"`).
+- Pipeline topology: `config/pipeline.yaml` defines model types, scales, stages, DAG dependencies. Default stages and variants live in `config/conf/config.yaml`.
+- Resolver: `resolve()` in `_hydra_bridge.py` composes Hydra config groups → `OmegaConf.to_object()` → `PipelineConfig.model_validate()`.
+- Hydra config groups: `conf/model/` (6 files), `conf/auxiliary/` (2 files), `conf/dataset/` (6 files). Each uses `@package _global_` to merge at root.
 - **Config layer is inert**: no mlflow, shutil, or I/O imports. Artifact management lives in `pipeline/artifacts.py`.
 
 > Experiment tracking (MLflow): See experiment-tracking.md.

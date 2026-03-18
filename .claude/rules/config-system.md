@@ -2,23 +2,25 @@
 
 Config is defined by four orthogonal concerns: **model_type** (architecture), **scale** (capacity), **auxiliaries** (loss modifiers like KD), and **dataset**. Adding a new value along any axis = adding a YAML file.
 
-## Architecture (3 files)
+## Architecture (5 files)
 
 | File | Role |
 |------|------|
-| `handler.py` | `ConfigHandler` class — YAML loading, resolution, path derivation. `EnvironmentSettings` (pydantic-settings) for `KD_GAT_*` env vars. |
-| `schema.py` | All Pydantic models — `PipelineConfig`, architecture sub-configs, `DatasetEntry`, artifact contracts (`TrainingArtifact`, etc.). |
-| `__init__.py` | Singleton + re-exports. All external code: `from graphids.config import X`. |
+| `_hydra_bridge.py` | `resolve()` via Hydra Compose API — config group selection + overrides → `PipelineConfig`. |
+| `constants.py` | Project constants, `load_pipeline_yaml()`, topology (`STAGES`, `STAGE_DEPENDENCIES`, `VALID_MODEL_TYPES`, `VALID_SCALES`). Leaf dependency. |
+| `paths.py` | Path derivation (`stage_dir`, `checkpoint_path`, lake path primitives). `EnvironmentSettings` for SLURM + MLflow only. |
+| `schema.py` | All Pydantic models — `PipelineConfig` (Literal-validated `model_type`/`scale`), architecture sub-configs, `DatasetEntry`, artifact contracts. |
+| `__init__.py` | Re-exports from all submodules. All external code: `from graphids.config import X`. |
 
 Config is **inert** — no mlflow, shutil, or I/O. Artifact management lives in `pipeline/artifacts.py`.
 
 ## Pipeline topology
 
-`config/pipeline.yaml` is the single source of truth for model types, scales, stages, variants, DAG dependencies, preprocessing constants, defaults, and path defaults. `ConfigHandler` loads this once and exposes `STAGES`, `STAGE_DEPENDENCIES`, `VALID_MODEL_TYPES`, `VALID_SCALES`. To add a new model/stage/variant, edit `pipeline.yaml` + register the implementation.
+`config/pipeline.yaml` defines model types, scales, stages, and DAG dependencies. `constants.py` loads this once and exposes `STAGES`, `STAGE_DEPENDENCIES`, `VALID_MODEL_TYPES`, `VALID_SCALES`. Default stages and variants live in `config/conf/config.yaml` (Hydra root config). To add a new model/stage/variant, edit `pipeline.yaml` + `conf/` YAMLs + register the implementation.
 
 ## Resolution order
 
-Pydantic defaults (baseline) → `models/{type}/{scale}.yaml` (overrides only) → `auxiliaries/{aux}.yaml` → CLI overrides → Pydantic validation → frozen.
+Hydra defaults list → config groups (`conf/model/`, `conf/auxiliary/`, `conf/dataset/`) → CLI overrides → `OmegaConf.to_object()` → `PipelineConfig.model_validate()` → frozen.
 
 ```python
 from graphids.config import resolve, PipelineConfig
@@ -34,11 +36,13 @@ cfg.vgae.canid_weight  # VGAE task loss weights (canid=0.1, nbr=0.05, kl=0.01)
 
 ## Environment variables
 
-All `KD_GAT_*` env vars are declared in `EnvironmentSettings(BaseSettings)` with `env_prefix="KD_GAT_"`. pydantic-settings handles type validation and override priority (env var > YAML default).
+Path vars (`lake_root`) flow through Hydra `oc.env` resolvers in `config/conf/config.yaml` → `PipelineConfig` fields. SLURM + MLflow vars use `EnvironmentSettings(BaseSettings)` in `paths.py` with `env_prefix="KD_GAT_"`.
 
 ## Path layout
 
-`experimentruns/{dataset}/{model_type}_{scale}_{stage}[_{aux}]/seed_{N}`
+`{lake_root}/{production|dev/user}/{dataset}/{model_type}_{scale}_{stage}[_{aux}]/seed_{N}`
+
+`lake_root` defaults to `experimentruns` when `KD_GAT_LAKE_ROOT` is unset.
 
 ## Config Discipline
 

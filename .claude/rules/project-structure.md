@@ -3,30 +3,33 @@
 ## 3-Layer Hierarchy
 
 ```
-graphids/               # Top-level package — __getattr__ lazy gateway for core/, pipeline/, lake/
-  __init__.py          # Lazy gateway: PipelineConfig, resolve, checkpoint_path (eager); core/pipeline/lake (lazy)
+graphids/               # Top-level package — __getattr__ lazy gateway for core/, pipeline/
+  __init__.py          # Lazy gateway: PipelineConfig, resolve, checkpoint_path (eager); core/pipeline (lazy)
   api.py               # Programmatic facade: train(), evaluate(), orchestrate() — for notebooks/Dagster
-  lake/                 # Layer 1b: ESS data lake (imports config/ only, no pipeline/ or core/)
-    __init__.py         # Gateway: LakeConfig, write_manifest, cache_lock, rebuild_catalog (lazy)
-    config.py           # LakeConfig Pydantic model + env var resolution ($KD_GAT_LAKE_ROOT)
-    catalog.py          # DuckDB catalog rebuild from _manifest.json + config.json + metrics.json
-    manifest.py         # _manifest.json writer/reader + SHA-256 checksum verification
-    locking.py          # GPFS-safe advisory file locking (fcntl.flock) for cache writes
-  config/               # Layer 1: Inert, declarative (no imports from pipeline/, core/, or lake/)
-    handler.py          # ConfigHandler class + EnvironmentSettings (pydantic-settings) — YAML loading, resolution, paths
-    schema.py           # All Pydantic models: PipelineConfig, architectures, DatasetEntry, artifact contracts
-    __init__.py         # Singleton _api = ConfigHandler() + re-exports. All external: `from graphids.config import X`
-    pipeline.yaml       # Pipeline topology + preprocessing constants + defaults + path defaults (single source of truth)
+  config/               # Layer 1: Inert, declarative (no imports from pipeline/ or core/)
+    _hydra_bridge.py    # resolve() via Hydra Compose API → PipelineConfig
+    constants.py        # Project constants, load_pipeline_yaml(), topology (STAGES, STAGE_DEPENDENCIES, etc.)
+    paths.py            # Path derivation (stage_dir, checkpoint_path, lake primitives), EnvironmentSettings (SLURM/MLflow)
+    schema.py           # All Pydantic models: PipelineConfig (Literal model_type/scale), architectures, DatasetEntry, artifact contracts
+    __init__.py         # Re-exports from all submodules. All external: `from graphids.config import X`
+    pipeline.yaml       # Pipeline topology: model types, scales, stages, DAG dependencies
     datasets.yaml       # Dataset catalog (add entries here for new datasets)
     resources.yaml      # SLURM resource profiles + slurm_defaults + failure reactions
-    models/             # Architecture × Scale YAML files (only overrides; Pydantic defaults are baseline)
-      vgae/large.yaml, small.yaml
-      gat/large.yaml, small.yaml
-      dqn/large.yaml, small.yaml
-    auxiliaries/        # Loss modifier YAML files (composable)
-      kd_standard.yaml
+    conf/               # Hydra config groups (composed by _hydra_bridge.py)
+      config.yaml       # Root config: defaults list, infrastructure, stages, variants
+      model/            # model_type × scale (compound names, @package _global_)
+        vgae_large.yaml, vgae_small.yaml, gat_large.yaml, gat_small.yaml, dqn_large.yaml, dqn_small.yaml
+      auxiliary/         # Loss modifier config groups
+        none.yaml, kd_standard.yaml
+      dataset/          # Dataset identity config groups
+        hcrl_sa.yaml, hcrl_ch.yaml, set_01.yaml, set_02.yaml, set_03.yaml, set_04.yaml
     search_spaces/      # HPO search space definitions (for Ray Tune)
       vgae.yaml, gat.yaml, dqn.yaml
+  lake/                 # ESS data lake I/O (imports config/ only, no pipeline/ or core/)
+    __init__.py         # Gateway: write_manifest, cache_lock, rebuild_catalog (lazy)
+    catalog.py          # DuckDB catalog rebuild from _manifest.json
+    manifest.py         # _manifest.json writer/reader + SHA-256 checksum verification
+    locking.py          # GPFS-safe advisory file locking (fcntl.flock) for cache writes
   pipeline/             # Layer 2: Orchestration (imports graphids.config/, lazy imports from graphids.core/)
     __init__.py         # Gateway: build_cli_cmd, STAGE_FNS
     cli.py              # Entry point + MLflow run context; lifecycle: _archive_previous, _log_stage_artifacts, _write_lake_manifest
@@ -125,11 +128,8 @@ notebooks/
     playground.ipynb            # General experimentation
     deno_plot_template.ipynb    # Deno/Observable Plot template
     sample_bubble_chart.ipynb   # Bubble chart prototype
-docs/
-  ECOSYSTEM.md          # Dependency ecosystem documentation
-  memory_optimization.md  # Memory optimization strategies (DeviceStatsMonitor + DynamicBatchSampler)
 ```
 
 ## File Count
 
-57 Python files under `graphids/` (config: 3, pipeline: 15 incl. artifacts.py, core: 16, lake: 5, top-level: 2).
+~58 Python files under `graphids/` (config: 5, pipeline: 17 incl. artifacts.py, core: 26, lake: 3, top-level: 2).

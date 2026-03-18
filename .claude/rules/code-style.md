@@ -11,7 +11,7 @@ Enforced by `tests/test_layer_boundaries.py`:
 When adding new code:
 - Constants → `graphids/config/constants.py`
 - Hyperparameters → Pydantic models in `graphids/config/schema.py`
-- Architecture defaults → YAML files in `graphids/config/models/` or `graphids/config/auxiliaries/`
+- Architecture defaults → YAML files in `graphids/config/conf/model/` or `graphids/config/conf/auxiliary/`
 - Path helpers → `graphids/config/paths.py`
 - `from graphids.config import PipelineConfig, resolve, checkpoint_path` — use the package re-exports
 
