@@ -7,17 +7,6 @@ defaults:
 stage: autoencoder
 seed: 42
 
-# Empty anchors — Hydra needs these to accept CLI overrides like training.lr=0.001
-# Pydantic fills actual defaults during model_validate()
-vgae: {}
-gat: {}
-dqn: {}
-training: {}
-fusion: {}
-preprocessing: {}
-temporal: {}
-tune: {}
-
 # --- Infrastructure (env vars via oc.env with defaults) ---
 lake_root: ${oc.env:KD_GAT_LAKE_ROOT,experimentruns}
 device: cuda

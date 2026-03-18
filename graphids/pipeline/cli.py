@@ -81,36 +81,13 @@ def _setup_mlflow(run_name: str, cfg: PipelineConfig, stage: str, tags: dict | N
 # ---------------------------------------------------------------------------
 
 
-def _prepare_overrides(raw_overrides: list[str]) -> list[str]:
-    """Ensure nested-key overrides use Hydra's ++ (force-set) prefix.
-
-    Config group selections (model=X, dataset=X, etc.) and top-level keys
-    (stage=X, seed=X) pass through unchanged. Nested dot-path overrides
-    like training.lr=0.001 need ++ because config.yaml has empty anchors.
-    """
-    _PASSTHROUGH_KEYS = {"model", "auxiliary", "dataset", "stage", "seed"}
-    prepared = []
-    for ov in raw_overrides:
-        if "=" not in ov:
-            prepared.append(ov)
-            continue
-        key = ov.split("=", 1)[0].lstrip("+~")
-        if key in _PASSTHROUGH_KEYS:
-            prepared.append(ov)
-        elif not ov.startswith(("+", "~")):
-            prepared.append(f"++{ov}")
-        else:
-            prepared.append(ov)
-    return prepared
-
-
 def _run_training(overrides: list[str]) -> None:
     """Compose config from Hydra overrides and dispatch a training stage."""
     from omegaconf import OmegaConf
 
     from graphids.config._hydra_bridge import _hydra_compose
 
-    with _hydra_compose(_prepare_overrides(overrides)) as hydra_cfg:
+    with _hydra_compose(overrides) as hydra_cfg:
         raw = OmegaConf.to_object(hydra_cfg)
 
     stage = raw.pop("stage")
@@ -129,7 +106,7 @@ def _show_config(overrides: list[str]) -> None:
 
     from graphids.config._hydra_bridge import _hydra_compose
 
-    with _hydra_compose(_prepare_overrides(overrides)) as hydra_cfg:
+    with _hydra_compose(overrides) as hydra_cfg:
         print(OmegaConf.to_yaml(hydra_cfg))
 
 
