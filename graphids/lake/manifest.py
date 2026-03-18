@@ -40,7 +40,12 @@ class ManifestEntry(BaseModel, frozen=True):
 
 
 class Manifest(BaseModel, frozen=True):
-    """Artifact manifest for a completed run."""
+    """Artifact manifest for a completed run.
+
+    The ``metrics`` field is the single source of truth for final run metrics.
+    MLflow autolog provides live training observability; the manifest carries
+    the authoritative final numbers for catalog/dashboard consumption.
+    """
 
     # Identity
     dataset: str
@@ -58,6 +63,9 @@ class Manifest(BaseModel, frozen=True):
 
     # Artifacts
     artifacts: list[ManifestEntry]
+
+    # Metrics (single source of truth — replaces separate metrics.json reads)
+    metrics: dict[str, object] = {}
 
 
 def _sha256_file(path: Path, chunk_size: int = 1 << 20) -> str:
@@ -93,10 +101,13 @@ def write_manifest(
     stage: str,
     auxiliaries: str = "none",
     seed: int = 42,
+    metrics: dict[str, object] | None = None,
 ) -> Path:
     """Write _manifest.json to a completed run directory.
 
     Scans for known artifacts, computes checksums, writes atomically.
+    If ``metrics`` is None, reads from ``metrics.json`` in stage_dir
+    (backward compat). Pass an explicit dict to skip the file read.
     Returns the manifest path.
     """
     entries = []
@@ -111,6 +122,20 @@ def write_manifest(
                 )
             )
 
+    # Resolve metrics: explicit dict > metrics.json file > empty
+    if metrics is None:
+        metrics_path = stage_dir / "metrics.json"
+        if metrics_path.exists():
+            try:
+                import json
+
+                metrics = json.loads(metrics_path.read_text())
+            except (json.JSONDecodeError, OSError) as e:
+                log.warning("Failed to read metrics.json for manifest: %s", e)
+                metrics = {}
+        else:
+            metrics = {}
+
     manifest = Manifest(
         dataset=dataset,
         model_type=model_type,
@@ -123,6 +148,7 @@ def write_manifest(
         git_sha=_git_sha(),
         slurm_job_id=os.environ.get("SLURM_JOB_ID", ""),
         artifacts=entries,
+        metrics=metrics,
     )
 
     manifest_path = stage_dir / "_manifest.json"

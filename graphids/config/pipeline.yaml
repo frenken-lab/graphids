@@ -1,4 +1,4 @@
-# pipeline.yaml — Single source of truth for pipeline topology.
+# pipeline.yaml — Pipeline topology (single source of truth for DAG structure).
 #
 # Defines what model types, scales, stages, and variants exist.
 # Python code discovers implementations via registries; this file
@@ -96,23 +96,3 @@ variants:
 
 # --- Default stage list (for single-run PipelineConfig) ---
 default_stages: [autoencoder, curriculum, fusion, evaluation]
-
-# --- Defaults ---
-defaults:
-  dataset: hcrl_sa
-  seeds: [42, 123, 456]
-
-# --- Preprocessing constants ---
-preprocessing:
-  version: "4.0.0"
-  max_data_bytes: 8
-  node_feature_count: 26
-  edge_feature_count: 11
-  excluded_attack_types: [suppress, masquerade]
-  mmap_tensor_limit: 60000
-
-# --- Path defaults (overridable via env vars) ---
-paths:
-  experiment_root: experimentruns
-  sweep_results_dir: data/sweep_results
-  mlflow_uri: "sqlite:///data/mlflow/mlflow.db"

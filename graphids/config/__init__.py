@@ -33,9 +33,6 @@ run_id_str = _api.run_id_str
 run_metadata = _api.run_metadata
 get_datasets = _api.get_datasets
 sweep_result_path = _api.sweep_result_path
-sweep_searcher_path = _api.sweep_searcher_path
-list_models = _api.list_models
-list_auxiliaries = _api.list_auxiliaries
 parse_seeds = _api.parse_seeds
 load_catalog = _api.load_catalog
 

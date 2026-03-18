@@ -364,20 +364,19 @@ class PreprocessingArtifact(BaseModel, frozen=True):
 
     @model_validator(mode="after")
     def _validate_compatibility(self) -> PreprocessingArtifact:
-        from .handler import load_pipeline_yaml
+        from .handler import (
+            EDGE_FEATURE_COUNT,
+            NODE_FEATURE_COUNT,
+            PREPROCESSING_VERSION,
+        )
 
-        prep = load_pipeline_yaml()["preprocessing"]
         errors = []
-        if self.preprocessing_version != prep["version"]:
-            errors.append(f"version {self.preprocessing_version} != {prep['version']}")
-        if self.node_feature_count != prep["node_feature_count"]:
-            errors.append(
-                f"node_features {self.node_feature_count} != {prep['node_feature_count']}"
-            )
-        if self.edge_feature_count != prep["edge_feature_count"]:
-            errors.append(
-                f"edge_features {self.edge_feature_count} != {prep['edge_feature_count']}"
-            )
+        if self.preprocessing_version != PREPROCESSING_VERSION:
+            errors.append(f"version {self.preprocessing_version} != {PREPROCESSING_VERSION}")
+        if self.node_feature_count != NODE_FEATURE_COUNT:
+            errors.append(f"node_features {self.node_feature_count} != {NODE_FEATURE_COUNT}")
+        if self.edge_feature_count != EDGE_FEATURE_COUNT:
+            errors.append(f"edge_features {self.edge_feature_count} != {EDGE_FEATURE_COUNT}")
         if errors:
             raise ValueError(f"Preprocessing cache incompatible: {'; '.join(errors)}")
         return self
@@ -403,14 +402,13 @@ def compute_preprocessing_hash() -> str:
     """Content-addressable hash of preprocessing parameters."""
     import hashlib
 
-    from .handler import load_pipeline_yaml
+    from .handler import EDGE_FEATURE_COUNT, NODE_FEATURE_COUNT, PREPROCESSING_VERSION
 
-    prep = load_pipeline_yaml()["preprocessing"]
     defaults = PreprocessingConfig()
     components = [
-        prep["version"],
-        str(prep["node_feature_count"]),
-        str(prep["edge_feature_count"]),
+        PREPROCESSING_VERSION,
+        str(NODE_FEATURE_COUNT),
+        str(EDGE_FEATURE_COUNT),
         str(defaults.window_size),
         str(defaults.stride),
         str(defaults.train_val_split),

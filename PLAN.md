@@ -1,57 +1,73 @@
 # KD-GAT Session Plan
 
-> Last updated: 2026-03-17
+> Last updated: 2026-03-18
 
 ## Active Plan
 
-No active plan. Pipeline consolidation complete. Next: run training.
+**Pipeline toolchain migration** — replace custom management layer (84% of pipeline/) with Hydra + Dagster + Lightning.
+
+- Decision: `~/plans/pipeline-toolchain-decision.md`
+- Research: `~/plans/pipeline-decoupling-analysis.md`
+- Phase 1 design: `~/plans/phase1-hydra-config.md`
 
 ## In Progress
 
-- Ops dashboard (`buckeyeguy/kd-gat-dashboard`) — running on HF Spaces. Shows 181 experiment runs + 37 sweep trials.
+- **Toolchain migration implementation** — executing tool-agnostic structural changes
+- Ops dashboard (`buckeyeguy/kd-gat-dashboard`) — running on HF Spaces
 
 ## Blocked
 
 (none)
 
+## Migration Phases
+
+| Phase | What | Status |
+|-------|------|--------|
+| 1 | Config framework migration (LightningCLI evaluated, spike pending) | **Designing** |
+| 2 | Hydra Optuna sweeper (replace sweep_pipeline/tune_config/store) | Pending P1 |
+| 3 | Extract shared slurm_client module | Pending |
+| 4 | AdaptiveSlurmLauncher Hydra plugin | Pending P1+P3 |
+| 5 | Lightning predict_step + BasePredictionWriter for eval | Pending |
+| 6 | SLURMEnvironment auto-requeue | Pending |
+| 7 | Simplify artifacts.py (ESS primary, drop MLflow fallback) | Pending |
+| 8 | dagster-slurm eval (WSL → OSC SSH) | Pending |
+| 9 | Dagster partitions (multi-seed × multi-dataset) | Pending P8 |
+
 ## Open Questions
 
-### Orchestration architecture
-- Should Ray be kept at all, or fully replaced? (Path A vs C)
-- When to revisit Flyte? (trigger: OSC gets K8s)
-- How to handle HPO if Ray is dropped? (standalone Optuna loses ASHA multi-fidelity)
-- Database consolidation: SQLite (single-writer) + PostgreSQL (multi-writer) + DuckDB (analytics) — three engines?
+- Hydra maintenance risk — last stable 1.3.2 (Feb 2023). hydra-zen compensates. Compose API is escape hatch.
+- submitit pickles in-process — conflicts with CUDA isolation. Need subprocess inside trainable.
+- Manifest convergence timing — do before or after Hydra? (~1 day, independent)
 
-### Is RL justified for fusion?
-See `~/plans/fusion-redesign.md` for full analysis.
-
-## Next Up (after orchestration)
+## Next Up (after toolchain migration)
 
 - Fusion method comparison experiment
 - Evaluate research questions R1–R3
-- Research visualization Space (`buckeyeguy/kd-gat-research`) — see previous PLAN.md for detailed requirements
 
 ## Key Reference Documents
 
 | Document | Purpose |
 |----------|---------|
-| `~/plans/ecosystem-component-registry.md` | 24-component grocery list with interfaces and gaps |
-| `~/plans/orchestration-tool-evaluation.md` | 6 tools scored against 14 requirements |
-| `~/plans/code-state-report-template.md` | Reusable 10-step codebase analysis methodology |
-| `~/plans/2026-03-11-architecture-session.md` | Full session decisions and findings |
+| `~/plans/pipeline-toolchain-decision.md` | Chosen toolchain + migration order + database convergence |
+| `~/plans/pipeline-decoupling-analysis.md` | 5,852-line decomposition: 16% ML / 84% management |
+| `~/plans/phase1-hydra-config.md` | Phase 1 detailed design |
 | `~/plans/fusion-redesign.md` | RL fusion analysis |
-| `~/plans/slurm-orchestration-redesign.md` | Original orchestration design rationale |
+| `~/plans/ecosystem-component-registry.md` | 24-component grocery list with interfaces and gaps |
 
 ## Completed
 
-- **Pipeline layer consolidation v2** — 4 phases: bugs+config, torchmetrics, batched eval (10-50x speedup), god function decomposition. See `plans/pipeline-consolidation.md`. (2026-03-17)
+- **Structural migration (5 tasks)** — (2026-03-18)
+  - Dead code removal: `list_models()`, `list_auxiliaries()`, `sweep_searcher_path()`, Optuna pickle save
+  - Manifest convergence: `metrics` field on `Manifest` (SoT), catalog reads from manifest with recursive flattening (fixes eval metrics gap)
+  - Split `pipeline.yaml`: topology-only (removed preprocessing constants, defaults, paths → module-level constants in handler.py)
+  - Plan artifact schema: `PlanJob`, `ArtifactDependency`, `Plan` Pydantic models + `build_plan()` in `orchestration/plan.py`. Verified: 12 jobs for 3-seed large variant, correct deps + resources, JSON round-trip.
+  - Config concern separation: preprocessing constants elevated to module-level in handler.py (no longer read from YAML at runtime). Path extraction deferred — too many callers for a no-behavior-change refactor.
+- **Pipeline decoupling analysis** — 5,852 lines classified (932 ML, 4,920 management). 180 functions: 20 ML, 55 replaceable, 105 glue. Toolchain decision made. (2026-03-18)
+- **Pipeline layer consolidation v2** — 4 phases: bugs+config, torchmetrics, batched eval (10-50x speedup), god function decomposition. (2026-03-17)
 - **Preprocessing module hardening** — 6 fixes: ghost config param, adapter serialization, IR validation, feature manifest, SRP split. (2026-03-17)
 - **Models layer hardening** — decouple extractor, consolidate conv, typed layout. (2026-03-17)
-- **Architecture review & ecosystem mapping** — 50 files / 9,540 lines inventoried. 24 ecosystem components defined with interfaces, gaps, priorities. 4 critical gaps identified. Orchestration tool evaluation (6 tools × 14 requirements). Session doc written. (2026-03-11)
-- Codebase consolidation: 12,511→9,537 lines (-24%), 55→50 files. Deleted unused orchestration (executor, driver, planner), moved loss_landscape to scripts/, trimmed tune_config. (2026-03-10)
-- MLOps tools catalog: 437 tools compiled. 12 dimensions. (2026-03-10)
-- Shared PostgreSQL backend: Apptainer PG 16 on SLURM, on-demand launcher, dual-backend store. (2026-03-10)
-- Scheduler-agnostic orchestration: built and deleted same day — 5-component system was over-engineered. Code preserved in git history (commits 123845f, 971dd6e, c697b63). (2026-03-10)
+- **Architecture review & ecosystem mapping** — 50 files / 9,540 lines inventoried. 24 ecosystem components. (2026-03-11)
+- Codebase consolidation: 12,511→9,537 lines (-24%), 55→50 files. (2026-03-10)
 - Memory/batch sizing simplification: ~600 lines removed. (2026-03-07)
 - MLflow migration: replaces W&B + lakehouse + CSVLogger. (2026-03-06)
 - Feature engineering v2.0.0: 11→26-D node features, GATv2. (2026-03-03)

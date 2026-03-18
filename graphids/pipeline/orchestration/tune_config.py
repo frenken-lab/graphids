@@ -27,7 +27,7 @@ from pathlib import Path
 import yaml
 
 from graphids.config import STAGE_MODEL_MAP as _STAGE_MODEL
-from graphids.config import sweep_result_path, sweep_searcher_path
+from graphids.config import sweep_result_path
 
 _SEARCH_SPACES_DIR = Path(__file__).resolve().parents[2] / "config" / "search_spaces"
 
@@ -285,17 +285,6 @@ def run_tune(
     )
 
     results = tuner.fit()
-
-    # Save searcher state (fitted Optuna TPE model) for future warm-starts
-    from pathlib import Path
-
-    searcher_path = sweep_searcher_path(stage, dataset, scale)
-    searcher_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        search_alg.save(str(searcher_path))
-        log.info("Searcher state saved to %s", searcher_path)
-    except Exception as e:
-        log.warning("Failed to save searcher state: %s", e)
 
     best = results.get_best_result(metric=metric, mode=mode)
     log.info(

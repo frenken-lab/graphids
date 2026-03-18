@@ -99,16 +99,28 @@ def rebuild_catalog(lake_root: Path, catalog_path: Path | None = None) -> Path:
             except (json.JSONDecodeError, OSError):
                 pass
 
-        # Merge metrics.json fields (flat)
-        metrics_path = run_dir / "metrics.json"
-        if metrics_path.exists():
-            try:
-                metrics = json.loads(metrics_path.read_text())
-                for k, v in metrics.items():
-                    if isinstance(v, (int, float)):
-                        row[f"metric_{k}"] = v
-            except (json.JSONDecodeError, OSError):
-                pass
+        # Merge metrics from manifest (single source of truth).
+        # Falls back to separate metrics.json for backward compat with
+        # runs written before manifest convergence.
+        manifest_metrics = manifest.get("metrics", {})
+        if not manifest_metrics:
+            metrics_path = run_dir / "metrics.json"
+            if metrics_path.exists():
+                try:
+                    manifest_metrics = json.loads(metrics_path.read_text())
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+        def _flatten_metrics(obj: dict, prefix: str = "metric") -> None:
+            """Flatten nested metrics dicts into row with dotted keys."""
+            for k, v in obj.items():
+                key = f"{prefix}_{k}"
+                if isinstance(v, (int, float)):
+                    row[key] = v
+                elif isinstance(v, dict):
+                    _flatten_metrics(v, key)
+
+        _flatten_metrics(manifest_metrics)
 
         rows.append(row)
 

@@ -29,6 +29,23 @@ CONFIG_DIR = Path(__file__).parent
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # ---------------------------------------------------------------------------
+# Preprocessing constants (project-wide, change with feature engineering)
+# ---------------------------------------------------------------------------
+PREPROCESSING_VERSION = "4.0.0"
+MAX_DATA_BYTES = 8
+NODE_FEATURE_COUNT = 26
+EDGE_FEATURE_COUNT = 11
+EXCLUDED_ATTACK_TYPES = ["suppress", "masquerade"]
+MMAP_TENSOR_LIMIT = 60_000
+
+# ---------------------------------------------------------------------------
+# Project defaults
+# ---------------------------------------------------------------------------
+DEFAULT_DATASET = "hcrl_sa"
+DEFAULT_SEEDS = [42, 123, 456]
+SWEEP_RESULTS_DIR = "data/sweep_results"
+
+# ---------------------------------------------------------------------------
 # Standalone YAML loader (used by schema.py validators + ConfigHandler)
 # ---------------------------------------------------------------------------
 _pipeline_cache: dict | None = None
@@ -92,30 +109,24 @@ class ConfigHandler:
 
         # --- Environment (pydantic-settings: env vars override YAML defaults) ---
         slurm = resources["slurm_defaults"]
-        paths = pipeline["paths"]
         self.env = EnvironmentSettings(
             slurm_account=slurm["account"],
             slurm_partition=slurm["partition"],
             gpu_type=slurm["gpu_type"],
-            experiment_root=paths["experiment_root"],
         )
 
-        # --- Preprocessing constants ---
-        prep = pipeline["preprocessing"]
-        self.PREPROCESSING_VERSION: str = prep["version"]
-        self.MAX_DATA_BYTES: int = prep["max_data_bytes"]
-        self.NODE_FEATURE_COUNT: int = prep["node_feature_count"]
-        self.EDGE_FEATURE_COUNT: int = prep["edge_feature_count"]
-        self.EXCLUDED_ATTACK_TYPES: list[str] = prep["excluded_attack_types"]
-        self.MMAP_TENSOR_LIMIT: int = prep["mmap_tensor_limit"]
+        # --- Preprocessing constants (from module-level) ---
+        self.PREPROCESSING_VERSION = PREPROCESSING_VERSION
+        self.MAX_DATA_BYTES = MAX_DATA_BYTES
+        self.NODE_FEATURE_COUNT = NODE_FEATURE_COUNT
+        self.EDGE_FEATURE_COUNT = EDGE_FEATURE_COUNT
+        self.EXCLUDED_ATTACK_TYPES = EXCLUDED_ATTACK_TYPES
+        self.MMAP_TENSOR_LIMIT = MMAP_TENSOR_LIMIT
 
-        # --- Defaults ---
-        defaults = pipeline["defaults"]
-        self.DEFAULT_DATASET: str = defaults["dataset"]
-        self.DEFAULT_SEEDS: list[int] = defaults["seeds"]
-
-        # --- Path defaults ---
-        self.SWEEP_RESULTS_DIR: str = paths["sweep_results_dir"]
+        # --- Defaults (from module-level) ---
+        self.DEFAULT_DATASET = DEFAULT_DATASET
+        self.DEFAULT_SEEDS = DEFAULT_SEEDS
+        self.SWEEP_RESULTS_DIR = SWEEP_RESULTS_DIR
 
         # --- Expose env settings as top-level attrs ---
         self.SLURM_ACCOUNT: str = self.env.slurm_account
@@ -185,25 +196,6 @@ class ConfigHandler:
             merged["experiment_root"] = self.env.experiment_root
 
         return PipelineConfig.model_validate(merged)
-
-    def list_models(self) -> dict[str, list[str]]:
-        """Discover available model types and scales from YAML files."""
-        models = {}
-        models_dir = CONFIG_DIR / "models"
-        if models_dir.exists():
-            for model_dir in sorted(models_dir.iterdir()):
-                if model_dir.is_dir() and model_dir.name in self.VALID_MODEL_TYPES:
-                    scales = [f.stem for f in sorted(model_dir.glob("*.yaml"))]
-                    if scales:
-                        models[model_dir.name] = scales
-        return models
-
-    def list_auxiliaries(self) -> list[str]:
-        """Discover available auxiliary configs from YAML files."""
-        aux_dir = CONFIG_DIR / "auxiliaries"
-        if aux_dir.exists():
-            return [f.stem for f in sorted(aux_dir.glob("*.yaml"))]
-        return []
 
     # ===================================================================
     # Run identity
@@ -292,14 +284,6 @@ class ConfigHandler:
         if self.env.lake_root:
             return Path(self.env.lake_root) / "sweeps" / dataset / f"{stage}_{scale}_best.yaml"
         return self.PROJECT_ROOT / self.SWEEP_RESULTS_DIR / f"{stage}_{dataset}_{scale}_best.yaml"
-
-    def sweep_searcher_path(self, stage: str, dataset: str, scale: str) -> Path:
-        """Path for a sweep's Optuna searcher state pickle."""
-        if self.env.lake_root:
-            return Path(self.env.lake_root) / "sweeps" / dataset / f"{stage}_{scale}_searcher.pkl"
-        return (
-            self.PROJECT_ROOT / self.SWEEP_RESULTS_DIR / f"{stage}_{dataset}_{scale}_searcher.pkl"
-        )
 
     def get_datasets(self) -> list[str]:
         """Dataset names from datasets.yaml (cached)."""

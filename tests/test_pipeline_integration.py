@@ -56,10 +56,10 @@ class TestConfigRoundTrip:
         assert cfg == loaded
 
     def test_all_model_scale_round_trip(self, tmp_path):
-        from graphids.config import PipelineConfig, list_models, resolve
+        from graphids.config import VALID_MODEL_TYPES, VALID_SCALES, PipelineConfig, resolve
 
-        for model_type, scales in list_models().items():
-            for scale in scales:
+        for model_type in sorted(VALID_MODEL_TYPES):
+            for scale in sorted(VALID_SCALES):
                 cfg = resolve(model_type, scale, dataset="hcrl_sa")
                 p = tmp_path / f"{model_type}_{scale}.json"
                 cfg.save(p)
@@ -686,23 +686,6 @@ class TestSchemaValidation:
         cfg = PipelineConfig()
         with pytest.raises(Exception):
             cfg.vgae.latent_dim = 999
-
-    def test_resolver_list_models(self):
-        from graphids.config import list_models
-
-        models = list_models()
-        assert "vgae" in models
-        assert "gat" in models
-        assert "dqn" in models
-        assert "large" in models["vgae"]
-        assert "small" in models["vgae"]
-
-    def test_resolver_list_auxiliaries(self):
-        from graphids.config import list_auxiliaries
-
-        aux = list_auxiliaries()
-        assert "none" in aux
-        assert "kd_standard" in aux
 
     def test_has_kd_property(self):
         from graphids.config import PipelineConfig
