@@ -1310,6 +1310,7 @@ name = "kd-gat"
 version = "1.0.0"
 source = { editable = "." }
 dependencies = [
+    { name = "duckdb" },
     { name = "fastapi" },
     { name = "mlflow" },
     { name = "numpy" },
@@ -1346,7 +1347,6 @@ db = [
     { name = "psycopg", extra = ["binary"] },
 ]
 dev = [
-    { name = "duckdb" },
     { name = "httpx" },
     { name = "pytest" },
     { name = "ruff" },
@@ -1359,7 +1359,7 @@ ray = [
 requires-dist = [
     { name = "dagster", marker = "extra == 'dagster'", specifier = ">=1.9" },
     { name = "dagster-webserver", marker = "extra == 'dagster'", specifier = ">=1.9" },
-    { name = "duckdb", marker = "extra == 'dev'", specifier = ">=1.0.0" },
+    { name = "duckdb", specifier = ">=1.0.0" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "mlflow", specifier = ">=2.18" },

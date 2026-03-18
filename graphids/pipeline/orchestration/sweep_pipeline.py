@@ -19,10 +19,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from graphids.config.constants import (
+from graphids.config import (
     PROJECT_ROOT,
     STAGE_MODEL_MAP,
-    SWEEP_RESULTS_DIR,
+    sweep_result_path,
 )
 from graphids.pipeline.orchestration.job import JobSpec, JobState, ResourceSpec
 from graphids.pipeline.orchestration.store import PipelineStore
@@ -116,20 +116,18 @@ def _step_status(store: PipelineStore, run_id: str, step_name: str) -> str:
 
 
 def _sweep_result_path(stage: str, dataset: str, scale: str) -> Path:
-    return PROJECT_ROOT / SWEEP_RESULTS_DIR / f"{stage}_{dataset}_{scale}_best.yaml"
+    return sweep_result_path(stage, dataset, scale)
 
 
 def _checkpoint_path(model: str, scale: str, stage: str, dataset: str) -> Path:
-    from graphids.config.paths import checkpoint_path
-    from graphids.config.resolver import resolve
+    from graphids.config import checkpoint_path, resolve
 
     cfg = resolve(model, scale, dataset=dataset)
     return checkpoint_path(cfg, stage)
 
 
 def _metrics_path(scale: str, dataset: str) -> Path:
-    from graphids.config.paths import metrics_path
-    from graphids.config.resolver import resolve
+    from graphids.config import metrics_path, resolve
 
     cfg = resolve("vgae", scale, dataset=dataset)
     return metrics_path(cfg, "evaluation")
@@ -364,7 +362,7 @@ def run_sweep_pipeline(
 
 def _run_multi_seed_final(dataset: str, scale: str) -> None:
     """Re-train best config with all DEFAULT_SEEDS for statistical significance."""
-    from graphids.config.constants import DEFAULT_SEEDS
+    from graphids.config import DEFAULT_SEEDS
 
     log.info("=== Multi-seed training for %s/%s with seeds %s ===", dataset, scale, DEFAULT_SEEDS)
 
@@ -405,8 +403,7 @@ def _run_multi_seed_final(dataset: str, scale: str) -> None:
 
 def _dry_run(dataset: str, scale: str) -> None:
     """Print DAG state and verify configs without executing."""
-    from graphids.config import data_dir
-    from graphids.config.resolver import resolve
+    from graphids.config import data_dir, resolve
     from graphids.pipeline.validate import validate_datasets
 
     log.info("=== Sweep Pipeline Dry Run: dataset=%s, scale=%s ===", dataset, scale)

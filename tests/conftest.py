@@ -46,7 +46,7 @@ IN_CHANNELS = 26
 
 def _make_graph(num_nodes=10, num_edges=20, label=0):
     """Create a single synthetic graph matching real data shape."""
-    from graphids.config.constants import EDGE_FEATURE_COUNT
+    from graphids.config import EDGE_FEATURE_COUNT
 
     x = torch.randn(num_nodes, IN_CHANNELS)
     x[:, 0] = torch.randint(0, NUM_IDS, (num_nodes,)).float()

@@ -11,7 +11,7 @@ import json
 import logging
 from pathlib import Path
 
-from graphids.config.constants import PROJECT_ROOT
+from graphids.config import PROJECT_ROOT
 
 log = logging.getLogger(__name__)
 

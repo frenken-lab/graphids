@@ -14,11 +14,11 @@ from graphids.config import (
     PipelineConfig,
     cache_dir,
     data_dir,
-    get_resolver,
     metrics_path,
     stage_dir,
 )
-from graphids.config.constants import get_batch_index, graph_attack_type
+from graphids.core.graph_utils import get_batch_index, graph_attack_type
+from graphids.pipeline.artifacts import artifact_exists, get_artifact
 
 from .data_loading import training_preamble
 from .utils import (
@@ -62,16 +62,16 @@ def evaluate(cfg: PipelineConfig) -> dict:
     artifacts: dict = {}
 
     # Check upfront whether fusion eval will need VGAE+GAT (avoid redundant reload)
-    resolver = get_resolver()
+
     fusion_needs_models = (
-        resolver.exists(cfg, "fusion", "best_model.pt", model_type="dqn")
-        and resolver.exists(cfg, vgae_stage, "best_model.pt", model_type="vgae")
-        and resolver.exists(cfg, gat_stage, "best_model.pt", model_type="gat")
+        artifact_exists(cfg, "fusion", "best_model.pt", model_type="dqn")
+        and artifact_exists(cfg, vgae_stage, "best_model.pt", model_type="vgae")
+        and artifact_exists(cfg, gat_stage, "best_model.pt", model_type="gat")
     )
 
     # ---- GAT evaluation ----
     gat = None
-    if resolver.exists(cfg, gat_stage, "best_model.pt", model_type="gat"):
+    if artifact_exists(cfg, gat_stage, "best_model.pt", model_type="gat"):
         gat = load_model(cfg, "gat", gat_stage, num_ids, in_ch, device)
 
         p, l, s, gat_emb, gat_attn, gat_at = _run_gat_inference(
@@ -112,7 +112,7 @@ def evaluate(cfg: PipelineConfig) -> dict:
 
     # ---- VGAE evaluation ----
     vgae = None
-    if resolver.exists(cfg, vgae_stage, "best_model.pt", model_type="vgae"):
+    if artifact_exists(cfg, vgae_stage, "best_model.pt", model_type="vgae"):
         vgae = load_model(cfg, "vgae", vgae_stage, num_ids, in_ch, device)
 
         errors_np, labels_np, vgae_z, vgae_at, vgae_components = _run_vgae_inference(
@@ -162,7 +162,7 @@ def evaluate(cfg: PipelineConfig) -> dict:
         from graphids.core.models.dqn import EnhancedDQNFusionAgent
 
         fusion_cfg = load_frozen_cfg(cfg, "fusion")
-        fusion_ckpt = resolver.get(cfg, "fusion", "best_model.pt", model_type="dqn")
+        fusion_ckpt = get_artifact(cfg, "fusion", "best_model.pt", model_type="dqn")
         agent = EnhancedDQNFusionAgent.from_config(fusion_cfg, device=str(device), inference=True)
         agent.load_checkpoint(fusion_ckpt)
 
@@ -247,7 +247,7 @@ def evaluate(cfg: PipelineConfig) -> dict:
         log.info("Saved attention weights (%d samples) → %s", len(attn_list), attn_path)
 
     # Temporal model evaluation
-    if cfg.temporal.enabled and resolver.exists(cfg, "temporal", "best_model.pt", model_type="gat"):
+    if cfg.temporal.enabled and artifact_exists(cfg, "temporal", "best_model.pt", model_type="gat"):
         try:
             from graphids.core.models.temporal import TemporalGraphClassifier
             from graphids.core.preprocessing.temporal import TemporalGrouper
@@ -272,7 +272,7 @@ def evaluate(cfg: PipelineConfig) -> dict:
                 freeze_spatial=True,
                 num_classes=2,
             ).to(device)
-            temporal_ckpt = resolver.get(cfg, "temporal", "best_model.pt", model_type="gat")
+            temporal_ckpt = get_artifact(cfg, "temporal", "best_model.pt", model_type="gat")
             temporal_model.load_state_dict(
                 torch.load(temporal_ckpt, map_location="cpu", weights_only=True)
             )
@@ -599,15 +599,15 @@ def _collect_layer_representations(model, data, device, max_samples=500):
 
 def _save_cka(cfg, val_data, device, num_ids, in_ch, out_dir):
     """Compute and save CKA matrix between teacher and student GAT layers."""
-    from graphids.config import get_resolver, resolve
+    from graphids.config import resolve
+    from graphids.pipeline.artifacts import artifact_exists
 
-    resolver = get_resolver()
     teacher_cfg = resolve("gat", "large", dataset=cfg.dataset)
-    if not resolver.exists(teacher_cfg, "curriculum", "best_model.pt", model_type="gat"):
+    if not artifact_exists(teacher_cfg, "curriculum", "best_model.pt", model_type="gat"):
         log.warning("CKA: teacher checkpoint not found")
         return
 
-    if not resolver.exists(cfg, "curriculum", "best_model.pt", model_type="gat"):
+    if not artifact_exists(cfg, "curriculum", "best_model.pt", model_type="gat"):
         log.warning("CKA: student checkpoint not found")
         return
 

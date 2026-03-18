@@ -19,7 +19,7 @@ import pandas as pd
 import torch
 from torch_geometric.data import Data
 
-from graphids.config.constants import EDGE_FEATURE_COUNT, NODE_FEATURE_COUNT
+from graphids.config import EDGE_FEATURE_COUNT, NODE_FEATURE_COUNT
 from graphids.core.preprocessing.adapters.can_bus import CANBusAdapter
 from graphids.core.preprocessing.dataset import GraphDataset
 from graphids.core.preprocessing.engine import GraphEngine
@@ -74,6 +74,7 @@ class TestEntityVocabulary(unittest.TestCase):
 
     def test_roundtrip_persistence(self):
         import tempfile
+
         vocab = EntityVocabulary.build_from_ids([1, 2, 3])
         with tempfile.NamedTemporaryFile(suffix=".pkl") as f:
             vocab.save(f.name)
@@ -107,27 +108,31 @@ class TestIRSchema(unittest.TestCase):
 
     def test_validate_valid_df(self):
         schema = IRSchema(num_features=2)
-        df = pd.DataFrame({
-            "entity_id": [0, 1, 2],
-            "feature_0": [0.1, 0.2, 0.3],
-            "feature_1": [0.4, 0.5, 0.6],
-            "source_id": [0, 1, 0],
-            "target_id": [1, 2, 1],
-            "label": [0, 1, 0],
-        })
+        df = pd.DataFrame(
+            {
+                "entity_id": [0, 1, 2],
+                "feature_0": [0.1, 0.2, 0.3],
+                "feature_1": [0.4, 0.5, 0.6],
+                "source_id": [0, 1, 0],
+                "target_id": [1, 2, 1],
+                "label": [0, 1, 0],
+            }
+        )
         result = schema.validate(df)
         self.assertEqual(len(result), 3)
 
     def test_validate_missing_column(self):
         schema = IRSchema(num_features=2)
-        df = pd.DataFrame({
-            "entity_id": [0],
-            "feature_0": [0.1],
-            # missing feature_1
-            "source_id": [0],
-            "target_id": [1],
-            "label": [0],
-        })
+        df = pd.DataFrame(
+            {
+                "entity_id": [0],
+                "feature_0": [0.1],
+                # missing feature_1
+                "source_id": [0],
+                "target_id": [1],
+                "label": [0],
+            }
+        )
         with self.assertRaises(ValueError):
             schema.validate(df)
 
@@ -208,10 +213,9 @@ class TestCANBusAdapter(unittest.TestCase):
     def setUpClass(cls):
         cls.test_root = "data/automotive/hcrl_sa"
         import os
+
         if not os.path.isdir(cls.test_root):
-            raise unittest.SkipTest(
-                f"Test data not available at {cls.test_root}"
-            )
+            raise unittest.SkipTest(f"Test data not available at {cls.test_root}")
 
     def test_discover_files(self):
         adapter = CANBusAdapter()
@@ -243,8 +247,10 @@ class TestCANBusAdapter(unittest.TestCase):
 
         # Check feature normalization (bytes should be in [0, 1])
         for col in [f"feature_{i}" for i in range(8)]:
-            self.assertTrue((ir_df[col] >= 0).all() and (ir_df[col] <= 1).all(),
-                            f"{col} not properly normalized")
+            self.assertTrue(
+                (ir_df[col] >= 0).all() and (ir_df[col] <= 1).all(),
+                f"{col} not properly normalized",
+            )
 
 
 class TestGraphDataset(unittest.TestCase):
@@ -288,10 +294,9 @@ class TestEndToEnd(unittest.TestCase):
     def setUpClass(cls):
         cls.test_root = "data/automotive/hcrl_sa"
         import os
+
         if not os.path.isdir(cls.test_root):
-            raise unittest.SkipTest(
-                f"Test data not available at {cls.test_root}"
-            )
+            raise unittest.SkipTest(f"Test data not available at {cls.test_root}")
 
     def test_process_dataset(self):
         graphs, vocab_dict = process_dataset(

@@ -22,8 +22,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from graphids.config import resolve
-from graphids.config.constants import NODE_FEATURE_COUNT
+from graphids.config import NODE_FEATURE_COUNT, resolve
 
 log = logging.getLogger(__name__)
 

@@ -13,12 +13,12 @@ from pathlib import Path
 
 import torch
 
-from graphids.config.constants import (
+from graphids.config import (
     EDGE_FEATURE_COUNT,
     NODE_FEATURE_COUNT,
     PREPROCESSING_VERSION,
+    PreprocessingConfig,
 )
-from graphids.config.schema import PreprocessingConfig
 
 _PREP_DEFAULTS = PreprocessingConfig()
 from graphids.core.preprocessing.dataset import (
@@ -417,7 +417,7 @@ def _write_cache_metadata(cache_dir, dataset_name, graphs, id_mapping, csv_files
     """Write cache_metadata.json alongside processed cache files."""
     import torch_geometric
 
-    from graphids.config.contracts import compute_preprocessing_hash
+    from graphids.config import compute_preprocessing_hash
 
     metadata = {
         "dataset": dataset_name,

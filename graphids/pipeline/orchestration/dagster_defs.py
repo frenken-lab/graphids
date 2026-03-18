@@ -27,13 +27,13 @@ from functools import cached_property
 
 import dagster as dg
 
-from graphids.config.constants import (
+from graphids.config import (
     DEFAULT_SEEDS,
     PROJECT_ROOT,
     STAGE_DEPENDENCIES,
     STAGE_MODEL_MAP,
+    get_datasets,
 )
-from graphids.config.paths import get_datasets
 
 from .dagster_resources import (
     clear_retry_state,
@@ -311,7 +311,7 @@ def build_dag_topology() -> dict[str, DagNode]:
     Returns {asset_name: DagNode} with preprocess + all variant stages.
     Both build_dagster_assets() and fire_and_forget() call this.
     """
-    from graphids.config.resolver import resolve
+    from graphids.config import resolve
 
     cfg = resolve("vgae", "large")
     nodes: dict[str, DagNode] = {}
@@ -419,7 +419,7 @@ def fire_and_forget(
     """
     import graphlib
 
-    from graphids.config.resolver import resolve
+    from graphids.config import resolve
 
     cfg = resolve("vgae", "large")
     client = PipesSlurmClient(dry_run=dry_run)

@@ -12,7 +12,7 @@ import torch
 import torch.nn.functional as F
 
 from graphids.config import PipelineConfig, checkpoint_path, config_path, stage_dir
-from graphids.config.constants import get_batch_index
+from graphids.core.graph_utils import get_batch_index
 
 from .batch_sizing import resolve_batch_config
 from .data_loading import training_preamble

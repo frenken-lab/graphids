@@ -26,8 +26,8 @@ from pathlib import Path
 
 import yaml
 
-from graphids.config.constants import STAGE_MODEL_MAP as _STAGE_MODEL
-from graphids.config.constants import SWEEP_RESULTS_DIR
+from graphids.config import STAGE_MODEL_MAP as _STAGE_MODEL
+from graphids.config import sweep_result_path, sweep_searcher_path
 
 _SEARCH_SPACES_DIR = Path(__file__).resolve().parents[2] / "config" / "search_spaces"
 
@@ -88,7 +88,7 @@ def _load_warm_start_configs(
 
     import yaml
 
-    path = Path(SWEEP_RESULTS_DIR) / f"{stage}_{source_dataset}_{source_scale}_best.yaml"
+    path = sweep_result_path(stage, source_dataset, source_scale)
     if not path.exists():
         log.info("No prior sweep results at %s — starting cold", path)
         return [], []
@@ -151,8 +151,7 @@ def _trainable(
         return
 
     # Read metrics from the stage output (use absolute path — Ray worker cwd differs)
-    from graphids.config import stage_dir
-    from graphids.config.resolver import resolve
+    from graphids.config import resolve, stage_dir
 
     overrides = {"dataset": dataset}
     cfg = resolve(model, scale, **overrides)
@@ -215,7 +214,7 @@ def run_tune(
         raise ValueError(f"No search space defined for stage '{stage}'")
 
     # Load config for tune defaults (grace_period, reduction_factor)
-    from graphids.config.resolver import resolve as _resolve
+    from graphids.config import resolve as _resolve
 
     cfg = _resolve(_STAGE_MODEL[stage], scale, dataset=dataset)
     if grace_period <= 0:
@@ -290,7 +289,7 @@ def run_tune(
     # Save searcher state (fitted Optuna TPE model) for future warm-starts
     from pathlib import Path
 
-    searcher_path = Path(SWEEP_RESULTS_DIR) / f"{stage}_{dataset}_{scale}_searcher.pkl"
+    searcher_path = sweep_searcher_path(stage, dataset, scale)
     searcher_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         search_alg.save(str(searcher_path))
@@ -335,7 +334,7 @@ def run_tune(
             )
             mlflow.log_params(best.config)
             # Log best config YAML as artifact
-            best_yaml = Path(SWEEP_RESULTS_DIR) / f"{stage}_{dataset}_{scale}_best.yaml"
+            best_yaml = sweep_result_path(stage, dataset, scale)
             if best_yaml.exists():
                 mlflow.log_artifact(str(best_yaml))
     except Exception as e:
@@ -353,14 +352,12 @@ def export_best_config(best_result, stage: str, dataset: str, scale: str) -> Non
 
     import yaml
 
-    out_dir = Path(SWEEP_RESULTS_DIR)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
     config = best_result.config
     val_loss = best_result.metrics.get("val_loss", float("inf"))
 
     # Write YAML
-    out_path = out_dir / f"{stage}_{dataset}_{scale}_best.yaml"
+    out_path = sweep_result_path(stage, dataset, scale)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "stage": stage,
         "dataset": dataset,

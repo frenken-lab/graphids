@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from graphids.config.constants import EXCLUDED_ATTACK_TYPES, MAX_DATA_BYTES
+from graphids.config import EXCLUDED_ATTACK_TYPES, MAX_DATA_BYTES
 
 from ..schema import (
     CAN_BUS_SCHEMA,

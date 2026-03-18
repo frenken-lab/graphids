@@ -29,7 +29,7 @@ class TestGATReturnEmbedding:
 
     @pytest.fixture
     def gat_model(self):
-        from graphids.config.resolver import resolve
+        from graphids.config import resolve
 
         cfg = resolve("gat", "small", dataset="hcrl_sa", **SMOKE_OVERRIDES)
         from graphids.core.models.gat import GATWithJK
@@ -168,8 +168,7 @@ class TestCLIArchiveRestore:
         """When a stage dir has metrics.json, re-running should archive it."""
         from datetime import datetime
 
-        from graphids.config import stage_dir
-        from graphids.config.resolver import resolve
+        from graphids.config import resolve, stage_dir
 
         cfg = resolve("vgae", "large", dataset="hcrl_sa", experiment_root=str(tmp_path))
         sdir = stage_dir(cfg, "autoencoder")
@@ -194,8 +193,7 @@ class TestCLIArchiveRestore:
         import shutil
         from datetime import datetime
 
-        from graphids.config import stage_dir
-        from graphids.config.resolver import resolve
+        from graphids.config import resolve, stage_dir
 
         cfg = resolve("vgae", "large", dataset="hcrl_sa", experiment_root=str(tmp_path))
         sdir = stage_dir(cfg, "autoencoder")
@@ -226,8 +224,7 @@ class TestCLIArchiveRestore:
         import shutil
         from datetime import datetime
 
-        from graphids.config import stage_dir
-        from graphids.config.resolver import resolve
+        from graphids.config import resolve, stage_dir
 
         cfg = resolve("vgae", "large", dataset="hcrl_sa", experiment_root=str(tmp_path))
         sdir = stage_dir(cfg, "autoencoder")

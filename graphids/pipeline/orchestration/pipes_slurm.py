@@ -21,7 +21,7 @@ from pathlib import Path
 
 import yaml
 
-from graphids.config.constants import PROJECT_ROOT, SLURM_ACCOUNT, SLURM_GPU_TYPE
+from graphids.config import PROJECT_ROOT, SLURM_ACCOUNT, SLURM_GPU_TYPE
 from graphids.pipeline.subprocess_utils import build_cli_cmd
 
 from .job import ResourceSpec
@@ -453,8 +453,12 @@ class PipesSlurmClient:
         """
         from pydantic import ValidationError
 
-        from graphids.config.contracts import EvaluationArtifact, TrainingArtifact
-        from graphids.config.paths import EXPERIMENT_ROOT, run_id_str
+        from graphids.config import (
+            EXPERIMENT_ROOT,
+            EvaluationArtifact,
+            TrainingArtifact,
+            run_id_str,
+        )
 
         if stage == "preprocess":
             return True
@@ -487,7 +491,7 @@ class PipesSlurmClient:
         seed: int = 42,
     ) -> str | None:
         """Look for a Lightning auto-save checkpoint after TIMEOUT."""
-        from graphids.config.paths import EXPERIMENT_ROOT, run_id_str
+        from graphids.config import EXPERIMENT_ROOT, run_id_str
 
         aux = auxiliaries if auxiliaries != "none" else ""
         rid = run_id_str(dataset, model, scale, stage, aux)

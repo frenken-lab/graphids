@@ -23,8 +23,7 @@ import numpy as np
 import torch
 from torch_geometric.data import Data
 
-from graphids.config.constants import EDGE_FEATURE_COUNT
-from graphids.config.schema import PreprocessingConfig
+from graphids.config import EDGE_FEATURE_COUNT, PreprocessingConfig
 
 from .schema import IRSchema
 

@@ -30,12 +30,11 @@ from graphids.config import (
     STAGES,
     PipelineConfig,
     config_path,
-    get_resolver,
+    resolve,
     run_id,
     run_metadata,
     stage_dir,
 )
-from graphids.config.resolver import resolve
 
 from .validate import validate
 
@@ -61,7 +60,7 @@ def _parse_bool(v: str) -> bool:
 
 def _parse_seeds(value: str) -> list[int]:
     """Parse --seeds argument: comma-separated ints or a count for random seeds."""
-    from graphids.config.constants import parse_seeds
+    from graphids.config import parse_seeds
 
     try:
         return parse_seeds(value)
@@ -259,8 +258,7 @@ def _run_preprocess(args: argparse.Namespace, log: logging.Logger) -> None:
     Calls load_dataset() which checks cache validity (version, feature dims)
     and rebuilds if needed.
     """
-    from graphids.config import cache_dir, data_dir
-    from graphids.config.resolver import resolve
+    from graphids.config import cache_dir, data_dir, resolve
 
     dataset = args.dataset or DEFAULT_DATASET
     cfg = resolve("vgae", "large", dataset=dataset)
@@ -412,7 +410,7 @@ def _run_orchestrate(args: argparse.Namespace, log: logging.Logger) -> None:
     dataset = args.dataset or DEFAULT_DATASET
     seeds = None
     if args.seeds:
-        from graphids.config.constants import parse_seeds
+        from graphids.config import parse_seeds
 
         seeds = parse_seeds(args.seeds)
 
@@ -508,8 +506,6 @@ def _run_single_stage(
 
     # ---- Dispatch ----
     t_start = time.monotonic()
-    resolver = get_resolver()
-
     with _setup_mlflow(run_name, cfg, stage, tags=extra_tags):
         try:
             # Log config as params
@@ -565,7 +561,9 @@ def _run_single_stage(
                         post_metrics[k] = v
             mlflow.log_metrics(post_metrics)
 
-            # Log artifacts to MLflow AND populate cache via resolver.put()
+            # Log artifacts to MLflow AND populate cache
+            from graphids.pipeline.artifacts import put_artifact
+
             for artifact_name in [
                 "best_model.pt",
                 "config.json",
@@ -577,7 +575,7 @@ def _run_single_stage(
             ]:
                 artifact_path = sdir / artifact_name
                 if artifact_path.exists():
-                    resolver.put(cfg, stage, artifact_path)
+                    put_artifact(cfg, stage, artifact_path)
 
             # Write _manifest.json for data lake
             try:
@@ -684,7 +682,7 @@ def main(argv: list[str] | None = None) -> None:
         # Parse dot-path overrides
         dot_overrides = _parse_dot_overrides(args.override)
         if dot_overrides:
-            from graphids.config.resolver import _deep_merge
+            from graphids.config.handler import _deep_merge
 
             _deep_merge(overrides, dot_overrides)
 

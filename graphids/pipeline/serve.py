@@ -73,8 +73,8 @@ _device: torch.device = torch.device("cpu")
 
 def _load_models(dataset: str, scale: str) -> dict:
     """Load VGAE + GAT + DQN using ArtifactResolver."""
-    from graphids.config import get_resolver
-    from graphids.config.resolver import resolve
+    from graphids.config import resolve
+    from graphids.pipeline.artifacts import artifact_exists, get_artifact
     from graphids.pipeline.stages.utils import load_data, load_model
 
     cache_key = f"{dataset}_{scale}"
@@ -83,27 +83,26 @@ def _load_models(dataset: str, scale: str) -> dict:
 
     cfg = resolve("vgae", scale, dataset=dataset)
     _, _, num_ids, in_ch = load_data(cfg)
-    resolver = get_resolver()
 
     models = {}
 
     # VGAE
-    if resolver.exists(cfg, "autoencoder", "best_model.pt", model_type="vgae"):
+    if artifact_exists(cfg, "autoencoder", "best_model.pt", model_type="vgae"):
         models["vgae"] = load_model(cfg, "vgae", "autoencoder", num_ids, in_ch, _device)
 
     # GAT
     gat_cfg = resolve("gat", scale, dataset=dataset)
-    if resolver.exists(gat_cfg, "curriculum", "best_model.pt", model_type="gat"):
+    if artifact_exists(gat_cfg, "curriculum", "best_model.pt", model_type="gat"):
         models["gat"] = load_model(gat_cfg, "gat", "curriculum", num_ids, in_ch, _device)
 
     # DQN
     dqn_cfg = resolve("dqn", scale, dataset=dataset)
-    if resolver.exists(dqn_cfg, "fusion", "best_model.pt", model_type="dqn"):
+    if artifact_exists(dqn_cfg, "fusion", "best_model.pt", model_type="dqn"):
         from graphids.core.models.dqn import EnhancedDQNFusionAgent
         from graphids.pipeline.stages.trainer_factory import load_frozen_cfg
 
         fusion_cfg = load_frozen_cfg(dqn_cfg, "fusion")
-        fusion_ckpt = resolver.get(dqn_cfg, "fusion", "best_model.pt", model_type="dqn")
+        fusion_ckpt = get_artifact(dqn_cfg, "fusion", "best_model.pt", model_type="dqn")
         agent = EnhancedDQNFusionAgent.from_config(fusion_cfg, device=str(_device), inference=True)
         agent.load_checkpoint(fusion_ckpt)
         models["dqn"] = agent

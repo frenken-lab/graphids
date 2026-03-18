@@ -55,7 +55,7 @@ class LakeConfig(BaseModel, frozen=True):
     def cache_dir(self, dataset: str, version: str | None = None) -> Path:
         """Cache directory for preprocessed graphs."""
         if version is None:
-            from graphids.config.constants import PREPROCESSING_VERSION
+            from graphids.config import PREPROCESSING_VERSION
 
             version = PREPROCESSING_VERSION
         return self.lake_root / "cache" / f"v{version}" / dataset
@@ -63,6 +63,10 @@ class LakeConfig(BaseModel, frozen=True):
     def raw_dir(self, dataset: str) -> Path:
         """Raw dataset directory."""
         return self.lake_root / "raw" / dataset
+
+    def sweep_dir(self, dataset: str) -> Path:
+        """Sweep results directory for a dataset."""
+        return self.lake_root / "sweeps" / dataset
 
     def catalog_path(self) -> Path:
         """DuckDB catalog file."""

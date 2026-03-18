@@ -10,14 +10,20 @@ import torch
 import torch.nn as nn
 from pytorch_lightning.callbacks import DeviceStatsMonitor, EarlyStopping, ModelCheckpoint
 
-from graphids.config import MLFLOW_TRACKING_URI, PipelineConfig, get_resolver, run_id, stage_dir
+from graphids.config import (
+    MLFLOW_TRACKING_URI,
+    STAGE_MODEL_MAP,
+    PipelineConfig,
+    run_id,
+    stage_dir,
+)
+from graphids.pipeline.artifacts import get_artifact
 
 log = logging.getLogger(__name__)
 
 # model_type → the canonical stage that produces the teacher checkpoint.
 # "curriculum" is preferred over "normal" for GAT since the teacher (large) always
 # trains via curriculum. Derived from STAGE_MODEL_MAP with first-wins semantics.
-from graphids.config.constants import STAGE_MODEL_MAP
 
 _TEACHER_STAGE: dict[str, str] = {}
 for _stage, _model in STAGE_MODEL_MAP.items():
@@ -35,8 +41,7 @@ def resolve_teacher_path(cfg: PipelineConfig, model_type: str) -> Path:
     reference scale-agnostic — today it's "large", but could be any
     variant that produces a checkpoint for the given model_type.
     """
-    from graphids.config import checkpoint_path
-    from graphids.config.resolver import resolve
+    from graphids.config import checkpoint_path, resolve
 
     if cfg.kd and cfg.kd.model_path:
         return Path(cfg.kd.model_path)
@@ -174,7 +179,7 @@ def _extract_state_dict(checkpoint) -> dict:
     return checkpoint
 
 
-from graphids.config.constants import STAGE_MODEL_MAP as _STAGE_MODEL_TYPE
+from graphids.config import STAGE_MODEL_MAP as _STAGE_MODEL_TYPE
 
 
 def load_frozen_cfg(
@@ -188,9 +193,8 @@ def load_frozen_cfg(
     Raises FileNotFoundError if the frozen config doesn't exist.
     """
     mt = model_type or _STAGE_MODEL_TYPE.get(stage, cfg.model_type)
-    resolver = get_resolver()
     try:
-        p = resolver.get(cfg, stage, "config.json", model_type=mt)
+        p = get_artifact(cfg, stage, "config.json", model_type=mt)
     except FileNotFoundError:
         raise FileNotFoundError(
             f"Frozen config not found for stage '{stage}' (model_type={mt}). "
@@ -217,9 +221,8 @@ def load_model(
     """
     from graphids.core.models.registry import get as registry_get
 
-    resolver = get_resolver()
     frozen_cfg = load_frozen_cfg(cfg, stage, model_type=model_type)
-    ckpt = resolver.get(cfg, stage, "best_model.pt", model_type=model_type)
+    ckpt = get_artifact(cfg, stage, "best_model.pt", model_type=model_type)
     model = registry_get(model_type).factory(frozen_cfg, num_ids, in_channels)
     model.load_state_dict(torch.load(ckpt, map_location="cpu", weights_only=True))
     model.to(device)

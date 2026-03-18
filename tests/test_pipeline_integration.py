@@ -47,8 +47,7 @@ class TestConfigRoundTrip:
     """Config serialization must preserve every field exactly."""
 
     def test_save_load_identity(self, tmp_path):
-        from graphids.config import PipelineConfig
-        from graphids.config.resolver import resolve
+        from graphids.config import PipelineConfig, resolve
 
         cfg = resolve("vgae", "small", dataset="set_01")
         p = tmp_path / "config.json"
@@ -57,8 +56,7 @@ class TestConfigRoundTrip:
         assert cfg == loaded
 
     def test_all_model_scale_round_trip(self, tmp_path):
-        from graphids.config import PipelineConfig
-        from graphids.config.resolver import list_models, resolve
+        from graphids.config import PipelineConfig, list_models, resolve
 
         for model_type, scales in list_models().items():
             for scale in scales:
@@ -89,7 +87,7 @@ class TestModelMatchesConfig:
     """Every config param must actually affect the model it controls."""
 
     def test_vgae_dims_from_config(self):
-        from graphids.config.resolver import resolve
+        from graphids.config import resolve
         from graphids.core.models.vgae import GraphAutoencoderNeighborhood
 
         for scale in ("large", "small"):
@@ -117,7 +115,7 @@ class TestModelMatchesConfig:
             )
 
     def test_gat_dims_from_config(self):
-        from graphids.config.resolver import resolve
+        from graphids.config import resolve
         from graphids.core.models.gat import GATWithJK
 
         for scale in ("large", "small"):
@@ -145,7 +143,7 @@ class TestModelMatchesConfig:
 
     def test_dqn_dims_from_config(self):
         """dqn.hidden and dqn.layers must actually change QNetwork architecture."""
-        from graphids.config.resolver import resolve
+        from graphids.config import resolve
         from graphids.core.models.dqn import QNetwork
 
         large_cfg = resolve("dqn", "large")
@@ -195,8 +193,7 @@ class TestCheckpointRoundTrip:
     """Saving then loading a model must reproduce identical weights."""
 
     def test_vgae_checkpoint_roundtrip(self, tmp_path):
-        from graphids.config import PipelineConfig
-        from graphids.config.resolver import resolve
+        from graphids.config import PipelineConfig, resolve
         from graphids.core.models.vgae import GraphAutoencoderNeighborhood
 
         cfg = resolve("vgae", "small")
@@ -235,7 +232,7 @@ class TestCheckpointRoundTrip:
             assert torch.equal(p1, p2), f"Weight mismatch in {n1}"
 
     def test_gat_checkpoint_roundtrip(self, tmp_path):
-        from graphids.config.resolver import resolve
+        from graphids.config import resolve
         from graphids.core.models.gat import GATWithJK
 
         cfg = resolve("gat", "large")
@@ -275,7 +272,7 @@ class TestCheckpointRoundTrip:
             assert torch.equal(p1, p2), f"Weight mismatch in {n1}"
 
     def test_dqn_checkpoint_roundtrip(self, tmp_path):
-        from graphids.config.resolver import resolve
+        from graphids.config import resolve
         from graphids.core.models.dqn import QNetwork
 
         cfg = resolve("dqn", "large")
@@ -297,7 +294,7 @@ class TestCheckpointRoundTrip:
 
     def test_wrong_dims_crash_loudly(self, tmp_path):
         """Loading a checkpoint into a model with wrong dims must raise, not silently corrupt."""
-        from graphids.config.resolver import resolve
+        from graphids.config import resolve
         from graphids.core.models.vgae import GraphAutoencoderNeighborhood
 
         large_cfg = resolve("vgae", "large")
@@ -342,8 +339,7 @@ class TestTeacherLoading:
 
     def _save_teacher(self, tmp_path, model_type):
         """Save a teacher model + config to a temp directory."""
-        from graphids.config import checkpoint_path, config_path, stage_dir
-        from graphids.config.resolver import resolve
+        from graphids.config import checkpoint_path, config_path, resolve, stage_dir
 
         stage_map = {"vgae": "autoencoder", "gat": "curriculum", "dqn": "fusion"}
         stage = stage_map[model_type]
@@ -369,7 +365,7 @@ class TestTeacherLoading:
         return str(checkpoint_path(cfg, stage))
 
     def test_vgae_teacher_loads_own_dims(self, tmp_path):
-        from graphids.config.resolver import resolve
+        from graphids.config import resolve
         from graphids.pipeline.stages.utils import load_teacher
 
         teacher_path = self._save_teacher(tmp_path, "vgae")
@@ -380,7 +376,7 @@ class TestTeacherLoading:
         assert teacher is not None
 
     def test_gat_teacher_loads_own_dims(self, tmp_path):
-        from graphids.config.resolver import resolve
+        from graphids.config import resolve
         from graphids.pipeline.stages.utils import load_teacher
 
         teacher_path = self._save_teacher(tmp_path, "gat")
@@ -391,7 +387,7 @@ class TestTeacherLoading:
         assert teacher is not None
 
     def test_dqn_teacher_loads_own_dims(self, tmp_path):
-        from graphids.config.resolver import resolve
+        from graphids.config import resolve
         from graphids.pipeline.stages.utils import load_teacher
 
         teacher_path = self._save_teacher(tmp_path, "dqn")
@@ -403,7 +399,7 @@ class TestTeacherLoading:
 
     def test_missing_teacher_config_raises(self, tmp_path):
         """Missing teacher config.json must raise, not silently fall back."""
-        from graphids.config.resolver import resolve
+        from graphids.config import resolve
         from graphids.core.models.vgae import GraphAutoencoderNeighborhood
         from graphids.pipeline.stages.utils import load_teacher
 
@@ -546,7 +542,9 @@ class TestValidation:
             validate(cfg, "autoencoder")
 
     def test_missing_prerequisite_config(self, tmp_path, monkeypatch):
-        from graphids.config import PipelineConfig, paths
+        from unittest.mock import patch
+
+        from graphids.config import PipelineConfig
         from graphids.pipeline.validate import validate
 
         cfg = PipelineConfig(
@@ -557,15 +555,11 @@ class TestValidation:
         )
         # Curriculum depends on ("vgae", "autoencoder") — create VGAE dir
         # with best_model.pt but no config.json
-        vgae_dir = tmp_path / "hcrl_sa" / "vgae_large_autoencoder"
+        vgae_dir = tmp_path / "hcrl_sa" / "vgae_large_autoencoder" / "seed_42"
         vgae_dir.mkdir(parents=True)
         (vgae_dir / "best_model.pt").write_bytes(b"fake")
 
-        # Use isolated resolver: fresh cache dir + no MLflow fallback
-        isolated_resolver = paths.ArtifactResolver(cache_root=tmp_path / ".cache")
-        isolated_resolver._find_run = lambda *a, **kw: None
-        monkeypatch.setattr(paths, "_resolver", isolated_resolver)
-
+        # get_artifact for config.json will raise since only best_model.pt exists
         with pytest.raises(ValueError, match="config"):
             validate(cfg, "curriculum")
 
@@ -601,8 +595,7 @@ class TestFrozenConfigPropagation:
         load_frozen_cfg resolves "autoencoder" → model_type="vgae" automatically,
         so a GAT config can find the VGAE autoencoder config.
         """
-        from graphids.config import config_path, stage_dir
-        from graphids.config.resolver import resolve
+        from graphids.config import config_path, resolve, stage_dir
         from graphids.pipeline.stages.utils import load_frozen_cfg
 
         vgae_cfg = resolve(
@@ -633,9 +626,7 @@ class TestFrozenConfigPropagation:
     def test_missing_frozen_config_raises(self, tmp_path):
         from unittest.mock import patch
 
-        from graphids.config import PipelineConfig
-        from graphids.config.paths import ArtifactResolver
-        from graphids.config.schema import AuxiliaryConfig
+        from graphids.config import AuxiliaryConfig, PipelineConfig
         from graphids.pipeline.stages.utils import load_frozen_cfg
 
         cfg = PipelineConfig(
@@ -645,16 +636,8 @@ class TestFrozenConfigPropagation:
             auxiliaries=[AuxiliaryConfig(type="kd")],
             experiment_root=str(tmp_path),
         )
-        # Use isolated resolver with empty cache + no MLflow
-        test_resolver = ArtifactResolver(cache_root=tmp_path / "empty_cache")
-        with (
-            patch("graphids.config.get_resolver", return_value=test_resolver),
-            patch(
-                "graphids.pipeline.stages.trainer_factory.get_resolver", return_value=test_resolver
-            ),
-            patch.object(test_resolver, "_find_run", return_value=None),
-            pytest.raises(FileNotFoundError, match="Frozen config not found"),
-        ):
+        # get_artifact will raise FileNotFoundError since no artifacts exist
+        with pytest.raises(FileNotFoundError, match="Frozen config not found"):
             load_frozen_cfg(cfg, "autoencoder")
 
 
@@ -665,7 +648,7 @@ class TestFrozenConfigPropagation:
 
 class TestMmapConstant:
     def test_single_source_of_truth(self):
-        from graphids.config.constants import MMAP_TENSOR_LIMIT
+        from graphids.config import MMAP_TENSOR_LIMIT
 
         assert isinstance(MMAP_TENSOR_LIMIT, int)
         assert MMAP_TENSOR_LIMIT > 0
@@ -705,7 +688,7 @@ class TestSchemaValidation:
             cfg.vgae.latent_dim = 999
 
     def test_resolver_list_models(self):
-        from graphids.config.resolver import list_models
+        from graphids.config import list_models
 
         models = list_models()
         assert "vgae" in models
@@ -715,7 +698,7 @@ class TestSchemaValidation:
         assert "small" in models["vgae"]
 
     def test_resolver_list_auxiliaries(self):
-        from graphids.config.resolver import list_auxiliaries
+        from graphids.config import list_auxiliaries
 
         aux = list_auxiliaries()
         assert "none" in aux

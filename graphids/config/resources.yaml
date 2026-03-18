@@ -3,11 +3,16 @@
 # Structure: resource_profiles[model_type][scale][stage] -> ResourceSpec
 # Adding a new stage or variant = edit this YAML + add to STAGE_DEPENDENCIES in constants.py.
 
+slurm_defaults:
+  account: PAS1266
+  partition: gpu
+  gpu_type: v100
+
 resource_profiles:
   preprocess:
     "":
       preprocess:
-        partition: serial
+        partition: cpu
         gpus: 0
         cpus: 8
         mem: "32G"
@@ -45,14 +50,14 @@ resource_profiles:
   dqn:
     large:
       fusion:
-        partition: serial
+        partition: cpu
         gpus: 0
         cpus: 4
         mem: "16G"
         walltime: "0:30:00"
     small:
       fusion:
-        partition: serial
+        partition: cpu
         gpus: 0
         cpus: 4
         mem: "12G"
@@ -60,14 +65,14 @@ resource_profiles:
   eval:
     large:
       evaluation:
-        partition: serial
+        partition: cpu
         gpus: 0
         cpus: 4
         mem: "16G"
         walltime: "0:30:00"
     small:
       evaluation:
-        partition: serial
+        partition: cpu
         gpus: 0
         cpus: 4
         mem: "12G"

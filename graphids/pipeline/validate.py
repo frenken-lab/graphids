@@ -14,8 +14,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from graphids.config import PipelineConfig
 
-from graphids.config import STAGES, data_dir, get_datasets, get_resolver
-from graphids.config.constants import STAGE_DEPENDENCIES
+from graphids.config import STAGE_DEPENDENCIES, STAGES, data_dir, get_datasets
 
 _log = logging.getLogger(__name__)
 
@@ -25,7 +24,7 @@ def validate_datasets(datasets: list[str], scale: str) -> list[str]:
 
     Returns a list of error strings (empty if all OK).
     """
-    from graphids.config.resolver import resolve
+    from graphids.config import resolve
 
     errors: list[str] = []
     for dataset in datasets:
@@ -42,7 +41,9 @@ def validate_datasets(datasets: list[str], scale: str) -> list[str]:
 def _artifact_exists(cfg: PipelineConfig, stage: str, name: str, model_type: str) -> bool:
     """Check if a stage artifact exists via the resolver (cache → legacy → MLflow)."""
     try:
-        get_resolver().get(cfg, stage, name, model_type=model_type)
+        from graphids.pipeline.artifacts import get_artifact
+
+        get_artifact(cfg, stage, name, model_type=model_type)
         return True
     except FileNotFoundError:
         return False

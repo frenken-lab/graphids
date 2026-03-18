@@ -20,8 +20,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from graphids.config import checkpoint_path, resolve
-from graphids.config.constants import DEFAULT_DATASET
+from graphids.config import DEFAULT_DATASET, checkpoint_path, resolve
 
 
 def train(

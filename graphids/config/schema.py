@@ -1,7 +1,10 @@
-"""Pydantic v2 config schema. Replaces the flat frozen dataclass.
+"""Pydantic v2 config schema — every data model in the config layer.
 
 One frozen BaseModel per concern. Nested composition. Declarative validation.
 JSON serialization via model_dump_json / model_validate_json.
+
+Includes: pipeline config, architecture sub-configs, dataset catalog entries,
+and artifact validation contracts.
 """
 
 from __future__ import annotations
@@ -185,9 +188,9 @@ class PipelineConfig(BaseModel, frozen=True):
     def _fill_pipeline_defaults(cls, data):
         """Fill stages and variants from pipeline.yaml when not provided."""
         if isinstance(data, dict):
-            from .constants import _load_pipeline_yaml
+            from .handler import load_pipeline_yaml
 
-            pipeline = _load_pipeline_yaml()
+            pipeline = load_pipeline_yaml()
             if data.get("stages") is None:
                 data["stages"] = pipeline.get(
                     "default_stages", ["autoencoder", "curriculum", "fusion", "evaluation"]
@@ -222,7 +225,11 @@ class PipelineConfig(BaseModel, frozen=True):
     # --- Cross-field validation (reads valid values from pipeline.yaml) ---
     @model_validator(mode="after")
     def _check_cross_field(self) -> PipelineConfig:
-        from .constants import VALID_MODEL_TYPES, VALID_SCALES
+        from .handler import load_pipeline_yaml
+
+        _pl = load_pipeline_yaml()
+        VALID_MODEL_TYPES = frozenset(_pl["models"].keys())
+        VALID_SCALES = frozenset(_pl["scales"])
 
         if self.model_type not in VALID_MODEL_TYPES:
             raise ValueError(
@@ -243,3 +250,160 @@ class PipelineConfig(BaseModel, frozen=True):
         """Load config from JSON file."""
         raw = json.loads(Path(path).read_text())
         return cls.model_validate(raw)
+
+
+# ---------------------------------------------------------------------------
+# Dataset catalog entry
+# ---------------------------------------------------------------------------
+
+
+class DatasetEntry(BaseModel, frozen=True):
+    """Schema for one dataset catalog entry in datasets.yaml."""
+
+    domain: str
+    protocol: str
+    source: str = ""
+    description: str = ""
+    csv_dir: str
+    csv_columns: dict[str, str]
+    train_subdir: str
+    train_attack_subdir: str = ""
+    test_subdirs: list[str]
+    added_by: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Artifact validation contracts
+# ---------------------------------------------------------------------------
+
+
+class StageArtifact(BaseModel, frozen=True):
+    """Base contract for pipeline stage outputs."""
+
+    stage_dir: Path
+    config_json: Path
+    metrics_json: Path
+
+    @model_validator(mode="after")
+    def _validate_files_exist(self) -> StageArtifact:
+        missing = []
+        if not self.config_json.exists():
+            missing.append(str(self.config_json))
+        if not self.metrics_json.exists():
+            missing.append(str(self.metrics_json))
+        if missing:
+            raise ValueError(f"Missing required files: {missing}")
+        return self
+
+    @classmethod
+    def from_stage_dir(cls, path: Path) -> StageArtifact:
+        return cls(
+            stage_dir=path,
+            config_json=path / "config.json",
+            metrics_json=path / "metrics.json",
+        )
+
+
+class TrainingArtifact(StageArtifact, frozen=True):
+    """Contract: training stages (autoencoder, curriculum, fusion)."""
+
+    best_model_pt: Path = Path()
+
+    @model_validator(mode="after")
+    def _validate_checkpoint(self) -> TrainingArtifact:
+        if not self.best_model_pt.exists():
+            raise ValueError(f"Missing checkpoint: {self.best_model_pt}")
+        return self
+
+    @classmethod
+    def from_stage_dir(cls, path: Path) -> TrainingArtifact:
+        return cls(
+            stage_dir=path,
+            config_json=path / "config.json",
+            metrics_json=path / "metrics.json",
+            best_model_pt=path / "best_model.pt",
+        )
+
+
+class EvaluationArtifact(StageArtifact, frozen=True):
+    """Contract: evaluation stage."""
+
+    embeddings_npz: Path | None = None
+    dqn_policy_json: Path | None = None
+
+    @classmethod
+    def from_stage_dir(cls, path: Path) -> EvaluationArtifact:
+        emb = path / "embeddings.npz"
+        pol = path / "dqn_policy.json"
+        return cls(
+            stage_dir=path,
+            config_json=path / "config.json",
+            metrics_json=path / "metrics.json",
+            embeddings_npz=emb if emb.exists() else None,
+            dqn_policy_json=pol if pol.exists() else None,
+        )
+
+
+class PreprocessingArtifact(BaseModel, frozen=True):
+    """Contract: preprocessing cache output."""
+
+    cache_dir: Path
+    metadata_json: Path
+    preprocessing_version: str
+    node_feature_count: int
+    edge_feature_count: int
+    config_hash: str = ""
+
+    @model_validator(mode="after")
+    def _validate_compatibility(self) -> PreprocessingArtifact:
+        from .handler import load_pipeline_yaml
+
+        prep = load_pipeline_yaml()["preprocessing"]
+        errors = []
+        if self.preprocessing_version != prep["version"]:
+            errors.append(f"version {self.preprocessing_version} != {prep['version']}")
+        if self.node_feature_count != prep["node_feature_count"]:
+            errors.append(
+                f"node_features {self.node_feature_count} != {prep['node_feature_count']}"
+            )
+        if self.edge_feature_count != prep["edge_feature_count"]:
+            errors.append(
+                f"edge_features {self.edge_feature_count} != {prep['edge_feature_count']}"
+            )
+        if errors:
+            raise ValueError(f"Preprocessing cache incompatible: {'; '.join(errors)}")
+        return self
+
+    @classmethod
+    def from_cache_dir(cls, path: Path) -> PreprocessingArtifact:
+        metadata_path = path / "cache_metadata.json"
+        if not metadata_path.exists():
+            raise ValueError(f"No cache_metadata.json in {path}")
+
+        metadata = json.loads(metadata_path.read_text())
+        return cls(
+            cache_dir=path,
+            metadata_json=metadata_path,
+            preprocessing_version=metadata.get("preprocessing_version", "unknown"),
+            node_feature_count=metadata.get("node_feature_dim", 0),
+            edge_feature_count=metadata.get("edge_feature_dim", 0),
+            config_hash=metadata.get("config_hash", ""),
+        )
+
+
+def compute_preprocessing_hash() -> str:
+    """Content-addressable hash of preprocessing parameters."""
+    import hashlib
+
+    from .handler import load_pipeline_yaml
+
+    prep = load_pipeline_yaml()["preprocessing"]
+    defaults = PreprocessingConfig()
+    components = [
+        prep["version"],
+        str(prep["node_feature_count"]),
+        str(prep["edge_feature_count"]),
+        str(defaults.window_size),
+        str(defaults.stride),
+    ]
+    return hashlib.sha256("|".join(components).encode()).hexdigest()[:16]

@@ -9,8 +9,8 @@ import torch
 import torch.nn as nn
 from torch_geometric.loader import DataLoader, DynamicBatchSampler
 
-from graphids.config import PipelineConfig, cache_dir, data_dir
-from graphids.config.constants import MMAP_TENSOR_LIMIT, get_batch_index
+from graphids.config import MMAP_TENSOR_LIMIT, PipelineConfig, cache_dir, data_dir
+from graphids.core.graph_utils import get_batch_index
 
 log = logging.getLogger(__name__)
 
