@@ -183,6 +183,7 @@ def make_dataloader(
 def cache_predictions(models: dict[str, nn.Module], data, device, max_samples: int = 150_000):
     """Run registered extractors over data, produce N-D state vectors for DQN.
 
+
     ``models`` maps model_type name to loaded model (e.g. ``{"vgae": vgae, "gat": gat}``).
     Feature concatenation order follows registry registration order (VGAE then GAT)
     to preserve the existing 15-D layout.
@@ -192,6 +193,8 @@ def cache_predictions(models: dict[str, nn.Module], data, device, max_samples: i
     registered = registry_extractors()
     active = [(name, ext) for name, ext in registered if name in models]
 
+    from graphids.core.preprocessing import get_batch_index
+
     states, labels = [], []
     for model in models.values():
         model.eval()
@@ -200,8 +203,6 @@ def cache_predictions(models: dict[str, nn.Module], data, device, max_samples: i
     with torch.no_grad():
         for i in range(n_samples):
             g = data[i].clone().to(device)
-            from graphids.core.preprocessing import get_batch_index
-
             batch_idx = get_batch_index(g, device)
 
             features = [ext.extract(models[name], g, batch_idx, device) for name, ext in active]

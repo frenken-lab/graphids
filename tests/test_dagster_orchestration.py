@@ -102,7 +102,7 @@ class TestResourceSpec:
     def test_from_yaml_defaults(self):
         res = ResourceSpec.from_yaml({})
         assert res.memory_gb == 20
-        assert res.partition == "serial"
+        assert res.partition == "cpu"
 
 
 # ---------------------------------------------------------------------------
@@ -124,12 +124,12 @@ class TestResourceProfiles:
     def test_preprocess_is_cpu(self):
         res = get_resources("preprocess", "", "preprocess")
         assert res.gpus == 0
-        assert res.partition == "serial"
+        assert res.partition == "cpu"
 
     def test_dqn_fusion_is_cpu(self):
         res = get_resources("dqn", "large", "fusion")
         assert res.gpus == 0
-        assert res.partition == "serial"
+        assert res.partition == "cpu"
 
     def test_missing_profile_raises(self):
         with pytest.raises(KeyError, match="No resource profile"):

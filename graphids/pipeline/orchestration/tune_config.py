@@ -322,7 +322,7 @@ def run_tune(
                 "dataset": dataset,
                 "scale": scale,
                 "num_samples": str(num_samples),
-                "trainable_mode": trainable_label,
+                "trainable_mode": "subprocess",
             },
         ):
             mlflow.log_metrics(

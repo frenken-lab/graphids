@@ -25,6 +25,10 @@ class VGAEArchitecture(BaseModel, frozen=True):
     conv_type: Literal["gat", "gatv2", "transformer"] = "gat"
     edge_dim: int = Field(11, ge=1)
     proj_dim: int = Field(0, ge=0)
+    # Loss component weights for task_loss = recon + w1*canid + w2*nbr + w3*kl
+    canid_weight: float = Field(0.1, ge=0)
+    nbr_weight: float = Field(0.05, ge=0)
+    kl_weight: float = Field(0.01, ge=0)
 
 
 class GATArchitecture(BaseModel, frozen=True):

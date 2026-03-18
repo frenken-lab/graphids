@@ -29,21 +29,20 @@ graphids/               # Top-level package — __getattr__ lazy gateway for cor
       vgae.yaml, gat.yaml, dqn.yaml
   pipeline/             # Layer 2: Orchestration (imports graphids.config/, lazy imports from graphids.core/)
     __init__.py         # Gateway: build_cli_cmd, STAGE_FNS
-    cli.py              # Entry point + MLflow run context + artifact logging + archive restore on failure
+    cli.py              # Entry point + MLflow run context; lifecycle: _archive_previous, _log_stage_artifacts, _write_lake_manifest
     artifacts.py        # Artifact store: get/put/exists with cache → filesystem → MLflow fallback
     serve.py            # FastAPI inference server (/predict, /health)
     validate.py         # Config + environment validation utilities
     subprocess_utils.py # Shared CLI command builder for subprocess dispatch
     stages/             # Stage implementations
       training.py       # Training loop (autoencoder, curriculum, normal stages)
-      evaluation.py     # Multi-model eval; captures embeddings.npz + dqn_policy.json
+      evaluation.py     # Eval orchestrator + per-model evaluators (_evaluate_gat/vgae/fusion/temporal); batched inference via PyG DataLoader; torchmetrics
       fusion.py         # Multi-model fusion stage (DQN, MLP, weighted avg)
       temporal.py       # Temporal graph classification (GAT encoder + Transformer over time)
       data_loading.py   # Dataset loading + graph caching + training_preamble()
       batch_sizing.py   # Batch size resolution (safety_factor × configured batch_size)
       trainer_factory.py # Lightning Trainer + ModelCheckpoint + EarlyStopping + DeviceStatsMonitor + MLflow autolog
       modules.py        # Lightning modules: VGAEModule, GATModule, CurriculumDataModule + teacher offload helpers
-      loss_landscape.py # Loss landscape visualization (standalone analysis tool)
       utils.py          # Re-exports from submodules (convenience imports)
     orchestration/      # Pipeline orchestration (Dagster + SLURM)
       __init__.py       # Gateway: ResourceSpec, PipesSlurmClient, SlurmJobFailed; lazy Dagster imports

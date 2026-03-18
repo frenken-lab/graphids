@@ -62,7 +62,23 @@ CLI: `python -m graphids.pipeline.cli orchestrate --dataset hcrl_sa --seeds 42,1
 - **Subprocess dispatch**: Each stage runs as `subprocess.run()` for CUDA context isolation (~300-500 MB per model). Overhead (~3-5s) is <0.1% of pipeline wall time.
 - **Per-stage granularity**: Finer (per-epoch) has massive scheduling overhead; coarser (per-variant) loses restartability.
 - **Checkpoint passing**: Filesystem paths, not object store (debuggable, subprocess-compatible).
-- Archive restore: `cli.py` archives previous runs before re-running, restores on failure.
+- Archive restore: `cli.py` archives previous runs before re-running, restores on failure. Lifecycle extracted into `_archive_previous()`, `_log_stage_artifacts()`, `_write_lake_manifest()`.
+
+## Evaluation
+
+`graphids/pipeline/stages/evaluation.py` — thin orchestrator (`evaluate()`) dispatching to per-model evaluators:
+
+| Function | Role |
+|----------|------|
+| `_evaluate_gat()` | GAT inference + test scenarios |
+| `_evaluate_vgae()` | VGAE reconstruction-error + Youden's J threshold |
+| `_evaluate_fusion()` | DQN/MLP/WeightedAvg fusion eval |
+| `_evaluate_temporal()` | Temporal graph classification eval |
+| `probe_embedding_dim()` | Shared helper (used by evaluation + temporal stages) |
+
+- **Batched inference**: `_run_gat_inference()` and `_run_vgae_inference()` use PyG `DataLoader` (batch_size=128). Attention capture stays per-sample. VGAE component capture falls back to per-sample via `_run_vgae_inference_per_sample()`.
+- **Metrics**: `_compute_metrics()` uses `torchmetrics.classification.Binary*` (GPU-native). Custom: detection-at-FPR, Youden's J.
+- **Artifact saving**: `_save_embedding_artifacts()`, `_save_attention_artifacts()`, `_save_dqn_policy_artifact()`.
 
 ## Memory & Batch Sizing
 
@@ -85,4 +101,4 @@ Heavy analysis (UMAP, attention, CKA, etc.) lives in `notebooks/analysis/`.
 
 - Delete unused code completely. No compatibility shims or `# removed` comments.
 - Dataset catalog: `graphids/config/datasets.yaml` — single place to register new datasets.
-- Leverage library features over custom code: Lightning callbacks, Pydantic validation, PyG batching, sklearn metrics.
+- Leverage library features over custom code: Lightning callbacks, Pydantic validation, PyG batching, torchmetrics.

@@ -47,20 +47,14 @@ def evaluate(cfg: PipelineConfig) -> dict:
         }
     """
     train_data, val_data, num_ids, in_ch, device = training_preamble(cfg, "EVALUATION")
-
     test_scenarios = _load_test_data(cfg)
 
     all_metrics: dict = {}
     test_metrics: dict = {}
-
-    # Stage names (run_id() adds aux suffix automatically based on cfg.auxiliaries)
-    gat_stage = "curriculum"
-    vgae_stage = "autoencoder"
-
-    # Artifact collectors for embeddings/policy export
     artifacts: dict = {}
 
-    # Check upfront whether fusion eval will need VGAE+GAT (avoid redundant reload)
+    gat_stage = "curriculum"
+    vgae_stage = "autoencoder"
 
     fusion_needs_models = (
         artifact_exists(cfg, "fusion", "best_model.pt", model_type="dqn")
@@ -68,145 +62,256 @@ def evaluate(cfg: PipelineConfig) -> dict:
         and artifact_exists(cfg, gat_stage, "best_model.pt", model_type="gat")
     )
 
-    # ---- GAT evaluation ----
-    gat = None
+    # ---- Per-model evaluation ----
+    gat, vgae = None, None
+
     if artifact_exists(cfg, gat_stage, "best_model.pt", model_type="gat"):
         gat = load_model(cfg, "gat", gat_stage, num_ids, in_ch, device)
-
-        p, l, s, gat_emb, gat_attn, gat_at = _run_gat_inference(
-            gat,
-            val_data,
-            device,
-            capture_embeddings=True,
-            capture_attention=True,
+        all_metrics["gat"], test_metrics["gat"] = _evaluate_gat(
+            gat, val_data, test_scenarios, device
         )
-        all_metrics["gat"] = _compute_metrics(l, p, s)
-        if gat_emb is not None:
-            artifacts["gat_emb"] = gat_emb
-            artifacts["gat_labels"] = l
-            artifacts["gat_attack_types"] = gat_at
-        if gat_attn:
-            artifacts["gat_attention"] = gat_attn
-        log.info(
-            "GAT val metrics: %s",
-            {k: f"{v:.4f}" for k, v in all_metrics["gat"]["core"].items() if isinstance(v, float)},
-        )
-
-        if test_scenarios:
-            test_metrics["gat"] = {}
-            for scenario, tdata in test_scenarios.items():
-                tp, tl, ts, _, _, _ = _run_gat_inference(gat, tdata, device)
-                test_metrics["gat"][scenario] = _compute_metrics(tl, tp, ts)
-                log.info(
-                    "GAT %s  acc=%.4f f1=%.4f",
-                    scenario,
-                    test_metrics["gat"][scenario]["core"]["accuracy"],
-                    test_metrics["gat"][scenario]["core"]["f1"],
-                )
-
+        _collect_gat_artifacts(gat, val_data, device, artifacts)
         if not fusion_needs_models:
             del gat
             gat = None
             cleanup()
 
-    # ---- VGAE evaluation ----
-    vgae = None
     if artifact_exists(cfg, vgae_stage, "best_model.pt", model_type="vgae"):
         vgae = load_model(cfg, "vgae", vgae_stage, num_ids, in_ch, device)
-
-        errors_np, labels_np, vgae_z, vgae_at, vgae_components = _run_vgae_inference(
-            vgae, val_data, device, capture_embeddings=True, capture_components=True
+        all_metrics["vgae"], test_metrics["vgae"], best_thresh = _evaluate_vgae(
+            vgae, val_data, test_scenarios, device
         )
-        best_thresh, youden_j, vgae_preds = _vgae_threshold(labels_np, errors_np)
-        all_metrics["vgae"] = _compute_metrics(labels_np, vgae_preds, errors_np)
-        if vgae_z is not None:
-            artifacts["vgae_z"] = vgae_z
-            artifacts["vgae_labels"] = labels_np
-            artifacts["vgae_errors"] = errors_np
-            artifacts["vgae_attack_types"] = vgae_at
-        if vgae_components is not None:
-            for comp_name, comp_arr in vgae_components.items():
-                artifacts[f"vgae_error_{comp_name}"] = comp_arr
-        all_metrics["vgae"]["core"]["optimal_threshold"] = best_thresh
-        all_metrics["vgae"]["core"]["youden_j"] = youden_j
-        log.info(
-            "VGAE val metrics: %s",
-            {k: f"{v:.4f}" for k, v in all_metrics["vgae"]["core"].items() if isinstance(v, float)},
-        )
-
-        if test_scenarios:
-            test_metrics["vgae"] = {}
-            for scenario, tdata in test_scenarios.items():
-                te, tl, _, _, _ = _run_vgae_inference(vgae, tdata, device)
-                tp = (te > best_thresh).astype(int)
-                test_metrics["vgae"][scenario] = _compute_metrics(tl, tp, te)
-                test_metrics["vgae"][scenario]["core"]["threshold_from_val"] = best_thresh
-                log.info(
-                    "VGAE %s  acc=%.4f f1=%.4f",
-                    scenario,
-                    test_metrics["vgae"][scenario]["core"]["accuracy"],
-                    test_metrics["vgae"][scenario]["core"]["f1"],
-                )
-
+        _collect_vgae_artifacts(vgae, val_data, device, artifacts)
         if not fusion_needs_models:
             del vgae
             vgae = None
             cleanup()
 
-    # ---- DQN Fusion evaluation ----
     if fusion_needs_models and vgae is not None and gat is not None:
-        models = {"vgae": vgae, "gat": gat}
-        val_cache = cache_predictions(models, val_data, device, cfg.fusion.max_val_samples)
-
-        from graphids.core.models.dqn import EnhancedDQNFusionAgent
-
-        fusion_cfg = load_frozen_cfg(cfg, "fusion")
-        fusion_ckpt = get_artifact(cfg, "fusion", "best_model.pt", model_type="dqn")
-        agent = EnhancedDQNFusionAgent.from_config(fusion_cfg, device=str(device), inference=True)
-        agent.load_checkpoint(fusion_ckpt)
-
-        fp, fl, fs, fq = _run_fusion_inference(agent, val_cache)
-        all_metrics["fusion"] = _compute_metrics(fl, fp, fs)
-        # Capture DQN policy (alpha distribution by class)
-        artifacts["dqn_alphas"] = fs.tolist()
-        artifacts["dqn_labels"] = fl.tolist()
-        artifacts["dqn_q_values"] = fq
-        log.info(
-            "Fusion val metrics: %s",
-            {
-                k: f"{v:.4f}"
-                for k, v in all_metrics["fusion"]["core"].items()
-                if isinstance(v, float)
-            },
+        all_metrics["fusion"], test_metrics["fusion"] = _evaluate_fusion(
+            cfg, gat, vgae, val_data, test_scenarios, device, artifacts
         )
-
-        if test_scenarios:
-            test_metrics["fusion"] = {}
-            for scenario, tdata in test_scenarios.items():
-                tc = cache_predictions(models, tdata, device, cfg.fusion.max_val_samples)
-                tp, tl, ts, _ = _run_fusion_inference(agent, tc)
-                test_metrics["fusion"][scenario] = _compute_metrics(tl, tp, ts)
-                log.info(
-                    "Fusion %s  acc=%.4f f1=%.4f",
-                    scenario,
-                    test_metrics["fusion"][scenario]["core"]["accuracy"],
-                    test_metrics["fusion"][scenario]["core"]["f1"],
-                )
-
         del vgae, gat
         cleanup()
 
+    if cfg.temporal.enabled and artifact_exists(cfg, "temporal", "best_model.pt", model_type="gat"):
+        temporal_m = _evaluate_temporal(cfg, val_data, num_ids, in_ch, device, gat_stage)
+        if temporal_m is not None:
+            all_metrics["temporal"] = temporal_m
+
+    # ---- CKA (KD runs only) ----
+    out = stage_dir(cfg, "evaluation")
+    out.mkdir(parents=True, exist_ok=True)
+    if cfg.has_kd:
+        try:
+            _save_cka(cfg, val_data, device, num_ids, in_ch, out)
+        except Exception as e:
+            log.warning("CKA computation failed (non-fatal): %s", e)
+
+    # ---- Persist ----
+    test_metrics = {k: v for k, v in test_metrics.items() if v}
     if test_metrics:
         all_metrics["test"] = test_metrics
 
-    # Save all metrics
-    out = stage_dir(cfg, "evaluation")
-    out.mkdir(parents=True, exist_ok=True)
     mp = metrics_path(cfg, "evaluation")
     mp.write_text(json.dumps(all_metrics, indent=2))
     log.info("All metrics saved to %s", mp)
 
-    # Save embeddings artifact (VGAE latent + GAT hidden + attack types)
+    _save_embedding_artifacts(artifacts, out)
+    _save_attention_artifacts(artifacts, out)
+    _save_dqn_policy_artifact(artifacts, out)
+
+    cleanup()
+    return all_metrics
+
+
+# ---------------------------------------------------------------------------
+# Per-model evaluators
+# ---------------------------------------------------------------------------
+
+
+def _log_core_metrics(name: str, metrics: dict) -> None:
+    log.info(
+        "%s val metrics: %s",
+        name,
+        {k: f"{v:.4f}" for k, v in metrics["core"].items() if isinstance(v, float)},
+    )
+
+
+def _evaluate_gat(gat, val_data, test_scenarios, device) -> tuple[dict, dict]:
+    """Evaluate GAT on validation + test scenarios. Returns (val_metrics, test_metrics)."""
+    p, l, s, _, _, _ = _run_gat_inference(gat, val_data, device)
+    val_m = _compute_metrics(l, p, s)
+    _log_core_metrics("GAT", val_m)
+
+    test_m = {}
+    if test_scenarios:
+        for scenario, tdata in test_scenarios.items():
+            tp, tl, ts, _, _, _ = _run_gat_inference(gat, tdata, device)
+            test_m[scenario] = _compute_metrics(tl, tp, ts)
+            log.info(
+                "GAT %s  acc=%.4f f1=%.4f",
+                scenario,
+                test_m[scenario]["core"]["accuracy"],
+                test_m[scenario]["core"]["f1"],
+            )
+    return val_m, test_m
+
+
+def _collect_gat_artifacts(gat, val_data, device, artifacts: dict) -> None:
+    """Run GAT inference with embedding + attention capture for artifact export."""
+    p, l, s, gat_emb, gat_attn, gat_at = _run_gat_inference(
+        gat, val_data, device, capture_embeddings=True, capture_attention=True
+    )
+    if gat_emb is not None:
+        artifacts["gat_emb"] = gat_emb
+        artifacts["gat_labels"] = l
+        artifacts["gat_attack_types"] = gat_at
+    if gat_attn:
+        artifacts["gat_attention"] = gat_attn
+
+
+def _evaluate_vgae(vgae, val_data, test_scenarios, device) -> tuple[dict, dict, float]:
+    """Evaluate VGAE on validation + test. Returns (val_metrics, test_metrics, threshold)."""
+    errors_np, labels_np, _, _, _ = _run_vgae_inference(vgae, val_data, device)
+    best_thresh, youden_j, vgae_preds = _vgae_threshold(labels_np, errors_np)
+    val_m = _compute_metrics(labels_np, vgae_preds, errors_np)
+    val_m["core"]["optimal_threshold"] = best_thresh
+    val_m["core"]["youden_j"] = youden_j
+    _log_core_metrics("VGAE", val_m)
+
+    test_m = {}
+    if test_scenarios:
+        for scenario, tdata in test_scenarios.items():
+            te, tl, _, _, _ = _run_vgae_inference(vgae, tdata, device)
+            tp = (te > best_thresh).astype(int)
+            test_m[scenario] = _compute_metrics(tl, tp, te)
+            test_m[scenario]["core"]["threshold_from_val"] = best_thresh
+            log.info(
+                "VGAE %s  acc=%.4f f1=%.4f",
+                scenario,
+                test_m[scenario]["core"]["accuracy"],
+                test_m[scenario]["core"]["f1"],
+            )
+    return val_m, test_m, best_thresh
+
+
+def _collect_vgae_artifacts(vgae, val_data, device, artifacts: dict) -> None:
+    """Run VGAE inference with embedding + component capture for artifact export."""
+    errors_np, labels_np, vgae_z, vgae_at, vgae_components = _run_vgae_inference(
+        vgae, val_data, device, capture_embeddings=True, capture_components=True
+    )
+    if vgae_z is not None:
+        artifacts["vgae_z"] = vgae_z
+        artifacts["vgae_labels"] = labels_np
+        artifacts["vgae_errors"] = errors_np
+        artifacts["vgae_attack_types"] = vgae_at
+    if vgae_components is not None:
+        for comp_name, comp_arr in vgae_components.items():
+            artifacts[f"vgae_error_{comp_name}"] = comp_arr
+
+
+def _evaluate_fusion(
+    cfg, gat, vgae, val_data, test_scenarios, device, artifacts
+) -> tuple[dict, dict]:
+    """Evaluate DQN/MLP/WeightedAvg fusion. Returns (val_metrics, test_metrics)."""
+    models = {"vgae": vgae, "gat": gat}
+    val_cache = cache_predictions(models, val_data, device, cfg.fusion.max_val_samples)
+
+    from graphids.core.models.dqn import EnhancedDQNFusionAgent
+
+    fusion_cfg = load_frozen_cfg(cfg, "fusion")
+    fusion_ckpt = get_artifact(cfg, "fusion", "best_model.pt", model_type="dqn")
+    agent = EnhancedDQNFusionAgent.from_config(fusion_cfg, device=str(device), inference=True)
+    agent.load_checkpoint(fusion_ckpt)
+
+    fp, fl, fs, fq = _run_fusion_inference(agent, val_cache)
+    val_m = _compute_metrics(fl, fp, fs)
+    artifacts["dqn_alphas"] = fs.tolist()
+    artifacts["dqn_labels"] = fl.tolist()
+    artifacts["dqn_q_values"] = fq
+    _log_core_metrics("Fusion", val_m)
+
+    test_m = {}
+    if test_scenarios:
+        for scenario, tdata in test_scenarios.items():
+            tc = cache_predictions(models, tdata, device, cfg.fusion.max_val_samples)
+            tp, tl, ts, _ = _run_fusion_inference(agent, tc)
+            test_m[scenario] = _compute_metrics(tl, tp, ts)
+            log.info(
+                "Fusion %s  acc=%.4f f1=%.4f",
+                scenario,
+                test_m[scenario]["core"]["accuracy"],
+                test_m[scenario]["core"]["f1"],
+            )
+    return val_m, test_m
+
+
+def _evaluate_temporal(cfg, val_data, num_ids, in_ch, device, gat_stage) -> dict | None:
+    """Evaluate temporal model. Returns metrics dict or None on failure."""
+    try:
+        from graphids.core.models.temporal import TemporalGraphClassifier
+        from graphids.core.preprocessing._temporal import TemporalGrouper
+
+        gat_for_temporal = load_model(cfg, "gat", gat_stage, num_ids, in_ch, device)
+        spatial_dim = probe_embedding_dim(gat_for_temporal, val_data[0], device)
+
+        tc = cfg.temporal
+        temporal_model = TemporalGraphClassifier(
+            spatial_encoder=gat_for_temporal,
+            spatial_dim=spatial_dim,
+            temporal_hidden=tc.temporal_hidden,
+            temporal_heads=tc.temporal_heads,
+            temporal_layers=tc.temporal_layers,
+            max_seq_len=tc.temporal_window,
+            freeze_spatial=True,
+            num_classes=2,
+        ).to(device)
+        temporal_ckpt = get_artifact(cfg, "temporal", "best_model.pt", model_type="gat")
+        temporal_model.load_state_dict(
+            torch.load(temporal_ckpt, map_location="cpu", weights_only=True)
+        )
+        temporal_model.eval()
+
+        grouper = TemporalGrouper(window=tc.temporal_window, stride=tc.temporal_stride)
+        val_sequences = grouper.group(val_data)
+
+        if not val_sequences:
+            return None
+
+        t_preds, t_labels = [], []
+        with torch.no_grad():
+            for seq_obj in val_sequences:
+                moved = [g.clone().to(device) for g in seq_obj.graphs]
+                logits = temporal_model([[g for g in moved]])
+                t_preds.append(logits.argmax(dim=1)[0].item())
+                t_labels.append(seq_obj.y)
+
+        metrics = _compute_metrics(np.array(t_labels), np.array(t_preds))
+        _log_core_metrics("Temporal", metrics)
+
+        del temporal_model, gat_for_temporal
+        cleanup()
+        return metrics
+    except Exception as e:
+        log.warning("Temporal evaluation failed (non-fatal): %s", e)
+        return None
+
+
+def probe_embedding_dim(model, sample_graph, device) -> int:
+    """Probe a model's embedding dimension using a single forward pass."""
+    with torch.no_grad():
+        probe = sample_graph.clone().to(device)
+        _, emb = model(probe, return_embedding=True)
+        return emb.shape[-1]
+
+
+# ---------------------------------------------------------------------------
+# Artifact saving helpers
+# ---------------------------------------------------------------------------
+
+
+def _save_embedding_artifacts(artifacts: dict, out: Path) -> None:
     embed_data = {}
     for key in (
         "vgae_z",
@@ -228,114 +333,43 @@ def evaluate(cfg: PipelineConfig) -> dict:
         np.savez_compressed(npz_path, **embed_data)
         log.info("Saved embeddings → %s", npz_path)
 
-    # Save attention weights artifact
-    if "gat_attention" in artifacts:
-        attn_list = artifacts["gat_attention"]
-        attn_export = {}
-        for i, entry in enumerate(attn_list):
-            prefix = f"sample_{i}"
-            attn_export[f"{prefix}_graph_idx"] = entry["graph_idx"]
-            attn_export[f"{prefix}_label"] = entry["label"]
-            attn_export[f"{prefix}_edge_index"] = entry["edge_index"]
-            attn_export[f"{prefix}_node_features"] = entry["node_features"]
-            for layer_idx, aw in enumerate(entry["attention_weights"]):
-                attn_export[f"{prefix}_layer_{layer_idx}_alpha"] = aw
-        attn_export["n_samples"] = len(attn_list)
-        attn_path = out / "attention_weights.npz"
-        np.savez_compressed(attn_path, **attn_export)
-        log.info("Saved attention weights (%d samples) → %s", len(attn_list), attn_path)
 
-    # Temporal model evaluation
-    if cfg.temporal.enabled and artifact_exists(cfg, "temporal", "best_model.pt", model_type="gat"):
-        try:
-            from graphids.core.models.temporal import TemporalGraphClassifier
-            from graphids.core.preprocessing._temporal import TemporalGrouper
+def _save_attention_artifacts(artifacts: dict, out: Path) -> None:
+    if "gat_attention" not in artifacts:
+        return
+    attn_list = artifacts["gat_attention"]
+    attn_export = {}
+    for i, entry in enumerate(attn_list):
+        prefix = f"sample_{i}"
+        attn_export[f"{prefix}_graph_idx"] = entry["graph_idx"]
+        attn_export[f"{prefix}_label"] = entry["label"]
+        attn_export[f"{prefix}_edge_index"] = entry["edge_index"]
+        attn_export[f"{prefix}_node_features"] = entry["node_features"]
+        for layer_idx, aw in enumerate(entry["attention_weights"]):
+            attn_export[f"{prefix}_layer_{layer_idx}_alpha"] = aw
+    attn_export["n_samples"] = len(attn_list)
+    attn_path = out / "attention_weights.npz"
+    np.savez_compressed(attn_path, **attn_export)
+    log.info("Saved attention weights (%d samples) → %s", len(attn_list), attn_path)
 
-            # Load spatial encoder
-            gat_for_temporal = load_model(cfg, "gat", gat_stage, num_ids, in_ch, device)
 
-            # Probe spatial dim
-            with torch.no_grad():
-                probe = val_data[0].clone().to(device)
-                _, probe_emb = gat_for_temporal(probe, return_embedding=True)
-                spatial_dim = probe_emb.shape[-1]
-
-            tc = cfg.temporal
-            temporal_model = TemporalGraphClassifier(
-                spatial_encoder=gat_for_temporal,
-                spatial_dim=spatial_dim,
-                temporal_hidden=tc.temporal_hidden,
-                temporal_heads=tc.temporal_heads,
-                temporal_layers=tc.temporal_layers,
-                max_seq_len=tc.temporal_window,
-                freeze_spatial=True,
-                num_classes=2,
-            ).to(device)
-            temporal_ckpt = get_artifact(cfg, "temporal", "best_model.pt", model_type="gat")
-            temporal_model.load_state_dict(
-                torch.load(temporal_ckpt, map_location="cpu", weights_only=True)
-            )
-            temporal_model.eval()
-
-            grouper = TemporalGrouper(
-                window=tc.temporal_window,
-                stride=tc.temporal_stride,
-            )
-            val_sequences = grouper.group(val_data)
-
-            if val_sequences:
-                t_preds, t_labels = [], []
-                with torch.no_grad():
-                    for seq_obj in val_sequences:
-                        moved = [g.clone().to(device) for g in seq_obj.graphs]
-                        logits = temporal_model([[g for g in moved]])
-                        t_preds.append(logits.argmax(dim=1)[0].item())
-                        t_labels.append(seq_obj.y)
-
-                all_metrics["temporal"] = _compute_metrics(
-                    np.array(t_labels),
-                    np.array(t_preds),
-                )
-                log.info(
-                    "Temporal val metrics: %s",
-                    {
-                        k: f"{v:.4f}"
-                        for k, v in all_metrics["temporal"]["core"].items()
-                        if isinstance(v, float)
-                    },
-                )
-
-            del temporal_model, gat_for_temporal
-            cleanup()
-        except Exception as e:
-            log.warning("Temporal evaluation failed (non-fatal): %s", e)
-
-    # CKA computation for KD runs (teacher vs student layer similarity)
-    if cfg.has_kd:
-        try:
-            _save_cka(cfg, val_data, device, num_ids, in_ch, out)
-        except Exception as e:
-            log.warning("CKA computation failed (non-fatal): %s", e)
-
-    # Save DQN policy artifact
-    if "dqn_alphas" in artifacts:
-        alphas = artifacts["dqn_alphas"]
-        labels = artifacts["dqn_labels"]
-        alpha_by_label = {"normal": [], "attack": []}
-        for a, lbl in zip(alphas, labels):
-            alpha_by_label["normal" if lbl == 0 else "attack"].append(a)
-        policy_data = {
-            "alphas": alphas,
-            "labels": labels,
-            "alpha_by_label": alpha_by_label,
-            "q_values": artifacts.get("dqn_q_values", []),
-        }
-        policy_path = out / "dqn_policy.json"
-        policy_path.write_text(json.dumps(policy_data, indent=2))
-        log.info("Saved DQN policy → %s", policy_path)
-
-    cleanup()
-    return all_metrics
+def _save_dqn_policy_artifact(artifacts: dict, out: Path) -> None:
+    if "dqn_alphas" not in artifacts:
+        return
+    alphas = artifacts["dqn_alphas"]
+    labels = artifacts["dqn_labels"]
+    alpha_by_label = {"normal": [], "attack": []}
+    for a, lbl in zip(alphas, labels):
+        alpha_by_label["normal" if lbl == 0 else "attack"].append(a)
+    policy_data = {
+        "alphas": alphas,
+        "labels": labels,
+        "alpha_by_label": alpha_by_label,
+        "q_values": artifacts.get("dqn_q_values", []),
+    }
+    policy_path = out / "dqn_policy.json"
+    policy_path.write_text(json.dumps(policy_data, indent=2))
+    log.info("Saved DQN policy → %s", policy_path)
 
 
 # ---------------------------------------------------------------------------
@@ -356,42 +390,53 @@ ATTENTION_SAMPLE_LIMIT = 50  # Max graphs to capture attention for (export size)
 def _run_gat_inference(gat, data, device, capture_embeddings=False, capture_attention=False):
     """Run GAT inference. Returns (preds, labels, scores, embeddings, attn_data, attack_types).
 
-    When capture_embeddings=True, captures the hidden representation before
-    the final classification layer via the forward_embedding() method.
-    When capture_attention=True, captures per-layer attention weights for a
-    sampled subset of graphs.
+    Uses batched inference via PyG DataLoader for 10-50x speedup.
+    Attention capture stays per-sample (small subset only).
     """
+    from torch_geometric.loader import DataLoader as PyGDataLoader
+
     from graphids.core.preprocessing import graph_attack_type
 
     preds, labels, scores = [], [], []
     attack_types = []
     embeddings = [] if capture_embeddings else None
     attn_data = [] if capture_attention else None
+
+    loader = PyGDataLoader(data, batch_size=128, shuffle=False)
     with torch.no_grad():
-        for idx, g in enumerate(data):
-            g = g.clone().to(device)
+        for batch in loader:
+            batch = batch.to(device)
             if capture_embeddings:
-                logits, emb = gat(g, return_embedding=True)
-                embeddings.append(emb[0].cpu().numpy())
+                logits, emb = gat(batch, return_embedding=True)
+                for row in emb.cpu().numpy():
+                    embeddings.append(row)
             else:
-                logits = gat(g)
+                logits = gat(batch)
             probs = F.softmax(logits, dim=1)
-            preds.append(logits.argmax(1)[0].item())
-            labels.append(graph_label(g))
-            scores.append(probs[0, 1].item())
-            attack_types.append(graph_attack_type(g))
-            # Attention capture (separate pass, sampled subset only)
-            if capture_attention and idx < ATTENTION_SAMPLE_LIMIT:
+            preds.extend(logits.argmax(1).cpu().tolist())
+            scores.extend(probs[:, 1].cpu().tolist())
+            labels.extend(batch.y.cpu().tolist())
+            if hasattr(batch, "attack_type") and batch.attack_type is not None:
+                attack_types.extend(batch.attack_type.cpu().tolist())
+            else:
+                attack_types.extend([-1] * batch.num_graphs)
+
+    # Attention capture (separate per-sample pass, small subset only)
+    if capture_attention:
+        for idx in range(min(len(data), ATTENTION_SAMPLE_LIMIT)):
+            g = data[idx].clone().to(device)
+            with torch.no_grad():
                 _, att_weights = gat(g, return_attention_weights=True)
-                attn_data.append(
-                    {
-                        "graph_idx": idx,
-                        "label": graph_label(g),
-                        "edge_index": g.edge_index.cpu().numpy(),
-                        "node_features": g.x[:, 0].cpu().numpy(),  # CAN IDs
-                        "attention_weights": [a.numpy() for a in att_weights],
-                    }
-                )
+            attn_data.append(
+                {
+                    "graph_idx": idx,
+                    "label": graph_label(g),
+                    "edge_index": g.edge_index.cpu().numpy(),
+                    "node_features": g.x[:, 0].cpu().numpy(),
+                    "attention_weights": [a.numpy() for a in att_weights],
+                }
+            )
+
     emb_array = np.array(embeddings) if capture_embeddings and embeddings else None
     return (
         np.array(preds),
@@ -408,12 +453,52 @@ def _run_vgae_inference(vgae, data, device, capture_embeddings=False, capture_co
 
     Returns (errors, labels, embeddings, attack_types, component_errors).
 
-    When capture_embeddings=True, captures z.mean(dim=0) (graph-level latent
-    embedding) per sample from the encoder's latent representation.
-
-    When capture_components=True, computes per-component loss values:
-    recon (MSE), canid (CE), neighborhood (BCE), and KL divergence.
+    Uses batched inference via PyG DataLoader for the common path.
+    Falls back to per-sample when capture_components=True (needs per-graph
+    neighborhood targets and KL decomposition).
     """
+    if capture_components:
+        return _run_vgae_inference_per_sample(
+            vgae, data, device, capture_embeddings, capture_components
+        )
+
+    from torch_geometric.loader import DataLoader as PyGDataLoader
+    from torch_geometric.nn import global_mean_pool
+    from torch_geometric.utils import scatter
+
+    errors, labels = [], []
+    attack_types = []
+    embeddings = [] if capture_embeddings else None
+
+    loader = PyGDataLoader(data, batch_size=128, shuffle=False)
+    with torch.no_grad():
+        for batch in loader:
+            batch = batch.to(device)
+            edge_attr = getattr(batch, "edge_attr", None)
+            cont, _, _, z, _ = vgae(batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr)
+
+            # Per-graph MSE via scatter
+            per_node_se = (cont - batch.x[:, 1:]).pow(2).mean(dim=1)
+            graph_errors = scatter(per_node_se, batch.batch, dim=0, reduce="mean")
+            errors.extend(graph_errors.cpu().tolist())
+
+            labels.extend(batch.y.cpu().tolist())
+            if hasattr(batch, "attack_type") and batch.attack_type is not None:
+                attack_types.extend(batch.attack_type.cpu().tolist())
+            else:
+                attack_types.extend([-1] * batch.num_graphs)
+
+            if capture_embeddings and z is not None:
+                graph_z = global_mean_pool(z, batch.batch)
+                for row in graph_z.cpu().numpy():
+                    embeddings.append(row)
+
+    emb_array = np.array(embeddings) if capture_embeddings and embeddings else None
+    return np.array(errors), np.array(labels), emb_array, np.array(attack_types), None
+
+
+def _run_vgae_inference_per_sample(vgae, data, device, capture_embeddings, capture_components):
+    """Per-sample VGAE inference with component-level loss decomposition."""
     from graphids.core.preprocessing import get_batch_index, graph_attack_type
 
     errors, labels = [], []
@@ -433,7 +518,6 @@ def _run_vgae_inference(vgae, data, device, capture_embeddings=False, capture_co
             labels.append(graph_label(g))
             attack_types.append(graph_attack_type(g))
             if capture_embeddings and z is not None:
-                # Graph-level embedding: mean pool over nodes
                 embeddings.append(z.mean(dim=0).cpu().numpy())
             if capture_components:
                 components["recon"].append(err)
@@ -486,59 +570,78 @@ def _vgae_threshold(labels, errors):
 
 
 def _compute_metrics(labels, preds, scores=None) -> dict:
-    """Compute classification metrics using sklearn.classification_report."""
-    from sklearn.metrics import auc as sk_auc
-    from sklearn.metrics import (
-        classification_report,
-        cohen_kappa_score,
-        confusion_matrix,
-        matthews_corrcoef,
-        precision_recall_curve,
-        roc_auc_score,
-        roc_curve,
+    """Compute classification metrics using torchmetrics.
+
+    Core metrics via MetricCollection (GPU-native, no sklearn).
+    Custom: detection-at-FPR thresholds (no torchmetrics equivalent).
+    """
+    from torchmetrics.classification import (
+        BinaryAUROC,
+        BinaryAveragePrecision,
+        BinaryCohenKappa,
+        BinaryConfusionMatrix,
+        BinaryF1Score,
+        BinaryMatthewsCorrCoef,
+        BinaryPrecision,
+        BinaryRecall,
+        BinaryROC,
+        BinarySpecificity,
     )
 
-    report = classification_report(labels, preds, output_dict=True, zero_division=0)
-    cm = confusion_matrix(labels, preds, labels=[0, 1])
-    tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
+    labels_t = torch.as_tensor(labels, dtype=torch.long)
+    preds_t = torch.as_tensor(preds, dtype=torch.long)
 
-    specificity = float(tn / (tn + fp)) if (tn + fp) > 0 else 0.0
-    fpr = float(fp / (fp + tn)) if (fp + tn) > 0 else 0.0
-    fnr = float(fn / (fn + tp)) if (fn + tp) > 0 else 0.0
+    # Confusion matrix first — used for FPR/FNR and per-class stats
+    cm = BinaryConfusionMatrix()(preds_t, labels_t)
+    tn, fp, fn, tp = cm.ravel().tolist()
+
+    fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
+    fnr = fn / (fn + tp) if (fn + tp) > 0 else 0.0
+
+    precision = BinaryPrecision()(preds_t, labels_t).item()
+    recall = BinaryRecall()(preds_t, labels_t).item()
+    specificity = BinarySpecificity()(preds_t, labels_t).item()
 
     core = {
-        "accuracy": float(report["accuracy"]),
-        "precision": float(report["1"]["precision"]) if "1" in report else 0.0,
-        "recall": float(report["1"]["recall"]) if "1" in report else 0.0,
-        "f1": float(report["1"]["f1-score"]) if "1" in report else 0.0,
+        "accuracy": float((tp + tn) / max(tp + tn + fp + fn, 1)),
+        "precision": precision,
+        "recall": recall,
+        "f1": BinaryF1Score()(preds_t, labels_t).item(),
         "specificity": specificity,
-        "balanced_accuracy": float(report.get("macro avg", {}).get("recall", 0.0)),
-        "mcc": float(matthews_corrcoef(labels, preds)),
+        "balanced_accuracy": (recall + specificity) / 2,
+        "mcc": BinaryMatthewsCorrCoef()(preds_t, labels_t).item(),
         "fpr": fpr,
         "fnr": fnr,
         "n_samples": int(len(labels)),
         "confusion_matrix": cm.tolist(),
     }
 
+    # Per-class precision / recall / f1 / support
+    prec_0 = tn / (tn + fn) if (tn + fn) > 0 else 0.0
+    rec_0 = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+    f1_0 = 2 * prec_0 * rec_0 / (prec_0 + rec_0) if (prec_0 + rec_0) > 0 else 0.0
+    prec_1, rec_1, f1_1 = precision, recall, core["f1"]
+
     additional = {
-        "kappa": float(cohen_kappa_score(labels, preds)),
+        "kappa": BinaryCohenKappa()(preds_t, labels_t).item(),
         "per_class": {
-            k: v for k, v in report.items() if k not in ("accuracy", "macro avg", "weighted avg")
+            "0": {"precision": prec_0, "recall": rec_0, "f1-score": f1_0, "support": int(tn + fp)},
+            "1": {"precision": prec_1, "recall": rec_1, "f1-score": f1_1, "support": int(tp + fn)},
         },
     }
 
     if scores is not None and len(set(labels)) > 1:
-        core["auc"] = float(roc_auc_score(labels, scores))
+        scores_t = torch.as_tensor(scores, dtype=torch.float)
+        core["auc"] = BinaryAUROC()(scores_t, labels_t).item()
         try:
-            prec_vals, rec_vals, _ = precision_recall_curve(labels, scores)
-            additional["pr_auc"] = float(sk_auc(rec_vals, prec_vals))
+            additional["pr_auc"] = BinaryAveragePrecision()(scores_t, labels_t).item()
         except ValueError:
             additional["pr_auc"] = 0.0
         try:
-            fpr_curve, tpr_curve, _ = roc_curve(labels, scores)
+            fpr_curve, tpr_curve, _ = BinaryROC()(scores_t, labels_t)
             det_at_fpr = {}
             for fpr_target in [0.05, 0.01, 0.001]:
-                idx = np.argmin(np.abs(fpr_curve - fpr_target))
+                idx = torch.argmin(torch.abs(fpr_curve - fpr_target))
                 det_at_fpr[str(fpr_target)] = float(tpr_curve[idx])
             additional["detection_at_fpr"] = det_at_fpr
         except ValueError:

@@ -39,14 +39,10 @@ def validate_datasets(datasets: list[str], scale: str) -> list[str]:
 
 
 def _artifact_exists(cfg: PipelineConfig, stage: str, name: str, model_type: str) -> bool:
-    """Check if a stage artifact exists via the resolver (cache → legacy → MLflow)."""
-    try:
-        from graphids.pipeline.artifacts import get_artifact
+    """Check if a stage artifact exists via the resolver (cache → legacy → filesystem)."""
+    from graphids.pipeline.artifacts import artifact_exists
 
-        get_artifact(cfg, stage, name, model_type=model_type)
-        return True
-    except FileNotFoundError:
-        return False
+    return artifact_exists(cfg, stage, name, model_type=model_type)
 
 
 def validate(cfg: PipelineConfig, stage: str) -> None:

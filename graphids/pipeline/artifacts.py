@@ -32,22 +32,27 @@ def _get_mlflow():
     return _mlflow_client
 
 
+def _resolve_stage_model(stage: str, model_type: str) -> str:
+    """Map stage + model_type to directory model name. Evaluation uses 'eval'."""
+    return "eval" if stage == "evaluation" else model_type
+
+
 def _id_parts(cfg: PipelineConfig, stage: str) -> tuple[str, str, str]:
     aux_suffix = f"_{cfg.auxiliaries[0].type}" if cfg.auxiliaries else ""
-    model = "eval" if stage == "evaluation" else cfg.model_type
+    model = _resolve_stage_model(stage, cfg.model_type)
     return model, cfg.scale, aux_suffix
 
 
 def _artifact_group(cfg: PipelineConfig, stage: str, model_type: str) -> str:
     _, scale, aux_suffix = _id_parts(cfg, stage)
-    model = "eval" if stage == "evaluation" else model_type
+    model = _resolve_stage_model(stage, model_type)
     return f"{cfg.dataset}/{model}_{scale}_{stage}{aux_suffix}"
 
 
 def _fs_artifact_path(cfg: PipelineConfig, stage: str, artifact_name: str, model_type: str) -> Path:
     """Check experimentruns/ path with seed subdirectory."""
     _, scale, aux_suffix = _id_parts(cfg, stage)
-    model = "eval" if stage == "evaluation" else model_type
+    model = _resolve_stage_model(stage, model_type)
     base = Path(cfg.experiment_root) / cfg.dataset / f"{model}_{scale}_{stage}{aux_suffix}"
     return base / f"seed_{cfg.seed}" / artifact_name
 

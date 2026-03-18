@@ -15,6 +15,18 @@ from .utils import cache_predictions, cleanup, load_model
 log = logging.getLogger(__name__)
 
 
+def _save_dqn_checkpoint(agent, path: Path) -> None:
+    """Save DQN agent checkpoint (q_network + target_network + epsilon)."""
+    torch.save(
+        {
+            "q_network": agent.q_network.state_dict(),
+            "target_network": agent.target_network.state_dict(),
+            "epsilon": agent.epsilon,
+        },
+        path,
+    )
+
+
 def _train_dqn_fusion(cfg, train_cache, val_cache, device, out) -> float:
     """Vectorized DQN RL fusion training loop. Returns best validation accuracy.
 
@@ -64,26 +76,12 @@ def _train_dqn_fusion(cfg, train_cache, val_cache, device, out) -> float:
 
             if acc > best_acc:
                 best_acc = acc
-                torch.save(
-                    {
-                        "q_network": agent.q_network.state_dict(),
-                        "target_network": agent.target_network.state_dict(),
-                        "epsilon": agent.epsilon,
-                    },
-                    checkpoint_path(cfg, "fusion"),
-                )
+                _save_dqn_checkpoint(agent, checkpoint_path(cfg, "fusion"))
 
     # Ensure we always save something
     ckpt = checkpoint_path(cfg, "fusion")
     if not ckpt.exists():
-        torch.save(
-            {
-                "q_network": agent.q_network.state_dict(),
-                "target_network": agent.target_network.state_dict(),
-                "epsilon": agent.epsilon,
-            },
-            ckpt,
-        )
+        _save_dqn_checkpoint(agent, ckpt)
 
     return best_acc
 

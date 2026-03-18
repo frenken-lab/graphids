@@ -115,31 +115,17 @@ def _step_status(store: PipelineStore, run_id: str, step_name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _sweep_result_path(stage: str, dataset: str, scale: str) -> Path:
-    return sweep_result_path(stage, dataset, scale)
-
-
-def _checkpoint_path(model: str, scale: str, stage: str, dataset: str) -> Path:
-    from graphids.config import checkpoint_path, resolve
-
-    cfg = resolve(model, scale, dataset=dataset)
-    return checkpoint_path(cfg, stage)
-
-
-def _metrics_path(scale: str, dataset: str) -> Path:
-    from graphids.config import metrics_path, resolve
-
-    cfg = resolve("vgae", scale, dataset=dataset)
-    return metrics_path(cfg, "evaluation")
-
-
 def _verify_step_output(step: SweepStep, dataset: str, scale: str) -> bool:
+    from graphids.config import checkpoint_path, metrics_path, resolve
+
     if step.kind == "sweep":
-        return _sweep_result_path(step.stage, dataset, scale).exists()
+        return sweep_result_path(step.stage, dataset, scale).exists()
     elif step.kind == "train":
-        return _checkpoint_path(step.model, scale, step.stage, dataset).exists()
+        cfg = resolve(step.model, scale, dataset=dataset)
+        return checkpoint_path(cfg, step.stage).exists()
     elif step.kind == "evaluate":
-        return _metrics_path(scale, dataset).exists()
+        cfg = resolve("vgae", scale, dataset=dataset)
+        return metrics_path(cfg, "evaluation").exists()
     return False
 
 
@@ -152,7 +138,7 @@ def load_best_config(stage: str, dataset: str, scale: str) -> dict:
     """Read best HP config from a completed sweep's YAML output."""
     import yaml
 
-    path = _sweep_result_path(stage, dataset, scale)
+    path = sweep_result_path(stage, dataset, scale)
     if not path.exists():
         raise FileNotFoundError(f"No sweep results found at {path}")
     payload = yaml.safe_load(path.read_text())
@@ -180,7 +166,7 @@ def _run_sweep_step(
 
     # Auto-warm-start from set_01 if sweeping a different dataset and results exist
     if warm_start_from is None and dataset != "set_01":
-        ref_path = _sweep_result_path(step.stage, "set_01", scale)
+        ref_path = sweep_result_path(step.stage, "set_01", scale)
         if ref_path.exists():
             warm_start_from = "set_01"
             log.info("Auto warm-starting %s from set_01 results", step.stage)
@@ -446,7 +432,7 @@ def _dry_run(dataset: str, scale: str) -> None:
     log.info("Expected outputs:")
     for step in SWEEP_DAG:
         if step.kind == "sweep":
-            p = _sweep_result_path(step.stage, dataset, scale)
+            p = sweep_result_path(step.stage, dataset, scale)
             log.info("  sweep: %s (exists=%s)", p.relative_to(PROJECT_ROOT), p.exists())
         elif step.kind == "train":
             p = _checkpoint_path(step.model, scale, step.stage, dataset)

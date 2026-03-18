@@ -27,7 +27,7 @@ class ResourceSpec(BaseModel, frozen=True):
     cpus: int = 4
     memory_gb: int = 20
     walltime: timedelta = timedelta(hours=3)
-    partition: str = "serial"
+    partition: str = "cpu"
     exclude_nodes: str = ""
 
     @property
@@ -80,7 +80,7 @@ class ResourceSpec(BaseModel, frozen=True):
             cpus=data.get("cpus", 4),
             memory_gb=mem_gb,
             walltime=wt,
-            partition=data.get("partition", "serial"),
+            partition=data.get("partition", "cpu"),
             exclude_nodes=data.get("exclude_nodes", ""),
         )
 

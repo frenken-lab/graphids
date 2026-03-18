@@ -29,6 +29,7 @@ cfg.training.lr        # Training hyperparameters
 cfg.has_kd             # Property: any KD auxiliary?
 cfg.kd.temperature     # KD auxiliary config (via property)
 cfg.active_arch        # Architecture config for active model_type
+cfg.vgae.canid_weight  # VGAE task loss weights (canid=0.1, nbr=0.05, kl=0.01)
 ```
 
 ## Environment variables

@@ -183,12 +183,9 @@ def train_temporal(cfg: PipelineConfig) -> dict:
     gat = load_model(cfg, "gat", gat_stage, num_ids, in_ch, device)
     log.info("Loaded pretrained GAT from %s stage", gat_stage)
 
-    # Determine spatial embedding dimension by running a probe
-    with torch.no_grad():
-        probe_data = train_data[0].clone().to(device)
-        _, probe_emb = gat(probe_data, return_embedding=True)
-        spatial_dim = probe_emb.shape[-1]
-        del probe_data, probe_emb
+    from .evaluation import probe_embedding_dim
+
+    spatial_dim = probe_embedding_dim(gat, train_data[0], device)
     log.info("Spatial embedding dim: %d", spatial_dim)
 
     # Group into temporal sequences

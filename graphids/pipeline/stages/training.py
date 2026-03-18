@@ -120,7 +120,7 @@ def train_curriculum(cfg: PipelineConfig) -> Path:
     # Split and score
     normals = [g for g in train_data if graph_label(g) == 0]
     attacks = [g for g in train_data if graph_label(g) == 1]
-    scores = _score_difficulty(vgae, normals, device)
+    scores = _score_difficulty(vgae, normals, device, canid_weight=cfg.vgae.canid_weight)
     del vgae
     cleanup()
 
@@ -149,12 +149,16 @@ def train_normal(cfg: PipelineConfig) -> Path:
     return _save_and_cleanup(module, trainer, cfg, "normal", "GAT (normal)")
 
 
-def _score_difficulty(vgae_model, graphs, device, chunk_size: int = 500) -> list[float]:
+def _score_difficulty(
+    vgae_model, graphs, device, chunk_size: int = 500, canid_weight: float = 0.1
+) -> list[float]:
     """Score each graph's reconstruction difficulty using trained VGAE.
 
     Memory optimization: Processes graphs in chunks and clears GPU cache between
     chunks to prevent memory accumulation on large datasets.
     """
+    from graphids.core.preprocessing import get_batch_index
+
     scores = []
     vgae_model.eval()
     total_chunks = (len(graphs) + chunk_size - 1) // chunk_size
@@ -167,8 +171,6 @@ def _score_difficulty(vgae_model, graphs, device, chunk_size: int = 500) -> list
         with torch.no_grad():
             for g in chunk_graphs:
                 g = g.clone().to(device)
-                from graphids.core.preprocessing import get_batch_index
-
                 batch_idx = get_batch_index(g, device)
                 edge_attr = getattr(g, "edge_attr", None)
                 cont, canid_logits, _, _, _ = vgae_model(
@@ -176,7 +178,7 @@ def _score_difficulty(vgae_model, graphs, device, chunk_size: int = 500) -> list
                 )
                 recon = F.mse_loss(cont, g.x[:, 1:]).item()
                 canid = F.cross_entropy(canid_logits, g.x[:, 0].long()).item()
-                scores.append(recon + 0.1 * canid)
+                scores.append(recon + canid_weight * canid)
                 del g
 
         if torch.cuda.is_available():

@@ -1,33 +1,14 @@
 # KD-GAT Session Plan
 
-> Last updated: 2026-03-11
+> Last updated: 2026-03-17
 
-## Priority: Ecosystem Architecture & Tool Selection
+## Active Plan
 
-Completed a full architectural review and ecosystem component mapping. Before training or building new orchestration, we need to finalize tool selections against the 24-component registry.
-
-### Next Steps
-
-1. **Review ecosystem component registry** — `~/plans/ecosystem-component-registry.md` defines all 24 components with interfaces, gaps, and priorities. Use this as the "grocery list" for tool shopping.
-2. **Fix critical gaps (low-effort):**
-   - Commit `uv.lock` to git (reproducibility)
-   - Add git SHA + DVC rev to MLflow tags (reproducibility + data lineage)
-   - Add per-stage SU tracking via `sacct` integration
-3. **Orchestration decision** — choose between:
-   - Path A: Keep Ray + add Submitit for per-stage SLURM dispatch (~200 lines)
-   - Path B: Replace Ray with Parsl (if Ray overhead is a blocker)
-   - Path C: Minimal custom coordinator + Submitit (if dropping Ray entirely)
-   - See `~/plans/orchestration-tool-evaluation.md` for full analysis
-4. **Implement plan-then-execute pattern** — separate DAG spec (YAML templates) from execution (pluggable backends). See session doc section 7.
-5. **Add dry-run mode** — `cli plan --dry-run` to preview what a pipeline run will do before committing SUs
-6. **Statistical significance testing** — add bootstrap CI + paired t-test to evaluation stage for multi-seed runs
-7. **Run training** — full sweep once orchestration is settled
+No active plan. Pipeline consolidation complete. Next: run training.
 
 ## In Progress
 
-- **Ecosystem component registry** — 24 components mapped with interfaces, gaps, priorities (`~/plans/ecosystem-component-registry.md`)
 - Ops dashboard (`buckeyeguy/kd-gat-dashboard`) — running on HF Spaces. Shows 181 experiment runs + 37 sweep trials.
-- **tool-landscape** (`~/tool-landscape`) — DuckDB-backed evaluation framework, 1,157 tools. Used for orchestration tool evaluation.
 
 ## Blocked
 
@@ -63,6 +44,9 @@ See `~/plans/fusion-redesign.md` for full analysis.
 
 ## Completed
 
+- **Pipeline layer consolidation v2** — 4 phases: bugs+config, torchmetrics, batched eval (10-50x speedup), god function decomposition. See `plans/pipeline-consolidation.md`. (2026-03-17)
+- **Preprocessing module hardening** — 6 fixes: ghost config param, adapter serialization, IR validation, feature manifest, SRP split. (2026-03-17)
+- **Models layer hardening** — decouple extractor, consolidate conv, typed layout. (2026-03-17)
 - **Architecture review & ecosystem mapping** — 50 files / 9,540 lines inventoried. 24 ecosystem components defined with interfaces, gaps, priorities. 4 critical gaps identified. Orchestration tool evaluation (6 tools × 14 requirements). Session doc written. (2026-03-11)
 - Codebase consolidation: 12,511→9,537 lines (-24%), 55→50 files. Deleted unused orchestration (executor, driver, planner), moved loss_landscape to scripts/, trimmed tune_config. (2026-03-10)
 - MLOps tools catalog: 437 tools compiled. 12 dimensions. (2026-03-10)

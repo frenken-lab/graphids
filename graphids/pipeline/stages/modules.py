@@ -78,7 +78,8 @@ class VGAEModule(pl.LightningModule):
         canid = F.cross_entropy(canid_logits, batch.x[:, 0].long())
         nbr_targets = self.model.create_neighborhood_targets(batch.x, batch.edge_index, batch.batch)
         nbr_loss = F.binary_cross_entropy_with_logits(nbr_logits, nbr_targets)
-        task_loss = recon + 0.1 * canid + 0.05 * nbr_loss + 0.01 * kl_loss
+        w = self.cfg.vgae
+        task_loss = recon + w.canid_weight * canid + w.nbr_weight * nbr_loss + w.kl_weight * kl_loss
         return task_loss, cont_out, z
 
     def _step(self, batch):

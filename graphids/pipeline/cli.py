@@ -428,6 +428,54 @@ def _run_orchestrate(args: argparse.Namespace, log: logging.Logger) -> None:
         log.info("  %s: %s", name, jid)
 
 
+def _archive_previous(sdir: Path, log: logging.Logger) -> Path | None:
+    """Archive a completed run directory before re-running. Returns archive path or None."""
+    if not (sdir / "metrics.json").exists():
+        return None
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    archive = sdir.parent / f"{sdir.name}.archive_{ts}"
+    sdir.rename(archive)
+    log.warning("Archived completed run → %s", archive)
+    return archive
+
+
+def _log_stage_artifacts(cfg: PipelineConfig, stage: str, sdir: Path) -> None:
+    """Log stage artifacts to MLflow and populate the artifact cache."""
+    from graphids.pipeline.artifacts import put_artifact
+
+    for artifact_name in [
+        "best_model.pt",
+        "config.json",
+        "metrics.json",
+        "embeddings.npz",
+        "attention_weights.npz",
+        "dqn_policy.json",
+        "explanations.npz",
+    ]:
+        artifact_path = sdir / artifact_name
+        if artifact_path.exists():
+            put_artifact(cfg, stage, artifact_path)
+
+
+def _write_lake_manifest(cfg: PipelineConfig, stage: str, sdir: Path, log: logging.Logger) -> None:
+    """Write _manifest.json for the ESS data lake."""
+    try:
+        from graphids.lake.manifest import write_manifest
+
+        aux_type = cfg.auxiliaries[0].type if cfg.auxiliaries else "none"
+        write_manifest(
+            sdir,
+            dataset=cfg.dataset,
+            model_type=cfg.model_type,
+            scale=cfg.scale,
+            stage=stage,
+            auxiliaries=aux_type,
+            seed=cfg.seed,
+        )
+    except Exception as e:
+        log.warning("Failed to write manifest: %s", e)
+
+
 def _run_single_stage(
     cfg: PipelineConfig,
     stage: str,
@@ -440,12 +488,7 @@ def _run_single_stage(
 
     # ---- Archive completed run if re-running same config ----
     sdir = stage_dir(cfg, stage)
-    archive = None
-    if (sdir / "metrics.json").exists():
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        archive = sdir.parent / f"{sdir.name}.archive_{ts}"
-        sdir.rename(archive)
-        log.warning("Archived completed run → %s", archive)
+    archive = _archive_previous(sdir, log)
 
     # ---- Save frozen config ----
     cfg_out = config_path(cfg, stage)
@@ -561,38 +604,8 @@ def _run_single_stage(
                         post_metrics[k] = v
             mlflow.log_metrics(post_metrics)
 
-            # Log artifacts to MLflow AND populate cache
-            from graphids.pipeline.artifacts import put_artifact
-
-            for artifact_name in [
-                "best_model.pt",
-                "config.json",
-                "metrics.json",
-                "embeddings.npz",
-                "attention_weights.npz",
-                "dqn_policy.json",
-                "explanations.npz",
-            ]:
-                artifact_path = sdir / artifact_name
-                if artifact_path.exists():
-                    put_artifact(cfg, stage, artifact_path)
-
-            # Write _manifest.json for data lake
-            try:
-                from graphids.lake.manifest import write_manifest
-
-                aux_type = cfg.auxiliaries[0].type if cfg.auxiliaries else "none"
-                write_manifest(
-                    sdir,
-                    dataset=cfg.dataset,
-                    model_type=cfg.model_type,
-                    scale=cfg.scale,
-                    stage=stage,
-                    auxiliaries=aux_type,
-                    seed=cfg.seed,
-                )
-            except Exception as e:
-                log.warning("Failed to write manifest: %s", e)
+            _log_stage_artifacts(cfg, stage, sdir)
+            _write_lake_manifest(cfg, stage, sdir, log)
 
             # Success → delete archive
             if archive and archive.exists():
