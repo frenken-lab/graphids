@@ -772,12 +772,13 @@ def main(argv: list[str] | None = None) -> None:
                 aux_name = "kd_standard"
             overrides.setdefault("auxiliaries", [{"type": "kd", "model_path": args.teacher_path}])
 
-        # Parse dot-path overrides
+        # Parse dot-path overrides — merge into overrides dict
         dot_overrides = _parse_dot_overrides(args.override)
-        if dot_overrides:
-            from graphids.config.handler import _deep_merge
-
-            _deep_merge(overrides, dot_overrides)
+        for k, v in dot_overrides.items():
+            if isinstance(v, dict) and isinstance(overrides.get(k), dict):
+                overrides[k].update(v)
+            else:
+                overrides[k] = v
 
         cfg = resolve(args.model, args.scale, auxiliaries=aux_name, **overrides)
         log.info("Resolved config: model=%s, scale=%s, aux=%s", args.model, args.scale, aux_name)

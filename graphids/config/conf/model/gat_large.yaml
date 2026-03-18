@@ -1,7 +1,10 @@
+# @package _global_
 # GAT large (teacher)
 # JK cat → fc_input_dim = hidden * heads * layers = 48 * 8 * 3 = 1152
 # fc_layers: 1 means just the output projection (1152 → 2), no hidden FC.
-# This avoids a 1.3M-param hidden FC layer that dominated the parameter count.
+model_type: gat
+scale: large
+
 gat:
   fc_layers: 1
   conv_type: "gatv2"

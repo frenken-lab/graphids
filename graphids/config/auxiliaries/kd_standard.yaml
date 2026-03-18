@@ -1,4 +1,0 @@
-# Standard knowledge distillation
-# All values match AuxiliaryConfig defaults — only the list entry is needed.
-auxiliaries:
-  - type: kd

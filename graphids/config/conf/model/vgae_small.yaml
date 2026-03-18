@@ -1,4 +1,8 @@
-# VGAE small (was: student preset)
+# @package _global_
+# VGAE small (student)
+model_type: vgae
+scale: small
+
 vgae:
   hidden_dims: [80, 40, 16]
   latent_dim: 16

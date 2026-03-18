@@ -1,4 +1,8 @@
-# DQN small (was: student preset)
+# @package _global_
+# DQN small (student)
+model_type: dqn
+scale: small
+
 dqn:
   hidden: 160
   layers: 2

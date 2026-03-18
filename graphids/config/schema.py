@@ -170,8 +170,8 @@ class PipelineConfig(BaseModel, frozen=True):
 
     # --- Identity (the four concerns) ---
     dataset: str = "hcrl_sa"
-    model_type: str = "vgae"
-    scale: str = "large"
+    model_type: Literal["vgae", "gat", "dqn"] = "vgae"
+    scale: Literal["large", "small"] = "large"
     seed: int = 42
 
     # --- Architecture (per model type) ---
@@ -187,27 +187,11 @@ class PipelineConfig(BaseModel, frozen=True):
     temporal: TemporalConfig = TemporalConfig()
     tune: TuneConfig = TuneConfig()
 
-    # --- Pipeline DAG (defaults from pipeline.yaml) ---
-    stages: list[str] = Field(default=None)
-    variants: list[VariantConfig] = Field(default=None)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _fill_pipeline_defaults(cls, data):
-        """Fill stages and variants from pipeline.yaml when not provided."""
-        if isinstance(data, dict):
-            from .handler import load_pipeline_yaml
-
-            pipeline = load_pipeline_yaml()
-            if data.get("stages") is None:
-                data["stages"] = pipeline.get(
-                    "default_stages", ["autoencoder", "curriculum", "fusion", "evaluation"]
-                )
-            if data.get("variants") is None:
-                data["variants"] = [
-                    {"name": name, **v} for name, v in pipeline.get("variants", {}).items()
-                ]
-        return data
+    # --- Pipeline DAG (defaults from config.yaml) ---
+    stages: list[str] = Field(
+        default=["autoencoder", "curriculum", "fusion", "evaluation"],
+    )
+    variants: list[VariantConfig] = Field(default_factory=list)
 
     # --- Infrastructure ---
     experiment_root: str = "experimentruns"
@@ -215,6 +199,13 @@ class PipelineConfig(BaseModel, frozen=True):
     num_workers: int = 2
     mp_start_method: str = "spawn"
     run_test: bool = True
+
+    # --- Path env overrides (populated by Hydra oc.env, None = not set) ---
+    lake_root: str | None = None
+    data_root: str | None = None
+    cache_root: str | None = None
+    stage_dir_override: str | None = None
+    production: bool = False
 
     # --- Convenience properties ---
     @property
@@ -229,23 +220,6 @@ class PipelineConfig(BaseModel, frozen=True):
     def active_arch(self):
         """Return the architecture config for the active model_type."""
         return getattr(self, self.model_type)
-
-    # --- Cross-field validation (reads valid values from pipeline.yaml) ---
-    @model_validator(mode="after")
-    def _check_cross_field(self) -> PipelineConfig:
-        from .handler import load_pipeline_yaml
-
-        _pl = load_pipeline_yaml()
-        VALID_MODEL_TYPES = frozenset(_pl["models"].keys())
-        VALID_SCALES = frozenset(_pl["scales"])
-
-        if self.model_type not in VALID_MODEL_TYPES:
-            raise ValueError(
-                f"model_type must be one of {sorted(VALID_MODEL_TYPES)}, got '{self.model_type}'"
-            )
-        if self.scale not in VALID_SCALES:
-            raise ValueError(f"scale must be one of {sorted(VALID_SCALES)}, got '{self.scale}'")
-        return self
 
     # --- Serialization ---
     def save(self, path: str | Path) -> None:
@@ -367,7 +341,7 @@ class PreprocessingArtifact(BaseModel, frozen=True):
 
     @model_validator(mode="after")
     def _validate_compatibility(self) -> PreprocessingArtifact:
-        from .handler import (
+        from .constants import (
             EDGE_FEATURE_COUNT,
             NODE_FEATURE_COUNT,
             PREPROCESSING_VERSION,
@@ -405,7 +379,7 @@ def compute_preprocessing_hash() -> str:
     """Content-addressable hash of preprocessing parameters."""
     import hashlib
 
-    from .handler import EDGE_FEATURE_COUNT, NODE_FEATURE_COUNT, PREPROCESSING_VERSION
+    from .constants import EDGE_FEATURE_COUNT, NODE_FEATURE_COUNT, PREPROCESSING_VERSION
 
     defaults = PreprocessingConfig()
     components = [

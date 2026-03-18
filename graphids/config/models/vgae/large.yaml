@@ -1,8 +1,0 @@
-# VGAE large (was: teacher preset)
-# Only intentional overrides (Pydantic defaults are the baseline)
-vgae:
-  conv_type: "gatv2"
-  proj_dim: 48
-training:
-  lr: 0.002
-  safety_factor: 0.80

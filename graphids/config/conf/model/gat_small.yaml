@@ -1,7 +1,10 @@
+# @package _global_
 # GAT small (student)
 # JK cat → fc_input_dim = hidden * heads * layers = 24 * 4 * 2 = 192
 # fc_layers: 2 means one hidden FC (192 → 192) + output (192 → 2).
-# Teacher/student ratio ≈ 5x (down from ~16x with old fc_layers settings).
+model_type: gat
+scale: small
+
 gat:
   hidden: 24
   layers: 2

@@ -152,7 +152,7 @@ def build_plan(
     # Load resource profiles
     import yaml
 
-    from graphids.config.handler import CONFIG_DIR
+    from graphids.config.constants import CONFIG_DIR
 
     resources_raw = yaml.safe_load((CONFIG_DIR / "resources.yaml").read_text())
     profiles = resources_raw.get("resource_profiles", {})

@@ -1,4 +1,8 @@
-# DQN large (was: teacher preset)
+# @package _global_
+# DQN large (teacher)
 # All DQN arch values match Pydantic defaults — only training overrides needed.
+model_type: dqn
+scale: large
+
 training:
   safety_factor: 0.45
