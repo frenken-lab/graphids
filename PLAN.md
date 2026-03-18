@@ -26,7 +26,7 @@
 | 1b | Decompose config layer (constants.py, paths.py, _hydra_bridge.py) | **Done** |
 | 1c | Collapse to lake_root-only paths, dissolve LakeConfig | **Done** |
 | 1d | Dissolve lake/ package (manifest→pipeline, catalog→pipeline, locking→core) | **Done** |
-| 1e | Hydra CLI routing (replace argparse in cli.py) | **Next** |
+| 1e | Hydra CLI routing (replace argparse in cli.py) | **Done** |
 | 2 | Hydra Optuna sweeper (replace sweep_pipeline/tune_config/store) | Pending P1e |
 | 3 | dagster-slurm (replaces bulk of pipes_slurm.py) | **Decided** (Option A) |
 | 4 | ~~AdaptiveSlurmLauncher~~ — eliminated by flattened orchestration | **Eliminated** |
@@ -42,7 +42,7 @@
 |--------|-------|---------------|
 | **Config** | Hydra Compose + Pydantic | **Done** — 5-file config layer, Hydra config groups, lake_root-only |
 | **Orchestration** | Dagster + dagster-slurm | Partial — fire_and_forget works, dagster-slurm integration pending |
-| **ML Training** | Lightning modules + stages | Coupled — 932 lines ML in 3,000 lines of glue. Needs predict_step, CLI simplification |
+| **ML Training** | Lightning modules + stages | Coupled — 932 lines ML in 3,000 lines of glue. Needs predict_step. CLI simplified (Phase 1e done). |
 | **I/O** | pipeline/manifest + catalog + artifacts | Reorganized — manifest+catalog in pipeline/, locking in core/ |
 
 ## Open Questions
@@ -76,6 +76,16 @@
 
 ## Completed
 
+- **Hydra CLI routing (Phase 1e)** — (2026-03-18)
+  - Replaced argparse _build_parser() with Hydra override grammar via Compose API
+  - Training: `stage=autoencoder model=vgae_large training.lr=0.001` (Hydra key=value)
+  - Non-training subcommands keep per-command argparse (orchestrate, lake, tune, etc.)
+  - Added show-config subcommand (replaces --cfg job)
+  - sweep_id/tags/ckpt_path → EnvironmentSettings (not PipelineConfig)
+  - build_cli_cmd() emits Hydra grammar for subprocess dispatch
+  - Deleted ~200 lines (_build_parser, _parse_dot_overrides, multi-seed loop)
+  - Fixed _hydra_bridge.py: tuple serialization + unknown dataset handling
+  - 3 commits, 174 tests passing, zero regressions
 - **Hydra config migration + config layer refactor** — (2026-03-18)
   - Replaced ConfigHandler with Hydra Compose API (_hydra_bridge.py)
   - Decomposed handler.py → constants.py + paths.py (no overlap, clear ownership)
