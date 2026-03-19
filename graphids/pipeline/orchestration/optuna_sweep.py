@@ -24,9 +24,7 @@ from graphids.config import (
     DEFAULT_SEEDS,
     PROJECT_ROOT,
     STAGE_MODEL_MAP,
-    checkpoint_path,
     resolve,
-    stage_dir,
     sweep_result_path,
 )
 from graphids.storage import StorageGateway
@@ -277,7 +275,8 @@ def run_sweep_pipeline(
             log.info("Sweep for %s already complete, skipping", stage)
 
         cfg = resolve(model, scale, dataset=dataset)
-        if not checkpoint_path(cfg, stage).exists():
+        gw = StorageGateway(cfg=cfg)
+        if not gw.exists(stage, "best_model.pt"):
             best_config = load_best_config(stage, dataset, scale)
             env = {**os.environ, "KD_GAT_SWEEP_ID": f"tune_{stage}_{dataset}_{scale}"}
             cmd = build_cli_cmd(stage, model, scale, dataset, overrides=list(best_config.items()))

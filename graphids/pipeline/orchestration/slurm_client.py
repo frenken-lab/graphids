@@ -115,18 +115,27 @@ def save_retry_state(
     asset_key: str, reason: str, node: str | None = None, ckpt_path: str | None = None
 ) -> None:
     """Write retry metadata to slurm_logs/dagster_retry/{asset_key}.json."""
-    _RETRY_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    from graphids.storage.gateway import StorageGateway
+
+    gw = StorageGateway(
+        lake_root=".", dataset="retry", model_type="retry", scale="retry",
+    )
     state = {"reason": reason, "node": node, "ckpt_path": ckpt_path}
-    (_RETRY_STATE_DIR / f"{asset_key}.json").write_text(json.dumps(state, indent=2))
+    gw.write_json(_RETRY_STATE_DIR / f"{asset_key}.json", state)
 
 
 def load_retry_state(asset_key: str) -> dict | None:
     """Read retry metadata from previous attempt, if any."""
+    from graphids.storage.gateway import StorageGateway
+
     path = _RETRY_STATE_DIR / f"{asset_key}.json"
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text())
+        gw = StorageGateway(
+            lake_root=".", dataset="retry", model_type="retry", scale="retry",
+        )
+        return gw.read_json(path)
     except (json.JSONDecodeError, OSError):
         return None
 
@@ -277,6 +286,8 @@ class PipesSlurmClient:
         ckpt_path: str | None = None, dependency_job_id: str | None = None,
     ) -> tuple[str, Path]:
         """Generate sbatch script, write to disk, return (content, path)."""
+        from graphids.storage.gateway import StorageGateway
+
         script = generate_sbatch_script(
             stage=stage, model=model, scale=scale, dataset=dataset, resources=resources,
             seed=seed, auxiliaries=auxiliaries, ckpt_path=ckpt_path,
@@ -284,8 +295,10 @@ class PipesSlurmClient:
         )
         aux_tag = f"_{auxiliaries}" if auxiliaries != "none" else ""
         script_path = self._scripts_dir / f"dagster_{model}_{scale}_{stage}{aux_tag}.sbatch"
-        self._scripts_dir.mkdir(parents=True, exist_ok=True)
-        script_path.write_text(script)
+        gw = StorageGateway(
+            lake_root=".", dataset="slurm", model_type="slurm", scale="slurm",
+        )
+        gw.write_bytes(script_path, script.encode())
         return script, script_path
 
     def run(

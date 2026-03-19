@@ -16,7 +16,6 @@ from graphids.config import (
     STAGE_MODEL_MAP,
     PipelineConfig,
     run_id,
-    stage_dir,
 )
 from graphids.storage import StorageGateway
 
@@ -42,7 +41,7 @@ def resolve_teacher_path(cfg: PipelineConfig, model_type: str) -> Path:
     reference scale-agnostic — today it's "large", but could be any
     variant that produces a checkpoint for the given model_type.
     """
-    from graphids.config import checkpoint_path, resolve
+    from graphids.config import resolve
 
     if cfg.kd and cfg.kd.model_path:
         return Path(cfg.kd.model_path)
@@ -53,7 +52,8 @@ def resolve_teacher_path(cfg: PipelineConfig, model_type: str) -> Path:
         raise ValueError(f"No teacher stage mapping for model_type '{model_type}'")
 
     teacher_cfg = resolve(model_type, teacher_scale, dataset=cfg.dataset, seed=cfg.seed)
-    path = checkpoint_path(teacher_cfg, stage)
+    gw = StorageGateway(cfg=teacher_cfg)
+    path = gw.resolve(stage, "best_model.pt")
     if not path.exists():
         raise FileNotFoundError(
             f"Teacher checkpoint not found: {path}. "
@@ -289,8 +289,8 @@ def make_trainer(
 ) -> pl.Trainer:
     """Create a Lightning Trainer with standard callbacks."""
     t = cfg.training
-    out = stage_dir(cfg, stage)
-    out.mkdir(parents=True, exist_ok=True)
+    gw = StorageGateway(cfg=cfg)
+    out = gw.ensure_dir(stage)
     torch.backends.cudnn.benchmark = t.cudnn_benchmark
 
     # Persistent NFS path for Lightning auto-checkpoints (SIGUSR1 timeout saves).
