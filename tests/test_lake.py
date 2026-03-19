@@ -168,25 +168,31 @@ class TestManifest:
 
 class TestCacheLock:
     def test_lock_creates_lockfile(self, tmp_path):
-        from graphids.core.preprocessing._locking import cache_lock
+        from graphids.storage import StorageGateway
 
+        gw = StorageGateway(
+            lake_root=tmp_path, dataset="test", model_type="test", scale="test",
+        )
         cache_dir = tmp_path / "hcrl_sa"
         cache_dir.mkdir()
 
-        with cache_lock(cache_dir):
+        with gw.lock(cache_dir):
             lock_file = tmp_path / ".hcrl_sa.lock"
             assert lock_file.exists()
 
     def test_lock_is_reentrant_different_dirs(self, tmp_path):
-        from graphids.core.preprocessing._locking import cache_lock
+        from graphids.storage import StorageGateway
 
+        gw = StorageGateway(
+            lake_root=tmp_path, dataset="test", model_type="test", scale="test",
+        )
         dir_a = tmp_path / "a"
         dir_b = tmp_path / "b"
         dir_a.mkdir()
         dir_b.mkdir()
 
-        with cache_lock(dir_a):
-            with cache_lock(dir_b):
+        with gw.lock(dir_a):
+            with gw.lock(dir_b):
                 pass  # Should not deadlock
 
 

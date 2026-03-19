@@ -29,6 +29,7 @@ from graphids.config import (
     stage_dir,
     sweep_result_path,
 )
+from graphids.storage import StorageGateway
 from graphids.pipeline.subprocess_utils import build_cli_cmd
 
 log = logging.getLogger(__name__)
@@ -111,9 +112,10 @@ def _objective(
         return float("inf")
 
     cfg = resolve(model, scale, dataset=dataset)
-    manifest = PROJECT_ROOT / stage_dir(cfg, stage) / "_manifest.json"
-    if manifest.exists():
-        metrics = json.loads(manifest.read_text()).get("metrics", {})
+    gw = StorageGateway(cfg=cfg)
+    manifest_path = gw.resolve(stage, "_manifest.json")
+    if manifest_path.exists():
+        metrics = gw.read_json(manifest_path).get("metrics", {})
         return metrics.get("val_loss", metrics.get("best_val_loss", float("inf")))
     return float("inf")
 

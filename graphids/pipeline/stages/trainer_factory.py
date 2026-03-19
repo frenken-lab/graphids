@@ -18,7 +18,7 @@ from graphids.config import (
     run_id,
     stage_dir,
 )
-from graphids.pipeline.artifacts import get_artifact
+from graphids.storage import StorageGateway
 
 log = logging.getLogger(__name__)
 
@@ -189,13 +189,14 @@ def load_frozen_cfg(
     """Load the frozen config.json saved during training for *stage*.
 
     model_type defaults to the canonical owner of the stage (e.g. "autoencoder" → "vgae").
-    Uses the ArtifactResolver for cache-first, MLflow-fallback resolution.
+    Uses the StorageGateway for filesystem resolution.
 
     Raises FileNotFoundError if the frozen config doesn't exist.
     """
     mt = model_type or _STAGE_MODEL_TYPE.get(stage, cfg.model_type)
+    gw = StorageGateway(cfg=cfg)
     try:
-        p = get_artifact(cfg, stage, "config.json", model_type=mt)
+        p = gw.require(stage, "config.json", model_type=mt)
     except FileNotFoundError:
         raise FileNotFoundError(
             f"Frozen config not found for stage '{stage}' (model_type={mt}). "
@@ -218,12 +219,13 @@ def load_model(
 ) -> nn.Module:
     """Load a trained model using its frozen config and the registry.
 
-    Uses the ArtifactResolver for cache-first, MLflow-fallback resolution.
+    Uses the StorageGateway for filesystem resolution.
     """
     from graphids.core.models.registry import get as registry_get
 
     frozen_cfg = load_frozen_cfg(cfg, stage, model_type=model_type)
-    ckpt = get_artifact(cfg, stage, "best_model.pt", model_type=model_type)
+    gw = StorageGateway(cfg=cfg)
+    ckpt = gw.require(stage, "best_model.pt", model_type=model_type)
     model = registry_get(model_type).factory(frozen_cfg, num_ids, in_channels)
     model.load_state_dict(torch.load(ckpt, map_location="cpu", weights_only=True))
     model.to(device)

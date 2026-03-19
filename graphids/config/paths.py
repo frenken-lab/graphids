@@ -1,8 +1,8 @@
 """Path derivation, run identity, and environment settings.
 
-All path functions take a PipelineConfig and derive filesystem paths.
-Path-related env vars (KD_GAT_LAKE_ROOT, etc.) flow through Hydra → PipelineConfig.
-SLURM/MLflow env vars are read via pydantic-settings (outside config composition).
+PipelineConfig-based path helpers and environment settings.
+Lake path primitives (lake_run_dir, etc.) live in graphids.storage.paths
+and are re-exported here for backward compatibility during transition.
 """
 
 from __future__ import annotations
@@ -22,6 +22,17 @@ from .constants import (
     PREPROCESSING_VERSION,
     PROJECT_ROOT,
     SWEEP_RESULTS_DIR,
+)
+
+# Re-export lake path primitives from storage layer (canonical source)
+from graphids.storage.paths import (  # noqa: F401
+    lake_cache_dir,
+    lake_catalog_path,
+    lake_exports_dir,
+    lake_raw_dir,
+    lake_root_from_env,
+    lake_run_dir,
+    lake_sweep_dir,
 )
 
 if TYPE_CHECKING:
@@ -116,14 +127,23 @@ def _config_hash(cfg: PipelineConfig) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Path derivation (all reads from cfg, no hidden singleton)
+# Path derivation (PipelineConfig-based wrappers over storage layer)
 # ---------------------------------------------------------------------------
 
 
 def stage_dir(cfg: PipelineConfig, stage: str) -> Path:
     """Canonical output directory for a stage (always lake layout)."""
     aux = cfg.auxiliaries[0].type if cfg.auxiliaries else ""
-    return _lake_run_dir(cfg, stage, aux=aux)
+    return lake_run_dir(
+        lake_root=cfg.lake_root,
+        dataset=cfg.dataset,
+        model_type=cfg.model_type,
+        scale=cfg.scale,
+        stage=stage,
+        aux=aux,
+        seed=cfg.seed,
+        production=cfg.production,
+    )
 
 
 def checkpoint_path(cfg: PipelineConfig, stage: str) -> Path:
@@ -146,7 +166,7 @@ def data_dir(cfg: PipelineConfig) -> Path:
 
 def cache_dir(cfg: PipelineConfig) -> Path:
     """Processed-graph cache directory."""
-    return lake_cache_dir(cfg.lake_root, cfg.dataset)
+    return lake_cache_dir(cfg.lake_root, cfg.dataset, version=PREPROCESSING_VERSION)
 
 
 def sweep_result_path(stage: str, dataset: str, scale: str) -> Path:
@@ -197,108 +217,3 @@ def parse_seeds(value: str) -> list[int]:
         return [int(s.strip()) for s in value.split(",")]
     except ValueError as e:
         raise ValueError(f"Invalid seeds value '{value}': {e}") from e
-
-
-# ---------------------------------------------------------------------------
-# Lake path primitives (single source of truth — LakeConfig delegates here)
-# ---------------------------------------------------------------------------
-
-
-def lake_run_dir(
-    lake_root: str | Path,
-    dataset: str,
-    model_type: str,
-    scale: str,
-    stage: str,
-    aux: str = "",
-    seed: int = 42,
-    production: bool = True,
-) -> Path:
-    """Derive a lake run directory from raw identity dimensions.
-
-    Path: {lake_root}/{production|dev/user}/{dataset}/{model}_{scale}_{stage}[_{aux}]/seed_{seed}
-
-    This is the single source of truth for lake run-dir layout.
-    Both PipelineConfig-based callers and LakeConfig delegate here.
-    """
-    import getpass
-
-    tier = "production" if production else f"dev/{getpass.getuser()}"
-    model = "eval" if stage == "evaluation" else model_type
-    suffix = f"_{aux}" if aux else ""
-    return Path(lake_root) / tier / dataset / f"{model}_{scale}_{stage}{suffix}" / f"seed_{seed}"
-
-
-def lake_cache_dir(
-    lake_root: str | Path,
-    dataset: str,
-    version: str | None = None,
-) -> Path:
-    """Derive a lake cache directory for preprocessed graphs.
-
-    Path: {lake_root}/cache/v{version}/{dataset}
-
-    Single source of truth for lake cache-dir layout.
-    """
-    if version is None:
-        version = PREPROCESSING_VERSION
-    return Path(lake_root) / "cache" / f"v{version}" / dataset
-
-
-def lake_raw_dir(lake_root: str | Path, dataset: str) -> Path:
-    """Derive a lake raw-data directory.
-
-    Path: {lake_root}/raw/{dataset}
-
-    Single source of truth for lake raw-dir layout.
-    """
-    return Path(lake_root) / "raw" / dataset
-
-
-def lake_root_from_env() -> Path | None:
-    """Read KD_GAT_LAKE_ROOT from the environment.
-
-    Returns Path if set, None otherwise.
-    """
-    root = os.environ.get("KD_GAT_LAKE_ROOT")
-    if not root:
-        return None
-    return Path(root)
-
-
-def lake_sweep_dir(lake_root: str | Path, dataset: str) -> Path:
-    """Sweep results directory for a dataset.
-
-    Path: {lake_root}/sweeps/{dataset}
-    """
-    return Path(lake_root) / "sweeps" / dataset
-
-
-def lake_catalog_path(lake_root: str | Path) -> Path:
-    """DuckDB catalog file path.
-
-    Path: {lake_root}/catalog/kd_gat.duckdb
-    """
-    return Path(lake_root) / "catalog" / "kd_gat.duckdb"
-
-
-def lake_exports_dir(lake_root: str | Path) -> Path:
-    """Exports directory for parquet files.
-
-    Path: {lake_root}/exports
-    """
-    return Path(lake_root) / "exports"
-
-
-def _lake_run_dir(cfg: PipelineConfig, stage: str, aux: str = "") -> Path:
-    """PipelineConfig wrapper around lake_run_dir()."""
-    return lake_run_dir(
-        lake_root=cfg.lake_root,
-        dataset=cfg.dataset,
-        model_type=cfg.model_type,
-        scale=cfg.scale,
-        stage=stage,
-        aux=aux,
-        seed=cfg.seed,
-        production=cfg.production,
-    )

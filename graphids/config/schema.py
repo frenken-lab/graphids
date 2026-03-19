@@ -217,6 +217,7 @@ class PipelineConfig(BaseModel, frozen=True):
 
     # --- Serialization ---
     def save(self, path: str | Path) -> None:
+        """Write config as JSON. Prefer ArtifactMapper.save_config() in production code."""
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(self.model_dump_json(indent=2))

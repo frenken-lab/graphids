@@ -138,17 +138,15 @@ def write_manifest(
     )
 
     manifest_path = stage_dir / "_manifest.json"
-    tmp_path = manifest_path.with_suffix(".tmp")
 
-    try:
-        tmp_path.write_text(manifest.model_dump_json(indent=2))
-        with open(tmp_path, "rb") as f:
-            os.fsync(f.fileno())
-        tmp_path.rename(manifest_path)
-        log.info("Wrote manifest: %s (%d artifacts)", manifest_path, len(entries))
-    except Exception:
-        tmp_path.unlink(missing_ok=True)
-        raise
+    from graphids.storage.gateway import StorageGateway
+
+    # Use a dummy gateway just for the atomic write helper
+    gw = StorageGateway(
+        lake_root=".", dataset="manifest", model_type="manifest", scale="manifest",
+    )
+    gw.write_bytes(manifest_path, manifest.model_dump_json(indent=2).encode())
+    log.info("Wrote manifest: %s (%d artifacts)", manifest_path, len(entries))
 
     return manifest_path
 

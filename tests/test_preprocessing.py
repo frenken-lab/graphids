@@ -540,13 +540,13 @@ class TestAtomicIO(unittest.TestCase):
     def test_atomic_rename_retry(self):
         import tempfile
 
-        from graphids.core.preprocessing._atomic_io import atomic_rename
+        from graphids.storage.gateway import _atomic_rename
 
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d) / "tmp.txt"
             final = Path(d) / "final.txt"
             tmp.write_text("hello")
-            atomic_rename(tmp, final)
+            _atomic_rename(tmp, final)
             self.assertTrue(final.exists())
             self.assertFalse(tmp.exists())
             self.assertEqual(final.read_text(), "hello")

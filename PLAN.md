@@ -1,6 +1,6 @@
 # KD-GAT Session Plan
 
-> Last updated: 2026-03-18
+> Last updated: 2026-03-19
 
 ## Active Plan
 
@@ -8,6 +8,10 @@
 
 - Decision: `~/plans/pipeline-toolchain-decision.md`
 - Research: `~/plans/pipeline-decoupling-analysis.md`
+
+## Recently Completed
+
+- **StorageGateway + ArtifactMapper** (2026-03-19) — new `graphids/storage/` layer. Single I/O interface for the entire codebase. NFS-safe atomic writes, advisory locking, domain-aware serialization. Deleted `artifacts.py`, `eval_writers.py`, `_atomic_io.py`, `_locking.py`. 215 tests pass.
 
 ## In Progress
 

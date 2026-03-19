@@ -18,7 +18,6 @@ from graphids.config import (
     PREPROCESSING_VERSION,
 )
 
-from ._atomic_io import atomic_rename, atomic_save_collated
 from ._cache_metadata import write_cache_metadata
 from ._dataset import (
     CollatedGraphDataset,
@@ -258,24 +257,24 @@ def _process_dataset_from_scratch(
         graphs = list(graphs)
 
     # Save cache atomically in collated format, with advisory lock
-    import pickle
+    from graphids.storage.gateway import StorageGateway
+    from graphids.storage.mapper import ArtifactMapper
 
-    from graphids.core.preprocessing._locking import cache_lock
+    gw = StorageGateway(
+        lake_root=".",  # dummy — we only use lock() and mapper helpers
+        dataset="cache",
+        model_type="cache",
+        scale="cache",
+    )
+    mapper = ArtifactMapper(gw)
 
     cache_file.parent.mkdir(parents=True, exist_ok=True)
     logger.info(f"Saving processed data to cache (collated format): {cache_file}")
 
-    temp_cache = cache_file.with_suffix(".tmp")
-    temp_mapping = id_mapping_file.with_suffix(".tmp")
-
     try:
-        with cache_lock(cache_file.parent):
-            atomic_save_collated(graphs, temp_cache, cache_file)
-            with open(temp_mapping, "wb") as f:
-                pickle.dump(id_mapping, f, protocol=4)
-            with open(temp_mapping, "rb") as f:
-                os.fsync(f.fileno())
-            atomic_rename(temp_mapping, id_mapping_file)
+        with gw.lock(cache_file.parent):
+            mapper.save_collated(graphs, cache_file)
+            mapper.save_pickle(id_mapping, id_mapping_file)
 
         logger.info(f"Cache saved (collated): {len(graphs)} graphs")
 
@@ -291,8 +290,6 @@ def _process_dataset_from_scratch(
         )
     except Exception as e:
         logger.error(f"Failed to save cache: {e}")
-        temp_cache.unlink(missing_ok=True)
-        temp_mapping.unlink(missing_ok=True)
 
     # Return a CollatedGraphDataset (reload from saved file for mmap)
     return load_collated(cache_file), id_mapping
@@ -366,17 +363,22 @@ def load_test_scenarios(
             graphs = list(graphs)
 
         if graphs:
-            # Save cache atomically in collated format
+            # Save cache atomically in collated format via mapper
+            from graphids.storage.mapper import ArtifactMapper
+            from graphids.storage.gateway import StorageGateway
+
+            _gw = StorageGateway(
+                lake_root=".", dataset="cache", model_type="cache", scale="cache",
+            )
+            _mapper = ArtifactMapper(_gw)
             cache_dir_path.mkdir(parents=True, exist_ok=True)
-            tmp = cache_file.with_suffix(".tmp")
             try:
-                atomic_save_collated(graphs, tmp, cache_file)
+                _mapper.save_collated(graphs, cache_file)
                 logger.info(
                     "Cached %d test graphs (collated) for %s -> %s", len(graphs), name, cache_file
                 )
             except Exception as e:
                 logger.warning("Failed to cache test graphs for %s: %s", name, e)
-                tmp.unlink(missing_ok=True)
 
             scenarios[name] = load_collated(cache_file)
         else:

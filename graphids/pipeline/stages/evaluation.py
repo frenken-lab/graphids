@@ -7,15 +7,11 @@ import logging
 import numpy as np
 import torch
 
-from graphids.config import (
-    PipelineConfig,
-    stage_dir,
-)
-from graphids.pipeline.artifacts import artifact_exists, get_artifact
+from graphids.config import PipelineConfig
+from graphids.storage import StorageGateway, open_gateway
 
 from .data_loading import training_preamble
 from .eval_inference import run_fusion_inference, run_gat_inference, run_vgae_inference
-from .eval_writers import write_attention, write_cka, write_dqn_policy, write_embeddings
 from .utils import (
     cache_predictions,
     cleanup,
@@ -44,6 +40,7 @@ def evaluate(cfg: PipelineConfig) -> dict:
 
     cli.py passes this to the manifest (single source of truth for metrics).
     """
+    gw, mapper = open_gateway(cfg)
     train_data, val_data, num_ids, in_ch, device = training_preamble(cfg, "EVALUATION")
     test_scenarios = _load_test_data(cfg)
 
@@ -54,16 +51,16 @@ def evaluate(cfg: PipelineConfig) -> dict:
     vgae_stage = "autoencoder"
 
     fusion_needs_models = (
-        artifact_exists(cfg, "fusion", "best_model.pt", model_type="dqn")
-        and artifact_exists(cfg, vgae_stage, "best_model.pt", model_type="vgae")
-        and artifact_exists(cfg, gat_stage, "best_model.pt", model_type="gat")
+        gw.exists("fusion", "best_model.pt", model_type="dqn")
+        and gw.exists(vgae_stage, "best_model.pt", model_type="vgae")
+        and gw.exists(gat_stage, "best_model.pt", model_type="gat")
     )
 
     # ---- Per-model evaluation ----
     gat_model, vgae_model = None, None
     gat_result, vgae_result, fusion_result = None, None, None
 
-    if artifact_exists(cfg, gat_stage, "best_model.pt", model_type="gat"):
+    if gw.exists(gat_stage, "best_model.pt", model_type="gat"):
         gat_model = load_model(cfg, "gat", gat_stage, num_ids, in_ch, device)
         all_metrics["gat"], test_metrics["gat"] = _evaluate_gat(
             gat_model, val_data, test_scenarios, device
@@ -77,7 +74,7 @@ def evaluate(cfg: PipelineConfig) -> dict:
             gat_model = None
             cleanup()
 
-    if artifact_exists(cfg, vgae_stage, "best_model.pt", model_type="vgae"):
+    if gw.exists(vgae_stage, "best_model.pt", model_type="vgae"):
         vgae_model = load_model(cfg, "vgae", vgae_stage, num_ids, in_ch, device)
         all_metrics["vgae"], test_metrics["vgae"], best_thresh = _evaluate_vgae(
             vgae_model, val_data, test_scenarios, device
@@ -98,17 +95,16 @@ def evaluate(cfg: PipelineConfig) -> dict:
         del vgae_model, gat_model
         cleanup()
 
-    if cfg.temporal.enabled and artifact_exists(cfg, "temporal", "best_model.pt", model_type="gat"):
+    if cfg.temporal.enabled and gw.exists("temporal", "best_model.pt", model_type="gat"):
         temporal_m = _evaluate_temporal(cfg, val_data, num_ids, in_ch, device, gat_stage)
         if temporal_m is not None:
             all_metrics["temporal"] = temporal_m
 
     # ---- CKA (KD runs only) ----
-    out = stage_dir(cfg, "evaluation")
-    out.mkdir(parents=True, exist_ok=True)
+    gw.ensure_dir("evaluation")
     if cfg.has_kd:
         try:
-            write_cka(cfg, val_data, device, num_ids, in_ch, out)
+            mapper.save_cka(cfg, val_data, device, num_ids, in_ch, "evaluation")
         except Exception as e:
             log.warning("CKA computation failed (non-fatal): %s", e)
 
@@ -117,9 +113,9 @@ def evaluate(cfg: PipelineConfig) -> dict:
     if test_metrics:
         all_metrics["test"] = test_metrics
 
-    write_embeddings(gat_result, vgae_result, out)
-    write_attention(gat_result, out)
-    write_dqn_policy(fusion_result, out)
+    mapper.save_embeddings(gat_result, vgae_result, "evaluation")
+    mapper.save_attention(gat_result, "evaluation")
+    mapper.save_dqn_policy(fusion_result, "evaluation")
 
     cleanup()
     return {"metrics": all_metrics}
@@ -195,7 +191,8 @@ def _evaluate_fusion(
     from graphids.core.models.dqn import EnhancedDQNFusionAgent
 
     fusion_cfg = load_frozen_cfg(cfg, "fusion")
-    fusion_ckpt = get_artifact(cfg, "fusion", "best_model.pt", model_type="dqn")
+    gw_local = StorageGateway(cfg=cfg)
+    fusion_ckpt = gw_local.require("fusion", "best_model.pt", model_type="dqn")
     agent = EnhancedDQNFusionAgent.from_config(fusion_cfg, device=str(device), inference=True)
     agent.load_checkpoint(fusion_ckpt)
 
@@ -238,7 +235,8 @@ def _evaluate_temporal(cfg, val_data, num_ids, in_ch, device, gat_stage) -> dict
             freeze_spatial=True,
             num_classes=2,
         ).to(device)
-        temporal_ckpt = get_artifact(cfg, "temporal", "best_model.pt", model_type="gat")
+        gw_t = StorageGateway(cfg=cfg)
+        temporal_ckpt = gw_t.require("temporal", "best_model.pt", model_type="gat")
         temporal_model.load_state_dict(
             torch.load(temporal_ckpt, map_location="cpu", weights_only=True)
         )
@@ -314,6 +312,7 @@ def compute_metrics(labels, preds, scores=None) -> dict:
     """
     from torchmetrics import MetricCollection
     from torchmetrics.classification import (
+        BinaryAccuracy,
         BinaryAUROC,
         BinaryAveragePrecision,
         BinaryCohenKappa,
@@ -331,6 +330,7 @@ def compute_metrics(labels, preds, scores=None) -> dict:
 
     mc = MetricCollection(
         {
+            "accuracy": BinaryAccuracy(),
             "precision": BinaryPrecision(),
             "recall": BinaryRecall(),
             "f1": BinaryF1Score(),
@@ -344,7 +344,6 @@ def compute_metrics(labels, preds, scores=None) -> dict:
     tn, fp, fn, tp = cm.ravel().tolist()
 
     core = {k: v.item() for k, v in r.items()}
-    core["accuracy"] = float((tp + tn) / max(tp + tn + fp + fn, 1))
     core["balanced_accuracy"] = (core["recall"] + core["specificity"]) / 2
     core["fpr"] = fp / (fp + tn) if (fp + tn) > 0 else 0.0
     core["fnr"] = fn / (fn + tp) if (fn + tp) > 0 else 0.0

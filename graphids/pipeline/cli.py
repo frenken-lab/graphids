@@ -35,11 +35,11 @@ from graphids.config import (
     STAGES,
     SWEEP_ID,
     PipelineConfig,
-    config_path,
     run_id,
     run_metadata,
     stage_dir,
 )
+from graphids.storage import open_gateway
 
 from .validate import validate
 
@@ -315,11 +315,12 @@ def _run_single_stage(cfg: PipelineConfig, stage: str) -> None:
     """Execute a single training stage with MLflow tracking."""
     validate(cfg, stage)
 
-    sdir = stage_dir(cfg, stage)
+    gw, mapper = open_gateway(cfg)
+    sdir = gw.resolve(stage)
     archive = _archive_previous(sdir)
 
-    cfg_out = config_path(cfg, stage)
-    cfg.save(cfg_out)
+    mapper.save_config(cfg, stage)
+    cfg_out = gw.resolve(stage, "config.json")
 
     run_name = run_id(cfg, stage)
     log.info("Run started: %s (seed=%d)", run_name, cfg.seed)

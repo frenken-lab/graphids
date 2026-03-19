@@ -353,16 +353,18 @@ class PipesSlurmClient:
         """Check that expected artifacts exist after stage completion."""
         from pydantic import ValidationError
 
-        from graphids.config import EvaluationArtifact, TrainingArtifact, lake_run_dir
+        from graphids.config import EvaluationArtifact, TrainingArtifact
+        from graphids.storage import StorageGateway
 
         if stage == "preprocess":
             return True
         aux = auxiliaries if auxiliaries != "none" else ""
-        stage_path = lake_run_dir(
+        gw = StorageGateway(
             lake_root=os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns"),
             dataset=dataset, model_type=model, scale=scale,
-            stage=stage, aux=aux, seed=seed, production=True,
+            auxiliaries=aux or "none", seed=seed, production=True,
         )
+        stage_path = gw.resolve(stage)
         if not stage_path.exists():
             return False
         contract = EvaluationArtifact if stage == "evaluation" else TrainingArtifact
@@ -377,13 +379,14 @@ class PipesSlurmClient:
         auxiliaries: str, seed: int = 42,
     ) -> str | None:
         """Look for a Lightning auto-save checkpoint after TIMEOUT."""
-        from graphids.config import lake_run_dir
+        from graphids.storage import StorageGateway
 
         aux = auxiliaries if auxiliaries != "none" else ""
-        stage_path = lake_run_dir(
+        gw = StorageGateway(
             lake_root=os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns"),
             dataset=dataset, model_type=model, scale=scale,
-            stage=stage, aux=aux, seed=seed, production=True,
+            auxiliaries=aux or "none", seed=seed, production=True,
         )
+        stage_path = gw.resolve(stage)
         ckpt = stage_path / ".pl_auto_save.ckpt"
         return str(ckpt) if ckpt.exists() else None

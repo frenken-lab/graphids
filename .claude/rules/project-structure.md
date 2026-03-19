@@ -1,15 +1,20 @@
 # KD-GAT Project Structure
 
-## 3-Layer Hierarchy
+## 4-Layer Hierarchy
 
 ```
-graphids/               # Top-level package — __getattr__ lazy gateway for core/, pipeline/
-  __init__.py          # Lazy gateway: PipelineConfig, resolve, checkpoint_path (eager); core/pipeline (lazy)
+graphids/               # Top-level package — __getattr__ lazy gateway for core/, pipeline/, storage/
+  __init__.py          # Lazy gateway: PipelineConfig, resolve, checkpoint_path (eager); core/pipeline/storage (lazy)
   api.py               # Programmatic facade: train(), evaluate(), orchestrate() — for notebooks/Dagster
-  config/               # Layer 1: Inert, declarative (no imports from pipeline/ or core/)
+  storage/              # Layer 0: Infrastructure (no imports from config/, pipeline/, or core/)
+    __init__.py         # Re-exports: StorageGateway, ArtifactMapper, open_gateway, lake path primitives
+    gateway.py          # NFS-safe I/O: atomic writes (tmpfile+fsync+rename), advisory locking (fcntl.flock), path resolution
+    mapper.py           # Domain-aware serialization: checkpoints, configs, eval artifacts, cache, pickle (lazy domain imports)
+    paths.py            # Lake path layout: lake_run_dir, lake_cache_dir, lake_raw_dir, etc.
+  config/               # Layer 1: Inert, declarative (imports storage/ for path primitives, no pipeline/ or core/)
     _hydra_bridge.py    # resolve() via Hydra Compose API → PipelineConfig
     constants.py        # Project constants, load_pipeline_yaml(), topology (STAGES, STAGE_DEPENDENCIES, etc.)
-    paths.py            # Path derivation (stage_dir, checkpoint_path, lake primitives), EnvironmentSettings (SLURM/MLflow)
+    paths.py            # PipelineConfig-based path helpers (stage_dir, checkpoint_path), EnvironmentSettings (SLURM/MLflow). Lake primitives re-exported from storage/paths.py
     schema.py           # All Pydantic models: PipelineConfig (Literal model_type/scale), architectures, DatasetEntry, artifact contracts
     __init__.py         # Re-exports from all submodules. All external: `from graphids.config import X`
     pipeline.yaml       # Pipeline topology: model types, scales, stages, DAG dependencies
@@ -26,14 +31,12 @@ graphids/               # Top-level package — __getattr__ lazy gateway for cor
     search_spaces/      # HPO search space definitions (for Ray Tune)
       vgae.yaml, gat.yaml, dqn.yaml
   lake/                 # ESS data lake I/O (imports config/ only, no pipeline/ or core/)
-    __init__.py         # Gateway: write_manifest, cache_lock, rebuild_catalog (lazy)
+    __init__.py         # Gateway: write_manifest, rebuild_catalog (lazy)
     catalog.py          # DuckDB catalog rebuild from _manifest.json
     manifest.py         # _manifest.json writer/reader + SHA-256 checksum verification
-    locking.py          # GPFS-safe advisory file locking (fcntl.flock) for cache writes
-  pipeline/             # Layer 2: Orchestration (imports graphids.config/, lazy imports from graphids.core/)
+  pipeline/             # Layer 2: Orchestration (imports graphids.config/, graphids.storage/, lazy imports from graphids.core/)
     __init__.py         # Gateway: build_cli_cmd, STAGE_FNS
     cli.py              # Entry point: Hydra override grammar for training, argparse for subcommands; MLflow run context
-    artifacts.py        # Artifact store: get/put/exists with cache → filesystem → MLflow fallback
     serve.py            # FastAPI inference server (/predict, /health)
     validate.py         # Config + environment validation utilities
     subprocess_utils.py # Shared CLI command builder for subprocess dispatch
@@ -42,7 +45,6 @@ graphids/               # Top-level package — __getattr__ lazy gateway for cor
       evaluation.py     # Eval orchestrator + per-model evaluators + compute_metrics + probe_embedding_dim
       eval_types.py     # Frozen dataclasses: GATResult, VGAEResult, FusionResult
       eval_inference.py # Typed inference: run_gat/vgae/fusion_inference (batched via PyG DataLoader)
-      eval_writers.py   # Artifact writers: write_embeddings/attention/dqn_policy/cka
       fusion.py         # Multi-model fusion stage (DQN, MLP, weighted avg)
       temporal.py       # Temporal graph classification (GAT encoder + Transformer over time)
       data_loading.py   # Dataset loading + graph caching + training_preamble()
@@ -87,7 +89,8 @@ data/
 experimentruns/         # Legacy outputs (migrated to ESS data lake)
 tests/
   conftest.py           # Shared fixtures (tiny architectures, temp dirs, E2E_OVERRIDES)
-  test_layer_boundaries.py  # Import hierarchy + gateway enforcement (config ← pipeline ← core)
+  test_storage.py           # StorageGateway + ArtifactMapper unit tests (35 tests)
+  test_layer_boundaries.py  # Import hierarchy + gateway enforcement (storage ← config ← pipeline ← core)
   test_dagster_orchestration.py # Dagster assets, fire-and-forget, resource profiles (62 tests)
   test_preprocessing.py     # Preprocessing unit tests
   test_registry.py          # Model registry tests
@@ -135,4 +138,4 @@ notebooks/
 
 ## File Count
 
-~62 Python files under `graphids/` (config: 5, pipeline: 20 incl. artifacts.py, core: 26, top-level: 2).
+~62 Python files under `graphids/` (storage: 4, config: 5, pipeline: 17, core: 24, top-level: 2).

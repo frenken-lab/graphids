@@ -10,7 +10,7 @@ __version__ = "1.0.0"
 
 from graphids.config import PipelineConfig, checkpoint_path, resolve
 
-_lazy_submodules = {"core", "pipeline"}
+_lazy_submodules = {"core", "pipeline", "storage"}
 
 
 def __getattr__(name):

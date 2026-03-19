@@ -20,6 +20,7 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PACKAGE_ROOT = PROJECT_ROOT / "graphids"
 
+STORAGE_DIR = PACKAGE_ROOT / "storage"
 CONFIG_DIR = PACKAGE_ROOT / "config"
 PIPELINE_DIR = PACKAGE_ROOT / "pipeline"
 CORE_DIR = PACKAGE_ROOT / "core"
@@ -99,6 +100,61 @@ def _subpackage_imported(filepath: Path, top_level_only: bool = False) -> set[st
         if len(parts) >= 2 and parts[0] == "graphids":
             modules.add(parts[1])  # "config", "pipeline", "core"
     return modules
+
+
+class TestStorageLayerBoundary:
+    """storage/ must never import from config/, pipeline/, or core/."""
+
+    def test_storage_no_config_imports(self):
+        violations = []
+        for f in _collect_python_files(STORAGE_DIR):
+            if f.name == "mapper.py":
+                # mapper.py has lazy (function-local) imports from config/ and core/
+                mods = _subpackage_imported(f, top_level_only=True)
+            else:
+                mods = _subpackage_imported(f)
+            if "config" in mods:
+                violations.append(str(f.relative_to(PROJECT_ROOT)))
+        assert not violations, (
+            f"storage/ imports from config/ at module level (violates layer boundary):\n  "
+            + "\n  ".join(violations)
+        )
+
+    def test_storage_no_pipeline_imports(self):
+        violations = []
+        for f in _collect_python_files(STORAGE_DIR):
+            if f.name == "mapper.py":
+                mods = _subpackage_imported(f, top_level_only=True)
+            else:
+                mods = _subpackage_imported(f)
+            if "pipeline" in mods:
+                violations.append(str(f.relative_to(PROJECT_ROOT)))
+        assert not violations, (
+            f"storage/ imports from pipeline/ at module level (violates layer boundary):\n  "
+            + "\n  ".join(violations)
+        )
+
+    def test_storage_gateway_no_domain_imports(self):
+        """gateway.py must have zero domain imports (not even lazy)."""
+        gateway_file = STORAGE_DIR / "gateway.py"
+        if not gateway_file.exists():
+            pytest.skip("gateway.py not found")
+        mods = _subpackage_imported(gateway_file)
+        domain = mods & {"config", "pipeline", "core"}
+        assert not domain, (
+            f"storage/gateway.py imports domain modules {domain} (must be domain-free)"
+        )
+
+    def test_storage_paths_no_domain_imports(self):
+        """paths.py must have zero domain imports."""
+        paths_file = STORAGE_DIR / "paths.py"
+        if not paths_file.exists():
+            pytest.skip("paths.py not found")
+        mods = _subpackage_imported(paths_file)
+        domain = mods & {"config", "pipeline", "core"}
+        assert not domain, (
+            f"storage/paths.py imports domain modules {domain} (must be domain-free)"
+        )
 
 
 class TestConfigLayerBoundary:

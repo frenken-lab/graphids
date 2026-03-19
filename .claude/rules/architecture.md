@@ -10,7 +10,7 @@
 |------|------|
 | `_hydra_bridge.py` | Schema-merge config composition: `resolve()` (programmatic) + `compose_config()` (CLI). |
 | `constants.py` | Project constants, `load_pipeline_yaml()`, topology derivation (`STAGES`, `STAGE_DEPENDENCIES`, etc.). Leaf dependency — no config submodule imports. |
-| `paths.py` | Path derivation (`stage_dir`, `checkpoint_path`, lake path primitives). `EnvironmentSettings` for SLURM, MLflow, and run metadata (sweep_id, tags, ckpt_path). |
+| `paths.py` | PipelineConfig-based path helpers (`stage_dir`, `checkpoint_path`). Lake primitives re-exported from `storage/paths.py`. `EnvironmentSettings` for SLURM, MLflow, and run metadata. |
 | `schema.py` | All Pydantic models — pipeline config, architecture sub-configs, dataset catalog entries, artifact validation contracts. `Literal`-validated `model_type`/`scale`. |
 | `__init__.py` | Re-exports from all submodules. All external code uses `from graphids.config import X`. |
 
@@ -22,21 +22,33 @@
 - Pipeline topology: `config/pipeline.yaml` defines model types, scales, stages, DAG dependencies. Default stages and variants live in `config/conf/config.yaml`.
 - **Schema-merge composition**: `_hydra_bridge.py` composes Hydra config groups only → builds full-field schema from PipelineConfig defaults → `OmegaConf.merge(schema, hydra)` → applies nested overrides with `force_add=False` (typo detection) → `PipelineConfig.model_validate()`. Two entry points: `resolve()` (programmatic), `compose_config()` (CLI, returns DictConfig + stage).
 - Hydra config groups: `conf/model/` (6 files), `conf/auxiliary/` (2 files), `conf/dataset/` (6 files). Each uses `@package _global_` to merge at root.
-- **Config layer is inert**: no mlflow, shutil, or I/O imports. Artifact management lives in `pipeline/artifacts.py`.
+- **Config layer is inert**: no mlflow, shutil, or I/O imports. Imports `storage/` for lake path primitives.
 
 > Experiment tracking (MLflow): See experiment-tracking.md.
 
-## Artifact Management
+## Storage Layer
 
-`graphids/pipeline/artifacts.py` — cache-first lookup with filesystem and MLflow fallback.
+`graphids/storage/` — infrastructure layer below all others. No domain imports at module level.
 
-| Function | Purpose |
-|----------|---------|
-| `get_artifact(cfg, stage, name, model_type=)` | Locate artifact: cache → experimentruns → MLflow download |
-| `put_artifact(cfg, stage, local_path)` | Log to MLflow + populate cache |
-| `artifact_exists(cfg, stage, name, model_type=)` | Check without downloading |
+| File | Role |
+|------|------|
+| `gateway.py` | `StorageGateway`: domain-ignorant transport. Dual-init (PipelineConfig or raw coords). NFS-safe atomic writes (tmpfile+fsync+rename), advisory locking (fcntl.flock), path resolution via `resolve/exists/require/ensure_dir`. |
+| `mapper.py` | `ArtifactMapper`: domain-aware serialization. Checkpoints, configs, eval artifacts (embeddings/attention/CKA/DQN policy), collated cache, pickle, generic JSON/npz. Lazy domain imports inside methods. |
+| `paths.py` | Lake path layout primitives: `lake_run_dir`, `lake_cache_dir`, `lake_raw_dir`, etc. Single source of truth for filesystem layout. |
 
-Used for cross-stage reads (e.g. loading VGAE checkpoint while training GAT). Same-stage writes use `stage_dir()` directly.
+**Usage pattern:**
+```python
+from graphids.storage import open_gateway
+gw, mapper = open_gateway(cfg)
+gw.exists("autoencoder", "best_model.pt", model_type="vgae")  # check
+mapper.save_checkpoint(model.state_dict(), "autoencoder")       # save
+mapper.load_config("autoencoder")                                # load
+```
+
+**Raw-coord mode** (no PipelineConfig needed):
+```python
+gw = StorageGateway(lake_root="/fs/ess/...", dataset="hcrl_sa", model_type="vgae", scale="large")
+```
 
 ## Orchestration
 
@@ -71,18 +83,19 @@ CLI: `python -m graphids.pipeline.cli orchestrate --dataset hcrl_sa --seeds 42,1
 
 ## Evaluation
 
-4 files under `graphids/pipeline/stages/`:
+3 files under `graphids/pipeline/stages/` + artifact writes via `ArtifactMapper`:
 
 | File | Role |
 |------|------|
 | `evaluation.py` | Orchestrator (`evaluate()`), per-model evaluators, `compute_metrics`, `probe_embedding_dim` |
 | `eval_types.py` | Frozen dataclasses: `GATResult`, `VGAEResult`, `FusionResult` |
 | `eval_inference.py` | Typed inference: `run_gat_inference`, `run_vgae_inference`, `run_fusion_inference` |
-| `eval_writers.py` | Artifact I/O: `write_embeddings`, `write_attention`, `write_dqn_policy`, `write_cka` |
+
+Artifact writes (`save_embeddings`, `save_attention`, `save_dqn_policy`, `save_cka`) live in `ArtifactMapper` (storage layer).
 
 - **Batched inference**: `run_gat_inference()` and `run_vgae_inference()` use Lightning `trainer.predict()` via `_GATPredictor`/`_VGAEPredictor` wrappers (batch_size=128). GATConv return type workaround: predict_step always uses `return_embedding=True` (consistent type); attention capture stays in separate manual `_capture_attention()` loop (50 samples, uses `return_attention_weights=True` which changes GATConv output type). VGAE component capture falls back to per-sample.
 - **Metrics**: `compute_metrics()` uses `torchmetrics.MetricCollection` (GPU-native, no sklearn). Custom: detection-at-FPR, Youden's J via `torchmetrics.functional.binary_roc`.
-- **CKA**: Self-contained in `eval_writers.py` (loads models, computes linear CKA, writes JSON).
+- **CKA**: Self-contained in `ArtifactMapper.save_cka()` (loads models, computes linear CKA, writes JSON).
 
 ## Memory & Batch Sizing
 

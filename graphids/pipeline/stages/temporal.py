@@ -10,7 +10,6 @@ because temporal ordering matters for this task.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 import numpy as np
 import pytorch_lightning as pl
@@ -19,12 +18,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
-from graphids.config import (
-    PipelineConfig,
-    checkpoint_path,
-    config_path,
-    stage_dir,
-)
+from graphids.config import PipelineConfig
+from graphids.storage import open_gateway
 
 from .utils import (
     cleanup,
@@ -252,10 +247,9 @@ def train_temporal(cfg: PipelineConfig) -> dict:
     log.info("Temporal model: %d total params, %d trainable", total_params, trainable_params)
 
     # Save frozen config
-    out = stage_dir(cfg, "temporal")
-    out.mkdir(parents=True, exist_ok=True)
-    cfg_out = config_path(cfg, "temporal")
-    cfg.save(cfg_out)
+    gw, mapper = open_gateway(cfg)
+    gw.ensure_dir("temporal")
+    mapper.save_config(cfg, "temporal")
 
     # Train
     lit_module = TemporalLightningModule(temporal_model, cfg)
@@ -263,8 +257,7 @@ def train_temporal(cfg: PipelineConfig) -> dict:
     trainer.fit(lit_module, train_loader, val_loader)
 
     # Save best model
-    best_ckpt = checkpoint_path(cfg, "temporal")
-    torch.save(temporal_model.state_dict(), best_ckpt)
+    best_ckpt = mapper.save_checkpoint(temporal_model.state_dict(), "temporal")
     log.info("Saved temporal model → %s", best_ckpt)
 
     # Compute final metrics

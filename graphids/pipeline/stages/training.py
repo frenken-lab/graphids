@@ -10,7 +10,8 @@ import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 
-from graphids.config import PipelineConfig, checkpoint_path, config_path, run_id
+from graphids.config import PipelineConfig, run_id
+from graphids.storage import open_gateway
 
 from .batch_sizing import resolve_batch_config
 from .data_loading import training_preamble
@@ -26,32 +27,6 @@ from .utils import (
 )
 
 log = logging.getLogger(__name__)
-
-
-def _extract_training_metrics(trainer: pl.Trainer) -> dict:
-    """Extract metrics from trainer's callback state after training.
-
-    Returns a dict with val_loss, epochs_run, and any scalar callback metrics.
-    """
-    metrics: dict = {}
-
-    # Extract best score from ModelCheckpoint callback
-    for cb in trainer.callbacks:
-        if isinstance(cb, pl.callbacks.ModelCheckpoint) and cb.best_model_score is not None:
-            metrics["val_loss"] = float(cb.best_model_score)
-            break
-
-    # Add final logged scalar metrics
-    if trainer.callback_metrics:
-        for k, v in trainer.callback_metrics.items():
-            if k not in metrics:
-                try:
-                    metrics[k] = float(v) if hasattr(v, "item") else v
-                except (TypeError, ValueError):
-                    pass  # skip non-scalar values
-
-    metrics["epochs_run"] = trainer.current_epoch + 1
-    return metrics
 
 
 def _resume_ckpt_path(cfg: PipelineConfig, stage: str) -> str | None:
@@ -90,19 +65,11 @@ def _save_and_cleanup(module, trainer, cfg, stage: str, label: str | None = None
 
     Metrics extraction is non-fatal — returns empty metrics on failure.
     """
-    try:
-        metrics = _extract_training_metrics(trainer)
-    except Exception as e:
-        log.warning("Failed to extract training metrics: %s", e)
-        metrics = {}
-
-    ckpt = checkpoint_path(cfg, stage)
-    ckpt.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(module.model.state_dict(), ckpt)
-    cfg.save(config_path(cfg, stage))
-    log.info("Saved %s: %s", label or stage, ckpt)
+    _, mapper = open_gateway(cfg)
+    result = mapper.save_training_result(module.model, cfg, stage, trainer)
+    log.info("Saved %s: %s", label or stage, result["checkpoint"])
     cleanup()
-    return {"checkpoint": str(ckpt), "metrics": metrics}
+    return result
 
 
 def train_autoencoder(cfg: PipelineConfig) -> dict:
