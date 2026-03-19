@@ -32,7 +32,7 @@ graphids/               # Top-level package — __getattr__ lazy gateway for cor
     locking.py          # GPFS-safe advisory file locking (fcntl.flock) for cache writes
   pipeline/             # Layer 2: Orchestration (imports graphids.config/, lazy imports from graphids.core/)
     __init__.py         # Gateway: build_cli_cmd, STAGE_FNS
-    cli.py              # Entry point + MLflow run context; lifecycle: _archive_previous, _log_stage_artifacts, _write_lake_manifest
+    cli.py              # Entry point: Hydra override grammar for training, argparse for subcommands; MLflow run context
     artifacts.py        # Artifact store: get/put/exists with cache → filesystem → MLflow fallback
     serve.py            # FastAPI inference server (/predict, /health)
     validate.py         # Config + environment validation utilities

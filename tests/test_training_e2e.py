@@ -65,8 +65,9 @@ class TestAutoencoderE2E:
 
         with ExitStack() as stack:
             _apply_load_data_patches(stack, synth_data)
-            ckpt = train_autoencoder(cfg)
+            result = train_autoencoder(cfg)
 
+        ckpt = Path(result["checkpoint"])
         assert ckpt.exists(), "Checkpoint not saved"
         assert config_path(cfg, "autoencoder").exists(), "Config not saved"
 
@@ -109,8 +110,9 @@ class TestCurriculumE2E:
         with ExitStack() as stack:
             _apply_load_data_patches(stack, synth_data)
             train_autoencoder(vgae_cfg)
-            ckpt = train_curriculum(gat_cfg)
+            result = train_curriculum(gat_cfg)
 
+        ckpt = Path(result["checkpoint"])
         assert ckpt.exists(), "GAT checkpoint not saved"
         assert config_path(gat_cfg, "curriculum").exists(), "GAT config not saved"
 
@@ -168,8 +170,9 @@ class TestFusionE2E:
             _apply_load_data_patches(stack, synth_data)
             train_autoencoder(vgae_cfg)
             train_curriculum(gat_cfg)
-            ckpt = train_fusion(dqn_cfg)
+            result = train_fusion(dqn_cfg)
 
+        ckpt = Path(result["checkpoint"])
         assert ckpt.exists(), "DQN checkpoint not saved"
         assert config_path(dqn_cfg, "fusion").exists(), "DQN config not saved"
 

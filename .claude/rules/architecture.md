@@ -8,9 +8,9 @@
 
 | File | Role |
 |------|------|
-| `_hydra_bridge.py` | `resolve()` via Hydra Compose API — config group selection + overrides → `PipelineConfig`. |
+| `_hydra_bridge.py` | Schema-merge config composition: `resolve()` (programmatic) + `compose_config()` (CLI). |
 | `constants.py` | Project constants, `load_pipeline_yaml()`, topology derivation (`STAGES`, `STAGE_DEPENDENCIES`, etc.). Leaf dependency — no config submodule imports. |
-| `paths.py` | Path derivation (`stage_dir`, `checkpoint_path`, lake path primitives). `EnvironmentSettings` for SLURM + MLflow env vars only. |
+| `paths.py` | Path derivation (`stage_dir`, `checkpoint_path`, lake path primitives). `EnvironmentSettings` for SLURM, MLflow, and run metadata (sweep_id, tags, ckpt_path). |
 | `schema.py` | All Pydantic models — pipeline config, architecture sub-configs, dataset catalog entries, artifact validation contracts. `Literal`-validated `model_type`/`scale`. |
 | `__init__.py` | Re-exports from all submodules. All external code uses `from graphids.config import X`. |
 
@@ -18,9 +18,9 @@
 - Sub-configs: `cfg.vgae`, `cfg.gat`, `cfg.dqn`, `cfg.training`, `cfg.fusion`, `cfg.temporal` — nested Pydantic models. Always use nested access, never flat.
 - Auxiliaries: `cfg.auxiliaries` is a list of `AuxiliaryConfig`. KD is a composable loss modifier, not a model identity. Use `cfg.has_kd` / `cfg.kd` properties.
 - Constants: topology data lives in `pipeline.yaml`, loaded by `constants.py`. Preprocessing constants are module-level in `constants.py`.
-- Env vars: Path vars (`lake_root`) flow through Hydra `oc.env` → `PipelineConfig`. SLURM/MLflow vars use `EnvironmentSettings` in `paths.py` (`env_prefix="KD_GAT_"`).
+- Env vars: Path vars (`lake_root`) flow through Hydra `oc.env` → `PipelineConfig`. Infrastructure + run metadata use `EnvironmentSettings` in `paths.py` (`env_prefix="KD_GAT_"`). Run metadata (sweep_id, tags, ckpt_path) lives in EnvironmentSettings, NOT PipelineConfig — doesn't affect config hash.
 - Pipeline topology: `config/pipeline.yaml` defines model types, scales, stages, DAG dependencies. Default stages and variants live in `config/conf/config.yaml`.
-- Resolver: `resolve()` in `_hydra_bridge.py` composes Hydra config groups → `OmegaConf.to_object()` → `PipelineConfig.model_validate()`.
+- **Schema-merge composition**: `_hydra_bridge.py` composes Hydra config groups only → builds full-field schema from PipelineConfig defaults → `OmegaConf.merge(schema, hydra)` → applies nested overrides with `force_add=False` (typo detection) → `PipelineConfig.model_validate()`. Two entry points: `resolve()` (programmatic), `compose_config()` (CLI, returns DictConfig + stage).
 - Hydra config groups: `conf/model/` (6 files), `conf/auxiliary/` (2 files), `conf/dataset/` (6 files). Each uses `@package _global_` to merge at root.
 - **Config layer is inert**: no mlflow, shutil, or I/O imports. Artifact management lives in `pipeline/artifacts.py`.
 
