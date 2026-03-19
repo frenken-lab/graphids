@@ -27,7 +27,6 @@ from .constants import (  # noqa: F401
 )
 from .paths import (  # noqa: F401
     CKPT_PATH,
-    MLFLOW_TRACKING_URI,
     SLURM_ACCOUNT,
     SLURM_GPU_TYPE,
     SLURM_PARTITION,
@@ -49,18 +48,22 @@ from .paths import (  # noqa: F401
     parse_seeds,
     run_id,
     run_id_str,
-    run_metadata,
     stage_dir,
     sweep_result_path,
 )
 from .schema import (  # noqa: F401
     AuxiliaryConfig,
     DatasetEntry,
-    EvaluationArtifact,
     PipelineConfig,
-    PreprocessingArtifact,
     PreprocessingConfig,
-    TrainingArtifact,
     TrainingConfig,
     compute_preprocessing_hash,
+)
+
+# Backward-compat re-exports: contracts moved to graphids.storage.contracts
+from graphids.storage.contracts import (  # noqa: F401
+    EvaluationArtifact,
+    PreprocessingArtifact,
+    StageArtifact,
+    TrainingArtifact,
 )

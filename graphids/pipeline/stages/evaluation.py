@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import logging
+import structlog
 
 import numpy as np
 import torch
@@ -19,7 +19,7 @@ from .utils import (
     load_model,
 )
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 
 def evaluate(cfg: PipelineConfig) -> dict:
@@ -106,7 +106,7 @@ def evaluate(cfg: PipelineConfig) -> dict:
         try:
             mapper.save_cka(cfg, val_data, device, num_ids, in_ch, "evaluation")
         except Exception as e:
-            log.warning("CKA computation failed (non-fatal): %s", e)
+            log.warning("cka_computation_failed", error=str(e))
 
     # ---- Persist artifacts ----
     test_metrics = {k: v for k, v in test_metrics.items() if v}
@@ -128,9 +128,9 @@ def evaluate(cfg: PipelineConfig) -> dict:
 
 def _log_core_metrics(name: str, metrics: dict) -> None:
     log.info(
-        "%s val metrics: %s",
-        name,
-        {k: f"{v:.4f}" for k, v in metrics["core"].items() if isinstance(v, float)},
+        "val_metrics",
+        model=name,
+        **{k: round(v, 4) for k, v in metrics["core"].items() if isinstance(v, float)},
     )
 
 
@@ -146,10 +146,10 @@ def _evaluate_gat(gat, val_data, test_scenarios, device) -> tuple[dict, dict]:
             tr = run_gat_inference(gat, tdata, device)
             test_m[scenario] = compute_metrics(tr.labels, tr.preds, tr.scores)
             log.info(
-                "GAT %s  acc=%.4f f1=%.4f",
-                scenario,
-                test_m[scenario]["core"]["accuracy"],
-                test_m[scenario]["core"]["f1"],
+                "gat_test_result",
+                scenario=scenario,
+                accuracy=round(test_m[scenario]["core"]["accuracy"], 4),
+                f1=round(test_m[scenario]["core"]["f1"], 4),
             )
     return val_m, test_m
 
@@ -171,10 +171,10 @@ def _evaluate_vgae(vgae, val_data, test_scenarios, device) -> tuple[dict, dict, 
             test_m[scenario] = compute_metrics(tr.labels, tp, tr.errors)
             test_m[scenario]["core"]["threshold_from_val"] = best_thresh
             log.info(
-                "VGAE %s  acc=%.4f f1=%.4f",
-                scenario,
-                test_m[scenario]["core"]["accuracy"],
-                test_m[scenario]["core"]["f1"],
+                "vgae_test_result",
+                scenario=scenario,
+                accuracy=round(test_m[scenario]["core"]["accuracy"], 4),
+                f1=round(test_m[scenario]["core"]["f1"], 4),
             )
     return val_m, test_m, best_thresh
 
@@ -207,10 +207,10 @@ def _evaluate_fusion(
             tr = run_fusion_inference(agent, tc)
             test_m[scenario] = compute_metrics(tr.labels, tr.preds, tr.scores)
             log.info(
-                "Fusion %s  acc=%.4f f1=%.4f",
-                scenario,
-                test_m[scenario]["core"]["accuracy"],
-                test_m[scenario]["core"]["f1"],
+                "fusion_test_result",
+                scenario=scenario,
+                accuracy=round(test_m[scenario]["core"]["accuracy"], 4),
+                f1=round(test_m[scenario]["core"]["f1"], 4),
             )
     return val_m, test_m, result
 
@@ -263,7 +263,7 @@ def _evaluate_temporal(cfg, val_data, num_ids, in_ch, device, gat_stage) -> dict
         cleanup()
         return metrics
     except Exception as e:
-        log.warning("Temporal evaluation failed (non-fatal): %s", e)
+        log.warning("temporal_evaluation_failed", error=str(e))
         return None
 
 

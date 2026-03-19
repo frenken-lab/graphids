@@ -10,7 +10,7 @@ The adapter is now a parameter (not hardcoded), resolved by the caller
 
 from __future__ import annotations
 
-import logging
+import structlog
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -25,7 +25,7 @@ from .adapters.base import DomainAdapter
 if TYPE_CHECKING:
     from torch_geometric.data import Data
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 _PREP_DEFAULTS = PreprocessingConfig()
 
@@ -109,15 +109,15 @@ def process_dataset(
     files = adapter.discover_files(root, split)
 
     if not files:
-        log.warning("No CSV files found in %s for split '%s'", root, split)
+        log.warning("no_csv_files_found", root=str(root), split=split)
         empty: list[Data] = []
         return (empty, {"OOV": 0}) if return_vocab else empty
 
-    log.info("Found %d CSV files to process", len(files))
+    log.info("csv_files_to_process", count=len(files))
 
     # Build vocabulary if not provided
     if vocab is None:
-        log.info("Building vocabulary from %d files...", len(files))
+        log.info("building_vocabulary", file_count=len(files))
         vocab = adapter.build_vocabulary(files)
     vocab_dict = vocab.to_dict()
 
@@ -138,7 +138,7 @@ def process_dataset(
         ray_threshold=ray_threshold,
     )
 
-    log.info("Total graphs created: %d", len(all_graphs))
+    log.info("total_graphs_created", count=len(all_graphs))
 
     if return_vocab:
         return all_graphs, vocab_dict
@@ -209,7 +209,7 @@ def _process_sequential(
 
     for i, f in enumerate(files):
         if verbose or i % 10 == 0:
-            log.info("Processing file %d/%d: %s", i + 1, len(files), f.name)
+            log.info("processing_file", current=i + 1, total=len(files), name=f.name)
 
         try:
             graphs = _process_single_file(
@@ -222,9 +222,9 @@ def _process_sequential(
                 adapter_kwargs,
             )
             all_graphs.extend(graphs)
-            log.info("  Created %d graphs (%d total)", len(graphs), len(all_graphs))
+            log.info("graphs_created", batch=len(graphs), total=len(all_graphs))
         except Exception as e:
-            log.warning("Error processing %s: %s", f, e)
+            log.warning("processing_error", file=str(f), error=str(e))
 
     return all_graphs
 
@@ -252,7 +252,7 @@ def _process_ray(
         v = ray.get(v_ref) if not isinstance(v_ref, dict) else v_ref
         return _process_single_file(file_path, v, schema_local, ws, st, a_cls, a_kw)
 
-    log.info("Submitting %d files to Ray...", len(files))
+    log.info("ray_submit", file_count=len(files))
     futures = [
         _remote_process.remote(
             str(f),
@@ -281,6 +281,6 @@ def _process_ray(
                     len(all_graphs),
                 )
         except Exception as e:
-            log.warning("Ray task %d failed: %s", i, e)
+            log.warning("ray_task_failed", task=i, error=str(e))
 
     return all_graphs

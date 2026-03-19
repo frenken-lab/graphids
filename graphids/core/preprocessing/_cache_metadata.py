@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-import logging
+import structlog
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -20,7 +20,7 @@ from graphids.config import (
 from ._dataset import CollatedGraphDataset
 from ._schema import EDGE_MANIFEST, NODE_MANIFEST
 
-logger = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 
 def compute_graph_stats(graphs) -> dict:
@@ -89,9 +89,9 @@ def write_cache_metadata(
 
     try:
         metadata["graph_stats"] = compute_graph_stats(graphs)
-        logger.info("Graph stats: %s", metadata["graph_stats"]["node_count"])
+        log.info("graph_stats_computed", node_count=metadata["graph_stats"]["node_count"])
     except Exception as e:
-        logger.warning("Failed to compute graph stats: %s", e)
+        log.warning("graph_stats_computation_failed", error=str(e))
 
     from graphids.storage.gateway import StorageGateway
 
@@ -103,9 +103,9 @@ def write_cache_metadata(
     metadata_file = cache_path / "cache_metadata.json"
     try:
         gw.write_json(metadata_file, metadata)
-        logger.info("Cache metadata written to %s", metadata_file)
+        log.info("cache_metadata_written", path=str(metadata_file))
     except Exception as e:
-        logger.warning("Failed to write cache metadata: %s", e)
+        log.warning("cache_metadata_write_failed", error=str(e))
 
     # Write feature manifest alongside cache
     manifest_file = cache_path / "feature_manifest.json"
@@ -115,6 +115,6 @@ def write_cache_metadata(
             "edge_features": EDGE_MANIFEST.to_json(),
         }
         gw.write_json(manifest_file, manifest_data)
-        logger.info("Feature manifest written to %s", manifest_file)
+        log.info("feature_manifest_written", path=str(manifest_file))
     except Exception as e:
-        logger.warning("Failed to write feature manifest: %s", e)
+        log.warning("feature_manifest_write_failed", error=str(e))

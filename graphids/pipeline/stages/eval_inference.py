@@ -15,7 +15,6 @@ Design note — GATConv return type workaround:
 
 from __future__ import annotations
 
-import logging
 
 import numpy as np
 import pytorch_lightning as pl
@@ -26,7 +25,6 @@ from torch_geometric.loader import DataLoader as PyGDataLoader
 from .eval_types import FusionResult, GATResult, VGAEResult
 from .utils import graph_label
 
-log = logging.getLogger(__name__)
 
 ATTENTION_SAMPLE_LIMIT = 50  # Max graphs to capture attention for (export size)
 

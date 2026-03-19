@@ -6,14 +6,14 @@ functions with a single class that handles building, encoding, persistence, and 
 
 from __future__ import annotations
 
-import logging
+import structlog
 import pickle
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 
 import pandas as pd
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 # Sentinel key for out-of-vocabulary entities
 OOV_KEY = "OOV"
@@ -84,7 +84,7 @@ class EntityVocabulary:
 
         for i, csv_file in enumerate(csv_files):
             if i % 10 == 0:
-                log.info("Scanning file %d/%d for entity IDs...", i + 1, len(csv_files))
+                log.info("scanning_file", current=i + 1, total=len(csv_files))
             try:
                 df_col = pd.read_csv(csv_file, usecols=[id_column])
                 raw_values = df_col.iloc[:, 0].dropna().unique()
@@ -99,9 +99,9 @@ class EntityVocabulary:
 
                 del df_col
             except Exception as e:
-                log.warning("Could not scan %s: %s", csv_file, e)
+                log.warning("scan_failed", file=str(csv_file), error=str(e))
 
-        log.info("Built vocabulary with %d entities (+ OOV)", len(unique_ids))
+        log.info("vocabulary_built", entity_count=len(unique_ids))
         return cls.build_from_ids(unique_ids)
 
     # ------------------------------------------------------------------

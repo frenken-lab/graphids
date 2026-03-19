@@ -100,7 +100,7 @@ class TestManifest:
         return run_dir
 
     def test_write_manifest(self, tmp_path):
-        from graphids.pipeline.manifest import read_manifest, write_manifest
+        from graphids.storage.manifest import read_manifest, write_manifest
 
         run_dir = self._make_run_dir(tmp_path)
         path = write_manifest(
@@ -121,7 +121,7 @@ class TestManifest:
         assert len(manifest.artifacts) == 2  # config, best_model
 
     def test_verify_manifest_ok(self, tmp_path):
-        from graphids.pipeline.manifest import verify_manifest, write_manifest
+        from graphids.storage.manifest import verify_manifest, write_manifest
 
         run_dir = self._make_run_dir(tmp_path)
         write_manifest(run_dir, "hcrl_sa", "vgae", "large", "autoencoder")
@@ -130,7 +130,7 @@ class TestManifest:
         assert errors == []
 
     def test_verify_manifest_missing_file(self, tmp_path):
-        from graphids.pipeline.manifest import verify_manifest, write_manifest
+        from graphids.storage.manifest import verify_manifest, write_manifest
 
         run_dir = self._make_run_dir(tmp_path)
         write_manifest(run_dir, "hcrl_sa", "vgae", "large", "autoencoder")
@@ -143,7 +143,7 @@ class TestManifest:
         assert any("Missing" in e for e in errors)
 
     def test_verify_manifest_checksum_mismatch(self, tmp_path):
-        from graphids.pipeline.manifest import verify_manifest, write_manifest
+        from graphids.storage.manifest import verify_manifest, write_manifest
 
         run_dir = self._make_run_dir(tmp_path)
         write_manifest(run_dir, "hcrl_sa", "vgae", "large", "autoencoder")
@@ -156,7 +156,7 @@ class TestManifest:
         assert any("Checksum mismatch" in e for e in errors)
 
     def test_read_manifest_missing(self, tmp_path):
-        from graphids.pipeline.manifest import read_manifest
+        from graphids.storage.manifest import read_manifest
 
         assert read_manifest(tmp_path) is None
 
@@ -204,7 +204,7 @@ class TestCacheLock:
 class TestCatalog:
     def test_rebuild_catalog_empty(self, tmp_path):
         """Rebuild with no manifests should create catalog file path."""
-        from graphids.pipeline.catalog import rebuild_catalog
+        from graphids.storage.catalog import rebuild_catalog
 
         lake_root = tmp_path / "lake"
         (lake_root / "production").mkdir(parents=True)
@@ -213,8 +213,8 @@ class TestCatalog:
 
     def test_rebuild_and_query(self, tmp_path):
         """Full round-trip: write manifest → rebuild catalog → query."""
-        from graphids.pipeline.catalog import catalog_status, rebuild_catalog
-        from graphids.pipeline.manifest import write_manifest
+        from graphids.storage.catalog import catalog_status, rebuild_catalog
+        from graphids.storage.manifest import write_manifest
 
         lake_root = tmp_path / "lake"
         run_dir = lake_root / "production" / "hcrl_sa" / "vgae_large_autoencoder" / "seed_42"

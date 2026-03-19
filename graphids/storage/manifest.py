@@ -8,16 +8,20 @@ Written atomically after all stage artifacts are saved.
 from __future__ import annotations
 
 import hashlib
-import logging
 import os
+import structlog
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
 import graphids
 
-log = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from .gateway import StorageGateway
+
+log = structlog.get_logger()
 
 # Artifacts that may exist in a run directory (metrics live in manifest, not as separate file)
 _KNOWN_ARTIFACTS = [
@@ -101,11 +105,18 @@ def write_manifest(
     auxiliaries: str = "none",
     seed: int = 42,
     metrics: dict[str, object] | None = None,
+    gateway: StorageGateway | None = None,
 ) -> Path:
     """Write _manifest.json to a completed run directory.
 
     Scans for known artifacts, computes checksums, writes atomically.
     Returns the manifest path.
+
+    Parameters
+    ----------
+    gateway : StorageGateway | None
+        If provided, uses this gateway for atomic writes. Otherwise creates
+        a minimal gateway internally.
     """
     entries = []
     for name in _KNOWN_ARTIFACTS:
@@ -139,14 +150,14 @@ def write_manifest(
 
     manifest_path = stage_dir / "_manifest.json"
 
-    from graphids.storage.gateway import StorageGateway
+    if gateway is None:
+        from .gateway import StorageGateway
 
-    # Use a dummy gateway just for the atomic write helper
-    gw = StorageGateway(
-        lake_root=".", dataset="manifest", model_type="manifest", scale="manifest",
-    )
-    gw.write_bytes(manifest_path, manifest.model_dump_json(indent=2).encode())
-    log.info("Wrote manifest: %s (%d artifacts)", manifest_path, len(entries))
+        gateway = StorageGateway(
+            lake_root=".", dataset="manifest", model_type="manifest", scale="manifest",
+        )
+    gateway.write_bytes(manifest_path, manifest.model_dump_json(indent=2).encode())
+    log.info("manifest_written", path=str(manifest_path), artifact_count=len(entries))
 
     return manifest_path
 
@@ -159,7 +170,7 @@ def read_manifest(stage_dir: Path) -> Manifest | None:
     try:
         return Manifest.model_validate_json(manifest_path.read_text())
     except Exception as e:
-        log.warning("Failed to read manifest %s: %s", manifest_path, e)
+        log.warning("manifest_read_failed", path=str(manifest_path), error=str(e))
         return None
 
 

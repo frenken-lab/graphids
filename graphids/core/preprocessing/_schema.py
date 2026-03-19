@@ -17,10 +17,10 @@ Column layout (order matters for numpy conversion):
 
 from __future__ import annotations
 
-import logging
+import structlog
 from dataclasses import dataclass, field
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 # Column name constants used throughout the preprocessing pipeline
 COL_ENTITY_ID = "entity_id"

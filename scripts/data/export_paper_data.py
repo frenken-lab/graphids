@@ -15,7 +15,7 @@ import argparse
 import csv
 import hashlib
 import json
-import logging
+import structlog
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,8 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from graphids.core.preprocessing import ATTACK_TYPE_NAMES
 from graphids.config import lake_exports_dir, lake_root_from_env, lake_run_dir
 
-log = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+log = structlog.get_logger()
 
 SAMPLE_FRAC = 0.10
 
@@ -437,4 +436,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    from graphids.logging import configure_logging
+    configure_logging()
     main()

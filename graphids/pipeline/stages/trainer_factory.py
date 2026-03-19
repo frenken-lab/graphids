@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import logging
+import structlog
 import os
 from pathlib import Path
 
@@ -12,14 +12,13 @@ import torch.nn as nn
 from pytorch_lightning.callbacks import DeviceStatsMonitor, EarlyStopping, ModelCheckpoint
 
 from graphids.config import (
-    MLFLOW_TRACKING_URI,
     STAGE_MODEL_MAP,
     PipelineConfig,
     run_id,
 )
 from graphids.storage import StorageGateway
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 # model_type → the canonical stage that produces the teacher checkpoint.
 # "curriculum" is preferred over "normal" for GAT since the teacher (large) always
@@ -59,7 +58,7 @@ def resolve_teacher_path(cfg: PipelineConfig, model_type: str) -> Path:
             f"Teacher checkpoint not found: {path}. "
             f"Train {model_type}/{teacher_scale} first, or set model_path explicitly."
         )
-    log.info("Auto-resolved teacher (%s/%s): %s", model_type, teacher_scale, path)
+    log.info("auto_resolved_teacher", model_type=model_type, scale=teacher_scale, path=str(path))
     return path
 
 
@@ -140,7 +139,7 @@ def _load_teacher(
     else:
         teacher.load_state_dict(sd)
 
-    log.info("Loaded %s teacher from %s (num_ids=%d)", model_type, teacher_path, t_num_ids)
+    log.info("loaded_teacher", model_type=model_type, path=teacher_path, num_ids=t_num_ids)
 
     teacher.to(device)
     teacher.eval()
@@ -167,7 +166,7 @@ def make_projection(
 
     if s_dim != t_dim:
         proj = nn.Linear(s_dim, t_dim).to(device)
-        log.info("Projection layer: %d -> %d", s_dim, t_dim)
+        log.info("projection_layer_created", student_dim=s_dim, teacher_dim=t_dim)
         return proj
     return None
 
@@ -260,26 +259,10 @@ def build_optimizer_dict(optimizer, cfg: PipelineConfig):
             "lr_scheduler": {"scheduler": sched, "monitor": t.monitor_metric},
         }
     else:
-        log.warning("Unknown scheduler_type=%s, skipping", t.scheduler_type)
+        log.warning("unknown_scheduler_type", scheduler_type=t.scheduler_type)
         return optimizer
 
     return {"optimizer": optimizer, "lr_scheduler": sched}
-
-
-def _setup_mlflow_autolog() -> None:
-    """Enable MLflow autolog for PyTorch Lightning.
-
-    Called once per training process. Sets tracking URI and enables
-    automatic logging of metrics, params, and checkpoints.
-    """
-    import mlflow
-
-    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-    mlflow.pytorch.autolog(
-        checkpoint=True,
-        log_every_n_epoch=1,
-        log_models=False,  # We save checkpoints via ModelCheckpoint callback
-    )
 
 
 def make_trainer(
@@ -299,8 +282,8 @@ def make_trainer(
     persistent_root = Path(cfg.lake_root) / run_id(cfg, stage)
     persistent_root.mkdir(parents=True, exist_ok=True)
 
-    # Enable MLflow autolog (idempotent — safe to call multiple times)
-    _setup_mlflow_autolog()
+    # Per-epoch metrics to CSV (replaces MLflow autolog)
+    csv_logger = pl.loggers.CSVLogger(save_dir=str(out), name="metrics")
 
     callbacks = [
         ModelCheckpoint(
@@ -341,6 +324,7 @@ def make_trainer(
         gradient_clip_val=t.gradient_clip,
         accumulate_grad_batches=t.accumulate_grad_batches,
         callbacks=callbacks,
+        logger=csv_logger,
         plugins=plugins or None,
         log_every_n_steps=t.log_every_n_steps,
         enable_progress_bar=True,

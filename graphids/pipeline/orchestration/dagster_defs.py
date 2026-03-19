@@ -6,7 +6,7 @@ Assets dynamically generated from STAGE_DEPENDENCIES + PipelineConfig.variants
 Entry point: ``dagster dev -m graphids.pipeline.orchestration.dagster_defs``
 """
 
-import logging
+import structlog
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -32,7 +32,7 @@ from .slurm_client import (
     scale_resources,
 )
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 # ---------------------------------------------------------------------------
 # Resource + partitions
@@ -145,7 +145,7 @@ def _make_hf_push_asset(eval_dep_names: list[str]):
             capture_output=True, text=True, cwd=str(PROJECT_ROOT),
         )
         if result.returncode != 0:
-            context.log.warning("HF push failed (non-fatal): %s", result.stderr[:500])
+            context.log.warning("hf_push_failed", error=result.stderr[:500])
         return dg.MaterializeResult(metadata={"returncode": result.returncode, "dataset": dataset})
 
     return _asset
@@ -163,7 +163,7 @@ def _make_rebuild_catalog_asset():
         if not lake_root:
             return dg.MaterializeResult(metadata={"skipped": True})
         from pathlib import Path
-        from graphids.pipeline.catalog import rebuild_catalog
+        from graphids.storage.catalog import rebuild_catalog
         catalog_path = rebuild_catalog(Path(lake_root))
         return dg.MaterializeResult(metadata={"catalog_path": str(catalog_path)})
 
@@ -250,7 +250,16 @@ def fire_and_forget(
 ) -> dict[str, str]:
     """Submit all jobs with --dependency=afterok chains. No polling."""
     import graphlib
+    import uuid
+
+    import structlog
+
     from graphids.config import resolve
+
+    structlog.contextvars.bind_contextvars(
+        pipeline_run_id=str(uuid.uuid4())[:8],
+        dataset=dataset,
+    )
 
     client = PipesSlurmClient(dry_run=dry_run)
     seed_list = seeds or [resolve("vgae", "large").seed]

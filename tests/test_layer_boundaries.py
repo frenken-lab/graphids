@@ -105,11 +105,14 @@ def _subpackage_imported(filepath: Path, top_level_only: bool = False) -> set[st
 class TestStorageLayerBoundary:
     """storage/ must never import from config/, pipeline/, or core/."""
 
+    # Files with lazy (function-local) imports from other layers
+    _LAZY_IMPORT_FILES = {"mapper.py", "contracts.py", "manifest.py"}
+
     def test_storage_no_config_imports(self):
         violations = []
         for f in _collect_python_files(STORAGE_DIR):
-            if f.name == "mapper.py":
-                # mapper.py has lazy (function-local) imports from config/ and core/
+            if f.name in self._LAZY_IMPORT_FILES:
+                # These files have lazy (function-local) imports from config/ and core/
                 mods = _subpackage_imported(f, top_level_only=True)
             else:
                 mods = _subpackage_imported(f)
@@ -123,7 +126,7 @@ class TestStorageLayerBoundary:
     def test_storage_no_pipeline_imports(self):
         violations = []
         for f in _collect_python_files(STORAGE_DIR):
-            if f.name == "mapper.py":
+            if f.name in self._LAZY_IMPORT_FILES:
                 mods = _subpackage_imported(f, top_level_only=True)
             else:
                 mods = _subpackage_imported(f)

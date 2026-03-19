@@ -14,7 +14,7 @@ and does NOT belong in the GraphEngine.
 
 from __future__ import annotations
 
-import logging
+import structlog
 import os
 from collections.abc import Sequence
 from pathlib import Path
@@ -31,7 +31,7 @@ from .._schema import (
 from .._vocabulary import EntityVocabulary
 from .base import DomainAdapter
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 # CAN bus IR schemas (8 data bytes → 8 features)
 CAN_BUS_SCHEMA = IRSchema(num_features=8)
@@ -261,14 +261,14 @@ class CANBusAdapter(DomainAdapter):
                 chunk.rename(columns={"arbitration_id": "CAN ID"}, inplace=True)
                 chunks.append(chunk)
         except Exception as e:
-            log.debug("Chunked reading failed for %s: %s. Trying full read.", csv_path, e)
+            log.debug("chunked_read_failed", path=str(csv_path), error=str(e))
             try:
                 full = pd.read_csv(csv_path, engine="python", dtype=str)
                 full.columns = ["Timestamp", "arbitration_id", "data_field", "attack"]
                 full.rename(columns={"arbitration_id": "CAN ID"}, inplace=True)
                 chunks.append(full)
             except Exception as e2:
-                log.warning("Failed to read %s: %s", csv_path, e2)
+                log.warning("read_failed", path=str(csv_path), error=str(e2))
         return chunks
 
     def _chunk_to_ir(self, chunk: pd.DataFrame, vocab: EntityVocabulary) -> pd.DataFrame:

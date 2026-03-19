@@ -7,7 +7,7 @@ All artifact lookups go through the ArtifactResolver (cache → legacy → MLflo
 
 from __future__ import annotations
 
-import logging
+import structlog
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 from graphids.config import STAGE_DEPENDENCIES, STAGES, data_dir, get_datasets
 
-_log = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 
 def validate_datasets(datasets: list[str], scale: str) -> list[str]:
@@ -62,7 +62,7 @@ def validate(cfg: PipelineConfig, stage: str) -> None:
 
     # --- KD consistency ---
     if cfg.scale == "small" and not cfg.has_kd:
-        _log.warning("Small model without KD -- running as ablation baseline")
+        log.warning("Small model without KD -- running as ablation baseline")
 
     if cfg.has_kd and cfg.kd.model_path:
         # Explicit teacher path — validate it exists
@@ -74,7 +74,7 @@ def validate(cfg: PipelineConfig, stage: str) -> None:
             errors.append(f"Teacher config not found: {teacher_cfg}")
     elif cfg.has_kd and not cfg.kd.model_path and stage != "evaluation":
         # Auto-resolution via prepare_kd() at training time
-        _log.info("KD teacher will auto-resolve from scale='%s'", cfg.kd.teacher_scale)
+        log.info("kd_teacher_auto_resolve", teacher_scale=cfg.kd.teacher_scale)
 
     # --- prerequisite checkpoints (via resolver, not hardcoded paths) ---
     if stage in STAGE_DEPENDENCIES:

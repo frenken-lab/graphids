@@ -19,7 +19,7 @@ import torch.multiprocessing as mp
 # Must be called before any CUDA or multiprocessing usage.
 mp.set_start_method("spawn", force=True)
 
-import logging
+import structlog
 import os
 import sys
 import time
@@ -31,19 +31,15 @@ import typer
 
 from graphids.config import (
     DEFAULT_DATASET,
-    MLFLOW_TRACKING_URI,
     STAGES,
-    SWEEP_ID,
     PipelineConfig,
     run_id,
-    run_metadata,
-    stage_dir,
 )
 from graphids.storage import open_gateway
 
 from .validate import validate
 
-log = logging.getLogger("pipeline")
+log = structlog.get_logger()
 
 app = typer.Typer(
     name="graphids",
@@ -51,23 +47,6 @@ app = typer.Typer(
     add_completion=False,
     no_args_is_help=False,
 )
-
-
-# ---------------------------------------------------------------------------
-# MLflow setup
-# ---------------------------------------------------------------------------
-
-
-def _setup_mlflow(run_name: str, cfg: PipelineConfig, stage: str, tags: dict | None = None):
-    """Set up MLflow tracking and start a run."""
-    import mlflow
-
-    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-    mlflow.set_experiment(f"kd-gat-{stage}")
-    mlflow_tags = run_metadata(cfg, stage)
-    if tags:
-        mlflow_tags.update(tags)
-    return mlflow.start_run(run_name=run_name, tags=mlflow_tags)
 
 
 # ---------------------------------------------------------------------------
@@ -82,13 +61,13 @@ def _run_training(overrides: list[str]) -> None:
 
     merged, stage = compose_config(overrides)
     if stage is None or stage not in STAGES:
-        log.error("Unknown training stage: %s. Valid: %s", stage, list(STAGES.keys()))
+        log.error("unknown_training_stage", stage=stage, valid=list(STAGES.keys()))
         raise SystemExit(1)
 
     raw = OmegaConf.to_object(merged)
     raw.pop("stage", None)
     cfg = PipelineConfig.model_validate(raw)
-    log.info("Resolved config: model=%s, scale=%s, dataset=%s", cfg.model_type, cfg.scale, cfg.dataset)
+    log.info("config_resolved")
     _run_single_stage(cfg, stage)
 
 
@@ -115,9 +94,9 @@ def preprocess(dataset: Optional[str] = None):
 
     ds = dataset or DEFAULT_DATASET
     cfg = resolve("vgae", "large", dataset=ds)
-    log.info("Preprocessing dataset: %s", ds)
+    log.info("preprocessing_started", dataset=ds)
     PreprocessingPipeline(cfg).load_dataset()
-    log.info("Preprocessed cache ready for %s", ds)
+    log.info("preprocessing_complete", dataset=ds)
 
 
 @app.command()
@@ -149,15 +128,15 @@ def sweep(
         _model_to_stage = {"vgae": "autoencoder", "gat": "curriculum", "dqn": "fusion"}
         sweep_stage = _model_to_stage.get(stage, stage)
         if sweep_stage not in STAGE_MODEL_MAP:
-            log.error("--stage must be autoencoder/curriculum/fusion or vgae/gat/dqn. Got: %s", stage)
+            log.error("invalid_sweep_stage", stage=stage)
             raise SystemExit(1)
         best = run_sweep(
             stage=sweep_stage, dataset=ds, scale=scale, num_samples=num_samples,
             max_epochs=max_epochs, patience=patience, warm_start_from=warm_start_from,
         )
-        log.info("Sweep complete. Best params: %s", best)
+        log.info("sweep_complete", best_params=best)
     else:
-        log.error("Must specify --stage <name> or --full-pipeline")
+        log.error("missing_sweep_args")
         raise SystemExit(1)
 
 
@@ -168,14 +147,14 @@ def lake(action: str = typer.Option("status", help="rebuild-catalog | verify | s
 
     lake_root = lake_root_from_env()
     if lake_root is None:
-        log.error("KD_GAT_LAKE_ROOT not set. Run: export KD_GAT_LAKE_ROOT=/fs/ess/PAS1266/kd-gat")
+        log.error("lake_root_not_set")
         raise SystemExit(1)
 
     if action == "rebuild-catalog":
-        from graphids.pipeline.catalog import rebuild_catalog
-        log.info("Catalog rebuilt: %s", rebuild_catalog(lake_root))
+        from graphids.storage.catalog import rebuild_catalog
+        log.info("catalog_rebuilt", result=rebuild_catalog(lake_root))
     elif action == "verify":
-        from graphids.pipeline.manifest import verify_manifest
+        from graphids.storage.manifest import verify_manifest
         errors_total = run_count = 0
         for tier_dir in [lake_root / "production", lake_root / "dev"]:
             if not tier_dir.exists():
@@ -185,16 +164,15 @@ def lake(action: str = typer.Option("status", help="rebuild-catalog | verify | s
                 run_count += 1
                 if not ok:
                     errors_total += len(errors)
-                    log.warning("FAILED: %s — %s", manifest_file.parent, "; ".join(errors))
-        log.info("Verified %d runs, %d errors", run_count, errors_total)
+                    log.warning("manifest_verify_failed", path=str(manifest_file.parent), errors=errors)
+        log.info("manifest_verify_complete", runs=run_count, errors=errors_total)
     elif action == "status":
-        from graphids.pipeline.catalog import catalog_status
+        from graphids.storage.catalog import catalog_status
         status = catalog_status(lake_catalog_path(lake_root))
         if not status.get("exists"):
-            log.info("Catalog not built. Run: python -m graphids.pipeline.cli lake --action rebuild-catalog")
+            log.info("catalog_not_built")
             return
-        log.info("Lake: %d runs | stages: %s | datasets: %s",
-                 status["total_runs"], status["by_stage"], status["by_dataset"])
+        log.info("lake_status", total_runs=status["total_runs"], by_stage=status["by_stage"], by_dataset=status["by_dataset"])
 
 
 @app.command()
@@ -216,11 +194,11 @@ def daemon(
             capture_output=True, text=True,
         )
         if result.stdout.strip():
-            log.info("Dagster daemon: %s", result.stdout.strip())
+            log.info("dagster_daemon_status", info=result.stdout.strip())
             if connection_file.exists():
-                log.info("Connection info:\n%s", connection_file.read_text())
+                log.info("dagster_connection_info", info=connection_file.read_text())
         else:
-            log.info("No dagster daemon job running.")
+            log.info("dagster_daemon_not_running")
         return
 
     if stop:
@@ -231,11 +209,11 @@ def daemon(
         job_id = result.stdout.strip().split("\n")[0] if result.stdout.strip() else ""
         if job_id:
             subprocess.run(["scancel", job_id], check=True)
-            log.info("Cancelled dagster daemon job %s", job_id)
+            log.info("dagster_daemon_cancelled", job_id=job_id)
             if connection_file.exists():
                 connection_file.unlink()
         else:
-            log.info("No dagster daemon job to cancel.")
+            log.info("dagster_daemon_none_to_cancel")
         return
 
     cmd = ["bash", str(project_root / "scripts" / "slurm" / "launch_dagster.sh")]
@@ -262,9 +240,8 @@ def orchestrate(
         seed_list = parse_seeds(seeds)
 
     job_ids = fire_and_forget(dataset=ds, seeds=seed_list, dry_run=dry_run)
-    log.info("Submitted %d jobs:", len(job_ids))
-    for name, jid in job_ids.items():
-        log.info("  %s: %s", name, jid)
+    log.info("jobs_submitted", count=len(job_ids), jobs=job_ids)
+
 
 
 # ---------------------------------------------------------------------------
@@ -279,31 +256,21 @@ def _archive_previous(sdir: Path) -> Path | None:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     archive = sdir.parent / f"{sdir.name}.archive_{ts}"
     sdir.rename(archive)
-    log.warning("Archived completed run → %s", archive)
+    log.warning("run_archived", path=str(archive))
     return archive
-
-
-def _log_stage_artifacts(sdir: Path) -> None:
-    """Log stage artifacts to MLflow."""
-    import mlflow
-    for name in ["best_model.pt", "config.json", "embeddings.npz",
-                 "attention_weights.npz", "dqn_policy.json", "explanations.npz"]:
-        p = sdir / name
-        if p.exists():
-            mlflow.log_artifact(str(p))
 
 
 def _write_lake_manifest(cfg: PipelineConfig, stage: str, sdir: Path, metrics: dict | None = None) -> None:
     """Write _manifest.json for the ESS data lake."""
     try:
-        from graphids.pipeline.manifest import write_manifest
+        from graphids.storage.manifest import write_manifest
         write_manifest(
             sdir, dataset=cfg.dataset, model_type=cfg.model_type, scale=cfg.scale,
             stage=stage, auxiliaries=cfg.auxiliaries[0].type if cfg.auxiliaries else "none",
             seed=cfg.seed, metrics=metrics,
         )
     except Exception as e:
-        log.warning("Failed to write manifest: %s", e)
+        log.warning("manifest_write_failed", error=str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -312,103 +279,69 @@ def _write_lake_manifest(cfg: PipelineConfig, stage: str, sdir: Path, metrics: d
 
 
 def _run_single_stage(cfg: PipelineConfig, stage: str) -> None:
-    """Execute a single training stage with MLflow tracking."""
+    """Execute a single training stage."""
     validate(cfg, stage)
+
+    structlog.contextvars.bind_contextvars(
+        dataset=cfg.dataset,
+        model=cfg.model_type,
+        scale=cfg.scale,
+        stage=stage,
+        seed=cfg.seed,
+        slurm_job_id=os.environ.get("SLURM_JOB_ID", ""),
+    )
 
     gw, mapper = open_gateway(cfg)
     sdir = gw.resolve(stage)
     archive = _archive_previous(sdir)
-
     mapper.save_config(cfg, stage)
-    cfg_out = gw.resolve(stage, "config.json")
 
-    run_name = run_id(cfg, stage)
-    log.info("Run started: %s (seed=%d)", run_name, cfg.seed)
+    log.info("run_started")
 
-    # Environment metadata
-    slurm_job_id = os.environ.get("SLURM_JOB_ID")
-    gpu_name = None
     try:
         import torch
         if torch.cuda.is_available():
-            gpu_name = torch.cuda.get_device_name(0)
             torch.cuda.reset_peak_memory_stats()
     except Exception:
         pass
 
-    if SWEEP_ID:
-        run_type = "sweep_best"
-    elif cfg.training.max_epochs < 10:
-        run_type = "smoke_test"
-    else:
-        run_type = "production"
-
-    teacher_run_id_str = None
-    if cfg.has_kd and cfg.kd and cfg.kd.model_path:
-        tp = Path(cfg.kd.model_path)
-        if tp.parent.parent.name and tp.parent.name:
-            teacher_run_id_str = f"{tp.parent.parent.name}/{tp.parent.name}"
-
-    import mlflow
-
-    extra_tags = {"slurm_job_id": slurm_job_id or "", "gpu_name": gpu_name or "", "run_type": run_type}
-    if teacher_run_id_str:
-        extra_tags["teacher_run_id"] = teacher_run_id_str
-
     t_start = time.monotonic()
-    with _setup_mlflow(run_name, cfg, stage, tags=extra_tags):
+    try:
+        from .stages import STAGE_FNS
+        result = STAGE_FNS[stage](cfg)
+
+        duration = time.monotonic() - t_start
+        peak_gpu_mb = None
         try:
-            mlflow.log_params({
-                "dataset": cfg.dataset, "model_type": cfg.model_type, "scale": cfg.scale,
-                "stage": stage, "has_kd": cfg.has_kd, "seed": cfg.seed,
-                "batch_size": cfg.training.batch_size, "max_epochs": cfg.training.max_epochs,
-                "lr": cfg.training.lr,
-            })
-            mlflow.log_artifact(str(cfg_out))
+            import torch
+            if torch.cuda.is_available():
+                peak_gpu_mb = torch.cuda.max_memory_allocated() / (1024**2)
+        except Exception:
+            pass
 
-            from .stages import STAGE_FNS
-            result = STAGE_FNS[stage](cfg)
+        stage_metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
+        stage_metrics["duration_seconds"] = duration
+        if peak_gpu_mb is not None:
+            stage_metrics["peak_gpu_mb"] = peak_gpu_mb
 
-            duration = time.monotonic() - t_start
-            peak_gpu_mb = None
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    peak_gpu_mb = torch.cuda.max_memory_allocated() / (1024**2)
-            except Exception:
-                pass
+        _write_lake_manifest(cfg, stage, sdir, metrics=stage_metrics)
 
-            stage_metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
-            stage_metrics["duration_seconds"] = duration
-            if peak_gpu_mb is not None:
-                stage_metrics["peak_gpu_mb"] = peak_gpu_mb
+        if archive and archive.exists():
+            import shutil
+            shutil.rmtree(archive, ignore_errors=True)
 
-            mlflow_metrics = {k: v for k, v in stage_metrics.items() if isinstance(v, (int, float))}
-            mlflow.log_metrics(mlflow_metrics)
+        log.info("stage_complete", **{k: v for k, v in stage_metrics.items() if isinstance(v, (int, float))})
 
-            _log_stage_artifacts(sdir)
-            _write_lake_manifest(cfg, stage, sdir, metrics=stage_metrics)
-
-            if archive and archive.exists():
+    except Exception as e:
+        duration = time.monotonic() - t_start
+        if archive and archive.exists():
+            if sdir.exists():
                 import shutil
-                shutil.rmtree(archive, ignore_errors=True)
-
-            mlflow.set_tag("status", "success")
-            log.info("Stage '%s' complete (%.1fs, peak_gpu=%.0fMB)", stage, duration, peak_gpu_mb or 0.0)
-
-        except Exception as e:
-            duration = time.monotonic() - t_start
-            if archive and archive.exists():
-                if sdir.exists():
-                    import shutil
-                    shutil.rmtree(sdir, ignore_errors=True)
-                archive.rename(sdir)
-                log.warning("Restored archive after failure: %s", sdir)
-            mlflow.set_tag("status", "failed")
-            mlflow.set_tag("failure_reason", str(e)[:250])
-            mlflow.log_metrics({"duration_seconds": duration})
-            log.error("Run failed: %s", str(e))
-            raise
+                shutil.rmtree(sdir, ignore_errors=True)
+            archive.rename(sdir)
+            log.warning("archive_restored", path=str(sdir))
+        log.error("stage_failed", error=str(e)[:250], duration_s=round(duration, 1))
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -421,11 +354,13 @@ _SUBCOMMANDS = frozenset({
 
 
 def main(argv: list[str] | None = None) -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s  %(name)-20s  %(levelname)-7s  %(message)s",
-    )
+    from graphids.logging import configure_logging
+
     args = argv if argv is not None else sys.argv[1:]
+    json_logs = "--json-logs" in args
+    if json_logs:
+        args = [a for a in args if a != "--json-logs"]
+    configure_logging(json=json_logs or None)
 
     # If first arg is a subcommand or --help, let Typer handle it.
     # Otherwise treat all args as Hydra overrides for training.

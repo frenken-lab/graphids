@@ -17,7 +17,7 @@ coefficient.  Aljabri et al. (2025) validated entropy features via SHAP.
 
 from __future__ import annotations
 
-import logging
+import structlog
 
 import numpy as np
 import torch
@@ -27,7 +27,7 @@ from graphids.config import PreprocessingConfig
 
 from ._schema import IRSchema
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 _PREP_DEFAULTS = PreprocessingConfig()
 

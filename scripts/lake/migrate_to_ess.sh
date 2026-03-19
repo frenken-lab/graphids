@@ -127,7 +127,7 @@ if $MIGRATE_RUNS; then
             cd "$PROJECT_ROOT"
             python -c "
 from pathlib import Path
-from graphids.lake.manifest import write_manifest, read_manifest
+from graphids.storage.manifest import write_manifest, read_manifest
 import json
 
 production = Path('${DST}')

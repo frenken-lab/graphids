@@ -11,10 +11,10 @@ Requires: duckdb>=1.0.0 (optional dependency).
 from __future__ import annotations
 
 import json
-import logging
+import structlog
 from pathlib import Path
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 
 def rebuild_catalog(lake_root: Path, catalog_path: Path | None = None) -> Path:
@@ -50,10 +50,10 @@ def rebuild_catalog(lake_root: Path, catalog_path: Path | None = None) -> Path:
             manifest_files.extend(tier_dir.rglob("_manifest.json"))
 
     if not manifest_files:
-        log.warning("No _manifest.json files found under %s", lake_root)
+        log.warning("catalog_no_manifests", lake_root=str(lake_root))
         return catalog_path
 
-    log.info("Found %d manifest files", len(manifest_files))
+    log.info("catalog_manifests_found", count=len(manifest_files))
 
     # Build rows by joining manifest + config + metrics
     rows = []
@@ -62,7 +62,7 @@ def rebuild_catalog(lake_root: Path, catalog_path: Path | None = None) -> Path:
         try:
             manifest = json.loads(mf.read_text())
         except (json.JSONDecodeError, OSError) as e:
-            log.warning("Skipping %s: %s", mf, e)
+            log.warning("catalog_manifest_skip", path=str(mf), error=str(e))
             continue
 
         # Determine tier from path
@@ -126,7 +126,7 @@ def rebuild_catalog(lake_root: Path, catalog_path: Path | None = None) -> Path:
         rows.append(row)
 
     if not rows:
-        log.warning("No valid runs found")
+        log.warning("catalog_no_valid_runs")
         return catalog_path
 
     # Write rows to a temp JSON file, then load into DuckDB
@@ -143,14 +143,13 @@ def rebuild_catalog(lake_root: Path, catalog_path: Path | None = None) -> Path:
                 f"CREATE TABLE experiments AS SELECT * FROM read_json_auto('{tmp_json}', union_by_name=true, maximum_object_size=10485760)"
             )
             count = db.execute("SELECT count(*) FROM experiments").fetchone()[0]
-            log.info("Catalog rebuilt: %d runs → %s", count, catalog_path)
+            log.info("catalog_rebuilt", run_count=count, path=str(catalog_path))
         finally:
             db.close()
     finally:
         tmp_json.unlink(missing_ok=True)
 
     return catalog_path
-
 
 
 def catalog_status(catalog_path: Path) -> dict:

@@ -6,11 +6,15 @@
 graphids/               # Top-level package — __getattr__ lazy gateway for core/, pipeline/, storage/
   __init__.py          # Lazy gateway: PipelineConfig, resolve, checkpoint_path (eager); core/pipeline/storage (lazy)
   api.py               # Programmatic facade: train(), evaluate(), orchestrate() — for notebooks/Dagster
+  logging.py           # structlog configure_logging(): processor pipeline, stdlib bridge, JSON/console renderers
   storage/              # Layer 0: Infrastructure (no imports from config/, pipeline/, or core/)
-    __init__.py         # Re-exports: StorageGateway, ArtifactMapper, open_gateway, lake path primitives
+    __init__.py         # Re-exports: StorageGateway, ArtifactMapper, open_gateway, lake path primitives, contracts, manifest, catalog
     gateway.py          # NFS-safe I/O: atomic writes (tmpfile+fsync+rename), advisory locking (fcntl.flock), path resolution
     mapper.py           # Domain-aware serialization: checkpoints, configs, eval artifacts, cache, pickle (lazy domain imports)
     paths.py            # Lake path layout: lake_run_dir, lake_cache_dir, lake_raw_dir, etc.
+    manifest.py         # _manifest.json writer/reader + SHA-256 checksum verification
+    catalog.py          # DuckDB catalog rebuild from manifests + status query
+    contracts.py        # Artifact validation: StageArtifact, TrainingArtifact, EvaluationArtifact, PreprocessingArtifact
   config/               # Layer 1: Inert, declarative (imports storage/ for path primitives, no pipeline/ or core/)
     _hydra_bridge.py    # resolve() via Hydra Compose API → PipelineConfig
     constants.py        # Project constants, load_pipeline_yaml(), topology (STAGES, STAGE_DEPENDENCIES, etc.)
@@ -138,4 +142,4 @@ notebooks/
 
 ## File Count
 
-~62 Python files under `graphids/` (storage: 4, config: 5, pipeline: 17, core: 24, top-level: 2).
+~65 Python files under `graphids/` (storage: 7, config: 5, pipeline: 17, core: 24, top-level: 3).

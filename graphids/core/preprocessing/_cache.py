@@ -6,7 +6,7 @@ Core function:
 """
 
 import json
-import logging
+import structlog
 import os
 from pathlib import Path
 
@@ -24,7 +24,7 @@ from ._dataset import (
     load_collated,
 )
 
-logger = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 
 # ============================================================================
@@ -96,7 +96,7 @@ def load_dataset(
             stride=stride,
         )
 
-    logger.info(f"Created dataset with {len(dataset)} total graphs")
+    log.info("dataset_created", total_graphs=len(dataset))
 
     train_size = int(train_val_split * len(dataset))
     val_size = len(dataset) - train_size
@@ -106,7 +106,7 @@ def load_dataset(
         generator=torch.Generator().manual_seed(seed),
     )
 
-    logger.info(f"Dataset split: {len(train_dataset)} training, {len(val_dataset)} validation")
+    log.info("dataset_split", training=len(train_dataset), validation=len(val_dataset))
 
     num_ids = len(id_mapping) if id_mapping else 1000
     return train_dataset, val_dataset, num_ids
@@ -143,10 +143,10 @@ def _load_cached_data(
 
         # Validate loaded data
         if not isinstance(id_mapping, dict):
-            logger.warning("Invalid cache format: id_mapping is not a dict.")
+            log.warning("Invalid cache format: id_mapping is not a dict.")
             return None, None
 
-        logger.info(f"Loaded {len(dataset)} cached graphs with {len(id_mapping)} unique IDs")
+        log.info("cache_loaded", graphs=len(dataset), unique_ids=len(id_mapping))
 
         # Validate cache using metadata if available
         metadata_file = cache_file.parent / "cache_metadata.json"
@@ -173,33 +173,39 @@ def _load_cached_data(
                     if cached_val is not None and cached_val != current_val:
                         stale_reasons.append(f"{key}: {cached_val} != {current_val}")
                 if stale_reasons:
-                    logger.warning("Cache stale (%s). Rebuilding.", "; ".join(stale_reasons))
+                    log.warning("cache_stale_rebuilding", reasons="; ".join(stale_reasons))
                     return None, None
 
                 if expected > 0 and actual < expected * 0.1:
-                    logger.warning(
-                        f"CACHE ISSUE: Only {actual} graphs found, expected {expected} "
-                        f"(preprocessing v{version}). Rebuilding cache."
+                    log.warning(
+                        "cache_graph_count_too_low",
+                        actual=actual,
+                        expected=expected,
+                        version=version,
                     )
                     return None, None
                 elif expected > 0 and actual < expected * 0.5:
-                    logger.warning(
-                        f"Cache has fewer graphs than expected: {actual} vs {expected}. "
-                        "Use --force-rebuild to recreate."
+                    log.warning(
+                        "cache_fewer_graphs_than_expected",
+                        actual=actual,
+                        expected=expected,
                     )
                 else:
-                    logger.info(
-                        f"Cache validated: {actual} graphs (expected {expected}, v{version})"
+                    log.info(
+                        "cache_validated",
+                        actual=actual,
+                        expected=expected,
+                        version=version,
                     )
             except (json.JSONDecodeError, KeyError) as e:
-                logger.warning(f"Cache metadata unreadable: {e}. Proceeding with loaded data.")
+                log.warning("cache_metadata_unreadable", error=str(e))
         else:
-            logger.info(f"No cache metadata found. Loaded {len(dataset)} graphs.")
+            log.info("cache_loaded_no_metadata", graphs=len(dataset))
 
         return dataset, id_mapping
 
     except (EOFError, AttributeError) as e:
-        logger.warning(f"Cache file corrupted ({type(e).__name__}). Deleting and rebuilding.")
+        log.warning("cache_corrupted_rebuilding", error_type=type(e).__name__)
         try:
             cache_file.unlink(missing_ok=True)
             id_mapping_file.unlink(missing_ok=True)
@@ -207,7 +213,7 @@ def _load_cached_data(
             pass
         return None, None
     except Exception as e:
-        logger.warning(f"Failed to load cached data: {e}. Processing from scratch.")
+        log.warning("cache_load_failed", error=str(e))
         return None, None
 
 
@@ -222,10 +228,11 @@ def _process_dataset_from_scratch(
     stride: int = 100,
 ):
     """Process dataset from CSV files and save in collated format."""
-    logger.info(
-        f"Processing dataset: {'forced rebuild' if force_rebuild else 'processing from scratch'}..."
+    log.info(
+        "processing_dataset",
+        mode="forced_rebuild" if force_rebuild else "from_scratch",
+        path=str(dataset_path),
     )
-    logger.info(f"Dataset path: {dataset_path}")
 
     if not os.path.exists(dataset_path):
         raise FileNotFoundError(f"Dataset path does not exist: {dataset_path}")
@@ -237,12 +244,12 @@ def _process_dataset_from_scratch(
 
         adapter = CANBusAdapter(include_attack_type=True)
     csv_files = adapter.discover_files(str(dataset_path), "train_")
-    logger.info("Found %d CSV files in %s", len(csv_files), dataset_path)
+    log.info("csv_files_found", count=len(csv_files), path=str(dataset_path))
 
     if not csv_files:
         raise FileNotFoundError(f"No train CSV files found in {dataset_path}")
 
-    logger.info("Starting graph creation from CSV files...")
+    log.info("graph_creation_started")
     graphs, id_mapping = process_dataset(
         dataset_path,
         split="train_",
@@ -269,14 +276,14 @@ def _process_dataset_from_scratch(
     mapper = ArtifactMapper(gw)
 
     cache_file.parent.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Saving processed data to cache (collated format): {cache_file}")
+    log.info("saving_cache", format="collated", path=str(cache_file))
 
     try:
         with gw.lock(cache_file.parent):
             mapper.save_collated(graphs, cache_file)
             mapper.save_pickle(id_mapping, id_mapping_file)
 
-        logger.info(f"Cache saved (collated): {len(graphs)} graphs")
+        log.info("cache_saved", format="collated", graphs=len(graphs))
 
         # Write cache metadata for validation on future loads
         write_cache_metadata(
@@ -289,7 +296,7 @@ def _process_dataset_from_scratch(
             stride=stride,
         )
     except Exception as e:
-        logger.error(f"Failed to save cache: {e}")
+        log.error("cache_save_failed", error=str(e))
 
     # Return a CollatedGraphDataset (reload from saved file for mmap)
     return load_collated(cache_file), id_mapping
@@ -318,7 +325,7 @@ def load_test_scenarios(
 
     id_mapping_file = cache_dir_path / "id_mapping.pkl"
     if not id_mapping_file.exists():
-        logger.warning("No id_mapping at %s -- skipping test data", id_mapping_file)
+        log.warning("no_id_mapping_skipping_test_data", path=str(id_mapping_file))
         return {}
 
     with open(id_mapping_file, "rb") as f:
@@ -327,7 +334,7 @@ def load_test_scenarios(
     vocab = EntityVocabulary.from_legacy_mapping(id_mapping)
 
     if not dataset_path.exists():
-        logger.warning("Dataset path %s not found -- skipping test data", dataset_path)
+        log.warning("dataset_path_not_found_skipping_test_data", path=str(dataset_path))
         return {}
 
     scenarios: dict[str, CollatedGraphDataset] = {}
@@ -342,14 +349,14 @@ def load_test_scenarios(
         if not force_rebuild_cache and cache_file.exists():
             try:
                 dataset = load_collated(cache_file)
-                logger.info("Loaded %d cached test graphs for %s", len(dataset), name)
+                log.info("test_cache_loaded", scenario=name, graphs=len(dataset))
                 scenarios[name] = dataset
                 continue
             except Exception as e:
-                logger.warning("Test cache load failed for %s: %s. Rebuilding.", name, e)
+                log.warning("test_cache_load_failed", scenario=name, error=str(e))
 
         # Build from CSV using new pipeline
-        logger.info("Building test graphs for %s", name)
+        log.info("building_test_graphs", scenario=name)
         graphs = process_dataset(
             str(dataset_path),
             split=name,
@@ -374,14 +381,17 @@ def load_test_scenarios(
             cache_dir_path.mkdir(parents=True, exist_ok=True)
             try:
                 _mapper.save_collated(graphs, cache_file)
-                logger.info(
-                    "Cached %d test graphs (collated) for %s -> %s", len(graphs), name, cache_file
+                log.info(
+                    "test_cache_saved",
+                    scenario=name,
+                    graphs=len(graphs),
+                    path=str(cache_file),
                 )
             except Exception as e:
-                logger.warning("Failed to cache test graphs for %s: %s", name, e)
+                log.warning("test_cache_save_failed", scenario=name, error=str(e))
 
             scenarios[name] = load_collated(cache_file)
         else:
-            logger.warning("No graphs created for test scenario %s", name)
+            log.warning("no_graphs_for_test_scenario", scenario=name)
 
     return scenarios

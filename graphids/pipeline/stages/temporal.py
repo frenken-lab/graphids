@@ -9,7 +9,7 @@ because temporal ordering matters for this task.
 
 from __future__ import annotations
 
-import logging
+import structlog
 
 import numpy as np
 import pytorch_lightning as pl
@@ -29,7 +29,7 @@ from .utils import (
     make_trainer,
 )
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 
 # ---------------------------------------------------------------------------
@@ -158,12 +158,12 @@ def train_temporal(cfg: PipelineConfig) -> dict:
         return {"status": "skipped", "reason": "temporal.enabled=False"}
 
     log.info(
-        "=== TEMPORAL: %s / %s_%s (window=%d, stride=%d) ===",
-        cfg.dataset,
-        cfg.model_type,
-        cfg.scale,
-        tc.temporal_window,
-        tc.temporal_stride,
+        "temporal_stage_start",
+        dataset=cfg.dataset,
+        model_type=cfg.model_type,
+        scale=cfg.scale,
+        window=tc.temporal_window,
+        stride=tc.temporal_stride,
     )
     pl.seed_everything(cfg.seed)
 
@@ -174,12 +174,12 @@ def train_temporal(cfg: PipelineConfig) -> dict:
     # Load pretrained GAT
     gat_stage = "curriculum"
     gat = load_model(cfg, "gat", gat_stage, num_ids, in_ch, device)
-    log.info("Loaded pretrained GAT from %s stage", gat_stage)
+    log.info("loaded_pretrained_gat", stage=gat_stage)
 
     from .evaluation import compute_metrics, probe_embedding_dim
 
     spatial_dim = probe_embedding_dim(gat, train_data[0], device)
-    log.info("Spatial embedding dim: %d", spatial_dim)
+    log.info("spatial_embedding_dim", dim=spatial_dim)
 
     # Group into temporal sequences
     from graphids.core.preprocessing._temporal import TemporalGrouper
@@ -196,10 +196,10 @@ def train_temporal(cfg: PipelineConfig) -> dict:
     val_sequences = grouper.group(temporal_val_graphs)
 
     log.info(
-        "Temporal sequences: train=%d, val=%d (from %d total graphs)",
-        len(train_sequences),
-        len(val_sequences),
-        len(all_graphs),
+        "temporal_sequences",
+        train=len(train_sequences),
+        val=len(val_sequences),
+        total_graphs=len(all_graphs),
     )
 
     if not train_sequences or not val_sequences:
@@ -244,7 +244,7 @@ def train_temporal(cfg: PipelineConfig) -> dict:
 
     total_params = sum(p.numel() for p in temporal_model.parameters())
     trainable_params = sum(p.numel() for p in temporal_model.parameters() if p.requires_grad)
-    log.info("Temporal model: %d total params, %d trainable", total_params, trainable_params)
+    log.info("temporal_model_params", total=total_params, trainable=trainable_params)
 
     # Save frozen config
     gw, mapper = open_gateway(cfg)
@@ -258,7 +258,7 @@ def train_temporal(cfg: PipelineConfig) -> dict:
 
     # Save best model
     best_ckpt = mapper.save_checkpoint(temporal_model.state_dict(), "temporal")
-    log.info("Saved temporal model → %s", best_ckpt)
+    log.info("saved_temporal_model", checkpoint=str(best_ckpt))
 
     # Compute final metrics
     temporal_model.eval()
@@ -278,12 +278,8 @@ def train_temporal(cfg: PipelineConfig) -> dict:
     result_metrics = {"temporal": metrics}
 
     log.info(
-        "Temporal metrics: %s",
-        {
-            k: f"{v:.4f}"
-            for k, v in result_metrics["temporal"]["core"].items()
-            if isinstance(v, float)
-        },
+        "temporal_metrics",
+        **{k: round(v, 4) for k, v in result_metrics["temporal"]["core"].items() if isinstance(v, float)},
     )
 
     cleanup()

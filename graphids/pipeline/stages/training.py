@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import logging
+import structlog
 import os
 from pathlib import Path
 
@@ -26,7 +26,7 @@ from .utils import (
     make_trainer,
 )
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 
 def _resume_ckpt_path(cfg: PipelineConfig, stage: str) -> str | None:
@@ -45,16 +45,16 @@ def _resume_ckpt_path(cfg: PipelineConfig, stage: str) -> str | None:
     except KeyError:
         pass
     if path and Path(path).exists():
-        log.info("Resuming from orchestrator checkpoint: %s", path)
+        log.info("resume_from_orchestrator_checkpoint", path=path)
         return path
     if path:
-        log.warning("Checkpoint path set but not found: %s", path)
+        log.warning("checkpoint_path_not_found", path=path)
 
     # 2. Lightning auto-save from SLURMEnvironment (timeout requeue)
     persistent_root = Path(cfg.lake_root) / run_id(cfg, stage)
     auto_save = persistent_root / ".pl_auto_save.ckpt"
     if auto_save.exists():
-        log.info("Resuming from Lightning auto-save: %s", auto_save)
+        log.info("resume_from_auto_save", path=str(auto_save))
         return str(auto_save)
 
     return None
@@ -67,7 +67,7 @@ def _save_and_cleanup(module, trainer, cfg, stage: str, label: str | None = None
     """
     _, mapper = open_gateway(cfg)
     result = mapper.save_training_result(module.model, cfg, stage, trainer)
-    log.info("Saved %s: %s", label or stage, result["checkpoint"])
+    log.info("saved_training_result", label=label or stage, checkpoint=result["checkpoint"])
     cleanup()
     return result
 
@@ -163,6 +163,6 @@ def _score_difficulty(
             torch.cuda.empty_cache()
 
         if (chunk_idx + 1) % 10 == 0:
-            log.info("Difficulty scoring: %d/%d chunks complete", chunk_idx + 1, total_chunks)
+            log.info("difficulty_scoring_progress", chunks_done=chunk_idx + 1, total_chunks=total_chunks)
 
     return scores

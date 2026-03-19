@@ -12,7 +12,6 @@ No ++, no _flatten_dict, no _to_hydra_value.
 
 from __future__ import annotations
 
-import logging
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -22,7 +21,6 @@ from omegaconf import DictConfig, OmegaConf
 if TYPE_CHECKING:
     from .schema import PipelineConfig
 
-log = logging.getLogger(__name__)
 
 CONF_DIR = str((Path(__file__).parent / "conf").resolve())
 

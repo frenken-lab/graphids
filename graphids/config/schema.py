@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 
 class VGAEArchitecture(BaseModel, frozen=True):
@@ -247,127 +247,6 @@ class DatasetEntry(BaseModel, frozen=True):
     train_attack_subdir: str = ""
     test_subdirs: list[str]
     added_by: str = ""
-
-
-# ---------------------------------------------------------------------------
-# Artifact validation contracts
-# ---------------------------------------------------------------------------
-
-
-class StageArtifact(BaseModel, frozen=True):
-    """Base contract for pipeline stage outputs.
-
-    Metrics live in _manifest.json (single source of truth), not as a separate file.
-    """
-
-    stage_dir: Path
-    config_json: Path
-    manifest_json: Path
-
-    @model_validator(mode="after")
-    def _validate_files_exist(self) -> StageArtifact:
-        missing = []
-        if not self.config_json.exists():
-            missing.append(str(self.config_json))
-        if not self.manifest_json.exists():
-            missing.append(str(self.manifest_json))
-        if missing:
-            raise ValueError(f"Missing required files: {missing}")
-        return self
-
-    @classmethod
-    def from_stage_dir(cls, path: Path) -> StageArtifact:
-        return cls(
-            stage_dir=path,
-            config_json=path / "config.json",
-            manifest_json=path / "_manifest.json",
-        )
-
-
-class TrainingArtifact(StageArtifact, frozen=True):
-    """Contract: training stages (autoencoder, curriculum, fusion)."""
-
-    best_model_pt: Path = Path()
-
-    @model_validator(mode="after")
-    def _validate_checkpoint(self) -> TrainingArtifact:
-        if not self.best_model_pt.exists():
-            raise ValueError(f"Missing checkpoint: {self.best_model_pt}")
-        return self
-
-    @classmethod
-    def from_stage_dir(cls, path: Path) -> TrainingArtifact:
-        return cls(
-            stage_dir=path,
-            config_json=path / "config.json",
-            manifest_json=path / "_manifest.json",
-            best_model_pt=path / "best_model.pt",
-        )
-
-
-class EvaluationArtifact(StageArtifact, frozen=True):
-    """Contract: evaluation stage."""
-
-    embeddings_npz: Path | None = None
-    dqn_policy_json: Path | None = None
-
-    @classmethod
-    def from_stage_dir(cls, path: Path) -> EvaluationArtifact:
-        emb = path / "embeddings.npz"
-        pol = path / "dqn_policy.json"
-        return cls(
-            stage_dir=path,
-            config_json=path / "config.json",
-            manifest_json=path / "_manifest.json",
-            embeddings_npz=emb if emb.exists() else None,
-            dqn_policy_json=pol if pol.exists() else None,
-        )
-
-
-class PreprocessingArtifact(BaseModel, frozen=True):
-    """Contract: preprocessing cache output."""
-
-    cache_dir: Path
-    metadata_json: Path
-    preprocessing_version: str
-    node_feature_count: int
-    edge_feature_count: int
-    config_hash: str = ""
-
-    @model_validator(mode="after")
-    def _validate_compatibility(self) -> PreprocessingArtifact:
-        from .constants import (
-            EDGE_FEATURE_COUNT,
-            NODE_FEATURE_COUNT,
-            PREPROCESSING_VERSION,
-        )
-
-        errors = []
-        if self.preprocessing_version != PREPROCESSING_VERSION:
-            errors.append(f"version {self.preprocessing_version} != {PREPROCESSING_VERSION}")
-        if self.node_feature_count != NODE_FEATURE_COUNT:
-            errors.append(f"node_features {self.node_feature_count} != {NODE_FEATURE_COUNT}")
-        if self.edge_feature_count != EDGE_FEATURE_COUNT:
-            errors.append(f"edge_features {self.edge_feature_count} != {EDGE_FEATURE_COUNT}")
-        if errors:
-            raise ValueError(f"Preprocessing cache incompatible: {'; '.join(errors)}")
-        return self
-
-    @classmethod
-    def from_cache_dir(cls, path: Path) -> PreprocessingArtifact:
-        metadata_path = path / "cache_metadata.json"
-        if not metadata_path.exists():
-            raise ValueError(f"No cache_metadata.json in {path}")
-
-        metadata = json.loads(metadata_path.read_text())
-        return cls(
-            cache_dir=path,
-            metadata_json=metadata_path,
-            preprocessing_version=metadata.get("preprocessing_version", "unknown"),
-            node_feature_count=metadata.get("node_feature_dim", 0),
-            edge_feature_count=metadata.get("edge_feature_dim", 0),
-            config_hash=metadata.get("config_hash", ""),
-        )
 
 
 def compute_preprocessing_hash() -> str:

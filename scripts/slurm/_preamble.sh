@@ -21,9 +21,6 @@ set -a; source .env; set +a
 # Group-writable umask for shared ESS data lake
 umask 002
 
-# MLflow tracking URI (sourced from .env, but ensure it's set for all jobs)
-export MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI:-sqlite:///$PROJECT_ROOT/data/mlflow/mlflow.db}"
-
 if [[ "${SKIP_CUDA_CONF:-0}" != "1" ]]; then
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 fi

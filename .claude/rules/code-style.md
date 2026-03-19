@@ -18,6 +18,14 @@ When adding new code:
 - `from graphids.storage import open_gateway` — standard gateway+mapper creation
 - `from graphids.config import PipelineConfig, resolve, checkpoint_path` — use the package re-exports
 
+## Logging Style
+
+- `import structlog; log = structlog.get_logger()` — never `import logging`
+- Structured events: `log.info("event_name", key=value)` — no format strings (`%s`, `%d`, f-strings)
+- Event names: `lowercase_snake_case`, short, descriptive (e.g. `stage_complete`, `cache_loaded`)
+- Context via `structlog.contextvars.bind_contextvars()` at entry points — don't repeat dataset/model/stage in every call
+- `graphids/logging.py` owns all logging config — never call `logging.basicConfig()`
+
 ## General Style
 
 - Make minimal, targeted changes. Prefer the simplest solution; avoid speculative abstractions.

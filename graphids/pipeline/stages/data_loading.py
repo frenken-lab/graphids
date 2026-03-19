@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import logging
+import structlog
 
 import pytorch_lightning as pl
 import torch
@@ -11,12 +11,12 @@ from torch_geometric.loader import DataLoader, DynamicBatchSampler
 
 from graphids.config import MMAP_TENSOR_LIMIT, PipelineConfig, cache_dir, data_dir
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 
 def training_preamble(cfg: PipelineConfig, stage_name: str):
     """Shared setup for all training/eval stages: log, seed, load data, resolve device."""
-    log.info("=== %s: %s / %s_%s ===", stage_name, cfg.dataset, cfg.model_type, cfg.scale)
+    log.info("stage_start", stage=stage_name, dataset=cfg.dataset, model_type=cfg.model_type, scale=cfg.scale)
     pl.seed_everything(cfg.seed)
     train_data, val_data, num_ids, in_ch = load_data(cfg)
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
@@ -78,13 +78,11 @@ def _safe_num_workers(data, cfg: PipelineConfig) -> int:
         effective_count = tensor_count * nw
         if effective_count > MMAP_TENSOR_LIMIT:
             log.warning(
-                "Dataset has %d tensor storages × %d workers = %d effective mmaps "
-                "(limit %d for vm.max_map_count). "
-                "Falling back to num_workers=0 to avoid mmap OOM.",
-                tensor_count,
-                nw,
-                effective_count,
-                MMAP_TENSOR_LIMIT,
+                "mmap_limit_exceeded_falling_back_to_single_worker",
+                tensor_storages=tensor_count,
+                workers=nw,
+                effective_mmaps=effective_count,
+                limit=MMAP_TENSOR_LIMIT,
             )
             return 0
     return nw
@@ -108,7 +106,7 @@ def compute_node_budget(batch_size: int, cfg: PipelineConfig) -> int | None:
             return None
         return int(batch_size * p95)
     except Exception as e:
-        log.warning("Failed to read graph stats for node budget: %s", e)
+        log.warning("graph_stats_read_failed", error=str(e))
         return None
 
 

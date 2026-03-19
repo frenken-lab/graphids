@@ -12,7 +12,7 @@ Usage:
 from __future__ import annotations
 
 import json
-import logging
+import structlog
 import os
 import subprocess
 from pathlib import Path
@@ -30,7 +30,7 @@ from graphids.config import (
 from graphids.storage import StorageGateway
 from graphids.pipeline.subprocess_utils import build_cli_cmd
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 # ---------------------------------------------------------------------------
 # Search spaces (loaded from YAML: graphids/config/search_spaces/)
@@ -106,7 +106,7 @@ def _objective(
     result = subprocess.run(cmd, capture_output=True, text=True, cwd=PROJECT_ROOT)
 
     if result.returncode != 0:
-        log.warning("Trial %d failed: %s", trial.number, (result.stderr or "unknown")[-500:])
+        log.warning("trial_failed", trial=trial.number, stderr=(result.stderr or "unknown")[-500:])
         return float("inf")
 
     cfg = resolve(model, scale, dataset=dataset)
@@ -129,10 +129,10 @@ def _enqueue_warm_start(
     """Enqueue prior sweep results as initial trial for warm-starting."""
     path = sweep_result_path(stage, source_dataset, scale)
     if not path.exists():
-        log.info("No prior sweep results at %s — starting cold", path)
+        log.info("no_prior_sweep_results", path=str(path))
         return
     payload = yaml.safe_load(path.read_text())
-    log.info("Warm-starting from %s (val_loss=%.6f)", path, payload["val_loss"])
+    log.info("warm_starting", path=str(path), val_loss=round(payload["val_loss"], 6))
     study.enqueue_trial(payload["config"])
 
 
@@ -166,20 +166,7 @@ def run_sweep(
     study_name = f"{stage}_{dataset}_{scale}"
     storage = f"sqlite:///{_sweep_db_path()}"
 
-    # MLflow callback (replaces manual _log_sweep_to_mlflow)
     callbacks = []
-    try:
-        from graphids.config import MLFLOW_TRACKING_URI
-
-        mlflowcb = optuna.integration.MLflowCallback(
-            tracking_uri=MLFLOW_TRACKING_URI,
-            metric_name="val_loss",
-            create_experiment=True,
-            mlflow_kwargs={"experiment_name": f"kd-gat-sweep-{stage}"},
-        )
-        callbacks.append(mlflowcb)
-    except Exception:
-        log.debug("MLflow callback unavailable, skipping")
 
     study = optuna.create_study(
         study_name=study_name,
@@ -200,9 +187,9 @@ def run_sweep(
     remaining = num_samples - len(completed)
 
     if remaining <= 0:
-        log.info("Study %s already has %d completed trials, skipping", study_name, len(completed))
+        log.info("study_already_complete", study=study_name, completed_trials=len(completed))
     else:
-        log.info("Running %d trials for %s (%d already completed)", remaining, study_name, len(completed))
+        log.info("running_trials", remaining=remaining, study=study_name, already_completed=len(completed))
         study.optimize(
             lambda trial: _objective(trial, stage, dataset, scale, max_epochs, patience),
             n_trials=remaining,
@@ -212,7 +199,7 @@ def run_sweep(
     best = study.best_trial
     _export_best_config(best, stage, dataset, scale)
 
-    log.info("Best config for %s: %s (val_loss=%.6f)", stage, best.params, best.value)
+    log.info("best_config", stage=stage, params=best.params, val_loss=round(best.value, 6))
     return best.params
 
 
@@ -227,9 +214,9 @@ def _export_best_config(
         "val_loss": float(best.value), "config": best.params,
     }
     out_path.write_text(yaml.safe_dump(payload, default_flow_style=False, sort_keys=False))
-    log.info("Best config saved to %s", out_path)
+    log.info("best_config_saved", path=str(out_path))
     cli_parts = [f"-O {k} {v}" for k, v in sorted(best.params.items())]
-    log.info("CLI overrides:\n  %s", " \\\n  ".join(cli_parts))
+    log.info("cli_overrides", overrides=" \\\n  ".join(cli_parts))
 
 
 def load_best_config(stage: str, dataset: str, scale: str) -> dict:
@@ -258,8 +245,7 @@ def run_sweep_pipeline(
 ) -> None:
     """Sequential sweep -> train-best -> evaluate for all 3 stages."""
     if dry_run:
-        log.info("Dry run: would sweep %s/%s (%d stages, %d trials each)",
-                 dataset, scale, len(_PIPELINE_STAGES), num_samples)
+        log.info("sweep_dry_run", dataset=dataset, scale=scale, stages=len(_PIPELINE_STAGES), trials_each=num_samples)
         return
 
     for stage, model in _PIPELINE_STAGES:
@@ -268,11 +254,11 @@ def run_sweep_pipeline(
             if ws is None and dataset != "set_01":
                 if sweep_result_path(stage, "set_01", scale).exists():
                     ws = "set_01"
-                    log.info("Auto warm-starting %s from set_01 results", stage)
+                    log.info("auto_warm_start", stage=stage, source="set_01")
             run_sweep(stage, dataset, scale, num_samples=num_samples,
                       max_epochs=max_epochs, patience=patience, warm_start_from=ws)
         else:
-            log.info("Sweep for %s already complete, skipping", stage)
+            log.info("sweep_already_complete", stage=stage)
 
         cfg = resolve(model, scale, dataset=dataset)
         gw = StorageGateway(cfg=cfg)
@@ -280,18 +266,18 @@ def run_sweep_pipeline(
             best_config = load_best_config(stage, dataset, scale)
             env = {**os.environ, "KD_GAT_SWEEP_ID": f"tune_{stage}_{dataset}_{scale}"}
             cmd = build_cli_cmd(stage, model, scale, dataset, overrides=list(best_config.items()))
-            log.info("Training best %s: %s", stage, " ".join(cmd))
+            log.info("training_best_config", stage=stage, cmd=" ".join(cmd))
             result = subprocess.run(cmd, cwd=PROJECT_ROOT, env=env)
             if result.returncode != 0:
                 raise RuntimeError(f"Training step '{stage}' failed (exit {result.returncode})")
         else:
-            log.info("Checkpoint for %s already exists, skipping training", stage)
+            log.info("checkpoint_exists_skipping", stage=stage)
 
     log.info("Running final evaluation")
     result = subprocess.run(build_cli_cmd("evaluation", "vgae", scale, dataset), cwd=PROJECT_ROOT)
     if result.returncode != 0:
         raise RuntimeError(f"Evaluation failed (exit {result.returncode})")
-    log.info("Sweep pipeline complete for %s/%s", dataset, scale)
+    log.info("sweep_pipeline_complete", dataset=dataset, scale=scale)
 
     if multi_seed:
         _run_multi_seed_final(dataset, scale)
@@ -299,7 +285,7 @@ def run_sweep_pipeline(
 
 def _run_multi_seed_final(dataset: str, scale: str) -> None:
     """Re-train best config with all DEFAULT_SEEDS for statistical significance."""
-    log.info("Multi-seed training for %s/%s with seeds %s", dataset, scale, DEFAULT_SEEDS)
+    log.info("multi_seed_training_start", dataset=dataset, scale=scale, seeds=DEFAULT_SEEDS)
     for stage, model in _PIPELINE_STAGES:
         config = load_best_config(stage, dataset, scale)
         for seed in DEFAULT_SEEDS:
@@ -312,4 +298,4 @@ def _run_multi_seed_final(dataset: str, scale: str) -> None:
         result = subprocess.run(build_cli_cmd("evaluation", "vgae", scale, dataset, seed=seed), cwd=PROJECT_ROOT)
         if result.returncode != 0:
             raise RuntimeError(f"Multi-seed evaluation seed={seed} failed")
-    log.info("Multi-seed training complete for %s/%s", dataset, scale)
+    log.info("multi_seed_training_complete", dataset=dataset, scale=scale)

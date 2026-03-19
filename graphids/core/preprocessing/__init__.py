@@ -16,7 +16,6 @@ Re-exports for convenience:
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
 from ._dataset import CollatedGraphDataset, GraphDataset
@@ -34,7 +33,6 @@ if TYPE_CHECKING:
 
     from .adapters.base import DomainAdapter
 
-log = logging.getLogger(__name__)
 
 __all__ = [
     # Primary API

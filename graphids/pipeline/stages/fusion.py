@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import logging
+import structlog
 
 import torch
 
@@ -12,7 +12,7 @@ from graphids.storage import open_gateway
 from .data_loading import training_preamble
 from .utils import cache_predictions, cleanup, load_model
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 
 def _train_dqn_fusion(cfg, train_cache, val_cache, device, out) -> float:
@@ -54,12 +54,12 @@ def _train_dqn_fusion(cfg, train_cache, val_cache, device, out) -> float:
             metrics = agent.validate_batch(val_states, val_labels)
             acc = metrics.get("accuracy", 0)
             log.info(
-                "Episode %d/%d  avg_reward=%.2f  val_acc=%.4f  eps=%.3f",
-                ep + 1,
-                cfg.fusion.episodes,
-                rewards.mean().item(),
-                acc,
-                agent.epsilon,
+                "dqn_episode",
+                episode=ep + 1,
+                total_episodes=cfg.fusion.episodes,
+                avg_reward=round(rewards.mean().item(), 2),
+                val_acc=round(acc, 4),
+                epsilon=round(agent.epsilon, 3),
             )
 
             if acc > best_acc:
@@ -165,6 +165,6 @@ def train_fusion(cfg: PipelineConfig) -> dict:
     mapper.save_config(cfg, "fusion")
 
     metrics = {"best_acc": best_acc, "val_loss": 1.0 - best_acc, "fusion_method": method}
-    log.info("Saved %s fusion: %s (best_acc=%.4f)", method, ckpt, best_acc)
+    log.info("saved_fusion", method=method, checkpoint=str(ckpt), best_acc=round(best_acc, 4))
     cleanup()
     return {"checkpoint": str(ckpt), "metrics": metrics}

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
+import structlog
 import sys
 import time
 from pathlib import Path
@@ -35,7 +35,7 @@ if str(_ROOT) not in sys.path:
 
 from graphids.config import resolve
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 SUPPORTED_MODELS = ("dominant", "ocgnn")
 
@@ -129,10 +129,10 @@ def main():
     parser.add_argument(
         "--output-dir", default=None, help="Output directory (default: experimentruns/baselines/)"
     )
-    parser.add_argument("--mlflow", action="store_true", help="Log results to MLflow")
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    from graphids.logging import configure_logging
+    configure_logging()
 
     models = [m.strip() for m in args.models.split(",")]
     for m in models:
@@ -145,55 +145,21 @@ def main():
     )
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    log.info("Loading dataset: %s", args.dataset)
+    log.info("loading_dataset", dataset=args.dataset)
     train_data, val_data, num_ids = _load_graphs(args.dataset)
-    log.info("Loaded %d train + %d val graphs, %d CAN IDs", len(train_data), len(val_data), num_ids)
-
-    mlflow_run = None
-    if args.mlflow:
-        try:
-            import mlflow
-
-            from graphids.config import MLFLOW_TRACKING_URI
-
-            mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-            mlflow.set_experiment("kd-gat-baselines")
-            mlflow_run = mlflow.start_run(
-                run_name=f"pygod-baselines-{args.dataset}",
-                tags={"type": "baseline", "framework": "pygod", "dataset": args.dataset},
-            )
-        except ImportError:
-            log.warning("mlflow not installed, skipping MLflow logging")
+    log.info("dataset_loaded", train=len(train_data), val=len(val_data), num_ids=num_ids)
 
     all_results = {}
     for model_name in models:
-        log.info("Running %s on %s...", model_name, args.dataset)
+        log.info("running_model", model=model_name, dataset=args.dataset)
         metrics = _run_model(model_name, train_data, val_data, args.device)
 
         out_path = output_dir / f"pygod_{model_name}_{args.dataset}.json"
         out_path.write_text(json.dumps(metrics, indent=2))
-        log.info("Saved results to %s", out_path)
-        log.info(
-            "  AUC-ROC: %.4f  F1: %.4f  Precision: %.4f  Recall: %.4f",
-            metrics["auc_roc"],
-            metrics["f1"],
-            metrics["precision"],
-            metrics["recall"],
-        )
+        log.info("model_complete", model=model_name, path=str(out_path),
+                 auc_roc=round(metrics["auc_roc"], 4), f1=round(metrics["f1"], 4))
 
         all_results[model_name] = metrics
-
-        if mlflow_run is not None:
-            import mlflow
-
-            mlflow.log_metrics(
-                {f"{model_name}/{k}": v for k, v in metrics.items() if isinstance(v, (int, float))}
-            )
-
-    if mlflow_run is not None:
-        import mlflow
-
-        mlflow.end_run()
 
     # Print summary table
     print("\n" + "=" * 60)

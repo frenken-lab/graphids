@@ -53,9 +53,6 @@ class EnvironmentSettings(BaseSettings):
     slurm_partition: str = "gpu"
     gpu_type: str = "v100"
 
-    # MLFLOW_TRACKING_URI doesn't have KD_GAT_ prefix — handled separately
-    mlflow_tracking_uri: str | None = Field(None, validation_alias="MLFLOW_TRACKING_URI")
-
     # Run metadata (not config identity — never on PipelineConfig)
     sweep_id: str = ""
     tags: str = ""
@@ -69,9 +66,6 @@ _env = EnvironmentSettings()
 SLURM_ACCOUNT: str = _env.slurm_account
 SLURM_PARTITION: str = _env.slurm_partition
 SLURM_GPU_TYPE: str = _env.gpu_type
-MLFLOW_TRACKING_URI: str = (
-    _env.mlflow_tracking_uri or f"sqlite:///{PROJECT_ROOT / 'data' / 'mlflow' / 'mlflow.db'}"
-)
 SWEEP_ID: str = _env.sweep_id
 USER_TAGS: str = _env.tags
 CKPT_PATH: str = _env.ckpt_path
@@ -101,23 +95,6 @@ def run_id_str(dataset: str, model_type: str, scale: str, stage: str, aux: str =
     return f"{dataset}/{model}_{scale}_{stage}{suffix}"
 
 
-def run_metadata(cfg: PipelineConfig, stage: str) -> dict[str, str]:
-    """MLflow tags for a run."""
-    tags = {
-        "dataset": cfg.dataset,
-        "model_type": cfg.model_type,
-        "scale": cfg.scale,
-        "stage": stage,
-        "auxiliaries": cfg.auxiliaries[0].type if cfg.auxiliaries else "none",
-        "seed": str(cfg.seed),
-        "run_group": run_id(cfg, stage),
-        "config_hash": _config_hash(cfg),
-    }
-    if SWEEP_ID:
-        tags["sweep_id"] = SWEEP_ID
-    if USER_TAGS:
-        tags["user_tags"] = USER_TAGS
-    return tags
 
 
 def _config_hash(cfg: PipelineConfig) -> str:

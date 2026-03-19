@@ -8,7 +8,7 @@ discovery). Used by Dagster assets and fire-and-forget mode.
 from __future__ import annotations
 
 import json
-import logging
+import structlog
 import os
 import subprocess
 import time
@@ -22,7 +22,7 @@ from graphids.pipeline.subprocess_utils import build_cli_cmd
 
 from .job import ResourceSpec
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 
 # ---------------------------------------------------------------------------
@@ -254,9 +254,9 @@ def poll_until_done(job_id: str, *, poll_interval: int = 30) -> tuple[str, str, 
     while True:
         state, reason, node = sacct_query(job_id)
         if state in TERMINAL_STATES:
-            log.info("Job %s reached state: %s (reason: %s)", job_id, state, reason)
+            log.info("job_terminal", job_id=job_id, state=state, reason=reason)
             return state, reason, node
-        log.debug("Job %s state: %s, polling in %ds...", job_id, state, poll_interval)
+        log.debug("job_polling", job_id=job_id, state=state, poll_interval_s=poll_interval)
         time.sleep(poll_interval)
 
 
@@ -317,11 +317,11 @@ class PipesSlurmClient:
             ckpt_path=ckpt_path, dependency_job_id=dependency_job_id,
         )
         if self.dry_run:
-            log.info("[DRY RUN] Would submit:\n%s", script)
+            log.info("dry_run_submit", script=script)
             return {"job_id": "dry-run", "state": "DRY_RUN", "script_path": str(script_path)}
 
         job_id = submit_sbatch(script_path, cwd=self.project_root)
-        log.info("Submitted SLURM job %s for %s/%s/%s", job_id, model, scale, stage)
+        log.info("slurm_job_submitted", job_id=job_id, model=model, scale=scale, stage=stage)
 
         t0 = time.monotonic()
         state, reason, node = poll_until_done(job_id, poll_interval=self.poll_interval)
@@ -353,10 +353,10 @@ class PipesSlurmClient:
             seed=seed, auxiliaries=auxiliaries, dependency_job_id=dependency_job_id,
         )
         if self.dry_run:
-            log.info("[DRY RUN] Would submit: %s", script_path)
+            log.info("dry_run_submit", script_path=str(script_path))
             return "dry-run"
         job_id = submit_sbatch(script_path, cwd=self.project_root)
-        log.info("Submitted (no-poll) SLURM job %s for %s/%s/%s", job_id, model, scale, stage)
+        log.info("slurm_job_submitted_no_poll", job_id=job_id, model=model, scale=scale, stage=stage)
         return job_id
 
     def _validate_artifacts(
@@ -366,7 +366,7 @@ class PipesSlurmClient:
         """Check that expected artifacts exist after stage completion."""
         from pydantic import ValidationError
 
-        from graphids.config import EvaluationArtifact, TrainingArtifact
+        from graphids.storage.contracts import EvaluationArtifact, TrainingArtifact
         from graphids.storage import StorageGateway
 
         if stage == "preprocess":

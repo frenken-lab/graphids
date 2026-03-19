@@ -1,64 +1,63 @@
 #!/usr/bin/env python3
-"""Push MLflow experiment data to HF Dataset for dashboard consumption.
+"""Push experiment data to HF Dataset for dashboard consumption.
 
 Usage:
     python scripts/data/push_experiments_to_hf.py
 
 Data flow:
-    MLflow SQLite → mlflow.search_runs() → experiments.parquet → HF Dataset
+    _manifest.json files → rebuild_catalog() → DuckDB → experiments.parquet → HF Dataset
 """
 
 from __future__ import annotations
 
-import logging
 import os
 from datetime import UTC, datetime
 
-log = logging.getLogger(__name__)
+import structlog
+
+log = structlog.get_logger()
 
 HF_DATASET_REPO = "buckeyeguy/kd-gat-experiments"
 
 
 def push():
-    import mlflow
+    import duckdb
     from huggingface_hub import HfApi
 
-    from graphids.config import MLFLOW_TRACKING_URI
+    from graphids.config import lake_catalog_path, lake_root_from_env
+    from graphids.storage.catalog import rebuild_catalog
 
-    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-
-    # Search all runs across all experiments
-    runs = mlflow.search_runs(search_all_experiments=True)
-    if runs.empty:
-        log.warning("No MLflow runs found — nothing to push")
+    lake_root = lake_root_from_env()
+    if lake_root is None:
+        log.error("lake_root_not_set")
         return
 
-    log.info("Found %d MLflow runs", len(runs))
+    # Rebuild catalog from manifests, then query
+    catalog_path = rebuild_catalog(lake_root)
+    con = duckdb.connect(str(catalog_path), read_only=True)
+    runs = con.execute("SELECT * FROM experiments").fetchdf()
+    con.close()
 
-    # Ensure run_group and seed columns exist (derived from tags)
-    for tag_col in ["tags.run_group", "tags.seed"]:
-        short_name = tag_col.split(".")[-1]
-        if tag_col in runs.columns:
-            runs[short_name] = runs[tag_col]
-        elif short_name not in runs.columns:
-            runs[short_name] = None
+    if runs.empty:
+        log.warning("no_runs_found")
+        return
+
+    log.info("runs_found", count=len(runs))
 
     # Write to temp parquet
     out_path = "/tmp/kd_gat_experiments.parquet"
     runs.to_parquet(out_path, index=False)
 
-    # Also write to ESS exports/ if lake root is configured
-    lake_root = os.environ.get("KD_GAT_LAKE_ROOT")
-    if lake_root:
-        exports_dir = os.path.join(lake_root, "exports")
-        os.makedirs(exports_dir, exist_ok=True)
-        lake_parquet = os.path.join(exports_dir, "experiments.parquet")
-        runs.to_parquet(lake_parquet, index=False)
-        log.info("Wrote lake export: %s", lake_parquet)
+    # Also write to ESS exports/
+    exports_dir = lake_root / "exports"
+    exports_dir.mkdir(parents=True, exist_ok=True)
+    lake_parquet = exports_dir / "experiments.parquet"
+    runs.to_parquet(str(lake_parquet), index=False)
+    log.info("lake_export_written", path=str(lake_parquet))
 
     token = os.environ.get("HF_TOKEN")
     if not token:
-        log.warning("HF_TOKEN not set — skipping HF push")
+        log.warning("hf_token_not_set")
         return
 
     api = HfApi(token=token)
@@ -70,9 +69,10 @@ def push():
         repo_type="dataset",
         commit_message=f"Update experiments ({datetime.now(UTC).strftime('%Y-%m-%d %H:%M')})",
     )
-    log.info("Pushed experiments.parquet to %s", HF_DATASET_REPO)
+    log.info("hf_push_complete", repo=HF_DATASET_REPO)
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    from graphids.logging import configure_logging
+    configure_logging()
     push()

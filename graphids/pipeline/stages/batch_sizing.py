@@ -9,11 +9,11 @@ can adjust batch_size in config YAML if needed.
 
 from __future__ import annotations
 
-import logging
+import structlog
 
 from graphids.config import PipelineConfig
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 
 def effective_batch_size(cfg: PipelineConfig) -> int:
@@ -31,9 +31,7 @@ def resolve_batch_config(cfg: PipelineConfig):
     if cfg.training.dynamic_batching:
         max_nodes = compute_node_budget(bs, cfg)
         if max_nodes:
-            log.info("Dynamic batching: max_num_nodes=%d (batch_size=%d × p95)", max_nodes, bs)
+            log.info("dynamic_batching_enabled", max_num_nodes=max_nodes, batch_size=bs)
         else:
-            log.info(
-                "Dynamic batching: no cache metadata, falling back to static batch_size=%d", bs
-            )
+            log.info("dynamic_batching_fallback_to_static", batch_size=bs)
     return bs, max_nodes

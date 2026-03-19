@@ -14,7 +14,7 @@ Must run on GPU node (SLURM).
 from __future__ import annotations
 
 import argparse
-import logging
+import structlog
 import os
 from pathlib import Path
 
@@ -24,7 +24,7 @@ import torch.nn.functional as F
 
 from graphids.config import NODE_FEATURE_COUNT, resolve
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 LAKE_ROOT = Path(os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns"))
 OUTPUT_ROOT = Path("data/loss_landscapes")
@@ -393,10 +393,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--output-dir", type=Path, default=None, help="Output directory")
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s  %(name)-30s  %(levelname)-7s  %(message)s",
-    )
+    from graphids.logging import configure_logging
+    configure_logging()
 
     results = compute_loss_landscape(
         model_type=args.model,

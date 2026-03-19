@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import fcntl
 import json
-import logging
+import structlog
 import os
 import tempfile
 import time
@@ -24,7 +24,7 @@ from .paths import lake_run_dir
 if TYPE_CHECKING:
     from collections.abc import Generator
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 
 class StorageGateway:
@@ -199,9 +199,9 @@ class StorageGateway:
         fd = None
         try:
             fd = open(lock_file, "w")
-            log.debug("Acquiring lock: %s", lock_file)
+            log.debug("acquiring_lock", lock_file=str(lock_file))
             fcntl.flock(fd, fcntl.LOCK_EX)
-            log.debug("Lock acquired: %s", lock_file)
+            log.debug("lock_acquired", lock_file=str(lock_file))
             yield
         finally:
             if fd is not None:
@@ -210,7 +210,7 @@ class StorageGateway:
                 except OSError:
                     pass
                 fd.close()
-                log.debug("Lock released: %s", lock_file)
+                log.debug("lock_released", lock_file=str(lock_file))
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +226,7 @@ def _atomic_rename(tmp: Path, final: Path, retries: int = 3) -> None:
             return
         except OSError as e:
             if attempt < retries - 1:
-                log.warning("Rename attempt %d failed: %s. Retrying...", attempt + 1, e)
+                log.warning("rename_retry", attempt=attempt + 1, error=str(e))
                 time.sleep(1)
             else:
                 raise

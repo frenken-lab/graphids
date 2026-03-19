@@ -1,11 +1,11 @@
-import logging
+import structlog
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 
 class QNetwork(nn.Module):
@@ -194,7 +194,7 @@ class EnhancedDQNFusionAgent:
         # Weights for VGAE anomaly score (used in batch reward computation)
         self._vgae_weights = None  # Set via from_config() or set_vgae_weights()
 
-        log.info("DQN Agent initialized: %d actions, state_dim=%d", alpha_steps, self.state_dim)
+        log.info("dqn_agent_initialized", actions=alpha_steps, state_dim=self.state_dim)
 
     def set_vgae_weights(self, weights: tuple[float, ...]) -> None:
         """Set VGAE error weights for anomaly score derivation."""

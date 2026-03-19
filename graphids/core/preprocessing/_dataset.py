@@ -13,7 +13,7 @@ triggers automatic rebuild.
 
 from __future__ import annotations
 
-import logging
+import structlog
 from pathlib import Path
 
 import numpy as np
@@ -21,7 +21,7 @@ import torch
 from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.data.separate import separate
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 
 def GraphDataset(data_list: list[Data]) -> CollatedGraphDataset:

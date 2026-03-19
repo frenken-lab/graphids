@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 
 import pytorch_lightning as pl
 import torch
@@ -18,7 +17,6 @@ from .utils import (
     make_dataloader,
 )
 
-log = logging.getLogger(__name__)
 
 
 def _teacher_to_device(teacher, device, on_cpu_flag, cfg):
@@ -36,6 +34,22 @@ def _teacher_offload(teacher, cfg):
         torch.cuda.empty_cache()
         return True
     return False
+
+
+def soft_label_kd_loss(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    temperature: float,
+) -> torch.Tensor:
+    """Hinton soft-label knowledge distillation loss (F.kl_div).
+
+    KL(softmax(student/T) || softmax(teacher/T)) * T^2
+    """
+    return F.kl_div(
+        F.log_softmax(student_logits / temperature, dim=-1),
+        F.softmax(teacher_logits / temperature, dim=-1),
+        reduction="batchmean",
+    ) * (temperature**2)
 
 
 class VGAEModule(pl.LightningModule):
@@ -125,35 +139,6 @@ class VGAEModule(pl.LightningModule):
         loss = self._step(batch)
         self.log("val_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
 
-    def predict_step(self, batch, _batch_idx):
-        """Batched VGAE prediction — reconstruction errors + embeddings.
-
-        Returns a dict with consistent keys per batch. Component-level
-        decomposition (KL, neighborhood) requires per-sample inference
-        and is NOT handled here — use eval_inference._run_vgae_inference_per_sample.
-        """
-        from torch_geometric.nn import global_mean_pool
-        from torch_geometric.utils import scatter
-
-        edge_attr = getattr(batch, "edge_attr", None)
-        cont, _, _, z, _ = self.model(batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr)
-
-        per_node_se = (cont - batch.x[:, 1:]).pow(2).mean(dim=1)
-        graph_errors = scatter(per_node_se, batch.batch, dim=0, reduce="mean")
-
-        result = {
-            "errors": graph_errors.cpu(),
-            "labels": batch.y.cpu(),
-            "attack_types": (
-                batch.attack_type.cpu()
-                if hasattr(batch, "attack_type") and batch.attack_type is not None
-                else torch.full((batch.num_graphs,), -1)
-            ),
-        }
-        if z is not None:
-            result["embeddings"] = global_mean_pool(z, batch.batch).cpu()
-        return result
-
     def configure_optimizers(self):
         params = list(self.model.parameters())
         if self.projection is not None:
@@ -212,12 +197,7 @@ class GATModule(pl.LightningModule):
 
             self._teacher_on_cpu = _teacher_offload(self.teacher, self.cfg)
 
-            T = kd.temperature
-            kd_loss = F.kl_div(
-                F.log_softmax(logits / T, dim=-1),
-                F.softmax(t_logits / T, dim=-1),
-                reduction="batchmean",
-            ) * (T**2)
+            kd_loss = soft_label_kd_loss(logits, t_logits, kd.temperature)
             loss = kd.alpha * kd_loss + (1 - kd.alpha) * task_loss
         else:
             loss = task_loss
@@ -234,28 +214,6 @@ class GATModule(pl.LightningModule):
         loss, acc = self._step(batch)
         self.log("val_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
         self.log("val_acc", acc, prog_bar=True, batch_size=batch.num_graphs)
-
-    def predict_step(self, batch, _batch_idx):
-        """Batched GAT prediction — logits, scores, embeddings.
-
-        Always uses ``return_embedding=True`` for a consistent return type.
-        Attention weight capture requires ``return_attention_weights=True``
-        which changes GATConv's output type — that path is NOT handled here.
-        Use eval_inference._capture_attention for per-sample attention extraction.
-        """
-        logits, emb = self.model(batch, return_embedding=True)
-        probs = F.softmax(logits, dim=1)
-        return {
-            "preds": logits.argmax(1).cpu(),
-            "scores": probs[:, 1].cpu(),
-            "labels": batch.y.cpu(),
-            "attack_types": (
-                batch.attack_type.cpu()
-                if hasattr(batch, "attack_type") and batch.attack_type is not None
-                else torch.full((batch.num_graphs,), -1)
-            ),
-            "embeddings": emb.cpu(),
-        }
 
     def configure_optimizers(self):
         opt = torch.optim.Adam(

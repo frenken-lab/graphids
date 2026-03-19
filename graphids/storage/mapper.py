@@ -11,7 +11,7 @@ itself remains domain-free.
 from __future__ import annotations
 
 import json
-import logging
+import structlog
 import os
 import pickle
 from pathlib import Path
@@ -21,7 +21,7 @@ import torch
 
 from .gateway import StorageGateway
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 
 class ArtifactMapper:
@@ -39,7 +39,7 @@ class ArtifactMapper:
         path = self._gw.resolve(stage, "best_model.pt")
         path.parent.mkdir(parents=True, exist_ok=True)
         self._atomic_torch_save(state_dict, path)
-        log.info("Saved checkpoint: %s", path)
+        log.info("checkpoint_saved", path=str(path))
         return path
 
     def load_checkpoint(
@@ -54,7 +54,7 @@ class ArtifactMapper:
         path = self._gw.resolve(stage, "best_model.pt")
         path.parent.mkdir(parents=True, exist_ok=True)
         self._atomic_torch_save(agent_state, path)
-        log.info("Saved DQN checkpoint: %s", path)
+        log.info("dqn_checkpoint_saved", path=str(path))
         return path
 
     # ------------------------------------------------------------------
@@ -65,7 +65,7 @@ class ArtifactMapper:
         """Save frozen PipelineConfig as JSON."""
         path = self._gw.resolve(stage, "config.json")
         self._gw.write_json(path, cfg.model_dump())
-        log.info("Saved config: %s", path)
+        log.info("config_saved", path=str(path))
         return path
 
     def load_config(self, stage: str, model_type: str | None = None):
@@ -93,7 +93,7 @@ class ArtifactMapper:
         try:
             metrics = _extract_training_metrics(trainer)
         except Exception as e:
-            log.warning("Failed to extract training metrics: %s", e)
+            log.warning("training_metrics_extraction_failed", error=str(e))
             metrics = {}
 
         ckpt_path = self.save_checkpoint(model.state_dict(), stage)
@@ -127,7 +127,7 @@ class ArtifactMapper:
             npz_path = self._gw.resolve(stage, "embeddings.npz")
             npz_path.parent.mkdir(parents=True, exist_ok=True)
             np.savez_compressed(npz_path, **embed_data)
-            log.info("Saved embeddings → %s", npz_path)
+            log.info("embeddings_saved", path=str(npz_path))
 
     def save_attention(self, gat, stage: str) -> None:
         """Write GAT attention weights to attention_weights.npz."""
@@ -148,11 +148,7 @@ class ArtifactMapper:
         attn_path = self._gw.resolve(stage, "attention_weights.npz")
         attn_path.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(attn_path, **attn_export)
-        log.info(
-            "Saved attention weights (%d samples) → %s",
-            len(gat.attention),
-            attn_path,
-        )
+        log.info("attention_weights_saved", samples=len(gat.attention), path=str(attn_path))
 
     def save_dqn_policy(self, fusion, stage: str) -> None:
         """Write DQN policy data (alphas, q-values) to dqn_policy.json."""
@@ -206,6 +202,8 @@ class ArtifactMapper:
         teacher = load_model(teacher_cfg, "gat", "curriculum", num_ids, in_ch, device)
         student = load_model(cfg, "gat", "curriculum", num_ids, in_ch, device)
 
+        from graphids.pipeline.stages.cka import _collect_layer_representations, _linear_cka
+
         teacher_layers = _collect_layer_representations(teacher, val_data, device)
         student_layers = _collect_layer_representations(student, val_data, device)
 
@@ -227,7 +225,7 @@ class ArtifactMapper:
         }
         path = self._gw.resolve(stage, "cka_matrix.json")
         self._gw.write_json(path, cka_data)
-        log.info("CKA matrix: %dx%d", n_teacher, n_student)
+        log.info("cka_matrix_saved", teacher_layers=n_teacher, student_layers=n_student)
 
         del teacher, student
         cleanup()
@@ -293,7 +291,7 @@ class ArtifactMapper:
         path = self._gw.resolve(stage, name)
         path.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(path, **data)
-        log.info("Saved %s", path)
+        log.info("npz_saved", path=str(path))
         return path
 
     def save_json(self, data: dict, stage: str, name: str) -> Path:
@@ -331,62 +329,6 @@ def open_gateway(cfg) -> tuple[StorageGateway, ArtifactMapper]:
     """Create a gateway + mapper pair from a PipelineConfig."""
     gw = StorageGateway(cfg=cfg)
     return gw, ArtifactMapper(gw)
-
-
-# ---------------------------------------------------------------------------
-# CKA helpers (absorbed from eval_writers.py — domain logic, not I/O)
-# ---------------------------------------------------------------------------
-
-
-def _unbiased_hsic(K: torch.Tensor, L: torch.Tensor) -> float:
-    """Unbiased HSIC estimator (Song et al. 2012)."""
-    n = K.shape[0]
-    ones = torch.ones(n, 1, device=K.device)
-    result = torch.trace(K @ L)
-    result += (
-        (ones.t() @ K @ ones @ ones.t() @ L @ ones) / ((n - 1) * (n - 2))
-    ).item()
-    result -= ((ones.t() @ K @ L @ ones) * 2 / (n - 2)).item()
-    return (1 / (n * (n - 3)) * result).item()
-
-
-def _linear_cka(X: np.ndarray, Y: np.ndarray) -> float:
-    """Linear CKA with unbiased HSIC estimator."""
-    X_t = torch.from_numpy(X - X.mean(axis=0)).float()
-    Y_t = torch.from_numpy(Y - Y.mean(axis=0)).float()
-
-    K = X_t @ X_t.T
-    L = Y_t @ Y_t.T
-
-    hsic_xy = _unbiased_hsic(K, L)
-    hsic_xx = _unbiased_hsic(K, K)
-    hsic_yy = _unbiased_hsic(L, L)
-
-    denom = (hsic_xx * hsic_yy) ** 0.5
-    return hsic_xy / denom if denom > 0 else 0.0
-
-
-def _collect_layer_representations(
-    model, data, device, max_samples: int = 500
-) -> list[np.ndarray]:
-    """Collect per-layer representations from a GAT model."""
-    all_layers: list[list] | None = None
-    count = 0
-    with torch.no_grad():
-        for g in data:
-            if count >= max_samples:
-                break
-            g = g.clone().to(device)
-            xs = model(g, return_intermediate=True)
-            layer_reps = [x.mean(dim=0).cpu().numpy() for x in xs]
-            if all_layers is None:
-                all_layers = [[] for _ in range(len(layer_reps))]
-            for i, rep in enumerate(layer_reps):
-                all_layers[i].append(rep)
-            count += 1
-    if all_layers is None:
-        return []
-    return [np.array(layer) for layer in all_layers]
 
 
 # ---------------------------------------------------------------------------

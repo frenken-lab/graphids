@@ -28,13 +28,16 @@
 
 ## Storage Layer
 
-`graphids/storage/` — infrastructure layer below all others. No domain imports at module level.
+`graphids/storage/` — infrastructure layer below all others. No domain imports at module level. 7 files:
 
 | File | Role |
 |------|------|
 | `gateway.py` | `StorageGateway`: domain-ignorant transport. Dual-init (PipelineConfig or raw coords). NFS-safe atomic writes (tmpfile+fsync+rename), advisory locking (fcntl.flock), path resolution via `resolve/exists/require/ensure_dir`. |
-| `mapper.py` | `ArtifactMapper`: domain-aware serialization. Checkpoints, configs, eval artifacts (embeddings/attention/CKA/DQN policy), collated cache, pickle, generic JSON/npz. Lazy domain imports inside methods. |
+| `mapper.py` | `ArtifactMapper`: domain-aware serialization. Checkpoints, configs, eval artifacts (embeddings/attention/DQN policy), collated cache, pickle, generic JSON/npz. Lazy domain imports inside methods. CKA math moved to `pipeline/stages/cka.py`. |
 | `paths.py` | Lake path layout primitives: `lake_run_dir`, `lake_cache_dir`, `lake_raw_dir`, etc. Single source of truth for filesystem layout. |
+| `manifest.py` | `_manifest.json` writer/reader + SHA-256 checksum verification. Moved from `pipeline/`. |
+| `catalog.py` | DuckDB catalog rebuild from manifests + status query. Moved from `pipeline/`. |
+| `contracts.py` | Artifact validation: `StageArtifact`, `TrainingArtifact`, `EvaluationArtifact`, `PreprocessingArtifact`. Moved from `config/schema.py`. |
 
 **Usage pattern:**
 ```python
@@ -113,6 +116,21 @@ Artifact writes (`save_embeddings`, `save_attention`, `save_dqn_policy`, `save_c
 Consolidated Streamlit app at `dashboard/` (in-repo) reads from HF Datasets (auto-pushed by SLURM epilog via `scripts/data/push_experiments_to_hf.py`). Two data sources: `buckeyeguy/kd-gat-experiments` (MLflow push) + `buckeyeguy/kd-gat-sweeps` (sweep results).
 
 Heavy analysis (UMAP, attention, CKA, etc.) lives in `notebooks/analysis/`.
+
+## Logging
+
+structlog with stdlib bridge. One config call at process startup, structured events everywhere.
+
+| File | Role |
+|------|------|
+| `graphids/logging.py` | `configure_logging(json=, level=)` — processor pipeline, stdlib bridge, console/JSON renderer |
+
+- All loggers: `import structlog; log = structlog.get_logger()`
+- Structured events: `log.info("event_name", key=value)` — no format strings
+- Context binding: `structlog.contextvars.bind_contextvars(dataset=..., model=..., stage=...)` at stage entry — auto-carried on all subsequent log calls
+- JSON mode: `--json-logs` CLI flag or `KD_GAT_JSON_LOGS=1` env var
+- stdlib bridge: Lightning, Hydra, PyG logs route through same processor pipeline via `foreign_pre_chain`
+- `pipeline_run_id` correlation: bound in `fire_and_forget()` for cross-job tracing
 
 ## General Principles
 
