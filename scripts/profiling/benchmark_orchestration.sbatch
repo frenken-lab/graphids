@@ -65,7 +65,7 @@ export KD_GAT_BENCHMARK_LOG="${BENCHMARK_LOG}"
 # Run the full pipeline for one dataset (all variants: large, small_kd, small_nokd)
 PIPELINE_START=$(date +%s)
 
-python -m graphids.pipeline.cli flow --dataset "${DATASET}" --local
+python -m graphids.cli flow --dataset "${DATASET}" --local
 
 PIPELINE_END=$(date +%s)
 PIPELINE_ELAPSED=$((PIPELINE_END - PIPELINE_START))

@@ -42,7 +42,7 @@ dagster = ["dagster>=1.9", "dagster-webserver>=1.9"]
 ray = ["ray[default]>=2.49", "ray[tune]>=2.49"]
 
 [project.scripts]
-graphids = "graphids.pipeline.cli:main"
+graphids = "graphids.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["graphids"]

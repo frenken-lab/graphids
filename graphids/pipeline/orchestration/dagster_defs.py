@@ -163,7 +163,7 @@ def _make_rebuild_catalog_asset():
         if not lake_root:
             return dg.MaterializeResult(metadata={"skipped": True})
         from pathlib import Path
-        from graphids.storage.catalog import rebuild_catalog
+        from graphids.storage import rebuild_catalog
         catalog_path = rebuild_catalog(Path(lake_root))
         return dg.MaterializeResult(metadata={"catalog_path": str(catalog_path)})
 

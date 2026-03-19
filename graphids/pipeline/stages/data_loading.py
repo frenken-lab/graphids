@@ -93,7 +93,7 @@ def compute_node_budget(batch_size: int, cfg: PipelineConfig) -> int | None:
 
     Returns None when cache metadata is unavailable (falls back to static batching).
     """
-    from graphids.storage.gateway import StorageGateway
+    from graphids.storage import StorageGateway
 
     metadata_path = cache_dir(cfg) / "cache_metadata.json"
     if not metadata_path.exists():

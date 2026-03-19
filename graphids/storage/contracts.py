@@ -95,7 +95,7 @@ class PreprocessingArtifact(BaseModel, frozen=True):
 
     @model_validator(mode="after")
     def _validate_compatibility(self) -> PreprocessingArtifact:
-        from graphids.config.constants import (
+        from graphids.config import (
             EDGE_FEATURE_COUNT,
             NODE_FEATURE_COUNT,
             PREPROCESSING_VERSION,

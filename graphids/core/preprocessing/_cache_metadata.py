@@ -93,7 +93,7 @@ def write_cache_metadata(
     except Exception as e:
         log.warning("graph_stats_computation_failed", error=str(e))
 
-    from graphids.storage.gateway import StorageGateway
+    from graphids.storage import StorageGateway
 
     gw = StorageGateway(
         lake_root=".", dataset="cache", model_type="cache", scale="cache",

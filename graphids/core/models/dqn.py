@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import structlog
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -488,9 +491,16 @@ class EnhancedDQNFusionAgent:
 
         return result
 
-    def load_checkpoint(self, checkpoint_path: str | torch.Tensor) -> None:
-        """Load Q-network and target network weights from a checkpoint file."""
-        sd = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    def load_checkpoint(self, checkpoint_or_path: dict | str | Path) -> None:
+        """Load Q-network and target network weights.
+
+        Accepts either a pre-loaded state_dict (from ArtifactMapper) or a
+        filesystem path (legacy convenience).
+        """
+        if isinstance(checkpoint_or_path, dict):
+            sd = checkpoint_or_path
+        else:
+            sd = torch.load(checkpoint_or_path, map_location="cpu", weights_only=True)
         self.q_network.load_state_dict(sd["q_network"])
         self.target_network.load_state_dict(sd["target_network"])
         if "epsilon" in sd:

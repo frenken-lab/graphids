@@ -20,7 +20,7 @@ export PATH="$HOME/KD-GAT/.venv/bin:$PATH"
 export PYTHONPATH=/users/PAS2022/rf15/KD-GAT:$PYTHONPATH
 
 # Then run:
-python -m graphids.pipeline.cli ...
+python -m graphids.cli ...
 python -m pytest tests/ -v
 ```
 

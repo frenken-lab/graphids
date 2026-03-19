@@ -39,7 +39,7 @@ echo "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || ec
 # Run 1: GAT (no edge_attr)
 echo ""
 echo "--- Run 1: conv_type=gat (no edge_attr) ---"
-python -m graphids.pipeline.cli curriculum \
+python -m graphids.cli curriculum \
     --model gat --scale "${SCALE}" --dataset "${DATASET}" \
     -O training.max_epochs "${EPOCHS}" \
     -O training.profile true \
@@ -49,7 +49,7 @@ python -m graphids.pipeline.cli curriculum \
 
 echo ""
 echo "--- Run 2: conv_type=transformer (with edge_attr) ---"
-python -m graphids.pipeline.cli curriculum \
+python -m graphids.cli curriculum \
     --model gat --scale "${SCALE}" --dataset "${DATASET}" \
     -O training.max_epochs "${EPOCHS}" \
     -O training.profile true \

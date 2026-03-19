@@ -78,7 +78,7 @@ nodes:
   layer: pipeline
   status: active
   lines: 600
-  notes: "Entry point (python -m graphids.pipeline.cli). MLflow context, archive/restore, stage dispatch"
+  notes: "Entry point (python -m graphids.cli). MLflow context, archive/restore, stage dispatch"
 
 - id: validate
   type: source
@@ -1253,7 +1253,7 @@ edges:
 - from: ray_pipeline
   to: cli
   rel: dispatches
-  notes: "subprocess.run python -m graphids.pipeline.cli"
+  notes: "subprocess.run python -m graphids.cli"
 
   # ── Orchestration — Sweep pipeline ──────────────────────────────────
 - from: sweep_pipeline
@@ -1267,7 +1267,7 @@ edges:
 - from: sweep_pipeline
   to: cli
   rel: dispatches
-  notes: "subprocess.run python -m graphids.pipeline.cli"
+  notes: "subprocess.run python -m graphids.cli"
 - from: sweep_pipeline
   to: sweep_state
   rel: writes
@@ -1305,7 +1305,7 @@ edges:
 - from: tune_config
   to: cli
   rel: dispatches
-  notes: "subprocess.run python -m graphids.pipeline.cli (trainable)"
+  notes: "subprocess.run python -m graphids.cli (trainable)"
 - from: tune_config
   to: metrics_json
   rel: reads
@@ -1497,7 +1497,7 @@ edges:
 - from: ray_slurm_sbatch
   to: cli
   rel: dispatches
-  notes: "python -m graphids.pipeline.cli {entrypoint}"
+  notes: "python -m graphids.cli {entrypoint}"
 - from: ray_slurm_sbatch
   to: epilog_sh
   rel: calls
@@ -1510,7 +1510,7 @@ edges:
 - from: sweep_sh
   to: cli
   rel: dispatches
-  notes: "python -m graphids.pipeline.cli sweep-pipeline"
+  notes: "python -m graphids.cli sweep-pipeline"
 - from: sweep_sh
   to: epilog_sh
   rel: calls
@@ -1523,7 +1523,7 @@ edges:
 - from: smoke_test_sbatch
   to: cli
   rel: dispatches
-  notes: "python -m graphids.pipeline.cli tune (1-trial smoke)"
+  notes: "python -m graphids.cli tune (1-trial smoke)"
 
 - from: tune_sweep_sbatch
   to: preamble_sh
@@ -1532,7 +1532,7 @@ edges:
 - from: tune_sweep_sbatch
   to: cli
   rel: dispatches
-  notes: "python -m graphids.pipeline.cli tune"
+  notes: "python -m graphids.cli tune"
 
 - from: epilog_sh
   to: push_hf

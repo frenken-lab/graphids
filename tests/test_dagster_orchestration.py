@@ -210,7 +210,7 @@ class TestScriptGeneration:
         assert "#SBATCH --job-name=kd-gat-autoencoder-vgae-large" in script
         assert "source scripts/slurm/_preamble.sh" in script
         assert "source scripts/slurm/_epilog.sh" in script
-        assert "graphids.pipeline.cli" in script
+        assert "graphids.cli" in script
         assert "stage=autoencoder" in script
         assert "model=vgae_large" in script
         assert "dataset=hcrl_sa" in script
@@ -636,16 +636,16 @@ class TestSubmitNoPoll:
 
 class TestCLI:
     def test_orchestrate_is_subcommand(self):
-        from graphids.pipeline.cli import _SUBCOMMANDS
+        from graphids.cli import _SUBCOMMANDS
 
         assert "orchestrate" in _SUBCOMMANDS
 
     def test_preprocess_is_subcommand(self):
-        from graphids.pipeline.cli import _SUBCOMMANDS
+        from graphids.cli import _SUBCOMMANDS
 
         assert "preprocess" in _SUBCOMMANDS
 
     def test_flow_not_a_subcommand(self):
-        from graphids.pipeline.cli import _SUBCOMMANDS
+        from graphids.cli import _SUBCOMMANDS
 
         assert "flow" not in _SUBCOMMANDS

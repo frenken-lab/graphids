@@ -17,8 +17,8 @@ from pathlib import Path
 
 import yaml
 
-from graphids.config import PROJECT_ROOT, SLURM_ACCOUNT, SLURM_GPU_TYPE
-from graphids.pipeline.subprocess_utils import build_cli_cmd
+from graphids.config import DEFAULT_LAKE_ROOT, PROJECT_ROOT, SLURM_ACCOUNT, SLURM_GPU_TYPE
+from ..subprocess_utils import build_cli_cmd
 
 from .job import ResourceSpec
 
@@ -115,7 +115,7 @@ def save_retry_state(
     asset_key: str, reason: str, node: str | None = None, ckpt_path: str | None = None
 ) -> None:
     """Write retry metadata to slurm_logs/dagster_retry/{asset_key}.json."""
-    from graphids.storage.gateway import StorageGateway
+    from graphids.storage import StorageGateway
 
     gw = StorageGateway(
         lake_root=".", dataset="retry", model_type="retry", scale="retry",
@@ -126,7 +126,7 @@ def save_retry_state(
 
 def load_retry_state(asset_key: str) -> dict | None:
     """Read retry metadata from previous attempt, if any."""
-    from graphids.storage.gateway import StorageGateway
+    from graphids.storage import StorageGateway
 
     path = _RETRY_STATE_DIR / f"{asset_key}.json"
     if not path.exists():
@@ -286,7 +286,7 @@ class PipesSlurmClient:
         ckpt_path: str | None = None, dependency_job_id: str | None = None,
     ) -> tuple[str, Path]:
         """Generate sbatch script, write to disk, return (content, path)."""
-        from graphids.storage.gateway import StorageGateway
+        from graphids.storage import StorageGateway
 
         script = generate_sbatch_script(
             stage=stage, model=model, scale=scale, dataset=dataset, resources=resources,
@@ -366,14 +366,13 @@ class PipesSlurmClient:
         """Check that expected artifacts exist after stage completion."""
         from pydantic import ValidationError
 
-        from graphids.storage.contracts import EvaluationArtifact, TrainingArtifact
-        from graphids.storage import StorageGateway
+        from graphids.storage import EvaluationArtifact, TrainingArtifact, StorageGateway
 
         if stage == "preprocess":
             return True
         aux = auxiliaries if auxiliaries != "none" else ""
         gw = StorageGateway(
-            lake_root=os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns"),
+            lake_root=os.environ.get("KD_GAT_LAKE_ROOT", DEFAULT_LAKE_ROOT),
             dataset=dataset, model_type=model, scale=scale,
             auxiliaries=aux or "none", seed=seed, production=True,
         )
@@ -396,7 +395,7 @@ class PipesSlurmClient:
 
         aux = auxiliaries if auxiliaries != "none" else ""
         gw = StorageGateway(
-            lake_root=os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns"),
+            lake_root=os.environ.get("KD_GAT_LAKE_ROOT", DEFAULT_LAKE_ROOT),
             dataset=dataset, model_type=model, scale=scale,
             auxiliaries=aux or "none", seed=seed, production=True,
         )

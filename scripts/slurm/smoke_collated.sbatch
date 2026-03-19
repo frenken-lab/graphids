@@ -19,7 +19,7 @@ log_job_header "Smoke Test: collated storage + num_workers"
 EPOCH_OVERRIDES="-O training.max_epochs 30 -O training.patience 10"
 
 echo "=== Stage 1: VGAE autoencoder ==="
-python -m graphids.pipeline.cli autoencoder \
+python -m graphids.cli autoencoder \
     --model vgae --scale large --dataset hcrl_sa \
     $EPOCH_OVERRIDES
 VGAE_EXIT=$?
@@ -33,7 +33,7 @@ fi
 
 echo ""
 echo "=== Stage 2: GAT curriculum ==="
-python -m graphids.pipeline.cli curriculum \
+python -m graphids.cli curriculum \
     --model gat --scale large --dataset hcrl_sa \
     $EPOCH_OVERRIDES
 GAT_EXIT=$?

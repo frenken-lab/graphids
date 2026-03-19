@@ -69,7 +69,7 @@ Per-stage sbatch submission via Dagster assets. Each stage is a separate SLURM j
 
 **Adaptive retry**: OOM → 2× memory, TIMEOUT → 1.5× time + checkpoint resume, NODE_FAIL → exclude node. Configured in `resources.yaml` `failure_reactions` section.
 
-CLI: `python -m graphids.pipeline.cli orchestrate --dataset hcrl_sa --seeds 42,123,456`
+CLI: `python -m graphids.cli orchestrate --dataset hcrl_sa --seeds 42,123,456`
 
 ### HPO (Optuna, inside SLURM jobs)
 - `optuna_sweep.py`: Single file — `run_sweep()` (single-stage Optuna study) + `run_sweep_pipeline()` (sequential 3-stage loop). Subprocess-based objective for CUDA isolation. Optuna's built-in SQLite storage provides free resume.

@@ -264,8 +264,7 @@ def _process_dataset_from_scratch(
         graphs = list(graphs)
 
     # Save cache atomically in collated format, with advisory lock
-    from graphids.storage.gateway import StorageGateway
-    from graphids.storage.mapper import ArtifactMapper
+    from graphids.storage import StorageGateway, ArtifactMapper
 
     gw = StorageGateway(
         lake_root=".",  # dummy — we only use lock() and mapper helpers
@@ -371,8 +370,7 @@ def load_test_scenarios(
 
         if graphs:
             # Save cache atomically in collated format via mapper
-            from graphids.storage.mapper import ArtifactMapper
-            from graphids.storage.gateway import StorageGateway
+            from graphids.storage import StorageGateway, ArtifactMapper
 
             _gw = StorageGateway(
                 lake_root=".", dataset="cache", model_type="cache", scale="cache",

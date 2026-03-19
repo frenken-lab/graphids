@@ -10,7 +10,7 @@
 | Component | Details |
 |-----------|---------|
 | **Config system** | Pydantic v2 frozen models + YAML composition. `resolve()` → frozen `PipelineConfig`. 6 datasets. Pydantic defaults are baseline; YAMLs contain only overrides. |
-| **Training pipeline** | CLI: `python -m graphids.pipeline.cli <stage> --model <type> --scale <size> --dataset <name>`. DeviceStatsMonitor for GPU logging. |
+| **Training pipeline** | CLI: `python -m graphids.cli <stage> --model <type> --scale <size> --dataset <name>`. DeviceStatsMonitor for GPU logging. |
 | **Dagster orchestration** | Per-stage SLURM jobs via `dagster_defs.py` + `pipes_slurm.py`. Fire-and-forget mode with `--dependency=afterok` chains. Adaptive retry (OOM→2× mem, TIMEOUT→ckpt resume). 62 tests. |
 | **SLURM integration** | Pitzer cluster. GPU (2x V100 per node, PAS1266) + CPU partitions. Resource profiles in `resources.yaml`. |
 | **Graph caching** | Preprocessing v3.0.0 (26-D node features). DynamicBatchSampler. Content-addressable hash validation. |

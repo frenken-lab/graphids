@@ -37,7 +37,7 @@ echo "Scale:     ${SCALE}"
 echo "Extra args: $*"
 
 # Run the sweep pipeline (Optuna SQLite storage handles resume)
-python -m graphids.pipeline.cli sweep \
+python -m graphids.cli sweep \
     --full-pipeline \
     --dataset "${DATASET}" \
     --scale "${SCALE}" \

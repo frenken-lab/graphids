@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from graphids.config.schema import PreprocessingConfig
+from graphids.config import PreprocessingConfig
 
 from ._engine import GraphEngine
 from ._schema import IRSchema

@@ -33,7 +33,7 @@ Parse the dataset and scale from `$ARGUMENTS`. If only one word is provided, it 
 
 3. **Submit Ray pipeline** with appropriate arguments:
    ```bash
-   PYTHONPATH=. python -m graphids.pipeline.cli flow --dataset <dataset> [--scale <scale>]
+   PYTHONPATH=. python -m graphids.cli flow --dataset <dataset> [--scale <scale>]
    ```
    If running on login node, add `--local` for Ray local mode (no GPU).
 

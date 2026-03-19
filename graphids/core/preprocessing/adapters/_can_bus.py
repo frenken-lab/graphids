@@ -90,7 +90,7 @@ class CANBusAdapter(DomainAdapter):
         excluded_attacks: Sequence[str] = EXCLUDED_ATTACK_TYPES,
         include_attack_type: bool = False,
     ):
-        from graphids.config.schema import PreprocessingConfig
+        from graphids.config import PreprocessingConfig
 
         if chunk_size is None:
             chunk_size = PreprocessingConfig().chunk_size

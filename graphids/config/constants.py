@@ -30,6 +30,7 @@ MMAP_TENSOR_LIMIT = 60_000
 # Project defaults
 # ---------------------------------------------------------------------------
 DEFAULT_DATASET = "hcrl_sa"
+DEFAULT_LAKE_ROOT = "experimentruns"
 DEFAULT_SEEDS = [42, 123, 456]
 SWEEP_RESULTS_DIR = "data/sweep_results"
 

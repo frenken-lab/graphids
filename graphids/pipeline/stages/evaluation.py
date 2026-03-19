@@ -190,11 +190,13 @@ def _evaluate_fusion(
 
     from graphids.core.models.dqn import EnhancedDQNFusionAgent
 
+    from graphids.storage import ArtifactMapper
+
     fusion_cfg = load_frozen_cfg(cfg, "fusion")
     gw_local = StorageGateway(cfg=cfg)
-    fusion_ckpt = gw_local.require("fusion", "best_model.pt", model_type="dqn")
+    mapper_f = ArtifactMapper(gw_local)
     agent = EnhancedDQNFusionAgent.from_config(fusion_cfg, device=str(device), inference=True)
-    agent.load_checkpoint(fusion_ckpt)
+    agent.load_checkpoint(mapper_f.load_checkpoint("fusion", model_type="dqn"))
 
     result = run_fusion_inference(agent, val_cache)
     val_m = compute_metrics(result.labels, result.preds, result.scores)
@@ -235,10 +237,12 @@ def _evaluate_temporal(cfg, val_data, num_ids, in_ch, device, gat_stage) -> dict
             freeze_spatial=True,
             num_classes=2,
         ).to(device)
+        from graphids.storage import ArtifactMapper
+
         gw_t = StorageGateway(cfg=cfg)
-        temporal_ckpt = gw_t.require("temporal", "best_model.pt", model_type="gat")
+        mapper_t = ArtifactMapper(gw_t)
         temporal_model.load_state_dict(
-            torch.load(temporal_ckpt, map_location="cpu", weights_only=True)
+            mapper_t.load_checkpoint("temporal", model_type="gat")
         )
         temporal_model.eval()
 

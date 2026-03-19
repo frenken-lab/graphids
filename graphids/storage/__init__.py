@@ -26,7 +26,7 @@ from .paths import (
 
 # Lazy imports for manifest and catalog (heavy deps)
 def __getattr__(name: str):
-    if name in ("write_manifest", "read_manifest", "verify_manifest", "Manifest", "ManifestEntry"):
+    if name in ("write_manifest", "read_manifest", "verify_manifest", "verify_all", "Manifest", "ManifestEntry"):
         from . import manifest as _m
         return getattr(_m, name)
     if name in ("rebuild_catalog", "catalog_status"):

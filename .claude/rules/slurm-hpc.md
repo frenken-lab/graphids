@@ -141,7 +141,7 @@ Data staging uses a 3-tier storage hierarchy. `scripts/data/stage_data.sh` manag
 ### Layer 1: Dry-Run (login node, no GPU, ~2s)
 
 ```bash
-CUDA_VISIBLE_DEVICES="" .venv/bin/python -m graphids.pipeline.cli tune \
+CUDA_VISIBLE_DEVICES="" .venv/bin/python -m graphids.cli tune \
     --dry-run --model <stage> --dataset <dataset> --scale <scale>
 ```
 
@@ -177,6 +177,6 @@ Only after Layer 2 passes. Submit the real job with full dataset/samples.
 - Git, DVC, ruff
 
 **Must go through SLURM:**
-- `python -m graphids.pipeline.cli <any stage>` — all training/evaluation
+- `python -m graphids.cli <any stage>` — all training/evaluation
 - `python -m pytest` — test suite
 - Any script that imports and runs models

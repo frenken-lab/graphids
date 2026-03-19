@@ -34,7 +34,7 @@ echo "Partition: gpudebug (1hr max)"
 echo "GPU:       $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'N/A')"
 
 # Run 1 trial, 2 epochs, smallest dataset
-python -m graphids.pipeline.cli tune \
+python -m graphids.cli tune \
     --model "${SMOKE_STAGE}" \
     --dataset hcrl_ch \
     --scale large \

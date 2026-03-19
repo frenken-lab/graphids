@@ -23,7 +23,7 @@ def build_cli_cmd(
     auxiliaries: str = "none",
     overrides: list[tuple[str, str]] | None = None,
 ) -> list[str]:
-    """Build a CLI command list for ``python -m graphids.pipeline.cli``.
+    """Build a CLI command list for ``python -m graphids.cli``.
 
     Emits Hydra override grammar (``key=value``).
 
@@ -52,7 +52,7 @@ def build_cli_cmd(
     cmd = [
         sys.executable,
         "-m",
-        "graphids.pipeline.cli",
+        "graphids.cli",
         f"stage={stage}",
     ]
 

@@ -28,7 +28,7 @@ from graphids.config import (
     sweep_result_path,
 )
 from graphids.storage import StorageGateway
-from graphids.pipeline.subprocess_utils import build_cli_cmd
+from ..subprocess_utils import build_cli_cmd
 
 log = structlog.get_logger()
 

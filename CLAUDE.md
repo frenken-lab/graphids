@@ -8,30 +8,30 @@ Large models are compressed into small models via KD auxiliaries for edge deploy
 
 ```bash
 # Run a single stage (Hydra override grammar)
-python -m graphids.pipeline.cli stage=autoencoder model=vgae_large dataset=hcrl_sa
-python -m graphids.pipeline.cli stage=curriculum model=gat_small auxiliary=kd_standard dataset=hcrl_sa
-python -m graphids.pipeline.cli stage=fusion model=dqn_large dataset=hcrl_ch
-python -m graphids.pipeline.cli stage=autoencoder model=vgae_large dataset=hcrl_sa training.lr=0.001 vgae.latent_dim=16
-python -m graphids.pipeline.cli stage=autoencoder model=vgae_large dataset=hcrl_sa seed=123
+python -m graphids.cli stage=autoencoder model=vgae_large dataset=hcrl_sa
+python -m graphids.cli stage=curriculum model=gat_small auxiliary=kd_standard dataset=hcrl_sa
+python -m graphids.cli stage=fusion model=dqn_large dataset=hcrl_ch
+python -m graphids.cli stage=autoencoder model=vgae_large dataset=hcrl_sa training.lr=0.001 vgae.latent_dim=16
+python -m graphids.cli stage=autoencoder model=vgae_large dataset=hcrl_sa seed=123
 # Stages: autoencoder, curriculum, normal, fusion, evaluation, temporal
 # Models: vgae_large, vgae_small, gat_large, gat_small, dqn_large, dqn_small
 # Auxiliaries: none, kd_standard
 
 # Show resolved config without running
-python -m graphids.pipeline.cli show-config model=vgae_large dataset=hcrl_sa
+python -m graphids.cli show-config model=vgae_large dataset=hcrl_sa
 
 # Full pipeline via Dagster + SLURM (fire-and-forget dependency chains)
-python -m graphids.pipeline.cli orchestrate --dataset hcrl_sa
-python -m graphids.pipeline.cli orchestrate --dataset hcrl_sa --dry-run  # Preview DAG
-python -m graphids.pipeline.cli orchestrate --dataset hcrl_sa --seeds 42,123,456
+python -m graphids.cli orchestrate --dataset hcrl_sa
+python -m graphids.cli orchestrate --dataset hcrl_sa --dry-run  # Preview DAG
+python -m graphids.cli orchestrate --dataset hcrl_sa --seeds 42,123,456
 
 # Preprocess graph cache
-python -m graphids.pipeline.cli preprocess --dataset hcrl_sa
+python -m graphids.cli preprocess --dataset hcrl_sa
 
 # Data lake management
-python -m graphids.pipeline.cli lake --lake-action status            # Lake status
-python -m graphids.pipeline.cli lake --lake-action rebuild-catalog   # Rebuild DuckDB catalog
-python -m graphids.pipeline.cli lake --lake-action verify            # Verify artifact checksums
+python -m graphids.cli lake --lake-action status            # Lake status
+python -m graphids.cli lake --lake-action rebuild-catalog   # Rebuild DuckDB catalog
+python -m graphids.cli lake --lake-action verify            # Verify artifact checksums
 bash scripts/lake/setup_ess.sh                                       # Create ESS directory tree
 bash scripts/lake/migrate_to_ess.sh --dry-run                        # Preview migration
 

@@ -111,7 +111,7 @@ def _load_teacher(
     checkpoint = torch.load(teacher_path, map_location="cpu", weights_only=True)
     sd = _extract_state_dict(checkpoint)
 
-    teacher_cfg_path = Path(teacher_path).parent / "config.json"
+    teacher_cfg_path = teacher_dir / "config.json"
     if not teacher_cfg_path.exists():
         raise FileNotFoundError(
             f"Teacher config not found: {teacher_cfg_path}. "
@@ -221,12 +221,13 @@ def load_model(
     Uses the StorageGateway for filesystem resolution.
     """
     from graphids.core.models.registry import get as registry_get
+    from graphids.storage import ArtifactMapper
 
     frozen_cfg = load_frozen_cfg(cfg, stage, model_type=model_type)
     gw = StorageGateway(cfg=cfg)
-    ckpt = gw.require(stage, "best_model.pt", model_type=model_type)
+    mapper = ArtifactMapper(gw)
     model = registry_get(model_type).factory(frozen_cfg, num_ids, in_channels)
-    model.load_state_dict(torch.load(ckpt, map_location="cpu", weights_only=True))
+    model.load_state_dict(mapper.load_checkpoint(stage, model_type=model_type))
     model.to(device)
     model.eval()
     return model

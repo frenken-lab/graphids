@@ -18,7 +18,7 @@ from typing import NamedTuple
 
 import torch.nn as nn
 
-from graphids.config.schema import PipelineConfig
+from graphids.config import PipelineConfig
 
 from .fusion_features import (
     FusionFeatureExtractor,

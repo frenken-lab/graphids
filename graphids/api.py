@@ -32,7 +32,7 @@ def train(
     **overrides,
 ) -> Path:
     """Train a model. Returns checkpoint path."""
-    from graphids.pipeline.stages import STAGE_FNS
+    from graphids.pipeline import STAGE_FNS
 
     cfg = resolve(model_type, scale, dataset=dataset, seed=seed, **overrides)
     STAGE_FNS[stage](cfg)
@@ -46,7 +46,7 @@ def evaluate(
     **overrides,
 ) -> dict:
     """Evaluate all trained models. Returns metrics dict."""
-    from graphids.pipeline.stages import STAGE_FNS
+    from graphids.pipeline import STAGE_FNS
 
     cfg = resolve("vgae", scale, dataset=dataset, seed=seed, **overrides)
     result = STAGE_FNS["evaluation"](cfg)

@@ -7,7 +7,7 @@
 #   sbatch scripts/slurm/tune_sweep.sbatch fusion      --dataset set_01 --scale large --num-samples 15
 #
 # The first positional arg is the stage name (autoencoder, curriculum, fusion).
-# All subsequent args are forwarded to `python -m graphids.pipeline.cli tune`.
+# All subsequent args are forwarded to `python -m graphids.cli tune`.
 #
 # Account comes from .env (KD_GAT_SLURM_ACCOUNT). Submit with:
 #   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/tune_sweep.sbatch ...
@@ -37,7 +37,7 @@ echo "Args:      $*"
 echo "Ray:       $(python -c 'import ray; print(ray.__version__)')"
 
 # Run tune via CLI
-python -m graphids.pipeline.cli tune \
+python -m graphids.cli tune \
     --model "${TUNE_STAGE}" \
     "$@"
 

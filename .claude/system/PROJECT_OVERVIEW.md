@@ -14,7 +14,7 @@ VGAE (unsupervised reconstruction) → GAT (supervised classification) → DQN (
                                      EVALUATION ←────── TEMPORAL (optional: GAT + Transformer)
 ```
 
-**Entry point**: `python -m graphids.pipeline.cli <stage> --model <type> --scale <size> --dataset <name>`
+**Entry point**: `python -m graphids.cli <stage> --model <type> --scale <size> --dataset <name>`
 
 ## Layered Architecture
 

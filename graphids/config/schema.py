@@ -15,6 +15,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from .constants import DEFAULT_LAKE_ROOT
+
 
 class VGAEArchitecture(BaseModel, frozen=True):
     hidden_dims: tuple[int, ...] = (480, 240, 48)
@@ -194,7 +196,7 @@ class PipelineConfig(BaseModel, frozen=True):
     variants: list[VariantConfig] = Field(default_factory=list)
 
     # --- Infrastructure ---
-    lake_root: str = "experimentruns"
+    lake_root: str = DEFAULT_LAKE_ROOT
     device: str = "cuda"
     num_workers: int = 2
     mp_start_method: str = "spawn"
