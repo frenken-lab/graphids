@@ -111,7 +111,7 @@ def _load_teacher(
     checkpoint = torch.load(teacher_path, map_location="cpu", weights_only=True)
     sd = _extract_state_dict(checkpoint)
 
-    teacher_cfg_path = teacher_dir / "config.json"
+    teacher_cfg_path = Path(teacher_path).parent / "config.json"
     if not teacher_cfg_path.exists():
         raise FileNotFoundError(
             f"Teacher config not found: {teacher_cfg_path}. "
@@ -179,9 +179,6 @@ def _extract_state_dict(checkpoint) -> dict:
     return checkpoint
 
 
-from graphids.config import STAGE_MODEL_MAP as _STAGE_MODEL_TYPE
-
-
 def load_frozen_cfg(
     cfg: PipelineConfig, stage: str, model_type: str | None = None
 ) -> PipelineConfig:
@@ -192,7 +189,7 @@ def load_frozen_cfg(
 
     Raises FileNotFoundError if the frozen config doesn't exist.
     """
-    mt = model_type or _STAGE_MODEL_TYPE.get(stage, cfg.model_type)
+    mt = model_type or STAGE_MODEL_MAP.get(stage, cfg.model_type)
     gw = StorageGateway(cfg=cfg)
     try:
         p = gw.require(stage, "config.json", model_type=mt)
