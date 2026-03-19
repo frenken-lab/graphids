@@ -1,23 +1,20 @@
-"""Job definition models for pipeline state tracking.
+"""Job definition models for pipeline orchestration.
 
-Pydantic v2 frozen models for describing jobs, resources, and state.
-Used by sweep_pipeline and Dagster orchestration.
+Pydantic v2 frozen models for describing SLURM resource requirements.
+Used by Dagster orchestration.
 """
 
 from __future__ import annotations
 
 from datetime import timedelta
-from enum import Enum
-from typing import Any
-from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class ResourceSpec(BaseModel, frozen=True):
     """Resource requirements for a pipeline job.
 
-    Used by both sweep_pipeline (HPO) and Dagster SLURM orchestration.
+    Used by Dagster SLURM orchestration.
     SLURM-specific fields (partition, exclude_nodes) default to safe values
     so non-SLURM callers can ignore them.
     """
@@ -83,31 +80,3 @@ class ResourceSpec(BaseModel, frozen=True):
             partition=data.get("partition", "cpu"),
             exclude_nodes=data.get("exclude_nodes", ""),
         )
-
-
-class JobState(str, Enum):
-    """Job lifecycle states."""
-
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELED = "canceled"
-
-    @property
-    def is_terminal(self) -> bool:
-        return self in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELED)
-
-
-class JobSpec(BaseModel, frozen=True):
-    """A single unit of work in the pipeline DAG."""
-
-    id: UUID = Field(default_factory=uuid4)
-    name: str
-    executable: str = ""
-    arguments: list[str] = []
-    parameters: dict[str, Any] = {}
-    resources: ResourceSpec = ResourceSpec()
-    parents: list[UUID] = []
-    environment: dict[str, str] = {}
-    tags: dict[str, str] = {}

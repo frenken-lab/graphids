@@ -39,7 +39,10 @@ graphids/               # Top-level package — __getattr__ lazy gateway for cor
     subprocess_utils.py # Shared CLI command builder for subprocess dispatch
     stages/             # Stage implementations
       training.py       # Training loop (autoencoder, curriculum, normal stages)
-      evaluation.py     # Eval orchestrator + per-model evaluators (_evaluate_gat/vgae/fusion/temporal); batched inference via PyG DataLoader; torchmetrics
+      evaluation.py     # Eval orchestrator + per-model evaluators + compute_metrics + probe_embedding_dim
+      eval_types.py     # Frozen dataclasses: GATResult, VGAEResult, FusionResult
+      eval_inference.py # Typed inference: run_gat/vgae/fusion_inference (batched via PyG DataLoader)
+      eval_writers.py   # Artifact writers: write_embeddings/attention/dqn_policy/cka
       fusion.py         # Multi-model fusion stage (DQN, MLP, weighted avg)
       temporal.py       # Temporal graph classification (GAT encoder + Transformer over time)
       data_loading.py   # Dataset loading + graph caching + training_preamble()
@@ -53,8 +56,8 @@ graphids/               # Top-level package — __getattr__ lazy gateway for cor
       dagster_defs.py   # Dagster asset definitions + build_dag_topology() + fire_and_forget()
       dagster_resources.py # Retry state helpers (per-asset failure metadata)
       pipes_slurm.py    # SLURM sbatch/sacct wrapper: script gen, submit, poll, artifact validation
-      sweep_pipeline.py # Hyperparameter sweep orchestration (SQLite-backed state)
-      tune_config.py    # Ray Tune search space + OptunaSearch + ASHAScheduler
+      slurm_client.py   # Shared SLURM primitives: sbatch gen, sacct polling, adaptive retry
+      optuna_sweep.py   # Optuna HPO: run_sweep() + run_sweep_pipeline() (SQLite-backed resume)
   core/                 # Layer 3: Domain (models, data loading, preprocessing; imports graphids.config/)
     __init__.py         # Gateway: load_dataset, load_test_scenarios, get_model, process_dataset
     data.py             # Dataset loading with NFS-safe caching (was core/training/datamodules.py)
@@ -132,4 +135,4 @@ notebooks/
 
 ## File Count
 
-~58 Python files under `graphids/` (config: 5, pipeline: 17 incl. artifacts.py, core: 26, lake: 3, top-level: 2).
+~62 Python files under `graphids/` (config: 5, pipeline: 20 incl. artifacts.py, core: 26, top-level: 2).

@@ -27,12 +27,13 @@
 | 1c | Collapse to lake_root-only paths, dissolve LakeConfig | **Done** |
 | 1d | Dissolve lake/ package (manifest→pipeline, catalog→pipeline, locking→core) | **Done** |
 | 1e | Hydra CLI routing (replace argparse in cli.py) | **Done** |
-| 2 | Hydra Optuna sweeper (replace sweep_pipeline/tune_config/store) | Pending P1e |
-| 3 | dagster-slurm (replaces bulk of pipes_slurm.py) | **Decided** (Option A) |
+| 2 | Optuna direct HPO (replace Ray Tune + sweep_pipeline + store) | **Done** |
+| 3 | Extract shared slurm_client module from pipes_slurm.py | **Done** |
 | 4 | ~~AdaptiveSlurmLauncher~~ — eliminated by flattened orchestration | **Eliminated** |
-| 5 | Lightning predict_step + BasePredictionWriter for eval | Pending |
-| 6 | SLURMEnvironment auto-requeue | Pending |
-| 7 | Simplify artifacts.py (ESS primary, drop MLflow fallback) | Pending |
+| 5 | Typed eval decomposition + torchmetrics condensation | **Done** |
+| 5b | Lightning predict_step for eval inference | **Done** |
+| 6 | SLURMEnvironment auto-requeue | **Done** |
+| 7 | Simplify artifacts.py (ESS primary, drop MLflow fallback) | **Done** |
 | 8 | dagster-slurm + pixi-pack (WSL daemon → OSC SSH → pixi env) | **Decided** (Option A) |
 | 9 | Dagster partitions (multi-seed × multi-dataset + HPO trials) | Pending P8 |
 
@@ -42,8 +43,8 @@
 |--------|-------|---------------|
 | **Config** | Hydra Compose + Pydantic | **Done** — 5-file config layer, Hydra config groups, lake_root-only |
 | **Orchestration** | Dagster + dagster-slurm | Partial — fire_and_forget works, dagster-slurm integration pending |
-| **ML Training** | Lightning modules + stages | Coupled — 932 lines ML in 3,000 lines of glue. Needs predict_step. CLI simplified (Phase 1e done). |
-| **I/O** | pipeline/manifest + catalog + artifacts | Reorganized — manifest+catalog in pipeline/, locking in core/ |
+| **ML Training** | Lightning modules + stages | Eval decomposed (Phase 5). CLI simplified (Phase 1e). |
+| **I/O** | pipeline/manifest + catalog + artifacts | Simplified — artifacts.py is thin ESS wrapper (no cache/MLflow fallback) |
 
 ## Open Questions
 
@@ -76,6 +77,18 @@
 
 ## Completed
 
+- **Typed eval decomposition (Phase 5)** — (2026-03-18)
+  - Decomposed evaluation.py (743 lines, 1 file) → 4 files (784 lines total)
+  - eval_types.py: frozen dataclasses (GATResult, VGAEResult, FusionResult)
+  - eval_inference.py: typed inference functions (run_gat/vgae/fusion_inference)
+  - eval_writers.py: artifact writers (write_embeddings/attention/dqn_policy/cka)
+  - evaluation.py: slim orchestrator + compute_metrics + probe_embedding_dim
+  - MetricCollection replaces 11 individual torchmetrics instantiations
+  - binary_roc replaces sklearn roc_curve (sklearn dependency eliminated)
+  - Removed dead per-class manual computation (derivable from confusion matrix)
+  - Fixed E2E test return contract (evaluate() returns {"metrics": ...})
+  - compute_metrics and probe_embedding_dim are now public API (no underscore)
+  - All 158 non-SLURM tests pass, zero regressions
 - **Hydra CLI routing (Phase 1e)** — (2026-03-18)
   - Replaced argparse _build_parser() with Hydra override grammar via Compose API
   - Training: `stage=autoencoder model=vgae_large training.lr=0.001` (Hydra key=value)

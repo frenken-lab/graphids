@@ -10,7 +10,7 @@ import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 
-from graphids.config import PipelineConfig, checkpoint_path, config_path
+from graphids.config import PipelineConfig, checkpoint_path, config_path, run_id
 
 from .batch_sizing import resolve_batch_config
 from .data_loading import training_preamble
@@ -54,24 +54,34 @@ def _extract_training_metrics(trainer: pl.Trainer) -> dict:
     return metrics
 
 
-def _resume_ckpt_path() -> str | None:
-    """Read and consume the resume checkpoint path from environment.
+def _resume_ckpt_path(cfg: PipelineConfig, stage: str) -> str | None:
+    """Find a checkpoint to resume from.
 
-    Set by the orchestrator (via CLI --ckpt-path) when resubmitting a
-    timed-out stage that saved a Lightning auto-checkpoint.
+    Resolution order:
+    1. ``KD_GAT_CKPT_PATH`` env var — explicit override from orchestrator
+       (set when Dagster retries a timed-out stage).
+    2. Lightning auto-save — ``.pl_auto_save.ckpt`` in persistent_root,
+       written by ``SLURMEnvironment(auto_requeue=True)`` on SIGUSR1.
     """
+    # 1. Explicit override from orchestrator
     path = os.environ.get("KD_GAT_CKPT_PATH")
-    # Best-effort cleanup: remove the env var after reading without relying on pop,
-    # which is not thread-safe on process-global state.
     try:
         del os.environ["KD_GAT_CKPT_PATH"]
     except KeyError:
         pass
     if path and Path(path).exists():
-        log.info("Resuming from Lightning checkpoint: %s", path)
+        log.info("Resuming from orchestrator checkpoint: %s", path)
         return path
     if path:
         log.warning("Checkpoint path set but not found: %s", path)
+
+    # 2. Lightning auto-save from SLURMEnvironment (timeout requeue)
+    persistent_root = Path(cfg.lake_root) / run_id(cfg, stage)
+    auto_save = persistent_root / ".pl_auto_save.ckpt"
+    if auto_save.exists():
+        log.info("Resuming from Lightning auto-save: %s", auto_save)
+        return str(auto_save)
+
     return None
 
 
@@ -107,7 +117,7 @@ def train_autoencoder(cfg: PipelineConfig) -> dict:
     val_dl = make_dataloader(val_data, cfg, bs, shuffle=False, max_num_nodes=max_nodes)
 
     trainer = make_trainer(cfg, "autoencoder")
-    trainer.fit(module, train_dl, val_dl, ckpt_path=_resume_ckpt_path())
+    trainer.fit(module, train_dl, val_dl, ckpt_path=_resume_ckpt_path(cfg, "autoencoder"))
     return _save_and_cleanup(module, trainer, cfg, "autoencoder", "VGAE")
 
 
@@ -130,7 +140,7 @@ def train_curriculum(cfg: PipelineConfig) -> dict:
     trainer = make_trainer(cfg, "curriculum")
 
     dm = CurriculumDataModule(normals, attacks, scores, val_data, cfg)
-    trainer.fit(module, datamodule=dm, ckpt_path=_resume_ckpt_path())
+    trainer.fit(module, datamodule=dm, ckpt_path=_resume_ckpt_path(cfg, "curriculum"))
     return _save_and_cleanup(module, trainer, cfg, "curriculum", "GAT")
 
 
@@ -146,7 +156,7 @@ def train_normal(cfg: PipelineConfig) -> dict:
     val_dl = make_dataloader(val_data, cfg, bs, shuffle=False, max_num_nodes=max_nodes)
 
     trainer = make_trainer(cfg, "normal")
-    trainer.fit(module, train_dl, val_dl, ckpt_path=_resume_ckpt_path())
+    trainer.fit(module, train_dl, val_dl, ckpt_path=_resume_ckpt_path(cfg, "normal"))
     return _save_and_cleanup(module, trainer, cfg, "normal", "GAT (normal)")
 
 

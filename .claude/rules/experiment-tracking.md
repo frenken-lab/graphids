@@ -29,7 +29,7 @@ Consumers:
 |-----------|-----------|
 | `cli.py` | `mlflow.start_run()` context wraps dispatch; logs params, tags, post-training metrics, artifacts |
 | `trainer_factory.py` | `mlflow.pytorch.autolog()` + DeviceStatsMonitor for per-epoch metrics + GPU stats |
-| `tune_config.py` | Sweep summary run with best config, val_loss, trial counts |
+| `optuna_sweep.py` | Sweep summary run with best config, val_loss, trial counts |
 | `run_pygod_baselines.py` | Optional `--mlflow` flag for baseline metrics |
 
 ## Key Environment

@@ -58,8 +58,7 @@ Three-layer import hierarchy (enforced by `tests/test_layer_boundaries.py`):
   - `dagster_defs.py` — Dagster asset definitions + `build_dag_topology()` + `fire_and_forget()`
   - `dagster_resources.py` — Per-asset retry state helpers
   - `pipes_slurm.py` — SLURM sbatch/sacct wrapper: script gen, submit, poll, artifact validation via contracts
-  - `sweep_pipeline.py` — Hyperparameter sweep orchestration (SQLite-backed state)
-  - `tune_config.py` — Ray Tune search space + OptunaSearch + ASHAScheduler
+  - `optuna_sweep.py` — Optuna HPO: `run_sweep()` (single-stage) + `run_sweep_pipeline()` (sequential 3-stage). SQLite-backed resume.
 
 ### Layer 3: `graphids/core/` (domain — imports graphids.config.constants, never imports graphids.pipeline)
 

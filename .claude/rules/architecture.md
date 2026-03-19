@@ -56,10 +56,12 @@ Per-stage sbatch submission via Dagster assets. Each stage is a separate SLURM j
 
 CLI: `python -m graphids.pipeline.cli orchestrate --dataset hcrl_sa --seeds 42,123,456`
 
-### HPO (Ray Tune, inside SLURM jobs)
-- `tune_config.py`: Subprocess-based trainable (each trial spawns `cli.py` for CUDA isolation).
-- `sweep_pipeline.py`: Multi-stage HPO sweep DAG (SQLite-backed state).
-- Future: Dagster-managed Ray Tune (outer orchestration via Dagster, inner trial scheduling via Ray Tune).
+### HPO (Optuna, inside SLURM jobs)
+- `optuna_sweep.py`: Single file — `run_sweep()` (single-stage Optuna study) + `run_sweep_pipeline()` (sequential 3-stage loop). Subprocess-based objective for CUDA isolation. Optuna's built-in SQLite storage provides free resume.
+
+### Shared SLURM module
+- `slurm_client.py`: Generic SLURM primitives — `generate_sbatch_script()`, `submit_sbatch()`, `sacct_query()`, `poll_until_done()`, resource profiles, adaptive retry (`scale_resources()`), `SlurmJobFailed`. No Dagster imports.
+- `pipes_slurm.py`: Thin Dagster wrapper — `PipesSlurmClient` (script file management, artifact validation, checkpoint discovery). Imports and re-exports from `slurm_client.py`.
 
 ### Shared Principles
 - **Subprocess dispatch**: Each stage runs as `subprocess.run()` for CUDA context isolation (~300-500 MB per model). Overhead (~3-5s) is <0.1% of pipeline wall time.
@@ -69,19 +71,18 @@ CLI: `python -m graphids.pipeline.cli orchestrate --dataset hcrl_sa --seeds 42,1
 
 ## Evaluation
 
-`graphids/pipeline/stages/evaluation.py` — thin orchestrator (`evaluate()`) dispatching to per-model evaluators:
+4 files under `graphids/pipeline/stages/`:
 
-| Function | Role |
-|----------|------|
-| `_evaluate_gat()` | GAT inference + test scenarios |
-| `_evaluate_vgae()` | VGAE reconstruction-error + Youden's J threshold |
-| `_evaluate_fusion()` | DQN/MLP/WeightedAvg fusion eval |
-| `_evaluate_temporal()` | Temporal graph classification eval |
-| `probe_embedding_dim()` | Shared helper (used by evaluation + temporal stages) |
+| File | Role |
+|------|------|
+| `evaluation.py` | Orchestrator (`evaluate()`), per-model evaluators, `compute_metrics`, `probe_embedding_dim` |
+| `eval_types.py` | Frozen dataclasses: `GATResult`, `VGAEResult`, `FusionResult` |
+| `eval_inference.py` | Typed inference: `run_gat_inference`, `run_vgae_inference`, `run_fusion_inference` |
+| `eval_writers.py` | Artifact I/O: `write_embeddings`, `write_attention`, `write_dqn_policy`, `write_cka` |
 
-- **Batched inference**: `_run_gat_inference()` and `_run_vgae_inference()` use PyG `DataLoader` (batch_size=128). Attention capture stays per-sample. VGAE component capture falls back to per-sample via `_run_vgae_inference_per_sample()`.
-- **Metrics**: `_compute_metrics()` uses `torchmetrics.classification.Binary*` (GPU-native). Custom: detection-at-FPR, Youden's J.
-- **Artifact saving**: `_save_embedding_artifacts()`, `_save_attention_artifacts()`, `_save_dqn_policy_artifact()`.
+- **Batched inference**: `run_gat_inference()` and `run_vgae_inference()` use Lightning `trainer.predict()` via `_GATPredictor`/`_VGAEPredictor` wrappers (batch_size=128). GATConv return type workaround: predict_step always uses `return_embedding=True` (consistent type); attention capture stays in separate manual `_capture_attention()` loop (50 samples, uses `return_attention_weights=True` which changes GATConv output type). VGAE component capture falls back to per-sample.
+- **Metrics**: `compute_metrics()` uses `torchmetrics.MetricCollection` (GPU-native, no sklearn). Custom: detection-at-FPR, Youden's J via `torchmetrics.functional.binary_roc`.
+- **CKA**: Self-contained in `eval_writers.py` (loads models, computes linear CKA, writes JSON).
 
 ## Memory & Batch Sizing
 

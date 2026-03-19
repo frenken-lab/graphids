@@ -181,7 +181,7 @@ def train_temporal(cfg: PipelineConfig) -> dict:
     gat = load_model(cfg, "gat", gat_stage, num_ids, in_ch, device)
     log.info("Loaded pretrained GAT from %s stage", gat_stage)
 
-    from .evaluation import probe_embedding_dim
+    from .evaluation import compute_metrics, probe_embedding_dim
 
     spatial_dim = probe_embedding_dim(gat, train_data[0], device)
     log.info("Spatial embedding dim: %d", spatial_dim)
@@ -278,9 +278,7 @@ def train_temporal(cfg: PipelineConfig) -> dict:
             all_preds.extend(preds.cpu().tolist())
             all_labels.extend(labels.tolist())
 
-    from .evaluation import _compute_metrics
-
-    metrics = _compute_metrics(all_labels, all_preds)
+    metrics = compute_metrics(all_labels, all_preds)
     metrics["core"]["n_sequences"] = len(all_labels)
     metrics["core"]["window"] = tc.temporal_window
     metrics["core"]["stride"] = tc.temporal_stride

@@ -125,6 +125,35 @@ class VGAEModule(pl.LightningModule):
         loss = self._step(batch)
         self.log("val_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
 
+    def predict_step(self, batch, _batch_idx):
+        """Batched VGAE prediction — reconstruction errors + embeddings.
+
+        Returns a dict with consistent keys per batch. Component-level
+        decomposition (KL, neighborhood) requires per-sample inference
+        and is NOT handled here — use eval_inference._run_vgae_inference_per_sample.
+        """
+        from torch_geometric.nn import global_mean_pool
+        from torch_geometric.utils import scatter
+
+        edge_attr = getattr(batch, "edge_attr", None)
+        cont, _, _, z, _ = self.model(batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr)
+
+        per_node_se = (cont - batch.x[:, 1:]).pow(2).mean(dim=1)
+        graph_errors = scatter(per_node_se, batch.batch, dim=0, reduce="mean")
+
+        result = {
+            "errors": graph_errors.cpu(),
+            "labels": batch.y.cpu(),
+            "attack_types": (
+                batch.attack_type.cpu()
+                if hasattr(batch, "attack_type") and batch.attack_type is not None
+                else torch.full((batch.num_graphs,), -1)
+            ),
+        }
+        if z is not None:
+            result["embeddings"] = global_mean_pool(z, batch.batch).cpu()
+        return result
+
     def configure_optimizers(self):
         params = list(self.model.parameters())
         if self.projection is not None:
@@ -205,6 +234,28 @@ class GATModule(pl.LightningModule):
         loss, acc = self._step(batch)
         self.log("val_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
         self.log("val_acc", acc, prog_bar=True, batch_size=batch.num_graphs)
+
+    def predict_step(self, batch, _batch_idx):
+        """Batched GAT prediction — logits, scores, embeddings.
+
+        Always uses ``return_embedding=True`` for a consistent return type.
+        Attention weight capture requires ``return_attention_weights=True``
+        which changes GATConv's output type — that path is NOT handled here.
+        Use eval_inference._capture_attention for per-sample attention extraction.
+        """
+        logits, emb = self.model(batch, return_embedding=True)
+        probs = F.softmax(logits, dim=1)
+        return {
+            "preds": logits.argmax(1).cpu(),
+            "scores": probs[:, 1].cpu(),
+            "labels": batch.y.cpu(),
+            "attack_types": (
+                batch.attack_type.cpu()
+                if hasattr(batch, "attack_type") and batch.attack_type is not None
+                else torch.full((batch.num_graphs,), -1)
+            ),
+            "embeddings": emb.cpu(),
+        }
 
     def configure_optimizers(self):
         opt = torch.optim.Adam(

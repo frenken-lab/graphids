@@ -226,8 +226,9 @@ class TestFullPipelineE2E:
             stack.enter_context(
                 patch("graphids.pipeline.stages.evaluation._load_test_data", return_value={})
             )
-            metrics = evaluate(eval_cfg)
+            result = evaluate(eval_cfg)
 
+        metrics = result["metrics"]
         assert "gat" in metrics, "GAT metrics missing"
         assert "vgae" in metrics, "VGAE metrics missing"
         assert "fusion" in metrics, "Fusion metrics missing"

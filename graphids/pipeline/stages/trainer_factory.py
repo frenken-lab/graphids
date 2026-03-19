@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 import pytorch_lightning as pl
@@ -320,6 +321,15 @@ def make_trainer(
     if extra_callbacks:
         callbacks.extend(extra_callbacks)
 
+    # On SLURM: enable auto-requeue so Lightning catches SIGUSR1,
+    # saves .pl_auto_save.ckpt, and calls scontrol requeue automatically.
+    # The bash wrapper (_preamble.sh) forwards USR1 from SLURM to Python.
+    plugins = []
+    if os.environ.get("SLURM_JOB_ID"):
+        from pytorch_lightning.plugins.environments import SLURMEnvironment
+
+        plugins.append(SLURMEnvironment(auto_requeue=True))
+
     return pl.Trainer(
         default_root_dir=str(persistent_root),
         max_epochs=t.max_epochs,
@@ -329,6 +339,7 @@ def make_trainer(
         gradient_clip_val=t.gradient_clip,
         accumulate_grad_batches=t.accumulate_grad_batches,
         callbacks=callbacks,
+        plugins=plugins or None,
         log_every_n_steps=t.log_every_n_steps,
         enable_progress_bar=True,
         deterministic=t.deterministic,

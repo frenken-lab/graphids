@@ -48,8 +48,7 @@ log = logging.getLogger("pipeline")
 _SUBCOMMANDS = frozenset({
     "orchestrate",
     "preprocess",
-    "tune",
-    "sweep-pipeline",
+    "sweep",
     "plan",
     "lake",
     "show-config",
@@ -133,97 +132,73 @@ def _run_preprocess(argv: list[str]) -> None:
     log.info("Preprocessed cache ready for %s", dataset)
 
 
-def _run_tune(argv: list[str]) -> None:
-    """Dispatch HPO sweep via Ray Tune."""
-    p = argparse.ArgumentParser(prog="pipeline tune")
-    p.add_argument("--model", type=str, default="vgae")
-    p.add_argument("--scale", type=str, default="large")
+def _run_sweep(argv: list[str]) -> None:
+    """Dispatch Optuna HPO sweep (single-stage or full pipeline)."""
+    p = argparse.ArgumentParser(prog="pipeline sweep")
+    p.add_argument("--stage", type=str, default=None, help="Single stage to sweep (autoencoder, curriculum, fusion)")
+    p.add_argument("--full-pipeline", action="store_true", default=False, help="Run full 3-stage sweep pipeline")
     p.add_argument("--dataset", type=str, default=None)
+    p.add_argument("--scale", type=str, default="large")
     p.add_argument("--num-samples", type=int, default=20)
-    p.add_argument("--max-concurrent", type=int, default=1)
-    p.add_argument("--grace-period", type=int, default=10)
-    p.add_argument("--tune-epochs", type=int, default=50)
-    p.add_argument("--tune-patience", type=int, default=15)
-    p.add_argument("--local", action="store_true", default=False)
+    p.add_argument("--max-epochs", type=int, default=50)
+    p.add_argument("--patience", type=int, default=15)
     p.add_argument("--warm-start-from", type=str, default=None)
-    args = p.parse_args(argv)
-
-    from .orchestration.tune_config import _STAGE_MODEL, run_tune
-
-    _model_to_stage = {"vgae": "autoencoder", "gat": "curriculum", "dqn": "fusion"}
-
-    if args.model in _STAGE_MODEL:
-        tune_stage = args.model
-    elif args.model in _model_to_stage:
-        tune_stage = _model_to_stage[args.model]
-    else:
-        log.error(
-            "For 'tune', --model must be a stage name (autoencoder, curriculum, fusion) "
-            "or model type (vgae, gat, dqn). Got: %s",
-            args.model,
-        )
-        return
-
-    log.info(
-        "Starting tune: stage=%s, dataset=%s, scale=%s, samples=%d",
-        tune_stage,
-        args.dataset or DEFAULT_DATASET,
-        args.scale,
-        args.num_samples,
-    )
-
-    results = run_tune(
-        stage=tune_stage,
-        dataset=args.dataset or DEFAULT_DATASET,
-        scale=args.scale,
-        num_samples=args.num_samples,
-        max_concurrent=args.max_concurrent,
-        grace_period=args.grace_period,
-        local=args.local,
-        max_epochs=args.tune_epochs,
-        patience=args.tune_patience,
-        warm_start_from=args.warm_start_from,
-    )
-
-    best = results.get_best_result(metric="val_loss", mode="min")
-    log.info("Tune complete. Best val_loss=%.6f", best.metrics.get("val_loss", float("inf")))
-    log.info("Best config: %s", best.config)
-
-
-def _run_sweep_pipeline(argv: list[str]) -> None:
-    """Dispatch full sweep pipeline DAG."""
-    p = argparse.ArgumentParser(prog="pipeline sweep-pipeline")
-    p.add_argument("--dataset", type=str, default=None)
-    p.add_argument("--scale", type=str, default="large")
-    p.add_argument("--num-samples", type=int, default=20)
-    p.add_argument("--max-concurrent", type=int, default=1)
-    p.add_argument("--tune-epochs", type=int, default=50)
-    p.add_argument("--tune-patience", type=int, default=15)
-    p.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--dry-run", action="store_true", default=False)
+    p.add_argument("--multi-seed", action="store_true", default=False)
     args = p.parse_args(argv)
 
-    from .orchestration.sweep_pipeline import run_sweep_pipeline
+    from graphids.config import STAGE_MODEL_MAP
 
-    log.info(
-        "Starting sweep pipeline: dataset=%s, scale=%s, samples=%d, resume=%s, dry_run=%s",
-        args.dataset or DEFAULT_DATASET,
-        args.scale,
-        args.num_samples,
-        args.resume,
-        args.dry_run,
-    )
+    from .orchestration.optuna_sweep import run_sweep, run_sweep_pipeline
 
-    run_sweep_pipeline(
-        dataset=args.dataset or DEFAULT_DATASET,
-        scale=args.scale,
-        num_samples=args.num_samples,
-        max_concurrent=args.max_concurrent,
-        tune_epochs=args.tune_epochs,
-        tune_patience=args.tune_patience,
-        resume=args.resume,
-        dry_run=args.dry_run,
-    )
+    dataset = args.dataset or DEFAULT_DATASET
+
+    if args.full_pipeline:
+        log.info(
+            "Starting sweep pipeline: dataset=%s, scale=%s, samples=%d, dry_run=%s",
+            dataset, args.scale, args.num_samples, args.dry_run,
+        )
+        run_sweep_pipeline(
+            dataset=dataset,
+            scale=args.scale,
+            num_samples=args.num_samples,
+            max_epochs=args.max_epochs,
+            patience=args.patience,
+            warm_start_from=args.warm_start_from,
+            dry_run=args.dry_run,
+            multi_seed=args.multi_seed,
+        )
+    elif args.stage:
+        # Accept model names as stage aliases
+        _model_to_stage = {"vgae": "autoencoder", "gat": "curriculum", "dqn": "fusion"}
+        sweep_stage = _model_to_stage.get(args.stage, args.stage)
+
+        if sweep_stage not in STAGE_MODEL_MAP:
+            log.error(
+                "--stage must be a stage name (autoencoder, curriculum, fusion) "
+                "or model type (vgae, gat, dqn). Got: %s",
+                args.stage,
+            )
+            return
+
+        log.info(
+            "Starting sweep: stage=%s, dataset=%s, scale=%s, samples=%d",
+            sweep_stage, dataset, args.scale, args.num_samples,
+        )
+        best_params = run_sweep(
+            stage=sweep_stage,
+            dataset=dataset,
+            scale=args.scale,
+            num_samples=args.num_samples,
+            max_epochs=args.max_epochs,
+            patience=args.patience,
+            warm_start_from=args.warm_start_from,
+        )
+        log.info("Sweep complete. Best params: %s", best_params)
+    else:
+        log.error("Must specify --stage <name> or --full-pipeline")
+        p.print_help()
+        raise SystemExit(1)
 
 
 def _run_lake(argv: list[str]) -> None:
@@ -379,8 +354,7 @@ def _run_orchestrate(argv: list[str]) -> None:
 _DISPATCH = {
     "show-config": _show_config,
     "preprocess": _run_preprocess,
-    "tune": _run_tune,
-    "sweep-pipeline": _run_sweep_pipeline,
+    "sweep": _run_sweep,
     "lake": _run_lake,
     "plan": _run_plan,
     "orchestrate": _run_orchestrate,
@@ -404,8 +378,8 @@ def _archive_previous(sdir: Path, log: logging.Logger) -> Path | None:
 
 
 def _log_stage_artifacts(cfg: PipelineConfig, stage: str, sdir: Path) -> None:
-    """Log stage artifacts to MLflow and populate the artifact cache."""
-    from graphids.pipeline.artifacts import put_artifact
+    """Log stage artifacts to MLflow for observability."""
+    import mlflow
 
     for artifact_name in [
         "best_model.pt",
@@ -417,7 +391,7 @@ def _log_stage_artifacts(cfg: PipelineConfig, stage: str, sdir: Path) -> None:
     ]:
         artifact_path = sdir / artifact_name
         if artifact_path.exists():
-            put_artifact(cfg, stage, artifact_path)
+            mlflow.log_artifact(str(artifact_path))
 
 
 def _write_lake_manifest(
