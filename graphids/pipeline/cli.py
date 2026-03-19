@@ -1,13 +1,15 @@
-"""Single CLI entry point.
+"""Single CLI entry point (Typer + Hydra).
 
-Training stages use Hydra override grammar (key=value):
+Training uses Hydra override grammar via the default command:
     python -m graphids.pipeline.cli stage=autoencoder model=vgae_large dataset=hcrl_sa
-    python -m graphids.pipeline.cli stage=curriculum model=gat_small auxiliary=kd_standard training.lr=0.001
-    python -m graphids.pipeline.cli show-config model=vgae_large dataset=hcrl_sa
 
-Non-training subcommands use argparse:
-    python -m graphids.pipeline.cli orchestrate --dataset hcrl_sa --seeds 42,123,456 --dry-run
-    python -m graphids.pipeline.cli lake --lake-action status
+All other subcommands use typed flags:
+    python -m graphids.pipeline.cli sweep --stage autoencoder --num-samples 20
+    python -m graphids.pipeline.cli orchestrate --dataset hcrl_sa --dry-run
+    python -m graphids.pipeline.cli daemon --status
+    python -m graphids.pipeline.cli lake --action status
+    python -m graphids.pipeline.cli show-config model=vgae_large dataset=hcrl_sa
+    python -m graphids.pipeline.cli preprocess --dataset hcrl_sa
 """
 
 from __future__ import annotations
@@ -15,18 +17,17 @@ from __future__ import annotations
 import torch.multiprocessing as mp
 
 # Must be called before any CUDA or multiprocessing usage.
-# Prevents "Cannot re-initialize CUDA in forked subprocess" errors
-# when DataLoader workers collate tensors after CUDA has been initialized
-# in the main process (e.g. by _score_difficulty in the curriculum stage).
 mp.set_start_method("spawn", force=True)
 
-import argparse
 import logging
 import os
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
+
+import typer
 
 from graphids.config import (
     DEFAULT_DATASET,
@@ -44,15 +45,12 @@ from .validate import validate
 
 log = logging.getLogger("pipeline")
 
-# Subcommands that bypass Hydra config composition
-_SUBCOMMANDS = frozenset({
-    "orchestrate",
-    "preprocess",
-    "sweep",
-    "lake",
-    "daemon",
-    "show-config",
-})
+app = typer.Typer(
+    name="graphids",
+    help="KD-GAT pipeline CLI",
+    add_completion=False,
+    no_args_is_help=False,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -61,36 +59,31 @@ _SUBCOMMANDS = frozenset({
 
 
 def _setup_mlflow(run_name: str, cfg: PipelineConfig, stage: str, tags: dict | None = None):
-    """Set up MLflow tracking and start a run. Returns the active run."""
+    """Set up MLflow tracking and start a run."""
     import mlflow
 
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     mlflow.set_experiment(f"kd-gat-{stage}")
-
-    # Use run_metadata() as the base tags — single source of truth
     mlflow_tags = run_metadata(cfg, stage)
     if tags:
         mlflow_tags.update(tags)
-
     return mlflow.start_run(run_name=run_name, tags=mlflow_tags)
 
 
 # ---------------------------------------------------------------------------
-# Training entry point (Hydra Compose API)
+# Training (default command — Hydra override grammar)
 # ---------------------------------------------------------------------------
 
 
 def _run_training(overrides: list[str]) -> None:
     """Compose config from Hydra overrides and dispatch a training stage."""
     from graphids.config._hydra_bridge import compose_config
+    from omegaconf import OmegaConf
 
     merged, stage = compose_config(overrides)
-
     if stage is None or stage not in STAGES:
         log.error("Unknown training stage: %s. Valid: %s", stage, list(STAGES.keys()))
         raise SystemExit(1)
-
-    from omegaconf import OmegaConf
 
     raw = OmegaConf.to_object(merged)
     raw.pop("stage", None)
@@ -99,186 +92,125 @@ def _run_training(overrides: list[str]) -> None:
     _run_single_stage(cfg, stage)
 
 
-def _show_config(overrides: list[str]) -> None:
+# ---------------------------------------------------------------------------
+# Subcommands
+# ---------------------------------------------------------------------------
+
+
+@app.command("show-config", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+def show_config(ctx: typer.Context):
     """Print resolved config as YAML without running."""
+    from graphids.config._hydra_bridge import compose_config
     from omegaconf import OmegaConf
 
-    from graphids.config._hydra_bridge import compose_config
-
-    merged, _stage = compose_config(overrides)
+    merged, _stage = compose_config(ctx.args)
     print(OmegaConf.to_yaml(merged))
 
 
-# ---------------------------------------------------------------------------
-# Non-training subcommands
-# ---------------------------------------------------------------------------
-
-
-def _run_preprocess(argv: list[str]) -> None:
+@app.command()
+def preprocess(dataset: Optional[str] = None):
     """Build preprocessed graph cache for a dataset."""
-    p = argparse.ArgumentParser(prog="pipeline preprocess")
-    p.add_argument("--dataset", type=str, default=None)
-    args = p.parse_args(argv)
-
     from graphids.config import resolve
-
-    dataset = args.dataset or DEFAULT_DATASET
-    cfg = resolve("vgae", "large", dataset=dataset)
-
-    log.info("Preprocessing dataset: %s", dataset)
     from graphids.core.preprocessing import PreprocessingPipeline
 
+    ds = dataset or DEFAULT_DATASET
+    cfg = resolve("vgae", "large", dataset=ds)
+    log.info("Preprocessing dataset: %s", ds)
     PreprocessingPipeline(cfg).load_dataset()
-    log.info("Preprocessed cache ready for %s", dataset)
+    log.info("Preprocessed cache ready for %s", ds)
 
 
-def _run_sweep(argv: list[str]) -> None:
-    """Dispatch Optuna HPO sweep (single-stage or full pipeline)."""
-    p = argparse.ArgumentParser(prog="pipeline sweep")
-    p.add_argument("--stage", type=str, default=None, help="Single stage to sweep (autoencoder, curriculum, fusion)")
-    p.add_argument("--full-pipeline", action="store_true", default=False, help="Run full 3-stage sweep pipeline")
-    p.add_argument("--dataset", type=str, default=None)
-    p.add_argument("--scale", type=str, default="large")
-    p.add_argument("--num-samples", type=int, default=20)
-    p.add_argument("--max-epochs", type=int, default=50)
-    p.add_argument("--patience", type=int, default=15)
-    p.add_argument("--warm-start-from", type=str, default=None)
-    p.add_argument("--dry-run", action="store_true", default=False)
-    p.add_argument("--multi-seed", action="store_true", default=False)
-    args = p.parse_args(argv)
-
+@app.command()
+def sweep(
+    stage: Optional[str] = None,
+    full_pipeline: bool = False,
+    dataset: Optional[str] = None,
+    scale: str = "large",
+    num_samples: int = 20,
+    max_epochs: int = 50,
+    patience: int = 15,
+    warm_start_from: Optional[str] = None,
+    dry_run: bool = False,
+    multi_seed: bool = False,
+):
+    """Run Optuna HPO sweep (single-stage or full pipeline)."""
     from graphids.config import STAGE_MODEL_MAP
-
     from .orchestration.optuna_sweep import run_sweep, run_sweep_pipeline
 
-    dataset = args.dataset or DEFAULT_DATASET
+    ds = dataset or DEFAULT_DATASET
 
-    if args.full_pipeline:
-        log.info(
-            "Starting sweep pipeline: dataset=%s, scale=%s, samples=%d, dry_run=%s",
-            dataset, args.scale, args.num_samples, args.dry_run,
-        )
+    if full_pipeline:
         run_sweep_pipeline(
-            dataset=dataset,
-            scale=args.scale,
-            num_samples=args.num_samples,
-            max_epochs=args.max_epochs,
-            patience=args.patience,
-            warm_start_from=args.warm_start_from,
-            dry_run=args.dry_run,
-            multi_seed=args.multi_seed,
+            dataset=ds, scale=scale, num_samples=num_samples, max_epochs=max_epochs,
+            patience=patience, warm_start_from=warm_start_from, dry_run=dry_run,
+            multi_seed=multi_seed,
         )
-    elif args.stage:
-        # Accept model names as stage aliases
+    elif stage:
         _model_to_stage = {"vgae": "autoencoder", "gat": "curriculum", "dqn": "fusion"}
-        sweep_stage = _model_to_stage.get(args.stage, args.stage)
-
+        sweep_stage = _model_to_stage.get(stage, stage)
         if sweep_stage not in STAGE_MODEL_MAP:
-            log.error(
-                "--stage must be a stage name (autoencoder, curriculum, fusion) "
-                "or model type (vgae, gat, dqn). Got: %s",
-                args.stage,
-            )
-            return
-
-        log.info(
-            "Starting sweep: stage=%s, dataset=%s, scale=%s, samples=%d",
-            sweep_stage, dataset, args.scale, args.num_samples,
+            log.error("--stage must be autoencoder/curriculum/fusion or vgae/gat/dqn. Got: %s", stage)
+            raise SystemExit(1)
+        best = run_sweep(
+            stage=sweep_stage, dataset=ds, scale=scale, num_samples=num_samples,
+            max_epochs=max_epochs, patience=patience, warm_start_from=warm_start_from,
         )
-        best_params = run_sweep(
-            stage=sweep_stage,
-            dataset=dataset,
-            scale=args.scale,
-            num_samples=args.num_samples,
-            max_epochs=args.max_epochs,
-            patience=args.patience,
-            warm_start_from=args.warm_start_from,
-        )
-        log.info("Sweep complete. Best params: %s", best_params)
+        log.info("Sweep complete. Best params: %s", best)
     else:
         log.error("Must specify --stage <name> or --full-pipeline")
-        p.print_help()
         raise SystemExit(1)
 
 
-def _run_lake(argv: list[str]) -> None:
-    """Dispatch lake management commands."""
-    p = argparse.ArgumentParser(prog="pipeline lake")
-    p.add_argument(
-        "--lake-action",
-        type=str,
-        default="status",
-        choices=["rebuild-catalog", "verify", "status"],
-    )
-    args = p.parse_args(argv)
-
+@app.command()
+def lake(action: str = typer.Option("status", help="rebuild-catalog | verify | status")):
+    """Data lake management."""
     from graphids.config import lake_catalog_path, lake_root_from_env
 
     lake_root = lake_root_from_env()
     if lake_root is None:
         log.error("KD_GAT_LAKE_ROOT not set. Run: export KD_GAT_LAKE_ROOT=/fs/ess/PAS1266/kd-gat")
-        return
-
-    action = args.lake_action
+        raise SystemExit(1)
 
     if action == "rebuild-catalog":
         from graphids.pipeline.catalog import rebuild_catalog
-
-        catalog_path = rebuild_catalog(lake_root)
-        log.info("Catalog rebuilt: %s", catalog_path)
-
+        log.info("Catalog rebuilt: %s", rebuild_catalog(lake_root))
     elif action == "verify":
         from graphids.pipeline.manifest import verify_manifest
-
-        errors_total = 0
-        run_count = 0
+        errors_total = run_count = 0
         for tier_dir in [lake_root / "production", lake_root / "dev"]:
             if not tier_dir.exists():
                 continue
             for manifest_file in tier_dir.rglob("_manifest.json"):
-                run_dir = manifest_file.parent
-                ok, errors = verify_manifest(run_dir)
+                ok, errors = verify_manifest(manifest_file.parent)
                 run_count += 1
                 if not ok:
                     errors_total += len(errors)
-                    log.warning("FAILED: %s — %s", run_dir, "; ".join(errors))
+                    log.warning("FAILED: %s — %s", manifest_file.parent, "; ".join(errors))
         log.info("Verified %d runs, %d errors", run_count, errors_total)
-
     elif action == "status":
         from graphids.pipeline.catalog import catalog_status
-
-        cat_path = lake_catalog_path(lake_root)
-        status = catalog_status(cat_path)
+        status = catalog_status(lake_catalog_path(lake_root))
         if not status.get("exists"):
-            log.info("Lake root: %s", lake_root)
-            log.info(
-                "Catalog: not built yet. Run: python -m graphids.pipeline.cli lake --lake-action rebuild-catalog"
-            )
+            log.info("Catalog not built. Run: python -m graphids.pipeline.cli lake --action rebuild-catalog")
             return
-        log.info("Lake root: %s", lake_root)
-        log.info("Total runs: %d", status["total_runs"])
-        log.info("By stage: %s", status["by_stage"])
-        log.info("By dataset: %s", status["by_dataset"])
+        log.info("Lake: %d runs | stages: %s | datasets: %s",
+                 status["total_runs"], status["by_stage"], status["by_dataset"])
 
 
-
-def _run_daemon(argv: list[str]) -> None:
-    """Manage the Dagster daemon SLURM job (launch/status/stop)."""
-    p = argparse.ArgumentParser(prog="pipeline daemon")
-    p.add_argument("--status", action="store_true", default=False, help="Show daemon connection info")
-    p.add_argument("--stop", action="store_true", default=False, help="Cancel running daemon job")
-    p.add_argument("--resubmit", action="store_true", default=False, help="Auto-resubmit before timeout")
-    p.add_argument("--time", type=str, default=None, help="Override walltime (e.g. 48:00:00)")
-    args = p.parse_args(argv)
-
+@app.command()
+def daemon(
+    status: bool = False,
+    stop: bool = False,
+    resubmit: bool = False,
+    time_override: Optional[str] = typer.Option(None, "--time", help="Override walltime"),
+):
+    """Manage Dagster daemon SLURM job."""
     import subprocess
 
     project_root = Path(__file__).resolve().parent.parent.parent
     connection_file = project_root / ".dagster" / "connection_info.txt"
-    launch_script = project_root / "scripts" / "slurm" / "launch_dagster.sh"
 
-    if args.status:
-        # Check squeue for running daemon
+    if status:
         result = subprocess.run(
             ["squeue", "-u", os.environ["USER"], "-n", "dagster-daemon", "-h", "-o", "%i %T %N %M"],
             capture_output=True, text=True,
@@ -291,7 +223,7 @@ def _run_daemon(argv: list[str]) -> None:
             log.info("No dagster daemon job running.")
         return
 
-    if args.stop:
+    if stop:
         result = subprocess.run(
             ["squeue", "-u", os.environ["USER"], "-n", "dagster-daemon", "-h", "-o", "%i"],
             capture_output=True, text=True,
@@ -306,59 +238,33 @@ def _run_daemon(argv: list[str]) -> None:
             log.info("No dagster daemon job to cancel.")
         return
 
-    # Launch via the shell script
-    cmd = ["bash", str(launch_script)]
-    if args.resubmit:
+    cmd = ["bash", str(project_root / "scripts" / "slurm" / "launch_dagster.sh")]
+    if resubmit:
         cmd.append("--resubmit")
-    if args.time:
-        cmd.extend(["--time", args.time])
-
+    if time_override:
+        cmd.extend(["--time", time_override])
     subprocess.run(cmd, check=True)
 
 
-def _run_orchestrate(argv: list[str]) -> None:
-    """Dispatch pipeline via Dagster fire-and-forget (SLURM dependency chains)."""
-    p = argparse.ArgumentParser(prog="pipeline orchestrate")
-    p.add_argument("--dataset", type=str, default=None)
-    p.add_argument("--seeds", type=str, default=None)
-    p.add_argument("--dry-run", action="store_true", default=False)
-    args = p.parse_args(argv)
-
+@app.command()
+def orchestrate(
+    dataset: Optional[str] = None,
+    seeds: Optional[str] = None,
+    dry_run: bool = False,
+):
+    """Submit pipeline via fire-and-forget SLURM dependency chains."""
     from .orchestration.dagster_defs import fire_and_forget
 
-    dataset = args.dataset or DEFAULT_DATASET
-    seeds = None
-    if args.seeds:
+    ds = dataset or DEFAULT_DATASET
+    seed_list = None
+    if seeds:
         from graphids.config import parse_seeds
+        seed_list = parse_seeds(seeds)
 
-        seeds = parse_seeds(args.seeds)
-
-    log.info(
-        "Orchestrate (fire-and-forget): dataset=%s, seeds=%s, dry_run=%s",
-        dataset,
-        seeds,
-        args.dry_run,
-    )
-
-    job_ids = fire_and_forget(dataset=dataset, seeds=seeds, dry_run=args.dry_run)
-
+    job_ids = fire_and_forget(dataset=ds, seeds=seed_list, dry_run=dry_run)
     log.info("Submitted %d jobs:", len(job_ids))
     for name, jid in job_ids.items():
         log.info("  %s: %s", name, jid)
-
-
-# ---------------------------------------------------------------------------
-# Subcommand dispatch
-# ---------------------------------------------------------------------------
-
-_DISPATCH = {
-    "show-config": _show_config,
-    "preprocess": _run_preprocess,
-    "sweep": _run_sweep,
-    "lake": _run_lake,
-    "orchestrate": _run_orchestrate,
-    "daemon": _run_daemon,
-}
 
 
 # ---------------------------------------------------------------------------
@@ -366,8 +272,8 @@ _DISPATCH = {
 # ---------------------------------------------------------------------------
 
 
-def _archive_previous(sdir: Path, log: logging.Logger) -> Path | None:
-    """Archive a completed run directory before re-running. Returns archive path or None."""
+def _archive_previous(sdir: Path) -> Path | None:
+    """Archive a completed run directory before re-running."""
     if not (sdir / "config.json").exists():
         return None
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -377,44 +283,24 @@ def _archive_previous(sdir: Path, log: logging.Logger) -> Path | None:
     return archive
 
 
-def _log_stage_artifacts(cfg: PipelineConfig, stage: str, sdir: Path) -> None:
-    """Log stage artifacts to MLflow for observability."""
+def _log_stage_artifacts(sdir: Path) -> None:
+    """Log stage artifacts to MLflow."""
     import mlflow
-
-    for artifact_name in [
-        "best_model.pt",
-        "config.json",
-        "embeddings.npz",
-        "attention_weights.npz",
-        "dqn_policy.json",
-        "explanations.npz",
-    ]:
-        artifact_path = sdir / artifact_name
-        if artifact_path.exists():
-            mlflow.log_artifact(str(artifact_path))
+    for name in ["best_model.pt", "config.json", "embeddings.npz",
+                 "attention_weights.npz", "dqn_policy.json", "explanations.npz"]:
+        p = sdir / name
+        if p.exists():
+            mlflow.log_artifact(str(p))
 
 
-def _write_lake_manifest(
-    cfg: PipelineConfig,
-    stage: str,
-    sdir: Path,
-    log: logging.Logger,
-    metrics: dict | None = None,
-) -> None:
+def _write_lake_manifest(cfg: PipelineConfig, stage: str, sdir: Path, metrics: dict | None = None) -> None:
     """Write _manifest.json for the ESS data lake."""
     try:
         from graphids.pipeline.manifest import write_manifest
-
-        aux_type = cfg.auxiliaries[0].type if cfg.auxiliaries else "none"
         write_manifest(
-            sdir,
-            dataset=cfg.dataset,
-            model_type=cfg.model_type,
-            scale=cfg.scale,
-            stage=stage,
-            auxiliaries=aux_type,
-            seed=cfg.seed,
-            metrics=metrics,
+            sdir, dataset=cfg.dataset, model_type=cfg.model_type, scale=cfg.scale,
+            stage=stage, auxiliaries=cfg.auxiliaries[0].type if cfg.auxiliaries else "none",
+            seed=cfg.seed, metrics=metrics,
         )
     except Exception as e:
         log.warning("Failed to write manifest: %s", e)
@@ -425,41 +311,30 @@ def _write_lake_manifest(
 # ---------------------------------------------------------------------------
 
 
-def _run_single_stage(
-    cfg: PipelineConfig,
-    stage: str,
-) -> None:
-    """Execute a single training stage with MLflow tracking and artifact caching."""
-    # ---- Validate ----
+def _run_single_stage(cfg: PipelineConfig, stage: str) -> None:
+    """Execute a single training stage with MLflow tracking."""
     validate(cfg, stage)
 
-    # ---- Archive completed run if re-running same config ----
     sdir = stage_dir(cfg, stage)
-    archive = _archive_previous(sdir, log)
+    archive = _archive_previous(sdir)
 
-    # ---- Save frozen config ----
     cfg_out = config_path(cfg, stage)
     cfg.save(cfg_out)
-    log.info("Frozen config: %s", cfg_out)
 
-    # ---- Run ID ----
     run_name = run_id(cfg, stage)
     log.info("Run started: %s (seed=%d)", run_name, cfg.seed)
 
-    # ---- Collect environment metadata ----
+    # Environment metadata
     slurm_job_id = os.environ.get("SLURM_JOB_ID")
     gpu_name = None
     try:
         import torch
-
         if torch.cuda.is_available():
             gpu_name = torch.cuda.get_device_name(0)
             torch.cuda.reset_peak_memory_stats()
     except Exception:
         pass
 
-    # ---- Enrichment tags (beyond run_metadata) ----
-    # sweep_id and user_tags are now in run_metadata() via EnvironmentSettings
     if SWEEP_ID:
         run_type = "sweep_best"
     elif cfg.training.max_epochs < 10:
@@ -473,112 +348,64 @@ def _run_single_stage(
         if tp.parent.parent.name and tp.parent.name:
             teacher_run_id_str = f"{tp.parent.parent.name}/{tp.parent.name}"
 
-    # ---- MLflow run context ----
     import mlflow
 
-    extra_tags = {
-        "slurm_job_id": slurm_job_id or "",
-        "gpu_name": gpu_name or "",
-        "run_type": run_type,
-    }
+    extra_tags = {"slurm_job_id": slurm_job_id or "", "gpu_name": gpu_name or "", "run_type": run_type}
     if teacher_run_id_str:
         extra_tags["teacher_run_id"] = teacher_run_id_str
 
-    # ---- Dispatch ----
     t_start = time.monotonic()
     with _setup_mlflow(run_name, cfg, stage, tags=extra_tags):
         try:
-            # Log config as params
-            mlflow.log_params(
-                {
-                    "dataset": cfg.dataset,
-                    "model_type": cfg.model_type,
-                    "scale": cfg.scale,
-                    "stage": stage,
-                    "has_kd": cfg.has_kd,
-                    "seed": cfg.seed,
-                    "batch_size": cfg.training.batch_size,
-                    "max_epochs": cfg.training.max_epochs,
-                    "lr": cfg.training.lr,
-                }
-            )
-
-            # Log frozen config as artifact
+            mlflow.log_params({
+                "dataset": cfg.dataset, "model_type": cfg.model_type, "scale": cfg.scale,
+                "stage": stage, "has_kd": cfg.has_kd, "seed": cfg.seed,
+                "batch_size": cfg.training.batch_size, "max_epochs": cfg.training.max_epochs,
+                "lr": cfg.training.lr,
+            })
             mlflow.log_artifact(str(cfg_out))
 
             from .stages import STAGE_FNS
-
             result = STAGE_FNS[stage](cfg)
 
-            t_end = time.monotonic()
-            duration_seconds = t_end - t_start
-
-            # Capture GPU peak memory
+            duration = time.monotonic() - t_start
             peak_gpu_mb = None
             try:
                 import torch
-
                 if torch.cuda.is_available():
                     peak_gpu_mb = torch.cuda.max_memory_allocated() / (1024**2)
             except Exception:
                 pass
 
-            log.info(
-                "Stage '%s' complete (%.1fs, peak_gpu=%.0fMB). Result: %s",
-                stage,
-                duration_seconds,
-                peak_gpu_mb or 0.0,
-                result,
-            )
-
-            # Extract stage metrics from result dict (all stages now return {"metrics": {...}})
-            stage_metrics = {}
-            if isinstance(result, dict):
-                stage_metrics = result.get("metrics", {})
-
-            # Enrich with runtime info
-            stage_metrics["duration_seconds"] = duration_seconds
+            stage_metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
+            stage_metrics["duration_seconds"] = duration
             if peak_gpu_mb is not None:
                 stage_metrics["peak_gpu_mb"] = peak_gpu_mb
 
-            # Log scalar metrics to MLflow
-            mlflow_metrics = {"duration_seconds": duration_seconds}
-            if peak_gpu_mb is not None:
-                mlflow_metrics["peak_gpu_mb"] = peak_gpu_mb
-            for k, v in stage_metrics.items():
-                if isinstance(v, (int, float)):
-                    mlflow_metrics[k] = v
+            mlflow_metrics = {k: v for k, v in stage_metrics.items() if isinstance(v, (int, float))}
             mlflow.log_metrics(mlflow_metrics)
 
-            _log_stage_artifacts(cfg, stage, sdir)
-            _write_lake_manifest(cfg, stage, sdir, log, metrics=stage_metrics)
+            _log_stage_artifacts(sdir)
+            _write_lake_manifest(cfg, stage, sdir, metrics=stage_metrics)
 
-            # Success → delete archive
             if archive and archive.exists():
                 import shutil
-
                 shutil.rmtree(archive, ignore_errors=True)
 
             mlflow.set_tag("status", "success")
-            log.info("Run completed successfully")
+            log.info("Stage '%s' complete (%.1fs, peak_gpu=%.0fMB)", stage, duration, peak_gpu_mb or 0.0)
 
         except Exception as e:
-            t_end = time.monotonic()
-            duration_seconds = t_end - t_start
-
-            # Failure → restore archive
+            duration = time.monotonic() - t_start
             if archive and archive.exists():
                 if sdir.exists():
                     import shutil
-
                     shutil.rmtree(sdir, ignore_errors=True)
                 archive.rename(sdir)
                 log.warning("Restored archive after failure: %s", sdir)
-
             mlflow.set_tag("status", "failed")
             mlflow.set_tag("failure_reason", str(e)[:250])
-            mlflow.log_metrics({"duration_seconds": duration_seconds})
-
+            mlflow.log_metrics({"duration_seconds": duration})
             log.error("Run failed: %s", str(e))
             raise
 
@@ -587,17 +414,22 @@ def _run_single_stage(
 # Entry point
 # ---------------------------------------------------------------------------
 
+_SUBCOMMANDS = frozenset({
+    "show-config", "preprocess", "sweep", "lake", "daemon", "orchestrate",
+})
+
 
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s  %(name)-20s  %(levelname)-7s  %(message)s",
     )
-
     args = argv if argv is not None else sys.argv[1:]
 
-    if args and args[0] in _SUBCOMMANDS:
-        _DISPATCH[args[0]](args[1:])
+    # If first arg is a subcommand or --help, let Typer handle it.
+    # Otherwise treat all args as Hydra overrides for training.
+    if not args or args[0] in _SUBCOMMANDS or args[0].startswith("-"):
+        app(args)
     else:
         _run_training(args)
 
