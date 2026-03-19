@@ -7,7 +7,7 @@ Public API:
 """
 
 from graphids.pipeline.orchestration.job import ResourceSpec
-from graphids.pipeline.orchestration.pipes_slurm import PipesSlurmClient, SlurmJobFailed
+from graphids.pipeline.orchestration.slurm_client import PipesSlurmClient, SlurmJobFailed
 
 
 # Lazy imports for Dagster (heavy dependency)

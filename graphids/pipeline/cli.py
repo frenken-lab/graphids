@@ -49,7 +49,6 @@ _SUBCOMMANDS = frozenset({
     "orchestrate",
     "preprocess",
     "sweep",
-    "plan",
     "lake",
     "daemon",
     "show-config",
@@ -262,59 +261,6 @@ def _run_lake(argv: list[str]) -> None:
         log.info("By dataset: %s", status["by_dataset"])
 
 
-def _run_plan(argv: list[str]) -> None:
-    """Build and save (or preview) an execution plan."""
-    p = argparse.ArgumentParser(prog="pipeline plan")
-    p.add_argument("--dataset", type=str, default=None)
-    p.add_argument("--seeds", type=str, default=None)
-    p.add_argument("--variant", type=str, default="large")
-    p.add_argument("--dry-run", action="store_true", default=False)
-    p.add_argument("--plan-output", type=str, default=None)
-    args = p.parse_args(argv)
-
-    from graphids.config import parse_seeds
-
-    from .orchestration.plan import build_plan
-
-    dataset = args.dataset or DEFAULT_DATASET
-    seeds = parse_seeds(args.seeds) if args.seeds else [42]
-    variant = args.variant
-
-    plan = build_plan(dataset=dataset, seeds=seeds, variant=variant)
-
-    if args.dry_run:
-        log.info(
-            "Plan: %s | variant=%s | %d seeds | %d jobs | hash=%s",
-            dataset,
-            variant,
-            len(seeds),
-            len(plan.jobs),
-            plan.plan_hash,
-        )
-        for job in plan.jobs:
-            deps = ", ".join(d.job_id for d in job.depends_on) or "(none)"
-            log.info(
-                "  %s  [%s %s %s]  deps=[%s]  res=%s",
-                job.id,
-                job.model_type,
-                job.scale,
-                job.stage,
-                deps,
-                f"{job.resources.partition}/{job.resources.memory_gb}GB/{job.resources.gpus}gpu",
-            )
-        return
-
-    if args.plan_output:
-        out_path = Path(args.plan_output)
-    else:
-        from graphids.config import lake_root_from_env
-
-        lake = lake_root_from_env() or Path("experimentruns")
-        out_path = lake / dataset / "plan.json"
-
-    plan.save(out_path)
-    log.info("Plan saved: %s (%d jobs, hash=%s)", out_path, len(plan.jobs), plan.plan_hash)
-
 
 def _run_daemon(argv: list[str]) -> None:
     """Manage the Dagster daemon SLURM job (launch/status/stop)."""
@@ -376,7 +322,6 @@ def _run_orchestrate(argv: list[str]) -> None:
     p.add_argument("--dataset", type=str, default=None)
     p.add_argument("--seeds", type=str, default=None)
     p.add_argument("--dry-run", action="store_true", default=False)
-    p.add_argument("--fire-and-forget", action="store_true", default=False)
     args = p.parse_args(argv)
 
     from .orchestration.dagster_defs import fire_and_forget
@@ -411,7 +356,6 @@ _DISPATCH = {
     "preprocess": _run_preprocess,
     "sweep": _run_sweep,
     "lake": _run_lake,
-    "plan": _run_plan,
     "orchestrate": _run_orchestrate,
     "daemon": _run_daemon,
 }

@@ -1,17 +1,15 @@
-"""Shared SLURM primitives: sbatch generation, sacct polling, adaptive retry.
+"""SLURM job management: sbatch generation, submission, polling, adaptive retry.
 
-Reusable by any orchestrator (Dagster, sweep pipeline, manual submission).
-No Dagster or framework-specific imports — pure SLURM + config interactions.
-
-Consumers:
-- ``PipesSlurmClient`` in ``pipes_slurm.py`` (Dagster orchestration)
-- ``fire_and_forget()`` in ``dagster_defs.py`` (dependency chains)
-- Future: any orchestrator that needs SLURM submission
+Provides both low-level primitives (submit_sbatch, sacct_query) and the
+high-level PipesSlurmClient (submit + poll + validate artifacts + checkpoint
+discovery). Used by Dagster assets and fire-and-forget mode.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import subprocess
 import time
 from datetime import timedelta
@@ -79,10 +77,7 @@ del _raw_resources
 
 
 def get_resources(model: str, scale: str, stage: str) -> ResourceSpec:
-    """Look up resource profile for a (model, scale, stage) tuple.
-
-    Raises KeyError with a helpful message if not found.
-    """
+    """Look up resource profile for a (model, scale, stage) tuple."""
     key = (model, scale, stage)
     if key not in RESOURCE_PROFILES:
         available = sorted(RESOURCE_PROFILES.keys())
@@ -94,8 +89,10 @@ def get_resources(model: str, scale: str, stage: str) -> ResourceSpec:
 
 
 # ---------------------------------------------------------------------------
-# Resource scaling for adaptive retry
+# Adaptive retry: resource scaling + state persistence
 # ---------------------------------------------------------------------------
+
+_RETRY_STATE_DIR = Path(PROJECT_ROOT) / "slurm_logs" / "dagster_retry"
 
 
 def scale_resources(resources: ResourceSpec, failure_reason: str) -> ResourceSpec:
@@ -105,16 +102,40 @@ def scale_resources(resources: ResourceSpec, failure_reason: str) -> ResourceSpe
         return resources
 
     updates: dict = {}
-
     if "scale_mem" in reaction:
         updates["memory_gb"] = int(resources.memory_gb * reaction["scale_mem"])
-
     if "scale_time" in reaction:
         total_secs = resources.walltime.total_seconds()
-        scaled_secs = int(total_secs * reaction["scale_time"])
-        updates["walltime"] = timedelta(seconds=scaled_secs)
+        updates["walltime"] = timedelta(seconds=int(total_secs * reaction["scale_time"]))
 
     return resources.model_copy(update=updates) if updates else resources
+
+
+def save_retry_state(
+    asset_key: str, reason: str, node: str | None = None, ckpt_path: str | None = None
+) -> None:
+    """Write retry metadata to slurm_logs/dagster_retry/{asset_key}.json."""
+    _RETRY_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    state = {"reason": reason, "node": node, "ckpt_path": ckpt_path}
+    (_RETRY_STATE_DIR / f"{asset_key}.json").write_text(json.dumps(state, indent=2))
+
+
+def load_retry_state(asset_key: str) -> dict | None:
+    """Read retry metadata from previous attempt, if any."""
+    path = _RETRY_STATE_DIR / f"{asset_key}.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def clear_retry_state(asset_key: str) -> None:
+    """Remove retry state after successful completion."""
+    path = _RETRY_STATE_DIR / f"{asset_key}.json"
+    if path.exists():
+        path.unlink()
 
 
 # ---------------------------------------------------------------------------
@@ -133,119 +154,66 @@ def generate_sbatch_script(
     auxiliaries: str = "none",
     ckpt_path: str | None = None,
     dependency_job_id: str | None = None,
-    pipes_context_path: str | None = None,
-    pipes_messages_path: str | None = None,
     project_root: str | None = None,
     production: bool = True,
 ) -> str:
-    """Generate a complete sbatch script for one pipeline stage.
-
-    Sources _preamble.sh for env setup and _epilog.sh for cleanup.
-    Uses build_cli_cmd() for the stage command.
-    """
+    """Generate a complete sbatch script for one pipeline stage."""
     root = project_root or str(PROJECT_ROOT)
+    cli_command = " ".join(build_cli_cmd(
+        stage=stage, model=model, scale=scale, dataset=dataset,
+        seed=seed, auxiliaries=auxiliaries,
+    ))
 
-    # Build the CLI command string
-    cmd_list = build_cli_cmd(
-        stage=stage,
-        model=model,
-        scale=scale,
-        dataset=dataset,
-        seed=seed,
-        auxiliaries=auxiliaries,
-    )
-    cli_command = " ".join(cmd_list)
-
-    # Build SBATCH directives
     lines = [
         "#!/usr/bin/env bash",
         f"#SBATCH --account={SLURM_ACCOUNT}",
         f"#SBATCH --partition={resources.partition}",
     ]
-
     if resources.gpus > 0:
         lines.append(f"#SBATCH --gres=gpu:{SLURM_GPU_TYPE}:{resources.gpus}")
-
-    lines.extend(
-        [
-            "#SBATCH --nodes=1 --ntasks=1",
-            f"#SBATCH --cpus-per-task={resources.cpus}",
-            f"#SBATCH --mem={resources.mem_slurm}",
-            f"#SBATCH --time={resources.walltime_slurm}",
-            f"#SBATCH --job-name=kd-gat-{stage}-{model}-{scale}",
-            "#SBATCH --output=slurm_logs/dagster_%j.out",
-            "#SBATCH --error=slurm_logs/dagster_%j.err",
-            "#SBATCH --signal=B:USR1@180",
-        ]
-    )
-
+    lines.extend([
+        "#SBATCH --nodes=1 --ntasks=1",
+        f"#SBATCH --cpus-per-task={resources.cpus}",
+        f"#SBATCH --mem={resources.mem_slurm}",
+        f"#SBATCH --time={resources.walltime_slurm}",
+        f"#SBATCH --job-name=kd-gat-{stage}-{model}-{scale}",
+        "#SBATCH --output=slurm_logs/dagster_%j.out",
+        "#SBATCH --error=slurm_logs/dagster_%j.err",
+        "#SBATCH --signal=B:USR1@180",
+    ])
     if resources.exclude_nodes:
         lines.append(f"#SBATCH --exclude={resources.exclude_nodes}")
-
     if dependency_job_id:
         lines.append(f"#SBATCH --dependency=afterok:{dependency_job_id}")
 
-    # Script body
-    lines.extend(
-        [
-            "",
-            f'cd "{root}"',
-            "source scripts/slurm/_preamble.sh",
-            "",
-        ]
-    )
-
+    lines.extend(["", f'cd "{root}"', "source scripts/slurm/_preamble.sh", ""])
     if production:
         lines.append("export KD_GAT_PRODUCTION=1")
-
-    # Checkpoint resume (set by orchestrator on TIMEOUT resubmit)
     if ckpt_path:
         lines.append(f'export KD_GAT_CKPT_PATH="{ckpt_path}"')
-
     lines.append("")
-
-    # Dagster Pipes env vars (NFS temp file transport)
-    if pipes_context_path:
-        lines.append(f'export DAGSTER_PIPES_CONTEXT="{pipes_context_path}"')
-    if pipes_messages_path:
-        lines.append(f'export DAGSTER_PIPES_MESSAGES="{pipes_messages_path}"')
-    if pipes_context_path or pipes_messages_path:
-        lines.append("")
-
-    # For CPU-only jobs, skip CUDA config
     if resources.gpus == 0:
-        lines.append("export SKIP_CUDA_CONF=1")
-        lines.append("")
+        lines.extend(["export SKIP_CUDA_CONF=1", ""])
 
-    lines.extend(
-        [
-            "# Stage command (generated by build_cli_cmd)",
-            f"{cli_command} &",
-            "_KD_CHILD_PID=$!",
-            "wait $_KD_CHILD_PID",
-            "EXIT_CODE=$?",
-            "",
-            "source scripts/slurm/_epilog.sh",
-            "exit $EXIT_CODE",
-        ]
-    )
-
+    lines.extend([
+        f"{cli_command} &",
+        "_KD_CHILD_PID=$!",
+        "wait $_KD_CHILD_PID",
+        "EXIT_CODE=$?",
+        "",
+        "source scripts/slurm/_epilog.sh",
+        "exit $EXIT_CODE",
+    ])
     return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------------------
-# SLURM submission and polling (standalone functions)
+# SLURM submission and polling
 # ---------------------------------------------------------------------------
 
-#: Terminal SLURM job states (no further transitions possible)
 TERMINAL_STATES = frozenset({
-    "COMPLETED",
-    "FAILED",
-    "CANCELLED",
-    "TIMEOUT",
-    "OUT_OF_MEMORY",
-    "NODE_FAIL",
-    "PREEMPTED",
+    "COMPLETED", "FAILED", "CANCELLED", "TIMEOUT",
+    "OUT_OF_MEMORY", "NODE_FAIL", "PREEMPTED",
 })
 
 
@@ -253,56 +221,169 @@ def submit_sbatch(script_path: Path | str, *, cwd: str | None = None) -> str:
     """Submit an sbatch script, return the job ID."""
     result = subprocess.run(
         ["sbatch", "--parsable", str(script_path)],
-        capture_output=True,
-        text=True,
-        check=True,
+        capture_output=True, text=True, check=True,
         cwd=cwd or str(PROJECT_ROOT),
     )
-    job_id = result.stdout.strip().split(";")[0]  # parsable may include cluster
-    return job_id
+    return result.stdout.strip().split(";")[0]
 
 
 def sacct_query(job_id: str) -> tuple[str, str, str]:
-    """Query sacct for job state.
-
-    Returns (state, reason, node_name).
-    """
+    """Query sacct for (state, reason, node_name)."""
     result = subprocess.run(
-        [
-            "sacct",
-            "-j",
-            job_id,
-            "-X",  # no sub-steps
-            "--parsable2",
-            "--noheader",
-            "-o",
-            "State,Reason,NodeList",
-        ],
-        capture_output=True,
-        text=True,
+        ["sacct", "-j", job_id, "-X", "--parsable2", "--noheader", "-o", "State,Reason,NodeList"],
+        capture_output=True, text=True,
     )
     if result.returncode != 0 or not result.stdout.strip():
         return "PENDING", "", ""
-
-    # Take first line (the main job, not steps)
     parts = result.stdout.strip().split("\n")[0].split("|")
-    state = parts[0].split()[0] if parts else "UNKNOWN"  # strip trailing modifiers
-    reason = parts[1] if len(parts) > 1 else ""
-    node = parts[2] if len(parts) > 2 else ""
-    return state, reason, node
+    state = parts[0].split()[0] if parts else "UNKNOWN"
+    return state, parts[1] if len(parts) > 1 else "", parts[2] if len(parts) > 2 else ""
 
 
 def poll_until_done(job_id: str, *, poll_interval: int = 30) -> tuple[str, str, str]:
-    """Poll sacct until job reaches a terminal state.
-
-    Returns (state, reason, node_name).
-    """
+    """Poll sacct until job reaches a terminal state."""
     while True:
         state, reason, node = sacct_query(job_id)
-
         if state in TERMINAL_STATES:
             log.info("Job %s reached state: %s (reason: %s)", job_id, state, reason)
             return state, reason, node
-
         log.debug("Job %s state: %s, polling in %ds...", job_id, state, poll_interval)
         time.sleep(poll_interval)
+
+
+# ---------------------------------------------------------------------------
+# PipesSlurmClient: high-level submit + poll + validate
+# ---------------------------------------------------------------------------
+
+
+class PipesSlurmClient:
+    """Submit sbatch jobs and poll via sacct. Validates artifacts on completion."""
+
+    def __init__(
+        self,
+        project_root: str | None = None,
+        poll_interval: int = 30,
+        dry_run: bool = False,
+    ):
+        self.project_root = project_root or str(PROJECT_ROOT)
+        self.poll_interval = poll_interval
+        self.dry_run = dry_run
+        self._scripts_dir = Path(self.project_root) / "slurm_logs"
+
+    def _write_script(
+        self,
+        stage: str, model: str, scale: str, dataset: str, resources: ResourceSpec,
+        *, seed: int | None = None, auxiliaries: str = "none",
+        ckpt_path: str | None = None, dependency_job_id: str | None = None,
+    ) -> tuple[str, Path]:
+        """Generate sbatch script, write to disk, return (content, path)."""
+        script = generate_sbatch_script(
+            stage=stage, model=model, scale=scale, dataset=dataset, resources=resources,
+            seed=seed, auxiliaries=auxiliaries, ckpt_path=ckpt_path,
+            dependency_job_id=dependency_job_id, project_root=self.project_root,
+        )
+        aux_tag = f"_{auxiliaries}" if auxiliaries != "none" else ""
+        script_path = self._scripts_dir / f"dagster_{model}_{scale}_{stage}{aux_tag}.sbatch"
+        self._scripts_dir.mkdir(parents=True, exist_ok=True)
+        script_path.write_text(script)
+        return script, script_path
+
+    def run(
+        self,
+        stage: str, model: str, scale: str, dataset: str, resources: ResourceSpec,
+        *, seed: int | None = None, auxiliaries: str = "none",
+        ckpt_path: str | None = None, dependency_job_id: str | None = None,
+    ) -> dict:
+        """Submit a SLURM job and poll until completion.
+
+        Returns metadata dict. Raises SlurmJobFailed on failure.
+        """
+        script, script_path = self._write_script(
+            stage, model, scale, dataset, resources,
+            seed=seed, auxiliaries=auxiliaries,
+            ckpt_path=ckpt_path, dependency_job_id=dependency_job_id,
+        )
+        if self.dry_run:
+            log.info("[DRY RUN] Would submit:\n%s", script)
+            return {"job_id": "dry-run", "state": "DRY_RUN", "script_path": str(script_path)}
+
+        job_id = submit_sbatch(script_path, cwd=self.project_root)
+        log.info("Submitted SLURM job %s for %s/%s/%s", job_id, model, scale, stage)
+
+        t0 = time.monotonic()
+        state, reason, node = poll_until_done(job_id, poll_interval=self.poll_interval)
+        elapsed = time.monotonic() - t0
+
+        metadata = {
+            "job_id": job_id, "state": state, "reason": reason, "node": node,
+            "elapsed_seconds": round(elapsed, 1), "script_path": str(script_path),
+        }
+
+        if state == "COMPLETED":
+            metadata["artifacts_valid"] = self._validate_artifacts(
+                dataset, model, scale, stage, auxiliaries,
+            )
+            return metadata
+
+        ckpt = self._find_checkpoint(dataset, model, scale, stage, auxiliaries)
+        raise SlurmJobFailed(reason=state, node=node, ckpt_path=ckpt, metadata=metadata)
+
+    def submit_no_poll(
+        self,
+        stage: str, model: str, scale: str, dataset: str, resources: ResourceSpec,
+        *, seed: int | None = None, auxiliaries: str = "none",
+        dependency_job_id: str | None = None,
+    ) -> str:
+        """Submit a job without polling. Returns job ID."""
+        _script, script_path = self._write_script(
+            stage, model, scale, dataset, resources,
+            seed=seed, auxiliaries=auxiliaries, dependency_job_id=dependency_job_id,
+        )
+        if self.dry_run:
+            log.info("[DRY RUN] Would submit: %s", script_path)
+            return "dry-run"
+        job_id = submit_sbatch(script_path, cwd=self.project_root)
+        log.info("Submitted (no-poll) SLURM job %s for %s/%s/%s", job_id, model, scale, stage)
+        return job_id
+
+    def _validate_artifacts(
+        self, dataset: str, model: str, scale: str, stage: str,
+        auxiliaries: str, seed: int = 42,
+    ) -> bool:
+        """Check that expected artifacts exist after stage completion."""
+        from pydantic import ValidationError
+
+        from graphids.config import EvaluationArtifact, TrainingArtifact, lake_run_dir
+
+        if stage == "preprocess":
+            return True
+        aux = auxiliaries if auxiliaries != "none" else ""
+        stage_path = lake_run_dir(
+            lake_root=os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns"),
+            dataset=dataset, model_type=model, scale=scale,
+            stage=stage, aux=aux, seed=seed, production=True,
+        )
+        if not stage_path.exists():
+            return False
+        contract = EvaluationArtifact if stage == "evaluation" else TrainingArtifact
+        try:
+            contract.from_stage_dir(stage_path)
+            return True
+        except (ValidationError, ValueError):
+            return False
+
+    def _find_checkpoint(
+        self, dataset: str, model: str, scale: str, stage: str,
+        auxiliaries: str, seed: int = 42,
+    ) -> str | None:
+        """Look for a Lightning auto-save checkpoint after TIMEOUT."""
+        from graphids.config import lake_run_dir
+
+        aux = auxiliaries if auxiliaries != "none" else ""
+        stage_path = lake_run_dir(
+            lake_root=os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns"),
+            dataset=dataset, model_type=model, scale=scale,
+            stage=stage, aux=aux, seed=seed, production=True,
+        )
+        ckpt = stage_path / ".pl_auto_save.ckpt"
+        return str(ckpt) if ckpt.exists() else None

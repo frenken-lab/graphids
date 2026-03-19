@@ -13,10 +13,10 @@ from pathlib import Path
 import pytest
 
 from graphids.pipeline.orchestration.job import ResourceSpec
-from graphids.pipeline.orchestration.pipes_slurm import (
+from graphids.pipeline.orchestration.slurm_client import (
     FAILURE_REACTIONS,
-    RESOURCE_PROFILES,
     PipesSlurmClient,
+    RESOURCE_PROFILES,
     generate_sbatch_script,
     get_resources,
     scale_resources,
@@ -320,24 +320,24 @@ class TestScriptGeneration:
 
 class TestRetryState:
     def test_save_load_clear(self, tmp_path, monkeypatch):
-        from graphids.pipeline.orchestration import dagster_resources as dr
+        from graphids.pipeline.orchestration import slurm_client as sc
 
-        monkeypatch.setattr(dr, "_RETRY_STATE_DIR", tmp_path / "retry")
+        monkeypatch.setattr(sc, "_RETRY_STATE_DIR", tmp_path / "retry")
 
-        dr.save_retry_state("test_asset", "OUT_OF_MEMORY", node="p0042")
-        state = dr.load_retry_state("test_asset")
+        sc.save_retry_state("test_asset", "OUT_OF_MEMORY", node="p0042")
+        state = sc.load_retry_state("test_asset")
         assert state is not None
         assert state["reason"] == "OUT_OF_MEMORY"
         assert state["node"] == "p0042"
 
-        dr.clear_retry_state("test_asset")
-        assert dr.load_retry_state("test_asset") is None
+        sc.clear_retry_state("test_asset")
+        assert sc.load_retry_state("test_asset") is None
 
     def test_load_missing_returns_none(self, tmp_path, monkeypatch):
-        from graphids.pipeline.orchestration import dagster_resources as dr
+        from graphids.pipeline.orchestration import slurm_client as sc
 
-        monkeypatch.setattr(dr, "_RETRY_STATE_DIR", tmp_path / "retry")
-        assert dr.load_retry_state("nonexistent") is None
+        monkeypatch.setattr(sc, "_RETRY_STATE_DIR", tmp_path / "retry")
+        assert sc.load_retry_state("nonexistent") is None
 
 
 # ---------------------------------------------------------------------------
