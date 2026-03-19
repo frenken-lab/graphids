@@ -51,6 +51,7 @@ _SUBCOMMANDS = frozenset({
     "sweep",
     "plan",
     "lake",
+    "daemon",
     "show-config",
 })
 
@@ -315,6 +316,60 @@ def _run_plan(argv: list[str]) -> None:
     log.info("Plan saved: %s (%d jobs, hash=%s)", out_path, len(plan.jobs), plan.plan_hash)
 
 
+def _run_daemon(argv: list[str]) -> None:
+    """Manage the Dagster daemon SLURM job (launch/status/stop)."""
+    p = argparse.ArgumentParser(prog="pipeline daemon")
+    p.add_argument("--status", action="store_true", default=False, help="Show daemon connection info")
+    p.add_argument("--stop", action="store_true", default=False, help="Cancel running daemon job")
+    p.add_argument("--resubmit", action="store_true", default=False, help="Auto-resubmit before timeout")
+    p.add_argument("--time", type=str, default=None, help="Override walltime (e.g. 48:00:00)")
+    args = p.parse_args(argv)
+
+    import subprocess
+
+    project_root = Path(__file__).resolve().parent.parent.parent
+    connection_file = project_root / ".dagster" / "connection_info.txt"
+    launch_script = project_root / "scripts" / "slurm" / "launch_dagster.sh"
+
+    if args.status:
+        # Check squeue for running daemon
+        result = subprocess.run(
+            ["squeue", "-u", os.environ["USER"], "-n", "dagster-daemon", "-h", "-o", "%i %T %N %M"],
+            capture_output=True, text=True,
+        )
+        if result.stdout.strip():
+            log.info("Dagster daemon: %s", result.stdout.strip())
+            if connection_file.exists():
+                log.info("Connection info:\n%s", connection_file.read_text())
+        else:
+            log.info("No dagster daemon job running.")
+        return
+
+    if args.stop:
+        result = subprocess.run(
+            ["squeue", "-u", os.environ["USER"], "-n", "dagster-daemon", "-h", "-o", "%i"],
+            capture_output=True, text=True,
+        )
+        job_id = result.stdout.strip().split("\n")[0] if result.stdout.strip() else ""
+        if job_id:
+            subprocess.run(["scancel", job_id], check=True)
+            log.info("Cancelled dagster daemon job %s", job_id)
+            if connection_file.exists():
+                connection_file.unlink()
+        else:
+            log.info("No dagster daemon job to cancel.")
+        return
+
+    # Launch via the shell script
+    cmd = ["bash", str(launch_script)]
+    if args.resubmit:
+        cmd.append("--resubmit")
+    if args.time:
+        cmd.extend(["--time", args.time])
+
+    subprocess.run(cmd, check=True)
+
+
 def _run_orchestrate(argv: list[str]) -> None:
     """Dispatch pipeline via Dagster fire-and-forget (SLURM dependency chains)."""
     p = argparse.ArgumentParser(prog="pipeline orchestrate")
@@ -358,6 +413,7 @@ _DISPATCH = {
     "lake": _run_lake,
     "plan": _run_plan,
     "orchestrate": _run_orchestrate,
+    "daemon": _run_daemon,
 }
 
 

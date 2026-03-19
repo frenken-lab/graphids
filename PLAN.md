@@ -34,7 +34,7 @@
 | 5b | Lightning predict_step for eval inference | **Done** |
 | 6 | SLURMEnvironment auto-requeue | **Done** |
 | 7 | Simplify artifacts.py (ESS primary, drop MLflow fallback) | **Done** |
-| 8 | dagster-slurm + pixi-pack (WSL daemon → OSC SSH → pixi env) | **Decided** (Option A) |
+| 8 | Dagster daemon as SLURM job (CPU job + SSH tunnel to UI) | **Done** |
 | 9 | Dagster partitions (multi-seed × multi-dataset + HPO trials) | Pending P8 |
 
 ## 3-Pillar Architecture (target)

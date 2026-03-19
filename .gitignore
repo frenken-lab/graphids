@@ -40,10 +40,11 @@ data/loss_landscapes/
 data/sweep_state/
 data/sweep_results/
 
-# ===== RAY / LIGHTNING / MLFLOW =====
+# ===== RAY / LIGHTNING / MLFLOW / DAGSTER =====
 ray_results/
 wandb/
 data/mlflow/
+.dagster/
 
 # ===== OSC OnDemand =====
 .ondemand/
