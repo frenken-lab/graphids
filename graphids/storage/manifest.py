@@ -196,3 +196,18 @@ def verify_manifest(stage_dir: Path) -> tuple[bool, list[str]]:
             )
 
     return len(errors) == 0, errors
+
+
+def verify_all(lake_root: Path) -> tuple[int, int]:
+    """Verify all manifests under lake_root. Returns (run_count, error_count)."""
+    run_count = error_count = 0
+    for tier_dir in [lake_root / "production", lake_root / "dev"]:
+        if not tier_dir.exists():
+            continue
+        for mf in tier_dir.rglob("_manifest.json"):
+            ok, errors = verify_manifest(mf.parent)
+            run_count += 1
+            if not ok:
+                error_count += len(errors)
+                log.warning("manifest_verify_failed", path=str(mf.parent), errors=errors)
+    return run_count, error_count

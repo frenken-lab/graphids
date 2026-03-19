@@ -6,10 +6,8 @@ Training uses Hydra override grammar via the default command:
 All other subcommands use typed flags:
     python -m graphids.pipeline.cli sweep --stage autoencoder --num-samples 20
     python -m graphids.pipeline.cli orchestrate --dataset hcrl_sa --dry-run
-    python -m graphids.pipeline.cli daemon --status
     python -m graphids.pipeline.cli lake --action status
     python -m graphids.pipeline.cli show-config model=vgae_large dataset=hcrl_sa
-    python -m graphids.pipeline.cli preprocess --dataset hcrl_sa
 """
 
 from __future__ import annotations
@@ -19,56 +17,25 @@ import torch.multiprocessing as mp
 # Must be called before any CUDA or multiprocessing usage.
 mp.set_start_method("spawn", force=True)
 
-import structlog
 import os
+import shutil
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import structlog
 import typer
 
-from graphids.config import (
-    DEFAULT_DATASET,
-    STAGES,
-    PipelineConfig,
-    run_id,
-)
+from graphids.config import DEFAULT_DATASET, STAGES, PipelineConfig, run_id
 from graphids.storage import open_gateway
 
 from .validate import validate
 
 log = structlog.get_logger()
 
-app = typer.Typer(
-    name="graphids",
-    help="KD-GAT pipeline CLI",
-    add_completion=False,
-    no_args_is_help=False,
-)
-
-
-# ---------------------------------------------------------------------------
-# Training (default command — Hydra override grammar)
-# ---------------------------------------------------------------------------
-
-
-def _run_training(overrides: list[str]) -> None:
-    """Compose config from Hydra overrides and dispatch a training stage."""
-    from graphids.config._hydra_bridge import compose_config
-    from omegaconf import OmegaConf
-
-    merged, stage = compose_config(overrides)
-    if stage is None or stage not in STAGES:
-        log.error("unknown_training_stage", stage=stage, valid=list(STAGES.keys()))
-        raise SystemExit(1)
-
-    raw = OmegaConf.to_object(merged)
-    raw.pop("stage", None)
-    cfg = PipelineConfig.model_validate(raw)
-    log.info("config_resolved")
-    _run_single_stage(cfg, stage)
+app = typer.Typer(name="graphids", help="KD-GAT pipeline CLI", add_completion=False, no_args_is_help=False)
 
 
 # ---------------------------------------------------------------------------
@@ -82,8 +49,7 @@ def show_config(ctx: typer.Context):
     from graphids.config._hydra_bridge import compose_config
     from omegaconf import OmegaConf
 
-    merged, _stage = compose_config(ctx.args)
-    print(OmegaConf.to_yaml(merged))
+    print(OmegaConf.to_yaml(compose_config(ctx.args)[0]))
 
 
 @app.command()
@@ -93,9 +59,7 @@ def preprocess(dataset: Optional[str] = None):
     from graphids.core.preprocessing import PreprocessingPipeline
 
     ds = dataset or DEFAULT_DATASET
-    cfg = resolve("vgae", "large", dataset=ds)
-    log.info("preprocessing_started", dataset=ds)
-    PreprocessingPipeline(cfg).load_dataset()
+    PreprocessingPipeline(resolve("vgae", "large", dataset=ds)).load_dataset()
     log.info("preprocessing_complete", dataset=ds)
 
 
@@ -113,11 +77,9 @@ def sweep(
     multi_seed: bool = False,
 ):
     """Run Optuna HPO sweep (single-stage or full pipeline)."""
-    from graphids.config import STAGE_MODEL_MAP
     from .orchestration.optuna_sweep import run_sweep, run_sweep_pipeline
 
     ds = dataset or DEFAULT_DATASET
-
     if full_pipeline:
         run_sweep_pipeline(
             dataset=ds, scale=scale, num_samples=num_samples, max_epochs=max_epochs,
@@ -125,19 +87,17 @@ def sweep(
             multi_seed=multi_seed,
         )
     elif stage:
-        _model_to_stage = {"vgae": "autoencoder", "gat": "curriculum", "dqn": "fusion"}
-        sweep_stage = _model_to_stage.get(stage, stage)
+        from graphids.config import STAGE_MODEL_MAP
+        _aliases = {"vgae": "autoencoder", "gat": "curriculum", "dqn": "fusion"}
+        sweep_stage = _aliases.get(stage, stage)
         if sweep_stage not in STAGE_MODEL_MAP:
-            log.error("invalid_sweep_stage", stage=stage)
-            raise SystemExit(1)
-        best = run_sweep(
+            raise SystemExit(f"Invalid stage: {stage}")
+        log.info("sweep_complete", best_params=run_sweep(
             stage=sweep_stage, dataset=ds, scale=scale, num_samples=num_samples,
             max_epochs=max_epochs, patience=patience, warm_start_from=warm_start_from,
-        )
-        log.info("sweep_complete", best_params=best)
+        ))
     else:
-        log.error("missing_sweep_args")
-        raise SystemExit(1)
+        raise SystemExit("Must specify --stage <name> or --full-pipeline")
 
 
 @app.command()
@@ -147,81 +107,19 @@ def lake(action: str = typer.Option("status", help="rebuild-catalog | verify | s
 
     lake_root = lake_root_from_env()
     if lake_root is None:
-        log.error("lake_root_not_set")
-        raise SystemExit(1)
+        raise SystemExit("KD_GAT_LAKE_ROOT not set")
 
     if action == "rebuild-catalog":
         from graphids.storage.catalog import rebuild_catalog
         log.info("catalog_rebuilt", result=rebuild_catalog(lake_root))
     elif action == "verify":
-        from graphids.storage.manifest import verify_manifest
-        errors_total = run_count = 0
-        for tier_dir in [lake_root / "production", lake_root / "dev"]:
-            if not tier_dir.exists():
-                continue
-            for manifest_file in tier_dir.rglob("_manifest.json"):
-                ok, errors = verify_manifest(manifest_file.parent)
-                run_count += 1
-                if not ok:
-                    errors_total += len(errors)
-                    log.warning("manifest_verify_failed", path=str(manifest_file.parent), errors=errors)
-        log.info("manifest_verify_complete", runs=run_count, errors=errors_total)
+        from graphids.storage.manifest import verify_all
+        runs, errors = verify_all(lake_root)
+        log.info("verify_complete", runs=runs, errors=errors)
     elif action == "status":
         from graphids.storage.catalog import catalog_status
         status = catalog_status(lake_catalog_path(lake_root))
-        if not status.get("exists"):
-            log.info("catalog_not_built")
-            return
-        log.info("lake_status", total_runs=status["total_runs"], by_stage=status["by_stage"], by_dataset=status["by_dataset"])
-
-
-@app.command()
-def daemon(
-    status: bool = False,
-    stop: bool = False,
-    resubmit: bool = False,
-    time_override: Optional[str] = typer.Option(None, "--time", help="Override walltime"),
-):
-    """Manage Dagster daemon SLURM job."""
-    import subprocess
-
-    project_root = Path(__file__).resolve().parent.parent.parent
-    connection_file = project_root / ".dagster" / "connection_info.txt"
-
-    if status:
-        result = subprocess.run(
-            ["squeue", "-u", os.environ["USER"], "-n", "dagster-daemon", "-h", "-o", "%i %T %N %M"],
-            capture_output=True, text=True,
-        )
-        if result.stdout.strip():
-            log.info("dagster_daemon_status", info=result.stdout.strip())
-            if connection_file.exists():
-                log.info("dagster_connection_info", info=connection_file.read_text())
-        else:
-            log.info("dagster_daemon_not_running")
-        return
-
-    if stop:
-        result = subprocess.run(
-            ["squeue", "-u", os.environ["USER"], "-n", "dagster-daemon", "-h", "-o", "%i"],
-            capture_output=True, text=True,
-        )
-        job_id = result.stdout.strip().split("\n")[0] if result.stdout.strip() else ""
-        if job_id:
-            subprocess.run(["scancel", job_id], check=True)
-            log.info("dagster_daemon_cancelled", job_id=job_id)
-            if connection_file.exists():
-                connection_file.unlink()
-        else:
-            log.info("dagster_daemon_none_to_cancel")
-        return
-
-    cmd = ["bash", str(project_root / "scripts" / "slurm" / "launch_dagster.sh")]
-    if resubmit:
-        cmd.append("--resubmit")
-    if time_override:
-        cmd.extend(["--time", time_override])
-    subprocess.run(cmd, check=True)
+        log.info("lake_status", **{k: v for k, v in status.items() if k != "exists"}) if status.get("exists") else log.info("catalog_not_built")
 
 
 @app.command()
@@ -238,108 +136,65 @@ def orchestrate(
     if seeds:
         from graphids.config import parse_seeds
         seed_list = parse_seeds(seeds)
-
-    job_ids = fire_and_forget(dataset=ds, seeds=seed_list, dry_run=dry_run)
-    log.info("jobs_submitted", count=len(job_ids), jobs=job_ids)
-
+    log.info("jobs_submitted", jobs=fire_and_forget(dataset=ds, seeds=seed_list, dry_run=dry_run))
 
 
 # ---------------------------------------------------------------------------
-# Stage lifecycle helpers
-# ---------------------------------------------------------------------------
-
-
-def _archive_previous(sdir: Path) -> Path | None:
-    """Archive a completed run directory before re-running."""
-    if not (sdir / "config.json").exists():
-        return None
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    archive = sdir.parent / f"{sdir.name}.archive_{ts}"
-    sdir.rename(archive)
-    log.warning("run_archived", path=str(archive))
-    return archive
-
-
-def _write_lake_manifest(cfg: PipelineConfig, stage: str, sdir: Path, metrics: dict | None = None) -> None:
-    """Write _manifest.json for the ESS data lake."""
-    try:
-        from graphids.storage.manifest import write_manifest
-        write_manifest(
-            sdir, dataset=cfg.dataset, model_type=cfg.model_type, scale=cfg.scale,
-            stage=stage, auxiliaries=cfg.auxiliaries[0].type if cfg.auxiliaries else "none",
-            seed=cfg.seed, metrics=metrics,
-        )
-    except Exception as e:
-        log.warning("manifest_write_failed", error=str(e))
-
-
-# ---------------------------------------------------------------------------
-# Single stage execution
+# Stage execution
 # ---------------------------------------------------------------------------
 
 
 def _run_single_stage(cfg: PipelineConfig, stage: str) -> None:
     """Execute a single training stage."""
     validate(cfg, stage)
-
     structlog.contextvars.bind_contextvars(
-        dataset=cfg.dataset,
-        model=cfg.model_type,
-        scale=cfg.scale,
-        stage=stage,
-        seed=cfg.seed,
-        slurm_job_id=os.environ.get("SLURM_JOB_ID", ""),
+        dataset=cfg.dataset, model=cfg.model_type, scale=cfg.scale,
+        stage=stage, seed=cfg.seed, slurm_job_id=os.environ.get("SLURM_JOB_ID", ""),
     )
 
     gw, mapper = open_gateway(cfg)
     sdir = gw.resolve(stage)
-    archive = _archive_previous(sdir)
+
+    # Archive previous completed run
+    archive = None
+    if (sdir / "config.json").exists():
+        archive = sdir.parent / f"{sdir.name}.archive_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        sdir.rename(archive)
+        log.warning("run_archived", path=str(archive))
+
     mapper.save_config(cfg, stage)
-
     log.info("run_started")
-
-    try:
-        import torch
-        if torch.cuda.is_available():
-            torch.cuda.reset_peak_memory_stats()
-    except Exception:
-        pass
 
     t_start = time.monotonic()
     try:
         from .stages import STAGE_FNS
         result = STAGE_FNS[stage](cfg)
-
         duration = time.monotonic() - t_start
-        peak_gpu_mb = None
+
+        metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
+        metrics["duration_seconds"] = duration
+
+        # Write manifest (authoritative record of this run)
+        from graphids.storage.manifest import write_manifest
         try:
-            import torch
-            if torch.cuda.is_available():
-                peak_gpu_mb = torch.cuda.max_memory_allocated() / (1024**2)
-        except Exception:
-            pass
-
-        stage_metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
-        stage_metrics["duration_seconds"] = duration
-        if peak_gpu_mb is not None:
-            stage_metrics["peak_gpu_mb"] = peak_gpu_mb
-
-        _write_lake_manifest(cfg, stage, sdir, metrics=stage_metrics)
+            write_manifest(
+                sdir, dataset=cfg.dataset, model_type=cfg.model_type, scale=cfg.scale,
+                stage=stage, auxiliaries=cfg.auxiliaries[0].type if cfg.auxiliaries else "none",
+                seed=cfg.seed, metrics=metrics,
+            )
+        except Exception as e:
+            log.warning("manifest_write_failed", error=str(e))
 
         if archive and archive.exists():
-            import shutil
             shutil.rmtree(archive, ignore_errors=True)
-
-        log.info("stage_complete", **{k: v for k, v in stage_metrics.items() if isinstance(v, (int, float))})
+        log.info("stage_complete", **{k: v for k, v in metrics.items() if isinstance(v, (int, float))})
 
     except Exception as e:
         duration = time.monotonic() - t_start
         if archive and archive.exists():
             if sdir.exists():
-                import shutil
                 shutil.rmtree(sdir, ignore_errors=True)
             archive.rename(sdir)
-            log.warning("archive_restored", path=str(sdir))
         log.error("stage_failed", error=str(e)[:250], duration_s=round(duration, 1))
         raise
 
@@ -348,9 +203,7 @@ def _run_single_stage(cfg: PipelineConfig, stage: str) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
-_SUBCOMMANDS = frozenset({
-    "show-config", "preprocess", "sweep", "lake", "daemon", "orchestrate",
-})
+_SUBCOMMANDS = frozenset({"show-config", "preprocess", "sweep", "lake", "orchestrate"})
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -362,12 +215,19 @@ def main(argv: list[str] | None = None) -> None:
         args = [a for a in args if a != "--json-logs"]
     configure_logging(json=json_logs or None)
 
-    # If first arg is a subcommand or --help, let Typer handle it.
-    # Otherwise treat all args as Hydra overrides for training.
     if not args or args[0] in _SUBCOMMANDS or args[0].startswith("-"):
         app(args)
     else:
-        _run_training(args)
+        # Hydra override grammar for training
+        from graphids.config._hydra_bridge import compose_config
+        from omegaconf import OmegaConf
+
+        merged, stage = compose_config(args)
+        if stage is None or stage not in STAGES:
+            raise SystemExit(f"Unknown stage: {stage}. Valid: {list(STAGES.keys())}")
+        raw = OmegaConf.to_object(merged)
+        raw.pop("stage", None)
+        _run_single_stage(PipelineConfig.model_validate(raw), stage)
 
 
 if __name__ == "__main__":
