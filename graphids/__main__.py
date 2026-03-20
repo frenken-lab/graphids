@@ -1,10 +1,9 @@
-"""Single CLI entry point: Hydra for training/sweep, argparse for orchestrate/preprocess.
+"""Single CLI entry point: Hydra for training/sweep, argparse for orchestrate.
 
 Usage:
     python -m graphids stage=autoencoder model=vgae_large dataset=hcrl_sa
     python -m graphids --multirun stage=autoencoder model=vgae_large
     python -m graphids orchestrate --dataset hcrl_sa [--seeds 42,123] [--dry-run]
-    python -m graphids preprocess --dataset hcrl_sa
     python -m graphids --cfg job model=vgae_large
 """
 
@@ -47,23 +46,6 @@ def main(argv: list[str] | None = None) -> None:
         seed_list = parse_seeds(parsed.seeds) if parsed.seeds else [resolve("vgae", "large").seed]
         futures = run_dag(dag=build_dag_topology(), dataset=parsed.dataset, seeds=seed_list, dry_run=parsed.dry_run)
         structlog.get_logger().info("jobs_submitted", count=len(futures))
-
-    elif cmd == "preprocess":
-        import argparse
-
-        import structlog
-
-        from graphids.config import DEFAULT_DATASET, resolve
-
-        sys.argv = [sys.argv[0]] + args[1:]
-        parser = argparse.ArgumentParser(description="Build preprocessed graph cache")
-        parser.add_argument("--dataset", default=DEFAULT_DATASET)
-        parsed = parser.parse_args()
-
-        from graphids.core.preprocessing import PreprocessingPipeline
-
-        PreprocessingPipeline(resolve("vgae", "large", dataset=parsed.dataset)).load_dataset()
-        structlog.get_logger().info("preprocessing_complete", dataset=parsed.dataset)
 
     else:
         # Hydra path: training (default) or sweep (--multirun)
