@@ -1,12 +1,11 @@
-"""Single CLI entry point: Hydra-as-framework for training/sweep, argparse for the rest.
+"""Single CLI entry point: Hydra for training/sweep, argparse for orchestrate/preprocess.
 
 Usage:
     python -m graphids stage=autoencoder model=vgae_large dataset=hcrl_sa
-    python -m graphids --multirun stage=autoencoder model=vgae_large  # HPO sweep
+    python -m graphids --multirun stage=autoencoder model=vgae_large
     python -m graphids orchestrate --dataset hcrl_sa [--seeds 42,123] [--dry-run]
-    python -m graphids lake --action status|rebuild-catalog|verify
     python -m graphids preprocess --dataset hcrl_sa
-    python -m graphids --cfg job model=vgae_large  # show resolved config
+    python -m graphids --cfg job model=vgae_large
 """
 
 from __future__ import annotations
@@ -16,8 +15,6 @@ import sys
 import torch.multiprocessing as mp
 
 mp.set_start_method("spawn", force=True)
-
-_SUBCOMMANDS = {"orchestrate", "lake", "preprocess"}
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -30,110 +27,69 @@ def main(argv: list[str] | None = None) -> None:
         args = [a for a in args if a != "--json-logs"]
     configure_logging(json=json_logs or None)
 
-    if args and args[0] in _SUBCOMMANDS:
-        cmd, rest = args[0], args[1:]
-        sys.argv = [sys.argv[0]] + rest
-        if cmd == "orchestrate":
-            _orchestrate()
-        elif cmd == "lake":
-            _lake()
-        elif cmd == "preprocess":
-            _preprocess()
+    cmd = args[0] if args else None
+
+    if cmd == "orchestrate":
+        import argparse
+
+        import structlog
+
+        from graphids.config import DEFAULT_DATASET, parse_seeds, resolve
+        from graphids.pipeline.orchestration.dag import build_dag_topology, run_dag
+
+        sys.argv = [sys.argv[0]] + args[1:]
+        parser = argparse.ArgumentParser(description="Submit pipeline DAG to SLURM")
+        parser.add_argument("--dataset", default=DEFAULT_DATASET)
+        parser.add_argument("--seeds", default=None, help="Comma-separated seeds")
+        parser.add_argument("--dry-run", action="store_true")
+        parsed = parser.parse_args()
+
+        seed_list = parse_seeds(parsed.seeds) if parsed.seeds else [resolve("vgae", "large").seed]
+        futures = run_dag(dag=build_dag_topology(), dataset=parsed.dataset, seeds=seed_list, dry_run=parsed.dry_run)
+        structlog.get_logger().info("jobs_submitted", count=len(futures))
+
+    elif cmd == "preprocess":
+        import argparse
+
+        import structlog
+
+        from graphids.config import DEFAULT_DATASET, resolve
+
+        sys.argv = [sys.argv[0]] + args[1:]
+        parser = argparse.ArgumentParser(description="Build preprocessed graph cache")
+        parser.add_argument("--dataset", default=DEFAULT_DATASET)
+        parsed = parser.parse_args()
+
+        from graphids.core.preprocessing import PreprocessingPipeline
+
+        PreprocessingPipeline(resolve("vgae", "large", dataset=parsed.dataset)).load_dataset()
+        structlog.get_logger().info("preprocessing_complete", dataset=parsed.dataset)
+
     else:
         # Hydra path: training (default) or sweep (--multirun)
+        import hydra
+        from omegaconf import DictConfig, OmegaConf
+
+        from graphids.config import STAGES, PipelineConfig
+        from graphids.pipeline.executor import execute_stage
+
         sys.argv = [sys.argv[0]] + args
-        _hydra_main()
 
+        @hydra.main(config_path="config/conf", config_name="config", version_base="1.3")
+        def run(cfg: DictConfig) -> float | None:
+            stage = cfg.get("stage")
+            if not stage or stage not in STAGES:
+                raise SystemExit(f"stage= required. Valid: {list(STAGES.keys())}")
 
-# ---------------------------------------------------------------------------
-# Hydra entry point (training + sweep share the same function)
-# ---------------------------------------------------------------------------
+            raw = OmegaConf.to_object(cfg)
+            raw.pop("stage", None)
+            pcfg = PipelineConfig.model_validate(raw)
 
-def _hydra_main() -> None:
-    import hydra
-    from omegaconf import DictConfig, OmegaConf
+            result = execute_stage(pcfg, stage)
+            metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
+            return metrics.get("val_loss", float("inf"))
 
-    from graphids.config import STAGES, PipelineConfig
-    from graphids.pipeline.executor import execute_stage
-
-    @hydra.main(config_path="config/conf", config_name="config", version_base="1.3")
-    def run(cfg: DictConfig) -> float | None:
-        stage = cfg.get("stage")
-        if not stage or stage not in STAGES:
-            raise SystemExit(f"stage= required. Valid: {list(STAGES.keys())}")
-
-        raw = OmegaConf.to_object(cfg)
-        raw.pop("stage", None)
-        pcfg = PipelineConfig.model_validate(raw)
-
-        result = execute_stage(pcfg, stage)
-        metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
-        return metrics.get("val_loss", float("inf"))
-
-    run()
-
-
-# ---------------------------------------------------------------------------
-# Argparse subcommands (no Hydra)
-# ---------------------------------------------------------------------------
-
-def _orchestrate() -> None:
-    import argparse
-
-    import structlog
-
-    from graphids.config import DEFAULT_DATASET, parse_seeds, resolve
-    from graphids.pipeline.orchestration.dag import build_dag_topology, run_dag
-
-    log = structlog.get_logger()
-    parser = argparse.ArgumentParser(description="Submit pipeline DAG to SLURM")
-    parser.add_argument("--dataset", default=DEFAULT_DATASET)
-    parser.add_argument("--seeds", default=None, help="Comma-separated seeds")
-    parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args()
-
-    seed_list = parse_seeds(args.seeds) if args.seeds else [resolve("vgae", "large").seed]
-    dag = build_dag_topology()
-    futures = run_dag(dag=dag, dataset=args.dataset, seeds=seed_list, dry_run=args.dry_run)
-    log.info("jobs_submitted", count=len(futures))
-
-
-def _lake() -> None:
-    import argparse
-
-    import structlog
-
-    log = structlog.get_logger()
-    parser = argparse.ArgumentParser(description="Data lake management")
-    parser.add_argument("--action", default="status", choices=["status", "rebuild-catalog", "verify"])
-    args = parser.parse_args()
-
-    from graphids.config.paths import lake_root_from_env
-
-    lake_root = lake_root_from_env()
-    if lake_root is None:
-        raise SystemExit("KD_GAT_LAKE_ROOT not set")
-
-    log.info("lake_command", action=args.action, lake_root=str(lake_root))
-    log.warning("lake_commands_pending_migration", detail="catalog/verify rebuilt in Phase E")
-
-
-def _preprocess() -> None:
-    import argparse
-
-    import structlog
-
-    from graphids.config import DEFAULT_DATASET, resolve
-
-    log = structlog.get_logger()
-    parser = argparse.ArgumentParser(description="Build preprocessed graph cache")
-    parser.add_argument("--dataset", default=DEFAULT_DATASET)
-    args = parser.parse_args()
-
-    from graphids.core.preprocessing import PreprocessingPipeline
-
-    PreprocessingPipeline(resolve("vgae", "large", dataset=args.dataset)).load_dataset()
-    log.info("preprocessing_complete", dataset=args.dataset)
+        run()
 
 
 if __name__ == "__main__":
