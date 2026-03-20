@@ -1,7 +1,6 @@
 """Job definition models for pipeline orchestration.
 
-Pydantic v2 frozen models for describing SLURM resource requirements.
-Used by Dagster orchestration.
+Pydantic v2 frozen models for describing resource requirements.
 """
 
 from __future__ import annotations
@@ -14,9 +13,8 @@ from pydantic import BaseModel
 class ResourceSpec(BaseModel, frozen=True):
     """Resource requirements for a pipeline job.
 
-    Used by Dagster SLURM orchestration.
-    SLURM-specific fields (partition, exclude_nodes) default to safe values
-    so non-SLURM callers can ignore them.
+    Platform-agnostic resource description. Backend adapters
+    (e.g. slurm.make_slurm_executor) map these to platform-specific params.
     """
 
     nodes: int = 1
@@ -27,20 +25,6 @@ class ResourceSpec(BaseModel, frozen=True):
     partition: str = "cpu"
     exclude_nodes: str = ""
 
-    @property
-    def mem_slurm(self) -> str:
-        """Memory as SLURM string, e.g. '20G'."""
-        return f"{self.memory_gb}G"
-
-    @property
-    def walltime_slurm(self) -> str:
-        """Walltime as SLURM 'H:MM:SS' string."""
-        total = int(self.walltime.total_seconds())
-        h = total // 3600
-        m = (total % 3600) // 60
-        s = total % 60
-        return f"{h}:{m:02d}:{s:02d}"
-
     @classmethod
     def from_yaml(cls, data: dict) -> ResourceSpec:
         """Construct from resources.yaml entry.
@@ -48,11 +32,9 @@ class ResourceSpec(BaseModel, frozen=True):
         Accepts either ``memory_gb`` (int) or ``mem`` (str like '20G').
         Accepts either ``walltime`` (timedelta-compatible) or string 'H:MM:SS'.
         """
-        # Memory: accept 'mem' string ('20G') or 'memory_gb' int
         mem_gb = data.get("memory_gb")
         if mem_gb is None and "mem" in data:
             mem_str = data["mem"]
-            # Parse '32G' -> 32, '512M' -> 0 (round down)
             if mem_str.upper().endswith("G"):
                 mem_gb = int(mem_str[:-1])
             elif mem_str.upper().endswith("M"):
@@ -62,7 +44,6 @@ class ResourceSpec(BaseModel, frozen=True):
         elif mem_gb is None:
             mem_gb = 20
 
-        # Walltime: accept 'H:MM:SS' string
         wt = data.get("walltime", "3:00:00")
         if isinstance(wt, str):
             parts = wt.split(":")

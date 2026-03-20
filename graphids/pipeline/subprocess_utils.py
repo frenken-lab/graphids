@@ -1,11 +1,8 @@
-"""Shared CLI command builder for subprocess dispatch.
+"""CLI command builder for Optuna subprocess dispatch.
 
-All subprocess-based stage invocations go through build_cli_cmd() to ensure
-consistent argument formatting. The returned list is suitable for subprocess.run()
-or subprocess.Popen(). SLURM wrappers join the result into a string and wrap
-with sbatch separately.
-
-Emits Hydra override grammar: ``stage=X model=Y dataset=Z key=value``.
+Only used by optuna_sweep.py for CUDA isolation between HPO trials.
+Pipeline orchestration uses submitit (see orchestration/slurm.py) which
+submits Python callables directly — no CLI string building needed.
 """
 
 from __future__ import annotations

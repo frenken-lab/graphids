@@ -9,17 +9,82 @@ from __future__ import annotations
 import graphlib
 from concurrent.futures import Future
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Callable
 
 import structlog
+import yaml
 
-from graphids.config import STAGE_DEPENDENCIES, STAGE_MODEL_MAP, resolve
+from graphids.config import CONFIG_DIR, STAGE_DEPENDENCIES, STAGE_MODEL_MAP, resolve
 from graphids.pipeline.executor import execute_stage
 
 from .job import ResourceSpec
-from .slurm_primitives import FAILURE_REACTIONS, get_resources, scale_resources, SlurmJobFailed
 
 log = structlog.get_logger()
+
+
+# ---------------------------------------------------------------------------
+# Resource profiles (loaded from resources.yaml)
+# ---------------------------------------------------------------------------
+
+_RESOURCES_YAML = CONFIG_DIR / "resources.yaml"
+
+
+def _load_resources_yaml() -> dict:
+    return yaml.safe_load(_RESOURCES_YAML.read_text())
+
+
+def _parse_resource_profiles(raw: dict) -> dict[tuple[str, str, str], ResourceSpec]:
+    profiles: dict[tuple[str, str, str], ResourceSpec] = {}
+    for model, scales in raw.get("resource_profiles", {}).items():
+        for scale, stages in scales.items():
+            for stage, res in stages.items():
+                profiles[(model, scale, stage)] = ResourceSpec.from_yaml(res)
+    return profiles
+
+
+_raw_resources = _load_resources_yaml()
+RESOURCE_PROFILES = _parse_resource_profiles(_raw_resources)
+FAILURE_REACTIONS: dict[str, dict] = _raw_resources.get("failure_reactions", {})
+del _raw_resources
+
+
+def get_resources(model: str, scale: str, stage: str) -> ResourceSpec:
+    """Look up resource profile for a (model, scale, stage) tuple."""
+    key = (model, scale, stage)
+    if key not in RESOURCE_PROFILES:
+        available = sorted(RESOURCE_PROFILES.keys())
+        raise KeyError(
+            f"No resource profile for {key}. "
+            f"Add an entry to config/resources.yaml. Available: {available}"
+        )
+    return RESOURCE_PROFILES[key]
+
+
+def scale_resources(resources: ResourceSpec, failure_reason: str) -> ResourceSpec:
+    """Apply failure reaction scaling. OOM -> 2x mem, TIMEOUT -> 1.5x time."""
+    reaction = FAILURE_REACTIONS.get(failure_reason, {})
+    if not reaction:
+        return resources
+    updates: dict = {}
+    if "scale_mem" in reaction:
+        updates["memory_gb"] = int(resources.memory_gb * reaction["scale_mem"])
+    if "scale_time" in reaction:
+        total_secs = resources.walltime.total_seconds()
+        updates["walltime"] = timedelta(seconds=int(total_secs * reaction["scale_time"]))
+    return resources.model_copy(update=updates) if updates else resources
+
+
+class SlurmJobFailed(Exception):
+    """Raised when a SLURM job reaches a terminal failure state."""
+
+    def __init__(self, reason: str, node: str | None = None,
+                 ckpt_path: str | None = None, metadata: dict | None = None):
+        self.reason = reason
+        self.node = node
+        self.ckpt_path = ckpt_path
+        self.metadata = metadata or {}
+        super().__init__(f"SLURM job failed: {reason} (node={node})")
 
 
 @dataclass(frozen=True)
