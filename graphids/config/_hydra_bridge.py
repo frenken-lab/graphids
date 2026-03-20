@@ -67,40 +67,6 @@ def _build_schema() -> DictConfig:
     return OmegaConf.create(PipelineConfig().model_dump())
 
 
-def _coerce(raw: str) -> Any:
-    """Coerce a CLI string to a Python value for OmegaConf.update."""
-    if raw.lower() == "true":
-        return True
-    if raw.lower() == "false":
-        return False
-    if raw.lower() in ("null", "~"):
-        return None
-    if raw.startswith("[") and raw.endswith("]"):
-        inner = raw[1:-1].strip()
-        return [_coerce(x.strip()) for x in inner.split(",")] if inner else []
-    try:
-        return int(raw)
-    except ValueError:
-        pass
-    try:
-        return float(raw)
-    except ValueError:
-        pass
-    return raw
-
-
-def _flatten(d: dict[str, Any], prefix: str = "") -> list[tuple[str, Any]]:
-    """Flatten a nested dict to (dot.path, value) pairs."""
-    items: list[tuple[str, Any]] = []
-    for k, v in d.items():
-        key = f"{prefix}.{k}" if prefix else k
-        if isinstance(v, dict):
-            items.extend(_flatten(v, key))
-        else:
-            items.append((key, v))
-    return items
-
-
 # ---------------------------------------------------------------------------
 # compose() — internal API for CLI
 # ---------------------------------------------------------------------------
@@ -143,8 +109,9 @@ def compose_config(
     merged = OmegaConf.merge(schema, hydra_cfg)
 
     # 4. Apply nested overrides with typo detection
+    #    Values stay as strings — Pydantic coerces types at model_validate() time.
     for key, raw_value in nested_overrides:
-        OmegaConf.update(merged, key, _coerce(raw_value), force_add=False)
+        OmegaConf.update(merged, key, raw_value, force_add=False)
 
     stage = merged.get("stage", None)
     return merged, stage
@@ -199,8 +166,8 @@ def resolve(
     # 4. Apply programmatic overrides (from kwargs)
     if seed is not None:
         OmegaConf.update(merged, "seed", seed)
-    for key, value in _flatten(config_overrides):
-        OmegaConf.update(merged, key, value, force_add=False)
+    for key, value in config_overrides.items():
+        OmegaConf.update(merged, key, value, merge=True, force_add=False)
 
     # 5. Convert to dict, strip Hydra-only keys, validate
     raw: dict = OmegaConf.to_object(merged)

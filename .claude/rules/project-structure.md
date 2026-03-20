@@ -41,7 +41,6 @@ graphids/               # Top-level package — __getattr__ lazy gateway for cor
   pipeline/             # Layer 2: Orchestration (imports graphids.config/, graphids.storage/, lazy imports from graphids.core/)
     __init__.py         # Gateway: build_cli_cmd, STAGE_FNS
     cli.py              # Entry point: Hydra override grammar for training, argparse for subcommands; MLflow run context
-    serve.py            # FastAPI inference server (/predict, /health)
     validate.py         # Config + environment validation utilities
     subprocess_utils.py # Shared CLI command builder for subprocess dispatch
     stages/             # Stage implementations
@@ -60,9 +59,8 @@ graphids/               # Top-level package — __getattr__ lazy gateway for cor
       __init__.py       # Gateway: ResourceSpec, PipesSlurmClient, SlurmJobFailed; lazy Dagster imports
       job.py            # Pydantic v2 frozen models: ResourceSpec (SLURM resource profiles)
       dagster_defs.py   # Dagster asset definitions + build_dag_topology() + fire_and_forget()
-      dagster_resources.py # Retry state helpers (per-asset failure metadata)
-      pipes_slurm.py    # SLURM sbatch/sacct wrapper: script gen, submit, poll, artifact validation
-      slurm_client.py   # Shared SLURM primitives: sbatch gen, sacct polling, adaptive retry
+      pipes_slurm.py    # Dagster Pipes SLURM client (PipesClient + ConfigurableResource over NFS)
+      slurm_primitives.py # SLURM primitives: sbatch gen, submit, poll, adaptive retry, resource profiles
       optuna_sweep.py   # Optuna HPO: run_sweep() + run_sweep_pipeline() (SQLite-backed resume)
   core/                 # Layer 3: Domain (models, data loading, preprocessing; imports graphids.config/)
     __init__.py         # Gateway: load_dataset, load_test_scenarios, get_model, process_dataset
@@ -92,19 +90,12 @@ data/
   ethernet/             # Network flow datasets (MachineLearningCSV, GeneratedLabelledFlows)
 experimentruns/         # Legacy outputs (migrated to ESS data lake)
 tests/
-  conftest.py           # Shared fixtures (tiny architectures, temp dirs, E2E_OVERRIDES)
-  test_storage.py           # StorageGateway + ArtifactMapper unit tests (35 tests)
-  test_layer_boundaries.py  # Import hierarchy + gateway enforcement (storage ← config ← pipeline ← core)
-  test_dagster_orchestration.py # Dagster assets, fire-and-forget, resource profiles (62 tests)
-  test_preprocessing.py     # Preprocessing unit tests
-  test_registry.py          # Model registry tests
-  test_fusion_extractors.py # Fusion feature extraction tests
-  test_serve.py             # FastAPI serving tests
-  test_training_smoke.py    # Training smoke tests (quick sanity checks)
-  test_training_e2e.py      # End-to-end training tests (full pipeline, SLURM only)
-  test_pipeline_integration.py # Pipeline integration tests
-  test_new_features.py      # New feature regression tests
-  test_lake.py              # Lake module tests (config, manifest, locking, catalog)
+  conftest.py               # Shared fixtures: module-scoped DAG topology, asset lookup, resource factories
+  test_resource_spec.py     # ResourceSpec Pydantic model: SLURM formatting, from_yaml, immutability
+  test_slurm_primitives.py  # Script gen, resource profiles, adaptive retry, sacct parsing, polling
+  test_dag_topology.py      # DAG construction, Dagster asset wiring, partition defs, Pipes client
+  test_fire_and_forget.py   # Zero-daemon SLURM submission (monkeypatched, no real sbatch)
+  test_pipes_slurm.py       # Pipes client integration, submit_no_poll, CLI subcommands
 scripts/
   reproduce.sh          # Full reproduction script
   slurm/                # SLURM job scripts

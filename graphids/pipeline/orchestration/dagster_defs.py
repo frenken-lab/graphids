@@ -10,7 +10,6 @@ import structlog
 import subprocess
 import sys
 from dataclasses import dataclass
-from functools import cached_property
 
 import dagster as dg
 
@@ -21,39 +20,19 @@ from graphids.config import (
     STAGE_MODEL_MAP,
     get_datasets,
 )
-from .slurm_client import (
+from .slurm_primitives import (
     FAILURE_REACTIONS,
-    PipesSlurmClient,
     SlurmJobFailed,
-    clear_retry_state,
     get_resources,
-    load_retry_state,
-    save_retry_state,
     scale_resources,
 )
+from .pipes_slurm import PipesSlurmClient, submit_no_poll
 
 log = structlog.get_logger()
 
 # ---------------------------------------------------------------------------
-# Resource + partitions
+# Partitions
 # ---------------------------------------------------------------------------
-
-
-class PipesSlurmResource(dg.ConfigurableResource):
-    """Dagster resource wrapping PipesSlurmClient."""
-
-    project_root: str = str(PROJECT_ROOT)
-    poll_interval: int = 30
-    dry_run: bool = False
-
-    @cached_property
-    def client(self) -> PipesSlurmClient:
-        return PipesSlurmClient(
-            project_root=self.project_root,
-            poll_interval=self.poll_interval,
-            dry_run=self.dry_run,
-        )
-
 
 pipeline_partitions = dg.MultiPartitionsDefinition({
     "dataset": dg.StaticPartitionsDefinition(get_datasets()),
@@ -87,7 +66,7 @@ def _make_stage_asset(
     name: str, stage: str, cli_model: str, resource_model: str,
     scale: str, dep_names: list[str], auxiliaries: str = "none",
 ):
-    """Factory: create a @dg.asset that submits one SLURM job."""
+    """Factory: create a @dg.asset that submits one SLURM job via Pipes."""
 
     @dg.asset(
         name=name,
@@ -97,35 +76,31 @@ def _make_stage_asset(
         metadata={"cli_model": cli_model, "resource_model": resource_model,
                   "scale": scale, "stage": stage, "auxiliaries": auxiliaries},
     )
-    def _asset(context: dg.AssetExecutionContext, slurm: PipesSlurmResource):
+    def _asset(context: dg.AssetExecutionContext, slurm: PipesSlurmClient):
         dataset, seed = _extract_partition(context)
-        asset_key_str = f"{name}__{dataset}__seed{seed}"
-
-        retry_state = load_retry_state(asset_key_str)
         resources = get_resources(resource_model, scale, stage)
 
-        ckpt_path = None
-        if retry_state:
-            resources = scale_resources(resources, retry_state["reason"])
-            ckpt_path = retry_state.get("ckpt_path")
-            if retry_state.get("node") and FAILURE_REACTIONS.get(
-                retry_state["reason"], {}
-            ).get("exclude_node"):
-                resources = resources.model_copy(update={"exclude_nodes": retry_state["node"]})
+        # Adaptive retry: scale resources based on previous failure
+        if context.retry_number > 0:
+            # Dagster tracks retry count; scale resources for common failure modes
+            for reason in ("OUT_OF_MEMORY", "TIMEOUT"):
+                resources = scale_resources(resources, reason)
 
         try:
-            result = slurm.client.run(
+            return slurm.run(
+                context=context,
                 stage=stage, model=cli_model, scale=scale, dataset=dataset,
-                resources=resources, seed=seed, auxiliaries=auxiliaries, ckpt_path=ckpt_path,
+                resources=resources, seed=seed, auxiliaries=auxiliaries,
             )
-            clear_retry_state(asset_key_str)
-            return dg.MaterializeResult(metadata=result)
         except SlurmJobFailed as e:
-            save_retry_state(asset_key_str, reason=e.reason, node=e.node, ckpt_path=e.ckpt_path)
             reaction = FAILURE_REACTIONS.get(e.reason, {})
             if reaction.get("max_retries", 0) > 0:
-                raise dg.RetryRequested(max_retries=reaction["max_retries"], seconds_to_wait=10) from e
-            raise dg.Failure(description=f"SLURM job failed: {e.reason}", metadata=e.metadata) from e
+                raise dg.RetryRequested(
+                    max_retries=reaction["max_retries"], seconds_to_wait=10,
+                ) from e
+            raise dg.Failure(
+                description=f"SLURM job failed: {e.reason}", metadata=e.metadata,
+            ) from e
 
     _asset.__name__ = name
     _asset.__qualname__ = name
@@ -261,7 +236,6 @@ def fire_and_forget(
         dataset=dataset,
     )
 
-    client = PipesSlurmClient(dry_run=dry_run)
     seed_list = seeds or [resolve("vgae", "large").seed]
     dag = build_dag_topology()
     topo_order = list(graphlib.TopologicalSorter(
@@ -277,10 +251,11 @@ def fire_and_forget(
             parent_ids = [job_ids[dep] for dep in node.deps if dep in job_ids]
             dep_str = ",".join(parent_ids) if parent_ids else None
 
-            job_ids[asset_nm] = client.submit_no_poll(
+            job_ids[asset_nm] = submit_no_poll(
                 stage=node.stage, model=node.cli_model, scale=node.scale,
                 dataset=dataset, resources=resources, seed=seed,
                 auxiliaries=node.auxiliaries, dependency_job_id=dep_str,
+                dry_run=dry_run,
             )
         all_job_ids.update({f"{k}__seed{seed}": v for k, v in job_ids.items()})
     return all_job_ids
@@ -292,5 +267,5 @@ def fire_and_forget(
 
 defs = dg.Definitions(
     assets=build_dagster_assets(),
-    resources={"slurm": PipesSlurmResource()},
+    resources={"slurm": PipesSlurmClient()},
 )

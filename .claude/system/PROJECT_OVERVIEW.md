@@ -39,7 +39,6 @@ Three-layer import hierarchy (enforced by `tests/test_layer_boundaries.py`):
 - `__init__.py` — Gateway: `build_cli_cmd`, `STAGE_FNS`
 - `cli.py` — Arg parser, MLflow run context, artifact logging, `STAGE_FNS` dispatch, archive restore on failure
 - `api.py` — Programmatic facade: `train()`, `evaluate()`, `orchestrate()` (for notebooks/Dagster)
-- `serve.py` — FastAPI inference server (`/predict`, `/health`) with DQN fusion scoring
 - `validate.py` — Config + environment validation utilities
 - `subprocess_utils.py` — Shared CLI command builder for subprocess dispatch
 - `stages/` — Training logic split into modules:
@@ -56,8 +55,8 @@ Three-layer import hierarchy (enforced by `tests/test_layer_boundaries.py`):
   - `__init__.py` — Gateway: `ResourceSpec`, `PipesSlurmClient`, `SlurmJobFailed`; lazy Dagster imports
   - `job.py` — Pydantic v2 frozen `ResourceSpec` (partition, GPUs, memory, walltime)
   - `dagster_defs.py` — Dagster asset definitions + `build_dag_topology()` + `fire_and_forget()`
-  - `dagster_resources.py` — Per-asset retry state helpers
-  - `pipes_slurm.py` — SLURM sbatch/sacct wrapper: script gen, submit, poll, artifact validation via contracts
+  - `pipes_slurm.py` — Dagster Pipes SLURM client (`PipesClient` + `ConfigurableResource`) over NFS
+  - `slurm_primitives.py` — SLURM primitives: sbatch gen, submit, poll, adaptive retry, resource profiles
   - `optuna_sweep.py` — Optuna HPO: `run_sweep()` (single-stage) + `run_sweep_pipeline()` (sequential 3-stage). SQLite-backed resume.
 
 ### Layer 3: `graphids/core/` (domain — imports graphids.config.constants, never imports graphids.pipeline)

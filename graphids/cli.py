@@ -144,8 +144,19 @@ def orchestrate(
 # ---------------------------------------------------------------------------
 
 
+def _init_pipes_context() -> None:
+    """Initialize Dagster Pipes context if env vars are present (zero-cost otherwise)."""
+    try:
+        from dagster_pipes import PipesContext, open_dagster_pipes
+        if not PipesContext.is_initialized():
+            open_dagster_pipes()
+    except (ImportError, Exception):
+        pass
+
+
 def _run_single_stage(cfg: PipelineConfig, stage: str) -> None:
     """Execute a single training stage."""
+    _init_pipes_context()
     validate(cfg, stage)
     structlog.contextvars.bind_contextvars(
         dataset=cfg.dataset, model=cfg.model_type, scale=cfg.scale,
@@ -184,6 +195,17 @@ def _run_single_stage(cfg: PipelineConfig, stage: str) -> None:
             )
         except Exception as e:
             log.warning("manifest_write_failed", error=str(e))
+
+        # Report to Dagster Pipes if running under orchestration
+        try:
+            from dagster_pipes import PipesContext, open_dagster_pipes
+            if PipesContext.is_initialized():
+                pipes = PipesContext.get()
+                pipes.report_asset_materialization(
+                    metadata={k: v for k, v in metrics.items() if isinstance(v, (int, float, str))},
+                )
+        except ImportError:
+            pass
 
         if archive and archive.exists():
             shutil.rmtree(archive, ignore_errors=True)

@@ -89,43 +89,80 @@ def _train_dqn_fusion(cfg, train_cache, val_cache, device, out) -> float:
     return best_acc
 
 
+def _make_fusion_trainer(cfg):
+    """Create a lightweight Lightning Trainer for fusion baselines (MLP/WeightedAvg)."""
+    import pytorch_lightning as pl
+    from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+
+    gw, _ = open_gateway(cfg)
+    out = gw.ensure_dir("fusion")
+
+    return pl.Trainer(
+        default_root_dir=str(out),
+        max_epochs=cfg.fusion.mlp_max_epochs,
+        accelerator="auto",
+        devices="auto",
+        callbacks=[
+            ModelCheckpoint(
+                dirpath=str(out), filename="best_model",
+                monitor="val_loss", mode="min", save_top_k=1,
+            ),
+            EarlyStopping(monitor="val_loss", patience=10, mode="min"),
+        ],
+        logger=pl.loggers.CSVLogger(save_dir=str(out), name="metrics"),
+        enable_progress_bar=True,
+        log_every_n_steps=10,
+    )
+
+
+def _make_fusion_dataloaders(train_cache, val_cache, batch_size: int):
+    """Build train/val DataLoaders from cached prediction tensors."""
+    from torch.utils.data import DataLoader, TensorDataset
+
+    train_ds = TensorDataset(train_cache["states"], train_cache["labels"])
+    val_ds = TensorDataset(val_cache["states"], val_cache["labels"])
+    return (
+        DataLoader(train_ds, batch_size=batch_size, shuffle=True),
+        DataLoader(val_ds, batch_size=batch_size),
+    )
+
+
 def _train_mlp_fusion(cfg, train_cache, val_cache, device) -> float:
-    """MLP supervised fusion. Returns best validation accuracy."""
-    from graphids.core.models.dqn import MLPFusionAgent
+    """MLP supervised fusion via Lightning Trainer. Returns best validation accuracy."""
+    from graphids.core.models.dqn import MLPFusionModule
     from graphids.core.models.registry import fusion_state_dim
 
-    agent = MLPFusionAgent(
+    module = MLPFusionModule(
         state_dim=fusion_state_dim(),
         hidden_dims=cfg.fusion.mlp_hidden_dims,
         lr=cfg.fusion.lr,
-        device=str(device),
     )
-    best_acc = agent.train_on_cache(
-        train_cache["states"],
-        train_cache["labels"],
-        val_cache["states"],
-        val_cache["labels"],
-        cfg,
+    train_dl, val_dl = _make_fusion_dataloaders(
+        train_cache, val_cache, cfg.dqn.batch_size,
     )
+    trainer = _make_fusion_trainer(cfg)
+    trainer.fit(module, train_dl, val_dl)
+
     _, mapper = open_gateway(cfg)
-    mapper.save_checkpoint(agent.state_dict(), "fusion")
+    mapper.save_checkpoint({"model": module.model.state_dict()}, "fusion")
+    best_acc = trainer.callback_metrics.get("val_acc", torch.tensor(0.0)).item()
     return best_acc
 
 
 def _train_weighted_avg_fusion(cfg, train_cache, val_cache, device) -> float:
-    """Weighted average fusion. Returns best validation accuracy."""
-    from graphids.core.models.dqn import WeightedAvgFusionAgent
+    """Weighted average fusion via Lightning Trainer. Returns best validation accuracy."""
+    from graphids.core.models.dqn import WeightedAvgModule
 
-    agent = WeightedAvgFusionAgent(device=str(device))
-    best_acc = agent.train_on_cache(
-        train_cache["states"],
-        train_cache["labels"],
-        val_cache["states"],
-        val_cache["labels"],
-        cfg,
+    module = WeightedAvgModule(lr=cfg.fusion.lr)
+    train_dl, val_dl = _make_fusion_dataloaders(
+        train_cache, val_cache, cfg.dqn.batch_size,
     )
+    trainer = _make_fusion_trainer(cfg)
+    trainer.fit(module, train_dl, val_dl)
+
     _, mapper = open_gateway(cfg)
-    mapper.save_checkpoint(agent.state_dict(), "fusion")
+    mapper.save_checkpoint(module.state_dict_for_save(), "fusion")
+    best_acc = trainer.callback_metrics.get("val_acc", torch.tensor(0.0)).item()
     return best_acc
 
 

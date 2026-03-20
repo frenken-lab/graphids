@@ -62,8 +62,8 @@ Per-stage sbatch submission via Dagster assets. Each stage is a separate SLURM j
 |-----------|------|------|
 | **Job Definition** | `job.py` | Pydantic v2 frozen `ResourceSpec` (partition, GPUs, memory, walltime). |
 | **DAG Topology** | `dagster_defs.py` | `build_dag_topology() → dict[str, DagNode]` — single source of truth for pipeline DAG. Used by both `build_dagster_assets()` (Dagster entry point) and `fire_and_forget()` (SLURM dependency chains). |
-| **SLURM Client** | `pipes_slurm.py` | `PipesSlurmClient`: script gen via `build_cli_cmd()`, sbatch submit, sacct poll, artifact validation via Pydantic contracts. Resource profiles + failure reactions from `resources.yaml`. |
-| **Retry State** | `dagster_resources.py` | Per-asset retry metadata (failure reason, node, checkpoint path) persisted to JSON for resource scaling on retry. |
+| **Pipes Client** | `pipes_slurm.py` | `PipesSlurmClient(PipesClient, ConfigurableResource)`: Dagster Pipes over NFS. Uses `PipesFileContextInjector`/`PipesFileMessageReader` for cross-node communication. |
+| **SLURM Primitives** | `slurm_primitives.py` | `generate_sbatch_script()`, `submit_sbatch()`, `sacct_query()`, `poll_until_done()`, resource profiles, adaptive retry (`scale_resources()`), `SlurmJobFailed`. No Dagster imports. |
 
 **Fire-and-forget mode**: `fire_and_forget()` submits all jobs with `--dependency=afterok` chains — no polling, SLURM handles ordering. Topological sort via `graphlib.TopologicalSorter`.
 
@@ -73,10 +73,6 @@ CLI: `python -m graphids.cli orchestrate --dataset hcrl_sa --seeds 42,123,456`
 
 ### HPO (Optuna, inside SLURM jobs)
 - `optuna_sweep.py`: Single file — `run_sweep()` (single-stage Optuna study) + `run_sweep_pipeline()` (sequential 3-stage loop). Subprocess-based objective for CUDA isolation. Optuna's built-in SQLite storage provides free resume.
-
-### Shared SLURM module
-- `slurm_client.py`: Generic SLURM primitives — `generate_sbatch_script()`, `submit_sbatch()`, `sacct_query()`, `poll_until_done()`, resource profiles, adaptive retry (`scale_resources()`), `SlurmJobFailed`. No Dagster imports.
-- `pipes_slurm.py`: Thin Dagster wrapper — `PipesSlurmClient` (script file management, artifact validation, checkpoint discovery). Imports and re-exports from `slurm_client.py`.
 
 ### Shared Principles
 - **Subprocess dispatch**: Each stage runs as `subprocess.run()` for CUDA context isolation (~300-500 MB per model). Overhead (~3-5s) is <0.1% of pipeline wall time.
@@ -106,10 +102,6 @@ Artifact writes (`save_embeddings`, `save_attention`, `save_dqn_policy`, `save_c
 - **DynamicBatchSampler** (PyG) packs variable-size graphs to a node budget instead of fixed count.
 - **Batch sizing**: `safety_factor × configured batch_size` (config-driven). No GPU memory probing.
 - **Teacher offloading**: `cfg.training.offload_teacher_to_cpu` moves teacher to CPU between forward passes to save GPU memory. Shared helpers in `modules.py`.
-
-## Inference Serving
-
-`graphids/pipeline/serve.py` — FastAPI endpoints (`/predict`, `/health`) loading VGAE+GAT+DQN from `experimentruns/`. Returns fusion scores via DQN agent's `select_action()` + `_derive_scores()`.
 
 ## Dashboard
 

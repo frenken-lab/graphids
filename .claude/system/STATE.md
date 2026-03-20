@@ -26,7 +26,6 @@
 
 | Component | Issue |
 |-----------|-------|
-| **Inference server** | `serve.py` exists (`/predict`, `/health`). Prototype only, untested with current checkpoints. |
 | **Sweep pipeline** | `optuna_sweep.py` — Optuna direct (replaced Ray Tune). SQLite-backed resume, subprocess trial isolation. |
 
 ### Not Implemented (Red)

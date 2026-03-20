@@ -7,7 +7,7 @@ Public API:
 """
 
 from graphids.pipeline.orchestration.job import ResourceSpec
-from graphids.pipeline.orchestration.slurm_client import PipesSlurmClient, SlurmJobFailed
+from graphids.pipeline.orchestration.slurm_primitives import SlurmJobFailed
 
 
 # Lazy imports for Dagster (heavy dependency)
@@ -16,4 +16,8 @@ def __getattr__(name):
         from graphids.pipeline.orchestration import dagster_defs
 
         return getattr(dagster_defs, name)
+    if name == "PipesSlurmClient":
+        from graphids.pipeline.orchestration.pipes_slurm import PipesSlurmClient
+
+        return PipesSlurmClient
     raise AttributeError(f"module 'graphids.pipeline.orchestration' has no attribute {name!r}")

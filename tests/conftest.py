@@ -1,103 +1,85 @@
-"""Shared fixtures for training smoke and e2e tests."""
+"""Shared fixtures for orchestration tests.
+
+Expensive objects (DAG topology, Dagster assets) are built once per module.
+Resource spec factories avoid repeating timedelta boilerplate.
+"""
 
 from __future__ import annotations
 
-import os
+from datetime import timedelta
 
 import pytest
-import torch
-from torch_geometric.data import Data
+
+from graphids.pipeline.orchestration.job import ResourceSpec
 
 
-def pytest_addoption(parser):
-    parser.addoption(
-        "--run-slurm",
-        action="store_true",
-        default=False,
-        help="Run tests marked as needing SLURM compute node",
+# ---------------------------------------------------------------------------
+# Resource spec factories
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def gpu_resources() -> ResourceSpec:
+    """Standard GPU resource spec for tests."""
+    return ResourceSpec(
+        partition="gpu", gpus=1, cpus=4,
+        memory_gb=16, walltime=timedelta(hours=3),
     )
 
 
-def pytest_configure(config):
-    config.addinivalue_line("markers", "slurm: test requires SLURM compute node (CPU or GPU)")
-
-
-def pytest_collection_modifyitems(config, items):
-    on_compute = "SLURM_JOB_ID" in os.environ
-    run_slurm = config.getoption("--run-slurm", default=False)
-    if on_compute or run_slurm:
-        return
-    skip_slurm = pytest.mark.skip(
-        reason="Needs SLURM compute node (use --run-slurm or submit via sbatch)"
+@pytest.fixture()
+def cpu_resources() -> ResourceSpec:
+    """Standard CPU resource spec for tests."""
+    return ResourceSpec(
+        partition="cpu", gpus=0, cpus=8,
+        memory_gb=32, walltime=timedelta(hours=1),
     )
-    for item in items:
-        if "slurm" in item.keywords:
-            item.add_marker(skip_slurm)
-
-
-NUM_IDS = 20
-IN_CHANNELS = 26
 
 
 # ---------------------------------------------------------------------------
-# Synthetic data helpers
+# DAG topology (built once per module that requests it)
 # ---------------------------------------------------------------------------
 
 
-def _make_graph(num_nodes=10, num_edges=20, label=0):
-    """Create a single synthetic graph matching real data shape."""
-    from graphids.config import EDGE_FEATURE_COUNT
+@pytest.fixture(scope="module")
+def dag_topology():
+    """Pipeline DAG topology — built once, shared across all tests in a module."""
+    from graphids.pipeline.orchestration.dagster_defs import build_dag_topology
 
-    x = torch.randn(num_nodes, IN_CHANNELS)
-    x[:, 0] = torch.randint(0, NUM_IDS, (num_nodes,)).float()
-    edge_index = torch.randint(0, num_nodes, (2, num_edges))
-    edge_attr = torch.randn(num_edges, EDGE_FEATURE_COUNT)
-    y = torch.tensor([label])
-    return Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y)
+    return build_dag_topology()
 
 
-def _make_dataset(n=50):
-    """Create a small dataset with mix of normal/attack graphs."""
-    return [_make_graph(label=i % 2) for i in range(n)]
+@pytest.fixture(scope="module")
+def dagster_assets():
+    """Dagster asset definitions — built once, shared across all tests in a module."""
+    from graphids.pipeline.orchestration.dagster_defs import build_dagster_assets
+
+    return build_dagster_assets()
 
 
 # ---------------------------------------------------------------------------
-# Shared smoke-test config overrides (nested format for new PipelineConfig)
+# Asset lookup helpers (exposed as fixtures for cleaner test signatures)
 # ---------------------------------------------------------------------------
 
-SMOKE_OVERRIDES = dict(
-    training=dict(
-        max_epochs=2,
-        batch_size=16,
-        precision="32-true",
-        patience=2,
-        gradient_checkpointing=False,
-        log_every_n_steps=1,
-        safety_factor=1.0,
-    ),
-    device="cpu",
-    num_workers=0,
-    mp_start_method="spawn",
-)
 
-# E2E tests need tiny architectures to finish in reasonable time on CPU
-E2E_OVERRIDES = dict(
-    training=dict(
-        max_epochs=2,
-        batch_size=16,
-        precision="32-true",
-        patience=2,
-        gradient_checkpointing=False,
-        log_every_n_steps=1,
-        safety_factor=1.0,
-    ),
-    device="cpu",
-    num_workers=0,
-    mp_start_method="spawn",
-    # Tiny VGAE
-    vgae=dict(hidden_dims=(32, 16, 8), latent_dim=8, heads=1, embedding_dim=4, dropout=0.1),
-    # Tiny GAT
-    gat=dict(hidden=8, layers=2, heads=2, embedding_dim=4, fc_layers=2, dropout=0.1),
-    # Tiny DQN
-    dqn=dict(hidden=32, layers=2, buffer_size=500, batch_size=32, target_update=10),
-)
+@pytest.fixture(scope="module")
+def find_asset(dagster_assets):
+    """Return a lookup function: find_asset(name) -> asset definition."""
+    index = {a.key.path[-1]: a for a in dagster_assets}
+
+    def _find(name: str):
+        return index[name]
+
+    return _find
+
+
+@pytest.fixture(scope="module")
+def asset_dep_names(dagster_assets):
+    """Return a lookup function: asset_dep_names(name) -> set of dep names."""
+    index = {a.key.path[-1]: a for a in dagster_assets}
+
+    def _deps(name: str) -> set[str]:
+        spec = list(index[name].specs)[0]
+        return {d.asset_key.path[-1] for d in spec.deps}
+
+    return _deps

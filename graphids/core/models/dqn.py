@@ -4,6 +4,7 @@ import structlog
 from pathlib import Path
 
 import numpy as np
+import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -135,7 +136,6 @@ class EnhancedDQNFusionAgent:
         num_layers=3,
         weight_decay=1e-5,
         scheduler_patience=1000,
-        max_patience=5000,
     ):
         # Action and state space
         self.alpha_values = np.linspace(0, 1, alpha_steps)
@@ -176,11 +176,6 @@ class EnhancedDQNFusionAgent:
         # Training tracking
         self.training_step = 0
         self.update_counter = 0
-
-        # Validation tracking
-        self.best_validation_score = -float("inf")
-        self.patience_counter = 0
-        self.max_patience = max_patience
 
         # Derive feature indices from registry (no hardcoded offsets)
         from .registry import feature_layout
@@ -227,7 +222,6 @@ class EnhancedDQNFusionAgent:
             num_layers=cfg.dqn.layers,
             weight_decay=cfg.dqn.weight_decay,
             scheduler_patience=cfg.dqn.scheduler_patience,
-            max_patience=cfg.dqn.max_patience,
         )
         if inference:
             kwargs.update(epsilon=0.0, epsilon_decay=1.0, min_epsilon=0.0)
@@ -481,14 +475,6 @@ class EnhancedDQNFusionAgent:
         # Update LR scheduler
         self.scheduler.step(result["avg_reward"])
 
-        # Early stopping tracking
-        current_score = result["accuracy"] + 0.1 * result["avg_reward"]
-        if current_score > self.best_validation_score:
-            self.best_validation_score = current_score
-            self.patience_counter = 0
-        else:
-            self.patience_counter += 1
-
         return result
 
     def load_checkpoint(self, checkpoint_or_path: dict | str | Path) -> None:
@@ -534,10 +520,10 @@ class MLPFusionNetwork(nn.Module):
         return self.net(x).squeeze(-1)
 
 
-class MLPFusionAgent:
-    """Supervised MLP baseline: learns binary classification directly from state vectors.
+class MLPFusionModule(pl.LightningModule):
+    """Supervised MLP baseline: binary classification from fusion state vectors.
 
-    Same 15-D state as DQN, but trained with BCE loss instead of RL episodes.
+    Same state as DQN, but trained with BCE loss via Lightning instead of RL episodes.
     """
 
     def __init__(
@@ -545,69 +531,40 @@ class MLPFusionAgent:
         state_dim: int,
         hidden_dims: tuple[int, ...] = (64, 32),
         lr: float = 0.001,
-        device: str = "cpu",
     ):
-        self.device = device
-        self.model = MLPFusionNetwork(state_dim, hidden_dims).to(device)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
+        super().__init__()
+        self.save_hyperparameters()
+        self.model = MLPFusionNetwork(state_dim, hidden_dims)
         self.loss_fn = nn.BCEWithLogitsLoss()
+        self.lr = lr
 
-    def train_on_cache(self, train_states, train_labels, val_states, val_labels, cfg) -> float:
-        max_epochs = cfg.fusion.mlp_max_epochs
-        batch_size = cfg.dqn.batch_size
-        best_acc = 0.0
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(x)
 
-        for epoch in range(max_epochs):
-            self.model.train()
-            idx = torch.randperm(len(train_states))
-            epoch_loss = 0.0
-            n_batches = 0
+    def training_step(self, batch, batch_idx):
+        states, labels = batch
+        logits = self(states)
+        loss = self.loss_fn(logits, labels.float())
+        self.log("train_loss", loss, prog_bar=True)
+        return loss
 
-            for start in range(0, len(train_states), batch_size):
-                batch_idx = idx[start : start + batch_size]
-                states = train_states[batch_idx].to(self.device)
-                labels = train_labels[batch_idx].float().to(self.device)
+    def validation_step(self, batch, batch_idx):
+        states, labels = batch
+        logits = self(states)
+        loss = self.loss_fn(logits, labels.float())
+        preds = (logits > 0).long()
+        acc = (preds == labels).float().mean()
+        self.log("val_loss", loss, prog_bar=True)
+        self.log("val_acc", acc, prog_bar=True)
 
-                logits = self.model(states)
-                loss = self.loss_fn(logits, labels)
-
-                self.optimizer.zero_grad()
-                loss.backward()
-                self.optimizer.step()
-                epoch_loss += loss.item()
-                n_batches += 1
-
-            # Validation
-            if (epoch + 1) % 10 == 0:
-                acc = self._evaluate(val_states, val_labels)
-                log.info(
-                    "MLP epoch %d/%d  loss=%.4f  val_acc=%.4f",
-                    epoch + 1,
-                    max_epochs,
-                    epoch_loss / max(n_batches, 1),
-                    acc,
-                )
-                if acc > best_acc:
-                    best_acc = acc
-
-        return best_acc
-
-    def _evaluate(self, states: torch.Tensor, labels: torch.Tensor) -> float:
-        self.model.eval()
-        with torch.no_grad():
-            logits = self.model(states.to(self.device))
-            preds = (logits > 0).long()
-            correct = (preds == labels.to(self.device)).sum().item()
-        return correct / len(labels)
-
-    def state_dict(self) -> dict:
-        return {"model": self.model.state_dict()}
+    def configure_optimizers(self):
+        return optim.Adam(self.parameters(), lr=self.lr)
 
     def fuse(self, state_features: np.ndarray) -> int:
-        self.model.eval()
+        self.eval()
         with torch.no_grad():
             t = torch.tensor(state_features, dtype=torch.float32).unsqueeze(0).to(self.device)
-            logit = self.model(t)
+            logit = self(t)
             return 1 if logit.item() > 0 else 0
 
 
@@ -616,18 +573,19 @@ class MLPFusionAgent:
 # ---------------------------------------------------------------------------
 
 
-class WeightedAvgFusionAgent:
+class WeightedAvgModule(pl.LightningModule):
     """Simplest baseline: learns a single scalar alpha per model.
 
     If this matches DQN's F1, the RL approach is unjustified.
     Fusion: score = (1 - sigmoid(w)) * vgae_conf + sigmoid(w) * gat_conf
     """
 
-    def __init__(self, device: str = "cpu"):
-        self.device = device
-        self.weight = nn.Parameter(torch.zeros(1, device=device))
-        self.optimizer = optim.Adam([self.weight], lr=0.01)
+    def __init__(self, lr: float = 0.01):
+        super().__init__()
+        self.save_hyperparameters()
+        self.weight = nn.Parameter(torch.zeros(1))
         self.loss_fn = nn.BCELoss()
+        self.lr = lr
 
         from .registry import feature_layout
 
@@ -635,53 +593,37 @@ class WeightedAvgFusionAgent:
         self._vgae_conf_idx = layout["vgae"].confidence_idx
         self._gat_conf_idx = layout["gat"].confidence_idx
 
-    def train_on_cache(self, train_states, train_labels, val_states, val_labels, cfg) -> float:
-        max_epochs = cfg.fusion.mlp_max_epochs
-        best_acc = 0.0
+    def forward(self, states: torch.Tensor) -> torch.Tensor:
+        alpha = torch.sigmoid(self.weight)
+        vgae_conf = states[:, self._vgae_conf_idx]
+        gat_conf = states[:, self._gat_conf_idx]
+        return torch.clamp((1 - alpha) * vgae_conf + alpha * gat_conf, 1e-7, 1 - 1e-7)
 
-        for epoch in range(max_epochs):
-            alpha = torch.sigmoid(self.weight)
-            vgae_conf = train_states[:, self._vgae_conf_idx].to(self.device)
-            gat_conf = train_states[:, self._gat_conf_idx].to(self.device)
-            scores = (1 - alpha) * vgae_conf + alpha * gat_conf
-            scores = torch.clamp(scores, 1e-7, 1 - 1e-7)
-            labels = train_labels.float().to(self.device)
+    def training_step(self, batch, batch_idx):
+        states, labels = batch
+        scores = self(states)
+        loss = self.loss_fn(scores, labels.float())
+        self.log("train_loss", loss, prog_bar=True)
+        self.log("alpha", torch.sigmoid(self.weight).item(), prog_bar=True)
+        return loss
 
-            loss = self.loss_fn(scores, labels)
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
+    def validation_step(self, batch, batch_idx):
+        states, labels = batch
+        scores = self(states)
+        loss = self.loss_fn(scores, labels.float())
+        preds = (scores > 0.5).long()
+        acc = (preds == labels).float().mean()
+        self.log("val_loss", loss, prog_bar=True)
+        self.log("val_acc", acc, prog_bar=True)
 
-            if (epoch + 1) % 10 == 0:
-                acc = self._evaluate(val_states, val_labels)
-                a = torch.sigmoid(self.weight).item()
-                log.info(
-                    "WeightedAvg epoch %d/%d  loss=%.4f  val_acc=%.4f  alpha=%.3f",
-                    epoch + 1,
-                    max_epochs,
-                    loss.item(),
-                    acc,
-                    a,
-                )
-                if acc > best_acc:
-                    best_acc = acc
+    def configure_optimizers(self):
+        return optim.Adam(self.parameters(), lr=self.lr)
 
-        return best_acc
-
-    def _evaluate(self, states: torch.Tensor, labels: torch.Tensor) -> float:
-        with torch.no_grad():
-            alpha = torch.sigmoid(self.weight)
-            vgae_conf = states[:, self._vgae_conf_idx].to(self.device)
-            gat_conf = states[:, self._gat_conf_idx].to(self.device)
-            scores = (1 - alpha) * vgae_conf + alpha * gat_conf
-            preds = (scores > 0.5).long()
-            correct = (preds == labels.to(self.device)).sum().item()
-        return correct / len(labels)
-
-    def state_dict(self) -> dict:
+    def state_dict_for_save(self) -> dict:
         return {"weight": self.weight.detach().cpu(), "alpha": torch.sigmoid(self.weight).item()}
 
     def fuse(self, state_features: np.ndarray) -> int:
+        self.eval()
         with torch.no_grad():
             alpha = torch.sigmoid(self.weight).item()
             vgae_conf = state_features[self._vgae_conf_idx]

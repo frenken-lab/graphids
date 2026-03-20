@@ -21,6 +21,7 @@ import optuna
 import yaml
 
 from graphids.config import (
+    CONFIG_DIR,
     DEFAULT_SEEDS,
     PROJECT_ROOT,
     STAGE_MODEL_MAP,
@@ -36,7 +37,7 @@ log = structlog.get_logger()
 # Search spaces (loaded from YAML: graphids/config/search_spaces/)
 # ---------------------------------------------------------------------------
 
-_SEARCH_SPACES_DIR = Path(__file__).resolve().parents[2] / "config" / "search_spaces"
+_SEARCH_SPACES_DIR = CONFIG_DIR / "search_spaces"
 
 
 def _load_search_spaces() -> dict[str, dict[str, tuple]]:
@@ -273,7 +274,7 @@ def run_sweep_pipeline(
         else:
             log.info("checkpoint_exists_skipping", stage=stage)
 
-    log.info("Running final evaluation")
+    log.info("running_final_evaluation")
     result = subprocess.run(build_cli_cmd("evaluation", "vgae", scale, dataset), cwd=PROJECT_ROOT)
     if result.returncode != 0:
         raise RuntimeError(f"Evaluation failed (exit {result.returncode})")
