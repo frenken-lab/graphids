@@ -610,26 +610,24 @@ If a session discovers that the plan is wrong (e.g., a framework feature doesn't
 
 **No deletions yet.** This phase proves the new path works before cutting the old one.
 
-### Phase B: Hydra-as-framework + sweep (breaking)
+### Phase B: Hydra-as-framework + sweep (breaking) — DONE
 
-**Goal:** Switch CLI to `@hydra.main`. Delete sweep code.
+**What was built:**
 
-**Delete:**
-- `cli.py` (171 lines)
-- `pipeline/orchestration/optuna_sweep.py` (302 lines)
-- `pipeline/subprocess_utils.py` (72 lines)
-- `config/search_spaces/*.yaml` (3 files, 57 lines)
+- Deleted: `cli.py`, `optuna_sweep.py`, `subprocess_utils.py`, `config/search_spaces/*.yaml`, `compose_config()`, `_CONFIG_GROUPS`
+- Deleted: 4 stale SLURM scripts (tune_sweep, sweep_pipeline, smoke_test, benchmark_orchestration)
+- Added: `__main__.py` (155 lines) — single dispatcher. `@hydra.main` for training/sweep (same function, `--multirun` flag differentiates). Argparse for orchestrate/lake/preprocess.
+- Updated: pyproject.toml (`graphids = "graphids.__main__:main"`), 3 SLURM scripts migrated to Hydra override grammar
+- Added: `conf/config.yaml` — `checkpoints` dict with OmegaConf interpolation, `_tier`/`_output_base` private vars, `hydra.run.dir` template
 
-**Add:**
-- `train.py` (~15 lines, `@hydra.main`)
-- `sweep.py` (~15 lines, `@hydra.main` + `--multirun`)
-- `orchestrate.py`, `lake.py`, `preprocess.py` (~55 lines total)
-- `conf/config.yaml` sweeper section + `conf/sweep/*.yaml` search spaces (~70 lines)
-- `hydra-optuna-sweeper`, `hydra-submitit-launcher` to pyproject.toml
-
-**Update:** pyproject.toml entry points, all scripts that reference `python -m graphids.cli`, SLURM sbatch scripts.
-
-**Delete tests:** Any test that imports `optuna_sweep`, `subprocess_utils`, or tests CLI subcommand routing.
+**CLI surface:**
+```
+python -m graphids stage=autoencoder model=vgae_large dataset=hcrl_sa
+python -m graphids --multirun stage=autoencoder model=vgae_large
+python -m graphids orchestrate --dataset hcrl_sa
+python -m graphids lake --action status
+python -m graphids preprocess --dataset hcrl_sa
+```
 
 ### Phase C: Delete storage layer (breaking)
 
@@ -687,7 +685,7 @@ If a session discovers that the plan is wrong (e.g., a framework feature doesn't
 |---|---|---|
 | Spike | Q1-Q5 research | **Done** (all resolved, no blockers) |
 | A | Lightning experiment management | **Done** — save_hyperparameters on VGAE/GAT, CSVLogger name=""/version="", RunMetadataCallback, EvalArtifactCallback |
-| B | Hydra-as-framework + sweep | **Done** — deleted cli.py/optuna_sweep/subprocess_utils/search_spaces (-919 lines), added train.py/sweep.py/orchestrate.py/lake.py/preprocess.py (+348 lines) |
-| C | Delete storage layer | Pending (depends on A) |
+| B | Hydra-as-framework + sweep | **Done** — deleted cli.py/optuna_sweep/subprocess_utils/search_spaces/stale scripts. Added `__main__.py` (single dispatcher: @hydra.main for train/sweep, argparse for rest). Deleted `compose_config()`. -651 net lines. |
+| C | Delete storage layer | **In progress** — storage/ deleted, partial fixes attempted but deviated from plan. Needs revert + redo per `plans/phase-c-implementation.md`. |
 | D | instantiate() + Tuner | Pending (depends on B) |
 | E | Dashboard + scripts | Pending (depends on C) |
