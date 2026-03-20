@@ -4,16 +4,17 @@
 
 ## Active Plan
 
-**Replace optuna_sweep.py + subprocess_utils.py with hydra-optuna-sweeper** — 374 lines → 0 Python + YAML config.
+**Framework consolidation: Hydra-as-framework + Lightning experiment management** — see `plans/framework-consolidation.research.md`
 
-- Research needed: verify hydra-optuna-sweeper works with our Hydra Compose API (we use `compose_config()`, not `@hydra.main`)
-- `subprocess_utils.py` (72 lines) only exists because `optuna_sweep.py` uses `build_cli_cmd()` for subprocess dispatch
-- With hydra-optuna-sweeper, each trial IS a Hydra run — no custom sweep code
-- See `plans/codebase-reduction.md` sections F5, H4a for analysis
-- See `plans/stage-executor-and-launcher.research.md` for context on what was just completed
+- Phase A (done): Lightning save_hyperparameters, CSVLogger fix, EvalArtifactCallback, RunMetadataCallback
+- Phase B (done): Deleted cli.py, optuna_sweep.py, subprocess_utils.py, search_spaces/. Added @hydra.main entry points (train.py, sweep.py, orchestrate.py, lake.py, preprocess.py). -571 net lines.
+- Phase C (next): Delete `graphids/storage/` layer — replace with Lightning + stdlib
+- Phase D: `hydra.utils.instantiate()` + Lightning Tuner
+- Phase E: Dashboard + scripts migration
 
 ## Recently Completed
 
+- **Framework consolidation Phase A+B** (2026-03-20) — Lightning experiment management + Hydra-as-framework. Deleted sweep code + Typer CLI (-919 lines), added @hydra.main entry points + callbacks (+348 lines). See `plans/framework-consolidation.research.md`.
 - **Stage executor + submitit orchestration** (2026-03-20) — extracted `execute_stage()` as single entry point for all pipeline paths (CLI, API, notebook). Replaced Dagster + custom SLURM script generation with submitit + graphlib. Deleted dagster_defs.py, pipes_slurm.py, slurm_primitives.py (-687 production lines, -43% of pipeline/orchestration). `api.py` now has full guarantees (validation, manifest, logging, archive). See `plans/stage-executor-and-launcher.research.md`.
 - **CLI move + facade enforcement + I/O leak fixes** (2026-03-19)
 - **structlog integration** (2026-03-19)

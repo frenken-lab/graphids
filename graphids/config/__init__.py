@@ -4,7 +4,7 @@ Usage:
     from graphids.config import resolve, PipelineConfig, stage_dir, STAGES
 """
 
-from ._hydra_bridge import compose_config, resolve  # noqa: F401
+from ._hydra_bridge import resolve  # noqa: F401
 from .constants import (  # noqa: F401
     CATALOG_PATH,
     CONFIG_DIR,

@@ -39,23 +39,21 @@ echo "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || ec
 # Run 1: GAT (no edge_attr)
 echo ""
 echo "--- Run 1: conv_type=gat (no edge_attr) ---"
-python -m graphids.cli curriculum \
-    --model gat --scale "${SCALE}" --dataset "${DATASET}" \
-    -O training.max_epochs "${EPOCHS}" \
-    -O training.profile true \
-    -O training.profile_steps 5 \
-    -O gat.conv_type gat \
-    -O training.patience 999
+python -m graphids.train stage=curriculum model=gat_${SCALE} dataset=${DATASET} \
+    training.max_epochs=${EPOCHS} \
+    training.profile=true \
+    training.profile_steps=5 \
+    gat.conv_type=gat \
+    training.patience=999
 
 echo ""
 echo "--- Run 2: conv_type=transformer (with edge_attr) ---"
-python -m graphids.cli curriculum \
-    --model gat --scale "${SCALE}" --dataset "${DATASET}" \
-    -O training.max_epochs "${EPOCHS}" \
-    -O training.profile true \
-    -O training.profile_steps 5 \
-    -O gat.conv_type transformer \
-    -O training.patience 999
+python -m graphids.train stage=curriculum model=gat_${SCALE} dataset=${DATASET} \
+    training.max_epochs=${EPOCHS} \
+    training.profile=true \
+    training.profile_steps=5 \
+    gat.conv_type=transformer \
+    training.patience=999
 
 echo ""
 echo "=== Profiling complete. Run: python scripts/profiling/analyze_profile.py ==="

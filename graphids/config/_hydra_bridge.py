@@ -24,9 +24,6 @@ if TYPE_CHECKING:
 
 CONF_DIR = str((Path(__file__).parent / "conf").resolve())
 
-# Config group keys — these select YAML files, not nested values
-_CONFIG_GROUPS = frozenset({"model", "auxiliary", "dataset"})
-
 # Keys in Hydra config but not in PipelineConfig — stripped before validation
 _HYDRA_ONLY_KEYS = frozenset({"stage"})
 
@@ -66,55 +63,6 @@ def _build_schema() -> DictConfig:
 
     return OmegaConf.create(PipelineConfig().model_dump())
 
-
-# ---------------------------------------------------------------------------
-# compose() — internal API for CLI
-# ---------------------------------------------------------------------------
-
-
-def compose_config(
-    overrides: list[str] | None = None,
-) -> tuple[DictConfig, str | None]:
-    """Compose config from CLI overrides, returning (merged DictConfig, stage).
-
-    Used by cli.py's _run_training() and _show_config(). Returns the DictConfig
-    before Pydantic validation so the CLI can extract 'stage' and print YAML.
-    """
-    overrides = overrides or []
-
-    # Split: config group selections go to Hydra, nested overrides applied after merge
-    group_overrides: list[str] = []
-    nested_overrides: list[tuple[str, str]] = []
-
-    for ov in overrides:
-        clean = ov.lstrip("+")
-        if "=" not in clean:
-            group_overrides.append(clean)
-            continue
-        key, value = clean.split("=", 1)
-        if key in _CONFIG_GROUPS:
-            group_overrides.append(f"{key}={value}")
-        else:
-            nested_overrides.append((key, value))
-
-    # 1. Hydra compose (config groups only)
-    with _hydra_compose(group_overrides) as hydra_cfg:
-        pass
-
-    # 2. Schema (all fields with defaults)
-    schema = _build_schema()
-
-    # 3. Merge: schema base + Hydra YAML on top
-    OmegaConf.set_struct(schema, False)
-    merged = OmegaConf.merge(schema, hydra_cfg)
-
-    # 4. Apply nested overrides with typo detection
-    #    Values stay as strings — Pydantic coerces types at model_validate() time.
-    for key, raw_value in nested_overrides:
-        OmegaConf.update(merged, key, raw_value, force_add=False)
-
-    stage = merged.get("stage", None)
-    return merged, stage
 
 
 # ---------------------------------------------------------------------------

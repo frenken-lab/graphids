@@ -20,11 +20,11 @@ bash scripts/lake/migrate_to_ess.sh 2>&1
 
 echo ""
 echo "=== Building DuckDB catalog ==="
-python -m graphids.cli lake --lake-action rebuild-catalog
+python -m graphids.lake --action rebuild-catalog
 
 echo ""
 echo "=== Verifying artifacts ==="
-python -m graphids.cli lake --lake-action status
+python -m graphids.lake --action status
 
 EXIT_CODE=$?
 log_job_footer $EXIT_CODE

@@ -16,12 +16,9 @@ source "$SCRIPT_DIR/_preamble.sh"
 
 log_job_header "Smoke Test: collated storage + num_workers"
 
-EPOCH_OVERRIDES="-O training.max_epochs 30 -O training.patience 10"
-
 echo "=== Stage 1: VGAE autoencoder ==="
-python -m graphids.cli autoencoder \
-    --model vgae --scale large --dataset hcrl_sa \
-    $EPOCH_OVERRIDES
+python -m graphids.train stage=autoencoder model=vgae_large dataset=hcrl_sa \
+    training.max_epochs=30 training.patience=10
 VGAE_EXIT=$?
 echo "VGAE exit code: $VGAE_EXIT"
 
@@ -33,9 +30,8 @@ fi
 
 echo ""
 echo "=== Stage 2: GAT curriculum ==="
-python -m graphids.cli curriculum \
-    --model gat --scale large --dataset hcrl_sa \
-    $EPOCH_OVERRIDES
+python -m graphids.train stage=curriculum model=gat_large dataset=hcrl_sa \
+    training.max_epochs=30 training.patience=10
 GAT_EXIT=$?
 echo "GAT exit code: $GAT_EXIT"
 

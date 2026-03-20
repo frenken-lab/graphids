@@ -69,6 +69,7 @@ class VGAEModule(pl.LightningModule):
         projection: nn.Linear | None = None,
     ):
         super().__init__()
+        self.save_hyperparameters({"cfg": cfg.model_dump(), "num_ids": num_ids, "in_channels": in_channels})
         from graphids.core.models.vgae import GraphAutoencoderNeighborhood
 
         self.cfg = cfg
@@ -166,6 +167,7 @@ class GATModule(pl.LightningModule):
         teacher: nn.Module | None = None,
     ):
         super().__init__()
+        self.save_hyperparameters({"cfg": cfg.model_dump(), "num_ids": num_ids, "in_channels": in_channels})
         from graphids.core.models.gat import GATWithJK
 
         self.cfg = cfg

@@ -11,6 +11,8 @@ import torch
 import torch.nn as nn
 from pytorch_lightning.callbacks import DeviceStatsMonitor, EarlyStopping, ModelCheckpoint
 
+from .callbacks import RunMetadataCallback
+
 from graphids.config import (
     STAGE_MODEL_MAP,
     PipelineConfig,
@@ -281,7 +283,7 @@ def make_trainer(
     persistent_root.mkdir(parents=True, exist_ok=True)
 
     # Per-epoch metrics to CSV (replaces MLflow autolog)
-    csv_logger = pl.loggers.CSVLogger(save_dir=str(out), name="metrics")
+    csv_logger = pl.loggers.CSVLogger(save_dir=str(out), name="", version="")
 
     callbacks = [
         ModelCheckpoint(
@@ -299,6 +301,7 @@ def make_trainer(
             check_on_train_epoch_end=False,
         ),
         DeviceStatsMonitor(cpu_stats=False),
+        RunMetadataCallback(),
     ]
 
     if extra_callbacks:
