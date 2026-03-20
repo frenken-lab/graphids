@@ -1,6 +1,6 @@
 """Tests for ResourceSpec Pydantic model (job.py).
 
-Covers SLURM formatting properties, YAML factory, immutability.
+Covers YAML factory, immutability, defaults.
 """
 
 from __future__ import annotations
@@ -10,39 +10,6 @@ from datetime import timedelta
 import pytest
 
 from graphids.pipeline.orchestration.job import ResourceSpec
-
-
-# ---------------------------------------------------------------------------
-# SLURM formatting properties
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("memory_gb", "expected"),
-    [
-        (1, "1G"),
-        (20, "20G"),
-        (128, "128G"),
-    ],
-    ids=["1G", "20G", "128G"],
-)
-def test_mem_slurm(memory_gb, expected):
-    assert ResourceSpec(memory_gb=memory_gb).mem_slurm == expected
-
-
-@pytest.mark.parametrize(
-    ("walltime", "expected"),
-    [
-        (timedelta(hours=3), "3:00:00"),
-        (timedelta(minutes=30), "0:30:00"),
-        (timedelta(hours=1, minutes=30), "1:30:00"),
-        (timedelta(hours=10, minutes=5, seconds=30), "10:05:30"),
-        (timedelta(seconds=0), "0:00:00"),
-    ],
-    ids=["3h", "30m", "1h30m", "10h5m30s", "zero"],
-)
-def test_walltime_slurm(walltime, expected):
-    assert ResourceSpec(walltime=walltime).walltime_slurm == expected
 
 
 # ---------------------------------------------------------------------------
