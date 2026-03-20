@@ -4,22 +4,23 @@
 
 ## Active Plan
 
-**Stage executor + Launcher protocol** — platform-agnostic orchestration replacing Dagster + custom SLURM scripts.
+**Replace optuna_sweep.py + subprocess_utils.py with hydra-optuna-sweeper** — 374 lines → 0 Python + YAML config.
 
-- Design: `plans/stage-executor-and-launcher.research.md` (research-first brainstorm)
-- Prior brainstorm: `plans/stage-executor-and-launcher.freeform.md` (design-first, partially wrong)
-- Investigation: `plans/codebase-reduction.md` (deep code read)
-- Prior decision: `~/plans/pipeline-toolchain-decision.md` (partially superseded — dropping Dagster)
+- Research needed: verify hydra-optuna-sweeper works with our Hydra Compose API (we use `compose_config()`, not `@hydra.main`)
+- `subprocess_utils.py` (72 lines) only exists because `optuna_sweep.py` uses `build_cli_cmd()` for subprocess dispatch
+- With hydra-optuna-sweeper, each trial IS a Hydra run — no custom sweep code
+- See `plans/codebase-reduction.md` sections F5, H4a for analysis
+- See `plans/stage-executor-and-launcher.research.md` for context on what was just completed
 
 ## Recently Completed
 
-- **CLI move + facade enforcement + I/O leak fixes** (2026-03-19) — moved `cli.py` to `graphids/` root (alongside `api.py`). Enforced facade imports (20 deep cross-package imports → facade modules). Routed remaining `torch.load` calls through `ArtifactMapper`. Extracted `DEFAULT_LAKE_ROOT` constant. Normalized intra-package imports to relative. 38 files, zero regressions.
-- **structlog integration** (2026-03-19) — replaced stdlib logging + MLflow with structlog processor pipeline + manifest-based metrics.
-- **StorageGateway + ArtifactMapper** (2026-03-19) — new `graphids/storage/` layer. Single I/O interface for the entire codebase. NFS-safe atomic writes, advisory locking, domain-aware serialization. Deleted `artifacts.py`, `eval_writers.py`, `_atomic_io.py`, `_locking.py`. 215 tests pass.
+- **Stage executor + submitit orchestration** (2026-03-20) — extracted `execute_stage()` as single entry point for all pipeline paths (CLI, API, notebook). Replaced Dagster + custom SLURM script generation with submitit + graphlib. Deleted dagster_defs.py, pipes_slurm.py, slurm_primitives.py (-687 production lines, -43% of pipeline/orchestration). `api.py` now has full guarantees (validation, manifest, logging, archive). See `plans/stage-executor-and-launcher.research.md`.
+- **CLI move + facade enforcement + I/O leak fixes** (2026-03-19)
+- **structlog integration** (2026-03-19)
+- **StorageGateway + ArtifactMapper** (2026-03-19)
 
 ## In Progress
 
-- **Toolchain migration** — config layer complete, CLI moved to root, orchestration + ML decoupling next
 - Ops dashboard (`buckeyeguy/kd-gat-dashboard`) — running on HF Spaces
 
 ## Blocked
