@@ -17,21 +17,14 @@ import torch.multiprocessing as mp
 # Must be called before any CUDA or multiprocessing usage.
 mp.set_start_method("spawn", force=True)
 
-import os
-import shutil
 import sys
-import time
-from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
 import structlog
 import typer
 
-from graphids.config import DEFAULT_DATASET, STAGES, PipelineConfig, run_id
-from graphids.storage import open_gateway
-
-from graphids.pipeline.validate import validate
+from graphids.config import DEFAULT_DATASET, STAGES, PipelineConfig
+from graphids.pipeline.executor import execute_stage
 
 log = structlog.get_logger()
 
@@ -129,96 +122,18 @@ def orchestrate(
     dry_run: bool = False,
 ):
     """Submit pipeline via fire-and-forget SLURM dependency chains."""
-    from graphids.pipeline.orchestration.dagster_defs import fire_and_forget
+    from graphids.config import parse_seeds, resolve
+    from graphids.pipeline.orchestration.dag import build_dag_topology, run_dag
+    from graphids.pipeline.orchestration.slurm import make_slurm_executor
 
     ds = dataset or DEFAULT_DATASET
-    seed_list = None
-    if seeds:
-        from graphids.config import parse_seeds
-        seed_list = parse_seeds(seeds)
-    log.info("jobs_submitted", jobs=fire_and_forget(dataset=ds, seeds=seed_list, dry_run=dry_run))
-
-
-# ---------------------------------------------------------------------------
-# Stage execution
-# ---------------------------------------------------------------------------
-
-
-def _init_pipes_context() -> None:
-    """Initialize Dagster Pipes context if env vars are present (zero-cost otherwise)."""
-    try:
-        from dagster_pipes import PipesContext, open_dagster_pipes
-        if not PipesContext.is_initialized():
-            open_dagster_pipes()
-    except (ImportError, Exception):
-        pass
-
-
-def _run_single_stage(cfg: PipelineConfig, stage: str) -> None:
-    """Execute a single training stage."""
-    _init_pipes_context()
-    validate(cfg, stage)
-    structlog.contextvars.bind_contextvars(
-        dataset=cfg.dataset, model=cfg.model_type, scale=cfg.scale,
-        stage=stage, seed=cfg.seed, slurm_job_id=os.environ.get("SLURM_JOB_ID", ""),
+    seed_list = parse_seeds(seeds) if seeds else [resolve("vgae", "large").seed]
+    dag = build_dag_topology()
+    futures = run_dag(
+        executor_factory=lambda r, deps: make_slurm_executor(r, dep_futures=deps),
+        dag=dag, dataset=ds, seeds=seed_list, dry_run=dry_run,
     )
-
-    gw, mapper = open_gateway(cfg)
-    sdir = gw.resolve(stage)
-
-    # Archive previous completed run
-    archive = None
-    if (sdir / "config.json").exists():
-        archive = sdir.parent / f"{sdir.name}.archive_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        sdir.rename(archive)
-        log.warning("run_archived", path=str(archive))
-
-    mapper.save_config(cfg, stage)
-    log.info("run_started")
-
-    t_start = time.monotonic()
-    try:
-        from graphids.pipeline import STAGE_FNS
-        result = STAGE_FNS[stage](cfg)
-        duration = time.monotonic() - t_start
-
-        metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
-        metrics["duration_seconds"] = duration
-
-        # Write manifest (authoritative record of this run)
-        from graphids.storage import write_manifest
-        try:
-            write_manifest(
-                sdir, dataset=cfg.dataset, model_type=cfg.model_type, scale=cfg.scale,
-                stage=stage, auxiliaries=cfg.auxiliaries[0].type if cfg.auxiliaries else "none",
-                seed=cfg.seed, metrics=metrics,
-            )
-        except Exception as e:
-            log.warning("manifest_write_failed", error=str(e))
-
-        # Report to Dagster Pipes if running under orchestration
-        try:
-            from dagster_pipes import PipesContext, open_dagster_pipes
-            if PipesContext.is_initialized():
-                pipes = PipesContext.get()
-                pipes.report_asset_materialization(
-                    metadata={k: v for k, v in metrics.items() if isinstance(v, (int, float, str))},
-                )
-        except ImportError:
-            pass
-
-        if archive and archive.exists():
-            shutil.rmtree(archive, ignore_errors=True)
-        log.info("stage_complete", **{k: v for k, v in metrics.items() if isinstance(v, (int, float))})
-
-    except Exception as e:
-        duration = time.monotonic() - t_start
-        if archive and archive.exists():
-            if sdir.exists():
-                shutil.rmtree(sdir, ignore_errors=True)
-            archive.rename(sdir)
-        log.error("stage_failed", error=str(e)[:250], duration_s=round(duration, 1))
-        raise
+    log.info("jobs_submitted", count=len(futures))
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +164,7 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(f"Unknown stage: {stage}. Valid: {list(STAGES.keys())}")
         raw = OmegaConf.to_object(merged)
         raw.pop("stage", None)
-        _run_single_stage(PipelineConfig.model_validate(raw), stage)
+        execute_stage(PipelineConfig.model_validate(raw), stage)
 
 
 if __name__ == "__main__":

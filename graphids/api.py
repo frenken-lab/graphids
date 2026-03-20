@@ -1,16 +1,15 @@
 """Programmatic API facade for KD-GAT pipeline.
 
-Thin wrapper over the same resolve→dispatch logic as the CLI, designed
-for notebook usage and Dagster integration (no argparse).
+Thin wrapper over execute_stage(), designed for notebook usage.
 
 Usage:
     from graphids.api import train, evaluate, orchestrate
 
-    # Train a single stage
-    ckpt = train("vgae", "large", "hcrl_sa")
+    # Train a single stage (full guarantees: validation, manifest, logging)
+    result = train("vgae", "large", "hcrl_sa")
 
     # Evaluate all models
-    metrics = evaluate("hcrl_sa")
+    result = evaluate("hcrl_sa")
 
     # Submit full pipeline to SLURM
     job_ids = orchestrate("hcrl_sa", seeds=[42, 123, 456])
@@ -18,9 +17,8 @@ Usage:
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from graphids.config import DEFAULT_DATASET, checkpoint_path, resolve
+from graphids.config import DEFAULT_DATASET, resolve
+from graphids.pipeline.executor import StageResult, execute_stage
 
 
 def train(
@@ -30,13 +28,10 @@ def train(
     stage: str = "autoencoder",
     seed: int = 42,
     **overrides,
-) -> Path:
-    """Train a model. Returns checkpoint path."""
-    from graphids.pipeline import STAGE_FNS
-
+) -> StageResult:
+    """Train a model. Returns StageResult with metrics, checkpoint path, manifest."""
     cfg = resolve(model_type, scale, dataset=dataset, seed=seed, **overrides)
-    STAGE_FNS[stage](cfg)
-    return checkpoint_path(cfg, stage)
+    return execute_stage(cfg, stage)
 
 
 def evaluate(
@@ -44,21 +39,24 @@ def evaluate(
     scale: str = "large",
     seed: int = 42,
     **overrides,
-) -> dict:
-    """Evaluate all trained models. Returns metrics dict."""
-    from graphids.pipeline import STAGE_FNS
-
+) -> StageResult:
+    """Evaluate all trained models. Returns StageResult."""
     cfg = resolve("vgae", scale, dataset=dataset, seed=seed, **overrides)
-    result = STAGE_FNS["evaluation"](cfg)
-    return result.get("metrics", result) if isinstance(result, dict) else result
+    return execute_stage(cfg, "evaluation")
 
 
 def orchestrate(
     dataset: str = DEFAULT_DATASET,
     seeds: list[int] | None = None,
     dry_run: bool = False,
-) -> dict[str, str]:
-    """Fire-and-forget pipeline submission. Returns {asset: job_id}."""
-    from graphids.pipeline.orchestration.dagster_defs import fire_and_forget
+) -> dict:
+    """Fire-and-forget pipeline submission. Returns {asset: Future}."""
+    from graphids.pipeline.orchestration.dag import build_dag_topology, run_dag
+    from graphids.pipeline.orchestration.slurm import make_slurm_executor
 
-    return fire_and_forget(dataset=dataset, seeds=seeds, dry_run=dry_run)
+    seed_list = seeds or [resolve("vgae", "large").seed]
+    dag = build_dag_topology()
+    return run_dag(
+        executor_factory=lambda r, deps: make_slurm_executor(r, dep_futures=deps),
+        dag=dag, dataset=dataset, seeds=seed_list, dry_run=dry_run,
+    )

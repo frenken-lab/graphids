@@ -1,13 +1,15 @@
 # KD-GAT Session Plan
 
-> Last updated: 2026-03-19
+> Last updated: 2026-03-20
 
 ## Active Plan
 
-**Pipeline toolchain migration** — replace custom management layer (84% of pipeline/) with Hydra + Dagster + Lightning.
+**Stage executor + Launcher protocol** — platform-agnostic orchestration replacing Dagster + custom SLURM scripts.
 
-- Decision: `~/plans/pipeline-toolchain-decision.md`
-- Research: `~/plans/pipeline-decoupling-analysis.md`
+- Design: `plans/stage-executor-and-launcher.research.md` (research-first brainstorm)
+- Prior brainstorm: `plans/stage-executor-and-launcher.freeform.md` (design-first, partially wrong)
+- Investigation: `plans/codebase-reduction.md` (deep code read)
+- Prior decision: `~/plans/pipeline-toolchain-decision.md` (partially superseded — dropping Dagster)
 
 ## Recently Completed
 
