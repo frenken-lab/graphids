@@ -67,7 +67,8 @@ def _hydra_main() -> None:
         pcfg = PipelineConfig.model_validate(raw)
 
         result = execute_stage(pcfg, stage)
-        return result.metrics.get("val_loss", float("inf"))
+        metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
+        return metrics.get("val_loss", float("inf"))
 
     run()
 
