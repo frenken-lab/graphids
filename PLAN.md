@@ -11,11 +11,13 @@
 
 ## Recently Completed
 
+- **CLI move + facade enforcement + I/O leak fixes** (2026-03-19) — moved `cli.py` to `graphids/` root (alongside `api.py`). Enforced facade imports (20 deep cross-package imports → facade modules). Routed remaining `torch.load` calls through `ArtifactMapper`. Extracted `DEFAULT_LAKE_ROOT` constant. Normalized intra-package imports to relative. 38 files, zero regressions.
+- **structlog integration** (2026-03-19) — replaced stdlib logging + MLflow with structlog processor pipeline + manifest-based metrics.
 - **StorageGateway + ArtifactMapper** (2026-03-19) — new `graphids/storage/` layer. Single I/O interface for the entire codebase. NFS-safe atomic writes, advisory locking, domain-aware serialization. Deleted `artifacts.py`, `eval_writers.py`, `_atomic_io.py`, `_locking.py`. 215 tests pass.
 
 ## In Progress
 
-- **Toolchain migration** — config layer complete, CLI + orchestration + ML decoupling next
+- **Toolchain migration** — config layer complete, CLI moved to root, orchestration + ML decoupling next
 - Ops dashboard (`buckeyeguy/kd-gat-dashboard`) — running on HF Spaces
 
 ## Blocked
@@ -47,8 +49,8 @@
 |--------|-------|---------------|
 | **Config** | Hydra Compose + Pydantic | **Done** — 5-file config layer, Hydra config groups, lake_root-only |
 | **Orchestration** | Dagster + dagster-slurm | Partial — fire_and_forget works, dagster-slurm integration pending |
-| **ML Training** | Lightning modules + stages | Eval decomposed (Phase 5). CLI simplified (Phase 1e). |
-| **I/O** | pipeline/manifest + catalog + artifacts | Simplified — artifacts.py is thin ESS wrapper (no cache/MLflow fallback) |
+| **ML Training** | Lightning modules + stages | Eval decomposed (Phase 5). CLI at `graphids/cli.py` (Phase 1e). |
+| **I/O** | `graphids/storage/` (StorageGateway + ArtifactMapper) | **Done** — NFS-safe gateway, domain-aware mapper, manifest + catalog. All checkpoint loads routed through mapper. |
 
 ## Open Questions
 
@@ -81,6 +83,27 @@
 
 ## Completed
 
+- **CLI move + facade enforcement + I/O leaks** — (2026-03-19)
+  - Moved `graphids/pipeline/cli.py` → `graphids/cli.py` (backward-compat shim kept)
+  - Updated pyproject.toml entry point, subprocess_utils module string, all sbatch scripts
+  - Added `compose_config` + `verify_all` to package facade re-exports
+  - Fixed 20 cross-package deep imports to use facade modules
+  - Routed `load_model`, temporal/fusion checkpoint loads through `ArtifactMapper`
+  - DQN `load_checkpoint` accepts `dict | str | Path` (mapper-friendly)
+  - Extracted `DEFAULT_LAKE_ROOT` constant, replaced hardcoded `"experimentruns"` in schema + slurm_client
+  - Normalized 2 intra-package absolute imports to relative
+  - 38 files changed, zero regressions
+- **structlog integration** — (2026-03-19)
+  - Replaced stdlib logging + MLflow with structlog processor pipeline
+  - `graphids/logging.py`: configure_logging(), JSON/console renderers, stdlib bridge
+  - Context binding via `structlog.contextvars` at stage entry points
+  - `pipeline_run_id` correlation for cross-job tracing
+- **StorageGateway + ArtifactMapper** — (2026-03-19)
+  - New `graphids/storage/` layer (7 files): gateway, mapper, paths, manifest, catalog, contracts
+  - NFS-safe atomic writes (tmpfile+fsync+rename), advisory locking (fcntl.flock)
+  - Domain-aware serialization: checkpoints, configs, eval artifacts, cache, pickle
+  - Deleted: `artifacts.py`, `eval_writers.py`, `_atomic_io.py`, `_locking.py`
+  - 215 tests pass
 - **Typed eval decomposition (Phase 5)** — (2026-03-18)
   - Decomposed evaluation.py (743 lines, 1 file) → 4 files (784 lines total)
   - eval_types.py: frozen dataclasses (GATResult, VGAEResult, FusionResult)
