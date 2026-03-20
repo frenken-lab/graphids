@@ -24,7 +24,7 @@ def push():
     import duckdb
     from huggingface_hub import HfApi
 
-    from graphids.config import lake_catalog_path, lake_root_from_env
+    from graphids.storage.paths import lake_catalog_path, lake_root_from_env
     from graphids.storage.catalog import rebuild_catalog
 
     lake_root = lake_root_from_env()

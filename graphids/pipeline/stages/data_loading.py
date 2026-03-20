@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import gc
+
 import structlog
 
 import pytorch_lightning as pl
@@ -12,6 +14,13 @@ from torch_geometric.loader import DataLoader, DynamicBatchSampler
 from graphids.config import MMAP_TENSOR_LIMIT, PipelineConfig, cache_dir, data_dir
 
 log = structlog.get_logger()
+
+
+def cleanup():
+    """Free GPU memory."""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def training_preamble(cfg: PipelineConfig, stage_name: str):

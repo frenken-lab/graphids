@@ -38,13 +38,6 @@ from .paths import (  # noqa: F401
     config_path,
     data_dir,
     get_datasets,
-    lake_cache_dir,
-    lake_catalog_path,
-    lake_exports_dir,
-    lake_raw_dir,
-    lake_root_from_env,
-    lake_run_dir,
-    lake_sweep_dir,
     load_catalog,
     parse_seeds,
     run_id,
@@ -59,12 +52,4 @@ from .schema import (  # noqa: F401
     PreprocessingConfig,
     TrainingConfig,
     compute_preprocessing_hash,
-)
-
-# Backward-compat re-exports: contracts moved to graphids.storage.contracts
-from graphids.storage.contracts import (  # noqa: F401
-    EvaluationArtifact,
-    PreprocessingArtifact,
-    StageArtifact,
-    TrainingArtifact,
 )

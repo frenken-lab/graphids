@@ -25,7 +25,7 @@ You are an expert ML debugger specializing in PyTorch, PyTorch Lightning, and GN
 - `graphids/config/resolver.py` - YAML composition: `resolve(model_type, scale, auxiliaries, **overrides)` → frozen `PipelineConfig`
 - `graphids/config/paths.py` - Path layout: `{dataset}/{model_type}_{scale}_{stage}[_{aux}]`
 - `graphids/pipeline/stages/` - Training, fusion, evaluation modules (use nested config access: `cfg.vgae.latent_dim`, `cfg.gat.hidden`, etc.)
-- `graphids/pipeline/cli.py` - Entry point, MLflow run context, archive/restore on failure
+- `graphids/cli.py` - Entry point, MLflow run context, archive/restore on failure
 - `graphids/pipeline/orchestration/` - Ray orchestration (ray_pipeline, ray_slurm)
 - `experimentruns/` - Experiment outputs and logs
 

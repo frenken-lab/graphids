@@ -10,14 +10,9 @@ import torch
 from graphids.config import PipelineConfig
 from graphids.storage import StorageGateway, open_gateway
 
-from .data_loading import training_preamble
+from .data_loading import cache_predictions, cleanup, training_preamble
 from .eval_inference import run_fusion_inference, run_gat_inference, run_vgae_inference
-from .utils import (
-    cache_predictions,
-    cleanup,
-    load_frozen_cfg,
-    load_model,
-)
+from .trainer_factory import load_frozen_cfg, load_model
 
 log = structlog.get_logger()
 

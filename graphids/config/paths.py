@@ -1,8 +1,7 @@
 """Path derivation, run identity, and environment settings.
 
 PipelineConfig-based path helpers and environment settings.
-Lake path primitives (lake_run_dir, etc.) live in graphids.storage.paths
-and are re-exported here for backward compatibility during transition.
+Lake path primitives (lake_run_dir, etc.) live in graphids.storage.paths.
 """
 
 from __future__ import annotations
@@ -22,17 +21,6 @@ from .constants import (
     PREPROCESSING_VERSION,
     PROJECT_ROOT,
     SWEEP_RESULTS_DIR,
-)
-
-# Re-export lake path primitives from storage layer (canonical source)
-from graphids.storage.paths import (  # noqa: F401
-    lake_cache_dir,
-    lake_catalog_path,
-    lake_exports_dir,
-    lake_raw_dir,
-    lake_root_from_env,
-    lake_run_dir,
-    lake_sweep_dir,
 )
 
 if TYPE_CHECKING:

@@ -330,7 +330,7 @@ def load_test_scenarios(
     with open(id_mapping_file, "rb") as f:
         id_mapping = pickle.load(f)
 
-    vocab = EntityVocabulary.from_legacy_mapping(id_mapping)
+    vocab = EntityVocabulary.from_dict(id_mapping)
 
     if not dataset_path.exists():
         log.warning("dataset_path_not_found_skipping_test_data", path=str(dataset_path))

@@ -8,12 +8,6 @@ Usage:
 
 from .gateway import StorageGateway
 from .mapper import ArtifactMapper, open_gateway
-from .contracts import (
-    EvaluationArtifact,
-    PreprocessingArtifact,
-    StageArtifact,
-    TrainingArtifact,
-)
 from .paths import (
     lake_cache_dir,
     lake_catalog_path,

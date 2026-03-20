@@ -1,6 +1,6 @@
 ---
 paths:
-  - "graphids/pipeline/cli.py"
+  - "graphids/cli.py"
   - "graphids/pipeline/stages/trainer_factory.py"
   - "data/mlflow/**"
 ---

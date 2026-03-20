@@ -23,7 +23,7 @@ import torch.nn.functional as F
 from torch_geometric.loader import DataLoader as PyGDataLoader
 
 from .eval_types import FusionResult, GATResult, VGAEResult
-from .utils import graph_label
+from .data_loading import graph_label
 
 
 ATTENTION_SAMPLE_LIMIT = 50  # Max graphs to capture attention for (export size)

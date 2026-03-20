@@ -10,7 +10,8 @@ from graphids.config import PipelineConfig
 from graphids.storage import open_gateway
 
 from .data_loading import training_preamble
-from .utils import cache_predictions, cleanup, load_model
+from .data_loading import cache_predictions, cleanup
+from .trainer_factory import load_model
 
 log = structlog.get_logger()
 

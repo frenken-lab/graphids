@@ -25,7 +25,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from graphids.core.preprocessing import ATTACK_TYPE_NAMES
-from graphids.config import lake_exports_dir, lake_root_from_env, lake_run_dir
+from graphids.storage.paths import lake_exports_dir, lake_root_from_env, lake_run_dir
 
 log = structlog.get_logger()
 

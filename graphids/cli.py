@@ -103,7 +103,7 @@ def sweep(
 @app.command()
 def lake(action: str = typer.Option("status", help="rebuild-catalog | verify | status")):
     """Data lake management."""
-    from graphids.config import lake_catalog_path, lake_root_from_env
+    from graphids.storage.paths import lake_catalog_path, lake_root_from_env
 
     lake_root = lake_root_from_env()
     if lake_root is None:

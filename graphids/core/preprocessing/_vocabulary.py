@@ -147,16 +147,16 @@ class EntityVocabulary:
         return cls(mapping)
 
     # ------------------------------------------------------------------
-    # Compatibility
+    # Dict conversion
     # ------------------------------------------------------------------
 
     def to_dict(self) -> dict:
-        """Return the raw id_to_index dict (for legacy compatibility)."""
+        """Return the raw id_to_index dict (e.g. for pandas .map())."""
         return dict(self._id_to_index)
 
     @classmethod
-    def from_legacy_mapping(cls, id_mapping: dict) -> EntityVocabulary:
-        """Wrap a legacy id_mapping dict into an EntityVocabulary."""
+    def from_dict(cls, id_mapping: dict) -> EntityVocabulary:
+        """Build an EntityVocabulary from an id→index mapping dict."""
         if OOV_KEY not in id_mapping:
             id_mapping = dict(id_mapping)
             id_mapping[OOV_KEY] = len(id_mapping)

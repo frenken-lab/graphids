@@ -10,12 +10,9 @@ import torch.nn.functional as F
 
 from graphids.config import PipelineConfig
 
-from .utils import (
-    build_optimizer_dict,
-    compute_node_budget,
-    effective_batch_size,
-    make_dataloader,
-)
+from .batch_sizing import effective_batch_size
+from .data_loading import compute_node_budget, make_dataloader
+from .trainer_factory import build_optimizer_dict
 
 
 

@@ -21,13 +21,8 @@ from torch.utils.data import DataLoader, Dataset
 from graphids.config import PipelineConfig
 from graphids.storage import open_gateway
 
-from .utils import (
-    cleanup,
-    graph_label,
-    load_data,
-    load_model,
-    make_trainer,
-)
+from .data_loading import cleanup, graph_label, load_data
+from .trainer_factory import load_model, make_trainer
 
 log = structlog.get_logger()
 

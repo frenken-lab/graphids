@@ -23,7 +23,7 @@ from graphids.core.preprocessing import (
     ATTACK_TYPE_CODES,
     ATTACK_TYPE_NAMES,
 )
-from graphids.config import lake_exports_dir, lake_root_from_env
+from graphids.storage.paths import lake_exports_dir, lake_root_from_env
 
 
 def main() -> None:

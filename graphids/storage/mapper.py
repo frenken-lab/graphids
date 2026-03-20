@@ -197,7 +197,8 @@ class ArtifactMapper:
             log.warning("CKA: student checkpoint not found")
             return
 
-        from graphids.pipeline.stages.utils import cleanup, load_model
+        from graphids.pipeline.stages.data_loading import cleanup
+        from graphids.pipeline.stages.trainer_factory import load_model
 
         teacher = load_model(teacher_cfg, "gat", "curriculum", num_ids, in_ch, device)
         student = load_model(cfg, "gat", "curriculum", num_ids, in_ch, device)

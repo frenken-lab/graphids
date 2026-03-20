@@ -16,15 +16,8 @@ from graphids.storage import open_gateway
 from .batch_sizing import resolve_batch_config
 from .data_loading import training_preamble
 from .modules import CurriculumDataModule, GATModule, VGAEModule
-from .trainer_factory import prepare_kd
-from .utils import (
-    cleanup,
-    graph_label,
-    load_data,
-    load_model,
-    make_dataloader,
-    make_trainer,
-)
+from .data_loading import cleanup, graph_label, load_data, make_dataloader
+from .trainer_factory import load_model, make_trainer, prepare_kd
 
 log = structlog.get_logger()
 

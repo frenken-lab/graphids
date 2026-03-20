@@ -84,7 +84,7 @@
 ## Completed
 
 - **CLI move + facade enforcement + I/O leaks** — (2026-03-19)
-  - Moved `graphids/pipeline/cli.py` → `graphids/cli.py` (backward-compat shim kept)
+  - Moved `graphids/pipeline/cli.py` → `graphids/cli.py` (shim removed)
   - Updated pyproject.toml entry point, subprocess_utils module string, all sbatch scripts
   - Added `compose_config` + `verify_all` to package facade re-exports
   - Fixed 20 cross-package deep imports to use facade modules
