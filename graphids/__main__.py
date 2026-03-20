@@ -84,7 +84,6 @@ def _orchestrate() -> None:
 
     from graphids.config import DEFAULT_DATASET, parse_seeds, resolve
     from graphids.pipeline.orchestration.dag import build_dag_topology, run_dag
-    from graphids.pipeline.orchestration.slurm import make_slurm_executor
 
     log = structlog.get_logger()
     parser = argparse.ArgumentParser(description="Submit pipeline DAG to SLURM")
@@ -95,10 +94,7 @@ def _orchestrate() -> None:
 
     seed_list = parse_seeds(args.seeds) if args.seeds else [resolve("vgae", "large").seed]
     dag = build_dag_topology()
-    futures = run_dag(
-        executor_factory=lambda r, deps: make_slurm_executor(r, dep_futures=deps),
-        dag=dag, dataset=args.dataset, seeds=seed_list, dry_run=args.dry_run,
-    )
+    futures = run_dag(dag=dag, dataset=args.dataset, seeds=seed_list, dry_run=args.dry_run)
     log.info("jobs_submitted", count=len(futures))
 
 

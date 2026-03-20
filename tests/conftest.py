@@ -1,30 +1,19 @@
-"""Shared fixtures for orchestration tests.
-
-Resource spec factories avoid repeating timedelta boilerplate.
-"""
+"""Shared fixtures for orchestration tests."""
 
 from __future__ import annotations
 
-from datetime import timedelta
-
 import pytest
 
-from graphids.pipeline.orchestration.job import ResourceSpec
+from graphids.pipeline.orchestration.dag import _normalize
 
 
 @pytest.fixture()
-def gpu_resources() -> ResourceSpec:
-    """Standard GPU resource spec for tests."""
-    return ResourceSpec(
-        partition="gpu", gpus=1, cpus=4,
-        memory_gb=16, walltime=timedelta(hours=3),
-    )
+def gpu_resources() -> dict:
+    """Standard GPU resource dict for tests."""
+    return _normalize({"partition": "gpu", "gpus": 1, "cpus": 4, "mem": "16G", "walltime": "3:00:00"})
 
 
 @pytest.fixture()
-def cpu_resources() -> ResourceSpec:
-    """Standard CPU resource spec for tests."""
-    return ResourceSpec(
-        partition="cpu", gpus=0, cpus=8,
-        memory_gb=32, walltime=timedelta(hours=1),
-    )
+def cpu_resources() -> dict:
+    """Standard CPU resource dict for tests."""
+    return _normalize({"partition": "cpu", "gpus": 0, "cpus": 8, "mem": "32G", "walltime": "1:00:00"})

@@ -1,19 +1,14 @@
-"""Tests for ResourceSpec Pydantic model (job.py).
-
-Covers YAML factory, immutability, defaults.
-"""
+"""Tests for resource profile parsing (dag.py _normalize)."""
 
 from __future__ import annotations
 
-from datetime import timedelta
-
 import pytest
 
-from graphids.pipeline.orchestration.job import ResourceSpec
+from graphids.pipeline.orchestration.dag import _normalize, scale_resources
 
 
 # ---------------------------------------------------------------------------
-# from_yaml factory
+# _normalize (YAML dict → submitit-ready dict)
 # ---------------------------------------------------------------------------
 
 
@@ -42,43 +37,35 @@ from graphids.pipeline.orchestration.job import ResourceSpec
         ),
     ],
 )
-def test_from_yaml(yaml_input, expected_mem, expected_partition):
-    res = ResourceSpec.from_yaml(yaml_input)
-    assert res.memory_gb == expected_mem
-    assert res.partition == expected_partition
-    assert isinstance(res, ResourceSpec)
+def test_normalize(yaml_input, expected_mem, expected_partition):
+    res = _normalize(yaml_input)
+    assert res["memory_gb"] == expected_mem
+    assert res["partition"] == expected_partition
 
 
-def test_from_yaml_walltime_parsing():
-    res = ResourceSpec.from_yaml({"walltime": "2:30:00"})
-    assert res.walltime == timedelta(hours=2, minutes=30)
-
-
-# ---------------------------------------------------------------------------
-# Immutability
-# ---------------------------------------------------------------------------
-
-
-def test_frozen_rejects_mutation(gpu_resources):
-    with pytest.raises(Exception):
-        gpu_resources.gpus = 2  # type: ignore[misc]
-
-
-def test_model_copy_preserves_type(gpu_resources):
-    updated = gpu_resources.model_copy(update={"memory_gb": 64})
-    assert isinstance(updated, ResourceSpec)
-    assert updated.memory_gb == 64
-    assert updated.gpus == gpu_resources.gpus  # other fields unchanged
+def test_normalize_walltime_parsing():
+    res = _normalize({"walltime": "2:30:00"})
+    assert res["walltime_min"] == 150
 
 
 # ---------------------------------------------------------------------------
-# Defaults
+# scale_resources
 # ---------------------------------------------------------------------------
 
 
-def test_default_exclude_nodes():
-    assert ResourceSpec().exclude_nodes == ""
+def test_oom_doubles_memory():
+    res = _normalize({"mem": "20G"})
+    scaled = scale_resources(res, "OUT_OF_MEMORY")
+    assert scaled["memory_gb"] == 40
 
 
-def test_default_partition():
-    assert ResourceSpec().partition == "cpu"
+def test_timeout_scales_time():
+    res = _normalize({"walltime": "2:00:00"})
+    scaled = scale_resources(res, "TIMEOUT")
+    assert scaled["walltime_min"] == 180
+
+
+def test_unknown_reason_no_change():
+    res = _normalize({"mem": "20G", "walltime": "3:00:00"})
+    scaled = scale_resources(res, "UNKNOWN_REASON")
+    assert scaled == res
