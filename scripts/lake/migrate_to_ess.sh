@@ -120,50 +120,6 @@ if $MIGRATE_RUNS; then
             fi
         done
 
-        # Generate manifests for migrated runs
-        if ! $DRY_RUN; then
-            echo ""
-            echo "--- Generating manifests for migrated runs ---"
-            cd "$PROJECT_ROOT"
-            python -c "
-from pathlib import Path
-from graphids.storage.manifest import write_manifest, read_manifest
-import json
-
-production = Path('${DST}')
-for manifest_candidate in production.rglob('config.json'):
-    run_dir = manifest_candidate.parent
-    # Only process seed_ directories
-    if not run_dir.name.startswith('seed_'):
-        continue
-    # Skip if manifest already exists
-    if (run_dir / '_manifest.json').exists():
-        continue
-    try:
-        cfg = json.loads(manifest_candidate.read_text())
-        seed = int(run_dir.name.split('_')[1])
-        # Derive identity from path
-        parts = run_dir.parent.name.split('_')
-        dataset = run_dir.parent.parent.name
-        stage_parts = run_dir.parent.name
-        model_type = cfg.get('model_type', parts[0])
-        scale = cfg.get('scale', parts[1] if len(parts) > 1 else 'large')
-        # Extract stage (third part after model_scale_)
-        remaining = '_'.join(parts[2:])
-        # Check for auxiliary suffix
-        aux = 'none'
-        for known_aux in ['kd_standard', 'kd']:
-            if remaining.endswith('_' + known_aux):
-                aux = known_aux
-                remaining = remaining[:-(len(known_aux) + 1)]
-                break
-        stage = remaining
-
-        write_manifest(run_dir, dataset, model_type, scale, stage, aux, seed)
-    except Exception as e:
-        print(f'  Warning: {run_dir}: {e}')
-"
-        fi
     else
         echo "  Source not found: ${SRC} — skipping"
     fi

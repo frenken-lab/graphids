@@ -37,6 +37,7 @@ from .paths import (  # noqa: F401
     data_dir,
     get_datasets,
     lake_catalog_path,
+    lake_exports_dir,
     lake_root_from_env,
     load_catalog,
     parse_seeds,

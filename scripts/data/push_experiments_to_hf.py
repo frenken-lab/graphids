@@ -5,13 +5,14 @@ Usage:
     python scripts/data/push_experiments_to_hf.py
 
 Data flow:
-    _manifest.json files → rebuild_catalog() → DuckDB → experiments.parquet → HF Dataset
+    metrics.csv + hparams.yaml files → pandas → experiments.parquet → HF Dataset
 """
 
 from __future__ import annotations
 
 import os
 from datetime import UTC, datetime
+from pathlib import Path
 
 import structlog
 
@@ -21,37 +22,55 @@ HF_DATASET_REPO = "buckeyeguy/kd-gat-experiments"
 
 
 def push():
-    import duckdb
+    import pandas as pd
+    import yaml
     from huggingface_hub import HfApi
 
-    from graphids.storage.paths import lake_catalog_path, lake_root_from_env
-    from graphids.storage.catalog import rebuild_catalog
+    from graphids.config.paths import lake_exports_dir, lake_root_from_env
 
     lake_root = lake_root_from_env()
     if lake_root is None:
         log.error("lake_root_not_set")
         return
 
-    # Rebuild catalog from manifests, then query
-    catalog_path = rebuild_catalog(lake_root)
-    con = duckdb.connect(str(catalog_path), read_only=True)
-    runs = con.execute("SELECT * FROM experiments").fetchdf()
-    con.close()
-
-    if runs.empty:
-        log.warning("no_runs_found")
+    csv_files = list(Path(lake_root).rglob("metrics.csv"))
+    if not csv_files:
+        log.warning("no_metrics_files_found")
         return
 
+    frames = []
+    for f in csv_files:
+        try:
+            df = pd.read_csv(f)
+        except Exception as e:
+            log.warning("csv_read_failed", path=str(f), error=str(e))
+            continue
+        df["run_dir"] = str(f.parent)
+        hparams = f.parent / "hparams.yaml"
+        if hparams.exists():
+            try:
+                hp = yaml.safe_load(hparams.read_text())
+                if isinstance(hp, dict) and "cfg" in hp:
+                    cfg = hp["cfg"]
+                    for key in ("dataset", "model_type", "scale", "seed"):
+                        df[key] = cfg.get(key, "")
+            except Exception as e:
+                log.warning("hparams_read_failed", path=str(hparams), error=str(e))
+        frames.append(df)
+
+    if not frames:
+        log.warning("no_valid_runs")
+        return
+
+    runs = pd.concat(frames, ignore_index=True)
     log.info("runs_found", count=len(runs))
 
-    # Write to temp parquet
     out_path = "/tmp/kd_gat_experiments.parquet"
     runs.to_parquet(out_path, index=False)
 
-    # Also write to ESS exports/
-    exports_dir = lake_root / "exports"
-    exports_dir.mkdir(parents=True, exist_ok=True)
-    lake_parquet = exports_dir / "experiments.parquet"
+    exports = lake_exports_dir(lake_root)
+    exports.mkdir(parents=True, exist_ok=True)
+    lake_parquet = exports / "experiments.parquet"
     runs.to_parquet(str(lake_parquet), index=False)
     log.info("lake_export_written", path=str(lake_parquet))
 

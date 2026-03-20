@@ -5,7 +5,7 @@ Thin wrapper over execute_stage(), designed for notebook usage.
 Usage:
     from graphids.api import train, evaluate, orchestrate
 
-    # Train a single stage (full guarantees: validation, manifest, logging)
+    # Train a single stage (full guarantees: validation, logging)
     result = train("vgae", "large", "hcrl_sa")
 
     # Evaluate all models
@@ -29,7 +29,7 @@ def train(
     seed: int = 42,
     **overrides,
 ) -> StageResult:
-    """Train a model. Returns StageResult with metrics, checkpoint path, manifest."""
+    """Train a model. Returns StageResult with metrics and checkpoint path."""
     cfg = resolve(model_type, scale, dataset=dataset, seed=seed, **overrides)
     return execute_stage(cfg, stage)
 

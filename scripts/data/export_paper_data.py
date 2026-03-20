@@ -15,6 +15,7 @@ import argparse
 import csv
 import hashlib
 import json
+import os
 import structlog
 import sys
 from datetime import UTC, datetime
@@ -25,9 +26,16 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from graphids.core.preprocessing import ATTACK_TYPE_NAMES
-from graphids.storage.paths import lake_exports_dir, lake_root_from_env, lake_run_dir
+from graphids.config.paths import lake_exports_dir, lake_root_from_env
 
 log = structlog.get_logger()
+
+
+def lake_run_dir(lake_root, dataset, model_type, scale, stage, seed=42, production=False):
+    """Reconstruct run directory path for existing runs on disk."""
+    tier = "production" if production else f"dev/{os.environ.get('USER', 'unknown')}"
+    return Path(lake_root) / tier / dataset / f"{model_type}_{scale}_{stage}" / f"seed_{seed}"
+
 
 SAMPLE_FRAC = 0.10
 

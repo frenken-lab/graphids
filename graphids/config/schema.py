@@ -103,6 +103,7 @@ class TrainingConfig(BaseModel, frozen=True):
     scheduler_t_max: int = -1
     scheduler_step_size: int = 50
     scheduler_gamma: float = 0.1
+    scheduler: dict | None = None
     # Curriculum params (used when stage=curriculum)
     curriculum_start_ratio: float = 1.0
     curriculum_end_ratio: float = 10.0
@@ -203,6 +204,7 @@ class PipelineConfig(BaseModel, frozen=True):
     run_test: bool = True
     production: bool = False
     checkpoints: dict[str, str] = Field(default_factory=dict)
+    callbacks: dict = Field(default_factory=dict)
 
     # --- Convenience properties ---
     @property

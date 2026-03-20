@@ -25,14 +25,13 @@ class StageResult:
     metrics: dict[str, float]
     duration_seconds: float
     checkpoint_path: Path | None
-    manifest_path: Path
 
 
 def execute_stage(cfg: PipelineConfig, stage: str) -> StageResult:
     """Execute a pipeline stage with full guarantees.
 
-    Owns: logging setup, validation, structlog context, archive/restore,
-    config snapshot, timing, manifest write. Stage functions do the ML work.
+    Owns: logging setup, validation, structlog context,
+    config snapshot, timing. Stage functions do the ML work.
     """
     configure_logging()
     structlog.contextvars.bind_contextvars(
@@ -58,7 +57,7 @@ def execute_stage(cfg: PipelineConfig, stage: str) -> StageResult:
 
         ckpt = sdir / "best_model.pt"
         log.info("stage_complete", **{k: v for k, v in metrics.items() if isinstance(v, (int, float))})
-        return StageResult(metrics, duration, ckpt if ckpt.exists() else None, sdir / "_manifest.json")
+        return StageResult(metrics, duration, ckpt if ckpt.exists() else None)
 
     except Exception:
         raise

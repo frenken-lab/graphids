@@ -1,22 +1,17 @@
 # KD-GAT Code Style
 
-## Import Rules (4-layer hierarchy)
+## Import Rules (3-layer hierarchy)
 
-Enforced by `tests/test_layer_boundaries.py`:
-
-0. **`graphids/storage/`** (infrastructure): No imports from `config/`, `pipeline/`, or `core/`. `gateway.py` and `paths.py` are fully domain-free. `mapper.py` uses lazy (function-local) domain imports only.
-1. **`graphids/config/`** (top): Imports `graphids.storage` for path primitives. Never imports from `pipeline/` or `core/`.
-2. **`graphids/pipeline/`** (middle): Imports `graphids.config` and `graphids.storage` freely at top level. Imports `graphids.core` only inside functions (lazy).
-3. **`graphids/core/`** (bottom): Imports `graphids.config.constants` for shared constants. Uses `graphids.storage` for cache I/O (lazy). Never imports from `graphids.pipeline`.
+1. **`graphids/config/`** (top): Never imports from `pipeline/` or `core/`.
+2. **`graphids/pipeline/`** (middle): Imports `graphids.config` freely at top level. Imports `graphids.core` only inside functions (lazy).
+3. **`graphids/core/`** (bottom): Imports `graphids.config.constants` for shared constants. Never imports from `graphids.pipeline`.
 
 When adding new code:
 - Constants → `graphids/config/constants.py`
 - Hyperparameters → Pydantic models in `graphids/config/schema.py`
 - Architecture defaults → YAML files in `graphids/config/conf/model/` or `graphids/config/conf/auxiliary/`
-- Path helpers → `graphids/config/paths.py` (PipelineConfig-based) or `graphids/storage/paths.py` (raw lake layout)
-- File I/O → `graphids/storage/gateway.py` (transport) or `graphids/storage/mapper.py` (domain-aware serialization)
-- `from graphids.storage import open_gateway` — standard gateway+mapper creation
-- `from graphids.config import PipelineConfig, resolve, checkpoint_path` — use the package re-exports
+- Path helpers → `graphids/config/paths.py`
+- `from graphids.config import PipelineConfig, resolve` — use the package re-exports
 
 ## Logging Style
 

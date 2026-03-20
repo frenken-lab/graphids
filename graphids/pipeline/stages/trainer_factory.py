@@ -9,8 +9,6 @@ from pathlib import Path
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
-from pytorch_lightning.callbacks import DeviceStatsMonitor, EarlyStopping, ModelCheckpoint
-
 from .callbacks import RunMetadataCallback
 
 from graphids.config import (
@@ -19,6 +17,16 @@ from graphids.config import (
 )
 
 log = structlog.get_logger()
+
+
+def _instantiate_callbacks(cfg: PipelineConfig) -> list:
+    """Instantiate callbacks from config, add non-configurable ones."""
+    from hydra.utils import instantiate
+
+    cbs = [cb for cb in instantiate(cfg.callbacks).values() if cb is not None]
+    cbs.append(RunMetadataCallback())
+    return cbs
+
 
 # model_type → the canonical stage that produces the teacher checkpoint.
 # "curriculum" is preferred over "normal" for GAT since the teacher (large) always
@@ -184,7 +192,6 @@ def load_frozen_cfg(
     """Load the frozen config.json saved during training for *stage*.
 
     model_type defaults to the canonical owner of the stage (e.g. "autoencoder" → "vgae").
-    Uses the StorageGateway for filesystem resolution.
 
     Raises FileNotFoundError if the frozen config doesn't exist.
     """
@@ -210,10 +217,7 @@ def load_model(
     in_channels: int,
     device: torch.device,
 ) -> nn.Module:
-    """Load a trained model using its frozen config and the registry.
-
-    Uses the StorageGateway for filesystem resolution.
-    """
+    """Load a trained model using its frozen config and the registry."""
     from graphids.core.models.registry import get as registry_get
 
     frozen_cfg = load_frozen_cfg(cfg, stage, model_type=model_type)
@@ -227,33 +231,18 @@ def load_model(
 def build_optimizer_dict(optimizer, cfg: PipelineConfig):
     """Return optimizer or {optimizer, lr_scheduler} dict for Lightning."""
     t = cfg.training
-    if not t.use_scheduler:
+    if not t.use_scheduler or not t.scheduler:
         return optimizer
 
-    t_max = t.scheduler_t_max if t.scheduler_t_max > 0 else t.max_epochs
+    from hydra.utils import instantiate
 
-    if t.scheduler_type == "cosine":
-        sched = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=t_max)
-    elif t.scheduler_type == "step":
-        sched = torch.optim.lr_scheduler.StepLR(
-            optimizer,
-            step_size=t.scheduler_step_size,
-            gamma=t.scheduler_gamma,
-        )
-    elif t.scheduler_type == "plateau":
-        sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer,
-            mode=t.monitor_mode,
-            patience=t.patience // 2,
-        )
+    sched = instantiate(t.scheduler, optimizer=optimizer)
+
+    if isinstance(sched, torch.optim.lr_scheduler.ReduceLROnPlateau):
         return {
             "optimizer": optimizer,
             "lr_scheduler": {"scheduler": sched, "monitor": t.monitor_metric},
         }
-    else:
-        log.warning("unknown_scheduler_type", scheduler_type=t.scheduler_type)
-        return optimizer
-
     return {"optimizer": optimizer, "lr_scheduler": sched}
 
 
@@ -264,29 +253,11 @@ def make_trainer(
 ) -> pl.Trainer:
     """Create a Lightning Trainer with standard callbacks."""
     t = cfg.training
-    out = Path.cwd()
     torch.backends.cudnn.benchmark = t.cudnn_benchmark
 
     csv_logger = pl.loggers.CSVLogger(save_dir=".", name="", version="")
 
-    callbacks = [
-        ModelCheckpoint(
-            dirpath=str(out),
-            filename="best_model",
-            monitor=t.monitor_metric,
-            mode=t.monitor_mode,
-            save_top_k=t.save_top_k,
-            save_on_train_epoch_end=False,
-        ),
-        EarlyStopping(
-            monitor=t.monitor_metric,
-            patience=t.patience,
-            mode=t.monitor_mode,
-            check_on_train_epoch_end=False,
-        ),
-        DeviceStatsMonitor(cpu_stats=False),
-        RunMetadataCallback(),
-    ]
+    callbacks = _instantiate_callbacks(cfg)
 
     if extra_callbacks:
         callbacks.extend(extra_callbacks)

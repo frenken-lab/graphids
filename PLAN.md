@@ -7,10 +7,10 @@
 **Framework consolidation: Hydra-as-framework + Lightning experiment management** — see `plans/framework-consolidation.research.md`
 
 - Phase A (done): Lightning save_hyperparameters, CSVLogger fix, EvalArtifactCallback, RunMetadataCallback
-- Phase B (done): Deleted cli.py, optuna_sweep.py, subprocess_utils.py, search_spaces/. Added @hydra.main entry points (train.py, sweep.py, orchestrate.py, lake.py, preprocess.py). -571 net lines.
-- Phase C (next): Delete `graphids/storage/` layer — replace with Lightning + stdlib
-- Phase D: `hydra.utils.instantiate()` + Lightning Tuner
-- Phase E: Dashboard + scripts migration
+- Phase B (done): Deleted cli.py, optuna_sweep.py, subprocess_utils.py, search_spaces/. Added `__main__.py` with @hydra.main. -651 net lines.
+- Phase C (done): Deleted `graphids/storage/` (1,107 lines). All I/O through Lightning + Hydra + stdlib. -1,220 net lines.
+- Phase D (done): `hydra.utils.instantiate()` for callbacks + scheduler dispatch. -5 net lines.
+- Phase E (done): Fixed broken scripts, updated rules files, removed ray dep, cleaned stale references. -110 net lines.
 
 ## Recently Completed
 
@@ -54,7 +54,7 @@
 | **Config** | Hydra Compose + Pydantic | **Done** — 5-file config layer, Hydra config groups, lake_root-only |
 | **Orchestration** | Dagster + dagster-slurm | Partial — fire_and_forget works, dagster-slurm integration pending |
 | **ML Training** | Lightning modules + stages | Eval decomposed (Phase 5). CLI at `graphids/cli.py` (Phase 1e). |
-| **I/O** | `graphids/storage/` (StorageGateway + ArtifactMapper) | **Done** — NFS-safe gateway, domain-aware mapper, manifest + catalog. All checkpoint loads routed through mapper. |
+| **I/O** | Lightning CSVLogger + ModelCheckpoint + callbacks | **Done** — No custom storage layer. CSVLogger for metrics, ModelCheckpoint for checkpoints, EvalArtifactCallback for eval artifacts. |
 
 ## Open Questions
 

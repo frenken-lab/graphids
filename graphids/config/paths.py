@@ -80,6 +80,11 @@ def lake_catalog_path(lake_root: str | Path) -> Path:
     return Path(lake_root) / "catalog" / "kd_gat.duckdb"
 
 
+def lake_exports_dir(lake_root: str | Path) -> Path:
+    """Path: {lake_root}/exports"""
+    return Path(lake_root) / "exports"
+
+
 # ---------------------------------------------------------------------------
 # Path derivation (PipelineConfig-based)
 # ---------------------------------------------------------------------------

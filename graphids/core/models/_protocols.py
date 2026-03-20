@@ -23,7 +23,7 @@ class GraphModel(Protocol):
 
 
 class StageMetrics(TypedDict, total=False):
-    """Contract: what every stage returns in the metrics dict (written to _manifest.json)."""
+    """Contract: what every stage returns in the metrics dict."""
 
     accuracy: float
     f1_macro: float

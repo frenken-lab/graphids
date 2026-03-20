@@ -49,6 +49,25 @@ checkpoints:
   dqn: ${_output_base}/dqn_${scale}_fusion/seed_${seed}/best_model.pt
   temporal: ${_output_base}/gat_${scale}_temporal/seed_${seed}/best_model.pt
 
+callbacks:
+  checkpoint:
+    _target_: pytorch_lightning.callbacks.ModelCheckpoint
+    dirpath: "."
+    filename: best_model
+    monitor: ${training.monitor_metric}
+    mode: ${training.monitor_mode}
+    save_top_k: ${training.save_top_k}
+    save_on_train_epoch_end: false
+  early_stopping:
+    _target_: pytorch_lightning.callbacks.EarlyStopping
+    monitor: ${training.monitor_metric}
+    patience: ${training.patience}
+    mode: ${training.monitor_mode}
+    check_on_train_epoch_end: false
+  device_stats:
+    _target_: pytorch_lightning.callbacks.DeviceStatsMonitor
+    cpu_stats: false
+
 # Change hydra section:
 hydra:
   job:

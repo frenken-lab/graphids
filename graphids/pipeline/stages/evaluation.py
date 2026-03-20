@@ -34,7 +34,7 @@ def evaluate(cfg: PipelineConfig) -> dict:
             }
         }
 
-    cli.py passes this to the manifest (single source of truth for metrics).
+    Metrics are logged via CSVLogger (single source of truth).
     """
     train_data, val_data, num_ids, in_ch, device = training_preamble(cfg, "EVALUATION")
     test_scenarios = _load_test_data(cfg)
