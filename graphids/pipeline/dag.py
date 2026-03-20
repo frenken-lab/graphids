@@ -15,7 +15,7 @@ import submitit
 import yaml
 
 from graphids.config import CONFIG_DIR, SLURM_ACCOUNT, STAGE_DEPENDENCIES, STAGE_MODEL_MAP, resolve
-from graphids.pipeline.executor import execute_stage
+from graphids.pipeline.stages import run_stage
 
 log = structlog.get_logger()
 
@@ -242,7 +242,7 @@ def run_dag(
                 continue
 
             executor = make_slurm_executor(resources, dep_futures=dep_futs)
-            futures[name] = executor.submit(execute_stage, cfg, node.stage)
+            futures[name] = executor.submit(run_stage, cfg, node.stage)
             all_futures[f"{name}__seed{seed}"] = futures[name]
 
     return all_futures

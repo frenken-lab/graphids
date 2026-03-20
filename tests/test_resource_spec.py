@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from graphids.pipeline.orchestration.dag import _normalize, scale_resources
+from graphids.pipeline.dag import _normalize, scale_resources
 
 
 # ---------------------------------------------------------------------------

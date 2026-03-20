@@ -34,7 +34,7 @@ def main(argv: list[str] | None = None) -> None:
         import structlog
 
         from graphids.config import DEFAULT_DATASET, parse_seeds, resolve
-        from graphids.pipeline.orchestration.dag import build_dag_topology, run_dag
+        from graphids.pipeline.dag import build_dag_topology, run_dag
 
         sys.argv = [sys.argv[0]] + args[1:]
         parser = argparse.ArgumentParser(description="Submit pipeline DAG to SLURM")
@@ -53,7 +53,7 @@ def main(argv: list[str] | None = None) -> None:
         from omegaconf import DictConfig, OmegaConf
 
         from graphids.config import STAGES, PipelineConfig
-        from graphids.pipeline.executor import execute_stage
+        from graphids.pipeline.stages import run_stage
 
         sys.argv = [sys.argv[0]] + args
 
@@ -67,7 +67,7 @@ def main(argv: list[str] | None = None) -> None:
             raw.pop("stage", None)
             pcfg = PipelineConfig.model_validate(raw)
 
-            result = execute_stage(pcfg, stage)
+            result = run_stage(pcfg, stage)
             metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
             return metrics.get("val_loss", float("inf"))
 
