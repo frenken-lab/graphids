@@ -7,8 +7,9 @@ import structlog
 import numpy as np
 import torch
 
+from pathlib import Path
+
 from graphids.config import PipelineConfig
-from graphids.storage import StorageGateway, open_gateway
 
 from .data_loading import cache_predictions, cleanup, training_preamble
 from .eval_inference import run_fusion_inference, run_gat_inference, run_vgae_inference
@@ -35,27 +36,23 @@ def evaluate(cfg: PipelineConfig) -> dict:
 
     cli.py passes this to the manifest (single source of truth for metrics).
     """
-    gw, mapper = open_gateway(cfg)
     train_data, val_data, num_ids, in_ch, device = training_preamble(cfg, "EVALUATION")
     test_scenarios = _load_test_data(cfg)
 
     all_metrics: dict = {}
     test_metrics: dict = {}
 
-    gat_stage = "curriculum"
-    vgae_stage = "autoencoder"
-
     fusion_needs_models = (
-        gw.exists("fusion", "best_model.pt", model_type="dqn")
-        and gw.exists(vgae_stage, "best_model.pt", model_type="vgae")
-        and gw.exists(gat_stage, "best_model.pt", model_type="gat")
+        Path(cfg.checkpoints["dqn"]).exists()
+        and Path(cfg.checkpoints["vgae"]).exists()
+        and Path(cfg.checkpoints["gat"]).exists()
     )
 
     # ---- Per-model evaluation ----
     gat_model, vgae_model = None, None
     gat_result, vgae_result, fusion_result = None, None, None
 
-    if gw.exists(gat_stage, "best_model.pt", model_type="gat"):
+    if Path(cfg.checkpoints["gat"]).exists():
         gat_model = load_model(cfg, "gat", gat_stage, num_ids, in_ch, device)
         all_metrics["gat"], test_metrics["gat"] = _evaluate_gat(
             gat_model, val_data, test_scenarios, device
@@ -69,7 +66,7 @@ def evaluate(cfg: PipelineConfig) -> dict:
             gat_model = None
             cleanup()
 
-    if gw.exists(vgae_stage, "best_model.pt", model_type="vgae"):
+    if Path(cfg.checkpoints["vgae"]).exists():
         vgae_model = load_model(cfg, "vgae", vgae_stage, num_ids, in_ch, device)
         all_metrics["vgae"], test_metrics["vgae"], best_thresh = _evaluate_vgae(
             vgae_model, val_data, test_scenarios, device
@@ -90,16 +87,16 @@ def evaluate(cfg: PipelineConfig) -> dict:
         del vgae_model, gat_model
         cleanup()
 
-    if cfg.temporal.enabled and gw.exists("temporal", "best_model.pt", model_type="gat"):
+    if cfg.temporal.enabled and Path(cfg.checkpoints["temporal"]).exists():
         temporal_m = _evaluate_temporal(cfg, val_data, num_ids, in_ch, device, gat_stage)
         if temporal_m is not None:
             all_metrics["temporal"] = temporal_m
 
     # ---- CKA (KD runs only) ----
-    gw.ensure_dir("evaluation")
     if cfg.has_kd:
         try:
-            mapper.save_cka(cfg, val_data, device, num_ids, in_ch, "evaluation")
+            from .cka import compute_and_save_cka
+            compute_and_save_cka(cfg, val_data, device, num_ids, in_ch, Path.cwd())
         except Exception as e:
             log.warning("cka_computation_failed", error=str(e))
 
@@ -108,9 +105,14 @@ def evaluate(cfg: PipelineConfig) -> dict:
     if test_metrics:
         all_metrics["test"] = test_metrics
 
-    mapper.save_embeddings(gat_result, vgae_result, "evaluation")
-    mapper.save_attention(gat_result, "evaluation")
-    mapper.save_dqn_policy(fusion_result, "evaluation")
+    from .callbacks import EvalArtifactCallback
+    cb = EvalArtifactCallback()
+    cb.gat_result = gat_result
+    cb.vgae_result = vgae_result
+    cb.fusion_result = fusion_result
+    cb._save_embeddings(Path.cwd())
+    cb._save_attention(Path.cwd())
+    cb._save_dqn_policy(Path.cwd())
 
     cleanup()
     return {"metrics": all_metrics}
@@ -185,13 +187,9 @@ def _evaluate_fusion(
 
     from graphids.core.models.dqn import EnhancedDQNFusionAgent
 
-    from graphids.storage import ArtifactMapper
-
     fusion_cfg = load_frozen_cfg(cfg, "fusion")
-    gw_local = StorageGateway(cfg=cfg)
-    mapper_f = ArtifactMapper(gw_local)
     agent = EnhancedDQNFusionAgent.from_config(fusion_cfg, device=str(device), inference=True)
-    agent.load_checkpoint(mapper_f.load_checkpoint("fusion", model_type="dqn"))
+    agent.load_checkpoint(torch.load(cfg.checkpoints["dqn"], map_location="cpu", weights_only=True))
 
     result = run_fusion_inference(agent, val_cache)
     val_m = compute_metrics(result.labels, result.preds, result.scores)
@@ -232,13 +230,9 @@ def _evaluate_temporal(cfg, val_data, num_ids, in_ch, device, gat_stage) -> dict
             freeze_spatial=True,
             num_classes=2,
         ).to(device)
-        from graphids.storage import ArtifactMapper
-
-        gw_t = StorageGateway(cfg=cfg)
-        mapper_t = ArtifactMapper(gw_t)
-        temporal_model.load_state_dict(
-            mapper_t.load_checkpoint("temporal", model_type="gat")
-        )
+        temporal_model.load_state_dict(torch.load(
+            cfg.checkpoints["temporal"], map_location="cpu", weights_only=True,
+        ))
         temporal_model.eval()
 
         grouper = TemporalGrouper(window=tc.temporal_window, stride=tc.temporal_stride)

@@ -93,16 +93,17 @@ def write_cache_metadata(
     except Exception as e:
         log.warning("graph_stats_computation_failed", error=str(e))
 
-    from graphids.storage import StorageGateway
-
-    gw = StorageGateway(
-        lake_root=".", dataset="cache", model_type="cache", scale="cache",
-    )
+    import os
 
     cache_path = Path(cache_dir)
     metadata_file = cache_path / "cache_metadata.json"
     try:
-        gw.write_json(metadata_file, metadata)
+        tmp = metadata_file.with_suffix(".tmp")
+        with open(tmp, "w") as f:
+            json.dump(metadata, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp.rename(metadata_file)
         log.info("cache_metadata_written", path=str(metadata_file))
     except Exception as e:
         log.warning("cache_metadata_write_failed", error=str(e))
@@ -114,7 +115,12 @@ def write_cache_metadata(
             "node_features": NODE_MANIFEST.to_json(),
             "edge_features": EDGE_MANIFEST.to_json(),
         }
-        gw.write_json(manifest_file, manifest_data)
+        tmp = manifest_file.with_suffix(".tmp")
+        with open(tmp, "w") as f:
+            json.dump(manifest_data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp.rename(manifest_file)
         log.info("feature_manifest_written", path=str(manifest_file))
     except Exception as e:
         log.warning("feature_manifest_write_failed", error=str(e))

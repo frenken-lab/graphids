@@ -1,7 +1,7 @@
 """Configuration layer: inert, declarative, no imports from pipeline/ or core/.
 
 Usage:
-    from graphids.config import resolve, PipelineConfig, stage_dir, STAGES
+    from graphids.config import resolve, PipelineConfig, STAGES
 """
 
 from ._hydra_bridge import resolve  # noqa: F401
@@ -34,16 +34,12 @@ from .paths import (  # noqa: F401
     SWEEP_ID,
     USER_TAGS,
     cache_dir,
-    checkpoint_path,
-    config_path,
     data_dir,
     get_datasets,
+    lake_catalog_path,
+    lake_root_from_env,
     load_catalog,
     parse_seeds,
-    run_id,
-    run_id_str,
-    stage_dir,
-    sweep_result_path,
 )
 from .schema import (  # noqa: F401
     AuxiliaryConfig,

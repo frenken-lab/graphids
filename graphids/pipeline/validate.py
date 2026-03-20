@@ -39,11 +39,9 @@ def validate_datasets(datasets: list[str], scale: str) -> list[str]:
 
 
 def _artifact_exists(cfg: PipelineConfig, stage: str, name: str, model_type: str) -> bool:
-    """Check if a stage artifact exists via the StorageGateway."""
-    from graphids.storage import StorageGateway
-
-    gw = StorageGateway(cfg=cfg)
-    return gw.exists(stage, name, model_type=model_type)
+    """Check if a stage artifact exists via checkpoint paths."""
+    from pathlib import Path
+    return Path(cfg.checkpoints[model_type]).exists()
 
 
 def validate(cfg: PipelineConfig, stage: str) -> None:

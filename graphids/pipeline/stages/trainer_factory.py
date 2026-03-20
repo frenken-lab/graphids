@@ -16,9 +16,7 @@ from .callbacks import RunMetadataCallback
 from graphids.config import (
     STAGE_MODEL_MAP,
     PipelineConfig,
-    run_id,
 )
-from graphids.storage import StorageGateway
 
 log = structlog.get_logger()
 
@@ -53,8 +51,7 @@ def resolve_teacher_path(cfg: PipelineConfig, model_type: str) -> Path:
         raise ValueError(f"No teacher stage mapping for model_type '{model_type}'")
 
     teacher_cfg = resolve(model_type, teacher_scale, dataset=cfg.dataset, seed=cfg.seed)
-    gw = StorageGateway(cfg=teacher_cfg)
-    path = gw.resolve(stage, "best_model.pt")
+    path = Path(teacher_cfg.checkpoints[model_type])
     if not path.exists():
         raise FileNotFoundError(
             f"Teacher checkpoint not found: {path}. "
@@ -192,10 +189,8 @@ def load_frozen_cfg(
     Raises FileNotFoundError if the frozen config doesn't exist.
     """
     mt = model_type or STAGE_MODEL_MAP.get(stage, cfg.model_type)
-    gw = StorageGateway(cfg=cfg)
-    try:
-        p = gw.require(stage, "config.json", model_type=mt)
-    except FileNotFoundError:
+    p = Path(cfg.checkpoints[mt]).parent / "config.json"
+    if not p.exists():
         raise FileNotFoundError(
             f"Frozen config not found for stage '{stage}' (model_type={mt}). "
             f"The '{stage}' stage must be trained first (with config saved) "
@@ -220,13 +215,10 @@ def load_model(
     Uses the StorageGateway for filesystem resolution.
     """
     from graphids.core.models.registry import get as registry_get
-    from graphids.storage import ArtifactMapper
 
     frozen_cfg = load_frozen_cfg(cfg, stage, model_type=model_type)
-    gw = StorageGateway(cfg=cfg)
-    mapper = ArtifactMapper(gw)
     model = registry_get(model_type).factory(frozen_cfg, num_ids, in_channels)
-    model.load_state_dict(mapper.load_checkpoint(stage, model_type=model_type))
+    model.load_state_dict(torch.load(cfg.checkpoints[model_type], map_location="cpu", weights_only=True))
     model.to(device)
     model.eval()
     return model
@@ -272,18 +264,10 @@ def make_trainer(
 ) -> pl.Trainer:
     """Create a Lightning Trainer with standard callbacks."""
     t = cfg.training
-    gw = StorageGateway(cfg=cfg)
-    out = gw.ensure_dir(stage)
+    out = Path.cwd()
     torch.backends.cudnn.benchmark = t.cudnn_benchmark
 
-    # Persistent NFS path for Lightning auto-checkpoints (SIGUSR1 timeout saves).
-    # stage_dir() may be $TMPDIR (node-local SSD, lost after job ends).
-    # default_root_dir must survive job termination for checkpoint-aware resume.
-    persistent_root = Path(cfg.lake_root) / run_id(cfg, stage)
-    persistent_root.mkdir(parents=True, exist_ok=True)
-
-    # Per-epoch metrics to CSV (replaces MLflow autolog)
-    csv_logger = pl.loggers.CSVLogger(save_dir=str(out), name="", version="")
+    csv_logger = pl.loggers.CSVLogger(save_dir=".", name="", version="")
 
     callbacks = [
         ModelCheckpoint(
@@ -317,7 +301,7 @@ def make_trainer(
         plugins.append(SLURMEnvironment(auto_requeue=True))
 
     return pl.Trainer(
-        default_root_dir=str(persistent_root),
+        default_root_dir=".",
         max_epochs=t.max_epochs,
         accelerator="auto",
         devices="auto",

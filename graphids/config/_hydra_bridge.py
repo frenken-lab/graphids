@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 CONF_DIR = str((Path(__file__).parent / "conf").resolve())
 
 # Keys in Hydra config but not in PipelineConfig — stripped before validation
-_HYDRA_ONLY_KEYS = frozenset({"stage"})
+_HYDRA_ONLY_KEYS = frozenset({"stage", "_tier", "_output_base"})
 
 
 # ---------------------------------------------------------------------------

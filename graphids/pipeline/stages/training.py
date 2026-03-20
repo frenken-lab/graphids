@@ -10,8 +10,7 @@ import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 
-from graphids.config import PipelineConfig, run_id
-from graphids.storage import open_gateway
+from graphids.config import PipelineConfig
 
 from .batch_sizing import resolve_batch_config
 from .data_loading import training_preamble
@@ -44,8 +43,7 @@ def _resume_ckpt_path(cfg: PipelineConfig, stage: str) -> str | None:
         log.warning("checkpoint_path_not_found", path=path)
 
     # 2. Lightning auto-save from SLURMEnvironment (timeout requeue)
-    persistent_root = Path(cfg.lake_root) / run_id(cfg, stage)
-    auto_save = persistent_root / ".pl_auto_save.ckpt"
+    auto_save = Path.cwd() / ".pl_auto_save.ckpt"
     if auto_save.exists():
         log.info("resume_from_auto_save", path=str(auto_save))
         return str(auto_save)
@@ -54,15 +52,15 @@ def _resume_ckpt_path(cfg: PipelineConfig, stage: str) -> str | None:
 
 
 def _save_and_cleanup(module, trainer, cfg, stage: str, label: str | None = None) -> dict:
-    """Save checkpoint and config. Returns result dict with checkpoint path and metrics.
-
-    Metrics extraction is non-fatal — returns empty metrics on failure.
-    """
-    _, mapper = open_gateway(cfg)
-    result = mapper.save_training_result(module.model, cfg, stage, trainer)
-    log.info("saved_training_result", label=label or stage, checkpoint=result["checkpoint"])
+    """Extract results after training. ModelCheckpoint already saved the model."""
+    ckpt = getattr(trainer.checkpoint_callback, "best_model_path", "")
+    metrics = {}
+    if trainer.callback_metrics:
+        metrics = {k: v.item() if hasattr(v, "item") else v
+                   for k, v in trainer.callback_metrics.items()}
+    log.info("training_complete", label=label or stage, checkpoint=ckpt)
     cleanup()
-    return result
+    return {"checkpoint": ckpt, "metrics": metrics}
 
 
 def train_autoencoder(cfg: PipelineConfig) -> dict:

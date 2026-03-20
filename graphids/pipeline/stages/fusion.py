@@ -3,17 +3,25 @@
 from __future__ import annotations
 
 import structlog
+from pathlib import Path
 
 import torch
 
 from graphids.config import PipelineConfig
-from graphids.storage import open_gateway
 
 from .data_loading import training_preamble
 from .data_loading import cache_predictions, cleanup
 from .trainer_factory import load_model
 
 log = structlog.get_logger()
+
+
+def _save_dqn_ckpt(agent) -> None:
+    torch.save({
+        "q_network": agent.q_network.state_dict(),
+        "target_network": agent.target_network.state_dict(),
+        "epsilon": agent.epsilon,
+    }, "best_model.pt")
 
 
 def _train_dqn_fusion(cfg, train_cache, val_cache, device, out) -> float:
@@ -65,27 +73,11 @@ def _train_dqn_fusion(cfg, train_cache, val_cache, device, out) -> float:
 
             if acc > best_acc:
                 best_acc = acc
-                _, mapper = open_gateway(cfg)
-                mapper.save_dqn_checkpoint(
-                    {
-                        "q_network": agent.q_network.state_dict(),
-                        "target_network": agent.target_network.state_dict(),
-                        "epsilon": agent.epsilon,
-                    },
-                    "fusion",
-                )
+                _save_dqn_ckpt(agent)
 
     # Ensure we always save something
-    gw, mapper = open_gateway(cfg)
-    if not gw.exists("fusion", "best_model.pt"):
-        mapper.save_dqn_checkpoint(
-            {
-                "q_network": agent.q_network.state_dict(),
-                "target_network": agent.target_network.state_dict(),
-                "epsilon": agent.epsilon,
-            },
-            "fusion",
-        )
+    if not Path("best_model.pt").exists():
+        _save_dqn_ckpt(agent)
 
     return best_acc
 
@@ -95,22 +87,19 @@ def _make_fusion_trainer(cfg):
     import pytorch_lightning as pl
     from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 
-    gw, _ = open_gateway(cfg)
-    out = gw.ensure_dir("fusion")
-
     return pl.Trainer(
-        default_root_dir=str(out),
+        default_root_dir=".",
         max_epochs=cfg.fusion.mlp_max_epochs,
         accelerator="auto",
         devices="auto",
         callbacks=[
             ModelCheckpoint(
-                dirpath=str(out), filename="best_model",
+                dirpath=".", filename="best_model",
                 monitor="val_loss", mode="min", save_top_k=1,
             ),
             EarlyStopping(monitor="val_loss", patience=10, mode="min"),
         ],
-        logger=pl.loggers.CSVLogger(save_dir=str(out), name="metrics"),
+        logger=pl.loggers.CSVLogger(save_dir=".", name="", version=""),
         enable_progress_bar=True,
         log_every_n_steps=10,
     )
@@ -144,8 +133,7 @@ def _train_mlp_fusion(cfg, train_cache, val_cache, device) -> float:
     trainer = _make_fusion_trainer(cfg)
     trainer.fit(module, train_dl, val_dl)
 
-    _, mapper = open_gateway(cfg)
-    mapper.save_checkpoint({"model": module.model.state_dict()}, "fusion")
+    torch.save({"model": module.model.state_dict()}, "best_model.pt")
     best_acc = trainer.callback_metrics.get("val_acc", torch.tensor(0.0)).item()
     return best_acc
 
@@ -161,8 +149,7 @@ def _train_weighted_avg_fusion(cfg, train_cache, val_cache, device) -> float:
     trainer = _make_fusion_trainer(cfg)
     trainer.fit(module, train_dl, val_dl)
 
-    _, mapper = open_gateway(cfg)
-    mapper.save_checkpoint(module.state_dict_for_save(), "fusion")
+    torch.save(module.state_dict_for_save(), "best_model.pt")
     best_acc = trainer.callback_metrics.get("val_acc", torch.tensor(0.0)).item()
     return best_acc
 
@@ -185,13 +172,10 @@ def train_fusion(cfg: PipelineConfig) -> dict:
     del vgae, gat
     cleanup()
 
-    gw, mapper = open_gateway(cfg)
-    gw.ensure_dir("fusion")
-
     # Dispatch on fusion method
     method = cfg.fusion.method
     if method == "dqn":
-        best_acc = _train_dqn_fusion(cfg, train_cache, val_cache, device, gw.resolve("fusion"))
+        best_acc = _train_dqn_fusion(cfg, train_cache, val_cache, device, Path.cwd())
     elif method == "mlp":
         best_acc = _train_mlp_fusion(cfg, train_cache, val_cache, device)
     elif method == "weighted_avg":
@@ -199,8 +183,8 @@ def train_fusion(cfg: PipelineConfig) -> dict:
     else:
         raise ValueError(f"Unknown fusion method: {method}")
 
-    ckpt = gw.resolve("fusion", "best_model.pt")
-    mapper.save_config(cfg, "fusion")
+    ckpt = Path("best_model.pt")
+    cfg.save(Path("config.json"))
 
     metrics = {"best_acc": best_acc, "val_loss": 1.0 - best_acc, "fusion_method": method}
     log.info("saved_fusion", method=method, checkpoint=str(ckpt), best_acc=round(best_acc, 4))

@@ -1,26 +1,17 @@
-"""Path derivation, run identity, and environment settings.
-
-PipelineConfig-based path helpers and environment settings.
-Lake path primitives (lake_run_dir, etc.) live in graphids.storage.paths.
-"""
+"""Path derivation and environment settings."""
 
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import yaml
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .constants import (
     CATALOG_PATH,
     PREPROCESSING_VERSION,
-    PROJECT_ROOT,
-    SWEEP_RESULTS_DIR,
 )
 
 if TYPE_CHECKING:
@@ -60,65 +51,38 @@ CKPT_PATH: str = _env.ckpt_path
 
 
 # ---------------------------------------------------------------------------
-# Run identity
+# Lake path primitives (preprocessing cache + raw data — not per-run)
 # ---------------------------------------------------------------------------
 
-
-def _id_parts(cfg: PipelineConfig, stage: str) -> tuple[str, str, str]:
-    aux_suffix = f"_{cfg.auxiliaries[0].type}" if cfg.auxiliaries else ""
-    model = "eval" if stage == "evaluation" else cfg.model_type
-    return model, cfg.scale, aux_suffix
+_DEFAULT_PREPROCESSING_VERSION = "4"
 
 
-def run_id(cfg: PipelineConfig, stage: str) -> str:
-    """Deterministic run ID: {dataset}/{model}_{scale}_{stage}[_{aux}]."""
-    model, scale, aux_suffix = _id_parts(cfg, stage)
-    return f"{cfg.dataset}/{model}_{scale}_{stage}{aux_suffix}"
+def lake_cache_dir(lake_root: str | Path, dataset: str, version: str | None = None) -> Path:
+    """Path: {lake_root}/cache/v{version}/{dataset}"""
+    if version is None:
+        version = _DEFAULT_PREPROCESSING_VERSION
+    return Path(lake_root) / "cache" / f"v{version}" / dataset
 
 
-def run_id_str(dataset: str, model_type: str, scale: str, stage: str, aux: str = "") -> str:
-    """Run ID from raw strings (no PipelineConfig needed)."""
-    suffix = f"_{aux}" if aux else ""
-    model = "eval" if stage == "evaluation" else model_type
-    return f"{dataset}/{model}_{scale}_{stage}{suffix}"
+def lake_raw_dir(lake_root: str | Path, dataset: str) -> Path:
+    """Path: {lake_root}/raw/{dataset}"""
+    return Path(lake_root) / "raw" / dataset
 
 
+def lake_root_from_env() -> Path | None:
+    """Read KD_GAT_LAKE_ROOT from the environment."""
+    root = os.environ.get("KD_GAT_LAKE_ROOT")
+    return Path(root) if root else None
 
 
-def _config_hash(cfg: PipelineConfig) -> str:
-    return hashlib.sha256(
-        json.dumps(cfg.model_dump(), sort_keys=True, default=str).encode()
-    ).hexdigest()[:12]
+def lake_catalog_path(lake_root: str | Path) -> Path:
+    """Path: {lake_root}/catalog/kd_gat.duckdb"""
+    return Path(lake_root) / "catalog" / "kd_gat.duckdb"
 
 
 # ---------------------------------------------------------------------------
-# Path derivation (PipelineConfig-based wrappers over storage layer)
+# Path derivation (PipelineConfig-based)
 # ---------------------------------------------------------------------------
-
-
-def stage_dir(cfg: PipelineConfig, stage: str) -> Path:
-    """Canonical output directory for a stage (always lake layout)."""
-    aux = cfg.auxiliaries[0].type if cfg.auxiliaries else ""
-    return lake_run_dir(
-        lake_root=cfg.lake_root,
-        dataset=cfg.dataset,
-        model_type=cfg.model_type,
-        scale=cfg.scale,
-        stage=stage,
-        aux=aux,
-        seed=cfg.seed,
-        production=cfg.production,
-    )
-
-
-def checkpoint_path(cfg: PipelineConfig, stage: str) -> Path:
-    """Where the best model checkpoint is saved."""
-    return stage_dir(cfg, stage) / "best_model.pt"
-
-
-def config_path(cfg: PipelineConfig, stage: str) -> Path:
-    """Where the frozen config JSON is saved alongside the model."""
-    return stage_dir(cfg, stage) / "config.json"
 
 
 def data_dir(cfg: PipelineConfig) -> Path:
@@ -132,18 +96,6 @@ def data_dir(cfg: PipelineConfig) -> Path:
 def cache_dir(cfg: PipelineConfig) -> Path:
     """Processed-graph cache directory."""
     return lake_cache_dir(cfg.lake_root, cfg.dataset, version=PREPROCESSING_VERSION)
-
-
-def sweep_result_path(stage: str, dataset: str, scale: str) -> Path:
-    """Path for a sweep's best-config YAML.
-
-    Standalone (no PipelineConfig) because sweep orchestration iterates
-    over steps without a full config. Reads KD_GAT_LAKE_ROOT directly.
-    """
-    lake_root = os.environ.get("KD_GAT_LAKE_ROOT")
-    if lake_root:
-        return Path(lake_root) / "sweeps" / dataset / f"{stage}_{scale}_best.yaml"
-    return PROJECT_ROOT / SWEEP_RESULTS_DIR / f"{stage}_{dataset}_{scale}_best.yaml"
 
 
 # ---------------------------------------------------------------------------

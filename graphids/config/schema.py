@@ -202,6 +202,7 @@ class PipelineConfig(BaseModel, frozen=True):
     mp_start_method: str = "spawn"
     run_test: bool = True
     production: bool = False
+    checkpoints: dict[str, str] = Field(default_factory=dict)
 
     # --- Convenience properties ---
     @property

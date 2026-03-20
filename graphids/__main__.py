@@ -111,26 +111,14 @@ def _lake() -> None:
     parser.add_argument("--action", default="status", choices=["status", "rebuild-catalog", "verify"])
     args = parser.parse_args()
 
-    from graphids.storage.paths import lake_catalog_path, lake_root_from_env
+    from graphids.config.paths import lake_root_from_env
 
     lake_root = lake_root_from_env()
     if lake_root is None:
         raise SystemExit("KD_GAT_LAKE_ROOT not set")
 
-    if args.action == "rebuild-catalog":
-        from graphids.storage import rebuild_catalog
-        log.info("catalog_rebuilt", result=rebuild_catalog(lake_root))
-    elif args.action == "verify":
-        from graphids.storage import verify_all
-        runs, errors = verify_all(lake_root)
-        log.info("verify_complete", runs=runs, errors=errors)
-    elif args.action == "status":
-        from graphids.storage import catalog_status
-        status = catalog_status(lake_catalog_path(lake_root))
-        if status.get("exists"):
-            log.info("lake_status", **{k: v for k, v in status.items() if k != "exists"})
-        else:
-            log.info("catalog_not_built")
+    log.info("lake_command", action=args.action, lake_root=str(lake_root))
+    log.warning("lake_commands_pending_migration", detail="catalog/verify rebuilt in Phase E")
 
 
 def _preprocess() -> None:

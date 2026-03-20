@@ -39,9 +39,20 @@ variants:
     needs_teacher: false
     stages: [autoencoder, curriculum, fusion, evaluation]
 
+# Add after the infrastructure section:
+_tier: dev/${oc.env:USER,unknown}
+_output_base: ${lake_root}/${_tier}/${dataset}
+
+checkpoints:
+  vgae: ${_output_base}/vgae_${scale}_autoencoder/seed_${seed}/best_model.pt
+  gat: ${_output_base}/gat_${scale}_curriculum/seed_${seed}/best_model.pt
+  dqn: ${_output_base}/dqn_${scale}_fusion/seed_${seed}/best_model.pt
+  temporal: ${_output_base}/gat_${scale}_temporal/seed_${seed}/best_model.pt
+
+# Change hydra section:
 hydra:
   job:
-    chdir: false
+    chdir: true # Hydra cd's to run.dir — Lightning writes to cwd
   output_subdir: null
   run:
-    dir: .
+    dir: ${_output_base}/${model_type}_${scale}_${stage}/seed_${seed}

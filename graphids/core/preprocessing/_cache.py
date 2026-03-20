@@ -263,24 +263,34 @@ def _process_dataset_from_scratch(
     if not isinstance(graphs, list):
         graphs = list(graphs)
 
-    # Save cache atomically in collated format, with advisory lock
-    from graphids.storage import StorageGateway, ArtifactMapper
-
-    gw = StorageGateway(
-        lake_root=".",  # dummy — we only use lock() and mapper helpers
-        dataset="cache",
-        model_type="cache",
-        scale="cache",
-    )
-    mapper = ArtifactMapper(gw)
+    # Save cache atomically with advisory lock
+    import fcntl
+    import os
+    import pickle
+    from graphids.core.preprocessing._dataset import save_collated as _save_collated
 
     cache_file.parent.mkdir(parents=True, exist_ok=True)
     log.info("saving_cache", format="collated", path=str(cache_file))
 
     try:
-        with gw.lock(cache_file.parent):
-            mapper.save_collated(graphs, cache_file)
-            mapper.save_pickle(id_mapping, id_mapping_file)
+        lock_path = cache_file.parent / ".lock"
+        with open(lock_path, "w") as lock_fd:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
+            # Atomic collated save
+            tmp = cache_file.with_suffix(".tmp")
+            _save_collated(graphs, tmp)
+            with open(tmp, "rb") as f:
+                os.fsync(f.fileno())
+            tmp.rename(cache_file)
+
+            # Atomic pickle save
+            tmp_pkl = id_mapping_file.with_suffix(".tmp")
+            with open(tmp_pkl, "wb") as f:
+                pickle.dump(id_mapping, f, protocol=4)
+            with open(tmp_pkl, "rb") as f:
+                os.fsync(f.fileno())
+            tmp_pkl.rename(id_mapping_file)
 
         log.info("cache_saved", format="collated", graphs=len(graphs))
 
@@ -369,16 +379,16 @@ def load_test_scenarios(
             graphs = list(graphs)
 
         if graphs:
-            # Save cache atomically in collated format via mapper
-            from graphids.storage import StorageGateway, ArtifactMapper
+            import os
+            from graphids.core.preprocessing._dataset import save_collated as _save_collated
 
-            _gw = StorageGateway(
-                lake_root=".", dataset="cache", model_type="cache", scale="cache",
-            )
-            _mapper = ArtifactMapper(_gw)
             cache_dir_path.mkdir(parents=True, exist_ok=True)
             try:
-                _mapper.save_collated(graphs, cache_file)
+                tmp = cache_file.with_suffix(".tmp")
+                _save_collated(graphs, tmp)
+                with open(tmp, "rb") as f:
+                    os.fsync(f.fileno())
+                tmp.rename(cache_file)
                 log.info(
                     "test_cache_saved",
                     scenario=name,

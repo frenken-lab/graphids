@@ -10,6 +10,7 @@ because temporal ordering matters for this task.
 from __future__ import annotations
 
 import structlog
+from pathlib import Path
 
 import numpy as np
 import pytorch_lightning as pl
@@ -19,7 +20,6 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 from graphids.config import PipelineConfig
-from graphids.storage import open_gateway
 
 from .data_loading import cleanup, graph_label, load_data
 from .trainer_factory import load_model, make_trainer
@@ -241,19 +241,15 @@ def train_temporal(cfg: PipelineConfig) -> dict:
     trainable_params = sum(p.numel() for p in temporal_model.parameters() if p.requires_grad)
     log.info("temporal_model_params", total=total_params, trainable=trainable_params)
 
-    # Save frozen config
-    gw, mapper = open_gateway(cfg)
-    gw.ensure_dir("temporal")
-    mapper.save_config(cfg, "temporal")
+    cfg.save(Path("config.json"))
 
     # Train
     lit_module = TemporalLightningModule(temporal_model, cfg)
     trainer = make_trainer(cfg, "temporal")
     trainer.fit(lit_module, train_loader, val_loader)
 
-    # Save best model
-    best_ckpt = mapper.save_checkpoint(temporal_model.state_dict(), "temporal")
-    log.info("saved_temporal_model", checkpoint=str(best_ckpt))
+    torch.save(temporal_model.state_dict(), "best_model.pt")
+    log.info("saved_temporal_model", checkpoint="best_model.pt")
 
     # Compute final metrics
     temporal_model.eval()
