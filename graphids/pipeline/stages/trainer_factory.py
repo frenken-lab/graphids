@@ -94,7 +94,7 @@ def prepare_kd(
     if model_type == "vgae":
         from graphids.core.models.registry import get as registry_get
 
-        tmp_student = registry_get("vgae").factory(cfg, num_ids, in_channels)
+        tmp_student = registry_get("vgae")(cfg, num_ids, in_channels)
         projection = make_projection(tmp_student, teacher, "vgae", device)
         del tmp_student
 
@@ -131,7 +131,7 @@ def _load_teacher(
             t_num_ids = sd[key].shape[0]
             break
 
-    teacher = registry_get(model_type).factory(tcfg, t_num_ids, in_channels)
+    teacher = registry_get(model_type)(tcfg, t_num_ids, in_channels)
 
     # DQN checkpoints have nested state dict
     if model_type == "dqn":
@@ -220,7 +220,7 @@ def load_model(
     from graphids.core.models.registry import get as registry_get
 
     frozen_cfg = load_frozen_cfg(cfg, stage, model_type=model_type)
-    model = registry_get(model_type).factory(frozen_cfg, num_ids, in_channels)
+    model = registry_get(model_type)(frozen_cfg, num_ids, in_channels)
     model.load_state_dict(torch.load(cfg.checkpoints[model_type], map_location="cpu", weights_only=True))
     model.to(device)
     model.eval()

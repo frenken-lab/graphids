@@ -18,26 +18,74 @@ import torch.multiprocessing as mp
 mp.set_start_method("spawn", force=True)
 
 
+def _configure_logging(*, json: bool | None = None, level: str = "INFO") -> None:
+    """One-time structlog + stdlib bridge setup."""
+    import logging
+    import os
+
+    import structlog
+
+    if json is None:
+        json = os.environ.get("KD_GAT_JSON_LOGS", "").lower() in ("1", "true", "yes")
+
+    shared: list[structlog.types.Processor] = [
+        structlog.contextvars.merge_contextvars,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.add_logger_name,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.UnicodeDecoder(),
+    ]
+    renderer = structlog.processors.JSONRenderer() if json else structlog.dev.ConsoleRenderer()
+
+    structlog.configure(
+        processors=[*shared, structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
+    handler = logging.StreamHandler()
+    handler.setFormatter(structlog.stdlib.ProcessorFormatter(
+        processors=[structlog.stdlib.ProcessorFormatter.remove_processors_meta, renderer],
+        foreign_pre_chain=shared,
+    ))
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(level)
+
+
 def main(argv: list[str] | None = None) -> None:
     import hydra
-    from omegaconf import DictConfig
+    from hydra.core.config_store import ConfigStore
+    from omegaconf import DictConfig, OmegaConf
 
-    from graphids.config import STAGES, _merge_model_preset
-    from graphids.logging import configure_logging
+    from graphids.config import CONFIG_DIR, STAGES, Config
     from graphids.pipeline.stages import run_stage
+
+    # Register structured config as schema — Hydra validates types on compose
+    cs = ConfigStore.instance()
+    cs.store(name="config", node=Config)
 
     args = argv if argv is not None else sys.argv[1:]
 
     json_logs = "--json-logs" in args
     if json_logs:
         args = [a for a in args if a != "--json-logs"]
-    configure_logging(json=json_logs or None)
+    _configure_logging(json=json_logs or None)
+
+    # Extract Hydra overrides (key=value args, not --flags) for preset merge
+    cli_overrides = [a for a in args if "=" in a and not a.startswith("-")]
 
     sys.argv = [sys.argv[0]] + args
 
     @hydra.main(config_path="config", config_name="config", version_base="1.3")
     def run(cfg: DictConfig) -> float | None:
-        cfg = _merge_model_preset(cfg)
+        # Merge model preset; re-apply CLI overrides so they win
+        models = OmegaConf.load(CONFIG_DIR / "models.yaml")
+        preset = models.get(f"{cfg.model_type}_{cfg.scale}")
+        if preset:
+            cfg = OmegaConf.merge(cfg, preset, OmegaConf.from_dotlist(cli_overrides))
 
         stage = cfg.get("stage")
         if not stage or stage not in STAGES:
@@ -48,6 +96,27 @@ def main(argv: list[str] | None = None) -> None:
         return metrics.get("val_loss", float("inf"))
 
     run()
+
+
+def dag(argv: list[str] | None = None) -> None:
+    """Submit full pipeline DAG to SLURM."""
+    import argparse
+    import logging
+
+    from graphids.config import DEFAULT_DATASET, resolve
+    from graphids.pipeline.stages import submit_dag
+
+    logging.basicConfig(level=logging.INFO)
+
+    parser = argparse.ArgumentParser(description="Submit pipeline DAG to SLURM")
+    parser.add_argument("--dataset", default=DEFAULT_DATASET)
+    parser.add_argument("--seeds", default=None, help="Comma-separated seeds")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args(argv)
+
+    seeds = [int(s) for s in args.seeds.split(",")] if args.seeds else [resolve().seed]
+    futures = submit_dag(args.dataset, seeds, dry_run=args.dry_run)
+    print(f"Submitted {len(futures)} jobs")
 
 
 if __name__ == "__main__":

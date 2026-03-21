@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 from torch_geometric.loader import DataLoader, DynamicBatchSampler
 
-from graphids.config import MMAP_TENSOR_LIMIT, cache_dir, data_dir
+from graphids.config import MMAP_TENSOR_LIMIT, cache_dir
 
 log = structlog.get_logger()
 
@@ -104,7 +104,7 @@ def compute_node_budget(batch_size: int, cfg) -> int | None:
     """
     import json
 
-    metadata_path = cache_dir(cfg) / "cache_metadata.json"
+    metadata_path = cache_dir(cfg.lake_root, cfg.dataset) / "cache_metadata.json"
     if not metadata_path.exists():
         return None
     try:

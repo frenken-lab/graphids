@@ -1,12 +1,5 @@
-# Resource profiles and failure reactions for Dagster SLURM orchestration.
-#
-# Structure: resource_profiles[model_type][scale][stage] -> ResourceSpec
-# Adding a new stage or variant = edit this YAML + add to STAGE_DEPENDENCIES in constants.py.
-
-slurm_defaults:
-  account: PAS1266
-  partition: gpu
-  gpu_type: v100
+# Resource profiles for SLURM orchestration.
+# Structure: resource_profiles[model_type][scale][stage] -> {gpus, cpus, memory_gb, walltime_min, partition}
 
 resource_profiles:
   preprocess:
@@ -15,79 +8,65 @@ resource_profiles:
         partition: cpu
         gpus: 0
         cpus: 8
-        mem: "32G"
-        walltime: "1:00:00"
+        memory_gb: 32
+        walltime_min: 60
   vgae:
     large:
       autoencoder:
         partition: gpu
         gpus: 1
         cpus: 4
-        mem: "20G"
-        walltime: "3:00:00"
+        memory_gb: 20
+        walltime_min: 180
     small:
       autoencoder:
         partition: gpu
         gpus: 1
         cpus: 4
-        mem: "16G"
-        walltime: "2:00:00"
+        memory_gb: 16
+        walltime_min: 120
   gat:
     large:
       curriculum:
         partition: gpu
         gpus: 1
         cpus: 4
-        mem: "16G"
-        walltime: "3:00:00"
+        memory_gb: 16
+        walltime_min: 180
     small:
       curriculum:
         partition: gpu
         gpus: 1
         cpus: 4
-        mem: "12G"
-        walltime: "2:00:00"
+        memory_gb: 12
+        walltime_min: 120
   dqn:
     large:
       fusion:
         partition: cpu
         gpus: 0
         cpus: 4
-        mem: "16G"
-        walltime: "0:30:00"
+        memory_gb: 16
+        walltime_min: 30
     small:
       fusion:
         partition: cpu
         gpus: 0
         cpus: 4
-        mem: "12G"
-        walltime: "0:30:00"
+        memory_gb: 12
+        walltime_min: 30
   eval:
     large:
       evaluation:
         partition: cpu
         gpus: 0
         cpus: 4
-        mem: "16G"
-        walltime: "0:30:00"
+        memory_gb: 16
+        walltime_min: 30
     small:
       evaluation:
         partition: cpu
         gpus: 0
         cpus: 4
-        mem: "12G"
-        walltime: "0:30:00"
-
-failure_reactions:
-  OUT_OF_MEMORY:
-    scale_mem: 2.0
-    max_retries: 2
-  TIMEOUT:
-    scale_time: 1.5
-    max_retries: 2
-    ckpt_resume: true
-  NODE_FAIL:
-    exclude_node: true
-    max_retries: 3
-  FAILED:
-    max_retries: 1
+        memory_gb: 12
+        walltime_min: 30

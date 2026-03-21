@@ -31,11 +31,18 @@ scales:
 # depends_on is a list of {model, stage} pairs (empty = root node).
 # run_id() overrides model to "eval" for the evaluation stage.
 stages:
+  preprocess:
+    learning_type: preprocessing
+    model: preprocess
+    mode: preprocess
+    depends_on: []
+
   autoencoder:
     learning_type: unsupervised
     model: vgae
     mode: autoencoder
-    depends_on: []
+    depends_on:
+      - { model: preprocess, stage: preprocess }
 
   curriculum:
     learning_type: supervised
@@ -63,7 +70,8 @@ stages:
     learning_type: evaluation
     model: eval
     mode: evaluation
-    depends_on: []
+    depends_on:
+      - { model: dqn, stage: fusion }
 
   temporal:
     learning_type: temporal

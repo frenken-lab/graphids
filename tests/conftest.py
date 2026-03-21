@@ -4,16 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from graphids.pipeline.dag import _normalize
-
 
 @pytest.fixture()
 def gpu_resources() -> dict:
-    """Standard GPU resource dict for tests."""
-    return _normalize({"partition": "gpu", "gpus": 1, "cpus": 4, "mem": "16G", "walltime": "3:00:00"})
+    return {"partition": "gpu", "gpus": 1, "cpus": 4, "memory_gb": 16, "walltime_min": 180}
 
 
 @pytest.fixture()
 def cpu_resources() -> dict:
-    """Standard CPU resource dict for tests."""
-    return _normalize({"partition": "cpu", "gpus": 0, "cpus": 8, "mem": "32G", "walltime": "1:00:00"})
+    return {"partition": "cpu", "gpus": 0, "cpus": 8, "memory_gb": 32, "walltime_min": 60}

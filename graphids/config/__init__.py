@@ -1,11 +1,12 @@
-"""Configuration layer: constants, paths, Hydra YAML."""
+"""Configuration layer: constants, schema, paths, resolution."""
 
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
 
-import yaml
+from omegaconf import MISSING, OmegaConf
 
 from .constants import (  # noqa: F401
     CATALOG_PATH,
@@ -43,119 +44,180 @@ CKPT_PATH: str = os.environ.get("KD_GAT_CKPT_PATH", "")
 
 
 # ---------------------------------------------------------------------------
-# Config-based paths (called with Hydra cfg)
+# Structured config schema (Hydra validates types via these dataclasses)
 # ---------------------------------------------------------------------------
 
-def data_dir(cfg) -> Path:
+@dataclass
+class VGAEConfig:
+    hidden_dims: list[int] = field(default_factory=lambda: [480, 240, 48])
+    latent_dim: int = 48
+    heads: int = 4
+    embedding_dim: int = 32
+    dropout: float = 0.15
+    conv_type: str = "gat"
+    edge_dim: int = 11
+    proj_dim: int = 0
+    canid_weight: float = 0.1
+    nbr_weight: float = 0.05
+    kl_weight: float = 0.01
+
+
+@dataclass
+class GATConfig:
+    hidden: int = 48
+    layers: int = 3
+    heads: int = 8
+    dropout: float = 0.2
+    embedding_dim: int = 16
+    fc_layers: int = 3
+    conv_type: str = "gat"
+    edge_dim: int = 11
+    pool_aggrs: list[str] = field(default_factory=lambda: ["mean"])
+    proj_dim: int = 0
+
+
+@dataclass
+class DQNConfig:
+    hidden: int = 576
+    layers: int = 3
+    gamma: float = 0.99
+    epsilon: float = 0.1
+    epsilon_decay: float = 0.995
+    min_epsilon: float = 0.01
+    buffer_size: int = 100_000
+    batch_size: int = 128
+    target_update: int = 100
+    weight_decay: float = 0.00001
+    scheduler_patience: int = 1000
+    max_patience: int = 5000
+    vgae_error_weights: list[float] = field(default_factory=lambda: [0.4, 0.35, 0.25])
+
+
+@dataclass
+class TrainingConfig:
+    lr: float = 0.003
+    max_epochs: int = 300
+    batch_size: int = 4096
+    patience: int = 100
+    weight_decay: float = 0.0001
+    gradient_clip: float = 1.0
+    precision: str = "16-mixed"
+    safety_factor: float = 0.5
+    gradient_checkpointing: bool = True
+    use_teacher_cache: bool = True
+    clear_cache_every_n: int = 100
+    offload_teacher_to_cpu: bool = False
+    accumulate_grad_batches: int = 1
+    save_top_k: int = 1
+    monitor_metric: str = "val_loss"
+    monitor_mode: str = "min"
+    log_every_n_steps: int = 50
+    test_every_n_epochs: int = 5
+    deterministic: bool = False
+    cudnn_benchmark: bool = True
+    compile_model: bool = False
+    use_scheduler: bool = False
+    scheduler_type: str = "cosine"
+    scheduler_t_max: int = -1
+    scheduler_step_size: int = 50
+    scheduler_gamma: float = 0.1
+    scheduler: str | None = None
+    curriculum_start_ratio: float = 1.0
+    curriculum_end_ratio: float = 10.0
+    difficulty_percentile: float = 75.0
+    use_vgae_mining: bool = True
+    difficulty_cache_update: int = 10
+    curriculum_memory_multiplier: float = 1.0
+    log_teacher_student_comparison: bool = True
+    dynamic_batching: bool = True
+
+
+@dataclass
+class FusionConfig:
+    method: str = "dqn"
+    episodes: int = 500
+    max_samples: int = 150_000
+    max_val_samples: int = 30_000
+    episode_sample_size: int = 20_000
+    training_step_interval: int = 32
+    gpu_training_steps: int = 16
+    lr: float = 0.001
+    alpha_steps: int = 21
+    mlp_hidden_dims: list[int] = field(default_factory=lambda: [64, 32])
+    mlp_max_epochs: int = 100
+
+
+@dataclass
+class TemporalConfig:
+    enabled: bool = False
+    temporal_window: int = 8
+    temporal_stride: int = 1
+    temporal_hidden: int = 64
+    temporal_heads: int = 4
+    temporal_layers: int = 2
+    freeze_spatial: bool = True
+    spatial_lr_factor: float = 0.1
+
+
+@dataclass
+class Config:
+    dataset: str = "hcrl_sa"
+    model_type: str = "vgae"
+    scale: str = "large"
+    stage: str = "autoencoder"
+    seed: int = 42
+    lake_root: str = MISSING  # resolved from env/YAML
+    device: str = "cuda"
+    num_workers: int = 2
+    production: bool = False
+    auxiliaries: list = field(default_factory=list)
+    vgae: VGAEConfig = field(default_factory=VGAEConfig)
+    gat: GATConfig = field(default_factory=GATConfig)
+    dqn: DQNConfig = field(default_factory=DQNConfig)
+    training: TrainingConfig = field(default_factory=TrainingConfig)
+    fusion: FusionConfig = field(default_factory=FusionConfig)
+    temporal: TemporalConfig = field(default_factory=TemporalConfig)
+
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+
+def data_dir(lake_root: str, dataset: str) -> Path:
     """Raw data directory. Tries lake, falls back to local."""
-    candidate = Path(cfg.lake_root) / "raw" / cfg.dataset
+    candidate = Path(lake_root) / "raw" / dataset
     if candidate.exists():
         return candidate
-    return Path("data") / "automotive" / cfg.dataset
+    return Path("data") / "automotive" / dataset
 
 
-def cache_dir(cfg) -> Path:
+def cache_dir(lake_root: str, dataset: str) -> Path:
     """Processed-graph cache directory."""
-    return Path(cfg.lake_root) / "cache" / f"v{PREPROCESSING_VERSION}" / cfg.dataset
+    return Path(lake_root) / "cache" / f"v{PREPROCESSING_VERSION}" / dataset
 
 
 # ---------------------------------------------------------------------------
-# Dataset catalog
-# ---------------------------------------------------------------------------
-
-_datasets_cache: list[str] | None = None
-
-
-def get_datasets() -> list[str]:
-    global _datasets_cache
-    if _datasets_cache is None:
-        _datasets_cache = list(yaml.safe_load(CATALOG_PATH.read_text()).keys())
-    return _datasets_cache
-
-
-def load_catalog() -> dict:
-    return yaml.safe_load(CATALOG_PATH.read_text())
-
-
-def parse_seeds(value: str) -> list[int]:
-    if value is None:
-        return []
-    return [int(s.strip()) for s in value.split(",")]
-
-
-# ---------------------------------------------------------------------------
-# Hydra config resolution
+# Config resolution
 # ---------------------------------------------------------------------------
 
 def resolve(*overrides: str):
-    """Compose config: Hydra base + model preset + CLI overrides.
+    """Compose config: structured defaults + YAML infrastructure + model preset + CLI overrides.
 
-    Merge order: config.yaml defaults → model preset → CLI overrides.
-    This ensures CLI overrides always win over model presets.
+    Merge order: dataclass defaults → config.yaml (infra) → model preset → CLI overrides.
+    Hydra validates types via the structured Config dataclass.
     """
-    from hydra import compose, initialize_config_dir
-    from hydra.core.global_hydra import GlobalHydra
-    from omegaconf import OmegaConf
-
-    GlobalHydra.instance().clear()
-    with initialize_config_dir(version_base="1.3", config_dir=str(CONFIG_DIR)):
-        base = compose(config_name="config", overrides=[])
-        cfg = compose(config_name="config", overrides=list(overrides))
-
-    # Merge order: base → preset → CLI overrides
-    # CLI overrides = keys where cfg differs from base
-    preset = _load_model_preset(cfg.model_type, cfg.scale)
-    if preset:
-        cli_diff = _extract_overrides(base, cfg)
-        cfg = OmegaConf.merge(cfg, preset, cli_diff)
-    return cfg
-
-
-def _merge_model_preset(cfg):
-    """Merge model preset into cfg (for @hydra.main where CLI overrides are already applied).
-
-    Called from __main__.py where Hydra has already merged CLI overrides.
-    We re-apply the overrides on top of the preset so CLI always wins.
-    """
-    from hydra import compose, initialize_config_dir
-    from hydra.core.global_hydra import GlobalHydra
-    from omegaconf import OmegaConf
-
-    # Get the base config (no overrides) to compute what the user changed
-    GlobalHydra.instance().clear()
-    with initialize_config_dir(version_base="1.3", config_dir=str(CONFIG_DIR)):
-        base = compose(config_name="config", overrides=[])
-
-    preset = _load_model_preset(cfg.model_type, cfg.scale)
-    if preset:
-        cli_diff = _extract_overrides(base, cfg)
-        cfg = OmegaConf.merge(cfg, preset, cli_diff)
-    return cfg
-
-
-def _load_model_preset(model_type: str, scale: str):
-    """Load model preset from models.yaml, or None if not found."""
-    from omegaconf import OmegaConf
-
+    schema = OmegaConf.structured(Config)
+    infra = OmegaConf.load(CONFIG_DIR / "config.yaml")
     models = OmegaConf.load(CONFIG_DIR / "models.yaml")
-    key = f"{model_type}_{scale}"
-    if key in models and models[key]:
-        return models[key]
-    return None
+    cli = OmegaConf.from_dotlist(list(overrides))
 
+    # Open struct so infra keys (_tier, checkpoints, callbacks, hydra) can merge in
+    OmegaConf.set_struct(schema, False)
 
-def _extract_overrides(base, cfg):
-    """Extract the subset of cfg that differs from base (i.e. CLI overrides)."""
-    from omegaconf import DictConfig, OmegaConf
+    # Determine model_type + scale from overrides (before full merge)
+    identity = OmegaConf.merge(schema, infra, cli)
+    preset = models.get(f"{identity.model_type}_{identity.scale}") or {}
 
-    diff = {}
-    for key in cfg:
-        if key not in base:
-            diff[key] = cfg[key]
-        elif isinstance(cfg[key], DictConfig) and isinstance(base.get(key), DictConfig):
-            sub = _extract_overrides(base[key], cfg[key])
-            if sub:
-                diff[key] = sub
-        elif OmegaConf.is_missing(base, key) or cfg[key] != base[key]:
-            diff[key] = cfg[key]
-    return OmegaConf.create(diff)
+    cfg = OmegaConf.merge(schema, infra, preset, cli)
+    OmegaConf.set_struct(cfg, True)
+    return cfg
