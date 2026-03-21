@@ -26,10 +26,11 @@ def push():
     import yaml
     from huggingface_hub import HfApi
 
-    from graphids.config.paths import lake_exports_dir, lake_root_from_env
+    import os
+    from pathlib import Path
 
-    lake_root = lake_root_from_env()
-    if lake_root is None:
+    lake_root = os.environ.get("KD_GAT_LAKE_ROOT")
+    if not lake_root:
         log.error("lake_root_not_set")
         return
 
@@ -68,7 +69,7 @@ def push():
     out_path = "/tmp/kd_gat_experiments.parquet"
     runs.to_parquet(out_path, index=False)
 
-    exports = lake_exports_dir(lake_root)
+    exports = Path(lake_root) / "exports"
     exports.mkdir(parents=True, exist_ok=True)
     lake_parquet = exports / "experiments.parquet"
     runs.to_parquet(str(lake_parquet), index=False)

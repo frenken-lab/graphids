@@ -1,9 +1,7 @@
 """Configuration layer: constants, paths, Hydra YAML.
 
 Usage:
-    from graphids.config import STAGES, STAGE_MODEL_MAP, data_dir, cache_dir
-    # Config resolution: use hydra.compose() directly
-    # Config save/load: use OmegaConf.save() / OmegaConf.load()
+    from graphids.config import STAGES, data_dir, cache_dir, resolve
 """
 
 from .constants import (  # noqa: F401
@@ -29,6 +27,20 @@ from .constants import (  # noqa: F401
     compute_preprocessing_hash,
     load_pipeline_yaml,
 )
+from .paths import (  # noqa: F401
+    CKPT_PATH,
+    SLURM_ACCOUNT,
+    SLURM_GPU_TYPE,
+    SLURM_PARTITION,
+    SWEEP_ID,
+    USER_TAGS,
+    cache_dir,
+    data_dir,
+    get_datasets,
+    load_catalog,
+    parse_seeds,
+)
+
 CONF_DIR = str((CONFIG_DIR / "conf").resolve())
 
 
@@ -40,21 +52,3 @@ def resolve(*overrides: str):
     GlobalHydra.instance().clear()
     with initialize_config_dir(version_base="1.3", config_dir=CONF_DIR):
         return compose(config_name="config", overrides=list(overrides))
-
-
-from .paths import (  # noqa: F401
-    CKPT_PATH,
-    SLURM_ACCOUNT,
-    SLURM_GPU_TYPE,
-    SLURM_PARTITION,
-    SWEEP_ID,
-    USER_TAGS,
-    cache_dir,
-    data_dir,
-    get_datasets,
-    lake_catalog_path,
-    lake_exports_dir,
-    lake_root_from_env,
-    load_catalog,
-    parse_seeds,
-)

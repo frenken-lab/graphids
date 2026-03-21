@@ -26,7 +26,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from graphids.core.preprocessing import ATTACK_TYPE_NAMES
-from graphids.config.paths import lake_exports_dir, lake_root_from_env
+import os
+from pathlib import Path
 
 log = structlog.get_logger()
 
@@ -381,12 +382,12 @@ def main() -> None:
     p.add_argument("--tables-only", action="store_true")
     args = p.parse_args()
 
-    lake_root = lake_root_from_env()
+    lake_root = os.environ.get("KD_GAT_LAKE_ROOT")
     if not lake_root:
         log.error("KD_GAT_LAKE_ROOT not set")
         sys.exit(1)
 
-    paper_dir = lake_exports_dir(lake_root) / "paper"
+    paper_dir = Path(lake_root) / "exports" / "paper"
     csv_dir, fig_dir = paper_dir / "csv", paper_dir / "figures"
 
     # Read from ESS production — the data lake is the single source of truth

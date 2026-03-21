@@ -7,10 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from .constants import (
-    CATALOG_PATH,
-    PREPROCESSING_VERSION,
-)
+from .constants import CATALOG_PATH, PREPROCESSING_VERSION
 
 
 # ---------------------------------------------------------------------------
@@ -26,39 +23,20 @@ CKPT_PATH: str = os.environ.get("KD_GAT_CKPT_PATH", "")
 
 
 # ---------------------------------------------------------------------------
-# Lake paths
+# Config-based paths (called with Hydra cfg)
 # ---------------------------------------------------------------------------
 
-def lake_root_from_env() -> Path | None:
-    root = os.environ.get("KD_GAT_LAKE_ROOT")
-    return Path(root) if root else None
-
-
-def lake_cache_dir(lake_root, dataset: str, version: str | None = None) -> Path:
-    return Path(lake_root) / "cache" / f"v{version or PREPROCESSING_VERSION}" / dataset
-
-
-def lake_raw_dir(lake_root, dataset: str) -> Path:
-    return Path(lake_root) / "raw" / dataset
-
-
-def lake_catalog_path(lake_root) -> Path:
-    return Path(lake_root) / "catalog" / "kd_gat.duckdb"
-
-
-def lake_exports_dir(lake_root) -> Path:
-    return Path(lake_root) / "exports"
-
-
 def data_dir(cfg) -> Path:
-    candidate = lake_raw_dir(cfg.lake_root, cfg.dataset)
+    """Raw data directory. Tries lake, falls back to local."""
+    candidate = Path(cfg.lake_root) / "raw" / cfg.dataset
     if candidate.exists():
         return candidate
     return Path("data") / "automotive" / cfg.dataset
 
 
 def cache_dir(cfg) -> Path:
-    return lake_cache_dir(cfg.lake_root, cfg.dataset)
+    """Processed-graph cache directory."""
+    return Path(cfg.lake_root) / "cache" / f"v{PREPROCESSING_VERSION}" / cfg.dataset
 
 
 # ---------------------------------------------------------------------------
