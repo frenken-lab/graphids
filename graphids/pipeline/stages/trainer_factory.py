@@ -44,14 +44,17 @@ def make_trainer(cfg, stage: str) -> pl.Trainer:
 
 
 def prepare_kd(
-    cfg, model_type: str, num_ids: int, in_channels: int, device: torch.device,
+    cfg, model_type: str, device: torch.device,
 ) -> tuple[nn.Module | None, nn.Linear | None]:
     """Resolve teacher path, load & freeze teacher, create projection if needed.
 
+    Reads num_ids and in_channels from cfg (populated by DataModule.populate_config).
     Returns (teacher, projection) when KD is active, or (None, None) otherwise.
     """
     if not any(a.type == "kd" for a in cfg.get("auxiliaries", [])):
         return None, None
+
+    num_ids, in_channels = cfg.num_ids, cfg.in_channels
 
     # --- Resolve teacher checkpoint path ---
     kd = next(a for a in cfg.get("auxiliaries", []) if a.type == "kd")
@@ -147,13 +150,16 @@ def load_frozen_cfg(cfg, stage: str, model_type: str | None = None):
 
 
 def load_model(
-    cfg, model_type: str, stage: str, num_ids: int, in_channels: int, device: torch.device,
+    cfg, model_type: str, stage: str, device: torch.device,
 ) -> nn.Module:
-    """Load a trained model using its frozen config and the registry."""
+    """Load a trained model using its frozen config and the registry.
+
+    Reads num_ids and in_channels from cfg (populated by DataModule.populate_config).
+    """
     from graphids.core.models.registry import get as registry_get
 
     frozen_cfg = load_frozen_cfg(cfg, stage, model_type=model_type)
-    model = registry_get(model_type)(frozen_cfg, num_ids, in_channels)
+    model = registry_get(model_type)(frozen_cfg, cfg.num_ids, cfg.in_channels)
     model.load_state_dict(torch.load(cfg.checkpoints[model_type], map_location="cpu", weights_only=True))
     model.to(device).eval()
     return model

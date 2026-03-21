@@ -24,7 +24,6 @@ MAX_DATA_BYTES = 8
 NODE_FEATURE_COUNT = 26
 EDGE_FEATURE_COUNT = 11
 EXCLUDED_ATTACK_TYPES = ["suppress", "masquerade"]
-MMAP_TENSOR_LIMIT = 60_000
 
 # Preprocessing defaults (replaces PreprocessingConfig Pydantic model)
 PREPROCESSING_DEFAULTS = {

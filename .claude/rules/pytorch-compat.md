@@ -1,10 +1,3 @@
----
-paths:
-  - "pyproject.toml"
-  - "uv.lock"
-  - "graphids/**/*.py"
----
-
 # uv + PyTorch + PyG on OSC — Version Compatibility
 
 This stack has a **three-way version coupling** that must stay in sync. Getting any axis wrong causes segfaults (not import errors — silent C++ ABI mismatches).

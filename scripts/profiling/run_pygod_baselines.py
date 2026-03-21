@@ -43,17 +43,15 @@ SUPPORTED_MODELS = ("dominant", "ocgnn")
 def _load_graphs(dataset: str):
     """Load cached graph data via the project's data loading utils."""
     cfg = resolve("vgae", "large", dataset=dataset)
-    from graphids.core.preprocessing import PreprocessingPipeline
+    from graphids.core.preprocessing import CANBusDataModule
 
-    pipe = PreprocessingPipeline(cfg)
-    train_data, val_data, num_ids = pipe.load_dataset()
-    return train_data, val_data, num_ids
+    dm = CANBusDataModule.from_cfg(cfg)
+    dm.setup("fit")
+    return list(dm.train_dataset), list(dm.val_dataset), dm.num_ids
 
 
 def _graph_label(g) -> int:
-    from graphids.pipeline.stages.data_loading import graph_label
-
-    return graph_label(g)
+    return g.y.item() if g.y.dim() == 0 else int(g.y[0].item())
 
 
 def _run_model(model_name: str, train_data, val_data, device: str) -> dict:
@@ -99,10 +97,16 @@ def _run_model(model_name: str, train_data, val_data, device: str) -> dict:
     elapsed = time.time() - t0
     log.info("%s: finished %d graphs in %.1fs", model_name, len(all_graphs), elapsed)
 
-    # Threshold via Youden's J (reuse shared implementation)
-    from graphids.pipeline.stages.evaluation import _vgae_threshold
-
-    best_thresh, _, preds = _vgae_threshold(labels, scores)
+    # Threshold via Youden's J
+    from torchmetrics.functional.classification import binary_roc
+    fpr_v, tpr_v, thresholds_v = binary_roc(
+        torch.as_tensor(scores, dtype=torch.float),
+        torch.as_tensor(labels, dtype=torch.long),
+    )
+    j_scores = tpr_v - fpr_v
+    best_idx = torch.argmax(j_scores).item()
+    best_thresh = float(thresholds_v[best_idx]) if best_idx < len(thresholds_v) else float(np.median(scores))
+    preds = (np.array(scores) > best_thresh).astype(int)
 
     metrics = {
         "model": model_name,

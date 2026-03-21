@@ -11,6 +11,15 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torchmetrics import MetricCollection
+from torchmetrics.classification import (
+    BinaryAccuracy,
+    BinaryAUROC,
+    BinaryF1Score,
+    BinaryPrecision,
+    BinaryRecall,
+    BinarySpecificity,
+)
 
 
 class MLPFusionNetwork(nn.Module):
@@ -47,6 +56,11 @@ class MLPFusionModule(pl.LightningModule):
         self.model = MLPFusionNetwork(state_dim, hidden_dims)
         self.loss_fn = nn.BCEWithLogitsLoss()
         self.lr = lr
+        self.test_metrics = MetricCollection({
+            "accuracy": BinaryAccuracy(), "f1": BinaryF1Score(),
+            "precision": BinaryPrecision(), "recall": BinaryRecall(),
+            "specificity": BinarySpecificity(), "auc": BinaryAUROC(),
+        })
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.model(x)
@@ -66,6 +80,14 @@ class MLPFusionModule(pl.LightningModule):
         acc = (preds == labels).float().mean()
         self.log("val_loss", loss, prog_bar=True)
         self.log("val_acc", acc, prog_bar=True)
+
+    def test_step(self, batch, batch_idx):
+        states, labels = batch
+        logits = self(states)
+        scores = torch.sigmoid(logits)
+        preds = (logits > 0).long()
+        self.test_metrics.update(preds, labels)
+        self.log_dict(self.test_metrics, batch_size=len(labels))
 
     def configure_optimizers(self):
         return optim.Adam(self.parameters(), lr=self.lr)
@@ -91,6 +113,11 @@ class WeightedAvgModule(pl.LightningModule):
         self.weight = nn.Parameter(torch.zeros(1))
         self.loss_fn = nn.BCELoss()
         self.lr = lr
+        self.test_metrics = MetricCollection({
+            "accuracy": BinaryAccuracy(), "f1": BinaryF1Score(),
+            "precision": BinaryPrecision(), "recall": BinaryRecall(),
+            "specificity": BinarySpecificity(), "auc": BinaryAUROC(),
+        })
 
         from .registry import feature_layout
 
@@ -120,6 +147,13 @@ class WeightedAvgModule(pl.LightningModule):
         acc = (preds == labels).float().mean()
         self.log("val_loss", loss, prog_bar=True)
         self.log("val_acc", acc, prog_bar=True)
+
+    def test_step(self, batch, batch_idx):
+        states, labels = batch
+        scores = self(states)
+        preds = (scores > 0.5).long()
+        self.test_metrics.update(preds, labels)
+        self.log_dict(self.test_metrics, batch_size=len(labels))
 
     def configure_optimizers(self):
         return optim.Adam(self.parameters(), lr=self.lr)

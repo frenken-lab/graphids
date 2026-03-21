@@ -1,10 +1,3 @@
----
-paths:
-  - "graphids/cli.py"
-  - "graphids/pipeline/stages/trainer_factory.py"
-  - "data/mlflow/**"
----
-
 # KD-GAT Experiment Tracking
 
 ## Architecture: MLflow SQLite Backend
@@ -47,6 +40,3 @@ Binary artifacts stored in `experimentruns/{dataset}/{run}/` AND logged to MLflo
 - `config.json` — frozen PipelineConfig
 - `metrics.json` — training metrics summary
 
-## HF Dataset Push
-
-`scripts/data/push_experiments_to_hf.py` reads MLflow → Parquet → HF Dataset (`buckeyeguy/kd-gat-experiments`). Auto-triggered by `_epilog.sh` after SLURM jobs.

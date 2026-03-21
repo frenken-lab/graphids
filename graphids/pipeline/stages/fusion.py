@@ -2,130 +2,180 @@
 
 from __future__ import annotations
 
+import math
 import structlog
 from pathlib import Path
 
 import torch
+from torch.utils.data import DataLoader, TensorDataset
 
 
 import pytorch_lightning as pl
+from pytorch_lightning.callbacks import ModelCheckpoint
+from torchmetrics import MetricCollection
+from torchmetrics.classification import (
+    BinaryAccuracy,
+    BinaryAUROC,
+    BinaryF1Score,
+    BinaryPrecision,
+    BinaryRecall,
+    BinarySpecificity,
+)
 
-from .data_loading import cache_predictions, cleanup, load_data
+from graphids.core.preprocessing import CANBusDataModule
+
+from .data_loading import cache_predictions, cleanup
 from .trainer_factory import load_model
 
 log = structlog.get_logger()
 
 
-def _save_dqn_ckpt(agent) -> None:
-    torch.save({
-        "q_network": agent.q_network.state_dict(),
-        "target_network": agent.target_network.state_dict(),
-        "epsilon": agent.epsilon,
-    }, "best_model.pt")
+def _fusion_test_metrics() -> MetricCollection:
+    return MetricCollection({
+        "accuracy": BinaryAccuracy(), "f1": BinaryF1Score(),
+        "precision": BinaryPrecision(), "recall": BinaryRecall(),
+        "specificity": BinarySpecificity(), "auc": BinaryAUROC(),
+    })
 
 
-def _train_dqn_fusion(cfg, train_cache, val_cache, device) -> float:
-    """Vectorized DQN RL fusion training loop. Returns best validation accuracy.
+# ---------------------------------------------------------------------------
+# DQN Lightning module (train + eval)
+# ---------------------------------------------------------------------------
 
-    Each episode: batch forward pass -> batch reward -> store in tensor buffer
-    -> gradient steps from buffer. No Python-level per-sample loop.
+
+class DQNFusionModule(pl.LightningModule):
+    """Lightning wrapper for DQN fusion agent.
+
+    Uses manual optimization since the agent manages its own optimizer.
+    training_step runs one RL episode: select actions, compute rewards,
+    store experiences, gradient steps from replay buffer, epsilon decay.
     """
-    from graphids.core.models.dqn import EnhancedDQNFusionAgent
 
-    agent = EnhancedDQNFusionAgent.from_config(cfg, device=str(device))
+    def __init__(self, agent, cfg=None):
+        super().__init__()
+        self.automatic_optimization = False
+        self.agent = agent
+        self.cfg = cfg
+        self.test_metrics = _fusion_test_metrics()
 
-    best_acc = 0.0
-    val_states = val_cache["states"][: min(5000, len(val_cache["states"]))]
-    val_labels = val_cache["labels"][: min(5000, len(val_cache["labels"]))]
-
-    for ep in range(cfg.fusion.episodes):
-        idx = torch.randperm(len(train_cache["states"]))[: cfg.fusion.episode_sample_size]
-        batch_states = train_cache["states"][idx]
-        batch_labels = train_cache["labels"][idx]
-
-        # Vectorized: one forward pass for all samples, batch reward, batch store
-        actions, alphas, norm_states = agent.select_action_batch(batch_states, training=True)
+    def training_step(self, batch, batch_idx):
+        states, labels = batch
+        actions, alphas, norm_states = self.agent.select_action_batch(states, training=True)
         # TODO(open-question): Training uses (alpha > 0.5) as prediction, but
         # validation uses the proper fused score. See dqn.py top-level comment.
         preds = (alphas > 0.5).long()
-        rewards = agent.reward_calc.compute(preds, batch_labels, norm_states, alphas)
-        agent.store_experiences_batch(norm_states, actions, rewards)
+        rewards = self.agent.reward_calc.compute(preds, labels, norm_states, alphas)
+        self.agent.store_experiences_batch(norm_states, actions, rewards)
 
         # Gradient steps from replay buffer
-        if agent.buffer_size_current >= cfg.dqn.batch_size:
-            for _ in range(cfg.fusion.gpu_training_steps):
-                agent.train_step()
+        loss = None
+        if self.agent.buffer_size_current >= self.cfg.dqn.batch_size:
+            for _ in range(self.cfg.fusion.gpu_training_steps):
+                loss = self.agent.train_step()
 
         # Epsilon decay
-        agent.epsilon = max(agent.min_epsilon, agent.epsilon * agent.epsilon_decay)
+        self.agent.epsilon = max(self.agent.min_epsilon, self.agent.epsilon * self.agent.epsilon_decay)
 
-        if (ep + 1) % 50 == 0:
-            metrics = agent.validate_batch(val_states, val_labels)
-            acc = metrics.get("accuracy", 0)
-            log.info(
-                "dqn_episode",
-                episode=ep + 1,
-                total_episodes=cfg.fusion.episodes,
-                avg_reward=round(rewards.mean().item(), 2),
-                val_acc=round(acc, 4),
-                epsilon=round(agent.epsilon, 3),
-            )
+        self.log("train_reward", rewards.mean(), prog_bar=True)
+        self.log("epsilon", self.agent.epsilon)
+        if loss is not None:
+            self.log("train_loss", loss)
 
-            if acc > best_acc:
-                best_acc = acc
-                _save_dqn_ckpt(agent)
+    def validation_step(self, batch, batch_idx):
+        states, labels = batch
+        metrics = self.agent.validate_batch(states, labels)
+        self.log("val_acc", metrics.get("accuracy", 0.0), prog_bar=True)
 
-    # Ensure we always save something
-    if not Path("best_model.pt").exists():
-        _save_dqn_ckpt(agent)
+    def test_step(self, batch, batch_idx):
+        states, labels = batch
+        actions, alphas, norm_states = self.agent.select_action_batch(states, training=False)
+        anomaly_scores, gat_probs = self.agent.reward_calc.derive_scores(norm_states)
+        fused_scores = (1 - alphas) * anomaly_scores + alphas * gat_probs
+        preds = (fused_scores > 0.5).long()
+        self.test_metrics.update(preds, labels)
+        self.log_dict(self.test_metrics, batch_size=len(labels))
 
-    return best_acc
+    def configure_optimizers(self):
+        return self.agent.optimizer
 
 
-def _train_bandit_fusion(cfg, train_cache, val_cache, device) -> float:
-    """Neural-LinUCB contextual bandit fusion. Returns best validation accuracy."""
-    from graphids.core.models.bandit import NeuralLinUCBAgent
+# ---------------------------------------------------------------------------
+# Bandit Lightning module (train + eval)
+# ---------------------------------------------------------------------------
 
-    agent = NeuralLinUCBAgent.from_config(cfg, device=str(device))
 
-    best_acc = 0.0
-    val_states = val_cache["states"][: min(5000, len(val_cache["states"]))]
-    val_labels = val_cache["labels"][: min(5000, len(val_cache["labels"]))]
+class BanditFusionModule(pl.LightningModule):
+    """Lightning wrapper for Neural-LinUCB bandit agent.
 
-    for ep in range(cfg.fusion.episodes):
-        idx = torch.randperm(len(train_cache["states"]))[: cfg.fusion.episode_sample_size]
-        batch_states = train_cache["states"][idx]
-        batch_labels = train_cache["labels"][idx]
+    Uses manual optimization — Sherman-Morrison updates are closed-form,
+    with periodic backbone retraining via the agent's internal optimizer.
+    """
 
-        result = agent.train_episode(batch_states, batch_labels)
+    def __init__(self, agent, cfg=None):
+        super().__init__()
+        self.automatic_optimization = False
+        self.agent = agent
+        self.cfg = cfg
+        self.test_metrics = _fusion_test_metrics()
 
-        if (ep + 1) % 50 == 0:
-            metrics = agent.validate_batch(val_states, val_labels)
-            acc = metrics.get("accuracy", 0)
-            regret = agent.regret_stats()
-            log.info(
-                "bandit_episode",
-                episode=ep + 1,
-                total_episodes=cfg.fusion.episodes,
-                train_acc=round(result["accuracy"], 4),
-                val_acc=round(acc, 4),
-                avg_ucb_width=round(regret["avg_ucb_width"], 4),
-            )
+    def training_step(self, batch, batch_idx):
+        states, labels = batch
+        result = self.agent.train_episode(states, labels)
+        self.log("train_acc", result["accuracy"], prog_bar=True)
+        regret = self.agent.regret_stats()
+        self.log("avg_ucb_width", regret["avg_ucb_width"])
 
-            if acc > best_acc:
-                best_acc = acc
-                torch.save(agent.state_dict(), "best_model.pt")
+    def validation_step(self, batch, batch_idx):
+        states, labels = batch
+        metrics = self.agent.validate_batch(states, labels)
+        self.log("val_acc", metrics.get("accuracy", 0.0), prog_bar=True)
 
-    if not Path("best_model.pt").exists():
-        torch.save(agent.state_dict(), "best_model.pt")
+    def test_step(self, batch, batch_idx):
+        states, labels = batch
+        actions, alphas, norm_states = self.agent.select_action_batch(states, training=False)
+        anomaly_scores, gat_probs = self.agent.reward_calc.derive_scores(norm_states)
+        fused_scores = (1 - alphas) * anomaly_scores + alphas * gat_probs
+        preds = (fused_scores > 0.5).long()
+        self.test_metrics.update(preds, labels)
+        self.log_dict(self.test_metrics, batch_size=len(labels))
 
-    return best_acc
+    def configure_optimizers(self):
+        return self.agent.backbone_optimizer
+
+
+# ---------------------------------------------------------------------------
+# Trainer factories
+# ---------------------------------------------------------------------------
+
+
+def _make_rl_fusion_trainer(cfg, steps_per_epoch: int):
+    """Create Lightning Trainer for RL fusion (DQN/bandit).
+
+    Maps episodes to epochs. Validates every 50 training steps.
+    ModelCheckpoint saves best model by val_acc.
+    """
+    max_epochs = math.ceil(cfg.fusion.episodes / steps_per_epoch)
+    return pl.Trainer(
+        default_root_dir=".",
+        max_epochs=max_epochs,
+        accelerator="auto",
+        devices="auto",
+        callbacks=[
+            ModelCheckpoint(
+                dirpath=".", filename="best_model",
+                monitor="val_acc", mode="max", save_top_k=1,
+            ),
+        ],
+        val_check_interval=min(50, steps_per_epoch),
+        logger=pl.loggers.CSVLogger(save_dir=".", name="", version=""),
+        enable_progress_bar=True,
+        log_every_n_steps=10,
+    )
 
 
 def _make_fusion_trainer(cfg):
     """Create a lightweight Lightning Trainer for fusion baselines (MLP/WeightedAvg)."""
-    import pytorch_lightning as pl
-    from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+    from pytorch_lightning.callbacks import EarlyStopping
 
     return pl.Trainer(
         default_root_dir=".",
@@ -147,14 +197,67 @@ def _make_fusion_trainer(cfg):
 
 def _make_fusion_dataloaders(train_cache, val_cache, batch_size: int):
     """Build train/val DataLoaders from cached prediction tensors."""
-    from torch.utils.data import DataLoader, TensorDataset
-
     train_ds = TensorDataset(train_cache["states"], train_cache["labels"])
     val_ds = TensorDataset(val_cache["states"], val_cache["labels"])
     return (
         DataLoader(train_ds, batch_size=batch_size, shuffle=True),
         DataLoader(val_ds, batch_size=batch_size),
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-method training functions
+# ---------------------------------------------------------------------------
+
+
+def _save_dqn_ckpt(agent) -> None:
+    torch.save({
+        "q_network": agent.q_network.state_dict(),
+        "target_network": agent.target_network.state_dict(),
+        "epsilon": agent.epsilon,
+    }, "best_model.pt")
+
+
+def _train_dqn_fusion(cfg, train_cache, val_cache, device) -> float:
+    """DQN RL fusion via Lightning Trainer. Returns best validation accuracy."""
+    from graphids.core.models.dqn import EnhancedDQNFusionAgent
+
+    agent = EnhancedDQNFusionAgent.from_config(cfg, device=str(device))
+    module = DQNFusionModule(agent, cfg)
+
+    train_dl, val_dl = _make_fusion_dataloaders(
+        train_cache,
+        {k: v[:5000] for k, v in val_cache.items()},
+        cfg.fusion.episode_sample_size,
+    )
+    steps_per_epoch = math.ceil(len(train_cache["states"]) / cfg.fusion.episode_sample_size)
+    trainer = _make_rl_fusion_trainer(cfg, steps_per_epoch)
+    trainer.fit(module, train_dl, val_dl)
+
+    # Save in agent's native format (Lightning checkpoint is .ckpt)
+    _save_dqn_ckpt(agent)
+    return trainer.callback_metrics.get("val_acc", torch.tensor(0.0)).item()
+
+
+def _train_bandit_fusion(cfg, train_cache, val_cache, device) -> float:
+    """Neural-LinUCB bandit fusion via Lightning Trainer. Returns best validation accuracy."""
+    from graphids.core.models.bandit import NeuralLinUCBAgent
+
+    agent = NeuralLinUCBAgent.from_config(cfg, device=str(device))
+    module = BanditFusionModule(agent, cfg)
+
+    train_dl, val_dl = _make_fusion_dataloaders(
+        train_cache,
+        {k: v[:5000] for k, v in val_cache.items()},
+        cfg.fusion.episode_sample_size,
+    )
+    steps_per_epoch = math.ceil(len(train_cache["states"]) / cfg.fusion.episode_sample_size)
+    trainer = _make_rl_fusion_trainer(cfg, steps_per_epoch)
+    trainer.fit(module, train_dl, val_dl)
+
+    # Save in agent's native format
+    torch.save(agent.state_dict(), "best_model.pt")
+    return trainer.callback_metrics.get("val_acc", torch.tensor(0.0)).item()
 
 
 def _train_mlp_fusion(cfg, train_cache, val_cache, device) -> float:
@@ -194,21 +297,28 @@ def _train_weighted_avg_fusion(cfg, train_cache, val_cache, device) -> float:
     return best_acc
 
 
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+
 def train_fusion(cfg) -> dict:
     """Train fusion agent on cached VGAE+GAT predictions. Returns result dict with checkpoint and metrics."""
     pl.seed_everything(cfg.seed)
-    train_data, val_data, num_ids, in_ch = load_data(cfg)
+    dm = CANBusDataModule.from_cfg(cfg)
+    dm.setup("fit")
+    dm.populate_config(cfg)
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
 
     # Load frozen VGAE + GAT
-    vgae = load_model(cfg, "vgae", "autoencoder", num_ids, in_ch, device)
-    gat = load_model(cfg, "gat", "curriculum", num_ids, in_ch, device)
+    vgae = load_model(cfg, "vgae", "autoencoder", device)
+    gat = load_model(cfg, "gat", "curriculum", device)
 
     # Cache predictions
     log.info("Caching VGAE + GAT predictions ...")
     models = {"vgae": vgae, "gat": gat}
-    train_cache = cache_predictions(models, train_data, device, cfg.fusion.max_samples)
-    val_cache = cache_predictions(models, val_data, device, cfg.fusion.max_val_samples)
+    train_cache = cache_predictions(models, list(dm.train_dataset), device, cfg.fusion.max_samples)
+    val_cache = cache_predictions(models, list(dm.val_dataset), device, cfg.fusion.max_val_samples)
     del vgae, gat
     cleanup()
 

@@ -1,6 +1,6 @@
 # KD-GAT Session Plan
 
-> Last updated: 2026-03-20
+> Last updated: 2026-03-21
 
 ## Active Plan
 
@@ -14,6 +14,8 @@
 
 ## Recently Completed
 
+- **Evaluation decomposition** (2026-03-21) — Rewrote `evaluation.py` as EVAL_ORDER dispatcher + `eval_gat()`, `eval_vgae()`, `eval_fusion()`, `eval_temporal()` functions. All models now eval via `trainer.test()` — one pattern. Added `test_step` + `MetricCollection` to `TemporalLightningModule`, `MLPFusionModule`, `WeightedAvgModule`. Created `DQNFusionModule` + `BanditFusionModule` eval-only wrappers in `fusion.py`. Adapted `test_model()` to accept pre-built DataLoader. Deleted manual inference loops (`_evaluate_fusion`, `_evaluate_temporal`). Fixed stale `compute_metrics`/`probe_embedding_dim` imports in `temporal.py`, stale `_vgae_threshold` import in `run_pygod_baselines.py`. DQN/bandit training wrapped in Lightning (steps 7-9 completed same session). See `plans/eval-decomposition.md`.
+- **DataModule + import restructure + num_ids fix** (2026-03-21) — Created `CANBusDataModule(LightningDataModule)` in `core/preprocessing/datamodule.py`. Fixed 3 broken imports. Migrated all 6 callers to DataModule. Added `populate_config(cfg)` to write `num_ids`/`in_channels` into config after setup — eliminated manual threading from all stage functions, model constructors, `load_model()`, `prepare_kd()`. Deleted `_tensor_count()`, `MMAP_TENSOR_LIMIT`, inlined `graph_label()`. Fixed `cka.py` arg order bug. See `plans/adaptive-herding-alpaca.md`.
 - **Preprocessing rewrite** (2026-03-20) — Replaced 11-file, 2,150-line preprocessing (adapters, cache, schema, engine, vocabulary, parallel) with 4-file, 370-line library-first implementation. CANBusDataset(InMemoryDataset) + Polars lazy scan + group_by_dynamic + to_torch(). 31-D node features, 12-D edge features (was 26-D/11-D — models need input dim update). Old files deleted, callers not yet migrated. See `plans/codebase-reduction.md` section H1.
 - **Framework consolidation Phase A+B** (2026-03-20) — Lightning experiment management + Hydra-as-framework. Deleted sweep code + Typer CLI (-919 lines), added @hydra.main entry points + callbacks (+348 lines). See `plans/framework-consolidation.research.md`.
 - **Stage executor + submitit orchestration** (2026-03-20) — extracted `execute_stage()` as single entry point for all pipeline paths (CLI, API, notebook). Replaced Dagster + custom SLURM script generation with submitit + graphlib. Deleted dagster_defs.py, pipes_slurm.py, slurm_primitives.py (-687 production lines, -43% of pipeline/orchestration). `api.py` now has full guarantees (validation, manifest, logging, archive). See `plans/stage-executor-and-launcher.research.md`.
@@ -24,11 +26,35 @@
 ## In Progress
 
 - Ops dashboard (`buckeyeguy/kd-gat-dashboard`) — running on HF Spaces
-- **Preprocessing rewrite callers migration** — new `CANBusDataset(InMemoryDataset)` + Polars features landed (`8b7c161`), old preprocessing deleted (`73a90b1`). Broken imports need fixing:
-  - `graphids/core/__init__.py` — imports `load_dataset`, `load_test_scenarios`, `CollatedGraphDataset` (all deleted)
-  - `graphids/pipeline/stages/data_loading.py` — imports `PreprocessingPipeline` (deleted)
-  - `graphids/pipeline/stages/evaluation.py` — imports `PreprocessingPipeline` (deleted)
-  - Callers should switch to `from graphids.core.preprocessing import CANBusDataset` with `split="train"/"val"/"test"`
+- **Test suite** — test plan designed (2026-03-21), not yet implemented. Priority order:
+  1. `test_config.py` — Hydra compose, overrides, model preset merge
+  2. `test_models.py` — forward shape, gradient flow, parameter update, variable-size graphs
+  3. `test_preprocessing.py` — CANBusDataset produces valid Data with 31-D/12-D features
+  4. `test_modules.py` — Lightning fast_dev_run, checkpoint roundtrip
+  5. `test_pipeline_dag.py` — topological order, missing dependency errors
+
+## Upcoming — 3 design threads (pick 1 per session)
+
+### A. ~~Evaluation decomposition~~ — DONE (2026-03-21)
+Moved to Recently Completed.
+
+### B. Class imbalance experiment battery — READY TO RUN
+Loss functions implemented: `ce`, `weighted_ce`, `focal` (via `training.loss_fn` config). Curriculum ablation = `training.curriculum_use_difficulty: false`.
+
+**Next session:**
+1. Write the Hydra `--multirun` sweep config for Phase 1 screening (1 dataset `hcrl_ch`, 1 seed, 50 epochs, all 4 loss strategies).
+2. Submit to SLURM gpu partition, collect F1 + AP metrics.
+3. Phase 2: top 3 strategies × all datasets × 3 seeds.
+
+See `memory/research_curriculum_imbalance.md` for background.
+
+### C. ~~VGAE anomaly score strengthening~~ — DONE (2026-03-21)
+Composite score implemented: `recon + canid_weight * canid + nbr_weight * nbr` with `scatter(reduce="max")`.
+
+**Open:** Weight tuning — could search over a weight grid via Youden's J. Interacts with thread B experiments.
+
+### D. Smoke test
+Minimal integration test with synthetic data (3 graphs, 5 nodes). Catches import breakage. Highest-ROI test item. ~30 lines.
 
 ## Blocked
 
@@ -59,7 +85,7 @@
 |--------|-------|---------------|
 | **Config** | Hydra Compose + Pydantic | **Done** — 5-file config layer, Hydra config groups, lake_root-only |
 | **Orchestration** | Dagster + dagster-slurm | Partial — fire_and_forget works, dagster-slurm integration pending |
-| **ML Training** | Lightning modules + stages | Eval decomposed (Phase 5). CLI at `graphids/cli.py` (Phase 1e). |
+| **ML Training** | Lightning modules + stages | **Done** — All models use `trainer.test()` for eval, `trainer.fit()` for training (incl. DQN/bandit). Focal/weighted_ce loss options. Composite VGAE anomaly score. |
 | **I/O** | Lightning CSVLogger + ModelCheckpoint + callbacks | **Done** — No custom storage layer. CSVLogger for metrics, ModelCheckpoint for checkpoints, EvalArtifactCallback for eval artifacts. |
 
 ## Open Questions

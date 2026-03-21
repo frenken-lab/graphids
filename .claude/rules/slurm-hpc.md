@@ -1,10 +1,3 @@
----
-paths:
-  - "**/*.sbatch"
-  - "scripts/slurm/**"
-  - "scripts/*.sh"
----
-
 # KD-GAT SLURM / HPC Conventions
 
 ## Environment

@@ -18,12 +18,6 @@ When adding new code:
 - Context via `structlog.contextvars.bind_contextvars()` at entry points
 - Logging setup is inlined in `__main__.py`, not a separate module
 
-## General Style
-
-- If something is unused, delete it completely. No compatibility shims.
-- If a dependency does it, use the dependency. Don't wrap.
-- If it can be inlined, inline it. Don't add single-caller functions.
-
 ## Git
 
 - Short summary line, body explains why not what.

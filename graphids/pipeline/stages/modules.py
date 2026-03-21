@@ -55,6 +55,15 @@ def soft_label_kd_loss(
     ) * (temperature**2)
 
 
+def _focal_loss(
+    logits: torch.Tensor, targets: torch.Tensor, gamma: float = 2.0,
+) -> torch.Tensor:
+    """Focal loss (Lin et al. 2017) for class-imbalanced classification."""
+    ce = F.cross_entropy(logits, targets, reduction="none")
+    pt = torch.exp(-ce)
+    return ((1 - pt) ** gamma * ce).mean()
+
+
 class VGAEModule(pl.LightningModule):
     """VGAE training: reconstruct node features + CAN IDs + neighborhood.
 
@@ -69,12 +78,11 @@ class VGAEModule(pl.LightningModule):
     def __init__(
         self,
         cfg,
-        num_ids: int,
-        in_channels: int,
         teacher: nn.Module | None = None,
         projection: nn.Linear | None = None,
     ):
         super().__init__()
+        num_ids, in_channels = cfg.num_ids, cfg.in_channels
         self.save_hyperparameters({"cfg": OmegaConf.to_container(cfg), "num_ids": num_ids, "in_channels": in_channels})
         from graphids.core.models.vgae import GraphAutoencoderNeighborhood
 
@@ -165,9 +173,26 @@ class VGAEModule(pl.LightningModule):
         from torch_geometric.utils import scatter
 
         edge_attr = getattr(batch, "edge_attr", None)
-        cont, _, _, _, _ = self.model(batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr)
+        cont, canid_logits, nbr_logits, _, _, _ = self.model(
+            batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr,
+        )
+        # Per-node continuous reconstruction error
         per_node_se = (cont - batch.x[:, 1:]).pow(2).mean(dim=1)
-        errors = scatter(per_node_se, batch.batch, dim=0, reduce="mean")
+        recon = scatter(per_node_se, batch.batch, dim=0, reduce="max")
+        # Per-node CAN ID classification error
+        canid_err = F.cross_entropy(canid_logits, batch.x[:, 0].long(), reduction="none")
+        canid_per_graph = scatter(canid_err, batch.batch, dim=0, reduce="max")
+        # Per-node neighborhood prediction error
+        nbr_targets = self.model.create_neighborhood_targets(
+            batch.x, batch.edge_index, batch.batch,
+        )
+        nbr_err = F.binary_cross_entropy_with_logits(
+            nbr_logits, nbr_targets, reduction="none",
+        ).mean(dim=1)
+        nbr_per_graph = scatter(nbr_err, batch.batch, dim=0, reduce="max")
+        # Composite score using config weights
+        w = self.cfg.vgae
+        errors = recon + w.canid_weight * canid_per_graph + w.nbr_weight * nbr_per_graph
         self._test_errors.append(errors)
         self._test_labels.append(batch.y)
         if self.test_threshold is not None:
@@ -205,12 +230,11 @@ class GATModule(pl.LightningModule):
     def __init__(
         self,
         cfg,
-        num_ids: int,
-        in_channels: int,
         num_classes: int = 2,
         teacher: nn.Module | None = None,
     ):
         super().__init__()
+        num_ids, in_channels = cfg.num_ids, cfg.in_channels
         self.save_hyperparameters({"cfg": OmegaConf.to_container(cfg), "num_ids": num_ids, "in_channels": in_channels})
         from graphids.core.models.gat import GATWithJK
 
@@ -225,13 +249,23 @@ class GATModule(pl.LightningModule):
             "precision": BinaryPrecision(), "recall": BinaryRecall(),
             "specificity": BinarySpecificity(), "auc": BinaryAUROC(),
         })
+        # Configurable loss for class-imbalance experiments
+        loss_name = cfg.training.loss_fn
+        if loss_name == "weighted_ce":
+            w = torch.tensor([1.0, cfg.training.loss_weight])
+            self.loss_fn = nn.CrossEntropyLoss(weight=w)
+        elif loss_name == "focal":
+            gamma = cfg.training.focal_gamma
+            self.loss_fn = lambda logits, y: _focal_loss(logits, y, gamma)
+        else:
+            self.loss_fn = F.cross_entropy
 
     def forward(self, batch):
         return self.model(batch)
 
     def _step(self, batch):
         logits = self(batch)
-        task_loss = F.cross_entropy(logits, batch.y)
+        task_loss = self.loss_fn(logits, batch.y)
         acc = (logits.argmax(1) == batch.y).float().mean()
 
         if self.teacher is not None:

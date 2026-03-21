@@ -18,9 +18,20 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
+from torchmetrics import MetricCollection
+from torchmetrics.classification import (
+    BinaryAccuracy,
+    BinaryAUROC,
+    BinaryF1Score,
+    BinaryPrecision,
+    BinaryRecall,
+    BinarySpecificity,
+)
 
 
-from .data_loading import cleanup, graph_label, load_data
+from graphids.core.preprocessing import CANBusDataModule
+
+from .data_loading import cleanup
 from .trainer_factory import load_model, make_trainer
 
 log = structlog.get_logger()
@@ -70,6 +81,11 @@ class TemporalLightningModule(pl.LightningModule):
         super().__init__()
         self.model = model
         self.cfg = cfg
+        self.test_metrics = MetricCollection({
+            "accuracy": BinaryAccuracy(), "f1": BinaryF1Score(),
+            "precision": BinaryPrecision(), "recall": BinaryRecall(),
+            "specificity": BinarySpecificity(), "auc": BinaryAUROC(),
+        })
 
     def forward(self, graph_sequences):
         return self.model(graph_sequences)
@@ -98,6 +114,15 @@ class TemporalLightningModule(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         return self._shared_step(batch, "val")
+
+    def test_step(self, batch, batch_idx):
+        graph_sequences, labels = batch
+        device = self.device
+        moved_sequences = [[g.clone().to(device) for g in seq] for seq in graph_sequences]
+        logits = self.model(moved_sequences)
+        preds = logits.argmax(dim=1)
+        self.test_metrics.update(preds, labels.to(device))
+        self.log_dict(self.test_metrics, batch_size=len(graph_sequences))
 
     def configure_optimizers(self):
         t = self.cfg.training
@@ -161,18 +186,22 @@ def train_temporal(cfg) -> dict:
     )
     pl.seed_everything(cfg.seed)
 
-    # Load data (same as other stages)
-    train_data, val_data, num_ids, in_ch = load_data(cfg)
+    # Load data
+    dm = CANBusDataModule.from_cfg(cfg)
+    dm.setup("fit")
+    dm.populate_config(cfg)
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
 
     # Load pretrained GAT
     gat_stage = "curriculum"
-    gat = load_model(cfg, "gat", gat_stage, num_ids, in_ch, device)
+    gat = load_model(cfg, "gat", gat_stage, device)
     log.info("loaded_pretrained_gat", stage=gat_stage)
 
-    from .evaluation import compute_metrics, probe_embedding_dim
-
-    spatial_dim = probe_embedding_dim(gat, train_data[0], device)
+    # Probe spatial embedding dim
+    with torch.no_grad():
+        probe = dm.train_dataset[0].clone().to(device)
+        _, emb = gat(probe, return_embedding=True)
+        spatial_dim = emb.shape[-1]
     log.info("spatial_embedding_dim", dim=spatial_dim)
 
     # Group into temporal sequences
@@ -181,7 +210,7 @@ def train_temporal(cfg) -> dict:
     grouper = TemporalGrouper(window=tc.temporal_window, stride=tc.temporal_stride)
 
     # Contiguous time split: first 80% train, last 20% val
-    all_graphs = train_data + val_data
+    all_graphs = list(dm.train_dataset) + list(dm.val_dataset)
     split_idx = int(len(all_graphs) * 0.8)
     temporal_train_graphs = all_graphs[:split_idx]
     temporal_val_graphs = all_graphs[split_idx:]
@@ -250,19 +279,13 @@ def train_temporal(cfg) -> dict:
     torch.save(temporal_model.state_dict(), "best_model.pt")
     log.info("saved_temporal_model", checkpoint="best_model.pt")
 
-    # Compute final metrics
-    temporal_model.eval()
-    all_preds, all_labels = [], []
-    with torch.no_grad():
-        for graph_sequences, labels in val_loader:
-            moved = [[g.clone().to(device) for g in seq] for seq in graph_sequences]
-            logits = temporal_model(moved)
-            preds = logits.argmax(dim=1)
-            all_preds.extend(preds.cpu().tolist())
-            all_labels.extend(labels.tolist())
+    # Compute final metrics via Lightning test loop
+    from .eval_inference import extract_metrics, make_test_trainer
 
-    metrics = compute_metrics(all_labels, all_preds)
-    metrics["core"]["n_sequences"] = len(all_labels)
+    test_trainer = make_test_trainer()
+    test_trainer.test(lit_module, dataloaders=val_loader, verbose=False)
+    metrics = extract_metrics(lit_module)
+    metrics["core"]["n_sequences"] = len(val_sequences)
     metrics["core"]["window"] = tc.temporal_window
     metrics["core"]["stride"] = tc.temporal_stride
     result_metrics = {"temporal": metrics}

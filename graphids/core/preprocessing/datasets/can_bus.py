@@ -59,6 +59,7 @@ class CANBusDataset(InMemoryDataset):
         self.seed = seed
         super().__init__(str(root), transform, pre_transform)
         self.load(self.processed_paths[0])
+        self._load_num_arb_ids()
 
         if self.split in ("train", "val"):
             self._apply_train_val_split()
@@ -67,6 +68,14 @@ class CANBusDataset(InMemoryDataset):
     def processed_file_names(self) -> list[str]:
         tag = "train" if self.split in ("train", "val") else "test"
         return [f"data_{tag}.pt"]
+
+    def _load_num_arb_ids(self) -> None:
+        meta_path = Path(self.processed_dir) / "num_arb_ids.txt"
+        if meta_path.exists():
+            self.num_arb_ids = int(meta_path.read_text().strip())
+        else:
+            # Fallback: max node count across all graphs (less precise but safe)
+            self.num_arb_ids = max((g.x.shape[0] for g in self), default=0)
 
     def _apply_train_val_split(self) -> None:
         n = len(self)
@@ -91,14 +100,16 @@ class CANBusDataset(InMemoryDataset):
         with nfs_lock(lock_path):
             if Path(self.processed_paths[0]).exists():
                 return
-            data_list = self._build_graphs()
+            data_list, num_arb_ids = self._build_graphs()
             if self.pre_transform is not None:
                 data_list = [self.pre_transform(d) for d in data_list]
             self.save(data_list, self.processed_paths[0])
+            # Persist vocab size for embedding table construction
+            (Path(self.processed_dir) / "num_arb_ids.txt").write_text(str(num_arb_ids))
 
     # ── pipeline ──────────────────────────────────────────────────────
 
-    def _build_graphs(self) -> list[Data]:
+    def _build_graphs(self) -> tuple[list[Data], int]:
         df = self._read_raw()
 
         # Vocabulary: vectorised .replace() instead of per-row Python lambda
@@ -125,7 +136,7 @@ class CANBusDataset(InMemoryDataset):
             if len(window) < self.window_size:
                 continue  # skip trailing partial window
             graphs.append(self._window_to_graph(window, num_nodes))
-        return graphs
+        return graphs, num_nodes
 
     def _read_raw(self) -> pl.DataFrame:
         """Lazy-scan CSVs, parse hex, compute entropy, tag attack types. Collect once."""

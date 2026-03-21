@@ -11,7 +11,9 @@ import torch
 import torch.nn.functional as F
 
 
-from .data_loading import cleanup, compute_node_budget, graph_label, load_data, make_dataloader
+from graphids.core.preprocessing import CANBusDataModule
+
+from .data_loading import cleanup
 from .modules import CurriculumDataModule, GATModule, VGAEModule
 from .trainer_factory import load_model, make_trainer, prepare_kd
 
@@ -63,63 +65,59 @@ def _save_and_cleanup(module, trainer, cfg, stage: str, label: str | None = None
 def train_autoencoder(cfg) -> dict:
     """Train VGAE on graph reconstruction. Returns result dict with checkpoint and metrics."""
     pl.seed_everything(cfg.seed)
-    train_data, val_data, num_ids, in_ch = load_data(cfg)
+    dm = CANBusDataModule.from_cfg(cfg)
+    dm.setup("fit")
+    dm.populate_config(cfg)
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
 
-    teacher, projection = prepare_kd(cfg, "vgae", num_ids, in_ch, device)
-    module = VGAEModule(cfg, num_ids, in_ch, teacher=teacher, projection=projection)
-    bs = max(8, int(cfg.training.batch_size * cfg.training.safety_factor))
-    max_nodes = compute_node_budget(bs, cfg) if cfg.training.dynamic_batching else None
-
-    train_dl = make_dataloader(train_data, cfg, bs, shuffle=True, max_num_nodes=max_nodes)
-    val_dl = make_dataloader(val_data, cfg, bs, shuffle=False, max_num_nodes=max_nodes)
+    teacher, projection = prepare_kd(cfg, "vgae", device)
+    module = VGAEModule(cfg, teacher=teacher, projection=projection)
 
     trainer = make_trainer(cfg, "autoencoder")
-    trainer.fit(module, train_dl, val_dl, ckpt_path=_resume_ckpt_path(cfg, "autoencoder"))
+    trainer.fit(module, datamodule=dm, ckpt_path=_resume_ckpt_path(cfg, "autoencoder"))
     return _save_and_cleanup(module, trainer, cfg, "autoencoder", "VGAE")
 
 
 def train_curriculum(cfg) -> dict:
     """Train GAT with VGAE-guided curriculum learning. Returns result dict with checkpoint and metrics."""
     pl.seed_everything(cfg.seed)
-    train_data, val_data, num_ids, in_ch = load_data(cfg)
+    dm = CANBusDataModule.from_cfg(cfg)
+    dm.setup("fit")
+    dm.populate_config(cfg)
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
 
     # Load VGAE for difficulty scoring
-    vgae = load_model(cfg, "vgae", "autoencoder", num_ids, in_ch, device)
+    vgae = load_model(cfg, "vgae", "autoencoder", device)
 
     # Split and score
-    normals = [g for g in train_data if graph_label(g) == 0]
-    attacks = [g for g in train_data if graph_label(g) == 1]
+    normals = [g for g in dm.train_dataset if (g.y.item() if g.y.dim() == 0 else int(g.y[0].item())) == 0]
+    attacks = [g for g in dm.train_dataset if (g.y.item() if g.y.dim() == 0 else int(g.y[0].item())) == 1]
     scores = _score_difficulty(vgae, normals, device, canid_weight=cfg.vgae.canid_weight)
     del vgae
     cleanup()
 
-    teacher, _ = prepare_kd(cfg, "gat", num_ids, in_ch, device)
-    module = GATModule(cfg, num_ids, in_ch, teacher=teacher)
+    teacher, _ = prepare_kd(cfg, "gat", device)
+    module = GATModule(cfg, teacher=teacher)
     trainer = make_trainer(cfg, "curriculum")
 
-    dm = CurriculumDataModule(normals, attacks, scores, val_data, cfg)
-    trainer.fit(module, datamodule=dm, ckpt_path=_resume_ckpt_path(cfg, "curriculum"))
+    cdm = CurriculumDataModule(normals, attacks, scores, list(dm.val_dataset), cfg)
+    trainer.fit(module, datamodule=cdm, ckpt_path=_resume_ckpt_path(cfg, "curriculum"))
     return _save_and_cleanup(module, trainer, cfg, "curriculum", "GAT")
 
 
 def train_normal(cfg) -> dict:
     """Train GAT with standard cross-entropy (no curriculum). Returns result dict with checkpoint and metrics."""
     pl.seed_everything(cfg.seed)
-    train_data, val_data, num_ids, in_ch = load_data(cfg)
+    dm = CANBusDataModule.from_cfg(cfg)
+    dm.setup("fit")
+    dm.populate_config(cfg)
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
 
-    teacher, _ = prepare_kd(cfg, "gat", num_ids, in_ch, device)
-    module = GATModule(cfg, num_ids, in_ch, teacher=teacher)
-    bs = max(8, int(cfg.training.batch_size * cfg.training.safety_factor))
-    max_nodes = compute_node_budget(bs, cfg) if cfg.training.dynamic_batching else None
-
-    train_dl = make_dataloader(train_data, cfg, bs, shuffle=True, max_num_nodes=max_nodes)
-    val_dl = make_dataloader(val_data, cfg, bs, shuffle=False, max_num_nodes=max_nodes)
+    teacher, _ = prepare_kd(cfg, "gat", device)
+    module = GATModule(cfg, teacher=teacher)
 
     trainer = make_trainer(cfg, "normal")
-    trainer.fit(module, train_dl, val_dl, ckpt_path=_resume_ckpt_path(cfg, "normal"))
+    trainer.fit(module, datamodule=dm, ckpt_path=_resume_ckpt_path(cfg, "normal"))
     return _save_and_cleanup(module, trainer, cfg, "normal", "GAT (normal)")
 
 

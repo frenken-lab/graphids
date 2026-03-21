@@ -43,34 +43,6 @@ This project is indexed by GitNexus as **KD-GAT** (2522 symbols, 4872 relationsh
 3. `READ gitnexus://repo/KD-GAT/process/{processName}` — trace the full execution flow step by step
 4. For regressions: `gitnexus_detect_changes({scope: "compare", base_ref: "main"})` — see what your branch changed
 
-## Tools Quick Reference
-
-| Tool | When to use | Command |
-|------|-------------|---------|
-| `query` | Find code by concept | `gitnexus_query({query: "auth validation"})` |
-| `context` | 360-degree view of one symbol | `gitnexus_context({name: "validateUser"})` |
-| `impact` | Blast radius before editing | `gitnexus_impact({target: "X", direction: "upstream"})` |
-| `detect_changes` | Pre-commit scope check | `gitnexus_detect_changes({scope: "staged"})` |
-| `rename` | Safe multi-file rename | `gitnexus_rename({symbol_name: "old", new_name: "new", dry_run: true})` |
-| `cypher` | Custom graph queries | `gitnexus_cypher({query: "MATCH ..."})` |
-
-## Impact Risk Levels
-
-| Depth | Meaning | Action |
-|-------|---------|--------|
-| d=1 | WILL BREAK — direct callers/importers | MUST update these |
-| d=2 | LIKELY AFFECTED — indirect deps | Should test |
-| d=3 | MAY NEED TESTING — transitive | Test if critical path |
-
-## Resources
-
-| Resource | Use for |
-|----------|---------|
-| `gitnexus://repo/KD-GAT/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/KD-GAT/clusters` | All functional areas |
-| `gitnexus://repo/KD-GAT/processes` | All execution flows |
-| `gitnexus://repo/KD-GAT/process/{name}` | Step-by-step execution trace |
-
 ## Self-Check Before Finishing
 
 Before completing any code modification task, verify:

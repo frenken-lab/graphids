@@ -16,7 +16,6 @@ from torch_geometric.loader import DataLoader as PyGDataLoader
 
 from dataclasses import dataclass
 
-from .data_loading import graph_label
 
 
 @dataclass(frozen=True)
@@ -54,7 +53,7 @@ ATTENTION_SAMPLE_LIMIT = 50
 # Test runner (uses test_step on training modules)
 # ---------------------------------------------------------------------------
 
-def _make_test_trainer() -> pl.Trainer:
+def make_test_trainer() -> pl.Trainer:
     return pl.Trainer(
         accelerator="auto", devices="auto",
         logger=False, enable_checkpointing=False, enable_progress_bar=False,
@@ -70,9 +69,17 @@ def extract_metrics(module) -> dict:
 
 
 def test_model(module, data, batch_size: int = 128) -> dict:
-    """Run trainer.test() on a module and return extracted metrics."""
-    trainer = _make_test_trainer()
-    loader = PyGDataLoader(data, batch_size=batch_size, shuffle=False)
+    """Run trainer.test() on a module and return extracted metrics.
+
+    Args:
+        data: Either a list of PyG Data objects (creates PyGDataLoader) or
+              a pre-built DataLoader (used as-is, e.g. for fusion tensor batches).
+    """
+    trainer = make_test_trainer()
+    if isinstance(data, list):
+        loader = PyGDataLoader(data, batch_size=batch_size, shuffle=False)
+    else:
+        loader = data  # pre-built DataLoader (fusion, temporal)
     trainer.test(module, dataloaders=loader, verbose=False)
     return extract_metrics(module)
 
@@ -93,7 +100,7 @@ def find_vgae_threshold(module, data) -> tuple[float, float]:
     module._test_errors.clear()
     module._test_labels.clear()
 
-    trainer = _make_test_trainer()
+    trainer = make_test_trainer()
     loader = PyGDataLoader(data, batch_size=128, shuffle=False)
     trainer.test(module, dataloaders=loader, verbose=False)
 
@@ -135,7 +142,7 @@ def capture_gat_artifacts(gat, data, device, embeddings: bool = True, attention:
             with torch.no_grad():
                 _, att_weights = gat(g, return_attention_weights=True)
             attn_data.append({
-                "graph_idx": idx, "label": graph_label(g),
+                "graph_idx": idx, "label": g.y.item() if g.y.dim() == 0 else int(g.y[0].item()),
                 "edge_index": g.edge_index.cpu().numpy(),
                 "node_features": g.x[:, 0].cpu().numpy(),
                 "attention_weights": [a.numpy() for a in att_weights],
@@ -167,7 +174,7 @@ def capture_vgae_artifacts(vgae, data, device, embeddings: bool = True, componen
             )
             err = F.mse_loss(cont, g.x[:, 1:]).item()
             errors.append(err)
-            labels.append(graph_label(g))
+            labels.append(g.y.item() if g.y.dim() == 0 else int(g.y[0].item()))
             attack_types.append(graph_attack_type(g))
             if embeddings and z is not None:
                 embs.append(z.mean(dim=0).cpu().numpy())

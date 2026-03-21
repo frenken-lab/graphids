@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 from torch_geometric.loader import DataLoader, DynamicBatchSampler
 
-from graphids.config import MMAP_TENSOR_LIMIT, cache_dir
+from graphids.config import cache_dir
 
 log = structlog.get_logger()
 
@@ -20,20 +20,6 @@ def cleanup():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-
-def graph_label(g) -> int:
-    """Extract scalar graph-level label consistently."""
-    return g.y.item() if g.y.dim() == 0 else int(g.y[0].item())
-
-
-def load_data(cfg):
-    """Load graph dataset. Returns (train_graphs, val_graphs, num_ids, in_channels)."""
-    from graphids.core.preprocessing import PreprocessingPipeline
-
-    pipe = PreprocessingPipeline(cfg)
-    train_data, val_data, num_ids = pipe.load_dataset()
-    in_channels = train_data[0].x.shape[1] if train_data else 11
-    return train_data, val_data, num_ids, in_channels
 
 
 def compute_node_budget(batch_size: int, cfg) -> int | None:
@@ -64,16 +50,10 @@ def make_dataloader(
 ) -> DataLoader:
     """Create a DataLoader with consistent settings.
 
-    Uses DynamicBatchSampler when max_num_nodes is provided. Falls back to
-    num_workers=0 when tensor storages exceed kernel mmap limit.
+    Uses DynamicBatchSampler when max_num_nodes is provided.
+    Spawn multiprocessing is hardcoded for CUDA safety.
     """
-    # Determine safe num_workers (mmap limit with spawn multiprocessing)
     nw = cfg.num_workers
-    if nw > 0:
-        tensor_count = _tensor_count(data)
-        if tensor_count * nw > MMAP_TENSOR_LIMIT:
-            log.warning("mmap_limit_falling_back", tensors=tensor_count, workers=nw)
-            nw = 0
 
     common = dict(
         num_workers=nw,
@@ -116,17 +96,3 @@ def cache_predictions(models: dict[str, nn.Module], data, device, max_samples: i
             labels.append(g.y[0] if g.y.dim() > 0 else g.y)
 
     return {"states": torch.stack(states), "labels": torch.tensor(labels)}
-
-
-def _tensor_count(data) -> int:
-    """Estimate tensor storages for mmap limit check."""
-    if not data:
-        return 0
-    if hasattr(data, "tensor_storage_count"):
-        return data.tensor_storage_count
-    if hasattr(data, "dataset") and hasattr(data.dataset, "tensor_storage_count"):
-        return data.dataset.tensor_storage_count
-    sample = data[0]
-    per_graph = sum(1 for a in ("x", "edge_index", "y", "edge_attr", "batch")
-                    if getattr(sample, a, None) is not None)
-    return len(data) * per_graph

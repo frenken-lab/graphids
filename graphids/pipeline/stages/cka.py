@@ -26,16 +26,20 @@ def _linear_cka(X: np.ndarray, Y: np.ndarray) -> float:
     return _unbiased_hsic(K, L) / denom if denom > 0 else 0.0
 
 
-def compute_and_save_cka(cfg, val_data, device, num_ids: int, in_channels: int, output_dir: Path) -> None:
+def compute_and_save_cka(cfg, val_data, device, output_dir: Path) -> None:
     """Compute layer-wise CKA between teacher (large) and student (current scale), save to JSON."""
     from graphids.config import resolve
+    from omegaconf import open_dict
     from .trainer_factory import load_model
 
     # Student = current config's GAT
-    student = load_model(cfg, "curriculum", "gat", num_ids, in_channels, device)
-    # Teacher = large-scale GAT
+    student = load_model(cfg, "gat", "curriculum", device)
+    # Teacher = large-scale GAT (inherit num_ids/in_channels from cfg)
     teacher_cfg = resolve(f"model_type=gat", f"scale=large", f"dataset={cfg.dataset}", f"seed={cfg.seed}")
-    teacher = load_model(teacher_cfg, "curriculum", "gat", num_ids, in_channels, device)
+    with open_dict(teacher_cfg):
+        teacher_cfg.num_ids = cfg.num_ids
+        teacher_cfg.in_channels = cfg.in_channels
+    teacher = load_model(teacher_cfg, "gat", "curriculum", device)
 
     student_reps = _collect_reps(student, val_data, device)
     teacher_reps = _collect_reps(teacher, val_data, device)

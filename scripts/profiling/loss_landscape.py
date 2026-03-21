@@ -168,10 +168,11 @@ _LOSS_FN = {
 
 def _load_graph_data(dataset: str, model_type: str, cfg, max_graphs: int = 500):
     """Load preprocessed graph data for loss evaluation."""
-    from graphids.pipeline.stages.data_loading import load_data
+    from graphids.core.preprocessing import CANBusDataModule
 
-    train_graphs, val_graphs, _num_ids, _in_ch = load_data(cfg)
-    graphs = train_graphs + val_graphs
+    dm = CANBusDataModule.from_cfg(cfg)
+    dm.setup("fit")
+    graphs = list(dm.train_dataset) + list(dm.val_dataset)
     # Subsample for efficiency
     if len(graphs) > max_graphs:
         rng = np.random.default_rng(42)

@@ -17,7 +17,6 @@ from .constants import (  # noqa: F401
     EDGE_FEATURE_COUNT,
     EXCLUDED_ATTACK_TYPES,
     MAX_DATA_BYTES,
-    MMAP_TENSOR_LIMIT,
     NODE_FEATURE_COUNT,
     PREPROCESSING_DEFAULTS,
     PREPROCESSING_VERSION,
@@ -144,6 +143,9 @@ class TrainingConfig:
     curriculum_memory_multiplier: float = 1.0
     log_teacher_student_comparison: bool = True
     dynamic_batching: bool = True
+    loss_fn: str = "ce"  # ce | weighted_ce | focal
+    loss_weight: float = 10.0  # weight for minority (attack) class in weighted_ce
+    focal_gamma: float = 2.0  # focusing parameter for focal loss
 
 
 @dataclass
@@ -185,6 +187,9 @@ class Config:
     num_workers: int = 2
     production: bool = False
     auxiliaries: list = field(default_factory=list)
+    # Data-derived dimensions — populated by CANBusDataModule.populate_config()
+    num_ids: int = 0  # CAN arbitration-ID vocabulary size (for nn.Embedding)
+    in_channels: int = 0  # node feature dimension (CAN ID col + continuous features)
     vgae: VGAEConfig = field(default_factory=VGAEConfig)
     gat: GATConfig = field(default_factory=GATConfig)
     dqn: DQNConfig = field(default_factory=DQNConfig)
