@@ -1,130 +1,92 @@
-"""Trainer factory and optimizer/scheduler helpers."""
+"""Trainer factory, KD preparation, and model loading."""
 
 from __future__ import annotations
 
-import structlog
 import os
 from pathlib import Path
 
 import pytorch_lightning as pl
+import structlog
 import torch
 import torch.nn as nn
-from .callbacks import RunMetadataCallback
 
 from graphids.config import STAGE_MODEL_MAP
+from .callbacks import RunMetadataCallback
 
 log = structlog.get_logger()
 
-
-def _instantiate_callbacks(cfg) -> list:
-    """Instantiate callbacks from config, add non-configurable ones."""
-    from hydra.utils import instantiate
-
-    cbs = [cb for cb in instantiate(cfg.callbacks).values() if cb is not None]
-    cbs.append(RunMetadataCallback())
-    return cbs
-
-
-# model_type → the canonical stage that produces the teacher checkpoint.
-# "curriculum" is preferred over "normal" for GAT since the teacher (large) always
-# trains via curriculum. Derived from STAGE_MODEL_MAP with first-wins semantics.
-
+# model_type → canonical stage that produces the teacher checkpoint.
 _TEACHER_STAGE: dict[str, str] = {}
 for _stage, _model in STAGE_MODEL_MAP.items():
     _TEACHER_STAGE.setdefault(_model, _stage)
 
 
-def resolve_teacher_path(cfg, model_type: str) -> Path:
-    """Auto-resolve teacher checkpoint path for KD.
+def make_trainer(cfg, stage: str) -> pl.Trainer:
+    """Create a Lightning Trainer from config."""
+    from hydra.utils import instantiate
 
-    Resolution order:
-    1. Explicit ``kd.model_path`` (manual override)
-    2. Auto-resolve from ``kd.teacher_scale`` via the artifact resolver
+    cbs = [cb for cb in instantiate(cfg.callbacks).values() if cb is not None]
+    cbs.append(RunMetadataCallback())
 
-    The ``teacher_scale`` field (default ``"large"``) makes the teacher
-    reference scale-agnostic — today it's "large", but could be any
-    variant that produces a checkpoint for the given model_type.
-    """
-    kd = next((a for a in cfg.get("auxiliaries", []) if a.type == "kd"), None)
-    if kd and kd.model_path:
-        return Path(kd.model_path)
-
-    teacher_scale = kd.teacher_scale if kd else "large"
-    stage = _TEACHER_STAGE.get(model_type)
-    if stage is None:
-        raise ValueError(f"No teacher stage mapping for model_type '{model_type}'")
-
-    from graphids.config import resolve
-    teacher_cfg = resolve(f"model_type={model_type}", f"scale={teacher_scale}", f"dataset={cfg.dataset}", f"seed={cfg.seed}")
-    path = Path(teacher_cfg.checkpoints[model_type])
-    if not path.exists():
-        raise FileNotFoundError(
-            f"Teacher checkpoint not found: {path}. "
-            f"Train {model_type}/{teacher_scale} first, or set model_path explicitly."
-        )
-    log.info("auto_resolved_teacher", model_type=model_type, scale=teacher_scale, path=str(path))
-    return path
+    return pl.Trainer(
+        max_epochs=cfg.training.max_epochs,
+        accelerator="gpu" if cfg.device == "cuda" and torch.cuda.is_available() else "cpu",
+        devices=1,
+        callbacks=cbs,
+        gradient_clip_val=cfg.training.gradient_clip,
+        precision=cfg.training.precision,
+        log_every_n_steps=cfg.training.log_every_n_steps,
+        accumulate_grad_batches=cfg.training.accumulate_grad_batches,
+        deterministic=cfg.training.deterministic,
+        benchmark=cfg.training.cudnn_benchmark,
+        enable_progress_bar=bool(os.environ.get("SLURM_JOB_ID")),
+    )
 
 
 def prepare_kd(
-    cfg,
-    model_type: str,
-    num_ids: int,
-    in_channels: int,
-    device: torch.device,
+    cfg, model_type: str, num_ids: int, in_channels: int, device: torch.device,
 ) -> tuple[nn.Module | None, nn.Linear | None]:
-    """Resolve, load, and prepare all KD components for a training stage.
+    """Resolve teacher path, load & freeze teacher, create projection if needed.
 
-    Returns ``(teacher, projection)`` when KD is active, or
-    ``(None, None)`` when KD is disabled.  Centralizes the entire
-    teacher lifecycle so training functions need only::
-
-        teacher, projection = prepare_kd(cfg, "vgae", num_ids, in_ch, device)
-
-    No if/else branching required in calling code.
+    Returns (teacher, projection) when KD is active, or (None, None) otherwise.
     """
     if not any(a.type == "kd" for a in cfg.get("auxiliaries", [])):
         return None, None
 
-    teacher_path = resolve_teacher_path(cfg, model_type)
-    teacher = _load_teacher(str(teacher_path), model_type, cfg, num_ids, in_channels, device)
+    # --- Resolve teacher checkpoint path ---
+    kd = next(a for a in cfg.get("auxiliaries", []) if a.type == "kd")
+    if kd.get("model_path"):
+        teacher_path = Path(kd.model_path)
+    else:
+        teacher_scale = kd.get("teacher_scale", "large")
+        stage = _TEACHER_STAGE.get(model_type)
+        if stage is None:
+            raise ValueError(f"No teacher stage mapping for model_type '{model_type}'")
+        from graphids.config import resolve
+        teacher_cfg = resolve(f"model_type={model_type}", f"scale={teacher_scale}",
+                              f"dataset={cfg.dataset}", f"seed={cfg.seed}")
+        teacher_path = Path(teacher_cfg.checkpoints[model_type])
+        if not teacher_path.exists():
+            raise FileNotFoundError(
+                f"Teacher checkpoint not found: {teacher_path}. "
+                f"Train {model_type}/{teacher_scale} first, or set model_path explicitly."
+            )
 
-    # Projection layer only needed for VGAE (latent space alignment)
-    projection = None
-    if model_type == "vgae":
-        from graphids.core.models.registry import get as registry_get
-
-        tmp_student = registry_get("vgae")(cfg, num_ids, in_channels)
-        projection = make_projection(tmp_student, teacher, "vgae", device)
-        del tmp_student
-
-    return teacher, projection
-
-
-def _load_teacher(
-    teacher_path: str,
-    model_type: str,
-    cfg,
-    num_ids: int,
-    in_channels: int,
-    device: torch.device,
-) -> nn.Module:
-    """Load and freeze a teacher model from checkpoint.  Internal to prepare_kd()."""
+    # --- Load and freeze teacher ---
     from graphids.core.models.registry import get as registry_get
-
-    checkpoint = torch.load(teacher_path, map_location="cpu", weights_only=True)
-    sd = _extract_state_dict(checkpoint)
-
-    teacher_cfg_path = Path(teacher_path).parent / "config.yaml"
-    if not teacher_cfg_path.exists():
-        raise FileNotFoundError(
-            f"Teacher config not found: {teacher_cfg_path}. "
-            f"Cannot load teacher without its frozen config (risk of dimension mismatch)."
-        )
     from omegaconf import OmegaConf
-    tcfg = OmegaConf.load(teacher_cfg_path)
 
-    # Infer num_ids from checkpoint embedding if present
+    checkpoint = torch.load(str(teacher_path), map_location="cpu", weights_only=True)
+    sd = checkpoint
+    if isinstance(sd, dict) and "state_dict" in sd:
+        raw = sd["state_dict"]
+        sd = {k.replace("model.", ""): v for k, v in raw.items() if k.startswith("model.")} or raw
+
+    tcfg_path = teacher_path.parent / "config.yaml"
+    if not tcfg_path.exists():
+        raise FileNotFoundError(f"Teacher config not found: {tcfg_path}")
+    tcfg = OmegaConf.load(tcfg_path)
+
     t_num_ids = num_ids
     for key in sd:
         if key.endswith("id_embedding.weight"):
@@ -133,88 +95,59 @@ def _load_teacher(
 
     teacher = registry_get(model_type)(tcfg, t_num_ids, in_channels)
 
-    # DQN checkpoints have nested state dict
     if model_type == "dqn":
-        if "q_network" in sd:
-            teacher.load_state_dict(sd["q_network"])
-        elif "q_network_state_dict" in sd:
-            teacher.load_state_dict(sd["q_network_state_dict"])
-        else:
-            teacher.load_state_dict(sd)
+        teacher.load_state_dict(sd.get("q_network") or sd.get("q_network_state_dict") or sd)
     else:
         teacher.load_state_dict(sd)
 
-    log.info("loaded_teacher", model_type=model_type, path=teacher_path, num_ids=t_num_ids)
-
-    teacher.to(device)
-    teacher.eval()
+    log.info("loaded_teacher", model_type=model_type, path=str(teacher_path), num_ids=t_num_ids)
+    teacher.to(device).eval()
     for p in teacher.parameters():
         p.requires_grad = False
-    return teacher
+
+    # --- Projection layer (VGAE latent space alignment) ---
+    projection = None
+    if model_type == "vgae":
+        tmp = registry_get("vgae")(cfg, num_ids, in_channels)
+        projection = make_projection(tmp, teacher, "vgae", device)
+        del tmp
+
+    return teacher, projection
 
 
 def make_projection(
-    student_model: nn.Module,
-    teacher: nn.Module,
-    model_type: str,
-    device: torch.device,
+    student: nn.Module, teacher: nn.Module, model_type: str, device: torch.device,
 ) -> nn.Linear | None:
     """Create projection layer if teacher/student latent dims differ."""
     if model_type == "vgae":
-        s_dim = getattr(student_model, "latent_dim", getattr(student_model, "_latent_dim", 16))
+        s_dim = getattr(student, "latent_dim", getattr(student, "_latent_dim", 16))
         t_dim = getattr(teacher, "latent_dim", getattr(teacher, "_latent_dim", 96))
     elif model_type == "gat":
-        s_dim = getattr(student_model, "hidden_channels", getattr(student_model, "out_channels", 2))
+        s_dim = getattr(student, "hidden_channels", getattr(student, "out_channels", 2))
         t_dim = getattr(teacher, "hidden_channels", getattr(teacher, "out_channels", 2))
     else:
         return None
-
     if s_dim != t_dim:
-        proj = nn.Linear(s_dim, t_dim).to(device)
-        log.info("projection_layer_created", student_dim=s_dim, teacher_dim=t_dim)
-        return proj
+        log.info("projection_layer", student_dim=s_dim, teacher_dim=t_dim)
+        return nn.Linear(s_dim, t_dim).to(device)
     return None
 
 
-def _extract_state_dict(checkpoint) -> dict:
-    """Handle Lightning checkpoint format, return clean state dict."""
-    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
-        sd = checkpoint["state_dict"]
-        return {k.replace("model.", ""): v for k, v in sd.items() if k.startswith("model.")} or sd
-    return checkpoint
-
-
-def load_frozen_cfg(
-    cfg, stage: str, model_type: str | None = None
-):
-    """Load the frozen config.yaml saved during training for *stage*.
-
-    model_type defaults to the canonical owner of the stage (e.g. "autoencoder" → "vgae").
-
-    Raises FileNotFoundError if the frozen config doesn't exist.
-    """
-    mt = model_type or STAGE_MODEL_MAP.get(stage, cfg.model_type)
-    p = Path(cfg.checkpoints[mt]).parent / "config.yaml"
+def load_frozen_cfg(cfg, stage: str, model_type: str | None = None):
+    """Load the frozen config.yaml saved by a prior training stage."""
+    mt = model_type or STAGE_MODEL_MAP.get(stage, stage)
+    p = Path(cfg.checkpoints.get(mt, "")).parent / "config.yaml"
     if not p.exists():
         raise FileNotFoundError(
             f"Frozen config not found for stage '{stage}' (model_type={mt}). "
-            f"The '{stage}' stage must be trained first (with config saved) "
-            f"before dependent stages can load it."
+            f"The '{stage}' stage must be trained first."
         )
-    try:
-        from omegaconf import OmegaConf
-        return OmegaConf.load(p)
-    except Exception as e:
-        raise RuntimeError(f"Could not load frozen config {p}: {e}") from e
+    from omegaconf import OmegaConf
+    return OmegaConf.load(p)
 
 
 def load_model(
-    cfg,
-    model_type: str,
-    stage: str,
-    num_ids: int,
-    in_channels: int,
-    device: torch.device,
+    cfg, model_type: str, stage: str, num_ids: int, in_channels: int, device: torch.device,
 ) -> nn.Module:
     """Load a trained model using its frozen config and the registry."""
     from graphids.core.models.registry import get as registry_get
@@ -222,66 +155,15 @@ def load_model(
     frozen_cfg = load_frozen_cfg(cfg, stage, model_type=model_type)
     model = registry_get(model_type)(frozen_cfg, num_ids, in_channels)
     model.load_state_dict(torch.load(cfg.checkpoints[model_type], map_location="cpu", weights_only=True))
-    model.to(device)
-    model.eval()
+    model.to(device).eval()
     return model
 
 
 def build_optimizer_dict(optimizer, cfg):
     """Return optimizer or {optimizer, lr_scheduler} dict for Lightning."""
-    t = cfg.training
-    if not t.use_scheduler or not t.scheduler:
+    if not cfg.training.use_scheduler or cfg.training.scheduler is None:
         return optimizer
 
     from hydra.utils import instantiate
-
-    sched = instantiate(t.scheduler, optimizer=optimizer)
-
-    if isinstance(sched, torch.optim.lr_scheduler.ReduceLROnPlateau):
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {"scheduler": sched, "monitor": t.monitor_metric},
-        }
-    return {"optimizer": optimizer, "lr_scheduler": sched}
-
-
-def make_trainer(
-    cfg,
-    stage: str,
-    extra_callbacks: list | None = None,
-) -> pl.Trainer:
-    """Create a Lightning Trainer with standard callbacks."""
-    t = cfg.training
-    torch.backends.cudnn.benchmark = t.cudnn_benchmark
-
-    csv_logger = pl.loggers.CSVLogger(save_dir=".", name="", version="")
-
-    callbacks = _instantiate_callbacks(cfg)
-
-    if extra_callbacks:
-        callbacks.extend(extra_callbacks)
-
-    # On SLURM: enable auto-requeue so Lightning catches SIGUSR1,
-    # saves .pl_auto_save.ckpt, and calls scontrol requeue automatically.
-    # The bash wrapper (_preamble.sh) forwards USR1 from SLURM to Python.
-    plugins = []
-    if os.environ.get("SLURM_JOB_ID"):
-        from pytorch_lightning.plugins.environments import SLURMEnvironment
-
-        plugins.append(SLURMEnvironment(auto_requeue=True))
-
-    return pl.Trainer(
-        default_root_dir=".",
-        max_epochs=t.max_epochs,
-        accelerator="auto",
-        devices="auto",
-        precision=t.precision,
-        gradient_clip_val=t.gradient_clip,
-        accumulate_grad_batches=t.accumulate_grad_batches,
-        callbacks=callbacks,
-        logger=csv_logger,
-        plugins=plugins or None,
-        log_every_n_steps=t.log_every_n_steps,
-        enable_progress_bar=True,
-        deterministic=t.deterministic,
-    )
+    sched = instantiate(cfg.training.scheduler, optimizer=optimizer)
+    return {"optimizer": optimizer, "lr_scheduler": {"scheduler": sched, "monitor": cfg.training.monitor_metric}}

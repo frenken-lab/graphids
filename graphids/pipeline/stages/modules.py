@@ -1,16 +1,22 @@
-"""Lightning modules for VGAE and GAT training."""
+"""Lightning modules for VGAE and GAT: train + val + test."""
 
 from __future__ import annotations
-
 
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 from omegaconf import OmegaConf
+from torchmetrics import MetricCollection
+from torchmetrics.classification import (
+    BinaryAccuracy,
+    BinaryAUROC,
+    BinaryF1Score,
+    BinaryPrecision,
+    BinaryRecall,
+    BinarySpecificity,
+)
 
-from .batch_sizing import effective_batch_size
 from .data_loading import compute_node_budget, make_dataloader
 from .trainer_factory import build_optimizer_dict
 
@@ -79,6 +85,15 @@ class VGAEModule(pl.LightningModule):
         self.teacher = teacher
         self.projection = projection
         self._teacher_on_cpu = False
+        # Test mode
+        self.test_threshold: float | None = None
+        self.test_metrics = MetricCollection({
+            "accuracy": BinaryAccuracy(), "f1": BinaryF1Score(),
+            "precision": BinaryPrecision(), "recall": BinaryRecall(),
+            "specificity": BinarySpecificity(), "auc": BinaryAUROC(),
+        })
+        self._test_errors: list[torch.Tensor] = []
+        self._test_labels: list[torch.Tensor] = []
 
     def forward(self, batch):
         edge_attr = getattr(batch, "edge_attr", None)
@@ -137,6 +152,26 @@ class VGAEModule(pl.LightningModule):
         loss = self._step(batch)
         self.log("val_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
 
+    def test_step(self, batch, _idx):
+        from torch_geometric.utils import scatter
+
+        edge_attr = getattr(batch, "edge_attr", None)
+        cont, _, _, _, _ = self.model(batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr)
+        per_node_se = (cont - batch.x[:, 1:]).pow(2).mean(dim=1)
+        errors = scatter(per_node_se, batch.batch, dim=0, reduce="mean")
+        self._test_errors.append(errors)
+        self._test_labels.append(batch.y)
+        if self.test_threshold is not None:
+            preds = (errors > self.test_threshold).long()
+            self.test_metrics.update(preds, batch.y)
+            self.log_dict(self.test_metrics, batch_size=batch.num_graphs)
+
+    def get_test_errors(self) -> tuple:
+        """Return accumulated (errors, labels) as numpy arrays after test."""
+        import numpy as np
+        return (torch.cat(self._test_errors).cpu().numpy(),
+                torch.cat(self._test_labels).cpu().numpy())
+
     def configure_optimizers(self):
         params = list(self.model.parameters())
         if self.projection is not None:
@@ -176,6 +211,11 @@ class GATModule(pl.LightningModule):
             self.model = torch.compile(self.model)
         self.teacher = teacher
         self._teacher_on_cpu = False
+        self.test_metrics = MetricCollection({
+            "accuracy": BinaryAccuracy(), "f1": BinaryF1Score(),
+            "precision": BinaryPrecision(), "recall": BinaryRecall(),
+            "specificity": BinarySpecificity(), "auc": BinaryAUROC(),
+        })
 
     def forward(self, batch):
         return self.model(batch)
@@ -214,6 +254,13 @@ class GATModule(pl.LightningModule):
         self.log("val_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
         self.log("val_acc", acc, prog_bar=True, batch_size=batch.num_graphs)
 
+    def test_step(self, batch, _idx):
+        logits = self(batch)
+        preds = logits.argmax(1)
+        scores = F.softmax(logits, dim=1)[:, 1]
+        self.test_metrics.update(preds, batch.y)
+        self.log_dict(self.test_metrics, batch_size=batch.num_graphs)
+
     def configure_optimizers(self):
         opt = torch.optim.Adam(
             self.parameters(),
@@ -244,14 +291,14 @@ class CurriculumDataModule(pl.LightningDataModule):
             self.cfg,
         )
         self._current_epoch += 1
-        bs = effective_batch_size(self.cfg)
+        bs = max(8, int(self.cfg.training.batch_size * self.cfg.training.safety_factor))
         max_nodes = None
         if self.cfg.training.dynamic_batching:
             max_nodes = compute_node_budget(bs, self.cfg)
         return make_dataloader(sampled, self.cfg, bs, shuffle=True, max_num_nodes=max_nodes)
 
     def val_dataloader(self):
-        bs = effective_batch_size(self.cfg)
+        bs = max(8, int(self.cfg.training.batch_size * self.cfg.training.safety_factor))
         max_nodes = None
         if self.cfg.training.dynamic_batching:
             max_nodes = compute_node_budget(bs, self.cfg)

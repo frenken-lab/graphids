@@ -8,8 +8,9 @@ from pathlib import Path
 import torch
 
 
-from .data_loading import training_preamble
-from .data_loading import cache_predictions, cleanup
+import pytorch_lightning as pl
+
+from .data_loading import cache_predictions, cleanup, load_data
 from .trainer_factory import load_model
 
 log = structlog.get_logger()
@@ -23,7 +24,7 @@ def _save_dqn_ckpt(agent) -> None:
     }, "best_model.pt")
 
 
-def _train_dqn_fusion(cfg, train_cache, val_cache, device, out) -> float:
+def _train_dqn_fusion(cfg, train_cache, val_cache, device) -> float:
     """Vectorized DQN RL fusion training loop. Returns best validation accuracy.
 
     Each episode: batch forward pass -> batch reward -> store in tensor buffer
@@ -47,7 +48,7 @@ def _train_dqn_fusion(cfg, train_cache, val_cache, device, out) -> float:
         # TODO(open-question): Training uses (alpha > 0.5) as prediction, but
         # validation uses the proper fused score. See dqn.py top-level comment.
         preds = (alphas > 0.5).long()
-        rewards = agent.compute_fusion_reward_batch(preds, batch_labels, norm_states, alphas)
+        rewards = agent.reward_calc.compute(preds, batch_labels, norm_states, alphas)
         agent.store_experiences_batch(norm_states, actions, rewards)
 
         # Gradient steps from replay buffer
@@ -77,6 +78,46 @@ def _train_dqn_fusion(cfg, train_cache, val_cache, device, out) -> float:
     # Ensure we always save something
     if not Path("best_model.pt").exists():
         _save_dqn_ckpt(agent)
+
+    return best_acc
+
+
+def _train_bandit_fusion(cfg, train_cache, val_cache, device) -> float:
+    """Neural-LinUCB contextual bandit fusion. Returns best validation accuracy."""
+    from graphids.core.models.bandit import NeuralLinUCBAgent
+
+    agent = NeuralLinUCBAgent.from_config(cfg, device=str(device))
+
+    best_acc = 0.0
+    val_states = val_cache["states"][: min(5000, len(val_cache["states"]))]
+    val_labels = val_cache["labels"][: min(5000, len(val_cache["labels"]))]
+
+    for ep in range(cfg.fusion.episodes):
+        idx = torch.randperm(len(train_cache["states"]))[: cfg.fusion.episode_sample_size]
+        batch_states = train_cache["states"][idx]
+        batch_labels = train_cache["labels"][idx]
+
+        result = agent.train_episode(batch_states, batch_labels)
+
+        if (ep + 1) % 50 == 0:
+            metrics = agent.validate_batch(val_states, val_labels)
+            acc = metrics.get("accuracy", 0)
+            regret = agent.regret_stats()
+            log.info(
+                "bandit_episode",
+                episode=ep + 1,
+                total_episodes=cfg.fusion.episodes,
+                train_acc=round(result["accuracy"], 4),
+                val_acc=round(acc, 4),
+                avg_ucb_width=round(regret["avg_ucb_width"], 4),
+            )
+
+            if acc > best_acc:
+                best_acc = acc
+                torch.save(agent.state_dict(), "best_model.pt")
+
+    if not Path("best_model.pt").exists():
+        torch.save(agent.state_dict(), "best_model.pt")
 
     return best_acc
 
@@ -118,7 +159,7 @@ def _make_fusion_dataloaders(train_cache, val_cache, batch_size: int):
 
 def _train_mlp_fusion(cfg, train_cache, val_cache, device) -> float:
     """MLP supervised fusion via Lightning Trainer. Returns best validation accuracy."""
-    from graphids.core.models.dqn import MLPFusionModule
+    from graphids.core.models.fusion_baselines import MLPFusionModule
     from graphids.core.models.registry import fusion_state_dim
 
     module = MLPFusionModule(
@@ -139,7 +180,7 @@ def _train_mlp_fusion(cfg, train_cache, val_cache, device) -> float:
 
 def _train_weighted_avg_fusion(cfg, train_cache, val_cache, device) -> float:
     """Weighted average fusion via Lightning Trainer. Returns best validation accuracy."""
-    from graphids.core.models.dqn import WeightedAvgModule
+    from graphids.core.models.fusion_baselines import WeightedAvgModule
 
     module = WeightedAvgModule(lr=cfg.fusion.lr)
     train_dl, val_dl = _make_fusion_dataloaders(
@@ -155,9 +196,9 @@ def _train_weighted_avg_fusion(cfg, train_cache, val_cache, device) -> float:
 
 def train_fusion(cfg) -> dict:
     """Train fusion agent on cached VGAE+GAT predictions. Returns result dict with checkpoint and metrics."""
-    train_data, val_data, num_ids, in_ch, device = training_preamble(
-        cfg, f"FUSION ({cfg.fusion.method})"
-    )
+    pl.seed_everything(cfg.seed)
+    train_data, val_data, num_ids, in_ch = load_data(cfg)
+    device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
 
     # Load frozen VGAE + GAT
     vgae = load_model(cfg, "vgae", "autoencoder", num_ids, in_ch, device)
@@ -174,7 +215,9 @@ def train_fusion(cfg) -> dict:
     # Dispatch on fusion method
     method = cfg.fusion.method
     if method == "dqn":
-        best_acc = _train_dqn_fusion(cfg, train_cache, val_cache, device, Path.cwd())
+        best_acc = _train_dqn_fusion(cfg, train_cache, val_cache, device)
+    elif method == "bandit":
+        best_acc = _train_bandit_fusion(cfg, train_cache, val_cache, device)
     elif method == "mlp":
         best_acc = _train_mlp_fusion(cfg, train_cache, val_cache, device)
     elif method == "weighted_avg":
@@ -183,8 +226,7 @@ def train_fusion(cfg) -> dict:
         raise ValueError(f"Unknown fusion method: {method}")
 
     ckpt = Path("best_model.pt")
-    from graphids.config import save_config
-    save_config(cfg, Path("config.yaml"))
+    # config.yaml already saved by run_stage() in __init__.py
 
     metrics = {"best_acc": best_acc, "val_loss": 1.0 - best_acc, "fusion_method": method}
     log.info("saved_fusion", method=method, checkpoint=str(ckpt), best_acc=round(best_acc, 4))

@@ -11,10 +11,8 @@ import torch
 import torch.nn.functional as F
 
 
-from .batch_sizing import resolve_batch_config
-from .data_loading import training_preamble
+from .data_loading import cleanup, compute_node_budget, graph_label, load_data, make_dataloader
 from .modules import CurriculumDataModule, GATModule, VGAEModule
-from .data_loading import cleanup, graph_label, load_data, make_dataloader
 from .trainer_factory import load_model, make_trainer, prepare_kd
 
 log = structlog.get_logger()
@@ -64,11 +62,14 @@ def _save_and_cleanup(module, trainer, cfg, stage: str, label: str | None = None
 
 def train_autoencoder(cfg) -> dict:
     """Train VGAE on graph reconstruction. Returns result dict with checkpoint and metrics."""
-    train_data, val_data, num_ids, in_ch, device = training_preamble(cfg, "AUTOENCODER")
+    pl.seed_everything(cfg.seed)
+    train_data, val_data, num_ids, in_ch = load_data(cfg)
+    device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
 
     teacher, projection = prepare_kd(cfg, "vgae", num_ids, in_ch, device)
     module = VGAEModule(cfg, num_ids, in_ch, teacher=teacher, projection=projection)
-    bs, max_nodes = resolve_batch_config(cfg)
+    bs = max(8, int(cfg.training.batch_size * cfg.training.safety_factor))
+    max_nodes = compute_node_budget(bs, cfg) if cfg.training.dynamic_batching else None
 
     train_dl = make_dataloader(train_data, cfg, bs, shuffle=True, max_num_nodes=max_nodes)
     val_dl = make_dataloader(val_data, cfg, bs, shuffle=False, max_num_nodes=max_nodes)
@@ -80,7 +81,9 @@ def train_autoencoder(cfg) -> dict:
 
 def train_curriculum(cfg) -> dict:
     """Train GAT with VGAE-guided curriculum learning. Returns result dict with checkpoint and metrics."""
-    train_data, val_data, num_ids, in_ch, device = training_preamble(cfg, "CURRICULUM")
+    pl.seed_everything(cfg.seed)
+    train_data, val_data, num_ids, in_ch = load_data(cfg)
+    device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
 
     # Load VGAE for difficulty scoring
     vgae = load_model(cfg, "vgae", "autoencoder", num_ids, in_ch, device)
@@ -103,11 +106,14 @@ def train_curriculum(cfg) -> dict:
 
 def train_normal(cfg) -> dict:
     """Train GAT with standard cross-entropy (no curriculum). Returns result dict with checkpoint and metrics."""
-    train_data, val_data, num_ids, in_ch, device = training_preamble(cfg, "NORMAL")
+    pl.seed_everything(cfg.seed)
+    train_data, val_data, num_ids, in_ch = load_data(cfg)
+    device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
 
     teacher, _ = prepare_kd(cfg, "gat", num_ids, in_ch, device)
     module = GATModule(cfg, num_ids, in_ch, teacher=teacher)
-    bs, max_nodes = resolve_batch_config(cfg)
+    bs = max(8, int(cfg.training.batch_size * cfg.training.safety_factor))
+    max_nodes = compute_node_budget(bs, cfg) if cfg.training.dynamic_batching else None
 
     train_dl = make_dataloader(train_data, cfg, bs, shuffle=True, max_num_nodes=max_nodes)
     val_dl = make_dataloader(val_data, cfg, bs, shuffle=False, max_num_nodes=max_nodes)
