@@ -1,9 +1,9 @@
 """CLI entry point: Hydra-as-framework for training and sweep.
 
 Usage:
-    python -m graphids stage=autoencoder model=vgae_large dataset=hcrl_sa
-    python -m graphids --multirun stage=autoencoder model=vgae_large
-    python -m graphids --cfg job model=vgae_large
+    python -m graphids stage=autoencoder model_type=vgae scale=large dataset=hcrl_sa
+    python -m graphids --multirun stage=autoencoder model_type=vgae scale=large training.lr=0.001,0.01
+    python -m graphids stage=autoencoder model_type=vgae scale=large --cfg job
 
 Orchestration (submit full DAG to SLURM):
     python -m graphids.pipeline.dag --dataset hcrl_sa --seeds 42,123 --dry-run
@@ -22,7 +22,7 @@ def main(argv: list[str] | None = None) -> None:
     import hydra
     from omegaconf import DictConfig
 
-    from graphids.config import STAGES
+    from graphids.config import STAGES, _merge_model_preset
     from graphids.logging import configure_logging
     from graphids.pipeline.stages import run_stage
 
@@ -35,8 +35,10 @@ def main(argv: list[str] | None = None) -> None:
 
     sys.argv = [sys.argv[0]] + args
 
-    @hydra.main(config_path="config/conf", config_name="config", version_base="1.3")
+    @hydra.main(config_path="config", config_name="config", version_base="1.3")
     def run(cfg: DictConfig) -> float | None:
+        cfg = _merge_model_preset(cfg)
+
         stage = cfg.get("stage")
         if not stage or stage not in STAGES:
             raise SystemExit(f"stage= required. Valid: {list(STAGES.keys())}")

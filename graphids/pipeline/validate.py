@@ -25,7 +25,7 @@ def validate_datasets(datasets: list[str], scale: str) -> list[str]:
     errors: list[str] = []
     for dataset in datasets:
         try:
-            cfg = resolve(f"model=vgae_{scale}", f"dataset={dataset}")
+            cfg = resolve("model_type=vgae", f"scale={scale}", f"dataset={dataset}")
             ddir = data_dir(cfg)
             if not ddir.exists():
                 errors.append(f"Data dir missing for {dataset}: {ddir}")

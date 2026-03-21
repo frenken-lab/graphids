@@ -1,0 +1,60 @@
+# models.yaml — model×scale presets (overrides on top of config.yaml defaults)
+# Key format: {model_type}_{scale}
+# Empty dict {} means "use all defaults from config.yaml"
+
+vgae_large:
+  vgae:
+    conv_type: gatv2
+    proj_dim: 48
+  training:
+    lr: 0.002
+    safety_factor: 0.80
+
+vgae_small:
+  vgae:
+    hidden_dims: [80, 40, 16]
+    latent_dim: 16
+    heads: 1
+    embedding_dim: 4
+    dropout: 0.1
+    conv_type: gatv2
+    proj_dim: 32
+  training:
+    lr: 0.002
+    safety_factor: 0.85
+
+gat_large:
+  gat:
+    fc_layers: 1
+    conv_type: gatv2
+    proj_dim: 48
+  training:
+    batch_size: 8192
+    safety_factor: 0.85
+
+gat_small:
+  gat:
+    hidden: 24
+    layers: 2
+    heads: 4
+    embedding_dim: 8
+    fc_layers: 2
+    dropout: 0.1
+    conv_type: gatv2
+    proj_dim: 32
+  training:
+    lr: 0.001
+    patience: 50
+    safety_factor: 0.90
+
+dqn_large:
+  training:
+    safety_factor: 0.45
+
+dqn_small:
+  dqn:
+    hidden: 160
+    layers: 2
+    buffer_size: 50000
+    batch_size: 64
+    target_update: 50

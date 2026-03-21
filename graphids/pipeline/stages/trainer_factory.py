@@ -55,7 +55,7 @@ def resolve_teacher_path(cfg, model_type: str) -> Path:
         raise ValueError(f"No teacher stage mapping for model_type '{model_type}'")
 
     from graphids.config import resolve
-    teacher_cfg = resolve(f"model={model_type}_{teacher_scale}", f"dataset={cfg.dataset}", f"seed={cfg.seed}")
+    teacher_cfg = resolve(f"model_type={model_type}", f"scale={teacher_scale}", f"dataset={cfg.dataset}", f"seed={cfg.seed}")
     path = Path(teacher_cfg.checkpoints[model_type])
     if not path.exists():
         raise FileNotFoundError(

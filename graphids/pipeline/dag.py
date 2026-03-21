@@ -184,35 +184,36 @@ def _asset_name(resource_model: str, scale: str, stage: str, aux: str = "") -> s
 
 
 def build_dag_topology() -> dict[str, DagNode]:
-    """Build pipeline DAG from config variants + STAGE_DEPENDENCIES."""
-    cfg = resolve("model=vgae_large")
+    """Build pipeline DAG from pipeline.yaml variants + STAGE_DEPENDENCIES."""
+
+    pipeline = yaml.safe_load((CONFIG_DIR / "pipeline.yaml").read_text())
     nodes: dict[str, DagNode] = {
         "preprocess": DagNode("preprocess", "preprocess", "preprocess", "", "none", frozenset()),
     }
 
-    for variant in cfg.variants:
-        aux = variant.auxiliaries if variant.auxiliaries != "none" else ""
-        for stage in variant.stages:
+    for variant in pipeline["variants"].values():
+        aux = variant["auxiliaries"] if variant["auxiliaries"] != "none" else ""
+        for stage in variant["stages"]:
             resource_model = STAGE_MODEL_MAP[stage]
             cli_model = "vgae" if stage == "evaluation" else resource_model
-            asset_nm = _asset_name(resource_model, variant.scale, stage, aux)
+            asset_nm = _asset_name(resource_model, variant["scale"], stage, aux)
 
             dep_names: set[str] = set()
             if stage == "autoencoder":
                 dep_names.add("preprocess")
             else:
                 for dep_model_type, dep_stage in STAGE_DEPENDENCIES.get(stage, []):
-                    dep_names.add(_asset_name(dep_model_type, variant.scale, dep_stage, aux))
+                    dep_names.add(_asset_name(dep_model_type, variant["scale"], dep_stage, aux))
                 if stage == "evaluation" and not dep_names:
-                    dep_names.add(_asset_name(STAGE_MODEL_MAP["fusion"], variant.scale, "fusion", aux))
+                    dep_names.add(_asset_name(STAGE_MODEL_MAP["fusion"], variant["scale"], "fusion", aux))
 
-            if variant.needs_teacher and stage in ("autoencoder", "curriculum"):
+            if variant["needs_teacher"] and stage in ("autoencoder", "curriculum"):
                 teacher_nm = _asset_name(resource_model, "large", stage)
                 if teacher_nm != asset_nm:
                     dep_names.add(teacher_nm)
 
-            nodes[asset_nm] = DagNode(stage, cli_model, resource_model, variant.scale,
-                                      variant.auxiliaries, frozenset(dep_names))
+            nodes[asset_nm] = DagNode(stage, cli_model, resource_model, variant["scale"],
+                                      variant["auxiliaries"], frozenset(dep_names))
     return nodes
 
 
@@ -235,7 +236,7 @@ def run_dag(
             node = dag[name]
             dep_futs = [futures[d] for d in node.deps if d in futures]
             resources = get_resources(node.resource_model, node.scale, node.stage)
-            cfg = resolve(f"model={node.cli_model}_{node.scale}", f"dataset={dataset}", f"seed={seed}")
+            cfg = resolve(f"model_type={node.cli_model}", f"scale={node.scale}", f"dataset={dataset}", f"seed={seed}")
 
             if dry_run:
                 log.info("dry_run", asset=name, deps=[str(d) for d in node.deps])
@@ -262,6 +263,6 @@ if __name__ == "__main__":
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    seed_list = parse_seeds(args.seeds) if args.seeds else [resolve("model=vgae_large").seed]
+    seed_list = parse_seeds(args.seeds) if args.seeds else [resolve().seed]
     futures = run_dag(dag=build_dag_topology(), dataset=args.dataset, seeds=seed_list, dry_run=args.dry_run)
     log.info("jobs_submitted", count=len(futures))
