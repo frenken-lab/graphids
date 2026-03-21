@@ -4,56 +4,15 @@ CAN bus intrusion detection using a 3-stage knowledge distillation pipeline:
 VGAE (unsupervised reconstruction) → GAT (supervised classification) → DQN (RL fusion).
 Large models are compressed into small models via KD auxiliaries for edge deployment.
 
+## Code Philosophy
+
+Every function, file, and abstraction must earn its place. Before writing code, answer: does a dependency already do this? Can this be inlined? Does this file need to exist or can it be 10 lines somewhere else? If you can't justify it in one sentence, delete it. When a plan says simplify — that means less code, not different code.
+
 ## Key Commands
-
-```bash
-# Run a single stage (Hydra override grammar)
-python -m graphids.cli stage=autoencoder model=vgae_large dataset=hcrl_sa
-python -m graphids.cli stage=curriculum model=gat_small auxiliary=kd_standard dataset=hcrl_sa
-python -m graphids.cli stage=fusion model=dqn_large dataset=hcrl_ch
-python -m graphids.cli stage=autoencoder model=vgae_large dataset=hcrl_sa training.lr=0.001 vgae.latent_dim=16
-python -m graphids.cli stage=autoencoder model=vgae_large dataset=hcrl_sa seed=123
-# Stages: autoencoder, curriculum, normal, fusion, evaluation, temporal
-# Models: vgae_large, vgae_small, gat_large, gat_small, dqn_large, dqn_small
-# Auxiliaries: none, kd_standard
-
-# Show resolved config without running
-python -m graphids.cli show-config model=vgae_large dataset=hcrl_sa
-
-# Full pipeline via Dagster + SLURM (fire-and-forget dependency chains)
-python -m graphids.cli orchestrate --dataset hcrl_sa
-python -m graphids.cli orchestrate --dataset hcrl_sa --dry-run  # Preview DAG
-python -m graphids.cli orchestrate --dataset hcrl_sa --seeds 42,123,456
-
-# Preprocess graph cache
-python -m graphids.cli preprocess --dataset hcrl_sa
-
-# Data lake management
-python -m graphids.cli lake --lake-action status            # Lake status
-python -m graphids.cli lake --lake-action rebuild-catalog   # Rebuild DuckDB catalog
-python -m graphids.cli lake --lake-action verify            # Verify artifact checksums
-bash scripts/lake/setup_ess.sh                                       # Create ESS directory tree
-bash scripts/lake/migrate_to_ess.sh --dry-run                        # Preview migration
-
-# Analytics
-python scripts/data/push_experiments_to_hf.py           # MLflow → HF Dataset for dashboard
-# Tests — ALWAYS submit to SLURM
-bash scripts/slurm/run_tests_slurm.sh
-bash scripts/slurm/run_tests_slurm.sh -k "test_full_pipeline"
-```
 
 ## Session Start
 
 Always read `PLAN.md` before starting work. Update it after completing any task.
-
-## Skills
-
-| Skill | Usage | Description |
-|-------|-------|-------------|
-| `/run-pipeline` | `/run-pipeline hcrl_sa large` | Submit Dagster pipeline to SLURM |
-| `/check-status` | `/check-status hcrl_sa` | Check SLURM queue, checkpoints, MLflow |
-| `/run-tests` | `/run-tests` or `/run-tests test_config` | Run pytest suite |
-| `/sync-state` | `/sync-state` | Update STATE.md from current outputs |
 
 ## Rules (auto-loaded from `.claude/rules/`)
 
@@ -61,11 +20,6 @@ Always read `PLAN.md` before starting work. Update it after completing any task.
 
 > Cross-repo propagation: See `~/.claude/rules/cross-repo-propagation.md`
 > Environment variables: See `~/.claude/rules/secrets-and-env-vars.md`
-
-## Detailed Documentation
-
-- `.claude/system/PROJECT_OVERVIEW.md` — full architecture, models, memory optimization (updated 2026-03-07)
-- `.claude/system/STATE.md` — current session state (updated 2026-03-07)
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
@@ -88,19 +42,6 @@ This project is indexed by GitNexus as **KD-GAT** (2522 symbols, 4872 relationsh
 2. `gitnexus_context({name: "<suspect function>"})` — see all callers, callees, and process participation
 3. `READ gitnexus://repo/KD-GAT/process/{processName}` — trace the full execution flow step by step
 4. For regressions: `gitnexus_detect_changes({scope: "compare", base_ref: "main"})` — see what your branch changed
-
-## When Refactoring
-
-- **Renaming**: MUST use `gitnexus_rename({symbol_name: "old", new_name: "new", dry_run: true})` first. Review the preview — graph edits are safe, text_search edits need manual review. Then run with `dry_run: false`.
-- **Extracting/Splitting**: MUST run `gitnexus_context({name: "target"})` to see all incoming/outgoing refs, then `gitnexus_impact({target: "target", direction: "upstream"})` to find all external callers before moving code.
-- After any refactor: run `gitnexus_detect_changes({scope: "all"})` to verify only expected files changed.
-
-## Never Do
-
-- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
-- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
 
 ## Tools Quick Reference
 

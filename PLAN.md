@@ -14,6 +14,7 @@
 
 ## Recently Completed
 
+- **Preprocessing rewrite** (2026-03-20) — Replaced 11-file, 2,150-line preprocessing (adapters, cache, schema, engine, vocabulary, parallel) with 4-file, 370-line library-first implementation. CANBusDataset(InMemoryDataset) + Polars lazy scan + group_by_dynamic + to_torch(). 31-D node features, 12-D edge features (was 26-D/11-D — models need input dim update). Old files deleted, callers not yet migrated. See `plans/codebase-reduction.md` section H1.
 - **Framework consolidation Phase A+B** (2026-03-20) — Lightning experiment management + Hydra-as-framework. Deleted sweep code + Typer CLI (-919 lines), added @hydra.main entry points + callbacks (+348 lines). See `plans/framework-consolidation.research.md`.
 - **Stage executor + submitit orchestration** (2026-03-20) — extracted `execute_stage()` as single entry point for all pipeline paths (CLI, API, notebook). Replaced Dagster + custom SLURM script generation with submitit + graphlib. Deleted dagster_defs.py, pipes_slurm.py, slurm_primitives.py (-687 production lines, -43% of pipeline/orchestration). `api.py` now has full guarantees (validation, manifest, logging, archive). See `plans/stage-executor-and-launcher.research.md`.
 - **CLI move + facade enforcement + I/O leak fixes** (2026-03-19)
@@ -23,6 +24,11 @@
 ## In Progress
 
 - Ops dashboard (`buckeyeguy/kd-gat-dashboard`) — running on HF Spaces
+- **Preprocessing rewrite callers migration** — new `CANBusDataset(InMemoryDataset)` + Polars features landed (`8b7c161`), old preprocessing deleted (`73a90b1`). Broken imports need fixing:
+  - `graphids/core/__init__.py` — imports `load_dataset`, `load_test_scenarios`, `CollatedGraphDataset` (all deleted)
+  - `graphids/pipeline/stages/data_loading.py` — imports `PreprocessingPipeline` (deleted)
+  - `graphids/pipeline/stages/evaluation.py` — imports `PreprocessingPipeline` (deleted)
+  - Callers should switch to `from graphids.core.preprocessing import CANBusDataset` with `split="train"/"val"/"test"`
 
 ## Blocked
 
