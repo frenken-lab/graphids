@@ -1,8 +1,4 @@
-"""Configuration layer: constants, paths, Hydra YAML.
-
-Usage:
-    from graphids.config import STAGES, data_dir, cache_dir, resolve
-"""
+"""Configuration layer: constants, paths, Hydra YAML."""
 
 from .constants import (  # noqa: F401
     CATALOG_PATH,
@@ -25,7 +21,6 @@ from .constants import (  # noqa: F401
     VALID_MODEL_TYPES,
     VALID_SCALES,
     compute_preprocessing_hash,
-    load_pipeline_yaml,
 )
 from .paths import (  # noqa: F401
     CKPT_PATH,

@@ -53,52 +53,29 @@ def compute_preprocessing_hash() -> str:
 # ---------------------------------------------------------------------------
 # Project defaults
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Pipeline topology (derived from pipeline.yaml at import time)
+# ---------------------------------------------------------------------------
+_pipeline = yaml.safe_load((CONFIG_DIR / "pipeline.yaml").read_text())
+
+STAGES: dict[str, tuple[str, str, str]] = {
+    name: (s["learning_type"], s["model"], s["mode"])
+    for name, s in _pipeline["stages"].items()
+}
+STAGE_MODEL_MAP: dict[str, str] = {k: v[1] for k, v in STAGES.items()}
+STAGE_DEPENDENCIES: dict[str, list[tuple[str, str]]] = {
+    name: [(d["model"], d["stage"]) for d in s.get("depends_on", [])]
+    for name, s in _pipeline["stages"].items()
+    if s.get("depends_on")
+}
+VALID_MODEL_TYPES: frozenset[str] = frozenset(_pipeline["models"])
+VALID_SCALES: frozenset[str] = frozenset(_pipeline["scales"])
+del _pipeline
+
+# ---------------------------------------------------------------------------
+# Project defaults
+# ---------------------------------------------------------------------------
 DEFAULT_DATASET = "hcrl_sa"
 DEFAULT_LAKE_ROOT = "experimentruns"
 DEFAULT_SEEDS = [42, 123, 456]
 SWEEP_RESULTS_DIR = "data/sweep_results"
-
-# ---------------------------------------------------------------------------
-# Pipeline topology (cached loader)
-# ---------------------------------------------------------------------------
-_pipeline_cache: dict | None = None
-
-
-def load_pipeline_yaml() -> dict:
-    """Load and cache pipeline.yaml."""
-    global _pipeline_cache
-    if _pipeline_cache is None:
-        _pipeline_cache = yaml.safe_load((CONFIG_DIR / "pipeline.yaml").read_text())
-    return _pipeline_cache
-
-
-def _load_topology() -> (
-    tuple[
-        dict[str, tuple[str, str, str]],
-        dict[str, str],
-        frozenset[str],
-        frozenset[str],
-        dict[str, list[tuple[str, str]]],
-    ]
-):
-    """Derive pipeline topology constants from pipeline.yaml."""
-    pipeline = load_pipeline_yaml()
-
-    stages: dict[str, tuple[str, str, str]] = {
-        name: (s["learning_type"], s["model"], s["mode"]) for name, s in pipeline["stages"].items()
-    }
-    stage_model_map: dict[str, str] = {k: v[1] for k, v in stages.items()}
-    valid_model_types: frozenset[str] = frozenset(pipeline["models"].keys())
-    valid_scales: frozenset[str] = frozenset(pipeline["scales"])
-
-    deps: dict[str, list[tuple[str, str]]] = {}
-    for name, s in pipeline["stages"].items():
-        dep_list = s.get("depends_on", [])
-        if dep_list:
-            deps[name] = [(d["model"], d["stage"]) for d in dep_list]
-
-    return stages, stage_model_map, valid_model_types, valid_scales, deps
-
-
-# Eagerly computed at import time (pipeline.yaml is small and always needed)
-STAGES, STAGE_MODEL_MAP, VALID_MODEL_TYPES, VALID_SCALES, STAGE_DEPENDENCIES = _load_topology()
