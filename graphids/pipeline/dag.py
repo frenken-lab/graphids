@@ -246,3 +246,22 @@ def run_dag(
             all_futures[f"{name}__seed{seed}"] = futures[name]
 
     return all_futures
+
+
+if __name__ == "__main__":
+    import argparse
+
+    from graphids.config import DEFAULT_DATASET, parse_seeds
+    from graphids.logging import configure_logging
+
+    configure_logging()
+
+    parser = argparse.ArgumentParser(description="Submit pipeline DAG to SLURM")
+    parser.add_argument("--dataset", default=DEFAULT_DATASET)
+    parser.add_argument("--seeds", default=None, help="Comma-separated seeds")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+
+    seed_list = parse_seeds(args.seeds) if args.seeds else [resolve("vgae", "large").seed]
+    futures = run_dag(dag=build_dag_topology(), dataset=args.dataset, seeds=seed_list, dry_run=args.dry_run)
+    log.info("jobs_submitted", count=len(futures))
