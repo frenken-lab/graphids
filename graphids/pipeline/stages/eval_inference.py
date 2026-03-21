@@ -162,7 +162,7 @@ def capture_vgae_artifacts(vgae, data, device, embeddings: bool = True, componen
             g = g.clone().to(device)
             batch_idx = get_batch_index(g, device)
             edge_attr = getattr(g, "edge_attr", None)
-            cont, canid_logits, nbr_logits, z, kl_loss = vgae(
+            cont, canid_logits, nbr_logits, z, kl_loss, _ = vgae(
                 g.x, g.edge_index, batch_idx, edge_attr=edge_attr,
             )
             err = F.mse_loss(cont, g.x[:, 1:]).item()

@@ -97,11 +97,20 @@ class VGAEModule(pl.LightningModule):
 
     def forward(self, batch):
         edge_attr = getattr(batch, "edge_attr", None)
-        return self.model(batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr)
+        mask_ratio = self.cfg.vgae.mask_ratio if self.training else 0.0
+        return self.model(
+            batch.x, batch.edge_index, batch.batch,
+            edge_attr=edge_attr, mask_ratio=mask_ratio,
+        )
 
     def _task_loss(self, batch):
-        cont_out, canid_logits, nbr_logits, z, kl_loss = self(batch)
-        recon = F.mse_loss(cont_out, batch.x[:, 1:])
+        cont_out, canid_logits, nbr_logits, z, kl_loss, mask = self(batch)
+        target = batch.x[:, 1:]
+        if mask is not None:
+            # Reconstruction loss on masked positions only (GraphMAE-style)
+            recon = F.mse_loss(cont_out[mask], target[mask])
+        else:
+            recon = F.mse_loss(cont_out, target)
         canid = F.cross_entropy(canid_logits, batch.x[:, 0].long())
         nbr_targets = self.model.create_neighborhood_targets(batch.x, batch.edge_index, batch.batch)
         nbr_loss = F.binary_cross_entropy_with_logits(nbr_logits, nbr_targets)

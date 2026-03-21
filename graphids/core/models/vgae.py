@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from ._utils import InputEncoder, _make_conv, conv_forward
+from ._utils import InputEncoder, build_conv_stack, _make_conv, conv_forward
 
 
 class GraphAutoencoderNeighborhood(nn.Module):
@@ -82,70 +82,28 @@ class GraphAutoencoderNeighborhood(nn.Module):
         gat_in_dim = self.input_encoder.out_dim
         self.gat_in_dim = gat_in_dim
 
-        # Encoder: build progressive GAT layers matching encoder_targets
-        self.encoder_layers = nn.ModuleList()
-        self.encoder_bns = nn.ModuleList()
-        in_dim = gat_in_dim
-        for i, target_dim in enumerate(encoder_targets):
-            heads = encoder_heads if i == 0 else 1
-            # per-head out dim
-            if heads > 1 and target_dim % heads == 0:
-                out_per_head = target_dim // heads
-            else:
-                heads = 1
-                out_per_head = target_dim
-            self.encoder_layers.append(
-                _make_conv(
-                    conv_type,
-                    in_dim,
-                    out_per_head,
-                    heads=heads,
-                    edge_dim=self._edge_dim,
-                )
-            )
-            if self.batch_norm:
-                self.encoder_bns.append(nn.BatchNorm1d(target_dim))
-            in_dim = target_dim
+        # Encoder: progressive GAT layers
+        self.encoder_layers, self.encoder_bns = build_conv_stack(
+            conv_type, gat_in_dim, encoder_targets, self._edge_dim,
+            heads_first=encoder_heads, batch_norm=batch_norm,
+        )
 
-        # Latent heads map final encoder output to latent_dim
-        self.latent_in_dim = in_dim
+        # Latent heads
+        self.latent_in_dim = encoder_targets[-1]
         self.z_mean = nn.Linear(self.latent_in_dim, latent_dim)
         self.z_logvar = nn.Linear(self.latent_in_dim, latent_dim)
 
-        # Decoder: mirror of encoder (reverse progressive schedule)
+        # Decoder: mirror of encoder, final layer outputs continuous features
         decoder_targets = list(reversed(encoder_targets))
-        self.decoder_layers = nn.ModuleList()
-        self.decoder_bns = nn.ModuleList()
-        in_dim = latent_dim
-
-        # Validate: first decoder layer must accept latent_dim input
-        if len(decoder_targets) == 0:
-            raise ValueError(
-                f"decoder_targets is empty! hidden_dims={hidden_dims}, encoder_targets={encoder_targets}"
-            )
-        for i, target_dim in enumerate(decoder_targets):
-            # For intermediate decoder layers we may use multiple heads; final layer maps to continuous features
-            is_last = i == len(decoder_targets) - 1
-            heads = decoder_heads if (not is_last and decoder_heads > 1) else 1
-            if heads > 1 and target_dim % heads == 0 and not is_last:
-                out_per_head = target_dim // heads
-            else:
-                heads = 1
-                out_per_head = target_dim if not is_last else (in_channels - 1)
-
-            self.decoder_layers.append(
-                _make_conv(
-                    conv_type,
-                    in_dim,
-                    out_per_head,
-                    heads=heads,
-                    edge_dim=self._edge_dim,
-                )
-            )
-            if (not is_last) and self.batch_norm:
-                self.decoder_bns.append(nn.BatchNorm1d(out_per_head * heads))
-            # next in_dim for following layer
-            in_dim = (out_per_head * heads) if (not is_last) else (in_channels - 1)
+        # Replace last target with (in_channels - 1) for reconstruction output
+        decoder_targets[-1] = in_channels - 1
+        self.decoder_layers, self.decoder_bns = build_conv_stack(
+            conv_type, latent_dim, decoder_targets, self._edge_dim,
+            heads_first=decoder_heads, batch_norm=batch_norm,
+        )
+        # Remove the batch norm for the last decoder layer (sigmoid output, no BN)
+        if batch_norm and len(self.decoder_bns) == len(decoder_targets):
+            self.decoder_bns = self.decoder_bns[:-1]
 
         # CAN ID classifier head
         self.canid_classifier = nn.Linear(latent_dim, num_ids)
@@ -166,10 +124,8 @@ class GraphAutoencoderNeighborhood(nn.Module):
         self.dropout = nn.Dropout(p=dropout)
         self.latent_dim = latent_dim
 
-    def encode(self, x, edge_index, edge_attr=None):
-
+    def encode(self, x, edge_index, edge_attr=None, batch=None):
         x = self.input_encoder(x)
-        # Apply encoder layers
         for i, conv in enumerate(self.encoder_layers):
             bn = self.encoder_bns[i] if self.batch_norm else None
             x = conv_forward(
@@ -178,6 +134,7 @@ class GraphAutoencoderNeighborhood(nn.Module):
                 edge_index,
                 edge_attr,
                 bn=bn,
+                batch=batch,
                 dropout_p=self.dropout_rate,
                 training=self.training,
                 use_checkpointing=self.use_checkpointing,
@@ -190,24 +147,9 @@ class GraphAutoencoderNeighborhood(nn.Module):
         kl_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
         return z, kl_loss
 
-    def decode_node(self, z, edge_index, edge_attr=None):
+    def decode_node(self, z, edge_index, edge_attr=None, batch=None):
+        assert z.size(-1) == self.latent_dim, f"Expected {self.latent_dim}D input, got {z.size(-1)}D"
         x = z
-
-        # Runtime shape validation
-        if x.size(-1) != self.latent_dim:
-            raise RuntimeError(
-                f"decode_node input has {x.size(-1)} features but expected latent_dim={self.latent_dim}"
-            )
-
-        # Check first decoder layer expects latent_dim input
-        first_layer = self.decoder_layers[0]
-        if first_layer.in_channels != self.latent_dim:
-            raise RuntimeError(
-                f"First decoder layer expects {first_layer.in_channels} features "
-                f"but latent_dim={self.latent_dim}. "
-                f"Decoder layers: {[(l.in_channels, l.out_channels, l.heads) for l in self.decoder_layers]}"
-            )
-
 
         for i, conv in enumerate(self.decoder_layers):
             if i < len(self.decoder_layers) - 1:
@@ -218,6 +160,7 @@ class GraphAutoencoderNeighborhood(nn.Module):
                     edge_index,
                     edge_attr,
                     bn=bn,
+                    batch=batch,
                     dropout_p=self.dropout_rate,
                     training=self.training,
                     use_checkpointing=self.use_checkpointing,
@@ -237,18 +180,6 @@ class GraphAutoencoderNeighborhood(nn.Module):
         canid_logits = self.canid_classifier(z)
 
         return cont_out, canid_logits
-
-    def decode_neighborhood(self, z):
-        """Decode latent representation to neighborhood predictions.
-
-        Args:
-            z (torch.Tensor): Latent node embeddings with shape [num_nodes, latent_dim].
-
-        Returns:
-            torch.Tensor: Neighborhood logits with shape [num_nodes, num_ids].
-        """
-        neighbor_logits = self.neighborhood_decoder(z)
-        return neighbor_logits
 
     def create_neighborhood_targets(self, x, edge_index, batch):
         """Create neighborhood target matrix for training.
@@ -290,25 +221,40 @@ class GraphAutoencoderNeighborhood(nn.Module):
             embedding_dim=cfg.vgae.embedding_dim,
             dropout=cfg.vgae.dropout,
             conv_type=conv_type,
-            edge_dim=cfg.vgae.edge_dim if conv_type in ("transformer", "gatv2") else None,
+            edge_dim=cfg.vgae.edge_dim if conv_type in ("transformer", "gatv2", "gps") else None,
             proj_dim=cfg.vgae.proj_dim,
             use_checkpointing=cfg.training.gradient_checkpointing,
         )
 
-    def forward(self, x, edge_index, batch, edge_attr=None):
+    def forward(self, x, edge_index, batch, edge_attr=None, mask_ratio: float = 0.0):
         """Forward pass through the GraphAutoencoderNeighborhood.
 
         Args:
-            x (torch.Tensor): Node features with shape [num_nodes, in_channels].
-            edge_index (torch.Tensor): Edge indices with shape [2, num_edges].
-            batch (torch.Tensor): Batch assignment vector.
-            edge_attr (torch.Tensor, optional): Edge features for TransformerConv/GATv2Conv.
+            x: Node features [num_nodes, in_channels]. Column 0 is CAN ID.
+            edge_index: Edge indices [2, num_edges].
+            batch: Batch assignment vector.
+            edge_attr: Optional edge features for TransformerConv/GATv2Conv.
+            mask_ratio: Fraction of continuous features to mask during training
+                (GraphMAE-style). Masked features are zeroed before encoding;
+                the returned mask indicates which (node, feature) positions
+                were masked for selective reconstruction loss. Set to 0.0 to
+                disable (inference, or legacy behavior).
 
         Returns:
-            tuple: (continuous_output, canid_logits, neighbor_logits, latent_embeddings, kl_loss).
+            tuple: (cont_out, canid_logits, neighbor_logits, z, kl_loss, mask).
+            mask is a bool tensor [num_nodes, in_channels-1] or None if mask_ratio=0.
         """
+        mask = None
+        if mask_ratio > 0.0 and self.training:
+            # Mask continuous features (column 1+), keep CAN IDs intact
+            cont = x[:, 1:]
+            mask = torch.rand_like(cont) < mask_ratio
+            masked_cont = cont.clone()
+            masked_cont[mask] = 0.0
+            x = torch.cat([x[:, :1], masked_cont], dim=1)
+
         ea = edge_attr if self._uses_edge_attr else None
-        z, kl_loss = self.encode(x, edge_index, edge_attr=ea)
-        cont_out, canid_logits = self.decode_node(z, edge_index, edge_attr=ea)
-        neighbor_logits = self.decode_neighborhood(z)
-        return cont_out, canid_logits, neighbor_logits, z, kl_loss
+        z, kl_loss = self.encode(x, edge_index, edge_attr=ea, batch=batch)
+        cont_out, canid_logits = self.decode_node(z, edge_index, edge_attr=ea, batch=batch)
+        neighbor_logits = self.neighborhood_decoder(z)
+        return cont_out, canid_logits, neighbor_logits, z, kl_loss, mask

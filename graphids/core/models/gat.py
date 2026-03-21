@@ -67,11 +67,11 @@ class GATWithJK(nn.Module):
             )
 
         self.jk = JumpingKnowledge(
-            mode="cat", channels=hidden_channels * heads, num_layers=num_layers
+            mode="lstm", channels=hidden_channels * heads, num_layers=num_layers
         )
 
-        # Pooling
-        jk_out_dim = hidden_channels * heads * num_layers
+        # Pooling — "lstm" JK outputs single-layer dim (not concatenated)
+        jk_out_dim = hidden_channels * heads
         if len(pool_aggrs) > 1:
             self.pool = MultiAggregation(list(pool_aggrs))
             fc_input_dim = jk_out_dim * len(pool_aggrs)
@@ -101,7 +101,7 @@ class GATWithJK(nn.Module):
             num_fc_layers=cfg.gat.fc_layers,
             embedding_dim=cfg.gat.embedding_dim,
             conv_type=cfg.gat.conv_type,
-            edge_dim=cfg.gat.edge_dim if cfg.gat.conv_type in ("transformer", "gatv2") else None,
+            edge_dim=cfg.gat.edge_dim if cfg.gat.conv_type in ("transformer", "gatv2", "gps") else None,
             pool_aggrs=cfg.gat.pool_aggrs,
             proj_dim=cfg.gat.proj_dim,
             use_checkpointing=cfg.training.gradient_checkpointing,
@@ -140,6 +140,7 @@ class GATWithJK(nn.Module):
                     x,
                     edge_index,
                     edge_attr,
+                    batch=batch,
                     dropout_p=self.dropout,
                     training=self.training,
                     use_checkpointing=self.use_checkpointing,

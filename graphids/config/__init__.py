@@ -54,9 +54,10 @@ class VGAEConfig:
     heads: int = 4
     embedding_dim: int = 32
     dropout: float = 0.15
-    conv_type: str = "gat"
+    conv_type: str = "gatv2"
     edge_dim: int = 11
     proj_dim: int = 0
+    mask_ratio: float = 0.3
     canid_weight: float = 0.1
     nbr_weight: float = 0.05
     kl_weight: float = 0.01
@@ -70,7 +71,7 @@ class GATConfig:
     dropout: float = 0.2
     embedding_dim: int = 16
     fc_layers: int = 3
-    conv_type: str = "gat"
+    conv_type: str = "gatv2"
     edge_dim: int = 11
     pool_aggrs: list[str] = field(default_factory=lambda: ["mean"])
     proj_dim: int = 0
@@ -91,6 +92,19 @@ class DQNConfig:
     scheduler_patience: int = 1000
     max_patience: int = 5000
     vgae_error_weights: list[float] = field(default_factory=lambda: [0.4, 0.35, 0.25])
+
+
+@dataclass
+class BanditConfig:
+    ucb_alpha: float = 1.0
+    lambda_reg: float = 1.0
+    backbone_retrain_freq: int = 50
+    backbone_lr: float = 0.001
+    backbone_epochs: int = 5
+    hidden: int = 576
+    layers: int = 3
+    buffer_size: int = 100_000
+    batch_size: int = 128
 
 
 @dataclass
@@ -174,6 +188,7 @@ class Config:
     vgae: VGAEConfig = field(default_factory=VGAEConfig)
     gat: GATConfig = field(default_factory=GATConfig)
     dqn: DQNConfig = field(default_factory=DQNConfig)
+    bandit: BanditConfig = field(default_factory=BanditConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     fusion: FusionConfig = field(default_factory=FusionConfig)
     temporal: TemporalConfig = field(default_factory=TemporalConfig)
