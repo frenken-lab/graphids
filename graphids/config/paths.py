@@ -1,11 +1,11 @@
-"""Path derivation and environment settings."""
+"""Path derivation and environment constants."""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
+
 import yaml
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .constants import (
     CATALOG_PATH,
@@ -14,79 +14,43 @@ from .constants import (
 
 
 # ---------------------------------------------------------------------------
-# Environment settings (SLURM + MLflow only — path vars are in Hydra config)
+# Environment (KD_GAT_* env vars with defaults)
 # ---------------------------------------------------------------------------
 
-
-class EnvironmentSettings(BaseSettings):
-    """KD_GAT_* env vars for infrastructure outside config composition."""
-
-    model_config = SettingsConfigDict(env_prefix="KD_GAT_")
-
-    slurm_account: str = "PAS1266"
-    slurm_partition: str = "gpu"
-    gpu_type: str = "v100"
-
-    # Run metadata (not config identity — never in Hydra config)
-    sweep_id: str = ""
-    tags: str = ""
-    ckpt_path: str = ""
-
-
-# Module-level singleton (read once at import)
-_env = EnvironmentSettings()
-
-# Derived constants from env
-SLURM_ACCOUNT: str = _env.slurm_account
-SLURM_PARTITION: str = _env.slurm_partition
-SLURM_GPU_TYPE: str = _env.gpu_type
-SWEEP_ID: str = _env.sweep_id
-USER_TAGS: str = _env.tags
-CKPT_PATH: str = _env.ckpt_path
+SLURM_ACCOUNT: str = os.environ.get("KD_GAT_SLURM_ACCOUNT", "PAS1266")
+SLURM_PARTITION: str = os.environ.get("KD_GAT_SLURM_PARTITION", "gpu")
+SLURM_GPU_TYPE: str = os.environ.get("KD_GAT_GPU_TYPE", "v100")
+SWEEP_ID: str = os.environ.get("KD_GAT_SWEEP_ID", "")
+USER_TAGS: str = os.environ.get("KD_GAT_TAGS", "")
+CKPT_PATH: str = os.environ.get("KD_GAT_CKPT_PATH", "")
 
 
 # ---------------------------------------------------------------------------
-# Lake path primitives (preprocessing cache + raw data — not per-run)
+# Lake paths
 # ---------------------------------------------------------------------------
-
-_DEFAULT_PREPROCESSING_VERSION = "4"
-
-
-def lake_cache_dir(lake_root: str | Path, dataset: str, version: str | None = None) -> Path:
-    """Path: {lake_root}/cache/v{version}/{dataset}"""
-    if version is None:
-        version = _DEFAULT_PREPROCESSING_VERSION
-    return Path(lake_root) / "cache" / f"v{version}" / dataset
-
-
-def lake_raw_dir(lake_root: str | Path, dataset: str) -> Path:
-    """Path: {lake_root}/raw/{dataset}"""
-    return Path(lake_root) / "raw" / dataset
-
 
 def lake_root_from_env() -> Path | None:
-    """Read KD_GAT_LAKE_ROOT from the environment."""
     root = os.environ.get("KD_GAT_LAKE_ROOT")
     return Path(root) if root else None
 
 
-def lake_catalog_path(lake_root: str | Path) -> Path:
-    """Path: {lake_root}/catalog/kd_gat.duckdb"""
+def lake_cache_dir(lake_root, dataset: str, version: str | None = None) -> Path:
+    return Path(lake_root) / "cache" / f"v{version or PREPROCESSING_VERSION}" / dataset
+
+
+def lake_raw_dir(lake_root, dataset: str) -> Path:
+    return Path(lake_root) / "raw" / dataset
+
+
+def lake_catalog_path(lake_root) -> Path:
     return Path(lake_root) / "catalog" / "kd_gat.duckdb"
 
 
-def lake_exports_dir(lake_root: str | Path) -> Path:
-    """Path: {lake_root}/exports"""
+def lake_exports_dir(lake_root) -> Path:
     return Path(lake_root) / "exports"
 
 
-# ---------------------------------------------------------------------------
-# Path derivation (Config-based)
-# ---------------------------------------------------------------------------
-
-
 def data_dir(cfg) -> Path:
-    """Raw data directory for a dataset."""
     candidate = lake_raw_dir(cfg.lake_root, cfg.dataset)
     if candidate.exists():
         return candidate
@@ -94,41 +58,28 @@ def data_dir(cfg) -> Path:
 
 
 def cache_dir(cfg) -> Path:
-    """Processed-graph cache directory."""
-    return lake_cache_dir(cfg.lake_root, cfg.dataset, version=PREPROCESSING_VERSION)
+    return lake_cache_dir(cfg.lake_root, cfg.dataset)
 
 
 # ---------------------------------------------------------------------------
-# Catalog
+# Dataset catalog
 # ---------------------------------------------------------------------------
 
 _datasets_cache: list[str] | None = None
 
 
 def get_datasets() -> list[str]:
-    """Dataset names from datasets.yaml (cached)."""
     global _datasets_cache
     if _datasets_cache is None:
-        _datasets_cache = list(load_catalog().keys())
+        _datasets_cache = list(yaml.safe_load(CATALOG_PATH.read_text()).keys())
     return _datasets_cache
 
 
 def load_catalog() -> dict:
-    """Load dataset entries from datasets.yaml."""
-    raw = yaml.safe_load(CATALOG_PATH.read_text())
-    return raw
-
-
-# ---------------------------------------------------------------------------
-# Utilities
-# ---------------------------------------------------------------------------
+    return yaml.safe_load(CATALOG_PATH.read_text())
 
 
 def parse_seeds(value: str) -> list[int]:
-    """Parse seeds: comma-separated ints."""
     if value is None:
         return []
-    try:
-        return [int(s.strip()) for s in value.split(",")]
-    except ValueError as e:
-        raise ValueError(f"Invalid seeds value '{value}': {e}") from e
+    return [int(s.strip()) for s in value.split(",")]
