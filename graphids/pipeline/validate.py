@@ -9,12 +9,9 @@ from __future__ import annotations
 
 import structlog
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from graphids.config import PipelineConfig
 
-from graphids.config import STAGE_DEPENDENCIES, STAGES, data_dir, get_datasets
+from graphids.config import STAGE_DEPENDENCIES, STAGES, data_dir, get_datasets, resolve
 
 log = structlog.get_logger()
 
@@ -24,12 +21,11 @@ def validate_datasets(datasets: list[str], scale: str) -> list[str]:
 
     Returns a list of error strings (empty if all OK).
     """
-    from graphids.config import resolve
 
     errors: list[str] = []
     for dataset in datasets:
         try:
-            cfg = resolve("vgae", scale, dataset=dataset)
+            cfg = resolve(f"model=vgae_{scale}", f"dataset={dataset}")
             ddir = data_dir(cfg)
             if not ddir.exists():
                 errors.append(f"Data dir missing for {dataset}: {ddir}")
@@ -38,13 +34,13 @@ def validate_datasets(datasets: list[str], scale: str) -> list[str]:
     return errors
 
 
-def _artifact_exists(cfg: PipelineConfig, stage: str, name: str, model_type: str) -> bool:
+def _artifact_exists(cfg, stage: str, name: str, model_type: str) -> bool:
     """Check if a stage artifact exists via checkpoint paths."""
     from pathlib import Path
     return Path(cfg.checkpoints[model_type]).exists()
 
 
-def validate(cfg: PipelineConfig, stage: str) -> None:
+def validate(cfg, stage: str) -> None:
     """Raise ValueError if config + stage combination is invalid."""
     errors: list[str] = []
 
@@ -59,20 +55,19 @@ def validate(cfg: PipelineConfig, stage: str) -> None:
         errors.append(f"Data directory not found: {data_dir(cfg)}")
 
     # --- KD consistency ---
-    if cfg.scale == "small" and not cfg.has_kd:
+    kd = next((a for a in cfg.get("auxiliaries", []) if a.type == "kd"), None)
+    if cfg.scale == "small" and not kd:
         log.warning("Small model without KD -- running as ablation baseline")
 
-    if cfg.has_kd and cfg.kd.model_path:
-        # Explicit teacher path — validate it exists
-        tp = Path(cfg.kd.model_path)
+    if kd and kd.model_path:
+        tp = Path(kd.model_path)
         if not tp.exists():
             errors.append(f"Teacher checkpoint not found: {tp}")
-        teacher_cfg = tp.parent / "config.json"
+        teacher_cfg = tp.parent / "config.yaml"
         if not teacher_cfg.exists():
             errors.append(f"Teacher config not found: {teacher_cfg}")
-    elif cfg.has_kd and not cfg.kd.model_path and stage != "evaluation":
-        # Auto-resolution via prepare_kd() at training time
-        log.info("kd_teacher_auto_resolve", teacher_scale=cfg.kd.teacher_scale)
+    elif kd and not kd.model_path and stage != "evaluation":
+        log.info("kd_teacher_auto_resolve", teacher_scale=kd.teacher_scale)
 
     # --- prerequisite checkpoints (via resolver, not hardcoded paths) ---
     if stage in STAGE_DEPENDENCIES:

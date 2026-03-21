@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from graphids.config import PreprocessingConfig
+from graphids.config import PREPROCESSING_DEFAULTS
 
 from ._engine import GraphEngine
 from ._schema import IRSchema
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger()
 
-_PREP_DEFAULTS = PreprocessingConfig()
+
 
 
 def _process_single_file(
@@ -71,8 +71,8 @@ def process_dataset(
     root: str | Path,
     split: str = "train_",
     vocab: EntityVocabulary | None = None,
-    window_size: int = _PREP_DEFAULTS.window_size,
-    stride: int = _PREP_DEFAULTS.stride,
+    window_size: int = PREPROCESSING_DEFAULTS["window_size"],
+    stride: int = PREPROCESSING_DEFAULTS["stride"],
     return_vocab: bool = False,
     verbose: bool = False,
     adapter: DomainAdapter | None = None,
@@ -122,7 +122,7 @@ def process_dataset(
     vocab_dict = vocab.to_dict()
 
     # Decide: Ray parallel vs sequential
-    ray_threshold = _PREP_DEFAULTS.ray_file_threshold
+    ray_threshold = PREPROCESSING_DEFAULTS["ray_file_threshold"]
     adapter_cls = type(adapter)
     adapter_kwargs = adapter.to_init_kwargs()
 

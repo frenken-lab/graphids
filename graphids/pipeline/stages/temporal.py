@@ -19,7 +19,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
-from graphids.config import PipelineConfig
 
 from .data_loading import cleanup, graph_label, load_data
 from .trainer_factory import load_model, make_trainer
@@ -67,7 +66,7 @@ def collate_temporal(batch):
 class TemporalLightningModule(pl.LightningModule):
     """Lightning wrapper for TemporalGraphClassifier."""
 
-    def __init__(self, model, cfg: PipelineConfig):
+    def __init__(self, model, cfg):
         super().__init__()
         self.model = model
         self.cfg = cfg
@@ -141,7 +140,7 @@ class TemporalLightningModule(pl.LightningModule):
 # ---------------------------------------------------------------------------
 
 
-def train_temporal(cfg: PipelineConfig) -> dict:
+def train_temporal(cfg) -> dict:
     """Train temporal graph classifier.
 
     Loads pretrained GAT, wraps with temporal Transformer head, trains
@@ -241,7 +240,8 @@ def train_temporal(cfg: PipelineConfig) -> dict:
     trainable_params = sum(p.numel() for p in temporal_model.parameters() if p.requires_grad)
     log.info("temporal_model_params", total=total_params, trainable=trainable_params)
 
-    cfg.save(Path("config.json"))
+    from graphids.config import save_config
+    save_config(cfg, Path("config.yaml"))
 
     # Train
     lit_module = TemporalLightningModule(temporal_model, cfg)

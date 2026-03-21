@@ -18,7 +18,6 @@ from typing import NamedTuple
 
 import torch.nn as nn
 
-from graphids.config import PipelineConfig
 
 from .fusion_features import (
     FusionFeatureExtractor,
@@ -41,7 +40,7 @@ _REGISTRY: dict[str, ModelEntry] = {}
 @dataclass
 class ModelEntry:
     model_type: str
-    factory: Callable[[PipelineConfig, int, int], nn.Module]
+    factory: Callable
     extractor: FusionFeatureExtractor | None
 
 

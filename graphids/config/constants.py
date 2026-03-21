@@ -26,6 +26,30 @@ EDGE_FEATURE_COUNT = 11
 EXCLUDED_ATTACK_TYPES = ["suppress", "masquerade"]
 MMAP_TENSOR_LIMIT = 60_000
 
+# Preprocessing defaults (replaces PreprocessingConfig Pydantic model)
+PREPROCESSING_DEFAULTS = {
+    "window_size": 100,
+    "stride": 100,
+    "train_val_split": 0.8,
+    "chunk_size": 5000,
+    "ray_file_threshold": 4,
+}
+
+
+def compute_preprocessing_hash() -> str:
+    """Content-addressable hash of preprocessing parameters."""
+    import hashlib
+
+    components = [
+        PREPROCESSING_VERSION,
+        str(NODE_FEATURE_COUNT),
+        str(EDGE_FEATURE_COUNT),
+        str(PREPROCESSING_DEFAULTS["window_size"]),
+        str(PREPROCESSING_DEFAULTS["stride"]),
+        str(PREPROCESSING_DEFAULTS["train_val_split"]),
+    ]
+    return hashlib.sha256("|".join(components).encode()).hexdigest()[:16]
+
 # ---------------------------------------------------------------------------
 # Project defaults
 # ---------------------------------------------------------------------------

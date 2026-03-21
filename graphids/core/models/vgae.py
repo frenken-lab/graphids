@@ -279,7 +279,7 @@ class GraphAutoencoderNeighborhood(nn.Module):
 
     @classmethod
     def from_config(cls, cfg, num_ids: int, in_ch: int) -> "GraphAutoencoderNeighborhood":
-        """Construct from a PipelineConfig."""
+        """Construct from a config."""
         conv_type = cfg.vgae.conv_type
         return cls(
             num_ids=num_ids,

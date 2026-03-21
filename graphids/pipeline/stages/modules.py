@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from graphids.config import PipelineConfig
+from omegaconf import OmegaConf
 
 from .batch_sizing import effective_batch_size
 from .data_loading import compute_node_budget, make_dataloader
@@ -62,14 +62,14 @@ class VGAEModule(pl.LightningModule):
 
     def __init__(
         self,
-        cfg: PipelineConfig,
+        cfg,
         num_ids: int,
         in_channels: int,
         teacher: nn.Module | None = None,
         projection: nn.Linear | None = None,
     ):
         super().__init__()
-        self.save_hyperparameters({"cfg": cfg.model_dump(), "num_ids": num_ids, "in_channels": in_channels})
+        self.save_hyperparameters({"cfg": OmegaConf.to_container(cfg), "num_ids": num_ids, "in_channels": in_channels})
         from graphids.core.models.vgae import GraphAutoencoderNeighborhood
 
         self.cfg = cfg
@@ -98,7 +98,7 @@ class VGAEModule(pl.LightningModule):
         task_loss, cont_out, z = self._task_loss(batch)
 
         if self.teacher is not None:
-            kd = self.cfg.kd
+            kd = next((a for a in self.cfg.get("auxiliaries", []) if a.type == "kd"), None)
             self._teacher_on_cpu = _teacher_to_device(
                 self.teacher, batch.x.device, self._teacher_on_cpu, self.cfg
             )
@@ -160,14 +160,14 @@ class GATModule(pl.LightningModule):
 
     def __init__(
         self,
-        cfg: PipelineConfig,
+        cfg,
         num_ids: int,
         in_channels: int,
         num_classes: int = 2,
         teacher: nn.Module | None = None,
     ):
         super().__init__()
-        self.save_hyperparameters({"cfg": cfg.model_dump(), "num_ids": num_ids, "in_channels": in_channels})
+        self.save_hyperparameters({"cfg": OmegaConf.to_container(cfg), "num_ids": num_ids, "in_channels": in_channels})
         from graphids.core.models.gat import GATWithJK
 
         self.cfg = cfg
@@ -186,7 +186,7 @@ class GATModule(pl.LightningModule):
         acc = (logits.argmax(1) == batch.y).float().mean()
 
         if self.teacher is not None:
-            kd = self.cfg.kd
+            kd = next((a for a in self.cfg.get("auxiliaries", []) if a.type == "kd"), None)
             self._teacher_on_cpu = _teacher_to_device(
                 self.teacher, batch.x.device, self._teacher_on_cpu, self.cfg
             )
@@ -226,7 +226,7 @@ class GATModule(pl.LightningModule):
 class CurriculumDataModule(pl.LightningDataModule):
     """Resamples training data each epoch with increasing difficulty."""
 
-    def __init__(self, normals, attacks, scores, val_data, cfg: PipelineConfig):
+    def __init__(self, normals, attacks, scores, val_data, cfg):
         super().__init__()
         self.normals = normals
         self.attacks = attacks
@@ -258,7 +258,7 @@ class CurriculumDataModule(pl.LightningDataModule):
         return make_dataloader(self.val_data, self.cfg, bs, shuffle=False, max_num_nodes=max_nodes)
 
 
-def _curriculum_sample(normals, attacks, scores, epoch, cfg: PipelineConfig):
+def _curriculum_sample(normals, attacks, scores, epoch, cfg):
     """Sample training batch with curriculum ratio and difficulty-based selection."""
     progress = min(epoch / max(cfg.training.max_epochs, 1), 1.0)
     ratio = cfg.training.curriculum_start_ratio + progress * (

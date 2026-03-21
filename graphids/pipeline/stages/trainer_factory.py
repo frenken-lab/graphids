@@ -11,15 +11,12 @@ import torch
 import torch.nn as nn
 from .callbacks import RunMetadataCallback
 
-from graphids.config import (
-    STAGE_MODEL_MAP,
-    PipelineConfig,
-)
+from graphids.config import STAGE_MODEL_MAP
 
 log = structlog.get_logger()
 
 
-def _instantiate_callbacks(cfg: PipelineConfig) -> list:
+def _instantiate_callbacks(cfg) -> list:
     """Instantiate callbacks from config, add non-configurable ones."""
     from hydra.utils import instantiate
 
@@ -37,28 +34,28 @@ for _stage, _model in STAGE_MODEL_MAP.items():
     _TEACHER_STAGE.setdefault(_model, _stage)
 
 
-def resolve_teacher_path(cfg: PipelineConfig, model_type: str) -> Path:
+def resolve_teacher_path(cfg, model_type: str) -> Path:
     """Auto-resolve teacher checkpoint path for KD.
 
     Resolution order:
-    1. Explicit ``cfg.kd.model_path`` (manual override)
-    2. Auto-resolve from ``cfg.kd.teacher_scale`` via the artifact resolver
+    1. Explicit ``kd.model_path`` (manual override)
+    2. Auto-resolve from ``kd.teacher_scale`` via the artifact resolver
 
     The ``teacher_scale`` field (default ``"large"``) makes the teacher
     reference scale-agnostic — today it's "large", but could be any
     variant that produces a checkpoint for the given model_type.
     """
-    from graphids.config import resolve
+    kd = next((a for a in cfg.get("auxiliaries", []) if a.type == "kd"), None)
+    if kd and kd.model_path:
+        return Path(kd.model_path)
 
-    if cfg.kd and cfg.kd.model_path:
-        return Path(cfg.kd.model_path)
-
-    teacher_scale = cfg.kd.teacher_scale if cfg.kd else "large"
+    teacher_scale = kd.teacher_scale if kd else "large"
     stage = _TEACHER_STAGE.get(model_type)
     if stage is None:
         raise ValueError(f"No teacher stage mapping for model_type '{model_type}'")
 
-    teacher_cfg = resolve(model_type, teacher_scale, dataset=cfg.dataset, seed=cfg.seed)
+    from graphids.config import resolve
+    teacher_cfg = resolve(f"model={model_type}_{teacher_scale}", f"dataset={cfg.dataset}", f"seed={cfg.seed}")
     path = Path(teacher_cfg.checkpoints[model_type])
     if not path.exists():
         raise FileNotFoundError(
@@ -70,7 +67,7 @@ def resolve_teacher_path(cfg: PipelineConfig, model_type: str) -> Path:
 
 
 def prepare_kd(
-    cfg: PipelineConfig,
+    cfg,
     model_type: str,
     num_ids: int,
     in_channels: int,
@@ -86,7 +83,7 @@ def prepare_kd(
 
     No if/else branching required in calling code.
     """
-    if not cfg.has_kd:
+    if not any(a.type == "kd" for a in cfg.get("auxiliaries", [])):
         return None, None
 
     teacher_path = resolve_teacher_path(cfg, model_type)
@@ -107,7 +104,7 @@ def prepare_kd(
 def _load_teacher(
     teacher_path: str,
     model_type: str,
-    cfg: PipelineConfig,
+    cfg,
     num_ids: int,
     in_channels: int,
     device: torch.device,
@@ -118,13 +115,14 @@ def _load_teacher(
     checkpoint = torch.load(teacher_path, map_location="cpu", weights_only=True)
     sd = _extract_state_dict(checkpoint)
 
-    teacher_cfg_path = Path(teacher_path).parent / "config.json"
+    teacher_cfg_path = Path(teacher_path).parent / "config.yaml"
     if not teacher_cfg_path.exists():
         raise FileNotFoundError(
             f"Teacher config not found: {teacher_cfg_path}. "
             f"Cannot load teacher without its frozen config (risk of dimension mismatch)."
         )
-    tcfg = PipelineConfig.load(teacher_cfg_path)
+    from omegaconf import OmegaConf
+    tcfg = OmegaConf.load(teacher_cfg_path)
 
     # Infer num_ids from checkpoint embedding if present
     t_num_ids = num_ids
@@ -187,16 +185,16 @@ def _extract_state_dict(checkpoint) -> dict:
 
 
 def load_frozen_cfg(
-    cfg: PipelineConfig, stage: str, model_type: str | None = None
-) -> PipelineConfig:
-    """Load the frozen config.json saved during training for *stage*.
+    cfg, stage: str, model_type: str | None = None
+):
+    """Load the frozen config.yaml saved during training for *stage*.
 
     model_type defaults to the canonical owner of the stage (e.g. "autoencoder" → "vgae").
 
     Raises FileNotFoundError if the frozen config doesn't exist.
     """
     mt = model_type or STAGE_MODEL_MAP.get(stage, cfg.model_type)
-    p = Path(cfg.checkpoints[mt]).parent / "config.json"
+    p = Path(cfg.checkpoints[mt]).parent / "config.yaml"
     if not p.exists():
         raise FileNotFoundError(
             f"Frozen config not found for stage '{stage}' (model_type={mt}). "
@@ -204,13 +202,14 @@ def load_frozen_cfg(
             f"before dependent stages can load it."
         )
     try:
-        return PipelineConfig.load(p)
+        from omegaconf import OmegaConf
+        return OmegaConf.load(p)
     except Exception as e:
         raise RuntimeError(f"Could not load frozen config {p}: {e}") from e
 
 
 def load_model(
-    cfg: PipelineConfig,
+    cfg,
     model_type: str,
     stage: str,
     num_ids: int,
@@ -228,7 +227,7 @@ def load_model(
     return model
 
 
-def build_optimizer_dict(optimizer, cfg: PipelineConfig):
+def build_optimizer_dict(optimizer, cfg):
     """Return optimizer or {optimizer, lr_scheduler} dict for Lightning."""
     t = cfg.training
     if not t.use_scheduler or not t.scheduler:
@@ -247,7 +246,7 @@ def build_optimizer_dict(optimizer, cfg: PipelineConfig):
 
 
 def make_trainer(
-    cfg: PipelineConfig,
+    cfg,
     stage: str,
     extra_callbacks: list | None = None,
 ) -> pl.Trainer:

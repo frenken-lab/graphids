@@ -29,7 +29,6 @@ from .adapters._can_bus import ATTACK_TYPE_CODES, ATTACK_TYPE_NAMES
 if TYPE_CHECKING:
     from torch.utils.data import Subset
 
-    from graphids.config import PipelineConfig
 
     from .adapters.base import DomainAdapter
 
@@ -71,7 +70,7 @@ assert EDGE_MANIFEST.count == EDGE_FEATURE_COUNT, (
 class PreprocessingPipeline:
     """Unified API for preprocessing, caching, and dataset loading."""
 
-    def __init__(self, cfg: PipelineConfig):
+    def __init__(self, cfg):
         self._cfg = cfg
         self._prep = cfg.preprocessing
         self._adapter = self._resolve_adapter()

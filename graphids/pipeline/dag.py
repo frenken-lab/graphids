@@ -184,8 +184,8 @@ def _asset_name(resource_model: str, scale: str, stage: str, aux: str = "") -> s
 
 
 def build_dag_topology() -> dict[str, DagNode]:
-    """Build pipeline DAG from PipelineConfig.variants + STAGE_DEPENDENCIES."""
-    cfg = resolve("vgae", "large")
+    """Build pipeline DAG from config variants + STAGE_DEPENDENCIES."""
+    cfg = resolve("model=vgae_large")
     nodes: dict[str, DagNode] = {
         "preprocess": DagNode("preprocess", "preprocess", "preprocess", "", "none", frozenset()),
     }
@@ -235,7 +235,7 @@ def run_dag(
             node = dag[name]
             dep_futs = [futures[d] for d in node.deps if d in futures]
             resources = get_resources(node.resource_model, node.scale, node.stage)
-            cfg = resolve(node.cli_model, node.scale, dataset=dataset, seed=seed)
+            cfg = resolve(f"model={node.cli_model}_{node.scale}", f"dataset={dataset}", f"seed={seed}")
 
             if dry_run:
                 log.info("dry_run", asset=name, deps=[str(d) for d in node.deps])
@@ -262,6 +262,6 @@ if __name__ == "__main__":
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    seed_list = parse_seeds(args.seeds) if args.seeds else [resolve("vgae", "large").seed]
+    seed_list = parse_seeds(args.seeds) if args.seeds else [resolve("model=vgae_large").seed]
     futures = run_dag(dag=build_dag_topology(), dataset=args.dataset, seeds=seed_list, dry_run=args.dry_run)
     log.info("jobs_submitted", count=len(futures))

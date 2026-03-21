@@ -23,13 +23,13 @@ import numpy as np
 import torch
 from torch_geometric.data import Data
 
-from graphids.config import PreprocessingConfig
+from graphids.config import PREPROCESSING_DEFAULTS
 
 from ._schema import IRSchema
 
 log = structlog.get_logger()
 
-_PREP_DEFAULTS = PreprocessingConfig()
+
 
 
 class GraphEngine:
@@ -48,8 +48,8 @@ class GraphEngine:
     def __init__(
         self,
         schema: IRSchema,
-        window_size: int = _PREP_DEFAULTS.window_size,
-        stride: int = _PREP_DEFAULTS.stride,
+        window_size: int = PREPROCESSING_DEFAULTS["window_size"],
+        stride: int = PREPROCESSING_DEFAULTS["stride"],
     ):
         self.schema = schema
         self.window_size = window_size

@@ -89,7 +89,7 @@ class GATWithJK(nn.Module):
 
     @classmethod
     def from_config(cls, cfg, num_ids: int, in_ch: int) -> "GATWithJK":
-        """Construct from a PipelineConfig."""
+        """Construct from a config."""
         return cls(
             num_ids=num_ids,
             in_channels=in_ch,

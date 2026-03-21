@@ -10,7 +10,6 @@ import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 
-from graphids.config import PipelineConfig
 
 from .batch_sizing import resolve_batch_config
 from .data_loading import training_preamble
@@ -21,7 +20,7 @@ from .trainer_factory import load_model, make_trainer, prepare_kd
 log = structlog.get_logger()
 
 
-def _resume_ckpt_path(cfg: PipelineConfig, stage: str) -> str | None:
+def _resume_ckpt_path(cfg, stage: str) -> str | None:
     """Find a checkpoint to resume from.
 
     Resolution order:
@@ -63,7 +62,7 @@ def _save_and_cleanup(module, trainer, cfg, stage: str, label: str | None = None
     return {"checkpoint": ckpt, "metrics": metrics}
 
 
-def train_autoencoder(cfg: PipelineConfig) -> dict:
+def train_autoencoder(cfg) -> dict:
     """Train VGAE on graph reconstruction. Returns result dict with checkpoint and metrics."""
     train_data, val_data, num_ids, in_ch, device = training_preamble(cfg, "AUTOENCODER")
 
@@ -79,7 +78,7 @@ def train_autoencoder(cfg: PipelineConfig) -> dict:
     return _save_and_cleanup(module, trainer, cfg, "autoencoder", "VGAE")
 
 
-def train_curriculum(cfg: PipelineConfig) -> dict:
+def train_curriculum(cfg) -> dict:
     """Train GAT with VGAE-guided curriculum learning. Returns result dict with checkpoint and metrics."""
     train_data, val_data, num_ids, in_ch, device = training_preamble(cfg, "CURRICULUM")
 
@@ -102,7 +101,7 @@ def train_curriculum(cfg: PipelineConfig) -> dict:
     return _save_and_cleanup(module, trainer, cfg, "curriculum", "GAT")
 
 
-def train_normal(cfg: PipelineConfig) -> dict:
+def train_normal(cfg) -> dict:
     """Train GAT with standard cross-entropy (no curriculum). Returns result dict with checkpoint and metrics."""
     train_data, val_data, num_ids, in_ch, device = training_preamble(cfg, "NORMAL")
 

@@ -9,7 +9,6 @@ import torch
 
 from pathlib import Path
 
-from graphids.config import PipelineConfig
 
 from .data_loading import cache_predictions, cleanup, training_preamble
 from .eval_inference import run_fusion_inference, run_gat_inference, run_vgae_inference
@@ -18,7 +17,7 @@ from .trainer_factory import load_frozen_cfg, load_model
 log = structlog.get_logger()
 
 
-def evaluate(cfg: PipelineConfig) -> dict:
+def evaluate(cfg) -> dict:
     """Evaluate trained model(s) on validation and held-out test data.
 
     Returns ``{"metrics": {...}}`` where metrics has the structure::
@@ -93,7 +92,7 @@ def evaluate(cfg: PipelineConfig) -> dict:
             all_metrics["temporal"] = temporal_m
 
     # ---- CKA (KD runs only) ----
-    if cfg.has_kd:
+    if any(a.type == "kd" for a in cfg.get("auxiliaries", [])):
         try:
             from .cka import compute_and_save_cka
             compute_and_save_cka(cfg, val_data, device, num_ids, in_ch, Path.cwd())
@@ -273,7 +272,7 @@ def probe_embedding_dim(model, sample_graph, device) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _load_test_data(cfg: PipelineConfig) -> dict:
+def _load_test_data(cfg) -> dict:
     """Load held-out test graphs per scenario (cached)."""
     from graphids.core.preprocessing import PreprocessingPipeline
 

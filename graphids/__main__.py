@@ -20,9 +20,9 @@ mp.set_start_method("spawn", force=True)
 
 def main(argv: list[str] | None = None) -> None:
     import hydra
-    from omegaconf import DictConfig, OmegaConf
+    from omegaconf import DictConfig
 
-    from graphids.config import STAGES, PipelineConfig
+    from graphids.config import STAGES
     from graphids.logging import configure_logging
     from graphids.pipeline.stages import run_stage
 
@@ -41,11 +41,7 @@ def main(argv: list[str] | None = None) -> None:
         if not stage or stage not in STAGES:
             raise SystemExit(f"stage= required. Valid: {list(STAGES.keys())}")
 
-        raw = OmegaConf.to_object(cfg)
-        raw.pop("stage", None)
-        pcfg = PipelineConfig.model_validate(raw)
-
-        result = run_stage(pcfg, stage)
+        result = run_stage(cfg, stage)
         metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
         return metrics.get("val_loss", float("inf"))
 

@@ -7,7 +7,6 @@ from pathlib import Path
 
 import torch
 
-from graphids.config import PipelineConfig
 
 from .data_loading import training_preamble
 from .data_loading import cache_predictions, cleanup
@@ -154,7 +153,7 @@ def _train_weighted_avg_fusion(cfg, train_cache, val_cache, device) -> float:
     return best_acc
 
 
-def train_fusion(cfg: PipelineConfig) -> dict:
+def train_fusion(cfg) -> dict:
     """Train fusion agent on cached VGAE+GAT predictions. Returns result dict with checkpoint and metrics."""
     train_data, val_data, num_ids, in_ch, device = training_preamble(
         cfg, f"FUSION ({cfg.fusion.method})"
@@ -184,7 +183,8 @@ def train_fusion(cfg: PipelineConfig) -> dict:
         raise ValueError(f"Unknown fusion method: {method}")
 
     ckpt = Path("best_model.pt")
-    cfg.save(Path("config.json"))
+    from graphids.config import save_config
+    save_config(cfg, Path("config.yaml"))
 
     metrics = {"best_acc": best_acc, "val_loss": 1.0 - best_acc, "fusion_method": method}
     log.info("saved_fusion", method=method, checkpoint=str(ckpt), best_acc=round(best_acc, 4))

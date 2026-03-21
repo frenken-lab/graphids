@@ -34,7 +34,7 @@ class QNetwork(nn.Module):
 
     @classmethod
     def from_config(cls, cfg) -> "QNetwork":
-        """Construct from a PipelineConfig."""
+        """Construct from a config."""
         from .registry import fusion_state_dim
 
         return cls(
@@ -201,12 +201,12 @@ class EnhancedDQNFusionAgent:
     @classmethod
     def from_config(
         cls,
-        cfg: "PipelineConfig",
+        cfg,
         device: str = "cpu",
         *,
         inference: bool = False,
     ) -> "EnhancedDQNFusionAgent":
-        """Create agent from PipelineConfig. Set inference=True for eval/serve (no exploration)."""
+        """Create agent from config. Set inference=True for eval/serve (no exploration)."""
         from .registry import fusion_state_dim
 
         kwargs = dict(

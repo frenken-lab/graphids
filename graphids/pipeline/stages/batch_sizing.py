@@ -11,17 +11,16 @@ from __future__ import annotations
 
 import structlog
 
-from graphids.config import PipelineConfig
 
 log = structlog.get_logger()
 
 
-def effective_batch_size(cfg: PipelineConfig) -> int:
+def effective_batch_size(cfg) -> int:
     """Apply safety factor to configured batch size."""
     return max(8, int(cfg.training.batch_size * cfg.training.safety_factor))
 
 
-def resolve_batch_config(cfg: PipelineConfig):
+def resolve_batch_config(cfg):
     """Compute batch size and optional dynamic batching node budget."""
     from .data_loading import compute_node_budget
 

@@ -61,13 +61,13 @@ def load_dataset(
         Tuple of (train_dataset, val_dataset, num_unique_ids)
     """
     if window_size is None or stride is None:
-        from graphids.config import PreprocessingConfig
+        from graphids.config import PREPROCESSING_DEFAULTS
 
-        _defaults = PreprocessingConfig()
+        
         if window_size is None:
-            window_size = _defaults.window_size
+            window_size = PREPROCESSING_DEFAULTS["window_size"]
         if stride is None:
-            stride = _defaults.stride
+            stride = PREPROCESSING_DEFAULTS["stride"]
 
     cache_file = cache_dir_path / "processed_graphs.pt"
     id_mapping_file = cache_dir_path / "id_mapping.pkl"

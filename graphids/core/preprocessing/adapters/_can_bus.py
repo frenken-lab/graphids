@@ -90,10 +90,10 @@ class CANBusAdapter(DomainAdapter):
         excluded_attacks: Sequence[str] = EXCLUDED_ATTACK_TYPES,
         include_attack_type: bool = False,
     ):
-        from graphids.config import PreprocessingConfig
+        from graphids.config import PREPROCESSING_DEFAULTS
 
         if chunk_size is None:
-            chunk_size = PreprocessingConfig().chunk_size
+            chunk_size = PREPROCESSING_DEFAULTS["chunk_size"]
         self._chunk_size = chunk_size
         self._excluded_attacks = list(excluded_attacks)
         self._include_attack_type = include_attack_type

@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 from torch_geometric.loader import DataLoader, DynamicBatchSampler
 
-from graphids.config import MMAP_TENSOR_LIMIT, PipelineConfig, cache_dir, data_dir
+from graphids.config import MMAP_TENSOR_LIMIT, cache_dir, data_dir
 
 log = structlog.get_logger()
 
@@ -23,7 +23,7 @@ def cleanup():
         torch.cuda.empty_cache()
 
 
-def training_preamble(cfg: PipelineConfig, stage_name: str):
+def training_preamble(cfg, stage_name: str):
     """Shared setup for all training/eval stages: log, seed, load data, resolve device."""
     log.info("stage_start", stage=stage_name, dataset=cfg.dataset, model_type=cfg.model_type, scale=cfg.scale)
     pl.seed_everything(cfg.seed)
@@ -37,7 +37,7 @@ def graph_label(g) -> int:
     return g.y.item() if g.y.dim() == 0 else int(g.y[0].item())
 
 
-def load_data(cfg: PipelineConfig):
+def load_data(cfg):
     """Load graph dataset. Returns (train_graphs, val_graphs, num_ids, in_channels)."""
     from graphids.core.preprocessing import PreprocessingPipeline
 
@@ -72,7 +72,7 @@ def _estimate_tensor_count(data) -> int:
     return len(data) * tensors_per_graph
 
 
-def _safe_num_workers(data, cfg: PipelineConfig) -> int:
+def _safe_num_workers(data, cfg) -> int:
     """Return num_workers, falling back to 0 if dataset exceeds mmap limits.
 
     With spawn multiprocessing, every tensor storage needs a separate mmap
@@ -97,7 +97,7 @@ def _safe_num_workers(data, cfg: PipelineConfig) -> int:
     return nw
 
 
-def compute_node_budget(batch_size: int, cfg: PipelineConfig) -> int | None:
+def compute_node_budget(batch_size: int, cfg) -> int | None:
     """Derive max_num_nodes from batch_size * p95 graph node count.
 
     Returns None when cache metadata is unavailable (falls back to static batching).
@@ -140,7 +140,7 @@ def _estimate_dynamic_steps(data, max_num_nodes: int, batch_size: int) -> int:
 
 def make_dataloader(
     data,
-    cfg: PipelineConfig,
+    cfg,
     batch_size: int,
     shuffle: bool = True,
     max_num_nodes: int | None = None,

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING
-
 import yaml
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -14,12 +12,9 @@ from .constants import (
     PREPROCESSING_VERSION,
 )
 
-if TYPE_CHECKING:
-    from .schema import PipelineConfig
-
 
 # ---------------------------------------------------------------------------
-# Environment settings (SLURM + MLflow only — path vars are in PipelineConfig)
+# Environment settings (SLURM + MLflow only — path vars are in Hydra config)
 # ---------------------------------------------------------------------------
 
 
@@ -32,7 +27,7 @@ class EnvironmentSettings(BaseSettings):
     slurm_partition: str = "gpu"
     gpu_type: str = "v100"
 
-    # Run metadata (not config identity — never on PipelineConfig)
+    # Run metadata (not config identity — never in Hydra config)
     sweep_id: str = ""
     tags: str = ""
     ckpt_path: str = ""
@@ -86,11 +81,11 @@ def lake_exports_dir(lake_root: str | Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Path derivation (PipelineConfig-based)
+# Path derivation (Config-based)
 # ---------------------------------------------------------------------------
 
 
-def data_dir(cfg: PipelineConfig) -> Path:
+def data_dir(cfg) -> Path:
     """Raw data directory for a dataset."""
     candidate = lake_raw_dir(cfg.lake_root, cfg.dataset)
     if candidate.exists():
@@ -98,7 +93,7 @@ def data_dir(cfg: PipelineConfig) -> Path:
     return Path("data") / "automotive" / cfg.dataset
 
 
-def cache_dir(cfg: PipelineConfig) -> Path:
+def cache_dir(cfg) -> Path:
     """Processed-graph cache directory."""
     return lake_cache_dir(cfg.lake_root, cfg.dataset, version=PREPROCESSING_VERSION)
 
@@ -119,11 +114,9 @@ def get_datasets() -> list[str]:
 
 
 def load_catalog() -> dict:
-    """Load and validate all dataset entries from datasets.yaml."""
-    from .schema import DatasetEntry
-
+    """Load dataset entries from datasets.yaml."""
     raw = yaml.safe_load(CATALOG_PATH.read_text())
-    return {name: DatasetEntry.model_validate(entry) for name, entry in raw.items()}
+    return raw
 
 
 # ---------------------------------------------------------------------------

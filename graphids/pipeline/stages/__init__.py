@@ -36,5 +36,6 @@ def run_stage(cfg, stage: str) -> dict:
         slurm_job_id=os.environ.get("SLURM_JOB_ID", ""),
     )
     validate(cfg, stage)
-    cfg.save(Path.cwd() / "config.json")
+    from omegaconf import OmegaConf
+    OmegaConf.save(cfg, Path.cwd() / "config.yaml")
     return STAGE_FNS[stage](cfg)
