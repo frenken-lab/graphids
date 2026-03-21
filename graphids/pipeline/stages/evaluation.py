@@ -213,7 +213,6 @@ def _evaluate_temporal(cfg, val_data, num_ids, in_ch, device) -> dict | None:
         from graphids.core.preprocessing._temporal import TemporalGrouper
 
         gat = load_model(cfg, "gat", "curriculum", num_ids, in_ch, device)
-        from .eval_inference import GATTestModule
         # Probe embedding dim
         with torch.no_grad():
             probe = val_data[0].clone().to(device)

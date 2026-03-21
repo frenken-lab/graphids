@@ -240,8 +240,7 @@ def train_temporal(cfg) -> dict:
     trainable_params = sum(p.numel() for p in temporal_model.parameters() if p.requires_grad)
     log.info("temporal_model_params", total=total_params, trainable=trainable_params)
 
-    from graphids.config import save_config
-    save_config(cfg, Path("config.yaml"))
+    # run_stage() already saves config.yaml
 
     # Train
     lit_module = TemporalLightningModule(temporal_model, cfg)
