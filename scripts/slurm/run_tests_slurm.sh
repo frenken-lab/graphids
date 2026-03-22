@@ -17,6 +17,6 @@ sbatch --account="${KD_GAT_SLURM_ACCOUNT:?Set KD_GAT_SLURM_ACCOUNT in .env}" --p
   --time=00:30:00 --mem=16G --cpus-per-task=4 \
   --job-name=kd-gat-pytest --output="$PROJECT_DIR/slurm_logs/%j-pytest.out" \
   --error="$PROJECT_DIR/slurm_logs/%j-pytest.err" \
-  --wrap="cd $PROJECT_DIR && SKIP_CUDA_CONF=1 SKIP_STAGE_DATA=1 source scripts/slurm/_preamble.sh && python -m pytest tests/ -v $*"
+  --wrap="cd $PROJECT_DIR && module load python/3.12 && source .venv/bin/activate && python -m pytest tests/ -v $*"
 
 echo "Submitted pytest job. Check slurm_logs/ for output."
