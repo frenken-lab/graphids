@@ -151,9 +151,20 @@ class CANBusDataset(InMemoryDataset):
 
         combined = pl.concat(frames).sort("timestamp")
 
+        # Normalize column names: HCRL CSVs use different names than our schema
+        col_names = combined.collect_schema().names()
+        renames = {}
+        if "arbitration_id" in col_names:
+            renames["arbitration_id"] = "arb_id"
+        if "data_field" in col_names:
+            renames["data_field"] = "payload"
+        if renames:
+            combined = combined.rename(renames)
+        payload_col = "payload"
+
         # Parse hex payload → 8 byte columns (single with_columns, pushed into query plan)
         byte_exprs = [
-            pl.col("payload")
+            pl.col(payload_col)
             .str.slice(i * 2, 2)
             .str.to_integer(base=16, strict=False)
             .fill_null(0)
