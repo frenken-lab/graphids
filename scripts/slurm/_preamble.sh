@@ -16,7 +16,7 @@ mkdir -p slurm_logs
 module load python/3.12
 source .venv/bin/activate
 
-set -a; source .env; set +a
+set -a; source ./.env; set +a
 
 # Group-writable umask for shared ESS data lake
 umask 002
