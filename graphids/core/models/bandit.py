@@ -66,6 +66,8 @@ class NeuralLinUCBAgent:
         buffer_size: int = 100_000,
         batch_size: int = 128,
         device: str = "cpu",
+        decision_threshold: float = 0.5,
+        reward_kwargs: dict | None = None,
     ):
         self.device = device
         self.alpha_steps = alpha_steps
@@ -75,6 +77,7 @@ class NeuralLinUCBAgent:
         self.batch_size = batch_size
         self.backbone_retrain_freq = backbone_retrain_freq
         self.backbone_epochs = backbone_epochs
+        self.decision_threshold = decision_threshold
 
         # Neural backbone
         self.backbone = Backbone(state_dim, hidden_dim, num_layers).to(device)
@@ -95,7 +98,7 @@ class NeuralLinUCBAgent:
         self._buf_capacity = buffer_size
 
         # Reward calculator (shared with DQN)
-        self.reward_calc = FusionRewardCalculator()
+        self.reward_calc = FusionRewardCalculator(**(reward_kwargs or {}))
 
         # Tracking
         self.state_dim = state_dim
@@ -111,7 +114,17 @@ class NeuralLinUCBAgent:
         """Create agent from pipeline config."""
         from .registry import fusion_state_dim
 
-        agent = cls(
+        reward_kwargs = dict(
+            vgae_weights=list(cfg.dqn.vgae_error_weights),
+            reward_correct=cfg.dqn.reward_correct,
+            reward_incorrect=cfg.dqn.reward_incorrect,
+            confidence_weight=cfg.dqn.confidence_weight,
+            combined_conf_weight=cfg.dqn.combined_conf_weight,
+            disagreement_penalty=cfg.dqn.disagreement_penalty,
+            overconf_penalty=cfg.dqn.overconf_penalty,
+            balance_weight=cfg.dqn.balance_weight,
+        )
+        return cls(
             state_dim=fusion_state_dim(),
             alpha_steps=cfg.fusion.alpha_steps,
             ucb_alpha=cfg.bandit.ucb_alpha,
@@ -124,9 +137,9 @@ class NeuralLinUCBAgent:
             buffer_size=cfg.bandit.buffer_size,
             batch_size=cfg.bandit.batch_size,
             device=device,
+            decision_threshold=cfg.fusion.decision_threshold,
+            reward_kwargs=reward_kwargs,
         )
-        agent.reward_calc.set_vgae_weights(cfg.dqn.vgae_error_weights)
-        return agent
 
     # ------------------------------------------------------------------
     # Action selection (batch)
@@ -279,7 +292,7 @@ class NeuralLinUCBAgent:
         # Fused prediction
         anomaly_scores, gat_probs = self.reward_calc.derive_scores(norm_states)
         fused_scores = (1 - alphas) * anomaly_scores + alphas * gat_probs
-        preds = (fused_scores > 0.5).long()
+        preds = (fused_scores > self.decision_threshold).long()
 
         # Reward
         rewards = self.reward_calc.compute(preds, labels, norm_states, alphas)
@@ -321,7 +334,7 @@ class NeuralLinUCBAgent:
 
         anomaly_scores, gat_probs = self.reward_calc.derive_scores(norm_states)
         fused_scores = (1 - alphas) * anomaly_scores + alphas * gat_probs
-        preds = (fused_scores > 0.5).long()
+        preds = (fused_scores > self.decision_threshold).long()
 
         correct = (preds == labels).sum().item()
         rewards = self.reward_calc.compute(preds, labels, norm_states, alphas)

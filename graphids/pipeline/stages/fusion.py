@@ -61,9 +61,9 @@ class DQNFusionModule(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         states, labels = batch
         actions, alphas, norm_states = self.agent.select_action_batch(states, training=True)
-        # TODO(open-question): Training uses (alpha > 0.5) as prediction, but
+        # TODO(open-question): Training uses (alpha > threshold) as prediction, but
         # validation uses the proper fused score. See dqn.py top-level comment.
-        preds = (alphas > 0.5).long()
+        preds = (alphas > self.agent.decision_threshold).long()
         rewards = self.agent.reward_calc.compute(preds, labels, norm_states, alphas)
         self.agent.store_experiences_batch(norm_states, actions, rewards)
 
@@ -91,7 +91,7 @@ class DQNFusionModule(pl.LightningModule):
         actions, alphas, norm_states = self.agent.select_action_batch(states, training=False)
         anomaly_scores, gat_probs = self.agent.reward_calc.derive_scores(norm_states)
         fused_scores = (1 - alphas) * anomaly_scores + alphas * gat_probs
-        preds = (fused_scores > 0.5).long()
+        preds = (fused_scores > self.agent.decision_threshold).long()
         self.test_metrics.update(preds, labels)
         self.log_dict(self.test_metrics, batch_size=len(labels))
 
@@ -135,7 +135,7 @@ class BanditFusionModule(pl.LightningModule):
         actions, alphas, norm_states = self.agent.select_action_batch(states, training=False)
         anomaly_scores, gat_probs = self.agent.reward_calc.derive_scores(norm_states)
         fused_scores = (1 - alphas) * anomaly_scores + alphas * gat_probs
-        preds = (fused_scores > 0.5).long()
+        preds = (fused_scores > self.agent.decision_threshold).long()
         self.test_metrics.update(preds, labels)
         self.log_dict(self.test_metrics, batch_size=len(labels))
 
@@ -285,7 +285,7 @@ def _train_weighted_avg_fusion(cfg, train_cache, val_cache, device) -> float:
     """Weighted average fusion via Lightning Trainer. Returns best validation accuracy."""
     from graphids.core.models.fusion_baselines import WeightedAvgModule
 
-    module = WeightedAvgModule(lr=cfg.fusion.lr)
+    module = WeightedAvgModule(lr=cfg.fusion.lr, decision_threshold=cfg.fusion.decision_threshold)
     train_dl, val_dl = _make_fusion_dataloaders(
         train_cache, val_cache, cfg.dqn.batch_size,
     )

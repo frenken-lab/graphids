@@ -262,7 +262,7 @@ def train_temporal(cfg) -> dict:
         temporal_layers=tc.temporal_layers,
         max_seq_len=tc.temporal_window,
         freeze_spatial=tc.freeze_spatial,
-        num_classes=2,
+        num_classes=cfg.num_classes,
     ).to(device)
 
     total_params = sum(p.numel() for p in temporal_model.parameters())

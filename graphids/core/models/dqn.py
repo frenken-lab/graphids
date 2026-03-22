@@ -137,6 +137,8 @@ class EnhancedDQNFusionAgent:
         num_layers=3,
         weight_decay=1e-5,
         scheduler_patience=1000,
+        decision_threshold: float = 0.5,
+        reward_kwargs: dict | None = None,
     ):
         self._alpha_values_t = torch.linspace(0, 1, alpha_steps)
         self.action_dim = alpha_steps
@@ -148,6 +150,7 @@ class EnhancedDQNFusionAgent:
         self.device = device
         self.batch_size = batch_size
         self.target_update_freq = target_update_freq
+        self.decision_threshold = decision_threshold
 
         # Networks
         self.q_network = QNetwork(state_dim, alpha_steps, hidden_dim, num_layers).to(device)
@@ -162,7 +165,7 @@ class EnhancedDQNFusionAgent:
         self.loss_fn = nn.SmoothL1Loss()
 
         self._buffer = TensorReplayBuffer(buffer_size, state_dim)
-        self.reward_calc = FusionRewardCalculator()
+        self.reward_calc = FusionRewardCalculator(**(reward_kwargs or {}))
         self.training_step = 0
         self.update_counter = 0
 
@@ -175,6 +178,16 @@ class EnhancedDQNFusionAgent:
         """Create agent from config. Set inference=True for eval/serve (no exploration)."""
         from .registry import fusion_state_dim
 
+        reward_kwargs = dict(
+            vgae_weights=list(cfg.dqn.vgae_error_weights),
+            reward_correct=cfg.dqn.reward_correct,
+            reward_incorrect=cfg.dqn.reward_incorrect,
+            confidence_weight=cfg.dqn.confidence_weight,
+            combined_conf_weight=cfg.dqn.combined_conf_weight,
+            disagreement_penalty=cfg.dqn.disagreement_penalty,
+            overconf_penalty=cfg.dqn.overconf_penalty,
+            balance_weight=cfg.dqn.balance_weight,
+        )
         kwargs = dict(
             lr=cfg.fusion.lr,
             gamma=cfg.dqn.gamma,
@@ -188,6 +201,8 @@ class EnhancedDQNFusionAgent:
             num_layers=cfg.dqn.layers,
             weight_decay=cfg.dqn.weight_decay,
             scheduler_patience=cfg.dqn.scheduler_patience,
+            decision_threshold=cfg.fusion.decision_threshold,
+            reward_kwargs=reward_kwargs,
         )
         if inference:
             kwargs.update(epsilon=0.0, epsilon_decay=1.0, min_epsilon=0.0)
@@ -197,9 +212,7 @@ class EnhancedDQNFusionAgent:
                 epsilon_decay=cfg.dqn.epsilon_decay,
                 min_epsilon=cfg.dqn.min_epsilon,
             )
-        agent = cls(**kwargs)
-        agent.reward_calc.set_vgae_weights(cfg.dqn.vgae_error_weights)
-        return agent
+        return cls(**kwargs)
 
     # ------------------------------------------------------------------
     # Action selection
@@ -279,7 +292,7 @@ class EnhancedDQNFusionAgent:
 
         anomaly_scores, gat_probs = self.reward_calc.derive_scores(norm_states)
         fused_scores = (1 - alphas) * anomaly_scores + alphas * gat_probs
-        preds = (fused_scores > 0.5).long()
+        preds = (fused_scores > self.decision_threshold).long()
 
         correct = (preds == labels).sum().item()
         rewards = self.reward_calc.compute(preds, labels, norm_states, alphas)

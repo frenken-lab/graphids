@@ -277,7 +277,7 @@ def eval_temporal(cfg, val_data, test_scenarios, device) -> dict | None:
             spatial_encoder=gat, spatial_dim=spatial_dim,
             temporal_hidden=tc.temporal_hidden, temporal_heads=tc.temporal_heads,
             temporal_layers=tc.temporal_layers, max_seq_len=tc.temporal_window,
-            freeze_spatial=True, num_classes=2,
+            freeze_spatial=True, num_classes=cfg.num_classes,
         ).to(device)
         temporal_model.load_state_dict(torch.load(
             cfg.checkpoints["temporal"], map_location="cpu", weights_only=True,

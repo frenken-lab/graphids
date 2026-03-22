@@ -11,15 +11,6 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torchmetrics import MetricCollection
-from torchmetrics.classification import (
-    BinaryAccuracy,
-    BinaryAUROC,
-    BinaryF1Score,
-    BinaryPrecision,
-    BinaryRecall,
-    BinarySpecificity,
-)
 
 
 class MLPFusionNetwork(nn.Module):
@@ -56,11 +47,6 @@ class MLPFusionModule(pl.LightningModule):
         self.model = MLPFusionNetwork(state_dim, hidden_dims)
         self.loss_fn = nn.BCEWithLogitsLoss()
         self.lr = lr
-        self.test_metrics = MetricCollection({
-            "accuracy": BinaryAccuracy(), "f1": BinaryF1Score(),
-            "precision": BinaryPrecision(), "recall": BinaryRecall(),
-            "specificity": BinarySpecificity(), "auc": BinaryAUROC(),
-        })
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.model(x)
@@ -81,14 +67,6 @@ class MLPFusionModule(pl.LightningModule):
         self.log("val_loss", loss, prog_bar=True)
         self.log("val_acc", acc, prog_bar=True)
 
-    def test_step(self, batch, batch_idx):
-        states, labels = batch
-        logits = self(states)
-        scores = torch.sigmoid(logits)
-        preds = (logits > 0).long()
-        self.test_metrics.update(preds, labels)
-        self.log_dict(self.test_metrics, batch_size=len(labels))
-
     def configure_optimizers(self):
         return optim.Adam(self.parameters(), lr=self.lr)
 
@@ -107,17 +85,13 @@ class WeightedAvgModule(pl.LightningModule):
     Fusion: score = (1 - sigmoid(w)) * vgae_conf + sigmoid(w) * gat_conf
     """
 
-    def __init__(self, lr: float = 0.01):
+    def __init__(self, lr: float = 0.01, decision_threshold: float = 0.5):
         super().__init__()
         self.save_hyperparameters()
         self.weight = nn.Parameter(torch.zeros(1))
         self.loss_fn = nn.BCELoss()
         self.lr = lr
-        self.test_metrics = MetricCollection({
-            "accuracy": BinaryAccuracy(), "f1": BinaryF1Score(),
-            "precision": BinaryPrecision(), "recall": BinaryRecall(),
-            "specificity": BinarySpecificity(), "auc": BinaryAUROC(),
-        })
+        self.decision_threshold = decision_threshold
 
         from .registry import feature_layout
 
@@ -143,17 +117,10 @@ class WeightedAvgModule(pl.LightningModule):
         states, labels = batch
         scores = self(states)
         loss = self.loss_fn(scores, labels.float())
-        preds = (scores > 0.5).long()
+        preds = (scores > self.decision_threshold).long()
         acc = (preds == labels).float().mean()
         self.log("val_loss", loss, prog_bar=True)
         self.log("val_acc", acc, prog_bar=True)
-
-    def test_step(self, batch, batch_idx):
-        states, labels = batch
-        scores = self(states)
-        preds = (scores > 0.5).long()
-        self.test_metrics.update(preds, labels)
-        self.log_dict(self.test_metrics, batch_size=len(labels))
 
     def configure_optimizers(self):
         return optim.Adam(self.parameters(), lr=self.lr)
@@ -168,4 +135,4 @@ class WeightedAvgModule(pl.LightningModule):
             vgae_conf = state_features[self._vgae_conf_idx]
             gat_conf = state_features[self._gat_conf_idx]
             score = (1 - alpha) * vgae_conf + alpha * gat_conf
-            return 1 if score > 0.5 else 0
+            return 1 if score > self.decision_threshold else 0

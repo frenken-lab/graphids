@@ -3,6 +3,26 @@
 
 lake_root: ${oc.env:KD_GAT_LAKE_ROOT,experimentruns}
 production: ${oc.env:KD_GAT_PRODUCTION,false}
+num_classes: 2
+
+evaluation:
+  batch_size: 256
+
+temporal:
+  train_split: 0.8
+
+# --- Fusion reward shaping (override via CLI: dqn.reward_correct=2.0) ---
+dqn:
+  reward_correct: 3.0
+  reward_incorrect: -3.0
+  confidence_weight: 0.5
+  combined_conf_weight: 0.3
+  disagreement_penalty: -1.0
+  overconf_penalty: -1.5
+  balance_weight: 0.3
+
+fusion:
+  decision_threshold: 0.5
 
 # --- Derived paths ---
 _tier: dev/${oc.env:USER,unknown}

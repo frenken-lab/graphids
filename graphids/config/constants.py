@@ -21,8 +21,8 @@ CATALOG_PATH = CONFIG_DIR / "datasets.yaml"
 # ---------------------------------------------------------------------------
 PREPROCESSING_VERSION = "4.0.0"
 MAX_DATA_BYTES = 8
-NODE_FEATURE_COUNT = 26
-EDGE_FEATURE_COUNT = 11
+NODE_FEATURE_COUNT = 31
+EDGE_FEATURE_COUNT = 12
 EXCLUDED_ATTACK_TYPES = ["suppress", "masquerade"]
 
 # Preprocessing defaults (replaces PreprocessingConfig Pydantic model)

@@ -10,6 +10,8 @@ import polars as pl
 import torch
 from torch import Tensor
 
+from graphids.config.constants import EDGE_FEATURE_COUNT
+
 BYTE_COLS = [f"byte_{i}" for i in range(8)]
 
 # Column order defines tensor layout. Changing order changes model input.
@@ -63,7 +65,7 @@ def node_features(
         (pl.col("byte_0").diff().abs().drop_nulls() > 0).mean().alias("change_rate"),
     ).fill_null(0)
 
-    out = torch.zeros(num_nodes, 31, dtype=torch.float32)
+    out = torch.zeros(num_nodes, len(NODE_COL_ORDER), dtype=torch.float32)
     if stats.is_empty():
         return out
 
@@ -75,15 +77,16 @@ def node_features(
         pl.col("kurtosis").clip(-10, 10),
     )
 
-    # Select feature columns in order → to_torch() → dense tensor scatter
+    # Select feature columns in order → to_torch() → dense 2-D tensor → scatter into output
     feature_df = stats.select(NODE_COL_ORDER).cast({col: pl.Float32 for col in NODE_COL_ORDER})
-    tensor_dict = feature_df.to_torch(dtype=pl.Float32)  # dict of 1-D tensors
-    for col_idx, name in enumerate(NODE_COL_ORDER):
-        out[ids, col_idx] = tensor_dict[name]
+    feature_tensor = feature_df.to_torch(dtype=pl.Float32)  # shape [n_ids, n_features]
+    idx = torch.from_numpy(ids)
+    out[idx] = feature_tensor
 
     # Clustering coefficient needs graph structure — overwrite placeholder
     if edge_index is not None:
-        out[:, 28] = torch.from_numpy(_clustering_coefficients(edge_index, num_nodes))
+        cc_idx = NODE_COL_ORDER.index("clustering_coeff")
+        out[:, cc_idx] = torch.from_numpy(_clustering_coefficients(edge_index, num_nodes))
 
     return out
 
@@ -100,7 +103,7 @@ def edge_features(
     Each edge in shift-1 adjacency is unique — no groupby.
     """
     n = len(src)
-    out = torch.zeros(n, 12, dtype=torch.float32)
+    out = torch.zeros(n, EDGE_FEATURE_COUNT, dtype=torch.float32)
     if n == 0:
         return out
 

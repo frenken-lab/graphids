@@ -114,8 +114,20 @@ class CANBusDataModule(pl.LightningDataModule):
         assert ds is not None, "call setup() first"
         return ds[0].x.shape[1] if len(ds) > 0 else 31
 
+    @property
+    def num_classes(self) -> int:
+        """Number of unique target classes across the dataset (fallback to 2)."""
+        ds = self._train_ds or next(iter(self._test_datasets.values()), None)
+        assert ds is not None, "call setup() first"
+        if len(ds) == 0:
+            return 2
+        import torch
+        labels = torch.tensor([g.y.item() if g.y.numel() == 1 else g.y for g in ds])
+        n = int(labels.unique().numel())
+        return n if n >= 2 else 2
+
     def populate_config(self, cfg) -> None:
-        """Write data-derived dimensions (num_ids, in_channels) into cfg.
+        """Write data-derived dimensions (num_ids, in_channels, num_classes) into cfg.
 
         Must be called after setup(). Eliminates manual threading of these
         values through every stage function and model constructor.
@@ -125,6 +137,7 @@ class CANBusDataModule(pl.LightningDataModule):
         with open_dict(cfg):
             cfg.num_ids = self.num_ids
             cfg.in_channels = self.in_channels
+            cfg.num_classes = self.num_classes
 
     # -- DataLoaders ----------------------------------------------------------
 

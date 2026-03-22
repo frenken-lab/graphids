@@ -203,7 +203,7 @@ def run_fusion_inference(agent, cache) -> FusionResult:
     actions, alphas, norm_states = agent.select_action_batch(states, training=False)
     anomaly_scores, gat_probs = agent.reward_calc.derive_scores(norm_states)
     fused_scores = (1 - alphas) * anomaly_scores + alphas * gat_probs
-    preds = (fused_scores > 0.5).long()
+    preds = (fused_scores > agent.decision_threshold).long()
 
     # DQN has q_network; bandit has theta (per-arm weights)
     with torch.no_grad():

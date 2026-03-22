@@ -54,7 +54,7 @@ class VGAEConfig:
     embedding_dim: int = 32
     dropout: float = 0.15
     conv_type: str = "gatv2"
-    edge_dim: int = 11
+    edge_dim: int = 12
     proj_dim: int = 0
     mask_ratio: float = 0.3
     canid_weight: float = 0.1
@@ -71,7 +71,7 @@ class GATConfig:
     embedding_dim: int = 16
     fc_layers: int = 3
     conv_type: str = "gatv2"
-    edge_dim: int = 11
+    edge_dim: int = 12
     pool_aggrs: list[str] = field(default_factory=lambda: ["mean"])
     proj_dim: int = 0
 
@@ -91,6 +91,13 @@ class DQNConfig:
     scheduler_patience: int = 1000
     max_patience: int = 5000
     vgae_error_weights: list[float] = field(default_factory=lambda: [0.4, 0.35, 0.25])
+    reward_correct: float = 3.0
+    reward_incorrect: float = -3.0
+    confidence_weight: float = 0.5
+    combined_conf_weight: float = 0.3
+    disagreement_penalty: float = -1.0
+    overconf_penalty: float = -1.5
+    balance_weight: float = 0.3
 
 
 @dataclass
@@ -161,6 +168,12 @@ class FusionConfig:
     alpha_steps: int = 21
     mlp_hidden_dims: list[int] = field(default_factory=lambda: [64, 32])
     mlp_max_epochs: int = 100
+    decision_threshold: float = 0.5
+
+
+@dataclass
+class EvaluationConfig:
+    batch_size: int = 256
 
 
 @dataclass
@@ -173,6 +186,7 @@ class TemporalConfig:
     temporal_layers: int = 2
     freeze_spatial: bool = True
     spatial_lr_factor: float = 0.1
+    train_split: float = 0.8
 
 
 @dataclass
@@ -190,11 +204,13 @@ class Config:
     # Data-derived dimensions — populated by CANBusDataModule.populate_config()
     num_ids: int = 0  # CAN arbitration-ID vocabulary size (for nn.Embedding)
     in_channels: int = 0  # node feature dimension (CAN ID col + continuous features)
+    num_classes: int = 2  # number of target classes (derived from data, default binary)
     vgae: VGAEConfig = field(default_factory=VGAEConfig)
     gat: GATConfig = field(default_factory=GATConfig)
     dqn: DQNConfig = field(default_factory=DQNConfig)
     bandit: BanditConfig = field(default_factory=BanditConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     fusion: FusionConfig = field(default_factory=FusionConfig)
     temporal: TemporalConfig = field(default_factory=TemporalConfig)
 

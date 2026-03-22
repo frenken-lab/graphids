@@ -94,7 +94,7 @@ class GATWithJK(nn.Module):
             num_ids=num_ids,
             in_channels=in_ch,
             hidden_channels=cfg.gat.hidden,
-            out_channels=2,
+            out_channels=cfg.num_classes,
             num_layers=cfg.gat.layers,
             heads=cfg.gat.heads,
             dropout=cfg.gat.dropout,
