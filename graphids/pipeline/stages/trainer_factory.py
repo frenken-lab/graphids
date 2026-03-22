@@ -39,7 +39,7 @@ def make_trainer(cfg, stage: str) -> pl.Trainer:
         accumulate_grad_batches=cfg.training.accumulate_grad_batches,
         deterministic=cfg.training.deterministic,
         benchmark=cfg.training.cudnn_benchmark,
-        enable_progress_bar=bool(os.environ.get("SLURM_JOB_ID")),
+        enable_progress_bar=not bool(os.environ.get("SLURM_JOB_ID")),
     )
 
 
@@ -90,11 +90,7 @@ def prepare_kd(
         raise FileNotFoundError(f"Teacher config not found: {tcfg_path}")
     tcfg = OmegaConf.load(tcfg_path)
 
-    t_num_ids = num_ids
-    for key in sd:
-        if key.endswith("id_embedding.weight"):
-            t_num_ids = sd[key].shape[0]
-            break
+    t_num_ids = tcfg.get("num_ids", num_ids)
 
     teacher = registry_get(model_type)(tcfg, t_num_ids, in_channels)
 
@@ -111,9 +107,11 @@ def prepare_kd(
     # --- Projection layer (VGAE latent space alignment) ---
     projection = None
     if model_type == "vgae":
-        tmp = registry_get("vgae")(cfg, num_ids, in_channels)
-        projection = make_projection(tmp, teacher, "vgae", device)
-        del tmp
+        s_dim = cfg.vgae.latent_dim
+        t_dim = tcfg.vgae.latent_dim
+        if s_dim != t_dim:
+            log.info("projection_layer", student_dim=s_dim, teacher_dim=t_dim)
+            projection = nn.Linear(s_dim, t_dim).to(device)
 
     return teacher, projection
 

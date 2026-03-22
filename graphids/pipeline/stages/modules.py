@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import functools
+
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
@@ -142,7 +144,7 @@ class VGAEModule(pl.LightningModule):
                     else torch.zeros(batch.x.size(0), dtype=torch.long, device=batch.x.device)
                 )
                 t_edge_attr = getattr(batch, "edge_attr", None)
-                t_cont, _, _, t_z, _ = self.teacher(
+                t_cont, _, _, t_z, _, _ = self.teacher(
                     batch.x, batch.edge_index, batch_idx, edge_attr=t_edge_attr
                 )
 
@@ -196,9 +198,16 @@ class VGAEModule(pl.LightningModule):
         self._test_errors.append(errors)
         self._test_labels.append(batch.y)
         if self.test_threshold is not None:
-            preds = (errors > self.test_threshold).long()
-            self.test_metrics.update(preds, batch.y)
-            self.log_dict(self.test_metrics, batch_size=batch.num_graphs)
+            # Pass continuous error scores — BinaryAUROC needs probabilities,
+            # and BinaryAccuracy/F1/Precision/Recall threshold at 0.5 internally.
+            self.test_metrics.update(errors, batch.y)
+
+    def on_test_epoch_start(self):
+        self.test_metrics.reset()
+
+    def on_test_epoch_end(self):
+        if self.test_threshold is not None:
+            self.log_dict(self.test_metrics.compute())
 
     def get_test_errors(self) -> tuple:
         """Return accumulated (errors, labels) as numpy arrays after test."""
@@ -256,7 +265,7 @@ class GATModule(pl.LightningModule):
             self.loss_fn = nn.CrossEntropyLoss(weight=w)
         elif loss_name == "focal":
             gamma = cfg.training.focal_gamma
-            self.loss_fn = lambda logits, y: _focal_loss(logits, y, gamma)
+            self.loss_fn = functools.partial(_focal_loss, gamma=gamma)
         else:
             self.loss_fn = F.cross_entropy
 
@@ -301,8 +310,13 @@ class GATModule(pl.LightningModule):
         logits = self(batch)
         preds = logits.argmax(1)
         scores = F.softmax(logits, dim=1)[:, 1]
-        self.test_metrics.update(preds, batch.y)
-        self.log_dict(self.test_metrics, batch_size=batch.num_graphs)
+        self.test_metrics.update(scores, batch.y)
+
+    def on_test_epoch_start(self):
+        self.test_metrics.reset()
+
+    def on_test_epoch_end(self):
+        self.log_dict(self.test_metrics.compute())
 
     def configure_optimizers(self):
         opt = torch.optim.Adam(

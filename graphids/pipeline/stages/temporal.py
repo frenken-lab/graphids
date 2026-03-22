@@ -122,7 +122,12 @@ class TemporalLightningModule(pl.LightningModule):
         logits = self.model(moved_sequences)
         preds = logits.argmax(dim=1)
         self.test_metrics.update(preds, labels.to(device))
-        self.log_dict(self.test_metrics, batch_size=len(graph_sequences))
+
+    def on_test_epoch_start(self):
+        self.test_metrics.reset()
+
+    def on_test_epoch_end(self):
+        self.log_dict(self.test_metrics.compute())
 
     def configure_optimizers(self):
         t = self.cfg.training
@@ -276,6 +281,11 @@ def train_temporal(cfg) -> dict:
     trainer = make_trainer(cfg, "temporal")
     trainer.fit(lit_module, train_loader, val_loader)
 
+    # Restore best-epoch weights before saving
+    best_path = trainer.checkpoint_callback.best_model_path
+    if best_path:
+        best_ckpt = torch.load(best_path, weights_only=True)
+        lit_module.load_state_dict(best_ckpt["state_dict"])
     torch.save(temporal_model.state_dict(), "best_model.pt")
     log.info("saved_temporal_model", checkpoint="best_model.pt")
 

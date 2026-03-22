@@ -93,7 +93,12 @@ class DQNFusionModule(pl.LightningModule):
         fused_scores = (1 - alphas) * anomaly_scores + alphas * gat_probs
         preds = (fused_scores > self.agent.decision_threshold).long()
         self.test_metrics.update(preds, labels)
-        self.log_dict(self.test_metrics, batch_size=len(labels))
+
+    def on_test_epoch_start(self):
+        self.test_metrics.reset()
+
+    def on_test_epoch_end(self):
+        self.log_dict(self.test_metrics.compute())
 
     def configure_optimizers(self):
         return self.agent.optimizer
@@ -137,7 +142,12 @@ class BanditFusionModule(pl.LightningModule):
         fused_scores = (1 - alphas) * anomaly_scores + alphas * gat_probs
         preds = (fused_scores > self.agent.decision_threshold).long()
         self.test_metrics.update(preds, labels)
-        self.log_dict(self.test_metrics, batch_size=len(labels))
+
+    def on_test_epoch_start(self):
+        self.test_metrics.reset()
+
+    def on_test_epoch_end(self):
+        self.log_dict(self.test_metrics.compute())
 
     def configure_optimizers(self):
         return self.agent.backbone_optimizer
@@ -210,6 +220,14 @@ def _make_fusion_dataloaders(train_cache, val_cache, batch_size: int):
 # ---------------------------------------------------------------------------
 
 
+def _restore_best_weights(trainer, module) -> None:
+    """Load best checkpoint weights into module before saving native format."""
+    best_path = trainer.checkpoint_callback.best_model_path
+    if best_path:
+        best_ckpt = torch.load(best_path, weights_only=True)
+        module.load_state_dict(best_ckpt["state_dict"])
+
+
 def _save_dqn_ckpt(agent) -> None:
     torch.save({
         "q_network": agent.q_network.state_dict(),
@@ -227,14 +245,15 @@ def _train_dqn_fusion(cfg, train_cache, val_cache, device) -> float:
 
     train_dl, val_dl = _make_fusion_dataloaders(
         train_cache,
-        {k: v[:5000] for k, v in val_cache.items()},
+        {k: v[:cfg.fusion.max_val_samples] for k, v in val_cache.items()},
         cfg.fusion.episode_sample_size,
     )
     steps_per_epoch = math.ceil(len(train_cache["states"]) / cfg.fusion.episode_sample_size)
     trainer = _make_rl_fusion_trainer(cfg, steps_per_epoch)
     trainer.fit(module, train_dl, val_dl)
 
-    # Save in agent's native format (Lightning checkpoint is .ckpt)
+    # Restore best-epoch weights before saving in agent's native format
+    _restore_best_weights(trainer, module)
     _save_dqn_ckpt(agent)
     return trainer.callback_metrics.get("val_acc", torch.tensor(0.0)).item()
 
@@ -248,14 +267,15 @@ def _train_bandit_fusion(cfg, train_cache, val_cache, device) -> float:
 
     train_dl, val_dl = _make_fusion_dataloaders(
         train_cache,
-        {k: v[:5000] for k, v in val_cache.items()},
+        {k: v[:cfg.fusion.max_val_samples] for k, v in val_cache.items()},
         cfg.fusion.episode_sample_size,
     )
     steps_per_epoch = math.ceil(len(train_cache["states"]) / cfg.fusion.episode_sample_size)
     trainer = _make_rl_fusion_trainer(cfg, steps_per_epoch)
     trainer.fit(module, train_dl, val_dl)
 
-    # Save in agent's native format
+    # Restore best-epoch weights before saving in agent's native format
+    _restore_best_weights(trainer, module)
     torch.save(agent.state_dict(), "best_model.pt")
     return trainer.callback_metrics.get("val_acc", torch.tensor(0.0)).item()
 
@@ -338,7 +358,7 @@ def train_fusion(cfg) -> dict:
     ckpt = Path("best_model.pt")
     # config.yaml already saved by run_stage() in __init__.py
 
-    metrics = {"best_acc": best_acc, "val_loss": 1.0 - best_acc, "fusion_method": method}
+    metrics = {"best_acc": best_acc, "fusion_method": method}
     log.info("saved_fusion", method=method, checkpoint=str(ckpt), best_acc=round(best_acc, 4))
     cleanup()
     return {"checkpoint": str(ckpt), "metrics": metrics}

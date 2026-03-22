@@ -62,13 +62,19 @@ def _save_and_cleanup(module, trainer, cfg, stage: str, label: str | None = None
     return {"checkpoint": ckpt, "metrics": metrics}
 
 
-def train_autoencoder(cfg) -> dict:
-    """Train VGAE on graph reconstruction. Returns result dict with checkpoint and metrics."""
+def _training_setup(cfg) -> tuple[CANBusDataModule, torch.device]:
+    """Common setup: seed, datamodule, populate config, resolve device."""
     pl.seed_everything(cfg.seed)
     dm = CANBusDataModule.from_cfg(cfg)
     dm.setup("fit")
     dm.populate_config(cfg)
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+    return dm, device
+
+
+def train_autoencoder(cfg) -> dict:
+    """Train VGAE on graph reconstruction. Returns result dict with checkpoint and metrics."""
+    dm, device = _training_setup(cfg)
 
     teacher, projection = prepare_kd(cfg, "vgae", device)
     module = VGAEModule(cfg, teacher=teacher, projection=projection)
@@ -80,11 +86,7 @@ def train_autoencoder(cfg) -> dict:
 
 def train_curriculum(cfg) -> dict:
     """Train GAT with VGAE-guided curriculum learning. Returns result dict with checkpoint and metrics."""
-    pl.seed_everything(cfg.seed)
-    dm = CANBusDataModule.from_cfg(cfg)
-    dm.setup("fit")
-    dm.populate_config(cfg)
-    device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+    dm, device = _training_setup(cfg)
 
     # Load VGAE for difficulty scoring
     vgae = load_model(cfg, "vgae", "autoencoder", device)
@@ -107,11 +109,7 @@ def train_curriculum(cfg) -> dict:
 
 def train_normal(cfg) -> dict:
     """Train GAT with standard cross-entropy (no curriculum). Returns result dict with checkpoint and metrics."""
-    pl.seed_everything(cfg.seed)
-    dm = CANBusDataModule.from_cfg(cfg)
-    dm.setup("fit")
-    dm.populate_config(cfg)
-    device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+    dm, device = _training_setup(cfg)
 
     teacher, _ = prepare_kd(cfg, "gat", device)
     module = GATModule(cfg, teacher=teacher)
@@ -145,7 +143,7 @@ def _score_difficulty(
                 g = g.clone().to(device)
                 batch_idx = get_batch_index(g, device)
                 edge_attr = getattr(g, "edge_attr", None)
-                cont, canid_logits, _, _, _ = vgae_model(
+                cont, canid_logits, _, _, _, _ = vgae_model(
                     g.x, g.edge_index, batch_idx, edge_attr=edge_attr
                 )
                 recon = F.mse_loss(cont, g.x[:, 1:]).item()

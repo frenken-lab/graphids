@@ -123,7 +123,7 @@ class EnhancedDQNFusionAgent:
         self,
         alpha_steps=21,
         lr=1e-3,
-        gamma=0.9,
+        gamma=0.0,
         epsilon=0.2,
         epsilon_decay=0.995,
         min_epsilon=0.01,
@@ -261,9 +261,9 @@ class EnhancedDQNFusionAgent:
         current_q = self.q_network(states).gather(1, actions.unsqueeze(1)).squeeze(1)
 
         with torch.no_grad():
-            next_actions = self.q_network(states).max(dim=1)[1]
-            next_q = self.target_network(states).gather(1, next_actions.unsqueeze(1)).squeeze(1)
-            targets = rewards + self.gamma * next_q
+            # No real next-state in fusion formulation — gamma=0 makes this
+            # pure reward maximization (no bootstrapping from same state).
+            targets = rewards
 
         loss = self.loss_fn(current_q, targets)
 

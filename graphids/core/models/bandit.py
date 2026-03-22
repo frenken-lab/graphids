@@ -18,6 +18,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+from .dqn import TensorReplayBuffer
 from .fusion_reward import FusionRewardCalculator
 
 log = structlog.get_logger()
@@ -90,12 +91,7 @@ class NeuralLinUCBAgent:
         self.theta = torch.zeros(alpha_steps, d, device=device)
 
         # Replay buffer for backbone retraining
-        self._buf_states = torch.zeros(buffer_size, state_dim)
-        self._buf_actions = torch.zeros(buffer_size, dtype=torch.long)
-        self._buf_rewards = torch.zeros(buffer_size)
-        self._buf_pos = 0
-        self._buf_size = 0
-        self._buf_capacity = buffer_size
+        self._buffer = TensorReplayBuffer(buffer_size, state_dim)
 
         # Reward calculator (shared with DQN)
         self.reward_calc = FusionRewardCalculator(**(reward_kwargs or {}))
@@ -165,7 +161,9 @@ class NeuralLinUCBAgent:
                 # UCB bonus: alpha * sqrt(z^T A_inv_a z) → [N, K]
                 # For each arm k: z @ A_inv[k] @ z^T → scalar per (n, k)
                 Az = torch.einsum("kij,nj->nki", self.A_inv, z)  # [N, K, d]
-                ucb = self.ucb_alpha * torch.sqrt((z.unsqueeze(1) * Az).sum(dim=2))  # [N, K]
+                ucb = self.ucb_alpha * torch.sqrt(
+                    (z.unsqueeze(1) * Az).sum(dim=2).clamp(min=0.0)
+                )  # [N, K]
                 scores = mu + ucb
                 self._ucb_widths.append(ucb.mean().item())
             else:
@@ -217,36 +215,20 @@ class NeuralLinUCBAgent:
         self, states: torch.Tensor, actions: torch.Tensor, rewards: torch.Tensor
     ) -> None:
         """Store experiences in replay buffer for backbone retraining."""
-        n = len(states)
-        end = self._buf_pos + n
-        if end <= self._buf_capacity:
-            self._buf_states[self._buf_pos:end] = states.cpu()
-            self._buf_actions[self._buf_pos:end] = actions.cpu()
-            self._buf_rewards[self._buf_pos:end] = rewards.cpu()
-        else:
-            first = self._buf_capacity - self._buf_pos
-            self._buf_states[self._buf_pos:] = states[:first].cpu()
-            self._buf_actions[self._buf_pos:] = actions[:first].cpu()
-            self._buf_rewards[self._buf_pos:] = rewards[:first].cpu()
-            rest = n - first
-            self._buf_states[:rest] = states[first:].cpu()
-            self._buf_actions[:rest] = actions[first:].cpu()
-            self._buf_rewards[:rest] = rewards[first:].cpu()
-        self._buf_pos = (self._buf_pos + n) % self._buf_capacity
-        self._buf_size = min(self._buf_size + n, self._buf_capacity)
+        self._buffer.add_batch(states.cpu(), actions.cpu(), rewards.cpu())
 
     def retrain_backbone(self) -> float | None:
         """Retrain backbone on buffered experiences. Returns avg loss or None."""
-        if self._buf_size < self.batch_size:
+        if len(self._buffer) < self.batch_size:
             return None
 
         self.backbone.train()
         total_loss = 0.0
         for _ in range(self.backbone_epochs):
-            idx = torch.randint(0, self._buf_size, (self.batch_size,))
-            states = self._buf_states[idx].to(self.device)
-            actions = self._buf_actions[idx].to(self.device)
-            rewards = self._buf_rewards[idx].to(self.device)
+            states, actions, rewards = self._buffer.sample(self.batch_size)
+            states = states.to(self.device)
+            actions = actions.to(self.device)
+            rewards = rewards.to(self.device)
 
             z = self.backbone(states)  # [B, d]
             # Predicted reward for the taken action: theta_a^T z
