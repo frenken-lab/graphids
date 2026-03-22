@@ -157,38 +157,58 @@ def capture_gat_artifacts(gat, data, device, embeddings: bool = True, attention:
 
 
 def capture_vgae_artifacts(vgae, data, device, embeddings: bool = True, components: bool = True) -> VGAEResult:
-    """Capture VGAE embeddings and component-level loss decomposition."""
-    from graphids.core.preprocessing import get_batch_index, graph_attack_type
+    """Capture VGAE embeddings and component-level loss decomposition.
 
-    errors, labels, attack_types = [], [], []
-    embs = [] if embeddings else None
+    Uses batched forward passes with scatter reduction for per-graph losses.
+    """
+    from graphids.core.preprocessing import graph_attack_type
+    from torch_geometric.utils import scatter
+
+    errors_all, labels_all, types_all = [], [], []
+    embs_all = [] if embeddings else None
     comps: dict[str, list] = {"recon": [], "canid": [], "nbr": [], "kl": []} if components else {}
 
     with torch.no_grad():
-        for g in data:
-            g = g.clone().to(device)
-            batch_idx = get_batch_index(g, device)
-            edge_attr = getattr(g, "edge_attr", None)
+        for batch in PyGDataLoader(data, batch_size=128, shuffle=False):
+            batch = batch.to(device)
+            edge_attr = getattr(batch, "edge_attr", None)
             cont, canid_logits, nbr_logits, z, kl_loss, _ = vgae(
-                g.x, g.edge_index, batch_idx, edge_attr=edge_attr,
+                batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr,
             )
-            err = F.mse_loss(cont, g.x[:, 1:]).item()
-            errors.append(err)
-            labels.append(g.y.item() if g.y.dim() == 0 else int(g.y[0].item()))
-            attack_types.append(graph_attack_type(g))
+            # Per-graph MSE via scatter
+            node_mse = (cont - batch.x[:, 1:]).pow(2).mean(dim=1)
+            graph_mse = scatter(node_mse, batch.batch, reduce="mean")
+            errors_all.append(graph_mse.cpu())
+
+            # Per-graph labels and attack types
+            for g in batch.to_data_list():
+                labels_all.append(g.y.item() if g.y.dim() == 0 else int(g.y[0].item()))
+                types_all.append(graph_attack_type(g))
+
             if embeddings and z is not None:
-                embs.append(z.mean(dim=0).cpu().numpy())
+                graph_emb = scatter(z, batch.batch, dim=0, reduce="mean")
+                embs_all.append(graph_emb.cpu().numpy())
+
             if components:
-                comps["recon"].append(err)
-                comps["canid"].append(F.cross_entropy(canid_logits, g.x[:, 0].long()).item())
-                nbr_targets = vgae.create_neighborhood_targets(g.x, g.edge_index, batch_idx)
-                comps["nbr"].append(F.binary_cross_entropy_with_logits(nbr_logits, nbr_targets).item())
-                comps["kl"].append(kl_loss.item() if torch.is_tensor(kl_loss) else float(kl_loss))
+                comps["recon"].append(graph_mse.cpu())
+                node_ce = F.cross_entropy(canid_logits, batch.x[:, 0].long(), reduction="none")
+                comps["canid"].append(scatter(node_ce, batch.batch, reduce="mean").cpu())
+                nbr_targets = vgae.create_neighborhood_targets(batch.x, batch.edge_index, batch.batch)
+                node_nbr = F.binary_cross_entropy_with_logits(
+                    nbr_logits, nbr_targets, reduction="none",
+                ).mean(dim=1)
+                comps["nbr"].append(scatter(node_nbr, batch.batch, reduce="mean").cpu())
+                kl_val = kl_loss.item() if torch.is_tensor(kl_loss) else float(kl_loss)
+                n_graphs = int(batch.batch.max().item()) + 1
+                comps["kl"].extend([kl_val] * n_graphs)
 
     return VGAEResult(
-        errors=np.array(errors), labels=np.array(labels), attack_types=np.array(attack_types),
-        embeddings=np.array(embs) if embs else None,
-        components={k: np.array(v) for k, v in comps.items()} if components else None,
+        errors=torch.cat(errors_all).numpy(),
+        labels=np.array(labels_all),
+        attack_types=np.array(types_all),
+        embeddings=np.vstack(embs_all) if embs_all else None,
+        components={k: (torch.cat(v).numpy() if isinstance(v[0], torch.Tensor) else np.array(v))
+                    for k, v in comps.items()} if components else None,
     )
 
 

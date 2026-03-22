@@ -127,9 +127,10 @@ def _score_difficulty(
     Memory optimization: Processes graphs in chunks and clears GPU cache between
     chunks to prevent memory accumulation on large datasets.
     """
-    from graphids.core.preprocessing import get_batch_index
+    from torch_geometric.data import Batch
+    from torch_geometric.utils import scatter
 
-    scores = []
+    scores: list[float] = []
     vgae_model.eval()
     total_chunks = (len(graphs) + chunk_size - 1) // chunk_size
 
@@ -139,22 +140,20 @@ def _score_difficulty(
         chunk_graphs = graphs[start:end]
 
         with torch.no_grad():
-            for g in chunk_graphs:
-                g = g.clone().to(device)
-                batch_idx = get_batch_index(g, device)
-                edge_attr = getattr(g, "edge_attr", None)
-                cont, canid_logits, _, _, _, _ = vgae_model(
-                    g.x, g.edge_index, batch_idx, edge_attr=edge_attr
-                )
-                recon = F.mse_loss(cont, g.x[:, 1:]).item()
-                canid = F.cross_entropy(canid_logits, g.x[:, 0].long()).item()
-                scores.append(recon + canid_weight * canid)
-                del g
-
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+            batch = Batch.from_data_list([g.clone() for g in chunk_graphs]).to(device)
+            edge_attr = getattr(batch, "edge_attr", None)
+            cont, canid_logits, _, _, _, _ = vgae_model(
+                batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr
+            )
+            # Per-graph losses via scatter reduction
+            node_mse = (cont - batch.x[:, 1:]).pow(2).mean(dim=1)
+            graph_mse = scatter(node_mse, batch.batch, reduce="mean")
+            node_ce = F.cross_entropy(canid_logits, batch.x[:, 0].long(), reduction="none")
+            graph_ce = scatter(node_ce, batch.batch, reduce="mean")
+            scores.extend((graph_mse + canid_weight * graph_ce).tolist())
+            del batch
 
         if (chunk_idx + 1) % 10 == 0:
-            log.info("difficulty_scoring_progress", chunks_done=chunk_idx + 1, total_chunks=total_chunks)
+            log.info("difficulty_scoring_progress", chunks_done=chunk_idx + 1, total=total_chunks)
 
     return scores

@@ -92,21 +92,23 @@ class TemporalGraphClassifier(nn.Module):
         seq_len = len(graph_sequences[0])
         device = next(self.parameters()).device
 
-        # Encode all graphs spatially
-        all_embeddings = []
-        for seq in graph_sequences:
-            seq_embs = []
-            ctx = torch.no_grad() if self.freeze_spatial else torch.enable_grad()
-            with ctx:
-                if self.freeze_spatial:
-                    self.spatial_encoder.eval()
-                for g in seq:
-                    _, emb = self.spatial_encoder(g, return_embedding=True)
-                    seq_embs.append(emb.squeeze(0))  # [spatial_dim]
-            all_embeddings.append(torch.stack(seq_embs))  # [seq_len, spatial_dim]
+        # Encode all graphs spatially in one batched forward pass
+        from torch_geometric.data import Batch
 
-        # [batch_size, seq_len, spatial_dim]
-        x = torch.stack(all_embeddings)
+        assert all(len(seq) == seq_len for seq in graph_sequences), (
+            "All sequences must have equal length for batched spatial encoding"
+        )
+        all_graphs = [g for seq in graph_sequences for g in seq]
+        big_batch = Batch.from_data_list(all_graphs).to(device)
+
+        ctx = torch.no_grad() if self.freeze_spatial else torch.enable_grad()
+        with ctx:
+            if self.freeze_spatial:
+                self.spatial_encoder.eval()
+            _, all_embs = self.spatial_encoder(big_batch, return_embedding=True)
+
+        # all_embs is [total_graphs, spatial_dim] — reshape to [batch, seq_len, spatial_dim]
+        x = all_embs.view(batch_size, seq_len, -1)
 
         # Project to temporal hidden dim
         x = self.spatial_proj(x)  # [batch, seq_len, temporal_hidden]

@@ -78,7 +78,11 @@ def make_dataloader(
 
 
 def cache_predictions(models: dict[str, nn.Module], data, device, max_samples: int = 150_000):
-    """Run registered extractors over data, produce N-D state vectors for DQN."""
+    """Run registered extractors over data, produce N-D state vectors for DQN.
+
+    Uses a DataLoader for batched clone+transfer, then extracts per-graph
+    features within each on-device batch (extractors are not batch-aware).
+    """
     from graphids.core.models.registry import extractors as registry_extractors
     from graphids.core.preprocessing import get_batch_index
 
@@ -86,13 +90,17 @@ def cache_predictions(models: dict[str, nn.Module], data, device, max_samples: i
     for model in models.values():
         model.eval()
 
+    capped = data[:max_samples]
+    loader = DataLoader(capped, batch_size=128, shuffle=False)
+
     states, labels = [], []
     with torch.no_grad():
-        for i in range(min(len(data), max_samples)):
-            g = data[i].clone().to(device)
-            batch_idx = get_batch_index(g, device)
-            features = [ext.extract(models[name], g, batch_idx, device) for name, ext in active]
-            states.append(torch.cat(features))
-            labels.append(g.y[0] if g.y.dim() > 0 else g.y)
+        for batch in loader:
+            batch = batch.to(device)
+            for g in batch.to_data_list():
+                batch_idx = get_batch_index(g, device)
+                features = [ext.extract(models[name], g, batch_idx, device) for name, ext in active]
+                states.append(torch.cat(features))
+                labels.append(g.y[0] if g.y.dim() > 0 else g.y)
 
     return {"states": torch.stack(states), "labels": torch.tensor(labels)}

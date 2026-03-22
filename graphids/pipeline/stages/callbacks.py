@@ -1,12 +1,11 @@
 """Lightning callbacks and artifact save functions.
 
-RunMetadataCallback: saves git SHA + artifact checksums after training.
+RunMetadataCallback: saves git SHA after training.
 save_embeddings/save_attention/save_dqn_policy: eval artifact persistence.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -88,7 +87,7 @@ def save_dqn_policy(out: Path, fusion_result: FusionResult | None) -> None:
 # ---------------------------------------------------------------------------
 
 class RunMetadataCallback(pl.Callback):
-    """Save run metadata (git SHA, artifact checksums) after training."""
+    """Save run metadata (git SHA) after training."""
 
     def on_fit_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         out = Path(trainer.log_dir)
@@ -102,17 +101,6 @@ class RunMetadataCallback(pl.Callback):
             metadata["git_sha"] = sha
         except (subprocess.CalledProcessError, FileNotFoundError):
             metadata["git_sha"] = "unknown"
-
-        checksums = {}
-        for f in sorted(out.iterdir()):
-            if f.is_file() and f.suffix in (".pt", ".ckpt", ".npz", ".csv", ".yaml"):
-                h = hashlib.sha256()
-                with open(f, "rb") as fh:
-                    for chunk in iter(lambda: fh.read(8192), b""):
-                        h.update(chunk)
-                checksums[f.name] = h.hexdigest()
-        if checksums:
-            metadata["checksums"] = checksums
 
         path = out / "run_metadata.json"
         path.write_text(json.dumps(metadata, indent=2))

@@ -23,24 +23,6 @@ from .data_loading import compute_node_budget, make_dataloader
 from .trainer_factory import build_optimizer_dict
 
 
-
-def _teacher_to_device(teacher, device, on_cpu_flag, cfg):
-    """Move teacher to device if offloaded, return updated on_cpu flag."""
-    if cfg.training.offload_teacher_to_cpu and on_cpu_flag:
-        teacher.to(device)
-        return False
-    return on_cpu_flag
-
-
-def _teacher_offload(teacher, cfg):
-    """Offload teacher to CPU after forward pass, return on_cpu=True."""
-    if cfg.training.offload_teacher_to_cpu:
-        teacher.to("cpu")
-        torch.cuda.empty_cache()
-        return True
-    return False
-
-
 def soft_label_kd_loss(
     student_logits: torch.Tensor,
     teacher_logits: torch.Tensor,
@@ -133,9 +115,9 @@ class VGAEModule(pl.LightningModule):
 
         if self.teacher is not None:
             kd = next((a for a in self.cfg.get("auxiliaries", []) if a.type == "kd"), None)
-            self._teacher_on_cpu = _teacher_to_device(
-                self.teacher, batch.x.device, self._teacher_on_cpu, self.cfg
-            )
+            if self.cfg.training.offload_teacher_to_cpu and self._teacher_on_cpu:
+                self.teacher.to(batch.x.device)
+                self._teacher_on_cpu = False
 
             with torch.no_grad():
                 batch_idx = (
@@ -148,7 +130,10 @@ class VGAEModule(pl.LightningModule):
                     batch.x, batch.edge_index, batch_idx, edge_attr=t_edge_attr
                 )
 
-            self._teacher_on_cpu = _teacher_offload(self.teacher, self.cfg)
+            if self.cfg.training.offload_teacher_to_cpu:
+                self.teacher.to("cpu")
+                torch.cuda.empty_cache()
+                self._teacher_on_cpu = True
 
             z_s = self.projection(z) if self.projection is not None else z
             min_n = min(z_s.size(0), t_z.size(0))
@@ -279,14 +264,17 @@ class GATModule(pl.LightningModule):
 
         if self.teacher is not None:
             kd = next((a for a in self.cfg.get("auxiliaries", []) if a.type == "kd"), None)
-            self._teacher_on_cpu = _teacher_to_device(
-                self.teacher, batch.x.device, self._teacher_on_cpu, self.cfg
-            )
+            if self.cfg.training.offload_teacher_to_cpu and self._teacher_on_cpu:
+                self.teacher.to(batch.x.device)
+                self._teacher_on_cpu = False
 
             with torch.no_grad():
                 t_logits = self.teacher(batch)
 
-            self._teacher_on_cpu = _teacher_offload(self.teacher, self.cfg)
+            if self.cfg.training.offload_teacher_to_cpu:
+                self.teacher.to("cpu")
+                torch.cuda.empty_cache()
+                self._teacher_on_cpu = True
 
             kd_loss = soft_label_kd_loss(logits, t_logits, kd.temperature)
             loss = kd.alpha * kd_loss + (1 - kd.alpha) * task_loss
