@@ -154,13 +154,11 @@ class CANBusDataset(InMemoryDataset):
         log.info("windowing", n_windows=n_windows, window_size=ws, stride=st)
 
         if st >= ws:
-            # Non-overlapping: each row belongs to exactly one window
             df = df.with_columns(
                 (pl.col("_row") // st).cast(pl.Int64).alias("_wid"),
                 (pl.col("_row") % ws < half).alias("_first_half"),
             ).filter(pl.col("_wid") <= max_wid)
         else:
-            # Overlapping: int_ranges + explode (vectorized, no Python loop)
             row = pl.col("_row")
             first_wid = ((row - ws + st) // st).clip(lower_bound=0)
             last_wid = (row // st).clip(upper_bound=max_wid)
@@ -174,17 +172,42 @@ class CANBusDataset(InMemoryDataset):
                 )
             )
 
-        # ── Vectorized node features ──────────────────────────────────
-        node_stats = df.group_by(["_wid", "node_id"], maintain_order=True).agg(
+        # ── Chunked processing ────────────────────────────────────────
+        # Process windows in chunks to bound peak memory. Each chunk:
+        # filter → stats + edges + labels (parallel in Polars) → assemble → free.
+        CHUNK_SIZE = 500
+        graphs: list[Data] = []
+
+        for chunk_start in range(0, n_windows, CHUNK_SIZE):
+            chunk_end = min(chunk_start + CHUNK_SIZE, n_windows)
+            chunk_df = df.filter(
+                (pl.col("_wid") >= chunk_start) & (pl.col("_wid") < chunk_end)
+            )
+
+            chunk_graphs = self._process_chunk(chunk_df, num_nodes)
+            graphs.extend(chunk_graphs)
+            del chunk_df, chunk_graphs
+
+            if chunk_end < n_windows:
+                log.info("chunk_done", windows=f"{chunk_end}/{n_windows}")
+
+        del df
+        log.info("graphs_built", count=len(graphs), num_nodes=num_nodes)
+        return graphs, num_nodes
+
+    def _process_chunk(
+        self, chunk_df: pl.DataFrame, num_nodes: int,
+    ) -> list[Data]:
+        """Build graphs for a chunk of windows. Frees intermediates eagerly."""
+        # ── Node stats ────────────────────────────────────────────────
+        node_stats = chunk_df.group_by(["_wid", "node_id"], maintain_order=True).agg(
             *NODE_STAT_EXPRS
         ).fill_null(0).fill_nan(0)
-        log.info("node_stats_computed", rows=len(node_stats))
 
-        # ── Vectorized edge features ──────────────────────────────────
-        # Compute IAT, byte diffs, and bidirectional flag across ALL windows at once.
+        # ── Edge features ─────────────────────────────────────────────
         edge_df = (
-            df.select("_wid", "_row", "node_id", "timestamp",
-                      *[f"byte_{i}" for i in range(4)])
+            chunk_df.select("_wid", "_row", "node_id", "timestamp",
+                            *[f"byte_{i}" for i in range(4)])
             .sort(["_wid", "_row"])
             .with_columns(
                 pl.col("node_id").alias("src"),
@@ -196,31 +219,24 @@ class CANBusDataset(InMemoryDataset):
                     for i in range(4)
                 ],
             )
-            .filter(pl.col("iat").is_not_null())  # drop first row of each window
+            .filter(pl.col("iat").is_not_null())
         )
-
-        # Bidirectional flag via self-join: does (dst, src) exist in same window?
-        edge_pairs = (
-            edge_df.select("_wid", "src", "dst").unique()
-            .with_columns(pl.lit(True).alias("_has_reverse"))
-        )
+        # Bidirectional flag
+        edge_pairs = edge_df.select("_wid", "src", "dst").unique()
         edge_df = (
             edge_df.join(
-                edge_pairs,
+                edge_pairs.with_columns(pl.lit(True).alias("_rev")),
                 left_on=["_wid", "dst", "src"],
                 right_on=["_wid", "src", "dst"],
                 how="left",
             )
-            .with_columns(
-                pl.col("_has_reverse").fill_null(False).cast(pl.Float32).alias("bidir")
-            )
-            .drop("_has_reverse")
+            .with_columns(pl.col("_rev").fill_null(False).cast(pl.Float32).alias("bidir"))
+            .drop("_rev")
         )
-        log.info("edge_features_computed", rows=len(edge_df))
+        del edge_pairs
 
-        # ── Vectorized labels ─────────────────────────────────────────
-        raw_for_labels = df.select("_wid", "attack", "attack_type")
-        labels = raw_for_labels.group_by("_wid").agg(
+        # ── Labels ────────────────────────────────────────────────────
+        labels = chunk_df.group_by("_wid").agg(
             (pl.col("attack").max() > 0).cast(pl.Int64).alias("y"),
             pl.col("attack_type")
             .filter(pl.col("attack_type") > 0)
@@ -229,51 +245,41 @@ class CANBusDataset(InMemoryDataset):
         label_dict: dict[int, tuple[int, int]] = {
             row[0]: (row[1], row[2]) for row in labels.iter_rows()
         }
+        del labels
 
-        # ── Partition by window (single Polars call each) ─────────────
+        # ── Partition + assemble ──────────────────────────────────────
         stats_parts = node_stats.partition_by("_wid", maintain_order=True, as_dict=True)
+        del node_stats
         edge_parts = edge_df.partition_by("_wid", maintain_order=True, as_dict=True)
+        del edge_df
 
-        # Pre-extract numpy arrays for edge features per window
-        edge_arrays: dict[int, dict[str, np.ndarray]] = {}
-        for wid_key, part in edge_parts.items():
-            wid = wid_key[0] if isinstance(wid_key, tuple) else wid_key
-            edge_arrays[wid] = {
-                "src": part["src"].to_numpy(),
-                "dst": part["dst"].to_numpy(),
-                "iat": part["iat"].to_numpy(),
-                **{f"byte_{i}_diff": part[f"byte_{i}_diff"].to_numpy() for i in range(4)},
-                "bidir": part["bidir"].to_numpy(),
-            }
-
-        # ── Assembly loop (minimal: tensor indexing + networkx CC) ─────
         graphs: list[Data] = []
         for wid_key, stats in stats_parts.items():
             wid = wid_key[0] if isinstance(wid_key, tuple) else wid_key
-            ea = edge_arrays.get(wid)
-            if ea is None:
+            epart = edge_parts.get(wid_key)
+            if epart is None:
                 continue
 
-            src, dst = ea["src"], ea["dst"]
+            src = epart["src"].to_numpy()
+            dst = epart["dst"].to_numpy()
             ei = np.stack([src, dst])
 
-            # Node features (clustering_coefficients inside stats_to_tensor)
             x = stats_to_tensor(stats, num_nodes, edge_index=ei)
 
-            # Edge features from pre-computed arrays
             n_edges = len(src)
             edge_attr = torch.zeros(n_edges, N_EDGE_FEATURES, dtype=torch.float32)
-            edge_attr[:, 0] = torch.from_numpy(ea["iat"])
-            edge_attr[:, 2] = torch.from_numpy(ea["iat"])
-            edge_attr[:, 3] = torch.from_numpy(ea["iat"])
+            iat = torch.from_numpy(epart["iat"].to_numpy().copy())
+            edge_attr[:, 0] = iat
+            edge_attr[:, 2] = iat
+            edge_attr[:, 3] = iat
             edge_attr[:, 6] = 1.0
             for i in range(4):
-                edge_attr[:, 7 + i] = torch.from_numpy(ea[f"byte_{i}_diff"])
-            edge_attr[:, 11] = torch.from_numpy(ea["bidir"])
+                edge_attr[:, 7 + i] = torch.from_numpy(
+                    epart[f"byte_{i}_diff"].to_numpy().copy()
+                )
+            edge_attr[:, 11] = torch.from_numpy(epart["bidir"].to_numpy().copy())
 
-            # Labels from pre-computed dict
             y_val, at_val = label_dict.get(wid, (0, 0))
-
             graphs.append(Data(
                 x=x,
                 edge_index=torch.tensor(ei, dtype=torch.long),
@@ -282,8 +288,8 @@ class CANBusDataset(InMemoryDataset):
                 attack_type=torch.tensor([at_val], dtype=torch.long),
             ))
 
-        log.info("graphs_built", count=len(graphs), num_nodes=num_nodes)
-        return graphs, num_nodes
+        del stats_parts, edge_parts
+        return graphs
 
     @staticmethod
     def _infer_attack_type(csv_path: Path) -> int:
