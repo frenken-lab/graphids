@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from omegaconf import MISSING, OmegaConf
 
@@ -205,6 +206,11 @@ class Config:
     num_ids: int = 0  # CAN arbitration-ID vocabulary size (for nn.Embedding)
     in_channels: int = 0  # node feature dimension (CAN ID col + continuous features)
     num_classes: int = 2  # number of target classes (derived from data, default binary)
+    # Interpolation-heavy fields from config.yaml (Hydra needs them in schema)
+    _tier: str = MISSING
+    _output_base: str = MISSING
+    checkpoints: Any = MISSING
+    callbacks: Any = MISSING
     vgae: VGAEConfig = field(default_factory=VGAEConfig)
     gat: GATConfig = field(default_factory=GATConfig)
     dqn: DQNConfig = field(default_factory=DQNConfig)

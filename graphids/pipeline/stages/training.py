@@ -25,7 +25,7 @@ def _resume_ckpt_path(cfg, stage: str) -> str | None:
 
     Resolution order:
     1. ``KD_GAT_CKPT_PATH`` env var — explicit override from orchestrator
-       (set when Dagster retries a timed-out stage).
+       (set by orchestrator when retrying a timed-out stage).
     2. Lightning auto-save — ``.pl_auto_save.ckpt`` in persistent_root,
        written by ``SLURMEnvironment(auto_requeue=True)`` on SIGUSR1.
     """

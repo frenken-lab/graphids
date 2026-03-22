@@ -76,21 +76,20 @@ Minimal integration test with synthetic data (3 graphs, 5 nodes). Catches import
 | 5b | Lightning predict_step for eval inference | **Done** |
 | 6 | SLURMEnvironment auto-requeue | **Done** |
 | 7 | Simplify artifacts.py (ESS primary, drop MLflow fallback) | **Done** |
-| 8 | Dagster daemon as SLURM job (CPU job + SSH tunnel to UI) | **Done** |
-| 9 | Dagster partitions (multi-seed × multi-dataset + HPO trials) | Pending P8 |
+| 8 | ~~Dagster daemon~~ — replaced by submitit orchestration | **Superseded** |
+| 9 | ~~Dagster partitions~~ — replaced by submitit orchestration | **Superseded** |
 
 ## 3-Pillar Architecture (target)
 
 | Pillar | Owner | Current state |
 |--------|-------|---------------|
 | **Config** | Hydra Compose + Pydantic | **Done** — 5-file config layer, Hydra config groups, lake_root-only |
-| **Orchestration** | Dagster + dagster-slurm | Partial — fire_and_forget works, dagster-slurm integration pending |
+| **Orchestration** | submitit + graphlib | **Done** — execute_stage() as single entry point, submitit for SLURM submission, graphlib for DAG resolution |
 | **ML Training** | Lightning modules + stages | **Done** — All models use `trainer.test()` for eval, `trainer.fit()` for training (incl. DQN/bandit). Focal/weighted_ce loss options. Composite VGAE anomaly score. |
 | **I/O** | Lightning CSVLogger + ModelCheckpoint + callbacks | **Done** — No custom storage layer. CSVLogger for metrics, ModelCheckpoint for checkpoints, EvalArtifactCallback for eval artifacts. |
 
 ## Open Questions
 
-- **Adaptive retry hooks**: dagster-slurm doesn't classify SLURM failures (OOM vs TIMEOUT). How to hook `scale_resources()` into Dagster's `RetryPolicy`?
 - **pixi-pack + OSC CUDA**: Verify PyTorch conda packages with bundled cudatoolkit work on OSC GPU nodes.
 
 ## Decisions Made
@@ -98,8 +97,8 @@ Minimal integration test with synthetic data (3 graphs, 5 nodes). Catches import
 - **Hydra Compose API** (2026-03-18): hydra-core + omegaconf (no hydra-zen). Config groups in conf/model/, conf/auxiliary/, conf/dataset/. Same resolve() signature, Hydra internals.
 - **lake_root-only paths** (2026-03-18): Single storage root. experiment_root, data_root, cache_root, stage_dir_override eliminated. KD_GAT_LAKE_ROOT (default: experimentruns).
 - **lake/ dissolved** (2026-03-18): manifest.py → pipeline/, catalog.py → pipeline/, locking.py → core/preprocessing/_locking.py.
-- **Flattened orchestration** (2026-03-18): Dagster owns all SLURM submission. Phase 4 eliminated.
-- **dagster-slurm Option A** (2026-03-18): Bash launcher + pixi-pack + custom preamble.
+- **Flattened orchestration** (2026-03-18): ~~Dagster owns all SLURM submission.~~ Superseded by submitit + graphlib (2026-03-20). Phase 4 eliminated.
+- ~~**dagster-slurm Option A** (2026-03-18): Bash launcher + pixi-pack + custom preamble.~~ Superseded by submitit.
 - **Manifest as metrics SoT** (2026-03-18): _manifest.json is sole source of truth.
 
 ## Next Up (after toolchain migration)

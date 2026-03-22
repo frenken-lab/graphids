@@ -69,7 +69,7 @@ if ! $DRY_RUN; then
     "directories": {
         "raw": "Immutable raw CAN bus datasets",
         "cache": "Preprocessed graph cache, versioned by PREPROCESSING_VERSION",
-        "production": "Production experiment runs (Dagster orchestration)",
+        "production": "Production experiment runs (submitit orchestration)",
         "dev": "Per-user development sandboxes (same structure as production)",
         "exports": "Derived datasets for dashboards (parquet files)",
         "sweeps": "HPO sweep best-config YAMLs and searcher state",
@@ -101,7 +101,7 @@ db.sql("SELECT dataset, model_type, scale, f1_macro FROM experiments ORDER BY f1
   raw/                  # Immutable raw datasets (hcrl_sa, hcrl_ch, set_01..04)
   cache/                # Preprocessed graphs, versioned (v3.0.0/)
     v3.0.0/{dataset}/   #   processed_graphs.pt, id_mapping.pkl, cache_metadata.json
-  production/           # Production runs (Dagster-managed)
+  production/           # Production runs (submitit-managed)
     {dataset}/{model}_{scale}_{stage}[_{aux}]/seed_{N}/
       config.json       #   Frozen PipelineConfig
       metrics.json      #   Evaluation metrics

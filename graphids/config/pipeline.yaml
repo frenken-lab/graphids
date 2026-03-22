@@ -82,7 +82,7 @@ stages:
 
 # --- Pipeline variants (what the orchestrator runs) ---
 # Each variant defines a scale + auxiliary + stage list.
-# Adding a variant here = Dagster picks it up automatically.
+# Adding a variant here = the orchestrator picks it up automatically.
 variants:
   large:
     scale: large
