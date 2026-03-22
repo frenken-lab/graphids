@@ -119,8 +119,9 @@ class CANBusDataset(InMemoryDataset):
         )
         num_nodes = len(vocab) + 1
 
-        # Add a row index for group_by_dynamic windowing
-        df = df.with_row_index("_idx")
+        # Add a row index for group_by_dynamic windowing (cast to Int64 — Polars
+        # with_row_index returns UInt32 but group_by_dynamic requires signed int)
+        df = df.with_row_index("_idx").cast({"_idx": pl.Int64})
 
         # Sliding windows via group_by_dynamic on the row index.
         # every=stride, period=window_size gives the same windows as the
