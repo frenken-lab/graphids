@@ -22,6 +22,7 @@ ATTACK_TYPE_CODES: dict[str, int] = {
     "benign": 0,
     "dos": 1,
     "fuzzy": 2,
+    "fuzzing": 2,
     "gear": 3,
     "rpm": 4,
     "flooding": 5,
@@ -115,7 +116,7 @@ class CANBusDataset(InMemoryDataset):
         # Vocabulary: vectorised .replace() instead of per-row Python lambda
         vocab, oov = vocab_from_column(df["arb_id"])
         df = df.with_columns(
-            pl.col("arb_id").replace(vocab, default=oov).cast(pl.Int64).alias("node_id")
+            pl.col("arb_id").replace_strict(vocab, default=oov).cast(pl.Int64).alias("node_id")
         )
         num_nodes = len(vocab) + 1
 
@@ -139,11 +140,28 @@ class CANBusDataset(InMemoryDataset):
             graphs.append(self._window_to_graph(window, num_nodes))
         return graphs, num_nodes
 
+    @staticmethod
+    def _infer_attack_type(csv_path: Path) -> int:
+        """Infer attack type code from file/directory naming conventions.
+
+        Checks file stem and parent directory name against ATTACK_TYPE_CODES.
+        Falls back to the CSV 'attack' column at graph level (binary 0/1)
+        if no keyword matches — returns 0 (benign) as safe default.
+        """
+        # Check both file stem and parent dir for attack keywords
+        parts = (csv_path.stem.lower() + " " + csv_path.parent.name.lower())
+        for keyword, code in ATTACK_TYPE_CODES.items():
+            if keyword in parts:
+                return code
+        # No keyword matched — default to benign (0), not attack (1).
+        # The binary label y is derived from the CSV 'attack' column anyway.
+        return 0
+
     def _read_raw(self) -> pl.DataFrame:
         """Lazy-scan CSVs, parse hex, compute entropy, tag attack types. Collect once."""
         frames = []
         for csv_path in sorted(self.raw_data_dir.rglob("*.csv")):
-            at = ATTACK_TYPE_CODES.get(csv_path.parent.name.lower(), 1)
+            at = self._infer_attack_type(csv_path)
             lf = (
                 pl.scan_csv(csv_path)
                 .with_columns(pl.lit(at).alias("attack_type"))
@@ -199,10 +217,12 @@ class CANBusDataset(InMemoryDataset):
         x = node_features(window, num_nodes, edge_index=ei)
         edge_attr = edge_features(timestamps, byte_arrays, src, dst)
 
-        attack_col = window["attack_type"]
-        has_attack = attack_col.max() > 0
+        # Binary label from CSV ground truth 'attack' column (0=normal, 1=attack)
+        has_attack = int(window["attack"].max()) > 0
         y = torch.tensor([1 if has_attack else 0], dtype=torch.long)
 
+        # Multi-class attack type from directory-inferred 'attack_type' column
+        attack_col = window["attack_type"]
         if has_attack:
             at = int(attack_col.filter(attack_col > 0).mode().item())
         else:
