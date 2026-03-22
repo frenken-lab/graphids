@@ -16,33 +16,41 @@ SKIP_CUDA_CONF=1 source "$SCRIPT_DIR/_preamble.sh"
 
 DATASETS=(hcrl_ch hcrl_sa set_01 set_02 set_03 set_04)
 
-echo "=== Cache Rebuild: PREPROCESSING_VERSION=$(python -c 'from graphids.config.constants import PREPROCESSING_VERSION; print(PREPROCESSING_VERSION)') ==="
+PREPROCESSING_VERSION=$(python -c 'from graphids.config.constants import PREPROCESSING_VERSION; print(PREPROCESSING_VERSION)')
+echo "=== Cache Rebuild: PREPROCESSING_VERSION=${PREPROCESSING_VERSION} ==="
 
 for ds in "${DATASETS[@]}"; do
     echo ""
     echo "=== Rebuilding cache: $ds ==="
     start_time=$SECONDS
 
+    # Delete existing cache to force rebuild (InMemoryDataset skips if .complete marker exists)
+    CACHE_DIR=$(python -c "from graphids.config import cache_dir; print(cache_dir('${KD_GAT_LAKE_ROOT:-/fs/ess/PAS1266/kd-gat}', '$ds'))")
+    if [ -d "$CACHE_DIR" ]; then
+        echo "  Removing stale cache: $CACHE_DIR"
+        rm -rf "$CACHE_DIR"
+    fi
+
     python -c "
-from graphids.core.training.datamodules import load_dataset
-from graphids.config import data_dir, cache_dir, resolve
+from graphids.core.preprocessing.datamodule import CANBusDataModule
+from graphids.config import resolve
 
-cfg = resolve('vgae', 'large', dataset='$ds')
-train, val, num_ids = load_dataset(
-    '$ds',
-    dataset_path=data_dir(cfg),
-    cache_dir_path=cache_dir(cfg),
-    force_rebuild_cache=True,
-)
-print(f'  $ds: {len(train)+len(val)} graphs, {num_ids} unique IDs')
-print(f'  Features: {train[0].x.shape[1]} dims')
+cfg = resolve('model_type=vgae', 'scale=large', 'dataset=$ds')
+dm = CANBusDataModule.from_cfg(cfg)
+dm.setup('fit')
 
-# Quick feature range check — all should be [0, 1] after normalization
+train = dm.train_dataset
+val = dm.val_dataset
+print(f'  $ds: {len(train)+len(val)} graphs, {dm.num_ids} unique IDs')
+print(f'  Features: {dm.in_channels} node dims, {dm.edge_dim} edge dims')
+
+# Quick feature range check
 import torch
 all_x = torch.cat([train[i].x for i in range(min(500, len(train)))])
 for idx, name in [(17, 'Entropy'), (20, 'Skewness'), (21, 'Kurtosis'), (23, 'SplitHalf')]:
-    vals = all_x[:, idx]
-    print(f'  {name} (feat {idx}): min={vals.min():.4f}, max={vals.max():.4f}, mean={vals.mean():.4f}')
+    if idx < all_x.shape[1]:
+        vals = all_x[:, idx]
+        print(f'  {name} (feat {idx}): min={vals.min():.4f}, max={vals.max():.4f}, mean={vals.mean():.4f}')
 "
     elapsed=$((SECONDS - start_time))
     echo "  Completed in ${elapsed}s"

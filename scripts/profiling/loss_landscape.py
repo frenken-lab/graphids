@@ -270,7 +270,7 @@ def compute_loss_landscape(
         cfg = PipelineConfig.load(config_file)
         log.info("Loaded config from %s", config_file)
     else:
-        cfg = resolve(model_type, model_scale, dataset=dataset)
+        cfg = resolve(f"model_type={model_type}", f"scale={model_scale}", f"dataset={dataset}")
         log.warning("No config.json in %s — using resolve() defaults", run_dir)
 
     # Build model and load weights

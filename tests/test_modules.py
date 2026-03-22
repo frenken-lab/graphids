@@ -288,7 +288,6 @@ class TestCurriculumDataModule:
         assert vl is not None
 
 
-@pytest.mark.skip(reason="Temporal stage is future research — not yet validated")
 class TestTemporalStage:
     """Temporal model + Lightning module + dataset — future research."""
 
@@ -310,7 +309,7 @@ class TestTemporalStage:
         model = TemporalGraphClassifier(
             spatial_encoder=spatial, spatial_dim=32, num_classes=2,
             temporal_hidden=16, temporal_heads=2, temporal_layers=1,
-            seq_len=4,
+            max_seq_len=4,
         )
         sequences = [self._make_sequence() for _ in range(3)]
         model.eval()

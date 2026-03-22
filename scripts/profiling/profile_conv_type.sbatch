@@ -1,45 +1,30 @@
 #!/usr/bin/env bash
-# Account comes from .env (KD_GAT_SLURM_ACCOUNT). Submit with:
-#   sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/profiling/profile_conv_type.sbatch
+# Profile GAT vs TransformerConv to decide whether cuGraph acceleration is worthwhile.
+#
+# Usage: sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/profiling/profile_conv_type.sbatch [dataset] [scale]
+# Then:  python scripts/profiling/analyze_profile.py
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:v100:1
+#SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=85G
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=48G
 #SBATCH --time=02:00:00
 #SBATCH --job-name=kd-gat-profile-conv
 #SBATCH --output=slurm_logs/profile_conv_%j.out
 #SBATCH --error=slurm_logs/profile_conv_%j.err
-
-# Profile GAT (no edge_attr) vs TransformerConv (with edge_attr) to decide
-# whether cuGraph acceleration is worthwhile.
-#
-# Usage: sbatch scripts/profiling/profile_conv_type.sbatch [dataset] [scale]
-# Then:  python scripts/profiling/analyze_profile.py
-
-set -euo pipefail
+#SBATCH --signal=B:USR1@300
 
 DATASET="${1:-hcrl_sa}"
 SCALE="${2:-large}"
 EPOCHS=5
 
-cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}"
+source /users/PAS2022/rf15/KD-GAT/scripts/slurm/_preamble.sh
 
-# Load environment
-module load python/3.12
-source .venv/bin/activate
+log_job_header "Conv type profiling: ${DATASET} / ${SCALE}"
 
-mkdir -p slurm_logs
-
-echo "=== Profiling conv_type comparison: ${DATASET} / ${SCALE} ==="
-echo "Date: $(date)"
-echo "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'N/A')"
-
-# Run 1: GAT (no edge_attr)
-echo ""
 echo "--- Run 1: conv_type=gat (no edge_attr) ---"
-python -m graphids.train stage=curriculum model=gat_${SCALE} dataset=${DATASET} \
+python -m graphids stage=curriculum model_type=gat scale=${SCALE} dataset=${DATASET} \
     training.max_epochs=${EPOCHS} \
     training.profile=true \
     training.profile_steps=5 \
@@ -48,7 +33,7 @@ python -m graphids.train stage=curriculum model=gat_${SCALE} dataset=${DATASET} 
 
 echo ""
 echo "--- Run 2: conv_type=transformer (with edge_attr) ---"
-python -m graphids.train stage=curriculum model=gat_${SCALE} dataset=${DATASET} \
+python -m graphids stage=curriculum model_type=gat scale=${SCALE} dataset=${DATASET} \
     training.max_epochs=${EPOCHS} \
     training.profile=true \
     training.profile_steps=5 \
@@ -57,4 +42,5 @@ python -m graphids.train stage=curriculum model=gat_${SCALE} dataset=${DATASET} 
 
 echo ""
 echo "=== Profiling complete. Run: python scripts/profiling/analyze_profile.py ==="
-echo "Date: $(date)"
+
+JOB_LOG_PREFIX="profile_conv" source /users/PAS2022/rf15/KD-GAT/scripts/slurm/_epilog.sh

@@ -42,7 +42,7 @@ SUPPORTED_MODELS = ("dominant", "ocgnn")
 
 def _load_graphs(dataset: str):
     """Load cached graph data via the project's data loading utils."""
-    cfg = resolve("vgae", "large", dataset=dataset)
+    cfg = resolve("model_type=vgae", "scale=large", f"dataset={dataset}")
     from graphids.core.preprocessing import CANBusDataModule
 
     dm = CANBusDataModule.from_cfg(cfg)

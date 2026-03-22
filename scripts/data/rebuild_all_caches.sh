@@ -1,6 +1,6 @@
 #!/bin/bash
 # Rebuild ALL graph caches (train + test) for specified datasets via SLURM.
-# Deletes existing caches first to force a clean rebuild with current preprocessing version.
+# Each dataset gets its own SLURM job for parallelism.
 #
 # Usage: bash scripts/data/rebuild_all_caches.sh                          # All 6 datasets
 #        bash scripts/data/rebuild_all_caches.sh hcrl_ch hcrl_sa          # Specific datasets
@@ -11,7 +11,7 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 mkdir -p "$PROJECT_DIR/slurm_logs"
 
-# Source .env for KD_GAT_SLURM_ACCOUNT
+# Source .env for KD_GAT_SLURM_ACCOUNT and KD_GAT_LAKE_ROOT
 set -a; source "$PROJECT_DIR/.env" 2>/dev/null; set +a
 
 DRY_RUN=false
@@ -30,9 +30,10 @@ if [ -z "$DATASETS" ]; then
 fi
 
 ACCOUNT="${KD_GAT_SLURM_ACCOUNT:?Set KD_GAT_SLURM_ACCOUNT in .env}"
+LAKE_ROOT="${KD_GAT_LAKE_ROOT:-/fs/ess/PAS1266/kd-gat}"
 
 for ds in $DATASETS; do
-    CACHE_DIR="$PROJECT_DIR/data/cache/$ds"
+    CACHE_DIR=$("$PROJECT_DIR/.venv/bin/python" -c "from graphids.config import cache_dir; print(cache_dir('${LAKE_ROOT}', '$ds'))")
 
     if [ "$DRY_RUN" = true ]; then
         echo "[dry-run] Would delete $CACHE_DIR and submit rebuild job for $ds"
@@ -45,29 +46,28 @@ for ds in $DATASETS; do
         rm -rf "$CACHE_DIR"
     fi
 
-    # Submit train cache rebuild
     sbatch --account="$ACCOUNT" --partition=cpu \
-      --time=360 --mem=85G --cpus-per-task=8 \
+      --time=02:00:00 --mem=48G --cpus-per-task=8 \
       --job-name="cache-${ds}" \
       --output="$PROJECT_DIR/slurm_logs/%j-cache-${ds}.out" \
       --error="$PROJECT_DIR/slurm_logs/%j-cache-${ds}.err" \
-      --wrap="source $PROJECT_DIR/.venv/bin/activate && cd $PROJECT_DIR && python -c \"
-from graphids.core.training.datamodules import load_dataset, load_test_scenarios
-from pathlib import Path
-import logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)s %(levelname)s %(message)s')
-ds = '${ds}'
-ds_path = Path(f'data/automotive/{ds}')
-cache_path = Path(f'data/cache/{ds}')
+      --wrap="SKIP_CUDA_CONF=1 SKIP_STAGE_DATA=1 source $PROJECT_DIR/scripts/slurm/_preamble.sh && python -c \"
+from graphids.core.preprocessing.datamodule import CANBusDataModule
+from graphids.config import resolve
 
-print(f'=== Rebuilding train cache for {ds} ===', flush=True)
-train, val, num_ids = load_dataset(ds, ds_path, cache_path, force_rebuild_cache=True)
-print(f'  Train: {len(train)}, Val: {len(val)}, IDs: {num_ids}', flush=True)
+ds = '${ds}'
+cfg = resolve('model_type=vgae', 'scale=large', f'dataset={ds}')
+dm = CANBusDataModule.from_cfg(cfg)
+
+print(f'=== Rebuilding train/val cache for {ds} ===', flush=True)
+dm.setup('fit')
+print(f'  Train: {len(dm.train_dataset)}, Val: {len(dm.val_dataset)}, IDs: {dm.num_ids}', flush=True)
+print(f'  Features: {dm.in_channels} node dims, {dm.edge_dim} edge dims', flush=True)
 
 print(f'=== Rebuilding test caches for {ds} ===', flush=True)
-scenarios = load_test_scenarios(ds, ds_path, cache_path, force_rebuild_cache=True)
-for name, graphs in scenarios.items():
-    print(f'  {name}: {len(graphs)} graphs', flush=True)
+dm.setup('test')
+for name, test_ds in dm.test_datasets.items():
+    print(f'  {name}: {len(test_ds)} graphs', flush=True)
 print(f'=== Done: {ds} ===', flush=True)
 \""
     echo "Submitted cache rebuild job for ${ds}"
