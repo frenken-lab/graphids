@@ -3,9 +3,14 @@
 Owns the entire pipeline: scan CSVs (lazy) → parse hex → build vocabulary →
 vectorized feature computation via Polars group_by → PyG Data → cache.
 
-All feature computation is done in Polars expressions — no Python loops over
-windows. The only per-window Python code is assembling the final Data objects
-from pre-computed tensor slices.
+Feature computation uses Polars expressions throughout:
+- Node stats: single group_by(window_id, node_id).agg() across all windows
+- Edge features: diff().over("_wid") for IAT and byte diffs, self-join for bidir
+- Labels: group_by("_wid").agg() for attack presence and type
+- Window assignment: int_ranges + explode (no Python loop)
+
+The only per-window Python code is the final Data assembly and networkx
+clustering coefficients (graph-structure-dependent, not vectorizable).
 """
 
 from __future__ import annotations
@@ -19,12 +24,11 @@ import torch
 from torch_geometric.data import Data, InMemoryDataset
 
 from graphids.core.preprocessing.features import (
-    BYTE_COLS,
     N_EDGE_FEATURES,
-    N_NODE_FEATURES,
     NODE_COL_ORDER,
     NODE_STAT_EXPRS,
     clustering_coefficients,
+    edge_features,
     stats_to_tensor,
 )
 from graphids.core.preprocessing.utils import atomic_save, nfs_lock, vocab_from_column
@@ -124,15 +128,6 @@ class CANBusDataset(InMemoryDataset):
     # ── pipeline ──────────────────────────────────────────────────────
 
     def _build_graphs(self) -> tuple[list[Data], int]:
-        """Build all graphs from raw CSVs using vectorized Polars operations.
-
-        Pipeline:
-        1. _read_raw: lazy scan → parse hex → entropy → collect (one Polars plan)
-        2. Add vocabulary, window_id, first_half flag
-        3. group_by(window_id, node_id).agg() — ALL node stats in one call
-        4. Compute edge features vectorized (diff-based, no per-window loop)
-        5. Assemble Data objects from pre-computed arrays
-        """
         df = self._read_raw()
         log.info("raw_loaded", rows=len(df))
 
@@ -143,141 +138,146 @@ class CANBusDataset(InMemoryDataset):
             pl.col("arb_id").replace_strict(vocab, default=oov).cast(pl.Int64).alias("node_id")
         )
 
-        # Window assignment: integer division on row index
+        # ── Window assignment (pure Polars, no Python loop) ───────────
         df = df.with_row_index("_row")
         n_rows = len(df)
         ws, st = self.window_size, self.stride
-
-        # Each row belongs to window_id = (row - offset) // stride for valid offsets
-        # But for sliding windows, a row can belong to multiple windows.
-        # Instead: compute window start indices, then for each window slice the DataFrame.
-        # This is still O(windows) but the per-window work is a slice + pre-computed agg.
-
-        # Compute all window starts
-        window_starts = list(range(0, n_rows - ws + 1, st))
-        n_windows = len(window_starts)
-        log.info("windowing", n_windows=n_windows, window_size=ws, stride=st)
-
-        # Pre-compute first_half flag for split_half_ratio
         half = ws // 2
 
-        # ── Vectorized node features ──────────────────────────────────
-        # Assign each row a window_id via a cross-join approach:
-        # For non-overlapping windows (stride >= window_size), simple integer division works.
-        # For overlapping windows, rows belong to multiple windows — need to explode.
+        n_windows = max(0, (n_rows - ws) // st + 1)
+        if n_windows == 0:
+            log.warning("no_complete_windows", n_rows=n_rows, window_size=ws)
+            return [], num_nodes
+        max_wid = n_windows - 1
+        log.info("windowing", n_windows=n_windows, window_size=ws, stride=st)
 
         if st >= ws:
             # Non-overlapping: each row belongs to exactly one window
             df = df.with_columns(
                 (pl.col("_row") // st).cast(pl.Int64).alias("_wid"),
                 (pl.col("_row") % ws < half).alias("_first_half"),
-            )
-            # Filter out partial trailing window
-            max_wid = (n_rows - ws) // st
-            df = df.filter(pl.col("_wid") <= max_wid)
+            ).filter(pl.col("_wid") <= max_wid)
         else:
-            # Overlapping: assign each row to all windows it belongs to
-            # Row r belongs to windows where start <= r < start + ws
-            # i.e., window ids where (r - ws + 1) / st <= wid <= r / st
-            # Efficient approach: build window_id array and explode
-            row_np = df["_row"].to_numpy()
-            wid_lists = []
-            fh_lists = []
-            for r in row_np:
-                first_wid = max(0, (r - ws + 1 + st - 1) // st)  # ceil((r - ws + 1) / st)
-                last_wid = r // st
-                last_wid = min(last_wid, len(window_starts) - 1)
-                wids = list(range(first_wid, last_wid + 1))
-                wid_lists.append(wids)
-                # Position within each window: r - wid * st
-                fh_lists.append([int((r - wid * st) < half) for wid in wids])
-
-            df = df.with_columns(
-                pl.Series("_wid", wid_lists, dtype=pl.List(pl.Int64)),
-                pl.Series("_first_half", fh_lists, dtype=pl.List(pl.Int64)),
-            ).explode("_wid", "_first_half").with_columns(
-                pl.col("_first_half").cast(pl.Boolean),
+            # Overlapping: int_ranges + explode (vectorized, no Python loop)
+            row = pl.col("_row")
+            first_wid = ((row - ws + st) // st).clip(lower_bound=0)
+            last_wid = (row // st).clip(upper_bound=max_wid)
+            df = (
+                df.with_columns(
+                    pl.int_ranges(first_wid, last_wid + 1, dtype=pl.Int64).alias("_wid"),
+                )
+                .explode("_wid")
+                .with_columns(
+                    ((row - pl.col("_wid") * st) < half).alias("_first_half"),
+                )
             )
 
-        # One group_by over (window_id, node_id) — ALL per-node stats vectorized
+        # ── Vectorized node features ──────────────────────────────────
         node_stats = df.group_by(["_wid", "node_id"], maintain_order=True).agg(
             *NODE_STAT_EXPRS
         ).fill_null(0).fill_nan(0)
-
         log.info("node_stats_computed", rows=len(node_stats))
 
         # ── Vectorized edge features ──────────────────────────────────
-        # Edge = temporal adjacency (shift-1 within each window)
-        # Pre-compute: src = node_id[:-1], dst = node_id[1:] per window
-        # IAT = diff(timestamp), byte_diff = abs(diff(byte_i))
+        # Compute IAT, byte diffs, and bidirectional flag across ALL windows at once.
+        edge_df = (
+            df.select("_wid", "_row", "node_id", "timestamp",
+                      *[f"byte_{i}" for i in range(4)])
+            .sort(["_wid", "_row"])
+            .with_columns(
+                pl.col("node_id").alias("src"),
+                pl.col("node_id").shift(-1).over("_wid").alias("dst"),
+                pl.col("timestamp").diff().over("_wid").cast(pl.Float32).alias("iat"),
+                *[
+                    pl.col(f"byte_{i}").diff().abs().over("_wid").cast(pl.Float32)
+                    .alias(f"byte_{i}_diff")
+                    for i in range(4)
+                ],
+            )
+            .filter(pl.col("iat").is_not_null())  # drop first row of each window
+        )
 
-        # Get raw arrays for edge computation (original row order, pre-explode)
-        raw_df = df.select("_wid", "_row", "node_id", "timestamp",
-                           *[f"byte_{i}" for i in range(4)], "attack", "attack_type")
-        # For overlapping windows, same row appears multiple times with different _wid
-        # Sort by (_wid, _row) to get correct temporal order within each window
-        raw_df = raw_df.sort(["_wid", "_row"])
+        # Bidirectional flag via self-join: does (dst, src) exist in same window?
+        edge_pairs = (
+            edge_df.select("_wid", "src", "dst").unique()
+            .with_columns(pl.lit(True).alias("_has_reverse"))
+        )
+        edge_df = (
+            edge_df.join(
+                edge_pairs,
+                left_on=["_wid", "dst", "src"],
+                right_on=["_wid", "src", "dst"],
+                how="left",
+            )
+            .with_columns(
+                pl.col("_has_reverse").fill_null(False).cast(pl.Float32).alias("bidir")
+            )
+            .drop("_has_reverse")
+        )
+        log.info("edge_features_computed", rows=len(edge_df))
 
-        # ── Assemble graphs ───────────────────────────────────────────
-        # Group node_stats by window for tensor construction
-        wid_to_stats: dict[int, pl.DataFrame] = {}
-        for wid_val, grp in node_stats.group_by("_wid", maintain_order=True):
-            wid_to_stats[wid_val[0]] = grp  # type: ignore[index]
+        # ── Vectorized labels ─────────────────────────────────────────
+        raw_for_labels = df.select("_wid", "attack", "attack_type")
+        labels = raw_for_labels.group_by("_wid").agg(
+            (pl.col("attack").max() > 0).cast(pl.Int64).alias("y"),
+            pl.col("attack_type")
+            .filter(pl.col("attack_type") > 0)
+            .mode().first().fill_null(0).alias("at"),
+        )
+        label_dict: dict[int, tuple[int, int]] = {
+            row[0]: (row[1], row[2]) for row in labels.iter_rows()
+        }
 
-        # Group raw rows by window for edge construction
-        wid_to_raw: dict[int, pl.DataFrame] = {}
-        for wid_val, grp in raw_df.group_by("_wid", maintain_order=True):
-            wid_to_raw[wid_val[0]] = grp  # type: ignore[index]
+        # ── Partition by window (single Polars call each) ─────────────
+        stats_parts = node_stats.partition_by("_wid", maintain_order=True, as_dict=True)
+        edge_parts = edge_df.partition_by("_wid", maintain_order=True, as_dict=True)
 
+        # Pre-extract numpy arrays for edge features per window
+        edge_arrays: dict[int, dict[str, np.ndarray]] = {}
+        for wid_key, part in edge_parts.items():
+            wid = wid_key[0] if isinstance(wid_key, tuple) else wid_key
+            edge_arrays[wid] = {
+                "src": part["src"].to_numpy(),
+                "dst": part["dst"].to_numpy(),
+                "iat": part["iat"].to_numpy(),
+                **{f"byte_{i}_diff": part[f"byte_{i}_diff"].to_numpy() for i in range(4)},
+                "bidir": part["bidir"].to_numpy(),
+            }
+
+        # ── Assembly loop (minimal: tensor indexing + networkx CC) ─────
         graphs: list[Data] = []
-        for wid in sorted(wid_to_stats.keys()):
-            stats = wid_to_stats[wid]
-            raw = wid_to_raw.get(wid)
-            if raw is None or len(raw) < ws:
+        for wid_key, stats in stats_parts.items():
+            wid = wid_key[0] if isinstance(wid_key, tuple) else wid_key
+            ea = edge_arrays.get(wid)
+            if ea is None:
                 continue
 
-            # Node features → tensor (uses shared stats_to_tensor from features.py)
-            node_ids = raw["node_id"].to_numpy()
-            src, dst = node_ids[:-1], node_ids[1:]
+            src, dst = ea["src"], ea["dst"]
             ei = np.stack([src, dst])
+
+            # Node features (clustering_coefficients inside stats_to_tensor)
             x = stats_to_tensor(stats, num_nodes, edge_index=ei)
 
-            # Edge features
-            timestamps = raw["timestamp"].to_numpy()
-            iat = np.diff(timestamps).astype(np.float32)
+            # Edge features from pre-computed arrays
             n_edges = len(src)
             edge_attr = torch.zeros(n_edges, N_EDGE_FEATURES, dtype=torch.float32)
-            edge_attr[:, 0] = torch.from_numpy(iat)
-            edge_attr[:, 2] = torch.from_numpy(iat)
-            edge_attr[:, 3] = torch.from_numpy(iat)
+            edge_attr[:, 0] = torch.from_numpy(ea["iat"])
+            edge_attr[:, 2] = torch.from_numpy(ea["iat"])
+            edge_attr[:, 3] = torch.from_numpy(ea["iat"])
             edge_attr[:, 6] = 1.0
             for i in range(4):
-                byte_diff = np.abs(np.diff(raw[f"byte_{i}"].to_numpy())).astype(np.float32)
-                edge_attr[:, 7 + i] = torch.from_numpy(byte_diff)
-            # Bidirectional flag
-            directed = set(zip(src, dst))
-            bidir = torch.tensor(
-                [1.0 if (d, s) in directed else 0.0 for s, d in zip(src, dst)],
-                dtype=torch.float32,
-            )
-            edge_attr[:, 11] = bidir
+                edge_attr[:, 7 + i] = torch.from_numpy(ea[f"byte_{i}_diff"])
+            edge_attr[:, 11] = torch.from_numpy(ea["bidir"])
 
-            # Labels
-            has_attack = int(raw["attack"].max()) > 0
-            y = torch.tensor([1 if has_attack else 0], dtype=torch.long)
-            at_col = raw["attack_type"]
-            if has_attack:
-                at_vals = at_col.filter(at_col > 0)
-                at = int(at_vals.mode().item()) if len(at_vals) > 0 else 0
-            else:
-                at = 0
+            # Labels from pre-computed dict
+            y_val, at_val = label_dict.get(wid, (0, 0))
 
             graphs.append(Data(
                 x=x,
                 edge_index=torch.tensor(ei, dtype=torch.long),
                 edge_attr=edge_attr,
-                y=y,
-                attack_type=torch.tensor([at], dtype=torch.long),
+                y=torch.tensor([y_val], dtype=torch.long),
+                attack_type=torch.tensor([at_val], dtype=torch.long),
             ))
 
         log.info("graphs_built", count=len(graphs), num_nodes=num_nodes)
@@ -339,5 +339,3 @@ class CANBusDataset(InMemoryDataset):
         )
 
         return combined.collect()
-
-
