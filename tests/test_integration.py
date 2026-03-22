@@ -50,9 +50,13 @@ class TestPopulateConfig:
 
             @property
             def num_classes(self) -> int:
-                labels = torch.tensor([g.y.item() for g in self._graphs])
+                labels = torch.cat([g.y.view(-1) for g in self._graphs])
                 n = int(labels.unique().numel())
                 return n if n >= 2 else 2
+
+            @property
+            def edge_dim(self) -> int:
+                return self._graphs[0].edge_attr.shape[1]
 
         return StubDataModule(graphs)
 

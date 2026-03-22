@@ -32,10 +32,10 @@ class TestVGAE:
 
     def test_gradient_flow(self, model):
         batch = make_batch(2)
-        cont, canid, _, _, kl, _ = model(
+        cont, canid, nbr, _, kl, _ = model(
             batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr,
         )
-        (cont.sum() + canid.sum() + kl).backward()
+        (cont.sum() + canid.sum() + nbr.sum() + kl).backward()
         dead = [n for n, p in model.named_parameters() if p.grad is None]
         assert not dead, f"No gradient: {dead}"
 

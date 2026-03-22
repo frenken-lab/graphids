@@ -24,7 +24,7 @@ def _make_window(n_rows: int = 20, n_ids: int = 5):
 
 def test_node_features_shape():
     from graphids.core.preprocessing.features import node_features, NODE_COL_ORDER
-    x = node_features(_make_window(30, 8), 8, edge_index=np.array([[0, 1], [1, 2]]))
+    x = node_features(_make_window(80, 8), 8, edge_index=np.array([[0, 1], [1, 2]]))
     assert x.shape == (8, len(NODE_COL_ORDER))
     assert not torch.isnan(x).any()
 
