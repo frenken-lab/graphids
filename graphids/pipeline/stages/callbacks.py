@@ -90,7 +90,7 @@ class RunMetadataCallback(pl.Callback):
     """Save run metadata (git SHA) after training."""
 
     def on_fit_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        out = Path(trainer.log_dir)
+        out = Path(trainer.log_dir or trainer.default_root_dir or ".")
         out.mkdir(parents=True, exist_ok=True)
 
         metadata: dict = {}

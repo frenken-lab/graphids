@@ -80,7 +80,7 @@ def node_features(
     # Select feature columns in order → to_torch() → dense 2-D tensor → scatter into output
     feature_df = stats.select(NODE_COL_ORDER).cast({col: pl.Float32 for col in NODE_COL_ORDER})
     feature_tensor = feature_df.to_torch(dtype=pl.Float32)  # shape [n_ids, n_features]
-    idx = torch.from_numpy(ids)
+    idx = torch.from_numpy(ids.copy())
     out[idx] = feature_tensor
 
     # Clustering coefficient needs graph structure — overwrite placeholder
