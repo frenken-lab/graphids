@@ -62,6 +62,12 @@ testpaths = ["tests"]
 markers = [
     "slow: marks tests as slow (>30s, deselect with '-m not slow')",
     "slurm: marks tests that require SLURM submission",
+    "future: marks tests for future research (skip by default)",
+]
+filterwarnings = [
+    "ignore:The `srun` command is available:UserWarning:lightning_fabric",
+    "ignore:Can't initialize NVML:UserWarning:torch.cuda",
+    "ignore:.*torch_geometric.distributed.*has been deprecated:DeprecationWarning",
 ]
 
 [tool.ruff]

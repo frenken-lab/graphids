@@ -140,8 +140,8 @@ def load_frozen_cfg(cfg, stage: str, model_type: str | None = None):
     p = Path(cfg.checkpoints.get(mt, "")).parent / "config.yaml"
     if not p.exists():
         raise FileNotFoundError(
-            f"Frozen config not found for stage '{stage}' (model_type={mt}). "
-            f"The '{stage}' stage must be trained first."
+            f"Frozen config not found: {p}\n"
+            f"The '{mt}/{stage}' stage must be trained first."
         )
     from omegaconf import OmegaConf
     return OmegaConf.load(p)
@@ -156,6 +156,12 @@ def load_model(
     """
     from graphids.core.models.registry import get as registry_get
 
+    ckpt_path = Path(cfg.checkpoints[model_type])
+    if not ckpt_path.exists():
+        raise FileNotFoundError(
+            f"Checkpoint not found: {ckpt_path}\n"
+            f"The '{model_type}/{stage}' stage must be trained first."
+        )
     frozen_cfg = load_frozen_cfg(cfg, stage, model_type=model_type)
     model = registry_get(model_type)(frozen_cfg, cfg.num_ids, cfg.in_channels)
     model.load_state_dict(torch.load(cfg.checkpoints[model_type], map_location="cpu", weights_only=True))

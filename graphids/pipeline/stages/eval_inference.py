@@ -46,7 +46,10 @@ class FusionResult:
 
 log = structlog.get_logger()
 
-ATTENTION_SAMPLE_LIMIT = 50
+
+def graph_label(g) -> int:
+    """Extract scalar label from a PyG Data object (handles 0-D and 1-D y)."""
+    return g.y.item() if g.y.dim() == 0 else int(g.y[0].item())
 
 
 # ---------------------------------------------------------------------------
@@ -60,16 +63,11 @@ def make_test_trainer() -> pl.Trainer:
     )
 
 
-def extract_metrics(module) -> dict:
-    """Extract computed test_metrics from a module into a standard dict."""
-    r = module.test_metrics.compute()
-    core = {k: v.item() for k, v in r.items()}
-    core["balanced_accuracy"] = (core.get("recall", 0) + core.get("specificity", 0)) / 2
-    return {"core": core, "additional": {}}
+def test_model(module, data, batch_size: int = 256) -> dict:
+    """Run trainer.test() on a module and return metrics from the test loop.
 
-
-def test_model(module, data, batch_size: int = 128) -> dict:
-    """Run trainer.test() on a module and return extracted metrics.
+    Uses the return value of ``trainer.test()`` which contains all metrics
+    logged via ``self.log_dict()`` in each module's ``on_test_epoch_end``.
 
     Args:
         data: Either a list of PyG Data objects (creates PyGDataLoader) or
@@ -80,15 +78,17 @@ def test_model(module, data, batch_size: int = 128) -> dict:
         loader = PyGDataLoader(data, batch_size=batch_size, shuffle=False)
     else:
         loader = data  # pre-built DataLoader (fusion, temporal)
-    trainer.test(module, dataloaders=loader, verbose=False)
-    return extract_metrics(module)
+    results = trainer.test(module, dataloaders=loader, verbose=False)
+    core = dict(results[0]) if results else {}
+    core["balanced_accuracy"] = (core.get("recall", 0) + core.get("specificity", 0)) / 2
+    return {"core": core, "additional": {}}
 
 
 # ---------------------------------------------------------------------------
 # VGAE threshold search
 # ---------------------------------------------------------------------------
 
-def find_vgae_threshold(module, data) -> tuple[float, float]:
+def find_vgae_threshold(module, data, batch_size: int = 256) -> tuple[float, float]:
     """Find optimal anomaly threshold via Youden's J on validation data.
 
     Runs test without a threshold to accumulate errors, then computes optimal.
@@ -101,15 +101,32 @@ def find_vgae_threshold(module, data) -> tuple[float, float]:
     module._test_labels.clear()
 
     trainer = make_test_trainer()
-    loader = PyGDataLoader(data, batch_size=128, shuffle=False)
+    loader = PyGDataLoader(data, batch_size=batch_size, shuffle=False)
     trainer.test(module, dataloaders=loader, verbose=False)
 
     errors, labels = module.get_test_errors()
+
+    # Guard: no data processed
+    if len(errors) == 0:
+        log.warning("find_vgae_threshold_no_data")
+        return 0.5, 0.0
+
+    # Guard: single-class labels (ROC undefined)
+    unique_labels = np.unique(labels)
+    if len(unique_labels) < 2:
+        log.warning("find_vgae_threshold_single_class", unique_label=int(unique_labels[0]))
+        return float(np.median(errors)), 0.0
+
     fpr_v, tpr_v, thresholds_v = binary_roc(
         torch.as_tensor(errors, dtype=torch.float),
         torch.as_tensor(labels, dtype=torch.long),
     )
     j_scores = tpr_v - fpr_v
+
+    # Guard: degenerate ROC curve
+    if len(j_scores) == 0 or len(thresholds_v) == 0:
+        return float(np.median(errors)), 0.0
+
     best_idx = torch.argmax(j_scores).item()
     thresh = float(thresholds_v[best_idx]) if best_idx < len(thresholds_v) else float(np.median(errors))
     return thresh, float(j_scores[best_idx])
@@ -119,11 +136,11 @@ def find_vgae_threshold(module, data) -> tuple[float, float]:
 # Artifact capture (separate passes — not compatible with test_step)
 # ---------------------------------------------------------------------------
 
-def capture_gat_artifacts(gat, data, device, embeddings: bool = True, attention: bool = True) -> GATResult:
+def capture_gat_artifacts(gat, data, device, embeddings: bool = True, attention: bool = True, batch_size: int = 256, attention_limit: int = 50) -> GATResult:
     """Capture GAT embeddings and attention weights for paper artifacts."""
     preds_all, scores_all, labels_all, types_all, embs_all = [], [], [], [], []
     with torch.no_grad():
-        for g in PyGDataLoader(data, batch_size=128, shuffle=False):
+        for g in PyGDataLoader(data, batch_size=batch_size, shuffle=False):
             g = g.to(device)
             logits, emb = gat(g, return_embedding=True)
             preds_all.append(logits.argmax(1).cpu())
@@ -137,12 +154,12 @@ def capture_gat_artifacts(gat, data, device, embeddings: bool = True, attention:
     attn_data = None
     if attention:
         attn_data = []
-        for idx in range(min(len(data), ATTENTION_SAMPLE_LIMIT)):
+        for idx in range(min(len(data), attention_limit)):
             g = data[idx].clone().to(device)
             with torch.no_grad():
                 _, att_weights = gat(g, return_attention_weights=True)
             attn_data.append({
-                "graph_idx": idx, "label": g.y.item() if g.y.dim() == 0 else int(g.y[0].item()),
+                "graph_idx": idx, "label": graph_label(g),
                 "edge_index": g.edge_index.cpu().numpy(),
                 "node_features": g.x[:, 0].cpu().numpy(),
                 "attention_weights": [a.numpy() for a in att_weights],
@@ -156,7 +173,7 @@ def capture_gat_artifacts(gat, data, device, embeddings: bool = True, attention:
     )
 
 
-def capture_vgae_artifacts(vgae, data, device, embeddings: bool = True, components: bool = True) -> VGAEResult:
+def capture_vgae_artifacts(vgae, data, device, embeddings: bool = True, components: bool = True, batch_size: int = 256) -> VGAEResult:
     """Capture VGAE embeddings and component-level loss decomposition.
 
     Uses batched forward passes with scatter reduction for per-graph losses.
@@ -169,7 +186,7 @@ def capture_vgae_artifacts(vgae, data, device, embeddings: bool = True, componen
     comps: dict[str, list] = {"recon": [], "canid": [], "nbr": [], "kl": []} if components else {}
 
     with torch.no_grad():
-        for batch in PyGDataLoader(data, batch_size=128, shuffle=False):
+        for batch in PyGDataLoader(data, batch_size=batch_size, shuffle=False):
             batch = batch.to(device)
             edge_attr = getattr(batch, "edge_attr", None)
             cont, canid_logits, nbr_logits, z, kl_loss, _ = vgae(
@@ -182,7 +199,7 @@ def capture_vgae_artifacts(vgae, data, device, embeddings: bool = True, componen
 
             # Per-graph labels and attack types
             for g in batch.to_data_list():
-                labels_all.append(g.y.item() if g.y.dim() == 0 else int(g.y[0].item()))
+                labels_all.append(graph_label(g))
                 types_all.append(graph_attack_type(g))
 
             if embeddings and z is not None:

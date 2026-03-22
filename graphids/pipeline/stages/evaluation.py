@@ -87,7 +87,7 @@ def evaluate(cfg) -> dict:
     if any(a.type == "kd" for a in cfg.get("auxiliaries", [])):
         try:
             from .cka import compute_and_save_cka
-            compute_and_save_cka(cfg, val_data, device, Path.cwd())
+            compute_and_save_cka(cfg, val_data, device, Path.cwd(), max_samples=cfg.evaluation.cka_max_samples)
         except Exception as e:
             log.warning("cka_failed", error=str(e))
 
@@ -126,16 +126,17 @@ def eval_gat(cfg, val_data, test_scenarios, device) -> dict:
     module = GATModule(cfg)
     module.model = gat_model
 
-    val_metrics = test_model(module, val_data)
+    bs = cfg.evaluation.batch_size
+    val_metrics = test_model(module, val_data, batch_size=bs)
     _log_metrics("GAT", val_metrics)
 
     scenario_metrics = {}
     if test_scenarios:
         for name, tdata in test_scenarios.items():
             module.test_metrics.reset()
-            scenario_metrics[name] = test_model(module, tdata)
+            scenario_metrics[name] = test_model(module, tdata, batch_size=bs)
 
-    gat_result = capture_gat_artifacts(gat_model, val_data, device)
+    gat_result = capture_gat_artifacts(gat_model, val_data, device, batch_size=bs, attention_limit=cfg.evaluation.attention_sample_limit)
 
     del gat_model
     cleanup()
@@ -152,13 +153,14 @@ def eval_vgae(cfg, val_data, test_scenarios, device) -> dict:
     module = VGAEModule(cfg)
     module.model = vgae_model
 
-    threshold, youden_j = find_vgae_threshold(module, val_data)
+    bs = cfg.evaluation.batch_size
+    threshold, youden_j = find_vgae_threshold(module, val_data, batch_size=bs)
     module.test_threshold = threshold
     module._test_errors.clear()
     module._test_labels.clear()
     module.test_metrics.reset()
 
-    val_metrics = test_model(module, val_data)
+    val_metrics = test_model(module, val_data, batch_size=bs)
     val_metrics["core"]["optimal_threshold"] = threshold
     val_metrics["core"]["youden_j"] = youden_j
     _log_metrics("VGAE", val_metrics)
@@ -169,9 +171,9 @@ def eval_vgae(cfg, val_data, test_scenarios, device) -> dict:
             module.test_metrics.reset()
             module._test_errors.clear()
             module._test_labels.clear()
-            scenario_metrics[name] = test_model(module, tdata)
+            scenario_metrics[name] = test_model(module, tdata, batch_size=bs)
 
-    vgae_result = capture_vgae_artifacts(vgae_model, val_data, device)
+    vgae_result = capture_vgae_artifacts(vgae_model, val_data, device, batch_size=bs)
 
     del vgae_model
     cleanup()
@@ -190,7 +192,7 @@ def eval_fusion(cfg, val_data, test_scenarios, device) -> dict:
     gat = load_model(cfg, "gat", "curriculum", device)
     models = {"vgae": vgae, "gat": gat}
 
-    val_cache = cache_predictions(models, val_data, device, cfg.fusion.max_val_samples)
+    val_cache = cache_predictions(models, val_data, device, cfg.fusion.max_val_samples, batch_size=cfg.evaluation.batch_size)
     fusion_cfg = load_frozen_cfg(cfg, "fusion")
     method = fusion_cfg.fusion.method if hasattr(fusion_cfg, "fusion") else cfg.fusion.method
 
@@ -230,7 +232,7 @@ def eval_fusion(cfg, val_data, test_scenarios, device) -> dict:
     scenario_metrics = {}
     if test_scenarios:
         for name, tdata in test_scenarios.items():
-            tc = cache_predictions(models, tdata, device, cfg.fusion.max_val_samples)
+            tc = cache_predictions(models, tdata, device, cfg.fusion.max_val_samples, batch_size=cfg.evaluation.batch_size)
             tl = DataLoader(
                 TensorDataset(tc["states"], tc["labels"]),
                 batch_size=cfg.evaluation.batch_size, shuffle=False,

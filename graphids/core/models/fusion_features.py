@@ -62,7 +62,7 @@ class VGAEFusionExtractor:
         edge_attr = (
             getattr(graph, "edge_attr", None) if getattr(model, "_uses_edge_attr", False) else None
         )
-        cont, canid_logits, nbr_logits, z, _ = model(
+        cont, canid_logits, nbr_logits, z, _, _ = model(
             graph.x, graph.edge_index, batch_idx, edge_attr=edge_attr
         )
         recon_err = F.mse_loss(cont, graph.x[:, 1:], reduction="none").mean().item()

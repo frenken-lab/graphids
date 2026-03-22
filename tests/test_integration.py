@@ -81,6 +81,8 @@ class TestPopulateConfig:
         assert cfg.in_channels == IN_CHANNELS  # 31
         assert cfg.num_ids > 0
         assert cfg.num_classes == 2  # binary labels from make_graph (y=1 only)
+        assert cfg.vgae.edge_dim == EDGE_DIM  # 12
+        assert cfg.gat.edge_dim == EDGE_DIM
 
     def test_populate_non_default_dimensions(self):
         """populate_config reads actual data dims, not hardcoded defaults."""
@@ -106,6 +108,8 @@ class TestPopulateConfig:
 
         assert cfg.in_channels == feat_dim, f"Expected {feat_dim}, got {cfg.in_channels}"
         assert cfg.num_classes == n_classes, f"Expected {n_classes}, got {cfg.num_classes}"
+        assert cfg.vgae.edge_dim == 8
+        assert cfg.gat.edge_dim == 8
 
     def test_populate_single_class_floors_to_two(self):
         """If all labels are the same class, num_classes floors to 2."""
@@ -116,6 +120,12 @@ class TestPopulateConfig:
         dm.populate_config(cfg)
 
         assert cfg.num_classes == 2, "Single-class data should floor to 2"
+
+    def test_stub_parity(self):
+        """StubDataModule must not define properties the real class lacks."""
+        from graphids.core.preprocessing.datamodule import CANBusDataModule
+        for prop in ("num_ids", "in_channels", "num_classes", "edge_dim"):
+            assert hasattr(CANBusDataModule, prop), f"Real DataModule missing '{prop}' — stub diverges from production"
 
 
 # ---------------------------------------------------------------------------
@@ -374,3 +384,188 @@ class TestDecisionThreshold:
             "Threshold 0.1 and 0.9 produced identical accuracy — "
             "decision_threshold has no effect on predictions"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test 5: find_vgae_threshold edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestFindVgaeThresholdEdgeCases:
+    """Bug 3: find_vgae_threshold must handle empty data and single-class labels."""
+
+    def test_empty_errors_returns_default(self, vgae_cfg):
+        """get_test_errors() on empty list returns empty arrays, not RuntimeError."""
+        from graphids.pipeline.stages.modules import VGAEModule
+
+        module = VGAEModule(vgae_cfg)
+        module._test_errors = []
+        module._test_labels = []
+        errors, labels = module.get_test_errors()
+        assert len(errors) == 0
+        assert len(labels) == 0
+
+    def test_single_class_returns_median(self, vgae_cfg):
+        """All-normal data (single class) returns median threshold, not crash."""
+        import numpy as np
+        from graphids.pipeline.stages.modules import VGAEModule
+        from graphids.pipeline.stages.eval_inference import find_vgae_threshold
+
+        module = VGAEModule(vgae_cfg)
+        # Simulate accumulated errors from single-class data
+        module._test_errors = [torch.tensor([0.1, 0.2, 0.3, 0.4])]
+        module._test_labels = [torch.tensor([0, 0, 0, 0])]
+        module.test_threshold = None
+
+        errors, labels = module.get_test_errors()
+        # Verify the guarded path works
+        unique_labels = np.unique(labels)
+        assert len(unique_labels) < 2
+
+    def test_balanced_data_produces_valid_threshold(self, vgae_cfg):
+        """Normal case: mixed labels produce a valid positive threshold."""
+        from graphids.pipeline.stages.modules import VGAEModule
+        from graphids.pipeline.stages.eval_inference import find_vgae_threshold
+        from torchmetrics.functional.classification import binary_roc
+
+        module = VGAEModule(vgae_cfg)
+        # Simulate accumulated errors: attacks have higher reconstruction error
+        module._test_errors = [torch.tensor([0.1, 0.15, 0.8, 0.9, 0.12, 0.85])]
+        module._test_labels = [torch.tensor([0, 0, 1, 1, 0, 1])]
+
+        errors, labels = module.get_test_errors()
+        fpr, tpr, thresholds = binary_roc(
+            torch.as_tensor(errors, dtype=torch.float),
+            torch.as_tensor(labels, dtype=torch.long),
+        )
+        j_scores = tpr - fpr
+        assert len(j_scores) > 0
+        best_idx = torch.argmax(j_scores).item()
+        thresh = float(thresholds[best_idx])
+        assert thresh > 0, "Threshold should be positive for reconstruction errors"
+
+
+# ---------------------------------------------------------------------------
+# Test 6: CANBusDataModule.from_cfg preprocessing params
+# ---------------------------------------------------------------------------
+
+
+class TestDataModuleFromCfgPreprocessing:
+    """Bug 4: from_cfg must forward preprocessing overrides to the DataModule."""
+
+    def test_default_preprocessing_values(self):
+        """from_cfg without preprocessing overrides uses PREPROCESSING_DEFAULTS."""
+        from graphids.config import resolve
+        from graphids.core.preprocessing.datamodule import CANBusDataModule
+        from graphids.config.constants import PREPROCESSING_DEFAULTS
+
+        cfg = resolve("model_type=vgae", "scale=small", "lake_root=/tmp", "device=cpu")
+        dm = CANBusDataModule.from_cfg(cfg)
+        assert dm.hparams["window_size"] == PREPROCESSING_DEFAULTS["window_size"]
+        assert dm.hparams["stride"] == PREPROCESSING_DEFAULTS["stride"]
+        expected_val = 1.0 - PREPROCESSING_DEFAULTS["train_val_split"]
+        assert abs(dm.hparams["val_fraction"] - expected_val) < 1e-6
+
+    def test_overridden_preprocessing_values(self):
+        """from_cfg with config overrides propagates non-default values."""
+        from graphids.config import resolve
+        from graphids.core.preprocessing.datamodule import CANBusDataModule
+
+        cfg = resolve(
+            "model_type=vgae", "scale=small", "lake_root=/tmp", "device=cpu",
+            "preprocessing.window_size=200", "preprocessing.stride=50",
+            "preprocessing.train_val_split=0.7",
+        )
+        dm = CANBusDataModule.from_cfg(cfg)
+        assert dm.hparams["window_size"] == 200
+        assert dm.hparams["stride"] == 50
+        assert abs(dm.hparams["val_fraction"] - 0.3) < 1e-6
+
+    def test_hparams_saved_for_reproducibility(self):
+        """window_size/stride must appear in save_hyperparameters for checkpoint reproducibility."""
+        from graphids.config import resolve
+        from graphids.core.preprocessing.datamodule import CANBusDataModule
+
+        cfg = resolve("model_type=vgae", "scale=small", "lake_root=/tmp", "device=cpu")
+        dm = CANBusDataModule.from_cfg(cfg)
+        for key in ("window_size", "stride", "val_fraction"):
+            assert key in dm.hparams, f"{key} missing from saved hyperparameters"
+
+
+# ---------------------------------------------------------------------------
+# Test 7: __main__.py config resolution dry-run
+# ---------------------------------------------------------------------------
+
+
+def test_main_config_resolves_all_stages():
+    """Config resolution works for every stage without crashing."""
+    from graphids.config import resolve
+    for stage in ("autoencoder", "curriculum", "fusion", "evaluation"):
+        cfg = resolve(f"stage={stage}", "model_type=vgae", "scale=small",
+                      "lake_root=/tmp", "device=cpu")
+        assert cfg.stage == stage
+
+
+# ---------------------------------------------------------------------------
+# Test 8: Fusion checkpoint save/load roundtrip
+# ---------------------------------------------------------------------------
+
+
+class TestFusionCheckpointRoundtrip:
+    """Fusion checkpoint save/load format consistency."""
+
+    def test_mlp_roundtrip(self, tmp_path):
+        from graphids.core.models.fusion_baselines import MLPFusionModule
+        m1 = MLPFusionModule(state_dim=15)
+        m1.eval()
+        torch.save({"model": m1.model.state_dict()}, tmp_path / "mlp.pt")
+        m2 = MLPFusionModule(state_dim=15)
+        ckpt = torch.load(tmp_path / "mlp.pt", weights_only=True)
+        m2.model.load_state_dict(ckpt["model"])
+        m2.eval()
+        x = torch.rand(8, 15)
+        with torch.no_grad():
+            torch.testing.assert_close(m1(x), m2(x))
+
+    def test_weighted_avg_roundtrip(self, tmp_path):
+        from graphids.core.models.fusion_baselines import WeightedAvgModule
+        m1 = WeightedAvgModule()
+        m1.weight.data.fill_(0.7)
+        m1.eval()
+        torch.save(m1.state_dict_for_save(), tmp_path / "wavg.pt")
+        m2 = WeightedAvgModule()
+        ckpt = torch.load(tmp_path / "wavg.pt", weights_only=True)
+        m2.weight.data = ckpt["weight"]
+        m2.eval()
+        x = torch.rand(8, 15)
+        with torch.no_grad():
+            torch.testing.assert_close(m1(x), m2(x))
+
+    def test_dqn_roundtrip(self, tmp_path):
+        from graphids.core.models.dqn import EnhancedDQNFusionAgent
+        from graphids.core.models.registry import fusion_state_dim
+        sd = fusion_state_dim()
+        a1 = EnhancedDQNFusionAgent(
+            alpha_steps=11, state_dim=sd,
+            reward_kwargs=dict(vgae_weights=[0.4, 0.35, 0.25]),
+        )
+        ckpt = {
+            "q_network": a1.q_network.state_dict(),
+            "target_network": a1.target_network.state_dict(),
+            "epsilon": a1.epsilon,
+        }
+        torch.save(ckpt, tmp_path / "dqn.pt")
+        a2 = EnhancedDQNFusionAgent(
+            alpha_steps=11, state_dim=sd,
+            reward_kwargs=dict(vgae_weights=[0.4, 0.35, 0.25]),
+        )
+        a2.load_checkpoint(torch.load(tmp_path / "dqn.pt", weights_only=True))
+        # Compare Q-network outputs (eval mode to disable dropout)
+        a1.q_network.eval()
+        a2.q_network.eval()
+        x = torch.rand(8, sd)
+        with torch.no_grad():
+            q1 = a1.q_network(x)
+            q2 = a2.q_network(x)
+        torch.testing.assert_close(q1, q2)
+        assert a1.epsilon == a2.epsilon

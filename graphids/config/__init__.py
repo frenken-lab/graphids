@@ -175,6 +175,8 @@ class FusionConfig:
 @dataclass
 class EvaluationConfig:
     batch_size: int = 256
+    attention_sample_limit: int = 50
+    cka_max_samples: int = 500
 
 
 @dataclass
@@ -188,6 +190,14 @@ class TemporalConfig:
     freeze_spatial: bool = True
     spatial_lr_factor: float = 0.1
     train_split: float = 0.8
+    batch_size: int = 0  # 0 means use heuristic
+
+
+@dataclass
+class PreprocessingConfig:
+    window_size: int = 100
+    stride: int = 100
+    train_val_split: float = 0.8
 
 
 @dataclass
@@ -219,6 +229,7 @@ class Config:
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     fusion: FusionConfig = field(default_factory=FusionConfig)
     temporal: TemporalConfig = field(default_factory=TemporalConfig)
+    preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
 
 
 # ---------------------------------------------------------------------------

@@ -26,7 +26,7 @@ def _linear_cka(X: np.ndarray, Y: np.ndarray) -> float:
     return _unbiased_hsic(K, L) / denom if denom > 0 else 0.0
 
 
-def compute_and_save_cka(cfg, val_data, device, output_dir: Path) -> None:
+def compute_and_save_cka(cfg, val_data, device, output_dir: Path, *, max_samples: int = 500) -> None:
     """Compute layer-wise CKA between teacher (large) and student (current scale), save to JSON."""
     from graphids.config import resolve
     from omegaconf import open_dict
@@ -41,8 +41,8 @@ def compute_and_save_cka(cfg, val_data, device, output_dir: Path) -> None:
         teacher_cfg.in_channels = cfg.in_channels
     teacher = load_model(teacher_cfg, "gat", "curriculum", device)
 
-    student_reps = _collect_reps(student, val_data, device)
-    teacher_reps = _collect_reps(teacher, val_data, device)
+    student_reps = _collect_reps(student, val_data, device, max_samples=max_samples)
+    teacher_reps = _collect_reps(teacher, val_data, device, max_samples=max_samples)
 
     n_layers = min(len(teacher_reps), len(student_reps))
     scores = {f"layer_{i}": _linear_cka(teacher_reps[i], student_reps[i]) for i in range(n_layers)}

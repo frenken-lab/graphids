@@ -11,6 +11,7 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from .registry import fusion_test_metrics
 
 
 class MLPFusionNetwork(nn.Module):
@@ -47,6 +48,7 @@ class MLPFusionModule(pl.LightningModule):
         self.model = MLPFusionNetwork(state_dim, hidden_dims)
         self.loss_fn = nn.BCEWithLogitsLoss()
         self.lr = lr
+        self.test_metrics = fusion_test_metrics()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.model(x)
@@ -66,6 +68,18 @@ class MLPFusionModule(pl.LightningModule):
         acc = (preds == labels).float().mean()
         self.log("val_loss", loss, prog_bar=True)
         self.log("val_acc", acc, prog_bar=True)
+
+    def test_step(self, batch, batch_idx):
+        states, labels = batch
+        logits = self(states)
+        preds = (logits > 0).long()
+        self.test_metrics.update(preds, labels)
+
+    def on_test_epoch_start(self):
+        self.test_metrics.reset()
+
+    def on_test_epoch_end(self):
+        self.log_dict(self.test_metrics.compute())
 
     def configure_optimizers(self):
         return optim.Adam(self.parameters(), lr=self.lr)
@@ -92,6 +106,7 @@ class WeightedAvgModule(pl.LightningModule):
         self.loss_fn = nn.BCELoss()
         self.lr = lr
         self.decision_threshold = decision_threshold
+        self.test_metrics = fusion_test_metrics()
 
         from .registry import feature_layout
 
@@ -121,6 +136,18 @@ class WeightedAvgModule(pl.LightningModule):
         acc = (preds == labels).float().mean()
         self.log("val_loss", loss, prog_bar=True)
         self.log("val_acc", acc, prog_bar=True)
+
+    def test_step(self, batch, batch_idx):
+        states, labels = batch
+        scores = self(states)
+        preds = (scores > self.decision_threshold).long()
+        self.test_metrics.update(preds, labels)
+
+    def on_test_epoch_start(self):
+        self.test_metrics.reset()
+
+    def on_test_epoch_end(self):
+        self.log_dict(self.test_metrics.compute())
 
     def configure_optimizers(self):
         return optim.Adam(self.parameters(), lr=self.lr)

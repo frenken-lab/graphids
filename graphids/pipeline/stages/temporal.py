@@ -239,7 +239,7 @@ def train_temporal(cfg) -> dict:
     val_ds = TemporalGraphDataset(val_sequences, device)
 
     # Small batch size for temporal (sequences are heavy)
-    temporal_batch_size = max(1, min(32, len(train_sequences) // 10))
+    temporal_batch_size = cfg.temporal.batch_size if cfg.temporal.batch_size > 0 else max(1, min(32, len(train_sequences) // 10))
 
     train_loader = DataLoader(
         train_ds,
@@ -290,11 +290,13 @@ def train_temporal(cfg) -> dict:
     log.info("saved_temporal_model", checkpoint="best_model.pt")
 
     # Compute final metrics via Lightning test loop
-    from .eval_inference import extract_metrics, make_test_trainer
+    from .eval_inference import make_test_trainer
 
     test_trainer = make_test_trainer()
-    test_trainer.test(lit_module, dataloaders=val_loader, verbose=False)
-    metrics = extract_metrics(lit_module)
+    results = test_trainer.test(lit_module, dataloaders=val_loader, verbose=False)
+    core = dict(results[0]) if results else {}
+    core["balanced_accuracy"] = (core.get("recall", 0) + core.get("specificity", 0)) / 2
+    metrics = {"core": core, "additional": {}}
     metrics["core"]["n_sequences"] = len(val_sequences)
     metrics["core"]["window"] = tc.temporal_window
     metrics["core"]["stride"] = tc.temporal_stride

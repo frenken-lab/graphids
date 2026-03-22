@@ -68,3 +68,38 @@ class TestGAT:
     def test_variable_size_graphs(self, model):
         batch = make_variable_batch([3, 20])
         assert model(batch).shape == (2, 2)
+
+
+class TestGPSConv:
+    """GPS conv path: _ProjectedGPS + conv_forward GPS branch."""
+
+    @pytest.fixture()
+    def model(self):
+        from graphids.core.models.vgae import GraphAutoencoderNeighborhood
+        return GraphAutoencoderNeighborhood(
+            num_ids=NUM_IDS, in_channels=IN_CHANNELS, hidden_dims=[32, 16],
+            latent_dim=16, encoder_heads=2, embedding_dim=4, dropout=0.0,
+            conv_type="gps", edge_dim=EDGE_DIM, proj_dim=0,
+        )
+
+    def test_forward_shapes(self, model):
+        batch = make_batch(3)
+        n = batch.x.size(0)
+        cont, canid, nbr, z, kl, mask = model(
+            batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr,
+        )
+        assert cont.shape == (n, IN_CHANNELS - 1)
+        assert canid.shape == (n, NUM_IDS)
+        assert z.shape[0] == n
+        assert kl.dim() == 0
+
+    def test_gradient_flow(self, model):
+        batch = make_batch(2)
+        cont, canid, nbr, _, kl, _ = model(
+            batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr,
+        )
+        (cont.sum() + canid.sum() + nbr.sum() + kl).backward()
+        # GPS conv skips external BatchNorm (has internal norm) — exclude encoder_bns
+        dead = [n for n, p in model.named_parameters()
+                if p.grad is None and "encoder_bns" not in n]
+        assert not dead, f"No gradient: {dead}"

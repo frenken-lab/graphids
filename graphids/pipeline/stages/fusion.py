@@ -12,30 +12,12 @@ from torch.utils.data import DataLoader, TensorDataset
 
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
-from torchmetrics import MetricCollection
-from torchmetrics.classification import (
-    BinaryAccuracy,
-    BinaryAUROC,
-    BinaryF1Score,
-    BinaryPrecision,
-    BinaryRecall,
-    BinarySpecificity,
-)
-
 from graphids.core.preprocessing import CANBusDataModule
 
 from .data_loading import cache_predictions, cleanup
 from .trainer_factory import load_model
 
 log = structlog.get_logger()
-
-
-def _fusion_test_metrics() -> MetricCollection:
-    return MetricCollection({
-        "accuracy": BinaryAccuracy(), "f1": BinaryF1Score(),
-        "precision": BinaryPrecision(), "recall": BinaryRecall(),
-        "specificity": BinarySpecificity(), "auc": BinaryAUROC(),
-    })
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +38,8 @@ class DQNFusionModule(pl.LightningModule):
         self.automatic_optimization = False
         self.agent = agent
         self.cfg = cfg
-        self.test_metrics = _fusion_test_metrics()
+        from graphids.core.models.registry import fusion_test_metrics
+        self.test_metrics = fusion_test_metrics()
 
     def training_step(self, batch, batch_idx):
         states, labels = batch
@@ -121,7 +104,8 @@ class BanditFusionModule(pl.LightningModule):
         self.automatic_optimization = False
         self.agent = agent
         self.cfg = cfg
-        self.test_metrics = _fusion_test_metrics()
+        from graphids.core.models.registry import fusion_test_metrics
+        self.test_metrics = fusion_test_metrics()
 
     def training_step(self, batch, batch_idx):
         states, labels = batch
@@ -295,6 +279,7 @@ def _train_mlp_fusion(cfg, train_cache, val_cache, device) -> float:
     )
     trainer = _make_fusion_trainer(cfg)
     trainer.fit(module, train_dl, val_dl)
+    _restore_best_weights(trainer, module)
 
     torch.save({"model": module.model.state_dict()}, "best_model.pt")
     best_acc = trainer.callback_metrics.get("val_acc", torch.tensor(0.0)).item()
@@ -311,6 +296,7 @@ def _train_weighted_avg_fusion(cfg, train_cache, val_cache, device) -> float:
     )
     trainer = _make_fusion_trainer(cfg)
     trainer.fit(module, train_dl, val_dl)
+    _restore_best_weights(trainer, module)
 
     torch.save(module.state_dict_for_save(), "best_model.pt")
     best_acc = trainer.callback_metrics.get("val_acc", torch.tensor(0.0)).item()
@@ -337,8 +323,8 @@ def train_fusion(cfg) -> dict:
     # Cache predictions
     log.info("Caching VGAE + GAT predictions ...")
     models = {"vgae": vgae, "gat": gat}
-    train_cache = cache_predictions(models, list(dm.train_dataset), device, cfg.fusion.max_samples)
-    val_cache = cache_predictions(models, list(dm.val_dataset), device, cfg.fusion.max_val_samples)
+    train_cache = cache_predictions(models, list(dm.train_dataset), device, cfg.fusion.max_samples, batch_size=cfg.evaluation.batch_size)
+    val_cache = cache_predictions(models, list(dm.val_dataset), device, cfg.fusion.max_val_samples, batch_size=cfg.evaluation.batch_size)
     del vgae, gat
     cleanup()
 

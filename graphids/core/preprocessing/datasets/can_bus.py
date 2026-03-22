@@ -117,13 +117,15 @@ class CANBusDataset(InMemoryDataset):
     def process(self) -> None:
         lock_path = Path(self.processed_dir) / ".lock"
         with nfs_lock(lock_path):
-            if Path(self.processed_paths[0]).exists():
+            marker = Path(self.processed_dir) / ".complete"
+            if Path(self.processed_paths[0]).exists() and marker.exists():
                 return
             data_list, num_arb_ids = self._build_graphs()
             if self.pre_transform is not None:
                 data_list = [self.pre_transform(d) for d in data_list]
             self.save(data_list, self.processed_paths[0])
             (Path(self.processed_dir) / "num_arb_ids.txt").write_text(str(num_arb_ids))
+            marker.write_text("ok")
 
     # ── pipeline ──────────────────────────────────────────────────────
 

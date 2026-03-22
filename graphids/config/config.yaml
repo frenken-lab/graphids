@@ -6,6 +6,11 @@ production: ${oc.env:KD_GAT_PRODUCTION,false}
 # num_classes, in_channels, edge_dim: set at runtime by populate_config().
 # Dataclass defaults are fallbacks only. Do NOT add them here.
 
+preprocessing:
+  window_size: 100
+  stride: 100
+  train_val_split: 0.8
+
 # --- Derived paths ---
 _tier: dev/${oc.env:USER,unknown}
 _output_base: ${lake_root}/${_tier}/${dataset}

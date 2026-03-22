@@ -11,7 +11,7 @@ import structlog
 import pytorch_lightning as pl
 
 from graphids.config import cache_dir, data_dir
-from graphids.config.constants import CATALOG_PATH, PREPROCESSING_DEFAULTS
+from graphids.config.constants import CATALOG_PATH, EDGE_FEATURE_COUNT, PREPROCESSING_DEFAULTS
 
 from .datasets.can_bus import CANBusDataset
 
@@ -53,6 +53,7 @@ class CANBusDataModule(pl.LightningDataModule):
     @classmethod
     def from_cfg(cls, cfg) -> CANBusDataModule:
         """Construct from a resolved Config object."""
+        pre = cfg.preprocessing
         return cls(
             dataset=cfg.dataset,
             lake_root=cfg.lake_root,
@@ -61,6 +62,9 @@ class CANBusDataModule(pl.LightningDataModule):
             seed=cfg.seed,
             dynamic_batching=cfg.training.dynamic_batching,
             safety_factor=cfg.training.safety_factor,
+            window_size=pre.window_size,
+            stride=pre.stride,
+            val_fraction=1.0 - pre.train_val_split,
         )
 
     def setup(self, stage: str | None = None) -> None:
@@ -80,7 +84,10 @@ class CANBusDataModule(pl.LightningDataModule):
             catalog = _load_catalog()
             entry = catalog[hp["dataset"]]
             for subdir in entry.get("test_subdirs", []):
-                test_raw = raw / subdir if (raw / subdir).exists() else raw
+                test_raw = raw / subdir
+                if not test_raw.exists():
+                    log.warning("test_subdir_missing", subdir=subdir, raw_dir=str(raw))
+                    continue
                 self._test_datasets[subdir] = CANBusDataset(
                     root=root, raw_dir=test_raw, split="test", **common,
                 )
@@ -125,6 +132,13 @@ class CANBusDataModule(pl.LightningDataModule):
         labels = torch.cat([g.y.view(-1) for g in ds])
         n = int(labels.unique().numel())
         return n if n >= 2 else 2
+
+    @property
+    def edge_dim(self) -> int:
+        """Edge feature dimensionality."""
+        ds = self._train_ds or next(iter(self._test_datasets.values()), None)
+        assert ds is not None, "call setup() first"
+        return ds[0].edge_attr.shape[1] if len(ds) > 0 else EDGE_FEATURE_COUNT
 
     def populate_config(self, cfg) -> None:
         """Write data-derived dimensions (num_ids, in_channels, num_classes) into cfg.

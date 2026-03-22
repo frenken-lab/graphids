@@ -77,7 +77,7 @@ def make_dataloader(
     return DataLoader(data, batch_size=batch_size, shuffle=shuffle, **common)
 
 
-def cache_predictions(models: dict[str, nn.Module], data, device, max_samples: int = 150_000):
+def cache_predictions(models: dict[str, nn.Module], data, device, max_samples: int = 150_000, batch_size: int = 256):
     """Run registered extractors over data, produce N-D state vectors for DQN.
 
     Uses a DataLoader for batched clone+transfer, then extracts per-graph
@@ -91,7 +91,7 @@ def cache_predictions(models: dict[str, nn.Module], data, device, max_samples: i
         model.eval()
 
     capped = data[:max_samples]
-    loader = DataLoader(capped, batch_size=128, shuffle=False)
+    loader = DataLoader(capped, batch_size=batch_size, shuffle=False)
 
     states, labels = [], []
     with torch.no_grad():

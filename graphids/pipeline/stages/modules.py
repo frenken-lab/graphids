@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 
 import pytorch_lightning as pl
@@ -46,6 +47,31 @@ def _focal_loss(
     ce = F.cross_entropy(logits, targets, reduction="none")
     pt = torch.exp(-ce)
     return ((1 - pt) ** gamma * ce).mean()
+
+
+def _get_kd_config(cfg):
+    """Get KD auxiliary config, or None if not configured."""
+    return next((a for a in cfg.get("auxiliaries", []) if a.type == "kd"), None)
+
+
+def _lerp(a: float, b: float, t: float) -> float:
+    """Linear interpolation: a + t * (b - a)."""
+    return a + t * (b - a)
+
+
+@contextlib.contextmanager
+def _teacher_on_device(module, device):
+    """Move teacher to device for inference, offload back to CPU after."""
+    if module.cfg.training.offload_teacher_to_cpu and module._teacher_on_cpu:
+        module.teacher.to(device)
+        module._teacher_on_cpu = False
+    try:
+        yield
+    finally:
+        if module.cfg.training.offload_teacher_to_cpu:
+            module.teacher.to("cpu")
+            torch.cuda.empty_cache()
+            module._teacher_on_cpu = True
 
 
 class VGAEModule(pl.LightningModule):
@@ -114,26 +140,18 @@ class VGAEModule(pl.LightningModule):
         task_loss, cont_out, z = self._task_loss(batch)
 
         if self.teacher is not None:
-            kd = next((a for a in self.cfg.get("auxiliaries", []) if a.type == "kd"), None)
-            if self.cfg.training.offload_teacher_to_cpu and self._teacher_on_cpu:
-                self.teacher.to(batch.x.device)
-                self._teacher_on_cpu = False
-
-            with torch.no_grad():
-                batch_idx = (
-                    batch.batch
-                    if batch.batch is not None
-                    else torch.zeros(batch.x.size(0), dtype=torch.long, device=batch.x.device)
-                )
-                t_edge_attr = getattr(batch, "edge_attr", None)
-                t_cont, _, _, t_z, _, _ = self.teacher(
-                    batch.x, batch.edge_index, batch_idx, edge_attr=t_edge_attr
-                )
-
-            if self.cfg.training.offload_teacher_to_cpu:
-                self.teacher.to("cpu")
-                torch.cuda.empty_cache()
-                self._teacher_on_cpu = True
+            kd = _get_kd_config(self.cfg)
+            with _teacher_on_device(self, batch.x.device):
+                with torch.no_grad():
+                    batch_idx = (
+                        batch.batch
+                        if batch.batch is not None
+                        else torch.zeros(batch.x.size(0), dtype=torch.long, device=batch.x.device)
+                    )
+                    t_edge_attr = getattr(batch, "edge_attr", None)
+                    t_cont, _, _, t_z, _, _ = self.teacher(
+                        batch.x, batch.edge_index, batch_idx, edge_attr=t_edge_attr
+                    )
 
             z_s = self.projection(z) if self.projection is not None else z
             min_n = min(z_s.size(0), t_z.size(0))
@@ -197,6 +215,8 @@ class VGAEModule(pl.LightningModule):
     def get_test_errors(self) -> tuple:
         """Return accumulated (errors, labels) as numpy arrays after test."""
         import numpy as np
+        if not self._test_errors:
+            return np.array([], dtype=np.float32), np.array([], dtype=np.int64)
         return (torch.cat(self._test_errors).cpu().numpy(),
                 torch.cat(self._test_labels).cpu().numpy())
 
@@ -263,18 +283,10 @@ class GATModule(pl.LightningModule):
         acc = (logits.argmax(1) == batch.y).float().mean()
 
         if self.teacher is not None:
-            kd = next((a for a in self.cfg.get("auxiliaries", []) if a.type == "kd"), None)
-            if self.cfg.training.offload_teacher_to_cpu and self._teacher_on_cpu:
-                self.teacher.to(batch.x.device)
-                self._teacher_on_cpu = False
-
-            with torch.no_grad():
-                t_logits = self.teacher(batch)
-
-            if self.cfg.training.offload_teacher_to_cpu:
-                self.teacher.to("cpu")
-                torch.cuda.empty_cache()
-                self._teacher_on_cpu = True
+            kd = _get_kd_config(self.cfg)
+            with _teacher_on_device(self, batch.x.device):
+                with torch.no_grad():
+                    t_logits = self.teacher(batch)
 
             kd_loss = soft_label_kd_loss(logits, t_logits, kd.temperature)
             loss = kd.alpha * kd_loss + (1 - kd.alpha) * task_loss
@@ -353,12 +365,8 @@ class CurriculumDataModule(pl.LightningDataModule):
 def _curriculum_sample(normals, attacks, scores, epoch, cfg):
     """Sample training batch with curriculum ratio and difficulty-based selection."""
     progress = min(epoch / max(cfg.training.max_epochs, 1), 1.0)
-    ratio = cfg.training.curriculum_start_ratio + progress * (
-        cfg.training.curriculum_end_ratio - cfg.training.curriculum_start_ratio
-    )
-    percentile = cfg.training.difficulty_percentile + progress * (
-        95 - cfg.training.difficulty_percentile
-    )
+    ratio = _lerp(cfg.training.curriculum_start_ratio, cfg.training.curriculum_end_ratio, progress)
+    percentile = _lerp(cfg.training.difficulty_percentile, 95.0, progress)
 
     if scores:
         threshold = sorted(scores)[int(len(scores) * percentile / 100)]

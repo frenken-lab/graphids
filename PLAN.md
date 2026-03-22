@@ -14,6 +14,7 @@
 
 ## Recently Completed
 
+- **Test suite + codebase hardening** (2026-03-22) — Built test suite from 47→85 tests (82 pass, 3 skip-marked temporal). Fixed 7 runtime bugs: missing `edge_dim` property, VGAE 5→6 unpack, MLP/WeightedAvg missing `test_step`+`test_metrics`, `_restore_best_weights` skipped for baselines, `find_vgae_threshold` crashes on empty/single-class data, `from_cfg()` ignoring preprocessing params, `_score_difficulty` leaking eval mode. Completed 11 code quality tasks: shared `fusion_test_metrics()` factory in registry.py, `trainer.test()` return value used (deleted `extract_metrics`), hardcoded `batch_size=128` → `cfg.evaluation.batch_size`, teacher offload context manager, `graph_label()` utility, `_get_kd_config()` helper, `_lerp()` for curriculum, 3 config fields added (`attention_sample_limit`, `temporal.batch_size`, `cka_max_samples`), `PreprocessingConfig` wired through `from_cfg()`. Added coverage: GPS conv, `_infer_attack_type`, `CurriculumDataModule`, fusion checkpoint roundtrips, `CANBusDataset._build_graphs` integration, config dry-run. Fixed I/O wiring: test_subdirs fallback silently used training data (now warns+skips), partial cache detection via `.complete` marker, `load_model` early checkpoint check with clear error, pipeline sbatch inter-stage checkpoint verification. Created `test_pipeline_stages.sbatch` (GPU) and `test_preprocessing.sbatch` (CPU) SLURM scripts.
 - **Evaluation decomposition** (2026-03-21) — Rewrote `evaluation.py` as EVAL_ORDER dispatcher + `eval_gat()`, `eval_vgae()`, `eval_fusion()`, `eval_temporal()` functions. All models now eval via `trainer.test()` — one pattern. Added `test_step` + `MetricCollection` to `TemporalLightningModule`, `MLPFusionModule`, `WeightedAvgModule`. Created `DQNFusionModule` + `BanditFusionModule` eval-only wrappers in `fusion.py`. Adapted `test_model()` to accept pre-built DataLoader. Deleted manual inference loops (`_evaluate_fusion`, `_evaluate_temporal`). Fixed stale `compute_metrics`/`probe_embedding_dim` imports in `temporal.py`, stale `_vgae_threshold` import in `run_pygod_baselines.py`. DQN/bandit training wrapped in Lightning (steps 7-9 completed same session). See `plans/eval-decomposition.md`.
 - **DataModule + import restructure + num_ids fix** (2026-03-21) — Created `CANBusDataModule(LightningDataModule)` in `core/preprocessing/datamodule.py`. Fixed 3 broken imports. Migrated all 6 callers to DataModule. Added `populate_config(cfg)` to write `num_ids`/`in_channels` into config after setup — eliminated manual threading from all stage functions, model constructors, `load_model()`, `prepare_kd()`. Deleted `_tensor_count()`, `MMAP_TENSOR_LIMIT`, inlined `graph_label()`. Fixed `cka.py` arg order bug. See `plans/adaptive-herding-alpaca.md`.
 - **Preprocessing rewrite** (2026-03-20) — Replaced 11-file, 2,150-line preprocessing (adapters, cache, schema, engine, vocabulary, parallel) with 4-file, 370-line library-first implementation. CANBusDataset(InMemoryDataset) + Polars lazy scan + group_by_dynamic + to_torch(). 31-D node features, 12-D edge features (was 26-D/11-D — models need input dim update). Old files deleted, callers not yet migrated. See `plans/codebase-reduction.md` section H1.
@@ -26,19 +27,10 @@
 ## In Progress
 
 - Ops dashboard (`buckeyeguy/kd-gat-dashboard`) — running on HF Spaces
-- **Test suite** — test plan designed (2026-03-21), not yet implemented. Priority order:
-  1. `test_config.py` — Hydra compose, overrides, model preset merge
-  2. `test_models.py` — forward shape, gradient flow, parameter update, variable-size graphs
-  3. `test_preprocessing.py` — CANBusDataset produces valid Data with 31-D/12-D features
-  4. `test_modules.py` — Lightning fast_dev_run, checkpoint roundtrip
-  5. `test_pipeline_dag.py` — topological order, missing dependency errors
 
-## Upcoming — 3 design threads (pick 1 per session)
+## Upcoming — 2 design threads (pick 1 per session)
 
-### A. ~~Evaluation decomposition~~ — DONE (2026-03-21)
-Moved to Recently Completed.
-
-### B. Class imbalance experiment battery — READY TO RUN
+### A. Class imbalance experiment battery — READY TO RUN
 Loss functions implemented: `ce`, `weighted_ce`, `focal` (via `training.loss_fn` config). Curriculum ablation = `training.curriculum_use_difficulty: false`.
 
 **Next session:**
@@ -48,13 +40,10 @@ Loss functions implemented: `ce`, `weighted_ce`, `focal` (via `training.loss_fn`
 
 See `memory/research_curriculum_imbalance.md` for background.
 
-### C. ~~VGAE anomaly score strengthening~~ — DONE (2026-03-21)
+### B. VGAE anomaly score weight tuning
 Composite score implemented: `recon + canid_weight * canid + nbr_weight * nbr` with `scatter(reduce="max")`.
 
-**Open:** Weight tuning — could search over a weight grid via Youden's J. Interacts with thread B experiments.
-
-### D. Smoke test
-Minimal integration test with synthetic data (3 graphs, 5 nodes). Catches import breakage. Highest-ROI test item. ~30 lines.
+**Open:** Weight tuning — could search over a weight grid via Youden's J. Interacts with thread A experiments.
 
 ## Blocked
 

@@ -14,6 +14,7 @@ import torch.nn.functional as F
 from graphids.core.preprocessing import CANBusDataModule
 
 from .data_loading import cleanup
+from .eval_inference import graph_label
 from .modules import CurriculumDataModule, GATModule, VGAEModule
 from .trainer_factory import load_model, make_trainer, prepare_kd
 
@@ -92,8 +93,8 @@ def train_curriculum(cfg) -> dict:
     vgae = load_model(cfg, "vgae", "autoencoder", device)
 
     # Split and score
-    normals = [g for g in dm.train_dataset if (g.y.item() if g.y.dim() == 0 else int(g.y[0].item())) == 0]
-    attacks = [g for g in dm.train_dataset if (g.y.item() if g.y.dim() == 0 else int(g.y[0].item())) == 1]
+    normals = [g for g in dm.train_dataset if graph_label(g) == 0]
+    attacks = [g for g in dm.train_dataset if graph_label(g) == 1]
     scores = _score_difficulty(vgae, normals, device, canid_weight=cfg.vgae.canid_weight)
     del vgae
     cleanup()
@@ -131,29 +132,33 @@ def _score_difficulty(
     from torch_geometric.utils import scatter
 
     scores: list[float] = []
+    was_training = vgae_model.training
     vgae_model.eval()
-    total_chunks = (len(graphs) + chunk_size - 1) // chunk_size
+    try:
+        total_chunks = (len(graphs) + chunk_size - 1) // chunk_size
 
-    for chunk_idx in range(total_chunks):
-        start = chunk_idx * chunk_size
-        end = min(start + chunk_size, len(graphs))
-        chunk_graphs = graphs[start:end]
+        for chunk_idx in range(total_chunks):
+            start = chunk_idx * chunk_size
+            end = min(start + chunk_size, len(graphs))
+            chunk_graphs = graphs[start:end]
 
-        with torch.no_grad():
-            batch = Batch.from_data_list([g.clone() for g in chunk_graphs]).to(device)
-            edge_attr = getattr(batch, "edge_attr", None)
-            cont, canid_logits, _, _, _, _ = vgae_model(
-                batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr
-            )
-            # Per-graph losses via scatter reduction
-            node_mse = (cont - batch.x[:, 1:]).pow(2).mean(dim=1)
-            graph_mse = scatter(node_mse, batch.batch, reduce="mean")
-            node_ce = F.cross_entropy(canid_logits, batch.x[:, 0].long(), reduction="none")
-            graph_ce = scatter(node_ce, batch.batch, reduce="mean")
-            scores.extend((graph_mse + canid_weight * graph_ce).tolist())
-            del batch
+            with torch.no_grad():
+                batch = Batch.from_data_list([g.clone() for g in chunk_graphs]).to(device)
+                edge_attr = getattr(batch, "edge_attr", None)
+                cont, canid_logits, _, _, _, _ = vgae_model(
+                    batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr
+                )
+                # Per-graph losses via scatter reduction
+                node_mse = (cont - batch.x[:, 1:]).pow(2).mean(dim=1)
+                graph_mse = scatter(node_mse, batch.batch, reduce="mean")
+                node_ce = F.cross_entropy(canid_logits, batch.x[:, 0].long(), reduction="none")
+                graph_ce = scatter(node_ce, batch.batch, reduce="mean")
+                scores.extend((graph_mse + canid_weight * graph_ce).tolist())
+                del batch
 
-        if (chunk_idx + 1) % 10 == 0:
-            log.info("difficulty_scoring_progress", chunks_done=chunk_idx + 1, total=total_chunks)
+            if (chunk_idx + 1) % 10 == 0:
+                log.info("difficulty_scoring_progress", chunks_done=chunk_idx + 1, total=total_chunks)
 
-    return scores
+        return scores
+    finally:
+        vgae_model.train(was_training)

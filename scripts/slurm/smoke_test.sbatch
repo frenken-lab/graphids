@@ -2,7 +2,7 @@
 #SBATCH --partition=gpudebug
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=20G
+#SBATCH --mem=48G
 #SBATCH --time=01:00:00
 #SBATCH --job-name=kd-gat-smoke
 #SBATCH --output=slurm_logs/smoke_%j.out
