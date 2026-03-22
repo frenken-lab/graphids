@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import pytest
 import torch
-from omegaconf import open_dict
+from omegaconf import OmegaConf, open_dict
 from torch_geometric.data import Batch, Data
 
 NUM_IDS = 10
 IN_CHANNELS = 31
 EDGE_DIM = 12
+N_NODES = 8  # fixed default — tests must not assume random sizes
 
 
-def make_graph(num_nodes: int = 8, num_edges: int = 12) -> Data:
+def make_graph(num_nodes: int = N_NODES, num_edges: int = 12) -> Data:
     """Synthetic CAN-bus-like graph: col 0 = CAN ID index, rest = continuous."""
     x = torch.rand(num_nodes, IN_CHANNELS)
     x[:, 0] = torch.randint(0, NUM_IDS, (num_nodes,)).float()
@@ -24,13 +25,14 @@ def make_graph(num_nodes: int = 8, num_edges: int = 12) -> Data:
     return Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=torch.tensor([1]))
 
 
-def make_batch(n_graphs: int = 4, min_nodes: int = 5, max_nodes: int = 12) -> Batch:
-    """Batch of variable-size graphs."""
-    graphs = []
-    for _ in range(n_graphs):
-        n = torch.randint(min_nodes, max_nodes + 1, (1,)).item()
-        graphs.append(make_graph(num_nodes=n, num_edges=n * 2))
-    return Batch.from_data_list(graphs)
+def make_batch(n_graphs: int = 4) -> Batch:
+    """Batch of fixed-size graphs. Deterministic — no random node counts."""
+    return Batch.from_data_list([make_graph() for _ in range(n_graphs)])
+
+
+def make_variable_batch(sizes: list[int]) -> Batch:
+    """Batch of explicitly-sized graphs for variable-size tests."""
+    return Batch.from_data_list([make_graph(num_nodes=n, num_edges=n * 2) for n in sizes])
 
 
 @pytest.fixture(scope="session")
@@ -56,15 +58,13 @@ def base_cfg():
 
 @pytest.fixture()
 def vgae_cfg(base_cfg):
-    """VGAE config (copy of base)."""
-    from omegaconf import OmegaConf
+    """VGAE config (deep copy of base)."""
     return OmegaConf.create(OmegaConf.to_container(base_cfg, resolve=True))
 
 
 @pytest.fixture()
 def gat_cfg(base_cfg):
     """GAT config derived from base."""
-    from omegaconf import OmegaConf
     cfg = OmegaConf.create(OmegaConf.to_container(base_cfg, resolve=True))
     with open_dict(cfg):
         cfg.model_type = "gat"

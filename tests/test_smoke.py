@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import torch
-
-from conftest import make_batch
+from conftest import N_NODES, make_batch
 
 
 def test_gat_forward(gat_cfg):
@@ -27,7 +26,5 @@ def test_vgae_forward(vgae_cfg):
     with torch.no_grad():
         out = module(make_batch(3))
     assert len(out) == 6
-    n_nodes = 3 * 8  # 3 graphs, default 8 nodes
-    # Just check leading dims, not exact values
-    assert out[0].shape[0] == n_nodes  # cont
-    assert out[3].shape[0] == n_nodes  # z
+    assert out[0].shape[0] == 3 * N_NODES  # cont
+    assert out[3].shape[0] == 3 * N_NODES  # z

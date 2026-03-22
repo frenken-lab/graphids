@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 import torch
-
-from conftest import EDGE_DIM, IN_CHANNELS, NUM_IDS, make_batch, make_graph
 from torch_geometric.data import Batch
+
+from conftest import EDGE_DIM, IN_CHANNELS, NUM_IDS, make_batch, make_graph, make_variable_batch
 
 
 class TestVGAE:
@@ -20,7 +20,7 @@ class TestVGAE:
         )
 
     def test_forward_shapes(self, model):
-        batch = make_batch(num_graphs=3)
+        batch = make_batch(3)
         n = batch.x.size(0)
         cont, canid, nbr, z, kl, mask = model(
             batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr,
@@ -31,7 +31,7 @@ class TestVGAE:
         assert kl.dim() == 0
 
     def test_gradient_flow(self, model):
-        batch = make_batch(num_graphs=2)
+        batch = make_batch(2)
         cont, canid, _, _, kl, _ = model(
             batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr,
         )
@@ -40,10 +40,9 @@ class TestVGAE:
         assert not dead, f"No gradient: {dead}"
 
     def test_variable_size_graphs(self, model):
-        batch = Batch.from_data_list([make_graph(num_nodes=3, num_edges=4),
-                                       make_graph(num_nodes=15, num_edges=30)])
+        batch = make_variable_batch([3, 15])
         out = model(batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr)
-        assert out[0].shape[0] == 18  # 3 + 15
+        assert out[0].shape[0] == 18
 
 
 class TestGAT:
@@ -58,8 +57,7 @@ class TestGAT:
         )
 
     def test_forward_shape(self, model):
-        logits = model(make_batch(num_graphs=5))
-        assert logits.shape == (5, 2)
+        assert model(make_batch(5)).shape == (5, 2)
 
     def test_gradient_flow(self, model):
         model(make_batch(3)).sum().backward()
@@ -68,5 +66,5 @@ class TestGAT:
         assert not dead, f"No gradient: {dead}"
 
     def test_variable_size_graphs(self, model):
-        batch = Batch.from_data_list([make_graph(3, 4), make_graph(20, 40)])
+        batch = make_variable_batch([3, 20])
         assert model(batch).shape == (2, 2)

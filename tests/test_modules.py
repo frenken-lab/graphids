@@ -6,7 +6,7 @@ import pytest
 import torch
 from torch_geometric.loader import DataLoader
 
-from conftest import make_graph
+from conftest import make_batch, make_graph
 
 
 @pytest.mark.slow
@@ -32,7 +32,6 @@ class TestFastDevRun:
         """All loss functions produce finite loss in training_step."""
         from omegaconf import open_dict
         from graphids.pipeline.stages.modules import GATModule
-        from conftest import make_batch
         for loss_fn in ("ce", "weighted_ce", "focal"):
             with open_dict(gat_cfg):
                 gat_cfg.training.loss_fn = loss_fn
@@ -45,7 +44,6 @@ class TestFastDevRun:
 class TestCheckpointRoundtrip:
     def test_vgae(self, vgae_cfg, tmp_path):
         from graphids.pipeline.stages.modules import VGAEModule
-        from conftest import make_batch
 
         m1 = VGAEModule(vgae_cfg)
         m1.eval()
@@ -65,7 +63,6 @@ class TestCheckpointRoundtrip:
 
     def test_gat(self, gat_cfg, tmp_path):
         from graphids.pipeline.stages.modules import GATModule
-        from conftest import make_batch
 
         m1 = GATModule(gat_cfg)
         m1.eval()
