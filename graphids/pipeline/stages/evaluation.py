@@ -215,14 +215,14 @@ def eval_fusion(cfg, val_data, test_scenarios, device) -> dict:
         module.model.load_state_dict(ckpt["model"])
     elif method == "weighted_avg":
         from graphids.core.models.fusion_baselines import WeightedAvgModule
-        module = WeightedAvgModule(lr=cfg.fusion.lr)
+        module = WeightedAvgModule(lr=cfg.fusion.lr, decision_threshold=cfg.fusion.decision_threshold)
         ckpt = torch.load(cfg.checkpoints["dqn"], map_location="cpu", weights_only=True)
         module.weight.data = ckpt["weight"]
 
     # Eval via trainer.test()
     val_loader = DataLoader(
         TensorDataset(val_cache["states"], val_cache["labels"]),
-        batch_size=256, shuffle=False,
+        batch_size=cfg.evaluation.batch_size, shuffle=False,
     )
     val_metrics = test_model(module, val_loader)
     _log_metrics("Fusion", val_metrics)
@@ -233,7 +233,7 @@ def eval_fusion(cfg, val_data, test_scenarios, device) -> dict:
             tc = cache_predictions(models, tdata, device, cfg.fusion.max_val_samples)
             tl = DataLoader(
                 TensorDataset(tc["states"], tc["labels"]),
-                batch_size=256, shuffle=False,
+                batch_size=cfg.evaluation.batch_size, shuffle=False,
             )
             module.test_metrics.reset()
             scenario_metrics[name] = test_model(module, tl)

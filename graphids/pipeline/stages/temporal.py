@@ -211,7 +211,7 @@ def train_temporal(cfg) -> dict:
 
     # Contiguous time split: first 80% train, last 20% val
     all_graphs = list(dm.train_dataset) + list(dm.val_dataset)
-    split_idx = int(len(all_graphs) * 0.8)
+    split_idx = int(len(all_graphs) * tc.train_split)
     temporal_train_graphs = all_graphs[:split_idx]
     temporal_val_graphs = all_graphs[split_idx:]
 

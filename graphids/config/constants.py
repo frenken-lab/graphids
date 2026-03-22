@@ -21,6 +21,8 @@ CATALOG_PATH = CONFIG_DIR / "datasets.yaml"
 # ---------------------------------------------------------------------------
 PREPROCESSING_VERSION = "4.0.0"
 MAX_DATA_BYTES = 8
+# Must match len(NODE_COL_ORDER) in features.py and edge_features() output.
+# Changing features? Update these AND bump PREPROCESSING_VERSION.
 NODE_FEATURE_COUNT = 31
 EDGE_FEATURE_COUNT = 12
 EXCLUDED_ATTACK_TYPES = ["suppress", "masquerade"]

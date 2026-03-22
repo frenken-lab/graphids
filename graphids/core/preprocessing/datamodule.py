@@ -122,7 +122,7 @@ class CANBusDataModule(pl.LightningDataModule):
         if len(ds) == 0:
             return 2
         import torch
-        labels = torch.tensor([g.y.item() if g.y.numel() == 1 else g.y for g in ds])
+        labels = torch.cat([g.y.view(-1) for g in ds])
         n = int(labels.unique().numel())
         return n if n >= 2 else 2
 
@@ -138,6 +138,8 @@ class CANBusDataModule(pl.LightningDataModule):
             cfg.num_ids = self.num_ids
             cfg.in_channels = self.in_channels
             cfg.num_classes = self.num_classes
+            cfg.vgae.edge_dim = self.edge_dim
+            cfg.gat.edge_dim = self.edge_dim
 
     # -- DataLoaders ----------------------------------------------------------
 
