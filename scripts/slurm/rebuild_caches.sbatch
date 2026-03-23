@@ -54,7 +54,7 @@ print(f'  Features: {dm.in_channels} node dims, {dm.edge_dim} edge dims')
 # Quick feature range check
 import torch
 all_x = torch.cat([train[i].x for i in range(min(500, len(train)))])
-for idx, name in [(17, 'Entropy'), (20, 'Skewness'), (21, 'Kurtosis'), (23, 'SplitHalf')]:
+for idx, name in [(25, 'Entropy'), (26, 'Skewness'), (27, 'Kurtosis'), (31, 'IAT_mean')]:
     if idx < all_x.shape[1]:
         vals = all_x[:, idx]
         print(f'  {name} (feat {idx}): min={vals.min():.4f}, max={vals.max():.4f}, mean={vals.mean():.4f}')
