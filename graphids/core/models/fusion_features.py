@@ -63,11 +63,12 @@ class VGAEFusionExtractor:
             getattr(graph, "edge_attr", None) if getattr(model, "_uses_edge_attr", False) else None
         )
         cont, canid_logits, nbr_logits, z, _, _ = model(
-            graph.x, graph.edge_index, batch_idx, edge_attr=edge_attr
+            graph.x, graph.edge_index, batch_idx, edge_attr=edge_attr,
+            node_id=graph.node_id,
         )
-        recon_err = F.mse_loss(cont, graph.x[:, 1:], reduction="none").mean().item()
-        canid_err = F.cross_entropy(canid_logits, graph.x[:, 0].long()).item()
-        nbr_targets = model.create_neighborhood_targets(graph.x, graph.edge_index, batch_idx)
+        recon_err = F.mse_loss(cont, graph.x, reduction="none").mean().item()
+        canid_err = F.cross_entropy(canid_logits, graph.node_id).item()
+        nbr_targets = model.create_neighborhood_targets(graph.node_id, graph.edge_index, batch_idx)
         nbr_err = F.binary_cross_entropy_with_logits(
             nbr_logits, nbr_targets, reduction="mean"
         ).item()

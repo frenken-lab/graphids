@@ -46,3 +46,24 @@ hydra:
   output_subdir: null
   run:
     dir: ${_output_base}/${model_type}_${scale}_${stage}/seed_${seed}
+  sweeper:
+    direction: minimize
+    n_trials: 30
+    n_jobs: 1
+    study_name: ${model_type}_${scale}_${stage}
+    storage: null
+    sampler:
+      _target_: optuna.samplers.TPESampler
+      seed: ${seed}
+      n_startup_trials: 10
+    params: {}
+  launcher:
+    partition: gpu
+    gpus_per_node: 1
+    cpus_per_task: 4
+    mem_gb: 48
+    timeout_min: 480
+    account: ${oc.env:KD_GAT_SLURM_ACCOUNT,PAS1266}
+    array_parallelism: 4
+    setup:
+      - "source /users/PAS2022/rf15/KD-GAT/scripts/slurm/_preamble.sh"

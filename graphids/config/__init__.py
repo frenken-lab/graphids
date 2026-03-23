@@ -55,7 +55,7 @@ class VGAEConfig:
     embedding_dim: int = 32
     dropout: float = 0.15
     conv_type: str = "gatv2"
-    edge_dim: int = 12
+    edge_dim: int = 11
     proj_dim: int = 0
     mask_ratio: float = 0.3
     canid_weight: float = 0.1
@@ -72,7 +72,7 @@ class GATConfig:
     embedding_dim: int = 16
     fc_layers: int = 3
     conv_type: str = "gatv2"
-    edge_dim: int = 12
+    edge_dim: int = 11
     pool_aggrs: list[str] = field(default_factory=lambda: ["mean"])
     proj_dim: int = 0
 
@@ -158,7 +158,7 @@ class TrainingConfig:
 
 @dataclass
 class FusionConfig:
-    method: str = "dqn"
+    method: str = "bandit"
     episodes: int = 500
     max_samples: int = 150_000
     max_val_samples: int = 30_000

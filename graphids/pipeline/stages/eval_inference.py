@@ -161,7 +161,7 @@ def capture_gat_artifacts(gat, data, device, embeddings: bool = True, attention:
             attn_data.append({
                 "graph_idx": idx, "label": graph_label(g),
                 "edge_index": g.edge_index.cpu().numpy(),
-                "node_features": g.x[:, 0].cpu().numpy(),
+                "node_features": g.node_id.cpu().numpy(),
                 "attention_weights": [a.numpy() for a in att_weights],
             })
 
@@ -191,9 +191,10 @@ def capture_vgae_artifacts(vgae, data, device, embeddings: bool = True, componen
             edge_attr = getattr(batch, "edge_attr", None)
             cont, canid_logits, nbr_logits, z, kl_loss, _ = vgae(
                 batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr,
+                node_id=batch.node_id,
             )
             # Per-graph MSE via scatter
-            node_mse = (cont - batch.x[:, 1:]).pow(2).mean(dim=1)
+            node_mse = (cont - batch.x).pow(2).mean(dim=1)
             graph_mse = scatter(node_mse, batch.batch, reduce="mean")
             errors_all.append(graph_mse.cpu())
 
@@ -208,9 +209,9 @@ def capture_vgae_artifacts(vgae, data, device, embeddings: bool = True, componen
 
             if components:
                 comps["recon"].append(graph_mse.cpu())
-                node_ce = F.cross_entropy(canid_logits, batch.x[:, 0].long(), reduction="none")
+                node_ce = F.cross_entropy(canid_logits, batch.node_id, reduction="none")
                 comps["canid"].append(scatter(node_ce, batch.batch, reduce="mean").cpu())
-                nbr_targets = vgae.create_neighborhood_targets(batch.x, batch.edge_index, batch.batch)
+                nbr_targets = vgae.create_neighborhood_targets(batch.node_id, batch.edge_index, batch.batch)
                 node_nbr = F.binary_cross_entropy_with_logits(
                     nbr_logits, nbr_targets, reduction="none",
                 ).mean(dim=1)

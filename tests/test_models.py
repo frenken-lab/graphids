@@ -23,9 +23,10 @@ class TestVGAE:
         batch = make_batch(3)
         n = batch.x.size(0)
         cont, canid, nbr, z, kl, mask = model(
-            batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr,
+            batch.x, batch.edge_index, batch.batch,
+            edge_attr=batch.edge_attr, node_id=batch.node_id,
         )
-        assert cont.shape == (n, IN_CHANNELS - 1)
+        assert cont.shape == (n, IN_CHANNELS)
         assert canid.shape == (n, NUM_IDS)
         assert z.shape[0] == n
         assert kl.dim() == 0
@@ -33,7 +34,8 @@ class TestVGAE:
     def test_gradient_flow(self, model):
         batch = make_batch(2)
         cont, canid, nbr, _, kl, _ = model(
-            batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr,
+            batch.x, batch.edge_index, batch.batch,
+            edge_attr=batch.edge_attr, node_id=batch.node_id,
         )
         (cont.sum() + canid.sum() + nbr.sum() + kl).backward()
         dead = [n for n, p in model.named_parameters() if p.grad is None]
@@ -41,7 +43,10 @@ class TestVGAE:
 
     def test_variable_size_graphs(self, model):
         batch = make_variable_batch([3, 15])
-        out = model(batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr)
+        out = model(
+            batch.x, batch.edge_index, batch.batch,
+            edge_attr=batch.edge_attr, node_id=batch.node_id,
+        )
         assert out[0].shape[0] == 18
 
 
@@ -86,9 +91,10 @@ class TestGPSConv:
         batch = make_batch(3)
         n = batch.x.size(0)
         cont, canid, nbr, z, kl, mask = model(
-            batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr,
+            batch.x, batch.edge_index, batch.batch,
+            edge_attr=batch.edge_attr, node_id=batch.node_id,
         )
-        assert cont.shape == (n, IN_CHANNELS - 1)
+        assert cont.shape == (n, IN_CHANNELS)
         assert canid.shape == (n, NUM_IDS)
         assert z.shape[0] == n
         assert kl.dim() == 0
@@ -96,7 +102,8 @@ class TestGPSConv:
     def test_gradient_flow(self, model):
         batch = make_batch(2)
         cont, canid, nbr, _, kl, _ = model(
-            batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr,
+            batch.x, batch.edge_index, batch.batch,
+            edge_attr=batch.edge_attr, node_id=batch.node_id,
         )
         (cont.sum() + canid.sum() + nbr.sum() + kl).backward()
         # GPS conv skips external BatchNorm (has internal norm) — exclude encoder_bns

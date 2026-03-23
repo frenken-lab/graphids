@@ -146,12 +146,13 @@ def _score_difficulty(
                 batch = Batch.from_data_list([g.clone() for g in chunk_graphs]).to(device)
                 edge_attr = getattr(batch, "edge_attr", None)
                 cont, canid_logits, _, _, _, _ = vgae_model(
-                    batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr
+                    batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr,
+                    node_id=batch.node_id,
                 )
                 # Per-graph losses via scatter reduction
-                node_mse = (cont - batch.x[:, 1:]).pow(2).mean(dim=1)
+                node_mse = (cont - batch.x).pow(2).mean(dim=1)
                 graph_mse = scatter(node_mse, batch.batch, reduce="mean")
-                node_ce = F.cross_entropy(canid_logits, batch.x[:, 0].long(), reduction="none")
+                node_ce = F.cross_entropy(canid_logits, batch.node_id, reduction="none")
                 graph_ce = scatter(node_ce, batch.batch, reduce="mean")
                 scores.extend((graph_mse + canid_weight * graph_ce).tolist())
                 del batch

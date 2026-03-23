@@ -8,21 +8,22 @@ from omegaconf import OmegaConf, open_dict
 from torch_geometric.data import Batch, Data
 
 NUM_IDS = 10
-IN_CHANNELS = 31
-EDGE_DIM = 12
+IN_CHANNELS = 35
+EDGE_DIM = 11
 N_NODES = 8  # fixed default — tests must not assume random sizes
 
 
 def make_graph(num_nodes: int = N_NODES, num_edges: int = 12) -> Data:
-    """Synthetic CAN-bus-like graph: col 0 = CAN ID index, rest = continuous."""
+    """Synthetic CAN-bus-like graph: all continuous features + separate node_id."""
     x = torch.rand(num_nodes, IN_CHANNELS)
-    x[:, 0] = torch.randint(0, NUM_IDS, (num_nodes,)).float()
+    node_id = torch.randint(0, NUM_IDS, (num_nodes,))
     edge_index = torch.stack([
         torch.randint(0, num_nodes, (num_edges,)),
         torch.randint(0, num_nodes, (num_edges,)),
     ])
     edge_attr = torch.rand(num_edges, EDGE_DIM)
-    return Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=torch.tensor([1]))
+    return Data(x=x, edge_index=edge_index, edge_attr=edge_attr,
+                node_id=node_id, y=torch.tensor([1]))
 
 
 def make_batch(n_graphs: int = 4) -> Batch:

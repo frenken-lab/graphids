@@ -41,8 +41,8 @@ class TestPopulateConfig:
 
             @property
             def num_ids(self) -> int:
-                ids = torch.cat([g.x[:, 0] for g in self._graphs])
-                return int(ids.unique().numel())
+                ids = torch.cat([g.node_id for g in self._graphs])
+                return int(ids.max().item()) + 1
 
             @property
             def in_channels(self) -> int:
@@ -67,7 +67,7 @@ class TestPopulateConfig:
         return resolve("model_type=vgae", "scale=small", "lake_root=/tmp", "device=cpu")
 
     def test_populate_sets_default_dimensions(self):
-        """populate_config writes in_channels=31, edge_dim=12, num_classes=2 from data."""
+        """populate_config writes in_channels=31, edge_dim=10, num_classes=2 from data."""
         graphs = [make_graph() for _ in range(10)]
         dm = self._make_datamodule_stub(graphs)
         cfg = self._base_cfg()
@@ -91,13 +91,14 @@ class TestPopulateConfig:
 
         def _make_custom_graph(label: int) -> Data:
             x = torch.rand(N_NODES, feat_dim)
-            x[:, 0] = torch.randint(0, 5, (N_NODES,)).float()
+            node_id = torch.randint(0, 5, (N_NODES,))
             edge_index = torch.stack([
                 torch.randint(0, N_NODES, (12,)),
                 torch.randint(0, N_NODES, (12,)),
             ])
             edge_attr = torch.rand(12, 8)  # 8-D edges (non-default)
-            return Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=torch.tensor([label]))
+            return Data(x=x, edge_index=edge_index, edge_attr=edge_attr,
+                        node_id=node_id, y=torch.tensor([label]))
 
         # 3-class labels: 0, 1, 2
         graphs = [_make_custom_graph(i % n_classes) for i in range(12)]

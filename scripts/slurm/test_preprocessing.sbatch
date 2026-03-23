@@ -36,7 +36,7 @@ assert len(ds) > 0, 'No graphs produced'
 g = ds[0]
 print(f'  x: {g.x.shape}, edge_index: {g.edge_index.shape}, edge_attr: {g.edge_attr.shape}, y: {g.y}')
 assert g.x.shape[1] == 31, f'Expected 31 node features, got {g.x.shape[1]}'
-assert g.edge_attr.shape[1] == 12, f'Expected 12 edge features, got {g.edge_attr.shape[1]}'
+assert g.edge_attr.shape[1] == 10, f'Expected 10 edge features, got {g.edge_attr.shape[1]}'
 
 import torch
 assert not torch.isnan(g.x).any(), 'NaN in node features'

@@ -102,12 +102,13 @@ def _evaluate_vgae_loss(model, dataloader, device: torch.device) -> float:
         for batch in dataloader:
             batch = batch.clone().to(device)
             edge_attr = getattr(batch, "edge_attr", None)
-            cont_out, canid_logits, nbr_logits, _z, kl_loss = model(
-                batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr
+            cont_out, canid_logits, nbr_logits, _z, kl_loss, _ = model(
+                batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr,
+                node_id=batch.node_id,
             )
-            recon = F.mse_loss(cont_out, batch.x[:, 1:])
-            canid = F.cross_entropy(canid_logits, batch.x[:, 0].long())
-            nbr_targets = model.create_neighborhood_targets(batch.x, batch.edge_index, batch.batch)
+            recon = F.mse_loss(cont_out, batch.x)
+            canid = F.cross_entropy(canid_logits, batch.node_id)
+            nbr_targets = model.create_neighborhood_targets(batch.node_id, batch.edge_index, batch.batch)
             nbr_loss = F.binary_cross_entropy_with_logits(nbr_logits, nbr_targets)
             loss = recon + 0.1 * canid + 0.05 * nbr_loss + 0.01 * kl_loss
             total_loss += loss.item() * batch.num_graphs

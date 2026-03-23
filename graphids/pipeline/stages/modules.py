@@ -118,19 +118,19 @@ class VGAEModule(pl.LightningModule):
         mask_ratio = self.cfg.vgae.mask_ratio if self.training else 0.0
         return self.model(
             batch.x, batch.edge_index, batch.batch,
-            edge_attr=edge_attr, mask_ratio=mask_ratio,
+            edge_attr=edge_attr, mask_ratio=mask_ratio, node_id=batch.node_id,
         )
 
     def _task_loss(self, batch):
         cont_out, canid_logits, nbr_logits, z, kl_loss, mask = self(batch)
-        target = batch.x[:, 1:]
+        target = batch.x
         if mask is not None:
             # Reconstruction loss on masked positions only (GraphMAE-style)
             recon = F.mse_loss(cont_out[mask], target[mask])
         else:
             recon = F.mse_loss(cont_out, target)
-        canid = F.cross_entropy(canid_logits, batch.x[:, 0].long())
-        nbr_targets = self.model.create_neighborhood_targets(batch.x, batch.edge_index, batch.batch)
+        canid = F.cross_entropy(canid_logits, batch.node_id)
+        nbr_targets = self.model.create_neighborhood_targets(batch.node_id, batch.edge_index, batch.batch)
         nbr_loss = F.binary_cross_entropy_with_logits(nbr_logits, nbr_targets)
         w = self.cfg.vgae
         task_loss = recon + w.canid_weight * canid + w.nbr_weight * nbr_loss + w.kl_weight * kl_loss
@@ -150,7 +150,8 @@ class VGAEModule(pl.LightningModule):
                     )
                     t_edge_attr = getattr(batch, "edge_attr", None)
                     t_cont, _, _, t_z, _, _ = self.teacher(
-                        batch.x, batch.edge_index, batch_idx, edge_attr=t_edge_attr
+                        batch.x, batch.edge_index, batch_idx, edge_attr=t_edge_attr,
+                        node_id=batch.node_id,
                     )
 
             z_s = self.projection(z) if self.projection is not None else z
@@ -180,16 +181,17 @@ class VGAEModule(pl.LightningModule):
         edge_attr = getattr(batch, "edge_attr", None)
         cont, canid_logits, nbr_logits, _, _, _ = self.model(
             batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr,
+            node_id=batch.node_id,
         )
         # Per-node continuous reconstruction error
-        per_node_se = (cont - batch.x[:, 1:]).pow(2).mean(dim=1)
+        per_node_se = (cont - batch.x).pow(2).mean(dim=1)
         recon = scatter(per_node_se, batch.batch, dim=0, reduce="max")
         # Per-node CAN ID classification error
-        canid_err = F.cross_entropy(canid_logits, batch.x[:, 0].long(), reduction="none")
+        canid_err = F.cross_entropy(canid_logits, batch.node_id, reduction="none")
         canid_per_graph = scatter(canid_err, batch.batch, dim=0, reduce="max")
         # Per-node neighborhood prediction error
         nbr_targets = self.model.create_neighborhood_targets(
-            batch.x, batch.edge_index, batch.batch,
+            batch.node_id, batch.edge_index, batch.batch,
         )
         nbr_err = F.binary_cross_entropy_with_logits(
             nbr_logits, nbr_targets, reduction="none",

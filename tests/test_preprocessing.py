@@ -25,14 +25,16 @@ def _make_window(n_rows: int = 20, n_ids: int = 5):
 
 def test_node_features_shape():
     from graphids.core.preprocessing.features import node_features, NODE_COL_ORDER
-    x = node_features(_make_window(80, 8), 8, edge_index=np.array([[0, 1], [1, 2]]))
-    assert x.shape == (8, len(NODE_COL_ORDER))
+    x, node_ids = node_features(_make_window(80, 8), edge_index=np.array([[0, 1], [1, 2]]))
+    n_active = node_ids.shape[0]
+    assert x.shape == (n_active, len(NODE_COL_ORDER))
+    assert node_ids.shape == (n_active,)
     assert not torch.isnan(x).any()
 
 
 def test_node_features_skewness_clamped():
     from graphids.core.preprocessing.features import node_features
-    x = node_features(_make_window(100, 3), 3)
+    x, _ = node_features(_make_window(100, 3))
     # Skewness and kurtosis columns — verify clamping to ±10
     assert x.abs().max() <= 10.0 or True  # some features exceed 10 legitimately
     # But skewness (col 26) and kurtosis (col 27) specifically must be clamped
@@ -49,18 +51,18 @@ def test_edge_features_shape():
     n = 15
     ea = edge_features(
         np.arange(n + 1, dtype=np.float64),
-        [np.random.rand(n + 1).astype(np.float32) for _ in range(4)],
+        [np.random.rand(n + 1).astype(np.float32) for _ in range(8)],
         np.arange(n, dtype=np.int64), np.arange(1, n + 1, dtype=np.int64),
     )
     assert ea.shape == (n, EDGE_FEATURE_COUNT)
 
 
 def test_edge_features_iat():
-    """Inter-arrival time in columns 0, 2, 3."""
+    """Inter-arrival time in column 0."""
     from graphids.core.preprocessing.features import edge_features
     ea = edge_features(
         np.array([0.0, 0.1, 0.3, 0.6]),
-        [np.zeros(4, dtype=np.float32) for _ in range(4)],
+        [np.zeros(4, dtype=np.float32) for _ in range(8)],
         np.array([0, 1, 2]), np.array([1, 2, 3]),
     )
     expected = torch.tensor([0.1, 0.2, 0.3])
@@ -73,14 +75,66 @@ def test_graph_construction_end_to_end():
     window = _make_window(20, 5)
     ids = np.array(window["node_id"].to_list())
     src, dst = ids[:-1], ids[1:]
-    x = node_features(window, 5, edge_index=np.stack([src, dst]))
+    x, node_ids = node_features(window, edge_index=np.stack([src, dst]))
     ea = edge_features(
         window["timestamp"].to_numpy(),
-        [window[f"byte_{i}"].to_numpy() for i in range(4)],
+        [window[f"byte_{i}"].to_numpy() for i in range(8)],
         src, dst,
     )
-    assert x.shape == (5, 31)
-    assert ea.shape == (19, 12)
+    n_active = node_ids.shape[0]
+    assert x.shape == (n_active, 35)
+    assert node_ids.shape == (n_active,)
+    assert ea.shape == (19, 11)
+
+
+def test_node_iat_features():
+    """node_iat_mean/std computed from per-node timestamp diffs."""
+    from graphids.core.preprocessing.features import node_features, NODE_COL_ORDER
+    window = _make_window(80, 4)
+    x, _ = node_features(window, edge_index=np.array([[0, 1], [1, 2]]))
+    iat_mean_idx = NODE_COL_ORDER.index("node_iat_mean")
+    iat_std_idx = NODE_COL_ORDER.index("node_iat_std")
+    # IAT mean should be positive (timestamps are monotonically increasing)
+    assert (x[:, iat_mean_idx] >= 0).all()
+    # IAT std should be non-negative
+    assert (x[:, iat_std_idx] >= 0).all()
+    assert not torch.isnan(x[:, iat_mean_idx]).any()
+    assert not torch.isnan(x[:, iat_std_idx]).any()
+
+
+def test_degree_features():
+    """in_degree/out_degree filled post-hoc from edge_index."""
+    from graphids.core.preprocessing.features import node_features, NODE_COL_ORDER
+    window = _make_window(80, 4)
+    # Create a known edge structure: 0→1, 1→2
+    ei = np.array([[0, 1], [1, 2]])
+    x, _ = node_features(window, edge_index=ei)
+    in_deg_idx = NODE_COL_ORDER.index("in_degree")
+    out_deg_idx = NODE_COL_ORDER.index("out_degree")
+    n = x.shape[0]
+    # All degree values should be non-negative integers
+    assert (x[:, in_deg_idx] >= 0).all()
+    assert (x[:, out_deg_idx] >= 0).all()
+    # Without edge_index, degrees should be zero
+    x_no_ei, _ = node_features(window, edge_index=None)
+    assert (x_no_ei[:, in_deg_idx] == 0).all()
+    assert (x_no_ei[:, out_deg_idx] == 0).all()
+
+
+def test_edge_freq_numpy_path():
+    """edge_freq in numpy path counts (src, dst) pair occurrences."""
+    from graphids.core.preprocessing.features import edge_features, N_EDGE_FEATURES
+    # Two edges share (0→1), one unique (1→2)
+    src = np.array([0, 0, 1], dtype=np.int64)
+    dst = np.array([1, 1, 2], dtype=np.int64)
+    ts = np.array([0.0, 0.1, 0.2, 0.3], dtype=np.float64)
+    byte_arrs = [np.zeros(4, dtype=np.float32) for _ in range(8)]
+    ea = edge_features(ts, byte_arrs, src, dst)
+    assert ea.shape == (3, N_EDGE_FEATURES)
+    # edge_freq is slot 10
+    assert ea[0, 10] == 2.0  # (0→1) appears twice
+    assert ea[1, 10] == 2.0  # (0→1) appears twice
+    assert ea[2, 10] == 1.0  # (1→2) appears once
 
 
 class TestInferAttackType:
@@ -147,6 +201,10 @@ class TestCANBusDatasetBuildGraphs:
         assert hasattr(g, "edge_index")
         assert hasattr(g, "edge_attr")
         assert hasattr(g, "y")
-        assert g.x.shape[1] == 31
-        assert g.edge_attr.shape[1] == 12
+        assert hasattr(g, "node_id")
+        assert g.x.shape[1] == 35
+        assert g.edge_attr.shape[1] == 11
+        assert g.node_id.shape[0] == g.x.shape[0]
+        assert g.x.shape[0] < 2048, "Compact graph should have << 2048 nodes"
+        assert g.edge_index.max() < g.x.shape[0], "Edge indices must be local"
         assert not torch.isnan(g.x).any()

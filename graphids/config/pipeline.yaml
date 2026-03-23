@@ -56,7 +56,7 @@ stages:
     model: gat
     mode: normal
     depends_on:
-      - { model: vgae, stage: autoencoder }
+      - { model: preprocess, stage: preprocess }
 
   fusion:
     learning_type: rl_fusion

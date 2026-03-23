@@ -11,7 +11,7 @@ import structlog
 import pytorch_lightning as pl
 
 from graphids.config import cache_dir, data_dir
-from graphids.config.constants import CATALOG_PATH, EDGE_FEATURE_COUNT, PREPROCESSING_DEFAULTS
+from graphids.config.constants import CATALOG_PATH, EDGE_FEATURE_COUNT, NODE_FEATURE_COUNT, PREPROCESSING_DEFAULTS
 
 from .datasets.can_bus import CANBusDataset
 
@@ -119,7 +119,7 @@ class CANBusDataModule(pl.LightningDataModule):
     def in_channels(self) -> int:
         ds = self._train_ds or next(iter(self._test_datasets.values()), None)
         assert ds is not None, "call setup() first"
-        return ds[0].x.shape[1] if len(ds) > 0 else 31
+        return ds[0].x.shape[1] if len(ds) > 0 else NODE_FEATURE_COUNT
 
     @property
     def num_classes(self) -> int:

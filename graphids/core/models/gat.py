@@ -121,8 +121,9 @@ class GATWithJK(nn.Module):
     ):
         x, edge_index, batch = data.x, data.edge_index, data.batch
         edge_attr = getattr(data, "edge_attr", None) if self._uses_edge_attr else None
+        node_id = data.node_id
 
-        x = self.input_encoder(x)
+        x = self.input_encoder(x, node_id)
 
         attention_weights = [] if return_attention_weights else None
 

@@ -1,36 +1,19 @@
-"""CAN bus dataset — self-contained InMemoryDataset subclass.
+"""CAN bus dataset — InMemoryDataset subclass.
 
-Owns the entire pipeline: scan CSVs (lazy) → parse hex → build vocabulary →
-vectorized feature computation via Polars group_by → PyG Data → cache.
-
-Feature computation uses Polars expressions throughout:
-- Node stats: single group_by(window_id, node_id).agg() across all windows
-- Edge features: diff().over("_wid") for IAT and byte diffs, self-join for bidir
-- Labels: group_by("_wid").agg() for attack presence and type
-- Window assignment: int_ranges + explode (no Python loop)
-
-The only per-window Python code is the final Data assembly and networkx
-clustering coefficients (graph-structure-dependent, not vectorizable).
+Handles I/O (CSV scanning, hex parsing, vocabulary) and delegates the
+general sliding-window-to-graph pipeline to features.sliding_window_graphs().
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
 import polars as pl
 import structlog
 import torch
 from torch_geometric.data import Data, InMemoryDataset
 
-from graphids.core.preprocessing.features import (
-    N_EDGE_FEATURES,
-    NODE_COL_ORDER,
-    NODE_STAT_EXPRS,
-    clustering_coefficients,
-    edge_features,
-    stats_to_tensor,
-)
+from graphids.core.preprocessing.features import sliding_window_graphs
 from graphids.core.preprocessing.utils import atomic_save, nfs_lock, vocab_from_column
 
 log = structlog.get_logger()
@@ -94,7 +77,7 @@ class CANBusDataset(InMemoryDataset):
         if meta_path.exists():
             self.num_arb_ids = int(meta_path.read_text().strip())
         else:
-            self.num_arb_ids = max((g.x.shape[0] for g in self), default=0)
+            self.num_arb_ids = int(max((g.node_id.max().item() for g in self), default=-1)) + 1
 
     def _apply_train_val_split(self) -> None:
         n = len(self)
@@ -135,161 +118,13 @@ class CANBusDataset(InMemoryDataset):
 
         # Vocabulary
         vocab, oov = vocab_from_column(df["arb_id"])
-        num_nodes = len(vocab) + 1
+        num_arb_ids = len(vocab) + 1  # global vocab size for embedding table
         df = df.with_columns(
             pl.col("arb_id").replace_strict(vocab, default=oov).cast(pl.Int64).alias("node_id")
         )
 
-        # ── Window assignment (pure Polars, no Python loop) ───────────
-        df = df.with_row_index("_row")
-        n_rows = len(df)
-        ws, st = self.window_size, self.stride
-        half = ws // 2
-
-        n_windows = max(0, (n_rows - ws) // st + 1)
-        if n_windows == 0:
-            log.warning("no_complete_windows", n_rows=n_rows, window_size=ws)
-            return [], num_nodes
-        max_wid = n_windows - 1
-        log.info("windowing", n_windows=n_windows, window_size=ws, stride=st)
-
-        if st >= ws:
-            df = df.with_columns(
-                (pl.col("_row") // st).cast(pl.Int64).alias("_wid"),
-                (pl.col("_row") % ws < half).alias("_first_half"),
-            ).filter(pl.col("_wid") <= max_wid)
-        else:
-            row = pl.col("_row")
-            first_wid = ((row - ws + st) // st).clip(lower_bound=0)
-            last_wid = (row // st).clip(upper_bound=max_wid)
-            df = (
-                df.with_columns(
-                    pl.int_ranges(first_wid, last_wid + 1, dtype=pl.Int64).alias("_wid"),
-                )
-                .explode("_wid")
-                .with_columns(
-                    ((row - pl.col("_wid") * st) < half).alias("_first_half"),
-                )
-            )
-
-        # ── Chunked processing ────────────────────────────────────────
-        # Process windows in chunks to bound peak memory. Each chunk:
-        # filter → stats + edges + labels (parallel in Polars) → assemble → free.
-        CHUNK_SIZE = 500
-        graphs: list[Data] = []
-
-        for chunk_start in range(0, n_windows, CHUNK_SIZE):
-            chunk_end = min(chunk_start + CHUNK_SIZE, n_windows)
-            chunk_df = df.filter(
-                (pl.col("_wid") >= chunk_start) & (pl.col("_wid") < chunk_end)
-            )
-
-            chunk_graphs = self._process_chunk(chunk_df, num_nodes)
-            graphs.extend(chunk_graphs)
-            del chunk_df, chunk_graphs
-
-            if chunk_end < n_windows:
-                log.info("chunk_done", windows=f"{chunk_end}/{n_windows}")
-
-        del df
-        log.info("graphs_built", count=len(graphs), num_nodes=num_nodes)
-        return graphs, num_nodes
-
-    def _process_chunk(
-        self, chunk_df: pl.DataFrame, num_nodes: int,
-    ) -> list[Data]:
-        """Build graphs for a chunk of windows. Frees intermediates eagerly."""
-        # ── Node stats ────────────────────────────────────────────────
-        node_stats = chunk_df.group_by(["_wid", "node_id"], maintain_order=True).agg(
-            *NODE_STAT_EXPRS
-        ).fill_null(0).fill_nan(0)
-
-        # ── Edge features ─────────────────────────────────────────────
-        edge_df = (
-            chunk_df.select("_wid", "_row", "node_id", "timestamp",
-                            *[f"byte_{i}" for i in range(4)])
-            .sort(["_wid", "_row"])
-            .with_columns(
-                pl.col("node_id").alias("src"),
-                pl.col("node_id").shift(-1).over("_wid").alias("dst"),
-                pl.col("timestamp").diff().over("_wid").cast(pl.Float32).alias("iat"),
-                *[
-                    pl.col(f"byte_{i}").diff().abs().over("_wid").cast(pl.Float32)
-                    .alias(f"byte_{i}_diff")
-                    for i in range(4)
-                ],
-            )
-            .filter(pl.col("iat").is_not_null())
-        )
-        # Bidirectional flag
-        edge_pairs = edge_df.select("_wid", "src", "dst").unique()
-        edge_df = (
-            edge_df.join(
-                edge_pairs.with_columns(pl.lit(True).alias("_rev")),
-                left_on=["_wid", "dst", "src"],
-                right_on=["_wid", "src", "dst"],
-                how="left",
-            )
-            .with_columns(pl.col("_rev").fill_null(False).cast(pl.Float32).alias("bidir"))
-            .drop("_rev")
-        )
-        del edge_pairs
-
-        # ── Labels ────────────────────────────────────────────────────
-        labels = chunk_df.group_by("_wid").agg(
-            (pl.col("attack").max() > 0).cast(pl.Int64).alias("y"),
-            pl.col("attack_type")
-            .filter(pl.col("attack_type") > 0)
-            .mode().first().fill_null(0).alias("at"),
-        )
-        label_dict: dict[int, tuple[int, int]] = {
-            row[0]: (row[1], row[2]) for row in labels.iter_rows()
-        }
-        del labels
-
-        # ── Partition + assemble ──────────────────────────────────────
-        stats_parts = node_stats.partition_by("_wid", maintain_order=True, as_dict=True)
-        del node_stats
-        edge_parts = edge_df.partition_by("_wid", maintain_order=True, as_dict=True)
-        del edge_df
-
-        graphs: list[Data] = []
-        for wid_key, stats in stats_parts.items():
-            wid = wid_key[0] if isinstance(wid_key, tuple) else wid_key
-            epart = edge_parts.get(wid_key)
-            if epart is None:
-                continue
-
-            src = epart["src"].to_numpy()
-            dst = epart["dst"].to_numpy()
-            ei = np.stack([src, dst])
-
-            x = stats_to_tensor(stats, num_nodes, edge_index=ei)
-
-            n_edges = len(src)
-            edge_attr = torch.zeros(n_edges, N_EDGE_FEATURES, dtype=torch.float32)
-            iat = torch.from_numpy(epart["iat"].to_numpy().copy())
-            edge_attr[:, 0] = iat
-            edge_attr[:, 2] = iat
-            edge_attr[:, 3] = iat
-            edge_attr[:, 6] = 1.0
-            for i in range(4):
-                edge_attr[:, 7 + i] = torch.from_numpy(
-                    epart[f"byte_{i}_diff"].to_numpy().copy()
-                )
-            edge_attr[:, 11] = torch.from_numpy(epart["bidir"].to_numpy().copy())
-
-            y_val, at_val = label_dict.get(wid, (0, 0))
-            graphs.append(Data(
-                x=x,
-                edge_index=torch.tensor(ei, dtype=torch.long),
-                edge_attr=edge_attr,
-                y=torch.tensor([y_val], dtype=torch.long),
-                attack_type=torch.tensor([at_val], dtype=torch.long),
-            ))
-
-        del stats_parts, edge_parts
-        return graphs
+        graphs = sliding_window_graphs(df, self.window_size, self.stride)
+        return graphs, num_arb_ids
 
     @staticmethod
     def _infer_attack_type(csv_path: Path) -> int:

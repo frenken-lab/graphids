@@ -95,8 +95,8 @@ class GraphAutoencoderNeighborhood(nn.Module):
 
         # Decoder: mirror of encoder, final layer outputs continuous features
         decoder_targets = list(reversed(encoder_targets))
-        # Replace last target with (in_channels - 1) for reconstruction output
-        decoder_targets[-1] = in_channels - 1
+        # Replace last target with in_channels for reconstruction output
+        decoder_targets[-1] = in_channels
         self.decoder_layers, self.decoder_bns = build_conv_stack(
             conv_type, latent_dim, decoder_targets, self._edge_dim,
             heads_first=decoder_heads, batch_norm=batch_norm,
@@ -124,8 +124,8 @@ class GraphAutoencoderNeighborhood(nn.Module):
         self.dropout = nn.Dropout(p=dropout)
         self.latent_dim = latent_dim
 
-    def encode(self, x, edge_index, edge_attr=None, batch=None):
-        x = self.input_encoder(x)
+    def encode(self, x, edge_index, edge_attr=None, batch=None, node_id=None):
+        x = self.input_encoder(x, node_id)
         for i, conv in enumerate(self.encoder_layers):
             bn = self.encoder_bns[i] if self.batch_norm else None
             x = conv_forward(
@@ -176,35 +176,31 @@ class GraphAutoencoderNeighborhood(nn.Module):
                         use_checkpointing=self.use_checkpointing,
                     )
                 )
-        cont_out = x  # shape: [num_nodes, in_channels-1]
+        cont_out = x  # shape: [num_nodes, in_channels]
         canid_logits = self.canid_classifier(z)
 
         return cont_out, canid_logits
 
-    def create_neighborhood_targets(self, x, edge_index, batch):
+    def create_neighborhood_targets(self, node_id, edge_index, batch):
         """Create neighborhood target matrix for training.
 
         Args:
-            x (torch.Tensor): Node features with CAN IDs in first column.
-            edge_index (torch.Tensor): Edge indices.
-            batch (torch.Tensor): Batch assignment vector.
+            node_id: Global CAN ID indices [num_nodes].
+            edge_index: Edge indices [2, num_edges].
+            batch: Batch assignment vector.
 
         Returns:
-            torch.Tensor: Binary target matrix [num_nodes, num_ids].
+            Binary target matrix [num_nodes, num_ids].
         """
-        num_nodes = x.size(0)
-        device = x.device
-        neighbor_targets = torch.zeros(num_nodes, self.num_ids, device=device)
+        num_nodes = node_id.size(0)
+        neighbor_targets = torch.zeros(num_nodes, self.num_ids, device=node_id.device)
 
         src_nodes = edge_index[0]
         dst_nodes = edge_index[1]
-        dst_can_ids = x[dst_nodes, 0].long()
+        dst_can_ids = node_id[dst_nodes]
 
         valid = (dst_can_ids >= 0) & (dst_can_ids < self.num_ids)
-        src_valid = src_nodes[valid]
-        dst_ids_valid = dst_can_ids[valid]
-
-        neighbor_targets[src_valid, dst_ids_valid] = 1.0
+        neighbor_targets[src_nodes[valid], dst_can_ids[valid]] = 1.0
 
         return neighbor_targets
 
@@ -226,35 +222,33 @@ class GraphAutoencoderNeighborhood(nn.Module):
             use_checkpointing=cfg.training.gradient_checkpointing,
         )
 
-    def forward(self, x, edge_index, batch, edge_attr=None, mask_ratio: float = 0.0):
+    def forward(self, x, edge_index, batch, edge_attr=None, mask_ratio: float = 0.0, node_id=None):
         """Forward pass through the GraphAutoencoderNeighborhood.
 
         Args:
-            x: Node features [num_nodes, in_channels]. Column 0 is CAN ID.
+            x: Continuous node features [num_nodes, in_channels].
             edge_index: Edge indices [2, num_edges].
             batch: Batch assignment vector.
             edge_attr: Optional edge features for TransformerConv/GATv2Conv.
-            mask_ratio: Fraction of continuous features to mask during training
+            mask_ratio: Fraction of features to mask during training
                 (GraphMAE-style). Masked features are zeroed before encoding;
                 the returned mask indicates which (node, feature) positions
                 were masked for selective reconstruction loss. Set to 0.0 to
                 disable (inference, or legacy behavior).
+            node_id: Global CAN ID indices [num_nodes] for embedding lookup.
 
         Returns:
             tuple: (cont_out, canid_logits, neighbor_logits, z, kl_loss, mask).
-            mask is a bool tensor [num_nodes, in_channels-1] or None if mask_ratio=0.
+            mask is a bool tensor [num_nodes, in_channels] or None if mask_ratio=0.
         """
         mask = None
         if mask_ratio > 0.0 and self.training:
-            # Mask continuous features (column 1+), keep CAN IDs intact
-            cont = x[:, 1:]
-            mask = torch.rand_like(cont) < mask_ratio
-            masked_cont = cont.clone()
-            masked_cont[mask] = 0.0
-            x = torch.cat([x[:, :1], masked_cont], dim=1)
+            mask = torch.rand_like(x) < mask_ratio
+            x = x.clone()
+            x[mask] = 0.0
 
         ea = edge_attr if self._uses_edge_attr else None
-        z, kl_loss = self.encode(x, edge_index, edge_attr=ea, batch=batch)
+        z, kl_loss = self.encode(x, edge_index, edge_attr=ea, batch=batch, node_id=node_id)
         cont_out, canid_logits = self.decode_node(z, edge_index, edge_attr=ea, batch=batch)
         neighbor_logits = self.neighborhood_decoder(z)
         return cont_out, canid_logits, neighbor_logits, z, kl_loss, mask

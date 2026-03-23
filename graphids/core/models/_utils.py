@@ -38,28 +38,27 @@ class InputEncoder(nn.Module):
         self._proj_dim = proj_dim
 
         if proj_dim > 0:
-            self.feat_proj = nn.Linear(in_channels - 1, proj_dim)
+            self.feat_proj = nn.Linear(in_channels, proj_dim)
         else:
             self.feat_proj = None
 
-        cont_dim = proj_dim if proj_dim > 0 else (in_channels - 1)
+        cont_dim = proj_dim if proj_dim > 0 else in_channels
         self.out_dim = embedding_dim + cont_dim
 
-    def forward(self, x: Tensor) -> Tensor:
-        """Encode raw node features into model input.
+    def forward(self, x: Tensor, node_id: Tensor) -> Tensor:
+        """Encode node features with CAN ID embedding.
 
         Args:
-            x: Node features ``[num_nodes, in_channels]`` where ``x[:, 0]``
-               is the CAN ID index and ``x[:, 1:]`` are continuous features.
+            x: Continuous features ``[num_nodes, in_channels]``.
+            node_id: Global CAN ID indices ``[num_nodes]`` for embedding lookup.
 
         Returns:
             Encoded features ``[num_nodes, out_dim]``.
         """
-        id_emb = self.id_embedding(x[:, 0].long())
-        other_feats = x[:, 1:]
+        id_emb = self.id_embedding(node_id)
         if self.feat_proj is not None:
-            other_feats = self.feat_proj(other_feats)
-        return torch.cat([id_emb, other_feats], dim=1)
+            x = self.feat_proj(x)
+        return torch.cat([id_emb, x], dim=1)
 
 
 class _ProjectedGPS(nn.Module):
