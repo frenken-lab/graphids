@@ -18,11 +18,6 @@ from torch_geometric.data import Data
 BYTE_COLS = [f"byte_{i}" for i in range(8)]
 
 
-def _init_graph_worker():
-    """Set file-system sharing in each spawn worker to avoid /dev/shm mmap OOM."""
-    import torch.multiprocessing as _mp
-    _mp.set_sharing_strategy("file_system")
-
 # Column order defines tensor layout. Changing order changes model input.
 NODE_COL_ORDER = (
     [f"{c}_mean" for c in BYTE_COLS]
@@ -235,9 +230,7 @@ def _assemble_chunk(
 ) -> list[Data]:
     """Build PyG Data objects from pre-materialized numpy arrays.
 
-    Module-level function (required for spawn multiprocessing pickling).
-    Accepts numpy arrays (not torch tensors) to avoid torch's mmap-based
-    IPC which fails on HPC nodes with restricted /dev/shm.
+    Module-level function for sequential (non-IPC) path.
     Each tuple in window_specs: (s_start, s_count, e_start, e_count, y_val, at_val).
     Offsets are relative to the passed array slices.
     """
@@ -257,6 +250,116 @@ def _assemble_chunk(
         nf[:, IN_DEG_IDX] = degree(ei[1], num_nodes=sc).float()
         nf[:, OUT_DEG_IDX] = degree(ei[0], num_nodes=sc).float()
 
+        graphs.append(Data(
+            x=nf,
+            edge_index=ei,
+            edge_attr=torch.from_numpy(edge_feats[es:es + ec].copy()),
+            node_id=nids,
+            y=torch.tensor([y_val], dtype=torch.long),
+            attack_type=torch.tensor([at_val], dtype=torch.long),
+        ))
+    return graphs
+
+
+def _assemble_chunk_numpy(
+    node_feats: np.ndarray,
+    node_ids: np.ndarray,
+    edge_src: np.ndarray,
+    edge_dst: np.ndarray,
+    edge_feats: np.ndarray,
+    window_specs: list[tuple[int, int, int, int, int, int]],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
+           list[tuple[int, int, int, int, int, int]]]:
+    """Build graph arrays from pre-materialized numpy — no torch, no Data objects.
+
+    Runs in worker processes. Returns pure numpy arrays so IPC uses standard
+    pickle (raw memcpy) instead of torch's mmap/file_system mechanism.
+
+    Returns
+    -------
+    (node_feats_out, node_ids_out, edge_src_out, edge_dst_out, edge_feats_out, specs_out)
+        Concatenated numpy arrays for all windows in the chunk, with specs_out
+        containing (s_start, s_count, e_start, e_count, y_val, at_val) tuples
+        using LOCAL offsets into the returned arrays.
+    """
+    nf_parts: list[np.ndarray] = []
+    ni_parts: list[np.ndarray] = []
+    es_parts: list[np.ndarray] = []
+    ed_parts: list[np.ndarray] = []
+    ef_parts: list[np.ndarray] = []
+    specs_out: list[tuple[int, int, int, int, int, int]] = []
+
+    s_offset = 0
+    e_offset = 0
+
+    for ss, sc, es, ec, y_val, at_val in window_specs:
+        nf = node_feats[ss:ss + sc].copy()
+        nids = node_ids[ss:ss + sc].copy()
+        esrc = edge_src[es:es + ec].copy()
+        edst = edge_dst[es:es + ec].copy()
+        ef = edge_feats[es:es + ec].copy()
+
+        # Clustering coefficients (networkx, already numpy-native)
+        ei_np = np.stack([esrc, edst]) if ec > 0 else np.empty((2, 0), dtype=np.int64)
+        nf[:, CC_IDX] = clustering_coefficients(ei_np, sc)
+
+        # In-degree and out-degree via np.bincount (no torch import needed)
+        nf[:, IN_DEG_IDX] = np.bincount(edst, minlength=sc).astype(np.float32) if ec > 0 else 0.0
+        nf[:, OUT_DEG_IDX] = np.bincount(esrc, minlength=sc).astype(np.float32) if ec > 0 else 0.0
+
+        nf_parts.append(nf)
+        ni_parts.append(nids)
+        es_parts.append(esrc)
+        ed_parts.append(edst)
+        ef_parts.append(ef)
+        specs_out.append((s_offset, sc, e_offset, ec, y_val, at_val))
+
+        s_offset += sc
+        e_offset += ec
+
+    # Concatenate all parts into contiguous arrays
+    if nf_parts:
+        return (
+            np.concatenate(nf_parts),
+            np.concatenate(ni_parts),
+            np.concatenate(es_parts) if es_parts and e_offset > 0 else np.empty(0, dtype=edge_src.dtype),
+            np.concatenate(ed_parts) if ed_parts and e_offset > 0 else np.empty(0, dtype=edge_dst.dtype),
+            np.concatenate(ef_parts) if ef_parts and e_offset > 0 else np.empty((0, edge_feats.shape[1]), dtype=edge_feats.dtype),
+            specs_out,
+        )
+    # Empty chunk fallback
+    return (
+        np.empty((0, node_feats.shape[1]), dtype=node_feats.dtype),
+        np.empty(0, dtype=node_ids.dtype),
+        np.empty(0, dtype=edge_src.dtype),
+        np.empty(0, dtype=edge_dst.dtype),
+        np.empty((0, edge_feats.shape[1]), dtype=edge_feats.dtype),
+        specs_out,
+    )
+
+
+def _numpy_to_data(
+    node_feats: np.ndarray,
+    node_ids: np.ndarray,
+    edge_src: np.ndarray,
+    edge_dst: np.ndarray,
+    edge_feats: np.ndarray,
+    specs: list[tuple[int, int, int, int, int, int]],
+) -> list[Data]:
+    """Convert numpy arrays returned by _assemble_chunk_numpy into PyG Data objects.
+
+    Runs in the parent process where torch IPC is not involved.
+    Each tuple in specs: (s_start, s_count, e_start, e_count, y_val, at_val)
+    with offsets local to the passed arrays.
+    """
+    graphs: list[Data] = []
+    for ss, sc, es, ec, y_val, at_val in specs:
+        nf = torch.from_numpy(node_feats[ss:ss + sc].copy())
+        nids = torch.from_numpy(node_ids[ss:ss + sc].copy())
+        ei = torch.stack([
+            torch.from_numpy(edge_src[es:es + ec].copy()),
+            torch.from_numpy(edge_dst[es:es + ec].copy()),
+        ])
         graphs.append(Data(
             x=nf,
             edge_index=ei,
@@ -296,11 +399,13 @@ def _assemble_graphs(
         es, ec = e_entry
         win_specs.append((ss, sc, es, ec, label_y.get(wid, 0), label_at.get(wid, 0)))
 
-    n_workers = int(os.environ.get("KD_GAT_GRAPH_WORKERS", min(os.cpu_count() or 1, 8)))
+    # Default to min(cpu_count, 8) workers: fork is cheap (~ms startup, no
+    # tensor pickling) and preprocessing is CPU-only (no CUDA).
+    default_workers = min(os.cpu_count() or 1, 8)
+    n_workers = int(os.environ.get("KD_GAT_GRAPH_WORKERS", default_workers))
     chunk_size = max(500, len(win_specs) // (n_workers * 16)) if n_workers > 1 else len(win_specs)
 
-    # Convert to numpy once — _assemble_chunk accepts numpy to avoid
-    # torch's mmap-based IPC which fails on HPC (/dev/shm restrictions).
+    # Convert to numpy once — _assemble_chunk works with numpy arrays.
     nf_np = all_node_feats.numpy()
     ni_np = all_node_ids.numpy()
     es_np = all_edge_src.numpy()
@@ -312,21 +417,18 @@ def _assemble_graphs(
         log.info("graph_assembly_start", n_windows=len(win_specs), n_workers=1, mode="sequential")
         return _assemble_chunk(nf_np, ni_np, es_np, ed_np, ef_np, win_specs)
 
-    # ── Parallel path ────────────────────────────────────────────
+    # ── Parallel path (fork — safe because preprocessing is CPU-only) ──
+    # Workers return numpy arrays (standard pickle/memcpy IPC), not torch
+    # Data objects (which would trigger torch's mmap/file_system IPC).
     import multiprocessing as mp
-    import torch.multiprocessing as torch_mp
     from concurrent.futures import ProcessPoolExecutor
-
-    # Workers return Data objects containing torch tensors. Without this,
-    # torch pickles tensors via mmap (/dev/shm) which OOMs on HPC nodes.
-    torch_mp.set_sharing_strategy("file_system")
 
     log.info("graph_assembly_start", n_windows=len(win_specs),
              n_workers=n_workers, chunk_size=chunk_size, mode="parallel")
 
-    ctx = mp.get_context("spawn")
+    ctx = mp.get_context("fork")
     futures = []
-    with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx, initializer=_init_graph_worker) as pool:
+    with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
         for chunk_start in range(0, len(win_specs), chunk_size):
             chunk = win_specs[chunk_start:chunk_start + chunk_size]
             # Compute contiguous array slice bounds for this chunk
@@ -340,7 +442,7 @@ def _assemble_graphs(
                 for ss, sc, es, ec, y, at in chunk
             ]
             futures.append(pool.submit(
-                _assemble_chunk,
+                _assemble_chunk_numpy,
                 nf_np[s_lo:s_hi].copy(),
                 ni_np[s_lo:s_hi].copy(),
                 es_np[e_lo:e_hi].copy(),
@@ -349,10 +451,11 @@ def _assemble_graphs(
                 local_specs,
             ))
 
-    # Collect in submission order → deterministic output
+    # Collect numpy results in submission order, convert to Data in parent
     graphs: list[Data] = []
     for future in futures:
-        graphs.extend(future.result())
+        nf_out, ni_out, es_out, ed_out, ef_out, specs_out = future.result()
+        graphs.extend(_numpy_to_data(nf_out, ni_out, es_out, ed_out, ef_out, specs_out))
     return graphs
 
 

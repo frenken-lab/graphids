@@ -479,7 +479,7 @@ class CurriculumDataModule(pl.LightningDataModule):
         common = dict(
             num_workers=nw,
             persistent_workers=nw > 0,
-            pin_memory=nw > 0,
+            pin_memory=True,
             multiprocessing_context="spawn" if nw > 0 else None,
         )
 

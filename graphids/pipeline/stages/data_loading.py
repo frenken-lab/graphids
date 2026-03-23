@@ -79,7 +79,7 @@ def make_dataloader(
 
     common = dict(
         num_workers=nw,
-        pin_memory=nw > 0,
+        pin_memory=True,
         persistent_workers=nw > 0,
         multiprocessing_context="spawn" if nw > 0 else None,
     )

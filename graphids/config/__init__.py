@@ -209,7 +209,7 @@ class Config:
     seed: int = 42
     lake_root: str = MISSING  # resolved from env/YAML
     device: str = "cuda"
-    num_workers: int = 2
+    num_workers: int = 0
     production: bool = False
     auxiliaries: list = field(default_factory=list)
     # Data-derived dimensions — populated by CANBusDataModule.populate_config()

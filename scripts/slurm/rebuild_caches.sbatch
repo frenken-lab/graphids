@@ -13,8 +13,8 @@
 #SBATCH --partition=cpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=96G
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=48G
 #SBATCH --time=02:00:00
 #SBATCH --array=0-5
 #SBATCH --job-name=kd-gat-cache
@@ -24,8 +24,9 @@
 SCRIPT_DIR="/users/PAS2022/rf15/KD-GAT/scripts/slurm"
 SKIP_CUDA_CONF=1 STAGE_DATA_ARGS="--raw" source "$SCRIPT_DIR/_preamble.sh"
 
-# Parallel graph assembly: use 8 workers (matched to --cpus-per-task)
-export KD_GAT_GRAPH_WORKERS=8
+# Sequential graph assembly (spawn workers are slower than sequential
+# for this workload and deadlock on compute nodes under NFS contention).
+# Override with KD_GAT_GRAPH_WORKERS=N if needed.
 
 DATASETS=(hcrl_ch hcrl_sa set_01 set_02 set_03 set_04)
 DS="${DATASETS[$SLURM_ARRAY_TASK_ID]}"
