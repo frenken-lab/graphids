@@ -16,6 +16,10 @@ import sys
 import torch.multiprocessing as mp
 
 mp.set_start_method("spawn", force=True)
+# Use file-based IPC instead of /dev/shm mmap. OSC SLURM nodes restrict
+# /dev/shm and vm.max_map_count (65530), causing OOM with large datasets
+# (e.g. 700K graphs × 6 tensors × N workers exceeds mmap limits).
+mp.set_sharing_strategy("file_system")
 
 
 def _configure_logging(*, json: bool | None = None, level: str = "INFO") -> None:

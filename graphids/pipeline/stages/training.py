@@ -97,7 +97,7 @@ def train_curriculum(cfg) -> dict:
     attacks = [g for g in dm.train_dataset if graph_label(g) == 1]
     scores = _score_difficulty(vgae, normals, device, canid_weight=cfg.vgae.canid_weight)
     del vgae
-    cleanup()
+    cleanup()  # free VGAE VRAM before loading GAT teacher
 
     teacher, _ = prepare_kd(cfg, "gat", device)
     module = GATModule(cfg, teacher=teacher)
@@ -143,7 +143,7 @@ def _score_difficulty(
             chunk_graphs = graphs[start:end]
 
             with torch.no_grad():
-                batch = Batch.from_data_list([g.clone() for g in chunk_graphs]).to(device)
+                batch = Batch.from_data_list([g.clone() for g in chunk_graphs]).to(device, non_blocking=True)
                 edge_attr = getattr(batch, "edge_attr", None)
                 cont, canid_logits, _, _, _, _ = vgae_model(
                     batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr,

@@ -17,6 +17,12 @@ from torch_geometric.data import Data
 
 BYTE_COLS = [f"byte_{i}" for i in range(8)]
 
+
+def _init_graph_worker():
+    """Set file-system sharing in each spawn worker to avoid /dev/shm mmap OOM."""
+    import torch.multiprocessing as _mp
+    _mp.set_sharing_strategy("file_system")
+
 # Column order defines tensor layout. Changing order changes model input.
 NODE_COL_ORDER = (
     [f"{c}_mean" for c in BYTE_COLS]
@@ -37,6 +43,11 @@ EDGE_COL_ORDER = (
 )
 
 N_EDGE_FEATURES = len(EDGE_COL_ORDER)  # 10
+
+# Column indices for post-hoc features filled from graph structure.
+CC_IDX = NODE_COL_ORDER.index("clustering_coeff")
+IN_DEG_IDX = NODE_COL_ORDER.index("in_degree")
+OUT_DEG_IDX = NODE_COL_ORDER.index("out_degree")
 
 # Polars aggregation expressions for per-node stats within a window.
 # Used by group_by("node_id").agg() and group_by(["_wid", "node_id"]).agg().
@@ -73,8 +84,16 @@ EDGE_STAT_EXPRS: list[pl.Expr] = [
 
 
 def clustering_coefficients(edge_index: np.ndarray, num_nodes: int) -> np.ndarray:
-    """Clustering coefficient per node via networkx (C-optimized)."""
+    """Clustering coefficient per node via NetworkX (C-optimized).
+
+    NetworkX is the standard implementation for this metric. For our typical
+    CAN bus graphs (20-30 nodes), it's ~0.65ms/call — equivalent to custom
+    sparse matrix approaches, without maintaining custom math.
+    """
     import networkx as nx
+
+    if num_nodes == 0 or edge_index.shape[1] == 0:
+        return np.zeros(num_nodes, dtype=np.float32)
 
     G = nx.Graph()
     G.add_nodes_from(range(num_nodes))
@@ -206,6 +225,137 @@ def edge_features(
     return out
 
 
+def _assemble_chunk(
+    node_feats: np.ndarray,
+    node_ids: np.ndarray,
+    edge_src: np.ndarray,
+    edge_dst: np.ndarray,
+    edge_feats: np.ndarray,
+    window_specs: list[tuple[int, int, int, int, int, int]],
+) -> list[Data]:
+    """Build PyG Data objects from pre-materialized numpy arrays.
+
+    Module-level function (required for spawn multiprocessing pickling).
+    Accepts numpy arrays (not torch tensors) to avoid torch's mmap-based
+    IPC which fails on HPC nodes with restricted /dev/shm.
+    Each tuple in window_specs: (s_start, s_count, e_start, e_count, y_val, at_val).
+    Offsets are relative to the passed array slices.
+    """
+    from torch_geometric.utils import degree
+
+    graphs: list[Data] = []
+    for ss, sc, es, ec, y_val, at_val in window_specs:
+        nf = torch.from_numpy(node_feats[ss:ss + sc].copy())
+        nids = torch.from_numpy(node_ids[ss:ss + sc].copy())
+        ei = torch.stack([
+            torch.from_numpy(edge_src[es:es + ec].copy()),
+            torch.from_numpy(edge_dst[es:es + ec].copy()),
+        ])
+
+        ei_np = ei.numpy()
+        nf[:, CC_IDX] = torch.from_numpy(clustering_coefficients(ei_np, sc))
+        nf[:, IN_DEG_IDX] = degree(ei[1], num_nodes=sc).float()
+        nf[:, OUT_DEG_IDX] = degree(ei[0], num_nodes=sc).float()
+
+        graphs.append(Data(
+            x=nf,
+            edge_index=ei,
+            edge_attr=torch.from_numpy(edge_feats[es:es + ec].copy()),
+            node_id=nids,
+            y=torch.tensor([y_val], dtype=torch.long),
+            attack_type=torch.tensor([at_val], dtype=torch.long),
+        ))
+    return graphs
+
+
+def _assemble_graphs(
+    all_node_feats: Tensor,
+    all_node_ids: Tensor,
+    all_edge_src: Tensor,
+    all_edge_dst: Tensor,
+    all_edge_feats: Tensor,
+    s_wids: list[int],
+    s_starts: list[int],
+    s_counts: list[int],
+    e_lookup: dict[int, tuple[int, int]],
+    label_y: dict[int, int],
+    label_at: dict[int, int],
+) -> list[Data]:
+    """Dispatch graph assembly — sequential or parallel via ProcessPoolExecutor."""
+    import os
+
+    log = structlog.get_logger()
+
+    # Build flat window specs: (s_start, s_count, e_start, e_count, y_val, at_val)
+    win_specs: list[tuple[int, int, int, int, int, int]] = []
+    for i, wid in enumerate(s_wids):
+        e_entry = e_lookup.get(wid)
+        if e_entry is None:
+            continue
+        ss, sc = s_starts[i], s_counts[i]
+        es, ec = e_entry
+        win_specs.append((ss, sc, es, ec, label_y.get(wid, 0), label_at.get(wid, 0)))
+
+    n_workers = int(os.environ.get("KD_GAT_GRAPH_WORKERS", min(os.cpu_count() or 1, 8)))
+    chunk_size = max(500, len(win_specs) // (n_workers * 16)) if n_workers > 1 else len(win_specs)
+
+    # Convert to numpy once — _assemble_chunk accepts numpy to avoid
+    # torch's mmap-based IPC which fails on HPC (/dev/shm restrictions).
+    nf_np = all_node_feats.numpy()
+    ni_np = all_node_ids.numpy()
+    es_np = all_edge_src.numpy()
+    ed_np = all_edge_dst.numpy()
+    ef_np = all_edge_feats.numpy()
+    del all_node_feats, all_node_ids, all_edge_src, all_edge_dst, all_edge_feats
+
+    if n_workers <= 1 or len(win_specs) <= chunk_size:
+        log.info("graph_assembly_start", n_windows=len(win_specs), n_workers=1, mode="sequential")
+        return _assemble_chunk(nf_np, ni_np, es_np, ed_np, ef_np, win_specs)
+
+    # ── Parallel path ────────────────────────────────────────────
+    import multiprocessing as mp
+    import torch.multiprocessing as torch_mp
+    from concurrent.futures import ProcessPoolExecutor
+
+    # Workers return Data objects containing torch tensors. Without this,
+    # torch pickles tensors via mmap (/dev/shm) which OOMs on HPC nodes.
+    torch_mp.set_sharing_strategy("file_system")
+
+    log.info("graph_assembly_start", n_windows=len(win_specs),
+             n_workers=n_workers, chunk_size=chunk_size, mode="parallel")
+
+    ctx = mp.get_context("spawn")
+    futures = []
+    with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx, initializer=_init_graph_worker) as pool:
+        for chunk_start in range(0, len(win_specs), chunk_size):
+            chunk = win_specs[chunk_start:chunk_start + chunk_size]
+            # Compute contiguous array slice bounds for this chunk
+            s_lo = min(ss for ss, *_ in chunk)
+            s_hi = max(ss + sc for ss, sc, *_ in chunk)
+            e_lo = min(es for _, _, es, *_ in chunk)
+            e_hi = max(es + ec for _, _, es, ec, *_ in chunk)
+            # Rebase offsets to chunk-local
+            local_specs = [
+                (ss - s_lo, sc, es - e_lo, ec, y, at)
+                for ss, sc, es, ec, y, at in chunk
+            ]
+            futures.append(pool.submit(
+                _assemble_chunk,
+                nf_np[s_lo:s_hi].copy(),
+                ni_np[s_lo:s_hi].copy(),
+                es_np[e_lo:e_hi].copy(),
+                ed_np[e_lo:e_hi].copy(),
+                ef_np[e_lo:e_hi].copy(),
+                local_specs,
+            ))
+
+    # Collect in submission order → deterministic output
+    graphs: list[Data] = []
+    for future in futures:
+        graphs.extend(future.result())
+    return graphs
+
+
 def sliding_window_graphs(
     df: pl.DataFrame,
     window_size: int,
@@ -285,8 +435,15 @@ def sliding_window_graphs(
         .mode().first().fill_null(0).alias("at"),
     )
 
-    node_stats, edge_df, labels = pl.collect_all([stats_lf, edges_base, labels_lf])
-    del df, lf
+    # Sequential collection reduces peak memory by ~20-30GB vs collect_all().
+    # All three lazy frames reference `lf` → `df`, so df/lf must survive until
+    # the last collect. labels is tiny; collect it first.
+    labels = labels_lf.collect()
+    del labels_lf
+    node_stats = stats_lf.collect()
+    del stats_lf
+    edge_df = edges_base.collect()
+    del edges_base, df, lf
     log.info("features_computed", stat_rows=len(node_stats), edge_rows=len(edge_df))
 
     # Bidirectional flag (needs materialized edge_df)
@@ -305,45 +462,59 @@ def sliding_window_graphs(
         return wids, starts, counts
 
     s_wids, s_starts, s_counts = _rle_boundaries(node_stats)
+
+    # ── Vectorized local ID computation (Polars) ─────────────────
+    # Assign 0-based local IDs per window matching RLE row order,
+    # then join to edge_df so src/dst get local indices in bulk.
+    local_ids = np.concatenate([np.arange(c, dtype=np.int64) for c in s_counts])
+    node_stats = node_stats.with_columns(pl.Series("_local_id", local_ids))
+
+    id_map = node_stats.select("_wid", "node_id", "_local_id")
+    edge_df = (
+        edge_df
+        .join(
+            id_map.rename({"node_id": "src", "_local_id": "src_local"}),
+            on=["_wid", "src"], how="left",
+        )
+        .join(
+            id_map.rename({"node_id": "dst", "_local_id": "dst_local"}),
+            on=["_wid", "dst"], how="left",
+        )
+    )
+    del id_map
+
+    # Recompute edge boundaries after join (left join preserves row order)
     e_wids, e_starts, e_counts = _rle_boundaries(edge_df)
     e_lookup: dict[int, tuple[int, int]] = dict(zip(e_wids, zip(e_starts, e_counts)))
 
-    # ── Build graphs ──────────────────────────────────────────────
-    graphs: list[Data] = []
-    for i, wid in enumerate(s_wids):
-        e_entry = e_lookup.get(wid)
-        if e_entry is None:
-            continue
-
-        ss, sc = s_starts[i], s_counts[i]
-        es, ec = e_entry
-
-        stats_slice = node_stats[ss:ss + sc]
-        edge_slice = edge_df[es:es + ec]
-
-        # Global→local ID remapping (Polars replace_strict — no Python row loop)
-        node_ids_list = stats_slice["node_id"].to_list()
-        global_to_local = {gid: i for i, gid in enumerate(node_ids_list)}
-        edge_slice = edge_slice.with_columns(
-            pl.col("src").replace_strict(global_to_local).cast(pl.Int64).alias("src"),
-            pl.col("dst").replace_strict(global_to_local).cast(pl.Int64).alias("dst"),
-        )
-
-        ei = edge_slice.select("src", "dst").to_torch(dtype=pl.Int64).T
-        x, node_ids = stats_to_tensor(stats_slice, edge_index=ei.numpy())
-        edge_attr = edge_to_tensor(edge_slice)
-
-        y_val = label_y.get(wid, 0)
-        at_val = label_at.get(wid, 0)
-        graphs.append(Data(
-            x=x,
-            edge_index=ei,
-            edge_attr=edge_attr,
-            node_id=node_ids,
-            y=torch.tensor([y_val], dtype=torch.long),
-            attack_type=torch.tensor([at_val], dtype=torch.long),
-        ))
-
+    # ── Bulk Polars → torch handoff ──────────────────────────────
+    all_node_feats = (
+        node_stats.select(NODE_COL_ORDER)
+        .fill_null(0).fill_nan(0)
+        .to_torch(dtype=pl.Float32)
+    )
+    all_node_ids = torch.from_numpy(
+        node_stats["node_id"].cast(pl.Int64).to_numpy().copy()
+    )
+    all_edge_src = torch.from_numpy(
+        edge_df["src_local"].cast(pl.Int64).to_numpy().copy()
+    )
+    all_edge_dst = torch.from_numpy(
+        edge_df["dst_local"].cast(pl.Int64).to_numpy().copy()
+    )
+    all_edge_feats = (
+        edge_df.select(list(EDGE_COL_ORDER))
+        .fill_null(0).fill_nan(0)
+        .to_torch(dtype=pl.Float32)
+    )
     del node_stats, edge_df
+
+    # ── Build graphs (torch tensor slicing) ──────────────────────
+    graphs = _assemble_graphs(
+        all_node_feats, all_node_ids,
+        all_edge_src, all_edge_dst, all_edge_feats,
+        s_wids, s_starts, s_counts, e_lookup,
+        label_y, label_at,
+    )
     log.info("graphs_built", count=len(graphs))
     return graphs

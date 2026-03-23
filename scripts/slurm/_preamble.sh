@@ -22,7 +22,7 @@ set -a; source ./.env; set +a
 umask 002
 
 if [[ "${SKIP_CUDA_CONF:-0}" != "1" ]]; then
-    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
 fi
 
 if [[ "${SKIP_STAGE_DATA:-0}" != "1" ]]; then

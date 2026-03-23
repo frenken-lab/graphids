@@ -97,13 +97,13 @@ class TemporalLightningModule(pl.LightningModule):
         # Move graphs to device
         moved_sequences = []
         for seq in graph_sequences:
-            moved_sequences.append([g.clone().to(device) for g in seq])
+            moved_sequences.append([g.clone().to(device, non_blocking=True) for g in seq])
 
         logits = self.model(moved_sequences)
-        loss = F.cross_entropy(logits, labels.to(device))
+        loss = F.cross_entropy(logits, labels.to(device, non_blocking=True))
 
         preds = logits.argmax(dim=1)
-        acc = (preds == labels.to(device)).float().mean()
+        acc = (preds == labels.to(device, non_blocking=True)).float().mean()
 
         self.log(f"{stage}_loss", loss, prog_bar=True, batch_size=len(graph_sequences))
         self.log(f"{stage}_acc", acc, prog_bar=True, batch_size=len(graph_sequences))
@@ -118,10 +118,10 @@ class TemporalLightningModule(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         graph_sequences, labels = batch
         device = self.device
-        moved_sequences = [[g.clone().to(device) for g in seq] for seq in graph_sequences]
+        moved_sequences = [[g.clone().to(device, non_blocking=True) for g in seq] for seq in graph_sequences]
         logits = self.model(moved_sequences)
         preds = logits.argmax(dim=1)
-        self.test_metrics.update(preds, labels.to(device))
+        self.test_metrics.update(preds, labels.to(device, non_blocking=True))
 
     def on_test_epoch_start(self):
         self.test_metrics.reset()
@@ -204,7 +204,7 @@ def train_temporal(cfg) -> dict:
 
     # Probe spatial embedding dim
     with torch.no_grad():
-        probe = dm.train_dataset[0].clone().to(device)
+        probe = dm.train_dataset[0].clone().to(device, non_blocking=True)
         _, emb = gat(probe, return_embedding=True)
         spatial_dim = emb.shape[-1]
     log.info("spatial_embedding_dim", dim=spatial_dim)

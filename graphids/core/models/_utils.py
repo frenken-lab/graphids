@@ -140,16 +140,20 @@ def build_conv_stack(
     return convs, norms
 
 
-def checkpoint_conv(conv, x: Tensor, edge_index: Tensor, edge_attr: Tensor | None = None) -> Tensor:
-    """Run a graph conv layer through gradient checkpointing.
-
-    Uses default-arg capture to avoid the stale-closure bug in loops.
-    """
-    if edge_attr is not None:
-        return checkpoint(
-            lambda xi, c=conv, ei=edge_index, ea=edge_attr: c(xi, ei, ea), x, use_reentrant=False
-        )
-    return checkpoint(lambda xi, c=conv, ei=edge_index: c(xi, ei), x, use_reentrant=False)
+def _conv_forward_inner(
+    conv, x: Tensor, edge_index: Tensor, edge_attr: Tensor | None,
+    bn: nn.Module | None, batch: Tensor | None,
+    activation, dropout_p: float, training: bool,
+) -> Tensor:
+    """Full conv block: conv → norm → activation → dropout."""
+    x = conv(x, edge_index, edge_attr) if edge_attr is not None else conv(x, edge_index)
+    if bn is not None:
+        x = bn(x, batch) if isinstance(bn, GraphNorm) else bn(x)
+    if activation is not None:
+        x = activation(x)
+    if dropout_p > 0.0:
+        x = torch.nn.functional.dropout(x, p=dropout_p, training=training)
+    return x
 
 
 def conv_forward(
@@ -166,35 +170,19 @@ def conv_forward(
 ) -> Tensor:
     """Apply a graph conv layer with optional norm, activation, and dropout.
 
-    Args:
-        conv: Graph convolution layer (GATConv, GATv2Conv, TransformerConv).
-        x: Node features ``[num_nodes, in_dim]``.
-        edge_index: Edge indices ``[2, num_edges]``.
-        edge_attr: Optional edge features.
-        bn: Optional norm layer (GraphNorm or BatchNorm1d).
-        batch: Batch assignment vector for GraphNorm. Ignored by BatchNorm1d.
-        activation: Activation function (default: F.relu). Pass None to skip.
-        dropout_p: Dropout probability (0.0 = no dropout).
-        training: Whether in training mode (affects dropout).
-        use_checkpointing: Use gradient checkpointing for the conv layer.
-
-    Returns:
-        Transformed node features.
+    When use_checkpointing is True, the entire block (conv + norm + activation +
+    dropout) is wrapped in a single checkpoint segment. This saves ~30-50% of
+    activation memory at the cost of recomputing the forward pass during backward.
+    Uses use_reentrant=False for torch.compile compatibility.
     """
     _is_gps = isinstance(conv, (GPSConv, _ProjectedGPS))
-    if use_checkpointing and x.requires_grad and not _is_gps:
-        x = checkpoint_conv(conv, x, edge_index, edge_attr)
-    elif _is_gps:
-        x = conv(x, edge_index, edge_attr=edge_attr, batch=batch)
-    else:
-        x = conv(x, edge_index, edge_attr) if edge_attr is not None else conv(x, edge_index)
-    # GPS has internal norm, activation, and dropout — skip external ones
     if _is_gps:
-        return x
-    if bn is not None:
-        x = bn(x, batch) if isinstance(bn, GraphNorm) else bn(x)
-    if activation is not None:
-        x = activation(x)
-    if dropout_p > 0.0:
-        x = torch.nn.functional.dropout(x, p=dropout_p, training=training)
-    return x
+        # GPS has internal norm, activation, and dropout — run as-is
+        return conv(x, edge_index, edge_attr=edge_attr, batch=batch)
+    if use_checkpointing and x.requires_grad:
+        return checkpoint(
+            _conv_forward_inner,
+            conv, x, edge_index, edge_attr, bn, batch, activation, dropout_p, training,
+            use_reentrant=False,
+        )
+    return _conv_forward_inner(conv, x, edge_index, edge_attr, bn, batch, activation, dropout_p, training)

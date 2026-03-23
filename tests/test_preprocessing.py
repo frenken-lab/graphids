@@ -208,3 +208,107 @@ class TestCANBusDatasetBuildGraphs:
         assert g.x.shape[0] < 2048, "Compact graph should have << 2048 nodes"
         assert g.edge_index.max() < g.x.shape[0], "Edge indices must be local"
         assert not torch.isnan(g.x).any()
+
+
+class TestClusteringCoefficients:
+    """clustering_coefficients: scipy sparse implementation vs NetworkX reference."""
+
+    @staticmethod
+    def _nx_reference(edge_index: np.ndarray, num_nodes: int) -> np.ndarray:
+        import networkx as nx
+        G = nx.Graph()
+        G.add_nodes_from(range(num_nodes))
+        G.add_edges_from(zip(edge_index[0], edge_index[1]))
+        cc = nx.clustering(G)
+        return np.array([cc.get(i, 0.0) for i in range(num_nodes)], dtype=np.float32)
+
+    def test_triangle(self):
+        """Complete triangle: every node has cc=1.0."""
+        from graphids.core.preprocessing.features import clustering_coefficients
+        ei = np.array([[0, 1, 2], [1, 2, 0]])
+        cc = clustering_coefficients(ei, 3)
+        np.testing.assert_allclose(cc, [1.0, 1.0, 1.0], atol=1e-6)
+
+    def test_path(self):
+        """Path graph 0-1-2: node 1 has cc=0 (no triangle)."""
+        from graphids.core.preprocessing.features import clustering_coefficients
+        ei = np.array([[0, 1], [1, 2]])
+        cc = clustering_coefficients(ei, 3)
+        np.testing.assert_allclose(cc, [0.0, 0.0, 0.0], atol=1e-6)
+
+    def test_star(self):
+        """Star graph: center cc=0, leaves cc=0."""
+        from graphids.core.preprocessing.features import clustering_coefficients
+        ei = np.array([[0, 0, 0], [1, 2, 3]])
+        cc = clustering_coefficients(ei, 4)
+        np.testing.assert_allclose(cc, [0.0, 0.0, 0.0, 0.0], atol=1e-6)
+
+    def test_empty(self):
+        from graphids.core.preprocessing.features import clustering_coefficients
+        cc = clustering_coefficients(np.zeros((2, 0), dtype=np.int64), 3)
+        assert cc.shape == (3,)
+        assert (cc == 0).all()
+
+    def test_isolated_nodes(self):
+        from graphids.core.preprocessing.features import clustering_coefficients
+        cc = clustering_coefficients(np.zeros((2, 0), dtype=np.int64), 0)
+        assert cc.shape == (0,)
+
+    def test_matches_networkx_random(self):
+        """Random graphs: scipy matches NetworkX within tolerance."""
+        from graphids.core.preprocessing.features import clustering_coefficients
+        rng = np.random.default_rng(123)
+        for _ in range(20):
+            n = rng.integers(5, 30)
+            m = rng.integers(5, n * 2)
+            src = rng.integers(0, n, m)
+            dst = rng.integers(0, n, m)
+            ei = np.stack([src, dst])
+            cc_scipy = clustering_coefficients(ei, n)
+            cc_nx = self._nx_reference(ei, n)
+            np.testing.assert_allclose(cc_scipy, cc_nx, atol=1e-5,
+                                       err_msg=f"Mismatch for n={n}, m={m}")
+
+
+class TestAssembleChunk:
+    """_assemble_chunk: unit test for the graph assembly worker function."""
+
+    def test_single_window(self):
+        from graphids.core.preprocessing.features import _assemble_chunk
+        # 3 nodes, 2 edges (0→1, 1→2), local indices — numpy arrays
+        node_feats = np.zeros((3, 35), dtype=np.float32)
+        node_ids = np.array([10, 20, 30], dtype=np.int64)
+        edge_src = np.array([0, 1], dtype=np.int64)
+        edge_dst = np.array([1, 2], dtype=np.int64)
+        edge_feats = np.zeros((2, 11), dtype=np.float32)
+        specs = [(0, 3, 0, 2, 0, 0)]  # s_start, s_count, e_start, e_count, y, at
+
+        graphs = _assemble_chunk(node_feats, node_ids, edge_src, edge_dst, edge_feats, specs)
+        assert len(graphs) == 1
+        g = graphs[0]
+        assert g.x.shape == (3, 35)
+        assert g.edge_index.shape == (2, 2)
+        assert g.edge_attr.shape == (2, 11)
+        assert g.node_id.shape == (3,)
+        assert g.edge_index.max() < 3, "Edge indices must be local"
+        assert not torch.isnan(g.x).any()
+
+    def test_multiple_windows(self):
+        from graphids.core.preprocessing.features import _assemble_chunk
+        # 2 windows: first has 2 nodes/1 edge, second has 3 nodes/2 edges
+        node_feats = np.zeros((5, 35), dtype=np.float32)
+        node_ids = np.array([1, 2, 3, 4, 5], dtype=np.int64)
+        edge_src = np.array([0, 0, 1], dtype=np.int64)
+        edge_dst = np.array([1, 1, 2], dtype=np.int64)
+        edge_feats = np.zeros((3, 11), dtype=np.float32)
+        specs = [
+            (0, 2, 0, 1, 1, 0),  # window 1: 2 nodes, 1 edge, y=1
+            (2, 3, 1, 2, 0, 2),  # window 2: 3 nodes, 2 edges, y=0, at=2
+        ]
+
+        graphs = _assemble_chunk(node_feats, node_ids, edge_src, edge_dst, edge_feats, specs)
+        assert len(graphs) == 2
+        assert graphs[0].x.shape[0] == 2
+        assert graphs[1].x.shape[0] == 3
+        assert graphs[0].y.item() == 1
+        assert graphs[1].attack_type.item() == 2

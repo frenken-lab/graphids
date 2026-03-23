@@ -61,6 +61,7 @@ class VGAEConfig:
     canid_weight: float = 0.1
     nbr_weight: float = 0.05
     kl_weight: float = 0.01
+    k_neg: int = 32  # negative samples per node for neighborhood loss
 
 
 @dataclass
@@ -123,7 +124,6 @@ class TrainingConfig:
     weight_decay: float = 0.0001
     gradient_clip: float = 1.0
     precision: str = "16-mixed"
-    safety_factor: float = 0.5
     gradient_checkpointing: bool = True
     use_teacher_cache: bool = True
     clear_cache_every_n: int = 100

@@ -141,7 +141,7 @@ def capture_gat_artifacts(gat, data, device, embeddings: bool = True, attention:
     preds_all, scores_all, labels_all, types_all, embs_all = [], [], [], [], []
     with torch.no_grad():
         for g in PyGDataLoader(data, batch_size=batch_size, shuffle=False):
-            g = g.to(device)
+            g = g.to(device, non_blocking=True)
             logits, emb = gat(g, return_embedding=True)
             preds_all.append(logits.argmax(1).cpu())
             scores_all.append(F.softmax(logits, dim=1)[:, 1].cpu())
@@ -155,7 +155,7 @@ def capture_gat_artifacts(gat, data, device, embeddings: bool = True, attention:
     if attention:
         attn_data = []
         for idx in range(min(len(data), attention_limit)):
-            g = data[idx].clone().to(device)
+            g = data[idx].clone().to(device, non_blocking=True)
             with torch.no_grad():
                 _, att_weights = gat(g, return_attention_weights=True)
             attn_data.append({
@@ -187,7 +187,7 @@ def capture_vgae_artifacts(vgae, data, device, embeddings: bool = True, componen
 
     with torch.no_grad():
         for batch in PyGDataLoader(data, batch_size=batch_size, shuffle=False):
-            batch = batch.to(device)
+            batch = batch.to(device, non_blocking=True)
             edge_attr = getattr(batch, "edge_attr", None)
             cont, canid_logits, nbr_logits, z, kl_loss, _ = vgae(
                 batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr,

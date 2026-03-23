@@ -8,7 +8,7 @@ vgae_large:
     proj_dim: 48
   training:
     lr: 0.002
-    safety_factor: 0.80
+    compile_model: true
 
 vgae_small:
   vgae:
@@ -21,7 +21,7 @@ vgae_small:
     proj_dim: 32
   training:
     lr: 0.002
-    safety_factor: 0.85
+    compile_model: true
 
 gat_large:
   gat:
@@ -30,7 +30,7 @@ gat_large:
     proj_dim: 48
   training:
     batch_size: 8192
-    safety_factor: 0.85
+    compile_model: true
 
 gat_small:
   gat:
@@ -45,11 +45,9 @@ gat_small:
   training:
     lr: 0.001
     patience: 50
-    safety_factor: 0.90
+    compile_model: true
 
-dqn_large:
-  training:
-    safety_factor: 0.45
+dqn_large: {}
 
 dqn_small:
   dqn:

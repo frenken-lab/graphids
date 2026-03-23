@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from ._utils import InputEncoder, build_conv_stack, _make_conv, conv_forward
 
@@ -203,6 +204,35 @@ class GraphAutoencoderNeighborhood(nn.Module):
         neighbor_targets[src_nodes[valid], dst_can_ids[valid]] = 1.0
 
         return neighbor_targets
+
+    @staticmethod
+    def neighborhood_loss_negsampled(
+        logits: torch.Tensor,
+        node_id: torch.Tensor,
+        edge_index: torch.Tensor,
+        num_ids: int,
+        k_neg: int = 32,
+    ) -> torch.Tensor:
+        """Neighborhood BCE loss with negative sampling.
+
+        Memory: O(num_edges + num_nodes * k_neg) instead of O(num_nodes * num_ids).
+        """
+        src, dst = edge_index
+        dst_ids = node_id[dst]
+        valid = (dst_ids >= 0) & (dst_ids < num_ids)
+        # Positive: logits at true neighbor IDs
+        pos_logits = logits[src[valid], dst_ids[valid]]
+        pos_loss = -F.logsigmoid(pos_logits).mean()
+        # Negative: random IDs per node, excluding true neighbors (sparse rejection)
+        neg_ids = torch.randint(0, num_ids, (logits.size(0), k_neg), device=logits.device)
+        # Encode (node, id) as unique keys for sparse collision check
+        pos_keys = src[valid].long() * num_ids + dst_ids[valid].long()
+        node_range = torch.arange(logits.size(0), device=logits.device)
+        neg_keys = (node_range.unsqueeze(1) * num_ids + neg_ids).reshape(-1)
+        is_collision = torch.isin(neg_keys, pos_keys)
+        neg_logits = logits.gather(1, neg_ids).reshape(-1)[~is_collision]
+        neg_loss = -F.logsigmoid(-neg_logits).mean() if neg_logits.numel() > 0 else logits.new_zeros(1)
+        return pos_loss + neg_loss
 
     @classmethod
     def from_config(cls, cfg, num_ids: int, in_ch: int) -> "GraphAutoencoderNeighborhood":

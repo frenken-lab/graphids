@@ -6,6 +6,7 @@ general sliding-window-to-graph pipeline to features.sliding_window_graphs().
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import polars as pl
@@ -108,7 +109,55 @@ class CANBusDataset(InMemoryDataset):
                 data_list = [self.pre_transform(d) for d in data_list]
             self.save(data_list, self.processed_paths[0])
             (Path(self.processed_dir) / "num_arb_ids.txt").write_text(str(num_arb_ids))
+            self._write_cache_metadata(data_list)
             marker.write_text("ok")
+
+    def _write_cache_metadata(self, data_list: list) -> None:
+        """Write graph statistics to cache_metadata.json for DynamicBatchSampler."""
+        import json
+        import tempfile
+
+        node_counts = [d.num_nodes for d in data_list]
+        edge_counts = [d.num_edges for d in data_list]
+        node_t = torch.tensor(node_counts, dtype=torch.float32)
+        edge_t = torch.tensor(edge_counts, dtype=torch.float32)
+
+        meta = {
+            "window_size": self.window_size,
+            "stride": self.stride,
+            "num_graphs": len(data_list),
+            "graph_stats": {
+                "node_count": {
+                    "min": int(node_t.min().item()),
+                    "max": int(node_t.max().item()),
+                    "mean": float(node_t.mean().item()),
+                    "p95": float(node_t.quantile(0.95).item()),
+                    "p99": float(node_t.quantile(0.99).item()),
+                },
+                "edge_count": {
+                    "min": int(edge_t.min().item()),
+                    "max": int(edge_t.max().item()),
+                    "mean": float(edge_t.mean().item()),
+                },
+            },
+        }
+        # NFS-safe atomic write: tmpfile → fsync → rename
+        out_path = Path(self.root) / "cache_metadata.json"
+        fd, tmp = tempfile.mkstemp(dir=out_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(meta, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            fd = -1  # owned by fdopen now
+            os.rename(tmp, out_path)
+        except BaseException:
+            if fd >= 0:
+                os.close(fd)
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            raise
+        log.info("cache_metadata_written", path=str(out_path), num_graphs=len(data_list))
 
     # ── pipeline ──────────────────────────────────────────────────────
 

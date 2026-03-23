@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+from typing import NamedTuple
 
 import structlog
 import torch
@@ -14,6 +15,12 @@ from graphids.config import cache_dir
 log = structlog.get_logger()
 
 
+class NodeBudgetInfo(NamedTuple):
+    """Result of compute_node_budget: budget for DynamicBatchSampler + mean for num_steps."""
+    budget: int
+    mean_nodes: float
+
+
 def cleanup():
     """Free GPU memory."""
     gc.collect()
@@ -21,24 +28,33 @@ def cleanup():
         torch.cuda.empty_cache()
 
 
-
-def compute_node_budget(batch_size: int, cfg) -> int | None:
+def compute_node_budget(batch_size: int, cfg) -> NodeBudgetInfo:
     """Derive max_num_nodes from batch_size * p95 graph node count.
 
-    Returns None when cache metadata is unavailable (falls back to static batching).
+    Reads graph statistics from cache_metadata.json written during preprocessing.
+    Returns NodeBudgetInfo(budget, mean_nodes) so callers can pass mean_nodes
+    to make_dataloader without a redundant file read.
+    Raises FileNotFoundError if metadata is missing — rebuild caches first.
     """
     import json
 
-    metadata_path = cache_dir(cfg.lake_root, cfg.dataset) / "cache_metadata.json"
+    lake_root = cfg.lake_root if hasattr(cfg, "lake_root") else cfg["lake_root"]
+    dataset = cfg.dataset if hasattr(cfg, "dataset") else cfg["dataset"]
+    metadata_path = cache_dir(lake_root, dataset) / "cache_metadata.json"
     if not metadata_path.exists():
-        return None
-    try:
-        meta = json.loads(metadata_path.read_text())
-        p95 = meta.get("graph_stats", {}).get("node_count", {}).get("p95")
-        return int(batch_size * p95) if p95 else None
-    except Exception as e:
-        log.warning("graph_stats_read_failed", error=str(e))
-        return None
+        msg = (
+            f"cache_metadata.json not found at {metadata_path}. "
+            "Rebuild caches with: python -m graphids stage=preprocess dataset=..."
+        )
+        raise FileNotFoundError(msg)
+    meta = json.loads(metadata_path.read_text())
+    stats = meta["graph_stats"]["node_count"]
+    p95 = stats["p95"]
+    mean = stats["mean"]
+    budget = int(batch_size * p95)
+    log.info("node_budget_computed", batch_size=batch_size, p95_nodes=p95,
+             mean_nodes=mean, budget=budget)
+    return NodeBudgetInfo(budget=budget, mean_nodes=mean)
 
 
 def make_dataloader(
@@ -47,11 +63,17 @@ def make_dataloader(
     batch_size: int,
     shuffle: bool = True,
     max_num_nodes: int | None = None,
+    mean_nodes: float | None = None,
 ) -> DataLoader:
     """Create a DataLoader with consistent settings.
 
     Uses DynamicBatchSampler when max_num_nodes is provided.
     Spawn multiprocessing is hardcoded for CUDA safety.
+
+    Args:
+        mean_nodes: Mean graph node count from cache metadata. Required when
+            max_num_nodes is set (used for num_steps estimate). Callers should
+            pass this from NodeBudgetInfo.mean_nodes to avoid a redundant file read.
     """
     nw = cfg.num_workers
 
@@ -63,14 +85,16 @@ def make_dataloader(
     )
 
     if max_num_nodes is not None:
-        # Estimate actual batch count for DynamicBatchSampler
-        n_sample = min(500, len(data))
-        indices = torch.randperm(len(data))[:n_sample].tolist()
-        mean_nodes = sum(data[i].num_nodes for i in indices) / max(n_sample, 1)
+        if mean_nodes is None:
+            raise ValueError(
+                "mean_nodes is required when max_num_nodes is set. "
+                "Pass NodeBudgetInfo.mean_nodes from compute_node_budget()."
+            )
         num_steps = max(1, int(len(data) * mean_nodes / max_num_nodes))
 
         sampler = DynamicBatchSampler(
-            data, max_num=max_num_nodes, mode="node", shuffle=shuffle, num_steps=num_steps,
+            data, max_num=max_num_nodes, mode="node", shuffle=shuffle,
+            num_steps=num_steps, skip_too_big=True,
         )
         return DataLoader(data, batch_sampler=sampler, **common)
 
@@ -96,7 +120,7 @@ def cache_predictions(models: dict[str, nn.Module], data, device, max_samples: i
     states, labels = [], []
     with torch.no_grad():
         for batch in loader:
-            batch = batch.to(device)
+            batch = batch.to(device, non_blocking=True)
             for g in batch.to_data_list():
                 batch_idx = get_batch_index(g, device)
                 features = [ext.extract(models[name], g, batch_idx, device) for name, ext in active]

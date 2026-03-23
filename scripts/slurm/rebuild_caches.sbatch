@@ -24,6 +24,9 @@
 SCRIPT_DIR="/users/PAS2022/rf15/KD-GAT/scripts/slurm"
 SKIP_CUDA_CONF=1 STAGE_DATA_ARGS="--raw" source "$SCRIPT_DIR/_preamble.sh"
 
+# Parallel graph assembly: use 8 workers (matched to --cpus-per-task)
+export KD_GAT_GRAPH_WORKERS=8
+
 DATASETS=(hcrl_ch hcrl_sa set_01 set_02 set_03 set_04)
 DS="${DATASETS[$SLURM_ARRAY_TASK_ID]}"
 

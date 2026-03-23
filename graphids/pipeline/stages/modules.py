@@ -20,8 +20,29 @@ from torchmetrics.classification import (
     BinarySpecificity,
 )
 
+import structlog
+
 from .data_loading import compute_node_budget, make_dataloader
 from .trainer_factory import build_optimizer_dict
+
+_log = structlog.get_logger()
+
+
+class OOMSkipMixin:
+    """Skip batch on CUDA OOM. Follows fairseq pattern (single-GPU safe).
+
+    Lightning natively handles training_step returning None — it skips the
+    optimizer step and continues training.
+    """
+
+    def _oom_safe_step(self, batch, batch_idx, step_fn):
+        try:
+            return step_fn(batch, batch_idx)
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            _log.warning("oom_batch_skipped", batch_idx=batch_idx,
+                         num_graphs=batch.num_graphs, num_nodes=batch.num_nodes)
+            return None
 
 
 def soft_label_kd_loss(
@@ -70,11 +91,10 @@ def _teacher_on_device(module, device):
     finally:
         if module.cfg.training.offload_teacher_to_cpu:
             module.teacher.to("cpu")
-            torch.cuda.empty_cache()
             module._teacher_on_cpu = True
 
 
-class VGAEModule(pl.LightningModule):
+class VGAEModule(OOMSkipMixin, pl.LightningModule):
     """VGAE training: reconstruct node features + CAN IDs + neighborhood.
 
     When teacher is provided, adds dual-signal KD loss:
@@ -99,7 +119,7 @@ class VGAEModule(pl.LightningModule):
         self.cfg = cfg
         self.model = GraphAutoencoderNeighborhood.from_config(cfg, num_ids, in_channels)
         if cfg.training.compile_model and hasattr(torch, "compile"):
-            self.model = torch.compile(self.model)
+            self.model = torch.compile(self.model, dynamic=True)
         self.teacher = teacher
         self.projection = projection
         self._teacher_on_cpu = False
@@ -130,8 +150,12 @@ class VGAEModule(pl.LightningModule):
         else:
             recon = F.mse_loss(cont_out, target)
         canid = F.cross_entropy(canid_logits, batch.node_id)
-        nbr_targets = self.model.create_neighborhood_targets(batch.node_id, batch.edge_index, batch.batch)
-        nbr_loss = F.binary_cross_entropy_with_logits(nbr_logits, nbr_targets)
+        from graphids.core.models.vgae import GraphAutoencoderNeighborhood
+
+        nbr_loss = GraphAutoencoderNeighborhood.neighborhood_loss_negsampled(
+            nbr_logits, batch.node_id, batch.edge_index,
+            self.hparams["num_ids"], k_neg=self.cfg.vgae.k_neg,
+        )
         w = self.cfg.vgae
         task_loss = recon + w.canid_weight * canid + w.nbr_weight * nbr_loss + w.kl_weight * kl_loss
         return task_loss, cont_out, z
@@ -166,10 +190,13 @@ class VGAEModule(pl.LightningModule):
 
         return task_loss
 
-    def training_step(self, batch, _idx):
+    def _training_step_inner(self, batch, _idx):
         loss = self._step(batch)
         self.log("train_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
         return loss
+
+    def training_step(self, batch, batch_idx):
+        return self._oom_safe_step(batch, batch_idx, self._training_step_inner)
 
     def validation_step(self, batch, _idx):
         loss = self._step(batch)
@@ -232,7 +259,7 @@ class VGAEModule(pl.LightningModule):
         return build_optimizer_dict(opt, self.cfg)
 
 
-class GATModule(pl.LightningModule):
+class GATModule(OOMSkipMixin, pl.LightningModule):
     """GAT supervised classification (normal vs attack).
 
     When teacher is provided, adds soft-label KD:
@@ -257,7 +284,7 @@ class GATModule(pl.LightningModule):
         self.cfg = cfg
         self.model = GATWithJK.from_config(cfg, num_ids, in_channels)
         if cfg.training.compile_model and hasattr(torch, "compile"):
-            self.model = torch.compile(self.model)
+            self.model = torch.compile(self.model, dynamic=True)
         self.teacher = teacher
         self._teacher_on_cpu = False
         self.test_metrics = MetricCollection({
@@ -297,11 +324,14 @@ class GATModule(pl.LightningModule):
 
         return loss, acc
 
-    def training_step(self, batch, _idx):
+    def _training_step_inner(self, batch, _idx):
         loss, acc = self._step(batch)
         self.log("train_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
         self.log("train_acc", acc, prog_bar=True, batch_size=batch.num_graphs)
         return loss
+
+    def training_step(self, batch, batch_idx):
+        return self._oom_safe_step(batch, batch_idx, self._training_step_inner)
 
     def validation_step(self, batch, _idx):
         loss, acc = self._step(batch)
@@ -329,60 +359,166 @@ class GATModule(pl.LightningModule):
         return build_optimizer_dict(opt, self.cfg)
 
 
+class CurriculumDynamicBatchSampler:
+    """Curriculum selection + node-budget packing in a single batch sampler.
+
+    Runs in the main process. Workers receive index batches via queues,
+    so set_epoch() mutations propagate even with persistent_workers=True + spawn.
+    """
+
+    def __init__(
+        self,
+        dataset,
+        normal_indices: list[int],
+        attack_indices: list[int],
+        scores: list[float],
+        cfg,
+        max_num_nodes: int | None,
+    ):
+        assert len(scores) == len(normal_indices), (
+            f"scores ({len(scores)}) must align 1:1 with normal_indices ({len(normal_indices)})"
+        )
+        self.dataset = dataset
+        self.normal_indices = normal_indices
+        self.attack_indices = attack_indices
+        self.scores = scores
+        self.cfg = cfg
+        self.max_num_nodes = max_num_nodes  # None = fixed-count mode
+        self._active_indices = normal_indices + attack_indices
+        # Cache node counts once — dataset is immutable
+        self._node_counts = [dataset[i].num_nodes for i in range(len(dataset))]
+        self._cached_len: int | None = None
+
+    def set_epoch(self, epoch: int) -> None:
+        """Update active indices for curriculum progression.
+
+        Scores[i] corresponds to normal_indices[i]. This invariant is
+        enforced by the assert in __init__.
+        """
+        cfg = self.cfg
+        progress = min(epoch / max(cfg.training.max_epochs, 1), 1.0)
+        ratio = _lerp(cfg.training.curriculum_start_ratio, cfg.training.curriculum_end_ratio, progress)
+        percentile = _lerp(cfg.training.difficulty_percentile, 95.0, progress)
+
+        if self.scores:
+            scores_t = torch.tensor(self.scores)
+            threshold = scores_t.quantile(percentile / 100).item()
+            hard = [i for i, s in zip(self.normal_indices, self.scores) if s >= threshold]
+            if not hard:
+                hard = self.normal_indices
+        else:
+            hard = self.normal_indices
+
+        n_normals = min(int(len(self.attack_indices) * ratio), len(hard))
+        if n_normals and n_normals < len(hard):
+            perm = torch.randperm(len(hard))[:n_normals]
+            selected = [hard[i] for i in perm.tolist()]
+        else:
+            selected = hard
+        self._active_indices = selected + self.attack_indices
+        self._cached_len = None  # invalidate
+
+    def __iter__(self):
+        perm = torch.randperm(len(self._active_indices)).tolist()
+        if self.max_num_nodes is None:
+            # Fixed-count mode: batch_size graphs per batch
+            bs = max(8, self.cfg.training.batch_size)
+            for start in range(0, len(perm), bs):
+                yield [self._active_indices[perm[j]] for j in range(start, min(start + bs, len(perm)))]
+            return
+        # Node-budget packing mode
+        batch, batch_nodes = [], 0
+        for i in perm:
+            idx = self._active_indices[i]
+            n = self._node_counts[idx]
+            if n > self.max_num_nodes:
+                continue  # skip_too_big
+            if batch_nodes + n > self.max_num_nodes:
+                yield batch
+                batch, batch_nodes = [idx], n
+            else:
+                batch.append(idx)
+                batch_nodes += n
+        if batch:
+            yield batch
+
+    def __len__(self) -> int:
+        if self._cached_len is not None:
+            return self._cached_len
+        if self.max_num_nodes is None:
+            bs = max(8, self.cfg.training.batch_size)
+            self._cached_len = max(1, (len(self._active_indices) + bs - 1) // bs)
+        else:
+            total = sum(self._node_counts[i] for i in self._active_indices)
+            self._cached_len = max(1, total // self.max_num_nodes)
+        return self._cached_len
+
+
 class CurriculumDataModule(pl.LightningDataModule):
-    """Resamples training data each epoch with increasing difficulty."""
+    """Curriculum learning with persistent workers.
+
+    Builds ONE DataLoader at init. set_epoch() on the batch_sampler controls
+    which graphs are yielded each epoch — no DataLoader rebuild needed.
+    """
 
     def __init__(self, normals, attacks, scores, val_data, cfg):
         super().__init__()
-        self.normals = normals
-        self.attacks = attacks
-        self.scores = scores
         self.val_data = val_data
         self.cfg = cfg
         self._current_epoch = 0
 
-    def train_dataloader(self):
-        sampled = _curriculum_sample(
-            self.normals,
-            self.attacks,
-            self.scores,
-            self._current_epoch,
-            self.cfg,
+        # Full dataset = normals + attacks; track indices
+        full_dataset = normals + attacks
+        normal_indices = list(range(len(normals)))
+        attack_indices = list(range(len(normals), len(full_dataset)))
+
+        from torch_geometric.loader import DataLoader as PyGDataLoader
+
+        bs = max(8, cfg.training.batch_size)
+        nw = cfg.num_workers
+        common = dict(
+            num_workers=nw,
+            persistent_workers=nw > 0,
+            pin_memory=nw > 0,
+            multiprocessing_context="spawn" if nw > 0 else None,
         )
+
+        if cfg.training.dynamic_batching:
+            info = compute_node_budget(bs, cfg)
+            self._mean_nodes = info.mean_nodes
+            self._batch_sampler = CurriculumDynamicBatchSampler(
+                full_dataset, normal_indices, attack_indices, scores, cfg, info.budget,
+            )
+            self._train_loader = PyGDataLoader(
+                full_dataset, batch_sampler=self._batch_sampler, **common,
+            )
+        else:
+            # Fixed-count batching: no node budget, just graph count
+            self._batch_sampler = CurriculumDynamicBatchSampler(
+                full_dataset, normal_indices, attack_indices, scores, cfg,
+                max_num_nodes=None,
+            )
+            self._train_loader = PyGDataLoader(
+                full_dataset, batch_sampler=self._batch_sampler, **common,
+            )
+            self._mean_nodes = None
+
+    def train_dataloader(self):
+        self._batch_sampler.set_epoch(self._current_epoch)
         self._current_epoch += 1
-        bs = max(8, int(self.cfg.training.batch_size * self.cfg.training.safety_factor))
-        max_nodes = None
-        if self.cfg.training.dynamic_batching:
-            max_nodes = compute_node_budget(bs, self.cfg)
-        return make_dataloader(sampled, self.cfg, bs, shuffle=True, max_num_nodes=max_nodes)
+        return self._train_loader
 
     def val_dataloader(self):
-        bs = max(8, int(self.cfg.training.batch_size * self.cfg.training.safety_factor))
+        bs = max(8, self.cfg.training.batch_size)
         max_nodes = None
+        mean_nodes = None
         if self.cfg.training.dynamic_batching:
-            max_nodes = compute_node_budget(bs, self.cfg)
-        return make_dataloader(self.val_data, self.cfg, bs, shuffle=False, max_num_nodes=max_nodes)
-
-
-def _curriculum_sample(normals, attacks, scores, epoch, cfg):
-    """Sample training batch with curriculum ratio and difficulty-based selection."""
-    progress = min(epoch / max(cfg.training.max_epochs, 1), 1.0)
-    ratio = _lerp(cfg.training.curriculum_start_ratio, cfg.training.curriculum_end_ratio, progress)
-    percentile = _lerp(cfg.training.difficulty_percentile, 95.0, progress)
-
-    if scores:
-        threshold = sorted(scores)[int(len(scores) * percentile / 100)]
-        hard_normals = [n for n, s in zip(normals, scores) if s >= threshold]
-        if not hard_normals:
-            hard_normals = normals
-    else:
-        hard_normals = normals
-
-    n_normals = min(int(len(attacks) * ratio), len(hard_normals))
-    if n_normals and n_normals < len(hard_normals):
-        # Use torch RNG for reproducible sampling controlled by pl.seed_everything()
-        perm = torch.randperm(len(hard_normals))[:n_normals]
-        sampled_normals = [hard_normals[i] for i in perm.tolist()]
-    else:
-        sampled_normals = hard_normals
-    return sampled_normals + attacks
+            # Reuse mean_nodes cached from __init__ to avoid redundant file read.
+            # Recompute budget since batch_size could differ (though currently same).
+            info = compute_node_budget(bs, self.cfg)
+            max_nodes = info.budget
+            mean_nodes = self._mean_nodes
+        return make_dataloader(
+            self.val_data, self.cfg, bs, shuffle=False,
+            max_num_nodes=max_nodes, mean_nodes=mean_nodes,
+        )

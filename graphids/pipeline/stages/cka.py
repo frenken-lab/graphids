@@ -56,7 +56,7 @@ def _collect_reps(model, data, device, max_samples: int = 500) -> list[np.ndarra
         for g in data:
             if count >= max_samples:
                 break
-            g = g.clone().to(device)
+            g = g.clone().to(device, non_blocking=True)
             xs = model(g, return_intermediate=True)
             reps = [x.mean(dim=0).cpu().numpy() for x in xs]
             if layers is None:

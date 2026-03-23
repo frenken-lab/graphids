@@ -42,7 +42,6 @@ class CANBusDataModule(pl.LightningDataModule):
         val_fraction: float = 1.0 - PREPROCESSING_DEFAULTS["train_val_split"],
         seed: int = 42,
         dynamic_batching: bool = True,
-        safety_factor: float = 1.0,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -61,7 +60,6 @@ class CANBusDataModule(pl.LightningDataModule):
             num_workers=cfg.num_workers,
             seed=cfg.seed,
             dynamic_batching=cfg.training.dynamic_batching,
-            safety_factor=cfg.training.safety_factor,
             window_size=pre.window_size,
             stride=pre.stride,
             val_fraction=1.0 - pre.train_val_split,
@@ -171,6 +169,13 @@ class CANBusDataModule(pl.LightningDataModule):
         from graphids.pipeline.stages.data_loading import compute_node_budget, make_dataloader
 
         hp = self.hparams
-        bs = max(8, int(hp["batch_size"] * hp["safety_factor"]))
-        max_nodes = compute_node_budget(bs, hp) if hp["dynamic_batching"] else None
-        return make_dataloader(dataset, hp, bs, shuffle=shuffle, max_num_nodes=max_nodes)
+        bs = max(8, hp["batch_size"])
+        if hp["dynamic_batching"]:
+            info = compute_node_budget(bs, hp)
+            max_nodes, mean_nodes = info.budget, info.mean_nodes
+        else:
+            max_nodes, mean_nodes = None, None
+        return make_dataloader(
+            dataset, hp, bs, shuffle=shuffle,
+            max_num_nodes=max_nodes, mean_nodes=mean_nodes,
+        )
