@@ -1,20 +1,14 @@
-import functools
-
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from omegaconf import OmegaConf
-from torchmetrics import MetricCollection
-from torchmetrics.classification import (
-    BinaryAccuracy, BinaryAUROC, BinaryF1Score,
-    BinaryPrecision, BinaryRecall, BinarySpecificity,
-)
 
-from ._conv import InputEncoder, build_conv_stack, _make_conv, conv_forward
+from ._conv import InputEncoder, build_conv_stack, build_encoder_stack, _make_conv, conv_forward, resolve_edge_dim
 from ._training import (
     OOMSkipMixin, soft_label_kd_loss, _get_kd_config, teacher_on_device,
     build_optimizer_dict, compute_node_budget, NodeBudgetInfo,
+    binary_test_metrics,
 )
 
 
@@ -82,29 +76,13 @@ class GraphAutoencoderNeighborhood(nn.Module):
         self._edge_dim = self.input_encoder._edge_dim
         self._proj_dim = proj_dim
 
-        # Hidden dims schedule: interpret list; if last equals latent_dim assume the
-        # list includes latent entry and use hidden_dims[:-1] as encoder targets.
-        if hidden_dims is None or len(hidden_dims) == 0:
-            hidden_dims = [max(128, latent_dim * 2), latent_dim]
-
-        # If last hidden dim equals latent_dim, drop it for encoder targets
-        if len(hidden_dims) >= 2 and hidden_dims[-1] == latent_dim:
-            encoder_targets = hidden_dims[:-1]
-        else:
-            encoder_targets = hidden_dims
-
-        # Input dim to first GAT combines ID embedding and continuous features
+        # Encoder conv stack (shared with DGI)
         gat_in_dim = self.input_encoder.out_dim
         self.gat_in_dim = gat_in_dim
-
-        # Encoder: progressive GAT layers
-        self.encoder_layers, self.encoder_bns = build_conv_stack(
-            conv_type, gat_in_dim, encoder_targets, self._edge_dim,
-            heads_first=encoder_heads, batch_norm=batch_norm,
+        self.encoder_layers, self.encoder_bns, self.latent_in_dim = build_encoder_stack(
+            hidden_dims, latent_dim, gat_in_dim, conv_type, self._edge_dim,
+            encoder_heads=encoder_heads, batch_norm=batch_norm,
         )
-
-        # Latent heads
-        self.latent_in_dim = encoder_targets[-1]
         self.variational = variational
         self.z_mean = nn.Linear(self.latent_in_dim, latent_dim)
         if variational:
@@ -267,7 +245,7 @@ class GraphAutoencoderNeighborhood(nn.Module):
             embedding_dim=cfg.vgae.embedding_dim,
             dropout=cfg.vgae.dropout,
             conv_type=conv_type,
-            edge_dim=cfg.vgae.edge_dim if conv_type in ("transformer", "gatv2", "gps") else None,
+            edge_dim=resolve_edge_dim(conv_type, cfg.vgae.edge_dim),
             proj_dim=cfg.vgae.proj_dim,
             use_checkpointing=cfg.training.gradient_checkpointing,
             variational=cfg.vgae.get("variational", True),
@@ -330,11 +308,7 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         self.projection = projection
         self._teacher_on_cpu = False
         self.test_threshold: float | None = None
-        self.test_metrics = MetricCollection({
-            "accuracy": BinaryAccuracy(), "f1": BinaryF1Score(),
-            "precision": BinaryPrecision(), "recall": BinaryRecall(),
-            "specificity": BinarySpecificity(), "auc": BinaryAUROC(),
-        })
+        self.test_metrics = binary_test_metrics()
         self._test_errors: list[torch.Tensor] = []
         self._test_labels: list[torch.Tensor] = []
 

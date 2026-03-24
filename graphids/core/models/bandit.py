@@ -29,17 +29,8 @@ class Backbone(nn.Module):
 
     def __init__(self, state_dim: int, hidden_dim: int = 128, num_layers: int = 3):
         super().__init__()
-        layers: list[nn.Module] = []
-        in_dim = state_dim
-        for _ in range(num_layers):
-            layers.extend([
-                nn.Linear(in_dim, hidden_dim),
-                nn.LayerNorm(hidden_dim),
-                nn.ReLU(),
-                nn.Dropout(0.2),
-            ])
-            in_dim = hidden_dim
-        self.net = nn.Sequential(*layers)
+        from .dqn import build_mlp_body
+        self.net = build_mlp_body(state_dim, hidden_dim, num_layers)
         self.out_dim = hidden_dim
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -110,16 +101,8 @@ class NeuralLinUCBAgent:
         """Create agent from pipeline config."""
         from .registry import fusion_state_dim
 
-        reward_kwargs = dict(
-            vgae_weights=list(cfg.dqn.vgae_error_weights),
-            reward_correct=cfg.dqn.reward_correct,
-            reward_incorrect=cfg.dqn.reward_incorrect,
-            confidence_weight=cfg.dqn.confidence_weight,
-            combined_conf_weight=cfg.dqn.combined_conf_weight,
-            disagreement_penalty=cfg.dqn.disagreement_penalty,
-            overconf_penalty=cfg.dqn.overconf_penalty,
-            balance_weight=cfg.dqn.balance_weight,
-        )
+        from .fusion_reward import reward_kwargs_from_cfg
+        reward_kwargs = reward_kwargs_from_cfg(cfg)
         return cls(
             state_dim=fusion_state_dim(),
             alpha_steps=cfg.fusion.alpha_steps,
@@ -312,16 +295,9 @@ class NeuralLinUCBAgent:
     # ------------------------------------------------------------------
 
     def predict(self, states: torch.Tensor) -> dict:
-        """Greedy fused prediction (no UCB exploration).
-
-        Returns:
-            Dict with preds, fused_scores, alphas, norm_states.
-        """
-        actions, alphas, norm_states = self.select_action_batch(states, training=False)
-        anomaly_scores, gat_probs = self.reward_calc.derive_scores(norm_states)
-        fused_scores = (1 - alphas) * anomaly_scores + alphas * gat_probs
-        preds = (fused_scores > self.decision_threshold).long()
-        return {"preds": preds, "fused_scores": fused_scores, "alphas": alphas, "norm_states": norm_states}
+        """Greedy fused prediction (no UCB exploration)."""
+        from .fusion_reward import fused_predict
+        return fused_predict(self, states)
 
     def q_values(self, norm_states: torch.Tensor) -> torch.Tensor:
         """Compute per-arm expected rewards for normalized states. Shape: [N, K]."""

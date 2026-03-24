@@ -7,6 +7,14 @@ from torch.utils.checkpoint import checkpoint
 from torch_geometric.nn import GATConv, GATv2Conv, GPSConv, TransformerConv
 from torch_geometric.nn.norm import GraphNorm
 
+# Conv types whose layers accept edge_attr
+_EDGE_ATTR_CONV_TYPES = frozenset(("transformer", "gatv2", "gps"))
+
+
+def resolve_edge_dim(conv_type: str, edge_dim: int | None) -> int | None:
+    """Return edge_dim if conv_type uses edge attributes, else None."""
+    return edge_dim if conv_type in _EDGE_ATTR_CONV_TYPES else None
+
 
 class InputEncoder(nn.Module):
     """Shared input encoding for VGAE and GAT models.
@@ -33,7 +41,7 @@ class InputEncoder(nn.Module):
         self.id_embedding = nn.Embedding(num_ids, embedding_dim)
         self.num_ids = num_ids
         self.conv_type = conv_type
-        self._uses_edge_attr = conv_type in ("transformer", "gatv2", "gps")
+        self._uses_edge_attr = conv_type in _EDGE_ATTR_CONV_TYPES
         self._edge_dim = edge_dim if self._uses_edge_attr else None
         self._proj_dim = proj_dim
 
@@ -138,6 +146,34 @@ def build_conv_stack(
             norms.append(GraphNorm(out_per_head * heads))
         in_dim = out_per_head * heads
     return convs, norms
+
+
+def build_encoder_stack(
+    hidden_dims: list[int] | None,
+    latent_dim: int,
+    in_dim: int,
+    conv_type: str,
+    edge_dim: int | None,
+    encoder_heads: int = 1,
+    batch_norm: bool = True,
+) -> tuple[nn.ModuleList, nn.ModuleList, int]:
+    """Normalize hidden_dims and build the encoder conv stack.
+
+    Shared by VGAE and DGI encoders. Returns (conv_layers, norm_layers,
+    latent_in_dim) where latent_in_dim is the last encoder target dimension.
+    """
+    if hidden_dims is None or len(hidden_dims) == 0:
+        hidden_dims = [max(128, latent_dim * 2), latent_dim]
+    if len(hidden_dims) >= 2 and hidden_dims[-1] == latent_dim:
+        encoder_targets = hidden_dims[:-1]
+    else:
+        encoder_targets = hidden_dims
+
+    convs, norms = build_conv_stack(
+        conv_type, in_dim, encoder_targets, edge_dim,
+        heads_first=encoder_heads, batch_norm=batch_norm,
+    )
+    return convs, norms, encoder_targets[-1]
 
 
 def _conv_forward_inner(

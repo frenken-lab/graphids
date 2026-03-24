@@ -11,7 +11,7 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from .registry import fusion_test_metrics
+from ._training import binary_test_metrics
 
 
 class MLPFusionNetwork(nn.Module):
@@ -48,7 +48,7 @@ class MLPFusionModule(pl.LightningModule):
         self.model = MLPFusionNetwork(state_dim, hidden_dims)
         self.loss_fn = nn.BCEWithLogitsLoss()
         self.lr = lr
-        self.test_metrics = fusion_test_metrics()
+        self.test_metrics = binary_test_metrics()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.model(x)
@@ -114,7 +114,7 @@ class WeightedAvgModule(pl.LightningModule):
         self.loss_fn = nn.BCELoss()
         self.lr = lr
         self.decision_threshold = decision_threshold
-        self.test_metrics = fusion_test_metrics()
+        self.test_metrics = binary_test_metrics()
 
         from .registry import feature_layout
 
@@ -192,7 +192,7 @@ class RLFusionModule(pl.LightningModule):
         self.automatic_optimization = False
         self.agent = agent
         self._optimizer_attr = optimizer_attr
-        self.test_metrics = fusion_test_metrics()
+        self.test_metrics = binary_test_metrics()
 
     def training_step(self, batch, batch_idx):
         states, labels = batch

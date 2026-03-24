@@ -11,6 +11,20 @@ import torch
 log = structlog.get_logger()
 
 
+def reward_kwargs_from_cfg(cfg) -> dict:
+    """Extract FusionRewardCalculator kwargs from pipeline config."""
+    return dict(
+        vgae_weights=list(cfg.dqn.vgae_error_weights),
+        reward_correct=cfg.dqn.reward_correct,
+        reward_incorrect=cfg.dqn.reward_incorrect,
+        confidence_weight=cfg.dqn.confidence_weight,
+        combined_conf_weight=cfg.dqn.combined_conf_weight,
+        disagreement_penalty=cfg.dqn.disagreement_penalty,
+        overconf_penalty=cfg.dqn.overconf_penalty,
+        balance_weight=cfg.dqn.balance_weight,
+    )
+
+
 class FusionRewardCalculator:
     """Vectorized fusion reward from state features, predictions, and labels.
 
@@ -140,3 +154,15 @@ class FusionRewardCalculator:
             1.0 - (alphas - 0.5).abs() * 2
         )
         return total_reward + balance_bonus
+
+
+def fused_predict(agent, states: torch.Tensor) -> dict:
+    """Greedy fused prediction shared by DQN and bandit agents.
+
+    Requires agent to have: select_action_batch, reward_calc, decision_threshold.
+    """
+    actions, alphas, norm_states = agent.select_action_batch(states, training=False)
+    anomaly_scores, gat_probs = agent.reward_calc.derive_scores(norm_states)
+    fused_scores = (1 - alphas) * anomaly_scores + alphas * gat_probs
+    preds = (fused_scores > agent.decision_threshold).long()
+    return {"preds": preds, "fused_scores": fused_scores, "alphas": alphas, "norm_states": norm_states}

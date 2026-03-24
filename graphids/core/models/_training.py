@@ -93,3 +93,17 @@ def build_optimizer_dict(optimizer, cfg):
     from hydra.utils import instantiate
     sched = instantiate(cfg.training.scheduler, optimizer=optimizer)
     return {"optimizer": optimizer, "lr_scheduler": {"scheduler": sched, "monitor": cfg.training.monitor_metric}}
+
+
+def binary_test_metrics():
+    """Standard binary classification MetricCollection shared by all Lightning modules."""
+    from torchmetrics import MetricCollection
+    from torchmetrics.classification import (
+        BinaryAccuracy, BinaryAUROC, BinaryF1Score,
+        BinaryPrecision, BinaryRecall, BinarySpecificity,
+    )
+    return MetricCollection({
+        "accuracy": BinaryAccuracy(), "f1": BinaryF1Score(),
+        "precision": BinaryPrecision(), "recall": BinaryRecall(),
+        "specificity": BinarySpecificity(), "auc": BinaryAUROC(),
+    })

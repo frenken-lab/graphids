@@ -78,15 +78,3 @@ def extractors() -> list[tuple[str, FusionFeatureExtractor]]:
     return [(name, ext) for name, (_, ext) in _MODELS.items() if ext is not None]
 
 
-def fusion_test_metrics():
-    """Standard MetricCollection for fusion eval (shared by DQN, bandit, MLP, weighted_avg)."""
-    from torchmetrics import MetricCollection
-    from torchmetrics.classification import (
-        BinaryAccuracy, BinaryAUROC, BinaryF1Score,
-        BinaryPrecision, BinaryRecall, BinarySpecificity,
-    )
-    return MetricCollection({
-        "accuracy": BinaryAccuracy(), "f1": BinaryF1Score(),
-        "precision": BinaryPrecision(), "recall": BinaryRecall(),
-        "specificity": BinarySpecificity(), "auc": BinaryAUROC(),
-    })

@@ -14,14 +14,9 @@ import torch
 import torch.nn as nn
 from omegaconf import OmegaConf
 from torch_geometric.nn import global_mean_pool
-from torchmetrics import MetricCollection
-from torchmetrics.classification import (
-    BinaryAccuracy, BinaryAUROC, BinaryF1Score,
-    BinaryPrecision, BinaryRecall, BinarySpecificity,
-)
 
-from ._conv import InputEncoder, build_conv_stack, conv_forward
-from ._training import OOMSkipMixin, build_optimizer_dict
+from ._conv import InputEncoder, build_encoder_stack, conv_forward, resolve_edge_dim
+from ._training import OOMSkipMixin, build_optimizer_dict, binary_test_metrics
 
 
 class GraphInfomaxModel(nn.Module):
@@ -67,21 +62,11 @@ class GraphInfomaxModel(nn.Module):
         self._edge_dim = self.input_encoder._edge_dim
 
         # Encoder conv stack (same architecture as VGAE encoder)
-        if hidden_dims is None or len(hidden_dims) == 0:
-            hidden_dims = [max(128, latent_dim * 2), latent_dim]
-        if len(hidden_dims) >= 2 and hidden_dims[-1] == latent_dim:
-            encoder_targets = hidden_dims[:-1]
-        else:
-            encoder_targets = hidden_dims
-
         gat_in_dim = self.input_encoder.out_dim
-        self.encoder_layers, self.encoder_bns = build_conv_stack(
-            conv_type, gat_in_dim, encoder_targets, self._edge_dim,
-            heads_first=encoder_heads, batch_norm=batch_norm,
+        self.encoder_layers, self.encoder_bns, self.latent_in_dim = build_encoder_stack(
+            hidden_dims, latent_dim, gat_in_dim, conv_type, self._edge_dim,
+            encoder_heads=encoder_heads, batch_norm=batch_norm,
         )
-
-        # Projection to latent space (replaces VGAE's z_mean head)
-        self.latent_in_dim = encoder_targets[-1]
         self.z_proj = nn.Linear(self.latent_in_dim, latent_dim)
 
         # Bilinear discriminator: scores node–summary pairs
@@ -149,7 +134,7 @@ class GraphInfomaxModel(nn.Module):
             embedding_dim=cfg.dgi.embedding_dim,
             dropout=cfg.dgi.dropout,
             conv_type=conv_type,
-            edge_dim=cfg.dgi.edge_dim if conv_type in ("transformer", "gatv2", "gps") else None,
+            edge_dim=resolve_edge_dim(conv_type, cfg.dgi.edge_dim),
             proj_dim=cfg.dgi.proj_dim,
             use_checkpointing=cfg.training.gradient_checkpointing,
         )
@@ -176,11 +161,7 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
         if cfg.training.compile_model and hasattr(torch, "compile"):
             self.model = torch.compile(self.model, dynamic=True)
         self.test_threshold: float | None = None
-        self.test_metrics = MetricCollection({
-            "accuracy": BinaryAccuracy(), "f1": BinaryF1Score(),
-            "precision": BinaryPrecision(), "recall": BinaryRecall(),
-            "specificity": BinarySpecificity(), "auc": BinaryAUROC(),
-        })
+        self.test_metrics = binary_test_metrics()
         self._test_scores: list[torch.Tensor] = []
         self._test_labels: list[torch.Tensor] = []
 

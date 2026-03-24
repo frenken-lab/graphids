@@ -10,16 +10,11 @@ from torch_geometric.nn import (
     global_mean_pool,
 )
 from torch_geometric.nn.aggr import MultiAggregation
-from torchmetrics import MetricCollection
-from torchmetrics.classification import (
-    BinaryAccuracy, BinaryAUROC, BinaryF1Score,
-    BinaryPrecision, BinaryRecall, BinarySpecificity,
-)
 
-from ._conv import InputEncoder, _make_conv, conv_forward
+from ._conv import InputEncoder, _make_conv, conv_forward, resolve_edge_dim
 from ._training import (
     OOMSkipMixin, soft_label_kd_loss, focal_loss, _get_kd_config,
-    teacher_on_device, build_optimizer_dict,
+    teacher_on_device, build_optimizer_dict, binary_test_metrics,
 )
 
 
@@ -115,7 +110,7 @@ class GATWithJK(nn.Module):
             num_fc_layers=cfg.gat.fc_layers,
             embedding_dim=cfg.gat.embedding_dim,
             conv_type=cfg.gat.conv_type,
-            edge_dim=cfg.gat.edge_dim if cfg.gat.conv_type in ("transformer", "gatv2", "gps") else None,
+            edge_dim=resolve_edge_dim(cfg.gat.conv_type, cfg.gat.edge_dim),
             pool_aggrs=cfg.gat.pool_aggrs,
             proj_dim=cfg.gat.proj_dim,
             use_checkpointing=cfg.training.gradient_checkpointing,
@@ -200,11 +195,7 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
             self.model = torch.compile(self.model, dynamic=True)
         self.teacher = teacher
         self._teacher_on_cpu = False
-        self.test_metrics = MetricCollection({
-            "accuracy": BinaryAccuracy(), "f1": BinaryF1Score(),
-            "precision": BinaryPrecision(), "recall": BinaryRecall(),
-            "specificity": BinarySpecificity(), "auc": BinaryAUROC(),
-        })
+        self.test_metrics = binary_test_metrics()
         loss_name = cfg.training.loss_fn
         if loss_name == "weighted_ce":
             w = torch.tensor([1.0, cfg.training.loss_weight])
