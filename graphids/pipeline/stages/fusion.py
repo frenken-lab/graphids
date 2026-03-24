@@ -318,7 +318,7 @@ def train_fusion(cfg) -> dict:
 
     # Load frozen VGAE + GAT
     vgae = load_model(cfg, "vgae", "autoencoder", device)
-    gat = load_model(cfg, "gat", "curriculum", device)
+    gat = load_model(cfg, "gat", cfg.gat_stage, device)
 
     # Cache predictions
     log.info("Caching VGAE + GAT predictions ...")

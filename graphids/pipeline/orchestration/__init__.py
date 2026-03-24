@@ -1,5 +1,4 @@
 """Orchestration: manifest-driven SLURM DAG submission."""
-from .ablation_builder import ManifestBuilder  # noqa: F401
 
 # Lazy imports to avoid RuntimeWarning when running `python -m ...manifest`
 def __getattr__(name: str):  # noqa: N807

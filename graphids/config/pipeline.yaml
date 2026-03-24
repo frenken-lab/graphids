@@ -19,6 +19,9 @@ models:
   dqn:
     learning_type: rl_fusion
     architecture: DQNArchitecture
+  dgi:
+    learning_type: unsupervised
+    architecture: DGIArchitecture
 
 # --- Valid scales (must have corresponding models/{type}/{scale}.yaml) ---
 scales:
@@ -43,7 +46,7 @@ stages:
     mode: autoencoder
     depends_on:
       - { model: preprocess, stage: preprocess }
-    identity_keys: [scale, vgae.conv_type]
+    identity_keys: [scale, vgae.conv_type, vgae.variational]
 
   curriculum:
     learning_type: supervised
@@ -68,7 +71,7 @@ stages:
     depends_on:
       - { model: vgae, stage: autoencoder }
       - { model: gat, stage: curriculum }
-    identity_keys: [scale, training.loss_fn, fusion.method]
+    identity_keys: [scale, gat_stage, training.loss_fn, fusion.method]
 
   evaluation:
     learning_type: evaluation
@@ -76,7 +79,7 @@ stages:
     mode: evaluation
     depends_on:
       - { model: dqn, stage: fusion }
-    identity_keys: [scale, training.loss_fn, fusion.method]
+    identity_keys: [scale, gat_stage, training.loss_fn, fusion.method]
 
   temporal:
     learning_type: temporal
@@ -84,7 +87,7 @@ stages:
     mode: temporal
     depends_on:
       - { model: gat, stage: curriculum }
-    identity_keys: [scale, training.loss_fn]
+    identity_keys: [scale, gat_stage, training.loss_fn]
 
 # --- Default stage list (when manifest omits stages) ---
 default_stages: [autoencoder, curriculum, fusion, evaluation]

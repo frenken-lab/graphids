@@ -231,15 +231,24 @@ def submit_manifest(
         cfg = resolve(*job.overrides)
 
         executor = submitit.SlurmExecutor(folder="slurm_logs/%j")
+        mem_val = f"{job.resources.get('memory_gb', 16)}G"
+        partition = job.resources.get("partition", "gpu")
+
+        # Dataset-scoped staging + skip TMPDIR for CPU inference jobs
+        stage_args = f"--cache --dataset {job.dataset}"
+        if partition == "cpu":
+            stage_args += " --skip-tmpdir"
+        setup_cmds = [f'export STAGE_DATA_ARGS="{stage_args}"', "source scripts/slurm/_preamble.sh"]
+
         executor.update_parameters(
-            mem_gb=job.resources.get("memory_gb", 16),
+            mem=mem_val,
             gpus_per_node=job.resources.get("gpus", 0),
             cpus_per_task=job.resources.get("cpus", 4),
-            timeout_min=job.resources.get("walltime_min", 120),
-            partition=job.resources.get("partition", "gpu"),
+            time=job.resources.get("walltime_min", 120),
+            partition=partition,
             account=SLURM_ACCOUNT,
-            setup=["source scripts/slurm/_preamble.sh"],
-            slurm_additional_parameters={"dependency": dep_str} if dep_str else {},
+            setup=setup_cmds,
+            additional_parameters={"dependency": dep_str} if dep_str else {},
         )
         futures[job.node_id] = executor.submit(run_stage, cfg, job.stage)
         log.info("submitted", node=job.node_id, job_id=futures[job.node_id].job_id)

@@ -15,7 +15,7 @@ from graphids.core.preprocessing import CANBusDataModule
 
 from .data_loading import cleanup
 from .eval_inference import graph_label
-from .modules import CurriculumDataModule, GATModule, VGAEModule
+from .modules import CurriculumDataModule, DGIModule, GATModule, VGAEModule
 from .trainer_factory import load_model, make_trainer, prepare_kd
 
 log = structlog.get_logger()
@@ -74,15 +74,20 @@ def _training_setup(cfg) -> tuple[CANBusDataModule, torch.device]:
 
 
 def train_autoencoder(cfg) -> dict:
-    """Train VGAE on graph reconstruction. Returns result dict with checkpoint and metrics."""
+    """Train unsupervised model (VGAE/GAE/DGI). Returns result dict with checkpoint and metrics."""
     dm, device = _training_setup(cfg)
 
-    teacher, projection = prepare_kd(cfg, "vgae", device)
-    module = VGAEModule(cfg, teacher=teacher, projection=projection)
+    if cfg.model_type == "dgi":
+        module = DGIModule(cfg)
+        label = "DGI"
+    else:
+        teacher, projection = prepare_kd(cfg, "vgae", device)
+        module = VGAEModule(cfg, teacher=teacher, projection=projection)
+        label = "GAE" if not cfg.vgae.get("variational", True) else "VGAE"
 
     trainer = make_trainer(cfg, "autoencoder")
     trainer.fit(module, datamodule=dm, ckpt_path=_resume_ckpt_path(cfg, "autoencoder"))
-    return _save_and_cleanup(module, trainer, cfg, "autoencoder", "VGAE")
+    return _save_and_cleanup(module, trainer, cfg, "autoencoder", label)
 
 
 def train_curriculum(cfg) -> dict:

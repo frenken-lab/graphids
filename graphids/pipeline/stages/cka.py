@@ -33,7 +33,7 @@ def compute_and_save_cka(cfg, val_data, device, output_dir: Path, *, max_samples
     from .trainer_factory import load_model
 
     # Student = current config's GAT
-    student = load_model(cfg, "gat", "curriculum", device)
+    student = load_model(cfg, "gat", cfg.gat_stage, device)
     # Teacher = large-scale GAT (inherit num_ids/in_channels from cfg)
     teacher_cfg = resolve(f"model_type=gat", f"scale=large", f"dataset={cfg.dataset}", f"seed={cfg.seed}")
     with open_dict(teacher_cfg):

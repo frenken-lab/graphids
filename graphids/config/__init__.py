@@ -58,6 +58,7 @@ class VGAEConfig:
     conv_type: str = "gatv2"
     edge_dim: int = 11
     proj_dim: int = 0
+    variational: bool = True  # False = GAE (no KL, no reparameterization)
     mask_ratio: float = 0.3
     canid_weight: float = 0.1
     nbr_weight: float = 0.05
@@ -117,10 +118,22 @@ class BanditConfig:
 
 
 @dataclass
+class DGIConfig:
+    hidden_dims: list[int] = field(default_factory=lambda: [480, 240, 48])
+    latent_dim: int = 48
+    heads: int = 4
+    embedding_dim: int = 32
+    dropout: float = 0.15
+    conv_type: str = "gatv2"
+    edge_dim: int = 11
+    proj_dim: int = 0
+
+
+@dataclass
 class TrainingConfig:
     lr: float = 0.003
     max_epochs: int = 300
-    batch_size: int = 4096
+    batch_size: int = 6144
     patience: int = 100
     weight_decay: float = 0.0001
     gradient_clip: float = 1.0
@@ -207,6 +220,7 @@ class Config:
     model_type: str = "vgae"
     scale: str = "large"
     stage: str = "autoencoder"
+    gat_stage: str = "curriculum"  # which GAT training stage to use (curriculum or normal)
     seed: int = 42
     lake_root: str = MISSING  # resolved from env/YAML
     device: str = "cuda"
@@ -225,6 +239,7 @@ class Config:
     vgae: VGAEConfig = field(default_factory=VGAEConfig)
     gat: GATConfig = field(default_factory=GATConfig)
     dqn: DQNConfig = field(default_factory=DQNConfig)
+    dgi: DGIConfig = field(default_factory=DGIConfig)
     bandit: BanditConfig = field(default_factory=BanditConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)

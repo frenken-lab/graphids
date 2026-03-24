@@ -47,6 +47,7 @@ class GraphAutoencoderNeighborhood(nn.Module):
         conv_type="gat",
         edge_dim=None,
         proj_dim=0,
+        variational=True,
     ):
         super().__init__()
 
@@ -91,8 +92,10 @@ class GraphAutoencoderNeighborhood(nn.Module):
 
         # Latent heads
         self.latent_in_dim = encoder_targets[-1]
+        self.variational = variational
         self.z_mean = nn.Linear(self.latent_in_dim, latent_dim)
-        self.z_logvar = nn.Linear(self.latent_in_dim, latent_dim)
+        if variational:
+            self.z_logvar = nn.Linear(self.latent_in_dim, latent_dim)
 
         # Decoder: mirror of encoder, final layer outputs continuous features
         decoder_targets = list(reversed(encoder_targets))
@@ -141,11 +144,15 @@ class GraphAutoencoderNeighborhood(nn.Module):
                 use_checkpointing=self.use_checkpointing,
             )
         mu = self.z_mean(x)
-        logvar = self.z_logvar(x).clamp(-20, 20)
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        z = mu + eps * std
-        kl_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
+        if self.variational:
+            logvar = self.z_logvar(x).clamp(-20, 20)
+            std = torch.exp(0.5 * logvar)
+            eps = torch.randn_like(std)
+            z = mu + eps * std
+            kl_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
+        else:
+            z = mu
+            kl_loss = mu.new_tensor(0.0)
         return z, kl_loss
 
     def decode_node(self, z, edge_index, edge_attr=None, batch=None):
@@ -250,6 +257,7 @@ class GraphAutoencoderNeighborhood(nn.Module):
             edge_dim=cfg.vgae.edge_dim if conv_type in ("transformer", "gatv2", "gps") else None,
             proj_dim=cfg.vgae.proj_dim,
             use_checkpointing=cfg.training.gradient_checkpointing,
+            variational=cfg.vgae.get("variational", True),
         )
 
     def forward(self, x, edge_index, batch, edge_attr=None, mask_ratio: float = 0.0, node_id=None):

@@ -32,11 +32,20 @@ def _dqn_from_config(cfg, num_ids: int = 0, in_ch: int = 0):
     return QNetwork.from_config(cfg)
 
 
+def _dgi_from_config(cfg, num_ids: int = 0, in_ch: int = 0):
+    """Lazy import for DGI model."""
+    from .dgi import GraphInfomaxModel
+
+    return GraphInfomaxModel.from_config(cfg, num_ids, in_ch)
+
+
 # Order matters — VGAE then GAT matches the 15-D state layout for trained DQN checkpoints.
+# DGI has no fusion extractor (doesn't participate in fusion — contrastive, not reconstructive).
 _MODELS: dict[str, tuple[callable, FusionFeatureExtractor | None]] = {
     "vgae": (GraphAutoencoderNeighborhood.from_config, VGAEFusionExtractor()),
     "gat": (GATWithJK.from_config, GATFusionExtractor()),
     "dqn": (_dqn_from_config, None),
+    "dgi": (_dgi_from_config, None),
 }
 
 

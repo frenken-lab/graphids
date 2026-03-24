@@ -24,12 +24,12 @@ from .eval_inference import (
     run_fusion_inference,
     test_model,
 )
-from .modules import GATModule, VGAEModule
+from .modules import DGIModule, GATModule, VGAEModule
 from .trainer_factory import load_frozen_cfg, load_model
 
 log = structlog.get_logger()
 
-EVAL_ORDER = ["gat", "vgae", "fusion", "temporal"]
+EVAL_ORDER = ["gat", "vgae", "dgi", "fusion", "temporal"]
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +58,7 @@ def evaluate(cfg) -> dict:
     eval_fns = {
         "gat": eval_gat,
         "vgae": eval_vgae,
+        "dgi": eval_dgi,
         "fusion": eval_fusion,
         "temporal": eval_temporal,
     }
@@ -122,7 +123,7 @@ def _fusion_checkpoints_exist(cfg) -> bool:
 
 def eval_gat(cfg, val_data, test_scenarios, device) -> dict:
     """Evaluate GAT via trainer.test() + capture artifacts."""
-    gat_model = load_model(cfg, "gat", "curriculum", device)
+    gat_model = load_model(cfg, "gat", cfg.gat_stage, device)
     module = GATModule(cfg)
     module.model = gat_model
 
@@ -184,12 +185,47 @@ def eval_vgae(cfg, val_data, test_scenarios, device) -> dict:
     }
 
 
+def eval_dgi(cfg, val_data, test_scenarios, device) -> dict:
+    """Evaluate DGI: discriminator-based anomaly detection (same pattern as VGAE)."""
+    dgi_model = load_model(cfg, "dgi", "autoencoder", device)
+    module = DGIModule(cfg)
+    module.model = dgi_model
+
+    bs = cfg.evaluation.batch_size
+    threshold, youden_j = find_vgae_threshold(module, val_data, batch_size=bs)
+    module.test_threshold = threshold
+    module._test_scores.clear()
+    module._test_labels.clear()
+    module.test_metrics.reset()
+
+    val_metrics = test_model(module, val_data, batch_size=bs)
+    val_metrics["core"]["optimal_threshold"] = threshold
+    val_metrics["core"]["youden_j"] = youden_j
+    _log_metrics("DGI", val_metrics)
+
+    scenario_metrics = {}
+    if test_scenarios:
+        for name, tdata in test_scenarios.items():
+            module.test_metrics.reset()
+            module._test_scores.clear()
+            module._test_labels.clear()
+            scenario_metrics[name] = test_model(module, tdata, batch_size=bs)
+
+    del dgi_model
+    cleanup()
+    return {
+        "val_metrics": val_metrics,
+        "test_metrics": scenario_metrics,
+        "artifacts": None,
+    }
+
+
 def eval_fusion(cfg, val_data, test_scenarios, device) -> dict:
     """Evaluate fusion agent via Lightning test loop."""
     from .fusion import BanditFusionModule, DQNFusionModule
 
     vgae = load_model(cfg, "vgae", "autoencoder", device)
-    gat = load_model(cfg, "gat", "curriculum", device)
+    gat = load_model(cfg, "gat", cfg.gat_stage, device)
     models = {"vgae": vgae, "gat": gat}
 
     val_cache = cache_predictions(models, val_data, device, cfg.fusion.max_val_samples, batch_size=cfg.evaluation.batch_size)
@@ -266,7 +302,7 @@ def eval_temporal(cfg, val_data, test_scenarios, device) -> dict | None:
             collate_temporal,
         )
 
-        gat = load_model(cfg, "gat", "curriculum", device)
+        gat = load_model(cfg, "gat", cfg.gat_stage, device)
 
         # Probe embedding dim
         with torch.no_grad():

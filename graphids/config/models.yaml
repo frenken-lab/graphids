@@ -47,6 +47,27 @@ gat_small:
     patience: 50
     compile_model: true
 
+dgi_large:
+  dgi:
+    conv_type: gatv2
+    proj_dim: 48
+  training:
+    lr: 0.002
+    compile_model: true
+
+dgi_small:
+  dgi:
+    hidden_dims: [80, 40, 16]
+    latent_dim: 16
+    heads: 1
+    embedding_dim: 4
+    dropout: 0.1
+    conv_type: gatv2
+    proj_dim: 32
+  training:
+    lr: 0.002
+    compile_model: true
+
 dqn_large: {}
 
 dqn_small:

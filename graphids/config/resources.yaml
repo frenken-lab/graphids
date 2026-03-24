@@ -1,5 +1,6 @@
 # Resource profiles for SLURM orchestration.
 # Structure: resource_profiles[model_type][scale][stage] -> {gpus, cpus, memory_gb, walltime_min, partition}
+# Memory sized for batch_size=6144. GPU training: 6 CPUs (~54G entitled). CPU inference: 3 CPUs (~25G).
 
 resource_profiles:
   preprocess:
@@ -8,77 +9,92 @@ resource_profiles:
         partition: cpu
         gpus: 0
         cpus: 8
-        memory_gb: 32
+        memory_gb: 54
         walltime_min: 60
   vgae:
     large:
       autoencoder:
         partition: gpu
         gpus: 1
-        cpus: 4
-        memory_gb: 20
-        walltime_min: 180
+        cpus: 6
+        memory_gb: 54
+        walltime_min: 240
     small:
       autoencoder:
         partition: gpu
         gpus: 1
-        cpus: 4
-        memory_gb: 16
-        walltime_min: 120
+        cpus: 6
+        memory_gb: 54
+        walltime_min: 240
   gat:
     large:
       curriculum:
         partition: gpu
         gpus: 1
-        cpus: 4
-        memory_gb: 16
-        walltime_min: 180
+        cpus: 6
+        memory_gb: 54
+        walltime_min: 240
       normal:
         partition: gpu
         gpus: 1
-        cpus: 4
-        memory_gb: 16
-        walltime_min: 180
+        cpus: 6
+        memory_gb: 54
+        walltime_min: 240
     small:
       curriculum:
         partition: gpu
         gpus: 1
-        cpus: 4
-        memory_gb: 12
-        walltime_min: 120
+        cpus: 6
+        memory_gb: 54
+        walltime_min: 240
       normal:
         partition: gpu
         gpus: 1
-        cpus: 4
-        memory_gb: 12
-        walltime_min: 120
+        cpus: 6
+        memory_gb: 54
+        walltime_min: 240
+  dgi:
+    large:
+      autoencoder:
+        partition: gpu
+        gpus: 1
+        cpus: 6
+        memory_gb: 54
+        walltime_min: 240
+    small:
+      autoencoder:
+        partition: gpu
+        gpus: 1
+        cpus: 6
+        memory_gb: 54
+        walltime_min: 240
   dqn:
     large:
       fusion:
         partition: cpu
         gpus: 0
-        cpus: 4
-        memory_gb: 16
-        walltime_min: 30
+        cpus: 3
+        memory_gb: 25
+        walltime_min: 60
     small:
       fusion:
         partition: cpu
         gpus: 0
-        cpus: 4
-        memory_gb: 12
-        walltime_min: 30
+        cpus: 3
+        memory_gb: 25
+        walltime_min: 60
   eval:
     large:
       evaluation:
         partition: cpu
         gpus: 0
-        cpus: 4
-        memory_gb: 16
-        walltime_min: 30
+        cpus: 3
+        memory_gb: 25
+        walltime_min: 60
     small:
       evaluation:
         partition: cpu
         gpus: 0
-        cpus: 4
-        memory_gb: 12
-        walltime_min: 30
+        cpus: 3
+        memory_gb: 25
+        walltime_min: 60

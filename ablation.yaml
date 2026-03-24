@@ -1,7 +1,7 @@
 sweep:
   dataset:
-  - hcrl_ch
   - set_01
+  - set_02
   seed:
   - 42
 defaults:
@@ -14,27 +14,40 @@ defaults:
   training.loss_fn: focal
   fusion.method: bandit
 configs:
-  # Claim 4: Loss x Curriculum factorial (2x3 = 6 configs)
   loss_x_curriculum_ce_curriculum:
     training.loss_fn: ce
     fusion.method: weighted_avg
   loss_x_curriculum_ce_normal:
     training.loss_fn: ce
-    stages: [autoencoder, normal, fusion, evaluation]
     fusion.method: weighted_avg
+    stages:
+    - autoencoder
+    - normal
+    - fusion
+    - evaluation
+    gat_stage: normal
   loss_x_curriculum_focal_curriculum:
     fusion.method: weighted_avg
   loss_x_curriculum_focal_normal:
-    stages: [autoencoder, normal, fusion, evaluation]
     fusion.method: weighted_avg
+    stages:
+    - autoencoder
+    - normal
+    - fusion
+    - evaluation
+    gat_stage: normal
   loss_x_curriculum_weighted_ce_curriculum:
     training.loss_fn: weighted_ce
     fusion.method: weighted_avg
   loss_x_curriculum_weighted_ce_normal:
     training.loss_fn: weighted_ce
-    stages: [autoencoder, normal, fusion, evaluation]
     fusion.method: weighted_avg
-  # Claim 2: Fusion method sweep (4 configs, share upstream GAT)
+    stages:
+    - autoencoder
+    - normal
+    - fusion
+    - evaluation
+    gat_stage: normal
   fusion_bandit: {}
   fusion_dqn:
     fusion.method: dqn
@@ -42,20 +55,30 @@ configs:
     fusion.method: mlp
   fusion_weighted_avg:
     fusion.method: weighted_avg
-  # Claim 3: KD & scale
-  kd_student:
-    scale: small_kd
-  large_reference:
-    scale: large
-  # Claim 5: Conv type
+  conv_gatv2: {}
   conv_gatv1:
     vgae.conv_type: gat
     gat.conv_type: gat
   conv_gps:
     vgae.conv_type: gps
     gat.conv_type: gps
-  # Claim 1: Single-model baselines
+    training.batch_size: 256
+  unsup_vgae: {}
+  unsup_gae:
+    vgae.variational: false
+  unsup_dgi:
+    model_type: dgi
+    stages:
+    - autoencoder
+    - normal
+    - evaluation
+    gat_stage: normal
   vgae_only:
-    stages: [autoencoder, evaluation]
+    stages:
+    - autoencoder
+    - evaluation
   gat_only:
-    stages: [normal, evaluation]
+    stages:
+    - normal
+    - evaluation
+    gat_stage: normal

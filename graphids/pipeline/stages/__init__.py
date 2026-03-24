@@ -27,7 +27,13 @@ STAGE_FNS = {
 
 
 def run_stage(cfg, stage: str) -> dict:
-    """Bind context, save config, run stage function."""
+    """Bind context, chdir to run directory, save config, run stage function.
+
+    Output directory mirrors Hydra's run.dir pattern:
+      {lake_root}/{tier}/{dataset}/{model_type}_{scale}_{stage}/seed_{seed}
+    All Lightning outputs (checkpoints, logs, metrics) land in the data lake,
+    not the project directory.
+    """
     from omegaconf import OmegaConf
 
     from graphids.config import STAGES
@@ -35,10 +41,20 @@ def run_stage(cfg, stage: str) -> dict:
     if stage not in STAGES:
         raise ValueError(f"Unknown stage '{stage}'. Choose from: {list(STAGES.keys())}")
 
+    # Resolve output directory from config (same interpolation as hydra.run.dir)
+    tier = f"dev/{os.environ.get('USER', 'unknown')}"
+    production = cfg.get("production", False)
+    if production:
+        tier = "production"
+    run_dir = Path(cfg.lake_root) / tier / cfg.dataset / f"{cfg.model_type}_{cfg.scale}_{stage}" / f"seed_{cfg.seed}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    os.chdir(run_dir)
+
     structlog.contextvars.bind_contextvars(
         dataset=cfg.dataset, model=cfg.model_type, scale=cfg.scale,
         stage=stage, seed=cfg.seed,
         slurm_job_id=os.environ.get("SLURM_JOB_ID", ""),
+        run_dir=str(run_dir),
     )
-    OmegaConf.save(cfg, Path.cwd() / "config.yaml")
+    OmegaConf.save(cfg, run_dir / "config.yaml")
     return STAGE_FNS[stage](cfg)

@@ -15,10 +15,13 @@ preprocessing:
 _tier: dev/${oc.env:USER,unknown}
 _output_base: ${lake_root}/${_tier}/${dataset}
 
+gat_stage: curriculum  # GAT training stage: curriculum or normal
+
 checkpoints:
   vgae: ${_output_base}/vgae_${scale}_autoencoder/seed_${seed}/best_model.pt
-  gat: ${_output_base}/gat_${scale}_curriculum/seed_${seed}/best_model.pt
+  gat: ${_output_base}/gat_${scale}_${gat_stage}/seed_${seed}/best_model.pt
   dqn: ${_output_base}/dqn_${scale}_fusion/seed_${seed}/best_model.pt
+  dgi: ${_output_base}/dgi_${scale}_autoencoder/seed_${seed}/best_model.pt
   temporal: ${_output_base}/gat_${scale}_temporal/seed_${seed}/best_model.pt
 
 callbacks:
