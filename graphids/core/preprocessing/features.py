@@ -118,13 +118,10 @@ def stats_to_tensor(
     )
 
     if edge_index is not None:
-        cc_idx = NODE_COL_ORDER.index("clustering_coeff")
-        x[:, cc_idx] = torch.from_numpy(clustering_coefficients(edge_index, n_active))
-        in_deg_idx = NODE_COL_ORDER.index("in_degree")
-        out_deg_idx = NODE_COL_ORDER.index("out_degree")
+        x[:, CC_IDX] = torch.from_numpy(clustering_coefficients(edge_index, n_active))
         ei = edge_index.astype(np.intp)
-        x[:, in_deg_idx] = torch.from_numpy(np.bincount(ei[1], minlength=n_active).astype(np.float32))
-        x[:, out_deg_idx] = torch.from_numpy(np.bincount(ei[0], minlength=n_active).astype(np.float32))
+        x[:, IN_DEG_IDX] = torch.from_numpy(np.bincount(ei[1], minlength=n_active).astype(np.float32))
+        x[:, OUT_DEG_IDX] = torch.from_numpy(np.bincount(ei[0], minlength=n_active).astype(np.float32))
 
     return x, node_ids
 
@@ -219,46 +216,6 @@ def edge_features(
 
     return out
 
-
-def _assemble_chunk(
-    node_feats: np.ndarray,
-    node_ids: np.ndarray,
-    edge_src: np.ndarray,
-    edge_dst: np.ndarray,
-    edge_feats: np.ndarray,
-    window_specs: list[tuple[int, int, int, int, int, int]],
-) -> list[Data]:
-    """Build PyG Data objects from pre-materialized numpy arrays.
-
-    Module-level function for sequential (non-IPC) path.
-    Each tuple in window_specs: (s_start, s_count, e_start, e_count, y_val, at_val).
-    Offsets are relative to the passed array slices.
-    """
-    from torch_geometric.utils import degree
-
-    graphs: list[Data] = []
-    for ss, sc, es, ec, y_val, at_val in window_specs:
-        nf = torch.from_numpy(node_feats[ss:ss + sc].copy())
-        nids = torch.from_numpy(node_ids[ss:ss + sc].copy())
-        ei = torch.stack([
-            torch.from_numpy(edge_src[es:es + ec].copy()),
-            torch.from_numpy(edge_dst[es:es + ec].copy()),
-        ])
-
-        ei_np = ei.numpy()
-        nf[:, CC_IDX] = torch.from_numpy(clustering_coefficients(ei_np, sc))
-        nf[:, IN_DEG_IDX] = degree(ei[1], num_nodes=sc).float()
-        nf[:, OUT_DEG_IDX] = degree(ei[0], num_nodes=sc).float()
-
-        graphs.append(Data(
-            x=nf,
-            edge_index=ei,
-            edge_attr=torch.from_numpy(edge_feats[es:es + ec].copy()),
-            node_id=nids,
-            y=torch.tensor([y_val], dtype=torch.long),
-            attack_type=torch.tensor([at_val], dtype=torch.long),
-        ))
-    return graphs
 
 
 def _assemble_chunk_numpy(
@@ -405,7 +362,7 @@ def _assemble_graphs(
     n_workers = int(os.environ.get("KD_GAT_GRAPH_WORKERS", default_workers))
     chunk_size = max(500, len(win_specs) // (n_workers * 16)) if n_workers > 1 else len(win_specs)
 
-    # Convert to numpy once — _assemble_chunk works with numpy arrays.
+    # Convert to numpy once — _assemble_chunk_numpy works with numpy arrays.
     nf_np = all_node_feats.numpy()
     ni_np = all_node_ids.numpy()
     es_np = all_edge_src.numpy()
@@ -415,7 +372,8 @@ def _assemble_graphs(
 
     if n_workers <= 1 or len(win_specs) <= chunk_size:
         log.info("graph_assembly_start", n_windows=len(win_specs), n_workers=1, mode="sequential")
-        return _assemble_chunk(nf_np, ni_np, es_np, ed_np, ef_np, win_specs)
+        result = _assemble_chunk_numpy(nf_np, ni_np, es_np, ed_np, ef_np, win_specs)
+        return _numpy_to_data(*result)
 
     # ── Parallel path (fork — safe because preprocessing is CPU-only) ──
     # Workers return numpy arrays (standard pickle/memcpy IPC), not torch

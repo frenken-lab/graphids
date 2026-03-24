@@ -271,10 +271,10 @@ class TestClusteringCoefficients:
 
 
 class TestAssembleChunk:
-    """_assemble_chunk: unit test for the graph assembly worker function."""
+    """Test graph assembly via _assemble_chunk_numpy + _numpy_to_data."""
 
     def test_single_window(self):
-        from graphids.core.preprocessing.features import _assemble_chunk
+        from graphids.core.preprocessing.features import _assemble_chunk_numpy, _numpy_to_data
         # 3 nodes, 2 edges (0→1, 1→2), local indices — numpy arrays
         node_feats = np.zeros((3, 35), dtype=np.float32)
         node_ids = np.array([10, 20, 30], dtype=np.int64)
@@ -283,7 +283,8 @@ class TestAssembleChunk:
         edge_feats = np.zeros((2, 11), dtype=np.float32)
         specs = [(0, 3, 0, 2, 0, 0)]  # s_start, s_count, e_start, e_count, y, at
 
-        graphs = _assemble_chunk(node_feats, node_ids, edge_src, edge_dst, edge_feats, specs)
+        result = _assemble_chunk_numpy(node_feats, node_ids, edge_src, edge_dst, edge_feats, specs)
+        graphs = _numpy_to_data(*result)
         assert len(graphs) == 1
         g = graphs[0]
         assert g.x.shape == (3, 35)
@@ -294,7 +295,7 @@ class TestAssembleChunk:
         assert not torch.isnan(g.x).any()
 
     def test_multiple_windows(self):
-        from graphids.core.preprocessing.features import _assemble_chunk
+        from graphids.core.preprocessing.features import _assemble_chunk_numpy, _numpy_to_data
         # 2 windows: first has 2 nodes/1 edge, second has 3 nodes/2 edges
         node_feats = np.zeros((5, 35), dtype=np.float32)
         node_ids = np.array([1, 2, 3, 4, 5], dtype=np.int64)
@@ -306,7 +307,8 @@ class TestAssembleChunk:
             (2, 3, 1, 2, 0, 2),  # window 2: 3 nodes, 2 edges, y=0, at=2
         ]
 
-        graphs = _assemble_chunk(node_feats, node_ids, edge_src, edge_dst, edge_feats, specs)
+        result = _assemble_chunk_numpy(node_feats, node_ids, edge_src, edge_dst, edge_feats, specs)
+        graphs = _numpy_to_data(*result)
         assert len(graphs) == 2
         assert graphs[0].x.shape[0] == 2
         assert graphs[1].x.shape[0] == 3
