@@ -212,7 +212,7 @@ def _eval_unsupervised(cfg, val_data, test_scenarios, device, model_name, module
 
 def eval_fusion(cfg, val_data, test_scenarios, device) -> dict:
     """Evaluate fusion agent via Lightning test loop."""
-    from .fusion import RLFusionModule, _bandit_train_step, _dqn_train_step
+    from .fusion import RLFusionModule
 
     vgae = load_model(cfg, "vgae", "autoencoder", device)
     gat = load_model(cfg, "gat", cfg.gat_stage, device)
@@ -228,12 +228,12 @@ def eval_fusion(cfg, val_data, test_scenarios, device) -> dict:
         from graphids.core.models.dqn import EnhancedDQNFusionAgent
         agent = EnhancedDQNFusionAgent.from_config(fusion_cfg, device=str(device), inference=True)
         agent.load_checkpoint(ckpt)
-        module = RLFusionModule(agent, _dqn_train_step, "optimizer")
+        module = RLFusionModule(agent, "optimizer")
     elif method == "bandit":
         from graphids.core.models.bandit import NeuralLinUCBAgent
         agent = NeuralLinUCBAgent.from_config(fusion_cfg, device=str(device))
         agent.load_checkpoint(ckpt)
-        module = RLFusionModule(agent, _bandit_train_step, "backbone_optimizer")
+        module = RLFusionModule(agent, "backbone_optimizer")
     elif method == "mlp":
         from graphids.core.models.fusion_baselines import MLPFusionModule
         module = MLPFusionModule.from_checkpoint(ckpt, cfg)

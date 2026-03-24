@@ -14,12 +14,12 @@ import structlog
 from .evaluation import evaluate
 from .fusion import train_fusion
 from .temporal import train_temporal
-from .training import train_autoencoder, train_curriculum, train_normal
+from .training import train_stage
 
 STAGE_FNS = {
-    "autoencoder": train_autoencoder,
-    "curriculum":  train_curriculum,
-    "normal":      train_normal,
+    "autoencoder": train_stage,
+    "curriculum":  train_stage,
+    "normal":      train_stage,
     "fusion":      train_fusion,
     "evaluation":  evaluate,
     "temporal":    train_temporal,

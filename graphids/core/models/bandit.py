@@ -301,6 +301,7 @@ class NeuralLinUCBAgent:
             "avg_reward": rewards.mean().item(),
             "avg_alpha": alphas.mean().item(),
             "alpha_std": alphas.std().item(),
+            "avg_ucb_width": float(np.mean(self._ucb_widths[-50:])) if self._ucb_widths else 0.0,
         }
         if backbone_loss is not None:
             result["backbone_loss"] = backbone_loss

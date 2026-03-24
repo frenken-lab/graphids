@@ -1,4 +1,4 @@
-"""Training stages: autoencoder, curriculum, normal."""
+"""Training stages: generic runner for autoencoder, curriculum, normal."""
 
 from __future__ import annotations
 
@@ -9,14 +9,8 @@ from pathlib import Path
 
 import pytorch_lightning as pl
 import torch
-import torch.nn.functional as F
 
-
-from graphids.core.preprocessing import CANBusDataModule
-
-from .eval_inference import graph_label
-from .modules import CurriculumDataModule, DGIModule, GATModule, VGAEModule
-from .trainer_factory import load_model, make_trainer, prepare_kd
+from .trainer_factory import build_datamodule, build_module, make_trainer
 
 log = structlog.get_logger()
 
@@ -51,125 +45,26 @@ def _resume_ckpt_path(cfg, stage: str) -> str | None:
     return None
 
 
-def _save_and_cleanup(module, trainer, cfg, stage: str, label: str | None = None) -> dict:
+def _save_and_cleanup(module, trainer, cfg, stage: str) -> dict:
     """Extract results after training. ModelCheckpoint already saved the model."""
     ckpt = getattr(trainer.checkpoint_callback, "best_model_path", "")
     metrics = {}
     if trainer.callback_metrics:
         metrics = {k: v.item() if hasattr(v, "item") else v
                    for k, v in trainer.callback_metrics.items()}
-    log.info("training_complete", label=label or stage, checkpoint=ckpt)
+    log.info("training_complete", stage=stage, checkpoint=ckpt)
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     return {"checkpoint": ckpt, "metrics": metrics}
 
 
-def _training_setup(cfg) -> tuple[CANBusDataModule, torch.device]:
-    """Common setup: seed, datamodule, populate config, resolve device."""
+def train_stage(cfg) -> dict:
+    """Generic training for autoencoder/curriculum/normal stages."""
+    stage = cfg.stage
     pl.seed_everything(cfg.seed)
-    dm = CANBusDataModule.from_cfg(cfg)
-    dm.setup("fit")
-    dm.populate_config(cfg)
-    device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
-    return dm, device
-
-
-def train_autoencoder(cfg) -> dict:
-    """Train unsupervised model (VGAE/GAE/DGI). Returns result dict with checkpoint and metrics."""
-    dm, device = _training_setup(cfg)
-
-    if cfg.model_type == "dgi":
-        module = DGIModule(cfg)
-        label = "DGI"
-    else:
-        teacher, projection = prepare_kd(cfg, "vgae", device)
-        module = VGAEModule(cfg, teacher=teacher, projection=projection)
-        label = "GAE" if not cfg.vgae.get("variational", True) else "VGAE"
-
-    trainer = make_trainer(cfg, "autoencoder")
-    trainer.fit(module, datamodule=dm, ckpt_path=_resume_ckpt_path(cfg, "autoencoder"))
-    return _save_and_cleanup(module, trainer, cfg, "autoencoder", label)
-
-
-def train_curriculum(cfg) -> dict:
-    """Train GAT with VGAE-guided curriculum learning. Returns result dict with checkpoint and metrics."""
-    dm, device = _training_setup(cfg)
-
-    # Load VGAE for difficulty scoring
-    vgae = load_model(cfg, "vgae", "autoencoder", device)
-
-    # Split and score
-    normals = [g for g in dm.train_dataset if graph_label(g) == 0]
-    attacks = [g for g in dm.train_dataset if graph_label(g) == 1]
-    scores = _score_difficulty(vgae, normals, device, canid_weight=cfg.vgae.canid_weight)
-    del vgae
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()  # free VGAE VRAM before loading GAT teacher
-
-    teacher, _ = prepare_kd(cfg, "gat", device)
-    module = GATModule(cfg, teacher=teacher)
-    trainer = make_trainer(cfg, "curriculum")
-
-    cdm = CurriculumDataModule(normals, attacks, scores, list(dm.val_dataset), cfg)
-    trainer.fit(module, datamodule=cdm, ckpt_path=_resume_ckpt_path(cfg, "curriculum"))
-    return _save_and_cleanup(module, trainer, cfg, "curriculum", "GAT")
-
-
-def train_normal(cfg) -> dict:
-    """Train GAT with standard cross-entropy (no curriculum). Returns result dict with checkpoint and metrics."""
-    dm, device = _training_setup(cfg)
-
-    teacher, _ = prepare_kd(cfg, "gat", device)
-    module = GATModule(cfg, teacher=teacher)
-
-    trainer = make_trainer(cfg, "normal")
-    trainer.fit(module, datamodule=dm, ckpt_path=_resume_ckpt_path(cfg, "normal"))
-    return _save_and_cleanup(module, trainer, cfg, "normal", "GAT (normal)")
-
-
-def _score_difficulty(
-    vgae_model, graphs, device, chunk_size: int = 500, canid_weight: float = 0.1
-) -> list[float]:
-    """Score each graph's reconstruction difficulty using trained VGAE.
-
-    Memory optimization: Processes graphs in chunks and clears GPU cache between
-    chunks to prevent memory accumulation on large datasets.
-    """
-    from torch_geometric.data import Batch
-    from torch_geometric.utils import scatter
-
-    scores: list[float] = []
-    was_training = vgae_model.training
-    vgae_model.eval()
-    try:
-        total_chunks = (len(graphs) + chunk_size - 1) // chunk_size
-
-        for chunk_idx in range(total_chunks):
-            start = chunk_idx * chunk_size
-            end = min(start + chunk_size, len(graphs))
-            chunk_graphs = graphs[start:end]
-
-            with torch.no_grad():
-                batch = Batch.from_data_list([g.clone() for g in chunk_graphs]).to(device, non_blocking=True)
-                edge_attr = getattr(batch, "edge_attr", None)
-                cont, canid_logits, _, _, _, _ = vgae_model(
-                    batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr,
-                    node_id=batch.node_id,
-                )
-                # Per-graph losses via scatter reduction
-                node_mse = (cont - batch.x).pow(2).mean(dim=1)
-                graph_mse = scatter(node_mse, batch.batch, reduce="mean")
-                node_ce = F.cross_entropy(canid_logits, batch.node_id, reduction="none")
-                graph_ce = scatter(node_ce, batch.batch, reduce="mean")
-                scores.extend((graph_mse + canid_weight * graph_ce).tolist())
-                del batch
-                torch.cuda.empty_cache()
-
-            if (chunk_idx + 1) % 10 == 0:
-                log.info("difficulty_scoring_progress", chunks_done=chunk_idx + 1, total=total_chunks)
-
-        return scores
-    finally:
-        vgae_model.train(was_training)
+    dm, device = build_datamodule(cfg, stage)
+    module = build_module(cfg, stage, device)
+    trainer = make_trainer(cfg, stage)
+    trainer.fit(module, datamodule=dm, ckpt_path=_resume_ckpt_path(cfg, stage))
+    return _save_and_cleanup(module, trainer, cfg, stage)

@@ -46,6 +46,120 @@ def make_trainer(cfg, stage: str, **overrides) -> pl.Trainer:
     return pl.Trainer(**kwargs)
 
 
+def build_datamodule(cfg, stage: str) -> tuple[pl.LightningDataModule, torch.device]:
+    """Build DataModule + resolve device for any training stage."""
+    device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+
+    if stage == "fusion":
+        from .fusion import FusionDataModule
+        dm = FusionDataModule(cfg)
+        dm.setup("fit")
+        return dm, dm.device
+
+    # All graph-based stages start from CANBusDataModule
+    from graphids.core.preprocessing import CANBusDataModule
+    raw_dm = CANBusDataModule.from_cfg(cfg)
+    raw_dm.setup("fit")
+    raw_dm.populate_config(cfg)
+
+    if stage == "curriculum":
+        dm = _build_curriculum_dm(raw_dm, cfg, device)
+        return dm, device
+
+    return raw_dm, device
+
+
+def _build_curriculum_dm(raw_dm, cfg, device):
+    """Score difficulty with VGAE, build CurriculumDataModule."""
+    import gc
+
+    import torch.nn.functional as F
+    from torch_geometric.data import Batch
+    from torch_geometric.utils import scatter
+
+    from .eval_inference import graph_label
+    from .modules import CurriculumDataModule
+
+    vgae = load_model(cfg, "vgae", "autoencoder", device)
+    normals = [g for g in raw_dm.train_dataset if graph_label(g) == 0]
+    attacks = [g for g in raw_dm.train_dataset if graph_label(g) == 1]
+
+    # Score difficulty via VGAE reconstruction error
+    scores: list[float] = []
+    was_training = vgae.training
+    vgae.eval()
+    try:
+        chunk_size = 500
+        canid_weight = cfg.vgae.canid_weight
+        for start in range(0, len(normals), chunk_size):
+            chunk = normals[start : start + chunk_size]
+            with torch.no_grad():
+                batch = Batch.from_data_list([g.clone() for g in chunk]).to(device, non_blocking=True)
+                edge_attr = getattr(batch, "edge_attr", None)
+                cont, canid_logits, _, _, _, _ = vgae(
+                    batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr,
+                    node_id=batch.node_id,
+                )
+                node_mse = (cont - batch.x).pow(2).mean(dim=1)
+                graph_mse = scatter(node_mse, batch.batch, reduce="mean")
+                node_ce = F.cross_entropy(canid_logits, batch.node_id, reduction="none")
+                graph_ce = scatter(node_ce, batch.batch, reduce="mean")
+                scores.extend((graph_mse + canid_weight * graph_ce).tolist())
+                del batch
+                torch.cuda.empty_cache()
+    finally:
+        vgae.train(was_training)
+
+    del vgae
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return CurriculumDataModule(normals, attacks, scores, list(raw_dm.val_dataset), cfg)
+
+
+def build_module(cfg, stage: str, device: torch.device) -> pl.LightningModule:
+    """Build the Lightning module for any training stage."""
+    if stage == "autoencoder":
+        from .modules import DGIModule, VGAEModule
+        if cfg.model_type == "dgi":
+            return DGIModule(cfg)
+        teacher, projection = prepare_kd(cfg, "vgae", device)
+        return VGAEModule(cfg, teacher=teacher, projection=projection)
+    elif stage in ("normal", "curriculum"):
+        from .modules import GATModule
+        teacher, _ = prepare_kd(cfg, "gat", device)
+        return GATModule(cfg, teacher=teacher)
+    elif stage == "fusion":
+        return _build_fusion_module(cfg, device)
+    else:
+        raise ValueError(f"Unknown training stage: {stage}")
+
+
+def _build_fusion_module(cfg, device: torch.device) -> pl.LightningModule:
+    """Build fusion module per method."""
+    method = cfg.fusion.method
+    if method == "dqn":
+        from .fusion import RLFusionModule
+        from graphids.core.models.dqn import EnhancedDQNFusionAgent
+        agent = EnhancedDQNFusionAgent.from_config(cfg, device=str(device))
+        return RLFusionModule(agent, "optimizer")
+    elif method == "bandit":
+        from .fusion import RLFusionModule
+        from graphids.core.models.bandit import NeuralLinUCBAgent
+        agent = NeuralLinUCBAgent.from_config(cfg, device=str(device))
+        return RLFusionModule(agent, "backbone_optimizer")
+    elif method == "mlp":
+        from graphids.core.models.fusion_baselines import MLPFusionModule
+        from graphids.core.models.registry import fusion_state_dim
+        return MLPFusionModule(state_dim=fusion_state_dim(), hidden_dims=cfg.fusion.mlp_hidden_dims, lr=cfg.fusion.lr)
+    elif method == "weighted_avg":
+        from graphids.core.models.fusion_baselines import WeightedAvgModule
+        return WeightedAvgModule(lr=cfg.fusion.lr, decision_threshold=cfg.fusion.decision_threshold)
+    else:
+        raise ValueError(f"Unknown fusion method: {method}")
+
+
 def prepare_kd(
     cfg, model_type: str, device: torch.device,
 ) -> tuple[nn.Module | None, nn.Linear | None]:
