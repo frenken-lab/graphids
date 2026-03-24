@@ -105,6 +105,10 @@ def evaluate(cfg) -> dict:
     if test_metrics:
         all_metrics["test"] = test_metrics
 
+    import json
+    Path("metrics.json").write_text(json.dumps(all_metrics, indent=2, default=float))
+    log.info("metrics_saved", path=str(Path.cwd() / "metrics.json"))
+
     cleanup()
     return {"metrics": all_metrics}
 

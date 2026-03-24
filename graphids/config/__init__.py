@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from omegaconf import MISSING, OmegaConf
+from omegaconf import MISSING, DictConfig, OmegaConf
 
 from .constants import (  # noqa: F401
     CATALOG_PATH,
@@ -31,6 +32,26 @@ from .constants import (  # noqa: F401
     VALID_SCALES,
     compute_preprocessing_hash,
 )
+
+# ---------------------------------------------------------------------------
+# OmegaConf custom resolver: identity_hash
+# ---------------------------------------------------------------------------
+# Produces an 8-char hash from a stage's identity_keys (defined in pipeline.yaml).
+# Used in config.yaml interpolation:  ${identity_hash:${stage}}
+# Stages with no identity_keys return empty string (path unchanged).
+
+
+def _identity_hash_resolver(stage: str, *, _root_: DictConfig) -> str:
+    stage_def = PIPELINE_YAML.get("stages", {}).get(stage, {})
+    keys = stage_def.get("identity_keys", [])
+    if not keys:
+        return ""
+    pairs = [f"{k}={OmegaConf.select(_root_, k, default='_default_')}" for k in sorted(keys)]
+    return "_" + hashlib.sha256("|".join(pairs).encode()).hexdigest()[:8]
+
+
+OmegaConf.register_new_resolver("identity_hash", _identity_hash_resolver)
+
 
 # ---------------------------------------------------------------------------
 # Environment (KD_GAT_* env vars with defaults)

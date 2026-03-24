@@ -90,10 +90,15 @@ def _write_json(data, path: Path, compact: bool = True) -> None:
 
 def lake_run_dir(
     lake_root, dataset, model_type, scale, stage, seed=42, production=False,
+    identity_hash="",
 ) -> Path:
-    """Reconstruct run directory path for existing runs on disk."""
+    """Reconstruct run directory path for existing runs on disk.
+
+    identity_hash: 8-char hash from identity_keys (new path format), or "" for legacy paths.
+    """
     tier = "production" if production else f"dev/{os.environ.get('USER', 'unknown')}"
-    return Path(lake_root) / tier / dataset / f"{model_type}_{scale}_{stage}" / f"seed_{seed}"
+    suffix = f"_{identity_hash}" if identity_hash else ""
+    return Path(lake_root) / tier / dataset / f"{model_type}_{scale}_{stage}{suffix}" / f"seed_{seed}"
 
 
 def _resolve_ess(ess_root: Optional[Path]) -> Path:

@@ -46,6 +46,12 @@ Path vars (`lake_root`) flow through Hydra `oc.env` resolvers in `config.yaml`. 
 
 ## Path layout
 
-`{lake_root}/{production|dev/user}/{dataset}/{model_type}_{scale}_{stage}[_{aux}]/seed_{N}`
+`{lake_root}/{production|dev/user}/{dataset}/{model_type}_{scale}_{stage}_{identity_hash}/seed_{N}`
 
 `lake_root` defaults to `experimentruns` when `KD_GAT_LAKE_ROOT` is unset.
+
+The `identity_hash` suffix is an 8-char SHA256 derived from the stage's `identity_keys` (defined in `pipeline.yaml`). It prevents run directory collisions between ablation configs that share the same model_type+scale+stage. Computed by the `identity_hash` custom OmegaConf resolver registered in `graphids/config/__init__.py`.
+
+## DuckDB catalog
+
+`{lake_root}/catalog/kd_gat.duckdb` — `experiments` table with flat metric columns + `config JSON` + `identity_hash`. Written by `_append_to_catalog()` in `graphids/pipeline/stages/__init__.py` after each stage completes. Best-effort (never fails the training job). Catalog is disposable — rebuildable from filesystem.

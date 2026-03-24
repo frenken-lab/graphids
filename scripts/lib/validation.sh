@@ -13,12 +13,13 @@ _KD_VALIDATION_LOADED=1
 
 kd_run_dir() {
     # Build canonical run directory path.
-    # Usage: kd_run_dir <lake_root> <dataset> <model_type> <scale> <stage> [seed] [aux]
-    # Output: {lake_root}/{dataset}/{model}_{scale}_{stage}[_{aux}]/seed_{N}
+    # Usage: kd_run_dir <lake_root> <dataset> <model_type> <scale> <stage> [seed] [suffix]
+    # Output: {lake_root}/{dataset}/{model}_{scale}_{stage}[_{suffix}]/seed_{N}
+    # suffix: identity hash (e.g., "a3f2b1c9") or legacy aux label
     local lake_root="$1" dataset="$2" model="$3" scale="$4" stage="$5"
-    local seed="${6:-42}" aux="${7:-}"
+    local seed="${6:-42}" suffix="${7:-}"
     local run_name="${model}_${scale}_${stage}"
-    [[ -n "$aux" ]] && run_name="${run_name}_${aux}"
+    [[ -n "$suffix" ]] && run_name="${run_name}_${suffix}"
     echo "${lake_root}/${dataset}/${run_name}/seed_${seed}"
 }
 
