@@ -26,16 +26,6 @@ PyTorch version ←→ PyG extension wheels (torch-scatter, torch-sparse, torch-
 | torch-geometric | 2.7.0 | PyPI |
 | RAPIDS | Not integrated — removed. Single uv env. |
 
-## How to Upgrade Torch
-
-1. Check `https://data.pyg.org/whl/` for the new torch version's wheel page
-2. Verify the page returns HTTP 200 and has `cp312-linux_x86_64` wheels
-3. Update `pyproject.toml`:
-   - `torch>=X.Y.0,<X.Z` in `[project.dependencies]`
-   - PyG flat index URL in `[[tool.uv.index]]`
-4. `rm uv.lock && uv sync --extra dev`
-5. Verify: `.venv/bin/python -c "import torch; import torch_scatter; print('OK')"`
-
 ## Traps to Avoid
 
 - **`torch>=2.6`** without upper bound: resolves to latest with no PyG wheels. Always pin `<next_major`.

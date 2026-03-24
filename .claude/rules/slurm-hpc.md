@@ -28,7 +28,6 @@ When creating or modifying a SLURM `.sh` script, follow these conventions:
 | `--mem` | `48G` | Only if `sacct` shows MaxRSS > 40G for this job type |
 | `--cpus-per-task` | `4` | Multi-worker DataLoader (`num_workers > 2`) or multi-concurrent Ray trials |
 | `--gres` | `gpu:1` | Never request `gpu:v100:1` — use generic `gpu:1` for scheduler flexibility |
-| `--time` | `08:00:00` | Increase for Phase B full training (200 epochs) |
 
 **Right-size resources.** Over-requesting memory/CPUs increases your scheduler footprint and slows queue priority. Check actual usage with `sacct -j <JOBID> -o MaxRSS,ReqMem`. Historical: training jobs use 8-20G RAM; tune sweeps use 5-15G.
 
@@ -120,47 +119,6 @@ Data staging uses a 3-tier storage hierarchy. `scripts/data/stage_data.sh` manag
 
 1. **NFS → Scratch**: Skipped if marker exists and source file count matches. The 90-day scratch purge deletes the marker, triggering a fresh sync automatically.
 2. **Scratch → TMPDIR**: Skipped if `$TMPDIR/kd-gat-data/cache/` already exists (shouldn't happen since TMPDIR is per-job, but guards against re-sourcing).
-
-### When to Re-stage
-
-- After rebuilding preprocessed caches (`cache-*.sh` jobs) — new files change the count, marker auto-invalidates
-- After scratch purge (90 days idle) — marker is deleted, next job auto-syncs
-- Manual: `rm /fs/scratch/PAS1266/kd-gat-data/cache/.staged_marker` to force re-sync
-
-## 3-Layer Validation Protocol
-
-**Before submitting any new or modified job to `gpu` partition, validate in layers:**
-
-### Layer 1: Dry-Run (login node, no GPU, ~2s)
-
-```bash
-CUDA_VISIBLE_DEVICES="" .venv/bin/python -m graphids.cli tune \
-    --dry-run --model <stage> --dataset <dataset> --scale <scale>
-```
-
-Validates: config resolution, data directory existence, search space construction, Ray imports, Tuner construction, subprocess command. Catches ~80% of errors (config typos, missing data, import issues, wrong paths).
-
-### Layer 2: GPU Smoke Test (gpudebug partition, ~5-10 min)
-
-```bash
-sbatch --account=$KD_GAT_SLURM_ACCOUNT scripts/slurm/smoke_test.sbatch <stage>
-```
-
-Runs 1 trial, 2 epochs, on `hcrl_ch` (smallest dataset). Uses `gpudebug` partition (1hr max, priority scheduling — starts within minutes). Validates: GPU access, CUDA context, data loading, model forward/backward pass, checkpoint save, metrics reporting.
-
-### Layer 3: Production (gpu partition)
-
-Only after Layer 2 passes. Submit the real job with full dataset/samples.
-
-### When to Use Each Layer
-
-| Change | Layer 1 | Layer 2 | Layer 3 |
-|--------|---------|---------|---------|
-| New config field / YAML change | Required | Required | Then submit |
-| Code change in model/training | Required | Required | Then submit |
-| New SLURM script or env change | Skip | Required | Then submit |
-| Same code, different dataset | Required | Skip | Submit |
-| Re-run after OOM/timeout | Skip | Skip | Adjust resources, submit |
 
 ## Login Node Safety
 

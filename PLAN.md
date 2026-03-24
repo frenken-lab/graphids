@@ -1,176 +1,73 @@
 # KD-GAT Session Plan
 
-> Last updated: 2026-03-21
+> Last updated: 2026-03-23
 
 ## Active Plan
 
-**Framework consolidation: Hydra-as-framework + Lightning experiment management** — see `plans/framework-consolidation.research.md`
+### Ablation pipeline — READY TO RUN (pending model variants)
 
-- Phase A (done): Lightning save_hyperparameters, CSVLogger fix, EvalArtifactCallback, RunMetadataCallback
-- Phase B (done): Deleted cli.py, optuna_sweep.py, subprocess_utils.py, search_spaces/. Added `__main__.py` with @hydra.main. -651 net lines.
-- Phase C (done): Deleted `graphids/storage/` (1,107 lines). All I/O through Lightning + Hydra + stdlib. -1,220 net lines.
-- Phase D (done): `hydra.utils.instantiate()` for callbacks + scheduler dispatch. -5 net lines.
-- Phase E (done): Fixed broken scripts, updated rules files, removed ray dep, cleaned stale references. -110 net lines.
+The manifest orchestrator is built (`758d66f`). `ablation.yaml` has 16 configs covering 6 paper claims. Dry-run produces 62 dedup'd SLURM jobs (vs 160 naive). But several configs reference model/stage variants that don't exist yet.
+
+**What's done:**
+- `ManifestBuilder` — agnostic YAML plan builder (add/factorial/sweep_axis/write)
+- `submit_manifest()` — reads any YAML manifest, builds SLURM DAG with stage deduplication via `identity_keys` in `pipeline.yaml`
+- `ablation.yaml` — 16 configs using Hydra dotlist keys, `sweep` + `defaults` + `configs` format
+- CLI: `python -m graphids.pipeline.orchestration.manifest ablation.yaml --dry-run`
+
+**What's missing to run the ablation:**
+
+1. **GCN/SAGE/GPS conv variants in `_make_conv`** — `conv_gatv1` and `conv_gps` configs override `vgae.conv_type` and `gat.conv_type`. The autoencoder and GAT modules need to handle `conv_type` values beyond `gatv2`. Check what `_make_conv()` currently supports in the VGAE and GAT architectures.
+
+2. **GAE unsupervised method** — `unsup_gae` config needs a GAE (non-variational) autoencoder. Currently only VGAE exists. GAE is simpler (no KL divergence, no reparameterization). Decide: separate model_type `gae` in pipeline.yaml, or a flag on the existing VGAE module (`variational: false`)?
+
+3. **DGI unsupervised method** — `unsup_dgi` config needs Deep Graph Infomax. This is a different architecture (contrastive, not reconstructive). Likely a separate model_type + stage function. Lower priority — can defer to a future ablation round.
+
+4. **`normal` stage evaluation path** — `gat_only` config runs `stages: [normal, evaluation]`. The evaluation stage currently expects a fusion checkpoint (depends_on fusion). When running without fusion, evaluation needs to handle missing upstream — either skip fusion metrics or evaluate the GAT directly.
+
+5. **`vgae_only` evaluation path** — same issue: `stages: [autoencoder, evaluation]` skips GAT and fusion. Evaluation needs to handle VGAE-only scoring.
+
+6. **`small_kd` scale** — `kd_student` config uses `scale: small_kd`. This needs:
+   - A `small_kd` preset in `models.yaml` (or reuse `small` with KD auxiliaries)
+   - Teacher dependency logic in the orchestrator (when scale contains `_kd`, add dependency on `large`-scale teacher job)
+   - KD loss wiring in the training loop
+
+**Suggested approach for next session:**
+1. Start with what's simplest: verify `normal` and `vgae_only` eval paths work
+2. Add `gat` (v1) conv_type support to `_make_conv()` — likely a 1-line change
+3. Run the subset of configs that work now: `--filter loss_x_curriculum_ce_curriculum loss_x_curriculum_focal_curriculum fusion_bandit fusion_weighted_avg`
+4. Add remaining model variants incrementally
 
 ## Recently Completed
 
-- **Test suite + codebase hardening** (2026-03-22) — Built test suite from 47→85 tests (82 pass, 3 skip-marked temporal). Fixed 7 runtime bugs: missing `edge_dim` property, VGAE 5→6 unpack, MLP/WeightedAvg missing `test_step`+`test_metrics`, `_restore_best_weights` skipped for baselines, `find_vgae_threshold` crashes on empty/single-class data, `from_cfg()` ignoring preprocessing params, `_score_difficulty` leaking eval mode. Completed 11 code quality tasks: shared `fusion_test_metrics()` factory in registry.py, `trainer.test()` return value used (deleted `extract_metrics`), hardcoded `batch_size=128` → `cfg.evaluation.batch_size`, teacher offload context manager, `graph_label()` utility, `_get_kd_config()` helper, `_lerp()` for curriculum, 3 config fields added (`attention_sample_limit`, `temporal.batch_size`, `cka_max_samples`), `PreprocessingConfig` wired through `from_cfg()`. Added coverage: GPS conv, `_infer_attack_type`, `CurriculumDataModule`, fusion checkpoint roundtrips, `CANBusDataset._build_graphs` integration, config dry-run. Fixed I/O wiring: test_subdirs fallback silently used training data (now warns+skips), partial cache detection via `.complete` marker, `load_model` early checkpoint check with clear error, pipeline sbatch inter-stage checkpoint verification. Created `test_pipeline_stages.sbatch` (GPU) and `test_preprocessing.sbatch` (CPU) SLURM scripts.
-- **Evaluation decomposition** (2026-03-21) — Rewrote `evaluation.py` as EVAL_ORDER dispatcher + `eval_gat()`, `eval_vgae()`, `eval_fusion()`, `eval_temporal()` functions. All models now eval via `trainer.test()` — one pattern. Added `test_step` + `MetricCollection` to `TemporalLightningModule`, `MLPFusionModule`, `WeightedAvgModule`. Created `DQNFusionModule` + `BanditFusionModule` eval-only wrappers in `fusion.py`. Adapted `test_model()` to accept pre-built DataLoader. Deleted manual inference loops (`_evaluate_fusion`, `_evaluate_temporal`). Fixed stale `compute_metrics`/`probe_embedding_dim` imports in `temporal.py`, stale `_vgae_threshold` import in `run_pygod_baselines.py`. DQN/bandit training wrapped in Lightning (steps 7-9 completed same session). See `plans/eval-decomposition.md`.
-- **DataModule + import restructure + num_ids fix** (2026-03-21) — Created `CANBusDataModule(LightningDataModule)` in `core/preprocessing/datamodule.py`. Fixed 3 broken imports. Migrated all 6 callers to DataModule. Added `populate_config(cfg)` to write `num_ids`/`in_channels` into config after setup — eliminated manual threading from all stage functions, model constructors, `load_model()`, `prepare_kd()`. Deleted `_tensor_count()`, `MMAP_TENSOR_LIMIT`, inlined `graph_label()`. Fixed `cka.py` arg order bug. See `plans/adaptive-herding-alpaca.md`.
-- **Preprocessing rewrite** (2026-03-20) — Replaced 11-file, 2,150-line preprocessing (adapters, cache, schema, engine, vocabulary, parallel) with 4-file, 370-line library-first implementation. CANBusDataset(InMemoryDataset) + Polars lazy scan + group_by_dynamic + to_torch(). 31-D node features, 12-D edge features (was 26-D/11-D — models need input dim update). Old files deleted, callers not yet migrated. See `plans/codebase-reduction.md` section H1.
-- **Framework consolidation Phase A+B** (2026-03-20) — Lightning experiment management + Hydra-as-framework. Deleted sweep code + Typer CLI (-919 lines), added @hydra.main entry points + callbacks (+348 lines). See `plans/framework-consolidation.research.md`.
-- **Stage executor + submitit orchestration** (2026-03-20) — extracted `execute_stage()` as single entry point for all pipeline paths (CLI, API, notebook). Replaced Dagster + custom SLURM script generation with submitit + graphlib. Deleted dagster_defs.py, pipes_slurm.py, slurm_primitives.py (-687 production lines, -43% of pipeline/orchestration). `api.py` now has full guarantees (validation, manifest, logging, archive). See `plans/stage-executor-and-launcher.research.md`.
-- **CLI move + facade enforcement + I/O leak fixes** (2026-03-19)
-- **structlog integration** (2026-03-19)
-- **StorageGateway + ArtifactMapper** (2026-03-19)
+- Generic manifest orchestrator (`758d66f`)
+- Deduplicate graph assembly + ablation builder (`c7b5231`)
+- Fix preprocessing parallelism (`83fd3f5`)
+- GPU training efficiency: deterministic batch sizing (`d88e2ed`)
 
 ## In Progress
 
 - Ops dashboard (`buckeyeguy/kd-gat-dashboard`) — running on HF Spaces
 
-## Upcoming — 2 design threads (pick 1 per session)
-
-### A. Class imbalance experiment battery — READY TO RUN
-Loss functions implemented: `ce`, `weighted_ce`, `focal` (via `training.loss_fn` config). Curriculum ablation = `training.curriculum_use_difficulty: false`.
-
-**Next session:**
-1. Write the Hydra `--multirun` sweep config for Phase 1 screening (1 dataset `hcrl_ch`, 1 seed, 50 epochs, all 4 loss strategies).
-2. Submit to SLURM gpu partition, collect F1 + AP metrics.
-3. Phase 2: top 3 strategies × all datasets × 3 seeds.
-
-See `memory/research_curriculum_imbalance.md` for background.
-
-### B. VGAE anomaly score weight tuning
-Composite score implemented: `recon + canid_weight * canid + nbr_weight * nbr` with `scatter(reduce="max")`.
-
-**Open:** Weight tuning — could search over a weight grid via Youden's J. Interacts with thread A experiments.
-
 ## Blocked
 
 (none)
-
-## Migration Phases
-
-| Phase | What | Status |
-|-------|------|--------|
-| 1a | Hydra Compose API config composition (replace ConfigHandler.resolve) | **Done** |
-| 1b | Decompose config layer (constants.py, paths.py, _hydra_bridge.py) | **Done** |
-| 1c | Collapse to lake_root-only paths, dissolve LakeConfig | **Done** |
-| 1d | Dissolve lake/ package (manifest→pipeline, catalog→pipeline, locking→core) | **Done** |
-| 1e | Hydra CLI routing (replace argparse in cli.py) | **Done** |
-| 2 | Optuna direct HPO (replace Ray Tune + sweep_pipeline + store) | **Done** |
-| 3 | Extract shared slurm_client module from pipes_slurm.py | **Done** |
-| 4 | ~~AdaptiveSlurmLauncher~~ — eliminated by flattened orchestration | **Eliminated** |
-| 5 | Typed eval decomposition + torchmetrics condensation | **Done** |
-| 5b | Lightning predict_step for eval inference | **Done** |
-| 6 | SLURMEnvironment auto-requeue | **Done** |
-| 7 | Simplify artifacts.py (ESS primary, drop MLflow fallback) | **Done** |
-| 8 | ~~Dagster daemon~~ — replaced by submitit orchestration | **Superseded** |
-| 9 | ~~Dagster partitions~~ — replaced by submitit orchestration | **Superseded** |
 
 ## 3-Pillar Architecture (target)
 
 | Pillar | Owner | Current state |
 |--------|-------|---------------|
 | **Config** | Hydra Compose + Pydantic | **Done** — 5-file config layer, Hydra config groups, lake_root-only |
-| **Orchestration** | submitit + graphlib | **Done** — execute_stage() as single entry point, submitit for SLURM submission, graphlib for DAG resolution |
-| **ML Training** | Lightning modules + stages | **Done** — All models use `trainer.test()` for eval, `trainer.fit()` for training (incl. DQN/bandit). Focal/weighted_ce loss options. Composite VGAE anomaly score. |
-| **I/O** | Lightning CSVLogger + ModelCheckpoint + callbacks | **Done** — No custom storage layer. CSVLogger for metrics, ModelCheckpoint for checkpoints, EvalArtifactCallback for eval artifacts. |
+| **Orchestration** | submitit + graphlib | **Done** — manifest-driven SLURM DAG with stage deduplication |
+| **ML Training** | Lightning modules + stages | **Done** — All models use `trainer.test()` for eval, `trainer.fit()` for training |
+| **I/O** | Lightning CSVLogger + ModelCheckpoint + callbacks | **Done** — No custom storage layer |
 
 ## Open Questions
 
-- **pixi-pack + OSC CUDA**: Verify PyTorch conda packages with bundled cudatoolkit work on OSC GPU nodes.
-
-## Decisions Made
-
-- **Hydra Compose API** (2026-03-18): hydra-core + omegaconf (no hydra-zen). Config groups in conf/model/, conf/auxiliary/, conf/dataset/. Same resolve() signature, Hydra internals.
-- **lake_root-only paths** (2026-03-18): Single storage root. experiment_root, data_root, cache_root, stage_dir_override eliminated. KD_GAT_LAKE_ROOT (default: experimentruns).
-- **lake/ dissolved** (2026-03-18): manifest.py → pipeline/, catalog.py → pipeline/, locking.py → core/preprocessing/_locking.py.
-- **Flattened orchestration** (2026-03-18): ~~Dagster owns all SLURM submission.~~ Superseded by submitit + graphlib (2026-03-20). Phase 4 eliminated.
-- ~~**dagster-slurm Option A** (2026-03-18): Bash launcher + pixi-pack + custom preamble.~~ Superseded by submitit.
-- **Manifest as metrics SoT** (2026-03-18): _manifest.json is sole source of truth.
-
-## Next Up (after toolchain migration)
-
-- Fusion method comparison experiment
-- Evaluate research questions R1–R3
+- **GAE vs DGI**: Should these be separate model_types in pipeline.yaml or flags on the VGAE module?
+- **Eval without fusion**: Should evaluation stage auto-detect missing upstream, or should manifest configs specify a different eval stage?
 
 ## Key Reference Documents
 
-| Document | Purpose |
-|----------|---------|
-| `~/plans/pipeline-toolchain-decision.md` | Chosen toolchain + migration order |
-| `~/plans/pipeline-decoupling-analysis.md` | 5,852-line decomposition: 16% ML / 84% management |
-| `~/plans/phase1-hydra-spike.md` | Phase 1 detailed design (spike portion complete) |
-| `~/plans/fusion-redesign.md` | RL fusion analysis |
-| `~/plans/ecosystem-component-registry.md` | 24-component grocery list |
-
-## Completed
-
-- **CLI move + facade enforcement + I/O leaks** — (2026-03-19)
-  - Moved `graphids/pipeline/cli.py` → `graphids/cli.py` (shim removed)
-  - Updated pyproject.toml entry point, subprocess_utils module string, all sbatch scripts
-  - Added `compose_config` + `verify_all` to package facade re-exports
-  - Fixed 20 cross-package deep imports to use facade modules
-  - Routed `load_model`, temporal/fusion checkpoint loads through `ArtifactMapper`
-  - DQN `load_checkpoint` accepts `dict | str | Path` (mapper-friendly)
-  - Extracted `DEFAULT_LAKE_ROOT` constant, replaced hardcoded `"experimentruns"` in schema + slurm_client
-  - Normalized 2 intra-package absolute imports to relative
-  - 38 files changed, zero regressions
-- **structlog integration** — (2026-03-19)
-  - Replaced stdlib logging + MLflow with structlog processor pipeline
-  - `graphids/logging.py`: configure_logging(), JSON/console renderers, stdlib bridge
-  - Context binding via `structlog.contextvars` at stage entry points
-  - `pipeline_run_id` correlation for cross-job tracing
-- **StorageGateway + ArtifactMapper** — (2026-03-19)
-  - New `graphids/storage/` layer (7 files): gateway, mapper, paths, manifest, catalog, contracts
-  - NFS-safe atomic writes (tmpfile+fsync+rename), advisory locking (fcntl.flock)
-  - Domain-aware serialization: checkpoints, configs, eval artifacts, cache, pickle
-  - Deleted: `artifacts.py`, `eval_writers.py`, `_atomic_io.py`, `_locking.py`
-  - 215 tests pass
-- **Typed eval decomposition (Phase 5)** — (2026-03-18)
-  - Decomposed evaluation.py (743 lines, 1 file) → 4 files (784 lines total)
-  - eval_types.py: frozen dataclasses (GATResult, VGAEResult, FusionResult)
-  - eval_inference.py: typed inference functions (run_gat/vgae/fusion_inference)
-  - eval_writers.py: artifact writers (write_embeddings/attention/dqn_policy/cka)
-  - evaluation.py: slim orchestrator + compute_metrics + probe_embedding_dim
-  - MetricCollection replaces 11 individual torchmetrics instantiations
-  - binary_roc replaces sklearn roc_curve (sklearn dependency eliminated)
-  - Removed dead per-class manual computation (derivable from confusion matrix)
-  - Fixed E2E test return contract (evaluate() returns {"metrics": ...})
-  - compute_metrics and probe_embedding_dim are now public API (no underscore)
-  - All 158 non-SLURM tests pass, zero regressions
-- **Hydra CLI routing (Phase 1e)** — (2026-03-18)
-  - Replaced argparse _build_parser() with Hydra override grammar via Compose API
-  - Training: `stage=autoencoder model=vgae_large training.lr=0.001` (Hydra key=value)
-  - Non-training subcommands keep per-command argparse (orchestrate, lake, tune, etc.)
-  - Added show-config subcommand (replaces --cfg job)
-  - sweep_id/tags/ckpt_path → EnvironmentSettings (not PipelineConfig)
-  - build_cli_cmd() emits Hydra grammar for subprocess dispatch
-  - Deleted ~200 lines (_build_parser, _parse_dot_overrides, multi-seed loop)
-  - Fixed _hydra_bridge.py: tuple serialization + unknown dataset handling
-  - 3 commits, 174 tests passing, zero regressions
-- **Hydra config migration + config layer refactor** — (2026-03-18)
-  - Replaced ConfigHandler with Hydra Compose API (_hydra_bridge.py)
-  - Decomposed handler.py → constants.py + paths.py (no overlap, clear ownership)
-  - Unified env vars: path vars via Hydra oc.env, SLURM/MLflow via pydantic-settings
-  - Moved stages/variants from pipeline.yaml shadow load to Hydra config.yaml
-  - Literal-validated model_type/scale (replaces runtime _check_cross_field validator)
-  - Collapsed to lake_root-only paths (removed experiment_root, data_root, cache_root, stage_dir_override)
-  - Dissolved LakeConfig class → standalone lake_* functions in config/paths.py
-  - Dissolved lake/ package → manifest+catalog to pipeline/, locking to core/
-  - Deleted: handler.py, lake/config.py, lake/__init__.py, old models/ + auxiliaries/ dirs
-  - Added: hydra-core, omegaconf, pydantic-settings deps. Removed hydra-zen.
-  - Updated rules files (architecture.md, config-system.md, project-structure.md, code-style.md)
-  - 5 commits, 161 tests passing, zero regressions
-- **Plan CLI + manifest convergence phase B** — (2026-03-18)
-- **Structural migration (5 tasks)** — (2026-03-18)
-- **Pipeline decoupling analysis** — (2026-03-18)
-- **Pipeline layer consolidation v2** — (2026-03-17)
-- **Preprocessing module hardening** — (2026-03-17)
-- **Models layer hardening** — (2026-03-17)
-- **Architecture review & ecosystem mapping** — (2026-03-11)
-- Codebase consolidation: 12,511→9,537 lines (-24%), 55→50 files. (2026-03-10)
-- Memory/batch sizing simplification: ~600 lines removed. (2026-03-07)
-- MLflow migration: replaces W&B + lakehouse + CSVLogger. (2026-03-06)
-- Feature engineering v2.0.0: 11→26-D node features, GATv2. (2026-03-03)
+- `ablation.yaml` — 16-config experiment manifest
+- `graphids/pipeline/orchestration/manifest.py` — orchestrator
+- `graphids/config/pipeline.yaml` — DAG topology + identity_keys
