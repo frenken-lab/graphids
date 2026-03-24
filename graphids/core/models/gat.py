@@ -16,8 +16,8 @@ from torchmetrics.classification import (
     BinaryPrecision, BinaryRecall, BinarySpecificity,
 )
 
-from ._utils import (
-    InputEncoder, _make_conv, conv_forward,
+from ._conv import InputEncoder, _make_conv, conv_forward
+from ._training import (
     OOMSkipMixin, soft_label_kd_loss, focal_loss, _get_kd_config,
     teacher_on_device, build_optimizer_dict,
 )

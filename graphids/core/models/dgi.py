@@ -20,9 +20,8 @@ from torchmetrics.classification import (
     BinaryPrecision, BinaryRecall, BinarySpecificity,
 )
 
-from ._utils import OOMSkipMixin, build_optimizer_dict
-
-from ._utils import InputEncoder, build_conv_stack, conv_forward
+from ._conv import InputEncoder, build_conv_stack, conv_forward
+from ._training import OOMSkipMixin, build_optimizer_dict
 
 
 class GraphInfomaxModel(nn.Module):

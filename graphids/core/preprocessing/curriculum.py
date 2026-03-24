@@ -7,7 +7,7 @@ import math
 import pytorch_lightning as pl
 import torch
 
-from graphids.core.models._utils import compute_node_budget
+from graphids.core.models._training import compute_node_budget
 
 
 class CurriculumDynamicBatchSampler:
