@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import structlog
+import gc
 import os
+import structlog
 from pathlib import Path
 
 import pytorch_lightning as pl
@@ -13,7 +14,6 @@ import torch.nn.functional as F
 
 from graphids.core.preprocessing import CANBusDataModule
 
-from .data_loading import cleanup
 from .eval_inference import graph_label
 from .modules import CurriculumDataModule, DGIModule, GATModule, VGAEModule
 from .trainer_factory import load_model, make_trainer, prepare_kd
@@ -59,7 +59,9 @@ def _save_and_cleanup(module, trainer, cfg, stage: str, label: str | None = None
         metrics = {k: v.item() if hasattr(v, "item") else v
                    for k, v in trainer.callback_metrics.items()}
     log.info("training_complete", label=label or stage, checkpoint=ckpt)
-    cleanup()
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     return {"checkpoint": ckpt, "metrics": metrics}
 
 
@@ -102,7 +104,9 @@ def train_curriculum(cfg) -> dict:
     attacks = [g for g in dm.train_dataset if graph_label(g) == 1]
     scores = _score_difficulty(vgae, normals, device, canid_weight=cfg.vgae.canid_weight)
     del vgae
-    cleanup()  # free VGAE VRAM before loading GAT teacher
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()  # free VGAE VRAM before loading GAT teacher
 
     teacher, _ = prepare_kd(cfg, "gat", device)
     module = GATModule(cfg, teacher=teacher)

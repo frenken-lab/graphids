@@ -6,8 +6,10 @@ Dispatcher iterates EVAL_ORDER and calls per-model eval functions.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import numpy as np
 import pytorch_lightning as pl
 import structlog
 import torch
@@ -15,9 +17,13 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from graphids.core.preprocessing import CANBusDataModule
 
-from .callbacks import save_attention, save_dqn_policy, save_embeddings
-from .data_loading import cache_predictions, cleanup
+import gc
+
+from .fusion import cache_predictions
 from .eval_inference import (
+    FusionResult,
+    GATResult,
+    VGAEResult,
     capture_gat_artifacts,
     capture_vgae_artifacts,
     find_vgae_threshold,
@@ -57,8 +63,12 @@ def evaluate(cfg) -> dict:
 
     eval_fns = {
         "gat": eval_gat,
-        "vgae": eval_vgae,
-        "dgi": eval_dgi,
+        "vgae": lambda cfg, val, ts, dev: _eval_unsupervised(
+            cfg, val, ts, dev, "vgae", VGAEModule, capture_fn=capture_vgae_artifacts,
+        ),
+        "dgi": lambda cfg, val, ts, dev: _eval_unsupervised(
+            cfg, val, ts, dev, "dgi", DGIModule,
+        ),
         "fusion": eval_fusion,
         "temporal": eval_temporal,
     }
@@ -93,23 +103,24 @@ def evaluate(cfg) -> dict:
             log.warning("cka_failed", error=str(e))
 
     # Persist artifacts
-    save_embeddings(
+    _save_embeddings(
         Path.cwd(),
         artifacts.get("vgae"),
         artifacts.get("gat"),
     )
-    save_attention(Path.cwd(), artifacts.get("gat"))
-    save_dqn_policy(Path.cwd(), artifacts.get("fusion"))
+    _save_attention(Path.cwd(), artifacts.get("gat"))
+    _save_dqn_policy(Path.cwd(), artifacts.get("fusion"))
 
     test_metrics = {k: v for k, v in test_metrics.items() if v}
     if test_metrics:
         all_metrics["test"] = test_metrics
 
-    import json
     Path("metrics.json").write_text(json.dumps(all_metrics, indent=2, default=float))
     log.info("metrics_saved", path=str(Path.cwd() / "metrics.json"))
 
-    cleanup()
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     return {"metrics": all_metrics}
 
 
@@ -144,7 +155,9 @@ def eval_gat(cfg, val_data, test_scenarios, device) -> dict:
     gat_result = capture_gat_artifacts(gat_model, val_data, device, batch_size=bs, attention_limit=cfg.evaluation.attention_sample_limit)
 
     del gat_model
-    cleanup()
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     return {
         "val_metrics": val_metrics,
         "test_metrics": scenario_metrics,
@@ -152,81 +165,54 @@ def eval_gat(cfg, val_data, test_scenarios, device) -> dict:
     }
 
 
-def eval_vgae(cfg, val_data, test_scenarios, device) -> dict:
-    """Evaluate VGAE: threshold search on val, then test with threshold."""
-    vgae_model = load_model(cfg, "vgae", "autoencoder", device)
-    module = VGAEModule(cfg)
-    module.model = vgae_model
+def _eval_unsupervised(cfg, val_data, test_scenarios, device, model_name, module_cls, capture_fn=None) -> dict:
+    """Evaluate an unsupervised model (VGAE or DGI): threshold search on val, then test."""
+    model = load_model(cfg, model_name, "autoencoder", device)
+    module = module_cls(cfg)
+    module.model = model
 
     bs = cfg.evaluation.batch_size
     threshold, youden_j = find_vgae_threshold(module, val_data, batch_size=bs)
     module.test_threshold = threshold
-    module._test_errors.clear()
-    module._test_labels.clear()
+
+    # Clear accumulation lists — attribute names differ by module
+    for attr in ("_test_errors", "_test_scores", "_test_labels"):
+        acc = getattr(module, attr, None)
+        if acc is not None:
+            acc.clear()
     module.test_metrics.reset()
 
     val_metrics = test_model(module, val_data, batch_size=bs)
-    val_metrics["core"]["optimal_threshold"] = threshold
-    val_metrics["core"]["youden_j"] = youden_j
-    _log_metrics("VGAE", val_metrics)
+    val_metrics["optimal_threshold"] = threshold
+    val_metrics["youden_j"] = youden_j
+    _log_metrics(model_name.upper(), val_metrics)
 
     scenario_metrics = {}
     if test_scenarios:
         for name, tdata in test_scenarios.items():
             module.test_metrics.reset()
-            module._test_errors.clear()
-            module._test_labels.clear()
+            for attr in ("_test_errors", "_test_scores", "_test_labels"):
+                acc = getattr(module, attr, None)
+                if acc is not None:
+                    acc.clear()
             scenario_metrics[name] = test_model(module, tdata, batch_size=bs)
 
-    vgae_result = capture_vgae_artifacts(vgae_model, val_data, device, batch_size=bs)
+    artifacts = capture_fn(model, val_data, device, batch_size=bs) if capture_fn else None
 
-    del vgae_model
-    cleanup()
+    del model
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     return {
         "val_metrics": val_metrics,
         "test_metrics": scenario_metrics,
-        "artifacts": vgae_result,
-    }
-
-
-def eval_dgi(cfg, val_data, test_scenarios, device) -> dict:
-    """Evaluate DGI: discriminator-based anomaly detection (same pattern as VGAE)."""
-    dgi_model = load_model(cfg, "dgi", "autoencoder", device)
-    module = DGIModule(cfg)
-    module.model = dgi_model
-
-    bs = cfg.evaluation.batch_size
-    threshold, youden_j = find_vgae_threshold(module, val_data, batch_size=bs)
-    module.test_threshold = threshold
-    module._test_scores.clear()
-    module._test_labels.clear()
-    module.test_metrics.reset()
-
-    val_metrics = test_model(module, val_data, batch_size=bs)
-    val_metrics["core"]["optimal_threshold"] = threshold
-    val_metrics["core"]["youden_j"] = youden_j
-    _log_metrics("DGI", val_metrics)
-
-    scenario_metrics = {}
-    if test_scenarios:
-        for name, tdata in test_scenarios.items():
-            module.test_metrics.reset()
-            module._test_scores.clear()
-            module._test_labels.clear()
-            scenario_metrics[name] = test_model(module, tdata, batch_size=bs)
-
-    del dgi_model
-    cleanup()
-    return {
-        "val_metrics": val_metrics,
-        "test_metrics": scenario_metrics,
-        "artifacts": None,
+        "artifacts": artifacts,
     }
 
 
 def eval_fusion(cfg, val_data, test_scenarios, device) -> dict:
     """Evaluate fusion agent via Lightning test loop."""
-    from .fusion import BanditFusionModule, DQNFusionModule
+    from .fusion import RLFusionModule, _bandit_train_step, _dqn_train_step
 
     vgae = load_model(cfg, "vgae", "autoencoder", device)
     gat = load_model(cfg, "gat", cfg.gat_stage, device)
@@ -241,7 +227,7 @@ def eval_fusion(cfg, val_data, test_scenarios, device) -> dict:
     if method == "bandit":
         from graphids.core.models.bandit import NeuralLinUCBAgent
         agent = NeuralLinUCBAgent.from_config(fusion_cfg, device=str(device))
-        module = BanditFusionModule(agent)
+        module = RLFusionModule(agent, _bandit_train_step, "backbone_optimizer")
         agent.load_checkpoint(ckpt)
     elif method == "mlp":
         from graphids.core.models.fusion_baselines import MLPFusionModule
@@ -264,7 +250,7 @@ def eval_fusion(cfg, val_data, test_scenarios, device) -> dict:
         agent = EnhancedDQNFusionAgent.from_config(
             fusion_cfg, device=str(device), inference=True,
         )
-        module = DQNFusionModule(agent)
+        module = RLFusionModule(agent, _dqn_train_step, "optimizer")
         agent.load_checkpoint(ckpt)
 
     # Eval via trainer.test()
@@ -292,7 +278,9 @@ def eval_fusion(cfg, val_data, test_scenarios, device) -> dict:
         fusion_result = run_fusion_inference(agent, val_cache)
 
     del vgae, gat
-    cleanup()
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     return {
         "val_metrics": val_metrics,
         "test_metrics": scenario_metrics,
@@ -347,10 +335,12 @@ def eval_temporal(cfg, val_data, test_scenarios, device) -> dict | None:
         _log_metrics("Temporal", val_metrics)
 
         del temporal_model, gat
-        cleanup()
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         return {"val_metrics": val_metrics, "test_metrics": {}, "artifacts": None}
-    except Exception as e:
-        log.warning("temporal_eval_failed", error=str(e))
+    except Exception:
+        log.exception("temporal_eval_failed")
         return None
 
 
@@ -362,5 +352,64 @@ def eval_temporal(cfg, val_data, test_scenarios, device) -> dict | None:
 def _log_metrics(name: str, metrics: dict) -> None:
     log.info(
         "val_metrics", model=name,
-        **{k: round(v, 4) for k, v in metrics["core"].items() if isinstance(v, float)},
+        **{k: round(v, 4) for k, v in metrics.items() if isinstance(v, float)},
     )
+
+
+def _save_embeddings(
+    out: Path, vgae_result: VGAEResult | None, gat_result: GATResult | None,
+) -> None:
+    embed_data: dict[str, np.ndarray] = {}
+    if vgae_result is not None:
+        if vgae_result.embeddings is not None:
+            embed_data["vgae_z"] = vgae_result.embeddings
+            embed_data["vgae_labels"] = vgae_result.labels
+            embed_data["vgae_errors"] = vgae_result.errors
+            embed_data["vgae_attack_types"] = vgae_result.attack_types
+        if vgae_result.components is not None:
+            for name, arr in vgae_result.components.items():
+                embed_data[f"vgae_error_{name}"] = arr
+    if gat_result is not None and gat_result.embeddings is not None:
+        embed_data["gat_emb"] = gat_result.embeddings
+        embed_data["gat_labels"] = gat_result.labels
+        embed_data["gat_attack_types"] = gat_result.attack_types
+    if embed_data:
+        path = out / "embeddings.npz"
+        np.savez_compressed(path, **embed_data)
+        log.info("embeddings_saved", path=str(path))
+
+
+def _save_attention(out: Path, gat_result: GATResult | None) -> None:
+    if gat_result is None or not gat_result.attention:
+        return
+    attn_export: dict = {}
+    for i, entry in enumerate(gat_result.attention):
+        prefix = f"sample_{i}"
+        attn_export[f"{prefix}_graph_idx"] = entry["graph_idx"]
+        attn_export[f"{prefix}_label"] = entry["label"]
+        attn_export[f"{prefix}_edge_index"] = entry["edge_index"]
+        attn_export[f"{prefix}_node_features"] = entry["node_features"]
+        for layer_idx, aw in enumerate(entry["attention_weights"]):
+            attn_export[f"{prefix}_layer_{layer_idx}_alpha"] = aw
+    attn_export["n_samples"] = len(gat_result.attention)
+    path = out / "attention_weights.npz"
+    np.savez_compressed(path, **attn_export)
+    log.info("attention_weights_saved", samples=len(gat_result.attention), path=str(path))
+
+
+def _save_dqn_policy(out: Path, fusion_result: FusionResult | None) -> None:
+    if fusion_result is None:
+        return
+    alphas = fusion_result.scores.tolist()
+    labels = fusion_result.labels.tolist()
+    alpha_by_label: dict[str, list] = {"normal": [], "attack": []}
+    for a, lbl in zip(alphas, labels):
+        alpha_by_label["normal" if lbl == 0 else "attack"].append(a)
+    policy_data = {
+        "alphas": alphas, "labels": labels,
+        "alpha_by_label": alpha_by_label,
+        "q_values": fusion_result.q_values.tolist(),
+    }
+    path = out / "dqn_policy.json"
+    path.write_text(json.dumps(policy_data, indent=2))
+    log.info("dqn_policy_saved", path=str(path))

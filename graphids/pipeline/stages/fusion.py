@@ -2,22 +2,53 @@
 
 from __future__ import annotations
 
+import gc
 import math
 import structlog
 from pathlib import Path
 
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
+from torch_geometric.loader import DataLoader as PyGDataLoader
 
 
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 from graphids.core.preprocessing import CANBusDataModule
 
-from .data_loading import cache_predictions, cleanup
 from .trainer_factory import load_model
 
 log = structlog.get_logger()
+
+
+def cache_predictions(models: dict[str, nn.Module], data, device, max_samples: int = 150_000, batch_size: int = 256):
+    """Run registered extractors over data, produce N-D state vectors for DQN.
+
+    Uses a DataLoader for batched clone+transfer, then extracts per-graph
+    features within each on-device batch (extractors are not batch-aware).
+    """
+    from graphids.core.models.registry import extractors as registry_extractors
+    from graphids.core.preprocessing import get_batch_index
+
+    active = [(name, ext) for name, ext in registry_extractors() if name in models]
+    for model in models.values():
+        model.eval()
+
+    capped = data[:max_samples]
+    loader = PyGDataLoader(capped, batch_size=batch_size, shuffle=False)
+
+    states, labels = [], []
+    with torch.no_grad():
+        for batch in loader:
+            batch = batch.to(device, non_blocking=True)
+            for g in batch.to_data_list():
+                batch_idx = get_batch_index(g, device)
+                features = [ext.extract(models[name], g, batch_idx, device) for name, ext in active]
+                states.append(torch.cat(features))
+                labels.append(g.y[0] if g.y.dim() > 0 else g.y)
+
+    return {"states": torch.stack(states), "labels": torch.tensor(labels)}
 
 
 # ---------------------------------------------------------------------------
@@ -25,44 +56,26 @@ log = structlog.get_logger()
 # ---------------------------------------------------------------------------
 
 
-class DQNFusionModule(pl.LightningModule):
-    """Lightning wrapper for DQN fusion agent.
+class RLFusionModule(pl.LightningModule):
+    """Lightning wrapper for RL fusion agents (DQN, bandit).
 
-    Uses manual optimization since the agent manages its own optimizer.
-    training_step runs one RL episode: select actions, compute rewards,
-    store experiences, gradient steps from replay buffer, epsilon decay.
+    Uses manual optimization. The agent-specific training logic is passed
+    as a callable ``train_fn(module, batch)`` to keep the module generic.
+    Validation and test are identical for all RL agents.
     """
 
-    def __init__(self, agent, cfg=None):
+    def __init__(self, agent, train_fn, optimizer_attr: str = "optimizer", cfg=None):
         super().__init__()
         self.automatic_optimization = False
         self.agent = agent
+        self._train_fn = train_fn
+        self._optimizer_attr = optimizer_attr
         self.cfg = cfg
         from graphids.core.models.registry import fusion_test_metrics
         self.test_metrics = fusion_test_metrics()
 
     def training_step(self, batch, batch_idx):
-        states, labels = batch
-        actions, alphas, norm_states = self.agent.select_action_batch(states, training=True)
-        # TODO(open-question): Training uses (alpha > threshold) as prediction, but
-        # validation uses the proper fused score. See dqn.py top-level comment.
-        preds = (alphas > self.agent.decision_threshold).long()
-        rewards = self.agent.reward_calc.compute(preds, labels, norm_states, alphas)
-        self.agent.store_experiences_batch(norm_states, actions, rewards)
-
-        # Gradient steps from replay buffer
-        loss = None
-        if self.agent.buffer_size_current >= self.cfg.dqn.batch_size:
-            for _ in range(self.cfg.fusion.gpu_training_steps):
-                loss = self.agent.train_step()
-
-        # Epsilon decay
-        self.agent.epsilon = max(self.agent.min_epsilon, self.agent.epsilon * self.agent.epsilon_decay)
-
-        self.log("train_reward", rewards.mean(), prog_bar=True)
-        self.log("epsilon", self.agent.epsilon)
-        if loss is not None:
-            self.log("train_loss", loss)
+        self._train_fn(self, batch)
 
     def validation_step(self, batch, batch_idx):
         states, labels = batch
@@ -84,57 +97,36 @@ class DQNFusionModule(pl.LightningModule):
         self.log_dict(self.test_metrics.compute())
 
     def configure_optimizers(self):
-        return self.agent.optimizer
+        return getattr(self.agent, self._optimizer_attr)
 
 
-# ---------------------------------------------------------------------------
-# Bandit Lightning module (train + eval)
-# ---------------------------------------------------------------------------
+def _dqn_train_step(module: RLFusionModule, batch) -> None:
+    """DQN episode: select actions → rewards → replay → gradient steps → epsilon decay."""
+    states, labels = batch
+    agent = module.agent
+    actions, alphas, norm_states = agent.select_action_batch(states, training=True)
+    preds = (alphas > agent.decision_threshold).long()
+    rewards = agent.reward_calc.compute(preds, labels, norm_states, alphas)
+    agent.store_experiences_batch(norm_states, actions, rewards)
+
+    loss = None
+    if agent.buffer_size_current >= module.cfg.dqn.batch_size:
+        for _ in range(module.cfg.fusion.gpu_training_steps):
+            loss = agent.train_step()
+
+    agent.epsilon = max(agent.min_epsilon, agent.epsilon * agent.epsilon_decay)
+    module.log("train_reward", rewards.mean(), prog_bar=True)
+    module.log("epsilon", agent.epsilon)
+    if loss is not None:
+        module.log("train_loss", loss)
 
 
-class BanditFusionModule(pl.LightningModule):
-    """Lightning wrapper for Neural-LinUCB bandit agent.
-
-    Uses manual optimization — Sherman-Morrison updates are closed-form,
-    with periodic backbone retraining via the agent's internal optimizer.
-    """
-
-    def __init__(self, agent, cfg=None):
-        super().__init__()
-        self.automatic_optimization = False
-        self.agent = agent
-        self.cfg = cfg
-        from graphids.core.models.registry import fusion_test_metrics
-        self.test_metrics = fusion_test_metrics()
-
-    def training_step(self, batch, batch_idx):
-        states, labels = batch
-        result = self.agent.train_episode(states, labels)
-        self.log("train_acc", result["accuracy"], prog_bar=True)
-        regret = self.agent.regret_stats()
-        self.log("avg_ucb_width", regret["avg_ucb_width"])
-
-    def validation_step(self, batch, batch_idx):
-        states, labels = batch
-        metrics = self.agent.validate_batch(states, labels)
-        self.log("val_acc", metrics.get("accuracy", 0.0), prog_bar=True)
-
-    def test_step(self, batch, batch_idx):
-        states, labels = batch
-        actions, alphas, norm_states = self.agent.select_action_batch(states, training=False)
-        anomaly_scores, gat_probs = self.agent.reward_calc.derive_scores(norm_states)
-        fused_scores = (1 - alphas) * anomaly_scores + alphas * gat_probs
-        preds = (fused_scores > self.agent.decision_threshold).long()
-        self.test_metrics.update(preds, labels)
-
-    def on_test_epoch_start(self):
-        self.test_metrics.reset()
-
-    def on_test_epoch_end(self):
-        self.log_dict(self.test_metrics.compute())
-
-    def configure_optimizers(self):
-        return self.agent.backbone_optimizer
+def _bandit_train_step(module: RLFusionModule, batch) -> None:
+    """Bandit episode: train_episode + regret logging."""
+    states, labels = batch
+    result = module.agent.train_episode(states, labels)
+    module.log("train_acc", result["accuracy"], prog_bar=True)
+    module.log("avg_ucb_width", module.agent.regret_stats()["avg_ucb_width"])
 
 
 # ---------------------------------------------------------------------------
@@ -142,50 +134,37 @@ class BanditFusionModule(pl.LightningModule):
 # ---------------------------------------------------------------------------
 
 
-def _make_rl_fusion_trainer(cfg, steps_per_epoch: int):
-    """Create Lightning Trainer for RL fusion (DQN/bandit).
+def _make_fusion_trainer(cfg, *, is_rl: bool = False, steps_per_epoch: int = 0):
+    """Create Lightning Trainer for fusion training.
 
-    Maps episodes to epochs. Validates every 50 training steps.
-    ModelCheckpoint saves best model by val_acc.
+    RL (DQN/bandit): monitors val_acc, maps episodes to epochs, validates every 50 steps.
+    Baselines (MLP/weighted_avg): monitors val_loss with EarlyStopping.
     """
-    max_epochs = math.ceil(cfg.fusion.episodes / steps_per_epoch)
+    if is_rl:
+        max_epochs = math.ceil(cfg.fusion.episodes / steps_per_epoch)
+        monitor, mode = "val_acc", "max"
+        extra_callbacks = []
+        extra_kwargs = {"val_check_interval": min(50, steps_per_epoch)}
+    else:
+        from pytorch_lightning.callbacks import EarlyStopping
+        max_epochs = cfg.fusion.mlp_max_epochs
+        monitor, mode = "val_loss", "min"
+        extra_callbacks = [EarlyStopping(monitor=monitor, patience=10, mode=mode)]
+        extra_kwargs = {}
+
     return pl.Trainer(
         default_root_dir=".",
         max_epochs=max_epochs,
         accelerator="auto",
         devices="auto",
         callbacks=[
-            ModelCheckpoint(
-                dirpath=".", filename="best_model",
-                monitor="val_acc", mode="max", save_top_k=1,
-            ),
-        ],
-        val_check_interval=min(50, steps_per_epoch),
-        logger=pl.loggers.CSVLogger(save_dir=".", name="", version=""),
-        enable_progress_bar=True,
-        log_every_n_steps=10,
-    )
-
-
-def _make_fusion_trainer(cfg):
-    """Create a lightweight Lightning Trainer for fusion baselines (MLP/WeightedAvg)."""
-    from pytorch_lightning.callbacks import EarlyStopping
-
-    return pl.Trainer(
-        default_root_dir=".",
-        max_epochs=cfg.fusion.mlp_max_epochs,
-        accelerator="auto",
-        devices="auto",
-        callbacks=[
-            ModelCheckpoint(
-                dirpath=".", filename="best_model",
-                monitor="val_loss", mode="min", save_top_k=1,
-            ),
-            EarlyStopping(monitor="val_loss", patience=10, mode="min"),
+            ModelCheckpoint(dirpath=".", filename="best_model", monitor=monitor, mode=mode, save_top_k=1),
+            *extra_callbacks,
         ],
         logger=pl.loggers.CSVLogger(save_dir=".", name="", version=""),
         enable_progress_bar=True,
         log_every_n_steps=10,
+        **extra_kwargs,
     )
 
 
@@ -204,110 +183,6 @@ def _make_fusion_dataloaders(train_cache, val_cache, batch_size: int):
 # ---------------------------------------------------------------------------
 
 
-def _restore_best_weights(trainer, module) -> None:
-    """Load best checkpoint weights into module before saving native format."""
-    best_path = trainer.checkpoint_callback.best_model_path
-    if best_path:
-        best_ckpt = torch.load(best_path, weights_only=True)
-        module.load_state_dict(best_ckpt["state_dict"])
-
-
-def _save_dqn_ckpt(agent) -> None:
-    torch.save({
-        "q_network": agent.q_network.state_dict(),
-        "target_network": agent.target_network.state_dict(),
-        "epsilon": agent.epsilon,
-    }, "best_model.pt")
-
-
-def _train_dqn_fusion(cfg, train_cache, val_cache, device) -> float:
-    """DQN RL fusion via Lightning Trainer. Returns best validation accuracy."""
-    from graphids.core.models.dqn import EnhancedDQNFusionAgent
-
-    agent = EnhancedDQNFusionAgent.from_config(cfg, device=str(device))
-    module = DQNFusionModule(agent, cfg)
-
-    train_dl, val_dl = _make_fusion_dataloaders(
-        train_cache,
-        {k: v[:cfg.fusion.max_val_samples] for k, v in val_cache.items()},
-        cfg.fusion.episode_sample_size,
-    )
-    steps_per_epoch = math.ceil(len(train_cache["states"]) / cfg.fusion.episode_sample_size)
-    trainer = _make_rl_fusion_trainer(cfg, steps_per_epoch)
-    trainer.fit(module, train_dl, val_dl)
-
-    # Restore best-epoch weights before saving in agent's native format
-    _restore_best_weights(trainer, module)
-    _save_dqn_ckpt(agent)
-    return trainer.callback_metrics.get("val_acc", torch.tensor(0.0)).item()
-
-
-def _train_bandit_fusion(cfg, train_cache, val_cache, device) -> float:
-    """Neural-LinUCB bandit fusion via Lightning Trainer. Returns best validation accuracy."""
-    from graphids.core.models.bandit import NeuralLinUCBAgent
-
-    agent = NeuralLinUCBAgent.from_config(cfg, device=str(device))
-    module = BanditFusionModule(agent, cfg)
-
-    train_dl, val_dl = _make_fusion_dataloaders(
-        train_cache,
-        {k: v[:cfg.fusion.max_val_samples] for k, v in val_cache.items()},
-        cfg.fusion.episode_sample_size,
-    )
-    steps_per_epoch = math.ceil(len(train_cache["states"]) / cfg.fusion.episode_sample_size)
-    trainer = _make_rl_fusion_trainer(cfg, steps_per_epoch)
-    trainer.fit(module, train_dl, val_dl)
-
-    # Restore best-epoch weights before saving in agent's native format
-    _restore_best_weights(trainer, module)
-    torch.save(agent.state_dict(), "best_model.pt")
-    return trainer.callback_metrics.get("val_acc", torch.tensor(0.0)).item()
-
-
-def _train_mlp_fusion(cfg, train_cache, val_cache, device) -> float:
-    """MLP supervised fusion via Lightning Trainer. Returns best validation accuracy."""
-    from graphids.core.models.fusion_baselines import MLPFusionModule
-    from graphids.core.models.registry import fusion_state_dim
-
-    module = MLPFusionModule(
-        state_dim=fusion_state_dim(),
-        hidden_dims=cfg.fusion.mlp_hidden_dims,
-        lr=cfg.fusion.lr,
-    )
-    train_dl, val_dl = _make_fusion_dataloaders(
-        train_cache, val_cache, cfg.dqn.batch_size,
-    )
-    trainer = _make_fusion_trainer(cfg)
-    trainer.fit(module, train_dl, val_dl)
-    _restore_best_weights(trainer, module)
-
-    torch.save({"model": module.model.state_dict()}, "best_model.pt")
-    best_acc = trainer.callback_metrics.get("val_acc", torch.tensor(0.0)).item()
-    return best_acc
-
-
-def _train_weighted_avg_fusion(cfg, train_cache, val_cache, device) -> float:
-    """Weighted average fusion via Lightning Trainer. Returns best validation accuracy."""
-    from graphids.core.models.fusion_baselines import WeightedAvgModule
-
-    module = WeightedAvgModule(lr=cfg.fusion.lr, decision_threshold=cfg.fusion.decision_threshold)
-    train_dl, val_dl = _make_fusion_dataloaders(
-        train_cache, val_cache, cfg.dqn.batch_size,
-    )
-    trainer = _make_fusion_trainer(cfg)
-    trainer.fit(module, train_dl, val_dl)
-    _restore_best_weights(trainer, module)
-
-    torch.save(module.state_dict_for_save(), "best_model.pt")
-    best_acc = trainer.callback_metrics.get("val_acc", torch.tensor(0.0)).item()
-    return best_acc
-
-
-# ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
-
-
 def train_fusion(cfg) -> dict:
     """Train fusion agent on cached VGAE+GAT predictions. Returns result dict with checkpoint and metrics."""
     pl.seed_everything(cfg.seed)
@@ -316,35 +191,71 @@ def train_fusion(cfg) -> dict:
     dm.populate_config(cfg)
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
 
-    # Load frozen VGAE + GAT
+    # Load frozen VGAE + GAT, cache predictions, release models
     vgae = load_model(cfg, "vgae", "autoencoder", device)
     gat = load_model(cfg, "gat", cfg.gat_stage, device)
-
-    # Cache predictions
-    log.info("Caching VGAE + GAT predictions ...")
     models = {"vgae": vgae, "gat": gat}
     train_cache = cache_predictions(models, list(dm.train_dataset), device, cfg.fusion.max_samples, batch_size=cfg.evaluation.batch_size)
     val_cache = cache_predictions(models, list(dm.val_dataset), device, cfg.fusion.max_val_samples, batch_size=cfg.evaluation.batch_size)
     del vgae, gat
-    cleanup()
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
-    # Dispatch on fusion method
+    # Build module + save function per method
     method = cfg.fusion.method
     if method == "dqn":
-        best_acc = _train_dqn_fusion(cfg, train_cache, val_cache, device)
+        from graphids.core.models.dqn import EnhancedDQNFusionAgent
+        agent = EnhancedDQNFusionAgent.from_config(cfg, device=str(device))
+        module = RLFusionModule(agent, _dqn_train_step, "optimizer", cfg)
+        save_fn = lambda: torch.save({
+            "q_network": agent.q_network.state_dict(),
+            "target_network": agent.target_network.state_dict(),
+            "epsilon": agent.epsilon,
+        }, "best_model.pt")
+        is_rl = True
     elif method == "bandit":
-        best_acc = _train_bandit_fusion(cfg, train_cache, val_cache, device)
+        from graphids.core.models.bandit import NeuralLinUCBAgent
+        agent = NeuralLinUCBAgent.from_config(cfg, device=str(device))
+        module = RLFusionModule(agent, _bandit_train_step, "backbone_optimizer", cfg)
+        save_fn = lambda: torch.save(agent.state_dict(), "best_model.pt")
+        is_rl = True
     elif method == "mlp":
-        best_acc = _train_mlp_fusion(cfg, train_cache, val_cache, device)
+        from graphids.core.models.fusion_baselines import MLPFusionModule
+        from graphids.core.models.registry import fusion_state_dim
+        module = MLPFusionModule(state_dim=fusion_state_dim(), hidden_dims=cfg.fusion.mlp_hidden_dims, lr=cfg.fusion.lr)
+        save_fn = lambda: torch.save({"model": module.model.state_dict()}, "best_model.pt")
+        is_rl = False
     elif method == "weighted_avg":
-        best_acc = _train_weighted_avg_fusion(cfg, train_cache, val_cache, device)
+        from graphids.core.models.fusion_baselines import WeightedAvgModule
+        module = WeightedAvgModule(lr=cfg.fusion.lr, decision_threshold=cfg.fusion.decision_threshold)
+        save_fn = lambda: torch.save(module.state_dict_for_save(), "best_model.pt")
+        is_rl = False
     else:
         raise ValueError(f"Unknown fusion method: {method}")
 
-    ckpt = Path("best_model.pt")
-    # config.yaml already saved by run_stage() in __init__.py
+    # Shared training: RL methods use episode sampling, baselines use batch sampling
+    if is_rl:
+        train_dl, val_dl = _make_fusion_dataloaders(
+            train_cache, {k: v[:cfg.fusion.max_val_samples] for k, v in val_cache.items()},
+            cfg.fusion.episode_sample_size,
+        )
+        steps_per_epoch = math.ceil(len(train_cache["states"]) / cfg.fusion.episode_sample_size)
+        trainer = _make_fusion_trainer(cfg, is_rl=True, steps_per_epoch=steps_per_epoch)
+    else:
+        train_dl, val_dl = _make_fusion_dataloaders(train_cache, val_cache, cfg.dqn.batch_size)
+        trainer = _make_fusion_trainer(cfg)
+
+    trainer.fit(module, train_dl, val_dl)
+    best_path = trainer.checkpoint_callback.best_model_path
+    if best_path:
+        module.load_state_dict(torch.load(best_path, weights_only=True)["state_dict"])
+    save_fn()
+    best_acc = trainer.callback_metrics.get("val_acc", torch.tensor(0.0)).item()
 
     metrics = {"best_acc": best_acc, "fusion_method": method}
-    log.info("saved_fusion", method=method, checkpoint=str(ckpt), best_acc=round(best_acc, 4))
-    cleanup()
-    return {"checkpoint": str(ckpt), "metrics": metrics}
+    log.info("saved_fusion", method=method, checkpoint="best_model.pt", best_acc=round(best_acc, 4))
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return {"checkpoint": "best_model.pt", "metrics": metrics}

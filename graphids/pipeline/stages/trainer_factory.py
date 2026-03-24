@@ -11,7 +11,6 @@ import torch
 import torch.nn as nn
 
 from graphids.config import STAGE_MODEL_MAP
-from .callbacks import RunMetadataCallback
 
 log = structlog.get_logger()
 
@@ -26,7 +25,6 @@ def make_trainer(cfg, stage: str) -> pl.Trainer:
     from hydra.utils import instantiate
 
     cbs = [cb for cb in instantiate(cfg.callbacks).values() if cb is not None]
-    cbs.append(RunMetadataCallback())
 
     return pl.Trainer(
         max_epochs=cfg.training.max_epochs,
@@ -114,24 +112,6 @@ def prepare_kd(
             projection = nn.Linear(s_dim, t_dim).to(device)
 
     return teacher, projection
-
-
-def make_projection(
-    student: nn.Module, teacher: nn.Module, model_type: str, device: torch.device,
-) -> nn.Linear | None:
-    """Create projection layer if teacher/student latent dims differ."""
-    if model_type == "vgae":
-        s_dim = getattr(student, "latent_dim", getattr(student, "_latent_dim", 16))
-        t_dim = getattr(teacher, "latent_dim", getattr(teacher, "_latent_dim", 96))
-    elif model_type == "gat":
-        s_dim = getattr(student, "hidden_channels", getattr(student, "out_channels", 2))
-        t_dim = getattr(teacher, "hidden_channels", getattr(teacher, "out_channels", 2))
-    else:
-        return None
-    if s_dim != t_dim:
-        log.info("projection_layer", student_dim=s_dim, teacher_dim=t_dim)
-        return nn.Linear(s_dim, t_dim).to(device)
-    return None
 
 
 def load_frozen_cfg(cfg, stage: str, model_type: str | None = None):

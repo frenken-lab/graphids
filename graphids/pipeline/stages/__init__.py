@@ -53,6 +53,18 @@ def run_stage(cfg, stage: str) -> dict:
         run_dir=str(run_dir),
     )
     OmegaConf.save(cfg, run_dir / "config.yaml")
+
+    # Capture git SHA (replaces RunMetadataCallback)
+    import json
+    import subprocess
+    try:
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL,
+        ).decode().strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        sha = "unknown"
+    (run_dir / "run_metadata.json").write_text(json.dumps({"git_sha": sha}, indent=2))
+
     result = STAGE_FNS[stage](cfg)
     _append_to_catalog(cfg, stage, result, run_dir)
     return result
@@ -89,8 +101,9 @@ def _append_to_catalog(cfg, stage: str, result: dict, run_dir: Path) -> None:
             )
         """)
         metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
-        identity_suffix = cfg.hydra.run.dir.split(f"{cfg.model_type}_{cfg.scale}_{stage}")[-1].split("/")[0]
-        identity_hash = identity_suffix.lstrip("_") if identity_suffix else None
+        # Resolve identity hash via the registered OmegaConf resolver (graphids.config)
+        raw_hash = OmegaConf.create({"_h": f"${{identity_hash:{stage}}}"}, parent=cfg)._h
+        identity_hash = raw_hash.lstrip("_") or None
         config_json = json.dumps(OmegaConf.to_container(cfg, resolve=True))
         db.execute(
             """INSERT INTO experiments (

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import math
+from typing import NamedTuple
 
 import pytorch_lightning as pl
 import torch
@@ -22,10 +24,46 @@ from torchmetrics.classification import (
 
 import structlog
 
-from .data_loading import compute_node_budget, make_dataloader
+from graphids.config import cache_dir
+
 from .trainer_factory import build_optimizer_dict
 
 _log = structlog.get_logger()
+
+
+class NodeBudgetInfo(NamedTuple):
+    """Result of compute_node_budget: budget for DynamicBatchSampler + mean for num_steps."""
+    budget: int
+    mean_nodes: float
+
+
+def compute_node_budget(batch_size: int, cfg) -> NodeBudgetInfo:
+    """Derive max_num_nodes from batch_size * p95 graph node count.
+
+    Reads graph statistics from cache_metadata.json written during preprocessing.
+    Returns NodeBudgetInfo(budget, mean_nodes) so callers can pass mean_nodes
+    to make_dataloader without a redundant file read.
+    Raises FileNotFoundError if metadata is missing — rebuild caches first.
+    """
+    import json
+
+    lake_root = cfg.lake_root if hasattr(cfg, "lake_root") else cfg["lake_root"]
+    dataset = cfg.dataset if hasattr(cfg, "dataset") else cfg["dataset"]
+    metadata_path = cache_dir(lake_root, dataset) / "cache_metadata.json"
+    if not metadata_path.exists():
+        msg = (
+            f"cache_metadata.json not found at {metadata_path}. "
+            "Rebuild caches with: python -m graphids stage=preprocess dataset=..."
+        )
+        raise FileNotFoundError(msg)
+    meta = json.loads(metadata_path.read_text())
+    stats = meta["graph_stats"]["node_count"]
+    p95 = stats["p95"]
+    mean = stats["mean"]
+    budget = int(batch_size * p95)
+    _log.info("node_budget_computed", batch_size=batch_size, p95_nodes=p95,
+             mean_nodes=mean, budget=budget)
+    return NodeBudgetInfo(budget=budget, mean_nodes=mean)
 
 
 class OOMSkipMixin:
@@ -73,11 +111,6 @@ def _focal_loss(
 def _get_kd_config(cfg):
     """Get KD auxiliary config, or None if not configured."""
     return next((a for a in cfg.get("auxiliaries", []) if a.type == "kd"), None)
-
-
-def _lerp(a: float, b: float, t: float) -> float:
-    """Linear interpolation: a + t * (b - a)."""
-    return a + t * (b - a)
 
 
 @contextlib.contextmanager
@@ -397,8 +430,8 @@ class CurriculumDynamicBatchSampler:
         """
         cfg = self.cfg
         progress = min(epoch / max(cfg.training.max_epochs, 1), 1.0)
-        ratio = _lerp(cfg.training.curriculum_start_ratio, cfg.training.curriculum_end_ratio, progress)
-        percentile = _lerp(cfg.training.difficulty_percentile, 95.0, progress)
+        ratio = math.lerp(cfg.training.curriculum_start_ratio, cfg.training.curriculum_end_ratio, progress)
+        percentile = math.lerp(cfg.training.difficulty_percentile, 95.0, progress)
 
         if self.scores:
             scores_t = torch.tensor(self.scores)
@@ -509,19 +542,28 @@ class CurriculumDataModule(pl.LightningDataModule):
         return self._train_loader
 
     def val_dataloader(self):
+        from torch_geometric.loader import DataLoader as PyGDataLoader, DynamicBatchSampler
+
         bs = max(8, self.cfg.training.batch_size)
-        max_nodes = None
-        mean_nodes = None
-        if self.cfg.training.dynamic_batching:
-            # Reuse mean_nodes cached from __init__ to avoid redundant file read.
-            # Recompute budget since batch_size could differ (though currently same).
-            info = compute_node_budget(bs, self.cfg)
-            max_nodes = info.budget
-            mean_nodes = self._mean_nodes
-        return make_dataloader(
-            self.val_data, self.cfg, bs, shuffle=False,
-            max_num_nodes=max_nodes, mean_nodes=mean_nodes,
+        nw = self.cfg.num_workers
+        common = dict(
+            num_workers=nw,
+            pin_memory=True,
+            persistent_workers=nw > 0,
+            multiprocessing_context="spawn" if nw > 0 else None,
         )
+
+        if self.cfg.training.dynamic_batching:
+            info = compute_node_budget(bs, self.cfg)
+            mean_nodes = self._mean_nodes
+            num_steps = max(1, int(len(self.val_data) * mean_nodes / info.budget))
+            sampler = DynamicBatchSampler(
+                self.val_data, max_num=info.budget, mode="node", shuffle=False,
+                num_steps=num_steps, skip_too_big=True,
+            )
+            return PyGDataLoader(self.val_data, batch_sampler=sampler, **common)
+
+        return PyGDataLoader(self.val_data, batch_size=bs, shuffle=False, **common)
 
 
 # ---------------------------------------------------------------------------

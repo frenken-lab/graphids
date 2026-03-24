@@ -165,17 +165,40 @@ class CANBusDataModule(pl.LightningDataModule):
         return [self._build_loader(ds, shuffle=False) for ds in self._test_datasets.values()]
 
     def _build_loader(self, dataset, shuffle: bool):
-        # Lazy import to avoid circular: datamodule (core) -> data_loading (pipeline)
-        from graphids.pipeline.stages.data_loading import compute_node_budget, make_dataloader
+        import json
+
+        from torch_geometric.loader import DataLoader as PyGDataLoader
+        from torch_geometric.loader import DynamicBatchSampler
 
         hp = self.hparams
         bs = max(8, hp["batch_size"])
+        nw = hp["num_workers"] if "num_workers" in hp else 0
+
+        max_nodes, mean_nodes = None, None
         if hp["dynamic_batching"]:
-            info = compute_node_budget(bs, hp)
-            max_nodes, mean_nodes = info.budget, info.mean_nodes
-        else:
-            max_nodes, mean_nodes = None, None
-        return make_dataloader(
-            dataset, hp, bs, shuffle=shuffle,
-            max_num_nodes=max_nodes, mean_nodes=mean_nodes,
+            metadata_path = cache_dir(hp["lake_root"], hp["dataset"]) / "cache_metadata.json"
+            if not metadata_path.exists():
+                raise FileNotFoundError(
+                    f"cache_metadata.json not found at {metadata_path}. "
+                    "Rebuild caches with: python -m graphids stage=preprocess dataset=..."
+                )
+            stats = json.loads(metadata_path.read_text())["graph_stats"]["node_count"]
+            max_nodes = int(bs * stats["p95"])
+            mean_nodes = stats["mean"]
+
+        common = dict(
+            num_workers=nw,
+            pin_memory=True,
+            persistent_workers=nw > 0,
+            multiprocessing_context="spawn" if nw > 0 else None,
         )
+
+        if max_nodes is not None:
+            num_steps = max(1, int(len(dataset) * mean_nodes / max_nodes))
+            sampler = DynamicBatchSampler(
+                dataset, max_num=max_nodes, mode="node", shuffle=shuffle,
+                num_steps=num_steps, skip_too_big=True,
+            )
+            return PyGDataLoader(dataset, batch_sampler=sampler, **common)
+
+        return PyGDataLoader(dataset, batch_size=bs, shuffle=shuffle, **common)

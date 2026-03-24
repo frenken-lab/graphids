@@ -79,9 +79,9 @@ def test_model(module, data, batch_size: int = 256) -> dict:
     else:
         loader = data  # pre-built DataLoader (fusion, temporal)
     results = trainer.test(module, dataloaders=loader, verbose=False)
-    core = dict(results[0]) if results else {}
-    core["balanced_accuracy"] = (core.get("recall", 0) + core.get("specificity", 0)) / 2
-    return {"core": core, "additional": {}}
+    metrics = dict(results[0]) if results else {}
+    metrics["balanced_accuracy"] = (metrics.get("recall", 0) + metrics.get("specificity", 0)) / 2
+    return metrics
 
 
 # ---------------------------------------------------------------------------

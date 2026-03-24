@@ -9,6 +9,7 @@ because temporal ordering matters for this task.
 
 from __future__ import annotations
 
+import gc
 import structlog
 from pathlib import Path
 
@@ -31,7 +32,6 @@ from torchmetrics.classification import (
 
 from graphids.core.preprocessing import CANBusDataModule
 
-from .data_loading import cleanup
 from .trainer_factory import load_model, make_trainer
 
 log = structlog.get_logger()
@@ -307,5 +307,7 @@ def train_temporal(cfg) -> dict:
         **{k: round(v, 4) for k, v in result_metrics["temporal"]["core"].items() if isinstance(v, float)},
     )
 
-    cleanup()
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     return {"metrics": result_metrics}
