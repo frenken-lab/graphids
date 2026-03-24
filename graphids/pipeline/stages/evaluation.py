@@ -224,34 +224,24 @@ def eval_fusion(cfg, val_data, test_scenarios, device) -> dict:
 
     # Load fusion module per method
     ckpt = torch.load(cfg.checkpoints["dqn"], map_location="cpu", weights_only=True)
-    if method == "bandit":
+    if method == "dqn":
+        from graphids.core.models.dqn import EnhancedDQNFusionAgent
+        agent = EnhancedDQNFusionAgent.from_config(fusion_cfg, device=str(device), inference=True)
+        agent.load_checkpoint(ckpt)
+        module = RLFusionModule(agent, _dqn_train_step, "optimizer")
+    elif method == "bandit":
         from graphids.core.models.bandit import NeuralLinUCBAgent
         agent = NeuralLinUCBAgent.from_config(fusion_cfg, device=str(device))
-        module = RLFusionModule(agent, _bandit_train_step, "backbone_optimizer")
         agent.load_checkpoint(ckpt)
+        module = RLFusionModule(agent, _bandit_train_step, "backbone_optimizer")
     elif method == "mlp":
         from graphids.core.models.fusion_baselines import MLPFusionModule
-        from graphids.core.models.registry import fusion_state_dim
-        module = MLPFusionModule(
-            state_dim=fusion_state_dim(),
-            hidden_dims=cfg.fusion.mlp_hidden_dims,
-            lr=cfg.fusion.lr,
-        )
-        module.model.load_state_dict(ckpt["model"])
+        module = MLPFusionModule.from_checkpoint(ckpt, cfg)
     elif method == "weighted_avg":
         from graphids.core.models.fusion_baselines import WeightedAvgModule
-        module = WeightedAvgModule(
-            lr=cfg.fusion.lr,
-            decision_threshold=cfg.fusion.decision_threshold,
-        )
-        module.weight.data = ckpt["weight"]
-    else:  # dqn (default)
-        from graphids.core.models.dqn import EnhancedDQNFusionAgent
-        agent = EnhancedDQNFusionAgent.from_config(
-            fusion_cfg, device=str(device), inference=True,
-        )
-        module = RLFusionModule(agent, _dqn_train_step, "optimizer")
-        agent.load_checkpoint(ckpt)
+        module = WeightedAvgModule.from_checkpoint(ckpt, cfg)
+    else:
+        raise ValueError(f"Unknown fusion method: {method}")
 
     # Eval via trainer.test()
     val_loader = DataLoader(

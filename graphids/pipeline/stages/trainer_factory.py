@@ -20,17 +20,20 @@ for _stage, _model in STAGE_MODEL_MAP.items():
     _TEACHER_STAGE.setdefault(_model, _stage)
 
 
-def make_trainer(cfg, stage: str) -> pl.Trainer:
-    """Create a Lightning Trainer from config."""
-    from hydra.utils import instantiate
+def make_trainer(cfg, stage: str, **overrides) -> pl.Trainer:
+    """Create a Lightning Trainer from config with optional overrides.
 
-    cbs = [cb for cb in instantiate(cfg.callbacks).values() if cb is not None]
+    Stages like fusion pass overrides for callbacks, max_epochs, logger, etc.
+    while inheriting precision, gradient_clip, deterministic, etc. from cfg.training.
+    """
+    if "callbacks" not in overrides:
+        from hydra.utils import instantiate
+        overrides["callbacks"] = [cb for cb in instantiate(cfg.callbacks).values() if cb is not None]
 
-    return pl.Trainer(
+    kwargs = dict(
         max_epochs=cfg.training.max_epochs,
         accelerator="gpu" if cfg.device == "cuda" and torch.cuda.is_available() else "cpu",
         devices=1,
-        callbacks=cbs,
         gradient_clip_val=cfg.training.gradient_clip,
         precision=cfg.training.precision,
         log_every_n_steps=cfg.training.log_every_n_steps,
@@ -39,6 +42,8 @@ def make_trainer(cfg, stage: str) -> pl.Trainer:
         benchmark=cfg.training.cudnn_benchmark,
         enable_progress_bar=not bool(os.environ.get("SLURM_JOB_ID")),
     )
+    kwargs.update(overrides)
+    return pl.Trainer(**kwargs)
 
 
 def prepare_kd(

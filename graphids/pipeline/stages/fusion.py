@@ -17,7 +17,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 from graphids.core.preprocessing import CANBusDataModule
 
-from .trainer_factory import load_model
+from .trainer_factory import load_model, make_trainer
 
 log = structlog.get_logger()
 
@@ -84,11 +84,8 @@ class RLFusionModule(pl.LightningModule):
 
     def test_step(self, batch, batch_idx):
         states, labels = batch
-        actions, alphas, norm_states = self.agent.select_action_batch(states, training=False)
-        anomaly_scores, gat_probs = self.agent.reward_calc.derive_scores(norm_states)
-        fused_scores = (1 - alphas) * anomaly_scores + alphas * gat_probs
-        preds = (fused_scores > self.agent.decision_threshold).long()
-        self.test_metrics.update(preds, labels)
+        result = self.agent.predict(states)
+        self.test_metrics.update(result["preds"], labels)
 
     def on_test_epoch_start(self):
         self.test_metrics.reset()
@@ -101,24 +98,13 @@ class RLFusionModule(pl.LightningModule):
 
 
 def _dqn_train_step(module: RLFusionModule, batch) -> None:
-    """DQN episode: select actions → rewards → replay → gradient steps → epsilon decay."""
+    """DQN episode: delegates to agent.train_episode(), logs metrics."""
     states, labels = batch
-    agent = module.agent
-    actions, alphas, norm_states = agent.select_action_batch(states, training=True)
-    preds = (alphas > agent.decision_threshold).long()
-    rewards = agent.reward_calc.compute(preds, labels, norm_states, alphas)
-    agent.store_experiences_batch(norm_states, actions, rewards)
-
-    loss = None
-    if agent.buffer_size_current >= module.cfg.dqn.batch_size:
-        for _ in range(module.cfg.fusion.gpu_training_steps):
-            loss = agent.train_step()
-
-    agent.epsilon = max(agent.min_epsilon, agent.epsilon * agent.epsilon_decay)
-    module.log("train_reward", rewards.mean(), prog_bar=True)
-    module.log("epsilon", agent.epsilon)
-    if loss is not None:
-        module.log("train_loss", loss)
+    result = module.agent.train_episode(states, labels)
+    module.log("train_reward", result["avg_reward"], prog_bar=True)
+    module.log("epsilon", result["epsilon"])
+    if result["loss"] is not None:
+        module.log("train_loss", result["loss"])
 
 
 def _bandit_train_step(module: RLFusionModule, batch) -> None:
@@ -127,45 +113,6 @@ def _bandit_train_step(module: RLFusionModule, batch) -> None:
     result = module.agent.train_episode(states, labels)
     module.log("train_acc", result["accuracy"], prog_bar=True)
     module.log("avg_ucb_width", module.agent.regret_stats()["avg_ucb_width"])
-
-
-# ---------------------------------------------------------------------------
-# Trainer factories
-# ---------------------------------------------------------------------------
-
-
-def _make_fusion_trainer(cfg, *, is_rl: bool = False, steps_per_epoch: int = 0):
-    """Create Lightning Trainer for fusion training.
-
-    RL (DQN/bandit): monitors val_acc, maps episodes to epochs, validates every 50 steps.
-    Baselines (MLP/weighted_avg): monitors val_loss with EarlyStopping.
-    """
-    if is_rl:
-        max_epochs = math.ceil(cfg.fusion.episodes / steps_per_epoch)
-        monitor, mode = "val_acc", "max"
-        extra_callbacks = []
-        extra_kwargs = {"val_check_interval": min(50, steps_per_epoch)}
-    else:
-        from pytorch_lightning.callbacks import EarlyStopping
-        max_epochs = cfg.fusion.mlp_max_epochs
-        monitor, mode = "val_loss", "min"
-        extra_callbacks = [EarlyStopping(monitor=monitor, patience=10, mode=mode)]
-        extra_kwargs = {}
-
-    return pl.Trainer(
-        default_root_dir=".",
-        max_epochs=max_epochs,
-        accelerator="auto",
-        devices="auto",
-        callbacks=[
-            ModelCheckpoint(dirpath=".", filename="best_model", monitor=monitor, mode=mode, save_top_k=1),
-            *extra_callbacks,
-        ],
-        logger=pl.loggers.CSVLogger(save_dir=".", name="", version=""),
-        enable_progress_bar=True,
-        log_every_n_steps=10,
-        **extra_kwargs,
-    )
 
 
 def _make_fusion_dataloaders(train_cache, val_cache, batch_size: int):
@@ -208,11 +155,7 @@ def train_fusion(cfg) -> dict:
         from graphids.core.models.dqn import EnhancedDQNFusionAgent
         agent = EnhancedDQNFusionAgent.from_config(cfg, device=str(device))
         module = RLFusionModule(agent, _dqn_train_step, "optimizer", cfg)
-        save_fn = lambda: torch.save({
-            "q_network": agent.q_network.state_dict(),
-            "target_network": agent.target_network.state_dict(),
-            "epsilon": agent.epsilon,
-        }, "best_model.pt")
+        save_fn = lambda: torch.save(agent.state_dict(), "best_model.pt")
         is_rl = True
     elif method == "bandit":
         from graphids.core.models.bandit import NeuralLinUCBAgent
@@ -241,10 +184,25 @@ def train_fusion(cfg) -> dict:
             cfg.fusion.episode_sample_size,
         )
         steps_per_epoch = math.ceil(len(train_cache["states"]) / cfg.fusion.episode_sample_size)
-        trainer = _make_fusion_trainer(cfg, is_rl=True, steps_per_epoch=steps_per_epoch)
+        trainer = make_trainer(cfg, "fusion",
+            default_root_dir=".",
+            max_epochs=math.ceil(cfg.fusion.episodes / steps_per_epoch),
+            callbacks=[ModelCheckpoint(dirpath=".", filename="best_model", monitor="val_acc", mode="max", save_top_k=1)],
+            logger=pl.loggers.CSVLogger(save_dir=".", name="", version=""),
+            val_check_interval=min(50, steps_per_epoch),
+        )
     else:
+        from pytorch_lightning.callbacks import EarlyStopping
         train_dl, val_dl = _make_fusion_dataloaders(train_cache, val_cache, cfg.dqn.batch_size)
-        trainer = _make_fusion_trainer(cfg)
+        trainer = make_trainer(cfg, "fusion",
+            default_root_dir=".",
+            max_epochs=cfg.fusion.mlp_max_epochs,
+            callbacks=[
+                ModelCheckpoint(dirpath=".", filename="best_model", monitor="val_loss", mode="min", save_top_k=1),
+                EarlyStopping(monitor="val_loss", patience=10, mode="min"),
+            ],
+            logger=pl.loggers.CSVLogger(save_dir=".", name="", version=""),
+        )
 
     trainer.fit(module, train_dl, val_dl)
     best_path = trainer.checkpoint_callback.best_model_path

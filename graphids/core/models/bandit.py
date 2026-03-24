@@ -307,16 +307,35 @@ class NeuralLinUCBAgent:
         return result
 
     # ------------------------------------------------------------------
+    # Inference
+    # ------------------------------------------------------------------
+
+    def predict(self, states: torch.Tensor) -> dict:
+        """Greedy fused prediction (no UCB exploration).
+
+        Returns:
+            Dict with preds, fused_scores, alphas, norm_states.
+        """
+        actions, alphas, norm_states = self.select_action_batch(states, training=False)
+        anomaly_scores, gat_probs = self.reward_calc.derive_scores(norm_states)
+        fused_scores = (1 - alphas) * anomaly_scores + alphas * gat_probs
+        preds = (fused_scores > self.decision_threshold).long()
+        return {"preds": preds, "fused_scores": fused_scores, "alphas": alphas, "norm_states": norm_states}
+
+    def q_values(self, norm_states: torch.Tensor) -> torch.Tensor:
+        """Compute per-arm expected rewards for normalized states. Shape: [N, K]."""
+        with torch.no_grad():
+            z = self.backbone(norm_states.to(self.device))
+            return torch.einsum("kd,nd->nk", self.theta, z).cpu()
+
+    # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------
 
     def validate_batch(self, states: torch.Tensor, labels: torch.Tensor) -> dict:
         """Greedy evaluation (no UCB exploration)."""
-        actions, alphas, norm_states = self.select_action_batch(states, training=False)
-
-        anomaly_scores, gat_probs = self.reward_calc.derive_scores(norm_states)
-        fused_scores = (1 - alphas) * anomaly_scores + alphas * gat_probs
-        preds = (fused_scores > self.decision_threshold).long()
+        result = self.predict(states)
+        preds, norm_states, alphas = result["preds"], result["norm_states"], result["alphas"]
 
         correct = (preds == labels).sum().item()
         rewards = self.reward_calc.compute(preds, labels, norm_states, alphas)

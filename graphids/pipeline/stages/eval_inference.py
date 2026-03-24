@@ -193,9 +193,9 @@ def capture_vgae_artifacts(vgae, data, device, embeddings: bool = True, componen
                 batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr,
                 node_id=batch.node_id,
             )
-            # Per-graph MSE via scatter
+            # Per-graph reconstruction error (max = worst-node, matches test_step)
             node_mse = (cont - batch.x).pow(2).mean(dim=1)
-            graph_mse = scatter(node_mse, batch.batch, reduce="mean")
+            graph_mse = scatter(node_mse, batch.batch, reduce="max")
             errors_all.append(graph_mse.cpu())
 
             # Per-graph labels and attack types
@@ -210,12 +210,12 @@ def capture_vgae_artifacts(vgae, data, device, embeddings: bool = True, componen
             if components:
                 comps["recon"].append(graph_mse.cpu())
                 node_ce = F.cross_entropy(canid_logits, batch.node_id, reduction="none")
-                comps["canid"].append(scatter(node_ce, batch.batch, reduce="mean").cpu())
+                comps["canid"].append(scatter(node_ce, batch.batch, reduce="max").cpu())
                 nbr_targets = vgae.create_neighborhood_targets(batch.node_id, batch.edge_index, batch.batch)
                 node_nbr = F.binary_cross_entropy_with_logits(
                     nbr_logits, nbr_targets, reduction="none",
                 ).mean(dim=1)
-                comps["nbr"].append(scatter(node_nbr, batch.batch, reduce="mean").cpu())
+                comps["nbr"].append(scatter(node_nbr, batch.batch, reduce="max").cpu())
                 kl_val = kl_loss.item() if torch.is_tensor(kl_loss) else float(kl_loss)
                 n_graphs = int(batch.batch.max().item()) + 1
                 comps["kl"].extend([kl_val] * n_graphs)
@@ -238,20 +238,10 @@ def run_fusion_inference(agent, cache) -> FusionResult:
     """Run fusion inference (works for both DQN and bandit agents)."""
     states = cache["states"]
     labels_t = cache["labels"]
-    actions, alphas, norm_states = agent.select_action_batch(states, training=False)
-    anomaly_scores, gat_probs = agent.reward_calc.derive_scores(norm_states)
-    fused_scores = (1 - alphas) * anomaly_scores + alphas * gat_probs
-    preds = (fused_scores > agent.decision_threshold).long()
-
-    # DQN has q_network; bandit has theta (per-arm weights)
-    with torch.no_grad():
-        if hasattr(agent, "q_network"):
-            q_values = agent.q_network(norm_states.to(agent.device)).cpu()
-        else:
-            z = agent.backbone(norm_states.to(agent.device))
-            q_values = torch.einsum("kd,nd->nk", agent.theta, z).cpu()
+    result = agent.predict(states)
+    qv = agent.q_values(result["norm_states"])
 
     return FusionResult(
-        preds=preds.numpy(), labels=labels_t.numpy(),
-        scores=fused_scores.numpy(), q_values=q_values.numpy(),
+        preds=result["preds"].numpy(), labels=labels_t.numpy(),
+        scores=result["fused_scores"].numpy(), q_values=qv.numpy(),
     )

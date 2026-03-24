@@ -84,6 +84,14 @@ class MLPFusionModule(pl.LightningModule):
     def configure_optimizers(self):
         return optim.Adam(self.parameters(), lr=self.lr)
 
+    @classmethod
+    def from_checkpoint(cls, ckpt: dict, cfg) -> MLPFusionModule:
+        """Construct and load from a checkpoint dict."""
+        from .registry import fusion_state_dim
+        module = cls(state_dim=fusion_state_dim(), hidden_dims=cfg.fusion.mlp_hidden_dims, lr=cfg.fusion.lr)
+        module.model.load_state_dict(ckpt["model"])
+        return module
+
     def fuse(self, state_features: np.ndarray) -> int:
         self.eval()
         with torch.no_grad():
@@ -154,6 +162,13 @@ class WeightedAvgModule(pl.LightningModule):
 
     def state_dict_for_save(self) -> dict:
         return {"weight": self.weight.detach().cpu(), "alpha": torch.sigmoid(self.weight).item()}
+
+    @classmethod
+    def from_checkpoint(cls, ckpt: dict, cfg) -> WeightedAvgModule:
+        """Construct and load from a checkpoint dict."""
+        module = cls(lr=cfg.fusion.lr, decision_threshold=cfg.fusion.decision_threshold)
+        module.weight.data = ckpt["weight"]
+        return module
 
     def fuse(self, state_features: np.ndarray) -> int:
         self.eval()

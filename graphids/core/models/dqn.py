@@ -138,6 +138,7 @@ class EnhancedDQNFusionAgent:
         weight_decay=1e-5,
         scheduler_patience=1000,
         decision_threshold: float = 0.5,
+        gpu_training_steps: int = 1,
         reward_kwargs: dict | None = None,
     ):
         self._alpha_values_t = torch.linspace(0, 1, alpha_steps)
@@ -151,6 +152,7 @@ class EnhancedDQNFusionAgent:
         self.batch_size = batch_size
         self.target_update_freq = target_update_freq
         self.decision_threshold = decision_threshold
+        self.gpu_training_steps = gpu_training_steps
 
         # Networks
         self.q_network = QNetwork(state_dim, alpha_steps, hidden_dim, num_layers).to(device)
@@ -202,6 +204,7 @@ class EnhancedDQNFusionAgent:
             weight_decay=cfg.dqn.weight_decay,
             scheduler_patience=cfg.dqn.scheduler_patience,
             decision_threshold=cfg.fusion.decision_threshold,
+            gpu_training_steps=cfg.fusion.gpu_training_steps,
             reward_kwargs=reward_kwargs,
         )
         if inference:
@@ -280,6 +283,61 @@ class EnhancedDQNFusionAgent:
         return loss.item()
 
     # ------------------------------------------------------------------
+    # Training episode (called from fusion pipeline)
+    # ------------------------------------------------------------------
+
+    def train_episode(
+        self, states: torch.Tensor, labels: torch.Tensor
+    ) -> dict:
+        """One training episode: select → reward → replay → gradient steps → epsilon decay.
+
+        Args:
+            states: [N, D] raw state features
+            labels: [N] ground truth labels
+
+        Returns:
+            Dict with avg_reward, avg_alpha, epsilon, loss.
+        """
+        actions, alphas, norm_states = self.select_action_batch(states, training=True)
+        preds = (alphas > self.decision_threshold).long()
+        rewards = self.reward_calc.compute(preds, labels, norm_states, alphas)
+        self.store_experiences_batch(norm_states, actions, rewards)
+
+        loss = None
+        for _ in range(self.gpu_training_steps):
+            loss = self.train_step()
+
+        self.epsilon = max(self.min_epsilon, self.epsilon * self.epsilon_decay)
+
+        return {
+            "avg_reward": rewards.mean().item(),
+            "avg_alpha": alphas.mean().item(),
+            "epsilon": self.epsilon,
+            "loss": loss,
+        }
+
+    # ------------------------------------------------------------------
+    # Inference
+    # ------------------------------------------------------------------
+
+    def predict(self, states: torch.Tensor) -> dict:
+        """Greedy fused prediction (no exploration).
+
+        Returns:
+            Dict with preds, fused_scores, alphas, norm_states.
+        """
+        actions, alphas, norm_states = self.select_action_batch(states, training=False)
+        anomaly_scores, gat_probs = self.reward_calc.derive_scores(norm_states)
+        fused_scores = (1 - alphas) * anomaly_scores + alphas * gat_probs
+        preds = (fused_scores > self.decision_threshold).long()
+        return {"preds": preds, "fused_scores": fused_scores, "alphas": alphas, "norm_states": norm_states}
+
+    def q_values(self, norm_states: torch.Tensor) -> torch.Tensor:
+        """Compute Q-values for normalized states. Shape: [N, action_dim]."""
+        with torch.no_grad():
+            return self.q_network(norm_states.to(self.device)).cpu()
+
+    # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------
 
@@ -288,11 +346,8 @@ class EnhancedDQNFusionAgent:
         was_training = self.q_network.training
         self.q_network.eval()
 
-        actions, alphas, norm_states = self.select_action_batch(states, training=False)
-
-        anomaly_scores, gat_probs = self.reward_calc.derive_scores(norm_states)
-        fused_scores = (1 - alphas) * anomaly_scores + alphas * gat_probs
-        preds = (fused_scores > self.decision_threshold).long()
+        result = self.predict(states)
+        preds, norm_states, alphas = result["preds"], result["norm_states"], result["alphas"]
 
         correct = (preds == labels).sum().item()
         rewards = self.reward_calc.compute(preds, labels, norm_states, alphas)
@@ -300,18 +355,26 @@ class EnhancedDQNFusionAgent:
         if was_training:
             self.q_network.train()
 
-        result = {
+        metrics = {
             "accuracy": correct / len(labels),
             "avg_reward": rewards.mean().item(),
             "avg_alpha": alphas.mean().item(),
             "alpha_std": alphas.std().item(),
         }
-        self.scheduler.step(result["avg_reward"])
-        return result
+        self.scheduler.step(metrics["avg_reward"])
+        return metrics
 
     # ------------------------------------------------------------------
     # Checkpointing
     # ------------------------------------------------------------------
+
+    def state_dict(self) -> dict:
+        """Serialize agent state for checkpointing."""
+        return {
+            "q_network": self.q_network.state_dict(),
+            "target_network": self.target_network.state_dict(),
+            "epsilon": self.epsilon,
+        }
 
     def load_checkpoint(self, checkpoint_or_path: dict | str | Path) -> None:
         """Load Q-network and target network weights."""
