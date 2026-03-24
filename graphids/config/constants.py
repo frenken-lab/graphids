@@ -71,7 +71,8 @@ STAGE_DEPENDENCIES: dict[str, list[tuple[str, str]]] = {
 }
 VALID_MODEL_TYPES: frozenset[str] = frozenset(_pipeline["models"])
 VALID_SCALES: frozenset[str] = frozenset(_pipeline["scales"])
-del _pipeline
+# Full pipeline dict for orchestration (identity_keys, default_stages).
+PIPELINE_YAML: dict = _pipeline
 
 # ---------------------------------------------------------------------------
 # Project defaults

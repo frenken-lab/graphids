@@ -26,6 +26,7 @@ from .constants import (  # noqa: F401
     STAGE_MODEL_MAP,
     STAGES,
     SWEEP_RESULTS_DIR,
+    PIPELINE_YAML,
     VALID_MODEL_TYPES,
     VALID_SCALES,
     compute_preprocessing_hash,

@@ -33,8 +33,20 @@ resource_profiles:
         cpus: 4
         memory_gb: 16
         walltime_min: 180
+      normal:
+        partition: gpu
+        gpus: 1
+        cpus: 4
+        memory_gb: 16
+        walltime_min: 180
     small:
       curriculum:
+        partition: gpu
+        gpus: 1
+        cpus: 4
+        memory_gb: 12
+        walltime_min: 120
+      normal:
         partition: gpu
         gpus: 1
         cpus: 4

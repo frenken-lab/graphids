@@ -5,13 +5,14 @@ Usage:
     python -m graphids --multirun stage=autoencoder model_type=vgae scale=large training.lr=0.001,0.01
     python -m graphids stage=autoencoder model_type=vgae scale=large --cfg job
 
-Orchestration (submit full DAG to SLURM):
-    python -m graphids.pipeline.dag --dataset hcrl_sa --seeds 42,123 --dry-run
+Orchestration (submit manifest to SLURM):
+    python -m graphids.pipeline.orchestration.manifest ablation.yaml --dry-run
 """
 
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import torch.multiprocessing as mp
 
@@ -102,25 +103,21 @@ def main(argv: list[str] | None = None) -> None:
     run()
 
 
-def dag(argv: list[str] | None = None) -> None:
-    """Submit full pipeline DAG to SLURM."""
+def manifest(argv: list[str] | None = None) -> None:
+    """Submit experiment manifest to SLURM."""
     import argparse
-    import logging
 
-    from graphids.config import DEFAULT_DATASET, resolve
-    from graphids.pipeline.stages import submit_dag
+    from graphids.pipeline.orchestration.manifest import submit_manifest
 
-    logging.basicConfig(level=logging.INFO)
-
-    parser = argparse.ArgumentParser(description="Submit pipeline DAG to SLURM")
-    parser.add_argument("--dataset", default=DEFAULT_DATASET)
-    parser.add_argument("--seeds", default=None, help="Comma-separated seeds")
-    parser.add_argument("--dry-run", action="store_true")
+    parser = argparse.ArgumentParser(description="Submit experiment manifest to SLURM")
+    parser.add_argument("manifest", type=Path, help="Path to manifest YAML")
+    parser.add_argument("--dry-run", action="store_true", help="Print plan without submitting")
+    parser.add_argument("--filter", nargs="*", help="Only run these config names")
     args = parser.parse_args(argv)
 
-    seeds = [int(s) for s in args.seeds.split(",")] if args.seeds else [resolve().seed]
-    futures = submit_dag(args.dataset, seeds, dry_run=args.dry_run)
-    print(f"Submitted {len(futures)} jobs")
+    futures = submit_manifest(args.manifest, dry_run=args.dry_run, filter_configs=args.filter)
+    if futures:
+        print(f"Submitted {len(futures)} jobs")
 
 
 if __name__ == "__main__":
