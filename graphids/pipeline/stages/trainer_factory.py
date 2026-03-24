@@ -78,7 +78,7 @@ def _build_curriculum_dm(raw_dm, cfg, device):
     from torch_geometric.utils import scatter
 
     from .eval_inference import graph_label
-    from .modules import CurriculumDataModule
+    from graphids.core.preprocessing.curriculum import CurriculumDataModule
 
     vgae = load_model(cfg, "vgae", "autoencoder", device)
     normals = [g for g in raw_dm.train_dataset if graph_label(g) == 0]
@@ -121,13 +121,14 @@ def _build_curriculum_dm(raw_dm, cfg, device):
 def build_module(cfg, stage: str, device: torch.device) -> pl.LightningModule:
     """Build the Lightning module for any training stage."""
     if stage == "autoencoder":
-        from .modules import DGIModule, VGAEModule
+        from graphids.core.models.dgi import DGIModule
+        from graphids.core.models.vgae import VGAEModule
         if cfg.model_type == "dgi":
             return DGIModule(cfg)
         teacher, projection = prepare_kd(cfg, "vgae", device)
         return VGAEModule(cfg, teacher=teacher, projection=projection)
     elif stage in ("normal", "curriculum"):
-        from .modules import GATModule
+        from graphids.core.models.gat import GATModule
         teacher, _ = prepare_kd(cfg, "gat", device)
         return GATModule(cfg, teacher=teacher)
     elif stage == "fusion":
@@ -140,12 +141,12 @@ def _build_fusion_module(cfg, device: torch.device) -> pl.LightningModule:
     """Build fusion module per method."""
     method = cfg.fusion.method
     if method == "dqn":
-        from .fusion import RLFusionModule
+        from graphids.core.models.fusion_baselines import RLFusionModule
         from graphids.core.models.dqn import EnhancedDQNFusionAgent
         agent = EnhancedDQNFusionAgent.from_config(cfg, device=str(device))
         return RLFusionModule(agent, "optimizer")
     elif method == "bandit":
-        from .fusion import RLFusionModule
+        from graphids.core.models.fusion_baselines import RLFusionModule
         from graphids.core.models.bandit import NeuralLinUCBAgent
         agent = NeuralLinUCBAgent.from_config(cfg, device=str(device))
         return RLFusionModule(agent, "backbone_optimizer")
@@ -268,11 +269,3 @@ def load_model(
     return model
 
 
-def build_optimizer_dict(optimizer, cfg):
-    """Return optimizer or {optimizer, lr_scheduler} dict for Lightning."""
-    if not cfg.training.use_scheduler or cfg.training.scheduler is None:
-        return optimizer
-
-    from hydra.utils import instantiate
-    sched = instantiate(cfg.training.scheduler, optimizer=optimizer)
-    return {"optimizer": optimizer, "lr_scheduler": {"scheduler": sched, "monitor": cfg.training.monitor_metric}}

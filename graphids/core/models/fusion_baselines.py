@@ -178,3 +178,44 @@ class WeightedAvgModule(pl.LightningModule):
             gat_conf = state_features[self._gat_conf_idx]
             score = (1 - alpha) * vgae_conf + alpha * gat_conf
             return 1 if score > self.decision_threshold else 0
+
+
+class RLFusionModule(pl.LightningModule):
+    """Lightning wrapper for RL fusion agents (DQN, bandit).
+
+    Uses manual optimization. Both agents implement ``train_episode(states, labels)``
+    returning a metrics dict. All returned keys are logged automatically.
+    """
+
+    def __init__(self, agent, optimizer_attr: str = "optimizer"):
+        super().__init__()
+        self.automatic_optimization = False
+        self.agent = agent
+        self._optimizer_attr = optimizer_attr
+        self.test_metrics = fusion_test_metrics()
+
+    def training_step(self, batch, batch_idx):
+        states, labels = batch
+        result = self.agent.train_episode(states, labels)
+        for k, v in result.items():
+            if v is not None:
+                self.log(k, float(v), prog_bar=(k in ("avg_reward", "accuracy")))
+
+    def validation_step(self, batch, batch_idx):
+        states, labels = batch
+        metrics = self.agent.validate_batch(states, labels)
+        self.log("val_acc", metrics.get("accuracy", 0.0), prog_bar=True)
+
+    def test_step(self, batch, batch_idx):
+        states, labels = batch
+        result = self.agent.predict(states)
+        self.test_metrics.update(result["preds"], labels)
+
+    def on_test_epoch_start(self):
+        self.test_metrics.reset()
+
+    def on_test_epoch_end(self):
+        self.log_dict(self.test_metrics.compute())
+
+    def configure_optimizers(self):
+        return getattr(self.agent, self._optimizer_attr)

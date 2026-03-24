@@ -18,20 +18,20 @@ class TestFastDevRun:
 
     def test_vgae(self, vgae_cfg):
         import pytorch_lightning as pl
-        from graphids.pipeline.stages.modules import VGAEModule
+        from graphids.core.models.vgae import VGAEModule
         trainer = pl.Trainer(fast_dev_run=True, accelerator="cpu", enable_progress_bar=False)
         trainer.fit(VGAEModule(vgae_cfg), self._loader(), self._loader())
 
     def test_gat(self, gat_cfg):
         import pytorch_lightning as pl
-        from graphids.pipeline.stages.modules import GATModule
+        from graphids.core.models.gat import GATModule
         trainer = pl.Trainer(fast_dev_run=True, accelerator="cpu", enable_progress_bar=False)
         trainer.fit(GATModule(gat_cfg), self._loader(), self._loader())
 
     def test_gat_loss_variants(self, gat_cfg):
         """All loss functions produce finite loss in training_step."""
         from omegaconf import open_dict
-        from graphids.pipeline.stages.modules import GATModule
+        from graphids.core.models.gat import GATModule
         for loss_fn in ("ce", "weighted_ce", "focal"):
             with open_dict(gat_cfg):
                 gat_cfg.training.loss_fn = loss_fn
@@ -210,7 +210,7 @@ class TestRestoreBestWeights:
 
 class TestCheckpointRoundtrip:
     def test_vgae(self, vgae_cfg, tmp_path):
-        from graphids.pipeline.stages.modules import VGAEModule
+        from graphids.core.models.vgae import VGAEModule
 
         m1 = VGAEModule(vgae_cfg)
         m1.eval()
@@ -229,7 +229,7 @@ class TestCheckpointRoundtrip:
         torch.testing.assert_close(o1[0], o2[0])
 
     def test_gat(self, gat_cfg, tmp_path):
-        from graphids.pipeline.stages.modules import GATModule
+        from graphids.core.models.gat import GATModule
 
         m1 = GATModule(gat_cfg)
         m1.eval()
@@ -259,7 +259,7 @@ class TestCurriculumDataModule:
         return normals, attacks, scores
 
     def test_train_dataloader_returns_loader(self, gat_cfg):
-        from graphids.pipeline.stages.modules import CurriculumDataModule
+        from graphids.core.preprocessing.curriculum import CurriculumDataModule
         normals, attacks, scores = self._make_curriculum_data()
         val_data = [make_graph() for _ in range(5)]
         dm = CurriculumDataModule(normals, attacks, scores, val_data, gat_cfg)
@@ -270,7 +270,7 @@ class TestCurriculumDataModule:
         assert hasattr(batch, "y")
 
     def test_epoch_counter_increments(self, gat_cfg):
-        from graphids.pipeline.stages.modules import CurriculumDataModule
+        from graphids.core.preprocessing.curriculum import CurriculumDataModule
         normals, attacks, scores = self._make_curriculum_data()
         dm = CurriculumDataModule(normals, attacks, scores, [make_graph()], gat_cfg)
         assert dm._current_epoch == 0
@@ -280,7 +280,7 @@ class TestCurriculumDataModule:
         assert dm._current_epoch == 2
 
     def test_val_dataloader_is_fixed(self, gat_cfg):
-        from graphids.pipeline.stages.modules import CurriculumDataModule
+        from graphids.core.preprocessing.curriculum import CurriculumDataModule
         normals, attacks, scores = self._make_curriculum_data()
         val_data = [make_graph() for _ in range(8)]
         dm = CurriculumDataModule(normals, attacks, scores, val_data, gat_cfg)

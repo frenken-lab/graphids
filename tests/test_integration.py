@@ -397,7 +397,7 @@ class TestFindVgaeThresholdEdgeCases:
 
     def test_empty_errors_returns_default(self, vgae_cfg):
         """get_test_errors() on empty list returns empty arrays, not RuntimeError."""
-        from graphids.pipeline.stages.modules import VGAEModule
+        from graphids.core.models.vgae import VGAEModule
 
         module = VGAEModule(vgae_cfg)
         module._test_errors = []
@@ -409,7 +409,7 @@ class TestFindVgaeThresholdEdgeCases:
     def test_single_class_returns_median(self, vgae_cfg):
         """All-normal data (single class) returns median threshold, not crash."""
         import numpy as np
-        from graphids.pipeline.stages.modules import VGAEModule
+        from graphids.core.models.vgae import VGAEModule
         from graphids.pipeline.stages.eval_inference import find_vgae_threshold
 
         module = VGAEModule(vgae_cfg)
@@ -425,7 +425,7 @@ class TestFindVgaeThresholdEdgeCases:
 
     def test_balanced_data_produces_valid_threshold(self, vgae_cfg):
         """Normal case: mixed labels produce a valid positive threshold."""
-        from graphids.pipeline.stages.modules import VGAEModule
+        from graphids.core.models.vgae import VGAEModule
         from graphids.pipeline.stages.eval_inference import find_vgae_threshold
         from torchmetrics.functional.classification import binary_roc
 

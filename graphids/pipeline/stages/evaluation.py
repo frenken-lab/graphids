@@ -30,7 +30,9 @@ from .eval_inference import (
     run_fusion_inference,
     test_model,
 )
-from .modules import DGIModule, GATModule, VGAEModule
+from graphids.core.models.dgi import DGIModule
+from graphids.core.models.gat import GATModule
+from graphids.core.models.vgae import VGAEModule
 from .trainer_factory import load_frozen_cfg, load_model
 
 log = structlog.get_logger()
@@ -212,7 +214,7 @@ def _eval_unsupervised(cfg, val_data, test_scenarios, device, model_name, module
 
 def eval_fusion(cfg, val_data, test_scenarios, device) -> dict:
     """Evaluate fusion agent via Lightning test loop."""
-    from .fusion import RLFusionModule
+    from graphids.core.models.fusion_baselines import RLFusionModule
 
     vgae = load_model(cfg, "vgae", "autoencoder", device)
     gat = load_model(cfg, "gat", cfg.gat_stage, device)

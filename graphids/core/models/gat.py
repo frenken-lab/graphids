@@ -1,12 +1,26 @@
+import functools
+
+import pytorch_lightning as pl
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from omegaconf import OmegaConf
 from torch_geometric.nn import (
     JumpingKnowledge,
     global_mean_pool,
 )
 from torch_geometric.nn.aggr import MultiAggregation
+from torchmetrics import MetricCollection
+from torchmetrics.classification import (
+    BinaryAccuracy, BinaryAUROC, BinaryF1Score,
+    BinaryPrecision, BinaryRecall, BinarySpecificity,
+)
 
-from ._utils import InputEncoder, _make_conv, conv_forward
+from ._utils import (
+    InputEncoder, _make_conv, conv_forward,
+    OOMSkipMixin, soft_label_kd_loss, focal_loss, _get_kd_config,
+    teacher_on_device, build_optimizer_dict,
+)
 
 
 class GATWithJK(nn.Module):
@@ -161,3 +175,88 @@ class GATWithJK(nn.Module):
         for layer in self.fc_layers:
             x = layer(x)
         return x
+
+
+# ---------------------------------------------------------------------------
+# Lightning training module
+# ---------------------------------------------------------------------------
+
+
+class GATModule(OOMSkipMixin, pl.LightningModule):
+    """GAT supervised classification (normal vs attack).
+
+    When teacher is provided, adds soft-label KD:
+      kd_loss = KL_div(student_logits/T, teacher_logits/T) * T^2
+      total = alpha * kd_loss + (1-alpha) * task_loss
+    """
+
+    def __init__(self, cfg, num_classes: int = 2, teacher: nn.Module | None = None):
+        super().__init__()
+        num_ids, in_channels = cfg.num_ids, cfg.in_channels
+        self.save_hyperparameters({"cfg": OmegaConf.to_container(cfg), "num_ids": num_ids, "in_channels": in_channels})
+        self.cfg = cfg
+        self.model = GATWithJK.from_config(cfg, num_ids, in_channels)
+        if cfg.training.compile_model and hasattr(torch, "compile"):
+            self.model = torch.compile(self.model, dynamic=True)
+        self.teacher = teacher
+        self._teacher_on_cpu = False
+        self.test_metrics = MetricCollection({
+            "accuracy": BinaryAccuracy(), "f1": BinaryF1Score(),
+            "precision": BinaryPrecision(), "recall": BinaryRecall(),
+            "specificity": BinarySpecificity(), "auc": BinaryAUROC(),
+        })
+        loss_name = cfg.training.loss_fn
+        if loss_name == "weighted_ce":
+            w = torch.tensor([1.0, cfg.training.loss_weight])
+            self.loss_fn = nn.CrossEntropyLoss(weight=w)
+        elif loss_name == "focal":
+            self.loss_fn = functools.partial(focal_loss, gamma=cfg.training.focal_gamma)
+        else:
+            self.loss_fn = F.cross_entropy
+
+    def forward(self, batch):
+        return self.model(batch)
+
+    def _step(self, batch):
+        logits = self(batch)
+        task_loss = self.loss_fn(logits, batch.y)
+        acc = (logits.argmax(1) == batch.y).float().mean()
+        if self.teacher is not None:
+            kd = _get_kd_config(self.cfg)
+            with teacher_on_device(self, batch.x.device):
+                with torch.no_grad():
+                    t_logits = self.teacher(batch)
+            kd_loss = soft_label_kd_loss(logits, t_logits, kd.temperature)
+            loss = kd.alpha * kd_loss + (1 - kd.alpha) * task_loss
+        else:
+            loss = task_loss
+        return loss, acc
+
+    def _training_step_inner(self, batch, _idx):
+        loss, acc = self._step(batch)
+        self.log("train_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
+        self.log("train_acc", acc, prog_bar=True, batch_size=batch.num_graphs)
+        return loss
+
+    def training_step(self, batch, batch_idx):
+        return self._oom_safe_step(batch, batch_idx, self._training_step_inner)
+
+    def validation_step(self, batch, _idx):
+        loss, acc = self._step(batch)
+        self.log("val_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
+        self.log("val_acc", acc, prog_bar=True, batch_size=batch.num_graphs)
+
+    def test_step(self, batch, _idx):
+        logits = self(batch)
+        scores = F.softmax(logits, dim=1)[:, 1]
+        self.test_metrics.update(scores, batch.y)
+
+    def on_test_epoch_start(self):
+        self.test_metrics.reset()
+
+    def on_test_epoch_end(self):
+        self.log_dict(self.test_metrics.compute())
+
+    def configure_optimizers(self):
+        opt = torch.optim.Adam(self.parameters(), lr=self.cfg.training.lr, weight_decay=self.cfg.training.weight_decay)
+        return build_optimizer_dict(opt, self.cfg)

@@ -1,8 +1,21 @@
+import functools
+
+import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from omegaconf import OmegaConf
+from torchmetrics import MetricCollection
+from torchmetrics.classification import (
+    BinaryAccuracy, BinaryAUROC, BinaryF1Score,
+    BinaryPrecision, BinaryRecall, BinarySpecificity,
+)
 
-from ._utils import InputEncoder, build_conv_stack, _make_conv, conv_forward
+from ._utils import (
+    InputEncoder, build_conv_stack, _make_conv, conv_forward,
+    OOMSkipMixin, soft_label_kd_loss, _get_kd_config, teacher_on_device,
+    build_optimizer_dict, compute_node_budget, NodeBudgetInfo,
+)
 
 
 class GraphAutoencoderNeighborhood(nn.Module):
@@ -290,3 +303,138 @@ class GraphAutoencoderNeighborhood(nn.Module):
         cont_out, canid_logits = self.decode_node(z, edge_index, edge_attr=ea, batch=batch)
         neighbor_logits = self.neighborhood_decoder(z)
         return cont_out, canid_logits, neighbor_logits, z, kl_loss, mask
+
+
+# ---------------------------------------------------------------------------
+# Lightning training module
+# ---------------------------------------------------------------------------
+
+
+class VGAEModule(OOMSkipMixin, pl.LightningModule):
+    """VGAE training: reconstruct node features + CAN IDs + neighborhood.
+
+    When teacher is provided, adds dual-signal KD loss:
+      kd_loss = latent_w * MSE(project(z_s), z_t) + recon_w * MSE(recon_s, recon_t)
+      total = alpha * kd_loss + (1-alpha) * task_loss
+    """
+
+    def __init__(self, cfg, teacher: nn.Module | None = None, projection: nn.Linear | None = None):
+        super().__init__()
+        num_ids, in_channels = cfg.num_ids, cfg.in_channels
+        self.save_hyperparameters({"cfg": OmegaConf.to_container(cfg), "num_ids": num_ids, "in_channels": in_channels})
+        self.cfg = cfg
+        self.model = GraphAutoencoderNeighborhood.from_config(cfg, num_ids, in_channels)
+        if cfg.training.compile_model and hasattr(torch, "compile"):
+            self.model = torch.compile(self.model, dynamic=True)
+        self.teacher = teacher
+        self.projection = projection
+        self._teacher_on_cpu = False
+        self.test_threshold: float | None = None
+        self.test_metrics = MetricCollection({
+            "accuracy": BinaryAccuracy(), "f1": BinaryF1Score(),
+            "precision": BinaryPrecision(), "recall": BinaryRecall(),
+            "specificity": BinarySpecificity(), "auc": BinaryAUROC(),
+        })
+        self._test_errors: list[torch.Tensor] = []
+        self._test_labels: list[torch.Tensor] = []
+
+    def forward(self, batch):
+        edge_attr = getattr(batch, "edge_attr", None)
+        mask_ratio = self.cfg.vgae.mask_ratio if self.training else 0.0
+        return self.model(
+            batch.x, batch.edge_index, batch.batch,
+            edge_attr=edge_attr, mask_ratio=mask_ratio, node_id=batch.node_id,
+        )
+
+    def _task_loss(self, batch):
+        cont_out, canid_logits, nbr_logits, z, kl_loss, mask = self(batch)
+        target = batch.x
+        if mask is not None:
+            recon = F.mse_loss(cont_out[mask], target[mask])
+        else:
+            recon = F.mse_loss(cont_out, target)
+        canid = F.cross_entropy(canid_logits, batch.node_id)
+        nbr_loss = GraphAutoencoderNeighborhood.neighborhood_loss_negsampled(
+            nbr_logits, batch.node_id, batch.edge_index,
+            self.hparams["num_ids"], k_neg=self.cfg.vgae.k_neg,
+        )
+        w = self.cfg.vgae
+        task_loss = recon + w.canid_weight * canid + w.nbr_weight * nbr_loss + w.kl_weight * kl_loss
+        return task_loss, cont_out, z
+
+    def _step(self, batch):
+        task_loss, cont_out, z = self._task_loss(batch)
+        if self.teacher is not None:
+            kd = _get_kd_config(self.cfg)
+            with teacher_on_device(self, batch.x.device):
+                with torch.no_grad():
+                    batch_idx = (
+                        batch.batch if batch.batch is not None
+                        else torch.zeros(batch.x.size(0), dtype=torch.long, device=batch.x.device)
+                    )
+                    t_edge_attr = getattr(batch, "edge_attr", None)
+                    t_cont, _, _, t_z, _, _ = self.teacher(
+                        batch.x, batch.edge_index, batch_idx, edge_attr=t_edge_attr, node_id=batch.node_id,
+                    )
+            z_s = self.projection(z) if self.projection is not None else z
+            min_n = min(z_s.size(0), t_z.size(0))
+            latent_kd = F.mse_loss(z_s[:min_n], t_z[:min_n])
+            min_r = min(cont_out.size(0), t_cont.size(0))
+            recon_kd = F.mse_loss(cont_out[:min_r], t_cont[:min_r])
+            kd_loss = kd.vgae_latent_weight * latent_kd + kd.vgae_recon_weight * recon_kd
+            return kd.alpha * kd_loss + (1 - kd.alpha) * task_loss
+        return task_loss
+
+    def _training_step_inner(self, batch, _idx):
+        loss = self._step(batch)
+        self.log("train_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
+        return loss
+
+    def training_step(self, batch, batch_idx):
+        return self._oom_safe_step(batch, batch_idx, self._training_step_inner)
+
+    def validation_step(self, batch, _idx):
+        loss = self._step(batch)
+        self.log("val_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
+
+    def test_step(self, batch, _idx):
+        from torch_geometric.utils import scatter
+        edge_attr = getattr(batch, "edge_attr", None)
+        cont, canid_logits, nbr_logits, _, _, _ = self.model(
+            batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr, node_id=batch.node_id,
+        )
+        per_node_se = (cont - batch.x).pow(2).mean(dim=1)
+        recon = scatter(per_node_se, batch.batch, dim=0, reduce="max")
+        canid_err = F.cross_entropy(canid_logits, batch.node_id, reduction="none")
+        canid_per_graph = scatter(canid_err, batch.batch, dim=0, reduce="max")
+        nbr_targets = self.model.create_neighborhood_targets(batch.node_id, batch.edge_index, batch.batch)
+        nbr_err = F.binary_cross_entropy_with_logits(nbr_logits, nbr_targets, reduction="none").mean(dim=1)
+        nbr_per_graph = scatter(nbr_err, batch.batch, dim=0, reduce="max")
+        w = self.cfg.vgae
+        errors = recon + w.canid_weight * canid_per_graph + w.nbr_weight * nbr_per_graph
+        self._test_errors.append(errors)
+        self._test_labels.append(batch.y)
+        if self.test_threshold is not None:
+            self.test_metrics.update(errors, batch.y)
+
+    def on_test_epoch_start(self):
+        self.test_metrics.reset()
+
+    def on_test_epoch_end(self):
+        if self.test_threshold is not None:
+            self.log_dict(self.test_metrics.compute())
+
+    def get_test_errors(self) -> tuple:
+        """Return accumulated (errors, labels) as numpy arrays after test."""
+        import numpy as np
+        if not self._test_errors:
+            return np.array([], dtype=np.float32), np.array([], dtype=np.int64)
+        return (torch.cat(self._test_errors).cpu().numpy(),
+                torch.cat(self._test_labels).cpu().numpy())
+
+    def configure_optimizers(self):
+        params = list(self.model.parameters())
+        if self.projection is not None:
+            params += list(self.projection.parameters())
+        opt = torch.optim.Adam(params, lr=self.cfg.training.lr, weight_decay=self.cfg.training.weight_decay)
+        return build_optimizer_dict(opt, self.cfg)

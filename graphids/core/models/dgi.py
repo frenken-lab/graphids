@@ -9,9 +9,18 @@ Reference: Veličković et al., "Deep Graph Infomax" (ICLR 2019).
 
 from __future__ import annotations
 
+import pytorch_lightning as pl
 import torch
 import torch.nn as nn
+from omegaconf import OmegaConf
 from torch_geometric.nn import global_mean_pool
+from torchmetrics import MetricCollection
+from torchmetrics.classification import (
+    BinaryAccuracy, BinaryAUROC, BinaryF1Score,
+    BinaryPrecision, BinaryRecall, BinarySpecificity,
+)
+
+from ._utils import OOMSkipMixin, build_optimizer_dict
 
 from ._utils import InputEncoder, build_conv_stack, conv_forward
 
@@ -145,3 +154,87 @@ class GraphInfomaxModel(nn.Module):
             proj_dim=cfg.dgi.proj_dim,
             use_checkpointing=cfg.training.gradient_checkpointing,
         )
+
+
+# ---------------------------------------------------------------------------
+# Lightning training module
+# ---------------------------------------------------------------------------
+
+
+class DGIModule(OOMSkipMixin, pl.LightningModule):
+    """DGI contrastive training: maximize node–summary mutual information.
+
+    Anomaly scoring at test time uses discriminator confidence:
+    low discriminator agreement → anomalous graph.
+    """
+
+    def __init__(self, cfg):
+        super().__init__()
+        num_ids, in_channels = cfg.num_ids, cfg.in_channels
+        self.save_hyperparameters({"cfg": OmegaConf.to_container(cfg), "num_ids": num_ids, "in_channels": in_channels})
+        self.cfg = cfg
+        self.model = GraphInfomaxModel.from_config(cfg, num_ids, in_channels)
+        if cfg.training.compile_model and hasattr(torch, "compile"):
+            self.model = torch.compile(self.model, dynamic=True)
+        self.test_threshold: float | None = None
+        self.test_metrics = MetricCollection({
+            "accuracy": BinaryAccuracy(), "f1": BinaryF1Score(),
+            "precision": BinaryPrecision(), "recall": BinaryRecall(),
+            "specificity": BinarySpecificity(), "auc": BinaryAUROC(),
+        })
+        self._test_scores: list[torch.Tensor] = []
+        self._test_labels: list[torch.Tensor] = []
+
+    def forward(self, batch):
+        edge_attr = getattr(batch, "edge_attr", None)
+        return self.model(
+            batch.x, batch.edge_index, batch.batch,
+            edge_attr=edge_attr, node_id=batch.node_id,
+        )
+
+    def _training_step_inner(self, batch, _idx):
+        pos_z, neg_z, summary = self(batch)
+        loss = self.model.dgi_loss(pos_z, neg_z, summary, batch.batch)
+        self.log("train_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
+        return loss
+
+    def training_step(self, batch, batch_idx):
+        return self._oom_safe_step(batch, batch_idx, self._training_step_inner)
+
+    def validation_step(self, batch, _idx):
+        pos_z, neg_z, summary = self(batch)
+        loss = self.model.dgi_loss(pos_z, neg_z, summary, batch.batch)
+        self.log("val_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
+
+    def test_step(self, batch, _idx):
+        from torch_geometric.utils import scatter
+        pos_z = self.model.encode(
+            batch.x, batch.edge_index, getattr(batch, "edge_attr", None),
+            batch.batch, batch.node_id,
+        )
+        summary = self.model.summarize(pos_z, batch.batch)
+        node_scores = self.model.discriminate(pos_z, summary, batch.batch)
+        graph_scores = 1 - scatter(node_scores, batch.batch, dim=0, reduce="mean")
+        self._test_scores.append(graph_scores)
+        self._test_labels.append(batch.y)
+        if self.test_threshold is not None:
+            self.test_metrics.update(graph_scores, batch.y)
+
+    def on_test_epoch_start(self):
+        self.test_metrics.reset()
+
+    def on_test_epoch_end(self):
+        if self.test_threshold is not None:
+            self.log_dict(self.test_metrics.compute())
+
+    def get_test_errors(self) -> tuple:
+        """Return accumulated (anomaly_scores, labels) as numpy arrays."""
+        import numpy as np
+        if not self._test_scores:
+            return np.array([], dtype=np.float32), np.array([], dtype=np.int64)
+        return (torch.cat(self._test_scores).cpu().numpy(),
+                torch.cat(self._test_labels).cpu().numpy())
+
+    def configure_optimizers(self):
+        opt = torch.optim.Adam(self.parameters(), lr=self.cfg.training.lr, weight_decay=self.cfg.training.weight_decay)
+        return build_optimizer_dict(opt, self.cfg)
