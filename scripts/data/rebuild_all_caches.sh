@@ -1,57 +1,29 @@
 #!/bin/bash
-# Rebuild ALL graph caches (train + test) for specified datasets via SLURM.
-# Each dataset gets its own SLURM job for parallelism.
-#
-# Usage: bash scripts/data/rebuild_all_caches.sh                          # All 6 datasets
-#        bash scripts/data/rebuild_all_caches.sh hcrl_ch hcrl_sa          # Specific datasets
-#        bash scripts/data/rebuild_all_caches.sh --dry-run                # Show what would run
-
+# Rebuild ALL graph caches for specified datasets via SLURM.
+# Usage: bash scripts/data/rebuild_all_caches.sh [--dry-run] [dataset ...]
 set -euo pipefail
 
-PROJECT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-mkdir -p "$PROJECT_DIR/slurm_logs"
+source "$(dirname "$0")/../lib/datasets.sh"
+source "$(dirname "$0")/../lib/dryrun.sh"
+source "$(dirname "$0")/../lib/slurm.sh"
 
-# Source .env for KD_GAT_SLURM_ACCOUNT and KD_GAT_LAKE_ROOT
-set -a; source "$PROJECT_DIR/.env" 2>/dev/null; set +a
-
-DRY_RUN=false
-DATASETS=""
-
-for arg in "$@"; do
-    if [ "$arg" = "--dry-run" ]; then
-        DRY_RUN=true
-    else
-        DATASETS="$DATASETS $arg"
-    fi
-done
-
-if [ -z "$DATASETS" ]; then
-    DATASETS="hcrl_ch hcrl_sa set_01 set_02 set_03 set_04"
-fi
-
-ACCOUNT="${KD_GAT_SLURM_ACCOUNT:?Set KD_GAT_SLURM_ACCOUNT in .env}"
+kd_parse_dry_run "$@"
+read -ra DATASETS <<< "$(kd_parse_datasets "$@")"
 LAKE_ROOT="${KD_GAT_LAKE_ROOT:-/fs/ess/PAS1266/kd-gat}"
 
-for ds in $DATASETS; do
-    CACHE_DIR=$("$PROJECT_DIR/.venv/bin/python" -c "from graphids.config import cache_dir; print(cache_dir('${LAKE_ROOT}', '$ds'))")
+rebuild_one() {
+    local ds="$1"
+    local cache_dir
+    cache_dir=$("${KD_PROJECT_ROOT}/.venv/bin/python" -c \
+        "from graphids.config import cache_dir; print(cache_dir('${LAKE_ROOT}', '$ds'))")
 
-    if [ "$DRY_RUN" = true ]; then
-        echo "[dry-run] Would delete $CACHE_DIR and submit rebuild job for $ds"
-        continue
+    if [[ -d "$cache_dir" ]]; then
+        kd_log INFO "Deleting stale cache" dataset="$ds" path="$cache_dir"
+        kd_exec rm -rf "$cache_dir"
     fi
 
-    # Delete existing cache to force rebuild
-    if [ -d "$CACHE_DIR" ]; then
-        echo "Deleting stale cache: $CACHE_DIR"
-        rm -rf "$CACHE_DIR"
-    fi
-
-    sbatch --account="$ACCOUNT" --partition=cpu \
-      --time=02:00:00 --mem=48G --cpus-per-task=8 \
-      --job-name="cache-${ds}" \
-      --output="$PROJECT_DIR/slurm_logs/%j-cache-${ds}.out" \
-      --error="$PROJECT_DIR/slurm_logs/%j-cache-${ds}.err" \
-      --wrap="SKIP_CUDA_CONF=1 SKIP_STAGE_DATA=1 source $PROJECT_DIR/scripts/slurm/_preamble.sh && python -c \"
+    kd_submit cpu "cache-${ds}" \
+        "SKIP_CUDA_CONF=1 SKIP_STAGE_DATA=1 source ${KD_PROJECT_ROOT}/scripts/slurm/_preamble.sh && python -c \"
 from graphids.core.preprocessing.datamodule import CANBusDataModule
 from graphids.config import resolve
 
@@ -69,6 +41,10 @@ dm.setup('test')
 for name, test_ds in dm.test_datasets.items():
     print(f'  {name}: {len(test_ds)} graphs', flush=True)
 print(f'=== Done: {ds} ===', flush=True)
-\""
-    echo "Submitted cache rebuild job for ${ds}"
-done
+\"" \
+        "--time=02:00:00 --mem=48G --cpus-per-task=8"
+
+    kd_log INFO "Submitted cache rebuild" dataset="$ds"
+}
+
+kd_each_dataset rebuild_one "${DATASETS[@]}"

@@ -120,8 +120,8 @@ class TemporalLightningModule(pl.LightningModule):
         device = self.device
         moved_sequences = [[g.clone().to(device, non_blocking=True) for g in seq] for seq in graph_sequences]
         logits = self.model(moved_sequences)
-        preds = logits.argmax(dim=1)
-        self.test_metrics.update(preds, labels.to(device, non_blocking=True))
+        scores = F.softmax(logits, dim=1)[:, 1]
+        self.test_metrics.update(scores, labels.to(device, non_blocking=True))
 
     def on_test_epoch_start(self):
         self.test_metrics.reset()

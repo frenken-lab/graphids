@@ -232,30 +232,36 @@ def eval_fusion(cfg, val_data, test_scenarios, device) -> dict:
     fusion_cfg = load_frozen_cfg(cfg, "fusion")
     method = fusion_cfg.fusion.method if hasattr(fusion_cfg, "fusion") else cfg.fusion.method
 
-    # Load agent
+    # Load fusion module per method
+    ckpt = torch.load(cfg.checkpoints["dqn"], map_location="cpu", weights_only=True)
     if method == "bandit":
         from graphids.core.models.bandit import NeuralLinUCBAgent
         agent = NeuralLinUCBAgent.from_config(fusion_cfg, device=str(device))
         module = BanditFusionModule(agent)
-    else:
-        from graphids.core.models.dqn import EnhancedDQNFusionAgent
-        agent = EnhancedDQNFusionAgent.from_config(fusion_cfg, device=str(device), inference=True)
-        module = DQNFusionModule(agent)
-
-    agent.load_checkpoint(torch.load(cfg.checkpoints["dqn"], map_location="cpu", weights_only=True))
-
-    # MLP / weighted_avg: load their Lightning modules directly
-    if method == "mlp":
+        agent.load_checkpoint(ckpt)
+    elif method == "mlp":
         from graphids.core.models.fusion_baselines import MLPFusionModule
         from graphids.core.models.registry import fusion_state_dim
-        module = MLPFusionModule(state_dim=fusion_state_dim(), hidden_dims=cfg.fusion.mlp_hidden_dims, lr=cfg.fusion.lr)
-        ckpt = torch.load(cfg.checkpoints["dqn"], map_location="cpu", weights_only=True)
+        module = MLPFusionModule(
+            state_dim=fusion_state_dim(),
+            hidden_dims=cfg.fusion.mlp_hidden_dims,
+            lr=cfg.fusion.lr,
+        )
         module.model.load_state_dict(ckpt["model"])
     elif method == "weighted_avg":
         from graphids.core.models.fusion_baselines import WeightedAvgModule
-        module = WeightedAvgModule(lr=cfg.fusion.lr, decision_threshold=cfg.fusion.decision_threshold)
-        ckpt = torch.load(cfg.checkpoints["dqn"], map_location="cpu", weights_only=True)
+        module = WeightedAvgModule(
+            lr=cfg.fusion.lr,
+            decision_threshold=cfg.fusion.decision_threshold,
+        )
         module.weight.data = ckpt["weight"]
+    else:  # dqn (default)
+        from graphids.core.models.dqn import EnhancedDQNFusionAgent
+        agent = EnhancedDQNFusionAgent.from_config(
+            fusion_cfg, device=str(device), inference=True,
+        )
+        module = DQNFusionModule(agent)
+        agent.load_checkpoint(ckpt)
 
     # Eval via trainer.test()
     val_loader = DataLoader(

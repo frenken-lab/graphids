@@ -17,6 +17,47 @@
 - Heavy tests use `@pytest.mark.slurm` — auto-skipped on login nodes.
 - **Always run tests via SLURM** (`cpu` partition, 8 CPUs, 16GB). Submit with `bash scripts/slurm/run_tests_slurm.sh`.
 
+## Shell Building Blocks (`scripts/lib/`)
+
+**When writing new shell scripts, compose from `scripts/lib/` functions instead of writing ad-hoc code.** Source the modules you need:
+
+```bash
+source "$(dirname "$0")/../lib/datasets.sh"   # KD_ALL_DATASETS, kd_parse_datasets, kd_each_dataset
+source "$(dirname "$0")/../lib/dryrun.sh"      # kd_parse_dry_run, kd_exec, kd_mkdir
+source "$(dirname "$0")/../lib/slurm.sh"       # kd_submit, kd_sbatch_gpu_args, kd_sbatch_cpu_args
+source "$(dirname "$0")/../lib/validation.sh"  # kd_run_dir, kd_check_checkpoint, kd_run_complete
+# _bootstrap.sh (kd_log, kd_die, kd_load_env) is auto-sourced by all above
+```
+
+**Key functions:**
+- `kd_log LEVEL "msg" key=val` — structured stderr logging
+- `kd_die "msg"` — log ERROR + exit 1
+- `kd_parse_datasets "$@"` — extract dataset names from args, default=all (reads datasets.yaml)
+- `kd_each_dataset callback [ds ...]` — iterate datasets with a callback function
+- `kd_parse_dry_run "$@"` — set `KD_DRY_RUN=true` if `--dry-run` in args
+- `kd_exec cmd args...` — execute or log if dry-run
+- `kd_submit gpu|cpu "name" "command" [extra-sbatch-args]` — submit sbatch with standard args
+- `kd_run_dir lake ds model scale stage [seed] [aux]` — canonical path builder
+- `kd_check_checkpoint path [desc]` — returns 0/1, logs result
+- `kd_require_slurm_env` — die if not inside SLURM job
+
+**Conventions:** `kd_` prefix on all functions. Source guards prevent double-loading. Functions return exit codes, never call `exit` (except `kd_die`). Works alongside `_preamble.sh` / `_epilog.sh`.
+
+**Example (login-node launcher):**
+```bash
+#!/bin/bash
+set -euo pipefail
+source "$(dirname "$0")/../lib/datasets.sh"
+source "$(dirname "$0")/../lib/dryrun.sh"
+source "$(dirname "$0")/../lib/slurm.sh"
+
+kd_parse_dry_run "$@"
+read -ra DATASETS <<< "$(kd_parse_datasets "$@")"
+
+do_one() { kd_submit gpu "train-$1" "source .../scripts/slurm/_preamble.sh && python -m graphids dataset=$1"; }
+kd_each_dataset do_one "${DATASETS[@]}"
+```
+
 ## Writing SLURM Job Scripts
 
 When creating or modifying a SLURM `.sh` script, follow these conventions:

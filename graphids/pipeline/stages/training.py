@@ -161,6 +161,7 @@ def _score_difficulty(
                 graph_ce = scatter(node_ce, batch.batch, reduce="mean")
                 scores.extend((graph_mse + canid_weight * graph_ce).tolist())
                 del batch
+                torch.cuda.empty_cache()
 
             if (chunk_idx + 1) % 10 == 0:
                 log.info("difficulty_scoring_progress", chunks_done=chunk_idx + 1, total=total_chunks)
