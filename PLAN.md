@@ -64,6 +64,33 @@
 - Ablation Run 003 (submitting 2026-03-25)
 - Ops dashboard (`buckeyeguy/kd-gat-dashboard`) — running on HF Spaces
 
+### DataLoader consolidation — `make_graph_loader` as single source
+
+**Context:** GPU util is ~30% with 2 workers. Profiling showed collation (PyG's `separate()` → `Batch.from_data_list()` round-trip) costs 7-12× more than necessary for InMemoryDataset. Root cause: PyG un-collates pre-collated data then re-collates it, with 3600 Python ops per batch.
+
+**Done (commit 527857b):**
+- `fast_collate` function: gathers directly from InMemoryDataset `_data`/`slices` via vectorized index ops. Spike-tested: 7-12× faster than warm cached path at 200-1000 graphs/batch. Correctness proven (all 8 tensors identical).
+- `make_graph_loader` factory: isinstance check routes InMemoryDataset → fast path, list[Data] → PyGDataLoader.
+- Wired into `CANBusDataModule._build_loader` only.
+
+**Remaining — consolidate ALL graph DataLoader creation through `make_graph_loader`:**
+
+1. Move common kwargs into the factory (num_workers, pin_memory, persistent_workers, spawn context, worker_init_fn). These are copy-pasted across 10+ call sites.
+2. Move DynamicBatchSampler construction into factory (duplicated between `_build_loader` and `curriculum.py`).
+3. Route these call sites through `make_graph_loader`:
+   - `curriculum.py:133` (train) — passes `list[Data]`, falls through to PyGDataLoader
+   - `curriculum.py:160` (val) — same
+   - `cache_predictions` in `datamodule.py` — passes list
+   - `vgae.py:373,560` — eval, passes list
+   - `gat.py:196` — eval, passes list
+   - `dgi.py:237` — eval, passes list
+   - `_training.py:174` — eval, passes list or pre-built loader
+   - `loss_landscape.py:175` — one-shot, passes list
+4. `_build_loader` becomes a thin wrapper (passes hparams to factory).
+5. Verify: grep for remaining `PyGDataLoader` — should only appear inside `make_graph_loader`.
+
+**Not yet answered:** GPU util is still 30% even though collation is now ~1ms. The real bottleneck hasn't been identified. Collation speedup helps but doesn't explain the 70% GPU idle time. Next step: profile actual training with fast_collate wired in to see if GPU util changes, or if the bottleneck is elsewhere in the DataLoader pipeline (IPC, pin_memory thread, OS scheduling).
+
 ## Blocked
 
 (none)
