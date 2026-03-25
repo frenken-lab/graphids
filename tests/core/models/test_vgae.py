@@ -1,10 +1,10 @@
-"""Model tests: forward shape, gradient flow, variable-size graphs."""
+"""VGAE + GPS conv: architecture, forward pass, gradient flow, checkpoint roundtrip."""
 
 from __future__ import annotations
 
 import pytest
 import torch
-from torch_geometric.data import Batch
+from torch_geometric.loader import DataLoader
 
 from conftest import EDGE_DIM, IN_CHANNELS, NUM_IDS, make_batch, make_graph, make_variable_batch
 
@@ -50,31 +50,6 @@ class TestVGAE:
         assert out[0].shape[0] == 18
 
 
-class TestGAT:
-    @pytest.fixture()
-    def model(self):
-        from graphids.core.models.gat import GATWithJK
-        return GATWithJK(
-            num_ids=NUM_IDS, in_channels=IN_CHANNELS, hidden_channels=16,
-            out_channels=2, num_layers=2, heads=2, dropout=0.0,
-            num_fc_layers=2, embedding_dim=4, conv_type="gatv2",
-            edge_dim=EDGE_DIM, pool_aggrs=("mean",), proj_dim=0,
-        )
-
-    def test_forward_shape(self, model):
-        assert model(make_batch(5)).shape == (5, 2)
-
-    def test_gradient_flow(self, model):
-        model(make_batch(3)).sum().backward()
-        dead = [n for n, p in model.named_parameters()
-                if p.requires_grad and p.grad is None]
-        assert not dead, f"No gradient: {dead}"
-
-    def test_variable_size_graphs(self, model):
-        batch = make_variable_batch([3, 20])
-        assert model(batch).shape == (2, 2)
-
-
 class TestGPSConv:
     """GPS conv path: _ProjectedGPS + conv_forward GPS branch."""
 
@@ -106,7 +81,37 @@ class TestGPSConv:
             edge_attr=batch.edge_attr, node_id=batch.node_id,
         )
         (cont.sum() + canid.sum() + nbr.sum() + kl).backward()
-        # GPS conv skips external BatchNorm (has internal norm) — exclude encoder_bns
         dead = [n for n, p in model.named_parameters()
                 if p.grad is None and "encoder_bns" not in n]
         assert not dead, f"No gradient: {dead}"
+
+
+@pytest.mark.slow
+class TestVGAEFastDevRun:
+    def test_vgae(self, vgae_cfg):
+        import pytorch_lightning as pl
+        from graphids.core.models.vgae import VGAEModule
+        loader = DataLoader([make_graph() for _ in range(16)], batch_size=4)
+        trainer = pl.Trainer(fast_dev_run=True, accelerator="cpu", enable_progress_bar=False)
+        trainer.fit(VGAEModule(vgae_cfg), loader, loader)
+
+
+class TestVGAECheckpointRoundtrip:
+    def test_vgae(self, vgae_cfg, tmp_path):
+        from graphids.core.models.vgae import VGAEModule
+
+        m1 = VGAEModule(vgae_cfg)
+        m1.eval()
+        torch.save(m1.state_dict(), tmp_path / "v.ckpt")
+
+        m2 = VGAEModule(vgae_cfg)
+        m2.load_state_dict(torch.load(tmp_path / "v.ckpt", weights_only=True))
+        m2.eval()
+
+        batch = make_batch(2)
+        with torch.no_grad():
+            torch.manual_seed(0)
+            o1 = m1(batch)
+            torch.manual_seed(0)
+            o2 = m2(batch)
+        torch.testing.assert_close(o1[0], o2[0])

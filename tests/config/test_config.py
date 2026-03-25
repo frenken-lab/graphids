@@ -1,6 +1,8 @@
-"""Config layer tests: resolve, presets, overrides, constants."""
+"""Config layer tests: resolve, presets, overrides, constants, DAG topology."""
 
 from __future__ import annotations
+
+import graphlib
 
 import pytest
 from omegaconf import OmegaConf
@@ -36,7 +38,7 @@ def test_cli_beats_preset():
 
 
 def test_serializable():
-    """Config → dict for MLflow/hparams."""
+    """Config -> dict for MLflow/hparams."""
     from graphids.config import resolve
     container = OmegaConf.to_container(resolve(), resolve=True)
     assert isinstance(container, dict)
@@ -60,3 +62,47 @@ def test_new_config_fields():
     assert cfg.fusion.decision_threshold == 0.5
     assert cfg.dqn.reward_correct == 3.0
     assert cfg.evaluation.batch_size == 256
+
+
+# ---------------------------------------------------------------------------
+# DAG topology (from test_pipeline_dag.py)
+# ---------------------------------------------------------------------------
+
+
+def _topo_order() -> list[str]:
+    from graphids.config.constants import STAGES, STAGE_DEPENDENCIES
+    graph = {s: {ds for _, ds in STAGE_DEPENDENCIES.get(s, [])} for s in STAGES}
+    return list(graphlib.TopologicalSorter(graph).static_order())
+
+
+def test_no_cycles():
+    order = _topo_order()
+    from graphids.config.constants import STAGES
+    assert len(order) == len(STAGES)
+
+
+@pytest.mark.parametrize("before,after", [
+    ("autoencoder", "curriculum"),
+    ("autoencoder", "fusion"),
+    ("curriculum", "fusion"),
+    ("fusion", "evaluation"),
+])
+def test_ordering(before, after):
+    order = _topo_order()
+    assert order.index(before) < order.index(after)
+
+
+def test_default_stages_are_valid():
+    import yaml
+    from graphids.config.constants import CONFIG_DIR, STAGES
+    pipeline = yaml.safe_load((CONFIG_DIR / "pipeline.yaml").read_text())
+    bad = [s for s in pipeline["default_stages"] if s not in STAGES]
+    assert not bad, f"default_stages has unknown stages: {bad}"
+
+
+def test_stages_have_identity_keys():
+    import yaml
+    from graphids.config.constants import CONFIG_DIR
+    pipeline = yaml.safe_load((CONFIG_DIR / "pipeline.yaml").read_text())
+    for name, sdef in pipeline["stages"].items():
+        assert "identity_keys" in sdef, f"Stage '{name}' missing identity_keys"

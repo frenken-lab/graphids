@@ -130,95 +130,6 @@ class TestPopulateConfig:
 
 
 # ---------------------------------------------------------------------------
-# Test 2: FusionRewardCalculator wiring
-# ---------------------------------------------------------------------------
-
-
-class TestFusionRewardCalculator:
-    """FusionRewardCalculator requires vgae_weights and uses constructor coefficients."""
-
-    def test_missing_vgae_weights_raises(self):
-        """vgae_weights is keyword-only and required — omitting it is a TypeError."""
-        from graphids.core.models.fusion_reward import FusionRewardCalculator
-
-        with pytest.raises(TypeError, match="vgae_weights"):
-            FusionRewardCalculator()
-
-    def test_construction_with_vgae_weights(self):
-        """Providing vgae_weights succeeds and stores them."""
-        from graphids.core.models.fusion_reward import FusionRewardCalculator
-
-        weights = [0.5, 0.3, 0.2]
-        calc = FusionRewardCalculator(vgae_weights=weights)
-
-        assert torch.allclose(calc._vgae_weights, torch.tensor(weights))
-
-    def test_reward_coefficients_actually_used(self):
-        """Non-default reward coefficients produce different rewards than defaults."""
-        from graphids.core.models.fusion_reward import FusionRewardCalculator
-        from graphids.core.models.registry import fusion_state_dim
-
-        state_dim = fusion_state_dim()
-        n = 16
-        torch.manual_seed(42)
-        states = torch.rand(n, state_dim)
-        labels = torch.randint(0, 2, (n,))
-        alphas = torch.full((n,), 0.5)
-
-        # Default coefficients
-        calc_default = FusionRewardCalculator(vgae_weights=[0.4, 0.35, 0.25])
-        norm_default = calc_default.normalize(states)
-        _, gat_probs_d = calc_default.derive_scores(norm_default)
-        anomaly_d, _ = calc_default.derive_scores(norm_default)
-        fused_d = (1 - alphas) * anomaly_d + alphas * gat_probs_d
-        preds_d = (fused_d > 0.5).long()
-        rewards_default = calc_default.compute(preds_d, labels, norm_default, alphas)
-
-        # Non-default coefficients (dramatically different)
-        calc_custom = FusionRewardCalculator(
-            vgae_weights=[0.1, 0.1, 0.8],
-            reward_correct=10.0,
-            reward_incorrect=-10.0,
-            confidence_weight=2.0,
-            combined_conf_weight=1.5,
-            disagreement_penalty=-5.0,
-            overconf_penalty=-5.0,
-            balance_weight=1.0,
-        )
-        norm_custom = calc_custom.normalize(states)
-        anomaly_c, gat_probs_c = calc_custom.derive_scores(norm_custom)
-        fused_c = (1 - alphas) * anomaly_c + alphas * gat_probs_c
-        preds_c = (fused_c > 0.5).long()
-        rewards_custom = calc_custom.compute(preds_c, labels, norm_custom, alphas)
-
-        # Rewards must differ — if they match, coefficients are being ignored
-        assert not torch.allclose(rewards_default, rewards_custom, atol=1e-3), (
-            "Default and custom reward coefficients produced identical rewards — "
-            "constructor args are not being used"
-        )
-
-    def test_derive_scores_uses_vgae_weights(self):
-        """derive_scores uses self._vgae_weights, not a hardcoded array."""
-        from graphids.core.models.fusion_reward import FusionRewardCalculator
-        from graphids.core.models.registry import fusion_state_dim
-
-        state_dim = fusion_state_dim()
-        torch.manual_seed(0)
-        states = torch.rand(8, state_dim)
-
-        calc_a = FusionRewardCalculator(vgae_weights=[1.0, 0.0, 0.0])
-        calc_b = FusionRewardCalculator(vgae_weights=[0.0, 0.0, 1.0])
-
-        scores_a, _ = calc_a.derive_scores(states)
-        scores_b, _ = calc_b.derive_scores(states)
-
-        assert not torch.allclose(scores_a, scores_b, atol=1e-4), (
-            "Different vgae_weights produced identical anomaly scores — "
-            "derive_scores ignores vgae_weights"
-        )
-
-
-# ---------------------------------------------------------------------------
 # Test 3: Config → model construction flow
 # ---------------------------------------------------------------------------
 
@@ -410,7 +321,7 @@ class TestFindVgaeThresholdEdgeCases:
         """All-normal data (single class) returns median threshold, not crash."""
         import numpy as np
         from graphids.core.models.vgae import VGAEModule
-        from graphids.pipeline.stages.eval_inference import find_vgae_threshold
+
 
         module = VGAEModule(vgae_cfg)
         # Simulate accumulated errors from single-class data
@@ -426,7 +337,7 @@ class TestFindVgaeThresholdEdgeCases:
     def test_balanced_data_produces_valid_threshold(self, vgae_cfg):
         """Normal case: mixed labels produce a valid positive threshold."""
         from graphids.core.models.vgae import VGAEModule
-        from graphids.pipeline.stages.eval_inference import find_vgae_threshold
+
         from torchmetrics.functional.classification import binary_roc
 
         module = VGAEModule(vgae_cfg)
@@ -507,66 +418,3 @@ def test_main_config_resolves_all_stages():
         assert cfg.stage == stage
 
 
-# ---------------------------------------------------------------------------
-# Test 8: Fusion checkpoint save/load roundtrip
-# ---------------------------------------------------------------------------
-
-
-class TestFusionCheckpointRoundtrip:
-    """Fusion checkpoint save/load format consistency."""
-
-    def test_mlp_roundtrip(self, tmp_path):
-        from graphids.core.models.fusion_baselines import MLPFusionModule
-        m1 = MLPFusionModule(state_dim=15)
-        m1.eval()
-        torch.save({"model": m1.model.state_dict()}, tmp_path / "mlp.pt")
-        m2 = MLPFusionModule(state_dim=15)
-        ckpt = torch.load(tmp_path / "mlp.pt", weights_only=True)
-        m2.model.load_state_dict(ckpt["model"])
-        m2.eval()
-        x = torch.rand(8, 15)
-        with torch.no_grad():
-            torch.testing.assert_close(m1(x), m2(x))
-
-    def test_weighted_avg_roundtrip(self, tmp_path):
-        from graphids.core.models.fusion_baselines import WeightedAvgModule
-        m1 = WeightedAvgModule()
-        m1.weight.data.fill_(0.7)
-        m1.eval()
-        torch.save(m1.state_dict_for_save(), tmp_path / "wavg.pt")
-        m2 = WeightedAvgModule()
-        ckpt = torch.load(tmp_path / "wavg.pt", weights_only=True)
-        m2.weight.data = ckpt["weight"]
-        m2.eval()
-        x = torch.rand(8, 15)
-        with torch.no_grad():
-            torch.testing.assert_close(m1(x), m2(x))
-
-    def test_dqn_roundtrip(self, tmp_path):
-        from graphids.core.models.dqn import EnhancedDQNFusionAgent
-        from graphids.core.models.registry import fusion_state_dim
-        sd = fusion_state_dim()
-        a1 = EnhancedDQNFusionAgent(
-            alpha_steps=11, state_dim=sd,
-            reward_kwargs=dict(vgae_weights=[0.4, 0.35, 0.25]),
-        )
-        ckpt = {
-            "q_network": a1.q_network.state_dict(),
-            "target_network": a1.target_network.state_dict(),
-            "epsilon": a1.epsilon,
-        }
-        torch.save(ckpt, tmp_path / "dqn.pt")
-        a2 = EnhancedDQNFusionAgent(
-            alpha_steps=11, state_dim=sd,
-            reward_kwargs=dict(vgae_weights=[0.4, 0.35, 0.25]),
-        )
-        a2.load_checkpoint(torch.load(tmp_path / "dqn.pt", weights_only=True))
-        # Compare Q-network outputs (eval mode to disable dropout)
-        a1.q_network.eval()
-        a2.q_network.eval()
-        x = torch.rand(8, sd)
-        with torch.no_grad():
-            q1 = a1.q_network(x)
-            q2 = a2.q_network(x)
-        torch.testing.assert_close(q1, q2)
-        assert a1.epsilon == a2.epsilon
