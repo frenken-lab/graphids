@@ -18,7 +18,161 @@ from torch.utils.data import DataLoader, TensorDataset
 from graphids.config import cache_dir, data_dir
 from graphids.config.constants import CATALOG_PATH, EDGE_FEATURE_COUNT, NODE_FEATURE_COUNT, PREPROCESSING_DEFAULTS
 
+
+def _worker_init(worker_id: int) -> None:
+    """Set file_system sharing strategy in spawn workers (not inherited from parent)."""
+    import torch.multiprocessing as mp
+    mp.set_sharing_strategy("file_system")
+
+
 from .datasets.can_bus import CANBusDataset
+
+
+# ---------------------------------------------------------------------------
+# Fast collation — bypass separate() → Batch.from_data_list() round-trip
+# ---------------------------------------------------------------------------
+
+
+class _IndexDataset(torch.utils.data.Dataset):
+    """Wrapper that returns physical graph indices instead of Data objects.
+
+    Resolves the logical→physical index mapping from InMemoryDataset._indices
+    so that the collate_fn receives indices directly into _data/slices.
+    """
+
+    def __init__(self, dataset: CANBusDataset) -> None:
+        self._physical: list[int] = list(dataset.indices())
+        self._len = len(self._physical)
+
+    def __len__(self) -> int:
+        return self._len
+
+    def __getitem__(self, idx: int) -> int:
+        return self._physical[idx]
+
+
+def _make_fast_collate_fn(dataset: CANBusDataset):
+    """Build a collate_fn that slices directly from pre-collated InMemoryDataset tensors.
+
+    Instead of separate() → 200 Data objects → Batch.from_data_list() → re-collate,
+    this gathers data with vectorized index ops on the existing concatenated tensors.
+    The result is ~6 C++ kernel launches instead of ~3600 Python-level operations per batch.
+    """
+    from torch_geometric.data import Batch, Data
+
+    # Close over the pre-collated tensors and slice boundaries.
+    # These are mmap'd — reads fault in pages on demand, no full copy.
+    data = dataset._data
+    slices = dataset.slices
+
+    # Pre-fetch tensor refs (avoid repeated getattr in hot path)
+    data_x = data.x
+    data_edge_index = data.edge_index
+    data_edge_attr = data.edge_attr
+    data_node_id = data.node_id
+    data_y = data.y
+    data_attack_type = data.attack_type
+
+    sl_x = slices["x"]
+    sl_ei = slices["edge_index"]
+    sl_ea = slices["edge_attr"]
+    sl_nid = slices["node_id"]
+    sl_y = slices["y"]
+    sl_at = slices["attack_type"]
+
+    def _range_index(starts: torch.Tensor, sizes: torch.Tensor) -> torch.Tensor:
+        """Build a flat gather index from per-graph (start, size) pairs.
+
+        Vectorized equivalent of:
+            torch.cat([torch.arange(s, s + n) for s, n in zip(starts, sizes)])
+        but with O(1) Python calls instead of O(batch_size).
+        """
+        total = int(sizes.sum())
+        # cum_sizes: running total of sizes, for computing local offsets
+        cum_sizes = sizes.cumsum(0)
+        # Each position's offset within its graph:  [0,1,..,n0-1, 0,1,..,n1-1, ...]
+        local = torch.arange(total) - torch.repeat_interleave(cum_sizes - sizes, sizes)
+        # Each position's global start:  [s0,s0,.., s1,s1,.., ...]
+        global_starts = torch.repeat_interleave(starts, sizes)
+        return global_starts + local
+
+    def fast_collate(indices: list[int]) -> Batch:
+        idx = torch.tensor(indices, dtype=torch.long)
+
+        # -- Slice boundaries (6 vectorized index ops) -------------------------
+        node_starts = sl_x[idx]
+        node_ends = sl_x[idx + 1]
+        node_sizes = node_ends - node_starts
+
+        edge_starts = sl_ei[idx]
+        edge_ends = sl_ei[idx + 1]
+        edge_sizes = edge_ends - edge_starts
+
+        # -- Gather indices for variable-size attributes -----------------------
+        node_gather = _range_index(node_starts, node_sizes)
+        edge_gather = _range_index(edge_starts, edge_sizes)
+
+        # -- Gather tensors (one index_select per attribute) -------------------
+        # Each creates a NEW tensor with its own storage — IPC-safe.
+        x = data_x[node_gather]                    # [total_nodes, F]
+        node_id = data_node_id[node_gather]         # [total_nodes]
+        edge_index = data_edge_index[:, edge_gather]  # [2, total_edges]
+        edge_attr = data_edge_attr[edge_gather]     # [total_edges, E]
+        y = data_y[idx]                             # [batch_size]
+        attack_type = data_attack_type[idx]         # [batch_size]
+
+        # -- Edge index offsets (vectorized) -----------------------------------
+        # Pre-collated edge_index has local 0-based indices per graph.
+        # Add cumulative node counts so indices are global within the batch.
+        cum_nodes = node_sizes.cumsum(0)
+        offsets = torch.cat([cum_nodes.new_zeros(1), cum_nodes[:-1]])
+        edge_offsets = torch.repeat_interleave(offsets, edge_sizes)
+        edge_index = edge_index + edge_offsets.unsqueeze(0)
+
+        # -- Batch vector and ptr ----------------------------------------------
+        batch_vec = torch.repeat_interleave(
+            torch.arange(len(idx)), node_sizes,
+        )
+        ptr = torch.cat([cum_nodes.new_zeros(1), cum_nodes])
+
+        # -- Assemble Batch ----------------------------------------------------
+        out = Batch(
+            x=x,
+            edge_index=edge_index,
+            edge_attr=edge_attr,
+            node_id=node_id,
+            y=y,
+            attack_type=attack_type,
+            batch=batch_vec,
+            ptr=ptr,
+        )
+        out._num_graphs = len(idx)
+        return out
+
+    return fast_collate
+
+
+def make_graph_loader(dataset, *, batch_sampler=None, batch_size=1, shuffle=False, **kwargs) -> DataLoader:
+    """Factory that picks the fast collation path for InMemoryDataset, else PyGDataLoader.
+
+    For CANBusDataset (InMemoryDataset with pre-collated _data/slices),
+    uses _IndexDataset + fast_collate to bypass the separate→re-collate round-trip.
+    For plain list[Data] or other dataset types, falls through to PyGDataLoader.
+    """
+    from torch_geometric.data import InMemoryDataset
+    from torch_geometric.loader import DataLoader as PyGDataLoader
+
+    if isinstance(dataset, InMemoryDataset) and hasattr(dataset, '_data') and dataset._data is not None:
+        fast_collate = _make_fast_collate_fn(dataset)
+        index_ds = _IndexDataset(dataset)
+        if batch_sampler is not None:
+            return DataLoader(index_ds, batch_sampler=batch_sampler, collate_fn=fast_collate, **kwargs)
+        return DataLoader(index_ds, batch_size=batch_size, shuffle=shuffle, collate_fn=fast_collate, **kwargs)
+
+    if batch_sampler is not None:
+        return PyGDataLoader(dataset, batch_sampler=batch_sampler, **kwargs)
+    return PyGDataLoader(dataset, batch_size=batch_size, shuffle=shuffle, **kwargs)
+
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -184,7 +338,6 @@ class CANBusDataModule(pl.LightningDataModule):
         return [self._build_loader(ds, shuffle=False) for ds in self._test_datasets.values()]
 
     def _build_loader(self, dataset, shuffle: bool):
-        from torch_geometric.loader import DataLoader as PyGDataLoader
         from torch_geometric.loader import DynamicBatchSampler
 
         from graphids.core.models._training import compute_node_budget
@@ -198,6 +351,7 @@ class CANBusDataModule(pl.LightningDataModule):
             pin_memory=True,
             persistent_workers=nw > 0,
             multiprocessing_context="spawn" if nw > 0 else None,
+            worker_init_fn=_worker_init if nw > 0 else None,
         )
 
         if hp["dynamic_batching"]:
@@ -209,9 +363,9 @@ class CANBusDataModule(pl.LightningDataModule):
                 dataset, max_num=info.budget, mode="node", shuffle=shuffle,
                 num_steps=num_steps, skip_too_big=True,
             )
-            return PyGDataLoader(dataset, batch_sampler=sampler, **common)
+            return make_graph_loader(dataset, batch_sampler=sampler, **common)
 
-        return PyGDataLoader(dataset, batch_size=bs, shuffle=shuffle, **common)
+        return make_graph_loader(dataset, batch_size=bs, shuffle=shuffle, **common)
 
 
 # ---------------------------------------------------------------------------
