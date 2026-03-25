@@ -15,11 +15,11 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from graphids.core.models._training import gpu_cleanup, test_model
-from graphids.core.models.fusion_baselines import load_fusion_module, run_fusion_inference
+from graphids.core.models.fusion_baselines import run_fusion_inference
 from graphids.core.models.registry import get_module_cls
 from graphids.core.preprocessing import CANBusDataModule, cache_predictions
 
-from .trainer_factory import load_frozen_cfg, load_model
+from .trainer_factory import load_model
 
 log = structlog.get_logger()
 
@@ -114,11 +114,13 @@ def _eval_fusion(cfg, val_data, test_scenarios, device) -> dict:
 
     bs = cfg.evaluation.batch_size
     val_cache = cache_predictions(models, val_data, device, cfg.fusion.max_val_samples, batch_size=bs)
-    fusion_cfg = load_frozen_cfg(cfg, "fusion")
-    method = fusion_cfg.fusion.method if hasattr(fusion_cfg, "fusion") else cfg.fusion.method
 
-    ckpt = torch.load(cfg.checkpoints["dqn"], map_location="cpu", weights_only=True)
-    module = load_fusion_module(ckpt, fusion_cfg, device=str(device))
+    # Load fusion module via Lightning — method dispatch is handled by the checkpoint's hparams
+    from graphids.core.models.fusion_baselines import MLPFusionModule, RLFusionModule, WeightedAvgModule
+    ckpt_path = cfg.checkpoints["dqn"]
+    method = cfg.fusion.method
+    _fusion_cls = {"mlp": MLPFusionModule, "weighted_avg": WeightedAvgModule}.get(method, RLFusionModule)
+    module = _fusion_cls.load_from_checkpoint(ckpt_path, map_location=str(device))
 
     val_loader = DataLoader(
         TensorDataset(val_cache["states"], val_cache["labels"]),

@@ -55,7 +55,7 @@ def build() -> ManifestBuilder:
     # Claim 5: Conv type (3)
     b.add("conv_gatv2")
     b.add("conv_gatv1", conv_type="gat")
-    b.add("conv_gps", conv_type="gps", **{"training.batch_size": 256})
+    b.add("conv_gps", conv_type="gps")
 
     # Claim 6: Unsupervised method (3)
     b.add("unsup_vgae")

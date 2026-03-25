@@ -12,7 +12,6 @@ from __future__ import annotations
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
-from omegaconf import OmegaConf
 from torch_geometric.nn import global_mean_pool
 
 from ._conv import InputEncoder, build_encoder_stack, conv_forward, resolve_edge_dim
@@ -154,8 +153,11 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
 
     def __init__(self, cfg, teacher=None, projection=None):
         super().__init__()
+        if isinstance(cfg, dict):
+            from omegaconf import OmegaConf
+            cfg = OmegaConf.create(cfg)
+        self.save_hyperparameters(ignore=["teacher", "projection"])
         num_ids, in_channels = cfg.num_ids, cfg.in_channels
-        self.save_hyperparameters({"cfg": OmegaConf.to_container(cfg), "num_ids": num_ids, "in_channels": in_channels})
         self.cfg = cfg
         self.model = GraphInfomaxModel.from_config(cfg, num_ids, in_channels)
         if cfg.training.compile_model and hasattr(torch, "compile"):

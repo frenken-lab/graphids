@@ -138,6 +138,8 @@ class CANBusDataset(InMemoryDataset):
                     "min": int(edge_t.min().item()),
                     "max": int(edge_t.max().item()),
                     "mean": float(edge_t.mean().item()),
+                    "p95": float(edge_t.quantile(0.95).item()),
+                    "p99": float(edge_t.quantile(0.99).item()),
                 },
             },
         }

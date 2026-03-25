@@ -154,7 +154,7 @@ class DGIConfig:
 class TrainingConfig:
     lr: float = 0.003
     max_epochs: int = 300
-    batch_size: int = 6144
+    batch_size: int = 8192
     patience: int = 100
     weight_decay: float = 0.0001
     gradient_clip: float = 1.0

@@ -152,13 +152,14 @@ def build_dag(
                     # Resource lookup: (model, scale, mode), fall back to base scale (e.g. small_kd → small)
                     mode = sdef.get("mode", stage)
                     base_scale = scale.split("_")[0] if "_" in scale else scale
-                    res = (
-                        resources.get((model, scale, mode))
-                        or resources.get((model, base_scale, mode))
-                        or {}
+                    res = resources.get((model, scale, mode)) or resources.get(
+                        (model, base_scale, mode)
                     )
                     if not res:
-                        log.warning("no_resource_profile", model=model, scale=scale, stage=stage)
+                        raise ValueError(
+                            f"No resource profile for ({model}, {scale}, {mode}). "
+                            f"Add an entry to resources.yaml for this model/scale/stage combo."
+                        )
 
                     # Dependency node_ids: look up upstream stage in this run's node map
                     dep_ids = []
@@ -231,8 +232,8 @@ def submit_manifest(
         cfg = resolve(*job.overrides)
 
         executor = submitit.SlurmExecutor(folder="slurm_logs/%j")
-        mem_val = f"{job.resources.get('memory_gb', 16)}G"
-        partition = job.resources.get("partition", "gpu")
+        mem_val = f"{job.resources['memory_gb']}G"
+        partition = job.resources["partition"]
 
         # Dataset-scoped staging + skip TMPDIR for CPU inference jobs
         stage_args = f"--cache --dataset {job.dataset}"
@@ -242,9 +243,9 @@ def submit_manifest(
 
         executor.update_parameters(
             mem=mem_val,
-            gpus_per_node=job.resources.get("gpus", 0),
-            cpus_per_task=job.resources.get("cpus", 4),
-            time=job.resources.get("walltime_min", 120),
+            gpus_per_node=job.resources["gpus"],
+            cpus_per_task=job.resources["cpus"],
+            time=job.resources["walltime_min"],
             partition=partition,
             account=SLURM_ACCOUNT,
             setup=setup_cmds,

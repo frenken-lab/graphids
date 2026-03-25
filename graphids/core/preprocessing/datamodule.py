@@ -50,6 +50,8 @@ class CANBusDataModule(pl.LightningDataModule):
         val_fraction: float = 1.0 - PREPROCESSING_DEFAULTS["train_val_split"],
         seed: int = 42,
         dynamic_batching: bool = True,
+        conv_type: str = "gatv2",
+        heads: int = 4,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -60,7 +62,14 @@ class CANBusDataModule(pl.LightningDataModule):
     @classmethod
     def from_cfg(cls, cfg) -> CANBusDataModule:
         """Construct from a resolved Config object."""
+        from graphids.config.constants import STAGE_MODEL_MAP
+
         pre = cfg.preprocessing
+        # Resolve conv_type/heads from the active model's sub-config.
+        model_type = STAGE_MODEL_MAP.get(cfg.stage, cfg.model_type)
+        model_sub = getattr(cfg, model_type, None)
+        conv_type = getattr(model_sub, "conv_type", "gatv2") if model_sub else "gatv2"
+        heads = getattr(model_sub, "heads", 4) if model_sub else 4
         return cls(
             dataset=cfg.dataset,
             lake_root=cfg.lake_root,
@@ -71,6 +80,8 @@ class CANBusDataModule(pl.LightningDataModule):
             window_size=pre.window_size,
             stride=pre.stride,
             val_fraction=1.0 - pre.train_val_split,
+            conv_type=conv_type,
+            heads=heads,
         )
 
     def setup(self, stage: str | None = None) -> None:
@@ -173,26 +184,14 @@ class CANBusDataModule(pl.LightningDataModule):
         return [self._build_loader(ds, shuffle=False) for ds in self._test_datasets.values()]
 
     def _build_loader(self, dataset, shuffle: bool):
-        import json
-
         from torch_geometric.loader import DataLoader as PyGDataLoader
         from torch_geometric.loader import DynamicBatchSampler
+
+        from graphids.core.models._training import compute_node_budget
 
         hp = self.hparams
         bs = max(8, hp["batch_size"])
         nw = hp["num_workers"] if "num_workers" in hp else 0
-
-        max_nodes, mean_nodes = None, None
-        if hp["dynamic_batching"]:
-            metadata_path = cache_dir(hp["lake_root"], hp["dataset"]) / "cache_metadata.json"
-            if not metadata_path.exists():
-                raise FileNotFoundError(
-                    f"cache_metadata.json not found at {metadata_path}. "
-                    "Rebuild caches with: python -m graphids stage=preprocess dataset=..."
-                )
-            stats = json.loads(metadata_path.read_text())["graph_stats"]["node_count"]
-            max_nodes = int(bs * stats["p95"])
-            mean_nodes = stats["mean"]
 
         common = dict(
             num_workers=nw,
@@ -201,10 +200,13 @@ class CANBusDataModule(pl.LightningDataModule):
             multiprocessing_context="spawn" if nw > 0 else None,
         )
 
-        if max_nodes is not None:
-            num_steps = max(1, int(len(dataset) * mean_nodes / max_nodes))
+        if hp["dynamic_batching"]:
+            info = compute_node_budget(
+                bs, hp, conv_type=hp.get("conv_type", "gatv2"), heads=hp.get("heads", 4),
+            )
+            num_steps = max(1, int(len(dataset) * info.mean_nodes / info.budget))
             sampler = DynamicBatchSampler(
-                dataset, max_num=max_nodes, mode="node", shuffle=shuffle,
+                dataset, max_num=info.budget, mode="node", shuffle=shuffle,
                 num_steps=num_steps, skip_too_big=True,
             )
             return PyGDataLoader(dataset, batch_sampler=sampler, **common)

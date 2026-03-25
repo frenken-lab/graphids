@@ -1,6 +1,6 @@
 # Resource profiles for SLURM orchestration.
 # Structure: resource_profiles[model_type][scale][stage] -> {gpus, cpus, memory_gb, walltime_min, partition}
-# Memory sized for batch_size=6144. GPU training: 6 CPUs (~54G entitled). CPU inference: 3 CPUs (~25G).
+# Memory sized for batch_size=8192. GPU training: 6 CPUs (~54G entitled). CPU inference: 3 CPUs (~25G).
 
 resource_profiles:
   preprocess:

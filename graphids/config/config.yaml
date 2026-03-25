@@ -20,9 +20,9 @@ gat_stage: curriculum  # GAT training stage: curriculum or normal
 checkpoints:
   vgae: ${_output_base}/vgae_${scale}_autoencoder${identity_hash:autoencoder}/seed_${seed}/best_model.ckpt
   gat: ${_output_base}/gat_${scale}_${gat_stage}${identity_hash:${gat_stage}}/seed_${seed}/best_model.ckpt
-  dqn: ${_output_base}/dqn_${scale}_fusion${identity_hash:fusion}/seed_${seed}/best_model.pt
+  dqn: ${_output_base}/dqn_${scale}_fusion${identity_hash:fusion}/seed_${seed}/best_model.ckpt
   dgi: ${_output_base}/dgi_${scale}_autoencoder${identity_hash:autoencoder}/seed_${seed}/best_model.ckpt
-  temporal: ${_output_base}/gat_${scale}_temporal${identity_hash:temporal}/seed_${seed}/best_model.pt
+  temporal: ${_output_base}/gat_${scale}_temporal${identity_hash:temporal}/seed_${seed}/best_model.ckpt
 
 callbacks:
   checkpoint:

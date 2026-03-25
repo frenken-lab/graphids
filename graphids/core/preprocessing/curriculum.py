@@ -115,7 +115,9 @@ class CurriculumDataModule(pl.LightningDataModule):
         )
 
         if cfg.training.dynamic_batching:
-            info = compute_node_budget(bs, cfg)
+            info = compute_node_budget(
+                bs, cfg, conv_type=cfg.gat.conv_type, heads=cfg.gat.heads,
+            )
             self._mean_nodes = info.mean_nodes
             self._batch_sampler = CurriculumDynamicBatchSampler(
                 full_dataset, normal_indices, attack_indices, scores, cfg, info.budget,
@@ -144,7 +146,9 @@ class CurriculumDataModule(pl.LightningDataModule):
         )
 
         if self.cfg.training.dynamic_batching:
-            info = compute_node_budget(bs, self.cfg)
+            info = compute_node_budget(
+                bs, self.cfg, conv_type=self.cfg.gat.conv_type, heads=self.cfg.gat.heads,
+            )
             num_steps = max(1, int(len(self.val_data) * self._mean_nodes / info.budget))
             sampler = DynamicBatchSampler(
                 self.val_data, max_num=info.budget, mode="node", shuffle=False,

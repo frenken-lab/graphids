@@ -6,7 +6,6 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from omegaconf import OmegaConf
 from torch_geometric.nn import (
     JumpingKnowledge,
     global_mean_pool,
@@ -246,8 +245,11 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
 
     def __init__(self, cfg, num_classes: int = 2, teacher: nn.Module | None = None, projection: nn.Module | None = None):
         super().__init__()
+        if isinstance(cfg, dict):
+            from omegaconf import OmegaConf
+            cfg = OmegaConf.create(cfg)
+        self.save_hyperparameters(ignore=["teacher", "projection", "num_classes"])
         num_ids, in_channels = cfg.num_ids, cfg.in_channels
-        self.save_hyperparameters({"cfg": OmegaConf.to_container(cfg), "num_ids": num_ids, "in_channels": in_channels})
         self.cfg = cfg
         self.model = GATWithJK.from_config(cfg, num_ids, in_channels)
         if cfg.training.compile_model and hasattr(torch, "compile"):

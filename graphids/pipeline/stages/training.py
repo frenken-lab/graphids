@@ -48,30 +48,16 @@ def _resume_ckpt_path(cfg, stage: str) -> str | None:
 def _save_and_cleanup(module, trainer, cfg, stage: str) -> dict:
     """Extract results after training.
 
-    If the module has a save_checkpoint method (fusion, temporal), restores
-    best weights and saves in the module's native format. Otherwise uses
-    Lightning's ModelCheckpoint path directly.
+    All modules save via Lightning's ModelCheckpoint (.ckpt).
+    RL agents persist extra state via on_save_checkpoint hooks.
     """
-    best_path = getattr(trainer.checkpoint_callback, "best_model_path", "")
-
-    # Restore best checkpoint weights if available
-    if best_path and hasattr(module, "save_checkpoint"):
-        best_ckpt = torch.load(best_path, weights_only=True)
-        module.load_state_dict(best_ckpt["state_dict"])
-        module.save_checkpoint("best_model.pt")
-        ckpt = "best_model.pt"
-    elif hasattr(module, "save_checkpoint"):
-        module.save_checkpoint("best_model.pt")
-        ckpt = "best_model.pt"
-    else:
-        ckpt = best_path
+    ckpt = getattr(trainer.checkpoint_callback, "best_model_path", "")
 
     metrics = {}
     if trainer.callback_metrics:
         metrics = {k: v.item() if hasattr(v, "item") else v
                    for k, v in trainer.callback_metrics.items()}
 
-    # Stage-specific metric enrichment
     if stage == "fusion":
         metrics["fusion_method"] = cfg.fusion.method
 

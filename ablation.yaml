@@ -62,7 +62,6 @@ configs:
   conv_gps:
     vgae.conv_type: gps
     gat.conv_type: gps
-    training.batch_size: 256
   unsup_vgae: {}
   unsup_gae:
     vgae.variational: false

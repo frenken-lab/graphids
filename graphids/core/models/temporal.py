@@ -138,43 +138,133 @@ class TemporalGraphClassifier(nn.Module):
         return logits
 
 
+def _probe_spatial_dim(gat: nn.Module, cfg) -> int:
+    """Derive spatial embedding dim from the GAT architecture without data.
+
+    Uses the JK output dim (hidden_channels * heads) scaled by the number
+    of pool aggregators, matching what ``GATWithJK.forward(return_embedding=True)``
+    produces after global pooling.
+    """
+    jk_dim = cfg.gat.hidden * cfg.gat.heads
+    n_aggrs = len(cfg.gat.pool_aggrs) if hasattr(cfg.gat, "pool_aggrs") else 1
+    return jk_dim * n_aggrs
+
+
 class TemporalLightningModule(pl.LightningModule):
-    """Lightning wrapper for TemporalGraphClassifier."""
+    """Lightning wrapper for TemporalGraphClassifier.
 
-    def __init__(self, model: TemporalGraphClassifier, cfg):
+    Constructor builds the model internally from config so Lightning's
+    ``save_hyperparameters`` / ``load_from_checkpoint`` round-trip works.
+
+    Args:
+        cfg: OmegaConf DictConfig (or plain dict on reload).
+        gat_ckpt_path: Path to pretrained GAT checkpoint. Required for
+            training; None during ``load_from_checkpoint`` reconstruction
+            (weights come from the Lightning checkpoint itself).
+    """
+
+    def __init__(self, cfg, gat_ckpt_path: str | None = None):
         super().__init__()
-        self.model = model
+        from omegaconf import OmegaConf
+
+        if isinstance(cfg, dict):
+            cfg = OmegaConf.create(cfg)
+
+        # Two-step save: ignore live OmegaConf + gat_ckpt_path (weights are in
+        # the Lightning checkpoint, so we don't need the GAT path on reload).
+        self.save_hyperparameters(ignore=["cfg", "gat_ckpt_path"])
+        self.save_hyperparameters(
+            {"cfg": OmegaConf.to_container(cfg) if hasattr(cfg, "_metadata") else cfg}
+        )
+
         self.cfg = cfg
-
-    @classmethod
-    def from_datamodule(cls, cfg, dm) -> TemporalLightningModule:
-        """Build from a TemporalDataModule that already loaded the GAT."""
-        import structlog
-        tc = cfg.temporal
-        model = TemporalGraphClassifier(
-            spatial_encoder=dm.gat, spatial_dim=dm.spatial_dim,
-            temporal_hidden=tc.temporal_hidden, temporal_heads=tc.temporal_heads,
-            temporal_layers=tc.temporal_layers, max_seq_len=tc.temporal_window,
-            freeze_spatial=tc.freeze_spatial, num_classes=cfg.num_classes,
-        ).to(dm.device)
-        dm.gat = None  # model owns it now
-
-        total_params = sum(p.numel() for p in model.parameters())
-        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        structlog.get_logger().info("temporal_model_params", total=total_params, trainable=trainable)
-
-        return cls(model, cfg)
+        self.model = self._build_model(cfg, gat_ckpt_path)
         self.test_metrics = MetricCollection({
             "accuracy": BinaryAccuracy(), "f1": BinaryF1Score(),
             "precision": BinaryPrecision(), "recall": BinaryRecall(),
             "specificity": BinarySpecificity(), "auc": BinaryAUROC(),
         })
 
+    # ------------------------------------------------------------------
+    # Model construction
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_model(cfg, gat_ckpt_path: str | None) -> TemporalGraphClassifier:
+        """Build TemporalGraphClassifier from config.
+
+        When *gat_ckpt_path* is provided (training), loads the pretrained GAT
+        and probes its embedding dim.  When None (``load_from_checkpoint``),
+        builds a skeleton GAT from config dimensions — the real weights will be
+        loaded from the Lightning checkpoint's ``state_dict``.
+        """
+        from pathlib import Path
+
+        from graphids.core.models.gat import GATWithJK
+
+        tc = cfg.temporal
+
+        if gat_ckpt_path is not None:
+            # Training path: load pretrained GAT from checkpoint
+            ckpt_path = Path(gat_ckpt_path)
+            if not ckpt_path.exists():
+                raise FileNotFoundError(
+                    f"GAT checkpoint not found: {ckpt_path}\n"
+                    f"The GAT stage must be trained first."
+                )
+            gat = GATWithJK.from_config(cfg, cfg.num_ids, cfg.in_channels)
+            checkpoint = torch.load(gat_ckpt_path, map_location="cpu", weights_only=True)
+            if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+                raw = checkpoint["state_dict"]
+                checkpoint = (
+                    {k.replace("model.", ""): v for k, v in raw.items() if k.startswith("model.")}
+                    or raw
+                )
+            gat.load_state_dict(checkpoint)
+            gat.eval()
+
+            # Probe spatial embedding dim
+            spatial_dim = _probe_spatial_dim(gat, cfg)
+        else:
+            # Reconstruction path (load_from_checkpoint): skeleton GAT,
+            # weights will be overwritten by Lightning's state_dict restore.
+            gat = GATWithJK.from_config(cfg, cfg.num_ids, cfg.in_channels)
+            spatial_dim = _probe_spatial_dim(gat, cfg)
+
+        model = TemporalGraphClassifier(
+            spatial_encoder=gat,
+            spatial_dim=spatial_dim,
+            temporal_hidden=tc.temporal_hidden,
+            temporal_heads=tc.temporal_heads,
+            temporal_layers=tc.temporal_layers,
+            max_seq_len=tc.temporal_window,
+            freeze_spatial=tc.freeze_spatial,
+            num_classes=cfg.num_classes,
+        )
+        return model
+
+    @classmethod
+    def from_datamodule(cls, cfg, dm) -> TemporalLightningModule:
+        """Build from config + TemporalDataModule.
+
+        Extracts the GAT checkpoint path from cfg; the DataModule is only
+        used for device placement after construction.
+        """
+        import structlog
+
+        gat_ckpt_path = str(cfg.checkpoints["gat"])
+        module = cls(cfg, gat_ckpt_path=gat_ckpt_path)
+        module.model = module.model.to(dm.device)
+        dm.gat = None  # DataModule no longer needs its GAT reference
+
+        total_params = sum(p.numel() for p in module.model.parameters())
+        trainable = sum(p.numel() for p in module.model.parameters() if p.requires_grad)
+        structlog.get_logger().info("temporal_model_params", total=total_params, trainable=trainable)
+
+        return module
+
     def forward(self, graph_sequences):
         return self.model(graph_sequences)
-
-    def save_checkpoint(self, path: str) -> None:
-        torch.save(self.model.state_dict(), path)
 
     def _shared_step(self, batch, stage: str):
         graph_sequences, labels = batch
@@ -238,31 +328,27 @@ class TemporalLightningModule(pl.LightningModule):
 
     @classmethod
     def evaluate(cls, cfg, val_data, test_scenarios, device, *, load_model_fn) -> dict | None:
-        """Evaluate temporal model via Lightning test loop."""
+        """Evaluate temporal model via Lightning test loop.
+
+        Loads the full Lightning checkpoint via ``load_from_checkpoint``,
+        avoiding manual model reconstruction.
+        """
         from torch.utils.data import DataLoader
 
-        from graphids.core.preprocessing._temporal import TemporalGraphDataset, TemporalGrouper, collate_temporal
+        from graphids.core.preprocessing._temporal import (
+            TemporalGraphDataset,
+            TemporalGrouper,
+            collate_temporal,
+        )
 
         from ._training import gpu_cleanup, test_model
 
-        gat = load_model_fn(cfg, "gat", cfg.gat_stage, device)
-        with torch.no_grad():
-            probe = val_data[0].clone().to(device)
-            _, emb = gat(probe, return_embedding=True)
-            spatial_dim = emb.shape[-1]
+        ckpt_path = cfg.checkpoints["temporal"]
+        module = cls.load_from_checkpoint(ckpt_path, map_location=device)
+        module = module.to(device)
+        module.eval()
 
         tc = cfg.temporal
-        temporal_model = TemporalGraphClassifier(
-            spatial_encoder=gat, spatial_dim=spatial_dim,
-            temporal_hidden=tc.temporal_hidden, temporal_heads=tc.temporal_heads,
-            temporal_layers=tc.temporal_layers, max_seq_len=tc.temporal_window,
-            freeze_spatial=True, num_classes=cfg.num_classes,
-        ).to(device)
-        temporal_model.load_state_dict(torch.load(
-            cfg.checkpoints["temporal"], map_location="cpu", weights_only=True,
-        ))
-
-        module = cls(temporal_model, cfg)
         grouper = TemporalGrouper(window=tc.temporal_window, stride=tc.temporal_stride)
         val_sequences = grouper.group(val_data)
         if not val_sequences:
@@ -275,5 +361,5 @@ class TemporalLightningModule(pl.LightningModule):
         )
         val_metrics = test_model(module, val_loader)
 
-        gpu_cleanup(temporal_model, gat)
+        gpu_cleanup(module.model)
         return {"val_metrics": val_metrics, "test_metrics": {}, "artifacts": None}

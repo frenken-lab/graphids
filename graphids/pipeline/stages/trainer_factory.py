@@ -144,28 +144,19 @@ def prepare_kd(
                 f"Train {model_type}/{teacher_scale} first, or set model_path explicitly."
             )
 
-    # --- Load and freeze teacher ---
-    from graphids.core.models.registry import get as registry_get
-    from omegaconf import OmegaConf
+    # --- Load and freeze teacher via Lightning ---
+    from graphids.core.models.registry import get_module_cls
 
-    checkpoint = torch.load(str(teacher_path), map_location="cpu", weights_only=True)
-    sd = checkpoint
-    if isinstance(sd, dict) and "state_dict" in sd:
-        raw = sd["state_dict"]
-        sd = {k.replace("model.", ""): v for k, v in raw.items() if k.startswith("model.")} or raw
+    module = get_module_cls(model_type).load_from_checkpoint(
+        str(teacher_path), map_location="cpu",
+    )
+    teacher = module.model
+    tcfg = module.hparams.get("cfg", {})
+    if isinstance(tcfg, dict):
+        from omegaconf import OmegaConf
+        tcfg = OmegaConf.create(tcfg)
 
-    tcfg_path = teacher_path.parent / "config.yaml"
-    if not tcfg_path.exists():
-        raise FileNotFoundError(f"Teacher config not found: {tcfg_path}")
-    tcfg = OmegaConf.load(tcfg_path)
-
-    t_num_ids = tcfg.get("num_ids", num_ids)
-
-    teacher = registry_get(model_type)(tcfg, t_num_ids, in_channels)
-
-    teacher.load_state_dict(sd)
-
-    log.info("loaded_teacher", model_type=model_type, path=str(teacher_path), num_ids=t_num_ids)
+    log.info("loaded_teacher", model_type=model_type, path=str(teacher_path))
     teacher.to(device).eval()
     for p in teacher.parameters():
         p.requires_grad = False
@@ -182,27 +173,14 @@ def prepare_kd(
     return teacher, projection
 
 
-def load_frozen_cfg(cfg, stage: str, model_type: str | None = None):
-    """Load the frozen config.yaml saved by a prior training stage."""
-    mt = model_type or STAGE_MODEL_MAP.get(stage, stage)
-    p = Path(cfg.checkpoints.get(mt, "")).parent / "config.yaml"
-    if not p.exists():
-        raise FileNotFoundError(
-            f"Frozen config not found: {p}\n"
-            f"The '{mt}/{stage}' stage must be trained first."
-        )
-    from omegaconf import OmegaConf
-    return OmegaConf.load(p)
-
-
 def load_model(
     cfg, model_type: str, stage: str, device: torch.device,
 ) -> nn.Module:
-    """Load a trained model using its frozen config and the registry.
+    """Load a trained model's inner nn.Module via Lightning load_from_checkpoint.
 
-    Reads num_ids and in_channels from cfg (populated by DataModule.populate_config).
+    Returns the raw nn.Module (not the Lightning wrapper), frozen and on device.
     """
-    from graphids.core.models.registry import get as registry_get
+    from graphids.core.models.registry import get_module_cls
 
     ckpt_path = Path(cfg.checkpoints[model_type])
     if not ckpt_path.exists():
@@ -210,9 +188,10 @@ def load_model(
             f"Checkpoint not found: {ckpt_path}\n"
             f"The '{model_type}/{stage}' stage must be trained first."
         )
-    frozen_cfg = load_frozen_cfg(cfg, stage, model_type=model_type)
-    model = registry_get(model_type)(frozen_cfg, cfg.num_ids, cfg.in_channels)
-    model.load_state_dict(torch.load(cfg.checkpoints[model_type], map_location="cpu", weights_only=True))
+    module = get_module_cls(model_type).load_from_checkpoint(
+        str(ckpt_path), map_location="cpu",
+    )
+    model = module.model
     model.to(device).eval()
     return model
 

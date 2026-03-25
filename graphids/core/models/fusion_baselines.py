@@ -126,17 +126,6 @@ class MLPFusionModule(_SupervisedFusionOverrides, pl.LightningModule):
     def configure_optimizers(self):
         return optim.Adam(self.parameters(), lr=self.lr)
 
-    def save_checkpoint(self, path: str) -> None:
-        torch.save({"model": self.model.state_dict()}, path)
-
-    @classmethod
-    def from_checkpoint(cls, ckpt: dict, cfg) -> MLPFusionModule:
-        """Construct and load from a checkpoint dict."""
-        from .registry import fusion_state_dim
-        module = cls(state_dim=fusion_state_dim(), hidden_dims=cfg.fusion.mlp_hidden_dims, lr=cfg.fusion.lr)
-        module.model.load_state_dict(ckpt["model"])
-        return module
-
     def fuse(self, state_features: np.ndarray) -> int:
         self.eval()
         with torch.no_grad():
@@ -205,19 +194,6 @@ class WeightedAvgModule(_SupervisedFusionOverrides, pl.LightningModule):
     def configure_optimizers(self):
         return optim.Adam(self.parameters(), lr=self.lr)
 
-    def save_checkpoint(self, path: str) -> None:
-        torch.save(self.state_dict_for_save(), path)
-
-    def state_dict_for_save(self) -> dict:
-        return {"weight": self.weight.detach().cpu(), "alpha": torch.sigmoid(self.weight).item()}
-
-    @classmethod
-    def from_checkpoint(cls, ckpt: dict, cfg) -> WeightedAvgModule:
-        """Construct and load from a checkpoint dict."""
-        module = cls(lr=cfg.fusion.lr, decision_threshold=cfg.fusion.decision_threshold)
-        module.weight.data = ckpt["weight"]
-        return module
-
     def fuse(self, state_features: np.ndarray) -> int:
         self.eval()
         with torch.no_grad():
@@ -233,13 +209,42 @@ class RLFusionModule(pl.LightningModule):
 
     Uses manual optimization. Both agents implement ``train_episode(states, labels)``
     returning a metrics dict. All returned keys are logged automatically.
+
+    Constructor accepts config + method so Lightning can round-trip through
+    ``save_hyperparameters`` / ``load_from_checkpoint``.
     """
 
-    def __init__(self, agent, optimizer_attr: str = "optimizer"):
+    def __init__(self, cfg, method: str = "dqn", device: str = "cpu"):
         super().__init__()
+        from omegaconf import OmegaConf
+
+        # Normalize cfg for load_from_checkpoint round-trip (arrives as dict)
+        if isinstance(cfg, dict):
+            cfg = OmegaConf.create(cfg)
+
+        # Save hparams: cfg stored as plain dict for serialization
+        self.save_hyperparameters(ignore=["cfg"])
+        self.save_hyperparameters(
+            {"cfg": OmegaConf.to_container(cfg) if hasattr(cfg, "_metadata") else cfg}
+        )
+
         self.automatic_optimization = False
+        self.cfg = cfg
+
+        # Build agent from config
+        if method == "dqn":
+            from .dqn import EnhancedDQNFusionAgent
+
+            agent = EnhancedDQNFusionAgent.from_config(cfg, device=device)
+        elif method == "bandit":
+            from .bandit import NeuralLinUCBAgent
+
+            agent = NeuralLinUCBAgent.from_config(cfg, device=device)
+        else:
+            raise ValueError(f"RLFusionModule only handles dqn/bandit, got: {method}")
+
+        self._optimizer_attr = "optimizer" if method == "dqn" else "backbone_optimizer"
         self.agent = agent
-        self._optimizer_attr = optimizer_attr
         self.test_metrics = binary_test_metrics()
 
     def training_step(self, batch, batch_idx):
@@ -265,8 +270,12 @@ class RLFusionModule(pl.LightningModule):
     def on_test_epoch_end(self):
         self.log_dict(self.test_metrics.compute())
 
-    def save_checkpoint(self, path: str) -> None:
-        torch.save(self.agent.state_dict(), path)
+    def on_save_checkpoint(self, checkpoint):
+        checkpoint["agent_state"] = self.agent.state_dict()
+
+    def on_load_checkpoint(self, checkpoint):
+        if "agent_state" in checkpoint:
+            self.agent.load_checkpoint(checkpoint["agent_state"])
 
     def trainer_overrides(self, cfg, dm) -> dict:
         """Trainer overrides for RL fusion training."""
@@ -286,35 +295,14 @@ class RLFusionModule(pl.LightningModule):
     def configure_optimizers(self):
         return getattr(self.agent, self._optimizer_attr)
 
-    @classmethod
-    def from_checkpoint(cls, ckpt: dict, cfg, *, device: str = "cpu") -> RLFusionModule:
-        """Construct RL agent from checkpoint and wrap in RLFusionModule."""
-        method = cfg.fusion.method
-        if method == "dqn":
-            from .dqn import EnhancedDQNFusionAgent
-            agent = EnhancedDQNFusionAgent.from_config(cfg, device=device, inference=True)
-            agent.load_checkpoint(ckpt)
-            return cls(agent, "optimizer")
-        elif method == "bandit":
-            from .bandit import NeuralLinUCBAgent
-            agent = NeuralLinUCBAgent.from_config(cfg, device=device)
-            agent.load_checkpoint(ckpt)
-            return cls(agent, "backbone_optimizer")
-        else:
-            raise ValueError(f"RLFusionModule.from_checkpoint only handles dqn/bandit, got: {method}")
-
 
 def build_fusion_module(cfg, device: torch.device) -> pl.LightningModule:
     """Build a fusion Lightning module for training (no checkpoint)."""
     method = cfg.fusion.method
     if method == "dqn":
-        from .dqn import EnhancedDQNFusionAgent
-        agent = EnhancedDQNFusionAgent.from_config(cfg, device=str(device))
-        return RLFusionModule(agent, "optimizer")
+        return RLFusionModule(cfg, method="dqn", device=str(device))
     elif method == "bandit":
-        from .bandit import NeuralLinUCBAgent
-        agent = NeuralLinUCBAgent.from_config(cfg, device=str(device))
-        return RLFusionModule(agent, "backbone_optimizer")
+        return RLFusionModule(cfg, method="bandit", device=str(device))
     elif method == "mlp":
         from .registry import fusion_state_dim
         return MLPFusionModule(state_dim=fusion_state_dim(), hidden_dims=cfg.fusion.mlp_hidden_dims, lr=cfg.fusion.lr)
@@ -324,14 +312,3 @@ def build_fusion_module(cfg, device: torch.device) -> pl.LightningModule:
         raise ValueError(f"Unknown fusion method: {method}")
 
 
-def load_fusion_module(ckpt: dict, cfg, *, device: str = "cpu") -> pl.LightningModule:
-    """Load a trained fusion module from checkpoint (any method)."""
-    method = cfg.fusion.method
-    if method in ("dqn", "bandit"):
-        return RLFusionModule.from_checkpoint(ckpt, cfg, device=device)
-    elif method == "mlp":
-        return MLPFusionModule.from_checkpoint(ckpt, cfg)
-    elif method == "weighted_avg":
-        return WeightedAvgModule.from_checkpoint(ckpt, cfg)
-    else:
-        raise ValueError(f"Unknown fusion method: {method}")
