@@ -464,7 +464,7 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         canid = F.cross_entropy(canid_logits, batch.node_id)
         nbr_loss = GraphAutoencoderNeighborhood.neighborhood_loss_negsampled(
             nbr_logits, batch.node_id, batch.edge_index,
-            self.hparams["num_ids"], k_neg=self.cfg.vgae.k_neg,
+            self.cfg.num_ids, k_neg=self.cfg.vgae.k_neg,
         )
         w = self.cfg.vgae
         task_loss = recon + w.canid_weight * canid + w.nbr_weight * nbr_loss + w.kl_weight * kl_loss
