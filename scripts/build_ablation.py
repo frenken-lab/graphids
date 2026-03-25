@@ -87,7 +87,7 @@ def main():
 
     if args.dry_run:
         subprocess.run(
-            [sys.executable, "-m", "graphids.pipeline.orchestration.manifest", str(out), "--dry-run"],
+            [sys.executable, "-m", "graphids", "manifest", str(out), "--dry-run"],
             check=True,
         )
 

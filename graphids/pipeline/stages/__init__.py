@@ -11,6 +11,8 @@ from pathlib import Path
 
 import structlog
 
+log = structlog.get_logger()
+
 from .evaluation import evaluate
 from .training import train_stage
 
@@ -75,8 +77,6 @@ def _append_to_catalog(cfg, stage: str, result: dict, run_dir: Path) -> None:
 
         import duckdb
         from omegaconf import OmegaConf
-
-        from graphids.config import CATALOG_PATH
 
         catalog_path = Path(cfg.lake_root) / "catalog" / "kd_gat.duckdb"
         catalog_path.parent.mkdir(parents=True, exist_ok=True)

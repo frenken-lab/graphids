@@ -1,12 +1,10 @@
-"""CLI entry point: Hydra-as-framework for training and sweep.
+"""CLI entry point: single stage runs via Hydra, DAG submission via manifest.
 
 Usage:
     python -m graphids stage=autoencoder model_type=vgae scale=large dataset=hcrl_sa
     python -m graphids --multirun stage=autoencoder model_type=vgae scale=large training.lr=0.001,0.01
-    python -m graphids stage=autoencoder model_type=vgae scale=large --cfg job
-
-Orchestration (submit manifest to SLURM):
-    python -m graphids.pipeline.orchestration.manifest ablation.yaml --dry-run
+    python -m graphids manifest ablation.yaml --dry-run
+    python -m graphids manifest ablation.yaml --filter baseline_bandit
 """
 
 from __future__ import annotations
@@ -15,7 +13,7 @@ import sys
 from pathlib import Path
 
 import torch.multiprocessing as mp
-
+## TODO: This may be obsolete as spawn does work well with IPC inter-process communication
 mp.set_start_method("spawn", force=True)
 # Use file-based IPC instead of /dev/shm mmap. OSC SLURM nodes restrict
 # /dev/shm and vm.max_map_count (65530), causing OOM with large datasets
@@ -73,7 +71,7 @@ def manifest(argv: list[str] | None = None) -> None:
     """Submit experiment manifest to SLURM."""
     import argparse
 
-    from graphids.pipeline.orchestration.manifest import submit_manifest
+    from graphids.pipeline.manifest import submit_manifest
 
     parser = argparse.ArgumentParser(description="Submit experiment manifest to SLURM")
     parser.add_argument("manifest", type=Path, help="Path to manifest YAML")
@@ -87,4 +85,7 @@ def manifest(argv: list[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:2] == ["manifest"]:
+        manifest(sys.argv[2:])
+    else:
+        main()

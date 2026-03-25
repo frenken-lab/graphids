@@ -33,7 +33,6 @@ dependencies = [
     "omegaconf>=2.3",
     "structlog>=25.5.0",
     "hydra-optuna-sweeper>=1.1.2",
-    "hydra-submitit-launcher>=1.2.0",
 ]
 
 [project.optional-dependencies]
@@ -83,7 +82,7 @@ ignore = ["E501", "E402", "E741", "W291", "W292", "W293", "F541", "B905", "B017"
 "__init__.py" = ["F401"]
 "tests/*" = ["F401"]
 "graphids/pipeline/stages/*" = ["F401"]
-"graphids/pipeline/orchestration/*" = ["F401"]
+"graphids/pipeline/manifest.py" = ["F401"]
 
 [tool.mypy]
 python_version = "3.12"

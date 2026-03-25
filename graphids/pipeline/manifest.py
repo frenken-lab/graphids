@@ -282,17 +282,3 @@ def plan_summary(
         per_stage=dict(stage_counts),
     )
 
-
-# ---------------------------------------------------------------------------
-# CLI entry point
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Submit experiment manifest to SLURM")
-    parser.add_argument("manifest", type=Path, help="Path to manifest YAML")
-    parser.add_argument("--dry-run", action="store_true", help="Print plan without submitting")
-    parser.add_argument("--filter", nargs="*", help="Only run these config names")
-    args = parser.parse_args()
-    submit_manifest(args.manifest, dry_run=args.dry_run, filter_configs=args.filter)
