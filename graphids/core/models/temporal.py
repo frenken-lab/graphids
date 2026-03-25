@@ -11,8 +11,19 @@ No new dependencies — uses PyTorch native nn.TransformerEncoder.
 
 from __future__ import annotations
 
+import pytorch_lightning as pl
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torchmetrics import MetricCollection
+from torchmetrics.classification import (
+    BinaryAccuracy,
+    BinaryAUROC,
+    BinaryF1Score,
+    BinaryPrecision,
+    BinaryRecall,
+    BinarySpecificity,
+)
 
 
 class TemporalGraphClassifier(nn.Module):
@@ -125,3 +136,83 @@ class TemporalGraphClassifier(nn.Module):
         logits = self.classifier(x)  # [batch, num_classes]
 
         return logits
+
+
+class TemporalLightningModule(pl.LightningModule):
+    """Lightning wrapper for TemporalGraphClassifier."""
+
+    def __init__(self, model: TemporalGraphClassifier, cfg):
+        super().__init__()
+        self.model = model
+        self.cfg = cfg
+        self.test_metrics = MetricCollection({
+            "accuracy": BinaryAccuracy(), "f1": BinaryF1Score(),
+            "precision": BinaryPrecision(), "recall": BinaryRecall(),
+            "specificity": BinarySpecificity(), "auc": BinaryAUROC(),
+        })
+
+    def forward(self, graph_sequences):
+        return self.model(graph_sequences)
+
+    def save_checkpoint(self, path: str) -> None:
+        torch.save(self.model.state_dict(), path)
+
+    def _shared_step(self, batch, stage: str):
+        graph_sequences, labels = batch
+        device = self.device
+
+        moved_sequences = []
+        for seq in graph_sequences:
+            moved_sequences.append([g.clone().to(device, non_blocking=True) for g in seq])
+
+        logits = self.model(moved_sequences)
+        loss = F.cross_entropy(logits, labels.to(device, non_blocking=True))
+
+        preds = logits.argmax(dim=1)
+        acc = (preds == labels.to(device, non_blocking=True)).float().mean()
+
+        self.log(f"{stage}_loss", loss, prog_bar=True, batch_size=len(graph_sequences))
+        self.log(f"{stage}_acc", acc, prog_bar=True, batch_size=len(graph_sequences))
+        return loss
+
+    def training_step(self, batch, batch_idx):
+        return self._shared_step(batch, "train")
+
+    def validation_step(self, batch, batch_idx):
+        return self._shared_step(batch, "val")
+
+    def test_step(self, batch, batch_idx):
+        graph_sequences, labels = batch
+        device = self.device
+        moved_sequences = [[g.clone().to(device, non_blocking=True) for g in seq] for seq in graph_sequences]
+        logits = self.model(moved_sequences)
+        scores = F.softmax(logits, dim=1)[:, 1]
+        self.test_metrics.update(scores, labels.to(device, non_blocking=True))
+
+    def on_test_epoch_start(self):
+        self.test_metrics.reset()
+
+    def on_test_epoch_end(self):
+        self.log_dict(self.test_metrics.compute())
+
+    def configure_optimizers(self):
+        t = self.cfg.training
+        tc = self.cfg.temporal
+
+        spatial_params = list(self.model.spatial_encoder.parameters())
+        temporal_params = [
+            p
+            for n, p in self.model.named_parameters()
+            if not n.startswith("spatial_encoder") and p.requires_grad
+        ]
+
+        param_groups = []
+        if not tc.freeze_spatial and spatial_params:
+            param_groups.append({"params": spatial_params, "lr": t.lr * tc.spatial_lr_factor})
+        if temporal_params:
+            param_groups.append({"params": temporal_params, "lr": t.lr})
+
+        return torch.optim.AdamW(
+            param_groups if param_groups else self.model.parameters(),
+            lr=t.lr, weight_decay=t.weight_decay,
+        )

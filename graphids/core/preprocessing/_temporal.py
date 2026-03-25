@@ -9,6 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import torch
+from torch.utils.data import Dataset
+
 if TYPE_CHECKING:
     from torch_geometric.data import Data
 
@@ -61,3 +64,30 @@ class TemporalGrouper:
             sequences.append(GraphSequence(graphs=window_graphs, y=label))
 
         return sequences
+
+
+class TemporalGraphDataset(Dataset):
+    """PyTorch Dataset wrapping a list of GraphSequence objects."""
+
+    def __init__(self, sequences: list[GraphSequence], device: torch.device):
+        self.sequences = sequences
+        self.device = device
+
+    def __len__(self):
+        return len(self.sequences)
+
+    def __getitem__(self, idx):
+        seq = self.sequences[idx]
+        return seq.graphs, seq.y
+
+
+def collate_temporal(batch):
+    """Custom collate for temporal graph sequences.
+
+    Returns:
+        graph_sequences: list of lists of Data objects
+        labels: tensor of labels
+    """
+    graph_sequences = [item[0] for item in batch]
+    labels = torch.tensor([item[1] for item in batch], dtype=torch.long)
+    return graph_sequences, labels

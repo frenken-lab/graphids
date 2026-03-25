@@ -8,12 +8,13 @@ Re-exports for convenience:
     get_batch_index, graph_attack_type   — graph utilities
     ATTACK_TYPE_CODES, ATTACK_TYPE_NAMES — CAN bus attack mappings
     TemporalGrouper, GraphSequence       — temporal grouping
+    TemporalGraphDataset, collate_temporal — temporal dataset/collate
 """
 
 from __future__ import annotations
 
 from ._graph_utils import get_batch_index, graph_attack_type
-from ._temporal import GraphSequence, TemporalGrouper
+from ._temporal import GraphSequence, TemporalGraphDataset, TemporalGrouper, collate_temporal
 from .datamodule import CANBusDataModule
 from .datasets import ATTACK_TYPE_CODES, ATTACK_TYPE_NAMES, CANBusDataset
 
@@ -26,4 +27,6 @@ __all__ = [
     "graph_attack_type",
     "TemporalGrouper",
     "GraphSequence",
+    "TemporalGraphDataset",
+    "collate_temporal",
 ]

@@ -214,8 +214,6 @@ def _eval_unsupervised(cfg, val_data, test_scenarios, device, model_name, module
 
 def eval_fusion(cfg, val_data, test_scenarios, device) -> dict:
     """Evaluate fusion agent via Lightning test loop."""
-    from graphids.core.models.fusion_baselines import RLFusionModule
-
     vgae = load_model(cfg, "vgae", "autoencoder", device)
     gat = load_model(cfg, "gat", cfg.gat_stage, device)
     models = {"vgae": vgae, "gat": gat}
@@ -224,26 +222,10 @@ def eval_fusion(cfg, val_data, test_scenarios, device) -> dict:
     fusion_cfg = load_frozen_cfg(cfg, "fusion")
     method = fusion_cfg.fusion.method if hasattr(fusion_cfg, "fusion") else cfg.fusion.method
 
-    # Load fusion module per method
+    # Load trained fusion module via unified loader
+    from graphids.core.models.fusion_baselines import load_fusion_module
     ckpt = torch.load(cfg.checkpoints["dqn"], map_location="cpu", weights_only=True)
-    if method == "dqn":
-        from graphids.core.models.dqn import EnhancedDQNFusionAgent
-        agent = EnhancedDQNFusionAgent.from_config(fusion_cfg, device=str(device), inference=True)
-        agent.load_checkpoint(ckpt)
-        module = RLFusionModule(agent, "optimizer")
-    elif method == "bandit":
-        from graphids.core.models.bandit import NeuralLinUCBAgent
-        agent = NeuralLinUCBAgent.from_config(fusion_cfg, device=str(device))
-        agent.load_checkpoint(ckpt)
-        module = RLFusionModule(agent, "backbone_optimizer")
-    elif method == "mlp":
-        from graphids.core.models.fusion_baselines import MLPFusionModule
-        module = MLPFusionModule.from_checkpoint(ckpt, cfg)
-    elif method == "weighted_avg":
-        from graphids.core.models.fusion_baselines import WeightedAvgModule
-        module = WeightedAvgModule.from_checkpoint(ckpt, cfg)
-    else:
-        raise ValueError(f"Unknown fusion method: {method}")
+    module = load_fusion_module(ckpt, fusion_cfg, device=str(device))
 
     # Eval via trainer.test()
     val_loader = DataLoader(
@@ -267,7 +249,7 @@ def eval_fusion(cfg, val_data, test_scenarios, device) -> dict:
     # Artifact capture (q-values / policy JSON) — only for DQN/bandit
     fusion_result = None
     if method in ("dqn", "bandit"):
-        fusion_result = run_fusion_inference(agent, val_cache)
+        fusion_result = run_fusion_inference(module.agent, val_cache)
 
     del vgae, gat
     gc.collect()
@@ -283,12 +265,10 @@ def eval_fusion(cfg, val_data, test_scenarios, device) -> dict:
 def eval_temporal(cfg, val_data, test_scenarios, device) -> dict | None:
     """Evaluate temporal model via Lightning test loop."""
     try:
-        from graphids.core.models.temporal import TemporalGraphClassifier
-        from graphids.core.preprocessing._temporal import TemporalGrouper
-
-        from .temporal import (
+        from graphids.core.models.temporal import TemporalGraphClassifier, TemporalLightningModule
+        from graphids.core.preprocessing._temporal import (
             TemporalGraphDataset,
-            TemporalLightningModule,
+            TemporalGrouper,
             collate_temporal,
         )
 

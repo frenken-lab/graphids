@@ -1,8 +1,9 @@
-"""Training stages: generic runner for autoencoder, curriculum, normal."""
+"""Training stages: generic runner for all stages (autoencoder, curriculum, normal, fusion, temporal)."""
 
 from __future__ import annotations
 
 import gc
+import math
 import os
 import structlog
 from pathlib import Path
@@ -45,13 +46,68 @@ def _resume_ckpt_path(cfg, stage: str) -> str | None:
     return None
 
 
+def _fusion_trainer_overrides(cfg, dm) -> dict:
+    """Compute trainer overrides for fusion stage (RL vs baseline)."""
+    from pytorch_lightning.callbacks import ModelCheckpoint
+
+    is_rl = cfg.fusion.method in ("dqn", "bandit")
+    if is_rl:
+        return {
+            "default_root_dir": ".",
+            "max_epochs": math.ceil(cfg.fusion.episodes / dm.steps_per_epoch),
+            "callbacks": [ModelCheckpoint(
+                dirpath=".", filename="best_model",
+                monitor="val_acc", mode="max", save_top_k=1,
+            )],
+            "logger": pl.loggers.CSVLogger(save_dir=".", name="", version=""),
+            "val_check_interval": min(50, dm.steps_per_epoch),
+        }
+    else:
+        from pytorch_lightning.callbacks import EarlyStopping
+        return {
+            "default_root_dir": ".",
+            "max_epochs": cfg.fusion.mlp_max_epochs,
+            "callbacks": [
+                ModelCheckpoint(
+                    dirpath=".", filename="best_model",
+                    monitor="val_loss", mode="min", save_top_k=1,
+                ),
+                EarlyStopping(monitor="val_loss", patience=10, mode="min"),
+            ],
+            "logger": pl.loggers.CSVLogger(save_dir=".", name="", version=""),
+        }
+
+
 def _save_and_cleanup(module, trainer, cfg, stage: str) -> dict:
-    """Extract results after training. ModelCheckpoint already saved the model."""
-    ckpt = getattr(trainer.checkpoint_callback, "best_model_path", "")
+    """Extract results after training.
+
+    If the module has a save_checkpoint method (fusion, temporal), restores
+    best weights and saves in the module's native format. Otherwise uses
+    Lightning's ModelCheckpoint path directly.
+    """
+    best_path = getattr(trainer.checkpoint_callback, "best_model_path", "")
+
+    # Restore best checkpoint weights if available
+    if best_path and hasattr(module, "save_checkpoint"):
+        best_ckpt = torch.load(best_path, weights_only=True)
+        module.load_state_dict(best_ckpt["state_dict"])
+        module.save_checkpoint("best_model.pt")
+        ckpt = "best_model.pt"
+    elif hasattr(module, "save_checkpoint"):
+        module.save_checkpoint("best_model.pt")
+        ckpt = "best_model.pt"
+    else:
+        ckpt = best_path
+
     metrics = {}
     if trainer.callback_metrics:
         metrics = {k: v.item() if hasattr(v, "item") else v
                    for k, v in trainer.callback_metrics.items()}
+
+    # Stage-specific metric enrichment
+    if stage == "fusion":
+        metrics["fusion_method"] = cfg.fusion.method
+
     log.info("training_complete", stage=stage, checkpoint=ckpt)
     gc.collect()
     if torch.cuda.is_available():
@@ -60,11 +116,21 @@ def _save_and_cleanup(module, trainer, cfg, stage: str) -> dict:
 
 
 def train_stage(cfg) -> dict:
-    """Generic training for autoencoder/curriculum/normal stages."""
+    """Generic training for all stages: autoencoder, curriculum, normal, fusion, temporal."""
     stage = cfg.stage
+
+    # Early exit for disabled temporal
+    if stage == "temporal" and not cfg.temporal.enabled:
+        log.warning("temporal.enabled=False, skipping")
+        return {"status": "skipped", "reason": "temporal.enabled=False"}
+
     pl.seed_everything(cfg.seed)
     dm, device = build_datamodule(cfg, stage)
-    module = build_module(cfg, stage, device)
-    trainer = make_trainer(cfg, stage)
+    module = build_module(cfg, stage, device, dm=dm)
+
+    # Stage-specific trainer overrides
+    overrides = _fusion_trainer_overrides(cfg, dm) if stage == "fusion" else {}
+    trainer = make_trainer(cfg, stage, **overrides)
+
     trainer.fit(module, datamodule=dm, ckpt_path=_resume_ckpt_path(cfg, stage))
     return _save_and_cleanup(module, trainer, cfg, stage)

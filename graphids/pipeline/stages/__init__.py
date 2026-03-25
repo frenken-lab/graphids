@@ -12,17 +12,15 @@ from pathlib import Path
 import structlog
 
 from .evaluation import evaluate
-from .fusion import train_fusion
-from .temporal import train_temporal
 from .training import train_stage
 
 STAGE_FNS = {
     "autoencoder": train_stage,
     "curriculum":  train_stage,
     "normal":      train_stage,
-    "fusion":      train_fusion,
+    "fusion":      train_stage,
     "evaluation":  evaluate,
-    "temporal":    train_temporal,
+    "temporal":    train_stage,
 }
 
 

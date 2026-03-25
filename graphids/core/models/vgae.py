@@ -282,6 +282,50 @@ class GraphAutoencoderNeighborhood(nn.Module):
         neighbor_logits = self.neighborhood_decoder(z)
         return cont_out, canid_logits, neighbor_logits, z, kl_loss, mask
 
+    @torch.no_grad()
+    def score_difficulty(
+        self, graphs: list, canid_weight: float = 1.0, chunk_size: int = 500,
+    ) -> list[float]:
+        """Score reconstruction difficulty for curriculum learning.
+
+        Per-graph score = mean_node_MSE + canid_weight * mean_node_CE.
+        Higher score = harder to reconstruct = more difficult sample.
+
+        Args:
+            graphs: List of PyG Data objects (normal-class only).
+            canid_weight: Weight for CAN ID cross-entropy term.
+            chunk_size: Batch size for chunked inference.
+
+        Returns:
+            List of float scores, one per graph.
+        """
+        from torch_geometric.data import Batch
+        from torch_geometric.utils import scatter
+
+        device = next(self.parameters()).device
+        was_training = self.training
+        self.eval()
+        try:
+            scores: list[float] = []
+            for start in range(0, len(graphs), chunk_size):
+                chunk = graphs[start : start + chunk_size]
+                batch = Batch.from_data_list([g.clone() for g in chunk]).to(device, non_blocking=True)
+                edge_attr = getattr(batch, "edge_attr", None)
+                cont, canid_logits, _, _, _, _ = self(
+                    batch.x, batch.edge_index, batch.batch,
+                    edge_attr=edge_attr, node_id=batch.node_id,
+                )
+                node_mse = (cont - batch.x).pow(2).mean(dim=1)
+                graph_mse = scatter(node_mse, batch.batch, reduce="mean")
+                node_ce = F.cross_entropy(canid_logits, batch.node_id, reduction="none")
+                graph_ce = scatter(node_ce, batch.batch, reduce="mean")
+                scores.extend((graph_mse + canid_weight * graph_ce).tolist())
+                del batch
+                torch.cuda.empty_cache()
+            return scores
+        finally:
+            self.train(was_training)
+
 
 # ---------------------------------------------------------------------------
 # Lightning training module
