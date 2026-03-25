@@ -6,12 +6,35 @@ standard supervised losses instead of RL episodes.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from ._training import binary_test_metrics
+
+
+@dataclass(frozen=True)
+class FusionResult:
+    """Artifacts from fusion evaluation: predictions, scores, q-values."""
+    preds: np.ndarray
+    labels: np.ndarray
+    scores: np.ndarray
+    q_values: np.ndarray
+
+
+def run_fusion_inference(agent, cache: dict) -> FusionResult:
+    """Run fusion inference (works for both DQN and bandit agents)."""
+    states = cache["states"]
+    labels_t = cache["labels"]
+    result = agent.predict(states)
+    qv = agent.q_values(result["norm_states"])
+    return FusionResult(
+        preds=result["preds"].numpy(), labels=labels_t.numpy(),
+        scores=result["fused_scores"].numpy(), q_values=qv.numpy(),
+    )
 
 
 class MLPFusionNetwork(nn.Module):

@@ -215,6 +215,44 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
         return (torch.cat(self._test_scores).cpu().numpy(),
                 torch.cat(self._test_labels).cpu().numpy())
 
+    def find_threshold(self, data: list, batch_size: int = 256) -> tuple[float, float]:
+        """Find optimal anomaly threshold via Youden's J on validation data.
+
+        Returns (threshold, youden_j).
+        """
+        import numpy as np
+        from torch_geometric.loader import DataLoader as PyGDataLoader
+        from torchmetrics.functional.classification import binary_roc
+
+        self.test_threshold = None
+        self._test_scores.clear()
+        self._test_labels.clear()
+
+        trainer = pl.Trainer(
+            accelerator="auto", devices="auto",
+            logger=False, enable_checkpointing=False, enable_progress_bar=False,
+        )
+        loader = PyGDataLoader(data, batch_size=batch_size, shuffle=False)
+        trainer.test(self, dataloaders=loader, verbose=False)
+
+        scores, labels = self.get_test_errors()
+        if len(scores) == 0:
+            return 0.5, 0.0
+        unique_labels = np.unique(labels)
+        if len(unique_labels) < 2:
+            return float(np.median(scores)), 0.0
+
+        fpr_v, tpr_v, thresholds_v = binary_roc(
+            torch.as_tensor(scores, dtype=torch.float),
+            torch.as_tensor(labels, dtype=torch.long),
+        )
+        j_scores = tpr_v - fpr_v
+        if len(j_scores) == 0 or len(thresholds_v) == 0:
+            return float(np.median(scores)), 0.0
+        best_idx = torch.argmax(j_scores).item()
+        thresh = float(thresholds_v[best_idx]) if best_idx < len(thresholds_v) else float(np.median(scores))
+        return thresh, float(j_scores[best_idx])
+
     def configure_optimizers(self):
         opt = torch.optim.Adam(self.parameters(), lr=self.cfg.training.lr, weight_decay=self.cfg.training.weight_decay)
         return build_optimizer_dict(opt, self.cfg)

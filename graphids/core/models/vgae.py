@@ -1,3 +1,6 @@
+from dataclasses import dataclass
+
+import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
@@ -10,6 +13,16 @@ from ._training import (
     build_optimizer_dict, compute_node_budget, NodeBudgetInfo,
     binary_test_metrics,
 )
+
+
+@dataclass(frozen=True)
+class VGAEResult:
+    """Artifacts from VGAE evaluation: errors, embeddings, loss components."""
+    errors: np.ndarray
+    labels: np.ndarray
+    attack_types: np.ndarray
+    embeddings: np.ndarray | None = None
+    components: dict[str, np.ndarray] | None = None
 
 
 class GraphAutoencoderNeighborhood(nn.Module):
@@ -326,6 +339,76 @@ class GraphAutoencoderNeighborhood(nn.Module):
         finally:
             self.train(was_training)
 
+    @torch.no_grad()
+    def capture_artifacts(
+        self, data: list, device: torch.device, *,
+        embeddings: bool = True, components: bool = True, batch_size: int = 256,
+    ) -> VGAEResult:
+        """Capture embeddings and component-level loss decomposition.
+
+        Uses batched forward passes with scatter reduction for per-graph losses.
+        """
+        from torch_geometric.loader import DataLoader as PyGDataLoader
+        from torch_geometric.utils import scatter
+
+        def _graph_label(g) -> int:
+            return g.y.item() if g.y.dim() == 0 else int(g.y[0].item())
+
+        def _graph_attack_type(g) -> int:
+            if hasattr(g, "attack_type") and g.attack_type is not None:
+                return g.attack_type.item() if g.attack_type.dim() == 0 else int(g.attack_type[0].item())
+            return -1
+
+        errors_all, labels_all, types_all = [], [], []
+        embs_all = [] if embeddings else None
+        comps: dict[str, list] = {"recon": [], "canid": [], "nbr": [], "kl": []} if components else {}
+
+        was_training = self.training
+        self.eval()
+        try:
+            for batch in PyGDataLoader(data, batch_size=batch_size, shuffle=False):
+                batch = batch.to(device, non_blocking=True)
+                edge_attr = getattr(batch, "edge_attr", None)
+                cont, canid_logits, nbr_logits, z, kl_loss, _ = self(
+                    batch.x, batch.edge_index, batch.batch,
+                    edge_attr=edge_attr, node_id=batch.node_id,
+                )
+                node_mse = (cont - batch.x).pow(2).mean(dim=1)
+                graph_mse = scatter(node_mse, batch.batch, reduce="max")
+                errors_all.append(graph_mse.cpu())
+
+                for g in batch.to_data_list():
+                    labels_all.append(_graph_label(g))
+                    types_all.append(_graph_attack_type(g))
+
+                if embeddings and z is not None:
+                    graph_emb = scatter(z, batch.batch, dim=0, reduce="mean")
+                    embs_all.append(graph_emb.cpu().numpy())
+
+                if components:
+                    comps["recon"].append(graph_mse.cpu())
+                    node_ce = F.cross_entropy(canid_logits, batch.node_id, reduction="none")
+                    comps["canid"].append(scatter(node_ce, batch.batch, reduce="max").cpu())
+                    nbr_targets = self.create_neighborhood_targets(batch.node_id, batch.edge_index, batch.batch)
+                    node_nbr = F.binary_cross_entropy_with_logits(
+                        nbr_logits, nbr_targets, reduction="none",
+                    ).mean(dim=1)
+                    comps["nbr"].append(scatter(node_nbr, batch.batch, reduce="max").cpu())
+                    kl_val = kl_loss.item() if torch.is_tensor(kl_loss) else float(kl_loss)
+                    n_graphs = int(batch.batch.max().item()) + 1
+                    comps["kl"].extend([kl_val] * n_graphs)
+        finally:
+            self.train(was_training)
+
+        return VGAEResult(
+            errors=torch.cat(errors_all).numpy(),
+            labels=np.array(labels_all),
+            attack_types=np.array(types_all),
+            embeddings=np.vstack(embs_all) if embs_all else None,
+            components={k: (torch.cat(v).numpy() if isinstance(v[0], torch.Tensor) else np.array(v))
+                        for k, v in comps.items()} if components else None,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Lightning training module
@@ -444,11 +527,53 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
 
     def get_test_errors(self) -> tuple:
         """Return accumulated (errors, labels) as numpy arrays after test."""
-        import numpy as np
         if not self._test_errors:
             return np.array([], dtype=np.float32), np.array([], dtype=np.int64)
         return (torch.cat(self._test_errors).cpu().numpy(),
                 torch.cat(self._test_labels).cpu().numpy())
+
+    def find_threshold(self, data: list, batch_size: int = 256) -> tuple[float, float]:
+        """Find optimal anomaly threshold via Youden's J on validation data.
+
+        Runs test without a threshold to accumulate errors, then computes optimal.
+        Returns (threshold, youden_j).
+        """
+        import pytorch_lightning as _pl
+        from torch_geometric.loader import DataLoader as PyGDataLoader
+        from torchmetrics.functional.classification import binary_roc
+
+        self.test_threshold = None  # accumulate errors only
+        self._test_errors.clear()
+        self._test_labels.clear()
+
+        trainer = _pl.Trainer(
+            accelerator="auto", devices="auto",
+            logger=False, enable_checkpointing=False, enable_progress_bar=False,
+        )
+        loader = PyGDataLoader(data, batch_size=batch_size, shuffle=False)
+        trainer.test(self, dataloaders=loader, verbose=False)
+
+        errors, labels = self.get_test_errors()
+
+        if len(errors) == 0:
+            return 0.5, 0.0
+
+        unique_labels = np.unique(labels)
+        if len(unique_labels) < 2:
+            return float(np.median(errors)), 0.0
+
+        fpr_v, tpr_v, thresholds_v = binary_roc(
+            torch.as_tensor(errors, dtype=torch.float),
+            torch.as_tensor(labels, dtype=torch.long),
+        )
+        j_scores = tpr_v - fpr_v
+
+        if len(j_scores) == 0 or len(thresholds_v) == 0:
+            return float(np.median(errors)), 0.0
+
+        best_idx = torch.argmax(j_scores).item()
+        thresh = float(thresholds_v[best_idx]) if best_idx < len(thresholds_v) else float(np.median(errors))
+        return thresh, float(j_scores[best_idx])
 
     def configure_optimizers(self):
         params = list(self.model.parameters())

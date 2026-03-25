@@ -17,6 +17,11 @@ def get_batch_index(g, device: torch.device) -> torch.Tensor:
     return torch.zeros(g.x.size(0), dtype=torch.long, device=device)
 
 
+def graph_label(g) -> int:
+    """Extract scalar label from a PyG Data object (handles 0-D and 1-D y)."""
+    return g.y.item() if g.y.dim() == 0 else int(g.y[0].item())
+
+
 def graph_attack_type(g, default: int | None = -1) -> int | None:
     """Get attack_type from a PyG graph, with backward-compat default.
 

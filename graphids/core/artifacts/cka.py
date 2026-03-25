@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import torch
@@ -26,20 +27,21 @@ def _linear_cka(X: np.ndarray, Y: np.ndarray) -> float:
     return _unbiased_hsic(K, L) / denom if denom > 0 else 0.0
 
 
-def compute_and_save_cka(cfg, val_data, device, output_dir: Path, *, max_samples: int = 500) -> None:
+def compute_and_save_cka(
+    cfg, val_data, device, output_dir: Path, *,
+    load_model_fn: Callable,
+    max_samples: int = 500,
+) -> None:
     """Compute layer-wise CKA between teacher (large) and student (current scale), save to JSON."""
     from graphids.config import resolve
     from omegaconf import open_dict
-    from .trainer_factory import load_model
 
-    # Student = current config's GAT
-    student = load_model(cfg, "gat", cfg.gat_stage, device)
-    # Teacher = large-scale GAT (inherit num_ids/in_channels from cfg)
+    student = load_model_fn(cfg, "gat", cfg.gat_stage, device)
     teacher_cfg = resolve(f"model_type=gat", f"scale=large", f"dataset={cfg.dataset}", f"seed={cfg.seed}")
     with open_dict(teacher_cfg):
         teacher_cfg.num_ids = cfg.num_ids
         teacher_cfg.in_channels = cfg.in_channels
-    teacher = load_model(teacher_cfg, "gat", "curriculum", device)
+    teacher = load_model_fn(teacher_cfg, "gat", "curriculum", device)
 
     student_reps = _collect_reps(student, val_data, device, max_samples=max_samples)
     teacher_reps = _collect_reps(teacher, val_data, device, max_samples=max_samples)

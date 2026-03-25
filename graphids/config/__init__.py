@@ -212,6 +212,9 @@ class EvaluationConfig:
     batch_size: int = 256
     attention_sample_limit: int = 50
     cka_max_samples: int = 500
+    loss_landscape: bool = False
+    landscape_resolution: int = 51
+    landscape_scale: float = 1.0
 
 
 @dataclass

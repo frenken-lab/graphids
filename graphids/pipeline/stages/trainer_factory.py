@@ -79,7 +79,7 @@ def _build_curriculum_dm(raw_dm, cfg, device):
     """Score difficulty with VGAE, build CurriculumDataModule."""
     import gc
 
-    from .eval_inference import graph_label
+    from graphids.core.preprocessing import graph_label
     from graphids.core.preprocessing.curriculum import CurriculumDataModule
 
     vgae = load_model(cfg, "vgae", "autoencoder", device)

@@ -1,5 +1,7 @@
 import functools
+from dataclasses import dataclass
 
+import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
@@ -16,6 +18,17 @@ from ._training import (
     OOMSkipMixin, soft_label_kd_loss, focal_loss, _get_kd_config,
     teacher_on_device, build_optimizer_dict, binary_test_metrics,
 )
+
+
+@dataclass(frozen=True)
+class GATResult:
+    """Artifacts from GAT evaluation: predictions, embeddings, attention."""
+    preds: np.ndarray
+    labels: np.ndarray
+    scores: np.ndarray
+    attack_types: np.ndarray
+    embeddings: np.ndarray | None = None
+    attention: list[dict] | None = None
 
 
 class GATWithJK(nn.Module):
@@ -170,6 +183,52 @@ class GATWithJK(nn.Module):
         for layer in self.fc_layers:
             x = layer(x)
         return x
+
+    @torch.no_grad()
+    def capture_artifacts(
+        self, data: list, device: torch.device, *,
+        embeddings: bool = True, attention: bool = True,
+        batch_size: int = 256, attention_limit: int = 50,
+    ) -> GATResult:
+        """Capture predictions, embeddings, and attention weights for paper artifacts."""
+        from torch_geometric.loader import DataLoader as PyGDataLoader
+
+        preds_all, scores_all, labels_all, types_all, embs_all = [], [], [], [], []
+        for g in PyGDataLoader(data, batch_size=batch_size, shuffle=False):
+            g = g.to(device, non_blocking=True)
+            logits, emb = self(g, return_embedding=True)
+            preds_all.append(logits.argmax(1).cpu())
+            scores_all.append(F.softmax(logits, dim=1)[:, 1].cpu())
+            labels_all.append(g.y.cpu())
+            at = (g.attack_type.cpu()
+                  if hasattr(g, "attack_type") and g.attack_type is not None
+                  else torch.full((g.num_graphs,), -1))
+            types_all.append(at)
+            if embeddings:
+                embs_all.append(emb.cpu())
+
+        attn_data = None
+        if attention:
+            attn_data = []
+            for idx in range(min(len(data), attention_limit)):
+                g = data[idx].clone().to(device, non_blocking=True)
+                _, att_weights = self(g, return_attention_weights=True)
+                attn_data.append({
+                    "graph_idx": idx,
+                    "label": g.y.item() if g.y.dim() == 0 else int(g.y[0].item()),
+                    "edge_index": g.edge_index.cpu().numpy(),
+                    "node_features": g.node_id.cpu().numpy(),
+                    "attention_weights": [a.numpy() for a in att_weights],
+                })
+
+        return GATResult(
+            preds=torch.cat(preds_all).numpy(),
+            labels=torch.cat(labels_all).numpy(),
+            scores=torch.cat(scores_all).numpy(),
+            attack_types=torch.cat(types_all).numpy(),
+            embeddings=torch.cat(embs_all).numpy() if embs_all else None,
+            attention=attn_data,
+        )
 
 
 # ---------------------------------------------------------------------------

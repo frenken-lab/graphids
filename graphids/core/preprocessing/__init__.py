@@ -13,7 +13,7 @@ Re-exports for convenience:
 
 from __future__ import annotations
 
-from ._graph_utils import get_batch_index, graph_attack_type
+from ._graph_utils import get_batch_index, graph_attack_type, graph_label
 from ._temporal import GraphSequence, TemporalGraphDataset, TemporalGrouper, collate_temporal
 from .datamodule import CANBusDataModule
 from .datasets import ATTACK_TYPE_CODES, ATTACK_TYPE_NAMES, CANBusDataset
@@ -25,6 +25,7 @@ __all__ = [
     "ATTACK_TYPE_NAMES",
     "get_batch_index",
     "graph_attack_type",
+    "graph_label",
     "TemporalGrouper",
     "GraphSequence",
     "TemporalGraphDataset",
