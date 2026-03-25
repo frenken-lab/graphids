@@ -152,7 +152,7 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
     low discriminator agreement → anomalous graph.
     """
 
-    def __init__(self, cfg):
+    def __init__(self, cfg, teacher=None, projection=None):
         super().__init__()
         num_ids, in_channels = cfg.num_ids, cfg.in_channels
         self.save_hyperparameters({"cfg": OmegaConf.to_container(cfg), "num_ids": num_ids, "in_channels": in_channels})
@@ -252,6 +252,36 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
         best_idx = torch.argmax(j_scores).item()
         thresh = float(thresholds_v[best_idx]) if best_idx < len(thresholds_v) else float(np.median(scores))
         return thresh, float(j_scores[best_idx])
+
+    @classmethod
+    def evaluate(cls, cfg, val_data, test_scenarios, device, *, load_model_fn) -> dict:
+        """Evaluate DGI: threshold search on val, then test scenarios."""
+        from ._training import eval_with_scenarios, gpu_cleanup
+        model = load_model_fn(cfg, "dgi", "autoencoder", device)
+        module = cls(cfg)
+        module.model = model
+
+        bs = cfg.evaluation.batch_size
+        threshold, youden_j = module.find_threshold(val_data, batch_size=bs)
+        module.test_threshold = threshold
+
+        def _clear_accumulators():
+            for attr in ("_test_errors", "_test_scores", "_test_labels"):
+                acc = getattr(module, attr, None)
+                if acc is not None:
+                    acc.clear()
+
+        _clear_accumulators()
+        module.test_metrics.reset()
+
+        val_metrics, scenario_metrics = eval_with_scenarios(
+            module, val_data, test_scenarios, bs, reset_fn=_clear_accumulators,
+        )
+        val_metrics["optimal_threshold"] = threshold
+        val_metrics["youden_j"] = youden_j
+
+        gpu_cleanup(model)
+        return {"val_metrics": val_metrics, "test_metrics": scenario_metrics, "artifacts": None}
 
     def configure_optimizers(self):
         opt = torch.optim.Adam(self.parameters(), lr=self.cfg.training.lr, weight_decay=self.cfg.training.weight_decay)

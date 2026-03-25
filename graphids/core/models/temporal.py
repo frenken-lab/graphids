@@ -145,6 +145,25 @@ class TemporalLightningModule(pl.LightningModule):
         super().__init__()
         self.model = model
         self.cfg = cfg
+
+    @classmethod
+    def from_datamodule(cls, cfg, dm) -> TemporalLightningModule:
+        """Build from a TemporalDataModule that already loaded the GAT."""
+        import structlog
+        tc = cfg.temporal
+        model = TemporalGraphClassifier(
+            spatial_encoder=dm.gat, spatial_dim=dm.spatial_dim,
+            temporal_hidden=tc.temporal_hidden, temporal_heads=tc.temporal_heads,
+            temporal_layers=tc.temporal_layers, max_seq_len=tc.temporal_window,
+            freeze_spatial=tc.freeze_spatial, num_classes=cfg.num_classes,
+        ).to(dm.device)
+        dm.gat = None  # model owns it now
+
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        structlog.get_logger().info("temporal_model_params", total=total_params, trainable=trainable)
+
+        return cls(model, cfg)
         self.test_metrics = MetricCollection({
             "accuracy": BinaryAccuracy(), "f1": BinaryF1Score(),
             "precision": BinaryPrecision(), "recall": BinaryRecall(),
@@ -216,3 +235,45 @@ class TemporalLightningModule(pl.LightningModule):
             param_groups if param_groups else self.model.parameters(),
             lr=t.lr, weight_decay=t.weight_decay,
         )
+
+    @classmethod
+    def evaluate(cls, cfg, val_data, test_scenarios, device, *, load_model_fn) -> dict | None:
+        """Evaluate temporal model via Lightning test loop."""
+        from torch.utils.data import DataLoader
+
+        from graphids.core.preprocessing._temporal import TemporalGraphDataset, TemporalGrouper, collate_temporal
+
+        from ._training import gpu_cleanup, test_model
+
+        gat = load_model_fn(cfg, "gat", cfg.gat_stage, device)
+        with torch.no_grad():
+            probe = val_data[0].clone().to(device)
+            _, emb = gat(probe, return_embedding=True)
+            spatial_dim = emb.shape[-1]
+
+        tc = cfg.temporal
+        temporal_model = TemporalGraphClassifier(
+            spatial_encoder=gat, spatial_dim=spatial_dim,
+            temporal_hidden=tc.temporal_hidden, temporal_heads=tc.temporal_heads,
+            temporal_layers=tc.temporal_layers, max_seq_len=tc.temporal_window,
+            freeze_spatial=True, num_classes=cfg.num_classes,
+        ).to(device)
+        temporal_model.load_state_dict(torch.load(
+            cfg.checkpoints["temporal"], map_location="cpu", weights_only=True,
+        ))
+
+        module = cls(temporal_model, cfg)
+        grouper = TemporalGrouper(window=tc.temporal_window, stride=tc.temporal_stride)
+        val_sequences = grouper.group(val_data)
+        if not val_sequences:
+            return None
+
+        val_loader = DataLoader(
+            TemporalGraphDataset(val_sequences, device),
+            batch_size=32, shuffle=False,
+            collate_fn=collate_temporal, num_workers=0,
+        )
+        val_metrics = test_model(module, val_loader)
+
+        gpu_cleanup(temporal_model, gat)
+        return {"val_metrics": val_metrics, "test_metrics": {}, "artifacts": None}

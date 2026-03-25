@@ -244,7 +244,7 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
       total = alpha * kd_loss + (1-alpha) * task_loss
     """
 
-    def __init__(self, cfg, num_classes: int = 2, teacher: nn.Module | None = None):
+    def __init__(self, cfg, num_classes: int = 2, teacher: nn.Module | None = None, projection: nn.Module | None = None):
         super().__init__()
         num_ids, in_channels = cfg.num_ids, cfg.in_channels
         self.save_hyperparameters({"cfg": OmegaConf.to_container(cfg), "num_ids": num_ids, "in_channels": in_channels})
@@ -306,6 +306,24 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
 
     def on_test_epoch_end(self):
         self.log_dict(self.test_metrics.compute())
+
+    @classmethod
+    def evaluate(cls, cfg, val_data, test_scenarios, device, *, load_model_fn) -> dict:
+        """Evaluate GAT via trainer.test() + capture artifacts."""
+        from ._training import eval_with_scenarios, gpu_cleanup
+        gat_model = load_model_fn(cfg, "gat", cfg.gat_stage, device)
+        module = cls(cfg)
+        module.model = gat_model
+
+        bs = cfg.evaluation.batch_size
+        val_metrics, scenario_metrics = eval_with_scenarios(module, val_data, test_scenarios, bs)
+
+        gat_result = gat_model.capture_artifacts(
+            val_data, device, batch_size=bs,
+            attention_limit=cfg.evaluation.attention_sample_limit,
+        )
+        gpu_cleanup(gat_model)
+        return {"val_metrics": val_metrics, "test_metrics": scenario_metrics, "artifacts": gat_result}
 
     def configure_optimizers(self):
         opt = torch.optim.Adam(self.parameters(), lr=self.cfg.training.lr, weight_decay=self.cfg.training.weight_decay)

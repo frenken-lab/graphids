@@ -54,7 +54,26 @@ class MLPFusionNetwork(nn.Module):
         return self.net(x).squeeze(-1)
 
 
-class MLPFusionModule(pl.LightningModule):
+class _SupervisedFusionOverrides:
+    """Mixin providing trainer_overrides for supervised fusion modules (MLP, WeightedAvg)."""
+
+    def trainer_overrides(self, cfg, dm) -> dict:
+        from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+        return {
+            "default_root_dir": ".",
+            "max_epochs": cfg.fusion.mlp_max_epochs,
+            "callbacks": [
+                ModelCheckpoint(
+                    dirpath=".", filename="best_model",
+                    monitor="val_loss", mode="min", save_top_k=1,
+                ),
+                EarlyStopping(monitor="val_loss", patience=10, mode="min"),
+            ],
+            "logger": pl.loggers.CSVLogger(save_dir=".", name="", version=""),
+        }
+
+
+class MLPFusionModule(_SupervisedFusionOverrides, pl.LightningModule):
     """Supervised MLP baseline: binary classification from fusion state vectors.
 
     Same state as DQN, but trained with BCE loss via Lightning instead of RL episodes.
@@ -126,7 +145,7 @@ class MLPFusionModule(pl.LightningModule):
             return 1 if logit.item() > 0 else 0
 
 
-class WeightedAvgModule(pl.LightningModule):
+class WeightedAvgModule(_SupervisedFusionOverrides, pl.LightningModule):
     """Simplest baseline: learns a single scalar alpha per model.
 
     If this matches DQN's F1, the RL approach is unjustified.
@@ -248,6 +267,21 @@ class RLFusionModule(pl.LightningModule):
 
     def save_checkpoint(self, path: str) -> None:
         torch.save(self.agent.state_dict(), path)
+
+    def trainer_overrides(self, cfg, dm) -> dict:
+        """Trainer overrides for RL fusion training."""
+        import math
+        from pytorch_lightning.callbacks import ModelCheckpoint
+        return {
+            "default_root_dir": ".",
+            "max_epochs": math.ceil(cfg.fusion.episodes / dm.steps_per_epoch),
+            "callbacks": [ModelCheckpoint(
+                dirpath=".", filename="best_model",
+                monitor="val_acc", mode="max", save_top_k=1,
+            )],
+            "logger": pl.loggers.CSVLogger(save_dir=".", name="", version=""),
+            "val_check_interval": min(50, dm.steps_per_epoch),
+        }
 
     def configure_optimizers(self):
         return getattr(self.agent, self._optimizer_attr)

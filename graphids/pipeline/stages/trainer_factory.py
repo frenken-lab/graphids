@@ -51,14 +51,14 @@ def build_datamodule(cfg, stage: str) -> tuple[pl.LightningDataModule, torch.dev
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
 
     if stage == "fusion":
-        from .fusion import FusionDataModule
-        dm = FusionDataModule(cfg)
+        from graphids.core.preprocessing import FusionDataModule
+        dm = FusionDataModule(cfg, load_model_fn=load_model)
         dm.setup("fit")
         return dm, dm.device
 
     if stage == "temporal":
-        from .temporal import TemporalDataModule
-        dm = TemporalDataModule(cfg)
+        from graphids.core.preprocessing import TemporalDataModule
+        dm = TemporalDataModule(cfg, load_model_fn=load_model)
         dm.setup("fit")
         return dm, dm.device
 
@@ -98,50 +98,18 @@ def _build_curriculum_dm(raw_dm, cfg, device):
 
 def build_module(cfg, stage: str, device: torch.device, dm=None) -> pl.LightningModule:
     """Build the Lightning module for any training stage."""
-    if stage == "autoencoder":
-        from graphids.core.models.dgi import DGIModule
-        from graphids.core.models.vgae import VGAEModule
-        if cfg.model_type == "dgi":
-            return DGIModule(cfg)
-        teacher, projection = prepare_kd(cfg, "vgae", device)
-        return VGAEModule(cfg, teacher=teacher, projection=projection)
-    elif stage in ("normal", "curriculum"):
-        from graphids.core.models.gat import GATModule
-        teacher, _ = prepare_kd(cfg, "gat", device)
-        return GATModule(cfg, teacher=teacher)
-    elif stage == "fusion":
-        return _build_fusion_module(cfg, device)
-    elif stage == "temporal":
-        return _build_temporal_module(cfg, device, dm)
-    else:
-        raise ValueError(f"Unknown training stage: {stage}")
+    if stage == "fusion":
+        from graphids.core.models.fusion_baselines import build_fusion_module
+        return build_fusion_module(cfg, device)
+    if stage == "temporal":
+        from graphids.core.models.temporal import TemporalLightningModule
+        return TemporalLightningModule.from_datamodule(cfg, dm)
 
-
-def _build_fusion_module(cfg, device: torch.device) -> pl.LightningModule:
-    """Build fusion module per method — delegates to model layer."""
-    from graphids.core.models.fusion_baselines import build_fusion_module
-    return build_fusion_module(cfg, device)
-
-
-def _build_temporal_module(cfg, device: torch.device, dm) -> pl.LightningModule:
-    """Build temporal module using GAT from the TemporalDataModule."""
-    from graphids.core.models.temporal import TemporalGraphClassifier, TemporalLightningModule
-
-    tc = cfg.temporal
-    gat = dm.gat  # loaded during TemporalDataModule.setup()
-    temporal_model = TemporalGraphClassifier(
-        spatial_encoder=gat, spatial_dim=dm.spatial_dim,
-        temporal_hidden=tc.temporal_hidden, temporal_heads=tc.temporal_heads,
-        temporal_layers=tc.temporal_layers, max_seq_len=tc.temporal_window,
-        freeze_spatial=tc.freeze_spatial, num_classes=cfg.num_classes,
-    ).to(device)
-    dm.gat = None  # model owns it now
-
-    total_params = sum(p.numel() for p in temporal_model.parameters())
-    trainable = sum(p.numel() for p in temporal_model.parameters() if p.requires_grad)
-    log.info("temporal_model_params", total=total_params, trainable=trainable)
-
-    return TemporalLightningModule(temporal_model, cfg)
+    # Graph-based stages (autoencoder, normal, curriculum): generic via registry
+    from graphids.core.models.registry import get_module_cls
+    module_cls = get_module_cls(cfg.model_type)
+    teacher, projection = prepare_kd(cfg, cfg.model_type, device)
+    return module_cls(cfg, teacher=teacher, projection=projection)
 
 
 def prepare_kd(
@@ -195,10 +163,7 @@ def prepare_kd(
 
     teacher = registry_get(model_type)(tcfg, t_num_ids, in_channels)
 
-    if model_type == "dqn":
-        teacher.load_state_dict(sd.get("q_network") or sd.get("q_network_state_dict") or sd)
-    else:
-        teacher.load_state_dict(sd)
+    teacher.load_state_dict(sd)
 
     log.info("loaded_teacher", model_type=model_type, path=str(teacher_path), num_ids=t_num_ids)
     teacher.to(device).eval()

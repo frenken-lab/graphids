@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import gc
-import math
 import os
 import structlog
 from pathlib import Path
@@ -44,38 +43,6 @@ def _resume_ckpt_path(cfg, stage: str) -> str | None:
         return str(auto_save)
 
     return None
-
-
-def _fusion_trainer_overrides(cfg, dm) -> dict:
-    """Compute trainer overrides for fusion stage (RL vs baseline)."""
-    from pytorch_lightning.callbacks import ModelCheckpoint
-
-    is_rl = cfg.fusion.method in ("dqn", "bandit")
-    if is_rl:
-        return {
-            "default_root_dir": ".",
-            "max_epochs": math.ceil(cfg.fusion.episodes / dm.steps_per_epoch),
-            "callbacks": [ModelCheckpoint(
-                dirpath=".", filename="best_model",
-                monitor="val_acc", mode="max", save_top_k=1,
-            )],
-            "logger": pl.loggers.CSVLogger(save_dir=".", name="", version=""),
-            "val_check_interval": min(50, dm.steps_per_epoch),
-        }
-    else:
-        from pytorch_lightning.callbacks import EarlyStopping
-        return {
-            "default_root_dir": ".",
-            "max_epochs": cfg.fusion.mlp_max_epochs,
-            "callbacks": [
-                ModelCheckpoint(
-                    dirpath=".", filename="best_model",
-                    monitor="val_loss", mode="min", save_top_k=1,
-                ),
-                EarlyStopping(monitor="val_loss", patience=10, mode="min"),
-            ],
-            "logger": pl.loggers.CSVLogger(save_dir=".", name="", version=""),
-        }
 
 
 def _save_and_cleanup(module, trainer, cfg, stage: str) -> dict:
@@ -128,8 +95,7 @@ def train_stage(cfg) -> dict:
     dm, device = build_datamodule(cfg, stage)
     module = build_module(cfg, stage, device, dm=dm)
 
-    # Stage-specific trainer overrides
-    overrides = _fusion_trainer_overrides(cfg, dm) if stage == "fusion" else {}
+    overrides = module.trainer_overrides(cfg, dm) if hasattr(module, "trainer_overrides") else {}
     trainer = make_trainer(cfg, stage, **overrides)
 
     trainer.fit(module, datamodule=dm, ckpt_path=_resume_ckpt_path(cfg, stage))

@@ -107,3 +107,59 @@ def binary_test_metrics():
         "precision": BinaryPrecision(), "recall": BinaryRecall(),
         "specificity": BinarySpecificity(), "auc": BinaryAUROC(),
     })
+
+
+# ---------------------------------------------------------------------------
+# Evaluation helpers (shared by module evaluate() classmethods)
+# ---------------------------------------------------------------------------
+
+
+def make_test_trainer():
+    """Create a Lightning Trainer for test-time evaluation."""
+    import pytorch_lightning as pl
+    return pl.Trainer(
+        accelerator="auto", devices="auto",
+        logger=False, enable_checkpointing=False, enable_progress_bar=False,
+    )
+
+
+def test_model(module, data, batch_size: int = 256) -> dict:
+    """Run trainer.test() on a module and return metrics.
+
+    Args:
+        data: Either a list of PyG Data objects (creates PyGDataLoader) or
+              a pre-built DataLoader (used as-is, e.g. for fusion tensor batches).
+    """
+    from torch_geometric.loader import DataLoader as PyGDataLoader
+    trainer = make_test_trainer()
+    if isinstance(data, list):
+        loader = PyGDataLoader(data, batch_size=batch_size, shuffle=False)
+    else:
+        loader = data
+    results = trainer.test(module, dataloaders=loader, verbose=False)
+    metrics = dict(results[0]) if results else {}
+    metrics["balanced_accuracy"] = (metrics.get("recall", 0) + metrics.get("specificity", 0)) / 2
+    return metrics
+
+
+def eval_with_scenarios(module, val_data, test_scenarios, batch_size: int, reset_fn=None) -> tuple[dict, dict]:
+    """Run test on val + each test scenario. Returns (val_metrics, scenario_metrics)."""
+    val_metrics = test_model(module, val_data, batch_size=batch_size)
+    scenario_metrics = {}
+    if test_scenarios:
+        for name, tdata in test_scenarios.items():
+            module.test_metrics.reset()
+            if reset_fn:
+                reset_fn()
+            scenario_metrics[name] = test_model(module, tdata, batch_size=batch_size)
+    return val_metrics, scenario_metrics
+
+
+def gpu_cleanup(*objs):
+    """Delete objects and free GPU memory."""
+    import gc as _gc
+    for o in objs:
+        del o
+    _gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
