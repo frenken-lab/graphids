@@ -1,16 +1,16 @@
 # KD-GAT Session Plan
 
-> Last updated: 2026-03-24
+> Last updated: 2026-03-25
 
 ## Active Plan
 
-### Ablation Run 003 — Ready to submit
+### Ablation Run 003 — Submitting now
 
 18 configs × 2 datasets (set_01, set_02) × 1 seed (42), deduped to 62 SLURM jobs. KD configs deferred.
 
-**Fixes applied (Run 001 + Run 002 post-mortems):**
+**Fixes applied (Run 001 + Run 002 post-mortems + 2026-03-25 hardening):**
 - [x] `batch_size` default: 4096 → 8192 (VRAM was 33% utilized on V100)
-- [x] GPS `batch_size`: 256 (O(N²) attention OOM at higher values)
+- [x] **VRAM-aware budget**: `compute_node_budget()` auto-caps GPS O(N²) at ~20K nodes from `torch.cuda` VRAM. Replaces manual `batch_size=256` band-aid.
 - [x] GPU wall time: 120 → 240 min (7 jobs timed out at ~1:50)
 - [x] Eval/fusion wall time: 30 → 60 min
 - [x] Dataset-scoped staging: `--dataset` flag copies ~5 GB instead of 87 GB
@@ -19,8 +19,10 @@
 - [x] **Identity-aware paths**: `identity_hash` OmegaConf resolver prevents run dir collisions
 - [x] **metrics.json**: evaluation stage now persists metrics to disk
 - [x] **DuckDB catalog**: `_append_to_catalog()` writes run metadata after each stage
-- [x] **Checkpoint extensions**: fixed `.pt` → `.ckpt` for Lightning-saved checkpoints
+- [x] **All checkpoints .ckpt**: unified via Lightning `ModelCheckpoint` + `load_from_checkpoint()`
+- [x] **Fail-fast resources**: `manifest.py` raises `ValueError` on missing profile (was silent 16G fallback → 65 OOM kills)
 - [x] **Old corrupted runs cleaned**: removed all Run 001/002 dirs from ESS
+- [x] **Pre-existing bugs fixed**: `encoder_targets` NameError in VGAE decoder, `math.lerp` (Python 3.13+ only)
 
 **Verify after Run 003 completes:**
 - [ ] Each ablation config produces a unique run directory (hash suffix)
@@ -29,10 +31,11 @@
 - [ ] `metrics.json` exists in evaluation run dirs
 - [ ] VRAM utilization improved (target: 8-12 GB of 16 GB with batch_size=8192)
 - [ ] No timeouts at 240 min wall time
-- [ ] GPS conv_gps jobs complete without OOM at batch_size=256
+- [ ] GPS conv_gps jobs complete without OOM (VRAM-aware cap ~20K nodes)
 - [ ] DGI (unsup_dgi) trains and evaluates successfully
+- [ ] `load_from_checkpoint()` round-trips correctly at stage boundaries
 
-**Status tracking:** `plans/ablation-run-001.md`, `gpu_vram_usage.md`, `sacct -u $USER --starttime=<submit_time>`
+**Status tracking:** `sacct -u $USER --starttime=<submit_time>`
 
 ### Configs (18 runnable)
 
@@ -50,17 +53,15 @@
 
 ## Recently Completed
 
+- **Checkpoint standardization**: all 7 Lightning modules use `save_hyperparameters()` + `load_from_checkpoint()`. Deleted 4 custom `save_checkpoint()`, 3 `from_checkpoint()`, `load_frozen_cfg()`, envelope sniffing, `_save_and_cleanup()` branching.
+- **VRAM-aware batching**: `compute_node_budget()` accepts conv_type/heads, auto-caps GPS via `sqrt(VRAM * 0.6 / cost_per_n2)`.
 - Ablation model variants: GAE flag, DGI model + module + eval
 - `gat_stage` checkpoint routing for normal vs curriculum
-- `ManifestBuilder` moved to config layer
-- `scripts/build_ablation.py` + `scripts/build_pipeline.py`
 - Data staging: dataset-scoped + skip-tmpdir flags
-- Submitit API fix (`mem_gb`→`mem`, `timeout_min`→`time`)
-- Generic manifest orchestrator (`758d66f`)
 
 ## In Progress
 
-- Ablation Run 002 (submitted 2026-03-24 08:12)
+- Ablation Run 003 (submitting 2026-03-25)
 - Ops dashboard (`buckeyeguy/kd-gat-dashboard`) — running on HF Spaces
 
 ## Blocked
@@ -74,22 +75,21 @@
 | **Config** | Hydra Compose + Pydantic | **Done** — 5-file config layer + ManifestBuilder |
 | **Orchestration** | submitit + graphlib | **Done** — manifest-driven SLURM DAG with stage deduplication |
 | **ML Training** | Lightning modules + stages | **Done** — VGAE/GAE/DGI/GAT/fusion models |
-| **I/O** | Lightning CSVLogger + ModelCheckpoint + DuckDB catalog | **Done** — identity-aware paths + DuckDB append |
+| **I/O** | Lightning ModelCheckpoint + DuckDB catalog | **Done** — identity-aware paths, uniform .ckpt, DuckDB append |
 
 ## Open Questions
 
 - ~~**GAE vs DGI**~~ **Resolved**: GAE = flag on VGAE, DGI = separate model_type
 - ~~**Eval without fusion**~~ **Resolved**: checkpoint-presence guard + `gat_stage` routing
-- ~~**Hydra launcher plugin**~~ **Resolved**: Keep current architecture, polish it. See `plans/hydra-dag-launcher.md`.
-- ~~**Run dir collisions**~~ **Resolved**: `identity_hash` OmegaConf resolver uses `identity_keys` from `pipeline.yaml` to produce 8-char hash suffix per stage. See `plans/stateless-wibbling-gem.md`.
-- ~~**metrics.json missing**~~ **Resolved**: `evaluation.py` now writes `metrics.json` before return.
+- ~~**Run dir collisions**~~ **Resolved**: `identity_hash` OmegaConf resolver
+- ~~**GPS OOM**~~ **Resolved**: VRAM-aware budget auto-caps quadratic convs
+- ~~**Checkpoint fragility**~~ **Resolved**: unified Lightning `load_from_checkpoint()` API
 
 ## Key Reference Documents
 
 - `ablation.yaml` — 18-config experiment manifest (built by `scripts/build_ablation.py`)
 - `plans/ablation-run-001.md` — Run 001 post-mortem with efficiency analysis
 - `plans/ablation-001-training-efficiency.md` — Research: VRAM, GPS OOM, data staging
-- `plans/hydra-dag-launcher.md` — Research: why not a Hydra plugin
-- `graphids/pipeline/orchestration/manifest.py` — orchestrator
+- `graphids/pipeline/manifest.py` — orchestrator
 - `graphids/config/pipeline.yaml` — DAG topology + identity_keys
 - `graphids/config/resources.yaml` — SLURM resource profiles

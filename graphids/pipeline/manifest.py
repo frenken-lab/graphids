@@ -239,7 +239,11 @@ def submit_manifest(
         stage_args = f"--cache --dataset {job.dataset}"
         if partition == "cpu":
             stage_args += " --skip-tmpdir"
-        setup_cmds = [f'export STAGE_DATA_ARGS="{stage_args}"', "source scripts/slurm/_preamble.sh"]
+        setup_cmds = [
+            "unset SLURM_CPUS_PER_TASK SLURM_TRES_PER_TASK",
+            f'export STAGE_DATA_ARGS="{stage_args}"',
+            "source scripts/slurm/_preamble.sh",
+        ]
 
         executor.update_parameters(
             mem=mem_val,
