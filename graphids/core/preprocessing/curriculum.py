@@ -33,8 +33,8 @@ class CurriculumDynamicBatchSampler:
         """Update active indices for curriculum progression."""
         cfg = self.cfg
         progress = min(epoch / max(cfg.training.max_epochs, 1), 1.0)
-        ratio = math.lerp(cfg.training.curriculum_start_ratio, cfg.training.curriculum_end_ratio, progress)
-        percentile = math.lerp(cfg.training.difficulty_percentile, 95.0, progress)
+        ratio = cfg.training.curriculum_start_ratio + (cfg.training.curriculum_end_ratio - cfg.training.curriculum_start_ratio) * progress
+        percentile = cfg.training.difficulty_percentile + (95.0 - cfg.training.difficulty_percentile) * progress
 
         if self.scores:
             scores_t = torch.tensor(self.scores)

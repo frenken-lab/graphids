@@ -101,6 +101,11 @@ class GraphAutoencoderNeighborhood(nn.Module):
             self.z_logvar = nn.Linear(self.latent_in_dim, latent_dim)
 
         # Decoder: mirror of encoder, final layer outputs continuous features
+        # Recompute encoder_targets (same logic as build_encoder_stack)
+        if hidden_dims is not None and len(hidden_dims) >= 2 and hidden_dims[-1] == latent_dim:
+            encoder_targets = hidden_dims[:-1]
+        else:
+            encoder_targets = hidden_dims if hidden_dims else [max(128, latent_dim * 2), latent_dim]
         decoder_targets = list(reversed(encoder_targets))
         # Replace last target with in_channels for reconstruction output
         decoder_targets[-1] = in_channels

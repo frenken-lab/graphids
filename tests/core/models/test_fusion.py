@@ -167,27 +167,31 @@ class TestFusionCheckpointRoundtrip:
     """Fusion checkpoint save/load format consistency."""
 
     def test_mlp_roundtrip(self, tmp_path):
+        import pytorch_lightning as pl
         from graphids.core.models.fusion_baselines import MLPFusionModule
         m1 = MLPFusionModule(state_dim=15)
         m1.eval()
-        torch.save({"model": m1.model.state_dict()}, tmp_path / "mlp.pt")
-        m2 = MLPFusionModule(state_dim=15)
-        ckpt = torch.load(tmp_path / "mlp.pt", weights_only=True)
-        m2.model.load_state_dict(ckpt["model"])
+        trainer = pl.Trainer(enable_checkpointing=False, logger=False)
+        trainer.strategy.connect(m1)
+        ckpt_path = str(tmp_path / "mlp.ckpt")
+        trainer.save_checkpoint(ckpt_path)
+        m2 = MLPFusionModule.load_from_checkpoint(ckpt_path)
         m2.eval()
         x = torch.rand(8, 15)
         with torch.no_grad():
             torch.testing.assert_close(m1(x), m2(x))
 
     def test_weighted_avg_roundtrip(self, tmp_path):
+        import pytorch_lightning as pl
         from graphids.core.models.fusion_baselines import WeightedAvgModule
         m1 = WeightedAvgModule()
         m1.weight.data.fill_(0.7)
         m1.eval()
-        torch.save(m1.state_dict_for_save(), tmp_path / "wavg.pt")
-        m2 = WeightedAvgModule()
-        ckpt = torch.load(tmp_path / "wavg.pt", weights_only=True)
-        m2.weight.data = ckpt["weight"]
+        trainer = pl.Trainer(enable_checkpointing=False, logger=False)
+        trainer.strategy.connect(m1)
+        ckpt_path = str(tmp_path / "wavg.ckpt")
+        trainer.save_checkpoint(ckpt_path)
+        m2 = WeightedAvgModule.load_from_checkpoint(ckpt_path)
         m2.eval()
         x = torch.rand(8, 15)
         with torch.no_grad():
