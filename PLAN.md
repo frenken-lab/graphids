@@ -50,17 +50,40 @@
 - Ablation Run 003 — training COMPLETED (2026-03-25), eval needs resubmit (weights_only fix)
 - Ops dashboard (`buckeyeguy/kd-gat-dashboard`) — running on HF Spaces
 
-### Hydra → plain config migration (2026-03-26) — DONE
+### Config system rewrite (2026-03-26) — DONE
 
-Removed Hydra and OmegaConf dependency. Config now uses plain YAML + dataclass defaults + dict merge.
+Replaced Hydra/OmegaConf with jsonargparse + plain YAML. Then reorganized
+the entire config package for single-responsibility and data/logic separation.
 
-**Phase 1 (decouple):** Added `_Namespace` (SimpleNamespace subclass with .get()/[]), `to_namespace()`, `compute_identity_hash()`. Removed `OmegaConf.create` guards from 5 model files, `open_dict` from datamodule/cka, `OmegaConf.save`/`HydraConfig` from stages.
+**Migration (21 commits):**
+- Removed hydra-core, omegaconf, hydra-optuna-sweeper dependencies
+- Added jsonargparse[signatures] — handles CLI parsing, type coercion, env vars, YAML merge
+- All checkpoint loads now use `weights_only=True` (plain dict hparams)
+- Zero omegaconf references remain in codebase
 
-**Phase 2 (replace entry point):** Rewrote `resolve()` with plain YAML + `_deep_merge`. Removed `@hydra.main` from `__main__.py`. Replaced `hydra.utils.instantiate` with `_build_callbacks()` in trainer_factory.
+**Dead code removal:**
+- 5 wrapper functions deleted (build_optimizer_dict, _get_kd_config, make_test_trainer, _build_callbacks, _nested_get)
+- 2 dead parameters removed (load_model stage, make_trainer stage)
+- logging.py deleted — structlog.configure inlined at call sites
+- Custom _Namespace/_parse_dotlist/_deep_merge replaced by jsonargparse built-ins
 
-**Phase 3 (clean config files):** Split `models.yaml` → `config/presets/{model}_{scale}.yaml`. Deleted `config.yaml` (redundant — all defaults in dataclasses) and `models.yaml`.
+**Structural reorganization:**
+- `__init__.py` files are re-exports only — all logic moved to named modules
+- `config/resolve.py` — config composition (87 lines, single responsibility)
+- `config/constants.py` — topology loader, path helpers, identity hash, env vars
+- `config/defaults/` — pure values: schema.py, pipeline.yaml, datasets.yaml, resources.yaml, presets.yaml
+- Nothing outside `config/` imports from `config.defaults.*` or `config.resolve`
 
-**Phase 4 (remove deps):** Removed `hydra-core`, `omegaconf`, `hydra-optuna-sweeper` from `pyproject.toml`. Replaced OmegaConf in 4 test files with `copy.deepcopy` + plain attribute assignment. `to_namespace()` retains lazy OmegaConf import for old checkpoint backward compat.
+**Single source of truth:**
+- `pipeline.yaml` defines valid models, scales, stages → Config defaults derived at import
+- `datasets.yaml` uses YAML anchors (set_01–04 were identical copy-paste, now 4 lines each)
+- `presets.yaml` uses anchors (vgae/dgi shared unsupervised configs)
+- Dataclass schema defines field shapes + types, YAML defines values
+
+**Bug fixes:**
+- SLURMEnvironment(auto_requeue=True) wired in make_trainer (auto-save was dead code)
+- seed_everything(workers=True) for reproducible DataLoader worker seeding
+- Trainer reused across eval scenarios (was creating N+1 instances)
 
 ### Codebase cleanup (2026-03-25) — DONE
 
