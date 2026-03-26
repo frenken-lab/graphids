@@ -17,43 +17,23 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CATALOG_PATH = CONFIG_DIR / "datasets.yaml"
 
 # ---------------------------------------------------------------------------
-# Preprocessing constants (change with feature engineering)
+# Preprocessing constants
 # ---------------------------------------------------------------------------
 PREPROCESSING_VERSION = "7.0.0"
 MAX_DATA_BYTES = 8
-# Must match len(NODE_COL_ORDER) in features.py and edge_features() output.
-# Changing features? Update these AND bump PREPROCESSING_VERSION.
-NODE_FEATURE_COUNT = 35
-EDGE_FEATURE_COUNT = 11
 EXCLUDED_ATTACK_TYPES = ["suppress", "masquerade"]
-
-# Preprocessing defaults (replaces PreprocessingConfig Pydantic model)
-PREPROCESSING_DEFAULTS = {
-    "window_size": 100,
-    "stride": 100,
-    "train_val_split": 0.8,
-    "chunk_size": 5000,
-    "ray_file_threshold": 4,
-}
 
 
 def compute_preprocessing_hash() -> str:
     """Content-addressable hash of preprocessing parameters."""
     import hashlib
 
-    components = [
-        PREPROCESSING_VERSION,
-        str(NODE_FEATURE_COUNT),
-        str(EDGE_FEATURE_COUNT),
-        str(PREPROCESSING_DEFAULTS["window_size"]),
-        str(PREPROCESSING_DEFAULTS["stride"]),
-        str(PREPROCESSING_DEFAULTS["train_val_split"]),
-    ]
+    # Lazy import to avoid circular dependency (features.py → constants.py)
+    from graphids.core.preprocessing.features import N_EDGE_FEATURES, N_NODE_FEATURES
+
+    components = [PREPROCESSING_VERSION, str(N_NODE_FEATURES), str(N_EDGE_FEATURES), "100", "100", "0.8"]
     return hashlib.sha256("|".join(components).encode()).hexdigest()[:16]
 
-# ---------------------------------------------------------------------------
-# Project defaults
-# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # Pipeline topology (derived from pipeline.yaml at import time)
 # ---------------------------------------------------------------------------
@@ -73,11 +53,3 @@ VALID_MODEL_TYPES: frozenset[str] = frozenset(_pipeline["models"])
 VALID_SCALES: frozenset[str] = frozenset(_pipeline["scales"])
 # Full pipeline dict for orchestration (identity_keys, default_stages).
 PIPELINE_YAML: dict = _pipeline
-
-# ---------------------------------------------------------------------------
-# Project defaults
-# ---------------------------------------------------------------------------
-DEFAULT_DATASET = "hcrl_sa"
-DEFAULT_LAKE_ROOT = "experimentruns"
-DEFAULT_SEEDS = [42, 123, 456]
-SWEEP_RESULTS_DIR = "data/sweep_results"

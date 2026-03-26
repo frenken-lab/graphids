@@ -16,7 +16,9 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from graphids.config import cache_dir, data_dir
-from graphids.config.constants import CATALOG_PATH, EDGE_FEATURE_COUNT, NODE_FEATURE_COUNT, PREPROCESSING_DEFAULTS
+from graphids.config.constants import CATALOG_PATH
+
+from .features import N_EDGE_FEATURES as EDGE_FEATURE_COUNT, N_NODE_FEATURES as NODE_FEATURE_COUNT
 
 from .datasets.can_bus import CANBusDataset
 
@@ -71,9 +73,9 @@ class CANBusDataModule(pl.LightningDataModule):
         lake_root: str,
         batch_size: int = 32,
         num_workers: int = 2,
-        window_size: int = PREPROCESSING_DEFAULTS["window_size"],
-        stride: int = PREPROCESSING_DEFAULTS["stride"],
-        val_fraction: float = 1.0 - PREPROCESSING_DEFAULTS["train_val_split"],
+        window_size: int = 100,
+        stride: int = 100,
+        val_fraction: float = 0.2,
         seed: int = 42,
         dynamic_batching: bool = True,
         conv_type: str = "gatv2",
