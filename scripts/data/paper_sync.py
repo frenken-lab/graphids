@@ -542,11 +542,11 @@ def push(
     ess_root: Optional[Path] = typer.Option(None, "--ess-root", help="Override KD_GAT_LAKE_ROOT"),
 ):
     """Transform eval artifacts into paper-ready format on ESS."""
-    try:
-        from graphids.logging import configure_logging
-        configure_logging()
-    except ImportError:
-        logging.basicConfig(level=logging.INFO)
+    import structlog
+    structlog.configure(processors=[
+        structlog.processors.add_log_level,
+        structlog.dev.ConsoleRenderer(),
+    ])
 
     lake_root = ess_root or os.environ.get("KD_GAT_LAKE_ROOT")
     if not lake_root:

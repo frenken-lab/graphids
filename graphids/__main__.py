@@ -20,8 +20,16 @@ mp.set_start_method("spawn", force=True)
 mp.set_sharing_strategy("file_system")
 
 
-from graphids.logging import configure_logging
-configure_logging()
+import structlog
+structlog.configure(
+    processors=[
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.dev.ConsoleRenderer(),
+    ],
+    cache_logger_on_first_use=True,
+)
 
 
 def main(argv: list[str] | None = None) -> None:

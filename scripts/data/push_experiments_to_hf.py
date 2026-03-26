@@ -93,6 +93,9 @@ def push():
 
 
 if __name__ == "__main__":
-    from graphids.logging import configure_logging
-    configure_logging()
+    import structlog
+    structlog.configure(processors=[
+        structlog.processors.add_log_level,
+        structlog.dev.ConsoleRenderer(),
+    ])
     push()
