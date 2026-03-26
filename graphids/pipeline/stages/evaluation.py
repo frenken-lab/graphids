@@ -120,7 +120,7 @@ def _eval_fusion(cfg, val_data, test_scenarios, device) -> dict:
     ckpt_path = cfg.checkpoints["dqn"]
     method = cfg.fusion.method
     _fusion_cls = {"mlp": MLPFusionModule, "weighted_avg": WeightedAvgModule}.get(method, RLFusionModule)
-    module = _fusion_cls.load_from_checkpoint(ckpt_path, map_location=str(device), weights_only=False)
+    module = _fusion_cls.load_from_checkpoint(ckpt_path, map_location=str(device), weights_only=True)
 
     val_loader = DataLoader(
         TensorDataset(val_cache["states"], val_cache["labels"]),

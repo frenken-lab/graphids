@@ -219,8 +219,6 @@ class RLFusionModule(pl.LightningModule):
         from graphids.config import _ns_to_dict, to_namespace
         cfg = to_namespace(cfg)
 
-        # Save hparams: cfg stored as plain dict for checkpoint serialization
-        self.save_hyperparameters(ignore=["cfg"])
         self.save_hyperparameters({"cfg": _ns_to_dict(cfg)})
 
         self.automatic_optimization = False

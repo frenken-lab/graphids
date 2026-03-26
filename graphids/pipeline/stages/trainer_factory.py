@@ -195,7 +195,7 @@ def _load_checkpoint(
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
     module = get_module_cls(model_type).load_from_checkpoint(
-        str(ckpt_path), map_location="cpu", weights_only=False,
+        str(ckpt_path), map_location="cpu", weights_only=True,
     )
     model = module.model
     model.to(device).eval()

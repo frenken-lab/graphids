@@ -168,10 +168,9 @@ class TemporalLightningModule(pl.LightningModule):
         from graphids.config import _ns_to_dict, to_namespace
         cfg = to_namespace(cfg)
 
-        # Two-step save: cfg as plain dict, gat_ckpt_path not needed on reload
-        # (weights come from the Lightning checkpoint itself).
-        self.save_hyperparameters(ignore=["cfg", "gat_ckpt_path"])
-        self.save_hyperparameters({"cfg": _ns_to_dict(cfg)})
+        # cfg as plain dict; gat_ckpt_path not needed on reload (weights come
+        # from the Lightning checkpoint itself).
+        self.save_hyperparameters({"cfg": _ns_to_dict(cfg)}, ignore=["gat_ckpt_path"])
 
         self.cfg = cfg
         self.model = self._build_model(cfg, gat_ckpt_path)
@@ -340,7 +339,7 @@ class TemporalLightningModule(pl.LightningModule):
         from ._training import gpu_cleanup, test_model
 
         ckpt_path = cfg.checkpoints["temporal"]
-        module = cls.load_from_checkpoint(ckpt_path, map_location=device, weights_only=False)
+        module = cls.load_from_checkpoint(ckpt_path, map_location=device, weights_only=True)
         module = module.to(device)
         module.eval()
 

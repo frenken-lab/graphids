@@ -155,8 +155,7 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
         super().__init__()
         from graphids.config import _ns_to_dict, to_namespace
         cfg = to_namespace(cfg)
-        self.save_hyperparameters(ignore=["cfg", "teacher", "projection"])
-        self.save_hyperparameters({"cfg": _ns_to_dict(cfg)})
+        self.save_hyperparameters({"cfg": _ns_to_dict(cfg)}, ignore=["teacher", "projection"])
         num_ids, in_channels = cfg.num_ids, cfg.in_channels
         self.cfg = cfg
         self.model = GraphInfomaxModel.from_config(cfg, num_ids, in_channels)

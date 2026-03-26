@@ -46,8 +46,8 @@ def compute_node_budget(
     import json
     from graphids.config import cache_dir
 
-    lake_root = cfg.lake_root if hasattr(cfg, "lake_root") else cfg["lake_root"]
-    dataset = cfg.dataset if hasattr(cfg, "dataset") else cfg["dataset"]
+    lake_root = cfg.lake_root
+    dataset = cfg.dataset
     metadata_path = cache_dir(lake_root, dataset) / "cache_metadata.json"
     if not metadata_path.exists():
         raise FileNotFoundError(
