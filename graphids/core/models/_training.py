@@ -138,25 +138,28 @@ def binary_test_metrics():
 # ---------------------------------------------------------------------------
 
 
-def test_model(module, data, batch_size: int = 256) -> dict:
+def _eval_trainer():
+    """Single reusable Trainer for test-time evaluation."""
+    import pytorch_lightning as pl
+    return pl.Trainer(
+        accelerator="auto", devices="auto",
+        logger=False, enable_checkpointing=False, enable_progress_bar=False,
+    )
+
+
+def test_model(module, data, batch_size: int = 256, *, trainer=None) -> dict:
     """Run trainer.test() on a module and return metrics.
 
     Args:
         data: Either a list of PyG Data objects (creates PyGDataLoader) or
               a pre-built DataLoader (used as-is, e.g. for fusion tensor batches).
+        trainer: Reuse an existing Trainer. Created if not provided.
     """
-    import pytorch_lightning as pl
-
     from graphids.core.preprocessing.datamodule import make_graph_loader
 
-    trainer = pl.Trainer(
-        accelerator="auto", devices="auto",
-        logger=False, enable_checkpointing=False, enable_progress_bar=False,
-    )
-    if isinstance(data, list):
-        loader = make_graph_loader(data, batch_size=batch_size)
-    else:
-        loader = data
+    if trainer is None:
+        trainer = _eval_trainer()
+    loader = make_graph_loader(data, batch_size=batch_size) if isinstance(data, list) else data
     results = trainer.test(module, dataloaders=loader, verbose=False)
     metrics = dict(results[0]) if results else {}
     metrics["balanced_accuracy"] = (metrics.get("recall", 0) + metrics.get("specificity", 0)) / 2
@@ -165,12 +168,13 @@ def test_model(module, data, batch_size: int = 256) -> dict:
 
 def eval_with_scenarios(module, val_data, test_scenarios, batch_size: int) -> tuple[dict, dict]:
     """Run test on val + each test scenario. Returns (val_metrics, scenario_metrics)."""
-    val_metrics = test_model(module, val_data, batch_size=batch_size)
+    trainer = _eval_trainer()
+    val_metrics = test_model(module, val_data, batch_size=batch_size, trainer=trainer)
     scenario_metrics = {}
     if test_scenarios:
         for name, tdata in test_scenarios.items():
             module.test_metrics.reset()
-            scenario_metrics[name] = test_model(module, tdata, batch_size=batch_size)
+            scenario_metrics[name] = test_model(module, tdata, batch_size=batch_size, trainer=trainer)
     return val_metrics, scenario_metrics
 
 
