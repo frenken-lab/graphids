@@ -2,79 +2,21 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
-from pathlib import Path
 
 import yaml
 
 from jsonargparse import ArgumentParser, Namespace
 
 from .constants import (
-    CONFIG_DIR,
     DEFAULT_DATASET,
     DEFAULT_MODEL_TYPE,
     DEFAULT_SCALE,
     DEFAULT_STAGE,
     DEFAULTS_DIR,
-    PIPELINE_YAML,
+    compute_identity_hash,
 )
 from .defaults.schema import Config
-
-
-def to_namespace(cfg):
-    """Convert dict (from checkpoint reload) to jsonargparse Namespace.
-
-    Recursively converts nested dicts and list items. No-op on Namespace.
-    """
-    if isinstance(cfg, Namespace):
-        return cfg
-    if isinstance(cfg, dict):
-        return Namespace(**{k: to_namespace(v) for k, v in cfg.items()})
-    if isinstance(cfg, list):
-        return [to_namespace(v) for v in cfg]
-    return cfg
-
-
-def compute_identity_hash(stage: str, cfg) -> str:
-    """Compute identity hash for a stage from its identity_keys.
-
-    Returns ``"_<8-char-hex>"`` or ``""`` if the stage has no identity keys.
-    """
-    stage_def = PIPELINE_YAML.get("stages", {}).get(stage, {})
-    keys = stage_def.get("identity_keys", [])
-    if not keys:
-        return ""
-
-    def _get(dotted_key, default=None):
-        cur = cfg
-        for part in dotted_key.split("."):
-            if cur is None:
-                return default
-            cur = cur.get(part) if isinstance(cur, dict) else getattr(cur, part, None)
-        return cur if cur is not None else default
-
-    unresolved = [k for k in keys if _get(k) is None]
-    if unresolved:
-        import structlog
-        structlog.get_logger().warning("identity_key_unresolved", stage=stage, keys=unresolved)
-    pairs = [f"{k}={_get(k, '_default_')}" for k in sorted(keys)]
-    return "_" + hashlib.sha256("|".join(pairs).encode()).hexdigest()[:8]
-
-
-def data_dir(lake_root: str, dataset: str) -> Path:
-    """Raw data directory. Tries lake, falls back to local."""
-    from .constants import PREPROCESSING_VERSION
-    candidate = Path(lake_root) / "raw" / dataset
-    if candidate.exists():
-        return candidate
-    return Path("data") / "automotive" / dataset
-
-
-def cache_dir(lake_root: str, dataset: str) -> Path:
-    """Processed-graph cache directory."""
-    from .constants import PREPROCESSING_VERSION
-    return Path(lake_root) / "cache" / f"v{PREPROCESSING_VERSION}" / dataset
 
 
 def _compute_derived(cfg: Namespace) -> None:

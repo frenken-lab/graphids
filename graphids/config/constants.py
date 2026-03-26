@@ -61,7 +61,7 @@ DEFAULT_MODEL_TYPE: str = next(iter(_pipeline["models"]))  # first model
 DEFAULT_SCALE: str = _pipeline["scales"][0]                 # first scale
 DEFAULT_STAGE: str = _pipeline["default_stages"][0]         # first default stage
 _datasets = yaml.safe_load((DEFAULTS_DIR / "datasets.yaml").read_text())
-DEFAULT_DATASET: str = next(iter(_datasets))                # first dataset
+DEFAULT_DATASET: str = next(k for k in _datasets if not k.startswith("_"))  # skip YAML anchors
 
 # ---------------------------------------------------------------------------
 # Environment (KD_GAT_* infrastructure env vars)
@@ -72,3 +72,54 @@ SLURM_GPU_TYPE: str = os.environ.get("KD_GAT_GPU_TYPE", "v100")
 SWEEP_ID: str = os.environ.get("KD_GAT_SWEEP_ID", "")
 USER_TAGS: str = os.environ.get("KD_GAT_TAGS", "")
 CKPT_PATH: str = os.environ.get("KD_GAT_CKPT_PATH", "")
+
+
+# ---------------------------------------------------------------------------
+# Path helpers
+# ---------------------------------------------------------------------------
+
+
+def data_dir(lake_root: str, dataset: str) -> Path:
+    """Raw data directory. Tries lake, falls back to local."""
+    candidate = Path(lake_root) / "raw" / dataset
+    if candidate.exists():
+        return candidate
+    return Path("data") / "automotive" / dataset
+
+
+def cache_dir(lake_root: str, dataset: str) -> Path:
+    """Processed-graph cache directory."""
+    return Path(lake_root) / "cache" / f"v{PREPROCESSING_VERSION}" / dataset
+
+
+# ---------------------------------------------------------------------------
+# Identity hash
+# ---------------------------------------------------------------------------
+
+
+def compute_identity_hash(stage: str, cfg) -> str:
+    """Compute identity hash for a stage from its identity_keys.
+
+    Returns ``"_<8-char-hex>"`` or ``""`` if the stage has no identity keys.
+    """
+    import hashlib
+
+    stage_def = PIPELINE_YAML.get("stages", {}).get(stage, {})
+    keys = stage_def.get("identity_keys", [])
+    if not keys:
+        return ""
+
+    def _get(dotted_key, default=None):
+        cur = cfg
+        for part in dotted_key.split("."):
+            if cur is None:
+                return default
+            cur = cur.get(part) if isinstance(cur, dict) else getattr(cur, part, None)
+        return cur if cur is not None else default
+
+    unresolved = [k for k in keys if _get(k) is None]
+    if unresolved:
+        import structlog
+        structlog.get_logger().warning("identity_key_unresolved", stage=stage, keys=unresolved)
+    pairs = [f"{k}={_get(k, '_default_')}" for k in sorted(keys)]
+    return "_" + hashlib.sha256("|".join(pairs).encode()).hexdigest()[:8]
