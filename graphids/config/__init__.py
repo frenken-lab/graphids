@@ -355,41 +355,6 @@ def cache_dir(lake_root: str, dataset: str) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _dataclass_to_dict(obj):
-    """Recursively convert a dataclass instance to a plain dict."""
-    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-        return {f.name: _dataclass_to_dict(getattr(obj, f.name))
-                for f in dataclasses.fields(obj)}
-    if isinstance(obj, list):
-        return [_dataclass_to_dict(v) for v in obj]
-    return obj
-
-
-def _parse_value(s: str):
-    """Parse a CLI value string to the appropriate Python type."""
-    if s.lower() == "true":
-        return True
-    if s.lower() == "false":
-        return False
-    if s.lower() in ("null", "none"):
-        return None
-    try:
-        return int(s)
-    except ValueError:
-        pass
-    try:
-        return float(s)
-    except ValueError:
-        pass
-    # List syntax: [1,2,3] or [mean,max]
-    if s.startswith("[") and s.endswith("]"):
-        inner = s[1:-1].strip()
-        if not inner:
-            return []
-        return [_parse_value(v.strip()) for v in inner.split(",")]
-    return s
-
-
 def _parse_dotlist(overrides: tuple[str, ...] | list[str]) -> dict:
     """Parse CLI overrides like 'training.lr=0.001' into a nested dict."""
     result: dict = {}
@@ -397,11 +362,13 @@ def _parse_dotlist(overrides: tuple[str, ...] | list[str]) -> dict:
         if "=" not in item:
             continue
         key, value = item.split("=", 1)
+        # yaml.safe_load handles bool, int, float, list, null, string
+        parsed = yaml.safe_load(value)
         parts = key.split(".")
         current = result
         for part in parts[:-1]:
             current = current.setdefault(part, {})
-        current[parts[-1]] = _parse_value(value)
+        current[parts[-1]] = parsed
     return result
 
 
@@ -429,28 +396,24 @@ def _compute_derived(cfg: _Namespace) -> None:
     cfg._tier = f"dev/{user}"
     cfg._output_base = f"{cfg.lake_root}/{cfg._tier}/{cfg.dataset}"
 
-    cfg.checkpoints = _Namespace(
-        vgae=(
-            f"{cfg._output_base}/vgae_{cfg.scale}_autoencoder"
-            f"{compute_identity_hash('autoencoder', cfg)}/seed_{cfg.seed}/best_model.ckpt"
-        ),
-        gat=(
-            f"{cfg._output_base}/gat_{cfg.scale}_{cfg.gat_stage}"
-            f"{compute_identity_hash(cfg.gat_stage, cfg)}/seed_{cfg.seed}/best_model.ckpt"
-        ),
-        dqn=(
-            f"{cfg._output_base}/dqn_{cfg.scale}_fusion"
-            f"{compute_identity_hash('fusion', cfg)}/seed_{cfg.seed}/best_model.ckpt"
-        ),
-        dgi=(
-            f"{cfg._output_base}/dgi_{cfg.scale}_autoencoder"
-            f"{compute_identity_hash('autoencoder', cfg)}/seed_{cfg.seed}/best_model.ckpt"
-        ),
-        temporal=(
-            f"{cfg._output_base}/gat_{cfg.scale}_temporal"
-            f"{compute_identity_hash('temporal', cfg)}/seed_{cfg.seed}/best_model.ckpt"
-        ),
-    )
+    # Checkpoint paths: {base}/{model}_{scale}_{stage}{hash}/seed_{seed}/best_model.ckpt
+    # Keyed by model_type; stage comes from STAGE_MODEL_MAP inverse.
+    _CKPT_STAGES = {
+        "vgae": "autoencoder",
+        "gat": cfg.gat_stage,
+        "dqn": "fusion",
+        "dgi": "autoencoder",
+        "temporal": "temporal",
+    }
+    # temporal uses "gat" as model dir prefix (spatial encoder is GAT)
+    _CKPT_MODEL = {"temporal": "gat"}
+    cfg.checkpoints = _Namespace(**{
+        model: (
+            f"{cfg._output_base}/{_CKPT_MODEL.get(model, model)}_{cfg.scale}_{stage}"
+            f"{compute_identity_hash(stage, cfg)}/seed_{cfg.seed}/best_model.ckpt"
+        )
+        for model, stage in _CKPT_STAGES.items()
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -465,7 +428,7 @@ def resolve(*overrides: str) -> _Namespace:
     Returns a plain _Namespace with all derived fields (checkpoints, paths) computed.
     """
     # 1. Dataclass defaults
-    cfg = _dataclass_to_dict(Config())
+    cfg = dataclasses.asdict(Config())
 
     # 2. Env-derived defaults (replaces config.yaml oc.env interpolations)
     cfg["lake_root"] = os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns")
