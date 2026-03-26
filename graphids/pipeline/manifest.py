@@ -89,6 +89,13 @@ def build_dag(
     stages_def = pipeline["stages"]
     default_stages = pipeline.get("default_stages", list(stages_def.keys()))
 
+    # Validate datasets exist in catalog
+    from graphids.config import CATALOG_PATH
+    catalog = yaml.safe_load(CATALOG_PATH.read_text())
+    for ds in sweep.get("dataset", [defaults.get("dataset")]):
+        if ds and ds not in catalog:
+            raise ValueError(f"Dataset '{ds}' not in {CATALOG_PATH}. Available: {list(catalog.keys())}")
+
     # Expand sweep dimensions into Cartesian product
     sweep_keys = list(sweep.keys())
     sweep_vals = [sweep[k] for k in sweep_keys]

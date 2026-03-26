@@ -25,6 +25,12 @@ STAGE_FNS = {
     "temporal":    train_stage,
 }
 
+# Validate all pipeline stages have handlers
+from graphids.config.constants import STAGES as _STAGES
+_missing = set(_STAGES) - set(STAGE_FNS) - {"preprocess"}
+if _missing:
+    raise RuntimeError(f"Stages defined in pipeline.yaml but missing from STAGE_FNS: {_missing}")
+
 
 def run_stage(cfg, stage: str) -> dict:
     """Bind context, chdir to run directory, save config, run stage function.

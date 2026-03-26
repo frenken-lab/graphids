@@ -46,6 +46,10 @@ def _identity_hash_resolver(stage: str, *, _root_: DictConfig) -> str:
     keys = stage_def.get("identity_keys", [])
     if not keys:
         return ""
+    unresolved = [k for k in keys if OmegaConf.select(_root_, k, default=None) is None]
+    if unresolved:
+        import structlog
+        structlog.get_logger().warning("identity_key_unresolved", stage=stage, keys=unresolved)
     pairs = [f"{k}={OmegaConf.select(_root_, k, default='_default_')}" for k in sorted(keys)]
     return "_" + hashlib.sha256("|".join(pairs).encode()).hexdigest()[:8]
 
@@ -303,7 +307,11 @@ def resolve(*overrides: str):
 
     # Determine model_type + scale from overrides (before full merge)
     identity = OmegaConf.merge(schema, infra, cli)
-    preset = models.get(f"{identity.model_type}_{identity.scale}") or {}
+    preset_key = f"{identity.model_type}_{identity.scale}"
+    preset = models.get(preset_key) or {}
+    if not preset and identity.model_type in VALID_MODEL_TYPES:
+        import structlog
+        structlog.get_logger().warning("missing_model_preset", key=preset_key, using="dataclass defaults")
 
     cfg = OmegaConf.merge(schema, infra, preset, cli)
     OmegaConf.set_struct(cfg, True)
