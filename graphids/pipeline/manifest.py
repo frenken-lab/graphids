@@ -1,6 +1,7 @@
 """YAML manifest → SLURM DAG submission with stage deduplication."""
 from __future__ import annotations
 
+import dataclasses
 import graphlib
 from dataclasses import dataclass
 from itertools import product
@@ -125,17 +126,9 @@ def build_dag(
                 node_id = _identity_key(stage, dataset, seed, run_config, identity_keys)
 
                 if node_id in jobs:
-                    # Shared stage — add this config name
                     existing = jobs[node_id]
-                    jobs[node_id] = StageJob(
-                        node_id=existing.node_id,
-                        stage=existing.stage,
-                        dataset=existing.dataset,
-                        seed=existing.seed,
-                        overrides=existing.overrides,
-                        resources=existing.resources,
-                        dep_ids=existing.dep_ids,
-                        config_names=existing.config_names | {config_name},
+                    jobs[node_id] = dataclasses.replace(
+                        existing, config_names=existing.config_names | {config_name},
                     )
                 else:
                     # New stage job
@@ -197,7 +190,7 @@ def submit_manifest(
     filter_configs: list[str] | None = None,
 ) -> dict[str, object]:
     """Load manifest, build DAG, submit via submitit (or dry-run print)."""
-    from graphids.config import SLURM_ACCOUNT, resolve
+    from graphids.config import SLURM_ACCOUNT, STAGE_MODEL_MAP, resolve
     from graphids.pipeline.stages import run_stage
 
     sweep, defaults, configs = load_manifest(manifest_path)
@@ -221,15 +214,28 @@ def submit_manifest(
     import submitit
 
     futures: dict[str, object] = {}
+    skipped = 0
     for job in dag:
+        cfg = resolve(*job.overrides)
+
+        # Skip-if-done: check if output checkpoint already exists
+        ckpt_key = STAGE_MODEL_MAP.get(job.stage)
+        if ckpt_key and job.stage != "evaluation":
+            try:
+                ckpt_path = cfg.checkpoints.get(ckpt_key)
+                if ckpt_path and Path(ckpt_path).exists():
+                    log.info("skip_completed", node=job.node_id, checkpoint=ckpt_path)
+                    skipped += 1
+                    continue
+            except Exception:
+                pass  # resolve failure = submit anyway
+
         dep_futs = [futures[d] for d in job.dep_ids if d in futures]
         dep_str = (
-            f"afterok:{':'.join(str(f.job_id) for f in dep_futs)}"
+            f"afterany:{':'.join(str(f.job_id) for f in dep_futs)}"
             if dep_futs
             else None
         )
-
-        cfg = resolve(*job.overrides)
 
         executor = submitit.SlurmExecutor(folder="slurm_logs/%j")
         mem_val = f"{job.resources['memory_gb']}G"
@@ -240,7 +246,7 @@ def submit_manifest(
         if partition == "cpu":
             stage_args += " --skip-tmpdir"
         setup_cmds = [
-            "unset SLURM_CPUS_PER_TASK SLURM_TRES_PER_TASK",
+            "unset SLURM_TRES_PER_TASK",
             f'export STAGE_DATA_ARGS="{stage_args}"',
             "source scripts/slurm/_preamble.sh",
         ]
@@ -258,6 +264,8 @@ def submit_manifest(
         futures[job.node_id] = executor.submit(run_stage, cfg, job.stage)
         log.info("submitted", node=job.node_id, job_id=futures[job.node_id].job_id)
 
+    if skipped:
+        log.info("dag_skipped_completed", count=skipped)
     return futures
 
 

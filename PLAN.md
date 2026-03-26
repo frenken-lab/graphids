@@ -9,20 +9,6 @@
 18 configs × 2 datasets (set_01, set_02) × 1 seed (42), deduped to 62 SLURM jobs. KD configs deferred.
 
 **Fixes applied (Run 001 + Run 002 post-mortems + 2026-03-25 hardening):**
-- [x] `batch_size` default: 4096 → 8192 (VRAM was 33% utilized on V100)
-- [x] **VRAM-aware budget**: `compute_node_budget()` auto-caps GPS O(N²) at ~20K nodes from `torch.cuda` VRAM. Replaces manual `batch_size=256` band-aid.
-- [x] GPU wall time: 120 → 240 min (7 jobs timed out at ~1:50)
-- [x] Eval/fusion wall time: 30 → 60 min
-- [x] Dataset-scoped staging: `--dataset` flag copies ~5 GB instead of 87 GB
-- [x] CPU eval skips TMPDIR: `--skip-tmpdir` reads from scratch (0 copy)
-- [x] Stale cache cleanup: removed v3/v4/v5/v7 dirs (64 GB freed)
-- [x] **Identity-aware paths**: `identity_hash` OmegaConf resolver prevents run dir collisions
-- [x] **metrics.json**: evaluation stage now persists metrics to disk
-- [x] **DuckDB catalog**: `_append_to_catalog()` writes run metadata after each stage
-- [x] **All checkpoints .ckpt**: unified via Lightning `ModelCheckpoint` + `load_from_checkpoint()`
-- [x] **Fail-fast resources**: `manifest.py` raises `ValueError` on missing profile (was silent 16G fallback → 65 OOM kills)
-- [x] **Old corrupted runs cleaned**: removed all Run 001/002 dirs from ESS
-- [x] **Pre-existing bugs fixed**: `encoder_targets` NameError in VGAE decoder, `math.lerp` (Python 3.13+ only)
 
 **Verify after Run 003 completes:**
 - [ ] Each ablation config produces a unique run directory (hash suffix)
@@ -61,56 +47,48 @@
 
 ## In Progress
 
-- Ablation Run 003 (submitting 2026-03-25)
+- Ablation Run 003 — training COMPLETED (2026-03-25), eval needs resubmit (weights_only fix)
 - Ops dashboard (`buckeyeguy/kd-gat-dashboard`) — running on HF Spaces
 
-### DataLoader consolidation — `make_graph_loader` as single source
+### Codebase cleanup (2026-03-25) — DONE
 
-**Context:** GPU util is ~30% with 2 workers. Profiling showed collation (PyG's `separate()` → `Batch.from_data_list()` round-trip) costs 7-12× more than necessary for InMemoryDataset. Root cause: PyG un-collates pre-collated data then re-collates it, with 3600 Python ops per batch.
+Replaced custom DataLoader/collation/assembly with PyG APIs, adopted Lightning built-ins.
 
-**Done (commit 527857b):**
-- `fast_collate` function: gathers directly from InMemoryDataset `_data`/`slices` via vectorized index ops. Spike-tested: 7-12× faster than warm cached path at 200-1000 graphs/batch. Correctness proven (all 8 tensors identical).
-- `make_graph_loader` factory: isinstance check routes InMemoryDataset → fast path, list[Data] → PyGDataLoader.
-- Wired into `CANBusDataModule._build_loader` only.
+**Deleted (~700 lines):**
+- `_FastCollate`, `_SlicesBatchSampler`, `_IndexDataset` → PyG `DynamicBatchSampler` + standard `DataLoader`
+- `_assemble_chunk_numpy`, `_numpy_to_data`, `_assemble_graphs` (ProcessPoolExecutor parallel assembly) → Polars vectorized triangle counting for clustering coefficient + degree
+- `_graph_utils.py` (dead), `edge_features` (dead), accumulator pattern in VGAE/DGI
+- Dead scheduler config fields, `cache_predictions` as standalone function
 
-**Remaining — consolidate ALL graph DataLoader creation through `make_graph_loader`:**
+**Added:**
+- `PrefetchLoader` on train/val DataLoaders (async GPU transfer)
+- `LearningRateMonitor` + `StochasticWeightAveraging` callbacks
+- `predict_step` + `Trainer.predict()` for threshold search (replaces manual accumulators)
+- `afterany` + pre-flight checkpoint check in DAG submission (replaces `afterok` silent cascades)
+- Skip-if-done in manifest submission (don't resubmit completed stages)
+- DuckDB catalog self-heals missing columns via `ALTER TABLE ADD COLUMN`
+- Batch-aware fusion extractors (scatter ops, no `to_data_list()` loops)
+- `parse_payload()` moved from can_bus.py to features.py (single source of truth)
+- `_load_checkpoint` shared helper for model loading (was duplicated)
 
-1. Move common kwargs into the factory (num_workers, pin_memory, persistent_workers, spawn context, worker_init_fn). These are copy-pasted across 10+ call sites.
-2. Move DynamicBatchSampler construction into factory (duplicated between `_build_loader` and `curriculum.py`).
-3. Route these call sites through `make_graph_loader`:
-   - `curriculum.py:133` (train) — passes `list[Data]`, falls through to PyGDataLoader
-   - `curriculum.py:160` (val) — same
-   - `cache_predictions` in `datamodule.py` — passes list
-   - `vgae.py:373,560` — eval, passes list
-   - `gat.py:196` — eval, passes list
-   - `dgi.py:237` — eval, passes list
-   - `_training.py:174` — eval, passes list or pre-built loader
-   - `loss_landscape.py:175` — one-shot, passes list
-4. `_build_loader` becomes a thin wrapper (passes hparams to factory).
-5. Verify: grep for remaining `PyGDataLoader` — should only appear inside `make_graph_loader`.
+**GPU profile (Run 003, 2026-03-25):**
 
-**Not yet answered:** GPU util is still 30% even though collation is now ~1ms. The real bottleneck hasn't been identified. Collation speedup helps but doesn't explain the 70% GPU idle time. Next step: profile actual training with fast_collate wired in to see if GPU util changes, or if the bottleneck is elsewhere in the DataLoader pipeline (IPC, pin_memory thread, OS scheduling).
+| Model | Dataset | GPU util (training) | VRAM peak | CPU RSS | Time |
+|-------|---------|-------------------|-----------|---------|------|
+| VGAE | set_01 | 83% | 8.8G/16G | 13G | 1:12 |
+| VGAE | set_02 | 77% | 10.0G/16G | 22G* | 1:16 |
+| GAT | set_02 | 90% | 13.1G/16G | 13G | 2:11 |
+
+*VGAE/set_02 high RSS is CPU-side worker memory bloat, not GPU. 19% idle GPU = DataLoader-bound. PrefetchLoader should help on next run.
 
 ## Blocked
 
 (none)
 
-## 3-Pillar Architecture (target)
-
-| Pillar | Owner | Current state |
-|--------|-------|---------------|
-| **Config** | Hydra Compose + Pydantic | **Done** — 5-file config layer + ManifestBuilder |
-| **Orchestration** | submitit + graphlib | **Done** — manifest-driven SLURM DAG with stage deduplication |
-| **ML Training** | Lightning modules + stages | **Done** — VGAE/GAE/DGI/GAT/fusion models |
-| **I/O** | Lightning ModelCheckpoint + DuckDB catalog | **Done** — identity-aware paths, uniform .ckpt, DuckDB append |
-
 ## Open Questions
 
-- ~~**GAE vs DGI**~~ **Resolved**: GAE = flag on VGAE, DGI = separate model_type
-- ~~**Eval without fusion**~~ **Resolved**: checkpoint-presence guard + `gat_stage` routing
-- ~~**Run dir collisions**~~ **Resolved**: `identity_hash` OmegaConf resolver
-- ~~**GPS OOM**~~ **Resolved**: VRAM-aware budget auto-caps quadratic convs
-- ~~**Checkpoint fragility**~~ **Resolved**: unified Lightning `load_from_checkpoint()` API
+- VGAE worker memory bloat (13G vs 22G bimodal) — same model, different nodes. PrefetchLoader may help, needs rerun to confirm.
+- `--mem` over-requesting 54G when peak is 23G — update `resources.yaml` to 32G after confirming PrefetchLoader doesn't change RSS profile.
 
 ## Key Reference Documents
 
