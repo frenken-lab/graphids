@@ -5,6 +5,7 @@ No imports from other config submodules — this is the leaf dependency.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import yaml
@@ -53,3 +54,13 @@ VALID_MODEL_TYPES: frozenset[str] = frozenset(_pipeline["models"])
 VALID_SCALES: frozenset[str] = frozenset(_pipeline["scales"])
 # Full pipeline dict for orchestration (identity_keys, default_stages).
 PIPELINE_YAML: dict = _pipeline
+
+# ---------------------------------------------------------------------------
+# Environment (KD_GAT_* infrastructure env vars)
+# ---------------------------------------------------------------------------
+SLURM_ACCOUNT: str = os.environ.get("KD_GAT_SLURM_ACCOUNT", "PAS1266")
+SLURM_PARTITION: str = os.environ.get("KD_GAT_SLURM_PARTITION", "gpu")
+SLURM_GPU_TYPE: str = os.environ.get("KD_GAT_GPU_TYPE", "v100")
+SWEEP_ID: str = os.environ.get("KD_GAT_SWEEP_ID", "")
+USER_TAGS: str = os.environ.get("KD_GAT_TAGS", "")
+CKPT_PATH: str = os.environ.get("KD_GAT_CKPT_PATH", "")
