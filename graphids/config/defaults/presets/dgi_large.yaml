@@ -1,6 +1,0 @@
-dgi:
-  conv_type: gatv2
-  proj_dim: 48
-training:
-  lr: 0.002
-  compile_model: true

@@ -6,6 +6,8 @@ import hashlib
 import os
 from pathlib import Path
 
+import yaml
+
 from jsonargparse import ArgumentParser, Namespace
 
 from .constants import (
@@ -113,8 +115,19 @@ def resolve(*overrides: str) -> Namespace:
 
     model_type = top.get("model_type", DEFAULT_MODEL_TYPE)
     scale = top.get("scale", DEFAULT_SCALE)
-    preset_path = DEFAULTS_DIR / "presets" / f"{model_type}_{scale}.yaml"
-    config_files = [str(preset_path)] if preset_path.exists() else []
+    preset_key = f"{model_type}_{scale}"
+
+    # Load preset from single presets.yaml, write to temp file for jsonargparse
+    import tempfile
+    presets_path = DEFAULTS_DIR / "presets.yaml"
+    presets = yaml.safe_load(presets_path.read_text()) if presets_path.exists() else {}
+    preset = presets.get(preset_key, {})
+    config_files = []
+    if preset:
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False)
+        yaml.dump(preset, tmp, default_flow_style=False)
+        tmp.close()
+        config_files = [tmp.name]
 
     parser = ArgumentParser(default_config_files=config_files, env_prefix="KD_GAT", default_env=True)
     parser.add_class_arguments(Config, nested_key=None)

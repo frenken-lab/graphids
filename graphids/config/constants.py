@@ -51,7 +51,7 @@ STAGE_DEPENDENCIES: dict[str, list[tuple[str, str]]] = {
     for name, s in _pipeline["stages"].items()
     if s.get("depends_on")
 }
-VALID_MODEL_TYPES: frozenset[str] = frozenset(_pipeline["models"])
+VALID_MODEL_TYPES: frozenset[str] = frozenset(_pipeline["models"])  # works for both list and dict
 VALID_SCALES: frozenset[str] = frozenset(_pipeline["scales"])
 # Full pipeline dict for orchestration (identity_keys, default_stages).
 PIPELINE_YAML: dict = _pipeline

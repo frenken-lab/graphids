@@ -8,20 +8,8 @@
 # To add a new scale:       add to scales: + create models/{type}/{scale}.yaml + add resource profile
 # To add a new stage:       add to stages: with depends_on + identity_keys + register stage function + add resource profile
 
-# --- Model types (keys must match models/{type}/ directories) ---
-models:
-  vgae:
-    learning_type: unsupervised
-    architecture: VGAEArchitecture
-  gat:
-    learning_type: supervised
-    architecture: GATArchitecture
-  dqn:
-    learning_type: rl_fusion
-    architecture: DQNArchitecture
-  dgi:
-    learning_type: unsupervised
-    architecture: DGIArchitecture
+# --- Model types ---
+models: [vgae, gat, dqn, dgi]
 
 # --- Valid scales (must have corresponding models/{type}/{scale}.yaml) ---
 scales:
