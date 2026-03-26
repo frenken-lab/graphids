@@ -1,6 +1,6 @@
 """Configuration layer: schema, resolution, constants."""
 
-from .constants import (  # noqa: F401
+from .defaults.constants import (  # noqa: F401
     CATALOG_PATH,
     CKPT_PATH,
     CONFIG_DIR,
@@ -28,4 +28,4 @@ from .resolve import (  # noqa: F401
     resolve,
     to_namespace,
 )
-from .schema import Config  # noqa: F401
+from .defaults.schema import Config  # noqa: F401

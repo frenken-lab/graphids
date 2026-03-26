@@ -21,10 +21,10 @@ def _resume_ckpt_path(cfg, stage: str) -> str | None:
     Resolution order:
     1. ``KD_GAT_CKPT_PATH`` env var — explicit override from orchestrator
        (set by orchestrator when retrying a timed-out stage).
-    2. ``ckpt_path="last"`` — Lightning looks for the most recent checkpoint
-       in the Trainer's default_root_dir (== cwd, since run_stage chdir's).
-       This covers ``SLURMEnvironment(auto_requeue=True)`` auto-saves
-       (``.pl_auto_save.ckpt``) and any ModelCheckpoint ``last.ckpt``.
+    2. ``None`` — Lightning's built-in ``_parse_ckpt_path`` detects
+       ``SLURMEnvironment`` + ``hpc_ckpt_*.ckpt`` in ``default_root_dir``
+       and resumes automatically.  The ``SLURMEnvironment(auto_requeue=True)``
+       plugin in ``make_trainer()`` handles SIGUSR1 → checkpoint save → requeue.
     """
     # 1. Explicit override from orchestrator
     path = os.environ.pop("KD_GAT_CKPT_PATH", None)
@@ -34,8 +34,9 @@ def _resume_ckpt_path(cfg, stage: str) -> str | None:
     if path:
         log.warning("checkpoint_path_not_found", path=path)
 
-    # 2. Let Lightning find the latest checkpoint (auto-save or last.ckpt)
-    return "last"
+    # 2. Let Lightning handle HPC auto-resume (SLURMEnvironment writes
+    #    hpc_ckpt_*.ckpt on SIGUSR1; _parse_ckpt_path finds it when None).
+    return None
 
 
 def _save_and_cleanup(module, trainer, cfg, stage: str) -> dict:

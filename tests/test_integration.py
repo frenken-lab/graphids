@@ -367,7 +367,7 @@ class TestDataModuleFromCfgPreprocessing:
         """from_cfg without preprocessing overrides uses PREPROCESSING_DEFAULTS."""
         from graphids.config import resolve
         from graphids.core.preprocessing.datamodule import CANBusDataModule
-        from graphids.config.constants import PREPROCESSING_DEFAULTS
+        from graphids.config.defaults.constants import PREPROCESSING_DEFAULTS
 
         cfg = resolve("model_type=vgae", "scale=small", "lake_root=/tmp", "device=cpu")
         dm = CANBusDataModule.from_cfg(cfg)

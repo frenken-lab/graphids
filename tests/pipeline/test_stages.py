@@ -13,7 +13,7 @@ def test_unknown_stage_raises():
 
 
 def test_all_stages_have_functions():
-    from graphids.config.constants import STAGES
-    from graphids.pipeline.stages import STAGE_FNS
+    from graphids.config import STAGES
+    from graphids.pipeline.stages.runner import STAGE_FNS
     missing = [s for s in STAGES if s != "preprocess" and s not in STAGE_FNS]
     assert not missing, f"Missing stage functions: {missing}"

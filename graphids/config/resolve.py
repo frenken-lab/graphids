@@ -8,8 +8,8 @@ from pathlib import Path
 
 from jsonargparse import ArgumentParser, Namespace
 
-from .constants import CONFIG_DIR, PIPELINE_YAML
-from .schema import Config
+from .defaults.constants import CONFIG_DIR, PIPELINE_YAML
+from .defaults.schema import Config
 
 
 def to_namespace(cfg):
@@ -54,7 +54,7 @@ def compute_identity_hash(stage: str, cfg) -> str:
 
 def data_dir(lake_root: str, dataset: str) -> Path:
     """Raw data directory. Tries lake, falls back to local."""
-    from .constants import PREPROCESSING_VERSION  # noqa: F811 — re-export not needed here
+    from .defaults.constants import PREPROCESSING_VERSION
     candidate = Path(lake_root) / "raw" / dataset
     if candidate.exists():
         return candidate
@@ -63,7 +63,7 @@ def data_dir(lake_root: str, dataset: str) -> Path:
 
 def cache_dir(lake_root: str, dataset: str) -> Path:
     """Processed-graph cache directory."""
-    from .constants import PREPROCESSING_VERSION
+    from .defaults.constants import PREPROCESSING_VERSION
     return Path(lake_root) / "cache" / f"v{PREPROCESSING_VERSION}" / dataset
 
 
