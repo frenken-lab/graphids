@@ -14,7 +14,7 @@ import numpy as np
 import structlog
 import torch
 import torch.nn.functional as F
-from torch_geometric.loader import DataLoader as PyGDataLoader
+from graphids.core.preprocessing.datamodule import make_graph_loader
 
 log = structlog.get_logger()
 
@@ -172,7 +172,7 @@ def compute_and_save_loss_landscape(
     else:
         data = val_data
 
-    dataloader = PyGDataLoader(data, batch_size=min(256, len(data)), shuffle=False, num_workers=0)
+    dataloader = make_graph_loader(data, batch_size=min(256, len(data)))
 
     for model_type, loss_fn in _LOSS_FN.items():
         ckpt = cfg.checkpoints.get(model_type)
@@ -180,7 +180,7 @@ def compute_and_save_loss_landscape(
             continue
 
         stage = "autoencoder" if model_type == "vgae" else cfg.gat_stage
-        model = load_model_fn(cfg, model_type, stage, device)
+        model = load_model_fn(cfg, model_type, device)
         log.info("loss_landscape_start", model=model_type, resolution=resolution, scale=scale)
 
         result = _sweep_grid(model, loss_fn, dataloader, device, cfg, resolution, scale, seed)

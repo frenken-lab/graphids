@@ -132,7 +132,7 @@ class TemporalDataModule(pl.LightningDataModule):
         tc = self.cfg.temporal
 
         # Load pretrained GAT and probe spatial embedding dim
-        self.gat = self._load_model(self.cfg, "gat", self.cfg.gat_stage, self._device)
+        self.gat = self._load_model(self.cfg, "gat", self._device)
         with torch.no_grad():
             probe = raw_dm.train_dataset[0].clone().to(self._device, non_blocking=True)
             _, emb = self.gat(probe, return_embedding=True)

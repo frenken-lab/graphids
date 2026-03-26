@@ -14,8 +14,8 @@ from torch_geometric.nn.aggr import MultiAggregation
 
 from ._conv import InputEncoder, _make_conv, conv_forward, resolve_edge_dim
 from ._training import (
-    OOMSkipMixin, soft_label_kd_loss, focal_loss, _get_kd_config,
-    teacher_on_device, build_optimizer_dict, binary_test_metrics,
+    OOMSkipMixin, soft_label_kd_loss, focal_loss,
+    teacher_on_device, binary_test_metrics,
 )
 
 
@@ -273,7 +273,7 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
         task_loss = self.loss_fn(logits, batch.y)
         acc = (logits.argmax(1) == batch.y).float().mean()
         if self.teacher is not None:
-            kd = _get_kd_config(self.cfg)
+            kd = next(a for a in self.cfg.get("auxiliaries", []) if a.type == "kd")
             with teacher_on_device(self, batch.x.device):
                 with torch.no_grad():
                     t_logits = self.teacher(batch)
@@ -312,7 +312,7 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
     def evaluate(cls, cfg, val_data, test_scenarios, device, *, load_model_fn) -> dict:
         """Evaluate GAT via trainer.test() + capture artifacts."""
         from ._training import eval_with_scenarios, gpu_cleanup
-        gat_model = load_model_fn(cfg, "gat", cfg.gat_stage, device)
+        gat_model = load_model_fn(cfg, "gat", device)
         module = cls(cfg)
         module.model = gat_model
 
@@ -328,4 +328,4 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
 
     def configure_optimizers(self):
         opt = torch.optim.Adam(self.parameters(), lr=self.cfg.training.lr, weight_decay=self.cfg.training.weight_decay)
-        return build_optimizer_dict(opt, self.cfg)
+        return opt

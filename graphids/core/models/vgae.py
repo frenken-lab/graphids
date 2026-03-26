@@ -8,8 +8,8 @@ import torch.nn.functional as F
 
 from ._conv import InputEncoder, build_conv_stack, build_encoder_stack, _make_conv, conv_forward, resolve_edge_dim
 from ._training import (
-    OOMSkipMixin, soft_label_kd_loss, _get_kd_config, teacher_on_device,
-    build_optimizer_dict, compute_node_budget, NodeBudgetInfo,
+    OOMSkipMixin, soft_label_kd_loss, teacher_on_device,
+    compute_node_budget, NodeBudgetInfo,
     binary_test_metrics,
 )
 
@@ -451,7 +451,7 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
     def _step(self, batch):
         task_loss, cont_out, z = self._task_loss(batch)
         if self.teacher is not None:
-            kd = _get_kd_config(self.cfg)
+            kd = next(a for a in self.cfg.get("auxiliaries", []) if a.type == "kd")
             with teacher_on_device(self, batch.x.device):
                 with torch.no_grad():
                     batch_idx = (
@@ -552,7 +552,7 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
     def evaluate(cls, cfg, val_data, test_scenarios, device, *, load_model_fn) -> dict:
         """Evaluate VGAE: threshold search on val, test, capture artifacts."""
         from ._training import eval_with_scenarios, gpu_cleanup
-        model = load_model_fn(cfg, "vgae", "autoencoder", device)
+        model = load_model_fn(cfg, "vgae", device)
         module = cls(cfg)
         module.model = model
 
@@ -576,4 +576,4 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         if self.projection is not None:
             params += list(self.projection.parameters())
         opt = torch.optim.Adam(params, lr=self.cfg.training.lr, weight_decay=self.cfg.training.weight_decay)
-        return build_optimizer_dict(opt, self.cfg)
+        return opt

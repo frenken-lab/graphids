@@ -108,8 +108,8 @@ def _fusion_checkpoints_exist(cfg) -> bool:
 
 def _eval_fusion(cfg, val_data, test_scenarios, device) -> dict:
     """Evaluate fusion agent via Lightning test loop."""
-    vgae = load_model(cfg, "vgae", "autoencoder", device)
-    gat = load_model(cfg, "gat", cfg.gat_stage, device)
+    vgae = load_model(cfg, "vgae", device)
+    gat = load_model(cfg, "gat", device)
     models = {"vgae": vgae, "gat": gat}
 
     bs = cfg.evaluation.batch_size

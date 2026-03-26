@@ -15,7 +15,7 @@ import torch.nn as nn
 from torch_geometric.nn import global_mean_pool
 
 from ._conv import InputEncoder, build_encoder_stack, conv_forward, resolve_edge_dim
-from ._training import OOMSkipMixin, build_optimizer_dict, binary_test_metrics
+from ._training import OOMSkipMixin, binary_test_metrics
 
 
 class GraphInfomaxModel(nn.Module):
@@ -245,7 +245,7 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
     def evaluate(cls, cfg, val_data, test_scenarios, device, *, load_model_fn) -> dict:
         """Evaluate DGI: threshold search on val, then test scenarios."""
         from ._training import eval_with_scenarios, gpu_cleanup
-        model = load_model_fn(cfg, "dgi", "autoencoder", device)
+        model = load_model_fn(cfg, "dgi", device)
         module = cls(cfg)
         module.model = model
 
@@ -265,4 +265,4 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
 
     def configure_optimizers(self):
         opt = torch.optim.Adam(self.parameters(), lr=self.cfg.training.lr, weight_decay=self.cfg.training.weight_decay)
-        return build_optimizer_dict(opt, self.cfg)
+        return opt

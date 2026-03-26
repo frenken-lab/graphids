@@ -35,11 +35,11 @@ def compute_and_save_cka(
     """Compute layer-wise CKA between teacher (large) and student (current scale), save to JSON."""
     from graphids.config import resolve
 
-    student = load_model_fn(cfg, "gat", cfg.gat_stage, device)
+    student = load_model_fn(cfg, "gat", device)
     teacher_cfg = resolve(f"model_type=gat", f"scale=large", f"dataset={cfg.dataset}", f"seed={cfg.seed}")
     teacher_cfg.num_ids = cfg.num_ids
     teacher_cfg.in_channels = cfg.in_channels
-    teacher = load_model_fn(teacher_cfg, "gat", "curriculum", device)
+    teacher = load_model_fn(teacher_cfg, "gat", device)
 
     student_reps = _collect_reps(student, val_data, device, max_samples=max_samples)
     teacher_reps = _collect_reps(teacher, val_data, device, max_samples=max_samples)

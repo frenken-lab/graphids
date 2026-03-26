@@ -82,7 +82,7 @@ def train_stage(cfg) -> dict:
     module = build_module(cfg, stage, device, dm=dm)
 
     overrides = module.trainer_overrides(cfg, dm) if hasattr(module, "trainer_overrides") else {}
-    trainer = make_trainer(cfg, stage, **overrides)
+    trainer = make_trainer(cfg, **overrides)
 
     trainer.fit(module, datamodule=dm, ckpt_path=_resume_ckpt_path(cfg, stage))
     return _save_and_cleanup(module, trainer, cfg, stage)

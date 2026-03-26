@@ -289,8 +289,8 @@ class FusionDataModule(pl.LightningDataModule):
         raw_dm.setup("fit")
         raw_dm.populate_config(self.cfg)
 
-        vgae = self._load_model(self.cfg, "vgae", "autoencoder", self._device)
-        gat = self._load_model(self.cfg, "gat", self.cfg.gat_stage, self._device)
+        vgae = self._load_model(self.cfg, "vgae", self._device)
+        gat = self._load_model(self.cfg, "gat", self._device)
         models = {"vgae": vgae, "gat": gat}
         bs = self.cfg.evaluation.batch_size
         self.train_cache = self.cache_predictions(

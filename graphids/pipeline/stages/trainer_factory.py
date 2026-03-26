@@ -20,41 +20,36 @@ for _stage, _model in STAGE_MODEL_MAP.items():
     _TEACHER_STAGE.setdefault(_model, _stage)
 
 
-def _build_callbacks(cfg) -> list:
-    """Construct Lightning callbacks directly from config fields."""
-    from pytorch_lightning.callbacks import (
-        DeviceStatsMonitor,
-        EarlyStopping,
-        LearningRateMonitor,
-        ModelCheckpoint,
-        StochasticWeightAveraging,
-    )
-
-    t = cfg.training
-    return [
-        ModelCheckpoint(
-            dirpath=".", filename="best_model",
-            monitor=t.monitor_metric, mode=t.monitor_mode,
-            save_top_k=t.save_top_k, save_on_train_epoch_end=False,
-        ),
-        EarlyStopping(
-            monitor=t.monitor_metric, patience=t.patience,
-            mode=t.monitor_mode, check_on_train_epoch_end=False,
-        ),
-        DeviceStatsMonitor(cpu_stats=True),
-        LearningRateMonitor(logging_interval="step"),
-        StochasticWeightAveraging(swa_lrs=0.001, swa_epoch_start=0.75),
-    ]
-
-
-def make_trainer(cfg, stage: str, **overrides) -> pl.Trainer:
+def make_trainer(cfg, **overrides) -> pl.Trainer:
     """Create a Lightning Trainer from config with optional overrides.
 
     Stages like fusion pass overrides for callbacks, max_epochs, logger, etc.
     while inheriting precision, gradient_clip, deterministic, etc. from cfg.training.
     """
     if "callbacks" not in overrides:
-        overrides["callbacks"] = _build_callbacks(cfg)
+        from pytorch_lightning.callbacks import (
+            DeviceStatsMonitor,
+            EarlyStopping,
+            LearningRateMonitor,
+            ModelCheckpoint,
+            StochasticWeightAveraging,
+        )
+
+        t = cfg.training
+        overrides["callbacks"] = [
+            ModelCheckpoint(
+                dirpath=".", filename="best_model",
+                monitor=t.monitor_metric, mode=t.monitor_mode,
+                save_top_k=t.save_top_k, save_on_train_epoch_end=False,
+            ),
+            EarlyStopping(
+                monitor=t.monitor_metric, patience=t.patience,
+                mode=t.monitor_mode, check_on_train_epoch_end=False,
+            ),
+            DeviceStatsMonitor(cpu_stats=True),
+            LearningRateMonitor(logging_interval="step"),
+            StochasticWeightAveraging(swa_lrs=0.001, swa_epoch_start=0.75),
+        ]
 
     kwargs = dict(
         max_epochs=cfg.training.max_epochs,
@@ -107,7 +102,7 @@ def _build_curriculum_dm(raw_dm, cfg, device):
 
     from graphids.core.preprocessing.curriculum import CurriculumDataModule
 
-    vgae = load_model(cfg, "vgae", "autoencoder", device)
+    vgae = load_model(cfg, "vgae", device)
     normals = [g for g in raw_dm.train_dataset if int(g.y[0]) == 0]
     attacks = [g for g in raw_dm.train_dataset if int(g.y[0]) == 1]
 
@@ -206,7 +201,7 @@ def _load_checkpoint(
 
 
 def load_model(
-    cfg, model_type: str, stage: str, device: torch.device,
+    cfg, model_type: str, device: torch.device,
 ) -> nn.Module:
     """Load a trained model's inner nn.Module. Returns frozen model on device."""
     ckpt_path = Path(cfg.checkpoints[model_type])

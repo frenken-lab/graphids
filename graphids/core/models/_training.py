@@ -105,11 +105,6 @@ def focal_loss(logits, targets, gamma: float = 2.0):
     return ((1 - pt) ** gamma * ce).mean()
 
 
-def _get_kd_config(cfg):
-    """Get KD auxiliary config, or None if not configured."""
-    return next((a for a in cfg.get("auxiliaries", []) if a.type == "kd"), None)
-
-
 @contextlib.contextmanager
 def teacher_on_device(module, device):
     """Move teacher to device for inference, offload back to CPU after."""
@@ -122,11 +117,6 @@ def teacher_on_device(module, device):
         if module.cfg.training.offload_teacher_to_cpu:
             module.teacher.to("cpu")
             module._teacher_on_cpu = True
-
-
-def build_optimizer_dict(optimizer, cfg):
-    """Return optimizer for Lightning. SWA is handled via callback, not scheduler."""
-    return optimizer
 
 
 def binary_test_metrics():
@@ -148,15 +138,6 @@ def binary_test_metrics():
 # ---------------------------------------------------------------------------
 
 
-def make_test_trainer():
-    """Create a Lightning Trainer for test-time evaluation."""
-    import pytorch_lightning as pl
-    return pl.Trainer(
-        accelerator="auto", devices="auto",
-        logger=False, enable_checkpointing=False, enable_progress_bar=False,
-    )
-
-
 def test_model(module, data, batch_size: int = 256) -> dict:
     """Run trainer.test() on a module and return metrics.
 
@@ -164,8 +145,14 @@ def test_model(module, data, batch_size: int = 256) -> dict:
         data: Either a list of PyG Data objects (creates PyGDataLoader) or
               a pre-built DataLoader (used as-is, e.g. for fusion tensor batches).
     """
+    import pytorch_lightning as pl
+
     from graphids.core.preprocessing.datamodule import make_graph_loader
-    trainer = make_test_trainer()
+
+    trainer = pl.Trainer(
+        accelerator="auto", devices="auto",
+        logger=False, enable_checkpointing=False, enable_progress_bar=False,
+    )
     if isinstance(data, list):
         loader = make_graph_loader(data, batch_size=batch_size)
     else:

@@ -95,19 +95,6 @@ def to_namespace(cfg) -> _Namespace:
 # ---------------------------------------------------------------------------
 
 
-def _nested_get(obj, dotted_key: str, default=None):
-    """Get a value from a nested object using a dotted key path."""
-    current = obj
-    for part in dotted_key.split("."):
-        if current is None:
-            return default
-        if isinstance(current, dict):
-            current = current.get(part)
-        else:
-            current = getattr(current, part, None)
-    return current if current is not None else default
-
-
 def compute_identity_hash(stage: str, cfg) -> str:
     """Compute identity hash for a stage from its identity_keys.
 
@@ -117,11 +104,20 @@ def compute_identity_hash(stage: str, cfg) -> str:
     keys = stage_def.get("identity_keys", [])
     if not keys:
         return ""
-    unresolved = [k for k in keys if _nested_get(cfg, k) is None]
+
+    def _get(dotted_key, default=None):
+        cur = cfg
+        for part in dotted_key.split("."):
+            if cur is None:
+                return default
+            cur = cur.get(part) if isinstance(cur, dict) else getattr(cur, part, None)
+        return cur if cur is not None else default
+
+    unresolved = [k for k in keys if _get(k) is None]
     if unresolved:
         import structlog
         structlog.get_logger().warning("identity_key_unresolved", stage=stage, keys=unresolved)
-    pairs = [f"{k}={_nested_get(cfg, k, '_default_')}" for k in sorted(keys)]
+    pairs = [f"{k}={_get(k, '_default_')}" for k in sorted(keys)]
     return "_" + hashlib.sha256("|".join(pairs).encode()).hexdigest()[:8]
 
 
