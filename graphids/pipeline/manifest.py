@@ -226,11 +226,14 @@ def submit_manifest(
                 if ckpt_path and Path(ckpt_path).exists():
                     log.info("skip_completed", node=job.node_id, checkpoint=ckpt_path)
                     skipped += 1
+                    # Register as done so downstream jobs have no dependency (run immediately)
+                    futures[job.node_id] = None
                     continue
             except Exception:
                 pass  # resolve failure = submit anyway
 
-        dep_futs = [futures[d] for d in job.dep_ids if d in futures]
+        # Filter out None sentinels (skipped stages) — those are already done
+        dep_futs = [futures[d] for d in job.dep_ids if d in futures and futures[d] is not None]
         dep_str = (
             f"afterany:{':'.join(str(f.job_id) for f in dep_futs)}"
             if dep_futs
