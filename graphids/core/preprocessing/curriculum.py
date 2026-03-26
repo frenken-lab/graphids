@@ -34,7 +34,11 @@ class CurriculumSampler:
         if self.max_num_nodes is None:
             return None
         subset = Subset(self.dataset, self._active_indices)
-        sampler = DynamicBatchSampler(subset, max_num=self.max_num_nodes, mode="node", shuffle=True, skip_too_big=True)
+        num_steps = max(1, len(self._active_indices) * 30 // self.max_num_nodes)  # ~30 nodes avg
+        sampler = DynamicBatchSampler(
+            subset, max_num=self.max_num_nodes, mode="node", shuffle=True,
+            skip_too_big=True, num_steps=num_steps,
+        )
         return sampler
 
     def set_epoch(self, epoch: int) -> None:
@@ -115,7 +119,11 @@ class CurriculumDataModule(pl.LightningDataModule):
 
         if self.cfg.training.dynamic_batching:
             info = compute_node_budget(bs, self.cfg, conv_type=self.cfg.gat.conv_type, heads=self.cfg.gat.heads)
-            sampler = DynamicBatchSampler(self.val_data, max_num=info.budget, mode="node", shuffle=False, skip_too_big=True)
+            num_steps = max(1, len(self.val_data) * 30 // info.budget)
+            sampler = DynamicBatchSampler(
+                self.val_data, max_num=info.budget, mode="node", shuffle=False,
+                skip_too_big=True, num_steps=num_steps,
+            )
             return make_graph_loader(self.val_data, batch_sampler=sampler, num_workers=nw)
 
         return make_graph_loader(self.val_data, batch_size=bs, shuffle=False, num_workers=nw)
