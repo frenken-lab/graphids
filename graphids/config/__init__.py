@@ -1,20 +1,17 @@
 """Configuration layer: constants, schema, paths, resolution.
 
-Config composition uses plain YAML loading, dataclass defaults, and recursive
-dict merge. All public APIs return _Namespace.
+Config resolution uses jsonargparse for CLI parsing, type coercion, and
+YAML preset loading. All public APIs return jsonargparse.Namespace.
 """
 
 from __future__ import annotations
 
-import dataclasses
 import hashlib
 import os
-import types
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
-import yaml
+from jsonargparse import ArgumentParser, Namespace
 
 from .constants import (  # noqa: F401
     CATALOG_PATH,
@@ -34,64 +31,26 @@ from .constants import (  # noqa: F401
 
 
 # ---------------------------------------------------------------------------
-# Plain namespace: config objects returned by resolve()
+# Namespace conversion (checkpoint reload path)
 # ---------------------------------------------------------------------------
 
 
-class _Namespace(types.SimpleNamespace):
-    """Recursive namespace with attribute access, .get(), and bracket access.
+def to_namespace(cfg):
+    """Convert dict (from checkpoint reload) to jsonargparse Namespace.
 
-    Returned by resolve() and to_namespace(). Supports attribute access,
-    .get(key, default), and bracket access.
+    Recursively converts nested dicts and list items. No-op on Namespace.
     """
-
-    def get(self, key: str, default=None):
-        return getattr(self, key, default)
-
-    def __getitem__(self, key: str):
-        try:
-            return getattr(self, key)
-        except AttributeError:
-            raise KeyError(key)
-
-    def __contains__(self, key: str) -> bool:
-        return hasattr(self, key)
-
-
-def _dict_to_ns(d):
-    """Recursively convert a dict to a _Namespace."""
-    if isinstance(d, dict):
-        return _Namespace(**{k: _dict_to_ns(v) for k, v in d.items()})
-    if isinstance(d, list):
-        return [_dict_to_ns(v) for v in d]
-    return d
-
-
-def _ns_to_dict(obj):
-    """Recursively convert a _Namespace to a plain dict."""
-    if isinstance(obj, types.SimpleNamespace):
-        return {k: _ns_to_dict(v) for k, v in vars(obj).items()}
-    if isinstance(obj, dict):
-        return {k: _ns_to_dict(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return type(obj)(_ns_to_dict(v) for v in obj)
-    return obj
-
-
-def to_namespace(cfg) -> _Namespace:
-    """Convert any config representation to a plain _Namespace.
-
-    Handles: _Namespace (no-op), dict (from checkpoints or plain dicts).
-    """
-    if isinstance(cfg, _Namespace):
+    if isinstance(cfg, Namespace):
         return cfg
     if isinstance(cfg, dict):
-        return _dict_to_ns(cfg)
-    raise TypeError(f"Cannot convert {type(cfg).__name__} to _Namespace")
+        return Namespace(**{k: to_namespace(v) for k, v in cfg.items()})
+    if isinstance(cfg, list):
+        return [to_namespace(v) for v in cfg]
+    return cfg
 
 
 # ---------------------------------------------------------------------------
-# Identity hash: plain function
+# Identity hash
 # ---------------------------------------------------------------------------
 
 
@@ -314,9 +273,9 @@ class Config:
     production: bool = False
     auxiliaries: list = field(default_factory=list)
     # Data-derived dimensions — populated by CANBusDataModule.populate_config()
-    num_ids: int = 0  # CAN arbitration-ID vocabulary size (for nn.Embedding)
-    in_channels: int = 0  # node feature dimension (CAN ID col + continuous features)
-    num_classes: int = 2  # number of target classes (derived from data, default binary)
+    num_ids: int = 0
+    in_channels: int = 0
+    num_classes: int = 2
     vgae: VGAEConfig = field(default_factory=VGAEConfig)
     gat: GATConfig = field(default_factory=GATConfig)
     dqn: DQNConfig = field(default_factory=DQNConfig)
@@ -347,41 +306,12 @@ def cache_dir(lake_root: str, dataset: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Config resolution helpers
+# Derived fields (computed after parsing)
 # ---------------------------------------------------------------------------
 
 
-def _parse_dotlist(overrides: tuple[str, ...] | list[str]) -> dict:
-    """Parse CLI overrides like 'training.lr=0.001' into a nested dict."""
-    result: dict = {}
-    for item in overrides:
-        if "=" not in item:
-            continue
-        key, value = item.split("=", 1)
-        # yaml.safe_load handles bool, int, float, list, null, string
-        parsed = yaml.safe_load(value)
-        parts = key.split(".")
-        current = result
-        for part in parts[:-1]:
-            current = current.setdefault(part, {})
-        current[parts[-1]] = parsed
-    return result
-
-
-def _deep_merge(base: dict, override: dict) -> None:
-    """Recursively merge *override* into *base* in-place. Override wins for leaves."""
-    for key, value in override.items():
-        if key in base and isinstance(base[key], dict) and isinstance(value, dict):
-            _deep_merge(base[key], value)
-        else:
-            base[key] = value
-
-
-def _compute_derived(cfg: _Namespace) -> None:
-    """Fill fields that were previously YAML interpolations.
-
-    Must run after all merges so identity hashes see final config values.
-    """
+def _compute_derived(cfg: Namespace) -> None:
+    """Fill env-derived and path fields after all overrides are applied."""
     if not cfg.lake_root:
         cfg.lake_root = os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns")
     env_prod = os.environ.get("KD_GAT_PRODUCTION")
@@ -392,8 +322,6 @@ def _compute_derived(cfg: _Namespace) -> None:
     cfg._tier = f"dev/{user}"
     cfg._output_base = f"{cfg.lake_root}/{cfg._tier}/{cfg.dataset}"
 
-    # Checkpoint paths: {base}/{model}_{scale}_{stage}{hash}/seed_{seed}/best_model.ckpt
-    # Keyed by model_type; stage comes from STAGE_MODEL_MAP inverse.
     _CKPT_STAGES = {
         "vgae": "autoencoder",
         "gat": cfg.gat_stage,
@@ -401,9 +329,8 @@ def _compute_derived(cfg: _Namespace) -> None:
         "dgi": "autoencoder",
         "temporal": "temporal",
     }
-    # temporal uses "gat" as model dir prefix (spatial encoder is GAT)
     _CKPT_MODEL = {"temporal": "gat"}
-    cfg.checkpoints = _Namespace(**{
+    cfg.checkpoints = Namespace(**{
         model: (
             f"{cfg._output_base}/{_CKPT_MODEL.get(model, model)}_{cfg.scale}_{stage}"
             f"{compute_identity_hash(stage, cfg)}/seed_{cfg.seed}/best_model.ckpt"
@@ -417,42 +344,27 @@ def _compute_derived(cfg: _Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 
-def resolve(*overrides: str) -> _Namespace:
-    """Compose config: dataclass defaults + env vars + model preset + CLI overrides.
+def resolve(*overrides: str) -> Namespace:
+    """Compose config: dataclass defaults + YAML preset + CLI overrides.
 
-    Merge order: dataclass defaults → env-derived defaults → model preset → CLI overrides.
-    Returns a plain _Namespace with all derived fields (checkpoints, paths) computed.
+    jsonargparse handles type coercion, nested dataclass flattening, and
+    YAML/CLI merge. Preset file selected from model_type + scale.
     """
-    # 1. Dataclass defaults
-    cfg = dataclasses.asdict(Config())
+    # Extract model_type + scale from top-level overrides for preset lookup
+    top = {}
+    for o in overrides:
+        if "=" in o and "." not in o:
+            k, v = o.split("=", 1)
+            top[k] = v
 
-    # 2. Env-derived defaults (replaces config.yaml oc.env interpolations)
-    cfg["lake_root"] = os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns")
-    cfg["production"] = os.environ.get("KD_GAT_PRODUCTION", "false").lower() == "true"
+    preset_path = CONFIG_DIR / "presets" / f"{top.get('model_type', 'vgae')}_{top.get('scale', 'large')}.yaml"
+    defaults = [str(preset_path)] if preset_path.exists() else []
 
-    # 3. Parse CLI overrides
-    cli = _parse_dotlist(overrides)
+    parser = ArgumentParser(default_config_files=defaults)
+    parser.add_class_arguments(Config, nested_key=None)
 
-    # 4. Apply CLI to determine model_type + scale (needed for preset lookup)
-    _deep_merge(cfg, cli)
+    args = [f"--{o}" if "=" in o and not o.startswith("-") else o for o in overrides]
+    cfg = parser.parse_args(args)
 
-    # 5. Load and apply model preset from presets/{model_type}_{scale}.yaml
-    preset_key = f"{cfg['model_type']}_{cfg['scale']}"
-    preset_path = CONFIG_DIR / "presets" / f"{preset_key}.yaml"
-    if preset_path.exists():
-        preset = yaml.safe_load(preset_path.read_text()) or {}
-        if preset:
-            _deep_merge(cfg, preset)
-    elif cfg["model_type"] in VALID_MODEL_TYPES:
-        import structlog
-        structlog.get_logger().warning(
-            "missing_model_preset", key=preset_key, using="dataclass defaults",
-        )
-
-    # 6. Re-apply CLI overrides (CLI always wins over preset)
-    _deep_merge(cfg, cli)
-
-    # 7. Convert to namespace and compute derived fields
-    ns = _dict_to_ns(cfg)
-    _compute_derived(ns)
-    return ns
+    _compute_derived(cfg)
+    return cfg

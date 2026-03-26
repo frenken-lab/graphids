@@ -38,8 +38,8 @@ def test_cli_beats_preset():
 
 def test_serializable():
     """Config -> dict for MLflow/hparams."""
-    from graphids.config import _ns_to_dict, resolve
-    container = _ns_to_dict(resolve())
+    from graphids.config import resolve
+    container = resolve().as_dict()
     assert isinstance(container, dict)
 
 

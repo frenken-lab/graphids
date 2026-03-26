@@ -47,7 +47,6 @@ def run_stage(cfg, stage: str) -> dict:
 
     from graphids.config import (
         STAGES,
-        _ns_to_dict,
         compute_identity_hash,
         to_namespace,
     )
@@ -77,7 +76,7 @@ def run_stage(cfg, stage: str) -> dict:
 
     # Save config as plain YAML
     with open(run_dir / "config.yaml", "w") as f:
-        yaml.dump(_ns_to_dict(cfg), f, default_flow_style=False, sort_keys=False)
+        yaml.dump(cfg.as_dict(), f, default_flow_style=False, sort_keys=False)
 
     # Capture git SHA (replaces RunMetadataCallback)
     try:
@@ -100,7 +99,7 @@ def _append_to_catalog(cfg, stage: str, result: dict, run_dir: Path) -> None:
 
         import duckdb
 
-        from graphids.config import _ns_to_dict, compute_identity_hash
+        from graphids.config import compute_identity_hash
 
         catalog_path = Path(cfg.lake_root) / "catalog" / "kd_gat.duckdb"
         catalog_path.parent.mkdir(parents=True, exist_ok=True)
@@ -130,7 +129,7 @@ def _append_to_catalog(cfg, stage: str, result: dict, run_dir: Path) -> None:
         metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
         raw_hash = compute_identity_hash(stage, cfg)
         identity_hash = raw_hash.lstrip("_") or None
-        config_json = json.dumps(_ns_to_dict(cfg))
+        config_json = json.dumps(cfg.as_dict())
         db.execute(
             """INSERT INTO experiments (
                 run_dir, dataset, model_type, scale, stage, seed,

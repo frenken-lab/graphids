@@ -165,12 +165,12 @@ class TemporalLightningModule(pl.LightningModule):
 
     def __init__(self, cfg, gat_ckpt_path: str | None = None):
         super().__init__()
-        from graphids.config import _ns_to_dict, to_namespace
+        from graphids.config import to_namespace
         cfg = to_namespace(cfg)
 
         # cfg as plain dict; gat_ckpt_path not needed on reload (weights come
         # from the Lightning checkpoint itself).
-        self.save_hyperparameters({"cfg": _ns_to_dict(cfg)}, ignore=["gat_ckpt_path"])
+        self.save_hyperparameters({"cfg": cfg.as_dict()}, ignore=["gat_ckpt_path"])
 
         self.cfg = cfg
         self.model = self._build_model(cfg, gat_ckpt_path)
