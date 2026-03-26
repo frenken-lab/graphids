@@ -104,17 +104,17 @@ class GATFusionExtractor:
         return 6
 
     def extract(self, model: torch.nn.Module, batch, device: torch.device) -> torch.Tensor:
-        logits, emb = model(batch, return_embedding=True)  # logits [B,2], emb [N, D]
-        b = batch.batch
+        logits, emb = model(batch, return_embedding=True)  # logits [B,2], emb [B, D] (post-pool)
 
         probs = F.softmax(logits, dim=1)  # [B, 2]
         entropy = -(probs * (probs + 1e-8).log()).sum(dim=1)  # [B]
         conf = (1.0 - entropy / math.log(2)).clamp(0.0, 1.0)  # [B]
 
-        emb_mean = scatter(emb.mean(dim=1), b, dim=0, reduce="mean")  # [B]
-        emb_std = scatter(emb.std(dim=1), b, dim=0, reduce="mean")  # [B]
-        emb_max = scatter(emb.max(dim=1).values, b, dim=0, reduce="max")  # [B]
-        emb_min = scatter(emb.min(dim=1).values, b, dim=0, reduce="min")  # [B]
+        # emb is already graph-level [B, D] after GAT's pool layer
+        emb_mean = emb.mean(dim=1)   # [B]
+        emb_std = emb.std(dim=1)     # [B]
+        emb_max = emb.max(dim=1).values  # [B]
+        emb_min = emb.min(dim=1).values  # [B]
 
         return torch.cat([probs, emb_mean.unsqueeze(1), emb_std.unsqueeze(1),
                           emb_max.unsqueeze(1), emb_min.unsqueeze(1), conf.unsqueeze(1)], dim=1)

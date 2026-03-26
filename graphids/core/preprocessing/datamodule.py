@@ -229,8 +229,10 @@ class CANBusDataModule(pl.LightningDataModule):
             info = compute_node_budget(
                 bs, hp, conv_type=hp.get("conv_type", "gatv2"), heads=hp.get("heads", 4),
             )
+            num_steps = max(1, int(len(dataset) * info.mean_nodes / info.budget))
             sampler = DynamicBatchSampler(
-                dataset, max_num=info.budget, mode="node", shuffle=shuffle, skip_too_big=True,
+                dataset, max_num=info.budget, mode="node", shuffle=shuffle,
+                skip_too_big=True, num_steps=num_steps,
             )
             dataset._data_list = None  # clear bloat from sampler's __init__
             return make_graph_loader(dataset, batch_sampler=sampler, num_workers=nw)
