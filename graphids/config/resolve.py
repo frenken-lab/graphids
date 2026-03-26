@@ -8,7 +8,7 @@ from pathlib import Path
 
 from jsonargparse import ArgumentParser, Namespace
 
-from .defaults.constants import CONFIG_DIR, PIPELINE_YAML
+from .constants import CONFIG_DIR, DEFAULTS_DIR, PIPELINE_YAML
 from .defaults.schema import Config
 
 
@@ -54,7 +54,7 @@ def compute_identity_hash(stage: str, cfg) -> str:
 
 def data_dir(lake_root: str, dataset: str) -> Path:
     """Raw data directory. Tries lake, falls back to local."""
-    from .defaults.constants import PREPROCESSING_VERSION
+    from .constants import PREPROCESSING_VERSION
     candidate = Path(lake_root) / "raw" / dataset
     if candidate.exists():
         return candidate
@@ -63,7 +63,7 @@ def data_dir(lake_root: str, dataset: str) -> Path:
 
 def cache_dir(lake_root: str, dataset: str) -> Path:
     """Processed-graph cache directory."""
-    from .defaults.constants import PREPROCESSING_VERSION
+    from .constants import PREPROCESSING_VERSION
     return Path(lake_root) / "cache" / f"v{PREPROCESSING_VERSION}" / dataset
 
 
@@ -102,7 +102,7 @@ def resolve(*overrides: str) -> Namespace:
             k, v = o.split("=", 1)
             top[k] = v
 
-    preset_path = CONFIG_DIR / "presets" / f"{top.get('model_type', 'vgae')}_{top.get('scale', 'large')}.yaml"
+    preset_path = DEFAULTS_DIR / "presets" / f"{top.get('model_type', 'vgae')}_{top.get('scale', 'large')}.yaml"
     defaults = [str(preset_path)] if preset_path.exists() else []
 
     parser = ArgumentParser(default_config_files=defaults, env_prefix="KD_GAT", default_env=True)

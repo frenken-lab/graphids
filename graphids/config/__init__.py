@@ -1,9 +1,10 @@
 """Configuration layer: schema, resolution, constants."""
 
-from .defaults.constants import (  # noqa: F401
+from .constants import (  # noqa: F401
     CATALOG_PATH,
     CKPT_PATH,
     CONFIG_DIR,
+    DEFAULTS_DIR,
     EXCLUDED_ATTACK_TYPES,
     MAX_DATA_BYTES,
     PIPELINE_YAML,

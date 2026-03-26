@@ -50,8 +50,8 @@ def load_manifest(path: Path) -> tuple[dict[str, list], dict[str, Any], dict[str
 
 def _load_resources() -> dict[str, dict]:
     """Load flat resource profiles keyed by mode name (gpu_train, gpu_eval, cpu_preprocess)."""
-    from graphids.config import CONFIG_DIR
-    return yaml.safe_load((CONFIG_DIR / "resources.yaml").read_text()).get("resource_profiles", {})
+    from graphids.config import DEFAULTS_DIR
+    return yaml.safe_load((DEFAULTS_DIR / "resources.yaml").read_text()).get("resource_profiles", {})
 
 
 def _resolve_stages(merged: dict[str, Any], default_stages: list[str]) -> list[str]:

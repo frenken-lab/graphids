@@ -14,8 +14,9 @@ import yaml
 # File locations
 # ---------------------------------------------------------------------------
 CONFIG_DIR = Path(__file__).parent
+DEFAULTS_DIR = CONFIG_DIR / "defaults"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-CATALOG_PATH = CONFIG_DIR / "datasets.yaml"
+CATALOG_PATH = DEFAULTS_DIR / "datasets.yaml"
 
 # ---------------------------------------------------------------------------
 # Preprocessing constants
@@ -38,7 +39,7 @@ def compute_preprocessing_hash() -> str:
 # ---------------------------------------------------------------------------
 # Pipeline topology (derived from pipeline.yaml at import time)
 # ---------------------------------------------------------------------------
-_pipeline = yaml.safe_load((CONFIG_DIR / "pipeline.yaml").read_text())
+_pipeline = yaml.safe_load((DEFAULTS_DIR / "pipeline.yaml").read_text())
 
 STAGES: dict[str, tuple[str, str, str]] = {
     name: (s["learning_type"], s["model"], s["mode"])
