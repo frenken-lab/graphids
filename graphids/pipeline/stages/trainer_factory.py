@@ -51,6 +51,12 @@ def make_trainer(cfg, **overrides) -> pl.Trainer:
             StochasticWeightAveraging(swa_lrs=0.001, swa_epoch_start=0.75),
         ]
 
+    plugins = list(overrides.pop("plugins", []))
+    if os.environ.get("SLURM_JOB_ID"):
+        from pytorch_lightning.plugins.environments import SLURMEnvironment
+
+        plugins.append(SLURMEnvironment(auto_requeue=True))
+
     kwargs = dict(
         max_epochs=cfg.training.max_epochs,
         accelerator="gpu" if cfg.device == "cuda" and torch.cuda.is_available() else "cpu",
@@ -62,6 +68,7 @@ def make_trainer(cfg, **overrides) -> pl.Trainer:
         deterministic=cfg.training.deterministic,
         benchmark=cfg.training.cudnn_benchmark,
         enable_progress_bar=not bool(os.environ.get("SLURM_JOB_ID")),
+        plugins=plugins or None,
     )
     kwargs.update(overrides)
     return pl.Trainer(**kwargs)
