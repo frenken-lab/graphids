@@ -15,15 +15,6 @@ from pathlib import Path
 import torch
 import torch.multiprocessing as mp
 mp.set_start_method("spawn", force=True)
-# Allow OmegaConf DictConfig in old checkpoints (torch 2.6+ defaults weights_only=True).
-# Safe to fail if OmegaConf is not installed (Phase 4).
-try:
-    torch.serialization.add_safe_globals([
-        __import__("omegaconf").DictConfig,
-        __import__("omegaconf").ListConfig,
-    ])
-except (ImportError, AttributeError):
-    pass
 # file_system strategy: safety net for main-process tensor sharing.
 # Spawn workers don't inherit this — they get it via worker_init_fn in datamodule.py.
 mp.set_sharing_strategy("file_system")

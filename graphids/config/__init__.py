@@ -1,7 +1,7 @@
 """Configuration layer: constants, schema, paths, resolution.
 
-No OmegaConf or Hydra dependency. Config composition uses plain YAML loading,
-dataclass defaults, and recursive dict merge. All public APIs return _Namespace.
+Config composition uses plain YAML loading, dataclass defaults, and recursive
+dict merge. All public APIs return _Namespace.
 """
 
 from __future__ import annotations
@@ -41,8 +41,8 @@ from .constants import (  # noqa: F401
 class _Namespace(types.SimpleNamespace):
     """Recursive namespace with attribute access, .get(), and bracket access.
 
-    Returned by resolve() and to_namespace(). Supports the same access patterns
-    as OmegaConf DictConfig so downstream code works unchanged.
+    Returned by resolve() and to_namespace(). Supports attribute access,
+    .get(key, default), and bracket access.
     """
 
     def get(self, key: str, default=None):
@@ -81,19 +81,13 @@ def _ns_to_dict(obj):
 def to_namespace(cfg) -> _Namespace:
     """Convert any config representation to a plain _Namespace.
 
-    Handles: _Namespace (no-op), dict (checkpoints), DictConfig (old checkpoints).
+    Handles: _Namespace (no-op), dict (from checkpoints or plain dicts).
     """
     if isinstance(cfg, _Namespace):
         return cfg
     if isinstance(cfg, dict):
         return _dict_to_ns(cfg)
-    # DictConfig from old checkpoints — lazy import, removed in Phase 4
-    try:
-        from omegaconf import OmegaConf
-        return _dict_to_ns(OmegaConf.to_container(cfg, resolve=True))
-    except ImportError:
-        # OmegaConf uninstalled — try generic dict conversion
-        return _dict_to_ns(dict(cfg))
+    raise TypeError(f"Cannot convert {type(cfg).__name__} to _Namespace")
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +138,7 @@ CKPT_PATH: str = os.environ.get("KD_GAT_CKPT_PATH", "")
 
 
 # ---------------------------------------------------------------------------
-# Config schema (dataclasses with defaults — no MISSING sentinels)
+# Config schema (dataclasses with defaults)
 # ---------------------------------------------------------------------------
 
 @dataclass

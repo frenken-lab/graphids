@@ -189,7 +189,7 @@ class CANBusDataModule(pl.LightningDataModule):
         """Write data-derived dimensions (num_ids, in_channels, num_classes) into cfg.
 
         Must be called after setup(). Works with any config type that supports
-        attribute assignment (_Namespace, dataclass, DictConfig with open struct).
+        attribute assignment.
         """
         cfg.num_ids = self.num_ids
         cfg.in_channels = self.in_channels

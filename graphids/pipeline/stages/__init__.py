@@ -75,7 +75,7 @@ def run_stage(cfg, stage: str) -> dict:
         run_dir=str(run_dir),
     )
 
-    # Save config as plain YAML (no OmegaConf dependency)
+    # Save config as plain YAML
     with open(run_dir / "config.yaml", "w") as f:
         yaml.dump(_ns_to_dict(cfg), f, default_flow_style=False, sort_keys=False)
 
