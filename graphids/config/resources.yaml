@@ -90,11 +90,11 @@ resource_profiles:
         gpus: 1
         cpus: 6
         memory_gb: 32
-        walltime_min: 30
+        walltime_min: 60
     small:
       evaluation:
         partition: gpu
         gpus: 1
         cpus: 6
         memory_gb: 32
-        walltime_min: 30
+        walltime_min: 60
