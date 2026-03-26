@@ -10,7 +10,7 @@ resource_profiles:
         gpus: 0
         cpus: 8
         memory_gb: 54
-        walltime_min: 60
+        walltime_min: 90
   vgae:
     large:
       autoencoder:
@@ -75,14 +75,14 @@ resource_profiles:
         gpus: 0
         cpus: 3
         memory_gb: 25
-        walltime_min: 60
+        walltime_min: 90
     small:
       fusion:
         partition: cpu
         gpus: 0
         cpus: 3
         memory_gb: 25
-        walltime_min: 60
+        walltime_min: 90
   eval:
     large:
       evaluation:
@@ -90,11 +90,11 @@ resource_profiles:
         gpus: 0
         cpus: 3
         memory_gb: 25
-        walltime_min: 60
+        walltime_min: 90
     small:
       evaluation:
         partition: cpu
         gpus: 0
         cpus: 3
         memory_gb: 25
-        walltime_min: 60
+        walltime_min: 90
