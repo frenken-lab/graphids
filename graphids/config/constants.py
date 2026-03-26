@@ -56,6 +56,13 @@ VALID_SCALES: frozenset[str] = frozenset(_pipeline["scales"])
 # Full pipeline dict for orchestration (identity_keys, default_stages).
 PIPELINE_YAML: dict = _pipeline
 
+# Pipeline-derived defaults (so schema.py doesn't hardcode these)
+DEFAULT_MODEL_TYPE: str = next(iter(_pipeline["models"]))  # first model
+DEFAULT_SCALE: str = _pipeline["scales"][0]                 # first scale
+DEFAULT_STAGE: str = _pipeline["default_stages"][0]         # first default stage
+_datasets = yaml.safe_load((DEFAULTS_DIR / "datasets.yaml").read_text())
+DEFAULT_DATASET: str = next(iter(_datasets))                # first dataset
+
 # ---------------------------------------------------------------------------
 # Environment (KD_GAT_* infrastructure env vars)
 # ---------------------------------------------------------------------------

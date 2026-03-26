@@ -170,13 +170,15 @@ class PreprocessingConfig:
 
 @dataclass
 class Config:
-    dataset: str = "hcrl_sa"
-    model_type: str = "vgae"
-    scale: str = "large"
-    stage: str = "autoencoder"
+    # Defaults for these come from pipeline.yaml / datasets.yaml via constants.py.
+    # resolve() injects them with parser.set_defaults() before parsing.
+    dataset: str = ""
+    model_type: str = ""
+    scale: str = ""
+    stage: str = ""
     gat_stage: str = "curriculum"
     seed: int = 42
-    lake_root: str = "experimentruns"  # overridden by KD_GAT_LAKE_ROOT env var
+    lake_root: str = "experimentruns"
     device: str = "cuda"
     num_workers: int = 4
     production: bool = False

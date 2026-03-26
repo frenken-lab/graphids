@@ -8,7 +8,15 @@ from pathlib import Path
 
 from jsonargparse import ArgumentParser, Namespace
 
-from .constants import CONFIG_DIR, DEFAULTS_DIR, PIPELINE_YAML
+from .constants import (
+    CONFIG_DIR,
+    DEFAULT_DATASET,
+    DEFAULT_MODEL_TYPE,
+    DEFAULT_SCALE,
+    DEFAULT_STAGE,
+    DEFAULTS_DIR,
+    PIPELINE_YAML,
+)
 from .defaults.schema import Config
 
 
@@ -96,17 +104,28 @@ def resolve(*overrides: str) -> Namespace:
     jsonargparse handles type coercion, nested dataclass flattening, and
     YAML/CLI merge. Preset file selected from model_type + scale.
     """
+    # Extract top-level overrides for preset lookup
     top = {}
     for o in overrides:
         if "=" in o and "." not in o:
             k, v = o.split("=", 1)
             top[k] = v
 
-    preset_path = DEFAULTS_DIR / "presets" / f"{top.get('model_type', 'vgae')}_{top.get('scale', 'large')}.yaml"
-    defaults = [str(preset_path)] if preset_path.exists() else []
+    model_type = top.get("model_type", DEFAULT_MODEL_TYPE)
+    scale = top.get("scale", DEFAULT_SCALE)
+    preset_path = DEFAULTS_DIR / "presets" / f"{model_type}_{scale}.yaml"
+    config_files = [str(preset_path)] if preset_path.exists() else []
 
-    parser = ArgumentParser(default_config_files=defaults, env_prefix="KD_GAT", default_env=True)
+    parser = ArgumentParser(default_config_files=config_files, env_prefix="KD_GAT", default_env=True)
     parser.add_class_arguments(Config, nested_key=None)
+
+    # Inject pipeline-derived defaults (pipeline.yaml is the source of truth)
+    parser.set_defaults({
+        "model_type": DEFAULT_MODEL_TYPE,
+        "scale": DEFAULT_SCALE,
+        "stage": DEFAULT_STAGE,
+        "dataset": DEFAULT_DATASET,
+    })
 
     args = [f"--{o}" if "=" in o and not o.startswith("-") else o for o in overrides]
     cfg = parser.parse_args(args)
