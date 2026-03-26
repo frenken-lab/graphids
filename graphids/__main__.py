@@ -2,9 +2,9 @@
 
 Usage:
     python -m graphids stage=autoencoder model_type=vgae scale=large dataset=hcrl_sa
-    python -m graphids stage=autoencoder model_type=vgae scale=large training.lr=0.001
     python -m graphids manifest ablation.yaml --dry-run
-    python -m graphids manifest ablation.yaml --filter baseline_bandit
+
+JSON logs: set KD_GAT_JSON_LOGS=1 (auto-detected, no CLI flag needed).
 """
 
 from __future__ import annotations
@@ -20,7 +20,8 @@ mp.set_start_method("spawn", force=True)
 mp.set_sharing_strategy("file_system")
 
 
-from graphids.logging import configure_logging as _configure_logging
+from graphids.logging import configure_logging
+configure_logging()
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -28,13 +29,6 @@ def main(argv: list[str] | None = None) -> None:
     from graphids.pipeline.stages import run_stage
 
     args = argv if argv is not None else sys.argv[1:]
-
-    json_logs = "--json-logs" in args
-    if json_logs:
-        args = [a for a in args if a != "--json-logs"]
-    _configure_logging(json=json_logs or None)
-
-    # CLI overrides are key=value args (not --flags)
     overrides = [a for a in args if "=" in a and not a.startswith("-")]
 
     cfg = resolve(*overrides)
