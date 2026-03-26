@@ -6,13 +6,11 @@ Public API:
 
 Re-exports for convenience:
     ATTACK_TYPE_CODES, ATTACK_TYPE_NAMES — CAN bus attack mappings
-    TemporalGrouper, GraphSequence       — temporal grouping
-    TemporalGraphDataset, collate_temporal — temporal dataset/collate
+    TemporalDataModule, TemporalGrouper, etc. — lazy-imported (temporal disabled by default)
 """
 
 from __future__ import annotations
 
-from ._temporal import GraphSequence, TemporalDataModule, TemporalGraphDataset, TemporalGrouper, collate_temporal
 from .datamodule import CANBusDataModule, FusionDataModule
 from .datasets import ATTACK_TYPE_CODES, ATTACK_TYPE_NAMES, CANBusDataset
 
@@ -28,3 +26,12 @@ __all__ = [
     "TemporalGraphDataset",
     "collate_temporal",
 ]
+
+
+def __getattr__(name: str):
+    """Lazy-load temporal symbols — avoids pulling in Lightning on every import."""
+    _temporal_names = {"GraphSequence", "TemporalDataModule", "TemporalGraphDataset", "TemporalGrouper", "collate_temporal"}
+    if name in _temporal_names:
+        from . import _temporal
+        return getattr(_temporal, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

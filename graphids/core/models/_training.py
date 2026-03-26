@@ -27,7 +27,7 @@ class NodeBudgetInfo(NamedTuple):
 def _available_vram_bytes() -> int:
     """Total GPU VRAM in bytes. Falls back to 12 GB for CPU/testing."""
     if torch.cuda.is_available():
-        return torch.cuda.get_device_properties(0).total_mem
+        return torch.cuda.get_device_properties(0).total_memory
     return 12 * 1024**3
 
 
@@ -125,12 +125,8 @@ def teacher_on_device(module, device):
 
 
 def build_optimizer_dict(optimizer, cfg):
-    """Return optimizer or {optimizer, lr_scheduler} dict for Lightning."""
-    if not cfg.training.use_scheduler or cfg.training.scheduler is None:
-        return optimizer
-    from hydra.utils import instantiate
-    sched = instantiate(cfg.training.scheduler, optimizer=optimizer)
-    return {"optimizer": optimizer, "lr_scheduler": {"scheduler": sched, "monitor": cfg.training.monitor_metric}}
+    """Return optimizer for Lightning. SWA is handled via callback, not scheduler."""
+    return optimizer
 
 
 def binary_test_metrics():
@@ -168,10 +164,10 @@ def test_model(module, data, batch_size: int = 256) -> dict:
         data: Either a list of PyG Data objects (creates PyGDataLoader) or
               a pre-built DataLoader (used as-is, e.g. for fusion tensor batches).
     """
-    from torch_geometric.loader import DataLoader as PyGDataLoader
+    from graphids.core.preprocessing.datamodule import make_graph_loader
     trainer = make_test_trainer()
     if isinstance(data, list):
-        loader = PyGDataLoader(data, batch_size=batch_size, shuffle=False)
+        loader = make_graph_loader(data, batch_size=batch_size)
     else:
         loader = data
     results = trainer.test(module, dataloaders=loader, verbose=False)
@@ -180,15 +176,13 @@ def test_model(module, data, batch_size: int = 256) -> dict:
     return metrics
 
 
-def eval_with_scenarios(module, val_data, test_scenarios, batch_size: int, reset_fn=None) -> tuple[dict, dict]:
+def eval_with_scenarios(module, val_data, test_scenarios, batch_size: int) -> tuple[dict, dict]:
     """Run test on val + each test scenario. Returns (val_metrics, scenario_metrics)."""
     val_metrics = test_model(module, val_data, batch_size=batch_size)
     scenario_metrics = {}
     if test_scenarios:
         for name, tdata in test_scenarios.items():
             module.test_metrics.reset()
-            if reset_fn:
-                reset_fn()
             scenario_metrics[name] = test_model(module, tdata, batch_size=batch_size)
     return val_metrics, scenario_metrics
 

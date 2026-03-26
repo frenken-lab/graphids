@@ -164,8 +164,6 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
             self.model = torch.compile(self.model, dynamic=True)
         self.test_threshold: float | None = None
         self.test_metrics = binary_test_metrics()
-        self._test_scores: list[torch.Tensor] = []
-        self._test_labels: list[torch.Tensor] = []
 
     def forward(self, batch):
         edge_attr = getattr(batch, "edge_attr", None)
@@ -188,7 +186,8 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
         loss = self.model.dgi_loss(pos_z, neg_z, summary, batch.batch)
         self.log("val_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
 
-    def test_step(self, batch, _idx):
+    def _per_graph_scores(self, batch):
+        """Compute per-graph anomaly scores (1 - mean discriminator confidence)."""
         from torch_geometric.utils import scatter
         pos_z = self.model.encode(
             batch.x, batch.edge_index, getattr(batch, "edge_attr", None),
@@ -196,11 +195,12 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
         )
         summary = self.model.summarize(pos_z, batch.batch)
         node_scores = self.model.discriminate(pos_z, summary, batch.batch)
-        graph_scores = 1 - scatter(node_scores, batch.batch, dim=0, reduce="mean")
-        self._test_scores.append(graph_scores)
-        self._test_labels.append(batch.y)
+        return 1 - scatter(node_scores, batch.batch, dim=0, reduce="mean")
+
+    def test_step(self, batch, _idx):
+        scores = self._per_graph_scores(batch)
         if self.test_threshold is not None:
-            self.test_metrics.update(graph_scores, batch.y)
+            self.test_metrics.update(scores, batch.y)
 
     def on_test_epoch_start(self):
         self.test_metrics.reset()
@@ -209,50 +209,37 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
         if self.test_threshold is not None:
             self.log_dict(self.test_metrics.compute())
 
-    def get_test_errors(self) -> tuple:
-        """Return accumulated (anomaly_scores, labels) as numpy arrays."""
-        import numpy as np
-        if not self._test_scores:
-            return np.array([], dtype=np.float32), np.array([], dtype=np.int64)
-        return (torch.cat(self._test_scores).cpu().numpy(),
-                torch.cat(self._test_labels).cpu().numpy())
+    def predict_step(self, batch, _idx):
+        scores = self._per_graph_scores(batch)
+        return {"scores": scores, "labels": batch.y}
 
     def find_threshold(self, data: list, batch_size: int = 256) -> tuple[float, float]:
-        """Find optimal anomaly threshold via Youden's J on validation data.
-
-        Returns (threshold, youden_j).
-        """
-        import numpy as np
-        from torch_geometric.loader import DataLoader as PyGDataLoader
+        """Find optimal anomaly threshold via Youden's J on validation data."""
         from torchmetrics.functional.classification import binary_roc
 
-        self.test_threshold = None
-        self._test_scores.clear()
-        self._test_labels.clear()
+        from graphids.core.preprocessing.datamodule import make_graph_loader
 
         trainer = pl.Trainer(
             accelerator="auto", devices="auto",
             logger=False, enable_checkpointing=False, enable_progress_bar=False,
         )
-        loader = PyGDataLoader(data, batch_size=batch_size, shuffle=False)
-        trainer.test(self, dataloaders=loader, verbose=False)
+        loader = make_graph_loader(data, batch_size=batch_size)
+        preds = trainer.predict(self, dataloaders=loader)
 
-        scores, labels = self.get_test_errors()
+        scores = torch.cat([p["scores"] for p in preds]).cpu()
+        labels = torch.cat([p["labels"] for p in preds]).cpu()
+
         if len(scores) == 0:
             return 0.5, 0.0
-        unique_labels = np.unique(labels)
-        if len(unique_labels) < 2:
-            return float(np.median(scores)), 0.0
+        if labels.unique().numel() < 2:
+            return float(scores.median()), 0.0
 
-        fpr_v, tpr_v, thresholds_v = binary_roc(
-            torch.as_tensor(scores, dtype=torch.float),
-            torch.as_tensor(labels, dtype=torch.long),
-        )
+        fpr_v, tpr_v, thresholds_v = binary_roc(scores, labels.long())
         j_scores = tpr_v - fpr_v
         if len(j_scores) == 0 or len(thresholds_v) == 0:
-            return float(np.median(scores)), 0.0
+            return float(scores.median()), 0.0
         best_idx = torch.argmax(j_scores).item()
-        thresh = float(thresholds_v[best_idx]) if best_idx < len(thresholds_v) else float(np.median(scores))
+        thresh = float(thresholds_v[best_idx]) if best_idx < len(thresholds_v) else float(scores.median())
         return thresh, float(j_scores[best_idx])
 
     @classmethod
@@ -266,18 +253,10 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
         bs = cfg.evaluation.batch_size
         threshold, youden_j = module.find_threshold(val_data, batch_size=bs)
         module.test_threshold = threshold
-
-        def _clear_accumulators():
-            for attr in ("_test_errors", "_test_scores", "_test_labels"):
-                acc = getattr(module, attr, None)
-                if acc is not None:
-                    acc.clear()
-
-        _clear_accumulators()
         module.test_metrics.reset()
 
         val_metrics, scenario_metrics = eval_with_scenarios(
-            module, val_data, test_scenarios, bs, reset_fn=_clear_accumulators,
+            module, val_data, test_scenarios, bs,
         )
         val_metrics["optimal_threshold"] = threshold
         val_metrics["youden_j"] = youden_j

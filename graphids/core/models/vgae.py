@@ -301,32 +301,24 @@ class GraphAutoencoderNeighborhood(nn.Module):
 
     @torch.no_grad()
     def score_difficulty(
-        self, graphs: list, canid_weight: float = 1.0, chunk_size: int = 500,
+        self, graphs: list, canid_weight: float = 1.0, batch_size: int = 500,
     ) -> list[float]:
         """Score reconstruction difficulty for curriculum learning.
 
         Per-graph score = mean_node_MSE + canid_weight * mean_node_CE.
         Higher score = harder to reconstruct = more difficult sample.
-
-        Args:
-            graphs: List of PyG Data objects (normal-class only).
-            canid_weight: Weight for CAN ID cross-entropy term.
-            chunk_size: Batch size for chunked inference.
-
-        Returns:
-            List of float scores, one per graph.
         """
-        from torch_geometric.data import Batch
         from torch_geometric.utils import scatter
+
+        from graphids.core.preprocessing.datamodule import make_graph_loader
 
         device = next(self.parameters()).device
         was_training = self.training
         self.eval()
         try:
             scores: list[float] = []
-            for start in range(0, len(graphs), chunk_size):
-                chunk = graphs[start : start + chunk_size]
-                batch = Batch.from_data_list([g.clone() for g in chunk]).to(device, non_blocking=True)
+            for batch in make_graph_loader(graphs, batch_size=batch_size):
+                batch = batch.to(device, non_blocking=True)
                 edge_attr = getattr(batch, "edge_attr", None)
                 cont, canid_logits, _, _, _, _ = self(
                     batch.x, batch.edge_index, batch.batch,
@@ -337,8 +329,6 @@ class GraphAutoencoderNeighborhood(nn.Module):
                 node_ce = F.cross_entropy(canid_logits, batch.node_id, reduction="none")
                 graph_ce = scatter(node_ce, batch.batch, reduce="mean")
                 scores.extend((graph_mse + canid_weight * graph_ce).tolist())
-                del batch
-                torch.cuda.empty_cache()
             return scores
         finally:
             self.train(was_training)
@@ -434,8 +424,6 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         self._teacher_on_cpu = False
         self.test_threshold: float | None = None
         self.test_metrics = binary_test_metrics()
-        self._test_errors: list[torch.Tensor] = []
-        self._test_labels: list[torch.Tensor] = []
 
     def forward(self, batch):
         edge_attr = getattr(batch, "edge_attr", None)
@@ -496,7 +484,8 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         loss = self._step(batch)
         self.log("val_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
 
-    def test_step(self, batch, _idx):
+    def _per_graph_errors(self, batch):
+        """Compute weighted per-graph anomaly errors from a batch."""
         from torch_geometric.utils import scatter
         edge_attr = getattr(batch, "edge_attr", None)
         cont, canid_logits, nbr_logits, _, _, _ = self.model(
@@ -510,9 +499,10 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         nbr_err = F.binary_cross_entropy_with_logits(nbr_logits, nbr_targets, reduction="none").mean(dim=1)
         nbr_per_graph = scatter(nbr_err, batch.batch, dim=0, reduce="max")
         w = self.cfg.vgae
-        errors = recon + w.canid_weight * canid_per_graph + w.nbr_weight * nbr_per_graph
-        self._test_errors.append(errors)
-        self._test_labels.append(batch.y)
+        return recon + w.canid_weight * canid_per_graph + w.nbr_weight * nbr_per_graph
+
+    def test_step(self, batch, _idx):
+        errors = self._per_graph_errors(batch)
         if self.test_threshold is not None:
             self.test_metrics.update(errors, batch.y)
 
@@ -523,55 +513,40 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         if self.test_threshold is not None:
             self.log_dict(self.test_metrics.compute())
 
-    def get_test_errors(self) -> tuple:
-        """Return accumulated (errors, labels) as numpy arrays after test."""
-        if not self._test_errors:
-            return np.array([], dtype=np.float32), np.array([], dtype=np.int64)
-        return (torch.cat(self._test_errors).cpu().numpy(),
-                torch.cat(self._test_labels).cpu().numpy())
+    def predict_step(self, batch, _idx):
+        errors = self._per_graph_errors(batch)
+        return {"errors": errors, "labels": batch.y}
 
     def find_threshold(self, data: list, batch_size: int = 256) -> tuple[float, float]:
-        """Find optimal anomaly threshold via Youden's J on validation data.
-
-        Runs test without a threshold to accumulate errors, then computes optimal.
-        Returns (threshold, youden_j).
-        """
+        """Find optimal anomaly threshold via Youden's J on validation data."""
         import pytorch_lightning as _pl
         from torchmetrics.functional.classification import binary_roc
 
         from graphids.core.preprocessing.datamodule import make_graph_loader
-
-        self.test_threshold = None  # accumulate errors only
-        self._test_errors.clear()
-        self._test_labels.clear()
 
         trainer = _pl.Trainer(
             accelerator="auto", devices="auto",
             logger=False, enable_checkpointing=False, enable_progress_bar=False,
         )
         loader = make_graph_loader(data, batch_size=batch_size)
-        trainer.test(self, dataloaders=loader, verbose=False)
+        preds = trainer.predict(self, dataloaders=loader)
 
-        errors, labels = self.get_test_errors()
+        errors = torch.cat([p["errors"] for p in preds]).cpu()
+        labels = torch.cat([p["labels"] for p in preds]).cpu()
 
         if len(errors) == 0:
             return 0.5, 0.0
+        if labels.unique().numel() < 2:
+            return float(errors.median()), 0.0
 
-        unique_labels = np.unique(labels)
-        if len(unique_labels) < 2:
-            return float(np.median(errors)), 0.0
-
-        fpr_v, tpr_v, thresholds_v = binary_roc(
-            torch.as_tensor(errors, dtype=torch.float),
-            torch.as_tensor(labels, dtype=torch.long),
-        )
+        fpr_v, tpr_v, thresholds_v = binary_roc(errors, labels.long())
         j_scores = tpr_v - fpr_v
 
         if len(j_scores) == 0 or len(thresholds_v) == 0:
-            return float(np.median(errors)), 0.0
+            return float(errors.median()), 0.0
 
         best_idx = torch.argmax(j_scores).item()
-        thresh = float(thresholds_v[best_idx]) if best_idx < len(thresholds_v) else float(np.median(errors))
+        thresh = float(thresholds_v[best_idx]) if best_idx < len(thresholds_v) else float(errors.median())
         return thresh, float(j_scores[best_idx])
 
     @classmethod
@@ -585,18 +560,10 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         bs = cfg.evaluation.batch_size
         threshold, youden_j = module.find_threshold(val_data, batch_size=bs)
         module.test_threshold = threshold
-
-        def _clear_accumulators():
-            for attr in ("_test_errors", "_test_scores", "_test_labels"):
-                acc = getattr(module, attr, None)
-                if acc is not None:
-                    acc.clear()
-
-        _clear_accumulators()
         module.test_metrics.reset()
 
         val_metrics, scenario_metrics = eval_with_scenarios(
-            module, val_data, test_scenarios, bs, reset_fn=_clear_accumulators,
+            module, val_data, test_scenarios, bs,
         )
         val_metrics["optimal_threshold"] = threshold
         val_metrics["youden_j"] = youden_j

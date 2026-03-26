@@ -35,6 +35,7 @@ def run_stage(cfg, stage: str) -> dict:
     not the project directory.
     """
     from omegaconf import OmegaConf
+    from omegaconf.errors import ConfigAttributeError
 
     from graphids.config import STAGES
 
@@ -42,7 +43,13 @@ def run_stage(cfg, stage: str) -> dict:
         raise ValueError(f"Unknown stage '{stage}'. Choose from: {list(STAGES.keys())}")
 
     # Use the identity-aware path from Hydra config (resolved via identity_hash resolver)
-    run_dir = Path(cfg.hydra.run.dir)
+    # When running via submitit, hydra.run.dir is pickled into cfg.
+    # When running via `python -m graphids`, it's in HydraConfig instead.
+    try:
+        run_dir = Path(cfg.hydra.run.dir)
+    except (AttributeError, ConfigAttributeError):
+        from hydra.core.hydra_config import HydraConfig
+        run_dir = Path(HydraConfig.get().run.dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     os.chdir(run_dir)
 
@@ -81,23 +88,28 @@ def _append_to_catalog(cfg, stage: str, result: dict, run_dir: Path) -> None:
         catalog_path = Path(cfg.lake_root) / "catalog" / "kd_gat.duckdb"
         catalog_path.parent.mkdir(parents=True, exist_ok=True)
         db = duckdb.connect(str(catalog_path))
-        db.execute("""
-            CREATE TABLE IF NOT EXISTS experiments (
-                run_dir VARCHAR, tier VARCHAR, dataset VARCHAR,
-                model_type VARCHAR, scale VARCHAR, stage VARCHAR,
-                auxiliaries VARCHAR, seed BIGINT,
-                created_at TIMESTAMP DEFAULT current_timestamp,
-                graphids_version VARCHAR, git_sha VARCHAR,
-                slurm_job_id VARCHAR, num_artifacts BIGINT,
-                lr DOUBLE, max_epochs BIGINT, batch_size BIGINT,
-                precision VARCHAR, has_kd BOOLEAN,
-                metric_val_loss DOUBLE, metric_train_loss DOUBLE,
-                metric_epochs_run BIGINT,
-                metric_train_acc DOUBLE, metric_val_acc DOUBLE,
-                identity_hash VARCHAR, config_name VARCHAR,
-                config JSON, identity_values VARCHAR
-            )
-        """)
+        _SCHEMA = {
+            "run_dir": "VARCHAR", "tier": "VARCHAR", "dataset": "VARCHAR",
+            "model_type": "VARCHAR", "scale": "VARCHAR", "stage": "VARCHAR",
+            "auxiliaries": "VARCHAR", "seed": "BIGINT",
+            "created_at": "TIMESTAMP DEFAULT current_timestamp",
+            "graphids_version": "VARCHAR", "git_sha": "VARCHAR",
+            "slurm_job_id": "VARCHAR", "num_artifacts": "BIGINT",
+            "lr": "DOUBLE", "max_epochs": "BIGINT", "batch_size": "BIGINT",
+            "precision": "VARCHAR", "has_kd": "BOOLEAN",
+            "metric_val_loss": "DOUBLE", "metric_train_loss": "DOUBLE",
+            "metric_epochs_run": "BIGINT",
+            "metric_train_acc": "DOUBLE", "metric_val_acc": "DOUBLE",
+            "identity_hash": "VARCHAR", "config_name": "VARCHAR",
+            "config": "JSON", "identity_values": "VARCHAR",
+        }
+        cols = ", ".join(f"{k} {v}" for k, v in _SCHEMA.items())
+        db.execute(f"CREATE TABLE IF NOT EXISTS experiments ({cols})")
+        # Self-heal: add any columns missing from older databases
+        existing = {r[0] for r in db.execute("SELECT column_name FROM information_schema.columns WHERE table_name='experiments'").fetchall()}
+        for col, dtype in _SCHEMA.items():
+            if col not in existing:
+                db.execute(f"ALTER TABLE experiments ADD COLUMN {col} {dtype.split()[0]}")
         metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
         # Resolve identity hash via the registered OmegaConf resolver (graphids.config)
         raw_hash = OmegaConf.create({"_h": f"${{identity_hash:{stage}}}"}, parent=cfg)._h

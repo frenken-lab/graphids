@@ -172,12 +172,6 @@ class TrainingConfig:
     deterministic: bool = False
     cudnn_benchmark: bool = True
     compile_model: bool = False
-    use_scheduler: bool = False
-    scheduler_type: str = "cosine"
-    scheduler_t_max: int = -1
-    scheduler_step_size: int = 50
-    scheduler_gamma: float = 0.1
-    scheduler: str | None = None
     curriculum_start_ratio: float = 1.0
     curriculum_end_ratio: float = 10.0
     difficulty_percentile: float = 75.0
@@ -248,7 +242,7 @@ class Config:
     seed: int = 42
     lake_root: str = MISSING  # resolved from env/YAML
     device: str = "cuda"
-    num_workers: int = 0
+    num_workers: int = 4
     production: bool = False
     auxiliaries: list = field(default_factory=list)
     # Data-derived dimensions — populated by CANBusDataModule.populate_config()

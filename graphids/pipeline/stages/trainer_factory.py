@@ -143,20 +143,8 @@ def prepare_kd(
                 f"Train {model_type}/{teacher_scale} first, or set model_path explicitly."
             )
 
-    # --- Load and freeze teacher via Lightning ---
-    from graphids.core.models.registry import get_module_cls
-
-    module = get_module_cls(model_type).load_from_checkpoint(
-        str(teacher_path), map_location="cpu", weights_only=False,
-    )
-    teacher = module.model
-    tcfg = module.hparams.get("cfg", {})
-    if isinstance(tcfg, dict):
-        from omegaconf import OmegaConf
-        tcfg = OmegaConf.create(tcfg)
-
-    log.info("loaded_teacher", model_type=model_type, path=str(teacher_path))
-    teacher.to(device).eval()
+    # --- Load and freeze teacher ---
+    teacher, tcfg = _load_checkpoint(teacher_path, model_type, device)
     for p in teacher.parameters():
         p.requires_grad = False
 
@@ -172,26 +160,32 @@ def prepare_kd(
     return teacher, projection
 
 
-def load_model(
-    cfg, model_type: str, stage: str, device: torch.device,
-) -> nn.Module:
-    """Load a trained model's inner nn.Module via Lightning load_from_checkpoint.
-
-    Returns the raw nn.Module (not the Lightning wrapper), frozen and on device.
-    """
+def _load_checkpoint(
+    ckpt_path: Path, model_type: str, device: torch.device,
+) -> tuple[nn.Module, object]:
+    """Load a checkpoint, return (inner model on device in eval mode, hparams cfg)."""
     from graphids.core.models.registry import get_module_cls
 
-    ckpt_path = Path(cfg.checkpoints[model_type])
     if not ckpt_path.exists():
-        raise FileNotFoundError(
-            f"Checkpoint not found: {ckpt_path}\n"
-            f"The '{model_type}/{stage}' stage must be trained first."
-        )
+        raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
     module = get_module_cls(model_type).load_from_checkpoint(
         str(ckpt_path), map_location="cpu", weights_only=False,
     )
     model = module.model
     model.to(device).eval()
+    tcfg = module.hparams.get("cfg", {})
+    if isinstance(tcfg, dict):
+        from omegaconf import OmegaConf
+        tcfg = OmegaConf.create(tcfg)
+    return model, tcfg
+
+
+def load_model(
+    cfg, model_type: str, stage: str, device: torch.device,
+) -> nn.Module:
+    """Load a trained model's inner nn.Module. Returns frozen model on device."""
+    ckpt_path = Path(cfg.checkpoints[model_type])
+    model, _ = _load_checkpoint(ckpt_path, model_type, device)
     return model
 
 

@@ -41,7 +41,14 @@ callbacks:
     check_on_train_epoch_end: false
   device_stats:
     _target_: pytorch_lightning.callbacks.DeviceStatsMonitor
-    cpu_stats: false
+    cpu_stats: true
+  lr_monitor:
+    _target_: pytorch_lightning.callbacks.LearningRateMonitor
+    logging_interval: step
+  swa:
+    _target_: pytorch_lightning.callbacks.StochasticWeightAveraging
+    swa_lrs: 0.001
+    swa_epoch_start: 0.75
 
 hydra:
   job:
