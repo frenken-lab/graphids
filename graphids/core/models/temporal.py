@@ -344,7 +344,7 @@ class TemporalLightningModule(pl.LightningModule):
         from ._training import gpu_cleanup, test_model
 
         ckpt_path = cfg.checkpoints["temporal"]
-        module = cls.load_from_checkpoint(ckpt_path, map_location=device)
+        module = cls.load_from_checkpoint(ckpt_path, map_location=device, weights_only=False)
         module = module.to(device)
         module.eval()
 

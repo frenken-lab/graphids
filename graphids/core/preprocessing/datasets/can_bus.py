@@ -14,7 +14,7 @@ import structlog
 import torch
 from torch_geometric.data import Data, InMemoryDataset
 
-from graphids.core.preprocessing.features import sliding_window_graphs
+from graphids.core.preprocessing.features import parse_payload, sliding_window_graphs
 from graphids.core.preprocessing.utils import atomic_save, nfs_lock, vocab_from_column
 
 log = structlog.get_logger()
@@ -74,11 +74,8 @@ class CANBusDataset(InMemoryDataset):
         return [f"data_{tag}.pt"]
 
     def _load_num_arb_ids(self) -> None:
-        meta_path = Path(self.processed_dir) / "num_arb_ids.txt"
-        if meta_path.exists():
-            self.num_arb_ids = int(meta_path.read_text().strip())
-        else:
-            self.num_arb_ids = int(max((g.node_id.max().item() for g in self), default=-1)) + 1
+        # Always derive from actual data — num_arb_ids.txt can be stale/corrupted
+        self.num_arb_ids = int(self._data.node_id.max().item()) + 1
 
     def _apply_train_val_split(self) -> None:
         n = len(self)
@@ -209,27 +206,6 @@ class CANBusDataset(InMemoryDataset):
         if renames:
             combined = combined.rename(renames)
 
-        # Parse hex payload → 8 byte columns
-        byte_exprs = [
-            pl.col("payload")
-            .str.slice(i * 2, 2)
-            .str.to_integer(base=16, strict=False)
-            .fill_null(0)
-            .cast(pl.Float32)
-            .alias(f"byte_{i}")
-            for i in range(8)
-        ]
-        combined = combined.with_columns(byte_exprs)
-
-        # Shannon entropy per message
-        byte_cols = [pl.col(f"byte_{i}") for i in range(8)]
-        row_sum = pl.sum_horizontal(byte_cols).clip(1e-12, None)
-        entropy_terms = [
-            pl.when(c > 0).then(-(c / row_sum) * (c / row_sum).log()).otherwise(0.0)
-            for c in byte_cols
-        ]
-        combined = combined.with_columns(
-            pl.sum_horizontal(entropy_terms).alias("entropy")
-        )
+        combined = parse_payload(combined)
 
         return combined.collect()

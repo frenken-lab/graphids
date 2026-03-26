@@ -2,97 +2,82 @@
 
 from __future__ import annotations
 
-import math
-
 import pytorch_lightning as pl
 import torch
+from torch.utils.data import Subset
+from torch_geometric.loader import DynamicBatchSampler
 
 from graphids.core.models._training import compute_node_budget
+from graphids.core.preprocessing.datamodule import make_graph_loader
 
 
-class CurriculumDynamicBatchSampler:
-    """Curriculum selection + node-budget packing in a single batch sampler.
+class CurriculumSampler:
+    """Curriculum selection — picks which graphs are active each epoch.
 
-    Runs in the main process. Workers receive index batches via queues,
-    so set_epoch() mutations propagate even with persistent_workers=True + spawn.
+    set_epoch() updates active indices based on difficulty scores and
+    epoch progress. Wraps a DynamicBatchSampler (or fixed-size batching)
+    rebuilt each epoch from the active subset.
     """
 
     def __init__(self, dataset, normal_indices, attack_indices, scores, cfg, max_num_nodes=None):
         assert len(scores) == len(normal_indices)
         self.dataset = dataset
-        self.normal_indices = normal_indices
+        self.normal_indices = torch.tensor(normal_indices, dtype=torch.long)
         self.attack_indices = attack_indices
-        self.scores = scores
+        self.scores = torch.tensor(scores) if scores else None
         self.cfg = cfg
         self.max_num_nodes = max_num_nodes
         self._active_indices = normal_indices + attack_indices
-        self._node_counts = [dataset[i].num_nodes for i in range(len(dataset))]
-        self._cached_len: int | None = None
+        self._inner = self._build_inner()
+
+    def _build_inner(self):
+        if self.max_num_nodes is None:
+            return None
+        subset = Subset(self.dataset, self._active_indices)
+        sampler = DynamicBatchSampler(subset, max_num=self.max_num_nodes, mode="node", shuffle=True, skip_too_big=True)
+        return sampler
 
     def set_epoch(self, epoch: int) -> None:
         """Update active indices for curriculum progression."""
-        cfg = self.cfg
-        progress = min(epoch / max(cfg.training.max_epochs, 1), 1.0)
-        ratio = cfg.training.curriculum_start_ratio + (cfg.training.curriculum_end_ratio - cfg.training.curriculum_start_ratio) * progress
-        percentile = cfg.training.difficulty_percentile + (95.0 - cfg.training.difficulty_percentile) * progress
+        t = self.cfg.training
+        progress = min(epoch / max(t.max_epochs, 1), 1.0)
+        ratio = t.curriculum_start_ratio + (t.curriculum_end_ratio - t.curriculum_start_ratio) * progress
+        percentile = t.difficulty_percentile + (95.0 - t.difficulty_percentile) * progress
 
-        if self.scores:
-            scores_t = torch.tensor(self.scores)
-            threshold = scores_t.quantile(percentile / 100).item()
-            hard = [i for i, s in zip(self.normal_indices, self.scores) if s >= threshold]
-            if not hard:
-                hard = self.normal_indices
+        # Filter normals by difficulty threshold, subsample to ratio
+        if self.scores is not None:
+            threshold = self.scores.quantile(percentile / 100).item()
+            mask = self.scores >= threshold
+            hard = self.normal_indices[mask].tolist() or self.normal_indices.tolist()
         else:
-            hard = self.normal_indices
+            hard = self.normal_indices.tolist()
 
-        n_normals = min(int(len(self.attack_indices) * ratio), len(hard))
-        if n_normals and n_normals < len(hard):
-            perm = torch.randperm(len(hard))[:n_normals]
-            selected = [hard[i] for i in perm.tolist()]
-        else:
-            selected = hard
+        n = min(int(len(self.attack_indices) * ratio), len(hard))
+        selected = [hard[i] for i in torch.randperm(len(hard))[:n].tolist()] if 0 < n < len(hard) else hard
         self._active_indices = selected + self.attack_indices
-        self._cached_len = None
+        self._inner = self._build_inner()
 
     def __iter__(self):
-        perm = torch.randperm(len(self._active_indices)).tolist()
-        if self.max_num_nodes is None:
+        if self._inner is not None:
+            yield from self._inner
+        else:
             bs = max(8, self.cfg.training.batch_size)
+            perm = torch.randperm(len(self._active_indices)).tolist()
             for start in range(0, len(perm), bs):
                 yield [self._active_indices[perm[j]] for j in range(start, min(start + bs, len(perm)))]
-            return
-        batch, batch_nodes = [], 0
-        for i in perm:
-            idx = self._active_indices[i]
-            n = self._node_counts[idx]
-            if n > self.max_num_nodes:
-                continue
-            if batch_nodes + n > self.max_num_nodes:
-                yield batch
-                batch, batch_nodes = [idx], n
-            else:
-                batch.append(idx)
-                batch_nodes += n
-        if batch:
-            yield batch
 
     def __len__(self) -> int:
-        if self._cached_len is not None:
-            return self._cached_len
-        if self.max_num_nodes is None:
-            bs = max(8, self.cfg.training.batch_size)
-            self._cached_len = max(1, (len(self._active_indices) + bs - 1) // bs)
-        else:
-            total = sum(self._node_counts[i] for i in self._active_indices)
-            self._cached_len = max(1, total // self.max_num_nodes)
-        return self._cached_len
+        if self._inner is not None:
+            return len(self._inner)
+        bs = max(8, self.cfg.training.batch_size)
+        return max(1, (len(self._active_indices) + bs - 1) // bs)
 
 
 class CurriculumDataModule(pl.LightningDataModule):
     """Curriculum learning with persistent workers.
 
-    Builds ONE DataLoader at init. set_epoch() on the batch_sampler controls
-    which graphs are yielded each epoch — no DataLoader rebuild needed.
+    Rebuilds batch sampler each epoch via set_epoch() to control
+    which graphs are yielded based on difficulty progression.
     """
 
     def __init__(self, normals, attacks, scores, val_data, cfg):
@@ -105,30 +90,19 @@ class CurriculumDataModule(pl.LightningDataModule):
         normal_indices = list(range(len(normals)))
         attack_indices = list(range(len(normals), len(full_dataset)))
 
-        from torch_geometric.loader import DataLoader as PyGDataLoader
-
-        bs = max(8, cfg.training.batch_size)
         nw = cfg.num_workers
-        common = dict(
-            num_workers=nw, persistent_workers=nw > 0, pin_memory=True,
-            multiprocessing_context="spawn" if nw > 0 else None,
-        )
-
+        budget = None
         if cfg.training.dynamic_batching:
-            info = compute_node_budget(
-                bs, cfg, conv_type=cfg.gat.conv_type, heads=cfg.gat.heads,
-            )
-            self._mean_nodes = info.mean_nodes
-            self._batch_sampler = CurriculumDynamicBatchSampler(
-                full_dataset, normal_indices, attack_indices, scores, cfg, info.budget,
-            )
-        else:
-            self._batch_sampler = CurriculumDynamicBatchSampler(
-                full_dataset, normal_indices, attack_indices, scores, cfg, max_num_nodes=None,
-            )
-            self._mean_nodes = None
+            bs = max(8, cfg.training.batch_size)
+            info = compute_node_budget(bs, cfg, conv_type=cfg.gat.conv_type, heads=cfg.gat.heads)
+            budget = info.budget
 
-        self._train_loader = PyGDataLoader(full_dataset, batch_sampler=self._batch_sampler, **common)
+        self._batch_sampler = CurriculumSampler(
+            full_dataset, normal_indices, attack_indices, scores, cfg, budget,
+        )
+        self._train_loader = make_graph_loader(
+            full_dataset, batch_sampler=self._batch_sampler, num_workers=nw,
+        )
 
     def train_dataloader(self):
         self._batch_sampler.set_epoch(self._current_epoch)
@@ -136,24 +110,12 @@ class CurriculumDataModule(pl.LightningDataModule):
         return self._train_loader
 
     def val_dataloader(self):
-        from torch_geometric.loader import DataLoader as PyGDataLoader, DynamicBatchSampler
-
         bs = max(8, self.cfg.training.batch_size)
         nw = self.cfg.num_workers
-        common = dict(
-            num_workers=nw, pin_memory=True, persistent_workers=nw > 0,
-            multiprocessing_context="spawn" if nw > 0 else None,
-        )
 
         if self.cfg.training.dynamic_batching:
-            info = compute_node_budget(
-                bs, self.cfg, conv_type=self.cfg.gat.conv_type, heads=self.cfg.gat.heads,
-            )
-            num_steps = max(1, int(len(self.val_data) * self._mean_nodes / info.budget))
-            sampler = DynamicBatchSampler(
-                self.val_data, max_num=info.budget, mode="node", shuffle=False,
-                num_steps=num_steps, skip_too_big=True,
-            )
-            return PyGDataLoader(self.val_data, batch_sampler=sampler, **common)
+            info = compute_node_budget(bs, self.cfg, conv_type=self.cfg.gat.conv_type, heads=self.cfg.gat.heads)
+            sampler = DynamicBatchSampler(self.val_data, max_num=info.budget, mode="node", shuffle=False, skip_too_big=True)
+            return make_graph_loader(self.val_data, batch_sampler=sampler, num_workers=nw)
 
-        return PyGDataLoader(self.val_data, batch_size=bs, shuffle=False, **common)
+        return make_graph_loader(self.val_data, batch_size=bs, shuffle=False, num_workers=nw)

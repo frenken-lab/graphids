@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from graphids.core.models._training import gpu_cleanup, test_model
 from graphids.core.models.fusion_baselines import run_fusion_inference
 from graphids.core.models.registry import get_module_cls
-from graphids.core.preprocessing import CANBusDataModule, cache_predictions
+from graphids.core.preprocessing import CANBusDataModule, FusionDataModule
 
 from .trainer_factory import load_model
 
@@ -113,14 +113,14 @@ def _eval_fusion(cfg, val_data, test_scenarios, device) -> dict:
     models = {"vgae": vgae, "gat": gat}
 
     bs = cfg.evaluation.batch_size
-    val_cache = cache_predictions(models, val_data, device, cfg.fusion.max_val_samples, batch_size=bs)
+    val_cache = FusionDataModule.cache_predictions(models, val_data, device, cfg.fusion.max_val_samples, batch_size=bs)
 
     # Load fusion module via Lightning — method dispatch is handled by the checkpoint's hparams
     from graphids.core.models.fusion_baselines import MLPFusionModule, RLFusionModule, WeightedAvgModule
     ckpt_path = cfg.checkpoints["dqn"]
     method = cfg.fusion.method
     _fusion_cls = {"mlp": MLPFusionModule, "weighted_avg": WeightedAvgModule}.get(method, RLFusionModule)
-    module = _fusion_cls.load_from_checkpoint(ckpt_path, map_location=str(device))
+    module = _fusion_cls.load_from_checkpoint(ckpt_path, map_location=str(device), weights_only=False)
 
     val_loader = DataLoader(
         TensorDataset(val_cache["states"], val_cache["labels"]),
@@ -131,7 +131,7 @@ def _eval_fusion(cfg, val_data, test_scenarios, device) -> dict:
     scenario_metrics = {}
     if test_scenarios:
         for name, tdata in test_scenarios.items():
-            tc = cache_predictions(models, tdata, device, cfg.fusion.max_val_samples, batch_size=bs)
+            tc = FusionDataModule.cache_predictions(models, tdata, device, cfg.fusion.max_val_samples, batch_size=bs)
             tl = DataLoader(TensorDataset(tc["states"], tc["labels"]), batch_size=bs, shuffle=False)
             module.test_metrics.reset()
             scenario_metrics[name] = test_model(module, tl)

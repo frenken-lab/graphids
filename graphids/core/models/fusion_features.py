@@ -1,8 +1,8 @@
 """Fusion feature extractors for DQN state construction.
 
-Each extractor knows how to derive a fixed-size feature vector from one
-model's output.  Extractors are stateless and registered in the model
-registry so that ``cache_predictions`` can iterate them generically.
+Each extractor derives a fixed-size feature matrix [B, D] from one model's
+batched output. Extractors are stateless and registered in the model registry
+so that ``FusionDataModule.cache_predictions`` can iterate them generically.
 """
 
 from __future__ import annotations
@@ -12,11 +12,12 @@ from typing import Protocol, runtime_checkable
 
 import torch
 import torch.nn.functional as F
+from torch_geometric.utils import scatter
 
 
 @runtime_checkable
 class FusionFeatureExtractor(Protocol):
-    """Extracts a fixed-size feature vector from a model's output for DQN fusion."""
+    """Extracts a [B, D] feature matrix from a model's batched output."""
 
     @property
     def feature_dim(self) -> int: ...
@@ -29,10 +30,11 @@ class FusionFeatureExtractor(Protocol):
     def extract(
         self,
         model: torch.nn.Module,
-        graph,
-        batch_idx: torch.Tensor,
+        batch,
         device: torch.device,
-    ) -> torch.Tensor: ...
+    ) -> torch.Tensor:
+        """Return [B, feature_dim] tensor from a batched PyG Data object."""
+        ...
 
 
 class VGAEFusionExtractor:
@@ -52,42 +54,36 @@ class VGAEFusionExtractor:
     def confidence_index(self) -> int:
         return 7
 
-    def extract(
-        self,
-        model: torch.nn.Module,
-        graph,
-        batch_idx: torch.Tensor,
-        device: torch.device,
-    ) -> torch.Tensor:
-        edge_attr = (
-            getattr(graph, "edge_attr", None) if getattr(model, "_uses_edge_attr", False) else None
-        )
+    def extract(self, model: torch.nn.Module, batch, device: torch.device) -> torch.Tensor:
+        edge_attr = getattr(batch, "edge_attr", None) if getattr(model, "_uses_edge_attr", False) else None
         cont, canid_logits, nbr_logits, z, _, _ = model(
-            graph.x, graph.edge_index, batch_idx, edge_attr=edge_attr,
-            node_id=graph.node_id,
+            batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr, node_id=batch.node_id,
         )
-        recon_err = F.mse_loss(cont, graph.x, reduction="none").mean().item()
-        canid_err = F.cross_entropy(canid_logits, graph.node_id).item()
-        nbr_targets = model.create_neighborhood_targets(graph.node_id, graph.edge_index, batch_idx)
-        nbr_err = F.binary_cross_entropy_with_logits(
-            nbr_logits, nbr_targets, reduction="mean"
-        ).item()
-        z_mean, z_std = z.mean().item(), z.std().item()
-        z_max, z_min = z.max().item(), z.min().item()
-        vgae_conf = 1.0 / (1.0 + recon_err)
+        B = int(batch.batch.max()) + 1
+        b = batch.batch
 
-        return torch.tensor(
-            [
-                recon_err,
-                nbr_err,
-                canid_err,
-                z_mean,
-                z_std,
-                z_max,
-                z_min,
-                vgae_conf,
-            ]
-        )
+        # Per-graph MSE reconstruction error
+        node_sq_err = (cont - batch.x).pow(2).mean(dim=1)  # [N]
+        recon_err = scatter(node_sq_err, b, dim=0, reduce="mean")  # [B]
+
+        # Per-graph cross-entropy for CAN ID prediction
+        canid_ce = F.cross_entropy(canid_logits, batch.node_id, reduction="none")  # [N]
+        canid_err = scatter(canid_ce, b, dim=0, reduce="mean")  # [B]
+
+        # Per-graph neighbor prediction loss
+        nbr_targets = model.create_neighborhood_targets(batch.node_id, batch.edge_index, b)
+        nbr_bce = F.binary_cross_entropy_with_logits(nbr_logits, nbr_targets, reduction="none").mean(dim=1)  # [N]
+        nbr_err = scatter(nbr_bce, b, dim=0, reduce="mean")  # [B]
+
+        # Per-graph latent stats
+        z_mean = scatter(z.mean(dim=1), b, dim=0, reduce="mean")  # [B]
+        z_std = scatter(z.std(dim=1), b, dim=0, reduce="mean")  # [B]
+        z_max = scatter(z.max(dim=1).values, b, dim=0, reduce="max")  # [B]
+        z_min = scatter(z.min(dim=1).values, b, dim=0, reduce="min")  # [B]
+
+        conf = 1.0 / (1.0 + recon_err)  # [B]
+
+        return torch.stack([recon_err, nbr_err, canid_err, z_mean, z_std, z_max, z_min, conf], dim=1)
 
 
 class GATFusionExtractor:
@@ -107,21 +103,18 @@ class GATFusionExtractor:
     def confidence_index(self) -> int:
         return 6
 
-    def extract(
-        self,
-        model: torch.nn.Module,
-        graph,
-        batch_idx: torch.Tensor,
-        device: torch.device,
-    ) -> torch.Tensor:
-        logits, emb = model(graph, return_embedding=True)
-        emb_mean = emb.mean().item()
-        emb_std = emb.std().item() if emb.numel() > 1 else 0.0
-        emb_max, emb_min = emb.max().item(), emb.min().item()
+    def extract(self, model: torch.nn.Module, batch, device: torch.device) -> torch.Tensor:
+        logits, emb = model(batch, return_embedding=True)  # logits [B,2], emb [N, D]
+        b = batch.batch
 
-        probs = F.softmax(logits, dim=1)
-        p0, p1 = probs[0, 0].item(), probs[0, 1].item()
-        entropy = -(probs * (probs + 1e-8).log()).sum().item()
-        gat_conf = max(0.0, min(1.0, 1.0 - entropy / math.log(2)))
+        probs = F.softmax(logits, dim=1)  # [B, 2]
+        entropy = -(probs * (probs + 1e-8).log()).sum(dim=1)  # [B]
+        conf = (1.0 - entropy / math.log(2)).clamp(0.0, 1.0)  # [B]
 
-        return torch.tensor([p0, p1, emb_mean, emb_std, emb_max, emb_min, gat_conf])
+        emb_mean = scatter(emb.mean(dim=1), b, dim=0, reduce="mean")  # [B]
+        emb_std = scatter(emb.std(dim=1), b, dim=0, reduce="mean")  # [B]
+        emb_max = scatter(emb.max(dim=1).values, b, dim=0, reduce="max")  # [B]
+        emb_min = scatter(emb.min(dim=1).values, b, dim=0, reduce="min")  # [B]
+
+        return torch.cat([probs, emb_mean.unsqueeze(1), emb_std.unsqueeze(1),
+                          emb_max.unsqueeze(1), emb_min.unsqueeze(1), conf.unsqueeze(1)], dim=1)

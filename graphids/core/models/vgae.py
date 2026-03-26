@@ -352,16 +352,9 @@ class GraphAutoencoderNeighborhood(nn.Module):
 
         Uses batched forward passes with scatter reduction for per-graph losses.
         """
-        from torch_geometric.loader import DataLoader as PyGDataLoader
         from torch_geometric.utils import scatter
 
-        def _graph_label(g) -> int:
-            return g.y.item() if g.y.dim() == 0 else int(g.y[0].item())
-
-        def _graph_attack_type(g) -> int:
-            if hasattr(g, "attack_type") and g.attack_type is not None:
-                return g.attack_type.item() if g.attack_type.dim() == 0 else int(g.attack_type[0].item())
-            return -1
+        from graphids.core.preprocessing.datamodule import make_graph_loader
 
         errors_all, labels_all, types_all = [], [], []
         embs_all = [] if embeddings else None
@@ -370,7 +363,7 @@ class GraphAutoencoderNeighborhood(nn.Module):
         was_training = self.training
         self.eval()
         try:
-            for batch in PyGDataLoader(data, batch_size=batch_size, shuffle=False):
+            for batch in make_graph_loader(data, batch_size=batch_size):
                 batch = batch.to(device, non_blocking=True)
                 edge_attr = getattr(batch, "edge_attr", None)
                 cont, canid_logits, nbr_logits, z, kl_loss, _ = self(
@@ -380,10 +373,8 @@ class GraphAutoencoderNeighborhood(nn.Module):
                 node_mse = (cont - batch.x).pow(2).mean(dim=1)
                 graph_mse = scatter(node_mse, batch.batch, reduce="max")
                 errors_all.append(graph_mse.cpu())
-
-                for g in batch.to_data_list():
-                    labels_all.append(_graph_label(g))
-                    types_all.append(_graph_attack_type(g))
+                labels_all.append(batch.y.cpu())
+                types_all.append(batch.attack_type.cpu() if hasattr(batch, "attack_type") and batch.attack_type is not None else torch.full_like(batch.y, -1))
 
                 if embeddings and z is not None:
                     graph_emb = scatter(z, batch.batch, dim=0, reduce="mean")
@@ -406,8 +397,8 @@ class GraphAutoencoderNeighborhood(nn.Module):
 
         return VGAEResult(
             errors=torch.cat(errors_all).numpy(),
-            labels=np.array(labels_all),
-            attack_types=np.array(types_all),
+            labels=torch.cat(labels_all).numpy(),
+            attack_types=torch.cat(types_all).numpy(),
             embeddings=np.vstack(embs_all) if embs_all else None,
             components={k: (torch.cat(v).numpy() if isinstance(v[0], torch.Tensor) else np.array(v))
                         for k, v in comps.items()} if components else None,
@@ -546,8 +537,9 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         Returns (threshold, youden_j).
         """
         import pytorch_lightning as _pl
-        from torch_geometric.loader import DataLoader as PyGDataLoader
         from torchmetrics.functional.classification import binary_roc
+
+        from graphids.core.preprocessing.datamodule import make_graph_loader
 
         self.test_threshold = None  # accumulate errors only
         self._test_errors.clear()
@@ -557,7 +549,7 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
             accelerator="auto", devices="auto",
             logger=False, enable_checkpointing=False, enable_progress_bar=False,
         )
-        loader = PyGDataLoader(data, batch_size=batch_size, shuffle=False)
+        loader = make_graph_loader(data, batch_size=batch_size)
         trainer.test(self, dataloaders=loader, verbose=False)
 
         errors, labels = self.get_test_errors()

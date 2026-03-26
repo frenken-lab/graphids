@@ -79,12 +79,11 @@ def _build_curriculum_dm(raw_dm, cfg, device):
     """Score difficulty with VGAE, build CurriculumDataModule."""
     import gc
 
-    from graphids.core.preprocessing import graph_label
     from graphids.core.preprocessing.curriculum import CurriculumDataModule
 
     vgae = load_model(cfg, "vgae", "autoencoder", device)
-    normals = [g for g in raw_dm.train_dataset if graph_label(g) == 0]
-    attacks = [g for g in raw_dm.train_dataset if graph_label(g) == 1]
+    normals = [g for g in raw_dm.train_dataset if int(g.y[0]) == 0]
+    attacks = [g for g in raw_dm.train_dataset if int(g.y[0]) == 1]
 
     scores = vgae.score_difficulty(normals, canid_weight=cfg.vgae.canid_weight)
 
@@ -148,7 +147,7 @@ def prepare_kd(
     from graphids.core.models.registry import get_module_cls
 
     module = get_module_cls(model_type).load_from_checkpoint(
-        str(teacher_path), map_location="cpu",
+        str(teacher_path), map_location="cpu", weights_only=False,
     )
     teacher = module.model
     tcfg = module.hparams.get("cfg", {})
@@ -189,7 +188,7 @@ def load_model(
             f"The '{model_type}/{stage}' stage must be trained first."
         )
     module = get_module_cls(model_type).load_from_checkpoint(
-        str(ckpt_path), map_location="cpu",
+        str(ckpt_path), map_location="cpu", weights_only=False,
     )
     model = module.model
     model.to(device).eval()
