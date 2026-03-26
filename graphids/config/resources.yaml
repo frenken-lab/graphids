@@ -86,15 +86,15 @@ resource_profiles:
   eval:
     large:
       evaluation:
-        partition: cpu
-        gpus: 0
-        cpus: 3
-        memory_gb: 25
-        walltime_min: 90
+        partition: gpu
+        gpus: 1
+        cpus: 6
+        memory_gb: 32
+        walltime_min: 30
     small:
       evaluation:
-        partition: cpu
-        gpus: 0
-        cpus: 3
-        memory_gb: 25
-        walltime_min: 90
+        partition: gpu
+        gpus: 1
+        cpus: 6
+        memory_gb: 32
+        walltime_min: 30
