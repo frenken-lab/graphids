@@ -35,27 +35,36 @@ if _missing:
 def run_stage(cfg, stage: str) -> dict:
     """Bind context, chdir to run directory, save config, run stage function.
 
-    Output directory uses identity-aware paths via the identity_hash resolver:
+    Output directory uses identity-aware paths:
       {lake_root}/{tier}/{dataset}/{model_type}_{scale}_{stage}_{hash}/seed_{seed}
     All Lightning outputs (checkpoints, logs, metrics) land in the data lake,
     not the project directory.
     """
-    from omegaconf import OmegaConf
-    from omegaconf.errors import ConfigAttributeError
+    import json
+    import subprocess
 
-    from graphids.config import STAGES
+    import yaml
+
+    from graphids.config import (
+        STAGES,
+        _ns_to_dict,
+        compute_identity_hash,
+        to_namespace,
+    )
 
     if stage not in STAGES:
         raise ValueError(f"Unknown stage '{stage}'. Choose from: {list(STAGES.keys())}")
 
-    # Use the identity-aware path from Hydra config (resolved via identity_hash resolver)
-    # When running via submitit, hydra.run.dir is pickled into cfg.
-    # When running via `python -m graphids`, it's in HydraConfig instead.
-    try:
-        run_dir = Path(cfg.hydra.run.dir)
-    except (AttributeError, ConfigAttributeError):
-        from hydra.core.hydra_config import HydraConfig
-        run_dir = Path(HydraConfig.get().run.dir)
+    # Convert to plain namespace at the pipeline boundary
+    cfg = to_namespace(cfg)
+
+    # Compute run directory from config fields (no Hydra/HydraConfig dependency)
+    identity = compute_identity_hash(stage, cfg)
+    run_dir = (
+        Path(cfg._output_base)
+        / f"{cfg.model_type}_{cfg.scale}_{stage}{identity}"
+        / f"seed_{cfg.seed}"
+    )
     run_dir.mkdir(parents=True, exist_ok=True)
     os.chdir(run_dir)
 
@@ -65,11 +74,12 @@ def run_stage(cfg, stage: str) -> dict:
         slurm_job_id=os.environ.get("SLURM_JOB_ID", ""),
         run_dir=str(run_dir),
     )
-    OmegaConf.save(cfg, run_dir / "config.yaml")
+
+    # Save config as plain YAML (no OmegaConf dependency)
+    with open(run_dir / "config.yaml", "w") as f:
+        yaml.dump(_ns_to_dict(cfg), f, default_flow_style=False, sort_keys=False)
 
     # Capture git SHA (replaces RunMetadataCallback)
-    import json
-    import subprocess
     try:
         sha = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL,
@@ -89,7 +99,8 @@ def _append_to_catalog(cfg, stage: str, result: dict, run_dir: Path) -> None:
         import json
 
         import duckdb
-        from omegaconf import OmegaConf
+
+        from graphids.config import _ns_to_dict, compute_identity_hash
 
         catalog_path = Path(cfg.lake_root) / "catalog" / "kd_gat.duckdb"
         catalog_path.parent.mkdir(parents=True, exist_ok=True)
@@ -117,10 +128,9 @@ def _append_to_catalog(cfg, stage: str, result: dict, run_dir: Path) -> None:
             if col not in existing:
                 db.execute(f"ALTER TABLE experiments ADD COLUMN {col} {dtype.split()[0]}")
         metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
-        # Resolve identity hash via the registered OmegaConf resolver (graphids.config)
-        raw_hash = OmegaConf.create({"_h": f"${{identity_hash:{stage}}}"}, parent=cfg)._h
+        raw_hash = compute_identity_hash(stage, cfg)
         identity_hash = raw_hash.lstrip("_") or None
-        config_json = json.dumps(OmegaConf.to_container(cfg, resolve=True))
+        config_json = json.dumps(_ns_to_dict(cfg))
         db.execute(
             """INSERT INTO experiments (
                 run_dir, dataset, model_type, scale, stage, seed,

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import copy
+
 import pytest
 import torch
-from omegaconf import OmegaConf, open_dict
 from torch_geometric.data import Batch, Data
 
 NUM_IDS = 10
@@ -42,32 +43,30 @@ def base_cfg():
     from graphids.config import resolve
 
     cfg = resolve("model_type=vgae", "scale=small", "lake_root=/tmp", "device=cpu")
-    with open_dict(cfg):
-        cfg.num_ids = NUM_IDS
-        cfg.in_channels = IN_CHANNELS
-        cfg.num_classes = 2
-        cfg.num_workers = 0
-        cfg.training.max_epochs = 2
-        cfg.training.precision = 32
-        cfg.training.gradient_checkpointing = False
-        cfg.training.compile_model = False
-        cfg.training.dynamic_batching = False
-        cfg.training.log_every_n_steps = 1
-        cfg.training.patience = 100
+    cfg.num_ids = NUM_IDS
+    cfg.in_channels = IN_CHANNELS
+    cfg.num_classes = 2
+    cfg.num_workers = 0
+    cfg.training.max_epochs = 2
+    cfg.training.precision = 32
+    cfg.training.gradient_checkpointing = False
+    cfg.training.compile_model = False
+    cfg.training.dynamic_batching = False
+    cfg.training.log_every_n_steps = 1
+    cfg.training.patience = 100
     return cfg
 
 
 @pytest.fixture()
 def vgae_cfg(base_cfg):
     """VGAE config (deep copy of base)."""
-    return OmegaConf.create(OmegaConf.to_container(base_cfg, resolve=True))
+    return copy.deepcopy(base_cfg)
 
 
 @pytest.fixture()
 def gat_cfg(base_cfg):
     """GAT config derived from base."""
-    cfg = OmegaConf.create(OmegaConf.to_container(base_cfg, resolve=True))
-    with open_dict(cfg):
-        cfg.model_type = "gat"
-        cfg.stage = "curriculum"
+    cfg = copy.deepcopy(base_cfg)
+    cfg.model_type = "gat"
+    cfg.stage = "curriculum"
     return cfg

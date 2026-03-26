@@ -410,10 +410,10 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
 
     def __init__(self, cfg, teacher: nn.Module | None = None, projection: nn.Linear | None = None):
         super().__init__()
-        if isinstance(cfg, dict):
-            from omegaconf import OmegaConf
-            cfg = OmegaConf.create(cfg)
-        self.save_hyperparameters(ignore=["teacher", "projection"])
+        from graphids.config import _ns_to_dict, to_namespace
+        cfg = to_namespace(cfg)
+        self.save_hyperparameters(ignore=["cfg", "teacher", "projection"])
+        self.save_hyperparameters({"cfg": _ns_to_dict(cfg)})
         num_ids, in_channels = cfg.num_ids, cfg.in_channels
         self.cfg = cfg
         self.model = GraphAutoencoderNeighborhood.from_config(cfg, num_ids, in_channels)

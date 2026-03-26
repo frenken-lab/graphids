@@ -188,17 +188,14 @@ class CANBusDataModule(pl.LightningDataModule):
     def populate_config(self, cfg) -> None:
         """Write data-derived dimensions (num_ids, in_channels, num_classes) into cfg.
 
-        Must be called after setup(). Eliminates manual threading of these
-        values through every stage function and model constructor.
+        Must be called after setup(). Works with any config type that supports
+        attribute assignment (_Namespace, dataclass, DictConfig with open struct).
         """
-        from omegaconf import OmegaConf, open_dict
-
-        with open_dict(cfg):
-            cfg.num_ids = self.num_ids
-            cfg.in_channels = self.in_channels
-            cfg.num_classes = self.num_classes
-            cfg.vgae.edge_dim = self.edge_dim
-            cfg.gat.edge_dim = self.edge_dim
+        cfg.num_ids = self.num_ids
+        cfg.in_channels = self.in_channels
+        cfg.num_classes = self.num_classes
+        cfg.vgae.edge_dim = self.edge_dim
+        cfg.gat.edge_dim = self.edge_dim
 
     # -- DataLoaders ----------------------------------------------------------
 

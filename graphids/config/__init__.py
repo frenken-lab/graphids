@@ -1,14 +1,20 @@
-"""Configuration layer: constants, schema, paths, resolution."""
+"""Configuration layer: constants, schema, paths, resolution.
+
+No OmegaConf or Hydra dependency. Config composition uses plain YAML loading,
+dataclass defaults, and recursive dict merge. All public APIs return _Namespace.
+"""
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import os
+import types
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from omegaconf import MISSING, DictConfig, OmegaConf
+import yaml
 
 from .constants import (  # noqa: F401
     CATALOG_PATH,
@@ -26,28 +32,103 @@ from .constants import (  # noqa: F401
     compute_preprocessing_hash,
 )
 
+
 # ---------------------------------------------------------------------------
-# OmegaConf custom resolver: identity_hash
+# Plain namespace: config objects returned by resolve()
 # ---------------------------------------------------------------------------
-# Produces an 8-char hash from a stage's identity_keys (defined in pipeline.yaml).
-# Used in config.yaml interpolation:  ${identity_hash:${stage}}
-# Stages with no identity_keys return empty string (path unchanged).
 
 
-def _identity_hash_resolver(stage: str, *, _root_: DictConfig) -> str:
+class _Namespace(types.SimpleNamespace):
+    """Recursive namespace with attribute access, .get(), and bracket access.
+
+    Returned by resolve() and to_namespace(). Supports the same access patterns
+    as OmegaConf DictConfig so downstream code works unchanged.
+    """
+
+    def get(self, key: str, default=None):
+        return getattr(self, key, default)
+
+    def __getitem__(self, key: str):
+        try:
+            return getattr(self, key)
+        except AttributeError:
+            raise KeyError(key)
+
+    def __contains__(self, key: str) -> bool:
+        return hasattr(self, key)
+
+
+def _dict_to_ns(d):
+    """Recursively convert a dict to a _Namespace."""
+    if isinstance(d, dict):
+        return _Namespace(**{k: _dict_to_ns(v) for k, v in d.items()})
+    if isinstance(d, list):
+        return [_dict_to_ns(v) for v in d]
+    return d
+
+
+def _ns_to_dict(obj):
+    """Recursively convert a _Namespace to a plain dict."""
+    if isinstance(obj, types.SimpleNamespace):
+        return {k: _ns_to_dict(v) for k, v in vars(obj).items()}
+    if isinstance(obj, dict):
+        return {k: _ns_to_dict(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_ns_to_dict(v) for v in obj)
+    return obj
+
+
+def to_namespace(cfg) -> _Namespace:
+    """Convert any config representation to a plain _Namespace.
+
+    Handles: _Namespace (no-op), dict (checkpoints), DictConfig (old checkpoints).
+    """
+    if isinstance(cfg, _Namespace):
+        return cfg
+    if isinstance(cfg, dict):
+        return _dict_to_ns(cfg)
+    # DictConfig from old checkpoints — lazy import, removed in Phase 4
+    try:
+        from omegaconf import OmegaConf
+        return _dict_to_ns(OmegaConf.to_container(cfg, resolve=True))
+    except ImportError:
+        # OmegaConf uninstalled — try generic dict conversion
+        return _dict_to_ns(dict(cfg))
+
+
+# ---------------------------------------------------------------------------
+# Identity hash: plain function
+# ---------------------------------------------------------------------------
+
+
+def _nested_get(obj, dotted_key: str, default=None):
+    """Get a value from a nested object using a dotted key path."""
+    current = obj
+    for part in dotted_key.split("."):
+        if current is None:
+            return default
+        if isinstance(current, dict):
+            current = current.get(part)
+        else:
+            current = getattr(current, part, None)
+    return current if current is not None else default
+
+
+def compute_identity_hash(stage: str, cfg) -> str:
+    """Compute identity hash for a stage from its identity_keys.
+
+    Returns ``"_<8-char-hex>"`` or ``""`` if the stage has no identity keys.
+    """
     stage_def = PIPELINE_YAML.get("stages", {}).get(stage, {})
     keys = stage_def.get("identity_keys", [])
     if not keys:
         return ""
-    unresolved = [k for k in keys if OmegaConf.select(_root_, k, default=None) is None]
+    unresolved = [k for k in keys if _nested_get(cfg, k) is None]
     if unresolved:
         import structlog
         structlog.get_logger().warning("identity_key_unresolved", stage=stage, keys=unresolved)
-    pairs = [f"{k}={OmegaConf.select(_root_, k, default='_default_')}" for k in sorted(keys)]
+    pairs = [f"{k}={_nested_get(cfg, k, '_default_')}" for k in sorted(keys)]
     return "_" + hashlib.sha256("|".join(pairs).encode()).hexdigest()[:8]
-
-
-OmegaConf.register_new_resolver("identity_hash", _identity_hash_resolver)
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +144,7 @@ CKPT_PATH: str = os.environ.get("KD_GAT_CKPT_PATH", "")
 
 
 # ---------------------------------------------------------------------------
-# Structured config schema (Hydra validates types via these dataclasses)
+# Config schema (dataclasses with defaults — no MISSING sentinels)
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -237,7 +318,7 @@ class Config:
     stage: str = "autoencoder"
     gat_stage: str = "curriculum"  # which GAT training stage to use (curriculum or normal)
     seed: int = 42
-    lake_root: str = MISSING  # resolved from env/YAML
+    lake_root: str = ""  # filled from KD_GAT_LAKE_ROOT env var in resolve()
     device: str = "cuda"
     num_workers: int = 4
     production: bool = False
@@ -246,11 +327,6 @@ class Config:
     num_ids: int = 0  # CAN arbitration-ID vocabulary size (for nn.Embedding)
     in_channels: int = 0  # node feature dimension (CAN ID col + continuous features)
     num_classes: int = 2  # number of target classes (derived from data, default binary)
-    # Interpolation-heavy fields from config.yaml (Hydra needs them in schema)
-    _tier: str = MISSING
-    _output_base: str = MISSING
-    checkpoints: Any = MISSING
-    callbacks: Any = MISSING
     vgae: VGAEConfig = field(default_factory=VGAEConfig)
     gat: GATConfig = field(default_factory=GATConfig)
     dqn: DQNConfig = field(default_factory=DQNConfig)
@@ -281,31 +357,149 @@ def cache_dir(lake_root: str, dataset: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Config resolution helpers
+# ---------------------------------------------------------------------------
+
+
+def _dataclass_to_dict(obj):
+    """Recursively convert a dataclass instance to a plain dict."""
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return {f.name: _dataclass_to_dict(getattr(obj, f.name))
+                for f in dataclasses.fields(obj)}
+    if isinstance(obj, list):
+        return [_dataclass_to_dict(v) for v in obj]
+    return obj
+
+
+def _parse_value(s: str):
+    """Parse a CLI value string to the appropriate Python type."""
+    if s.lower() == "true":
+        return True
+    if s.lower() == "false":
+        return False
+    if s.lower() in ("null", "none"):
+        return None
+    try:
+        return int(s)
+    except ValueError:
+        pass
+    try:
+        return float(s)
+    except ValueError:
+        pass
+    # List syntax: [1,2,3] or [mean,max]
+    if s.startswith("[") and s.endswith("]"):
+        inner = s[1:-1].strip()
+        if not inner:
+            return []
+        return [_parse_value(v.strip()) for v in inner.split(",")]
+    return s
+
+
+def _parse_dotlist(overrides: tuple[str, ...] | list[str]) -> dict:
+    """Parse CLI overrides like 'training.lr=0.001' into a nested dict."""
+    result: dict = {}
+    for item in overrides:
+        if "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        parts = key.split(".")
+        current = result
+        for part in parts[:-1]:
+            current = current.setdefault(part, {})
+        current[parts[-1]] = _parse_value(value)
+    return result
+
+
+def _deep_merge(base: dict, override: dict) -> None:
+    """Recursively merge *override* into *base* in-place. Override wins for leaves."""
+    for key, value in override.items():
+        if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+            _deep_merge(base[key], value)
+        else:
+            base[key] = value
+
+
+def _compute_derived(cfg: _Namespace) -> None:
+    """Fill fields that were previously YAML interpolations.
+
+    Must run after all merges so identity hashes see final config values.
+    """
+    if not cfg.lake_root:
+        cfg.lake_root = os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns")
+    env_prod = os.environ.get("KD_GAT_PRODUCTION")
+    if env_prod is not None:
+        cfg.production = env_prod.lower() == "true"
+
+    user = os.environ.get("USER", "unknown")
+    cfg._tier = f"dev/{user}"
+    cfg._output_base = f"{cfg.lake_root}/{cfg._tier}/{cfg.dataset}"
+
+    cfg.checkpoints = _Namespace(
+        vgae=(
+            f"{cfg._output_base}/vgae_{cfg.scale}_autoencoder"
+            f"{compute_identity_hash('autoencoder', cfg)}/seed_{cfg.seed}/best_model.ckpt"
+        ),
+        gat=(
+            f"{cfg._output_base}/gat_{cfg.scale}_{cfg.gat_stage}"
+            f"{compute_identity_hash(cfg.gat_stage, cfg)}/seed_{cfg.seed}/best_model.ckpt"
+        ),
+        dqn=(
+            f"{cfg._output_base}/dqn_{cfg.scale}_fusion"
+            f"{compute_identity_hash('fusion', cfg)}/seed_{cfg.seed}/best_model.ckpt"
+        ),
+        dgi=(
+            f"{cfg._output_base}/dgi_{cfg.scale}_autoencoder"
+            f"{compute_identity_hash('autoencoder', cfg)}/seed_{cfg.seed}/best_model.ckpt"
+        ),
+        temporal=(
+            f"{cfg._output_base}/gat_{cfg.scale}_temporal"
+            f"{compute_identity_hash('temporal', cfg)}/seed_{cfg.seed}/best_model.ckpt"
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Config resolution
 # ---------------------------------------------------------------------------
 
-def resolve(*overrides: str):
-    """Compose config: structured defaults + YAML infrastructure + model preset + CLI overrides.
 
-    Merge order: dataclass defaults → config.yaml (infra) → model preset → CLI overrides.
-    Hydra validates types via the structured Config dataclass.
+def resolve(*overrides: str) -> _Namespace:
+    """Compose config: dataclass defaults + env vars + model preset + CLI overrides.
+
+    Merge order: dataclass defaults → env-derived defaults → model preset → CLI overrides.
+    Returns a plain _Namespace with all derived fields (checkpoints, paths) computed.
     """
-    schema = OmegaConf.structured(Config)
-    infra = OmegaConf.load(CONFIG_DIR / "config.yaml")
-    models = OmegaConf.load(CONFIG_DIR / "models.yaml")
-    cli = OmegaConf.from_dotlist(list(overrides))
+    # 1. Dataclass defaults
+    cfg = _dataclass_to_dict(Config())
 
-    # Open struct so infra keys (_tier, checkpoints, callbacks, hydra) can merge in
-    OmegaConf.set_struct(schema, False)
+    # 2. Env-derived defaults (replaces config.yaml oc.env interpolations)
+    cfg["lake_root"] = os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns")
+    cfg["production"] = os.environ.get("KD_GAT_PRODUCTION", "false").lower() == "true"
 
-    # Determine model_type + scale from overrides (before full merge)
-    identity = OmegaConf.merge(schema, infra, cli)
-    preset_key = f"{identity.model_type}_{identity.scale}"
-    preset = models.get(preset_key) or {}
-    if not preset and identity.model_type in VALID_MODEL_TYPES:
+    # 3. Parse CLI overrides
+    cli = _parse_dotlist(overrides)
+
+    # 4. Apply CLI to determine model_type + scale (needed for preset lookup)
+    _deep_merge(cfg, cli)
+
+    # 5. Load and apply model preset from presets/{model_type}_{scale}.yaml
+    preset_key = f"{cfg['model_type']}_{cfg['scale']}"
+    preset_path = CONFIG_DIR / "presets" / f"{preset_key}.yaml"
+    if preset_path.exists():
+        preset = yaml.safe_load(preset_path.read_text()) or {}
+        if preset:
+            _deep_merge(cfg, preset)
+    elif cfg["model_type"] in VALID_MODEL_TYPES:
         import structlog
-        structlog.get_logger().warning("missing_model_preset", key=preset_key, using="dataclass defaults")
+        structlog.get_logger().warning(
+            "missing_model_preset", key=preset_key, using="dataclass defaults",
+        )
 
-    cfg = OmegaConf.merge(schema, infra, preset, cli)
-    OmegaConf.set_struct(cfg, True)
-    return cfg
+    # 6. Re-apply CLI overrides (CLI always wins over preset)
+    _deep_merge(cfg, cli)
+
+    # 7. Convert to namespace and compute derived fields
+    ns = _dict_to_ns(cfg)
+    _compute_derived(ns)
+    return ns

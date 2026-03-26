@@ -45,11 +45,9 @@ class TestGATFastDevRun:
 
     def test_gat_loss_variants(self, gat_cfg):
         """All loss functions produce finite loss in training_step."""
-        from omegaconf import open_dict
         from graphids.core.models.gat import GATModule
         for loss_fn in ("ce", "weighted_ce", "focal"):
-            with open_dict(gat_cfg):
-                gat_cfg.training.loss_fn = loss_fn
+            gat_cfg.training.loss_fn = loss_fn
             module = GATModule(gat_cfg)
             module.train()
             loss = module.training_step(make_batch(4), 0)

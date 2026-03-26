@@ -50,6 +50,18 @@
 - Ablation Run 003 — training COMPLETED (2026-03-25), eval needs resubmit (weights_only fix)
 - Ops dashboard (`buckeyeguy/kd-gat-dashboard`) — running on HF Spaces
 
+### Hydra → plain config migration (2026-03-26) — DONE
+
+Removed Hydra and OmegaConf dependency. Config now uses plain YAML + dataclass defaults + dict merge.
+
+**Phase 1 (decouple):** Added `_Namespace` (SimpleNamespace subclass with .get()/[]), `to_namespace()`, `compute_identity_hash()`. Removed `OmegaConf.create` guards from 5 model files, `open_dict` from datamodule/cka, `OmegaConf.save`/`HydraConfig` from stages.
+
+**Phase 2 (replace entry point):** Rewrote `resolve()` with plain YAML + `_deep_merge`. Removed `@hydra.main` from `__main__.py`. Replaced `hydra.utils.instantiate` with `_build_callbacks()` in trainer_factory.
+
+**Phase 3 (clean config files):** Split `models.yaml` → `config/presets/{model}_{scale}.yaml`. Deleted `config.yaml` (redundant — all defaults in dataclasses) and `models.yaml`.
+
+**Phase 4 (remove deps):** Removed `hydra-core`, `omegaconf`, `hydra-optuna-sweeper` from `pyproject.toml`. Replaced OmegaConf in 4 test files with `copy.deepcopy` + plain attribute assignment. `to_namespace()` retains lazy OmegaConf import for old checkpoint backward compat.
+
 ### Codebase cleanup (2026-03-25) — DONE
 
 Replaced custom DataLoader/collation/assembly with PyG APIs, adopted Lightning built-ins.

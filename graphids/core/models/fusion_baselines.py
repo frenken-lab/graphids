@@ -216,17 +216,12 @@ class RLFusionModule(pl.LightningModule):
 
     def __init__(self, cfg, method: str = "dqn", device: str = "cpu"):
         super().__init__()
-        from omegaconf import OmegaConf
+        from graphids.config import _ns_to_dict, to_namespace
+        cfg = to_namespace(cfg)
 
-        # Normalize cfg for load_from_checkpoint round-trip (arrives as dict)
-        if isinstance(cfg, dict):
-            cfg = OmegaConf.create(cfg)
-
-        # Save hparams: cfg stored as plain dict for serialization
+        # Save hparams: cfg stored as plain dict for checkpoint serialization
         self.save_hyperparameters(ignore=["cfg"])
-        self.save_hyperparameters(
-            {"cfg": OmegaConf.to_container(cfg) if hasattr(cfg, "_metadata") else cfg}
-        )
+        self.save_hyperparameters({"cfg": _ns_to_dict(cfg)})
 
         self.automatic_optimization = False
         self.cfg = cfg

@@ -20,6 +20,33 @@ for _stage, _model in STAGE_MODEL_MAP.items():
     _TEACHER_STAGE.setdefault(_model, _stage)
 
 
+def _build_callbacks(cfg) -> list:
+    """Construct Lightning callbacks directly from config fields."""
+    from pytorch_lightning.callbacks import (
+        DeviceStatsMonitor,
+        EarlyStopping,
+        LearningRateMonitor,
+        ModelCheckpoint,
+        StochasticWeightAveraging,
+    )
+
+    t = cfg.training
+    return [
+        ModelCheckpoint(
+            dirpath=".", filename="best_model",
+            monitor=t.monitor_metric, mode=t.monitor_mode,
+            save_top_k=t.save_top_k, save_on_train_epoch_end=False,
+        ),
+        EarlyStopping(
+            monitor=t.monitor_metric, patience=t.patience,
+            mode=t.monitor_mode, check_on_train_epoch_end=False,
+        ),
+        DeviceStatsMonitor(cpu_stats=True),
+        LearningRateMonitor(logging_interval="step"),
+        StochasticWeightAveraging(swa_lrs=0.001, swa_epoch_start=0.75),
+    ]
+
+
 def make_trainer(cfg, stage: str, **overrides) -> pl.Trainer:
     """Create a Lightning Trainer from config with optional overrides.
 
@@ -27,8 +54,7 @@ def make_trainer(cfg, stage: str, **overrides) -> pl.Trainer:
     while inheriting precision, gradient_clip, deterministic, etc. from cfg.training.
     """
     if "callbacks" not in overrides:
-        from hydra.utils import instantiate
-        overrides["callbacks"] = [cb for cb in instantiate(cfg.callbacks).values() if cb is not None]
+        overrides["callbacks"] = _build_callbacks(cfg)
 
     kwargs = dict(
         max_epochs=cfg.training.max_epochs,
@@ -174,9 +200,8 @@ def _load_checkpoint(
     model = module.model
     model.to(device).eval()
     tcfg = module.hparams.get("cfg", {})
-    if isinstance(tcfg, dict):
-        from omegaconf import OmegaConf
-        tcfg = OmegaConf.create(tcfg)
+    from graphids.config import to_namespace
+    tcfg = to_namespace(tcfg)
     return model, tcfg
 
 

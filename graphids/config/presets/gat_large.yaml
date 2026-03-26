@@ -1,0 +1,7 @@
+gat:
+  fc_layers: 1
+  conv_type: gatv2
+  proj_dim: 48
+training:
+  batch_size: 8192
+  compile_model: true

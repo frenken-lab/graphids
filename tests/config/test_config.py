@@ -5,7 +5,6 @@ from __future__ import annotations
 import graphlib
 
 import pytest
-from omegaconf import OmegaConf
 
 
 def test_resolve_defaults():
@@ -24,10 +23,10 @@ def test_cli_overrides():
 
 
 def test_preset_merge():
-    """Model preset from models.yaml overrides dataclass defaults."""
+    """Model preset overrides dataclass defaults."""
     from graphids.config import resolve
     cfg = resolve("model_type=vgae", "scale=large")
-    assert cfg.training.lr == 0.002  # from models.yaml, not dataclass default
+    assert cfg.training.lr == 0.002  # from preset, not dataclass default
     assert cfg.vgae.proj_dim == 48
 
 
@@ -39,8 +38,8 @@ def test_cli_beats_preset():
 
 def test_serializable():
     """Config -> dict for MLflow/hparams."""
-    from graphids.config import resolve
-    container = OmegaConf.to_container(resolve(), resolve=True)
+    from graphids.config import _ns_to_dict, resolve
+    container = _ns_to_dict(resolve())
     assert isinstance(container, dict)
 
 

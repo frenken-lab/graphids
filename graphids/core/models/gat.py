@@ -190,10 +190,10 @@ class GATWithJK(nn.Module):
         batch_size: int = 256, attention_limit: int = 50,
     ) -> GATResult:
         """Capture predictions, embeddings, and attention weights for paper artifacts."""
-        from torch_geometric.loader import DataLoader as PyGDataLoader
+        from graphids.core.preprocessing.datamodule import make_graph_loader
 
         preds_all, scores_all, labels_all, types_all, embs_all = [], [], [], [], []
-        for g in PyGDataLoader(data, batch_size=batch_size, shuffle=False):
+        for g in make_graph_loader(data, batch_size=batch_size):
             g = g.to(device, non_blocking=True)
             logits, emb = self(g, return_embedding=True)
             preds_all.append(logits.argmax(1).cpu())
@@ -245,10 +245,10 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
 
     def __init__(self, cfg, num_classes: int = 2, teacher: nn.Module | None = None, projection: nn.Module | None = None):
         super().__init__()
-        if isinstance(cfg, dict):
-            from omegaconf import OmegaConf
-            cfg = OmegaConf.create(cfg)
-        self.save_hyperparameters(ignore=["teacher", "projection", "num_classes"])
+        from graphids.config import _ns_to_dict, to_namespace
+        cfg = to_namespace(cfg)
+        self.save_hyperparameters(ignore=["cfg", "teacher", "projection", "num_classes"])
+        self.save_hyperparameters({"cfg": _ns_to_dict(cfg)})
         num_ids, in_channels = cfg.num_ids, cfg.in_channels
         self.cfg = cfg
         self.model = GATWithJK.from_config(cfg, num_ids, in_channels)

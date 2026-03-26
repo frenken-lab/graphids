@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 import torch
-from omegaconf import OmegaConf, open_dict
+import copy
 from torch_geometric.data import Batch, Data
 
 from conftest import EDGE_DIM, IN_CHANNELS, NUM_IDS, N_NODES, make_batch, make_graph
@@ -142,9 +142,8 @@ class TestConfigToModel:
         """GATWithJK.from_config uses cfg.num_classes for output dim, not a hardcoded 2."""
         from graphids.core.models.gat import GATWithJK
 
-        cfg = OmegaConf.create(OmegaConf.to_container(gat_cfg, resolve=True))
-        with open_dict(cfg):
-            cfg.num_classes = 5
+        cfg = copy.deepcopy(gat_cfg)
+        cfg.num_classes = 5
 
         model = GATWithJK.from_config(cfg, num_ids=NUM_IDS, in_ch=IN_CHANNELS)
         model.eval()
@@ -162,7 +161,7 @@ class TestConfigToModel:
         """Default num_classes=2 produces shape [batch, 2]."""
         from graphids.core.models.gat import GATWithJK
 
-        cfg = OmegaConf.create(OmegaConf.to_container(gat_cfg, resolve=True))
+        cfg = copy.deepcopy(gat_cfg)
         assert cfg.num_classes == 2
 
         model = GATWithJK.from_config(cfg, num_ids=NUM_IDS, in_ch=IN_CHANNELS)
@@ -181,9 +180,8 @@ class TestConfigToModel:
         from graphids.core.models.gat import GATWithJK
 
         cfg = resolve("model_type=gat", "scale=small", "lake_root=/tmp", "device=cpu")
-        with open_dict(cfg):
-            cfg.num_classes = 7
-            cfg.training.gradient_checkpointing = False
+        cfg.num_classes = 7
+        cfg.training.gradient_checkpointing = False
 
         model = GATWithJK.from_config(cfg, num_ids=NUM_IDS, in_ch=IN_CHANNELS)
         model.eval()

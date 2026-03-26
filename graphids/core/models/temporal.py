@@ -157,7 +157,7 @@ class TemporalLightningModule(pl.LightningModule):
     ``save_hyperparameters`` / ``load_from_checkpoint`` round-trip works.
 
     Args:
-        cfg: OmegaConf DictConfig (or plain dict on reload).
+        cfg: Config namespace (or plain dict on reload from checkpoint).
         gat_ckpt_path: Path to pretrained GAT checkpoint. Required for
             training; None during ``load_from_checkpoint`` reconstruction
             (weights come from the Lightning checkpoint itself).
@@ -165,17 +165,13 @@ class TemporalLightningModule(pl.LightningModule):
 
     def __init__(self, cfg, gat_ckpt_path: str | None = None):
         super().__init__()
-        from omegaconf import OmegaConf
+        from graphids.config import _ns_to_dict, to_namespace
+        cfg = to_namespace(cfg)
 
-        if isinstance(cfg, dict):
-            cfg = OmegaConf.create(cfg)
-
-        # Two-step save: ignore live OmegaConf + gat_ckpt_path (weights are in
-        # the Lightning checkpoint, so we don't need the GAT path on reload).
+        # Two-step save: cfg as plain dict, gat_ckpt_path not needed on reload
+        # (weights come from the Lightning checkpoint itself).
         self.save_hyperparameters(ignore=["cfg", "gat_ckpt_path"])
-        self.save_hyperparameters(
-            {"cfg": OmegaConf.to_container(cfg) if hasattr(cfg, "_metadata") else cfg}
-        )
+        self.save_hyperparameters({"cfg": _ns_to_dict(cfg)})
 
         self.cfg = cfg
         self.model = self._build_model(cfg, gat_ckpt_path)

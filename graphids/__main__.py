@@ -1,8 +1,8 @@
-"""CLI entry point: single stage runs via Hydra, DAG submission via manifest.
+"""CLI entry point: single stage runs via resolve(), DAG submission via manifest.
 
 Usage:
     python -m graphids stage=autoencoder model_type=vgae scale=large dataset=hcrl_sa
-    python -m graphids --multirun stage=autoencoder model_type=vgae scale=large training.lr=0.001,0.01
+    python -m graphids stage=autoencoder model_type=vgae scale=large training.lr=0.001
     python -m graphids manifest ablation.yaml --dry-run
     python -m graphids manifest ablation.yaml --filter baseline_bandit
 """
@@ -12,12 +12,20 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import torch
 import torch.multiprocessing as mp
-## TODO: This may be obsolete as spawn does work well with IPC inter-process communication
 mp.set_start_method("spawn", force=True)
-# Use file-based IPC instead of /dev/shm mmap. OSC SLURM nodes restrict
-# /dev/shm and vm.max_map_count (65530), causing OOM with large datasets
-# (e.g. 700K graphs × 6 tensors × N workers exceeds mmap limits).
+# Allow OmegaConf DictConfig in old checkpoints (torch 2.6+ defaults weights_only=True).
+# Safe to fail if OmegaConf is not installed (Phase 4).
+try:
+    torch.serialization.add_safe_globals([
+        __import__("omegaconf").DictConfig,
+        __import__("omegaconf").ListConfig,
+    ])
+except (ImportError, AttributeError):
+    pass
+# file_system strategy: safety net for main-process tensor sharing.
+# Spawn workers don't inherit this — they get it via worker_init_fn in datamodule.py.
 mp.set_sharing_strategy("file_system")
 
 
@@ -25,16 +33,8 @@ from graphids.logging import configure_logging as _configure_logging
 
 
 def main(argv: list[str] | None = None) -> None:
-    import hydra
-    from hydra.core.config_store import ConfigStore
-    from omegaconf import DictConfig, OmegaConf
-
-    from graphids.config import CONFIG_DIR, STAGES, Config
+    from graphids.config import STAGES, resolve
     from graphids.pipeline.stages import run_stage
-
-    # Register structured config as schema — Hydra validates types on compose
-    cs = ConfigStore.instance()
-    cs.store(name="config", node=Config)
 
     args = argv if argv is not None else sys.argv[1:]
 
@@ -43,28 +43,17 @@ def main(argv: list[str] | None = None) -> None:
         args = [a for a in args if a != "--json-logs"]
     _configure_logging(json=json_logs or None)
 
-    # Extract Hydra overrides (key=value args, not --flags) for preset merge
-    cli_overrides = [a for a in args if "=" in a and not a.startswith("-")]
+    # CLI overrides are key=value args (not --flags)
+    overrides = [a for a in args if "=" in a and not a.startswith("-")]
 
-    sys.argv = [sys.argv[0]] + args
+    cfg = resolve(*overrides)
+    stage = cfg.stage
+    if not stage or stage not in STAGES:
+        raise SystemExit(f"stage= required. Valid: {list(STAGES.keys())}")
 
-    @hydra.main(config_path="config", config_name="config", version_base="1.3")
-    def run(cfg: DictConfig) -> float | None:
-        # Merge model preset; re-apply CLI overrides so they win
-        models = OmegaConf.load(CONFIG_DIR / "models.yaml")
-        preset = models.get(f"{cfg.model_type}_{cfg.scale}")
-        if preset:
-            cfg = OmegaConf.merge(cfg, preset, OmegaConf.from_dotlist(cli_overrides))
-
-        stage = cfg.get("stage")
-        if not stage or stage not in STAGES:
-            raise SystemExit(f"stage= required. Valid: {list(STAGES.keys())}")
-
-        result = run_stage(cfg, stage)
-        metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
-        return metrics.get("val_loss", float("inf"))
-
-    run()
+    result = run_stage(cfg, stage)
+    metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
+    return metrics.get("val_loss", float("inf"))
 
 
 def manifest(argv: list[str] | None = None) -> None:

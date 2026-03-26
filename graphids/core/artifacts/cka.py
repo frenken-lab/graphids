@@ -34,13 +34,11 @@ def compute_and_save_cka(
 ) -> None:
     """Compute layer-wise CKA between teacher (large) and student (current scale), save to JSON."""
     from graphids.config import resolve
-    from omegaconf import open_dict
 
     student = load_model_fn(cfg, "gat", cfg.gat_stage, device)
     teacher_cfg = resolve(f"model_type=gat", f"scale=large", f"dataset={cfg.dataset}", f"seed={cfg.seed}")
-    with open_dict(teacher_cfg):
-        teacher_cfg.num_ids = cfg.num_ids
-        teacher_cfg.in_channels = cfg.in_channels
+    teacher_cfg.num_ids = cfg.num_ids
+    teacher_cfg.in_channels = cfg.in_channels
     teacher = load_model_fn(teacher_cfg, "gat", "curriculum", device)
 
     student_reps = _collect_reps(student, val_data, device, max_samples=max_samples)
