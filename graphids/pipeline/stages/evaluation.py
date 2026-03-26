@@ -37,7 +37,7 @@ def evaluate(cfg) -> dict:
     Uses Lightning's trainer.test() with torchmetrics for metric computation.
     Returns {"metrics": {...}} with per-model and per-test-scenario results.
     """
-    pl.seed_everything(cfg.seed)
+    pl.seed_everything(cfg.seed, workers=True)
     dm = CANBusDataModule.from_cfg(cfg)
     dm.setup()
     dm.populate_config(cfg)

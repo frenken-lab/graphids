@@ -267,7 +267,7 @@ class Config:
     stage: str = "autoencoder"
     gat_stage: str = "curriculum"  # which GAT training stage to use (curriculum or normal)
     seed: int = 42
-    lake_root: str = ""  # filled from KD_GAT_LAKE_ROOT env var in resolve()
+    lake_root: str = "experimentruns"  # overridden by KD_GAT_LAKE_ROOT env var via env_prefix
     device: str = "cuda"
     num_workers: int = 4
     production: bool = False
@@ -311,13 +311,7 @@ def cache_dir(lake_root: str, dataset: str) -> Path:
 
 
 def _compute_derived(cfg: Namespace) -> None:
-    """Fill env-derived and path fields after all overrides are applied."""
-    if not cfg.lake_root:
-        cfg.lake_root = os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns")
-    env_prod = os.environ.get("KD_GAT_PRODUCTION")
-    if env_prod is not None:
-        cfg.production = env_prod.lower() == "true"
-
+    """Fill path fields after all overrides are applied."""
     user = os.environ.get("USER", "unknown")
     cfg._tier = f"dev/{user}"
     cfg._output_base = f"{cfg.lake_root}/{cfg._tier}/{cfg.dataset}"
@@ -360,7 +354,7 @@ def resolve(*overrides: str) -> Namespace:
     preset_path = CONFIG_DIR / "presets" / f"{top.get('model_type', 'vgae')}_{top.get('scale', 'large')}.yaml"
     defaults = [str(preset_path)] if preset_path.exists() else []
 
-    parser = ArgumentParser(default_config_files=defaults)
+    parser = ArgumentParser(default_config_files=defaults, env_prefix="KD_GAT", default_env=True)
     parser.add_class_arguments(Config, nested_key=None)
 
     args = [f"--{o}" if "=" in o and not o.startswith("-") else o for o in overrides]

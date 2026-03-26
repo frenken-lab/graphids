@@ -21,28 +21,21 @@ def _resume_ckpt_path(cfg, stage: str) -> str | None:
     Resolution order:
     1. ``KD_GAT_CKPT_PATH`` env var — explicit override from orchestrator
        (set by orchestrator when retrying a timed-out stage).
-    2. Lightning auto-save — ``.pl_auto_save.ckpt`` in persistent_root,
-       written by ``SLURMEnvironment(auto_requeue=True)`` on SIGUSR1.
+    2. ``ckpt_path="last"`` — Lightning looks for the most recent checkpoint
+       in the Trainer's default_root_dir (== cwd, since run_stage chdir's).
+       This covers ``SLURMEnvironment(auto_requeue=True)`` auto-saves
+       (``.pl_auto_save.ckpt``) and any ModelCheckpoint ``last.ckpt``.
     """
     # 1. Explicit override from orchestrator
-    path = os.environ.get("KD_GAT_CKPT_PATH")
-    try:
-        del os.environ["KD_GAT_CKPT_PATH"]
-    except KeyError:
-        pass
+    path = os.environ.pop("KD_GAT_CKPT_PATH", None)
     if path and Path(path).exists():
         log.info("resume_from_orchestrator_checkpoint", path=path)
         return path
     if path:
         log.warning("checkpoint_path_not_found", path=path)
 
-    # 2. Lightning auto-save from SLURMEnvironment (timeout requeue)
-    auto_save = Path.cwd() / ".pl_auto_save.ckpt"
-    if auto_save.exists():
-        log.info("resume_from_auto_save", path=str(auto_save))
-        return str(auto_save)
-
-    return None
+    # 2. Let Lightning find the latest checkpoint (auto-save or last.ckpt)
+    return "last"
 
 
 def _save_and_cleanup(module, trainer, cfg, stage: str) -> dict:
@@ -77,7 +70,7 @@ def train_stage(cfg) -> dict:
         log.warning("temporal.enabled=False, skipping")
         return {"status": "skipped", "reason": "temporal.enabled=False"}
 
-    pl.seed_everything(cfg.seed)
+    pl.seed_everything(cfg.seed, workers=True)
     dm, device = build_datamodule(cfg, stage)
     module = build_module(cfg, stage, device, dm=dm)
 
