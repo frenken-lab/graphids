@@ -16,7 +16,7 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from graphids.config import cache_dir, data_dir
-from graphids.config.defaults.constants import CATALOG_PATH
+from graphids.config import CATALOG_PATH
 
 from .features import N_EDGE_FEATURES as EDGE_FEATURE_COUNT, N_NODE_FEATURES as NODE_FEATURE_COUNT
 
@@ -90,7 +90,7 @@ class CANBusDataModule(pl.LightningDataModule):
     @classmethod
     def from_cfg(cls, cfg) -> CANBusDataModule:
         """Construct from a resolved Config object."""
-        from graphids.config.defaults.constants import STAGE_MODEL_MAP
+        from graphids.config import STAGE_MODEL_MAP
 
         pre = cfg.preprocessing
         # Resolve conv_type/heads from the active model's sub-config.

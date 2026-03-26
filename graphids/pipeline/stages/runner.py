@@ -22,7 +22,7 @@ STAGE_FNS = {
 }
 
 # Validate all pipeline stages have handlers
-from graphids.config.defaults.constants import STAGES as _STAGES
+from graphids.config import STAGES as _STAGES
 _missing = set(_STAGES) - set(STAGE_FNS) - {"preprocess"}
 if _missing:
     raise RuntimeError(f"Stages defined in pipeline.yaml but missing from STAGE_FNS: {_missing}")
