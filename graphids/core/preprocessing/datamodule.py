@@ -31,7 +31,7 @@ def _worker_init(worker_id: int) -> None:
 
 def make_graph_loader(
     dataset, *, batch_sampler=None, batch_size=1, shuffle=False,
-    num_workers: int = 0, pin_memory: bool = False, **kwargs,
+    num_workers: int = 0, pin_memory: bool = True, **kwargs,
 ) -> DataLoader:
     """Thin wrapper around PyG DataLoader — sets spawn/persistent_workers defaults."""
     from torch_geometric.loader import DataLoader as PyGDataLoader
@@ -202,18 +202,11 @@ class CANBusDataModule(pl.LightningDataModule):
 
     # -- DataLoaders ----------------------------------------------------------
 
-    def _prefetch(self, loader):
-        """Wrap loader with async GPU prefetch when CUDA is available."""
-        if torch.cuda.is_available():
-            from torch_geometric.loader import PrefetchLoader
-            return PrefetchLoader(loader, device=torch.device("cuda"))
-        return loader
-
     def train_dataloader(self):
-        return self._prefetch(self._build_loader(self._train_ds, shuffle=True))
+        return self._build_loader(self._train_ds, shuffle=True)
 
     def val_dataloader(self):
-        return self._prefetch(self._build_loader(self._val_ds, shuffle=False))
+        return self._build_loader(self._val_ds, shuffle=False)
 
     def test_dataloader(self):
         return [self._build_loader(ds, shuffle=False) for ds in self._test_datasets.values()]
