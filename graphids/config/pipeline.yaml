@@ -36,14 +36,14 @@ stages:
   preprocess:
     learning_type: preprocessing
     model: preprocess
-    mode: preprocess
+    mode: cpu_preprocess
     depends_on: []
     identity_keys: []
 
   autoencoder:
     learning_type: unsupervised
     model: vgae
-    mode: autoencoder
+    mode: gpu_train
     depends_on:
       - { model: preprocess, stage: preprocess }
     identity_keys: [scale, vgae.conv_type, vgae.variational]
@@ -51,7 +51,7 @@ stages:
   curriculum:
     learning_type: supervised
     model: gat
-    mode: curriculum
+    mode: gpu_train
     depends_on:
       - { model: vgae, stage: autoencoder }
     identity_keys: [scale, gat.conv_type, training.loss_fn]
@@ -59,7 +59,7 @@ stages:
   normal:
     learning_type: supervised
     model: gat
-    mode: normal
+    mode: gpu_train
     depends_on:
       - { model: preprocess, stage: preprocess }
     identity_keys: [scale, gat.conv_type, training.loss_fn]
@@ -67,7 +67,7 @@ stages:
   fusion:
     learning_type: rl_fusion
     model: dqn
-    mode: fusion
+    mode: gpu_train
     depends_on:
       - { model: vgae, stage: autoencoder }
       - { model: gat, stage: curriculum }
@@ -76,7 +76,7 @@ stages:
   evaluation:
     learning_type: evaluation
     model: eval
-    mode: evaluation
+    mode: gpu_eval
     depends_on:
       - { model: dqn, stage: fusion }
     identity_keys: [scale, gat_stage, training.loss_fn, fusion.method]
@@ -84,7 +84,7 @@ stages:
   temporal:
     learning_type: temporal
     model: gat
-    mode: temporal
+    mode: gpu_train
     depends_on:
       - { model: gat, stage: curriculum }
     identity_keys: [scale, gat_stage, training.loss_fn]

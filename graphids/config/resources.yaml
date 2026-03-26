@@ -1,100 +1,22 @@
 # Resource profiles for SLURM orchestration.
-# Structure: resource_profiles[model_type][scale][stage] -> {gpus, cpus, memory_gb, walltime_min, partition}
-# Memory sized for batch_size=8192. GPU training: 6 CPUs (~54G entitled). CPU inference: 3 CPUs (~25G).
+# 3 profiles mapped by pipeline.yaml `mode` field. No per-model/scale lookup.
 
 resource_profiles:
-  preprocess:
-    "":
-      preprocess:
-        partition: cpu
-        gpus: 0
-        cpus: 8
-        memory_gb: 54
-        walltime_min: 90
-  vgae:
-    large:
-      autoencoder:
-        partition: gpu
-        gpus: 1
-        cpus: 6
-        memory_gb: 54
-        walltime_min: 240
-    small:
-      autoencoder:
-        partition: gpu
-        gpus: 1
-        cpus: 6
-        memory_gb: 54
-        walltime_min: 240
-  gat:
-    large:
-      curriculum:
-        partition: gpu
-        gpus: 1
-        cpus: 6
-        memory_gb: 54
-        walltime_min: 240
-      normal:
-        partition: gpu
-        gpus: 1
-        cpus: 6
-        memory_gb: 54
-        walltime_min: 240
-    small:
-      curriculum:
-        partition: gpu
-        gpus: 1
-        cpus: 6
-        memory_gb: 54
-        walltime_min: 240
-      normal:
-        partition: gpu
-        gpus: 1
-        cpus: 6
-        memory_gb: 54
-        walltime_min: 240
-  dgi:
-    large:
-      autoencoder:
-        partition: gpu
-        gpus: 1
-        cpus: 6
-        memory_gb: 54
-        walltime_min: 240
-    small:
-      autoencoder:
-        partition: gpu
-        gpus: 1
-        cpus: 6
-        memory_gb: 54
-        walltime_min: 240
-  dqn:
-    large:
-      fusion:
-        partition: cpu
-        gpus: 0
-        cpus: 3
-        memory_gb: 25
-        walltime_min: 90
-    small:
-      fusion:
-        partition: cpu
-        gpus: 0
-        cpus: 3
-        memory_gb: 25
-        walltime_min: 90
-  eval:
-    large:
-      evaluation:
-        partition: gpu
-        gpus: 1
-        cpus: 6
-        memory_gb: 32
-        walltime_min: 60
-    small:
-      evaluation:
-        partition: gpu
-        gpus: 1
-        cpus: 6
-        memory_gb: 32
-        walltime_min: 60
+  gpu_train:
+    partition: gpu
+    gpus: 1
+    cpus: 6
+    memory_gb: 32
+    walltime_min: 240
+  gpu_eval:
+    partition: gpu
+    gpus: 1
+    cpus: 6
+    memory_gb: 32
+    walltime_min: 120
+  cpu_preprocess:
+    partition: cpu
+    gpus: 0
+    cpus: 8
+    memory_gb: 32
+    walltime_min: 90

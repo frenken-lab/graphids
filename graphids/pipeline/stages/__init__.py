@@ -26,23 +26,6 @@ STAGE_FNS = {
 }
 
 
-def _check_upstream_checkpoints(cfg, stage: str) -> None:
-    """Fail fast if upstream checkpoints are missing (upstream job failed via afterany)."""
-    from graphids.config import STAGE_DEPENDENCIES, STAGE_MODEL_MAP
-
-    for dep_model, dep_stage in STAGE_DEPENDENCIES.get(stage, []):
-        ckpt_key = dep_model
-        try:
-            ckpt_path = cfg.checkpoints.get(ckpt_key)
-        except Exception:
-            continue
-        if ckpt_path and not Path(ckpt_path).exists():
-            raise FileNotFoundError(
-                f"Upstream checkpoint missing: {ckpt_path}\n"
-                f"Stage '{dep_stage}' ({dep_model}) must complete before '{stage}' can run."
-            )
-
-
 def run_stage(cfg, stage: str) -> dict:
     """Bind context, chdir to run directory, save config, run stage function.
 
@@ -88,9 +71,6 @@ def run_stage(cfg, stage: str) -> dict:
     except (subprocess.CalledProcessError, FileNotFoundError):
         sha = "unknown"
     (run_dir / "run_metadata.json").write_text(json.dumps({"git_sha": sha}, indent=2))
-
-    # Pre-flight: verify upstream checkpoints exist (catches afterany failures)
-    _check_upstream_checkpoints(cfg, stage)
 
     result = STAGE_FNS[stage](cfg)
     _append_to_catalog(cfg, stage, result, run_dir)

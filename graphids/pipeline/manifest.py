@@ -48,15 +48,10 @@ def load_manifest(path: Path) -> tuple[dict[str, list], dict[str, Any], dict[str
 # DAG builder
 # ---------------------------------------------------------------------------
 
-def _load_resources() -> dict[tuple[str, str, str], dict]:
+def _load_resources() -> dict[str, dict]:
+    """Load flat resource profiles keyed by mode name (gpu_train, gpu_eval, cpu_preprocess)."""
     from graphids.config import CONFIG_DIR
-    raw = yaml.safe_load((CONFIG_DIR / "resources.yaml").read_text())
-    return {
-        (model, scale, stage): res
-        for model, scales in raw.get("resource_profiles", {}).items()
-        for scale, stages in scales.items()
-        for stage, res in stages.items()
-    }
+    return yaml.safe_load((CONFIG_DIR / "resources.yaml").read_text()).get("resource_profiles", {})
 
 
 def _resolve_stages(merged: dict[str, Any], default_stages: list[str]) -> list[str]:
@@ -142,17 +137,10 @@ def build_dag(
                         f"stage={stage}",
                     ] + overrides_list
 
-                    # Resource lookup: (model, scale, mode), fall back to base scale (e.g. small_kd → small)
-                    mode = sdef.get("mode", stage)
-                    base_scale = scale.split("_")[0] if "_" in scale else scale
-                    res = resources.get((model, scale, mode)) or resources.get(
-                        (model, base_scale, mode)
-                    )
+                    mode = sdef.get("mode", "gpu_train")
+                    res = resources.get(mode)
                     if not res:
-                        raise ValueError(
-                            f"No resource profile for ({model}, {scale}, {mode}). "
-                            f"Add an entry to resources.yaml for this model/scale/stage combo."
-                        )
+                        raise ValueError(f"No resource profile '{mode}'. Check resources.yaml.")
 
                     # Dependency node_ids: look up upstream stage in this run's node map
                     dep_ids = []
@@ -235,7 +223,7 @@ def submit_manifest(
         # Filter out None sentinels (skipped stages) — those are already done
         dep_futs = [futures[d] for d in job.dep_ids if d in futures and futures[d] is not None]
         dep_str = (
-            f"afterany:{':'.join(str(f.job_id) for f in dep_futs)}"
+            f"afterok:{':'.join(str(f.job_id) for f in dep_futs)}"
             if dep_futs
             else None
         )
