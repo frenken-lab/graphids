@@ -84,49 +84,83 @@ class CurriculumDataModule(pl.LightningDataModule):
     which graphs are yielded based on difficulty progression.
     """
 
-    @classmethod
-    def from_cfg(cls, cfg) -> CurriculumDataModule:
-        """Build from config: load datasets, score difficulty with VGAE, construct DM."""
-        import gc
-        from pathlib import Path
+    def __init__(
+        self,
+        dataset: str = "",
+        lake_root: str = "experimentruns",
+        vgae_ckpt_path: str = "",
+        batch_size: int = 8192,
+        num_workers: int = 2,
+        window_size: int = 100,
+        stride: int = 100,
+        val_fraction: float = 0.2,
+        seed: int = 42,
+        dynamic_batching: bool = True,
+        conv_type: str = "gatv2",
+        heads: int = 4,
+        canid_weight: float = 0.1,
+        curriculum_start_ratio: float = 1.0,
+        curriculum_end_ratio: float = 10.0,
+        difficulty_percentile: float = 75.0,
+        max_epochs: int = 300,
+    ):
+        super().__init__()
+        self.save_hyperparameters()
+        self._batch_sampler = None
+        self._train_loader = None
+        self._current_epoch = 0
+        self.val_data = None
 
+    def setup(self, stage=None):
+        if self._train_loader is not None:
+            return
+        import gc
+        import types
+        from pathlib import Path
         from graphids.core.models._training import load_inner_model
         from graphids.core.preprocessing.datamodule import load_datasets
 
-        train_ds, val_ds, _ = load_datasets(cfg)
-        device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
-        vgae, _ = load_inner_model("vgae", Path(cfg.checkpoints["vgae"]), device)
+        hp = self.hparams
+        cfg_ns = types.SimpleNamespace(
+            dataset=hp.dataset, lake_root=hp.lake_root, seed=hp.seed,
+            preprocessing=types.SimpleNamespace(
+                window_size=hp.window_size, stride=hp.stride,
+                train_val_split=1.0 - hp.val_fraction,
+            ),
+        )
+        train_ds, val_ds, _ = load_datasets(cfg_ns)
+        self.val_data = list(val_ds)
+
+        device = torch.device("cpu")
+        vgae, _ = load_inner_model("vgae", Path(hp.vgae_ckpt_path), device)
         normals = [g for g in train_ds if int(g.y[0]) == 0]
         attacks = [g for g in train_ds if int(g.y[0]) == 1]
-        scores = vgae.score_difficulty(normals, canid_weight=cfg.vgae.canid_weight)
+        scores = vgae.score_difficulty(normals, canid_weight=hp.canid_weight)
         del vgae
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        return cls(normals, attacks, scores, list(val_ds), cfg)
-
-    def __init__(self, normals, attacks, scores, val_data, cfg):
-        super().__init__()
-        self.val_data = val_data
-        self.cfg = cfg
-        self._current_epoch = 0
 
         full_dataset = normals + attacks
         normal_indices = list(range(len(normals)))
         attack_indices = list(range(len(normals), len(full_dataset)))
 
-        nw = cfg.num_workers
         budget = None
-        if cfg.training.dynamic_batching:
-            bs = max(8, cfg.training.batch_size)
-            info = compute_node_budget(bs, cfg, conv_type=cfg.gat.conv_type, heads=cfg.gat.heads)
+        if hp.dynamic_batching:
+            bs = max(8, hp.batch_size)
+            info = compute_node_budget(bs, hp, conv_type=hp.conv_type, heads=hp.heads)
             budget = info.budget
 
+        sampler_cfg = types.SimpleNamespace(training=types.SimpleNamespace(
+            batch_size=hp.batch_size, max_epochs=hp.max_epochs,
+            curriculum_start_ratio=hp.curriculum_start_ratio,
+            curriculum_end_ratio=hp.curriculum_end_ratio,
+            difficulty_percentile=hp.difficulty_percentile,
+            dynamic_batching=hp.dynamic_batching,
+        ))
         self._batch_sampler = CurriculumSampler(
-            full_dataset, normal_indices, attack_indices, scores, cfg, budget,
+            full_dataset, normal_indices, attack_indices, scores, sampler_cfg, budget,
         )
         self._train_loader = make_graph_loader(
-            full_dataset, batch_sampler=self._batch_sampler, num_workers=nw,
+            full_dataset, batch_sampler=self._batch_sampler, num_workers=hp.num_workers,
         )
 
     def train_dataloader(self):
@@ -135,16 +169,16 @@ class CurriculumDataModule(pl.LightningDataModule):
         return self._train_loader
 
     def val_dataloader(self):
-        bs = max(8, self.cfg.training.batch_size)
-        nw = self.cfg.num_workers
+        hp = self.hparams
+        bs = max(8, hp.batch_size)
 
-        if self.cfg.training.dynamic_batching:
-            info = compute_node_budget(bs, self.cfg, conv_type=self.cfg.gat.conv_type, heads=self.cfg.gat.heads)
+        if hp.dynamic_batching:
+            info = compute_node_budget(bs, hp, conv_type=hp.conv_type, heads=hp.heads)
             num_steps = max(1, len(self.val_data) * 30 // info.budget)
             sampler = DynamicBatchSampler(
                 self.val_data, max_num=info.budget, mode="node", shuffle=False,
                 skip_too_big=True, num_steps=num_steps,
             )
-            return make_graph_loader(self.val_data, batch_sampler=sampler, num_workers=nw)
+            return make_graph_loader(self.val_data, batch_sampler=sampler, num_workers=hp.num_workers)
 
-        return make_graph_loader(self.val_data, batch_size=bs, shuffle=False, num_workers=nw)
+        return make_graph_loader(self.val_data, batch_size=bs, shuffle=False, num_workers=hp.num_workers)

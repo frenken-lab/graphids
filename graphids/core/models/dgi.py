@@ -15,7 +15,7 @@ import torch.nn as nn
 from torch_geometric.nn import global_mean_pool
 
 from ._conv import InputEncoder, build_encoder_stack, conv_forward, resolve_edge_dim
-from ._training import OOMSkipMixin, binary_test_metrics, find_threshold as _find_threshold
+from ._training import OOMSkipMixin, binary_test_metrics
 
 
 class GraphInfomaxModel(nn.Module):
@@ -169,6 +169,8 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
         self.model = None
         self.test_threshold: float | None = None
         self.test_metrics = binary_test_metrics()
+        self._test_scores: list[torch.Tensor] = []
+        self._test_labels: list[torch.Tensor] = []
         if num_ids > 0:
             self._build()
 
@@ -220,46 +222,51 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
 
     def test_step(self, batch, _idx):
         scores = self._per_graph_scores(batch)
-        if self.test_threshold is not None:
-            self.test_metrics.update(scores, batch.y)
+        self._test_scores.append(scores.detach())
+        self._test_labels.append(batch.y.detach())
 
     def on_test_epoch_start(self):
         self.test_metrics.reset()
+        self._test_scores.clear()
+        self._test_labels.clear()
 
     def on_test_epoch_end(self):
+        if not self._test_scores:
+            return
+        from torchmetrics.functional.classification import binary_roc
+
+        scores = torch.cat(self._test_scores).cpu()
+        labels = torch.cat(self._test_labels).cpu().long()
+
+        if self.test_threshold is None:
+            if labels.unique().numel() < 2:
+                self.test_threshold = float(scores.median())
+            else:
+                fpr, tpr, thresholds = binary_roc(scores, labels)
+                j = tpr - fpr
+                best = torch.argmax(j)
+                self.test_threshold = float(thresholds[best]) if best < len(thresholds) else float(scores.median())
+
+        preds = (scores >= self.test_threshold).long()
+        self.test_metrics.update(preds, labels)
+        metrics = self.test_metrics.compute()
+        metrics["threshold"] = self.test_threshold
+        self.log_dict(metrics)
+        self._test_scores.clear()
+        self._test_labels.clear()
+
+    def on_save_checkpoint(self, checkpoint):
         if self.test_threshold is not None:
-            self.log_dict(self.test_metrics.compute())
+            checkpoint["test_threshold"] = self.test_threshold
+
+    def on_load_checkpoint(self, checkpoint):
+        self.test_threshold = checkpoint.get("test_threshold")
 
     def predict_step(self, batch, _idx):
         scores = self._per_graph_scores(batch)
         return {"scores": scores, "labels": batch.y}
 
-    def find_threshold(self, data: list, batch_size: int = 256) -> tuple[float, float]:
-        """Find optimal anomaly threshold via Youden's J on validation data."""
-        return _find_threshold(self, data, score_key="scores", batch_size=batch_size)
-
-    @classmethod
-    def evaluate(cls, cfg, val_data, test_scenarios, device, *, load_model_fn) -> dict:
-        """Evaluate DGI: threshold search on val, then test scenarios."""
-        from ._training import eval_with_scenarios, gpu_cleanup
-        model = load_model_fn(cfg, "dgi", device)
-        module = cls(cfg)
-        module.model = model
-
-        bs = cfg.evaluation.batch_size
-        threshold, youden_j = module.find_threshold(val_data, batch_size=bs)
-        module.test_threshold = threshold
-        module.test_metrics.reset()
-
-        val_metrics, scenario_metrics = eval_with_scenarios(
-            module, val_data, test_scenarios, bs,
-        )
-        val_metrics["optimal_threshold"] = threshold
-        val_metrics["youden_j"] = youden_j
-
-        gpu_cleanup(model)
-        return {"val_metrics": val_metrics, "test_metrics": scenario_metrics, "artifacts": None}
-
     def configure_optimizers(self):
         opt = torch.optim.Adam(self.parameters(), lr=self.hparams.training.lr, weight_decay=self.hparams.training.weight_decay)
-        return opt
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=self.hparams.training.max_epochs)
+        return {"optimizer": opt, "lr_scheduler": {"scheduler": scheduler, "interval": "epoch"}}

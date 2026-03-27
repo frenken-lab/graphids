@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
@@ -12,18 +9,8 @@ from ._conv import InputEncoder, build_conv_stack, build_encoder_stack, _make_co
 from ._training import (
     OOMSkipMixin, soft_label_kd_loss, teacher_on_device,
     compute_node_budget, NodeBudgetInfo,
-    binary_test_metrics, find_threshold,
+    binary_test_metrics,
 )
-
-
-@dataclass(frozen=True)
-class VGAEResult:
-    """Artifacts from VGAE evaluation: errors, embeddings, loss components."""
-    errors: np.ndarray
-    labels: np.ndarray
-    attack_types: np.ndarray
-    embeddings: np.ndarray | None = None
-    components: dict[str, np.ndarray] | None = None
 
 
 class GraphAutoencoderNeighborhood(nn.Module):
@@ -335,68 +322,6 @@ class GraphAutoencoderNeighborhood(nn.Module):
         finally:
             self.train(was_training)
 
-    @torch.no_grad()
-    def capture_artifacts(
-        self, data: list, device: torch.device, *,
-        embeddings: bool = True, components: bool = True, batch_size: int = 256,
-    ) -> VGAEResult:
-        """Capture embeddings and component-level loss decomposition.
-
-        Uses batched forward passes with scatter reduction for per-graph losses.
-        """
-        from torch_geometric.utils import scatter
-
-        from graphids.core.preprocessing.datamodule import make_graph_loader
-
-        errors_all, labels_all, types_all = [], [], []
-        embs_all = [] if embeddings else None
-        comps: dict[str, list] = {"recon": [], "canid": [], "nbr": [], "kl": []} if components else {}
-
-        was_training = self.training
-        self.eval()
-        try:
-            for batch in make_graph_loader(data, batch_size=batch_size):
-                batch = batch.to(device, non_blocking=True)
-                edge_attr = getattr(batch, "edge_attr", None)
-                cont, canid_logits, nbr_logits, z, kl_loss, _ = self(
-                    batch.x, batch.edge_index, batch.batch,
-                    edge_attr=edge_attr, node_id=batch.node_id,
-                )
-                node_mse = (cont - batch.x).pow(2).mean(dim=1)
-                graph_mse = scatter(node_mse, batch.batch, reduce="max")
-                errors_all.append(graph_mse.cpu())
-                labels_all.append(batch.y.cpu())
-                types_all.append(batch.attack_type.cpu() if hasattr(batch, "attack_type") and batch.attack_type is not None else torch.full_like(batch.y, -1))
-
-                if embeddings and z is not None:
-                    graph_emb = scatter(z, batch.batch, dim=0, reduce="mean")
-                    embs_all.append(graph_emb.cpu().numpy())
-
-                if components:
-                    comps["recon"].append(graph_mse.cpu())
-                    node_ce = F.cross_entropy(canid_logits, batch.node_id, reduction="none")
-                    comps["canid"].append(scatter(node_ce, batch.batch, reduce="max").cpu())
-                    nbr_targets = self.create_neighborhood_targets(batch.node_id, batch.edge_index, batch.batch)
-                    node_nbr = F.binary_cross_entropy_with_logits(
-                        nbr_logits, nbr_targets, reduction="none",
-                    ).mean(dim=1)
-                    comps["nbr"].append(scatter(node_nbr, batch.batch, reduce="max").cpu())
-                    kl_val = kl_loss.item() if torch.is_tensor(kl_loss) else float(kl_loss)
-                    n_graphs = int(batch.batch.max().item()) + 1
-                    comps["kl"].extend([kl_val] * n_graphs)
-        finally:
-            self.train(was_training)
-
-        return VGAEResult(
-            errors=torch.cat(errors_all).numpy(),
-            labels=torch.cat(labels_all).numpy(),
-            attack_types=torch.cat(types_all).numpy(),
-            embeddings=np.vstack(embs_all) if embs_all else None,
-            components={k: (torch.cat(v).numpy() if isinstance(v[0], torch.Tensor) else np.array(v))
-                        for k, v in comps.items()} if components else None,
-        )
-
-
 # ---------------------------------------------------------------------------
 # Lightning training module
 # ---------------------------------------------------------------------------
@@ -439,6 +364,8 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         self._teacher_on_cpu = False
         self.test_threshold: float | None = None
         self.test_metrics = binary_test_metrics()
+        self._test_scores: list[torch.Tensor] = []
+        self._test_labels: list[torch.Tensor] = []
         if num_ids > 0:
             self._build()
 
@@ -537,50 +464,54 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
 
     def test_step(self, batch, _idx):
         errors = self._per_graph_errors(batch)
-        if self.test_threshold is not None:
-            self.test_metrics.update(errors, batch.y)
+        self._test_scores.append(errors.detach())
+        self._test_labels.append(batch.y.detach())
 
     def on_test_epoch_start(self):
         self.test_metrics.reset()
+        self._test_scores.clear()
+        self._test_labels.clear()
 
     def on_test_epoch_end(self):
+        if not self._test_scores:
+            return
+        from torchmetrics.functional.classification import binary_roc
+
+        scores = torch.cat(self._test_scores).cpu()
+        labels = torch.cat(self._test_labels).cpu().long()
+
+        if self.test_threshold is None:
+            if labels.unique().numel() < 2:
+                self.test_threshold = float(scores.median())
+            else:
+                fpr, tpr, thresholds = binary_roc(scores, labels)
+                j = tpr - fpr
+                best = torch.argmax(j)
+                self.test_threshold = float(thresholds[best]) if best < len(thresholds) else float(scores.median())
+
+        preds = (scores >= self.test_threshold).long()
+        self.test_metrics.update(preds, labels)
+        metrics = self.test_metrics.compute()
+        metrics["threshold"] = self.test_threshold
+        self.log_dict(metrics)
+        self._test_scores.clear()
+        self._test_labels.clear()
+
+    def on_save_checkpoint(self, checkpoint):
         if self.test_threshold is not None:
-            self.log_dict(self.test_metrics.compute())
+            checkpoint["test_threshold"] = self.test_threshold
+
+    def on_load_checkpoint(self, checkpoint):
+        self.test_threshold = checkpoint.get("test_threshold")
 
     def predict_step(self, batch, _idx):
         errors = self._per_graph_errors(batch)
         return {"errors": errors, "labels": batch.y}
-
-    def find_threshold(self, data: list, batch_size: int = 256) -> tuple[float, float]:
-        """Find optimal anomaly threshold via Youden's J on validation data."""
-        return find_threshold(self, data, score_key="errors", batch_size=batch_size)
-
-    @classmethod
-    def evaluate(cls, cfg, val_data, test_scenarios, device, *, load_model_fn) -> dict:
-        """Evaluate VGAE: threshold search on val, test, capture artifacts."""
-        from ._training import eval_with_scenarios, gpu_cleanup
-        model = load_model_fn(cfg, "vgae", device)
-        module = cls(cfg)
-        module.model = model
-
-        bs = cfg.evaluation.batch_size
-        threshold, youden_j = module.find_threshold(val_data, batch_size=bs)
-        module.test_threshold = threshold
-        module.test_metrics.reset()
-
-        val_metrics, scenario_metrics = eval_with_scenarios(
-            module, val_data, test_scenarios, bs,
-        )
-        val_metrics["optimal_threshold"] = threshold
-        val_metrics["youden_j"] = youden_j
-
-        artifacts = model.capture_artifacts(val_data, device, batch_size=bs)
-        gpu_cleanup(model)
-        return {"val_metrics": val_metrics, "test_metrics": scenario_metrics, "artifacts": artifacts}
 
     def configure_optimizers(self):
         params = list(self.model.parameters())
         if self.projection is not None:
             params += list(self.projection.parameters())
         opt = torch.optim.Adam(params, lr=self.hparams.training.lr, weight_decay=self.hparams.training.weight_decay)
-        return opt
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=self.hparams.training.max_epochs)
+        return {"optimizer": opt, "lr_scheduler": {"scheduler": scheduler, "interval": "epoch"}}

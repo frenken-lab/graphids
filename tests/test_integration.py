@@ -1,141 +1,26 @@
 """Integration tests — verify cross-component wiring, not isolated units.
 
-Each test exercises a real code path end-to-end: config resolution → data →
-model construction → inference. Imports helpers from conftest.py.
+Each test exercises a real code path end-to-end: config → model construction →
+inference. Imports helpers from conftest.py.
 """
 
 from __future__ import annotations
 
+import copy
+
 import pytest
 import torch
-import copy
-from torch_geometric.data import Batch, Data
 
-from conftest import EDGE_DIM, IN_CHANNELS, NUM_IDS, N_NODES, make_batch, make_graph
+from conftest import IN_CHANNELS, NUM_IDS, make_batch
 
 
 # ---------------------------------------------------------------------------
-# Test 1: populate_config flow
-# ---------------------------------------------------------------------------
-
-
-class TestPopulateConfig:
-    """CANBusDataModule.populate_config writes data-derived dims into cfg."""
-
-    @staticmethod
-    def _make_datamodule_stub(graphs: list[Data]) -> object:
-        """Minimal stub that satisfies populate_config's property protocol.
-
-        We avoid constructing a real CANBusDataModule (needs filesystem data).
-        Instead we subclass it and override the properties that populate_config
-        reads, backed by the synthetic graphs we supply.
-        """
-        from graphids.core.preprocessing.datamodule import CANBusDataModule
-
-        class StubDataModule(CANBusDataModule):
-            """Bypass __init__ / setup; inject graphs directly."""
-
-            def __init__(self, graphs: list[Data]):
-                # Skip super().__init__ — we don't need hparams / filesystem
-                self._graphs = graphs
-
-            @property
-            def num_ids(self) -> int:
-                ids = torch.cat([g.node_id for g in self._graphs])
-                return int(ids.max().item()) + 1
-
-            @property
-            def in_channels(self) -> int:
-                return self._graphs[0].x.shape[1]
-
-            @property
-            def num_classes(self) -> int:
-                labels = torch.cat([g.y.view(-1) for g in self._graphs])
-                n = int(labels.unique().numel())
-                return n if n >= 2 else 2
-
-            @property
-            def edge_dim(self) -> int:
-                return self._graphs[0].edge_attr.shape[1]
-
-        return StubDataModule(graphs)
-
-    @staticmethod
-    def _base_cfg():
-        from graphids.config import resolve
-
-        return resolve("model_type=vgae", "scale=small", "lake_root=/tmp", "device=cpu")
-
-    def test_populate_sets_default_dimensions(self):
-        """populate_config writes in_channels=31, edge_dim=10, num_classes=2 from data."""
-        graphs = [make_graph() for _ in range(10)]
-        dm = self._make_datamodule_stub(graphs)
-        cfg = self._base_cfg()
-
-        # Pre-condition: defaults are 0 / 2
-        assert cfg.in_channels == 0
-        assert cfg.num_ids == 0
-
-        dm.populate_config(cfg)
-
-        assert cfg.in_channels == IN_CHANNELS  # 31
-        assert cfg.num_ids > 0
-        assert cfg.num_classes == 2  # binary labels from make_graph (y=1 only)
-        assert cfg.vgae.edge_dim == EDGE_DIM  # 12
-        assert cfg.gat.edge_dim == EDGE_DIM
-
-    def test_populate_non_default_dimensions(self):
-        """populate_config reads actual data dims, not hardcoded defaults."""
-        feat_dim = 25
-        n_classes = 3
-
-        def _make_custom_graph(label: int) -> Data:
-            x = torch.rand(N_NODES, feat_dim)
-            node_id = torch.randint(0, 5, (N_NODES,))
-            edge_index = torch.stack([
-                torch.randint(0, N_NODES, (12,)),
-                torch.randint(0, N_NODES, (12,)),
-            ])
-            edge_attr = torch.rand(12, 8)  # 8-D edges (non-default)
-            return Data(x=x, edge_index=edge_index, edge_attr=edge_attr,
-                        node_id=node_id, y=torch.tensor([label]))
-
-        # 3-class labels: 0, 1, 2
-        graphs = [_make_custom_graph(i % n_classes) for i in range(12)]
-        dm = self._make_datamodule_stub(graphs)
-        cfg = self._base_cfg()
-
-        dm.populate_config(cfg)
-
-        assert cfg.in_channels == feat_dim, f"Expected {feat_dim}, got {cfg.in_channels}"
-        assert cfg.num_classes == n_classes, f"Expected {n_classes}, got {cfg.num_classes}"
-        assert cfg.vgae.edge_dim == 8
-        assert cfg.gat.edge_dim == 8
-
-    def test_populate_single_class_floors_to_two(self):
-        """If all labels are the same class, num_classes floors to 2."""
-        graphs = [make_graph() for _ in range(5)]  # all y=1
-        dm = self._make_datamodule_stub(graphs)
-        cfg = self._base_cfg()
-
-        dm.populate_config(cfg)
-
-        assert cfg.num_classes == 2, "Single-class data should floor to 2"
-
-    def test_stub_parity(self):
-        """StubDataModule must not define properties the real class lacks."""
-        from graphids.core.preprocessing.datamodule import CANBusDataModule
-        for prop in ("num_ids", "in_channels", "num_classes", "edge_dim"):
-            assert hasattr(CANBusDataModule, prop), f"Real DataModule missing '{prop}' — stub diverges from production"
-
-
-# ---------------------------------------------------------------------------
-# Test 3: Config → model construction flow
+# Test: Config → model construction flow
 # ---------------------------------------------------------------------------
 
 
 class TestConfigToModel:
-    """resolve() → set num_classes → GATWithJK.from_config → correct output shape."""
+    """Config → GATWithJK.from_config → correct output shape."""
 
     @pytest.mark.slow
     def test_gat_output_respects_num_classes(self, gat_cfg):
@@ -174,14 +59,12 @@ class TestConfigToModel:
         assert out.shape == (3, 2), f"Expected (3, 2), got {out.shape}"
 
     @pytest.mark.slow
-    def test_gat_from_resolve_end_to_end(self):
-        """Full path: resolve() → from_config() → forward() with non-default classes."""
-        from graphids.config import resolve
+    def test_gat_nondefault_classes(self, gat_cfg):
+        """from_config() → forward() with non-default classes."""
         from graphids.core.models.gat import GATWithJK
 
-        cfg = resolve("model_type=gat", "scale=small", "lake_root=/tmp", "device=cpu")
+        cfg = copy.deepcopy(gat_cfg)
         cfg.num_classes = 7
-        cfg.training.gradient_checkpointing = False
 
         model = GATWithJK.from_config(cfg, num_ids=NUM_IDS, in_ch=IN_CHANNELS)
         model.eval()
@@ -194,7 +77,7 @@ class TestConfigToModel:
 
 
 # ---------------------------------------------------------------------------
-# Test 4: Decision threshold actually used
+# Test: Decision threshold actually used
 # ---------------------------------------------------------------------------
 
 
@@ -229,9 +112,6 @@ class TestDecisionThreshold:
 
         result = agent.validate_batch(states, labels)
 
-        # With threshold=0.9, most fused_scores (random in ~[0,1]) will be < 0.9
-        # so predictions should be predominantly 0, giving low accuracy on all-1 labels.
-        # With default 0.5 threshold, ~half would be predicted 1.
         assert result["accuracy"] < 0.5, (
             f"Accuracy {result['accuracy']:.2f} is too high for threshold=0.9 on all-positive "
             f"labels — decision_threshold is likely not being used"
@@ -294,125 +174,3 @@ class TestDecisionThreshold:
             "Threshold 0.1 and 0.9 produced identical accuracy — "
             "decision_threshold has no effect on predictions"
         )
-
-
-# ---------------------------------------------------------------------------
-# Test 5: find_vgae_threshold edge cases
-# ---------------------------------------------------------------------------
-
-
-class TestFindVgaeThresholdEdgeCases:
-    """Bug 3: find_vgae_threshold must handle empty data and single-class labels."""
-
-    def test_empty_errors_returns_default(self, vgae_cfg):
-        """get_test_errors() on empty list returns empty arrays, not RuntimeError."""
-        from graphids.core.models.vgae import VGAEModule
-
-        module = VGAEModule(vgae_cfg)
-        module._test_errors = []
-        module._test_labels = []
-        errors, labels = module.get_test_errors()
-        assert len(errors) == 0
-        assert len(labels) == 0
-
-    def test_single_class_returns_median(self, vgae_cfg):
-        """All-normal data (single class) returns median threshold, not crash."""
-        import numpy as np
-        from graphids.core.models.vgae import VGAEModule
-
-
-        module = VGAEModule(vgae_cfg)
-        # Simulate accumulated errors from single-class data
-        module._test_errors = [torch.tensor([0.1, 0.2, 0.3, 0.4])]
-        module._test_labels = [torch.tensor([0, 0, 0, 0])]
-        module.test_threshold = None
-
-        errors, labels = module.get_test_errors()
-        # Verify the guarded path works
-        unique_labels = np.unique(labels)
-        assert len(unique_labels) < 2
-
-    def test_balanced_data_produces_valid_threshold(self, vgae_cfg):
-        """Normal case: mixed labels produce a valid positive threshold."""
-        from graphids.core.models.vgae import VGAEModule
-
-        from torchmetrics.functional.classification import binary_roc
-
-        module = VGAEModule(vgae_cfg)
-        # Simulate accumulated errors: attacks have higher reconstruction error
-        module._test_errors = [torch.tensor([0.1, 0.15, 0.8, 0.9, 0.12, 0.85])]
-        module._test_labels = [torch.tensor([0, 0, 1, 1, 0, 1])]
-
-        errors, labels = module.get_test_errors()
-        fpr, tpr, thresholds = binary_roc(
-            torch.as_tensor(errors, dtype=torch.float),
-            torch.as_tensor(labels, dtype=torch.long),
-        )
-        j_scores = tpr - fpr
-        assert len(j_scores) > 0
-        best_idx = torch.argmax(j_scores).item()
-        thresh = float(thresholds[best_idx])
-        assert thresh > 0, "Threshold should be positive for reconstruction errors"
-
-
-# ---------------------------------------------------------------------------
-# Test 6: CANBusDataModule.from_cfg preprocessing params
-# ---------------------------------------------------------------------------
-
-
-class TestDataModuleFromCfgPreprocessing:
-    """Bug 4: from_cfg must forward preprocessing overrides to the DataModule."""
-
-    def test_default_preprocessing_values(self):
-        """from_cfg without preprocessing overrides uses PREPROCESSING_DEFAULTS."""
-        from graphids.config import resolve
-        from graphids.core.preprocessing.datamodule import CANBusDataModule
-        from graphids.config.defaults.constants import PREPROCESSING_DEFAULTS
-
-        cfg = resolve("model_type=vgae", "scale=small", "lake_root=/tmp", "device=cpu")
-        dm = CANBusDataModule.from_cfg(cfg)
-        assert dm.hparams["window_size"] == PREPROCESSING_DEFAULTS["window_size"]
-        assert dm.hparams["stride"] == PREPROCESSING_DEFAULTS["stride"]
-        expected_val = 1.0 - PREPROCESSING_DEFAULTS["train_val_split"]
-        assert abs(dm.hparams["val_fraction"] - expected_val) < 1e-6
-
-    def test_overridden_preprocessing_values(self):
-        """from_cfg with config overrides propagates non-default values."""
-        from graphids.config import resolve
-        from graphids.core.preprocessing.datamodule import CANBusDataModule
-
-        cfg = resolve(
-            "model_type=vgae", "scale=small", "lake_root=/tmp", "device=cpu",
-            "preprocessing.window_size=200", "preprocessing.stride=50",
-            "preprocessing.train_val_split=0.7",
-        )
-        dm = CANBusDataModule.from_cfg(cfg)
-        assert dm.hparams["window_size"] == 200
-        assert dm.hparams["stride"] == 50
-        assert abs(dm.hparams["val_fraction"] - 0.3) < 1e-6
-
-    def test_hparams_saved_for_reproducibility(self):
-        """window_size/stride must appear in save_hyperparameters for checkpoint reproducibility."""
-        from graphids.config import resolve
-        from graphids.core.preprocessing.datamodule import CANBusDataModule
-
-        cfg = resolve("model_type=vgae", "scale=small", "lake_root=/tmp", "device=cpu")
-        dm = CANBusDataModule.from_cfg(cfg)
-        for key in ("window_size", "stride", "val_fraction"):
-            assert key in dm.hparams, f"{key} missing from saved hyperparameters"
-
-
-# ---------------------------------------------------------------------------
-# Test 7: __main__.py config resolution dry-run
-# ---------------------------------------------------------------------------
-
-
-def test_main_config_resolves_all_stages():
-    """Config resolution works for every stage without crashing."""
-    from graphids.config import resolve
-    for stage in ("autoencoder", "curriculum", "fusion", "evaluation"):
-        cfg = resolve(f"stage={stage}", "model_type=vgae", "scale=small",
-                      "lake_root=/tmp", "device=cpu")
-        assert cfg.stage == stage
-
-

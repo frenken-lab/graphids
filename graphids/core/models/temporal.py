@@ -279,6 +279,14 @@ class TemporalLightningModule(pl.LightningModule):
     def on_test_epoch_end(self):
         self.log_dict(self.test_metrics.compute())
 
+    def predict_step(self, batch, batch_idx):
+        graph_sequences, labels = batch
+        device = self.device
+        moved = [[g.clone().to(device, non_blocking=True) for g in seq] for seq in graph_sequences]
+        logits = self.model(moved)
+        scores = F.softmax(logits, dim=1)[:, 1]
+        return {"preds": logits.argmax(1), "scores": scores, "labels": labels.to(device)}
+
     def configure_optimizers(self):
         t = self.hparams.training
         tc = self.hparams.temporal
@@ -301,40 +309,3 @@ class TemporalLightningModule(pl.LightningModule):
             lr=t.lr, weight_decay=t.weight_decay,
         )
 
-    @classmethod
-    def evaluate(cls, cfg, val_data, test_scenarios, device, *, load_model_fn) -> dict | None:
-        """Evaluate temporal model via Lightning test loop.
-
-        Loads the full Lightning checkpoint via ``load_from_checkpoint``,
-        avoiding manual model reconstruction.
-        """
-        from torch.utils.data import DataLoader
-
-        from graphids.core.preprocessing._temporal import (
-            TemporalGraphDataset,
-            TemporalGrouper,
-            collate_temporal,
-        )
-
-        from ._training import gpu_cleanup, test_model
-
-        ckpt_path = cfg.checkpoints["temporal"]
-        module = cls.load_from_checkpoint(ckpt_path, map_location=device, weights_only=True)
-        module = module.to(device)
-        module.eval()
-
-        tc = cfg.temporal
-        grouper = TemporalGrouper(window=tc.temporal_window, stride=tc.temporal_stride)
-        val_sequences = grouper.group(val_data)
-        if not val_sequences:
-            return None
-
-        val_loader = DataLoader(
-            TemporalGraphDataset(val_sequences, device),
-            batch_size=32, shuffle=False,
-            collate_fn=collate_temporal, num_workers=0,
-        )
-        val_metrics = test_model(module, val_loader)
-
-        gpu_cleanup(module.model)
-        return {"val_metrics": val_metrics, "test_metrics": {}, "artifacts": None}

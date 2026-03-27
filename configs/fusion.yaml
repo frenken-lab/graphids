@@ -1,0 +1,18 @@
+# Fusion stage (bandit/dqn/mlp/weighted_avg). Depends on VGAE + GAT checkpoints.
+# Use with: --config configs/fusion.yaml --model.init_args.method=bandit
+# Does NOT use base.yaml — different trainer settings (max_epochs, monitor, precision).
+model:
+  class_path: graphids.core.models.fusion_baselines.RLFusionModule
+  init_args: {method: bandit}
+data:
+  class_path: graphids.core.preprocessing.datamodule.FusionDataModule
+seed_everything: 42
+trainer:
+  accelerator: auto
+  devices: auto
+  precision: 32
+  max_epochs: 50
+  log_every_n_steps: 10
+  callbacks:
+    - class_path: pytorch_lightning.callbacks.ModelCheckpoint
+      init_args: {monitor: val_acc, mode: max, save_top_k: 1}

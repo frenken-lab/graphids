@@ -108,13 +108,15 @@ def focal_loss(logits, targets, gamma: float = 2.0):
 @contextlib.contextmanager
 def teacher_on_device(module, device):
     """Move teacher to device for inference, offload back to CPU after."""
-    if module.cfg.training.offload_teacher_to_cpu and module._teacher_on_cpu:
+    training_cfg = getattr(getattr(module, "hparams", None), "training", None)
+    offload = getattr(training_cfg, "offload_teacher_to_cpu", False) if training_cfg else False
+    if offload and module._teacher_on_cpu:
         module.teacher.to(device)
         module._teacher_on_cpu = False
     try:
         yield
     finally:
-        if module.cfg.training.offload_teacher_to_cpu:
+        if offload:
             module.teacher.to("cpu")
             module._teacher_on_cpu = True
 
@@ -134,106 +136,7 @@ def binary_test_metrics():
 
 
 # ---------------------------------------------------------------------------
-# Evaluation helpers (shared by module evaluate() classmethods)
-# ---------------------------------------------------------------------------
-
-
-def _eval_trainer():
-    """Single reusable Trainer for test-time evaluation."""
-    import pytorch_lightning as pl
-    return pl.Trainer(
-        accelerator="auto", devices="auto",
-        logger=False, enable_checkpointing=False, enable_progress_bar=False,
-    )
-
-
-def find_threshold(
-    module, data: list, *, score_key: str = "scores", batch_size: int = 256,
-) -> tuple[float, float]:
-    """Find optimal anomaly threshold via Youden's J on validation data.
-
-    Works with any LightningModule whose predict_step returns a dict with
-    ``score_key`` (continuous anomaly scores) and ``"labels"`` (binary ground truth).
-
-    Args:
-        module: LightningModule with a compatible predict_step.
-        data: List of PyG Data objects (validation set).
-        score_key: Key in predict_step output containing anomaly scores.
-        batch_size: Batch size for the prediction DataLoader.
-
-    Returns:
-        (threshold, youden_j) tuple.
-    """
-    from torchmetrics.functional.classification import binary_roc
-
-    from graphids.core.preprocessing.datamodule import make_graph_loader
-
-    trainer = _eval_trainer()
-    loader = make_graph_loader(data, batch_size=batch_size)
-    preds = trainer.predict(module, dataloaders=loader)
-
-    scores = torch.cat([p[score_key] for p in preds]).cpu()
-    labels = torch.cat([p["labels"] for p in preds]).cpu()
-
-    if len(scores) == 0:
-        return 0.5, 0.0
-    if labels.unique().numel() < 2:
-        return float(scores.median()), 0.0
-
-    fpr_v, tpr_v, thresholds_v = binary_roc(scores, labels.long())
-    j_scores = tpr_v - fpr_v
-
-    if len(j_scores) == 0 or len(thresholds_v) == 0:
-        return float(scores.median()), 0.0
-
-    best_idx = torch.argmax(j_scores).item()
-    thresh = float(thresholds_v[best_idx]) if best_idx < len(thresholds_v) else float(scores.median())
-    return thresh, float(j_scores[best_idx])
-
-
-def test_model(module, data, batch_size: int = 256, *, trainer=None) -> dict:
-    """Run trainer.test() on a module and return metrics.
-
-    Args:
-        data: Either a list of PyG Data objects (creates PyGDataLoader) or
-              a pre-built DataLoader (used as-is, e.g. for fusion tensor batches).
-        trainer: Reuse an existing Trainer. Created if not provided.
-    """
-    from graphids.core.preprocessing.datamodule import make_graph_loader
-
-    if trainer is None:
-        trainer = _eval_trainer()
-    loader = make_graph_loader(data, batch_size=batch_size) if isinstance(data, list) else data
-    results = trainer.test(module, dataloaders=loader, verbose=False)
-    metrics = dict(results[0]) if results else {}
-    metrics["balanced_accuracy"] = (metrics.get("recall", 0) + metrics.get("specificity", 0)) / 2
-    return metrics
-
-
-def eval_with_scenarios(module, val_data, test_scenarios, batch_size: int) -> tuple[dict, dict]:
-    """Run test on val + each test scenario. Returns (val_metrics, scenario_metrics)."""
-    trainer = _eval_trainer()
-    val_metrics = test_model(module, val_data, batch_size=batch_size, trainer=trainer)
-    scenario_metrics = {}
-    if test_scenarios:
-        for name, tdata in test_scenarios.items():
-            module.test_metrics.reset()
-            scenario_metrics[name] = test_model(module, tdata, batch_size=batch_size, trainer=trainer)
-    return val_metrics, scenario_metrics
-
-
-def gpu_cleanup(*objs):
-    """Delete objects and free GPU memory."""
-    import gc as _gc
-    for o in objs:
-        del o
-    _gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-
-# ---------------------------------------------------------------------------
-# Model loading + KD preparation (used by pipeline and module __init__)
+# Model loading + KD preparation (used by module __init__)
 # ---------------------------------------------------------------------------
 
 

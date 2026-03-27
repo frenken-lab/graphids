@@ -39,21 +39,32 @@ def make_variable_batch(sizes: list[int]) -> Batch:
 
 @pytest.fixture(scope="session")
 def base_cfg():
-    """Session-scoped resolved config (vgae small, CPU). Clone before mutating."""
-    from graphids.config import resolve
-
-    cfg = resolve("model_type=vgae", "scale=small", "lake_root=/tmp", "device=cpu")
-    cfg.num_ids = NUM_IDS
-    cfg.in_channels = IN_CHANNELS
-    cfg.num_classes = 2
-    cfg.num_workers = 0
-    cfg.training.max_epochs = 2
-    cfg.training.precision = 32
-    cfg.training.gradient_checkpointing = False
-    cfg.training.compile_model = False
-    cfg.training.dynamic_batching = False
-    cfg.training.log_every_n_steps = 1
-    cfg.training.patience = 100
+    """Session-scoped config namespace for tests. Clone before mutating."""
+    import types
+    from graphids.config.defaults.schema import (
+        VGAEConfig, GATConfig, DGIConfig, TrainingConfig,
+        FusionConfig, DQNConfig, BanditConfig, EvaluationConfig,
+        PreprocessingConfig, TemporalConfig,
+    )
+    cfg = types.SimpleNamespace(
+        model_type="vgae", scale="small", stage="autoencoder",
+        lake_root="/tmp", dataset="test", seed=42,
+        device="cpu", num_workers=0,
+        num_ids=NUM_IDS, in_channels=IN_CHANNELS, num_classes=2,
+        gat_stage="curriculum", auxiliaries=[],
+        vgae=VGAEConfig(hidden_dims=[32, 16], latent_dim=16, heads=2, embedding_dim=4),
+        gat=GATConfig(hidden=16, layers=2, heads=2, fc_layers=2, embedding_dim=4),
+        dgi=DGIConfig(hidden_dims=[32, 16], latent_dim=16, heads=2, embedding_dim=4),
+        training=TrainingConfig(
+            max_epochs=2, precision="32", gradient_checkpointing=False,
+            compile_model=False, dynamic_batching=False, log_every_n_steps=1,
+            patience=100, batch_size=32,
+        ),
+        fusion=FusionConfig(), dqn=DQNConfig(), bandit=BanditConfig(),
+        evaluation=EvaluationConfig(), temporal=TemporalConfig(),
+        preprocessing=PreprocessingConfig(),
+        checkpoints={},
+    )
     return cfg
 
 

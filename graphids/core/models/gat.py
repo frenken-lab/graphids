@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import functools
-from dataclasses import dataclass
-
-import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
@@ -19,17 +16,6 @@ from ._training import (
     OOMSkipMixin, soft_label_kd_loss, focal_loss,
     teacher_on_device, binary_test_metrics,
 )
-
-
-@dataclass(frozen=True)
-class GATResult:
-    """Artifacts from GAT evaluation: predictions, embeddings, attention."""
-    preds: np.ndarray
-    labels: np.ndarray
-    scores: np.ndarray
-    attack_types: np.ndarray
-    embeddings: np.ndarray | None = None
-    attention: list[dict] | None = None
 
 
 class GATWithJK(nn.Module):
@@ -185,53 +171,6 @@ class GATWithJK(nn.Module):
             x = layer(x)
         return x
 
-    @torch.no_grad()
-    def capture_artifacts(
-        self, data: list, device: torch.device, *,
-        embeddings: bool = True, attention: bool = True,
-        batch_size: int = 256, attention_limit: int = 50,
-    ) -> GATResult:
-        """Capture predictions, embeddings, and attention weights for paper artifacts."""
-        from graphids.core.preprocessing.datamodule import make_graph_loader
-
-        preds_all, scores_all, labels_all, types_all, embs_all = [], [], [], [], []
-        for g in make_graph_loader(data, batch_size=batch_size):
-            g = g.to(device, non_blocking=True)
-            logits, emb = self(g, return_embedding=True)
-            preds_all.append(logits.argmax(1).cpu())
-            scores_all.append(F.softmax(logits, dim=1)[:, 1].cpu())
-            labels_all.append(g.y.cpu())
-            at = (g.attack_type.cpu()
-                  if hasattr(g, "attack_type") and g.attack_type is not None
-                  else torch.full((g.num_graphs,), -1))
-            types_all.append(at)
-            if embeddings:
-                embs_all.append(emb.cpu())
-
-        attn_data = None
-        if attention:
-            attn_data = []
-            for idx in range(min(len(data), attention_limit)):
-                g = data[idx].clone().to(device, non_blocking=True)
-                _, att_weights = self(g, return_attention_weights=True)
-                attn_data.append({
-                    "graph_idx": idx,
-                    "label": g.y.item() if g.y.dim() == 0 else int(g.y[0].item()),
-                    "edge_index": g.edge_index.cpu().numpy(),
-                    "node_features": g.node_id.cpu().numpy(),
-                    "attention_weights": [a.numpy() for a in att_weights],
-                })
-
-        return GATResult(
-            preds=torch.cat(preds_all).numpy(),
-            labels=torch.cat(labels_all).numpy(),
-            scores=torch.cat(scores_all).numpy(),
-            attack_types=torch.cat(types_all).numpy(),
-            embeddings=torch.cat(embs_all).numpy() if embs_all else None,
-            attention=attn_data,
-        )
-
-
 # ---------------------------------------------------------------------------
 # Lightning training module
 # ---------------------------------------------------------------------------
@@ -343,24 +282,12 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
     def on_test_epoch_end(self):
         self.log_dict(self.test_metrics.compute())
 
-    @classmethod
-    def evaluate(cls, cfg, val_data, test_scenarios, device, *, load_model_fn) -> dict:
-        """Evaluate GAT via trainer.test() + capture artifacts."""
-        from ._training import eval_with_scenarios, gpu_cleanup
-        gat_model = load_model_fn(cfg, "gat", device)
-        module = cls(cfg)
-        module.model = gat_model
-
-        bs = cfg.evaluation.batch_size
-        val_metrics, scenario_metrics = eval_with_scenarios(module, val_data, test_scenarios, bs)
-
-        gat_result = gat_model.capture_artifacts(
-            val_data, device, batch_size=bs,
-            attention_limit=cfg.evaluation.attention_sample_limit,
-        )
-        gpu_cleanup(gat_model)
-        return {"val_metrics": val_metrics, "test_metrics": scenario_metrics, "artifacts": gat_result}
+    def predict_step(self, batch, _idx):
+        logits = self(batch)
+        scores = F.softmax(logits, dim=1)[:, 1]
+        return {"preds": logits.argmax(1), "scores": scores, "labels": batch.y}
 
     def configure_optimizers(self):
         opt = torch.optim.Adam(self.parameters(), lr=self.hparams.training.lr, weight_decay=self.hparams.training.weight_decay)
-        return opt
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=self.hparams.training.max_epochs)
+        return {"optimizer": opt, "lr_scheduler": {"scheduler": scheduler, "interval": "epoch"}}

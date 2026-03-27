@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import gc
 import math
-from pathlib import Path
+
 import pytorch_lightning as pl
 import structlog
 import torch
@@ -112,31 +112,6 @@ class CANBusDataModule(pl.LightningDataModule):
         self._val_ds: CANBusDataset | None = None
         self._test_datasets: dict[str, CANBusDataset] = {}
 
-    @classmethod
-    def from_cfg(cls, cfg) -> CANBusDataModule:
-        """Construct from a resolved Config object."""
-        from graphids.config import STAGE_MODEL_MAP
-
-        pre = cfg.preprocessing
-        # Resolve conv_type/heads from the active model's sub-config.
-        model_type = STAGE_MODEL_MAP.get(cfg.stage, cfg.model_type)
-        model_sub = getattr(cfg, model_type, None)
-        conv_type = getattr(model_sub, "conv_type", "gatv2") if model_sub else "gatv2"
-        heads = getattr(model_sub, "heads", 4) if model_sub else 4
-        return cls(
-            dataset=cfg.dataset,
-            lake_root=cfg.lake_root,
-            batch_size=cfg.training.batch_size,
-            num_workers=cfg.num_workers,
-            seed=cfg.seed,
-            dynamic_batching=cfg.training.dynamic_batching,
-            window_size=pre.window_size,
-            stride=pre.stride,
-            val_fraction=1.0 - pre.train_val_split,
-            conv_type=conv_type,
-            heads=heads,
-        )
-
     def setup(self, stage: str | None = None) -> None:
         import types
         hp = self.hparams
@@ -236,18 +211,29 @@ class FusionDataModule(pl.LightningDataModule):
     Wraps CANBusDataModule internally — callers never touch raw graph data.
     """
 
-    def __init__(self, cfg):
+    def __init__(
+        self,
+        dataset: str = "",
+        lake_root: str = "experimentruns",
+        vgae_ckpt_path: str = "",
+        gat_ckpt_path: str = "",
+        method: str = "bandit",
+        batch_size: int = 128,
+        episode_sample_size: int = 20000,
+        max_samples: int = 150000,
+        max_val_samples: int = 30000,
+        eval_batch_size: int = 256,
+        seed: int = 42,
+        window_size: int = 100,
+        stride: int = 100,
+        val_fraction: float = 0.2,
+    ):
         super().__init__()
-        self.cfg = cfg
-        self._device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
-        is_rl = cfg.fusion.method in ("dqn", "bandit")
-        self._batch_size = cfg.fusion.episode_sample_size if is_rl else cfg.dqn.batch_size
+        self.save_hyperparameters()
+        is_rl = method in ("dqn", "bandit")
+        self._batch_size = episode_sample_size if is_rl else batch_size
         self.train_cache: dict | None = None
         self.val_cache: dict | None = None
-
-    @property
-    def device(self) -> torch.device:
-        return self._device
 
     @property
     def steps_per_epoch(self) -> int:
@@ -282,18 +268,31 @@ class FusionDataModule(pl.LightningDataModule):
         return {"states": torch.cat(states), "labels": torch.cat(labels)}
 
     def setup(self, stage=None):
-        train_ds, val_ds, _ = load_datasets(self.cfg)
-
+        if self.train_cache is not None:
+            return
+        import types
+        from pathlib import Path
         from graphids.core.models._training import load_inner_model
-        vgae, _ = load_inner_model("vgae", Path(self.cfg.checkpoints["vgae"]), self._device)
-        gat, _ = load_inner_model("gat", Path(self.cfg.checkpoints["gat"]), self._device)
+
+        hp = self.hparams
+        cfg_ns = types.SimpleNamespace(
+            dataset=hp.dataset, lake_root=hp.lake_root, seed=hp.seed,
+            preprocessing=types.SimpleNamespace(
+                window_size=hp.window_size, stride=hp.stride,
+                train_val_split=1.0 - hp.val_fraction,
+            ),
+        )
+        train_ds, val_ds, _ = load_datasets(cfg_ns)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        vgae, _ = load_inner_model("vgae", Path(hp.vgae_ckpt_path), device)
+        gat, _ = load_inner_model("gat", Path(hp.gat_ckpt_path), device)
         models = {"vgae": vgae, "gat": gat}
-        bs = self.cfg.evaluation.batch_size
         self.train_cache = self.cache_predictions(
-            models, list(train_ds), self._device, self.cfg.fusion.max_samples, batch_size=bs,
+            models, list(train_ds), device, hp.max_samples, batch_size=hp.eval_batch_size,
         )
         self.val_cache = self.cache_predictions(
-            models, list(val_ds), self._device, self.cfg.fusion.max_val_samples, batch_size=bs,
+            models, list(val_ds), device, hp.max_val_samples, batch_size=hp.eval_batch_size,
         )
 
         del vgae, gat, models

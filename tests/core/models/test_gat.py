@@ -36,19 +36,27 @@ class TestGAT:
 
 @pytest.mark.slow
 class TestGATFastDevRun:
+    @staticmethod
+    def _make_module(cfg):
+        from graphids.core.models.gat import GATModule
+        return GATModule(
+            gat=cfg.gat, training=cfg.training,
+            num_ids=NUM_IDS, in_channels=IN_CHANNELS,
+        )
+
     def test_gat(self, gat_cfg):
         import pytorch_lightning as pl
-        from graphids.core.models.gat import GATModule
         loader = DataLoader([make_graph() for _ in range(16)], batch_size=4)
         trainer = pl.Trainer(fast_dev_run=True, accelerator="cpu", enable_progress_bar=False)
-        trainer.fit(GATModule(gat_cfg), loader, loader)
+        trainer.fit(self._make_module(gat_cfg), loader, loader)
 
     def test_gat_loss_variants(self, gat_cfg):
         """All loss functions produce finite loss in training_step."""
-        from graphids.core.models.gat import GATModule
+        import copy
         for loss_fn in ("ce", "weighted_ce", "focal"):
-            gat_cfg.training.loss_fn = loss_fn
-            module = GATModule(gat_cfg)
+            cfg = copy.deepcopy(gat_cfg)
+            cfg.training.loss_fn = loss_fn
+            module = self._make_module(cfg)
             module.train()
             loss = module.training_step(make_batch(4), 0)
             assert torch.isfinite(loss), f"{loss_fn} produced non-finite loss"
@@ -58,11 +66,17 @@ class TestGATCheckpointRoundtrip:
     def test_gat(self, gat_cfg, tmp_path):
         from graphids.core.models.gat import GATModule
 
-        m1 = GATModule(gat_cfg)
+        def _mk():
+            return GATModule(
+                gat=gat_cfg.gat, training=gat_cfg.training,
+                num_ids=NUM_IDS, in_channels=IN_CHANNELS,
+            )
+
+        m1 = _mk()
         m1.eval()
         torch.save(m1.state_dict(), tmp_path / "g.ckpt")
 
-        m2 = GATModule(gat_cfg)
+        m2 = _mk()
         m2.load_state_dict(torch.load(tmp_path / "g.ckpt", weights_only=True))
         m2.eval()
 

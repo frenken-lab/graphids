@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import torch
-from conftest import N_NODES, make_batch
+from conftest import IN_CHANNELS, NUM_IDS, N_NODES, make_batch
 
 
 def test_gat_forward(gat_cfg):
     """GAT: synthetic batch → [n_graphs, num_classes] logits."""
     from graphids.core.models.gat import GATModule
 
-    module = GATModule(gat_cfg)
+    module = GATModule(
+        gat=gat_cfg.gat, training=gat_cfg.training,
+        num_ids=NUM_IDS, in_channels=IN_CHANNELS,
+    )
     module.eval()
     with torch.no_grad():
         logits = module(make_batch(3))
@@ -21,7 +24,10 @@ def test_vgae_forward(vgae_cfg):
     """VGAE: synthetic batch → (cont, canid, nbr, z, kl, mask)."""
     from graphids.core.models.vgae import VGAEModule
 
-    module = VGAEModule(vgae_cfg)
+    module = VGAEModule(
+        vgae=vgae_cfg.vgae, training=vgae_cfg.training,
+        num_ids=NUM_IDS, in_channels=IN_CHANNELS,
+    )
     module.eval()
     with torch.no_grad():
         out = module(make_batch(3))

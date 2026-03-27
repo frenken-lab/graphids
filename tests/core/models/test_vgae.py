@@ -92,19 +92,29 @@ class TestVGAEFastDevRun:
         import pytorch_lightning as pl
         from graphids.core.models.vgae import VGAEModule
         loader = DataLoader([make_graph() for _ in range(16)], batch_size=4)
+        module = VGAEModule(
+            vgae=vgae_cfg.vgae, training=vgae_cfg.training,
+            num_ids=NUM_IDS, in_channels=IN_CHANNELS,
+        )
         trainer = pl.Trainer(fast_dev_run=True, accelerator="cpu", enable_progress_bar=False)
-        trainer.fit(VGAEModule(vgae_cfg), loader, loader)
+        trainer.fit(module, loader, loader)
 
 
 class TestVGAECheckpointRoundtrip:
     def test_vgae(self, vgae_cfg, tmp_path):
         from graphids.core.models.vgae import VGAEModule
 
-        m1 = VGAEModule(vgae_cfg)
+        m1 = VGAEModule(
+            vgae=vgae_cfg.vgae, training=vgae_cfg.training,
+            num_ids=NUM_IDS, in_channels=IN_CHANNELS,
+        )
         m1.eval()
         torch.save(m1.state_dict(), tmp_path / "v.ckpt")
 
-        m2 = VGAEModule(vgae_cfg)
+        m2 = VGAEModule(
+            vgae=vgae_cfg.vgae, training=vgae_cfg.training,
+            num_ids=NUM_IDS, in_channels=IN_CHANNELS,
+        )
         m2.load_state_dict(torch.load(tmp_path / "v.ckpt", weights_only=True))
         m2.eval()
 
