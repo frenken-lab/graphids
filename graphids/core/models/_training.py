@@ -147,6 +147,50 @@ def _eval_trainer():
     )
 
 
+def find_threshold(
+    module, data: list, *, score_key: str = "scores", batch_size: int = 256,
+) -> tuple[float, float]:
+    """Find optimal anomaly threshold via Youden's J on validation data.
+
+    Works with any LightningModule whose predict_step returns a dict with
+    ``score_key`` (continuous anomaly scores) and ``"labels"`` (binary ground truth).
+
+    Args:
+        module: LightningModule with a compatible predict_step.
+        data: List of PyG Data objects (validation set).
+        score_key: Key in predict_step output containing anomaly scores.
+        batch_size: Batch size for the prediction DataLoader.
+
+    Returns:
+        (threshold, youden_j) tuple.
+    """
+    from torchmetrics.functional.classification import binary_roc
+
+    from graphids.core.preprocessing.datamodule import make_graph_loader
+
+    trainer = _eval_trainer()
+    loader = make_graph_loader(data, batch_size=batch_size)
+    preds = trainer.predict(module, dataloaders=loader)
+
+    scores = torch.cat([p[score_key] for p in preds]).cpu()
+    labels = torch.cat([p["labels"] for p in preds]).cpu()
+
+    if len(scores) == 0:
+        return 0.5, 0.0
+    if labels.unique().numel() < 2:
+        return float(scores.median()), 0.0
+
+    fpr_v, tpr_v, thresholds_v = binary_roc(scores, labels.long())
+    j_scores = tpr_v - fpr_v
+
+    if len(j_scores) == 0 or len(thresholds_v) == 0:
+        return float(scores.median()), 0.0
+
+    best_idx = torch.argmax(j_scores).item()
+    thresh = float(thresholds_v[best_idx]) if best_idx < len(thresholds_v) else float(scores.median())
+    return thresh, float(j_scores[best_idx])
+
+
 def test_model(module, data, batch_size: int = 256, *, trainer=None) -> dict:
     """Run trainer.test() on a module and return metrics.
 
@@ -186,3 +230,84 @@ def gpu_cleanup(*objs):
     _gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+# ---------------------------------------------------------------------------
+# Model loading + KD preparation (used by pipeline and module __init__)
+# ---------------------------------------------------------------------------
+
+
+def load_inner_model(
+    model_type: str, ckpt_path, device,
+) -> tuple[torch.nn.Module, object]:
+    """Load a Lightning checkpoint, return (inner nn.Module on device in eval, hparams cfg).
+
+    Uses Lightning's load_from_checkpoint under the hood. Extracts the raw
+    nn.Module (not the LightningModule wrapper) for use as teacher / inference.
+    """
+    from pathlib import Path
+
+    from graphids.config import to_namespace
+    from graphids.core.models.registry import get_module_cls
+
+    ckpt_path = Path(ckpt_path)
+    if not ckpt_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+    module = get_module_cls(model_type).load_from_checkpoint(
+        str(ckpt_path), map_location="cpu", weights_only=True,
+    )
+    model = module.model
+    model.to(device).eval()
+    tcfg = to_namespace(module.hparams.get("cfg", {}))
+    return model, tcfg
+
+
+def prepare_kd(
+    cfg, model_type: str, device,
+) -> tuple[torch.nn.Module | None, torch.nn.Linear | None]:
+    """Resolve teacher checkpoint, load + freeze, create projection if needed.
+
+    Returns (teacher, projection) when KD is active, (None, None) otherwise.
+    Called by module __init__ or pipeline build_module.
+    """
+    from pathlib import Path
+
+    if not any(a.type == "kd" for a in cfg.get("auxiliaries", [])):
+        return None, None
+
+    kd = next(a for a in cfg.get("auxiliaries", []) if a.type == "kd")
+    if kd.get("model_path"):
+        teacher_path = Path(kd.model_path)
+    else:
+        from graphids.config import STAGE_MODEL_MAP, resolve
+        teacher_scale = kd.get("teacher_scale", "large")
+        # Find canonical stage for this model type
+        teacher_stage = next(
+            (s for s, m in STAGE_MODEL_MAP.items() if m == model_type), None,
+        )
+        if teacher_stage is None:
+            raise ValueError(f"No stage mapping for model_type '{model_type}'")
+        teacher_cfg = resolve(
+            f"model_type={model_type}", f"scale={teacher_scale}",
+            f"dataset={cfg.dataset}", f"seed={cfg.seed}",
+        )
+        teacher_path = Path(teacher_cfg.checkpoints[model_type])
+        if not teacher_path.exists():
+            raise FileNotFoundError(
+                f"Teacher checkpoint not found: {teacher_path}. "
+                f"Train {model_type}/{teacher_scale} first, or set model_path explicitly."
+            )
+
+    teacher, tcfg = load_inner_model(model_type, teacher_path, device)
+    teacher.requires_grad_(False)
+
+    # Projection layer for VGAE latent space alignment
+    projection = None
+    if model_type == "vgae":
+        s_dim = cfg.vgae.latent_dim
+        t_dim = tcfg.vgae.latent_dim
+        if s_dim != t_dim:
+            _log.info("projection_layer", student_dim=s_dim, teacher_dim=t_dim)
+            projection = torch.nn.Linear(s_dim, t_dim).to(device)
+
+    return teacher, projection

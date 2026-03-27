@@ -15,15 +15,6 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchmetrics import MetricCollection
-from torchmetrics.classification import (
-    BinaryAccuracy,
-    BinaryAUROC,
-    BinaryF1Score,
-    BinaryPrecision,
-    BinaryRecall,
-    BinarySpecificity,
-)
 
 
 class TemporalGraphClassifier(nn.Module):
@@ -174,11 +165,9 @@ class TemporalLightningModule(pl.LightningModule):
 
         self.cfg = cfg
         self.model = self._build_model(cfg, gat_ckpt_path)
-        self.test_metrics = MetricCollection({
-            "accuracy": BinaryAccuracy(), "f1": BinaryF1Score(),
-            "precision": BinaryPrecision(), "recall": BinaryRecall(),
-            "specificity": BinarySpecificity(), "auc": BinaryAUROC(),
-        })
+
+        from ._training import binary_test_metrics
+        self.test_metrics = binary_test_metrics()
 
     # ------------------------------------------------------------------
     # Model construction

@@ -15,7 +15,7 @@ import torch.nn as nn
 from torch_geometric.nn import global_mean_pool
 
 from ._conv import InputEncoder, build_encoder_stack, conv_forward, resolve_edge_dim
-from ._training import OOMSkipMixin, binary_test_metrics
+from ._training import OOMSkipMixin, binary_test_metrics, find_threshold as _find_threshold
 
 
 class GraphInfomaxModel(nn.Module):
@@ -214,32 +214,7 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
 
     def find_threshold(self, data: list, batch_size: int = 256) -> tuple[float, float]:
         """Find optimal anomaly threshold via Youden's J on validation data."""
-        from torchmetrics.functional.classification import binary_roc
-
-        from graphids.core.preprocessing.datamodule import make_graph_loader
-
-        trainer = pl.Trainer(
-            accelerator="auto", devices="auto",
-            logger=False, enable_checkpointing=False, enable_progress_bar=False,
-        )
-        loader = make_graph_loader(data, batch_size=batch_size)
-        preds = trainer.predict(self, dataloaders=loader)
-
-        scores = torch.cat([p["scores"] for p in preds]).cpu()
-        labels = torch.cat([p["labels"] for p in preds]).cpu()
-
-        if len(scores) == 0:
-            return 0.5, 0.0
-        if labels.unique().numel() < 2:
-            return float(scores.median()), 0.0
-
-        fpr_v, tpr_v, thresholds_v = binary_roc(scores, labels.long())
-        j_scores = tpr_v - fpr_v
-        if len(j_scores) == 0 or len(thresholds_v) == 0:
-            return float(scores.median()), 0.0
-        best_idx = torch.argmax(j_scores).item()
-        thresh = float(thresholds_v[best_idx]) if best_idx < len(thresholds_v) else float(scores.median())
-        return thresh, float(j_scores[best_idx])
+        return _find_threshold(self, data, score_key="scores", batch_size=batch_size)
 
     @classmethod
     def evaluate(cls, cfg, val_data, test_scenarios, device, *, load_model_fn) -> dict:

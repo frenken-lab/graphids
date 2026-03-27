@@ -10,7 +10,7 @@ from ._conv import InputEncoder, build_conv_stack, build_encoder_stack, _make_co
 from ._training import (
     OOMSkipMixin, soft_label_kd_loss, teacher_on_device,
     compute_node_budget, NodeBudgetInfo,
-    binary_test_metrics,
+    binary_test_metrics, find_threshold,
 )
 
 
@@ -518,35 +518,7 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
 
     def find_threshold(self, data: list, batch_size: int = 256) -> tuple[float, float]:
         """Find optimal anomaly threshold via Youden's J on validation data."""
-        import pytorch_lightning as _pl
-        from torchmetrics.functional.classification import binary_roc
-
-        from graphids.core.preprocessing.datamodule import make_graph_loader
-
-        trainer = _pl.Trainer(
-            accelerator="auto", devices="auto",
-            logger=False, enable_checkpointing=False, enable_progress_bar=False,
-        )
-        loader = make_graph_loader(data, batch_size=batch_size)
-        preds = trainer.predict(self, dataloaders=loader)
-
-        errors = torch.cat([p["errors"] for p in preds]).cpu()
-        labels = torch.cat([p["labels"] for p in preds]).cpu()
-
-        if len(errors) == 0:
-            return 0.5, 0.0
-        if labels.unique().numel() < 2:
-            return float(errors.median()), 0.0
-
-        fpr_v, tpr_v, thresholds_v = binary_roc(errors, labels.long())
-        j_scores = tpr_v - fpr_v
-
-        if len(j_scores) == 0 or len(thresholds_v) == 0:
-            return float(errors.median()), 0.0
-
-        best_idx = torch.argmax(j_scores).item()
-        thresh = float(thresholds_v[best_idx]) if best_idx < len(thresholds_v) else float(errors.median())
-        return thresh, float(j_scores[best_idx])
+        return find_threshold(self, data, score_key="errors", batch_size=batch_size)
 
     @classmethod
     def evaluate(cls, cfg, val_data, test_scenarios, device, *, load_model_fn) -> dict:
