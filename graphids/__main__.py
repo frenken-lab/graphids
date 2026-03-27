@@ -1,6 +1,4 @@
-"""
-CLI entry point: LightningCLI for training, jsonargparse for manifest ops.
-"""
+"""CLI entry point: LightningCLI with linked args for DRY config."""
 
 from __future__ import annotations
 
@@ -26,7 +24,15 @@ if __name__ == "__main__":
     import pytorch_lightning as pl
     from pytorch_lightning.cli import LightningCLI
 
-    LightningCLI(
+    class GraphIDSCLI(LightningCLI):
+        def add_arguments_to_parser(self, parser):
+            # Set once on data, auto-copied to model — no double-passing.
+            parser.link_arguments("data.init_args.dataset", "model.init_args.dataset")
+            parser.link_arguments("data.init_args.lake_root", "model.init_args.lake_root")
+            parser.link_arguments("seed_everything", "model.init_args.seed")
+            parser.link_arguments("trainer.max_epochs", "model.init_args.training.max_epochs")
+
+    GraphIDSCLI(
         pl.LightningModule,
         pl.LightningDataModule,
         subclass_mode_model=True,
