@@ -127,7 +127,7 @@ Replaced custom DataLoader/collation/assembly with PyG APIs, adopted Lightning b
 
 ## Key Reference Documents
 
-- `ablation.yaml` — 18-config experiment manifest (built by `scripts/build_ablation.py`)
+- `ablation.yaml` — 18-config experiment manifest (built by `python -m graphids build ablation`)
 - `plans/ablation-run-001.md` — Run 001 post-mortem with efficiency analysis
 - `plans/ablation-001-training-efficiency.md` — Research: VRAM, GPS OOM, data staging
 - `graphids/pipeline/manifest.py` — orchestrator

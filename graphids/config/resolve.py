@@ -65,25 +65,31 @@ def resolve(*overrides: str) -> Namespace:
     presets = yaml.safe_load(presets_path.read_text()) if presets_path.exists() else {}
     preset = presets.get(preset_key, {})
     config_files = []
+    tmp_path = None
     if preset:
         tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False)
         yaml.dump(preset, tmp, default_flow_style=False)
         tmp.close()
-        config_files = [tmp.name]
+        tmp_path = tmp.name
+        config_files = [tmp_path]
 
-    parser = ArgumentParser(default_config_files=config_files, env_prefix="KD_GAT", default_env=True)
-    parser.add_class_arguments(Config, nested_key=None)
+    try:
+        parser = ArgumentParser(default_config_files=config_files, env_prefix="KD_GAT", default_env=True)
+        parser.add_class_arguments(Config, nested_key=None)
 
-    # Inject pipeline-derived defaults (pipeline.yaml is the source of truth)
-    parser.set_defaults({
-        "model_type": DEFAULT_MODEL_TYPE,
-        "scale": DEFAULT_SCALE,
-        "stage": DEFAULT_STAGE,
-        "dataset": DEFAULT_DATASET,
-    })
+        # Inject pipeline-derived defaults (pipeline.yaml is the source of truth)
+        parser.set_defaults({
+            "model_type": DEFAULT_MODEL_TYPE,
+            "scale": DEFAULT_SCALE,
+            "stage": DEFAULT_STAGE,
+            "dataset": DEFAULT_DATASET,
+        })
 
-    args = [f"--{o}" if "=" in o and not o.startswith("-") else o for o in overrides]
-    cfg = parser.parse_args(args)
+        args = [f"--{o}" if "=" in o and not o.startswith("-") else o for o in overrides]
+        cfg = parser.parse_args(args)
+    finally:
+        if tmp_path:
+            os.unlink(tmp_path)
 
     _compute_derived(cfg)
     return cfg
