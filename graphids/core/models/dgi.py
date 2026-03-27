@@ -156,13 +156,19 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
         from graphids.config import to_namespace
         cfg = to_namespace(cfg)
         self.save_hyperparameters({"cfg": cfg.as_dict()}, ignore=["teacher", "projection"])
-        num_ids, in_channels = cfg.num_ids, cfg.in_channels
         self.cfg = cfg
-        self.model = GraphInfomaxModel.from_config(cfg, num_ids, in_channels)
-        if cfg.training.compile_model and hasattr(torch, "compile"):
-            self.model = torch.compile(self.model, dynamic=True)
+        self.model = None
         self.test_threshold: float | None = None
         self.test_metrics = binary_test_metrics()
+        if cfg.num_ids > 0:
+            self.build_model()
+
+    def build_model(self):
+        """Construct the inner nn.Module. Called by PopulateAndBuild callback or eagerly."""
+        cfg = self.cfg
+        self.model = GraphInfomaxModel.from_config(cfg, cfg.num_ids, cfg.in_channels)
+        if cfg.training.compile_model and hasattr(torch, "compile"):
+            self.model = torch.compile(self.model, dynamic=True)
 
     def forward(self, batch):
         edge_attr = getattr(batch, "edge_attr", None)

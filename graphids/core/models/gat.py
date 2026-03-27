@@ -248,11 +248,8 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
         from graphids.config import to_namespace
         cfg = to_namespace(cfg)
         self.save_hyperparameters({"cfg": cfg.as_dict()}, ignore=["teacher", "projection", "num_classes"])
-        num_ids, in_channels = cfg.num_ids, cfg.in_channels
         self.cfg = cfg
-        self.model = GATWithJK.from_config(cfg, num_ids, in_channels)
-        if cfg.training.compile_model and hasattr(torch, "compile"):
-            self.model = torch.compile(self.model, dynamic=True)
+        self.model = None
         self.teacher = teacher
         self._teacher_on_cpu = False
         self.test_metrics = binary_test_metrics()
@@ -264,6 +261,18 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
             self.loss_fn = functools.partial(focal_loss, gamma=cfg.training.focal_gamma)
         else:
             self.loss_fn = F.cross_entropy
+        if cfg.num_ids > 0:
+            self.build_model()
+
+    def build_model(self):
+        """Construct the inner nn.Module + resolve KD teacher if configured."""
+        from ._training import prepare_kd
+        cfg = self.cfg
+        self.model = GATWithJK.from_config(cfg, cfg.num_ids, cfg.in_channels)
+        if cfg.training.compile_model and hasattr(torch, "compile"):
+            self.model = torch.compile(self.model, dynamic=True)
+        if self.teacher is None:
+            self.teacher, _ = prepare_kd(cfg, cfg.model_type, torch.device("cpu"))
 
     def forward(self, batch):
         return self.model(batch)

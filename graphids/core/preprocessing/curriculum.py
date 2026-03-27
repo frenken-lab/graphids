@@ -84,6 +84,39 @@ class CurriculumDataModule(pl.LightningDataModule):
     which graphs are yielded based on difficulty progression.
     """
 
+    @classmethod
+    def from_cfg(cls, cfg, raw_dm=None, *, load_model_fn=None) -> CurriculumDataModule:
+        """Build from config: load VGAE, score difficulty, construct DM.
+
+        If raw_dm is not provided, builds CANBusDataModule internally.
+        If load_model_fn is not provided, uses pipeline.stages.runner.load_model.
+        """
+        import gc
+
+        if raw_dm is None:
+            from graphids.core.preprocessing.datamodule import CANBusDataModule
+            raw_dm = CANBusDataModule.from_cfg(cfg)
+            raw_dm.setup("fit")
+            raw_dm.populate_config(cfg)
+
+        if load_model_fn is None:
+            from graphids.core.models._training import load_inner_model
+            from pathlib import Path
+            def load_model_fn(c, model_type, device):
+                model, _ = load_inner_model(model_type, Path(c.checkpoints[model_type]), device)
+                return model
+
+        device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+        vgae = load_model_fn(cfg, "vgae", device)
+        normals = [g for g in raw_dm.train_dataset if int(g.y[0]) == 0]
+        attacks = [g for g in raw_dm.train_dataset if int(g.y[0]) == 1]
+        scores = vgae.score_difficulty(normals, canid_weight=cfg.vgae.canid_weight)
+        del vgae
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return cls(normals, attacks, scores, list(raw_dm.val_dataset), cfg)
+
     def __init__(self, normals, attacks, scores, val_data, cfg):
         super().__init__()
         self.val_data = val_data

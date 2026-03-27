@@ -119,6 +119,13 @@ class TrainingConfig:
     loss_fn: str = "ce"  # ce | weighted_ce | focal
     loss_weight: float = 10.0  # weight for minority (attack) class in weighted_ce
     focal_gamma: float = 2.0  # focusing parameter for focal loss
+    # Callback toggles (control which Lightning callbacks are active)
+    swa_enabled: bool = True
+    swa_lrs: float = 0.001
+    swa_epoch_start: float = 0.75
+    device_stats: bool = True
+    lr_monitor: bool = True
+    lr_monitor_interval: str = "step"
 
 
 @dataclass
