@@ -247,7 +247,6 @@ def load_inner_model(
     """
     from pathlib import Path
 
-    from graphids.config import to_namespace
     from graphids.core.models.registry import get_module_cls
 
     ckpt_path = Path(ckpt_path)
@@ -258,8 +257,7 @@ def load_inner_model(
     )
     model = module.model
     model.to(device).eval()
-    tcfg = to_namespace(module.hparams.get("cfg", {}))
-    return model, tcfg
+    return model, module.hparams
 
 
 def prepare_kd(
@@ -279,19 +277,12 @@ def prepare_kd(
     if kd.get("model_path"):
         teacher_path = Path(kd.model_path)
     else:
-        from graphids.config import STAGE_MODEL_MAP, resolve
+        from graphids.config import checkpoint_path
         teacher_scale = kd.get("teacher_scale", "large")
-        # Find canonical stage for this model type
-        teacher_stage = next(
-            (s for s, m in STAGE_MODEL_MAP.items() if m == model_type), None,
+        teacher_path = checkpoint_path(
+            cfg.lake_root, cfg.dataset, model_type, teacher_scale, cfg.seed, cfg,
+            gat_stage=getattr(cfg, "gat_stage", "curriculum"),
         )
-        if teacher_stage is None:
-            raise ValueError(f"No stage mapping for model_type '{model_type}'")
-        teacher_cfg = resolve(
-            f"model_type={model_type}", f"scale={teacher_scale}",
-            f"dataset={cfg.dataset}", f"seed={cfg.seed}",
-        )
-        teacher_path = Path(teacher_cfg.checkpoints[model_type])
         if not teacher_path.exists():
             raise FileNotFoundError(
                 f"Teacher checkpoint not found: {teacher_path}. "

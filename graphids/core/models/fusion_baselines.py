@@ -214,25 +214,35 @@ class RLFusionModule(pl.LightningModule):
     ``save_hyperparameters`` / ``load_from_checkpoint``.
     """
 
-    def __init__(self, cfg, method: str = "dqn", device: str = "cpu"):
+    def __init__(
+        self,
+        fusion: FusionConfig = None,
+        dqn: DQNConfig = None,
+        bandit: BanditConfig = None,
+        method: str = "dqn",
+        device: str = "cpu",
+    ):
         super().__init__()
-        from graphids.config import to_namespace
-        cfg = to_namespace(cfg)
-
-        self.save_hyperparameters({"cfg": cfg.as_dict()})
+        from graphids.config.defaults.schema import (
+            BanditConfig as _BC, DQNConfig as _DC, FusionConfig as _FC,
+        )
+        if fusion is None:
+            fusion = _FC()
+        if dqn is None:
+            dqn = _DC()
+        if bandit is None:
+            bandit = _BC()
+        self.save_hyperparameters()
 
         self.automatic_optimization = False
-        self.cfg = cfg
 
-        # Build agent from config
+        # Build agent — agents read from self.hparams (fusion.*, dqn.*, bandit.*)
         if method == "dqn":
             from .dqn import EnhancedDQNFusionAgent
-
-            agent = EnhancedDQNFusionAgent.from_config(cfg, device=device)
+            agent = EnhancedDQNFusionAgent.from_config(self.hparams, device=device)
         elif method == "bandit":
             from .bandit import NeuralLinUCBAgent
-
-            agent = NeuralLinUCBAgent.from_config(cfg, device=device)
+            agent = NeuralLinUCBAgent.from_config(self.hparams, device=device)
         else:
             raise ValueError(f"RLFusionModule only handles dqn/bandit, got: {method}")
 
@@ -288,20 +298,5 @@ class RLFusionModule(pl.LightningModule):
     def configure_optimizers(self):
         return getattr(self.agent, self._optimizer_attr)
 
-
-def build_fusion_module(cfg, device: torch.device) -> pl.LightningModule:
-    """Build a fusion Lightning module for training (no checkpoint)."""
-    method = cfg.fusion.method
-    if method == "dqn":
-        return RLFusionModule(cfg, method="dqn", device=str(device))
-    elif method == "bandit":
-        return RLFusionModule(cfg, method="bandit", device=str(device))
-    elif method == "mlp":
-        from .registry import fusion_state_dim
-        return MLPFusionModule(state_dim=fusion_state_dim(), hidden_dims=cfg.fusion.mlp_hidden_dims, lr=cfg.fusion.lr)
-    elif method == "weighted_avg":
-        return WeightedAvgModule(lr=cfg.fusion.lr, decision_threshold=cfg.fusion.decision_threshold)
-    else:
-        raise ValueError(f"Unknown fusion method: {method}")
 
 

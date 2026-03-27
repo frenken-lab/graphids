@@ -85,37 +85,25 @@ class CurriculumDataModule(pl.LightningDataModule):
     """
 
     @classmethod
-    def from_cfg(cls, cfg, raw_dm=None, *, load_model_fn=None) -> CurriculumDataModule:
-        """Build from config: load VGAE, score difficulty, construct DM.
-
-        If raw_dm is not provided, builds CANBusDataModule internally.
-        If load_model_fn is not provided, uses pipeline.stages.runner.load_model.
-        """
+    def from_cfg(cls, cfg) -> CurriculumDataModule:
+        """Build from config: load datasets, score difficulty with VGAE, construct DM."""
         import gc
+        from pathlib import Path
 
-        if raw_dm is None:
-            from graphids.core.preprocessing.datamodule import CANBusDataModule
-            raw_dm = CANBusDataModule.from_cfg(cfg)
-            raw_dm.setup("fit")
-            raw_dm.populate_config(cfg)
+        from graphids.core.models._training import load_inner_model
+        from graphids.core.preprocessing.datamodule import load_datasets
 
-        if load_model_fn is None:
-            from graphids.core.models._training import load_inner_model
-            from pathlib import Path
-            def load_model_fn(c, model_type, device):
-                model, _ = load_inner_model(model_type, Path(c.checkpoints[model_type]), device)
-                return model
-
+        train_ds, val_ds, _ = load_datasets(cfg)
         device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
-        vgae = load_model_fn(cfg, "vgae", device)
-        normals = [g for g in raw_dm.train_dataset if int(g.y[0]) == 0]
-        attacks = [g for g in raw_dm.train_dataset if int(g.y[0]) == 1]
+        vgae, _ = load_inner_model("vgae", Path(cfg.checkpoints["vgae"]), device)
+        normals = [g for g in train_ds if int(g.y[0]) == 0]
+        attacks = [g for g in train_ds if int(g.y[0]) == 1]
         scores = vgae.score_difficulty(normals, canid_weight=cfg.vgae.canid_weight)
         del vgae
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        return cls(normals, attacks, scores, list(raw_dm.val_dataset), cfg)
+        return cls(normals, attacks, scores, list(val_ds), cfg)
 
     def __init__(self, normals, attacks, scores, val_data, cfg):
         super().__init__()

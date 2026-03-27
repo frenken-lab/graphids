@@ -151,23 +151,39 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
     low discriminator agreement → anomalous graph.
     """
 
-    def __init__(self, cfg, teacher=None, projection=None):
+    def __init__(
+        self,
+        dgi: DGIConfig = None,
+        training: TrainingConfig = None,
+        num_ids: int = 0,
+        in_channels: int = 0,
+        num_classes: int = 2,
+    ):
         super().__init__()
-        from graphids.config import to_namespace
-        cfg = to_namespace(cfg)
-        self.save_hyperparameters({"cfg": cfg.as_dict()}, ignore=["teacher", "projection"])
-        self.cfg = cfg
+        from graphids.config.defaults.schema import DGIConfig as _DC, TrainingConfig as _TC
+        if dgi is None:
+            dgi = _DC()
+        if training is None:
+            training = _TC()
+        self.save_hyperparameters()
         self.model = None
         self.test_threshold: float | None = None
         self.test_metrics = binary_test_metrics()
-        if cfg.num_ids > 0:
-            self.build_model()
+        if num_ids > 0:
+            self._build()
 
-    def build_model(self):
-        """Construct the inner nn.Module. Called by PopulateAndBuild callback or eagerly."""
-        cfg = self.cfg
-        self.model = GraphInfomaxModel.from_config(cfg, cfg.num_ids, cfg.in_channels)
-        if cfg.training.compile_model and hasattr(torch, "compile"):
+    def setup(self, stage=None):
+        if self.model is None:
+            dm = self.trainer.datamodule
+            self.hparams.num_ids = dm.num_ids
+            self.hparams.in_channels = dm.in_channels
+            self.hparams.num_classes = dm.num_classes
+            self._build()
+
+    def _build(self):
+        hp = self.hparams
+        self.model = GraphInfomaxModel.from_config(hp, hp.num_ids, hp.in_channels)
+        if hp.training.compile_model and hasattr(torch, "compile"):
             self.model = torch.compile(self.model, dynamic=True)
 
     def forward(self, batch):
@@ -245,5 +261,5 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
         return {"val_metrics": val_metrics, "test_metrics": scenario_metrics, "artifacts": None}
 
     def configure_optimizers(self):
-        opt = torch.optim.Adam(self.parameters(), lr=self.cfg.training.lr, weight_decay=self.cfg.training.weight_decay)
+        opt = torch.optim.Adam(self.parameters(), lr=self.hparams.training.lr, weight_decay=self.hparams.training.weight_decay)
         return opt

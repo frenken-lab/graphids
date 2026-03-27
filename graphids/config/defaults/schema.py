@@ -173,33 +173,3 @@ class PreprocessingConfig:
     window_size: int = 100
     stride: int = 100
     train_val_split: float = 0.8
-
-
-@dataclass
-class Config:
-    # Defaults for these come from pipeline.yaml / datasets.yaml via constants.py.
-    # resolve() injects them with parser.set_defaults() before parsing.
-    dataset: str = ""
-    model_type: str = ""
-    scale: str = ""
-    stage: str = ""
-    gat_stage: str = "curriculum"
-    seed: int = 42
-    lake_root: str = "experimentruns"
-    device: str = "cuda"
-    num_workers: int = 4
-    production: bool = False
-    auxiliaries: list = field(default_factory=list)
-    num_ids: int = 0
-    in_channels: int = 0
-    num_classes: int = 2
-    vgae: VGAEConfig = field(default_factory=VGAEConfig)
-    gat: GATConfig = field(default_factory=GATConfig)
-    dqn: DQNConfig = field(default_factory=DQNConfig)
-    dgi: DGIConfig = field(default_factory=DGIConfig)
-    bandit: BanditConfig = field(default_factory=BanditConfig)
-    training: TrainingConfig = field(default_factory=TrainingConfig)
-    evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
-    fusion: FusionConfig = field(default_factory=FusionConfig)
-    temporal: TemporalConfig = field(default_factory=TemporalConfig)
-    preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)

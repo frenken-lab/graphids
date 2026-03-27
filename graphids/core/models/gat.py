@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import functools
 from dataclasses import dataclass
 
@@ -243,36 +245,60 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
       total = alpha * kd_loss + (1-alpha) * task_loss
     """
 
-    def __init__(self, cfg, num_classes: int = 2, teacher: nn.Module | None = None, projection: nn.Module | None = None):
+    def __init__(
+        self,
+        gat: GATConfig = None,
+        training: TrainingConfig = None,
+        model_type: str = "gat",
+        lake_root: str = "experimentruns",
+        dataset: str = "",
+        seed: int = 42,
+        gat_stage: str = "curriculum",
+        auxiliaries: list = None,
+        num_ids: int = 0,
+        in_channels: int = 0,
+        num_classes: int = 2,
+    ):
         super().__init__()
-        from graphids.config import to_namespace
-        cfg = to_namespace(cfg)
-        self.save_hyperparameters({"cfg": cfg.as_dict()}, ignore=["teacher", "projection", "num_classes"])
-        self.cfg = cfg
+        from graphids.config.defaults.schema import GATConfig as _GC, TrainingConfig as _TC
+        if gat is None:
+            gat = _GC()
+        if training is None:
+            training = _TC()
+        if auxiliaries is None:
+            auxiliaries = []
+        self.save_hyperparameters()
         self.model = None
-        self.teacher = teacher
+        self.teacher = None
         self._teacher_on_cpu = False
         self.test_metrics = binary_test_metrics()
-        loss_name = cfg.training.loss_fn
+        loss_name = training.loss_fn
         if loss_name == "weighted_ce":
-            w = torch.tensor([1.0, cfg.training.loss_weight])
+            w = torch.tensor([1.0, training.loss_weight])
             self.loss_fn = nn.CrossEntropyLoss(weight=w)
         elif loss_name == "focal":
-            self.loss_fn = functools.partial(focal_loss, gamma=cfg.training.focal_gamma)
+            self.loss_fn = functools.partial(focal_loss, gamma=training.focal_gamma)
         else:
             self.loss_fn = F.cross_entropy
-        if cfg.num_ids > 0:
-            self.build_model()
+        if num_ids > 0:
+            self._build()
 
-    def build_model(self):
-        """Construct the inner nn.Module + resolve KD teacher if configured."""
+    def setup(self, stage=None):
+        if self.model is None:
+            dm = self.trainer.datamodule
+            self.hparams.num_ids = dm.num_ids
+            self.hparams.in_channels = dm.in_channels
+            self.hparams.num_classes = dm.num_classes
+            self._build()
+
+    def _build(self):
         from ._training import prepare_kd
-        cfg = self.cfg
-        self.model = GATWithJK.from_config(cfg, cfg.num_ids, cfg.in_channels)
-        if cfg.training.compile_model and hasattr(torch, "compile"):
+        hp = self.hparams
+        self.model = GATWithJK.from_config(hp, hp.num_ids, hp.in_channels)
+        if hp.training.compile_model and hasattr(torch, "compile"):
             self.model = torch.compile(self.model, dynamic=True)
         if self.teacher is None:
-            self.teacher, _ = prepare_kd(cfg, cfg.model_type, torch.device("cpu"))
+            self.teacher, _ = prepare_kd(hp, hp.model_type, torch.device("cpu"))
 
     def forward(self, batch):
         return self.model(batch)
@@ -282,7 +308,7 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
         task_loss = self.loss_fn(logits, batch.y)
         acc = (logits.argmax(1) == batch.y).float().mean()
         if self.teacher is not None:
-            kd = next(a for a in self.cfg.get("auxiliaries", []) if a.type == "kd")
+            kd = next(a for a in self.hparams.get("auxiliaries", []) if a.type == "kd")
             with teacher_on_device(self, batch.x.device):
                 with torch.no_grad():
                     t_logits = self.teacher(batch)
@@ -336,5 +362,5 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
         return {"val_metrics": val_metrics, "test_metrics": scenario_metrics, "artifacts": gat_result}
 
     def configure_optimizers(self):
-        opt = torch.optim.Adam(self.parameters(), lr=self.cfg.training.lr, weight_decay=self.cfg.training.weight_decay)
+        opt = torch.optim.Adam(self.parameters(), lr=self.hparams.training.lr, weight_decay=self.hparams.training.weight_decay)
         return opt

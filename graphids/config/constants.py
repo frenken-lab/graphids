@@ -123,3 +123,21 @@ def compute_identity_hash(stage: str, cfg) -> str:
         structlog.get_logger().warning("identity_key_unresolved", stage=stage, keys=unresolved)
     pairs = [f"{k}={_get(k, '_default_')}" for k in sorted(keys)]
     return "_" + hashlib.sha256("|".join(pairs).encode()).hexdigest()[:8]
+
+
+# Model type → canonical training stage
+_CKPT_STAGES = {"vgae": "autoencoder", "gat": "curriculum", "dqn": "fusion", "dgi": "autoencoder", "temporal": "temporal"}
+_CKPT_MODEL = {"temporal": "gat"}
+
+
+def checkpoint_path(lake_root: str, dataset: str, model_type: str, scale: str,
+                    seed: int, cfg, *, gat_stage: str = "curriculum") -> Path:
+    """Compute the expected checkpoint path for a trained model."""
+    user = os.environ.get("USER", "unknown")
+    output_base = f"{lake_root}/dev/{user}/{dataset}"
+    stage = _CKPT_STAGES.get(model_type, model_type)
+    if model_type == "gat":
+        stage = gat_stage
+    model_dir = _CKPT_MODEL.get(model_type, model_type)
+    identity = compute_identity_hash(stage, cfg)
+    return Path(f"{output_base}/{model_dir}_{scale}_{stage}{identity}/seed_{seed}/best_model.ckpt")

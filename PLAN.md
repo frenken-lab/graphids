@@ -50,6 +50,21 @@
 - Ablation Run 003 — training COMPLETED (2026-03-25), eval needs resubmit (weights_only fix)
 - Ops dashboard (`buckeyeguy/kd-gat-dashboard`) — running on HF Spaces
 
+### Lightning callback extraction (2026-03-27) — DONE
+
+Replaced handrolled runner.py orchestration with Lightning callbacks + LightningCLI.
+
+**New files:**
+- `graphids/pipeline/callbacks.py` — RunDirectorySetup, PopulateAndBuild, DuckDBCatalog
+- `graphids/pipeline/cli.py` — GraphIDSCLI (LightningCLI subclass, Trainer-from-config)
+
+**Refactored:**
+- runner.py: 359→238 lines. `_train` delegates to `cli.train_stage`
+- Modules: deferred `build_model()`, self-resolving KD teacher via `prepare_kd`
+- CurriculumDataModule: self-contained `from_cfg()` (builds raw DM + VGAE internally)
+- Configurable callbacks: `swa_enabled`, `device_stats`, `lr_monitor` in TrainingConfig
+- Shared `find_threshold()` extracted from VGAE/DGI into `_training.py`
+
 ### Config system rewrite (2026-03-26) — DONE
 
 Replaced Hydra/OmegaConf with jsonargparse + plain YAML. Then reorganized

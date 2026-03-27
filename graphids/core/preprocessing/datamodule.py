@@ -8,8 +8,7 @@ from __future__ import annotations
 
 import gc
 import math
-from typing import TYPE_CHECKING
-
+from pathlib import Path
 import pytorch_lightning as pl
 import structlog
 import torch
@@ -48,8 +47,6 @@ def make_graph_loader(
     return PyGDataLoader(dataset, batch_size=batch_size, shuffle=shuffle, **common)
 
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
 
 log = structlog.get_logger()
 
@@ -58,6 +55,34 @@ def _load_catalog() -> dict:
     import yaml
 
     return yaml.safe_load(CATALOG_PATH.read_text())
+
+
+def load_datasets(cfg) -> tuple[CANBusDataset, CANBusDataset, dict[str, CANBusDataset]]:
+    """Load train/val/test datasets from cache. No DataModule needed.
+
+    Returns (train_ds, val_ds, {name: test_ds}).
+    """
+    pre = cfg.preprocessing
+    root = cache_dir(cfg.lake_root, cfg.dataset)
+    raw = data_dir(cfg.lake_root, cfg.dataset)
+    common = dict(
+        window_size=pre.window_size, stride=pre.stride,
+        val_fraction=1.0 - pre.train_val_split, seed=cfg.seed,
+    )
+    train_ds = CANBusDataset(root=root, raw_dir=raw, split="train", **common)
+    train_ds._data_list = None
+    val_ds = CANBusDataset(root=root, raw_dir=raw, split="val", **common)
+    val_ds._data_list = None
+
+    test_datasets = {}
+    catalog = _load_catalog()
+    entry = catalog[cfg.dataset]
+    for subdir in entry.get("test_subdirs", []):
+        test_raw = raw / subdir
+        if test_raw.exists():
+            test_datasets[subdir] = CANBusDataset(root=root, raw_dir=test_raw, split="test", **common)
+
+    return train_ds, val_ds, test_datasets
 
 
 class CANBusDataModule(pl.LightningDataModule):
@@ -113,31 +138,16 @@ class CANBusDataModule(pl.LightningDataModule):
         )
 
     def setup(self, stage: str | None = None) -> None:
+        import types
         hp = self.hparams
-        root = cache_dir(hp["lake_root"], hp["dataset"])
-        raw = data_dir(hp["lake_root"], hp["dataset"])
-        common = dict(
-            window_size=hp["window_size"],
-            stride=hp["stride"],
-            val_fraction=hp["val_fraction"],
-            seed=hp["seed"],
+        cfg = types.SimpleNamespace(
+            dataset=hp["dataset"], lake_root=hp["lake_root"], seed=hp["seed"],
+            preprocessing=types.SimpleNamespace(
+                window_size=hp["window_size"], stride=hp["stride"],
+                train_val_split=1.0 - hp["val_fraction"],
+            ),
         )
-        if stage in ("fit", None):
-            self._train_ds = CANBusDataset(root=root, raw_dir=raw, split="train", **common)
-            self._train_ds._data_list = None  # prevent _data_list bloat (~3-5GB)
-            self._val_ds = CANBusDataset(root=root, raw_dir=raw, split="val", **common)
-            self._val_ds._data_list = None
-        if stage in ("test", None):
-            catalog = _load_catalog()
-            entry = catalog[hp["dataset"]]
-            for subdir in entry.get("test_subdirs", []):
-                test_raw = raw / subdir
-                if not test_raw.exists():
-                    log.warning("test_subdir_missing", subdir=subdir, raw_dir=str(raw))
-                    continue
-                self._test_datasets[subdir] = CANBusDataset(
-                    root=root, raw_dir=test_raw, split="test", **common,
-                )
+        self._train_ds, self._val_ds, self._test_datasets = load_datasets(cfg)
 
     # -- Properties (available after setup) -----------------------------------
 
@@ -185,18 +195,6 @@ class CANBusDataModule(pl.LightningDataModule):
         assert ds is not None, "call setup() first"
         return ds[0].edge_attr.shape[1] if len(ds) > 0 else EDGE_FEATURE_COUNT
 
-    def populate_config(self, cfg) -> None:
-        """Write data-derived dimensions (num_ids, in_channels, num_classes) into cfg.
-
-        Must be called after setup(). Works with any config type that supports
-        attribute assignment.
-        """
-        cfg.num_ids = self.num_ids
-        cfg.in_channels = self.in_channels
-        cfg.num_classes = self.num_classes
-        cfg.vgae.edge_dim = self.edge_dim
-        cfg.gat.edge_dim = self.edge_dim
-
     # -- DataLoaders ----------------------------------------------------------
 
     def train_dataloader(self):
@@ -238,10 +236,9 @@ class FusionDataModule(pl.LightningDataModule):
     Wraps CANBusDataModule internally — callers never touch raw graph data.
     """
 
-    def __init__(self, cfg, load_model_fn: Callable):
+    def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
-        self._load_model = load_model_fn
         self._device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
         is_rl = cfg.fusion.method in ("dqn", "bandit")
         self._batch_size = cfg.fusion.episode_sample_size if is_rl else cfg.dqn.batch_size
@@ -285,19 +282,18 @@ class FusionDataModule(pl.LightningDataModule):
         return {"states": torch.cat(states), "labels": torch.cat(labels)}
 
     def setup(self, stage=None):
-        raw_dm = CANBusDataModule.from_cfg(self.cfg)
-        raw_dm.setup("fit")
-        raw_dm.populate_config(self.cfg)
+        train_ds, val_ds, _ = load_datasets(self.cfg)
 
-        vgae = self._load_model(self.cfg, "vgae", self._device)
-        gat = self._load_model(self.cfg, "gat", self._device)
+        from graphids.core.models._training import load_inner_model
+        vgae, _ = load_inner_model("vgae", Path(self.cfg.checkpoints["vgae"]), self._device)
+        gat, _ = load_inner_model("gat", Path(self.cfg.checkpoints["gat"]), self._device)
         models = {"vgae": vgae, "gat": gat}
         bs = self.cfg.evaluation.batch_size
         self.train_cache = self.cache_predictions(
-            models, list(raw_dm.train_dataset), self._device, self.cfg.fusion.max_samples, batch_size=bs,
+            models, list(train_ds), self._device, self.cfg.fusion.max_samples, batch_size=bs,
         )
         self.val_cache = self.cache_predictions(
-            models, list(raw_dm.val_dataset), self._device, self.cfg.fusion.max_val_samples, batch_size=bs,
+            models, list(val_ds), self._device, self.cfg.fusion.max_val_samples, batch_size=bs,
         )
 
         del vgae, gat, models

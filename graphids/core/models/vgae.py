@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 import numpy as np
@@ -265,7 +267,7 @@ class GraphAutoencoderNeighborhood(nn.Module):
             edge_dim=resolve_edge_dim(conv_type, cfg.vgae.edge_dim),
             proj_dim=cfg.vgae.proj_dim,
             use_checkpointing=cfg.training.gradient_checkpointing,
-            variational=cfg.vgae.get("variational", True),
+            variational=getattr(cfg.vgae, "variational", True),
         )
 
     def forward(self, x, edge_index, batch, edge_attr=None, mask_ratio: float = 0.0, node_id=None):
@@ -408,34 +410,58 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
       total = alpha * kd_loss + (1-alpha) * task_loss
     """
 
-    def __init__(self, cfg, teacher: nn.Module | None = None, projection: nn.Linear | None = None):
+    def __init__(
+        self,
+        vgae: VGAEConfig = None,
+        training: TrainingConfig = None,
+        model_type: str = "vgae",
+        lake_root: str = "experimentruns",
+        dataset: str = "",
+        seed: int = 42,
+        gat_stage: str = "curriculum",
+        auxiliaries: list = None,
+        num_ids: int = 0,
+        in_channels: int = 0,
+        num_classes: int = 2,
+    ):
         super().__init__()
-        from graphids.config import to_namespace
-        cfg = to_namespace(cfg)
-        self.save_hyperparameters({"cfg": cfg.as_dict()}, ignore=["teacher", "projection"])
-        self.cfg = cfg
+        from graphids.config.defaults.schema import VGAEConfig as _VC, TrainingConfig as _TC
+        if vgae is None:
+            vgae = _VC()
+        if training is None:
+            training = _TC()
+        if auxiliaries is None:
+            auxiliaries = []
+        self.save_hyperparameters()
         self.model = None
-        self.teacher = teacher
-        self.projection = projection
+        self.teacher = None
+        self.projection = None
         self._teacher_on_cpu = False
         self.test_threshold: float | None = None
         self.test_metrics = binary_test_metrics()
-        if cfg.num_ids > 0:
-            self.build_model()
+        if num_ids > 0:
+            self._build()
 
-    def build_model(self):
-        """Construct the inner nn.Module + resolve KD teacher if configured."""
+    def setup(self, stage=None):
+        if self.model is None:
+            dm = self.trainer.datamodule
+            self.hparams.num_ids = dm.num_ids
+            self.hparams.in_channels = dm.in_channels
+            self.hparams.num_classes = dm.num_classes
+            self._build()
+
+    def _build(self):
         from ._training import prepare_kd
-        cfg = self.cfg
-        self.model = GraphAutoencoderNeighborhood.from_config(cfg, cfg.num_ids, cfg.in_channels)
-        if cfg.training.compile_model and hasattr(torch, "compile"):
+        hp = self.hparams
+        self.model = GraphAutoencoderNeighborhood.from_config(hp, hp.num_ids, hp.in_channels)
+        if hp.training.compile_model and hasattr(torch, "compile"):
             self.model = torch.compile(self.model, dynamic=True)
         if self.teacher is None:
-            self.teacher, self.projection = prepare_kd(cfg, cfg.model_type, torch.device("cpu"))
+            self.teacher, self.projection = prepare_kd(hp, hp.model_type, torch.device("cpu"))
 
     def forward(self, batch):
         edge_attr = getattr(batch, "edge_attr", None)
-        mask_ratio = self.cfg.vgae.mask_ratio if self.training else 0.0
+        mask_ratio = self.hparams.vgae.mask_ratio if self.training else 0.0
         return self.model(
             batch.x, batch.edge_index, batch.batch,
             edge_attr=edge_attr, mask_ratio=mask_ratio, node_id=batch.node_id,
@@ -451,16 +477,16 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         canid = F.cross_entropy(canid_logits, batch.node_id)
         nbr_loss = GraphAutoencoderNeighborhood.neighborhood_loss_negsampled(
             nbr_logits, batch.node_id, batch.edge_index,
-            self.cfg.num_ids, k_neg=self.cfg.vgae.k_neg,
+            self.hparams.num_ids, k_neg=self.hparams.vgae.k_neg,
         )
-        w = self.cfg.vgae
+        w = self.hparams.vgae
         task_loss = recon + w.canid_weight * canid + w.nbr_weight * nbr_loss + w.kl_weight * kl_loss
         return task_loss, cont_out, z
 
     def _step(self, batch):
         task_loss, cont_out, z = self._task_loss(batch)
         if self.teacher is not None:
-            kd = next(a for a in self.cfg.get("auxiliaries", []) if a.type == "kd")
+            kd = next(a for a in self.hparams.get("auxiliaries", []) if a.type == "kd")
             with teacher_on_device(self, batch.x.device):
                 with torch.no_grad():
                     batch_idx = (
@@ -506,7 +532,7 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         nbr_targets = self.model.create_neighborhood_targets(batch.node_id, batch.edge_index, batch.batch)
         nbr_err = F.binary_cross_entropy_with_logits(nbr_logits, nbr_targets, reduction="none").mean(dim=1)
         nbr_per_graph = scatter(nbr_err, batch.batch, dim=0, reduce="max")
-        w = self.cfg.vgae
+        w = self.hparams.vgae
         return recon + w.canid_weight * canid_per_graph + w.nbr_weight * nbr_per_graph
 
     def test_step(self, batch, _idx):
@@ -556,5 +582,5 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         params = list(self.model.parameters())
         if self.projection is not None:
             params += list(self.projection.parameters())
-        opt = torch.optim.Adam(params, lr=self.cfg.training.lr, weight_decay=self.cfg.training.weight_decay)
+        opt = torch.optim.Adam(params, lr=self.hparams.training.lr, weight_decay=self.hparams.training.weight_decay)
         return opt

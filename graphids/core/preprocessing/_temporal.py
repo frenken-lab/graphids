@@ -15,7 +15,6 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from torch_geometric.data import Data
 
 log = structlog.get_logger()
@@ -110,10 +109,9 @@ class TemporalDataModule(pl.LightningDataModule):
     The GAT reference is stored for build_module to consume (avoids loading twice).
     """
 
-    def __init__(self, cfg, load_model_fn: Callable):
+    def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
-        self._load_model = load_model_fn
         self._device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
         self.spatial_dim: int | None = None
         self.gat: torch.nn.Module | None = None
@@ -123,25 +121,25 @@ class TemporalDataModule(pl.LightningDataModule):
         return self._device
 
     def setup(self, stage=None):
-        from .datamodule import CANBusDataModule
+        from pathlib import Path
 
-        raw_dm = CANBusDataModule.from_cfg(self.cfg)
-        raw_dm.setup("fit")
-        raw_dm.populate_config(self.cfg)
+        from graphids.core.models._training import load_inner_model
+        from .datamodule import load_datasets
 
+        train_ds, val_ds, _ = load_datasets(self.cfg)
         tc = self.cfg.temporal
 
         # Load pretrained GAT and probe spatial embedding dim
-        self.gat = self._load_model(self.cfg, "gat", self._device)
+        self.gat, _ = load_inner_model("gat", Path(self.cfg.checkpoints["gat"]), self._device)
         with torch.no_grad():
-            probe = raw_dm.train_dataset[0].clone().to(self._device, non_blocking=True)
+            probe = train_ds[0].clone().to(self._device, non_blocking=True)
             _, emb = self.gat(probe, return_embedding=True)
             self.spatial_dim = emb.shape[-1]
         log.info("spatial_embedding_dim", dim=self.spatial_dim)
 
         # Contiguous time split: first train_split% train, rest val
         grouper = TemporalGrouper(window=tc.temporal_window, stride=tc.temporal_stride)
-        all_graphs = list(raw_dm.train_dataset) + list(raw_dm.val_dataset)
+        all_graphs = list(train_ds) + list(val_ds)
         split_idx = int(len(all_graphs) * tc.train_split)
 
         self._train_sequences = grouper.group(all_graphs[:split_idx])

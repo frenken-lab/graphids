@@ -154,17 +154,28 @@ class TemporalLightningModule(pl.LightningModule):
             (weights come from the Lightning checkpoint itself).
     """
 
-    def __init__(self, cfg, gat_ckpt_path: str | None = None):
+    def __init__(
+        self,
+        temporal: TemporalConfig = None,
+        gat: GATConfig = None,
+        training: TrainingConfig = None,
+        num_ids: int = 0,
+        in_channels: int = 0,
+        num_classes: int = 2,
+        gat_ckpt_path: str | None = None,
+    ):
         super().__init__()
-        from graphids.config import to_namespace
-        cfg = to_namespace(cfg)
-
-        # cfg as plain dict; gat_ckpt_path not needed on reload (weights come
-        # from the Lightning checkpoint itself).
-        self.save_hyperparameters({"cfg": cfg.as_dict()}, ignore=["gat_ckpt_path"])
-
-        self.cfg = cfg
-        self.model = self._build_model(cfg, gat_ckpt_path)
+        from graphids.config.defaults.schema import (
+            GATConfig as _GC, TemporalConfig as _TempC, TrainingConfig as _TC,
+        )
+        if temporal is None:
+            temporal = _TempC()
+        if gat is None:
+            gat = _GC()
+        if training is None:
+            training = _TC()
+        self.save_hyperparameters(ignore=["gat_ckpt_path"])
+        self.model = self._build_model(self.hparams, gat_ckpt_path)
 
         from ._training import binary_test_metrics
         self.test_metrics = binary_test_metrics()
@@ -227,26 +238,6 @@ class TemporalLightningModule(pl.LightningModule):
         )
         return model
 
-    @classmethod
-    def from_datamodule(cls, cfg, dm) -> TemporalLightningModule:
-        """Build from config + TemporalDataModule.
-
-        Extracts the GAT checkpoint path from cfg; the DataModule is only
-        used for device placement after construction.
-        """
-        import structlog
-
-        gat_ckpt_path = str(cfg.checkpoints["gat"])
-        module = cls(cfg, gat_ckpt_path=gat_ckpt_path)
-        module.model = module.model.to(dm.device)
-        dm.gat = None  # DataModule no longer needs its GAT reference
-
-        total_params = sum(p.numel() for p in module.model.parameters())
-        trainable = sum(p.numel() for p in module.model.parameters() if p.requires_grad)
-        structlog.get_logger().info("temporal_model_params", total=total_params, trainable=trainable)
-
-        return module
-
     def forward(self, graph_sequences):
         return self.model(graph_sequences)
 
@@ -289,8 +280,8 @@ class TemporalLightningModule(pl.LightningModule):
         self.log_dict(self.test_metrics.compute())
 
     def configure_optimizers(self):
-        t = self.cfg.training
-        tc = self.cfg.temporal
+        t = self.hparams.training
+        tc = self.hparams.temporal
 
         spatial_params = list(self.model.spatial_encoder.parameters())
         temporal_params = [
