@@ -359,6 +359,7 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         gradient_checkpointing: bool = True,
         compile_model: bool = False,
         # --- identity / dynamic ---
+        scale: str = "small",
         model_type: str = "vgae",
         lake_root: str = "experimentruns",
         dataset: str = "",

@@ -10,3 +10,4 @@ model:
     fc_layers: 4
     dropout: 0.11
     proj_dim: 48
+    scale: large

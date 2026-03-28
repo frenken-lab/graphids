@@ -207,6 +207,7 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
         focal_gamma: float = 2.0,
         loss_weight: float = 10.0,
         # --- identity / dynamic ---
+        scale: str = "small",
         model_type: str = "gat",
         lake_root: str = "experimentruns",
         dataset: str = "",

@@ -9,3 +9,4 @@ model:
     embedding_dim: 32
     dropout: 0.15
     proj_dim: 48
+    scale: large

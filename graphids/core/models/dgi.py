@@ -167,7 +167,12 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
         weight_decay: float = 0.0001,
         gradient_checkpointing: bool = True,
         compile_model: bool = False,
-        # --- dynamic ---
+        # --- identity / dynamic ---
+        scale: str = "small",
+        model_type: str = "dgi",
+        lake_root: str = "experimentruns",
+        dataset: str = "",
+        seed: int = 42,
         num_ids: int = 0,
         in_channels: int = 0,
         num_classes: int = 2,
