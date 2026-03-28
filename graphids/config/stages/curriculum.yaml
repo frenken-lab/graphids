@@ -1,10 +1,11 @@
 # GAT supervised + curriculum learning. Depends on VGAE checkpoint.
-# Use with: --config configs/base.yaml --config configs/curriculum.yaml --data.init_args.vgae_ckpt_path=<path>
+# Usage: python -m graphids fit --config graphids/config/stages/curriculum.yaml
 model:
   class_path: graphids.core.models.gat.GATModule
   init_args:
-    gat: {fc_layers: 1, proj_dim: 48}
-    training: {compile_model: true}
+    fc_layers: 1
+    proj_dim: 48
+    compile_model: true
 data:
   class_path: graphids.core.preprocessing.curriculum.CurriculumDataModule
   init_args: {batch_size: 8192, num_workers: 2}

@@ -1,9 +1,11 @@
-# VGAE unsupervised training. Use with: --config configs/base.yaml --config configs/autoencoder.yaml
+# VGAE unsupervised reconstruction.
+# Usage: python -m graphids fit --config graphids/config/stages/autoencoder.yaml
 model:
   class_path: graphids.core.models.vgae.VGAEModule
   init_args:
-    vgae: {proj_dim: 48}
-    training: {lr: 0.002, compile_model: true}
+    proj_dim: 48
+    lr: 0.002
+    compile_model: true
 data:
   class_path: graphids.core.preprocessing.datamodule.CANBusDataModule
   init_args: {batch_size: 8192, num_workers: 2}

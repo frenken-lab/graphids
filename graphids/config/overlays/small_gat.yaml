@@ -1,0 +1,12 @@
+# Small-scale GAT architecture.
+# Layer on top of stages/normal.yaml or stages/curriculum.yaml:
+#   python -m graphids fit --config .../stages/normal.yaml --config .../overlays/small_gat.yaml
+model:
+  init_args:
+    hidden: 24
+    layers: 2
+    heads: 4
+    embedding_dim: 8
+    fc_layers: 2
+    dropout: 0.1
+    proj_dim: 32

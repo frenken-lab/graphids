@@ -1,0 +1,15 @@
+# Fusion stage (bandit/dqn/mlp/weighted_avg). Depends on VGAE + GAT checkpoints.
+# Usage: python -m graphids fit --config graphids/config/stages/fusion.yaml
+# Overrides trainer defaults: precision 32, shorter training, monitors val_acc.
+trainer:
+  precision: 32
+  max_epochs: 50
+  log_every_n_steps: 10
+  callbacks:
+    - class_path: pytorch_lightning.callbacks.ModelCheckpoint
+      init_args: {monitor: val_acc, mode: max, save_top_k: 1}
+model:
+  class_path: graphids.core.models.fusion_baselines.RLFusionModule
+  init_args: {method: bandit}
+data:
+  class_path: graphids.core.preprocessing.datamodule.FusionDataModule

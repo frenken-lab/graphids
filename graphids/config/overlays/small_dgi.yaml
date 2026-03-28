@@ -1,0 +1,11 @@
+# Small-scale DGI architecture.
+# Layer on top of a DGI stage config:
+#   python -m graphids fit --config .../stages/autoencoder_dgi.yaml --config .../overlays/small_dgi.yaml
+model:
+  init_args:
+    hidden_dims: [80, 40, 16]
+    latent_dim: 16
+    heads: 1
+    embedding_dim: 4
+    dropout: 0.1
+    proj_dim: 32

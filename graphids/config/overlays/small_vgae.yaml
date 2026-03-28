@@ -1,0 +1,11 @@
+# Small-scale VGAE architecture.
+# Layer on top of stages/autoencoder.yaml:
+#   python -m graphids fit --config .../stages/autoencoder.yaml --config .../overlays/small_vgae.yaml
+model:
+  init_args:
+    hidden_dims: [80, 40, 16]
+    latent_dim: 16
+    heads: 1
+    embedding_dim: 4
+    dropout: 0.1
+    proj_dim: 32

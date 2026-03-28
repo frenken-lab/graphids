@@ -49,6 +49,7 @@
 
 - Ablation Run 003 — training COMPLETED (2026-03-25), eval needs resubmit (weights_only fix)
 - Ops dashboard (`buckeyeguy/kd-gat-dashboard`) — running on HF Spaces
+- **Flatten model config** — kill dataclasses, wire jsonargparse direct. See `plans/flatten-model-config.md`
 
 ### Lightning callback extraction (2026-03-27) — DONE
 

@@ -1,8 +1,0 @@
-# Scale override: small models. Layer on top of any stage config.
-# Use with: --config configs/base.yaml --config configs/autoencoder.yaml --config configs/small.yaml
-model:
-  init_args:
-    vgae: {hidden_dims: [80, 40, 16], latent_dim: 16, heads: 1, embedding_dim: 4, dropout: 0.1, proj_dim: 32}
-    gat: {hidden: 24, layers: 2, heads: 4, embedding_dim: 8, fc_layers: 2, dropout: 0.1, proj_dim: 32}
-    dgi: {hidden_dims: [80, 40, 16], latent_dim: 16, heads: 1, embedding_dim: 4, dropout: 0.1, proj_dim: 32}
-    training: {lr: 0.002, patience: 50, compile_model: true}
