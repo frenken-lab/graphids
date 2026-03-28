@@ -8,8 +8,6 @@ suitable for contour/heatmap visualization in the paper.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable
-
 import numpy as np
 import structlog
 import torch
@@ -77,7 +75,6 @@ def _vgae_loss(model, dataloader, device: torch.device, cfg) -> float:
     """VGAE reconstruction + CAN ID + neighborhood + KL loss (from config weights)."""
     model.eval()
     total, count = 0.0, 0
-    w = cfg.vgae
     for batch in dataloader:
         batch = batch.clone().to(device)
         edge_attr = getattr(batch, "edge_attr", None)
@@ -89,7 +86,7 @@ def _vgae_loss(model, dataloader, device: torch.device, cfg) -> float:
         canid = F.cross_entropy(canid_logits, batch.node_id)
         nbr_targets = model.create_neighborhood_targets(batch.node_id, batch.edge_index, batch.batch)
         nbr = F.binary_cross_entropy_with_logits(nbr_logits, nbr_targets)
-        loss = recon + w.canid_weight * canid + w.nbr_weight * nbr + w.kl_weight * kl_loss
+        loss = recon + cfg.canid_weight * canid + cfg.nbr_weight * nbr + cfg.kl_weight * kl_loss
         total += loss.item() * batch.num_graphs
         count += batch.num_graphs
     return total / max(count, 1)
@@ -159,12 +156,25 @@ def _sweep_grid(
 
 
 def compute_and_save_loss_landscape(
-    cfg, val_data: list, device: torch.device, output_dir: Path, *,
-    load_model_fn: Callable,
-    resolution: int = 51, scale: float = 1.0, seed: int = 42,
+    model: torch.nn.Module,
+    model_type: str,
+    val_data: list,
+    device: torch.device,
+    output_dir: Path,
+    hparams,
+    *,
+    resolution: int = 51,
+    scale: float = 1.0,
+    seed: int = 42,
     max_graphs: int = 500,
+    dataset: str = "",
 ) -> None:
-    """Compute loss landscapes for available models and save as Parquet."""
+    """Compute loss landscape for a model and save as Parquet."""
+    loss_fn = _LOSS_FN.get(model_type)
+    if loss_fn is None:
+        log.warning("loss_landscape_skip", model_type=model_type, reason="no loss function")
+        return
+
     if len(val_data) > max_graphs:
         rng = np.random.default_rng(seed)
         indices = rng.choice(len(val_data), max_graphs, replace=False)
@@ -174,20 +184,9 @@ def compute_and_save_loss_landscape(
 
     dataloader = make_graph_loader(data, batch_size=min(256, len(data)))
 
-    for model_type, loss_fn in _LOSS_FN.items():
-        ckpt = cfg.checkpoints.get(model_type)
-        if not ckpt or not Path(ckpt).exists():
-            continue
-
-        stage = "autoencoder" if model_type == "vgae" else cfg.gat_stage
-        model = load_model_fn(cfg, model_type, device)
-        log.info("loss_landscape_start", model=model_type, resolution=resolution, scale=scale)
-
-        result = _sweep_grid(model, loss_fn, dataloader, device, cfg, resolution, scale, seed)
-        _save_parquet(result, model_type, cfg.dataset, output_dir)
-
-        del model
-        torch.cuda.empty_cache()
+    log.info("loss_landscape_start", model=model_type, resolution=resolution, scale=scale)
+    result = _sweep_grid(model, loss_fn, dataloader, device, hparams, resolution, scale, seed)
+    _save_parquet(result, model_type, dataset, output_dir)
 
 
 def _save_parquet(result: dict, model_type: str, dataset: str, output_dir: Path) -> None:

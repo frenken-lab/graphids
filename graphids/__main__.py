@@ -21,22 +21,32 @@ structlog.configure(
 )
 
 if __name__ == "__main__":
-    import pytorch_lightning as pl
-    from pytorch_lightning.cli import LightningCLI
+    import sys
 
-    class GraphIDSCLI(LightningCLI):
-        def add_arguments_to_parser(self, parser):
-            # Set once on data, auto-copied to model — no double-passing.
-            parser.link_arguments("data.init_args.dataset", "model.init_args.dataset")
-            parser.link_arguments("data.init_args.lake_root", "model.init_args.lake_root")
-            parser.link_arguments("seed_everything", "model.init_args.seed")
-            # max_epochs lives in trainer.max_epochs only — not linked to model.
+    if len(sys.argv) > 1 and sys.argv[1] == "analyze":
+        from jsonargparse import ArgumentParser
+        from graphids.core.artifacts import Analyzer
 
-    GraphIDSCLI(
-        pl.LightningModule,
-        pl.LightningDataModule,
-        subclass_mode_model=True,
-        subclass_mode_data=True,
-        seed_everything_default=42,
-        parser_kwargs={"default_env": True, "env_prefix": "KD_GAT"},
-    )
+        parser = ArgumentParser(description="Generate analysis artifacts from trained checkpoints")
+        parser.add_class_arguments(Analyzer)
+        cfg = parser.parse_args(sys.argv[2:])
+        analyzer = parser.instantiate_classes(cfg)
+        analyzer.run()
+    else:
+        import pytorch_lightning as pl
+        from pytorch_lightning.cli import LightningCLI
+
+        class GraphIDSCLI(LightningCLI):
+            def add_arguments_to_parser(self, parser):
+                parser.link_arguments("data.init_args.dataset", "model.init_args.dataset")
+                parser.link_arguments("data.init_args.lake_root", "model.init_args.lake_root")
+                parser.link_arguments("seed_everything", "model.init_args.seed")
+
+        GraphIDSCLI(
+            pl.LightningModule,
+            pl.LightningDataModule,
+            subclass_mode_model=True,
+            subclass_mode_data=True,
+            seed_everything_default=42,
+            parser_kwargs={"default_env": True, "env_prefix": "KD_GAT"},
+        )

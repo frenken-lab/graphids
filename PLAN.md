@@ -54,7 +54,9 @@ Spikes, Slurm logs, tests, and profiles still write to this repo and not to shar
 
 - Ablation Run 003 — training COMPLETED (2026-03-25), eval needs resubmit (weights_only fix)
 - Ops dashboard (`buckeyeguy/kd-gat-dashboard`) — running on HF Spaces
-- **Artifacts package** — `generate_all` has zero callers (dead code). Decide: delete or rewire for eval pipeline.
+### Artifacts `analyze` subcommand (2026-03-28) — DONE
+
+Wired artifacts as `python -m graphids analyze --config stages/analyze_vgae.yaml`. Deleted dead `generate_all` + result dataclass imports. Rewrote all 4 leaf modules (embeddings, cka, loss_landscape, fusion_policy) to take concrete inputs. Created `Analyzer` class with typed `__init__` — jsonargparse reads signature, YAML provides values. Fail-loud validation on missing checkpoints. See `plans/fluffy-floating-galaxy.md`.
 
 ### Config flatten + consolidation (2026-03-28) — DONE
 

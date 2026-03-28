@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Callable
 
 import numpy as np
 import torch
@@ -28,27 +27,21 @@ def _linear_cka(X: np.ndarray, Y: np.ndarray) -> float:
 
 
 def compute_and_save_cka(
-    cfg, val_data, device, output_dir: Path, *,
-    load_model_fn: Callable,
+    student: torch.nn.Module,
+    teacher: torch.nn.Module,
+    val_data: list,
+    device: torch.device,
+    output_dir: Path,
+    *,
     max_samples: int = 500,
 ) -> None:
-    """Compute layer-wise CKA between teacher (large) and student (current scale), save to JSON."""
-    from graphids.config import checkpoint_path
-    from graphids.core.models._training import load_inner_model
-
-    student = load_model_fn(cfg, "gat", device)
-    teacher_ckpt = checkpoint_path(
-        cfg.lake_root, cfg.dataset, "gat", "large", cfg.seed, cfg,
-        gat_stage=getattr(cfg, "gat_stage", "curriculum"),
-    )
-    teacher, _ = load_inner_model("gat", teacher_ckpt, device)
-
+    """Compute layer-wise CKA between student and teacher, save to JSON."""
     student_reps = _collect_reps(student, val_data, device, max_samples=max_samples)
     teacher_reps = _collect_reps(teacher, val_data, device, max_samples=max_samples)
 
     n_layers = min(len(teacher_reps), len(student_reps))
     scores = {f"layer_{i}": _linear_cka(teacher_reps[i], student_reps[i]) for i in range(n_layers)}
-    Path(output_dir / "cka.json").write_text(json.dumps(scores, indent=2))
+    (output_dir / "cka.json").write_text(json.dumps(scores, indent=2))
 
 
 def _collect_reps(model, data, device, max_samples: int = 500) -> list[np.ndarray]:

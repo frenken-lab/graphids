@@ -1,3 +1,3 @@
 """Derived artifacts: post-evaluation outputs for paper figures and analysis."""
 
-from .generate import generate_all  # noqa: F401
+from .analyzer import Analyzer  # noqa: F401
