@@ -515,5 +515,5 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         if self.projection is not None:
             params += list(self.projection.parameters())
         opt = torch.optim.Adam(params, lr=self.hparams.training.lr, weight_decay=self.hparams.training.weight_decay)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=self.hparams.training.max_epochs)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=self.trainer.max_epochs)
         return {"optimizer": opt, "lr_scheduler": {"scheduler": scheduler, "interval": "epoch"}}

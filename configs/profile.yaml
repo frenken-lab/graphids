@@ -19,7 +19,6 @@ model:
     training:
       lr: 0.001
       weight_decay: 1.0e-5
-      max_epochs: 5
     vgae:
       conv_type: gatv2
 
