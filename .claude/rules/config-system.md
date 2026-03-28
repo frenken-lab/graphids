@@ -1,48 +1,87 @@
 # KD-GAT Config System
 
-Config is defined by four orthogonal concerns: **model_type** (architecture), **scale** (capacity), **auxiliaries** (loss modifiers like KD), and **dataset**.
+LightningCLI + jsonargparse + plain YAML. No Hydra, no OmegaConf, no dataclasses.
 
-## File layout (5 YAML + 2 Python)
+## Architecture
+
+jsonargparse reads `__init__` signatures on LightningModules and DataModules for type info. YAML provides values. CLI overrides win.
+
+```
+trainer.yaml (shared defaults) → stage YAML (model class_path + overrides) → overlay YAML (scale) → CLI
+```
+
+## File layout
 
 ```
 graphids/config/
-  __init__.py       # resolve() + re-exports + path helpers (from old paths.py)
-  constants.py      # Python constants + topology from pipeline.yaml
-  config.yaml       # Hydra root: ALL defaults inline (no config groups)
-  models.yaml       # Model×scale presets, keyed by {model_type}_{scale}
-  pipeline.yaml     # DAG topology (stages, variants, dependencies)
-  datasets.yaml     # Dataset catalog
-  resources.yaml    # SLURM resource profiles
+  __init__.py          # constants, topology, path helpers (single Python file)
+  constants.yaml       # static values: preprocessing_version, SLURM defaults, ckpt mappings
+  pipeline.yaml        # DAG topology: stages, dependencies, identity_keys, valid models/scales
+  datasets.yaml        # dataset catalog (YAML anchors for shared configs)
+  resources.yaml       # SLURM resource profiles per model×scale×stage
+  trainer.yaml         # default_config_files: seed, trainer (callbacks, precision, etc.)
+  stages/              # one per stage — model class_path + init_args overrides + data
+    autoencoder.yaml   # VGAEModule + CANBusDataModule
+    normal.yaml        # GATModule + CANBusDataModule (no curriculum)
+    curriculum.yaml    # GATModule + CurriculumDataModule
+    fusion.yaml        # RLFusionModule + FusionDataModule + trainer overrides
+  overlays/            # thin --config adds for scale/ablation variants
+    small_vgae.yaml    # small-scale VGAE dims
+    small_gat.yaml     # small-scale GAT dims
+    small_dgi.yaml     # small-scale DGI dims
 ```
-
-No config groups, no subdirectories. Model presets in `models.yaml` are merged by Python after Hydra compose.
-
-## Composition order
-
-```
-config.yaml (all defaults) → model preset from models.yaml → CLI overrides
-```
-
-`resolve()` and `_merge_model_preset()` handle this merge. CLI overrides always win.
 
 ## CLI usage
 
 ```bash
-python -m graphids stage=autoencoder model_type=vgae scale=large dataset=hcrl_sa
-python -m graphids stage=autoencoder model_type=vgae scale=large training.lr=0.001
-python -m graphids --multirun stage=autoencoder model_type=vgae scale=large training.lr=0.001,0.01
+# Basic — stage YAML selects model class_path, trainer.yaml is auto-loaded
+python -m graphids fit --config graphids/config/stages/autoencoder.yaml
+
+# With scale overlay
+python -m graphids fit --config graphids/config/stages/autoencoder.yaml \
+                       --config graphids/config/overlays/small_vgae.yaml
+
+# CLI overrides (flat keys)
+python -m graphids fit --config graphids/config/stages/normal.yaml \
+                       --model.init_args.lr=0.01
 ```
+
+## Model __init__ convention
+
+Every LightningModule takes **flat typed primitives** — no nested config objects. jsonargparse introspects the signature; YAML maps directly to init_args.
+
+```python
+class VGAEModule(pl.LightningModule):
+    def __init__(self, conv_type: str = "gatv2", hidden_dims: list[int] | None = None,
+                 latent_dim: int = 48, lr: float = 0.003, ...):
+        self.save_hyperparameters()
+```
+
+```yaml
+# stages/autoencoder.yaml — keys match __init__ params exactly
+model:
+  class_path: graphids.core.models.vgae.VGAEModule
+  init_args:
+    proj_dim: 48
+    lr: 0.002
+```
+
+**Prefix conventions** for modules with colliding param spaces:
+- `TemporalLightningModule`: `spatial_*` for GAT backbone, `temporal_*` for transformer
+- `RLFusionModule`: `dqn_*` for DQN agent, `bandit_*` for bandit agent
 
 ## Pipeline topology
 
-`pipeline.yaml` defines model types, scales, stages, DAG dependencies, and variants. `constants.py` loads this once and exposes `STAGES`, `STAGE_DEPENDENCIES`, `VALID_MODEL_TYPES`, `VALID_SCALES`. Variants are read directly from `pipeline.yaml` by `dag.py`.
+`pipeline.yaml` defines model types, scales, stages, DAG dependencies, and variants. `__init__.py` loads this once and exposes `STAGES`, `STAGE_DEPENDENCIES`, `VALID_MODEL_TYPES`, `VALID_SCALES`.
 
 ## Environment variables
 
-Path vars (`lake_root`) flow through Hydra `oc.env` resolvers in `config.yaml`. Infrastructure env vars are plain `os.environ.get()` calls in `__init__.py` with `KD_GAT_` prefix:
+Infrastructure env vars use `os.environ.get()` in `__init__.py` with `KD_GAT_` prefix:
 
 - SLURM: `SLURM_ACCOUNT`, `SLURM_PARTITION`, `SLURM_GPU_TYPE`
 - Run metadata: `SWEEP_ID`, `USER_TAGS`, `CKPT_PATH`
+
+jsonargparse also supports `--env_prefix=KD_GAT` for any init_args field.
 
 ## Path layout
 
@@ -50,8 +89,8 @@ Path vars (`lake_root`) flow through Hydra `oc.env` resolvers in `config.yaml`. 
 
 `lake_root` defaults to `experimentruns` when `KD_GAT_LAKE_ROOT` is unset.
 
-The `identity_hash` suffix is an 8-char SHA256 derived from the stage's `identity_keys` (defined in `pipeline.yaml`). It prevents run directory collisions between ablation configs that share the same model_type+scale+stage. Computed by the `identity_hash` custom OmegaConf resolver registered in `graphids/config/__init__.py`.
+The `identity_hash` suffix is an 8-char SHA256 derived from the stage's `identity_keys` (defined in `pipeline.yaml`). Computed by `compute_identity_hash()` in `__init__.py`.
 
 ## DuckDB catalog
 
-`{lake_root}/catalog/kd_gat.duckdb` — `experiments` table with flat metric columns + `config JSON` + `identity_hash`. Written by `_append_to_catalog()` in `graphids/pipeline/stages/__init__.py` after each stage completes. Best-effort (never fails the training job). Catalog is disposable — rebuildable from filesystem.
+`{lake_root}/catalog/kd_gat.duckdb` — `experiments` table with flat metric columns + `config JSON` + `identity_hash`. Written by `_append_to_catalog()` in `graphids/pipeline/stages/__init__.py` after each stage completes. Best-effort. Catalog is disposable — rebuildable from filesystem.

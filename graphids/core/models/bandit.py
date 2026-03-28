@@ -98,25 +98,25 @@ class NeuralLinUCBAgent:
 
     @classmethod
     def from_config(cls, cfg, device: str = "cpu") -> NeuralLinUCBAgent:
-        """Create agent from pipeline config."""
+        """Create agent from flat config (RLFusionModule.hparams)."""
         from .registry import fusion_state_dim
 
         from .fusion_reward import reward_kwargs_from_cfg
         reward_kwargs = reward_kwargs_from_cfg(cfg)
         return cls(
             state_dim=fusion_state_dim(),
-            alpha_steps=cfg.fusion.alpha_steps,
-            ucb_alpha=cfg.bandit.ucb_alpha,
-            lambda_reg=cfg.bandit.lambda_reg,
-            hidden_dim=cfg.bandit.hidden,
-            num_layers=cfg.bandit.layers,
-            backbone_lr=cfg.bandit.backbone_lr,
-            backbone_retrain_freq=cfg.bandit.backbone_retrain_freq,
-            backbone_epochs=cfg.bandit.backbone_epochs,
-            buffer_size=cfg.bandit.buffer_size,
-            batch_size=cfg.bandit.batch_size,
+            alpha_steps=cfg.alpha_steps,
+            ucb_alpha=cfg.bandit_ucb_alpha,
+            lambda_reg=cfg.bandit_lambda_reg,
+            hidden_dim=cfg.bandit_hidden,
+            num_layers=cfg.bandit_layers,
+            backbone_lr=cfg.bandit_backbone_lr,
+            backbone_retrain_freq=cfg.bandit_backbone_retrain_freq,
+            backbone_epochs=cfg.bandit_backbone_epochs,
+            buffer_size=cfg.bandit_buffer_size,
+            batch_size=cfg.bandit_batch_size,
             device=device,
-            decision_threshold=cfg.fusion.decision_threshold,
+            decision_threshold=cfg.decision_threshold,
             reward_kwargs=reward_kwargs,
         )
 

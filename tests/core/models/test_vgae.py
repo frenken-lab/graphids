@@ -93,7 +93,9 @@ class TestVGAEFastDevRun:
         from graphids.core.models.vgae import VGAEModule
         loader = DataLoader([make_graph() for _ in range(16)], batch_size=4)
         module = VGAEModule(
-            vgae=vgae_cfg.vgae, training=vgae_cfg.training,
+            hidden_dims=vgae_cfg.hidden_dims, latent_dim=vgae_cfg.latent_dim,
+            heads=vgae_cfg.heads, embedding_dim=vgae_cfg.embedding_dim,
+            gradient_checkpointing=False, compile_model=False,
             num_ids=NUM_IDS, in_channels=IN_CHANNELS,
         )
         trainer = pl.Trainer(fast_dev_run=True, accelerator="cpu", enable_progress_bar=False)

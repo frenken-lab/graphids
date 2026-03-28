@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import types
-
 import torch
 
 from conftest import make_graph
@@ -27,13 +25,11 @@ class TestCurriculumSampler:
         normal_indices = list(range(len(normals)))
         attack_indices = list(range(len(normals), len(full_dataset)))
 
-        cfg = types.SimpleNamespace(training=types.SimpleNamespace(
+        sampler = CurriculumSampler(
+            full_dataset, normal_indices, attack_indices, scores,
             batch_size=32, max_epochs=10,
             curriculum_start_ratio=1.0, curriculum_end_ratio=10.0,
-            difficulty_percentile=75.0, dynamic_batching=False,
-        ))
-        sampler = CurriculumSampler(
-            full_dataset, normal_indices, attack_indices, scores, cfg,
+            difficulty_percentile=75.0,
         )
         return sampler, full_dataset
 

@@ -19,13 +19,30 @@ class CurriculumSampler:
     rebuilt each epoch from the active subset.
     """
 
-    def __init__(self, dataset, normal_indices, attack_indices, scores, cfg, max_num_nodes=None):
+    def __init__(
+        self,
+        dataset,
+        normal_indices,
+        attack_indices,
+        scores,
+        *,
+        batch_size: int,
+        max_epochs: int,
+        curriculum_start_ratio: float,
+        curriculum_end_ratio: float,
+        difficulty_percentile: float,
+        max_num_nodes: int | None = None,
+    ):
         assert len(scores) == len(normal_indices)
         self.dataset = dataset
         self.normal_indices = torch.tensor(normal_indices, dtype=torch.long)
         self.attack_indices = attack_indices
         self.scores = torch.tensor(scores) if scores else None
-        self.cfg = cfg
+        self.batch_size = batch_size
+        self.max_epochs = max_epochs
+        self.curriculum_start_ratio = curriculum_start_ratio
+        self.curriculum_end_ratio = curriculum_end_ratio
+        self.difficulty_percentile = difficulty_percentile
         self.max_num_nodes = max_num_nodes
         self._active_indices = normal_indices + attack_indices
         self._inner = self._build_inner()
@@ -43,10 +60,9 @@ class CurriculumSampler:
 
     def set_epoch(self, epoch: int) -> None:
         """Update active indices for curriculum progression."""
-        t = self.cfg.training
-        progress = min(epoch / max(t.max_epochs, 1), 1.0)
-        ratio = t.curriculum_start_ratio + (t.curriculum_end_ratio - t.curriculum_start_ratio) * progress
-        percentile = t.difficulty_percentile + (95.0 - t.difficulty_percentile) * progress
+        progress = min(epoch / max(self.max_epochs, 1), 1.0)
+        ratio = self.curriculum_start_ratio + (self.curriculum_end_ratio - self.curriculum_start_ratio) * progress
+        percentile = self.difficulty_percentile + (95.0 - self.difficulty_percentile) * progress
 
         # Filter normals by difficulty threshold, subsample to ratio
         if self.scores is not None:
@@ -65,7 +81,7 @@ class CurriculumSampler:
         if self._inner is not None:
             yield from self._inner
         else:
-            bs = max(8, self.cfg.training.batch_size)
+            bs = max(8, self.batch_size)
             perm = torch.randperm(len(self._active_indices)).tolist()
             for start in range(0, len(perm), bs):
                 yield [self._active_indices[perm[j]] for j in range(start, min(start + bs, len(perm)))]
@@ -73,7 +89,7 @@ class CurriculumSampler:
     def __len__(self) -> int:
         if self._inner is not None:
             return len(self._inner)
-        bs = max(8, self.cfg.training.batch_size)
+        bs = max(8, self.batch_size)
         return max(1, (len(self._active_indices) + bs - 1) // bs)
 
 
@@ -153,15 +169,13 @@ class CurriculumDataModule(pl.LightningDataModule):
             info = compute_node_budget(bs, hp, conv_type=hp.conv_type, heads=hp.heads)
             budget = info.budget
 
-        sampler_cfg = types.SimpleNamespace(training=types.SimpleNamespace(
+        self._batch_sampler = CurriculumSampler(
+            full_dataset, normal_indices, attack_indices, scores,
             batch_size=hp.batch_size, max_epochs=hp.max_epochs,
             curriculum_start_ratio=hp.curriculum_start_ratio,
             curriculum_end_ratio=hp.curriculum_end_ratio,
             difficulty_percentile=hp.difficulty_percentile,
-            dynamic_batching=hp.dynamic_batching,
-        ))
-        self._batch_sampler = CurriculumSampler(
-            full_dataset, normal_indices, attack_indices, scores, sampler_cfg, budget,
+            max_num_nodes=budget,
         )
         self._train_loader = make_graph_loader(
             full_dataset, batch_sampler=self._batch_sampler, num_workers=hp.num_workers,

@@ -2,7 +2,7 @@
 
 Public API re-exported from submodules:
 
-    from graphids.core.models import get, fusion_state_dim, feature_layout, extractors
+    from graphids.core.models import fusion_state_dim, feature_layout, extractors
     from graphids.core.models import FusionFeatureExtractor, VGAEFusionExtractor, GATFusionExtractor
 """
 
@@ -16,5 +16,4 @@ from .registry import (
     extractors,
     feature_layout,
     fusion_state_dim,
-    get,
 )

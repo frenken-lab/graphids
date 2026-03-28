@@ -40,7 +40,11 @@ class TestGATFastDevRun:
     def _make_module(cfg):
         from graphids.core.models.gat import GATModule
         return GATModule(
-            gat=cfg.gat, training=cfg.training,
+            hidden=cfg.hidden, layers=cfg.layers, heads=cfg.heads,
+            fc_layers=cfg.fc_layers, embedding_dim=cfg.embedding_dim,
+            loss_fn=cfg.loss_fn, focal_gamma=cfg.focal_gamma,
+            loss_weight=cfg.loss_weight,
+            gradient_checkpointing=False, compile_model=False,
             num_ids=NUM_IDS, in_channels=IN_CHANNELS,
         )
 
@@ -55,7 +59,7 @@ class TestGATFastDevRun:
         import copy
         for loss_fn in ("ce", "weighted_ce", "focal"):
             cfg = copy.deepcopy(gat_cfg)
-            cfg.training.loss_fn = loss_fn
+            cfg.loss_fn = loss_fn
             module = self._make_module(cfg)
             module.train()
             loss = module.training_step(make_batch(4), 0)
@@ -68,7 +72,9 @@ class TestGATCheckpointRoundtrip:
 
         def _mk():
             return GATModule(
-                gat=gat_cfg.gat, training=gat_cfg.training,
+                hidden=gat_cfg.hidden, layers=gat_cfg.layers, heads=gat_cfg.heads,
+                fc_layers=gat_cfg.fc_layers, embedding_dim=gat_cfg.embedding_dim,
+                gradient_checkpointing=False, compile_model=False,
                 num_ids=NUM_IDS, in_channels=IN_CHANNELS,
             )
 

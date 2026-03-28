@@ -46,7 +46,7 @@ def test_node_features_skewness_clamped():
 
 def test_edge_features_shape():
     from graphids.core.preprocessing.features import edge_features
-    from graphids.config.defaults.constants import EDGE_FEATURE_COUNT
+    from graphids.core.preprocessing.features import N_EDGE_FEATURES as EDGE_FEATURE_COUNT
     n = 15
     ea = edge_features(
         np.arange(n + 1, dtype=np.float64),

@@ -30,11 +30,7 @@ if __name__ == "__main__":
             parser.link_arguments("data.init_args.dataset", "model.init_args.dataset")
             parser.link_arguments("data.init_args.lake_root", "model.init_args.lake_root")
             parser.link_arguments("seed_everything", "model.init_args.seed")
-            # NOT linking trainer.max_epochs → model.init_args.training.max_epochs.
-            # That link mutates the training Namespace after jsonargparse instantiation,
-            # converting the typed TrainingConfig dataclass back to a raw dict/Namespace.
-            # max_epochs lives in trainer.max_epochs (controls loop) and separately in
-            # model.training.max_epochs (controls CosineAnnealingLR T_max).
+            # max_epochs lives in trainer.max_epochs only — not linked to model.
 
     GraphIDSCLI(
         pl.LightningModule,

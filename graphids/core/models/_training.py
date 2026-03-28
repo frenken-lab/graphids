@@ -155,9 +155,17 @@ def load_inner_model(
     ckpt_path = Path(ckpt_path)
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
-    module = get_module_cls(model_type).load_from_checkpoint(
-        str(ckpt_path), map_location="cpu", weights_only=True,
-    )
+    try:
+        module = get_module_cls(model_type).load_from_checkpoint(
+            str(ckpt_path), map_location="cpu", weights_only=True,
+        )
+    except TypeError as exc:
+        if any(k in str(exc) for k in ("vgae", "gat", "dgi", "training", "fusion")):
+            raise RuntimeError(
+                f"Checkpoint {ckpt_path} has nested hparams (pre-flatten format). "
+                "Run: python scripts/migrate_checkpoints.py <checkpoint_dir>"
+            ) from exc
+        raise
     model = module.model
     model.to(device).eval()
     return model, module.hparams
@@ -198,8 +206,8 @@ def prepare_kd(
     # Projection layer for VGAE latent space alignment
     projection = None
     if model_type == "vgae":
-        s_dim = cfg.vgae.latent_dim
-        t_dim = tcfg.vgae.latent_dim
+        s_dim = cfg.latent_dim
+        t_dim = tcfg.latent_dim
         if s_dim != t_dim:
             _log.info("projection_layer", student_dim=s_dim, teacher_dim=t_dim)
             projection = torch.nn.Linear(s_dim, t_dim).to(device)

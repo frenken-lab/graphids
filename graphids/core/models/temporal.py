@@ -129,15 +129,17 @@ class TemporalGraphClassifier(nn.Module):
         return logits
 
 
-def _probe_spatial_dim(gat: nn.Module, cfg) -> int:
+def _probe_spatial_dim(
+    hidden: int, heads: int, pool_aggrs: list[str] | None,
+) -> int:
     """Derive spatial embedding dim from the GAT architecture without data.
 
     Uses the JK output dim (hidden_channels * heads) scaled by the number
     of pool aggregators, matching what ``GATWithJK.forward(return_embedding=True)``
     produces after global pooling.
     """
-    jk_dim = cfg.gat.hidden * cfg.gat.heads
-    n_aggrs = len(cfg.gat.pool_aggrs) if hasattr(cfg.gat, "pool_aggrs") else 1
+    jk_dim = hidden * heads
+    n_aggrs = len(pool_aggrs) if pool_aggrs else 1
     return jk_dim * n_aggrs
 
 
@@ -148,7 +150,6 @@ class TemporalLightningModule(pl.LightningModule):
     ``save_hyperparameters`` / ``load_from_checkpoint`` round-trip works.
 
     Args:
-        cfg: Config namespace (or plain dict on reload from checkpoint).
         gat_ckpt_path: Path to pretrained GAT checkpoint. Required for
             training; None during ``load_from_checkpoint`` reconstruction
             (weights come from the Lightning checkpoint itself).
@@ -156,24 +157,37 @@ class TemporalLightningModule(pl.LightningModule):
 
     def __init__(
         self,
-        temporal: TemporalConfig = None,
-        gat: GATConfig = None,
-        training: TrainingConfig = None,
+        # --- spatial (GAT backbone) ---
+        spatial_hidden: int = 48,
+        spatial_layers: int = 3,
+        spatial_heads: int = 8,
+        spatial_dropout: float = 0.2,
+        spatial_embedding_dim: int = 16,
+        spatial_conv_type: str = "gatv2",
+        spatial_edge_dim: int = 11,
+        spatial_pool_aggrs: list[str] | None = None,
+        spatial_proj_dim: int = 0,
+        spatial_fc_layers: int = 3,
+        # --- temporal ---
+        window_size: int = 10,
+        stride: int = 1,
+        temporal_hidden: int = 64,
+        temporal_heads: int = 4,
+        temporal_layers: int = 2,
+        freeze_spatial: bool = True,
+        spatial_lr_factor: float = 0.01,
+        # --- training ---
+        lr: float = 0.001,
+        weight_decay: float = 0.0001,
+        gradient_checkpointing: bool = False,
+        compile_model: bool = False,
+        # --- dynamic ---
         num_ids: int = 0,
         in_channels: int = 0,
         num_classes: int = 2,
         gat_ckpt_path: str | None = None,
     ):
         super().__init__()
-        from graphids.config.defaults.schema import (
-            GATConfig as _GC, TemporalConfig as _TempC, TrainingConfig as _TC,
-        )
-        if temporal is None:
-            temporal = _TempC()
-        if gat is None:
-            gat = _GC()
-        if training is None:
-            training = _TC()
         self.save_hyperparameters(ignore=["gat_ckpt_path"])
         self.model = self._build_model(self.hparams, gat_ckpt_path)
 
@@ -185,29 +199,47 @@ class TemporalLightningModule(pl.LightningModule):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _build_model(cfg, gat_ckpt_path: str | None) -> TemporalGraphClassifier:
-        """Build TemporalGraphClassifier from config.
+    def _build_model(hp, gat_ckpt_path: str | None) -> TemporalGraphClassifier:
+        """Build TemporalGraphClassifier from hparams.
 
         When *gat_ckpt_path* is provided (training), loads the pretrained GAT
         and probes its embedding dim.  When None (``load_from_checkpoint``),
-        builds a skeleton GAT from config dimensions — the real weights will be
+        builds a skeleton GAT from hparams dimensions — the real weights will be
         loaded from the Lightning checkpoint's ``state_dict``.
         """
         from pathlib import Path
 
         from graphids.core.models.gat import GATWithJK
+        from graphids.core.models._conv import resolve_edge_dim
 
-        tc = cfg.temporal
+        edge_dim = resolve_edge_dim(hp.spatial_conv_type, hp.spatial_edge_dim)
+
+        def _make_gat() -> GATWithJK:
+            return GATWithJK(
+                num_ids=hp.num_ids,
+                in_channels=hp.in_channels,
+                hidden_channels=hp.spatial_hidden,
+                out_channels=hp.num_classes,
+                num_layers=hp.spatial_layers,
+                heads=hp.spatial_heads,
+                dropout=hp.spatial_dropout,
+                num_fc_layers=hp.spatial_fc_layers,
+                embedding_dim=hp.spatial_embedding_dim,
+                conv_type=hp.spatial_conv_type,
+                edge_dim=edge_dim,
+                pool_aggrs=hp.spatial_pool_aggrs,
+                proj_dim=hp.spatial_proj_dim,
+                use_checkpointing=hp.gradient_checkpointing,
+            )
 
         if gat_ckpt_path is not None:
-            # Training path: load pretrained GAT from checkpoint
             ckpt_path = Path(gat_ckpt_path)
             if not ckpt_path.exists():
                 raise FileNotFoundError(
                     f"GAT checkpoint not found: {ckpt_path}\n"
                     f"The GAT stage must be trained first."
                 )
-            gat = GATWithJK.from_config(cfg, cfg.num_ids, cfg.in_channels)
+            gat = _make_gat()
             checkpoint = torch.load(gat_ckpt_path, map_location="cpu", weights_only=True)
             if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
                 raw = checkpoint["state_dict"]
@@ -217,24 +249,22 @@ class TemporalLightningModule(pl.LightningModule):
                 )
             gat.load_state_dict(checkpoint)
             gat.eval()
-
-            # Probe spatial embedding dim
-            spatial_dim = _probe_spatial_dim(gat, cfg)
         else:
-            # Reconstruction path (load_from_checkpoint): skeleton GAT,
-            # weights will be overwritten by Lightning's state_dict restore.
-            gat = GATWithJK.from_config(cfg, cfg.num_ids, cfg.in_channels)
-            spatial_dim = _probe_spatial_dim(gat, cfg)
+            gat = _make_gat()
+
+        spatial_dim = _probe_spatial_dim(
+            hp.spatial_hidden, hp.spatial_heads, hp.spatial_pool_aggrs,
+        )
 
         model = TemporalGraphClassifier(
             spatial_encoder=gat,
             spatial_dim=spatial_dim,
-            temporal_hidden=tc.temporal_hidden,
-            temporal_heads=tc.temporal_heads,
-            temporal_layers=tc.temporal_layers,
-            max_seq_len=tc.temporal_window,
-            freeze_spatial=tc.freeze_spatial,
-            num_classes=cfg.num_classes,
+            temporal_hidden=hp.temporal_hidden,
+            temporal_heads=hp.temporal_heads,
+            temporal_layers=hp.temporal_layers,
+            max_seq_len=hp.window_size,
+            freeze_spatial=hp.freeze_spatial,
+            num_classes=hp.num_classes,
         )
         return model
 
@@ -288,9 +318,6 @@ class TemporalLightningModule(pl.LightningModule):
         return {"preds": logits.argmax(1), "scores": scores, "labels": labels.to(device)}
 
     def configure_optimizers(self):
-        t = self.hparams.training
-        tc = self.hparams.temporal
-
         spatial_params = list(self.model.spatial_encoder.parameters())
         temporal_params = [
             p
@@ -299,13 +326,16 @@ class TemporalLightningModule(pl.LightningModule):
         ]
 
         param_groups = []
-        if not tc.freeze_spatial and spatial_params:
-            param_groups.append({"params": spatial_params, "lr": t.lr * tc.spatial_lr_factor})
+        if not self.hparams.freeze_spatial and spatial_params:
+            param_groups.append({
+                "params": spatial_params,
+                "lr": self.hparams.lr * self.hparams.spatial_lr_factor,
+            })
         if temporal_params:
-            param_groups.append({"params": temporal_params, "lr": t.lr})
+            param_groups.append({"params": temporal_params, "lr": self.hparams.lr})
 
         return torch.optim.AdamW(
             param_groups if param_groups else self.model.parameters(),
-            lr=t.lr, weight_decay=t.weight_decay,
+            lr=self.hparams.lr, weight_decay=self.hparams.weight_decay,
         )
 

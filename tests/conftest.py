@@ -39,33 +39,31 @@ def make_variable_batch(sizes: list[int]) -> Batch:
 
 @pytest.fixture(scope="session")
 def base_cfg():
-    """Session-scoped config namespace for tests. Clone before mutating."""
+    """Session-scoped flat config namespace for tests. Clone before mutating."""
     import types
-    from graphids.config.defaults.schema import (
-        VGAEConfig, GATConfig, DGIConfig, TrainingConfig,
-        FusionConfig, DQNConfig, BanditConfig, EvaluationConfig,
-        PreprocessingConfig, TemporalConfig,
-    )
-    cfg = types.SimpleNamespace(
+    return types.SimpleNamespace(
+        # identity
         model_type="vgae", scale="small", stage="autoencoder",
         lake_root="/tmp", dataset="test", seed=42,
         device="cpu", num_workers=0,
         num_ids=NUM_IDS, in_channels=IN_CHANNELS, num_classes=2,
         gat_stage="curriculum", auxiliaries=[],
-        vgae=VGAEConfig(hidden_dims=[32, 16], latent_dim=16, heads=2, embedding_dim=4),
-        gat=GATConfig(hidden=16, layers=2, heads=2, fc_layers=2, embedding_dim=4),
-        dgi=DGIConfig(hidden_dims=[32, 16], latent_dim=16, heads=2, embedding_dim=4),
-        training=TrainingConfig(
-            max_epochs=2, precision="32", gradient_checkpointing=False,
-            compile_model=False, dynamic_batching=False, log_every_n_steps=1,
-            patience=100, batch_size=32,
-        ),
-        fusion=FusionConfig(), dqn=DQNConfig(), bandit=BanditConfig(),
-        evaluation=EvaluationConfig(), temporal=TemporalConfig(),
-        preprocessing=PreprocessingConfig(),
+        # VGAE/DGI architecture
+        conv_type="gatv2",
+        hidden_dims=[32, 16], latent_dim=16, heads=2, embedding_dim=4,
+        dropout=0.15, edge_dim=EDGE_DIM, proj_dim=0,
+        variational=True, mask_ratio=0.3,
+        k_neg=32, canid_weight=0.1, nbr_weight=0.05, kl_weight=0.01,
+        # GAT architecture
+        hidden=16, layers=2, fc_layers=2,
+        pool_aggrs=["mean"],
+        # training
+        lr=0.003, weight_decay=0.0001,
+        gradient_checkpointing=False, compile_model=False,
+        loss_fn="ce", focal_gamma=2.0, loss_weight=10.0,
+        # misc
         checkpoints={},
     )
-    return cfg
 
 
 @pytest.fixture()

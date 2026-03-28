@@ -14,7 +14,6 @@ import torch
 import torch.nn as nn
 from torch_geometric.nn import global_mean_pool
 
-from graphids.config.defaults.schema import DGIConfig, TrainingConfig
 from ._conv import InputEncoder, build_encoder_stack, conv_forward, resolve_edge_dim
 from ._training import OOMSkipMixin, binary_test_metrics
 
@@ -124,19 +123,19 @@ class GraphInfomaxModel(nn.Module):
     @classmethod
     def from_config(cls, cfg, num_ids: int, in_ch: int) -> GraphInfomaxModel:
         """Construct from config (same interface as VGAE/GAT)."""
-        conv_type = cfg.dgi.conv_type
+        conv_type = cfg.conv_type
         return cls(
             num_ids=num_ids,
             in_channels=in_ch,
-            hidden_dims=list(cfg.dgi.hidden_dims),
-            latent_dim=cfg.dgi.latent_dim,
-            encoder_heads=cfg.dgi.heads,
-            embedding_dim=cfg.dgi.embedding_dim,
-            dropout=cfg.dgi.dropout,
+            hidden_dims=list(cfg.hidden_dims),
+            latent_dim=cfg.latent_dim,
+            encoder_heads=cfg.heads,
+            embedding_dim=cfg.embedding_dim,
+            dropout=cfg.dropout,
             conv_type=conv_type,
-            edge_dim=resolve_edge_dim(conv_type, cfg.dgi.edge_dim),
-            proj_dim=cfg.dgi.proj_dim,
-            use_checkpointing=cfg.training.gradient_checkpointing,
+            edge_dim=resolve_edge_dim(conv_type, cfg.edge_dim),
+            proj_dim=cfg.proj_dim,
+            use_checkpointing=cfg.gradient_checkpointing,
         )
 
 
@@ -154,16 +153,26 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
 
     def __init__(
         self,
-        dgi: DGIConfig = DGIConfig(),
-        training: TrainingConfig = TrainingConfig(),
+        # --- architecture ---
+        conv_type: str = "gatv2",
+        hidden_dims: list[int] | None = None,
+        latent_dim: int = 48,
+        heads: int = 4,
+        embedding_dim: int = 32,
+        dropout: float = 0.15,
+        edge_dim: int = 11,
+        proj_dim: int = 0,
+        # --- training ---
+        lr: float = 0.003,
+        weight_decay: float = 0.0001,
+        gradient_checkpointing: bool = True,
+        compile_model: bool = False,
+        # --- dynamic ---
         num_ids: int = 0,
         in_channels: int = 0,
         num_classes: int = 2,
     ):
         super().__init__()
-        from graphids.config import coerce_config
-        dgi = coerce_config(dgi, DGIConfig)
-        training = coerce_config(training, TrainingConfig)
         self.save_hyperparameters()
         self.model = None
         self.test_threshold: float | None = None
@@ -182,12 +191,9 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
             self._build()
 
     def _build(self):
-        from graphids.config import coerce_config
         hp = self.hparams
-        hp.dgi = coerce_config(hp.dgi, DGIConfig)
-        hp.training = coerce_config(hp.training, TrainingConfig)
         self.model = GraphInfomaxModel.from_config(hp, hp.num_ids, hp.in_channels)
-        if hp.training.compile_model and hasattr(torch, "compile"):
+        if hp.compile_model and hasattr(torch, "compile"):
             self.model = torch.compile(self.model, dynamic=True)
 
     def forward(self, batch):
@@ -269,6 +275,6 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
         return {"scores": scores, "labels": batch.y}
 
     def configure_optimizers(self):
-        opt = torch.optim.Adam(self.parameters(), lr=self.hparams.training.lr, weight_decay=self.hparams.training.weight_decay)
+        opt = torch.optim.Adam(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=self.trainer.max_epochs)
         return {"optimizer": opt, "lr_scheduler": {"scheduler": scheduler, "interval": "epoch"}}

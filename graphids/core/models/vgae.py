@@ -6,7 +6,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ._conv import InputEncoder, build_conv_stack, build_encoder_stack, _make_conv, conv_forward, resolve_edge_dim
-from graphids.config.defaults.schema import VGAEConfig, TrainingConfig
 from ._training import (
     OOMSkipMixin, soft_label_kd_loss, teacher_on_device,
     compute_node_budget, NodeBudgetInfo,
@@ -242,20 +241,20 @@ class GraphAutoencoderNeighborhood(nn.Module):
     @classmethod
     def from_config(cls, cfg, num_ids: int, in_ch: int) -> "GraphAutoencoderNeighborhood":
         """Construct from a config."""
-        conv_type = cfg.vgae.conv_type
+        conv_type = cfg.conv_type
         return cls(
             num_ids=num_ids,
             in_channels=in_ch,
-            hidden_dims=list(cfg.vgae.hidden_dims),
-            latent_dim=cfg.vgae.latent_dim,
-            encoder_heads=cfg.vgae.heads,
-            embedding_dim=cfg.vgae.embedding_dim,
-            dropout=cfg.vgae.dropout,
+            hidden_dims=list(cfg.hidden_dims),
+            latent_dim=cfg.latent_dim,
+            encoder_heads=cfg.heads,
+            embedding_dim=cfg.embedding_dim,
+            dropout=cfg.dropout,
             conv_type=conv_type,
-            edge_dim=resolve_edge_dim(conv_type, cfg.vgae.edge_dim),
-            proj_dim=cfg.vgae.proj_dim,
-            use_checkpointing=cfg.training.gradient_checkpointing,
-            variational=getattr(cfg.vgae, "variational", True),
+            edge_dim=resolve_edge_dim(conv_type, cfg.edge_dim),
+            proj_dim=cfg.proj_dim,
+            use_checkpointing=cfg.gradient_checkpointing,
+            variational=getattr(cfg, "variational", True),
         )
 
     def forward(self, x, edge_index, batch, edge_attr=None, mask_ratio: float = 0.0, node_id=None):
@@ -338,8 +337,27 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
 
     def __init__(
         self,
-        vgae: VGAEConfig = VGAEConfig(),
-        training: TrainingConfig = TrainingConfig(),
+        # --- architecture ---
+        conv_type: str = "gatv2",
+        hidden_dims: list[int] | None = None,
+        latent_dim: int = 48,
+        heads: int = 4,
+        embedding_dim: int = 32,
+        dropout: float = 0.15,
+        edge_dim: int = 11,
+        proj_dim: int = 0,
+        variational: bool = True,
+        mask_ratio: float = 0.3,
+        k_neg: int = 32,
+        canid_weight: float = 0.1,
+        nbr_weight: float = 0.05,
+        kl_weight: float = 0.01,
+        # --- training ---
+        lr: float = 0.003,
+        weight_decay: float = 0.0001,
+        gradient_checkpointing: bool = True,
+        compile_model: bool = False,
+        # --- identity / dynamic ---
         model_type: str = "vgae",
         lake_root: str = "experimentruns",
         dataset: str = "",
@@ -351,9 +369,6 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         num_classes: int = 2,
     ):
         super().__init__()
-        from graphids.config import coerce_config
-        vgae = coerce_config(vgae, VGAEConfig)
-        training = coerce_config(training, TrainingConfig)
         if auxiliaries is None:
             auxiliaries = []
         self.save_hyperparameters()
@@ -377,20 +392,17 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
             self._build()
 
     def _build(self):
-        from graphids.config import coerce_config
         from ._training import prepare_kd
         hp = self.hparams
-        hp.vgae = coerce_config(hp.vgae, VGAEConfig)
-        hp.training = coerce_config(hp.training, TrainingConfig)
         self.model = GraphAutoencoderNeighborhood.from_config(hp, hp.num_ids, hp.in_channels)
-        if hp.training.compile_model and hasattr(torch, "compile"):
+        if hp.compile_model and hasattr(torch, "compile"):
             self.model = torch.compile(self.model, dynamic=True)
         if self.teacher is None:
             self.teacher, self.projection = prepare_kd(hp, hp.model_type, torch.device("cpu"))
 
     def forward(self, batch):
         edge_attr = getattr(batch, "edge_attr", None)
-        mask_ratio = self.hparams.vgae.mask_ratio if self.training else 0.0
+        mask_ratio = self.hparams.mask_ratio if self.training else 0.0
         return self.model(
             batch.x, batch.edge_index, batch.batch,
             edge_attr=edge_attr, mask_ratio=mask_ratio, node_id=batch.node_id,
@@ -406,10 +418,10 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         canid = F.cross_entropy(canid_logits, batch.node_id)
         nbr_loss = GraphAutoencoderNeighborhood.neighborhood_loss_negsampled(
             nbr_logits, batch.node_id, batch.edge_index,
-            self.hparams.num_ids, k_neg=self.hparams.vgae.k_neg,
+            self.hparams.num_ids, k_neg=self.hparams.k_neg,
         )
-        w = self.hparams.vgae
-        task_loss = recon + w.canid_weight * canid + w.nbr_weight * nbr_loss + w.kl_weight * kl_loss
+        hp = self.hparams
+        task_loss = recon + hp.canid_weight * canid + hp.nbr_weight * nbr_loss + hp.kl_weight * kl_loss
         return task_loss, cont_out, z
 
     def _step(self, batch):
@@ -461,8 +473,8 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         nbr_targets = self.model.create_neighborhood_targets(batch.node_id, batch.edge_index, batch.batch)
         nbr_err = F.binary_cross_entropy_with_logits(nbr_logits, nbr_targets, reduction="none").mean(dim=1)
         nbr_per_graph = scatter(nbr_err, batch.batch, dim=0, reduce="max")
-        w = self.hparams.vgae
-        return recon + w.canid_weight * canid_per_graph + w.nbr_weight * nbr_per_graph
+        hp = self.hparams
+        return recon + hp.canid_weight * canid_per_graph + hp.nbr_weight * nbr_per_graph
 
     def test_step(self, batch, _idx):
         errors = self._per_graph_errors(batch)
@@ -514,6 +526,6 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         params = list(self.model.parameters())
         if self.projection is not None:
             params += list(self.projection.parameters())
-        opt = torch.optim.Adam(params, lr=self.hparams.training.lr, weight_decay=self.hparams.training.weight_decay)
+        opt = torch.optim.Adam(params, lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=self.trainer.max_epochs)
         return {"optimizer": opt, "lr_scheduler": {"scheduler": scheduler, "interval": "epoch"}}

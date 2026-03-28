@@ -11,7 +11,6 @@ from torch_geometric.nn import (
 )
 from torch_geometric.nn.aggr import MultiAggregation
 
-from graphids.config.defaults.schema import GATConfig, TrainingConfig
 from ._conv import InputEncoder, _make_conv, conv_forward, resolve_edge_dim
 from ._training import (
     OOMSkipMixin, soft_label_kd_loss, focal_loss,
@@ -103,18 +102,18 @@ class GATWithJK(nn.Module):
         return cls(
             num_ids=num_ids,
             in_channels=in_ch,
-            hidden_channels=cfg.gat.hidden,
+            hidden_channels=cfg.hidden,
             out_channels=cfg.num_classes,
-            num_layers=cfg.gat.layers,
-            heads=cfg.gat.heads,
-            dropout=cfg.gat.dropout,
-            num_fc_layers=cfg.gat.fc_layers,
-            embedding_dim=cfg.gat.embedding_dim,
-            conv_type=cfg.gat.conv_type,
-            edge_dim=resolve_edge_dim(cfg.gat.conv_type, cfg.gat.edge_dim),
-            pool_aggrs=cfg.gat.pool_aggrs,
-            proj_dim=cfg.gat.proj_dim,
-            use_checkpointing=cfg.training.gradient_checkpointing,
+            num_layers=cfg.layers,
+            heads=cfg.heads,
+            dropout=cfg.dropout,
+            num_fc_layers=cfg.fc_layers,
+            embedding_dim=cfg.embedding_dim,
+            conv_type=cfg.conv_type,
+            edge_dim=resolve_edge_dim(cfg.conv_type, cfg.edge_dim),
+            pool_aggrs=cfg.pool_aggrs,
+            proj_dim=cfg.proj_dim,
+            use_checkpointing=cfg.gradient_checkpointing,
         )
 
     def _pool(self, x, batch):
@@ -187,8 +186,26 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
 
     def __init__(
         self,
-        gat: GATConfig = GATConfig(),
-        training: TrainingConfig = TrainingConfig(),
+        # --- architecture ---
+        hidden: int = 48,
+        layers: int = 3,
+        heads: int = 8,
+        dropout: float = 0.2,
+        fc_layers: int = 3,
+        embedding_dim: int = 16,
+        conv_type: str = "gatv2",
+        edge_dim: int = 11,
+        pool_aggrs: list[str] | None = None,
+        proj_dim: int = 0,
+        # --- training ---
+        lr: float = 0.003,
+        weight_decay: float = 0.0001,
+        gradient_checkpointing: bool = True,
+        compile_model: bool = False,
+        loss_fn: str = "ce",
+        focal_gamma: float = 2.0,
+        loss_weight: float = 10.0,
+        # --- identity / dynamic ---
         model_type: str = "gat",
         lake_root: str = "experimentruns",
         dataset: str = "",
@@ -200,9 +217,8 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
         num_classes: int = 2,
     ):
         super().__init__()
-        from graphids.config import coerce_config
-        gat = coerce_config(gat, GATConfig)
-        training = coerce_config(training, TrainingConfig)
+        if pool_aggrs is None:
+            pool_aggrs = ["mean"]
         if auxiliaries is None:
             auxiliaries = []
         self.save_hyperparameters()
@@ -210,12 +226,11 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
         self.teacher = None
         self._teacher_on_cpu = False
         self.test_metrics = binary_test_metrics()
-        loss_name = training.loss_fn
-        if loss_name == "weighted_ce":
-            w = torch.tensor([1.0, training.loss_weight])
+        if loss_fn == "weighted_ce":
+            w = torch.tensor([1.0, loss_weight])
             self.loss_fn = nn.CrossEntropyLoss(weight=w)
-        elif loss_name == "focal":
-            self.loss_fn = functools.partial(focal_loss, gamma=training.focal_gamma)
+        elif loss_fn == "focal":
+            self.loss_fn = functools.partial(focal_loss, gamma=focal_gamma)
         else:
             self.loss_fn = F.cross_entropy
         if num_ids > 0:
@@ -230,13 +245,10 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
             self._build()
 
     def _build(self):
-        from graphids.config import coerce_config
         from ._training import prepare_kd
         hp = self.hparams
-        hp.gat = coerce_config(hp.gat, GATConfig)
-        hp.training = coerce_config(hp.training, TrainingConfig)
         self.model = GATWithJK.from_config(hp, hp.num_ids, hp.in_channels)
-        if hp.training.compile_model and hasattr(torch, "compile"):
+        if hp.compile_model and hasattr(torch, "compile"):
             self.model = torch.compile(self.model, dynamic=True)
         if self.teacher is None:
             self.teacher, _ = prepare_kd(hp, hp.model_type, torch.device("cpu"))
@@ -290,6 +302,6 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
         return {"preds": logits.argmax(1), "scores": scores, "labels": batch.y}
 
     def configure_optimizers(self):
-        opt = torch.optim.Adam(self.parameters(), lr=self.hparams.training.lr, weight_decay=self.hparams.training.weight_decay)
+        opt = torch.optim.Adam(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=self.trainer.max_epochs)
         return {"optimizer": opt, "lr_scheduler": {"scheduler": scheduler, "interval": "epoch"}}

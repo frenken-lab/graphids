@@ -37,18 +37,6 @@ class QNetwork(nn.Module):
             nn.Linear(hidden_dim, action_dim),
         )
 
-    @classmethod
-    def from_config(cls, cfg) -> "QNetwork":
-        """Construct from a config."""
-        from .registry import fusion_state_dim
-
-        return cls(
-            state_dim=fusion_state_dim(),
-            action_dim=cfg.fusion.alpha_steps,
-            hidden_dim=cfg.dqn.hidden,
-            num_layers=cfg.dqn.layers,
-        )
-
     def forward(self, x):
         return self.net(x)
 
@@ -182,35 +170,35 @@ class EnhancedDQNFusionAgent:
     def from_config(
         cls, cfg, device: str = "cpu", *, inference: bool = False,
     ) -> EnhancedDQNFusionAgent:
-        """Create agent from config. Set inference=True for eval/serve (no exploration)."""
+        """Create agent from flat config (RLFusionModule.hparams)."""
         from .registry import fusion_state_dim
 
         from .fusion_reward import reward_kwargs_from_cfg
         reward_kwargs = reward_kwargs_from_cfg(cfg)
         kwargs = dict(
-            lr=cfg.fusion.lr,
-            gamma=cfg.dqn.gamma,
-            buffer_size=cfg.dqn.buffer_size,
-            batch_size=cfg.dqn.batch_size,
-            target_update_freq=cfg.dqn.target_update,
+            lr=cfg.lr,
+            gamma=cfg.dqn_gamma,
+            buffer_size=cfg.dqn_buffer_size,
+            batch_size=cfg.dqn_batch_size,
+            target_update_freq=cfg.dqn_target_update,
             device=device,
             state_dim=fusion_state_dim(),
-            alpha_steps=cfg.fusion.alpha_steps,
-            hidden_dim=cfg.dqn.hidden,
-            num_layers=cfg.dqn.layers,
-            weight_decay=cfg.dqn.weight_decay,
-            scheduler_patience=cfg.dqn.scheduler_patience,
-            decision_threshold=cfg.fusion.decision_threshold,
-            gpu_training_steps=cfg.fusion.gpu_training_steps,
+            alpha_steps=cfg.alpha_steps,
+            hidden_dim=cfg.dqn_hidden,
+            num_layers=cfg.dqn_layers,
+            weight_decay=cfg.dqn_weight_decay,
+            scheduler_patience=cfg.dqn_scheduler_patience,
+            decision_threshold=cfg.decision_threshold,
+            gpu_training_steps=cfg.gpu_training_steps,
             reward_kwargs=reward_kwargs,
         )
         if inference:
             kwargs.update(epsilon=0.0, epsilon_decay=1.0, min_epsilon=0.0)
         else:
             kwargs.update(
-                epsilon=cfg.dqn.epsilon,
-                epsilon_decay=cfg.dqn.epsilon_decay,
-                min_epsilon=cfg.dqn.min_epsilon,
+                epsilon=cfg.dqn_epsilon,
+                epsilon_decay=cfg.dqn_epsilon_decay,
+                min_epsilon=cfg.dqn_min_epsilon,
             )
         return cls(**kwargs)
 

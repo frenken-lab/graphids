@@ -173,27 +173,57 @@ class RLFusionModule(pl.LightningModule):
 
     def __init__(
         self,
-        fusion: FusionConfig = None,
-        dqn: DQNConfig = None,
-        bandit: BanditConfig = None,
-        method: str = "dqn",
+        method: str = "bandit",
+        # --- fusion ---
+        episodes: int = 500,
+        max_samples: int = 150_000,
+        max_val_samples: int = 30_000,
+        episode_sample_size: int = 20_000,
+        training_step_interval: int = 32,
+        gpu_training_steps: int = 16,
+        lr: float = 0.001,
+        alpha_steps: int = 21,
+        decision_threshold: float = 0.5,
+        # --- dqn ---
+        dqn_hidden: int = 576,
+        dqn_layers: int = 3,
+        dqn_gamma: float = 0.99,
+        dqn_epsilon: float = 0.1,
+        dqn_epsilon_decay: float = 0.995,
+        dqn_min_epsilon: float = 0.01,
+        dqn_buffer_size: int = 100_000,
+        dqn_batch_size: int = 128,
+        dqn_target_update: int = 100,
+        dqn_weight_decay: float = 1e-5,
+        dqn_scheduler_patience: int = 1000,
+        dqn_vgae_error_weights: list[float] | None = None,
+        dqn_reward_correct: float = 3.0,
+        dqn_reward_incorrect: float = -3.0,
+        dqn_confidence_weight: float = 0.5,
+        dqn_combined_conf_weight: float = 0.3,
+        dqn_disagreement_penalty: float = -1.0,
+        dqn_overconf_penalty: float = -1.5,
+        dqn_balance_weight: float = 0.3,
+        # --- bandit ---
+        bandit_ucb_alpha: float = 1.0,
+        bandit_lambda_reg: float = 1.0,
+        bandit_backbone_retrain_freq: int = 50,
+        bandit_backbone_lr: float = 0.001,
+        bandit_backbone_epochs: int = 5,
+        bandit_hidden: int = 576,
+        bandit_layers: int = 3,
+        bandit_buffer_size: int = 100_000,
+        bandit_batch_size: int = 128,
+        # ---
         device: str = "cpu",
     ):
         super().__init__()
-        from graphids.config.defaults.schema import (
-            BanditConfig as _BC, DQNConfig as _DC, FusionConfig as _FC,
-        )
-        if fusion is None:
-            fusion = _FC()
-        if dqn is None:
-            dqn = _DC()
-        if bandit is None:
-            bandit = _BC()
+        if dqn_vgae_error_weights is None:
+            dqn_vgae_error_weights = [0.4, 0.35, 0.25]
         self.save_hyperparameters()
 
         self.automatic_optimization = False
 
-        # Build agent — agents read from self.hparams (fusion.*, dqn.*, bandit.*)
         if method == "dqn":
             from .dqn import EnhancedDQNFusionAgent
             agent = EnhancedDQNFusionAgent.from_config(self.hparams, device=device)

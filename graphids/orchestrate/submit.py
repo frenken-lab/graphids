@@ -24,7 +24,7 @@ from pathlib import Path
 import structlog
 import yaml
 
-from graphids.config.constants import PROJECT_ROOT, SLURM_ACCOUNT, STAGE_DEPENDENCIES, PIPELINE_YAML
+from graphids.config import PROJECT_ROOT, SLURM_ACCOUNT, STAGE_DEPENDENCIES, PIPELINE_YAML
 from .resources import get_failure_reactions, get_resources, scale_resources
 
 log = structlog.get_logger()

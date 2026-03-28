@@ -12,16 +12,16 @@ log = structlog.get_logger()
 
 
 def reward_kwargs_from_cfg(cfg) -> dict:
-    """Extract FusionRewardCalculator kwargs from pipeline config."""
+    """Extract FusionRewardCalculator kwargs from flat config."""
     return dict(
-        vgae_weights=list(cfg.dqn.vgae_error_weights),
-        reward_correct=cfg.dqn.reward_correct,
-        reward_incorrect=cfg.dqn.reward_incorrect,
-        confidence_weight=cfg.dqn.confidence_weight,
-        combined_conf_weight=cfg.dqn.combined_conf_weight,
-        disagreement_penalty=cfg.dqn.disagreement_penalty,
-        overconf_penalty=cfg.dqn.overconf_penalty,
-        balance_weight=cfg.dqn.balance_weight,
+        vgae_weights=list(cfg.dqn_vgae_error_weights),
+        reward_correct=cfg.dqn_reward_correct,
+        reward_incorrect=cfg.dqn_reward_incorrect,
+        confidence_weight=cfg.dqn_confidence_weight,
+        combined_conf_weight=cfg.dqn_combined_conf_weight,
+        disagreement_penalty=cfg.dqn_disagreement_penalty,
+        overconf_penalty=cfg.dqn_overconf_penalty,
+        balance_weight=cfg.dqn_balance_weight,
     )
 
 
