@@ -85,12 +85,16 @@ Replaced custom DataLoader/collation/assembly with PyG APIs, adopted Lightning b
 
 ## Blocked
 
-(none)
+- **Ablation Run 004** -- blocked on Dagster integration (`plans/dagster-integration.md`).
+  Need config expander + asset DAG to handle 60+ deduplicated jobs.
+- **HPO sweep** -- blocked on ablation results + Optuna integration (Phase 2)
+- **Full pipeline** -- blocked on HPO results (Phase 3)
 
 ## Open Questions
 
 - VGAE worker memory bloat (13G vs 22G bimodal) -- same model, different nodes. PrefetchLoader may help, needs rerun to confirm.
 - `--mem` over-requesting 54G when peak is 23G -- update `resources.yaml` to 32G after confirming PrefetchLoader doesn't change RSS profile.
+- dagster-slurm plugin vs custom PipesSlurmClient -- spike test needed (Phase A)
 
 ## Current Architecture
 
@@ -129,11 +133,11 @@ submit.py            # job submission + DAG chaining
 
 ### Key Reference Documents
 
-- `plans/models-consolidation.md` -- next cleanup: registry dissolution, shared base, optimizer wiring
-- `plans/preprocessing-consolidation.md` -- next cleanup: delete _temporal.py, DataModule fixes
-- `plans/flatten-model-config.md` -- completed config flatten reference
+- `plans/dagster-integration.md` -- **next priority**: Dagster orchestration for ablation/HPO/pipeline
+- `plans/experiment-sweep-plan.md` -- ablation claims, configs, stage sharing DAG
 - `plans/tier-priority-and-implementation.md` -- priority-ordered task list
-- `plans/ablation-run-001.md` -- Run 001 post-mortem
-- `plans/ablation-001-training-efficiency.md` -- VRAM, GPS OOM, data staging research
+- `plans/models-consolidation.md` -- deferred cleanup: registry dissolution, shared base
+- `plans/preprocessing-consolidation.md` -- deferred cleanup: delete _temporal.py, DataModule fixes
+- `plans/flatten-model-config.md` -- completed config flatten reference
 - `graphids/config/pipeline.yaml` -- DAG topology + identity_keys
 - `graphids/config/resources.yaml` -- SLURM resource profiles

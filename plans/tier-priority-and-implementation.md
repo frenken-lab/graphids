@@ -39,9 +39,10 @@
 
 | Plan file                                      | Scope                                  | Status |
 | ---------------------------------------------- | -------------------------------------- | ------ |
+| `plans/dagster-integration.md`                 | Dagster orchestration for ablation/HPO/pipeline | **proposed** -- next priority |
 | `plans/models-consolidation.md`                | 13 model files, -287 lines            | proposed (still current) |
 | `plans/preprocessing-consolidation.md`         | 8 data files, -179 lines              | proposed (still current) |
+| `plans/experiment-sweep-plan.md`               | Ablation + HPO design (claims/configs) | **partially superseded** -- infra replaced by dagster plan |
 | `plans/artifacts-consolidation.md`             | 6 artifact files                       | **superseded** -- Analyzer implemented differently |
 | `plans/pipeline-consolidation.md`              | Orchestration + SLURM                  | **superseded** -- pipeline/ deleted, orchestrate/ exists |
-| `plans/experiment-sweep-plan.md`               | Ablation + HPO design                  | **partially superseded** -- claims/configs still valid, infra sections stale |
 | `plans/flatten-model-config.md`                | Config flatten reference               | completed |
