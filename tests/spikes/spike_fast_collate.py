@@ -14,7 +14,7 @@ import torch
 from torch_geometric.data import Batch
 
 from graphids.config import cache_dir, data_dir
-from graphids.core.preprocessing.datamodule import _make_fast_collate_fn
+from graphids.core.preprocessing.datamodule import _FastCollate
 from graphids.core.preprocessing.datasets.can_bus import CANBusDataset
 
 N_REPEATS = 10
@@ -59,7 +59,7 @@ def main():
         split="train", window_size=100, stride=100,
     )
     physical = list(ds.indices())
-    fast_collate = _make_fast_collate_fn(ds)
+    fast_collate = _FastCollate(ds)
 
     print(f"Dataset: set_01, {len(ds)} graphs, {ds._data.x.shape[0]} total nodes")
     print(f"{'batch':>6} | {'old_cold':>10} {'old_warm':>10} {'new':>10} | {'cold/new':>10} {'warm/new':>10}")

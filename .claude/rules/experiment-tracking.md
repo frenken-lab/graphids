@@ -1,3 +1,0 @@
-# KD-GAT Experiment Tracking
-
-

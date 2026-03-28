@@ -29,18 +29,6 @@ source "$(dirname "$0")/../lib/validation.sh"  # kd_run_dir, kd_check_checkpoint
 # _bootstrap.sh (kd_log, kd_die, kd_load_env) is auto-sourced by all above
 ```
 
-**Key functions:**
-- `kd_log LEVEL "msg" key=val` — structured stderr logging
-- `kd_die "msg"` — log ERROR + exit 1
-- `kd_parse_datasets "$@"` — extract dataset names from args, default=all (reads datasets.yaml)
-- `kd_each_dataset callback [ds ...]` — iterate datasets with a callback function
-- `kd_parse_dry_run "$@"` — set `KD_DRY_RUN=true` if `--dry-run` in args
-- `kd_exec cmd args...` — execute or log if dry-run
-- `kd_submit gpu|cpu "name" "command" [extra-sbatch-args]` — submit sbatch with standard args
-- `kd_run_dir lake ds model scale stage [seed] [aux]` — canonical path builder
-- `kd_check_checkpoint path [desc]` — returns 0/1, logs result
-- `kd_require_slurm_env` — die if not inside SLURM job
-
 **Conventions:** `kd_` prefix on all functions. Source guards prevent double-loading. Functions return exit codes, never call `exit` (except `kd_die`). Works alongside `_preamble.sh` / `_epilog.sh`.
 
 **Example (login-node launcher):**
@@ -60,17 +48,7 @@ kd_each_dataset do_one "${DATASETS[@]}"
 
 ## Writing SLURM Job Scripts
 
-When creating or modifying a SLURM `.sh` script, follow these conventions:
-
-### Resource Sizing
-
-| Resource | Default | When to increase |
-|----------|---------|------------------|
-| `--mem` | `48G` | Only if `sacct` shows MaxRSS > 40G for this job type |
-| `--cpus-per-task` | `4` | Multi-worker DataLoader (`num_workers > 2`) or multi-concurrent Ray trials |
-| `--gres` | `gpu:1` | Never request `gpu:v100:1` — use generic `gpu:1` for scheduler flexibility |
-
-**Right-size resources.** Over-requesting memory/CPUs increases your scheduler footprint and slows queue priority. Check actual usage with `sacct -j <JOBID> -o MaxRSS,ReqMem`. Historical: training jobs use 8-20G RAM; tune sweeps use 5-15G.
+When creating or modifying a SLURM `.sh` or '.sbatch' script, follow these conventions:
 
 ### Available Partitions
 
@@ -90,29 +68,12 @@ When creating or modifying a SLURM `.sh` script, follow these conventions:
 ```bash
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=48G
-#SBATCH --time=08:00:00
-#SBATCH --job-name=kd-gat-<descriptive>
-#SBATCH --output=slurm_logs/<prefix>_%j.out
-#SBATCH --error=slurm_logs/<prefix>_%j.err
-#SBATCH --signal=B:USR1@300
 ```
 
 **CPU jobs** (tests, export, preprocessing):
 
 ```bash
 #SBATCH --partition=cpu
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
-#SBATCH --time=00:30:00
-#SBATCH --job-name=kd-gat-<descriptive>
-#SBATCH --output=slurm_logs/<prefix>_%j.out
-#SBATCH --error=slurm_logs/<prefix>_%j.err
 ```
 
 CPU preamble: `SKIP_CUDA_CONF=1 SKIP_STAGE_DATA=1 source "/users/PAS2022/rf15/KD-GAT/scripts/slurm/_preamble.sh"`
@@ -166,7 +127,7 @@ Data staging uses a 3-tier storage hierarchy. `scripts/data/stage_data.sh` manag
 **Safe on login node:**
 - Import checks: `python -c "from graphids.config import resolve; print('OK')"`
 - DuckDB queries: `duckdb < data/datalake/queries/leaderboard.sql`
-- Git, DVC, ruff
+- Git, ruff
 
 **Must go through SLURM:**
 - `python -m graphids.cli <any stage>` — all training/evaluation
