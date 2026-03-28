@@ -52,10 +52,18 @@ STAGE_DEPENDENCIES: dict[str, list[tuple[str, str]]] = {
 VALID_MODEL_TYPES: frozenset[str] = frozenset(PIPELINE_YAML["models"])
 VALID_SCALES: frozenset[str] = frozenset(PIPELINE_YAML["scales"])
 
+_missing_ckpt = set(PIPELINE_YAML["models"]) - set(_CKPT_STAGES.keys())
+if _missing_ckpt:
+    raise ValueError(
+        f"Models {_missing_ckpt} in pipeline.yaml missing from constants.yaml ckpt_stages. "
+        f"Add entries to constants.yaml before using new model types."
+    )
+
 DEFAULT_MODEL_TYPE: str = next(iter(PIPELINE_YAML["models"]))
 DEFAULT_SCALE: str = PIPELINE_YAML["scales"][0]
 DEFAULT_STAGE: str = PIPELINE_YAML["default_stages"][0]
-_datasets = yaml.safe_load((CONFIG_DIR / "datasets.yaml").read_text())
+CATALOG_PATH: Path = CONFIG_DIR / "datasets.yaml"
+_datasets = yaml.safe_load(CATALOG_PATH.read_text())
 DEFAULT_DATASET: str = next(k for k in _datasets if not k.startswith("_"))
 
 
@@ -108,8 +116,11 @@ def compute_identity_hash(stage: str, cfg) -> str:
 
     unresolved = [k for k in keys if _get(k) is None]
     if unresolved:
-        import structlog
-        structlog.get_logger().warning("identity_key_unresolved", stage=stage, keys=unresolved)
+        raise KeyError(
+            f"Identity keys {unresolved} not found in config for stage '{stage}'. "
+            f"These keys must be set in the YAML config or model __init__ for correct "
+            f"checkpoint path computation."
+        )
     pairs = [f"{k}={_get(k, '_default_')}" for k in sorted(keys)]
     return "_" + hashlib.sha256("|".join(pairs).encode()).hexdigest()[:8]
 

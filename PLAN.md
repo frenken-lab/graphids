@@ -4,9 +4,12 @@
 
 ## Active Plan
 
-### Ablation Run 003 — Submitted, eval pending
+### Ablation Run 004 — Ready to submit
 
-18 configs x 2 datasets (set_01, set_02) x 1 seed (42), deduped to 62 SLURM jobs. KD configs deferred.
+Run 003 (Hydra-era, 2026-03-25) checkpoints are incompatible with post-flatten code.
+Re-training as Run 004 with all 18 configs including KD (configs 10-11).
+
+18 configs x 2 datasets (set_01, set_02) x 1 seed (42). KD configs now wired.
 
 **Verify after Run 003 completes:**
 
@@ -36,26 +39,29 @@ Spikes, Slurm logs, tests, and profiles still write to this repo and not to shar
 | Unsup method           | 3       | vgae/gae/dgi                             |
 | Single-model baselines | 2       | vgae_only/gat_only                       |
 
-### Deferred
+### KD pipeline (configs 10-11)
 
-- **KD & scale** (`kd_student`, `large_reference`) -- needs `small_kd` preset + teacher wiring
+Config 11 (large reference) trains first. Config 10 (KD student) depends on it — pass
+teacher checkpoint path via `--model.init_args.auxiliaries[0].model_path=<path>` at submit time.
 
 ## In Progress
 
-- Ablation Run 003 -- training COMPLETED (2026-03-25), eval needs resubmit (weights_only fix)
 - Ops dashboard (`buckeyeguy/kd-gat-dashboard`) -- running on HF Spaces
 
-### Stale code cleanup (2026-03-28) -- IN PROGRESS
+### Code consolidation (deferred)
 
-- [x] `graphids/__init__.py` still has stale `"pipeline"` lazy import (pipeline/ deleted)
 - [ ] Models consolidation (`plans/models-consolidation.md`) -- registry.py dissolution, GraphModuleBase, optimizer wiring
 - [ ] Preprocessing consolidation (`plans/preprocessing-consolidation.md`) -- delete _temporal.py, DataModule convention fixes
 
 ## Recently Completed
 
-### Stale imports + bug fixes (2026-03-28)
+### KD wiring + bug fixes (2026-03-28)
 
-Found and fixed stale imports and bugs after config/CLI refactor. Import checks, dead references to deleted modules.
+Fixed 3 KD bugs: `teacher_on_device` stale nested ref, `prepare_kd` identity hash using
+student cfg for teacher path, mixed `.get()`/`getattr()` on hparams. Created 4 overlay YAMLs
+(`large_vgae`, `large_gat`, `kd_vgae`, `kd_gat`). Fixed `CATALOG_PATH` missing from config
+exports. Fixed stale `"pipeline"` lazy import. Fixed `orchestrate/resources.py` stale path.
+Run 003 checkpoints declared incompatible (Hydra-era nested format) — re-training as Run 004.
 
 ### Artifacts `analyze` subcommand (2026-03-28)
 

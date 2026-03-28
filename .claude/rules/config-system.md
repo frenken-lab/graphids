@@ -32,6 +32,10 @@ graphids/config/
     small_vgae.yaml    # small-scale VGAE dims
     small_gat.yaml     # small-scale GAT dims
     small_dgi.yaml     # small-scale DGI dims
+    large_vgae.yaml    # large-scale VGAE dims (sweep-optimized)
+    large_gat.yaml     # large-scale GAT dims (sweep-optimized)
+    kd_vgae.yaml       # KD auxiliaries for VGAE student
+    kd_gat.yaml        # KD auxiliaries for GAT student
 ```
 
 ## CLI usage
@@ -60,9 +64,12 @@ Every LightningModule takes **flat typed primitives** — no nested config objec
 ```python
 class VGAEModule(pl.LightningModule):
     def __init__(self, conv_type: str = "gatv2", hidden_dims: list[int] | None = None,
-                 latent_dim: int = 48, lr: float = 0.003, ...):
+                 latent_dim: int = 48, lr: float = 0.003,
+                 auxiliaries: list[KDAuxiliary] | None = None, ...):
         self.save_hyperparameters()
 ```
+
+**Structured list items** use `TypedDict` for jsonargparse validation. `KDAuxiliary` (in `_training.py`) defines valid keys for KD config — typos in YAML are rejected at parse time.
 
 ```yaml
 # stages/autoencoder.yaml — keys match __init__ params exactly
@@ -96,8 +103,18 @@ jsonargparse also supports `--env_prefix=KD_GAT` for any init_args field.
 
 `lake_root` defaults to `experimentruns` when `KD_GAT_LAKE_ROOT` is unset.
 
-The `identity_hash` suffix is an 8-char SHA256 derived from the stage's `identity_keys` (defined in `pipeline.yaml`). Computed by `compute_identity_hash()` in `__init__.py`.
+The `identity_hash` suffix is an 8-char SHA256 derived from the stage's `identity_keys` (defined in `pipeline.yaml`). Computed by `compute_identity_hash()` in `__init__.py`. **Missing identity keys raise `KeyError`** — never silently hash to defaults.
+
+## Config robustness
+
+Three layers of validation prevent silent config drift:
+
+1. **jsonargparse type checking** — unknown `init_args` keys and wrong types are rejected at parse time.
+2. **`KDAuxiliary` TypedDict** — structured list items (KD config) validate keys at parse time. Typos like `alppha` are caught.
+3. **`constants.yaml` model coverage** — `__init__.py` asserts all `pipeline.yaml` model types have `ckpt_stages` entries at import time.
+
+When adding new config fields: type annotations on `__init__` params are the schema. Use `TypedDict` for structured dicts/lists. jsonargparse enforces the rest.
 
 ## DuckDB catalog
 
-`{lake_root}/catalog/kd_gat.duckdb` — `experiments` table with flat metric columns + `config JSON` + `identity_hash`. Written by `_append_to_catalog()` in `graphids/pipeline/stages/__init__.py` after each stage completes. Best-effort. Catalog is disposable — rebuildable from filesystem.
+`{lake_root}/catalog/kd_gat.duckdb` — `experiments` table with flat metric columns + `config JSON` + `identity_hash`. Best-effort, disposable — rebuildable from filesystem.

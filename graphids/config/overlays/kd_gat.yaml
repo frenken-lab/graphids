@@ -1,0 +1,14 @@
+# KD overlay for GAT — distills from large teacher into small student.
+# Layer on top of stages/curriculum.yaml + overlays/small_gat.yaml:
+#   python -m graphids fit --config .../stages/curriculum.yaml \
+#       --config .../overlays/small_gat.yaml --config .../overlays/kd_gat.yaml
+#
+# Set model_path explicitly to the large teacher checkpoint after it completes:
+#   --model.init_args.auxiliaries[0].model_path=/path/to/large/best_model.ckpt
+model:
+  init_args:
+    auxiliaries:
+      - type: kd
+        alpha: 0.7
+        temperature: 4.0
+        teacher_scale: large

@@ -7,6 +7,7 @@ import torch.nn.functional as F
 
 from ._conv import InputEncoder, build_conv_stack, build_encoder_stack, _make_conv, conv_forward, resolve_edge_dim
 from ._training import (
+    KDAuxiliary,
     OOMSkipMixin, soft_label_kd_loss, teacher_on_device,
     compute_node_budget, NodeBudgetInfo,
     binary_test_metrics,
@@ -363,7 +364,7 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         dataset: str = "",
         seed: int = 42,
         gat_stage: str = "curriculum",
-        auxiliaries: list | None = None,
+        auxiliaries: list[KDAuxiliary] | None = None,
         num_ids: int = 0,
         in_channels: int = 0,
         num_classes: int = 2,
@@ -427,7 +428,7 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
     def _step(self, batch):
         task_loss, cont_out, z = self._task_loss(batch)
         if self.teacher is not None:
-            kd = next(a for a in self.hparams.get("auxiliaries", []) if a.type == "kd")
+            kd = next(a for a in getattr(self.hparams, "auxiliaries", []) if a.type == "kd")
             with teacher_on_device(self, batch.x.device):
                 with torch.no_grad():
                     batch_idx = (

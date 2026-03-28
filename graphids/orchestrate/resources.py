@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-_RESOURCES_PATH = Path(__file__).resolve().parents[1] / "config" / "defaults" / "resources.yaml"
+_RESOURCES_PATH = Path(__file__).resolve().parents[1] / "config" / "resources.yaml"
 
 
 @dataclass
@@ -45,7 +45,7 @@ def get_resources(model_type: str, scale: str, stage: str) -> ResourceSpec:
     except KeyError:
         raise KeyError(
             f"No resource profile for ({model_type}, {scale}, {stage}). "
-            f"Add entry to config/defaults/resources.yaml."
+            f"Add entry to config/resources.yaml."
         ) from None
     return ResourceSpec(**spec)
 

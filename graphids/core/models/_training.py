@@ -2,7 +2,7 @@
 
 import contextlib
 import math
-from typing import NamedTuple
+from typing import NamedTuple, TypedDict
 
 import structlog
 import torch
@@ -10,6 +10,21 @@ import torch.nn.functional as F
 from torch import Tensor
 
 _log = structlog.get_logger()
+
+
+class KDAuxiliary(TypedDict, total=False):
+    """Schema for KD auxiliary config items — validated by jsonargparse at parse time."""
+    type: str
+    alpha: float
+    # VGAE KD
+    vgae_latent_weight: float
+    vgae_recon_weight: float
+    # GAT KD
+    temperature: float
+    # Teacher resolution
+    teacher_scale: str
+    model_path: str
+
 
 # Conv types with O(N²) global attention (full attention matrix across all batch nodes).
 _QUADRATIC_CONV_TYPES = frozenset({"gps"})
@@ -108,8 +123,7 @@ def focal_loss(logits, targets, gamma: float = 2.0):
 @contextlib.contextmanager
 def teacher_on_device(module, device):
     """Move teacher to device for inference, offload back to CPU after."""
-    training_cfg = getattr(getattr(module, "hparams", None), "training", None)
-    offload = getattr(training_cfg, "offload_teacher_to_cpu", False) if training_cfg else False
+    offload = getattr(getattr(module, "hparams", None), "offload_teacher_to_cpu", False)
     if offload and module._teacher_on_cpu:
         module.teacher.to(device)
         module._teacher_on_cpu = False
@@ -182,17 +196,21 @@ def prepare_kd(
     """
     from pathlib import Path
 
-    if not any(a.type == "kd" for a in (getattr(cfg, "auxiliaries", None) or [])):
+    if not any(getattr(a, "type", None) == "kd" for a in (getattr(cfg, "auxiliaries", None) or [])):
         return None, None
 
-    kd = next(a for a in cfg.get("auxiliaries", []) if a.type == "kd")
-    if kd.get("model_path"):
+    kd = next(a for a in getattr(cfg, "auxiliaries", []) if a.type == "kd")
+    if getattr(kd, "model_path", None):
         teacher_path = Path(kd.model_path)
     else:
+        import copy
+
         from graphids.config import checkpoint_path
-        teacher_scale = kd.get("teacher_scale", "large")
+        teacher_scale = getattr(kd, "teacher_scale", "large")
+        teacher_cfg = copy.copy(cfg)
+        teacher_cfg.scale = teacher_scale
         teacher_path = checkpoint_path(
-            cfg.lake_root, cfg.dataset, model_type, teacher_scale, cfg.seed, cfg,
+            cfg.lake_root, cfg.dataset, model_type, teacher_scale, cfg.seed, teacher_cfg,
             gat_stage=getattr(cfg, "gat_stage", "curriculum"),
         )
         if not teacher_path.exists():
