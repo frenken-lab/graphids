@@ -173,7 +173,7 @@ def prepare_kd(
     """
     from pathlib import Path
 
-    if not any(a.type == "kd" for a in cfg.get("auxiliaries", [])):
+    if not any(a.type == "kd" for a in (getattr(cfg, "auxiliaries", None) or [])):
         return None, None
 
     kd = next(a for a in cfg.get("auxiliaries", []) if a.type == "kd")

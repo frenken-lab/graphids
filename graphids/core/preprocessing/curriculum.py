@@ -108,7 +108,7 @@ class CurriculumDataModule(pl.LightningDataModule):
         self.save_hyperparameters()
         self._batch_sampler = None
         self._train_loader = None
-        self._current_epoch = 0
+        self._val_loader = None
         self.val_data = None
 
     def setup(self, stage=None):
@@ -121,6 +121,10 @@ class CurriculumDataModule(pl.LightningDataModule):
         from graphids.core.preprocessing.datamodule import load_datasets
 
         hp = self.hparams
+        if not hp.vgae_ckpt_path:
+            raise ValueError(
+                "CurriculumDataModule requires vgae_ckpt_path — train VGAE autoencoder first"
+            )
         cfg_ns = types.SimpleNamespace(
             dataset=hp.dataset, lake_root=hp.lake_root, seed=hp.seed,
             preprocessing=types.SimpleNamespace(
@@ -162,16 +166,11 @@ class CurriculumDataModule(pl.LightningDataModule):
         self._train_loader = make_graph_loader(
             full_dataset, batch_sampler=self._batch_sampler, num_workers=hp.num_workers,
         )
+        self._val_loader = self._build_val_loader()
 
-    def train_dataloader(self):
-        self._batch_sampler.set_epoch(self._current_epoch)
-        self._current_epoch += 1
-        return self._train_loader
-
-    def val_dataloader(self):
+    def _build_val_loader(self):
         hp = self.hparams
         bs = max(8, hp.batch_size)
-
         if hp.dynamic_batching:
             info = compute_node_budget(bs, hp, conv_type=hp.conv_type, heads=hp.heads)
             num_steps = max(1, len(self.val_data) * 30 // info.budget)
@@ -180,5 +179,12 @@ class CurriculumDataModule(pl.LightningDataModule):
                 skip_too_big=True, num_steps=num_steps,
             )
             return make_graph_loader(self.val_data, batch_sampler=sampler, num_workers=hp.num_workers)
-
         return make_graph_loader(self.val_data, batch_size=bs, shuffle=False, num_workers=hp.num_workers)
+
+    def train_dataloader(self):
+        epoch = self.trainer.current_epoch if self.trainer else 0
+        self._batch_sampler.set_epoch(epoch)
+        return self._train_loader
+
+    def val_dataloader(self):
+        return self._val_loader

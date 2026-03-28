@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ._conv import InputEncoder, build_conv_stack, build_encoder_stack, _make_conv, conv_forward, resolve_edge_dim
+from graphids.config.defaults.schema import VGAEConfig, TrainingConfig
 from ._training import (
     OOMSkipMixin, soft_label_kd_loss, teacher_on_device,
     compute_node_budget, NodeBudgetInfo,
@@ -337,24 +338,22 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
 
     def __init__(
         self,
-        vgae: VGAEConfig = None,
-        training: TrainingConfig = None,
+        vgae: VGAEConfig = VGAEConfig(),
+        training: TrainingConfig = TrainingConfig(),
         model_type: str = "vgae",
         lake_root: str = "experimentruns",
         dataset: str = "",
         seed: int = 42,
         gat_stage: str = "curriculum",
-        auxiliaries: list = None,
+        auxiliaries: list | None = None,
         num_ids: int = 0,
         in_channels: int = 0,
         num_classes: int = 2,
     ):
         super().__init__()
-        from graphids.config.defaults.schema import VGAEConfig as _VC, TrainingConfig as _TC
-        if vgae is None:
-            vgae = _VC()
-        if training is None:
-            training = _TC()
+        from graphids.config import coerce_config
+        vgae = coerce_config(vgae, VGAEConfig)
+        training = coerce_config(training, TrainingConfig)
         if auxiliaries is None:
             auxiliaries = []
         self.save_hyperparameters()
@@ -378,8 +377,11 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
             self._build()
 
     def _build(self):
+        from graphids.config import coerce_config
         from ._training import prepare_kd
         hp = self.hparams
+        hp.vgae = coerce_config(hp.vgae, VGAEConfig)
+        hp.training = coerce_config(hp.training, TrainingConfig)
         self.model = GraphAutoencoderNeighborhood.from_config(hp, hp.num_ids, hp.in_channels)
         if hp.training.compile_model and hasattr(torch, "compile"):
             self.model = torch.compile(self.model, dynamic=True)

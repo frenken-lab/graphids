@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import gc
 import math
+import os
 
 import pytorch_lightning as pl
 import structlog
@@ -95,7 +96,7 @@ class CANBusDataModule(pl.LightningDataModule):
     def __init__(
         self,
         dataset: str,
-        lake_root: str,
+        lake_root: str = os.environ.get("KD_GAT_LAKE_ROOT"),
         batch_size: int = 32,
         num_workers: int = 2,
         window_size: int = 100,

@@ -14,6 +14,7 @@ import torch
 import torch.nn as nn
 from torch_geometric.nn import global_mean_pool
 
+from graphids.config.defaults.schema import DGIConfig, TrainingConfig
 from ._conv import InputEncoder, build_encoder_stack, conv_forward, resolve_edge_dim
 from ._training import OOMSkipMixin, binary_test_metrics
 
@@ -153,18 +154,16 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
 
     def __init__(
         self,
-        dgi: DGIConfig = None,
-        training: TrainingConfig = None,
+        dgi: DGIConfig = DGIConfig(),
+        training: TrainingConfig = TrainingConfig(),
         num_ids: int = 0,
         in_channels: int = 0,
         num_classes: int = 2,
     ):
         super().__init__()
-        from graphids.config.defaults.schema import DGIConfig as _DC, TrainingConfig as _TC
-        if dgi is None:
-            dgi = _DC()
-        if training is None:
-            training = _TC()
+        from graphids.config import coerce_config
+        dgi = coerce_config(dgi, DGIConfig)
+        training = coerce_config(training, TrainingConfig)
         self.save_hyperparameters()
         self.model = None
         self.test_threshold: float | None = None
@@ -183,7 +182,10 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
             self._build()
 
     def _build(self):
+        from graphids.config import coerce_config
         hp = self.hparams
+        hp.dgi = coerce_config(hp.dgi, DGIConfig)
+        hp.training = coerce_config(hp.training, TrainingConfig)
         self.model = GraphInfomaxModel.from_config(hp, hp.num_ids, hp.in_channels)
         if hp.training.compile_model and hasattr(torch, "compile"):
             self.model = torch.compile(self.model, dynamic=True)

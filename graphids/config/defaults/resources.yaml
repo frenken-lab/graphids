@@ -1,0 +1,136 @@
+# Resource profiles — single source of truth for SLURM allocation + DataLoader config.
+#
+# RAM formula: 15G base + num_workers × dataset_size + 4G overhead
+# (RSS inflated by shared mmap pages — actual PSS is lower)
+#
+# GPU util model: min(1.0, num_workers × T_gpu / T_collate)
+#   T_collate ≈ 25ms warm cache (persistent_workers epoch 2+)
+#   T_gpu ≈ 10ms (VGAE) / 25ms (GAT)
+#
+# Profiles derived from: sacct history March 2026, GPU profiling Run 003,
+# memory_profiling/investigation_v2.md, resource_plan_2026_03_27.md
+
+resource_profiles:
+  vgae:
+    medium:
+      autoencoder:
+        partition: gpu
+        gres: "gpu:1"
+        time: "02:30:00"
+        mem: "32G"
+        cpus_per_task: 4
+        num_workers: 3
+      curriculum:
+        partition: gpu
+        gres: "gpu:1"
+        time: "02:30:00"
+        mem: "32G"
+        cpus_per_task: 4
+        num_workers: 3
+    large:
+      autoencoder:
+        partition: gpu
+        gres: "gpu:1"
+        time: "04:00:00"
+        mem: "48G"
+        cpus_per_task: 4
+        num_workers: 3
+      curriculum:
+        partition: gpu
+        gres: "gpu:1"
+        time: "04:00:00"
+        mem: "48G"
+        cpus_per_task: 4
+        num_workers: 3
+
+  gat:
+    medium:
+      normal:
+        partition: gpu
+        gres: "gpu:1"
+        time: "03:00:00"
+        mem: "28G"
+        cpus_per_task: 3
+        num_workers: 2
+      curriculum:
+        partition: gpu
+        gres: "gpu:1"
+        time: "03:00:00"
+        mem: "28G"
+        cpus_per_task: 3
+        num_workers: 2
+    large:
+      normal:
+        partition: gpu
+        gres: "gpu:1"
+        time: "05:00:00"
+        mem: "36G"
+        cpus_per_task: 4
+        num_workers: 3
+      curriculum:
+        partition: gpu
+        gres: "gpu:1"
+        time: "05:00:00"
+        mem: "36G"
+        cpus_per_task: 4
+        num_workers: 3
+
+  dgi:
+    medium:
+      autoencoder:
+        partition: gpu
+        gres: "gpu:1"
+        time: "02:30:00"
+        mem: "32G"
+        cpus_per_task: 4
+        num_workers: 3
+
+  dqn:
+    medium:
+      fusion:
+        partition: gpu
+        gres: "gpu:1"
+        time: "01:00:00"
+        mem: "16G"
+        cpus_per_task: 2
+        num_workers: 0
+
+  bandit:
+    medium:
+      fusion:
+        partition: gpu
+        gres: "gpu:1"
+        time: "01:00:00"
+        mem: "16G"
+        cpus_per_task: 2
+        num_workers: 0
+
+  preprocess:
+    any:
+      preprocess:
+        partition: cpu
+        time: "02:00:00"
+        mem: "72G"
+        cpus_per_task: 8
+        num_workers: 0
+
+  test:
+    any:
+      test:
+        partition: cpu
+        time: "00:30:00"
+        mem: "16G"
+        cpus_per_task: 8
+        num_workers: 0
+
+# Adaptive retry — orchestrator scales resources on failure and resubmits.
+# Lightning auto-resumes from last checkpoint.
+failure_reactions:
+  OUT_OF_MEMORY:
+    scale_mem: 1.4
+    max_retries: 2
+  TIMEOUT:
+    scale_time: 1.5
+    max_retries: 1
+  NODE_FAIL:
+    max_retries: 2

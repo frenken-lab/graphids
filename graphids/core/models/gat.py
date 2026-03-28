@@ -11,6 +11,7 @@ from torch_geometric.nn import (
 )
 from torch_geometric.nn.aggr import MultiAggregation
 
+from graphids.config.defaults.schema import GATConfig, TrainingConfig
 from ._conv import InputEncoder, _make_conv, conv_forward, resolve_edge_dim
 from ._training import (
     OOMSkipMixin, soft_label_kd_loss, focal_loss,
@@ -186,24 +187,22 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
 
     def __init__(
         self,
-        gat: GATConfig = None,
-        training: TrainingConfig = None,
+        gat: GATConfig = GATConfig(),
+        training: TrainingConfig = TrainingConfig(),
         model_type: str = "gat",
         lake_root: str = "experimentruns",
         dataset: str = "",
         seed: int = 42,
         gat_stage: str = "curriculum",
-        auxiliaries: list = None,
+        auxiliaries: list | None = None,
         num_ids: int = 0,
         in_channels: int = 0,
         num_classes: int = 2,
     ):
         super().__init__()
-        from graphids.config.defaults.schema import GATConfig as _GC, TrainingConfig as _TC
-        if gat is None:
-            gat = _GC()
-        if training is None:
-            training = _TC()
+        from graphids.config import coerce_config
+        gat = coerce_config(gat, GATConfig)
+        training = coerce_config(training, TrainingConfig)
         if auxiliaries is None:
             auxiliaries = []
         self.save_hyperparameters()
@@ -231,8 +230,11 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
             self._build()
 
     def _build(self):
+        from graphids.config import coerce_config
         from ._training import prepare_kd
         hp = self.hparams
+        hp.gat = coerce_config(hp.gat, GATConfig)
+        hp.training = coerce_config(hp.training, TrainingConfig)
         self.model = GATWithJK.from_config(hp, hp.num_ids, hp.in_channels)
         if hp.training.compile_model and hasattr(torch, "compile"):
             self.model = torch.compile(self.model, dynamic=True)
