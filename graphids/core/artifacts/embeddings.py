@@ -84,20 +84,18 @@ def collect_and_save_attention(
     model.eval()
     try:
         data = val_data[:max_samples]
-        loader = make_graph_loader(data, batch_size=batch_size)
+        loader = make_graph_loader(data, batch_size=1)
 
         attn_export: dict[str, np.ndarray] = {}
         sample_idx = 0
         for batch in loader:
             batch = batch.clone().to(device)
-            # forward(return_attention_weights=True) -> (xs_list, [alpha_per_layer])
             xs, attention_weights = model(batch, return_attention_weights=True)
-            for i in range(batch.num_graphs):
-                prefix = f"sample_{sample_idx}"
-                attn_export[f"{prefix}_label"] = batch.y[i].cpu().numpy()
-                for layer_idx, alpha in enumerate(attention_weights):
-                    attn_export[f"{prefix}_layer_{layer_idx}_alpha"] = alpha.numpy()
-                sample_idx += 1
+            prefix = f"sample_{sample_idx}"
+            attn_export[f"{prefix}_label"] = batch.y[0].cpu().numpy()
+            for layer_idx, alpha in enumerate(attention_weights):
+                attn_export[f"{prefix}_layer_{layer_idx}_alpha"] = alpha.cpu().numpy()
+            sample_idx += 1
 
         if attn_export:
             attn_export["n_samples"] = np.array(sample_idx)

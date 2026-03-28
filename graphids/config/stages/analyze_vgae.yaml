@@ -1,10 +1,9 @@
 # VGAE analysis artifacts (embeddings, loss landscape).
-# Usage: python -m graphids analyze --config graphids/config/stages/analyze_vgae.yaml
-ckpt_path: ???  # required — path to trained VGAE checkpoint
-dataset: ???    # required — e.g. hcrl_sa
-model_type: vgae
-output_dir: artifacts/
-embeddings: true
-landscape: true
-landscape_resolution: 51
-landscape_scale: 1.0
+# Usage: python -m graphids analyze --config graphids/config/stages/analyze_vgae.yaml \
+#          --analyzer.ckpt_path path/to/best.ckpt --analyzer.dataset hcrl_sa
+analyzer:
+  model_type: vgae
+  embeddings: true
+  landscape: true
+  landscape_resolution: 51
+  landscape_scale: 1.0

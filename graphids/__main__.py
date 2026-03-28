@@ -28,9 +28,9 @@ if __name__ == "__main__":
         from graphids.core.artifacts import Analyzer
 
         parser = ArgumentParser(description="Generate analysis artifacts from trained checkpoints")
-        parser.add_class_arguments(Analyzer)
+        parser.add_class_arguments(Analyzer, "analyzer")
         cfg = parser.parse_args(sys.argv[2:])
-        analyzer = parser.instantiate_classes(cfg)
+        analyzer = parser.instantiate_classes(cfg).analyzer
         analyzer.run()
     else:
         import pytorch_lightning as pl

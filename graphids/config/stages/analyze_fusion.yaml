@@ -1,8 +1,8 @@
 # Fusion analysis artifacts (DQN/bandit policy).
-# Usage: python -m graphids analyze --config graphids/config/stages/analyze_fusion.yaml
-ckpt_path: ???  # required — path to trained fusion checkpoint
-dataset: ???    # required — e.g. hcrl_sa
-model_type: dqn
-output_dir: artifacts/
-embeddings: false
-fusion_policy: true
+# Usage: python -m graphids analyze --config graphids/config/stages/analyze_fusion.yaml \
+#          --analyzer.ckpt_path path/to/fusion.ckpt --analyzer.dataset hcrl_sa \
+#          --analyzer.vgae_ckpt_path path/to/vgae.ckpt --analyzer.gat_ckpt_path path/to/gat.ckpt
+analyzer:
+  model_type: fusion
+  embeddings: false
+  fusion_policy: true

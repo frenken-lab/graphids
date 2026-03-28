@@ -1,11 +1,10 @@
 # GAT analysis artifacts (embeddings, attention, CKA, loss landscape).
-# Usage: python -m graphids analyze --config graphids/config/stages/analyze_gat.yaml
-ckpt_path: ???              # required — path to trained GAT checkpoint
-dataset: ???                # required — e.g. hcrl_sa
-model_type: gat
-output_dir: artifacts/
-embeddings: true
-attention: true
-cka: true
-cka_teacher_ckpt: ???       # required when cka=true — path to large-scale teacher checkpoint
-landscape: true
+# Usage: python -m graphids analyze --config graphids/config/stages/analyze_gat.yaml \
+#          --analyzer.ckpt_path path/to/best.ckpt --analyzer.dataset hcrl_sa \
+#          --analyzer.cka_teacher_ckpt path/to/teacher.ckpt
+analyzer:
+  model_type: gat
+  embeddings: true
+  attention: true
+  cka: true
+  landscape: true

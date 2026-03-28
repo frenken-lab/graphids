@@ -37,6 +37,10 @@ def _dgi_module():
     from .dgi import DGIModule
     return DGIModule
 
+def _fusion_module():
+    from .fusion_baselines import RLFusionModule
+    return RLFusionModule
+
 
 # Order matters — VGAE then GAT matches the 15-D state layout for trained DQN checkpoints.
 # DGI has no fusion extractor (doesn't participate in fusion — contrastive, not reconstructive).
@@ -46,6 +50,7 @@ _MODELS: dict[str, tuple[FusionFeatureExtractor | None, callable | None]] = {
     "gat": (GATFusionExtractor(), _gat_module),
     "dqn": (None, None),
     "dgi": (None, _dgi_module),
+    "fusion": (None, _fusion_module),
 }
 
 

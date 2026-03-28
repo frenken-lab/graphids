@@ -140,14 +140,8 @@ def binary_test_metrics():
 # ---------------------------------------------------------------------------
 
 
-def load_inner_model(
-    model_type: str, ckpt_path, device,
-) -> tuple[torch.nn.Module, object]:
-    """Load a Lightning checkpoint, return (inner nn.Module on device in eval, hparams cfg).
-
-    Uses Lightning's load_from_checkpoint under the hood. Extracts the raw
-    nn.Module (not the LightningModule wrapper) for use as teacher / inference.
-    """
+def safe_load_checkpoint(model_type: str, ckpt_path, *, map_location="cpu"):
+    """load_from_checkpoint with migration guard for pre-flatten checkpoints."""
     from pathlib import Path
 
     from graphids.core.models.registry import get_module_cls
@@ -156,8 +150,8 @@ def load_inner_model(
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
     try:
-        module = get_module_cls(model_type).load_from_checkpoint(
-            str(ckpt_path), map_location="cpu", weights_only=True,
+        return get_module_cls(model_type).load_from_checkpoint(
+            str(ckpt_path), map_location=map_location, weights_only=True,
         )
     except TypeError as exc:
         if any(k in str(exc) for k in ("vgae", "gat", "dgi", "training", "fusion")):
@@ -166,6 +160,13 @@ def load_inner_model(
                 "Run: python scripts/migrate_checkpoints.py <checkpoint_dir>"
             ) from exc
         raise
+
+
+def load_inner_model(
+    model_type: str, ckpt_path, device,
+) -> tuple[torch.nn.Module, object]:
+    """Load a Lightning checkpoint, return (inner nn.Module on device in eval, hparams cfg)."""
+    module = safe_load_checkpoint(model_type, ckpt_path)
     model = module.model
     model.to(device).eval()
     return model, module.hparams
