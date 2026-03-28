@@ -1,0 +1,26 @@
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    ignore:
+      # PyTorch/PyG/CUDA constraint triangle — manual upgrades only.
+      # See .claude/rules/pytorch-compat.md for pinned versions.
+      - dependency-name: "torch"
+      - dependency-name: "torch-scatter"
+      - dependency-name: "torch-sparse"
+      - dependency-name: "torch-cluster"
+      - dependency-name: "torch-geometric"
+      - dependency-name: "pytorch-lightning"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "ci"
