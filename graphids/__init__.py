@@ -2,12 +2,11 @@
 
 Public API:
     import graphids.core  # lazy-loaded
-    import graphids.pipeline  # lazy-loaded
 """
 
 __version__ = "1.0.0"
 
-_lazy_submodules = {"core", "pipeline"}
+_lazy_submodules = {"core"}
 
 
 def __getattr__(name):
