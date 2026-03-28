@@ -25,6 +25,9 @@ graphids/config/
     normal.yaml        # GATModule + CANBusDataModule (no curriculum)
     curriculum.yaml    # GATModule + CurriculumDataModule
     fusion.yaml        # RLFusionModule + FusionDataModule + trainer overrides
+    analyze_vgae.yaml  # Analyzer config: VGAE embeddings + landscape
+    analyze_gat.yaml   # Analyzer config: GAT embeddings + attention + CKA + landscape
+    analyze_fusion.yaml # Analyzer config: fusion policy
   overlays/            # thin --config adds for scale/ablation variants
     small_vgae.yaml    # small-scale VGAE dims
     small_gat.yaml     # small-scale GAT dims
@@ -33,18 +36,22 @@ graphids/config/
 
 ## CLI usage
 
-```bash
-# Basic — stage YAML selects model class_path, trainer.yaml is auto-loaded
-python -m graphids fit --config graphids/config/stages/autoencoder.yaml
+Two entry points in `__main__.py`, both using jsonargparse:
 
-# With scale overlay
+```bash
+# --- Training (GraphIDSCLI → LightningCLI) ---
+python -m graphids fit --config graphids/config/stages/autoencoder.yaml
 python -m graphids fit --config graphids/config/stages/autoencoder.yaml \
                        --config graphids/config/overlays/small_vgae.yaml
-
-# CLI overrides (flat keys)
 python -m graphids fit --config graphids/config/stages/normal.yaml \
                        --model.init_args.lr=0.01
+
+# --- Analysis artifacts (Analyzer — no Trainer) ---
+python -m graphids analyze --config graphids/config/stages/analyze_vgae.yaml \
+    --analyzer.ckpt_path path/to/best.ckpt --analyzer.dataset hcrl_sa
 ```
+
+`analyze` YAML keys nest under `analyzer:` (same pattern as `model:`/`data:`/`trainer:`). Required args (`ckpt_path`, `dataset`, `model_type`) have no defaults — jsonargparse rejects configs that omit them.
 
 ## Model __init__ convention
 

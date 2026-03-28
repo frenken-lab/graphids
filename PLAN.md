@@ -1,6 +1,6 @@
 # KD-GAT Session Plan
 
-> Last updated: 2026-03-25
+> Last updated: 2026-03-28
 
 ## Active Plan
 
@@ -54,9 +54,10 @@ Spikes, Slurm logs, tests, and profiles still write to this repo and not to shar
 
 - Ablation Run 003 — training COMPLETED (2026-03-25), eval needs resubmit (weights_only fix)
 - Ops dashboard (`buckeyeguy/kd-gat-dashboard`) — running on HF Spaces
+
 ### Artifacts `analyze` subcommand (2026-03-28) — DONE
 
-Wired artifacts as `python -m graphids analyze --config stages/analyze_vgae.yaml`. Deleted dead `generate_all` + result dataclass imports. Rewrote all 4 leaf modules (embeddings, cka, loss_landscape, fusion_policy) to take concrete inputs. Created `Analyzer` class with typed `__init__` — jsonargparse reads signature, YAML provides values. Fail-loud validation on missing checkpoints. See `plans/fluffy-floating-galaxy.md`.
+`python -m graphids analyze --config stages/analyze_vgae.yaml --analyzer.ckpt_path ... --analyzer.dataset ...`. Same jsonargparse, YAML under `analyzer:` namespace. Deleted dead `generate_all`, rewrote 4 leaf modules to take concrete inputs, created `Analyzer` class. Fail-loud on missing checkpoints/deps. See `plans/fluffy-floating-galaxy.md`.
 
 ### Config flatten + consolidation (2026-03-28) — DONE
 

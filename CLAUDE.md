@@ -10,6 +10,26 @@ Every function, file, and abstraction must earn its place. Before writing code, 
 
 ## Key Commands
 
+```bash
+# Training
+python -m graphids fit --config graphids/config/stages/autoencoder.yaml
+python -m graphids fit --config graphids/config/stages/normal.yaml --config graphids/config/overlays/small_gat.yaml
+
+# Evaluation
+python -m graphids test --config graphids/config/stages/autoencoder.yaml --ckpt_path best.ckpt
+
+# Analysis artifacts (embeddings, CKA, loss landscape)
+python -m graphids analyze --config graphids/config/stages/analyze_vgae.yaml \
+    --analyzer.ckpt_path path/to/best.ckpt --analyzer.dataset hcrl_sa
+```
+
+## CLI Architecture
+
+Two entry points in `__main__.py`, both using jsonargparse:
+
+- `python -m graphids fit|test|validate|predict` → `GraphIDSCLI` (extends `LightningCLI`, adds `link_arguments` for DRY config)
+- `python -m graphids analyze` → `Analyzer` class (no Trainer — loads checkpoints, generates artifacts)
+
 ## Session Start
 
 Always read `PLAN.md` before starting work. Update it after completing any task.
