@@ -186,23 +186,24 @@ python -m graphids analyze --config graphids/config/stages/analyze_vgae.yaml \
 
 ### Orchestration
 
-`graphids/orchestrate/` submits stages to SLURM with dependency chaining:
+Dagster-based. See `plans/dagster-native-orchestration.md` for current design.
 
 ```bash
-python -m graphids.orchestrate --config-dir configs/ablation_run_004/ \
-    --datasets set_01 set_02 --seeds 42
+# Submission
+sbatch scripts/slurm/run_ablation.sh
+# Or directly: python -m graphids.orchestrate --partition "set_01|42"
 ```
 
-### Key files (current)
+### Key files
 
 | File | Role |
 |------|------|
 | `graphids/config/pipeline.yaml` | Stage DAG, identity_keys, valid models/scales |
+| `graphids/config/ablation.yaml` | 18-config ablation recipe |
 | `graphids/config/stages/*.yaml` | Per-stage LightningCLI configs |
 | `graphids/config/overlays/*.yaml` | Scale/ablation variant overlays |
 | `graphids/config/resources.yaml` | SLURM resource profiles |
-| `graphids/orchestrate/submit.py` | DAG-aware SLURM submission |
-| `graphids/orchestrate/resources.py` | Resource profiles + failure reactions |
+| `graphids/orchestrate/dagster_defs.py` | Dagster asset definitions |
 | `/fs/ess/PAS1266/kd-gat/sweeps/` | Prior sweep results |
 
 ---

@@ -7,8 +7,7 @@ import torch
 from torch.utils.data import Subset
 from torch_geometric.loader import DynamicBatchSampler
 
-from graphids.core.models._training import compute_node_budget
-from graphids.core.preprocessing.datamodule import make_graph_loader
+from graphids.core.preprocessing.datamodule import make_graph_loader, vram_node_budget
 
 
 class CurriculumSampler:
@@ -165,9 +164,10 @@ class CurriculumDataModule(pl.LightningDataModule):
 
         budget = None
         if hp.dynamic_batching:
-            bs = max(8, hp.batch_size)
-            info = compute_node_budget(bs, hp, conv_type=hp.conv_type, heads=hp.heads)
-            budget = info.budget
+            budget, _ = vram_node_budget(
+                hp.dataset, hp.lake_root,
+                conv_type=hp.conv_type, heads=hp.heads,
+            )
 
         self._batch_sampler = CurriculumSampler(
             full_dataset, normal_indices, attack_indices, scores,
@@ -186,10 +186,13 @@ class CurriculumDataModule(pl.LightningDataModule):
         hp = self.hparams
         bs = max(8, hp.batch_size)
         if hp.dynamic_batching:
-            info = compute_node_budget(bs, hp, conv_type=hp.conv_type, heads=hp.heads)
-            num_steps = max(1, len(self.val_data) * 30 // info.budget)
+            budget, mean_nodes = vram_node_budget(
+                hp.dataset, hp.lake_root,
+                conv_type=hp.conv_type, heads=hp.heads,
+            )
+            num_steps = max(1, int(len(self.val_data) * mean_nodes / budget))
             sampler = DynamicBatchSampler(
-                self.val_data, max_num=info.budget, mode="node", shuffle=False,
+                self.val_data, max_num=budget, mode="node", shuffle=False,
                 skip_too_big=True, num_steps=num_steps,
             )
             return make_graph_loader(self.val_data, batch_sampler=sampler, num_workers=hp.num_workers)

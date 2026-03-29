@@ -42,7 +42,7 @@ stages:
     mode: gpu_train
     depends_on:
       - { model: vgae, stage: autoencoder }
-    identity_keys: [scale, conv_type, loss_fn]
+    identity_keys: [scale, conv_type, loss_fn, variational]
 
   normal:
     learning_type: supervised
@@ -59,7 +59,7 @@ stages:
     depends_on:
       - { model: vgae, stage: autoencoder }
       - { model: gat, stage: curriculum }
-    identity_keys: [scale, gat_stage, loss_fn, method]
+    identity_keys: [scale, gat_stage, loss_fn, method, conv_type, variational]
 
   evaluation:
     learning_type: evaluation

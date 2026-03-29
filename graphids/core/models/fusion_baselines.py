@@ -214,6 +214,12 @@ class RLFusionModule(pl.LightningModule):
         bandit_layers: int = 3,
         bandit_buffer_size: int = 100_000,
         bandit_batch_size: int = 128,
+        # --- identity key metadata (for run directory hashing) ---
+        scale: str = "small",
+        gat_stage: str = "curriculum",
+        loss_fn: str = "ce",
+        conv_type: str = "gatv2",
+        variational: bool = True,
         # ---
         device: str = "cpu",
     ):

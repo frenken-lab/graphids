@@ -12,6 +12,21 @@
 
 resource_profiles:
   vgae:
+    small:
+      autoencoder:
+        partition: gpu
+        gres: "gpu:1"
+        time: "02:00:00"
+        mem: "24G"
+        cpus_per_task: 4
+        num_workers: 3
+      curriculum:
+        partition: gpu
+        gres: "gpu:1"
+        time: "02:00:00"
+        mem: "24G"
+        cpus_per_task: 4
+        num_workers: 3
     medium:
       autoencoder:
         partition: gpu
@@ -44,6 +59,21 @@ resource_profiles:
         num_workers: 3
 
   gat:
+    small:
+      normal:
+        partition: gpu
+        gres: "gpu:1"
+        time: "02:30:00"
+        mem: "24G"
+        cpus_per_task: 3
+        num_workers: 2
+      curriculum:
+        partition: gpu
+        gres: "gpu:1"
+        time: "02:30:00"
+        mem: "24G"
+        cpus_per_task: 3
+        num_workers: 2
     medium:
       normal:
         partition: gpu
@@ -76,6 +106,14 @@ resource_profiles:
         num_workers: 3
 
   dgi:
+    small:
+      autoencoder:
+        partition: gpu
+        gres: "gpu:1"
+        time: "02:00:00"
+        mem: "24G"
+        cpus_per_task: 4
+        num_workers: 3
     medium:
       autoencoder:
         partition: gpu
@@ -86,6 +124,14 @@ resource_profiles:
         num_workers: 3
 
   dqn:
+    small:
+      fusion:
+        partition: gpu
+        gres: "gpu:1"
+        time: "01:00:00"
+        mem: "16G"
+        cpus_per_task: 2
+        num_workers: 0
     medium:
       fusion:
         partition: gpu
@@ -94,14 +140,38 @@ resource_profiles:
         mem: "16G"
         cpus_per_task: 2
         num_workers: 0
+    large:
+      fusion:
+        partition: gpu
+        gres: "gpu:1"
+        time: "02:00:00"
+        mem: "24G"
+        cpus_per_task: 2
+        num_workers: 0
 
   bandit:
+    small:
+      fusion:
+        partition: gpu
+        gres: "gpu:1"
+        time: "01:00:00"
+        mem: "16G"
+        cpus_per_task: 2
+        num_workers: 0
     medium:
       fusion:
         partition: gpu
         gres: "gpu:1"
         time: "01:00:00"
         mem: "16G"
+        cpus_per_task: 2
+        num_workers: 0
+    large:
+      fusion:
+        partition: gpu
+        gres: "gpu:1"
+        time: "02:00:00"
+        mem: "24G"
         cpus_per_task: 2
         num_workers: 0
 

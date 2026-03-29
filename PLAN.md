@@ -27,7 +27,9 @@ Re-training as Run 004 with all 18 configs including KD (configs 10-11).
 
 ### IO Inconsistencies
 
-Spikes, Slurm logs, tests, and profiles still write to this repo and not to share lake folder
+Expanded configs now write to `{lake_root}/expanded/` (ESS on OSC). Remaining:
+- Slurm logs still write to `slurm_logs/` in repo
+- Test outputs still write to repo
 
 ### Configs (18 runnable)
 
@@ -47,6 +49,9 @@ teacher checkpoint path via `--model.init_args.auxiliaries[0].model_path=<path>`
 ## In Progress
 
 - Ops dashboard (`buckeyeguy/kd-gat-dashboard`) -- running on HF Spaces
+- **Ablation Run 004** -- failed 2026-03-29 (100% failure). Postmortem: `plans/dagster-ablation-postmortem.md`.
+  P0-P2 fixes applied. P2.5 collapse done (expand.py deleted, dagster reads recipe directly).
+  Next: `python -m graphids.orchestrate validate`, then smoke on gpudebug, then resubmit.
 
 ### Code consolidation (deferred)
 
@@ -54,6 +59,50 @@ teacher checkpoint path via `--model.init_args.auxiliaries[0].model_path=<path>`
 - [ ] Preprocessing consolidation (`plans/preprocessing-consolidation.md`) -- delete _temporal.py, DataModule convention fixes
 
 ## Recently Completed
+
+### P2.5: Collapse expand.py into dagster_defs.py (2026-03-29)
+
+Eliminated the two-phase expand→manifest→dagster pipeline. `dagster_defs.py` now
+reads `ablation.yaml` directly, computes topology and identity hashes in-process
+(no torch import at definition time), and builds multi-config SLURM commands.
+
+Deleted: `expand.py` (420 lines), `expanded_dir()`, 64 expanded YAMLs + manifest.json.
+Changed: `generate_script` accepts `config_files: list[str]` (multi-config flags),
+`run_dir()` added to `config/__init__.py`, `orchestrate/__main__.py` gains
+`validate`/`smoke` subcommands.
+
+Net: 420 lines deleted (expand.py), ~80 lines added to dagster_defs.py.
+SLURM command now: `python -m graphids fit --config stages/X.yaml --config overlays/Y.yaml --model.init_args.foo=bar`
+
+### Dagster Phase C+D: config expansion + dynamic asset graph (2026-03-29)
+
+Verified `trainer.yaml` wiring (all 4 stages get callbacks, mixed precision).
+Fixed fusion identity keys: added `conv_type`, `variational` to prevent incorrect
+dedup across conv types/unsup methods. Added `variational` to curriculum identity.
+Added identity key metadata params to `RLFusionModule` and `GATModule`.
+Wrote `ablation.yaml` (18 configs) + `expand.py` (150 lines) + rewrote `dagster_defs.py`
+(175 lines) with dynamic asset factory from manifest topology.
+
+32 unique assets (6 autoencoders, 8 curricula, 3 normals, 15 fusions) × 2 datasets
+= 64 expanded YAMLs. DAG deps wired from `STAGE_DEPENDENCIES` + KD cross-pipeline.
+Upstream checkpoint paths resolved at materialization time. Dry-run `RUN_SUCCESS`
+for `set_01|42` (all 32 assets). Added missing resource profiles (dqn/small/large,
+dgi/small). Upgraded alembic 1.6.5→1.18.4 (SQLAlchemy 2.0 compat).
+
+### Dagster orchestrate rewrite + gpudebug spike (2026-03-28)
+
+Replaced `graphids/orchestrate/` with dagster-based system. Deleted `submit.py` (247
+lines hand-rolled Pipeline class). New files: `slurm.py` (102 lines, sbatch/sacct),
+`dagster_defs.py` (140 lines, asset factory + partitions + retry). Config expansion
+via jsonargparse `--print_config`. dagster-slurm rejected (requires SSH). Pipes
+protocol rejected (post-hoc metrics sufficient). Added `small` scale resource profiles.
+Removed 6 dead hydra packages. See `plans/orchestrate-rewrite.md`.
+
+Gpudebug spike (job 46121143) validated full loop: dagster → sbatch → poll → COMPLETED.
+Bugs found and fixed: `link_arguments` for model→data params (`conv_type`, `heads`),
+`compute_node_budget` replaced with VRAM-driven `vram_node_budget` (uses
+`torch.cuda.mem_get_info`), alembic upgraded for SQLAlchemy 2.0. Discovered
+`trainer.yaml` is dead config (not loaded) — blocks Phase C.
 
 ### KD wiring + bug fixes (2026-03-28)
 
@@ -85,16 +134,16 @@ Replaced custom DataLoader/collation/assembly with PyG APIs, adopted Lightning b
 
 ## Blocked
 
-- **Ablation Run 004** -- blocked on Dagster integration (`plans/dagster-integration.md`).
-  Need config expander + asset DAG to handle 60+ deduplicated jobs.
+- **Ablation Run 004 eval** -- blocked on training completion. After all jobs finish:
+  `python -m graphids test` per run dir, then aggregate results to DuckDB catalog.
 - **HPO sweep** -- blocked on ablation results + Optuna integration (Phase 2)
 - **Full pipeline** -- blocked on HPO results (Phase 3)
 
 ## Open Questions
 
 - VGAE worker memory bloat (13G vs 22G bimodal) -- same model, different nodes. PrefetchLoader may help, needs rerun to confirm.
-- `--mem` over-requesting 54G when peak is 23G -- update `resources.yaml` to 32G after confirming PrefetchLoader doesn't change RSS profile.
-- dagster-slurm plugin vs custom PipesSlurmClient -- spike test needed (Phase A)
+- `--mem` over-requesting 54G when peak is 23G -- `resources.yaml` updated to 24-32G range. Validate in gpudebug spike.
+- ~~dagster-slurm plugin vs custom PipesSlurmClient~~ -- **RESOLVED.** Custom `slurm.py` (99 lines). dagster-slurm requires SSH.
 
 ## Current Architecture
 
@@ -125,19 +174,22 @@ overlays/            # thin scale/ablation variants
 ### Orchestration (`graphids/orchestrate/`)
 
 ```
-__init__.py          # package
-__main__.py          # CLI entry point
-resources.py         # SLURM resource profiles
-submit.py            # job submission + DAG chaining
+__init__.py          # package docstring
+__main__.py          # CLI: run (dagster), validate, smoke subcommands
+slurm.py             # sbatch submit, sacct poll, multi-config script gen
+dagster_defs.py      # recipe→topology, asset factory, validate, smoke, Definitions
+resources.py         # ResourceSpec + scale_resources (reads resources.yaml)
 ```
 
 ### Key Reference Documents
 
-- `plans/dagster-integration.md` -- **next priority**: Dagster orchestration for ablation/HPO/pipeline
+- `plans/dagster-native-orchestration.md` -- **active**: replace custom code with dagster-slurm + Component + IOManager
+- `plans/dagster-history.md` -- archived: timeline, lessons, postmortem from dagster build
 - `plans/experiment-sweep-plan.md` -- ablation claims, configs, stage sharing DAG
 - `plans/tier-priority-and-implementation.md` -- priority-ordered task list
-- `plans/models-consolidation.md` -- deferred cleanup: registry dissolution, shared base
-- `plans/preprocessing-consolidation.md` -- deferred cleanup: delete _temporal.py, DataModule fixes
-- `plans/flatten-model-config.md` -- completed config flatten reference
+- `plans/models-consolidation.md` -- deferred: registry dissolution, shared base
+- `plans/preprocessing-consolidation.md` -- deferred: delete _temporal.py, DataModule fixes
+- `plans/flatten-model-config.md` -- completed: config flatten reference
+- `plans/trainer-yaml-wiring.md` -- completed: trainer.yaml verification
 - `graphids/config/pipeline.yaml` -- DAG topology + identity_keys
 - `graphids/config/resources.yaml` -- SLURM resource profiles

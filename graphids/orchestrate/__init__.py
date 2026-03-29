@@ -1,9 +1,7 @@
-"""Pipeline orchestrator: submit LightningCLI stages to SLURM with DAG ordering.
+"""Dagster-based pipeline orchestrator.
 
-Usage as CPU job (interactive, can intervene):
-    srun --partition=cpu --time=24:00:00 --mem=4G --account=PAS1266 --pty \
-      python -m graphids.orchestrate configs/stages/ --datasets set_01 set_02
+Assets submit LightningCLI stages to SLURM. Dagster handles DAG ordering,
+partitions, retry, and concurrency.
 
-Usage from login node (fire and check later):
-    python -m graphids.orchestrate configs/stages/ --datasets set_01 --dry-run
+Entry point: dagster asset materialize -m graphids.orchestrate.dagster_defs
 """

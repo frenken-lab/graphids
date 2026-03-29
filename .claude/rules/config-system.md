@@ -13,34 +13,41 @@ trainer.yaml (shared defaults) → stage YAML (model class_path + overrides) →
 ## File layout
 
 ```
-graphids/config/
-  __init__.py          # constants, topology, path helpers (single Python file)
-  constants.yaml       # static values: preprocessing_version, SLURM defaults, ckpt mappings
-  pipeline.yaml        # DAG topology: stages, dependencies, identity_keys, valid models/scales
-  datasets.yaml        # dataset catalog (YAML anchors for shared configs)
-  resources.yaml       # SLURM resource profiles per model×scale×stage
-  trainer.yaml         # default_config_files: seed, trainer (callbacks, precision, etc.)
-  stages/              # one per stage — model class_path + init_args overrides + data
-    autoencoder.yaml   # VGAEModule + CANBusDataModule
-    normal.yaml        # GATModule + CANBusDataModule (no curriculum)
-    curriculum.yaml    # GATModule + CurriculumDataModule
-    fusion.yaml        # RLFusionModule + FusionDataModule + trainer overrides
-    analyze_vgae.yaml  # Analyzer config: VGAE embeddings + landscape
-    analyze_gat.yaml   # Analyzer config: GAT embeddings + attention + CKA + landscape
-    analyze_fusion.yaml # Analyzer config: fusion policy
-  overlays/            # thin --config adds for scale/ablation variants
-    small_vgae.yaml    # small-scale VGAE dims
-    small_gat.yaml     # small-scale GAT dims
-    small_dgi.yaml     # small-scale DGI dims
-    large_vgae.yaml    # large-scale VGAE dims (sweep-optimized)
-    large_gat.yaml     # large-scale GAT dims (sweep-optimized)
-    kd_vgae.yaml       # KD auxiliaries for VGAE student
-    kd_gat.yaml        # KD auxiliaries for GAT student
+graphids/
+  cli.py               # GraphIDSCLI + CLI_KWARGS — shared by __main__ and orchestrate
+  config/
+    __init__.py          # constants, topology, path helpers, LAKE_ROOT, run_dir()
+    constants.yaml       # static values: preprocessing_version, SLURM defaults, ckpt mappings
+    pipeline.yaml        # DAG topology: stages, dependencies, identity_keys, valid models/scales
+    datasets.yaml        # dataset catalog (YAML anchors for shared configs)
+    resources.yaml       # SLURM resource profiles per model×scale×stage
+    trainer.yaml         # default_config_files: seed, trainer (callbacks, precision, etc.)
+    ablation.yaml        # ablation recipe: sweep dimensions, config overrides
+    stages/              # one per stage — model class_path + init_args overrides + data
+      autoencoder.yaml   # VGAEModule + CANBusDataModule
+      normal.yaml        # GATModule + CANBusDataModule (no curriculum)
+      curriculum.yaml    # GATModule + CurriculumDataModule
+      fusion.yaml        # RLFusionModule + FusionDataModule + trainer overrides
+      analyze_vgae.yaml  # Analyzer config: VGAE embeddings + landscape
+      analyze_gat.yaml   # Analyzer config: GAT embeddings + attention + CKA + landscape
+      analyze_fusion.yaml # Analyzer config: fusion policy
+    overlays/            # thin --config adds for scale/ablation variants
+      small_vgae.yaml    # small-scale VGAE dims
+      small_gat.yaml     # small-scale GAT dims
+      small_dgi.yaml     # small-scale DGI dims
+      large_vgae.yaml    # large-scale VGAE dims (sweep-optimized)
+      large_gat.yaml     # large-scale GAT dims (sweep-optimized)
+      kd_vgae.yaml       # KD auxiliaries for VGAE student
+      kd_gat.yaml        # KD auxiliaries for GAT student
+  orchestrate/
+    dagster_defs.py      # recipe→topology, asset factory, validate, smoke, Definitions
 ```
+
+`LAKE_ROOT` defaults to `experimentruns` (relative) or `KD_GAT_LAKE_ROOT` env var (ESS on OSC).
 
 ## CLI usage
 
-Two entry points in `__main__.py`, both using jsonargparse:
+`GraphIDSCLI` class and `CLI_KWARGS` in `graphids/cli.py`. Two entry points in `__main__.py`:
 
 ```bash
 # --- Training (GraphIDSCLI → LightningCLI) ---
@@ -113,7 +120,11 @@ Three layers of validation prevent silent config drift:
 2. **`KDAuxiliary` TypedDict** — structured list items (KD config) validate keys at parse time. Typos like `alppha` are caught.
 3. **`constants.yaml` model coverage** — `__init__.py` asserts all `pipeline.yaml` model types have `ckpt_stages` entries at import time.
 
+4. **`python -m graphids.orchestrate validate`** — checks config chains parse, no callback/logger incompatibility, no null list fields in model init_args.
+
 When adding new config fields: type annotations on `__init__` params are the schema. Use `TypedDict` for structured dicts/lists. jsonargparse enforces the rest.
+
+**Null-serialization rule:** `--print_config` serializes `Optional[X] = None` defaults as `null`. If `__init__` normalizes `None → real_default` before `save_hyperparameters()`, the stage YAML MUST set the field explicitly so expanded configs never contain `null`. Grep pattern to audit: `if .* is None:` before `save_hyperparameters()` in any LightningModule.
 
 ## DuckDB catalog
 

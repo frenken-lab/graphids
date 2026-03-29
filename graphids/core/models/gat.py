@@ -82,6 +82,7 @@ class GATWithJK(nn.Module):
 
         # Pooling — "lstm" JK outputs single-layer dim (not concatenated)
         jk_out_dim = hidden_channels * heads
+        pool_aggrs = pool_aggrs or ("mean",)
         if len(pool_aggrs) > 1:
             self.pool = MultiAggregation(list(pool_aggrs))
             fc_input_dim = jk_out_dim * len(pool_aggrs)
@@ -213,6 +214,7 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
         dataset: str = "",
         seed: int = 42,
         gat_stage: str = "curriculum",
+        variational: bool = True,  # upstream VGAE type — identity key for curriculum
         auxiliaries: list[KDAuxiliary] | None = None,
         num_ids: int = 0,
         in_channels: int = 0,

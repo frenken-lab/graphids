@@ -7,6 +7,7 @@ train/val/test splits, and DataLoader creation.
 from __future__ import annotations
 
 import gc
+import json
 import math
 import os
 
@@ -17,6 +18,45 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from graphids.config import cache_dir, data_dir
 from graphids.config import CATALOG_PATH
+
+_log = structlog.get_logger()
+
+# --- Dynamic batching constants -------------------------------------------
+# Conv types with O(N²) global attention (full attention matrix).
+_QUADRATIC_CONV_TYPES = frozenset({"gps"})
+# Activation cost per node for linear convs (from profiling: 155K nodes ≈ 5 GB).
+_BYTES_PER_NODE = 32_768
+
+
+def vram_node_budget(
+    dataset: str, lake_root: str, *, conv_type: str = "gatv2", heads: int = 4,
+) -> tuple[int, float]:
+    """Compute node budget from available VRAM and dataset graph stats.
+
+    Returns (node_budget, mean_nodes).
+    """
+    metadata_path = cache_dir(lake_root, dataset) / "cache_metadata.json"
+    if not metadata_path.exists():
+        raise FileNotFoundError(
+            f"cache_metadata.json not found at {metadata_path}. "
+            "Run preprocessing first."
+        )
+    stats = json.loads(metadata_path.read_text())["graph_stats"]["node_count"]
+    mean_nodes = stats["mean"]
+
+    if torch.cuda.is_available():
+        free, _ = torch.cuda.mem_get_info()
+    else:
+        free = 12 * 1024**3  # CPU fallback for testing
+
+    if conv_type in _QUADRATIC_CONV_TYPES:
+        budget = int(math.sqrt(free / (heads * 3 * 2)))
+    else:
+        budget = int(free / _BYTES_PER_NODE)
+
+    _log.info("vram_node_budget", conv_type=conv_type, budget=budget,
+              free_vram_gb=round(free / 1e9, 2), mean_nodes=mean_nodes)
+    return budget, mean_nodes
 
 from .features import N_EDGE_FEATURES as EDGE_FEATURE_COUNT, N_NODE_FEATURES as NODE_FEATURE_COUNT
 
@@ -185,19 +225,19 @@ class CANBusDataModule(pl.LightningDataModule):
     def _build_loader(self, dataset, shuffle: bool):
         from torch_geometric.loader import DynamicBatchSampler
 
-        from graphids.core.models._training import compute_node_budget
-
         hp = self.hparams
         bs = max(8, hp["batch_size"])
         nw = hp["num_workers"] if "num_workers" in hp else 0
 
         if hp["dynamic_batching"]:
-            info = compute_node_budget(
-                bs, hp, conv_type=hp.get("conv_type", "gatv2"), heads=hp.get("heads", 4),
+            budget, mean_nodes = vram_node_budget(
+                hp["dataset"], hp["lake_root"],
+                conv_type=hp.get("conv_type", "gatv2"),
+                heads=hp.get("heads", 4),
             )
-            num_steps = max(1, int(len(dataset) * info.mean_nodes / info.budget))
+            num_steps = max(1, int(len(dataset) * mean_nodes / budget))
             sampler = DynamicBatchSampler(
-                dataset, max_num=info.budget, mode="node", shuffle=shuffle,
+                dataset, max_num=budget, mode="node", shuffle=shuffle,
                 skip_too_big=True, num_steps=num_steps,
             )
             dataset._data_list = None  # clear bloat from sampler's __init__

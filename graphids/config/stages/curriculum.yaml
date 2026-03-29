@@ -5,6 +5,8 @@ model:
   init_args:
     fc_layers: 1
     proj_dim: 48
+    pool_aggrs: ["mean"]
+    auxiliaries: []
     compile_model: true
 data:
   class_path: graphids.core.preprocessing.curriculum.CurriculumDataModule

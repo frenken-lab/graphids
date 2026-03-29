@@ -5,6 +5,7 @@ model:
   init_args:
     proj_dim: 48
     lr: 0.002
+    auxiliaries: []
     compile_model: true
 data:
   class_path: graphids.core.preprocessing.datamodule.CANBusDataModule

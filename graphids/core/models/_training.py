@@ -1,8 +1,7 @@
 """Lightning training helpers shared across VGAE, GAT, and DGI modules."""
 
 import contextlib
-import math
-from typing import NamedTuple, TypedDict
+from typing import TypedDict
 
 import structlog
 import torch
@@ -24,71 +23,6 @@ class KDAuxiliary(TypedDict, total=False):
     # Teacher resolution
     teacher_scale: str
     model_path: str
-
-
-# Conv types with O(N²) global attention (full attention matrix across all batch nodes).
-_QUADRATIC_CONV_TYPES = frozenset({"gps"})
-
-# Fraction of total VRAM reserved for the attention matrix (rest for model + activations + framework).
-_ATTN_VRAM_FRACTION = 0.6
-
-
-class NodeBudgetInfo(NamedTuple):
-    """Result of compute_node_budget: budget for DynamicBatchSampler + mean for num_steps."""
-    budget: int
-    mean_nodes: float
-
-
-def _available_vram_bytes() -> int:
-    """Total GPU VRAM in bytes. Falls back to 12 GB for CPU/testing."""
-    if torch.cuda.is_available():
-        return torch.cuda.get_device_properties(0).total_memory
-    return 12 * 1024**3
-
-
-def compute_node_budget(
-    batch_size: int, cfg, *, conv_type: str = "gatv2", heads: int = 4,
-) -> NodeBudgetInfo:
-    """Derive max_num_nodes for DynamicBatchSampler from graph stats and conv complexity.
-
-    For linear convs (gatv2, gat, transformer): budget = batch_size * p95_nodes.
-    For quadratic convs (gps): budget = min(linear_budget, VRAM-safe node ceiling).
-
-    The quadratic cap prevents GPS's O(N²) global attention from allocating an
-    attention matrix larger than available VRAM.  The ceiling is derived from
-    ``sqrt(vram_bytes * attn_fraction / (heads * 3 * dtype_bytes))``.
-    """
-    import json
-    from graphids.config import cache_dir
-
-    lake_root = cfg.lake_root
-    dataset = cfg.dataset
-    metadata_path = cache_dir(lake_root, dataset) / "cache_metadata.json"
-    if not metadata_path.exists():
-        raise FileNotFoundError(
-            f"cache_metadata.json not found at {metadata_path}. "
-            "Rebuild caches with: python -m graphids stage=preprocess dataset=..."
-        )
-    meta = json.loads(metadata_path.read_text())
-    stats = meta["graph_stats"]["node_count"]
-    linear_budget = int(batch_size * stats["p95"])
-
-    if conv_type in _QUADRATIC_CONV_TYPES:
-        vram = _available_vram_bytes()
-        # Attention matrix: N² * num_heads * 3 (Q, K, V) * 2 bytes (fp16)
-        cost_per_n2 = heads * 3 * 2
-        quadratic_cap = int(math.sqrt(vram * _ATTN_VRAM_FRACTION / cost_per_n2))
-        budget = min(linear_budget, quadratic_cap)
-        _log.info("node_budget_computed", conv_type=conv_type, batch_size=batch_size,
-                  p95_nodes=stats["p95"], linear_budget=linear_budget,
-                  quadratic_cap=quadratic_cap, vram_gb=round(vram / 1e9, 1),
-                  budget=budget, mean_nodes=stats["mean"])
-    else:
-        budget = linear_budget
-        _log.info("node_budget_computed", conv_type=conv_type, batch_size=batch_size,
-                  p95_nodes=stats["p95"], budget=budget, mean_nodes=stats["mean"])
-
-    return NodeBudgetInfo(budget=budget, mean_nodes=stats["mean"])
 
 
 class OOMSkipMixin:

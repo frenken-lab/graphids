@@ -9,7 +9,6 @@ from ._conv import InputEncoder, build_conv_stack, build_encoder_stack, _make_co
 from ._training import (
     KDAuxiliary,
     OOMSkipMixin, soft_label_kd_loss, teacher_on_device,
-    compute_node_budget, NodeBudgetInfo,
     binary_test_metrics,
 )
 

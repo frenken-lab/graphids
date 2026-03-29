@@ -28,6 +28,20 @@ _CKPT_MODEL: dict[str, str] = _constants["ckpt_model"]
 # ---------------------------------------------------------------------------
 _slurm = _constants["slurm"]
 SLURM_ACCOUNT: str = os.environ.get("KD_GAT_SLURM_ACCOUNT", _slurm["account"])
+
+# ---------------------------------------------------------------------------
+# Lake root — base for all experiment IO (expanded configs, run dirs, catalog)
+# ---------------------------------------------------------------------------
+LAKE_ROOT: str = os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns")
+
+
+def run_dir(lake_root: str, user: str, dataset: str, model_type: str,
+            scale: str, stage: str, identity: str, kd_tag: str, seed: int) -> str:
+    """Deterministic run directory path. Used by dagster + SLURM --trainer.default_root_dir."""
+    return (f"{lake_root}/dev/{user}/{dataset}"
+            f"/{model_type}_{scale}_{stage}{identity}{kd_tag}/seed_{seed}")
+
+
 SLURM_PARTITION: str = os.environ.get("KD_GAT_SLURM_PARTITION", _slurm["partition"])
 SLURM_GPU_TYPE: str = os.environ.get("KD_GAT_GPU_TYPE", _slurm["gpu_type"])
 SWEEP_ID: str = os.environ.get("KD_GAT_SWEEP_ID", "")

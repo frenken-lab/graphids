@@ -7,9 +7,9 @@ trainer:
   log_every_n_steps: 10
   callbacks:
     - class_path: pytorch_lightning.callbacks.ModelCheckpoint
-      init_args: {monitor: val_acc, mode: max, save_top_k: 1}
+      init_args: {monitor: val_acc, mode: max, save_top_k: 1, filename: "best_model"}
 model:
   class_path: graphids.core.models.fusion_baselines.RLFusionModule
-  init_args: {method: bandit}
+  init_args: {method: bandit, dqn_vgae_error_weights: [0.4, 0.35, 0.25]}
 data:
   class_path: graphids.core.preprocessing.datamodule.FusionDataModule
