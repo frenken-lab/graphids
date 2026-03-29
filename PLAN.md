@@ -49,9 +49,8 @@ teacher checkpoint path via `--model.init_args.auxiliaries[0].model_path=<path>`
 ## In Progress
 
 - Ops dashboard (`buckeyeguy/kd-gat-dashboard`) -- running on HF Spaces
-- **Ablation Run 004** -- failed 2026-03-29 (100% failure). Postmortem: `plans/dagster-ablation-postmortem.md`.
-  P0-P2 fixes applied. P2.5 collapse done (expand.py deleted, dagster reads recipe directly).
-  Next: `python -m graphids.orchestrate validate`, then smoke on gpudebug, then resubmit.
+- **Ablation Run 005** -- orchestration redesigned (dagster Component). dagster-slurm dropped.
+  Next: `python -m graphids.orchestrate validate` (on SLURM — imports torch), then smoke on gpudebug, then submit.
 
 ### Code consolidation (deferred)
 
@@ -59,6 +58,23 @@ teacher checkpoint path via `--model.init_args.auxiliaries[0].model_path=<path>`
 - [ ] Preprocessing consolidation (`plans/preprocessing-consolidation.md`) -- delete _temporal.py, DataModule convention fixes
 
 ## Recently Completed
+
+### Dagster Component redesign (2026-03-29)
+
+Replaced `dagster_defs.py` (513 lines) with `SlurmTrainingComponent` (dagster Component).
+Convention-based config resolution eliminates the `_stage_args()` if/elif chain.
+`pipeline.yaml` is now the single topology source — no re-derivation in Python.
+
+New files:
+- `graphids/components/slurm_training_component.py` (396 lines) — Component + `enumerate_assets()`
+- `graphids/orchestrate/definitions.py` (19 lines) — entry point via `build_defs_for_component`
+- `graphids/orchestrate/__main__.py` (260 lines, was 66) — validate/smoke ported from old code
+
+Retained: `slurm.py` (105), `resources.py` (78). Deleted: `dagster_defs.py` (513).
+dagster-slurm dropped (Pipes protocol mismatch — see `plans/dagster-native-orchestration.md`).
+
+Verified: `dg list defs` (32 assets), `dg check defs`, `smoke --dry-run` (3-stage chain).
+All 32 asset names, config files, model overrides, and deps match the old system exactly.
 
 ### P2.5: Collapse expand.py into dagster_defs.py (2026-03-29)
 
@@ -171,14 +187,17 @@ stages/              # one per stage + analyze configs
 overlays/            # thin scale/ablation variants
 ```
 
-### Orchestration (`graphids/orchestrate/`)
+### Orchestration (`graphids/orchestrate/` + `graphids/components/`)
 
 ```
-__init__.py          # package docstring
-__main__.py          # CLI: run (dagster), validate, smoke subcommands
-slurm.py             # sbatch submit, sacct poll, multi-config script gen
-dagster_defs.py      # recipe→topology, asset factory, validate, smoke, Definitions
-resources.py         # ResourceSpec + scale_resources (reads resources.yaml)
+components/
+  slurm_training_component.py  # SlurmTrainingComponent (dg.Component) + enumerate_assets()
+orchestrate/
+  __init__.py          # package docstring
+  __main__.py          # CLI: run/validate/smoke + validate_recipe() + smoke_test()
+  definitions.py       # dagster entry point (build_defs_for_component)
+  slurm.py             # sbatch submit, sacct poll, script gen
+  resources.py         # ResourceSpec + scale_resources (reads resources.yaml)
 ```
 
 ### Key Reference Documents

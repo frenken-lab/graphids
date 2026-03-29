@@ -1,6 +1,6 @@
 """SLURM helpers: sbatch submission and sacct polling.
 
-Pure functions — no dagster, no Lightning. Used by dagster_defs.py.
+Pure functions — no dagster, no Lightning. Used by SlurmTrainingComponent.
 """
 
 from __future__ import annotations

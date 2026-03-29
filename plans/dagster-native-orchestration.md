@@ -139,52 +139,51 @@ class CheckpointIOManager(dg.ConfigurableIOManager):
 
 ### What gets deleted
 
-| Current file | Lines | Replacement |
+| Current code | Lines | Replacement |
 |---|---|---|
-| `dagster_defs.py` | 513 | `component.py` (~80 lines) + `defs.yaml` (~15 lines) |
-| `slurm.py` | 105 | `dagster-slurm` ComputeResource (SSH-to-localhost) |
-| `resources.py` | 78 | `extra_slurm_opts` from resources.yaml, read in Component |
-| `__main__.py` | 65 | `dg launch` / `dg dev` (CLI provided by dagster) |
-| `config/run_dir()` | 5 | IOManager or Component computes path |
-| **Total custom** | **766** | **~100 lines + YAML** |
+| `dagster_defs.py` `_stage_args()` | 55 | Convention-based config file resolution from pipeline.yaml |
+| `dagster_defs.py` `load_recipe()` | 70 | Direct pipeline.yaml reads — topology is declared, not derived |
+| `dagster_defs.py` `_resolve_upstream_ckpts()` | 15 | CheckpointIOManager |
+| `dagster_defs.py` `_make_asset()` closure factory | 70 | Clean asset factory or Component `build_defs()` |
+| `dagster_defs.py` `_build_assets()` dep wiring | 40 | `deps=` from pipeline.yaml `STAGE_DEPENDENCIES` directly |
+| `dagster_defs.py` `smoke_test()` | 50 | Simplified — IOManager resolves ckpts, no manual wiring |
+| **Total deleted** | **~300** | **~100-150 lines (factory + IOManager)** |
 
 ### What stays
 
+- `slurm.py` — sbatch submit, sacct poll (105 lines, works fine)
+- `resources.py` — ResourceSpec, get_resources, scale_resources (79 lines)
+- `__main__.py` — CLI: run/validate/smoke subcommands (66 lines, may simplify)
 - `pipeline.yaml` — topology (unchanged, now the ONLY topology source)
 - `ablation.yaml` — recipe (unchanged)
-- `resources.yaml` — SLURM profiles (read by Component, not a separate module)
+- `resources.yaml` — SLURM profiles (unchanged)
 - `stages/*.yaml` + `overlays/*.yaml` — Lightning configs (unchanged)
-- `run_ablation.sh` — updated to use `dg launch` instead of raw dagster CLI
 
 ## Implementation
 
-### Phase 1: dagster-slurm spike
-
-1. Configure `ComputeResource` with SSH-to-localhost + `skip_payload_upload=True`
-2. Write one autoencoder asset using `ComputeResource.run()`
-3. Submit on gpudebug, verify: sbatch → poll → COMPLETED → metadata reported
-4. Compare with current `slurm.py` path — same behavior, less code
-
-### Phase 2: CheckpointIOManager
-
-1. Write `CheckpointIOManager` that resolves `{run_dir}/checkpoints/best_model.ckpt`
-2. Wire autoencoder → curriculum with IOManager checkpoint handoff
-3. Verify curriculum receives correct upstream checkpoint path
-
-### Phase 3: SlurmTrainingComponent
+### Phase 1: Scaffold Component + CheckpointIOManager
 
 1. `dg scaffold component SlurmTrainingComponent`
-2. `build_defs()` reads pipeline.yaml + ablation.yaml
-3. Generates AssetSpec per unique stage (deps from pipeline.yaml, not re-derived)
-4. Test: `dg list defs` shows 32 assets with correct deps
-5. Test: `dg launch --assets autoencoder_*` on gpudebug
+2. Write `CheckpointIOManager` — resolves `{run_dir}/checkpoints/best_model.ckpt`
+3. Write `defs.yaml` pointing to pipeline.yaml, ablation.yaml, resources.yaml
+4. Implement `build_defs()` — read pipeline.yaml topology, enumerate assets
+5. Test: `dg list defs` shows correct assets with correct deps
+6. Test: `dg check defs` passes
 
-### Phase 4: Delete custom code
+### Phase 2: Wire asset execution + IOManager
 
-1. Delete `dagster_defs.py`, `slurm.py`, `resources.py`, `__main__.py`
-2. Remove `run_dir()`, `_CKPT_MODEL` exports from `config/__init__.py`
-3. Update `run_ablation.sh` to use `dg launch`
-4. Verify full ablation: smoke on gpudebug, then submit Run 005
+1. Each asset: build CLI command from stage YAML + overlay + config overrides
+2. Call `slurm.py` submit/poll (retained as-is)
+3. Downstream assets receive upstream ckpt path via IOManager `load_input()`
+4. Port `validate_recipe()` to work with new component
+5. Test: dry-run materialization produces correct sbatch commands
+
+### Phase 3: Smoke + submit
+
+1. Smoke test on gpudebug (one 3-stage chain, 3 epochs)
+2. Verify checkpoint handoff works end-to-end across stages
+3. Delete old `dagster_defs.py` code (load_recipe, _stage_args, etc.)
+4. Submit Run 005 with new orchestration
 
 ## Prerequisite
 
@@ -195,11 +194,94 @@ P0-P2 fixes applied, awaiting resubmission.
 **Decision point:** resubmit Run 004 with current (fragile) code, or skip straight
 to this redesign and submit as Run 005. The latter is cleaner but delays results.
 
+## Revision: dagster-slurm dropped (2026-03-29)
+
+### Discovery
+
+Full API audit of `dagster-slurm` 0.x (installed, dagster 1.12.21) revealed a
+**complexity mismatch** with our use case:
+
+1. **Dagster Pipes protocol required.** `ComputeResource.run()` expects a Python
+   payload script that reports back via `dagster_pipes`. Our training commands are
+   `python -m graphids fit --config ...` — bash CLI commands, not Pipes-aware Python.
+   Adapting requires a wrapper script that opens a Pipes session, runs subprocess,
+   and reports metrics — adding indirection for no benefit.
+
+2. **Remote-first design.** dagster-slurm's core value is pixi env packaging, SCP
+   upload, and remote env extraction. We're already ON the SLURM cluster. SSH-to-
+   localhost adds a needless network hop to run `sbatch` on the same machine.
+
+3. **slurm.py is not the problem.** The 105-line `slurm.py` (generate_script,
+   submit, poll) is clean, working code. The fragility lives in `dagster_defs.py`:
+   `_stage_args()` if/elif chain, `load_recipe()` topology re-derivation,
+   `_resolve_upstream_ckpts()` manual checkpoint wiring, and the closure-heavy
+   asset factory.
+
+### Revised scope
+
+**Keep:** `slurm.py` (105 lines, works), `resources.py` (79 lines, works).
+
+**Replace:** `dagster_defs.py` (513 lines) — the asset factory, recipe loading,
+topology derivation, checkpoint wiring, and validate/smoke functions.
+
+**Delete target:** ~400 lines of fragile custom code in `dagster_defs.py`, replaced
+by dagster primitives (Component or asset factory reading `pipeline.yaml` directly)
++ IOManager for checkpoint handoff.
+
+The structural win is the same: `pipeline.yaml` as single source of truth, no
+re-derived topology, no manual checkpoint path wiring. We just skip the dagster-slurm
+detour that would add complexity without solving the actual problem.
+
+## Architecture decision: building blocks
+
+> **Decision: Component** (`dg.Component` + `defs.yaml`) — decided 2026-03-29.
+
+Dagster 1.9+ Components are the standard pattern for custom integrations. The
+`build_defs()` inner logic is identical to a raw asset factory, but the Component
+shell provides YAML-driven config, `dg` CLI discovery (`dg list defs`,
+`dg check defs`), template variables (`{{ env.LAKE_ROOT }}`), and scaffolding
+for free. Raw asset factories are the pre-1.9 pattern.
+
+### Architecture
+
+```
+SlurmTrainingComponent (dg.Component)
+├── defs.yaml — attributes: paths to pipeline.yaml, ablation.yaml, resources.yaml
+├── build_defs() — reads topology from pipeline.yaml, enumerates assets
+├── one @dg.asset per unique (stage, identity_hash)
+│   ├── deps= from STAGE_DEPENDENCIES (pipeline.yaml)
+│   ├── builds CLI command from stage YAML + overlay + overrides
+│   └── calls slurm.py submit/poll
+└── CheckpointIOManager — upstream ckpt path flows to downstream via IOManager
+
+slurm.py (retained) — sbatch submit, sacct poll
+resources.py (retained) — ResourceSpec, get_resources, scale_resources
+```
+
+### What the Component replaces
+
+| Deleted code | Lines | Component equivalent |
+|---|---|---|
+| `_stage_args()` if/elif | 55 | Convention from pipeline.yaml: stage→config file, model_type→overlay |
+| `load_recipe()` topology | 70 | `build_defs()` reads pipeline.yaml directly |
+| `_resolve_upstream_ckpts()` | 15 | `CheckpointIOManager.load_input()` |
+| `_make_asset()` closures | 70 | `@dg.asset` per spec, deps from pipeline.yaml |
+| `_build_assets()` dep wiring | 40 | Deps declared via `AssetSpec(deps=...)` |
+
+### Shared infrastructure (retained)
+
+- **`slurm.py`** — sbatch submit, sacct poll (105 lines)
+- **`resources.py`** — ResourceSpec, get_resources, scale_resources (79 lines)
+- **`pipeline.yaml`** — single topology source
+- **`ablation.yaml`** — sweep recipe
+- **`resources.yaml`** — SLURM resource profiles
+- **`stages/*.yaml` + `overlays/*.yaml`** — Lightning configs
+
 ## Risks
 
 | Risk | Mitigation |
 |---|---|
-| dagster-slurm doesn't support direct-on-cluster sbatch | Phase 1 spike tests this first. Fallback: keep slurm.py |
-| IOManager adds complexity for simple path passing | Phase 2 spike. Fallback: `deps=` with explicit path in metadata |
-| Component system too rigid for ablation sweep | Phase 3 spike. Fallback: pure Python asset factory (current pattern, but reading pipeline.yaml) |
-| PyG/torch import at dagster definition time | Component uses lazy imports; topology is pure YAML |
+| IOManager adds complexity for simple path passing | Spike first. Fallback: `deps=` with explicit path in metadata |
+| Component system too rigid for ablation sweep | Fallback: pure Python asset factory (Option B) |
+| PyG/torch import at dagster definition time | Topology is pure YAML; lazy imports only in validate/smoke |
+| dagster-slurm Pipes overhead | **RESOLVED.** Dropped dagster-slurm. Keeping slurm.py. |

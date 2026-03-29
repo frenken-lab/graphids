@@ -32,6 +32,7 @@ dependencies = [
     "jsonargparse[signatures]>=4.27.7",
     "structlog>=25.5.0",
     "dagster-slurm>=1.12.0",
+    "dagster-dg-cli>=1.12.21",
 ]
 
 [project.optional-dependencies]
@@ -82,6 +83,20 @@ ignore = ["E501", "E402", "E741", "W291", "W292", "W293", "F541", "B905", "B017"
 "tests/*" = ["F401"]
 "graphids/pipeline/stages/*" = ["F401"]
 "graphids/pipeline/manifest.py" = ["F401"]
+
+[tool.dg]
+directory_type = "project"
+
+[tool.dg.cli]
+suppress_warnings = ["project_and_activated_venv_mismatch"]
+
+[tool.dg.project]
+root_module = "graphids"
+defs_module = "graphids.orchestrate"
+code_location_target_module = "graphids.orchestrate.definitions"
+registry_modules = [
+    "graphids.components.slurm_training_component",
+]
 
 [tool.mypy]
 python_version = "3.12"
