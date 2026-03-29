@@ -49,7 +49,7 @@ teacher checkpoint path via `--model.init_args.auxiliaries[0].model_path=<path>`
 ## In Progress
 
 - Ops dashboard (`buckeyeguy/kd-gat-dashboard`) -- running on HF Spaces
-- **Ablation Run 005** -- orchestration redesigned (dagster Component). dagster-slurm dropped.
+- **Ablation Run 005** -- dagster orchestration rebuilt with proper primitives.
   Next: `python -m graphids.orchestrate validate` (on SLURM — imports torch), then smoke on gpudebug, then submit.
 
 ### Code consolidation (deferred)
@@ -59,22 +59,35 @@ teacher checkpoint path via `--model.init_args.auxiliaries[0].model_path=<path>`
 
 ## Recently Completed
 
-### Dagster Component redesign (2026-03-29)
+### Dagster orchestration rebuild (2026-03-29)
 
-Replaced `dagster_defs.py` (513 lines) with `SlurmTrainingComponent` (dagster Component).
-Convention-based config resolution eliminates the `_stage_args()` if/elif chain.
-`pipeline.yaml` is now the single topology source — no re-derivation in Python.
+Replaced `dagster_defs.py` (513 lines) with dagster-native orchestration using proper
+primitives: assets with tags/kinds/groups, `CheckpointPathIOManager` for checkpoint
+path handoff, `SlurmTrainingResource` for SLURM submission, asset checks, and
+`SlurmTrainingComponent` for definition assembly.
 
-New files:
-- `graphids/components/slurm_training_component.py` (396 lines) — Component + `enumerate_assets()`
-- `graphids/orchestrate/definitions.py` (19 lines) — entry point via `build_defs_for_component`
-- `graphids/orchestrate/__main__.py` (260 lines, was 66) — validate/smoke ported from old code
+Key design decisions:
+- **Assets** represent checkpoints (persistent artifacts), not jobs. Each has tags
+  (stage, model_type, scale), kinds (checkpoint/metrics), group_name, description.
+- **IOManager** stores/retrieves checkpoint path strings via JSON sidecars. Downstream
+  assets receive upstream paths as function parameters via `ins=` + `AssetIn`.
+- **Resource** wraps slurm.py submit/poll as dagster-injectable `ConfigurableResource`.
+- **Asset checks** — 32 blocking `checkpoint_exists` checks.
+- **StageConfig** (dataclass) separates training parameters from asset identity.
+- **Convention-based config resolution** replaces `_stage_args()` if/elif chain.
+- dagster-slurm dropped (Pipes protocol mismatch for on-cluster use).
+- `graphids/components/` deleted — component lives in `graphids/orchestrate/component.py`.
 
-Retained: `slurm.py` (105), `resources.py` (78). Deleted: `dagster_defs.py` (513).
-dagster-slurm dropped (Pipes protocol mismatch — see `plans/dagster-native-orchestration.md`).
+Files:
+- `graphids/orchestrate/component.py` (~420 lines) — Component + IOManager + Resource + factory
+- `graphids/orchestrate/definitions.py` (17 lines) — entry point
+- `graphids/orchestrate/__main__.py` (~210 lines) — CLI: run/validate/smoke
+- `graphids/orchestrate/slurm.py` (105 lines) — retained
+- `graphids/orchestrate/resources.py` (78 lines) — retained
 
-Verified: `dg list defs` (32 assets), `dg check defs`, `smoke --dry-run` (3-stage chain).
-All 32 asset names, config files, model overrides, and deps match the old system exactly.
+Verified: `dg check defs`, `dg list defs` (32 assets, 32 checks, all tagged),
+`smoke --dry-run` (3-stage chain). IOManager `load_input` wired via `ins=`/`AssetIn`
+(parameter-based deps, not `deps=` ordering-only).
 
 ### P2.5: Collapse expand.py into dagster_defs.py (2026-03-29)
 
@@ -187,14 +200,14 @@ stages/              # one per stage + analyze configs
 overlays/            # thin scale/ablation variants
 ```
 
-### Orchestration (`graphids/orchestrate/` + `graphids/components/`)
+### Orchestration (`graphids/orchestrate/`)
 
 ```
-components/
-  slurm_training_component.py  # SlurmTrainingComponent (dg.Component) + enumerate_assets()
 orchestrate/
   __init__.py          # package docstring
-  __main__.py          # CLI: run/validate/smoke + validate_recipe() + smoke_test()
+  __main__.py          # CLI: run/validate/smoke
+  component.py         # SlurmTrainingComponent + CheckpointPathIOManager +
+                       #   SlurmTrainingResource + enumerate_assets() + _make_asset()
   definitions.py       # dagster entry point (build_defs_for_component)
   slurm.py             # sbatch submit, sacct poll, script gen
   resources.py         # ResourceSpec + scale_resources (reads resources.yaml)

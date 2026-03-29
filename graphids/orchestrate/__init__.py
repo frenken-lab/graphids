@@ -1,8 +1,8 @@
 """Dagster-based pipeline orchestrator.
 
-SlurmTrainingComponent reads pipeline.yaml topology and ablation.yaml recipe,
-generates one dagster asset per unique (stage, identity_hash) pair.
-Assets submit LightningCLI stages to SLURM via sbatch.
+Assets represent trained model checkpoints. SlurmTrainingComponent reads
+pipeline.yaml + ablation.yaml, generates tagged assets with IOManager
+checkpoint handoff and SLURM submission via SlurmTrainingResource.
 
 Entry points:
   dg list defs                              — list all assets
