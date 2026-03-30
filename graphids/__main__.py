@@ -32,6 +32,10 @@ if __name__ == "__main__":
         cfg = parser.parse_args(sys.argv[2:])
         analyzer = parser.instantiate_classes(cfg).analyzer
         analyzer.run()
+    elif len(sys.argv) > 1 and sys.argv[1] == "profile":
+        from graphids.orchestrate.profiler import main as profile_main
+
+        profile_main(sys.argv[2:])
     else:
         from graphids.cli import GraphIDSCLI, CLI_KWARGS
 

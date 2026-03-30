@@ -22,6 +22,12 @@ set -a; source ./.env; set +a
 # Group-writable umask for shared ESS data lake
 umask 002
 
+# wandb: scratch for I/O-heavy run data, skip git probing on NFS, reduce SLURM log noise
+export WANDB_DIR=/fs/scratch/PAS1266/wandb
+mkdir -p "$WANDB_DIR"
+export WANDB_DISABLE_GIT=true
+export WANDB_SILENT=true
+
 if [[ "${SKIP_CUDA_CONF:-0}" != "1" ]]; then
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
 fi

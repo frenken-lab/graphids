@@ -8,13 +8,16 @@
 |-------|------|-------|
 | Training metrics | WandbLogger + CSVLogger | `trainer.yaml` loggers |
 | Full config logging | WandbSaveConfigCallback | `cli.py:9-17` (Lightning #19728) |
+| CSVLogger save_dir | `link_arguments` → `default_root_dir` | `cli.py:18-20` — metrics.csv in run dir |
 | GPU memory telemetry | DeviceStatsMonitor | `trainer.yaml` callbacks |
 | GPU system metrics | wandb pynvml (util%, temp, power) | Automatic, 15s interval |
-| Env vars | `WANDB_DIR`, `WANDB_DISABLE_GIT`, `WANDB_SILENT` | `_preamble.sh:25-27` |
+| Op-level profiling | PyTorchProfiler (chrome traces) | `overlays/profile.yaml` + `profile_training.sh` |
+| SLURM resource profiler | sacct: RSS, CPU%, wall time | `python -m graphids profile` (`orchestrate/profiler.py`) |
+| Env vars | `WANDB_DIR`, `WANDB_DISABLE_GIT`, `WANDB_SILENT` | `_preamble.sh:25-28` |
 | VRAM probe | `_probe_bytes_per_node()`, KD-aware | `datamodule.py` (runs `_step()` not `forward()`) |
 | Orchestration UI | dagster webserver + daemon | `scripts/dev/dagster-ui.sh` (port 3000, SSH tunnel) |
 | Checkpoint handoff | CheckpointPathIOManager | JSON sidecars at `{lake_root}/.dagster/io/` |
-| SLURM resource tracking | sacct in `_epilog.sh` | ESS log files |
+| SLURM job accounting | sacct in `_epilog.sh` | ESS log files |
 | CUDA alloc config | `expandable_segments:True,garbage_collection_threshold:0.8` | `_preamble.sh` |
 | Mixed precision | `precision: 16-mixed` | `trainer.yaml` |
 | Gradient checkpointing | `use_reentrant=False` | `_conv.py:195-224` |
@@ -33,9 +36,8 @@
 
 | Gap | Impact |
 |-----|--------|
-| `gpu_stats.csv` parser in `profile_jobs.py` | Dead code — wandb covers GPU util/temp/power. Remove parser. |
 | DuckDB catalog (`kd_gat.duckdb`) | No code writes to it. wandb partially replaces. |
-| sacct unstructured | Grepable in ESS logs but no DuckDB ingest. |
+| sacct → DuckDB ingest | `python -m graphids profile --json` produces structured data, but no auto-ingest to DuckDB yet. |
 
 ## Risks
 
@@ -47,7 +49,7 @@
 
 ## Tool decisions (don't re-investigate)
 
-**Adopt**: wandb (primary logger), DeviceStatsMonitor (memory), CSVLogger (backup), dagster UI (orchestration), nsys (one-off profiling), torch.cuda memory APIs (batch sizing)
+**Adopt**: wandb (primary logger), DeviceStatsMonitor (memory), CSVLogger (backup), dagster UI (orchestration), PyTorchProfiler (op-level traces), nsys (one-off system profiling), torch.cuda memory APIs (batch sizing), sacct profiler (SLURM resource accounting)
 
 **Skip** (with reasons — don't revisit):
 - **nvprof**: deprecated. **ncu**: 10-100x slower, only after nsys finds bad kernel. **DCGM**: needs admin.

@@ -25,6 +25,8 @@
 | 03-30 | — | **Run 004 submitted** (ablation.yaml, set_01/set_02, seed 42) | **100% failure** — 0/36 stages completed across 2 attempts |
 | 03-30 | `eac2a43` | Fix run 004 failures: RAM profiles, dagster logging, .complete markers | 3 of 5 issues fixed |
 | 03-30 | `f1ff51b` | Add observability: wandb + DeviceStatsMonitor, VRAM probe | Addresses issue #6 (zero observability) |
+| 03-30 | — | wandb fully wired: WandbSaveConfigCallback, _preamble.sh env vars | Issue #6 fully resolved |
+| 03-30 | — | Dagster UI: webserver + daemon launcher (`scripts/dev/dagster-ui.sh`) | Orchestration observability ready |
 
 ## Run 004 — failure summary
 
@@ -37,7 +39,7 @@ Two orchestrator attempts, both failed. See `../ablation-run-004-failures.md` fo
 | 3 | Large GAT CUDA OOM (`vram_node_budget()` model-blind) | 1 | **Open** — needs arch-aware budget |
 | 4 | KD autoencoder wall time (teacher VRAM collapses batch 3x) | 1 | **Open** — needs KD resource profiles + teacher VRAM fix |
 | 5 | `profile_jobs.py` broken for dagster log layout | — | **Open** — profiler expects submitit paths |
-| 6 | Zero observability (no logger, no GPU stats, no epoch progress) | all | **Partial** — wandb + DeviceStatsMonitor added (`f1ff51b`) |
+| 6 | Zero observability (no logger, no GPU stats, no epoch progress) | all | **Fixed** — wandb + DeviceStatsMonitor + WandbSaveConfigCallback + _preamble.sh env vars + dagster UI |
 
 ### Pre-submission bugs (caught during development, before Run 004)
 
@@ -59,7 +61,8 @@ Single CPU SLURM job runs dagster orchestrator. Submits GPU training jobs via sb
 - `SlurmTrainingComponent.build_defs()` generates assets from `pipeline.yaml` + `recipes/ablation.yaml`
 - `multiprocess_executor(max_concurrent=8)` fans out independent assets
 - Restart-safe: skip requires both `best_model.ckpt` AND `.complete` marker (not just any checkpoint)
-- No daemon, no webserver. `DAGSTER_HOME=/fs/scratch/PAS1266/dagster` (SQLite run history)
+- `DAGSTER_HOME=/fs/scratch/PAS1266/dagster` (SQLite run history).
+Webserver + daemon: `bash scripts/dev/dagster-ui.sh` (port 3000, SSH tunnel for local access)
 
 ## Dagster vs Lightning responsibility split
 
@@ -74,7 +77,7 @@ Single CPU SLURM job runs dagster orchestrator. Submits GPU training jobs via sb
 
 | Decision | Rationale | Status |
 |----------|-----------|--------|
-| No daemon/webserver | Batch `dg launch` on CPU SLURM job sufficient | Valid |
+| ~~No daemon/webserver~~ Webserver + daemon on login node | `scripts/dev/dagster-ui.sh` starts both. SSH tunnel for browser access. | **Updated** 2026-03-30 |
 | `MultiPartitionsDefinition(dataset, seed)` | Covers sweep matrix without custom code | Valid — implemented |
 | dagster-slurm rejected | Pipes protocol overhead, remote-first design, slurm.py not the problem | **Confirmed** — custom `SlurmTrainingResource` used instead. dagster-slurm unused dep in pyproject.toml (remove it). |
 | Dagster Pipes rejected | Training is CLI commands, not Pipes-aware Python | Valid — revisit if in-job metric streaming needed |
@@ -109,7 +112,7 @@ Dagster testing layers (from docs audit):
 |-----|--------|-------|--------|
 | `python_logs` file handler in `dagster.yaml` | Config only | Catches subprocess TypeError tracebacks | **Open** |
 | `dagster debug export <run_id>` | Zero — already available | Failed run inspection | Never used |
-| wandb + DeviceStatsMonitor in Lightning | Done | Loss curves, GPU stats | **Implemented** (`f1ff51b`) |
+| wandb + DeviceStatsMonitor in Lightning | Done | Loss curves, GPU stats | **Implemented** (`f1ff51b`) + WandbSaveConfigCallback + env vars (2026-03-30) |
 | `AssetObservation` in poll loop | ~10 lines | SLURM state transitions in dagster events | **Open** |
 | `context.add_output_metadata()` | ~5 lines/asset | job_id, wall time, peak RSS on materialization | **Open** |
 | Dagster Pipes for in-job metrics | Significant | Epoch progress mid-job | Deferred |

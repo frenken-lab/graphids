@@ -23,6 +23,19 @@ _TERMINAL = frozenset({
 })
 
 
+def sacct_query(job_ids: list[str] | list[int], fmt: str,
+                *, units: str = "G") -> str:
+    """Run sacct and return stdout. Shared by poll() and profiler."""
+    ids = ",".join(str(j) for j in job_ids)
+    cmd = ["sacct", "-j", ids, "--parsable2", "--noheader",
+           f"--format={fmt}", f"--units={units}"]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        log.warning("sacct_error", stderr=r.stderr.strip())
+        return ""
+    return r.stdout
+
+
 def generate_script(config_files: list[str], resources: ResourceSpec, *,
                     ckpt_path: Path | None = None,
                     cli_overrides: list[str] | None = None) -> str:
@@ -80,14 +93,10 @@ def poll(job_id: int, *, interval: int = 60, max_unknown: int = 5) -> str:
     """Poll sacct until terminal state. Returns state string."""
     unknown_count = 0
     while True:
-        r = subprocess.run(
-            ["sacct", "-j", str(job_id), "--format=JobID,State",
-             "--noheader", "--parsable2"],
-            capture_output=True, text=True,
-        )
+        stdout = sacct_query([job_id], "JobID,State")
         state = "UNKNOWN"
-        if r.returncode == 0:
-            for line in r.stdout.strip().split("\n"):
+        if stdout:
+            for line in stdout.strip().split("\n"):
                 parts = line.strip().split("|")
                 if len(parts) >= 2 and "." not in parts[0]:
                     state = parts[1].strip()

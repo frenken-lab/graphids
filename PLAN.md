@@ -95,20 +95,30 @@ Converted DQN and Bandit fusion agents from plain Python classes to proper Light
 deleted. `reward_kwargs_from_cfg()` deleted (dead code). Backward-compat aliases retained.
 New stage YAML: `fusion_dqn.yaml`. Registry updated. See `plans/architecture/models-consolidation.md`.
 
-### wandb + dagster UI setup (2026-03-30)
+### Observability fully wired (2026-03-30)
 
-wandb fully wired for Run 005:
-- `WandbSaveConfigCallback` in `cli.py` (subclasses `SaveConfigCallback`, forwards full
-  jsonargparse config to wandb — Lightning #19728 workaround)
-- Env vars in `_preamble.sh`: `WANDB_DIR=/fs/scratch/PAS1266/wandb`, `WANDB_DISABLE_GIT=true`,
-  `WANDB_SILENT=true`
-- Auth already in `~/.netrc` (entity: `frenken-2-the-ohio-state-university`)
-- `dagster-webserver` version aligned to 1.12.21
+All 5 profiling/observability tools wired and verified:
 
-Dagster UI operational:
-- `scripts/dev/dagster-ui.sh` — starts webserver (port 3000) + daemon, Ctrl-C stops both
-- Access via `ssh -L 3000:localhost:3000 pitzer.osc.edu` → `http://localhost:3000`
-- Verified: HTTP 200, `dg check defs` clean, daemon starts all 6 daemon types
+| Tool | What it provides | Config |
+|------|-----------------|--------|
+| wandb (pynvml) | GPU util%, temp, power, memory (15s) | `trainer.yaml` WandbLogger |
+| DeviceStatsMonitor | CUDA allocator stats per step | `trainer.yaml` callback |
+| PyTorchProfiler | Op-level timing, chrome traces | `overlays/profile.yaml` + `profile_training.sh` |
+| WandbSaveConfigCallback | Full jsonargparse config to wandb | `cli.py` `save_config_callback` |
+| sacct profiler | RSS, CPU%, wall time, mem efficiency | `python -m graphids profile` |
+
+Key fixes applied:
+- `WandbSaveConfigCallback` in `cli.py` (Lightning #19728 workaround)
+- `_preamble.sh`: `WANDB_DIR`, `WANDB_DISABLE_GIT`, `WANDB_SILENT`, `mkdir -p`
+- `link_arguments` for CSVLogger `save_dir` → follows `default_root_dir` (metrics.csv in run dir)
+- `dagster-slurm` removed from `pyproject.toml` (unused dep, -5 packages)
+- `dagster-webserver` aligned to 1.12.21
+- Dagster UI: `scripts/dev/dagster-ui.sh` (webserver + daemon, port 3000, SSH tunnel)
+- Profiler rewrite: `scripts/profile_jobs.py` (459 lines) → `graphids/orchestrate/profiler.py`
+  (251 lines). Fixed sacct `.0`→`.batch` bug (RSS was always 0), deleted dead `gpu_stats.csv`
+  code, shared `sacct_query()` with `slurm.py`, job name metadata parsing.
+- `configs/profile.yaml` (orphaned pre-flatten) → `graphids/config/overlays/profile.yaml`
+- `profile_training.sh` rewritten to use `_preamble.sh` + current config paths
 
 ### Smoke test verified + 8 bug fixes (2026-03-29)
 

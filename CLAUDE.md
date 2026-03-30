@@ -31,6 +31,7 @@ full jsonargparse config to wandb (Lightning #19728 workaround). Two entry point
 
 - `python -m graphids fit|test|validate|predict` → `GraphIDSCLI` (extends `LightningCLI`, adds `link_arguments` for DRY config)
 - `python -m graphids analyze` → `Analyzer` class (no Trainer — loads checkpoints, generates artifacts)
+- `python -m graphids profile <job_ids>` → sacct resource profiler (RSS, CPU%, wall time). See `orchestrate/profiler.py`.
 
 Orchestration: `python -m graphids.orchestrate [run|validate|smoke]` — dagster-based, see `plans/architecture/dagster-native-orchestration.md`
 
