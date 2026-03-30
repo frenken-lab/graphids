@@ -164,8 +164,6 @@ class DGIModule(GraphModuleBase):
         edge_dim: int = 11,
         proj_dim: int = 0,
         # --- training ---
-        lr: float = 0.003,
-        weight_decay: float = 0.0001,
         gradient_checkpointing: bool = True,
         compile_model: bool = False,
         # --- identity / dynamic ---

@@ -208,8 +208,6 @@ class GATModule(GraphModuleBase):
         pool_aggrs: list[str] | None = None,
         proj_dim: int = 0,
         # --- training ---
-        lr: float = 0.003,
-        weight_decay: float = 0.0001,
         gradient_checkpointing: bool = True,
         compile_model: bool = False,
         loss_fn: str = "ce",
