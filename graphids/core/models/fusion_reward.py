@@ -42,7 +42,7 @@ class FusionRewardCalculator:
         overconf_penalty: float = -1.5,
         balance_weight: float = 0.3,
     ) -> None:
-        from .registry import feature_layout
+        from .fusion_features import feature_layout
 
         layout = feature_layout()
         vgae = layout["vgae"]

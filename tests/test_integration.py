@@ -87,7 +87,7 @@ class TestDecisionThreshold:
     @staticmethod
     def _make_fusion_states(n: int = 32) -> torch.Tensor:
         """Create synthetic 15-D fusion state vectors."""
-        from graphids.core.models.registry import fusion_state_dim
+        from graphids.core.models.fusion_features import fusion_state_dim
 
         state_dim = fusion_state_dim()
         torch.manual_seed(123)
@@ -97,7 +97,7 @@ class TestDecisionThreshold:
     def test_dqn_high_threshold_suppresses_positives(self):
         """With threshold=0.9, fused_scores in [0.5, 0.9) yield preds=0, not 1."""
         from graphids.core.models.dqn import EnhancedDQNFusionAgent
-        from graphids.core.models.registry import fusion_state_dim
+        from graphids.core.models.fusion_features import fusion_state_dim
 
         state_dim = fusion_state_dim()
         agent = EnhancedDQNFusionAgent(
@@ -121,7 +121,7 @@ class TestDecisionThreshold:
     def test_bandit_high_threshold_suppresses_positives(self):
         """NeuralLinUCBAgent with threshold=0.9 suppresses positive predictions."""
         from graphids.core.models.bandit import NeuralLinUCBAgent
-        from graphids.core.models.registry import fusion_state_dim
+        from graphids.core.models.fusion_features import fusion_state_dim
 
         state_dim = fusion_state_dim()
         agent = NeuralLinUCBAgent(
@@ -145,7 +145,7 @@ class TestDecisionThreshold:
     def test_threshold_difference_changes_predictions(self):
         """Same agent state with threshold=0.1 vs 0.9 produces different predictions."""
         from graphids.core.models.dqn import EnhancedDQNFusionAgent
-        from graphids.core.models.registry import fusion_state_dim
+        from graphids.core.models.fusion_features import fusion_state_dim
 
         state_dim = fusion_state_dim()
         states = self._make_fusion_states()

@@ -92,17 +92,34 @@ def binary_test_metrics():
 # ---------------------------------------------------------------------------
 
 
+_MODULE_PATHS: dict[str, str] = {
+    "vgae": "graphids.core.models.vgae.VGAEModule",
+    "gat": "graphids.core.models.gat.GATModule",
+    "dgi": "graphids.core.models.dgi.DGIModule",
+    "fusion": "graphids.core.models.bandit.BanditFusionModule",
+    "dqn": "graphids.core.models.dqn.DQNFusionModule",
+}
+
+
 def safe_load_checkpoint(model_type: str, ckpt_path, *, map_location="cpu"):
     """load_from_checkpoint with migration guard for pre-flatten checkpoints."""
+    import importlib
     from pathlib import Path
 
-    from graphids.core.models.registry import get_module_cls
+    dotted = _MODULE_PATHS.get(model_type)
+    if dotted is None:
+        raise KeyError(
+            f"No module class for '{model_type}'. "
+            f"Available: {list(_MODULE_PATHS)}"
+        )
+    module_path, cls_name = dotted.rsplit(".", 1)
+    cls = getattr(importlib.import_module(module_path), cls_name)
 
     ckpt_path = Path(ckpt_path)
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
     try:
-        return get_module_cls(model_type).load_from_checkpoint(
+        return cls.load_from_checkpoint(
             str(ckpt_path), map_location=map_location, weights_only=True,
         )
     except TypeError as exc:

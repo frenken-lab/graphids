@@ -7,15 +7,13 @@ Public API re-exported from submodules:
 """
 
 from .fusion_features import (
+    FeatureLayout,
     FusionFeatureExtractor,
     GATFusionExtractor,
     VGAEFusionExtractor,
-)
-from .bandit import BanditFusionModule, NeuralLinUCBAgent
-from .dqn import DQNFusionModule, EnhancedDQNFusionAgent
-from .registry import (
-    FeatureLayout,
     extractors,
     feature_layout,
     fusion_state_dim,
 )
+from .bandit import BanditFusionModule, NeuralLinUCBAgent
+from .dqn import DQNFusionModule, EnhancedDQNFusionAgent

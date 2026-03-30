@@ -82,7 +82,7 @@ class MLPFusionModule(pl.LightningModule):
     ):
         super().__init__()
         if state_dim == 0:
-            from .registry import fusion_state_dim
+            from .fusion_features import fusion_state_dim
             state_dim = fusion_state_dim()
         self.save_hyperparameters()
         self.model = MLPFusionNetwork(state_dim, hidden_dims)
@@ -124,13 +124,6 @@ class MLPFusionModule(pl.LightningModule):
     def configure_optimizers(self):
         return optim.Adam(self.parameters(), lr=self.lr)
 
-    def fuse(self, state_features: np.ndarray) -> int:
-        self.eval()
-        with torch.no_grad():
-            t = torch.tensor(state_features, dtype=torch.float32).unsqueeze(0).to(self.device)
-            logit = self(t)
-            return 1 if logit.item() > 0 else 0
-
 
 class WeightedAvgModule(pl.LightningModule):
     """Simplest baseline: learns a single scalar alpha per model.
@@ -152,7 +145,7 @@ class WeightedAvgModule(pl.LightningModule):
         self.decision_threshold = decision_threshold
         self.test_metrics = binary_test_metrics()
 
-        from .registry import feature_layout
+        from .fusion_features import feature_layout
 
         layout = feature_layout()
         self._vgae_conf_idx = layout["vgae"].confidence_idx
@@ -195,13 +188,4 @@ class WeightedAvgModule(pl.LightningModule):
 
     def configure_optimizers(self):
         return optim.Adam(self.parameters(), lr=self.lr)
-
-    def fuse(self, state_features: np.ndarray) -> int:
-        self.eval()
-        with torch.no_grad():
-            alpha = torch.sigmoid(self.weight).item()
-            vgae_conf = state_features[self._vgae_conf_idx]
-            gat_conf = state_features[self._gat_conf_idx]
-            score = (1 - alpha) * vgae_conf + alpha * gat_conf
-            return 1 if score > self.decision_threshold else 0
 

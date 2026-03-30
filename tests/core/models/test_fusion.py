@@ -115,7 +115,7 @@ class TestFusionRewardCalculator:
 
     def test_reward_coefficients_actually_used(self):
         from graphids.core.models.fusion_reward import FusionRewardCalculator
-        from graphids.core.models.registry import fusion_state_dim
+        from graphids.core.models.fusion_features import fusion_state_dim
 
         state_dim = fusion_state_dim()
         n = 16
@@ -148,7 +148,7 @@ class TestFusionRewardCalculator:
 
     def test_derive_scores_uses_vgae_weights(self):
         from graphids.core.models.fusion_reward import FusionRewardCalculator
-        from graphids.core.models.registry import fusion_state_dim
+        from graphids.core.models.fusion_features import fusion_state_dim
 
         state_dim = fusion_state_dim()
         torch.manual_seed(0)
@@ -199,7 +199,7 @@ class TestFusionCheckpointRoundtrip:
 
     def test_dqn_roundtrip(self, tmp_path):
         from graphids.core.models.dqn import EnhancedDQNFusionAgent
-        from graphids.core.models.registry import fusion_state_dim
+        from graphids.core.models.fusion_features import fusion_state_dim
         sd = fusion_state_dim()
         a1 = EnhancedDQNFusionAgent(
             alpha_steps=11, state_dim=sd,
