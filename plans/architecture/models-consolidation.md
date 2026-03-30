@@ -1,6 +1,6 @@
 # Models Consolidation Plan
 
-> Status: **proposed** | Created: 2026-03-27 | Audited: 2026-03-30
+> Status: **partially complete** | Created: 2026-03-27 | Audited: 2026-03-30 | DQN/Bandit (§8) completed: 2026-03-30
 
 Consolidate `graphids/core/models/` (3,287 lines, 13 files) by adopting Lightning/torchmetrics
 built-ins instead of hand-rolled shared logic. Three concerns: optimizers, setup, threshold.
@@ -37,7 +37,7 @@ Recommend (a) for simplicity unless profiling shows meaningful memory cost on V1
 
 **Exceptions that keep custom `configure_optimizers`:**
 - `TemporalLightningModule` (`temporal.py:320-340`) — two param groups with different LRs
-- `RLFusionModule` (`fusion_baselines.py:277-278`) — manual optimization, proxies agent's optimizer
+- ~~`RLFusionModule` (`fusion_baselines.py:277-278`) — manual optimization, proxies agent's optimizer~~ (deleted — DQN/Bandit now have their own `configure_optimizers` as proper LightningModules)
 
 YAML configs add `optimizer:` / `lr_scheduler:` sections instead of hardcoding in Python.
 
@@ -143,7 +143,7 @@ _MODULE_PATHS: dict[str, str] = {
     "vgae": "graphids.core.models.vgae.VGAEModule",
     "gat": "graphids.core.models.gat.GATModule",
     "dgi": "graphids.core.models.dgi.DGIModule",
-    "fusion": "graphids.core.models.fusion_baselines.RLFusionModule",
+    "fusion": "graphids.core.models.bandit.BanditFusionModule",  # was RLFusionModule (deleted)
 }
 ```
 
@@ -185,8 +185,9 @@ _EXTRACTORS: list[tuple[str, FusionFeatureExtractor]] = [
 | `KDAuxiliary` | TypedDict | config schema | **Keep** |
 
 Note: `binary_test_metrics` has 7 callers, not 6. Fusion modules (`MLPFusionModule`,
-`WeightedAvgModule`, `RLFusionModule`) also call it, so keep the factory function
+`WeightedAvgModule`, `FusionModuleBase`) also call it, so keep the factory function
 for fusion and inline in `GraphModuleBase` for core modules — or keep the factory for all.
+(`RLFusionModule` deleted — `FusionModuleBase` now provides the shared base for fusion modules.)
 
 ## 7. `temporal.py` — use `load_inner_model` for GAT checkpoint loading
 
@@ -205,33 +206,29 @@ gat.load_state_dict(checkpoint)
 `TemporalLightningModule` does NOT subclass `GraphModuleBase` — eager build in `__init__`,
 no OOM guard, no threshold. Its custom `configure_optimizers` (two param groups) stays.
 
-## 8. DQN/Bandit — eliminate wrapper, adopt Lightning primitives
+## 8. DQN/Bandit — eliminate wrapper, adopt Lightning primitives ✅ DONE (2026-03-30)
 
-`EnhancedDQNFusionAgent` (`dqn.py`) and `NeuralLinUCBAgent` (`bandit.py`) are plain Python
+~~`EnhancedDQNFusionAgent` (`dqn.py`) and `NeuralLinUCBAgent` (`bandit.py`) are plain Python
 classes that re-implement Lightning concerns: optimizer (`dqn.py:156`), scheduler (`dqn.py:157`),
 grad clipping (`dqn.py:260`, `bandit.py:223`), checkpointing (`dqn.py:349`, `bandit.py:345`).
-`RLFusionModule` (`fusion_baselines.py:171-279`) wraps them with pure indirection.
+`RLFusionModule` (`fusion_baselines.py:171-279`) wraps them with pure indirection.~~
 
-**Action:** Make DQN/Bandit `LightningModule`s, delete `RLFusionModule`.
+**Completed.** What was done:
 
-**`DQNFusionModule(FusionModuleBase)`:**
-- `automatic_optimization = False` (multiple gradient steps per `training_step`)
-- `configure_optimizers` returns `AdamW` + `ReduceLROnPlateau`
-- Target network update via `on_train_batch_end`
-- Delete `state_dict()`, `load_checkpoint()`, manual optimizer creation
+1. `FusionModuleBase(pl.LightningModule)` created in `fusion_baselines.py` — shared base with `test_step`, `validation_step`, abstract methods
+2. `EnhancedDQNFusionAgent` → `DQNFusionModule(FusionModuleBase)` in `dqn.py` — proper LightningModule, auto-checkpoint, auto-device, `save_hparams`, `configure_optimizers`
+3. `NeuralLinUCBAgent` → `BanditFusionModule(FusionModuleBase)` in `bandit.py` — same, plus `register_buffer` for `A_inv`, `b`, `theta`
+4. `RLFusionModule` deleted from `fusion_baselines.py`
+5. `fusion.yaml` updated to point to `BanditFusionModule`, `fusion_dqn.yaml` created for `DQNFusionModule`
+6. `registry.py` updated with new lazy loaders
+7. `reward_kwargs_from_cfg()` deleted from `fusion_reward.py` (dead code)
+8. Backward-compat aliases: `EnhancedDQNFusionAgent = DQNFusionModule`, `NeuralLinUCBAgent = BanditFusionModule`
 
-**`BanditFusionModule(FusionModuleBase)`:**
-- `A_inv`, `b`, `theta` → `register_buffer()` → auto-checkpointed + auto device transfer
-- Delete `state_dict()`, `load_checkpoint()`, manual `.to(device)` calls
-
-**`FusionModuleBase(pl.LightningModule)`:**
-- Shared `test_step`, `on_test_epoch_start/end`, `validate_batch`, `predict`
-
-**Observation:** gamma=0 is hardcoded (`dqn.py:119`), making `targets = rewards` unconditional
+**Observation (still open):** gamma=0 is hardcoded (`dqn.py:119`), making `targets = rewards` unconditional
 (`dqn.py:251-254`). Target network has no effect. If gamma stays 0, target network can be
 deleted (~50% DQN params + sync logic). Not a consolidation item — flagged for research.
 
-**What stays unchanged:**
+**What stayed unchanged:**
 - `TensorReplayBuffer`, `FusionRewardCalculator`, `fused_predict`, `QNetwork`, `Backbone`, `build_mlp_body`
 - `MLPFusionModule`, `WeightedAvgModule` — already proper LightningModules
 
@@ -244,9 +241,9 @@ deleted (~50% DQN params + sync logic). Not a consolidation item — flagged for
 5. `GraphModuleBase` in `_training.py` — shared `setup()`, OOM guard, metrics, threshold
 6. Refactor VGAE/GAT/DGI to subclass `GraphModuleBase`, delete duplicated methods
 7. Wire `add_optimizer_args` in `cli.py`, delete `configure_optimizers` from GAT/DGI/VGAE
-8. `FusionModuleBase` — shared test/validate/predict for fusion agents
-9. Refactor DQN → `DQNFusionModule(FusionModuleBase)`, delete `RLFusionModule`
-10. Refactor Bandit → `BanditFusionModule(FusionModuleBase)`
+8. ~~`FusionModuleBase` — shared test/validate/predict for fusion agents~~ ✅ done
+9. ~~Refactor DQN → `DQNFusionModule(FusionModuleBase)`, delete `RLFusionModule`~~ ✅ done
+10. ~~Refactor Bandit → `BanditFusionModule(FusionModuleBase)`~~ ✅ done
 11. Update YAML configs: `optimizer:` / `lr_scheduler:` sections, model class paths
 12. Update `__init__.py` re-exports for new locations
 13. Verify: import checks + `--collect-only` on test suite
@@ -261,7 +258,7 @@ deleted (~50% DQN params + sync logic). Not a consolidation item — flagged for
 | `temporal.py` fix (§7) | +2 | -8 | -6 |
 | `GraphModuleBase` + VGAE/GAT/DGI refactor (§2,3) | +40 | -90 | -50 |
 | Optimizer wiring (§1) | +3 | -18 | -15 |
-| DQN/Bandit conversion (§8) | +50 | -170 | -120 |
+| DQN/Bandit conversion (§8) ✅ | +50 | -170 | -120 (est.) |
 | **Total** | **+124** | **-408** | **-284** |
 
 ## Risks

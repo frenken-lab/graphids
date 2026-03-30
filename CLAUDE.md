@@ -25,15 +25,18 @@ python -m graphids analyze --config graphids/config/stages/analyze_vgae.yaml \
 
 ## CLI Architecture
 
-`GraphIDSCLI` class and `CLI_KWARGS` live in `graphids/cli.py` — single definition shared by
-`__main__.py` (training) and `orchestrate/dagster_defs.py` (validation). Two entry points:
+`GraphIDSCLI`, `WandbSaveConfigCallback`, and `CLI_KWARGS` live in `graphids/cli.py` — single definition shared by
+`__main__.py` (training) and `orchestrate/` (validation). `WandbSaveConfigCallback` forwards
+full jsonargparse config to wandb (Lightning #19728 workaround). Two entry points:
 
 - `python -m graphids fit|test|validate|predict` → `GraphIDSCLI` (extends `LightningCLI`, adds `link_arguments` for DRY config)
 - `python -m graphids analyze` → `Analyzer` class (no Trainer — loads checkpoints, generates artifacts)
 
 Orchestration: `python -m graphids.orchestrate [run|validate|smoke]` — dagster-based, see `plans/architecture/dagster-native-orchestration.md`
 
-Fusion has per-method stage YAMLs: `fusion.yaml` (bandit/dqn → RLFusionModule), `fusion_mlp.yaml` (MLPFusionModule), `fusion_weighted_avg.yaml` (WeightedAvgModule). Config resolution in `component.py` picks the right YAML from `fusion_method` in the recipe.
+Dagster UI: `bash scripts/dev/dagster-ui.sh` (webserver + daemon on login node, port 3000). Access via SSH tunnel.
+
+Fusion has per-method stage YAMLs: `fusion_bandit.yaml` (`BanditFusionModule`), `fusion_dqn.yaml` (`DQNFusionModule`), `fusion_mlp.yaml` (`MLPFusionModule`), `fusion_weighted_avg.yaml` (`WeightedAvgModule`). Config resolution in `component.py` picks the right YAML from `fusion_method` in the recipe.
 
 ## Session Start
 

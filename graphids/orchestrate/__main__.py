@@ -27,7 +27,7 @@ _LOGGER_REQUIRED_CALLBACKS = {
     "pytorch_lightning.callbacks.LearningRateMonitor",
     "lightning.pytorch.callbacks.LearningRateMonitor",
 }
-_NULL_LIST_FIELDS = {"pool_aggrs", "hidden_dims", "auxiliaries", "dqn_vgae_error_weights"}
+_NULL_LIST_FIELDS = {"pool_aggrs", "hidden_dims", "auxiliaries"}
 
 
 def validate_recipe(recipe_path: Path = RECIPE_PATH) -> list[str]:

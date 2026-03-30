@@ -38,8 +38,12 @@ def _dgi_module():
     return DGIModule
 
 def _fusion_module():
-    from .fusion_baselines import RLFusionModule
-    return RLFusionModule
+    from .bandit import BanditFusionModule
+    return BanditFusionModule
+
+def _dqn_fusion_module():
+    from .dqn import DQNFusionModule
+    return DQNFusionModule
 
 
 # Order matters — VGAE then GAT matches the 15-D state layout for trained DQN checkpoints.
@@ -48,7 +52,7 @@ def _fusion_module():
 _MODELS: dict[str, tuple[FusionFeatureExtractor | None, callable | None]] = {
     "vgae": (VGAEFusionExtractor(), _vgae_module),
     "gat": (GATFusionExtractor(), _gat_module),
-    "dqn": (None, None),
+    "dqn": (None, _dqn_fusion_module),
     "dgi": (None, _dgi_module),
     "fusion": (None, _fusion_module),
 }

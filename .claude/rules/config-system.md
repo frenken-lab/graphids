@@ -28,7 +28,8 @@ graphids/
       autoencoder.yaml   # VGAEModule + CANBusDataModule
       normal.yaml        # GATModule + CANBusDataModule (no curriculum)
       curriculum.yaml    # GATModule + CurriculumDataModule
-      fusion.yaml        # RLFusionModule (bandit/dqn) + FusionDataModule + trainer overrides
+      fusion_bandit.yaml  # BanditFusionModule + FusionDataModule + trainer overrides
+      fusion_dqn.yaml    # DQNFusionModule + FusionDataModule + trainer overrides
       fusion_mlp.yaml    # MLPFusionModule + FusionDataModule
       fusion_weighted_avg.yaml  # WeightedAvgModule + FusionDataModule
       analyze_vgae.yaml  # Analyzer config: VGAE embeddings + landscape
@@ -96,7 +97,7 @@ model:
 
 **Prefix conventions** for modules with colliding param spaces:
 - `TemporalLightningModule`: `spatial_*` for GAT backbone, `temporal_*` for transformer
-- `RLFusionModule`: `dqn_*` for DQN agent, `bandit_*` for bandit agent
+- `DQNFusionModule` / `BanditFusionModule`: separate classes, no prefix needed (each has its own params)
 
 ## Pipeline topology
 

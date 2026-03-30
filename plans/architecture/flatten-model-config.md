@@ -32,7 +32,8 @@ Added:
 | `GATModule` | `gat.py:183` | 28 | — | `OOMSkipMixin` |
 | `DGIModule` | `dgi.py:149` | 20 | — | `OOMSkipMixin` |
 | `TemporalLightningModule` | `temporal.py:146` | 25 | `spatial_*`, `temporal_*` | — |
-| `RLFusionModule` | `fusion_baselines.py:171` | 39 | `dqn_*`, `bandit_*` | — |
+| `DQNFusionModule` | `dqn.py` | (flat) | — | — |
+| `BanditFusionModule` | `bandit.py` | (flat) | — | — |
 | `MLPFusionModule` | `fusion_baselines.py:33` | 3 | — | — |
 | `WeightedAvgModule` | `fusion_baselines.py:97` | 2 | — | — |
 | `Analyzer` | `cli.py` | (varies) | `analyzer.*` | — |
@@ -50,9 +51,9 @@ Updated to flat keys — these read flat `hparams` namespaces directly:
 - `GraphAutoencoderNeighborhood.from_config` (`vgae.py`)
 - `GATWithJK.from_config` (`gat.py`)
 - `GraphInfomaxModel.from_config` (`dgi.py`)
-- `EnhancedDQNFusionAgent.from_config` (`dqn.py`)
-- `NeuralLinUCBAgent.from_config` (`bandit.py`)
-- `reward_kwargs_from_cfg` (`fusion_reward.py`)
+- `DQNFusionModule` (`dqn.py`) — was `EnhancedDQNFusionAgent.from_config`, now proper LightningModule `__init__`
+- `BanditFusionModule` (`bandit.py`) — was `NeuralLinUCBAgent.from_config`, now proper LightningModule `__init__`
+- ~~`reward_kwargs_from_cfg` (`fusion_reward.py`)~~ — **deleted** (dead code, removed 2026-03-30)
 
 `QNetwork` (`dqn.py:30`) takes plain args (`state_dim`, `action_dim`, `hidden_dim`, `num_layers`) — no `from_config` method.
 

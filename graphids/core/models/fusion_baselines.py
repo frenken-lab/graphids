@@ -6,11 +6,49 @@ standard supervised losses instead of RL episodes.
 
 from __future__ import annotations
 
+from abc import abstractmethod
+
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from ._training import binary_test_metrics
+
+
+class FusionModuleBase(pl.LightningModule):
+    """Base Lightning wrapper for fusion agents with shared test/val logic."""
+
+    def __init__(self):
+        super().__init__()
+        self.test_metrics = binary_test_metrics()
+
+    @abstractmethod
+    def train_episode(self, states: torch.Tensor, labels: torch.Tensor) -> dict:
+        ...
+
+    @abstractmethod
+    def validate_batch(self, states: torch.Tensor, labels: torch.Tensor) -> dict:
+        ...
+
+    @abstractmethod
+    def predict(self, states: torch.Tensor) -> dict:
+        ...
+
+    def test_step(self, batch, batch_idx):
+        states, labels = batch
+        result = self.predict(states)
+        self.test_metrics.update(result["preds"], labels)
+
+    def on_test_epoch_start(self):
+        self.test_metrics.reset()
+
+    def on_test_epoch_end(self):
+        self.log_dict(self.test_metrics.compute())
+
+    def validation_step(self, batch, batch_idx):
+        states, labels = batch
+        metrics = self.validate_batch(states, labels)
+        self.log("val_acc", metrics.get("accuracy", 0.0), prog_bar=True)
 
 
 class MLPFusionNetwork(nn.Module):
@@ -166,116 +204,4 @@ class WeightedAvgModule(pl.LightningModule):
             gat_conf = state_features[self._gat_conf_idx]
             score = (1 - alpha) * vgae_conf + alpha * gat_conf
             return 1 if score > self.decision_threshold else 0
-
-
-class RLFusionModule(pl.LightningModule):
-    """Lightning wrapper for RL fusion agents (DQN, bandit).
-
-    Uses manual optimization. Both agents implement ``train_episode(states, labels)``
-    returning a metrics dict. All returned keys are logged automatically.
-
-    Constructor accepts config + method so Lightning can round-trip through
-    ``save_hyperparameters`` / ``load_from_checkpoint``.
-    """
-
-    def __init__(
-        self,
-        method: str = "bandit",
-        # --- fusion ---
-        episodes: int = 500,
-        max_samples: int = 150_000,
-        max_val_samples: int = 30_000,
-        episode_sample_size: int = 20_000,
-        training_step_interval: int = 32,
-        gpu_training_steps: int = 16,
-        lr: float = 0.001,
-        alpha_steps: int = 21,
-        decision_threshold: float = 0.5,
-        # --- dqn ---
-        dqn_hidden: int = 576,
-        dqn_layers: int = 3,
-        dqn_gamma: float = 0.99,
-        dqn_epsilon: float = 0.1,
-        dqn_epsilon_decay: float = 0.995,
-        dqn_min_epsilon: float = 0.01,
-        dqn_buffer_size: int = 100_000,
-        dqn_batch_size: int = 128,
-        dqn_target_update: int = 100,
-        dqn_weight_decay: float = 1e-5,
-        dqn_scheduler_patience: int = 1000,
-        dqn_vgae_error_weights: list[float] | None = None,
-        dqn_reward_correct: float = 3.0,
-        dqn_reward_incorrect: float = -3.0,
-        dqn_confidence_weight: float = 0.5,
-        dqn_combined_conf_weight: float = 0.3,
-        dqn_disagreement_penalty: float = -1.0,
-        dqn_overconf_penalty: float = -1.5,
-        dqn_balance_weight: float = 0.3,
-        # --- bandit ---
-        bandit_ucb_alpha: float = 1.0,
-        bandit_lambda_reg: float = 1.0,
-        bandit_backbone_retrain_freq: int = 50,
-        bandit_backbone_lr: float = 0.001,
-        bandit_backbone_epochs: int = 5,
-        bandit_hidden: int = 576,
-        bandit_layers: int = 3,
-        bandit_buffer_size: int = 100_000,
-        bandit_batch_size: int = 128,
-        # ---
-        device: str = "cpu",
-    ):
-        super().__init__()
-        if dqn_vgae_error_weights is None:
-            dqn_vgae_error_weights = [0.4, 0.35, 0.25]
-        self.save_hyperparameters()
-
-        self.automatic_optimization = False
-
-        if method == "dqn":
-            from .dqn import EnhancedDQNFusionAgent
-            agent = EnhancedDQNFusionAgent.from_config(self.hparams, device=device)
-        elif method == "bandit":
-            from .bandit import NeuralLinUCBAgent
-            agent = NeuralLinUCBAgent.from_config(self.hparams, device=device)
-        else:
-            raise ValueError(f"RLFusionModule only handles dqn/bandit, got: {method}")
-
-        self._optimizer_attr = "optimizer" if method == "dqn" else "backbone_optimizer"
-        self.agent = agent
-        self.test_metrics = binary_test_metrics()
-
-    def training_step(self, batch, batch_idx):
-        states, labels = batch
-        result = self.agent.train_episode(states, labels)
-        for k, v in result.items():
-            if v is not None:
-                self.log(k, float(v), prog_bar=(k in ("avg_reward", "accuracy")))
-
-    def validation_step(self, batch, batch_idx):
-        states, labels = batch
-        metrics = self.agent.validate_batch(states, labels)
-        self.log("val_acc", metrics.get("accuracy", 0.0), prog_bar=True)
-
-    def test_step(self, batch, batch_idx):
-        states, labels = batch
-        result = self.agent.predict(states)
-        self.test_metrics.update(result["preds"], labels)
-
-    def on_test_epoch_start(self):
-        self.test_metrics.reset()
-
-    def on_test_epoch_end(self):
-        self.log_dict(self.test_metrics.compute())
-
-    def on_save_checkpoint(self, checkpoint):
-        checkpoint["agent_state"] = self.agent.state_dict()
-
-    def on_load_checkpoint(self, checkpoint):
-        if "agent_state" in checkpoint:
-            self.agent.load_checkpoint(checkpoint["agent_state"])
-
-    def configure_optimizers(self):
-        return getattr(self.agent, self._optimizer_attr)
-
-
 

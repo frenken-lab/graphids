@@ -11,6 +11,8 @@ from .fusion_features import (
     GATFusionExtractor,
     VGAEFusionExtractor,
 )
+from .bandit import BanditFusionModule, NeuralLinUCBAgent
+from .dqn import DQNFusionModule, EnhancedDQNFusionAgent
 from .registry import (
     FeatureLayout,
     extractors,

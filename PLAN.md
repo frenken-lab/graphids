@@ -1,6 +1,6 @@
 # KD-GAT Session Plan
 
-> Last updated: 2026-03-30
+> Last updated: 2026-03-30 (session 2)
 
 ## Active Plan
 
@@ -51,7 +51,7 @@ teacher checkpoint path via `--model.init_args.auxiliaries[0].model_path=<path>`
 - Ops dashboard (`buckeyeguy/kd-gat-dashboard`) -- running on HF Spaces
 - **Ablation Run 005** -- dagster orchestration verified end-to-end.
   Validate passes, smoke passes (3-stage chain on gpudebug, hcrl_sa, 3 epochs).
-  Next: fix remaining Run 004 issues (#4 KD teacher VRAM, #5 observability), then submit.
+  All Run 004 issues resolved. Observability fully wired. Ready to submit.
 
 ### Run 004 fixes applied
 
@@ -69,17 +69,46 @@ teacher checkpoint path via `--model.init_args.auxiliaries[0].model_path=<path>`
 - [x] **KD teacher VRAM** (resolved issue #4 — Lightning auto-moves teacher to GPU).
   Teacher stored via `self.__dict__["teacher"]` to bypass `nn.Module._modules` registration.
   `teacher_on_device()` moves teacher CPU→GPU only during inference, then back to CPU.
-- [x] **Observability** (resolved issue #5 — logger: false, no GPU stats).
-  Added WandbLogger + CSVLogger + DeviceStatsMonitor to `trainer.yaml`.
-  wandb 0.25.1 installed. `orchestrate validate` passes all 18 configs.
-  Remaining: `wandb login`, `_preamble.sh` env vars, WandbSaveConfigCallback (~10 LOC).
+- [x] **Observability** (resolved issue #5 — fully wired).
+  WandbLogger + CSVLogger + DeviceStatsMonitor in `trainer.yaml`.
+  `WandbSaveConfigCallback` in `cli.py` (forwards full jsonargparse config to wandb).
+  Env vars in `_preamble.sh` (`WANDB_DIR=/fs/scratch/PAS1266/wandb`, `WANDB_DISABLE_GIT`, `WANDB_SILENT`).
+  Auth: `~/.netrc` (entity: `frenken-2-the-ohio-state-university`). `orchestrate validate` 18/18 pass.
+- [x] **Dagster UI** (resolved — webserver + daemon launcher).
+  `scripts/dev/dagster-ui.sh` starts both `dagster-webserver` (port 3000) and `dagster-daemon`.
+  Access via `ssh -L 3000:localhost:3000 pitzer.osc.edu` → `http://localhost:3000`.
+  Verified: HTTP 200, defs load, daemon starts (all 6 daemon types). Use tmux for persistence.
 
-### Code consolidation (deferred)
+### Code consolidation (partially complete)
 
 - [ ] Models consolidation (`plans/architecture/models-consolidation.md`) -- registry.py dissolution, GraphModuleBase, optimizer wiring
+  - [x] DQN/Bandit Lightning conversion (§8-10): `FusionModuleBase`, `DQNFusionModule`, `BanditFusionModule` — completed 2026-03-30. `RLFusionModule` deleted, `reward_kwargs_from_cfg` deleted.
+  - [ ] Remaining: §1-7 (optimizers, setup, threshold, dead code, registry, _training.py, temporal.py), §11-13 (YAML/exports/verify)
 - [ ] Preprocessing consolidation (`plans/architecture/preprocessing-consolidation.md`) -- delete _temporal.py, DataModule convention fixes
 
 ## Recently Completed
+
+### DQN/Bandit Lightning conversion (2026-03-30)
+
+Converted DQN and Bandit fusion agents from plain Python classes to proper LightningModules
+(models-consolidation.md §8-10). `FusionModuleBase` provides shared base. `RLFusionModule`
+deleted. `reward_kwargs_from_cfg()` deleted (dead code). Backward-compat aliases retained.
+New stage YAML: `fusion_dqn.yaml`. Registry updated. See `plans/architecture/models-consolidation.md`.
+
+### wandb + dagster UI setup (2026-03-30)
+
+wandb fully wired for Run 005:
+- `WandbSaveConfigCallback` in `cli.py` (subclasses `SaveConfigCallback`, forwards full
+  jsonargparse config to wandb — Lightning #19728 workaround)
+- Env vars in `_preamble.sh`: `WANDB_DIR=/fs/scratch/PAS1266/wandb`, `WANDB_DISABLE_GIT=true`,
+  `WANDB_SILENT=true`
+- Auth already in `~/.netrc` (entity: `frenken-2-the-ohio-state-university`)
+- `dagster-webserver` version aligned to 1.12.21
+
+Dagster UI operational:
+- `scripts/dev/dagster-ui.sh` — starts webserver (port 3000) + daemon, Ctrl-C stops both
+- Access via `ssh -L 3000:localhost:3000 pitzer.osc.edu` → `http://localhost:3000`
+- Verified: HTTP 200, `dg check defs` clean, daemon starts all 6 daemon types
 
 ### Smoke test verified + 8 bug fixes (2026-03-29)
 
@@ -150,7 +179,7 @@ SLURM command now: `python -m graphids fit --config stages/X.yaml --config overl
 Verified `trainer.yaml` wiring (all 4 stages get callbacks, mixed precision).
 Fixed fusion identity keys: added `conv_type`, `variational` to prevent incorrect
 dedup across conv types/unsup methods. Added `variational` to curriculum identity.
-Added identity key metadata params to `RLFusionModule` and `GATModule`.
+Added identity key metadata params to fusion modules (`RLFusionModule`, now `BanditFusionModule`/`DQNFusionModule`) and `GATModule`.
 Wrote `ablation.yaml` (18 configs) + `expand.py` (150 lines) + rewrote `dagster_defs.py`
 (175 lines) with dynamic asset factory from manifest topology.
 
