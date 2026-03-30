@@ -368,6 +368,7 @@ def _make_asset(
 
 def _make_checkpoint_checks(
     cfg_lookup: dict[str, StageConfig],
+    partitions_def: dg.MultiPartitionsDefinition,
     lake_root: str,
     user: str,
 ) -> list[dg.AssetChecksDefinition]:
@@ -375,26 +376,29 @@ def _make_checkpoint_checks(
     checks = []
     for asset_name, cfg in cfg_lookup.items():
 
-        @dg.asset_check(
-            asset=dg.AssetKey(asset_name),
-            name=f"checkpoint_exists_{asset_name}",
-            blocking=True,
-            description=f"Verify checkpoint for {asset_name}",
-        )
-        def _check(context, _cfg=cfg) -> dg.AssetCheckResult:
-            dataset = context.partition_key.keys_by_dimension["dataset"]
-            seed = int(context.partition_key.keys_by_dimension["seed"])
-            rd = run_dir(
-                lake_root, user, dataset, _cfg.model_type, _cfg.scale,
-                _cfg.stage, _cfg.identity, _cfg.kd_tag, seed,
+        def _make_check(name: str, c: StageConfig):
+            @dg.asset_check(
+                asset=dg.AssetKey(name),
+                name=f"checkpoint_exists_{name}",
+                blocking=True,
+                description=f"Verify checkpoint for {name}",
+                partitions_def=partitions_def,
             )
-            ckpt = Path(rd) / "checkpoints" / "best_model.ckpt"
-            return dg.AssetCheckResult(
-                passed=ckpt.exists(),
-                metadata={"path": dg.MetadataValue.path(str(ckpt))},
-            )
+            def _check(context) -> dg.AssetCheckResult:
+                dataset = context.partition_key.keys_by_dimension["dataset"]
+                seed = int(context.partition_key.keys_by_dimension["seed"])
+                rd = run_dir(
+                    lake_root, user, dataset, c.model_type, c.scale,
+                    c.stage, c.identity, c.kd_tag, seed,
+                )
+                ckpt = Path(rd) / "checkpoints" / "best_model.ckpt"
+                return dg.AssetCheckResult(
+                    passed=ckpt.exists(),
+                    metadata={"path": dg.MetadataValue.path(str(ckpt))},
+                )
+            return _check
 
-        checks.append(_check)
+        checks.append(_make_check(asset_name, cfg))
     return checks
 
 
@@ -433,7 +437,7 @@ class SlurmTrainingComponent(dg.Component, dg.Model, dg.Resolvable):
 
         # 4. Build asset checks
         cfg_lookup = {cfg.asset_name: cfg for cfg in stage_configs}
-        checks = _make_checkpoint_checks(cfg_lookup, lake_root, user)
+        checks = _make_checkpoint_checks(cfg_lookup, partitions, lake_root, user)
 
         # 6. Resources
         return dg.Definitions(
