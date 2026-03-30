@@ -42,7 +42,7 @@ def validate_recipe(recipe_path: Path = RECIPE_PATH) -> list[str]:
     _saved = sys.argv
     sys.argv = [sys.argv[0]]
     _cli = GraphIDSCLI(
-        **{**CLI_KWARGS, "run": False},
+        **{**CLI_KWARGS, "run": False, "auto_configure_optimizers": False},
         args=["--config", str(STAGES_DIR / "autoencoder.yaml"),
               "--config", str(OVERLAYS_DIR / "small_vgae.yaml"),
               "--data.init_args.dataset=hcrl_ch", "--seed_everything=42"],
@@ -69,7 +69,7 @@ def validate_recipe(recipe_path: Path = RECIPE_PATH) -> list[str]:
         try:
             parsed = parser.parse_args(args)
             cfg = yaml.safe_load(parser.dump(parsed, skip_link_targets=False, skip_none=False))
-        except Exception as e:
+        except (Exception, SystemExit) as e:
             errors.append(f"{spec.asset_name}: parse error: {e}")
             continue
 

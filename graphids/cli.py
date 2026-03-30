@@ -20,8 +20,9 @@ class WandbSaveConfigCallback(SaveConfigCallback):
 
 class GraphIDSCLI(LightningCLI):
     def add_arguments_to_parser(self, parser):
-        parser.add_optimizer_args(torch.optim.Adam)
-        parser.add_lr_scheduler_args(torch.optim.lr_scheduler.CosineAnnealingLR)
+        parser.add_optimizer_args((torch.optim.Adam, torch.optim.AdamW))
+        parser.add_lr_scheduler_args((torch.optim.lr_scheduler.CosineAnnealingLR,
+                                      torch.optim.lr_scheduler.ReduceLROnPlateau))
         parser.link_arguments("data.init_args.dataset", "model.init_args.dataset")
         parser.link_arguments("data.init_args.lake_root", "model.init_args.lake_root")
         parser.link_arguments("seed_everything", "model.init_args.seed")

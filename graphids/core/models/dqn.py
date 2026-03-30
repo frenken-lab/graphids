@@ -114,7 +114,7 @@ class DQNFusionModule(FusionModuleBase):
 
     def __init__(
         self,
-        state_dim: int,
+        state_dim: int = 0,
         alpha_steps: int = 21,
         lr: float = 1e-3,
         gamma: float = 0.0,
@@ -134,6 +134,9 @@ class DQNFusionModule(FusionModuleBase):
         reward_kwargs: dict | None = None,
     ):
         super().__init__()
+        if state_dim == 0:
+            from .fusion_features import fusion_state_dim
+            state_dim = fusion_state_dim()
         self.save_hyperparameters()
         self.automatic_optimization = False
 

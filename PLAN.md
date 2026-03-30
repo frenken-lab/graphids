@@ -85,6 +85,8 @@ teacher checkpoint path via `--model.init_args.auxiliaries[0].model_path=<path>`
   - [x] DQN/Bandit Lightning conversion (§8-10): `FusionModuleBase`, `DQNFusionModule`, `BanditFusionModule`
   - [x] §1-7,§11-13: `GraphModuleBase`, optimizer wiring, dead code, temporal fix, YAML configs, verification
   - Deferred: VGAE `configure_optimizers` (projection params), DGI stage YAML
+- [x] `orchestrate validate` 18/18 pass (2026-03-30) — fixed cli.py optimizer/scheduler args,
+  BanditFusionModule/DQNFusionModule `state_dim` default, `SystemExit` catch in validate
 - [ ] Preprocessing consolidation (`plans/architecture/preprocessing-consolidation.md`) -- delete _temporal.py, DataModule convention fixes
 
 ## Recently Completed
