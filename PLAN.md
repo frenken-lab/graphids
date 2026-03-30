@@ -84,10 +84,34 @@ teacher checkpoint path via `--model.init_args.auxiliaries[0].model_path=<path>`
 - [x] Models consolidation (`plans/architecture/models-consolidation.md`) -- **complete** (2026-03-30)
   - [x] DQN/Bandit Lightning conversion (§8-10): `FusionModuleBase`, `DQNFusionModule`, `BanditFusionModule`
   - [x] §1-7,§11-13: `GraphModuleBase`, optimizer wiring, dead code, temporal fix, YAML configs, verification
-  - Deferred: VGAE `configure_optimizers` (projection params), dead `lr`/`weight_decay` init params, DGI stage YAML
+  - Deferred: VGAE `configure_optimizers` (projection params), DGI stage YAML
 - [ ] Preprocessing consolidation (`plans/architecture/preprocessing-consolidation.md`) -- delete _temporal.py, DataModule convention fixes
 
 ## Recently Completed
+
+### Dagster test suite + test quality pass (2026-03-30)
+
+**New orchestrate tests (63 tests, 4 files, all login-node safe):**
+- Layer 0 (`test_pure.py`, 43 tests): `run_dir`, `compute_identity_hash`, `build_cli_args`,
+  `enumerate_assets`, `_identity_value`, `_cli_val`, `generate_script`, `ResourceSpec`,
+  `_detect_cluster`, `get_resources`, `scale_resources`
+- Layer 1 (`test_dagster_unit.py`, 4 tests): dry-run, skip-when-complete, failure, IOManager handoff
+- Layer 2 (`test_dagster_integration.py`, 6 tests): 3-stage pipeline, sidecar creation, asset checks
+- Layer 3 (`test_iomanager.py`, 6 tests): sidecar write/read/overwrite/round-trip/partition isolation
+
+**Production fix:** `component.py` — DRY_RUN returns early before `complete_marker.touch()` (was crashing
+on non-existent directory). Extracted `build_cli_args()` as pure function from `_train` closure.
+
+**Existing test quality fixes:**
+- Fixed broken `TestVGAECheckpointRoundtrip` (referenced removed `vgae_cfg.vgae` — dead since config flatten)
+- Fixed vacuous `assert x.abs().max() <= 10.0 or True` in `test_features.py`
+- Removed stale `lr`, `weight_decay`, `gat_stage` from `conftest.py::base_cfg`
+- Added `@pytest.mark.slurm` to 10 Trainer tests across 4 files
+- Parametrized duplicate tests: `test_vgae` (2 conv types), `test_gat` (3 loss fns),
+  `test_fusion` (MLP/WeightedAvg), `test_integration` (3 num_classes variants)
+- Strengthened weak assertions: curriculum `set_epoch`, integration threshold comparison
+- `test_fusion` `_make_fusion_batch` + checkpoint tests now use `fusion_state_dim()` not hardcoded `15`
+- Registered `dagster` marker in `pyproject.toml`; `-m dagster` / `-m "not dagster"` for selection
 
 ### Models consolidation complete (2026-03-30)
 

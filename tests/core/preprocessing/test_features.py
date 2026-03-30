@@ -35,8 +35,7 @@ def test_node_features_skewness_clamped():
     from graphids.core.preprocessing.features import node_features
     x, _ = node_features(_make_window(100, 3))
     # Skewness and kurtosis columns — verify clamping to +/-10
-    assert x.abs().max() <= 10.0 or True  # some features exceed 10 legitimately
-    # But skewness (col 26) and kurtosis (col 27) specifically must be clamped
+    # Only skewness and kurtosis are clamped — other features may exceed 10
     from graphids.core.preprocessing.features import NODE_COL_ORDER
     skew_idx = NODE_COL_ORDER.index("skewness")
     kurt_idx = NODE_COL_ORDER.index("kurtosis")

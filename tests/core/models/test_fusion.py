@@ -10,19 +10,29 @@ class TestFusionBaselineTestStep:
     """MLPFusionModule and WeightedAvgModule must have test_step + test_metrics."""
 
     @staticmethod
-    def _make_fusion_batch(n: int = 32, state_dim: int = 15):
-        states = torch.rand(n, state_dim)
+    def _make_fusion_batch(n: int = 32):
+        from graphids.core.models.fusion_features import fusion_state_dim
+        sd = fusion_state_dim()
+        states = torch.rand(n, sd)
         labels = torch.randint(0, 2, (n,))
         return states, labels
 
-    def test_mlp_has_test_metrics(self):
-        from graphids.core.models.fusion_baselines import MLPFusionModule
-        module = MLPFusionModule(state_dim=15)
-        assert hasattr(module, "test_metrics"), "MLPFusionModule missing test_metrics"
+    @staticmethod
+    def _make_module(name):
+        from graphids.core.models.fusion_baselines import MLPFusionModule, WeightedAvgModule
+        from graphids.core.models.fusion_features import fusion_state_dim
+        if name == "mlp":
+            return MLPFusionModule(state_dim=fusion_state_dim())
+        return WeightedAvgModule()
 
-    def test_mlp_test_step_updates_metrics(self):
-        from graphids.core.models.fusion_baselines import MLPFusionModule
-        module = MLPFusionModule(state_dim=15)
+    @pytest.mark.parametrize("module_name", ["mlp", "weighted_avg"])
+    def test_has_test_metrics(self, module_name):
+        module = self._make_module(module_name)
+        assert hasattr(module, "test_metrics"), f"{type(module).__name__} missing test_metrics"
+
+    @pytest.mark.parametrize("module_name", ["mlp", "weighted_avg"])
+    def test_test_step_updates_metrics(self, module_name):
+        module = self._make_module(module_name)
         module.eval()
         module.on_test_epoch_start()
         module.test_step(self._make_fusion_batch(), 0)
@@ -31,63 +41,23 @@ class TestFusionBaselineTestStep:
         assert "f1" in result
         assert all(0.0 <= v.item() <= 1.0 for v in result.values())
 
-    def test_weighted_avg_has_test_metrics(self):
-        from graphids.core.models.fusion_baselines import WeightedAvgModule
-        module = WeightedAvgModule()
-        assert hasattr(module, "test_metrics"), "WeightedAvgModule missing test_metrics"
-
-    def test_weighted_avg_test_step_updates_metrics(self):
-        from graphids.core.models.fusion_baselines import WeightedAvgModule
-        module = WeightedAvgModule()
-        module.eval()
-        module.on_test_epoch_start()
-        module.test_step(self._make_fusion_batch(), 0)
-        result = module.test_metrics.compute()
-        assert "accuracy" in result
-        assert "f1" in result
-
     @pytest.mark.slow
-    def test_mlp_test_step_via_lightning_trainer(self):
+    @pytest.mark.slurm
+    @pytest.mark.parametrize("module_name", ["mlp", "weighted_avg"])
+    def test_test_step_via_lightning_trainer(self, module_name):
         import pytorch_lightning as pl
-        from torch.utils.data import DataLoader as TorchDataLoader, TensorDataset
-        from graphids.core.models.fusion_baselines import MLPFusionModule
-        module = MLPFusionModule(state_dim=15)
+        from torch.utils.data import TensorDataset  # noqa: test-only tensor wrapping
+        module = self._make_module(module_name)
         states, labels = self._make_fusion_batch(64)
-        loader = TorchDataLoader(TensorDataset(states, labels), batch_size=16)
+        loader = torch.utils.data.DataLoader(TensorDataset(states, labels), batch_size=16)
         trainer = pl.Trainer(accelerator="cpu", logger=False, enable_checkpointing=False, enable_progress_bar=False)
         trainer.test(module, dataloaders=loader, verbose=False)
         result = module.test_metrics.compute()
         assert "accuracy" in result
 
-    @pytest.mark.slow
-    def test_weighted_avg_test_step_via_lightning_trainer(self):
-        import pytorch_lightning as pl
-        from torch.utils.data import DataLoader as TorchDataLoader, TensorDataset
-        from graphids.core.models.fusion_baselines import WeightedAvgModule
-        module = WeightedAvgModule()
-        states, labels = self._make_fusion_batch(64)
-        loader = TorchDataLoader(TensorDataset(states, labels), batch_size=16)
-        trainer = pl.Trainer(accelerator="cpu", logger=False, enable_checkpointing=False, enable_progress_bar=False)
-        trainer.test(module, dataloaders=loader, verbose=False)
-        result = module.test_metrics.compute()
-        assert "accuracy" in result
-
-    def test_mlp_test_metrics_reset_between_scenarios(self):
-        from graphids.core.models.fusion_baselines import MLPFusionModule
-        module = MLPFusionModule(state_dim=15)
-        module.eval()
-        module.on_test_epoch_start()
-        module.test_step(self._make_fusion_batch(32), 0)
-        result_1 = module.test_metrics.compute()
-        module.test_metrics.reset()
-        module.test_step(self._make_fusion_batch(16), 0)
-        result_2 = module.test_metrics.compute()
-        assert "accuracy" in result_1
-        assert "accuracy" in result_2
-
-    def test_weighted_avg_test_metrics_reset_between_scenarios(self):
-        from graphids.core.models.fusion_baselines import WeightedAvgModule
-        module = WeightedAvgModule()
+    @pytest.mark.parametrize("module_name", ["mlp", "weighted_avg"])
+    def test_metrics_reset_between_scenarios(self, module_name):
+        module = self._make_module(module_name)
         module.eval()
         module.on_test_epoch_start()
         module.test_step(self._make_fusion_batch(32), 0)
@@ -169,7 +139,8 @@ class TestFusionCheckpointRoundtrip:
     def test_mlp_roundtrip(self, tmp_path):
         import pytorch_lightning as pl
         from graphids.core.models.fusion_baselines import MLPFusionModule
-        m1 = MLPFusionModule(state_dim=15)
+        from graphids.core.models.fusion_features import fusion_state_dim
+        m1 = MLPFusionModule(state_dim=fusion_state_dim())
         m1.eval()
         trainer = pl.Trainer(enable_checkpointing=False, logger=False)
         trainer.strategy.connect(m1)
@@ -177,7 +148,7 @@ class TestFusionCheckpointRoundtrip:
         trainer.save_checkpoint(ckpt_path)
         m2 = MLPFusionModule.load_from_checkpoint(ckpt_path)
         m2.eval()
-        x = torch.rand(8, 15)
+        x = torch.rand(8, fusion_state_dim())
         with torch.no_grad():
             torch.testing.assert_close(m1(x), m2(x))
 
@@ -185,6 +156,7 @@ class TestFusionCheckpointRoundtrip:
         import pytorch_lightning as pl
         from graphids.core.models.fusion_baselines import WeightedAvgModule
         m1 = WeightedAvgModule()
+        from graphids.core.models.fusion_features import fusion_state_dim
         m1.weight.data.fill_(0.7)
         m1.eval()
         trainer = pl.Trainer(enable_checkpointing=False, logger=False)
@@ -193,7 +165,7 @@ class TestFusionCheckpointRoundtrip:
         trainer.save_checkpoint(ckpt_path)
         m2 = WeightedAvgModule.load_from_checkpoint(ckpt_path)
         m2.eval()
-        x = torch.rand(8, 15)
+        x = torch.rand(8, fusion_state_dim())
         with torch.no_grad():
             torch.testing.assert_close(m1(x), m2(x))
 

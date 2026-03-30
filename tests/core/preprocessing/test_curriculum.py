@@ -40,17 +40,25 @@ class TestCurriculumSampler:
         # Each batch is a list of indices
         assert all(isinstance(b, list) for b in batches)
 
-    def test_set_epoch_updates_active_indices(self):
-        sampler, _ = self._make_data_and_sampler()
-        initial_len = len(sampler._active_indices)
-        sampler.set_epoch(5)
-        # After progression, active indices may change
-        assert len(sampler._active_indices) > 0
-
-    def test_epoch_counter_via_set_epoch(self):
+    def test_set_epoch_changes_active_indices(self):
         sampler, _ = self._make_data_and_sampler()
         sampler.set_epoch(0)
-        sampler.set_epoch(1)
-        sampler.set_epoch(2)
-        # No crash — sampler handles multiple epoch transitions
-        assert len(list(sampler)) > 0
+        len_at_0 = len(sampler._active_indices)
+        sampler.set_epoch(5)
+        len_at_5 = len(sampler._active_indices)
+        # Curriculum progression should change the number of active indices
+        assert len_at_5 != len_at_0, (
+            f"set_epoch(5) did not change active indices "
+            f"(both {len_at_0}) — curriculum may be a no-op"
+        )
+
+    def test_late_epoch_has_more_active_indices_than_early(self):
+        sampler, _ = self._make_data_and_sampler()
+        sampler.set_epoch(0)
+        len_early = len(sampler._active_indices)
+        sampler.set_epoch(9)
+        len_late = len(sampler._active_indices)
+        # With start_ratio=1.0 -> end_ratio=10.0, late epochs include more data
+        assert len_late >= len_early, (
+            f"Active indices at epoch 9 ({len_late}) should be >= epoch 0 ({len_early})"
+        )

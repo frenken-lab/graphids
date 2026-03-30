@@ -64,6 +64,7 @@ testpaths = ["tests"]
 markers = [
     "slow: marks tests as slow (>30s, deselect with '-m not slow')",
     "slurm: marks tests that require SLURM submission",
+    "dagster: marks tests that require dagster (deselect with '-m not dagster')",
     "future: marks tests for future research (skip by default)",
 ]
 filterwarnings = [

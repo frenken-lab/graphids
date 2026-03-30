@@ -294,6 +294,28 @@ def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
 # ---------------------------------------------------------------------------
 
 
+def build_cli_args(
+    cfg: StageConfig,
+    dataset: str,
+    seed: int,
+    rd: str,
+    upstream_ckpts: dict[str, str] | None = None,
+) -> list[str]:
+    """Build CLI override args for a training job. Pure function — no side effects."""
+    args = [
+        f"--data.init_args.dataset={dataset}",
+        f"--seed_everything={seed}",
+        f"--trainer.default_root_dir={rd}",
+    ]
+    for k, v in cfg.model_overrides.items():
+        args.append(f"--model.init_args.{k}={v}")
+    for up_name, ckpt_path in (upstream_ckpts or {}).items():
+        flag = cfg.upstream_ckpt_flags.get(up_name)
+        if flag:
+            args.append(f"{flag}={ckpt_path}")
+    return args
+
+
 def _make_asset(
     cfg: StageConfig,
     partitions_def: dg.MultiPartitionsDefinition,
@@ -335,18 +357,7 @@ def _make_asset(
                 f"Stale checkpoint (no .complete marker), retraining: {ckpt_file}"
             )
 
-        # Build CLI: dataset, seed, run dir, model overrides, upstream ckpts
-        cli_args = [
-            f"--data.init_args.dataset={dataset}",
-            f"--seed_everything={seed}",
-            f"--trainer.default_root_dir={rd}",
-        ]
-        for k, v in cfg.model_overrides.items():
-            cli_args.append(f"--model.init_args.{k}={v}")
-        for up_name, ckpt_path in upstream_ckpts.items():
-            flag = cfg.upstream_ckpt_flags.get(up_name)
-            if flag:
-                cli_args.append(f"{flag}={ckpt_path}")
+        cli_args = build_cli_args(cfg, dataset, seed, rd, upstream_ckpts)
 
         # SLURM resources + adaptive retry
         resources = get_resources(cfg.model_type, cfg.scale, cfg.stage)
@@ -371,7 +382,10 @@ def _make_asset(
             on_state=_observe,
         )
 
-        if state not in ("COMPLETED", "DRY_RUN"):
+        if state == "DRY_RUN":
+            return str(ckpt_file)
+
+        if state != "COMPLETED":
             reactions = get_failure_reactions()
             reaction = reactions.get(state, {})
             if reaction.get("max_retries", 0) > 0:
