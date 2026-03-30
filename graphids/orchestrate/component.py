@@ -227,8 +227,13 @@ def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
             identity = compute_identity_hash(stage, id_cfg)
             config_files, has_overlay, used_variant = _resolve_config_files(stage, stage_def, merged)
 
+            # model_keys: only these identity keys become --model.init_args.* overrides
+            # If unset, all identity keys are passed (backward compat for non-fusion stages)
+            model_keys = set(stage_def.get("model_keys", id_keys))
             overrides: dict[str, str] = {}
             for key in id_keys:
+                if key not in model_keys:
+                    continue
                 if key == "scale" and has_overlay:
                     continue
                 if key == "method" and used_variant:

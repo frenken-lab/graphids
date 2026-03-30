@@ -41,12 +41,6 @@ class MLPFusionModule(pl.LightningModule):
         state_dim: int = 0,
         hidden_dims: tuple[int, ...] = (64, 32),
         lr: float = 0.001,
-        # --- identity key metadata (for run directory hashing) ---
-        scale: str = "small",
-        gat_stage: str = "curriculum",
-        loss_fn: str = "ce",
-        conv_type: str = "gatv2",
-        variational: bool = True,
     ):
         super().__init__()
         if state_dim == 0:
@@ -54,7 +48,7 @@ class MLPFusionModule(pl.LightningModule):
             state_dim = fusion_state_dim()
         self.save_hyperparameters()
         self.model = MLPFusionNetwork(state_dim, hidden_dims)
-        self._loss_fn = nn.BCEWithLogitsLoss()
+        self.loss_fn = nn.BCEWithLogitsLoss()
         self.lr = lr
         self.test_metrics = binary_test_metrics()
 
@@ -64,14 +58,14 @@ class MLPFusionModule(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         states, labels = batch
         logits = self(states)
-        loss = self._loss_fn(logits, labels.float())
+        loss = self.loss_fn(logits, labels.float())
         self.log("train_loss", loss, prog_bar=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
         states, labels = batch
         logits = self(states)
-        loss = self._loss_fn(logits, labels.float())
+        loss = self.loss_fn(logits, labels.float())
         preds = (logits > 0).long()
         acc = (preds == labels).float().mean()
         self.log("val_loss", loss, prog_bar=True)
@@ -111,17 +105,11 @@ class WeightedAvgModule(pl.LightningModule):
         self,
         lr: float = 0.01,
         decision_threshold: float = 0.5,
-        # --- identity key metadata (for run directory hashing) ---
-        scale: str = "small",
-        gat_stage: str = "curriculum",
-        loss_fn: str = "ce",
-        conv_type: str = "gatv2",
-        variational: bool = True,
     ):
         super().__init__()
         self.save_hyperparameters()
         self.weight = nn.Parameter(torch.zeros(1))
-        self._loss_fn = nn.BCELoss()
+        self.loss_fn = nn.BCELoss()
         self.lr = lr
         self.decision_threshold = decision_threshold
         self.test_metrics = binary_test_metrics()
@@ -141,7 +129,7 @@ class WeightedAvgModule(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         states, labels = batch
         scores = self(states)
-        loss = self._loss_fn(scores, labels.float())
+        loss = self.loss_fn(scores, labels.float())
         self.log("train_loss", loss, prog_bar=True)
         self.log("alpha", torch.sigmoid(self.weight).item(), prog_bar=True)
         return loss
@@ -149,7 +137,7 @@ class WeightedAvgModule(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         states, labels = batch
         scores = self(states)
-        loss = self._loss_fn(scores, labels.float())
+        loss = self.loss_fn(scores, labels.float())
         preds = (scores > self.decision_threshold).long()
         acc = (preds == labels).float().mean()
         self.log("val_loss", loss, prog_bar=True)
@@ -233,12 +221,6 @@ class RLFusionModule(pl.LightningModule):
         bandit_layers: int = 3,
         bandit_buffer_size: int = 100_000,
         bandit_batch_size: int = 128,
-        # --- identity key metadata (for run directory hashing) ---
-        scale: str = "small",
-        gat_stage: str = "curriculum",
-        loss_fn: str = "ce",
-        conv_type: str = "gatv2",
-        variational: bool = True,
         # ---
         device: str = "cpu",
     ):

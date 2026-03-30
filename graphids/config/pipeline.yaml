@@ -60,6 +60,7 @@ stages:
       - { model: vgae, stage: autoencoder }
       - { model: gat, stage: curriculum }
     identity_keys: [scale, gat_stage, loss_fn, method, conv_type, variational]
+    model_keys: [method]
 
   evaluation:
     learning_type: evaluation
