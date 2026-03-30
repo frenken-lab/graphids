@@ -207,8 +207,6 @@ class TemporalLightningModule(pl.LightningModule):
         builds a skeleton GAT from hparams dimensions — the real weights will be
         loaded from the Lightning checkpoint's ``state_dict``.
         """
-        from pathlib import Path
-
         from graphids.core.models.gat import GATWithJK
         from graphids.core.models._conv import resolve_edge_dim
 
@@ -233,22 +231,9 @@ class TemporalLightningModule(pl.LightningModule):
             )
 
         if gat_ckpt_path is not None:
-            ckpt_path = Path(gat_ckpt_path)
-            if not ckpt_path.exists():
-                raise FileNotFoundError(
-                    f"GAT checkpoint not found: {ckpt_path}\n"
-                    f"The GAT stage must be trained first."
-                )
-            gat = _make_gat()
-            checkpoint = torch.load(gat_ckpt_path, map_location="cpu", weights_only=True)
-            if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
-                raw = checkpoint["state_dict"]
-                checkpoint = (
-                    {k.replace("model.", ""): v for k, v in raw.items() if k.startswith("model.")}
-                    or raw
-                )
-            gat.load_state_dict(checkpoint)
-            gat.eval()
+            from ._training import load_inner_model
+
+            gat, _hparams = load_inner_model("gat", gat_ckpt_path, "cpu")
         else:
             gat = _make_gat()
 

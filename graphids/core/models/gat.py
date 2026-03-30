@@ -3,7 +3,6 @@ from __future__ import annotations
 import functools
 import os
 
-import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -15,10 +14,17 @@ from torch_geometric.nn.aggr import MultiAggregation
 
 from ._conv import InputEncoder, _make_conv, conv_forward, resolve_edge_dim
 from ._training import (
+    GraphModuleBase,
     KDAuxiliary,
-    OOMSkipMixin, soft_label_kd_loss, focal_loss,
     teacher_on_device, binary_test_metrics,
 )
+
+
+def _focal_loss(logits, targets, gamma: float = 2.0):
+    """Focal loss (Lin et al. 2017) for class-imbalanced classification."""
+    ce = F.cross_entropy(logits, targets, reduction="none")
+    pt = torch.exp(-ce)
+    return ((1 - pt) ** gamma * ce).mean()
 
 
 class GATWithJK(nn.Module):
@@ -180,7 +186,7 @@ class GATWithJK(nn.Module):
 # ---------------------------------------------------------------------------
 
 
-class GATModule(OOMSkipMixin, pl.LightningModule):
+class GATModule(GraphModuleBase):
     """GAT supervised classification (normal vs attack).
 
     When teacher is provided, adds soft-label KD:
@@ -235,18 +241,10 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
             w = torch.tensor([1.0, loss_weight])
             self.loss_fn = nn.CrossEntropyLoss(weight=w)
         elif loss_fn == "focal":
-            self.loss_fn = functools.partial(focal_loss, gamma=focal_gamma)
+            self.loss_fn = functools.partial(_focal_loss, gamma=focal_gamma)
         else:
             self.loss_fn = F.cross_entropy
         if num_ids > 0:
-            self._build()
-
-    def setup(self, stage=None):
-        if self.model is None:
-            dm = self.trainer.datamodule
-            self.hparams.num_ids = dm.num_ids
-            self.hparams.in_channels = dm.in_channels
-            self.hparams.num_classes = dm.num_classes
             self._build()
 
     def _build(self):
@@ -272,7 +270,13 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
             with teacher_on_device(self, batch.x.device):
                 with torch.no_grad():
                     t_logits = self.teacher(batch)
-            kd_loss = soft_label_kd_loss(logits, t_logits, kd.temperature)
+            # Hinton soft-label KD: KL(student/T || teacher/T) * T^2
+            T = kd.temperature
+            kd_loss = F.kl_div(
+                F.log_softmax(logits / T, dim=-1),
+                F.softmax(t_logits / T, dim=-1),
+                reduction="batchmean",
+            ) * (T ** 2)
             loss = kd.alpha * kd_loss + (1 - kd.alpha) * task_loss
         else:
             loss = task_loss
@@ -307,8 +311,3 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
         logits = self(batch)
         scores = F.softmax(logits, dim=1)[:, 1]
         return {"preds": logits.argmax(1), "scores": scores, "labels": batch.y}
-
-    def configure_optimizers(self):
-        opt = torch.optim.Adam(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=self.trainer.max_epochs)
-        return {"optimizer": opt, "lr_scheduler": {"scheduler": scheduler, "interval": "epoch"}}

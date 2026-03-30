@@ -1,6 +1,7 @@
 """Shared LightningCLI subclass — single definition used by __main__ and expand."""
 from __future__ import annotations
 
+import torch
 import pytorch_lightning as pl
 from pytorch_lightning.cli import LightningCLI, SaveConfigCallback
 from pytorch_lightning.loggers import WandbLogger
@@ -19,6 +20,8 @@ class WandbSaveConfigCallback(SaveConfigCallback):
 
 class GraphIDSCLI(LightningCLI):
     def add_arguments_to_parser(self, parser):
+        parser.add_optimizer_args(torch.optim.Adam)
+        parser.add_lr_scheduler_args(torch.optim.lr_scheduler.CosineAnnealingLR)
         parser.link_arguments("data.init_args.dataset", "model.init_args.dataset")
         parser.link_arguments("data.init_args.lake_root", "model.init_args.lake_root")
         parser.link_arguments("seed_everything", "model.init_args.seed")

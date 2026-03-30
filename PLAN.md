@@ -62,7 +62,7 @@ teacher checkpoint path via `--model.init_args.auxiliaries[0].model_path=<path>`
   runs 1 forward pass on ~2000 nodes at `train_dataloader()` time (model on GPU),
   measures `torch.cuda.max_memory_allocated()`, derives real bytes/node.
   Works for all model × scale × GPU combos. CurriculumDataModule defers budget
-  from `setup()` to `train_dataloader()`. `OOMSkipMixin` remains as safety net.
+  from `setup()` to `train_dataloader()`. `GraphModuleBase._oom_safe_step()` remains as safety net.
   **KD-aware** (2026-03-30): probe now runs `model._step()` (auto-detected) instead of
   `forward()`, capturing teacher VRAM during probe. See `plans/memory-profiling/vram-probe-kd-aware.md`.
   Caveat: `_GRAD_MULTIPLIER=2` overestimates for KD (teacher backward doesn't exist) — safe direction.
@@ -79,14 +79,27 @@ teacher checkpoint path via `--model.init_args.auxiliaries[0].model_path=<path>`
   Access via `ssh -L 3000:localhost:3000 pitzer.osc.edu` → `http://localhost:3000`.
   Verified: HTTP 200, defs load, daemon starts (all 6 daemon types). Use tmux for persistence.
 
-### Code consolidation (partially complete)
+### Code consolidation
 
-- [ ] Models consolidation (`plans/architecture/models-consolidation.md`) -- registry.py dissolution, GraphModuleBase, optimizer wiring
-  - [x] DQN/Bandit Lightning conversion (§8-10): `FusionModuleBase`, `DQNFusionModule`, `BanditFusionModule` — completed 2026-03-30. `RLFusionModule` deleted, `reward_kwargs_from_cfg` deleted.
-  - [ ] Remaining: §1-7 (optimizers, setup, threshold, dead code, registry, _training.py, temporal.py), §11-13 (YAML/exports/verify)
+- [x] Models consolidation (`plans/architecture/models-consolidation.md`) -- **complete** (2026-03-30)
+  - [x] DQN/Bandit Lightning conversion (§8-10): `FusionModuleBase`, `DQNFusionModule`, `BanditFusionModule`
+  - [x] §1-7,§11-13: `GraphModuleBase`, optimizer wiring, dead code, temporal fix, YAML configs, verification
+  - Deferred: VGAE `configure_optimizers` (projection params), dead `lr`/`weight_decay` init params, DGI stage YAML
 - [ ] Preprocessing consolidation (`plans/architecture/preprocessing-consolidation.md`) -- delete _temporal.py, DataModule convention fixes
 
 ## Recently Completed
+
+### Models consolidation complete (2026-03-30)
+
+All 13 steps of `plans/architecture/models-consolidation.md` done. Key outcomes:
+- `GraphModuleBase` in `_training.py` — shared `setup()`, OOM guard, BinaryROC threshold for VGAE/GAT/DGI
+- `OOMSkipMixin` deleted (absorbed into `GraphModuleBase`)
+- `configure_optimizers` deleted from GAT/DGI — CLI auto-wires via `add_optimizer_args`
+- Stage YAMLs (`normal.yaml`, `curriculum.yaml`) have explicit `optimizer:`/`lr_scheduler:` sections
+- `soft_label_kd_loss` inlined in `gat.py`, `focal_loss` → `_focal_loss` in `gat.py`
+- `temporal.py` checkpoint loading simplified (10→2 lines via `load_inner_model`)
+- Dead `fuse()` methods deleted from fusion_baselines.py
+- Import-level verification passes; SLURM test run pending
 
 ### DQN/Bandit Lightning conversion (2026-03-30)
 
@@ -300,7 +313,7 @@ orchestrate/
 - `plans/architecture/dagster-history.md` -- archived: timeline, lessons, postmortem from dagster build
 - `plans/experiment-sweep-plan.md` -- ablation claims, configs, stage sharing DAG
 - `plans/tier-priority-and-implementation.md` -- priority-ordered task list
-- `plans/architecture/models-consolidation.md` -- deferred: registry dissolution, shared base
+- `plans/architecture/models-consolidation.md` -- **completed**: GraphModuleBase, optimizer wiring, cleanup
 - `plans/architecture/preprocessing-consolidation.md` -- deferred: delete _temporal.py, DataModule fixes
 - `plans/architecture/flatten-model-config.md` -- completed: config flatten reference
 - `plans/architecture/trainer-yaml-wiring.md` -- completed: trainer.yaml verification

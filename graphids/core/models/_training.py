@@ -3,12 +3,74 @@
 import contextlib
 from typing import TypedDict
 
+import pytorch_lightning as pl
 import structlog
 import torch
-import torch.nn.functional as F
-from torch import Tensor
 
 _log = structlog.get_logger()
+
+
+# ---------------------------------------------------------------------------
+# GraphModuleBase — shared base for VGAE, GAT, DGI Lightning modules
+# ---------------------------------------------------------------------------
+
+
+class GraphModuleBase(pl.LightningModule):
+    """Shared base for VGAE, GAT, DGI — lazy setup, OOM guard, threshold metrics.
+
+    Subclasses must implement ``_build()`` which constructs ``self.model`` and any
+    other architecture components using ``self.hparams`` (populated by ``setup``).
+
+    Threshold support (VGAE, DGI): call ``_init_threshold_metrics()`` in your
+    ``__init__`` to enable ``BinaryROC`` accumulation and ``_find_threshold()``.
+    GAT (supervised) does not need this.
+    """
+
+    # -- Lazy model construction ------------------------------------------------
+
+    def setup(self, stage=None):
+        if self.model is None:
+            dm = self.trainer.datamodule
+            self.hparams.num_ids = dm.num_ids
+            self.hparams.in_channels = dm.in_channels
+            self.hparams.num_classes = dm.num_classes
+            self._build()
+
+    def _build(self):
+        raise NotImplementedError
+
+    # -- OOM guard --------------------------------------------------------------
+
+    def _oom_safe_step(self, batch, batch_idx, step_fn):
+        try:
+            return step_fn(batch, batch_idx)
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            _log.warning(
+                "oom_batch_skipped",
+                batch_idx=batch_idx,
+                num_graphs=batch.num_graphs,
+                num_nodes=batch.num_nodes,
+            )
+            return None
+
+    # -- BinaryROC threshold support (VGAE, DGI) -------------------------------
+
+    def _init_threshold_metrics(self):
+        """Call in ``__init__`` for modules that need Youden-J threshold."""
+        from torchmetrics.classification import BinaryROC
+
+        self.roc_metric = BinaryROC()
+        self.test_threshold: float | None = None
+
+    def _find_threshold(self) -> float | None:
+        """Compute optimal threshold via Youden's J statistic from accumulated ROC data."""
+        fpr, tpr, thresholds = self.roc_metric.compute()
+        if thresholds.numel() < 2:
+            return None
+        j = tpr - fpr
+        best = torch.argmax(j)
+        return float(thresholds[best]) if best < len(thresholds) else None
 
 
 class KDAuxiliary(TypedDict, total=False):
@@ -24,34 +86,6 @@ class KDAuxiliary(TypedDict, total=False):
     teacher_scale: str
     model_path: str
 
-
-class OOMSkipMixin:
-    """Skip batch on CUDA OOM. Lightning natively handles training_step returning None."""
-
-    def _oom_safe_step(self, batch, batch_idx, step_fn):
-        try:
-            return step_fn(batch, batch_idx)
-        except torch.cuda.OutOfMemoryError:
-            torch.cuda.empty_cache()
-            _log.warning("oom_batch_skipped", batch_idx=batch_idx,
-                         num_graphs=batch.num_graphs, num_nodes=batch.num_nodes)
-            return None
-
-
-def soft_label_kd_loss(student_logits, teacher_logits, temperature: float):
-    """Hinton soft-label KD loss: KL(student/T || teacher/T) * T^2."""
-    return F.kl_div(
-        F.log_softmax(student_logits / temperature, dim=-1),
-        F.softmax(teacher_logits / temperature, dim=-1),
-        reduction="batchmean",
-    ) * (temperature ** 2)
-
-
-def focal_loss(logits, targets, gamma: float = 2.0):
-    """Focal loss (Lin et al. 2017) for class-imbalanced classification."""
-    ce = F.cross_entropy(logits, targets, reduction="none")
-    pt = torch.exp(-ce)
-    return ((1 - pt) ** gamma * ce).mean()
 
 
 @contextlib.contextmanager

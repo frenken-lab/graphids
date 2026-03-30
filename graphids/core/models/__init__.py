@@ -4,8 +4,10 @@ Public API re-exported from submodules:
 
     from graphids.core.models import fusion_state_dim, feature_layout, extractors
     from graphids.core.models import FusionFeatureExtractor, VGAEFusionExtractor, GATFusionExtractor
+    from graphids.core.models import GraphModuleBase
 """
 
+from ._training import GraphModuleBase
 from .fusion_features import (
     FeatureLayout,
     FusionFeatureExtractor,

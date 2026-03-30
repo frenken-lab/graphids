@@ -11,13 +11,12 @@ from __future__ import annotations
 
 import os
 
-import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 from torch_geometric.nn import global_mean_pool
 
 from ._conv import InputEncoder, build_encoder_stack, conv_forward, resolve_edge_dim
-from ._training import OOMSkipMixin, binary_test_metrics
+from ._training import GraphModuleBase, binary_test_metrics
 
 
 class GraphInfomaxModel(nn.Module):
@@ -146,7 +145,7 @@ class GraphInfomaxModel(nn.Module):
 # ---------------------------------------------------------------------------
 
 
-class DGIModule(OOMSkipMixin, pl.LightningModule):
+class DGIModule(GraphModuleBase):
     """DGI contrastive training: maximize node–summary mutual information.
 
     Anomaly scoring at test time uses discriminator confidence:
@@ -182,19 +181,11 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
         self.model = None
-        self.test_threshold: float | None = None
+        self._init_threshold_metrics()
         self.test_metrics = binary_test_metrics()
         self._test_scores: list[torch.Tensor] = []
         self._test_labels: list[torch.Tensor] = []
         if num_ids > 0:
-            self._build()
-
-    def setup(self, stage=None):
-        if self.model is None:
-            dm = self.trainer.datamodule
-            self.hparams.num_ids = dm.num_ids
-            self.hparams.in_channels = dm.in_channels
-            self.hparams.num_classes = dm.num_classes
             self._build()
 
     def _build(self):
@@ -237,30 +228,29 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
 
     def test_step(self, batch, _idx):
         scores = self._per_graph_scores(batch)
+        labels = batch.y.detach()
+        self.roc_metric.update(scores.detach(), labels)
         self._test_scores.append(scores.detach())
-        self._test_labels.append(batch.y.detach())
+        self._test_labels.append(labels)
 
     def on_test_epoch_start(self):
         self.test_metrics.reset()
+        self.roc_metric.reset()
         self._test_scores.clear()
         self._test_labels.clear()
 
     def on_test_epoch_end(self):
         if not self._test_scores:
             return
-        from torchmetrics.functional.classification import binary_roc
 
         scores = torch.cat(self._test_scores).cpu()
         labels = torch.cat(self._test_labels).cpu().long()
 
         if self.test_threshold is None:
-            if labels.unique().numel() < 2:
-                self.test_threshold = float(scores.median())
-            else:
-                fpr, tpr, thresholds = binary_roc(scores, labels)
-                j = tpr - fpr
-                best = torch.argmax(j)
-                self.test_threshold = float(thresholds[best]) if best < len(thresholds) else float(scores.median())
+            threshold = self._find_threshold()
+            if threshold is None:
+                threshold = float(scores.median())
+            self.test_threshold = threshold
 
         preds = (scores >= self.test_threshold).long()
         self.test_metrics.update(preds, labels)
@@ -280,8 +270,3 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
     def predict_step(self, batch, _idx):
         scores = self._per_graph_scores(batch)
         return {"scores": scores, "labels": batch.y}
-
-    def configure_optimizers(self):
-        opt = torch.optim.Adam(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=self.trainer.max_epochs)
-        return {"optimizer": opt, "lr_scheduler": {"scheduler": scheduler, "interval": "epoch"}}
