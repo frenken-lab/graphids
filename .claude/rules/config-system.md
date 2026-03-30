@@ -22,7 +22,8 @@ graphids/
     datasets.yaml        # dataset catalog (YAML anchors for shared configs)
     resources.yaml       # SLURM resource profiles per model×scale×stage
     trainer.yaml         # default_config_files: seed, trainer (callbacks, precision, etc.)
-    ablation.yaml        # ablation recipe: sweep dimensions, config overrides
+    recipes/             # run specifications (sweep dimensions, config overrides)
+      ablation.yaml      # ablation recipe: 18 configs, claim-driven
     stages/              # one per stage — model class_path + init_args overrides + data
       autoencoder.yaml   # VGAEModule + CANBusDataModule
       normal.yaml        # GATModule + CANBusDataModule (no curriculum)

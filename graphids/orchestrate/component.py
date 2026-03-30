@@ -35,7 +35,8 @@ from graphids.orchestrate.slurm import generate_script, poll, submit
 
 STAGES_DIR = CONFIG_DIR / "stages"
 OVERLAYS_DIR = CONFIG_DIR / "overlays"
-RECIPE_PATH = CONFIG_DIR / "ablation.yaml"
+RECIPES_DIR = CONFIG_DIR / "recipes"
+RECIPE_PATH = Path(os.environ.get("KD_GAT_RECIPE", RECIPES_DIR / "ablation.yaml"))
 
 # Upstream model → CLI flag for passing its checkpoint downstream
 _CKPT_FLAG = {

@@ -20,7 +20,8 @@ from graphids.config import CONFIG_DIR, LAKE_ROOT, run_dir
 
 STAGES_DIR = CONFIG_DIR / "stages"
 OVERLAYS_DIR = CONFIG_DIR / "overlays"
-RECIPE_PATH = CONFIG_DIR / "ablation.yaml"
+RECIPES_DIR = CONFIG_DIR / "recipes"
+RECIPE_PATH = RECIPES_DIR / "ablation.yaml"
 
 _LOGGER_REQUIRED_CALLBACKS = {
     "pytorch_lightning.callbacks.LearningRateMonitor",
@@ -179,6 +180,8 @@ def main() -> None:
     p = argparse.ArgumentParser(description="KD-GAT pipeline orchestrator")
     sub = p.add_subparsers(dest="command")
     run_p = sub.add_parser("run", help="Run dagster asset materialization")
+    run_p.add_argument("--recipe", default=str(RECIPE_PATH),
+                       help=f"Recipe YAML (default: {RECIPE_PATH.name})")
     run_p.add_argument("--dataset", required=True, help="Dataset partition (e.g. set_01)")
     run_p.add_argument("--seed", type=int, default=42, help="Seed partition (default: 42)")
     run_p.add_argument("--select", default="*", help="Asset selection (default: all)")
@@ -196,6 +199,7 @@ def main() -> None:
             p.print_help()
             sys.exit(1)
         os.environ.setdefault("DAGSTER_HOME", "/fs/scratch/PAS1266/dagster")
+        os.environ["KD_GAT_RECIPE"] = args.recipe
         partition = f"{args.dataset}|{args.seed}"
         dg_bin = Path(sys.executable).parent / "dg"
         cmd = [str(dg_bin), "launch", "--assets", args.select,
