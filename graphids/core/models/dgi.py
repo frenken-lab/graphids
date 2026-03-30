@@ -183,8 +183,6 @@ class DGIModule(GraphModuleBase):
         self.model = None
         self._init_threshold_metrics()
         self.test_metrics = binary_test_metrics()
-        self._test_scores: list[torch.Tensor] = []
-        self._test_labels: list[torch.Tensor] = []
         if num_ids > 0:
             self._build()
 
@@ -228,37 +226,31 @@ class DGIModule(GraphModuleBase):
 
     def test_step(self, batch, _idx):
         scores = self._per_graph_scores(batch)
-        labels = batch.y.detach()
-        self.roc_metric.update(scores.detach(), labels)
-        self._test_scores.append(scores.detach())
-        self._test_labels.append(labels)
+        self.roc_metric.update(scores.detach(), batch.y.detach())
 
     def on_test_epoch_start(self):
         self.test_metrics.reset()
         self.roc_metric.reset()
-        self._test_scores.clear()
-        self._test_labels.clear()
 
     def on_test_epoch_end(self):
-        if not self._test_scores:
+        if not self.roc_metric.preds:
             return
 
-        scores = torch.cat(self._test_scores).cpu()
-        labels = torch.cat(self._test_labels).cpu().long()
+        scores = torch.cat(self.roc_metric.preds).cpu()
+        labels = torch.cat(self.roc_metric.target).cpu().long()
 
         if self.test_threshold is None:
             threshold = self._find_threshold()
             if threshold is None:
-                threshold = float(scores.median())
-            self.test_threshold = threshold
+                self.test_threshold = float(scores.median())
+            else:
+                self.test_threshold = threshold
 
         preds = (scores >= self.test_threshold).long()
         self.test_metrics.update(preds, labels)
         metrics = self.test_metrics.compute()
         metrics["threshold"] = self.test_threshold
         self.log_dict(metrics)
-        self._test_scores.clear()
-        self._test_labels.clear()
 
     def on_save_checkpoint(self, checkpoint):
         if self.test_threshold is not None:
