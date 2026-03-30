@@ -89,9 +89,14 @@ def submit(script: str, resources: ResourceSpec, *, job_name: str,
     return job_id
 
 
-def poll(job_id: int, *, interval: int = 60, max_unknown: int = 5) -> str:
-    """Poll sacct until terminal state. Returns state string."""
+def poll(job_id: int, *, interval: int = 60, max_unknown: int = 5,
+         on_state=None) -> str:
+    """Poll sacct until terminal state. Returns state string.
+
+    *on_state(state, job_id)* is called on each state transition (optional).
+    """
     unknown_count = 0
+    last_state = None
     while True:
         stdout = sacct_query([job_id], "JobID,State")
         state = "UNKNOWN"
@@ -101,6 +106,11 @@ def poll(job_id: int, *, interval: int = 60, max_unknown: int = 5) -> str:
                 if len(parts) >= 2 and "." not in parts[0]:
                     state = parts[1].strip()
                     break
+
+        if state != last_state:
+            if on_state:
+                on_state(state, job_id)
+            last_state = state
 
         if state in _TERMINAL:
             return state

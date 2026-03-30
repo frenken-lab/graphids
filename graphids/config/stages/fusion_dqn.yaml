@@ -1,18 +1,8 @@
-# Fusion stage (DQN). Depends on VGAE + GAT checkpoints.
-# Usage: python -m graphids fit --config graphids/config/stages/fusion_dqn.yaml
-# Overrides trainer defaults: precision 32, shorter training, monitors val_acc.
-trainer:
-  precision: 32
-  max_epochs: 50
-  log_every_n_steps: 10
-  callbacks:
-    - class_path: pytorch_lightning.callbacks.ModelCheckpoint
-      init_args: {monitor: val_acc, mode: max, save_top_k: 1, filename: "best_model"}
+# DQN fusion method. Layered on top of fusion.yaml.
 model:
   class_path: graphids.core.models.dqn.DQNFusionModule
   init_args:
     reward_kwargs:
       vgae_weights: [0.4, 0.35, 0.25]
 data:
-  class_path: graphids.core.preprocessing.datamodule.FusionDataModule
   init_args: {method: dqn}

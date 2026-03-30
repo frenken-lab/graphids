@@ -26,12 +26,11 @@ from graphids.config import (
     PIPELINE_YAML,
     STAGE_DEPENDENCIES,
     STAGE_MODEL_MAP,
-    _CKPT_MODEL,
     compute_identity_hash,
     run_dir,
 )
 from graphids.orchestrate.resources import get_failure_reactions, get_resources, scale_resources
-from graphids.orchestrate.slurm import generate_script, poll, submit
+from graphids.orchestrate.slurm import generate_script, poll, sacct_query, submit
 
 STAGES_DIR = CONFIG_DIR / "stages"
 OVERLAYS_DIR = CONFIG_DIR / "overlays"
@@ -97,15 +96,18 @@ class SlurmTrainingResource(dg.ConfigurableResource):
         job_name: str,
         cli_overrides: list[str] | None = None,
         ckpt_path: Path | None = None,
-    ) -> str:
+        on_state=None,
+    ) -> tuple[str, int]:
+        """Submit SLURM job and poll. Returns (state, job_id)."""
         script = generate_script(
             config_files, resources,
             ckpt_path=ckpt_path, cli_overrides=cli_overrides,
         )
         job_id = submit(script, resources, job_name=job_name, dry_run=self.dry_run)
         if self.dry_run:
-            return "DRY_RUN"
-        return poll(job_id, interval=self.poll_interval)
+            return "DRY_RUN", 0
+        state = poll(job_id, interval=self.poll_interval, on_state=on_state)
+        return state, job_id
 
 
 # ---------------------------------------------------------------------------
@@ -129,11 +131,13 @@ def _overlay_model(stage_def: dict, merged: dict) -> str:
 def _resolve_config_files(stage: str, stage_def: dict, merged: dict) -> tuple[list[str], bool]:
     scale = merged.get("scale", "small")
     model = _overlay_model(stage_def, merged)
-    # Method-specific stage YAML (e.g. fusion_mlp.yaml) takes priority
+    # Method-specific stage YAML (e.g. fusion_dqn.yaml) layers on top of base stage YAML
     method = merged.get("fusion_method")
     variant = STAGES_DIR / f"{stage}_{method}.yaml" if method else None
     used_variant = variant is not None and variant.exists()
-    configs = [str(variant)] if used_variant else [str(STAGES_DIR / f"{stage}.yaml")]
+    configs = [str(STAGES_DIR / f"{stage}.yaml")]
+    if used_variant:
+        configs.append(str(variant))
     overlay = OVERLAYS_DIR / f"{scale}_{model}.yaml"
     has_overlay = overlay.exists()
     if has_overlay:
@@ -266,7 +270,7 @@ def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
                                     upstream_names.append(tc_map[s])
                             break
 
-            model_dir = _CKPT_MODEL.get(STAGE_MODEL_MAP[stage], STAGE_MODEL_MAP[stage])
+            model_dir = STAGE_MODEL_MAP[stage]
             built[asset_name] = StageConfig(
                 asset_name=asset_name,
                 stage=stage,
@@ -350,13 +354,21 @@ def _make_asset(
             for reason in ("OUT_OF_MEMORY", "TIMEOUT"):
                 resources = scale_resources(resources, reason)
 
+        # Observation callback: emit SLURM state transitions to dagster event log
+        def _observe(slurm_state, jid):
+            context.log_event(dg.AssetObservation(
+                asset_key=context.asset_key,
+                metadata={"slurm_state": slurm_state, "job_id": jid},
+            ))
+
         resume = rd_path / "checkpoints" / "last.ckpt"
-        state = slurm.submit_and_wait(
+        state, job_id = slurm.submit_and_wait(
             config_files=list(cfg.config_files),
             resources=resources,
             job_name=f"{cfg.asset_name}_{dataset}_s{seed}",
             cli_overrides=cli_args,
             ckpt_path=resume if resume.exists() else None,
+            on_state=_observe,
         )
 
         if state not in ("COMPLETED", "DRY_RUN"):
@@ -366,6 +378,27 @@ def _make_asset(
                 raise dg.RetryRequested(
                     max_retries=reaction["max_retries"], seconds_to_wait=30)
             raise RuntimeError(f"SLURM job failed: {state}")
+
+        # Attach SLURM accounting metadata to the asset materialization
+        # Parent row has Elapsed; .batch row has MaxRSS.
+        if job_id:
+            out = sacct_query([job_id], "JobID,Elapsed,MaxRSS", units="G")
+            wall, rss = "", ""
+            if out:
+                for line in out.strip().split("\n"):
+                    fields = line.split("|")
+                    if len(fields) < 3:
+                        continue
+                    jid_field = fields[0].strip()
+                    if "." not in jid_field:
+                        wall = fields[1].strip()
+                    elif jid_field.endswith(".batch"):
+                        rss = fields[2].strip()
+            context.add_output_metadata({
+                "job_id": job_id,
+                "wall_time": wall,
+                "peak_rss": rss,
+            })
 
         complete_marker.touch()
         return str(ckpt_file)  # IOManager.handle_output stores this path
@@ -436,6 +469,16 @@ class SlurmTrainingComponent(dg.Component, dg.Model, dg.Resolvable):
 
         # 1. Enumerate training configs (pure data)
         stage_configs = enumerate_assets(PIPELINE_YAML, recipe)
+
+        # 1b. Validate all assets have resource profiles (fail at definition time, not submit time)
+        for cfg in stage_configs:
+            try:
+                get_resources(cfg.model_type, cfg.scale, cfg.stage)
+            except KeyError as e:
+                raise KeyError(
+                    f"Asset '{cfg.asset_name}' has no resource profile: {e}. "
+                    f"Add entry to config/resources.yaml."
+                ) from None
 
         # 2. Partitions
         datasets = [k for k in yaml.safe_load(CATALOG_PATH.read_text())

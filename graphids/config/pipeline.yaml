@@ -80,3 +80,11 @@ stages:
 
 # --- Default stage list (when manifest omits stages) ---
 default_stages: [autoencoder, curriculum, fusion, evaluation]
+
+# --- Checkpoint stage mapping (model_type → which stage produces its checkpoint) ---
+# Explicit because model types can share stages (dgi shares autoencoder with vgae).
+ckpt_stages:
+  vgae: autoencoder
+  gat: curriculum
+  dqn: fusion
+  dgi: autoencoder

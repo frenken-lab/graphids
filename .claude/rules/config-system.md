@@ -36,9 +36,8 @@ graphids/
       analyze_gat.yaml   # Analyzer config: GAT embeddings + attention + CKA + landscape
       analyze_fusion.yaml # Analyzer config: fusion policy
     overlays/            # thin --config adds for scale/ablation variants
-      small_vgae.yaml    # small-scale VGAE dims
+      small_vgae.yaml    # small-scale VGAE/DGI dims (DGI falls through to this)
       small_gat.yaml     # small-scale GAT dims
-      small_dgi.yaml     # small-scale DGI dims
       large_vgae.yaml    # large-scale VGAE dims (sweep-optimized)
       large_gat.yaml     # large-scale GAT dims (sweep-optimized)
       kd_vgae.yaml       # KD auxiliaries for VGAE student

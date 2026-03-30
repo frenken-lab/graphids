@@ -6,7 +6,7 @@
 
 - **WandbLogger + CSVLogger** in `trainer.yaml` (no `save_dir` — uses `WANDB_DIR` env var)
 - **WandbSaveConfigCallback** in `cli.py:9-17` — forwards full jsonargparse config (Lightning #19728 workaround)
-- **Env vars** in `_preamble.sh:25-27`: `WANDB_DIR=/fs/scratch/PAS1266/wandb`, `WANDB_DISABLE_GIT=true`, `WANDB_SILENT=true`
+- **Env vars** in `_preamble.sh:26-29`: `WANDB_DIR=/fs/scratch/PAS1266/wandb`, `WANDB_DISABLE_GIT=true`, `WANDB_SILENT=true`
 - **Auth**: `~/.netrc` (entity: `frenken-2-the-ohio-state-university`)
 - **Fallback**: `WANDB_MODE=offline` + `wandb sync` if network flakes (not wired — use manually)
 

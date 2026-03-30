@@ -13,11 +13,11 @@
 | GPU system metrics | wandb pynvml (util%, temp, power) | Automatic, 15s interval |
 | Op-level profiling | PyTorchProfiler (chrome traces) | `overlays/profile.yaml` + `profile_training.sh` |
 | SLURM resource profiler | sacct: RSS, CPU%, wall time | `python -m graphids profile` (`orchestrate/profiler.py`) |
-| Env vars | `WANDB_DIR`, `WANDB_DISABLE_GIT`, `WANDB_SILENT` | `_preamble.sh:25-28` |
-| VRAM probe | `_probe_bytes_per_node()`, KD-aware | `datamodule.py` (runs `_step()` not `forward()`) |
+| Env vars | `WANDB_DIR`, `WANDB_DISABLE_GIT`, `WANDB_SILENT` | `_preamble.sh:26-29` |
+| VRAM probe | `_probe_bytes_per_node()`, KD-aware | `preprocessing/datamodule.py:36-77` (prefers `_step()`, falls back to `forward()`) |
 | Orchestration UI | dagster webserver + daemon | `scripts/dev/dagster-ui.sh` (port 3000, SSH tunnel) |
 | Checkpoint handoff | CheckpointPathIOManager | JSON sidecars at `{lake_root}/.dagster/io/` |
-| SLURM job accounting | sacct in `_epilog.sh` | ESS log files |
+| SLURM job accounting | sacct summary + log rotation | `_epilog.sh` (prints sacct, deletes logs >30 days) |
 | CUDA alloc config | `expandable_segments:True,garbage_collection_threshold:0.8` | `_preamble.sh` |
 | Mixed precision | `precision: 16-mixed` | `trainer.yaml` |
 | Gradient checkpointing | `use_reentrant=False` | `_conv.py:195-224` |
