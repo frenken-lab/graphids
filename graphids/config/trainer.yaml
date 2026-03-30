@@ -6,11 +6,19 @@ trainer:
   max_epochs: 300
   gradient_clip_val: 1.0
   log_every_n_steps: 50
-  logger: false
+  logger:
+    - class_path: pytorch_lightning.loggers.WandbLogger
+      init_args:
+        project: kd-gat
+        log_model: false
+    - class_path: pytorch_lightning.loggers.CSVLogger
+      init_args:
+        save_dir: .
   callbacks:
     - class_path: pytorch_lightning.callbacks.ModelCheckpoint
       init_args: {monitor: val_loss, mode: min, save_top_k: 1, filename: "best_model"}
     - class_path: pytorch_lightning.callbacks.EarlyStopping
       init_args: {monitor: val_loss, patience: 100, mode: min}
     - class_path: graphids.core.preprocessing.curriculum.CurriculumEpochCallback
+    - class_path: pytorch_lightning.callbacks.DeviceStatsMonitor
 

@@ -172,36 +172,33 @@ class CurriculumDataModule(CANBusDataModule):
         normal_indices = list(range(len(normals)))
         attack_indices = list(range(len(normals), len(full_dataset)))
 
-        budget = None
-        mean_nodes = 1.0
-        if hp.dynamic_batching:
-            budget, mean_nodes = vram_node_budget(
-                hp.dataset, hp.lake_root,
-                conv_type=hp.conv_type, heads=hp.heads,
-            )
-
+        # Defer VRAM budget to train_dataloader() — model isn't on GPU yet
+        # during setup(). CurriculumSampler accepts max_num_nodes=None.
         self._batch_sampler = CurriculumSampler(
             full_dataset, normal_indices, attack_indices, scores,
             batch_size=hp.batch_size, max_epochs=hp.max_epochs,
             curriculum_start_ratio=hp.curriculum_start_ratio,
             curriculum_end_ratio=hp.curriculum_end_ratio,
             difficulty_percentile=hp.difficulty_percentile,
-            max_num_nodes=budget,
-            mean_nodes=mean_nodes,
+            max_num_nodes=None,
+            mean_nodes=1.0,
         )
         self._train_loader = make_graph_loader(
             full_dataset, batch_sampler=self._batch_sampler, num_workers=hp.num_workers,
         )
-        self._val_loader = self._build_val_loader()
+        self._val_loader = None  # built lazily in val_dataloader()
 
     def _build_val_loader(self):
         hp = self.hparams
         bs = max(8, hp.batch_size)
         val_data = list(self._val_ds)
         if hp.dynamic_batching:
+            trainer = getattr(self, "trainer", None)
+            model = trainer.lightning_module if trainer else None
             budget, mean_nodes = vram_node_budget(
                 hp.dataset, hp.lake_root,
                 conv_type=hp.conv_type, heads=hp.heads,
+                model=model, train_dataset=val_data,
             )
             num_steps = max(1, int(len(val_data) * mean_nodes / budget))
             sampler = DynamicBatchSampler(
@@ -212,7 +209,21 @@ class CurriculumDataModule(CANBusDataModule):
         return make_graph_loader(val_data, batch_size=bs, shuffle=False, num_workers=hp.num_workers)
 
     def train_dataloader(self):
+        hp = self.hparams
+        if hp.dynamic_batching and self._batch_sampler.max_num_nodes is None:
+            trainer = getattr(self, "trainer", None)
+            model = trainer.lightning_module if trainer else None
+            budget, mean_nodes = vram_node_budget(
+                hp.dataset, hp.lake_root,
+                conv_type=hp.conv_type, heads=hp.heads,
+                model=model, train_dataset=self._batch_sampler.dataset,
+            )
+            self._batch_sampler.max_num_nodes = budget
+            self._batch_sampler.mean_nodes = mean_nodes
+            self._batch_sampler._inner = self._batch_sampler._build_inner()
         return self._train_loader
 
     def val_dataloader(self):
+        if self._val_loader is None:
+            self._val_loader = self._build_val_loader()
         return self._val_loader

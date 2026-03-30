@@ -186,7 +186,7 @@ python -m graphids analyze --config graphids/config/stages/analyze_vgae.yaml \
 
 ### Orchestration
 
-Dagster-based. See `plans/dagster-native-orchestration.md` for current design.
+Dagster-based. See `plans/architecture/dagster-native-orchestration.md` for current design.
 
 ```bash
 # Submission

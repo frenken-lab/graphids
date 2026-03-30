@@ -13,7 +13,7 @@ set -euo pipefail
 # --- CPU orchestrator job ---
 # Dagster materializes all assets per partition (dataset|seed).
 # Each asset submits its own GPU sbatch job, polls sacct, handles retry.
-# Restart-safe: re-running skips completed stages (best_model.ckpt check).
+# Restart-safe: re-running skips completed stages (best_model.ckpt + .complete marker).
 #
 # Usage:
 #   sbatch scripts/slurm/run_ablation.sh                        # ablation (default)

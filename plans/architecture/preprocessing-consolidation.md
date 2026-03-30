@@ -1,18 +1,18 @@
 # Preprocessing Consolidation Plan
 
-> Status: **proposed** | Date: 2026-03-27
+> Status: **proposed** | Date: 2026-03-27 | Audited: 2026-03-30
 
-Consolidate `graphids/core/preprocessing/` (1,406 lines, 8 files + 1 subdirectory) by
+Consolidate `graphids/core/preprocessing/` (1,555 lines, 8 files + 1 subdirectory) by
 removing dead code, eliminating cfg duck-typing, and relocating misplaced logic.
 
 ## File inventory
 
 | File | Lines | Verdict |
 |------|-------|---------|
-| `features.py` | 438 | Domain logic. Partial dead code (test-only paths). |
+| `features.py` | 438 | Domain logic. Dead code: `edge_to_tensor` (0 callers), test-only paths. |
+| `datamodule.py` | 413 | Lightning DataModules. SimpleNamespace cfg reconstruction × 2, misplaced staticmethod. |
+| `curriculum.py` | 229 | Lightning DataModule. Delegates to parent `setup()`. Epoch tracking via callback (correct). |
 | `datasets/can_bus.py` | 211 | Domain logic. One inline atomic-write duplication. |
-| `datamodule.py` | 309 | Lightning DataModules. SimpleNamespace cfg reconstruction × 2, misplaced staticmethod. |
-| `curriculum.py` | 184 | Lightning DataModule. SimpleNamespace cfg reconstruction × 1. |
 | `_temporal.py` | 175 | **Dead** — zero production callers. |
 | `utils.py` | 49 | Small utilities. Stays. |
 | `__init__.py` | 37 | Re-exports + dead lazy-import for temporal symbols. |
@@ -22,24 +22,29 @@ removing dead code, eliminating cfg duck-typing, and relocating misplaced logic.
 
 ### Evidence
 
-`TemporalDataModule`, `TemporalGrouper`, `TemporalGraphDataset`, `collate_temporal` have
-**zero production callers**. The pipeline stages that used them (`train_temporal`,
+`TemporalDataModule`, `TemporalGrouper`, `TemporalGraphDataset`, `collate_temporal`,
+`GraphSequence` have **zero production callers**. No stage YAML wires `TemporalDataModule`
+to LightningCLI. The pipeline stages that used them (`train_temporal`,
 `_evaluate_temporal`) were deleted during the evaluation pipeline cleanup (commit `c41511d`).
 
-Only caller is `tests/core/models/test_temporal.py:39` which imports `collate_temporal`
-for a unit test of the temporal model's collation — this test should either be deleted
-or import the collation inline.
+Only external reference: `tests/core/models/test_temporal.py:39` imports `collate_temporal`
+directly from `_temporal` (bypasses `__init__` lazy path).
 
-The `__init__.py` lazy `__getattr__` loader (lines 30-36) and `__all__` entries
-(lines 21, 24, 26-27) for temporal symbols are also dead.
+The `__init__.py` lazy `__getattr__` loader (lines 31-37), `_temporal_names` set (line 33),
+and `__all__` entries (lines 21, 24, 25, 26, 27) for all 5 temporal symbols are dead.
+
+Note: `TemporalDataModule.__init__` takes an untyped `cfg` object (not flat typed
+primitives), so it would break LightningCLI / jsonargparse introspection if a stage YAML
+were ever added. This reinforces that it's stale, not in-progress.
 
 ### Action
 
 - Delete `_temporal.py` (175 lines)
-- Remove temporal entries from `__init__.py` `__all__` and `__getattr__`
+- Remove temporal entries from `__init__.py` `__all__`, `_temporal_names`, and `__getattr__`
 - Update or delete `test_temporal.py` collation test (move `collate_temporal` inline
   into the test if the test itself is still needed, or delete if temporal model coverage
   is handled elsewhere)
+- Clean stale `.pyc` files in `__pycache__/` (temporal, dataset, engine bytecodes from prior refactors)
 
 ### Line count: **-175 lines** (+ ~10 lines from `__init__.py` cleanup)
 
@@ -47,14 +52,13 @@ The `__init__.py` lazy `__getattr__` loader (lines 30-36) and `__all__` entries
 
 ### Problem
 
-Three DataModule `setup()` methods reconstruct an identical `types.SimpleNamespace` to
+Two DataModule `setup()` methods reconstruct a `types.SimpleNamespace` to
 satisfy `load_datasets(cfg)`:
 
-- `CANBusDataModule.setup` (`datamodule.py:116-124`)
-- `FusionDataModule.setup` (`datamodule.py:277-284`)
-- `CurriculumDataModule.setup` (`curriculum.py:123-130`)
+- `CANBusDataModule.setup` (`datamodule.py:217-225`) — `hp` accessed via string keys
+- `FusionDataModule.setup` (`datamodule.py:382-388`) — `hp` accessed via attributes
 
-Each builds:
+Each builds a two-level namespace:
 ```python
 cfg = types.SimpleNamespace(
     dataset=hp.dataset, lake_root=hp.lake_root, seed=hp.seed,
@@ -65,8 +69,14 @@ cfg = types.SimpleNamespace(
 )
 ```
 
-This exists because `load_datasets` duck-types on `cfg.dataset`, `cfg.lake_root`,
-`cfg.seed`, `cfg.preprocessing.window_size`, etc.
+`CurriculumDataModule.setup()` (curriculum.py:160) delegates via `super().setup(stage)` to
+`CANBusDataModule.setup()` — it does **not** construct its own namespace.
+
+`load_datasets` (`datamodule.py:161`) takes a single untyped `cfg` arg and duck-types on
+`cfg.dataset`, `cfg.lake_root`, `cfg.seed`, `cfg.preprocessing.window_size`,
+`cfg.preprocessing.stride`, `cfg.preprocessing.train_val_split`.
+
+Third caller: `_temporal.py:129` passes `self.cfg` directly (being deleted in section 1).
 
 ### Action
 
@@ -79,7 +89,7 @@ def load_datasets(
 ) -> tuple[CANBusDataset, CANBusDataset, dict[str, CANBusDataset]]:
 ```
 
-Then all three callers simplify to:
+Then both callers simplify to:
 ```python
 self._train_ds, self._val_ds, self._test_datasets = load_datasets(
     dataset=hp.dataset, lake_root=hp.lake_root, seed=hp.seed,
@@ -89,10 +99,10 @@ self._train_ds, self._val_ds, self._test_datasets = load_datasets(
 
 No more `import types`, no nested `SimpleNamespace`.
 
-Also removes `CurriculumSampler.__init__`'s separate `sampler_cfg` namespace
-(`curriculum.py:152`) if it uses the same pattern.
+(`CurriculumSampler.__init__` at `curriculum.py:27-55` already takes flat keyword args — no
+namespace pattern to clean up there.)
 
-### Line count: ~**-20 lines** (3 × 7-line namespace blocks → 3 × 3-line calls)
+### Line count: ~**-14 lines** (2 × 7-line namespace blocks → 2 × 3-line calls)
 
 ## 3. Move `cache_predictions` from `FusionDataModule` to `fusion_features.py`
 

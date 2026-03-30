@@ -1,6 +1,6 @@
 # KD-GAT Session Plan
 
-> Last updated: 2026-03-28
+> Last updated: 2026-03-30
 
 ## Active Plan
 
@@ -51,12 +51,28 @@ teacher checkpoint path via `--model.init_args.auxiliaries[0].model_path=<path>`
 - Ops dashboard (`buckeyeguy/kd-gat-dashboard`) -- running on HF Spaces
 - **Ablation Run 005** -- dagster orchestration verified end-to-end.
   Validate passes, smoke passes (3-stage chain on gpudebug, hcrl_sa, 3 epochs).
-  Next: submit Run 005.
+  Next: fix remaining Run 004 issues (#4 KD teacher VRAM, #5 observability), then submit.
+
+### Run 004 fixes applied
+
+- [x] SLURM RAM profiles bumped to 36G (resolved issue #1)
+- [x] dagster `context.log.warning` TypeError (resolved issue #2)
+- [x] **Probe-based VRAM node budget** (resolved issue #3 — large GAT CUDA OOM).
+  Replaced `_BYTES_PER_NODE = 32768` constant with `_probe_bytes_per_node()`:
+  runs 1 forward pass on ~2000 nodes at `train_dataloader()` time (model on GPU),
+  measures `torch.cuda.max_memory_allocated()`, derives real bytes/node.
+  Works for all model × scale × GPU combos. CurriculumDataModule defers budget
+  from `setup()` to `train_dataloader()`. `OOMSkipMixin` remains as safety net.
+- [ ] KD autoencoder teacher VRAM (issue #4 — Lightning auto-moves teacher to GPU)
+- [x] **Observability** (resolved issue #5 — logger: false, no GPU stats).
+  Added WandbLogger + CSVLogger + DeviceStatsMonitor to `trainer.yaml`.
+  wandb 0.25.1 installed. `orchestrate validate` passes all 18 configs.
+  Remaining: `wandb login`, `_preamble.sh` env vars, WandbSaveConfigCallback (~10 LOC).
 
 ### Code consolidation (deferred)
 
-- [ ] Models consolidation (`plans/models-consolidation.md`) -- registry.py dissolution, GraphModuleBase, optimizer wiring
-- [ ] Preprocessing consolidation (`plans/preprocessing-consolidation.md`) -- delete _temporal.py, DataModule convention fixes
+- [ ] Models consolidation (`plans/architecture/models-consolidation.md`) -- registry.py dissolution, GraphModuleBase, optimizer wiring
+- [ ] Preprocessing consolidation (`plans/architecture/preprocessing-consolidation.md`) -- delete _temporal.py, DataModule convention fixes
 
 ## Recently Completed
 
@@ -168,7 +184,7 @@ Run 003 checkpoints declared incompatible (Hydra-era nested format) — re-train
 
 ### Config flatten + consolidation (2026-03-28)
 
-Replaced Hydra/OmegaConf + config dataclasses with jsonargparse + flat YAML. All 5 LightningModules take flat typed primitives. Deleted `schema.py`, `coerce_config`, `resolve()`, `defaults/` directory. See `plans/flatten-model-config.md`.
+Replaced Hydra/OmegaConf + config dataclasses with jsonargparse + flat YAML. All 5 LightningModules take flat typed primitives. Deleted `schema.py`, `coerce_config`, `resolve()`, `defaults/` directory. See `plans/architecture/flatten-model-config.md`.
 
 ### Lightning callback extraction + LightningCLI (2026-03-27)
 
@@ -236,13 +252,14 @@ orchestrate/
 
 ### Key Reference Documents
 
-- `plans/dagster-native-orchestration.md` -- **active**: replace custom code with dagster-slurm + Component + IOManager
-- `plans/dagster-history.md` -- archived: timeline, lessons, postmortem from dagster build
+- `plans/architecture/dagster-native-orchestration.md` -- **active**: replace custom code with dagster-slurm + Component + IOManager
+- `plans/architecture/dagster-history.md` -- archived: timeline, lessons, postmortem from dagster build
 - `plans/experiment-sweep-plan.md` -- ablation claims, configs, stage sharing DAG
 - `plans/tier-priority-and-implementation.md` -- priority-ordered task list
-- `plans/models-consolidation.md` -- deferred: registry dissolution, shared base
-- `plans/preprocessing-consolidation.md` -- deferred: delete _temporal.py, DataModule fixes
-- `plans/flatten-model-config.md` -- completed: config flatten reference
-- `plans/trainer-yaml-wiring.md` -- completed: trainer.yaml verification
+- `plans/architecture/models-consolidation.md` -- deferred: registry dissolution, shared base
+- `plans/architecture/preprocessing-consolidation.md` -- deferred: delete _temporal.py, DataModule fixes
+- `plans/architecture/flatten-model-config.md` -- completed: config flatten reference
+- `plans/architecture/trainer-yaml-wiring.md` -- completed: trainer.yaml verification
+- `plans/research/profiling-and-observability.md` -- **active**: consolidated profiling, optimization, observability plan
 - `graphids/config/pipeline.yaml` -- DAG topology + identity_keys
 - `graphids/config/resources.yaml` -- SLURM resource profiles

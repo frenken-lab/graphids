@@ -7,6 +7,8 @@ from pytorch_lightning.cli import LightningCLI
 
 class GraphIDSCLI(LightningCLI):
     def add_arguments_to_parser(self, parser):
+        #TODO: init_args are 4 of the 5 here, seed_everything is also init_args
+        # should be organized between model, data, and other init_arg categories
         parser.link_arguments("data.init_args.dataset", "model.init_args.dataset")
         parser.link_arguments("data.init_args.lake_root", "model.init_args.lake_root")
         parser.link_arguments("seed_everything", "model.init_args.seed")

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import structlog
 
-from graphids.config import PROJECT_ROOT, SLURM_ACCOUNT
+from graphids.config import PROJECT_ROOT, SLURM_ACCOUNT, SLURM_LOG_DIR
 from .resources import ResourceSpec
 
 log = structlog.get_logger()
@@ -46,14 +46,15 @@ def generate_script(config_files: list[str], resources: ResourceSpec, *,
 def submit(script: str, resources: ResourceSpec, *, job_name: str,
            dry_run: bool = False) -> int:
     """Submit sbatch job. Returns job ID (0 if dry_run)."""
+    Path(SLURM_LOG_DIR).mkdir(parents=True, exist_ok=True)
     args = [
         "sbatch",
         f"--partition={resources.partition}", f"--time={resources.time}",
         f"--mem={resources.mem}", f"--cpus-per-task={resources.cpus_per_task}",
         f"--account={SLURM_ACCOUNT}", f"--job-name={job_name}",
         "--signal=B:USR1@300",
-        f"--output={PROJECT_ROOT}/slurm_logs/{job_name}_%j.out",
-        f"--error={PROJECT_ROOT}/slurm_logs/{job_name}_%j.err",
+        f"--output={SLURM_LOG_DIR}/{job_name}_%j.out",
+        f"--error={SLURM_LOG_DIR}/{job_name}_%j.err",
     ]
     if resources.gres:
         args.append(f"--gres={resources.gres}")

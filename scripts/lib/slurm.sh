@@ -63,7 +63,7 @@ kd_submit() {
         base_args="$(kd_sbatch_cpu_args)"
     fi
 
-    local log_dir="${KD_PROJECT_ROOT}/slurm_logs"
+    local log_dir="${KD_GAT_SLURM_LOG_DIR:-${KD_PROJECT_ROOT}/slurm_logs}"
     mkdir -p "$log_dir"
 
     # shellcheck disable=SC2086

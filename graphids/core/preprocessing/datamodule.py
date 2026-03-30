@@ -24,14 +24,63 @@ _log = structlog.get_logger()
 # --- Dynamic batching constants -------------------------------------------
 # Conv types with O(N²) global attention (full attention matrix).
 _QUADRATIC_CONV_TYPES = frozenset({"gps"})
-# Activation cost per node for linear convs (from profiling: 155K nodes ≈ 5 GB).
+# Fallback activation cost per node when no model is available for probing.
 _BYTES_PER_NODE = 32_768
+# Reserve 15% of free VRAM for allocator fragmentation + edge-density variance.
+_SAFETY_MARGIN = 0.85
+# Forward-only probe captures activations; multiply by this to account for
+# gradient memory during backward (gradients ≈ activations in size).
+_GRAD_MULTIPLIER = 2
+
+
+def _probe_bytes_per_node(model, dataset, n_target: int = 2000) -> int:
+    """Forward-pass a small batch, measure peak VRAM, return estimated bytes/node.
+
+    Runs under torch.no_grad() and multiplies by _GRAD_MULTIPLIER to account
+    for gradient memory during real training.  Same pattern as
+    ``GraphAutoencoderNeighborhood.score_difficulty`` (vgae.py:293).
+    """
+    from torch_geometric.data import Batch
+
+    graphs, n = [], 0
+    for g in dataset:
+        graphs.append(g)
+        n += g.num_nodes
+        if n >= n_target:
+            break
+
+    batch = Batch.from_data_list(graphs).to(model.device)
+    actual_nodes = batch.num_nodes
+
+    torch.cuda.reset_peak_memory_stats(model.device)
+    before = torch.cuda.memory_allocated(model.device)
+
+    was_training = model.training
+    model.eval()
+    with torch.no_grad():
+        model(batch)
+    model.train(was_training)
+
+    peak = torch.cuda.max_memory_allocated(model.device)
+    del batch
+    torch.cuda.empty_cache()
+
+    fwd_per_node = max(1, int((peak - before) / actual_nodes))
+    bpn = fwd_per_node * _GRAD_MULTIPLIER
+    _log.info("probe_bytes_per_node", bytes_per_node=bpn, probe_nodes=actual_nodes,
+              fwd_per_node=fwd_per_node, delta_mb=round((peak - before) / 1e6, 1))
+    return bpn
 
 
 def vram_node_budget(
     dataset: str, lake_root: str, *, conv_type: str = "gatv2", heads: int = 4,
+    model=None, train_dataset=None,
 ) -> tuple[int, float]:
     """Compute node budget from available VRAM and dataset graph stats.
+
+    If *model* and *train_dataset* are provided and CUDA is available, probes
+    actual per-node activation memory via a single forward pass.
+    Otherwise falls back to the ``_BYTES_PER_NODE`` constant.
 
     Returns (node_budget, mean_nodes).
     """
@@ -51,11 +100,22 @@ def vram_node_budget(
 
     if conv_type in _QUADRATIC_CONV_TYPES:
         budget = int(math.sqrt(free / (heads * 3 * 2)))
+        _log.info("vram_node_budget", conv_type=conv_type, budget=budget,
+                  free_vram_gb=round(free / 1e9, 2), mean_nodes=mean_nodes,
+                  method="quadratic")
+        return budget, mean_nodes
+
+    if model is not None and train_dataset is not None and torch.cuda.is_available():
+        bytes_per_node = _probe_bytes_per_node(model, train_dataset)
     else:
-        budget = int(free / _BYTES_PER_NODE)
+        bytes_per_node = _BYTES_PER_NODE
+
+    budget = int(free * _SAFETY_MARGIN / bytes_per_node)
 
     _log.info("vram_node_budget", conv_type=conv_type, budget=budget,
-              free_vram_gb=round(free / 1e9, 2), mean_nodes=mean_nodes)
+              free_vram_gb=round(free / 1e9, 2), mean_nodes=mean_nodes,
+              bytes_per_node=bytes_per_node,
+              method="probe" if model is not None else "fallback")
     return budget, mean_nodes
 
 from .features import N_EDGE_FEATURES as EDGE_FEATURE_COUNT, N_NODE_FEATURES as NODE_FEATURE_COUNT
@@ -230,10 +290,13 @@ class CANBusDataModule(pl.LightningDataModule):
         nw = hp["num_workers"] if "num_workers" in hp else 0
 
         if hp["dynamic_batching"]:
+            trainer = getattr(self, "trainer", None)
+            model = trainer.lightning_module if trainer else None
             budget, mean_nodes = vram_node_budget(
                 hp["dataset"], hp["lake_root"],
                 conv_type=hp.get("conv_type", "gatv2"),
                 heads=hp.get("heads", 4),
+                model=model, train_dataset=dataset,
             )
             num_steps = max(1, int(len(dataset) * mean_nodes / budget))
             sampler = DynamicBatchSampler(

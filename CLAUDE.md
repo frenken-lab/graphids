@@ -31,7 +31,7 @@ python -m graphids analyze --config graphids/config/stages/analyze_vgae.yaml \
 - `python -m graphids fit|test|validate|predict` → `GraphIDSCLI` (extends `LightningCLI`, adds `link_arguments` for DRY config)
 - `python -m graphids analyze` → `Analyzer` class (no Trainer — loads checkpoints, generates artifacts)
 
-Orchestration: `python -m graphids.orchestrate [run|validate|smoke]` — dagster-based, see `plans/dagster-native-orchestration.md`
+Orchestration: `python -m graphids.orchestrate [run|validate|smoke]` — dagster-based, see `plans/architecture/dagster-native-orchestration.md`
 
 Fusion has per-method stage YAMLs: `fusion.yaml` (bandit/dqn → RLFusionModule), `fusion_mlp.yaml` (MLPFusionModule), `fusion_weighted_avg.yaml` (WeightedAvgModule). Config resolution in `component.py` picks the right YAML from `fusion_method` in the recipe.
 

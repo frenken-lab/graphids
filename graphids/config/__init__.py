@@ -28,6 +28,7 @@ _CKPT_MODEL: dict[str, str] = _constants["ckpt_model"]
 # ---------------------------------------------------------------------------
 _slurm = _constants["slurm"]
 SLURM_ACCOUNT: str = os.environ.get("KD_GAT_SLURM_ACCOUNT", _slurm["account"])
+SLURM_LOG_DIR: str = os.environ.get("KD_GAT_SLURM_LOG_DIR", _slurm["log_dir"])
 
 # ---------------------------------------------------------------------------
 # Lake root — base for all experiment IO (expanded configs, run dirs, catalog)
