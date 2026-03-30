@@ -49,8 +49,9 @@ teacher checkpoint path via `--model.init_args.auxiliaries[0].model_path=<path>`
 ## In Progress
 
 - Ops dashboard (`buckeyeguy/kd-gat-dashboard`) -- running on HF Spaces
-- **Ablation Run 005** -- dagster orchestration rebuilt with proper primitives.
-  Next: `python -m graphids.orchestrate validate` (on SLURM — imports torch), then smoke on gpudebug, then submit.
+- **Ablation Run 005** -- dagster orchestration verified end-to-end.
+  Validate passes, smoke passes (3-stage chain on gpudebug, hcrl_sa, 3 epochs).
+  Next: submit Run 005.
 
 ### Code consolidation (deferred)
 
@@ -58,6 +59,26 @@ teacher checkpoint path via `--model.init_args.auxiliaries[0].model_path=<path>`
 - [ ] Preprocessing consolidation (`plans/preprocessing-consolidation.md`) -- delete _temporal.py, DataModule convention fixes
 
 ## Recently Completed
+
+### Smoke test verified + 8 bug fixes (2026-03-29)
+
+Dagster runtime path verified end-to-end: validate (all config chains) + smoke
+(autoencoder→curriculum→fusion, hcrl_sa, 3 epochs, gpudebug). Bugs found and fixed:
+
+1. **lake_root defaults** — 7 modules used `"experimentruns"` instead of
+   `os.environ.get("KD_GAT_LAKE_ROOT")`. Data not found at runtime.
+2. **SaveConfigCallback** — `overwrite: True` in CLI_KWARGS for reruns.
+3. **CurriculumDataModule** — subclassed CANBusDataModule (was missing num_ids,
+   in_channels, num_classes properties needed by GATModule.setup()).
+4. **DynamicBatchSampler num_steps** — CurriculumSampler._build_inner() didn't pass
+   num_steps (val loader did). len() undefined error.
+5. **CurriculumEpochCallback** — set_epoch() was only called at epoch 0 because
+   reload_dataloaders_every_n_epochs defaults to 0. Added callback in trainer.yaml.
+6. **Fusion YAML routing** — per-method stage YAMLs (fusion_mlp.yaml,
+   fusion_weighted_avg.yaml) + identity metadata params on MLPFusionModule/WeightedAvgModule.
+7. **MLPFusionModule.state_dim** — required param with no default. Now defaults to
+   fusion_state_dim().
+8. **Smoke seed collision** — default seed 0 (was 42, same as production).
 
 ### Dagster orchestration rebuild (2026-03-29)
 

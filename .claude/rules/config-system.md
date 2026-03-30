@@ -27,7 +27,9 @@ graphids/
       autoencoder.yaml   # VGAEModule + CANBusDataModule
       normal.yaml        # GATModule + CANBusDataModule (no curriculum)
       curriculum.yaml    # GATModule + CurriculumDataModule
-      fusion.yaml        # RLFusionModule + FusionDataModule + trainer overrides
+      fusion.yaml        # RLFusionModule (bandit/dqn) + FusionDataModule + trainer overrides
+      fusion_mlp.yaml    # MLPFusionModule + FusionDataModule
+      fusion_weighted_avg.yaml  # WeightedAvgModule + FusionDataModule
       analyze_vgae.yaml  # Analyzer config: VGAE embeddings + landscape
       analyze_gat.yaml   # Analyzer config: GAT embeddings + attention + CKA + landscape
       analyze_fusion.yaml # Analyzer config: fusion policy
@@ -40,7 +42,11 @@ graphids/
       kd_vgae.yaml       # KD auxiliaries for VGAE student
       kd_gat.yaml        # KD auxiliaries for GAT student
   orchestrate/
-    dagster_defs.py      # recipe→topology, asset factory, validate, smoke, Definitions
+    component.py         # SlurmTrainingComponent + IOManager + Resource + factory
+    definitions.py       # dagster entry point
+    __main__.py          # CLI: run/validate/smoke
+    slurm.py             # sbatch submit, sacct poll
+    resources.py         # ResourceSpec + scale_resources
 ```
 
 `LAKE_ROOT` defaults to `experimentruns` (relative) or `KD_GAT_LAKE_ROOT` env var (ESS on OSC).

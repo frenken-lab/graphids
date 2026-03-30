@@ -88,7 +88,7 @@ def validate_recipe(recipe_path: Path = RECIPE_PATH) -> list[str]:
 
 
 def smoke_test(*, dry_run: bool = False, dataset: str = "set_01",
-               seed: int = 42, max_epochs: int = 3) -> bool:
+               seed: int = 0, max_epochs: int = 3) -> bool:
     """Run one 3-stage chain on gpudebug."""
     from graphids.orchestrate.component import enumerate_assets
     from graphids.config import PIPELINE_YAML
@@ -136,6 +136,10 @@ def smoke_test(*, dry_run: bool = False, dataset: str = "set_01",
         spec = specs[name]
         rd = run_dir(lake_root, user, dataset, spec.model_type, spec.scale,
                      spec.stage, spec.identity, spec.kd_tag, seed)
+        ckpt_file = Path(rd) / "checkpoints" / "best_model.ckpt"
+        if ckpt_file.exists():
+            print(f"  SKIP: {spec.stage} ({name}) — checkpoint exists")
+            continue
         cli_args = [
             f"--data.init_args.dataset={dataset}",
             f"--seed_everything={seed}",
@@ -180,7 +184,7 @@ def main() -> None:
     smoke_p = sub.add_parser("smoke", help="Smoke test on gpudebug")
     smoke_p.add_argument("--dry-run", action="store_true")
     smoke_p.add_argument("--dataset", default="set_01")
-    smoke_p.add_argument("--seed", type=int, default=42)
+    smoke_p.add_argument("--seed", type=int, default=0)
     smoke_p.add_argument("--max-epochs", type=int, default=3)
     args, remaining = p.parse_known_args()
 

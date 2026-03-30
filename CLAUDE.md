@@ -33,6 +33,8 @@ python -m graphids analyze --config graphids/config/stages/analyze_vgae.yaml \
 
 Orchestration: `python -m graphids.orchestrate [run|validate|smoke]` — dagster-based, see `plans/dagster-native-orchestration.md`
 
+Fusion has per-method stage YAMLs: `fusion.yaml` (bandit/dqn → RLFusionModule), `fusion_mlp.yaml` (MLPFusionModule), `fusion_weighted_avg.yaml` (WeightedAvgModule). Config resolution in `component.py` picks the right YAML from `fusion_method` in the recipe.
+
 ## Session Start
 
 Always read `PLAN.md` before starting work. Update it after completing any task.

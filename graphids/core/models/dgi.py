@@ -9,6 +9,8 @@ Reference: Veličković et al., "Deep Graph Infomax" (ICLR 2019).
 
 from __future__ import annotations
 
+import os
+
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
@@ -170,7 +172,7 @@ class DGIModule(OOMSkipMixin, pl.LightningModule):
         # --- identity / dynamic ---
         scale: str = "small",
         model_type: str = "dgi",
-        lake_root: str = "experimentruns",
+        lake_root: str = os.environ.get("KD_GAT_LAKE_ROOT"),
         dataset: str = "",
         seed: int = 42,
         num_ids: int = 0,

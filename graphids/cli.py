@@ -20,6 +20,7 @@ CLI_KWARGS = dict(
     subclass_mode_model=True,
     subclass_mode_data=True,
     seed_everything_default=42,
+    save_config_kwargs={"overwrite": True},
     parser_kwargs={
         "default_env": True,
         "env_prefix": "KD_GAT",

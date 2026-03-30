@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
@@ -360,7 +362,7 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         # --- identity / dynamic ---
         scale: str = "small",
         model_type: str = "vgae",
-        lake_root: str = "experimentruns",
+        lake_root: str = os.environ.get("KD_GAT_LAKE_ROOT"),
         dataset: str = "",
         seed: int = 42,
         gat_stage: str = "curriculum",

@@ -255,7 +255,7 @@ class FusionDataModule(pl.LightningDataModule):
     def __init__(
         self,
         dataset: str = "",
-        lake_root: str = "experimentruns",
+        lake_root: str = os.environ.get("KD_GAT_LAKE_ROOT"),
         vgae_ckpt_path: str = "",
         gat_ckpt_path: str = "",
         method: str = "bandit",

@@ -128,7 +128,11 @@ def _overlay_model(stage_def: dict, merged: dict) -> str:
 def _resolve_config_files(stage: str, stage_def: dict, merged: dict) -> tuple[list[str], bool]:
     scale = merged.get("scale", "small")
     model = _overlay_model(stage_def, merged)
-    configs = [str(STAGES_DIR / f"{stage}.yaml")]
+    # Method-specific stage YAML (e.g. fusion_mlp.yaml) takes priority
+    method = merged.get("fusion_method")
+    variant = STAGES_DIR / f"{stage}_{method}.yaml" if method else None
+    used_variant = variant is not None and variant.exists()
+    configs = [str(variant)] if used_variant else [str(STAGES_DIR / f"{stage}.yaml")]
     overlay = OVERLAYS_DIR / f"{scale}_{model}.yaml"
     has_overlay = overlay.exists()
     if has_overlay:
@@ -137,7 +141,7 @@ def _resolve_config_files(stage: str, stage_def: dict, merged: dict) -> tuple[li
         kd = OVERLAYS_DIR / f"kd_{model}.yaml"
         if kd.exists():
             configs.append(str(kd))
-    return configs, has_overlay
+    return configs, has_overlay, used_variant
 
 
 def _identity_value(key: str, merged: dict, stages: list[str]) -> Any:
@@ -221,11 +225,13 @@ def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
             id_keys = stage_def.get("identity_keys", [])
             id_cfg = {k: _identity_value(k, merged, stages) for k in id_keys}
             identity = compute_identity_hash(stage, id_cfg)
-            config_files, has_overlay = _resolve_config_files(stage, stage_def, merged)
+            config_files, has_overlay, used_variant = _resolve_config_files(stage, stage_def, merged)
 
             overrides: dict[str, str] = {}
             for key in id_keys:
                 if key == "scale" and has_overlay:
+                    continue
+                if key == "method" and used_variant:
                     continue
                 val = id_cfg.get(key)
                 if val is not None:
