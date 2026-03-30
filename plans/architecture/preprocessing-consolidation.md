@@ -108,10 +108,11 @@ namespace pattern to clean up there.)
 
 ### Problem
 
-`FusionDataModule.cache_predictions` (`datamodule.py:243-268`) is a `@staticmethod` that:
-- Takes models + data + device
-- Imports `registry_extractors()` from `graphids.core.models.registry`
-- Runs model inference to build state vectors
+`FusionDataModule.cache_predictions` (`datamodule.py:346-372`) is a `@staticmethod` that:
+- Takes models + data + device + max_samples + batch_size
+- Calls `registry_extractors()` to get active extractors
+- Runs model inference in batches to build state vectors
+- Returns `{"states": ..., "labels": ...}`
 - Has no DataModule instance state
 
 This is model-layer logic (feature extraction) living in a data-layer class. It violates
@@ -137,9 +138,11 @@ self.train_cache = cache_predictions(models, list(train_ds), device, hp.max_samp
 
 ### Problem
 
-`CANBusDataset._write_cache_metadata` (`can_bus.py:112-158`) reimplements the
-tmpfile → fsync → rename pattern inline for JSON output. `utils.py` has `atomic_save`
-but it hardcodes `torch.save`.
+`CANBusDataset._write_cache_metadata` (`can_bus.py:112-159`) reimplements the
+tmpfile → fsync → rename pattern inline (lines 145-158: `tempfile.mkstemp` → `os.fdopen` →
+`json.dump` + `f.flush()` + `os.fsync` → `os.rename`, with cleanup on exception).
+
+`utils.py:34-49` has `atomic_save` using the same pattern but hardcoded to `torch.save`.
 
 ### Action
 
@@ -168,26 +171,40 @@ def atomic_save(data, path: Path) -> None:
 
 ### Line count: ~**-10 lines** (inline reimplementation deleted, +5 for generalized util)
 
-## 5. Dead test-only paths in `features.py`
+## 5. Dead and test-only paths in `features.py`
 
-### Observation (not an action item yet)
+### Observation
 
-`clustering_coefficients`, `stats_to_tensor`, `node_features`, `edge_to_tensor` (~65 lines)
-are only called from tests (`test_features.py`), not from the production path
-(`sliding_window_graphs`). The production path uses vectorized Polars triangle counting
-inline.
+| Function | Defined at | Production callers | Test callers |
+|----------|------------|-------------------|--------------|
+| `clustering_coefficients` | `features.py:105` | None (called internally by `stats_to_tensor`) | `test_features.py` (6 sites) |
+| `stats_to_tensor` | `features.py:124` | None (called internally by `node_features`) | None (reachable only via `node_features`) |
+| `node_features` | `features.py:153` | None | `test_features.py` (6 sites) |
+| `edge_to_tensor` | `features.py:191` | **None** | **None — completely dead** |
 
-These are the per-window path (process one window at a time) vs the batch production path
-(process all windows vectorized). The per-window path is useful for tests and debugging.
+The production path (`sliding_window_graphs`, lines 201-438) uses vectorized Polars
+triangle counting and stat expressions inline, never calling any of these.
 
-**Decision:** Keep for now. Flag for future cleanup if test coverage migrates to
-testing `sliding_window_graphs` directly. Not blocking.
+`edge_to_tensor` is fully dead — zero callers in production or tests. Safe to delete now.
+
+The `node_features` → `stats_to_tensor` → `clustering_coefficients` chain is the per-window
+path used by tests for correctness validation against the vectorized production path.
+
+**Note:** `test_features.py` imports `edge_features`, `_assemble_chunk_numpy`, and
+`_numpy_to_data` — symbols that do not exist in the current `features.py`. These tests
+are likely broken. Investigate before relying on test-only path as justification for
+keeping code.
+
+**Action:**
+- Delete `edge_to_tensor` now (dead code, ~10 lines).
+- Investigate broken test imports; fix or delete affected tests.
+- Keep `node_features` chain for now pending test investigation.
 
 ## 6. Lightning DataModule convention violations
 
 All three DataModules deviate from the `LightningDataModule` contract
 (Lightning docs: `data/datamodule.rst`). These aren't style nits — they
-block DDP, break checkpoint resume, and cause side-effect bugs.
+block DDP and skip unnecessary work.
 
 ### 6a. No `prepare_data()` / `setup()` separation — all three DataModules
 
@@ -201,7 +218,7 @@ Current code puts heavy one-time work in `setup()`:
 |---|---|---|
 | `CANBusDataModule` | `load_datasets()` → `CANBusDataset.process()` (NFS-locked CSV scan + graph building) | Yes — idempotent one-time cache build |
 | `FusionDataModule` | Loads VGAE + GAT models, runs inference (`cache_predictions`) | Yes — one-time state vector caching |
-| `CurriculumDataModule` | Loads VGAE, scores difficulty on all normal graphs | Yes — one-time scoring |
+| `CurriculumDataModule` | Delegates to `CANBusDataModule.setup()`, then loads VGAE and scores difficulty | Yes — one-time scoring |
 
 Single-GPU (current) works fine. DDP would run redundantly per-GPU or race on NFS.
 
@@ -244,74 +261,40 @@ Avoids loading train/val data when only testing, and vice versa.
 ### 6c. No `predict_dataloader()` — all three DataModules
 
 Models define `predict_step()` but `trainer.predict(datamodule=dm)` would fail — no
-`predict_dataloader()` method. `CANBusDataModule` has `test_dataloader()` but that
-returns a list of loaders per attack type, which isn't what predict needs.
+`predict_dataloader()` method. `CANBusDataModule` has `test_dataloader()` (line 282) but
+that returns a list of loaders per attack type, which isn't what predict needs.
+
+`FusionDataModule` has `train_dataloader` (line 407) and `val_dataloader` (line 411).
+`CurriculumDataModule` has `train_dataloader` (line 211) and `val_dataloader` (line 226).
 
 **Action:** Add `predict_dataloader()` to `CANBusDataModule` — returns the test loader(s)
 or a dedicated predict split. Low priority but completes the API.
 
-### 6d. No `state_dict()` / `load_state_dict()` on `CurriculumDataModule`
+### ~~6d. `_current_epoch` tracking~~ — RESOLVED
 
-`CurriculumDataModule` tracks `_current_epoch` (`curriculum.py:111`) which controls
-curriculum progression (what difficulty percentile of data is active). On checkpoint
-resume, this state is **lost** — training restarts curriculum from epoch 0, undoing
-the progression schedule.
+~~`CurriculumDataModule` tracks `_current_epoch` manually.~~
 
-**Action:**
+**Already fixed.** Epoch advancement uses `CurriculumEpochCallback.on_train_epoch_start()`
+(`curriculum.py:101-104`) which calls `dm._batch_sampler.set_epoch(trainer.current_epoch)`.
+No manual counter exists. `state_dict`/`load_state_dict` are unnecessary since
+`trainer.current_epoch` is already checkpointed by Lightning.
 
-```python
-def state_dict(self):
-    return {"current_epoch": self._current_epoch}
+### ~~6e. Side effects in `train_dataloader()`~~ — PARTIALLY RESOLVED
 
-def load_state_dict(self, state_dict):
-    self._current_epoch = state_dict["current_epoch"]
-```
+~~Manual `_current_epoch` counter incremented in `train_dataloader()`.~~
 
-Evidence: Lightning docs `extensions/datamodules_state.rst` — `state_dict`/`load_state_dict`
-are automatically called by the checkpointing system.
+**The manual epoch counter is gone.** However, `train_dataloader()` (`curriculum.py:211-224`)
+still has a first-call side effect: when `_batch_sampler.max_num_nodes is None`, it calls
+`vram_node_budget()` and writes to `self._batch_sampler.max_num_nodes`,
+`self._batch_sampler.mean_nodes`, and rebuilds `self._batch_sampler._inner`. This is
+acceptable for now (single-GPU, first-call only).
 
-### 6e. Side effects in `train_dataloader()` — `CurriculumDataModule`
+### ~~6f. `compute_node_budget` in models layer~~ — RESOLVED
 
-```python
-def train_dataloader(self):
-    self._batch_sampler.set_epoch(self._current_epoch)  # side effect
-    self._current_epoch += 1                             # mutation
-    return self._train_loader
-```
+~~`compute_node_budget` + `NodeBudgetInfo` in `_training.py`, imported by DataModules.~~
 
-Lightning can call `train_dataloader()` multiple times (sanity validation check calls it,
-then the real training loop calls it again). The manual counter increments incorrectly.
-
-**Action:** Replace `self._current_epoch` with `self.trainer.current_epoch`:
-
-```python
-def train_dataloader(self):
-    self._batch_sampler.set_epoch(self.trainer.current_epoch)
-    return self._train_loader
-```
-
-Eliminates the manual counter entirely. The `state_dict` (6d) is then also unnecessary
-since `trainer.current_epoch` is already checkpointed by Lightning.
-
-### 6f. `compute_node_budget` lives in models layer
-
-`datamodule.py:187` and `curriculum.py:10,149` import
-`from graphids.core.models._training import compute_node_budget`. This function reads
-dataset metadata and computes batch sizing — a preprocessing concern, not a model concern.
-
-**Action:** Move `compute_node_budget` + `NodeBudgetInfo` from `_training.py` to
-`datamodule.py` (or a new `_batching.py` if `datamodule.py` gets too large). The only
-non-preprocessing caller is `vgae.py` which imports it — that import reverses to
-`from graphids.core.preprocessing.datamodule import compute_node_budget` (allowed:
-models can import preprocessing utilities).
-
-Wait — code-style.md says core/ imports config.constants only, never pipeline. But
-preprocessing is also in core/. Let me check: `vgae.py` only *imports* the symbol at
-module level (`from ._training import compute_node_budget`), it doesn't *call* it.
-Grepping confirms `vgae.py` imports but never calls `compute_node_budget`. So the only
-actual callers are in preprocessing — the `vgae.py` import is dead.
-
-**Action (revised):** Move to preprocessing, delete the dead import from `vgae.py`.
+**Already gone.** Neither `compute_node_budget` nor `NodeBudgetInfo` exist anywhere in the
+codebase. `vgae.py` does not import either symbol. No action needed.
 
 ### Line count estimate (convention fixes)
 
@@ -320,20 +303,18 @@ actual callers are in preprocessing — the `vgae.py` import is dead.
 | `prepare_data()` / `setup()` split (3 DMs) | +30 | -10 |
 | `stage` guards in `setup()` | +12 | 0 |
 | `predict_dataloader()` on `CANBusDataModule` | +3 | 0 |
-| `CurriculumDataModule` use `trainer.current_epoch` | +1 | -5 |
-| Move `compute_node_budget` to preprocessing | +2 | -2 |
-| **Section net** | **+48** | **-17** |
-| **Section delta** | | **+31 lines** (correctness cost) |
+| **Section net** | **+45** | **-10** |
+| **Section delta** | | **+35 lines** (correctness cost) |
 
 ## Execution order
 
-1. Delete `_temporal.py` + clean `__init__.py` (standalone)
-2. Refactor `load_datasets` to keyword args, update 3 callers
-3. Move `cache_predictions` to `fusion_features.py` (depends on models plan section 6)
-4. Generalize `atomic_write` in `utils.py`, simplify `_write_cache_metadata`
-5. Move `compute_node_budget` from `_training.py` to preprocessing, delete dead `vgae.py` import
-6. `prepare_data()` / `setup(stage)` split on all 3 DataModules
-7. `CurriculumDataModule`: replace manual epoch counter with `trainer.current_epoch`
+1. Delete `_temporal.py` + clean `__init__.py` (standalone, no deps)
+2. Delete `edge_to_tensor` from `features.py` (standalone, zero callers)
+3. Investigate broken test imports in `test_features.py` (`edge_features`, `_assemble_chunk_numpy`, `_numpy_to_data`)
+4. Refactor `load_datasets` to keyword args, update 2 callers
+5. Move `cache_predictions` to `fusion_features.py` (depends on models plan section 6)
+6. Generalize `atomic_write` in `utils.py`, simplify `_write_cache_metadata`
+7. `prepare_data()` / `setup(stage)` split on all 3 DataModules
 8. Add `predict_dataloader()` to `CANBusDataModule`
 9. Verify: import checks + `--collect-only`
 
@@ -342,18 +323,24 @@ actual callers are in preprocessing — the `vgae.py` import is dead.
 | Section | Delta |
 |---------|-------|
 | Delete `_temporal.py` + `__init__.py` cleanup (section 1) | -185 |
-| `load_datasets` kwargs (section 2) | -20 |
+| Delete `edge_to_tensor` (section 5) | -10 |
+| `load_datasets` kwargs (section 2) | -14 |
 | `cache_predictions` relocation (section 3) | 0 |
 | `atomic_write` generalization (section 4) | -5 |
-| Convention fixes (sections 5-8) | +31 |
+| Convention fixes — 6a/6b/6c only (section 6) | +35 |
 | **Total** | **-179 lines** |
 
 ## Risks
 
-- **`load_datasets` callers outside preprocessing:** Verified — only the 3 DataModules
-  + `_temporal.py` (being deleted) call it. No external callers.
-- **`collate_temporal` in test:** One test imports it. Either inline in the test or delete
+- **`load_datasets` callers outside preprocessing:** Verified — only `CANBusDataModule` +
+  `FusionDataModule` + `_temporal.py` (being deleted) call it. `CurriculumDataModule`
+  delegates via `super()`. No external callers.
+- **`collate_temporal` in test:** One test (`test_temporal.py:39`) imports it directly from
+  `_temporal` (bypasses `__init__` lazy path). Either inline in the test or delete
   the test if temporal model tests are covered by `test_temporal.py`'s other test methods
   that exercise `TemporalLightningModule` directly.
 - **`cache_predictions` move timing:** Depends on models plan section 6 (registry dissolution)
   so that `extractors()` is already in `fusion_features.py`. Execute after that section.
+- **Broken test imports:** `test_features.py` imports symbols that don't exist in `features.py`
+  (`edge_features`, `_assemble_chunk_numpy`, `_numpy_to_data`). These tests may already be
+  failing silently — investigate before deleting the test-only code paths they exercise.
