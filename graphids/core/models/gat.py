@@ -230,7 +230,6 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
         self.save_hyperparameters()
         self.model = None
         self.teacher = None
-        self._teacher_on_cpu = False
         self.test_metrics = binary_test_metrics()
         if loss_fn == "weighted_ce":
             w = torch.tensor([1.0, loss_weight])
@@ -257,7 +256,9 @@ class GATModule(OOMSkipMixin, pl.LightningModule):
         if hp.compile_model and hasattr(torch, "compile"):
             self.model = torch.compile(self.model, dynamic=True)
         if self.teacher is None:
-            self.teacher, _ = prepare_kd(hp, hp.model_type, torch.device("cpu"))
+            teacher, _ = prepare_kd(hp, hp.model_type, torch.device("cpu"))
+            # Bypass nn.Module.__setattr__ so Lightning won't auto-move teacher to GPU
+            self.__dict__["teacher"] = teacher
 
     def forward(self, batch):
         return self.model(batch)

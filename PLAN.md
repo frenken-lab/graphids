@@ -63,7 +63,12 @@ teacher checkpoint path via `--model.init_args.auxiliaries[0].model_path=<path>`
   measures `torch.cuda.max_memory_allocated()`, derives real bytes/node.
   Works for all model × scale × GPU combos. CurriculumDataModule defers budget
   from `setup()` to `train_dataloader()`. `OOMSkipMixin` remains as safety net.
-- [ ] KD autoencoder teacher VRAM (issue #4 — Lightning auto-moves teacher to GPU)
+  **KD-aware** (2026-03-30): probe now runs `model._step()` (auto-detected) instead of
+  `forward()`, capturing teacher VRAM during probe. See `plans/memory-profiling/vram-probe-kd-aware.md`.
+  Caveat: `_GRAD_MULTIPLIER=2` overestimates for KD (teacher backward doesn't exist) — safe direction.
+- [x] **KD teacher VRAM** (resolved issue #4 — Lightning auto-moves teacher to GPU).
+  Teacher stored via `self.__dict__["teacher"]` to bypass `nn.Module._modules` registration.
+  `teacher_on_device()` moves teacher CPU→GPU only during inference, then back to CPU.
 - [x] **Observability** (resolved issue #5 — logger: false, no GPU stats).
   Added WandbLogger + CSVLogger + DeviceStatsMonitor to `trainer.yaml`.
   wandb 0.25.1 installed. `orchestrate validate` passes all 18 configs.

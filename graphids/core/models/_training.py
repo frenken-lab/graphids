@@ -56,17 +56,21 @@ def focal_loss(logits, targets, gamma: float = 2.0):
 
 @contextlib.contextmanager
 def teacher_on_device(module, device):
-    """Move teacher to device for inference, offload back to CPU after."""
-    offload = getattr(getattr(module, "hparams", None), "offload_teacher_to_cpu", False)
-    if offload and module._teacher_on_cpu:
-        module.teacher.to(device)
-        module._teacher_on_cpu = False
+    """Move KD teacher to *device* for inference, return to CPU after.
+
+    Teacher is stored outside ``nn.Module._modules`` (via ``__dict__``) so
+    Lightning never auto-transfers it to GPU.  This context manager is the
+    only code path that moves it onto the accelerator.
+    """
+    teacher = module.teacher
+    if teacher is None:
+        yield
+        return
+    teacher.to(device)
     try:
         yield
     finally:
-        if offload:
-            module.teacher.to("cpu")
-            module._teacher_on_cpu = True
+        teacher.to("cpu")
 
 
 def binary_test_metrics():

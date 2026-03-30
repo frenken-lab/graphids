@@ -6,7 +6,7 @@
 
 ## Goals
 
-1. **Batch size**: generalize VRAM budget calculation across model × scale × GPU combos
+1. **Batch size**: generalize VRAM budget calculation across model × scale × GPU combos (see also `plans/memory-profiling/vram-probe-kd-aware.md`)
 2. **Training speed**: identify and remove bottlenecks (CPU↔GPU, data loading, kernel efficiency)
 3. **Observability**: per-step GPU metrics, memory telemetry, throughput, experiment tracking
 
@@ -16,6 +16,7 @@
 |-----|--------|--------|--------|--------|
 | P0 | Enable CSVLogger + WandbLogger in `trainer.yaml` | 30 min | Solves issue #5 (zero observability). GPU util/temp/mem/power every 15s. | **Done** (2026-03-30). wandb 0.25.1 installed, `trainer.yaml` updated. `orchestrate validate` passes. |
 | P0 | Add DeviceStatsMonitor callback | 1 line YAML | Per-step CUDA allocator stats. Catches OOM precursors. Requires logger. | **Done** (2026-03-30). Added to `trainer.yaml` callbacks. |
+| P0 | KD-aware VRAM probe | 8 LOC | Probe runs `_step()` not `forward()` — captures teacher VRAM. Fixes budget underestimate for KD configs. | **Done** (2026-03-30). `datamodule.py` auto-detects `_step`. See `plans/memory-profiling/vram-probe-kd-aware.md`. |
 | P1 | Dagster UI via SSH tunnel | 30 min | Asset catalog, run history, Gantt charts, log tailing for orchestration layer. | Pending |
 | P1 | Run 1 nsys profiling job | 1 SLURM job | System-wide CPU↔GPU timeline. Answers "is training data-bound or compute-bound?" | Pending |
 | P1 | Run 1 memory snapshot job | 1 SLURM job | Per-allocation trace with stack traces. Diagnoses 13G vs 22G bimodal worker memory. | Pending |

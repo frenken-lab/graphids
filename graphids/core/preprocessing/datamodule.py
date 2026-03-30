@@ -33,12 +33,16 @@ _SAFETY_MARGIN = 0.85
 _GRAD_MULTIPLIER = 2
 
 
-def _probe_bytes_per_node(model, dataset, n_target: int = 2000) -> int:
-    """Forward-pass a small batch, measure peak VRAM, return estimated bytes/node.
+def _probe_bytes_per_node(model, dataset, n_target: int = 2000, step_fn=None) -> int:
+    """Run a representative step, measure peak VRAM, return estimated bytes/node.
+
+    When *step_fn* is provided (e.g. ``model._step``), the probe measures the
+    full training-step footprint — including KD teacher inference and any other
+    computation in ``_step``.  Falls back to ``model.forward`` when *step_fn*
+    is ``None``.
 
     Runs under torch.no_grad() and multiplies by _GRAD_MULTIPLIER to account
-    for gradient memory during real training.  Same pattern as
-    ``GraphAutoencoderNeighborhood.score_difficulty`` (vgae.py:293).
+    for gradient memory during real training.
     """
     from torch_geometric.data import Batch
 
@@ -58,7 +62,7 @@ def _probe_bytes_per_node(model, dataset, n_target: int = 2000) -> int:
     was_training = model.training
     model.eval()
     with torch.no_grad():
-        model(batch)
+        (step_fn or model)(batch)
     model.train(was_training)
 
     peak = torch.cuda.max_memory_allocated(model.device)
@@ -68,7 +72,8 @@ def _probe_bytes_per_node(model, dataset, n_target: int = 2000) -> int:
     fwd_per_node = max(1, int((peak - before) / actual_nodes))
     bpn = fwd_per_node * _GRAD_MULTIPLIER
     _log.info("probe_bytes_per_node", bytes_per_node=bpn, probe_nodes=actual_nodes,
-              fwd_per_node=fwd_per_node, delta_mb=round((peak - before) / 1e6, 1))
+              fwd_per_node=fwd_per_node, delta_mb=round((peak - before) / 1e6, 1),
+              method="step_fn" if step_fn else "forward")
     return bpn
 
 
@@ -79,8 +84,10 @@ def vram_node_budget(
     """Compute node budget from available VRAM and dataset graph stats.
 
     If *model* and *train_dataset* are provided and CUDA is available, probes
-    actual per-node activation memory via a single forward pass.
-    Otherwise falls back to the ``_BYTES_PER_NODE`` constant.
+    actual per-node activation memory.  When the model exposes a ``_step``
+    method (all graph LightningModules do), the probe runs the full training
+    step — capturing KD teacher inference, auxiliary losses, etc. — instead of
+    just ``forward()``.
 
     Returns (node_budget, mean_nodes).
     """
@@ -106,7 +113,9 @@ def vram_node_budget(
         return budget, mean_nodes
 
     if model is not None and train_dataset is not None and torch.cuda.is_available():
-        bytes_per_node = _probe_bytes_per_node(model, train_dataset)
+        # Prefer _step over forward — captures full training footprint (KD, etc.)
+        step_fn = getattr(model, "_step", None)
+        bytes_per_node = _probe_bytes_per_node(model, train_dataset, step_fn=step_fn)
     else:
         bytes_per_node = _BYTES_PER_NODE
 

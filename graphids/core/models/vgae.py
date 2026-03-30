@@ -378,7 +378,6 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         self.model = None
         self.teacher = None
         self.projection = None
-        self._teacher_on_cpu = False
         self.test_threshold: float | None = None
         self.test_metrics = binary_test_metrics()
         self._test_scores: list[torch.Tensor] = []
@@ -401,7 +400,10 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         if hp.compile_model and hasattr(torch, "compile"):
             self.model = torch.compile(self.model, dynamic=True)
         if self.teacher is None:
-            self.teacher, self.projection = prepare_kd(hp, hp.model_type, torch.device("cpu"))
+            teacher, projection = prepare_kd(hp, hp.model_type, torch.device("cpu"))
+            # Bypass nn.Module.__setattr__ so Lightning won't auto-move teacher to GPU
+            self.__dict__["teacher"] = teacher
+            self.projection = projection
 
     def forward(self, batch):
         edge_attr = getattr(batch, "edge_attr", None)

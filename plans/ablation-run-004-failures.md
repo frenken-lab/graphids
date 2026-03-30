@@ -47,18 +47,15 @@ All `vgae/small/autoencoder` and `gat/small/normal` jobs OOM'd at 24G on `set_01
 **Three compounding factors:**
 
 1. **set_01 is 26x larger than hcrl_sa** (4.4 GB cache vs 171 MB, 3.4x hcrl_ch)
-2. **Teacher consumes ~11 GiB VRAM on GPU**, collapsing batch budget 3x:
-   ```
-   vram_node_budget  budget=506568  free_vram_gb=16.6   # before teacher loads
-   vram_node_budget  budget=168904  free_vram_gb=5.53   # after teacher loads
-   ```
-   (`slurm_logs/...46156625.out:26-27`)
-   - `teacher_on_device` context manager (`_training.py:57-69`) only offloads when `offload_teacher_to_cpu=True`
-   - That param is read via `getattr(self.hparams, 'offload_teacher_to_cpu', False)` — not a declared `__init__` param on VGAEModule. **Latent footgun:** silently never offloads.
-   - **Open question:** Why does the teacher use 11 GiB VRAM if it only runs inference? (under investigation)
+2. **~~Teacher consumes ~11 GiB VRAM on GPU~~** (**RESOLVED** — `dagster` branch, 2026-03-30).
+   Teacher stored via `self.__dict__["teacher"]` to bypass `nn.Module._modules` registration.
+   `teacher_on_device()` now unconditionally moves teacher CPU→GPU for inference, then back.
+   Budget should recover to ~506K nodes (teacher weights ~3 MB, activation memory freed after each step).
+   VRAM probe also updated: runs `model._step()` instead of `forward()` to capture teacher footprint
+   during budget estimation. See `plans/memory-profiling/vram-probe-kd-aware.md`.
 3. **2h wall time insufficient.** Non-KD large autoencoder (bf355e79, 745K params) barely fit 2h (epoch 157/299 on set_01). KD small with 3x batch reduction + teacher overhead needs **6-8h**.
 
-**Fix needed:** KD variants need separate resource profiles (time ≥ 6h). Also investigate teacher VRAM — inference-only should not consume 11 GiB.
+**Fix needed:** KD variants need separate resource profiles (time ≥ 6h). ~~Also investigate teacher VRAM~~ (resolved).
 
 ### 5. profile_jobs.py broken for dagster pipeline
 
@@ -161,21 +158,17 @@ Source: https://docs.dagster.io/guides/operate/run-executors
 | `AssetObservation` in poll loop | Which SLURM jobs were PENDING vs RUNNING, how long in queue |
 | Dagster Pipes | Epoch progress, batch budget collapse (506K→168K), teacher VRAM consumption — all mid-job |
 
-### Teacher VRAM investigation (from Q4 follow-up)
+### Teacher VRAM investigation — RESOLVED (2026-03-30)
 
-The teacher's 11 GiB VRAM consumption is caused by **Lightning auto-moving `self.teacher` to GPU**.
+**Root cause:** Lightning auto-moved `self.teacher` to GPU via `nn.Module._modules` registration.
 
-- Teacher assigned as `self.teacher` at `vgae.py:379` — a child `nn.Module`
-- Lightning calls `module.to(device)` at setup, recursively moving ALL children to GPU
-- This happens before any training step, before `teacher_on_device` can intervene
-- `offload_teacher_to_cpu` is **doubly broken**: (1) not a declared `__init__` param on VGAEModule (`vgae.py:341-373`), read via `getattr(..., False)` at `_training.py:60` — can never be set via YAML; (2) Lightning already moved teacher to GPU at setup, so offload logic fights Lightning's own device management
-- Teacher weights (~745K params at fp32 ≈ 3 MB) are negligible; the 11 GiB is **activation memory** from forward pass on 168K nodes through `hidden_dims=[480,240,64]` with 4 heads (`large_vgae.yaml:6-12`)
-- `torch.no_grad()` is correctly applied (`vgae.py:432-443`), so no gradient graph retained, but intermediate tensors are live simultaneously during forward
+**Fix applied:** Option 1 — teacher stored via `self.__dict__["teacher"]` (bypasses `_modules`).
+`teacher_on_device()` rewritten: unconditionally moves teacher CPU→GPU for inference, CPU after.
+Deleted broken `offload_teacher_to_cpu` flag and `_teacher_on_cpu` state. Files changed:
+`_training.py:57-73`, `vgae.py:378-405`, `gat.py:231-260`.
 
-**Fix options:**
-1. Register teacher as non-module attribute (e.g. store in a dict, not `self.teacher`) so `nn.Module.to()` doesn't recurse into it
-2. Add `offload_teacher_to_cpu` as a real `__init__` param + override `on_fit_start()` to move teacher back to CPU after Lightning setup
-3. Use Lightning's `configure_model()` hook to load teacher after device placement
+**Remaining concern:** KD resource profiles still need `--time=06:00:00` minimum (factor 2 above).
+Per-step CPU↔GPU transfer adds ~0.5 ms (3 MB weights over PCIe 3.0) — negligible.
 
 ## 7. Dagster Testing Strategy
 
