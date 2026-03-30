@@ -178,7 +178,10 @@ def smoke_test(*, dry_run: bool = False, dataset: str = "set_01",
 def main() -> None:
     p = argparse.ArgumentParser(description="KD-GAT pipeline orchestrator")
     sub = p.add_subparsers(dest="command")
-    sub.add_parser("run", help="Run dagster asset materialization")
+    run_p = sub.add_parser("run", help="Run dagster asset materialization")
+    run_p.add_argument("--dataset", required=True, help="Dataset partition (e.g. set_01)")
+    run_p.add_argument("--seed", type=int, default=42, help="Seed partition (default: 42)")
+    run_p.add_argument("--select", default="*", help="Asset selection (default: all)")
     val_p = sub.add_parser("validate", help="Validate recipe config chains")
     val_p.add_argument("--recipe", default=str(RECIPE_PATH))
     smoke_p = sub.add_parser("smoke", help="Smoke test on gpudebug")
@@ -189,9 +192,15 @@ def main() -> None:
     args, remaining = p.parse_known_args()
 
     if args.command is None or args.command == "run":
+        if args.command is None:
+            p.print_help()
+            sys.exit(1)
         os.environ.setdefault("DAGSTER_HOME", "/fs/scratch/PAS1266/dagster")
-        cmd = [sys.executable, "-m", "dagster", "asset", "materialize",
-               "--select", "*", "-m", "graphids.orchestrate.definitions", *remaining]
+        partition = f"{args.dataset}|{args.seed}"
+        dg_bin = Path(sys.executable).parent / "dg"
+        cmd = [str(dg_bin), "launch", "--assets", args.select,
+               "--partition", partition, *remaining]
+        print(f"Materializing: select={args.select} partition={partition}")
         sys.exit(subprocess.call(cmd))
     elif args.command == "validate":
         errors = validate_recipe(Path(args.recipe))
