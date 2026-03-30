@@ -321,10 +321,15 @@ def _make_asset(
         rd_path = Path(rd)
         ckpt_file = rd_path / "checkpoints" / "best_model.ckpt"
 
-        # Skip if already complete
-        if ckpt_file.exists():
+        # Skip if already complete (checkpoint + marker from a successful run)
+        complete_marker = rd_path / ".complete"
+        if ckpt_file.exists() and complete_marker.exists():
             context.log.info(f"Already complete: {ckpt_file}")
             return str(ckpt_file)
+        if ckpt_file.exists() and not complete_marker.exists():
+            context.log.warning(
+                f"Stale checkpoint (no .complete marker), retraining: {ckpt_file}"
+            )
 
         # Build CLI: dataset, seed, run dir, model overrides, upstream ckpts
         cli_args = [
@@ -362,6 +367,7 @@ def _make_asset(
                     max_retries=reaction["max_retries"], seconds_to_wait=30)
             raise RuntimeError(f"SLURM job failed: {state}")
 
+        complete_marker.touch()
         return str(ckpt_file)  # IOManager.handle_output stores this path
 
     return _train
@@ -398,9 +404,14 @@ def _make_checkpoint_checks(
                     c.stage, c.identity, c.kd_tag, seed,
                 )
                 ckpt = Path(rd) / "checkpoints" / "best_model.ckpt"
+                marker = Path(rd) / ".complete"
+                passed = ckpt.exists() and marker.exists()
                 return dg.AssetCheckResult(
-                    passed=ckpt.exists(),
-                    metadata={"path": dg.MetadataValue.path(str(ckpt))},
+                    passed=passed,
+                    metadata={
+                        "path": dg.MetadataValue.path(str(ckpt)),
+                        "has_marker": dg.MetadataValue.bool(marker.exists()),
+                    },
                 )
             return _check
 
