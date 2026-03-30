@@ -22,7 +22,7 @@
 | --- | -------------------------------------- | ------------- | ------------ | ----------------------------------------- | ------ |
 | 4.1 | ~~Artifacts rewrite~~                  | ~~artifacts/~~| ~~net -220~~ | ~~artifacts-consolidation.md~~            | **DONE** (Analyzer subcommand, 2026-03-28) |
 | 4.2 | DQN/Bandit -> LightningModules         | `models/`     | net -120     | models-consolidation.md S5                | pending |
-| 4.3 | Memory bloat spike (prefetch thread)   | spike         | experimental | memory_profiling/resource_plan Problem 2  | pending |
+| 4.3 | Memory bloat spike (prefetch thread)   | spike         | experimental | plans/memory-profiling/performance-analysis.md "Open Items"  | pending |
 
 ## Completed tiers (archived)
 

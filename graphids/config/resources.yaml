@@ -8,7 +8,7 @@
 #   T_gpu ≈ 10ms (VGAE) / 25ms (GAT)
 #
 # Profiles derived from: sacct history March 2026, GPU profiling Run 003,
-# memory_profiling/investigation_v2.md, resource_plan_2026_03_27.md
+# plans/memory-profiling/performance-analysis.md
 
 resource_profiles:
   vgae:
