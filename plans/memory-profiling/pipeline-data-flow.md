@@ -38,12 +38,12 @@ data/automotive/set_02/
         │   8c: Sequential .collect() (saves ~20-30 GB peak)
         │   8d: Local ID remapping (bulk Polars join)
         │   8e: Polars → torch bulk handoff (.to_torch Float32)
-        │   8f: _assemble_graphs() — ProcessPoolExecutor (up to 8 workers)
-        │       Per window: tensor slicing, NetworkX clustering_coeff,
-        │       np.bincount → degree, build Data object
-        │       set_02: ~50K windows × 0.65ms ≈ 30s with 8 CPUs
+        │   8f: Zero-copy collation — bulk tensors ARE the collated format.
+        │       RLE boundaries from group_by become the slices dict directly.
+        │       No per-window Data objects, no list[Data], no collate() call.
+        │       Peak memory: ~1x final tensor size (was ~3x before 2026-03-31 fix).
         │
-        ▼  9. PyG InMemoryDataset.collate() → single Data + slices dict
+        ▼  9. Returns (Data, slices_dict, num_graphs) directly from bulk tensors
         ▼ 10. atomic_save() → torch.save + fsync + rename
         │
         ├──→ {lake}/cache/v7.0.0/{dataset}/processed/data_train.pt  (set_02 ≈ 5.9 GB)

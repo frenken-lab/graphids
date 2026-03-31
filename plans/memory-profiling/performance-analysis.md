@@ -289,4 +289,4 @@ that doesn't sacrifice warm-cache performance.
 - `plans/research/profiling-and-observability.md` — logging inventory, tool evaluations, observability plan
 - `plans/research/nvidia-gpu-profiling-tools.md` — nsys, ncu, torch.cuda memory APIs
 - `plans/research/lightning-profiler-vram-research.md` — why Lightning profilers can't replace _probe_bytes_per_node()
-- `plans/architecture/preprocessing-consolidation.md` — CurriculumDataModule fix tracked here
+- `plans/open_issues.md` — CurriculumDataModule rebuild + PSS verification tracked there

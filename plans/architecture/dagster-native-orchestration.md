@@ -125,54 +125,8 @@ Discovered by `dg` CLI via `pyproject.toml` `code_location_target_module`.
 The redesign restructured rather than reduced — complexity moved from ad-hoc code to
 dagster-native patterns (Component, IOManager, Resource), but total line count is similar.
 
-## Remaining issues
+## Open Issues
 
-### 1. `dagster-slurm` unused dependency
+Tracked in `../open_issues.md`. Key items: unused `dagster-slurm` dep, test layers 0-3 missing.
 
-`dagster-slurm>=1.12.0` is declared in `pyproject.toml` (line 34) and installed in `.venv`,
-but **zero Python files import it**. `SlurmTrainingResource` in `component.py` is a custom
-`ConfigurableResource`, not from `dagster-slurm`. The dependency should be removed from
-`pyproject.toml` to avoid confusion and reduce install weight.
-
-### 2. No `defs.yaml`
-
-The plan proposed YAML-driven component configuration via `defs.yaml` with template
-variables (`{{ env.KD_GAT_LAKE_ROOT }}`). The actual implementation uses Python-based
-config in `definitions.py`. This is simpler but means `dg scaffold` and `dg list components`
-won't discover the component via YAML. Acceptable trade-off for current scale.
-
-### 3. Dagster Pipes not adopted
-
-The plan's research section discussed `dagster_pipes.PipesContext` for metrics reporting.
-This was not implemented — metrics flow via `MaterializeResult(metadata=...)` in
-`_make_asset()`. No `dagster_pipes` import exists in the codebase. Fine for now; Pipes
-would only add value for cross-process metric streaming.
-
-## dagster-slurm evaluation (historical)
-
-> Preserved for decision context. dagster-slurm was evaluated and dropped.
-
-`dagster-slurm` 0.x (now 1.12.0, dagster 1.12.21 compat) provides `ComputeResource` with
-sbatch/sacct, `BashLauncher`, and local/SLURM mode toggle. Evaluated 2026-03-28/29.
-
-**Rejected because:**
-1. **Dagster Pipes protocol required.** `ComputeResource.run()` expects Pipes-aware Python
-   payloads. Our training commands are `python -m graphids fit --config ...` — bash CLI
-   commands. Adapting requires a wrapper script with no benefit.
-2. **Remote-first design.** dagster-slurm's core value is pixi env packaging + SCP upload.
-   We're already ON the SLURM cluster.
-3. **slurm.py is not the problem.** The 106-line `slurm.py` is clean, working code. The
-   fragility was in the asset factory / config resolution layer.
-
-SSH-to-localhost prerequisite was verified working (`~/.ssh/authorized_keys` has key),
-but the complexity mismatch made adoption net-negative.
-
-## Risks (current)
-
-| Risk | Status |
-|------|--------|
-| IOManager adds complexity for simple path passing | Implemented; JSON sidecars work |
-| Component system too rigid for ablation sweep | Working; `enumerate_assets()` handles recipe expansion |
-| PyG/torch import at dagster definition time | Solved — `component.py:8` says "NO torch/Lightning imports at definition time" |
-| dagster-slurm Pipes overhead | N/A — dagster-slurm dropped |
-| Unused dagster-slurm dep in pyproject.toml | **Open** — should remove |
+dagster-slurm evaluation and Dagster Pipes decision context: see `dagster-history.md`.

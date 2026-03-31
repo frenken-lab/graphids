@@ -174,21 +174,9 @@ Consolidated to `.env`. `dagster-ui.sh` asserts `DAGSTER_HOME` is set. `__main__
 
 ## Open Issues
 
-### RESOLVED: WandbLogger restored
-
-WandbLogger + WandbSaveConfigCallback restored to `trainer.yaml` and `cli.py`. Was accidentally removed during write-path consolidation. CSVLogger `save_dir` patching restored in `before_instantiate_classes`.
-
-### DORMANT: `experimentruns` fallback
-
-`LAKE_ROOT` defaults to `"experimentruns"` (relative, in-repo) when `KD_GAT_LAKE_ROOT` is unset. `.env` sets it to ESS. `.env.example` does not include it.
-
-### COSMETIC: `production` path never used
-
-`run_dir()` always emits `dev/{user}`. Remove the `{production|dev/user}` claim from docs.
-
-### PENDING: `dagster-ui.sh` needs `source .env`
-
-Script asserts `DAGSTER_HOME` but doesn't source `.env` where it's defined.
+- `experimentruns` fallback: `LAKE_ROOT` defaults to relative in-repo path when `KD_GAT_LAKE_ROOT` unset. `.env.example` should include it.
+- `production` path never used: `run_dir()` always emits `dev/{user}`. Remove claim from docs.
+- `dagster-ui.sh` needs `source .env`: script asserts `DAGSTER_HOME` but doesn't source it.
 
 ## Env Var → Path Mapping
 

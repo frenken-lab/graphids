@@ -16,21 +16,6 @@
 | 5 | GATv2 > other conv layers | GATv2 vs GATv1 vs GPSConv |
 | 6 | VGAE > other unsupervised | VGAE vs GAE vs DGI |
 
-## Decisions
-
-| Decision | Choice |
-|----------|--------|
-| Ablation datasets | `hcrl_ch` + `set_01` (2 of 6) |
-| Final eval datasets | All 6 |
-| Seed strategy | Screen with 1 seed -> expand to 3 for final table |
-| LR fairness | Shared HPs from prior sweeps |
-| Warm-start | Yes — enqueue old best trials into new Optuna studies |
-| Baseline (vanilla) | small / ce / normal / weighted_avg |
-| Proposed method | small_kd / focal / curriculum / bandit |
-| Large reference | large / focal / curriculum / bandit |
-
-## Phase 1: Ablation Study
-
 ### 1a. Screening Pass (1 seed, 2 datasets)
 
 #### 17 ablation configs
