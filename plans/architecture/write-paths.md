@@ -166,7 +166,7 @@ Consolidated to `.env`. `dagster-ui.sh` asserts `DAGSTER_HOME` is set. `__main__
 
 ### RESOLVED: test SLURM logs in-repo
 
-`run_tests_slurm.sh` was already deleted.
+`scripts/submit.sh tests` submits pytest to SLURM (`cpu` partition, 8 CPUs, 16GB).
 
 ### RESOLVED: smoke test duplication
 

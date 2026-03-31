@@ -15,36 +15,23 @@
 - Test on small datasets (`hcrl_ch`) before large ones (`set_02`+).
 - SLURM logs go to `slurm_logs/`, experiment outputs to `experimentruns/`.
 - Heavy tests use `@pytest.mark.slurm` — auto-skipped on login nodes.
-- **Always run tests via SLURM** (`cpu` partition, 8 CPUs, 16GB). Submit with `bash scripts/slurm/run_tests_slurm.sh`.
+- **Always run tests via SLURM.** Submit with `scripts/submit.sh tests [-k pattern]`.
 
-## Shell Building Blocks (`scripts/lib/`)
+## Job Submission
 
-**When writing new shell scripts, compose from `scripts/lib/` functions instead of writing ad-hoc code.** Source the modules you need:
+All SLURM jobs are submitted via the unified launcher `scripts/submit.sh <job> [args...]`:
 
-```bash
-source "$(dirname "$0")/../lib/datasets.sh"   # KD_ALL_DATASETS, kd_parse_datasets, kd_each_dataset
-source "$(dirname "$0")/../lib/dryrun.sh"      # kd_parse_dry_run, kd_exec, kd_mkdir
-source "$(dirname "$0")/../lib/slurm.sh"       # kd_submit, kd_sbatch_gpu_args, kd_sbatch_cpu_args
-source "$(dirname "$0")/../lib/validation.sh"  # kd_run_dir, kd_check_checkpoint, kd_run_complete
-# _bootstrap.sh (kd_log, kd_die, kd_load_env) is auto-sourced by all above
-```
+| Job | Command |
+|-----|---------|
+| Tests | `scripts/submit.sh tests [-k pattern] [-x]` |
+| Cache rebuild | `scripts/submit.sh rebuild-caches --all --delete-existing` |
+| Config validation | `scripts/submit.sh validate` |
+| Loss landscape | `scripts/submit.sh landscape <model_type> <dataset> <ckpt_path>` |
+| Preprocessing test | `scripts/submit.sh preprocessing-test` |
+| Ablation run | `scripts/submit.sh ablation [--recipe X] [--dataset X]` |
+| Profiling | `scripts/submit.sh profile` |
 
-**Conventions:** `kd_` prefix on all functions. Source guards prevent double-loading. Functions return exit codes, never call `exit` (except `kd_die`). Works alongside `_preamble.sh` / `_epilog.sh`.
-
-**Example (login-node launcher):**
-```bash
-#!/bin/bash
-set -euo pipefail
-source "$(dirname "$0")/../lib/datasets.sh"
-source "$(dirname "$0")/../lib/dryrun.sh"
-source "$(dirname "$0")/../lib/slurm.sh"
-
-kd_parse_dry_run "$@"
-read -ra DATASETS <<< "$(kd_parse_datasets "$@")"
-
-do_one() { kd_submit gpu "train-$1" "source .../scripts/slurm/_preamble.sh && python -m graphids dataset=$1"; }
-kd_each_dataset do_one "${DATASETS[@]}"
-```
+submit.sh handles `.env` sourcing, account selection, and resource defaults. Landscape auto-selects gpu vs cpu partition based on model type.
 
 ## Writing SLURM Job Scripts
 
@@ -105,7 +92,7 @@ JOB_LOG_PREFIX="ray" source "/users/PAS2022/rf15/KD-GAT/scripts/slurm/_epilog.sh
 
 ## Data Staging Protocol
 
-Data staging uses a 3-tier storage hierarchy. `scripts/data/stage_data.sh` manages this automatically.
+Data staging uses a 3-tier storage hierarchy. `python -m graphids stage-data` manages this automatically (called by `_preamble.sh`).
 
 ### Storage Tiers
 

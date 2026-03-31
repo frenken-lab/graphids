@@ -25,17 +25,32 @@ python -m graphids analyze --config graphids/config/stages/analyze_vgae.yaml \
 
 ## CLI Architecture
 
-`GraphIDSCLI`, `WandbSaveConfigCallback`, and `CLI_KWARGS` live in `graphids/cli.py` — single definition shared by
-`__main__.py` (training) and `orchestrate/` (validation). `WandbSaveConfigCallback` forwards
-full jsonargparse config to wandb (Lightning #19728 workaround). Two entry points:
+Three entry points, zero overlap:
 
-- `python -m graphids fit|test|validate|predict` → `GraphIDSCLI` (extends `LightningCLI`, adds `link_arguments` for DRY config)
-- `python -m graphids analyze` → `Analyzer` class (no Trainer — loads checkpoints, generates artifacts)
-- `python -m graphids profile <job_ids>` → sacct resource profiler (RSS, CPU%, wall time). See `orchestrate/profiler.py`.
+**Training** — `python -m graphids fit|test|validate|predict` → `GraphIDSCLI` (extends `LightningCLI`). `GraphIDSCLI`, `WandbSaveConfigCallback`, and `CLI_KWARGS` live in `graphids/cli.py`.
 
-Orchestration: `python -m graphids.orchestrate [run|validate|smoke]` — dagster-based, see `plans/architecture/dagster-native-orchestration.md`
+**Operational commands** — auto-discovered from `graphids/commands/`. Convention: module name = command name (`-` → `_`), each exports `main(argv)`. Adding a subcommand = one file + one YAML entry in `resources.yaml`.
 
-Dagster UI: `bash scripts/dev/dagster-ui.sh` (webserver + daemon on login node, port 3000). Access via SSH tunnel.
+| Command | Purpose |
+|---------|---------|
+| `python -m graphids analyze` | Analysis artifacts from checkpoints |
+| `python -m graphids landscape` | 2D loss landscape |
+| `python -m graphids profile <job_ids>` | sacct resource profiler |
+| `python -m graphids profile-training` | Profiled training run (PyTorchProfiler) |
+| `python -m graphids rebuild-caches` | Rebuild preprocessed graph caches |
+| `python -m graphids stage-data` | NFS → scratch → TMPDIR staging |
+| `python -m graphids submit-profile <job>` | Print SLURM resource profile for submit.sh |
+| `python -m graphids test-preprocessing` | Validate preprocessing pipeline |
+
+**Dagster** — own entry point, never called through `python -m graphids`:
+
+| Command | Purpose |
+|---------|---------|
+| `dg launch --assets ...` | Materialize assets |
+| `dg list defs` | List all assets |
+| `python -m graphids.orchestrate validate` | Validate recipe config chains |
+
+**SLURM submission** — all jobs via `scripts/submit.sh <profile> [args]`. Resource profiles read from `config/resources.yaml` (single source of truth). See `rules/slurm-hpc.md`.
 
 Fusion has per-method stage YAMLs: `fusion_bandit.yaml` (`BanditFusionModule`), `fusion_dqn.yaml` (`DQNFusionModule`), `fusion_mlp.yaml` (`MLPFusionModule`), `fusion_weighted_avg.yaml` (`WeightedAvgModule`). Config resolution in `component.py` picks the right YAML from `fusion_method` in the recipe.
 

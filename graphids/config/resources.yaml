@@ -191,6 +191,62 @@ resource_profiles:
         cpus_per_task: 8
         num_workers: 0
 
+# Submit profiles — single source of truth for scripts/submit.sh
+# Each profile maps to a SLURM resource allocation + preamble mode.
+# Modes: cpu (skip CUDA + data), cpu-raw (skip CUDA, stage raw data), gpu (full)
+submit_profiles:
+  tests:
+    partition: cpu
+    cpus: 8
+    mem: 16G
+    time: "01:00:00"
+    mode: cpu
+    command: "python -m pytest"
+  rebuild-caches:
+    partition: cpu
+    cpus: 4
+    mem: 128G
+    time: "04:00:00"
+    mode: cpu-raw
+    command: "python -m graphids rebuild-caches"
+  validate:
+    partition: cpu
+    cpus: 4
+    mem: 8G
+    time: "00:15:00"
+    mode: cpu
+    command: "python -m graphids.orchestrate validate"
+  preprocessing-test:
+    partition: cpu
+    cpus: 4
+    mem: 16G
+    time: "00:30:00"
+    mode: cpu-raw
+    command: "python -m graphids test-preprocessing"
+  ablation:
+    partition: cpu
+    cpus: 4
+    mem: 8G
+    time: "24:00:00"
+    signal: "USR1@300"
+    mode: cpu
+    command: "dg launch"
+  profile:
+    partition: gpudebug
+    cpus: 4
+    mem: 36G
+    time: "01:00:00"
+    signal: "USR1@60"
+    mode: gpu
+    command: "python -m graphids profile-training"
+  landscape:
+    partition: gpu
+    cpus: 4
+    mem: 32G
+    time: "02:00:00"
+    mode: gpu
+    command: "python -m graphids landscape"
+
 # Adaptive retry — orchestrator scales resources on failure and resubmits.
 # Lightning auto-resumes from last checkpoint.
 failure_reactions:

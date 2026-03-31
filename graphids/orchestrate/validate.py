@@ -90,3 +90,6 @@ def validate_recipe(argv: list[str]) -> None:
             print(f"  {e}", file=sys.stderr)
         sys.exit(1)
     print("OK: all config chains valid")
+
+
+main = validate_recipe

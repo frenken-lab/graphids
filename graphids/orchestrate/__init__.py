@@ -8,5 +8,4 @@ Entry points:
   dg list defs                              — list all assets
   dg launch --assets autoencoder_*          — materialize assets
   python -m graphids.orchestrate validate   — validate config chains
-  python -m graphids.orchestrate smoke      — smoke test on gpudebug
 """

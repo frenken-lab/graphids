@@ -84,4 +84,4 @@ The probe uses `getattr(model, "_step", None)` — a convention, not a contract.
 | Teacher excluded from `state_dict` | Confirmed via unit test |
 | Teacher excluded from `_modules` | Confirmed via unit test |
 
-Full test suite requires SLURM submission (`scripts/slurm/run_tests_slurm.sh`). Real VRAM measurement requires a GPU job — first signal will come from Run 005 smoke test on `gpudebug`.
+Full test suite requires SLURM submission (`scripts/submit.sh tests`). Real VRAM measurement requires a GPU job — first signal will come from Run 005 smoke test on `gpudebug`.

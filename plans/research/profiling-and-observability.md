@@ -11,8 +11,8 @@
 | CSVLogger save_dir | `link_arguments` → `default_root_dir` | `cli.py:18-20` — metrics.csv in run dir |
 | GPU memory telemetry | DeviceStatsMonitor | `trainer.yaml` callbacks |
 | GPU system metrics | wandb pynvml (util%, temp, power) | Automatic, 15s interval |
-| Op-level profiling | PyTorchProfiler (chrome traces) | `overlays/profile.yaml` + `profile_training.sh` |
-| SLURM resource profiler | sacct: RSS, CPU%, wall time | `python -m graphids profile` (`orchestrate/profiler.py`) |
+| Op-level profiling | PyTorchProfiler (chrome traces) | `overlays/profile.yaml` + `scripts/submit.sh profile` |
+| SLURM resource profiler | sacct: RSS, CPU%, wall time | `python -m graphids profile` (`commands/profile.py`) |
 | Env vars | `WANDB_DIR`, `WANDB_DISABLE_GIT`, `WANDB_SILENT` | `_preamble.sh:26-29` |
 | VRAM probe | `_probe_bytes_per_node()`, KD-aware | `preprocessing/datamodule.py:36-77` (prefers `_step()`, falls back to `forward()`) |
 | Orchestration UI | dagster webserver + daemon | `scripts/dev/dagster-ui.sh` (port 3000, SSH tunnel) |

@@ -1,15 +1,24 @@
 """CLI entry point: python -m graphids <subcommand>
 
-Subcommands:
+Subcommands (auto-discovered from graphids/commands/):
   fit|test|validate|predict  — LightningCLI training/evaluation
   analyze                    — generate analysis artifacts from checkpoints
-  profile <job_ids>          — sacct resource profiler
-  run                        — dagster asset materialization
-  validate-recipe            — verify all recipe config chains parse
+  landscape                  — compute 2D loss landscape
+  profile                    — sacct resource profiler
+  profile-training           — profiled training run (PyTorchProfiler)
+  rebuild-caches             — rebuild preprocessed graph caches
+  stage-data                 — stage data from NFS to scratch/TMPDIR
+  submit-profile             — print SLURM resource profile for submit.sh
+  test-preprocessing         — validate preprocessing pipeline
+
+Dagster (separate entry point):
+  python -m graphids.orchestrate validate  — validate config chains
+  dg launch --assets ...                   — materialize assets
 """
 
 from __future__ import annotations
 
+import importlib
 import sys
 
 # ---------------------------------------------------------------------------
@@ -33,32 +42,22 @@ structlog.configure(
 )
 
 # ---------------------------------------------------------------------------
-# Dispatch
+# Dispatch: command name → graphids.commands.<module_name>.main(argv)
+# Convention: module name = command name with - replaced by _
+# Fallback: LightningCLI handles fit/test/validate/predict
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else None
+    module_name = (cmd or "").replace("-", "_")
 
-    if cmd == "analyze":
-        from jsonargparse import ArgumentParser
-        from graphids.core.artifacts import Analyzer
-        parser = ArgumentParser()
-        parser.add_class_arguments(Analyzer, "analyzer")
-        cfg = parser.parse_args(sys.argv[2:])
-        parser.instantiate_classes(cfg).analyzer.run()
+    try:
+        mod = importlib.import_module(f"graphids.commands.{module_name}")
+    except (ModuleNotFoundError, ValueError):
+        mod = None
 
-    elif cmd == "profile":
-        from graphids.orchestrate.profiler import main as profile_main
-        profile_main(sys.argv[2:])
-
-    elif cmd == "run":
-        from graphids.orchestrate.run import run_orchestrate
-        run_orchestrate(sys.argv[2:])
-
-    elif cmd == "validate-recipe":
-        from graphids.orchestrate.validate import validate_recipe
-        validate_recipe(sys.argv[2:])
-
+    if mod and hasattr(mod, "main"):
+        mod.main(sys.argv[2:])
     else:
         from graphids.cli import CLI_KWARGS, GraphIDSCLI
         GraphIDSCLI(**CLI_KWARGS)

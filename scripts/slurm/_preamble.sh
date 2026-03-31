@@ -35,7 +35,7 @@ fi
 
 # Data staging: NFS → scratch → TMPDIR (node-local SSD)
 if [[ "${SKIP_STAGE_DATA:-0}" != "1" ]]; then
-    source scripts/data/stage_data.sh ${STAGE_DATA_ARGS:---cache}
+    eval $(python -m graphids stage-data ${STAGE_DATA_ARGS:---cache})
 fi
 
 if [[ -n "${TMPDIR:-}" ]]; then
