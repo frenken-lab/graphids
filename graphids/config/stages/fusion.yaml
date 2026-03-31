@@ -1,5 +1,7 @@
 # Fusion stage shared config. Depends on VGAE + GAT checkpoints.
 # Method-specific model class_path layered via fusion_{method}.yaml.
+# Inherits trainer.yaml defaults (gradient_clip_val, log_every_n_steps, etc.)
+# — harmless since RL fusion models use automatic_optimization=False.
 trainer:
   precision: 32
   max_epochs: 50

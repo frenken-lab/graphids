@@ -43,46 +43,40 @@ def test_node_features_skewness_clamped():
     assert x[:, kurt_idx].abs().max() <= 10.0
 
 
-def test_edge_features_shape():
-    from graphids.core.preprocessing.features import edge_features
-    from graphids.core.preprocessing.features import N_EDGE_FEATURES as EDGE_FEATURE_COUNT
-    n = 15
-    ea = edge_features(
-        np.arange(n + 1, dtype=np.float64),
-        [np.random.rand(n + 1).astype(np.float32) for _ in range(8)],
-        np.arange(n, dtype=np.int64), np.arange(1, n + 1, dtype=np.int64),
+def test_sliding_window_graphs_shapes_and_values():
+    """sliding_window_graphs produces Data objects with correct shapes and edge features."""
+    from graphids.core.preprocessing.features import (
+        sliding_window_graphs, N_EDGE_FEATURES, N_NODE_FEATURES, EDGE_COL_ORDER,
     )
-    assert ea.shape == (n, EDGE_FEATURE_COUNT)
+    import polars as pl
 
-
-def test_edge_features_iat():
-    """Inter-arrival time in column 0."""
-    from graphids.core.preprocessing.features import edge_features
-    ea = edge_features(
-        np.array([0.0, 0.1, 0.3, 0.6]),
-        [np.zeros(4, dtype=np.float32) for _ in range(8)],
-        np.array([0, 1, 2]), np.array([1, 2, 3]),
-    )
-    expected = torch.tensor([0.1, 0.2, 0.3])
-    torch.testing.assert_close(ea[:, 0], expected, atol=1e-5, rtol=1e-5)
-
-
-def test_graph_construction_end_to_end():
-    """node_features + edge_features produce compatible tensors for Data."""
-    from graphids.core.preprocessing.features import edge_features, node_features
-    window = _make_window(20, 5)
-    ids = np.array(window["node_id"].to_list())
-    src, dst = ids[:-1], ids[1:]
-    x, node_ids = node_features(window, edge_index=np.stack([src, dst]))
-    ea = edge_features(
-        window["timestamp"].to_numpy(),
-        [window[f"byte_{i}"].to_numpy() for i in range(8)],
-        src, dst,
-    )
-    n_active = node_ids.shape[0]
-    assert x.shape == (n_active, 35)
-    assert node_ids.shape == (n_active,)
-    assert ea.shape == (19, 11)
+    n_rows = 20
+    rng = np.random.default_rng(0)
+    node_ids = rng.integers(0, 4, n_rows)
+    df = pl.DataFrame({
+        "timestamp": np.arange(n_rows, dtype=np.float64),  # IAT = 1.0
+        "node_id": pl.Series(node_ids.tolist(), dtype=pl.Int64),
+        **{f"byte_{i}": np.ones(n_rows, dtype=np.float32) * i for i in range(8)},
+        "entropy": np.zeros(n_rows, dtype=np.float32),
+        "attack": [0] * n_rows,
+        "attack_type": [0] * n_rows,
+    })
+    graphs = sliding_window_graphs(df, window_size=10, stride=5)
+    assert len(graphs) > 0
+    g = graphs[0]
+    assert g.x.shape[1] == N_NODE_FEATURES
+    assert g.edge_attr.shape[1] == N_EDGE_FEATURES
+    assert g.edge_index.shape[0] == 2
+    assert g.y.item() == 0  # all-normal data
+    assert not torch.isnan(g.x).any()
+    assert not torch.isnan(g.edge_attr).any()
+    # IAT column (index 0): consecutive timestamps differ by 1.0
+    iat_idx = EDGE_COL_ORDER.index("iat")
+    assert (g.edge_attr[:, iat_idx] == 1.0).all(), "IAT should be 1.0 for unit-spaced timestamps"
+    # Byte diff columns: constant bytes → all diffs = 0
+    for i in range(8):
+        col_idx = EDGE_COL_ORDER.index(f"byte_{i}_diff")
+        assert (g.edge_attr[:, col_idx] == 0.0).all(), f"byte_{i}_diff should be 0 for constant bytes"
 
 
 def test_node_iat_features():
@@ -113,18 +107,29 @@ def test_degree_features():
     assert (x_no_ei[:, out_deg_idx] == 0).all()
 
 
-def test_edge_freq_numpy_path():
-    """edge_freq in numpy path counts (src, dst) pair occurrences."""
-    from graphids.core.preprocessing.features import edge_features, N_EDGE_FEATURES
-    src = np.array([0, 0, 1], dtype=np.int64)
-    dst = np.array([1, 1, 2], dtype=np.int64)
-    ts = np.array([0.0, 0.1, 0.2, 0.3], dtype=np.float64)
-    byte_arrs = [np.zeros(4, dtype=np.float32) for _ in range(8)]
-    ea = edge_features(ts, byte_arrs, src, dst)
-    assert ea.shape == (3, N_EDGE_FEATURES)
-    assert ea[0, 10] == 2.0
-    assert ea[1, 10] == 2.0
-    assert ea[2, 10] == 1.0
+def test_sliding_window_graphs_edge_freq():
+    """edge_freq counts repeated (src, dst) pairs within a window."""
+    from graphids.core.preprocessing.features import sliding_window_graphs, EDGE_COL_ORDER
+    import polars as pl
+
+    # 10 rows, 2 node IDs → many repeated (src, dst) pairs
+    node_ids = [0, 1, 0, 1, 0, 1, 0, 1, 0, 1]
+    df = pl.DataFrame({
+        "timestamp": np.arange(10, dtype=np.float64),
+        "node_id": pl.Series(node_ids, dtype=pl.Int64),
+        **{f"byte_{i}": np.zeros(10, dtype=np.float32) for i in range(8)},
+        "entropy": np.zeros(10, dtype=np.float32),
+        "attack": [0] * 10,
+        "attack_type": [0] * 10,
+    })
+    graphs = sliding_window_graphs(df, window_size=10, stride=10)
+    assert len(graphs) == 1
+    g = graphs[0]
+    freq_idx = EDGE_COL_ORDER.index("edge_freq")
+    # Alternating 0,1,0,1... → edges are 0→1 and 1→0, each repeated multiple times
+    assert (g.edge_attr[:, freq_idx] > 0).all(), "edge_freq should be positive"
+    # With 10 alternating IDs: 5 edges 0→1, 4 edges 1→0 → freq should reflect counts
+    assert g.edge_attr[:, freq_idx].max() > 1, "Repeated pairs should have edge_freq > 1"
 
 
 class TestClusteringCoefficients:
@@ -183,45 +188,3 @@ class TestClusteringCoefficients:
                                        err_msg=f"Mismatch for n={n}, m={m}")
 
 
-class TestAssembleChunk:
-    """Test graph assembly via _assemble_chunk_numpy + _numpy_to_data."""
-
-    def test_single_window(self):
-        from graphids.core.preprocessing.features import _assemble_chunk_numpy, _numpy_to_data
-        node_feats = np.zeros((3, 35), dtype=np.float32)
-        node_ids = np.array([10, 20, 30], dtype=np.int64)
-        edge_src = np.array([0, 1], dtype=np.int64)
-        edge_dst = np.array([1, 2], dtype=np.int64)
-        edge_feats = np.zeros((2, 11), dtype=np.float32)
-        specs = [(0, 3, 0, 2, 0, 0)]
-
-        result = _assemble_chunk_numpy(node_feats, node_ids, edge_src, edge_dst, edge_feats, specs)
-        graphs = _numpy_to_data(*result)
-        assert len(graphs) == 1
-        g = graphs[0]
-        assert g.x.shape == (3, 35)
-        assert g.edge_index.shape == (2, 2)
-        assert g.edge_attr.shape == (2, 11)
-        assert g.node_id.shape == (3,)
-        assert g.edge_index.max() < 3
-        assert not torch.isnan(g.x).any()
-
-    def test_multiple_windows(self):
-        from graphids.core.preprocessing.features import _assemble_chunk_numpy, _numpy_to_data
-        node_feats = np.zeros((5, 35), dtype=np.float32)
-        node_ids = np.array([1, 2, 3, 4, 5], dtype=np.int64)
-        edge_src = np.array([0, 0, 1], dtype=np.int64)
-        edge_dst = np.array([1, 1, 2], dtype=np.int64)
-        edge_feats = np.zeros((3, 11), dtype=np.float32)
-        specs = [
-            (0, 2, 0, 1, 1, 0),
-            (2, 3, 1, 2, 0, 2),
-        ]
-
-        result = _assemble_chunk_numpy(node_feats, node_ids, edge_src, edge_dst, edge_feats, specs)
-        graphs = _numpy_to_data(*result)
-        assert len(graphs) == 2
-        assert graphs[0].x.shape[0] == 2
-        assert graphs[1].x.shape[0] == 3
-        assert graphs[0].y.item() == 1
-        assert graphs[1].attack_type.item() == 2

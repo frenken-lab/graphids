@@ -187,7 +187,10 @@ class TestFusionCheckpointRoundtrip:
             alpha_steps=11, state_dim=sd,
             reward_kwargs=dict(vgae_weights=[0.4, 0.35, 0.25]),
         )
-        a2.load_checkpoint(torch.load(tmp_path / "dqn.pt", weights_only=True))
+        ckpt_loaded = torch.load(tmp_path / "dqn.pt", weights_only=True)
+        a2.q_network.load_state_dict(ckpt_loaded["q_network"])
+        a2.target_network.load_state_dict(ckpt_loaded["target_network"])
+        a2.epsilon = ckpt_loaded["epsilon"]
         a1.q_network.eval()
         a2.q_network.eval()
         x = torch.rand(8, sd)

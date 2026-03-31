@@ -28,7 +28,7 @@ class TestCurriculumSampler:
         sampler = CurriculumSampler(
             full_dataset, normal_indices, attack_indices, scores,
             batch_size=32, max_epochs=10,
-            curriculum_start_ratio=1.0, curriculum_end_ratio=10.0,
+            curriculum_start_ratio=0.3, curriculum_end_ratio=1.0,
             difficulty_percentile=75.0,
         )
         return sampler, full_dataset
@@ -58,7 +58,7 @@ class TestCurriculumSampler:
         len_early = len(sampler._active_indices)
         sampler.set_epoch(9)
         len_late = len(sampler._active_indices)
-        # With start_ratio=1.0 -> end_ratio=10.0, late epochs include more data
+        # With start_ratio=0.3 -> end_ratio=1.0, late epochs include more normals
         assert len_late >= len_early, (
             f"Active indices at epoch 9 ({len_late}) should be >= epoch 0 ({len_early})"
         )

@@ -97,9 +97,7 @@ class TestVGAECheckpointRoundtrip:
         batch = make_batch(2)
         with torch.no_grad():
             torch.manual_seed(0)
-            o1 = m1(batch.x, batch.edge_index, batch.batch,
-                     edge_attr=batch.edge_attr, node_id=batch.node_id)
+            o1 = m1(batch)
             torch.manual_seed(0)
-            o2 = m2(batch.x, batch.edge_index, batch.batch,
-                     edge_attr=batch.edge_attr, node_id=batch.node_id)
+            o2 = m2(batch)
         torch.testing.assert_close(o1[0], o2[0])

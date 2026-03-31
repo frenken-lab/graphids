@@ -70,7 +70,7 @@ class CurriculumSampler:
         ratio = self.curriculum_start_ratio + (
             self.curriculum_end_ratio - self.curriculum_start_ratio
         ) * min(epoch / max(self.max_epochs - 1, 1), 1.0)
-        n_normal = max(1, int(len(self.normal_indices) * min(ratio, 1.0)))
+        n_normal = min(max(1, int(len(self.normal_indices) * ratio)), len(self.normal_indices))
         threshold = torch.quantile(self.scores, self.difficulty_percentile / 100.0)
         easy = self.scores <= threshold
         hard = ~easy

@@ -39,6 +39,18 @@ class GraphModuleBase(pl.LightningModule):
     def _build(self):
         raise NotImplementedError
 
+    # -- Default optimizer (LightningCLI overrides via add_optimizer_args) ------
+
+    def configure_optimizers(self):
+        """Sensible default for direct Trainer use (tests, notebooks).
+
+        Production training uses LightningCLI which overrides this via
+        add_optimizer_args + stage YAML optimizer: blocks.
+        """
+        lr = getattr(self.hparams, "lr", 1e-3)
+        wd = getattr(self.hparams, "weight_decay", 0.0)
+        return torch.optim.Adam(self.parameters(), lr=lr, weight_decay=wd)
+
     # -- OOM guard --------------------------------------------------------------
 
     def _oom_safe_step(self, batch, batch_idx, step_fn):

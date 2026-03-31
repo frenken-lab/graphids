@@ -141,10 +141,11 @@ class TestDecisionThreshold:
         agent_high.q_network.load_state_dict(agent_low.q_network.state_dict())
         agent_high.target_network.load_state_dict(agent_low.target_network.state_dict())
 
-        result_low = agent_low.validate_batch(states, labels)
-        result_high = agent_high.validate_batch(states, labels)
+        result_low = agent_low.predict(states)
+        result_high = agent_high.predict(states)
 
-        assert result_low["accuracy"] > result_high["accuracy"], (
-            f"Low threshold ({result_low['accuracy']:.3f}) should catch more positives "
-            f"than high threshold ({result_high['accuracy']:.3f}) on mixed labels"
+        # Low threshold → more positive predictions; high threshold → fewer
+        assert result_low["preds"].sum() > result_high["preds"].sum(), (
+            f"Low threshold should predict more positives ({result_low['preds'].sum()}) "
+            f"than high threshold ({result_high['preds'].sum()})"
         )
