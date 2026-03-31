@@ -95,15 +95,6 @@ class CurriculumSampler:
         return max(1, (len(self._active_indices) + bs - 1) // bs)
 
 
-class CurriculumEpochCallback(pl.Callback):
-    """Calls set_epoch() on the curriculum sampler at each epoch start."""
-
-    def on_train_epoch_start(self, trainer, pl_module):
-        dm = trainer.datamodule
-        if hasattr(dm, '_batch_sampler') and dm._batch_sampler is not None:
-            dm._batch_sampler.set_epoch(trainer.current_epoch)
-
-
 class CurriculumDataModule(CANBusDataModule):
     """Curriculum learning with persistent workers.
 
@@ -207,6 +198,10 @@ class CurriculumDataModule(CANBusDataModule):
             )
             return make_graph_loader(val_data, batch_sampler=sampler, num_workers=hp.num_workers)
         return make_graph_loader(val_data, batch_size=bs, shuffle=False, num_workers=hp.num_workers)
+
+    def on_train_epoch_start(self, trainer, pl_module):
+        if self._batch_sampler is not None:
+            self._batch_sampler.set_epoch(trainer.current_epoch)
 
     def train_dataloader(self):
         hp = self.hparams

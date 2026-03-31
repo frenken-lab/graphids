@@ -53,12 +53,33 @@ class GraphIDSCLI(LightningCLI):
         if not root_dir:
             return
 
-        # Pin ModelCheckpoint.dirpath to {default_root_dir}/checkpoints
+        # Ensure ModelCheckpoint is always present and dirpath is pinned.
+        # Stage YAMLs that override trainer.callbacks can accidentally drop it
+        # (jsonargparse replaces lists, not merges), so cli.py is the safety net.
         cbs = subcfg.trainer.callbacks
-        if isinstance(cbs, list):
-            for cb in cbs:
-                if hasattr(cb, "class_path") and "ModelCheckpoint" in cb.class_path:
-                    cb.init_args.dirpath = f"{root_dir}/{_CKPT_DIR}"
+        if not isinstance(cbs, list):
+            cbs = []
+            subcfg.trainer.callbacks = cbs
+
+        has_ckpt = any(
+            hasattr(cb, "class_path") and "ModelCheckpoint" in cb.class_path
+            for cb in cbs
+        )
+        if not has_ckpt:
+            from jsonargparse import Namespace
+
+            cbs.append(Namespace(
+                class_path="pytorch_lightning.callbacks.ModelCheckpoint",
+                init_args=Namespace(
+                    monitor="val_loss", mode="min", save_top_k=1,
+                    save_last=True, filename="best_model",
+                    dirpath=f"{root_dir}/{_CKPT_DIR}",
+                ),
+            ))
+
+        for cb in cbs:
+            if hasattr(cb, "class_path") and "ModelCheckpoint" in cb.class_path:
+                cb.init_args.dirpath = f"{root_dir}/{_CKPT_DIR}"
 
 
 CLI_KWARGS = dict(
