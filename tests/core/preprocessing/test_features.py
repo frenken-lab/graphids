@@ -43,6 +43,21 @@ def test_node_features_skewness_clamped():
     assert x[:, kurt_idx].abs().max() <= 10.0
 
 
+def _get_graph(data, slices, idx):
+    """Extract a single graph from pre-collated (data, slices) format."""
+    from torch_geometric.data import Data
+    ns, ne = slices["x"][idx], slices["x"][idx + 1]
+    es, ee = slices["edge_index"][idx], slices["edge_index"][idx + 1]
+    return Data(
+        x=data.x[ns:ne],
+        edge_index=data.edge_index[:, es:ee],
+        edge_attr=data.edge_attr[es:ee],
+        node_id=data.node_id[ns:ne],
+        y=data.y[idx:idx + 1],
+        attack_type=data.attack_type[idx:idx + 1],
+    )
+
+
 def test_sliding_window_graphs_shapes_and_values():
     """sliding_window_graphs produces Data objects with correct shapes and edge features."""
     from graphids.core.preprocessing.features import (
@@ -61,9 +76,9 @@ def test_sliding_window_graphs_shapes_and_values():
         "attack": [0] * n_rows,
         "attack_type": [0] * n_rows,
     })
-    graphs = sliding_window_graphs(df, window_size=10, stride=5)
-    assert len(graphs) > 0
-    g = graphs[0]
+    data, slices, num_graphs = sliding_window_graphs(df, window_size=10, stride=5)
+    assert num_graphs > 0
+    g = _get_graph(data, slices, 0)
     assert g.x.shape[1] == N_NODE_FEATURES
     assert g.edge_attr.shape[1] == N_EDGE_FEATURES
     assert g.edge_index.shape[0] == 2
@@ -122,9 +137,9 @@ def test_sliding_window_graphs_edge_freq():
         "attack": [0] * 10,
         "attack_type": [0] * 10,
     })
-    graphs = sliding_window_graphs(df, window_size=10, stride=10)
-    assert len(graphs) == 1
-    g = graphs[0]
+    data, slices, num_graphs = sliding_window_graphs(df, window_size=10, stride=10)
+    assert num_graphs == 1
+    g = _get_graph(data, slices, 0)
     freq_idx = EDGE_COL_ORDER.index("edge_freq")
     # Alternating 0,1,0,1... → edges are 0→1 and 1→0, each repeated multiple times
     assert (g.edge_attr[:, freq_idx] > 0).all(), "edge_freq should be positive"

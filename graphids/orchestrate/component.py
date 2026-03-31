@@ -252,14 +252,17 @@ def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
 
             upstream_names: list[str] = []
             upstream_flags: dict[str, str] = {}
+            seen_models: set[str] = set()
             for dep in stage_def.get("depends_on", []):
-                dep_stage = dep["stage"]
-                dep_asset = stage_map.get(dep_stage)
-                if dep_asset:
-                    upstream_names.append(dep_asset)
-                    flag = _CKPT_FLAG.get(dep["model"], "")
-                    if flag:
-                        upstream_flags[dep_asset] = flag
+                dep_model = dep["model"]
+                dep_asset = stage_map.get(dep["stage"])
+                if not dep_asset or dep_model in seen_models:
+                    continue
+                seen_models.add(dep_model)
+                upstream_names.append(dep_asset)
+                flag = _CKPT_FLAG.get(dep_model, "")
+                if flag:
+                    upstream_flags[dep_asset] = flag
 
             if has_kd:
                 teacher_scale = merged.get("auxiliaries", [{}])[0].get("teacher_scale")
@@ -481,6 +484,7 @@ class SlurmTrainingComponent(dg.Component, dg.Model, dg.Resolvable):
 
     dry_run: bool = False
     poll_interval: int = 60
+    max_concurrent: int = 0  # 0 = no limit (SLURM handles throttling)
 
     def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
         recipe = yaml.safe_load(RECIPE_PATH.read_text())
@@ -517,7 +521,12 @@ class SlurmTrainingComponent(dg.Component, dg.Model, dg.Resolvable):
         cfg_lookup = {cfg.asset_name: cfg for cfg in stage_configs}
         checks = _make_checkpoint_checks(cfg_lookup, partitions, lake_root, user)
 
-        # 6. Resources
+        # 6. Executor: multiprocess so independent assets run in parallel.
+        # Each worker just does sbatch + poll (sleep loop), so concurrency is cheap.
+        executor_cfg = {"max_concurrent": self.max_concurrent} if self.max_concurrent > 0 else {}
+        executor = dg.multiprocess_executor.configured(executor_cfg)
+
+        # 7. Resources
         return dg.Definitions(
             assets=assets,
             asset_checks=checks,
@@ -530,4 +539,5 @@ class SlurmTrainingComponent(dg.Component, dg.Model, dg.Resolvable):
                     base_dir=DAGSTER_IO_DIR_TEMPLATE.replace("{lake_root}", lake_root),
                 ),
             },
+            executor=executor,
         )

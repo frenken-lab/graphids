@@ -24,11 +24,13 @@ _TERMINAL = frozenset({
 
 
 def sacct_query(job_ids: list[str] | list[int], fmt: str,
-                *, units: str = "G") -> str:
+                *, units: str = "G", cluster: str | None = None) -> str:
     """Run sacct and return stdout. Shared by poll() and profiler."""
     ids = ",".join(str(j) for j in job_ids)
     cmd = ["sacct", "-j", ids, "--parsable2", "--noheader",
            f"--format={fmt}", f"--units={units}"]
+    if cluster:
+        cmd.extend(["-M", cluster])
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         log.warning("sacct_error", stderr=r.stderr.strip())

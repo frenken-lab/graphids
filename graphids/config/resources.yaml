@@ -20,9 +20,9 @@ clusters:
     gpu_eval: { partition: gpu, gres: "gpu:1" }
     cpu_preprocess: { partition: cpu, gres: "" }
   ascend:
-    gpu_train: { partition: batch, gres: "gpu:a100:1" }
-    gpu_eval: { partition: batch, gres: "gpu:a100:1" }
-    cpu_preprocess: { partition: batch, gres: "" }
+    gpu_train: { partition: nextgen, gres: "gpu:a100:1" }
+    gpu_eval: { partition: nextgen, gres: "gpu:a100:1" }
+    cpu_preprocess: { partition: nextgen, gres: "" }
   cardinal:
     gpu_train: { partition: batch, gres: "gpu:h100:1" }
     gpu_eval: { partition: batch, gres: "gpu:h100:1" }
@@ -33,7 +33,7 @@ resource_profiles:
     small:
       autoencoder:
         mode: gpu_train
-        time: "02:00:00"
+        time: "04:00:00"
         mem: "36G"
         cpus_per_task: 4
         num_workers: 3
@@ -74,13 +74,13 @@ resource_profiles:
     small:
       normal:
         mode: gpu_train
-        time: "02:30:00"
+        time: "04:30:00"
         mem: "36G"
         cpus_per_task: 4
         num_workers: 3
       curriculum:
         mode: gpu_train
-        time: "02:30:00"
+        time: "04:30:00"
         mem: "36G"
         cpus_per_task: 4
         num_workers: 3

@@ -84,12 +84,13 @@ def _parse_mem(s: str) -> float:
 # SLURM sacct
 # ---------------------------------------------------------------------------
 
-def get_sacct_stats(job_ids: list[str]) -> dict[str, SLURMStats]:
+def get_sacct_stats(job_ids: list[str], *, cluster: str | None = None) -> dict[str, SLURMStats]:
     """Query sacct for resource usage."""
     if not job_ids:
         return {}
     stdout = sacct_query(
         job_ids, "JobID,JobName,State,Elapsed,MaxRSS,ReqMem,AllocCPUS,TRESUsageInTot",
+        cluster=cluster,
     )
     if not stdout:
         return {}
@@ -136,13 +137,15 @@ def get_sacct_stats(job_ids: list[str]) -> dict[str, SLURMStats]:
     return stats
 
 
-def discover_jobs_since(since: str) -> list[str]:
+def discover_jobs_since(since: str, *, cluster: str | None = None) -> list[str]:
     """Find job IDs from sacct since a given time."""
     user = subprocess.check_output(["whoami"]).decode().strip()
     cmd = [
         "sacct", "-u", user, f"--starttime={since}",
         "--parsable2", "--noheader", "--format=JobID,JobName", "-X",
     ]
+    if cluster:
+        cmd.extend(["-M", cluster])
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         return []
@@ -174,9 +177,9 @@ def _parse_job_name(job_name: str) -> dict[str, str]:
 # Profile assembly
 # ---------------------------------------------------------------------------
 
-def profile_jobs(job_ids: list[str]) -> list[JobProfile]:
+def profile_jobs(job_ids: list[str], *, cluster: str | None = None) -> list[JobProfile]:
     """Build profiles for SLURM job IDs."""
-    sacct = get_sacct_stats(job_ids)
+    sacct = get_sacct_stats(job_ids, cluster=cluster)
     profiles = []
     for jid in job_ids:
         slurm = sacct.get(jid, SLURMStats(job_id=jid))
@@ -232,19 +235,20 @@ def main(argv: list[str]) -> None:
     parser = argparse.ArgumentParser(description="Profile SLURM job resources")
     parser.add_argument("job_ids", nargs="*", help="SLURM job IDs")
     parser.add_argument("--since", help="All jobs since (e.g. 2026-03-28)")
+    parser.add_argument("--cluster", "-M", help="SLURM cluster (e.g. ascend)")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
     job_ids = list(args.job_ids)
     if args.since:
-        job_ids.extend(discover_jobs_since(args.since))
+        job_ids.extend(discover_jobs_since(args.since, cluster=args.cluster))
     if not job_ids:
         parser.error("Provide job IDs or --since")
 
     seen: set[str] = set()
     unique = [j for j in job_ids if j not in seen and not seen.add(j)]  # type: ignore[func-returns-value]
 
-    profiles = profile_jobs(unique)
+    profiles = profile_jobs(unique, cluster=args.cluster)
     if args.json:
         print(json.dumps([asdict(p) for p in profiles], indent=2))
     else:

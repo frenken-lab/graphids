@@ -398,6 +398,10 @@ class FusionDataModule(pl.LightningDataModule):
         train_ds, val_ds, _ = load_datasets(cfg_ns)
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+        if not hp.vgae_ckpt_path:
+            raise ValueError("vgae_ckpt_path is empty — upstream VGAE checkpoint not wired")
+        if not hp.gat_ckpt_path:
+            raise ValueError("gat_ckpt_path is empty — upstream GAT checkpoint not wired")
         vgae, _ = load_inner_model("vgae", Path(hp.vgae_ckpt_path), device)
         gat, _ = load_inner_model("gat", Path(hp.gat_ckpt_path), device)
         models = {"vgae": vgae, "gat": gat}

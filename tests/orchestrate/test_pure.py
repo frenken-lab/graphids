@@ -327,6 +327,7 @@ def mini_pipeline():
                 "depends_on": [
                     {"model": "vgae", "stage": "autoencoder"},
                     {"model": "gat", "stage": "curriculum"},
+                    {"model": "gat", "stage": "normal"},
                 ],
                 "identity_keys": ["scale", "gat_stage", "loss_fn", "method",
                                   "conv_type", "variational"],
@@ -413,9 +414,14 @@ def test_enumerate_normal_vs_curriculum_gat_stage_differ(mini_pipeline):
             "with_normal": {"stages": ["autoencoder", "normal", "fusion"]},
         },
     }
-    fusion_ids = {a.identity for a in enumerate_assets(mini_pipeline, recipe)
-                  if a.stage == "fusion"}
+    assets = enumerate_assets(mini_pipeline, recipe)
+    fusion_ids = {a.identity for a in assets if a.stage == "fusion"}
     assert len(fusion_ids) == 2
+
+    # Normal-only fusion must have GAT checkpoint wired (not silently empty)
+    normal_fusion = next(a for a in assets if a.stage == "fusion"
+                         and any("normal" in n for n in a.upstream_asset_names))
+    assert any("gat_ckpt_path" in f for f in normal_fusion.upstream_ckpt_flags.values())
 
 
 def test_enumerate_config_files_populated(mini_pipeline, mini_recipe):
