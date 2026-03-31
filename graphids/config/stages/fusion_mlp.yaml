@@ -1,0 +1,5 @@
+# MLP fusion baseline. Layered on top of fusion.yaml.
+model:
+  class_path: graphids.core.models.fusion_baselines.MLPFusionModule
+data:
+  init_args: {method: mlp}

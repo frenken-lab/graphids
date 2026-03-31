@@ -202,12 +202,16 @@ def sliding_window_graphs(
     df: pl.DataFrame,
     window_size: int,
     stride: int,
-) -> list[Data]:
-    """Convert a message DataFrame into PyG Data graphs via sliding windows.
+) -> tuple[Data, dict, int]:
+    """Convert a message DataFrame into pre-collated (Data, slices, num_graphs).
 
-    Produces compact graphs: x is [n_active, N_NODE_FEATURES] (only active nodes),
-    edge_index uses local IDs (0..n_active-1), and node_id stores the
-    global CAN ID indices for embedding lookup.
+    Returns the InMemoryDataset collated format directly from bulk tensors,
+    avoiding the triple-copy of list[Data] → collate → save. Peak memory
+    is ~1x the final tensor size instead of ~3x.
+
+    Each graph is one sliding window. Nodes are active arbitration IDs,
+    edges are temporal adjacency (shift-1), with local IDs (0..n_active-1).
+    node_id stores global CAN ID indices for embedding lookup.
 
     Required columns: node_id (Int64), timestamp, byte_0..7, entropy,
     attack, attack_type.
@@ -418,21 +422,70 @@ def sliding_window_graphs(
     )
     del node_stats, edge_df
 
-    # ── Build Data objects (direct slicing) ──────────────────────
-    graphs: list[Data] = []
-    for i, wid in enumerate(s_wids):
-        e_entry = e_lookup.get(wid)
-        if e_entry is None:
-            continue
-        ss, sc = s_starts[i], s_counts[i]
-        es, ec = e_entry
-        graphs.append(Data(
-            x=all_node_feats[ss:ss + sc].clone(),
-            edge_index=torch.stack([all_edge_src[es:es + ec], all_edge_dst[es:es + ec]]),
-            edge_attr=all_edge_feats[es:es + ec].clone(),
-            node_id=all_node_ids[ss:ss + sc].clone(),
-            y=torch.tensor([label_y.get(wid, 0)], dtype=torch.long),
-            attack_type=torch.tensor([label_at.get(wid, 0)], dtype=torch.long),
-        ))
-    log.info("graphs_built", count=len(graphs))
-    return graphs
+    # ── Build pre-collated (Data, slices) directly ────────────────
+    # The bulk tensors are already the concatenated form that
+    # InMemoryDataset.collate() would produce. Building individual
+    # Data objects + collate would triple peak memory. Instead,
+    # construct the slices dict from RLE boundaries.
+    keep = [i for i, wid in enumerate(s_wids) if wid in e_lookup]
+    kept_wids = [s_wids[i] for i in keep]
+    num_graphs = len(kept_wids)
+    if num_graphs == 0:
+        log.warning("no_graphs_with_edges")
+        return Data(), {}, 0
+
+    # Node slices: cumulative node counts for kept windows
+    node_counts = [s_counts[i] for i in keep]
+    node_offsets = [s_starts[i] for i in keep]
+    node_cumsum = torch.zeros(num_graphs + 1, dtype=torch.long)
+    for j, c in enumerate(node_counts):
+        node_cumsum[j + 1] = node_cumsum[j] + c
+
+    # Edge slices: cumulative edge counts for kept windows
+    edge_counts = [e_lookup[s_wids[i]][1] for i in keep]
+    edge_offsets = [e_lookup[s_wids[i]][0] for i in keep]
+    edge_cumsum = torch.zeros(num_graphs + 1, dtype=torch.long)
+    for j, c in enumerate(edge_counts):
+        edge_cumsum[j + 1] = edge_cumsum[j] + c
+
+    # Gather node tensors (contiguous, in kept-window order)
+    node_indices = torch.cat([
+        torch.arange(node_offsets[j], node_offsets[j] + node_counts[j])
+        for j in range(num_graphs)
+    ])
+    cat_x = all_node_feats[node_indices]
+    cat_node_id = all_node_ids[node_indices]
+    del all_node_feats, all_node_ids
+
+    # Gather edge tensors
+    edge_indices = torch.cat([
+        torch.arange(edge_offsets[j], edge_offsets[j] + edge_counts[j])
+        for j in range(num_graphs)
+    ])
+    cat_edge_src = all_edge_src[edge_indices]
+    cat_edge_dst = all_edge_dst[edge_indices]
+    cat_edge_attr = all_edge_feats[edge_indices]
+    del all_edge_src, all_edge_dst, all_edge_feats
+
+    cat_edge_index = torch.stack([cat_edge_src, cat_edge_dst])
+    del cat_edge_src, cat_edge_dst
+
+    # Per-graph labels
+    cat_y = torch.tensor([label_y.get(w, 0) for w in kept_wids], dtype=torch.long)
+    cat_at = torch.tensor([label_at.get(w, 0) for w in kept_wids], dtype=torch.long)
+    graph_idx = torch.arange(num_graphs + 1, dtype=torch.long)
+
+    data = Data(
+        x=cat_x, edge_index=cat_edge_index, edge_attr=cat_edge_attr,
+        node_id=cat_node_id, y=cat_y, attack_type=cat_at,
+    )
+    slices = {
+        "x": node_cumsum,
+        "edge_index": edge_cumsum,
+        "edge_attr": edge_cumsum,
+        "node_id": node_cumsum,
+        "y": graph_idx,
+        "attack_type": graph_idx,
+    }
+    log.info("graphs_built", count=num_graphs)
+    return data, slices, num_graphs

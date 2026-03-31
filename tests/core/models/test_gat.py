@@ -35,6 +35,7 @@ class TestGAT:
 
 
 @pytest.mark.slow
+@pytest.mark.slurm
 class TestGATFastDevRun:
     @staticmethod
     def _make_module(cfg):
@@ -54,16 +55,15 @@ class TestGATFastDevRun:
         trainer = pl.Trainer(fast_dev_run=True, accelerator="cpu", enable_progress_bar=False)
         trainer.fit(self._make_module(gat_cfg), loader, loader)
 
-    def test_gat_loss_variants(self, gat_cfg):
-        """All loss functions produce finite loss in training_step."""
+    @pytest.mark.parametrize("loss_fn", ["ce", "weighted_ce", "focal"])
+    def test_gat_loss_variant_produces_finite_loss(self, gat_cfg, loss_fn):
         import copy
-        for loss_fn in ("ce", "weighted_ce", "focal"):
-            cfg = copy.deepcopy(gat_cfg)
-            cfg.loss_fn = loss_fn
-            module = self._make_module(cfg)
-            module.train()
-            loss = module.training_step(make_batch(4), 0)
-            assert torch.isfinite(loss), f"{loss_fn} produced non-finite loss"
+        cfg = copy.deepcopy(gat_cfg)
+        cfg.loss_fn = loss_fn
+        module = self._make_module(cfg)
+        module.train()
+        loss = module.training_step(make_batch(4), 0)
+        assert torch.isfinite(loss), f"{loss_fn} produced non-finite loss"
 
 
 class TestGATCheckpointRoundtrip:

@@ -8,51 +8,63 @@
 #   T_gpu ≈ 10ms (VGAE) / 25ms (GAT)
 #
 # Profiles derived from: sacct history March 2026, GPU profiling Run 003,
-# memory_profiling/investigation_v2.md, resource_plan_2026_03_27.md
+# plans/memory-profiling/performance-analysis.md
+#
+# Cluster-agnostic: profiles use `mode` (from pipeline.yaml) instead of
+# hardcoded partition/gres. Resolved at submit time via `clusters` mapping
+# + hostname detection (or KD_GAT_CLUSTER env var override).
+
+clusters:
+  pitzer:
+    gpu_train: { partition: gpu, gres: "gpu:1" }
+    gpu_eval: { partition: gpu, gres: "gpu:1" }
+    cpu_preprocess: { partition: cpu, gres: "" }
+  ascend:
+    gpu_train: { partition: nextgen, gres: "gpu:a100:1" }
+    gpu_eval: { partition: nextgen, gres: "gpu:a100:1" }
+    cpu_preprocess: { partition: nextgen, gres: "" }
+  cardinal:
+    gpu_train: { partition: batch, gres: "gpu:h100:1" }
+    gpu_eval: { partition: batch, gres: "gpu:h100:1" }
+    cpu_preprocess: { partition: batch, gres: "" }
 
 resource_profiles:
   vgae:
     small:
       autoencoder:
-        partition: gpu
-        gres: "gpu:1"
-        time: "02:00:00"
-        mem: "24G"
+        mode: gpu_train
+        time: "04:00:00"
+        mem: "36G"
         cpus_per_task: 4
         num_workers: 3
       curriculum:
-        partition: gpu
-        gres: "gpu:1"
+        mode: gpu_train
         time: "02:00:00"
-        mem: "24G"
+        mem: "36G"
         cpus_per_task: 4
         num_workers: 3
     medium:
       autoencoder:
-        partition: gpu
-        gres: "gpu:1"
+        mode: gpu_train
         time: "02:30:00"
-        mem: "32G"
+        mem: "36G"
         cpus_per_task: 4
         num_workers: 3
       curriculum:
-        partition: gpu
-        gres: "gpu:1"
+        mode: gpu_train
         time: "02:30:00"
-        mem: "32G"
+        mem: "36G"
         cpus_per_task: 4
         num_workers: 3
     large:
       autoencoder:
-        partition: gpu
-        gres: "gpu:1"
+        mode: gpu_train
         time: "04:00:00"
         mem: "48G"
         cpus_per_task: 4
         num_workers: 3
       curriculum:
-        partition: gpu
-        gres: "gpu:1"
+        mode: gpu_train
         time: "04:00:00"
         mem: "48G"
         cpus_per_task: 4
@@ -61,45 +73,39 @@ resource_profiles:
   gat:
     small:
       normal:
-        partition: gpu
-        gres: "gpu:1"
-        time: "02:30:00"
-        mem: "24G"
-        cpus_per_task: 3
-        num_workers: 2
+        mode: gpu_train
+        time: "04:30:00"
+        mem: "36G"
+        cpus_per_task: 4
+        num_workers: 3
       curriculum:
-        partition: gpu
-        gres: "gpu:1"
-        time: "02:30:00"
-        mem: "24G"
-        cpus_per_task: 3
-        num_workers: 2
+        mode: gpu_train
+        time: "04:30:00"
+        mem: "36G"
+        cpus_per_task: 4
+        num_workers: 3
     medium:
       normal:
-        partition: gpu
-        gres: "gpu:1"
+        mode: gpu_train
         time: "03:00:00"
-        mem: "28G"
-        cpus_per_task: 3
-        num_workers: 2
+        mem: "36G"
+        cpus_per_task: 4
+        num_workers: 3
       curriculum:
-        partition: gpu
-        gres: "gpu:1"
+        mode: gpu_train
         time: "03:00:00"
-        mem: "28G"
-        cpus_per_task: 3
-        num_workers: 2
+        mem: "36G"
+        cpus_per_task: 4
+        num_workers: 3
     large:
       normal:
-        partition: gpu
-        gres: "gpu:1"
+        mode: gpu_train
         time: "05:00:00"
         mem: "36G"
         cpus_per_task: 4
         num_workers: 3
       curriculum:
-        partition: gpu
-        gres: "gpu:1"
+        mode: gpu_train
         time: "05:00:00"
         mem: "36G"
         cpus_per_task: 4
@@ -108,42 +114,37 @@ resource_profiles:
   dgi:
     small:
       autoencoder:
-        partition: gpu
-        gres: "gpu:1"
+        mode: gpu_train
         time: "02:00:00"
-        mem: "24G"
+        mem: "36G"
         cpus_per_task: 4
         num_workers: 3
     medium:
       autoencoder:
-        partition: gpu
-        gres: "gpu:1"
+        mode: gpu_train
         time: "02:30:00"
-        mem: "32G"
+        mem: "36G"
         cpus_per_task: 4
         num_workers: 3
 
   dqn:
     small:
       fusion:
-        partition: gpu
-        gres: "gpu:1"
+        mode: gpu_train
         time: "01:00:00"
         mem: "16G"
         cpus_per_task: 2
         num_workers: 0
     medium:
       fusion:
-        partition: gpu
-        gres: "gpu:1"
+        mode: gpu_train
         time: "01:00:00"
         mem: "16G"
         cpus_per_task: 2
         num_workers: 0
     large:
       fusion:
-        partition: gpu
-        gres: "gpu:1"
+        mode: gpu_train
         time: "02:00:00"
         mem: "24G"
         cpus_per_task: 2
@@ -152,24 +153,21 @@ resource_profiles:
   bandit:
     small:
       fusion:
-        partition: gpu
-        gres: "gpu:1"
+        mode: gpu_train
         time: "01:00:00"
         mem: "16G"
         cpus_per_task: 2
         num_workers: 0
     medium:
       fusion:
-        partition: gpu
-        gres: "gpu:1"
+        mode: gpu_train
         time: "01:00:00"
         mem: "16G"
         cpus_per_task: 2
         num_workers: 0
     large:
       fusion:
-        partition: gpu
-        gres: "gpu:1"
+        mode: gpu_train
         time: "02:00:00"
         mem: "24G"
         cpus_per_task: 2
@@ -178,7 +176,7 @@ resource_profiles:
   preprocess:
     any:
       preprocess:
-        partition: cpu
+        mode: cpu_preprocess
         time: "02:00:00"
         mem: "72G"
         cpus_per_task: 8
@@ -187,7 +185,7 @@ resource_profiles:
   test:
     any:
       test:
-        partition: cpu
+        mode: cpu_preprocess
         time: "00:30:00"
         mem: "16G"
         cpus_per_task: 8

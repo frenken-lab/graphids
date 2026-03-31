@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import structlog
-from pathlib import Path
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
+from .fusion_baselines import FusionModuleBase
 from .fusion_reward import FusionRewardCalculator
 
 log = structlog.get_logger()
@@ -104,7 +104,7 @@ class TensorReplayBuffer:
 # ---------------------------------------------------------------------------
 
 
-class EnhancedDQNFusionAgent:
+class DQNFusionModule(FusionModuleBase):
     """DQN agent for dynamic fusion of GAT and VGAE outputs.
 
     Designed for streaming/temporal scenarios where sequential decisions matter
@@ -114,26 +114,32 @@ class EnhancedDQNFusionAgent:
 
     def __init__(
         self,
-        alpha_steps=21,
-        lr=1e-3,
-        gamma=0.0,
-        epsilon=0.2,
-        epsilon_decay=0.995,
-        min_epsilon=0.01,
-        buffer_size=50000,
-        batch_size=128,
-        target_update_freq=100,
-        device="cpu",
+        state_dim: int = 0,
+        alpha_steps: int = 21,
+        lr: float = 1e-3,
+        gamma: float = 0.0,
+        epsilon: float = 0.2,
+        epsilon_decay: float = 0.995,
+        min_epsilon: float = 0.01,
+        buffer_size: int = 50000,
+        batch_size: int = 128,
+        target_update_freq: int = 100,
         *,
-        state_dim,
-        hidden_dim=128,
-        num_layers=3,
-        weight_decay=1e-5,
-        scheduler_patience=1000,
+        hidden_dim: int = 128,
+        num_layers: int = 3,
+        weight_decay: float = 1e-5,
+        scheduler_patience: int = 1000,
         decision_threshold: float = 0.5,
         gpu_training_steps: int = 1,
         reward_kwargs: dict | None = None,
     ):
+        super().__init__()
+        if state_dim == 0:
+            from .fusion_features import fusion_state_dim
+            state_dim = fusion_state_dim()
+        self.save_hyperparameters()
+        self.automatic_optimization = False
+
         self._alpha_values_t = torch.linspace(0, 1, alpha_steps)
         self.action_dim = alpha_steps
         self.state_dim = state_dim
@@ -141,15 +147,14 @@ class EnhancedDQNFusionAgent:
         self.epsilon = epsilon
         self.epsilon_decay = epsilon_decay
         self.min_epsilon = min_epsilon
-        self.device = device
         self.batch_size = batch_size
         self.target_update_freq = target_update_freq
         self.decision_threshold = decision_threshold
         self.gpu_training_steps = gpu_training_steps
 
-        # Networks
-        self.q_network = QNetwork(state_dim, alpha_steps, hidden_dim, num_layers).to(device)
-        self.target_network = QNetwork(state_dim, alpha_steps, hidden_dim, num_layers).to(device)
+        # Networks (nn.Module children — Lightning auto-transfers and checkpoints)
+        self.q_network = QNetwork(state_dim, alpha_steps, hidden_dim, num_layers)
+        self.target_network = QNetwork(state_dim, alpha_steps, hidden_dim, num_layers)
         self.target_network.load_state_dict(self.q_network.state_dict())
 
         # Optimizer and loss
@@ -161,46 +166,24 @@ class EnhancedDQNFusionAgent:
 
         self._buffer = TensorReplayBuffer(buffer_size, state_dim)
         self.reward_calc = FusionRewardCalculator(**(reward_kwargs or {}))
-        self.training_step = 0
+        self._train_step_count = 0
         self.update_counter = 0
 
         log.info("dqn_agent_initialized", actions=alpha_steps, state_dim=state_dim)
 
-    @classmethod
-    def from_config(
-        cls, cfg, device: str = "cpu", *, inference: bool = False,
-    ) -> EnhancedDQNFusionAgent:
-        """Create agent from flat config (RLFusionModule.hparams)."""
-        from .registry import fusion_state_dim
+    def configure_optimizers(self):
+        return self.optimizer
 
-        from .fusion_reward import reward_kwargs_from_cfg
-        reward_kwargs = reward_kwargs_from_cfg(cfg)
-        kwargs = dict(
-            lr=cfg.lr,
-            gamma=cfg.dqn_gamma,
-            buffer_size=cfg.dqn_buffer_size,
-            batch_size=cfg.dqn_batch_size,
-            target_update_freq=cfg.dqn_target_update,
-            device=device,
-            state_dim=fusion_state_dim(),
-            alpha_steps=cfg.alpha_steps,
-            hidden_dim=cfg.dqn_hidden,
-            num_layers=cfg.dqn_layers,
-            weight_decay=cfg.dqn_weight_decay,
-            scheduler_patience=cfg.dqn_scheduler_patience,
-            decision_threshold=cfg.decision_threshold,
-            gpu_training_steps=cfg.gpu_training_steps,
-            reward_kwargs=reward_kwargs,
-        )
-        if inference:
-            kwargs.update(epsilon=0.0, epsilon_decay=1.0, min_epsilon=0.0)
-        else:
-            kwargs.update(
-                epsilon=cfg.dqn_epsilon,
-                epsilon_decay=cfg.dqn_epsilon_decay,
-                min_epsilon=cfg.dqn_min_epsilon,
-            )
-        return cls(**kwargs)
+    # ------------------------------------------------------------------
+    # Lightning training entry point
+    # ------------------------------------------------------------------
+
+    def training_step(self, batch, batch_idx):
+        states, labels = batch
+        result = self.train_episode(states, labels)
+        for k, v in result.items():
+            if v is not None:
+                self.log(k, float(v), prog_bar=(k in ("avg_reward", "accuracy")))
 
     # ------------------------------------------------------------------
     # Action selection
@@ -264,7 +247,7 @@ class EnhancedDQNFusionAgent:
         if self.update_counter % self.target_update_freq == 0:
             self.target_network.load_state_dict(self.q_network.state_dict())
 
-        self.training_step += 1
+        self._train_step_count += 1
         return loss.item()
 
     # ------------------------------------------------------------------
@@ -342,30 +325,11 @@ class EnhancedDQNFusionAgent:
         self.scheduler.step(metrics["avg_reward"])
         return metrics
 
-    # ------------------------------------------------------------------
-    # Checkpointing
-    # ------------------------------------------------------------------
-
-    def state_dict(self) -> dict:
-        """Serialize agent state for checkpointing."""
-        return {
-            "q_network": self.q_network.state_dict(),
-            "target_network": self.target_network.state_dict(),
-            "epsilon": self.epsilon,
-        }
-
-    def load_checkpoint(self, checkpoint_or_path: dict | str | Path) -> None:
-        """Load Q-network and target network weights."""
-        if isinstance(checkpoint_or_path, dict):
-            sd = checkpoint_or_path
-        else:
-            sd = torch.load(checkpoint_or_path, map_location="cpu", weights_only=True)
-        self.q_network.load_state_dict(sd["q_network"])
-        self.target_network.load_state_dict(sd["target_network"])
-        if "epsilon" in sd:
-            self.epsilon = sd["epsilon"]
-
     @property
     def buffer_size_current(self) -> int:
         """Current number of experiences in the replay buffer."""
         return len(self._buffer)
+
+
+# Backward-compat alias (removed in Step 5)
+EnhancedDQNFusionAgent = DQNFusionModule

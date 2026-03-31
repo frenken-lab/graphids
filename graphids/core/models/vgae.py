@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-import pytorch_lightning as pl
+import os
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from ._conv import InputEncoder, build_conv_stack, build_encoder_stack, _make_conv, conv_forward, resolve_edge_dim
 from ._training import (
+    GraphModuleBase,
     KDAuxiliary,
-    OOMSkipMixin, soft_label_kd_loss, teacher_on_device,
+    teacher_on_device,
     binary_test_metrics,
 )
 
@@ -327,7 +329,7 @@ class GraphAutoencoderNeighborhood(nn.Module):
 # ---------------------------------------------------------------------------
 
 
-class VGAEModule(OOMSkipMixin, pl.LightningModule):
+class VGAEModule(GraphModuleBase):
     """VGAE training: reconstruct node features + CAN IDs + neighborhood.
 
     When teacher is provided, adds dual-signal KD loss:
@@ -360,7 +362,7 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         # --- identity / dynamic ---
         scale: str = "small",
         model_type: str = "vgae",
-        lake_root: str = "experimentruns",
+        lake_root: str = os.environ.get("KD_GAT_LAKE_ROOT"),
         dataset: str = "",
         seed: int = 42,
         gat_stage: str = "curriculum",
@@ -373,23 +375,12 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         if auxiliaries is None:
             auxiliaries = []
         self.save_hyperparameters()
+        self._init_threshold_metrics()
         self.model = None
         self.teacher = None
         self.projection = None
-        self._teacher_on_cpu = False
-        self.test_threshold: float | None = None
         self.test_metrics = binary_test_metrics()
-        self._test_scores: list[torch.Tensor] = []
-        self._test_labels: list[torch.Tensor] = []
         if num_ids > 0:
-            self._build()
-
-    def setup(self, stage=None):
-        if self.model is None:
-            dm = self.trainer.datamodule
-            self.hparams.num_ids = dm.num_ids
-            self.hparams.in_channels = dm.in_channels
-            self.hparams.num_classes = dm.num_classes
             self._build()
 
     def _build(self):
@@ -399,7 +390,10 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
         if hp.compile_model and hasattr(torch, "compile"):
             self.model = torch.compile(self.model, dynamic=True)
         if self.teacher is None:
-            self.teacher, self.projection = prepare_kd(hp, hp.model_type, torch.device("cpu"))
+            teacher, projection = prepare_kd(hp, hp.model_type, torch.device("cpu"))
+            # Bypass nn.Module.__setattr__ so Lightning won't auto-move teacher to GPU
+            self.__dict__["teacher"] = teacher
+            self.projection = projection
 
     def forward(self, batch):
         edge_attr = getattr(batch, "edge_attr", None)
@@ -479,38 +473,32 @@ class VGAEModule(OOMSkipMixin, pl.LightningModule):
 
     def test_step(self, batch, _idx):
         errors = self._per_graph_errors(batch)
-        self._test_scores.append(errors.detach())
-        self._test_labels.append(batch.y.detach())
+        self.roc_metric.update(errors.detach(), batch.y.detach())
 
     def on_test_epoch_start(self):
         self.test_metrics.reset()
-        self._test_scores.clear()
-        self._test_labels.clear()
+        self.roc_metric.reset()
 
     def on_test_epoch_end(self):
-        if not self._test_scores:
+        # Extract accumulated scores/labels from the BinaryROC metric
+        if not self.roc_metric.preds:
             return
-        from torchmetrics.functional.classification import binary_roc
 
-        scores = torch.cat(self._test_scores).cpu()
-        labels = torch.cat(self._test_labels).cpu().long()
+        scores = torch.cat(self.roc_metric.preds).cpu()
+        labels = torch.cat(self.roc_metric.target).cpu().long()
 
         if self.test_threshold is None:
-            if labels.unique().numel() < 2:
+            threshold = self._find_threshold()
+            if threshold is None:
                 self.test_threshold = float(scores.median())
             else:
-                fpr, tpr, thresholds = binary_roc(scores, labels)
-                j = tpr - fpr
-                best = torch.argmax(j)
-                self.test_threshold = float(thresholds[best]) if best < len(thresholds) else float(scores.median())
+                self.test_threshold = threshold
 
         preds = (scores >= self.test_threshold).long()
         self.test_metrics.update(preds, labels)
         metrics = self.test_metrics.compute()
         metrics["threshold"] = self.test_threshold
         self.log_dict(metrics)
-        self._test_scores.clear()
-        self._test_labels.clear()
 
     def on_save_checkpoint(self, checkpoint):
         if self.test_threshold is not None:

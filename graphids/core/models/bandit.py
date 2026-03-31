@@ -10,8 +10,6 @@ Reference: "Neural Contextual Bandits with UCB-based Exploration" (Zhou et al., 
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import structlog
 import torch
@@ -19,6 +17,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from .dqn import TensorReplayBuffer
+from .fusion_baselines import FusionModuleBase
 from .fusion_reward import FusionRewardCalculator
 
 log = structlog.get_logger()
@@ -37,7 +36,7 @@ class Backbone(nn.Module):
         return self.net(x)
 
 
-class NeuralLinUCBAgent:
+class BanditFusionModule(FusionModuleBase):
     """Neural-LinUCB: deep backbone + per-arm linear UCB.
 
     Action space: K discrete alpha values in [0, 1].
@@ -46,7 +45,7 @@ class NeuralLinUCBAgent:
 
     def __init__(
         self,
-        state_dim: int,
+        state_dim: int = 0,
         alpha_steps: int = 21,
         ucb_alpha: float = 1.0,
         lambda_reg: float = 1.0,
@@ -57,11 +56,16 @@ class NeuralLinUCBAgent:
         backbone_epochs: int = 5,
         buffer_size: int = 100_000,
         batch_size: int = 128,
-        device: str = "cpu",
         decision_threshold: float = 0.5,
         reward_kwargs: dict | None = None,
     ):
-        self.device = device
+        super().__init__()
+        if state_dim == 0:
+            from .fusion_features import fusion_state_dim
+            state_dim = fusion_state_dim()
+        self.save_hyperparameters()
+        self.automatic_optimization = False
+
         self.alpha_steps = alpha_steps
         self.alpha_values = torch.linspace(0, 1, alpha_steps)
         self.ucb_alpha = ucb_alpha
@@ -71,15 +75,18 @@ class NeuralLinUCBAgent:
         self.backbone_epochs = backbone_epochs
         self.decision_threshold = decision_threshold
 
-        # Neural backbone
-        self.backbone = Backbone(state_dim, hidden_dim, num_layers).to(device)
+        # Neural backbone (nn.Module child — auto-transferred and checkpointed)
+        self.backbone = Backbone(state_dim, hidden_dim, num_layers)
         self.backbone_optimizer = optim.AdamW(self.backbone.parameters(), lr=backbone_lr)
         d = self.backbone.out_dim
 
-        # Per-arm ridge regression: A_inv[k] = (X^T X + lambda I)^{-1}, b[k] = X^T y
-        self.A_inv = torch.eye(d, device=device).unsqueeze(0).repeat(alpha_steps, 1, 1) / lambda_reg
-        self.b = torch.zeros(alpha_steps, d, device=device)
-        self.theta = torch.zeros(alpha_steps, d, device=device)
+        # Per-arm ridge regression as registered buffers (auto-checkpointed, auto device transfer)
+        self.register_buffer(
+            "A_inv",
+            torch.eye(d).unsqueeze(0).repeat(alpha_steps, 1, 1) / lambda_reg,
+        )
+        self.register_buffer("b", torch.zeros(alpha_steps, d))
+        self.register_buffer("theta", torch.zeros(alpha_steps, d))
 
         # Replay buffer for backbone retraining
         self._buffer = TensorReplayBuffer(buffer_size, state_dim)
@@ -96,29 +103,19 @@ class NeuralLinUCBAgent:
 
         log.info("bandit_initialized", arms=alpha_steps, backbone_dim=d, ucb_alpha=ucb_alpha)
 
-    @classmethod
-    def from_config(cls, cfg, device: str = "cpu") -> NeuralLinUCBAgent:
-        """Create agent from flat config (RLFusionModule.hparams)."""
-        from .registry import fusion_state_dim
+    def configure_optimizers(self):
+        return self.backbone_optimizer
 
-        from .fusion_reward import reward_kwargs_from_cfg
-        reward_kwargs = reward_kwargs_from_cfg(cfg)
-        return cls(
-            state_dim=fusion_state_dim(),
-            alpha_steps=cfg.alpha_steps,
-            ucb_alpha=cfg.bandit_ucb_alpha,
-            lambda_reg=cfg.bandit_lambda_reg,
-            hidden_dim=cfg.bandit_hidden,
-            num_layers=cfg.bandit_layers,
-            backbone_lr=cfg.bandit_backbone_lr,
-            backbone_retrain_freq=cfg.bandit_backbone_retrain_freq,
-            backbone_epochs=cfg.bandit_backbone_epochs,
-            buffer_size=cfg.bandit_buffer_size,
-            batch_size=cfg.bandit_batch_size,
-            device=device,
-            decision_threshold=cfg.decision_threshold,
-            reward_kwargs=reward_kwargs,
-        )
+    # ------------------------------------------------------------------
+    # Lightning training entry point
+    # ------------------------------------------------------------------
+
+    def training_step(self, batch, batch_idx):
+        states, labels = batch
+        result = self.train_episode(states, labels)
+        for k, v in result.items():
+            if v is not None:
+                self.log(k, float(v), prog_bar=(k in ("avg_reward", "accuracy")))
 
     # ------------------------------------------------------------------
     # Action selection (batch)
@@ -227,10 +224,13 @@ class NeuralLinUCBAgent:
         self.backbone.eval()
 
         # Reset linear models after backbone change (representations shifted)
+        # Use in-place ops to preserve registered buffer registration
         d = self.backbone.out_dim
-        self.A_inv = torch.eye(d, device=self.device).unsqueeze(0).repeat(
-            self.alpha_steps, 1, 1
-        ) / self.lambda_reg
+        self.A_inv.copy_(
+            torch.eye(d, device=self.A_inv.device).unsqueeze(0).repeat(
+                self.alpha_steps, 1, 1
+            ) / self.lambda_reg
+        )
         self.b.zero_()
         self.theta.zero_()
 
@@ -338,32 +338,6 @@ class NeuralLinUCBAgent:
             "episodes": self._episode,
         }
 
-    # ------------------------------------------------------------------
-    # Checkpointing
-    # ------------------------------------------------------------------
 
-    def state_dict(self) -> dict:
-        """Serialize agent state for checkpointing."""
-        return {
-            "backbone": self.backbone.state_dict(),
-            "A_inv": self.A_inv.cpu(),
-            "b": self.b.cpu(),
-            "theta": self.theta.cpu(),
-            "episode": self._episode,
-            "total_reward": self._total_reward,
-            "total_steps": self._total_steps,
-        }
-
-    def load_checkpoint(self, checkpoint_or_path: dict | str | Path) -> None:
-        """Load agent state from checkpoint."""
-        if isinstance(checkpoint_or_path, dict):
-            sd = checkpoint_or_path
-        else:
-            sd = torch.load(checkpoint_or_path, map_location="cpu", weights_only=True)
-        self.backbone.load_state_dict(sd["backbone"])
-        self.A_inv = sd["A_inv"].to(self.device)
-        self.b = sd["b"].to(self.device)
-        self.theta = sd["theta"].to(self.device)
-        self._episode = sd.get("episode", 0)
-        self._total_reward = sd.get("total_reward", 0.0)
-        self._total_steps = sd.get("total_steps", 0)
+# Backward-compat alias (removed in Step 5)
+NeuralLinUCBAgent = BanditFusionModule

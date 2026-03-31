@@ -11,3 +11,6 @@ model:
 data:
   class_path: graphids.core.preprocessing.curriculum.CurriculumDataModule
   init_args: {batch_size: 8192, num_workers: 2}
+trainer:
+  callbacks:
+    - class_path: graphids.core.preprocessing.curriculum.CurriculumEpochCallback

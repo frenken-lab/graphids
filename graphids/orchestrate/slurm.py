@@ -12,7 +12,7 @@ from pathlib import Path
 
 import structlog
 
-from graphids.config import PROJECT_ROOT, SLURM_ACCOUNT
+from graphids.config import PROJECT_ROOT, SLURM_ACCOUNT, SLURM_LOG_DIR
 from .resources import ResourceSpec
 
 log = structlog.get_logger()
@@ -21,6 +21,21 @@ _TERMINAL = frozenset({
     "COMPLETED", "FAILED", "OUT_OF_MEMORY", "TIMEOUT",
     "NODE_FAIL", "CANCELLED", "PREEMPTED",
 })
+
+
+def sacct_query(job_ids: list[str] | list[int], fmt: str,
+                *, units: str = "G", cluster: str | None = None) -> str:
+    """Run sacct and return stdout. Shared by poll() and profiler."""
+    ids = ",".join(str(j) for j in job_ids)
+    cmd = ["sacct", "-j", ids, "--parsable2", "--noheader",
+           f"--format={fmt}", f"--units={units}"]
+    if cluster:
+        cmd.extend(["-M", cluster])
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        log.warning("sacct_error", stderr=r.stderr.strip())
+        return ""
+    return r.stdout
 
 
 def generate_script(config_files: list[str], resources: ResourceSpec, *,
@@ -46,14 +61,15 @@ def generate_script(config_files: list[str], resources: ResourceSpec, *,
 def submit(script: str, resources: ResourceSpec, *, job_name: str,
            dry_run: bool = False) -> int:
     """Submit sbatch job. Returns job ID (0 if dry_run)."""
+    Path(SLURM_LOG_DIR).mkdir(parents=True, exist_ok=True)
     args = [
         "sbatch",
         f"--partition={resources.partition}", f"--time={resources.time}",
         f"--mem={resources.mem}", f"--cpus-per-task={resources.cpus_per_task}",
         f"--account={SLURM_ACCOUNT}", f"--job-name={job_name}",
         "--signal=B:USR1@300",
-        f"--output={PROJECT_ROOT}/slurm_logs/{job_name}_%j.out",
-        f"--error={PROJECT_ROOT}/slurm_logs/{job_name}_%j.err",
+        f"--output={SLURM_LOG_DIR}/{job_name}_%j.out",
+        f"--error={SLURM_LOG_DIR}/{job_name}_%j.err",
     ]
     if resources.gres:
         args.append(f"--gres={resources.gres}")
@@ -75,22 +91,28 @@ def submit(script: str, resources: ResourceSpec, *, job_name: str,
     return job_id
 
 
-def poll(job_id: int, *, interval: int = 60, max_unknown: int = 5) -> str:
-    """Poll sacct until terminal state. Returns state string."""
+def poll(job_id: int, *, interval: int = 60, max_unknown: int = 5,
+         on_state=None) -> str:
+    """Poll sacct until terminal state. Returns state string.
+
+    *on_state(state, job_id)* is called on each state transition (optional).
+    """
     unknown_count = 0
+    last_state = None
     while True:
-        r = subprocess.run(
-            ["sacct", "-j", str(job_id), "--format=JobID,State",
-             "--noheader", "--parsable2"],
-            capture_output=True, text=True,
-        )
+        stdout = sacct_query([job_id], "JobID,State")
         state = "UNKNOWN"
-        if r.returncode == 0:
-            for line in r.stdout.strip().split("\n"):
+        if stdout:
+            for line in stdout.strip().split("\n"):
                 parts = line.strip().split("|")
                 if len(parts) >= 2 and "." not in parts[0]:
                     state = parts[1].strip()
                     break
+
+        if state != last_state:
+            if on_state:
+                on_state(state, job_id)
+            last_state = state
 
         if state in _TERMINAL:
             return state

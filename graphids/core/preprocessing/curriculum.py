@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import os
+
 import pytorch_lightning as pl
 import torch
 from torch.utils.data import Subset
 from torch_geometric.loader import DynamicBatchSampler
 
-from graphids.core.preprocessing.datamodule import make_graph_loader, vram_node_budget
+from graphids.core.preprocessing.datamodule import (
+    CANBusDataModule,
+    make_graph_loader,
+    vram_node_budget,
+)
 
 
 class CurriculumSampler:
@@ -31,6 +37,7 @@ class CurriculumSampler:
         curriculum_end_ratio: float,
         difficulty_percentile: float,
         max_num_nodes: int | None = None,
+        mean_nodes: float = 1.0,
     ):
         assert len(scores) == len(normal_indices)
         self.dataset = dataset
@@ -43,45 +50,41 @@ class CurriculumSampler:
         self.curriculum_end_ratio = curriculum_end_ratio
         self.difficulty_percentile = difficulty_percentile
         self.max_num_nodes = max_num_nodes
+        self.mean_nodes = mean_nodes
         self._active_indices = normal_indices + attack_indices
         self._inner = self._build_inner()
 
     def _build_inner(self):
         if self.max_num_nodes is None:
             return None
-        subset = Subset(self.dataset, self._active_indices)
-        num_steps = max(1, len(self._active_indices) * 30 // self.max_num_nodes)  # ~30 nodes avg
-        sampler = DynamicBatchSampler(
-            subset, max_num=self.max_num_nodes, mode="node", shuffle=True,
+        num_steps = max(1, int(len(self._active_indices) * self.mean_nodes / self.max_num_nodes))
+        return DynamicBatchSampler(
+            Subset(self.dataset, self._active_indices),
+            max_num=self.max_num_nodes, mode="node", shuffle=True,
             skip_too_big=True, num_steps=num_steps,
         )
-        return sampler
 
     def set_epoch(self, epoch: int) -> None:
-        """Update active indices for curriculum progression."""
-        progress = min(epoch / max(self.max_epochs, 1), 1.0)
-        ratio = self.curriculum_start_ratio + (self.curriculum_end_ratio - self.curriculum_start_ratio) * progress
-        percentile = self.difficulty_percentile + (95.0 - self.difficulty_percentile) * progress
-
-        # Filter normals by difficulty threshold, subsample to ratio
-        if self.scores is not None:
-            threshold = self.scores.quantile(percentile / 100).item()
-            mask = self.scores >= threshold
-            hard = self.normal_indices[mask].tolist() or self.normal_indices.tolist()
-        else:
-            hard = self.normal_indices.tolist()
-
-        n = min(int(len(self.attack_indices) * ratio), len(hard))
-        selected = [hard[i] for i in torch.randperm(len(hard))[:n].tolist()] if 0 < n < len(hard) else hard
-        self._active_indices = selected + self.attack_indices
+        if self.scores is None or len(self.scores) == 0:
+            return
+        ratio = self.curriculum_start_ratio + (
+            self.curriculum_end_ratio - self.curriculum_start_ratio
+        ) * min(epoch / max(self.max_epochs - 1, 1), 1.0)
+        n_normal = min(max(1, int(len(self.normal_indices) * ratio)), len(self.normal_indices))
+        threshold = torch.quantile(self.scores, self.difficulty_percentile / 100.0)
+        easy = self.scores <= threshold
+        hard = ~easy
+        easy_idx = self.normal_indices[easy][:n_normal].tolist()
+        hard_idx = self.normal_indices[hard].tolist()
+        self._active_indices = easy_idx + hard_idx + self.attack_indices
         self._inner = self._build_inner()
 
     def __iter__(self):
         if self._inner is not None:
             yield from self._inner
         else:
+            perm = torch.randperm(len(self._active_indices))
             bs = max(8, self.batch_size)
-            perm = torch.randperm(len(self._active_indices)).tolist()
             for start in range(0, len(perm), bs):
                 yield [self._active_indices[perm[j]] for j in range(start, min(start + bs, len(perm)))]
 
@@ -92,17 +95,27 @@ class CurriculumSampler:
         return max(1, (len(self._active_indices) + bs - 1) // bs)
 
 
-class CurriculumDataModule(pl.LightningDataModule):
+class CurriculumEpochCallback(pl.Callback):
+    """Calls set_epoch() on the curriculum sampler at each epoch start."""
+
+    def on_train_epoch_start(self, trainer, pl_module):
+        dm = trainer.datamodule
+        if hasattr(dm, '_batch_sampler') and dm._batch_sampler is not None:
+            dm._batch_sampler.set_epoch(trainer.current_epoch)
+
+
+class CurriculumDataModule(CANBusDataModule):
     """Curriculum learning with persistent workers.
 
-    Rebuilds batch sampler each epoch via set_epoch() to control
-    which graphs are yielded based on difficulty progression.
+    Subclasses CANBusDataModule for data loading + properties (num_ids,
+    in_channels, num_classes). Adds VGAE difficulty scoring and
+    curriculum-ordered batching via CurriculumSampler.
     """
 
     def __init__(
         self,
         dataset: str = "",
-        lake_root: str = "experimentruns",
+        lake_root: str = os.environ.get("KD_GAT_LAKE_ROOT"),
         vgae_ckpt_path: str = "",
         batch_size: int = 8192,
         num_workers: int = 2,
@@ -119,41 +132,38 @@ class CurriculumDataModule(pl.LightningDataModule):
         difficulty_percentile: float = 75.0,
         max_epochs: int = 300,
     ):
-        super().__init__()
+        super().__init__(
+            dataset=dataset, lake_root=lake_root, batch_size=batch_size,
+            num_workers=num_workers, window_size=window_size, stride=stride,
+            val_fraction=val_fraction, seed=seed, dynamic_batching=dynamic_batching,
+            conv_type=conv_type, heads=heads,
+        )
         self.save_hyperparameters()
         self._batch_sampler = None
         self._train_loader = None
         self._val_loader = None
-        self.val_data = None
 
     def setup(self, stage=None):
         if self._train_loader is not None:
             return
         import gc
-        import types
         from pathlib import Path
         from graphids.core.models._training import load_inner_model
-        from graphids.core.preprocessing.datamodule import load_datasets
 
         hp = self.hparams
         if not hp.vgae_ckpt_path:
             raise ValueError(
                 "CurriculumDataModule requires vgae_ckpt_path — train VGAE autoencoder first"
             )
-        cfg_ns = types.SimpleNamespace(
-            dataset=hp.dataset, lake_root=hp.lake_root, seed=hp.seed,
-            preprocessing=types.SimpleNamespace(
-                window_size=hp.window_size, stride=hp.stride,
-                train_val_split=1.0 - hp.val_fraction,
-            ),
-        )
-        train_ds, val_ds, _ = load_datasets(cfg_ns)
-        self.val_data = list(val_ds)
+
+        # Load datasets via parent — populates _train_ds, _val_ds, properties
+        super().setup(stage)
+
+        normals = [g for g in self._train_ds if int(g.y[0]) == 0]
+        attacks = [g for g in self._train_ds if int(g.y[0]) == 1]
 
         device = torch.device("cpu")
         vgae, _ = load_inner_model("vgae", Path(hp.vgae_ckpt_path), device)
-        normals = [g for g in train_ds if int(g.y[0]) == 0]
-        attacks = [g for g in train_ds if int(g.y[0]) == 1]
         scores = vgae.score_difficulty(normals, canid_weight=hp.canid_weight)
         del vgae
         gc.collect()
@@ -162,46 +172,58 @@ class CurriculumDataModule(pl.LightningDataModule):
         normal_indices = list(range(len(normals)))
         attack_indices = list(range(len(normals), len(full_dataset)))
 
-        budget = None
-        if hp.dynamic_batching:
-            budget, _ = vram_node_budget(
-                hp.dataset, hp.lake_root,
-                conv_type=hp.conv_type, heads=hp.heads,
-            )
-
+        # Defer VRAM budget to train_dataloader() — model isn't on GPU yet
+        # during setup(). CurriculumSampler accepts max_num_nodes=None.
         self._batch_sampler = CurriculumSampler(
             full_dataset, normal_indices, attack_indices, scores,
             batch_size=hp.batch_size, max_epochs=hp.max_epochs,
             curriculum_start_ratio=hp.curriculum_start_ratio,
             curriculum_end_ratio=hp.curriculum_end_ratio,
             difficulty_percentile=hp.difficulty_percentile,
-            max_num_nodes=budget,
+            max_num_nodes=None,
+            mean_nodes=1.0,
         )
         self._train_loader = make_graph_loader(
             full_dataset, batch_sampler=self._batch_sampler, num_workers=hp.num_workers,
         )
-        self._val_loader = self._build_val_loader()
+        self._val_loader = None  # built lazily in val_dataloader()
 
     def _build_val_loader(self):
         hp = self.hparams
         bs = max(8, hp.batch_size)
+        val_data = list(self._val_ds)
         if hp.dynamic_batching:
+            trainer = getattr(self, "trainer", None)
+            model = trainer.lightning_module if trainer else None
             budget, mean_nodes = vram_node_budget(
                 hp.dataset, hp.lake_root,
                 conv_type=hp.conv_type, heads=hp.heads,
+                model=model, train_dataset=val_data,
             )
-            num_steps = max(1, int(len(self.val_data) * mean_nodes / budget))
+            num_steps = max(1, int(len(val_data) * mean_nodes / budget))
             sampler = DynamicBatchSampler(
-                self.val_data, max_num=budget, mode="node", shuffle=False,
+                val_data, max_num=budget, mode="node", shuffle=False,
                 skip_too_big=True, num_steps=num_steps,
             )
-            return make_graph_loader(self.val_data, batch_sampler=sampler, num_workers=hp.num_workers)
-        return make_graph_loader(self.val_data, batch_size=bs, shuffle=False, num_workers=hp.num_workers)
+            return make_graph_loader(val_data, batch_sampler=sampler, num_workers=hp.num_workers)
+        return make_graph_loader(val_data, batch_size=bs, shuffle=False, num_workers=hp.num_workers)
 
     def train_dataloader(self):
-        epoch = self.trainer.current_epoch if self.trainer else 0
-        self._batch_sampler.set_epoch(epoch)
+        hp = self.hparams
+        if hp.dynamic_batching and self._batch_sampler.max_num_nodes is None:
+            trainer = getattr(self, "trainer", None)
+            model = trainer.lightning_module if trainer else None
+            budget, mean_nodes = vram_node_budget(
+                hp.dataset, hp.lake_root,
+                conv_type=hp.conv_type, heads=hp.heads,
+                model=model, train_dataset=self._batch_sampler.dataset,
+            )
+            self._batch_sampler.max_num_nodes = budget
+            self._batch_sampler.mean_nodes = mean_nodes
+            self._batch_sampler._inner = self._batch_sampler._build_inner()
         return self._train_loader
 
     def val_dataloader(self):
+        if self._val_loader is None:
+            self._val_loader = self._build_val_loader()
         return self._val_loader

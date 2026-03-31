@@ -27,6 +27,7 @@ dist/
 *.egg
 
 # ===== EXPERIMENT OUTPUTS =====
+/config.yaml
 lightning_logs/
 slurm_logs/
 results/
@@ -42,10 +43,9 @@ data/loss_landscapes/
 data/sweep_state/
 data/sweep_results/
 
-# ===== RAY / LIGHTNING / MLFLOW / DAGSTER =====
+# ===== RAY / LIGHTNING / DAGSTER =====
 ray_results/
 wandb/
-data/mlflow/
 .dagster/
 
 # ===== OSC OnDemand =====

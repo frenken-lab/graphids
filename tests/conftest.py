@@ -47,7 +47,7 @@ def base_cfg():
         lake_root="/tmp", dataset="test", seed=42,
         device="cpu", num_workers=0,
         num_ids=NUM_IDS, in_channels=IN_CHANNELS, num_classes=2,
-        gat_stage="curriculum", auxiliaries=[],
+        auxiliaries=[],
         # VGAE/DGI architecture
         conv_type="gatv2",
         hidden_dims=[32, 16], latent_dim=16, heads=2, embedding_dim=4,
@@ -58,7 +58,6 @@ def base_cfg():
         hidden=16, layers=2, fc_layers=2,
         pool_aggrs=["mean"],
         # training
-        lr=0.003, weight_decay=0.0001,
         gradient_checkpointing=False, compile_model=False,
         loss_fn="ce", focal_gamma=2.0, loss_weight=10.0,
         # misc

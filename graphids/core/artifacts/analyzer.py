@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import structlog
@@ -27,7 +28,7 @@ class Analyzer:
         dataset: str,
         model_type: str,
         # --- paths ---
-        lake_root: str = "experimentruns",
+        lake_root: str = os.environ.get("KD_GAT_LAKE_ROOT"),
         output_dir: str = "artifacts/",
         # --- artifact toggles ---
         embeddings: bool = True,

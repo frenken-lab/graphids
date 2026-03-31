@@ -22,25 +22,32 @@ graphids/
     datasets.yaml        # dataset catalog (YAML anchors for shared configs)
     resources.yaml       # SLURM resource profiles per model×scale×stage
     trainer.yaml         # default_config_files: seed, trainer (callbacks, precision, etc.)
-    ablation.yaml        # ablation recipe: sweep dimensions, config overrides
+    recipes/             # run specifications (sweep dimensions, config overrides)
+      ablation.yaml      # ablation recipe: 18 configs, claim-driven
     stages/              # one per stage — model class_path + init_args overrides + data
       autoencoder.yaml   # VGAEModule + CANBusDataModule
       normal.yaml        # GATModule + CANBusDataModule (no curriculum)
       curriculum.yaml    # GATModule + CurriculumDataModule
-      fusion.yaml        # RLFusionModule + FusionDataModule + trainer overrides
+      fusion_bandit.yaml  # BanditFusionModule + FusionDataModule + trainer overrides
+      fusion_dqn.yaml    # DQNFusionModule + FusionDataModule + trainer overrides
+      fusion_mlp.yaml    # MLPFusionModule + FusionDataModule
+      fusion_weighted_avg.yaml  # WeightedAvgModule + FusionDataModule
       analyze_vgae.yaml  # Analyzer config: VGAE embeddings + landscape
       analyze_gat.yaml   # Analyzer config: GAT embeddings + attention + CKA + landscape
       analyze_fusion.yaml # Analyzer config: fusion policy
     overlays/            # thin --config adds for scale/ablation variants
-      small_vgae.yaml    # small-scale VGAE dims
+      small_vgae.yaml    # small-scale VGAE/DGI dims (DGI falls through to this)
       small_gat.yaml     # small-scale GAT dims
-      small_dgi.yaml     # small-scale DGI dims
       large_vgae.yaml    # large-scale VGAE dims (sweep-optimized)
       large_gat.yaml     # large-scale GAT dims (sweep-optimized)
       kd_vgae.yaml       # KD auxiliaries for VGAE student
       kd_gat.yaml        # KD auxiliaries for GAT student
   orchestrate/
-    dagster_defs.py      # recipe→topology, asset factory, validate, smoke, Definitions
+    component.py         # SlurmTrainingComponent + IOManager + Resource + factory
+    definitions.py       # dagster entry point
+    __main__.py          # CLI: run/validate/smoke
+    slurm.py             # sbatch submit, sacct poll
+    resources.py         # ResourceSpec + scale_resources
 ```
 
 `LAKE_ROOT` defaults to `experimentruns` (relative) or `KD_GAT_LAKE_ROOT` env var (ESS on OSC).
@@ -89,7 +96,7 @@ model:
 
 **Prefix conventions** for modules with colliding param spaces:
 - `TemporalLightningModule`: `spatial_*` for GAT backbone, `temporal_*` for transformer
-- `RLFusionModule`: `dqn_*` for DQN agent, `bandit_*` for bandit agent
+- `DQNFusionModule` / `BanditFusionModule`: separate classes, no prefix needed (each has its own params)
 
 ## Pipeline topology
 

@@ -91,38 +91,30 @@ class CANBusDataset(InMemoryDataset):
             path, map_location="cpu", mmap=True, weights_only=False,
         )
 
-    def save(self, data_list: list[Data], path: str) -> None:
-        from torch_geometric.data import InMemoryDataset as _Base
-        atomic_save(list(_Base.collate(data_list)), Path(path))
-
     def process(self) -> None:
         lock_path = Path(self.processed_dir) / ".lock"
         with nfs_lock(lock_path):
             marker = Path(self.processed_dir) / ".complete"
             if Path(self.processed_paths[0]).exists() and marker.exists():
                 return
-            data_list, num_arb_ids = self._build_graphs()
-            if self.pre_transform is not None:
-                data_list = [self.pre_transform(d) for d in data_list]
-            self.save(data_list, self.processed_paths[0])
+            data, slices, num_arb_ids, num_graphs = self._build_graphs()
+            atomic_save([data, slices], Path(self.processed_paths[0]))
             (Path(self.processed_dir) / "num_arb_ids.txt").write_text(str(num_arb_ids))
-            self._write_cache_metadata(data_list)
+            self._write_cache_metadata(slices, num_graphs)
             marker.write_text("ok")
 
-    def _write_cache_metadata(self, data_list: list) -> None:
+    def _write_cache_metadata(self, slices: dict, num_graphs: int) -> None:
         """Write graph statistics to cache_metadata.json for DynamicBatchSampler."""
         import json
         import tempfile
 
-        node_counts = [d.num_nodes for d in data_list]
-        edge_counts = [d.num_edges for d in data_list]
-        node_t = torch.tensor(node_counts, dtype=torch.float32)
-        edge_t = torch.tensor(edge_counts, dtype=torch.float32)
+        node_t = (slices["x"][1:] - slices["x"][:-1]).float()
+        edge_t = (slices["edge_index"][1:] - slices["edge_index"][:-1]).float()
 
         meta = {
             "window_size": self.window_size,
             "stride": self.stride,
-            "num_graphs": len(data_list),
+            "num_graphs": num_graphs,
             "graph_stats": {
                 "node_count": {
                     "min": int(node_t.min().item()),
@@ -156,11 +148,11 @@ class CANBusDataset(InMemoryDataset):
             if os.path.exists(tmp):
                 os.unlink(tmp)
             raise
-        log.info("cache_metadata_written", path=str(out_path), num_graphs=len(data_list))
+        log.info("cache_metadata_written", path=str(out_path), num_graphs=num_graphs)
 
     # ── pipeline ──────────────────────────────────────────────────────
 
-    def _build_graphs(self) -> tuple[list[Data], int]:
+    def _build_graphs(self) -> tuple[Data, dict, int, int]:
         df = self._read_raw()
         log.info("raw_loaded", rows=len(df))
 
@@ -171,8 +163,9 @@ class CANBusDataset(InMemoryDataset):
             pl.col("arb_id").replace_strict(vocab, default=oov).cast(pl.Int64).alias("node_id")
         )
 
-        graphs = sliding_window_graphs(df, self.window_size, self.stride)
-        return graphs, num_arb_ids
+        data, slices, num_graphs = sliding_window_graphs(df, self.window_size, self.stride)
+        del df
+        return data, slices, num_arb_ids, num_graphs
 
     @staticmethod
     def _infer_attack_type(csv_path: Path) -> int:

@@ -25,13 +25,19 @@ python -m graphids analyze --config graphids/config/stages/analyze_vgae.yaml \
 
 ## CLI Architecture
 
-`GraphIDSCLI` class and `CLI_KWARGS` live in `graphids/cli.py` — single definition shared by
-`__main__.py` (training) and `orchestrate/dagster_defs.py` (validation). Two entry points:
+`GraphIDSCLI`, `WandbSaveConfigCallback`, and `CLI_KWARGS` live in `graphids/cli.py` — single definition shared by
+`__main__.py` (training) and `orchestrate/` (validation). `WandbSaveConfigCallback` forwards
+full jsonargparse config to wandb (Lightning #19728 workaround). Two entry points:
 
 - `python -m graphids fit|test|validate|predict` → `GraphIDSCLI` (extends `LightningCLI`, adds `link_arguments` for DRY config)
 - `python -m graphids analyze` → `Analyzer` class (no Trainer — loads checkpoints, generates artifacts)
+- `python -m graphids profile <job_ids>` → sacct resource profiler (RSS, CPU%, wall time). See `orchestrate/profiler.py`.
 
-Orchestration: `python -m graphids.orchestrate [run|validate|smoke]` — dagster-based, see `plans/dagster-native-orchestration.md`
+Orchestration: `python -m graphids.orchestrate [run|validate|smoke]` — dagster-based, see `plans/architecture/dagster-native-orchestration.md`
+
+Dagster UI: `bash scripts/dev/dagster-ui.sh` (webserver + daemon on login node, port 3000). Access via SSH tunnel.
+
+Fusion has per-method stage YAMLs: `fusion_bandit.yaml` (`BanditFusionModule`), `fusion_dqn.yaml` (`DQNFusionModule`), `fusion_mlp.yaml` (`MLPFusionModule`), `fusion_weighted_avg.yaml` (`WeightedAvgModule`). Config resolution in `component.py` picks the right YAML from `fusion_method` in the recipe.
 
 ## Session Start
 
@@ -47,7 +53,7 @@ modular rule files covering architecture, config, constraints, code style, SLURM
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **KD-GAT** (5341 symbols, 6536 relationships, 150 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **KD-GAT** (2074 symbols, 3357 relationships, 120 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

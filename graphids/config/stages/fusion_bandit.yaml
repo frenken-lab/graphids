@@ -1,0 +1,8 @@
+# Bandit fusion method. Layered on top of fusion.yaml.
+model:
+  class_path: graphids.core.models.bandit.BanditFusionModule
+  init_args:
+    reward_kwargs:
+      vgae_weights: [0.4, 0.35, 0.25]
+data:
+  init_args: {method: bandit}

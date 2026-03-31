@@ -6,13 +6,5 @@ slurm:
   account: PAS1266
   partition: gpu
   gpu_type: v100
+  log_dir: /fs/ess/PAS1266/kd-gat/slurm_logs
 
-ckpt_stages:
-  vgae: autoencoder
-  gat: curriculum
-  dqn: fusion
-  dgi: autoencoder
-  temporal: temporal
-
-ckpt_model:
-  gat: gat

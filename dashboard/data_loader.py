@@ -29,9 +29,6 @@ def load_experiments() -> pd.DataFrame:
                         rename[col] = short
         if rename:
             df = df.rename(columns=rename)
-        # Friendly aliases for MLflow-specific tag names
-        if "mlflow.runName" in df.columns and "run_name" not in df.columns:
-            df = df.rename(columns={"mlflow.runName": "run_name"})
         for col in ["duration_seconds", "peak_gpu_mb", "val_loss", "best_val_loss"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")

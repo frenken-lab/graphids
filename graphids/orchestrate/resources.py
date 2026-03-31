@@ -2,12 +2,26 @@
 
 from __future__ import annotations
 
+import os
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
 _RESOURCES_PATH = Path(__file__).resolve().parents[1] / "config" / "resources.yaml"
+
+
+def _detect_cluster() -> str:
+    """Detect OSC cluster from hostname, with env var override."""
+    override = os.environ.get("KD_GAT_CLUSTER")
+    if override:
+        return override.lower()
+    host = socket.gethostname().lower()
+    for name in ("cardinal", "ascend", "pitzer"):
+        if name in host:
+            return name
+    return "pitzer"
 
 
 @dataclass
@@ -37,16 +51,33 @@ def _load() -> dict:
 
 
 def get_resources(model_type: str, scale: str, stage: str) -> ResourceSpec:
-    """Look up resource profile for (model_type, scale, stage)."""
+    """Look up resource profile for (model_type, scale, stage).
+
+    Resolves cluster-agnostic ``mode`` field to concrete ``partition``/``gres``
+    using the ``clusters`` mapping + hostname detection.
+    """
     raw = _load()
     profiles = raw["resource_profiles"]
     try:
-        spec = profiles[model_type][scale][stage]
+        spec = dict(profiles[model_type][scale][stage])
     except KeyError:
         raise KeyError(
             f"No resource profile for ({model_type}, {scale}, {stage}). "
             f"Add entry to config/resources.yaml."
         ) from None
+
+    mode = spec.pop("mode", None)
+    if mode and "partition" not in spec:
+        cluster = _detect_cluster()
+        cluster_map = raw.get("clusters", {}).get(cluster)
+        if not cluster_map:
+            raise KeyError(f"No cluster config for '{cluster}' in resources.yaml")
+        mode_spec = cluster_map.get(mode)
+        if not mode_spec:
+            raise KeyError(f"No mode '{mode}' for cluster '{cluster}' in resources.yaml")
+        spec["partition"] = mode_spec["partition"]
+        spec["gres"] = mode_spec.get("gres", "")
+
     return ResourceSpec(**spec)
 
 

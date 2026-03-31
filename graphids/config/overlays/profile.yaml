@@ -1,0 +1,14 @@
+# Profiling overlay: 5 epochs, PyTorchProfiler, per-step logging.
+# Layer on any stage config:
+#   python -m graphids fit --config graphids/config/stages/autoencoder.yaml \
+#     --config graphids/config/overlays/small_vgae.yaml \
+#     --config graphids/config/overlays/profile.yaml \
+#     --data.init_args.dataset=hcrl_ch
+trainer:
+  max_epochs: 5
+  log_every_n_steps: 1
+  profiler:
+    class_path: pytorch_lightning.profilers.PyTorchProfiler
+    init_args:
+      row_limit: 30
+      export_to_chrome: true

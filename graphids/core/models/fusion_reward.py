@@ -11,20 +11,6 @@ import torch
 log = structlog.get_logger()
 
 
-def reward_kwargs_from_cfg(cfg) -> dict:
-    """Extract FusionRewardCalculator kwargs from flat config."""
-    return dict(
-        vgae_weights=list(cfg.dqn_vgae_error_weights),
-        reward_correct=cfg.dqn_reward_correct,
-        reward_incorrect=cfg.dqn_reward_incorrect,
-        confidence_weight=cfg.dqn_confidence_weight,
-        combined_conf_weight=cfg.dqn_combined_conf_weight,
-        disagreement_penalty=cfg.dqn_disagreement_penalty,
-        overconf_penalty=cfg.dqn_overconf_penalty,
-        balance_weight=cfg.dqn_balance_weight,
-    )
-
-
 class FusionRewardCalculator:
     """Vectorized fusion reward from state features, predictions, and labels.
 
@@ -56,7 +42,7 @@ class FusionRewardCalculator:
         overconf_penalty: float = -1.5,
         balance_weight: float = 0.3,
     ) -> None:
-        from .registry import feature_layout
+        from .fusion_features import feature_layout
 
         layout = feature_layout()
         vgae = layout["vgae"]

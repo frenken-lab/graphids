@@ -31,8 +31,9 @@ dependencies = [
     "duckdb>=1.0.0",
     "jsonargparse[signatures]>=4.27.7",
     "structlog>=25.5.0",
-    "dagster-slurm>=1.12.0",
     "dagster-dg-cli>=1.12.21",
+    "alembic>=1.18",
+    "wandb>=0.25.1",
 ]
 
 [project.optional-dependencies]
@@ -63,6 +64,7 @@ testpaths = ["tests"]
 markers = [
     "slow: marks tests as slow (>30s, deselect with '-m not slow')",
     "slurm: marks tests that require SLURM submission",
+    "dagster: marks tests that require dagster (deselect with '-m not dagster')",
     "future: marks tests for future research (skip by default)",
 ]
 filterwarnings = [
@@ -95,7 +97,7 @@ root_module = "graphids"
 defs_module = "graphids.orchestrate"
 code_location_target_module = "graphids.orchestrate.definitions"
 registry_modules = [
-    "graphids.components.slurm_training_component",
+    "graphids.orchestrate.component",
 ]
 
 [tool.mypy]

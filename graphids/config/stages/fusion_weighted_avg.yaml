@@ -1,0 +1,5 @@
+# Weighted average fusion baseline. Layered on top of fusion.yaml.
+model:
+  class_path: graphids.core.models.fusion_baselines.WeightedAvgModule
+data:
+  init_args: {method: weighted_avg}
