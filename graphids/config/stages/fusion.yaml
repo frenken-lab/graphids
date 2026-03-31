@@ -1,11 +1,12 @@
 # Fusion stage shared config. Depends on VGAE + GAT checkpoints.
 # Method-specific model class_path layered via fusion_{method}.yaml.
-# Inherits trainer.yaml defaults (gradient_clip_val, log_every_n_steps, etc.)
-# — harmless since RL fusion models use automatic_optimization=False.
+# gradient_clip_val: null — DQN/Bandit use manual optimization,
+# Lightning rejects gradient_clip_val with automatic_optimization=False.
 trainer:
   precision: 32
   max_epochs: 50
   log_every_n_steps: 10
+  gradient_clip_val: null
   callbacks:
     - class_path: pytorch_lightning.callbacks.ModelCheckpoint
       init_args: {monitor: val_acc, mode: max, save_top_k: 1, save_last: true, filename: "best_model"}
