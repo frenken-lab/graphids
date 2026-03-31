@@ -1,6 +1,6 @@
 # KD-GAT Session Plan
 
-> Last updated: 2026-03-30 (session 2)
+> Last updated: 2026-03-30 (session 3)
 
 ## Active Plan
 
@@ -25,11 +25,13 @@ Re-training as Run 004 with all 18 configs including KD (configs 10-11).
 
 **Status tracking:** `sacct -u $USER --starttime=<submit_time>`
 
-### IO Inconsistencies
+### IO Inconsistencies — RESOLVED
 
-Expanded configs now write to `{lake_root}/expanded/` (ESS on OSC). Remaining:
-- Slurm logs still write to `slurm_logs/` in repo
-- Test outputs still write to repo
+All write paths consolidated into `graphids/config/write_paths.yaml` (single source of truth).
+See `plans/architecture/write-paths.md` for full inventory. Remaining cosmetic:
+
+- `production` path prefix in docs never used (always `dev/{user}`)
+- `.env.example` doesn't include `KD_GAT_LAKE_ROOT`
 
 ### Configs (18 runnable)
 
@@ -58,74 +60,58 @@ teacher checkpoint path via `--model.init_args.auxiliaries[0].model_path=<path>`
 - [x] SLURM RAM profiles bumped to 36G (resolved issue #1)
 - [x] dagster `context.log.warning` TypeError (resolved issue #2)
 - [x] **Probe-based VRAM node budget** (resolved issue #3 — large GAT CUDA OOM).
-  Replaced `_BYTES_PER_NODE = 32768` constant with `_probe_bytes_per_node()`:
-  runs 1 forward pass on ~2000 nodes at `train_dataloader()` time (model on GPU),
-  measures `torch.cuda.max_memory_allocated()`, derives real bytes/node.
-  Works for all model × scale × GPU combos. CurriculumDataModule defers budget
-  from `setup()` to `train_dataloader()`. `GraphModuleBase._oom_safe_step()` remains as safety net.
-  **KD-aware** (2026-03-30): probe now runs `model._step()` (auto-detected) instead of
-  `forward()`, capturing teacher VRAM during probe. See `plans/memory-profiling/vram-probe-kd-aware.md`.
-  Caveat: `_GRAD_MULTIPLIER=2` overestimates for KD (teacher backward doesn't exist) — safe direction.
+      Replaced `_BYTES_PER_NODE = 32768` constant with `_probe_bytes_per_node()`:
+      runs 1 forward pass on ~2000 nodes at `train_dataloader()` time (model on GPU),
+      measures `torch.cuda.max_memory_allocated()`, derives real bytes/node.
+      Works for all model × scale × GPU combos. CurriculumDataModule defers budget
+      from `setup()` to `train_dataloader()`. `GraphModuleBase._oom_safe_step()` remains as safety net.
+      **KD-aware** (2026-03-30): probe now runs `model._step()` (auto-detected) instead of
+      `forward()`, capturing teacher VRAM during probe. See `plans/memory-profiling/vram-probe-kd-aware.md`.
+      Caveat: `_GRAD_MULTIPLIER=2` overestimates for KD (teacher backward doesn't exist) — safe direction.
 - [x] **KD teacher VRAM** (resolved issue #4 — Lightning auto-moves teacher to GPU).
-  Teacher stored via `self.__dict__["teacher"]` to bypass `nn.Module._modules` registration.
-  `teacher_on_device()` moves teacher CPU→GPU only during inference, then back to CPU.
+      Teacher stored via `self.__dict__["teacher"]` to bypass `nn.Module._modules` registration.
+      `teacher_on_device()` moves teacher CPU→GPU only during inference, then back to CPU.
 - [x] **Observability** (resolved issue #5 — fully wired).
-  WandbLogger + CSVLogger + DeviceStatsMonitor in `trainer.yaml`.
-  `WandbSaveConfigCallback` in `cli.py` (forwards full jsonargparse config to wandb).
-  Env vars in `_preamble.sh` (`WANDB_DIR=/fs/scratch/PAS1266/wandb`, `WANDB_DISABLE_GIT`, `WANDB_SILENT`).
-  Auth: `~/.netrc` (entity: `frenken-2-the-ohio-state-university`). `orchestrate validate` 18/18 pass.
+      WandbLogger + CSVLogger + DeviceStatsMonitor in `trainer.yaml`.
+      `WandbSaveConfigCallback` in `cli.py` (forwards full jsonargparse config to wandb).
+      Env vars in `_preamble.sh` (`WANDB_DIR=/fs/scratch/PAS1266/wandb`, `WANDB_DISABLE_GIT`, `WANDB_SILENT`).
+      Auth: `~/.netrc` (entity: `frenken-2-the-ohio-state-university`). `orchestrate validate` 18/18 pass.
 - [x] **Dagster UI** (resolved — webserver + daemon launcher).
-  `scripts/dev/dagster-ui.sh` starts both `dagster-webserver` (port 3000) and `dagster-daemon`.
-  Access via `ssh -L 3000:localhost:3000 pitzer.osc.edu` → `http://localhost:3000`.
-  Verified: HTTP 200, defs load, daemon starts (all 6 daemon types). Use tmux for persistence.
+      `scripts/dev/dagster-ui.sh` starts both `dagster-webserver` (port 3000) and `dagster-daemon`.
+      Access via `ssh -L 3000:localhost:3000 pitzer.osc.edu` → `http://localhost:3000`.
+      Verified: HTTP 200, defs load, daemon starts (all 6 daemon types). Use tmux for persistence.
 
 ### Code consolidation
 
-- [x] Models consolidation (`plans/architecture/models-consolidation.md`) -- **complete** (2026-03-30)
-  - [x] DQN/Bandit Lightning conversion (§8-10): `FusionModuleBase`, `DQNFusionModule`, `BanditFusionModule`
-  - [x] §1-7,§11-13: `GraphModuleBase`, optimizer wiring, dead code, temporal fix, YAML configs, verification
-  - Deferred: VGAE `configure_optimizers` (projection params), DGI stage YAML
-- [x] `orchestrate validate` 18/18 pass (2026-03-30) — fixed cli.py optimizer/scheduler args,
-  BanditFusionModule/DQNFusionModule `state_dim` default, `SystemExit` catch in validate
-- [ ] Preprocessing consolidation (`plans/architecture/preprocessing-consolidation.md`) -- delete _temporal.py, DataModule convention fixes
+- [ ] Preprocessing consolidation (`plans/architecture/preprocessing-consolidation.md`) -- delete \_temporal.py, DataModule convention fixes
 
 ## Recently Completed
 
-### Dagster test suite + test quality pass (2026-03-30)
+### Write-path consolidation (2026-03-30)
 
-**New orchestrate tests (63 tests, 4 files, all login-node safe):**
-- Layer 0 (`test_pure.py`, 43 tests): `run_dir`, `compute_identity_hash`, `build_cli_args`,
-  `enumerate_assets`, `_identity_value`, `_cli_val`, `generate_script`, `ResourceSpec`,
-  `_detect_cluster`, `get_resources`, `scale_resources`
-- Layer 1 (`test_dagster_unit.py`, 4 tests): dry-run, skip-when-complete, failure, IOManager handoff
-- Layer 2 (`test_dagster_integration.py`, 6 tests): 3-stage pipeline, sidecar creation, asset checks
-- Layer 3 (`test_iomanager.py`, 6 tests): sidecar write/read/overwrite/round-trip/partition isolation
+All runtime write paths declared in `graphids/config/write_paths.yaml`, loaded by `config/__init__.py`,
+consumed as constants (`CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `COMPLETE_MARKER`, etc.). No hardcoded
+path strings in Python code.
+
+Key changes:
+- `write_paths.yaml` — single source of truth for all disk writes
+- `__main__.py` — thin dispatcher for all subcommands (fit/analyze/profile/run/validate-recipe)
+- `cli.py` — slimmed: `GraphIDSCLI` + `WandbSaveConfigCallback` + checkpoint dirpath pin + CSVLogger save_dir patch
+- `orchestrate/__main__.py` — deleted (absorbed into `__main__.py`)
+- Checkpoints decoupled from CSVLogger versioning (`{run_dir}/checkpoints/`, not `lightning_logs/version_N/`)
+- Optimizer wiring removed from CLI (models own `configure_optimizers`)
+- CurriculumEpochCallback moved to `curriculum.yaml` (not in shared `trainer.yaml`)
+- MLflow references cleaned (`.gitignore`, `ci.yml`, `data_loader.py`, stale skills)
+- `dagster-ui.sh` sources `.env` for `DAGSTER_HOME`
+
+Full inventory: `plans/architecture/write-paths.md`
+
+### Dagster test suite + test quality pass (2026-03-30)
 
 **Production fix:** `component.py` — DRY_RUN returns early before `complete_marker.touch()` (was crashing
 on non-existent directory). Extracted `build_cli_args()` as pure function from `_train` closure.
 
-**Existing test quality fixes:**
-- Fixed broken `TestVGAECheckpointRoundtrip` (referenced removed `vgae_cfg.vgae` — dead since config flatten)
-- Fixed vacuous `assert x.abs().max() <= 10.0 or True` in `test_features.py`
-- Removed stale `lr`, `weight_decay`, `gat_stage` from `conftest.py::base_cfg`
-- Added `@pytest.mark.slurm` to 10 Trainer tests across 4 files
-- Parametrized duplicate tests: `test_vgae` (2 conv types), `test_gat` (3 loss fns),
-  `test_fusion` (MLP/WeightedAvg), `test_integration` (3 num_classes variants)
-- Strengthened weak assertions: curriculum `set_epoch`, integration threshold comparison
-- `test_fusion` `_make_fusion_batch` + checkpoint tests now use `fusion_state_dim()` not hardcoded `15`
-- Registered `dagster` marker in `pyproject.toml`; `-m dagster` / `-m "not dagster"` for selection
-
 ### Models consolidation complete (2026-03-30)
-
-All 13 steps of `plans/architecture/models-consolidation.md` done. Key outcomes:
-- `GraphModuleBase` in `_training.py` — shared `setup()`, OOM guard, BinaryROC threshold for VGAE/GAT/DGI
-- `OOMSkipMixin` deleted (absorbed into `GraphModuleBase`)
-- `configure_optimizers` deleted from GAT/DGI — CLI auto-wires via `add_optimizer_args`
-- Stage YAMLs (`normal.yaml`, `curriculum.yaml`) have explicit `optimizer:`/`lr_scheduler:` sections
-- `soft_label_kd_loss` inlined in `gat.py`, `focal_loss` → `_focal_loss` in `gat.py`
-- `temporal.py` checkpoint loading simplified (10→2 lines via `load_inner_model`)
-- Dead `fuse()` methods deleted from fusion_baselines.py
-- Import-level verification passes; SLURM test run pending
 
 ### DQN/Bandit Lightning conversion (2026-03-30)
 
@@ -138,15 +124,16 @@ New stage YAML: `fusion_dqn.yaml`. Registry updated. See `plans/architecture/mod
 
 All 5 profiling/observability tools wired and verified:
 
-| Tool | What it provides | Config |
-|------|-----------------|--------|
-| wandb (pynvml) | GPU util%, temp, power, memory (15s) | `trainer.yaml` WandbLogger |
-| DeviceStatsMonitor | CUDA allocator stats per step | `trainer.yaml` callback |
-| PyTorchProfiler | Op-level timing, chrome traces | `overlays/profile.yaml` + `profile_training.sh` |
-| WandbSaveConfigCallback | Full jsonargparse config to wandb | `cli.py` `save_config_callback` |
-| sacct profiler | RSS, CPU%, wall time, mem efficiency | `python -m graphids profile` |
+| Tool                    | What it provides                     | Config                                          |
+| ----------------------- | ------------------------------------ | ----------------------------------------------- |
+| wandb (pynvml)          | GPU util%, temp, power, memory (15s) | `trainer.yaml` WandbLogger                      |
+| DeviceStatsMonitor      | CUDA allocator stats per step        | `trainer.yaml` callback                         |
+| PyTorchProfiler         | Op-level timing, chrome traces       | `overlays/profile.yaml` + `profile_training.sh` |
+| WandbSaveConfigCallback | Full jsonargparse config to wandb    | `cli.py` `save_config_callback`                 |
+| sacct profiler          | RSS, CPU%, wall time, mem efficiency | `python -m graphids profile`                    |
 
 Key fixes applied:
+
 - `WandbSaveConfigCallback` in `cli.py` (Lightning #19728 workaround)
 - `_preamble.sh`: `WANDB_DIR`, `WANDB_DISABLE_GIT`, `WANDB_SILENT`, `mkdir -p`
 - `link_arguments` for CSVLogger `save_dir` → follows `default_root_dir` (metrics.csv in run dir)
@@ -169,7 +156,7 @@ Dagster runtime path verified end-to-end: validate (all config chains) + smoke
 2. **SaveConfigCallback** — `overwrite: True` in CLI_KWARGS for reruns.
 3. **CurriculumDataModule** — subclassed CANBusDataModule (was missing num_ids,
    in_channels, num_classes properties needed by GATModule.setup()).
-4. **DynamicBatchSampler num_steps** — CurriculumSampler._build_inner() didn't pass
+4. **DynamicBatchSampler num_steps** — CurriculumSampler.\_build_inner() didn't pass
    num_steps (val loader did). len() undefined error.
 5. **CurriculumEpochCallback** — set_epoch() was only called at epoch 0 because
    reload_dataloaders_every_n_epochs defaults to 0. Added callback in trainer.yaml.
@@ -181,105 +168,8 @@ Dagster runtime path verified end-to-end: validate (all config chains) + smoke
 
 ### Dagster orchestration rebuild (2026-03-29)
 
-Replaced `dagster_defs.py` (513 lines) with dagster-native orchestration using proper
-primitives: assets with tags/kinds/groups, `CheckpointPathIOManager` for checkpoint
-path handoff, `SlurmTrainingResource` for SLURM submission, asset checks, and
-`SlurmTrainingComponent` for definition assembly.
-
-Key design decisions:
-- **Assets** represent checkpoints (persistent artifacts), not jobs. Each has tags
-  (stage, model_type, scale), kinds (checkpoint/metrics), group_name, description.
-- **IOManager** stores/retrieves checkpoint path strings via JSON sidecars. Downstream
-  assets receive upstream paths as function parameters via `ins=` + `AssetIn`.
-- **Resource** wraps slurm.py submit/poll as dagster-injectable `ConfigurableResource`.
-- **Asset checks** — 32 blocking `checkpoint_exists` checks.
-- **StageConfig** (dataclass) separates training parameters from asset identity.
-- **Convention-based config resolution** replaces `_stage_args()` if/elif chain.
-- dagster-slurm dropped (Pipes protocol mismatch for on-cluster use).
-- `graphids/components/` deleted — component lives in `graphids/orchestrate/component.py`.
-
-Files:
-- `graphids/orchestrate/component.py` (~420 lines) — Component + IOManager + Resource + factory
-- `graphids/orchestrate/definitions.py` (17 lines) — entry point
-- `graphids/orchestrate/__main__.py` (~210 lines) — CLI: run/validate/smoke
-- `graphids/orchestrate/slurm.py` (105 lines) — retained
-- `graphids/orchestrate/resources.py` (78 lines) — retained
-
-Verified: `dg check defs`, `dg list defs` (32 assets, 32 checks, all tagged),
-`smoke --dry-run` (3-stage chain). IOManager `load_input` wired via `ins=`/`AssetIn`
-(parameter-based deps, not `deps=` ordering-only).
-
-### P2.5: Collapse expand.py into dagster_defs.py (2026-03-29)
-
-Eliminated the two-phase expand→manifest→dagster pipeline. `dagster_defs.py` now
-reads `ablation.yaml` directly, computes topology and identity hashes in-process
-(no torch import at definition time), and builds multi-config SLURM commands.
-
-Deleted: `expand.py` (420 lines), `expanded_dir()`, 64 expanded YAMLs + manifest.json.
-Changed: `generate_script` accepts `config_files: list[str]` (multi-config flags),
-`run_dir()` added to `config/__init__.py`, `orchestrate/__main__.py` gains
-`validate`/`smoke` subcommands.
-
-Net: 420 lines deleted (expand.py), ~80 lines added to dagster_defs.py.
-SLURM command now: `python -m graphids fit --config stages/X.yaml --config overlays/Y.yaml --model.init_args.foo=bar`
-
-### Dagster Phase C+D: config expansion + dynamic asset graph (2026-03-29)
-
-Verified `trainer.yaml` wiring (all 4 stages get callbacks, mixed precision).
-Fixed fusion identity keys: added `conv_type`, `variational` to prevent incorrect
-dedup across conv types/unsup methods. Added `variational` to curriculum identity.
-Added identity key metadata params to fusion modules (`RLFusionModule`, now `BanditFusionModule`/`DQNFusionModule`) and `GATModule`.
-Wrote `ablation.yaml` (18 configs) + `expand.py` (150 lines) + rewrote `dagster_defs.py`
-(175 lines) with dynamic asset factory from manifest topology.
-
-32 unique assets (6 autoencoders, 8 curricula, 3 normals, 15 fusions) × 2 datasets
-= 64 expanded YAMLs. DAG deps wired from `STAGE_DEPENDENCIES` + KD cross-pipeline.
-Upstream checkpoint paths resolved at materialization time. Dry-run `RUN_SUCCESS`
-for `set_01|42` (all 32 assets). Added missing resource profiles (dqn/small/large,
-dgi/small). Upgraded alembic 1.6.5→1.18.4 (SQLAlchemy 2.0 compat).
-
-### Dagster orchestrate rewrite + gpudebug spike (2026-03-28)
-
-Replaced `graphids/orchestrate/` with dagster-based system. Deleted `submit.py` (247
-lines hand-rolled Pipeline class). New files: `slurm.py` (102 lines, sbatch/sacct),
-`dagster_defs.py` (140 lines, asset factory + partitions + retry). Config expansion
-via jsonargparse `--print_config`. dagster-slurm rejected (requires SSH). Pipes
-protocol rejected (post-hoc metrics sufficient). Added `small` scale resource profiles.
-Removed 6 dead hydra packages. See `plans/orchestrate-rewrite.md`.
-
-Gpudebug spike (job 46121143) validated full loop: dagster → sbatch → poll → COMPLETED.
-Bugs found and fixed: `link_arguments` for model→data params (`conv_type`, `heads`),
-`compute_node_budget` replaced with VRAM-driven `vram_node_budget` (uses
-`torch.cuda.mem_get_info`), alembic upgraded for SQLAlchemy 2.0. Discovered
-`trainer.yaml` is dead config (not loaded) — blocks Phase C.
-
-### KD wiring + bug fixes (2026-03-28)
-
-Fixed 3 KD bugs: `teacher_on_device` stale nested ref, `prepare_kd` identity hash using
-student cfg for teacher path, mixed `.get()`/`getattr()` on hparams. Created 4 overlay YAMLs
-(`large_vgae`, `large_gat`, `kd_vgae`, `kd_gat`). Fixed `CATALOG_PATH` missing from config
-exports. Fixed stale `"pipeline"` lazy import. Fixed `orchestrate/resources.py` stale path.
-Run 003 checkpoints declared incompatible (Hydra-era nested format) — re-training as Run 004.
-
-### Artifacts `analyze` subcommand (2026-03-28)
-
-`python -m graphids analyze --config stages/analyze_vgae.yaml --analyzer.ckpt_path ... --analyzer.dataset ...`. Same jsonargparse, YAML under `analyzer:` namespace. `Analyzer` class in `graphids/core/artifacts/analyzer.py`. Fail-loud on missing checkpoints/deps.
-
-### Config flatten + consolidation (2026-03-28)
-
-Replaced Hydra/OmegaConf + config dataclasses with jsonargparse + flat YAML. All 5 LightningModules take flat typed primitives. Deleted `schema.py`, `coerce_config`, `resolve()`, `defaults/` directory. See `plans/architecture/flatten-model-config.md`.
-
-### Lightning callback extraction + LightningCLI (2026-03-27)
-
-Replaced handrolled runner.py orchestration with Lightning callbacks + LightningCLI. `GraphIDSCLI` in `graphids/__main__.py`. Deleted entire `graphids/pipeline/` package (callbacks.py, cli.py, manifest.py, runner.py, stages/).
-
-### Config system rewrite (2026-03-26)
-
-Replaced Hydra/OmegaConf with jsonargparse + plain YAML. Config package: `__init__.py` (constants + topology + path helpers), `constants.yaml`, `pipeline.yaml`, `datasets.yaml`, `resources.yaml`, `trainer.yaml`, `stages/*.yaml`, `overlays/*.yaml`.
-
-### Codebase cleanup (2026-03-25)
-
-Replaced custom DataLoader/collation/assembly with PyG APIs, adopted Lightning built-ins.
+Replaced custom orchestration with dagster primitives: `SlurmTrainingComponent`, `CheckpointPathIOManager`,
+`SlurmTrainingResource`, asset factory (`enumerate_assets` + `_make_asset`). See `plans/architecture/dagster-native-orchestration.md`.
 
 ## Blocked
 
@@ -298,24 +188,27 @@ Replaced custom DataLoader/collation/assembly with PyG APIs, adopted Lightning b
 
 ### CLI entry points (`graphids/__main__.py`)
 
-```bash
-# Training (GraphIDSCLI -> LightningCLI)
-python -m graphids fit --config graphids/config/stages/autoencoder.yaml
+Single dispatcher for all subcommands:
 
-# Analysis artifacts (Analyzer -- no Trainer)
+```bash
+python -m graphids fit --config graphids/config/stages/autoencoder.yaml
 python -m graphids analyze --config graphids/config/stages/analyze_vgae.yaml \
     --analyzer.ckpt_path path/to/best.ckpt --analyzer.dataset hcrl_sa
+python -m graphids profile <job_ids>
+python -m graphids run [recipe args]
+python -m graphids validate-recipe [recipe args]
 ```
 
 ### Config layout (`graphids/config/`)
 
 ```
-__init__.py          # constants, topology, path helpers (single Python file)
+__init__.py          # constants, topology, path helpers, write-path constants
+write_paths.yaml     # single source of truth for all runtime write paths
 constants.yaml       # static values
 pipeline.yaml        # DAG topology: stages, dependencies, identity_keys
 datasets.yaml        # dataset catalog (YAML anchors)
 resources.yaml       # SLURM resource profiles
-trainer.yaml         # default_config_files: seed, trainer
+trainer.yaml         # default_config_files: seed, trainer, loggers, callbacks
 stages/              # one per stage + analyze configs
 overlays/            # thin scale/ablation variants
 ```
@@ -325,22 +218,25 @@ overlays/            # thin scale/ablation variants
 ```
 orchestrate/
   __init__.py          # package docstring
-  __main__.py          # CLI: run/validate/smoke
   component.py         # SlurmTrainingComponent + CheckpointPathIOManager +
                        #   SlurmTrainingResource + enumerate_assets() + _make_asset()
   definitions.py       # dagster entry point (build_defs_for_component)
+  run.py               # dagster launch via dg CLI
+  validate.py          # recipe config chain validation
   slurm.py             # sbatch submit, sacct poll, script gen
   resources.py         # ResourceSpec + scale_resources (reads resources.yaml)
+  profiler.py          # sacct resource profiler (RSS, CPU%, wall time)
 ```
 
 ### Key Reference Documents
 
-- `plans/architecture/dagster-native-orchestration.md` -- **active**: replace custom code with dagster-slurm + Component + IOManager
+- `plans/architecture/write-paths.md` -- **active**: full write path inventory, execution order, conflict table
+- `plans/architecture/dagster-native-orchestration.md` -- **active**: dagster primitives, Component, IOManager
 - `plans/architecture/dagster-history.md` -- archived: timeline, lessons, postmortem from dagster build
 - `plans/experiment-sweep-plan.md` -- ablation claims, configs, stage sharing DAG
 - `plans/tier-priority-and-implementation.md` -- priority-ordered task list
 - `plans/architecture/models-consolidation.md` -- **completed**: GraphModuleBase, optimizer wiring, cleanup
-- `plans/architecture/preprocessing-consolidation.md` -- deferred: delete _temporal.py, DataModule fixes
+- `plans/architecture/preprocessing-consolidation.md` -- deferred: delete \_temporal.py, DataModule fixes
 - `plans/architecture/flatten-model-config.md` -- completed: config flatten reference
 - `plans/architecture/trainer-yaml-wiring.md` -- completed: trainer.yaml verification
 - `plans/research/profiling-and-observability.md` -- **active**: consolidated profiling, optimization, observability plan

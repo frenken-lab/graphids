@@ -21,7 +21,10 @@ import yaml
 
 from graphids.config import (
     CATALOG_PATH,
+    CKPT_SUBPATH,
+    COMPLETE_MARKER,
     CONFIG_DIR,
+    DAGSTER_IO_DIR_TEMPLATE,
     LAKE_ROOT,
     PIPELINE_YAML,
     STAGE_DEPENDENCIES,
@@ -345,10 +348,10 @@ def _make_asset(
             cfg.stage, cfg.identity, cfg.kd_tag, seed,
         )
         rd_path = Path(rd)
-        ckpt_file = rd_path / "checkpoints" / "best_model.ckpt"
+        ckpt_file = rd_path / CKPT_SUBPATH
 
         # Skip if already complete (checkpoint + marker from a successful run)
-        complete_marker = rd_path / ".complete"
+        complete_marker = rd_path / COMPLETE_MARKER
         if ckpt_file.exists() and complete_marker.exists():
             context.log.info(f"Already complete: {ckpt_file}")
             return str(ckpt_file)
@@ -372,7 +375,8 @@ def _make_asset(
                 metadata={"slurm_state": slurm_state, "job_id": jid},
             ))
 
-        resume = rd_path / "checkpoints" / "last.ckpt"
+        from graphids.config import LAST_CKPT_SUBPATH
+        resume = rd_path / LAST_CKPT_SUBPATH
         state, job_id = slurm.submit_and_wait(
             config_files=list(cfg.config_files),
             resources=resources,
@@ -450,8 +454,8 @@ def _make_checkpoint_checks(
                     lake_root, user, dataset, c.model_type, c.scale,
                     c.stage, c.identity, c.kd_tag, seed,
                 )
-                ckpt = Path(rd) / "checkpoints" / "best_model.ckpt"
-                marker = Path(rd) / ".complete"
+                ckpt = Path(rd) / CKPT_SUBPATH
+                marker = Path(rd) / COMPLETE_MARKER
                 passed = ckpt.exists() and marker.exists()
                 return dg.AssetCheckResult(
                     passed=passed,
@@ -523,7 +527,7 @@ class SlurmTrainingComponent(dg.Component, dg.Model, dg.Resolvable):
                     poll_interval=self.poll_interval,
                 ),
                 "io_manager": CheckpointPathIOManager(
-                    base_dir=f"{lake_root}/.dagster/io",
+                    base_dir=DAGSTER_IO_DIR_TEMPLATE.replace("{lake_root}", lake_root),
                 ),
             },
         )

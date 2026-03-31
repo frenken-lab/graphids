@@ -1,7 +1,0 @@
-{
-  "nodeModulesDir": "auto",
-  "imports": {
-    "@observablehq/plot": "npm:@observablehq/plot@^0.6",
-    "jsdom": "npm:jsdom@^28"
-  }
-}

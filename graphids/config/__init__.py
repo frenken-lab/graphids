@@ -33,6 +33,18 @@ SLURM_LOG_DIR: str = os.environ.get("KD_GAT_SLURM_LOG_DIR", _slurm["log_dir"])
 # ---------------------------------------------------------------------------
 LAKE_ROOT: str = os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns")
 
+# ---------------------------------------------------------------------------
+# Write paths — loaded from write_paths.yaml (single source of truth)
+# ---------------------------------------------------------------------------
+_write_paths = yaml.safe_load((CONFIG_DIR / "write_paths.yaml").read_text())
+
+CKPT_SUBPATH: str = _write_paths["lightning"]["checkpoint"]
+LAST_CKPT_SUBPATH: str = _write_paths["lightning"]["last_checkpoint"]
+COMPLETE_MARKER: str = _write_paths["dagster"]["complete_marker"]
+DAGSTER_IO_DIR_TEMPLATE: str = _write_paths["dagster"]["io_dir"]
+DAGSTER_HOME_DEFAULT: str = _write_paths["dagster"]["home"]
+WANDB_WRITE_DIR: str = os.environ.get("WANDB_DIR", _write_paths["wandb"]["dir"])
+
 
 def run_dir(lake_root: str, user: str, dataset: str, model_type: str,
             scale: str, stage: str, identity: str, kd_tag: str, seed: int) -> str:
@@ -149,4 +161,4 @@ def checkpoint_path(lake_root: str, dataset: str, model_type: str, scale: str,
     if model_type == "gat":
         stage = gat_stage
     identity = compute_identity_hash(stage, cfg)
-    return Path(f"{output_base}/{model_type}_{scale}_{stage}{identity}/seed_{seed}/best_model.ckpt")
+    return Path(f"{output_base}/{model_type}_{scale}_{stage}{identity}/seed_{seed}/{CKPT_SUBPATH}")

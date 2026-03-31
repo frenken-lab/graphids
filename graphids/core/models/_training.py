@@ -39,17 +39,21 @@ class GraphModuleBase(pl.LightningModule):
     def _build(self):
         raise NotImplementedError
 
-    # -- Default optimizer (LightningCLI overrides via add_optimizer_args) ------
+    # -- Optimizer ----------------------------------------------------------------
 
     def configure_optimizers(self):
-        """Sensible default for direct Trainer use (tests, notebooks).
-
-        Production training uses LightningCLI which overrides this via
-        add_optimizer_args + stage YAML optimizer: blocks.
-        """
+        """Adam + CosineAnnealingLR. Reads lr/weight_decay from hparams,
+        T_max from trainer.max_epochs."""
         lr = getattr(self.hparams, "lr", 1e-3)
         wd = getattr(self.hparams, "weight_decay", 0.0)
-        return torch.optim.Adam(self.parameters(), lr=lr, weight_decay=wd)
+        optimizer = torch.optim.Adam(self.parameters(), lr=lr, weight_decay=wd)
+        max_epochs = getattr(self.trainer, "max_epochs", None)
+        if max_epochs and max_epochs > 1:
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=max_epochs,
+            )
+            return {"optimizer": optimizer, "lr_scheduler": scheduler}
+        return optimizer
 
     # -- OOM guard --------------------------------------------------------------
 

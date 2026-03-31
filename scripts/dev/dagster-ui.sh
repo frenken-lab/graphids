@@ -9,7 +9,8 @@ set -euo pipefail
 PROJECT_ROOT="/users/PAS2022/rf15/KD-GAT"
 cd "$PROJECT_ROOT"
 
-export DAGSTER_HOME="/fs/scratch/PAS1266/dagster"
+set -a; source ./.env; set +a
+: "${DAGSTER_HOME:?DAGSTER_HOME not set after sourcing .env}"
 PORT="${1:-3000}"
 
 module load python/3.12 2>/dev/null || true
