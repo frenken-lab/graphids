@@ -20,6 +20,47 @@ _LOGGER_REQUIRED_CALLBACKS = {
 }
 _NULL_LIST_FIELDS = {"pool_aggrs", "hidden_dims", "auxiliaries"}
 
+# Stage conventions for monitor metrics.
+# Fusion stages optimize accuracy; all others optimize loss.
+_STAGE_MONITOR_CONVENTIONS: dict[str, tuple[str, str]] = {
+    "autoencoder": ("val_loss", "min"),
+    "normal": ("val_loss", "min"),
+    "curriculum": ("val_loss", "min"),
+    "fusion": ("val_acc", "max"),
+}
+
+
+def _check_monitor_conventions(
+    asset_name: str, stage: str, cfg: dict,
+) -> list[str]:
+    """Warn if checkpoint/early_stopping monitor doesn't match stage conventions."""
+    expected = _STAGE_MONITOR_CONVENTIONS.get(stage)
+    if expected is None:
+        return []
+
+    expected_monitor, expected_mode = expected
+    warnings: list[str] = []
+
+    for namespace, label in [("checkpoint", "ModelCheckpoint"),
+                             ("early_stopping", "EarlyStopping")]:
+        ns_cfg = cfg.get(namespace, {})
+        if not isinstance(ns_cfg, dict):
+            continue
+        monitor = ns_cfg.get("monitor")
+        mode = ns_cfg.get("mode")
+        if monitor is not None and monitor != expected_monitor:
+            warnings.append(
+                f"{asset_name}: {label} monitor={monitor!r}, "
+                f"expected {expected_monitor!r} for {stage} stage"
+            )
+        if mode is not None and mode != expected_mode:
+            warnings.append(
+                f"{asset_name}: {label} mode={mode!r}, "
+                f"expected {expected_mode!r} for {stage} stage"
+            )
+
+    return warnings
+
 
 def validate_recipe(argv: list[str]) -> None:
     """Parse every config chain in a recipe. Exit 1 on errors."""
@@ -47,6 +88,7 @@ def validate_recipe(argv: list[str]) -> None:
     sys.argv = _saved
 
     errors: list[str] = []
+    warnings: list[str] = []
     seen: set[tuple] = set()
 
     for spec in specs:
@@ -84,6 +126,12 @@ def validate_recipe(argv: list[str]) -> None:
             if fld in model_args and model_args[fld] is None:
                 errors.append(f"{spec.asset_name}: model.init_args.{fld} is null")
 
+        warnings.extend(_check_monitor_conventions(spec.asset_name, spec.stage, cfg))
+
+    if warnings:
+        print(f"WARN: {len(warnings)} monitor convention warnings:", file=sys.stderr)
+        for w in warnings:
+            print(f"  {w}", file=sys.stderr)
     if errors:
         print(f"FAIL: {len(errors)} errors:", file=sys.stderr)
         for e in errors:

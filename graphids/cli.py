@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 
 import pytorch_lightning as pl
+from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.cli import LightningCLI, SaveConfigCallback
 from pytorch_lightning.loggers import WandbLogger
 
@@ -32,6 +33,24 @@ class GraphIDSCLI(LightningCLI):
         parser.link_arguments("model.init_args.conv_type", "data.init_args.conv_type")
         parser.link_arguments("model.init_args.heads", "data.init_args.heads")
 
+        # Forced callbacks — registered as separate namespaces so stage YAMLs
+        # that override trainer.callbacks cannot drop them (jsonargparse replaces
+        # lists atomically, but these live outside the list).
+        parser.add_lightning_class_args(ModelCheckpoint, "checkpoint")
+        parser.set_defaults({
+            "checkpoint.monitor": "val_loss",
+            "checkpoint.mode": "min",
+            "checkpoint.save_top_k": 1,
+            "checkpoint.save_last": True,
+            "checkpoint.filename": "best_model",
+        })
+        parser.add_lightning_class_args(EarlyStopping, "early_stopping")
+        parser.set_defaults({
+            "early_stopping.monitor": "val_loss",
+            "early_stopping.patience": 100,
+            "early_stopping.mode": "min",
+        })
+
     def before_instantiate_classes(self):
         """Patch parsed config: logger save_dirs + checkpoint dirpath."""
         if not self.subcommand:
@@ -50,36 +69,9 @@ class GraphIDSCLI(LightningCLI):
                 elif "CSVLogger" in lg.class_path and root_dir:
                     lg.init_args.save_dir = root_dir
 
-        if not root_dir:
-            return
-
-        # Ensure ModelCheckpoint is always present and dirpath is pinned.
-        # Stage YAMLs that override trainer.callbacks can accidentally drop it
-        # (jsonargparse replaces lists, not merges), so cli.py is the safety net.
-        cbs = subcfg.trainer.callbacks
-        if not isinstance(cbs, list):
-            cbs = []
-            subcfg.trainer.callbacks = cbs
-
-        has_ckpt = any(
-            hasattr(cb, "class_path") and "ModelCheckpoint" in cb.class_path
-            for cb in cbs
-        )
-        if not has_ckpt:
-            from jsonargparse import Namespace
-
-            cbs.append(Namespace(
-                class_path="pytorch_lightning.callbacks.ModelCheckpoint",
-                init_args=Namespace(
-                    monitor="val_loss", mode="min", save_top_k=1,
-                    save_last=True, filename="best_model",
-                    dirpath=f"{root_dir}/{_CKPT_DIR}",
-                ),
-            ))
-
-        for cb in cbs:
-            if hasattr(cb, "class_path") and "ModelCheckpoint" in cb.class_path:
-                cb.init_args.dirpath = f"{root_dir}/{_CKPT_DIR}"
+        # Pin checkpoint dirpath to the run directory
+        if root_dir:
+            subcfg.checkpoint.dirpath = f"{root_dir}/{_CKPT_DIR}"
 
 
 CLI_KWARGS = dict(
