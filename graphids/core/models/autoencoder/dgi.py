@@ -15,8 +15,8 @@ import torch
 import torch.nn as nn
 from torch_geometric.nn import global_mean_pool
 
-from ._conv import InputEncoder, build_encoder_stack, conv_forward, resolve_edge_dim
-from ._training import GraphModuleBase, binary_test_metrics
+from .._conv import InputEncoder, build_encoder_stack, conv_forward, resolve_edge_dim
+from .._training import GraphModuleBase, binary_test_metrics
 
 
 class GraphInfomaxModel(nn.Module):

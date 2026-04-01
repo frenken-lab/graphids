@@ -1,7 +1,8 @@
 """Dagster orchestration CLI: python -m graphids.orchestrate <command>
 
 Commands:
-  validate   — validate all recipe config chains parse correctly
+    validate          — validate dagster defs + recipe/lightning config chains
+    validate-dagster  — validate dagster defs only
 """
 
 from __future__ import annotations
@@ -15,9 +16,12 @@ def main() -> None:
     if cmd == "validate":
         from graphids.orchestrate.validate import main as validate_main
         validate_main(sys.argv[2:])
+    elif cmd == "validate-dagster":
+        from graphids.orchestrate.validate import main as validate_main
+        validate_main(["--skip-lightning", *sys.argv[2:]])
     else:
         print("Usage: python -m graphids.orchestrate <command>", file=sys.stderr)
-        print("Commands: validate", file=sys.stderr)
+        print("Commands: validate, validate-dagster", file=sys.stderr)
         sys.exit(1)
 
 

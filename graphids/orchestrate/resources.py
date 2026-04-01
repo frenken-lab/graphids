@@ -1,4 +1,4 @@
-"""Resource profiles and adaptive retry scaling from resources.yaml."""
+"""Resource profiles and adaptive retry scaling from compact resources config."""
 
 from __future__ import annotations
 
@@ -7,9 +7,11 @@ import socket
 from dataclasses import dataclass
 from pathlib import Path
 
-import yaml
+from graphids.config.yaml_utils import read_yaml
 
-_RESOURCES_PATH = Path(__file__).resolve().parents[1] / "config" / "resources.yaml"
+_RESOURCES_DIR = Path(__file__).resolve().parents[1] / "config" / "resources"
+_CLUSTERS_PATH = _RESOURCES_DIR / "clusters.yaml"
+_PROFILES_DIR = _RESOURCES_DIR / "profiles"
 
 
 def _detect_cluster() -> str:
@@ -46,8 +48,15 @@ class ResourceSpec:
         return int(parts[0]) * 60 + int(parts[1])
 
 
-def _load() -> dict:
-    return yaml.safe_load(_RESOURCES_PATH.read_text())
+def _load_clusters() -> dict:
+    return read_yaml(_CLUSTERS_PATH)
+
+
+def _load_profile(family: str) -> dict:
+    path = _PROFILES_DIR / f"{family}.yaml"
+    if not path.exists():
+        raise KeyError(f"No resource profile file for '{family}' at {path}")
+    return read_yaml(path)
 
 
 def get_resources(model_type: str, scale: str, stage: str) -> ResourceSpec:
@@ -56,33 +65,55 @@ def get_resources(model_type: str, scale: str, stage: str) -> ResourceSpec:
     Resolves cluster-agnostic ``mode`` field to concrete ``partition``/``gres``
     using the ``clusters`` mapping + hostname detection.
     """
-    raw = _load()
-    profiles = raw["resource_profiles"]
+    # Fusion uses method-specific profiles under resources/profiles/fusion.yaml.
+    family = "fusion" if model_type in {"bandit", "dqn", "mlp", "weighted_avg", "fusion"} else model_type
+    raw_profile = _load_profile(family).get("resources", {})
+    by_scale = raw_profile.get("by_scale", {})
+
     try:
-        spec = dict(profiles[model_type][scale][stage])
+        stage_spec = dict(by_scale[scale][stage])
     except KeyError:
         raise KeyError(
             f"No resource profile for ({model_type}, {scale}, {stage}). "
-            f"Add entry to config/resources.yaml."
+            f"Add entry to config/resources/profiles/{family}.yaml."
         ) from None
+
+    if family == "fusion":
+        try:
+            spec = dict(stage_spec["by_method"][model_type])
+        except KeyError:
+            raise KeyError(
+                f"No fusion resource profile for method={model_type}, scale={scale}, stage={stage}."
+            ) from None
+    else:
+        spec = stage_spec
 
     mode = spec.pop("mode", None)
     if mode and "partition" not in spec:
         cluster = _detect_cluster()
-        cluster_map = raw.get("clusters", {}).get(cluster)
+        clusters = _load_clusters().get("clusters", {})
+        cluster_map = clusters.get("execution_modes", {}).get(cluster)
         if not cluster_map:
-            raise KeyError(f"No cluster config for '{cluster}' in resources.yaml")
+            default_cluster = clusters.get("default", "")
+            cluster_map = clusters.get("execution_modes", {}).get(default_cluster)
+        if not cluster_map:
+            raise KeyError(f"No cluster config for '{cluster}' in clusters.yaml")
         mode_spec = cluster_map.get(mode)
         if not mode_spec:
-            raise KeyError(f"No mode '{mode}' for cluster '{cluster}' in resources.yaml")
+            raise KeyError(f"No mode '{mode}' for cluster '{cluster}' in clusters.yaml")
         spec["partition"] = mode_spec["partition"]
         spec["gres"] = mode_spec.get("gres", "")
 
+    spec["cpus_per_task"] = spec.pop("cpus")
+    spec["num_workers"] = spec.pop("workers")
     return ResourceSpec(**spec)
 
 
 def get_failure_reactions() -> dict:
-    return _load().get("failure_reactions", {})
+    return {
+        "OUT_OF_MEMORY": {"max_retries": 2, "scale_mem": 1.5},
+        "TIMEOUT": {"max_retries": 2, "scale_time": 1.5},
+    }
 
 
 def scale_resources(spec: ResourceSpec, failure_reason: str) -> ResourceSpec:

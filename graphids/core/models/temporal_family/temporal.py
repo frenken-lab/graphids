@@ -191,7 +191,7 @@ class TemporalLightningModule(pl.LightningModule):
         self.save_hyperparameters(ignore=["gat_ckpt_path"])
         self.model = self._build_model(self.hparams, gat_ckpt_path)
 
-        from ._training import binary_test_metrics
+        from .._training import binary_test_metrics
         self.test_metrics = binary_test_metrics()
 
     # ------------------------------------------------------------------
@@ -207,7 +207,7 @@ class TemporalLightningModule(pl.LightningModule):
         builds a skeleton GAT from hparams dimensions — the real weights will be
         loaded from the Lightning checkpoint's ``state_dict``.
         """
-        from graphids.core.models.gat import GATWithJK
+        from graphids.core.models.supervised import GATWithJK
         from graphids.core.models._conv import resolve_edge_dim
 
         edge_dim = resolve_edge_dim(hp.spatial_conv_type, hp.spatial_edge_dim)
@@ -231,7 +231,7 @@ class TemporalLightningModule(pl.LightningModule):
             )
 
         if gat_ckpt_path is not None:
-            from ._training import load_inner_model
+            from .._training import load_inner_model
 
             gat, _hparams = load_inner_model("gat", gat_ckpt_path, "cpu")
         else:

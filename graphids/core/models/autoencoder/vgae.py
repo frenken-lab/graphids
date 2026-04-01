@@ -6,8 +6,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ._conv import InputEncoder, build_conv_stack, build_encoder_stack, _make_conv, conv_forward, resolve_edge_dim
-from ._training import (
+from .._conv import InputEncoder, build_conv_stack, build_encoder_stack, _make_conv, conv_forward, resolve_edge_dim
+from .._training import (
     GraphModuleBase,
     KDAuxiliary,
     teacher_on_device,
@@ -384,7 +384,7 @@ class VGAEModule(GraphModuleBase):
             self._build()
 
     def _build(self):
-        from ._training import prepare_kd
+        from .._training import prepare_kd
         hp = self.hparams
         self.model = GraphAutoencoderNeighborhood.from_config(hp, hp.num_ids, hp.in_channels)
         if hp.compile_model and hasattr(torch, "compile"):

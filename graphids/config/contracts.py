@@ -1,0 +1,117 @@
+"""Typed config contracts and recipe expansion facade."""
+
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+
+from .recipe_expand import expand_recipe_configs as _expand_recipe_configs_impl
+from .topology import STAGES, VALID_FUSION_METHODS, VALID_MODEL_TYPES, VALID_SCALES
+
+
+class KDEntry(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    type: Literal["kd"] = "kd"
+    alpha: float = 0.7
+    teacher_scale: str = "large"
+
+    @field_validator("teacher_scale")
+    @classmethod
+    def _valid_scale(cls, v: str) -> str:
+        if v not in VALID_SCALES:
+            raise ValueError(f"teacher_scale={v!r} not in {sorted(VALID_SCALES)}")
+        return v
+
+    @field_validator("alpha")
+    @classmethod
+    def _alpha_range(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError(f"alpha={v} must be in [0, 1]")
+        return v
+
+
+class TrainingRunConfig(BaseModel):
+    """Typed boundary input for a training run identity."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    stages: tuple[str, ...] = ("autoencoder", "curriculum", "fusion")
+    scale: str = "small"
+    conv_type: str = "gatv2"
+    loss_fn: str = "focal"
+    fusion_method: str = "bandit"
+    variational: bool = True
+    model_type: str | None = None
+    auxiliaries: tuple[KDEntry, ...] = ()
+
+    @field_validator("stages", mode="before")
+    @classmethod
+    def _coerce_stages(cls, v: Any) -> Any:
+        return tuple(v) if isinstance(v, list) else v
+
+    @field_validator("auxiliaries", mode="before")
+    @classmethod
+    def _coerce_auxiliaries(cls, v: Any) -> Any:
+        if isinstance(v, list):
+            return tuple(KDEntry(**x) if isinstance(x, dict) else x for x in v)
+        return v
+
+    @field_validator("scale")
+    @classmethod
+    def _valid_scale(cls, v: str) -> str:
+        if v not in VALID_SCALES:
+            raise ValueError(f"scale={v!r} not in {sorted(VALID_SCALES)}")
+        return v
+
+    @field_validator("conv_type")
+    @classmethod
+    def _valid_conv_type(cls, v: str) -> str:
+        if v not in {"gatv2", "gat", "gps"}:
+            raise ValueError("conv_type must be one of: gatv2, gat, gps")
+        return v
+
+    @field_validator("loss_fn")
+    @classmethod
+    def _valid_loss_fn(cls, v: str) -> str:
+        if v not in {"focal", "ce", "weighted_ce"}:
+            raise ValueError("loss_fn must be one of: focal, ce, weighted_ce")
+        return v
+
+    @field_validator("fusion_method")
+    @classmethod
+    def _valid_fusion_method(cls, v: str) -> str:
+        if v not in VALID_FUSION_METHODS:
+            raise ValueError(f"fusion_method={v!r} not in {sorted(VALID_FUSION_METHODS)}")
+        return v
+
+    @field_validator("model_type")
+    @classmethod
+    def _valid_model_type(cls, v: str | None) -> str | None:
+        if v is not None and v not in VALID_MODEL_TYPES:
+            raise ValueError(f"model_type={v!r} not in {sorted(VALID_MODEL_TYPES)}")
+        return v
+
+    @model_validator(mode="after")
+    def _stages_exist(self) -> "TrainingRunConfig":
+        bad = [s for s in self.stages if s not in STAGES]
+        if bad:
+            raise ValueError(f"Unknown stages: {bad}. Valid: {sorted(STAGES)}")
+        return self
+
+    def merge(self, overrides: dict[str, Any]) -> "TrainingRunConfig":
+        return TrainingRunConfig(**{**self.model_dump(), **overrides})
+
+    def get(self, key: str, default=None):
+        v = getattr(self, key, None)
+        return v if v is not None else default
+
+
+def expand_recipe_configs(raw_recipe: dict[str, Any]) -> dict[str, Any]:
+    """Normalize recipe envelopes to orchestrator-ready config lists."""
+    return _expand_recipe_configs_impl(
+        raw_recipe,
+        valid_scales=VALID_SCALES,
+        valid_fusion_methods=VALID_FUSION_METHODS,
+    )

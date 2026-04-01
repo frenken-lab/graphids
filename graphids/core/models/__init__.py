@@ -1,4 +1,11 @@
-"""Models module for CAN-Graph project.
+"""Models package for CAN-Graph.
+
+Family-oriented namespaces:
+
+    from graphids.core.models.autoencoder import VGAEModule, DGIModule
+    from graphids.core.models.supervised import GATModule
+    from graphids.core.models.fusion import BanditFusionModule, DQNFusionModule
+    from graphids.core.models.temporal_family import TemporalLightningModule
 
 Public API re-exported from submodules:
 
@@ -7,8 +14,10 @@ Public API re-exported from submodules:
     from graphids.core.models import GraphModuleBase
 """
 
+from . import autoencoder, fusion, supervised, temporal_family
+
 from ._training import GraphModuleBase
-from .fusion_features import (
+from .fusion.fusion_features import (
     FeatureLayout,
     FusionFeatureExtractor,
     GATFusionExtractor,
@@ -17,5 +26,24 @@ from .fusion_features import (
     feature_layout,
     fusion_state_dim,
 )
-from .bandit import BanditFusionModule, NeuralLinUCBAgent
-from .dqn import DQNFusionModule, EnhancedDQNFusionAgent
+from .fusion.bandit import BanditFusionModule, NeuralLinUCBAgent
+from .fusion.dqn import DQNFusionModule, EnhancedDQNFusionAgent
+
+__all__ = [
+    "autoencoder",
+    "supervised",
+    "fusion",
+    "temporal_family",
+    "GraphModuleBase",
+    "FeatureLayout",
+    "FusionFeatureExtractor",
+    "GATFusionExtractor",
+    "VGAEFusionExtractor",
+    "extractors",
+    "feature_layout",
+    "fusion_state_dim",
+    "BanditFusionModule",
+    "NeuralLinUCBAgent",
+    "DQNFusionModule",
+    "EnhancedDQNFusionAgent",
+]

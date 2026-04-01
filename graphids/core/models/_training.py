@@ -143,11 +143,12 @@ def binary_test_metrics():
 
 
 _MODULE_PATHS: dict[str, str] = {
-    "vgae": "graphids.core.models.vgae.VGAEModule",
-    "gat": "graphids.core.models.gat.GATModule",
-    "dgi": "graphids.core.models.dgi.DGIModule",
-    "fusion": "graphids.core.models.bandit.BanditFusionModule",
-    "dqn": "graphids.core.models.dqn.DQNFusionModule",
+    "vgae": "graphids.core.models.autoencoder.vgae.VGAEModule",
+    "gat": "graphids.core.models.supervised.gat.GATModule",
+    "dgi": "graphids.core.models.autoencoder.dgi.DGIModule",
+    "fusion": "graphids.core.models.fusion.bandit.BanditFusionModule",
+    "dqn": "graphids.core.models.fusion.dqn.DQNFusionModule",
+    "temporal": "graphids.core.models.temporal_family.temporal.TemporalLightningModule",
 }
 
 

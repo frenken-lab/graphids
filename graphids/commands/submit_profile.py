@@ -17,16 +17,26 @@ import yaml
 from graphids.config import CONFIG_DIR
 
 
+_SUBMIT_PROFILES_PATH = CONFIG_DIR / "resources" / "submit_profiles.yaml"
+
+
+def _load_submit_profiles() -> dict:
+    if not _SUBMIT_PROFILES_PATH.exists():
+        raise FileNotFoundError(
+            f"Missing submit profiles config: {_SUBMIT_PROFILES_PATH}."
+        )
+    return yaml.safe_load(_SUBMIT_PROFILES_PATH.read_text()) or {}
+
+
 def main(argv: list[str]) -> None:
+    resources = _load_submit_profiles()
+    profiles = resources.get("submit_profiles", {})
+
     if not argv:
-        _resources = yaml.safe_load((CONFIG_DIR / "resources.yaml").read_text())
-        profiles = _resources["submit_profiles"]
         print("Available profiles:", ", ".join(sorted(profiles)), file=sys.stderr)
         sys.exit(1)
 
     job = argv[0]
-    resources = yaml.safe_load((CONFIG_DIR / "resources.yaml").read_text())
-    profiles = resources["submit_profiles"]
 
     if job not in profiles:
         print(f"Unknown profile: {job}", file=sys.stderr)

@@ -1,8 +1,8 @@
 """Dagster-based pipeline orchestrator.
 
 Assets represent trained model checkpoints. SlurmTrainingComponent reads
-pipeline.yaml + ablation.yaml, generates tagged assets with IOManager
-checkpoint handoff and SLURM submission via SlurmTrainingResource.
+the compact config tree + recipe YAML, generates tagged assets with
+IOManager checkpoint handoff and SLURM submission via SlurmTrainingResource.
 
 Entry points:
   dg list defs                              — list all assets

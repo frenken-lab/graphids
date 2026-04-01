@@ -1,0 +1,57 @@
+submit_profiles:
+  tests:
+    partition: cpu
+    cpus: 8
+    mem: 16G
+    time: "1:00"
+    signal: ""
+    mode: cpu
+    command: python -m pytest
+  rebuild-caches:
+    partition: cpu
+    cpus: 4
+    mem: 128G
+    time: "4:00"
+    signal: ""
+    mode: cpu-raw
+    command: python -m graphids rebuild-caches
+  validate:
+    partition: cpu
+    cpus: 4
+    mem: 8G
+    time: "0:15"
+    signal: ""
+    mode: cpu
+    command: python -m graphids.orchestrate validate
+  preprocessing-test:
+    partition: cpu
+    cpus: 4
+    mem: 16G
+    time: "0:30"
+    signal: ""
+    mode: cpu-raw
+    command: python -m graphids test-preprocessing
+  ablation:
+    partition: cpu
+    cpus: 4
+    mem: 8G
+    time: "24:00"
+    signal: ""
+    mode: cpu
+    command: dg launch
+  profile:
+    partition: gpudebug
+    cpus: 4
+    mem: 36G
+    time: "1:00"
+    signal: ""
+    mode: gpu
+    command: python -m graphids profile-training
+  landscape:
+    partition: gpu
+    cpus: 4
+    mem: 32G
+    time: "2:00"
+    signal: ""
+    mode: gpu
+    command: python -m graphids landscape

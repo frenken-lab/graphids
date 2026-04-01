@@ -7,7 +7,8 @@ from pathlib import Path
 
 import yaml
 
-from graphids.config import CONFIG_DIR, PIPELINE_YAML, TrainingRunConfig
+from graphids.config import CONFIG_DIR, PIPELINE_YAML, TrainingRunConfig, expand_recipe_configs
+from graphids.core.contracts import TrainingContract, TrainingSpec
 
 STAGES_DIR = CONFIG_DIR / "stages"
 MODELS_DIR = CONFIG_DIR / "models"
@@ -63,17 +64,28 @@ def _check_monitor_conventions(
 
 
 def validate_recipe(argv: list[str]) -> None:
-    """Parse every config chain in a recipe. Exit 1 on errors."""
+    """Validate Dagster defs and/or recipe config chains."""
     import argparse
 
     from graphids.cli import CLI_KWARGS, GraphIDSCLI
-    from graphids.orchestrate.component import enumerate_assets
+    from graphids.orchestrate.component import SlurmTrainingComponent
+    from graphids.orchestrate.planning import enumerate_assets
 
     p = argparse.ArgumentParser(prog="python -m graphids validate-recipe")
     p.add_argument("--recipe", default=str(RECIPE_PATH))
+    p.add_argument("--skip-lightning", action="store_true")
+    p.add_argument("--skip-dagster", action="store_true")
     args = p.parse_args(argv)
 
-    recipe = yaml.safe_load(Path(args.recipe).read_text())
+    recipe = expand_recipe_configs(yaml.safe_load(Path(args.recipe).read_text()))
+
+    dagster_errors: list[str] = []
+    if not args.skip_dagster:
+        try:
+            defs = SlurmTrainingComponent().build_defs(None)
+            defs.get_repository_def()
+        except Exception as e:
+            dagster_errors.append(f"Dagster definitions are not loadable: {e}")
 
     # Early schema validation — catches typos and invalid values before CLI parsing
     schema_errors: list[str] = []
@@ -93,6 +105,16 @@ def validate_recipe(argv: list[str]) -> None:
             print(f"  {e}", file=sys.stderr)
         sys.exit(1)
 
+    if dagster_errors:
+        print(f"FAIL: {len(dagster_errors)} dagster load errors:", file=sys.stderr)
+        for e in dagster_errors:
+            print(f"  {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.skip_lightning:
+        print("OK: dagster definitions loadable")
+        return
+
     specs = enumerate_assets(PIPELINE_YAML, recipe)
 
     _saved = sys.argv
@@ -100,7 +122,8 @@ def validate_recipe(argv: list[str]) -> None:
     _cli = GraphIDSCLI(
         **{**CLI_KWARGS, "run": False, "auto_configure_optimizers": False},
         args=["--config", str(STAGES_DIR / "autoencoder.yaml"),
-              "--config", str(MODELS_DIR / "vgae" / "small.yaml"),
+              "--config", str(MODELS_DIR / "vgae" / "base.yaml"),
+              "--config", str(MODELS_DIR / "vgae" / "scales" / "small.yaml"),
               "--data.init_args.dataset=hcrl_ch", "--seed_everything=42"],
     )
     parser = _cli.parser
@@ -112,7 +135,7 @@ def validate_recipe(argv: list[str]) -> None:
 
     for spec in specs:
         chain_key = (tuple(spec.config_files)
-                     + tuple(sorted(spec.model_overrides.items())))
+                     + tuple(sorted(spec.model_init_overrides.items())))
         if chain_key in seen:
             continue
         seen.add(chain_key)
@@ -120,9 +143,17 @@ def validate_recipe(argv: list[str]) -> None:
         cli_args: list[str] = []
         for f in spec.config_files:
             cli_args += ["--config", f]
-        cli_args += ["--data.init_args.dataset=hcrl_ch", "--seed_everything=42"]
-        for k, v in spec.model_overrides.items():
-            cli_args += [f"--model.init_args.{k}={v}"]
+        parse_spec = TrainingSpec(
+            stage=spec.stage,
+            model_family=spec.model_type,
+            scale=spec.scale,
+            dataset="hcrl_ch",
+            seed=42,
+            run_dir="/tmp/graphids-validate",
+            config_files=spec.config_files,
+            model_init_overrides=spec.model_init_overrides,
+        )
+        cli_args += TrainingContract.to_cli_overrides(parse_spec)
 
         try:
             parsed = parser.parse_args(cli_args)

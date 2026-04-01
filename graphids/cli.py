@@ -58,7 +58,7 @@ class GraphIDSCLI(LightningCLI):
         subcfg = self.config[self.subcommand]
         root_dir = subcfg.trainer.default_root_dir
 
-        # Patch logger save_dirs from write_paths.yaml constants
+        # Patch logger save_dirs from config defaults/constants
         loggers = subcfg.trainer.logger
         if isinstance(loggers, list):
             for lg in loggers:
@@ -85,7 +85,7 @@ CLI_KWARGS = dict(
     parser_kwargs={
         "default_env": True,
         "env_prefix": "KD_GAT",
-        **{sub: {"default_config_files": ["graphids/config/trainer.yaml"]}
+        **{sub: {"default_config_files": ["graphids/config/defaults/trainer.yaml"]}
            for sub in ("fit", "validate", "test", "predict")},
     },
 )

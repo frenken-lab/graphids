@@ -32,6 +32,6 @@ def __getattr__(name: str):
     """Lazy-load temporal symbols — avoids pulling in Lightning on every import."""
     _temporal_names = {"GraphSequence", "TemporalDataModule", "TemporalGraphDataset", "TemporalGrouper", "collate_temporal"}
     if name in _temporal_names:
-        from . import _temporal
-        return getattr(_temporal, name)
+        from .stages import temporal
+        return getattr(temporal, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

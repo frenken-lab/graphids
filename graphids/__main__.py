@@ -1,11 +1,13 @@
 """CLI entry point: python -m graphids <subcommand>
 
-Subcommands (auto-discovered from graphids/commands/):
+Subcommands:
   fit|test|validate|predict  — LightningCLI training/evaluation
   analyze                    — generate analysis artifacts from checkpoints
+  analyze-from-spec          — run analyzer from canonical AnalysisSpec
   landscape                  — compute 2D loss landscape
   profile                    — sacct resource profiler
   profile-training           — profiled training run (PyTorchProfiler)
+  train-from-spec            — run training from canonical TrainingSpec
   rebuild-caches             — rebuild preprocessed graph caches
   stage-data                 — stage data from NFS to scratch/TMPDIR
   submit-profile             — print SLURM resource profile for submit.sh
@@ -18,6 +20,7 @@ Dagster (separate entry point):
 
 from __future__ import annotations
 
+import argparse
 import importlib
 import sys
 
@@ -41,23 +44,72 @@ structlog.configure(
     cache_logger_on_first_use=True,
 )
 
-# ---------------------------------------------------------------------------
-# Dispatch: command name → graphids.commands.<module_name>.main(argv)
-# Convention: module name = command name with - replaced by _
-# Fallback: LightningCLI handles fit/test/validate/predict
-# ---------------------------------------------------------------------------
+_LIGHTNING_COMMANDS = ("fit", "test", "validate", "predict")
+_COMMAND_MODULES: dict[str, str] = {
+    "analyze": "graphids.commands.analyze",
+    "analyze-from-spec": "graphids.commands.analyze_from_spec",
+    "landscape": "graphids.commands.landscape",
+    "profile": "graphids.commands.profile",
+    "profile-training": "graphids.commands.profile_training",
+    "rebuild-caches": "graphids.commands.rebuild_caches",
+    "stage-data": "graphids.commands.stage_data",
+    "submit-profile": "graphids.commands.submit_profile",
+    "test-preprocessing": "graphids.commands.test_preprocessing",
+    "train-from-spec": "graphids.commands.train_from_spec",
+}
+
+
+def _run_lightning(command: str, argv: list[str]) -> None:
+    from graphids.cli import CLI_KWARGS, GraphIDSCLI
+
+    GraphIDSCLI(**CLI_KWARGS, args=[command, *argv])
+
+
+def _run_module(module_name: str, argv: list[str]) -> None:
+    mod = importlib.import_module(module_name)
+    if not hasattr(mod, "main"):
+        raise RuntimeError(f"Module '{module_name}' does not expose a main(argv) entrypoint")
+    mod.main(argv)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="python -m graphids")
+    subs = parser.add_subparsers(dest="command")
+
+    for cmd in _LIGHTNING_COMMANDS:
+        p = subs.add_parser(cmd, add_help=False)
+        p.set_defaults(kind="lightning", command_name=cmd)
+
+    for cmd, module in _COMMAND_MODULES.items():
+        p = subs.add_parser(cmd, add_help=False)
+        p.set_defaults(kind="module", module_name=module)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = list(sys.argv[1:] if argv is None else argv)
+
+    # Preserve legacy behavior: no subcommand defaults to LightningCLI.
+    if not args:
+        from graphids.cli import CLI_KWARGS, GraphIDSCLI
+
+        GraphIDSCLI(**CLI_KWARGS)
+        return
+
+    parser = _build_parser()
+    ns, remaining = parser.parse_known_args(args)
+
+    if ns.command is None:
+        parser.print_help()
+        raise SystemExit(2)
+
+    if ns.kind == "lightning":
+        _run_lightning(ns.command_name, remaining)
+        return
+
+    _run_module(ns.module_name, remaining)
+
 
 if __name__ == "__main__":
-    cmd = sys.argv[1] if len(sys.argv) > 1 else None
-    module_name = (cmd or "").replace("-", "_")
-
-    try:
-        mod = importlib.import_module(f"graphids.commands.{module_name}")
-    except (ModuleNotFoundError, ValueError):
-        mod = None
-
-    if mod and hasattr(mod, "main"):
-        mod.main(sys.argv[2:])
-    else:
-        from graphids.cli import CLI_KWARGS, GraphIDSCLI
-        GraphIDSCLI(**CLI_KWARGS)
+    main()
