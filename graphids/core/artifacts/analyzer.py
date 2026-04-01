@@ -10,6 +10,8 @@ import torch
 
 from graphids.config import cache_dir, data_dir
 from graphids.core.models._training import safe_load_checkpoint
+from .tasks import run_attention, run_cka, run_embeddings, run_fusion_policy, run_landscape
+from .validation import validate_inputs
 
 log = structlog.get_logger()
 
@@ -79,17 +81,14 @@ class Analyzer:
         self.vgae_ckpt_path = vgae_ckpt_path
         self.gat_ckpt_path = gat_ckpt_path
 
-        # fail-loud validation
-        if not Path(self.ckpt_path).exists():
-            raise FileNotFoundError(f"Checkpoint not found: {self.ckpt_path}")
-        if self.cka and not self.cka_teacher_ckpt:
-            raise ValueError("cka=true requires cka_teacher_ckpt")
-        if self.cka and not Path(self.cka_teacher_ckpt).exists():
-            raise FileNotFoundError(f"Teacher checkpoint not found: {self.cka_teacher_ckpt}")
-        if self.fusion_policy and not self.vgae_ckpt_path:
-            raise ValueError("fusion_policy=true requires vgae_ckpt_path")
-        if self.fusion_policy and not self.gat_ckpt_path:
-            raise ValueError("fusion_policy=true requires gat_ckpt_path")
+        validate_inputs(
+            ckpt_path=self.ckpt_path,
+            cka=self.cka,
+            cka_teacher_ckpt=self.cka_teacher_ckpt,
+            fusion_policy=self.fusion_policy,
+            vgae_ckpt_path=self.vgae_ckpt_path,
+            gat_ckpt_path=self.gat_ckpt_path,
+        )
 
     def run(self) -> None:
         """Load models, load data, generate all enabled artifacts."""
@@ -108,40 +107,43 @@ class Analyzer:
         val_data = self._load_val_data()
 
         if self.embeddings:
-            from .embeddings import collect_and_save_embeddings
-            log.info("artifact_start", artifact="embeddings")
-            collect_and_save_embeddings(
-                model, val_data, device, self.output_dir,
+            run_embeddings(
+                model=model,
+                val_data=val_data,
+                device=device,
+                output_dir=self.output_dir,
                 model_type=self.model_type,
                 max_samples=self.embedding_max_samples,
                 batch_size=self.batch_size,
             )
 
         if self.attention:
-            from .embeddings import collect_and_save_attention
-            log.info("artifact_start", artifact="attention")
-            collect_and_save_attention(
-                model, val_data, device, self.output_dir,
+            run_attention(
+                model=model,
+                val_data=val_data,
+                device=device,
+                output_dir=self.output_dir,
                 max_samples=self.attention_max_samples,
             )
 
         if self.cka:
-            from .cka import compute_and_save_cka
-            log.info("artifact_start", artifact="cka")
-            teacher_module = safe_load_checkpoint("gat", self.cka_teacher_ckpt, map_location=device)
-            teacher_module.eval()
-            compute_and_save_cka(
-                model, teacher_module.model, val_data, device, self.output_dir,
+            run_cka(
+                model=model,
+                val_data=val_data,
+                device=device,
+                output_dir=self.output_dir,
+                teacher_ckpt=self.cka_teacher_ckpt,
                 max_samples=self.cka_max_samples,
             )
-            del teacher_module
-            torch.cuda.empty_cache()
 
         if self.landscape:
-            from .loss_landscape import compute_and_save_loss_landscape
-            log.info("artifact_start", artifact="landscape")
-            compute_and_save_loss_landscape(
-                model, self.model_type, val_data, device, self.output_dir, hparams,
+            run_landscape(
+                model=model,
+                model_type=self.model_type,
+                val_data=val_data,
+                device=device,
+                output_dir=self.output_dir,
+                hparams=hparams,
                 resolution=self.landscape_resolution,
                 scale=self.landscape_scale,
                 max_graphs=self.landscape_max_graphs,
@@ -150,7 +152,18 @@ class Analyzer:
             )
 
         if self.fusion_policy:
-            self._generate_fusion_policy(module, device)
+            run_fusion_policy(
+                module=module,
+                dataset=self.dataset,
+                lake_root=self.lake_root,
+                seed=self.seed,
+                vgae_ckpt_path=self.vgae_ckpt_path,
+                gat_ckpt_path=self.gat_ckpt_path,
+                window_size=self.window_size,
+                stride=self.stride,
+                output_dir=self.output_dir,
+                device=device,
+            )
 
         log.info("analyzer_done", output_dir=str(self.output_dir))
 
@@ -167,26 +180,3 @@ class Analyzer:
         log.info("data_loaded", n_val=len(val_data))
         return val_data
 
-    def _generate_fusion_policy(self, module, device: torch.device) -> None:
-        """Generate fusion policy artifact. Requires vgae + gat checkpoints."""
-        import numpy as np
-        from .fusion_policy import save_fusion_policy
-        from graphids.core.preprocessing.datamodule import FusionDataModule
-
-        log.info("artifact_start", artifact="fusion_policy")
-        agent = module.agent
-        dm = FusionDataModule(
-            dataset=self.dataset, lake_root=self.lake_root, seed=self.seed,
-            vgae_ckpt_path=self.vgae_ckpt_path, gat_ckpt_path=self.gat_ckpt_path,
-            window_size=self.window_size, stride=self.stride,
-        )
-        dm.setup("test")
-        states = dm.val_cache["states"].to(device)
-        labels = dm.val_cache["labels"]
-        result = agent.predict(states)
-        save_fusion_policy(
-            self.output_dir,
-            alphas=result["alphas"].cpu().numpy(),
-            labels=labels.numpy(),
-            q_values=agent.q_values(result["norm_states"]).cpu().numpy(),
-        )
