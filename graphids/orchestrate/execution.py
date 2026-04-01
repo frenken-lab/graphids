@@ -5,8 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from graphids.config import CKPT_SUBPATH, COMPLETE_MARKER, LAST_CKPT_SUBPATH, run_dir
-from graphids.core.contracts import TrainingSpec
+from graphids.config import CKPT_SUBPATH, COMPLETE_MARKER, run_dir
 from graphids.orchestrate.planning import StageConfig
 from graphids.slurm import sacct_query
 
@@ -42,58 +41,6 @@ def artifact_paths(
     ckpt_file = rd_path / CKPT_SUBPATH
     complete = rd_path / COMPLETE_MARKER
     return rd, rd_path, ckpt_file, complete
-
-
-def training_spec(
-    cfg: StageConfig,
-    *,
-    dataset: str,
-    seed: int,
-    run_directory: str,
-    run_directory_path: Path,
-    upstream_ckpts: dict[str, str],
-) -> TrainingSpec:
-    """Create one training contract spec, including optional resume checkpoint."""
-    spec = TrainingSpec(
-        stage=cfg.stage,
-        model_family=cfg.model_type,
-        scale=cfg.scale,
-        dataset=dataset,
-        seed=seed,
-        run_dir=run_directory,
-        config_files=cfg.config_files,
-        model_init_overrides=cfg.model_init_overrides,
-        upstream_ckpt_paths=upstream_ckpts,
-        upstream_model_families=cfg.upstream_model_families,
-    )
-    if cfg.trainer_overrides:
-        spec = spec.model_copy(update={
-            "runtime_overrides": {
-                **spec.runtime_overrides,
-                **cfg.trainer_overrides,
-            }
-        })
-    if cfg.kd_overrides:
-        import json
-        spec = spec.model_copy(update={
-            "runtime_overrides": {
-                **spec.runtime_overrides,
-                "model.init_args.auxiliaries": json.dumps([cfg.kd_overrides]),
-            }
-        })
-
-    resume = run_directory_path / LAST_CKPT_SUBPATH
-    if not resume.exists():
-        return spec
-
-    return spec.model_copy(
-        update={
-            "runtime_overrides": {
-                **spec.runtime_overrides,
-                "ckpt_path": str(resume),
-            }
-        }
-    )
 
 
 def slurm_accounting_metadata(job_id: int) -> dict[str, Any]:

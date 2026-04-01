@@ -3,7 +3,7 @@ submit_profiles:
     partition: cpu
     cpus: 8
     mem: 16G
-    time: "1:00"
+    time: "1:00:00"
     signal: ""
     mode: cpu
     command: python -m pytest
@@ -11,7 +11,7 @@ submit_profiles:
     partition: cpu
     cpus: 4
     mem: 128G
-    time: "4:00"
+    time: "3:00:00"
     signal: ""
     mode: cpu-raw
     command: python -m graphids rebuild-caches
@@ -19,7 +19,7 @@ submit_profiles:
     partition: cpu
     cpus: 4
     mem: 8G
-    time: "0:15"
+    time: "00:15:00"
     signal: ""
     mode: cpu
     command: python -m graphids.orchestrate validate
@@ -27,7 +27,7 @@ submit_profiles:
     partition: cpu
     cpus: 4
     mem: 16G
-    time: "0:30"
+    time: "00:30:00"
     signal: ""
     mode: cpu-raw
     command: python -m graphids test-preprocessing
@@ -35,7 +35,7 @@ submit_profiles:
     partition: cpu
     cpus: 4
     mem: 8G
-    time: "24:00"
+    time: "24:00:00"
     signal: ""
     mode: cpu
     command: dg launch
@@ -43,7 +43,7 @@ submit_profiles:
     partition: gpudebug
     cpus: 4
     mem: 36G
-    time: "1:00"
+    time: "1:00:00"
     signal: ""
     mode: gpu
     command: python -m graphids profile-training
@@ -51,7 +51,7 @@ submit_profiles:
     partition: gpu
     cpus: 4
     mem: 32G
-    time: "2:00"
+    time: "2:00:00"
     signal: ""
     mode: gpu
     command: python -m graphids landscape

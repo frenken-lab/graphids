@@ -1,128 +1,177 @@
 # Config System Overhaul
 
-> Extracted from `plans/research/config_system_synthesis.md`
-> Created: 2026-03-31
-> Updated: 2026-03-31 — Phase 1 complete, P2.1 complete
+> Canonical design: `plans/research/config_system_synthesis.md`
+> Created: 2026-03-31 | Updated: 2026-04-01
 
 ---
 
-## Phase 1 — YAML restructuring + forced callbacks (no new abstractions) ✓
+## Completed
 
-### P0: Forced callbacks via `add_lightning_class_args` ✓
+<details>
+<summary>Phase 1 — YAML restructuring + forced callbacks ✓</summary>
 
-- **Problem:** jsonargparse replaces lists atomically. Any stage YAML that defines
-  `trainer.callbacks:` silently drops ModelCheckpoint + EarlyStopping from `trainer.yaml`.
-  Already caused data loss — curriculum runs trained 300 epochs with no checkpoint.
-- **Fix:** Register ModelCheckpoint and EarlyStopping via `parser.add_lightning_class_args()`
-  in `GraphIDSCLI.add_arguments_to_parser()`. They get separate namespaces (`checkpoint.*`,
-  `early_stopping.*`) immune to `trainer.callbacks:` list replacement.
-- **Files:** `graphids/cli.py`, `graphids/config/trainer.yaml`, `graphids/config/stages/fusion*.yaml`,
-  `graphids/orchestrate/validate.py`
-- [x] All implementation subtasks complete
-- [ ] Spike: submit one curriculum + one fusion job on `gpudebug` (pre-relaunch)
+- **P0: Forced callbacks** — `add_lightning_class_args(ModelCheckpoint/EarlyStopping)` in
+  `cli.py:39-52`. Separate namespaces immune to list replacement. Fixed data loss bug.
+- **P1: Cross-product split** — `config/models/{type}/{base,scales/{small,large}}.yaml`.
+  Old cross-product overlays deleted. Linear file growth.
+- **P1: Import-time cross-validation** — `topology.py:90-114` validates model configs,
+  fusion configs, and resource profiles at import. 5 tests.
 
-### P1: Separate cross-product overlays into independent axes ✓
+</details>
 
-- **Problem:** Overlay files (`small_gat.yaml`, `large_vgae.yaml`) encode scale × model in a
-  single file. File count grows quadratically. Missing overlays silently skipped.
-- **Fix:** `graphids/config/models/{model_type}/{scale}.yaml` — one directory per model type,
-  one file per scale. KD overlays at `models/{model}/kd.yaml`. Old cross-product overlays deleted.
-- **Files:** `graphids/config/models/` (7 model dirs, 16 files), `graphids/config/overlays/`
-  (reduced to `profile.yaml`), `graphids/orchestrate/component.py`
-- [x] All implementation subtasks complete
-- [x] Bandit scale files populated (hidden_dim, num_layers, backbone_retrain_freq, backbone_epochs)
-- [x] Bandit shared defaults surfaced in `fusion_bandit.yaml` (ucb_alpha, lambda_reg, backbone_lr)
-- [x] Bandit resource profiles bumped for backbone retraining overhead
-- [x] Backbone eval mode leak fixed in `bandit.py:retrain_backbone()`
+<details>
+<summary>Phase 2.1 — TrainingRunConfig schema contract ✓</summary>
 
-### P1: Import-time cross-validation of resources vs pipeline topology ✓
+- Narrow Pydantic model (8 fields, `extra="forbid"`, frozen) in `config/contracts.py`.
+- `KDEntry` sub-schema. Validates against topology constants at construction.
+- `enumerate_assets()` migrated from untyped dicts. 20 tests.
 
-- **Problem:** `resources.yaml` drifts from `pipeline.yaml`. Dead config, missing profiles,
-  unreachable entries — only caught at dagster `build_defs()` time.
-- **Fix:** Three-way cross-validation at import time: `pipeline.yaml` × `models/` × `resources.yaml`.
-  `resource_model` field on `StageConfig` so fusion assets use method-specific resource profiles.
-- **Files:** `graphids/config/__init__.py`, `graphids/config/pipeline.yaml`,
-  `graphids/config/resources.yaml`, `graphids/orchestrate/component.py`, `tests/config/test_config.py`
-- [x] All implementation subtasks complete
-- [x] 5 cross-validation tests in `tests/config/test_config.py`
+</details>
 
-**Phase 1 validation:** `python -m graphids.orchestrate validate` needs SLURM — run before relaunch.
+<details>
+<summary>Phase 2.2 — ConfigResolver (with YAML-aware validation) ✓</summary>
+
+- `orchestrate/resolve.py`: single merge point replacing two separate sites.
+- Subsumes `training_spec()` (deleted from `execution.py`) and `apply_resource_overrides()`
+  call (removed from `assets.py`).
+- `ResolvedConfig` carries `TrainingSpec` + `ResourceSpec` + paths + audit trail.
+- `OverrideRecord` tracks key, value, source for every override.
+- Override-layer validators: `num_workers ≤ cpus_per_task-1`, dead `batch_size` override
+  for RL fusion, GPU partition consistency.
+- YAML-aware validators via `_merge_yaml_chain()`: curriculum epoch sync
+  (`data.init_args.max_epochs` vs `trainer.max_epochs`), YAML `num_workers` vs resource
+  profile CPUs, RL dead `batch_size` in stage YAML.
+- Structured audit logging via structlog.
+- Tests: 30 total (5 deep merge, 3 dotted overrides, 5 YAML-aware validation,
+  3 audit, 3 cross-field, 11 existing override/recipe tests).
+
+</details>
 
 ---
 
-## Phase 2 — Narrow typed contract (Dagster<->Lightning boundary)
+## Open — Ordered by Priority
 
-### P2.1: `TrainingRunConfig` Pydantic schema contract ✓
+### 1. SLURM validation (blocks everything)
 
-- **Problem:** Recipe entries are untyped dicts. `enumerate_assets()` accesses them with string
-  `.get()` calls — typos like `scael` or `conv_typ` are silently ignored and produce wrong
-  checkpoint paths at SLURM submission time, not at recipe-load time.
-- **Fix:** Narrow Pydantic `TrainingRunConfig` (8 fields that cross the boundary or are swept)
-  with `extra="forbid"`. Validates against `pipeline.yaml` constants at construction.
-  `.merge()` validates overlays. `KDEntry` sub-schema for KD auxiliary config.
-- **Scope:** `stages`, `scale`, `conv_type`, `loss_fn`, `fusion_method`, `variational`,
-  `model_type`, `auxiliaries`. Internal Lightning params stay in YAML.
-- **Files:** `graphids/config/__init__.py` (+95 lines), `graphids/orchestrate/component.py`
-  (migrated `enumerate_assets` + 3 helpers), `graphids/orchestrate/validate.py` (early schema
-  validation), `tests/config/test_config.py` (+20 tests)
-- [x] `KDEntry` + `TrainingRunConfig` schemas in `config/__init__.py`
-- [x] `enumerate_assets()` migrated from untyped dict to `TrainingRunConfig`
-- [x] `_overlay_model`, `_resolve_config_files`, `_identity_value` take typed `TrainingRunConfig`
-- [x] Early schema validation in `validate_recipe()` — recipe errors before CLI parse errors
-- [x] 20 tests: defaults, frozen, extra=forbid, validators, coercion, recipe round-trip
-- [x] 80 tests pass (login node). SLURM validation pending.
+Run tests and smoke test on SLURM to validate all recent changes.
 
-### P2.2: `ConfigResolver` as exclusive pipeline merge path
+```bash
+scripts/submit.sh tests -k test_overrides
+scripts/submit.sh tests -k test_config
+KD_GAT_RECIPE=graphids/config/recipes/smoke_test.yaml dg launch --assets '*'
+```
 
-- **Problem:** Override resolution is implicit — whatever jsonargparse merges last wins, with
-  no audit trail. Cross-field constraints not validated:
-  - `CurriculumDataModule.max_epochs` must match `trainer.max_epochs`
-  - `num_workers` in stage YAML should be ≤ `cpus_per_task - 1` in resource profile
-  - `FusionDataModule.batch_size` is dead when method is bandit/dqn
-- **Fix:** `ConfigResolver.resolve()` as the exclusive merge path for pipeline runs. Validates
-  final merged state. Emits override audit log (which override came from which source).
-- **Risk:** Medium — replaces existing merge path for dagster
-- [ ] Implement `ConfigResolver` with cross-field validators
-- [ ] Wire into dagster `component.py` asset creation
-- [ ] Add override audit logging
+- [ ] Override tests pass on SLURM
+- [ ] Config tests pass on SLURM
+- [ ] Smoke test completes (autoencoder → curriculum → fusion)
 
-### P2.3: Replace `write_paths.yaml` with frozen `PathContext`
+### ~~2. W1: Cross-field validators don't read YAML configs~~ ✓
 
-- **Problem:** `write_paths.yaml` declares paths but nothing enforces them. `run_dir()` in
-  `config/__init__.py` duplicates the pattern as an f-string. Code can write anywhere.
-- **Fix:** Frozen Pydantic `PathContext` with computed properties is the only source of write
-  paths. Inject into LightningCLI callbacks and Dagster ops. Delete `write_paths.yaml`.
-- **Risk:** Medium — touches all write sites. Lower priority than P2.2.
-- [ ] Implement `PathContext` (frozen, computed properties)
+Resolved 2026-04-01. Added `_merge_yaml_chain()` (naive deep merge + dotted-key
+override application) and 3 YAML-aware validators: curriculum epoch sync, YAML
+num_workers vs CPUs, RL dead batch_size. 13 new tests. See `resolve.py`.
+
+### 3. W2: Structural exclusivity (MEDIUM)
+
+Resolver is de facto exclusive but not enforced:
+- `artifact_paths()` in `execution.py` duplicates path computation. `checks.py` uses it.
+- `StageConfig` still exposes override fields — nothing prevents direct access.
+- `*-from-spec` CLI commands bypass the resolver (by design).
+
+- [ ] Migrate `checks.py` to use resolver or `ResolvedConfig` paths
+- [ ] Evaluate removing override fields from `StageConfig` public API
+
+### 4. P2.3: Replace `run_dir()` with frozen `PathContext` (MEDIUM)
+
+`write_paths.yaml` already deleted. `paths.py:run_dir()` is still a flat 9-arg
+function. No enforcement that callers use it. Frozen Pydantic `PathContext` with
+computed properties would be the single source of write paths.
+
+- [ ] Implement `PathContext` (subsumes `run_dir()` + `artifact_paths()`)
 - [ ] Wire as `ConfigurableResource` on Dagster side
 - [ ] Update `GraphIDSCLI` to use `PathContext` for logger/checkpoint dirs
-- [ ] Delete `write_paths.yaml` and remove `run_dir()` f-string duplicate
+
+> Note: resolves W2 path duplication — `artifact_paths()` becomes a `PathContext`
+> consumer, eliminating the second source of truth.
+
+### 5. W3: Per-stage override granularity (MEDIUM)
+
+`trainer_overrides` and `resource_overrides` apply uniformly to all stages.
+"autoencoder gets 2 epochs, curriculum gets 5" is not expressible. Limitation
+is in `planning.py` (recipe-level fields assigned to every `StageConfig`).
+
+- [ ] Evaluate whether current recipes need per-stage granularity
+- [ ] If yes: per-stage override blocks in recipe envelope, different values per `StageConfig`
+
+### 6. P2.4: Align `_KDSpec` / `KDEntry` field sets (LOW-MEDIUM)
+
+`_KDSpec` (recipe_expand.py) has 7 fields; `KDEntry` (contracts.py) has 3. The 4
+extra fields (`temperature`, `model_path`, `vgae_latent_weight`, `vgae_recon_weight`)
+bypass `TrainingRunConfig.auxiliaries` validation.
+
+- [ ] Decide: identity-relevant (add to `KDEntry`) or sweep-internal (document split)
+
+### 7. W4: Override collision detection (LOW)
+
+Last-write-wins if `trainer_overrides` and `model_init_overrides` touch the same key.
+Audit log records what was applied but doesn't warn on overwrites.
+- [ ] Warn if a key appears in multiple override sources
+
+### 8. W5: `OverrideRecord.value` type is lossy (LOW)
+
+KD overrides audit stores JSON blob as string. Not queryable.
+- [ ] Widen to `str | int | float | dict | list` or store structured + rendered
+
+### 9. W7: Spec-file path bypasses validators (LOW)
+
+`train-from-spec` / `analyze-from-spec` deserialize without cross-field validation.
+By design (SLURM receives pre-resolved specs), but means validators only protect
+the dagster path.
+- [ ] Add optional `--validate` to `*-from-spec`, or validate in `_spec_payload.py`
+
+### 10. W6: Resume checkpoint probe is side effect (LOW)
+
+`resume.exists()` makes resolver output depend on filesystem state. Correct
+behavior, but requires filesystem fixtures for unit tests.
+- [ ] Accept as inherently stateful, or extract to a callback
 
 ---
 
-## Phase 3 — Ongoing discipline + optional enhancements
+## Phase 3 — Ongoing discipline
 
-### P3: Scope discipline for `TrainingRunConfig`
+### Scope discipline for `TrainingRunConfig`
 
-- **Problem:** Risk of `TrainingRunConfig` growing to mirror every `__init__` parameter.
-- **Mitigation:** `extra="forbid"` catches accidental additions. Treat any field addition as
-  a deliberate decision.
-- [x] `extra="forbid"` enforced at schema level
-- [ ] Document the boundary rule in rules/
-- [ ] Review `TrainingRunConfig` fields quarterly — remove any that aren't actively used
+`extra="forbid"` enforced. Any field addition is a deliberate decision.
+- [ ] Document the boundary rule in `rules/`
+- [ ] Review fields quarterly — remove unused
 
-### P3: Recipe generation as code
+### Recipe generation as code
 
-- **Problem:** Recipe YAMLs don't scale with ablation dimensions — each new dimension
-  multiplies entries.
-- **Fix:** Python functions that generate recipe configs parametrically. Generates YAMLs
-  that LightningCLI reads — no runtime coupling.
-- **Risk:** Low — isolated to `orchestrate/`
-- [ ] Evaluate whether current recipe complexity justifies this
+Recipe YAMLs don't scale with ablation dimensions. Python functions could generate
+configs parametrically. Low priority — evaluate when recipe complexity demands it.
+- [ ] Evaluate whether current complexity justifies this
+
+---
+
+## Audit Log
+
+### 2026-04-01
+
+- Audited both docs against codebase. Phase 1 complete, P2.1 complete.
+- Interim field-passthrough override flow superseded by ConfigResolver implementation.
+- Deleted `training_spec()` from `execution.py` (subsumed by resolver).
+- Found `_KDSpec`/`KDEntry` field divergence (7 vs 3) — added as P2.4.
+- Identified 7 weaknesses in ConfigResolver, documented with severity and fix paths.
+- Decision: ConfigResolver is target architecture, current implementation is v1.
+- Fixed fusion `vgae_weights` bug — config gap in method YAMLs, deleted `set_vgae_weights()`.
+- Added YAML-aware validation (`_merge_yaml_chain` + 3 validators + 13 tests). W1 resolved.
+- Researched Dynaconf (rejected) and OmegaConf (not recommended) — `config_tool_comparison.md`.
+- Documented Phase 3 CLI decoupling architecture — `config_cli_decoupling.md`.
 
 ---
 
 ## Reference
 
-- Config audit: `graphids/config/CONFIG_REFERENCE.md` (merged from PARAMETER_AXES + INFRASTRUCTURE_REFERENCE)
-- P2.1 plan: `~/.claude/plans/purrfect-twirling-diffie.md`
+- `plans/research/config_system_synthesis.md` — canonical design (Parts 1-7)
+- `graphids/config/CONFIG_REFERENCE.md` — parameter axes and infrastructure
+- `~/.claude/plans/purrfect-twirling-diffie.md` — P2.1 implementation plan

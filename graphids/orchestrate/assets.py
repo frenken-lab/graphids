@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Protocol
 
 import dagster as dg
 
 from graphids.core.analyze_entrypoint import run_analysis_from_spec
 from graphids.orchestrate.analysis import build_analysis_spec, output_status, write_manifest
-from graphids.orchestrate.execution import artifact_paths, slurm_accounting_metadata, touch_complete, training_spec
+from graphids.orchestrate.execution import slurm_accounting_metadata, touch_complete
 from graphids.orchestrate.planning import StageConfig
-from graphids.slurm import apply_resource_overrides, get_resources, scale_resources
+from graphids.orchestrate.resolve import ConfigResolver
+from graphids.slurm import scale_resources
 
 
 class TrainingSubmitter(Protocol):
@@ -35,6 +36,7 @@ def make_training_asset(
     """Build one partitioned training asset from stage config."""
     ins = {name: dg.AssetIn(key=dg.AssetKey(name)) for name in cfg.upstream_asset_names}
     is_eval = cfg.stage == "evaluation"
+    resolver = ConfigResolver(lake_root=lake_root, user=user)
 
     @dg.asset(
         name=cfg.asset_name,
@@ -51,30 +53,15 @@ def make_training_asset(
         dataset = context.partition_key.keys_by_dimension["dataset"]
         seed = int(context.partition_key.keys_by_dimension["seed"])
 
-        rd, rd_path, ckpt_file, complete = artifact_paths(
-            cfg,
-            lake_root=lake_root,
-            user=user,
-            dataset=dataset,
-            seed=seed,
+        resolved = resolver.resolve(
+            cfg, dataset=dataset, seed=seed, upstream_ckpts=upstream_ckpts,
         )
 
-        if ckpt_file.exists() and complete.exists():
-            context.log.info(f"Already complete: {ckpt_file}")
-            return str(ckpt_file)
+        if resolved.ckpt_file.exists() and resolved.complete_marker.exists():
+            context.log.info(f"Already complete: {resolved.ckpt_file}")
+            return str(resolved.ckpt_file)
 
-        spec = training_spec(
-            cfg,
-            dataset=dataset,
-            seed=seed,
-            run_directory=rd,
-            run_directory_path=rd_path,
-            upstream_ckpts=upstream_ckpts,
-        )
-
-        resources = get_resources(cfg.resource_model or cfg.model_type, cfg.scale, cfg.stage)
-        if cfg.resource_overrides:
-            resources = apply_resource_overrides(resources, cfg.resource_overrides)
+        resources = resolved.resources
         if context.retry_number > 0:
             for reason in ("OUT_OF_MEMORY", "TIMEOUT"):
                 resources = scale_resources(resources, reason)
@@ -88,18 +75,18 @@ def make_training_asset(
             )
 
         state, job_id = context.resources.slurm.submit_and_wait(
-            training_spec=spec,
+            training_spec=resolved.spec,
             resources=resources,
             job_name=f"{cfg.asset_name}_{dataset}_s{seed}",
             on_state=_observe,
         )
 
         if state == "DRY_RUN":
-            return str(ckpt_file)
+            return str(resolved.ckpt_file)
         if state != "COMPLETED":
             raise RuntimeError(f"SLURM job failed: {state}")
 
-        touch_complete(rd_path)
+        touch_complete(resolved.run_dir_path)
 
         if job_id:
             accounting = slurm_accounting_metadata(job_id)
@@ -111,7 +98,7 @@ def make_training_asset(
                 }
             )
 
-        return str(ckpt_file)
+        return str(resolved.ckpt_file)
 
     return _train
 

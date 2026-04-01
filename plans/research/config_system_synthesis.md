@@ -296,6 +296,14 @@ Dagster pipeline          LightningCLI / YAML
 
 ## Part 5: Concrete Design
 
+> **Implementation status (2026-04-01):** An interim field-passthrough override flow was built
+> (recipe `trainer_overrides`/`resource_overrides` → `StageConfig` → two merge sites in
+> `execution.py` and `assets.py`). This solves the immediate need (smoke test walltimes) but
+> lacks cross-field validation and audit logging. **Decision: ConfigResolver remains the target
+> architecture.** The interim flow will be subsumed — its helpers (`_flatten_dict`,
+> `apply_resource_overrides`) become internal to the resolver, and the two merge sites collapse
+> into one. See `issues/config-system-overhaul.md` P2.2 for migration path.
+
 ### Override Resolution
 
 A single `ConfigResolver` is the **exclusive merge path for pipeline runs**. It does not layer

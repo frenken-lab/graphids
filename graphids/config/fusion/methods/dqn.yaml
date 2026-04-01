@@ -3,7 +3,8 @@ model:
   init_args:
     lr: 0.001
     decision_threshold: 0.5
-    reward_kwargs: {}
+    reward_kwargs:
+      vgae_weights: [0.4, 0.3, 0.3]
     gamma: 0.0
     epsilon: 0.2
     epsilon_decay: 0.995

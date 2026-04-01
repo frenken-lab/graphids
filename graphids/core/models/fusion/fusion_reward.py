@@ -64,10 +64,6 @@ class FusionRewardCalculator:
         self._overconf_penalty = overconf_penalty
         self._balance_weight = balance_weight
 
-    def set_vgae_weights(self, weights: tuple[float, ...] | list[float]) -> None:
-        """Set VGAE error weights for anomaly score derivation."""
-        self._vgae_weights = torch.tensor(weights, dtype=torch.float32)
-
     def normalize(self, states: torch.Tensor) -> torch.Tensor:
         """Clamp confidence features to [0, 1]. Returns a new tensor."""
         states = states.clone().float()

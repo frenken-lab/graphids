@@ -2,7 +2,8 @@ model:
   class_path: graphids.core.models.fusion.bandit.BanditFusionModule
   init_args:
     decision_threshold: 0.5
-    reward_kwargs: {}
+    reward_kwargs:
+      vgae_weights: [0.4, 0.3, 0.3]
     ucb_alpha: 1.0
     lambda_reg: 1.0
     backbone_lr: 0.001

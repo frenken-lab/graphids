@@ -10,8 +10,8 @@ import yaml
 from graphids.config import CONFIG_DIR, expand_recipe_configs  # public API (passes valid_scales)
 from graphids.config.recipe_expand import _flatten_dict  # internal, tested directly
 from graphids.core.contracts import TrainingContract, TrainingSpec
-from graphids.orchestrate.execution import training_spec
 from graphids.orchestrate.planning import StageConfig
+from graphids.orchestrate.resolve import ConfigResolver, _deep_merge, _apply_dotted_overrides
 from graphids.slurm import (
     ResourceSpec,
     apply_resource_overrides,
@@ -131,7 +131,11 @@ class TestApplyResourceOverrides:
 
 
 class TestTrainerOverrideFlow:
-    def test_trainer_overrides_in_runtime(self):
+    @pytest.fixture()
+    def resolver(self, tmp_path) -> ConfigResolver:
+        return ConfigResolver(lake_root=str(tmp_path), user="test")
+
+    def test_trainer_overrides_in_runtime(self, resolver):
         cfg = StageConfig(
             asset_name="test",
             stage="autoencoder",
@@ -139,15 +143,10 @@ class TestTrainerOverrideFlow:
             scale="small",
             trainer_overrides={"trainer.max_epochs": "2"},
         )
-        spec = training_spec(
-            cfg,
-            dataset="hcrl_sa",
-            seed=42,
-            run_directory="/tmp/test",
-            run_directory_path=Path("/tmp/nonexistent"),
-            upstream_ckpts={},
+        resolved = resolver.resolve(
+            cfg, dataset="hcrl_sa", seed=42, upstream_ckpts={},
         )
-        assert spec.runtime_overrides["trainer.max_epochs"] == "2"
+        assert resolved.spec.runtime_overrides["trainer.max_epochs"] == "2"
 
     def test_trainer_overrides_become_cli_args(self):
         spec = TrainingSpec(
@@ -163,19 +162,198 @@ class TestTrainerOverrideFlow:
         cli_args = TrainingContract.to_cli_overrides(spec)
         assert "--trainer.max_epochs=2" in cli_args
 
-    def test_empty_trainer_overrides_noop(self):
+    def test_empty_trainer_overrides_noop(self, resolver):
         cfg = StageConfig(
             asset_name="test",
             stage="autoencoder",
             model_type="vgae",
             scale="small",
         )
-        spec = training_spec(
-            cfg,
-            dataset="hcrl_sa",
-            seed=42,
-            run_directory="/tmp/test",
-            run_directory_path=Path("/tmp/nonexistent"),
-            upstream_ckpts={},
+        resolved = resolver.resolve(
+            cfg, dataset="hcrl_sa", seed=42, upstream_ckpts={},
         )
-        assert "trainer.max_epochs" not in spec.runtime_overrides
+        assert "trainer.max_epochs" not in resolved.spec.runtime_overrides
+
+    def test_audit_records_trainer_overrides(self, resolver):
+        cfg = StageConfig(
+            asset_name="test",
+            stage="autoencoder",
+            model_type="vgae",
+            scale="small",
+            trainer_overrides={"trainer.max_epochs": "2"},
+        )
+        resolved = resolver.resolve(
+            cfg, dataset="hcrl_sa", seed=42, upstream_ckpts={},
+        )
+        sources = {r.source for r in resolved.audit}
+        assert "recipe_trainer" in sources
+        keys = {r.key for r in resolved.audit}
+        assert "trainer.max_epochs" in keys
+
+    def test_audit_records_resource_overrides(self, resolver):
+        cfg = StageConfig(
+            asset_name="test",
+            stage="autoencoder",
+            model_type="vgae",
+            scale="small",
+            resource_overrides={"time": "0:15:00", "partition": "gpudebug"},
+        )
+        resolved = resolver.resolve(
+            cfg, dataset="hcrl_sa", seed=42, upstream_ckpts={},
+        )
+        sources = {r.source for r in resolved.audit}
+        assert "recipe_resource" in sources
+        keys = {r.key for r in resolved.audit}
+        assert "time" in keys
+        assert "partition" in keys
+
+    def test_cross_field_workers_exceeds_cpus_raises(self, resolver):
+        """num_workers > cpus_per_task - 1 should fail validation."""
+        cfg = StageConfig(
+            asset_name="test",
+            stage="autoencoder",
+            model_type="vgae",
+            scale="small",
+            resource_overrides={"cpus_per_task": 2, "num_workers": 4},
+        )
+        with pytest.raises(ValueError, match="num_workers.*exceeds"):
+            resolver.resolve(
+                cfg, dataset="hcrl_sa", seed=42, upstream_ckpts={},
+            )
+
+
+# ---------------------------------------------------------------------------
+# YAML-aware validation
+# ---------------------------------------------------------------------------
+
+
+class TestDeepMerge:
+    def test_simple_override(self):
+        assert _deep_merge({"a": 1}, {"a": 2}) == {"a": 2}
+
+    def test_nested_override(self):
+        base = {"trainer": {"max_epochs": 300, "precision": "16-mixed"}}
+        overlay = {"trainer": {"max_epochs": 2}}
+        result = _deep_merge(base, overlay)
+        assert result["trainer"]["max_epochs"] == 2
+        assert result["trainer"]["precision"] == "16-mixed"
+
+    def test_disjoint_keys(self):
+        result = _deep_merge({"a": 1}, {"b": 2})
+        assert result == {"a": 1, "b": 2}
+
+    def test_empty_overlay(self):
+        base = {"a": 1}
+        assert _deep_merge(base, {}) == {"a": 1}
+
+    def test_non_dict_replaces_dict(self):
+        assert _deep_merge({"a": {"b": 1}}, {"a": 42}) == {"a": 42}
+
+
+class TestApplyDottedOverrides:
+    def test_simple_dotted_key(self):
+        merged = {"trainer": {"max_epochs": 300}}
+        result = _apply_dotted_overrides(merged, {"trainer.max_epochs": "2"})
+        assert result["trainer"]["max_epochs"] == "2"
+
+    def test_creates_intermediate_dicts(self):
+        result = _apply_dotted_overrides({}, {"a.b.c": "val"})
+        assert result["a"]["b"]["c"] == "val"
+
+    def test_no_overrides_is_noop(self):
+        merged = {"x": 1}
+        assert _apply_dotted_overrides(merged, {}) == {"x": 1}
+
+
+class TestYAMLAwareValidation:
+    @pytest.fixture()
+    def resolver(self, tmp_path) -> ConfigResolver:
+        return ConfigResolver(lake_root=str(tmp_path), user="test")
+
+    def _write_yaml(self, tmp_path: Path, name: str, content: dict) -> str:
+        p = tmp_path / name
+        p.write_text(yaml.dump(content))
+        return str(p)
+
+    def test_merge_yaml_chain(self, resolver, tmp_path):
+        f1 = self._write_yaml(tmp_path, "base.yaml", {
+            "trainer": {"max_epochs": 300, "precision": "16-mixed"},
+            "data": {"init_args": {"num_workers": 3}},
+        })
+        f2 = self._write_yaml(tmp_path, "stage.yaml", {
+            "trainer": {"max_epochs": 100},
+            "data": {"init_args": {"batch_size": 64}},
+        })
+        merged = resolver._merge_yaml_chain(
+            (f1, f2), {"trainer.max_epochs": "2"},
+        )
+        assert merged["trainer"]["max_epochs"] == "2"
+        assert merged["trainer"]["precision"] == "16-mixed"
+        assert merged["data"]["init_args"]["num_workers"] == 3
+        assert merged["data"]["init_args"]["batch_size"] == 64
+
+    def test_curriculum_epoch_mismatch_raises(self, resolver, tmp_path):
+        f1 = self._write_yaml(tmp_path, "trainer.yaml", {
+            "trainer": {"max_epochs": 300},
+        })
+        f2 = self._write_yaml(tmp_path, "curriculum.yaml", {
+            "data": {"init_args": {"max_epochs": 300, "num_workers": 2}},
+        })
+        cfg = StageConfig(
+            asset_name="test_curriculum",
+            stage="curriculum",
+            model_type="gat",
+            scale="small",
+            config_files=(f1, f2),
+            trainer_overrides={"trainer.max_epochs": "2"},
+        )
+        with pytest.raises(ValueError, match="CurriculumDataModule.max_epochs.*!=.*trainer"):
+            resolver.resolve(cfg, dataset="hcrl_sa", seed=42, upstream_ckpts={})
+
+    def test_curriculum_epoch_match_passes(self, resolver, tmp_path):
+        f1 = self._write_yaml(tmp_path, "trainer.yaml", {
+            "trainer": {"max_epochs": 300},
+        })
+        f2 = self._write_yaml(tmp_path, "curriculum.yaml", {
+            "data": {"init_args": {"max_epochs": 300, "num_workers": 2}},
+        })
+        cfg = StageConfig(
+            asset_name="test_curriculum",
+            stage="curriculum",
+            model_type="gat",
+            scale="small",
+            config_files=(f1, f2),
+        )
+        resolved = resolver.resolve(
+            cfg, dataset="hcrl_sa", seed=42, upstream_ckpts={},
+        )
+        assert resolved.spec is not None
+
+    def test_yaml_num_workers_exceeds_cpus_raises(self, resolver, tmp_path):
+        f1 = self._write_yaml(tmp_path, "stage.yaml", {
+            "data": {"init_args": {"num_workers": 8}},
+        })
+        cfg = StageConfig(
+            asset_name="test_workers",
+            stage="autoencoder",
+            model_type="vgae",
+            scale="small",
+            config_files=(f1,),
+            resource_overrides={"cpus_per_task": 4, "num_workers": 3},
+        )
+        with pytest.raises(ValueError, match="num_workers.*in YAML exceeds"):
+            resolver.resolve(cfg, dataset="hcrl_sa", seed=42, upstream_ckpts={})
+
+    def test_missing_config_files_skipped(self, resolver):
+        """Missing YAML files are skipped, not crashed on."""
+        cfg = StageConfig(
+            asset_name="test",
+            stage="autoencoder",
+            model_type="vgae",
+            scale="small",
+            config_files=("/nonexistent/path.yaml",),
+        )
+        resolved = resolver.resolve(
+            cfg, dataset="hcrl_sa", seed=42, upstream_ckpts={},
+        )
+        assert resolved.spec is not None
