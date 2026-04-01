@@ -1,0 +1,14 @@
+io:
+  run_dir_template: "{lake_root}/dev/{user}/{dataset}/{model_family}_{scale}_{stage}{identity}{kd_tag}/seed_{seed}"
+  checkpoint_subpath: checkpoints/best_model.ckpt
+  last_checkpoint_subpath: checkpoints/last.ckpt
+  csv_logger_subpath: lightning_logs
+  complete_marker: .complete
+loggers:
+  wandb:
+    enabled: true
+    project: kd-gat
+    log_model: false
+  csv:
+    enabled: true
+    save_dir: .

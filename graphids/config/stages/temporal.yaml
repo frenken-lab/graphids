@@ -1,0 +1,12 @@
+stage:
+  name: temporal
+  trainer_overrides: {}
+  callbacks_overrides: {}
+data:
+  class_path: TemporalDataModule
+  init_args:
+    window_size: 10
+    stride: 1
+    val_fraction: 0.2
+    batch_size: 256
+    num_workers: 2

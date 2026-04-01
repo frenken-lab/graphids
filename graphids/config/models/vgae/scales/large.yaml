@@ -1,0 +1,9 @@
+model:
+  scale: large
+  init_args:
+    hidden_dims: [480, 240, 64]
+    latent_dim: 64
+    heads: 4
+    embedding_dim: 32
+    dropout: 0.15
+    proj_dim: 48

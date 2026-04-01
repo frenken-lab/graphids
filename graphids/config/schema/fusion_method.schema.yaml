@@ -1,0 +1,25 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+title: KD-GAT Fusion Method Config
+type: object
+additionalProperties: false
+required: [fusion, model]
+properties:
+  fusion:
+    type: object
+    additionalProperties: false
+    required: [method, training_mode]
+    properties:
+      method:
+        type: string
+        enum: [bandit, dqn, mlp, weighted_avg]
+      training_mode:
+        type: string
+        enum: [offline_rl, supervised, analytic]
+  model:
+    type: object
+    required: [class_path, init_args]
+    properties:
+      class_path:
+        type: string
+      init_args:
+        type: object

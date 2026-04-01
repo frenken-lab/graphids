@@ -1,8 +1,0 @@
-# Large-scale bandit backbone.
-# Compose: --config stages/fusion.yaml --config stages/fusion_bandit.yaml --config models/bandit/large.yaml
-model:
-  init_args:
-    hidden_dim: 256
-    num_layers: 4
-    backbone_retrain_freq: 50
-    backbone_epochs: 5

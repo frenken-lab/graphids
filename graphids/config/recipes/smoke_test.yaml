@@ -1,0 +1,16 @@
+recipe:
+  name: smoke_test
+  description: Fast correctness checks
+seeds: [42]
+selection:
+  datasets: [set_01]
+  model_families: [vgae, gat, fusion]
+  scales: [small]
+  stages:
+    vgae: [autoencoder]
+    gat: [normal]
+    fusion: [fusion]
+  fusion_methods: [bandit]
+overrides:
+  trainer:
+    max_epochs: 2

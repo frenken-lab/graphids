@@ -1,0 +1,10 @@
+model:
+  family: temporal
+  class_path: TemporalLightningModule
+  init_args:
+    spatial_conv_type: gatv2
+    spatial_edge_dim: 11
+    spatial_pool_aggrs: [mean]
+    freeze_spatial: true
+    spatial_lr_factor: 0.01
+    lr: 0.001

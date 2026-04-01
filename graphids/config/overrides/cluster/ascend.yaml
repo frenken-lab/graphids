@@ -1,0 +1,6 @@
+overrides:
+  cluster: ascend
+  slurm:
+    account: PAS1266
+    partition: nextgen
+    gpu_type: a100

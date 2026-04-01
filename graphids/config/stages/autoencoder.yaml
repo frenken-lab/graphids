@@ -1,12 +1,13 @@
-# VGAE unsupervised reconstruction.
-# Usage: python -m graphids fit --config graphids/config/stages/autoencoder.yaml
-model:
-  class_path: graphids.core.models.vgae.VGAEModule
-  init_args:
-    proj_dim: 48
-    lr: 0.002
-    auxiliaries: []
-    compile_model: true
+stage:
+  name: autoencoder
+  trainer_overrides: {}
+  callbacks_overrides: {}
 data:
-  class_path: graphids.core.preprocessing.datamodule.CANBusDataModule
-  init_args: {batch_size: 8192, num_workers: 2}
+  class_path: CANBusDataModule
+  init_args:
+    window_size: 100
+    stride: 100
+    val_fraction: 0.2
+    batch_size: 8192
+    num_workers: 2
+    dynamic_batching: true

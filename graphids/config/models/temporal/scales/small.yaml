@@ -1,0 +1,15 @@
+model:
+  scale: small
+  init_args:
+    spatial_hidden: 24
+    spatial_layers: 2
+    spatial_heads: 4
+    spatial_dropout: 0.1
+    spatial_embedding_dim: 8
+    spatial_proj_dim: 32
+    spatial_fc_layers: 2
+    window_size: 10
+    stride: 1
+    temporal_hidden: 48
+    temporal_heads: 4
+    temporal_layers: 2

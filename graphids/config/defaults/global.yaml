@@ -1,0 +1,11 @@
+version: 1
+project:
+  name: kd-gat
+  seed_everything: 42
+  tags: []
+paths:
+  lake_root: /fs/ess/PAS1266/kd-gat
+  data_root: ~/KD-GAT/data
+flags:
+  strict_validation: true
+  fail_on_unknown_keys: true

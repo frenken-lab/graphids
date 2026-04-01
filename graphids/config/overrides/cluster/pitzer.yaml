@@ -1,0 +1,6 @@
+overrides:
+  cluster: pitzer
+  slurm:
+    account: PAS1266
+    partition: gpu
+    gpu_type: v100

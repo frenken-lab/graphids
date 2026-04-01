@@ -1,0 +1,18 @@
+trainer:
+  accelerator: auto
+  devices: auto
+  precision: 16-mixed
+  max_epochs: 300
+  gradient_clip_val: 1.0
+  log_every_n_steps: 50
+callbacks:
+  checkpoint:
+    monitor: val_loss
+    mode: min
+    save_top_k: 1
+    save_last: true
+    filename: best_model
+  early_stopping:
+    monitor: val_loss
+    mode: min
+    patience: 100

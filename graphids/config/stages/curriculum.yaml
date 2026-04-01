@@ -1,14 +1,18 @@
-# GAT supervised + curriculum learning. Depends on VGAE checkpoint.
-# CurriculumDataModule.on_train_epoch_start() handles epoch callbacks internally.
-# Usage: python -m graphids fit --config graphids/config/stages/curriculum.yaml
-model:
-  class_path: graphids.core.models.gat.GATModule
-  init_args:
-    fc_layers: 1
-    proj_dim: 48
-    pool_aggrs: ["mean"]
-    auxiliaries: []
-    compile_model: true
+stage:
+  name: curriculum
+  trainer_overrides: {}
+  callbacks_overrides: {}
 data:
-  class_path: graphids.core.preprocessing.curriculum.CurriculumDataModule
-  init_args: {batch_size: 8192, num_workers: 2}
+  class_path: CurriculumDataModule
+  init_args:
+    window_size: 100
+    stride: 100
+    val_fraction: 0.2
+    batch_size: 8192
+    num_workers: 2
+    dynamic_batching: true
+    curriculum_start_ratio: 1.0
+    curriculum_end_ratio: 10.0
+    difficulty_percentile: 75.0
+    canid_weight: 0.1
+    max_epochs_ref: trainer.max_epochs

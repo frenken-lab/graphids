@@ -1,8 +1,0 @@
-# Small-scale bandit backbone.
-# Compose: --config stages/fusion.yaml --config stages/fusion_bandit.yaml --config models/bandit/small.yaml
-model:
-  init_args:
-    hidden_dim: 64
-    num_layers: 2
-    backbone_retrain_freq: 25
-    backbone_epochs: 3

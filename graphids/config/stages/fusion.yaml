@@ -1,17 +1,20 @@
-# Fusion stage shared config. Depends on VGAE + GAT checkpoints.
-# Method-specific model class_path layered via fusion_{method}.yaml.
-# gradient_clip_val: null — DQN/Bandit use manual optimization,
-# Lightning rejects gradient_clip_val with automatic_optimization=False.
+stage:
+  name: fusion
 trainer:
   precision: 32
   max_epochs: 50
-  log_every_n_steps: 10
   gradient_clip_val: null
-checkpoint:
-  monitor: val_acc
-  mode: max
-early_stopping:
-  monitor: val_acc
-  mode: max
+  log_every_n_steps: 10
+callbacks:
+  checkpoint:
+    monitor: val_acc
+    mode: max
+  early_stopping:
+    monitor: val_acc
+    mode: max
 data:
-  class_path: graphids.core.preprocessing.datamodule.FusionDataModule
+  class_path: FusionDataModule
+  init_args:
+    max_samples: 150000
+    max_val_samples: 30000
+    eval_batch_size: 256

@@ -1,0 +1,10 @@
+model:
+  scale: small
+  init_args:
+    hidden: 24
+    layers: 2
+    heads: 4
+    embedding_dim: 8
+    dropout: 0.1
+    proj_dim: 32
+    fc_layers: 2

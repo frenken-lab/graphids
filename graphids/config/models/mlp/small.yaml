@@ -1,4 +1,0 @@
-# MLP fusion — architecture params live in stages/fusion_mlp.yaml.
-# This file exists for config resolution completeness.
-# Compose: --config stages/fusion.yaml --config stages/fusion_mlp.yaml --config models/mlp/small.yaml
-{}

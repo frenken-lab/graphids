@@ -1,0 +1,19 @@
+clusters:
+  default: pitzer
+  detect_by_hostname:
+    pitzer: [pitzer]
+    ascend: [ascend]
+    cardinal: [cardinal]
+  execution_modes:
+    pitzer:
+      gpu_train: {partition: gpu, gres: gpu:1}
+      gpu_eval: {partition: gpu, gres: gpu:1}
+      cpu_preprocess: {partition: cpu}
+    ascend:
+      gpu_train: {partition: nextgen, gres: gpu:a100:1}
+      gpu_eval: {partition: nextgen, gres: gpu:a100:1}
+      cpu_preprocess: {partition: nextgen}
+    cardinal:
+      gpu_train: {partition: batch, gres: gpu:h100:1}
+      gpu_eval: {partition: batch, gres: gpu:h100:1}
+      cpu_preprocess: {partition: batch}

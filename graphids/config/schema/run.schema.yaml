@@ -1,0 +1,36 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+title: KD-GAT Run Request
+type: object
+additionalProperties: false
+required: [dataset, model_family, scale, stage]
+properties:
+  dataset:
+    type: string
+    enum: [hcrl_ch, hcrl_sa, set_01, set_02, set_03, set_04]
+  model_family:
+    type: string
+    enum: [vgae, dgi, gat, temporal, fusion]
+  scale:
+    type: string
+    enum: [small, large]
+  stage:
+    type: string
+    enum: [autoencoder, normal, curriculum, temporal, fusion]
+  fusion_method:
+    type: string
+    enum: [bandit, dqn, mlp, weighted_avg]
+  seed:
+    type: integer
+    minimum: 0
+allOf:
+  - if:
+      properties:
+        model_family: {const: fusion}
+    then:
+      required: [fusion_method]
+  - if:
+      properties:
+        model_family: {const: dgi}
+    then:
+      properties:
+        stage: {const: autoencoder}

@@ -1,13 +1,13 @@
-# GAT supervised classification, no curriculum. Standalone baseline.
-# Usage: python -m graphids fit --config graphids/config/stages/normal.yaml
-model:
-  class_path: graphids.core.models.gat.GATModule
-  init_args:
-    fc_layers: 1
-    proj_dim: 48
-    pool_aggrs: ["mean"]
-    auxiliaries: []
-    compile_model: true
+stage:
+  name: normal
+  trainer_overrides: {}
+  callbacks_overrides: {}
 data:
-  class_path: graphids.core.preprocessing.datamodule.CANBusDataModule
-  init_args: {batch_size: 8192, num_workers: 2}
+  class_path: CANBusDataModule
+  init_args:
+    window_size: 100
+    stride: 100
+    val_fraction: 0.2
+    batch_size: 8192
+    num_workers: 2
+    dynamic_batching: true

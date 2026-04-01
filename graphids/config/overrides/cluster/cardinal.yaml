@@ -1,0 +1,6 @@
+overrides:
+  cluster: cardinal
+  slurm:
+    account: PAS1266
+    partition: batch
+    gpu_type: h100
