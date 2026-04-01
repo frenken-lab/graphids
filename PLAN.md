@@ -1,12 +1,17 @@
 # KD-GAT Session Plan
 
-> Last updated: 2026-03-31 (end of config/model/orchestrate refactor session)
+> Last updated: 2026-03-31 (end of config wiring + validation session)
 
 ## Current State
 
-Run 005 completed 22/36 jobs on Ascend A100. All 3 immediate failures fixed (fusion wiring, preprocessing OOM, wall times). **NOT ready to relaunch** — systemic issues remain.
+All config chains pass `python -m graphids.orchestrate validate`. Dagster definitions load. Ready for validation run on `hcrl_sa` (3 epochs) to confirm full runtime chain.
 
-Config, model, and orchestrate layers fully refactored (see Handoff below). Documentation updated to match new structure. Public API (`graphids.config` imports) unchanged.
+**TEMPORARY:** `defaults/trainer.yaml` has `max_epochs: 3`. Revert to `300` before ablation launch.
+
+**Validation run command:**
+```bash
+KD_GAT_RECIPE=graphids/config/recipes/validation_run.yaml dg launch --assets '*'
+```
 
 ## Handoff — What the last session did (2026-03-31)
 
@@ -56,10 +61,12 @@ scripts/ reduced from 20 files to 3: `submit.sh`, `slurm/_preamble.sh`, `slurm/_
 
 `project_hydra_config_refactor.md` (Hydra was rejected), `feedback_yaml_only_config.md`, `feedback_never_run_tests_login.md`, `feedback_slurm_partition.md` all duplicate rules files. Delete these.
 
-## Blocking — Must fix before relaunch
+## Blocking — Must fix before ablation relaunch
 
-1. **Forced callbacks** — ModelCheckpoint silently dropped by jsonargparse list replacement. Curriculum runs trained 300 epochs with no checkpoint. Fix spec ready: `plans/architecture/forced-callbacks.md`
-2. **Open issues triage** — `plans/open_issues.md` has 25+ deferred items across 6 categories. Need to prioritize: which block correct results vs which are cleanup.
+1. **Revert `max_epochs`** — `defaults/trainer.yaml` is at 3 for validation. Set back to 300.
+2. **Recipe `overrides` for trainer params** — `TrainingRunConfig` has no `trainer` field, so recipe `overrides: trainer: max_epochs: N` fails. Need either a `runtime_overrides` field on `TrainingRunConfig` or a separate mechanism. Blocks per-recipe epoch control.
+3. **Orchestrate test coverage** — all orchestrate tests were deleted (stale imports). Need new tests for `planning.py`, `execution.py`, `assets.py`, `checks.py`.
+4. **Open issues triage** — `plans/open_issues.md` has 25+ deferred items across 6 categories.
 
 ## In Progress
 
