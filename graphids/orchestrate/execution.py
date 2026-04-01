@@ -11,6 +11,13 @@ from graphids.orchestrate.planning import StageConfig
 from graphids.orchestrate.slurm import sacct_query
 
 
+def touch_complete(rd_path: Path) -> None:
+    """Write the .complete marker after a successful training run."""
+    marker = rd_path / COMPLETE_MARKER
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+
+
 def artifact_paths(
     cfg: StageConfig,
     *,

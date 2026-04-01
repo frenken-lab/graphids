@@ -8,7 +8,7 @@ import dagster as dg
 
 from graphids.core.analyze_entrypoint import run_analysis_from_spec
 from graphids.orchestrate.analysis import build_analysis_spec, output_status, write_manifest
-from graphids.orchestrate.execution import artifact_paths, slurm_accounting_metadata, training_spec
+from graphids.orchestrate.execution import artifact_paths, slurm_accounting_metadata, touch_complete, training_spec
 from graphids.orchestrate.planning import StageConfig
 from graphids.orchestrate.resources import get_resources, scale_resources
 
@@ -51,7 +51,7 @@ def make_training_asset(
         dataset = context.partition_key.keys_by_dimension["dataset"]
         seed = int(context.partition_key.keys_by_dimension["seed"])
 
-        rd, rd_path, ckpt_file, _ = artifact_paths(
+        rd, rd_path, ckpt_file, complete = artifact_paths(
             cfg,
             lake_root=lake_root,
             user=user,
@@ -59,7 +59,7 @@ def make_training_asset(
             seed=seed,
         )
 
-        if ckpt_file.exists():
+        if ckpt_file.exists() and complete.exists():
             context.log.info(f"Already complete: {ckpt_file}")
             return str(ckpt_file)
 
@@ -96,6 +96,8 @@ def make_training_asset(
             return str(ckpt_file)
         if state != "COMPLETED":
             raise RuntimeError(f"SLURM job failed: {state}")
+
+        touch_complete(rd_path)
 
         if job_id:
             accounting = slurm_accounting_metadata(job_id)

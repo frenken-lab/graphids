@@ -25,6 +25,9 @@ from pathlib import Path
 
 import structlog
 
+structlog.configure(
+    logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
+)
 log = structlog.get_logger()
 
 
