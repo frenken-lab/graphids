@@ -73,13 +73,15 @@ num_workers vs CPUs, RL dead batch_size. 13 new tests. See `resolve.py`.
 
 ### ~~3. W2: Structural exclusivity~~ ✓
 
-Resolved 2026-04-01. Decoupled CLI architecture eliminates dual merge:
+Resolved 2026-04-01, revised 2026-04-01 (session 3):
 - `artifact_paths()` deleted — `PathContext` is single source for paths.
 - `checks.py` uses `PathContext` directly.
-- Pipeline path uses direct instantiation (`train_entrypoint.py`), no LightningCLI.
-- `to_cli_overrides()` replaced by `to_override_dict()` (dict, not CLI strings).
+- Pipeline path delegates to LightningCLI via `run_lightning()` — builds CLI args
+  from `TrainingSpec`, LightningCLI handles merge + type validation + instantiation.
+- Shadow instantiation (`run_training_from_resolved`, 80 lines reimplementing
+  LightningCLI) deleted — produced immediate drift risk with the dev path.
 - `StageConfig` override fields still consumed exclusively by `ConfigResolver`.
-- See `plans/research/config_cli_decoupling.md`.
+- See `plans/research/config_cli_decoupling.md` Resolution section.
 
 ### ~~4. P2.3: Replace `run_dir()` with frozen `PathContext`~~ ✓
 
@@ -118,10 +120,10 @@ KD overrides audit stores JSON blob as string. Not queryable.
 
 ### 9. W7: Spec-file path bypasses validators (LOW)
 
-`train-from-spec` now uses `resolve_configs()` to merge the YAML chain before
-direct instantiation, so the same merge path runs on both dagster and SLURM sides.
-Cross-field validation still only runs in `ConfigResolver` (dagster side).
-`analyze-from-spec` is unchanged.
+`train-from-spec` builds CLI args from `TrainingSpec` and delegates to
+`run_lightning()` (LightningCLI), so the same instantiation path runs for both
+pipeline and dev. Cross-field validation still only runs in `ConfigResolver`
+(dagster side). `analyze-from-spec` is unchanged.
 - [ ] Wire cross-field validators into `train-from-spec` path (optional)
 
 ### 10. W6: Resume checkpoint probe is side effect (LOW)
@@ -168,7 +170,7 @@ configs parametrically. Low priority — evaluate when recipe complexity demands
 - Built decoupled CLI architecture (Phase 3 from `config_cli_decoupling.md`).
 - `cli.py` is now torch-free — `resolve_configs()` + `run_lightning()` (lazy import).
 - LightningCLI subclass moved to `_lightning.py` (internal, dev path + validate only).
-- Pipeline path uses direct instantiation (`train_entrypoint.py`) — no LightningCLI.
+- Pipeline path initially used direct instantiation (`train_entrypoint.py`) — revised in session 3.
 - `PathContext` (frozen Pydantic) replaces `run_dir()` + `artifact_paths()`.
 - `ResolvedConfig.paths: PathContext` replaces 3 separate path fields (no compat layer).
 - `to_cli_overrides()` → `to_override_dict()` (dict output, not CLI strings).
@@ -176,6 +178,27 @@ configs parametrically. Low priority — evaluate when recipe complexity demands
 - `validate.py` uses snapshot path instead of reconstructing CLI args.
 - `__main__.py` defers `torch.multiprocessing` setup to `_run_lightning()`.
 - W2 resolved, P2.3 resolved, W7 partially resolved.
+
+### 2026-04-01 (session 3)
+
+- Audited recent code additions for hand-rolled framework reimplementations.
+- Deleted `run_training_from_resolved` (80 lines shadow LightningCLI): `_import_class`,
+  `_get_dotted`, `_set_dotted`, `_apply_links`, `_patch_paths`, manual Model/Data/Trainer
+  instantiation. All reimplemented what LightningCLI already provides.
+- Pipeline path now delegates to `run_lightning()` via CLI args built from `TrainingSpec`.
+  Both dev and pipeline paths converge at LightningCLI — one instantiation path, zero drift.
+- Extracted shared wiring constants (`LINK_TARGETS`, `CHECKPOINT_DEFAULTS`,
+  `EARLY_STOPPING_DEFAULTS`) to `cli.py` as single source of truth for `_lightning.py`.
+- `train_entrypoint.py`: 144 → 51 lines. Only `_build_cli_args`, `run_training_from_spec`,
+  `run_training_from_payload` remain.
+- ConfigResolver role clarified: cross-field validation + audit trail only, not
+  merge-for-instantiation. LightningCLI is the exclusive execution path.
+- W2 resolution revised: "direct instantiation" replaced with "LightningCLI delegation."
+- Fixed C1 (dual merge divergence risk): added `test_merge_parity.py` — 3 parametrized
+  tests assert naive `merge_yaml_chain` matches jsonargparse output for representative
+  config chains (autoencoder, normal, fusion). Marked `@pytest.mark.slurm`.
+- Fixed C2 (non-atomic config writes): `write_yaml()` now uses temp file + `fsync` +
+  `os.rename()` for NFS safety. Follows project convention from critical-constraints.md.
 
 ---
 

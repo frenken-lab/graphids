@@ -5,6 +5,7 @@ No torch/Lightning dependencies — safe for login nodes and dagster workers.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +64,15 @@ def merge_yaml_chain(
 
 
 def write_yaml(data: dict[str, Any], path: Path) -> None:
-    """Write dict as YAML. Parents created automatically."""
+    """Write dict as YAML atomically (NFS-safe: temp file → fsync → rename)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with tmp.open("w") as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.rename(tmp, path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise

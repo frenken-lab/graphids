@@ -2,6 +2,9 @@
 
 Used only by the dev path (python -m graphids fit) and validate.py.
 Pipeline runs use direct instantiation via train_entrypoint.py.
+
+Wiring constants (link targets, callback defaults) imported from cli.py —
+single source of truth shared with the pipeline path.
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.cli import LightningCLI, SaveConfigCallback
 from pytorch_lightning.loggers import WandbLogger
 
+from graphids.cli import CHECKPOINT_DEFAULTS, EARLY_STOPPING_DEFAULTS, LINK_TARGETS
 from graphids.config import CKPT_SUBPATH, WANDB_WRITE_DIR
 
 _CKPT_DIR = str(PurePosixPath(CKPT_SUBPATH).parent)
@@ -31,30 +35,20 @@ class WandbSaveConfigCallback(SaveConfigCallback):
 
 class GraphIDSCLI(LightningCLI):
     def add_arguments_to_parser(self, parser):
-        parser.link_arguments("data.init_args.dataset", "model.init_args.dataset")
-        parser.link_arguments("data.init_args.lake_root", "model.init_args.lake_root")
-        parser.link_arguments("seed_everything", "model.init_args.seed")
-        parser.link_arguments("seed_everything", "data.init_args.seed")
-        parser.link_arguments("model.init_args.conv_type", "data.init_args.conv_type")
-        parser.link_arguments("model.init_args.heads", "data.init_args.heads")
+        for src, tgt in LINK_TARGETS:
+            parser.link_arguments(src, tgt)
 
         # Forced callbacks — registered as separate namespaces so stage YAMLs
         # that override trainer.callbacks cannot drop them (jsonargparse replaces
         # lists atomically, but these live outside the list).
         parser.add_lightning_class_args(ModelCheckpoint, "checkpoint")
-        parser.set_defaults({
-            "checkpoint.monitor": "val_loss",
-            "checkpoint.mode": "min",
-            "checkpoint.save_top_k": 1,
-            "checkpoint.save_last": True,
-            "checkpoint.filename": "best_model",
-        })
+        parser.set_defaults(
+            {f"checkpoint.{k}": v for k, v in CHECKPOINT_DEFAULTS.items()}
+        )
         parser.add_lightning_class_args(EarlyStopping, "early_stopping")
-        parser.set_defaults({
-            "early_stopping.monitor": "val_loss",
-            "early_stopping.patience": 100,
-            "early_stopping.mode": "min",
-        })
+        parser.set_defaults(
+            {f"early_stopping.{k}": v for k, v in EARLY_STOPPING_DEFAULTS.items()}
+        )
 
     def before_instantiate_classes(self):
         """Patch parsed config: logger save_dirs + checkpoint dirpath."""

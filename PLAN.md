@@ -1,55 +1,55 @@
 # KD-GAT Session Plan
 
-> Last updated: 2026-04-01 (ConfigResolver + YAML-aware validation session)
+> Last updated: 2026-04-01 (session 3 — shadow instantiation deleted, audit)
 
 ## Current State
 
-ConfigResolver is the exclusive merge path for pipeline runs (`orchestrate/resolve.py`).
-Overrides, cross-field validation (including YAML-aware checks), and audit logging are
-consolidated in one place. Fusion `vgae_weights` bug fixed. `max_epochs` reverted to 300.
-Ready to run smoke test on SLURM.
+Pipeline path and dev path converge at LightningCLI. `train_entrypoint.py` builds CLI
+args from `TrainingSpec` and delegates to `run_lightning()` — no shadow instantiation.
+ConfigResolver handles cross-field validation + audit trail (not merge-for-instantiation).
+Shared wiring constants (`LINK_TARGETS`, callback defaults) in `cli.py`, consumed by
+`_lightning.py`. Ready to run smoke test on SLURM.
 
 **Smoke test command:**
 ```bash
 KD_GAT_RECIPE=graphids/config/recipes/smoke_test.yaml dg launch --assets '*'
 ```
 
-## What this session did (2026-04-01)
+## What this session did (2026-04-01, session 3)
 
-### Config system audit
+### Audit: hand-rolled code in recent additions
 
-Audited `issues/config-system-overhaul.md` and `plans/research/config_system_synthesis.md`
-against actual codebase. Found interim override flow diverged from synthesis doc's
-ConfigResolver design. Decision: ConfigResolver is target architecture.
+Audited 833 lines added over 4 commits. Found `train_entrypoint.py` reimplemented
+~80 lines of LightningCLI: `_import_class`, `_get_dotted`, `_set_dotted`, `_apply_links`
+(link_arguments), `_patch_paths` (before_instantiate_classes), manual Model/Data/Trainer
+instantiation. All deleted.
 
-### ConfigResolver (P2.2)
+### Shadow instantiation → LightningCLI delegation
 
-Implemented `orchestrate/resolve.py` — single merge point replacing two separate sites:
-- Subsumes `training_spec()` (deleted from `execution.py`) + `apply_resource_overrides()`
-  call (moved from `assets.py` into resolver)
-- `ResolvedConfig` = `TrainingSpec` + `ResourceSpec` + paths + audit trail
-- Override-layer validators: workers vs CPUs, RL dead batch_size, GPU partition consistency
-- YAML-aware validators via `_merge_yaml_chain()`: curriculum epoch sync, YAML num_workers
-  vs resource CPUs, RL dead batch_size in stage YAML
-- Structured audit logging (source → key → value for every override)
-- 30 tests in `test_overrides.py`
+`run_training_from_spec` now builds CLI args and calls `run_lightning()`. Both paths
+converge at LightningCLI. 144 → 51 lines. Zero drift risk.
 
-### Fusion vgae_weights fix
+### Shared wiring constants
 
-`FusionRewardCalculator.__init__` required `vgae_weights` but method YAMLs had
-`reward_kwargs: {}`. Fixed by adding `vgae_weights: [0.4, 0.3, 0.3]` to both
-`bandit.yaml` and `dqn.yaml`. Deleted unused `set_vgae_weights()`.
+Extracted `LINK_TARGETS`, `CHECKPOINT_DEFAULTS`, `EARLY_STOPPING_DEFAULTS` to `cli.py`
+as single source of truth. `_lightning.py` imports them.
 
-### Research
+### Doc alignment
 
-- `plans/research/config_tool_comparison.md` — Dynaconf (rejected: first-level merge only),
-  OmegaConf (not recommended: dual merge antipattern). Naive YAML merge wins.
-- `plans/research/config_cli_decoupling.md` — Phase 3 architecture: decouple GraphIDSCLI
-  from LightningCLI, merge once + execute anywhere.
+Updated `issues/config-system-overhaul.md` (W2, W7, audit log),
+`plans/research/config_cli_decoupling.md` (Resolution section), PLAN.md.
+
+### MLOps evaluation + fixes (C1, C2)
+
+Independent evaluation against Hydra, MMEngine, Dagster, LightningCLI (vanilla).
+Report: `plans/architecture/cli-config-evaluation.md`. Two critical fixes applied:
+- C1: `tests/config/test_merge_parity.py` — 3 tests assert naive merge matches
+  jsonargparse for representative config chains (autoencoder, normal, fusion).
+- C2: `write_yaml()` now atomic (temp file + fsync + rename) for NFS safety.
 
 ## Blocking — Must do before ablation
 
-1. **Run smoke test on SLURM** — validates full pipeline with new resolver
+1. **Run smoke test on SLURM** — validates pipeline with LightningCLI delegation path
 2. **Run override + config tests on SLURM** — `scripts/submit.sh tests -k test_overrides`
 
 ## Next
@@ -58,8 +58,6 @@ Implemented `orchestrate/resolve.py` — single merge point replacing two separa
 2. Run tests on SLURM
 3. Launch ablation (`plans/experiment-sweep-plan.md`)
 4. Evaluation + analysis as dagster assets (`plans/architecture/evaluation-analysis-assets.md`)
-5. P2.3: `PathContext` (replaces `run_dir()` + eliminates path duplication with `artifact_paths()`)
-6. Phase 3: CLI decoupling (`plans/research/config_cli_decoupling.md`)
 
 ## Key References
 

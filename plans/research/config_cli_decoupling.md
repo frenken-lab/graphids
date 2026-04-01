@@ -165,6 +165,36 @@ The decoupled CLI is the architecturally correct long-term solution but requires
 
 Revisit after the ablation run surfaces real pain points with the current approach.
 
+## Resolution (2026-04-01, session 3)
+
+The "resolved dict directly" path was tried and reverted. Key findings:
+
+**What was built (session 2):** `run_training_from_resolved()` in `train_entrypoint.py` —
+80 lines of direct Model/Data/Trainer instantiation from a merged config dict. Included
+hand-rolled `_import_class`, `_get_dotted`, `_set_dotted`, `_apply_links` (reimplements
+`link_arguments`), `_patch_paths` (reimplements `before_instantiate_classes`).
+
+**Why it was wrong:** Immediate drift risk. Every wiring detail (6 link targets, 5 checkpoint
+defaults, 3 early stopping defaults, logger patching rules) was duplicated between
+`_lightning.py` and `train_entrypoint.py`. Any change to one required updating the other.
+The shadow code reimplemented what LightningCLI already provides, violating the project's
+"framework first" principle.
+
+**What replaced it:** `train_entrypoint.py` now builds CLI args from `TrainingSpec` and
+calls `run_lightning()`. LightningCLI handles merge, type validation, link_arguments,
+forced callbacks, path patching, and instantiation. 144 → 51 lines.
+
+**Architecture outcome:** Import-level decoupling succeeded (cli.py is torch-free).
+Execution-level decoupling was the wrong abstraction — both paths now converge at
+LightningCLI, which is correct because:
+1. There should be one instantiation path, not two
+2. LightningCLI's parser machinery is cheap relative to training
+3. The config chain + CLI overrides pattern is what jsonargparse was designed for
+4. ConfigResolver's role narrowed to cross-field validation + audit (not merge)
+
+The doc's Concern #1 ("LightningCLI expects to own the parser") was right — and the
+answer is: let it. Don't fight the framework.
+
 ## References
 
 - `config_system_synthesis.md` Part 5 — ConfigResolver design, `to_lightning_yaml()`
