@@ -20,7 +20,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from graphids.config import SLURM_LOG_DIR
-from graphids.orchestrate.slurm import sacct_query
+from graphids.slurm import sacct_query
 
 
 # ---------------------------------------------------------------------------

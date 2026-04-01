@@ -49,6 +49,24 @@ class _RecipeEnvelope(BaseModel):
     overrides: dict[str, Any] = Field(default_factory=dict)
     selection: _SelectionSpec | None = None
     sweeps: list[_SweepSpec] = Field(default_factory=list)
+    trainer_overrides: dict[str, Any] = Field(default_factory=dict)
+    resource_overrides: dict[str, Any] = Field(default_factory=dict)
+
+
+def _flatten_dict(d: dict[str, Any], prefix: str = "") -> dict[str, str]:
+    """Flatten nested dict to dotted-key CLI strings.
+
+    >>> _flatten_dict({"max_epochs": 2}, "trainer")
+    {"trainer.max_epochs": "2"}
+    """
+    out: dict[str, str] = {}
+    for k, v in d.items():
+        full = f"{prefix}.{k}" if prefix else k
+        if isinstance(v, dict):
+            out.update(_flatten_dict(v, full))
+        else:
+            out[full] = str(v).lower() if isinstance(v, bool) else str(v)
+    return out
 
 
 def _normalize_list(value: Any) -> list[Any]:
@@ -152,4 +170,10 @@ def expand_recipe_configs(
         )
 
     seed_list = envelope.seeds if envelope.seeds else [42]
-    return {"defaults": defaults, "configs": configs, "sweep": {"seeds": seed_list}}
+    return {
+        "defaults": defaults,
+        "configs": configs,
+        "sweep": {"seeds": seed_list},
+        "trainer_overrides": _flatten_dict(envelope.trainer_overrides, "trainer"),
+        "resource_overrides": dict(envelope.resource_overrides),
+    }

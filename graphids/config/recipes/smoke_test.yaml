@@ -1,16 +1,19 @@
 recipe:
   name: smoke_test
-  description: Fast correctness checks
+  description: Fast smoke test — hcrl_sa, 2 epochs, gpudebug
 seeds: [42]
 selection:
-  datasets: [set_01]
+  datasets: [hcrl_sa]
   model_families: [vgae, gat, fusion]
   scales: [small]
   stages:
     vgae: [autoencoder]
-    gat: [normal]
+    gat: [curriculum]
     fusion: [fusion]
   fusion_methods: [bandit]
-overrides:
-  trainer:
-    max_epochs: 2
+# Keys are relative to the trainer namespace (no "trainer." prefix needed)
+trainer_overrides:
+  max_epochs: 2
+resource_overrides:
+  time: "0:15:00"
+  partition: gpudebug

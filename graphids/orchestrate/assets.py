@@ -10,7 +10,7 @@ from graphids.core.analyze_entrypoint import run_analysis_from_spec
 from graphids.orchestrate.analysis import build_analysis_spec, output_status, write_manifest
 from graphids.orchestrate.execution import artifact_paths, slurm_accounting_metadata, touch_complete, training_spec
 from graphids.orchestrate.planning import StageConfig
-from graphids.orchestrate.resources import get_resources, scale_resources
+from graphids.slurm import apply_resource_overrides, get_resources, scale_resources
 
 
 class TrainingSubmitter(Protocol):
@@ -73,6 +73,8 @@ def make_training_asset(
         )
 
         resources = get_resources(cfg.resource_model or cfg.model_type, cfg.scale, cfg.stage)
+        if cfg.resource_overrides:
+            resources = apply_resource_overrides(resources, cfg.resource_overrides)
         if context.retry_number > 0:
             for reason in ("OUT_OF_MEMORY", "TIMEOUT"):
                 resources = scale_resources(resources, reason)

@@ -29,8 +29,7 @@ from graphids.orchestrate.analysis import supports_analysis
 from graphids.orchestrate.assets import make_analysis_asset, make_training_asset
 from graphids.orchestrate.checks import make_analysis_checks, make_checkpoint_checks
 from graphids.orchestrate.planning import StageConfig, enumerate_assets
-from graphids.orchestrate.resources import ResourceSpec
-from graphids.orchestrate.slurm import SlurmJobClient, SubprocessSlurmJobClient
+from graphids.slurm import ResourceSpec, SlurmJobClient, SubprocessSlurmJobClient
 
 RECIPES_DIR = CONFIG_DIR / "recipes"
 RECIPE_PATH = Path(os.environ.get("KD_GAT_RECIPE", RECIPES_DIR / "ablation.yaml"))

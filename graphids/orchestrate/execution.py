@@ -8,7 +8,7 @@ from typing import Any
 from graphids.config import CKPT_SUBPATH, COMPLETE_MARKER, LAST_CKPT_SUBPATH, run_dir
 from graphids.core.contracts import TrainingSpec
 from graphids.orchestrate.planning import StageConfig
-from graphids.orchestrate.slurm import sacct_query
+from graphids.slurm import sacct_query
 
 
 def touch_complete(rd_path: Path) -> None:
@@ -66,6 +66,13 @@ def training_spec(
         upstream_ckpt_paths=upstream_ckpts,
         upstream_model_families=cfg.upstream_model_families,
     )
+    if cfg.trainer_overrides:
+        spec = spec.model_copy(update={
+            "runtime_overrides": {
+                **spec.runtime_overrides,
+                **cfg.trainer_overrides,
+            }
+        })
     if cfg.kd_overrides:
         import json
         spec = spec.model_copy(update={

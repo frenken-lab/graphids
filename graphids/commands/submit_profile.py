@@ -44,6 +44,17 @@ def main(argv: list[str]) -> None:
         sys.exit(1)
 
     p = profiles[job]
+
+    # Validate SLURM fields through ResourceSpec (catches bad time formats, etc.)
+    from graphids.slurm import ResourceSpec
+    ResourceSpec(
+        partition=p["partition"],
+        time=p["time"],
+        mem=p["mem"],
+        cpus_per_task=p["cpus"],
+        num_workers=0,
+    )
+
     parts = [
         p["partition"],
         str(p["cpus"]),

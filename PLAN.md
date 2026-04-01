@@ -1,92 +1,115 @@
 # KD-GAT Session Plan
 
-> Last updated: 2026-03-31 (end of config wiring + validation session)
+> Last updated: 2026-04-01 (recipe override flow + slurm extraction session)
 
 ## Current State
 
-All config chains pass `python -m graphids.orchestrate validate`. Dagster definitions load. Ready for validation run on `hcrl_sa` (3 epochs) to confirm full runtime chain.
+Recipe-level trainer and resource overrides are wired end-to-end. Smoke test recipe updated to use hcrl_sa + curriculum + gpudebug. SLURM infrastructure extracted to `graphids/slurm/`. Ready to run smoke test on SLURM.
 
 **TEMPORARY:** `defaults/trainer.yaml` has `max_epochs: 3`. Revert to `300` before ablation launch.
 
-**Validation run command:**
+**Smoke test command:**
 ```bash
-KD_GAT_RECIPE=graphids/config/recipes/validation_run.yaml dg launch --assets '*'
+KD_GAT_DRY_RUN=1 KD_GAT_RECIPE=graphids/config/recipes/smoke_test.yaml dg launch --assets '*'
 ```
 
-## Handoff — What the last session did (2026-03-31)
+**Real smoke test (on SLURM):**
+```bash
+KD_GAT_RECIPE=graphids/config/recipes/smoke_test.yaml dg launch --assets '*'
+```
 
-Config/model/orchestrate refactor, building on prior scripts/ cleanup.
+## Handoff — What this session did (2026-04-01)
 
-### Config decomposition
+### Problem analysis
 
-Monolithic YAML files split into focused modules:
-- `constants.yaml` → `runtime.py` (env vars) + `defaults/global.yaml` + `defaults/io.yaml`
-- `pipeline.yaml` → `topology.py` (Python, import-time validation) + `matrix/axes.yaml`
-- `datasets.yaml` → `config/datasets/*.yaml` (per-dataset) + `load_catalog()` in `paths.py`
-- `resources.yaml` → `config/resources/profiles/*.yaml` + `clusters.yaml` + `submit_profiles.yaml`
-- `trainer.yaml` → `config/defaults/trainer.yaml`
-- `write_paths.yaml` → removed (logic in `paths.py`)
-- `overlays/` → removed; model configs now use `models/{family}/base.yaml` + `scales/{scale}.yaml`
+Last session spent hours on a 3-epoch validation run, fixing 5 runtime bugs one-at-a-time through serial SLURM submit→fail→fix→resubmit cycles. Each cycle cost 5-15 min of queue wait. Root cause: no way to run a fast smoke test with short walltimes, and no validation on SLURM resource formats.
 
-New Python modules: `base.py` (CONFIG_DIR, PROJECT_ROOT), `runtime.py`, `topology.py`, `paths.py`, `contracts.py`, `yaml_utils.py`, `recipe_expand.py`. `__init__.py` is a re-export facade — public API unchanged.
+### Recipe override flow (Phase 2 partial)
 
-### Fusion config consolidation
+Implemented the override resolution layer from `plans/research/config_system_synthesis.md` Part 5. Trainer and resource overrides flow through a separate channel from identity (TrainingRunConfig stays narrow at 8 fields).
 
-Per-method stage YAMLs (`fusion_bandit.yaml`, `fusion_dqn.yaml`, `fusion_mlp.yaml`, `fusion_weighted_avg.yaml`) replaced with single `stages/fusion.yaml` + per-method overlays in `config/fusion/methods/{method}.yaml` + fusion scales in `config/fusion/scales/`.
+```
+recipe YAML
+  ├── overrides       → defaults → TrainingRunConfig  (identity — unchanged)
+  ├── trainer_overrides → flatten("trainer.") → StageConfig → runtime_overrides → CLI args
+  └── resource_overrides → StageConfig → ResourceSpec patching → SLURM sbatch
+```
 
-### Model directory restructure
+Files changed:
+- `graphids/config/recipe_expand.py` — `_RecipeEnvelope` gains `trainer_overrides` + `resource_overrides`, `_flatten_dict()` helper, passthrough in output
+- `graphids/orchestrate/planning.py` — `StageConfig` gains `trainer_overrides: dict[str, str]` + `resource_overrides: dict[str, str | int]`, populated from recipe
+- `graphids/orchestrate/execution.py` — `training_spec()` merges `trainer_overrides` into `runtime_overrides` before KD/resume
+- `graphids/slurm/resources.py` — `apply_resource_overrides()` with key validation
+- `graphids/orchestrate/assets.py` — resource overrides applied after `get_resources()`, before `scale_resources()`
 
-Flat `core/models/*.py` reorganized into family packages:
-- `vgae.py`, `dgi.py` → `autoencoder/`
-- `gat.py` → `supervised/`
-- `temporal.py` → `temporal_family/`
-- `bandit.py`, `dqn.py`, `fusion_baselines.py`, `fusion_features.py`, `fusion_reward.py` → `fusion/`
+### Smoke test recipe
 
-Shared utilities remain at top level: `_conv.py`, `_training.py`.
+`graphids/config/recipes/smoke_test.yaml` rewritten:
+- `set_01` → `hcrl_sa` (3,995 graphs, 76 MB — fastest real dataset)
+- Added `curriculum` stage (exercises VGAE checkpoint seam via `CurriculumDataModule.setup()` → `load_inner_model("vgae", ckpt)`)
+- `trainer_overrides: {max_epochs: 2}` — cold + warm DataLoader start
+- `resource_overrides: {time: "0:15:00", partition: gpudebug}` — priority queue, fast turnaround
 
-### Orchestrate decomposition
+### SLURM time format validation
 
-Monolithic orchestrate split into: `planning.py`, `execution.py`, `assets.py`, `checks.py`, `analysis.py`, `slurm.py`, `validate.py`. `component.py` is the integration hub. Contracts moved to `core/contracts/` (`analysis.py`, `models.py`, `ops.py`).
+`ResourceSpec.__post_init__` validates time format matches `[D-]HH:MM:SS`. Catches the exact `2:00` (interpreted as 2min) bug from last session at construction time — applies to all sources: profile YAMLs, resource_overrides, scale_resources output.
 
-### CLI changes
+`submit_profile.py` also routes through `ResourceSpec` for validation, covering the `scripts/submit.sh` submission path.
 
-- Commands use explicit `_COMMAND_MODULES` dict in `__main__.py`, NOT auto-discovery. Adding a subcommand = one file + one dict entry.
-- New commands: `train-from-spec`, `analyze-from-spec` (spec-file transport for dagster→SLURM).
+### SLURM package extraction
 
-### Prior session (scripts refactor)
+Extracted `resources.py` and `slurm.py` from `graphids/orchestrate/` to `graphids/slurm/`. These are infrastructure (no dagster imports) that was buried under orchestration. Two commands already reached in from outside (`commands/profile.py`, `commands/submit_profile.py`).
 
-scripts/ reduced from 20 files to 3: `submit.sh`, `slurm/_preamble.sh`, `slurm/_epilog.sh`. All job logic in Python CLI subcommands. Separated dagster from CLI (`dg launch` directly, no wrapper).
+New import hierarchy:
+```
+graphids/config/   (top — no deps on other graphids packages)
+graphids/core/     (models, preprocessing, contracts)
+graphids/slurm/    (ResourceSpec, submit, sacct_query — SLURM infra)
+graphids/orchestrate/  (dagster-specific: assets, component, planning)
+```
 
-### Stale memories identified but NOT cleaned
+### Tests
 
-`project_hydra_config_refactor.md` (Hydra was rejected), `feedback_yaml_only_config.md`, `feedback_never_run_tests_login.md`, `feedback_slurm_partition.md` all duplicate rules files. Delete these.
+`tests/orchestrate/test_overrides.py` — 17 tests covering:
+- `_flatten_dict` (nested→dotted conversion, booleans, edge cases)
+- Recipe expansion (trainer flattening, resource passthrough, backward compat)
+- `apply_resource_overrides` (field patching, typo rejection, noop on empty)
+- Trainer override flow (StageConfig → runtime_overrides → CLI args)
+
+### Checkpoint flow documented
+
+Traced the inter-stage checkpoint loading:
+- `CurriculumDataModule.setup()` loads VGAE checkpoint for difficulty scoring
+- `FusionDataModule.setup()` loads VGAE + GAT checkpoints for state vector caching
+- Both use `load_inner_model()` → `cls.load_from_checkpoint()`
+- `fast_dev_run=True` disables ModelCheckpoint — would break downstream stages. Must use `max_epochs` + `limit_*_batches` for smoke tests.
 
 ## Blocking — Must fix before ablation relaunch
 
 1. **Revert `max_epochs`** — `defaults/trainer.yaml` is at 3 for validation. Set back to 300.
-2. **Recipe `overrides` for trainer params** — `TrainingRunConfig` has no `trainer` field, so recipe `overrides: trainer: max_epochs: N` fails. Need either a `runtime_overrides` field on `TrainingRunConfig` or a separate mechanism. Blocks per-recipe epoch control.
-3. **Orchestrate test coverage** — all orchestrate tests were deleted (stale imports). Need new tests for `planning.py`, `execution.py`, `assets.py`, `checks.py`.
-4. **Open issues triage** — `plans/open_issues.md` has 25+ deferred items across 6 categories.
+2. **Run smoke test on SLURM** — validate the full pipeline end-to-end with the new recipe.
+3. **Fusion vgae_weights init** — pre-existing bug, blocks fusion stage. Not addressed this session.
+4. **Recipe `overrides` for trainer params** — RESOLVED by `trainer_overrides` field.
+5. **Orchestrate test coverage** — `test_overrides.py` added. Integration tests (`test_dagster_integration.py`) exist but may have stale imports.
 
 ## In Progress
 
 - HF Spaces dashboard (`buckeyeguy/kd-gat-dashboard`)
 
-## Next (after relaunch succeeds)
+## Next (after smoke test succeeds)
 
-1. Evaluation + analysis as dagster assets (`plans/architecture/evaluation-analysis-assets.md`)
-2. HPO sweep with Optuna (Phase 2 of `plans/experiment-sweep-plan.md`)
-3. Final evaluation — best config, all 6 datasets, 3+ seeds (Phase 3)
+1. Run full smoke test on SLURM — `KD_GAT_RECIPE=.../smoke_test.yaml dg launch --assets '*'`
+2. Fix fusion vgae_weights init bug
+3. Revert max_epochs to 300, launch ablation
+4. Evaluation + analysis as dagster assets (`plans/architecture/evaluation-analysis-assets.md`)
+5. Phase 2 remaining: `PathContext`, env var wiring (`KD_GAT_SLURM_PARTITION`)
 
 ## Key References
 
 | Doc | Purpose |
 |-----|---------|
+| `plans/research/config_system_synthesis.md` | Config system design — override resolution, Phase 1-3 |
 | `plans/open_issues.md` | All deferred items, consolidated |
 | `plans/experiment-sweep-plan.md` | 17-config ablation matrix, stage-sharing DAG, phased HPO |
 | `plans/ablation_and_main_005.md` | Run 005 job summary + failure post-mortem |
-| `plans/architecture/forced-callbacks.md` | Checkpoint loss fix — ready to implement |
-| `plans/scripts-refactor-option-c.md` | scripts/ cleanup — thin shells, Python does the work |
-| `plans/architecture/write-paths.md` | Filesystem layout, write path inventory |
-| `plans/architecture/dagster-native-orchestration.md` | Component architecture reference |
-| `plans/research/profiling-and-observability.md` | What's wired, what's not, tool decisions |
+| `.claude/plans/swirling-watching-codd.md` | Implementation plan for this session's work |

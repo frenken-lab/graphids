@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import socket
 from dataclasses import dataclass
@@ -26,6 +27,13 @@ def _detect_cluster() -> str:
     return "pitzer"
 
 
+import re
+
+_SLURM_TIME_RE = re.compile(
+    r"^(?:\d+-)?(?:\d{1,2}:)?\d{2}:\d{2}$"  # [D-]HH:MM:SS or MM:SS
+)
+
+
 @dataclass
 class ResourceSpec:
     partition: str
@@ -34,6 +42,13 @@ class ResourceSpec:
     cpus_per_task: int
     num_workers: int
     gres: str = ""
+
+    def __post_init__(self) -> None:
+        if not _SLURM_TIME_RE.match(self.time):
+            raise ValueError(
+                f"Invalid SLURM time format: {self.time!r}. "
+                f"Expected H:MM:SS, HH:MM:SS, or D-HH:MM:SS."
+            )
 
     @property
     def mem_mb(self) -> int:
@@ -138,3 +153,22 @@ def scale_resources(spec: ResourceSpec, failure_reason: str) -> ResourceSpec:
         cpus_per_task=spec.cpus_per_task, num_workers=spec.num_workers,
         gres=spec.gres,
     )
+
+
+def apply_resource_overrides(
+    spec: ResourceSpec, overrides: dict[str, str | int],
+) -> ResourceSpec:
+    """Apply recipe-level resource overrides onto a ResourceSpec.
+
+    Only known ResourceSpec fields are accepted. Unknown keys raise ValueError.
+    """
+    if not overrides:
+        return spec
+    valid = {f.name for f in dataclasses.fields(ResourceSpec)}
+    unknown = set(overrides) - valid
+    if unknown:
+        raise ValueError(
+            f"Unknown resource override keys: {sorted(unknown)}. "
+            f"Valid: {sorted(valid)}"
+        )
+    return dataclasses.replace(spec, **overrides)
