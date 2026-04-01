@@ -1,6 +1,5 @@
 model:
-  family: dgi
-  class_path: DGIModule
+  class_path: graphids.core.models.autoencoder.dgi.DGIModule
   init_args:
     conv_type: gatv2
     edge_dim: 11

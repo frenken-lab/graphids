@@ -1,6 +1,5 @@
 model:
-  family: temporal
-  class_path: TemporalLightningModule
+  class_path: graphids.core.models.temporal_family.temporal.TemporalLightningModule
   init_args:
     spatial_conv_type: gatv2
     spatial_edge_dim: 11

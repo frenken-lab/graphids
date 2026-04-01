@@ -1,9 +1,5 @@
-stage:
-  name: curriculum
-  trainer_overrides: {}
-  callbacks_overrides: {}
 data:
-  class_path: CurriculumDataModule
+  class_path: graphids.core.preprocessing.stages.curriculum.CurriculumDataModule
   init_args:
     window_size: 100
     stride: 100
@@ -15,4 +11,4 @@ data:
     curriculum_end_ratio: 10.0
     difficulty_percentile: 75.0
     canid_weight: 0.1
-    max_epochs_ref: trainer.max_epochs
+    max_epochs: 300

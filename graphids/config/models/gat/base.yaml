@@ -1,6 +1,5 @@
 model:
-  family: gat
-  class_path: GATModule
+  class_path: graphids.core.models.supervised.gat.GATModule
   init_args:
     conv_type: gatv2
     edge_dim: 11

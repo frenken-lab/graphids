@@ -11,12 +11,38 @@ from .runtime import CKPT_SUBPATH, PREPROCESSING_VERSION
 from .topology import PIPELINE_YAML
 from .yaml_utils import read_yaml
 
-CATALOG_PATH: Path = CONFIG_DIR / "datasets.yaml"
-if CATALOG_PATH.exists():
-    _datasets = read_yaml(CATALOG_PATH)
-    DEFAULT_DATASET: str = next((k for k in _datasets if not k.startswith("_")), "set_01")
-else:
-    DEFAULT_DATASET = "set_01"
+_DATASETS_DIR: Path = CONFIG_DIR / "datasets"
+DEFAULT_DATASET: str = "set_01"
+
+_catalog_cache: dict[str, dict[str, Any]] | None = None
+
+
+def load_catalog() -> dict[str, dict[str, Any]]:
+    """Load dataset catalog from per-file configs in config/datasets/.
+
+    Returns ``{dataset_name: {metadata_dict}}`` — same shape as the old
+    monolithic ``datasets.yaml``, so consumers need only an import change.
+    """
+    global _catalog_cache
+    if _catalog_cache is not None:
+        return _catalog_cache
+    if not _DATASETS_DIR.is_dir():
+        raise FileNotFoundError(f"Dataset config directory missing: {_DATASETS_DIR}")
+    catalog: dict[str, dict[str, Any]] = {}
+    for p in sorted(_DATASETS_DIR.glob("*.yaml")):
+        entry = read_yaml(p)
+        # Unwrap if nested under 'dataset' key (backwards compat with skeleton format)
+        if "dataset" in entry and isinstance(entry["dataset"], dict):
+            entry = entry["dataset"]
+        name = entry.get("name", p.stem)
+        catalog[name] = entry
+    _catalog_cache = catalog
+    return catalog
+
+
+def dataset_names() -> list[str]:
+    """Return list of dataset names (for dagster partitions, etc.)."""
+    return [k for k in load_catalog() if not k.startswith("_")]
 
 
 def run_dir(

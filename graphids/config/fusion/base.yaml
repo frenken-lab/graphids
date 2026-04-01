@@ -1,10 +1,2 @@
-fusion:
-  method: dqn
-  training_mode: offline_rl
-  decision_threshold: 0.5
-  episode_sample_size: 20000
-  method_args: {}
-model:
-  family: fusion
-  class_path: null
-  init_args: {}
+# Fusion base defaults. Model class_path and init_args provided by methods/*.yaml.
+{}

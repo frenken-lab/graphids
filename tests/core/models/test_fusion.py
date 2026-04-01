@@ -11,7 +11,7 @@ class TestFusionBaselineTestStep:
 
     @staticmethod
     def _make_fusion_batch(n: int = 32):
-        from graphids.core.models.fusion_features import fusion_state_dim
+        from graphids.core.models.fusion.fusion_features import fusion_state_dim
         sd = fusion_state_dim()
         states = torch.rand(n, sd)
         labels = torch.randint(0, 2, (n,))
@@ -19,8 +19,8 @@ class TestFusionBaselineTestStep:
 
     @staticmethod
     def _make_module(name):
-        from graphids.core.models.fusion_baselines import MLPFusionModule, WeightedAvgModule
-        from graphids.core.models.fusion_features import fusion_state_dim
+        from graphids.core.models.fusion.fusion_baselines import MLPFusionModule, WeightedAvgModule
+        from graphids.core.models.fusion.fusion_features import fusion_state_dim
         if name == "mlp":
             return MLPFusionModule(state_dim=fusion_state_dim())
         return WeightedAvgModule()
@@ -73,19 +73,19 @@ class TestFusionRewardCalculator:
     """FusionRewardCalculator requires vgae_weights and uses constructor coefficients."""
 
     def test_missing_vgae_weights_raises(self):
-        from graphids.core.models.fusion_reward import FusionRewardCalculator
+        from graphids.core.models.fusion.fusion_reward import FusionRewardCalculator
         with pytest.raises(TypeError, match="vgae_weights"):
             FusionRewardCalculator()
 
     def test_construction_with_vgae_weights(self):
-        from graphids.core.models.fusion_reward import FusionRewardCalculator
+        from graphids.core.models.fusion.fusion_reward import FusionRewardCalculator
         weights = [0.5, 0.3, 0.2]
         calc = FusionRewardCalculator(vgae_weights=weights)
         assert torch.allclose(calc._vgae_weights, torch.tensor(weights))
 
     def test_reward_coefficients_actually_used(self):
-        from graphids.core.models.fusion_reward import FusionRewardCalculator
-        from graphids.core.models.fusion_features import fusion_state_dim
+        from graphids.core.models.fusion.fusion_reward import FusionRewardCalculator
+        from graphids.core.models.fusion.fusion_features import fusion_state_dim
 
         state_dim = fusion_state_dim()
         n = 16
@@ -117,8 +117,8 @@ class TestFusionRewardCalculator:
         assert not torch.allclose(rewards_default, rewards_custom, atol=1e-3)
 
     def test_derive_scores_uses_vgae_weights(self):
-        from graphids.core.models.fusion_reward import FusionRewardCalculator
-        from graphids.core.models.fusion_features import fusion_state_dim
+        from graphids.core.models.fusion.fusion_reward import FusionRewardCalculator
+        from graphids.core.models.fusion.fusion_features import fusion_state_dim
 
         state_dim = fusion_state_dim()
         torch.manual_seed(0)
@@ -138,8 +138,8 @@ class TestFusionCheckpointRoundtrip:
 
     def test_mlp_roundtrip(self, tmp_path):
         import pytorch_lightning as pl
-        from graphids.core.models.fusion_baselines import MLPFusionModule
-        from graphids.core.models.fusion_features import fusion_state_dim
+        from graphids.core.models.fusion.fusion_baselines import MLPFusionModule
+        from graphids.core.models.fusion.fusion_features import fusion_state_dim
         m1 = MLPFusionModule(state_dim=fusion_state_dim())
         m1.eval()
         trainer = pl.Trainer(enable_checkpointing=False, logger=False)
@@ -154,9 +154,9 @@ class TestFusionCheckpointRoundtrip:
 
     def test_weighted_avg_roundtrip(self, tmp_path):
         import pytorch_lightning as pl
-        from graphids.core.models.fusion_baselines import WeightedAvgModule
+        from graphids.core.models.fusion.fusion_baselines import WeightedAvgModule
         m1 = WeightedAvgModule()
-        from graphids.core.models.fusion_features import fusion_state_dim
+        from graphids.core.models.fusion.fusion_features import fusion_state_dim
         m1.weight.data.fill_(0.7)
         m1.eval()
         trainer = pl.Trainer(enable_checkpointing=False, logger=False)
@@ -170,8 +170,8 @@ class TestFusionCheckpointRoundtrip:
             torch.testing.assert_close(m1(x), m2(x))
 
     def test_dqn_roundtrip(self, tmp_path):
-        from graphids.core.models.dqn import EnhancedDQNFusionAgent
-        from graphids.core.models.fusion_features import fusion_state_dim
+        from graphids.core.models.fusion.dqn import EnhancedDQNFusionAgent
+        from graphids.core.models.fusion.fusion_features import fusion_state_dim
         sd = fusion_state_dim()
         a1 = EnhancedDQNFusionAgent(
             alpha_steps=11, state_dim=sd,

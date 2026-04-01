@@ -15,8 +15,8 @@ class TestTemporalStage:
         return [make_graph(num_nodes=num_nodes) for _ in range(seq_len)]
 
     def test_temporal_classifier_forward(self):
-        from graphids.core.models.temporal import TemporalGraphClassifier
-        from graphids.core.models.gat import GATWithJK
+        from graphids.core.models.temporal_family.temporal import TemporalGraphClassifier
+        from graphids.core.models.supervised.gat import GATWithJK
 
         spatial = GATWithJK(
             num_ids=NUM_IDS, in_channels=IN_CHANNELS, hidden_channels=16,
@@ -47,5 +47,5 @@ class TestTemporalStage:
         assert labels.shape == (2,)
 
     def test_temporal_lightning_module_has_test_metrics(self):
-        from graphids.core.models.temporal import TemporalLightningModule
+        from graphids.core.models.temporal_family.temporal import TemporalLightningModule
         assert hasattr(TemporalLightningModule, "test_step")

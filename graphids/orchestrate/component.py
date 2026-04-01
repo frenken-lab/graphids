@@ -16,11 +16,11 @@ from pathlib import Path
 import dagster as dg
 
 from graphids.config import (
-    CATALOG_PATH,
     CONFIG_DIR,
     DAGSTER_IO_DIR_TEMPLATE,
     LAKE_ROOT,
     PIPELINE_YAML,
+    dataset_names,
     expand_recipe_configs,
 )
 from graphids.config.yaml_utils import read_yaml
@@ -89,8 +89,7 @@ class SlurmTrainingComponent(dg.Component, dg.Model, dg.Resolvable):
         stage_configs = enumerate_assets(PIPELINE_YAML, recipe)
 
         # 2. Partitions
-        datasets = [k for k in read_yaml(CATALOG_PATH)
-                     if not k.startswith("_")]
+        datasets = dataset_names()
         seeds = [str(s) for s in recipe.get("sweep", {}).get("seeds", [42])]
         partitions = dg.MultiPartitionsDefinition({
             "dataset": dg.StaticPartitionsDefinition(datasets),

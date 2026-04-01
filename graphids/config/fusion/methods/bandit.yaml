@@ -1,10 +1,6 @@
-fusion:
-  method: bandit
-  training_mode: offline_rl
 model:
-  class_path: BanditFusionModule
+  class_path: graphids.core.models.fusion.bandit.BanditFusionModule
   init_args:
-    lr: 0.001
     decision_threshold: 0.5
     reward_kwargs: {}
     ucb_alpha: 1.0

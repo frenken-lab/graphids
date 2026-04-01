@@ -1,6 +1,6 @@
 model:
-  scale: small
   init_args:
+    scale: small
     spatial_hidden: 24
     spatial_layers: 2
     spatial_heads: 4

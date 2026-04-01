@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from graphids.config import CKPT_SUBPATH, LAST_CKPT_SUBPATH, run_dir
+from graphids.config import CKPT_SUBPATH, COMPLETE_MARKER, LAST_CKPT_SUBPATH, run_dir
 from graphids.core.contracts import TrainingSpec
 from graphids.orchestrate.planning import StageConfig
 from graphids.orchestrate.slurm import sacct_query
@@ -18,8 +18,8 @@ def artifact_paths(
     user: str,
     dataset: str,
     seed: int,
-) -> tuple[str, Path, Path]:
-    """Build run directory and checkpoint marker paths for one partition."""
+) -> tuple[str, Path, Path, Path]:
+    """Build run directory, checkpoint, and completion marker paths for one partition."""
     rd = run_dir(
         lake_root,
         user,
@@ -33,7 +33,8 @@ def artifact_paths(
     )
     rd_path = Path(rd)
     ckpt_file = rd_path / CKPT_SUBPATH
-    return rd, rd_path, ckpt_file
+    complete = rd_path / COMPLETE_MARKER
+    return rd, rd_path, ckpt_file, complete
 
 
 def training_spec(
@@ -58,6 +59,15 @@ def training_spec(
         upstream_ckpt_paths=upstream_ckpts,
         upstream_model_families=cfg.upstream_model_families,
     )
+    if cfg.kd_overrides:
+        import json
+        spec = spec.model_copy(update={
+            "runtime_overrides": {
+                **spec.runtime_overrides,
+                "model.init_args.auxiliaries": json.dumps([cfg.kd_overrides]),
+            }
+        })
+
     resume = run_directory_path / LAST_CKPT_SUBPATH
     if not resume.exists():
         return spec

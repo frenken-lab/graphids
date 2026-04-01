@@ -1,6 +1,6 @@
 model:
-  scale: large
   init_args:
+    scale: large
     hidden_dims: [480, 240, 64]
     latent_dim: 64
     heads: 4

@@ -91,7 +91,8 @@ class TrainingContract:
             files.extend(
                 [
                     str(cls._FUSION_DIR / "base.yaml"),
-                    str(cls._FUSION_DIR / "scales" / f"{scale}.yaml"),
+                    # fusion/scales/*.yaml is orchestrator metadata (hidden_dim, batch_size),
+                    # not jsonargparse config — excluded from the CLI config chain.
                     str(cls._FUSION_DIR / "methods" / f"{fusion_method}.yaml"),
                 ]
             )

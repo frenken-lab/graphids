@@ -3,13 +3,14 @@
 from .base import CONFIG_DIR, PROJECT_ROOT
 from .contracts import KDEntry, TrainingRunConfig, expand_recipe_configs
 from .paths import (
-    CATALOG_PATH,
     DEFAULT_DATASET,
     cache_dir,
     checkpoint_path,
     compute_identity_hash,
     compute_preprocessing_hash,
     data_dir,
+    dataset_names,
+    load_catalog,
     run_dir,
 )
 from .runtime import (

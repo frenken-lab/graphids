@@ -1,6 +1,6 @@
 model:
-  scale: small
   init_args:
+    scale: small
     hidden: 24
     layers: 2
     heads: 4

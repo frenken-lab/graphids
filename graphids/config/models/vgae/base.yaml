@@ -1,6 +1,5 @@
 model:
-  family: vgae
-  class_path: VGAEModule
+  class_path: graphids.core.models.autoencoder.vgae.VGAEModule
   init_args:
     conv_type: gatv2
     edge_dim: 11

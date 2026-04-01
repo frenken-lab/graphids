@@ -30,7 +30,7 @@ class TestConfigToModel:
         (7, 2),
     ], ids=["default_binary", "five_class", "seven_class"])
     def test_gat_output_shape_matches_num_classes(self, gat_cfg, num_classes, n_graphs):
-        from graphids.core.models.gat import GATWithJK
+        from graphids.core.models.supervised.gat import GATWithJK
 
         cfg = copy.deepcopy(gat_cfg)
         cfg.num_classes = num_classes
@@ -58,7 +58,7 @@ class TestDecisionThreshold:
     @staticmethod
     def _make_fusion_states(n: int = 32) -> torch.Tensor:
         """Create synthetic 15-D fusion state vectors."""
-        from graphids.core.models.fusion_features import fusion_state_dim
+        from graphids.core.models.fusion.fusion_features import fusion_state_dim
 
         state_dim = fusion_state_dim()
         torch.manual_seed(123)
@@ -68,8 +68,8 @@ class TestDecisionThreshold:
     @pytest.mark.slurm
     def test_dqn_high_threshold_suppresses_positives(self):
         """With threshold=0.9, fused_scores in [0.5, 0.9) yield preds=0, not 1."""
-        from graphids.core.models.dqn import EnhancedDQNFusionAgent
-        from graphids.core.models.fusion_features import fusion_state_dim
+        from graphids.core.models.fusion.dqn import EnhancedDQNFusionAgent
+        from graphids.core.models.fusion.fusion_features import fusion_state_dim
 
         state_dim = fusion_state_dim()
         agent = EnhancedDQNFusionAgent(
@@ -93,8 +93,8 @@ class TestDecisionThreshold:
     @pytest.mark.slurm
     def test_bandit_high_threshold_suppresses_positives(self):
         """NeuralLinUCBAgent with threshold=0.9 suppresses positive predictions."""
-        from graphids.core.models.bandit import NeuralLinUCBAgent
-        from graphids.core.models.fusion_features import fusion_state_dim
+        from graphids.core.models.fusion.bandit import NeuralLinUCBAgent
+        from graphids.core.models.fusion.fusion_features import fusion_state_dim
 
         state_dim = fusion_state_dim()
         agent = NeuralLinUCBAgent(
@@ -118,8 +118,8 @@ class TestDecisionThreshold:
     @pytest.mark.slurm
     def test_threshold_difference_changes_predictions(self):
         """Same agent state with threshold=0.1 vs 0.9 produces different predictions."""
-        from graphids.core.models.dqn import EnhancedDQNFusionAgent
-        from graphids.core.models.fusion_features import fusion_state_dim
+        from graphids.core.models.fusion.dqn import EnhancedDQNFusionAgent
+        from graphids.core.models.fusion.fusion_features import fusion_state_dim
 
         state_dim = fusion_state_dim()
         states = self._make_fusion_states()

@@ -17,7 +17,7 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from graphids.config import cache_dir, data_dir
-from graphids.config import CATALOG_PATH
+from graphids.config import load_catalog
 
 _log = structlog.get_logger()
 
@@ -161,12 +161,6 @@ def make_graph_loader(
 log = structlog.get_logger()
 
 
-def _load_catalog() -> dict:
-    import yaml
-
-    return yaml.safe_load(CATALOG_PATH.read_text())
-
-
 def load_datasets(cfg) -> tuple[CANBusDataset, CANBusDataset, dict[str, CANBusDataset]]:
     """Load train/val/test datasets from cache. No DataModule needed.
 
@@ -185,7 +179,7 @@ def load_datasets(cfg) -> tuple[CANBusDataset, CANBusDataset, dict[str, CANBusDa
     val_ds._data_list = None
 
     test_datasets = {}
-    catalog = _load_catalog()
+    catalog = load_catalog()
     entry = catalog[cfg.dataset]
     for subdir in entry.get("test_subdirs", []):
         test_raw = raw / subdir

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from graphids.config import STAGE_MODEL_MAP, TrainingRunConfig, compute_identity_hash, expand_recipe_configs
+from graphids.config import STAGE_MODEL_MAP, TrainingRunConfig, compute_identity_hash
 from graphids.core.contracts import TrainingContract
 
 # Recipe key -> identity key (where names differ)
@@ -35,13 +35,16 @@ class StageConfig:
     identity: str = ""
     kd_tag: str = ""
     resource_model: str = ""  # model key for resource lookup (fusion method for fusion stages)
+    kd_overrides: dict[str, Any] = field(default_factory=dict)  # raw KDEntry payload
     upstream_asset_names: tuple[str, ...] = ()
     upstream_model_families: dict[str, str] = field(default_factory=dict)
 
 
 def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
-    """Two-pass enumeration: compute canonical keys, then build configs with resolved deps."""
-    recipe = expand_recipe_configs(recipe)
+    """Two-pass enumeration: compute canonical keys, then build configs with resolved deps.
+
+    Expects an already-expanded recipe (output of ``expand_recipe_configs``).
+    """
     default_cfg = TrainingRunConfig(**recipe.get("defaults", {}))
     stages_def = pipeline["stages"]
 
@@ -114,6 +117,10 @@ def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
                 if val is not None:
                     overrides[key] = str(val).lower() if isinstance(val, bool) else str(val)
 
+            kd_payload: dict[str, Any] = {}
+            if has_kd and merged.auxiliaries:
+                kd_payload = merged.auxiliaries[0].model_dump(exclude_none=True)
+
             upstream_names: list[str] = []
             upstream_models: dict[str, str] = {}
             seen_models: set[str] = set()
@@ -153,6 +160,7 @@ def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
                 identity=identity,
                 kd_tag="_kd" if has_kd else "",
                 resource_model=res_model,
+                kd_overrides=kd_payload,
                 upstream_asset_names=tuple(sorted(set(upstream_names))),
                 upstream_model_families=upstream_models,
             )

@@ -45,12 +45,13 @@ def make_training_asset(
         kinds={"metrics"} if is_eval else {"checkpoint"},
         tags={"stage": cfg.stage, "model_type": cfg.model_type, "scale": cfg.scale},
         description=f"{cfg.stage} ({cfg.model_type}, {cfg.scale})",
+        required_resource_keys={"slurm"},
     )
-    def _train(context, slurm: Any, **upstream_ckpts: str) -> str:
+    def _train(context, **upstream_ckpts: str) -> str:
         dataset = context.partition_key.keys_by_dimension["dataset"]
         seed = int(context.partition_key.keys_by_dimension["seed"])
 
-        rd, rd_path, ckpt_file = artifact_paths(
+        rd, rd_path, ckpt_file, _ = artifact_paths(
             cfg,
             lake_root=lake_root,
             user=user,
@@ -84,7 +85,7 @@ def make_training_asset(
                 )
             )
 
-        state, job_id = slurm.submit_and_wait(
+        state, job_id = context.resources.slurm.submit_and_wait(
             training_spec=spec,
             resources=resources,
             job_name=f"{cfg.asset_name}_{dataset}_s{seed}",

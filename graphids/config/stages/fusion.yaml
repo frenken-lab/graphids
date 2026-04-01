@@ -1,19 +1,16 @@
-stage:
-  name: fusion
 trainer:
   precision: 32
   max_epochs: 50
   gradient_clip_val: null
   log_every_n_steps: 10
-callbacks:
-  checkpoint:
-    monitor: val_acc
-    mode: max
-  early_stopping:
-    monitor: val_acc
-    mode: max
+checkpoint:
+  monitor: val_acc
+  mode: max
+early_stopping:
+  monitor: val_acc
+  mode: max
 data:
-  class_path: FusionDataModule
+  class_path: graphids.core.preprocessing.datamodule.FusionDataModule
   init_args:
     max_samples: 150000
     max_val_samples: 30000

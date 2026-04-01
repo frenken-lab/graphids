@@ -14,7 +14,7 @@ class TestVGAEConvTypes:
 
     @pytest.fixture(params=["gatv2", "gps"], ids=["gatv2", "gps"])
     def model_and_conv(self, request):
-        from graphids.core.models.vgae import GraphAutoencoderNeighborhood
+        from graphids.core.models.autoencoder.vgae import GraphAutoencoderNeighborhood
         m = GraphAutoencoderNeighborhood(
             num_ids=NUM_IDS, in_channels=IN_CHANNELS, hidden_dims=[32, 16],
             latent_dim=16, encoder_heads=2, embedding_dim=4, dropout=0.0,
@@ -65,7 +65,7 @@ class TestVGAEConvTypes:
 class TestVGAEFastDevRun:
     def test_vgae(self, vgae_cfg):
         import pytorch_lightning as pl
-        from graphids.core.models.vgae import VGAEModule
+        from graphids.core.models.autoencoder.vgae import VGAEModule
         loader = DataLoader([make_graph() for _ in range(16)], batch_size=4)
         module = VGAEModule(
             hidden_dims=vgae_cfg.hidden_dims, latent_dim=vgae_cfg.latent_dim,
@@ -79,7 +79,7 @@ class TestVGAEFastDevRun:
 
 class TestVGAECheckpointRoundtrip:
     def test_save_load_produces_identical_output(self, tmp_path):
-        from graphids.core.models.vgae import VGAEModule
+        from graphids.core.models.autoencoder.vgae import VGAEModule
 
         kwargs = dict(
             hidden_dims=[32, 16], latent_dim=16, heads=2,

@@ -1,8 +1,5 @@
-fusion:
-  method: dqn
-  training_mode: offline_rl
 model:
-  class_path: DQNFusionModule
+  class_path: graphids.core.models.fusion.dqn.DQNFusionModule
   init_args:
     lr: 0.001
     decision_threshold: 0.5

@@ -1,8 +1,5 @@
-fusion:
-  method: mlp
-  training_mode: supervised
 model:
-  class_path: MLPFusionModule
+  class_path: graphids.core.models.fusion.fusion_baselines.MLPFusionModule
   init_args:
     lr: 0.001
     hidden_dims: [64, 32]

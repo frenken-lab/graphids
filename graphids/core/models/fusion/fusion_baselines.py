@@ -12,7 +12,7 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from ._training import binary_test_metrics
+from .._training import binary_test_metrics
 
 
 class FusionModuleBase(pl.LightningModule):

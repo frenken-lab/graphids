@@ -151,5 +151,5 @@ def expand_recipe_configs(
             "Provide at least one sweep or selection block."
         )
 
-    seed_list = envelope.seeds or raw_recipe.get("sweep", {}).get("seeds", [42])
+    seed_list = envelope.seeds if envelope.seeds else [42]
     return {"defaults": defaults, "configs": configs, "sweep": {"seeds": seed_list}}

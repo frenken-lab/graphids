@@ -1,9 +1,5 @@
-stage:
-  name: normal
-  trainer_overrides: {}
-  callbacks_overrides: {}
 data:
-  class_path: CANBusDataModule
+  class_path: graphids.core.preprocessing.datamodule.CANBusDataModule
   init_args:
     window_size: 100
     stride: 100

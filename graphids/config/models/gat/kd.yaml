@@ -1,0 +1,9 @@
+# KD auxiliary defaults for GAT student.
+# Appended to config chain when recipe has auxiliaries.
+# teacher_scale, model_path resolved at runtime by prepare_kd().
+model:
+  init_args:
+    auxiliaries:
+      - type: kd
+        alpha: 0.7
+        temperature: 4.0

@@ -22,7 +22,7 @@ def _checkpoint_check_result(
 ) -> dg.AssetCheckResult:
     dataset = context.partition_key.keys_by_dimension["dataset"]
     seed = int(context.partition_key.keys_by_dimension["seed"])
-    _, _, ckpt = artifact_paths(
+    _, _, ckpt, complete = artifact_paths(
         cfg,
         lake_root=lake_root,
         user=user,
@@ -30,7 +30,7 @@ def _checkpoint_check_result(
         seed=seed,
     )
     return dg.AssetCheckResult(
-        passed=ckpt.exists(),
+        passed=ckpt.exists() and complete.exists(),
         metadata={"path": dg.MetadataValue.path(str(ckpt))},
     )
 
@@ -38,7 +38,7 @@ def _checkpoint_check_result(
 def _analysis_check_result(*, context, cfg: StageConfig) -> dg.AssetCheckResult:
     dataset = context.partition_key.keys_by_dimension["dataset"]
     seed = int(context.partition_key.keys_by_dimension["seed"])
-    _, _, ckpt = artifact_paths(
+    _, _, ckpt, _ = artifact_paths(
         cfg,
         lake_root=os.environ.get("KD_GAT_LAKE_ROOT", LAKE_ROOT),
         user=os.environ.get("USER", "unknown"),

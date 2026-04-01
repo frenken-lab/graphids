@@ -12,7 +12,7 @@ from conftest import EDGE_DIM, IN_CHANNELS, NUM_IDS, make_batch, make_graph, mak
 class TestGAT:
     @pytest.fixture()
     def model(self):
-        from graphids.core.models.gat import GATWithJK
+        from graphids.core.models.supervised.gat import GATWithJK
         return GATWithJK(
             num_ids=NUM_IDS, in_channels=IN_CHANNELS, hidden_channels=16,
             out_channels=2, num_layers=2, heads=2, dropout=0.0,
@@ -39,7 +39,7 @@ class TestGAT:
 class TestGATFastDevRun:
     @staticmethod
     def _make_module(cfg):
-        from graphids.core.models.gat import GATModule
+        from graphids.core.models.supervised.gat import GATModule
         return GATModule(
             hidden=cfg.hidden, layers=cfg.layers, heads=cfg.heads,
             fc_layers=cfg.fc_layers, embedding_dim=cfg.embedding_dim,
@@ -68,7 +68,7 @@ class TestGATFastDevRun:
 
 class TestGATCheckpointRoundtrip:
     def test_gat(self, gat_cfg, tmp_path):
-        from graphids.core.models.gat import GATModule
+        from graphids.core.models.supervised.gat import GATModule
 
         def _mk():
             return GATModule(

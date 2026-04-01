@@ -2,7 +2,7 @@ trainer:
   accelerator: auto
   devices: auto
   precision: 16-mixed
-  max_epochs: 300
+  max_epochs: 3  # TEMPORARY: validation run. Revert to 300 before ablation.
   gradient_clip_val: 1.0
   log_every_n_steps: 50
 callbacks:

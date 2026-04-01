@@ -8,7 +8,7 @@ from conftest import IN_CHANNELS, NUM_IDS, N_NODES, make_batch
 
 def test_gat_forward(gat_cfg):
     """GAT: synthetic batch → [n_graphs, num_classes] logits."""
-    from graphids.core.models.gat import GATModule
+    from graphids.core.models.supervised.gat import GATModule
 
     module = GATModule(
         hidden=gat_cfg.hidden, layers=gat_cfg.layers, heads=gat_cfg.heads,
@@ -24,7 +24,7 @@ def test_gat_forward(gat_cfg):
 
 def test_vgae_forward(vgae_cfg):
     """VGAE: synthetic batch → (cont, canid, nbr, z, kl, mask)."""
-    from graphids.core.models.vgae import VGAEModule
+    from graphids.core.models.autoencoder.vgae import VGAEModule
 
     module = VGAEModule(
         hidden_dims=vgae_cfg.hidden_dims, latent_dim=vgae_cfg.latent_dim,

@@ -1,9 +1,5 @@
-stage:
-  name: temporal
-  trainer_overrides: {}
-  callbacks_overrides: {}
 data:
-  class_path: TemporalDataModule
+  class_path: graphids.core.preprocessing.stages.temporal.TemporalDataModule
   init_args:
     window_size: 10
     stride: 1

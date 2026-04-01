@@ -13,7 +13,7 @@ Every function, file, and abstraction must earn its place. Before writing code, 
 ```bash
 # Training
 python -m graphids fit --config graphids/config/stages/autoencoder.yaml
-python -m graphids fit --config graphids/config/stages/normal.yaml --config graphids/config/models/gat/small.yaml
+python -m graphids fit --config graphids/config/stages/normal.yaml --config graphids/config/models/gat/scales/small.yaml
 
 # Evaluation
 python -m graphids test --config graphids/config/stages/autoencoder.yaml --ckpt_path best.ckpt
@@ -29,11 +29,12 @@ Three entry points, zero overlap:
 
 **Training** — `python -m graphids fit|test|validate|predict` → `GraphIDSCLI` (extends `LightningCLI`). `GraphIDSCLI`, `WandbSaveConfigCallback`, and `CLI_KWARGS` live in `graphids/cli.py`.
 
-**Operational commands** — auto-discovered from `graphids/commands/`. Convention: module name = command name (`-` → `_`), each exports `main(argv)`. Adding a subcommand = one file + one YAML entry in `resources.yaml`.
+**Operational commands** — registered in `_COMMAND_MODULES` dict in `__main__.py`. Convention: module name = command name (`-` → `_`), each exports `main(argv)`. Adding a subcommand = one file + one dict entry.
 
 | Command | Purpose |
 |---------|---------|
 | `python -m graphids analyze` | Analysis artifacts from checkpoints |
+| `python -m graphids analyze-from-spec` | Run analyzer from canonical AnalysisSpec (dagster transport) |
 | `python -m graphids landscape` | 2D loss landscape |
 | `python -m graphids profile <job_ids>` | sacct resource profiler |
 | `python -m graphids profile-training` | Profiled training run (PyTorchProfiler) |
@@ -41,6 +42,7 @@ Three entry points, zero overlap:
 | `python -m graphids stage-data` | NFS → scratch → TMPDIR staging |
 | `python -m graphids submit-profile <job>` | Print SLURM resource profile for submit.sh |
 | `python -m graphids test-preprocessing` | Validate preprocessing pipeline |
+| `python -m graphids train-from-spec` | Run training from canonical TrainingSpec (dagster transport) |
 
 **Dagster** — own entry point, never called through `python -m graphids`:
 
@@ -50,9 +52,9 @@ Three entry points, zero overlap:
 | `dg list defs` | List all assets |
 | `python -m graphids.orchestrate validate` | Validate recipe config chains |
 
-**SLURM submission** — all jobs via `scripts/submit.sh <profile> [args]`. Resource profiles read from `config/resources.yaml` (single source of truth). See `rules/slurm-hpc.md`.
+**SLURM submission** — all jobs via `scripts/submit.sh <profile> [args]`. Resource profiles read from `config/resources/` (per-model profile YAMLs + `clusters.yaml` + `submit_profiles.yaml`). See `rules/slurm-hpc.md`.
 
-Fusion has per-method stage YAMLs: `fusion_bandit.yaml` (`BanditFusionModule`), `fusion_dqn.yaml` (`DQNFusionModule`), `fusion_mlp.yaml` (`MLPFusionModule`), `fusion_weighted_avg.yaml` (`WeightedAvgModule`). Config resolution in `component.py` picks the right YAML from `fusion_method` in the recipe.
+Fusion uses a single `stages/fusion.yaml` + per-method overlays in `config/fusion/methods/{method}.yaml`. Config resolution in `component.py` composes the stage YAML with the method overlay from the recipe.
 
 ## Session Start
 
