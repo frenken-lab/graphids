@@ -7,10 +7,10 @@ from pathlib import Path
 
 import yaml
 
-from graphids.config import CONFIG_DIR, PIPELINE_YAML
+from graphids.config import CONFIG_DIR, PIPELINE_YAML, TrainingRunConfig
 
 STAGES_DIR = CONFIG_DIR / "stages"
-OVERLAYS_DIR = CONFIG_DIR / "overlays"
+MODELS_DIR = CONFIG_DIR / "models"
 RECIPES_DIR = CONFIG_DIR / "recipes"
 RECIPE_PATH = RECIPES_DIR / "ablation.yaml"
 
@@ -74,6 +74,25 @@ def validate_recipe(argv: list[str]) -> None:
     args = p.parse_args(argv)
 
     recipe = yaml.safe_load(Path(args.recipe).read_text())
+
+    # Early schema validation — catches typos and invalid values before CLI parsing
+    schema_errors: list[str] = []
+    try:
+        default_cfg = TrainingRunConfig(**recipe.get("defaults", {}))
+    except Exception as e:
+        schema_errors.append(f"Recipe defaults: {e}")
+    else:
+        for name, overrides in recipe.get("configs", {}).items():
+            try:
+                default_cfg.merge(overrides or {})
+            except Exception as e:
+                schema_errors.append(f"Recipe config '{name}': {e}")
+    if schema_errors:
+        print(f"FAIL: {len(schema_errors)} recipe schema errors:", file=sys.stderr)
+        for e in schema_errors:
+            print(f"  {e}", file=sys.stderr)
+        sys.exit(1)
+
     specs = enumerate_assets(PIPELINE_YAML, recipe)
 
     _saved = sys.argv
@@ -81,7 +100,7 @@ def validate_recipe(argv: list[str]) -> None:
     _cli = GraphIDSCLI(
         **{**CLI_KWARGS, "run": False, "auto_configure_optimizers": False},
         args=["--config", str(STAGES_DIR / "autoencoder.yaml"),
-              "--config", str(OVERLAYS_DIR / "small_vgae.yaml"),
+              "--config", str(MODELS_DIR / "vgae" / "small.yaml"),
               "--data.init_args.dataset=hcrl_ch", "--seed_everything=42"],
     )
     parser = _cli.parser

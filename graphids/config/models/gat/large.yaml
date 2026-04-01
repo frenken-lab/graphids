@@ -1,6 +1,5 @@
 # Large-scale GAT architecture (sweep-optimized).
-# Layer on top of stages/normal.yaml or stages/curriculum.yaml:
-#   python -m graphids fit --config .../stages/curriculum.yaml --config .../overlays/large_gat.yaml
+# Compose: --config stages/curriculum.yaml --config models/gat/large.yaml
 model:
   init_args:
     hidden: 64

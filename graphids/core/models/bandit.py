@@ -202,6 +202,7 @@ class BanditFusionModule(FusionModuleBase):
         if len(self._buffer) < self.batch_size:
             return None
 
+        was_training = self.backbone.training
         self.backbone.train()
         total_loss = 0.0
         for _ in range(self.backbone_epochs):
@@ -221,7 +222,7 @@ class BanditFusionModule(FusionModuleBase):
             self.backbone_optimizer.step()
             total_loss += loss.item()
 
-        self.backbone.eval()
+        self.backbone.train(was_training)
 
         # Reset linear models after backbone change (representations shifted)
         # Use in-place ops to preserve registered buffer registration

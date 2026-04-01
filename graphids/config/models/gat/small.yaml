@@ -1,6 +1,5 @@
 # Small-scale GAT architecture.
-# Layer on top of stages/normal.yaml or stages/curriculum.yaml:
-#   python -m graphids fit --config .../stages/normal.yaml --config .../overlays/small_gat.yaml
+# Compose: --config stages/normal.yaml --config models/gat/small.yaml
 model:
   init_args:
     hidden: 24

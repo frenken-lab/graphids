@@ -228,7 +228,7 @@ def test_generate_script_appends_overrides():
 
 def test_generate_script_multi_config():
     script = generate_script(
-        ["stages/autoencoder.yaml", "overlays/small_vgae.yaml"], GPU_SPEC,
+        ["stages/autoencoder.yaml", "models/vgae/small.yaml"], GPU_SPEC,
     )
     assert script.count("--config") == 2
 

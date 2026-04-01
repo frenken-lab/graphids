@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import os
+from typing import Literal
 from pathlib import Path
 
 import yaml
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -85,6 +87,175 @@ if _missing_ckpt:
         f"Models {_missing_ckpt} in pipeline.yaml 'models' missing from 'ckpt_stages'. "
         f"Add entries to ckpt_stages in pipeline.yaml."
     )
+
+VALID_FUSION_METHODS: frozenset[str] = frozenset(PIPELINE_YAML.get("fusion_methods", []))
+
+# Cross-validate model config files exist for every (model_type, scale) pair.
+# Catches missing configs at import time, not at runtime _resolve_config_files.
+_MODELS_DIR = CONFIG_DIR / "models"
+_missing_model_configs: list[str] = []
+for _model in PIPELINE_YAML["models"]:
+    for _scale in PIPELINE_YAML["scales"]:
+        if not (_MODELS_DIR / _model / f"{_scale}.yaml").exists():
+            _missing_model_configs.append(f"{_model}/{_scale}")
+for _method in PIPELINE_YAML.get("fusion_methods", []):
+    for _scale in PIPELINE_YAML["scales"]:
+        if not (_MODELS_DIR / _method / f"{_scale}.yaml").exists():
+            _missing_model_configs.append(f"{_method}/{_scale} (fusion method)")
+if _missing_model_configs:
+    raise FileNotFoundError(
+        f"Missing model config files in config/models/: {_missing_model_configs}. "
+        f"Create the YAML files or remove entries from pipeline.yaml."
+    )
+
+# Cross-validate resource profiles exist for every (model_type, scale, stage) and
+# (fusion_method, scale, fusion). Loaded lazily to avoid import-time cluster detection.
+_resources_raw = yaml.safe_load((CONFIG_DIR / "resources.yaml").read_text())
+_resource_profiles = _resources_raw.get("resource_profiles", {})
+_missing_resources: list[str] = []
+_SKIP_RESOURCE_STAGES = {"preprocess", "evaluation", "temporal"}
+for _stage_name, _stage_def in PIPELINE_YAML["stages"].items():
+    if _stage_name in _SKIP_RESOURCE_STAGES:
+        continue
+    _stage_model = _stage_def["model"]
+    if _stage_name == "fusion":
+        # Fusion: validate each method × scale
+        for _method in PIPELINE_YAML.get("fusion_methods", []):
+            for _scale in PIPELINE_YAML["scales"]:
+                if _method not in _resource_profiles or \
+                   _scale not in _resource_profiles.get(_method, {}) or \
+                   _stage_name not in _resource_profiles.get(_method, {}).get(_scale, {}):
+                    _missing_resources.append(f"{_method}/{_scale}/{_stage_name}")
+    else:
+        # Non-fusion: validate model × scale
+        for _scale in PIPELINE_YAML["scales"]:
+            if _stage_model not in _resource_profiles or \
+               _scale not in _resource_profiles.get(_stage_model, {}) or \
+               _stage_name not in _resource_profiles.get(_stage_model, {}).get(_scale, {}):
+                _missing_resources.append(f"{_stage_model}/{_scale}/{_stage_name}")
+if _missing_resources:
+    raise ValueError(
+        f"Missing resource profiles in config/resources.yaml: {_missing_resources}. "
+        f"Add entries or update pipeline.yaml."
+    )
+
+# ---------------------------------------------------------------------------
+# Recipe schema — typed contract for Dagster → SLURM → Lightning boundary
+# ---------------------------------------------------------------------------
+
+class KDEntry(BaseModel):
+    """KD auxiliary config — recipe-level fields only.
+
+    ML-specific fields (vgae_latent_weight, temperature, model_path) live in
+    models/{type}/kd.yaml overlays, not in recipes.
+    """
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    type: Literal["kd"] = "kd"
+    alpha: float = 0.7
+    teacher_scale: str = "large"
+
+    @field_validator("teacher_scale")
+    @classmethod
+    def _valid_scale(cls, v: str) -> str:
+        if v not in VALID_SCALES:
+            raise ValueError(f"teacher_scale={v!r} not in {sorted(VALID_SCALES)}")
+        return v
+
+    @field_validator("alpha")
+    @classmethod
+    def _alpha_range(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError(f"alpha={v} must be in [0, 1]")
+        return v
+
+
+class TrainingRunConfig(BaseModel):
+    """Typed contract for one recipe config entry.
+
+    Validates parameters that cross the Dagster → SLURM → Lightning boundary.
+    ``extra="forbid"`` catches typos (conv_typ, scael) at recipe-load time.
+
+    Usage::
+
+        default_cfg = TrainingRunConfig(**recipe.get("defaults", {}))
+        for name, overrides in recipe["configs"].items():
+            cfg = default_cfg.merge(overrides or {})
+    """
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    stages: tuple[str, ...] = ("autoencoder", "curriculum", "fusion")
+    scale: str = "small"
+    conv_type: str = "gatv2"
+    loss_fn: str = "focal"
+    fusion_method: str = "bandit"
+    variational: bool = True
+    model_type: str | None = None
+    auxiliaries: tuple[KDEntry, ...] = ()
+
+    @field_validator("stages", mode="before")
+    @classmethod
+    def _coerce_stages(cls, v):
+        return tuple(v) if isinstance(v, list) else v
+
+    @field_validator("auxiliaries", mode="before")
+    @classmethod
+    def _coerce_auxiliaries(cls, v):
+        if isinstance(v, list):
+            return tuple(KDEntry(**x) if isinstance(x, dict) else x for x in v)
+        return v
+
+    @field_validator("scale")
+    @classmethod
+    def _valid_scale(cls, v: str) -> str:
+        if v not in VALID_SCALES:
+            raise ValueError(f"scale={v!r} not in {sorted(VALID_SCALES)}")
+        return v
+
+    @field_validator("conv_type")
+    @classmethod
+    def _valid_conv_type(cls, v: str) -> str:
+        if v not in {"gatv2", "gat", "gps"}:
+            raise ValueError(f"conv_type={v!r} not in {{'gatv2', 'gat', 'gps'}}")
+        return v
+
+    @field_validator("loss_fn")
+    @classmethod
+    def _valid_loss_fn(cls, v: str) -> str:
+        if v not in {"focal", "ce", "weighted_ce"}:
+            raise ValueError(f"loss_fn={v!r} not in {{'focal', 'ce', 'weighted_ce'}}")
+        return v
+
+    @field_validator("fusion_method")
+    @classmethod
+    def _valid_fusion_method(cls, v: str) -> str:
+        if v not in VALID_FUSION_METHODS:
+            raise ValueError(f"fusion_method={v!r} not in {sorted(VALID_FUSION_METHODS)}")
+        return v
+
+    @field_validator("model_type")
+    @classmethod
+    def _valid_model_type(cls, v: str | None) -> str | None:
+        if v is not None and v not in VALID_MODEL_TYPES:
+            raise ValueError(f"model_type={v!r} not in {sorted(VALID_MODEL_TYPES)}")
+        return v
+
+    @model_validator(mode="after")
+    def _stages_exist(self) -> TrainingRunConfig:
+        bad = [s for s in self.stages if s not in STAGES]
+        if bad:
+            raise ValueError(f"Unknown stages: {bad}. Valid: {sorted(STAGES)}")
+        return self
+
+    def merge(self, overrides: dict) -> TrainingRunConfig:
+        """Overlay overrides onto self. Validates merged result — extra='forbid' catches typos."""
+        return TrainingRunConfig(**{**self.model_dump(), **overrides})
+
+    def get(self, key: str, default=None):
+        """Dict-like .get() for incremental migration of enumerate_assets()."""
+        v = getattr(self, key, None)
+        return v if v is not None else default
+
 
 DEFAULT_MODEL_TYPE: str = next(iter(PIPELINE_YAML["models"]))
 DEFAULT_SCALE: str = PIPELINE_YAML["scales"][0]

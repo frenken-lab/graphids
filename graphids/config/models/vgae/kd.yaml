@@ -1,7 +1,5 @@
 # KD overlay for VGAE — distills from large teacher into small student.
-# Layer on top of stages/autoencoder.yaml + overlays/small_vgae.yaml:
-#   python -m graphids fit --config .../stages/autoencoder.yaml \
-#       --config .../overlays/small_vgae.yaml --config .../overlays/kd_vgae.yaml
+# Compose: --config stages/autoencoder.yaml --config models/vgae/small.yaml --config models/vgae/kd.yaml
 #
 # Set model_path explicitly to the large teacher checkpoint after it completes:
 #   --model.init_args.auxiliaries[0].model_path=/path/to/large/best_model.ckpt

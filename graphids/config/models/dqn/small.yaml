@@ -1,0 +1,4 @@
+# DQN fusion — architecture params live in stages/fusion_dqn.yaml.
+# This file exists for config resolution completeness.
+# Compose: --config stages/fusion.yaml --config stages/fusion_dqn.yaml --config models/dqn/small.yaml
+{}

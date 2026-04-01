@@ -62,7 +62,7 @@ def autoencoder_cfg():
         stage="autoencoder", model_type="vgae", scale="small",
         config_files=(
             "graphids/config/stages/autoencoder.yaml",
-            "graphids/config/overlays/small_vgae.yaml",
+            "graphids/config/models/vgae/small.yaml",
         ),
         identity="_abc12345",
     )

@@ -29,6 +29,7 @@ from graphids.config import (
     PIPELINE_YAML,
     STAGE_DEPENDENCIES,
     STAGE_MODEL_MAP,
+    TrainingRunConfig,
     compute_identity_hash,
     run_dir,
 )
@@ -36,7 +37,7 @@ from graphids.orchestrate.resources import get_failure_reactions, get_resources,
 from graphids.orchestrate.slurm import generate_script, poll, sacct_query, submit
 
 STAGES_DIR = CONFIG_DIR / "stages"
-OVERLAYS_DIR = CONFIG_DIR / "overlays"
+MODELS_DIR = CONFIG_DIR / "models"
 RECIPES_DIR = CONFIG_DIR / "recipes"
 RECIPE_PATH = Path(os.environ.get("KD_GAT_RECIPE", RECIPES_DIR / "ablation.yaml"))
 
@@ -122,43 +123,40 @@ def _cli_val(v: Any) -> str:
     return str(v).lower() if isinstance(v, bool) else str(v)
 
 
-def _overlay_model(stage_def: dict, merged: dict) -> str:
+def _overlay_model(stage_def: dict, merged: TrainingRunConfig) -> str:
     """Model name for overlay lookup. Recipe model_type only applies to unsupervised stages."""
-    scale = merged.get("scale", "small")
-    if "model_type" in merged and stage_def.get("learning_type") == "unsupervised":
-        if (OVERLAYS_DIR / f"{scale}_{merged['model_type']}.yaml").exists():
-            return merged["model_type"]
+    if merged.model_type is not None and stage_def.get("learning_type") == "unsupervised":
+        if (MODELS_DIR / merged.model_type / f"{merged.scale}.yaml").exists():
+            return merged.model_type
     return stage_def["model"]
 
 
-def _resolve_config_files(stage: str, stage_def: dict, merged: dict) -> tuple[list[str], bool]:
-    scale = merged.get("scale", "small")
+def _resolve_config_files(stage: str, stage_def: dict, merged: TrainingRunConfig) -> tuple[list[str], bool]:
     model = _overlay_model(stage_def, merged)
-    # Method-specific stage YAML (e.g. fusion_dqn.yaml) layers on top of base stage YAML
-    method = merged.get("fusion_method")
-    variant = STAGES_DIR / f"{stage}_{method}.yaml" if method else None
-    used_variant = variant is not None and variant.exists()
+    variant = STAGES_DIR / f"{stage}_{merged.fusion_method}.yaml"
+    used_variant = variant.exists()
     configs = [str(STAGES_DIR / f"{stage}.yaml")]
     if used_variant:
         configs.append(str(variant))
-    overlay = OVERLAYS_DIR / f"{scale}_{model}.yaml"
+    overlay = MODELS_DIR / model / f"{merged.scale}.yaml"
     has_overlay = overlay.exists()
     if has_overlay:
         configs.append(str(overlay))
-    if "auxiliaries" in merged:
-        kd = OVERLAYS_DIR / f"kd_{model}.yaml"
+    if merged.auxiliaries:
+        kd = MODELS_DIR / model / "kd.yaml"
         if kd.exists():
             configs.append(str(kd))
     return configs, has_overlay, used_variant
 
 
-def _identity_value(key: str, merged: dict, stages: list[str]) -> Any:
+def _identity_value(key: str, merged: TrainingRunConfig | dict, stages: list[str]) -> Any:
     if key == "gat_stage":
         return "curriculum" if "curriculum" in stages else "normal"
+    _get = merged.get if isinstance(merged, dict) else lambda k, d=None: getattr(merged, k, d)
     for rk, ik in _RECIPE_TO_IDENTITY.items():
-        if ik == key and rk in merged:
-            return merged[rk]
-    return merged.get(key)
+        if ik == key:
+            return _get(rk)
+    return _get(key)
 
 
 # ---------------------------------------------------------------------------
@@ -178,14 +176,14 @@ class StageConfig:
     model_overrides: dict[str, str] = field(default_factory=dict)
     identity: str = ""
     kd_tag: str = ""
+    resource_model: str = ""  # model key for resource lookup (fusion method for fusion stages)
     upstream_asset_names: tuple[str, ...] = ()
     upstream_ckpt_flags: dict[str, str] = field(default_factory=dict)
 
 
 def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
     """Two-pass enumeration: compute canonical keys, then build configs with resolved deps."""
-    defaults = recipe.get("defaults", {})
-    default_stages = defaults.get("stages", ["autoencoder", "curriculum", "fusion"])
+    default_cfg = TrainingRunConfig(**recipe.get("defaults", {}))
     stages_def = pipeline["stages"]
 
     # Pass 1: canonical key map
@@ -193,9 +191,9 @@ def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
     config_stages: dict[str, dict[str, str]] = {}
 
     for config_name, config_overrides in recipe["configs"].items():
-        merged = {**defaults, **(config_overrides or {})}
-        stages = merged.get("stages", default_stages)
-        has_kd = "auxiliaries" in merged
+        merged = default_cfg.merge(config_overrides or {})
+        stages = list(merged.stages)
+        has_kd = bool(merged.auxiliaries)
         config_stages[config_name] = {}
 
         for stage in stages:
@@ -217,9 +215,9 @@ def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
     built: dict[str, StageConfig] = {}
 
     for config_name, config_overrides in recipe["configs"].items():
-        merged = {**defaults, **(config_overrides or {})}
-        stages = merged.get("stages", default_stages)
-        has_kd = "auxiliaries" in merged
+        merged = default_cfg.merge(config_overrides or {})
+        stages = list(merged.stages)
+        has_kd = bool(merged.auxiliaries)
         stage_map = config_stages[config_name]
 
         for stage in stages:
@@ -265,11 +263,11 @@ def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
                     upstream_flags[dep_asset] = flag
 
             if has_kd:
-                teacher_scale = merged.get("auxiliaries", [{}])[0].get("teacher_scale")
+                teacher_scale = merged.auxiliaries[0].teacher_scale if merged.auxiliaries else None
                 if teacher_scale:
                     for tc_name, tc_overrides in recipe["configs"].items():
-                        tc_merged = {**defaults, **(tc_overrides or {})}
-                        if tc_merged.get("scale") == teacher_scale and "auxiliaries" not in tc_merged:
+                        tc_merged = default_cfg.merge(tc_overrides or {})
+                        if tc_merged.scale == teacher_scale and not tc_merged.auxiliaries:
                             tc_map = config_stages.get(tc_name, {})
                             for s in ("autoencoder", "curriculum", "normal"):
                                 if s == stage and s in tc_map:
@@ -277,15 +275,17 @@ def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
                             break
 
             model_dir = STAGE_MODEL_MAP[stage]
+            res_model = merged.fusion_method if stage == "fusion" else model_dir
             built[asset_name] = StageConfig(
                 asset_name=asset_name,
                 stage=stage,
                 model_type=model_dir,
-                scale=merged.get("scale", "small"),
+                scale=merged.scale,
                 config_files=tuple(config_files),
                 model_overrides=overrides,
                 identity=identity,
                 kd_tag="_kd" if has_kd else "",
+                resource_model=res_model,
                 upstream_asset_names=tuple(sorted(set(upstream_names))),
                 upstream_ckpt_flags=upstream_flags,
             )
@@ -366,7 +366,7 @@ def _make_asset(
         cli_args = build_cli_args(cfg, dataset, seed, rd, upstream_ckpts)
 
         # SLURM resources + adaptive retry
-        resources = get_resources(cfg.model_type, cfg.scale, cfg.stage)
+        resources = get_resources(cfg.resource_model or cfg.model_type, cfg.scale, cfg.stage)
         if context.retry_number > 0:
             for reason in ("OUT_OF_MEMORY", "TIMEOUT"):
                 resources = scale_resources(resources, reason)
@@ -495,7 +495,7 @@ class SlurmTrainingComponent(dg.Component, dg.Model, dg.Resolvable):
         # 1b. Validate all assets have resource profiles (fail at definition time, not submit time)
         for cfg in stage_configs:
             try:
-                get_resources(cfg.model_type, cfg.scale, cfg.stage)
+                get_resources(cfg.resource_model or cfg.model_type, cfg.scale, cfg.stage)
             except KeyError as e:
                 raise KeyError(
                     f"Asset '{cfg.asset_name}' has no resource profile: {e}. "

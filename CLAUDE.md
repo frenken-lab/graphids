@@ -13,7 +13,7 @@ Every function, file, and abstraction must earn its place. Before writing code, 
 ```bash
 # Training
 python -m graphids fit --config graphids/config/stages/autoencoder.yaml
-python -m graphids fit --config graphids/config/stages/normal.yaml --config graphids/config/overlays/small_gat.yaml
+python -m graphids fit --config graphids/config/stages/normal.yaml --config graphids/config/models/gat/small.yaml
 
 # Evaluation
 python -m graphids test --config graphids/config/stages/autoencoder.yaml --ckpt_path best.ckpt

@@ -35,13 +35,22 @@ graphids/
       analyze_vgae.yaml  # Analyzer config: VGAE embeddings + landscape
       analyze_gat.yaml   # Analyzer config: GAT embeddings + attention + CKA + landscape
       analyze_fusion.yaml # Analyzer config: fusion policy
-    overlays/            # thin --config adds for scale/ablation variants
-      small_vgae.yaml    # small-scale VGAE/DGI dims (DGI falls through to this)
-      small_gat.yaml     # small-scale GAT dims
-      large_vgae.yaml    # large-scale VGAE dims (sweep-optimized)
-      large_gat.yaml     # large-scale GAT dims (sweep-optimized)
-      kd_vgae.yaml       # KD auxiliaries for VGAE student
-      kd_gat.yaml        # KD auxiliaries for GAT student
+    models/              # per-model architecture configs (one dir per model type)
+      vgae/
+        small.yaml       # small-scale VGAE/DGI dims
+        large.yaml       # large-scale VGAE dims (sweep-optimized)
+        kd.yaml          # KD auxiliaries for VGAE student
+      gat/
+        small.yaml       # small-scale GAT dims
+        large.yaml       # large-scale GAT dims (sweep-optimized)
+        kd.yaml          # KD auxiliaries for GAT student
+      dgi/
+        small.yaml       # small-scale DGI dims (shares VGAE topology)
+      dqn/
+        small.yaml       # placeholder (params in stage YAML)
+        large.yaml       # placeholder (params in stage YAML)
+    overlays/            # orthogonal overlays (profiling, debugging)
+      profile.yaml       # 5-epoch profiling overlay
   orchestrate/
     component.py         # SlurmTrainingComponent + IOManager + Resource + factory
     definitions.py       # dagster entry point
@@ -60,7 +69,7 @@ graphids/
 # --- Training (GraphIDSCLI → LightningCLI) ---
 python -m graphids fit --config graphids/config/stages/autoencoder.yaml
 python -m graphids fit --config graphids/config/stages/autoencoder.yaml \
-                       --config graphids/config/overlays/small_vgae.yaml
+                       --config graphids/config/models/vgae/small.yaml
 python -m graphids fit --config graphids/config/stages/normal.yaml \
                        --model.init_args.lr=0.01
 
@@ -100,7 +109,11 @@ model:
 
 ## Pipeline topology
 
-`pipeline.yaml` defines model types, scales, stages, DAG dependencies, and variants. `__init__.py` loads this once and exposes `STAGES`, `STAGE_DEPENDENCIES`, `VALID_MODEL_TYPES`, `VALID_SCALES`.
+`pipeline.yaml` defines model types, scales, fusion methods, stages, DAG dependencies, and variants. `__init__.py` loads this once and exposes `STAGES`, `STAGE_DEPENDENCIES`, `VALID_MODEL_TYPES`, `VALID_SCALES`, `VALID_FUSION_METHODS`.
+
+Import-time assertions cross-validate `pipeline.yaml` × `config/models/` × `resources.yaml`:
+every `(model_type, scale)` and `(fusion_method, scale)` must have model config files;
+every trainable `(model, scale, stage)` must have a resource profile.
 
 ## Environment variables
 

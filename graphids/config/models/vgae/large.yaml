@@ -1,6 +1,5 @@
 # Large-scale VGAE architecture (sweep-optimized).
-# Layer on top of stages/autoencoder.yaml:
-#   python -m graphids fit --config .../stages/autoencoder.yaml --config .../overlays/large_vgae.yaml
+# Compose: --config stages/autoencoder.yaml --config models/vgae/large.yaml
 model:
   init_args:
     hidden_dims: [480, 240, 64]

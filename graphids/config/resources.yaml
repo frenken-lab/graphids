@@ -43,19 +43,6 @@ resource_profiles:
         mem: "36G"
         cpus_per_task: 4
         num_workers: 3
-    medium:
-      autoencoder:
-        mode: gpu_train
-        time: "02:30:00"
-        mem: "36G"
-        cpus_per_task: 4
-        num_workers: 3
-      curriculum:
-        mode: gpu_train
-        time: "02:30:00"
-        mem: "36G"
-        cpus_per_task: 4
-        num_workers: 3
     large:
       autoencoder:
         mode: gpu_train
@@ -84,19 +71,6 @@ resource_profiles:
         mem: "36G"
         cpus_per_task: 4
         num_workers: 3
-    medium:
-      normal:
-        mode: gpu_train
-        time: "03:00:00"
-        mem: "36G"
-        cpus_per_task: 4
-        num_workers: 3
-      curriculum:
-        mode: gpu_train
-        time: "03:00:00"
-        mem: "36G"
-        cpus_per_task: 4
-        num_workers: 3
     large:
       normal:
         mode: gpu_train
@@ -119,23 +93,16 @@ resource_profiles:
         mem: "36G"
         cpus_per_task: 4
         num_workers: 3
-    medium:
+    large:
       autoencoder:
         mode: gpu_train
-        time: "02:30:00"
-        mem: "36G"
+        time: "04:00:00"
+        mem: "48G"
         cpus_per_task: 4
         num_workers: 3
 
   dqn:
     small:
-      fusion:
-        mode: gpu_train
-        time: "01:00:00"
-        mem: "16G"
-        cpus_per_task: 2
-        num_workers: 0
-    medium:
       fusion:
         mode: gpu_train
         time: "01:00:00"
@@ -154,11 +121,20 @@ resource_profiles:
     small:
       fusion:
         mode: gpu_train
-        time: "01:00:00"
+        time: "01:15:00"
         mem: "16G"
         cpus_per_task: 2
         num_workers: 0
-    medium:
+    large:
+      fusion:
+        mode: gpu_train
+        time: "02:30:00"
+        mem: "24G"
+        cpus_per_task: 2
+        num_workers: 0
+
+  mlp:
+    small:
       fusion:
         mode: gpu_train
         time: "01:00:00"
@@ -170,6 +146,22 @@ resource_profiles:
         mode: gpu_train
         time: "02:00:00"
         mem: "24G"
+        cpus_per_task: 2
+        num_workers: 0
+
+  weighted_avg:
+    small:
+      fusion:
+        mode: gpu_train
+        time: "00:30:00"
+        mem: "16G"
+        cpus_per_task: 2
+        num_workers: 0
+    large:
+      fusion:
+        mode: gpu_train
+        time: "01:00:00"
+        mem: "16G"
         cpus_per_task: 2
         num_workers: 0
 

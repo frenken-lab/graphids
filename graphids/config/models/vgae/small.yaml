@@ -1,6 +1,5 @@
 # Small-scale VGAE architecture.
-# Layer on top of stages/autoencoder.yaml:
-#   python -m graphids fit --config .../stages/autoencoder.yaml --config .../overlays/small_vgae.yaml
+# Compose: --config stages/autoencoder.yaml --config models/vgae/small.yaml
 model:
   init_args:
     hidden_dims: [80, 40, 16]

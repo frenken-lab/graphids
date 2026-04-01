@@ -1,7 +1,7 @@
 # Profiling overlay: 5 epochs, PyTorchProfiler, per-step logging.
 # Layer on any stage config:
 #   python -m graphids fit --config graphids/config/stages/autoencoder.yaml \
-#     --config graphids/config/overlays/small_vgae.yaml \
+#     --config graphids/config/models/vgae/small.yaml \
 #     --config graphids/config/overlays/profile.yaml \
 #     --data.init_args.dataset=hcrl_ch
 trainer:

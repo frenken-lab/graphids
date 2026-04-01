@@ -1,0 +1,10 @@
+# Small-scale DGI architecture (shares VGAE topology).
+# Compose: --config stages/autoencoder.yaml --config models/dgi/small.yaml
+model:
+  init_args:
+    hidden_dims: [80, 40, 16]
+    latent_dim: 16
+    heads: 1
+    embedding_dim: 4
+    dropout: 0.1
+    proj_dim: 32

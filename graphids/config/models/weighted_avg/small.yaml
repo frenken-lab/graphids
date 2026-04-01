@@ -1,0 +1,4 @@
+# Weighted average fusion — architecture params live in stages/fusion_weighted_avg.yaml.
+# This file exists for config resolution completeness.
+# Compose: --config stages/fusion.yaml --config stages/fusion_weighted_avg.yaml --config models/weighted_avg/small.yaml
+{}
