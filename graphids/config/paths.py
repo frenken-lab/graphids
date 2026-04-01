@@ -3,13 +3,55 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict
+
 from .base import CONFIG_DIR
-from .runtime import CKPT_SUBPATH, PREPROCESSING_VERSION
+from .runtime import CKPT_SUBPATH, COMPLETE_MARKER, LAST_CKPT_SUBPATH, PREPROCESSING_VERSION
 from .topology import PIPELINE_YAML
 from .yaml_utils import read_yaml
+
+
+class PathContext(BaseModel):
+    """Frozen path model — single source for all run-related paths."""
+
+    model_config = ConfigDict(frozen=True)
+
+    lake_root: str
+    user: str
+    dataset: str
+    model_type: str
+    scale: str
+    stage: str
+    identity: str
+    kd_tag: str
+    seed: int
+
+    @property
+    def run_dir(self) -> Path:
+        return Path(
+            f"{self.lake_root}/dev/{self.user}/{self.dataset}/"
+            f"{self.model_type}_{self.scale}_{self.stage}"
+            f"{self.identity}{self.kd_tag}/seed_{self.seed}"
+        )
+
+    @property
+    def ckpt_file(self) -> Path:
+        return self.run_dir / CKPT_SUBPATH
+
+    @property
+    def complete_marker(self) -> Path:
+        return self.run_dir / COMPLETE_MARKER
+
+    @property
+    def last_ckpt_file(self) -> Path:
+        return self.run_dir / LAST_CKPT_SUBPATH
+
+    @property
+    def ckpt_dir(self) -> Path:
+        return self.run_dir / PurePosixPath(CKPT_SUBPATH).parent
 
 _DATASETS_DIR: Path = CONFIG_DIR / "datasets"
 DEFAULT_DATASET: str = "set_01"
@@ -43,23 +85,6 @@ def load_catalog() -> dict[str, dict[str, Any]]:
 def dataset_names() -> list[str]:
     """Return list of dataset names (for dagster partitions, etc.)."""
     return [k for k in load_catalog() if not k.startswith("_")]
-
-
-def run_dir(
-    lake_root: str,
-    user: str,
-    dataset: str,
-    model_type: str,
-    scale: str,
-    stage: str,
-    identity: str,
-    kd_tag: str,
-    seed: int,
-) -> str:
-    return (
-        f"{lake_root}/dev/{user}/{dataset}/"
-        f"{model_type}_{scale}_{stage}{identity}{kd_tag}/seed_{seed}"
-    )
 
 
 def compute_preprocessing_hash() -> str:

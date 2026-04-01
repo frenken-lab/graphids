@@ -71,28 +71,22 @@ Resolved 2026-04-01. Added `_merge_yaml_chain()` (naive deep merge + dotted-key
 override application) and 3 YAML-aware validators: curriculum epoch sync, YAML
 num_workers vs CPUs, RL dead batch_size. 13 new tests. See `resolve.py`.
 
-### 3. W2: Structural exclusivity (MEDIUM)
+### ~~3. W2: Structural exclusivity~~ ✓
 
-Resolver is de facto exclusive but not enforced:
-- `artifact_paths()` in `execution.py` duplicates path computation. `checks.py` uses it.
-- `StageConfig` still exposes override fields — nothing prevents direct access.
-- `*-from-spec` CLI commands bypass the resolver (by design).
+Resolved 2026-04-01. Decoupled CLI architecture eliminates dual merge:
+- `artifact_paths()` deleted — `PathContext` is single source for paths.
+- `checks.py` uses `PathContext` directly.
+- Pipeline path uses direct instantiation (`train_entrypoint.py`), no LightningCLI.
+- `to_cli_overrides()` replaced by `to_override_dict()` (dict, not CLI strings).
+- `StageConfig` override fields still consumed exclusively by `ConfigResolver`.
+- See `plans/research/config_cli_decoupling.md`.
 
-- [ ] Migrate `checks.py` to use resolver or `ResolvedConfig` paths
-- [ ] Evaluate removing override fields from `StageConfig` public API
+### ~~4. P2.3: Replace `run_dir()` with frozen `PathContext`~~ ✓
 
-### 4. P2.3: Replace `run_dir()` with frozen `PathContext` (MEDIUM)
-
-`write_paths.yaml` already deleted. `paths.py:run_dir()` is still a flat 9-arg
-function. No enforcement that callers use it. Frozen Pydantic `PathContext` with
-computed properties would be the single source of write paths.
-
-- [ ] Implement `PathContext` (subsumes `run_dir()` + `artifact_paths()`)
-- [ ] Wire as `ConfigurableResource` on Dagster side
-- [ ] Update `GraphIDSCLI` to use `PathContext` for logger/checkpoint dirs
-
-> Note: resolves W2 path duplication — `artifact_paths()` becomes a `PathContext`
-> consumer, eliminating the second source of truth.
+Resolved 2026-04-01. `PathContext` (frozen Pydantic model) in `config/paths.py`.
+Properties: `run_dir`, `ckpt_file`, `complete_marker`, `last_ckpt_file`, `ckpt_dir`.
+`run_dir()` function deleted. `ResolvedConfig.paths: PathContext` replaces three
+separate path fields.
 
 ### 5. W3: Per-stage override granularity (MEDIUM)
 
@@ -124,10 +118,11 @@ KD overrides audit stores JSON blob as string. Not queryable.
 
 ### 9. W7: Spec-file path bypasses validators (LOW)
 
-`train-from-spec` / `analyze-from-spec` deserialize without cross-field validation.
-By design (SLURM receives pre-resolved specs), but means validators only protect
-the dagster path.
-- [ ] Add optional `--validate` to `*-from-spec`, or validate in `_spec_payload.py`
+`train-from-spec` now uses `resolve_configs()` to merge the YAML chain before
+direct instantiation, so the same merge path runs on both dagster and SLURM sides.
+Cross-field validation still only runs in `ConfigResolver` (dagster side).
+`analyze-from-spec` is unchanged.
+- [ ] Wire cross-field validators into `train-from-spec` path (optional)
 
 ### 10. W6: Resume checkpoint probe is side effect (LOW)
 
@@ -167,6 +162,20 @@ configs parametrically. Low priority — evaluate when recipe complexity demands
 - Added YAML-aware validation (`_merge_yaml_chain` + 3 validators + 13 tests). W1 resolved.
 - Researched Dynaconf (rejected) and OmegaConf (not recommended) — `config_tool_comparison.md`.
 - Documented Phase 3 CLI decoupling architecture — `config_cli_decoupling.md`.
+
+### 2026-04-01 (session 2)
+
+- Built decoupled CLI architecture (Phase 3 from `config_cli_decoupling.md`).
+- `cli.py` is now torch-free — `resolve_configs()` + `run_lightning()` (lazy import).
+- LightningCLI subclass moved to `_lightning.py` (internal, dev path + validate only).
+- Pipeline path uses direct instantiation (`train_entrypoint.py`) — no LightningCLI.
+- `PathContext` (frozen Pydantic) replaces `run_dir()` + `artifact_paths()`.
+- `ResolvedConfig.paths: PathContext` replaces 3 separate path fields (no compat layer).
+- `to_cli_overrides()` → `to_override_dict()` (dict output, not CLI strings).
+- Merge functions (`deep_merge`, `apply_dotted_overrides`, `merge_yaml_chain`) moved to `yaml_utils.py`.
+- `validate.py` uses snapshot path instead of reconstructing CLI args.
+- `__main__.py` defers `torch.multiprocessing` setup to `_run_lightning()`.
+- W2 resolved, P2.3 resolved, W7 partially resolved.
 
 ---
 

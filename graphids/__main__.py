@@ -24,14 +24,6 @@ import argparse
 import importlib
 import sys
 
-# ---------------------------------------------------------------------------
-# Process-level setup (must run before any torch import)
-# ---------------------------------------------------------------------------
-import torch.multiprocessing as mp
-
-mp.set_start_method("spawn", force=True)
-mp.set_sharing_strategy("file_system")
-
 import structlog
 
 structlog.configure(
@@ -60,9 +52,14 @@ _COMMAND_MODULES: dict[str, str] = {
 
 
 def _run_lightning(command: str, argv: list[str]) -> None:
-    from graphids.cli import CLI_KWARGS, GraphIDSCLI
+    import torch.multiprocessing as mp
 
-    GraphIDSCLI(**CLI_KWARGS, args=[command, *argv])
+    mp.set_start_method("spawn", force=True)
+    mp.set_sharing_strategy("file_system")
+
+    from graphids.cli import run_lightning
+
+    run_lightning([command, *argv])
 
 
 def _run_module(module_name: str, argv: list[str]) -> None:
@@ -92,9 +89,7 @@ def main(argv: list[str] | None = None) -> None:
 
     # Preserve legacy behavior: no subcommand defaults to LightningCLI.
     if not args:
-        from graphids.cli import CLI_KWARGS, GraphIDSCLI
-
-        GraphIDSCLI(**CLI_KWARGS)
+        _run_lightning("fit", [])
         return
 
     parser = _build_parser()

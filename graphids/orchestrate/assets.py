@@ -57,9 +57,9 @@ def make_training_asset(
             cfg, dataset=dataset, seed=seed, upstream_ckpts=upstream_ckpts,
         )
 
-        if resolved.ckpt_file.exists() and resolved.complete_marker.exists():
-            context.log.info(f"Already complete: {resolved.ckpt_file}")
-            return str(resolved.ckpt_file)
+        if resolved.paths.ckpt_file.exists() and resolved.paths.complete_marker.exists():
+            context.log.info(f"Already complete: {resolved.paths.ckpt_file}")
+            return str(resolved.paths.ckpt_file)
 
         resources = resolved.resources
         if context.retry_number > 0:
@@ -82,11 +82,11 @@ def make_training_asset(
         )
 
         if state == "DRY_RUN":
-            return str(resolved.ckpt_file)
+            return str(resolved.paths.ckpt_file)
         if state != "COMPLETED":
             raise RuntimeError(f"SLURM job failed: {state}")
 
-        touch_complete(resolved.run_dir_path)
+        touch_complete(resolved.paths.run_dir)
 
         if job_id:
             accounting = slurm_accounting_metadata(job_id)
@@ -98,7 +98,7 @@ def make_training_asset(
                 }
             )
 
-        return str(resolved.ckpt_file)
+        return str(resolved.paths.ckpt_file)
 
     return _train
 

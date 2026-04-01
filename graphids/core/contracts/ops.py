@@ -121,15 +121,16 @@ class TrainingContract:
         return str(value).lower() if isinstance(value, bool) else str(value)
 
     @classmethod
-    def to_cli_overrides(cls, spec: TrainingSpec) -> list[str]:
-        args = [
-            f"--data.init_args.dataset={spec.dataset}",
-            f"--seed_everything={spec.seed}",
-            f"--trainer.default_root_dir={spec.run_dir}",
-        ]
+    def to_override_dict(cls, spec: TrainingSpec) -> dict[str, str]:
+        """Convert TrainingSpec to dotted-key override dict for merge_yaml_chain."""
+        overrides: dict[str, str] = {
+            "data.init_args.dataset": spec.dataset,
+            "seed_everything": str(spec.seed),
+            "trainer.default_root_dir": spec.run_dir,
+        }
 
         for key, value in spec.model_init_overrides.items():
-            args.append(f"--model.init_args.{key}={cls._cli_scalar(value)}")
+            overrides[f"model.init_args.{key}"] = cls._cli_scalar(value)
 
         for upstream_asset, ckpt_path in spec.upstream_ckpt_paths.items():
             model_family = spec.upstream_model_families.get(upstream_asset)
@@ -137,9 +138,9 @@ class TrainingContract:
                 continue
             flag = cls._CKPT_FLAG_BY_MODEL.get(model_family)
             if flag:
-                args.append(f"{flag}={ckpt_path}")
+                overrides[flag.lstrip("-")] = ckpt_path
 
-        for key, value in spec.runtime_overrides.items():
-            args.append(f"--{key}={cls._cli_scalar(value)}")
-
-        return args
+        overrides.update(
+            {k: cls._cli_scalar(v) for k, v in spec.runtime_overrides.items()}
+        )
+        return overrides

@@ -11,7 +11,8 @@ from graphids.config import CONFIG_DIR, expand_recipe_configs  # public API (pas
 from graphids.config.recipe_expand import _flatten_dict  # internal, tested directly
 from graphids.core.contracts import TrainingContract, TrainingSpec
 from graphids.orchestrate.planning import StageConfig
-from graphids.orchestrate.resolve import ConfigResolver, _deep_merge, _apply_dotted_overrides
+from graphids.config.yaml_utils import apply_dotted_overrides, deep_merge
+from graphids.orchestrate.resolve import ConfigResolver
 from graphids.slurm import (
     ResourceSpec,
     apply_resource_overrides,
@@ -159,8 +160,8 @@ class TestTrainerOverrideFlow:
             config_files=(),
             runtime_overrides={"trainer.max_epochs": "2"},
         )
-        cli_args = TrainingContract.to_cli_overrides(spec)
-        assert "--trainer.max_epochs=2" in cli_args
+        overrides = TrainingContract.to_override_dict(spec)
+        assert overrides["trainer.max_epochs"] == "2"
 
     def test_empty_trainer_overrides_noop(self, resolver):
         cfg = StageConfig(
@@ -229,40 +230,40 @@ class TestTrainerOverrideFlow:
 
 class TestDeepMerge:
     def test_simple_override(self):
-        assert _deep_merge({"a": 1}, {"a": 2}) == {"a": 2}
+        assert deep_merge({"a": 1}, {"a": 2}) == {"a": 2}
 
     def test_nested_override(self):
         base = {"trainer": {"max_epochs": 300, "precision": "16-mixed"}}
         overlay = {"trainer": {"max_epochs": 2}}
-        result = _deep_merge(base, overlay)
+        result = deep_merge(base, overlay)
         assert result["trainer"]["max_epochs"] == 2
         assert result["trainer"]["precision"] == "16-mixed"
 
     def test_disjoint_keys(self):
-        result = _deep_merge({"a": 1}, {"b": 2})
+        result = deep_merge({"a": 1}, {"b": 2})
         assert result == {"a": 1, "b": 2}
 
     def test_empty_overlay(self):
         base = {"a": 1}
-        assert _deep_merge(base, {}) == {"a": 1}
+        assert deep_merge(base, {}) == {"a": 1}
 
     def test_non_dict_replaces_dict(self):
-        assert _deep_merge({"a": {"b": 1}}, {"a": 42}) == {"a": 42}
+        assert deep_merge({"a": {"b": 1}}, {"a": 42}) == {"a": 42}
 
 
 class TestApplyDottedOverrides:
     def test_simple_dotted_key(self):
         merged = {"trainer": {"max_epochs": 300}}
-        result = _apply_dotted_overrides(merged, {"trainer.max_epochs": "2"})
+        result = apply_dotted_overrides(merged, {"trainer.max_epochs": "2"})
         assert result["trainer"]["max_epochs"] == "2"
 
     def test_creates_intermediate_dicts(self):
-        result = _apply_dotted_overrides({}, {"a.b.c": "val"})
+        result = apply_dotted_overrides({}, {"a.b.c": "val"})
         assert result["a"]["b"]["c"] == "val"
 
     def test_no_overrides_is_noop(self):
         merged = {"x": 1}
-        assert _apply_dotted_overrides(merged, {}) == {"x": 1}
+        assert apply_dotted_overrides(merged, {}) == {"x": 1}
 
 
 class TestYAMLAwareValidation:

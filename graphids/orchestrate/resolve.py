@@ -12,13 +12,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import structlog
 
-from graphids.config import CKPT_SUBPATH, COMPLETE_MARKER, LAST_CKPT_SUBPATH, run_dir
-from graphids.config.yaml_utils import read_yaml
+from graphids.config import PathContext
+from graphids.config.yaml_utils import merge_yaml_chain
 from graphids.core.contracts import TrainingSpec
 from graphids.orchestrate.planning import StageConfig
 from graphids.slurm import ResourceSpec, apply_resource_overrides, get_resources
@@ -41,35 +40,8 @@ class ResolvedConfig:
 
     spec: TrainingSpec
     resources: ResourceSpec
-    run_dir_path: Path
-    ckpt_file: Path
-    complete_marker: Path
+    paths: PathContext
     audit: tuple[OverrideRecord, ...]
-
-
-def _deep_merge(base: dict, overlay: dict) -> dict:
-    """Recursive dict merge. Overlay values win. Returns new dict."""
-    out = dict(base)
-    for k, v in overlay.items():
-        if k in out and isinstance(out[k], dict) and isinstance(v, dict):
-            out[k] = _deep_merge(out[k], v)
-        else:
-            out[k] = v
-    return out
-
-
-def _apply_dotted_overrides(merged: dict, overrides: dict[str, Any]) -> dict:
-    """Apply dotted-key overrides (e.g. "trainer.max_epochs": "2") into nested dict."""
-    merged = dict(merged)
-    for dotted_key, value in overrides.items():
-        parts = dotted_key.split(".")
-        target = merged
-        for part in parts[:-1]:
-            if part not in target or not isinstance(target[part], dict):
-                target[part] = {}
-            target = target[part]
-        target[parts[-1]] = value
-    return merged
 
 
 class ConfigResolver:
@@ -84,24 +56,12 @@ class ConfigResolver:
         self._lake_root = lake_root
         self._user = user
 
+    @staticmethod
     def _merge_yaml_chain(
-        self, config_files: tuple[str, ...], runtime_overrides: dict[str, Any],
+        config_files: tuple[str, ...], runtime_overrides: dict[str, Any],
     ) -> dict[str, Any]:
-        """Read and merge the YAML config chain, then apply runtime overrides.
-
-        Used for cross-field validation only — not for execution. The SLURM job
-        uses jsonargparse's own merge via LightningCLI.
-        """
-        merged: dict[str, Any] = {}
-        for path_str in config_files:
-            path = Path(path_str)
-            if not path.exists():
-                log.warning("config_file_missing", path=path_str)
-                continue
-            merged = _deep_merge(merged, read_yaml(path))
-        if runtime_overrides:
-            merged = _apply_dotted_overrides(merged, runtime_overrides)
-        return merged
+        """Merge YAML config chain + runtime overrides for cross-field validation."""
+        return merge_yaml_chain(config_files, runtime_overrides)
 
     def resolve(
         self,
@@ -115,14 +75,11 @@ class ConfigResolver:
         audit: list[OverrideRecord] = []
 
         # --- Paths ---
-        rd = run_dir(
-            self._lake_root, self._user, dataset,
-            cfg.model_type, cfg.scale, cfg.stage,
-            cfg.identity, cfg.kd_tag, seed,
+        paths = PathContext(
+            lake_root=self._lake_root, user=self._user, dataset=dataset,
+            model_type=cfg.model_type, scale=cfg.scale, stage=cfg.stage,
+            identity=cfg.identity, kd_tag=cfg.kd_tag, seed=seed,
         )
-        rd_path = Path(rd)
-        ckpt_file = rd_path / CKPT_SUBPATH
-        complete = rd_path / COMPLETE_MARKER
 
         # --- Build TrainingSpec with all overrides merged ---
         runtime_overrides: dict[str, Any] = {}
@@ -138,11 +95,11 @@ class ConfigResolver:
             runtime_overrides[key] = val
             audit.append(OverrideRecord(key=key, value=val, source="kd"))
 
-        resume = rd_path / LAST_CKPT_SUBPATH
-        if resume.exists():
-            runtime_overrides["ckpt_path"] = str(resume)
+        if paths.last_ckpt_file.exists():
+            runtime_overrides["ckpt_path"] = str(paths.last_ckpt_file)
             audit.append(OverrideRecord(
-                key="ckpt_path", value=str(resume), source="resume_ckpt",
+                key="ckpt_path", value=str(paths.last_ckpt_file),
+                source="resume_ckpt",
             ))
 
         spec = TrainingSpec(
@@ -151,7 +108,7 @@ class ConfigResolver:
             scale=cfg.scale,
             dataset=dataset,
             seed=seed,
-            run_dir=rd,
+            run_dir=str(paths.run_dir),
             config_files=cfg.config_files,
             model_init_overrides=cfg.model_init_overrides,
             upstream_ckpt_paths=upstream_ckpts,
@@ -190,9 +147,7 @@ class ConfigResolver:
         return ResolvedConfig(
             spec=spec,
             resources=resources,
-            run_dir_path=rd_path,
-            ckpt_file=ckpt_file,
-            complete_marker=complete,
+            paths=paths,
             audit=audit_tuple,
         )
 

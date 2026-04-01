@@ -7,10 +7,19 @@ from pathlib import Path
 
 import dagster as dg
 
-from graphids.config import LAKE_ROOT
+from graphids.config import LAKE_ROOT, PathContext
 from graphids.orchestrate.analysis import ANALYSIS_MANIFEST_NAME, build_analysis_spec, output_status
-from graphids.orchestrate.execution import artifact_paths
 from graphids.orchestrate.planning import StageConfig
+
+
+def _paths_from_context(
+    cfg: StageConfig, *, lake_root: str, user: str, dataset: str, seed: int,
+) -> PathContext:
+    return PathContext(
+        lake_root=lake_root, user=user, dataset=dataset,
+        model_type=cfg.model_type, scale=cfg.scale, stage=cfg.stage,
+        identity=cfg.identity, kd_tag=cfg.kd_tag, seed=seed,
+    )
 
 
 def _checkpoint_check_result(
@@ -22,23 +31,17 @@ def _checkpoint_check_result(
 ) -> dg.AssetCheckResult:
     dataset = context.partition_key.keys_by_dimension["dataset"]
     seed = int(context.partition_key.keys_by_dimension["seed"])
-    _, _, ckpt, complete = artifact_paths(
-        cfg,
-        lake_root=lake_root,
-        user=user,
-        dataset=dataset,
-        seed=seed,
-    )
+    paths = _paths_from_context(cfg, lake_root=lake_root, user=user, dataset=dataset, seed=seed)
     return dg.AssetCheckResult(
-        passed=ckpt.exists() and complete.exists(),
-        metadata={"path": dg.MetadataValue.path(str(ckpt))},
+        passed=paths.ckpt_file.exists() and paths.complete_marker.exists(),
+        metadata={"path": dg.MetadataValue.path(str(paths.ckpt_file))},
     )
 
 
 def _analysis_check_result(*, context, cfg: StageConfig) -> dg.AssetCheckResult:
     dataset = context.partition_key.keys_by_dimension["dataset"]
     seed = int(context.partition_key.keys_by_dimension["seed"])
-    _, _, ckpt, _ = artifact_paths(
+    paths = _paths_from_context(
         cfg,
         lake_root=os.environ.get("KD_GAT_LAKE_ROOT", LAKE_ROOT),
         user=os.environ.get("USER", "unknown"),
@@ -49,7 +52,7 @@ def _analysis_check_result(*, context, cfg: StageConfig) -> dg.AssetCheckResult:
         cfg=cfg,
         dataset=dataset,
         seed=seed,
-        ckpt_path=str(ckpt),
+        ckpt_path=str(paths.ckpt_file),
     )
     output_dir = Path(spec.output_dir)
     manifest_path = output_dir / ANALYSIS_MANIFEST_NAME

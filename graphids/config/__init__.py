@@ -4,6 +4,7 @@ from .base import CONFIG_DIR, PROJECT_ROOT
 from .contracts import KDEntry, TrainingRunConfig, expand_recipe_configs
 from .paths import (
     DEFAULT_DATASET,
+    PathContext,
     cache_dir,
     checkpoint_path,
     compute_identity_hash,
@@ -11,7 +12,6 @@ from .paths import (
     data_dir,
     dataset_names,
     load_catalog,
-    run_dir,
 )
 from .runtime import (
     CKPT_PATH,

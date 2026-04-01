@@ -66,8 +66,11 @@ def _check_monitor_conventions(
 def validate_recipe(argv: list[str]) -> None:
     """Validate Dagster defs and/or recipe config chains."""
     import argparse
+    import tempfile
 
-    from graphids.cli import CLI_KWARGS, GraphIDSCLI
+    from graphids._lightning import CLI_KWARGS, GraphIDSCLI
+    from graphids.cli import resolve_configs
+    from graphids.config.yaml_utils import write_yaml
     from graphids.orchestrate.component import SlurmTrainingComponent
     from graphids.orchestrate.planning import enumerate_assets
 
@@ -133,50 +136,52 @@ def validate_recipe(argv: list[str]) -> None:
     warnings: list[str] = []
     seen: set[tuple] = set()
 
-    for spec in specs:
-        chain_key = (tuple(spec.config_files)
-                     + tuple(sorted(spec.model_init_overrides.items())))
-        if chain_key in seen:
-            continue
-        seen.add(chain_key)
+    with tempfile.TemporaryDirectory(prefix="graphids-validate-") as tmp:
+        tmp_dir = Path(tmp)
+        for spec in specs:
+            chain_key = (tuple(spec.config_files)
+                         + tuple(sorted(spec.model_init_overrides.items())))
+            if chain_key in seen:
+                continue
+            seen.add(chain_key)
 
-        cli_args: list[str] = []
-        for f in spec.config_files:
-            cli_args += ["--config", f]
-        parse_spec = TrainingSpec(
-            stage=spec.stage,
-            model_family=spec.model_type,
-            scale=spec.scale,
-            dataset="hcrl_ch",
-            seed=42,
-            run_dir="/tmp/graphids-validate",
-            config_files=spec.config_files,
-            model_init_overrides=spec.model_init_overrides,
-        )
-        cli_args += TrainingContract.to_cli_overrides(parse_spec)
+            parse_spec = TrainingSpec(
+                stage=spec.stage,
+                model_family=spec.model_type,
+                scale=spec.scale,
+                dataset="hcrl_ch",
+                seed=42,
+                run_dir=str(tmp_dir),
+                config_files=spec.config_files,
+                model_init_overrides=spec.model_init_overrides,
+            )
+            overrides = TrainingContract.to_override_dict(parse_spec)
+            resolved = resolve_configs(spec.config_files, overrides)
+            snapshot = tmp_dir / f"{spec.asset_name}.yaml"
+            write_yaml(resolved, snapshot)
 
-        try:
-            parsed = parser.parse_args(cli_args)
-            cfg = yaml.safe_load(
-                parser.dump(parsed, skip_link_targets=False, skip_none=False))
-        except (Exception, SystemExit) as e:
-            errors.append(f"{spec.asset_name}: parse error: {e}")
-            continue
+            try:
+                parsed = parser.parse_args(["--config", str(snapshot)])
+                cfg = yaml.safe_load(
+                    parser.dump(parsed, skip_link_targets=False, skip_none=False))
+            except (Exception, SystemExit) as e:
+                errors.append(f"{spec.asset_name}: parse error: {e}")
+                continue
 
-        trainer = cfg.get("trainer", {})
-        logger_on = trainer.get("logger", True) is not False
-        for cb in trainer.get("callbacks") or []:
-            cp = cb.get("class_path", "")
-            if cp in _LOGGER_REQUIRED_CALLBACKS and not logger_on:
-                errors.append(
-                    f"{spec.asset_name}: {cp.split('.')[-1]} requires logger")
+            trainer = cfg.get("trainer", {})
+            logger_on = trainer.get("logger", True) is not False
+            for cb in trainer.get("callbacks") or []:
+                cp = cb.get("class_path", "")
+                if cp in _LOGGER_REQUIRED_CALLBACKS and not logger_on:
+                    errors.append(
+                        f"{spec.asset_name}: {cp.split('.')[-1]} requires logger")
 
-        model_args = cfg.get("model", {}).get("init_args", {})
-        for fld in _NULL_LIST_FIELDS:
-            if fld in model_args and model_args[fld] is None:
-                errors.append(f"{spec.asset_name}: model.init_args.{fld} is null")
+            model_args = cfg.get("model", {}).get("init_args", {})
+            for fld in _NULL_LIST_FIELDS:
+                if fld in model_args and model_args[fld] is None:
+                    errors.append(f"{spec.asset_name}: model.init_args.{fld} is null")
 
-        warnings.extend(_check_monitor_conventions(spec.asset_name, spec.stage, cfg))
+            warnings.extend(_check_monitor_conventions(spec.asset_name, spec.stage, cfg))
 
     if warnings:
         print(f"WARN: {len(warnings)} monitor convention warnings:", file=sys.stderr)
