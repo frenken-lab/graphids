@@ -176,13 +176,23 @@ class CurriculumDataModule(CANBusDataModule):
         )
         self._train_loader = make_graph_loader(
             full_dataset, batch_sampler=self._batch_sampler, num_workers=hp.num_workers,
+            device=self._prefetch_device(),
         )
         self._val_loader = None  # built lazily in val_dataloader()
+
+    def _prefetch_device(self):
+        """Return GPU device for PrefetchLoader, or None for CPU."""
+        import torch
+        trainer = getattr(self, "trainer", None)
+        if trainer and torch.cuda.is_available():
+            return trainer.strategy.root_device
+        return None
 
     def _build_val_loader(self):
         hp = self.hparams
         bs = max(8, hp.batch_size)
         val_data = list(self._val_ds)
+        device = self._prefetch_device()
         if hp.dynamic_batching:
             trainer = getattr(self, "trainer", None)
             model = trainer.lightning_module if trainer else None
@@ -197,8 +207,8 @@ class CurriculumDataModule(CANBusDataModule):
                 val_data, max_num=result.budget, mode="node", shuffle=False,
                 skip_too_big=True, num_steps=num_steps,
             )
-            return make_graph_loader(val_data, batch_sampler=sampler, num_workers=hp.num_workers)
-        return make_graph_loader(val_data, batch_size=bs, shuffle=False, num_workers=hp.num_workers)
+            return make_graph_loader(val_data, batch_sampler=sampler, num_workers=hp.num_workers, device=device)
+        return make_graph_loader(val_data, batch_size=bs, shuffle=False, num_workers=hp.num_workers, device=device)
 
     def on_train_epoch_start(self, trainer, pl_module):
         if self._batch_sampler is not None:

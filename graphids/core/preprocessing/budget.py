@@ -1,23 +1,13 @@
-"""Throughput-aware node budget for GNN training.
+"""Node budget for PyG's DynamicBatchSampler.
 
-Cost model from docs/reference/gnn_throughput_equations.md.
-Computes batch size from regime classification + memory ceiling.
+    budget = min(memory_ceiling, throughput_ceiling)
 
-The key insight from the equations: both T_collation and T_gpu scale with batch
-size. Their ratio is approximately constant — determined by model architecture,
-graph structure, and worker count, NOT batch size. You're either in a
-collation-dominated regime (more workers is the fix) or a compute-dominated
-regime (fill VRAM). The regime is a property of the system, not a knob to turn.
+Memory ceiling: max nodes that fit in VRAM.
+Throughput ceiling: batch size where CPU collation keeps up with GPU.
+    Only exists when collation is slower AND GPU has per-step overhead.
 
-The one exception: GPU kernel overhead (α) creates a per-step constant cost
-that makes very small batches inefficient. When collation-dominated, we cap
-the batch to avoid extreme GPU starvation while staying large enough to
-amortize kernel overhead.
-
-Usage:
-    result = node_budget(dataset, lake_root, model=model,
-                         train_dataset=ds, num_workers=6)
-    sampler = DynamicBatchSampler(ds, max_num=result.budget, mode="node")
+Cost model: docs/reference/gnn_throughput_equations.md
+Each constant is tagged DERIVED / HEURISTIC / FALLBACK.
 """
 
 from __future__ import annotations
@@ -25,133 +15,95 @@ from __future__ import annotations
 import json
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import structlog
 import torch
+from torch.utils.benchmark import Timer as BenchmarkTimer
 
 log = structlog.get_logger()
 
-# --- Constants ---------------------------------------------------------------
-
-# Reserve 15% of free VRAM for allocator fragmentation + edge-density variance.
+# HEURISTIC: 15% VRAM reserve for allocator fragmentation. Variable-size
+# graph batches have higher memory variance than fixed-size, so wider than
+# Lightning's 5%. Standard range in PyTorch training code is 10-20%.
 _SAFETY_MARGIN = 0.85
 
-# Forward-only probe captures activations; multiply to account for gradient
-# memory during backward (gradients ≈ activations in size).
+# HEURISTIC: probe measures forward-only memory. Training adds gradients
+# (≈ activations) + optimizer state (small for GNNs with 24K-200K params).
+# 2× is a rough upper bound — could be 1.5-3× depending on model.
+# Source: Chen et al. 2016, popXL Tutorial 2.
 _GRAD_MULTIPLIER = 2
 
-# Fallback activation cost per node when no model is available for probing.
+# FALLBACK: conservative bytes/node when no model is available for probing.
+# Real models use 1-8KB/node. Overestimating is safe (smaller budget, no OOM).
 _FALLBACK_BYTES_PER_NODE = 32_768
 
-# Conv types with O(N²) global attention (full attention matrix).
+# DERIVED: conv types with O(N²) global attention (not O(E) over edges).
 _QUADRATIC_CONV_TYPES = frozenset({"gps"})
 
 
-# --- Cost model (Section 2-4 of gnn_throughput_equations.md) -----------------
-
 @dataclass
-class CostCoefficients:
-    """Empirically measured rates from a single probe batch.
-
-    These are per-unit rates, NOT total times. Both collation rate and GPU rate
-    scale with batch size — their ratio determines the regime.
-    """
-    collate_per_graph_s: float   # seconds per graph in Batch.from_data_list
-    gpu_per_node_s: float        # seconds per node of GPU compute (β)
-    gpu_overhead_s: float        # constant GPU overhead per step (α)
-    probe_n_graphs: int          # how many graphs the probe used
-    probe_n_nodes: int           # total nodes in probe batch
-
-
-def collation_time(n_graphs: int, coeffs: CostCoefficients) -> float:
-    """Predicted collation time for a batch of n_graphs.
-
-    Linear model: T_collate ≈ n_graphs × collate_per_graph.
-    Source: Section 2 — O(N_graphs) from PyG Batch.from_data_list.
-    """
-    return n_graphs * coeffs.collate_per_graph_s
+class BudgetResult:
+    """Output of node_budget()."""
+    budget: int                  # max_num for DynamicBatchSampler
+    mean_nodes: float            # dataset mean from cache_metadata.json
+    mem_budget: int              # VRAM ceiling in nodes
+    throughput_budget: int | None  # pipeline ceiling in nodes, None if N/A
+    binding: str                 # "memory" | "throughput" | "fallback"
+    cg_ratio: float | None       # (γ/W)/β diagnostic — >1 = collation bottleneck
+    # Raw probe measurements (for post-hoc analysis)
+    bytes_per_node: int | None = None
+    gamma_us: float | None = None   # γ: collation cost per graph (μs)
+    alpha_ms: float | None = None   # α: GPU overhead per step (ms)
+    beta_us: float | None = None    # β: GPU cost per node (μs)
 
 
-def gpu_time(n_nodes: int, coeffs: CostCoefficients) -> float:
-    """Predicted GPU time for a batch of n_nodes.
+def _probe(model, dataset, step_fn=None) -> tuple[int, float, float, float]:
+    """Measure bytes_per_node, γ (collation rate), α (GPU overhead), β (GPU per-node).
 
-    Affine model: T_gpu ≈ α + β × n_nodes.
-    α = kernel launch overhead (constant per step).
-    β = per-node compute cost (scales with model depth × hidden²).
-    Source: Section 3 — O(L·h²·(N_E + N_V)).
-    """
-    return coeffs.gpu_overhead_s + coeffs.gpu_per_node_s * n_nodes
+    Runs forward passes at two batch sizes to fit:
+        T_gpu(N) = α + β·N
 
+    From two measurements (N₁, T₁) and (N₂, T₂):
+        β = (T₂ - T₁) / (N₂ - N₁)
+        α = T₂ - β·N₂
 
-def regime(coeffs: CostCoefficients, num_workers: int, mean_nodes: float) -> str:
-    """Classify bottleneck regime from measured coefficients.
-
-    Compares per-node collation rate (γ/W) vs per-node GPU rate (β).
-    Source: Section 4 — regime is batch-size-independent when both sides
-    scale linearly. The overhead α shifts the balance toward compute-dominated
-    for small batches but doesn't change the asymptotic regime.
-    """
-    # γ = collation cost per node = collate_per_graph / mean_nodes
-    gamma = coeffs.collate_per_graph_s / max(1.0, mean_nodes)
-    gamma_eff = gamma / max(1, num_workers)
-    beta = coeffs.gpu_per_node_s
-
-    if beta <= 0:
-        return "collation-dominated"
-
-    ratio = gamma_eff / beta
-    if ratio > 2.0:
-        return "collation-dominated"
-    elif ratio < 0.5:
-        return "compute-dominated"
-    return "balanced"
-
-
-# --- Probe -------------------------------------------------------------------
-
-def probe(
-    model,
-    dataset,
-    n_target: int = 2000,
-    n_small: int = 200,
-    step_fn=None,
-) -> tuple[int, CostCoefficients]:
-    """Run two probe batches to measure VRAM, collation rate, and GPU rate.
-
-    Probes at two batch sizes (n_small and n_target nodes) to separate the
-    affine GPU model T_gpu = α + β·N into overhead (α) and per-node rate (β).
-
-    Returns:
-        (bytes_per_node, CostCoefficients)
+    Returns (bytes_per_node, gamma, alpha, beta).
     """
     from torch_geometric.data import Batch
 
-    # Collect graphs for both probe sizes
-    all_graphs, n = [], 0
+    # --- Collect graphs into two probe batches ---
+    # HEURISTIC: 2000 nodes for large batch (~70 graphs at mean 28 nodes),
+    # 200 nodes for small batch (~7 graphs). Large enough for reliable timing,
+    # small enough to be fast during DataLoader setup.
+    N_TARGET, N_SMALL = 2000, 200
+
+    all_graphs, total_nodes = [], 0
     small_idx = None
     for g in dataset:
         all_graphs.append(g)
-        n += g.num_nodes
-        if small_idx is None and n >= n_small:
+        total_nodes += g.num_nodes
+        if small_idx is None and total_nodes >= N_SMALL:
             small_idx = len(all_graphs)
-        if n >= n_target:
+        if total_nodes >= N_TARGET:
             break
 
+    # FALLBACK: if dataset is too small, use first 25% as small batch.
+    # Arbitrary — just needs to differ from large batch for the two-point solve.
     if small_idx is None:
         small_idx = max(1, len(all_graphs) // 4)
 
     graphs_small = all_graphs[:small_idx]
     graphs_large = all_graphs
 
-    # --- Measure collation time (CPU) on large batch ---
+    # --- γ: collation rate (CPU, single sample) ---
+    # Deterministic CPU work, single measurement is representative.
     t0 = time.perf_counter()
     batch_large = Batch.from_data_list(graphs_large)
     t_collate = time.perf_counter() - t0
+    gamma = t_collate / len(graphs_large)  # seconds per graph
 
-    # --- Build small batch for two-point GPU measurement ---
     batch_small = Batch.from_data_list(graphs_small)
-
     batch_large = batch_large.to(model.device)
     batch_small = batch_small.to(model.device)
     nodes_large = batch_large.num_nodes
@@ -160,42 +112,51 @@ def probe(
     was_training = model.training
     model.eval()
 
-    # Warmup both sizes (compile, kernel cache)
+    # Warmup: torch.compile, kernel JIT, cuDNN autotuning on both sizes.
+    fn = step_fn or model
     with torch.no_grad():
-        (step_fn or model)(batch_small)
-        (step_fn or model)(batch_large)
+        fn(batch_small)
+        fn(batch_large)
     torch.cuda.synchronize()
 
-    # --- Timed GPU runs ---
-    def _time_gpu(batch):
-        torch.cuda.synchronize()
-        t0 = time.perf_counter()
-        with torch.no_grad():
-            (step_fn or model)(batch)
-        torch.cuda.synchronize()
-        return time.perf_counter() - t0
+    # --- T_gpu at two batch sizes (BenchmarkTimer: multi-sample median) ---
+    def _make_fwd(batch):
+        def _fwd():
+            with torch.no_grad():
+                fn(batch)
+        return _fwd
 
-    t_gpu_small = _time_gpu(batch_small)
-    t_gpu_large = _time_gpu(batch_large)
+    t_gpu_small = BenchmarkTimer(
+        stmt="_fwd()", globals={"_fwd": _make_fwd(batch_small)},
+    ).blocked_autorange(min_run_time=0.2).median
 
-    # --- VRAM measurement (on large batch, same as before) ---
+    t_gpu_large = BenchmarkTimer(
+        stmt="_fwd()", globals={"_fwd": _make_fwd(batch_large)},
+    ).blocked_autorange(min_run_time=0.2).median
+
+    # --- bytes_per_node: VRAM delta from one forward pass ---
+    # (peak_allocated - baseline) / num_nodes captures real memory including
+    # scatter temporaries, attention buffers, PyG internals that the analytical
+    # formula (L·h·s per node) misses.
     torch.cuda.reset_peak_memory_stats(model.device)
     before = torch.cuda.memory_allocated(model.device)
     with torch.no_grad():
-        (step_fn or model)(batch_large)
+        fn(batch_large)
     torch.cuda.synchronize()
     peak = torch.cuda.max_memory_allocated(model.device)
 
     model.train(was_training)
-
     del batch_small, batch_large
     torch.cuda.empty_cache()
 
     fwd_per_node = max(1, int((peak - before) / nodes_large))
     bytes_per_node = fwd_per_node * _GRAD_MULTIPLIER
 
-    # --- Derive affine GPU model: T_gpu = α + β·N ---
-    # Two points: (nodes_small, t_gpu_small) and (nodes_large, t_gpu_large)
+    # --- Solve T_gpu = α + β·N ---
+    #   β = (T₂ - T₁) / (N₂ - N₁)
+    #   α = T₂ - β·N₂
+    # Clamped ≥ 0: negative = noise > signal. Biases toward zero which makes
+    # throughput_budget larger or None — safe, memory ceiling still protects.
     if nodes_large > nodes_small:
         beta = max(0.0, (t_gpu_large - t_gpu_small) / (nodes_large - nodes_small))
         alpha = max(0.0, t_gpu_large - beta * nodes_large)
@@ -203,80 +164,18 @@ def probe(
         beta = t_gpu_large / max(1, nodes_large)
         alpha = 0.0
 
-    n_graphs = len(graphs_large)
-    coeffs = CostCoefficients(
-        collate_per_graph_s=t_collate / n_graphs,
-        gpu_per_node_s=beta,
-        gpu_overhead_s=alpha,
-        probe_n_graphs=n_graphs,
-        probe_n_nodes=nodes_large,
-    )
-
     log.info("budget_probe",
              bytes_per_node=bytes_per_node,
-             probe_nodes_small=nodes_small,
-             probe_nodes_large=nodes_large,
-             probe_graphs=n_graphs,
+             nodes_small=nodes_small, nodes_large=nodes_large,
+             n_graphs=len(graphs_large),
              t_collate_ms=round(t_collate * 1000, 1),
              t_gpu_small_ms=round(t_gpu_small * 1000, 1),
              t_gpu_large_ms=round(t_gpu_large * 1000, 1),
              alpha_ms=round(alpha * 1000, 2),
-             beta_us_per_node=round(beta * 1e6, 3),
-             collate_per_graph_us=round(coeffs.collate_per_graph_s * 1e6, 1),
-             method="step_fn" if step_fn else "forward")
+             beta_us=round(beta * 1e6, 3),
+             gamma_us=round(gamma * 1e6, 1))
 
-    return bytes_per_node, coeffs
-
-
-# --- Budget computation ------------------------------------------------------
-
-@dataclass
-class BudgetResult:
-    """Structured result from node_budget(). All fields logged for analysis."""
-    budget: int                       # actual max_num for DynamicBatchSampler
-    mean_nodes: float                 # from cache_metadata.json
-    mem_budget: int                   # VRAM ceiling (nodes)
-    throughput_budget: int | None     # pipeline ceiling (nodes), None if no probe
-    binding: str                      # "memory" | "throughput" | "fallback"
-    regime: str                       # "collation-dominated" | "compute-dominated" | "balanced"
-    coefficients: CostCoefficients | None = field(default=None, repr=False)
-
-
-def _throughput_budget_nodes(
-    coeffs: CostCoefficients,
-    num_workers: int,
-    mean_nodes: float,
-) -> int | None:
-    """Compute the batch size where pipeline delivery matches GPU consumption.
-
-    Solves: T_collation(B) / W = T_gpu(B)
-    Where T_collation = γ·B (linear in graphs)
-    And   T_gpu = α + β·N = α + β·B·mean_nodes (affine in graphs via nodes)
-
-    Solution: B = α / (γ/W - β·mean_nodes)
-    Exists only when γ/W > β·mean_nodes (collation-dominated regime).
-
-    When it exists, this is the batch size (in graphs) where the pipeline
-    exactly keeps up with the GPU. Below this, the GPU starves less but
-    wastes kernel overhead. Above this, the GPU starves.
-    """
-    gamma = coeffs.collate_per_graph_s
-    beta_per_graph = coeffs.gpu_per_node_s * mean_nodes
-    alpha = coeffs.gpu_overhead_s
-    delivery_rate = gamma / max(1, num_workers)
-
-    # Only solvable when collation per graph exceeds GPU per graph
-    gap = delivery_rate - beta_per_graph
-    if gap <= 0:
-        return None  # compute-dominated — memory binds
-
-    if alpha <= 0:
-        # Pure linear model: ratio is constant, no finite optimum.
-        # Use mem_budget (regime check handles this).
-        return None
-
-    optimal_graphs = max(1, int(alpha / gap))
-    return int(optimal_graphs * mean_nodes)
+    return bytes_per_node, gamma, alpha, beta
 
 
 def node_budget(
@@ -289,25 +188,19 @@ def node_budget(
     train_dataset=None,
     num_workers: int = 2,
 ) -> BudgetResult:
-    """Compute node budget from regime classification + memory ceiling.
+    """Compute max_num for DynamicBatchSampler(mode="node").
 
-    Memory ceiling: largest batch that fits in VRAM without OOM.
-    Regime classification: determines if the pipeline is collation-dominated
-    or compute-dominated. In the collation-dominated regime AND when the GPU
-    has measurable per-step overhead (α), computes an optimal batch size that
-    balances kernel overhead amortization against pipeline delivery rate.
-
-    Args:
-        dataset: catalog name (e.g. "set_01")
-        lake_root: path to experiment lake
-        conv_type: convolution type (affects quadratic budget path)
-        heads: attention heads (for quadratic budget)
-        model: LightningModule on device (enables live probe)
-        train_dataset: dataset for probe batch
-        num_workers: DataLoader worker count
+    1. Read mean_nodes from cache_metadata.json.
+    2. Read free VRAM.
+    3. GPS conv → quadratic VRAM formula, return early.
+    4. If model available → _probe() for bytes_per_node, γ, α, β.
+    5. mem_budget = free × SAFETY_MARGIN / bytes_per_node.
+    6. throughput_budget = α / (γ/W - β·m̄) × m̄  [if it exists].
+    7. budget = min(mem_budget, throughput_budget).
     """
     from graphids.config import cache_dir
 
+    # --- Step 1: dataset statistics ---
     metadata_path = cache_dir(lake_root, dataset) / "cache_metadata.json"
     if not metadata_path.exists():
         raise FileNotFoundError(
@@ -317,71 +210,95 @@ def node_budget(
     stats = json.loads(metadata_path.read_text())["graph_stats"]["node_count"]
     mean_nodes = stats["mean"]
 
+    # --- Step 2: free VRAM ---
     if torch.cuda.is_available():
         free, _ = torch.cuda.mem_get_info()
     else:
-        free = 12 * 1024**3  # CPU fallback for testing
+        free = 12 * 1024**3  # FALLBACK: 12GB for CPU-only testing
 
-    # Quadratic conv types have O(N²) attention — separate path.
+    # --- Step 3: quadratic conv types ---
+    # DERIVED: GPS global attention allocates [N×N×K] per head.
+    # Memory ≈ N² × heads × 3 (Q,K,V) × 2 bytes (fp16).
+    # Solve: N ≤ sqrt(free / (heads × 3 × 2))
     if conv_type in _QUADRATIC_CONV_TYPES:
         budget = int(math.sqrt(free / (heads * 3 * 2)))
         log.info("node_budget", conv_type=conv_type, budget=budget,
-                 free_vram_gb=round(free / 1e9, 2), method="quadratic",
-                 binding="memory")
+                 free_vram_gb=round(free / 1e9, 2), binding="memory")
         return BudgetResult(
             budget=budget, mean_nodes=mean_nodes,
-            mem_budget=budget, throughput_budget=None, binding="memory",
-            regime="compute-dominated",
+            mem_budget=budget, throughput_budget=None,
+            binding="memory", cg_ratio=None,
         )
 
-    # --- Run probe if model available ---
-    coeffs = None
+    # --- Step 4: probe ---
+    gamma = alpha = beta = None
     bytes_per_node = _FALLBACK_BYTES_PER_NODE
 
     if model is not None and train_dataset is not None and torch.cuda.is_available():
         step_fn = getattr(model, "_step", None)
-        bytes_per_node, coeffs = probe(model, train_dataset, step_fn=step_fn)
+        bytes_per_node, gamma, alpha, beta = _probe(model, train_dataset, step_fn=step_fn)
 
-    # --- Memory ceiling ---
+    # --- Step 5: memory ceiling ---
+    # DERIVED: mem_budget = free × margin / bytes_per_node
     mem_budget = int(free * _SAFETY_MARGIN / bytes_per_node)
 
-    # --- Regime classification + throughput budget ---
+    # --- Step 6: throughput ceiling ---
+    # DERIVED from setting T_collate/W = T_gpu and solving for batch size B:
+    #
+    #   γ·B / W = α + β·B·m̄
+    #   B·(γ/W - β·m̄) = α
+    #   B = α / (γ/W - β·m̄)           ← in graphs
+    #   N = B · m̄                      ← convert to nodes
+    #
+    # Exists only when:
+    #   gap = γ/W - β·m̄ > 0   (collation slower than GPU per graph)
+    #   α > 0                  (measurable per-step overhead)
     throughput_budget = None
-    detected_regime = "unknown"
+    cg_ratio = None
 
-    if coeffs is not None:
-        detected_regime = regime(coeffs, num_workers, mean_nodes)
-        throughput_budget = _throughput_budget_nodes(coeffs, num_workers, mean_nodes)
+    if gamma is not None:
+        # Diagnostic ratio: (γ/W) / β — not used for decisions, just logged.
+        gamma_per_node = gamma / max(1.0, mean_nodes)
+        gamma_eff = gamma_per_node / max(1, num_workers)
+        if beta > 0:
+            cg_ratio = gamma_eff / beta
 
-    # --- Final budget ---
+        # Throughput budget from the balance equation.
+        delivery_rate = gamma / max(1, num_workers)   # γ/W
+        beta_per_graph = beta * mean_nodes             # β·m̄
+        gap = delivery_rate - beta_per_graph
+
+        if gap > 0 and alpha > 0:
+            optimal_graphs = max(1, int(alpha / gap))
+            throughput_budget = int(optimal_graphs * mean_nodes)
+
+    # --- Step 7: final budget = min(memory, throughput) ---
     if throughput_budget is not None and throughput_budget < mem_budget:
         budget = throughput_budget
         binding = "throughput"
     else:
         budget = mem_budget
-        binding = "fallback" if coeffs is None else "memory"
+        binding = "fallback" if gamma is None else "memory"
 
     budget = max(1, budget)
 
     log.info("node_budget",
-             budget=budget,
-             mem_budget=mem_budget,
-             throughput_budget=throughput_budget,
-             binding=binding,
-             regime=detected_regime,
+             budget=budget, mem_budget=mem_budget,
+             throughput_budget=throughput_budget, binding=binding,
+             cg_ratio=round(cg_ratio, 2) if cg_ratio is not None else None,
              num_workers=num_workers,
              free_vram_gb=round(free / 1e9, 2),
              bytes_per_node=bytes_per_node,
              mean_nodes=round(mean_nodes, 1),
-             alpha_ms=round(coeffs.gpu_overhead_s * 1000, 2) if coeffs else None,
-             beta_us=round(coeffs.gpu_per_node_s * 1e6, 3) if coeffs else None)
+             alpha_ms=round(alpha * 1000, 2) if alpha is not None else None,
+             beta_us=round(beta * 1e6, 3) if beta is not None else None)
 
     return BudgetResult(
-        budget=budget,
-        mean_nodes=mean_nodes,
-        mem_budget=mem_budget,
-        throughput_budget=throughput_budget,
-        binding=binding,
-        regime=detected_regime,
-        coefficients=coeffs,
+        budget=budget, mean_nodes=mean_nodes,
+        mem_budget=mem_budget, throughput_budget=throughput_budget,
+        binding=binding, cg_ratio=cg_ratio,
+        bytes_per_node=bytes_per_node,
+        gamma_us=round(gamma * 1e6, 1) if gamma is not None else None,
+        alpha_ms=round(alpha * 1000, 2) if alpha is not None else None,
+        beta_us=round(beta * 1e6, 3) if beta is not None else None,
     )

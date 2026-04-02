@@ -34,10 +34,20 @@ def _worker_init(worker_id: int) -> None:
 
 def make_graph_loader(
     dataset, *, batch_sampler=None, batch_size=1, shuffle=False,
-    num_workers: int = 0, pin_memory: bool = True, **kwargs,
+    num_workers: int = 0, pin_memory: bool = True,
+    device: torch.device | None = None, **kwargs,
 ) -> DataLoader:
-    """Thin wrapper around PyG DataLoader — sets spawn/persistent_workers defaults."""
+    """Thin wrapper around PyG DataLoader — sets spawn/persistent_workers defaults.
+
+    Args:
+        device: When set, wraps the loader with PyG's PrefetchLoader for async
+            H2D transfer via CUDA streams. pin_memory is disabled on the inner
+            loader (PrefetchLoader handles pinning internally).
+    """
     from torch_geometric.loader import DataLoader as PyGDataLoader
+
+    if device is not None:
+        pin_memory = False  # PrefetchLoader pins internally
 
     if num_workers > 0:
         kwargs.setdefault("persistent_workers", True)
@@ -47,8 +57,14 @@ def make_graph_loader(
     common = dict(num_workers=num_workers, pin_memory=pin_memory, **kwargs)
 
     if batch_sampler is not None:
-        return PyGDataLoader(dataset, batch_sampler=batch_sampler, **common)
-    return PyGDataLoader(dataset, batch_size=batch_size, shuffle=shuffle, **common)
+        loader = PyGDataLoader(dataset, batch_sampler=batch_sampler, **common)
+    else:
+        loader = PyGDataLoader(dataset, batch_size=batch_size, shuffle=shuffle, **common)
+
+    if device is not None:
+        from torch_geometric.loader import PrefetchLoader
+        return PrefetchLoader(loader, device=device)
+    return loader
 
 
 
@@ -186,8 +202,13 @@ class CANBusDataModule(pl.LightningDataModule):
         bs = max(8, hp["batch_size"])
         nw = hp["num_workers"] if "num_workers" in hp else 0
 
+        # Async H2D via PrefetchLoader when GPU is available
+        trainer = getattr(self, "trainer", None)
+        device = None
+        if trainer and torch.cuda.is_available():
+            device = trainer.strategy.root_device
+
         if hp["dynamic_batching"]:
-            trainer = getattr(self, "trainer", None)
             model = trainer.lightning_module if trainer else None
             result = node_budget(
                 hp["dataset"], hp["lake_root"],
@@ -202,9 +223,9 @@ class CANBusDataModule(pl.LightningDataModule):
                 skip_too_big=True, num_steps=num_steps,
             )
             dataset._data_list = None  # clear bloat from sampler's __init__
-            return make_graph_loader(dataset, batch_sampler=sampler, num_workers=nw)
+            return make_graph_loader(dataset, batch_sampler=sampler, num_workers=nw, device=device)
 
-        return make_graph_loader(dataset, batch_size=bs, shuffle=shuffle, num_workers=nw)
+        return make_graph_loader(dataset, batch_size=bs, shuffle=shuffle, num_workers=nw, device=device)
 
 
 class FusionDataModule(pl.LightningDataModule):
