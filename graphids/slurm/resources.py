@@ -104,6 +104,7 @@ def get_resources(model_type: str, scale: str, stage: str) -> ResourceSpec:
         spec = stage_spec
 
     mode = spec.pop("mode", None)
+    mem_per_cpu = None
     if mode and "partition" not in spec:
         cluster = _detect_cluster()
         clusters = _load_clusters().get("clusters", {})
@@ -118,10 +119,25 @@ def get_resources(model_type: str, scale: str, stage: str) -> ResourceSpec:
             raise KeyError(f"No mode '{mode}' for cluster '{cluster}' in clusters.yaml")
         spec["partition"] = mode_spec["partition"]
         spec["gres"] = mode_spec.get("gres", "")
+        mem_per_cpu = mode_spec.get("mem_per_cpu")  # MB, from clusters.yaml
 
     spec["cpus_per_task"] = spec.pop("cpus")
     spec["num_workers"] = spec.pop("workers")
-    return ResourceSpec(**spec)
+    result = ResourceSpec(**spec)
+
+    # Validate memory fits within SLURM's per-CPU limit for the resolved partition.
+    if mode and mem_per_cpu is not None:
+        max_mem_mb = result.cpus_per_task * mem_per_cpu
+        if result.mem_mb > max_mem_mb:
+            raise ValueError(
+                f"Requested mem={result.mem} ({result.mem_mb} MB) exceeds "
+                f"cluster limit: {result.cpus_per_task} CPUs × "
+                f"{mem_per_cpu} MB/CPU = {max_mem_mb} MB "
+                f"({max_mem_mb // 1024}G). "
+                f"Increase cpus or reduce mem."
+            )
+
+    return result
 
 
 def get_failure_reactions() -> dict:

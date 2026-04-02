@@ -9,10 +9,10 @@ import torch
 from torch.utils.data import Subset
 from torch_geometric.loader import DynamicBatchSampler
 
+from graphids.core.preprocessing.budget import node_budget
 from graphids.core.preprocessing.datamodule import (
     CANBusDataModule,
     make_graph_loader,
-    vram_node_budget,
 )
 
 
@@ -186,14 +186,15 @@ class CurriculumDataModule(CANBusDataModule):
         if hp.dynamic_batching:
             trainer = getattr(self, "trainer", None)
             model = trainer.lightning_module if trainer else None
-            budget, mean_nodes = vram_node_budget(
+            result = node_budget(
                 hp.dataset, hp.lake_root,
                 conv_type=hp.conv_type, heads=hp.heads,
                 model=model, train_dataset=val_data,
+                num_workers=hp.num_workers,
             )
-            num_steps = max(1, int(len(val_data) * mean_nodes / budget))
+            num_steps = max(1, int(len(val_data) * result.mean_nodes / result.budget))
             sampler = DynamicBatchSampler(
-                val_data, max_num=budget, mode="node", shuffle=False,
+                val_data, max_num=result.budget, mode="node", shuffle=False,
                 skip_too_big=True, num_steps=num_steps,
             )
             return make_graph_loader(val_data, batch_sampler=sampler, num_workers=hp.num_workers)
@@ -208,13 +209,14 @@ class CurriculumDataModule(CANBusDataModule):
         if hp.dynamic_batching and self._batch_sampler.max_num_nodes is None:
             trainer = getattr(self, "trainer", None)
             model = trainer.lightning_module if trainer else None
-            budget, mean_nodes = vram_node_budget(
+            result = node_budget(
                 hp.dataset, hp.lake_root,
                 conv_type=hp.conv_type, heads=hp.heads,
                 model=model, train_dataset=self._batch_sampler.dataset,
+                num_workers=hp.num_workers,
             )
-            self._batch_sampler.max_num_nodes = budget
-            self._batch_sampler.mean_nodes = mean_nodes
+            self._batch_sampler.max_num_nodes = result.budget
+            self._batch_sampler.mean_nodes = result.mean_nodes
             self._batch_sampler._inner = self._batch_sampler._build_inner()
         return self._train_loader
 

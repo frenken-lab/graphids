@@ -6,14 +6,14 @@ clusters:
     cardinal: [cardinal]
   execution_modes:
     pitzer:
-      gpu_train: {partition: gpu, gres: gpu:1}
-      gpu_eval: {partition: gpu, gres: gpu:1}
-      cpu_preprocess: {partition: cpu}
+      gpu_train: {partition: gpu, gres: "gpu:1", mem_per_cpu: 9292}
+      gpu_eval: {partition: gpu, gres: "gpu:1", mem_per_cpu: 9292}
+      cpu_preprocess: {partition: cpu, mem_per_cpu: 4556}
     ascend:
-      gpu_train: {partition: nextgen, gres: gpu:a100:1}
-      gpu_eval: {partition: nextgen, gres: gpu:a100:1}
-      cpu_preprocess: {partition: nextgen}
+      gpu_train: {partition: nextgen, gres: "gpu:a100:1", mem_per_cpu: 4027}
+      gpu_eval: {partition: nextgen, gres: "gpu:a100:1", mem_per_cpu: 4027}
+      cpu_preprocess: {partition: nextgen, mem_per_cpu: 4027}
     cardinal:
-      gpu_train: {partition: batch, gres: gpu:h100:1}
-      gpu_eval: {partition: batch, gres: gpu:h100:1}
-      cpu_preprocess: {partition: batch}
+      gpu_train: {partition: gpu, gres: "gpu:h100:1", mem_per_cpu: 9216}
+      gpu_eval: {partition: gpu, gres: "gpu:h100:1", mem_per_cpu: 9216}
+      cpu_preprocess: {partition: cpu, mem_per_cpu: 4966}
