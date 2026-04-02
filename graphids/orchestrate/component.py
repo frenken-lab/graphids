@@ -103,7 +103,7 @@ class SlurmTrainingComponent(dg.Component, dg.Model, dg.Resolvable):
         # 3. Build assets — one @asset per StageConfig (train→test→analyze in one SLURM job)
         assets = [make_training_asset(cfg, partitions, lake_root, user) for cfg in stage_configs]
 
-        # 4. Build asset checks
+        # 4. Build asset checks (checkpoint blocking + analysis non-blocking)
         cfg_lookup = {cfg.asset_name: cfg for cfg in stage_configs}
         checks = make_asset_checks(cfg_lookup, partitions, lake_root, user)
 

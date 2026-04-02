@@ -471,7 +471,7 @@ class VGAEModule(GraphModuleBase):
         hp = self.hparams
         return recon + hp.canid_weight * canid_per_graph + hp.nbr_weight * nbr_per_graph
 
-    def test_step(self, batch, _idx):
+    def test_step(self, batch, _idx, dataloader_idx=0):
         errors = self._per_graph_errors(batch)
         self.roc_metric.update(errors.detach(), batch.y.detach())
 

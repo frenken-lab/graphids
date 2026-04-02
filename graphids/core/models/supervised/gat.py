@@ -294,7 +294,10 @@ class GATModule(GraphModuleBase):
         self.log("val_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
         self.log("val_acc", acc, prog_bar=True, batch_size=batch.num_graphs)
 
-    def test_step(self, batch, _idx):
+    def test_step(self, batch, _idx, dataloader_idx=0):
+        # dataloader_idx: required when DataModule returns multiple test dataloaders
+        # (e.g. per-dataset evaluation). Lightning passes the index positionally;
+        # default=0 keeps single-dataloader callers working unchanged.
         logits = self(batch)
         scores = F.softmax(logits, dim=1)[:, 1]
         self.test_metrics.update(scores, batch.y)

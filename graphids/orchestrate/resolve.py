@@ -89,6 +89,15 @@ class ConfigResolver:
             for k, v in cfg.trainer_overrides.items():
                 audit.append(OverrideRecord(key=k, value=v, source="recipe_trainer"))
 
+            # Curriculum epoch sync: CurriculumDataModule.max_epochs must match
+            # trainer.max_epochs. Auto-inject the data override so recipes don't
+            # need stage-specific overrides for this cross-field constraint.
+            if cfg.stage == "curriculum" and "trainer.max_epochs" in runtime_overrides:
+                key = "data.init_args.max_epochs"
+                val = runtime_overrides["trainer.max_epochs"]
+                runtime_overrides[key] = val
+                audit.append(OverrideRecord(key=key, value=val, source="curriculum_sync"))
+
         if cfg.kd_overrides:
             key = "model.init_args.auxiliaries"
             val = json.dumps([cfg.kd_overrides])

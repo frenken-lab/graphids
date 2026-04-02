@@ -71,12 +71,19 @@ def generate_script(
     run_test: bool = True,
     analysis_spec_file: Path | None = None,
 ) -> str:
-    """Multi-command sbatch script: train, optionally test and analyze."""
+    """Multi-command sbatch script: train, optionally test and analyze.
+
+    Training runs under set -e (fail-fast). Test and analyze run with
+    set +e so their failures don't prevent the job from reporting success
+    back to the dagster orchestrator (which writes .complete markers).
+    """
     quoted = shlex.quote(str(spec_file))
     lines = [
         "#!/bin/bash",
         f"source {PROJECT_ROOT}/scripts/slurm/_preamble.sh",
         f"python -m graphids train-from-spec --spec-file {quoted}",
+        "# Test/analyze are best-effort — don't kill the job on failure",
+        "set +e",
     ]
     if run_test:
         lines.append(f"python -m graphids test-from-spec --spec-file {quoted}")

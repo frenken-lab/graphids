@@ -174,6 +174,6 @@ def expand_recipe_configs(
         "defaults": defaults,
         "configs": configs,
         "sweep": {"seeds": seed_list},
-        "trainer_overrides": _flatten_dict(envelope.trainer_overrides, "trainer"),
+        "trainer_overrides": _flatten_dict(envelope.trainer_overrides),
         "resource_overrides": dict(envelope.resource_overrides),
     }

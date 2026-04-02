@@ -1,7 +1,7 @@
 recipe:
   name: smoke_test
   description: Fast smoke test — hcrl_sa, 2 epochs, gpudebug
-seeds: [42]
+seeds: [99]
 selection:
   datasets: [hcrl_sa]
   model_families: [vgae, gat, fusion]
@@ -11,9 +11,11 @@ selection:
     gat: [curriculum]
     fusion: [fusion]
   fusion_methods: [bandit]
-# Keys are relative to the trainer namespace (no "trainer." prefix needed)
+# Fully-qualified dotted paths — used as --key=val CLI args
+# and applied to merged YAML for cross-field validation.
+# Curriculum data.init_args.max_epochs is auto-synced by ConfigResolver.
 trainer_overrides:
-  max_epochs: 2
+  trainer.max_epochs: 10
 resource_overrides:
   time: "0:15:00"
   partition: gpudebug

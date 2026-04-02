@@ -222,7 +222,7 @@ class DGIModule(GraphModuleBase):
         node_scores = self.model.discriminate(pos_z, summary, batch.batch)
         return 1 - scatter(node_scores, batch.batch, dim=0, reduce="mean")
 
-    def test_step(self, batch, _idx):
+    def test_step(self, batch, _idx, dataloader_idx=0):
         scores = self._per_graph_scores(batch)
         self.roc_metric.update(scores.detach(), batch.y.detach())
 

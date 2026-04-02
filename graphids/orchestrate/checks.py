@@ -1,4 +1,9 @@
-"""Dagster asset check factory helpers for orchestrated assets."""
+"""Dagster asset check factory helpers for orchestrated assets.
+
+Two checks per training asset:
+- checkpoint_complete — blocking, gates downstream assets
+- analysis_complete  — non-blocking, informational only
+"""
 
 from __future__ import annotations
 
@@ -26,33 +31,11 @@ def _paths_from_context(
     )
 
 
-def _check_result(
-    *, context, cfg: StageConfig, lake_root: str, user: str,
-) -> dg.AssetCheckResult:
-    """Verify checkpoint + complete marker, and analysis outputs if supported."""
+def _partition_keys(context) -> tuple[str, int]:
+    """Extract (dataset, seed) from a multi-partition context."""
     dataset = context.partition_key.keys_by_dimension["dataset"]
     seed = int(context.partition_key.keys_by_dimension["seed"])
-    paths = _paths_from_context(cfg, lake_root=lake_root, user=user, dataset=dataset, seed=seed)
-
-    ckpt_ok = paths.ckpt_file.exists() and paths.complete_marker.exists()
-    metadata: dict[str, dg.MetadataValue] = {
-        "path": dg.MetadataValue.path(str(paths.ckpt_file)),
-    }
-
-    if supports_analysis(cfg.model_type):
-        spec = build_analysis_spec(
-            cfg=cfg, dataset=dataset, seed=seed, ckpt_path=str(paths.ckpt_file),
-        )
-        manifest_path = Path(spec.output_dir) / ANALYSIS_MANIFEST_NAME
-        expected, existing = output_status(spec)
-        analysis_ok = manifest_path.exists() and len(existing) == len(expected)
-        metadata["manifest"] = dg.MetadataValue.path(str(manifest_path))
-        metadata["expected"] = len(expected)
-        metadata["existing"] = len(existing)
-    else:
-        analysis_ok = True  # no analysis expected
-
-    return dg.AssetCheckResult(passed=ckpt_ok and analysis_ok, metadata=metadata)
+    return dataset, seed
 
 
 def make_asset_checks(
@@ -61,24 +44,73 @@ def make_asset_checks(
     lake_root: str,
     user: str,
 ) -> list[dg.AssetChecksDefinition]:
-    """One combined check per training asset: checkpoint + analysis outputs."""
-    checks = []
+    """Two checks per training asset: checkpoint (blocking) + analysis (non-blocking)."""
+    checks: list[dg.AssetChecksDefinition] = []
     for asset_name, cfg in cfg_lookup.items():
 
-        def _make_check(name: str, c: StageConfig):
+        # --- Checkpoint check: blocking ---
+        def _make_ckpt_check(name: str, c: StageConfig):
             @dg.asset_check(
                 asset=dg.AssetKey(name),
-                name=f"outputs_complete_{name}",
+                name=f"checkpoint_complete_{name}",
                 blocking=True,
-                description=f"Verify outputs for {name}",
+                description=f"Verify checkpoint + complete marker for {name}",
                 partitions_def=partitions_def,
             )
             def _check(context) -> dg.AssetCheckResult:
-                return _check_result(
-                    context=context, cfg=c, lake_root=lake_root, user=user,
+                dataset, seed = _partition_keys(context)
+                paths = _paths_from_context(
+                    c, lake_root=lake_root, user=user, dataset=dataset, seed=seed,
+                )
+                ckpt_ok = paths.ckpt_file.exists() and paths.complete_marker.exists()
+                return dg.AssetCheckResult(
+                    passed=ckpt_ok,
+                    metadata={
+                        "ckpt_path": dg.MetadataValue.path(str(paths.ckpt_file)),
+                        "complete_marker": dg.MetadataValue.bool(
+                            paths.complete_marker.exists()
+                        ),
+                    },
                 )
 
             return _check
 
-        checks.append(_make_check(asset_name, cfg))
+        checks.append(_make_ckpt_check(asset_name, cfg))
+
+        # --- Analysis check: non-blocking, only for supported model types ---
+        if supports_analysis(cfg.model_type):
+
+            def _make_analysis_check(name: str, c: StageConfig):
+                @dg.asset_check(
+                    asset=dg.AssetKey(name),
+                    name=f"analysis_complete_{name}",
+                    blocking=False,
+                    description=f"Verify analysis outputs for {name}",
+                    partitions_def=partitions_def,
+                )
+                def _check(context) -> dg.AssetCheckResult:
+                    dataset, seed = _partition_keys(context)
+                    paths = _paths_from_context(
+                        c, lake_root=lake_root, user=user, dataset=dataset, seed=seed,
+                    )
+                    spec = build_analysis_spec(
+                        cfg=c, dataset=dataset, seed=seed,
+                        ckpt_path=str(paths.ckpt_file),
+                    )
+                    manifest_path = Path(spec.output_dir) / ANALYSIS_MANIFEST_NAME
+                    expected, existing = output_status(spec)
+                    analysis_ok = manifest_path.exists() and len(existing) == len(expected)
+                    return dg.AssetCheckResult(
+                        passed=analysis_ok,
+                        metadata={
+                            "manifest": dg.MetadataValue.path(str(manifest_path)),
+                            "expected": len(expected),
+                            "existing": len(existing),
+                        },
+                    )
+
+                return _check
+
+            checks.append(_make_analysis_check(asset_name, cfg))
+
     return checks

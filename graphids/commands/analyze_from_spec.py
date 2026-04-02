@@ -10,6 +10,8 @@ import argparse
 
 from graphids.commands._spec_payload import load_payload
 from graphids.core.analyze_entrypoint import run_analysis_from_payload
+from graphids.core.contracts import AnalysisContract
+from graphids.orchestrate.analysis import write_manifest
 
 
 def main(argv: list[str]) -> None:
@@ -19,3 +21,12 @@ def main(argv: list[str]) -> None:
 
     payload = load_payload(args.spec_file)
     run_analysis_from_payload(payload)
+
+    spec = AnalysisContract.from_envelope(payload)
+    write_manifest(
+        asset_name=spec.metadata.get("asset_name", "unknown"),
+        dataset=spec.dataset,
+        seed=spec.seed,
+        checkpoint_path=spec.ckpt_path,
+        spec=spec,
+    )

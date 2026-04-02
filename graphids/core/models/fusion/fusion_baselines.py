@@ -34,7 +34,10 @@ class FusionModuleBase(pl.LightningModule):
     def predict(self, states: torch.Tensor) -> dict:
         ...
 
-    def test_step(self, batch, batch_idx):
+    def test_step(self, batch, batch_idx, dataloader_idx=0):
+        # dataloader_idx: required when DataModule returns multiple test dataloaders
+        # (e.g. per-dataset evaluation). Lightning passes the index positionally;
+        # default=0 keeps single-dataloader callers working unchanged.
         states, labels = batch
         result = self.predict(states)
         self.test_metrics.update(result["preds"], labels)
@@ -109,7 +112,7 @@ class MLPFusionModule(pl.LightningModule):
         self.log("val_loss", loss, prog_bar=True)
         self.log("val_acc", acc, prog_bar=True)
 
-    def test_step(self, batch, batch_idx):
+    def test_step(self, batch, batch_idx, dataloader_idx=0):
         states, labels = batch
         logits = self(states)
         preds = (logits > 0).long()
@@ -174,7 +177,7 @@ class WeightedAvgModule(pl.LightningModule):
         self.log("val_loss", loss, prog_bar=True)
         self.log("val_acc", acc, prog_bar=True)
 
-    def test_step(self, batch, batch_idx):
+    def test_step(self, batch, batch_idx, dataloader_idx=0):
         states, labels = batch
         scores = self(states)
         preds = (scores > self.decision_threshold).long()

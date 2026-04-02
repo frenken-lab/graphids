@@ -56,7 +56,7 @@ class TestRecipeOverrideExpansion:
     def test_trainer_overrides_flattened(self):
         raw = {
             "sweeps": [{"model_family": "gat", "stage": "normal", "scale": "small"}],
-            "trainer_overrides": {"max_epochs": 2},
+            "trainer_overrides": {"trainer.max_epochs": 2},
         }
         expanded = expand_recipe_configs(raw)
         assert expanded["trainer_overrides"] == {"trainer.max_epochs": "2"}
@@ -293,7 +293,8 @@ class TestYAMLAwareValidation:
         assert merged["data"]["init_args"]["num_workers"] == 3
         assert merged["data"]["init_args"]["batch_size"] == 64
 
-    def test_curriculum_epoch_mismatch_raises(self, resolver, tmp_path):
+    def test_curriculum_epoch_auto_sync(self, resolver, tmp_path):
+        """Resolver auto-injects data.init_args.max_epochs for curriculum stages."""
         f1 = self._write_yaml(tmp_path, "trainer.yaml", {
             "trainer": {"max_epochs": 300},
         })
@@ -308,8 +309,10 @@ class TestYAMLAwareValidation:
             config_files=(f1, f2),
             trainer_overrides={"trainer.max_epochs": "2"},
         )
-        with pytest.raises(ValueError, match="CurriculumDataModule.max_epochs.*!=.*trainer"):
-            resolver.resolve(cfg, dataset="hcrl_sa", seed=42, upstream_ckpts={})
+        resolved = resolver.resolve(cfg, dataset="hcrl_sa", seed=42, upstream_ckpts={})
+        assert resolved.spec.runtime_overrides["data.init_args.max_epochs"] == "2"
+        sources = {r.source for r in resolved.audit}
+        assert "curriculum_sync" in sources
 
     def test_curriculum_epoch_match_passes(self, resolver, tmp_path):
         f1 = self._write_yaml(tmp_path, "trainer.yaml", {

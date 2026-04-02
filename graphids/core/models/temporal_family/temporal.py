@@ -280,7 +280,7 @@ class TemporalLightningModule(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         return self._shared_step(batch, "val")
 
-    def test_step(self, batch, batch_idx):
+    def test_step(self, batch, batch_idx, dataloader_idx=0):
         graph_sequences, labels = batch
         device = self.device
         moved_sequences = [[g.clone().to(device, non_blocking=True) for g in seq] for seq in graph_sequences]

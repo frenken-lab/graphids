@@ -11,8 +11,11 @@ import torch
 log = structlog.get_logger()
 
 
-class FusionRewardCalculator:
+class FusionRewardCalculator(torch.nn.Module):
     """Vectorized fusion reward from state features, predictions, and labels.
+
+    Extends nn.Module so _vgae_weights auto-transfers to GPU when the owning
+    LightningModule (BanditFusionModule, DQNFusionModule) is moved to a device.
 
     Encapsulates the feature layout indices and VGAE error weights so callers
     don't need to thread them through every call.
@@ -42,6 +45,7 @@ class FusionRewardCalculator:
         overconf_penalty: float = -1.5,
         balance_weight: float = 0.3,
     ) -> None:
+        super().__init__()
         from .fusion_features import feature_layout
 
         layout = feature_layout()
@@ -53,7 +57,9 @@ class FusionRewardCalculator:
         self._vgae_conf_idx = vgae.confidence_idx
         self._gat_conf_idx = gat.confidence_idx
 
-        self._vgae_weights = torch.tensor(vgae_weights, dtype=torch.float32)
+        self.register_buffer(
+            "_vgae_weights", torch.tensor(vgae_weights, dtype=torch.float32)
+        )
 
         # Reward shaping coefficients
         self._reward_correct = reward_correct
@@ -79,9 +85,7 @@ class FusionRewardCalculator:
         [N, D] -> ([N], [N]).
         """
         vgae_errors = states[:, self._vgae_error_slice]
-        anomaly_scores = (
-            (vgae_errors * self._vgae_weights).sum(dim=1).clamp(0.0, 1.0)
-        )
+        anomaly_scores = (vgae_errors * self._vgae_weights).sum(dim=1).clamp(0.0, 1.0)
 
         gat_logits = states[:, self._gat_logit_slice]
         gat_probs = torch.softmax(gat_logits, dim=1)[:, 1]

@@ -140,7 +140,7 @@ class DQNFusionModule(FusionModuleBase):
         self.save_hyperparameters()
         self.automatic_optimization = False
 
-        self._alpha_values_t = torch.linspace(0, 1, alpha_steps)
+        self.register_buffer("_alpha_values_t", torch.linspace(0, 1, alpha_steps))
         self.action_dim = alpha_steps
         self.state_dim = state_dim
         self.gamma = gamma

@@ -67,7 +67,7 @@ class BanditFusionModule(FusionModuleBase):
         self.automatic_optimization = False
 
         self.alpha_steps = alpha_steps
-        self.alpha_values = torch.linspace(0, 1, alpha_steps)
+        self.register_buffer("alpha_values", torch.linspace(0, 1, alpha_steps))
         self.ucb_alpha = ucb_alpha
         self.lambda_reg = lambda_reg
         self.batch_size = batch_size
@@ -149,7 +149,7 @@ class BanditFusionModule(FusionModuleBase):
             else:
                 scores = mu
 
-        actions = scores.argmax(dim=1).cpu()
+        actions = scores.argmax(dim=1)
         alphas = self.alpha_values[actions]
         return actions, alphas, norm_states
 
