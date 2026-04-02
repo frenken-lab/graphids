@@ -11,9 +11,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import structlog
+
 from graphids.cli import LINK_TARGETS, resolve_configs, run_lightning
+from graphids.config import LAST_CKPT_SUBPATH
 from graphids.config.yaml_utils import apply_dotted_overrides, write_yaml
 from graphids.core.contracts import TrainingContract, TrainingSpec
+
+log = structlog.get_logger()
 
 
 def _build_cli_args(spec: TrainingSpec) -> list[str]:
@@ -29,6 +34,16 @@ def _build_cli_args(spec: TrainingSpec) -> list[str]:
 
 def run_training_from_spec(spec: TrainingSpec) -> None:
     """Resolve config chain, write snapshot, run training via LightningCLI."""
+    # Auto-resume: check for last.ckpt on THIS node (not the orchestrator).
+    # Skip if the caller already set an explicit ckpt_path.
+    if "ckpt_path" not in spec.runtime_overrides:
+        last_ckpt = Path(spec.run_dir) / LAST_CKPT_SUBPATH
+        if last_ckpt.exists():
+            spec = spec.model_copy(update={
+                "runtime_overrides": {**spec.runtime_overrides, "ckpt_path": str(last_ckpt)},
+            })
+            log.info("auto_resume", ckpt=str(last_ckpt))
+
     overrides = TrainingContract.to_override_dict(spec)
     resolved = resolve_configs(spec.config_files, overrides)
 
@@ -66,11 +81,8 @@ def run_training_from_payload(payload: dict[str, Any]) -> None:
 
 def run_test_from_spec(spec: TrainingSpec) -> None:
     """Run LightningCLI test using best available checkpoint from a completed training run."""
-    import structlog
+    from graphids.config import CKPT_SUBPATH
 
-    from graphids.config import CKPT_SUBPATH, LAST_CKPT_SUBPATH
-
-    log = structlog.get_logger()
     run_dir = Path(spec.run_dir)
 
     ckpt = run_dir / CKPT_SUBPATH

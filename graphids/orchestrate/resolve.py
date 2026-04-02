@@ -104,12 +104,9 @@ class ConfigResolver:
             runtime_overrides[key] = val
             audit.append(OverrideRecord(key=key, value=val, source="kd"))
 
-        if paths.last_ckpt_file.exists():
-            runtime_overrides["ckpt_path"] = str(paths.last_ckpt_file)
-            audit.append(OverrideRecord(
-                key="ckpt_path", value=str(paths.last_ckpt_file),
-                source="resume_ckpt",
-            ))
+        # Auto-resume from last.ckpt is handled at training time in
+        # train_entrypoint.py — NOT here. The orchestrator runs on a different
+        # node (NFS-cached); checking exists() here creates a race condition.
 
         spec = TrainingSpec(
             stage=cfg.stage,
