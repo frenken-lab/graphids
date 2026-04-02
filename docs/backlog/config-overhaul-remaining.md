@@ -17,11 +17,14 @@ W4 — all done. See audit log in git history for details.
 
 ### 1. SLURM validation (blocks confidence)
 
-Run tests and smoke test on SLURM to validate all recent changes.
+Run tests and smoke test on SLURM to validate sessions 11-12 changes
+(command renames, CUDA guards, try_compile, orphaned YAML cleanup).
 
 ```bash
 scripts/submit.sh tests -k test_overrides
 scripts/submit.sh tests -k test_config
+scripts/submit.sh tests -k test_budget
+scripts/submit.sh tests -k test_smoke
 ```
 
 ### 2. W3: Per-stage override granularity (MEDIUM)

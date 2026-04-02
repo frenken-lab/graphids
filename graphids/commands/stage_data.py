@@ -66,29 +66,41 @@ def _rsync(src: Path, dst: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    argv = argv or []
-    flags = set(argv)
+    import argparse
 
-    stage_raw = "--cache" not in flags
-    stage_cache = "--raw" not in flags
-    skip_tmpdir = "--skip-tmpdir" in flags
+    parser = argparse.ArgumentParser(
+        description="Stage data from ESS/NFS to scratch/TMPDIR for fast job I/O"
+    )
+    parser.add_argument("--cache", action="store_true", help="Cache only (skip raw)")
+    parser.add_argument("--raw", action="store_true", help="Raw only (skip cache)")
+    parser.add_argument("--skip-tmpdir", action="store_true", help="Scratch only, no TMPDIR copy")
+    parser.add_argument("--dataset", default="", help="Single dataset to stage")
+    args = parser.parse_args(argv)
 
-    dataset = ""
-    for i, a in enumerate(argv):
-        if a == "--dataset" and i + 1 < len(argv):
-            dataset = argv[i + 1]
-        elif a.startswith("--dataset="):
-            dataset = a.split("=", 1)[1]
+    stage_raw = not args.cache
+    stage_cache = not args.raw
+    skip_tmpdir = args.skip_tmpdir
+    dataset = args.dataset
 
     lake_root = os.environ.get("KD_GAT_LAKE_ROOT", "")
-    data_root = Path(os.environ.get("KD_GAT_DATA_ROOT", "/users/PAS2022/rf15/kd-gat-data"))
-    scratch = Path(os.environ.get("KD_GAT_SCRATCH", "/fs/scratch/PAS1266"))
+    scratch_env = os.environ.get("KD_GAT_SCRATCH")
+    if not scratch_env:
+        log.error("KD_GAT_SCRATCH not set. Source .env before running.")
+        sys.exit(1)
+    scratch = Path(scratch_env)
     scratch_data = scratch / "kd-gat-data"
     tmpdir = os.environ.get("TMPDIR", "")
 
+    # Primary: ESS lake root (has raw/ subdir). Fallback: KD_GAT_DATA_ROOT env var.
     if lake_root and Path(lake_root, "raw").is_dir():
         data_root = Path(lake_root)
         log.info("using_ess_lake", path=str(data_root))
+    else:
+        data_root_env = os.environ.get("KD_GAT_DATA_ROOT")
+        if not data_root_env:
+            log.error("No data source found. Set KD_GAT_LAKE_ROOT (with raw/ subdir) or KD_GAT_DATA_ROOT.")
+            sys.exit(1)
+        data_root = Path(data_root_env)
 
     log.info("staging_start", source=str(data_root), scratch=str(scratch_data),
              tmpdir=tmpdir or "<not set>", dataset=dataset or "all")

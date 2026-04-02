@@ -14,6 +14,7 @@
 
 | Item | Priority | Notes |
 |------|----------|-------|
+| pipeline-status shows stale dagster state | **High** | See `docs/backlog/pipeline-status-stale.md` |
 | `--watch` mode for `pipeline-status` | Low | Auto-refresh with DAG context |
 | Structured JSON logs | Low | `JSONRenderer` when `SLURM_JOB_ID` set, enables `jq` |
 | Failure alerting | Low | `--mail-type=END,FAIL` or dagster-slack sensor |

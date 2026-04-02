@@ -1,6 +1,0 @@
-overrides:
-  paths:
-    lake_root: ./experimentruns
-  loggers:
-    wandb:
-      enabled: false

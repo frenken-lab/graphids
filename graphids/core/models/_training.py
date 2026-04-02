@@ -10,6 +10,23 @@ import torch
 _log = structlog.get_logger()
 
 
+def try_compile(model: torch.nn.Module, **kwargs) -> torch.nn.Module:
+    """Attempt ``torch.compile``; fall back to eager on inductor failure.
+
+    The inductor backend can fail on unusual FX graph patterns (e.g. DGI's
+    dual-encoder structure on torch 2.8). Rather than crash the entire job,
+    log a warning and continue uncompiled.
+    """
+    if not hasattr(torch, "compile"):
+        return model
+    try:
+        return torch.compile(model, **kwargs)
+    except Exception:
+        _log.warning("torch_compile_failed", model=type(model).__name__, fallback="eager")
+        torch._dynamo.reset()
+        return model
+
+
 # ---------------------------------------------------------------------------
 # GraphModuleBase — shared base for VGAE, GAT, DGI Lightning modules
 # ---------------------------------------------------------------------------

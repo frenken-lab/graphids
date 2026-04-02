@@ -1,6 +1,6 @@
 # KD-GAT Session Plan
 
-> Last updated: 2026-04-02 (session 10 — budget audit + simplification)
+> Last updated: 2026-04-02 (session 12 — bug fixes + backlog cleanup)
 
 ## Current State
 
@@ -270,24 +270,165 @@ Key finding: Graphcore docs provided the conceptual framework (fixed budgets,
 packing vs padding, efficiency metrics). The affine cost model, regime
 classification, and two-point probe are original to our design.
 
-## Next — profile-budget command
+## What this session did (2026-04-02, session 11 — CLI command audit + hygiene)
 
-The budget module is built on probe values that have never been measured on real
-hardware. The critical unknown: **is α > 0?** If not, the throughput ceiling
-never exists and the module reduces to `budget = VRAM / bytes_per_node`.
+### Command audit
 
-1. **Build `profile-budget` command** — `python -m graphids profile-budget`
-   instantiates each model (random weights) × dataset, runs `_probe()`, outputs
-   measured γ, α, β, bytes_per_node. See `docs/backlog/profile-budget-command.md`.
-2. **Run on GPU** — `scripts/submit.sh profile-budget`. 32 probes, ~2 min.
-3. **Replace test estimates** — update `MODEL_PROBES` in `test_budget_matrix.py`
+Audited all 14 commands in `graphids/commands/` by functional logic and
+dependencies. Identified 4 natural clusters:
+
+| Cluster | Commands | Pattern |
+|---------|----------|---------|
+| Spec runners | train-from-spec, test-from-spec, analyze-from-spec | Thin delegates, dagster→SLURM transport |
+| Core / GPU compute | analyze, profile-training, probe-budget | Model instantiation, GPU work, artifacts |
+| Data / preprocessing | stage-data, rebuild-caches, test-preprocessing | CPU-only dataset I/O |
+| Ops / observability | pipeline-status, job-stats, submit-profile | Query SLURM/dagster, format output |
+
+### Landscape folded into analyze
+
+`landscape.py` (48 lines) was a wrapper around `analyze` with fixed flags.
+Folded into `analyze.py` as a subcommand: `python -m graphids analyze landscape ...`.
+Deleted `landscape.py`, removed from `_COMMAND_MODULES`. Updated
+`submit_profiles.yaml` landscape command to route through analyze.
+
+### profile-budget rewritten to follow convention
+
+Original version did bespoke YAML merge + `importlib._import_class` — broke
+project convention. Rewritten to use `jsonargparse.add_subclass_arguments(
+pl.LightningModule)` + `instantiate_classes()` — same path as LightningCLI.
+
+### Command renames (proposed — applied in session 12)
+
+- `profile` → `job-stats` (sacct resource report, not profiling)
+- `profile-training` → `profile` (actual PyTorch Profiler)
+- `profile-budget` → `probe-budget` (hardware cost model measurement)
+
+### Handrolled code fixes (6 items)
+
+| File | Fix |
+|------|-----|
+| `rebuild_caches.py` | Hardcoded `ALL_DATASETS` tuple → `dataset_names()` from config |
+| `rebuild_caches.py` | Hardcoded `/fs/scratch/PAS1266/...` marker → derived from `KD_GAT_SCRATCH` env var |
+| `submit_profile.py` | `_load_submit_profiles()` → `read_yaml()` from `yaml_utils` |
+| `submit_profile.py` | Removed `ResourceSpec` misuse (constructed+discarded for time validation) |
+| `stage_data.py` | Hardcoded fallback paths → fail fast if `KD_GAT_SCRATCH`/`KD_GAT_DATA_ROOT` unset |
+| `stage_data.py` | Hand-rolled `set(argv)` parsing → `argparse.ArgumentParser` |
+
+### SLURM log path leak fixed
+
+`scripts/submit.sh`, `_preamble.sh`, `_epilog.sh` all hardcoded `slurm_logs/`
+relative to project root (NFS). Fixed to derive `SLURM_LOG_DIR` from env vars
+(`KD_GAT_SLURM_LOG_DIR` → `KD_GAT_LAKE_ROOT/slurm` → `experimentruns/slurm`),
+matching the Python `SLURM_LOG_DIR` constant in `runtime.py`. Verified shell
+and Python produce identical paths.
+
+## What this session did (2026-04-02, session 12 — bug fixes + backlog cleanup)
+
+### Ablation status (from sacct, not pipeline-status)
+
+Native `pipeline-status` showed only 2 SUCCESS — **wrong**. Dagster never
+updates asset status after SLURM completion. sacct shows the real picture:
+
+| Stage | Completed | Failed |
+|-------|-----------|--------|
+| autoencoder | 3 (GAE small, VGAE large, VGAE small) | 1 (DGI — torch.compile crash) |
+| normal | 4 (all 4 hashes) | 1 (ab6a75a4 — phantom resume_ckpt) |
+| curriculum | 2 (small, large) | 0 |
+| fusion | 5 (all 5) | 0 |
+| **Total** | **14** | **2** |
+
+Orchestrator (job 46260678) still RUNNING at 18h but idle — no child jobs
+in queue. All completable work finished.
+
+### Bug fixes (3 categorical + 3 defensive)
+
+**Categorical: unguarded `torch.compile`** — copy-pasted bare call in 3
+model `_build()` methods with no error handling. Inductor backend can fail
+on unusual FX graphs (DGI's dual-encoder structure).
+
+| Fix | File |
+|-----|------|
+| `try_compile()` helper | `_training.py` — catches exception, logs warning, falls back to eager |
+| Replace 3 inline copies | `dgi.py`, `vgae.py`, `gat.py` — all call `try_compile()` |
+| DGI compile disabled | `config/models/dgi/base.yaml` — `compile_model: false` (24.6K params, no benefit) |
+
+**Defensive: unguarded external calls** (from subagent audit of codebase):
+
+| Fix | File |
+|-----|------|
+| CUDA guards on `_probe()` | `budget.py` — `torch.cuda.*` calls guarded by `model.device.type == "cuda"` |
+| ImportError handling | `__main__.py` — `importlib.import_module` → clean `SystemExit` on failure |
+| CUDA guard on `empty_cache` | `tasks.py` — consistent with defensive pattern elsewhere in file |
+
+### Command renames applied
+
+Session 11 proposed, session 12 applied:
+- `profile` → `job-stats`, `profile-training` → `profile`, `profile-budget` → `probe-budget`
+- Updated: `__main__.py`, `submit_profiles.yaml`, `submit.sh`, `CLAUDE.md`
+
+### Backlog cleanup (7 subagents, 0 failures)
+
+| Task | Result |
+|------|--------|
+| Delete resolved backlog files | -2 files (ablation-bug-patterns → `reference/`, profile-budget-command) |
+| Delete `edge_to_tensor` | Confirmed 0 callers, deleted from `features.py` |
+| Fix broken test_features imports | Already clean (prior session) |
+| Orphaned YAML audit | -9 files, -2 dirs (`schema/`, `overrides/`). `matrix/axes.yaml` kept. 4 docs updated |
+| Dead lr/weight_decay audit | Not in GAT/DGI `__init__` — consumed by base class `getattr`. No-op |
+| open-items.md audit | 20→12 items. 4 resolved in code (curriculum DataLoader, GPS budget, dataset staging, T_max) |
+| CLAUDE.md command table | Updated with renames + landscape folded into analyze |
+
+### New backlog item
+
+`docs/backlog/pipeline-status-stale.md` — `pipeline-status` queries dagster
+`AssetRecord` which never updates after SLURM completion. Fix: reconcile
+with sacct (option A, ~20 lines) or fix dagster polling (option B).
+
+## Next
+
+### Ablation follow-up
+
+1. **Resubmit DGI autoencoder** — `compile_model: false` is now in config.
+   Manual sbatch (dagster retries exhausted for c479d625).
+2. **Resubmit normal_ab6a75a4** — phantom resume_ckpt fixed in code (ebd7e1f),
+   orchestrator had stale code. Manual sbatch.
+3. **Verify ablation completion** — all 32 assets should complete after
+   DGI + ab6a75a4 resubmit.
+
+### probe-budget on GPU
+
+Command is built and renamed (`probe-budget`). Needs GPU run.
+
+1. **Run on GPU** — `scripts/submit.sh probe-budget`. 32 probes, ~2 min.
+2. **Replace test estimates** — update `MODEL_PROBES` in `test_budget_matrix.py`
    with measured values.
-4. **Decision gate:** if α ≈ 0 for all models → delete throughput ceiling code.
+3. **Decision gate:** if α ≈ 0 for all models → delete throughput ceiling code.
    Budget becomes 5 lines.
-5. **Run budget tests** — `scripts/submit.sh tests -k test_budget`
-6. **Fix DGI** — set `compile_model: false`, resubmit DGI autoencoder.
-7. **Resubmit ab6a75a4** — manual sbatch (dagster retries exhausted).
-8. **Verify ablation completion** — all 32 assets.
+
+### SLURM validation of all session 11-12 changes
+
+```bash
+scripts/submit.sh tests -k test_overrides
+scripts/submit.sh tests -k test_config
+scripts/submit.sh tests -k test_budget
+scripts/submit.sh tests -k test_smoke
+```
+
+### Fix pipeline-status (HIGH)
+
+`pipeline-status` shows stale dagster state. Option A: cross-reference
+with sacct output (~20 lines in `commands/pipeline_status.py`).
+
+### Training efficiency (next campaign)
+
+1. Add `prefetch_factor` parameter (~10 lines + YAML)
+2. Per-model worker count (YAML only, after profiling)
+3. CPU training spike for autoencoders (deferred)
+
+### KD pipeline E2E test
+
+Minimal wiring test (option C from `kd-untested.md`) before writing paper
+claims. Then add KD to ablation recipe.
 
 ## Key References
 
@@ -297,13 +438,13 @@ never exists and the module reduces to `budget = VRAM / bytes_per_node`.
 | `docs/reference/gnn_throughput_equations.md` | Formal cost model with epistemic status |
 | `docs/reference/budget-pipeline-analysis.md` | Old vs new pipeline walkthrough, worker scaling |
 | `docs/reference/osc-cluster-memory-limits.md` | Per-partition mem_per_cpu for all 3 clusters |
+| `docs/reference/ablation-bug-patterns.md` | Bug patterns from smoke test + ablation — prevention guide |
 | `docs/backlog/training-efficiency.md` | Backlog: remaining tiers (prefetch_factor, CPU training) |
-| `docs/backlog/profile-budget-command.md` | **New** — profile-budget command spec |
-| `docs/backlog/ablation-bug-patterns.md` | 10 bugs from smoke test + ablation, with pattern analysis |
+| `docs/backlog/pipeline-status-stale.md` | Dagster status doesn't reflect SLURM completions |
 | `docs/decisions/0003-slurm-job-consolidation.md` | **Implemented** — bundle train+test+analyze in one SLURM job |
 | `docs/backlog/config-overhaul-remaining.md` | Config overhaul tracker — open items |
 | `docs/backlog/per-stage-overrides.md` | Global vs stage-specific overrides (open) |
 | `docs/backlog/analyzer-manifest.md` | Manifest ownership (open) |
 | `docs/backlog/override-chain.md` | 4-hop override flow — 5 mitigations applied, architecture open |
 | `docs/reference/experiment-plan.md` | 17-config ablation matrix |
-| `docs/backlog/open-items.md` | All deferred items |
+| `docs/backlog/open-items.md` | All deferred items (12 remaining) |

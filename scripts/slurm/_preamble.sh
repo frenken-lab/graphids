@@ -13,11 +13,13 @@ set -euo pipefail
 
 PROJECT_ROOT="/users/PAS2022/rf15/KD-GAT"
 cd "$PROJECT_ROOT"
-mkdir -p slurm_logs
 
 module load python/3.12
 source .venv/bin/activate
 set -a; source ./.env; set +a
+
+SLURM_LOG_DIR="${KD_GAT_SLURM_LOG_DIR:-${KD_GAT_LAKE_ROOT:-experimentruns}/slurm}"
+mkdir -p "$SLURM_LOG_DIR"
 
 # Group-writable umask for shared ESS data lake
 umask 002

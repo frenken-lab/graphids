@@ -35,10 +35,11 @@ Three entry points, zero overlap:
 |---------|---------|
 | `python -m graphids analyze` | Analysis artifacts from checkpoints |
 | `python -m graphids analyze-from-spec` | Run analyzer from canonical AnalysisSpec (dagster transport) |
-| `python -m graphids landscape` | 2D loss landscape |
+| `python -m graphids analyze landscape` | 2D loss landscape (folded into analyze) |
 | `python -m graphids pipeline-status` | Aggregated dagster + SLURM phase status |
-| `python -m graphids profile <job_ids>` | sacct resource profiler |
-| `python -m graphids profile-training` | Profiled training run (PyTorchProfiler) |
+| `python -m graphids job-stats <job_ids>` | sacct resource profiler |
+| `python -m graphids profile` | Profiled training run (PyTorchProfiler) |
+| `python -m graphids probe-budget` | Hardware cost model measurement |
 | `python -m graphids rebuild-caches` | Rebuild preprocessed graph caches |
 | `python -m graphids stage-data` | NFS → scratch → TMPDIR staging |
 | `python -m graphids submit-profile <job>` | Print SLURM resource profile for submit.sh |

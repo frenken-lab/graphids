@@ -188,16 +188,6 @@ def add_bidir_flag(edge_df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def edge_to_tensor(edge_df: pl.DataFrame) -> Tensor:
-    """Convert an edge DataFrame with EDGE_COL_ORDER columns to a [n_edges, N_EDGE_FEATURES] tensor.
-
-    Assembly function parallel to stats_to_tensor — used by the vectorized batch path.
-    """
-    return edge_df.select(list(EDGE_COL_ORDER)).fill_null(0).fill_nan(0).to_torch(
-        dtype=pl.Float32,
-    )
-
-
 def sliding_window_graphs(
     df: pl.DataFrame,
     window_size: int,

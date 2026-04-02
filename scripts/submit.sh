@@ -10,12 +10,14 @@
 #   scripts/submit.sh preprocessing-test [--dataset hcrl_ch]
 #   scripts/submit.sh ablation [--recipe X --dataset X --seed X]
 #   scripts/submit.sh profile [stage scale dataset]
+#   scripts/submit.sh probe-budget [args]
 set -euo pipefail
 
 PROJECT_ROOT="/users/PAS2022/rf15/KD-GAT"
 cd "$PROJECT_ROOT"
 source .env
-mkdir -p slurm_logs
+SLURM_LOG_DIR="${KD_GAT_SLURM_LOG_DIR:-${KD_GAT_LAKE_ROOT:-experimentruns}/slurm}"
+mkdir -p "$SLURM_LOG_DIR"
 
 JOB="${1:?Usage: scripts/submit.sh <job> [args...]}"
 shift
@@ -38,5 +40,5 @@ SIG_ARGS=()
 
 sbatch "$ACCT" --partition="$PARTITION" --cpus-per-task="$CPUS" --mem="$MEM" \
     --time="$TIME" --job-name="kd-gat-${JOB}" "${SIG_ARGS[@]}" \
-    --output="slurm_logs/${JOB}_%j.out" --error="slurm_logs/${JOB}_%j.err" \
+    --output="${SLURM_LOG_DIR}/${JOB}_%j.out" --error="${SLURM_LOG_DIR}/${JOB}_%j.err" \
     --wrap="${ENV}${PREAMBLE} && ${COMMAND} $(printf '%q ' "$@")"

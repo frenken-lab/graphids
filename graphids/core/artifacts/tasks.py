@@ -79,7 +79,8 @@ def run_cka(
         max_samples=max_samples,
     )
     del teacher_module
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def run_landscape(

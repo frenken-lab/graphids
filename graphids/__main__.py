@@ -4,10 +4,10 @@ Subcommands:
   fit|test|validate|predict  — LightningCLI training/evaluation
   analyze                    — generate analysis artifacts from checkpoints
   analyze-from-spec          — run analyzer from canonical AnalysisSpec
-  landscape                  — compute 2D loss landscape
   pipeline-status            — aggregated dagster + SLURM phase status
-  profile                    — sacct resource profiler
-  profile-training           — profiled training run (PyTorchProfiler)
+  job-stats                  — sacct resource profiler
+  probe-budget               — hardware cost model measurement
+  profile                    — profiled training run (PyTorchProfiler)
   train-from-spec            — run training from canonical TrainingSpec
   rebuild-caches             — rebuild preprocessed graph caches
   stage-data                 — stage data from NFS to scratch/TMPDIR
@@ -41,10 +41,10 @@ _LIGHTNING_COMMANDS = ("fit", "test", "validate", "predict")
 _COMMAND_MODULES: dict[str, str] = {
     "analyze": "graphids.commands.analyze",
     "analyze-from-spec": "graphids.commands.analyze_from_spec",
-    "landscape": "graphids.commands.landscape",
     "pipeline-status": "graphids.commands.pipeline_status",
-    "profile": "graphids.commands.profile",
-    "profile-training": "graphids.commands.profile_training",
+    "job-stats": "graphids.commands.profile",
+    "probe-budget": "graphids.commands.profile_budget",
+    "profile": "graphids.commands.profile_training",
     "rebuild-caches": "graphids.commands.rebuild_caches",
     "stage-data": "graphids.commands.stage_data",
     "submit-profile": "graphids.commands.submit_profile",
@@ -66,9 +66,12 @@ def _run_lightning(command: str, argv: list[str]) -> None:
 
 
 def _run_module(module_name: str, argv: list[str]) -> None:
-    mod = importlib.import_module(module_name)
+    try:
+        mod = importlib.import_module(module_name)
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise SystemExit(f"Failed to load command module '{module_name}': {exc}") from exc
     if not hasattr(mod, "main"):
-        raise RuntimeError(f"Module '{module_name}' does not expose a main(argv) entrypoint")
+        raise SystemExit(f"Module '{module_name}' does not expose a main(argv) entrypoint")
     mod.main(argv)
 
 

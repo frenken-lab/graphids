@@ -46,7 +46,15 @@ submit_profiles:
     time: "1:00:00"
     signal: ""
     mode: gpu
-    command: python -m graphids profile-training
+    command: python -m graphids profile
+  probe-budget:
+    partition: gpudebug
+    cpus: 8
+    mem: 36G
+    time: "00:30:00"
+    signal: ""
+    mode: gpu
+    command: python -m graphids probe-budget
   landscape:
     partition: gpu
     cpus: 4
@@ -54,4 +62,4 @@ submit_profiles:
     time: "2:00:00"
     signal: ""
     mode: gpu
-    command: python -m graphids landscape
+    command: python -m graphids analyze landscape

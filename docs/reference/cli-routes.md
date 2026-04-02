@@ -242,7 +242,6 @@ graphids/config/
     {hcrl_ch,hcrl_sa,set_01,...set_04}.yaml
   matrix/
     axes.yaml                # valid model types, scales, fusion methods
-    allowed_combinations.yaml
   resources/
     clusters.yaml            # cluster-specific settings
     submit_profiles.yaml     # submit.sh profile mappings
@@ -250,5 +249,4 @@ graphids/config/
   recipes/
     ablation.yaml            # 17-config ablation matrix
     smoke_test.yaml          # quick validation recipe
-  schema/                    # JSON-schema-style validation
 ```

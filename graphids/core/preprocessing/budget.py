@@ -117,7 +117,8 @@ def _probe(model, dataset, step_fn=None) -> tuple[int, float, float, float]:
     with torch.no_grad():
         fn(batch_small)
         fn(batch_large)
-    torch.cuda.synchronize()
+    if model.device.type == "cuda":
+        torch.cuda.synchronize()
 
     # --- T_gpu at two batch sizes (BenchmarkTimer: multi-sample median) ---
     def _make_fwd(batch):
@@ -138,18 +139,22 @@ def _probe(model, dataset, step_fn=None) -> tuple[int, float, float, float]:
     # (peak_allocated - baseline) / num_nodes captures real memory including
     # scatter temporaries, attention buffers, PyG internals that the analytical
     # formula (L·h·s per node) misses.
-    torch.cuda.reset_peak_memory_stats(model.device)
-    before = torch.cuda.memory_allocated(model.device)
-    with torch.no_grad():
-        fn(batch_large)
-    torch.cuda.synchronize()
-    peak = torch.cuda.max_memory_allocated(model.device)
+    if model.device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(model.device)
+        before = torch.cuda.memory_allocated(model.device)
+        with torch.no_grad():
+            fn(batch_large)
+        torch.cuda.synchronize()
+        peak = torch.cuda.max_memory_allocated(model.device)
+    else:
+        before, peak = 0, 0
 
     model.train(was_training)
     del batch_small, batch_large
-    torch.cuda.empty_cache()
+    if model.device.type == "cuda":
+        torch.cuda.empty_cache()
 
-    fwd_per_node = max(1, int((peak - before) / nodes_large))
+    fwd_per_node = max(1, int((peak - before) / nodes_large)) if peak > before else 1
     bytes_per_node = fwd_per_node * _GRAD_MULTIPLIER
 
     # --- Solve T_gpu = α + β·N ---

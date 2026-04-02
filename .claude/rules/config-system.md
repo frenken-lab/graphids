@@ -46,7 +46,6 @@ graphids/
       set_01.yaml ... set_04.yaml
     matrix/              # pipeline axes and constraints
       axes.yaml          # valid model types, scales, fusion methods
-      allowed_combinations.yaml
     resources/           # SLURM resource profiles (from old monolithic resources.yaml)
       clusters.yaml      # cluster-specific settings (partitions, GPUs)
       submit_profiles.yaml # submit.sh profile mappings
@@ -84,8 +83,6 @@ graphids/
           small.yaml, large.yaml
     recipes/             # run specifications (sweep dimensions, config overrides)
       ablation.yaml, final_eval.yaml, smoke_test.yaml
-    overrides/           # cluster/local overrides
-    schema/              # JSON-schema-style validation for config types
   core/
     models/
       __init__.py        # re-exports

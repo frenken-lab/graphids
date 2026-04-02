@@ -23,8 +23,7 @@ This is a composition-first YAML config system designed to be compact, robust, a
 
 - Axis-first: one file per concern, minimal duplication.
 - Bandit is a first-class peer fusion method under `fusion/methods/bandit.yaml`.
-- Explicit run legality in `matrix/allowed_combinations.yaml`.
-- Strict schema folder for validator tooling.
+- Run legality enforced by `topology.py` import-time assertions.
 
 ## Suggested resolver outputs
 
