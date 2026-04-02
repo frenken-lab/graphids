@@ -1,6 +1,6 @@
 # KD-GAT Session Plan
 
-> Last updated: 2026-04-02 (session 8 — smoke test + ablation launch)
+> Last updated: 2026-04-02 (session 9 — training efficiency + budget module)
 
 ## Current State
 
@@ -174,16 +174,75 @@ Orchestrator: SLURM job 46260678. Monitor with `squeue -u $USER` or `sacct`.
 - Re-run any failed assets: `scripts/submit.sh ablation --assets '<name>' --partition 'set_01|42'`
 - Leaf nodes can use direct `sbatch` (no dagster needed)
 
-## Next
+## What this session did (2026-04-02, session 9 — training efficiency)
 
-1. Verify set_01 ablation completes (all 32 assets)
-2. Review training metrics across ablation configs
-3. Launch second dataset or seeds per `docs/reference/experiment-plan.md`
+### Diagnosis: GPU utilization 5-22% across graph stages
+
+Synthesized `docs/reference/ablation-resource-profile.md` (profiled from running
+ablation) with `docs/reference/cpu_gpu_gnn_training_reference.md` (browser session
+research). Root cause: CPU-side `Batch.from_data_list()` collation dominates GPU
+compute by 2:1 (GAT) to 16:1 (VGAE). Old budget system filled VRAM regardless
+of pipeline capacity.
+
+### Changes made
+
+**Config (applied, affects new jobs):**
+- `num_workers: 2` → `6` in all 4 stage YAMLs
+- SLURM profiles: `cpus: 4` → `8`, memory bumped for worker RSS
+- `clusters.yaml`: added `mem_per_cpu` per partition (all 3 clusters), fixed
+  Cardinal partition `batch` → `gpu`
+- `resources.py`: validates `mem ≤ cpus × mem_per_cpu` at profile resolution
+
+**budget.py (wired up, needs GPU validation):**
+- New module `graphids/core/preprocessing/budget.py` replaces `vram_node_budget`
+- Two-point probe measures collation rate (γ), GPU per-node rate (β), and
+  kernel overhead (α) to classify regime
+- Affine GPU model: `T_gpu = α + β·N` (not constant)
+- Throughput budget exists only in collation-dominated regime with α > 0:
+  `N_optimal = α / (γ/W - β·mean_nodes)`
+- `datamodule.py` and `curriculum.py` wired to call `node_budget()`
+
+**Key correction during session:**
+Original design treated T_gpu as constant (25ms regardless of batch size).
+User caught the flaw: if utilization is 100% at all worker counts, throughput
+can't vary. Corrected to affine model where both T_collation and T_gpu scale
+with batch size. The regime (collation vs compute dominated) is batch-size-
+independent — determined by per-node rates and worker count.
+
+### What is NOT validated
+
+- **Two-point probe on GPU.** The affine model (α, β) has not been measured on
+  real hardware. Needs a SLURM job running the probe at two batch sizes.
+- **Throughput budget accuracy.** The `_throughput_budget_nodes` formula is
+  derived correctly from the affine model but depends on accurate α, β, γ.
+- **Actual GPU utilization improvement.** Regime classification works on CPU
+  (tested). Real utilization improvement needs before/after profiling.
+- **Tests.** Updated `test_vram_budget.py` parses and imports resolve, but
+  can't run on login node. Needs `scripts/submit.sh tests -k test_vram_budget`.
+
+## Next — budget validation
+
+1. **Run tests via SLURM:** `scripts/submit.sh tests -k test_vram_budget`
+2. **Profile the probe on GPU:** run a short training job that logs `BudgetResult`
+   fields (α, β, γ, regime, binding). Compare predicted vs actual step times.
+3. **Before/after comparison:** run identical config on `hcrl_sa` with old
+   budget (mem-only) vs new budget, compare GPU utilization via
+   `DeviceStatsMonitor` + nvitop
+4. **Backtest equations:** log per-step T_collation, T_gpu, T_delivery for ~100
+   steps. Plot against the affine model predictions. If the model is wrong,
+   the probe coefficients need recalibration.
+5. Verify set_01 ablation completes (all 32 assets)
+6. Review training metrics across ablation configs
 
 ## Key References
 
 | Doc | Purpose |
 |-----|---------|
+| `docs/reference/throughput-optimal-batching.md` | Throughput model, sources, corrected design |
+| `docs/reference/gnn_throughput_equations.md` | Formal cost model with epistemic status |
+| `docs/reference/budget-pipeline-analysis.md` | Old vs new pipeline walkthrough, worker scaling |
+| `docs/reference/osc-cluster-memory-limits.md` | Per-partition mem_per_cpu for all 3 clusters |
+| `docs/backlog/training-efficiency.md` | Backlog: remaining tiers (prefetch_factor, CPU training) |
 | `docs/decisions/0003-slurm-job-consolidation.md` | **Implemented** — bundle train+test+analyze in one SLURM job |
 | `docs/backlog/config-overhaul-remaining.md` | Config overhaul tracker — open items |
 | `docs/backlog/per-stage-overrides.md` | Global vs stage-specific overrides (open) |
