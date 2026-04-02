@@ -45,7 +45,7 @@
 |------|----------|------------|
 | wandb network failure | Medium | CSVLogger backup for `self.log()` metrics. GPU system metrics (util/temp/power) wandb-only — lost if wandb fails. |
 | Unsupervised models missing accuracy | Low | Expected — VGAE/DGI have no accuracy. Filter by model type in wandb panels. |
-| RL fusion dynamic keys | Low | `avg_reward`/`accuracy` only from `DQNFusionModule`/`BanditFusionModule` (was `RLFusionModule`, deleted). wandb handles sparse columns. |
+| RL fusion dynamic keys | Low | `avg_reward`/`accuracy` only from `DQNFusionModule`/`BanditFusionModule`. wandb handles sparse columns. |
 
 ## Tool decisions (don't re-investigate)
 

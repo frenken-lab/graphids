@@ -43,7 +43,7 @@ against mock recipe data — never with a real dagster materialization.
 has 3. The 4 extra fields (`temperature`, `model_path`, `vgae_latent_weight`,
 `vgae_recon_weight`) pass through `runtime_overrides` as a JSON blob without
 TypedDict validation. A typo in these fields is only caught at model `_build()` time
-inside the SLURM job. (Cross-ref: `issues/config-system-overhaul.md` item P2.4.)
+inside the SLURM job. (Cross-ref: `docs/backlog/config-overhaul-remaining.md` item P2.4.)
 
 ## Options to close
 

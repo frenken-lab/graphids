@@ -1,0 +1,27 @@
+# Forced Callbacks: Eliminate Config Fragility
+
+> Status: **IMPLEMENTED** | Created: 2026-03-31 | Implemented: 2026-04-01
+
+## Problem
+
+jsonargparse replaces lists atomically. Any stage YAML defining `trainer.callbacks:`
+silently dropped ModelCheckpoint + EarlyStopping from `trainer.yaml`. This caused
+curriculum runs to train 300 epochs with **no checkpoint** — weights lost on job exit.
+
+## Solution
+
+Callbacks registered via `parser.add_lightning_class_args(CallbackClass, "namespace")`
+are injected **after** config file merging. They live in separate namespaces (`checkpoint.*`,
+`early_stopping.*`), not in `trainer.callbacks`. No config file can remove them.
+
+Stage YAMLs override via namespace keys (e.g., `checkpoint.monitor: val_acc`),
+not `trainer.callbacks` lists. DeviceStatsMonitor in `trainer.yaml` survives.
+
+## Key files
+
+- `_lightning.py` — `add_lightning_class_args` + defaults
+- `defaults/trainer.yaml` — shared defaults (must stay in sync with Python constants)
+- Stage YAMLs — namespace overrides instead of `callbacks:` blocks
+
+See `cli-config-architecture.md` (lines 166-179) and `cli-config-evaluation.md` (S3)
+for architecture documentation.

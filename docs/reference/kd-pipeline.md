@@ -1,6 +1,6 @@
 # Knowledge Distillation Pipeline
 
-> Status: Wired but untested | See `issues/kd-pipeline-untested.md` for gaps
+> Status: Wired but untested | See `docs/backlog/kd-untested.md` for gaps
 
 ## What KD does
 
@@ -114,8 +114,8 @@ at CLI parse time.
 ## Known issues
 
 1. **`_KDSpec` (7 fields) vs `KDAuxiliary` (3 fields)** — 4 extra fields bypass
-   TypedDict validation. See `issues/config-system-overhaul.md` P2.4.
-2. **Full chain never tested** — see `issues/kd-pipeline-untested.md`.
+   TypedDict validation. See `docs/backlog/config-overhaul-remaining.md` P2.4.
+2. **Full chain never tested** — see `docs/backlog/kd-untested.md`.
 3. **Teacher stored via `__dict__`** — bypasses `nn.Module` registration, so
    Lightning never auto-transfers to GPU. `teacher_on_device` context manager
    handles per-step movement. Deliberate but fragile.

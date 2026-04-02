@@ -52,7 +52,7 @@ identity_keys) to control which keys become CLI overrides vs just hash inputs.
 
 ### Bugs found: 8 total
 
-3 patterns identified — see `issues/ablation-run-bugs.md` for full log.
+3 patterns identified — see `docs/backlog/ablation-bug-patterns.md` for full log.
 
 | Pattern | Bugs | Root cause |
 |---------|------|------------|
@@ -70,7 +70,7 @@ All config, merge parity, recipe expansion, CLI routing, and submit.sh tests gre
 
 | Issue | Status |
 |-------|--------|
-| `issues/ablation-run-bugs.md` | **New** — 8 bugs logged with patterns |
+| `docs/backlog/ablation-bug-patterns.md` | **New** — 8 bugs logged with patterns |
 
 ## What this session did (2026-04-01, session 7b — observability)
 
@@ -110,8 +110,8 @@ installing existing tools + ~200 lines of custom glue.
 
 | Issue | Status |
 |-------|--------|
-| `issues/pipeline-observability.md` | **Partially resolved** — CLI status done, alerting deferred |
-| `issues/slurm-phase-reporting.md` | **Resolved** — phase markers implemented (session 7) |
+| `docs/backlog/observability-remaining.md` | **Partially resolved** — CLI status done, alerting deferred |
+| `docs/backlog/slurm-phase-reporting.md (deleted)` | **Resolved** — phase markers implemented (session 7) |
 
 ## What this session did (2026-04-01, session 7)
 
@@ -150,9 +150,9 @@ fall back to `last.ckpt`.
 
 | Issue | Status |
 |-------|--------|
-| `issues/slurm-phase-reporting.md` | **Resolved** — phase markers implemented |
-| `issues/config-system-overhaul.md` | W4 (collision detection) resolved, validation hardened |
-| `issues/override-pipeline-consolidation.md` | 5 mitigations added, `OverrideChain` proposal still open |
+| `docs/backlog/slurm-phase-reporting.md (deleted)` | **Resolved** — phase markers implemented |
+| `docs/backlog/config-overhaul-remaining.md` | W4 (collision detection) resolved, validation hardened |
+| `docs/backlog/override-chain.md` | 5 mitigations added, `OverrideChain` proposal still open |
 
 ## Blocking — done
 
@@ -178,18 +178,17 @@ Orchestrator: SLURM job 46260678. Monitor with `squeue -u $USER` or `sacct`.
 
 1. Verify set_01 ablation completes (all 32 assets)
 2. Review training metrics across ablation configs
-3. Launch second dataset or seeds per `plans/experiment-sweep-plan.md`
+3. Launch second dataset or seeds per `docs/reference/experiment-plan.md`
 
 ## Key References
 
 | Doc | Purpose |
 |-----|---------|
-| `plans/architecture/slurm-job-consolidation.md` | **Implemented** — bundle train+test+analyze in one SLURM job |
-| `issues/config-system-overhaul.md` | Config overhaul tracker — mostly complete, W4 resolved session 7 |
-| `issues/per-stage-recipe-overrides.md` | Global vs stage-specific overrides (open) |
-| `issues/slurm-phase-reporting.md` | **Resolved** session 7 — phase markers implemented |
-| `issues/analyzer-manifest-lifecycle.md` | Manifest ownership (open) |
-| `issues/override-pipeline-consolidation.md` | 4-hop override flow — 5 mitigations applied, architecture open |
-| `plans/experiment-sweep-plan.md` | 17-config ablation matrix |
-| `issues/ablation-run-bugs.md` | 8 bugs from smoke test + ablation, with pattern analysis |
-| `plans/open_issues.md` | All deferred items |
+| `docs/decisions/0003-slurm-job-consolidation.md` | **Implemented** — bundle train+test+analyze in one SLURM job |
+| `docs/backlog/config-overhaul-remaining.md` | Config overhaul tracker — open items |
+| `docs/backlog/per-stage-overrides.md` | Global vs stage-specific overrides (open) |
+| `docs/backlog/analyzer-manifest.md` | Manifest ownership (open) |
+| `docs/backlog/override-chain.md` | 4-hop override flow — 5 mitigations applied, architecture open |
+| `docs/reference/experiment-plan.md` | 17-config ablation matrix |
+| `docs/backlog/ablation-bug-patterns.md` | 8 bugs from smoke test + ablation, with pattern analysis |
+| `docs/backlog/open-items.md` | All deferred items |

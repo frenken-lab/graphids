@@ -16,7 +16,7 @@
 | 03-29 | Fix 8 runtime bugs from smoke test | lake_root, SaveConfigCallback, CurriculumDM, fusion routing, etc. |
 | 03-30 | **Run 004** (ablation, set_01/set_02) | 0/36 completed across 2 attempts |
 | 03-30 | Fix Run 004: RAM profiles, dagster logging, VRAM probe, observability | All 6 issues resolved |
-| 03-31 | **Run 005** (ablation + main_results, Ascend A100) | 22/36 completed. See `ablation_and_main_005.md` |
+| 03-31 | **Run 005** (ablation + main_results, Ascend A100) | 22/36 completed. Post-mortem deleted 2026-04-02 (fixes applied, see git history) |
 | 03-31 | Fix Run 005: fusion wiring, zero-copy preprocessing, wall times | All 3 fixes applied |
 
 ## Execution Model
@@ -55,6 +55,5 @@ Single CPU SLURM job runs dagster orchestrator. Submits GPU training jobs via sb
 ## Cross-references
 
 - Architecture: `dagster-native-orchestration.md`
-- Open test gaps + observability items: `../open_issues.md`
-- Run 005 post-mortem: `../ablation_and_main_005.md`
-- Runs 001/004 post-mortem: `../ablation-runs-001-004-postmortem.md`
+- Open test gaps + observability items: `../backlog/open-items.md`
+- Run post-mortems: deleted 2026-04-02 (all fixes applied, value captured in `../backlog/open-items.md`)
