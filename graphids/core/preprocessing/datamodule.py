@@ -418,3 +418,6 @@ class FusionDataModule(pl.LightningDataModule):
     def val_dataloader(self):
         ds = TensorDataset(self.val_cache["states"], self.val_cache["labels"])
         return DataLoader(ds, batch_size=self._batch_size)
+
+    def test_dataloader(self):
+        return self.val_dataloader()

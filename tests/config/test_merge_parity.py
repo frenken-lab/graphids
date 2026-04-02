@@ -45,7 +45,8 @@ def _parse_via_jsonargparse(config_files, overrides, snapshot_path):
     write_yaml(resolved, snapshot_path)
 
     # Build CLI args matching this chain (same files + overrides the real path uses)
-    args = ["fit", "--config", str(snapshot_path)]
+    # run=False disables subcommands, so don't include "fit" in args
+    args = ["--config", str(snapshot_path)]
 
     saved = sys.argv
     sys.argv = [sys.argv[0]]
@@ -55,7 +56,7 @@ def _parse_via_jsonargparse(config_files, overrides, snapshot_path):
             args=args,
         )
         parsed = yaml.safe_load(
-            cli.parser.dump(cli.config["fit"], skip_link_targets=False, skip_none=False)
+            cli.parser.dump(cli.config, skip_link_targets=False, skip_none=False)
         )
     finally:
         sys.argv = saved

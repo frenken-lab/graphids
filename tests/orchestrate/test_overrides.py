@@ -84,9 +84,9 @@ class TestRecipeOverrideExpansion:
         path = CONFIG_DIR / "recipes" / "smoke_test.yaml"
         raw = yaml.safe_load(path.read_text())
         expanded = expand_recipe_configs(raw)
-        assert expanded["trainer_overrides"] == {"trainer.max_epochs": "2"}
+        assert expanded["trainer_overrides"] == {"trainer.max_epochs": "50"}
         assert expanded["resource_overrides"]["partition"] == "gpudebug"
-        assert expanded["resource_overrides"]["time"] == "0:15:00"
+        assert expanded["resource_overrides"]["time"] == "1:00:00"
         assert expanded["configs"], "No configs produced"
 
 
@@ -348,8 +348,8 @@ class TestYAMLAwareValidation:
         with pytest.raises(ValueError, match="num_workers.*in YAML exceeds"):
             resolver.resolve(cfg, dataset="hcrl_sa", seed=42, upstream_ckpts={})
 
-    def test_missing_config_files_skipped(self, resolver):
-        """Missing YAML files are skipped, not crashed on."""
+    def test_missing_config_files_raises(self, resolver):
+        """Missing YAML files raise FileNotFoundError (session 7 hardening)."""
         cfg = StageConfig(
             asset_name="test",
             stage="autoencoder",
@@ -357,7 +357,7 @@ class TestYAMLAwareValidation:
             scale="small",
             config_files=("/nonexistent/path.yaml",),
         )
-        resolved = resolver.resolve(
-            cfg, dataset="hcrl_sa", seed=42, upstream_ckpts={},
-        )
-        assert resolved.spec is not None
+        with pytest.raises(FileNotFoundError, match="YAML file not found"):
+            resolver.resolve(
+                cfg, dataset="hcrl_sa", seed=42, upstream_ckpts={},
+            )
