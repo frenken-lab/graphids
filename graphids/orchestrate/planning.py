@@ -19,7 +19,11 @@ def _identity_value(key: str, merged: TrainingRunConfig | dict, stages: list[str
     for rk, ik in _RECIPE_TO_IDENTITY.items():
         if ik == key:
             return _get(rk)
-    return _get(key)
+    val = _get(key)
+    # model_type=None means "use stage default" — resolve for stable identity hashes
+    if key == "model_type" and val is None:
+        return "vgae"
+    return val
 
 
 @dataclass(frozen=True)

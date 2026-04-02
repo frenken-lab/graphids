@@ -28,14 +28,14 @@ _STAGE_DEFS: dict[str, dict[str, Any]] = {
         "model": "vgae",
         "mode": "gpu_train",
         "depends_on": [],
-        "identity_keys": ["scale", "conv_type", "variational"],
+        "identity_keys": ["scale", "conv_type", "variational", "model_type"],
     },
     "curriculum": {
         "learning_type": "supervised",
         "model": "gat",
         "mode": "gpu_train",
         "depends_on": [{"model": "vgae", "stage": "autoencoder"}],
-        "identity_keys": ["scale", "conv_type", "loss_fn", "variational"],
+        "identity_keys": ["scale", "conv_type", "loss_fn", "variational", "model_type"],
     },
     "normal": {
         "learning_type": "supervised",
