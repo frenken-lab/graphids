@@ -1,71 +1,57 @@
 # KD-GAT Session Plan
 
-> Last updated: 2026-04-01 (session 3 — shadow instantiation deleted, audit)
+> Last updated: 2026-04-01 (session 5 — config layer cleanup, SLURM job consolidation)
 
 ## Current State
 
-Pipeline path and dev path converge at LightningCLI. `train_entrypoint.py` builds CLI
-args from `TrainingSpec` and delegates to `run_lightning()` — no shadow instantiation.
-ConfigResolver handles cross-field validation + audit trail (not merge-for-instantiation).
-Shared wiring constants (`LINK_TARGETS`, callback defaults) in `cli.py`, consumed by
-`_lightning.py`. Ready to run smoke test on SLURM.
+Pipeline converges at LightningCLI (`train_entrypoint.py` → `run_lightning()`). ConfigResolver
+handles cross-field validation + audit trail. SLURM submission via `scripts/submit.sh` works
+(quoting + signal sentinel fixed). Dagster orchestrator runs as CPU SLURM job (not login node).
 
-**Smoke test command:**
-```bash
-KD_GAT_RECIPE=graphids/config/recipes/smoke_test.yaml dg launch --assets '*'
-```
+Each model config is now **one dagster asset = one SLURM job** running train→test→analyze
+sequentially. Analysis no longer runs in-process on the dagster CPU worker.
 
-## What this session did (2026-04-01, session 3)
+## What this session did (2026-04-01, session 5)
 
-### Audit: hand-rolled code in recent additions
+### Config layer cleanup
+- Separated `runtime.py` into Layer 1 (project constants) and Layer 2 (env vars)
+- Removed YAML reads (`global.yaml`, `io.yaml`) from `runtime.py` — those values are constants
+- `PREPROCESSING_VERSION`, `MAX_DATA_BYTES`, `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `COMPLETE_MARKER` → plain Python constants
+- Dagster code (`component.py`, `checks.py`) uses `dg.EnvVar().get_value()` instead of importing `LAKE_ROOT` from `runtime.py` — deferred resolution, no import-time freeze
+- Removed unused `SLURM_LOG_DIR` import from `profile.py`
+- Fixed `kdgat-convention-check.sh` hook false positive on argparse in `commands/`
 
-Audited 833 lines added over 4 commits. Found `train_entrypoint.py` reimplemented
-~80 lines of LightningCLI: `_import_class`, `_get_dotted`, `_set_dotted`, `_apply_links`
-(link_arguments), `_patch_paths` (before_instantiate_classes), manual Model/Data/Trainer
-instantiation. All deleted.
+### SLURM job consolidation (implements `plans/architecture/slurm-job-consolidation.md`)
+- Added `test-from-spec` command (`graphids/commands/test_from_spec.py` + `run_test_from_spec()` in `train_entrypoint.py`)
+- `generate_script()` now produces multi-command sbatch scripts (train + test + analyze)
+- `SlurmJobClient`/`SubprocessSlurmJobClient` accept `run_test` and `analysis_spec` params
+- `make_training_asset()` builds analysis spec and passes to SLURM job — no more in-process torch
+- Deleted `make_analysis_asset()` — analysis runs inside GPU SLURM job
+- Merged `make_checkpoint_checks()` + `make_analysis_checks()` into single `make_asset_checks()`
+- `build_defs()` simplified — no analysis asset assembly
 
-### Shadow instantiation → LightningCLI delegation
-
-`run_training_from_spec` now builds CLI args and calls `run_lightning()`. Both paths
-converge at LightningCLI. 144 → 51 lines. Zero drift risk.
-
-### Shared wiring constants
-
-Extracted `LINK_TARGETS`, `CHECKPOINT_DEFAULTS`, `EARLY_STOPPING_DEFAULTS` to `cli.py`
-as single source of truth. `_lightning.py` imports them.
-
-### Doc alignment
-
-Updated `issues/config-system-overhaul.md` (W2, W7, audit log),
-`plans/research/config_cli_decoupling.md` (Resolution section), PLAN.md.
-
-### MLOps evaluation + fixes (C1, C2)
-
-Independent evaluation against Hydra, MMEngine, Dagster, LightningCLI (vanilla).
-Report: `plans/architecture/cli-config-evaluation.md`. Two critical fixes applied:
-- C1: `tests/config/test_merge_parity.py` — 3 tests assert naive merge matches
-  jsonargparse for representative config chains (autoencoder, normal, fusion).
-- C2: `write_yaml()` now atomic (temp file + fsync + rename) for NFS safety.
+### Issues resolved
+- `issues/analysis-assets-in-process.md` — **Fixed**: analysis runs inside GPU SLURM job
+- `issues/evaluation-stage-missing.md` — **Fixed**: `test-from-spec` runs in every training job
 
 ## Blocking — Must do before ablation
 
-1. **Run smoke test on SLURM** — validates pipeline with LightningCLI delegation path
-2. **Run override + config tests on SLURM** — `scripts/submit.sh tests -k test_overrides`
+1. **Run smoke test on SLURM** — verify consolidated job (train→test→analyze) works end-to-end
+2. **Run config/override tests on SLURM** — `scripts/submit.sh tests -k "test_overrides or test_config or test_merge_parity or test_submit_sh or test_cli_routing or test_recipe_expand_kd"`
 
 ## Next
 
-1. Run smoke test on SLURM
+1. Smoke test on SLURM (gpudebug partition)
 2. Run tests on SLURM
 3. Launch ablation (`plans/experiment-sweep-plan.md`)
-4. Evaluation + analysis as dagster assets (`plans/architecture/evaluation-analysis-assets.md`)
 
 ## Key References
 
 | Doc | Purpose |
 |-----|---------|
+| `plans/architecture/slurm-job-consolidation.md` | **Implemented** — bundle train+test+analyze in one SLURM job |
+| `plans/architecture/evaluation-analysis-assets.md` | **Superseded** — separate dagster assets per phase |
 | `issues/config-system-overhaul.md` | Config overhaul tracker — completed + open items |
-| `plans/research/config_system_synthesis.md` | Config system design — canonical reference |
-| `plans/research/config_cli_decoupling.md` | Phase 3 CLI architecture |
-| `plans/research/config_tool_comparison.md` | Dynaconf/OmegaConf evaluation |
+| `issues/recipe-env-var-not-propagating.md` | Root cause analysis of env var bug |
 | `plans/experiment-sweep-plan.md` | 17-config ablation matrix |
 | `plans/open_issues.md` | All deferred items |

@@ -10,7 +10,6 @@ NO torch/Lightning imports at definition time.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import dagster as dg
@@ -18,21 +17,18 @@ import dagster as dg
 from graphids.config import (
     CONFIG_DIR,
     DAGSTER_IO_DIR_TEMPLATE,
-    LAKE_ROOT,
     PIPELINE_YAML,
     dataset_names,
     expand_recipe_configs,
 )
 from graphids.config.yaml_utils import read_yaml
 from graphids.core.contracts import TrainingSpec
-from graphids.orchestrate.analysis import supports_analysis
-from graphids.orchestrate.assets import make_analysis_asset, make_training_asset
-from graphids.orchestrate.checks import make_analysis_checks, make_checkpoint_checks
+from graphids.orchestrate.assets import make_training_asset
+from graphids.orchestrate.checks import make_asset_checks
 from graphids.orchestrate.planning import StageConfig, enumerate_assets
 from graphids.slurm import ResourceSpec, SlurmJobClient, SubprocessSlurmJobClient
 
 RECIPES_DIR = CONFIG_DIR / "recipes"
-RECIPE_PATH = Path(os.environ.get("KD_GAT_RECIPE", RECIPES_DIR / "ablation.yaml"))
 
 
 class SlurmTrainingResource(dg.ConfigurableResource):
@@ -55,6 +51,8 @@ class SlurmTrainingResource(dg.ConfigurableResource):
         resources: ResourceSpec,
         job_name: str,
         on_state=None,
+        run_test: bool = True,
+        analysis_spec=None,
     ) -> tuple[str, int]:
         """Submit SLURM job and poll. Returns (state, job_id)."""
         return self._client().run_training_job(
@@ -62,6 +60,8 @@ class SlurmTrainingResource(dg.ConfigurableResource):
             resources=resources,
             job_name=job_name,
             on_state=on_state,
+            run_test=run_test,
+            analysis_spec=analysis_spec,
         )
 
 
@@ -82,7 +82,9 @@ class SlurmTrainingComponent(dg.Component, dg.Model, dg.Resolvable):
     max_concurrent: int = 0  # 0 = no limit (SLURM handles throttling)
 
     def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
-        recipe = expand_recipe_configs(read_yaml(RECIPE_PATH))
+        recipe_env = dg.EnvVar("KD_GAT_RECIPE").get_value()
+        recipe_path = Path(recipe_env) if recipe_env else RECIPES_DIR / "ablation.yaml"
+        recipe = expand_recipe_configs(read_yaml(recipe_path))
 
         # 1. Enumerate training configs (pure data)
         stage_configs = enumerate_assets(PIPELINE_YAML, recipe)
@@ -95,20 +97,15 @@ class SlurmTrainingComponent(dg.Component, dg.Model, dg.Resolvable):
             "seed": dg.StaticPartitionsDefinition(seeds),
         })
 
-        lake_root = os.environ.get("KD_GAT_LAKE_ROOT", LAKE_ROOT)
-        user = os.environ.get("USER", "unknown")
+        lake_root = dg.EnvVar("KD_GAT_LAKE_ROOT").get_value() or "experimentruns"
+        user = dg.EnvVar("USER").get_value() or "unknown"
 
-        # 3. Build assets — one @asset per StageConfig, IOManager wires checkpoint paths
+        # 3. Build assets — one @asset per StageConfig (train→test→analyze in one SLURM job)
         assets = [make_training_asset(cfg, partitions, lake_root, user) for cfg in stage_configs]
-        analysis_sources = [cfg for cfg in stage_configs if supports_analysis(cfg.model_type)]
-        analysis_assets = [make_analysis_asset(cfg, partitions) for cfg in analysis_sources]
-        assets.extend(analysis_assets)
 
         # 4. Build asset checks
         cfg_lookup = {cfg.asset_name: cfg for cfg in stage_configs}
-        checks = make_checkpoint_checks(cfg_lookup, partitions, lake_root, user)
-        analysis_lookup = {cfg.asset_name: cfg for cfg in analysis_sources}
-        checks.extend(make_analysis_checks(analysis_lookup, partitions))
+        checks = make_asset_checks(cfg_lookup, partitions, lake_root, user)
 
         # 6. Executor: multiprocess so independent assets run in parallel.
         # Each worker just does sbatch + poll (sleep loop), so concurrency is cheap.

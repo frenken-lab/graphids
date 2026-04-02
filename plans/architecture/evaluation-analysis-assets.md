@@ -1,5 +1,7 @@
 # Plan: Evaluation + Analysis Artifacts as Dagster Assets
 
+> **SUPERSEDED** by `plans/architecture/slurm-job-consolidation.md` (2026-04-01). That plan bundles train+test+analyze into a single SLURM job per model config instead of separate dagster assets. Decision driven by bugs found during first GPU smoke test: analysis running in-process on CPU, multiprocess executor child failures, env var propagation across process boundaries. More dagster assets = more failure surface.
+
 ## Context
 
 Training checkpoints are dagster assets, but evaluation and analysis are manual CLI invocations. `pipeline.yaml:65-71` already defines an `evaluation` stage, and `Analyzer` (`core/artifacts/analyzer.py`) already generates paper-ready artifacts. This plan wires both into the dagster pipeline as first-class assets with SLURM submission, partitioned by dataset×seed, and IOManager-based checkpoint path handoff from upstream training.

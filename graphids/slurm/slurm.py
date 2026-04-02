@@ -17,7 +17,7 @@ from typing import Callable, Protocol
 import structlog
 
 from graphids.config import PROJECT_ROOT, SLURM_ACCOUNT, SLURM_LOG_DIR
-from graphids.core.contracts import TrainingContract, TrainingSpec
+from graphids.core.contracts import AnalysisContract, AnalysisSpec, TrainingContract, TrainingSpec
 from .resources import ResourceSpec
 
 log = structlog.get_logger()
@@ -35,6 +35,8 @@ class SlurmJobClient(Protocol):
         resources: ResourceSpec,
         job_name: str,
         on_state: StateObserver | None = None,
+        run_test: bool = True,
+        analysis_spec: AnalysisSpec | None = None,
     ) -> tuple[str, int]:
         """Submit, monitor, and return (terminal_state, job_id)."""
 
@@ -66,19 +68,23 @@ def generate_script(
     resources: ResourceSpec,
     *,
     spec_file: Path,
+    run_test: bool = True,
+    analysis_spec_file: Path | None = None,
 ) -> str:
-    """3-line sbatch script: preamble, training command, epilog."""
-    parts = [
-        "python -m graphids train-from-spec",
-        f"--spec-file {shlex.quote(str(spec_file))}",
+    """Multi-command sbatch script: train, optionally test and analyze."""
+    quoted = shlex.quote(str(spec_file))
+    lines = [
+        "#!/bin/bash",
+        f"source {PROJECT_ROOT}/scripts/slurm/_preamble.sh",
+        f"python -m graphids train-from-spec --spec-file {quoted}",
     ]
-    cmd = " ".join(parts)
-    return (
-        "#!/bin/bash\n"
-        f"source {PROJECT_ROOT}/scripts/slurm/_preamble.sh\n"
-        f"{cmd}\n"
-        f"source {PROJECT_ROOT}/scripts/slurm/_epilog.sh\n"
-    )
+    if run_test:
+        lines.append(f"python -m graphids test-from-spec --spec-file {quoted}")
+    if analysis_spec_file:
+        aquoted = shlex.quote(str(analysis_spec_file))
+        lines.append(f"python -m graphids analyze-from-spec --spec-file {aquoted}")
+    lines.append(f"source {PROJECT_ROOT}/scripts/slurm/_epilog.sh")
+    return "\n".join(lines) + "\n"
 
 
 def write_training_spec(training_spec: TrainingSpec, *, job_name: str) -> Path:
@@ -88,6 +94,17 @@ def write_training_spec(training_spec: TrainingSpec, *, job_name: str) -> Path:
     filename = f"{job_name}_{uuid.uuid4().hex}.json"
     path = specs_dir / filename
     envelope = TrainingContract.to_envelope(training_spec, metadata={"job_name": job_name})
+    path.write_text(envelope.model_dump_json())
+    return path
+
+
+def write_analysis_spec(analysis_spec: AnalysisSpec, *, job_name: str) -> Path:
+    """Persist AnalysisSpec to shared filesystem for SLURM worker consumption."""
+    specs_dir = Path(SLURM_LOG_DIR) / "specs"
+    specs_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{job_name}_analysis_{uuid.uuid4().hex}.json"
+    path = specs_dir / filename
+    envelope = AnalysisContract.to_envelope(analysis_spec, metadata={"job_name": job_name})
     path.write_text(envelope.model_dump_json())
     return path
 
@@ -183,11 +200,23 @@ class SubprocessSlurmJobClient:
         resources: ResourceSpec,
         job_name: str,
         on_state: StateObserver | None = None,
+        run_test: bool = True,
+        analysis_spec: AnalysisSpec | None = None,
     ) -> tuple[str, int]:
         """Submit training job and block until terminal state."""
         spec_file = write_training_spec(training_spec, job_name=job_name)
+        analysis_spec_file = (
+            write_analysis_spec(analysis_spec, job_name=job_name)
+            if analysis_spec
+            else None
+        )
         try:
-            script = generate_script(resources, spec_file=spec_file)
+            script = generate_script(
+                resources,
+                spec_file=spec_file,
+                run_test=run_test,
+                analysis_spec_file=analysis_spec_file,
+            )
             job_id = submit(script, resources, job_name=job_name, dry_run=self.dry_run)
             if self.dry_run:
                 return "DRY_RUN", 0
@@ -201,6 +230,8 @@ class SubprocessSlurmJobClient:
         finally:
             if spec_file.exists():
                 spec_file.unlink()
+            if analysis_spec_file and analysis_spec_file.exists():
+                analysis_spec_file.unlink()
 
     def cancel_job(self, job_id: int) -> None:
         cancel(job_id)

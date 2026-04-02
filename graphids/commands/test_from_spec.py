@@ -1,0 +1,23 @@
+"""Run test (evaluation) from a serialized TrainingSpec payload.
+
+Uses the same spec as training — loads best checkpoint and runs LightningCLI test.
+
+Usage:
+    python -m graphids test-from-spec --spec-file /path/to/spec.json
+"""
+
+from __future__ import annotations
+
+import argparse
+
+from graphids.commands._spec_payload import load_payload
+from graphids.core.train_entrypoint import run_test_from_payload
+
+
+def main(argv: list[str]) -> None:
+    parser = argparse.ArgumentParser(description="Run test from canonical TrainingSpec")
+    parser.add_argument("--spec-file", required=True)
+    args = parser.parse_args(argv)
+
+    payload = load_payload(args.spec_file)
+    run_test_from_payload(payload)

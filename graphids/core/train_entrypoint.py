@@ -48,3 +48,34 @@ def run_training_from_spec(spec: TrainingSpec) -> None:
 
 def run_training_from_payload(payload: dict[str, Any]) -> None:
     run_training_from_spec(TrainingContract.from_envelope(payload))
+
+
+def run_test_from_spec(spec: TrainingSpec) -> None:
+    """Run LightningCLI test using best checkpoint from a completed training run."""
+    import structlog
+
+    log = structlog.get_logger()
+
+    ckpt = Path(spec.run_dir) / "checkpoints" / "best_model.ckpt"
+    if not ckpt.exists():
+        log.warning("no_checkpoint_for_test", run_dir=spec.run_dir)
+        return
+
+    overrides = TrainingContract.to_override_dict(spec)
+    args = ["test"]
+    for cf in spec.config_files:
+        args.extend(["--config", cf])
+    for key, val in overrides.items():
+        args.append(f"--{key}={val}")
+    args.append(f"--ckpt_path={ckpt}")
+
+    import torch.multiprocessing as mp
+
+    mp.set_start_method("spawn", force=True)
+    mp.set_sharing_strategy("file_system")
+
+    run_lightning(args)
+
+
+def run_test_from_payload(payload: dict[str, Any]) -> None:
+    run_test_from_spec(TrainingContract.from_envelope(payload))

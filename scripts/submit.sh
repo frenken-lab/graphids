@@ -34,9 +34,9 @@ case "$MODE" in
 esac
 
 SIG_ARGS=()
-[[ -n "$SIGNAL" ]] && SIG_ARGS=(--signal="B:${SIGNAL}")
+[[ -n "$SIGNAL" && "$SIGNAL" != "NONE" ]] && SIG_ARGS=(--signal="B:${SIGNAL}")
 
 sbatch "$ACCT" --partition="$PARTITION" --cpus-per-task="$CPUS" --mem="$MEM" \
     --time="$TIME" --job-name="kd-gat-${JOB}" "${SIG_ARGS[@]}" \
     --output="slurm_logs/${JOB}_%j.out" --error="slurm_logs/${JOB}_%j.err" \
-    --wrap="${ENV}${PREAMBLE} && ${COMMAND} $*"
+    --wrap="${ENV}${PREAMBLE} && ${COMMAND} $(printf '%q ' "$@")"

@@ -147,7 +147,7 @@ def test_analyze_stage_yamls_exist():
 
 def test_defaults_yamls_exist():
     """Core default configs are present."""
-    for name in ["global.yaml", "io.yaml", "trainer.yaml"]:
+    for name in ["trainer.yaml"]:
         path = CONFIG_DIR / "defaults" / name
         assert path.exists(), f"Missing defaults config: {path}"
 

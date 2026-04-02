@@ -60,7 +60,7 @@ def main(argv: list[str]) -> None:
         str(p["cpus"]),
         p["mem"],
         p["time"],
-        p.get("signal", ""),
+        p.get("signal", "") or "NONE",
         p["mode"],
         p["command"],
     ]

@@ -41,6 +41,7 @@ Three entry points, zero overlap:
 | `python -m graphids rebuild-caches` | Rebuild preprocessed graph caches |
 | `python -m graphids stage-data` | NFS → scratch → TMPDIR staging |
 | `python -m graphids submit-profile <job>` | Print SLURM resource profile for submit.sh |
+| `python -m graphids test-from-spec` | Run test (evaluation) from canonical TrainingSpec (dagster transport) |
 | `python -m graphids test-preprocessing` | Validate preprocessing pipeline |
 | `python -m graphids train-from-spec` | Run training from canonical TrainingSpec (dagster transport) |
 

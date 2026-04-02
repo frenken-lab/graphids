@@ -1,30 +1,18 @@
-"""Dagster asset factory helpers for training and analysis."""
+"""Dagster asset factory helpers for training.
+
+Each training asset bundles train → test → analyze in a single SLURM job.
+Analysis runs inside the GPU job (not in-process on the dagster worker).
+"""
 
 from __future__ import annotations
 
-from typing import Protocol
-
 import dagster as dg
 
-from graphids.core.analyze_entrypoint import run_analysis_from_spec
-from graphids.orchestrate.analysis import build_analysis_spec, output_status, write_manifest
+from graphids.orchestrate.analysis import build_analysis_spec, supports_analysis
 from graphids.orchestrate.execution import slurm_accounting_metadata, touch_complete
 from graphids.orchestrate.planning import StageConfig
 from graphids.orchestrate.resolve import ConfigResolver
 from graphids.slurm import scale_resources
-
-
-class TrainingSubmitter(Protocol):
-    """Protocol for resources capable of submitting and waiting on training jobs."""
-
-    def submit_and_wait(
-        self,
-        training_spec,
-        resources,
-        job_name: str,
-        on_state=None,
-    ) -> tuple[str, int]:
-        ...
 
 
 def make_training_asset(
@@ -33,10 +21,10 @@ def make_training_asset(
     lake_root: str,
     user: str,
 ) -> dg.AssetsDefinition:
-    """Build one partitioned training asset from stage config."""
+    """Build one partitioned training asset that runs train→test→analyze in one SLURM job."""
     ins = {name: dg.AssetIn(key=dg.AssetKey(name)) for name in cfg.upstream_asset_names}
-    is_eval = cfg.stage == "evaluation"
     resolver = ConfigResolver(lake_root=lake_root, user=user)
+    has_analysis = supports_analysis(cfg.model_type)
 
     @dg.asset(
         name=cfg.asset_name,
@@ -44,7 +32,7 @@ def make_training_asset(
         partitions_def=partitions_def,
         retry_policy=dg.RetryPolicy(max_retries=2, delay=30),
         group_name=cfg.stage,
-        kinds={"metrics"} if is_eval else {"checkpoint"},
+        kinds={"checkpoint"},
         tags={"stage": cfg.stage, "model_type": cfg.model_type, "scale": cfg.scale},
         description=f"{cfg.stage} ({cfg.model_type}, {cfg.scale})",
         required_resource_keys={"slurm"},
@@ -66,6 +54,14 @@ def make_training_asset(
             for reason in ("OUT_OF_MEMORY", "TIMEOUT"):
                 resources = scale_resources(resources, reason)
 
+        # Build analysis spec if model supports it (runs inside the SLURM job)
+        analysis_spec = None
+        if has_analysis:
+            analysis_spec = build_analysis_spec(
+                cfg=cfg, dataset=dataset, seed=seed,
+                ckpt_path=str(resolved.paths.ckpt_file),
+            )
+
         def _observe(slurm_state, jid):
             context.log_event(
                 dg.AssetObservation(
@@ -79,6 +75,7 @@ def make_training_asset(
             resources=resources,
             job_name=f"{cfg.asset_name}_{dataset}_s{seed}",
             on_state=_observe,
+            analysis_spec=analysis_spec,
         )
 
         if state == "DRY_RUN":
@@ -101,51 +98,3 @@ def make_training_asset(
         return str(resolved.paths.ckpt_file)
 
     return _train
-
-
-def make_analysis_asset(
-    cfg: StageConfig,
-    partitions_def: dg.MultiPartitionsDefinition,
-) -> dg.AssetsDefinition:
-    """Build analysis asset that consumes a training checkpoint."""
-
-    @dg.asset(
-        name=f"{cfg.asset_name}_analysis",
-        ins={"checkpoint_path": dg.AssetIn(key=dg.AssetKey(cfg.asset_name))},
-        partitions_def=partitions_def,
-        group_name="analysis",
-        kinds={"artifact", "report"},
-        tags={"stage": cfg.stage, "model_type": cfg.model_type, "scale": cfg.scale},
-        description=f"Analysis artifacts for {cfg.asset_name}",
-    )
-    def _analyze(context, checkpoint_path: str) -> str:
-        dataset = context.partition_key.keys_by_dimension["dataset"]
-        seed = int(context.partition_key.keys_by_dimension["seed"])
-        spec = build_analysis_spec(
-            cfg=cfg,
-            dataset=dataset,
-            seed=seed,
-            ckpt_path=checkpoint_path,
-        )
-
-        run_analysis_from_spec(spec)
-        manifest_path = write_manifest(
-            asset_name=cfg.asset_name,
-            dataset=dataset,
-            seed=seed,
-            checkpoint_path=checkpoint_path,
-            spec=spec,
-        )
-        expected_outputs, existing_outputs = output_status(spec)
-
-        context.add_output_metadata(
-            {
-                "manifest": dg.MetadataValue.path(str(manifest_path)),
-                "output_dir": dg.MetadataValue.path(spec.output_dir),
-                "expected_outputs": len(expected_outputs),
-                "existing_outputs": len(existing_outputs),
-            }
-        )
-        return str(manifest_path)
-
-    return _analyze
