@@ -1,6 +1,6 @@
 # KD-GAT Session Plan
 
-> Last updated: 2026-04-01 (session 7b — observability: tools + phase markers + pipeline-status CLI)
+> Last updated: 2026-04-02 (session 8 — smoke test + ablation launch)
 
 ## Current State
 
@@ -20,6 +20,53 @@ per-phase status (`phase_train`, `phase_test`, `phase_analyze`) in dagster metad
 Observability: `python -m graphids pipeline-status` shows aggregated asset status
 (dagster + phase markers + sacct). DeviceStatsMonitor logs CUDA memory stats per step.
 nvitop, reportseff, SlurmTUI installed as complementary tools.
+
+## What this session did (2026-04-02, session 8 — smoke test + ablation launch)
+
+### hcrl_sa smoke test — passed
+
+Ran full pipeline (vgae→gat_normal→gat_curriculum→4 fusion methods), all 7 SLURM
+jobs exit 0 in ~25 min total. GAT AUC=0.9995. Found and fixed 4 bugs:
+stale test assertions (3), missing `FusionDataModule.test_dataloader` (1).
+
+### set_01 ablation — launched, in progress
+
+Updated `ablation.yaml` with claims 5 (conv type: gatv2 vs gat vs gps) and
+6 (unsupervised method: VGAE vs GAE vs DGI). 24 recipe configs expand to 32
+unique dagster assets after dedup. Stage-sharing DAG avoids combinatorial explosion.
+
+**Identity hash fix:** Added `model_type` to autoencoder + curriculum identity_keys
+so DGI/GAE/VGAE autoencoders get distinct hashes. Added `model_keys` (subset of
+identity_keys) to control which keys become CLI overrides vs just hash inputs.
+
+**Ablation status** (as of session end):
+- 2 completed (autoencoder large + small/GAE)
+- 4 running (autoencoder small, 3 large normals)
+- 4 pending retries (3 normals with cleared stale ckpts, DGI manual submit)
+- 21 not yet submitted (waiting on upstream DAG)
+- 1 DGI autoencoder submitted manually (exhausted dagster retries, leaf node)
+
+### Bugs found: 8 total
+
+3 patterns identified — see `issues/ablation-run-bugs.md` for full log.
+
+| Pattern | Bugs | Root cause |
+|---------|------|------------|
+| Stale tests after code changes | 1-3 | Test assertions not updated after sessions 6-7 |
+| Stale artifacts from prior code | 5, 6 | Copied YAML fields, old checkpoint class_paths |
+| Identity keys ≠ model keys | 7, 8 | Identity keys for hashing blindly passed as CLI overrides |
+
+Bug 4 (missing test_dataloader) was standalone.
+
+### Config/override tests — 84/84 passed
+
+All config, merge parity, recipe expansion, CLI routing, and submit.sh tests green.
+
+### Issues updated
+
+| Issue | Status |
+|-------|--------|
+| `issues/ablation-run-bugs.md` | **New** — 8 bugs logged with patterns |
 
 ## What this session did (2026-04-01, session 7b — observability)
 
@@ -103,28 +150,31 @@ fall back to `last.ckpt`.
 | `issues/config-system-overhaul.md` | W4 (collision detection) resolved, validation hardened |
 | `issues/override-pipeline-consolidation.md` | 5 mitigations added, `OverrideChain` proposal still open |
 
-## Blocking — Must do before ablation
+## Blocking — done
 
-1. **Run clean smoke test** — resubmit with current code (includes all session 6+7 fixes):
-   ```bash
-   # Clear seed 99 markers first
-   for d in /fs/ess/PAS1266/kd-gat/dev/rf15/hcrl_sa/*/seed_99; do
-     rm -f "$d/.complete"; rm -rf "$d/artifacts"
-   done
-   KD_GAT_RECIPE=graphids/config/recipes/smoke_test.yaml \
-     scripts/submit.sh ablation --assets '*' --partition 'hcrl_sa|99'
-   ```
+1. ~~Run clean smoke test~~ — **done** (session 8, hcrl_sa, all 7 stages pass)
+2. ~~Run config/override tests~~ — **done** (session 8, 84/84 green)
+3. ~~Launch ablation~~ — **done** (session 8, set_01 seed 42, 32 assets)
 
-2. **Run config/override tests on SLURM**:
-   ```bash
-   scripts/submit.sh tests -k "test_overrides or test_config or test_merge_parity or test_submit_sh or test_cli_routing or test_recipe_expand_kd"
-   ```
+## Active — set_01 ablation in progress
+
+Orchestrator: SLURM job 46260678. Monitor with `squeue -u $USER` or `sacct`.
+
+**When current run completes, verify:**
+1. All 32 assets have `.complete` markers
+2. DGI autoencoder (manual job 46265877) completed
+3. 3 normal retries succeeded after checkpoint cleanup
+4. Curriculum + fusion stages submitted and completed downstream
+
+**Follow-up if needed:**
+- Re-run any failed assets: `scripts/submit.sh ablation --assets '<name>' --partition 'set_01|42'`
+- Leaf nodes can use direct `sbatch` (no dagster needed)
 
 ## Next
 
-1. Clean smoke test (blocking item 1)
-2. Run tests (blocking item 2)
-3. Launch ablation (`plans/experiment-sweep-plan.md`)
+1. Verify set_01 ablation completes (all 32 assets)
+2. Review training metrics across ablation configs
+3. Launch second dataset or seeds per `plans/experiment-sweep-plan.md`
 
 ## Key References
 
@@ -137,4 +187,5 @@ fall back to `last.ckpt`.
 | `issues/analyzer-manifest-lifecycle.md` | Manifest ownership (open) |
 | `issues/override-pipeline-consolidation.md` | 4-hop override flow — 5 mitigations applied, architecture open |
 | `plans/experiment-sweep-plan.md` | 17-config ablation matrix |
+| `issues/ablation-run-bugs.md` | 8 bugs from smoke test + ablation, with pattern analysis |
 | `plans/open_issues.md` | All deferred items |
