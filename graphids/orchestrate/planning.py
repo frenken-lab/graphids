@@ -100,7 +100,13 @@ def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
             id_cfg = {k: _identity_value(k, merged, stages) for k in id_keys}
             identity = compute_identity_hash(stage, id_cfg)
             model_family = STAGE_MODEL_MAP[stage]
-            if merged.model_type is not None and stage_def.get("learning_type") == "unsupervised":
+            # Only override unsupervised model_family when model_type IS an
+            # unsupervised model (vgae, dgi). A GAT curriculum sweep sets
+            # model_type="gat" but the upstream autoencoder must stay VGAE.
+            _UNSUPERVISED_MODELS = {"vgae", "dgi"}
+            if (merged.model_type is not None
+                    and stage_def.get("learning_type") == "unsupervised"
+                    and merged.model_type in _UNSUPERVISED_MODELS):
                 model_family = merged.model_type
             config_files = TrainingContract.resolve_config_files(
                 stage,
@@ -118,6 +124,9 @@ def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
                 if key == "scale":
                     continue
                 if key == "method" and stage == "fusion":
+                    continue
+                # variational is VGAE-only; DGI doesn't accept it
+                if key == "variational" and model_family == "dgi":
                     continue
                 val = id_cfg.get(key)
                 if val is not None:

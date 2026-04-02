@@ -29,6 +29,7 @@ _STAGE_DEFS: dict[str, dict[str, Any]] = {
         "mode": "gpu_train",
         "depends_on": [],
         "identity_keys": ["scale", "conv_type", "variational", "model_type"],
+        "model_keys": ["conv_type", "variational"],  # model_type: identity only, set by YAML
     },
     "curriculum": {
         "learning_type": "supervised",
@@ -36,6 +37,7 @@ _STAGE_DEFS: dict[str, dict[str, Any]] = {
         "mode": "gpu_train",
         "depends_on": [{"model": "vgae", "stage": "autoencoder"}],
         "identity_keys": ["scale", "conv_type", "loss_fn", "variational", "model_type"],
+        "model_keys": ["conv_type", "loss_fn"],  # variational/model_type: identity only
     },
     "normal": {
         "learning_type": "supervised",
