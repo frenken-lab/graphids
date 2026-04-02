@@ -5,6 +5,7 @@ Subcommands:
   analyze                    — generate analysis artifacts from checkpoints
   analyze-from-spec          — run analyzer from canonical AnalysisSpec
   landscape                  — compute 2D loss landscape
+  pipeline-status            — aggregated dagster + SLURM phase status
   profile                    — sacct resource profiler
   profile-training           — profiled training run (PyTorchProfiler)
   train-from-spec            — run training from canonical TrainingSpec
@@ -41,6 +42,7 @@ _COMMAND_MODULES: dict[str, str] = {
     "analyze": "graphids.commands.analyze",
     "analyze-from-spec": "graphids.commands.analyze_from_spec",
     "landscape": "graphids.commands.landscape",
+    "pipeline-status": "graphids.commands.pipeline_status",
     "profile": "graphids.commands.profile",
     "profile-training": "graphids.commands.profile_training",
     "rebuild-caches": "graphids.commands.rebuild_caches",

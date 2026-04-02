@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+from pytorch_lightning.callbacks import DeviceStatsMonitor, EarlyStopping, ModelCheckpoint
 from pytorch_lightning.cli import LightningCLI, SaveConfigCallback
 from pytorch_lightning.loggers import WandbLogger
 
@@ -49,6 +49,8 @@ class GraphIDSCLI(LightningCLI):
         parser.set_defaults(
             {f"early_stopping.{k}": v for k, v in EARLY_STOPPING_DEFAULTS.items()}
         )
+
+        parser.add_lightning_class_args(DeviceStatsMonitor, "device_stats")
 
     def before_instantiate_classes(self):
         """Patch parsed config: logger save_dirs + checkpoint dirpath."""

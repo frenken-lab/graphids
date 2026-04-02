@@ -1,5 +1,11 @@
 # No pipeline observability on headless OSC
 
+> **Status: PARTIALLY RESOLVED** — 2026-04-01 (session 7b). `pipeline-status` CLI
+> command implemented (`graphids/commands/pipeline_status.py`). Uses DagsterInstance
+> batch API + phase markers + rich table. Installed nvitop, reportseff, SlurmTUI as
+> complementary tools. Remaining: failure alerting (--mail-type or dagster-slack),
+> `--watch` mode, structured JSON logs.
+
 ## Problem
 
 Zero visibility into pipeline state while jobs are running:

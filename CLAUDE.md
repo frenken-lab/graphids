@@ -36,6 +36,7 @@ Three entry points, zero overlap:
 | `python -m graphids analyze` | Analysis artifacts from checkpoints |
 | `python -m graphids analyze-from-spec` | Run analyzer from canonical AnalysisSpec (dagster transport) |
 | `python -m graphids landscape` | 2D loss landscape |
+| `python -m graphids pipeline-status` | Aggregated dagster + SLURM phase status |
 | `python -m graphids profile <job_ids>` | sacct resource profiler |
 | `python -m graphids profile-training` | Profiled training run (PyTorchProfiler) |
 | `python -m graphids rebuild-caches` | Rebuild preprocessed graph caches |

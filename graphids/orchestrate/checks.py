@@ -11,13 +11,14 @@ from pathlib import Path
 
 import dagster as dg
 
-from graphids.config import PathContext
+from graphids.config import PHASE_MARKERS, PathContext
 from graphids.orchestrate.analysis import (
     ANALYSIS_MANIFEST_NAME,
     build_analysis_spec,
     output_status,
     supports_analysis,
 )
+from graphids.orchestrate.assets import _runtime_lake_root, _runtime_user
 from graphids.orchestrate.planning import StageConfig
 
 
@@ -41,8 +42,6 @@ def _partition_keys(context) -> tuple[str, int]:
 def make_asset_checks(
     cfg_lookup: dict[str, StageConfig],
     partitions_def: dg.MultiPartitionsDefinition,
-    lake_root: str,
-    user: str,
 ) -> list[dg.AssetChecksDefinition]:
     """Two checks per training asset: checkpoint (blocking) + analysis (non-blocking)."""
     checks: list[dg.AssetChecksDefinition] = []
@@ -60,16 +59,26 @@ def make_asset_checks(
             def _check(context) -> dg.AssetCheckResult:
                 dataset, seed = _partition_keys(context)
                 paths = _paths_from_context(
-                    c, lake_root=lake_root, user=user, dataset=dataset, seed=seed,
+                    c, lake_root=_runtime_lake_root(), user=_runtime_user(),
+                    dataset=dataset, seed=seed,
                 )
-                ckpt_ok = paths.ckpt_file.exists() and paths.complete_marker.exists()
+                ckpt = paths.ckpt_file if paths.ckpt_file.exists() else paths.last_ckpt_file
+                ckpt_ok = ckpt.exists() and paths.complete_marker.exists()
+                phase_status = {
+                    phase: (paths.run_dir / marker).exists()
+                    for phase, marker in PHASE_MARKERS.items()
+                }
                 return dg.AssetCheckResult(
                     passed=ckpt_ok,
                     metadata={
-                        "ckpt_path": dg.MetadataValue.path(str(paths.ckpt_file)),
+                        "ckpt_path": dg.MetadataValue.path(str(ckpt)),
                         "complete_marker": dg.MetadataValue.bool(
                             paths.complete_marker.exists()
                         ),
+                        **{
+                            f"phase_{phase}": dg.MetadataValue.bool(ok)
+                            for phase, ok in phase_status.items()
+                        },
                     },
                 )
 
@@ -91,11 +100,13 @@ def make_asset_checks(
                 def _check(context) -> dg.AssetCheckResult:
                     dataset, seed = _partition_keys(context)
                     paths = _paths_from_context(
-                        c, lake_root=lake_root, user=user, dataset=dataset, seed=seed,
+                        c, lake_root=_runtime_lake_root(), user=_runtime_user(),
+                        dataset=dataset, seed=seed,
                     )
+                    ckpt = paths.ckpt_file if paths.ckpt_file.exists() else paths.last_ckpt_file
                     spec = build_analysis_spec(
                         cfg=c, dataset=dataset, seed=seed,
-                        ckpt_path=str(paths.ckpt_file),
+                        ckpt_path=str(ckpt),
                     )
                     manifest_path = Path(spec.output_dir) / ANALYSIS_MANIFEST_NAME
                     expected, existing = output_status(spec)

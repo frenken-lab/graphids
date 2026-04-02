@@ -70,6 +70,15 @@ of the codebase working
 - `setup()` ignores `stage` param — loads everything unconditionally
 - No `predict_dataloader()` on any DataModule
 
+## Deferred from observability (2026-04-01)
+
+- `--mail-type=END,FAIL` in submit.sh — zero-effort job failure emails (skipped, user said "just fail")
+- `--watch` mode for `pipeline-status` — auto-refresh like `watch squeue` but with DAG context
+- Structured JSON logs — `structlog.processors.JSONRenderer()` when `SLURM_JOB_ID` is set, enables `jq` parsing
+- `pipeline_status.json` — machine-readable status file for cron-based alerting
+- dagster-slack sensor — requires `dagster-daemon run` as persistent process
+- turm fork — sacct + GPU GRES in Rust TUI (deferred in favor of existing tools: SlurmTUI, nvitop, reportseff)
+
 ## Deferred from dagster orchestration (2026-03-29)
 
 - `dagster-slurm>=1.12.0` in `pyproject.toml` is unused — zero imports. Remove.

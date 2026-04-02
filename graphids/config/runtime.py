@@ -20,6 +20,11 @@ EXCLUDED_ATTACK_TYPES: list[str] = ["suppress", "masquerade"]
 CKPT_SUBPATH: str = "checkpoints/best_model.ckpt"
 LAST_CKPT_SUBPATH: str = "checkpoints/last.ckpt"
 COMPLETE_MARKER: str = ".complete"
+PHASE_MARKERS: dict[str, str] = {
+    "train": ".train_complete",
+    "test": ".test_complete",
+    "analyze": ".analyze_complete",
+}
 DAGSTER_IO_DIR_TEMPLATE: str = "{lake_root}/dagster_io"
 DEFAULT_MODEL_TYPE: str = next(iter(VALID_MODEL_TYPES)) if VALID_MODEL_TYPES else "vgae"
 DEFAULT_SCALE: str = next(iter(VALID_SCALES)) if VALID_SCALES else "small"
