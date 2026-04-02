@@ -39,12 +39,16 @@ unique dagster assets after dedup. Stage-sharing DAG avoids combinatorial explos
 so DGI/GAE/VGAE autoencoders get distinct hashes. Added `model_keys` (subset of
 identity_keys) to control which keys become CLI overrides vs just hash inputs.
 
-**Ablation status** (as of session end):
-- 2 completed (autoencoder large + small/GAE)
-- 4 running (autoencoder small, 3 large normals)
-- 4 pending retries (3 normals with cleared stale ckpts, DGI manual submit)
-- 21 not yet submitted (waiting on upstream DAG)
-- 1 DGI autoencoder submitted manually (exhausted dagster retries, leaf node)
+**Ablation status** (2026-04-02 10:15 EDT):
+
+| Status | Count | Assets |
+|--------|-------|--------|
+| COMPLETED | 3 | `autoencoder_288aba35` (vgae small/GAE), `autoencoder_9ffb88b1` (vgae large), `autoencoder_ff9f9014` (vgae small) |
+| RUNNING | 3 | `normal_2bca8cb0` (large), `normal_46ee23eb` (large), `normal_789ca533` (large) |
+| PENDING retry | 3 | `normal_2af9d630` (small/focal), `normal_56cc5893` (small/ce), `normal_ab6a75a4` (small/wce) — stale ckpts cleared |
+| PENDING new | 2 | `curriculum_bf2a5575` (small), `curriculum_e9354ccd` (large) — upstream done, queued |
+| MANUAL submit | 1 | `autoencoder_c479d625` (DGI) — job 46265877, exhausted dagster retries |
+| NOT YET SUBMITTED | 20 | 4 autoencoders (ready), 8 curricula (blocked on autoencoders), 8 fusions (blocked on curricula) |
 
 ### Bugs found: 8 total
 
