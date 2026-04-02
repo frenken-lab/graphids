@@ -1,6 +1,6 @@
 # KD-GAT Session Plan
 
-> Last updated: 2026-04-02 (session 9 — training efficiency + budget module)
+> Last updated: 2026-04-02 (session 10 — budget audit + simplification)
 
 ## Current State
 
@@ -220,19 +220,74 @@ independent — determined by per-node rates and worker count.
 - **Tests.** Updated `test_vram_budget.py` parses and imports resolve, but
   can't run on login node. Needs `scripts/submit.sh tests -k test_vram_budget`.
 
-## Next — budget validation
+## What this session did (2026-04-02, session 10 — budget audit + simplification)
 
-1. **Run tests via SLURM:** `scripts/submit.sh tests -k test_vram_budget`
-2. **Profile the probe on GPU:** run a short training job that logs `BudgetResult`
-   fields (α, β, γ, regime, binding). Compare predicted vs actual step times.
-3. **Before/after comparison:** run identical config on `hcrl_sa` with old
-   budget (mem-only) vs new budget, compare GPU utilization via
-   `DeviceStatsMonitor` + nvitop
-4. **Backtest equations:** log per-step T_collation, T_gpu, T_delivery for ~100
-   steps. Plot against the affine model predictions. If the model is wrong,
-   the probe coefficients need recalibration.
-5. Verify set_01 ablation completes (all 32 assets)
-6. Review training metrics across ablation configs
+### Budget module rewrite
+
+Audited budget.py against PyG/Lightning/PyTorch deps. Two library replacements:
+- `torch.utils.benchmark.Timer` replaces manual `time.perf_counter` for GPU timing
+  (multi-sample median, proper CUDA sync)
+- `PrefetchLoader` (PyG) wraps DataLoaders for async H2D via CUDA streams
+
+Then audited the module internals:
+- Deleted `regime()` — its 2.0/0.5 thresholds were arbitrary and didn't control
+  the budget decision. Replaced with raw `cg_ratio` logged as a continuous value.
+- Deleted `CostCoefficients`, `collation_time()`, `gpu_time()`,
+  `collation_gpu_ratio()`, `_throughput_budget_nodes()` — dead code or decorative
+  wrappers. None were called in the budget decision path.
+- Collapsed 8 exports to 3: `BudgetResult`, `_probe`, `node_budget`.
+- Tagged every constant as DERIVED / HEURISTIC / FALLBACK with provenance.
+- Inlined throughput ceiling math into `node_budget()` with full derivation visible.
+
+### Tests
+
+- Rewrote `test_vram_budget.py` to test through public API with mocked `_probe`
+- Added `test_budget_matrix.py`: 611 parametrized tests across 4 datasets ×
+  8 model configs × 3 GPU types × 3 worker counts. Uses realistic values from
+  actual config files (model YAMLs, cache_metadata.json, resource profiles).
+- Tests verify: budget within VRAM, reasonable batch counts, monotonicity
+  (more VRAM → bigger budget, bigger model → smaller budget, more workers →
+  budget doesn't shrink), regime properties, GPS quadratic path.
+
+### Ablation diagnosis
+
+- Bug 9: DGI `torch.compile` inductor crash. Fix: `compile_model: false` in
+  `config/models/dgi/base.yaml`. Blocks entire DGI ablation branch.
+- Bug 10: phantom `resume_ckpt` from stale orchestrator code (already fixed in
+  session 9 commit ebd7e1f, but running orchestrator uses old code).
+- Both logged to `docs/backlog/ablation-bug-patterns.md`.
+
+### Ablation progress
+
+Orchestrator further along than expected — fusion jobs now submitting.
+Running: `normal_56cc5893`, `fusion_0afb6d08`, `fusion_d64ae7a5`.
+Pending: 3 more fusions. Blocked: DGI branch (bug 9) + ab6a75a4 (bug 10).
+
+### Graphcore source material
+
+Researched 14 pages across PyG tutorials, popXL tutorials, supplementary docs.
+Key finding: Graphcore docs provided the conceptual framework (fixed budgets,
+packing vs padding, efficiency metrics). The affine cost model, regime
+classification, and two-point probe are original to our design.
+
+## Next — profile-budget command
+
+The budget module is built on probe values that have never been measured on real
+hardware. The critical unknown: **is α > 0?** If not, the throughput ceiling
+never exists and the module reduces to `budget = VRAM / bytes_per_node`.
+
+1. **Build `profile-budget` command** — `python -m graphids profile-budget`
+   instantiates each model (random weights) × dataset, runs `_probe()`, outputs
+   measured γ, α, β, bytes_per_node. See `docs/backlog/profile-budget-command.md`.
+2. **Run on GPU** — `scripts/submit.sh profile-budget`. 32 probes, ~2 min.
+3. **Replace test estimates** — update `MODEL_PROBES` in `test_budget_matrix.py`
+   with measured values.
+4. **Decision gate:** if α ≈ 0 for all models → delete throughput ceiling code.
+   Budget becomes 5 lines.
+5. **Run budget tests** — `scripts/submit.sh tests -k test_budget`
+6. **Fix DGI** — set `compile_model: false`, resubmit DGI autoencoder.
+7. **Resubmit ab6a75a4** — manual sbatch (dagster retries exhausted).
+8. **Verify ablation completion** — all 32 assets.
 
 ## Key References
 
@@ -243,11 +298,12 @@ independent — determined by per-node rates and worker count.
 | `docs/reference/budget-pipeline-analysis.md` | Old vs new pipeline walkthrough, worker scaling |
 | `docs/reference/osc-cluster-memory-limits.md` | Per-partition mem_per_cpu for all 3 clusters |
 | `docs/backlog/training-efficiency.md` | Backlog: remaining tiers (prefetch_factor, CPU training) |
+| `docs/backlog/profile-budget-command.md` | **New** — profile-budget command spec |
+| `docs/backlog/ablation-bug-patterns.md` | 10 bugs from smoke test + ablation, with pattern analysis |
 | `docs/decisions/0003-slurm-job-consolidation.md` | **Implemented** — bundle train+test+analyze in one SLURM job |
 | `docs/backlog/config-overhaul-remaining.md` | Config overhaul tracker — open items |
 | `docs/backlog/per-stage-overrides.md` | Global vs stage-specific overrides (open) |
 | `docs/backlog/analyzer-manifest.md` | Manifest ownership (open) |
 | `docs/backlog/override-chain.md` | 4-hop override flow — 5 mitigations applied, architecture open |
 | `docs/reference/experiment-plan.md` | 17-config ablation matrix |
-| `docs/backlog/ablation-bug-patterns.md` | 8 bugs from smoke test + ablation, with pattern analysis |
 | `docs/backlog/open-items.md` | All deferred items |
