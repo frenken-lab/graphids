@@ -103,12 +103,12 @@ Max: 17 x 2 x 3 = 102 pipelines, ~150 GPU jobs (with sharing).
 
 | File | Role |
 |------|------|
-| `graphids/config/pipeline.yaml` | Stage DAG, identity_keys, valid models/scales |
+| `graphids/config/topology.py` | Stage DAG, identity_keys, valid models/scales (was `pipeline.yaml`) |
 | `graphids/config/recipes/ablation.yaml` | 18-config ablation recipe |
 | `graphids/config/stages/*.yaml` | Per-stage LightningCLI configs |
-| `graphids/config/overlays/*.yaml` | Scale/ablation variant overlays |
-| `graphids/config/resources.yaml` | SLURM resource profiles |
-| `graphids/orchestrate/definitions.py` | Dagster asset definitions |
+| `graphids/config/models/{type}/scales/*.yaml` | Per-model scale configs (was `overlays/`) |
+| `graphids/config/resources/profiles/*.yaml` | SLURM resource profiles (was `resources.yaml`) |
+| `graphids/orchestrate/component.py` | Dagster component + asset definitions (was `definitions.py`) |
 
 ## Prerequisites (all complete)
 

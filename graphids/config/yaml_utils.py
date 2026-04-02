@@ -56,8 +56,7 @@ def merge_yaml_chain(
     merged: dict[str, Any] = {}
     for path_str in config_files:
         p = Path(path_str)
-        if p.exists():
-            merged = deep_merge(merged, read_yaml(p))
+        merged = deep_merge(merged, read_yaml(p))  # raises FileNotFoundError on typos
     if overrides:
         merged = apply_dotted_overrides(merged, overrides)
     return merged

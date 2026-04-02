@@ -25,7 +25,7 @@ from graphids.config.yaml_utils import read_yaml
 from graphids.core.contracts import TrainingSpec
 from graphids.orchestrate.assets import make_training_asset
 from graphids.orchestrate.checks import make_asset_checks
-from graphids.orchestrate.planning import StageConfig, enumerate_assets
+from graphids.orchestrate.planning import enumerate_assets
 from graphids.slurm import ResourceSpec, SlurmJobClient, SubprocessSlurmJobClient
 
 RECIPES_DIR = CONFIG_DIR / "recipes"
@@ -98,14 +98,14 @@ class SlurmTrainingComponent(dg.Component, dg.Model, dg.Resolvable):
         })
 
         lake_root = dg.EnvVar("KD_GAT_LAKE_ROOT").get_value() or "experimentruns"
-        user = dg.EnvVar("USER").get_value() or "unknown"
 
         # 3. Build assets — one @asset per StageConfig (train→test→analyze in one SLURM job)
-        assets = [make_training_asset(cfg, partitions, lake_root, user) for cfg in stage_configs]
+        # lake_root/user are read at materialization time, not here (see assets._runtime_*)
+        assets = [make_training_asset(cfg, partitions) for cfg in stage_configs]
 
         # 4. Build asset checks (checkpoint blocking + analysis non-blocking)
         cfg_lookup = {cfg.asset_name: cfg for cfg in stage_configs}
-        checks = make_asset_checks(cfg_lookup, partitions, lake_root, user)
+        checks = make_asset_checks(cfg_lookup, partitions)
 
         # 6. Executor: multiprocess so independent assets run in parallel.
         # Each worker just does sbatch + poll (sleep loop), so concurrency is cheap.

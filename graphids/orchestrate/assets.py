@@ -6,6 +6,8 @@ Analysis runs inside the GPU job (not in-process on the dagster worker).
 
 from __future__ import annotations
 
+import os
+
 import dagster as dg
 
 from graphids.orchestrate.analysis import build_analysis_spec, supports_analysis
@@ -15,15 +17,20 @@ from graphids.orchestrate.resolve import ConfigResolver
 from graphids.slurm import scale_resources
 
 
+def _runtime_lake_root() -> str:
+    return os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns")
+
+
+def _runtime_user() -> str:
+    return os.environ.get("USER", "unknown")
+
+
 def make_training_asset(
     cfg: StageConfig,
     partitions_def: dg.MultiPartitionsDefinition,
-    lake_root: str,
-    user: str,
 ) -> dg.AssetsDefinition:
     """Build one partitioned training asset that runs train→test→analyze in one SLURM job."""
     ins = {name: dg.AssetIn(key=dg.AssetKey(name)) for name in cfg.upstream_asset_names}
-    resolver = ConfigResolver(lake_root=lake_root, user=user)
     has_analysis = supports_analysis(cfg.model_type)
 
     @dg.asset(
@@ -41,13 +48,20 @@ def make_training_asset(
         dataset = context.partition_key.keys_by_dimension["dataset"]
         seed = int(context.partition_key.keys_by_dimension["seed"])
 
+        resolver = ConfigResolver(lake_root=_runtime_lake_root(), user=_runtime_user())
         resolved = resolver.resolve(
             cfg, dataset=dataset, seed=seed, upstream_ckpts=upstream_ckpts,
         )
 
-        if resolved.paths.ckpt_file.exists() and resolved.paths.complete_marker.exists():
-            context.log.info(f"Already complete: {resolved.paths.ckpt_file}")
-            return str(resolved.paths.ckpt_file)
+        # Prefer best_model.ckpt, fall back to last.ckpt (fusion RL has no best)
+        def _available_ckpt():
+            p = resolved.paths
+            return p.ckpt_file if p.ckpt_file.exists() else p.last_ckpt_file
+
+        ckpt = _available_ckpt()
+        if ckpt.exists() and resolved.paths.complete_marker.exists():
+            context.log.info(f"Already complete: {ckpt}")
+            return str(ckpt)
 
         resources = resolved.resources
         if context.retry_number > 0:
@@ -79,7 +93,7 @@ def make_training_asset(
         )
 
         if state == "DRY_RUN":
-            return str(resolved.paths.ckpt_file)
+            return str(_available_ckpt())
         if state != "COMPLETED":
             raise RuntimeError(f"SLURM job failed: {state}")
 
@@ -95,6 +109,6 @@ def make_training_asset(
                 }
             )
 
-        return str(resolved.paths.ckpt_file)
+        return str(_available_ckpt())
 
     return _train

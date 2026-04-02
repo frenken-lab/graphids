@@ -140,3 +140,26 @@ class OverrideEntry:
 - `graphids/core/contracts/ops.py` -- to_override_dict delegates to chain
 - `graphids/core/train_entrypoint.py` -- _build_cli_args delegates to chain
 - `tests/orchestrate/test_pure.py` -- integration test recipe->CLI
+
+---
+
+## Mitigations applied (2026-04-01, session 7)
+
+The 4-hop architecture is unchanged, but several guards now catch the failure
+modes this issue describes:
+
+1. **`_flatten_dict` rejects non-scalars** — `TypeError` on lists/dicts prevents
+   structured values from being silently `str()`-ified (`recipe_expand.py`).
+2. **`merge_yaml_chain` raises on missing files** — `FileNotFoundError` instead of
+   silent skip prevents typos in config paths from producing default-only configs
+   (`yaml_utils.py`).
+3. **`to_override_dict` warns on key conflicts** — `runtime_overrides_clobber`
+   structlog warning when `runtime_overrides` collides with `model_init_overrides`
+   (`contracts/ops.py`).
+4. **Unmapped upstream models raise** — `KeyError` instead of silent drop when
+   `_CKPT_FLAG_BY_MODEL` has no entry for a model family (`contracts/ops.py`).
+5. **Config snapshot includes LINK_TARGETS** — snapshot YAML is now reproducible
+   for manual replay (`train_entrypoint.py`).
+
+The `OverrideChain` proposal remains the architectural fix. These guards reduce
+the blast radius of the existing 4-hop flow until it's consolidated.

@@ -1,7 +1,7 @@
 # Config System Overhaul
 
 > Canonical design: `plans/research/config_system_synthesis.md`
-> Created: 2026-03-31 | Updated: 2026-04-01
+> Created: 2026-03-31 | Updated: 2026-04-01 (session 7: W4 resolved, validation hardening)
 
 ---
 
@@ -107,11 +107,14 @@ bypass `TrainingRunConfig.auxiliaries` validation.
 
 - [ ] Decide: identity-relevant (add to `KDEntry`) or sweep-internal (document split)
 
-### 7. W4: Override collision detection (LOW)
+### ~~7. W4: Override collision detection~~ ✓ (LOW)
 
-Last-write-wins if `trainer_overrides` and `model_init_overrides` touch the same key.
-Audit log records what was applied but doesn't warn on overwrites.
-- [ ] Warn if a key appears in multiple override sources
+Resolved 2026-04-01. `to_override_dict()` in `contracts/ops.py` now logs
+`runtime_overrides_clobber` warning when `runtime_overrides` keys overlap with
+earlier-set keys. Also: `_flatten_dict` in `recipe_expand.py` now rejects
+non-scalar values with `TypeError`. `merge_yaml_chain` in `yaml_utils.py` now
+raises `FileNotFoundError` on missing config files (was silent skip).
+Unmapped upstream model families raise `KeyError` (was silent drop).
 
 ### 8. W5: `OverrideRecord.value` type is lossy (LOW)
 

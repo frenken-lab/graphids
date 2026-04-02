@@ -9,7 +9,12 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 
 from .base import CONFIG_DIR
-from .runtime import CKPT_SUBPATH, COMPLETE_MARKER, LAST_CKPT_SUBPATH, PREPROCESSING_VERSION
+from .runtime import (
+    CKPT_SUBPATH,
+    COMPLETE_MARKER,
+    LAST_CKPT_SUBPATH,
+    PREPROCESSING_VERSION,
+)
 from .topology import PIPELINE_YAML
 from .yaml_utils import read_yaml
 
@@ -151,10 +156,19 @@ def checkpoint_path(
     *,
     gat_stage: str = "curriculum",
 ) -> Path:
-    user = os.environ.get("USER", "unknown")
-    output_base = f"{lake_root}/dev/{user}/{dataset}"
+    """Resolve checkpoint path for a given model. Delegates to PathContext."""
     stage = PIPELINE_YAML.get("ckpt_stages", {}).get(model_type, model_type)
     if model_type == "gat":
         stage = gat_stage
     identity = compute_identity_hash(stage, cfg)
-    return Path(f"{output_base}/{model_type}_{scale}_{stage}{identity}/seed_{seed}/{CKPT_SUBPATH}")
+    return PathContext(
+        lake_root=lake_root,
+        user=os.environ.get("USER", "unknown"),
+        dataset=dataset,
+        model_type=model_type,
+        scale=scale,
+        stage=stage,
+        identity=identity,
+        kd_tag="",
+        seed=seed,
+    ).ckpt_file

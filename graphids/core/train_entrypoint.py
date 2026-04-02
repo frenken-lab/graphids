@@ -11,8 +11,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from graphids.cli import resolve_configs, run_lightning
-from graphids.config.yaml_utils import write_yaml
+from graphids.cli import LINK_TARGETS, resolve_configs, run_lightning
+from graphids.config.yaml_utils import apply_dotted_overrides, write_yaml
 from graphids.core.contracts import TrainingContract, TrainingSpec
 
 
@@ -31,6 +31,20 @@ def run_training_from_spec(spec: TrainingSpec) -> None:
     """Resolve config chain, write snapshot, run training via LightningCLI."""
     overrides = TrainingContract.to_override_dict(spec)
     resolved = resolve_configs(spec.config_files, overrides)
+
+    # Apply link targets so the snapshot is reproducible for manual replay
+    # (LightningCLI applies these at parse time, but resolve_configs doesn't)
+    links = {}
+    for src, tgt in LINK_TARGETS:
+        cur = resolved
+        for part in src.split("."):
+            cur = cur.get(part) if isinstance(cur, dict) else None
+            if cur is None:
+                break
+        if cur is not None:
+            links[tgt] = cur
+    if links:
+        resolved = apply_dotted_overrides(resolved, links)
 
     # Snapshot for reproducibility (written before training starts)
     rd = Path(spec.run_dir)
@@ -51,15 +65,21 @@ def run_training_from_payload(payload: dict[str, Any]) -> None:
 
 
 def run_test_from_spec(spec: TrainingSpec) -> None:
-    """Run LightningCLI test using best checkpoint from a completed training run."""
+    """Run LightningCLI test using best available checkpoint from a completed training run."""
     import structlog
 
-    log = structlog.get_logger()
+    from graphids.config import CKPT_SUBPATH, LAST_CKPT_SUBPATH
 
-    ckpt = Path(spec.run_dir) / "checkpoints" / "best_model.ckpt"
+    log = structlog.get_logger()
+    run_dir = Path(spec.run_dir)
+
+    ckpt = run_dir / CKPT_SUBPATH
     if not ckpt.exists():
-        log.warning("no_checkpoint_for_test", run_dir=spec.run_dir)
-        return
+        ckpt = run_dir / LAST_CKPT_SUBPATH
+        if not ckpt.exists():
+            log.warning("no_checkpoint_for_test", run_dir=spec.run_dir)
+            return
+        log.info("using_last_checkpoint", ckpt=str(ckpt))
 
     overrides = TrainingContract.to_override_dict(spec)
     args = ["test"]

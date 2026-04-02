@@ -1,5 +1,10 @@
 # SLURM phase reporting
 
+> **Status: RESOLVED** — 2026-04-01 (session 7). Phase markers implemented in
+> `generate_script()` (`slurm/slurm.py`), `PHASE_MARKERS` constant in `config/runtime.py`,
+> checkpoint check in `checks.py` reports per-phase status in dagster metadata.
+> `set -euo pipefail` added before preamble+training; `set +euo pipefail` before test/analyze.
+
 ## Problem
 
 Each SLURM training job runs three operations sequentially: train, test, analyze.

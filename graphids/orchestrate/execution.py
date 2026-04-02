@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -10,10 +11,23 @@ from graphids.slurm import sacct_query
 
 
 def touch_complete(rd_path: Path) -> None:
-    """Write the .complete marker after a successful training run."""
+    """Write the .complete marker after a successful training run.
+
+    Uses fsync to ensure visibility on NFS before returning.
+    """
     marker = rd_path / COMPLETE_MARKER
     marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.touch()
+    fd = os.open(str(marker), os.O_CREAT | os.O_WRONLY, 0o664)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    # fsync the directory so the new entry is durable on NFS
+    dir_fd = os.open(str(marker.parent), os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 def slurm_accounting_metadata(job_id: int) -> dict[str, Any]:

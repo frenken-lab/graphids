@@ -135,12 +135,31 @@ class TrainingContract:
         for upstream_asset, ckpt_path in spec.upstream_ckpt_paths.items():
             model_family = spec.upstream_model_families.get(upstream_asset)
             if not model_family:
+                import structlog
+
+                structlog.get_logger().warning(
+                    "unmapped_upstream_asset",
+                    asset=upstream_asset,
+                    known=list(spec.upstream_model_families),
+                )
                 continue
             flag = cls._CKPT_FLAG_BY_MODEL.get(model_family)
-            if flag:
-                overrides[flag.lstrip("-")] = ckpt_path
+            if not flag:
+                raise KeyError(
+                    f"No checkpoint flag for model family {model_family!r}. "
+                    f"Add it to TrainingContract._CKPT_FLAG_BY_MODEL."
+                )
+            overrides[flag.lstrip("-")] = ckpt_path
 
-        overrides.update(
-            {k: cls._cli_scalar(v) for k, v in spec.runtime_overrides.items()}
-        )
+        runtime = {k: cls._cli_scalar(v) for k, v in spec.runtime_overrides.items()}
+        conflicts = set(overrides) & set(runtime)
+        if conflicts:
+            import structlog
+
+            structlog.get_logger().warning(
+                "runtime_overrides_clobber",
+                keys=sorted(conflicts),
+                msg="runtime_overrides will overwrite earlier values",
+            )
+        overrides.update(runtime)
         return overrides

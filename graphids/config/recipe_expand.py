@@ -64,8 +64,13 @@ def _flatten_dict(d: dict[str, Any], prefix: str = "") -> dict[str, str]:
         full = f"{prefix}.{k}" if prefix else k
         if isinstance(v, dict):
             out.update(_flatten_dict(v, full))
-        else:
+        elif isinstance(v, (str, int, float, bool, type(None))):
             out[full] = str(v).lower() if isinstance(v, bool) else str(v)
+        else:
+            raise TypeError(
+                f"Non-scalar value for override key {full!r}: {type(v).__name__}={v!r}. "
+                "Only scalars (str, int, float, bool) are supported in trainer_overrides."
+            )
     return out
 
 

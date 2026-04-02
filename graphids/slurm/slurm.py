@@ -5,19 +5,25 @@ Pure functions — no dagster, no Lightning. Used by SlurmTrainingComponent.
 
 from __future__ import annotations
 
-import json
 import re
 import shlex
 import subprocess
 import time as _time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Protocol
 
 import structlog
 
-from graphids.config import PROJECT_ROOT, SLURM_ACCOUNT, SLURM_LOG_DIR
-from graphids.core.contracts import AnalysisContract, AnalysisSpec, TrainingContract, TrainingSpec
+from graphids.config import PHASE_MARKERS, PROJECT_ROOT, SLURM_ACCOUNT, SLURM_LOG_DIR
+from graphids.core.contracts import (
+    AnalysisContract,
+    AnalysisSpec,
+    TrainingContract,
+    TrainingSpec,
+)
+
 from .resources import ResourceSpec
 
 log = structlog.get_logger()
@@ -68,6 +74,7 @@ def generate_script(
     resources: ResourceSpec,
     *,
     spec_file: Path,
+    run_dir: str,
     run_test: bool = True,
     analysis_spec_file: Path | None = None,
 ) -> str:
@@ -76,20 +83,29 @@ def generate_script(
     Training runs under set -e (fail-fast). Test and analyze run with
     set +e so their failures don't prevent the job from reporting success
     back to the dagster orchestrator (which writes .complete markers).
+    Each phase writes a marker file on success for fine-grained status.
     """
     quoted = shlex.quote(str(spec_file))
+    qrd = shlex.quote(run_dir)
     lines = [
         "#!/bin/bash",
+        "set -euo pipefail",
         f"source {PROJECT_ROOT}/scripts/slurm/_preamble.sh",
+        f"_RUN_DIR={qrd}",
         f"python -m graphids train-from-spec --spec-file {quoted}",
+        f"touch \"$_RUN_DIR/{PHASE_MARKERS['train']}\"",
         "# Test/analyze are best-effort — don't kill the job on failure",
-        "set +e",
+        "set +euo pipefail",
     ]
     if run_test:
-        lines.append(f"python -m graphids test-from-spec --spec-file {quoted}")
+        lines.append(f"if python -m graphids test-from-spec --spec-file {quoted}; then")
+        lines.append(f"  touch \"$_RUN_DIR/{PHASE_MARKERS['test']}\"")
+        lines.append("fi")
     if analysis_spec_file:
         aquoted = shlex.quote(str(analysis_spec_file))
-        lines.append(f"python -m graphids analyze-from-spec --spec-file {aquoted}")
+        lines.append(f"if python -m graphids analyze-from-spec --spec-file {aquoted}; then")
+        lines.append(f"  touch \"$_RUN_DIR/{PHASE_MARKERS['analyze']}\"")
+        lines.append("fi")
     lines.append(f"source {PROJECT_ROOT}/scripts/slurm/_epilog.sh")
     return "\n".join(lines) + "\n"
 
@@ -221,6 +237,7 @@ class SubprocessSlurmJobClient:
             script = generate_script(
                 resources,
                 spec_file=spec_file,
+                run_dir=training_spec.run_dir,
                 run_test=run_test,
                 analysis_spec_file=analysis_spec_file,
             )

@@ -1,6 +1,6 @@
 recipe:
   name: smoke_test
-  description: Fast smoke test — hcrl_sa, 2 epochs, gpudebug
+  description: Medium-fidelity smoke — all stages, all fusions, 50 epochs, hcrl_sa
 seeds: [99]
 selection:
   datasets: [hcrl_sa]
@@ -8,14 +8,14 @@ selection:
   scales: [small]
   stages:
     vgae: [autoencoder]
-    gat: [curriculum]
+    gat: [normal, curriculum]
     fusion: [fusion]
-  fusion_methods: [bandit]
-# Fully-qualified dotted paths — used as --key=val CLI args
-# and applied to merged YAML for cross-field validation.
-# Curriculum data.init_args.max_epochs is auto-synced by ConfigResolver.
+  fusion_methods: [bandit, dqn, mlp, weighted_avg]
+# 50 epochs: enough for ModelCheckpoint to fire, curriculum phase 0→1,
+# EarlyStopping metric tracking, RL exploration to start.
+# Curriculum data.init_args.max_epochs auto-synced by ConfigResolver.
 trainer_overrides:
-  trainer.max_epochs: 10
+  trainer.max_epochs: 50
 resource_overrides:
-  time: "0:15:00"
+  time: "1:00:00"
   partition: gpudebug
