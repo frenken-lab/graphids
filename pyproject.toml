@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "kd-gat"
+name = "graphids"
 version = "1.0.0"
-description = "CAN Bus Intrusion Detection via Knowledge Distillation (VGAE → GAT → DQN)"
+description = "CAN Bus Intrusion Detection via Graph Neural Networks and Knowledge Distillation"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "torch>=2.8.0,<2.9",

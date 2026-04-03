@@ -1,4 +1,4 @@
-# KD-GAT Write Path Inventory
+# GraphIDS Write Path Inventory
 
 > Audited 2026-03-30. Updated same day after consolidation.
 

@@ -1,4 +1,4 @@
-# KD-GAT: CAN Bus Intrusion Detection via Knowledge Distillation
+# GraphIDS: CAN Bus Intrusion Detection via Knowledge Distillation
 
 CAN bus intrusion detection using a 3-stage knowledge distillation pipeline:
 VGAE (unsupervised reconstruction) → GAT (supervised classification) → fusion.

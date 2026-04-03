@@ -15,7 +15,7 @@ set -euo pipefail
 # turm and tail -f see nothing until the process exits.
 export PYTHONUNBUFFERED=1
 
-PROJECT_ROOT="/users/PAS2022/rf15/KD-GAT"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$PROJECT_ROOT"
 
 module load python/3.12

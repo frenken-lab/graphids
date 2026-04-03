@@ -1,4 +1,4 @@
-# KD-GAT Compact Config System
+# GraphIDS Compact Config System
 
 This is a composition-first YAML config system designed to be compact, robust, and extensible.
 

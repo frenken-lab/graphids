@@ -1,4 +1,4 @@
-# KD-GAT Config System
+# GraphIDS Config System
 
 LightningCLI + jsonargparse + plain YAML. No Hydra, no OmegaConf, no dataclasses.
 

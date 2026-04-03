@@ -13,7 +13,8 @@
 #     /fs/ess/PAS1266/kd-gat/dev/rf15/set_01/fusion_small_fusion_82437173/seed_42
 
 set -euo pipefail
-SKIP_CUDA_CONF=1 SKIP_STAGE_DATA=1 source /users/PAS2022/rf15/KD-GAT/scripts/slurm/_preamble.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SKIP_CUDA_CONF=1 SKIP_STAGE_DATA=1 source "$SCRIPT_DIR/_preamble.sh"
 
 METHOD="${1:?Usage: $0 <method> <scale> <run_dir>}"
 SCALE="${2:?Usage: $0 <method> <scale> <run_dir>}"
@@ -47,4 +48,4 @@ python -m graphids fit \
     --seed_everything=42 \
     --trainer.default_root_dir="$RUN_DIR"
 
-source /users/PAS2022/rf15/KD-GAT/scripts/slurm/_epilog.sh
+source "$SCRIPT_DIR/_epilog.sh"

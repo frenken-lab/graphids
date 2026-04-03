@@ -1,5 +1,5 @@
 ---
-title: KD-GAT Experiment Dashboard
+title: GraphIDS Experiment Dashboard
 emoji: 🔬
 colorFrom: blue
 colorTo: green

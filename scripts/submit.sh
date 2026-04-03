@@ -13,7 +13,7 @@
 #   scripts/submit.sh probe-budget [args]
 set -euo pipefail
 
-PROJECT_ROOT="/users/PAS2022/rf15/KD-GAT"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
 source .env
 SLURM_LOG_DIR="${KD_GAT_SLURM_LOG_DIR:-${KD_GAT_LAKE_ROOT:-experimentruns}/slurm}"
@@ -42,6 +42,6 @@ SIG_ARGS=()
 [[ -n "$SIGNAL" && "$SIGNAL" != "NONE" ]] && SIG_ARGS=(--signal="B:${SIGNAL}")
 
 sbatch "$ACCT" --partition="$PARTITION" --cpus-per-task="$CPUS" --mem="$MEM" \
-    --time="$TIME" --job-name="kd-gat-${JOB}" "${GPU_ARGS[@]}" "${SIG_ARGS[@]}" \
+    --time="$TIME" --job-name="graphids-${JOB}" "${GPU_ARGS[@]}" "${SIG_ARGS[@]}" \
     --output="${SLURM_LOG_DIR}/${JOB}_%j.out" --error="${SLURM_LOG_DIR}/${JOB}_%j.err" \
     --wrap="${ENV}${PREAMBLE} && ${COMMAND}$([ $# -gt 0 ] && printf ' %q' "$@")"

@@ -1,4 +1,4 @@
-# KD-GAT SLURM / HPC Conventions
+# GraphIDS SLURM / HPC Conventions
 
 ## Environment
 
@@ -63,15 +63,18 @@ When creating or modifying a SLURM `.sh` or '.sbatch' script, follow these conve
 #SBATCH --partition=cpu
 ```
 
-CPU preamble: `SKIP_CUDA_CONF=1 SKIP_STAGE_DATA=1 source "/users/PAS2022/rf15/KD-GAT/scripts/slurm/_preamble.sh"`
+CPU preamble: `SKIP_CUDA_CONF=1 SKIP_STAGE_DATA=1 source "$SCRIPT_DIR/_preamble.sh"`
 
 ### Required Environment Setup
 
 All boilerplate is in shared sourced scripts:
 
 ```bash
+# Auto-detect project root from script location
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Preamble: env setup, venv, .env, CUDA config, data staging
-source "/users/PAS2022/rf15/KD-GAT/scripts/slurm/_preamble.sh"
+source "$SCRIPT_DIR/_preamble.sh"
 
 # Override before sourcing:
 #   SKIP_CUDA_CONF=1   — for CPU-only jobs
@@ -81,7 +84,7 @@ source "/users/PAS2022/rf15/KD-GAT/scripts/slurm/_preamble.sh"
 
 ```bash
 # Epilog: GPU utilization report
-JOB_LOG_PREFIX="ray" source "/users/PAS2022/rf15/KD-GAT/scripts/slurm/_epilog.sh"
+JOB_LOG_PREFIX="ray" source "$SCRIPT_DIR/_epilog.sh"
 ```
 
 ### Key Patterns

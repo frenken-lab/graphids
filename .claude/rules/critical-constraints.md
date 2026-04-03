@@ -1,4 +1,4 @@
-# KD-GAT Critical Constraints
+# GraphIDS Critical Constraints
 
 These fix real crashes — DO NOT VIOLATE:
 

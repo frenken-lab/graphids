@@ -1,4 +1,4 @@
-# KD-GAT Code Style
+# GraphIDS Code Style
 
 ## Import Rules (3-layer hierarchy)
 

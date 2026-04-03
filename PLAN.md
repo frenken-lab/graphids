@@ -1,4 +1,4 @@
-# KD-GAT Session Plan
+# GraphIDS Session Plan
 
 > Last updated: 2026-04-03 (session 15 — orchestrator observability)
 

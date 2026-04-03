@@ -10,7 +10,8 @@
 #SBATCH --error=/fs/ess/PAS1266/kd-gat/slurm_logs/extract_fusion_%j.err
 
 set -euo pipefail
-source /users/PAS2022/rf15/KD-GAT/scripts/slurm/_preamble.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/_preamble.sh"
 
 LAKE=/fs/ess/PAS1266/kd-gat/dev/rf15/set_01
 
@@ -31,4 +32,4 @@ python -m graphids extract-fusion-states \
     --output-dir "$LAKE/fusion_states/large_9ffb88b1_e9354ccd"
 
 echo "=== Done ==="
-source /users/PAS2022/rf15/KD-GAT/scripts/slurm/_epilog.sh
+source "$SCRIPT_DIR/_epilog.sh"

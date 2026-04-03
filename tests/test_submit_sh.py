@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
-PROJECT_ROOT = "/users/PAS2022/rf15/KD-GAT"
+PROJECT_ROOT = str(Path(__file__).resolve().parents[1])
 SUBMIT_SH = f"{PROJECT_ROOT}/scripts/submit.sh"
 
 

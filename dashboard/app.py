@@ -1,4 +1,4 @@
-"""KD-GAT Experiment Dashboard — unified Streamlit app for experiments + sweeps."""
+"""GraphIDS Experiment Dashboard — unified Streamlit app for experiments + sweeps."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import plotly.express as px
 import streamlit as st
 from data_loader import filter_df, get_hp_columns, load_experiments, load_sweeps
 
-st.set_page_config(page_title="KD-GAT Dashboard", layout="wide", page_icon="🔬")
+st.set_page_config(page_title="GraphIDS Dashboard", layout="wide", page_icon="🔬")
 
 # --- Navigation ---
 page = st.sidebar.radio(
