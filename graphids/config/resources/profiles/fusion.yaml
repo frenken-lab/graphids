@@ -4,14 +4,14 @@ resources:
     small:
       fusion:
         by_method:
-          bandit:       {mode: gpu_train, time: "1:00:00", mem: 16G, cpus: 2, workers: 0}
-          dqn:          {mode: gpu_train, time: "1:00:00", mem: 16G, cpus: 2, workers: 0}
-          mlp:          {mode: gpu_train, time: "0:45:00", mem: 12G, cpus: 2, workers: 0}
-          weighted_avg: {mode: gpu_train, time: "0:30:00", mem:  8G, cpus: 1, workers: 0}
+          bandit:       {mode: cpu_train, time: "12:00:00", mem: 8G, cpus: 2, workers: 0}
+          dqn:          {mode: cpu_train, time: "12:00:00", mem: 8G, cpus: 2, workers: 0}
+          mlp:          {mode: cpu_train, time: "4:00:00",  mem: 8G, cpus: 2, workers: 0}
+          weighted_avg: {mode: cpu_train, time: "2:00:00",  mem: 4G, cpus: 1, workers: 0}
     large:
       fusion:
         by_method:
-          bandit:       {mode: gpu_train, time: "2:00:00", mem: 24G, cpus: 3, workers: 0}
-          dqn:          {mode: gpu_train, time: "2:00:00", mem: 24G, cpus: 3, workers: 0}
-          mlp:          {mode: gpu_train, time: "1:00:00", mem: 16G, cpus: 2, workers: 0}
-          weighted_avg: {mode: gpu_train, time: "0:45:00", mem: 10G, cpus: 2, workers: 0}
+          bandit:       {mode: cpu_train, time: "24:00:00", mem: 8G, cpus: 2, workers: 0}
+          dqn:          {mode: cpu_train, time: "24:00:00", mem: 8G, cpus: 2, workers: 0}
+          mlp:          {mode: cpu_train, time: "6:00:00",  mem: 8G, cpus: 2, workers: 0}
+          weighted_avg: {mode: cpu_train, time: "3:00:00",  mem: 4G, cpus: 1, workers: 0}

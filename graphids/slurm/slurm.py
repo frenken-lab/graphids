@@ -103,16 +103,21 @@ def generate_script(
     """
     quoted = shlex.quote(str(spec_file))
     qrd = shlex.quote(run_dir)
+    is_cpu = not resources.gres
     lines = [
         "#!/bin/bash",
         "set -euo pipefail",
+    ]
+    if is_cpu:
+        lines.append("export SKIP_CUDA_CONF=1 SKIP_STAGE_DATA=1")
+    lines.extend([
         f"source {PROJECT_ROOT}/scripts/slurm/_preamble.sh",
         f"_RUN_DIR={qrd}",
         f"python -m graphids train-from-spec --spec-file {quoted}",
         f"touch \"$_RUN_DIR/{PHASE_MARKERS['train']}\"",
         "# Test/analyze are best-effort — don't kill the job on failure",
         "set +euo pipefail",
-    ]
+    ])
     if run_test:
         lines.append(f"if python -m graphids test-from-spec --spec-file {quoted}; then")
         lines.append(f"  touch \"$_RUN_DIR/{PHASE_MARKERS['test']}\"")

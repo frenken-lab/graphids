@@ -167,17 +167,90 @@ fall back to `last.ckpt`.
 
 ## Active — set_01 ablation in progress
 
-Orchestrator: SLURM job 46260678. Monitor with `squeue -u $USER` or `sacct`.
+Second orchestrator (job 46276742) running. 3 curriculum jobs running on GPU
+(4c0b42ae, d5987709, 24c093ae). Most stages complete — see session 16 audit below.
 
-**When current run completes, verify:**
-1. All 32 assets have `.complete` markers
-2. DGI autoencoder (manual job 46265877) completed
-3. 3 normal retries succeeded after checkpoint cleanup
-4. Curriculum + fusion stages submitted and completed downstream
+## What this session did (2026-04-03, session 16 — lake audit + fusion CPU pipeline)
 
-**Follow-up if needed:**
-- Re-run any failed assets: `scripts/submit.sh ablation --assets '<name>' --partition 'set_01|42'`
-- Leaf nodes can use direct `sbatch` (no dagster needed)
+### Lake artifact audit
+
+Audited all 49 run directories under `set_01`. Key findings:
+
+| Finding | Scope | Action |
+|---------|-------|--------|
+| Train val_acc=96% but test acc=17% | All GAT normal/curriculum | Not a bug — test aggregates 6 subdirs including OOD + excluded attack types. Backlogged: `per-testset-metrics.md` |
+| No analysis artifacts for fusion/DGI | All fusion + DGI runs | `ANALYSIS_SUPPORTED_MODELS` only had vgae/gat. Added `dgi`. Fusion blocked by deeper issues (backlogged) |
+| No `best_model.ckpt` for Bandit/DQN | 2 RL fusion runs | `automatic_optimization=False` breaks ModelCheckpoint silently. Backlogged in `fusion-analysis-support.md` |
+| Fusion only got 50 epochs | All fusion runs | Was `max_epochs: 50`, old tests used 1500. Fixed to 1500, patience 200 |
+| ~12 stale orphan directories | Pre-DeviceStatsMonitor runs | From prior config hash changes. Safe to clean up |
+| `resource_profile.csv` in ~13/30 | Older runs | Callback added session 14, expected |
+
+### Fusion CPU training pipeline
+
+Fusion models are tiny (35K params) operating on pre-cached 15-D state vectors.
+GPU was wasted on 10+ hours of small tensor ops. Split into two phases:
+
+1. **Extract** (GPU, ~2 min): `python -m graphids extract-fusion-states` loads
+   VGAE+GAT, runs inference on 150K graphs, saves `{train,val}_states.pt` to disk
+2. **Train** (CPU, hours): `FusionDataModule` loads cached states from disk via
+   `cached_states_dir` param. No GPU, no upstream model loading.
+
+Changes:
+- New command `extract-fusion-states` in `graphids/commands/extract_fusion_states.py`
+- `FusionDataModule`: added `cached_states_dir` param, `_load_cached_states()` method
+- `fusion.yaml`: `max_epochs: 1500`, `patience: 200`, `accelerator: cpu`
+- `fusion.yaml` resources: all methods `gpu_train→cpu_train`, mem 8G/4G
+- `clusters.yaml`: added `cpu_train` mode for all 3 clusters
+- `topology.py`: fusion stage mode `cpu_train`
+- `slurm.py`: CPU jobs get `SKIP_CUDA_CONF=1 SKIP_STAGE_DATA=1`
+- `scripts/slurm/extract_fusion_states.sh` + `run_fusion_cpu.sh`
+
+### Extraction job submitted
+
+Job **46311413** — extracts both small and large fusion states:
+- Small: `vgae_ff9f9014` + `gat_bf2a5575` → `fusion_states/small_ff9f9014_bf2a5575/`
+- Large: `vgae_9ffb88b1` + `gat_e9354ccd` → `fusion_states/large_9ffb88b1_e9354ccd/`
+
+### Issues updated
+
+| Issue | Status |
+|-------|--------|
+| `docs/backlog/per-testset-metrics.md` | **New** — test_step pools 6 test sets |
+| `docs/backlog/fusion-analysis-support.md` | **New** — 3 blockers for fusion analysis |
+
+## Next session — submit fusion CPU training
+
+**Prerequisite:** Verify extraction job 46311413 completed:
+```bash
+sacct -j 46311413 --format=JobID,State,Elapsed
+ls /fs/ess/PAS1266/kd-gat/dev/rf15/set_01/fusion_states/*/fusion_states/
+```
+
+**Submit all 8 fusion methods on CPU** (zero GPU, all parallel):
+```bash
+LAKE=/fs/ess/PAS1266/kd-gat/dev/rf15/set_01
+SCRIPT=scripts/slurm/run_fusion_cpu.sh
+
+# Small scale
+sbatch --job-name=fusion_bandit_sm   $SCRIPT bandit       small "$LAKE/fusion_small_fusion_82437173/seed_42"
+sbatch --job-name=fusion_dqn_sm      $SCRIPT dqn          small "$LAKE/fusion_small_fusion_a7bdee36/seed_42"
+sbatch --job-name=fusion_mlp_sm      $SCRIPT mlp          small "$LAKE/fusion_small_fusion_d64ae7a5/seed_42"
+sbatch --job-name=fusion_wavg_sm     $SCRIPT weighted_avg small "$LAKE/fusion_small_fusion_79a8454f/seed_42"
+
+# Large scale
+sbatch --job-name=fusion_bandit_lg   $SCRIPT bandit       large "$LAKE/fusion_large_fusion_e6219e33/seed_42"
+sbatch --job-name=fusion_dqn_lg      $SCRIPT dqn          large "$LAKE/fusion_large_fusion_377a40f4/seed_42"
+sbatch --job-name=fusion_mlp_lg      $SCRIPT mlp          large "$LAKE/fusion_large_fusion_0afb6d08/seed_42"
+sbatch --job-name=fusion_wavg_lg     $SCRIPT weighted_avg large "$LAKE/fusion_large_fusion_e11ff23f/seed_42"
+```
+
+Note: these write into existing run dirs. `lightning_logs/version_N` will increment
+past the old 50-epoch runs. Old checkpoints will be overwritten by new training.
+
+**Also check:**
+- 3 curriculum GPU jobs still running (4c0b42ae, d5987709, 24c093ae) — should complete soon
+- DGI autoencoder c479d625 now gets analysis (embeddings) on next run
+- Remaining ablation assets not yet submitted (conv-type variants, loss variants)
 
 ## What this session did (2026-04-02, session 9 — training efficiency)
 

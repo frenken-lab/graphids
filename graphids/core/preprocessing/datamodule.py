@@ -242,6 +242,7 @@ class FusionDataModule(pl.LightningDataModule):
         lake_root: str = os.environ.get("KD_GAT_LAKE_ROOT"),
         vgae_ckpt_path: str = "",
         gat_ckpt_path: str = "",
+        cached_states_dir: str = "",
         method: str = "bandit",
         batch_size: int = 128,
         episode_sample_size: int = 20000,
@@ -295,12 +296,20 @@ class FusionDataModule(pl.LightningDataModule):
     def setup(self, stage=None):
         if self.train_cache is not None:
             return
+
+        hp = self.hparams
+
+        # Fast path: load pre-extracted states from disk (no GPU needed)
+        if hp.cached_states_dir:
+            self._load_cached_states(hp.cached_states_dir)
+            return
+
+        # Slow path: load upstream models and extract on GPU
         import types
         from pathlib import Path
 
         from graphids.core.models._training import load_inner_model
 
-        hp = self.hparams
         cfg_ns = types.SimpleNamespace(
             dataset=hp.dataset, lake_root=hp.lake_root, seed=hp.seed,
             preprocessing=types.SimpleNamespace(
@@ -341,6 +350,31 @@ class FusionDataModule(pl.LightningDataModule):
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    def _load_cached_states(self, cached_states_dir: str) -> None:
+        """Load pre-extracted fusion states from disk. No GPU needed."""
+        from pathlib import Path
+        from graphids.commands.extract_fusion_states import (
+            FUSION_STATES_DIR, TRAIN_FILENAME, VAL_FILENAME,
+        )
+
+        states_dir = Path(cached_states_dir)
+        # Support both direct dir and parent dir containing fusion_states/
+        if not (states_dir / TRAIN_FILENAME).exists():
+            states_dir = states_dir / FUSION_STATES_DIR
+        train_path = states_dir / TRAIN_FILENAME
+        val_path = states_dir / VAL_FILENAME
+        if not train_path.exists():
+            raise FileNotFoundError(f"Cached train states not found: {train_path}")
+        if not val_path.exists():
+            raise FileNotFoundError(f"Cached val states not found: {val_path}")
+
+        self.train_cache = torch.load(train_path, map_location="cpu", weights_only=True)
+        self.val_cache = torch.load(val_path, map_location="cpu", weights_only=True)
+        log.info("loaded_cached_states",
+                 dir=str(states_dir),
+                 train_shape=list(self.train_cache["states"].shape),
+                 val_shape=list(self.val_cache["states"].shape))
 
     def train_dataloader(self):
         ds = TensorDataset(self.train_cache["states"], self.train_cache["labels"])

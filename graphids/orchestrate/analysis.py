@@ -9,7 +9,7 @@ from graphids.core.contracts import AnalysisContract, AnalysisSpec
 from graphids.orchestrate.planning import StageConfig
 
 ANALYSIS_MANIFEST_NAME = "analysis_manifest.json"
-ANALYSIS_SUPPORTED_MODELS = frozenset({"vgae", "gat"})
+ANALYSIS_SUPPORTED_MODELS = frozenset({"vgae", "gat", "dgi"})
 
 
 def supports_analysis(model_type: str) -> bool:

@@ -18,7 +18,7 @@ STAGES: dict[str, tuple[str, str, str]] = {
     "autoencoder": ("unsupervised", "vgae", "gpu_train"),
     "curriculum": ("supervised", "gat", "gpu_train"),
     "normal": ("supervised", "gat", "gpu_train"),
-    "fusion": ("rl_fusion", "fusion", "gpu_train"),
+    "fusion": ("rl_fusion", "fusion", "cpu_train"),
     "temporal": ("temporal", "temporal", "gpu_train"),
 }
 
@@ -49,7 +49,7 @@ _STAGE_DEFS: dict[str, dict[str, Any]] = {
     "fusion": {
         "learning_type": "rl_fusion",
         "model": "fusion",
-        "mode": "gpu_train",
+        "mode": "cpu_train",
         "depends_on": [
             {"model": "vgae", "stage": "autoencoder"},
             {"model": "gat", "stage": "curriculum"},
