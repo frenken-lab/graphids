@@ -5,10 +5,10 @@ Extracted from EnhancedDQNFusionAgent to allow reuse across fusion methods.
 
 from __future__ import annotations
 
-import structlog
+from graphids.log import get_logger
 import torch
 
-log = structlog.get_logger()
+log = get_logger(__name__)
 
 
 class FusionRewardCalculator(torch.nn.Module):

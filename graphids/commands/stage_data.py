@@ -23,12 +23,10 @@ import shutil
 import sys
 from pathlib import Path
 
-import structlog
+from graphids.log import configure_logging, get_logger
 
-structlog.configure(
-    logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
-)
-log = structlog.get_logger()
+configure_logging()
+log = get_logger(__name__)
 
 
 def _count_files(path: Path) -> int:

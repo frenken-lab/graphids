@@ -21,7 +21,7 @@ import json
 import sys
 from pathlib import Path
 
-import structlog
+from graphids.log import get_logger
 
 from graphids.config import (
     CONFIG_DIR,
@@ -32,7 +32,7 @@ from graphids.config import (
 )
 from graphids.config.yaml_utils import read_yaml
 
-log = structlog.get_logger()
+log = get_logger(__name__)
 
 
 def _find_cached_datasets(lake_root: str) -> list[str]:

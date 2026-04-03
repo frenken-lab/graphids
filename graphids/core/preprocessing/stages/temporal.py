@@ -10,14 +10,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import pytorch_lightning as pl
-import structlog
+from graphids.log import get_logger
 import torch
 from torch.utils.data import DataLoader, Dataset
 
 if TYPE_CHECKING:
     from torch_geometric.data import Data
 
-log = structlog.get_logger()
+log = get_logger(__name__)
 
 
 @dataclass

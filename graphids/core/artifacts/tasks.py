@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import structlog
+from graphids.log import get_logger
 import torch
 
 from graphids.core.models._training import safe_load_checkpoint
 
-log = structlog.get_logger()
+log = get_logger(__name__)
 
 
 def run_embeddings(

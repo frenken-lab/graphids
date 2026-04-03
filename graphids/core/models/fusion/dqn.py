@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import structlog
+from graphids.log import get_logger
 
 import torch
 import torch.nn as nn
@@ -9,7 +9,7 @@ import torch.optim as optim
 from .fusion_baselines import FusionModuleBase
 from .fusion_reward import FusionRewardCalculator
 
-log = structlog.get_logger()
+log = get_logger(__name__)
 
 
 def build_mlp_body(state_dim: int, hidden_dim: int, num_layers: int) -> nn.Sequential:

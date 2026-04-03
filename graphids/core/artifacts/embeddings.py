@@ -5,11 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-import structlog
+from graphids.log import get_logger
 import torch
 from graphids.core.preprocessing.datamodule import make_graph_loader
 
-log = structlog.get_logger()
+log = get_logger(__name__)
 
 
 @torch.no_grad()

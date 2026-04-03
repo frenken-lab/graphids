@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import argparse
 
-import structlog
+from graphids.log import get_logger
 import torch
 
-log = structlog.get_logger()
+log = get_logger(__name__)
 
 
 def test_preprocessing(argv: list[str] | None = None) -> None:

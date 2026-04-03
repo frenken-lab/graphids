@@ -26,13 +26,13 @@ import statistics
 import time
 from dataclasses import dataclass
 
-import structlog
+from graphids.log import get_logger
 import torch
 from torch.utils.benchmark import Timer as BenchmarkTimer
 
 from graphids.config import cache_dir
 
-log = structlog.get_logger()
+log = get_logger(__name__)
 
 # HEURISTIC: 15% VRAM reserve for allocator fragmentation. Variable-size
 # graph batches have higher memory variance than fixed-size, so wider than

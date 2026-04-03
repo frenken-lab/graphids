@@ -25,17 +25,9 @@ import argparse
 import importlib
 import sys
 
-import structlog
+from graphids.log import configure_logging
 
-structlog.configure(
-    processors=[
-        structlog.contextvars.merge_contextvars,
-        structlog.processors.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.dev.ConsoleRenderer(),
-    ],
-    cache_logger_on_first_use=True,
-)
+configure_logging()
 
 _LIGHTNING_COMMANDS = ("fit", "test", "validate", "predict")
 _COMMAND_MODULES: dict[str, str] = {

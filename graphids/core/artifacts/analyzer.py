@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import structlog
+from graphids.log import get_logger
 import torch
 
 from graphids.config import cache_dir, data_dir
@@ -13,7 +13,7 @@ from graphids.core.models._training import safe_load_checkpoint
 from .tasks import run_attention, run_cka, run_embeddings, run_fusion_policy, run_landscape
 from .validation import validate_inputs
 
-log = structlog.get_logger()
+log = get_logger(__name__)
 
 
 class Analyzer:

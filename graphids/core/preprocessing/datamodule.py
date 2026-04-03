@@ -10,14 +10,14 @@ import gc
 import os
 
 import pytorch_lightning as pl
-import structlog
+from graphids.log import get_logger
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from graphids.config import cache_dir, data_dir, load_catalog
 from graphids.core.preprocessing.budget import node_budget
 
-_log = structlog.get_logger()
+_log = get_logger(__name__)
 
 
 from .datasets.can_bus import CANBusDataset
@@ -67,7 +67,7 @@ def make_graph_loader(
 
 
 
-log = structlog.get_logger()
+log = get_logger(__name__)
 
 
 def load_datasets(cfg) -> tuple[CANBusDataset, CANBusDataset, dict[str, CANBusDataset]]:

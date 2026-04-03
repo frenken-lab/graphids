@@ -10,14 +10,14 @@ import os
 from pathlib import Path
 
 import polars as pl
-import structlog
+from graphids.log import get_logger
 import torch
 from torch_geometric.data import Data, InMemoryDataset
 
 from graphids.core.preprocessing.features import parse_payload, sliding_window_graphs
 from graphids.core.preprocessing.utils import atomic_save, nfs_lock, vocab_from_column
 
-log = structlog.get_logger()
+log = get_logger(__name__)
 
 ATTACK_TYPE_CODES: dict[str, int] = {
     "normal": 0,

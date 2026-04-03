@@ -15,7 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
-import structlog
+from graphids.log import get_logger
 
 from graphids.config import PHASE_MARKERS, PROJECT_ROOT, SLURM_ACCOUNT, SLURM_LOG_DIR
 from graphids.core.contracts import (
@@ -27,7 +27,7 @@ from graphids.core.contracts import (
 
 from .resources import ResourceSpec
 
-log = structlog.get_logger()
+log = get_logger(__name__)
 
 StateObserver = Callable[[str, int], None]
 

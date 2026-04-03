@@ -4,10 +4,10 @@ import contextlib
 from typing import TypedDict
 
 import pytorch_lightning as pl
-import structlog
+from graphids.log import get_logger
 import torch
 
-_log = structlog.get_logger()
+_log = get_logger(__name__)
 
 
 def try_compile(model: torch.nn.Module, *, conv_type: str | None = None,

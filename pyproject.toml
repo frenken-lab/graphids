@@ -30,7 +30,6 @@ dependencies = [
     "uvicorn>=0.30",
     "duckdb>=1.0.0",
     "jsonargparse[signatures]>=4.27.7",
-    "structlog>=25.5.0",
     "dagster-dg-cli>=1.12.21",
     "alembic>=1.18",
     "wandb>=0.25.1",

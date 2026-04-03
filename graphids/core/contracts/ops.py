@@ -135,9 +135,9 @@ class TrainingContract:
         for upstream_asset, ckpt_path in spec.upstream_ckpt_paths.items():
             model_family = spec.upstream_model_families.get(upstream_asset)
             if not model_family:
-                import structlog
+                from graphids.log import get_logger
 
-                structlog.get_logger().warning(
+                get_logger(__name__).warning(
                     "unmapped_upstream_asset",
                     asset=upstream_asset,
                     known=list(spec.upstream_model_families),
@@ -154,9 +154,9 @@ class TrainingContract:
         runtime = {k: cls._cli_scalar(v) for k, v in spec.runtime_overrides.items()}
         conflicts = set(overrides) & set(runtime)
         if conflicts:
-            import structlog
+            from graphids.log import get_logger
 
-            structlog.get_logger().warning(
+            get_logger(__name__).warning(
                 "runtime_overrides_clobber",
                 keys=sorted(conflicts),
                 msg="runtime_overrides will overwrite earlier values",

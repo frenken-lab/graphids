@@ -1,9 +1,11 @@
 """Pipeline status: aggregated view of dagster assets + SLURM phase markers.
 
 Usage:
-    python -m graphids pipeline-status
-    python -m graphids pipeline-status --limit 30
-    python -m graphids pipeline-status --json
+    python -m graphids pipeline-status                        # grouped recipe view
+    python -m graphids pipeline-status --dataset set_01       # filter partition
+    python -m graphids pipeline-status --json                 # JSON for scripting
+    python -m graphids pipeline-status --dagster              # legacy flat view
+    python -m graphids pipeline-status --log [FILTER]         # orchestrator event log
 """
 
 from __future__ import annotations
@@ -12,14 +14,18 @@ import argparse
 import json
 import os
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from graphids.config import PHASE_MARKERS, SLURM_LOG_DIR, dataset_names
+from graphids.config import COMPLETE_MARKER, PHASE_MARKERS, SLURM_LOG_DIR, dataset_names
 from graphids.config.runtime import CKPT_SUBPATH, LAKE_ROOT
 from graphids.slurm import sacct_by_user
 
 _CKPT_DEPTH = len(Path(CKPT_SUBPATH).parts)
+
+# ---------------------------------------------------------------------------
+# Shared helpers (used by both recipe-aware and legacy paths)
+# ---------------------------------------------------------------------------
 
 
 def _parse_sacct() -> dict[str, dict[str, str]]:
@@ -44,11 +50,14 @@ def _parse_sacct() -> dict[str, dict[str, str]]:
             idx = jname.find(marker)
             if idx < 0:
                 continue
-            seed_str = jname[idx + len(marker):]
+            seed_str = jname[idx + len(marker) :]
             if seed_str.isdigit():
                 out[jname[:idx]] = {
-                    "job_id": jid, "state": state, "elapsed": elapsed,
-                    "dataset": ds, "seed": seed_str,
+                    "job_id": jid,
+                    "state": state,
+                    "elapsed": elapsed,
+                    "dataset": ds,
+                    "seed": seed_str,
                 }
             break
     return out
@@ -62,6 +71,234 @@ def _find_run_dir_fs(dataset: str, asset_name: str, seed: str) -> Path | None:
     # Dir name is {model_type}_{scale}_{asset_name}, e.g. vgae_small_autoencoder_288aba35
     matches = list(base.glob(f"*_{asset_name}/seed_{seed}"))
     return matches[0] if matches else None
+
+
+def _phase_status(run_dir: Path | None) -> dict[str, str]:
+    """Check phase marker files in a run directory.
+
+    Returns symbol per phase: ✓ (passed), ✗ (failed), - (unknown/legacy).
+    If no markers exist at all, the run predates this feature — show all as -.
+    """
+    no_data = {"train": "-", "test": "-", "analyze": "-"}
+    if run_dir is None or not run_dir.exists():
+        return no_data
+    raw = {phase: (run_dir / marker).exists() for phase, marker in PHASE_MARKERS.items()}
+    # No markers at all → legacy run, don't report false failures
+    if not any(raw.values()):
+        return no_data
+    return {phase: ("✓" if ok else "✗") for phase, ok in raw.items()}
+
+
+# ---------------------------------------------------------------------------
+# Recipe-aware view (default) — uses dagster AssetGraph + sacct + filesystem
+# ---------------------------------------------------------------------------
+
+_DONE_STATES = frozenset({"COMPLETED", "SUCCESS"})
+_FAILED_STATES = frozenset({"FAILED", "TIMEOUT", "OUT_OF_MEMORY", "CANCELLED"})
+_RUNNING_STATES = frozenset({"RUNNING", "PENDING"})
+
+# Stage display order for grouped output
+_STAGE_ORDER = {"autoencoder": 0, "normal": 1, "curriculum": 2, "fusion": 3, "temporal": 4}
+
+
+@dataclass
+class RecipeAssetStatus:
+    asset: str
+    stage: str
+    label: str
+    status: str
+    train: str
+    test: str
+    analyze: str
+    wall_time: str
+    job_id: str
+    upstream: list[str] = field(default_factory=list)
+
+
+def _derive_status(
+    sacct_entry: dict[str, str] | None,
+    complete_marker: bool,
+    upstream_statuses: list[str],
+) -> str:
+    """Derive display status from sacct + filesystem + upstream state."""
+    if sacct_entry:
+        state = sacct_entry["state"]
+        if state in _RUNNING_STATES:
+            return state
+        if complete_marker or state in _DONE_STATES:
+            return "COMPLETED"
+        if state in _FAILED_STATES:
+            return state
+        # Other sacct states (COMPLETING, REQUEUED, etc.)
+        return state
+    # No sacct entry — asset was never submitted (or >30 days ago)
+    if complete_marker:
+        return "COMPLETED"
+    if any(s in _FAILED_STATES for s in upstream_statuses):
+        return "BLOCKED"
+    if upstream_statuses and all(s in _DONE_STATES | {"COMPLETED"} for s in upstream_statuses):
+        return "PENDING"
+    if not upstream_statuses:
+        return "PENDING"  # root asset, never submitted
+    return "WAITING"
+
+
+def _collect_from_graph(
+    *, dataset: str | None = None, seed: int = 42,
+) -> list[RecipeAssetStatus]:
+    """Load dagster AssetGraph for universe + topology, reconcile with sacct + filesystem."""
+    from graphids.orchestrate.definitions import defs
+
+    ag = defs.resolve_asset_graph()
+    sacct = _parse_sacct()
+
+    # Build rows in topological order (parents before children)
+    status_map: dict[str, str] = {}
+    rows: list[RecipeAssetStatus] = []
+
+    # Sort by stage order, then asset name for deterministic output
+    all_keys = sorted(
+        ag.get_all_asset_keys(),
+        key=lambda k: (_STAGE_ORDER.get(ag.get(k).group_name, 99), k.path[0]),
+    )
+
+    for key in all_keys:
+        name = key.path[0]
+        node = ag.get(key)
+        parents = sorted(p.path[0] for p in node.parent_keys)
+
+        # sacct entry (filter by dataset/seed if specified)
+        sr = sacct.get(name)
+        if sr and dataset and sr["dataset"] != dataset:
+            sr = None
+        if sr and str(seed) != sr.get("seed", "42"):
+            sr = None
+
+        # Filesystem: run_dir + phase markers + complete marker
+        ds = sr["dataset"] if sr else (dataset or "")
+        sd = sr["seed"] if sr else str(seed)
+        run_dir = _find_run_dir_fs(ds, name, sd) if ds else None
+        phases = _phase_status(run_dir)
+        complete = bool(run_dir and (run_dir / COMPLETE_MARKER).exists())
+
+        # Derive status from sacct + filesystem + upstream
+        upstream_statuses = [status_map.get(p, "WAITING") for p in parents]
+        status = _derive_status(sr, complete, upstream_statuses)
+        status_map[name] = status
+
+        rows.append(RecipeAssetStatus(
+            asset=name,
+            stage=node.group_name,
+            label=node.description or f"{node.group_name} ({name})",
+            status=status,
+            train=phases["train"],
+            test=phases["test"],
+            analyze=phases["analyze"],
+            wall_time=sr["elapsed"] if sr else "",
+            job_id=sr["job_id"] if sr else "",
+            upstream=parents,
+        ))
+
+    return rows
+
+
+def _progress_summary(rows: list[RecipeAssetStatus]) -> str:
+    """One-line progress: '15/32 done, 2 failed, 3 running, 12 pending'."""
+    total = len(rows)
+    counts: dict[str, int] = {}
+    for r in rows:
+        if r.status == "COMPLETED":
+            bucket = "done"
+        elif r.status in _FAILED_STATES:
+            bucket = "failed"
+        elif r.status in _RUNNING_STATES:
+            bucket = "running"
+        else:
+            bucket = "pending"
+        counts[bucket] = counts.get(bucket, 0) + 1
+
+    parts = [f"{counts.get('done', 0)}/{total} done"]
+    for key in ("failed", "running", "pending"):
+        if counts.get(key, 0) > 0:
+            parts.append(f"{counts[key]} {key}")
+    return ", ".join(parts)
+
+
+def _render_grouped_table(
+    rows: list[RecipeAssetStatus],
+    dataset: str | None,
+    seed: int,
+) -> None:
+    """Rich table grouped by stage with progress header."""
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console()
+
+    # Header
+    ds_label = dataset or "all"
+    summary = _progress_summary(rows)
+    console.print(f"\n[bold]Pipeline Status[/bold]: {ds_label} seed {seed} -- {summary}\n")
+
+    status_styles = {
+        "COMPLETED": "green",
+        "SUCCESS": "green",
+        "FAILED": "red bold",
+        "TIMEOUT": "red bold",
+        "OUT_OF_MEMORY": "red bold",
+        "CANCELLED": "yellow",
+        "RUNNING": "yellow",
+        "PENDING": "dim",
+        "BLOCKED": "magenta",
+        "WAITING": "dim",
+    }
+    phase_styles = {"✓": "green", "✗": "red bold", "-": "dim"}
+
+    # Group by stage
+    from itertools import groupby
+
+    for stage, group in groupby(rows, key=lambda r: r.stage):
+        items = list(group)
+        table = Table(
+            title=f"{stage.upper()} ({len(items)})",
+            title_style="bold cyan",
+            show_lines=False,
+            expand=True,
+            padding=(0, 1),
+        )
+        table.add_column("Asset", style="cyan", no_wrap=True, ratio=3)
+        table.add_column("Config", ratio=3)
+        table.add_column("Status", no_wrap=True, ratio=1)
+        table.add_column("T", justify="center", width=1)
+        table.add_column("E", justify="center", width=1)
+        table.add_column("A", justify="center", width=1)
+        table.add_column("Wall", justify="right", ratio=1)
+        table.add_column("Job", justify="right", ratio=1)
+
+        for r in items:
+            ss = status_styles.get(r.status, "")
+            # Strip stage prefix from label for compactness: "curriculum (gat, small)" → "gat, small"
+            label = r.label
+            if label.startswith(f"{r.stage} (") and label.endswith(")"):
+                label = label[len(r.stage) + 2 : -1]
+            table.add_row(
+                r.asset,
+                label,
+                f"[{ss}]{r.status}[/{ss}]" if ss else r.status,
+                f"[{phase_styles.get(r.train, '')}]{r.train}[/]",
+                f"[{phase_styles.get(r.test, '')}]{r.test}[/]",
+                f"[{phase_styles.get(r.analyze, '')}]{r.analyze}[/]",
+                r.wall_time or "-",
+                r.job_id or "-",
+            )
+
+        console.print(table)
+        console.print()
+
+
+# ---------------------------------------------------------------------------
+# Legacy flat view (--dagster)
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -87,25 +324,6 @@ def _run_dir_from_ckpt(ckpt_path: str) -> Path | None:
     return p
 
 
-def _phase_status(run_dir: Path | None) -> dict[str, str]:
-    """Check phase marker files in a run directory.
-
-    Returns symbol per phase: ✓ (passed), ✗ (failed), - (unknown/legacy).
-    If no markers exist at all, the run predates this feature — show all as -.
-    """
-    no_data = {"train": "-", "test": "-", "analyze": "-"}
-    if run_dir is None or not run_dir.exists():
-        return no_data
-    raw = {
-        phase: (run_dir / marker).exists()
-        for phase, marker in PHASE_MARKERS.items()
-    }
-    # No markers at all → legacy run, don't report false failures
-    if not any(raw.values()):
-        return no_data
-    return {phase: ("✓" if ok else "✗") for phase, ok in raw.items()}
-
-
 def _collect(*, limit: int, use_sacct: bool = True) -> list[AssetStatus]:
     """Query DagsterInstance for asset materialization status, reconciled with sacct."""
     from dagster import DagsterInstance
@@ -124,14 +342,9 @@ def _collect(*, limit: int, use_sacct: bool = True) -> list[AssetStatus]:
 
         # Batch-fetch runs, deduplicated by run_id
         run_ids = {
-            r.asset_entry.last_run_id
-            for r in records
-            if r.asset_entry.last_run_id
+            r.asset_entry.last_run_id for r in records if r.asset_entry.last_run_id
         }
-        runs = {
-            rid: inst.get_run_by_id(rid)
-            for rid in run_ids
-        }
+        runs = {rid: inst.get_run_by_id(rid) for rid in run_ids}
 
         for record in records:
             entry = record.asset_entry
@@ -149,7 +362,7 @@ def _collect(*, limit: int, use_sacct: bool = True) -> list[AssetStatus]:
             # Run status from dagster (cached lookup)
             run = runs.get(event.run_id)
             run_status = run.status.value if run else "UNKNOWN"
-            partition = (run.tags.get("dagster/partition", "") if run else "")
+            partition = run.tags.get("dagster/partition", "") if run else ""
 
             # Metadata from materialization
             md = event.asset_materialization.metadata if event.asset_materialization else {}
@@ -202,7 +415,7 @@ def _render_table(rows: list[AssetStatus]) -> None:
     from rich.console import Console
     from rich.table import Table
 
-    table = Table(title="Pipeline Status", show_lines=False, expand=True)
+    table = Table(title="Pipeline Status (legacy)", show_lines=False, expand=True)
     table.add_column("Asset", style="cyan", no_wrap=True, ratio=3)
     table.add_column("Status", no_wrap=True, ratio=1)
     table.add_column("Partition", ratio=1)
@@ -243,6 +456,11 @@ def _render_table(rows: list[AssetStatus]) -> None:
         )
 
     Console().print(table)
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator event log (--log)
+# ---------------------------------------------------------------------------
 
 
 def _latest_log() -> Path | None:
@@ -300,17 +518,19 @@ def _render_log(log_path: Path, *, event_filter: str | None, follow: bool) -> No
             pass
 
 
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+
 def main(argv: list[str]) -> None:
     parser = argparse.ArgumentParser(
         prog="python -m graphids pipeline-status",
-        description="Aggregated pipeline status from dagster + SLURM phase markers",
+        description="Pipeline status from dagster asset graph + SLURM",
     )
-    parser.add_argument("--limit", type=int, default=50,
-                        help="Max assets to display")
-    parser.add_argument("--json", dest="as_json", action="store_true",
-                        help="Output as JSON instead of table")
-    parser.add_argument("--no-sacct", dest="use_sacct", action="store_false",
-                        default=True, help="Skip sacct reconciliation (dagster-only)")
+    # Mode selection
+    parser.add_argument("--dagster", action="store_true",
+                        help="Legacy flat view from dagster instance only")
     parser.add_argument("--log", nargs="?", const="all", metavar="FILTER",
                         choices=list(_LOG_FILTERS),
                         help="Read orchestrator event log. Filters: "
@@ -319,8 +539,23 @@ def main(argv: list[str]) -> None:
                         help="Follow log output (like tail -f). Use with --log")
     parser.add_argument("--log-file", type=Path, default=None,
                         help="Specific log file (default: latest)")
+
+    # Recipe-aware options
+    parser.add_argument("--dataset", "-d", default=None,
+                        help="Filter to dataset partition (e.g. set_01)")
+    parser.add_argument("--seed", "-s", type=int, default=42,
+                        help="Seed partition (default: 42)")
+
+    # Output
+    parser.add_argument("--json", dest="as_json", action="store_true",
+                        help="Output as JSON instead of table")
+    parser.add_argument("--limit", type=int, default=50,
+                        help="Max assets for legacy --dagster view")
+    parser.add_argument("--no-sacct", dest="use_sacct", action="store_false",
+                        default=True, help="Skip sacct reconciliation")
     args = parser.parse_args(argv)
 
+    # --- Log mode ---
     if args.log is not None:
         log_path = args.log_file or _latest_log()
         if log_path is None or not log_path.exists():
@@ -329,17 +564,40 @@ def main(argv: list[str]) -> None:
         _render_log(log_path, event_filter=_LOG_FILTERS[args.log], follow=args.follow)
         return
 
+    # --- Legacy dagster-only view ---
+    if args.dagster:
+        try:
+            rows = _collect(limit=args.limit, use_sacct=args.use_sacct)
+        except Exception as exc:
+            print(f"Error querying dagster: {exc}", file=sys.stderr)
+            raise SystemExit(1) from exc
+        if not rows:
+            print("No assets found in dagster instance.")
+            return
+        if args.as_json:
+            print(json.dumps([asdict(r) for r in rows], indent=2))
+        else:
+            _render_table(rows)
+        return
+
+    # --- Recipe-aware grouped view (default) ---
     try:
-        rows = _collect(limit=args.limit, use_sacct=args.use_sacct)
+        rows = _collect_from_graph(dataset=args.dataset, seed=args.seed)
     except Exception as exc:
-        print(f"Error querying dagster: {exc}", file=sys.stderr)
+        print(f"Error loading asset graph: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
 
     if not rows:
-        print("No assets found in dagster instance.")
+        print("No assets defined in current recipe.")
         return
 
     if args.as_json:
-        print(json.dumps([asdict(r) for r in rows], indent=2))
+        summary = _progress_summary(rows)
+        print(json.dumps({
+            "dataset": args.dataset,
+            "seed": args.seed,
+            "summary": summary,
+            "assets": [asdict(r) for r in rows],
+        }, indent=2))
     else:
-        _render_table(rows)
+        _render_grouped_table(rows, args.dataset, args.seed)

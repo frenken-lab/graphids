@@ -14,7 +14,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-import structlog
+from graphids.log import get_logger
 
 from graphids.config import PathContext
 from graphids.config.yaml_utils import merge_yaml_chain
@@ -22,7 +22,7 @@ from graphids.core.contracts import TrainingSpec
 from graphids.orchestrate.planning import StageConfig
 from graphids.slurm import ResourceSpec, apply_resource_overrides, get_resources
 
-log = structlog.get_logger()
+log = get_logger(__name__)
 
 
 @dataclass(frozen=True)

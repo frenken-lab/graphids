@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 
 import dagster as dg
-import structlog
+from graphids.log import get_logger
 
 from graphids.orchestrate.analysis import build_analysis_spec, supports_analysis
 from graphids.orchestrate.execution import slurm_accounting_metadata, touch_complete
@@ -17,7 +17,7 @@ from graphids.orchestrate.planning import StageConfig
 from graphids.orchestrate.resolve import ConfigResolver
 from graphids.slurm import scale_resources
 
-log = structlog.get_logger()
+log = get_logger(__name__)
 
 
 def _runtime_lake_root() -> str:
@@ -26,6 +26,14 @@ def _runtime_lake_root() -> str:
 
 def _runtime_user() -> str:
     return os.environ.get("USER", "unknown")
+
+
+def _asset_description(cfg: StageConfig) -> str:
+    """Human-readable asset description for dagster UI and CLI."""
+    parts = [cfg.model_type, cfg.scale]
+    for k, v in sorted(cfg.model_init_overrides.items()):
+        parts.append(f"{k}={v}")
+    return f"{cfg.stage} ({', '.join(parts)})"
 
 
 def make_training_asset(
@@ -44,7 +52,7 @@ def make_training_asset(
         group_name=cfg.stage,
         kinds={"checkpoint"},
         tags={"stage": cfg.stage, "model_type": cfg.model_type, "scale": cfg.scale},
-        description=f"{cfg.stage} ({cfg.model_type}, {cfg.scale})",
+        description=_asset_description(cfg),
         required_resource_keys={"slurm"},
     )
     def _train(context, **upstream_ckpts: str) -> str:

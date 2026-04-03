@@ -6,9 +6,9 @@ import json
 from pathlib import Path
 
 import numpy as np
-import structlog
+from graphids.log import get_logger
 
-log = structlog.get_logger()
+log = get_logger(__name__)
 
 
 def save_fusion_policy(

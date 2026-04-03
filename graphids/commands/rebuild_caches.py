@@ -13,11 +13,11 @@ import os
 import shutil
 from pathlib import Path
 
-import structlog
+from graphids.log import get_logger
 
 from graphids.config import LAKE_ROOT, PREPROCESSING_VERSION, cache_dir, dataset_names
 
-log = structlog.get_logger()
+log = get_logger(__name__)
 
 
 def rebuild_caches(argv: list[str] | None = None) -> None:

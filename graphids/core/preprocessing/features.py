@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 import polars as pl
-import structlog
+from graphids.log import get_logger
 import torch
 from torch import Tensor
 from torch_geometric.data import Data
@@ -206,7 +206,7 @@ def sliding_window_graphs(
     Required columns: node_id (Int64), timestamp, byte_0..7, entropy,
     attack, attack_type.
     """
-    log = structlog.get_logger()
+    log = get_logger(__name__)
 
     # ── Window assignment (pure Polars, no Python loop) ───────────
     df = df.with_row_index("_row")

@@ -11,14 +11,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import structlog
+from graphids.log import get_logger
 
 from graphids.cli import LINK_TARGETS, resolve_configs, run_lightning
 from graphids.config import LAST_CKPT_SUBPATH
 from graphids.config.yaml_utils import apply_dotted_overrides, write_yaml
 from graphids.core.contracts import TrainingContract, TrainingSpec
 
-log = structlog.get_logger()
+log = get_logger(__name__)
 
 
 def _build_cli_args(spec: TrainingSpec) -> list[str]:
