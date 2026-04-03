@@ -1,6 +1,6 @@
 # Training Efficiency — CPU-Bound DataLoader Bottleneck
 
-> Sources: `docs/reference/ablation-resource-profile.md`, `docs/reference/cpu_gpu_gnn_training_reference.md`
+> Sources: `docs/reference/ablation-resource-profile.md`, `docs/guides/cpu-gpu-gnn-training.md`
 
 ## Diagnosis
 
@@ -103,7 +103,7 @@ VGAE: 745K params, 5% GPU util. Even after budget cap, GPU compute is trivial.
 CPU training eliminates GPU queue contention and saves ~24 GPU-hours per campaign.
 
 Requires spike: measure CPU forward+backward throughput for VGAE to verify wall
-time doesn't regress more than ~30%. See `docs/reference/cpu_gpu_gnn_training_reference.md`
+time doesn't regress more than ~30%. See `docs/guides/cpu-gpu-gnn-training.md`
 for the analysis framework.
 
 Prerequisites: `cpu_train` execution mode, CPU-aware budget in `vram_node_budget`,

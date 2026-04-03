@@ -23,5 +23,4 @@ not `trainer.callbacks` lists. DeviceStatsMonitor in `trainer.yaml` survives.
 - `defaults/trainer.yaml` — shared defaults (must stay in sync with Python constants)
 - Stage YAMLs — namespace overrides instead of `callbacks:` blocks
 
-See `cli-config-architecture.md` (lines 166-179) and `cli-config-evaluation.md` (S3)
-for architecture documentation.
+See `docs/reference/config-architecture.md` (§3 Forced Callbacks, §6 strength S3).
