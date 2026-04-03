@@ -5,6 +5,7 @@ Pure functions — no dagster, no Lightning. Used by SlurmTrainingComponent.
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import subprocess
@@ -63,6 +64,21 @@ def sacct_query(job_ids: list[str] | list[int], fmt: str,
            f"--format={fmt}", f"--units={units}"]
     if cluster:
         cmd.extend(["-M", cluster])
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        log.warning("sacct_error", stderr=r.stderr.strip())
+        return ""
+    return r.stdout
+
+
+def sacct_by_user(fmt: str = "JobIDRaw,JobName,State,Elapsed",
+                  *, starttime: str = "now-30days") -> str:
+    """Run sacct for current user's recent jobs. Returns parsable stdout."""
+    user = os.environ.get("USER", "")
+    if not user:
+        return ""
+    cmd = ["sacct", "-u", user, f"--starttime={starttime}",
+           "--parsable2", "--noheader", f"--format={fmt}"]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         log.warning("sacct_error", stderr=r.stderr.strip())

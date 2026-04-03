@@ -21,6 +21,8 @@ import structlog
 import torch
 from torch.utils.benchmark import Timer as BenchmarkTimer
 
+from graphids.config import cache_dir
+
 log = structlog.get_logger()
 
 # HEURISTIC: 15% VRAM reserve for allocator fragmentation. Variable-size
@@ -56,19 +58,41 @@ class BudgetResult:
     gamma_us: float | None = None   # γ: collation cost per graph (μs)
     alpha_ms: float | None = None   # α: GPU overhead per step (ms)
     beta_us: float | None = None    # β: GPU cost per node (μs)
+    # Edge-aware fields (Phase 1B)
+    bytes_per_edge: int | None = None         # B: per-edge VRAM cost from 2×2 probe
+    edges_per_node_p95: float | None = None   # p95 edge/node ratio from cache stats
+    # Backward multiplier (Phase 2A)
+    backward_multiplier: float | None = None  # measured fwd+bwd / fwd ratio
+    # KD teacher (Phase 2B)
+    teacher_vram_bytes: int = 0               # estimated teacher VRAM reservation
+    # Compile status (Phase 2C)
+    is_compiled: bool | None = None           # torch.compile status when probed
 
 
-def _probe(model, dataset, step_fn=None) -> tuple[int, float, float, float]:
-    """Measure bytes_per_node, γ (collation rate), α (GPU overhead), β (GPU per-node).
+def _extract_loss(output):
+    """Handle _step() return formats: scalar, tuple, or dict."""
+    if isinstance(output, torch.Tensor):
+        return output
+    if isinstance(output, (tuple, list)):
+        return output[0]
+    if isinstance(output, dict):
+        return output["loss"]
+    raise TypeError(f"Cannot extract loss from {type(output)}")
 
-    Runs forward passes at two batch sizes to fit:
-        T_gpu(N) = α + β·N
 
-    From two measurements (N₁, T₁) and (N₂, T₂):
-        β = (T₂ - T₁) / (N₂ - N₁)
-        α = T₂ - β·N₂
+def _probe(model, dataset, step_fn=None) -> tuple[int, int, float, float, float, float]:
+    """Measure per-node/edge VRAM, backward multiplier, γ, α, β.
 
-    Returns (bytes_per_node, gamma, alpha, beta).
+    Edge-aware: measures VRAM at two batch sizes with different N/E counts,
+    solves the 2×2 system:  vram = A·N + B·E  for per-node (A) and per-edge (B).
+
+    Backward: runs one forward+backward step to measure the real gradient
+    memory multiplier instead of using _GRAD_MULTIPLIER heuristic.
+
+    Timing: fits  T_gpu(N) = α + β·N  from two-point measurement.
+
+    Returns (bytes_per_node, bytes_per_edge, backward_multiplier, gamma, alpha, beta).
+    bytes_per_node and bytes_per_edge include the backward multiplier.
     """
     from torch_geometric.data import Batch
 
@@ -108,6 +132,8 @@ def _probe(model, dataset, step_fn=None) -> tuple[int, float, float, float]:
     batch_small = batch_small.to(model.device)
     nodes_large = batch_large.num_nodes
     nodes_small = batch_small.num_nodes
+    edges_large = batch_large.num_edges
+    edges_small = batch_small.num_edges
 
     was_training = model.training
     model.eval()
@@ -135,27 +161,71 @@ def _probe(model, dataset, step_fn=None) -> tuple[int, float, float, float]:
         stmt="_fwd()", globals={"_fwd": _make_fwd(batch_large)},
     ).blocked_autorange(min_run_time=0.2).median
 
-    # --- bytes_per_node: VRAM delta from one forward pass ---
-    # (peak_allocated - baseline) / num_nodes captures real memory including
-    # scatter temporaries, attention buffers, PyG internals that the analytical
-    # formula (L·h·s per node) misses.
+    # --- Forward-only VRAM at two batch sizes ---
+    # Solve 2×2 system: vram = A·N + B·E for per-node (A) and per-edge (B) cost.
     if model.device.type == "cuda":
+        # Small batch
+        torch.cuda.reset_peak_memory_stats(model.device)
+        before = torch.cuda.memory_allocated(model.device)
+        with torch.no_grad():
+            fn(batch_small)
+        torch.cuda.synchronize()
+        vram_small = torch.cuda.max_memory_allocated(model.device) - before
+
+        # Large batch
         torch.cuda.reset_peak_memory_stats(model.device)
         before = torch.cuda.memory_allocated(model.device)
         with torch.no_grad():
             fn(batch_large)
         torch.cuda.synchronize()
-        peak = torch.cuda.max_memory_allocated(model.device)
+        vram_large = torch.cuda.max_memory_allocated(model.device) - before
     else:
-        before, peak = 0, 0
+        vram_small, vram_large = 0, 0
+
+    # Solve: vram = A·N + B·E
+    #   A = (vram_s·E_l - vram_l·E_s) / (N_s·E_l - N_l·E_s)
+    #   B = (N_s·vram_l - N_l·vram_s) / (N_s·E_l - N_l·E_s)
+    det = nodes_small * edges_large - nodes_large * edges_small
+    if abs(det) > 0 and vram_small > 0 and vram_large > 0:
+        fwd_per_node = max(1, int((vram_small * edges_large - vram_large * edges_small) / det))
+        fwd_per_edge = max(0, int((nodes_small * vram_large - nodes_large * vram_small) / det))
+    else:
+        # Degenerate case (same E/N ratio) — fall back to node-only
+        fwd_per_node = max(1, int(vram_large / max(1, nodes_large))) if vram_large > 0 else 1
+        fwd_per_edge = 0
+
+    # --- Backward pass multiplier ---
+    # Measures real fwd+bwd peak vs forward-only peak. This runs outside
+    # Lightning's training loop (during DataLoader setup), so we use
+    # torch.autograd.backward directly — Lightning's Trainer isn't active here.
+    backward_multiplier = _GRAD_MULTIPLIER
+    if model.device.type == "cuda" and step_fn is not None:
+        try:
+            model.train()
+            batch_bwd = batch_large.clone()
+            torch.cuda.reset_peak_memory_stats(model.device)
+            before = torch.cuda.memory_allocated(model.device)
+            loss = _extract_loss(step_fn(batch_bwd))
+            torch.autograd.backward(loss)
+            torch.cuda.synchronize()
+            bwd_peak = torch.cuda.max_memory_allocated(model.device) - before
+            if vram_large > 0:
+                backward_multiplier = max(1.0, bwd_peak / vram_large)
+            model.zero_grad(set_to_none=True)
+            del batch_bwd, loss
+            model.eval()
+        except Exception:
+            log.warning("backward_probe_failed", fallback=_GRAD_MULTIPLIER)
+            model.eval()
+
+    # Apply backward multiplier to get training-time costs
+    bytes_per_node = int(fwd_per_node * backward_multiplier)
+    bytes_per_edge = int(fwd_per_edge * backward_multiplier)
 
     model.train(was_training)
     del batch_small, batch_large
     if model.device.type == "cuda":
         torch.cuda.empty_cache()
-
-    fwd_per_node = max(1, int((peak - before) / nodes_large)) if peak > before else 1
-    bytes_per_node = fwd_per_node * _GRAD_MULTIPLIER
 
     # --- Solve T_gpu = α + β·N ---
     #   β = (T₂ - T₁) / (N₂ - N₁)
@@ -170,8 +240,11 @@ def _probe(model, dataset, step_fn=None) -> tuple[int, float, float, float]:
         alpha = 0.0
 
     log.info("budget_probe",
-             bytes_per_node=bytes_per_node,
+             bytes_per_node=bytes_per_node, bytes_per_edge=bytes_per_edge,
+             backward_multiplier=round(backward_multiplier, 2),
+             fwd_per_node=fwd_per_node, fwd_per_edge=fwd_per_edge,
              nodes_small=nodes_small, nodes_large=nodes_large,
+             edges_small=edges_small, edges_large=edges_large,
              n_graphs=len(graphs_large),
              t_collate_ms=round(t_collate * 1000, 1),
              t_gpu_small_ms=round(t_gpu_small * 1000, 1),
@@ -180,7 +253,7 @@ def _probe(model, dataset, step_fn=None) -> tuple[int, float, float, float]:
              beta_us=round(beta * 1e6, 3),
              gamma_us=round(gamma * 1e6, 1))
 
-    return bytes_per_node, gamma, alpha, beta
+    return bytes_per_node, bytes_per_edge, backward_multiplier, gamma, alpha, beta
 
 
 def node_budget(
@@ -203,8 +276,6 @@ def node_budget(
     6. throughput_budget = α / (γ/W - β·m̄) × m̄  [if it exists].
     7. budget = min(mem_budget, throughput_budget).
     """
-    from graphids.config import cache_dir
-
     # --- Step 1: dataset statistics ---
     metadata_path = cache_dir(lake_root, dataset) / "cache_metadata.json"
     if not metadata_path.exists():
@@ -212,40 +283,68 @@ def node_budget(
             f"cache_metadata.json not found at {metadata_path}. "
             "Run preprocessing first."
         )
-    stats = json.loads(metadata_path.read_text())["graph_stats"]["node_count"]
-    mean_nodes = stats["mean"]
+    graph_stats = json.loads(metadata_path.read_text())["graph_stats"]
+    node_stats = graph_stats["node_count"]
+    edge_stats = graph_stats.get("edge_count")  # may be absent in old caches
+    mean_nodes = node_stats["mean"]
 
-    # --- Step 2: free VRAM ---
+    # --- Step 2: free VRAM + KD teacher reservation ---
     if torch.cuda.is_available():
         free, _ = torch.cuda.mem_get_info()
     else:
         free = 12 * 1024**3  # FALLBACK: 12GB for CPU-only testing
+
+    # Subtract KD teacher footprint if present (Phase 2B)
+    teacher_vram = 0
+    if model is not None and hasattr(model, "teacher") and model.teacher is not None:
+        teacher_params = sum(p.numel() * p.element_size() for p in model.teacher.parameters())
+        # Inference activations ~2.5× params (no gradients, but intermediate tensors)
+        teacher_vram = int(teacher_params * 2.5)
+        log.info("kd_teacher_vram", bytes=teacher_vram, mb=round(teacher_vram / 1e6, 1))
+    effective_free = free - teacher_vram
+
+    # --- Step 2b: compile status (Phase 2C) ---
+    is_compiled = hasattr(model, "_orig_mod") if model is not None else None
 
     # --- Step 3: quadratic conv types ---
     # DERIVED: GPS global attention allocates [N×N×K] per head.
     # Memory ≈ N² × heads × 3 (Q,K,V) × 2 bytes (fp16).
     # Solve: N ≤ sqrt(free / (heads × 3 × 2))
     if conv_type in _QUADRATIC_CONV_TYPES:
-        budget = int(math.sqrt(free / (heads * 3 * 2)))
+        budget = int(math.sqrt(effective_free / (heads * 3 * 2)))
         log.info("node_budget", conv_type=conv_type, budget=budget,
-                 free_vram_gb=round(free / 1e9, 2), binding="memory")
+                 free_vram_gb=round(effective_free / 1e9, 2), binding="memory")
         return BudgetResult(
             budget=budget, mean_nodes=mean_nodes,
             mem_budget=budget, throughput_budget=None,
             binding="memory", cg_ratio=None,
+            teacher_vram_bytes=teacher_vram, is_compiled=is_compiled,
         )
 
     # --- Step 4: probe ---
     gamma = alpha = beta = None
     bytes_per_node = _FALLBACK_BYTES_PER_NODE
+    bytes_per_edge = 0
+    backward_multiplier = None
 
     if model is not None and train_dataset is not None and torch.cuda.is_available():
         step_fn = getattr(model, "_step", None)
-        bytes_per_node, gamma, alpha, beta = _probe(model, train_dataset, step_fn=step_fn)
+        bytes_per_node, bytes_per_edge, backward_multiplier, gamma, alpha, beta = (
+            _probe(model, train_dataset, step_fn=step_fn)
+        )
 
     # --- Step 5: memory ceiling ---
-    # DERIVED: mem_budget = free × margin / bytes_per_node
-    mem_budget = int(free * _SAFETY_MARGIN / bytes_per_node)
+    # Edge-aware: effective cost per node accounts for edge density (Phase 1B).
+    # Uses p95 edge/node ratio for conservative sizing.
+    edges_per_node_p95 = None
+    if bytes_per_edge > 0 and edge_stats is not None:
+        edges_per_node_p95 = edge_stats["p95"] / node_stats["p95"]
+        effective_bpn = bytes_per_node + bytes_per_edge * edges_per_node_p95
+    else:
+        effective_bpn = bytes_per_node
+
+    # DERIVED: mem_budget = effective_free × margin / effective_bytes_per_node
+    mem_budget = int(effective_free * _SAFETY_MARGIN / effective_bpn)
 
     # --- Step 6: throughput ceiling ---
     # DERIVED from setting T_collate/W = T_gpu and solving for batch size B:
@@ -292,8 +391,14 @@ def node_budget(
              throughput_budget=throughput_budget, binding=binding,
              cg_ratio=round(cg_ratio, 2) if cg_ratio is not None else None,
              num_workers=num_workers,
-             free_vram_gb=round(free / 1e9, 2),
+             free_vram_gb=round(effective_free / 1e9, 2),
              bytes_per_node=bytes_per_node,
+             bytes_per_edge=bytes_per_edge,
+             edges_per_node_p95=(round(edges_per_node_p95, 2)
+                                 if edges_per_node_p95 is not None else None),
+             backward_multiplier=(round(backward_multiplier, 2)
+                                  if backward_multiplier is not None else None),
+             teacher_vram_mb=round(teacher_vram / 1e6, 1) if teacher_vram else None,
              mean_nodes=round(mean_nodes, 1),
              alpha_ms=round(alpha * 1000, 2) if alpha is not None else None,
              beta_us=round(beta * 1e6, 3) if beta is not None else None)
@@ -306,4 +411,9 @@ def node_budget(
         gamma_us=round(gamma * 1e6, 1) if gamma is not None else None,
         alpha_ms=round(alpha * 1000, 2) if alpha is not None else None,
         beta_us=round(beta * 1e6, 3) if beta is not None else None,
+        bytes_per_edge=bytes_per_edge if bytes_per_edge else None,
+        edges_per_node_p95=edges_per_node_p95,
+        backward_multiplier=backward_multiplier,
+        teacher_vram_bytes=teacher_vram,
+        is_compiled=is_compiled,
     )

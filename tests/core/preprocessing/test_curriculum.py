@@ -12,7 +12,7 @@ class TestCurriculumSampler:
 
     @staticmethod
     def _make_data_and_sampler(n_normal=20, n_attack=10):
-        from graphids.core.preprocessing.curriculum import CurriculumSampler
+        from graphids.core.preprocessing.stages.curriculum import CurriculumSampler
 
         normals = [make_graph() for _ in range(n_normal)]
         for g in normals:

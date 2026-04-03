@@ -9,10 +9,18 @@ single source of truth shared with the pipeline path.
 
 from __future__ import annotations
 
-from pathlib import PurePosixPath
+import csv
+import resource
+import time
+from pathlib import Path, PurePosixPath
 
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import DeviceStatsMonitor, EarlyStopping, ModelCheckpoint
+import torch
+from pytorch_lightning.callbacks import (
+    DeviceStatsMonitor,
+    EarlyStopping,
+    ModelCheckpoint,
+)
 from pytorch_lightning.cli import LightningCLI, SaveConfigCallback
 from pytorch_lightning.loggers import WandbLogger
 
@@ -20,6 +28,79 @@ from graphids.cli import CHECKPOINT_DEFAULTS, EARLY_STOPPING_DEFAULTS, LINK_TARG
 from graphids.config import CKPT_SUBPATH, WANDB_WRITE_DIR
 
 _CKPT_DIR = str(PurePosixPath(CKPT_SUBPATH).parent)
+
+_PROFILE_FIELDS = [
+    "epoch", "global_step", "num_nodes", "num_edges", "num_graphs",
+    "cuda_allocated_mb", "cuda_reserved_mb", "cuda_peak_mb",
+    "host_rss_mb", "step_time_ms",
+]
+
+
+class ResourceProfileCallback(pl.Callback):
+    """Per-step VRAM + batch stats → {run_dir}/resource_profile.csv.
+
+    Logs every ``log_every_n_steps`` training steps. Overhead on non-logging
+    steps is ~50ns (modulo check). Logging steps: ~0.3ms (3 CUDA calls +
+    getrusage + CSV write).
+    """
+
+    def __init__(self, log_every_n_steps: int = 50):
+        self.log_every = log_every_n_steps
+        self._file = None
+        self._writer = None
+        self._step_start: float | None = None
+
+    def on_fit_start(self, trainer, pl_module):
+        root = trainer.default_root_dir
+        if root is None:
+            return
+        path = Path(root) / "resource_profile.csv"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = open(path, "w", newline="")  # noqa: SIM115
+        self._writer = csv.DictWriter(self._file, fieldnames=_PROFILE_FIELDS)
+        self._writer.writeheader()
+
+    def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
+        self._step_start = time.perf_counter()
+
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        if trainer.global_step % self.log_every != 0:
+            return
+        if self._writer is None:
+            return
+
+        step_time_ms = None
+        if self._step_start is not None:
+            step_time_ms = round((time.perf_counter() - self._step_start) * 1000, 1)
+
+        cuda_allocated = cuda_reserved = cuda_peak = 0.0
+        device = pl_module.device
+        if device.type == "cuda":
+            cuda_allocated = torch.cuda.memory_allocated(device) / 1e6
+            cuda_reserved = torch.cuda.memory_reserved(device) / 1e6
+            cuda_peak = torch.cuda.max_memory_allocated(device) / 1e6
+            torch.cuda.reset_peak_memory_stats(device)
+
+        host_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024  # KB→MB
+
+        self._writer.writerow({
+            "epoch": trainer.current_epoch,
+            "global_step": trainer.global_step,
+            "num_nodes": getattr(batch, "num_nodes", None),
+            "num_edges": getattr(batch, "num_edges", None),
+            "num_graphs": getattr(batch, "num_graphs", None),
+            "cuda_allocated_mb": round(cuda_allocated, 1),
+            "cuda_reserved_mb": round(cuda_reserved, 1),
+            "cuda_peak_mb": round(cuda_peak, 1),
+            "host_rss_mb": round(host_rss, 1),
+            "step_time_ms": step_time_ms,
+        })
+
+    def on_fit_end(self, trainer, pl_module):
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+            self._writer = None
 
 
 class WandbSaveConfigCallback(SaveConfigCallback):
@@ -51,6 +132,9 @@ class GraphIDSCLI(LightningCLI):
         )
 
         parser.add_lightning_class_args(DeviceStatsMonitor, "device_stats")
+
+        parser.add_lightning_class_args(ResourceProfileCallback, "resource_profile")
+        parser.set_defaults({"resource_profile.log_every_n_steps": 50})
 
     def before_instantiate_classes(self):
         """Patch parsed config: logger save_dirs + checkpoint dirpath."""

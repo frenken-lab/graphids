@@ -2,6 +2,6 @@ resources:
   family: temporal
   by_scale:
     small:
-      temporal: {mode: gpu_train, time: "3:00:00", mem: 28G, cpus: 8, workers: 6}
+      temporal: {mode: gpu_train, time: "3:00:00", cpus: 8, workers: 6}
     large:
-      temporal: {mode: gpu_train, time: "4:00:00", mem: 40G, cpus: 8, workers: 6}
+      temporal: {mode: gpu_train, time: "4:00:00", cpus: 8, workers: 6}

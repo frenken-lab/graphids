@@ -24,7 +24,7 @@ shift
 
 # Read resource profile from YAML (single source of truth)
 PROFILE=$(source .venv/bin/activate && python -m graphids submit-profile "$JOB")
-read -r PARTITION CPUS MEM TIME SIGNAL MODE COMMAND <<< "$PROFILE"
+read -r PARTITION CPUS MEM TIME SIGNAL MODE GRES COMMAND <<< "$PROFILE"
 
 ACCT="--account=${KD_GAT_SLURM_ACCOUNT}"
 PREAMBLE="source ${PROJECT_ROOT}/scripts/slurm/_preamble.sh"
@@ -35,10 +35,13 @@ case "$MODE" in
     cpu-raw) ENV="SKIP_CUDA_CONF=1 STAGE_DATA_ARGS=--raw " ;;
 esac
 
+GPU_ARGS=()
+[[ -n "$GRES" && "$GRES" != "NONE" ]] && GPU_ARGS=(--gres="$GRES")
+
 SIG_ARGS=()
 [[ -n "$SIGNAL" && "$SIGNAL" != "NONE" ]] && SIG_ARGS=(--signal="B:${SIGNAL}")
 
 sbatch "$ACCT" --partition="$PARTITION" --cpus-per-task="$CPUS" --mem="$MEM" \
-    --time="$TIME" --job-name="kd-gat-${JOB}" "${SIG_ARGS[@]}" \
+    --time="$TIME" --job-name="kd-gat-${JOB}" "${GPU_ARGS[@]}" "${SIG_ARGS[@]}" \
     --output="${SLURM_LOG_DIR}/${JOB}_%j.out" --error="${SLURM_LOG_DIR}/${JOB}_%j.err" \
     --wrap="${ENV}${PREAMBLE} && ${COMMAND} $(printf '%q ' "$@")"

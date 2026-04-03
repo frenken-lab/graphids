@@ -99,15 +99,15 @@ def make_training_asset(
 
         touch_complete(resolved.paths.run_dir)
 
+        md = {"run_dir": dg.MetadataValue.text(str(resolved.paths.run_dir))}
         if job_id:
             accounting = slurm_accounting_metadata(job_id)
-            context.add_output_metadata(
-                {
-                    "job_id": dg.MetadataValue.int(accounting["job_id"]),
-                    "wall_time": dg.MetadataValue.text(accounting["wall_time"] or ""),
-                    "peak_rss": dg.MetadataValue.text(accounting["peak_rss"] or ""),
-                }
-            )
+            md.update({
+                "job_id": dg.MetadataValue.int(accounting["job_id"]),
+                "wall_time": dg.MetadataValue.text(accounting["wall_time"] or ""),
+                "peak_rss": dg.MetadataValue.text(accounting["peak_rss"] or ""),
+            })
+        context.add_output_metadata(md)
 
         return str(_available_ckpt())
 

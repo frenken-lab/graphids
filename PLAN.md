@@ -1,6 +1,6 @@
 # KD-GAT Session Plan
 
-> Last updated: 2026-04-02 (session 12 — bug fixes + backlog cleanup)
+> Last updated: 2026-04-02 (session 14 — resource profiling P1+P2)
 
 ## Current State
 
@@ -386,14 +386,35 @@ with sacct (option A, ~20 lines) or fix dagster polling (option B).
 
 ## Next
 
-### Ablation follow-up
+### Ablation follow-up — 15/32 completed, 17 remaining
 
-1. **Resubmit DGI autoencoder** — `compile_model: false` is now in config.
-   Manual sbatch (dagster retries exhausted for c479d625).
-2. **Resubmit normal_ab6a75a4** — phantom resume_ckpt fixed in code (ebd7e1f),
-   orchestrator had stale code. Manual sbatch.
-3. **Verify ablation completion** — all 32 assets should complete after
-   DGI + ab6a75a4 resubmit.
+**Status (2026-04-02, session 14):**
+
+| Stage | Done | Remaining | Blockers |
+|-------|------|-----------|----------|
+| Autoencoders | 3 (vgae small, vgae large, GAE) | 1 DGI + ~2 conv-type variants | DGI: compile fix committed (85a7f1c) |
+| Normals | 5 | 1 (ab6a75a4) | phantom resume_ckpt: fix committed (ebd7e1f) |
+| Curricula | 2 (small/large ce, used by fusion pipeline) | ~6 ({focal,wce} × {small,large} + 2 conv-type) | Upstream done — never submitted |
+| Fusions | 5 (4 small + 1 large) | ~3 (remaining large) | Upstream done — never submitted |
+
+Orchestrator (46260678) went idle after completing fusion pipeline branch
+(autoencoder→normal→curriculum→fusion with default ce). Standalone
+curriculum/normal ablation variants and large-scale fusions never queued.
+
+**Resource changes (this session):**
+- `mem` removed from GPU training profiles — derived as `cpus × mem_per_cpu`
+  at resolution time (72G on Pitzer, 31G on Ascend, 72G on Cardinal).
+  Was hardcoded 40-52G, wasting 20-30G per job.
+- DGI time limit 2h → 4h (matches VGAE, no runtime evidence for DGI on set_01).
+- Fixed 3 invalid fusion profiles: large bandit/dqn `cpus: 2→3` (24G exceeded
+  2×9292=18G), large weighted_avg `cpus: 1→2` (10G exceeded 1×9292=9G).
+- Fusion keeps explicit `mem` (workers: 0, needs far less than CPU-proportional).
+
+**To finish:**
+1. Relaunch orchestrator — `scripts/submit.sh ablation`. All bug fixes and
+   resource changes are committed. Should submit remaining 17 assets.
+2. Or manual sbatch for DGI (c479d625) and normal (ab6a75a4) first, then
+   relaunch for the rest.
 
 ### probe-budget on GPU
 
@@ -414,15 +435,53 @@ scripts/submit.sh tests -k test_budget
 scripts/submit.sh tests -k test_smoke
 ```
 
-### Fix pipeline-status (HIGH)
+### ~~Fix pipeline-status~~ — DONE (session 13)
 
-`pipeline-status` shows stale dagster state. Option A: cross-reference
-with sacct output (~20 lines in `commands/pipeline_status.py`).
+sacct reconciliation implemented. Phase markers now work via filesystem fallback.
+
+### ~~Resource profiling system (7 dimensions)~~ — Phase 1+2 DONE (session 14)
+
+Phase 1+2 implemented. Phase 3+4 deferred until after first campaign with callback active.
+
+**Phase 1 — ResourceProfileCallback + edge-aware margin:**
+- `ResourceProfileCallback` in `_lightning.py` — forced callback, logs per-step
+  VRAM + batch stats (num_nodes, num_edges, cuda_peak_mb, host_rss_mb, step_time_ms)
+  to `{run_dir}/resource_profile.csv` every 50 steps
+- Edge-aware budget: `_probe()` now solves 2×2 system (vram = A·N + B·E) at two
+  batch sizes for per-node (A) and per-edge (B) VRAM cost. `node_budget()` reads
+  `edge_count.p95` from `cache_metadata.json` and computes
+  `effective_bpn = bytes_per_node + bytes_per_edge × edges_per_node_p95`
+
+**Phase 2 — backward multiplier + KD + fusion + compile:**
+- Backward multiplier: `_probe()` runs one forward+backward step via
+  `torch.autograd.backward()` to measure real gradient memory ratio. Falls back
+  to `_GRAD_MULTIPLIER=2` when `_step` unavailable
+- KD teacher reservation: `node_budget()` subtracts estimated teacher VRAM
+  (params × 2.5) from free VRAM before sizing budget
+- Fusion pre-flight: `FusionDataModule.setup()` warns if combined VGAE+GAT
+  models use >85% of VRAM after loading
+- Compile status: `BudgetResult.is_compiled` records `torch.compile` state
+
+**New BudgetResult fields:** `bytes_per_edge`, `edges_per_node_p95`,
+`backward_multiplier`, `teacher_vram_bytes`, `is_compiled`
+
+**New _probe() return:** 6-tuple `(bytes_per_node, bytes_per_edge,
+backward_multiplier, gamma, alpha, beta)`. All callers updated (budget.py,
+profile_budget.py, test_vram_budget.py, test_budget_matrix.py).
+
+**Test fixes:** budget matrix test bounds corrected (graphs_per_batch
+upper bound too tight for small graphs on large GPUs), monotonicity test
+now compares `mem_budget` not `budget` (regime switches break final-budget
+monotonicity but VRAM ceiling is always monotonic with model size).
+808 tests pass, 2 skipped (GPU-only).
+
+**Phase 3+4 deferred** — calibration analyzer + auto-feedback. Needs one
+campaign with callback active to produce `resource_profile.csv` data.
 
 ### Training efficiency (next campaign)
 
 1. Add `prefetch_factor` parameter (~10 lines + YAML)
-2. Per-model worker count (YAML only, after profiling)
+2. Per-model worker count (YAML only, after profiling — informed by resource profile data)
 3. CPU training spike for autoencoders (deferred)
 
 ### KD pipeline E2E test
@@ -440,7 +499,7 @@ claims. Then add KD to ablation recipe.
 | `docs/reference/osc-cluster-memory-limits.md` | Per-partition mem_per_cpu for all 3 clusters |
 | `docs/reference/ablation-bug-patterns.md` | Bug patterns from smoke test + ablation — prevention guide |
 | `docs/backlog/training-efficiency.md` | Backlog: remaining tiers (prefetch_factor, CPU training) |
-| `docs/backlog/pipeline-status-stale.md` | Dagster status doesn't reflect SLURM completions |
+| `docs/backlog/resource-profiling-plan.md` | 7-dimension resource profiling: callback + probe + calibration |
 | `docs/decisions/0003-slurm-job-consolidation.md` | **Implemented** — bundle train+test+analyze in one SLURM job |
 | `docs/backlog/config-overhaul-remaining.md` | Config overhaul tracker — open items |
 | `docs/backlog/per-stage-overrides.md` | Global vs stage-specific overrides (open) |

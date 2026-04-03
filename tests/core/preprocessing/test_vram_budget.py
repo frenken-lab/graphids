@@ -14,9 +14,9 @@ import torch
 from torch_geometric.data import Data
 
 from graphids.core.preprocessing.budget import (
-    BudgetResult,
     _FALLBACK_BYTES_PER_NODE,
     _SAFETY_MARGIN,
+    BudgetResult,
     _probe,
     node_budget,
 )
@@ -58,8 +58,10 @@ class _DummyModel(torch.nn.Module):
 def test_probe_returns_positive_values():
     model = _DummyModel().cuda()
     dataset = _make_dataset()
-    bpn, gamma, alpha, beta = _probe(model, dataset)
+    bpn, bpe, bwd_mult, gamma, alpha, beta = _probe(model, dataset)
     assert isinstance(bpn, int) and bpn > 0
+    assert isinstance(bpe, int) and bpe >= 0
+    assert bwd_mult >= 1.0, "backward multiplier must be >= 1"
     assert gamma > 0, "collation rate must be positive"
     assert beta >= 0, "per-node GPU cost must be non-negative"
     assert alpha >= 0, "GPU overhead must be non-negative"
@@ -130,10 +132,11 @@ def test_quadratic_path_for_gps(tmp_path):
 
 # --- throughput budget tests (mock _probe to inject coefficients) ------------
 
-def _mock_probe_factory(bytes_per_node, gamma, alpha, beta):
-    """Return a mock _probe that returns fixed values."""
+def _mock_probe_factory(bytes_per_node, gamma, alpha, beta,
+                        bytes_per_edge=0, backward_multiplier=2.0):
+    """Return a mock _probe that returns fixed values (6-tuple)."""
     def _mock_probe(model, dataset, step_fn=None):
-        return bytes_per_node, gamma, alpha, beta
+        return bytes_per_node, bytes_per_edge, backward_multiplier, gamma, alpha, beta
     return _mock_probe
 
 

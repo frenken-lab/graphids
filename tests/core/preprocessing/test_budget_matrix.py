@@ -3,6 +3,9 @@
 Parametrized over datasets, model types/scales, GPU types, and worker counts
 using realistic probe values estimated from model architectures. These are
 CPU tests (mock _probe) — actual GPU validation is a separate SLURM job.
+
+To generate the full budget profile artifact, run:
+    python -m graphids probe-budget --matrix
 """
 
 from __future__ import annotations
@@ -11,12 +14,13 @@ from unittest.mock import patch
 
 import pytest
 
+from graphids.config import CONFIG_DIR
+from graphids.config.yaml_utils import read_yaml
 from graphids.core.preprocessing.budget import (
-    BudgetResult,
     _SAFETY_MARGIN,
+    BudgetResult,
     node_budget,
 )
-
 
 # --- Real dataset statistics (from cache_metadata.json) ----------------------
 
@@ -35,33 +39,32 @@ DATASETS = {
 # These are ESTIMATES — real values come from running the probe on GPU.
 
 MODEL_PROBES = {
-    # (model_type, scale): (bytes_per_node, gamma_s, alpha_s, beta_s, conv_type)
+    # (model_type, scale): (bytes_per_node, bytes_per_edge, bwd_mult, gamma_s, alpha_s, beta_s, conv_type)
     #
     # VGAE small: 3 layers, hidden=[80,40,16], heads=1, ~24K params
-    ("vgae", "small"):    (1200,  70e-6, 0.002, 0.10e-6, "gatv2"),
+    ("vgae", "small"):    (1200,  80,  1.8, 70e-6, 0.002, 0.10e-6, "gatv2"),
     # VGAE large: 3 layers, hidden=[480,240,64], heads=4, ~200K params
-    ("vgae", "large"):    (4500,  70e-6, 0.005, 0.80e-6, "gatv2"),
+    ("vgae", "large"):    (4500,  320, 2.1, 70e-6, 0.005, 0.80e-6, "gatv2"),
     # GAT small: 2 layers, hidden=24, heads=4, ~15K params
-    ("gat", "small"):     (800,   70e-6, 0.002, 0.08e-6, "gatv2"),
+    ("gat", "small"):     (800,   48,  1.9, 70e-6, 0.002, 0.08e-6, "gatv2"),
     # GAT large: 3 layers, hidden=64, heads=4, ~60K params
-    ("gat", "large"):     (3200,  70e-6, 0.004, 0.50e-6, "gatv2"),
+    ("gat", "large"):     (3200,  192, 2.2, 70e-6, 0.004, 0.50e-6, "gatv2"),
     # DGI small: same arch as VGAE small + discriminator
-    ("dgi", "small"):     (1500,  70e-6, 0.003, 0.12e-6, "gatv2"),
+    ("dgi", "small"):     (1500,  96,  1.8, 70e-6, 0.003, 0.12e-6, "gatv2"),
     # DGI large: same arch as VGAE large + discriminator
-    ("dgi", "large"):     (5000,  70e-6, 0.006, 0.90e-6, "gatv2"),
+    ("dgi", "large"):     (5000,  360, 2.0, 70e-6, 0.006, 0.90e-6, "gatv2"),
     # Temporal small: 2 spatial + 2 transformer layers
-    ("temporal", "small"): (4000, 70e-6, 0.008, 1.50e-6, "gatv2"),
+    ("temporal", "small"): (4000, 240, 2.3, 70e-6, 0.008, 1.50e-6, "gatv2"),
     # Temporal large: 3 spatial + 3 transformer layers
-    ("temporal", "large"): (9000, 70e-6, 0.015, 4.00e-6, "gatv2"),
+    ("temporal", "large"): (9000, 560, 2.5, 70e-6, 0.015, 4.00e-6, "gatv2"),
 }
 
-# --- GPU free VRAM after model load -----------------------------------------
+# --- GPU free VRAM after model load (from clusters.yaml) --------------------
 
+_clusters = read_yaml(CONFIG_DIR / "resources" / "clusters.yaml")
 GPU_TYPES = {
-    # name: free_bytes (after model + CUDA context)
-    "v100_16gb":  14 * 1024**3,   # Pitzer
-    "a100_40gb":  36 * 1024**3,   # Ascend
-    "a100_80gb":  76 * 1024**3,   # Ascend
+    name: int(spec["free_gb"] * 1024**3)
+    for name, spec in _clusters["clusters"]["gpu_vram"].items()
 }
 
 WORKER_COUNTS = [2, 6, 8]
@@ -71,15 +74,22 @@ WORKER_COUNTS = [2, 6, 8]
 
 def _run(tmp_path, *, dataset, model_key, gpu, num_workers):
     """Run node_budget with mocked probe and VRAM."""
-    mean_nodes, _ = DATASETS[dataset]
-    bpn, gamma, alpha, beta, conv_type = MODEL_PROBES[model_key]
+    mean_nodes, p95_nodes = DATASETS[dataset]
+    bpn, bpe, bwd_mult, gamma, alpha, beta, conv_type = MODEL_PROBES[model_key]
     free = GPU_TYPES[gpu]
 
+    # Include edge_count stats for edge-aware margin.
+    # Estimate: edges ≈ 4.5 × nodes (typical CAN bus graph density).
+    edge_mean = mean_nodes * 4.5
+    edge_p95 = p95_nodes * 4.5
     metadata = tmp_path / "cache_metadata.json"
-    metadata.write_text(f'{{"graph_stats":{{"node_count":{{"mean":{mean_nodes}}}}}}}')
+    metadata.write_text(
+        f'{{"graph_stats":{{"node_count":{{"mean":{mean_nodes},"p95":{p95_nodes}}},'
+        f'"edge_count":{{"mean":{edge_mean},"p95":{edge_p95}}}}}}}'
+    )
 
     def mock_probe(model, ds, step_fn=None):
-        return bpn, gamma, alpha, beta
+        return bpn, bpe, bwd_mult, gamma, alpha, beta
 
     with (
         patch("graphids.core.preprocessing.budget.cache_dir", return_value=tmp_path),
@@ -115,8 +125,12 @@ def test_budget_positive_and_within_vram(tmp_path, dataset, model_key, gpu, num_
 
     assert result.budget >= 1
     bpn = MODEL_PROBES[model_key][0]
+    bpe = MODEL_PROBES[model_key][1]
     free = GPU_TYPES[gpu]
-    max_nodes = int(free * _SAFETY_MARGIN / bpn)
+    # Edge-aware: effective bytes_per_node includes edge cost scaled by edge density.
+    # edges/node ratio = edge_p95/node_p95 = 4.5 (from mock metadata in _run)
+    effective_bpn = bpn + bpe * 4.5
+    max_nodes = int(free * _SAFETY_MARGIN / effective_bpn)
     assert result.budget <= max_nodes, (
         f"budget {result.budget} exceeds mem ceiling {max_nodes}"
     )
@@ -124,13 +138,18 @@ def test_budget_positive_and_within_vram(tmp_path, dataset, model_key, gpu, num_
 
 @pytest.mark.parametrize("dataset,model_key,gpu,num_workers", _all_combos, ids=_ids)
 def test_budget_gives_reasonable_batch_count(tmp_path, dataset, model_key, gpu, num_workers):
-    """Budget should translate to ≥ 1 and ≤ 10000 graphs per batch."""
+    """Budget should translate to ≥ 1 graphs and fit in VRAM.
+
+    Upper bound is generous: small CAN bus graphs (21 nodes) on H100 (90GB)
+    can legitimately yield 200K+ graphs/batch. The VRAM ceiling test is the
+    real safety check; this test catches orders-of-magnitude errors.
+    """
     result = _run(tmp_path, dataset=dataset, model_key=model_key,
                   gpu=gpu, num_workers=num_workers)
 
     graphs_per_batch = result.budget / result.mean_nodes
     assert graphs_per_batch >= 1, f"budget too small: {graphs_per_batch:.1f} graphs"
-    assert graphs_per_batch <= 10000, f"budget too large: {graphs_per_batch:.1f} graphs"
+    assert graphs_per_batch <= 1_000_000, f"budget too large: {graphs_per_batch:.1f} graphs"
 
 
 # --- Scaling property tests --------------------------------------------------
@@ -154,8 +173,13 @@ def test_larger_gpu_gives_larger_or_equal_budget(tmp_path, model_key):
 
 
 @pytest.mark.parametrize("dataset", list(DATASETS.keys()))
-def test_larger_model_gives_smaller_or_equal_budget(tmp_path, dataset):
-    """Larger model (more bytes/node) → budget should not increase."""
+def test_larger_model_gives_smaller_or_equal_mem_budget(tmp_path, dataset):
+    """Larger model (more bytes/node) → memory ceiling should not increase.
+
+    Compares mem_budget (VRAM ceiling) not final budget, because binding
+    regime can switch: a small throughput-bound model can have a tighter
+    final budget than a large memory-bound model.
+    """
     pairs = [
         (("vgae", "small"), ("vgae", "large")),
         (("gat", "small"), ("gat", "large")),
@@ -167,9 +191,9 @@ def test_larger_model_gives_smaller_or_equal_budget(tmp_path, dataset):
                        gpu="v100_16gb", num_workers=6)
         r_large = _run(tmp_path, dataset=dataset, model_key=large_key,
                        gpu="v100_16gb", num_workers=6)
-        assert r_large.budget <= r_small.budget, (
-            f"{large_key} budget ({r_large.budget}) > "
-            f"{small_key} budget ({r_small.budget}) on {dataset}"
+        assert r_large.mem_budget <= r_small.mem_budget, (
+            f"{large_key} mem_budget ({r_large.mem_budget}) > "
+            f"{small_key} mem_budget ({r_small.mem_budget}) on {dataset}"
         )
 
 

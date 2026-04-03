@@ -2,8 +2,8 @@ resources:
   family: gat
   by_scale:
     small:
-      normal:     {mode: gpu_train, time: "4:30:00", mem: 40G, cpus: 8, workers: 6}
-      curriculum: {mode: gpu_train, time: "4:30:00", mem: 40G, cpus: 8, workers: 6}
+      normal:     {mode: gpu_train, time: "4:30:00", cpus: 8, workers: 6}
+      curriculum: {mode: gpu_train, time: "4:30:00", cpus: 8, workers: 6}
     large:
-      normal:     {mode: gpu_train, time: "5:00:00", mem: 40G, cpus: 8, workers: 6}
-      curriculum: {mode: gpu_train, time: "5:00:00", mem: 40G, cpus: 8, workers: 6}
+      normal:     {mode: gpu_train, time: "5:00:00", cpus: 8, workers: 6}
+      curriculum: {mode: gpu_train, time: "5:00:00", cpus: 8, workers: 6}

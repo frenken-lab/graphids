@@ -123,10 +123,22 @@ def get_resources(model_type: str, scale: str, stage: str) -> ResourceSpec:
 
     spec["cpus_per_task"] = spec.pop("cpus")
     spec["num_workers"] = spec.pop("workers")
+
+    # Derive mem from cpus × mem_per_cpu when not declared in profile.
+    # Profiles that need less (e.g. fusion with workers: 0) set mem explicitly.
+    if "mem" not in spec and mem_per_cpu is not None:
+        max_mem_mb = spec["cpus_per_task"] * mem_per_cpu
+        spec["mem"] = f"{max_mem_mb // 1024}G"
+    elif "mem" not in spec:
+        raise KeyError(
+            f"Profile for ({model_type}, {scale}, {stage}) has no 'mem' and "
+            f"no mem_per_cpu from cluster config to derive it."
+        )
+
     result = ResourceSpec(**spec)
 
-    # Validate memory fits within SLURM's per-CPU limit for the resolved partition.
-    if mode and mem_per_cpu is not None:
+    # Validate explicit mem doesn't exceed cluster limit.
+    if mem_per_cpu is not None:
         max_mem_mb = result.cpus_per_task * mem_per_cpu
         if result.mem_mb > max_mem_mb:
             raise ValueError(

@@ -15,10 +15,53 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from graphids.config import PHASE_MARKERS
-from graphids.config.runtime import CKPT_SUBPATH
+from graphids.config import PHASE_MARKERS, dataset_names
+from graphids.config.runtime import CKPT_SUBPATH, LAKE_ROOT
+from graphids.slurm import sacct_by_user
 
 _CKPT_DEPTH = len(Path(CKPT_SUBPATH).parts)
+
+
+def _parse_sacct() -> dict[str, dict[str, str]]:
+    """Query sacct for recent jobs, return {asset_name: {job_id, state, elapsed, dataset, seed}}.
+
+    Most recent job per asset wins (sacct returns chronological order).
+    """
+    stdout = sacct_by_user()
+    if not stdout:
+        return {}
+    known_ds = frozenset(dataset_names())
+    out: dict[str, dict[str, str]] = {}
+    for line in stdout.strip().splitlines():
+        parts = line.split("|")
+        if len(parts) < 4 or "." in parts[0]:  # skip .batch/.extern steps
+            continue
+        jid, jname, state, elapsed = parts[:4]
+        state = state.split()[0]  # "CANCELLED by 35950" → "CANCELLED"
+        # Parse job name: {asset_name}_{dataset}_s{seed}
+        for ds in sorted(known_ds, key=len, reverse=True):
+            marker = f"_{ds}_s"
+            idx = jname.find(marker)
+            if idx < 0:
+                continue
+            seed_str = jname[idx + len(marker):]
+            if seed_str.isdigit():
+                out[jname[:idx]] = {
+                    "job_id": jid, "state": state, "elapsed": elapsed,
+                    "dataset": ds, "seed": seed_str,
+                }
+            break
+    return out
+
+
+def _find_run_dir_fs(dataset: str, asset_name: str, seed: str) -> Path | None:
+    """Find run directory on filesystem by globbing for asset_name suffix."""
+    base = Path(LAKE_ROOT) / "dev" / os.environ.get("USER", "unknown") / dataset
+    if not base.is_dir():
+        return None
+    # Dir name is {model_type}_{scale}_{asset_name}, e.g. vgae_small_autoencoder_288aba35
+    matches = list(base.glob(f"*_{asset_name}/seed_{seed}"))
+    return matches[0] if matches else None
 
 
 @dataclass
@@ -63,14 +106,16 @@ def _phase_status(run_dir: Path | None) -> dict[str, str]:
     return {phase: ("✓" if ok else "✗") for phase, ok in raw.items()}
 
 
-def _collect(*, limit: int) -> list[AssetStatus]:
-    """Query DagsterInstance for asset materialization status."""
+def _collect(*, limit: int, use_sacct: bool = True) -> list[AssetStatus]:
+    """Query DagsterInstance for asset materialization status, reconciled with sacct."""
     from dagster import DagsterInstance
 
     os.environ.setdefault(
         "DAGSTER_HOME",
         os.environ.get("KD_GAT_DAGSTER_HOME", "/fs/scratch/PAS1266/dagster"),
     )
+
+    sacct = _parse_sacct() if use_sacct else {}
 
     rows: list[AssetStatus] = []
     with DagsterInstance.get() as inst:
@@ -115,8 +160,26 @@ def _collect(*, limit: int) -> list[AssetStatus]:
             wall_val = md.get("wall_time")
             wall_time = wall_val.value if wall_val else ""
 
-            # Phase markers from filesystem
+            # Reconcile with sacct — ground truth for SLURM job state
+            sr = sacct.get(asset_name)
+            if sr:
+                if run_status in ("STARTED", "UNKNOWN"):
+                    run_status = sr["state"]
+                if not job_id:
+                    job_id = sr["job_id"]
+                if not wall_time:
+                    wall_time = sr["elapsed"]
+                if not partition:
+                    partition = f"{sr['dataset']}|{sr['seed']}"
+
+            # Phase markers: try dagster metadata, then run_dir metadata, then filesystem
             run_dir = _run_dir_from_ckpt(ckpt_path) if ckpt_path else None
+            if run_dir is None:
+                rd_val = md.get("run_dir")
+                if rd_val:
+                    run_dir = Path(rd_val.value)
+            if run_dir is None and sr:
+                run_dir = _find_run_dir_fs(sr["dataset"], asset_name, sr["seed"])
             phases = _phase_status(run_dir)
 
             rows.append(AssetStatus(
@@ -151,8 +214,15 @@ def _render_table(rows: list[AssetStatus]) -> None:
 
     status_styles = {
         "SUCCESS": "green",
+        "COMPLETED": "green",
         "FAILURE": "red bold",
+        "FAILED": "red bold",
+        "OUT_OF_MEMORY": "red bold",
+        "TIMEOUT": "red bold",
+        "CANCELLED": "yellow",
         "STARTED": "yellow",
+        "RUNNING": "yellow",
+        "PENDING": "dim",
         "NEVER_RUN": "dim",
         "UNKNOWN": "dim",
     }
@@ -184,10 +254,12 @@ def main(argv: list[str]) -> None:
                         help="Max assets to display")
     parser.add_argument("--json", dest="as_json", action="store_true",
                         help="Output as JSON instead of table")
+    parser.add_argument("--no-sacct", dest="use_sacct", action="store_false",
+                        default=True, help="Skip sacct reconciliation (dagster-only)")
     args = parser.parse_args(argv)
 
     try:
-        rows = _collect(limit=args.limit)
+        rows = _collect(limit=args.limit, use_sacct=args.use_sacct)
     except Exception as exc:
         print(f"Error querying dagster: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc

@@ -16,12 +16,21 @@ SLURM:
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
+from pathlib import Path
 
 import structlog
 
-from graphids.config import CONFIG_DIR, LAKE_ROOT, VALID_MODEL_TYPES, VALID_SCALES, cache_dir
+from graphids.config import (
+    CONFIG_DIR,
+    LAKE_ROOT,
+    VALID_MODEL_TYPES,
+    VALID_SCALES,
+    cache_dir,
+)
+from graphids.config.yaml_utils import read_yaml
 
 log = structlog.get_logger()
 
@@ -39,28 +48,29 @@ def _find_cached_datasets(lake_root: str) -> list[str]:
 
 
 def _instantiate_model(model_type: str, scale: str, num_ids: int, in_channels: int):
-    """Instantiate a model from config YAMLs via jsonargparse (same path as LightningCLI)."""
-    import pytorch_lightning as pl
-    from jsonargparse import ArgumentParser
+    """Instantiate a model by reading config YAMLs and importing the class directly.
 
-    base = CONFIG_DIR / "models" / model_type / "base.yaml"
-    scale_yaml = CONFIG_DIR / "models" / model_type / "scales" / f"{scale}.yaml"
+    Avoids jsonargparse subclass resolution — the second --config (scale YAML)
+    replaces the model dict wholesale, losing class_path from the base YAML.
+    """
+    import importlib
 
-    parser = ArgumentParser()
-    parser.add_subclass_arguments(pl.LightningModule, "model")
+    base_cfg = read_yaml(CONFIG_DIR / "models" / model_type / "base.yaml")
+    scale_cfg = read_yaml(CONFIG_DIR / "models" / model_type / "scales" / f"{scale}.yaml")
 
-    cli_args = [
-        f"--config={base}",
-        f"--config={scale_yaml}",
-        f"--model.init_args.num_ids={num_ids}",
-        f"--model.init_args.in_channels={in_channels}",
-    ]
-    # Disable torch.compile for profiling — not all models have this param
+    class_path = base_cfg["model"]["class_path"]
+    init_args = {
+        **base_cfg["model"].get("init_args", {}),
+        **scale_cfg.get("model", {}).get("init_args", {}),
+    }
+    init_args["num_ids"] = num_ids
+    init_args["in_channels"] = in_channels
     if model_type != "temporal":
-        cli_args.append("--model.init_args.compile_model=false")
+        init_args["compile_model"] = False
 
-    cfg = parser.parse_args(cli_args)
-    return parser.instantiate_classes(cfg).model
+    module_path, class_name = class_path.rsplit(".", 1)
+    cls = getattr(importlib.import_module(module_path), class_name)
+    return cls(**init_args)
 
 
 def _probe_combo(
@@ -94,7 +104,9 @@ def _probe_combo(
 
     # --- Run probe ---
     step_fn = getattr(model, "_step", None)
-    bytes_per_node, gamma, alpha, beta = _probe(model, ds, step_fn=step_fn)
+    bytes_per_node, bytes_per_edge, backward_mult, gamma, alpha, beta = (
+        _probe(model, ds, step_fn=step_fn)
+    )
 
     # --- Free GPU memory ---
     del model
@@ -105,6 +117,8 @@ def _probe_combo(
         "scale": scale,
         "dataset": dataset_name,
         "bytes_per_node": bytes_per_node,
+        "bytes_per_edge": bytes_per_edge,
+        "backward_multiplier": round(backward_mult, 2),
         "gamma_us": round(gamma * 1e6, 1),
         "alpha_ms": round(alpha * 1000, 3),
         "beta_us": round(beta * 1e6, 3),
@@ -121,16 +135,19 @@ def _format_table(results: list[dict]) -> str:
 
     header = (
         f"{'model_type':<12} {'scale':<6} {'dataset':<10} "
-        f"{'bytes/node':>10} {'γ(μs)':>8} {'α(ms)':>8} {'β(μs)':>8} "
-        f"{'mean_nodes':>10} {'num_ids':>8}"
+        f"{'B/node':>10} {'B/edge':>10} {'bwd_mult':>8} "
+        f"{'γ(μs)':>8} {'α(ms)':>8} {'β(μs)':>8} "
+        f"{'mean_nodes':>10}"
     )
     lines = [header, "-" * len(header)]
 
     for r in results:
         lines.append(
             f"{r['model_type']:<12} {r['scale']:<6} {r['dataset']:<10} "
-            f"{r['bytes_per_node']:>10,} {r['gamma_us']:>8.1f} {r['alpha_ms']:>8.3f} "
-            f"{r['beta_us']:>8.3f} {r['mean_nodes']:>10.1f} {r['num_ids']:>8}"
+            f"{r['bytes_per_node']:>10,} {r['bytes_per_edge']:>10,} "
+            f"{r['backward_multiplier']:>8.2f} "
+            f"{r['gamma_us']:>8.1f} {r['alpha_ms']:>8.3f} "
+            f"{r['beta_us']:>8.3f} {r['mean_nodes']:>10.1f}"
         )
 
     # Summary: is α > 0 anywhere?
@@ -144,6 +161,102 @@ def _format_table(results: list[dict]) -> str:
         lines.append(f"** α > 0 for {len(nonzero)}/{len(results)} combos -> throughput ceiling is real.")
 
     return "\n".join(lines)
+
+
+_MATRIX_FIELDS = [
+    "dataset", "model_type", "scale", "gpu", "num_workers",
+    "budget", "mean_nodes", "graphs_per_batch",
+    "mem_budget", "throughput_budget", "binding", "cg_ratio",
+]
+
+_WORKER_COUNTS = [2, 4, 6, 8]
+
+
+def _load_gpu_vram() -> dict[str, int]:
+    """Read GPU VRAM specs from clusters.yaml → {name: free_bytes}."""
+    clusters = read_yaml(CONFIG_DIR / "resources" / "clusters.yaml")
+    return {
+        name: int(spec["free_gb"] * 1024**3)
+        for name, spec in clusters["clusters"]["gpu_vram"].items()
+    }
+
+
+def _write_matrix(probe_results: list[dict], lake_root: str) -> Path:
+    """Compute node_budget across GPU types × worker counts and write CSV.
+
+    Uses measured probe values (bytes_per_node, γ, α, β) from the current run
+    and varies free VRAM and worker count to produce the full budget profile.
+    """
+    from unittest.mock import patch
+
+    from graphids.core.preprocessing.budget import node_budget
+
+    gpu_vram = _load_gpu_vram()
+    rows: list[dict] = []
+
+    for probe in probe_results:
+        bpn = probe["bytes_per_node"]
+        bpe = probe["bytes_per_edge"]
+        bwd_mult = probe["backward_multiplier"]
+        gamma = probe["gamma_us"] * 1e-6   # back to seconds
+        alpha = probe["alpha_ms"] * 1e-3
+        beta = probe["beta_us"] * 1e-6
+        ds = probe["dataset"]
+        mean_nodes = probe["mean_nodes"]
+
+        # Write temporary cache_metadata.json for node_budget
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            metadata = Path(tmp) / "cache_metadata.json"
+            metadata.write_text(json.dumps(
+                {"graph_stats": {"node_count": {"mean": mean_nodes}}}
+            ))
+
+            def mock_probe(model, dataset, step_fn=None,
+                           _bpn=bpn, _bpe=bpe, _bwd=bwd_mult,
+                           _g=gamma, _a=alpha, _b=beta):
+                return _bpn, _bpe, _bwd, _g, _a, _b
+
+            for gpu_name, free_bytes in gpu_vram.items():
+                for nw in _WORKER_COUNTS:
+                    with (
+                        patch("graphids.core.preprocessing.budget.cache_dir",
+                              return_value=Path(tmp)),
+                        patch("graphids.core.preprocessing.budget._probe", mock_probe),
+                        patch("torch.cuda.is_available", return_value=True),
+                        patch("torch.cuda.mem_get_info",
+                              return_value=(free_bytes, free_bytes)),
+                    ):
+                        result = node_budget(
+                            ds, tmp, conv_type="gatv2",
+                            model=True, train_dataset=True, num_workers=nw,
+                        )
+                    rows.append({
+                        "dataset": ds,
+                        "model_type": probe["model_type"],
+                        "scale": probe["scale"],
+                        "gpu": gpu_name,
+                        "num_workers": nw,
+                        "budget": result.budget,
+                        "mean_nodes": result.mean_nodes,
+                        "graphs_per_batch": round(result.budget / result.mean_nodes, 1),
+                        "mem_budget": result.mem_budget,
+                        "throughput_budget": result.throughput_budget or "",
+                        "binding": result.binding,
+                        "cg_ratio": (round(result.cg_ratio, 3)
+                                     if result.cg_ratio is not None else ""),
+                    })
+
+    out_dir = Path(lake_root) / "reference"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / "budget_matrix.csv"
+    rows.sort(key=lambda r: (r["dataset"], r["model_type"], r["scale"],
+                             r["gpu"], r["num_workers"]))
+    with open(out, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=_MATRIX_FIELDS)
+        w.writeheader()
+        w.writerows(rows)
+    return out
 
 
 def main(argv: list[str]) -> None:
@@ -168,6 +281,11 @@ def main(argv: list[str]) -> None:
         help=f"Lake root path (default: {LAKE_ROOT})",
     )
     parser.add_argument("--json", action="store_true", help="Output JSON instead of table")
+    parser.add_argument(
+        "--matrix", action="store_true",
+        help="After probing, compute budget across all GPU types × worker counts "
+             "and write {lake_root}/reference/budget_matrix.csv",
+    )
     args = parser.parse_args(argv)
 
     import torch
@@ -219,3 +337,10 @@ def main(argv: list[str]) -> None:
             print(f"\n{len(errors)} probe(s) failed:")
             for e in errors:
                 print(f"  {e['label']}: {e['error']}")
+
+    if args.matrix and results:
+        csv_path = _write_matrix(results, args.lake_root)
+        n_gpus = len(_load_gpu_vram())
+        n_rows = len(results) * n_gpus * len(_WORKER_COUNTS)
+        log.info("budget_matrix_written", path=str(csv_path), rows=n_rows)
+        print(f"\nBudget matrix: {csv_path} ({n_rows} rows)")

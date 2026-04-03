@@ -14,16 +14,15 @@ import structlog
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
-from graphids.config import cache_dir, data_dir
-from graphids.config import load_catalog
+from graphids.config import cache_dir, data_dir, load_catalog
 from graphids.core.preprocessing.budget import node_budget
 
 _log = structlog.get_logger()
 
 
-from .features import N_EDGE_FEATURES as EDGE_FEATURE_COUNT, N_NODE_FEATURES as NODE_FEATURE_COUNT
-
 from .datasets.can_bus import CANBusDataset
+from .features import N_EDGE_FEATURES as EDGE_FEATURE_COUNT
+from .features import N_NODE_FEATURES as NODE_FEATURE_COUNT
 
 
 def _worker_init(worker_id: int) -> None:
@@ -295,6 +294,7 @@ class FusionDataModule(pl.LightningDataModule):
             return
         import types
         from pathlib import Path
+
         from graphids.core.models._training import load_inner_model
 
         hp = self.hparams
@@ -314,6 +314,18 @@ class FusionDataModule(pl.LightningDataModule):
             raise ValueError("gat_ckpt_path is empty — upstream GAT checkpoint not wired")
         vgae, _ = load_inner_model("vgae", Path(hp.vgae_ckpt_path), device)
         gat, _ = load_inner_model("gat", Path(hp.gat_ckpt_path), device)
+
+        # Fusion pre-flight: warn if both models consume > 85% of VRAM
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated(device)
+            total = torch.cuda.get_device_properties(device).total_mem
+            usage_pct = allocated / total * 100
+            if usage_pct > 85:
+                log.warning("fusion_setup_vram_high",
+                            allocated_mb=round(allocated / 1e6, 1),
+                            total_mb=round(total / 1e6, 1),
+                            pct=round(usage_pct, 1))
+
         models = {"vgae": vgae, "gat": gat}
         self.train_cache = self.cache_predictions(
             models, list(train_ds), device, hp.max_samples, batch_size=hp.eval_batch_size,
