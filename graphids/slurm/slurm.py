@@ -127,6 +127,7 @@ def generate_script(
         lines.append(f"if python -m graphids analyze-from-spec --spec-file {aquoted}; then")
         lines.append(f"  touch \"$_RUN_DIR/{PHASE_MARKERS['analyze']}\"")
         lines.append("fi")
+    lines.append(f"python -m graphids _finalize-record --run-dir \"$_RUN_DIR\"")
     lines.append(f"source {PROJECT_ROOT}/scripts/slurm/_epilog.sh")
     return "\n".join(lines) + "\n"
 

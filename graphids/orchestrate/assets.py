@@ -129,6 +129,22 @@ def make_training_asset(
                 "wall_time": dg.MetadataValue.text(wall_time),
                 "peak_rss": dg.MetadataValue.text(accounting["peak_rss"] or ""),
             })
+
+        # Enrich from sidecar if available
+        record_path = resolved.paths.run_dir / "run_record.json"
+        if record_path.exists():
+            from graphids.core.contracts import RunRecord
+            try:
+                record = RunRecord.model_validate_json(record_path.read_text())
+                for k, v in record.metrics.items():
+                    md[f"metric_{k}"] = dg.MetadataValue.float(v)
+                if record.wall_time_seconds is not None:
+                    md["wall_time_seconds"] = dg.MetadataValue.float(record.wall_time_seconds)
+                for phase, ok in record.phases.items():
+                    md[f"phase_{phase}"] = dg.MetadataValue.bool(ok)
+            except Exception as e:
+                log.warning("sidecar_read_failed", path=str(record_path), error=str(e))
+
         context.add_output_metadata(md)
 
         log.info("asset_complete", asset=cfg.asset_name, state=state,

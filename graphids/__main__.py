@@ -44,6 +44,8 @@ _COMMAND_MODULES: dict[str, str] = {
     "test-from-spec": "graphids.commands.test_from_spec",
     "test-preprocessing": "graphids.commands.test_preprocessing",
     "train-from-spec": "graphids.commands.train_from_spec",
+    "_finalize-record": "graphids.commands.finalize_record",
+    "rebuild-catalog": "graphids.commands.rebuild_catalog",
 }
 
 

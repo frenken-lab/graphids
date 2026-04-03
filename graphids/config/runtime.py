@@ -25,6 +25,7 @@ PHASE_MARKERS: dict[str, str] = {
     "test": ".test_complete",
     "analyze": ".analyze_complete",
 }
+RUN_RECORD_FILENAME: str = "run_record.json"
 DAGSTER_IO_DIR_TEMPLATE: str = "{lake_root}/dagster_io"
 DEFAULT_MODEL_TYPE: str = next(iter(VALID_MODEL_TYPES)) if VALID_MODEL_TYPES else "vgae"
 DEFAULT_SCALE: str = next(iter(VALID_SCALES)) if VALID_SCALES else "small"

@@ -26,6 +26,8 @@ graphids/
     submit_profile.py    # print SLURM resource profile for submit.sh
     test_preprocessing.py # validate preprocessing pipeline
     train_from_spec.py   # run training from canonical TrainingSpec (dagster transport)
+    finalize_record.py   # update run_record.json sidecar with phases + wall_time
+    rebuild_catalog.py   # rebuild DuckDB catalog from run_record.json sidecars
     _spec_payload.py     # shared spec deserialization for *_from_spec commands
   config/
     __init__.py          # re-export facade (public API: constants, topology, paths, contracts)
@@ -97,7 +99,7 @@ graphids/
       fusion/            # all fusion models
         bandit.py, dqn.py, fusion_baselines.py, fusion_features.py, fusion_reward.py
     contracts/           # canonical specs for dagster↔SLURM transport
-      analysis.py, models.py, ops.py
+      analysis.py, models.py, ops.py, run_record.py
   orchestrate/
     component.py         # integration hub — SlurmTrainingComponent + IOManager + Resource
     definitions.py       # dagster entry point
@@ -208,6 +210,17 @@ When adding new config fields: type annotations on `__init__` params are the sch
 
 **Null-serialization rule:** `--print_config` serializes `Optional[X] = None` defaults as `null`. If `__init__` normalizes `None → real_default` before `save_hyperparameters()`, the stage YAML MUST set the field explicitly so expanded configs never contain `null`. Grep pattern to audit: `if .* is None:` before `save_hyperparameters()` in any LightningModule.
 
+## Run record sidecars
+
+Every training run writes `{run_dir}/run_record.json` — a structured JSON sidecar that is the source of truth for experiment status and metrics. Written atomically (temp + fsync + rename).
+
+- **`RunRecord`** Pydantic model in `core/contracts/run_record.py`: status, identity fields, metrics (`dict[str, float]`), phases, SLURM context
+- **`RunRecordCallback`** in `_lightning.py`: writes sidecar on `on_fit_start` (started), `on_fit_end` (completed with `trainer.callback_metrics`), `on_exception` (failed)
+- **`_finalize-record`** command: called in generated sbatch script after test+analyze to add phase markers + sacct wall_time
+- Works for both paths: pipeline (dagster → `train-from-spec`) and dev (`python -m graphids fit`)
+
 ## DuckDB catalog
 
-`{lake_root}/catalog/kd_gat.duckdb` — `experiments` table with flat metric columns + `config JSON` + `identity_hash`. Best-effort, disposable — rebuildable from filesystem.
+`{lake_root}/catalog/kd_gat.duckdb` — `runs` table rebuilt from `run_record.json` sidecars. Disposable — rebuildable via `python -m graphids rebuild-catalog`.
+
+Uses `duckdb.read_json_auto()` for zero-loop ingestion. Query metrics via `metrics->>'val_loss'`. Legacy runs without sidecars are backfilled from `config_snapshot.yaml` + `metrics.csv` + phase markers.

@@ -103,6 +103,95 @@ class ResourceProfileCallback(pl.Callback):
             self._writer = None
 
 
+class RunRecordCallback(pl.Callback):
+    """Write structured run_record.json sidecar on fit start/end/exception.
+
+    Captures identity fields from ``trainer.default_root_dir`` path convention
+    and final metrics from ``trainer.callback_metrics``.
+    """
+
+    def __init__(self, enabled: bool = True):
+        self._enabled = enabled
+        self._record = None
+
+    def on_fit_start(self, trainer, pl_module):
+        if not self._enabled:
+            return
+        root = trainer.default_root_dir
+        if not root:
+            self._enabled = False
+            return
+
+        import os
+        from datetime import datetime, timezone
+
+        import graphids
+        from graphids.core.contracts.run_record import (
+            RunRecord,
+            _parse_identity_from_run_dir,
+            write_run_record,
+        )
+
+        try:
+            identity = _parse_identity_from_run_dir(root)
+        except (IndexError, ValueError):
+            self._enabled = False
+            return
+
+        self._record = RunRecord(
+            status="started",
+            run_dir=root,
+            stage=identity["stage"],
+            model_family=identity["model_family"],
+            scale=identity["scale"],
+            dataset=identity["dataset"],
+            seed=identity["seed"],
+            identity_hash=identity["identity_hash"],
+            kd_tag=identity["kd_tag"],
+            user=identity["user"],
+            graphids_version=graphids.__version__,
+            started_at=datetime.now(timezone.utc).isoformat(),
+            slurm_job_id=(
+                int(os.environ["SLURM_JOB_ID"])
+                if "SLURM_JOB_ID" in os.environ
+                else None
+            ),
+            slurm_partition=os.environ.get("SLURM_JOB_PARTITION"),
+            source="dagster" if "DAGSTER_RUN_ID" in os.environ else "cli",
+        )
+        write_run_record(self._record, Path(root))
+
+    def on_fit_end(self, trainer, pl_module):
+        if not self._enabled or self._record is None:
+            return
+        self._finalize(trainer, "completed")
+
+    def on_exception(self, trainer, pl_module, exception):
+        if not self._enabled or self._record is None:
+            return
+        self._finalize(trainer, "failed", error=str(exception)[:500])
+
+    def _finalize(self, trainer, status: str, error: str | None = None):
+        from datetime import datetime, timezone
+
+        from graphids.core.contracts.run_record import write_run_record
+
+        metrics = {
+            k: round(float(v), 6)
+            for k, v in trainer.callback_metrics.items()
+            if isinstance(v, (int, float, torch.Tensor))
+        }
+        metrics["epochs_run"] = float(trainer.current_epoch + 1)
+
+        self._record = self._record.model_copy(update={
+            "status": status,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "metrics": metrics,
+            "error_message": error,
+        })
+        write_run_record(self._record, Path(self._record.run_dir))
+
+
 class WandbSaveConfigCallback(SaveConfigCallback):
     """Forward full jsonargparse config to wandb (Lightning #19728 workaround)."""
 
@@ -135,6 +224,9 @@ class GraphIDSCLI(LightningCLI):
 
         parser.add_lightning_class_args(ResourceProfileCallback, "resource_profile")
         parser.set_defaults({"resource_profile.log_every_n_steps": 50})
+
+        parser.add_lightning_class_args(RunRecordCallback, "run_record")
+        parser.set_defaults({"run_record.enabled": True})
 
     def before_instantiate_classes(self):
         """Patch parsed config: logger save_dirs + checkpoint dirpath."""
