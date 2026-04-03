@@ -15,7 +15,7 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from graphids.config import PHASE_MARKERS, dataset_names
+from graphids.config import PHASE_MARKERS, SLURM_LOG_DIR, dataset_names
 from graphids.config.runtime import CKPT_SUBPATH, LAKE_ROOT
 from graphids.slurm import sacct_by_user
 
@@ -245,6 +245,61 @@ def _render_table(rows: list[AssetStatus]) -> None:
     Console().print(table)
 
 
+def _latest_log() -> Path | None:
+    """Find the most recent orchestrator JSONL log file."""
+    log_dir = Path(SLURM_LOG_DIR)
+    logs = sorted(log_dir.glob("orchestrator_*.jsonl"), key=lambda p: p.stat().st_mtime)
+    return logs[-1] if logs else None
+
+
+_LOG_FILTERS: dict[str, str | None] = {
+    "all": None,
+    "failures": "asset_failed",
+    "retries": "resource_scaled",
+    "completions": "asset_complete",
+    "submissions": "submitted",
+    "polls": "slurm_poll",
+}
+
+
+def _print_event(line: str, event_filter: str | None) -> None:
+    """Parse one JSONL line and print if it matches the filter."""
+    line = line.strip()
+    if not line:
+        return
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return
+    if event_filter and event.get("event") != event_filter:
+        return
+    print(json.dumps(event, indent=2), flush=True)
+
+
+def _render_log(log_path: Path, *, event_filter: str | None, follow: bool) -> None:
+    """Read orchestrator JSONL and pretty-print, optionally tailing for new events."""
+    import time
+
+    with open(log_path) as f:
+        for line in f:
+            _print_event(line, event_filter)
+
+        if not follow:
+            return
+
+        print(f"--- following {log_path.name} (Ctrl-C to stop) ---",
+              file=sys.stderr, flush=True)
+        try:
+            while True:
+                line = f.readline()
+                if line:
+                    _print_event(line, event_filter)
+                else:
+                    time.sleep(0.5)
+        except KeyboardInterrupt:
+            pass
+
+
 def main(argv: list[str]) -> None:
     parser = argparse.ArgumentParser(
         prog="python -m graphids pipeline-status",
@@ -256,7 +311,23 @@ def main(argv: list[str]) -> None:
                         help="Output as JSON instead of table")
     parser.add_argument("--no-sacct", dest="use_sacct", action="store_false",
                         default=True, help="Skip sacct reconciliation (dagster-only)")
+    parser.add_argument("--log", nargs="?", const="all", metavar="FILTER",
+                        choices=list(_LOG_FILTERS),
+                        help="Read orchestrator event log. Filters: "
+                             + ", ".join(_LOG_FILTERS))
+    parser.add_argument("--follow", "-f", action="store_true",
+                        help="Follow log output (like tail -f). Use with --log")
+    parser.add_argument("--log-file", type=Path, default=None,
+                        help="Specific log file (default: latest)")
     args = parser.parse_args(argv)
+
+    if args.log is not None:
+        log_path = args.log_file or _latest_log()
+        if log_path is None or not log_path.exists():
+            print(f"No orchestrator logs found in {SLURM_LOG_DIR}/", file=sys.stderr)
+            raise SystemExit(1)
+        _render_log(log_path, event_filter=_LOG_FILTERS[args.log], follow=args.follow)
+        return
 
     try:
         rows = _collect(limit=args.limit, use_sacct=args.use_sacct)

@@ -1,6 +1,6 @@
 # KD-GAT Session Plan
 
-> Last updated: 2026-04-02 (session 14 — resource profiling P1+P2)
+> Last updated: 2026-04-03 (session 15 — orchestrator observability)
 
 ## Current State
 
@@ -17,9 +17,14 @@ Asset checks are split: `checkpoint_complete` (blocking) gates downstream assets
 `analysis_complete` (non-blocking) is informational only. Checkpoint checks report
 per-phase status (`phase_train`, `phase_test`, `phase_analyze`) in dagster metadata.
 
-Observability: `python -m graphids pipeline-status` shows aggregated asset status
-(dagster + phase markers + sacct). DeviceStatsMonitor logs CUDA memory stats per step.
-nvitop, reportseff, SlurmTUI installed as complementary tools.
+Observability: three-layer stack.
+- **turm** — live SLURM queue + log tailing (now real-time via `PYTHONUNBUFFERED=1`)
+- **orchestrator JSONL** — structured event log per run at
+  `{SLURM_LOG_DIR}/orchestrator_{job_id}.jsonl` (materialize/skip/retry/scale/submit/fail)
+- **pipeline-status** — aggregated asset status table (dagster + sacct + phase markers)
+  with `--log [FILTER]` and `--follow` for orchestrator event queries
+- DeviceStatsMonitor logs CUDA memory stats per step.
+  nvitop, reportseff, SlurmTUI installed as complementary tools.
 
 ## What this session did (2026-04-02, session 8 — smoke test + ablation launch)
 
@@ -383,6 +388,55 @@ Session 11 proposed, session 12 applied:
 `docs/backlog/pipeline-status-stale.md` — `pipeline-status` queries dagster
 `AssetRecord` which never updates after SLURM completion. Fix: reconcile
 with sacct (option A, ~20 lines) or fix dagster polling (option B).
+
+## What this session did (2026-04-03, session 15 — orchestrator observability)
+
+### Structured orchestrator event log
+
+Dagster orchestrator was a black box — decisions (materialize, skip, retry,
+scale resources, submit, poll, succeed, fail) produced no visible output.
+
+**structlog JSONL** — configured in `definitions.py` at module scope. Under
+SLURM: `JSONRenderer` → `{SLURM_LOG_DIR}/orchestrator_{job_id}.jsonl`. Without
+SLURM: `ConsoleRenderer` (validation, `dg list defs`). Process-global — all
+structlog loggers in `resolve.py` and `slurm.py` automatically route to JSONL.
+
+**Events added (8 total):**
+
+| Event | File | Level | Key Fields |
+|-------|------|-------|------------|
+| `orchestrator_init` | `component.py` | info | recipe, num_assets, datasets, seeds |
+| `asset_start` | `assets.py` | info | asset, dataset, seed, retry |
+| `asset_skip` | `assets.py` | info | asset, ckpt |
+| `resource_scaled` | `assets.py` | info | asset, retry, old/new mem+time |
+| `asset_complete` | `assets.py` | info | asset, state, job_id, wall_time |
+| `asset_failed` | `assets.py` | error | asset, state, job_id |
+| `submitted` (enriched) | `slurm.py` | info | job_id, partition, time, mem, gres |
+| `slurm_poll` | `slurm.py` | info | job_id, state, prev |
+
+(Plus existing `config_resolved` in `resolve.py` — unchanged.)
+
+### pipeline-status --log CLI
+
+Added `--log [FILTER]` mode to `pipeline-status` for querying orchestrator JSONL.
+Filters: `all`, `failures`, `retries`, `completions`, `submissions`, `polls`.
+`--follow` / `-f` for live tailing. `--log-file` for specific file (default: latest).
+
+### turm fix
+
+`export PYTHONUNBUFFERED=1` in `_preamble.sh`. Fixes Python stdout buffering
+under SLURM — turm and `tail -f` now see output in real-time instead of at exit.
+
+### Spec file preservation
+
+Removed spec file deletion from `slurm.py` `finally` block. Specs persist in
+`{SLURM_LOG_DIR}/specs/` as audit trail of what was submitted to SLURM.
+
+### Issues updated
+
+| Issue | Status |
+|-------|--------|
+| `docs/backlog/observability-remaining.md` | **Resolved** — all high items done |
 
 ## Next
 

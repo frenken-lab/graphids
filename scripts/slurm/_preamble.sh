@@ -11,6 +11,10 @@
 
 set -euo pipefail
 
+# Without this, Python fully buffers stdout under SLURM (no TTY).
+# turm and tail -f see nothing until the process exits.
+export PYTHONUNBUFFERED=1
+
 PROJECT_ROOT="/users/PAS2022/rf15/KD-GAT"
 cd "$PROJECT_ROOT"
 

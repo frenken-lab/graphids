@@ -177,7 +177,9 @@ def submit(script: str, resources: ResourceSpec, *, job_name: str,
     if not m:
         raise RuntimeError(f"Could not parse job ID from sbatch: {r.stdout.strip()}")
     job_id = int(m.group(1))
-    log.info("submitted", job_id=job_id, job_name=job_name)
+    log.info("submitted", job_id=job_id, job_name=job_name,
+             partition=resources.partition, time=resources.time,
+             mem=resources.mem, gres=resources.gres or "none")
     return job_id
 
 
@@ -200,6 +202,8 @@ def poll(job_id: int, *, interval: int = 60, max_unknown: int = 5,
                     break
 
         if state != last_state:
+            log.info("slurm_poll", job_id=job_id, state=state,
+                     prev=last_state or "initial")
             if on_state:
                 on_state(state, job_id)
             last_state = state
@@ -268,10 +272,8 @@ class SubprocessSlurmJobClient:
             )
             return state, job_id
         finally:
-            if spec_file.exists():
-                spec_file.unlink()
-            if analysis_spec_file and analysis_spec_file.exists():
-                analysis_spec_file.unlink()
+            # Spec files preserved in {SLURM_LOG_DIR}/specs/ for audit trail.
+            pass
 
     def cancel_job(self, job_id: int) -> None:
         cancel(job_id)

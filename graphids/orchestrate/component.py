@@ -13,6 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import dagster as dg
+import structlog
 
 from graphids.config import (
     CONFIG_DIR,
@@ -111,6 +112,12 @@ class SlurmTrainingComponent(dg.Component, dg.Model, dg.Resolvable):
         # Each worker just does sbatch + poll (sleep loop), so concurrency is cheap.
         executor_cfg = {"max_concurrent": self.max_concurrent} if self.max_concurrent > 0 else {}
         executor = dg.multiprocess_executor.configured(executor_cfg)
+
+        structlog.get_logger().info(
+            "orchestrator_init", recipe=recipe_path.name,
+            num_assets=len(assets), datasets=datasets, seeds=seeds,
+            dry_run=self.dry_run,
+        )
 
         # 7. Resources
         return dg.Definitions(

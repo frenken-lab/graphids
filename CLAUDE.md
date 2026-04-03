@@ -37,6 +37,8 @@ Three entry points, zero overlap:
 | `python -m graphids analyze-from-spec` | Run analyzer from canonical AnalysisSpec (dagster transport) |
 | `python -m graphids analyze landscape` | 2D loss landscape (folded into analyze) |
 | `python -m graphids pipeline-status` | Aggregated dagster + SLURM phase status |
+| `python -m graphids pipeline-status --log [FILTER]` | Orchestrator event log (all/failures/retries/completions/submissions/polls) |
+| `python -m graphids pipeline-status --log -f` | Follow orchestrator log (like tail -f) |
 | `python -m graphids job-stats <job_ids>` | sacct resource profiler |
 | `python -m graphids profile` | Profiled training run (PyTorchProfiler) |
 | `python -m graphids probe-budget` | Hardware cost model measurement |
