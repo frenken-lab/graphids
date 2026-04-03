@@ -330,7 +330,7 @@ class FusionDataModule(pl.LightningDataModule):
         # Fusion pre-flight: warn if both models consume > 85% of VRAM
         if torch.cuda.is_available():
             allocated = torch.cuda.memory_allocated(device)
-            total = torch.cuda.get_device_properties(device).total_mem
+            total = torch.cuda.get_device_properties(device).total_memory
             usage_pct = allocated / total * 100
             if usage_pct > 85:
                 log.warning("fusion_setup_vram_high",

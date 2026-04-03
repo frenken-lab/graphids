@@ -1,7 +1,8 @@
 # Throughput Model & Budget System
 
-> Cost model for GNN training throughput, budget implementation, and literature assessment.
-> Consolidates: gnn_throughput_equations.md, throughput-optimal-batching.md, budget-pipeline-analysis.md, budget-cost-model-audit.md
+> Cost model for GNN training throughput, GPU optimization framework, and budget implementation.
+> Rewritten 2026-04-03 to correct sections 2, 3, 5 (previous version wrongly advocated
+> shrinking batches instead of scaling the data pipeline).
 
 ---
 
@@ -19,7 +20,9 @@ $$\Delta t_{\text{step}} = \Delta t_{\text{collate}} + \Delta t_{\text{transfer}
 
 With sufficient prefetch depth and `num_workers`, collation of batch $k+1$ overlaps with compute on batch $k$:
 
-$$\Delta t_{\text{step}} \approx \max\!\left(\Delta t_{\text{collate}},\ \Delta t_{\text{forward}} + \Delta t_{\text{backward}}\right)$$
+$$\Delta t_{\text{step}} \approx \max\!\left(\frac{\Delta t_{\text{collate}}}{W},\ \Delta t_{\text{forward}} + \Delta t_{\text{backward}}\right)$$
+
+where $W$ = number of DataLoader workers producing batches in parallel.
 
 > **Source:** Standard pipeline overlap analysis. Used explicitly in [Tan et al., USENIX ATC 2021](https://www.usenix.org/conference/atc21/presentation/tan-ying). The $\max(\cdot)$ form assumes zero synchronization overhead (idealization).
 
@@ -36,8 +39,6 @@ Summing over the batch:
 $$\Delta t_{\text{collate}} \propto N_V^{\text{batch}} \cdot d_v + N_E^{\text{batch}} \cdot (1 + d_e)$$
 
 > **Source:** Derived from PyG source inspection. Proportionality constant is hardware-dependent, must be measured.
-
-**Key implication:** At fixed node budget, packing *more, smaller* graphs increases $B$. If those graphs have non-trivial edge density, $N_E^{\text{batch}}$ grows, increasing collation cost. Node count alone is not the right proxy.
 
 In practice, for constant edge density (CAN bus ≈ 4.5 edges/node), collation simplifies to:
 
@@ -63,21 +64,37 @@ $$T_{\text{gpu}}(N) = \alpha + \beta \cdot N$$
 
 where $\alpha$ = per-step overhead (seconds), $\beta$ = per-node cost (seconds/node).
 
-### 1.4 Bottleneck Crossover
+### 1.4 Three Bottleneck Regimes
 
-The pipeline overlap condition is $\Delta t_{\text{collate}} < \Delta t_{\text{forward}} + \Delta t_{\text{backward}}$. Using $\Delta t_{\text{backward}} \approx 2 \cdot \Delta t_{\text{forward}}$ and mean degree $\bar{\rho} = N_E / N_V$:
+Every GPU workload sits in one of three regimes ([Horace He, "Making DL Go Brrr"](https://horace.io/brrr_intro.html)):
 
-$$d_v + \bar{\rho}(1 + d_e) \lesssim 3L \cdot h^2 (1 + \bar{\rho})$$
+1. **Compute-bound** — GPU arithmetic units are saturated. Achieved FLOPS near
+   peak. Fix: better kernels, tensor cores, mixed precision.
+2. **Memory-bound** — GPU HBM bandwidth is the bottleneck. Time moving data
+   between HBM and compute exceeds compute time. Fix: operator fusion, increase
+   arithmetic intensity (bigger matmuls, larger batches).
+3. **Overhead-bound** — everything *outside* the GPU is the bottleneck. Python
+   dispatch, CUDA kernel launch overhead, data loading stalls. Fix: give the
+   GPU more work (bigger batches) and deliver it faster (more workers, prefetch).
 
-With practical coefficients ($\gamma$, $\beta$, worker count $W$):
+The regime is identified by measuring achieved FLOPS as a percentage of peak.
+If FLOPS/peak is high, you're compute-bound. If GPU utilization is low despite
+large batches, you're memory-bound. If GPU utilization is low because the GPU
+is idle waiting for data, you're overhead-bound.
 
-| Regime | Condition | Action |
-|---|---|---|
-| **Collation-dominated** | $\gamma/W > \beta \cdot \bar{m}$ | Optimize pipeline: more workers, pre-caching |
-| **Compute-dominated** | $\gamma/W < \beta \cdot \bar{m}$ | Fill VRAM, optimize GPU utilization |
-| **Balanced** | Both comparable | Profile to find dominant term |
+**Arithmetic intensity** — the ratio of FLOPs to bytes transferred — determines
+the boundary between compute-bound and memory-bound. For a V100 (15.7 TFLOPS
+FP32, 900 GB/s HBM bandwidth), the threshold is ~17.4 FLOPs/byte. Operations
+below this are memory-bound; above are compute-bound.
 
-**The regime is a system property** (model + graph structure + workers), not a batch-size knob. $B$ cancels when comparing collation rate vs GPU rate.
+GNN message passing has inherently low arithmetic intensity due to sparse
+scatter/gather operations. This makes GNNs more likely to be memory-bound or
+overhead-bound than dense models (transformers, CNNs).
+
+> **Sources:**
+> [NVIDIA DL Performance Guide](https://docs.nvidia.com/deeplearning/performance/dl-performance-getting-started/index.html),
+> [JAX Scaling Book — Rooflines](https://jax-ml.github.io/scaling-book/roofline/),
+> [Horace He — Making DL Go Brrr](https://horace.io/brrr_intro.html)
 
 ### 1.5 Peak VRAM
 
@@ -136,85 +153,165 @@ print(f"backward: {t_full - t_forward:.3f}s (delta)")
 
 ## 2. Application: Small-Graph GNN Regime
 
-### Why "fill VRAM = fast" breaks
+### This workload is overhead-bound
 
-"Larger batch = faster training" assumes the GPU is the bottleneck. For images and LLMs, collation is trivial (`torch.stack()` on fixed-shape tensors), so larger batches better utilize GPU parallelism. VRAM is the only constraint.
+Profiled data from the set_01 ablation campaign (V100 16GB, 2 workers):
 
-For GNNs training on many small graphs, this inverts:
-- `Batch.from_data_list()` iterates every graph, concatenating variable-size tensors — **O(N_graphs)** CPU work
-- GPU compute (message passing) is cheap for small models
-- As batch size grows, $T_{\text{collation}}$ grows linearly while $T_{\text{gpu}}$ grows sublinearly. Past a crossover, every additional graph increases wait time more than useful work.
+| Model | Batch (graphs) | T_collate | T_gpu | GPU active % | Regime |
+|-------|----------------|-----------|-------|-------------|--------|
+| VGAE large | 5,471 | 400 ms | 25 ms | 5% | Overhead-bound |
+| GAT large | 1,289 | 52 ms | 25 ms | 22% | Overhead-bound |
 
-### Profiled evidence (set_01, Pitzer V100)
+The GPU finishes in 25ms and then idles for 175-375ms waiting for the CPU
+to collate the next batch. GPU compute units and HBM bandwidth are both
+unutilized. No amount of kernel fusion, mixed precision, or operator
+optimization helps when the GPU has no work to do.
+
+This is the textbook overhead-bound regime described by
+[Horace He](https://horace.io/brrr_intro.html): "the easiest way to tell
+if you're overhead bound is to simply increase the size of your data."
+
+### Why these models are overhead-bound
+
+Three factors compound:
+
+1. **Small models, cheap compute.** VGAE has 745K params, GAT has 2.5M.
+   Forward+backward on a V100 takes 25ms regardless of batch size because
+   the model is too small to saturate the GPU.
+
+2. **Expensive collation.** PyG's `Batch.from_data_list()` iterates every
+   graph, concatenating variable-size tensors. For 5,471 graphs at 65μs/graph,
+   that's 356ms of serial CPU work. This is O(B) and cannot be reduced without
+   changing the data format.
+
+3. **Insufficient pipeline depth.** With 2 workers, effective delivery rate
+   is T_collate/2 = 200ms. GPU needs a batch every 25ms. The pipeline is
+   8x too slow.
+
+> **Established in literature:**
+> - [SALIENT](https://arxiv.org/abs/2110.08450) (Kaler et al., 2021): 3x
+>   speedup from pipeline optimization alone. "Only ~28% of time is GPU training."
+> - [BGL](https://www.usenix.org/conference/nsdi23/presentation/liu-tianfeng)
+>   (Liu et al., NSDI 2023): ~10% GPU utilization in typical DGL training.
+> - [PyG #4891](https://github.com/pyg-team/pytorch_geometric/issues/4891):
+>   DataLoader is 59-83% of runtime.
+> - [ATC 2025](https://www.usenix.org/system/files/atc25-gong.pdf) (Gong et al.):
+>   "Training runtime on smaller graphs is dominated by framework overhead."
+
+### The correct fix: GPU-first sizing
+
+The optimization chain starts from the GPU and works outward:
 
 ```
-VGAE (fill VRAM → 154K nodes, 5,471 graphs):
-  T_collation = 400ms, 2 workers → effective delivery = 200ms/batch
-  T_gpu = 25ms
-  throughput = 770K nodes/sec
-  GPU utilization: 5%
-
-VGAE (throughput-optimal → ~50K nodes, ~1,800 graphs, 6 workers):
-  T_collation = ~130ms, 6 workers → effective delivery = ~22ms/batch
-  T_gpu = 25ms
-  throughput = 2,000K nodes/sec  (2.6x faster)
-  GPU utilization: ~100%
+VRAM capacity → max batch size → T_gpu per step
+                               → T_collation per step
+                                   → workers = ceil(T_c / T_gpu)
+                                       → CPUs, memory for SLURM
 ```
 
-A 3x smaller batch yields 2.6x higher throughput because the pipeline finally delivers batches as fast as the GPU consumes them.
+**Maximize batch size** to increase GPU utilization and amortize per-step
+overhead (α). Larger batches increase arithmetic intensity, pushing the
+workload from overhead-bound toward memory-bound or compute-bound — both
+of which are more efficient regimes.
 
-### The optimal batch size
+**Scale workers** to deliver batches at the rate the GPU consumes them.
+CPU memory is an order of magnitude cheaper than GPU time. A 128 GB RAM
+request that keeps the GPU fed is better than a 36 GB request where the
+GPU idles 90%.
 
-The crossover batch $B^*$ exists only in the collation-dominated regime (§1.4):
+> **Supported by:**
+> - [NVIDIA DL Performance Guide](https://docs.nvidia.com/deeplearning/performance/dl-performance-getting-started/index.html):
+>   "Larger layers achieve higher arithmetic intensity" → larger batches
+>   increase arithmetic intensity for the same model.
+> - [PyTorch Tuning Guide](https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html):
+>   "Set num_workers > 0 to enable asynchronous data loading, tuned based
+>   on workload."
+> - [JAX Scaling Book](https://jax-ml.github.io/scaling-book/roofline/):
+>   Batch size directly determines arithmetic intensity for matmuls.
+>   "Become compute-bound when per-replica batch size exceeds ~240 tokens"
+>   (for transformers; GNNs need proportionally more due to sparse ops).
 
-```
-B* = α / (γ/W − β·mean_nodes)     (exists only when γ/W > β·mean_nodes)
-```
+### Why "shrink the batch" was wrong
 
-$B^*$ is a **floor**, not a ceiling. Going above $B^*$ doesn't hurt throughput (flat at $\bar{m} \cdot W / \gamma$). Going below wastes GPU overhead.
+A previous version of this document proposed capping the batch at a
+"throughput-optimal" size smaller than VRAM capacity. The reasoning:
+with fixed workers (W=6), smaller batches reduce T_collation so the
+pipeline can keep up.
 
-Budget decision: `budget = max(N_floor, 1)` then `budget = min(budget, mem_budget)`.
+This is wrong because:
+
+1. **It holds the wrong variable fixed.** Workers are a cheap, scalable
+   resource. Batch size directly affects GPU efficiency. Shrinking the
+   batch sacrifices GPU throughput to accommodate an undersized pipeline.
+
+2. **Smaller batches increase per-step overhead.** Each step has fixed
+   costs: kernel launches (~3μs each, dozens per step), optimizer update,
+   DataLoader synchronization. More steps = more overhead. ([HiFuse, 2024](https://arxiv.org/html/2408.08490v1):
+   "substantial overhead and idle time from frequent kernel launches.")
+
+3. **Smaller batches reduce arithmetic intensity.** Less work per byte
+   transferred pushes the workload deeper into the memory-bound or
+   overhead-bound regime — the opposite of what you want.
+
+4. **The literature says increase batch size when overhead-bound.**
+   [NVIDIA](https://docs.nvidia.com/deeplearning/performance/dl-performance-getting-started/index.html),
+   [Horace He](https://horace.io/brrr_intro.html), and the
+   [roofline model](https://jax-ml.github.io/scaling-book/roofline/)
+   all recommend increasing batch size to move out of the overhead-bound
+   regime.
+
+### Projected impact (from ablation measurements)
+
+| Model | Current | Optimized | Speedup |
+|-------|---------|-----------|---------|
+| VGAE large | 3h40m, 5% GPU, 2 workers, 154K nodes | ~13min, ~80% GPU, 16 workers, ~460K nodes | **17x** |
+| GAT large | 3h55m, 22% GPU, 2 workers, 36K nodes | ~2h37m, ~50% GPU, 3 workers, ~42K nodes | **1.5x** |
+
+See `docs/backlog/training-efficiency.md` for the full sizing chain with
+derivations.
+
+### Additional GPU optimizations (secondary to pipeline fix)
+
+These help once the GPU is actually busy:
+
+| Optimization | Regime it helps | Status | Action |
+|-------------|----------------|--------|--------|
+| Mixed precision (AMP) | Memory-bound, compute-bound | Enabled | Already done |
+| torch.compile | Memory-bound (operator fusion) | Enabled | Consider disabling for VGAE (5% util, wastes 4-8GB VRAM pool) |
+| Tensor core alignment | Compute-bound (FP16 dims ÷ 8) | Not audited | Audit hidden dims |
+| CUDA Graphs | Overhead-bound (kernel launch) | Not used | Future: capture training step as graph |
+| expandable_segments | Overhead-bound (VRAM pool) | Not set | Enable in _preamble.sh |
+| pin_memory | Overhead-bound (H2D transfer) | Verify enabled | Check DataModule |
+| Gradient accumulation | Memory-bound (simulate larger batch) | Not needed | VRAM headroom exists |
+
+> **Sources:**
+> [PyTorch Tuning Guide](https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html),
+> [NVIDIA DL Performance Guide](https://docs.nvidia.com/deeplearning/performance/dl-performance-getting-started/index.html),
+> [HiFuse — CUDA kernel reduction](https://arxiv.org/html/2408.08490v1),
+> [CUDA Graphs for kernel batching](https://arxiv.org/html/2501.09398v1)
 
 ### Self-tuning properties
 
-| What changes | Effect on throughput budget |
+| What changes | Effect on sizing chain |
 |---|---|
-| Larger model (GAT vs VGAE) | $T_{\text{gpu}} \uparrow$ → larger batches fine (memory binds) |
-| More workers | pipeline depth ↑ → larger batches deliverable |
-| Faster CPU | $\gamma \downarrow$ → larger batches deliverable |
-| Larger graphs | $\gamma \uparrow$ per graph → smaller batches needed |
-| **Faster GPU (V100 → H100)** | $T_{\text{gpu}} \downarrow$ → **smaller batches needed** |
-
-The last row is counterintuitive: faster GPUs need smaller batches because they finish sooner and starve faster. Correct under throughput thinking, wrong under "fill VRAM" thinking.
-
-### Applicability
-
-This analysis applies specifically to:
-1. **Small models** — GPU compute is fast relative to data prep
-2. **Variable-size samples** — batch construction is O(N) not O(1)
-3. **Many samples per batch** — thousands of small graphs, not tens of large ones
-
-For large-graph GNNs (molecular dynamics, social networks), batches contain few graphs and collation is fast. VRAM binds. Conventional wisdom holds.
+| Larger model (GAT vs VGAE) | T_gpu ↑ → fewer workers needed to keep up |
+| More workers | Pipeline faster → can deliver bigger batches |
+| Faster CPU | γ ↓ → fewer workers needed |
+| Larger graphs | γ ↑ per graph → more workers needed |
+| Faster GPU (V100 → H100) | T_gpu ↓ → more workers needed to keep up |
+| torch.compile disabled | VRAM pool shrinks → room for bigger batch |
 
 ---
 
 ## 3. Budget Implementation (budget.py)
 
-### Old (memory-only) vs New (dual-constraint)
+### Current state
 
-**Old:** One question — "What fits in VRAM?"
-
-```
-vram_node_budget()                              [deleted]
-  ├─ _probe_bytes_per_node()                    [deleted]
-  │    ├─ Batch.from_data_list(~70 graphs)      — untimed
-  │    └─ model.forward(batch)                  — untimed, VRAM only
-  └─ budget = free_vram × 0.85 / bytes_per_node
-       → VGAE: 154K nodes (5,471 graphs)  ← fills VRAM, GPU idle 95%
-       → GAT:  36K nodes (1,289 graphs)   ← fills VRAM, GPU idle 78%
-```
-
-**New:** Two questions, tighter answer wins.
+`node_budget()` computes the VRAM-limited batch size and measures timing
+coefficients (γ, α, β). It does NOT yet compute the full sizing chain
+(workers, CPUs, memory). The throughput floor exists in the code but is
+vestigial from the old "cap the batch" design — it should be removed in
+favor of the GPU-first chain.
 
 ```
 node_budget()                                    [budget.py]
@@ -222,50 +319,44 @@ node_budget()                                    [budget.py]
   │    ├─ Batch.from_data_list(~70 graphs)      ← TIMED → γ
   │    ├─ model.forward(small batch)            ← TIMED
   │    ├─ model.forward(large batch)            ← TIMED → α, β (two-point)
-  │    └─ (bytes_per_node, CostCoefficients)
-  ├─ mem_budget = free_vram × 0.85 / bytes_per_node
-  ├─ throughput_budget (from affine model)       [NEW]
-  └─ budget = min(mem_budget, throughput_budget)
-       → VGAE: mem=154K, tput=58K → budget=58K  (throughput binds)
-       → GAT:  mem=36K,  tput=210K → budget=36K (memory binds)
+  │    ├─ model.train(); loss.backward()        ← TIMED → backward_multiplier
+  │    └─ (bytes_per_node, bytes_per_edge, CostCoefficients)
+  ├─ mem_budget = free_vram × 0.85 / effective_bpn
+  └─ budget = mem_budget                         ← VRAM is the only batch constraint
 ```
 
-### What budget.py measures
+### What needs to change
 
-**γ (collation rate):** `time(Batch.from_data_list(graphs)) / len(graphs)`. Units: seconds/graph. Bug: measured after `model.to(device)` — CUDA context init can stall CPU (DGI large measured γ = 200ms vs expected 65μs). Fix: `torch.cuda.synchronize()` before timing.
+The budget system should output a full `ResourceProfile`, not just a node
+count. The measurements already exist — it's arithmetic on existing values:
 
-**α, β (GPU timing):** Two-point probe using `BenchmarkTimer` (handles CUDA sync, multi-sample median). Measures **forward-only** time in eval mode. Training β ≈ β × backward_multiplier — means `cg_ratio` is ~2× too high (diagnostic only, doesn't affect budget).
+```python
+@dataclass
+class ResourceProfile:
+    # From VRAM probe (existing)
+    node_budget: int
+    graphs_per_batch: int
+    # From timing probe (existing measurements, new computation)
+    t_collation_ms: float      # γ × graphs_per_batch
+    t_gpu_ms: float            # (α + β × node_budget) × backward_multiplier
+    # From the sizing chain (new)
+    workers: int               # ceil(t_collation / t_gpu)
+    prefetch_factor: int       # 2-4
+    cpus: int                  # workers + 2
+    memory_gb: int             # workers × worker_rss + base
+```
 
-**bytes_per_node:** Peak `max_memory_allocated` delta from one forward pass / node count. Linear extrapolation assumption is valid — P/N error < 0.2% for all models. Probe OVERESTIMATES → budget is conservative (safe).
+### Known probe bug: torch.compile pool inflation
 
-**backward_multiplier:** `(training fwd+bwd peak) / (inference fwd peak)`. Measured values: 1.26-1.55. DGI falls back to `_GRAD_MULTIPLIER=2.0` (dual-encoder `_step` fails).
+The probe runs after `torch.compile`, which inflates the VRAM reserved pool
+by 4-8 GB. The probe sees reduced free VRAM and underestimates the batch
+by 2-3x. Active VRAM utilization is only 19-37% despite the probe trying
+to fill it.
 
-**mem_budget:** `free_vram × _SAFETY_MARGIN / effective_bpn`. Called after `model.to(device)` but before optimizer — Adam state not yet allocated (gap: 2P bytes, worst case 0.14%, absorbed by 15% margin).
+Fix: set `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` so the allocator
+returns unused segments, or probe before compile.
 
-### Correctness
-
-| Component | Status | Evidence |
-|---|---|---|
-| `budget = mem_budget` | **Correct** | Throughput floor << mem_budget for all configs |
-| `_SAFETY_MARGIN = 0.85` | **Adequate** | Covers allocator frag + optimizer + P/N error |
-| `BenchmarkTimer` for GPU | **Proper** | CUDA sync, multi-sample, outlier-robust |
-| Linear VRAM extrapolation | **Valid** | P/N error < 0.2% |
-| α,β two-point solve | **Correct** | Clamping ≥ 0 handles noise |
-| `skip_too_big=True` | **Correct** | No CAN bus graph exceeds budget |
-
-### Bugs found (2026-04-02 audit)
-
-| # | Bug | Impact | Fix |
-|---|---|---|---|
-| 1 | Stale docstrings say `min(mem, throughput)` — code does `mem_budget` only | Misleading | ~10 lines |
-| 2 | γ contaminated by GPU state (CUDA context init) | Inflated cg_ratio for some combos | `synchronize()` before timing |
-| 3 | `cg_ratio` uses forward-only β instead of training β | Diagnostic ~2× too high | Multiply by `bwd_mult` |
-| 4 | `num_steps` uses `int()` (floor) instead of `math.ceil` — can skip 10-15% of data | Slower convergence | 1-line fix |
-| 5 | No throughput floor guard (N_floor not enforced) | None currently (mem >> floor) | ~5 lines |
-
----
-
-## 4. Measured Probe Values
+### Measured probe values
 
 From GPU probe job 46273452, Pitzer V100, set_01:
 
@@ -280,49 +371,94 @@ From GPU probe job 46273452, Pitzer V100, set_01:
 
 *DGI backward probe fails, falls back to `_GRAD_MULTIPLIER=2.0`.
 
-### Derived throughput floor (N_floor, nodes) at W=6
+### Derived sizing chain (target state)
 
-| model/scale | γ/(m̄·W) μs/node | β μs/node | regime | N_floor |
-|---|---|---|---|---|
-| vgae/small | 0.384 | 0.00 | collation | 521 |
-| vgae/large | 0.384 | 0.16 | collation | ~705 |
-| gat/small | 0.384 | 0.85 | compute | no floor |
-| gat/large | 0.384 | 0.73 | compute | no floor |
-| dgi/small | 0.384 | 0.03 | collation | ~558 |
-| dgi/large | 0.384 | 0.06 | collation | ~533 |
+Using the probe values and the GPU-first chain:
 
-All floors well below smallest mem_budget (GAT large V100 ≈ 54K nodes).
+| model/scale | mem_budget (nodes) | T_gpu (ms) | T_collate (ms) | Workers needed | CPUs | Est. memory |
+|---|---|---|---|---|---|---|
+| vgae/small | ~400K | ~7 | ~920 | **132** | 134 | impractical |
+| vgae/large | ~230K | ~44 | ~530 | **13** | 15 | ~100 GB |
+| gat/small | ~190K | ~164 | ~437 | **3** | 5 | ~36 GB |
+| gat/large | ~52K | ~42 | ~120 | **3** | 5 | ~36 GB |
+| dgi/small | ~600K | ~25 | ~1,384 | **56** | 58 | impractical |
+| dgi/large | ~145K | ~15 | ~334 | **23** | 25 | ~160 GB |
+
+VGAE small and DGI small have such low β (near-zero per-node GPU cost) that
+the GPU finishes almost instantly regardless of batch size. For these,
+even 132 workers can't keep up because T_gpu ≈ α ≈ 7ms is dominated by
+kernel launch overhead, not actual compute. These models are candidates
+for **CPU-only training** or **CUDA Graphs** (capture the step as a single
+graph to eliminate per-kernel launch overhead).
+
+VGAE large and GAT large/small are the practical targets: 3-13 workers,
+feasible on OSC Pitzer.
+
+### Correctness of existing components
+
+| Component | Status | Evidence |
+|---|---|---|
+| `mem_budget` | **Correct but conservative** | torch.compile pool inflation underestimates by 2-3x |
+| `_SAFETY_MARGIN = 0.85` | **Adequate** | Covers allocator frag + optimizer + P/N error |
+| `BenchmarkTimer` for GPU | **Proper** | CUDA sync, multi-sample, outlier-robust |
+| Linear VRAM extrapolation | **Valid** | P/N error < 0.2% |
+| α,β two-point solve | **Correct** | Clamping ≥ 0 handles noise |
+| γ measurement | **Bug: contaminated by GPU state** | DGI large γ inflated 3000x |
+| `throughput_budget` | **Remove** | Vestigial from old "cap the batch" design |
 
 ---
 
-## 5. Literature Assessment
+## 4. Literature Assessment
 
 ### Established
 
-**GNN training is data-pipeline-bound, not GPU-bound.** Multiple systems papers measure ~28% GPU time / ~72% data preparation time:
+**GNN training is data-pipeline-bound, not GPU-bound.** Multiple systems
+papers measure ~28% GPU time / ~72% data preparation time:
 
-- **SALIENT** (Kaler et al., 2021): 3x speedup from pipeline optimization alone. [arXiv:2110.08450](https://arxiv.org/abs/2110.08450)
-- **BGL** (Liu et al., NSDI 2023): ~10% GPU utilization in typical DGL training. [USENIX](https://www.usenix.org/conference/nsdi23/presentation/liu-tianfeng)
-- **BatchGNN** (2023): CPU-side batch preparation dominates distributed GNN training. [arXiv:2306.13814](https://arxiv.org/abs/2306.13814)
+- **SALIENT** (Kaler et al., 2021): 3x speedup from pipeline optimization
+  alone. [arXiv:2110.08450](https://arxiv.org/abs/2110.08450)
+- **BGL** (Liu et al., NSDI 2023): ~10% GPU utilization in typical DGL
+  training. [USENIX](https://www.usenix.org/conference/nsdi23/presentation/liu-tianfeng)
+- **BatchGNN** (2023): CPU-side batch preparation dominates distributed GNN
+  training. [arXiv:2306.13814](https://arxiv.org/abs/2306.13814)
+- **ATC 2025** (Gong et al.): "Training runtime on smaller graphs is dominated
+  by framework overhead." [USENIX](https://www.usenix.org/system/files/atc25-gong.pdf)
 
-**`Batch.from_data_list()` is a known PyG bottleneck.** [PyG #572](https://github.com/pyg-team/pytorch_geometric/issues/572): original 3x slower, rewritten. [PyG #4891](https://github.com/pyg-team/pytorch_geometric/issues/4891): DataLoader is 59-83% of runtime.
+**`Batch.from_data_list()` is a known PyG bottleneck.**
+[PyG #572](https://github.com/pyg-team/pytorch_geometric/issues/572),
+[PyG #4891](https://github.com/pyg-team/pytorch_geometric/issues/4891):
+DataLoader is 59-83% of runtime.
 
-**Collation scales linearly with graph count.** Inherent to PyG's block-diagonal batching. [PyG docs](https://pytorch-geometric.readthedocs.io/en/latest/notes/batching.html).
+**The fix is to scale the pipeline, not shrink the batch.** The general
+DL optimization literature uniformly recommends increasing batch size when
+GPU utilization is low:
 
-**Small-graph packing is a recognized problem.** Graphcore's [IPU tutorial](https://docs.graphcore.ai/projects/tutorials/en/latest/pytorch_geometric/4_small_graph_batching_with_packing/README.html) addresses padding waste, but focuses on fixed-size hardware constraints, not throughput-optimal sizing.
+- [NVIDIA DL Performance Guide](https://docs.nvidia.com/deeplearning/performance/dl-performance-getting-started/index.html):
+  larger batches increase arithmetic intensity, pushing toward compute-bound.
+- [PyTorch Tuning Guide](https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html):
+  "increase batch size aggressively — usually your biggest win."
+- [Horace He](https://horace.io/brrr_intro.html): when overhead-bound,
+  "increase the size of your data."
+- [JAX Scaling Book](https://jax-ml.github.io/scaling-book/roofline/):
+  batch size determines arithmetic intensity; larger = more efficient.
 
-### Novel (not found in literature)
+**Kernel launch overhead is significant for small GNN batches.**
+[HiFuse](https://arxiv.org/html/2408.08490v1) (2024): individual kernels
+execute in 2.6-3.3μs, creating "substantial overhead from frequent launches."
+Reducing kernel count by 43-73% achieved 2.4x speedup.
+[CUDA Graphs](https://arxiv.org/html/2501.09398v1) (2025): capturing kernel
+sequences eliminates per-launch overhead.
+
+### What this project contributes
 
 | Component | Status |
 |---|---|
-| GNN training is data-pipeline-bound | **Established** — multiple systems papers |
-| `from_data_list` is a bottleneck | **Established** — PyG maintainers acknowledged |
-| Collation cost is O(N_graphs) | **Established** — inherent to PyG design |
-| Throughput-optimal batch < VRAM-optimal batch | **Derived** — correct inference, not published |
-| Dual-constraint budget with probe timing | **Novel** — not found in literature |
-| Faster GPU → smaller optimal batch | **Derived** — logical consequence, not published |
-
-No paper frames batch sizing as `T_collation ≤ T_gpu × pipeline_depth`. The systems papers focus on making the pipeline faster, not on reducing batch size to match pipeline capacity. No paper discusses the "many small graphs" regime where collation — not neighborhood sampling — is the bottleneck.
+| GNN training is overhead-bound for small graphs | **Established** — multiple systems papers |
+| Fix is to scale pipeline (workers), not shrink batch | **Established** — NVIDIA, PyTorch, roofline model |
+| `from_data_list` collation is O(B) | **Established** — PyG design |
+| GPU-first sizing chain (VRAM → batch → workers → SLURM) | **Engineering application** of established principles |
+| Dual-constraint budget with probe timing | **Implementation detail** — probe measurements are standard |
+| Very small models (β ≈ 0) may be better on CPU | **Derived** — correct inference from probe data |
 
 ---
 
@@ -331,9 +467,11 @@ No paper frames batch sizing as `T_collation ≤ T_gpu × pipeline_depth`. The s
 | Equation | Source |
 |---|---|
 | $T = N_V / \Delta t_{\text{step}}$ | Definition |
-| $\Delta t_{\text{step}} \approx \max(\Delta t_c, \Delta t_f + \Delta t_b)$ | Pipeline overlap ([Tan et al.](https://www.usenix.org/conference/atc21/presentation/tan-ying)) |
+| $\Delta t_{\text{step}} \approx \max(\Delta t_c / W, \Delta t_f + \Delta t_b)$ | Pipeline overlap ([Tan et al.](https://www.usenix.org/conference/atc21/presentation/tan-ying)) |
 | $\Delta t_c \propto N_V d_v + N_E(1+d_e)$ | PyG source inspection |
 | $\Delta t_f \propto L h^2 (N_E + N_V)$ | [Gilmer et al.](https://arxiv.org/abs/1704.01212) |
 | GAT attention: $K \cdot N_E \cdot h$ | [Veličković et al.](https://arxiv.org/abs/1710.10903) |
 | VRAM lower bound | [Chen et al.](https://arxiv.org/abs/1604.06174), [Kingma & Ba](https://arxiv.org/abs/1412.6980) |
+| Workers $= \lceil T_c / T_{\text{gpu}} \rceil$ | Pipeline saturation condition |
+| Arithmetic intensity threshold | [Roofline model](https://jax-ml.github.io/scaling-book/roofline/), [NVIDIA](https://docs.nvidia.com/deeplearning/performance/dl-performance-getting-started/index.html) |
 | Proportionality constants | **Must measure** |
