@@ -4,14 +4,13 @@
 
 Fusion is excluded from `ANALYSIS_SUPPORTED_MODELS` so no `artifacts/` or `.analyze_complete` for any fusion run. Two blockers prevent a simple add:
 
-### 1. `safe_load_checkpoint("fusion", ckpt)` always loads BanditFusionModule
+### 1. `safe_load_checkpoint("fusion", ckpt)` loads BanditFusionModule by default
 
-`_MODULE_PATHS` in `_training.py` maps `"fusion"` → `BanditFusionModule`. Loading an MLP, DQN, or WeightedAvg checkpoint as Bandit would crash. The orchestrator uses `model_type="fusion"` for all fusion methods — the fusion_method is only in the identity hash, not the model_type.
-
-Fix options:
-- A) Add per-method entries to `_MODULE_PATHS` (`"mlp_fusion"`, `"weighted_avg"`, etc.) and pass fusion_method through the analysis spec
-- B) Read `class_path` from the checkpoint's saved hyperparameters and load dynamically
-- C) Store `class_path` in the AnalysisSpec and use it directly
+`_MODULE_PATHS` now has `"fusion"` → Bandit and `"dqn"` → DQN, but MLP and
+WeightedAvg still missing. The orchestrator passes `model_type="fusion"` for all
+methods — need to either add `"mlp"` / `"weighted_avg"` entries and pass
+fusion_method through the analysis spec, or read `class_path` from checkpoint
+hyperparameters.
 
 ### 2. `fusion_policy` needs upstream checkpoint paths
 
