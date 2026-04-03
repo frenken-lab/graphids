@@ -38,7 +38,7 @@ submit_profiles:
     time: "24:00:00"
     signal: ""
     mode: cpu
-    command: dg launch
+    command: dg launch --assets '*' --partition 'set_01|42'
   profile:
     partition: gpudebug
     cpus: 4

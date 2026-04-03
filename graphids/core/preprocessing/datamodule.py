@@ -209,14 +209,17 @@ class CANBusDataModule(pl.LightningDataModule):
 
         if hp["dynamic_batching"]:
             model = trainer.lightning_module if trainer else None
+            # conv_type/heads are model params, not data params — read from model
+            model_hp = getattr(model, "hparams", {}) if model else {}
             result = node_budget(
                 hp["dataset"], hp["lake_root"],
-                conv_type=hp.get("conv_type", "gatv2"),
-                heads=hp.get("heads", 4),
+                conv_type=model_hp.get("conv_type", hp.get("conv_type", "gatv2")),
+                heads=model_hp.get("heads", hp.get("heads", 4)),
                 model=model, train_dataset=dataset,
                 num_workers=nw,
             )
-            num_steps = max(1, int(len(dataset) * result.mean_nodes / result.budget))
+            import math as _math
+            num_steps = max(1, _math.ceil(len(dataset) * result.mean_nodes / result.budget))
             sampler = DynamicBatchSampler(
                 dataset, max_num=result.budget, mode="node", shuffle=shuffle,
                 skip_too_big=True, num_steps=num_steps,

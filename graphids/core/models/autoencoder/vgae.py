@@ -389,7 +389,7 @@ class VGAEModule(GraphModuleBase):
         self.model = GraphAutoencoderNeighborhood.from_config(hp, hp.num_ids, hp.in_channels)
         if hp.compile_model:
             from .._training import try_compile
-            self.model = try_compile(self.model, dynamic=True)
+            self.model = try_compile(self.model, conv_type=hp.conv_type, dynamic=True)
         if self.teacher is None:
             teacher, projection = prepare_kd(hp, hp.model_type, torch.device("cpu"))
             # Bypass nn.Module.__setattr__ so Lightning won't auto-move teacher to GPU

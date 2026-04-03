@@ -39,24 +39,27 @@ DATASETS = {
 # These are ESTIMATES — real values come from running the probe on GPU.
 
 MODEL_PROBES = {
-    # (model_type, scale): (bytes_per_node, bytes_per_edge, bwd_mult, gamma_s, alpha_s, beta_s, conv_type)
+    # (model_type, scale): (bytes_per_node, bwd_mult, gamma_s, alpha_s, beta_s, conv_type)
+    # Measured on Pitzer V100 (job 46275772, 2026-04-03). Median across datasets.
+    # γ fixed: cuda.synchronize + 3-sample median eliminated DGI anomaly (200ms → 42μs).
+    # bytes_per_node includes backward multiplier. Temporal probes fail (windowed batching).
     #
-    # VGAE small: 3 layers, hidden=[80,40,16], heads=1, ~24K params
-    ("vgae", "small"):    (1200,  80,  1.8, 70e-6, 0.002, 0.10e-6, "gatv2"),
-    # VGAE large: 3 layers, hidden=[480,240,64], heads=4, ~200K params
-    ("vgae", "large"):    (4500,  320, 2.1, 70e-6, 0.005, 0.80e-6, "gatv2"),
-    # GAT small: 2 layers, hidden=24, heads=4, ~15K params
-    ("gat", "small"):     (800,   48,  1.9, 70e-6, 0.002, 0.08e-6, "gatv2"),
-    # GAT large: 3 layers, hidden=64, heads=4, ~60K params
-    ("gat", "large"):     (3200,  192, 2.2, 70e-6, 0.004, 0.50e-6, "gatv2"),
-    # DGI small: same arch as VGAE small + discriminator
-    ("dgi", "small"):     (1500,  96,  1.8, 70e-6, 0.003, 0.12e-6, "gatv2"),
-    # DGI large: same arch as VGAE large + discriminator
-    ("dgi", "large"):     (5000,  360, 2.0, 70e-6, 0.006, 0.90e-6, "gatv2"),
-    # Temporal small: 2 spatial + 2 transformer layers
-    ("temporal", "small"): (4000, 240, 2.3, 70e-6, 0.008, 1.50e-6, "gatv2"),
-    # Temporal large: 3 spatial + 3 transformer layers
-    ("temporal", "large"): (9000, 560, 2.5, 70e-6, 0.015, 4.00e-6, "gatv2"),
+    # VGAE small: ~26K params, bwd_mult=1.39
+    ("vgae", "small"):    (34620,  1.39, 40e-6, 0.008, 0.11e-6, "gatv2"),
+    # VGAE large: ~430K params, bwd_mult=1.26
+    ("vgae", "large"):    (50100,  1.26, 42e-6, 0.007, 0.15e-6, "gatv2"),
+    # GAT small: ~190K params, bwd_mult=1.29
+    ("gat", "small"):     (59860,  1.29, 40e-6, 0.003, 0.86e-6, "gatv2"),
+    # GAT large: ~2.5M params, bwd_mult=1.52
+    ("gat", "large"):     (223740, 1.52, 42e-6, 0.005, 0.73e-6, "gatv2"),
+    # DGI small: ~17K params, bwd_mult=2.0 (fallback — backward probe fails)
+    ("dgi", "small"):     (13970,  2.0, 40e-6, 0.007, 0.03e-6, "gatv2"),
+    # DGI large: ~345K params, bwd_mult=2.0 (fallback)
+    ("dgi", "large"):     (80140,  2.0, 42e-6, 0.006, 0.10e-6, "gatv2"),
+    # Temporal small: ~254K params (probe fails — needs windowed batching, estimates only)
+    ("temporal", "small"): (100000, 2.0, 42e-6, 0.008, 1.50e-6, "gatv2"),
+    # Temporal large: ~10.2M params (probe fails — estimates only)
+    ("temporal", "large"): (250000, 2.0, 42e-6, 0.015, 4.00e-6, "gatv2"),
 }
 
 # --- GPU free VRAM after model load (from clusters.yaml) --------------------
@@ -75,11 +78,12 @@ WORKER_COUNTS = [2, 6, 8]
 def _run(tmp_path, *, dataset, model_key, gpu, num_workers):
     """Run node_budget with mocked probe and VRAM."""
     mean_nodes, p95_nodes = DATASETS[dataset]
-    bpn, bpe, bwd_mult, gamma, alpha, beta, conv_type = MODEL_PROBES[model_key]
+    bpn, bwd_mult, gamma, alpha, beta, conv_type = MODEL_PROBES[model_key]
     free = GPU_TYPES[gpu]
 
     # Include edge_count stats for edge-aware margin.
     # Estimate: edges ≈ 4.5 × nodes (typical CAN bus graph density).
+    # p95/mean ratio ≈ 1.05 (near-constant E/N for CAN bus).
     edge_mean = mean_nodes * 4.5
     edge_p95 = p95_nodes * 4.5
     metadata = tmp_path / "cache_metadata.json"
@@ -89,7 +93,7 @@ def _run(tmp_path, *, dataset, model_key, gpu, num_workers):
     )
 
     def mock_probe(model, ds, step_fn=None):
-        return bpn, bpe, bwd_mult, gamma, alpha, beta
+        return bpn, bwd_mult, gamma, alpha, beta
 
     with (
         patch("graphids.core.preprocessing.budget.cache_dir", return_value=tmp_path),
@@ -125,11 +129,16 @@ def test_budget_positive_and_within_vram(tmp_path, dataset, model_key, gpu, num_
 
     assert result.budget >= 1
     bpn = MODEL_PROBES[model_key][0]
-    bpe = MODEL_PROBES[model_key][1]
     free = GPU_TYPES[gpu]
-    # Edge-aware: effective bytes_per_node includes edge cost scaled by edge density.
-    # edges/node ratio = edge_p95/node_p95 = 4.5 (from mock metadata in _run)
-    effective_bpn = bpn + bpe * 4.5
+    # Edge-aware margin: effective_bpn = bpn × (p95_epn / mean_epn).
+    # Mock metadata has edge/node ratio = 4.5 for both mean and p95,
+    # so p95_epn/mean_epn ≈ 1.0 (near-constant density) → no adjustment.
+    # For datasets where p95_nodes > mean_nodes, ratio can be slightly > 1.
+    mean_nodes, p95_nodes = DATASETS[dataset]
+    mean_epn = (mean_nodes * 4.5) / mean_nodes  # = 4.5
+    p95_epn = (p95_nodes * 4.5) / p95_nodes     # = 4.5
+    edge_ratio = max(1.0, p95_epn / mean_epn)   # = 1.0
+    effective_bpn = int(bpn * edge_ratio)
     max_nodes = int(free * _SAFETY_MARGIN / effective_bpn)
     assert result.budget <= max_nodes, (
         f"budget {result.budget} exceeds mem ceiling {max_nodes}"
@@ -200,7 +209,7 @@ def test_larger_model_gives_smaller_or_equal_mem_budget(tmp_path, dataset):
 @pytest.mark.parametrize("model_key", list(MODEL_PROBES.keys()),
                          ids=[f"{m}_{s}" for m, s in MODEL_PROBES])
 def test_more_workers_does_not_decrease_budget(tmp_path, model_key):
-    """More workers → throughput ceiling rises → budget should not shrink."""
+    """Budget (memory ceiling) should not change with worker count."""
     budgets = {}
     for w in [2, 6, 8]:
         result = _run(tmp_path, dataset="set_01", model_key=model_key,
@@ -214,13 +223,24 @@ def test_more_workers_does_not_decrease_budget(tmp_path, model_key):
 # --- Regime-specific tests ---------------------------------------------------
 
 def test_small_models_are_collation_dominated(tmp_path):
-    """Small models with few workers should have cg_ratio > 1."""
-    for mk in [("vgae", "small"), ("gat", "small"), ("dgi", "small")]:
+    """Small models with few workers should have cg_ratio > 1 (except GAT).
+
+    GAT small is compute-bound even at W=2 (cg_ratio ≈ 0.64) because β is
+    high relative to γ. VGAE and DGI have near-zero β → collation-bound.
+    """
+    for mk in [("vgae", "small"), ("dgi", "small")]:
         result = _run(tmp_path, dataset="set_01", model_key=mk,
                       gpu="v100_16gb", num_workers=2)
         assert result.cg_ratio is not None and result.cg_ratio > 1.0, (
             f"{mk} with 2 workers: cg_ratio={result.cg_ratio}, expected > 1"
         )
+
+    # GAT small is compute-bound — GPU is bottleneck, not collation
+    result = _run(tmp_path, dataset="set_01", model_key=("gat", "small"),
+                  gpu="v100_16gb", num_workers=2)
+    assert result.cg_ratio is not None and result.cg_ratio < 1.0, (
+        f"gat/small with 2 workers: cg_ratio={result.cg_ratio}, expected < 1"
+    )
 
 
 def test_large_temporal_may_be_compute_dominated(tmp_path):
@@ -232,29 +252,38 @@ def test_large_temporal_may_be_compute_dominated(tmp_path):
     # γ_eff = 2.48/8 = 0.31 μs/node
     # ratio = 0.31 / 4.0 = 0.078 → compute-dominated
     assert result.cg_ratio is not None and result.cg_ratio < 1.0
-    assert result.throughput_budget is None
     assert result.binding == "memory"
 
 
-def test_throughput_binds_for_small_model_few_workers(tmp_path):
-    """Small model + few workers + big GPU → throughput ceiling < mem ceiling."""
-    result = _run(tmp_path, dataset="set_01", model_key=("gat", "small"),
-                  gpu="a100_80gb", num_workers=2)
-    # On A100-80: mem_budget = 76GB * 0.85 / 800 = ~80M nodes
-    # Throughput: gap = 70e-6/2 - 0.08e-6*28.2 = 34.7e-6, B = 0.002/34.7e-6 ≈ 57
-    # throughput_budget ≈ 57 * 28.2 ≈ 1617 nodes ≪ 80M
-    assert result.throughput_budget is not None
-    assert result.throughput_budget < result.mem_budget
-    assert result.binding == "throughput"
+def test_budget_always_memory_bound(tmp_path):
+    """Budget equals mem_budget — throughput floor never exceeds VRAM ceiling."""
+    # Small model on big GPU
+    r1 = _run(tmp_path, dataset="set_01", model_key=("gat", "small"),
+              gpu="a100_80gb", num_workers=2)
+    assert r1.budget == r1.mem_budget
+    assert r1.binding == "memory"
+
+    # Large model on small GPU
+    r2 = _run(tmp_path, dataset="set_02", model_key=("temporal", "large"),
+              gpu="v100_16gb", num_workers=6)
+    assert r2.budget == r2.mem_budget
+    assert r2.binding == "memory"
 
 
-def test_memory_binds_for_large_model_small_gpu(tmp_path):
-    """Large model + small GPU → mem ceiling is tight, binds before throughput."""
-    result = _run(tmp_path, dataset="set_02", model_key=("temporal", "large"),
-                  gpu="v100_16gb", num_workers=6)
-    # mem_budget = 14GB * 0.85 / 9000 ≈ 1.4M nodes
-    # This model is compute-dominated (β=4μs) → no throughput budget
-    assert result.binding == "memory"
+def test_throughput_floor_never_exceeds_budget(tmp_path):
+    """Budget must not exceed mem_budget, even when floor > ceiling.
+
+    When floor > ceiling (e.g. DGI large on V100), GPU overhead can't be
+    fully amortized within VRAM. Budget uses mem_budget and logs a warning.
+    """
+    for mk in MODEL_PROBES:
+        for gpu in GPU_TYPES:
+            result = _run(tmp_path, dataset="set_01", model_key=mk,
+                          gpu=gpu, num_workers=6)
+            assert result.budget <= result.mem_budget, (
+                f"{mk} on {gpu}: budget {result.budget} > ceiling {result.mem_budget}"
+            )
+            assert result.binding == "memory" or result.binding == "fallback"
 
 
 # --- GPS quadratic path (no probe) ------------------------------------------
@@ -295,7 +324,6 @@ def test_fallback_consistent_across_datasets(tmp_path, dataset):
 
     assert result.binding == "fallback"
     assert result.cg_ratio is None
-    assert result.throughput_budget is None
     # All datasets get the same budget because fallback bytes_per_node is constant
     # and VRAM is the same (CPU fallback 12GB)
     from graphids.core.preprocessing.budget import _FALLBACK_BYTES_PER_NODE

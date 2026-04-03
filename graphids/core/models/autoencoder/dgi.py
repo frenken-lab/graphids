@@ -189,7 +189,7 @@ class DGIModule(GraphModuleBase):
         self.model = GraphInfomaxModel.from_config(hp, hp.num_ids, hp.in_channels)
         if hp.compile_model:
             from .._training import try_compile
-            self.model = try_compile(self.model, dynamic=True)
+            self.model = try_compile(self.model, conv_type=hp.conv_type, dynamic=True)
 
     def forward(self, batch):
         edge_attr = getattr(batch, "edge_attr", None)

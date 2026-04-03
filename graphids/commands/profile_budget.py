@@ -54,6 +54,7 @@ def _instantiate_model(model_type: str, scale: str, num_ids: int, in_channels: i
     replaces the model dict wholesale, losing class_path from the base YAML.
     """
     import importlib
+    import inspect
 
     base_cfg = read_yaml(CONFIG_DIR / "models" / model_type / "base.yaml")
     scale_cfg = read_yaml(CONFIG_DIR / "models" / model_type / "scales" / f"{scale}.yaml")
@@ -70,6 +71,13 @@ def _instantiate_model(model_type: str, scale: str, num_ids: int, in_channels: i
 
     module_path, class_name = class_path.rsplit(".", 1)
     cls = getattr(importlib.import_module(module_path), class_name)
+
+    # Filter to params accepted by __init__ (scale YAMLs may have metadata keys)
+    sig = inspect.signature(cls.__init__)
+    if not any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
+        valid = set(sig.parameters) - {"self"}
+        init_args = {k: v for k, v in init_args.items() if k in valid}
+
     return cls(**init_args)
 
 
@@ -104,7 +112,7 @@ def _probe_combo(
 
     # --- Run probe ---
     step_fn = getattr(model, "_step", None)
-    bytes_per_node, bytes_per_edge, backward_mult, gamma, alpha, beta = (
+    bytes_per_node, backward_mult, gamma, alpha, beta = (
         _probe(model, ds, step_fn=step_fn)
     )
 
@@ -117,7 +125,6 @@ def _probe_combo(
         "scale": scale,
         "dataset": dataset_name,
         "bytes_per_node": bytes_per_node,
-        "bytes_per_edge": bytes_per_edge,
         "backward_multiplier": round(backward_mult, 2),
         "gamma_us": round(gamma * 1e6, 1),
         "alpha_ms": round(alpha * 1000, 3),
@@ -135,7 +142,7 @@ def _format_table(results: list[dict]) -> str:
 
     header = (
         f"{'model_type':<12} {'scale':<6} {'dataset':<10} "
-        f"{'B/node':>10} {'B/edge':>10} {'bwd_mult':>8} "
+        f"{'B/node':>10} {'bwd_mult':>8} "
         f"{'γ(μs)':>8} {'α(ms)':>8} {'β(μs)':>8} "
         f"{'mean_nodes':>10}"
     )
@@ -144,7 +151,7 @@ def _format_table(results: list[dict]) -> str:
     for r in results:
         lines.append(
             f"{r['model_type']:<12} {r['scale']:<6} {r['dataset']:<10} "
-            f"{r['bytes_per_node']:>10,} {r['bytes_per_edge']:>10,} "
+            f"{r['bytes_per_node']:>10,} "
             f"{r['backward_multiplier']:>8.2f} "
             f"{r['gamma_us']:>8.1f} {r['alpha_ms']:>8.3f} "
             f"{r['beta_us']:>8.3f} {r['mean_nodes']:>10.1f}"
@@ -166,7 +173,7 @@ def _format_table(results: list[dict]) -> str:
 _MATRIX_FIELDS = [
     "dataset", "model_type", "scale", "gpu", "num_workers",
     "budget", "mean_nodes", "graphs_per_batch",
-    "mem_budget", "throughput_budget", "binding", "cg_ratio",
+    "mem_budget", "throughput_floor", "binding", "cg_ratio",
 ]
 
 _WORKER_COUNTS = [2, 4, 6, 8]
@@ -196,7 +203,6 @@ def _write_matrix(probe_results: list[dict], lake_root: str) -> Path:
 
     for probe in probe_results:
         bpn = probe["bytes_per_node"]
-        bpe = probe["bytes_per_edge"]
         bwd_mult = probe["backward_multiplier"]
         gamma = probe["gamma_us"] * 1e-6   # back to seconds
         alpha = probe["alpha_ms"] * 1e-3
@@ -213,9 +219,9 @@ def _write_matrix(probe_results: list[dict], lake_root: str) -> Path:
             ))
 
             def mock_probe(model, dataset, step_fn=None,
-                           _bpn=bpn, _bpe=bpe, _bwd=bwd_mult,
+                           _bpn=bpn, _bwd=bwd_mult,
                            _g=gamma, _a=alpha, _b=beta):
-                return _bpn, _bpe, _bwd, _g, _a, _b
+                return _bpn, _bwd, _g, _a, _b
 
             for gpu_name, free_bytes in gpu_vram.items():
                 for nw in _WORKER_COUNTS:
@@ -241,7 +247,8 @@ def _write_matrix(probe_results: list[dict], lake_root: str) -> Path:
                         "mean_nodes": result.mean_nodes,
                         "graphs_per_batch": round(result.budget / result.mean_nodes, 1),
                         "mem_budget": result.mem_budget,
-                        "throughput_budget": result.throughput_budget or "",
+                        "throughput_floor": (result.throughput_floor
+                                            if result.throughput_floor is not None else ""),
                         "binding": result.binding,
                         "cg_ratio": (round(result.cg_ratio, 3)
                                      if result.cg_ratio is not None else ""),

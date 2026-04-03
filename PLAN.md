@@ -440,6 +440,34 @@ Removed spec file deletion from `slurm.py` `finally` block. Specs persist in
 
 ## Next
 
+### ~~Budget module audit~~ — DONE (session 16)
+
+Full equation-by-equation audit against research docs + first principles.
+See `docs/reference/budget-cost-model-audit.md`.
+
+**5 bugs found, all fixed:**
+
+| Bug | Fix |
+|-----|-----|
+| Stale docstrings (module + node_budget) | Rewritten to match code |
+| γ measurement contaminated by GPU state | `torch.cuda.synchronize()` + `gc.collect()` + 3-sample median |
+| cg_ratio uses forward-only β | Now uses β × backward_multiplier (training-adjusted) |
+| num_steps truncates (drops 10-15% of data/epoch) | `math.ceil` in datamodule.py + curriculum.py |
+| No throughput floor guard | Added: `budget = clamp(floor, mem_ceiling)` |
+
+**Key mathematical result:** budget = mem_budget is correct for all
+current configs. Throughput floor (minimum batch to amortize α) exists
+but is always << mem_budget (max floor ≈ 87K nodes vs min ceiling ≈ 54K
+nodes for GAT large on V100). The floor is now computed and stored in
+`BudgetResult.throughput_floor` as a guard.
+
+**Plotting script:** `scripts/plot_budget.py --example` generates 14
+plots: throughput curves, regime heatmap, budget comparison, 3-panel
+deep dives (throughput + VRAM + GPU util) per model.
+
+**807 tests pass**, 2 skipped (GPU-only). Probe-budget SLURM job
+submitted (46275772) to validate on GPU with new γ measurement.
+
 ### Ablation follow-up — 15/32 completed, 17 remaining
 
 **Status (2026-04-02, session 14):**

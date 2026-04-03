@@ -10,13 +10,25 @@ import torch
 _log = structlog.get_logger()
 
 
-def try_compile(model: torch.nn.Module, **kwargs) -> torch.nn.Module:
+def try_compile(model: torch.nn.Module, *, conv_type: str | None = None,
+                **kwargs) -> torch.nn.Module:
     """Attempt ``torch.compile``; fall back to eager on inductor failure.
 
-    The inductor backend can fail on unusual FX graph patterns (e.g. DGI's
-    dual-encoder structure on torch 2.8). Rather than crash the entire job,
-    log a warning and continue uncompiled.
+    Skips compile entirely for conv types that use ``to_dense_batch()``
+    (e.g. GPS) — the ``Tensor.item()`` call causes graph breaks, repeated
+    recompilation, and eventual CUDA illegal memory access.
+
+    The inductor backend can also fail on unusual FX graph patterns (e.g.
+    DGI's dual-encoder structure on torch 2.8). Rather than crash the
+    entire job, log a warning and continue uncompiled.
     """
+    # GPS and other quadratic conv types use to_dense_batch() which calls
+    # Tensor.item() → graph break → repeated recompilation → CUDA crash.
+    _INCOMPATIBLE_CONV_TYPES = frozenset({"gps"})
+    if conv_type in _INCOMPATIBLE_CONV_TYPES:
+        _log.warning("compile_skipped", conv_type=conv_type,
+                     reason="to_dense_batch Tensor.item() causes graph breaks and CUDA crash")
+        return model
     if not hasattr(torch, "compile"):
         return model
     try:

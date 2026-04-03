@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 
 import pytorch_lightning as pl
@@ -57,7 +58,7 @@ class CurriculumSampler:
     def _build_inner(self):
         if self.max_num_nodes is None:
             return None
-        num_steps = max(1, int(len(self._active_indices) * self.mean_nodes / self.max_num_nodes))
+        num_steps = max(1, math.ceil(len(self._active_indices) * self.mean_nodes / self.max_num_nodes))
         return DynamicBatchSampler(
             Subset(self.dataset, self._active_indices),
             max_num=self.max_num_nodes, mode="node", shuffle=True,
@@ -196,13 +197,15 @@ class CurriculumDataModule(CANBusDataModule):
         if hp.dynamic_batching:
             trainer = getattr(self, "trainer", None)
             model = trainer.lightning_module if trainer else None
+            model_hp = getattr(model, "hparams", {}) if model else {}
             result = node_budget(
                 hp.dataset, hp.lake_root,
-                conv_type=hp.conv_type, heads=hp.heads,
+                conv_type=model_hp.get("conv_type", hp.conv_type),
+                heads=model_hp.get("heads", hp.heads),
                 model=model, train_dataset=val_data,
                 num_workers=hp.num_workers,
             )
-            num_steps = max(1, int(len(val_data) * result.mean_nodes / result.budget))
+            num_steps = max(1, math.ceil(len(val_data) * result.mean_nodes / result.budget))
             sampler = DynamicBatchSampler(
                 val_data, max_num=result.budget, mode="node", shuffle=False,
                 skip_too_big=True, num_steps=num_steps,
@@ -219,9 +222,11 @@ class CurriculumDataModule(CANBusDataModule):
         if hp.dynamic_batching and self._batch_sampler.max_num_nodes is None:
             trainer = getattr(self, "trainer", None)
             model = trainer.lightning_module if trainer else None
+            model_hp = getattr(model, "hparams", {}) if model else {}
             result = node_budget(
                 hp.dataset, hp.lake_root,
-                conv_type=hp.conv_type, heads=hp.heads,
+                conv_type=model_hp.get("conv_type", hp.conv_type),
+                heads=model_hp.get("heads", hp.heads),
                 model=model, train_dataset=self._batch_sampler.dataset,
                 num_workers=hp.num_workers,
             )

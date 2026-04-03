@@ -9,3 +9,9 @@ model:
     pool_aggrs: [mean]
     compile_model: true
     auxiliaries: []
+
+# GAT is compute-bound (cg_ratio ≈ 0.21 at W=6). 4 workers is sufficient —
+# extra workers idle waiting for GPU. Overrides stage YAML's num_workers=6.
+data:
+  init_args:
+    num_workers: 4

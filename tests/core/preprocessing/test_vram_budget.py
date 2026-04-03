@@ -58,9 +58,8 @@ class _DummyModel(torch.nn.Module):
 def test_probe_returns_positive_values():
     model = _DummyModel().cuda()
     dataset = _make_dataset()
-    bpn, bpe, bwd_mult, gamma, alpha, beta = _probe(model, dataset)
+    bpn, bwd_mult, gamma, alpha, beta = _probe(model, dataset)
     assert isinstance(bpn, int) and bpn > 0
-    assert isinstance(bpe, int) and bpe >= 0
     assert bwd_mult >= 1.0, "backward multiplier must be >= 1"
     assert gamma > 0, "collation rate must be positive"
     assert beta >= 0, "per-node GPU cost must be non-negative"
@@ -89,8 +88,8 @@ def test_fallback_when_no_model(tmp_path):
     assert isinstance(result, BudgetResult)
     assert result.mean_nodes == 30.0
     assert result.binding == "fallback"
-    assert result.throughput_budget is None
     assert result.cg_ratio is None
+    assert result.throughput_floor is None
     expected = int(12 * 1024**3 * _SAFETY_MARGIN / _FALLBACK_BYTES_PER_NODE)
     assert result.mem_budget == expected
     assert result.budget == expected
@@ -128,15 +127,16 @@ def test_quadratic_path_for_gps(tmp_path):
     assert result.budget > 0
     assert result.binding == "memory"
     assert result.cg_ratio is None
+    assert result.throughput_floor is None
 
 
 # --- throughput budget tests (mock _probe to inject coefficients) ------------
 
 def _mock_probe_factory(bytes_per_node, gamma, alpha, beta,
-                        bytes_per_edge=0, backward_multiplier=2.0):
-    """Return a mock _probe that returns fixed values (6-tuple)."""
+                        backward_multiplier=2.0):
+    """Return a mock _probe that returns fixed values (5-tuple)."""
     def _mock_probe(model, dataset, step_fn=None):
-        return bytes_per_node, bytes_per_edge, backward_multiplier, gamma, alpha, beta
+        return bytes_per_node, backward_multiplier, gamma, alpha, beta
     return _mock_probe
 
 
@@ -160,43 +160,24 @@ def _run_with_probe(tmp_path, gamma, alpha, beta, num_workers, mean_nodes=28.2,
                            num_workers=num_workers)
 
 
-def test_throughput_budget_exists_when_collation_dominated(tmp_path):
-    """When γ/W > β·m̄ and α > 0, a finite throughput budget exists."""
-    # γ=73μs/graph, β=0.15μs/node, α=3ms, W=2, m̄=28.2
-    # gap = 73e-6/2 - 0.15e-6*28.2 = 36.5e-6 - 4.23e-6 = 32.27e-6 > 0 ✓
-    # B = 0.003 / 32.27e-6 ≈ 93 graphs → 93 * 28.2 ≈ 2622 nodes
-    result = _run_with_probe(tmp_path, gamma=73e-6, alpha=0.003, beta=0.15e-6,
-                             num_workers=2)
-    assert result.throughput_budget is not None
-    assert result.throughput_budget > 0
-    assert result.cg_ratio is not None and result.cg_ratio > 1.0
+def test_budget_always_uses_memory_ceiling(tmp_path):
+    """Budget should equal mem_budget regardless of collation/compute regime."""
+    # Collation-dominated: low β, high γ
+    r1 = _run_with_probe(tmp_path, gamma=73e-6, alpha=0.003, beta=0.15e-6,
+                         num_workers=2)
+    assert r1.budget == r1.mem_budget
+    assert r1.binding == "memory"
+    # Throughput floor should exist in collation-dominated regime
+    assert r1.throughput_floor is not None
+    assert r1.throughput_floor < r1.mem_budget
 
-
-def test_throughput_budget_none_when_compute_dominated(tmp_path):
-    """When GPU is slower per graph (β·m̄ > γ/W), no throughput ceiling."""
-    # γ=73μs/graph, β=5μs/node, W=6, m̄=28.2
-    # gap = 73e-6/6 - 5e-6*28.2 = 12.2e-6 - 141e-6 < 0 → None
-    result = _run_with_probe(tmp_path, gamma=73e-6, alpha=0.003, beta=5e-6,
-                             num_workers=6)
-    assert result.throughput_budget is None
-    assert result.binding == "memory"
-
-
-def test_throughput_budget_scales_with_workers(tmp_path):
-    """More workers → larger throughput budget (pipeline delivers faster)."""
-    r2 = _run_with_probe(tmp_path, gamma=73e-6, alpha=0.003, beta=0.15e-6,
-                          num_workers=2)
-    r6 = _run_with_probe(tmp_path, gamma=73e-6, alpha=0.003, beta=0.15e-6,
-                          num_workers=6)
-    assert r2.throughput_budget is not None and r6.throughput_budget is not None
-    assert r6.throughput_budget > r2.throughput_budget
-
-
-def test_throughput_budget_none_when_no_overhead(tmp_path):
-    """With α=0, T_gpu is pure linear — no finite optimum."""
-    result = _run_with_probe(tmp_path, gamma=73e-6, alpha=0.0, beta=0.15e-6,
-                             num_workers=2)
-    assert result.throughput_budget is None
+    # Compute-dominated: high β (γ/W < β·m̄·bwd_mult)
+    r2 = _run_with_probe(tmp_path, gamma=73e-6, alpha=0.003, beta=5e-6,
+                         num_workers=6)
+    assert r2.budget == r2.mem_budget
+    assert r2.binding == "memory"
+    # Compute-bound: no throughput floor (GPU always bottleneck)
+    assert r2.throughput_floor is None
 
 
 def test_cg_ratio_reflects_worker_count(tmp_path):
@@ -206,3 +187,53 @@ def test_cg_ratio_reflects_worker_count(tmp_path):
     r8 = _run_with_probe(tmp_path, gamma=73e-6, alpha=0.003, beta=0.15e-6,
                           num_workers=8)
     assert r2.cg_ratio > r8.cg_ratio
+
+
+def test_cg_ratio_uses_training_adjusted_beta(tmp_path):
+    """cg_ratio should use β × backward_multiplier, not raw forward-only β."""
+    # With bwd_mult=2.0 (default mock), cg_ratio should be half of what
+    # it would be with forward-only β.
+    r = _run_with_probe(tmp_path, gamma=73e-6, alpha=0.003, beta=0.15e-6,
+                        num_workers=2)
+    # γ_eff = γ / (m̄ × W) = 73e-6 / (28.2 × 2) = 1.294e-6
+    # β_train = β × bwd_mult = 0.15e-6 × 2.0 = 0.30e-6
+    # cg_ratio = 1.294e-6 / 0.30e-6 ≈ 4.31
+    assert r.cg_ratio is not None
+    assert 4.0 < r.cg_ratio < 5.0, f"expected ~4.3, got {r.cg_ratio:.2f}"
+
+
+def test_throughput_floor_derivation(tmp_path):
+    """Throughput floor = α_train·m̄ / (γ/W − β_train·m̄), in nodes."""
+    # Collation-bound regime with known coefficients
+    gamma = 65e-6      # sec/graph
+    alpha = 0.008      # sec (GPU overhead)
+    beta = 0.10e-6     # sec/node (forward-only)
+    bwd_mult = 2.0     # mock default
+    mean_nodes = 28.2
+    num_workers = 6
+
+    r = _run_with_probe(tmp_path, gamma=gamma, alpha=alpha, beta=beta,
+                        num_workers=num_workers, mean_nodes=mean_nodes)
+
+    # Manual derivation:
+    #   α_train = 0.008 × 2.0 = 0.016
+    #   β_train = 0.10e-6 × 2.0 = 0.20e-6
+    #   collation_rate = γ/W = 65e-6 / 6 = 10.833e-6 sec/graph
+    #   gpu_rate = β_train × m̄ = 0.20e-6 × 28.2 = 5.64e-6 sec/graph
+    #   B_floor = α_train / (collation_rate - gpu_rate)
+    #           = 0.016 / (10.833e-6 - 5.64e-6) = 0.016 / 5.193e-6 ≈ 3081 graphs
+    #   N_floor = B_floor × m̄ = 3081 × 28.2 ≈ 86,885 nodes
+    import math
+    alpha_train = alpha * bwd_mult
+    beta_train = beta * bwd_mult
+    collation_rate = gamma / num_workers
+    gpu_rate = beta_train * mean_nodes
+    b_floor = alpha_train / (collation_rate - gpu_rate)
+    expected_floor = max(1, int(math.ceil(b_floor * mean_nodes)))
+
+    assert r.throughput_floor is not None
+    assert r.throughput_floor == expected_floor, (
+        f"expected {expected_floor}, got {r.throughput_floor}"
+    )
+    # Floor should be well below mem_budget
+    assert r.throughput_floor < r.mem_budget

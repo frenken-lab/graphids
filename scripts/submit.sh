@@ -44,4 +44,4 @@ SIG_ARGS=()
 sbatch "$ACCT" --partition="$PARTITION" --cpus-per-task="$CPUS" --mem="$MEM" \
     --time="$TIME" --job-name="kd-gat-${JOB}" "${GPU_ARGS[@]}" "${SIG_ARGS[@]}" \
     --output="${SLURM_LOG_DIR}/${JOB}_%j.out" --error="${SLURM_LOG_DIR}/${JOB}_%j.err" \
-    --wrap="${ENV}${PREAMBLE} && ${COMMAND} $(printf '%q ' "$@")"
+    --wrap="${ENV}${PREAMBLE} && ${COMMAND}$([ $# -gt 0 ] && printf ' %q' "$@")"
