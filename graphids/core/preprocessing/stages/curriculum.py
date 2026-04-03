@@ -110,7 +110,8 @@ class CurriculumDataModule(CANBusDataModule):
         lake_root: str = os.environ.get("KD_GAT_LAKE_ROOT"),
         vgae_ckpt_path: str = "",
         batch_size: int = 8192,
-        num_workers: int = 2,
+        num_workers: int | None = None,
+        prefetch_factor: int = 2,
         window_size: int = 100,
         stride: int = 100,
         val_fraction: float = 0.2,
@@ -126,7 +127,8 @@ class CurriculumDataModule(CANBusDataModule):
     ):
         super().__init__(
             dataset=dataset, lake_root=lake_root, batch_size=batch_size,
-            num_workers=num_workers, window_size=window_size, stride=stride,
+            num_workers=num_workers, prefetch_factor=prefetch_factor,
+            window_size=window_size, stride=stride,
             val_fraction=val_fraction, seed=seed, dynamic_batching=dynamic_batching,
             conv_type=conv_type, heads=heads,
         )
@@ -203,14 +205,14 @@ class CurriculumDataModule(CANBusDataModule):
                 conv_type=model_hp.get("conv_type", hp.conv_type),
                 heads=model_hp.get("heads", hp.heads),
                 model=model, train_dataset=val_data,
-                num_workers=hp.num_workers,
             )
+            nw = hp.num_workers if hp.num_workers is not None else 2
             num_steps = max(1, math.ceil(len(val_data) * result.mean_nodes / result.budget))
             sampler = DynamicBatchSampler(
                 val_data, max_num=result.budget, mode="node", shuffle=False,
                 skip_too_big=True, num_steps=num_steps,
             )
-            return make_graph_loader(val_data, batch_sampler=sampler, num_workers=hp.num_workers, device=device)
+            return make_graph_loader(val_data, batch_sampler=sampler, num_workers=nw, device=device)
         return make_graph_loader(val_data, batch_size=bs, shuffle=False, num_workers=hp.num_workers, device=device)
 
     def on_train_epoch_start(self, trainer, pl_module):
@@ -228,7 +230,6 @@ class CurriculumDataModule(CANBusDataModule):
                 conv_type=model_hp.get("conv_type", hp.conv_type),
                 heads=model_hp.get("heads", hp.heads),
                 model=model, train_dataset=self._batch_sampler.dataset,
-                num_workers=hp.num_workers,
             )
             self._batch_sampler.max_num_nodes = result.budget
             self._batch_sampler.mean_nodes = result.mean_nodes

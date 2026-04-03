@@ -134,6 +134,19 @@ class KDAuxiliary(TypedDict, total=False):
 
 
 @contextlib.contextmanager
+def eval_mode(model):
+    """Context manager: set model.eval(), restore original training state on exit.
+
+    Enforces the critical constraint: never leak eval mode to callers.
+    """
+    was_training = model.training
+    model.eval()
+    try:
+        yield
+    finally:
+        model.train(was_training)
+
+
 def teacher_on_device(module, device):
     """Move KD teacher to *device* for inference, return to CPU after.
 

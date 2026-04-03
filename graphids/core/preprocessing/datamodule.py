@@ -110,7 +110,8 @@ class CANBusDataModule(pl.LightningDataModule):
         dataset: str,
         lake_root: str = os.environ.get("KD_GAT_LAKE_ROOT"),
         batch_size: int = 32,
-        num_workers: int = 2,
+        num_workers: int | None = None,
+        prefetch_factor: int = 2,
         window_size: int = 100,
         stride: int = 100,
         val_fraction: float = 0.2,
@@ -199,7 +200,8 @@ class CANBusDataModule(pl.LightningDataModule):
 
         hp = self.hparams
         bs = max(8, hp["batch_size"])
-        nw = hp["num_workers"] if "num_workers" in hp else 0
+        nw = hp.get("num_workers")  # None = auto-size from sizing chain
+        pf = hp.get("prefetch_factor", 2)
 
         # Async H2D via PrefetchLoader when GPU is available
         trainer = getattr(self, "trainer", None)
@@ -216,8 +218,32 @@ class CANBusDataModule(pl.LightningDataModule):
                 conv_type=model_hp.get("conv_type", hp.get("conv_type", "gatv2")),
                 heads=model_hp.get("heads", hp.get("heads", 4)),
                 model=model, train_dataset=dataset,
-                num_workers=nw,
             )
+
+            # Auto-size workers: calibrate at the actual operating batch size
+            if nw is None:
+                from graphids.core.preprocessing.budget import (
+                    calibrate_at_budget, compute_resource_profile,
+                )
+                slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
+                max_cpus = int(slurm_cpus) if slurm_cpus else os.cpu_count()
+                bwd_mult = result.backward_multiplier or 2.0
+                t_c, t_g = calibrate_at_budget(
+                    model, dataset, result.budget, result.mean_nodes,
+                    backward_multiplier=bwd_mult,
+                )
+                profile = compute_resource_profile(
+                    result,
+                    t_collation_s=t_c if t_c > 0 else None,
+                    t_gpu_s=t_g if t_g > 0 else None,
+                    max_cpus=max_cpus,
+                )
+                if profile is not None:
+                    nw = profile.workers
+                    pf = profile.prefetch_factor
+                else:
+                    nw = 2  # fallback when probe unavailable
+
             import math as _math
             num_steps = max(1, _math.ceil(len(dataset) * result.mean_nodes / result.budget))
             sampler = DynamicBatchSampler(
@@ -225,9 +251,17 @@ class CANBusDataModule(pl.LightningDataModule):
                 skip_too_big=True, num_steps=num_steps,
             )
             dataset._data_list = None  # clear bloat from sampler's __init__
-            return make_graph_loader(dataset, batch_sampler=sampler, num_workers=nw, device=device)
+            return make_graph_loader(
+                dataset, batch_sampler=sampler, num_workers=nw, device=device,
+                prefetch_factor=pf if nw > 0 else None,
+            )
 
-        return make_graph_loader(dataset, batch_size=bs, shuffle=shuffle, num_workers=nw, device=device)
+        if nw is None:
+            nw = 2
+        return make_graph_loader(
+            dataset, batch_size=bs, shuffle=shuffle, num_workers=nw, device=device,
+            prefetch_factor=pf if nw > 0 else None,
+        )
 
 
 class FusionDataModule(pl.LightningDataModule):

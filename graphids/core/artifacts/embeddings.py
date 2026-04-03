@@ -24,9 +24,9 @@ def collect_and_save_embeddings(
     batch_size: int = 256,
 ) -> None:
     """Run inference on val_data, collect embeddings + labels, save as NPZ."""
-    was_training = model.training
-    model.eval()
-    try:
+    from graphids.core.models._training import eval_mode
+
+    with eval_mode(model):
         data = val_data[:max_samples]
         loader = make_graph_loader(data, batch_size=batch_size)
 
@@ -52,8 +52,6 @@ def collect_and_save_embeddings(
         path = output_dir / "embeddings.npz"
         np.savez_compressed(path, embeddings=embeddings, labels=labels, model_type=model_type)
         log.info("embeddings_saved", path=str(path), n_samples=len(labels), model_type=model_type)
-    finally:
-        model.train(was_training)
 
 
 @torch.no_grad()
@@ -80,9 +78,9 @@ def collect_and_save_attention(
         )
         return
 
-    was_training = model.training
-    model.eval()
-    try:
+    from graphids.core.models._training import eval_mode
+
+    with eval_mode(model):
         data = val_data[:max_samples]
         loader = make_graph_loader(data, batch_size=1)
 
@@ -102,5 +100,3 @@ def collect_and_save_attention(
             path = output_dir / "attention_weights.npz"
             np.savez_compressed(path, **attn_export)
             log.info("attention_weights_saved", samples=sample_idx, path=str(path))
-    finally:
-        model.train(was_training)

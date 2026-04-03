@@ -5,5 +5,5 @@ data:
     stride: 100
     val_fraction: 0.2
     batch_size: 8192
-    num_workers: 6
+    num_workers: null  # auto-sized from GPU-first sizing chain
     dynamic_batching: true

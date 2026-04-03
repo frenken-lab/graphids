@@ -5,4 +5,4 @@ data:
     stride: 1
     val_fraction: 0.2
     batch_size: 256
-    num_workers: 6
+    num_workers: null  # auto-sized from GPU-first sizing chain
