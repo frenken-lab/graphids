@@ -76,15 +76,23 @@ def _instantiate_model(model_type: str, scale: str, num_ids: int, in_channels: i
     return cls(**init_args)
 
 
+_CALIBRATION_FRACTIONS = [0.25, 0.50, 0.75, 1.0]
+
+
 def _probe_combo(
     model_type: str, scale: str, dataset_name: str, lake_root: str, device,
-) -> dict:
-    """Run full sizing chain for one (model_type, scale, dataset) combo."""
+) -> list[dict]:
+    """Run VRAM probe + multi-point calibration for one (model, scale, dataset).
+
+    Measures at multiple fractions of the VRAM budget so downstream plots
+    can fit the throughput model (α, β, γ) from raw data points.
+    Returns one row per measurement point.
+    """
     import torch
 
     from graphids.config import data_dir
     from graphids.core.preprocessing.budget import (
-        _probe_vram, calibrate_at_budget, compute_resource_profile, node_budget,
+        _probe_vram, calibrate_at_budget, node_budget,
     )
     from graphids.core.preprocessing.datasets.can_bus import CANBusDataset
 
@@ -111,20 +119,8 @@ def _probe_combo(
         conv_type=getattr(model, "hparams", {}).get("conv_type", "gatv2"),
     )
 
-    # --- Calibrate at operating batch size ---
-    t_collation, t_gpu = calibrate_at_budget(
-        model, ds, result.budget, backward_multiplier=backward_mult,
-    )
-
-    # --- Resource profile ---
-    profile = compute_resource_profile(
-        result, t_collation_s=t_collation, t_gpu_s=t_gpu,
-    )
-
-    del model
-    torch.cuda.empty_cache()
-
-    row = {
+    # --- Multi-point calibration ---
+    shared = {
         "model_type": model_type,
         "scale": scale,
         "dataset": dataset_name,
@@ -134,45 +130,51 @@ def _probe_combo(
         "mem_budget": result.mem_budget,
         "mean_nodes": round(result.mean_nodes, 1),
     }
-    if profile is not None:
-        row.update({
-            "t_collation_ms": round(t_collation * 1000, 1),
-            "t_gpu_ms": round(t_gpu * 1000, 1),
-            "workers": profile.workers,
-            "prefetch_factor": profile.prefetch_factor,
-            "cpus": profile.cpus,
-            "memory_gb": profile.memory_gb,
-            "cg_ratio": round(profile.t_collation_us / profile.t_gpu_us, 2)
-                        if profile.t_gpu_us > 0 else None,
+
+    rows = []
+    for frac in _CALIBRATION_FRACTIONS:
+        target = max(1, int(result.budget * frac))
+        t_collation, t_gpu, n_graphs = calibrate_at_budget(
+            model, ds, target, backward_multiplier=backward_mult,
+        )
+        if t_collation <= 0 and t_gpu <= 0:
+            continue
+        rows.append({
+            **shared,
+            "fraction": frac,
+            "target_nodes": target,
+            "n_graphs": n_graphs,
+            "t_collation_ms": round(t_collation * 1000, 2),
+            "t_gpu_ms": round(t_gpu * 1000, 2),
         })
-    return row
+
+    del model
+    torch.cuda.empty_cache()
+
+    return rows
 
 
 def _format_table(results: list[dict]) -> str:
-    """Format results as a readable sizing chain table."""
+    """Format results as a readable multi-point calibration table."""
     if not results:
         return "No results."
 
     header = (
-        f"{'model':<12} {'scale':<6} {'dataset':<10} "
-        f"{'B/node':>8} {'bwd':>5} {'budget':>10} "
-        f"{'T_c(ms)':>8} {'T_g(ms)':>8} {'W':>3} {'pf':>3} "
-        f"{'cpus':>5} {'mem_gb':>6} {'cg':>5}"
+        f"{'model':<12} {'scale':<6} {'dataset':<10} {'frac':>5} "
+        f"{'target':>10} {'graphs':>7} "
+        f"{'T_c(ms)':>9} {'T_g(ms)':>9} "
+        f"{'B/node':>8} {'bwd':>5} {'budget':>10}"
     )
     lines = [header, "-" * len(header)]
 
     for r in results:
         lines.append(
             f"{r['model_type']:<12} {r['scale']:<6} {r['dataset']:<10} "
+            f"{r['fraction']:>5.2f} "
+            f"{r['target_nodes']:>10,} {r['n_graphs']:>7,} "
+            f"{r['t_collation_ms']:>9.2f} {r['t_gpu_ms']:>9.2f} "
             f"{r['bytes_per_node']:>8,} {r['backward_multiplier']:>5.2f} "
-            f"{r['budget']:>10,} "
-            f"{r.get('t_collation_ms', ''):>8} "
-            f"{r.get('t_gpu_ms', ''):>8} "
-            f"{r.get('workers', ''):>3} "
-            f"{r.get('prefetch_factor', ''):>3} "
-            f"{r.get('cpus', ''):>5} "
-            f"{r.get('memory_gb', ''):>6} "
-            f"{r.get('cg_ratio', ''):>5}"
+            f"{r['budget']:>10,}"
         )
 
     return "\n".join(lines)
@@ -200,6 +202,10 @@ def main(argv: list[str]) -> None:
         help=f"Lake root path (default: {LAKE_ROOT})",
     )
     parser.add_argument("--json", action="store_true", help="Output JSON instead of table")
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Print results but don't write to data lake",
+    )
     args = parser.parse_args(argv)
 
     import torch
@@ -231,16 +237,38 @@ def main(argv: list[str]) -> None:
             for dataset_name in datasets:
                 label = f"{model_type}/{scale}/{dataset_name}"
                 try:
-                    result = _probe_combo(model_type, scale, dataset_name, args.lake_root, device)
-                    results.append(result)
-                    log.info("probe_done", label=label, **{
-                        k: v for k, v in result.items()
-                        if k not in ("model_type", "scale", "dataset")
-                    })
+                    rows = _probe_combo(model_type, scale, dataset_name, args.lake_root, device)
+                    results.extend(rows)
+                    log.info("probe_done", label=label, points=len(rows))
                 except Exception as e:
                     log.error("probe_failed", label=label, error=str(e))
                     errors.append({"label": label, "error": str(e)})
 
+    # --- Write to data lake ---
+    out_path = None
+    if results and not args.dry_run:
+        import csv
+        import os
+
+        from graphids.config import require_lake_write
+
+        require_lake_write()
+        out_dir = Path(args.lake_root) / "reference"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / "budget_calibration.csv"
+
+        fieldnames = list(results[0].keys())
+        tmp = out_path.with_suffix(".tmp")
+        with open(tmp, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(results)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp.rename(out_path)
+        log.info("budget_csv_written", path=str(out_path), rows=len(results))
+
+    # --- Print ---
     if args.json:
         output = {"results": results, "errors": errors}
         print(json.dumps(output, indent=2))
@@ -250,3 +278,6 @@ def main(argv: list[str]) -> None:
             print(f"\n{len(errors)} probe(s) failed:")
             for e in errors:
                 print(f"  {e['label']}: {e['error']}")
+
+    if out_path is not None:
+        print(f"\nWritten to {out_path}")

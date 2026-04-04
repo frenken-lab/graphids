@@ -159,6 +159,9 @@ def _rebuild_catalog(lake_root: str, *, dry_run: bool = False) -> int:
         log.info("rebuild_dry_run", sidecar_count=len(sidecars))
         return len(sidecars)
 
+    from graphids.config import require_lake_write
+
+    require_lake_write()
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
     db = duckdb.connect(str(catalog_path))
 

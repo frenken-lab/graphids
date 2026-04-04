@@ -19,6 +19,24 @@ from .topology import PIPELINE_YAML
 from .yaml_utils import read_yaml
 
 
+class LakeWriteError(PermissionError):
+    """Raised when lake write is attempted without KD_GAT_LAKE_WRITE=1."""
+
+
+def require_lake_write() -> None:
+    """Gate all data-lake writes behind KD_GAT_LAKE_WRITE=1.
+
+    SLURM jobs get this via _preamble.sh → .env. Direct CLI invocations
+    on login nodes or interactive sessions are blocked by default.
+    """
+    if os.environ.get("KD_GAT_LAKE_WRITE") != "1":
+        raise LakeWriteError(
+            "Lake write blocked: set KD_GAT_LAKE_WRITE=1 in environment "
+            "(SLURM jobs get this from .env via _preamble.sh). "
+            "For read-only runs, use --dry-run."
+        )
+
+
 class PathContext(BaseModel):
     """Frozen path model — single source for all run-related paths."""
 

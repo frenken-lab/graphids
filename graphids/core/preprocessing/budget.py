@@ -72,7 +72,7 @@ class ResourceProfile:
     """Full resource sizing from the GPU-first sizing chain.
 
     Computed by compute_resource_profile() from calibrate_at_budget() data.
-    See docs/backlog/training-efficiency.md for the sizing chain derivation.
+    See docs/reference/throughput-model.md for the sizing chain derivation.
     """
     node_budget: int
     graphs_per_batch: int
@@ -91,7 +91,7 @@ class ResourceProfile:
 def calibrate_at_budget(
     model, dataset, budget: int,
     *, backward_multiplier: float = _GRAD_MULTIPLIER,
-) -> tuple[float, float]:
+) -> tuple[float, float, int]:
     """Measure T_collation and T_gpu at the actual operating batch size.
 
     Builds one batch targeting ``budget`` nodes from the dataset, then:
@@ -100,16 +100,17 @@ def calibrate_at_budget(
 
     No extrapolation — direct measurement at the operating point.
 
-    Returns (t_collation_s, t_gpu_s) in seconds, or (0, 0) on failure.
+    Returns (t_collation_s, t_gpu_s, n_graphs) — seconds and graph count,
+    or (0, 0, 0) on failure.
     """
     from torch_geometric.data import Batch
 
     if model.device.type != "cuda":
-        return 0.0, 0.0
+        return 0.0, 0.0, 0
 
     graphs = _collect_graphs(dataset, budget)
     if len(graphs) < 2:
-        return 0.0, 0.0
+        return 0.0, 0.0, 0
 
     # --- T_collation: 3-sample median ---
     torch.cuda.synchronize()
@@ -154,7 +155,7 @@ def calibrate_at_budget(
              t_gpu_ms=round(t_gpu * 1000, 1),
              backward_multiplier=round(backward_multiplier, 2))
 
-    return t_collation, t_gpu
+    return t_collation, t_gpu, len(graphs)
 
 
 def compute_resource_profile(
@@ -287,6 +288,7 @@ def _probe_vram(model, dataset, step_fn=None) -> tuple[int, float]:
                 model.eval()
 
     bytes_per_node = int(fwd_per_node * backward_multiplier)
+    num_nodes = batch.num_nodes
 
     del batch
     if model.device.type == "cuda":
@@ -295,7 +297,7 @@ def _probe_vram(model, dataset, step_fn=None) -> tuple[int, float]:
     log.info("vram_probe",
              bytes_per_node=bytes_per_node,
              backward_multiplier=round(backward_multiplier, 2),
-             fwd_per_node=fwd_per_node, num_nodes=total_nodes)
+             fwd_per_node=fwd_per_node, num_nodes=num_nodes)
 
     return bytes_per_node, backward_multiplier
 

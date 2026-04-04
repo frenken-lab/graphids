@@ -611,6 +611,94 @@ requests = [
 ]
 
 [[package]]
+name = "graphids"
+version = "1.0.0"
+source = { editable = "." }
+dependencies = [
+    { name = "alembic" },
+    { name = "dagster-dg-cli" },
+    { name = "duckdb" },
+    { name = "fastapi" },
+    { name = "jsonargparse", extra = ["signatures"] },
+    { name = "networkx" },
+    { name = "numpy" },
+    { name = "optuna" },
+    { name = "pandas" },
+    { name = "polars" },
+    { name = "psutil" },
+    { name = "pyarrow" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "pytorch-lightning" },
+    { name = "pyyaml" },
+    { name = "scikit-learn" },
+    { name = "scipy" },
+    { name = "torch" },
+    { name = "torch-cluster" },
+    { name = "torch-geometric" },
+    { name = "torch-scatter" },
+    { name = "torch-sparse" },
+    { name = "uvicorn" },
+    { name = "wandb" },
+]
+
+[package.optional-dependencies]
+analysis = [
+    { name = "seaborn" },
+    { name = "torch-cka" },
+    { name = "umap-learn" },
+]
+baselines = [
+    { name = "pygod" },
+]
+db = [
+    { name = "psycopg", extra = ["binary"] },
+]
+dev = [
+    { name = "httpx" },
+    { name = "pytest" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "alembic", specifier = ">=1.18" },
+    { name = "dagster-dg-cli", specifier = ">=1.12.21" },
+    { name = "duckdb", specifier = ">=1.0.0" },
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
+    { name = "jsonargparse", extras = ["signatures"], specifier = ">=4.27.7" },
+    { name = "networkx", specifier = ">=3.2" },
+    { name = "numpy", specifier = ">=1.26.4" },
+    { name = "optuna", specifier = ">=4.0" },
+    { name = "pandas", specifier = ">=2.2.3" },
+    { name = "polars", specifier = ">=1.0.0" },
+    { name = "psutil", specifier = ">=6.0.0" },
+    { name = "psycopg", extras = ["binary"], marker = "extra == 'db'", specifier = ">=3.1" },
+    { name = "pyarrow", specifier = ">=14.0.0" },
+    { name = "pydantic", specifier = ">=2.10" },
+    { name = "pydantic-settings", specifier = ">=2.0" },
+    { name = "pygod", marker = "extra == 'baselines'", specifier = ">=1.1" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
+    { name = "pytorch-lightning", specifier = ">=2.6.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
+    { name = "scikit-learn", specifier = ">=1.5.0" },
+    { name = "scipy", specifier = ">=1.13.0" },
+    { name = "seaborn", marker = "extra == 'analysis'", specifier = ">=0.13" },
+    { name = "torch", specifier = ">=2.8.0,<2.9" },
+    { name = "torch-cka", marker = "extra == 'analysis'", specifier = ">=0.21" },
+    { name = "torch-cluster", index = "https://data.pyg.org/whl/torch-2.8.0+cu126.html" },
+    { name = "torch-geometric", specifier = ">=2.7.0" },
+    { name = "torch-scatter", index = "https://data.pyg.org/whl/torch-2.8.0+cu126.html" },
+    { name = "torch-sparse", index = "https://data.pyg.org/whl/torch-2.8.0+cu126.html" },
+    { name = "umap-learn", marker = "extra == 'analysis'", specifier = ">=0.5" },
+    { name = "uvicorn", specifier = ">=0.30" },
+    { name = "wandb", specifier = ">=0.25.1" },
+]
+provides-extras = ["analysis", "dev", "baselines", "db"]
+
+[[package]]
 name = "graphql-core"
 version = "3.2.8"
 source = { registry = "https://pypi.org/simple" }
@@ -810,96 +898,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/19/74/a633ee74eb36c44aa
 wheels = [
     { url = "https://files.pythonhosted.org/packages/41/45/1a4ed80516f02155c51f51e8cedb3c1902296743db0bbc66608a0db2814f/jsonschema_specifications-2025.9.1-py3-none-any.whl", hash = "sha256:98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe", size = 18437, upload-time = "2025-09-08T01:34:57.871Z" },
 ]
-
-[[package]]
-name = "kd-gat"
-version = "1.0.0"
-source = { editable = "." }
-dependencies = [
-    { name = "alembic" },
-    { name = "dagster-dg-cli" },
-    { name = "duckdb" },
-    { name = "fastapi" },
-    { name = "jsonargparse", extra = ["signatures"] },
-    { name = "networkx" },
-    { name = "numpy" },
-    { name = "optuna" },
-    { name = "pandas" },
-    { name = "polars" },
-    { name = "psutil" },
-    { name = "pyarrow" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "pytorch-lightning" },
-    { name = "pyyaml" },
-    { name = "scikit-learn" },
-    { name = "scipy" },
-    { name = "structlog" },
-    { name = "torch" },
-    { name = "torch-cluster" },
-    { name = "torch-geometric" },
-    { name = "torch-scatter" },
-    { name = "torch-sparse" },
-    { name = "uvicorn" },
-    { name = "wandb" },
-]
-
-[package.optional-dependencies]
-analysis = [
-    { name = "seaborn" },
-    { name = "torch-cka" },
-    { name = "umap-learn" },
-]
-baselines = [
-    { name = "pygod" },
-]
-db = [
-    { name = "psycopg", extra = ["binary"] },
-]
-dev = [
-    { name = "httpx" },
-    { name = "pytest" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "alembic", specifier = ">=1.18" },
-    { name = "dagster-dg-cli", specifier = ">=1.12.21" },
-    { name = "duckdb", specifier = ">=1.0.0" },
-    { name = "fastapi", specifier = ">=0.115" },
-    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
-    { name = "jsonargparse", extras = ["signatures"], specifier = ">=4.27.7" },
-    { name = "networkx", specifier = ">=3.2" },
-    { name = "numpy", specifier = ">=1.26.4" },
-    { name = "optuna", specifier = ">=4.0" },
-    { name = "pandas", specifier = ">=2.2.3" },
-    { name = "polars", specifier = ">=1.0.0" },
-    { name = "psutil", specifier = ">=6.0.0" },
-    { name = "psycopg", extras = ["binary"], marker = "extra == 'db'", specifier = ">=3.1" },
-    { name = "pyarrow", specifier = ">=14.0.0" },
-    { name = "pydantic", specifier = ">=2.10" },
-    { name = "pydantic-settings", specifier = ">=2.0" },
-    { name = "pygod", marker = "extra == 'baselines'", specifier = ">=1.1" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
-    { name = "pytorch-lightning", specifier = ">=2.6.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
-    { name = "scikit-learn", specifier = ">=1.5.0" },
-    { name = "scipy", specifier = ">=1.13.0" },
-    { name = "seaborn", marker = "extra == 'analysis'", specifier = ">=0.13" },
-    { name = "structlog", specifier = ">=25.5.0" },
-    { name = "torch", specifier = ">=2.8.0,<2.9" },
-    { name = "torch-cka", marker = "extra == 'analysis'", specifier = ">=0.21" },
-    { name = "torch-cluster", index = "https://data.pyg.org/whl/torch-2.8.0+cu126.html" },
-    { name = "torch-geometric", specifier = ">=2.7.0" },
-    { name = "torch-scatter", index = "https://data.pyg.org/whl/torch-2.8.0+cu126.html" },
-    { name = "torch-sparse", index = "https://data.pyg.org/whl/torch-2.8.0+cu126.html" },
-    { name = "umap-learn", marker = "extra == 'analysis'", specifier = ">=0.5" },
-    { name = "uvicorn", specifier = ">=0.30" },
-    { name = "wandb", specifier = ">=0.25.1" },
-]
-provides-extras = ["analysis", "dev", "baselines", "db"]
 
 [[package]]
 name = "kiwisolver"

@@ -62,6 +62,9 @@ def write_run_record(record: RunRecord, run_dir: Path) -> Path:
 
     Follows the same pattern as ``yaml_utils.write_yaml``.
     """
+    from graphids.config import require_lake_write
+
+    require_lake_write()
     path = run_dir / RUN_RECORD_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")

@@ -4,6 +4,7 @@ from .base import CONFIG_DIR, PROJECT_ROOT
 from .contracts import KDEntry, TrainingRunConfig, expand_recipe_configs
 from .paths import (
     DEFAULT_DATASET,
+    LakeWriteError,
     PathContext,
     cache_dir,
     checkpoint_path,
@@ -12,6 +13,7 @@ from .paths import (
     data_dir,
     dataset_names,
     load_catalog,
+    require_lake_write,
 )
 from .runtime import (
     CKPT_PATH,

@@ -228,8 +228,8 @@ class CANBusDataModule(pl.LightningDataModule):
                 slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
                 max_cpus = int(slurm_cpus) if slurm_cpus else os.cpu_count()
                 bwd_mult = result.backward_multiplier or 2.0
-                t_c, t_g = calibrate_at_budget(
-                    model, dataset, result.budget, result.mean_nodes,
+                t_c, t_g, _n_graphs = calibrate_at_budget(
+                    model, dataset, result.budget,
                     backward_multiplier=bwd_mult,
                 )
                 profile = compute_resource_profile(

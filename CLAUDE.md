@@ -41,7 +41,8 @@ Three entry points, zero overlap:
 | `python -m graphids pipeline-status --log -f` | Follow orchestrator log (like tail -f) |
 | `python -m graphids job-stats <job_ids>` | sacct resource profiler |
 | `python -m graphids profile` | Profiled training run (PyTorchProfiler) |
-| `python -m graphids probe-budget` | Hardware cost model measurement |
+| `python -m graphids probe-budget` | Hardware cost model measurement (multi-point, writes CSV to lake) |
+| `python -m graphids.plots.budget --csv <path>` | Budget cost-model plots (Altair, polars) |
 | `python -m graphids rebuild-caches` | Rebuild preprocessed graph caches |
 | `python -m graphids stage-data` | NFS → scratch → TMPDIR staging |
 | `python -m graphids submit-profile <job>` | Print SLURM resource profile for submit.sh |
@@ -59,7 +60,7 @@ Three entry points, zero overlap:
 | `dg list defs` | List all assets |
 | `python -m graphids.orchestrate validate` | Validate recipe config chains |
 
-**Config resolution** — `ConfigResolver` in `orchestrate/resolve.py` is the exclusive merge path for pipeline runs. It merges trainer/resource/KD overrides, validates cross-field constraints (including YAML-aware checks via naive deep merge), and emits an audit trail. `assets.py` calls `resolver.resolve()` → `ResolvedConfig` (TrainingSpec + ResourceSpec + paths). See `docs/backlog/config-overhaul-remaining.md`.
+**Config resolution** — `ConfigResolver` in `orchestrate/resolve.py` is the exclusive merge path for pipeline runs. It merges trainer/resource/KD overrides, validates cross-field constraints (including YAML-aware checks via naive deep merge), and emits an audit trail. `assets.py` calls `resolver.resolve()` → `ResolvedConfig` (TrainingSpec + ResourceSpec + paths). See frenken-lab/graphids#19.
 
 **SLURM submission** — all jobs via `scripts/submit.sh <profile> [args]`. Resource profiles read from `config/resources/` (per-model profile YAMLs + `clusters.yaml` + `submit_profiles.yaml`). See `rules/slurm-hpc.md`.
 
