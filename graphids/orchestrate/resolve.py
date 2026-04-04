@@ -14,8 +14,9 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
@@ -36,6 +37,157 @@ _STAGE_MONITORS = {
     "curriculum": ("val_loss", "min"),
     "fusion": ("val_acc", "max"),
 }
+
+
+# ---------------------------------------------------------------------------
+# Cross-field validation rules
+#
+# Each constraint that spans TrainingSpec + ResourceSpec + merged YAML lives
+# as a single ValidationRule. `applies` gates the rule (so curriculum-only
+# checks don't run on other stages); `check` returns the violation messages
+# or an empty list. Severity decides error-vs-warning at the call site.
+# Adding a rule = adding one entry to _RULES. Each rule is independently
+# unit-testable (see tests/orchestrate/test_overrides.py::TestValidationRules).
+# ---------------------------------------------------------------------------
+
+
+RuleFn = Callable[[TrainingSpec, ResourceSpec, StageConfig, dict[str, Any]], list[str]]
+RulePred = Callable[[TrainingSpec, ResourceSpec, StageConfig, dict[str, Any]], bool]
+
+
+@dataclass(frozen=True)
+class ValidationRule:
+    """One cross-field constraint applied during config resolution."""
+
+    name: str
+    severity: Literal["error", "warning"]
+    applies: RulePred
+    check: RuleFn
+
+
+def _data_init(merged: dict[str, Any]) -> dict[str, Any]:
+    return merged.get("data", {}).get("init_args", {}) or {}
+
+
+def _always(spec, res, cfg, merged) -> bool:  # noqa: ARG001
+    return True
+
+
+def _is_gpu_stage(spec, res, cfg, merged) -> bool:  # noqa: ARG001
+    return cfg.stage != "evaluation" and bool(res.gres)
+
+
+def _is_curriculum(spec, res, cfg, merged) -> bool:  # noqa: ARG001
+    return cfg.stage == "curriculum"
+
+
+def _is_fusion_rl(spec, res, cfg, merged) -> bool:  # noqa: ARG001
+    return cfg.stage == "fusion" and cfg.model_type in ("dqn", "bandit")
+
+
+def _check_num_workers_within_cpus(spec, res, cfg, merged) -> list[str]:  # noqa: ARG001
+    max_workers = res.cpus_per_task - 1
+    if res.num_workers > max_workers:
+        return [
+            f"num_workers={res.num_workers} exceeds "
+            f"cpus_per_task-1={max_workers}"
+        ]
+    return []
+
+
+def _check_yaml_num_workers_within_cpus(spec, res, cfg, merged) -> list[str]:  # noqa: ARG001
+    max_workers = res.cpus_per_task - 1
+    yaml_workers = _data_init(merged).get("num_workers")
+    if yaml_workers is not None and int(yaml_workers) > max_workers:
+        return [
+            f"data.init_args.num_workers={yaml_workers} in YAML exceeds "
+            f"cpus_per_task-1={max_workers} in resource profile"
+        ]
+    return []
+
+
+def _check_gpu_partition_consistency(spec, res, cfg, merged) -> list[str]:  # noqa: ARG001
+    if "gpu" not in res.partition:
+        return [
+            f"gres={res.gres!r} set but partition="
+            f"{res.partition!r} is not a GPU partition"
+        ]
+    return []
+
+
+def _check_curriculum_epoch_sync(spec, res, cfg, merged) -> list[str]:  # noqa: ARG001
+    data_max = _data_init(merged).get("max_epochs")
+    trainer_max = (merged.get("trainer") or {}).get("max_epochs")
+    if (
+        data_max is not None
+        and trainer_max is not None
+        and int(data_max) != int(trainer_max)
+    ):
+        return [
+            f"CurriculumDataModule.max_epochs={data_max} != "
+            f"trainer.max_epochs={trainer_max} — curriculum "
+            f"difficulty ramp will be scheduled over the wrong epoch count"
+        ]
+    return []
+
+
+def _check_fusion_rl_batch_size_override(spec, res, cfg, merged) -> list[str]:  # noqa: ARG001
+    if "data.init_args.batch_size" in spec.runtime_overrides:
+        return [
+            f"batch_size override has no effect for RL fusion method "
+            f"'{cfg.model_type}' — episode_sample_size controls batch size"
+        ]
+    return []
+
+
+def _check_fusion_rl_batch_size_yaml(spec, res, cfg, merged) -> list[str]:  # noqa: ARG001
+    yaml_bs = _data_init(merged).get("batch_size")
+    if yaml_bs is not None:
+        return [
+            f"data.init_args.batch_size={yaml_bs} has no effect for RL method "
+            f"'{cfg.model_type}' — episode_sample_size controls batch size"
+        ]
+    return []
+
+
+_RULES: tuple[ValidationRule, ...] = (
+    ValidationRule(
+        name="num_workers_within_cpus",
+        severity="error",
+        applies=_always,
+        check=_check_num_workers_within_cpus,
+    ),
+    ValidationRule(
+        name="yaml_num_workers_within_cpus",
+        severity="error",
+        applies=_always,
+        check=_check_yaml_num_workers_within_cpus,
+    ),
+    ValidationRule(
+        name="gpu_partition_consistency",
+        severity="error",
+        applies=_is_gpu_stage,
+        check=_check_gpu_partition_consistency,
+    ),
+    ValidationRule(
+        name="curriculum_epoch_sync",
+        severity="error",
+        applies=_is_curriculum,
+        check=_check_curriculum_epoch_sync,
+    ),
+    ValidationRule(
+        name="fusion_rl_batch_size_override",
+        severity="error",
+        applies=_is_fusion_rl,
+        check=_check_fusion_rl_batch_size_override,
+    ),
+    ValidationRule(
+        name="fusion_rl_batch_size_yaml",
+        severity="warning",
+        applies=_is_fusion_rl,
+        check=_check_fusion_rl_batch_size_yaml,
+    ),
+)
 
 
 def _convention_errors(dumped: dict, stage: str, label: str) -> list[str]:
@@ -241,70 +393,25 @@ class ConfigResolver:
         cfg: StageConfig,
         merged_yaml: dict[str, Any],
     ) -> None:
-        """Validate constraints that span TrainingSpec, ResourceSpec, and YAML configs."""
+        """Validate constraints that span TrainingSpec, ResourceSpec, and YAML configs.
+
+        Thin dispatcher over _RULES. Each rule is a ValidationRule with its
+        own `applies` predicate and `check` function; errors are collected
+        and raised as a single ValueError, warnings are logged and do not
+        fail resolution. See the _RULES tuple at module top for the full list.
+        """
         errors: list[str] = []
-        data_init = merged_yaml.get("data", {}).get("init_args", {})
-        trainer = merged_yaml.get("trainer", {})
-
-        # --- Resource-level checks ---
-
-        # num_workers must fit within allocated CPUs (leave 1 for main process)
-        max_workers = resources.cpus_per_task - 1
-        if resources.num_workers > max_workers:
-            errors.append(
-                f"num_workers={resources.num_workers} exceeds "
-                f"cpus_per_task-1={max_workers}"
-            )
-
-        # YAML num_workers vs resource profile CPUs
-        yaml_workers = data_init.get("num_workers")
-        if yaml_workers is not None and int(yaml_workers) > max_workers:
-            errors.append(
-                f"data.init_args.num_workers={yaml_workers} in YAML exceeds "
-                f"cpus_per_task-1={max_workers} in resource profile"
-            )
-
-        # GPU required for training stages (partition must be gpu/gpudebug)
-        if cfg.stage != "evaluation" and resources.gres:
-            if "gpu" not in resources.partition:
-                errors.append(
-                    f"gres={resources.gres!r} set but partition="
-                    f"{resources.partition!r} is not a GPU partition"
-                )
-
-        # --- YAML-aware checks ---
-
-        # Curriculum epoch sync: data module max_epochs must match trainer max_epochs
-        if cfg.stage == "curriculum":
-            data_max_epochs = data_init.get("max_epochs")
-            trainer_max_epochs = trainer.get("max_epochs")
-            if (
-                data_max_epochs is not None
-                and trainer_max_epochs is not None
-                and int(data_max_epochs) != int(trainer_max_epochs)
-            ):
-                errors.append(
-                    f"CurriculumDataModule.max_epochs={data_max_epochs} != "
-                    f"trainer.max_epochs={trainer_max_epochs} — curriculum "
-                    f"difficulty ramp will be scheduled over the wrong epoch count"
-                )
-
-        # Fusion RL methods ignore batch_size
-        if cfg.stage == "fusion" and cfg.model_type in ("dqn", "bandit"):
-            if "data.init_args.batch_size" in spec.runtime_overrides:
-                errors.append(
-                    f"batch_size override has no effect for RL fusion method "
-                    f"'{cfg.model_type}' — episode_sample_size controls batch size"
-                )
-            yaml_bs = data_init.get("batch_size")
-            if yaml_bs is not None:
-                log.warning(
-                    "dead_config",
-                    key="data.init_args.batch_size",
-                    value=yaml_bs,
-                    reason=f"RL method '{cfg.model_type}' uses episode_sample_size",
-                )
-
+        for rule in _RULES:
+            if not rule.applies(spec, resources, cfg, merged_yaml):
+                continue
+            messages = rule.check(spec, resources, cfg, merged_yaml)
+            if not messages:
+                continue
+            if rule.severity == "error":
+                errors.extend(messages)
+            else:
+                for msg in messages:
+                    log.warning("convention_mismatch", rule=rule.name, msg=msg)
         if errors:
             raise ValueError(
                 f"Cross-field validation failed for {cfg.asset_name}:\n"

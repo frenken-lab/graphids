@@ -47,6 +47,68 @@ class StageConfig:
     upstream_model_families: dict[str, str] = field(default_factory=dict)
 
 
+def _resolve_kd_teachers(
+    *,
+    student_config: str,
+    stage: str,
+    auxiliaries: tuple,
+    recipe: dict,
+    default_cfg: TrainingRunConfig,
+    config_stages: dict[str, dict[str, str]],
+    upstream_names: list[str],
+    upstream_models: dict[str, str],
+) -> None:
+    """Wire KD teacher assets as upstream dependencies by explicit recipe config name.
+
+    Each KD auxiliary must name its teacher via ``teacher_config`` (a key in
+    ``recipe["configs"]``). We validate that the named config exists, trains
+    without its own KD auxiliaries, and produces an asset for the student's
+    current stage. All mismatches raise with the student name + stage + the
+    set of valid alternatives so the failure is actionable.
+
+    This replaces the legacy scale-based inference (iterate configs, first
+    match wins) which silently rewired the student to different teachers
+    when recipe key order changed. See ``docs/reference/orchestration-risks.md``
+    item #2.
+    """
+    for idx, aux in enumerate(auxiliaries):
+        teacher_config = getattr(aux, "teacher_config", None)
+        if teacher_config is None:
+            raise ValueError(
+                f"KD student '{student_config}' (stage '{stage}', auxiliary "
+                f"index {idx}): missing teacher_config. Explicitly name the "
+                f"recipe config to use as teacher (e.g., "
+                f"teacher_config: baseline_large). Silent scale-based "
+                f"inference was removed — it depended on recipe key order."
+            )
+        if teacher_config not in recipe["configs"]:
+            raise ValueError(
+                f"KD student '{student_config}' (stage '{stage}'): "
+                f"teacher_config='{teacher_config}' does not name a config "
+                f"in this recipe. Available configs: "
+                f"{sorted(recipe['configs'].keys())}"
+            )
+        tc_overrides = recipe["configs"][teacher_config]
+        tc_merged = default_cfg.merge(tc_overrides or {})
+        if tc_merged.auxiliaries:
+            raise ValueError(
+                f"KD student '{student_config}' (stage '{stage}'): "
+                f"teacher_config='{teacher_config}' has its own auxiliaries "
+                f"— teachers must train without KD."
+            )
+        tc_map = config_stages.get(teacher_config, {})
+        if stage not in tc_map:
+            raise ValueError(
+                f"KD student '{student_config}' (stage '{stage}'): "
+                f"teacher_config='{teacher_config}' does not produce a "
+                f"'{stage}' asset. Teacher stages: {sorted(tc_map.keys())}"
+            )
+        teacher_asset = tc_map[stage]
+        if teacher_asset not in upstream_names:
+            upstream_names.append(teacher_asset)
+            upstream_models[teacher_asset] = STAGE_MODEL_MAP[stage]
+
+
 def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
     """Two-pass enumeration: compute canonical keys, then build configs with resolved deps.
 
@@ -150,18 +212,16 @@ def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
                 upstream_models[dep_asset] = dep_model
 
             if has_kd:
-                teacher_scale = merged.auxiliaries[0].teacher_scale if merged.auxiliaries else None
-                if teacher_scale:
-                    for tc_name, tc_overrides in recipe["configs"].items():
-                        tc_merged = default_cfg.merge(tc_overrides or {})
-                        if tc_merged.scale == teacher_scale and not tc_merged.auxiliaries:
-                            tc_map = config_stages.get(tc_name, {})
-                            for s in ("autoencoder", "curriculum", "normal"):
-                                if s == stage and s in tc_map:
-                                    teacher_asset = tc_map[s]
-                                    upstream_names.append(teacher_asset)
-                                    upstream_models[teacher_asset] = STAGE_MODEL_MAP[s]
-                            break
+                _resolve_kd_teachers(
+                    student_config=config_name,
+                    stage=stage,
+                    auxiliaries=merged.auxiliaries,
+                    recipe=recipe,
+                    default_cfg=default_cfg,
+                    config_stages=config_stages,
+                    upstream_names=upstream_names,
+                    upstream_models=upstream_models,
+                )
 
             model_dir = model_family
             res_model = merged.fusion_method if stage == "fusion" else model_family

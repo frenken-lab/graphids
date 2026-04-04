@@ -12,6 +12,7 @@ def test_expand_sweep_with_kd_auxiliary() -> None:
                 "kd": {
                     "type": "kd",
                     "alpha": 0.5,
+                    "teacher_config": "gat_normal_large",
                     "teacher_scale": "large",
                     "temperature": 2.0,
                 },
@@ -29,4 +30,5 @@ def test_expand_sweep_with_kd_auxiliary() -> None:
     config = next(iter(expanded["configs"].values()))
     assert "auxiliaries" in config
     assert config["auxiliaries"][0]["type"] == "kd"
+    assert config["auxiliaries"][0]["teacher_config"] == "gat_normal_large"
     assert config["auxiliaries"][0]["teacher_scale"] == "large"

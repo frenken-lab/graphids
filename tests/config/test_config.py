@@ -255,6 +255,15 @@ class TestKDEntry:
         assert kd.type == "kd"
         assert kd.alpha == 0.5
 
+    def test_teacher_config_optional_default(self):
+        """teacher_config defaults to None; orchestration validates it, not the contract."""
+        kd = KDEntry()
+        assert kd.teacher_config is None
+
+    def test_teacher_config_roundtrip(self):
+        kd = KDEntry(teacher_config="baseline_large")
+        assert kd.teacher_config == "baseline_large"
+
 
 class TestTrainingRunConfigCoercion:
     def test_stages_list_to_tuple(self):

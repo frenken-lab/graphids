@@ -204,7 +204,8 @@ Source: `KDAuxiliary` TypedDict (`core/models/_training.py:92`). All fields `tot
 | `temperature`        | `float` | GAT     | Softmax temperature for logit matching  |
 | `vgae_latent_weight` | `float` | VGAE    | Weight for latent-space alignment       |
 | `vgae_recon_weight`  | `float` | VGAE    | Weight for reconstruction loss          |
-| `teacher_scale`      | `str`   | all     | Scale string for auto-resolving teacher ckpt |
+| `teacher_config`     | `str`   | orchestration | **Required for pipeline runs.** Names the recipe config that produces the teacher — wired as an explicit upstream dagster dep by planning. |
+| `teacher_scale`      | `str`   | dev-path only | Scale used by `prepare_kd` when running `python -m graphids fit` without the orchestrator. Ignored by planning. |
 | `model_path`         | `str`   | all     | Explicit teacher ckpt path (overrides `teacher_scale`) |
 
 ---

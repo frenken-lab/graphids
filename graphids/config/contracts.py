@@ -10,12 +10,26 @@ from .topology import STAGES, VALID_FUSION_METHODS, VALID_MODEL_TYPES, VALID_SCA
 
 
 class KDEntry(BaseModel):
-    """Unified KD config schema. Fields must match KDAuxiliary in core/models/_training.py."""
+    """Unified KD config schema. Fields must match KDAuxiliary in core/models/_training.py.
+
+    Teacher identification:
+    - ``teacher_config`` (orchestration): names a recipe config by key. Planning
+      wires this config as an upstream dependency, guaranteeing the student
+      loads a specific teacher regardless of recipe key order. Required for
+      pipeline runs; silent scale-based inference was removed (see ADR/risk
+      doc — ordered iteration made it position-dependent).
+    - ``teacher_scale`` (dev path): used by ``prepare_kd`` when running
+      ``python -m graphids fit`` without the orchestrator, to recompute a
+      deterministic checkpoint path. Ignored by planning.
+    - ``model_path``: explicit teacher checkpoint path. Overrides everything
+      else at runtime.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     type: Literal["kd"] = "kd"
     alpha: float = 0.7
+    teacher_config: str | None = None
     teacher_scale: str = "large"
     temperature: float | None = None
     model_path: str | None = None
