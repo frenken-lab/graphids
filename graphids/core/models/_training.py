@@ -46,7 +46,7 @@ def try_compile(model: torch.nn.Module, *, conv_type: str | None = None,
 
 
 class GraphModuleBase(pl.LightningModule):
-    """Shared base for VGAE, GAT, DGI — lazy setup, OOM guard, threshold metrics.
+    """Shared base for VGAE, GAT, DGI — lazy setup, OOM guard, threshold metrics, KD plumbing.
 
     Subclasses must implement ``_build()`` which constructs ``self.model`` and any
     other architecture components using ``self.hparams`` (populated by ``setup``).
@@ -54,6 +54,12 @@ class GraphModuleBase(pl.LightningModule):
     Threshold support (VGAE, DGI): call ``_init_threshold_metrics()`` in your
     ``__init__`` to enable ``BinaryROC`` accumulation and ``_find_threshold()``.
     GAT (supervised) does not need this.
+
+    KD support: subclasses that distill from a teacher call ``_install_kd_teacher()``
+    at the end of ``_build()``. This handles teacher loading, the ``__dict__`` hack
+    that keeps the teacher off Lightning's auto-transfer path, and projection layer
+    creation (VGAE only). Subclasses then implement ``_kd_loss()`` and ``_step()``
+    applies it via the shared ``_apply_kd()`` helper.
     """
 
     # -- Lazy model construction ------------------------------------------------
@@ -68,6 +74,32 @@ class GraphModuleBase(pl.LightningModule):
 
     def _build(self):
         raise NotImplementedError
+
+    # -- KD plumbing ------------------------------------------------------------
+
+    def _install_kd_teacher(self) -> None:
+        """Resolve KD config, load + freeze teacher, install off the Lightning auto-transfer path.
+
+        No-op if ``hparams.auxiliaries`` has no ``kd`` entry. Subclasses call this
+        once at the end of ``_build()``. Sets ``self.teacher``, ``self.projection``
+        (VGAE only, for latent alignment), and ``self._kd_cfg`` (cached entry).
+        """
+        hp = self.hparams
+        auxiliaries = getattr(hp, "auxiliaries", None) or []
+        kd_cfg = next((a for a in auxiliaries if getattr(a, "type", None) == "kd"), None)
+        if kd_cfg is None:
+            return
+        teacher, projection = prepare_kd(hp, hp.model_type, torch.device("cpu"))
+        # Bypass nn.Module.__setattr__ so Lightning won't auto-move teacher to GPU.
+        # teacher_on_device() is the only code path that moves it onto the accelerator.
+        self.__dict__["teacher"] = teacher
+        self.projection = projection
+        self._kd_cfg = kd_cfg
+
+    def _apply_kd(self, task_loss: torch.Tensor, kd_loss: torch.Tensor) -> torch.Tensor:
+        """Convex combination of task loss and KD loss: α·kd + (1−α)·task."""
+        alpha = self._kd_cfg.alpha
+        return alpha * kd_loss + (1 - alpha) * task_loss
 
     # -- Optimizer ----------------------------------------------------------------
 
@@ -157,9 +189,18 @@ class GraphModuleBase(pl.LightningModule):
 
 
 class KDAuxiliary(TypedDict, total=False):
-    """Schema for KD auxiliary config items — validated by jsonargparse at parse time.
+    """Student-side KD config — runtime subset of ``KDEntry``.
 
-    Fields must match KDEntry in graphids/config/contracts.py.
+    Validated by jsonargparse at parse time. This is what a LightningModule
+    receives in its ``auxiliaries`` list after planning has consumed and
+    resolved orchestration-only fields.
+
+    Relationship to ``KDEntry`` (``graphids/config/contracts.py``):
+        - ``type``, ``alpha``, ``temperature``, ``vgae_latent_weight``,
+          ``vgae_recon_weight``, ``teacher_scale``, ``model_path`` — shared
+        - ``teacher_config`` — present on ``KDEntry``, absent here: it is
+          a planning-only field that resolves to an upstream dependency
+          + ``model_path`` before the student module ever sees the config.
     """
     type: str
     alpha: float
@@ -168,7 +209,7 @@ class KDAuxiliary(TypedDict, total=False):
     vgae_recon_weight: float
     # GAT KD
     temperature: float
-    # Teacher resolution
+    # Teacher resolution (dev path)
     teacher_scale: str
     model_path: str
 

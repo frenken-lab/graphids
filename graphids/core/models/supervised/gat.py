@@ -246,16 +246,13 @@ class GATModule(GraphModuleBase):
             self._build()
 
     def _build(self):
-        from .._training import prepare_kd
         hp = self.hparams
         self.model = GATWithJK.from_config(hp, hp.num_ids, hp.in_channels)
         if hp.compile_model:
             from .._training import try_compile
             self.model = try_compile(self.model, conv_type=hp.conv_type, dynamic=True)
         if self.teacher is None:
-            teacher, _ = prepare_kd(hp, hp.model_type, torch.device("cpu"))
-            # Bypass nn.Module.__setattr__ so Lightning won't auto-move teacher to GPU
-            self.__dict__["teacher"] = teacher
+            self._install_kd_teacher()
 
     def forward(self, batch):
         return self.model(batch)
@@ -264,22 +261,22 @@ class GATModule(GraphModuleBase):
         logits = self(batch)
         task_loss = self.loss_fn(logits, batch.y)
         acc = (logits.argmax(1) == batch.y).float().mean()
-        if self.teacher is not None:
-            kd = next(a for a in getattr(self.hparams, "auxiliaries", []) if a.type == "kd")
-            with teacher_on_device(self, batch.x.device):
-                with torch.no_grad():
-                    t_logits = self.teacher(batch)
-            # Hinton soft-label KD: KL(student/T || teacher/T) * T^2
-            T = kd.temperature
-            kd_loss = F.kl_div(
-                F.log_softmax(logits / T, dim=-1),
-                F.softmax(t_logits / T, dim=-1),
-                reduction="batchmean",
-            ) * (T ** 2)
-            loss = kd.alpha * kd_loss + (1 - kd.alpha) * task_loss
-        else:
-            loss = task_loss
-        return loss, acc
+        if self.teacher is None:
+            return task_loss, acc
+        kd_loss = self._kd_loss(batch, logits)
+        return self._apply_kd(task_loss, kd_loss), acc
+
+    def _kd_loss(self, batch, logits: torch.Tensor) -> torch.Tensor:
+        """Hinton soft-label KD: KL(student/T || teacher/T) · T²."""
+        with teacher_on_device(self, batch.x.device):
+            with torch.no_grad():
+                t_logits = self.teacher(batch)
+        T = self._kd_cfg.temperature
+        return F.kl_div(
+            F.log_softmax(logits / T, dim=-1),
+            F.softmax(t_logits / T, dim=-1),
+            reduction="batchmean",
+        ) * (T ** 2)
 
     def _training_step_inner(self, batch, _idx):
         loss, acc = self._step(batch)

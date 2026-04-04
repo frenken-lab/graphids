@@ -10,14 +10,21 @@ from .topology import STAGES, VALID_FUSION_METHODS, VALID_MODEL_TYPES, VALID_SCA
 
 
 class KDEntry(BaseModel):
-    """Unified KD config schema. Fields must match KDAuxiliary in core/models/_training.py.
+    """Recipe-side KD config schema — superset of ``KDAuxiliary``.
+
+    ``KDEntry`` is what recipes declare and the orchestrator consumes.
+    ``KDAuxiliary`` (``core/models/_training.py``) is the runtime subset
+    that LightningModules receive after planning has resolved
+    orchestration-only fields. The only field here that is NOT in
+    ``KDAuxiliary`` is ``teacher_config``, which is planning-only.
 
     Teacher identification:
     - ``teacher_config`` (orchestration): names a recipe config by key. Planning
       wires this config as an upstream dependency, guaranteeing the student
       loads a specific teacher regardless of recipe key order. Required for
       pipeline runs; silent scale-based inference was removed (see ADR/risk
-      doc — ordered iteration made it position-dependent).
+      doc — ordered iteration made it position-dependent). Consumed before
+      the student module sees the config.
     - ``teacher_scale`` (dev path): used by ``prepare_kd`` when running
       ``python -m graphids fit`` without the orchestrator, to recompute a
       deterministic checkpoint path. Ignored by planning.

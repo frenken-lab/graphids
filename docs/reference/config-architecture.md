@@ -196,7 +196,7 @@ graphids/config/
 
 | # | Issue | Severity |
 |---|---|---|
-| N1 | Recipe expansion growing its own type system (`_KDSpec`, `_SweepSpec` duplicate `TrainingRunConfig` fields) | Medium |
+| N1 | Recipe expansion growing its own type system (`_SweepSpec` duplicates `TrainingRunConfig` fields; `KDEntry` ↔ `KDAuxiliary` superset/subset is deliberate and documented) | Medium |
 | N2 | Validation requires full Lightning import + parser instantiation | Medium |
 | N3 | Checkpoint/EarlyStopping defaults duplicated in `cli.py` and `trainer.yaml` | Low |
 | N4 | No config diff/change tracking between runs | Low |

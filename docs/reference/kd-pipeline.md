@@ -113,18 +113,42 @@ at CLI parse time.
 
 | Symbol | Location | Role |
 |--------|----------|------|
-| `_KDSpec` | `config/recipe_expand.py:11` | Recipe-side KD config schema |
-| `KDAuxiliary` | `core/models/_training.py:92` | Model-side KD config TypedDict |
-| `prepare_kd` | `core/models/_training.py:195` | Teacher loading + projection |
-| `checkpoint_path` | `config/paths.py:149` | Teacher checkpoint path resolution |
-| `kd_overrides` | `orchestrate/planning.py:38` | StageConfig field for KD payload |
+| `KDEntry` | `config/contracts.py` | Recipe-side Pydantic schema (superset) |
+| `KDAuxiliary` | `core/models/_training.py` | Student-side TypedDict (runtime subset) |
+| `_install_kd_teacher` | `core/models/_training.py` | `GraphModuleBase` method: resolves KD cfg, loads + freezes teacher, stores it off Lightning's auto-transfer path |
+| `_kd_loss` | `vgae.py`, `gat.py` | Per-model KD loss shape (VGAE dual-signal MSE, GAT Hinton soft-label KL) |
+| `_apply_kd` | `core/models/_training.py` | Convex combo: α·kd + (1−α)·task |
+| `prepare_kd` | `core/models/_training.py` | Teacher checkpoint path resolution + load + projection layer |
+| `checkpoint_path` | `config/paths.py` | Teacher checkpoint path from identity keys |
+| `kd_overrides` | `orchestrate/planning.py` | StageConfig field for KD payload |
 | `kd.yaml` overlays | `config/models/{vgae,gat}/` | Default KD hyperparameters |
+
+## Schema relationship
+
+`KDEntry` and `KDAuxiliary` are deliberately not identical. `KDEntry` is the
+recipe-side superset (8 fields, Pydantic `extra="forbid"`). `KDAuxiliary` is the
+runtime subset that LightningModules actually receive (7 fields, TypedDict for
+jsonargparse validation). The difference is **`teacher_config`**, which is a
+planning-only field: the orchestrator consumes it to wire an upstream
+dependency and resolves it into `model_path` before the student module ever
+sees the config. Students never receive `teacher_config` directly.
+
+Both docstrings cross-reference each other so the subset relationship is
+discoverable from either side.
 
 ## Known issues
 
-1. **`_KDSpec` (7 fields) vs `KDAuxiliary` (3 fields)** — 4 extra fields bypass
-   TypedDict validation. See frenken-lab/graphids#19 (P2.4).
-2. **Full chain never tested** — see frenken-lab/graphids#25.
+1. **Full chain never tested** — see frenken-lab/graphids#25. The
+   `teacher_on_device` decorator bug (fixed 2026-04-04, session 18) would have
+   crashed any KD training on the first step with `TypeError: 'generator' object
+   does not support the context manager protocol`. This alone explains why
+   no KD run has ever been cited end-to-end. The code path is now valid but
+   still unexercised.
+2. **DGI has no KD support** — `DGIModule` does not call `_install_kd_teacher()`
+   and has no `_kd_loss()`. If claim 6 ablation extends to DGI-large → DGI-small,
+   add these two hooks.
 3. **Teacher stored via `__dict__`** — bypasses `nn.Module` registration, so
    Lightning never auto-transfers to GPU. `teacher_on_device` context manager
-   handles per-step movement. Deliberate but fragile.
+   handles per-step movement. The hack is localized to
+   `GraphModuleBase._install_kd_teacher()` (session 18) — one place to worry
+   about.

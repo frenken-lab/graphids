@@ -384,17 +384,13 @@ class VGAEModule(GraphModuleBase):
             self._build()
 
     def _build(self):
-        from .._training import prepare_kd
         hp = self.hparams
         self.model = GraphAutoencoderNeighborhood.from_config(hp, hp.num_ids, hp.in_channels)
         if hp.compile_model:
             from .._training import try_compile
             self.model = try_compile(self.model, conv_type=hp.conv_type, dynamic=True)
         if self.teacher is None:
-            teacher, projection = prepare_kd(hp, hp.model_type, torch.device("cpu"))
-            # Bypass nn.Module.__setattr__ so Lightning won't auto-move teacher to GPU
-            self.__dict__["teacher"] = teacher
-            self.projection = projection
+            self._install_kd_teacher()
 
     def forward(self, batch):
         edge_attr = getattr(batch, "edge_attr", None)
@@ -422,26 +418,27 @@ class VGAEModule(GraphModuleBase):
 
     def _step(self, batch):
         task_loss, cont_out, z = self._task_loss(batch)
-        if self.teacher is not None:
-            kd = next(a for a in getattr(self.hparams, "auxiliaries", []) if a.type == "kd")
-            with teacher_on_device(self, batch.x.device):
-                with torch.no_grad():
-                    batch_idx = (
-                        batch.batch if batch.batch is not None
-                        else torch.zeros(batch.x.size(0), dtype=torch.long, device=batch.x.device)
-                    )
-                    t_edge_attr = getattr(batch, "edge_attr", None)
-                    t_cont, _, _, t_z, _, _ = self.teacher(
-                        batch.x, batch.edge_index, batch_idx, edge_attr=t_edge_attr, node_id=batch.node_id,
-                    )
-            z_s = self.projection(z) if self.projection is not None else z
-            min_n = min(z_s.size(0), t_z.size(0))
-            latent_kd = F.mse_loss(z_s[:min_n], t_z[:min_n])
-            min_r = min(cont_out.size(0), t_cont.size(0))
-            recon_kd = F.mse_loss(cont_out[:min_r], t_cont[:min_r])
-            kd_loss = kd.vgae_latent_weight * latent_kd + kd.vgae_recon_weight * recon_kd
-            return kd.alpha * kd_loss + (1 - kd.alpha) * task_loss
-        return task_loss
+        if self.teacher is None:
+            return task_loss
+        kd_loss = self._kd_loss(batch, cont_out, z)
+        return self._apply_kd(task_loss, kd_loss)
+
+    def _kd_loss(self, batch, cont_out: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+        """Dual-signal KD: latent MSE + reconstruction MSE against the teacher."""
+        with teacher_on_device(self, batch.x.device):
+            with torch.no_grad():
+                t_cont, _, _, t_z, _, _ = self.teacher(
+                    batch.x, batch.edge_index, batch.batch,
+                    edge_attr=getattr(batch, "edge_attr", None),
+                    node_id=batch.node_id,
+                )
+        z_s = self.projection(z) if self.projection is not None else z
+        min_n = min(z_s.size(0), t_z.size(0))
+        latent_kd = F.mse_loss(z_s[:min_n], t_z[:min_n])
+        min_r = min(cont_out.size(0), t_cont.size(0))
+        recon_kd = F.mse_loss(cont_out[:min_r], t_cont[:min_r])
+        kd = self._kd_cfg
+        return kd.vgae_latent_weight * latent_kd + kd.vgae_recon_weight * recon_kd
 
     def _training_step_inner(self, batch, _idx):
         loss = self._step(batch)
