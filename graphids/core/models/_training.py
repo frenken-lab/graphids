@@ -119,7 +119,10 @@ class GraphModuleBase(pl.LightningModule):
 
 
 class KDAuxiliary(TypedDict, total=False):
-    """Schema for KD auxiliary config items — validated by jsonargparse at parse time."""
+    """Schema for KD auxiliary config items — validated by jsonargparse at parse time.
+
+    Fields must match KDEntry in graphids/config/contracts.py.
+    """
     type: str
     alpha: float
     # VGAE KD
@@ -190,7 +193,6 @@ _MODULE_PATHS: dict[str, str] = {
     "dgi": "graphids.core.models.autoencoder.dgi.DGIModule",
     "fusion": "graphids.core.models.fusion.bandit.BanditFusionModule",
     "dqn": "graphids.core.models.fusion.dqn.DQNFusionModule",
-    "temporal": "graphids.core.models.temporal_family.temporal.TemporalLightningModule",
 }
 
 

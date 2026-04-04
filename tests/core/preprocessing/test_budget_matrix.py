@@ -41,8 +41,6 @@ MODEL_PROBES = {
     ("gat", "large"):      (223740, 1.52, "gatv2"),
     ("dgi", "small"):      (13970,  2.0,  "gatv2"),
     ("dgi", "large"):      (80140,  2.0,  "gatv2"),
-    ("temporal", "small"):  (100000, 2.0,  "gatv2"),
-    ("temporal", "large"):  (250000, 2.0,  "gatv2"),
 }
 
 # --- GPU free VRAM after model load (from clusters.yaml) --------------------
@@ -152,7 +150,6 @@ def test_larger_model_gives_smaller_or_equal_mem_budget(tmp_path, dataset):
         (("vgae", "small"), ("vgae", "large")),
         (("gat", "small"), ("gat", "large")),
         (("dgi", "small"), ("dgi", "large")),
-        (("temporal", "small"), ("temporal", "large")),
     ]
     for small_key, large_key in pairs:
         r_small = _run(tmp_path, dataset=dataset, model_key=small_key, gpu="v100_16gb")

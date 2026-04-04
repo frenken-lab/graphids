@@ -1,4 +1,4 @@
-"""Shared preprocessing utilities."""
+"""NFS-safe I/O primitives and vocab construction — shared across dataset adapters."""
 
 from __future__ import annotations
 

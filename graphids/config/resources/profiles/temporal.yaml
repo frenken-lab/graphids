@@ -1,7 +1,0 @@
-resources:
-  family: temporal
-  by_scale:
-    small:
-      temporal: {mode: gpu_train, time: "3:00:00", cpus: 8, workers: 6}
-    large:
-      temporal: {mode: gpu_train, time: "4:00:00", cpus: 8, workers: 6}

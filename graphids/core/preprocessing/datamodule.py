@@ -1,77 +1,56 @@
-"""LightningDataModule for CAN bus graph datasets.
+"""LightningDataModules for graph datasets.
 
-Single DataModule for all 6 catalog datasets. Owns dataset construction,
-train/val/test splits, and DataLoader creation.
+- ``GraphDataModule``: dataset-agnostic base. Subclasses set ``dataset_cls``.
+- ``CANBusDataModule``: 3-line subclass binding ``CANBusDataset``.
+- ``CurriculumDataModule``: curriculum-ordered sampling over CAN data.
+- ``FusionDataModule``: frozen VGAE+GAT → cached state tensors.
 """
 
 from __future__ import annotations
 
 import gc
+import math
 import os
+from pathlib import Path
+from typing import ClassVar
 
 import pytorch_lightning as pl
-from graphids.log import get_logger
 import torch
+from graphids.log import get_logger
 from torch.utils.data import DataLoader, TensorDataset
+from torch_geometric.data import InMemoryDataset
 
 from graphids.config import cache_dir, data_dir, load_catalog
-from graphids.core.preprocessing.budget import node_budget
-
-_log = get_logger(__name__)
-
-
-from .datasets.can_bus import CANBusDataset
-from .features import N_EDGE_FEATURES as EDGE_FEATURE_COUNT
-from .features import N_NODE_FEATURES as NODE_FEATURE_COUNT
-
-
-def _worker_init(worker_id: int) -> None:
-    """Set file_system sharing strategy in spawn workers (not inherited from parent)."""
-    import torch.multiprocessing as mp
-    mp.set_sharing_strategy("file_system")
-
-
-def make_graph_loader(
-    dataset, *, batch_sampler=None, batch_size=1, shuffle=False,
-    num_workers: int = 0, pin_memory: bool = True,
-    device: torch.device | None = None, **kwargs,
-) -> DataLoader:
-    """Thin wrapper around PyG DataLoader — sets spawn/persistent_workers defaults.
-
-    Args:
-        device: When set, wraps the loader with PyG's PrefetchLoader for async
-            H2D transfer via CUDA streams. pin_memory is disabled on the inner
-            loader (PrefetchLoader handles pinning internally).
-    """
-    from torch_geometric.loader import DataLoader as PyGDataLoader
-
-    if device is not None:
-        pin_memory = False  # PrefetchLoader pins internally
-
-    if num_workers > 0:
-        kwargs.setdefault("persistent_workers", True)
-        kwargs.setdefault("multiprocessing_context", "spawn")
-        kwargs.setdefault("worker_init_fn", _worker_init)
-
-    common = dict(num_workers=num_workers, pin_memory=pin_memory, **kwargs)
-
-    if batch_sampler is not None:
-        loader = PyGDataLoader(dataset, batch_sampler=batch_sampler, **common)
-    else:
-        loader = PyGDataLoader(dataset, batch_size=batch_size, shuffle=shuffle, **common)
-
-    if device is not None:
-        from torch_geometric.loader import PrefetchLoader
-        return PrefetchLoader(loader, device=device)
-    return loader
-
-
+from graphids.core.preprocessing.budget import (
+    calibrate_at_budget,
+    compute_resource_profile,
+    node_budget,
+)
+from graphids.core.preprocessing.datasets.can_bus import (
+    N_EDGE_FEATURES as EDGE_FEATURE_COUNT,
+)
+from graphids.core.preprocessing.datasets.can_bus import (
+    N_NODE_FEATURES as NODE_FEATURE_COUNT,
+)
+from graphids.core.preprocessing.datasets.can_bus import CANBusDataset
+from graphids.core.preprocessing.sampler import (
+    CurriculumSampler,
+    NodeBudgetBatchSampler,
+    make_graph_loader,
+)
 
 log = get_logger(__name__)
 
 
-def load_datasets(cfg) -> tuple[CANBusDataset, CANBusDataset, dict[str, CANBusDataset]]:
-    """Load train/val/test datasets from cache. No DataModule needed.
+# ---------------------------------------------------------------------------
+# Shared dataset loading
+# ---------------------------------------------------------------------------
+
+
+def load_datasets(
+    cfg, dataset_cls: type[InMemoryDataset],
+) -> tuple[InMemoryDataset, InMemoryDataset, dict[str, InMemoryDataset]]:
+    """Load train/val/test datasets from cache using the given dataset class.
 
     Returns (train_ds, val_ds, {name: test_ds}).
     """
@@ -82,9 +61,9 @@ def load_datasets(cfg) -> tuple[CANBusDataset, CANBusDataset, dict[str, CANBusDa
         window_size=pre.window_size, stride=pre.stride,
         val_fraction=1.0 - pre.train_val_split, seed=cfg.seed,
     )
-    train_ds = CANBusDataset(root=root, raw_dir=raw, split="train", **common)
+    train_ds = dataset_cls(root=root, raw_dir=raw, split="train", **common)
     train_ds._data_list = None
-    val_ds = CANBusDataset(root=root, raw_dir=raw, split="val", **common)
+    val_ds = dataset_cls(root=root, raw_dir=raw, split="val", **common)
     val_ds._data_list = None
 
     test_datasets = {}
@@ -93,17 +72,24 @@ def load_datasets(cfg) -> tuple[CANBusDataset, CANBusDataset, dict[str, CANBusDa
     for subdir in entry.get("test_subdirs", []):
         test_raw = raw / subdir
         if test_raw.exists():
-            test_datasets[subdir] = CANBusDataset(root=root, raw_dir=test_raw, split="test", **common)
+            test_datasets[subdir] = dataset_cls(root=root, raw_dir=test_raw, split="test", **common)
 
     return train_ds, val_ds, test_datasets
 
 
-class CANBusDataModule(pl.LightningDataModule):
-    """CAN bus graph data — one DataModule for all 6 catalog datasets.
+# ---------------------------------------------------------------------------
+# GraphDataModule — dataset-agnostic base
+# ---------------------------------------------------------------------------
 
-    After ``setup()``, exposes ``train_dataset``, ``val_dataset``,
-    ``test_datasets``, ``num_ids``, and ``in_channels`` as properties.
+
+class GraphDataModule(pl.LightningDataModule):
+    """Dataset-agnostic graph DataModule.
+
+    Subclasses set ``dataset_cls`` to a concrete ``InMemoryDataset`` subclass.
+    All batching, VRAM sizing, and loader construction logic is shared.
     """
+
+    dataset_cls: ClassVar[type[InMemoryDataset]]
 
     def __init__(
         self,
@@ -122,9 +108,9 @@ class CANBusDataModule(pl.LightningDataModule):
     ):
         super().__init__()
         self.save_hyperparameters()
-        self._train_ds: CANBusDataset | None = None
-        self._val_ds: CANBusDataset | None = None
-        self._test_datasets: dict[str, CANBusDataset] = {}
+        self._train_ds: InMemoryDataset | None = None
+        self._val_ds: InMemoryDataset | None = None
+        self._test_datasets: dict[str, InMemoryDataset] = {}
 
     def setup(self, stage: str | None = None) -> None:
         import types
@@ -136,27 +122,29 @@ class CANBusDataModule(pl.LightningDataModule):
                 train_val_split=1.0 - hp["val_fraction"],
             ),
         )
-        self._train_ds, self._val_ds, self._test_datasets = load_datasets(cfg)
+        self._train_ds, self._val_ds, self._test_datasets = load_datasets(
+            cfg, self.dataset_cls,
+        )
 
     # -- Properties (available after setup) -----------------------------------
 
     @property
-    def train_dataset(self) -> CANBusDataset:
+    def train_dataset(self) -> InMemoryDataset:
         assert self._train_ds is not None, "call setup('fit') first"
         return self._train_ds
 
     @property
-    def val_dataset(self) -> CANBusDataset:
+    def val_dataset(self) -> InMemoryDataset:
         assert self._val_ds is not None, "call setup('fit') first"
         return self._val_ds
 
     @property
-    def test_datasets(self) -> dict[str, CANBusDataset]:
+    def test_datasets(self) -> dict[str, InMemoryDataset]:
         return self._test_datasets
 
     @property
     def num_ids(self) -> int:
-        """Global CAN arbitration-ID vocabulary size (embedding table size)."""
+        """Global arbitration/node-ID vocabulary size (embedding table size)."""
         ds = self._train_ds or next(iter(self._test_datasets.values()), None)
         assert ds is not None, "call setup() first"
         return ds.num_arb_ids
@@ -196,8 +184,6 @@ class CANBusDataModule(pl.LightningDataModule):
         return [self._build_loader(ds, shuffle=False) for ds in self._test_datasets.values()]
 
     def _build_loader(self, dataset, shuffle: bool):
-        from torch_geometric.loader import DynamicBatchSampler
-
         hp = self.hparams
         bs = max(8, hp["batch_size"])
         nw = hp.get("num_workers")  # None = auto-size from sizing chain
@@ -222,9 +208,6 @@ class CANBusDataModule(pl.LightningDataModule):
 
             # Auto-size workers: calibrate at the actual operating batch size
             if nw is None:
-                from graphids.core.preprocessing.budget import (
-                    calibrate_at_budget, compute_resource_profile,
-                )
                 slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
                 max_cpus = int(slurm_cpus) if slurm_cpus else os.cpu_count()
                 bwd_mult = result.backward_multiplier or 2.0
@@ -244,13 +227,15 @@ class CANBusDataModule(pl.LightningDataModule):
                 else:
                     nw = 2  # fallback when probe unavailable
 
-            import math as _math
-            num_steps = max(1, _math.ceil(len(dataset) * result.mean_nodes / result.budget))
-            sampler = DynamicBatchSampler(
-                dataset, max_num=result.budget, mode="node", shuffle=shuffle,
+            num_steps = max(1, math.ceil(len(dataset) * result.mean_nodes / result.budget))
+            # Read per-graph sizes from the cache's slice offsets (zero I/O).
+            # Replaces PyG's DynamicBatchSampler, which walks dataset[i].num_nodes
+            # per graph per epoch.
+            sizes = dataset.num_nodes_per_graph
+            sampler = NodeBudgetBatchSampler(
+                sizes, max_num=result.budget, shuffle=shuffle,
                 skip_too_big=True, num_steps=num_steps,
             )
-            dataset._data_list = None  # clear bloat from sampler's __init__
             return make_graph_loader(
                 dataset, batch_sampler=sampler, num_workers=nw, device=device,
                 prefetch_factor=pf if nw > 0 else None,
@@ -264,10 +249,186 @@ class CANBusDataModule(pl.LightningDataModule):
         )
 
 
+# ---------------------------------------------------------------------------
+# CANBusDataModule — thin subclass binding CANBusDataset
+# ---------------------------------------------------------------------------
+
+
+class CANBusDataModule(GraphDataModule):
+    """CAN bus graph data — one DataModule for all 6 catalog datasets."""
+
+    dataset_cls = CANBusDataset
+
+
+# ---------------------------------------------------------------------------
+# CurriculumDataModule — difficulty-ordered sampling over CAN data
+# ---------------------------------------------------------------------------
+
+
+class CurriculumDataModule(CANBusDataModule):
+    """Curriculum learning with persistent workers.
+
+    Subclasses CANBusDataModule for data loading + properties (num_ids,
+    in_channels, num_classes). Adds VGAE difficulty scoring and
+    curriculum-ordered batching via CurriculumSampler.
+    """
+
+    def __init__(
+        self,
+        dataset: str = "",
+        lake_root: str = os.environ.get("KD_GAT_LAKE_ROOT"),
+        vgae_ckpt_path: str = "",
+        batch_size: int = 8192,
+        num_workers: int | None = None,
+        prefetch_factor: int = 2,
+        window_size: int = 100,
+        stride: int = 100,
+        val_fraction: float = 0.2,
+        seed: int = 42,
+        dynamic_batching: bool = True,
+        conv_type: str = "gatv2",
+        heads: int = 4,
+        canid_weight: float = 0.1,
+        curriculum_start_ratio: float = 1.0,
+        curriculum_end_ratio: float = 10.0,
+        difficulty_percentile: float = 75.0,
+        max_epochs: int = 300,
+    ):
+        super().__init__(
+            dataset=dataset, lake_root=lake_root, batch_size=batch_size,
+            num_workers=num_workers, prefetch_factor=prefetch_factor,
+            window_size=window_size, stride=stride,
+            val_fraction=val_fraction, seed=seed, dynamic_batching=dynamic_batching,
+            conv_type=conv_type, heads=heads,
+        )
+        self.save_hyperparameters()
+        self._batch_sampler = None
+        self._train_loader = None
+        self._val_loader = None
+
+    def setup(self, stage=None):
+        if self._train_loader is not None:
+            return
+        from graphids.core.models._training import load_inner_model
+
+        hp = self.hparams
+        if not hp.vgae_ckpt_path:
+            raise ValueError(
+                "CurriculumDataModule requires vgae_ckpt_path — train VGAE autoencoder first"
+            )
+
+        # Load datasets via parent — populates _train_ds, _val_ds, properties
+        super().setup(stage)
+
+        normals = [g for g in self._train_ds if int(g.y[0]) == 0]
+        attacks = [g for g in self._train_ds if int(g.y[0]) == 1]
+
+        device = torch.device("cpu")
+        vgae, _ = load_inner_model("vgae", Path(hp.vgae_ckpt_path), device)
+        scores = vgae.score_difficulty(normals, canid_weight=hp.canid_weight)
+        del vgae
+        gc.collect()
+
+        full_dataset = normals + attacks
+        normal_indices = list(range(len(normals)))
+        attack_indices = list(range(len(normals), len(full_dataset)))
+
+        # Precompute per-graph node counts once — full_dataset is a list of
+        # already-materialized Data objects, so .num_nodes is just x.shape[0].
+        # CurriculumSampler rebuilds its inner sampler each epoch by indexing
+        # this tensor with the active subset (O(M) tensor op, not a walk).
+        dataset_sizes = torch.tensor(
+            [g.num_nodes for g in full_dataset], dtype=torch.long,
+        )
+
+        # Defer VRAM budget to train_dataloader() — model isn't on GPU yet
+        # during setup(). CurriculumSampler accepts max_num_nodes=None.
+        self._batch_sampler = CurriculumSampler(
+            full_dataset, normal_indices, attack_indices, scores,
+            batch_size=hp.batch_size, max_epochs=hp.max_epochs,
+            curriculum_start_ratio=hp.curriculum_start_ratio,
+            curriculum_end_ratio=hp.curriculum_end_ratio,
+            difficulty_percentile=hp.difficulty_percentile,
+            dataset_sizes=dataset_sizes,
+            max_num_nodes=None,
+            mean_nodes=1.0,
+        )
+        self._train_loader = make_graph_loader(
+            full_dataset, batch_sampler=self._batch_sampler, num_workers=hp.num_workers,
+            device=self._prefetch_device(),
+        )
+        self._val_loader = None  # built lazily in val_dataloader()
+
+    def _prefetch_device(self):
+        """Return GPU device for PrefetchLoader, or None for CPU."""
+        trainer = getattr(self, "trainer", None)
+        if trainer and torch.cuda.is_available():
+            return trainer.strategy.root_device
+        return None
+
+    def _build_val_loader(self):
+        hp = self.hparams
+        bs = max(8, hp.batch_size)
+        val_data = list(self._val_ds)
+        device = self._prefetch_device()
+        if hp.dynamic_batching:
+            trainer = getattr(self, "trainer", None)
+            model = trainer.lightning_module if trainer else None
+            model_hp = getattr(model, "hparams", {}) if model else {}
+            result = node_budget(
+                hp.dataset, hp.lake_root,
+                conv_type=model_hp.get("conv_type", hp.conv_type),
+                heads=model_hp.get("heads", hp.heads),
+                model=model, train_dataset=val_data,
+            )
+            nw = hp.num_workers if hp.num_workers is not None else 2
+            num_steps = max(1, math.ceil(len(val_data) * result.mean_nodes / result.budget))
+            val_sizes = torch.tensor(
+                [g.num_nodes for g in val_data], dtype=torch.long,
+            )
+            sampler = NodeBudgetBatchSampler(
+                val_sizes, max_num=result.budget, shuffle=False,
+                skip_too_big=True, num_steps=num_steps,
+            )
+            return make_graph_loader(val_data, batch_sampler=sampler, num_workers=nw, device=device)
+        return make_graph_loader(val_data, batch_size=bs, shuffle=False, num_workers=hp.num_workers, device=device)
+
+    def on_train_epoch_start(self, trainer, pl_module):
+        if self._batch_sampler is not None:
+            self._batch_sampler.set_epoch(trainer.current_epoch)
+
+    def train_dataloader(self):
+        hp = self.hparams
+        if hp.dynamic_batching and self._batch_sampler.max_num_nodes is None:
+            trainer = getattr(self, "trainer", None)
+            model = trainer.lightning_module if trainer else None
+            model_hp = getattr(model, "hparams", {}) if model else {}
+            result = node_budget(
+                hp.dataset, hp.lake_root,
+                conv_type=model_hp.get("conv_type", hp.conv_type),
+                heads=model_hp.get("heads", hp.heads),
+                model=model, train_dataset=self._batch_sampler.dataset,
+            )
+            self._batch_sampler.max_num_nodes = result.budget
+            self._batch_sampler.mean_nodes = result.mean_nodes
+            self._batch_sampler._inner = self._batch_sampler._build_inner()
+        return self._train_loader
+
+    def val_dataloader(self):
+        if self._val_loader is None:
+            self._val_loader = self._build_val_loader()
+        return self._val_loader
+
+
+# ---------------------------------------------------------------------------
+# FusionDataModule — frozen VGAE+GAT state caching
+# ---------------------------------------------------------------------------
+
+
 class FusionDataModule(pl.LightningDataModule):
     """Loads frozen VGAE+GAT, caches state vectors, serves DataLoaders.
 
-    Wraps CANBusDataModule internally — callers never touch raw graph data.
+    Wraps CAN data loading internally — callers never touch raw graph data.
     """
 
     def __init__(
@@ -340,7 +501,6 @@ class FusionDataModule(pl.LightningDataModule):
 
         # Slow path: load upstream models and extract on GPU
         import types
-        from pathlib import Path
 
         from graphids.core.models._training import load_inner_model
 
@@ -351,7 +511,7 @@ class FusionDataModule(pl.LightningDataModule):
                 train_val_split=1.0 - hp.val_fraction,
             ),
         )
-        train_ds, val_ds, _ = load_datasets(cfg_ns)
+        train_ds, val_ds, _ = load_datasets(cfg_ns, CANBusDataset)
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         if not hp.vgae_ckpt_path:
@@ -387,9 +547,10 @@ class FusionDataModule(pl.LightningDataModule):
 
     def _load_cached_states(self, cached_states_dir: str) -> None:
         """Load pre-extracted fusion states from disk. No GPU needed."""
-        from pathlib import Path
         from graphids.commands.extract_fusion_states import (
-            FUSION_STATES_DIR, TRAIN_FILENAME, VAL_FILENAME,
+            FUSION_STATES_DIR,
+            TRAIN_FILENAME,
+            VAL_FILENAME,
         )
 
         states_dir = Path(cached_states_dir)

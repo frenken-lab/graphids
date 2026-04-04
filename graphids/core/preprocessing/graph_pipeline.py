@@ -1,171 +1,17 @@
-"""CAN bus graph feature definitions and sliding-window graph construction.
+"""Dataset-agnostic sliding-window → graph pipeline.
 
-Single source of truth for node and edge feature schemas, Polars expressions,
-assembly functions, and the general sliding-window-to-graph pipeline.
-Dataset adapters (e.g. can_bus.py) handle I/O and vocabulary, then call
-sliding_window_graphs() for the general pipeline.
+Exposes ``sliding_window_graphs`` — a general pipeline that takes Polars
+feature expressions as parameters. Dataset adapters (``datasets/can_bus.py``,
+``datasets/ethernet.py``, ...) supply their own schemas and labels.
 """
 
 from __future__ import annotations
 
 import numpy as np
 import polars as pl
-from graphids.log import get_logger
 import torch
-from torch import Tensor
+from graphids.log import get_logger
 from torch_geometric.data import Data
-
-BYTE_COLS = [f"byte_{i}" for i in range(8)]
-
-
-def parse_payload(lf: pl.LazyFrame) -> pl.LazyFrame:
-    """Parse hex payload column into 8 byte columns + Shannon entropy.
-
-    Expects a 'payload' column (16-char hex string). Adds byte_0..byte_7
-    (Float32) and entropy (Float32). Passthrough if byte_0 already exists.
-    """
-    if "byte_0" in lf.collect_schema().names():
-        return lf
-    byte_exprs = [
-        pl.col("payload").str.slice(i * 2, 2)
-        .str.to_integer(base=16, strict=False)
-        .fill_null(0).cast(pl.Float32).alias(f"byte_{i}")
-        for i in range(8)
-    ]
-    lf = lf.with_columns(byte_exprs)
-    byte_cols = [pl.col(f"byte_{i}") for i in range(8)]
-    row_sum = pl.sum_horizontal(byte_cols).clip(1e-12, None)
-    entropy_terms = [
-        pl.when(c > 0).then(-(c / row_sum) * (c / row_sum).log()).otherwise(0.0)
-        for c in byte_cols
-    ]
-    return lf.with_columns(pl.sum_horizontal(entropy_terms).alias("entropy"))
-
-
-# Column order defines tensor layout. Changing order changes model input.
-NODE_COL_ORDER = (
-    [f"{c}_mean" for c in BYTE_COLS]
-    + [f"{c}_std" for c in BYTE_COLS]
-    + [f"{c}_range" for c in BYTE_COLS]
-    + ["msg_count", "entropy_mean", "skewness", "kurtosis",
-       "clustering_coeff", "split_half_ratio", "change_rate",
-       "node_iat_mean", "node_iat_std", "in_degree", "out_degree"]
-)
-
-N_NODE_FEATURES = len(NODE_COL_ORDER)
-# Edge feature layout: iat + 8 byte diffs + bidirectional flag.
-EDGE_COL_ORDER = (
-    "iat",
-    *(f"byte_{i}_diff" for i in range(8)),
-    "bidir",
-    "edge_freq",
-)
-
-N_EDGE_FEATURES = len(EDGE_COL_ORDER)  # 10
-
-# Column indices for post-hoc features filled from graph structure.
-CC_IDX = NODE_COL_ORDER.index("clustering_coeff")
-IN_DEG_IDX = NODE_COL_ORDER.index("in_degree")
-OUT_DEG_IDX = NODE_COL_ORDER.index("out_degree")
-
-# Polars aggregation expressions for per-node stats within a window.
-# Used by group_by("node_id").agg() and group_by(["_wid", "node_id"]).agg().
-# Requires columns: byte_0..7, entropy, _first_half (bool).
-NODE_STAT_EXPRS: list[pl.Expr] = [
-    *[pl.col(c).mean().alias(f"{c}_mean") for c in BYTE_COLS],
-    *[pl.col(c).std().alias(f"{c}_std") for c in BYTE_COLS],
-    *[(pl.col(c).max() - pl.col(c).min()).alias(f"{c}_range") for c in BYTE_COLS],
-    pl.len().cast(pl.Float32).alias("msg_count"),
-    pl.col("entropy").mean().alias("entropy_mean"),
-    pl.mean_horizontal(*[pl.col(c).skew().fill_nan(0).clip(-10, 10) for c in BYTE_COLS]).alias("skewness"),
-    pl.mean_horizontal(*[pl.col(c).kurtosis().fill_nan(0).clip(-10, 10) for c in BYTE_COLS]).alias("kurtosis"),
-    pl.lit(0.0).alias("clustering_coeff"),  # filled per-window from graph structure
-    pl.col("_first_half").mean().alias("split_half_ratio"),
-    pl.mean_horizontal(*[(pl.col(c).diff().abs().drop_nulls() > 0).mean() for c in BYTE_COLS]).alias("change_rate"),
-    pl.col("timestamp").diff().mean().cast(pl.Float32).alias("node_iat_mean"),
-    pl.col("timestamp").diff().std().fill_nan(0).cast(pl.Float32).alias("node_iat_std"),
-    pl.lit(0.0).alias("in_degree"),   # filled post-hoc from edge_index
-    pl.lit(0.0).alias("out_degree"),  # filled post-hoc from edge_index
-]
-
-# Polars expressions for vectorized edge feature computation.
-# Used by with_columns() after sort(["_wid", "_row"]).
-# Requires columns: timestamp, byte_0..7, _wid.
-# Note: bidir is computed separately via self-join (not expressible as a single expression).
-EDGE_STAT_EXPRS: list[pl.Expr] = [
-    pl.col("timestamp").diff().over("_wid").cast(pl.Float32).alias("iat"),
-    *[
-        pl.col(f"byte_{i}").diff().abs().over("_wid").cast(pl.Float32)
-        .alias(f"byte_{i}_diff")
-        for i in range(8)
-    ],
-]
-
-
-def clustering_coefficients(edge_index: np.ndarray, num_nodes: int) -> np.ndarray:
-    """Clustering coefficient per node via NetworkX (C-optimized).
-
-    NetworkX is the standard implementation for this metric. For our typical
-    CAN bus graphs (20-30 nodes), it's ~0.65ms/call — equivalent to custom
-    sparse matrix approaches, without maintaining custom math.
-    """
-    import networkx as nx
-
-    if num_nodes == 0 or edge_index.shape[1] == 0:
-        return np.zeros(num_nodes, dtype=np.float32)
-
-    G = nx.Graph()
-    G.add_nodes_from(range(num_nodes))
-    G.add_edges_from(zip(edge_index[0], edge_index[1]))
-    cc = nx.clustering(G)
-    return np.array([cc.get(i, 0.0) for i in range(num_nodes)], dtype=np.float32)
-
-
-def stats_to_tensor(
-    stats: pl.DataFrame, edge_index: np.ndarray | None = None,
-) -> tuple[Tensor, Tensor]:
-    """Convert per-node stats to compact [n_active, N_NODE_FEATURES] tensor.
-
-    Returns (x, node_ids) where node_ids are global CAN ID indices.
-    edge_index must use LOCAL indices (0..n_active-1).
-    """
-    n_active = len(stats)
-    if n_active == 0:
-        return torch.zeros(0, N_NODE_FEATURES, dtype=torch.float32), torch.zeros(0, dtype=torch.int64)
-
-    node_ids = torch.from_numpy(stats["node_id"].cast(pl.Int64).to_numpy().copy())
-    x = (
-        stats.select(NODE_COL_ORDER)
-        .cast({c: pl.Float32 for c in NODE_COL_ORDER})
-        .fill_null(0).fill_nan(0)
-        .to_torch(dtype=pl.Float32)
-    )
-
-    if edge_index is not None:
-        x[:, CC_IDX] = torch.from_numpy(clustering_coefficients(edge_index, n_active))
-        ei = edge_index.astype(np.intp)
-        x[:, IN_DEG_IDX] = torch.from_numpy(np.bincount(ei[1], minlength=n_active).astype(np.float32))
-        x[:, OUT_DEG_IDX] = torch.from_numpy(np.bincount(ei[0], minlength=n_active).astype(np.float32))
-
-    return x, node_ids
-
-
-def node_features(
-    window: pl.DataFrame,
-    edge_index: np.ndarray | None = None,
-) -> tuple[Tensor, Tensor]:
-    """Compute compact node features from a single window DataFrame.
-
-    Returns (x, node_ids) — same contract as stats_to_tensor.
-    This is the per-window path used by tests and standalone usage.
-    The vectorized batch path in can_bus.py uses NODE_STAT_EXPRS directly.
-    """
-    half = len(window) // 2
-    window = window.with_row_index("_row").with_columns(
-        (pl.col("_row") < half).alias("_first_half")
-    )
-    stats = window.group_by("node_id").agg(*NODE_STAT_EXPRS).fill_null(0).fill_nan(0)
-    return stats_to_tensor(stats, edge_index)
 
 
 def add_bidir_flag(edge_df: pl.DataFrame) -> pl.DataFrame:
@@ -192,6 +38,13 @@ def sliding_window_graphs(
     df: pl.DataFrame,
     window_size: int,
     stride: int,
+    *,
+    node_stat_exprs: list[pl.Expr],
+    edge_stat_exprs: list[pl.Expr],
+    node_col_order: list[str],
+    edge_col_order: tuple[str, ...],
+    label_exprs: list[pl.Expr],
+    edge_base_cols: list[str],
 ) -> tuple[Data, dict, int]:
     """Convert a message DataFrame into pre-collated (Data, slices, num_graphs).
 
@@ -199,12 +52,27 @@ def sliding_window_graphs(
     avoiding the triple-copy of list[Data] → collate → save. Peak memory
     is ~1x the final tensor size instead of ~3x.
 
-    Each graph is one sliding window. Nodes are active arbitration IDs,
-    edges are temporal adjacency (shift-1), with local IDs (0..n_active-1).
-    node_id stores global CAN ID indices for embedding lookup.
+    Each graph is one sliding window. Nodes are active per-window entities
+    (identified by the ``node_id`` column), edges are temporal adjacency
+    (shift-1), with local IDs (0..n_active-1). ``node_id`` stores global
+    indices for embedding lookup.
 
-    Required columns: node_id (Int64), timestamp, byte_0..7, entropy,
-    attack, attack_type.
+    Required columns in ``df``:
+        ``node_id`` (Int64), ``timestamp``, plus whatever ``node_stat_exprs``,
+        ``edge_stat_exprs``, ``label_exprs``, and ``edge_base_cols`` reference.
+
+    Parameters describing the dataset schema:
+        ``node_stat_exprs``: Polars aggregations for per-node features. Must
+            include a ``_first_half`` reference if the dataset cares about it.
+        ``edge_stat_exprs``: Polars expressions for edge features (iat, byte
+            diffs, etc.) applied after ``sort(["_wid", "_row"])``.
+        ``node_col_order``: final column order for the node feature tensor.
+        ``edge_col_order``: final column order for the edge feature tensor.
+        ``label_exprs``: per-window aggregations yielding label columns. The
+            first expression must be aliased ``y``; additional expressions
+            are attached as auxiliary attributes on the ``Data`` object.
+        ``edge_base_cols``: extra columns required for edge feature
+            computation (e.g. byte_0..7 for CAN byte diffs).
     """
     log = get_logger(__name__)
 
@@ -217,7 +85,7 @@ def sliding_window_graphs(
     n_windows = max(0, (n_rows - ws) // st + 1)
     if n_windows == 0:
         log.warning("no_complete_windows", n_rows=n_rows, window_size=ws)
-        return []
+        return Data(), {}, 0
     max_wid = n_windows - 1
     log.info("windowing", n_windows=n_windows, window_size=ws, stride=st)
 
@@ -245,18 +113,17 @@ def sliding_window_graphs(
 
     stats_lf = (
         lf.group_by(["_wid", "node_id"], maintain_order=True)
-        .agg(*NODE_STAT_EXPRS)
+        .agg(*node_stat_exprs)
         .fill_null(0).fill_nan(0)
     )
 
     edges_base = (
-        lf.select("_wid", "_row", "node_id", "timestamp",
-                   *[f"byte_{i}" for i in range(8)])
+        lf.select("_wid", "_row", "node_id", "timestamp", *edge_base_cols)
         .sort(["_wid", "_row"])
         .with_columns(
             pl.col("node_id").alias("src"),
             pl.col("node_id").shift(-1).over("_wid").alias("dst"),
-            *EDGE_STAT_EXPRS,
+            *edge_stat_exprs,
         )
         .filter(pl.col("iat").is_not_null() & pl.col("dst").is_not_null())
         .with_columns(
@@ -264,12 +131,7 @@ def sliding_window_graphs(
         )
     )
 
-    labels_lf = lf.group_by("_wid").agg(
-        (pl.col("attack").max() > 0).cast(pl.Int64).alias("y"),
-        pl.col("attack_type")
-        .filter(pl.col("attack_type") > 0)
-        .mode().first().fill_null(0).alias("at"),
-    )
+    labels_lf = lf.group_by("_wid").agg(*label_exprs)
 
     # Sequential collection reduces peak memory by ~20-30GB vs collect_all().
     # All three lazy frames reference `lf` → `df`, so df/lf must survive until
@@ -352,8 +214,15 @@ def sliding_window_graphs(
     del cc, in_deg, out_deg
     log.info("graph_structure_features_computed")
 
-    label_y = dict(zip(labels["_wid"].to_list(), labels["y"].to_list()))
-    label_at = dict(zip(labels["_wid"].to_list(), labels["at"].to_list()))
+    # Labels: the first expr must be aliased "y"; additional exprs become
+    # extra tensor attributes on the Data object.
+    label_names = [e.meta.output_name() for e in label_exprs]
+    assert label_names[0] == "y", (
+        f"first label expr must be aliased 'y', got {label_names[0]!r}"
+    )
+    label_maps: dict[str, dict[int, int]] = {}
+    for name in label_names:
+        label_maps[name] = dict(zip(labels["_wid"].to_list(), labels[name].to_list()))
     del labels
 
     # ── Slice boundaries via RLE ──────────────────────────────────
@@ -392,7 +261,7 @@ def sliding_window_graphs(
 
     # ── Bulk Polars → torch handoff ──────────────────────────────
     all_node_feats = (
-        node_stats.select(NODE_COL_ORDER)
+        node_stats.select(node_col_order)
         .fill_null(0).fill_nan(0)
         .to_torch(dtype=pl.Float32)
     )
@@ -406,7 +275,7 @@ def sliding_window_graphs(
         edge_df["dst_local"].cast(pl.Int64).to_numpy().copy()
     )
     all_edge_feats = (
-        edge_df.select(list(EDGE_COL_ORDER))
+        edge_df.select(list(edge_col_order))
         .fill_null(0).fill_nan(0)
         .to_torch(dtype=pl.Float32)
     )
@@ -417,7 +286,13 @@ def sliding_window_graphs(
     # InMemoryDataset.collate() would produce. Building individual
     # Data objects + collate would triple peak memory. Instead,
     # construct the slices dict from RLE boundaries.
+    #
+    # Graphs are presorted by node count. Adjacent graphs on disk have
+    # similar size, so DynamicBatchSampler + bucket shuffle produces
+    # batches that page-fault sequentially instead of randomly across
+    # the mmap'd cache.
     keep = [i for i, wid in enumerate(s_wids) if wid in e_lookup]
+    keep.sort(key=lambda i: s_counts[i])  # presort by node count
     kept_wids = [s_wids[i] for i in keep]
     num_graphs = len(kept_wids)
     if num_graphs == 0:
@@ -460,22 +335,23 @@ def sliding_window_graphs(
     cat_edge_index = torch.stack([cat_edge_src, cat_edge_dst])
     del cat_edge_src, cat_edge_dst
 
-    # Per-graph labels
-    cat_y = torch.tensor([label_y.get(w, 0) for w in kept_wids], dtype=torch.long)
-    cat_at = torch.tensor([label_at.get(w, 0) for w in kept_wids], dtype=torch.long)
+    # Per-graph labels (one tensor per label expression)
     graph_idx = torch.arange(num_graphs + 1, dtype=torch.long)
+    label_tensors: dict[str, torch.Tensor] = {
+        name: torch.tensor([label_maps[name].get(w, 0) for w in kept_wids], dtype=torch.long)
+        for name in label_names
+    }
 
     data = Data(
         x=cat_x, edge_index=cat_edge_index, edge_attr=cat_edge_attr,
-        node_id=cat_node_id, y=cat_y, attack_type=cat_at,
+        node_id=cat_node_id, **label_tensors,
     )
     slices = {
         "x": node_cumsum,
         "edge_index": edge_cumsum,
         "edge_attr": edge_cumsum,
         "node_id": node_cumsum,
-        "y": graph_idx,
-        "attack_type": graph_idx,
+        **{name: graph_idx for name in label_names},
     }
     log.info("graphs_built", count=num_graphs)
     return data, slices, num_graphs

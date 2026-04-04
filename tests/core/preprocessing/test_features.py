@@ -23,7 +23,7 @@ def _make_window(n_rows: int = 20, n_ids: int = 5):
 
 
 def test_node_features_shape():
-    from graphids.core.preprocessing.features import node_features, NODE_COL_ORDER
+    from graphids.core.preprocessing.datasets.can_bus import node_features, NODE_COL_ORDER
     x, node_ids = node_features(_make_window(80, 8), edge_index=np.array([[0, 1], [1, 2]]))
     n_active = node_ids.shape[0]
     assert x.shape == (n_active, len(NODE_COL_ORDER))
@@ -32,11 +32,11 @@ def test_node_features_shape():
 
 
 def test_node_features_skewness_clamped():
-    from graphids.core.preprocessing.features import node_features
+    from graphids.core.preprocessing.datasets.can_bus import node_features
     x, _ = node_features(_make_window(100, 3))
     # Skewness and kurtosis columns — verify clamping to +/-10
     # Only skewness and kurtosis are clamped — other features may exceed 10
-    from graphids.core.preprocessing.features import NODE_COL_ORDER
+    from graphids.core.preprocessing.datasets.can_bus import NODE_COL_ORDER
     skew_idx = NODE_COL_ORDER.index("skewness")
     kurt_idx = NODE_COL_ORDER.index("kurtosis")
     assert x[:, skew_idx].abs().max() <= 10.0
@@ -60,8 +60,11 @@ def _get_graph(data, slices, idx):
 
 def test_sliding_window_graphs_shapes_and_values():
     """sliding_window_graphs produces Data objects with correct shapes and edge features."""
-    from graphids.core.preprocessing.features import (
-        sliding_window_graphs, N_EDGE_FEATURES, N_NODE_FEATURES, EDGE_COL_ORDER,
+    from graphids.core.preprocessing.graph_pipeline import sliding_window_graphs
+    from graphids.core.preprocessing.datasets.can_bus import (
+        N_EDGE_FEATURES, N_NODE_FEATURES, EDGE_COL_ORDER,
+        NODE_STAT_EXPRS, EDGE_STAT_EXPRS, NODE_COL_ORDER,
+        LABEL_EXPRS, EDGE_BASE_COLS,
     )
     import polars as pl
 
@@ -76,7 +79,12 @@ def test_sliding_window_graphs_shapes_and_values():
         "attack": [0] * n_rows,
         "attack_type": [0] * n_rows,
     })
-    data, slices, num_graphs = sliding_window_graphs(df, window_size=10, stride=5)
+    data, slices, num_graphs = sliding_window_graphs(
+        df, window_size=10, stride=5,
+        node_stat_exprs=NODE_STAT_EXPRS, edge_stat_exprs=EDGE_STAT_EXPRS,
+        node_col_order=NODE_COL_ORDER, edge_col_order=EDGE_COL_ORDER,
+        label_exprs=LABEL_EXPRS, edge_base_cols=EDGE_BASE_COLS,
+    )
     assert num_graphs > 0
     g = _get_graph(data, slices, 0)
     assert g.x.shape[1] == N_NODE_FEATURES
@@ -96,7 +104,7 @@ def test_sliding_window_graphs_shapes_and_values():
 
 def test_node_iat_features():
     """node_iat_mean/std computed from per-node timestamp diffs."""
-    from graphids.core.preprocessing.features import node_features, NODE_COL_ORDER
+    from graphids.core.preprocessing.datasets.can_bus import node_features, NODE_COL_ORDER
     window = _make_window(80, 4)
     x, _ = node_features(window, edge_index=np.array([[0, 1], [1, 2]]))
     iat_mean_idx = NODE_COL_ORDER.index("node_iat_mean")
@@ -109,7 +117,7 @@ def test_node_iat_features():
 
 def test_degree_features():
     """in_degree/out_degree filled post-hoc from edge_index."""
-    from graphids.core.preprocessing.features import node_features, NODE_COL_ORDER
+    from graphids.core.preprocessing.datasets.can_bus import node_features, NODE_COL_ORDER
     window = _make_window(80, 4)
     ei = np.array([[0, 1], [1, 2]])
     x, _ = node_features(window, edge_index=ei)
@@ -124,7 +132,11 @@ def test_degree_features():
 
 def test_sliding_window_graphs_edge_freq():
     """edge_freq counts repeated (src, dst) pairs within a window."""
-    from graphids.core.preprocessing.features import sliding_window_graphs, EDGE_COL_ORDER
+    from graphids.core.preprocessing.graph_pipeline import sliding_window_graphs
+    from graphids.core.preprocessing.datasets.can_bus import (
+        EDGE_COL_ORDER, NODE_STAT_EXPRS, EDGE_STAT_EXPRS, NODE_COL_ORDER,
+        LABEL_EXPRS, EDGE_BASE_COLS,
+    )
     import polars as pl
 
     # 10 rows, 2 node IDs → many repeated (src, dst) pairs
@@ -137,7 +149,12 @@ def test_sliding_window_graphs_edge_freq():
         "attack": [0] * 10,
         "attack_type": [0] * 10,
     })
-    data, slices, num_graphs = sliding_window_graphs(df, window_size=10, stride=10)
+    data, slices, num_graphs = sliding_window_graphs(
+        df, window_size=10, stride=10,
+        node_stat_exprs=NODE_STAT_EXPRS, edge_stat_exprs=EDGE_STAT_EXPRS,
+        node_col_order=NODE_COL_ORDER, edge_col_order=EDGE_COL_ORDER,
+        label_exprs=LABEL_EXPRS, edge_base_cols=EDGE_BASE_COLS,
+    )
     assert num_graphs == 1
     g = _get_graph(data, slices, 0)
     freq_idx = EDGE_COL_ORDER.index("edge_freq")
@@ -160,36 +177,36 @@ class TestClusteringCoefficients:
         return np.array([cc.get(i, 0.0) for i in range(num_nodes)], dtype=np.float32)
 
     def test_triangle(self):
-        from graphids.core.preprocessing.features import clustering_coefficients
+        from graphids.core.preprocessing.datasets.can_bus import clustering_coefficients
         ei = np.array([[0, 1, 2], [1, 2, 0]])
         cc = clustering_coefficients(ei, 3)
         np.testing.assert_allclose(cc, [1.0, 1.0, 1.0], atol=1e-6)
 
     def test_path(self):
-        from graphids.core.preprocessing.features import clustering_coefficients
+        from graphids.core.preprocessing.datasets.can_bus import clustering_coefficients
         ei = np.array([[0, 1], [1, 2]])
         cc = clustering_coefficients(ei, 3)
         np.testing.assert_allclose(cc, [0.0, 0.0, 0.0], atol=1e-6)
 
     def test_star(self):
-        from graphids.core.preprocessing.features import clustering_coefficients
+        from graphids.core.preprocessing.datasets.can_bus import clustering_coefficients
         ei = np.array([[0, 0, 0], [1, 2, 3]])
         cc = clustering_coefficients(ei, 4)
         np.testing.assert_allclose(cc, [0.0, 0.0, 0.0, 0.0], atol=1e-6)
 
     def test_empty(self):
-        from graphids.core.preprocessing.features import clustering_coefficients
+        from graphids.core.preprocessing.datasets.can_bus import clustering_coefficients
         cc = clustering_coefficients(np.zeros((2, 0), dtype=np.int64), 3)
         assert cc.shape == (3,)
         assert (cc == 0).all()
 
     def test_isolated_nodes(self):
-        from graphids.core.preprocessing.features import clustering_coefficients
+        from graphids.core.preprocessing.datasets.can_bus import clustering_coefficients
         cc = clustering_coefficients(np.zeros((2, 0), dtype=np.int64), 0)
         assert cc.shape == (0,)
 
     def test_matches_networkx_random(self):
-        from graphids.core.preprocessing.features import clustering_coefficients
+        from graphids.core.preprocessing.datasets.can_bus import clustering_coefficients
         rng = np.random.default_rng(123)
         for _ in range(20):
             n = rng.integers(5, 30)

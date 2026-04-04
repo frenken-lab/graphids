@@ -5,7 +5,6 @@ Family-oriented namespaces:
     from graphids.core.models.autoencoder import VGAEModule, DGIModule
     from graphids.core.models.supervised import GATModule
     from graphids.core.models.fusion import BanditFusionModule, DQNFusionModule
-    from graphids.core.models.temporal_family import TemporalLightningModule
 
 Public API re-exported from submodules:
 
@@ -14,7 +13,7 @@ Public API re-exported from submodules:
     from graphids.core.models import GraphModuleBase
 """
 
-from . import autoencoder, fusion, supervised, temporal_family
+from . import autoencoder, fusion, supervised
 
 from ._training import GraphModuleBase
 from .fusion.fusion_features import (
@@ -33,7 +32,6 @@ __all__ = [
     "autoencoder",
     "supervised",
     "fusion",
-    "temporal_family",
     "GraphModuleBase",
     "FeatureLayout",
     "FusionFeatureExtractor",

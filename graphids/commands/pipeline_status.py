@@ -96,7 +96,7 @@ def _phase_status(run_dir: Path | None) -> dict[str, str]:
 _DONE_STATES = frozenset({"COMPLETED", "SUCCESS"})
 _FAILED_STATES = frozenset({"FAILED", "TIMEOUT", "OUT_OF_MEMORY", "CANCELLED"})
 _RUNNING_STATES = frozenset({"RUNNING", "PENDING"})
-_STAGE_ORDER = {"autoencoder": 0, "normal": 1, "curriculum": 2, "fusion": 3, "temporal": 4}
+_STAGE_ORDER = {"autoencoder": 0, "normal": 1, "curriculum": 2, "fusion": 3}
 
 
 @dataclass

@@ -79,7 +79,6 @@ def test_no_cycles():
     ("autoencoder", "curriculum"),
     ("autoencoder", "fusion"),
     ("curriculum", "fusion"),
-    ("curriculum", "temporal"),
 ])
 def test_ordering(before, after):
     order = _topo_order()

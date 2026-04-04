@@ -19,7 +19,6 @@ STAGES: dict[str, tuple[str, str, str]] = {
     "curriculum": ("supervised", "gat", "gpu_train"),
     "normal": ("supervised", "gat", "gpu_train"),
     "fusion": ("rl_fusion", "fusion", "cpu_train"),
-    "temporal": ("temporal", "temporal", "gpu_train"),
 }
 
 _STAGE_DEFS: dict[str, dict[str, Any]] = {
@@ -58,13 +57,6 @@ _STAGE_DEFS: dict[str, dict[str, Any]] = {
         "identity_keys": ["scale", "gat_stage", "loss_fn", "method", "conv_type", "variational"],
         "model_keys": [],
     },
-    "temporal": {
-        "learning_type": "temporal",
-        "model": "temporal",
-        "mode": "gpu_train",
-        "depends_on": [{"model": "gat", "stage": "curriculum"}],
-        "identity_keys": ["scale", "gat_stage", "loss_fn"],
-    },
 }
 
 PIPELINE_YAML: dict[str, Any] = {
@@ -77,7 +69,6 @@ PIPELINE_YAML: dict[str, Any] = {
         "vgae": "autoencoder",
         "dgi": "autoencoder",
         "gat": "curriculum",
-        "temporal": "temporal",
         "fusion": "fusion",
     },
 }

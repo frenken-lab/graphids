@@ -61,8 +61,7 @@ def _instantiate_model(model_type: str, scale: str, num_ids: int, in_channels: i
     }
     init_args["num_ids"] = num_ids
     init_args["in_channels"] = in_channels
-    if model_type != "temporal":
-        init_args["compile_model"] = False
+    init_args["compile_model"] = False
 
     module_path, class_name = class_path.rsplit(".", 1)
     cls = getattr(importlib.import_module(module_path), class_name)

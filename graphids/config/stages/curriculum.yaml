@@ -1,5 +1,5 @@
 data:
-  class_path: graphids.core.preprocessing.stages.curriculum.CurriculumDataModule
+  class_path: graphids.core.preprocessing.datamodule.CurriculumDataModule
   init_args:
     window_size: 100
     stride: 100

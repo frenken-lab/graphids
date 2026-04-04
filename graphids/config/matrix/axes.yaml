@@ -1,11 +1,10 @@
 axes:
   datasets: [hcrl_ch, hcrl_sa, set_01, set_02, set_03, set_04]
   scales: [small, large]
-  model_families: [vgae, dgi, gat, temporal, fusion]
+  model_families: [vgae, dgi, gat, fusion]
   fusion_methods: [bandit, dqn, mlp, weighted_avg]
   stages_by_model:
     vgae: [autoencoder, curriculum]
     dgi: [autoencoder]
     gat: [normal, curriculum]
-    temporal: [temporal]
     fusion: [fusion]

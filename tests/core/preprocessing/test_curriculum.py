@@ -12,7 +12,7 @@ class TestCurriculumSampler:
 
     @staticmethod
     def _make_data_and_sampler(n_normal=20, n_attack=10):
-        from graphids.core.preprocessing.stages.curriculum import CurriculumSampler
+        from graphids.core.preprocessing.sampler import CurriculumSampler
 
         normals = [make_graph() for _ in range(n_normal)]
         for g in normals:
@@ -24,12 +24,16 @@ class TestCurriculumSampler:
         full_dataset = normals + attacks
         normal_indices = list(range(len(normals)))
         attack_indices = list(range(len(normals), len(full_dataset)))
+        dataset_sizes = torch.tensor(
+            [g.num_nodes for g in full_dataset], dtype=torch.long,
+        )
 
         sampler = CurriculumSampler(
             full_dataset, normal_indices, attack_indices, scores,
             batch_size=32, max_epochs=10,
             curriculum_start_ratio=0.3, curriculum_end_ratio=1.0,
             difficulty_percentile=75.0,
+            dataset_sizes=dataset_sizes,
         )
         return sampler, full_dataset
 

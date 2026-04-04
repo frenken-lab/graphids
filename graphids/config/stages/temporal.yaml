@@ -1,8 +1,0 @@
-data:
-  class_path: graphids.core.preprocessing.stages.temporal.TemporalDataModule
-  init_args:
-    window_size: 10
-    stride: 1
-    val_fraction: 0.2
-    batch_size: 256
-    num_workers: null  # auto-sized from GPU-first sizing chain

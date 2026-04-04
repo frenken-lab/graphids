@@ -20,7 +20,7 @@ def test_preprocessing(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     from graphids.core.preprocessing.datamodule import CANBusDataModule
-    from graphids.core.preprocessing.features import N_EDGE_FEATURES, N_NODE_FEATURES
+    from graphids.core.preprocessing.datasets.can_bus import N_EDGE_FEATURES, N_NODE_FEATURES
 
     dm = CANBusDataModule(dataset=args.dataset)
     dm.setup("fit")
