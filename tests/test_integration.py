@@ -54,18 +54,18 @@ class TestDecisionThreshold:
     @staticmethod
     def _make_fusion_states(n: int = 32) -> torch.Tensor:
         """Create synthetic 15-D fusion state vectors."""
-        from graphids.core.models.fusion.fusion_features import fusion_state_dim
+        from graphids.core.models.fusion.fusion_features import STATE_DIM
 
-        state_dim = fusion_state_dim()
+        state_dim = STATE_DIM
         torch.manual_seed(123)
         return torch.rand(n, state_dim)
 
     def test_dqn_high_threshold_suppresses_positives(self):
         """With threshold=0.9, fused_scores in [0.5, 0.9) yield preds=0, not 1."""
         from graphids.core.models.fusion.dqn import DQNFusionModule
-        from graphids.core.models.fusion.fusion_features import fusion_state_dim
+        from graphids.core.models.fusion.fusion_features import STATE_DIM
 
-        state_dim = fusion_state_dim()
+        state_dim = STATE_DIM
         agent = DQNFusionModule(
             alpha_steps=21,
             state_dim=state_dim,
@@ -86,9 +86,9 @@ class TestDecisionThreshold:
     def test_bandit_high_threshold_suppresses_positives(self):
         """BanditFusionModule with threshold=0.9 suppresses positive predictions."""
         from graphids.core.models.fusion.bandit import BanditFusionModule
-        from graphids.core.models.fusion.fusion_features import fusion_state_dim
+        from graphids.core.models.fusion.fusion_features import STATE_DIM
 
-        state_dim = fusion_state_dim()
+        state_dim = STATE_DIM
         agent = BanditFusionModule(
             state_dim=state_dim,
             alpha_steps=21,
@@ -109,9 +109,9 @@ class TestDecisionThreshold:
     def test_threshold_difference_changes_predictions(self):
         """Same agent state with threshold=0.1 vs 0.9 produces different predictions."""
         from graphids.core.models.fusion.dqn import DQNFusionModule
-        from graphids.core.models.fusion.fusion_features import fusion_state_dim
+        from graphids.core.models.fusion.fusion_features import STATE_DIM
 
-        state_dim = fusion_state_dim()
+        state_dim = STATE_DIM
         states = self._make_fusion_states()
 
         agent_low = DQNFusionModule(
@@ -128,7 +128,6 @@ class TestDecisionThreshold:
         )
         # Copy weights so Q-networks are identical
         agent_high.q_network.load_state_dict(agent_low.q_network.state_dict())
-        agent_high.target_network.load_state_dict(agent_low.target_network.state_dict())
 
         result_low = agent_low.predict(states)
         result_high = agent_high.predict(states)

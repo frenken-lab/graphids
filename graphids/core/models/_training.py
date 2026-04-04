@@ -188,6 +188,7 @@ def eval_mode(model):
         model.train(was_training)
 
 
+@contextlib.contextmanager
 def teacher_on_device(module, device):
     """Move KD teacher to *device* for inference, return to CPU after.
 
@@ -239,7 +240,7 @@ _MODULE_PATHS: dict[str, str] = {
 
 
 def safe_load_checkpoint(model_type: str, ckpt_path, *, map_location="cpu"):
-    """load_from_checkpoint with migration guard for pre-flatten checkpoints."""
+    """Load a Lightning checkpoint by model type, raising on missing files."""
     import importlib
     from pathlib import Path
 
@@ -255,17 +256,9 @@ def safe_load_checkpoint(model_type: str, ckpt_path, *, map_location="cpu"):
     ckpt_path = Path(ckpt_path)
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
-    try:
-        return cls.load_from_checkpoint(
-            str(ckpt_path), map_location=map_location, weights_only=True,
-        )
-    except TypeError as exc:
-        if any(k in str(exc) for k in ("vgae", "gat", "dgi", "training", "fusion")):
-            raise RuntimeError(
-                f"Checkpoint {ckpt_path} has nested hparams (pre-flatten format). "
-                "Run: python scripts/migrate_checkpoints.py <checkpoint_dir>"
-            ) from exc
-        raise
+    return cls.load_from_checkpoint(
+        str(ckpt_path), map_location=map_location, weights_only=True,
+    )
 
 
 def load_inner_model(

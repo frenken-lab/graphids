@@ -8,12 +8,10 @@ from graphids.log import get_logger
 
 from ._nn import TensorReplayBuffer, build_mlp_body
 from .fusion_baselines import FusionModuleBase
-from .fusion_features import fusion_state_dim
+from .fusion_features import STATE_DIM
 from .fusion_reward import FusionRewardCalculator
 
 log = get_logger(__name__)
-
-_DEFAULT_STATE_DIM = fusion_state_dim()
 
 
 class QNetwork(nn.Module):
@@ -37,30 +35,27 @@ class QNetwork(nn.Module):
 
 
 class DQNFusionModule(FusionModuleBase):
-    """DQN agent for dynamic fusion of GAT and VGAE outputs.
+    """Vanilla DQN with gradient updates for dynamic fusion of GAT and VGAE outputs.
 
-    Designed for streaming/temporal scenarios where sequential decisions matter
-    (gamma > 0, target network, Double DQN). For independent graphs, prefer
-    the contextual bandit in bandit.py.
+    Fusion treats each graph as an independent context, so there is no
+    bootstrapped next state: ``targets = rewards`` and no target network
+    is needed. For a closed-form alternative, see ``BanditFusionModule``.
     """
 
     def __init__(
         self,
-        state_dim: int = _DEFAULT_STATE_DIM,
+        state_dim: int = STATE_DIM,
         alpha_steps: int = 21,
         lr: float = 1e-3,
-        gamma: float = 0.0,
         epsilon: float = 0.2,
         epsilon_decay: float = 0.995,
         min_epsilon: float = 0.01,
         buffer_size: int = 50000,
         batch_size: int = 128,
-        target_update_freq: int = 100,
         *,
         hidden_dim: int = 128,
         num_layers: int = 3,
         weight_decay: float = 1e-5,
-        scheduler_patience: int = 1000,
         decision_threshold: float = 0.5,
         gpu_training_steps: int = 1,
         reward_kwargs: dict | None = None,
@@ -72,31 +67,22 @@ class DQNFusionModule(FusionModuleBase):
         self.register_buffer("_alpha_values_t", torch.linspace(0, 1, alpha_steps))
         self.action_dim = alpha_steps
         self.state_dim = state_dim
-        self.gamma = gamma
         self.epsilon = epsilon
         self.epsilon_decay = epsilon_decay
         self.min_epsilon = min_epsilon
         self.batch_size = batch_size
-        self.target_update_freq = target_update_freq
         self.decision_threshold = decision_threshold
         self.gpu_training_steps = gpu_training_steps
 
-        # Networks (nn.Module children — Lightning auto-transfers and checkpoints)
+        # Network (nn.Module child — Lightning auto-transfers and checkpoints)
         self.q_network = QNetwork(state_dim, alpha_steps, hidden_dim, num_layers)
-        self.target_network = QNetwork(state_dim, alpha_steps, hidden_dim, num_layers)
-        self.target_network.load_state_dict(self.q_network.state_dict())
 
         # Optimizer and loss
         self.optimizer = optim.AdamW(self.q_network.parameters(), lr=lr, weight_decay=weight_decay)
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, patience=scheduler_patience, factor=0.8
-        )
         self.loss_fn = nn.SmoothL1Loss()
 
         self._buffer = TensorReplayBuffer(buffer_size, state_dim)
         self.reward_calc = FusionRewardCalculator(**(reward_kwargs or {}))
-        self._train_step_count = 0
-        self.update_counter = 0
 
         log.info("dqn_agent_initialized", actions=alpha_steps, state_dim=state_dim)
 
@@ -142,14 +128,12 @@ class DQNFusionModule(FusionModuleBase):
     # Training
     # ------------------------------------------------------------------
 
-    def store_experiences_batch(
-        self, states: torch.Tensor, actions: torch.Tensor, rewards: torch.Tensor
-    ):
-        """Store a batch of experiences in the tensor replay buffer."""
-        self._buffer.add_batch(states, actions, rewards)
-
     def train_step(self) -> float | None:
-        """One Double DQN gradient step from replay buffer."""
+        """One DQN gradient step from replay buffer.
+
+        Fusion has no real next-state: targets = rewards (pure reward
+        regression, no bootstrapping), so no target network is needed.
+        """
         if len(self._buffer) < self.batch_size:
             return None
 
@@ -159,24 +143,14 @@ class DQNFusionModule(FusionModuleBase):
         rewards = rewards.to(self.device)
 
         current_q = self.q_network(states).gather(1, actions.unsqueeze(1)).squeeze(1)
+        loss = self.loss_fn(current_q, rewards)
 
-        with torch.no_grad():
-            # No real next-state in fusion formulation — gamma=0 makes this
-            # pure reward maximization (no bootstrapping from same state).
-            targets = rewards
-
-        loss = self.loss_fn(current_q, targets)
-
-        self.optimizer.zero_grad()
-        loss.backward()
+        opt = self.optimizer
+        opt.zero_grad()
+        self.manual_backward(loss)
         torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), max_norm=1.0)
-        self.optimizer.step()
+        opt.step()
 
-        self.update_counter += 1
-        if self.update_counter % self.target_update_freq == 0:
-            self.target_network.load_state_dict(self.q_network.state_dict())
-
-        self._train_step_count += 1
         return loss.item()
 
     # ------------------------------------------------------------------
@@ -198,7 +172,7 @@ class DQNFusionModule(FusionModuleBase):
         actions, alphas, norm_states = self.select_action_batch(states, training=True)
         preds = (alphas > self.decision_threshold).long()
         rewards = self.reward_calc.compute(preds, labels, norm_states, alphas)
-        self.store_experiences_batch(norm_states, actions, rewards)
+        self._buffer.add_batch(norm_states, actions, rewards)
 
         loss = None
         for _ in range(self.gpu_training_steps):
@@ -245,16 +219,9 @@ class DQNFusionModule(FusionModuleBase):
         if was_training:
             self.q_network.train()
 
-        metrics = {
+        return {
             "accuracy": correct / len(labels),
             "avg_reward": rewards.mean().item(),
             "avg_alpha": alphas.mean().item(),
             "alpha_std": alphas.std().item(),
         }
-        self.scheduler.step(metrics["avg_reward"])
-        return metrics
-
-    @property
-    def buffer_size_current(self) -> int:
-        """Current number of experiences in the replay buffer."""
-        return len(self._buffer)

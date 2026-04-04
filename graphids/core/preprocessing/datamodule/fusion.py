@@ -73,9 +73,9 @@ class FusionDataModule(pl.LightningDataModule):
         batch_size: int = 256,
     ) -> dict[str, torch.Tensor]:
         """Run registered extractors over data, produce N-D state vectors for fusion."""
-        from graphids.core.models.fusion import extractors as registry_extractors
+        from graphids.core.models.fusion.fusion_features import EXTRACTORS
 
-        active = [(name, ext) for name, ext in registry_extractors() if name in models]
+        active = [(name, ext) for name, ext in EXTRACTORS.items() if name in models]
         for model in models.values():
             model.eval()
 

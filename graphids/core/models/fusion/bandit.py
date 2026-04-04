@@ -19,12 +19,10 @@ from graphids.log import get_logger
 
 from ._nn import TensorReplayBuffer, build_mlp_body
 from .fusion_baselines import FusionModuleBase
-from .fusion_features import fusion_state_dim
+from .fusion_features import STATE_DIM
 from .fusion_reward import FusionRewardCalculator
 
 log = get_logger(__name__)
-
-_DEFAULT_STATE_DIM = fusion_state_dim()
 
 
 class Backbone(nn.Module):
@@ -48,7 +46,7 @@ class BanditFusionModule(FusionModuleBase):
 
     def __init__(
         self,
-        state_dim: int = _DEFAULT_STATE_DIM,
+        state_dim: int = STATE_DIM,
         alpha_steps: int = 21,
         ucb_alpha: float = 1.0,
         lambda_reg: float = 1.0,
@@ -96,8 +94,6 @@ class BanditFusionModule(FusionModuleBase):
 
         # Tracking
         self.state_dim = state_dim
-        self._total_reward = 0.0
-        self._total_steps = 0
         self._episode = 0
         self._ucb_widths: list[float] = []
 
@@ -191,12 +187,6 @@ class BanditFusionModule(FusionModuleBase):
     # Backbone retraining (periodic, from buffer)
     # ------------------------------------------------------------------
 
-    def _store_buffer(
-        self, states: torch.Tensor, actions: torch.Tensor, rewards: torch.Tensor
-    ) -> None:
-        """Store experiences in replay buffer for backbone retraining."""
-        self._buffer.add_batch(states.cpu(), actions.cpu(), rewards.cpu())
-
     def retrain_backbone(self) -> float | None:
         """Retrain backbone on buffered experiences. Returns avg loss or None."""
         if len(self._buffer) < self.batch_size:
@@ -267,17 +257,13 @@ class BanditFusionModule(FusionModuleBase):
         self.update_linear(norm_states, actions, rewards)
 
         # Store for backbone retraining
-        self._store_buffer(norm_states, actions, rewards)
+        self._buffer.add_batch(norm_states.cpu(), actions.cpu(), rewards.cpu())
 
         # Periodic backbone retrain
         self._episode += 1
         backbone_loss = None
         if self._episode % self.backbone_retrain_freq == 0:
             backbone_loss = self.retrain_backbone()
-
-        # Track
-        self._total_reward += rewards.sum().item()
-        self._total_steps += len(states)
 
         correct = (preds == labels).sum().item()
         result = {
@@ -323,18 +309,4 @@ class BanditFusionModule(FusionModuleBase):
             "avg_reward": rewards.mean().item(),
             "avg_alpha": alphas.mean().item(),
             "alpha_std": alphas.std().item(),
-        }
-
-    # ------------------------------------------------------------------
-    # Diagnostics
-    # ------------------------------------------------------------------
-
-    def regret_stats(self) -> dict:
-        """Return cumulative regret estimate and UCB width trend."""
-        return {
-            "cumulative_reward": self._total_reward,
-            "total_steps": self._total_steps,
-            "avg_reward_per_step": self._total_reward / max(self._total_steps, 1),
-            "avg_ucb_width": float(np.mean(self._ucb_widths[-50:])) if self._ucb_widths else 0.0,
-            "episodes": self._episode,
         }

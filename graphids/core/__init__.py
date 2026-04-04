@@ -1,7 +1,7 @@
 """graphids.core — Domain layer: models, preprocessing, data loading.
 
 Import from subpackages directly:
-    from graphids.core.models import fusion_state_dim  # model registry
+    from graphids.core.models import STATE_DIM  # fusion state vector dim
     from graphids.core.preprocessing import CANBusDataModule  # data
 """
 

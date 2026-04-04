@@ -1,55 +1,49 @@
-"""Shared reward computation for fusion agents (DQN, bandit, etc)."""
+"""Fusion reward calculation + shared fused prediction helper.
+
+Reward shaping constants are fixed methodological choices — see
+``kd-gat-paper/content/methodology.md §Stage 3 Adaptive Fusion``.
+DQN and bandit share this identical reward; it is not an ablation axis.
+"""
 
 from __future__ import annotations
 
 import torch
 
-from graphids.log import get_logger
-
-log = get_logger(__name__)
+# --- Reward shaping constants (paper methodology.md eq-reward) ---------------
+# Base rewards appear inline in the paper's reward equation (±3.0).
+# The remaining coefficients weight the symbolic bonus/penalty terms
+# (r_agree, r_conf, r_disagree, r_overconf + implicit balance bonus).
+_REWARD_CORRECT = 3.0
+_REWARD_INCORRECT = -3.0
+_CONFIDENCE_WEIGHT = 0.5
+_COMBINED_CONF_WEIGHT = 0.3
+_DISAGREEMENT_PENALTY = -1.0
+_OVERCONF_PENALTY = -1.5
+_BALANCE_WEIGHT = 0.3
 
 
 class FusionRewardCalculator(torch.nn.Module):
     """Vectorized fusion reward from state features, predictions, and labels.
 
-    Extends nn.Module so _vgae_weights auto-transfers to GPU when the owning
+    Extends nn.Module so ``_vgae_weights`` auto-transfers to GPU when the owning
     LightningModule (BanditFusionModule, DQNFusionModule) is moved to a device.
 
-    Encapsulates the feature layout indices and VGAE error weights so callers
-    don't need to thread them through every call.
-
-    Args:
-        vgae_weights: Weights for combining VGAE reconstruction errors into a
-            single anomaly score. Must sum to ~1.0. Required -- callers must
-            provide explicitly (typically from cfg.dqn.vgae_error_weights).
-        reward_correct: Base reward for correct predictions.
-        reward_incorrect: Base reward for incorrect predictions.
-        confidence_weight: Weight on per-model confidence in correct-path bonus.
-        combined_conf_weight: Weight on max(vgae_conf, gat_conf) in correct-path bonus.
-        disagreement_penalty: Multiplier on model disagreement in wrong-path penalty.
-        overconf_penalty: Multiplier on overconfidence in wrong-path penalty.
-        balance_weight: Weight on alpha-balance bonus (penalizes extreme alphas).
+    The only tunable parameter is ``vgae_weights`` — the convex combination
+    weights for the three VGAE reconstruction error components (recon, nbr,
+    canid). All other shaping coefficients are fixed by the paper.
     """
 
     def __init__(
         self,
         *,
         vgae_weights: list[float] | tuple[float, ...],
-        reward_correct: float = 3.0,
-        reward_incorrect: float = -3.0,
-        confidence_weight: float = 0.5,
-        combined_conf_weight: float = 0.3,
-        disagreement_penalty: float = -1.0,
-        overconf_penalty: float = -1.5,
-        balance_weight: float = 0.3,
     ) -> None:
         super().__init__()
-        from .fusion_features import feature_layout
+        from .fusion_features import LAYOUT
 
-        layout = feature_layout()
-        vgae = layout["vgae"]
-        gat = layout["gat"]
-        self._confidence_indices = [fl.confidence_idx for fl in layout.values()]
+        vgae = LAYOUT["vgae"]
+        gat = LAYOUT["gat"]
+        self._confidence_indices = [fl.confidence_idx for fl in LAYOUT.values()]
         self._vgae_error_slice = slice(vgae.offset, vgae.offset + 3)
         self._gat_logit_slice = slice(gat.offset, gat.offset + 2)
         self._vgae_conf_idx = vgae.confidence_idx
@@ -58,15 +52,6 @@ class FusionRewardCalculator(torch.nn.Module):
         self.register_buffer(
             "_vgae_weights", torch.tensor(vgae_weights, dtype=torch.float32)
         )
-
-        # Reward shaping coefficients
-        self._reward_correct = reward_correct
-        self._reward_incorrect = reward_incorrect
-        self._confidence_weight = confidence_weight
-        self._combined_conf_weight = combined_conf_weight
-        self._disagreement_penalty = disagreement_penalty
-        self._overconf_penalty = overconf_penalty
-        self._balance_weight = balance_weight
 
     def normalize(self, states: torch.Tensor) -> torch.Tensor:
         """Clamp confidence features to [0, 1]. Returns a new tensor."""
@@ -107,36 +92,29 @@ class FusionRewardCalculator(torch.nn.Module):
         combined_conf = torch.max(vgae_conf, gat_conf)
 
         correct = preds == labels
-        base_reward = torch.where(
-            correct, self._reward_correct, self._reward_incorrect
-        )
+        base_reward = torch.where(correct, _REWARD_CORRECT, _REWARD_INCORRECT)
         model_agreement = 1.0 - (anomaly_scores - gat_probs).abs()
 
         # Correct path
         max_score = torch.max(anomaly_scores, gat_probs)
         confidence = torch.where(labels == 1, max_score, 1.0 - max_score)
         confidence_bonus = (
-            self._confidence_weight * confidence
-            + self._combined_conf_weight * combined_conf
+            _CONFIDENCE_WEIGHT * confidence + _COMBINED_CONF_WEIGHT * combined_conf
         )
         correct_reward = base_reward + model_agreement + confidence_bonus
 
         # Wrong path
-        disagreement_term = self._disagreement_penalty * (
-            1.0 - model_agreement
-        )
+        disagreement_term = _DISAGREEMENT_PENALTY * (1.0 - model_agreement)
         fused_confidence = alphas * gat_probs + (1 - alphas) * anomaly_scores
         overconf_term = torch.where(
             preds == 1,
-            self._overconf_penalty * fused_confidence,
-            self._overconf_penalty * (1.0 - fused_confidence),
+            _OVERCONF_PENALTY * fused_confidence,
+            _OVERCONF_PENALTY * (1.0 - fused_confidence),
         )
         wrong_reward = base_reward + disagreement_term + overconf_term
 
         total_reward = torch.where(correct, correct_reward, wrong_reward)
-        balance_bonus = self._balance_weight * (
-            1.0 - (alphas - 0.5).abs() * 2
-        )
+        balance_bonus = _BALANCE_WEIGHT * (1.0 - (alphas - 0.5).abs() * 2)
         return total_reward + balance_bonus
 
 

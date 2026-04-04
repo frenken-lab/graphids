@@ -1,45 +1,26 @@
 """Fusion feature extractors and state layout for DQN/bandit state construction.
 
 Each extractor derives a fixed-size feature matrix [B, D] from one model's
-batched output. Extractors are stateless; ``_EXTRACTORS`` defines the
-canonical ordering that determines the 15-D state layout trained DQN
-checkpoints expect.
-
-Also provides ``fusion_state_dim``, ``feature_layout``, ``extractors``, and
-``FeatureLayout`` — the fusion state geometry consumed by reward calculators,
-fusion baselines, and the data module.
+batched output. Module-level ``EXTRACTORS`` defines the canonical ordering
+that determines the 15-D state layout trained DQN/bandit checkpoints expect.
 """
 
 from __future__ import annotations
 
 import math
-from typing import NamedTuple, Protocol, runtime_checkable
+from typing import NamedTuple
 
 import torch
 import torch.nn.functional as F
 from torch_geometric.utils import scatter
 
 
-@runtime_checkable
-class FusionFeatureExtractor(Protocol):
-    """Extracts a [B, D] feature matrix from a model's batched output."""
+class FeatureLayout(NamedTuple):
+    """Offset, dim, and confidence index of one extractor inside the state vector."""
 
-    @property
-    def feature_dim(self) -> int: ...
-
-    @property
-    def confidence_index(self) -> int:
-        """Index of confidence feature within this extractor's output."""
-        ...
-
-    def extract(
-        self,
-        model: torch.nn.Module,
-        batch,
-        device: torch.device,
-    ) -> torch.Tensor:
-        """Return [B, feature_dim] tensor from a batched PyG Data object."""
-        ...
+    offset: int
+    dim: int
+    confidence_idx: int
 
 
 class VGAEFusionExtractor:
@@ -51,20 +32,14 @@ class VGAEFusionExtractor:
         [7]    confidence  (1 / (1 + recon_err))
     """
 
-    @property
-    def feature_dim(self) -> int:
-        return 8
-
-    @property
-    def confidence_index(self) -> int:
-        return 7
+    feature_dim = 8
+    confidence_index = 7
 
     def extract(self, model: torch.nn.Module, batch, device: torch.device) -> torch.Tensor:
         edge_attr = getattr(batch, "edge_attr", None) if getattr(model, "_uses_edge_attr", False) else None
         cont, canid_logits, nbr_logits, z, _, _ = model(
             batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr, node_id=batch.node_id,
         )
-        B = int(batch.batch.max()) + 1
         b = batch.batch
 
         # Per-graph MSE reconstruction error
@@ -100,13 +75,8 @@ class GATFusionExtractor:
         [6]    confidence  (1 - normalized entropy)
     """
 
-    @property
-    def feature_dim(self) -> int:
-        return 7
-
-    @property
-    def confidence_index(self) -> int:
-        return 6
+    feature_dim = 7
+    confidence_index = 6
 
     def extract(self, model: torch.nn.Module, batch, device: torch.device) -> torch.Tensor:
         logits, emb = model(batch, return_embedding=True)  # logits [B,2], emb [B, D] (post-pool)
@@ -126,40 +96,23 @@ class GATFusionExtractor:
 
 
 # ---------------------------------------------------------------------------
-# Fusion state layout — moved from registry.py
+# Registry — order is load-bearing, matches the 15-D layout baked into
+# existing DQN/bandit checkpoints.
 # ---------------------------------------------------------------------------
 
-
-class FeatureLayout(NamedTuple):
-    """Layout of one extractor's features within the fusion state vector."""
-
-    offset: int
-    dim: int
-    confidence_idx: int
+EXTRACTORS: dict[str, VGAEFusionExtractor | GATFusionExtractor] = {
+    "vgae": VGAEFusionExtractor(),
+    "gat": GATFusionExtractor(),
+}
 
 
-# Order is load-bearing — matches 15-D state layout that trained DQN checkpoints expect.
-_EXTRACTORS: list[tuple[str, FusionFeatureExtractor]] = [
-    ("vgae", VGAEFusionExtractor()),
-    ("gat", GATFusionExtractor()),
-]
-
-
-def fusion_state_dim() -> int:
-    """Total dimension of the fused state vector (sum of all extractor dims)."""
-    return sum(ext.feature_dim for _, ext in _EXTRACTORS)
-
-
-def feature_layout() -> dict[str, FeatureLayout]:
-    """Return {name: FeatureLayout} with offsets computed from extractor order."""
+def _build_layout() -> tuple[dict[str, FeatureLayout], int]:
     layout: dict[str, FeatureLayout] = {}
     offset = 0
-    for name, ext in _EXTRACTORS:
+    for name, ext in EXTRACTORS.items():
         layout[name] = FeatureLayout(offset, ext.feature_dim, offset + ext.confidence_index)
         offset += ext.feature_dim
-    return layout
+    return layout, offset
 
 
-def extractors() -> list[tuple[str, FusionFeatureExtractor]]:
-    """Return (name, extractor) pairs in registration order."""
-    return list(_EXTRACTORS)
+LAYOUT, STATE_DIM = _build_layout()

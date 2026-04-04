@@ -11,8 +11,8 @@ class TestFusionBaselineTestStep:
 
     @staticmethod
     def _make_fusion_batch(n: int = 32):
-        from graphids.core.models.fusion.fusion_features import fusion_state_dim
-        sd = fusion_state_dim()
+        from graphids.core.models.fusion.fusion_features import STATE_DIM
+        sd = STATE_DIM
         states = torch.rand(n, sd)
         labels = torch.randint(0, 2, (n,))
         return states, labels
@@ -20,9 +20,9 @@ class TestFusionBaselineTestStep:
     @staticmethod
     def _make_module(name):
         from graphids.core.models.fusion.fusion_baselines import MLPFusionModule, WeightedAvgModule
-        from graphids.core.models.fusion.fusion_features import fusion_state_dim
+        from graphids.core.models.fusion.fusion_features import STATE_DIM
         if name == "mlp":
-            return MLPFusionModule(state_dim=fusion_state_dim())
+            return MLPFusionModule(state_dim=STATE_DIM)
         return WeightedAvgModule()
 
     @pytest.mark.parametrize("module_name", ["mlp", "weighted_avg"])
@@ -69,7 +69,7 @@ class TestFusionBaselineTestStep:
 
 
 class TestFusionRewardCalculator:
-    """FusionRewardCalculator requires vgae_weights and uses constructor coefficients."""
+    """FusionRewardCalculator requires vgae_weights; other shaping constants are fixed."""
 
     def test_missing_vgae_weights_raises(self):
         from graphids.core.models.fusion.fusion_reward import FusionRewardCalculator
@@ -82,44 +82,11 @@ class TestFusionRewardCalculator:
         calc = FusionRewardCalculator(vgae_weights=weights)
         assert torch.allclose(calc._vgae_weights, torch.tensor(weights))
 
-    def test_reward_coefficients_actually_used(self):
-        from graphids.core.models.fusion.fusion_reward import FusionRewardCalculator
-        from graphids.core.models.fusion.fusion_features import fusion_state_dim
-
-        state_dim = fusion_state_dim()
-        n = 16
-        torch.manual_seed(42)
-        states = torch.rand(n, state_dim)
-        labels = torch.randint(0, 2, (n,))
-        alphas = torch.full((n,), 0.5)
-
-        calc_default = FusionRewardCalculator(vgae_weights=[0.4, 0.35, 0.25])
-        norm_default = calc_default.normalize(states)
-        _, gat_probs_d = calc_default.derive_scores(norm_default)
-        anomaly_d, _ = calc_default.derive_scores(norm_default)
-        fused_d = (1 - alphas) * anomaly_d + alphas * gat_probs_d
-        preds_d = (fused_d > 0.5).long()
-        rewards_default = calc_default.compute(preds_d, labels, norm_default, alphas)
-
-        calc_custom = FusionRewardCalculator(
-            vgae_weights=[0.1, 0.1, 0.8],
-            reward_correct=10.0, reward_incorrect=-10.0,
-            confidence_weight=2.0, combined_conf_weight=1.5,
-            disagreement_penalty=-5.0, overconf_penalty=-5.0, balance_weight=1.0,
-        )
-        norm_custom = calc_custom.normalize(states)
-        anomaly_c, gat_probs_c = calc_custom.derive_scores(norm_custom)
-        fused_c = (1 - alphas) * anomaly_c + alphas * gat_probs_c
-        preds_c = (fused_c > 0.5).long()
-        rewards_custom = calc_custom.compute(preds_c, labels, norm_custom, alphas)
-
-        assert not torch.allclose(rewards_default, rewards_custom, atol=1e-3)
-
     def test_derive_scores_uses_vgae_weights(self):
         from graphids.core.models.fusion.fusion_reward import FusionRewardCalculator
-        from graphids.core.models.fusion.fusion_features import fusion_state_dim
+        from graphids.core.models.fusion.fusion_features import STATE_DIM
 
-        state_dim = fusion_state_dim()
+        state_dim = STATE_DIM
         torch.manual_seed(0)
         states = torch.rand(8, state_dim)
 
@@ -138,8 +105,8 @@ class TestFusionCheckpointRoundtrip:
     def test_mlp_roundtrip(self, tmp_path):
         import pytorch_lightning as pl
         from graphids.core.models.fusion.fusion_baselines import MLPFusionModule
-        from graphids.core.models.fusion.fusion_features import fusion_state_dim
-        m1 = MLPFusionModule(state_dim=fusion_state_dim())
+        from graphids.core.models.fusion.fusion_features import STATE_DIM
+        m1 = MLPFusionModule(state_dim=STATE_DIM)
         m1.eval()
         trainer = pl.Trainer(enable_checkpointing=False, logger=False)
         trainer.strategy.connect(m1)
@@ -147,7 +114,7 @@ class TestFusionCheckpointRoundtrip:
         trainer.save_checkpoint(ckpt_path)
         m2 = MLPFusionModule.load_from_checkpoint(ckpt_path)
         m2.eval()
-        x = torch.rand(8, fusion_state_dim())
+        x = torch.rand(8, STATE_DIM)
         with torch.no_grad():
             torch.testing.assert_close(m1(x), m2(x))
 
@@ -155,7 +122,7 @@ class TestFusionCheckpointRoundtrip:
         import pytorch_lightning as pl
         from graphids.core.models.fusion.fusion_baselines import WeightedAvgModule
         m1 = WeightedAvgModule()
-        from graphids.core.models.fusion.fusion_features import fusion_state_dim
+        from graphids.core.models.fusion.fusion_features import STATE_DIM
         m1.weight.data.fill_(0.7)
         m1.eval()
         trainer = pl.Trainer(enable_checkpointing=False, logger=False)
@@ -164,21 +131,20 @@ class TestFusionCheckpointRoundtrip:
         trainer.save_checkpoint(ckpt_path)
         m2 = WeightedAvgModule.load_from_checkpoint(ckpt_path)
         m2.eval()
-        x = torch.rand(8, fusion_state_dim())
+        x = torch.rand(8, STATE_DIM)
         with torch.no_grad():
             torch.testing.assert_close(m1(x), m2(x))
 
     def test_dqn_roundtrip(self, tmp_path):
         from graphids.core.models.fusion.dqn import DQNFusionModule
-        from graphids.core.models.fusion.fusion_features import fusion_state_dim
-        sd = fusion_state_dim()
+        from graphids.core.models.fusion.fusion_features import STATE_DIM
+        sd = STATE_DIM
         a1 = DQNFusionModule(
             alpha_steps=11, state_dim=sd,
             reward_kwargs=dict(vgae_weights=[0.4, 0.35, 0.25]),
         )
         ckpt = {
             "q_network": a1.q_network.state_dict(),
-            "target_network": a1.target_network.state_dict(),
             "epsilon": a1.epsilon,
         }
         torch.save(ckpt, tmp_path / "dqn.pt")
@@ -188,7 +154,6 @@ class TestFusionCheckpointRoundtrip:
         )
         ckpt_loaded = torch.load(tmp_path / "dqn.pt", weights_only=True)
         a2.q_network.load_state_dict(ckpt_loaded["q_network"])
-        a2.target_network.load_state_dict(ckpt_loaded["target_network"])
         a2.epsilon = ckpt_loaded["epsilon"]
         a1.q_network.eval()
         a2.q_network.eval()

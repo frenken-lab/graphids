@@ -18,11 +18,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from .._training import binary_test_metrics
-from .fusion_features import fusion_state_dim
-
-# Module-level constant so ``--print_config`` serializes the real default
-# instead of a sentinel (see memory note: no --print_config null serialization).
-_DEFAULT_STATE_DIM = fusion_state_dim()
+from .fusion_features import LAYOUT, STATE_DIM
 
 
 class FusionModuleBase(pl.LightningModule):
@@ -63,7 +59,7 @@ class MLPFusionModule(FusionModuleBase):
 
     def __init__(
         self,
-        state_dim: int = _DEFAULT_STATE_DIM,
+        state_dim: int = STATE_DIM,
         hidden_dims: tuple[int, ...] = (64, 32),
         lr: float = 0.001,
     ):
@@ -128,10 +124,8 @@ class WeightedAvgModule(FusionModuleBase):
         self.lr = lr
         self.decision_threshold = decision_threshold
 
-        from .fusion_features import feature_layout
-        layout = feature_layout()
-        self._vgae_conf_idx = layout["vgae"].confidence_idx
-        self._gat_conf_idx = layout["gat"].confidence_idx
+        self._vgae_conf_idx = LAYOUT["vgae"].confidence_idx
+        self._gat_conf_idx = LAYOUT["gat"].confidence_idx
 
     def forward(self, states: torch.Tensor) -> torch.Tensor:
         alpha = torch.sigmoid(self.weight)

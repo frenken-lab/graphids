@@ -5,12 +5,9 @@ model:
     decision_threshold: 0.5
     reward_kwargs:
       vgae_weights: [0.4, 0.3, 0.3]
-    gamma: 0.0
     epsilon: 0.2
     epsilon_decay: 0.995
     min_epsilon: 0.01
-    target_update_freq: 100
     gpu_training_steps: 1
     weight_decay: 0.00001
-    scheduler_patience: 1000
     buffer_size: 50000

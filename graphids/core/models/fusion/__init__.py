@@ -2,26 +2,17 @@
 
 from .bandit import BanditFusionModule
 from .dqn import DQNFusionModule
-from .fusion_baselines import FusionModuleBase
-from .fusion_features import (
-    FeatureLayout,
-    FusionFeatureExtractor,
-    GATFusionExtractor,
-    VGAEFusionExtractor,
-    extractors,
-    feature_layout,
-    fusion_state_dim,
-)
+from .fusion_baselines import FusionModuleBase, MLPFusionModule, WeightedAvgModule
+from .fusion_features import EXTRACTORS, LAYOUT, STATE_DIM, FeatureLayout
 
 __all__ = [
     "BanditFusionModule",
     "DQNFusionModule",
     "FusionModuleBase",
+    "MLPFusionModule",
+    "WeightedAvgModule",
+    "EXTRACTORS",
+    "LAYOUT",
+    "STATE_DIM",
     "FeatureLayout",
-    "FusionFeatureExtractor",
-    "VGAEFusionExtractor",
-    "GATFusionExtractor",
-    "extractors",
-    "feature_layout",
-    "fusion_state_dim",
 ]

@@ -1,6 +1,76 @@
 # GraphIDS Session Plan
 
-> Last updated: 2026-04-04 (session 17 — tests audit + test-writing rules)
+> Last updated: 2026-04-04 (session 18 — fusion refactor + reward bake-in)
+
+## What this session did (2026-04-04, session 18 — fusion refactor)
+
+Audited `graphids/core/models/` with a focus on fusion complexity. Found a
+runtime-crash bug in KD training, 4 tiers of dead code, and 5 reward-shaping
+coefficients exposed as kwargs that the paper fixes as methodological
+constants. Executed all cuts in one pass. **Net −200 LOC across source,
+tests, configs, and docs.**
+
+### Bug fix (Tier 1)
+
+**`teacher_on_device` was missing `@contextlib.contextmanager`** — plain
+generator function used as `with teacher_on_device(self, device):` in
+`vgae.py:427` and `gat.py:269`. Any VGAE/GAT KD training crashes on the
+first step with `TypeError: 'generator' object does not support the context
+manager protocol`. Confirmed at runtime. One-line fix. Explains part of
+issue #25 (KD pipeline never tested end-to-end).
+
+### Dead code cuts
+
+| Tier | Cuts | Source |
+|---|---|---|
+| 1 | `teacher_on_device` decorator fix; delete `BanditFusionModule.regret_stats`, `_total_reward`/`_total_steps` trackers, `_store_buffer` wrapper; delete `DQNFusionModule.store_experiences_batch` wrapper, `buffer_size_current` property | −25 |
+| 2 | Collapse `fusion_features.py` registry: drop `FusionFeatureExtractor` Protocol + `@runtime_checkable`, `FeatureLayout` getter functions. Replace with module-level `STATE_DIM`, `LAYOUT`, `EXTRACTORS` constants. Update 5 source call sites + 12 test references | −65 |
+| 3 | Delete DQN `target_network`, `target_update_freq`, `update_counter`, `ReduceLROnPlateau` scheduler, `gamma`/`scheduler_patience` init args — γ=0 makes the target network unread and `configure_optimizers()` never returned the scheduler. Replace `loss.backward()` with Lightning-idiomatic `self.manual_backward(loss)` | −45 |
+| 4 | Delete `safe_load_checkpoint` pre-flatten migration guard — `scripts/migrate_checkpoints.py` doesn't exist; error message was a stale reference | −15 |
+| 5 | Bake reward shaping coefficients into module-level constants (see below) | −57 |
+
+### Reward-coefficient bake-in (Tier 5)
+
+Audited the 7 reward-shaping kwargs in `FusionRewardCalculator`:
+`reward_correct`, `reward_incorrect`, `confidence_weight`,
+`combined_conf_weight`, `disagreement_penalty`, `overconf_penalty`,
+`balance_weight`. Evidence:
+
+- **0 YAML sites** set them (bandit.yaml/dqn.yaml only pass `vgae_weights`)
+- **0 recipes** sweep them (ablation.yaml sweeps `loss_fn`, `conv_type`, `variational`, `fusion_method` only)
+- **0 issues** or plans mention reward shaping as a future ablation
+- **Paper (`kd-gat-paper/methodology.md §Stage 3`)** presents the reward
+  equation with ±3.0 as inline constants and says *"Both DQN and bandit use
+  this identical reward"* — reward is a fixed methodological choice, not
+  an ablation axis
+- **Ablation chapter** lists three axes: KD, GAT training, fusion method
+  comparison — nothing on reward shaping
+- **Only consumer:** one differential test that passed non-default values
+  purely to verify they affect output
+
+Replaced kwargs with 7 module-level `_CONSTANT` names in
+`fusion_reward.py`, pointing at the paper's equation. Unknown kwargs now
+rejected at construction time. Deleted the no-longer-viable
+`test_reward_coefficients_actually_used` test; coverage of the one
+surviving tunable (`vgae_weights`) is preserved by
+`test_derive_scores_uses_vgae_weights`.
+
+### Files touched (session 18)
+
+**Source:** `core/models/fusion/{bandit,dqn,fusion_baselines,fusion_features,fusion_reward,__init__}.py`, `core/models/{_training,__init__}.py`, `core/__init__.py`, `core/preprocessing/datamodule/fusion.py`
+
+**Tests:** `tests/core/models/test_fusion.py`, `tests/test_integration.py`
+
+**Config/docs:** `config/fusion/methods/dqn.yaml`, `config/CONFIG_REFERENCE.md`, `PLAN.md`
+
+### Verification
+
+- AST parse clean on all 12 touched Python files
+- Import chain resolves end-to-end; all 4 fusion modules instantiate with the new constants
+- `pytest tests/core/models/test_fusion.py tests/test_integration.py::TestDecisionThreshold` → **17/17 passing**
+- Attribute assertions verify removed names (`dqn.target_network`, `dqn.scheduler`, `dqn.gamma`, `bandit.regret_stats`, etc.) no longer exist
+- `teacher_on_device` context manager usable as `with` block (verified at runtime)
+- Full test suite on SLURM: not run (login node — run via `scripts/submit.sh tests`)
 
 ## Current state
 

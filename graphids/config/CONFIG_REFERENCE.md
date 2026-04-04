@@ -132,8 +132,8 @@ Source: `GATModule` (`core/models/gat.py:197`)
 
 ### Fusion Methods
 
-Source: `BanditFusionModule` (`core/models/bandit.py:46`), `DQNFusionModule` (`core/models/dqn.py:115`),
-`MLPFusionModule` (`core/models/fusion_baselines.py:77`), `WeightedAvgModule` (`core/models/fusion_baselines.py:135`)
+Source: `BanditFusionModule` (`core/models/fusion/bandit.py`), `DQNFusionModule` (`core/models/fusion/dqn.py`),
+`MLPFusionModule` (`core/models/fusion/fusion_baselines.py`), `WeightedAvgModule` (`core/models/fusion/fusion_baselines.py`)
 
 #### Shared trainer config (`fusion.yaml`)
 
@@ -150,22 +150,21 @@ Source: `BanditFusionModule` (`core/models/bandit.py:46`), `DQNFusionModule` (`c
 | `batch_size`            | 128    | 128   | —        | —           | scale-only     |
 | `lr`                    | 0.001  | 0.001 | 0.001    | 0.01        | method-only    |
 | `decision_threshold`    | 0.5    | 0.5   | —        | 0.5         | shared default |
-| `reward_kwargs`         | via YAML | via YAML | —   | —           | method-only    |
+| `reward_kwargs.vgae_weights` | `[0.4,0.3,0.3]` | `[0.4,0.3,0.3]` | — | — | method-only |
 | `ucb_alpha`             | 1.0    | —     | —        | —           | bandit-only    |
 | `lambda_reg`            | 1.0    | —     | —        | —           | bandit-only    |
 | `backbone_lr`           | 0.001  | —     | —        | —           | bandit-only    |
 | `backbone_retrain_freq` | 50     | —     | —        | —           | bandit-only    |
 | `backbone_epochs`       | 5      | —     | —        | —           | bandit-only    |
-| `gamma`                 | —      | 0.0   | —        | —           | dqn-only       |
 | `epsilon`               | —      | 0.2   | —        | —           | dqn-only       |
 | `epsilon_decay`         | —      | 0.995 | —        | —           | dqn-only       |
 | `min_epsilon`           | —      | 0.01  | —        | —           | dqn-only       |
-| `target_update_freq`    | —      | 100   | —        | —           | dqn-only       |
 | `gpu_training_steps`    | —      | 1     | —        | —           | dqn-only       |
 | `weight_decay`          | —      | 1e-5  | —        | —           | dqn-only       |
-| `scheduler_patience`    | —      | 1000  | —        | —           | dqn-only       |
 
 **Fusion YAML exposure gaps:** `dqn/small.yaml` and `dqn/large.yaml` are both `{}`. All fusion architecture params live as code defaults with zero YAML surface. No `bandit/`, `mlp/`, or `weighted_avg/` model config dirs exist.
+
+**Reward shaping constants are fixed, not tunable.** The 7 coefficients used by `FusionRewardCalculator.compute()` (`_REWARD_CORRECT=±3.0`, `_CONFIDENCE_WEIGHT=0.5`, `_COMBINED_CONF_WEIGHT=0.3`, `_DISAGREEMENT_PENALTY=-1.0`, `_OVERCONF_PENALTY=-1.5`, `_BALANCE_WEIGHT=0.3`) are module-level constants in `core/models/fusion/fusion_reward.py`, matching the paper's `methodology.md §Stage 3` equation. They are not exposed as kwargs and are not ablation axes — DQN and bandit share the identical reward by design. `vgae_weights` is the only tunable in `reward_kwargs`.
 
 ### Temporal Model (not yet in pipeline)
 
@@ -396,10 +395,10 @@ Auto-detected from hostname; overridable via `KD_GAT_CLUSTER`.
 | tests              | cpu       | 8    | 16G   | 1:00  | cpu     | `python -m pytest`                          |
 | rebuild-caches     | cpu       | 4    | 128G  | 4:00  | cpu-raw | `python -m graphids rebuild-caches`         |
 | validate           | cpu       | 4    | 8G    | 0:15  | cpu     | `python -m graphids.orchestrate validate`   |
-| preprocessing-test | cpu       | 4    | 16G   | 0:30  | cpu-raw | `python -m graphids test-preprocessing`     |
 | ablation           | cpu       | 4    | 8G    | 24:00 | cpu     | `dg launch`                                 |
-| profile            | gpudebug  | 4    | 36G   | 1:00  | gpu     | `python -m graphids profile-training`       |
-| landscape          | gpu       | 4    | 32G   | 2:00  | gpu     | `python -m graphids landscape`              |
+| profile            | gpudebug  | 4    | 36G   | 1:00  | gpu     | `python -m graphids profile`                |
+| probe-budget       | gpudebug  | 8    | 36G   | 1:00  | gpu     | `python -m graphids probe-budget`           |
+| landscape          | gpu       | 4    | 32G   | 2:00  | gpu     | `python -m graphids analyze landscape`      |
 
 Modes: `cpu` = `SKIP_CUDA_CONF=1 SKIP_STAGE_DATA=1`, `cpu-raw` = `SKIP_CUDA_CONF=1 STAGE_DATA_ARGS=--raw`, `gpu` = full preamble.
 
