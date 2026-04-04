@@ -62,11 +62,11 @@ class TestDecisionThreshold:
 
     def test_dqn_high_threshold_suppresses_positives(self):
         """With threshold=0.9, fused_scores in [0.5, 0.9) yield preds=0, not 1."""
-        from graphids.core.models.fusion.dqn import EnhancedDQNFusionAgent
+        from graphids.core.models.fusion.dqn import DQNFusionModule
         from graphids.core.models.fusion.fusion_features import fusion_state_dim
 
         state_dim = fusion_state_dim()
-        agent = EnhancedDQNFusionAgent(
+        agent = DQNFusionModule(
             alpha_steps=21,
             state_dim=state_dim,
             decision_threshold=0.9,
@@ -84,12 +84,12 @@ class TestDecisionThreshold:
         )
 
     def test_bandit_high_threshold_suppresses_positives(self):
-        """NeuralLinUCBAgent with threshold=0.9 suppresses positive predictions."""
-        from graphids.core.models.fusion.bandit import NeuralLinUCBAgent
+        """BanditFusionModule with threshold=0.9 suppresses positive predictions."""
+        from graphids.core.models.fusion.bandit import BanditFusionModule
         from graphids.core.models.fusion.fusion_features import fusion_state_dim
 
         state_dim = fusion_state_dim()
-        agent = NeuralLinUCBAgent(
+        agent = BanditFusionModule(
             state_dim=state_dim,
             alpha_steps=21,
             decision_threshold=0.9,
@@ -108,19 +108,19 @@ class TestDecisionThreshold:
 
     def test_threshold_difference_changes_predictions(self):
         """Same agent state with threshold=0.1 vs 0.9 produces different predictions."""
-        from graphids.core.models.fusion.dqn import EnhancedDQNFusionAgent
+        from graphids.core.models.fusion.dqn import DQNFusionModule
         from graphids.core.models.fusion.fusion_features import fusion_state_dim
 
         state_dim = fusion_state_dim()
         states = self._make_fusion_states()
 
-        agent_low = EnhancedDQNFusionAgent(
+        agent_low = DQNFusionModule(
             alpha_steps=21,
             state_dim=state_dim,
             decision_threshold=0.1,
             reward_kwargs=dict(vgae_weights=[0.4, 0.35, 0.25]),
         )
-        agent_high = EnhancedDQNFusionAgent(
+        agent_high = DQNFusionModule(
             alpha_steps=21,
             state_dim=state_dim,
             decision_threshold=0.9,

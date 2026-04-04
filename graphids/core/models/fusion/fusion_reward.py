@@ -1,12 +1,10 @@
-"""Shared reward computation for fusion agents (DQN, bandit, etc).
-
-Extracted from EnhancedDQNFusionAgent to allow reuse across fusion methods.
-"""
+"""Shared reward computation for fusion agents (DQN, bandit, etc)."""
 
 from __future__ import annotations
 
-from graphids.log import get_logger
 import torch
+
+from graphids.log import get_logger
 
 log = get_logger(__name__)
 

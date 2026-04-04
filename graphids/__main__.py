@@ -30,20 +30,21 @@ from graphids.log import configure_logging
 configure_logging()
 
 _LIGHTNING_COMMANDS = ("fit", "test", "validate", "predict")
+# Values are either "module" (calls module.main) or "module:function".
 _COMMAND_MODULES: dict[str, str] = {
     "analyze": "graphids.commands.analyze",
-    "analyze-from-spec": "graphids.commands.analyze_from_spec",
+    "analyze-from-spec": "graphids.commands.from_spec:main_analyze",
     "pipeline-status": "graphids.commands.pipeline_status",
-    "job-stats": "graphids.commands.profile",
-    "probe-budget": "graphids.commands.profile_budget",
-    "profile": "graphids.commands.profile_training",
+    "job-stats": "graphids.commands.job_stats",
+    "probe-budget": "graphids.commands.probe_budget",
+    "profile": "graphids.commands.profile",
     "rebuild-caches": "graphids.commands.rebuild_caches",
     "stage-data": "graphids.commands.stage_data",
     "submit-profile": "graphids.commands.submit_profile",
     "extract-fusion-states": "graphids.commands.extract_fusion_states",
-    "test-from-spec": "graphids.commands.run_test_from_spec",
+    "test-from-spec": "graphids.commands.from_spec:main_test",
     "test-preprocessing": "graphids.commands.test_preprocessing",
-    "train-from-spec": "graphids.commands.train_from_spec",
+    "train-from-spec": "graphids.commands.from_spec:main_train",
     "_finalize-record": "graphids.commands.finalize_record",
     "rebuild-catalog": "graphids.commands.rebuild_catalog",
 }
@@ -60,14 +61,17 @@ def _run_lightning(command: str, argv: list[str]) -> None:
     run_lightning([command, *argv])
 
 
-def _run_module(module_name: str, argv: list[str]) -> None:
+def _run_module(target: str, argv: list[str]) -> None:
+    module_name, _, func_name = target.partition(":")
+    func_name = func_name or "main"
     try:
         mod = importlib.import_module(module_name)
     except (ImportError, ModuleNotFoundError) as exc:
         raise SystemExit(f"Failed to load command module '{module_name}': {exc}") from exc
-    if not hasattr(mod, "main"):
-        raise SystemExit(f"Module '{module_name}' does not expose a main(argv) entrypoint")
-    mod.main(argv)
+    func = getattr(mod, func_name, None)
+    if func is None:
+        raise SystemExit(f"Module '{module_name}' does not expose '{func_name}(argv)'")
+    func(argv)
 
 
 def _build_parser() -> argparse.ArgumentParser:

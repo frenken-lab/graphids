@@ -169,10 +169,10 @@ class TestFusionCheckpointRoundtrip:
             torch.testing.assert_close(m1(x), m2(x))
 
     def test_dqn_roundtrip(self, tmp_path):
-        from graphids.core.models.fusion.dqn import EnhancedDQNFusionAgent
+        from graphids.core.models.fusion.dqn import DQNFusionModule
         from graphids.core.models.fusion.fusion_features import fusion_state_dim
         sd = fusion_state_dim()
-        a1 = EnhancedDQNFusionAgent(
+        a1 = DQNFusionModule(
             alpha_steps=11, state_dim=sd,
             reward_kwargs=dict(vgae_weights=[0.4, 0.35, 0.25]),
         )
@@ -182,7 +182,7 @@ class TestFusionCheckpointRoundtrip:
             "epsilon": a1.epsilon,
         }
         torch.save(ckpt, tmp_path / "dqn.pt")
-        a2 = EnhancedDQNFusionAgent(
+        a2 = DQNFusionModule(
             alpha_steps=11, state_dim=sd,
             reward_kwargs=dict(vgae_weights=[0.4, 0.35, 0.25]),
         )

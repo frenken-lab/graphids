@@ -4,8 +4,9 @@ import contextlib
 from typing import TypedDict
 
 import pytorch_lightning as pl
-from graphids.log import get_logger
 import torch
+
+from graphids.log import get_logger
 
 _log = get_logger(__name__)
 
@@ -117,6 +118,43 @@ class GraphModuleBase(pl.LightningModule):
         best = torch.argmax(j)
         return float(thresholds[best]) if best < len(thresholds) else None
 
+    # -- Shared test-epoch hooks -----------------------------------------------
+    # Two patterns:
+    #   (A) Simple: subclass sets ``self.test_metrics = binary_test_metrics()`` and
+    #       the default hooks reset/compute/log. Used by GAT.
+    #   (B) Thresholded: subclass also calls ``_init_threshold_metrics()``, overrides
+    #       ``on_test_epoch_end`` to call ``_log_thresholded_metrics()``. Used by VGAE, DGI.
+
+    def on_test_epoch_start(self):
+        self.test_metrics.reset()
+        if hasattr(self, "roc_metric"):
+            self.roc_metric.reset()
+
+    def on_test_epoch_end(self):
+        self.log_dict(self.test_metrics.compute())
+
+    def _log_thresholded_metrics(self):
+        """Derive Youden-J threshold from accumulated ROC, update test_metrics, log."""
+        if not self.roc_metric.preds:
+            return
+        scores = torch.cat(self.roc_metric.preds).cpu()
+        labels = torch.cat(self.roc_metric.target).cpu().long()
+        if self.test_threshold is None:
+            self.test_threshold = self._find_threshold() or float(scores.median())
+        preds = (scores >= self.test_threshold).long()
+        self.test_metrics.update(preds, labels)
+        metrics = self.test_metrics.compute()
+        metrics["threshold"] = self.test_threshold
+        self.log_dict(metrics)
+
+    def on_save_checkpoint(self, checkpoint):
+        if getattr(self, "test_threshold", None) is not None:
+            checkpoint["test_threshold"] = self.test_threshold
+
+    def on_load_checkpoint(self, checkpoint):
+        if "test_threshold" in checkpoint:
+            self.test_threshold = checkpoint["test_threshold"]
+
 
 class KDAuxiliary(TypedDict, total=False):
     """Schema for KD auxiliary config items — validated by jsonargparse at parse time.
@@ -172,8 +210,12 @@ def binary_test_metrics():
     """Standard binary classification MetricCollection shared by all Lightning modules."""
     from torchmetrics import MetricCollection
     from torchmetrics.classification import (
-        BinaryAccuracy, BinaryAUROC, BinaryF1Score,
-        BinaryPrecision, BinaryRecall, BinarySpecificity,
+        BinaryAccuracy,
+        BinaryAUROC,
+        BinaryF1Score,
+        BinaryPrecision,
+        BinaryRecall,
+        BinarySpecificity,
     )
     return MetricCollection({
         "accuracy": BinaryAccuracy(), "f1": BinaryF1Score(),

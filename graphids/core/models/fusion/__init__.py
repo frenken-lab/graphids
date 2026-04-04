@@ -1,7 +1,7 @@
 """Fusion policy model family exports."""
 
-from .bandit import BanditFusionModule, NeuralLinUCBAgent
-from .dqn import DQNFusionModule, EnhancedDQNFusionAgent
+from .bandit import BanditFusionModule
+from .dqn import DQNFusionModule
 from .fusion_baselines import FusionModuleBase
 from .fusion_features import (
     FeatureLayout,
@@ -15,9 +15,7 @@ from .fusion_features import (
 
 __all__ = [
     "BanditFusionModule",
-    "NeuralLinUCBAgent",
     "DQNFusionModule",
-    "EnhancedDQNFusionAgent",
     "FusionModuleBase",
     "FeatureLayout",
     "FusionFeatureExtractor",

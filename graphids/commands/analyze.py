@@ -4,7 +4,7 @@ Usage:
     python -m graphids analyze --config graphids/config/stages/analyze_vgae.yaml \\
         --analyzer.ckpt_path path/to/best.ckpt --analyzer.dataset hcrl_sa
 
-    # Landscape convenience mode (replaces standalone landscape command):
+    # Landscape subcommand:
     python -m graphids analyze landscape vgae hcrl_sa path/to/best.ckpt [--resolution 51]
 """
 

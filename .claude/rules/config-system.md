@@ -16,19 +16,17 @@ defaults/trainer.yaml (shared defaults) → stage YAML (model class_path + overr
 graphids/
   cli.py               # GraphIDSCLI + CLI_KWARGS — shared by __main__ and orchestrate
   commands/             # operational subcommands (registered in __main__.py _COMMAND_MODULES)
-    analyze.py           # analysis artifacts from checkpoints
-    analyze_from_spec.py # run analyzer from canonical AnalysisSpec (dagster transport)
-    landscape.py         # 2D loss landscape
-    profile.py           # sacct resource profiler
-    profile_training.py  # profiled training run (PyTorchProfiler)
+    analyze.py           # analysis artifacts from checkpoints (incl. landscape subcommand)
+    from_spec.py         # dagster→SLURM spec transport: main_train/main_test/main_analyze
+    job_stats.py         # sacct resource profiler (job-stats)
+    probe_budget.py      # hardware cost model measurement (probe-budget)
+    profile.py           # profiled training run (PyTorchProfiler)
     rebuild_caches.py    # rebuild preprocessed graph caches
     stage_data.py        # NFS → scratch → TMPDIR staging
     submit_profile.py    # print SLURM resource profile for submit.sh
     test_preprocessing.py # validate preprocessing pipeline
-    train_from_spec.py   # run training from canonical TrainingSpec (dagster transport)
     finalize_record.py   # update run_record.json sidecar with phases + wall_time
     rebuild_catalog.py   # rebuild DuckDB catalog from run_record.json sidecars
-    _spec_payload.py     # shared spec deserialization for *_from_spec commands
   config/
     __init__.py          # re-export facade (public API: constants, topology, paths, contracts)
     base.py              # CONFIG_DIR, PROJECT_ROOT

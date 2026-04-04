@@ -14,8 +14,9 @@ Public API re-exported from submodules:
 """
 
 from . import autoencoder, fusion, supervised
-
 from ._training import GraphModuleBase
+from .fusion.bandit import BanditFusionModule
+from .fusion.dqn import DQNFusionModule
 from .fusion.fusion_features import (
     FeatureLayout,
     FusionFeatureExtractor,
@@ -25,8 +26,6 @@ from .fusion.fusion_features import (
     feature_layout,
     fusion_state_dim,
 )
-from .fusion.bandit import BanditFusionModule, NeuralLinUCBAgent
-from .fusion.dqn import DQNFusionModule, EnhancedDQNFusionAgent
 
 __all__ = [
     "autoencoder",
@@ -41,7 +40,5 @@ __all__ = [
     "feature_layout",
     "fusion_state_dim",
     "BanditFusionModule",
-    "NeuralLinUCBAgent",
     "DQNFusionModule",
-    "EnhancedDQNFusionAgent",
 ]

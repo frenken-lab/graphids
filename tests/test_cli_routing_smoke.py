@@ -13,5 +13,5 @@ def test_module_command_is_routed() -> None:
     parser = cli_main._build_parser()
     ns, remaining = parser.parse_known_args(["analyze-from-spec", "--spec-file", "x.json"])
     assert ns.kind == "module"
-    assert ns.module_name == "graphids.commands.analyze_from_spec"
+    assert ns.module_name == "graphids.commands.from_spec:main_analyze"
     assert remaining == ["--spec-file", "x.json"]

@@ -476,37 +476,8 @@ class VGAEModule(GraphModuleBase):
         errors = self._per_graph_errors(batch)
         self.roc_metric.update(errors.detach(), batch.y.detach())
 
-    def on_test_epoch_start(self):
-        self.test_metrics.reset()
-        self.roc_metric.reset()
-
     def on_test_epoch_end(self):
-        # Extract accumulated scores/labels from the BinaryROC metric
-        if not self.roc_metric.preds:
-            return
-
-        scores = torch.cat(self.roc_metric.preds).cpu()
-        labels = torch.cat(self.roc_metric.target).cpu().long()
-
-        if self.test_threshold is None:
-            threshold = self._find_threshold()
-            if threshold is None:
-                self.test_threshold = float(scores.median())
-            else:
-                self.test_threshold = threshold
-
-        preds = (scores >= self.test_threshold).long()
-        self.test_metrics.update(preds, labels)
-        metrics = self.test_metrics.compute()
-        metrics["threshold"] = self.test_threshold
-        self.log_dict(metrics)
-
-    def on_save_checkpoint(self, checkpoint):
-        if self.test_threshold is not None:
-            checkpoint["test_threshold"] = self.test_threshold
-
-    def on_load_checkpoint(self, checkpoint):
-        self.test_threshold = checkpoint.get("test_threshold")
+        self._log_thresholded_metrics()
 
     def predict_step(self, batch, _idx):
         errors = self._per_graph_errors(batch)

@@ -11,16 +11,20 @@ Reference: "Neural Contextual Bandits with UCB-based Exploration" (Zhou et al., 
 from __future__ import annotations
 
 import numpy as np
-from graphids.log import get_logger
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from .dqn import TensorReplayBuffer
+from graphids.log import get_logger
+
+from ._nn import TensorReplayBuffer, build_mlp_body
 from .fusion_baselines import FusionModuleBase
+from .fusion_features import fusion_state_dim
 from .fusion_reward import FusionRewardCalculator
 
 log = get_logger(__name__)
+
+_DEFAULT_STATE_DIM = fusion_state_dim()
 
 
 class Backbone(nn.Module):
@@ -28,7 +32,6 @@ class Backbone(nn.Module):
 
     def __init__(self, state_dim: int, hidden_dim: int = 128, num_layers: int = 3):
         super().__init__()
-        from .dqn import build_mlp_body
         self.net = build_mlp_body(state_dim, hidden_dim, num_layers)
         self.out_dim = hidden_dim
 
@@ -45,7 +48,7 @@ class BanditFusionModule(FusionModuleBase):
 
     def __init__(
         self,
-        state_dim: int = 0,
+        state_dim: int = _DEFAULT_STATE_DIM,
         alpha_steps: int = 21,
         ucb_alpha: float = 1.0,
         lambda_reg: float = 1.0,
@@ -60,9 +63,6 @@ class BanditFusionModule(FusionModuleBase):
         reward_kwargs: dict | None = None,
     ):
         super().__init__()
-        if state_dim == 0:
-            from .fusion_features import fusion_state_dim
-            state_dim = fusion_state_dim()
         self.save_hyperparameters()
         self.automatic_optimization = False
 
@@ -338,7 +338,3 @@ class BanditFusionModule(FusionModuleBase):
             "avg_ucb_width": float(np.mean(self._ucb_widths[-50:])) if self._ucb_widths else 0.0,
             "episodes": self._episode,
         }
-
-
-# Backward-compat alias (removed in Step 5)
-NeuralLinUCBAgent = BanditFusionModule
