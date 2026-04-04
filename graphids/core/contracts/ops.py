@@ -117,12 +117,10 @@ class TrainingContract:
         return tuple(files)
 
     @classmethod
-    def _cli_scalar(cls, value: Any) -> str:
-        return str(value).lower() if isinstance(value, bool) else str(value)
-
-    @classmethod
     def to_override_dict(cls, spec: TrainingSpec) -> dict[str, str]:
         """Convert TrainingSpec to dotted-key override dict for merge_yaml_chain."""
+        _s = lambda v: str(v).lower() if isinstance(v, bool) else str(v)  # noqa: E731
+
         overrides: dict[str, str] = {
             "data.init_args.dataset": spec.dataset,
             "seed_everything": str(spec.seed),
@@ -130,7 +128,7 @@ class TrainingContract:
         }
 
         for key, value in spec.model_init_overrides.items():
-            overrides[f"model.init_args.{key}"] = cls._cli_scalar(value)
+            overrides[f"model.init_args.{key}"] = _s(value)
 
         for upstream_asset, ckpt_path in spec.upstream_ckpt_paths.items():
             model_family = spec.upstream_model_families.get(upstream_asset)
@@ -151,7 +149,7 @@ class TrainingContract:
                 )
             overrides[flag.lstrip("-")] = ckpt_path
 
-        runtime = {k: cls._cli_scalar(v) for k, v in spec.runtime_overrides.items()}
+        runtime = {k: _s(v) for k, v in spec.runtime_overrides.items()}
         conflicts = set(overrides) & set(runtime)
         if conflicts:
             from graphids.log import get_logger

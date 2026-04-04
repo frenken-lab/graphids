@@ -1,5 +1,0 @@
-streamlit>=1.40
-plotly>=6.0
-pandas>=2.2
-pyarrow>=18.0
-huggingface_hub>=1.0

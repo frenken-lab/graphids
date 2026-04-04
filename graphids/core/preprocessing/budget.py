@@ -12,6 +12,7 @@ from __future__ import annotations
 import gc
 import json
 import math
+import os
 import statistics
 import time
 from dataclasses import dataclass
@@ -208,6 +209,33 @@ def compute_resource_profile(
         cpus=cpus,
         memory_gb=memory_gb,
     )
+
+
+def autosize_workers(
+    model, dataset, result: BudgetResult,
+    *, default_prefetch_factor: int = 2,
+) -> tuple[int, int]:
+    """Return ``(num_workers, prefetch_factor)`` from the sizing chain.
+
+    Runs ``calibrate_at_budget`` + ``compute_resource_profile`` against the
+    actual operating batch size and caps workers to ``SLURM_CPUS_PER_TASK``
+    (or ``os.cpu_count()`` outside SLURM). Falls back to ``(2, default_pf)``
+    when the GPU probe is unavailable.
+    """
+    slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
+    max_cpus = int(slurm_cpus) if slurm_cpus else os.cpu_count()
+    bwd_mult = result.backward_multiplier or 2.0
+    t_c, t_g, _n_graphs = calibrate_at_budget(
+        model, dataset, result.budget, backward_multiplier=bwd_mult,
+    )
+    # calibrate_at_budget returns (0, 0, 0) on CPU / failure —
+    # compute_resource_profile detects this via t_gpu_s <= 0 and returns None.
+    profile = compute_resource_profile(
+        result, t_collation_s=t_c, t_gpu_s=t_g, max_cpus=max_cpus,
+    )
+    if profile is None:
+        return 2, default_prefetch_factor
+    return profile.workers, profile.prefetch_factor
 
 
 # ---------------------------------------------------------------------------

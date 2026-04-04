@@ -66,3 +66,29 @@ class TestCurriculumSampler:
         assert len_late >= len_early, (
             f"Active indices at epoch 9 ({len_late}) should be >= epoch 0 ({len_early})"
         )
+
+    def test_set_node_budget_finalizes_inner_sampler(self):
+        """Deferred budget path: sampler built with max_num_nodes=None has no inner
+        sampler; set_node_budget() installs the budget and rebuilds it.
+        CurriculumDataModule.train_dataloader() relies on this after the model
+        is placed on GPU (VRAM probe requires a live CUDA model)."""
+        sampler, full_dataset = self._make_data_and_sampler()
+        # Default fixture uses max_num_nodes=None
+        assert sampler.max_num_nodes is None
+        assert sampler._inner is None
+        # Batches still work via the fallback iterator (fixed batch_size)
+        fallback_batches = list(sampler)
+        assert len(fallback_batches) > 0
+
+        # Simulate post-GPU placement: budget known, finalize.
+        max_nodes = max(int(sampler.dataset_sizes.max().item()) * 4, 64)
+        sampler.set_node_budget(max_num_nodes=max_nodes, mean_nodes=8.0)
+        assert sampler.max_num_nodes == max_nodes
+        assert sampler._inner is not None
+        # Inner batches now respect the node budget and yield full-dataset indices
+        real_batches = list(sampler)
+        assert len(real_batches) > 0
+        flat = [i for batch in real_batches for i in batch]
+        assert max(flat) < len(full_dataset), (
+            "sampler must yield full-dataset positions, not subset-local"
+        )

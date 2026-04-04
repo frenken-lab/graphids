@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from graphids.cli import resolve_configs
+from graphids.config.yaml_utils import merge_yaml_chain
 from graphids.config.yaml_utils import write_yaml
 from graphids.core.contracts import TrainingContract, TrainingSpec
 
@@ -41,7 +41,7 @@ def _parse_via_jsonargparse(config_files, overrides, snapshot_path):
     """Build a fresh GraphIDSCLI per chain so the parser matches the model class."""
     from graphids._lightning import CLI_KWARGS, GraphIDSCLI
 
-    resolved = resolve_configs(config_files, overrides)
+    resolved = merge_yaml_chain(config_files, overrides)
     write_yaml(resolved, snapshot_path)
 
     # Build CLI args matching this chain (same files + overrides the real path uses)

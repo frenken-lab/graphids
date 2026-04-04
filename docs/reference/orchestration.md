@@ -93,6 +93,7 @@ see [`3-chain.md`](3-chain.md).
 ## Cross-references
 
 - [`3-chain.md`](3-chain.md) — dagster inputs, override flow, validation gates
+- [`orchestration-risks.md`](orchestration-risks.md) — known fragile / complex areas, recommended fixes
 - [`config-architecture.md`](config-architecture.md) — jsonargparse + YAML layer
 - [`write-paths.md`](write-paths.md) — lake layout, `PathContext`, identity hash
 - [ADR 0006 — Dagster integration](../decisions/0006-dagster-integration.md)

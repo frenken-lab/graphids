@@ -1,6 +1,14 @@
 # GraphIDS Session Plan
 
-> Last updated: 2026-04-03 (session 15 — orchestrator observability)
+> Last updated: 2026-04-03 (session 16 — typed overrides + backlog→GitHub migration)
+
+## HIGH PRIORITY
+
+- **Collapse override handoff chain (9 → 3)** — `docs/decisions/0009-collapse-override-handoffs.md`.
+  Move `parser.parse_object()` into ConfigResolver so every job is pre-validated at planning time.
+  Replace CLI string round-trip with dict-based instantiation on SLURM side.
+  Deletes ~55 lines, closes the validation desert between asset enumeration and jsonargparse.
+  Verify `instantiate_classes()` + forced callbacks + LINK_TARGETS before implementing.
 
 ## Current State
 

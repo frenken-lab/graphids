@@ -6,8 +6,9 @@
 docs/
   decisions/    # ADRs — final verdicts, permanent
   reference/    # Living docs for current architecture
-  backlog/      # Open work items, deleted when done
 ```
+
+Work items are tracked as **GitHub issues** (`gh issue list`), not files.
 
 ## Lifecycle Rules
 
@@ -25,16 +26,15 @@ docs/
 - **Named by topic:** `cli-routes.md`, `write-paths.md`
 - **Deleted when** the subsystem is removed
 
-### Backlog Items (`backlog/`)
+### Work Items (GitHub Issues)
 - **Created when:** work is deferred or a design question is identified
-- **Deleted entirely when resolved.** Not compacted, not marked "RESOLVED" — gone. The fix is in git
-- **Named by topic:** `kd-untested.md`, `per-stage-overrides.md`
-- When a backlog item becomes a decision, the decision goes to `decisions/` and the backlog item is deleted
+- **Closed when resolved.** The fix is in git
+- **Labels:** `config`, `orchestration`, `performance`, `models`, `evaluation`, `blocked`, `bug`
+- When an issue becomes a decision, the decision goes to `decisions/` and the issue is closed
 
 ## Session Hygiene
 
-At session start, scan `docs/backlog/` for items that are done. Delete them.
-This takes 2 minutes and prevents multi-hour audits.
+Backlog items are tracked as GitHub issues. At session start, check for stale issues.
 
 ## What Goes Where
 
@@ -42,10 +42,10 @@ This takes 2 minutes and prevents multi-hour audits.
 |-----------|--------|
 | Evaluated a tool/approach | `decisions/NNNN-*.md` |
 | Describing how system X works today | `reference/*.md` |
-| Work to do later | `backlog/*.md` |
-| Bug found during a run | Fix it or add to `backlog/`, never leave as "RESOLVED" |
+| Work to do later | GitHub issue with appropriate labels |
+| Bug found during a run | Fix it or file a GitHub issue |
 | Plan for a session | `PLAN.md` (root), not docs/ |
-| Implementation was completed | Delete the backlog item. Update reference if architecture changed |
+| Implementation was completed | Close the issue. Update reference if architecture changed |
 
 ## Anti-Patterns
 

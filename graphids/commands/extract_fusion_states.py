@@ -76,10 +76,9 @@ def extract_and_save(
     lake_root: str | None = None,
 ) -> Path:
     """Extract fusion states and save to disk. Returns the output directory."""
-    import types
-
     from graphids.core.models._training import load_inner_model
     from graphids.core.preprocessing.datamodule import FusionDataModule, load_datasets
+    from graphids.core.preprocessing.datasets.can_bus import CANBusDataset
 
     lake_root = lake_root or os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -89,14 +88,12 @@ def extract_and_save(
     gat, _ = load_inner_model("gat", Path(gat_ckpt), device)
     models = {"vgae": vgae, "gat": gat}
 
-    cfg = types.SimpleNamespace(
+    train_ds, val_ds, _ = load_datasets(
         dataset=dataset, lake_root=lake_root, seed=seed,
-        preprocessing=types.SimpleNamespace(
-            window_size=window_size, stride=stride,
-            train_val_split=1.0 - val_fraction,
-        ),
+        window_size=window_size, stride=stride,
+        train_val_split=1.0 - val_fraction,
+        dataset_cls=CANBusDataset,
     )
-    train_ds, val_ds, _ = load_datasets(cfg)
 
     log.info("extracting_train_states", n_graphs=len(train_ds), max_samples=max_samples)
     train_cache = FusionDataModule.cache_predictions(

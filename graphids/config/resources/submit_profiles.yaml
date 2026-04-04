@@ -51,7 +51,7 @@ submit_profiles:
     partition: gpudebug
     cpus: 8
     mem: 36G
-    time: "00:30:00"
+    time: "01:00:00"
     signal: ""
     mode: gpu
     command: python -m graphids probe-budget

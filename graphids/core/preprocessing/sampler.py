@@ -225,6 +225,19 @@ class CurriculumSampler:
             indices=active,  # yields full-dataset positions, not subset-local
         )
 
+    def set_node_budget(self, max_num_nodes: int, mean_nodes: float) -> None:
+        """Finalize the node budget after model placement on GPU.
+
+        ``CurriculumDataModule.setup()`` runs before Lightning moves the model
+        to device, so the VRAM probe in ``node_budget()`` would use the CPU
+        fallback. The sampler is constructed with ``max_num_nodes=None``; this
+        method is called from ``train_dataloader()`` (post-device-placement)
+        to install the real budget and rebuild the inner batch sampler.
+        """
+        self.max_num_nodes = max_num_nodes
+        self.mean_nodes = mean_nodes
+        self._inner = self._build_inner()
+
     def set_epoch(self, epoch: int) -> None:
         if self.scores is None or len(self.scores) == 0:
             return

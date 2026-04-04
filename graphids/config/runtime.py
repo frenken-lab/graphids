@@ -14,7 +14,7 @@ from .topology import VALID_MODEL_TYPES, VALID_SCALES
 # Layer 1 — project constants (no YAML, no env vars)
 # ---------------------------------------------------------------------------
 
-PREPROCESSING_VERSION: str = "7.0.0"
+PREPROCESSING_VERSION: str = "8.0.0"
 MAX_DATA_BYTES: int = 8
 EXCLUDED_ATTACK_TYPES: list[str] = ["suppress", "masquerade"]
 CKPT_SUBPATH: str = "checkpoints/best_model.ckpt"

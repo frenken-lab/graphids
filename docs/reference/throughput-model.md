@@ -267,7 +267,7 @@ This is wrong because:
 | VGAE large | 3h40m, 5% GPU, 2 workers, 154K nodes | ~13min, ~80% GPU, 16 workers, ~460K nodes | **17x** |
 | GAT large | 3h55m, 22% GPU, 2 workers, 36K nodes | ~2h37m, ~50% GPU, 3 workers, ~42K nodes | **1.5x** |
 
-See `docs/backlog/training-efficiency.md` for the full sizing chain with
+See frenken-lab/graphids#17 for the plot rewrite plan and full sizing chain with
 derivations.
 
 ### Additional GPU optimizations (secondary to pipeline fix)

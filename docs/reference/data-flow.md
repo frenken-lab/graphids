@@ -42,14 +42,19 @@ data/automotive/set_02/
         │       RLE boundaries from group_by become the slices dict directly.
         │       No per-window Data objects, no list[Data], no collate() call.
         │       Peak memory: ~1x final tensor size (was ~3x before 2026-03-31 fix).
+        │   8g: v8.0.0 — kept graphs presorted by node count before materialization.
+        │       Adjacent graphs on disk have similar size, so NodeBudgetBatchSampler
+        │       + bucket shuffle produces sequential mmap page faults within a bucket
+        │       instead of random ones across the whole cache. Also stabilizes VRAM
+        │       allocator block reuse by reducing batch-to-batch size variance.
         │
         ▼  9. Returns (Data, slices_dict, num_graphs) directly from bulk tensors
         ▼ 10. atomic_save() → torch.save + fsync + rename
         │
-        ├──→ {lake}/cache/v7.0.0/{dataset}/processed/data_train.pt  (set_02 ≈ 5.9 GB)
-        ├──→ {lake}/cache/v7.0.0/{dataset}/processed/num_arb_ids.txt
-        ├──→ {lake}/cache/v7.0.0/{dataset}/cache_metadata.json
-        └──→ {lake}/cache/v7.0.0/{dataset}/processed/.complete
+        ├──→ {lake}/cache/v8.0.0/{dataset}/processed/data_train.pt  (set_02 ≈ 5.9 GB)
+        ├──→ {lake}/cache/v8.0.0/{dataset}/processed/num_arb_ids.txt
+        ├──→ {lake}/cache/v8.0.0/{dataset}/cache_metadata.json
+        └──→ {lake}/cache/v8.0.0/{dataset}/processed/.complete
 ```
 
 ## Phase 2: Training Data Loading (every epoch, every batch)

@@ -1,7 +1,7 @@
-"""Config resolution and Lightning dispatch. No torch at import time.
+"""Lightning dispatch + shared wiring constants. No torch at import time.
 
 Dev path:      run_lightning() → lazy-import _lightning.py → GraphIDSCLI
-Pipeline path: resolve_configs() → direct instantiation (train_entrypoint.py)
+Pipeline path: merge_yaml_chain() → direct instantiation (train_entrypoint.py)
 
 Shared wiring constants (LINK_TARGETS, CHECKPOINT_DEFAULTS, EARLY_STOPPING_DEFAULTS)
 live here so both paths consume a single source of truth.
@@ -10,8 +10,6 @@ live here so both paths consume a single source of truth.
 from __future__ import annotations
 
 from typing import Any
-
-from graphids.config.yaml_utils import merge_yaml_chain
 
 # --- Shared wiring: single source of truth for dev + pipeline paths ---
 
@@ -37,14 +35,6 @@ EARLY_STOPPING_DEFAULTS: dict[str, Any] = {
     "patience": 100,
     "mode": "min",
 }
-
-
-def resolve_configs(
-    config_files: tuple[str, ...] | list[str],
-    overrides: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Merge YAML config chain + dotted overrides. No torch dependency."""
-    return merge_yaml_chain(config_files, overrides)
 
 
 def run_lightning(args: list[str]) -> None:
