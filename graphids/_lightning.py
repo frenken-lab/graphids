@@ -1,7 +1,8 @@
-"""LightningCLI subclass and kwargs. Internal — imported lazily by cli.py.
+"""LightningCLI subclass, kwargs, and shared CLI builder.
 
-Used only by the dev path (python -m graphids fit) and validate.py.
-Pipeline runs use direct instantiation via train_entrypoint.py.
+Used by the dev path (``python -m graphids fit``) via ``run_lightning``,
+the pipeline path (``train_entrypoint.py``) via ``build_cli``, and schema
+validation (``resolve.validate_cli_chain``) via ``schema_parser``.
 
 Wiring constants (link targets, callback defaults) imported from cli.py —
 single source of truth shared with the pipeline path.
@@ -10,7 +11,9 @@ single source of truth shared with the pipeline path.
 from __future__ import annotations
 
 import csv
+import functools
 import resource
+import sys
 import time
 from pathlib import Path, PurePosixPath
 
@@ -25,9 +28,41 @@ from pytorch_lightning.cli import LightningCLI, SaveConfigCallback
 from pytorch_lightning.loggers import WandbLogger
 
 from graphids.cli import CHECKPOINT_DEFAULTS, EARLY_STOPPING_DEFAULTS, LINK_TARGETS
-from graphids.config import CKPT_SUBPATH, WANDB_WRITE_DIR
+from graphids.config import CKPT_SUBPATH, CONFIG_DIR, WANDB_WRITE_DIR
 
 _CKPT_DIR = str(PurePosixPath(CKPT_SUBPATH).parent)
+
+# Known-valid config chain used solely to bootstrap the jsonargparse parser
+# (GraphIDSCLI.__init__ requires parseable args to set up its schema).
+_BOOTSTRAP = [
+    "--config", str(CONFIG_DIR / "stages/autoencoder.yaml"),
+    "--config", str(CONFIG_DIR / "models/vgae/base.yaml"),
+    "--config", str(CONFIG_DIR / "models/vgae/scales/small.yaml"),
+    "--data.init_args.dataset=hcrl_ch",
+    "--seed_everything=42",
+]
+
+
+def build_cli(args) -> "GraphIDSCLI":
+    """Construct a ``GraphIDSCLI(run=False)`` from CLI args or a merged dict.
+
+    Isolates ``sys.argv`` so LightningCLI doesn't warn about duplicate args.
+    Returned instance has ``cli.parser``, ``cli.trainer``, ``cli.model``,
+    ``cli.datamodule`` populated. Used by ``train_entrypoint._instantiate_from_spec``
+    (dict input) and ``schema_parser`` (bootstrap CLI args).
+    """
+    saved = sys.argv
+    sys.argv = [saved[0] if saved else "graphids"]
+    try:
+        return GraphIDSCLI(**{**CLI_KWARGS, "run": False}, args=args)
+    finally:
+        sys.argv = saved
+
+
+@functools.cache
+def schema_parser():
+    """Cached jsonargparse parser for schema validation. Torch-lazy."""
+    return build_cli(_BOOTSTRAP).parser
 
 _PROFILE_FIELDS = [
     "epoch", "global_step", "num_nodes", "num_edges", "num_graphs",
@@ -203,6 +238,33 @@ class WandbSaveConfigCallback(SaveConfigCallback):
                 break
 
 
+def patch_config_paths(cfg) -> None:
+    """Patch logger save_dirs + checkpoint dirpath on a parsed Namespace.
+
+    Shared between ``GraphIDSCLI.before_instantiate_classes()`` (dev path) and
+    ``graphids.core.train_entrypoint`` (pipeline path) so both flows apply
+    identical path wiring before instantiation. Mutates ``cfg`` in place.
+
+    ``cfg`` must be a Namespace with ``trainer.default_root_dir``,
+    ``trainer.logger``, and ``checkpoint`` attributes as produced by the
+    GraphIDSCLI parser.
+    """
+    root_dir = cfg.trainer.default_root_dir
+
+    loggers = cfg.trainer.logger
+    if isinstance(loggers, list):
+        for lg in loggers:
+            if not hasattr(lg, "class_path"):
+                continue
+            if "WandbLogger" in lg.class_path:
+                lg.init_args.save_dir = WANDB_WRITE_DIR
+            elif "CSVLogger" in lg.class_path and root_dir:
+                lg.init_args.save_dir = root_dir
+
+    if root_dir:
+        cfg.checkpoint.dirpath = f"{root_dir}/{_CKPT_DIR}"
+
+
 class GraphIDSCLI(LightningCLI):
     def add_arguments_to_parser(self, parser):
         for src, tgt in LINK_TARGETS:
@@ -229,26 +291,14 @@ class GraphIDSCLI(LightningCLI):
         parser.set_defaults({"run_record.enabled": True})
 
     def before_instantiate_classes(self):
-        """Patch parsed config: logger save_dirs + checkpoint dirpath."""
-        if not self.subcommand:
-            return
-        subcfg = self.config[self.subcommand]
-        root_dir = subcfg.trainer.default_root_dir
+        """Patch parsed config: logger save_dirs + checkpoint dirpath.
 
-        # Patch logger save_dirs from config defaults/constants
-        loggers = subcfg.trainer.logger
-        if isinstance(loggers, list):
-            for lg in loggers:
-                if not hasattr(lg, "class_path"):
-                    continue
-                if "WandbLogger" in lg.class_path:
-                    lg.init_args.save_dir = WANDB_WRITE_DIR
-                elif "CSVLogger" in lg.class_path and root_dir:
-                    lg.init_args.save_dir = root_dir
-
-        # Pin checkpoint dirpath to the run directory
-        if root_dir:
-            subcfg.checkpoint.dirpath = f"{root_dir}/{_CKPT_DIR}"
+        When ``run=True`` (dev path, subcommand dispatch), ``self.config`` is
+        keyed by subcommand. When ``run=False`` (pipeline path, dict-as-args),
+        ``self.config`` is the parsed namespace directly.
+        """
+        subcfg = self.config[self.subcommand] if self.subcommand else self.config
+        patch_config_paths(subcfg)
 
 
 CLI_KWARGS = dict(

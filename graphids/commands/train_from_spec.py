@@ -9,7 +9,8 @@ from __future__ import annotations
 import argparse
 
 from graphids.commands._spec_payload import load_payload
-from graphids.core.train_entrypoint import run_training_from_payload
+from graphids.core.contracts import TrainingContract
+from graphids.core.train_entrypoint import run_training_from_spec
 
 
 def main(argv: list[str]) -> None:
@@ -17,5 +18,4 @@ def main(argv: list[str]) -> None:
     parser.add_argument("--spec-file", required=True)
     args = parser.parse_args(argv)
 
-    payload = load_payload(args.spec_file)
-    run_training_from_payload(payload)
+    run_training_from_spec(TrainingContract.from_envelope(load_payload(args.spec_file)))

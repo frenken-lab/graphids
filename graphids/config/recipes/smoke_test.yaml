@@ -16,6 +16,9 @@ selection:
 # Curriculum data.init_args.max_epochs auto-synced by ConfigResolver.
 trainer_overrides:
   trainer.max_epochs: 50
+stage_overrides:
+  curriculum:
+    data.init_args.max_epochs: "50"
 resource_overrides:
   time: "1:00:00"
   partition: gpudebug

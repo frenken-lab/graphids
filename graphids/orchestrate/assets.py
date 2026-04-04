@@ -61,8 +61,9 @@ def make_training_asset(
         log.info("asset_start", asset=cfg.asset_name, dataset=dataset,
                  seed=seed, retry=context.retry_number)
 
+        # resolve_and_validate: pre-SLURM jsonargparse schema check (ADR 0009).
         resolver = ConfigResolver(lake_root=_runtime_lake_root(), user=_runtime_user())
-        resolved = resolver.resolve(
+        resolved = resolver.resolve_and_validate(
             cfg, dataset=dataset, seed=seed, upstream_ckpts=upstream_ckpts,
         )
 

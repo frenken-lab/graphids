@@ -4,25 +4,68 @@ ConfigResolver subsumes the two separate override merge sites (trainer
 overrides in execution.py, resource overrides in assets.py) into a single
 validated resolution with cross-field checks and an audit trail.
 
-Retry scaling (scale_resources on OOM/TIMEOUT) is a post-resolution runtime
-concern — it stays in the asset closure, not here.
+``validate_cli_chain`` runs the resolved spec through the full jsonargparse
+schema + convention checks, so override-key typos, null list fields, and
+logger/callback wiring mismatches die at planning time (ADR 0009).
 """
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 from dataclasses import dataclass
 from typing import Any
+
+import yaml
 
 from graphids.log import get_logger
 
 from graphids.config import PathContext
 from graphids.config.yaml_utils import merge_yaml_chain
-from graphids.core.contracts import TrainingSpec
+from graphids.core.contracts import TrainingContract, TrainingSpec
 from graphids.orchestrate.planning import StageConfig
 from graphids.slurm import ResourceSpec, apply_resource_overrides, get_resources
 
 log = get_logger(__name__)
+
+# Fusion stages optimize val_acc/max; all others val_loss/min.
+_STAGE_MONITORS = {
+    "autoencoder": ("val_loss", "min"),
+    "normal": ("val_loss", "min"),
+    "curriculum": ("val_loss", "min"),
+    "fusion": ("val_acc", "max"),
+}
+
+
+def _convention_errors(dumped: dict, stage: str, label: str) -> list[str]:
+    """Return fatal convention errors; emit non-fatal warnings via log."""
+    errors: list[str] = []
+    trainer = dumped.get("trainer") or {}
+    logger_on = trainer.get("logger", True) is not False
+    for cb in trainer.get("callbacks") or []:
+        cp = cb.get("class_path", "")
+        if "LearningRateMonitor" in cp and not logger_on:
+            errors.append(f"{cp.rsplit('.', 1)[-1]} requires trainer.logger=true")
+    model_args = dumped.get("model", {}).get("init_args") or {}
+    for fld in ("pool_aggrs", "hidden_dims", "auxiliaries"):
+        if fld in model_args and model_args[fld] is None:
+            errors.append(f"model.init_args.{fld} is null")
+    exp = _STAGE_MONITORS.get(stage)
+    if exp:
+        for ns in ("checkpoint", "early_stopping"):
+            cfg = dumped.get(ns) or {}
+            if not isinstance(cfg, dict):
+                continue
+            for field, expected in zip(("monitor", "mode"), exp):
+                val = cfg.get(field)
+                if val is not None and val != expected:
+                    log.warning(
+                        "convention_mismatch",
+                        asset=label, ns=ns, field=field,
+                        got=val, expected=expected,
+                    )
+    return errors
 
 
 @dataclass(frozen=True)
@@ -31,7 +74,8 @@ class OverrideRecord:
 
     key: str
     value: str | int | float
-    source: str  # recipe_trainer, recipe_resource, kd, resume_ckpt
+    source: str  # recipe_trainer, recipe_resource, kd, stage_override
+    stage: str | None = None  # None = all stages, else stage-scoped
 
 
 @dataclass(frozen=True)
@@ -55,13 +99,6 @@ class ConfigResolver:
     def __init__(self, lake_root: str, user: str) -> None:
         self._lake_root = lake_root
         self._user = user
-
-    @staticmethod
-    def _merge_yaml_chain(
-        config_files: tuple[str, ...], runtime_overrides: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Merge YAML config chain + runtime overrides for cross-field validation."""
-        return merge_yaml_chain(config_files, runtime_overrides)
 
     def resolve(
         self,
@@ -89,14 +126,10 @@ class ConfigResolver:
             for k, v in cfg.trainer_overrides.items():
                 audit.append(OverrideRecord(key=k, value=v, source="recipe_trainer"))
 
-            # Curriculum epoch sync: CurriculumDataModule.max_epochs must match
-            # trainer.max_epochs. Auto-inject the data override so recipes don't
-            # need stage-specific overrides for this cross-field constraint.
-            if cfg.stage == "curriculum" and "trainer.max_epochs" in runtime_overrides:
-                key = "data.init_args.max_epochs"
-                val = runtime_overrides["trainer.max_epochs"]
-                runtime_overrides[key] = val
-                audit.append(OverrideRecord(key=key, value=val, source="curriculum_sync"))
+        if cfg.stage_overrides:
+            runtime_overrides.update(cfg.stage_overrides)
+            for k, v in cfg.stage_overrides.items():
+                audit.append(OverrideRecord(key=k, value=v, source="stage_override", stage=cfg.stage))
 
         if cfg.kd_overrides:
             key = "model.init_args.auxiliaries"
@@ -132,7 +165,7 @@ class ConfigResolver:
                 audit.append(OverrideRecord(key=k, value=v, source="recipe_resource"))
 
         # --- Merge YAML chain for cross-field validation ---
-        merged_yaml = self._merge_yaml_chain(cfg.config_files, runtime_overrides)
+        merged_yaml = merge_yaml_chain(cfg.config_files, runtime_overrides)
 
         # --- Cross-field validation ---
         self._validate_cross_fields(spec, resources, cfg, merged_yaml)
@@ -145,7 +178,7 @@ class ConfigResolver:
                 dataset=dataset,
                 seed=seed,
                 overrides=[
-                    {"key": r.key, "value": r.value, "source": r.source}
+                    {"key": r.key, "value": r.value, "source": r.source, "stage": r.stage}
                     for r in audit_tuple
                 ],
             )
@@ -156,6 +189,50 @@ class ConfigResolver:
             paths=paths,
             audit=audit_tuple,
         )
+
+    def resolve_and_validate(
+        self,
+        cfg: StageConfig,
+        *,
+        dataset: str,
+        seed: int,
+        upstream_ckpts: dict[str, str] | None = None,
+    ) -> "ResolvedConfig":
+        """Resolve + pre-validate in one call. Used by assets.py and validate.py."""
+        resolved = self.resolve(
+            cfg, dataset=dataset, seed=seed, upstream_ckpts=upstream_ckpts or {},
+        )
+        self.validate_cli_chain(resolved.spec)
+        return resolved
+
+    def validate_cli_chain(self, spec: TrainingSpec) -> None:
+        """Pre-validate spec through jsonargparse schema + convention checks (ADR 0009)."""
+        from graphids._lightning import schema_parser  # lazy torch import
+
+        parser = schema_parser()
+        merged = merge_yaml_chain(
+            spec.config_files, TrainingContract.to_override_dict(spec),
+        )
+        label = f"{spec.stage}/{spec.model_family}_{spec.scale}"
+
+        # jsonargparse calls sys.exit() on parse errors; capture stderr + catch.
+        err_buf = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err_buf):
+                parsed = parser.parse_object(merged)
+        except (Exception, SystemExit) as e:
+            msg = next(
+                (ln for ln in reversed(err_buf.getvalue().splitlines()) if ln.strip()),
+                str(e),
+            )
+            raise ValueError(f"{label} schema (run_dir={spec.run_dir}): {msg}") from e
+
+        dumped = yaml.safe_load(
+            parser.dump(parsed, skip_link_targets=False, skip_none=False)
+        )
+        errors = _convention_errors(dumped, spec.stage, label)
+        if errors:
+            raise ValueError(f"{label} conventions: " + "; ".join(errors))
 
     def _validate_cross_fields(
         self,
