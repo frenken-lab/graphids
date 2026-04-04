@@ -34,8 +34,8 @@ Three entry points, zero overlap:
 | Command | Purpose |
 |---------|---------|
 | `python -m graphids analyze` | Analysis artifacts from checkpoints |
-| `python -m graphids analyze-from-spec` | Run analyzer from canonical AnalysisSpec (dagster transport) |
 | `python -m graphids analyze landscape` | 2D loss landscape (folded into analyze) |
+| `python -m graphids from-spec --phase {train,test,analyze}` | Run stage from canonical spec (dagster→SLURM transport) |
 | `python -m graphids pipeline-status` | Aggregated status (DuckDB catalog if available, else dagster + SLURM) |
 | `python -m graphids pipeline-status --log [FILTER]` | Orchestrator event log (all/failures/retries/completions/submissions/polls) |
 | `python -m graphids pipeline-status --log -f` | Follow orchestrator log (like tail -f) |
@@ -46,9 +46,6 @@ Three entry points, zero overlap:
 | `python -m graphids rebuild-caches` | Rebuild preprocessed graph caches |
 | `python -m graphids stage-data` | NFS → scratch → TMPDIR staging |
 | `python -m graphids submit-profile <job>` | Print SLURM resource profile for submit.sh |
-| `python -m graphids test-from-spec` | Run test (evaluation) from canonical TrainingSpec (dagster transport) |
-| `python -m graphids test-preprocessing` | Validate preprocessing pipeline |
-| `python -m graphids train-from-spec` | Run training from canonical TrainingSpec (dagster transport) |
 | `python -m graphids rebuild-catalog` | Rebuild DuckDB catalog from run_record.json sidecars |
 | `python -m graphids _finalize-record` | (internal) Update sidecar with phases + wall_time after test+analyze |
 

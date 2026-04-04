@@ -15,12 +15,9 @@ import argparse
 import json
 import re
 import subprocess
-import sys
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 
-from graphids.config import SLURM_LOG_DIR
-from graphids.slurm import sacct_query
+from graphids.slurm import parse_elapsed, sacct_query
 
 
 # ---------------------------------------------------------------------------
@@ -51,13 +48,6 @@ class JobProfile:
 # ---------------------------------------------------------------------------
 # Parsing helpers
 # ---------------------------------------------------------------------------
-
-def _parse_elapsed(s: str) -> float:
-    """Parse HH:MM:SS or D-HH:MM:SS to seconds."""
-    parts = s.replace("-", ":").split(":")
-    nums = [float(p) for p in parts]
-    return sum(v * m for v, m in zip(reversed(nums), [1, 60, 3600, 86400]))
-
 
 def _parse_mem(s: str) -> float:
     """Parse sacct memory string like '12.55G' or '25165024K' to float GiB."""
@@ -124,8 +114,8 @@ def get_sacct_stats(job_ids: list[str], *, cluster: str | None = None) -> dict[s
                 if "=" in kv:
                     k, v = kv.split("=", 1)
                     if k == "cpu":
-                        cpu_sec = _parse_elapsed(v)
-                        wall_sec = _parse_elapsed(s.elapsed) if s.elapsed else 0
+                        cpu_sec = parse_elapsed(v) or 0.0
+                        wall_sec = (parse_elapsed(s.elapsed) or 0.0) if s.elapsed else 0.0
                         if wall_sec > 0 and s.alloc_cpus > 0:
                             s.cpu_efficiency_pct = round(
                                 cpu_sec / (wall_sec * s.alloc_cpus) * 100, 1

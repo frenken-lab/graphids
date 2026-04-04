@@ -1,4 +1,4 @@
-"""Pipeline status: aggregated view of dagster assets + SLURM phase markers.
+"""Pipeline status: aggregated view of dagster assets backed by the DuckDB catalog.
 
 Usage:
     python -m graphids pipeline-status                        # grouped recipe view
@@ -11,89 +11,26 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from graphids.config import COMPLETE_MARKER, PHASE_MARKERS, SLURM_LOG_DIR, dataset_names
+from graphids.config import SLURM_LOG_DIR, catalog_path
 from graphids.config.runtime import LAKE_ROOT
-from graphids.slurm import sacct_by_user
 
 # ---------------------------------------------------------------------------
-# Shared helpers for recipe-aware views
+# Constants + dataclass
 # ---------------------------------------------------------------------------
 
-
-def _parse_sacct() -> dict[str, dict[str, str]]:
-    """Query sacct for recent jobs, return {asset_name: {job_id, state, elapsed, dataset, seed}}.
-
-    Most recent job per asset wins (sacct returns chronological order).
-    """
-    stdout = sacct_by_user()
-    if not stdout:
-        return {}
-    known_ds = frozenset(dataset_names())
-    out: dict[str, dict[str, str]] = {}
-    for line in stdout.strip().splitlines():
-        parts = line.split("|")
-        if len(parts) < 4 or "." in parts[0]:  # skip .batch/.extern steps
-            continue
-        jid, jname, state, elapsed = parts[:4]
-        state = state.split()[0]  # "CANCELLED by 35950" → "CANCELLED"
-        # Parse job name: {asset_name}_{dataset}_s{seed}
-        for ds in sorted(known_ds, key=len, reverse=True):
-            marker = f"_{ds}_s"
-            idx = jname.find(marker)
-            if idx < 0:
-                continue
-            seed_str = jname[idx + len(marker) :]
-            if seed_str.isdigit():
-                out[jname[:idx]] = {
-                    "job_id": jid,
-                    "state": state,
-                    "elapsed": elapsed,
-                    "dataset": ds,
-                    "seed": seed_str,
-                }
-            break
-    return out
-
-
-def _find_run_dir_fs(dataset: str, asset_name: str, seed: str) -> Path | None:
-    """Find run directory on filesystem by globbing for asset_name suffix."""
-    base = Path(LAKE_ROOT) / "dev" / os.environ.get("USER", "unknown") / dataset
-    if not base.is_dir():
-        return None
-    # Dir name is {model_type}_{scale}_{asset_name}, e.g. vgae_small_autoencoder_288aba35
-    matches = list(base.glob(f"*_{asset_name}/seed_{seed}"))
-    return matches[0] if matches else None
-
-
-def _phase_status(run_dir: Path | None) -> dict[str, str]:
-    """Check phase marker files in a run directory.
-
-    Returns symbol per phase: ✓ (passed), ✗ (failed), - (unknown/legacy).
-    If no markers exist at all, the run predates this feature — show all as -.
-    """
-    no_data = {"train": "-", "test": "-", "analyze": "-"}
-    if run_dir is None or not run_dir.exists():
-        return no_data
-    raw = {phase: (run_dir / marker).exists() for phase, marker in PHASE_MARKERS.items()}
-    # No markers at all → legacy run, don't report false failures
-    if not any(raw.values()):
-        return no_data
-    return {phase: ("✓" if ok else "✗") for phase, ok in raw.items()}
-
-
-# ---------------------------------------------------------------------------
-# Shared constants and dataclasses for recipe-aware views
-# ---------------------------------------------------------------------------
-
-_DONE_STATES = frozenset({"COMPLETED", "SUCCESS"})
 _FAILED_STATES = frozenset({"FAILED", "TIMEOUT", "OUT_OF_MEMORY", "CANCELLED"})
 _RUNNING_STATES = frozenset({"RUNNING", "PENDING"})
 _STAGE_ORDER = {"autoencoder": 0, "normal": 1, "curriculum": 2, "fusion": 3}
+
+_CATALOG_STATUS_MAP = {
+    "completed": "COMPLETED",
+    "failed": "FAILED",
+    "started": "RUNNING",
+}
 
 
 @dataclass
@@ -111,62 +48,89 @@ class RecipeAssetStatus:
 
 
 # ---------------------------------------------------------------------------
-# Catalog-based view — reads from DuckDB run_record sidecars
+# Catalog view (the only source)
 # ---------------------------------------------------------------------------
 
-_CATALOG_SUBPATH = "catalog/kd_gat.duckdb"
+
+def _phase_symbol(phases: dict, key: str) -> str:
+    """Phase symbol: ✓ (passed), ✗ (failed), - (unrecorded / in-progress).
+
+    ``None`` is treated as unrecorded because DuckDB's ``read_json_auto``
+    with ``union_by_name=true`` inflates an empty ``phases: {}`` dict to a
+    struct with NULL fields, which round-trips as JSON ``null`` values.
+    """
+    val = phases.get(key)
+    if val is None:
+        return "-"
+    return "✓" if val else "✗"
 
 
-def _catalog_path() -> Path | None:
-    """Return catalog path if it exists."""
-    p = Path(LAKE_ROOT) / _CATALOG_SUBPATH
-    return p if p.exists() else None
+def _format_wall_time(seconds: float | None) -> str:
+    if not seconds:
+        return ""
+    h, rem = divmod(int(seconds), 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}"
 
 
 def _collect_from_catalog(
     *, dataset: str | None = None, seed: int = 42,
 ) -> list[RecipeAssetStatus]:
-    """Load topology from dagster AssetGraph, status from DuckDB catalog."""
+    """Load topology from dagster AssetGraph, status from DuckDB catalog.
+
+    The catalog row's ``asset_name`` column (computed as
+    ``stage || identity_hash || kd_tag`` in ``rebuild_catalog``) matches the
+    dagster asset name exactly — single dict lookup, no fuzzy matching.
+    """
+    import duckdb
+
     from graphids.orchestrate.definitions import defs
 
-    cat = _catalog_path()
-    if cat is None:
+    cat = catalog_path(LAKE_ROOT)
+    if not cat.exists():
         raise FileNotFoundError(
-            f"Catalog not found at {LAKE_ROOT}/{_CATALOG_SUBPATH}. "
-            "Run: python -m graphids rebuild-catalog"
+            f"Catalog not found at {cat}. Run: python -m graphids rebuild-catalog"
         )
 
-    import duckdb
+    query = """
+        SELECT
+            asset_name,
+            status,
+            to_json(phases) AS phases_json,
+            wall_time_seconds,
+            CAST(slurm_job_id AS VARCHAR) AS slurm_job_id_str
+        FROM runs
+        WHERE seed = ?
+    """
+    params: list = [seed]
+    if dataset:
+        query += " AND dataset = ?"
+        params.append(dataset)
 
     db = duckdb.connect(str(cat), read_only=True)
     try:
-        query = "SELECT * FROM runs WHERE 1=1"
-        params: list = []
-        if dataset:
-            query += " AND dataset = ?"
-            params.append(dataset)
-        query += " AND seed = ?"
-        params.append(seed)
-        catalog_rows = db.execute(query, params).fetchdf()
+        rows = db.execute(query, params).fetchall()
     finally:
         db.close()
 
-    # Index catalog by asset-style key: {model_family}_{scale}_{stage}_{identity_hash}
-    # The asset_name in dagster matches the dir component minus the model_type prefix
-    catalog_by_dir = {}
-    for _, row in catalog_rows.iterrows():
-        run_dir = row.get("run_dir", "")
-        if run_dir:
-            # Extract the asset-name-like portion from run_dir
-            parts = Path(run_dir).parts
-            if len(parts) >= 2:
-                # dir_name is e.g. "vgae_small_autoencoder_8e6b9f70"
-                dir_name = parts[-2]
-                catalog_by_dir[dir_name] = row
+    catalog_by_name: dict[str, dict] = {}
+    for asset_name, rec_status, phases_json, wall_s, job_id_str in rows:
+        if not asset_name:
+            continue
+        try:
+            phases = json.loads(phases_json) if phases_json else {}
+        except (TypeError, ValueError):
+            phases = {}
+        catalog_by_name[asset_name] = {
+            "status": _CATALOG_STATUS_MAP.get(rec_status, (rec_status or "").upper()),
+            "phases": phases if isinstance(phases, dict) else {},
+            "wall_time": _format_wall_time(wall_s),
+            "job_id": job_id_str or "",
+        }
 
     ag = defs.resolve_asset_graph()
     status_map: dict[str, str] = {}
-    rows: list[RecipeAssetStatus] = []
+    out: list[RecipeAssetStatus] = []
 
     all_keys = sorted(
         ag.get_all_asset_keys(),
@@ -178,65 +142,29 @@ def _collect_from_catalog(
         node = ag.get(key)
         parents = sorted(p.path[0] for p in node.parent_keys)
 
-        # Find matching catalog row — asset_name is the identity portion of the dir
-        cat_row = None
-        for dir_name, row in catalog_by_dir.items():
-            # asset names contain the identity hash suffix that also appears in dir_name
-            if name in dir_name or dir_name.endswith(name):
-                cat_row = row
-                break
-
-        # Derive status from catalog
-        if cat_row is not None:
-            rec_status = str(cat_row.get("status", ""))
-            phases_raw = cat_row.get("phases")
-            if isinstance(phases_raw, str):
-                import json as _json
-                try:
-                    phases_raw = _json.loads(phases_raw)
-                except (ValueError, TypeError):
-                    phases_raw = {}
-            elif phases_raw is None:
-                phases_raw = {}
-
-            if rec_status == "completed":
-                status = "COMPLETED"
-            elif rec_status == "failed":
-                err = str(cat_row.get("error_message", ""))[:40]
-                status = f"FAILED"
-            elif rec_status == "started":
-                status = "RUNNING"
-            else:
-                status = rec_status.upper()
-
-            train = "✓" if phases_raw.get("train") else ("✗" if "train" in phases_raw else "-")
-            test = "✓" if phases_raw.get("test") else ("✗" if "test" in phases_raw else "-")
-            analyze = "✓" if phases_raw.get("analyze") else ("✗" if "analyze" in phases_raw else "-")
-
-            wall = ""
-            wt = cat_row.get("wall_time_seconds")
-            if wt is not None and wt == wt:  # not NaN
-                h, rem = divmod(int(wt), 3600)
-                m, s = divmod(rem, 60)
-                wall = f"{h}:{m:02d}:{s:02d}"
-
-            job_id = str(int(cat_row["slurm_job_id"])) if cat_row.get("slurm_job_id") is not None and cat_row["slurm_job_id"] == cat_row["slurm_job_id"] else ""
+        hit = catalog_by_name.get(name)
+        if hit is not None:
+            status = hit["status"]
+            phases = hit["phases"]
+            train = _phase_symbol(phases, "train")
+            test = _phase_symbol(phases, "test")
+            analyze = _phase_symbol(phases, "analyze")
+            wall = hit["wall_time"]
+            job_id = hit["job_id"]
         else:
-            upstream_statuses = [status_map.get(p, "WAITING") for p in parents]
-            if any(s in _FAILED_STATES for s in upstream_statuses):
+            # No catalog row — infer pending/blocked/waiting from upstream state
+            upstream = [status_map.get(p, "WAITING") for p in parents]
+            if any(s in _FAILED_STATES for s in upstream):
                 status = "BLOCKED"
-            elif upstream_statuses and all(s in _DONE_STATES | {"COMPLETED"} for s in upstream_statuses):
-                status = "PENDING"
-            elif not upstream_statuses:
+            elif not upstream or all(s == "COMPLETED" for s in upstream):
                 status = "PENDING"
             else:
                 status = "WAITING"
             train = test = analyze = "-"
-            wall = ""
-            job_id = ""
+            wall = job_id = ""
 
         status_map[name] = status
-        rows.append(RecipeAssetStatus(
+        out.append(RecipeAssetStatus(
             asset=name,
             stage=node.group_name,
             label=node.description or f"{node.group_name} ({name})",
@@ -249,99 +177,12 @@ def _collect_from_catalog(
             upstream=parents,
         ))
 
-    return rows
+    return out
 
 
 # ---------------------------------------------------------------------------
-# Recipe-aware view (fallback) — uses dagster AssetGraph + sacct + filesystem
+# Rendering
 # ---------------------------------------------------------------------------
-
-
-def _derive_status(
-    sacct_entry: dict[str, str] | None,
-    complete_marker: bool,
-    upstream_statuses: list[str],
-) -> str:
-    """Derive display status from sacct + filesystem + upstream state."""
-    if sacct_entry:
-        state = sacct_entry["state"]
-        if state in _RUNNING_STATES:
-            return state
-        if complete_marker or state in _DONE_STATES:
-            return "COMPLETED"
-        if state in _FAILED_STATES:
-            return state
-        # Other sacct states (COMPLETING, REQUEUED, etc.)
-        return state
-    # No sacct entry — asset was never submitted (or >30 days ago)
-    if complete_marker:
-        return "COMPLETED"
-    if any(s in _FAILED_STATES for s in upstream_statuses):
-        return "BLOCKED"
-    if upstream_statuses and all(s in _DONE_STATES | {"COMPLETED"} for s in upstream_statuses):
-        return "PENDING"
-    if not upstream_statuses:
-        return "PENDING"  # root asset, never submitted
-    return "WAITING"
-
-
-def _collect_from_graph(
-    *, dataset: str | None = None, seed: int = 42,
-) -> list[RecipeAssetStatus]:
-    """Load dagster AssetGraph for universe + topology, reconcile with sacct + filesystem."""
-    from graphids.orchestrate.definitions import defs
-
-    ag = defs.resolve_asset_graph()
-    sacct = _parse_sacct()
-
-    # Build rows in topological order (parents before children)
-    status_map: dict[str, str] = {}
-    rows: list[RecipeAssetStatus] = []
-
-    # Sort by stage order, then asset name for deterministic output
-    all_keys = sorted(
-        ag.get_all_asset_keys(),
-        key=lambda k: (_STAGE_ORDER.get(ag.get(k).group_name, 99), k.path[0]),
-    )
-
-    for key in all_keys:
-        name = key.path[0]
-        node = ag.get(key)
-        parents = sorted(p.path[0] for p in node.parent_keys)
-
-        # sacct entry (filter by dataset/seed if specified)
-        sr = sacct.get(name)
-        if sr and dataset and sr["dataset"] != dataset:
-            sr = None
-        if sr and str(seed) != sr.get("seed", "42"):
-            sr = None
-
-        # Filesystem: run_dir + phase markers + complete marker
-        ds = sr["dataset"] if sr else (dataset or "")
-        sd = sr["seed"] if sr else str(seed)
-        run_dir = _find_run_dir_fs(ds, name, sd) if ds else None
-        phases = _phase_status(run_dir)
-        complete = bool(run_dir and (run_dir / COMPLETE_MARKER).exists())
-
-        # Derive status from sacct + filesystem + upstream
-        upstream_statuses = [status_map.get(p, "WAITING") for p in parents]
-        status = _derive_status(sr, complete, upstream_statuses)
-        status_map[name] = status
-
-        rows.append(RecipeAssetStatus(
-            asset=name,
-            stage=node.group_name,
-            label=node.description or f"{node.group_name} ({name})",
-            status=status,
-            train=phases["train"],
-            test=phases["test"],
-            analyze=phases["analyze"],
-            wall_time=sr["elapsed"] if sr else "",
-            job_id=sr["job_id"] if sr else "",
-            upstream=parents,
-        ))
-
-    return rows
 
 
 def _progress_summary(rows: list[RecipeAssetStatus]) -> str:
@@ -372,12 +213,13 @@ def _render_grouped_table(
     seed: int,
 ) -> None:
     """Rich table grouped by stage with progress header."""
+    from itertools import groupby
+
     from rich.console import Console
     from rich.table import Table
 
     console = Console()
 
-    # Header
     ds_label = dataset or "all"
     summary = _progress_summary(rows)
     console.print(f"\n[bold]Pipeline Status[/bold]: {ds_label} seed {seed} -- {summary}\n")
@@ -395,9 +237,6 @@ def _render_grouped_table(
         "WAITING": "dim",
     }
     phase_styles = {"✓": "green", "✗": "red bold", "-": "dim"}
-
-    # Group by stage
-    from itertools import groupby
 
     for stage, group in groupby(rows, key=lambda r: r.stage):
         items = list(group)
@@ -419,7 +258,7 @@ def _render_grouped_table(
 
         for r in items:
             ss = status_styles.get(r.status, "")
-            # Strip stage prefix from label for compactness: "curriculum (gat, small)" → "gat, small"
+            # Strip stage prefix from label: "curriculum (gat, small)" → "gat, small"
             label = r.label
             if label.startswith(f"{r.stage} (") and label.endswith(")"):
                 label = label[len(r.stage) + 2 : -1]
@@ -443,13 +282,6 @@ def _render_grouped_table(
 # ---------------------------------------------------------------------------
 
 
-def _latest_log() -> Path | None:
-    """Find the most recent orchestrator JSONL log file."""
-    log_dir = Path(SLURM_LOG_DIR)
-    logs = sorted(log_dir.glob("orchestrator_*.jsonl"), key=lambda p: p.stat().st_mtime)
-    return logs[-1] if logs else None
-
-
 _LOG_FILTERS: dict[str, str | None] = {
     "all": None,
     "failures": "asset_failed",
@@ -458,6 +290,13 @@ _LOG_FILTERS: dict[str, str | None] = {
     "submissions": "submitted",
     "polls": "slurm_poll",
 }
+
+
+def _latest_log() -> Path | None:
+    """Find the most recent orchestrator JSONL log file."""
+    log_dir = Path(SLURM_LOG_DIR)
+    logs = sorted(log_dir.glob("orchestrator_*.jsonl"), key=lambda p: p.stat().st_mtime)
+    return logs[-1] if logs else None
 
 
 def _print_event(line: str, event_filter: str | None) -> None:
@@ -506,7 +345,7 @@ def _render_log(log_path: Path, *, event_filter: str | None, follow: bool) -> No
 def main(argv: list[str]) -> None:
     parser = argparse.ArgumentParser(
         prog="python -m graphids pipeline-status",
-        description="Pipeline status from dagster asset graph + SLURM",
+        description="Pipeline status from dagster asset graph + DuckDB catalog",
     )
     parser.add_argument("--log", nargs="?", const="all", metavar="FILTER",
                         choices=list(_LOG_FILTERS),
@@ -534,15 +373,7 @@ def main(argv: list[str]) -> None:
         return
 
     # --- Recipe-aware grouped view ---
-    # Prefer catalog (DuckDB) when available, fall back to sacct + filesystem
-    try:
-        if _catalog_path() is not None:
-            rows = _collect_from_catalog(dataset=args.dataset, seed=args.seed)
-        else:
-            rows = _collect_from_graph(dataset=args.dataset, seed=args.seed)
-    except Exception as exc:
-        print(f"Error loading status: {exc}", file=sys.stderr)
-        raise SystemExit(1) from exc
+    rows = _collect_from_catalog(dataset=args.dataset, seed=args.seed)
 
     if not rows:
         print("No assets defined in current recipe.")

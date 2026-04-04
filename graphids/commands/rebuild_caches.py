@@ -20,7 +20,7 @@ from graphids.config import LAKE_ROOT, PREPROCESSING_VERSION, cache_dir, dataset
 log = get_logger(__name__)
 
 
-def rebuild_caches(argv: list[str] | None = None) -> None:
+def main(argv: list[str] | None = None) -> None:
     all_datasets = dataset_names()
     parser = argparse.ArgumentParser(description="Rebuild preprocessed graph caches")
     group = parser.add_mutually_exclusive_group(required=True)
@@ -61,6 +61,3 @@ def rebuild_caches(argv: list[str] | None = None) -> None:
         if marker.exists():
             marker.unlink()
             log.info("invalidated_staging_marker", path=str(marker))
-
-
-main = rebuild_caches

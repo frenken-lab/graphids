@@ -1,11 +1,11 @@
-"""Spec-based command entrypoints (dagster → SLURM transport).
+"""Spec-based command entrypoint (dagster → SLURM transport).
 
-Three commands that deserialize a canonical spec file and dispatch to the
-corresponding training/test/analyze code path:
+Single entry point that deserializes a canonical spec file and dispatches
+to train, test, or analyze based on ``--phase``:
 
-    python -m graphids train-from-spec   --spec-file /tmp/spec.json
-    python -m graphids test-from-spec    --spec-file /tmp/spec.json
-    python -m graphids analyze-from-spec --spec-file /tmp/spec.json
+    python -m graphids from-spec --phase train   --spec-file /tmp/spec.json
+    python -m graphids from-spec --phase test    --spec-file /tmp/spec.json
+    python -m graphids from-spec --phase analyze --spec-file /tmp/spec.json
 """
 
 from __future__ import annotations
@@ -13,34 +13,33 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any
 
 from graphids.core.contracts import AnalysisContract, TrainingContract
 from graphids.core.train_entrypoint import run_test_from_spec, run_training_from_spec
 
 
-def _load_payload(argv: list[str], description: str) -> dict[str, Any]:
-    parser = argparse.ArgumentParser(description=description)
+def main(argv: list[str]) -> None:
+    parser = argparse.ArgumentParser(
+        description="Run training/test/analyze from a canonical spec (dagster transport)",
+    )
+    parser.add_argument("--phase", required=True, choices=("train", "test", "analyze"))
     parser.add_argument("--spec-file", required=True)
     args = parser.parse_args(argv)
-    return json.loads(Path(args.spec_file).read_text())
 
+    payload = json.loads(Path(args.spec_file).read_text())
 
-def main_train(argv: list[str]) -> None:
-    payload = _load_payload(argv, "Run fit from canonical TrainingSpec")
-    run_training_from_spec(TrainingContract.from_envelope(payload))
+    if args.phase == "train":
+        run_training_from_spec(TrainingContract.from_envelope(payload))
+        return
 
+    if args.phase == "test":
+        run_test_from_spec(TrainingContract.from_envelope(payload))
+        return
 
-def main_test(argv: list[str]) -> None:
-    payload = _load_payload(argv, "Run test from canonical TrainingSpec")
-    run_test_from_spec(TrainingContract.from_envelope(payload))
-
-
-def main_analyze(argv: list[str]) -> None:
+    # phase == "analyze"
     from graphids.core.artifacts import Analyzer
     from graphids.orchestrate.analysis import ANALYSIS_MANIFEST_NAME, output_status
 
-    payload = _load_payload(argv, "Run analyzer from canonical AnalysisSpec")
     spec = AnalysisContract.from_envelope(payload)
 
     runner_payload = spec.model_dump(mode="python")

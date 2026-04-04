@@ -34,8 +34,8 @@ dg launch --assets '*'
       -> SlurmTrainingResource.submit_and_wait(spec, resources)
         -> sbatch -> SLURM job:
 
-          python -m graphids train-from-spec --spec-file /tmp/spec.json
-            -> from_spec.main_train(argv)
+          python -m graphids from-spec --phase train --spec-file /tmp/spec.json
+            -> from_spec.main(argv)
             -> run_training_from_spec(spec)
               -> resolve_configs(...)          # snapshot (reproducibility)
               -> run_lightning(_build_cli_args(spec))    <-- same as Route A

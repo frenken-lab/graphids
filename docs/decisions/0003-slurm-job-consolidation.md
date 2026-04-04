@@ -10,9 +10,9 @@ Each model config = one dagster asset = one SLURM job running 3 sequential comma
 ```bash
 #!/bin/bash
 source scripts/slurm/_preamble.sh
-python -m graphids train-from-spec --spec-file $SPEC_FILE
-python -m graphids test-from-spec  --spec-file $SPEC_FILE
-python -m graphids analyze-from-spec --spec-file $SPEC_FILE
+python -m graphids from-spec --phase train   --spec-file $SPEC_FILE
+python -m graphids from-spec --phase test    --spec-file $SPEC_FILE
+python -m graphids from-spec --phase analyze --spec-file $SPEC_FILE
 source scripts/slurm/_epilog.sh
 ```
 
@@ -25,7 +25,7 @@ Per-phase markers: `.train_complete`, `.test_complete`, `.analyze_complete`.
 | Bug | How consolidation fixed it |
 |-----|---------------------------|
 | Analysis ran in-process on CPU dagster worker | Analyze runs inside GPU SLURM job |
-| No evaluation stage existed | `test-from-spec` runs `LightningCLI test` in same job |
+| No evaluation stage existed | `from-spec --phase test` runs `LightningCLI test` in same job |
 | Multiprocess executor child failures | Fewer assets = fewer executor workers |
 | Recipe env var lost across processes | Fewer process boundaries |
 
@@ -33,8 +33,8 @@ Per-phase markers: `.train_complete`, `.test_complete`, `.analyze_complete`.
 
 | File | Role |
 |------|------|
-| `graphids/commands/test_from_spec.py` | test-from-spec command |
-| `graphids/core/train_entrypoint.py` | `run_test_from_spec()` |
+| `graphids/commands/from_spec.py` | single `from-spec --phase {train,test,analyze}` entrypoint |
+| `graphids/core/train_entrypoint.py` | `run_test_from_spec()` / `run_training_from_spec()` |
 | `graphids/slurm/slurm.py` | `generate_script()` — multi-command |
 | `graphids/orchestrate/assets.py` | Single asset per model config |
 | `graphids/orchestrate/checks.py` | Unified checkpoint + phase checks |

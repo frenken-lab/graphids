@@ -18,13 +18,16 @@ from pathlib import Path
 
 import duckdb
 
-from graphids.config import PHASE_MARKERS, RUN_RECORD_FILENAME
+from graphids.config import (
+    CATALOG_SUBPATH,
+    PHASE_MARKERS,
+    RUN_RECORD_FILENAME,
+    catalog_path,
+)
 from graphids.config.runtime import LAKE_ROOT
 from graphids.log import get_logger
 
 log = get_logger(__name__)
-
-_CATALOG_SUBPATH = "catalog/kd_gat.duckdb"
 
 
 def _backfill_legacy_runs(lake_root: str, *, dry_run: bool = False) -> int:
@@ -146,7 +149,7 @@ def _read_csv_metrics(seed_dir: Path) -> dict[str, float]:
 
 def _rebuild_catalog(lake_root: str, *, dry_run: bool = False) -> int:
     """Ingest all run_record.json files into DuckDB catalog. Returns row count."""
-    catalog_path = Path(lake_root) / _CATALOG_SUBPATH
+    cat_path = catalog_path(lake_root)
     glob_pattern = str(Path(lake_root) / "dev" / "**" / RUN_RECORD_FILENAME)
 
     # Check if any sidecars exist
@@ -162,17 +165,22 @@ def _rebuild_catalog(lake_root: str, *, dry_run: bool = False) -> int:
     from graphids.config import require_lake_write
 
     require_lake_write()
-    catalog_path.parent.mkdir(parents=True, exist_ok=True)
-    db = duckdb.connect(str(catalog_path))
+    cat_path.parent.mkdir(parents=True, exist_ok=True)
+    db = duckdb.connect(str(cat_path))
 
     try:
         # Drop old experiments table if it exists (legacy schema)
         db.execute("DROP TABLE IF EXISTS experiments")
 
-        # Ingest all sidecars in one shot
+        # Ingest all sidecars in one shot. ``asset_name`` is computed so that
+        # ``pipeline-status`` can do an exact dict lookup against dagster's
+        # asset graph (asset name = ``f"{stage}{identity_hash}{kd_tag}"``).
         db.execute("""
             CREATE OR REPLACE TABLE runs AS
-            SELECT *, current_timestamp AS catalog_updated_at
+            SELECT
+                *,
+                stage || identity_hash || COALESCE(kd_tag, '') AS asset_name,
+                current_timestamp AS catalog_updated_at
             FROM read_json_auto(?, maximum_object_size=1048576, union_by_name=true)
         """, [glob_pattern])
 
@@ -186,7 +194,7 @@ def _rebuild_catalog(lake_root: str, *, dry_run: bool = False) -> int:
 
         log.info("catalog_rebuilt", total=count,
                  breakdown={s: n for s, n in summary},
-                 catalog_path=str(catalog_path))
+                 catalog_path=str(cat_path))
 
         return count
     finally:
@@ -221,4 +229,4 @@ def main(argv: list[str]) -> None:
     if args.dry_run:
         print(f"Would ingest {count} sidecar(s)")
     else:
-        print(f"Catalog rebuilt: {count} run(s) in {lake_root}/{_CATALOG_SUBPATH}")
+        print(f"Catalog rebuilt: {count} run(s) in {lake_root}/{CATALOG_SUBPATH}")

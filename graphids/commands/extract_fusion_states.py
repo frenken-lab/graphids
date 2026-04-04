@@ -45,71 +45,40 @@ def main(argv: list[str]) -> None:
     parser.add_argument("--val-fraction", type=float, default=0.2)
     args = parser.parse_args(argv)
 
-    extract_and_save(
-        vgae_ckpt=args.vgae_ckpt,
-        gat_ckpt=args.gat_ckpt,
-        dataset=args.dataset,
-        output_dir=args.output_dir,
-        max_samples=args.max_samples,
-        max_val_samples=args.max_val_samples,
-        batch_size=args.batch_size,
-        seed=args.seed,
-        window_size=args.window_size,
-        stride=args.stride,
-        val_fraction=args.val_fraction,
-    )
-
-
-def extract_and_save(
-    *,
-    vgae_ckpt: str,
-    gat_ckpt: str,
-    dataset: str,
-    output_dir: str,
-    max_samples: int = 150_000,
-    max_val_samples: int = 30_000,
-    batch_size: int = 256,
-    seed: int = 42,
-    window_size: int = 100,
-    stride: int = 100,
-    val_fraction: float = 0.2,
-    lake_root: str | None = None,
-) -> Path:
-    """Extract fusion states and save to disk. Returns the output directory."""
     from graphids.core.models._training import load_inner_model
     from graphids.core.preprocessing.datamodule import FusionDataModule, load_datasets
     from graphids.core.preprocessing.datasets.can_bus import CANBusDataset
 
-    lake_root = lake_root or os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns")
+    lake_root = os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    log.info("loading_upstream_models", vgae=vgae_ckpt, gat=gat_ckpt, device=str(device))
-    vgae, _ = load_inner_model("vgae", Path(vgae_ckpt), device)
-    gat, _ = load_inner_model("gat", Path(gat_ckpt), device)
+    log.info("loading_upstream_models", vgae=args.vgae_ckpt, gat=args.gat_ckpt, device=str(device))
+    vgae, _ = load_inner_model("vgae", Path(args.vgae_ckpt), device)
+    gat, _ = load_inner_model("gat", Path(args.gat_ckpt), device)
     models = {"vgae": vgae, "gat": gat}
 
     train_ds, val_ds, _ = load_datasets(
-        dataset=dataset, lake_root=lake_root, seed=seed,
-        window_size=window_size, stride=stride,
-        train_val_split=1.0 - val_fraction,
+        dataset=args.dataset, lake_root=lake_root, seed=args.seed,
+        window_size=args.window_size, stride=args.stride,
+        train_val_split=1.0 - args.val_fraction,
         dataset_cls=CANBusDataset,
     )
 
-    log.info("extracting_train_states", n_graphs=len(train_ds), max_samples=max_samples)
+    log.info("extracting_train_states", n_graphs=len(train_ds), max_samples=args.max_samples)
     train_cache = FusionDataModule.cache_predictions(
-        models, list(train_ds), device, max_samples, batch_size=batch_size,
+        models, list(train_ds), device, args.max_samples, batch_size=args.batch_size,
     )
 
-    log.info("extracting_val_states", n_graphs=len(val_ds), max_samples=max_val_samples)
+    log.info("extracting_val_states", n_graphs=len(val_ds), max_samples=args.max_val_samples)
     val_cache = FusionDataModule.cache_predictions(
-        models, list(val_ds), device, max_val_samples, batch_size=batch_size,
+        models, list(val_ds), device, args.max_val_samples, batch_size=args.batch_size,
     )
 
     # Move to CPU for disk serialization
     train_cache = {k: v.cpu() for k, v in train_cache.items()}
     val_cache = {k: v.cpu() for k, v in val_cache.items()}
 
-    out = Path(output_dir) / FUSION_STATES_DIR
+    out = Path(args.output_dir) / FUSION_STATES_DIR
     out.mkdir(parents=True, exist_ok=True)
     torch.save(train_cache, out / TRAIN_FILENAME)
     torch.save(val_cache, out / VAL_FILENAME)
@@ -118,6 +87,3 @@ def extract_and_save(
              output_dir=str(out),
              train_states=list(train_cache["states"].shape),
              val_states=list(val_cache["states"].shape))
-
-    del vgae, gat, models
-    return out

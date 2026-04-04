@@ -88,6 +88,13 @@ class PathContext(BaseModel):
 _DATASETS_DIR: Path = CONFIG_DIR / "datasets"
 DEFAULT_DATASET: str = "set_01"
 
+CATALOG_SUBPATH: str = "catalog/kd_gat.duckdb"
+
+
+def catalog_path(lake_root: str) -> Path:
+    """Return the DuckDB experiment catalog path for a given lake root."""
+    return Path(lake_root) / CATALOG_SUBPATH
+
 _catalog_cache: dict[str, dict[str, Any]] | None = None
 
 

@@ -7,7 +7,6 @@
 #   scripts/submit.sh rebuild-caches [--dataset hcrl_ch | --all] [--delete-existing]
 #   scripts/submit.sh validate
 #   scripts/submit.sh landscape <model_type> <dataset> <ckpt_path> [--resolution N]
-#   scripts/submit.sh preprocessing-test [--dataset hcrl_ch]
 #   scripts/submit.sh ablation [--recipe X --dataset X --seed X]
 #   scripts/submit.sh profile [stage scale dataset]
 #   scripts/submit.sh probe-budget [args]

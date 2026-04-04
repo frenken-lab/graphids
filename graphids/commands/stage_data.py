@@ -23,9 +23,8 @@ import shutil
 import sys
 from pathlib import Path
 
-from graphids.log import configure_logging, get_logger
+from graphids.log import get_logger
 
-configure_logging()
 log = get_logger(__name__)
 
 

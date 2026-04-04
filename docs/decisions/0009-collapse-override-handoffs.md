@@ -16,7 +16,7 @@ GPU startup.
 3. StageConfig → ConfigResolver.resolve()      Cross-field constraints
 4. ResolvedConfig → Dagster asset              Serialization (no validation)
 5. JSON spec → sbatch                          Shell (no validation)
-6. SLURM job → train-from-spec                 Deserialization (no validation)
+6. SLURM job → from-spec --phase train          Deserialization (no validation)
 7. TrainingSpec → to_override_dict()           Dict construction (no validation)
 8. override dict → merge_yaml_chain()          YAML merge (no validation)
 9. CLI args → jsonargparse                     FULL validation

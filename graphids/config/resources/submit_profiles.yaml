@@ -23,14 +23,6 @@ submit_profiles:
     signal: ""
     mode: cpu
     command: python -m graphids.orchestrate validate
-  preprocessing-test:
-    partition: cpu
-    cpus: 4
-    mem: 16G
-    time: "00:30:00"
-    signal: ""
-    mode: cpu-raw
-    command: python -m graphids test-preprocessing
   ablation:
     partition: cpu
     cpus: 4

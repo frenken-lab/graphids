@@ -86,6 +86,21 @@ def sacct_by_user(fmt: str = "JobIDRaw,JobName,State,Elapsed",
     return r.stdout
 
 
+def parse_elapsed(s: str) -> float | None:
+    """Parse sacct Elapsed (``HH:MM:SS`` or ``D-HH:MM:SS``) to seconds.
+
+    Returns ``None`` on unparseable input (empty string, malformed fields).
+    """
+    if not s:
+        return None
+    try:
+        parts = s.replace("-", ":").split(":")
+        nums = [float(p) for p in parts]
+        return sum(v * m for v, m in zip(reversed(nums), (1, 60, 3600, 86400)))
+    except ValueError:
+        return None
+
+
 def job_accounting(job_id: int) -> dict[str, str | int]:
     """Return ``{job_id, wall_time, peak_rss}`` parsed from sacct.
 
@@ -135,18 +150,22 @@ def generate_script(
     lines.extend([
         f"source {PROJECT_ROOT}/scripts/slurm/_preamble.sh",
         f"_RUN_DIR={qrd}",
-        f"python -m graphids train-from-spec --spec-file {quoted}",
+        f"python -m graphids from-spec --phase train --spec-file {quoted}",
         f"touch \"$_RUN_DIR/{PHASE_MARKERS['train']}\"",
         "# Test/analyze are best-effort — don't kill the job on failure",
         "set +euo pipefail",
     ])
     if run_test:
-        lines.append(f"if python -m graphids test-from-spec --spec-file {quoted}; then")
+        lines.append(
+            f"if python -m graphids from-spec --phase test --spec-file {quoted}; then"
+        )
         lines.append(f"  touch \"$_RUN_DIR/{PHASE_MARKERS['test']}\"")
         lines.append("fi")
     if analysis_spec_file:
         aquoted = shlex.quote(str(analysis_spec_file))
-        lines.append(f"if python -m graphids analyze-from-spec --spec-file {aquoted}; then")
+        lines.append(
+            f"if python -m graphids from-spec --phase analyze --spec-file {aquoted}; then"
+        )
         lines.append(f"  touch \"$_RUN_DIR/{PHASE_MARKERS['analyze']}\"")
         lines.append("fi")
     lines.append(f"python -m graphids _finalize-record --run-dir \"$_RUN_DIR\"")

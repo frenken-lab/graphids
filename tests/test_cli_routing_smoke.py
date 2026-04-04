@@ -11,7 +11,9 @@ def test_lightning_command_is_routed() -> None:
 
 def test_module_command_is_routed() -> None:
     parser = cli_main._build_parser()
-    ns, remaining = parser.parse_known_args(["analyze-from-spec", "--spec-file", "x.json"])
+    ns, remaining = parser.parse_known_args(
+        ["from-spec", "--phase", "analyze", "--spec-file", "x.json"]
+    )
     assert ns.kind == "module"
-    assert ns.module_name == "graphids.commands.from_spec:main_analyze"
-    assert remaining == ["--spec-file", "x.json"]
+    assert ns.module_name == "graphids.commands.from_spec"
+    assert remaining == ["--phase", "analyze", "--spec-file", "x.json"]

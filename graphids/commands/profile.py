@@ -1,9 +1,9 @@
 """Profile training — run a short profiled fit with PyTorchProfiler overlay.
 
 Usage:
-    python -m graphids profile-training
-    python -m graphids profile-training normal small set_01
-    python -m graphids profile-training fusion large set_01 --fusion-method bandit
+    python -m graphids profile
+    python -m graphids profile normal small set_01
+    python -m graphids profile fusion large set_01 --fusion-method bandit
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from graphids.core.contracts import TrainingContract, TrainingSpec
 from graphids.core.train_entrypoint import run_training_from_spec
 
 
-def run_profile_training(argv: list[str] | None = None) -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Profile a training stage")
     parser.add_argument("stage", nargs="?", default="autoencoder")
     parser.add_argument("scale", nargs="?", default="small")
@@ -46,6 +46,3 @@ def run_profile_training(argv: list[str] | None = None) -> None:
     )
 
     run_training_from_spec(spec)
-
-
-main = run_profile_training

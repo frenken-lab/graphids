@@ -36,14 +36,16 @@ def main(argv: list[str]) -> None:
     wall_time_seconds = None
     job_id_str = os.environ.get("SLURM_JOB_ID")
     if job_id_str:
-        from graphids.slurm import sacct_query
+        from graphids.slurm import parse_elapsed, sacct_query
 
         out = sacct_query([int(job_id_str)], "Elapsed")
         if out:
             for line in out.strip().splitlines():
                 fields = line.split("|")
                 if fields and "." not in fields[0].strip():
-                    wall_time_seconds = _parse_elapsed(fields[-1].strip() if len(fields) > 1 else fields[0].strip())
+                    wall_time_seconds = parse_elapsed(
+                        fields[-1].strip() if len(fields) > 1 else fields[0].strip()
+                    )
                     break
 
     record = record.model_copy(update={
@@ -51,22 +53,3 @@ def main(argv: list[str]) -> None:
         **({"wall_time_seconds": wall_time_seconds} if wall_time_seconds is not None else {}),
     })
     write_run_record(record, args.run_dir)
-
-
-def _parse_elapsed(elapsed: str) -> float | None:
-    """Parse sacct elapsed format (D-HH:MM:SS or HH:MM:SS) to seconds."""
-    try:
-        days = 0
-        if "-" in elapsed:
-            d, elapsed = elapsed.split("-", 1)
-            days = int(d)
-        parts = elapsed.split(":")
-        if len(parts) == 3:
-            h, m, s = int(parts[0]), int(parts[1]), float(parts[2])
-        elif len(parts) == 2:
-            h, m, s = 0, int(parts[0]), float(parts[1])
-        else:
-            return None
-        return days * 86400 + h * 3600 + m * 60 + s
-    except (ValueError, IndexError):
-        return None

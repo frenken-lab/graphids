@@ -90,7 +90,7 @@ Dev path (`python -m graphids fit --config ... --model.init_args.lr=0.01`) bypas
 ┌──────────▼──────────────────────────────────────────────────────┐
 │ HANDOFF 3: Run  (SLURM worker, GPU)                            │
 │                                                                 │
-│  python -m graphids train-from-spec --spec-file X.json          │
+│  python -m graphids from-spec --phase train --spec-file X.json  │
 │       ▼                                                         │
 │  TrainingContract.from_envelope(X)  → TrainingSpec              │
 │       ▼                                                         │
@@ -180,7 +180,7 @@ SLURM side then calls `TrainingContract.to_override_dict(spec)` (adds the non-ov
 
 I'd flag two items — neither critical, both in the **catch-early** direction:
 
-**1. `TrainingContract.to_override_dict` is called twice in the lifetime of a run** — once implicitly by `ConfigResolver.validate_cli_chain` (which rebuilds the merged dict to validate), and once on the SLURM side at `train-from-spec`. If we persisted the merged dict directly in the envelope instead of reconstructing it on the SLURM side, the SLURM pass becomes: `json.load → parser.parse_object → instantiate_classes`. ~20 lines gone from `train_entrypoint`, one less rebuild step. Tradeoff: envelopes grow because they carry the full merged YAML. Small regression in envelope size vs small improvement in fidelity — debatable.
+**1. `TrainingContract.to_override_dict` is called twice in the lifetime of a run** — once implicitly by `ConfigResolver.validate_cli_chain` (which rebuilds the merged dict to validate), and once on the SLURM side at `from-spec --phase train`. If we persisted the merged dict directly in the envelope instead of reconstructing it on the SLURM side, the SLURM pass becomes: `json.load → parser.parse_object → instantiate_classes`. ~20 lines gone from `train_entrypoint`, one less rebuild step. Tradeoff: envelopes grow because they carry the full merged YAML. Small regression in envelope size vs small improvement in fidelity — debatable.
 
 **2. `runtime_overrides` stringifies everything** — `_s = lambda v: str(v).lower() if isinstance(v, bool) else str(v)` in `to_override_dict`. This is because `runtime_overrides` is `dict[str, str]` per the `TrainingSpec` type. It forces `parser.parse_object` to coerce back to the right type on the other side. Not a correctness issue (jsonargparse handles the coercion), but the type stringification is unnecessary now that we control both endpoints of handoff 2. Could be `dict[str, Any]` throughout. Savings: maybe 5 LOC in contracts + some clarity.
 

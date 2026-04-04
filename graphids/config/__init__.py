@@ -3,10 +3,12 @@
 from .base import CONFIG_DIR, PROJECT_ROOT
 from .contracts import KDEntry, TrainingRunConfig, expand_recipe_configs
 from .paths import (
+    CATALOG_SUBPATH,
     DEFAULT_DATASET,
     LakeWriteError,
     PathContext,
     cache_dir,
+    catalog_path,
     checkpoint_path,
     compute_identity_hash,
     compute_preprocessing_hash,

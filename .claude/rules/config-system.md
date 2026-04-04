@@ -17,14 +17,13 @@ graphids/
   cli.py               # GraphIDSCLI + CLI_KWARGS — shared by __main__ and orchestrate
   commands/             # operational subcommands (registered in __main__.py _COMMAND_MODULES)
     analyze.py           # analysis artifacts from checkpoints (incl. landscape subcommand)
-    from_spec.py         # dagster→SLURM spec transport: main_train/main_test/main_analyze
+    from_spec.py         # dagster→SLURM spec transport: from-spec --phase {train,test,analyze}
     job_stats.py         # sacct resource profiler (job-stats)
     probe_budget.py      # hardware cost model measurement (probe-budget)
     profile.py           # profiled training run (PyTorchProfiler)
     rebuild_caches.py    # rebuild preprocessed graph caches
     stage_data.py        # NFS → scratch → TMPDIR staging
     submit_profile.py    # print SLURM resource profile for submit.sh
-    test_preprocessing.py # validate preprocessing pipeline
     finalize_record.py   # update run_record.json sidecar with phases + wall_time
     rebuild_catalog.py   # rebuild DuckDB catalog from run_record.json sidecars
   config/
@@ -135,13 +134,14 @@ python -m graphids analyze --config graphids/config/stages/analyze_vgae.yaml \
     --analyzer.ckpt_path path/to/best.ckpt --analyzer.dataset hcrl_sa
 
 # --- Spec-file transport (dagster → SLURM) ---
-python -m graphids train-from-spec --spec-file /tmp/spec.json
-python -m graphids analyze-from-spec --spec-file /tmp/spec.json
+python -m graphids from-spec --phase train   --spec-file /tmp/spec.json
+python -m graphids from-spec --phase test    --spec-file /tmp/spec.json
+python -m graphids from-spec --phase analyze --spec-file /tmp/spec.json
 ```
 
 `analyze` YAML keys nest under `analyzer:` (same pattern as `model:`/`data:`/`trainer:`). Required args (`ckpt_path`, `dataset`, `model_type`) have no defaults — jsonargparse rejects configs that omit them.
 
-`train-from-spec` and `analyze-from-spec` accept a canonical spec file (JSON) produced by dagster's `SlurmTrainingComponent`. This is the transport layer for dagster→SLURM job submission — dagster serializes the spec, SLURM deserializes and runs it.
+`from-spec` accepts a canonical spec file (JSON) produced by dagster's `SlurmTrainingComponent`. This is the transport layer for dagster→SLURM job submission — dagster serializes the spec, SLURM deserializes and runs it. `--phase {train,test,analyze}` dispatches to the training, test, or analysis code path; train/test use `TrainingContract` and analyze uses `AnalysisContract`.
 
 ## Model __init__ convention
 
@@ -215,7 +215,7 @@ Every training run writes `{run_dir}/run_record.json` — a structured JSON side
 - **`RunRecord`** Pydantic model in `core/contracts/run_record.py`: status, identity fields, metrics (`dict[str, float]`), phases, SLURM context
 - **`RunRecordCallback`** in `_lightning.py`: writes sidecar on `on_fit_start` (started), `on_fit_end` (completed with `trainer.callback_metrics`), `on_exception` (failed)
 - **`_finalize-record`** command: called in generated sbatch script after test+analyze to add phase markers + sacct wall_time
-- Works for both paths: pipeline (dagster → `train-from-spec`) and dev (`python -m graphids fit`)
+- Works for both paths: pipeline (dagster → `from-spec --phase train`) and dev (`python -m graphids fit`)
 
 ## DuckDB catalog
 
