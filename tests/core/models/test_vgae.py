@@ -61,7 +61,6 @@ class TestVGAEConvTypes:
 
 
 @pytest.mark.slow
-@pytest.mark.slurm
 class TestVGAEFastDevRun:
     def test_vgae(self, vgae_cfg):
         import pytorch_lightning as pl

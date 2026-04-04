@@ -35,7 +35,6 @@ class TestGAT:
 
 
 @pytest.mark.slow
-@pytest.mark.slurm
 class TestGATFastDevRun:
     @staticmethod
     def _make_module(cfg):

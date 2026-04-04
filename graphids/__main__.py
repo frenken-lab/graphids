@@ -41,7 +41,7 @@ _COMMAND_MODULES: dict[str, str] = {
     "stage-data": "graphids.commands.stage_data",
     "submit-profile": "graphids.commands.submit_profile",
     "extract-fusion-states": "graphids.commands.extract_fusion_states",
-    "test-from-spec": "graphids.commands.test_from_spec",
+    "test-from-spec": "graphids.commands.run_test_from_spec",
     "test-preprocessing": "graphids.commands.test_preprocessing",
     "train-from-spec": "graphids.commands.train_from_spec",
     "_finalize-record": "graphids.commands.finalize_record",

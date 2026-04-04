@@ -42,7 +42,6 @@ class TestFusionBaselineTestStep:
         assert all(0.0 <= v.item() <= 1.0 for v in result.values())
 
     @pytest.mark.slow
-    @pytest.mark.slurm
     @pytest.mark.parametrize("module_name", ["mlp", "weighted_avg"])
     def test_test_step_via_lightning_trainer(self, module_name):
         import pytorch_lightning as pl

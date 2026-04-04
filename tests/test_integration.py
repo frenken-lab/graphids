@@ -10,9 +10,7 @@ import copy
 
 import pytest
 import torch
-
 from conftest import IN_CHANNELS, NUM_IDS, make_batch
-
 
 # ---------------------------------------------------------------------------
 # Test: Config → model construction flow
@@ -22,8 +20,6 @@ from conftest import IN_CHANNELS, NUM_IDS, make_batch
 class TestConfigToModel:
     """Config → GATWithJK.from_config → correct output shape."""
 
-    @pytest.mark.slow
-    @pytest.mark.slurm
     @pytest.mark.parametrize("num_classes, n_graphs", [
         (2, 3),
         (5, 4),
@@ -64,8 +60,6 @@ class TestDecisionThreshold:
         torch.manual_seed(123)
         return torch.rand(n, state_dim)
 
-    @pytest.mark.slow
-    @pytest.mark.slurm
     def test_dqn_high_threshold_suppresses_positives(self):
         """With threshold=0.9, fused_scores in [0.5, 0.9) yield preds=0, not 1."""
         from graphids.core.models.fusion.dqn import EnhancedDQNFusionAgent
@@ -89,8 +83,6 @@ class TestDecisionThreshold:
             f"labels — decision_threshold is likely not being used"
         )
 
-    @pytest.mark.slow
-    @pytest.mark.slurm
     def test_bandit_high_threshold_suppresses_positives(self):
         """NeuralLinUCBAgent with threshold=0.9 suppresses positive predictions."""
         from graphids.core.models.fusion.bandit import NeuralLinUCBAgent
@@ -114,8 +106,6 @@ class TestDecisionThreshold:
             f"decision_threshold is likely not being used"
         )
 
-    @pytest.mark.slow
-    @pytest.mark.slurm
     def test_threshold_difference_changes_predictions(self):
         """Same agent state with threshold=0.1 vs 0.9 produces different predictions."""
         from graphids.core.models.fusion.dqn import EnhancedDQNFusionAgent
@@ -123,7 +113,6 @@ class TestDecisionThreshold:
 
         state_dim = fusion_state_dim()
         states = self._make_fusion_states()
-        labels = torch.randint(0, 2, (len(states),))
 
         agent_low = EnhancedDQNFusionAgent(
             alpha_steps=21,

@@ -39,42 +39,28 @@ def make_variable_batch(sizes: list[int]) -> Batch:
 
 @pytest.fixture(scope="session")
 def base_cfg():
-    """Session-scoped flat config namespace for tests. Clone before mutating."""
+    """Session-scoped SimpleNamespace with only the fields tests actually read.
+
+    Architecture kwargs for VGAEModule / GATModule / GATWithJK — not identity,
+    not infra, not constants (use NUM_IDS / IN_CHANNELS / EDGE_DIM directly).
+    Clone before mutating.
+    """
     import types
     return types.SimpleNamespace(
-        # identity
-        model_type="vgae", scale="small", stage="autoencoder",
-        lake_root="/tmp", dataset="test", seed=42,
-        device="cpu", num_workers=0,
-        num_ids=NUM_IDS, in_channels=IN_CHANNELS, num_classes=2,
-        auxiliaries=[],
-        # VGAE/DGI architecture
-        conv_type="gatv2",
+        # VGAE
         hidden_dims=[32, 16], latent_dim=16, heads=2, embedding_dim=4,
-        dropout=0.15, edge_dim=EDGE_DIM, proj_dim=0,
-        variational=True, mask_ratio=0.3,
-        k_neg=32, canid_weight=0.1, nbr_weight=0.05, kl_weight=0.01,
-        # GAT architecture
+        # GAT
         hidden=16, layers=2, fc_layers=2,
-        pool_aggrs=["mean"],
-        # training
-        gradient_checkpointing=False, compile_model=False,
         loss_fn="ce", focal_gamma=2.0, loss_weight=10.0,
-        # misc
-        checkpoints={},
+        num_classes=2,
     )
 
 
 @pytest.fixture()
 def vgae_cfg(base_cfg):
-    """VGAE config (deep copy of base)."""
     return copy.deepcopy(base_cfg)
 
 
 @pytest.fixture()
 def gat_cfg(base_cfg):
-    """GAT config derived from base."""
-    cfg = copy.deepcopy(base_cfg)
-    cfg.model_type = "gat"
-    cfg.stage = "curriculum"
-    return cfg
+    return copy.deepcopy(base_cfg)

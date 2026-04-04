@@ -155,28 +155,31 @@ def test_budget_equals_vram_ceiling(tmp_path):
     assert result.binding == "memory"
 
 
-def test_edge_aware_margin(tmp_path):
-    """Edge-dense batches should reduce budget via the edge margin."""
-    # p95 edge/node ratio > mean → wider effective bytes_per_node
-    metadata = tmp_path / "cache_metadata.json"
-    metadata.write_text(
-        '{"graph_stats":{"node_count":{"mean":28.2,"p95":35},'
-        '"edge_count":{"mean":126.9,"p95":210}}}'
-    )
+def test_edge_aware_margin_reduces_budget_vs_balanced(tmp_path):
+    """Edge-dense p95 produces a strictly smaller budget than edge-balanced p95.
 
+    Differential test — no formula mirroring. Runs node_budget twice with the
+    same probe and VRAM, varying only the p95 edge/node ratio in metadata.
+    """
     mock = _mock_probe_vram_factory(2000)
     free = int(16 * 1024**3)
 
-    with (
-        patch("graphids.core.preprocessing.budget.cache_dir", return_value=tmp_path),
-        patch("graphids.core.preprocessing.budget._probe_vram", mock),
-        patch("torch.cuda.is_available", return_value=True),
-        patch("torch.cuda.mem_get_info", return_value=(free, free)),
-    ):
-        result = node_budget("test", str(tmp_path), model=True, train_dataset=True)
+    def _run(edge_p95: float) -> int:
+        meta = tmp_path / "cache_metadata.json"
+        meta.write_text(
+            '{"graph_stats":{"node_count":{"mean":28.2,"p95":35},'
+            f'"edge_count":{{"mean":126.9,"p95":{edge_p95}}}}}}}'
+        )
+        with (
+            patch("graphids.core.preprocessing.budget.cache_dir", return_value=tmp_path),
+            patch("graphids.core.preprocessing.budget._probe_vram", mock),
+            patch("torch.cuda.is_available", return_value=True),
+            patch("torch.cuda.mem_get_info", return_value=(free, free)),
+        ):
+            return node_budget("test", str(tmp_path), model=True, train_dataset=True).budget
 
-    # p95_epn / mean_epn = (210/35) / (126.9/28.2) = 6.0 / 4.5 = 1.33
-    # effective_bpn = 2000 × 1.33 = 2666
-    # budget should be less than plain 2000 bpn budget
-    plain = int(free * _SAFETY_MARGIN / 2000)
-    assert result.budget < plain
+    # Balanced: p95_edge/p95_node == mean_edge/mean_node == 4.5
+    balanced = _run(edge_p95=35 * 4.5)
+    # Dense: p95 edge/node ratio is larger → stricter margin → smaller budget
+    dense = _run(edge_p95=210.0)
+    assert dense < balanced, f"edge-aware margin not applied: balanced={balanced}, dense={dense}"

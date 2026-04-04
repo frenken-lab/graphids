@@ -62,9 +62,7 @@ format = "flat"
 testpaths = ["tests"]
 markers = [
     "slow: marks tests as slow (>30s, deselect with '-m not slow')",
-    "slurm: marks tests that require SLURM submission",
-    "dagster: marks tests that require dagster (deselect with '-m not dagster')",
-    "future: marks tests for future research (skip by default)",
+    "slurm: marks tests that require SLURM submission (torch imports, CUDA, fast_dev_run)",
 ]
 filterwarnings = [
     "ignore:The `srun` command is available:UserWarning:lightning_fabric",
@@ -82,8 +80,6 @@ ignore = ["E501", "E402", "E741", "W291", "W292", "W293", "F541", "B905", "B017"
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 "tests/*" = ["F401"]
-"graphids/pipeline/stages/*" = ["F401"]
-"graphids/pipeline/manifest.py" = ["F401"]
 
 [tool.dg]
 directory_type = "project"
