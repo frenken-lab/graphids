@@ -5,19 +5,9 @@ from __future__ import annotations
 import itertools
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-
-class _KDSpec(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    type: str = "kd"
-    alpha: float = 0.7
-    teacher_scale: str = "large"
-    temperature: float | None = None
-    model_path: str | None = None
-    vgae_latent_weight: float | None = None
-    vgae_recon_weight: float | None = None
+from .contracts import KDEntry
 
 
 class _SweepSpec(BaseModel):
@@ -28,7 +18,7 @@ class _SweepSpec(BaseModel):
     scale: str | list[str] = "small"
     fusion_method: str | list[str] | None = None
     model_overrides: dict[str, Any] = Field(default_factory=dict)
-    kd: _KDSpec | None = None
+    kd: KDEntry | None = None
 
 
 class _SelectionSpec(BaseModel):
@@ -50,7 +40,18 @@ class _RecipeEnvelope(BaseModel):
     selection: _SelectionSpec | None = None
     sweeps: list[_SweepSpec] = Field(default_factory=list)
     trainer_overrides: dict[str, Any] = Field(default_factory=dict)
+    stage_overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
     resource_overrides: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("stage_overrides")
+    @classmethod
+    def _valid_stage_names(cls, v: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        from .topology import STAGES
+
+        bad = [s for s in v if s not in STAGES]
+        if bad:
+            raise ValueError(f"Unknown stages in stage_overrides: {bad}. Valid: {sorted(STAGES)}")
+        return v
 
 
 def _flatten_dict(d: dict[str, Any], prefix: str = "") -> dict[str, str]:
@@ -74,12 +75,6 @@ def _flatten_dict(d: dict[str, Any], prefix: str = "") -> dict[str, str]:
     return out
 
 
-def _normalize_list(value: Any) -> list[Any]:
-    if isinstance(value, list):
-        return value
-    return [value]
-
-
 def _stage_chain(stage: str) -> tuple[str, ...]:
     if stage == "fusion":
         return ("autoencoder", "curriculum", "normal", "fusion")
@@ -89,8 +84,8 @@ def _stage_chain(stage: str) -> tuple[str, ...]:
 
 
 def _expand_sweep(sweep: _SweepSpec) -> list[tuple[str, dict[str, Any]]]:
-    scales = _normalize_list(sweep.scale)
-    methods = _normalize_list(sweep.fusion_method) if sweep.fusion_method is not None else [None]
+    scales = sweep.scale if isinstance(sweep.scale, list) else [sweep.scale]
+    methods = (sweep.fusion_method if isinstance(sweep.fusion_method, list) else [sweep.fusion_method]) if sweep.fusion_method is not None else [None]
 
     init_args = (sweep.model_overrides or {}).get("init_args", {})
     axis_keys: list[str] = []
@@ -180,5 +175,9 @@ def expand_recipe_configs(
         "configs": configs,
         "sweep": {"seeds": seed_list},
         "trainer_overrides": _flatten_dict(envelope.trainer_overrides),
+        "stage_overrides": {
+            stage: _flatten_dict(overrides)
+            for stage, overrides in envelope.stage_overrides.items()
+        },
         "resource_overrides": dict(envelope.resource_overrides),
     }

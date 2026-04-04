@@ -276,7 +276,9 @@ class TestYAMLAwareValidation:
         p.write_text(yaml.dump(content))
         return str(p)
 
-    def test_merge_yaml_chain(self, resolver, tmp_path):
+    def test_merge_yaml_chain(self, tmp_path):
+        from graphids.config.yaml_utils import merge_yaml_chain
+
         f1 = self._write_yaml(tmp_path, "base.yaml", {
             "trainer": {"max_epochs": 300, "precision": "16-mixed"},
             "data": {"init_args": {"num_workers": 3}},
@@ -285,7 +287,7 @@ class TestYAMLAwareValidation:
             "trainer": {"max_epochs": 100},
             "data": {"init_args": {"batch_size": 64}},
         })
-        merged = resolver._merge_yaml_chain(
+        merged = merge_yaml_chain(
             (f1, f2), {"trainer.max_epochs": "2"},
         )
         assert merged["trainer"]["max_epochs"] == "2"
@@ -293,8 +295,8 @@ class TestYAMLAwareValidation:
         assert merged["data"]["init_args"]["num_workers"] == 3
         assert merged["data"]["init_args"]["batch_size"] == 64
 
-    def test_curriculum_epoch_auto_sync(self, resolver, tmp_path):
-        """Resolver auto-injects data.init_args.max_epochs for curriculum stages."""
+    def test_stage_overrides_applied(self, resolver, tmp_path):
+        """stage_overrides are merged into runtime_overrides for matching stage."""
         f1 = self._write_yaml(tmp_path, "trainer.yaml", {
             "trainer": {"max_epochs": 300},
         })
@@ -308,11 +310,14 @@ class TestYAMLAwareValidation:
             scale="small",
             config_files=(f1, f2),
             trainer_overrides={"trainer.max_epochs": "2"},
+            stage_overrides={"data.init_args.max_epochs": "2"},
         )
         resolved = resolver.resolve(cfg, dataset="hcrl_sa", seed=42, upstream_ckpts={})
         assert resolved.spec.runtime_overrides["data.init_args.max_epochs"] == "2"
         sources = {r.source for r in resolved.audit}
-        assert "curriculum_sync" in sources
+        assert "stage_override" in sources
+        stages = {r.stage for r in resolved.audit if r.source == "stage_override"}
+        assert "curriculum" in stages
 
     def test_curriculum_epoch_match_passes(self, resolver, tmp_path):
         f1 = self._write_yaml(tmp_path, "trainer.yaml", {

@@ -41,6 +41,7 @@ class StageConfig:
     resource_model: str = ""  # model key for resource lookup (fusion method for fusion stages)
     kd_overrides: dict[str, Any] = field(default_factory=dict)  # raw KDEntry payload
     trainer_overrides: dict[str, str] = field(default_factory=dict)
+    stage_overrides: dict[str, str] = field(default_factory=dict)
     resource_overrides: dict[str, str | int] = field(default_factory=dict)
     upstream_asset_names: tuple[str, ...] = ()
     upstream_model_families: dict[str, str] = field(default_factory=dict)
@@ -177,6 +178,7 @@ def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
                 resource_model=res_model,
                 kd_overrides=kd_payload,
                 trainer_overrides=recipe.get("trainer_overrides", {}),
+                stage_overrides=recipe.get("stage_overrides", {}).get(stage, {}),
                 resource_overrides=recipe.get("resource_overrides", {}),
                 upstream_asset_names=tuple(sorted(set(upstream_names))),
                 upstream_model_families=upstream_models,

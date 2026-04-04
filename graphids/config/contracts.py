@@ -6,16 +6,21 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from .recipe_expand import expand_recipe_configs as _expand_recipe_configs_impl
 from .topology import STAGES, VALID_FUSION_METHODS, VALID_MODEL_TYPES, VALID_SCALES
 
 
 class KDEntry(BaseModel):
+    """Unified KD config schema. Fields must match KDAuxiliary in core/models/_training.py."""
+
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     type: Literal["kd"] = "kd"
     alpha: float = 0.7
     teacher_scale: str = "large"
+    temperature: float | None = None
+    model_path: str | None = None
+    vgae_latent_weight: float | None = None
+    vgae_recon_weight: float | None = None
 
     @field_validator("teacher_scale")
     @classmethod
@@ -29,6 +34,13 @@ class KDEntry(BaseModel):
     def _alpha_range(cls, v: float) -> float:
         if not 0.0 <= v <= 1.0:
             raise ValueError(f"alpha={v} must be in [0, 1]")
+        return v
+
+    @field_validator("temperature")
+    @classmethod
+    def _temperature_positive(cls, v: float | None) -> float | None:
+        if v is not None and v <= 0:
+            raise ValueError(f"temperature={v} must be positive")
         return v
 
 
@@ -103,14 +115,12 @@ class TrainingRunConfig(BaseModel):
     def merge(self, overrides: dict[str, Any]) -> "TrainingRunConfig":
         return TrainingRunConfig(**{**self.model_dump(), **overrides})
 
-    def get(self, key: str, default=None):
-        v = getattr(self, key, None)
-        return v if v is not None else default
-
 
 def expand_recipe_configs(raw_recipe: dict[str, Any]) -> dict[str, Any]:
     """Normalize recipe envelopes to orchestrator-ready config lists."""
-    return _expand_recipe_configs_impl(
+    from .recipe_expand import expand_recipe_configs as _impl
+
+    return _impl(
         raw_recipe,
         valid_scales=VALID_SCALES,
         valid_fusion_methods=VALID_FUSION_METHODS,
