@@ -9,6 +9,7 @@ from graphids.slurm.resources import (
 from graphids.slurm.slurm import (
     SlurmJobClient,
     SubprocessSlurmJobClient,
+    job_accounting,
     sacct_by_user,
     sacct_query,
     submit,
@@ -21,6 +22,7 @@ __all__ = [
     "scale_resources",
     "SlurmJobClient",
     "SubprocessSlurmJobClient",
+    "job_accounting",
     "sacct_by_user",
     "sacct_query",
     "submit",

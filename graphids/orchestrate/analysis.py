@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from graphids.core.contracts import AnalysisContract, AnalysisSpec
@@ -47,32 +46,3 @@ def output_status(spec: AnalysisSpec) -> tuple[tuple[str, ...], list[str]]:
     expected = AnalysisContract.expected_outputs(spec)
     existing = [name for name in expected if (output_dir / name).exists()]
     return expected, existing
-
-
-def write_manifest(
-    *,
-    asset_name: str,
-    dataset: str,
-    seed: int,
-    checkpoint_path: str,
-    spec: AnalysisSpec,
-) -> Path:
-    """Write analysis manifest JSON and return its path."""
-    output_dir = Path(spec.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    expected, existing = output_status(spec)
-
-    manifest = {
-        "contract": AnalysisContract.CONTRACT_NAME,
-        "version": AnalysisContract.CONTRACT_VERSION,
-        "asset": asset_name,
-        "dataset": dataset,
-        "seed": seed,
-        "checkpoint_path": checkpoint_path,
-        "output_dir": str(output_dir),
-        "expected_outputs": list(expected),
-        "existing_outputs": existing,
-    }
-    manifest_path = output_dir / ANALYSIS_MANIFEST_NAME
-    manifest_path.write_text(json.dumps(manifest, indent=2))
-    return manifest_path

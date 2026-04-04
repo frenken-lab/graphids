@@ -86,6 +86,28 @@ def sacct_by_user(fmt: str = "JobIDRaw,JobName,State,Elapsed",
     return r.stdout
 
 
+def job_accounting(job_id: int) -> dict[str, str | int]:
+    """Return ``{job_id, wall_time, peak_rss}`` parsed from sacct.
+
+    sacct emits multiple rows per job — the parent row carries Elapsed, the
+    ``.batch`` child row carries MaxRSS. This walks both and returns the
+    merged postmortem used by dagster asset metadata.
+    """
+    out = sacct_query([job_id], "JobID,Elapsed,MaxRSS", units="G")
+    wall, rss = "", ""
+    if out:
+        for line in out.strip().split("\n"):
+            fields = line.split("|")
+            if len(fields) < 3:
+                continue
+            jid_field = fields[0].strip()
+            if "." not in jid_field:
+                wall = fields[1].strip()
+            elif jid_field.endswith(".batch"):
+                rss = fields[2].strip()
+    return {"job_id": job_id, "wall_time": wall, "peak_rss": rss}
+
+
 def generate_script(
     resources: ResourceSpec,
     *,

@@ -7,15 +7,16 @@ Analysis runs inside the GPU job (not in-process on the dagster worker).
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import dagster as dg
 from graphids.log import get_logger
 
+from graphids.config import COMPLETE_MARKER, PathContext
 from graphids.orchestrate.analysis import build_analysis_spec, supports_analysis
-from graphids.orchestrate.execution import slurm_accounting_metadata, touch_complete
 from graphids.orchestrate.planning import StageConfig
 from graphids.orchestrate.resolve import ConfigResolver
-from graphids.slurm import scale_resources
+from graphids.slurm import job_accounting, scale_resources
 
 log = get_logger(__name__)
 
@@ -26,6 +27,50 @@ def _runtime_lake_root() -> str:
 
 def _runtime_user() -> str:
     return os.environ.get("USER", "unknown")
+
+
+def _touch_complete(run_dir: Path) -> None:
+    """Write the ``.complete`` marker after a successful run.
+
+    Uses ``fsync`` on both the file and its parent directory so the marker
+    is durable on NFS before this function returns — otherwise dagster and
+    downstream resume-from-checkpoint checks can race the kernel cache.
+    """
+    marker = run_dir / COMPLETE_MARKER
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(marker), os.O_CREAT | os.O_WRONLY, 0o664)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    dir_fd = os.open(str(marker.parent), os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def partition_keys(context) -> tuple[str, int]:
+    """Extract (dataset, seed) from a dagster multi-partition context."""
+    return (
+        context.partition_key.keys_by_dimension["dataset"],
+        int(context.partition_key.keys_by_dimension["seed"]),
+    )
+
+
+def paths_for_context(context, cfg: StageConfig) -> PathContext:
+    """Build a PathContext for one materialization from dagster context + StageConfig.
+
+    Reads lake_root/user from env at call time so the same helper serves both
+    asset materialization and asset-check bodies.
+    """
+    dataset, seed = partition_keys(context)
+    return PathContext(
+        lake_root=_runtime_lake_root(), user=_runtime_user(),
+        dataset=dataset, seed=seed,
+        model_type=cfg.model_type, scale=cfg.scale, stage=cfg.stage,
+        identity=cfg.identity, kd_tag=cfg.kd_tag,
+    )
 
 
 def _asset_description(cfg: StageConfig) -> str:
@@ -56,8 +101,7 @@ def make_training_asset(
         required_resource_keys={"slurm"},
     )
     def _train(context, **upstream_ckpts: str) -> str:
-        dataset = context.partition_key.keys_by_dimension["dataset"]
-        seed = int(context.partition_key.keys_by_dimension["seed"])
+        dataset, seed = partition_keys(context)
         log.info("asset_start", asset=cfg.asset_name, dataset=dataset,
                  seed=seed, retry=context.retry_number)
 
@@ -67,12 +111,7 @@ def make_training_asset(
             cfg, dataset=dataset, seed=seed, upstream_ckpts=upstream_ckpts,
         )
 
-        # Prefer best_model.ckpt, fall back to last.ckpt (fusion RL has no best)
-        def _available_ckpt():
-            p = resolved.paths
-            return p.ckpt_file if p.ckpt_file.exists() else p.last_ckpt_file
-
-        ckpt = _available_ckpt()
+        ckpt = resolved.paths.resolved_ckpt
         if ckpt.exists() and resolved.paths.complete_marker.exists():
             log.info("asset_skip", asset=cfg.asset_name, ckpt=str(ckpt))
             return str(ckpt)
@@ -112,18 +151,18 @@ def make_training_asset(
         )
 
         if state == "DRY_RUN":
-            return str(_available_ckpt())
+            return str(resolved.paths.resolved_ckpt)
         if state != "COMPLETED":
             log.error("asset_failed", asset=cfg.asset_name, state=state,
                       job_id=job_id)
             raise RuntimeError(f"SLURM job failed: {state}")
 
-        touch_complete(resolved.paths.run_dir)
+        _touch_complete(resolved.paths.run_dir)
 
         md = {"run_dir": dg.MetadataValue.text(str(resolved.paths.run_dir))}
         wall_time = ""
         if job_id:
-            accounting = slurm_accounting_metadata(job_id)
+            accounting = job_accounting(job_id)
             wall_time = accounting["wall_time"] or ""
             md.update({
                 "job_id": dg.MetadataValue.int(accounting["job_id"]),
@@ -151,6 +190,6 @@ def make_training_asset(
         log.info("asset_complete", asset=cfg.asset_name, state=state,
                  job_id=job_id, wall_time=wall_time)
 
-        return str(_available_ckpt())
+        return str(resolved.paths.resolved_ckpt)
 
     return _train

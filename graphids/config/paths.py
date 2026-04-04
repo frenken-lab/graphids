@@ -73,6 +73,15 @@ class PathContext(BaseModel):
         return self.run_dir / LAST_CKPT_SUBPATH
 
     @property
+    def resolved_ckpt(self) -> Path:
+        """Best-available checkpoint: ``ckpt_file`` if present, else ``last_ckpt_file``.
+
+        Fusion RL (DQN/bandit) never writes a ``best_model.ckpt`` because they
+        don't track a validation-loss minimum — they only produce ``last.ckpt``.
+        """
+        return self.ckpt_file if self.ckpt_file.exists() else self.last_ckpt_file
+
+    @property
     def ckpt_dir(self) -> Path:
         return self.run_dir / PurePosixPath(CKPT_SUBPATH).parent
 
@@ -113,7 +122,7 @@ def dataset_names() -> list[str]:
 def compute_preprocessing_hash() -> str:
     import hashlib
 
-    from graphids.core.preprocessing.features import N_EDGE_FEATURES, N_NODE_FEATURES
+    from graphids.core.preprocessing.datasets.can_bus import N_EDGE_FEATURES, N_NODE_FEATURES
 
     components = [
         PREPROCESSING_VERSION,

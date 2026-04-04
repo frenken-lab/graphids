@@ -105,8 +105,10 @@ class SlurmTrainingComponent(dg.Component, dg.Model, dg.Resolvable):
         assets = [make_training_asset(cfg, partitions) for cfg in stage_configs]
 
         # 4. Build asset checks (checkpoint blocking + analysis non-blocking)
+        # multi_asset_check inherits partitions from the target asset — no
+        # partitions_def needed at the decorator level.
         cfg_lookup = {cfg.asset_name: cfg for cfg in stage_configs}
-        checks = make_asset_checks(cfg_lookup, partitions)
+        checks = make_asset_checks(cfg_lookup)
 
         # 6. Executor: multiprocess so independent assets run in parallel.
         # Each worker just does sbatch + poll (sleep loop), so concurrency is cheap.
