@@ -16,7 +16,6 @@ from .topology import VALID_MODEL_TYPES, VALID_SCALES
 
 PREPROCESSING_VERSION: str = "8.0.0"
 MAX_DATA_BYTES: int = 8
-EXCLUDED_ATTACK_TYPES: list[str] = ["suppress", "masquerade"]
 CKPT_SUBPATH: str = "checkpoints/best_model.ckpt"
 LAST_CKPT_SUBPATH: str = "checkpoints/last.ckpt"
 COMPLETE_MARKER: str = ".complete"
@@ -46,3 +45,7 @@ SLURM_GPU_TYPE: str = os.environ.get("KD_GAT_GPU_TYPE", "v100")
 SWEEP_ID: str = os.environ.get("KD_GAT_SWEEP_ID", "")
 USER_TAGS: str = os.environ.get("KD_GAT_TAGS", "")
 CKPT_PATH: str = os.environ.get("KD_GAT_CKPT_PATH", "")
+
+BUDGET_SAFETY_MARGIN: float = float(os.environ.get("KD_GAT_BUDGET_SAFETY_MARGIN", "0.85"))
+BUDGET_GRAD_MULTIPLIER: float = float(os.environ.get("KD_GAT_BUDGET_GRAD_MULT", "2"))
+BUDGET_FALLBACK_BPN: int = int(os.environ.get("KD_GAT_BUDGET_FALLBACK_BPN", "32768"))

@@ -14,15 +14,21 @@ import socket
 import sys
 
 from graphids.config import CONFIG_DIR
+from graphids.config.base import PROJECT_ROOT
 from graphids.config.yaml_utils import read_yaml
 
 _SUBMIT_PROFILES_PATH = CONFIG_DIR / "resources" / "submit_profiles.yaml"
-_CLUSTERS_PATH = CONFIG_DIR / "resources" / "clusters.yaml"
+_CLUSTERS_PATH = PROJECT_ROOT / "configs" / "resources" / "clusters.json"
+
+
+def _load_clusters() -> dict:
+    import json
+    return json.loads(_CLUSTERS_PATH.read_text())
 
 
 def _detect_cluster() -> str:
-    """Detect cluster from hostname using clusters.yaml mapping."""
-    clusters = read_yaml(_CLUSTERS_PATH)["clusters"]
+    """Detect cluster from hostname using clusters.json mapping."""
+    clusters = _load_clusters()
     hostname = socket.gethostname().lower()
     for cluster, prefixes in clusters["detect_by_hostname"].items():
         if any(hostname.startswith(p) for p in prefixes):
@@ -31,11 +37,11 @@ def _detect_cluster() -> str:
 
 
 def _resolve_gres(mode: str) -> str:
-    """Look up gres from clusters.yaml execution_modes for the current cluster."""
+    """Look up gres from clusters.json execution_modes for the current cluster."""
     if not mode.startswith("gpu"):
         return "NONE"
     cluster = _detect_cluster()
-    clusters = read_yaml(_CLUSTERS_PATH)["clusters"]
+    clusters = _load_clusters()
     exec_modes = clusters.get("execution_modes", {}).get(cluster, {})
     # mode "gpu" maps to "gpu_train" execution mode
     gpu_mode = exec_modes.get("gpu_train", {})

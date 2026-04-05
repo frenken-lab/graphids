@@ -12,12 +12,12 @@ only as static fixtures for property tests, not as behavioral guarantees.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 import pytest
 
-from graphids.config import CONFIG_DIR
-from graphids.config.yaml_utils import read_yaml
+from graphids.config import PROJECT_ROOT
 from graphids.core.preprocessing.budget import node_budget
 
 # Real dataset statistics (from cache_metadata.json). Only used to vary the
@@ -36,10 +36,12 @@ PROBE_ARCHETYPES = {
     "large":  (200_000, 1.5),
 }
 
-_clusters = read_yaml(CONFIG_DIR / "resources" / "clusters.yaml")
+_clusters = json.loads(
+    (PROJECT_ROOT / "configs" / "resources" / "clusters.json").read_text()
+)
 GPU_TYPES = {
     name: int(spec["free_gb"] * 1024**3)
-    for name, spec in _clusters["clusters"]["gpu_vram"].items()
+    for name, spec in _clusters["gpu_vram"].items()
 }
 
 

@@ -21,18 +21,17 @@ from .runtime import (
     CKPT_PATH,
     CKPT_SUBPATH,
     COMPLETE_MARKER,
-    PHASE_MARKERS,
     DAGSTER_HOME_DEFAULT,
-    RUN_RECORD_FILENAME,
     DAGSTER_IO_DIR_TEMPLATE,
     DEFAULT_MODEL_TYPE,
     DEFAULT_SCALE,
     DEFAULT_STAGE,
-    EXCLUDED_ATTACK_TYPES,
     LAKE_ROOT,
     LAST_CKPT_SUBPATH,
     MAX_DATA_BYTES,
+    PHASE_MARKERS,
     PREPROCESSING_VERSION,
+    RUN_RECORD_FILENAME,
     SLURM_ACCOUNT,
     SLURM_GPU_TYPE,
     SLURM_LOG_DIR,
@@ -43,10 +42,15 @@ from .runtime import (
 )
 from .topology import (
     PIPELINE_YAML,
-    STAGES,
     STAGE_DEPENDENCIES,
     STAGE_MODEL_MAP,
+    STAGES,
     VALID_FUSION_METHODS,
     VALID_MODEL_TYPES,
     VALID_SCALES,
+)
+from .validated_config import (
+    ConfigValidationError,
+    ValidatedConfig,
+    validate_config,
 )

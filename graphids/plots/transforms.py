@@ -7,8 +7,7 @@ from typing import NamedTuple
 import numpy as np
 import polars as pl
 
-from graphids.config import CONFIG_DIR
-from graphids.config.yaml_utils import read_yaml
+from graphids.config import PROJECT_ROOT
 
 SAFETY_MARGIN = 0.85
 
@@ -82,13 +81,16 @@ def load_calibration_csv(path: Path) -> pl.DataFrame:
 
 
 def load_gpus(select: str | None = None) -> tuple[dict[str, int], str, int]:
-    """Read GPU VRAM from clusters.yaml, optionally select one."""
-    vram = read_yaml(CONFIG_DIR / "resources" / "clusters.yaml")["clusters"]["gpu_vram"]
+    """Read GPU VRAM from configs/resources/clusters.json, optionally select one."""
+    import json
+    vram = json.loads(
+        (PROJECT_ROOT / "configs" / "resources" / "clusters.json").read_text()
+    )["gpu_vram"]
     gpus = {n.replace("_", " ").upper(): int(v["free_gb"] * 1024**3)
             for n, v in vram.items()}
     label = select.replace("_", " ").upper() if select else next(iter(gpus))
     if label not in gpus:
-        raise KeyError(f"GPU '{select}' not in clusters.yaml. Available: {list(gpus)}")
+        raise KeyError(f"GPU '{select}' not in clusters.json. Available: {list(gpus)}")
     return gpus, label, gpus[label]
 
 

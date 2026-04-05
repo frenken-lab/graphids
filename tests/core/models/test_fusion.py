@@ -19,7 +19,10 @@ class TestFusionBaselineTestStep:
 
     @staticmethod
     def _make_module(name):
-        from graphids.core.models.fusion.fusion_baselines import MLPFusionModule, WeightedAvgModule
+        from graphids.core.models.fusion.fusion_baselines import (
+            MLPFusionModule,
+            WeightedAvgModule,
+        )
         from graphids.core.models.fusion.fusion_features import STATE_DIM
         if name == "mlp":
             return MLPFusionModule(state_dim=STATE_DIM)
@@ -69,34 +72,71 @@ class TestFusionBaselineTestStep:
 
 
 class TestFusionRewardCalculator:
-    """FusionRewardCalculator requires vgae_weights; other shaping constants are fixed."""
+    """FusionRewardCalculator requires vgae_weights + paper reward constants.
+
+    Reward constants live in ``configs/fusion/reward.libsonnet`` and are
+    passed through by the method libsonnets; Python has no defaults.
+    """
+
+    # Paper values from configs/fusion/reward.libsonnet — kept in sync by
+    # ``test_reward_libsonnet_matches_paper_values`` below.
+    _PAPER_REWARD = {
+        "correct": 3.0,
+        "incorrect": -3.0,
+        "confidence_weight": 0.5,
+        "combined_conf_weight": 0.3,
+        "disagreement_penalty": -1.0,
+        "overconf_penalty": -1.5,
+        "balance_weight": 0.3,
+    }
 
     def test_missing_vgae_weights_raises(self):
         from graphids.core.models.fusion.fusion_reward import FusionRewardCalculator
         with pytest.raises(TypeError, match="vgae_weights"):
-            FusionRewardCalculator()
+            FusionRewardCalculator(**self._PAPER_REWARD)
 
     def test_construction_with_vgae_weights(self):
         from graphids.core.models.fusion.fusion_reward import FusionRewardCalculator
         weights = [0.5, 0.3, 0.2]
-        calc = FusionRewardCalculator(vgae_weights=weights)
+        calc = FusionRewardCalculator(vgae_weights=weights, **self._PAPER_REWARD)
         assert torch.allclose(calc._vgae_weights, torch.tensor(weights))
 
     def test_derive_scores_uses_vgae_weights(self):
-        from graphids.core.models.fusion.fusion_reward import FusionRewardCalculator
         from graphids.core.models.fusion.fusion_features import STATE_DIM
+        from graphids.core.models.fusion.fusion_reward import FusionRewardCalculator
 
         state_dim = STATE_DIM
         torch.manual_seed(0)
         states = torch.rand(8, state_dim)
 
-        calc_a = FusionRewardCalculator(vgae_weights=[1.0, 0.0, 0.0])
-        calc_b = FusionRewardCalculator(vgae_weights=[0.0, 0.0, 1.0])
+        calc_a = FusionRewardCalculator(vgae_weights=[1.0, 0.0, 0.0], **self._PAPER_REWARD)
+        calc_b = FusionRewardCalculator(vgae_weights=[0.0, 0.0, 1.0], **self._PAPER_REWARD)
 
         scores_a, _ = calc_a.derive_scores(states)
         scores_b, _ = calc_b.derive_scores(states)
 
         assert not torch.allclose(scores_a, scores_b, atol=1e-4)
+
+    def test_reward_libsonnet_matches_paper_values(self):
+        """configs/fusion/reward.libsonnet is the single source of truth —
+        this test catches drift if someone edits the libsonnet without
+        updating the _PAPER_REWARD fixture (or vice versa)."""
+        import json
+        import shutil
+        import subprocess
+
+        from graphids.config import PROJECT_ROOT
+
+        jsonnet_bin = shutil.which("jsonnet")
+        if not jsonnet_bin:
+            pytest.skip("jsonnet binary not on PATH")
+        reward_path = PROJECT_ROOT / "configs" / "fusion" / "reward.libsonnet"
+        result = subprocess.run(
+            [jsonnet_bin, str(reward_path)],
+            capture_output=True, text=True, check=True,
+        )
+        rendered = json.loads(result.stdout)
+        assert rendered == self._PAPER_REWARD
 
 
 class TestFusionCheckpointRoundtrip:
@@ -104,6 +144,7 @@ class TestFusionCheckpointRoundtrip:
 
     def test_mlp_roundtrip(self, tmp_path):
         import pytorch_lightning as pl
+
         from graphids.core.models.fusion.fusion_baselines import MLPFusionModule
         from graphids.core.models.fusion.fusion_features import STATE_DIM
         m1 = MLPFusionModule(state_dim=STATE_DIM)
@@ -120,6 +161,7 @@ class TestFusionCheckpointRoundtrip:
 
     def test_weighted_avg_roundtrip(self, tmp_path):
         import pytorch_lightning as pl
+
         from graphids.core.models.fusion.fusion_baselines import WeightedAvgModule
         m1 = WeightedAvgModule()
         from graphids.core.models.fusion.fusion_features import STATE_DIM

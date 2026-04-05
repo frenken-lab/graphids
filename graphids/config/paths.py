@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from .base import CONFIG_DIR
+from .base import PROJECT_ROOT
 from .runtime import (
     CKPT_SUBPATH,
     COMPLETE_MARKER,
@@ -16,7 +16,6 @@ from .runtime import (
     PREPROCESSING_VERSION,
 )
 from .topology import PIPELINE_YAML
-from .yaml_utils import read_yaml
 
 
 class LakeWriteError(PermissionError):
@@ -85,7 +84,7 @@ class PathContext(BaseModel):
     def ckpt_dir(self) -> Path:
         return self.run_dir / PurePosixPath(CKPT_SUBPATH).parent
 
-_DATASETS_DIR: Path = CONFIG_DIR / "datasets"
+_DATASET_REGISTRY: Path = PROJECT_ROOT / "configs" / "datasets" / "dataset_registry.json"
 DEFAULT_DATASET: str = "set_01"
 
 CATALOG_SUBPATH: str = "catalog/kd_gat.duckdb"
@@ -99,24 +98,28 @@ _catalog_cache: dict[str, dict[str, Any]] | None = None
 
 
 def load_catalog() -> dict[str, dict[str, Any]]:
-    """Load dataset catalog from per-file configs in config/datasets/.
+    """Load dataset catalog from ``configs/datasets/dataset_registry.json``.
 
-    Returns ``{dataset_name: {metadata_dict}}`` — same shape as the old
-    monolithic ``datasets.yaml``, so consumers need only an import change.
+    The on-disk registry is domain-nested (``{"automotive": {"hcrl_ch":
+    {...}}}``). This function flattens to ``{dataset_name: {metadata_dict}}``
+    and injects ``entry["name"]`` from the dict key so downstream consumers
+    don't need to care about the domain layer.
     """
+    import json
+
     global _catalog_cache
     if _catalog_cache is not None:
         return _catalog_cache
-    if not _DATASETS_DIR.is_dir():
-        raise FileNotFoundError(f"Dataset config directory missing: {_DATASETS_DIR}")
+    if not _DATASET_REGISTRY.is_file():
+        raise FileNotFoundError(f"Dataset registry missing: {_DATASET_REGISTRY}")
+    registry = json.loads(_DATASET_REGISTRY.read_text())
     catalog: dict[str, dict[str, Any]] = {}
-    for p in sorted(_DATASETS_DIR.glob("*.yaml")):
-        entry = read_yaml(p)
-        # Unwrap if nested under 'dataset' key (backwards compat with skeleton format)
-        if "dataset" in entry and isinstance(entry["dataset"], dict):
-            entry = entry["dataset"]
-        name = entry.get("name", p.stem)
-        catalog[name] = entry
+    for domain, datasets in registry.items():
+        if not isinstance(datasets, dict):
+            continue
+        for name, entry in datasets.items():
+            flat = {"name": name, "domain": domain, **entry}
+            catalog[name] = flat
     _catalog_cache = catalog
     return catalog
 
@@ -129,7 +132,10 @@ def dataset_names() -> list[str]:
 def compute_preprocessing_hash() -> str:
     import hashlib
 
-    from graphids.core.preprocessing.datasets.can_bus import N_EDGE_FEATURES, N_NODE_FEATURES
+    from graphids.core.preprocessing.datasets.can_bus import (
+        N_EDGE_FEATURES,
+        N_NODE_FEATURES,
+    )
 
     components = [
         PREPROCESSING_VERSION,

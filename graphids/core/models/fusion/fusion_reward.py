@@ -3,23 +3,16 @@
 Reward shaping constants are fixed methodological choices — see
 ``kd-gat-paper/content/methodology.md §Stage 3 Adaptive Fusion``.
 DQN and bandit share this identical reward; it is not an ablation axis.
+
+The seven shaping coefficients + ``vgae_weights`` are passed in from
+``configs/fusion/reward.libsonnet`` (imported by the method libsonnets)
+so they land in ``run_record.json`` for reproducibility. There are no
+Python defaults — the libsonnet is the single source of truth.
 """
 
 from __future__ import annotations
 
 import torch
-
-# --- Reward shaping constants (paper methodology.md eq-reward) ---------------
-# Base rewards appear inline in the paper's reward equation (±3.0).
-# The remaining coefficients weight the symbolic bonus/penalty terms
-# (r_agree, r_conf, r_disagree, r_overconf + implicit balance bonus).
-_REWARD_CORRECT = 3.0
-_REWARD_INCORRECT = -3.0
-_CONFIDENCE_WEIGHT = 0.5
-_COMBINED_CONF_WEIGHT = 0.3
-_DISAGREEMENT_PENALTY = -1.0
-_OVERCONF_PENALTY = -1.5
-_BALANCE_WEIGHT = 0.3
 
 
 class FusionRewardCalculator(torch.nn.Module):
@@ -28,15 +21,21 @@ class FusionRewardCalculator(torch.nn.Module):
     Extends nn.Module so ``_vgae_weights`` auto-transfers to GPU when the owning
     LightningModule (BanditFusionModule, DQNFusionModule) is moved to a device.
 
-    The only tunable parameter is ``vgae_weights`` — the convex combination
-    weights for the three VGAE reconstruction error components (recon, nbr,
-    canid). All other shaping coefficients are fixed by the paper.
+    All shaping coefficients are required kwargs — callers pass them from
+    ``configs/fusion/reward.libsonnet`` via ``reward_kwargs``.
     """
 
     def __init__(
         self,
         *,
         vgae_weights: list[float] | tuple[float, ...],
+        correct: float,
+        incorrect: float,
+        confidence_weight: float,
+        combined_conf_weight: float,
+        disagreement_penalty: float,
+        overconf_penalty: float,
+        balance_weight: float,
     ) -> None:
         super().__init__()
         from .fusion_features import LAYOUT
@@ -52,6 +51,14 @@ class FusionRewardCalculator(torch.nn.Module):
         self.register_buffer(
             "_vgae_weights", torch.tensor(vgae_weights, dtype=torch.float32)
         )
+
+        self._reward_correct = correct
+        self._reward_incorrect = incorrect
+        self._confidence_weight = confidence_weight
+        self._combined_conf_weight = combined_conf_weight
+        self._disagreement_penalty = disagreement_penalty
+        self._overconf_penalty = overconf_penalty
+        self._balance_weight = balance_weight
 
     def normalize(self, states: torch.Tensor) -> torch.Tensor:
         """Clamp confidence features to [0, 1]. Returns a new tensor."""
@@ -92,29 +99,30 @@ class FusionRewardCalculator(torch.nn.Module):
         combined_conf = torch.max(vgae_conf, gat_conf)
 
         correct = preds == labels
-        base_reward = torch.where(correct, _REWARD_CORRECT, _REWARD_INCORRECT)
+        base_reward = torch.where(correct, self._reward_correct, self._reward_incorrect)
         model_agreement = 1.0 - (anomaly_scores - gat_probs).abs()
 
         # Correct path
         max_score = torch.max(anomaly_scores, gat_probs)
         confidence = torch.where(labels == 1, max_score, 1.0 - max_score)
         confidence_bonus = (
-            _CONFIDENCE_WEIGHT * confidence + _COMBINED_CONF_WEIGHT * combined_conf
+            self._confidence_weight * confidence
+            + self._combined_conf_weight * combined_conf
         )
         correct_reward = base_reward + model_agreement + confidence_bonus
 
         # Wrong path
-        disagreement_term = _DISAGREEMENT_PENALTY * (1.0 - model_agreement)
+        disagreement_term = self._disagreement_penalty * (1.0 - model_agreement)
         fused_confidence = alphas * gat_probs + (1 - alphas) * anomaly_scores
         overconf_term = torch.where(
             preds == 1,
-            _OVERCONF_PENALTY * fused_confidence,
-            _OVERCONF_PENALTY * (1.0 - fused_confidence),
+            self._overconf_penalty * fused_confidence,
+            self._overconf_penalty * (1.0 - fused_confidence),
         )
         wrong_reward = base_reward + disagreement_term + overconf_term
 
         total_reward = torch.where(correct, correct_reward, wrong_reward)
-        balance_bonus = _BALANCE_WEIGHT * (1.0 - (alphas - 0.5).abs() * 2)
+        balance_bonus = self._balance_weight * (1.0 - (alphas - 0.5).abs() * 2)
         return total_reward + balance_bonus
 
 

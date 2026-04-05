@@ -22,22 +22,22 @@ import torch
 from torch.utils.benchmark import Timer as BenchmarkTimer
 
 from graphids.config import cache_dir
-
+from graphids.config.runtime import BUDGET_FALLBACK_BPN, BUDGET_GRAD_MULTIPLIER, BUDGET_SAFETY_MARGIN
 log = get_logger(__name__)
 
 # HEURISTIC: 15% VRAM reserve for allocator fragmentation. Variable-size
 # graph batches have higher memory variance than fixed-size, so wider than
 # Lightning's 5%. Standard range in PyTorch training code is 10-20%.
-_SAFETY_MARGIN = 0.85
+_SAFETY_MARGIN = BUDGET_SAFETY_MARGIN
 
 # HEURISTIC: probe measures forward-only memory. Training adds gradients
 # (≈ activations) + optimizer state (small for GNNs with 24K-200K params).
 # 2× is a rough upper bound — could be 1.5-3× depending on model.
-_GRAD_MULTIPLIER = 2
+_GRAD_MULTIPLIER = BUDGET_GRAD_MULTIPLIER
 
 # FALLBACK: conservative bytes/node when no model is available for probing.
 # Real models use 1-8KB/node. Overestimating is safe (smaller budget, no OOM).
-_FALLBACK_BYTES_PER_NODE = 32_768
+_FALLBACK_BYTES_PER_NODE = BUDGET_FALLBACK_BPN
 
 # DERIVED: conv types with O(N²) global attention (not O(E) over edges).
 _QUADRATIC_CONV_TYPES = frozenset({"gps"})

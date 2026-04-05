@@ -8,10 +8,11 @@ import socket
 from dataclasses import dataclass
 from pathlib import Path
 
+from graphids.config.base import PROJECT_ROOT
 from graphids.config.yaml_utils import read_yaml
 
 _RESOURCES_DIR = Path(__file__).resolve().parents[1] / "config" / "resources"
-_CLUSTERS_PATH = _RESOURCES_DIR / "clusters.yaml"
+_CLUSTERS_PATH = PROJECT_ROOT / "configs" / "resources" / "clusters.json"
 _PROFILES_DIR = _RESOURCES_DIR / "profiles"
 
 
@@ -64,7 +65,8 @@ class ResourceSpec:
 
 
 def _load_clusters() -> dict:
-    return read_yaml(_CLUSTERS_PATH)
+    import json
+    return json.loads(_CLUSTERS_PATH.read_text())
 
 
 def _load_profile(family: str) -> dict:
@@ -107,19 +109,19 @@ def get_resources(model_type: str, scale: str, stage: str) -> ResourceSpec:
     mem_per_cpu = None
     if mode and "partition" not in spec:
         cluster = _detect_cluster()
-        clusters = _load_clusters().get("clusters", {})
+        clusters = _load_clusters()
         cluster_map = clusters.get("execution_modes", {}).get(cluster)
         if not cluster_map:
             default_cluster = clusters.get("default", "")
             cluster_map = clusters.get("execution_modes", {}).get(default_cluster)
         if not cluster_map:
-            raise KeyError(f"No cluster config for '{cluster}' in clusters.yaml")
+            raise KeyError(f"No cluster config for '{cluster}' in clusters.json")
         mode_spec = cluster_map.get(mode)
         if not mode_spec:
-            raise KeyError(f"No mode '{mode}' for cluster '{cluster}' in clusters.yaml")
+            raise KeyError(f"No mode '{mode}' for cluster '{cluster}' in clusters.json")
         spec["partition"] = mode_spec["partition"]
         spec["gres"] = mode_spec.get("gres", "")
-        mem_per_cpu = mode_spec.get("mem_per_cpu")  # MB, from clusters.yaml
+        mem_per_cpu = mode_spec.get("mem_per_cpu")  # MB, from clusters.json
 
     spec["cpus_per_task"] = spec.pop("cpus")
     spec["num_workers"] = spec.pop("workers")

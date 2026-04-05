@@ -23,7 +23,7 @@ from graphids.config import (
 )
 
 # ---------------------------------------------------------------------------
-# Dataset catalog (per-file configs in config/datasets/)
+# Dataset catalog (configs/datasets/dataset_registry.json)
 # ---------------------------------------------------------------------------
 
 
@@ -35,7 +35,10 @@ def test_catalog_loads_all_datasets():
 
 
 def test_catalog_entries_have_required_fields():
-    required = {"name", "csv_dir", "csv_columns", "train_subdir", "test_subdirs", "attack_types"}
+    required = {
+        "name", "domain", "csv_dir", "csv_columns",
+        "train_subdir", "test_subdirs", "attack_types",
+    }
     for name, entry in load_catalog().items():
         missing = required - set(entry.keys())
         assert not missing, f"Dataset '{name}' missing fields: {missing}"
