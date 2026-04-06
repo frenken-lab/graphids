@@ -11,10 +11,10 @@ constructor signature and has a catalog entry.
 
 Curriculum learning is a toggle on this module (``sampler="curriculum"``),
 not a separate DataModule subclass. When enabled, ``setup()`` loads a VGAE
-checkpoint and scores training graphs by difficulty, then
-``train_dataloader()`` uses a ``CurriculumSampler`` instead of a plain
-``NodeBudgetBatchSampler``. A ``CurriculumEpochCallback`` (in
-``graphids.core.data.sampler``) advances the sampler's epoch counter.
+checkpoint, scores training graphs by difficulty, and buckets normals into
+K difficulty tiers (tier 0 = easiest). Each tier is pre-batched once.
+A ``CurriculumEpochCallback`` selects which tiers are active each epoch
+— O(1) epoch transition, zero re-collation.
 """
 
 from __future__ import annotations
@@ -29,7 +29,10 @@ from torch_geometric.data import InMemoryDataset
 
 from graphids.config.paths import cache_dir, data_dir, load_catalog
 from graphids.core.data.budget import autosize_workers, node_budget
-from graphids.core.data.sampler import CurriculumSampler, NodeBudgetBatchSampler, make_graph_loader
+from graphids.core.data.sampler import (
+    NodeBudgetBatchSampler,
+    make_graph_loader,
+)
 
 
 def load_datasets(
@@ -103,9 +106,9 @@ class GraphDataModule(pl.LightningDataModule):
         vgae_ckpt_path: str = "",
         curriculum_start_ratio: float = 1.0,
         curriculum_end_ratio: float = 10.0,
-        difficulty_percentile: float = 75.0,
         max_epochs: int = 300,
         canid_weight: float = 0.1,
+        num_tiers: int = 10,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -117,11 +120,16 @@ class GraphDataModule(pl.LightningDataModule):
         self._train_ds: InMemoryDataset | None = None
         self._val_ds: InMemoryDataset | None = None
         self._test_datasets: dict[str, InMemoryDataset] = {}
-        # Curriculum state — populated by _setup_curriculum() when sampler="curriculum"
-        self._curriculum_sampler: CurriculumSampler | None = None
-        self._curriculum_dataset: list | None = None
-        self._curriculum_sizes: torch.Tensor | None = None  # per-graph node counts
-        self._curriculum_loader = None
+        # Pre-batched train set — built once in first train_dataloader() call
+        self._prebatched_train = None
+        # Curriculum tier state — populated by _setup_curriculum()
+        self._curriculum_full_dataset = None
+        self._curriculum_dataset_sizes = None
+        self._curriculum_normal_tiers = None  # list[list[int]], sorted by difficulty
+        self._curriculum_attack_indices = None
+        self._tier_batches = None  # list[list[Batch]], one per normal tier
+        self._attack_tier_batches = None  # list[Batch]
+        self._active_batches = None  # concatenated active tiers for current epoch
 
     def setup(self, stage: str | None = None) -> None:
         hp = self.hparams
@@ -138,22 +146,25 @@ class GraphDataModule(pl.LightningDataModule):
             self._setup_curriculum()
 
     def _setup_curriculum(self) -> None:
-        """Build curriculum sampler via factory in ``sampler.py``."""
-        from graphids.core.data.sampler import build_curriculum_sampler
+        """Score graphs and bucket into difficulty tiers.
+
+        Pre-batching is deferred to the first ``train_dataloader()`` call
+        because ``node_budget()`` needs the model on GPU.
+        """
+        from graphids.core.data.sampler import build_curriculum_tiers
 
         hp = self.hparams
-        self._curriculum_sampler, self._curriculum_dataset, self._curriculum_sizes = (
-            build_curriculum_sampler(
-                self._train_ds,
-                vgae_ckpt_path=hp["vgae_ckpt_path"],
-                max_epochs=hp["max_epochs"],
-                curriculum_start_ratio=hp["curriculum_start_ratio"],
-                curriculum_end_ratio=hp["curriculum_end_ratio"],
-                difficulty_percentile=hp["difficulty_percentile"],
-                canid_weight=hp["canid_weight"],
-                seed=hp["seed"],
-            )
+        scores, normal_tiers, attack_indices, full_dataset, dataset_sizes = build_curriculum_tiers(
+            self._train_ds,
+            vgae_ckpt_path=hp["vgae_ckpt_path"],
+            canid_weight=hp["canid_weight"],
+            num_tiers=hp.get("num_tiers", 10),
+            seed=hp["seed"],
         )
+        self._curriculum_full_dataset = full_dataset
+        self._curriculum_dataset_sizes = dataset_sizes
+        self._curriculum_normal_tiers = normal_tiers
+        self._curriculum_attack_indices = attack_indices
 
     # -- Properties (available after setup) -----------------------------------
 
@@ -203,6 +214,8 @@ class GraphDataModule(pl.LightningDataModule):
     def train_dataloader(self):
         if self.hparams["sampler"] == "curriculum":
             return self._curriculum_train_dataloader()
+        if self.hparams["dynamic_batching"]:
+            return self._prebatched_train_dataloader()
         return self._build_loader(self._train_ds, shuffle=True)
 
     def val_dataloader(self):
@@ -269,23 +282,18 @@ class GraphDataModule(pl.LightningDataModule):
             prefetch_factor=pf if nw > 0 else None,
         )
 
-    def _curriculum_train_dataloader(self):
-        """Build the curriculum training loader (first call only).
+    def _prebatched_train_dataloader(self):
+        """Pre-batched training loader (standard path, dynamic batching).
 
-        Composes ``CurriculumSampler`` (which indices) with
-        ``NodeBudgetBatchSampler`` (how to batch them). Deferred to the
-        first ``train_dataloader()`` call because ``node_budget`` needs
-        the model on GPU.
+        First call: probe VRAM budget, plan batches, pre-collate all Batches.
+        Subsequent calls: return loader over cached list of Batches.
+        DataLoader shuffles batch *order* per epoch; graph-to-batch assignment
+        is fixed (acceptable — packing is deterministic for a given budget).
         """
-        if self._curriculum_loader is not None:
-            return self._curriculum_loader
+        if self._prebatched_train is None:
+            from torch_geometric.data import Batch
 
-        hp = self.hparams
-        nw = hp.get("num_workers")
-        pf = hp.get("prefetch_factor", 2)
-
-        if hp["dynamic_batching"]:
-            # VRAM probe now that model is on GPU
+            hp = self.hparams
             model, model_hp = self._model_and_hp()
             result = node_budget(
                 hp["dataset"],
@@ -293,38 +301,121 @@ class GraphDataModule(pl.LightningDataModule):
                 conv_type=model_hp.get("conv_type", hp.get("conv_type", "gatv2")),
                 heads=model_hp.get("heads", hp.get("heads", 4)),
                 model=model,
-                train_dataset=self._curriculum_dataset,
+                train_dataset=self._train_ds,
             )
-            if nw is None:
-                nw, pf = autosize_workers(
-                    model, self._curriculum_dataset, result, default_prefetch_factor=pf
-                )
-            # Compose: CurriculumSampler selects indices → NodeBudgetBatchSampler packs batches
-            active = list(self._curriculum_sampler)
-            active_sizes = self._curriculum_sizes[active]
-            num_steps = max(1, math.ceil(len(active) * result.mean_nodes / result.budget))
-            batch_sampler = NodeBudgetBatchSampler(
-                active_sizes,
+            num_steps = max(1, math.ceil(len(self._train_ds) * result.mean_nodes / result.budget))
+            sampler = NodeBudgetBatchSampler(
+                self._train_ds.num_nodes_per_graph,
                 max_num=result.budget,
-                shuffle=False,  # CurriculumSampler already shuffled
+                shuffle=False,  # deterministic packing; shuffle batch ORDER below
                 skip_too_big=True,
                 num_steps=num_steps,
-                indices=active,
             )
-        else:
-            # Fixed-size fallback — just use curriculum indices as-is
-            from torch.utils.data import BatchSampler
+            plans = list(sampler)
+            self._prebatched_train = [
+                Batch.from_data_list([self._train_ds[i] for i in plan]) for plan in plans
+            ]
 
-            active = list(self._curriculum_sampler)
-            batch_sampler = BatchSampler(
-                active, batch_size=max(8, hp["batch_size"]), drop_last=False
-            )
-
-        self._curriculum_loader = make_graph_loader(
-            self._curriculum_dataset,
-            batch_sampler=batch_sampler,
-            num_workers=nw if nw is not None else 2,
+        return make_graph_loader(
+            self._prebatched_train,
+            batch_size=None,
+            shuffle=True,
+            num_workers=0,  # O(1) __getitem__; workers add IPC overhead for no gain
             device=self._prefetch_device(),
-            prefetch_factor=pf if (nw or 2) > 0 else None,
         )
-        return self._curriculum_loader
+
+    def _prebatch_tiers(self) -> None:
+        """Pre-batch each curriculum tier (called once, deferred to first epoch).
+
+        Deferred because ``node_budget()`` needs the model on GPU.
+        """
+        from torch_geometric.data import Batch
+
+        hp = self.hparams
+        model, model_hp = self._model_and_hp()
+        result = node_budget(
+            hp["dataset"],
+            hp["lake_root"],
+            conv_type=model_hp.get("conv_type", hp.get("conv_type", "gatv2")),
+            heads=model_hp.get("heads", hp.get("heads", 4)),
+            model=model,
+            train_dataset=self._curriculum_full_dataset,
+        )
+        ds = self._curriculum_full_dataset
+        sizes = self._curriculum_dataset_sizes
+
+        # Pre-batch each normal tier
+        self._tier_batches = []
+        for tier_indices in self._curriculum_normal_tiers:
+            tier_sizes = sizes[tier_indices]
+            num_steps = max(1, math.ceil(len(tier_indices) * result.mean_nodes / result.budget))
+            sampler = NodeBudgetBatchSampler(
+                tier_sizes,
+                max_num=result.budget,
+                shuffle=False,
+                skip_too_big=True,
+                num_steps=num_steps,
+            )
+            plans = list(sampler)
+            self._tier_batches.append(
+                [Batch.from_data_list([ds[tier_indices[i]] for i in plan]) for plan in plans]
+            )
+
+        # Pre-batch attack tier (always active)
+        atk = self._curriculum_attack_indices
+        if atk:
+            atk_sizes = sizes[atk]
+            num_steps = max(1, math.ceil(len(atk) * result.mean_nodes / result.budget))
+            sampler = NodeBudgetBatchSampler(
+                atk_sizes,
+                max_num=result.budget,
+                shuffle=False,
+                skip_too_big=True,
+                num_steps=num_steps,
+            )
+            plans = list(sampler)
+            self._attack_tier_batches = [
+                Batch.from_data_list([ds[atk[i]] for i in plan]) for plan in plans
+            ]
+        else:
+            self._attack_tier_batches = []
+
+    def _select_active_tiers(self, epoch: int) -> None:
+        """Select which difficulty tiers are active based on curriculum ratio.
+
+        Called by ``CurriculumEpochCallback.on_train_epoch_start`` each epoch.
+        Tier 0 = easiest, tier K-1 = hardest.  Early epochs include fewer
+        tiers; later epochs include all.  Attacks are always included.
+        """
+        hp = self.hparams
+        ratio = hp["curriculum_start_ratio"] + (
+            hp["curriculum_end_ratio"] - hp["curriculum_start_ratio"]
+        ) * min(epoch / max(hp["max_epochs"] - 1, 1), 1.0)
+        num_tiers = len(self._tier_batches)
+        active_count = max(
+            1,
+            min(num_tiers, math.ceil(ratio * num_tiers / hp["curriculum_end_ratio"])),
+        )
+        active: list = []
+        for i in range(active_count):
+            active.extend(self._tier_batches[i])
+        active.extend(self._attack_tier_batches)
+        self._active_batches = active
+
+    def _curriculum_train_dataloader(self):
+        """Tier-based curriculum training loader.
+
+        First call: probe VRAM budget, pre-batch each tier.
+        Every call: return loader over active tiers (set by callback).
+        """
+        if self._tier_batches is None:
+            self._prebatch_tiers()
+            self._select_active_tiers(0)
+
+        return make_graph_loader(
+            self._active_batches,
+            batch_size=None,
+            shuffle=True,
+            num_workers=0,
+            device=self._prefetch_device(),
+        )

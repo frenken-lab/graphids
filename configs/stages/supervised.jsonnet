@@ -28,9 +28,9 @@ function(
   // Curriculum-specific (ignored when sampler='default')
   curriculum_start_ratio=1.0,
   curriculum_end_ratio=10.0,
-  difficulty_percentile=75.0,
   canid_weight=0.1,
   curriculum_max_epochs=300,
+  num_tiers=10,
 
   // Upstream checkpoint (VGAE teacher for curriculum scoring)
   vgae_ckpt_path=null,
@@ -70,9 +70,9 @@ function(
       } + (if sampler == 'curriculum' then {
         curriculum_start_ratio: curriculum_start_ratio,
         curriculum_end_ratio: curriculum_end_ratio,
-        difficulty_percentile: difficulty_percentile,
         canid_weight: canid_weight,
         max_epochs: curriculum_max_epochs,
+        num_tiers: num_tiers,
       } else {})
         + (if vgae_ckpt_path != null
            then { vgae_ckpt_path: vgae_ckpt_path }

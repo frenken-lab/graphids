@@ -2,9 +2,13 @@
 
 Follows PyTorch sampler grammar:
 
-- ``Sampler[int]`` yields individual indices (``CurriculumSampler``)
+- ``Sampler[int]`` yields individual indices
 - ``Sampler[list[int]]`` yields batches (``NodeBudgetBatchSampler``)
 - Compose: ``NodeBudgetBatchSampler`` wraps any index source
+
+``make_graph_loader`` supports ``batch_size=None`` for pre-batched datasets
+where each item is already a collated ``Batch`` (identity collation via
+``torch.utils.data.DataLoader`` — PyG DataLoader force-overrides ``collate_fn``).
 
 Dataset-agnostic: operates on pre-computed per-graph size tensors.
 """
@@ -35,12 +39,14 @@ def make_graph_loader(
     """Thin wrapper around PyG DataLoader — sets spawn/persistent_workers defaults.
 
     Args:
+        batch_size: Pass ``None`` for pre-batched datasets where each
+            ``__getitem__`` already returns a complete ``Batch``.  Uses
+            ``torch.utils.data.DataLoader`` with identity collation
+            (PyG DataLoader force-overrides ``collate_fn``).
         device: When set, wraps the loader with PyG's PrefetchLoader for async
             H2D transfer via CUDA streams. pin_memory is disabled on the inner
             loader (PrefetchLoader handles pinning internally).
     """
-    from torch_geometric.loader import DataLoader as PyGDataLoader
-
     if device is not None:
         pin_memory = False  # PrefetchLoader pins internally
 
@@ -51,9 +57,25 @@ def make_graph_loader(
 
     common = dict(num_workers=num_workers, pin_memory=pin_memory, **kwargs)
 
-    if batch_sampler is not None:
+    if batch_size is None:
+        # Pre-batched: each __getitem__ returns a complete Batch.
+        # PyG DataLoader pops collate_fn, so use torch DataLoader directly.
+        from torch.utils.data import DataLoader as TorchDataLoader
+
+        loader = TorchDataLoader(
+            dataset,
+            batch_size=None,
+            shuffle=shuffle,
+            collate_fn=_identity,
+            **common,
+        )
+    elif batch_sampler is not None:
+        from torch_geometric.loader import DataLoader as PyGDataLoader
+
         loader = PyGDataLoader(dataset, batch_sampler=batch_sampler, **common)
     else:
+        from torch_geometric.loader import DataLoader as PyGDataLoader
+
         loader = PyGDataLoader(dataset, batch_size=batch_size, shuffle=shuffle, **common)
 
     if device is not None:
@@ -179,106 +201,32 @@ class NodeBudgetBatchSampler(torch.utils.data.Sampler[list[int]]):
 
 
 # ---------------------------------------------------------------------------
-# Sampler[int] — curriculum epoch-based subset selection
+# Factory — VGAE scoring + difficulty-tier bucketing
 # ---------------------------------------------------------------------------
 
 
-class CurriculumSampler(torch.utils.data.Sampler[int]):
-    """Epoch-based difficulty-gated subset sampler (DistributedSampler pattern).
-
-    Each epoch, ``set_epoch()`` recomputes which graph indices are active
-    based on difficulty scores and a curriculum ramp. ``__iter__`` yields
-    individual indices (shuffled) — pair with ``NodeBudgetBatchSampler``
-    for node-budget batching.
-
-    Follows the same ``set_epoch`` / ``__iter__`` / ``__len__`` contract
-    as ``torch.utils.data.DistributedSampler``.
-    """
-
-    def __init__(
-        self,
-        normal_indices: list[int],
-        attack_indices: list[int],
-        scores: list[float] | torch.Tensor,
-        *,
-        max_epochs: int,
-        curriculum_start_ratio: float,
-        curriculum_end_ratio: float,
-        difficulty_percentile: float,
-        shuffle: bool = True,
-        seed: int = 0,
-    ):
-        self.normal_indices = torch.tensor(normal_indices, dtype=torch.long)
-        self.attack_indices = list(attack_indices)
-        self.scores = torch.tensor(scores) if not isinstance(scores, torch.Tensor) else scores
-        self.max_epochs = max_epochs
-        self.curriculum_start_ratio = curriculum_start_ratio
-        self.curriculum_end_ratio = curriculum_end_ratio
-        self.difficulty_percentile = difficulty_percentile
-        self.shuffle = shuffle
-        self.seed = seed
-        self.epoch = 0
-        # Initial active set: all indices
-        self._active_indices: list[int] = normal_indices + attack_indices
-
-    def set_epoch(self, epoch: int) -> None:
-        """Update active indices based on difficulty scores and curriculum progress.
-
-        Mirrors ``DistributedSampler.set_epoch`` — call before each epoch
-        to change the subset and shuffle seed.
-        """
-        self.epoch = epoch
-        if self.scores is None or len(self.scores) == 0:
-            return
-        ratio = self.curriculum_start_ratio + (
-            self.curriculum_end_ratio - self.curriculum_start_ratio
-        ) * min(epoch / max(self.max_epochs - 1, 1), 1.0)
-        n_normal = min(max(1, int(len(self.normal_indices) * ratio)), len(self.normal_indices))
-        threshold = torch.quantile(self.scores, self.difficulty_percentile / 100.0)
-        easy = self.scores <= threshold
-        hard = ~easy
-        easy_idx = self.normal_indices[easy][:n_normal].tolist()
-        hard_idx = self.normal_indices[hard].tolist()
-        self._active_indices = easy_idx + hard_idx + self.attack_indices
-
-    def __iter__(self):
-        indices = list(self._active_indices)
-        if self.shuffle:
-            g = torch.Generator()
-            g.manual_seed(self.seed + self.epoch)
-            perm = torch.randperm(len(indices), generator=g).tolist()
-            indices = [indices[i] for i in perm]
-        return iter(indices)
-
-    def __len__(self) -> int:
-        return len(self._active_indices)
-
-
-# ---------------------------------------------------------------------------
-# Factory — VGAE scoring + sampler construction
-# ---------------------------------------------------------------------------
-
-
-def build_curriculum_sampler(
+def build_curriculum_tiers(
     train_ds,
     *,
     vgae_ckpt_path: str,
-    max_epochs: int,
-    curriculum_start_ratio: float,
-    curriculum_end_ratio: float,
-    difficulty_percentile: float,
     canid_weight: float,
+    num_tiers: int = 10,
     seed: int = 0,
-) -> tuple[CurriculumSampler, list, torch.Tensor]:
-    """Score graphs by VGAE difficulty and build a curriculum sampler.
+) -> tuple[torch.Tensor, list[list[int]], list[int], list, torch.Tensor]:
+    """Score graphs by VGAE difficulty and bucket normals into difficulty tiers.
 
     Loads the VGAE checkpoint on CPU, scores normal-class training graphs,
-    then discards the model. Returns ``(sampler, full_dataset, dataset_sizes)``
-    where ``full_dataset`` is the reordered list (normals + attacks) that the
-    sampler indexes into, and ``dataset_sizes`` is the per-graph node count
-    tensor for ``NodeBudgetBatchSampler``.
+    sorts by ascending difficulty, and partitions into ``num_tiers`` quantile
+    buckets. Tier 0 = easiest, tier K-1 = hardest. Attacks get a separate
+    always-active tier.
+
+    Returns ``(scores, normal_tier_indices, attack_indices, full_dataset,
+    dataset_sizes)`` where ``full_dataset`` is reordered ``[normals + attacks]``
+    and each tier in ``normal_tier_indices`` is a list of indices into
+    ``full_dataset``.
     """
     import gc
+    import math
     from pathlib import Path
 
     from graphids.core.models._training import load_inner_model
@@ -294,47 +242,50 @@ def build_curriculum_sampler(
     normals = [g for g in train_ds if int(g.y[0]) == 0]
     attacks = [g for g in train_ds if int(g.y[0]) == 1]
     scores = vgae.score_difficulty(normals, canid_weight=canid_weight)
+    if not isinstance(scores, torch.Tensor):
+        scores = torch.tensor(scores, dtype=torch.float)
     del vgae
     gc.collect()
 
     full_dataset = normals + attacks
-    normal_indices = list(range(len(normals)))
-    attack_indices = list(range(len(normals), len(full_dataset)))
     dataset_sizes = torch.tensor([g.num_nodes for g in full_dataset], dtype=torch.long)
 
-    sampler = CurriculumSampler(
-        normal_indices,
-        attack_indices,
-        scores,
-        max_epochs=max_epochs,
-        curriculum_start_ratio=curriculum_start_ratio,
-        curriculum_end_ratio=curriculum_end_ratio,
-        difficulty_percentile=difficulty_percentile,
-        seed=seed,
-    )
-    return sampler, full_dataset, dataset_sizes
+    # Sort normal indices by ascending difficulty score
+    sorted_order = torch.argsort(scores).tolist()
+    # Partition into num_tiers quantile buckets
+    bucket_size = max(1, math.ceil(len(sorted_order) / num_tiers))
+    normal_tier_indices: list[list[int]] = []
+    for start in range(0, len(sorted_order), bucket_size):
+        tier = sorted_order[start : start + bucket_size]
+        normal_tier_indices.append(tier)
+
+    attack_indices = list(range(len(normals), len(full_dataset)))
+
+    return scores, normal_tier_indices, attack_indices, full_dataset, dataset_sizes
 
 
 # ---------------------------------------------------------------------------
-# Lightning callback — bridges DataModule ↔ Sampler epoch sync
+# Lightning callback — selects active curriculum tiers each epoch
 # ---------------------------------------------------------------------------
 
 import pytorch_lightning as pl
 
 
 class CurriculumEpochCallback(pl.Callback):
-    """Advance curriculum sampler's epoch counter each training epoch.
+    """Select active curriculum tiers each training epoch.
 
-    Lightning's ``LightningDataModule`` does not have an
-    ``on_train_epoch_start`` hook — only ``pl.Callback`` does. This
-    callback reads the datamodule's ``_curriculum_sampler`` and calls
-    ``set_epoch()``. It's a no-op when the datamodule doesn't use
-    curriculum sampling, so it's safe to add unconditionally to the
-    forced callback list.
+    Reads tier batches from the datamodule and updates the active batch
+    list based on curriculum progression.  No-op when the datamodule
+    doesn't use tier-based curriculum.  Safe to add unconditionally to
+    the forced callback list.
     """
 
     def on_train_epoch_start(self, trainer, pl_module):
         dm = trainer.datamodule
-        sampler = getattr(dm, "_curriculum_sampler", None)
-        if sampler is not None:
-            sampler.set_epoch(trainer.current_epoch)
+        if getattr(dm, "_tier_batches", None) is not None:
+            dm._select_active_tiers(trainer.current_epoch)
+
+
+def _identity(x):
+    """Identity collate_fn for ``make_graph_loader(batch_size=None)``."""
+    return x

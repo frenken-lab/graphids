@@ -57,8 +57,8 @@ Extends `CANBusDataModule`, adds:
 | `vgae_ckpt_path`          | `str = ""`       | set per run      | runtime            |
 | `curriculum_start_ratio`  | `float = 1.0`    | —                | curriculum tuning  |
 | `curriculum_end_ratio`    | `float = 10.0`   | —                | curriculum tuning  |
-| `difficulty_percentile`   | `float = 75.0`   | —                | curriculum tuning  |
 | `canid_weight`            | `float = 0.1`    | —                | curriculum tuning  |
+| `num_tiers`               | `int = 10`       | —                | curriculum tuning  |
 | `max_epochs`              | `int = 300`      | —                | **must match `trainer.max_epochs`** |
 
 #### `FusionDataModule` — fusion stages (`core/preprocessing/datamodule.py:327`)

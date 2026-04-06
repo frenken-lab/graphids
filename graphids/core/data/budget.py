@@ -1,10 +1,16 @@
-"""Node budget for PyG's DynamicBatchSampler.
+"""VRAM budget and worker sizing for graph batch planning.
 
-Memory ceiling: max nodes that fit in VRAM (hard upper bound — OOM above).
-Worker sizing: calibrate_at_budget() measures real T_collation and T_gpu
-at the operating batch size → compute_resource_profile() derives workers.
+Three sections:
 
-Cost model: docs/reference/gnn_throughput_equations.md
+1. **Constants + helpers** — safety margins, fallback values, graph collection.
+2. **VRAM probe + node budget** (core) — ``_probe_vram()`` measures bytes/node,
+   ``node_budget()`` computes max nodes per batch.  Used by all training paths
+   (standard pre-batched, curriculum tiers, val/test).
+3. **Calibration + worker sizing** — ``calibrate_at_budget()`` measures
+   T_collation and T_gpu, ``autosize_workers()`` derives num_workers.
+   Used by val/test auto-sizing (when ``num_workers=None``) and the
+   ``probe-budget`` CLI profiling tool.  Not used by pre-batched paths
+   (``num_workers=0``).
 """
 
 from __future__ import annotations
@@ -41,6 +47,11 @@ _FALLBACK_BYTES_PER_NODE = int(os.environ.get("KD_GAT_BUDGET_FALLBACK_BPN", "327
 
 # DERIVED: conv types with O(N²) global attention (not O(E) over edges).
 _QUADRATIC_CONV_TYPES = frozenset({"gps"})
+
+
+# ---------------------------------------------------------------------------
+# Section 1: Constants + helpers (above) and shared utilities
+# ---------------------------------------------------------------------------
 
 
 def _collect_graphs(dataset, target_nodes: int) -> list:
@@ -88,7 +99,9 @@ class ResourceProfile:
 
 
 # ---------------------------------------------------------------------------
-# Calibration: measure at the real operating batch size
+# Section 3: Calibration + worker sizing
+# Used by val/test auto-sizing (num_workers=None) and probe-budget CLI.
+# Not used by pre-batched paths (num_workers=0).
 # ---------------------------------------------------------------------------
 
 
@@ -267,7 +280,7 @@ def autosize_workers(
 
 
 # ---------------------------------------------------------------------------
-# VRAM probe: bytes_per_node + backward multiplier
+# Section 2: VRAM probe + node budget (core — used by all training paths)
 # ---------------------------------------------------------------------------
 
 
@@ -363,9 +376,7 @@ def _probe_vram(model, dataset, step_fn=None) -> tuple[int, float]:
     return bytes_per_node, backward_multiplier
 
 
-# ---------------------------------------------------------------------------
 # Node budget: VRAM ceiling → max nodes per batch
-# ---------------------------------------------------------------------------
 
 
 def node_budget(
