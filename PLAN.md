@@ -1,6 +1,47 @@
 # GraphIDS Session Plan
 
-> Last updated: 2026-04-05 (session 26 — Typer CLI + config reorg)
+> Last updated: 2026-04-06 (session 33 — contract docs cleanup)
+
+## What this session did (2026-04-06, session 33 — contract docs cleanup)
+
+- Removed remaining `TrainingContract` / `AnalysisContract` references from
+  orchestration/analysis docs and rules, aligning with the spec + envelope helpers.
+- Updated orchestration risk notes for typed KD handoffs and rewrote ADR 0009
+  to reflect the jsonnet + `validate_config` pipeline.
+
+## What this session did (2026-04-06, session 32 — SLURM env access)
+
+- Centralized SLURM environment reads in `graphids.slurm.env` and replaced
+  direct `os.environ` reads in logging, orchestration, callbacks, and budget sizing.
+
+## What this session did (2026-04-06, session 31 — SLURM refactor)
+
+- Split `graphids/slurm` into `core/` (accounting + submit), `ops/`
+  (profile + staging), and `pipeline.py` for GraphIDS-specific spec plumbing.
+- Updated SLURM imports to the new layout and refreshed env references.
+
+## What this session did (2026-04-06, session 30 — Dagster ResourceParam)
+
+- Swapped `context.resources.slurm` for `ResourceParam[SlurmTrainingResource]`
+  injection in the Dagster asset factory.
+
+## What this session did (2026-04-06, session 29 — Dagster runtime helpers)
+
+- Moved Dagster runtime helpers (partition keys, path context, complete marker)
+  into `graphids/orchestrate/dagster/runtime.py` and updated imports/docs.
+
+## What this session did (2026-04-06, session 28 — Orchestrate decomposition)
+
+- Reorganized `graphids/orchestrate` into subpackages (`dagster/`, `planning/`,
+  `resolve/`, `ops/`, `contracts/`) and moved modules accordingly.
+- Split `SlurmTrainingResource` into `dagster/resources.py`, added package
+  entry points (`__init__.py`) to enforce boundaries.
+- Updated import paths, CLI entrypoints, and reference docs for the new layout.
+
+## What this session did (2026-04-06, session 27 — Copilot instructions)
+
+- Added `.github/copilot-instructions.md` to document build/test/lint commands,
+  high-level architecture, and repo-specific conventions for future sessions.
 
 ## What this session did (2026-04-05, session 26 — Typer CLI + config reorg)
 

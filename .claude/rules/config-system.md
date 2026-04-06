@@ -17,7 +17,7 @@ with Jsonnet-backed configs (`commands/analyze.py`) per
 2. `enumerate_assets` produces `StageConfig`s carrying `jsonnet_path` +
    planner-derived identity knobs.
 3. `ConfigResolver.resolve` packs trainer/stage/KD/upstream-ckpt overrides
-   into a typed TLA dict via `TrainingContract.build_tla_dict`.
+   into a typed TLA dict via `graphids.orchestrate.contracts.build_tla_dict`.
 4. `render_config(spec.jsonnet_path, spec.jsonnet_tla)` produces the merged
    dict — identical on login node, dagster worker, and SLURM node.
 5. `validate_config(rendered) → ValidatedConfig` runs Pydantic validators
@@ -78,7 +78,7 @@ graphids/
   core/
     contracts/
       models.py                    # TrainingSpec — jsonnet_path, jsonnet_tla, identity
-      ops.py                       # TrainingContract — build_tla_dict, resolve_jsonnet_path
+      ops.py                       # build_tla_dict, resolve_jsonnet_path (training spec helpers)
       run_record.py                # RunRecord sidecar schema
     instantiate.py                 # instantiate(rendered) → InstantiatedRun (trainer, model, datamodule)
     train_entrypoint.py            # render_config → validate_config → snapshot → instantiate → fit
@@ -112,7 +112,7 @@ dg launch --assets 'autoencoder_*'
 ## Stage function convention
 
 Every `stages/*.jsonnet` is a top-level function with sensible defaults
-for every TLA. `TrainingContract.build_tla_dict` is the single site that
+for every TLA. `graphids.orchestrate.contracts.build_tla_dict` is the single site that
 packs a `StageConfig` into the TLA dict each stage consumes. Adding a new
 TLA means updating both the jsonnet signature AND `build_tla_dict`.
 

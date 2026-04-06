@@ -112,9 +112,9 @@ configs/                           # repo root
 ### Stage function shape
 
 Every `stages/*.jsonnet` is a top-level function of TLAs with sensible
-defaults for the dev path. `TrainingContract.build_tla_dict` is the single
-mapping between Python-side `StageConfig` and the TLA dict each stage
-accepts.
+defaults for the dev path. `graphids.orchestrate.contracts.build_tla_dict` is
+the single mapping between Python-side `StageConfig` and the TLA dict each
+stage accepts.
 
 ```jsonnet
 local defaults = import '../_lib/defaults.libsonnet';
@@ -194,7 +194,7 @@ ValidatedConfig (extra="forbid")
 
 Stage-archetype monitor mismatches (fusion must be `val_acc/max`, every
 other stage `val_loss/min`) remain a **warning** in
-`orchestrate/resolve._warn_stage_monitor_mismatch` because they're
+`orchestrate/resolve/resolver._warn_stage_monitor_mismatch` because they're
 advisory, not fatal — `ValidatedConfig` already forces internal
 consistency.
 
@@ -203,7 +203,7 @@ consistency.
 | Call site | What it does |
 |---|---|
 | `ConfigResolver.resolve()` | Calls `validate_config(rendered)` after `render_config`; attaches the typed view to `ResolvedConfig.validated` |
-| `ConfigResolver.resolve_and_validate()` | Thin alias for `resolve()` (Phase 3 deleted the jsonargparse second pass). Assets.py and orchestrate/validate.py use this name to signal "fully validated". |
+| `ConfigResolver.resolve_and_validate()` | Thin alias for `resolve()` (Phase 3 deleted the jsonargparse second pass). `dagster/assets.py` and orchestrate/validate.py use this name to signal "fully validated". |
 | `train_entrypoint._instantiate_from_spec()` | Calls `validate_config` on the SLURM worker before `instantiate(...)` — belt-and-braces second pass |
 | `instantiate()` | Re-validates if caller didn't pass a `ValidatedConfig` — ensures downstream code can trust `run.merged` shape |
 
@@ -254,16 +254,15 @@ every step that `GraphIDSCLI` used to own:
 | `config/jsonnet.py` | `render_config(path, tla)` subprocess shim | No |
 | `config/schemas.py` | `ValidatedConfig`, `validate_config`, `ConfigValidationError` | No |
 | `config/yaml_utils.py` | `read_yaml` / `write_yaml` (snapshots + recipes) | No |
-| `core/contracts/models.py` | `TrainingSpec` (Pydantic) — `jsonnet_path`, `jsonnet_tla` | No |
-| `core/contracts/ops.py` | `TrainingContract` — `build_tla_dict`, `resolve_jsonnet_path` | No |
+| `orchestrate/contracts/__init__.py` | `TrainingSpec` (Pydantic) — `jsonnet_path`, `jsonnet_tla`, `build_tla_dict` | No |
 | `core/train_entrypoint.py` | `render_config → validate_config → snapshot → instantiate` | Yes |
 | `config/contracts.py` | `TrainingRunConfig`, `KDEntry`, `expand_recipe_configs` | No |
 | `config/topology.py` | Stage DAG, valid types/scales, import-time assertions against `configs/` | No |
 | `config/shared.py` | `StageConfig`, `ResourceSpec` | No |
-| `orchestrate/planning.py` | `enumerate_assets` (StageConfig lives in `config/shared.py`) | No |
-| `orchestrate/resolve.py` | `ConfigResolver` — builds TLA, renders, validates, cross-field checks via `config/schemas.py` | No |
-| `orchestrate/assets.py` | `make_training_asset`, `make_analysis_asset` | No |
-| `orchestrate/component.py` | `SlurmTrainingComponent` (dagster Component) | No |
+| `orchestrate/planning/planner.py` | `enumerate_assets` (StageConfig lives in `config/shared.py`) | No |
+| `orchestrate/resolve/resolver.py` | `ConfigResolver` — builds TLA, renders, validates, cross-field checks via `config/schemas.py` | No |
+| `orchestrate/dagster/assets.py` | `make_training_asset` | No |
+| `orchestrate/dagster/component.py` | `SlurmTrainingComponent` (dagster Component) | No |
 
 ---
 

@@ -78,7 +78,7 @@ Dev path (`python -m graphids fit --config configs/stages/autoencoder.jsonnet --
 ┌──────────▼──────────────────────────────────────────────────────┐
 │ HANDOFF 2: Submit  (dagster worker, still CPU)                 │
 │                                                                 │
-│  TrainingContract.to_envelope(training_spec)                    │
+│  graphids.orchestrate.contracts.to_envelope(training_spec)      │
 │       ▼                                                         │
 │  write_training_spec → /fs/.../specs/<job>_<uuid>.json          │
 │       ▼                                                         │
@@ -94,7 +94,7 @@ Dev path (`python -m graphids fit --config configs/stages/autoencoder.jsonnet --
 │                                                                 │
 │  python -m graphids from-spec --phase train --spec-file X.json  │
 │       ▼                                                         │
-│  TrainingContract.from_envelope(X)  → TrainingSpec              │
+│  graphids.orchestrate.contracts.from_envelope(X)  → TrainingSpec │
 │       ▼                                                         │
 │  render_config(spec.jsonnet_path, spec.jsonnet_tla)             │
 │       ▼                                                         │
@@ -173,11 +173,11 @@ TrainingSpec(
 }
 ```
 
-Every override source (trainer, stage, KD, upstream ckpts) is packed into this dict at handoff 1, inside `ConfigResolver.resolve()` via `TrainingContract.build_tla_dict()`:
+Every override source (trainer, stage, KD, upstream ckpts) is packed into this dict at handoff 1, inside `ConfigResolver.resolve()` via `graphids.orchestrate.contracts.build_tla_dict()`:
 
 ```python
-# core/contracts/ops.py
-tla = TrainingContract.build_tla_dict(
+# orchestrate/contracts/__init__.py
+tla = graphids.orchestrate.contracts.build_tla_dict(
     cfg,
     dataset=dataset, seed=seed, run_dir=run_dir,
     upstream_ckpts=upstream_ckpts,

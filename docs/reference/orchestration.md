@@ -8,32 +8,29 @@ topology, and produces one partitioned asset per unique
 `(stage, model_type, scale, fusion_method, kd_variant)` combination. Each
 asset submits a single SLURM job that runs train → test → analyze.
 
-## Files (10, 1,171 LOC)
+## Layout
 
-| File | LOC | Role |
-|---|---:|---|
-| `__init__.py` | 11 | Package docstring |
-| `__main__.py` | 29 | CLI stub (validation moved into resolver gates) |
-| `definitions.py` | 35 | Dagster discovery entry (via `pyproject.toml`); configures logging, instantiates `SlurmTrainingComponent`, calls `build_defs_for_component` |
-| `component.py` | 138 | `SlurmTrainingComponent` (`dg.Component`) + `SlurmTrainingResource` (`dg.ConfigurableResource`). Assembles `Definitions(assets, asset_checks, resources, executor)` |
-| `planning.py` | 187 | Pure data: `enumerate_assets(pipeline, recipe) → list[StageConfig]` (StageConfig lives in `graphids.config.shared`). Two-pass expansion with canonical dedup, identity hashing, KD teacher resolution. No dagster imports |
-| `resolve.py` | 312 | `ConfigResolver` — the exclusive merge path (ADR 0009). Takes a `StageConfig` and produces `ResolvedConfig(spec, resources, paths, audit)`. Runs override merge + Pydantic gates (`validate_config` + stage cross-field validation) in one pass |
-| `assets.py` | 195 | `make_training_asset(cfg)` factory + shared dagster-context helpers (`partition_keys`, `paths_for_context`, `_runtime_lake_root`, `_runtime_user`, `_touch_complete`). One `@dg.asset` per `StageConfig`; bundles train→test→analyze into a single SLURM job |
-| `checks.py` | 124 | `make_asset_checks(cfg_lookup)` — one `@dg.multi_asset_check` op per training asset, emitting a blocking `checkpoint_complete_*` check and a non-blocking `analysis_complete_*` check (where supported) with `can_subset=True` |
-| `analysis.py` | 48 | Analysis spec/output helpers: `supports_analysis`, `build_analysis_spec`, `output_status`, `ANALYSIS_MANIFEST_NAME`. Shared by `assets.py` and `checks.py` |
+| Area | Files | Role |
+|---|---|---|
+| Root | `definitions.py`, `analysis.py`, `__main__.py` | Dagster discovery entry + analysis helpers + CLI stub |
+| `dagster/` | `component.py`, `resources.py`, `assets.py`, `checks.py`, `asset_config.py`, `runtime.py` | Dagster-facing component, resources, asset/check factories, runtime helpers |
+| `planning/` | `planner.py`, `recipes.py`, `shared.py` | Pure planning + recipe expansion + `StageConfig` (no Dagster imports) |
+| `resolve/` | `resolver.py`, `cross_field.py` | Config resolution + cross-field validation |
+| `contracts/` | `__init__.py` | `TrainingSpec` + envelope helpers |
+| `ops/` | `entrypoint.py`, `status.py`, `catalog.py`, `finalize.py` | CLI entry points (from-spec, pipeline-status, catalog rebuild, finalize sidecars) |
 
 ## Layered structure (no cycles)
 
 ```
-LEAVES     planning.py (pure data)
+LEAVES     planning/ (pure data)
                │
-CONTRACTS  analysis.py ◄── planning         resolve.py ◄── planning
+CONTRACTS  analysis.py ◄── planning         resolve/ ◄── planning
                │                                │
-FACTORIES  assets.py (uses analysis, planning, resolve)
+FACTORIES  dagster/assets.py (uses analysis, planning, resolve)
                │
-           checks.py (uses analysis, assets, planning)
+           dagster/checks.py (uses analysis, assets, planning)
                │
-HUB        component.py (uses assets, checks, planning)
+HUB        dagster/component.py (uses assets, checks, planning)
                │
 ENTRIES    definitions.py
                │
@@ -50,8 +47,8 @@ SlurmTrainingComponent (dg.Component)
 │   ├── expand_recipe_configs(recipe)            → normalized dict
 │   ├── enumerate_assets(PIPELINE_YAML, recipe)  → list[StageConfig]
 │   ├── MultiPartitionsDefinition(dataset × seed)
-│   ├── assets.make_training_asset(cfg)          → @dg.asset (one per StageConfig)
-│   ├── checks.make_asset_checks(cfg_lookup)     → one multi_asset_check per asset
+│   ├── dagster.assets.make_training_asset(cfg)  → @dg.asset (one per StageConfig, slurm injected via ResourceParam)
+│   ├── dagster.checks.make_asset_checks(cfg_lookup) → one multi_asset_check per asset
 │   └── Definitions(assets, asset_checks, resources, executor=multiprocess)
 │
 ├── SlurmTrainingResource (dg.ConfigurableResource)

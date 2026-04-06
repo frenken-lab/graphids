@@ -207,39 +207,13 @@ them consistently during resolution.
 
 ### 4. KD JSON blob stringification
 
-**Location:** `resolve.py:134–138`.
-
-```python
-if cfg.kd_overrides:
-    key = "model.init_args.auxiliaries"
-    val = json.dumps([cfg.kd_overrides])
-    runtime_overrides[key] = val
-    audit.append(OverrideRecord(key=key, value=val, source="kd"))
-```
+**Location:** `resolve.py`.
 
 KD config is a typed `KDEntry` (Pydantic, `config/contracts.py:12`) in the recipe.
-Planning extracts it as a dict via `model_dump(exclude_none=True)`. Resolve stringifies
-to JSON, stuffs it under `model.init_args.auxiliaries` in `runtime_overrides` (which is
-semantically `dict[str, Any]` but typed `dict[str, str]` on `TrainingSpec`).
-`TrainingContract.to_override_dict` (`core/contracts/ops.py:120`) passes the string
-through, `merge_yaml_chain` sets it as a YAML value, and jsonargparse parses it back
-into a typed `KDAuxiliary` TypedDict.
-
-So: `KDEntry` → `dict` → JSON string → YAML string → jsonargparse parse → `TypedDict`.
-
-**Why it's fragile:**
-
-- Four serialization layers between where KD config is defined and where it's consumed.
-  Each layer can corrupt the shape.
-- Audit log stores the JSON string verbatim — unreadable in diagnostics.
-- Type safety is lost in the middle three steps. jsonargparse catches malformed JSON, but
-  by then you're four layers deep.
-
-**What would fix it:** make `TrainingSpec.runtime_overrides` typed as `dict[str, Any]`
-instead of `dict[str, str]`, let structured values flow through as-is, and handle type
-coercion inside `merge_yaml_chain`. Would drop the `json.dumps` + `parse_object`
-round-trip. Non-trivial because it affects the serialization boundary shared with the
-dev path (LightningCLI).
+Planning extracts it as a dict via `model_dump(exclude_none=True)`. Resolve now passes
+the structured payload straight through `jsonnet_tla["auxiliaries"]` via
+`graphids.orchestrate.contracts.build_tla_dict`, so the handoff stays typed end-to-end.
+There is no JSON/YAML string round-trip and the audit trail records structured values.
 
 ## Tier 2 — Smaller but real
 
@@ -385,11 +359,8 @@ readable, AND the planning → resolve → transport → runtime path stops losi
 type safety in the middle three steps. jsonargparse catches malformed JSON,
 but only at the very end, far from whichever layer corrupted the shape.
 
-**Scope:** touches the serialization boundary shared with the dev path
-(LightningCLI). The hardest part is verifying the dev path still works when
-`runtime_overrides` contains non-string values — that code in
-`TrainingContract.to_override_dict` currently coerces everything via
-`_s = lambda v: str(v).lower() if isinstance(v, bool) else str(v)`.
+**Scope:** validate that downstream consumers keep treating `jsonnet_tla` as
+typed data (no stringification reintroduced in the CLI path).
 
 ---
 

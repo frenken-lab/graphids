@@ -36,8 +36,8 @@ KD-GAT/
 │ │ └── jsonnet.py # render_config() — already exists, keep here
 │ │
 │ ├── core/
-│ │ ├── contracts/ # TrainingContract, TrainingSpec — keep here
-│ │ │ # these are runtime contracts not config schemas
+│ │ ├── contracts/ # TrainingSpec + envelope helpers — keep here
+│ │ │ # these are runtime specs, not config schemas
 │ │ ├── models/ # unchanged
 │ │ ├── artifacts/ # unchanged
 │ │ └── preprocessing/ # unchanged

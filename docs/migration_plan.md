@@ -90,7 +90,7 @@ The argument linking feature in particular is probably replacing a chunk of your
 
 **Completed 2026-04-05.**
 
-`TrainingAssetConfig(dg.Config)` in `orchestrate/asset_config.py` provides
+`TrainingAssetConfig(dg.Config)` in `orchestrate/dagster/asset_config.py` provides
 launch-time overridable knobs (`run_test`, `run_analysis`, `dry_run`).
 Asset function returns `dg.Output[str]` with metadata. Checkpoint paths
 already flowed via Dagster asset I/O — `upstream_ckpt_paths` in

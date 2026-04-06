@@ -15,8 +15,8 @@ not infer them from this doc:
 
 | Layer | Entry point | Code |
 |---|---|---|
-| Config resolution (merge + audit trail) | `ConfigResolver.resolve()` | `graphids/orchestrate/resolve.py` |
-| Dagster assets / SLURM submission | `dg launch`, `scripts/slurm/submit.sh` | `graphids/orchestrate/{assets,component,slurm}.py` |
+| Config resolution (merge + audit trail) | `ConfigResolver.resolve()` | `graphids/orchestrate/resolve/resolver.py` |
+| Dagster assets / SLURM submission | `dg launch`, `scripts/slurm/submit.sh` | `graphids/orchestrate/dagster/{assets,component,resources}.py` |
 | Run record sidecars (status, metrics, phases) | `RunRecordCallback` | `graphids/core/contracts/run_record.py`, `graphids/callbacks.py` |
 | DuckDB catalog rebuild | `python -m graphids rebuild-catalog` | `graphids/commands/rebuild_catalog.py` |
 | Multi-point budget calibration CSV | `python -m graphids probe-budget` | `graphids/commands/profile_budget.py` (commit `6e3424a`) |
@@ -811,8 +811,8 @@ GAT is confirmed as the remaining bottleneck via nsys/ncu profiling.
 
 | File | Purpose |
 |---|---|
-| `graphids/orchestrate/resolve.py` | `ConfigResolver` (exclusive merge path, cross-field validation, audit trail) |
-| `graphids/orchestrate/{assets,component,slurm}.py` | Dagster asset defs + SLURM submission |
+| `graphids/orchestrate/resolve/resolver.py` | `ConfigResolver` (exclusive merge path, cross-field validation, audit trail) |
+| `graphids/orchestrate/dagster/{assets,component,resources}.py` | Dagster asset defs + SLURM submission |
 | `graphids/core/contracts/run_record.py` | `RunRecord` Pydantic schema |
 | `graphids/callbacks.py` | `RunRecordCallback` (writes sidecar on fit_start/end/exception) |
 | `graphids/commands/rebuild_catalog.py` | DuckDB catalog rebuild from sidecars |

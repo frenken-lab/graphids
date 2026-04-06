@@ -69,7 +69,7 @@ enumerate_assets (planning.py)
   ▼
 ConfigResolver.resolve (resolve.py)
   Packs kd_overrides into jsonnet_tla["auxiliaries"] via
-  TrainingContract.build_tla_dict (typed dict, not stringified)
+  graphids.orchestrate.contracts.build_tla_dict (typed dict, not stringified)
   │
   ▼
 render_config(jsonnet_path, jsonnet_tla)  (config/jsonnet.py)
