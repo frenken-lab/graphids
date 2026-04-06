@@ -449,7 +449,8 @@ def instantiate(
 
     # -- model ---------------------------------------------------------------
     model_init = _inject_loss_fn(merged["model"].get("init_args") or {})
-    model = model_cls(**model_init)
+    accepted = _init_kwargs(model_cls)
+    model = model_cls(**{k: v for k, v in model_init.items() if k in accepted})
 
     # -- trainer -------------------------------------------------------------
     trainer_cfg = dict(merged.get("trainer") or {})

@@ -140,7 +140,7 @@ class TestLinkArguments:
 
     def test_init_kwargs_matches_signature(self):
         """``_init_kwargs`` helper mirrors ``inspect.signature``, sans self/varargs."""
-        from graphids.core.models.autoencoder.vgae import VGAEModule
+        from graphids.core.models.autoencoder.vgae_module import VGAEModule
 
         params = _init_kwargs(VGAEModule)
         # Sanity-check a few known kwargs:
