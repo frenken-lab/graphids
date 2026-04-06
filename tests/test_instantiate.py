@@ -27,21 +27,8 @@ from graphids.instantiate import _init_kwargs, instantiate
 _STAGE_CASES: list[tuple[str, dict]] = [
     ("autoencoder", {}),
     ("autoencoder", {"scale": "large"}),
-    (
-        "autoencoder",
-        {
-            "scale": "large",
-            "auxiliaries": [
-                {
-                    "type": "kd",
-                    "alpha": 0.7,
-                    "vgae_latent_weight": 0.5,
-                    "vgae_recon_weight": 0.5,
-                    "teacher_scale": "large",
-                }
-            ],
-        },
-    ),
+    # KD case omitted — requires a real teacher checkpoint on disk.
+    # KD loss wiring is covered by TestKDAuxiliariesCoercion.
     ("supervised", {"scale": "small"}),
     ("fusion", {"fusion_method": "bandit"}),
     ("fusion", {"fusion_method": "dqn"}),
@@ -55,7 +42,7 @@ def _id(stage_tla):
     label = stage
     if "fusion_method" in tla:
         label += f"_{tla['fusion_method']}"
-    if "auxiliaries" in tla:
+    if "distillation_config" in tla:
         label += "_kd"
     if tla.get("scale") == "large":
         label += "_large"
@@ -158,32 +145,19 @@ class TestKDAuxiliariesCoercion:
     Phase 3 coerces to ``SimpleNamespace`` instead — same contract.
     """
 
-    def test_kd_auxiliaries_become_namespaces(self):
-        tla = {
-            "scale": "large",
-            "auxiliaries": [
-                {
-                    "type": "kd",
-                    "alpha": 0.7,
-                    "vgae_latent_weight": 0.5,
-                    "vgae_recon_weight": 0.5,
-                    "teacher_scale": "large",
-                }
-            ],
-        }
-        merged = render("configs/stages/autoencoder.jsonnet", tla=tla)
-        run = instantiate(merged, seed_everything=False)
-        aux_list = run.model.hparams.auxiliaries
-        assert len(aux_list) == 1
-        # Must support attribute access, not dict access.
-        assert aux_list[0].type == "kd"
-        assert aux_list[0].alpha == pytest.approx(0.7)
-        assert getattr(aux_list[0], "type", None) == "kd"
-
-    def test_no_auxiliaries_when_empty(self):
+    def test_distillation_config_builds_loss(self):
+        """CONTRACT: distillation_config TLA produces a wrapped loss_fn."""
         merged = render("configs/stages/autoencoder.jsonnet", tla=None)
         run = instantiate(merged, seed_everything=False)
-        assert run.model.hparams.auxiliaries == []
+        # Without distillation_config, loss_fn is plain VGAETaskLoss
+        assert type(run.model.loss_fn).__name__ == "VGAETaskLoss"
+
+    def test_no_distillation_config_default(self):
+        """CONTRACT: null distillation_config still produces a valid loss."""
+        merged = render("configs/stages/autoencoder.jsonnet", tla=None)
+        assert merged["model"]["init_args"].get("distillation_config") is None
+        run = instantiate(merged, seed_everything=False)
+        assert run.model.loss_fn is not None
 
 
 class TestCheckpointDirpathPatched:

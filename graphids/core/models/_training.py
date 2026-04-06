@@ -74,9 +74,10 @@ class GraphModuleBase(pl.LightningModule):
     def setup(self, stage=None):
         if self.model is None:
             dm = self.trainer.datamodule
-            self.hparams.num_ids = dm.num_ids
-            self.hparams.in_channels = dm.in_channels
-            self.hparams.num_classes = dm.num_classes
+            if dm is not None:
+                self.hparams.num_ids = dm.num_ids
+                self.hparams.in_channels = dm.in_channels
+                self.hparams.num_classes = dm.num_classes
             self._build()
 
     def _build(self):
