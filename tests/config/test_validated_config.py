@@ -1,4 +1,4 @@
-"""Tests for ``graphids.config.schemas`` validation."""
+"""Tests for ``graphids.config.schemas`` validation.
 
 Phase 2 validation layer. Each test cites the specific invariant it guards
 per ``.claude/rules/test-writing.md``; no formula mirrors, no pytest.raises
@@ -6,11 +6,11 @@ against framework-level errors (Pydantic does its own testing upstream).
 
 The tests are split into two groups:
 
-- ``TestRenderedStagesValidate`` — integration-level: render the real
+- ``TestRenderedStagesValidate`` --integration-level: render the real
   jsonnet stages and assert that every variant this repo ships produces a
   valid ``ValidatedConfig``. These tests cover the happy path end-to-end.
 
-- ``TestConventionRulesEnforced`` — focused regression tests for the rules
+- ``TestConventionRulesEnforced`` --focused regression tests for the rules
   migrated from ``resolve._convention_errors`` into Pydantic
   ``@model_validator`` methods. Each one builds a minimal ``valid_dict``
   fixture, mutates the single field under test, and asserts the validator
@@ -31,9 +31,8 @@ from graphids.config.schemas import (
 )
 from graphids.orchestrate.contracts import TrainingContract
 
-
 # ---------------------------------------------------------------------------
-# Happy path — every stage variant this repo ships validates
+# Happy path --every stage variant this repo ships validates
 # ---------------------------------------------------------------------------
 
 
@@ -63,16 +62,14 @@ class TestRenderedStagesValidate:
         # touching top-level identity. Invariant, not a formula mirror.
         assert vc.model.init_args["scale"] == scale
 
-    @pytest.mark.parametrize(
-        "method", ["bandit", "dqn", "mlp", "weighted_avg"]
-    )
+    @pytest.mark.parametrize("method", ["bandit", "dqn", "mlp", "weighted_avg"])
     def test_fusion_method_dispatch_validates(self, method: str) -> None:
         rendered = render(
             TrainingContract.resolve_jsonnet_path("fusion"),
             tla={"fusion_method": method},
         )
         vc = validate_config(rendered)
-        # Every fusion stage agrees on val_acc/max — the stage-archetype
+        # Every fusion stage agrees on val_acc/max --the stage-archetype
         # the planner warns about when violated.
         assert vc.checkpoint.monitor == "val_acc"
         assert vc.checkpoint.mode == "max"
@@ -175,12 +172,8 @@ class TestConventionRulesEnforced:
         """
         assert isinstance(validate_config(valid_dict), ValidatedConfig)
 
-    @pytest.mark.parametrize(
-        "field", ["pool_aggrs", "hidden_dims", "auxiliaries"]
-    )
-    def test_null_model_list_field_rejected(
-        self, valid_dict: dict, field: str
-    ) -> None:
+    @pytest.mark.parametrize("field", ["pool_aggrs", "hidden_dims", "auxiliaries"])
+    def test_null_model_list_field_rejected(self, valid_dict: dict, field: str) -> None:
         """REGRESSION: null list fields in model.init_args must die early.
 
         Source: ``_convention_errors`` in resolve.py pre-Phase-2. jsonargparse
@@ -192,9 +185,7 @@ class TestConventionRulesEnforced:
         with pytest.raises(ConfigValidationError, match="null"):
             validate_config(bad)
 
-    def test_monitor_checkpoint_vs_early_stopping_mismatch_rejected(
-        self, valid_dict: dict
-    ) -> None:
+    def test_monitor_checkpoint_vs_early_stopping_mismatch_rejected(self, valid_dict: dict) -> None:
         """CONTRACT: checkpoint and early_stopping track the same metric.
 
         Previously a warning against a hardcoded stage table; Phase 2
@@ -229,9 +220,7 @@ class TestConventionRulesEnforced:
         ]
         validate_config(ok)  # no raise
 
-    def test_class_path_outside_graphids_namespace_rejected(
-        self, valid_dict: dict
-    ) -> None:
+    def test_class_path_outside_graphids_namespace_rejected(self, valid_dict: dict) -> None:
         """CONTRACT: every model/data class_path must be namespaced.
 
         Guards against relative imports and stray top-level modules
@@ -246,7 +235,7 @@ class TestConventionRulesEnforced:
         """CONTRACT: unknown top-level keys indicate a recipe/stage typo.
 
         extra="forbid" on ValidatedConfig is the whole point of the Phase 2
-        layer — it's how we'll catch typos that jsonargparse silently
+        layer --it's how we'll catch typos that jsonargparse silently
         absorbed before (e.g. ``trinaer`` instead of ``trainer``).
         """
         bad = copy.deepcopy(valid_dict)

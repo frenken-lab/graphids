@@ -7,18 +7,20 @@ import graphlib
 import pytest
 from pydantic import ValidationError
 
-from graphids.config.constants import CONFIG_DIR
-from graphids.config.jsonnet import render
-from graphids.config.paths import dataset_names, load_catalog
-from graphids.config.schemas import KDEntry, TrainingRunConfig
-from graphids.config.topology import (
-    PIPELINE_TOPOLOGY,
-    STAGE_DEPENDENCIES,
-    STAGES,
+from graphids.config.constants import (
+    CONFIG_DIR,
     VALID_FUSION_METHODS,
     VALID_MODEL_TYPES,
     VALID_SCALES,
 )
+from graphids.config.jsonnet import render
+from graphids.config.paths import dataset_names, load_catalog
+from graphids.config.topology import (
+    PIPELINE_TOPOLOGY,
+    STAGE_DEPENDENCIES,
+    STAGES,
+)
+from graphids.orchestrate.recipes import KDEntry, TrainingRunConfig
 
 # ---------------------------------------------------------------------------
 # Dataset catalog (configs/datasets/dataset_registry.json)
