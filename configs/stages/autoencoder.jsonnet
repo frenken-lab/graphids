@@ -42,7 +42,7 @@ function(
     },
 
     data: {
-      class_path: 'graphids.core.data.datamodule.CANBusDataModule',
+      class_path: 'graphids.core.data.datamodule.GraphDataModule',
       init_args: {
         window_size: 100,
         stride: 100,

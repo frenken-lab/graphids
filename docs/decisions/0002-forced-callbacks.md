@@ -1,5 +1,7 @@
 # Forced Callbacks: Eliminate Config Fragility
 
+> **Stale reference note (2026-04-06):** `_lightning.py` and `add_lightning_class_args` no longer exist. Forced callbacks are now constructed by `_build_callbacks()` in `graphids/instantiate.py`. `defaults/trainer.yaml` replaced by `configs/_lib/defaults.libsonnet`.
+
 > Status: **IMPLEMENTED** | Created: 2026-03-31 | Implemented: 2026-04-01
 
 ## Problem

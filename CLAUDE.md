@@ -14,7 +14,7 @@ Every function, file, and abstraction must earn its place. Before writing code, 
 # Training — jsonnet stages (Phase 1 migration 2026-04-05). Each stage
 # has sensible TLA defaults so zero-arg invocation works as a smoke test.
 python -m graphids fit --config configs/stages/autoencoder.jsonnet
-python -m graphids fit --tla 'scale="large"' --config configs/stages/normal.jsonnet
+python -m graphids fit --tla 'scale="large"' --config configs/stages/supervised.jsonnet
 
 # Pass TLAs to stages (JSON-encoded values; unquoted bare strings also accepted)
 python -m graphids fit \
@@ -35,9 +35,9 @@ python -m graphids analyze --config configs/stages/analyze_vgae.jsonnet \
 
 Three entry points, zero overlap:
 
-**Training** — `python -m graphids fit|test|validate|predict` → `graphids/commands/train.py::main()` (stdlib argparse, Phase 3). Renders the jsonnet stage with any `--tla` flags, gates through `validate_config`, and calls `graphids.core.instantiate.instantiate(rendered) → InstantiatedRun` which handles class_path import, signature-filtered link_arguments, forced callbacks (ModelCheckpoint/EarlyStopping/DeviceStatsMonitor/ResourceProfileCallback/RunRecordCallback), logger wiring, and wandb config forwarding. `ResourceProfileCallback`/`RunRecordCallback` live in `graphids/callbacks.py`. `GraphIDSCLI`, `LightningCLI`, `_lightning.py`, and `cli.py` were deleted in Phase 3.
+**Training** — `python -m graphids fit|test|validate|predict` → `graphids/cli/_training.py` (Typer). Renders the jsonnet stage with any `--tla` flags, gates through `validate_config`, and calls `graphids.instantiate.instantiate(rendered) → InstantiatedRun` which handles class_path import, signature-filtered link_arguments, forced callbacks (ModelCheckpoint/EarlyStopping/DeviceStatsMonitor/ResourceProfileCallback/RunRecordCallback), logger wiring, and wandb config forwarding. Callbacks live in `graphids/core/monitoring/callbacks.py`.
 
-**Operational commands** — registered in `_COMMAND_MODULES` dict in `__main__.py`. Convention: module name = command name (`-` → `_`), each exports `main(argv)`. Adding a subcommand = one file + one dict entry.
+**Operational commands** — Typer CLI in `graphids/cli/`. `app.py` defines the root app with shared options (`parse_tla`, `apply_overrides`). Submodules register commands via `@app.command()` decorators: `_training.py`, `_analysis.py`, `_data.py`, `_orchestrate.py`, `_slurm.py`. `graphids/__main__.py` imports these submodules to register all commands.
 
 | Command | Purpose |
 |---------|---------|
@@ -65,7 +65,7 @@ Three entry points, zero overlap:
 | `dg list defs` | List all assets |
 | `dg list defs` | Validate dagster definitions |
 
-**Config resolution** — `ConfigResolver` in `orchestrate/resolve.py` is the exclusive merge path for pipeline runs. It packs trainer/resource/KD overrides into a typed TLA dict via `graphids.orchestrate.contracts.build_tla_dict`, renders the stage jsonnet via `graphids.config.jsonnet.render_config`, validates cross-field constraints, and emits an audit trail. `assets.py` calls `resolver.resolve()` → `ResolvedConfig` (TrainingSpec + ResourceSpec + paths). See frenken-lab/graphids#19 and `docs/reference/config-architecture.md`.
+**Config resolution** — `ConfigResolver` in `orchestrate/resolve/resolver.py` is the exclusive merge path for pipeline runs. It packs trainer/resource/KD overrides into a typed TLA dict via `graphids.orchestrate.contracts.build_tla_dict`, renders the stage jsonnet via `graphids.config.jsonnet.render_config`, validates cross-field constraints, and emits an audit trail. `orchestrate/dagster/assets.py` calls `resolver.resolve()` → `ResolvedConfig` (TrainingSpec + ResourceSpec + paths). See frenken-lab/graphids#19 and `docs/reference/config-architecture.md`.
 
 **SLURM submission** — all jobs via `scripts/slurm/submit.sh <profile> [args]`. The preamble hard-fails if the `jsonnet` binary is missing (see `docs/decisions/0010-jsonnet-binary.md`). Resource profiles read from `configs/resources/` (`job_profiles.json`, `clusters.json`, `submit_profiles.yaml`). See `rules/slurm-hpc.md`.
 

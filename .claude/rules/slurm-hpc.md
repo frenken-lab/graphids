@@ -115,7 +115,7 @@ Data staging uses a 3-tier storage hierarchy. `python -m graphids stage-data` ma
 ## Login Node Safety
 
 **Safe on login node:**
-- Import checks: `python -c "from graphids.config import resolve; print('OK')"`
+- Import checks: `python -c "from graphids.config import schemas; print('OK')"`
 - DuckDB queries: `duckdb < data/datalake/queries/leaderboard.sql`
 - Git, ruff
 

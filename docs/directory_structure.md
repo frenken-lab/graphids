@@ -12,10 +12,9 @@ KD-GAT/
 │ │ ├── pretrain.jsonnet # autoencoder stage
 │ │ ├── supervised.jsonnet # GAT stage
 │ │ └── fusion.jsonnet # fusion stage (was fusion.libsonnet?)
-│ ├── models/ # already exists — migrate → jsonnet
-│ │ ├── gat.libsonnet
-│ │ ├── dgi.libsonnet
-│ │ ├── vgae.libsonnet
+│ ├── models/
+│ │ ├── unsupervised.libsonnet  # was vgae + dgi
+│ │ ├── supervised.libsonnet    # was gat
 │ │ └── fusion/
 │ │ ├── dqn.libsonnet
 │ │ └── bandit.libsonnet
@@ -42,19 +41,19 @@ KD-GAT/
 │ │ ├── artifacts/ # unchanged
 │ │ └── preprocessing/ # unchanged
 │ │
-│ ├── orchestrate/
-│ │ ├── assets.py # Dagster assets — unchanged structure
-│ │ ├── definitions.py # unchanged
-│ │ ├── planning.py # enumerate_assets (StageConfig lives in graphids/config/shared.py)
-│ │ ├── resolve.py # cross-field logic in config/schemas.py
-│ │ ├── checks.py # Dagster asset checks — keep
-│ │ ├── analysis.py # keep
-│ │ └── component.py # keep
+│ ├── orchestrate/           # decomposed into subpackages (2026-04-06)
+│ │ ├── contracts/           # TrainingSpec, build_tla_dict
+│ │ ├── dagster/             # assets, checks, component, resources, runtime
+│ │ ├── planning/            # planner, recipes, shared (StageConfig)
+│ │ ├── resolve/             # resolver, cross_field
+│ │ ├── ops/                 # entrypoint, catalog, finalize, status
+│ │ ├── analysis.py
+│ │ └── definitions.py
 │ │
-│ ├── slurm/
-│ │ ├── __init__.py
-│ │ ├── resources.py
-│ │ └── slurm.py
-│ │ # ResourceSpec MOVES to graphids/config/shared.py
+│ ├── slurm/                 # decomposed (2026-04-06)
+│ │ ├── env.py               # centralized SLURM env var reads
+│ │ ├── core/                # accounting, submit
+│ │ ├── ops/                 # profile, staging
+│ │ └── pipeline.py          # GraphIDS-specific spec plumbing
 │ │
 │ └── train_entrypoint.py # thin — calls render_config → validate → instantiate

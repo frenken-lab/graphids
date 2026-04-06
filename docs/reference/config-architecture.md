@@ -1,15 +1,10 @@
 # Config Architecture
 
 > CLI routes, jsonnet-based config composition, and architecture evaluation.
-> Phase 1 migration (2026-04-05) replaced the 3-chain YAML + `merge_yaml_chain`
-> plumbing with `render_config(jsonnet_path, tla)`. Phase 2 (2026-04-05)
-> added a Pydantic validation layer — `graphids.config.validate_config` —
-> between the render and the downstream consumer. Phase 3 (2026-04-05)
-> stripped `LightningCLI` entirely: the validated dict is now consumed
-> by `graphids.core.instantiate.instantiate`, which imports class_paths
-> directly via `importlib` and constructs the Lightning stack without
-> `GraphIDSCLI`. Phase 4 retools the analyzer CLI to keep jsonargparse
-> for Jsonnet-backed configs (`commands/analyze.py`).
+> Phases 1–4 (completed 2026-04-05) replaced YAML chains + LightningCLI with:
+> `render_config(jsonnet_path, tla)` → `validate_config` (Pydantic) →
+> `graphids.instantiate.instantiate` (importlib class_path instantiation).
+> Analyzer CLI uses jsonargparse with Jsonnet-backed configs (`cli/_analysis.py`).
 
 ---
 
@@ -26,8 +21,8 @@ python -m graphids fit \
     --config configs/stages/autoencoder.jsonnet \
     --set model.init_args.lr=0.01
   -> __main__.py
-  -> commands.train.main([subcommand, *argv])
-  -> argparse: --config, --tla, --set, --ckpt_path
+  -> cli._training (Typer @app.command)
+  -> Typer: --config, --tla, --set, --ckpt_path
   -> render_config(jsonnet_path, tla)
   -> validate_config(rendered)  # Pydantic gate
   -> _apply_set_overrides(merged, overrides)
@@ -71,8 +66,8 @@ Validation runs inside `ConfigResolver.resolve` on asset materialization:
 
 ```
 python -m graphids {analyze|landscape|profile|rebuild-caches|stage-data|...}
-  -> __main__.py -> _COMMAND_MODULES dispatch
-  -> each command has its own argparse + logic
+  -> __main__.py imports cli submodules
+  -> Typer @app.command() dispatch per submodule
 ```
 
 **Key invariant:** Routes A, B, and C all render configs through the same
@@ -89,16 +84,16 @@ one subprocess call to `go-jsonnet`.
 configs/                           # repo root
 ├── _lib/
 │   ├── defaults.libsonnet         # trainer/checkpoint/early_stopping defaults
-│   └── helpers.libsonnet          # apply_dotted() for recipe overrides
+│   ├── helpers.libsonnet          # apply_dotted() for recipe overrides
+│   └── recipes.libsonnet          # recipe expansion logic
 ├── stages/
-│   ├── autoencoder.jsonnet        # VGAE + CANBusDataModule
-│   ├── normal.jsonnet             # GAT + CANBusDataModule
-│   ├── curriculum.jsonnet         # GAT + CurriculumDataModule
-│   └── fusion.jsonnet             # fusion-method dispatch
+│   ├── autoencoder.jsonnet        # VGAE/DGI + GraphDataModule
+│   ├── supervised.jsonnet         # GAT + GraphDataModule (was normal + curriculum)
+│   ├── fusion.jsonnet             # fusion-method dispatch
+│   └── analyze_{vgae,gat,fusion}.jsonnet  # Analyzer configs
 ├── models/
-│   ├── vgae.libsonnet             # { base, scales: {small, large}, kd }
-│   ├── gat.libsonnet
-│   └── dgi.libsonnet
+│   ├── unsupervised.libsonnet     # { base, scales: {small, large}, kd } (was vgae + dgi)
+│   └── supervised.libsonnet       # (was gat)
 ├── fusion.libsonnet               # { base, methods: {bandit, dqn, mlp, weighted_avg} }
 └── fusion/
     ├── base.libsonnet             # shared fusion trainer + data
@@ -119,7 +114,7 @@ stage accepts.
 ```jsonnet
 local defaults = import '../_lib/defaults.libsonnet';
 local helpers = import '../_lib/helpers.libsonnet';
-local vgae = import '../models/vgae.libsonnet';
+local unsupervised = import '../models/unsupervised.libsonnet';
 
 function(
   dataset='hcrl_ch', seed=42, run_dir='',
@@ -128,7 +123,7 @@ function(
   trainer_overrides={}, stage_overrides={}, ckpt_path=null,
 )
   defaults.trainer + defaults.checkpoint + defaults.early_stopping
-  + vgae.base + vgae.scales[scale]
+  + unsupervised.base + unsupervised.scales[scale]
   + {
     seed_everything: seed,
     trainer+: { default_root_dir: run_dir },
@@ -228,7 +223,7 @@ mode die at planning time.
 
 ### instantiate() responsibilities
 
-`graphids.core.instantiate.instantiate(rendered, validated=None)` owns
+`graphids.instantiate.instantiate(rendered, validated=None)` owns
 every step that `GraphIDSCLI` used to own:
 
 | Step | Old (LightningCLI) | New (Phase 3) |
@@ -247,19 +242,18 @@ every step that `GraphIDSCLI` used to own:
 
 | File | Role | Torch? |
 |---|---|---|
-| `commands/train.py` | Dev-path argparse entry — `fit/test/validate/predict`, `--config`, `--tla`, `--set`, `--ckpt_path` | Lazy |
-| `callbacks.py` | `ResourceProfileCallback`, `RunRecordCallback` (plain `pl.Callback` subclasses) | Yes |
-| `core/instantiate.py` | `instantiate(rendered) → InstantiatedRun` — importlib class_path, signature-filtered link_arguments, forced callbacks, wandb forwarding | Yes |
-| `__main__.py` | CLI dispatch: lightning commands → `commands.train.main`, others → command module dict | Lazy |
+| `cli/_training.py` | Dev-path Typer entry — `fit/test/validate/predict`, `--config`, `--tla`, `--set`, `--ckpt_path` | Lazy |
+| `core/monitoring/callbacks.py` | `ResourceProfileCallback`, `RunRecordCallback` (plain `pl.Callback` subclasses) | Yes |
+| `instantiate.py` | `instantiate(rendered) → InstantiatedRun` — importlib class_path, signature-filtered link_arguments, forced callbacks, wandb forwarding | Yes |
+| `__main__.py` | Imports `cli/` submodules to register Typer commands | Lazy |
 | `config/jsonnet.py` | `render_config(path, tla)` subprocess shim | No |
 | `config/schemas.py` | `ValidatedConfig`, `validate_config`, `ConfigValidationError` | No |
-| `config/yaml_utils.py` | `read_yaml` / `write_yaml` (snapshots + recipes) | No |
+| `contracts.py` | `TrainingRunConfig`, `KDEntry` | No |
 | `orchestrate/contracts/__init__.py` | `TrainingSpec` (Pydantic) — `jsonnet_path`, `jsonnet_tla`, `build_tla_dict` | No |
 | `core/train_entrypoint.py` | `render_config → validate_config → snapshot → instantiate` | Yes |
-| `config/contracts.py` | `TrainingRunConfig`, `KDEntry`, `expand_recipe_configs` | No |
 | `config/topology.py` | Stage DAG, valid types/scales, import-time assertions against `configs/` | No |
-| `config/shared.py` | `StageConfig`, `ResourceSpec` | No |
-| `orchestrate/planning/planner.py` | `enumerate_assets` (StageConfig lives in `config/shared.py`) | No |
+| `orchestrate/planning/shared.py` | `StageConfig` | No |
+| `orchestrate/planning/planner.py` | `enumerate_assets` | No |
 | `orchestrate/resolve/resolver.py` | `ConfigResolver` — builds TLA, renders, validates, cross-field checks via `config/schemas.py` | No |
 | `orchestrate/dagster/assets.py` | `make_training_asset` | No |
 | `orchestrate/dagster/component.py` | `SlurmTrainingComponent` (dagster Component) | No |
@@ -273,7 +267,7 @@ every step that `GraphIDSCLI` used to own:
 | # | Strength | Why it matters |
 |---|---|---|
 | S1 | **Single composition primitive** — jsonnet replaces custom deep-merge + dotted-override + stringification plumbing with a language built for it | ~100 LOC of Python merge code deleted; no dual merge semantics to keep in sync. |
-| S2 | **Torch-free config boundary** — `jsonnet.py`, `schemas.py`, `contracts/ops.py`, and the resolver never import torch; `callbacks.py` and `core/instantiate.py` lazy-imported from `commands/train.py` and `train_entrypoint.py` | Dagster workers and login nodes render and validate configs without GPU. |
+| S2 | **Torch-free config boundary** — `jsonnet.py`, `schemas.py`, `orchestrate/contracts`, and the resolver never import torch; `core/monitoring/callbacks.py` and `instantiate.py` lazy-imported from `cli/_training.py` and `train_entrypoint.py` | Dagster workers and login nodes render and validate configs without GPU. |
 | S3 | **Typed TLA round-trip** — `render_config` JSON-encodes every TLA via `--tla-code`, so ints stay ints, bools stay bools, lists stay lists | Removes the pre-migration stringification footgun (`to_override_dict` cast everything to `str`). |
 | S4 | **Single convergence point** — every path (dev, pipeline, validate) ends at `instantiate(rendered, validated=...)` consuming a dict produced by `render_config` and gated by `validate_config` | No separate code paths to drift apart. |
 | S5 | **Forced callbacks via explicit construction** — `_build_callbacks` assembles the 5-callback tuple from top-level sections, user callbacks from `trainer.callbacks` are appended | Prevents stage jsonnets from dropping critical callbacks while still letting them add `LearningRateMonitor` etc. |
@@ -281,7 +275,7 @@ every step that `GraphIDSCLI` used to own:
 | S7 | **Pydantic `extra="forbid"`** — `TrainingSpec`, `TrainingRunConfig`, `KDEntry`, `ValidatedConfig` | Typos caught at construction time. |
 | S8 | **Content-addressed run dirs** — `compute_identity_hash()` from `identity_keys` | Deterministic, filesystem-navigable, resumable. |
 | S9 | **Typed rendered-dict gate** — `validate_config` runs Pydantic validators on the jsonnet output before any downstream consumer (Phase 2) | Structural errors, null list fields, monitor mismatches, and un-namespaced class_paths die at planning time with actionable messages instead of bubbling out of jsonargparse/torch with cryptic tracebacks. |
-| S10 | **Direct instantiation via importlib** — Phase 3 replaced `GraphIDSCLI` + `jsonargparse.parse_object` with `graphids.core.instantiate.instantiate`, which imports `class_path` via `importlib` and applies signature-filtered link_arguments | Stack traces go straight to `VGAEModule.__init__` / `CANBusDataModule.__init__` instead of 15 layers of jsonargparse. KD auxiliary handling is a 3-line `SimpleNamespace` coercion, not a TypedDict+Namespace dance. |
+| S10 | **Direct instantiation via importlib** — Phase 3 replaced `GraphIDSCLI` + `jsonargparse.parse_object` with `graphids.instantiate.instantiate`, which imports `class_path` via `importlib` and applies signature-filtered link_arguments | Stack traces go straight to `VGAEModule.__init__` / `CANBusDataModule.__init__` instead of 15 layers of jsonargparse. KD auxiliary handling is a 3-line `SimpleNamespace` coercion, not a TypedDict+Namespace dance. |
 
 ### Known limitations
 

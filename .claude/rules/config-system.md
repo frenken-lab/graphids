@@ -1,15 +1,11 @@
 # GraphIDS Config System
 
-Jsonnet composition + Pydantic validation + direct Lightning instantiation.
-Phase 1 (2026-04-05) replaced the 3-chain YAML + `merge_yaml_chain` plumbing
-with a single `render_config(jsonnet_path, tla) → dict` call. Phase 2
-(2026-04-05) added `validate_config` as the typed Pydantic gate. Phase 3
-(2026-04-05) deleted `LightningCLI` / `GraphIDSCLI` / `schema_parser` /
-`build_cli` and replaced them with `graphids.core.instantiate.instantiate`
-— importlib-based class_path instantiation with signature-filtered
-link_arguments. Phase 4 retools the analyzer CLI to keep jsonargparse
-with Jsonnet-backed configs (`commands/analyze.py`) per
-`docs/migration_plan.md`.
+Jsonnet composition + Pydantic validation + direct instantiation.
+Phases 1–4 (completed 2026-04-05) replaced YAML chains + LightningCLI with
+`render_config(jsonnet_path, tla) → dict` → `validate_config` (Pydantic) →
+`graphids.instantiate.instantiate` (importlib class_path instantiation with
+signature-filtered link_arguments). Analyzer CLI uses jsonargparse with
+Jsonnet-backed configs (`cli/_analysis.py`).
 
 ## Architecture
 
@@ -23,7 +19,7 @@ with Jsonnet-backed configs (`commands/analyze.py`) per
 5. `validate_config(rendered) → ValidatedConfig` runs Pydantic validators
    (null list fields, monitor consistency, class_path namespacing, etc.)
    on the jsonnet output. Raises `ConfigValidationError` on any violation.
-6. `graphids.core.instantiate.instantiate(rendered, validated=...) →
+6. `graphids.instantiate.instantiate(rendered, validated=...) →
    InstantiatedRun` imports class_paths via `importlib`, applies
    signature-filtered link_arguments, builds forced callbacks, and returns
    a wired `(trainer, model, datamodule)` triple.
@@ -35,7 +31,8 @@ with Jsonnet-backed configs (`commands/analyze.py`) per
 configs/                           # repo root — jsonnet sources
 ├── _lib/
 │   ├── defaults.libsonnet         # trainer / checkpoint / early_stopping defaults
-│   └── helpers.libsonnet          # apply_dotted() for recipe overrides
+│   ├── helpers.libsonnet          # apply_dotted() for recipe overrides
+│   └── recipes.libsonnet          # recipe expansion logic
 ├── datasets/
 │   └── dataset_registry.json      # dataset catalog (domain → dataset metadata)
 ├── matrix/
@@ -44,14 +41,12 @@ configs/                           # repo root — jsonnet sources
 ├── recipes/                       # pipeline recipes (sweep dimensions)
 ├── stages/
 │   ├── autoencoder.jsonnet        # function(dataset, seed, run_dir, scale, conv_type, ...)
-│   ├── normal.jsonnet
-│   ├── curriculum.jsonnet
+│   ├── supervised.jsonnet         # (was normal.jsonnet + curriculum.jsonnet)
 │   ├── fusion.jsonnet
 │   └── analyze_{vgae,gat,fusion}.jsonnet  # Analyzer configs (NOT in CLI chain)
 ├── models/
-│   ├── vgae.libsonnet             # { base, scales: {small, large}, kd }
-│   ├── gat.libsonnet
-│   └── dgi.libsonnet
+│   ├── unsupervised.libsonnet     # { base, scales: {small, large}, kd } (was vgae + dgi)
+│   └── supervised.libsonnet       # (was gat)
 ├── resources/
 │   ├── clusters.json              # cluster → partition/gres mapping
 │   ├── job_profiles.json          # per-family/scale/stage resource sizing
@@ -62,31 +57,56 @@ configs/                           # repo root — jsonnet sources
     └── methods/{bandit,dqn,mlp,weighted_avg}.libsonnet
 
 graphids/
-  callbacks.py                     # ResourceProfileCallback, RunRecordCallback (pl.Callback)
-  commands/
-    train.py                       # fit/test/validate/predict — argparse + instantiate
-    # plus operational subcommands (analyze, profile, from-spec, ...)
+  instantiate.py                   # instantiate(rendered) → InstantiatedRun (trainer, model, datamodule)
+  contracts.py                     # TrainingRunConfig, KDEntry
+  cli/
+    app.py                         # Typer root app, shared options (parse_tla, apply_overrides)
+    _training.py                   # fit/test/validate/predict commands
+    _analysis.py                   # analyze command (jsonargparse + jsonnet)
+    _data.py                       # rebuild-caches, stage-data, rebuild-catalog
+    _orchestrate.py                # from-spec, pipeline-status
+    _slurm.py                      # job-stats, submit-profile
   config/
     __init__.py                    # public API facade
-    base.py                        # CONFIG_DIR, PROJECT_ROOT
-    runtime.py                     # env vars, constants
+    constants.py                   # CONFIG_DIR, PROJECT_ROOT, env var defaults
     topology.py                    # stage DAG + import-time jsonnet-tree assertions
     paths.py                       # run_dir, compute_identity_hash
-    contracts.py                   # TrainingRunConfig, KDEntry, expand_recipe_configs
+    schemas.py                     # validate_config → ValidatedConfig (Pydantic)
     jsonnet.py                     # render_config(path, tla) subprocess shim
-    yaml_utils.py                  # read_yaml / write_yaml (snapshots only)
   core/
-    contracts/
-      models.py                    # TrainingSpec — jsonnet_path, jsonnet_tla, identity
-      ops.py                       # build_tla_dict, resolve_jsonnet_path (training spec helpers)
-      run_record.py                # RunRecord sidecar schema
-    instantiate.py                 # instantiate(rendered) → InstantiatedRun (trainer, model, datamodule)
+    run_record.py                  # RunRecord sidecar schema
     train_entrypoint.py            # render_config → validate_config → snapshot → instantiate → fit
+    monitoring/
+      callbacks.py                 # ResourceProfileCallback, RunRecordCallback (pl.Callback)
   orchestrate/
-    planning.py                    # enumerate_assets (StageConfig in config/shared.py)
-    resolve.py                     # ConfigResolver, cross-field validation via config/schemas.py
-    component.py                   # SlurmTrainingComponent (dagster)
-    assets.py                      # @asset definitions
+    contracts/                     # TrainingSpec, build_tla_dict, resolve_jsonnet_path
+    planning/
+      planner.py                   # enumerate_assets
+      recipes.py                   # recipe expansion wrapper
+      shared.py                    # StageConfig
+    resolve/
+      resolver.py                  # ConfigResolver
+      cross_field.py               # cross-field Pydantic validation
+    dagster/
+      assets.py                    # @asset definitions
+      checks.py                    # freshness checks
+      component.py                 # SlurmTrainingComponent
+      resources.py                 # SlurmTrainingResource
+      runtime.py                   # partition keys, path context, complete marker
+    ops/
+      entrypoint.py                # run_from_spec (dagster→SLURM transport)
+      catalog.py                   # DuckDB catalog rebuild
+      finalize.py                  # _finalize-record
+      status.py                    # pipeline-status aggregation
+  slurm/
+    env.py                         # centralized SLURM env var reads
+    core/
+      accounting.py                # sacct wrappers
+      submit.py                    # sbatch submission
+    ops/
+      profile.py                   # resource profiling
+      staging.py                   # NFS → scratch → TMPDIR staging
+    pipeline.py                    # GraphIDS-specific spec → SLURM plumbing
 ```
 
 ## Running
@@ -174,14 +194,14 @@ renders correctly after editing.
 
 `data.init_args.num_workers: null` is a real value (auto-sized from
 GPU-first sizing), not "missing". Jsonnet has a first-class `null` —
-preserve it. The autoencoder/curriculum stages emit `num_workers: null`
-explicitly; `gat.base.libsonnet` overrides it to `4` because GAT is
+preserve it. The autoencoder stage emits `num_workers: null`
+explicitly; `supervised.libsonnet` overrides it to `4` because GAT is
 compute-bound.
 
 ## Environment variables
 
-Infrastructure env vars use `os.environ.get()` in `runtime.py` with
-`KD_GAT_` prefix:
+Infrastructure env vars use `os.environ.get()` in `config/constants.py`
+and `slurm/env.py` with `KD_GAT_` prefix:
 
 - SLURM: `SLURM_ACCOUNT`, `SLURM_PARTITION`, `SLURM_GPU_TYPE`
 - Run metadata: `SWEEP_ID`, `USER_TAGS`, `CKPT_PATH`
@@ -202,8 +222,8 @@ Every training run writes `{run_dir}/run_record.json` — a structured JSON
 sidecar that is the source of truth for experiment status and metrics.
 Written atomically (temp + fsync + rename).
 
-- **`RunRecord`** Pydantic model in `core/contracts/run_record.py`
-- **`RunRecordCallback`** in `graphids/callbacks.py` — writes sidecar on
+- **`RunRecord`** Pydantic model in `core/run_record.py`
+- **`RunRecordCallback`** in `core/monitoring/callbacks.py` — writes sidecar on
   `on_fit_start`/`on_fit_end`/`on_exception`
 - **`_finalize-record`** command — called in generated sbatch script
   after test+analyze to add phase markers + sacct wall_time

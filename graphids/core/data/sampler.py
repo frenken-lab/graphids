@@ -1,11 +1,15 @@
 """Batch samplers and DataLoader factory for graph data.
 
+Follows PyTorch sampler grammar:
+
+- ``Sampler[int]`` yields individual indices (``CurriculumSampler``)
+- ``Sampler[list[int]]`` yields batches (``NodeBudgetBatchSampler``)
+- Compose: ``NodeBudgetBatchSampler`` wraps any index source
+
 Dataset-agnostic: operates on pre-computed per-graph size tensors.
 """
 
 from __future__ import annotations
-
-import math
 
 import torch
 
@@ -59,7 +63,12 @@ def make_graph_loader(
     return loader
 
 
-class NodeBudgetBatchSampler(torch.utils.data.Sampler):
+# ---------------------------------------------------------------------------
+# Sampler[list[int]] — node-budget batch packing
+# ---------------------------------------------------------------------------
+
+
+class NodeBudgetBatchSampler(torch.utils.data.Sampler[list[int]]):
     """Node-budget batch sampler that reads per-graph sizes from a precomputed tensor.
 
     Replaces PyG's DynamicBatchSampler, which walks ``dataset[i].num_nodes`` per
@@ -169,86 +178,56 @@ class NodeBudgetBatchSampler(torch.utils.data.Sampler):
         return max(1, (total + self.max_num - 1) // self.max_num)
 
 
-class CurriculumSampler:
-    """Curriculum selection — picks which graphs are active each epoch.
+# ---------------------------------------------------------------------------
+# Sampler[int] — curriculum epoch-based subset selection
+# ---------------------------------------------------------------------------
 
-    set_epoch() updates active indices based on difficulty scores and
-    epoch progress. Rebuilds an inner ``NodeBudgetBatchSampler`` each epoch
-    over the active subset.
 
-    ``dataset_sizes``: per-graph node counts for the full dataset (same order
-    as ``dataset``). Precomputed once at construction time — rebuilding per
-    epoch is then an O(M) tensor index, not an M-graph walk. The inner
-    sampler is constructed with ``indices=active_indices`` so it yields
-    positions in the full dataset, not subset-local positions.
+class CurriculumSampler(torch.utils.data.Sampler[int]):
+    """Epoch-based difficulty-gated subset sampler (DistributedSampler pattern).
+
+    Each epoch, ``set_epoch()`` recomputes which graph indices are active
+    based on difficulty scores and a curriculum ramp. ``__iter__`` yields
+    individual indices (shuffled) — pair with ``NodeBudgetBatchSampler``
+    for node-budget batching.
+
+    Follows the same ``set_epoch`` / ``__iter__`` / ``__len__`` contract
+    as ``torch.utils.data.DistributedSampler``.
     """
 
     def __init__(
         self,
-        dataset,
-        normal_indices,
-        attack_indices,
-        scores,
+        normal_indices: list[int],
+        attack_indices: list[int],
+        scores: list[float] | torch.Tensor,
         *,
-        batch_size: int,
         max_epochs: int,
         curriculum_start_ratio: float,
         curriculum_end_ratio: float,
         difficulty_percentile: float,
-        dataset_sizes: torch.Tensor,
-        max_num_nodes: int | None = None,
-        mean_nodes: float = 1.0,
+        shuffle: bool = True,
+        seed: int = 0,
     ):
-        assert len(scores) == len(normal_indices)
-        assert len(dataset_sizes) == len(dataset), (
-            f"dataset_sizes length {len(dataset_sizes)} != dataset length {len(dataset)}"
-        )
-        self.dataset = dataset
-        self.dataset_sizes = dataset_sizes.to(torch.long)
         self.normal_indices = torch.tensor(normal_indices, dtype=torch.long)
-        self.attack_indices = attack_indices
-        self.scores = torch.tensor(scores) if scores else None
-        self.batch_size = batch_size
+        self.attack_indices = list(attack_indices)
+        self.scores = torch.tensor(scores) if not isinstance(scores, torch.Tensor) else scores
         self.max_epochs = max_epochs
         self.curriculum_start_ratio = curriculum_start_ratio
         self.curriculum_end_ratio = curriculum_end_ratio
         self.difficulty_percentile = difficulty_percentile
-        self.max_num_nodes = max_num_nodes
-        self.mean_nodes = mean_nodes
-        self._active_indices = normal_indices + attack_indices
-        self._inner = self._build_inner()
-
-    def _build_inner(self):
-        if self.max_num_nodes is None:
-            return None
-        active = torch.as_tensor(self._active_indices, dtype=torch.long)
-        active_sizes = self.dataset_sizes[active]
-        num_steps = max(
-            1, math.ceil(len(self._active_indices) * self.mean_nodes / self.max_num_nodes)
-        )
-        return NodeBudgetBatchSampler(
-            active_sizes,
-            max_num=self.max_num_nodes,
-            shuffle=True,
-            skip_too_big=True,
-            num_steps=num_steps,
-            indices=active,  # yields full-dataset positions, not subset-local
-        )
-
-    def set_node_budget(self, max_num_nodes: int, mean_nodes: float) -> None:
-        """Finalize the node budget after model placement on GPU.
-
-        ``CurriculumDataModule.setup()`` runs before Lightning moves the model
-        to device, so the VRAM probe in ``node_budget()`` would use the CPU
-        fallback. The sampler is constructed with ``max_num_nodes=None``; this
-        method is called from ``train_dataloader()`` (post-device-placement)
-        to install the real budget and rebuild the inner batch sampler.
-        """
-        self.max_num_nodes = max_num_nodes
-        self.mean_nodes = mean_nodes
-        self._inner = self._build_inner()
+        self.shuffle = shuffle
+        self.seed = seed
+        self.epoch = 0
+        # Initial active set: all indices
+        self._active_indices: list[int] = normal_indices + attack_indices
 
     def set_epoch(self, epoch: int) -> None:
+        """Update active indices based on difficulty scores and curriculum progress.
+
+        Mirrors ``DistributedSampler.set_epoch`` — call before each epoch
+        to change the subset and shuffle seed.
+        """
+        self.epoch = epoch
         if self.scores is None or len(self.scores) == 0:
             return
         ratio = self.curriculum_start_ratio + (
@@ -261,25 +240,84 @@ class CurriculumSampler:
         easy_idx = self.normal_indices[easy][:n_normal].tolist()
         hard_idx = self.normal_indices[hard].tolist()
         self._active_indices = easy_idx + hard_idx + self.attack_indices
-        self._inner = self._build_inner()
 
     def __iter__(self):
-        if self._inner is not None:
-            yield from self._inner
-        else:
-            perm = torch.randperm(len(self._active_indices))
-            bs = max(8, self.batch_size)
-            for start in range(0, len(perm), bs):
-                yield [
-                    self._active_indices[perm[j]] for j in range(start, min(start + bs, len(perm)))
-                ]
+        indices = list(self._active_indices)
+        if self.shuffle:
+            g = torch.Generator()
+            g.manual_seed(self.seed + self.epoch)
+            perm = torch.randperm(len(indices), generator=g).tolist()
+            indices = [indices[i] for i in perm]
+        return iter(indices)
 
     def __len__(self) -> int:
-        if self._inner is not None:
-            return len(self._inner)
-        bs = max(8, self.batch_size)
-        return max(1, (len(self._active_indices) + bs - 1) // bs)
+        return len(self._active_indices)
 
+
+# ---------------------------------------------------------------------------
+# Factory — VGAE scoring + sampler construction
+# ---------------------------------------------------------------------------
+
+
+def build_curriculum_sampler(
+    train_ds,
+    *,
+    vgae_ckpt_path: str,
+    max_epochs: int,
+    curriculum_start_ratio: float,
+    curriculum_end_ratio: float,
+    difficulty_percentile: float,
+    canid_weight: float,
+    seed: int = 0,
+) -> tuple[CurriculumSampler, list, torch.Tensor]:
+    """Score graphs by VGAE difficulty and build a curriculum sampler.
+
+    Loads the VGAE checkpoint on CPU, scores normal-class training graphs,
+    then discards the model. Returns ``(sampler, full_dataset, dataset_sizes)``
+    where ``full_dataset`` is the reordered list (normals + attacks) that the
+    sampler indexes into, and ``dataset_sizes`` is the per-graph node count
+    tensor for ``NodeBudgetBatchSampler``.
+    """
+    import gc
+    from pathlib import Path
+
+    from graphids.core.models._training import load_inner_model
+
+    if not vgae_ckpt_path:
+        raise ValueError(
+            "sampler='curriculum' requires vgae_ckpt_path — train a VGAE autoencoder first"
+        )
+
+    device = torch.device("cpu")
+    vgae, _ = load_inner_model("vgae", Path(vgae_ckpt_path), device)
+
+    normals = [g for g in train_ds if int(g.y[0]) == 0]
+    attacks = [g for g in train_ds if int(g.y[0]) == 1]
+    scores = vgae.score_difficulty(normals, canid_weight=canid_weight)
+    del vgae
+    gc.collect()
+
+    full_dataset = normals + attacks
+    normal_indices = list(range(len(normals)))
+    attack_indices = list(range(len(normals), len(full_dataset)))
+    dataset_sizes = torch.tensor([g.num_nodes for g in full_dataset], dtype=torch.long)
+
+    sampler = CurriculumSampler(
+        normal_indices,
+        attack_indices,
+        scores,
+        max_epochs=max_epochs,
+        curriculum_start_ratio=curriculum_start_ratio,
+        curriculum_end_ratio=curriculum_end_ratio,
+        difficulty_percentile=difficulty_percentile,
+        seed=seed,
+    )
+    return sampler, full_dataset, dataset_sizes
+
+
+# ---------------------------------------------------------------------------
+# Lightning callback — bridges DataModule ↔ Sampler epoch sync
+# ---------------------------------------------------------------------------
 
 import pytorch_lightning as pl
 

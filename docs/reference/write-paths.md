@@ -8,14 +8,14 @@
 - **ALL runtime writes** go to `/fs/ess/PAS1266/kd-gat/` (ESS), routed via `KD_GAT_LAKE_ROOT` env var.
 - **Scratch** (`/fs/scratch/PAS1266/`) is for transient data: wandb run files, dagster state DB, staged data.
 - **Nothing** should write to the repo directory. Ever.
-- **All training goes through dagster.** No direct CLI runs to ESS. Dagster sets `default_root_dir`, `cli.py` pins `dirpath`.
+- **All training goes through dagster.** No direct CLI runs to ESS. Dagster sets `default_root_dir`, `instantiate.py` pins `dirpath`.
 
 ## Single Source of Truth
 
-`graphids/config/write_paths.yaml` declares every write path. `config/__init__.py` loads it and exports constants. Python code imports constants — no hardcoded path strings.
+`graphids/config/constants.py` declares write path constants. Python code imports them — no hardcoded path strings.
 
 ```
-write_paths.yaml → config/__init__.py → cli.py, component.py, slurm.py
+config/constants.py → instantiate.py, dagster/component.py, slurm/pipeline.py
 ```
 
 Constants exported: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `COMPLETE_MARKER`, `DAGSTER_IO_DIR_TEMPLATE`, `DAGSTER_HOME_DEFAULT`
@@ -28,7 +28,7 @@ Constants exported: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `COMPLETE_MARKER`, `DAG
 │   └── {model}_{scale}_{stage}{identity}{kd}/
 │       └── seed_{N}/                             ← trainer.default_root_dir
 │           ├── checkpoints/
-│           │   ├── best_model.ckpt               ← ModelCheckpoint (dirpath pinned by cli.py)
+│           │   ├── best_model.ckpt               ← ModelCheckpoint (dirpath pinned by instantiate.py)
 │           │   └── last.ckpt                     ← ModelCheckpoint (save_last: true)
 │           ├── lightning_logs/version_*/
 │           │   ├── metrics.csv                   ← CSVLogger (diagnostics only)
@@ -58,13 +58,13 @@ All Lightning writes land under `trainer.default_root_dir`, set by dagster via `
 
 | What | Relative path | Who writes | Config |
 |------|---------------|-----------|--------|
-| Best checkpoint | `checkpoints/best_model.ckpt` | ModelCheckpoint | `trainer.yaml`, `cli.py` pins dirpath |
+| Best checkpoint | `checkpoints/best_model.ckpt` | ModelCheckpoint | `trainer.yaml`, `instantiate.py` pins dirpath |
 | Resume checkpoint | `checkpoints/last.ckpt` | ModelCheckpoint | `save_last: true` in trainer.yaml |
 | Metrics CSV | `lightning_logs/version_*/metrics.csv` | CSVLogger | Lightning default logger |
 | Hyperparameters | `lightning_logs/version_*/hparams.yaml` | CSVLogger | automatic |
-| Resolved config | `lightning_logs/version_*/config.yaml` | SaveConfigCallback | `cli.py` (overwrite: True) |
+| Resolved config | `lightning_logs/version_*/config.yaml` | SaveConfigCallback | `instantiate.py` (overwrite: True) |
 
-**Checkpoint path is pinned**: `cli.py` `before_instantiate_classes` sets `ModelCheckpoint.dirpath` to `{default_root_dir}/checkpoints`. Derived from `CKPT_SUBPATH` (loaded from `write_paths.yaml`). No version directory in checkpoint path.
+**Checkpoint path is pinned**: `instantiate.py` `_build_callbacks` sets `ModelCheckpoint.dirpath` to `{default_root_dir}/checkpoints`. Derived from `CKPT_SUBPATH` (loaded from `write_paths.yaml`). No version directory in checkpoint path.
 
 **CSVLogger versioning is irrelevant**: metrics/hparams/config go to `lightning_logs/version_N/` but nothing depends on the version number. Auto-increment on crash is harmless.
 
@@ -88,7 +88,7 @@ All Lightning writes land under `trainer.default_root_dir`, set by dagster via `
 | What | Path | Who writes | Config |
 |------|------|-----------|--------|
 | Run data (metrics, system stats) | `$WANDB_DIR/{project}/{run_id}/` | WandbLogger | `trainer.yaml` logger list |
-| Full rendered jsonnet config | wandb run config | `instantiate()` pushes `rendered` dict via `logger.experiment.config.update(rendered, allow_val_change=True)` | `graphids/core/instantiate.py` |
+| Full rendered jsonnet config | wandb run config | `instantiate()` pushes `rendered` dict via `logger.experiment.config.update(rendered, allow_val_change=True)` | `graphids/instantiate.py` |
 
 `_preamble.sh` sets `WANDB_DIR=/fs/scratch/PAS1266/wandb` (scratch, 90-day purge). Auth via `~/.netrc`.
 
@@ -123,7 +123,7 @@ _make_asset() called
 │                                       │   └─ mkdir KD_GAT_STAGE_DIR
 │                                       │
 │                                       ├─ python -m graphids fit
-│                                       │   ├─ cli.py pins ModelCheckpoint.dirpath
+│                                       │   ├─ instantiate.py pins ModelCheckpoint.dirpath
 │                                       │   ├─ SaveConfigCallback → config.yaml
 │                                       │   ├─ DataModule.setup()
 │                                       │   │   ├─ acquire .lock
@@ -150,7 +150,7 @@ analyzer — separate invocation, after all training
 
 ### RESOLVED: version_0 crash reuse → decoupled
 
-Checkpoints now write to `{run_dir}/checkpoints/` via explicit `dirpath` pin in `cli.py`. CSVLogger version auto-increment is irrelevant — nothing depends on `lightning_logs/version_N/`. No version number in any checkpoint path.
+Checkpoints now write to `{run_dir}/checkpoints/` via explicit `dirpath` pin in `instantiate.py`. CSVLogger version auto-increment is irrelevant — nothing depends on `lightning_logs/version_N/`. No version number in any checkpoint path.
 
 ### RESOLVED: last.ckpt resume was dead code
 

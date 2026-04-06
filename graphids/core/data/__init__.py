@@ -8,7 +8,6 @@ Public API:
 from __future__ import annotations
 
 from .datamodule import (
-    CANBusDataModule,
     FusionDataModule,
     GraphDataModule,
 )
@@ -16,7 +15,6 @@ from .datasets import ATTACK_TYPE_CODES, ATTACK_TYPE_NAMES, CANBusDataset
 
 __all__ = [
     "GraphDataModule",
-    "CANBusDataModule",
     "CANBusDataset",
     "FusionDataModule",
     "ATTACK_TYPE_CODES",

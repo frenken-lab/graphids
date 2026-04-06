@@ -1,5 +1,7 @@
 # wandb — Decisions & Reference
 
+> **Stale reference note (2026-04-06):** `WandbSaveConfigCallback` in `cli.py` no longer exists. Config forwarding to wandb is now done in `graphids/instantiate.py` via `logger.experiment.config.update()`. `trainer.yaml` replaced by jsonnet defaults in `configs/_lib/defaults.libsonnet`.
+
 > Implemented: 2026-03-30 | All checklist items done
 
 ## What's wired

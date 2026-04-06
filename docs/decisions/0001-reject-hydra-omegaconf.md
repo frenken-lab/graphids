@@ -1,5 +1,7 @@
 # ADR 0001: Reject Hydra/OmegaConf, Keep jsonargparse + Naive YAML Merge
 
+> **Stale reference note (2026-04-06):** LightningCLI was removed in Phase 3. Config is now jsonnet → Pydantic validate → `graphids.instantiate.instantiate()`. `cli.py` and `_lightning.py` no longer exist; CLI is Typer-based in `graphids/cli/`.
+
 > Date: 2026-04-01 | Status: **Accepted**
 
 ## Context

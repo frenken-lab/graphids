@@ -1,5 +1,7 @@
 # Research: Can Lightning's Profiler Replace `_probe_bytes_per_node()`?
 
+> **Stale reference note (2026-04-06):** `graphids/core/preprocessing/datamodule.py` no longer exists. Datamodules moved to `graphids/core/data/datamodule/` (graph.py, fusion.py, can_bus.py). `_probe_bytes_per_node` and `vram_node_budget` are no longer present in the codebase.
+
 > Last modified: 2026-03-30
 > Verdict: **No. Keep the custom probe.**
 

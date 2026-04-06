@@ -1,5 +1,7 @@
 # Dagster Orchestration — History & Lessons
 
+> **Stale reference note (2026-04-06):** `dagster_defs.py` -> `graphids/orchestrate/definitions.py`. `orchestrate/assets.py` -> `orchestrate/dagster/assets.py`. `orchestrate/checks.py` -> `orchestrate/dagster/checks.py`. `slurm/slurm.py` -> `slurm/pipeline.py`. `python -m graphids.orchestrate run` no longer valid -- CLI uses `graphids/commands/` entry points.
+
 > Consolidated from dagster-integration.md + orchestrate-rewrite.md + dagster-ablation-postmortem.md
 > Current architecture: `dagster-native-orchestration.md`
 > Audited: 2026-03-31

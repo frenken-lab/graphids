@@ -126,7 +126,7 @@ def valid_dict() -> dict:
             "default_root_dir": "",
         },
         "data": {
-            "class_path": "graphids.core.data.datamodule.CANBusDataModule",
+            "class_path": "graphids.core.data.datamodule.GraphDataModule",
             "init_args": {"batch_size": 8192, "dataset": "hcrl_ch"},
         },
         "model": {

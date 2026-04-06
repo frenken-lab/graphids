@@ -38,7 +38,7 @@ The only "CLI override" in the dagster path is environment-level:
 - `KD_GAT_LAKE_ROOT=/fs/ess/...` — change output root
 - `USER` — dev vs production namespace
 
-Dev path (`python -m graphids fit --config configs/stages/autoencoder.jsonnet --set model.init_args.lr=0.01`) bypasses dagster entirely — that's the `commands/train.py` argparse route, documented in CLAUDE.md under "Training".
+Dev path (`python -m graphids fit --config configs/stages/autoencoder.jsonnet --set model.init_args.lr=0.01`) bypasses dagster entirely — that's the `cli/_training.py` Typer route, documented in CLAUDE.md under "Training".
 
 ## The 3 handoffs (per ADR 0009)
 
@@ -108,7 +108,7 @@ Dev path (`python -m graphids fit --config configs/stages/autoencoder.jsonnet --
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-That's **three handoffs, two boundaries**. Everything between the boundaries is either pure data (`TrainingSpec` on the wire) or pure instantiation (`graphids.core.instantiate.instantiate` on the SLURM side). Zero additional merges, zero additional override sources, zero string round-trips.
+That's **three handoffs, two boundaries**. Everything between the boundaries is either pure data (`TrainingSpec` on the wire) or pure instantiation (`graphids.instantiate.instantiate` on the SLURM side). Zero additional merges, zero additional override sources, zero string round-trips.
 
 ## Where validation catches what
 
@@ -145,7 +145,7 @@ That's **three handoffs, two boundaries**. Everything between the boundaries is 
 After handoff 1, the only things that cross the boundary are the fields of `TrainingSpec`:
 
 ```python
-# graphids/core/contracts/models.py (post Phase 1)
+# graphids/orchestrate/contracts/__init__.py (post Phase 1)
 TrainingSpec(
     stage, model_family, scale, dataset, seed, run_dir,
     jsonnet_path,                  # str              — configs/stages/<stage>.jsonnet
@@ -188,6 +188,6 @@ tla = graphids.orchestrate.contracts.build_tla_dict(
 )
 ```
 
-SLURM side then calls `render_config(spec.jsonnet_path, spec.jsonnet_tla)`, re-runs `validate_config` as a belt-and-braces gate, snapshots `config_snapshot.yaml`, and hands the rendered dict to `graphids.core.instantiate.instantiate`. No additional merge layers, no additional CLI construction, no stringification round-trip, no additional validation gates that could reject what handoff 1 already blessed.
+SLURM side then calls `render_config(spec.jsonnet_path, spec.jsonnet_tla)`, re-runs `validate_config` as a belt-and-braces gate, snapshots `config_snapshot.yaml`, and hands the rendered dict to `graphids.instantiate.instantiate`. No additional merge layers, no additional CLI construction, no stringification round-trip, no additional validation gates that could reject what handoff 1 already blessed.
 
 **In short**: dagster takes in exactly one env var (`KD_GAT_RECIPE`) pointing at one YAML file. All override flavors flow through that file, get packed into `jsonnet_tla` inside `ConfigResolver`, get jsonnet-rendered + jsonargparse-validated at planning time (pre-sbatch), then cross one JSON boundary to a SLURM worker that does no merging of its own. The "CLI override" story is: there is no runtime CLI for the pipeline path — all variation lives in the recipe, and the recipe is the single input that ConfigResolver turns into a fully-validated asset plan before anything hits the queue.

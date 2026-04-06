@@ -1,5 +1,7 @@
 # Consolidate SLURM Jobs: train → test → analyze in one job
 
+> **Stale reference note (2026-04-06):** `commands/from_spec.py` -> `cli/_orchestrate.py`. `orchestrate/assets.py` -> `orchestrate/dagster/assets.py`. `orchestrate/checks.py` -> `orchestrate/dagster/checks.py`. `slurm/slurm.py` -> `slurm/pipeline.py`.
+
 > **Status: IMPLEMENTED** (2026-04-01). Supersedes `evaluation-analysis-assets.md` (deleted).
 > Implementation details in git history.
 

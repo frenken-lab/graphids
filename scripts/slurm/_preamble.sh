@@ -29,8 +29,7 @@ mkdir -p "$SLURM_LOG_DIR"
 umask 002
 
 # wandb: scratch for I/O-heavy run data, skip git probing on NFS, reduce SLURM log noise
-# Path sourced from write_paths.yaml via config/__init__.py (single source of truth)
-export WANDB_DIR=$(python -c "from graphids.config.constants import WANDB_WRITE_DIR; print(WANDB_WRITE_DIR)")
+export WANDB_DIR="${WANDB_DIR:-/fs/scratch/PAS1266/wandb}"
 mkdir -p "$WANDB_DIR"
 export WANDB_DISABLE_GIT=true
 export WANDB_SILENT=true

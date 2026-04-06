@@ -4,7 +4,9 @@
 
 **Current pain:** 3-chain YAML + custom resolver + LightningCLI + jsonargparse + file-based artifact catalog rebuilt by DuckDB query.
 
-**Target:** jsonnet (composition) → argparse entrypoint → Pydantic validation → Lightning Trainer → PyIceberg artifact catalog → DuckDB queries.
+**Target:** jsonnet (composition) → Typer CLI → Pydantic validation → Lightning Trainer → DuckDB catalog.
+
+**Status (2026-04-06):** Phases 1–5 complete. Phase 6 (PyIceberg) deferred — current DuckDB catalog + run_record.json sidecars are sufficient. Phase 7 not planned.
 
 ---
 
@@ -24,67 +26,30 @@ Phase 6 is fully independent — start it alongside Phase 2 since it only touche
 
 ---
 
-## Phase 1 — Jsonnet
+## Phase 1 — Jsonnet ✓
 
-**Goal:** Replace YAML chain + `merge_yaml_chain` + override plumbing with
-jsonnet. **Full migration, single PR — no shadow path, no dual-write.** Git
-history is the rollback. `LightningCLI` stays until Phase 3; jsonargparse is
-retooled in Phase 4 for analyzer configs.
+**Completed 2026-04-05.** Replaced YAML chain + `merge_yaml_chain` + override
+plumbing with jsonnet.
 
 ---
 
-## Phase 2 — Pydantic Validation Layer
+## Phase 2 — Pydantic Validation Layer ✓
 
-**Goal:** Insert a torch-free Pydantic validation layer between
-`render_config(...)` and downstream consumers. Replace
-`orchestrate.resolve._convention_errors` (hand-rolled post-hoc linting
-over the rendered dict) with real typed `@model_validator` rules so
-structural errors, null list fields, monitor-wiring mismatches, and
-un-namespaced `class_path` strings die at planning time with an actionable
-message.
+**Completed 2026-04-05.** `graphids.config.schemas.validate_config` validates
+rendered jsonnet output via Pydantic `@model_validator` rules.
 ---
 
-## Phase 3 — Strip LightningCLI
+## Phase 3 — Strip LightningCLI ✓
 
-**Goal:** Remove LightningCLI, keep Lightning Trainer.
-
-**NOT verified:**
-
-`WandbLogger` is not constructed in default stage configs; first
-production sweep is the first real exercise
+**Completed 2026-04-05.** LightningCLI removed. `graphids.instantiate.instantiate`
+handles class_path import + signature-filtered link_arguments directly.
 
 ---
 
-## Phase 4 — Jsonargparse Retooling
+## Phase 4 — Jsonargparse Retooling ✓
 
-- Upgrade dependency to `jsonargparse[all,shtab,argcomplete]>=4.47.0`
-- Switch analyzer configs (`configs/stages/analyze_*.jsonnet`) to Jsonnet
-- Update `commands/analyze.py` to use `ArgumentParser(parser_mode="jsonnet")`
-  with `--config` so analyzer configs parse as Jsonnet while CLI overrides
-  still work (`--analyzer.ckpt_path=...`)
-- Use type hints (e.g. `Literal["vgae","gat","fusion"]`) to tighten analyzer
-  validation at parse time
-- Docs: refresh usage examples and reference tables to point at `.jsonnet`
-- ***
-  What this means for your stack
-
-| Concern                                                       | jsonnet handles | jsonargparse handles     |
-| ------------------------------------------------------------- | --------------- | ------------------------ |
-| Config composition, inheritance, mixins                       | ✓               | ✗                        |
-| Lazy field computation (`self.lr * 1000`)                     | ✓               | ✗                        |
-| Import chaining across files                                  | ✓               | ✗                        |
-| Conditional config logic                                      | ✓               | ✗                        |
-| ExtVars / TLA injection                                       | ✓               | ✗ (delegates to jsonnet) |
-| CLI override on top of rendered config                        | ✗               | ✓                        |
-| Typed argument validation (paths, URLs, restricted numbers)   | ✗               | ✓                        |
-| Relative path resolution from config location                 | ✗               | ✓                        |
-| Argument linking (batch_size → model + datamodule)            | ✗               | ✓                        |
-| Class signature introspection (auto-add args from `__init__`) | ✗               | ✓                        |
-| Env var override (`APP_LR=1e-4`)                              | ✗               | ✓                        |
-| `--print_config` for debugging                                | ✗               | ✓                        |
-| Pydantic / dataclass / attrs native support                   | ✗               | ✓                        |
-
-The argument linking feature in particular is probably replacing a chunk of your custom resolver right now — if batch_size or seq_len appears in multiple config sections and you're manually keeping them in sync, link_arguments eliminates that entirely.
+**Completed 2026-04-05.** Analyzer configs (`configs/stages/analyze_*.jsonnet`)
+use jsonargparse `parser_mode="jsonnet"` via `cli/_analysis.py`.
 
 ## Phase 5 — Dagster Asset Config Boundaries ✓
 
@@ -100,67 +65,30 @@ overridable).
 
 ---
 
-## Phase 6 — PyIceberg Catalog
+## Phase 6 — PyIceberg Catalog (deferred)
 
-**Goal:** Replace file dump + DuckDB rebuild script with a structured catalog written at job completion.
-
-> This phase is independent — run it in parallel with Phases 2–5.
-
-1. Stand up PyIceberg catalog backend:
-   - SQLite locally for dev
-   - Postgres for production (reuse existing Dagster Postgres if available)
-
-2. Define Iceberg schemas for artifact types:
-
-   | Table         | Key Fields                                                              |
-   | ------------- | ----------------------------------------------------------------------- |
-   | `experiments` | `run_id`, `config_hash`, `jsonnet_path`, `dagster_run_id`, `created_at` |
-   | `checkpoints` | `run_id`, `epoch`, `val_loss`, `artifact_path`, `parent_run_id`         |
-   | `metrics`     | `run_id`, `step`, `metric_name`, `value`                                |
-   | `lineage`     | `run_id`, `parent_run_id`, `config_hash`, `artifact_path`               |
-
-3. Write `write_run_metadata(run_id, cfg, results)` — called by Dagster asset after SLURM job completes, the **only write site**:
-
-   ```python
-   table.append(pa.Table.from_pydict({
-       "run_id": [run_id],
-       "config_hash": [hash(str(cfg))],
-       "artifact_path": [checkpoint_path],
-       ...
-   }))
-   ```
-
-4. Port existing DuckDB rebuild queries to read from Iceberg via `.to_duckdb()` — verify output matches:
-
-   ```python
-   conn = catalog.load_table("ml.experiments").scan(
-       row_filter="val_loss < 0.1"
-   ).to_duckdb("experiments")
-   conn.execute("SELECT run_id, artifact_path FROM experiments ORDER BY val_loss")
-   ```
-
-5. Delete the rebuild script
-
-**Exit criteria:** "What config produced this checkpoint?" and "What checkpoints came from sweep X?" are answerable via SQL with no file-crawling.
+**Status:** Deferred indefinitely. The current `run_record.json` sidecar +
+DuckDB catalog (`rebuild-catalog` command) is sufficient for experiment
+tracking. PyIceberg adds complexity without clear benefit at current scale.
 
 ---
 
-## Phase 7 — Sweep Integration
+## Phase 7 — Sweep Integration (not planned)
 
 ---
 
 ## What Is Kept, Removed, and Added
 
-|                                                        | Action                       |
-| ------------------------------------------------------ | ---------------------------- |
-| Lightning `Trainer`, DDP, callbacks, `LightningModule` | **Keep**                     |
-| DuckDB for querying                                    | **Keep**                     |
-| LightningCLI                                           | **Remove** (Phase 3)         |
-| jsonargparse                                           | **Keep** (Phase 4)           |
-| YAML config chain                                      | **Remove** (Phase 1)         |
-| Custom resolver                                        | **Remove** (Phase 1)         |
-| DuckDB rebuild script                                  | **Remove** (Phase 6)         |
-| `go-jsonnet` binary                                    | **Add** (Phase 1)            |
-| stdlib `argparse` entrypoint                           | **Add** (Phase 3, ~20 lines) |
-| Pydantic per-asset config models                       | **Add** (Phase 2)            |
-| PyIceberg + catalog backend                            | **Add** (Phase 6)            |
+|                                                        | Status                          |
+| ------------------------------------------------------ | ------------------------------- |
+| Lightning `Trainer`, DDP, callbacks, `LightningModule` | **Kept**                        |
+| DuckDB for querying                                    | **Kept** + run_record sidecars  |
+| LightningCLI                                           | **Removed** (Phase 3) ✓        |
+| jsonargparse                                           | **Kept** for analyzer (Phase 4) ✓ |
+| YAML config chain                                      | **Removed** (Phase 1) ✓        |
+| Custom resolver                                        | **Removed** (Phase 1) ✓        |
+| `go-jsonnet` binary                                    | **Added** (Phase 1) ✓          |
+| Typer CLI                                              | **Added** (replaced argparse)   |
+| Pydantic validation layer                              | **Added** (Phase 2) ✓          |
+| Dagster asset config boundaries                        | **Added** (Phase 5) ✓          |
+| PyIceberg                                              | **Deferred** — not needed       |

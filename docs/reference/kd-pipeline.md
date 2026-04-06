@@ -81,7 +81,7 @@ validate_config(rendered)  (config/schemas.py)
   Pydantic gate: rejects null list fields, enforces class_path namespacing
   │
   ▼
-graphids.core.instantiate.instantiate (core/instantiate.py)
+graphids.instantiate.instantiate (instantiate.py)
   _coerce_kd_auxiliaries: each list item promoted dict → SimpleNamespace
   so Model._install_kd_teacher can call getattr(a, "type", None)
   Model(**init_args) — direct importlib instantiation, no jsonargparse
@@ -119,14 +119,14 @@ at CLI parse time.
 
 | Symbol | Location | Role |
 |--------|----------|------|
-| `KDEntry` | `config/contracts.py` | Recipe-side Pydantic schema (superset) |
+| `KDEntry` | `contracts.py` | Recipe-side Pydantic schema (superset) |
 | `KDAuxiliary` | `core/models/_training.py` | Student-side TypedDict (runtime subset) |
 | `_install_kd_teacher` | `core/models/_training.py` | `GraphModuleBase` method: resolves KD cfg, loads + freezes teacher, stores it off Lightning's auto-transfer path |
 | `_kd_loss` | `vgae.py`, `gat.py` | Per-model KD loss shape (VGAE dual-signal MSE, GAT Hinton soft-label KL) |
 | `_apply_kd` | `core/models/_training.py` | Convex combo: α·kd + (1−α)·task |
 | `prepare_kd` | `core/models/_training.py` | Teacher checkpoint path resolution + load + projection layer |
 | `checkpoint_path` | `config/paths.py` | Teacher checkpoint path from identity keys |
-| `kd_overrides` | `config/shared.py` | StageConfig field for KD payload |
+| `kd_overrides` | `orchestrate/planning/shared.py` | StageConfig field for KD payload |
 | `kd.yaml` overlays | `config/models/{vgae,gat}/` | Default KD hyperparameters |
 
 ## Schema relationship

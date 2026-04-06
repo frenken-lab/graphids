@@ -209,7 +209,7 @@ them consistently during resolution.
 
 **Location:** `resolve.py`.
 
-KD config is a typed `KDEntry` (Pydantic, `config/contracts.py:12`) in the recipe.
+KD config is a typed `KDEntry` (Pydantic, `contracts.py`) in the recipe.
 Planning extracts it as a dict via `model_dump(exclude_none=True)`. Resolve now passes
 the structured payload straight through `jsonnet_tla["auxiliaries"]` via
 `graphids.orchestrate.contracts.build_tla_dict`, so the handoff stays typed end-to-end.

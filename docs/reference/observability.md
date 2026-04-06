@@ -8,9 +8,9 @@
 | Layer | Tool | Where |
 |-------|------|-------|
 | Training metrics | WandbLogger + CSVLogger | `trainer.logger` list in stage libsonnet |
-| Full config logging | `instantiate()` pushes rendered jsonnet dict to `wandb.config` | `graphids/core/instantiate.py` |
-| CSVLogger save_dir | `_build_loggers` patches `init_args.save_dir` to `default_root_dir` | `graphids/core/instantiate.py` |
-| GPU memory telemetry | DeviceStatsMonitor (forced) | `_build_callbacks` in `graphids/core/instantiate.py` |
+| Full config logging | `instantiate()` pushes rendered jsonnet dict to `wandb.config` | `graphids/instantiate.py` |
+| CSVLogger save_dir | `_build_loggers` patches `init_args.save_dir` to `default_root_dir` | `graphids/instantiate.py` |
+| GPU memory telemetry | DeviceStatsMonitor (forced) | `_build_callbacks` in `graphids/instantiate.py` |
 | GPU system metrics | wandb pynvml (util%, temp, power) | Automatic, 15s interval |
 | Op-level profiling | PyTorchProfiler (chrome traces) | `scripts/slurm/submit.sh profile` |
 | SLURM resource profiler | sacct: RSS, CPU%, wall time | `python -m graphids profile` |

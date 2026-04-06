@@ -31,9 +31,9 @@ def rebuild_caches(datasets: list[str], *, delete_existing: bool = False) -> Non
             shutil.rmtree(cdir)
 
         log.info("rebuilding_cache", dataset=ds, version=PREPROCESSING_VERSION)
-        from graphids.core.data.datamodule.can_bus import CANBusDataModule
+        from graphids.core.data.datamodule.graph import GraphDataModule
 
-        dm = CANBusDataModule(dataset=ds, lake_root=LAKE_ROOT)
+        dm = GraphDataModule(dataset=ds, lake_root=LAKE_ROOT)
         dm.setup("fit")
 
         n_train = len(dm.train_dataset)

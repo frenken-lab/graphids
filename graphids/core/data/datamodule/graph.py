@@ -1,9 +1,8 @@
-"""Dataset-agnostic graph LightningDataModule base + shared dataset loader.
+"""Dataset-agnostic graph LightningDataModule + shared dataset loader.
 
-``GraphDataModule`` is the extension point for graph-shaped datasets. Each
-concrete dataset (CAN bus, future Ethernet, etc.) lives in its own sibling
-module and inherits from this class, setting ``dataset_cls`` to bind the
-underlying ``InMemoryDataset`` subclass.
+``GraphDataModule`` accepts a ``dataset_cls`` class-path string that is
+resolved at init time via ``importlib``, so the dataset domain is fully
+config-driven — no subclass needed per domain.
 
 ``load_datasets`` is a free helper used by both the graph family and
 ``FusionDataModule`` — it operates on any ``InMemoryDataset`` that accepts
@@ -20,9 +19,9 @@ checkpoint and scores training graphs by difficulty, then
 
 from __future__ import annotations
 
+import importlib
 import math
 import os
-from typing import ClassVar
 
 import pytorch_lightning as pl
 import torch
@@ -72,8 +71,9 @@ def load_datasets(
 class GraphDataModule(pl.LightningDataModule):
     """Dataset-agnostic graph DataModule.
 
-    Subclasses set ``dataset_cls`` to a concrete ``InMemoryDataset`` subclass.
-    All batching, VRAM sizing, and loader construction logic is shared.
+    ``dataset_cls`` is a dotted class-path string (e.g.
+    ``"graphids.core.data.datasets.can_bus.CANBusDataset"``) resolved via
+    importlib at init time. This keeps the dataset domain fully config-driven.
 
     Curriculum toggle:
         Pass ``sampler="curriculum"`` + ``vgae_ckpt_path`` to enable
@@ -83,11 +83,10 @@ class GraphDataModule(pl.LightningDataModule):
         trainer's callback list to advance the epoch counter.
     """
 
-    dataset_cls: ClassVar[type[InMemoryDataset]]
-
     def __init__(
         self,
         dataset: str,
+        dataset_cls: str = "graphids.core.data.datasets.can_bus.CANBusDataset",
         lake_root: str = os.environ.get("KD_GAT_LAKE_ROOT"),
         batch_size: int = 32,
         num_workers: int | None = None,
@@ -110,12 +109,18 @@ class GraphDataModule(pl.LightningDataModule):
     ):
         super().__init__()
         self.save_hyperparameters()
+        # Resolve dataset_cls class-path string → actual class
+        module_path, cls_name = dataset_cls.rsplit(".", 1)
+        self._dataset_cls: type[InMemoryDataset] = getattr(
+            importlib.import_module(module_path), cls_name
+        )
         self._train_ds: InMemoryDataset | None = None
         self._val_ds: InMemoryDataset | None = None
         self._test_datasets: dict[str, InMemoryDataset] = {}
         # Curriculum state — populated by _setup_curriculum() when sampler="curriculum"
         self._curriculum_sampler: CurriculumSampler | None = None
         self._curriculum_dataset: list | None = None
+        self._curriculum_sizes: torch.Tensor | None = None  # per-graph node counts
         self._curriculum_loader = None
 
     def setup(self, stage: str | None = None) -> None:
@@ -127,59 +132,27 @@ class GraphDataModule(pl.LightningDataModule):
             window_size=hp["window_size"],
             stride=hp["stride"],
             train_val_split=1.0 - hp["val_fraction"],
-            dataset_cls=self.dataset_cls,
+            dataset_cls=self._dataset_cls,
         )
         if hp["sampler"] == "curriculum":
             self._setup_curriculum()
 
     def _setup_curriculum(self) -> None:
-        """Score per-graph difficulty with VGAE and build the curriculum sampler.
-
-        Runs once during ``setup()``. Loads the VGAE checkpoint on CPU,
-        scores normal-class training graphs, then discards the model.
-        The resulting sampler starts with ``max_num_nodes=None`` — the real
-        VRAM budget is deferred to ``_curriculum_train_dataloader()`` because
-        the Lightning model isn't on GPU yet when ``setup()`` runs.
-        """
-        import gc
-        from pathlib import Path
-
-        from graphids.core.models._training import load_inner_model
+        """Build curriculum sampler via factory in ``sampler.py``."""
+        from graphids.core.data.sampler import build_curriculum_sampler
 
         hp = self.hparams
-        if not hp["vgae_ckpt_path"]:
-            raise ValueError(
-                "sampler='curriculum' requires vgae_ckpt_path — train a VGAE autoencoder first"
+        self._curriculum_sampler, self._curriculum_dataset, self._curriculum_sizes = (
+            build_curriculum_sampler(
+                self._train_ds,
+                vgae_ckpt_path=hp["vgae_ckpt_path"],
+                max_epochs=hp["max_epochs"],
+                curriculum_start_ratio=hp["curriculum_start_ratio"],
+                curriculum_end_ratio=hp["curriculum_end_ratio"],
+                difficulty_percentile=hp["difficulty_percentile"],
+                canid_weight=hp["canid_weight"],
+                seed=hp["seed"],
             )
-
-        device = torch.device("cpu")
-        vgae, _ = load_inner_model("vgae", Path(hp["vgae_ckpt_path"]), device)
-
-        normals = [g for g in self._train_ds if int(g.y[0]) == 0]
-        attacks = [g for g in self._train_ds if int(g.y[0]) == 1]
-        scores = vgae.score_difficulty(normals, canid_weight=hp["canid_weight"])
-        del vgae
-        gc.collect()
-
-        full_dataset = normals + attacks
-        normal_indices = list(range(len(normals)))
-        attack_indices = list(range(len(normals), len(full_dataset)))
-        dataset_sizes = torch.tensor([g.num_nodes for g in full_dataset], dtype=torch.long)
-
-        self._curriculum_dataset = full_dataset
-        self._curriculum_sampler = CurriculumSampler(
-            full_dataset,
-            normal_indices,
-            attack_indices,
-            scores,
-            batch_size=hp["batch_size"],
-            max_epochs=hp["max_epochs"],
-            curriculum_start_ratio=hp["curriculum_start_ratio"],
-            curriculum_end_ratio=hp["curriculum_end_ratio"],
-            difficulty_percentile=hp["difficulty_percentile"],
-            dataset_sizes=dataset_sizes,
-            max_num_nodes=None,
-            mean_nodes=1.0,
         )
 
     # -- Properties (available after setup) -----------------------------------
@@ -299,18 +272,20 @@ class GraphDataModule(pl.LightningDataModule):
     def _curriculum_train_dataloader(self):
         """Build the curriculum training loader (first call only).
 
-        Deferred to the first ``train_dataloader()`` call because
-        ``setup()`` runs before the model is on GPU, so ``node_budget``
-        can't probe VRAM during setup. By the time Lightning calls
-        ``train_dataloader()``, the model is on-device and the probe works.
+        Composes ``CurriculumSampler`` (which indices) with
+        ``NodeBudgetBatchSampler`` (how to batch them). Deferred to the
+        first ``train_dataloader()`` call because ``node_budget`` needs
+        the model on GPU.
         """
         if self._curriculum_loader is not None:
             return self._curriculum_loader
 
         hp = self.hparams
+        nw = hp.get("num_workers")
+        pf = hp.get("prefetch_factor", 2)
 
-        # Finalize budget now that model is on GPU
-        if hp["dynamic_batching"] and self._curriculum_sampler.max_num_nodes is None:
+        if hp["dynamic_batching"]:
+            # VRAM probe now that model is on GPU
             model, model_hp = self._model_and_hp()
             result = node_budget(
                 hp["dataset"],
@@ -320,13 +295,34 @@ class GraphDataModule(pl.LightningDataModule):
                 model=model,
                 train_dataset=self._curriculum_dataset,
             )
-            self._curriculum_sampler.set_node_budget(result.budget, result.mean_nodes)
+            if nw is None:
+                nw, pf = autosize_workers(
+                    model, self._curriculum_dataset, result, default_prefetch_factor=pf
+                )
+            # Compose: CurriculumSampler selects indices → NodeBudgetBatchSampler packs batches
+            active = list(self._curriculum_sampler)
+            active_sizes = self._curriculum_sizes[active]
+            num_steps = max(1, math.ceil(len(active) * result.mean_nodes / result.budget))
+            batch_sampler = NodeBudgetBatchSampler(
+                active_sizes,
+                max_num=result.budget,
+                shuffle=False,  # CurriculumSampler already shuffled
+                skip_too_big=True,
+                num_steps=num_steps,
+                indices=active,
+            )
+        else:
+            # Fixed-size fallback — just use curriculum indices as-is
+            from torch.utils.data import BatchSampler
 
-        nw = hp.get("num_workers")
-        pf = hp.get("prefetch_factor", 2)
+            active = list(self._curriculum_sampler)
+            batch_sampler = BatchSampler(
+                active, batch_size=max(8, hp["batch_size"]), drop_last=False
+            )
+
         self._curriculum_loader = make_graph_loader(
             self._curriculum_dataset,
-            batch_sampler=self._curriculum_sampler,
+            batch_sampler=batch_sampler,
             num_workers=nw if nw is not None else 2,
             device=self._prefetch_device(),
             prefetch_factor=pf if (nw or 2) > 0 else None,
