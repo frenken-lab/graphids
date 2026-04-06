@@ -184,8 +184,8 @@ class ConfigResolver:
             for k, v in cfg.resource_overrides.items():
                 audit.append(OverrideRecord(key=k, value=v, source="recipe_resource"))
 
-            # --- Render the jsonnet chain ---
-            rendered = render(spec.jsonnet_path, spec.jsonnet_tla)
+        # --- Render the jsonnet chain ---
+        rendered = render(spec.jsonnet_path, spec.jsonnet_tla)
 
         # --- Phase 2: Pydantic structural + convention validation ---
         # Raises ConfigValidationError (ValueError subclass) with an

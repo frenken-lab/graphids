@@ -10,7 +10,7 @@
   gat: {
     base: {
       model: {
-        class_path: 'graphids.core.models.supervised.gat.GATModule',
+        class_path: 'graphids.core.models.supervised.gat_module.GATModule',
         init_args: {
           conv_type: 'gatv2',
           edge_dim: 11,

@@ -9,7 +9,7 @@
   vgae: {
     base: {
       model: {
-        class_path: 'graphids.core.models.autoencoder.vgae.VGAEModule',
+        class_path: 'graphids.core.models.autoencoder.vgae_module.VGAEModule',
         init_args: {
           conv_type: 'gatv2',
           edge_dim: 11,
@@ -59,7 +59,7 @@
   dgi: {
     base: {
       model: {
-        class_path: 'graphids.core.models.autoencoder.dgi.DGIModule',
+        class_path: 'graphids.core.models.autoencoder.dgi_module.DGIModule',
         init_args: {
           conv_type: 'gatv2',
           edge_dim: 11,
