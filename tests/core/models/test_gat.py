@@ -67,6 +67,7 @@ class TestGATFastDevRun:
             embedding_dim=cfg.embedding_dim,
             loss_fn=loss_fn,
             num_ids=NUM_IDS,
+            in_channels=IN_CHANNELS,
             gradient_checkpointing=False,
             compile_model=False,
         )
@@ -104,6 +105,7 @@ class TestGATCheckpointRoundtrip:
                 embedding_dim=gat_cfg.embedding_dim,
                 loss_fn=CrossEntropyLoss(),
                 num_ids=NUM_IDS,
+                in_channels=IN_CHANNELS,
                 gradient_checkpointing=False,
                 compile_model=False,
             )

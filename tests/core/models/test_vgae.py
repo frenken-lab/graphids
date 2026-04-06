@@ -95,6 +95,7 @@ class TestVGAEFastDevRun:
             embedding_dim=vgae_cfg.embedding_dim,
             loss_fn=VGAETaskLoss(),
             num_ids=NUM_IDS,
+            in_channels=IN_CHANNELS,
             gradient_checkpointing=False,
             compile_model=False,
         )
@@ -114,6 +115,7 @@ class TestVGAECheckpointRoundtrip:
             embedding_dim=4,
             loss_fn=VGAETaskLoss(),
             num_ids=NUM_IDS,
+            in_channels=IN_CHANNELS,
             gradient_checkpointing=False,
             compile_model=False,
         )
