@@ -7,7 +7,7 @@ from typing import NamedTuple
 import numpy as np
 import polars as pl
 
-from graphids.config import PROJECT_ROOT
+from graphids.config.constants import PROJECT_ROOT
 
 SAFETY_MARGIN = 0.85
 

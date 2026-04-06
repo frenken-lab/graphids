@@ -1,67 +1,115 @@
 # GraphIDS Session Plan
 
-> Last updated: 2026-04-04 (session 19 — config stack migration plan)
+> Last updated: 2026-04-05 (session 26 — Typer CLI + config reorg)
 
-## Next session — Phase 1 jsonnet migration
+## What this session did (2026-04-05, session 26 — Typer CLI + config reorg)
 
-Full migration from YAML chain + `merge_yaml_chain` to jsonnet composition.
-Single PR, no shadow path. `jsonargparse` / `LightningCLI` stay; Phases 3–4
-strip those later.
+Two pieces of work:
 
-**Read first:**
-- `docs/migration_plan.md` — 7-phase overview
-- `docs/phase1_jsonnet.md` — commit-by-commit migration order, shim, gotchas
-- `docs/reference/3-chain.md` — current 3-handoff config flow (what we're replacing)
+### Config reorg: stage/family name migration + broken import fixes
 
-**Execute in order (see `docs/phase1_jsonnet.md` §7 for detail):**
-1. Install go-jsonnet 0.20.0+ to `~/.local/bin/` (both login + via dotfiles for all machines)
-2. Commit 1: `configs/` skeleton + `graphids/config/jsonnet.py` + ADR 0010
-3. Commit 2: **spike** — port exactly `autoencoder + vgae/small`, add one-chain parity test. STOP if it fails.
-4. Commit 3: port remaining models/stages/fusion methods; extend parity test to all ~100 recipe chains
-5. Commit 3.5: temporary dual-carry of `config_files + jsonnet_path` on `StageConfig` (one commit only)
-6. Commit 4: rewrite contracts/planning/resolver/entrypoint/_lightning/cli. Point of no return.
-7. Commit 5: **delete** YAML files, `merge_yaml_chain`, `deep_merge`, `apply_dotted_overrides`, `to_override_dict`, `resolve_config_files`, parity test. Add tiny `test_jsonnet_render.py` as permanent guard.
-8. Commit 6: update `docs/reference/`, `.claude/rules/`, `CLAUDE.md`, `PLAN.md`
+Completed the remaining Phase 2 orchestration + Phase 3 test updates from
+the config reorg that consolidated model families (vgae/dgi/gat →
+unsupervised/supervised) and stage names (normal/curriculum → supervised):
 
-**Exit gates (from `phase1_jsonnet.md` §11):**
-- `grep -r merge_yaml_chain graphids/ tests/` → empty
-- `ls graphids/config/stages/` → no such directory
-- `python -m graphids.orchestrate validate` passes on ablation/smoke_test/final_eval
-- `dg launch smoke_test` runs one asset per stage to COMPLETED
-- `python -m graphids fit --config configs/stages/autoencoder.jsonnet --trainer.max_epochs 1` runs on gpudebug
-- **Net LOC negative** (~−200 to −300). Positive net means a shadow path leaked.
+- `orchestrate/{contracts,resolve,cross_field,planning,recipes}.py` —
+  stage name updates, family checks, dead curriculum code removed
+- `orchestrate/logger.py`, `core/models/{gat_module,vgae_module}.py` —
+  stale `"normal"`/`"curriculum"` refs
+- ~15 files with broken imports from an earlier incomplete refactor:
+  `graphids.config.shared` → `orchestrate.shared`/`slurm.resources`,
+  `graphids.core.contracts` → `orchestrate.contracts`/`core.analysis.schemas`,
+  `graphids.config.contracts` → `orchestrate.recipes`,
+  `SLURM_ACCOUNT`/`SLURM_LOG_DIR` → `slurm.env`
+- Fixed `dep["model"]` → `dep["family"]` bug in `planning.py`
+  (topology.json uses `"family"` key)
+- Fixed pre-existing `DGIModule`/`VGAEModule`/`GATModule` `__init__.py`
+  re-exports, `fusion_reward.py` indentation error
+- All 6 test files updated (stage names, family names, imports)
 
-**First actions next session:**
-- Verify go-jsonnet install on Pitzer login: `jsonnet --version`
-- Sketch `configs/_lib/defaults.libsonnet` + `configs/stages/autoencoder.jsonnet` + `configs/models/vgae.libsonnet` (scales.small only)
-- Wire `graphids/config/jsonnet.py::render_config` (implementation in `docs/phase1_jsonnet.md` §6)
-- Write the spike parity test (one parametrization only — `autoencoder + vgae/small + hcrl_ch + seed 42`)
-- Submit via `scripts/submit.sh tests -k jsonnet_parity` on a CPU SLURM job
-- If green → proceed to Commit 3. If red → debug on the 1-chain surface, do NOT port more files.
+### Typer CLI: replace argparse + jsonargparse with principled grouping
 
-**Known traps (see `phase1_jsonnet.md` §9):**
-- `num_workers: null` must survive as literal null (jsonargparse footgun)
-- `+` vs `+:` in jsonnet — always use `+:` for nested dict keys
-- String-coercion tolerance in parity comparator (`str(a)==str(b)` at leaves)
-- `defaults/trainer.yaml` is silently injected by `parser_kwargs.default_config_files` today — bake into jsonnet, delete the reference
-- KD overlay conditional: `if std.length(auxiliaries) > 0 then vgae.kd else {}`
-- Dev path needs `.jsonnet` → temp YAML preprocessor in `cli.run_lightning`
+Replaced the accumulated argparse shim collection (`graphids/commands/`,
+12 files) and jsonargparse dependency with a Typer CLI following the
+responsibilities doc chain:
 
-## What this session did (2026-04-04, session 19 — config stack migration plan)
+```
+Typer parses CLI args → jsonnet renders → Pydantic validates → code runs
+```
 
-Wrote the 7-phase migration roadmap (`docs/migration_plan.md`) and detailed
-Phase 1 implementation plan (`docs/phase1_jsonnet.md`). Initial draft was a
-shadow-path approach (keep both YAML and jsonnet running in parallel until
-Phase 2); rewrote to full-migration-in-one-PR after pushback — git history is
-the rollback, no dual-write. No code changes this session; pure planning.
+- Created `graphids/cli/` package: `app.py` (shared options, parse_tla,
+  apply_overrides), `_training.py`, `_analysis.py`, `_data.py`,
+  `_orchestrate.py`, `_slurm.py`
+- Created `graphids/core/train_entrypoint.py` — the missing module that
+  3 files referenced. Shared render→validate→instantiate→trainer chain
+  for both dev path and pipeline path.
+- Rewrote `__main__.py` for Typer
+- Deleted `graphids/commands/` (12 files)
+- Replaced jsonargparse with typer in `pyproject.toml`
+- Fixed `pipeline-status` broken import (`SLURM_LOG_DIR`)
+- Fixed `fusion.py` stale import from old `commands/extract_fusion_states`
+- Rewrote `test_cli_routing_smoke.py` for Typer CliRunner
 
-## What this session did (2026-04-04, session 18 — fusion refactor)
+Commands grouped by `rich_help_panel`: Training (4), Analysis (1),
+Data (3), Orchestration (3), SLURM (2), plus hidden `_finalize-record`.
 
-Audited `graphids/core/models/` with a focus on fusion complexity. Found a
-runtime-crash bug in KD training, 4 tiers of dead code, and 5 reward-shaping
-coefficients exposed as kwargs that the paper fixes as methodological
-constants. Executed all cuts in one pass. **Net −200 LOC across source,
-tests, configs, and docs.**
+## Next session — SLURM smoke test
+
+Verify end-to-end via `scripts/slurm/submit.sh tests`. The Typer CLI,
+jsonnet render, Pydantic validation, and instantiate chain are all
+wired but only import-tested on login node.
+
+**Known deferred items:**
+
+- `instantiate.py` still has broken imports (`graphids.callbacks`,
+  `CurriculumEpochCallback` without import). These fire at training
+  time, not import time.
+- `orchestrate/entrypoint.py` imports `run_training_from_spec` /
+  `run_test_from_spec` from `core.train_entrypoint` — now exists.
+- `analyze` command interface changed: `--analyzer.ckpt_path` →
+  `--tla 'ckpt_path="..."'` (jsonnet TLA instead of jsonargparse
+  dotted override)
+
+## Active
+with zero LightningCLI / jsonargparse involvement. `_lightning.py` and
+`cli.py` are gone; `GraphIDSCLI`, `build_cli`, `schema_parser`,
+`CLI_KWARGS`, `WandbSaveConfigCallback`, `patch_config_paths`, and
+`validate_cli_chain` are all deleted.
+
+**Read first before starting Phase 4:**
+
+- `docs/migration_plan.md` — Phase 4 "Jsonargparse Retooling" section
+  (ActionJsonnet path vs stdlib argparse for `commands/analyze.py`)
+- `graphids/commands/analyze.py` — jsonargparse retooling (jsonnet parser_mode)
+- `graphids/core/artifacts/analyzer.py` — `Analyzer.__init__` signature
+  that the parser reads
+
+**Known Phase 3 deferred items:**
+
+- `commands/analyze.py` still imports `jsonargparse.ArgumentParser` to
+  build an auto-parser over `Analyzer.__init__`. Phase 4 keeps
+  jsonargparse and retools it for Jsonnet-backed configs + type-hint
+  validation per `docs/migration_plan.md §Phase 4`.
+- Dotted-key typos in `trainer_overrides` / `stage_overrides` used to be
+  caught at planning time by the deleted `validate_cli_chain` (via
+  `parser.parse_object`). Post-Phase-3 they now fail at instantiation
+  (Trainer / Model `__init__` kwarg mismatch). Consider re-adding
+  stage-libsonnet override validation in `ValidatedConfig` if this
+  becomes a pain point — but let the next production sweep expose it
+  first.
+- Fusion stage still absorbs `auxiliaries=[]` and `vgae_ckpt_path=null`
+  as ignored TLAs (Phase 1 deferred, unchanged in Phase 3).
+
+## What this session did (2026-04-05, session 22 — Phase 3 strip LightningCLI)
+
+LightningCLI + `jsonargparse` (for the training path) deleted. The
+rendered jsonnet dict is now consumed directly by
+`graphids.core.instantiate.instantiate` which imports class_paths via
+`importlib`, applies signature-filtered link_arguments, constructs the
+forced callback set explicitly, and returns a wired `(trainer, model,
+datamodule)` triple. The dev-path argparse entrypoint moved under
+`commands/` to comply with the project convention that argparse-based
+CLI tools live there.
 
 ### Bug fix (Tier 1)
 
@@ -71,22 +119,6 @@ generator function used as `with teacher_on_device(self, device):` in
 first step with `TypeError: 'generator' object does not support the context
 manager protocol`. Confirmed at runtime. One-line fix. Explains part of
 issue #25 (KD pipeline never tested end-to-end).
-
-## Current state
-
-Pipeline converges at LightningCLI (`train_entrypoint.py` → `run_lightning()`).
-`ConfigResolver` handles cross-field validation + audit trail; override chain
-collapsed 9→3 per ADR 0009 (commit `0837c04`). SLURM submission via
-`scripts/submit.sh`. Dagster orchestrator runs as a CPU SLURM job, not login.
-
-Each model config is **one dagster asset = one SLURM job** running
-train → test → analyze sequentially. Training under `set -euo pipefail`;
-test/analyze best-effort. Per-phase marker files (`.train_complete`,
-`.test_complete`, `.analyze_complete`) written on success.
-
-Asset checks split: `checkpoint_complete` (blocking) gates downstream,
-`analysis_complete` (non-blocking) informational. Phase status surfaced in
-dagster metadata (`phase_train`/`phase_test`/`phase_analyze`).
 
 **Observability:** three layers.
 
@@ -101,14 +133,34 @@ schema) → DuckDB catalog rebuildable via `rebuild-catalog`.
 
 ## Active
 
-## What this session did (2026-04-04, session 17 — tests audit)
+## What this session did (2026-04-05, session 25 — Jsonnet recipe expansion)
 
-### test-writing rules file
+- Moved recipe expansion logic into Jsonnet (`configs/_lib/recipes.libsonnet`) with a
+  `configs/recipes/_expand.jsonnet` entrypoint, keeping Python as validation + wrapper.
+- Simplified `recipe_expand.py` to delegate expansion to Jsonnet and updated tests/docs
+  to reference the new expansion path.
 
-New `.claude/rules/test-writing.md` — auto-loaded into every future session
-in this project. Codifies the three-question framework (project-vs-framework,
-formula-mirror-vs-property, cite-the-bug), marker discipline, and
-anti-patterns from this audit.
+## What this session did (2026-04-05, session 23 — Phase 4 jsonargparse retooling)
+
+- Switched analyzer configs to Jsonnet (`graphids/config/stages/analyze_*.jsonnet`) and
+  updated usage docs/refs to point at the new paths.
+- Retooled `commands/analyze.py` to use jsonargparse `parser_mode="jsonnet"` with
+  `--config`, keeping CLI overrides intact.
+- Upgraded jsonargparse dependency to full extras (`all,shtab,argcomplete`) and
+  aligned the Phase 4 docs + config-system notes with the new direction.
+
+## What this session did (2026-04-05, session 24 — config reorg execution)
+
+- Moved `StageConfig` and `ResourceSpec` into `graphids/config/shared.py` and
+  re-routed imports across orchestrate/SLURM/tests.
+- Replaced orchestrate cross-field checks with Pydantic validation in
+  `graphids/config/schemas.py` + `graphids/config/cross_field.py`.
+- Migrated resource profiles to `configs/resources/job_profiles.json` and
+  removed the legacy YAML profile files; updated `slurm/resources.py` loader.
+- Removed the legacy `orchestrate validate` CLI and updated docs/refs.
+- Added reward-default resolution from `configs/fusion/reward.libsonnet`
+  for DQN/Bandit instantiation and added safe defaults for missing
+  GAT config fields in test fixtures.
 
 ## What this session did (2026-04-03, session 16 — lake audit + fusion CPU pipeline)
 

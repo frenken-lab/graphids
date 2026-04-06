@@ -1,19 +1,69 @@
-from graphids import __main__ as cli_main
+"""Smoke tests for Typer CLI routing.
+
+Verifies that commands are registered and --help works without importing torch.
+"""
+
+from typer.testing import CliRunner
+
+# Register all command modules
+import graphids.cli._analysis  # noqa: F401
+import graphids.cli._data  # noqa: F401
+import graphids.cli._orchestrate  # noqa: F401
+import graphids.cli._slurm  # noqa: F401
+import graphids.cli._training  # noqa: F401
+from graphids.cli.app import app
+
+runner = CliRunner()
 
 
-def test_lightning_command_is_routed() -> None:
-    parser = cli_main._build_parser()
-    ns, remaining = parser.parse_known_args(["fit", "--config", "x.yaml"])
-    assert ns.kind == "lightning"
-    assert ns.command_name == "fit"
-    assert remaining == ["--config", "x.yaml"]
+def test_no_args_shows_help() -> None:
+    result = runner.invoke(app, [])
+    assert result.exit_code == 0
+    assert "Training" in result.output
+    assert "Analysis" in result.output
 
 
-def test_module_command_is_routed() -> None:
-    parser = cli_main._build_parser()
-    ns, remaining = parser.parse_known_args(
-        ["from-spec", "--phase", "analyze", "--spec-file", "x.json"]
-    )
-    assert ns.kind == "module"
-    assert ns.module_name == "graphids.commands.from_spec"
-    assert remaining == ["--phase", "analyze", "--spec-file", "x.json"]
+def test_fit_requires_config() -> None:
+    result = runner.invoke(app, ["fit"])
+    assert result.exit_code != 0
+
+
+def test_fit_help() -> None:
+    result = runner.invoke(app, ["fit", "--help"])
+    assert result.exit_code == 0
+    assert "--config" in result.output
+    assert "--tla" in result.output
+    assert "--set" in result.output
+
+
+def test_analyze_help() -> None:
+    result = runner.invoke(app, ["analyze", "--help"])
+    assert result.exit_code == 0
+    assert "--config" in result.output
+
+
+def test_submit_profile_routes() -> None:
+    result = runner.invoke(app, ["submit-profile", "tests"])
+    assert result.exit_code == 0
+    assert "cpu" in result.output
+
+
+def test_all_expected_commands_registered() -> None:
+    names = {c.name or c.callback.__name__ for c in app.registered_commands}
+    expected = {
+        "fit",
+        "test",
+        "validate",
+        "predict",
+        "analyze",
+        "rebuild-caches",
+        "stage-data",
+        "extract-fusion-states",
+        "from-spec",
+        "pipeline-status",
+        "rebuild-catalog",
+        "submit-profile",
+        "probe-budget",
+    }
+    missing = expected - names
+    assert not missing, f"Missing commands: {missing}"

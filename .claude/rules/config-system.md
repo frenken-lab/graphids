@@ -1,224 +1,215 @@
 # GraphIDS Config System
 
-LightningCLI + jsonargparse + plain YAML. No Hydra, no OmegaConf, no dataclasses.
+Jsonnet composition + Pydantic validation + direct Lightning instantiation.
+Phase 1 (2026-04-05) replaced the 3-chain YAML + `merge_yaml_chain` plumbing
+with a single `render_config(jsonnet_path, tla) → dict` call. Phase 2
+(2026-04-05) added `validate_config` as the typed Pydantic gate. Phase 3
+(2026-04-05) deleted `LightningCLI` / `GraphIDSCLI` / `schema_parser` /
+`build_cli` and replaced them with `graphids.core.instantiate.instantiate`
+— importlib-based class_path instantiation with signature-filtered
+link_arguments. Phase 4 retools the analyzer CLI to keep jsonargparse
+with Jsonnet-backed configs (`commands/analyze.py`) per
+`docs/migration_plan.md`.
 
 ## Architecture
 
-jsonargparse reads `__init__` signatures on LightningModules and DataModules for type info. YAML provides values. CLI overrides win.
-
-```
-defaults/trainer.yaml (shared defaults) → stage YAML (model class_path + overrides) → model scale YAML (dims) → CLI
-```
+1. Recipe YAML + pipeline topology declare which stage+scale chains exist.
+2. `enumerate_assets` produces `StageConfig`s carrying `jsonnet_path` +
+   planner-derived identity knobs.
+3. `ConfigResolver.resolve` packs trainer/stage/KD/upstream-ckpt overrides
+   into a typed TLA dict via `TrainingContract.build_tla_dict`.
+4. `render_config(spec.jsonnet_path, spec.jsonnet_tla)` produces the merged
+   dict — identical on login node, dagster worker, and SLURM node.
+5. `validate_config(rendered) → ValidatedConfig` runs Pydantic validators
+   (null list fields, monitor consistency, class_path namespacing, etc.)
+   on the jsonnet output. Raises `ConfigValidationError` on any violation.
+6. `graphids.core.instantiate.instantiate(rendered, validated=...) →
+   InstantiatedRun` imports class_paths via `importlib`, applies
+   signature-filtered link_arguments, builds forced callbacks, and returns
+   a wired `(trainer, model, datamodule)` triple.
+7. Full tree: `docs/reference/config-architecture.md`.
 
 ## File layout
 
 ```
+configs/                           # repo root — jsonnet sources
+├── _lib/
+│   ├── defaults.libsonnet         # trainer / checkpoint / early_stopping defaults
+│   └── helpers.libsonnet          # apply_dotted() for recipe overrides
+├── datasets/
+│   └── dataset_registry.json      # dataset catalog (domain → dataset metadata)
+├── matrix/
+│   ├── axes.json                  # valid model types / scales / fusion methods
+│   └── topology.json              # stage DAG + identity keys
+├── recipes/                       # pipeline recipes (sweep dimensions)
+├── stages/
+│   ├── autoencoder.jsonnet        # function(dataset, seed, run_dir, scale, conv_type, ...)
+│   ├── normal.jsonnet
+│   ├── curriculum.jsonnet
+│   ├── fusion.jsonnet
+│   └── analyze_{vgae,gat,fusion}.jsonnet  # Analyzer configs (NOT in CLI chain)
+├── models/
+│   ├── vgae.libsonnet             # { base, scales: {small, large}, kd }
+│   ├── gat.libsonnet
+│   └── dgi.libsonnet
+├── resources/
+│   ├── clusters.json              # cluster → partition/gres mapping
+│   ├── job_profiles.json          # per-family/scale/stage resource sizing
+│   └── submit_profiles.json       # scripts/slurm/submit.sh profiles
+├── fusion.libsonnet               # { base, methods: {bandit, dqn, mlp, weighted_avg} }
+└── fusion/
+    ├── base.libsonnet
+    └── methods/{bandit,dqn,mlp,weighted_avg}.libsonnet
+
 graphids/
-  cli.py               # GraphIDSCLI + CLI_KWARGS — shared by __main__ and orchestrate
-  commands/             # operational subcommands (registered in __main__.py _COMMAND_MODULES)
-    analyze.py           # analysis artifacts from checkpoints (incl. landscape subcommand)
-    from_spec.py         # dagster→SLURM spec transport: from-spec --phase {train,test,analyze}
-    job_stats.py         # sacct resource profiler (job-stats)
-    probe_budget.py      # hardware cost model measurement (probe-budget)
-    profile.py           # profiled training run (PyTorchProfiler)
-    rebuild_caches.py    # rebuild preprocessed graph caches
-    stage_data.py        # NFS → scratch → TMPDIR staging
-    submit_profile.py    # print SLURM resource profile for submit.sh
-    finalize_record.py   # update run_record.json sidecar with phases + wall_time
-    rebuild_catalog.py   # rebuild DuckDB catalog from run_record.json sidecars
+  callbacks.py                     # ResourceProfileCallback, RunRecordCallback (pl.Callback)
+  commands/
+    train.py                       # fit/test/validate/predict — argparse + instantiate
+    # plus operational subcommands (analyze, profile, from-spec, ...)
   config/
-    __init__.py          # re-export facade (public API: constants, topology, paths, contracts)
-    base.py              # CONFIG_DIR, PROJECT_ROOT
-    runtime.py           # env vars, constants (from old constants.yaml)
-    topology.py          # stage DAG, valid types/scales (from old pipeline.yaml)
-    paths.py             # run_dir(), load_catalog(), dataset_names(), compute_identity_hash()
-    contracts.py         # TrainingRunConfig, KDEntry, expand_recipe_configs()
-    yaml_utils.py        # read_yaml()
-    recipe_expand.py     # recipe expansion logic
-    defaults/            # shared trainer + global defaults
-      trainer.yaml       # seed, trainer (callbacks, precision, etc.)
-      global.yaml        # global defaults (from old constants.yaml static values)
-      io.yaml            # I/O defaults (from old constants.yaml + write_paths.yaml)
-    datasets/            # per-dataset catalog (from old monolithic datasets.yaml)
-      hcrl_ch.yaml
-      hcrl_sa.yaml
-      set_01.yaml ... set_04.yaml
-    matrix/              # pipeline axes and constraints
-      axes.yaml          # valid model types, scales, fusion methods
-    resources/           # SLURM resource profiles (from old monolithic resources.yaml)
-      clusters.yaml      # cluster-specific settings (partitions, GPUs)
-      submit_profiles.yaml # submit.sh profile mappings
-      profiles/          # per-model resource profiles
-        vgae.yaml, gat.yaml, dgi.yaml, temporal.yaml, fusion.yaml
-    stages/              # one per stage — model class_path + init_args overrides + data
-      autoencoder.yaml   # VGAEModule + CANBusDataModule
-      normal.yaml        # GATModule + CANBusDataModule (no curriculum)
-      curriculum.yaml    # GATModule + CurriculumDataModule
-      temporal.yaml      # TemporalLightningModule + TemporalDataModule
-      fusion.yaml        # single fusion stage YAML (all methods)
-      analyze_vgae.yaml  # Analyzer config: VGAE embeddings + landscape
-      analyze_gat.yaml   # Analyzer config: GAT embeddings + attention + CKA + landscape
-      analyze_fusion.yaml # Analyzer config: fusion policy
-    fusion/              # fusion-specific config (method overlays + scales)
-      base.yaml          # shared fusion defaults
-      methods/           # per-method overlays (bandit, dqn, mlp, weighted_avg)
-      scales/            # fusion scale configs (small, large)
-    models/              # per-model architecture configs (base + scales)
-      vgae/
-        base.yaml        # shared VGAE architecture defaults
-        scales/
-          small.yaml, large.yaml
-      gat/
-        base.yaml        # shared GAT architecture defaults
-        scales/
-          small.yaml, large.yaml
-      dgi/
-        base.yaml
-        scales/
-          small.yaml, large.yaml
-      temporal/
-        base.yaml
-        scales/
-          small.yaml, large.yaml
-    recipes/             # run specifications (sweep dimensions, config overrides)
-      ablation.yaml, final_eval.yaml, smoke_test.yaml
+    __init__.py                    # public API facade
+    base.py                        # CONFIG_DIR, PROJECT_ROOT
+    runtime.py                     # env vars, constants
+    topology.py                    # stage DAG + import-time jsonnet-tree assertions
+    paths.py                       # run_dir, compute_identity_hash
+    contracts.py                   # TrainingRunConfig, KDEntry, expand_recipe_configs
+    jsonnet.py                     # render_config(path, tla) subprocess shim
+    yaml_utils.py                  # read_yaml / write_yaml (snapshots only)
   core/
-    models/
-      __init__.py        # re-exports
-      _conv.py           # shared conv building blocks
-      _training.py       # KDAuxiliary TypedDict, shared training utils
-      autoencoder/       # VGAE, DGI
-        vgae.py, dgi.py
-      supervised/        # GAT
-        gat.py
-      temporal_family/   # temporal transformer
-        temporal.py
-      fusion/            # all fusion models
-        bandit.py, dqn.py, fusion_baselines.py, fusion_features.py, fusion_reward.py
-    contracts/           # canonical specs for dagster↔SLURM transport
-      analysis.py, models.py, ops.py, run_record.py
+    contracts/
+      models.py                    # TrainingSpec — jsonnet_path, jsonnet_tla, identity
+      ops.py                       # TrainingContract — build_tla_dict, resolve_jsonnet_path
+      run_record.py                # RunRecord sidecar schema
+    instantiate.py                 # instantiate(rendered) → InstantiatedRun (trainer, model, datamodule)
+    train_entrypoint.py            # render_config → validate_config → snapshot → instantiate → fit
   orchestrate/
-    component.py         # integration hub — SlurmTrainingComponent + IOManager + Resource
-    definitions.py       # dagster entry point
-    __main__.py          # CLI: run/validate/smoke
-    planning.py          # recipe → execution plan
-    execution.py         # plan executor
-    assets.py            # dagster asset definitions
-    checks.py            # dagster freshness/quality checks
-    analysis.py          # analysis asset integration
-    validate.py          # config chain validation
-    slurm.py             # sbatch submit, sacct poll
-    resources.py         # ResourceSpec + scale_resources
+    planning.py                    # enumerate_assets (StageConfig in config/shared.py)
+    resolve.py                     # ConfigResolver, cross-field validation via config/schemas.py
+    component.py                   # SlurmTrainingComponent (dagster)
+    assets.py                      # @asset definitions
 ```
 
-`LAKE_ROOT` defaults to `experimentruns` (relative) or `KD_GAT_LAKE_ROOT` env var (ESS on OSC).
-
-## CLI usage
-
-`GraphIDSCLI` class and `CLI_KWARGS` in `graphids/cli.py`. Commands registered via `_COMMAND_MODULES` dict in `__main__.py`:
+## Running
 
 ```bash
-# --- Training (GraphIDSCLI → LightningCLI) ---
-python -m graphids fit --config graphids/config/stages/autoencoder.yaml
-python -m graphids fit --config graphids/config/stages/autoencoder.yaml \
-                       --config graphids/config/models/vgae/scales/small.yaml
-python -m graphids fit --config graphids/config/stages/normal.yaml \
-                       --model.init_args.lr=0.01
+# Dev path (no TLAs needed — stages default for smoke)
+python -m graphids fit --config configs/stages/autoencoder.jsonnet
 
-# --- Fusion (single stage YAML + method overlay) ---
-python -m graphids fit --config graphids/config/stages/fusion.yaml \
-                       --config graphids/config/fusion/methods/bandit.yaml
+# Dev path with TLAs (preprocessor harvests them and passes to render_config)
+python -m graphids fit \
+    --tla 'dataset="hcrl_sa"' \
+    --tla 'scale="large"' \
+    --tla 'variational=false' \
+    --config configs/stages/autoencoder.jsonnet \
+    --model.init_args.lr=0.005
 
-# --- Analysis artifacts (Analyzer — no Trainer) ---
-python -m graphids analyze --config graphids/config/stages/analyze_vgae.yaml \
-    --analyzer.ckpt_path path/to/best.ckpt --analyzer.dataset hcrl_sa
+# Pipeline path (dagster → SLURM)
+dg launch --assets 'autoencoder_*'
 
-# --- Spec-file transport (dagster → SLURM) ---
-python -m graphids from-spec --phase train   --spec-file /tmp/spec.json
-python -m graphids from-spec --phase test    --spec-file /tmp/spec.json
-python -m graphids from-spec --phase analyze --spec-file /tmp/spec.json
+# Validation runs inside ConfigResolver during orchestration
 ```
 
-`analyze` YAML keys nest under `analyzer:` (same pattern as `model:`/`data:`/`trainer:`). Required args (`ckpt_path`, `dataset`, `model_type`) have no defaults — jsonargparse rejects configs that omit them.
+## Stage function convention
 
-`from-spec` accepts a canonical spec file (JSON) produced by dagster's `SlurmTrainingComponent`. This is the transport layer for dagster→SLURM job submission — dagster serializes the spec, SLURM deserializes and runs it. `--phase {train,test,analyze}` dispatches to the training, test, or analysis code path; train/test use `TrainingContract` and analyze uses `AnalysisContract`.
+Every `stages/*.jsonnet` is a top-level function with sensible defaults
+for every TLA. `TrainingContract.build_tla_dict` is the single site that
+packs a `StageConfig` into the TLA dict each stage consumes. Adding a new
+TLA means updating both the jsonnet signature AND `build_tla_dict`.
 
-## Model __init__ convention
-
-Every LightningModule takes **flat typed primitives** — no nested config objects. jsonargparse introspects the signature; YAML maps directly to init_args.
-
-```python
-class VGAEModule(pl.LightningModule):
-    def __init__(self, conv_type: str = "gatv2", hidden_dims: list[int] | None = None,
-                 latent_dim: int = 48, lr: float = 0.003,
-                 auxiliaries: list[KDAuxiliary] | None = None, ...):
-        self.save_hyperparameters()
+```jsonnet
+function(
+  dataset='hcrl_ch', seed=42, run_dir='',
+  scale='small', conv_type='gatv2', variational=true,
+  auxiliaries=[], vgae_ckpt_path=null,
+  trainer_overrides={}, stage_overrides={}, ckpt_path=null,
+)
+  defaults.trainer + defaults.checkpoint + defaults.early_stopping
+  + vgae.base + vgae.scales[scale]
+  + { seed_everything: seed, trainer+: {...}, data: {...}, model+: {...} }
+  + helpers.apply_dotted(trainer_overrides)
+  + helpers.apply_dotted(stage_overrides)
 ```
 
-**Structured list items** use `TypedDict` for jsonargparse validation. `KDAuxiliary` (in `_training.py`) defines valid keys for KD config — typos in YAML are rejected at parse time.
+## Merge semantics
 
-```yaml
-# stages/autoencoder.yaml — keys match __init__ params exactly
-model:
-  class_path: graphids.core.models.autoencoder.vgae.VGAEModule
-  init_args:
-    proj_dim: 48
-    lr: 0.002
-```
+Jsonnet `+:` is deep-merge; `+` on top-level objects is shallow
+merge-with-last-wins. Lists replace on conflict. Match the pattern from
+existing stages religiously — a single missing `:` on a nested key
+silently replaces the subtree instead of merging. Run
+`~/.local/bin/jsonnet configs/stages/<stage>.jsonnet` to verify a stage
+renders correctly after editing.
 
-**Prefix conventions** for modules with colliding param spaces:
-- `TemporalLightningModule`: `spatial_*` for GAT backbone, `temporal_*` for transformer
-- `DQNFusionModule` / `BanditFusionModule`: separate classes, no prefix needed (each has its own params)
+## Robustness
 
-## Pipeline topology
+1. **Typed TLA round-trip.** `render_config` passes every TLA through
+   `--tla-code <k>=<json.dumps(v)>` so ints stay ints, bools stay bools,
+   lists stay lists, `None` becomes jsonnet `null`.
+2. **Pydantic gate (`ValidatedConfig`)** — runs immediately after
+   `render_config`: null list fields in `model.init_args`, monitor
+   mismatch between `checkpoint` and `early_stopping`, un-namespaced
+   `class_path` strings, and `LearningRateMonitor` without `logger`
+   all die with an actionable error before any torch import.
+3. **KD auxiliaries → `SimpleNamespace`** — `instantiate.py` coerces
+   `model.init_args.auxiliaries` list items from `dict` to
+   `SimpleNamespace` so `_install_kd_teacher`'s attribute-access
+   contract (`getattr(a, "type", None)`) keeps working without the
+   jsonargparse TypedDict+Namespace dance.
+4. **Signature-filtered link_arguments** — `_apply_link_arguments`
+   inspects the target class's `__init__` signature and silently skips
+   links whose target name isn't in the accepted kwarg set. Fusion
+   models (`BanditFusionModule` / `DQNFusionModule` / `MLPFusionModule` /
+   `WeightedAvgModule`) don't take `dataset` / `conv_type` / `heads` /
+   `seed` / `lake_root` so every VGAE/GAT link is a no-op for them.
+5. **`topology.py` import-time assertions** — cross-validates the jsonnet
+   tree: every `(model_family)` has a libsonnet, every stage has a
+   `.jsonnet`, every fusion method has a method libsonnet. Missing files
+   fail at package import.
+6. **`ConfigResolver.resolve`** — renders every unique chain on asset
+   materialization, runs `validate_config` + `validate_stage_config` (Pydantic
+   cross-field rules), and catches override typos, null list fields, and
+   logger/callback wiring mismatches. No jsonargparse schema pass — deleted
+   in Phase 3.
 
-`topology.py` defines model types, scales, fusion methods, stages, DAG dependencies, and variants in Python (migrated from old `pipeline.yaml`). `__init__.py` re-exports `STAGES`, `STAGE_DEPENDENCIES`, `VALID_MODEL_TYPES`, `VALID_SCALES`, `VALID_FUSION_METHODS`. `matrix/axes.yaml` declares the valid combinations for recipe expansion.
+## Null preservation
 
-Import-time assertions in `topology.py` cross-validate the topology against `config/models/` and `config/resources/profiles/`:
-every `(model_type, scale)` and `(fusion_method, scale)` must have model config files;
-every trainable `(model, scale, stage)` must have a resource profile.
+`data.init_args.num_workers: null` is a real value (auto-sized from
+GPU-first sizing), not "missing". Jsonnet has a first-class `null` —
+preserve it. The autoencoder/curriculum stages emit `num_workers: null`
+explicitly; `gat.base.libsonnet` overrides it to `4` because GAT is
+compute-bound.
 
 ## Environment variables
 
-Infrastructure env vars use `os.environ.get()` in `runtime.py` with `KD_GAT_` prefix:
+Infrastructure env vars use `os.environ.get()` in `runtime.py` with
+`KD_GAT_` prefix:
 
 - SLURM: `SLURM_ACCOUNT`, `SLURM_PARTITION`, `SLURM_GPU_TYPE`
 - Run metadata: `SWEEP_ID`, `USER_TAGS`, `CKPT_PATH`
-
-jsonargparse also supports `--env_prefix=KD_GAT` for any init_args field.
 
 ## Path layout
 
 `{lake_root}/{production|dev/user}/{dataset}/{model_type}_{scale}_{stage}_{identity_hash}/seed_{N}`
 
 `lake_root` defaults to `experimentruns` when `KD_GAT_LAKE_ROOT` is unset.
-
-The `identity_hash` suffix is an 8-char SHA256 derived from the stage's `identity_keys` (defined in `topology.py`). Computed by `compute_identity_hash()` in `paths.py`. **Missing identity keys raise `KeyError`** — never silently hash to defaults.
-
-## Config robustness
-
-Four layers of validation prevent silent config drift:
-
-1. **jsonargparse type checking** — unknown `init_args` keys and wrong types are rejected at parse time.
-2. **`KDAuxiliary` TypedDict** — structured list items (KD config) validate keys at parse time. Typos like `alppha` are caught.
-3. **`topology.py` import-time assertions** — cross-validates model types, scales, and resource profiles at import time. Missing config files or resource profiles raise immediately.
-4. **`python -m graphids.orchestrate validate`** — checks config chains parse, no callback/logger incompatibility, no null list fields in model init_args.
-
-When adding new config fields: type annotations on `__init__` params are the schema. Use `TypedDict` for structured dicts/lists. jsonargparse enforces the rest.
-
-**Null-serialization rule:** `--print_config` serializes `Optional[X] = None` defaults as `null`. If `__init__` normalizes `None → real_default` before `save_hyperparameters()`, the stage YAML MUST set the field explicitly so expanded configs never contain `null`. Grep pattern to audit: `if .* is None:` before `save_hyperparameters()` in any LightningModule.
+The `identity_hash` suffix is an 8-char SHA256 derived from the stage's
+`identity_keys` (defined in `topology.py`). Computed by
+`compute_identity_hash()` in `paths.py`. **Missing identity keys raise
+`KeyError`** — never silently hash to defaults.
 
 ## Run record sidecars
 
-Every training run writes `{run_dir}/run_record.json` — a structured JSON sidecar that is the source of truth for experiment status and metrics. Written atomically (temp + fsync + rename).
+Every training run writes `{run_dir}/run_record.json` — a structured JSON
+sidecar that is the source of truth for experiment status and metrics.
+Written atomically (temp + fsync + rename).
 
-- **`RunRecord`** Pydantic model in `core/contracts/run_record.py`: status, identity fields, metrics (`dict[str, float]`), phases, SLURM context
-- **`RunRecordCallback`** in `_lightning.py`: writes sidecar on `on_fit_start` (started), `on_fit_end` (completed with `trainer.callback_metrics`), `on_exception` (failed)
-- **`_finalize-record`** command: called in generated sbatch script after test+analyze to add phase markers + sacct wall_time
-- Works for both paths: pipeline (dagster → `from-spec --phase train`) and dev (`python -m graphids fit`)
+- **`RunRecord`** Pydantic model in `core/contracts/run_record.py`
+- **`RunRecordCallback`** in `graphids/callbacks.py` — writes sidecar on
+  `on_fit_start`/`on_fit_end`/`on_exception`
+- **`_finalize-record`** command — called in generated sbatch script
+  after test+analyze to add phase markers + sacct wall_time
 
 ## DuckDB catalog
 
-`{lake_root}/catalog/kd_gat.duckdb` — `runs` table rebuilt from `run_record.json` sidecars. Disposable — rebuildable via `python -m graphids rebuild-catalog`.
-
-Uses `duckdb.read_json_auto()` for zero-loop ingestion. Query metrics via `metrics->>'val_loss'`. Legacy runs without sidecars are backfilled from `config_snapshot.yaml` + `metrics.csv` + phase markers.
+`{lake_root}/catalog/kd_gat.duckdb` — `runs` table rebuilt from
+`run_record.json` sidecars. Disposable — rebuildable via
+`python -m graphids rebuild-catalog`.

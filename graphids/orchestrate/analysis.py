@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from graphids.core.contracts import AnalysisContract, AnalysisSpec
-from graphids.orchestrate.planning import StageConfig
+from graphids.core.analysis.schemas import AnalysisContract, AnalysisSpec
+from graphids.orchestrate.shared import StageConfig
 
 ANALYSIS_MANIFEST_NAME = "analysis_manifest.json"
 ANALYSIS_SUPPORTED_MODELS = frozenset({"vgae", "gat", "dgi"})
@@ -27,7 +27,9 @@ def analysis_flags_for(model_type: str) -> dict[str, bool]:
     }
 
 
-def build_analysis_spec(*, cfg: StageConfig, dataset: str, seed: int, ckpt_path: str) -> AnalysisSpec:
+def build_analysis_spec(
+    *, cfg: StageConfig, dataset: str, seed: int, ckpt_path: str
+) -> AnalysisSpec:
     """Construct one analysis spec from checkpoint and asset metadata."""
     output_dir = Path(ckpt_path).resolve().parent.parent / "artifacts"
     return AnalysisSpec(

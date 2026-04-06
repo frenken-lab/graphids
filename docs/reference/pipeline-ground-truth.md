@@ -16,8 +16,8 @@ not infer them from this doc:
 | Layer | Entry point | Code |
 |---|---|---|
 | Config resolution (merge + audit trail) | `ConfigResolver.resolve()` | `graphids/orchestrate/resolve.py` |
-| Dagster assets / SLURM submission | `dg launch`, `scripts/submit.sh` | `graphids/orchestrate/{assets,component,slurm}.py` |
-| Run record sidecars (status, metrics, phases) | `RunRecordCallback` | `graphids/core/contracts/run_record.py`, `graphids/core/models/_lightning.py` |
+| Dagster assets / SLURM submission | `dg launch`, `scripts/slurm/submit.sh` | `graphids/orchestrate/{assets,component,slurm}.py` |
+| Run record sidecars (status, metrics, phases) | `RunRecordCallback` | `graphids/core/contracts/run_record.py`, `graphids/callbacks.py` |
 | DuckDB catalog rebuild | `python -m graphids rebuild-catalog` | `graphids/commands/rebuild_catalog.py` |
 | Multi-point budget calibration CSV | `python -m graphids probe-budget` | `graphids/commands/profile_budget.py` (commit `6e3424a`) |
 | Cost-model plots (Altair + Polars) | `python -m graphids.plots.budget` | `graphids/plots/{budget,transforms}.py` (commit `6e3424a`) |
@@ -281,7 +281,7 @@ See Section 6.
 > **Tracked elsewhere:** End-to-end SLURM wiring of `ResourceProfile` (probe →
 > sbatch header) moved to frenken-lab/graphids#31. The sizing chain is
 > implemented and wired to the DataLoader, but the sbatch allocation still
-> comes from static `config/resources/profiles/{model}.yaml`. That issue also
+> comes from static `configs/resources/job_profiles.json`. That issue also
 > tracks two probe gaps surfaced during the audit: hardcoded worker RSS
 > (`budget.py:167`) and unmeasured `vm_area_struct` count.
 
@@ -814,5 +814,5 @@ GAT is confirmed as the remaining bottleneck via nsys/ncu profiling.
 | `graphids/orchestrate/resolve.py` | `ConfigResolver` (exclusive merge path, cross-field validation, audit trail) |
 | `graphids/orchestrate/{assets,component,slurm}.py` | Dagster asset defs + SLURM submission |
 | `graphids/core/contracts/run_record.py` | `RunRecord` Pydantic schema |
-| `graphids/core/models/_lightning.py` | `RunRecordCallback` (writes sidecar on fit_start/end/exception) |
+| `graphids/callbacks.py` | `RunRecordCallback` (writes sidecar on fit_start/end/exception) |
 | `graphids/commands/rebuild_catalog.py` | DuckDB catalog rebuild from sidecars |

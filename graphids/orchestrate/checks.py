@@ -14,7 +14,8 @@ from pathlib import Path
 
 import dagster as dg
 
-from graphids.config import PHASE_MARKERS, PathContext
+from graphids.config.constants import PHASE_MARKERS
+from graphids.config.schemas import PathContext
 from graphids.orchestrate.analysis import (
     ANALYSIS_MANIFEST_NAME,
     build_analysis_spec,
@@ -22,16 +23,17 @@ from graphids.orchestrate.analysis import (
     supports_analysis,
 )
 from graphids.orchestrate.assets import paths_for_context
-from graphids.orchestrate.planning import StageConfig
+from graphids.orchestrate.shared import StageConfig
 
 
-def _ckpt_result(check_name: str, asset_key: dg.AssetKey, paths: PathContext) -> dg.AssetCheckResult:
+def _ckpt_result(
+    check_name: str, asset_key: dg.AssetKey, paths: PathContext
+) -> dg.AssetCheckResult:
     """Evaluate the checkpoint-complete check for one materialization."""
     ckpt = paths.resolved_ckpt
     ckpt_ok = ckpt.exists() and paths.complete_marker.exists()
     phase_status = {
-        phase: (paths.run_dir / marker).exists()
-        for phase, marker in PHASE_MARKERS.items()
+        phase: (paths.run_dir / marker).exists() for phase, marker in PHASE_MARKERS.items()
     }
     return dg.AssetCheckResult(
         check_name=check_name,
@@ -40,20 +42,22 @@ def _ckpt_result(check_name: str, asset_key: dg.AssetKey, paths: PathContext) ->
         metadata={
             "ckpt_path": dg.MetadataValue.path(str(ckpt)),
             "complete_marker": dg.MetadataValue.bool(paths.complete_marker.exists()),
-            **{
-                f"phase_{phase}": dg.MetadataValue.bool(ok)
-                for phase, ok in phase_status.items()
-            },
+            **{f"phase_{phase}": dg.MetadataValue.bool(ok) for phase, ok in phase_status.items()},
         },
     )
 
 
 def _analysis_result(
-    check_name: str, asset_key: dg.AssetKey, paths: PathContext, cfg: StageConfig,
+    check_name: str,
+    asset_key: dg.AssetKey,
+    paths: PathContext,
+    cfg: StageConfig,
 ) -> dg.AssetCheckResult:
     """Evaluate the analysis-complete check for one materialization."""
     spec = build_analysis_spec(
-        cfg=cfg, dataset=paths.dataset, seed=paths.seed,
+        cfg=cfg,
+        dataset=paths.dataset,
+        seed=paths.seed,
         ckpt_path=str(paths.resolved_ckpt),
     )
     manifest_path = Path(spec.output_dir) / ANALYSIS_MANIFEST_NAME

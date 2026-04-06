@@ -46,7 +46,7 @@ def _identity_value(key, merged, stages):
   explain *what* the code does, not *why* the clash exists.
 - A fifth clash gets added as another branch with no framework pushback.
 - No test asserts that every identity key in every stage resolves to a non-`None` value
-  for every recipe in `config/recipes/`. `compute_identity_hash` (`config/paths.py:158`)
+for every recipe in `configs/recipes/`. `compute_identity_hash` (`config/paths.py:158`)
   raises `KeyError` on missing keys, but the error lands far from the cause.
 
 **What would fix it:** either unify naming in `pipeline.yaml` and the recipe schema
@@ -128,25 +128,18 @@ later.
 naming a recipe config instead of inferring from `teacher_scale`). Migration cost:
 touch every recipe.
 
-### 3. The validation zoo in `resolve.py` — **RESOLVED (cross-field rules)**
+### 3. The validation zoo in `resolve.py` — **RESOLVED (Pydantic stage gate)**
 
-**Status:** `_validate_cross_fields` was refactored into a `ValidationRule` dataclass
-+ `_RULES` tuple. Each of the 6 cross-field rules (num_workers within cpus, YAML
-num_workers within cpus, GPU partition consistency, curriculum epoch sync, fusion RL
-batch_size override, fusion RL YAML batch_size warning) is now a single entry in
-`_RULES` with its own `applies` predicate and `check` function. `_validate_cross_fields`
-is a 15-line dispatcher over the tuple. Per-rule unit tests live at
-`tests/orchestrate/test_overrides.py::TestValidationRules` (19 tests).
+**Status:** Cross-field rules live in `graphids/config/cross_field.py` as a
+`ValidationRule` table (`_RULES`) and are enforced by
+`graphids/config/schemas.py::StageValidation` (Pydantic). The same six
+checks are still applied (num_workers within cpus, YAML num_workers within cpus,
+GPU partition consistency, curriculum epoch sync, fusion RL batch_size override,
+fusion RL YAML batch_size warning). Per-rule unit tests live in
+`tests/orchestrate/test_validation_rules.py`.
 
-**Still open:** `_convention_errors` (the post-jsonargparse checks — null list fields,
-`LearningRateMonitor`+logger wiring, stage monitor conventions) has not been
-converted to the same pattern. It runs on a different input (`dumped` dict from
-jsonargparse, not raw merged YAML) and is currently 28 lines with 3 checks. A
-follow-up could unify both under a single rule type, but the input shapes differ
-enough that a second `_CONVENTION_RULES` tuple is probably cleaner than a union.
-
-**Location (historical):** `resolve.py:41–68` (`_convention_errors`) and
-`resolve.py:237–312` (`_validate_cross_fields`).
+**Location:** `config/cross_field.py` (rules) + `config/schemas.py`
+(Pydantic gate). Structural checks remain in `config/schemas.py`.
 
 Original description — kept for context on why the refactor landed:
 
@@ -208,11 +201,9 @@ for ns in ("checkpoint", "early_stopping"):
 - **`_STAGE_MONITORS` lives in `resolve.py`** — it's topology data (which stages optimize
   which metric) in the wrong file. Belongs in `topology.py`.
 
-**What would fix it:** rules-as-data refactor. Each rule becomes a small class with
-`name`, `applies(...)`, `check(...) -> list[str] | None`, `severity`. `_validate_cross_fields`
-becomes a loop over a `_RULES` list. Each rule is independently testable, adding a rule
-is adding one class, warning-vs-error is a field. Mechanical refactor; ~60–80 LOC shuffled,
-zero behavior change. See "Recommended next fix" below.
+**What fixed it:** rules-as-data refactor + Pydantic gate. Each rule is a small
+object with `name`, `applies`, `check`, `severity`, and StageValidation applies
+them consistently during resolution.
 
 ### 4. KD JSON blob stringification
 

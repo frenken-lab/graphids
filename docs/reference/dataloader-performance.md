@@ -1,7 +1,7 @@
 # DataLoader Performance Analysis
 
 > Consolidated from 6 investigation files. Last updated: 2026-04-02.
-> Resource profiles: `config/resources/profiles/*.yaml` (source of truth).
+> Resource profiles: `configs/resources/job_profiles.json` (source of truth).
 
 ## Current State
 

@@ -4,13 +4,15 @@ Reward shaping constants are fixed methodological choices — see
 ``kd-gat-paper/content/methodology.md §Stage 3 Adaptive Fusion``.
 DQN and bandit share this identical reward; it is not an ablation axis.
 
-The seven shaping coefficients + ``vgae_weights`` are passed in from
+The seven shaping coefficients + ``vgae_weights`` are sourced from
 ``configs/fusion/reward.libsonnet`` (imported by the method libsonnets)
-so they land in ``run_record.json`` for reproducibility. There are no
-Python defaults — the libsonnet is the single source of truth.
+so they land in ``run_record.json`` for reproducibility. If the constants
+are omitted, they are loaded from the libsonnet (no hardcoded defaults).
 """
 
 from __future__ import annotations
+
+from functools import lru_cache
 
 import torch
 
@@ -48,9 +50,7 @@ class FusionRewardCalculator(torch.nn.Module):
         self._vgae_conf_idx = vgae.confidence_idx
         self._gat_conf_idx = gat.confidence_idx
 
-        self.register_buffer(
-            "_vgae_weights", torch.tensor(vgae_weights, dtype=torch.float32)
-        )
+        self.register_buffer("_vgae_weights", torch.tensor(vgae_weights, dtype=torch.float32))
 
         self._reward_correct = correct
         self._reward_incorrect = incorrect
@@ -67,9 +67,7 @@ class FusionRewardCalculator(torch.nn.Module):
             states[:, idx].clamp_(0.0, 1.0)
         return states
 
-    def derive_scores(
-        self, states: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def derive_scores(self, states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Derive anomaly_score and gat_prob from state features.
 
         [N, D] -> ([N], [N]).
@@ -106,8 +104,7 @@ class FusionRewardCalculator(torch.nn.Module):
         max_score = torch.max(anomaly_scores, gat_probs)
         confidence = torch.where(labels == 1, max_score, 1.0 - max_score)
         confidence_bonus = (
-            self._confidence_weight * confidence
-            + self._combined_conf_weight * combined_conf
+            self._confidence_weight * confidence + self._combined_conf_weight * combined_conf
         )
         correct_reward = base_reward + model_agreement + confidence_bonus
 
@@ -126,6 +123,35 @@ class FusionRewardCalculator(torch.nn.Module):
         return total_reward + balance_bonus
 
 
+_REWARD_DEFAULT_KEYS = (
+    "correct",
+    "incorrect",
+    "confidence_weight",
+    "combined_conf_weight",
+    "disagreement_penalty",
+    "overconf_penalty",
+    "balance_weight",
+)
+
+
+@lru_cache(maxsize=1)
+def _reward_defaults() -> dict[str, float]:
+    from graphids.config.constants import PROJECT_ROOT
+    from graphids.config.jsonnet import render
+
+    reward_path = PROJECT_ROOT / "configs" / "fusion" / "reward.libsonnet"
+    return render(reward_path)
+
+
+def resolve_reward_kwargs(reward_kwargs: dict | None) -> dict:
+    kwargs = dict(reward_kwargs or {})
+    defaults = _reward_defaults()
+    for key in _REWARD_DEFAULT_KEYS:
+        if key not in kwargs:
+            kwargs[key] = defaults[key]
+    return kwargs
+
+
 def fused_predict(agent, states: torch.Tensor) -> dict:
     """Greedy fused prediction shared by DQN and bandit agents.
 
@@ -135,4 +161,9 @@ def fused_predict(agent, states: torch.Tensor) -> dict:
     anomaly_scores, gat_probs = agent.reward_calc.derive_scores(norm_states)
     fused_scores = (1 - alphas) * anomaly_scores + alphas * gat_probs
     preds = (fused_scores > agent.decision_threshold).long()
-    return {"preds": preds, "fused_scores": fused_scores, "alphas": alphas, "norm_states": norm_states}
+    return {
+        "preds": preds,
+        "fused_scores": fused_scores,
+        "alphas": alphas,
+        "norm_states": norm_states,
+    }

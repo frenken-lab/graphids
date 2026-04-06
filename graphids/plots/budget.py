@@ -16,7 +16,7 @@ import altair as alt
 import numpy as np
 import polars as pl
 
-from graphids.config import PROJECT_ROOT
+from graphids.config.constants import PROJECT_ROOT
 from graphids.plots.transforms import (
     SAFETY_MARGIN, ModelParams, fit_models, load_calibration_csv, load_gpus,
 )
@@ -223,7 +223,7 @@ def main(argv: list[str] | None = None):
                         help="Single model deep-dive, e.g. 'vgae/small'")
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--gpu", type=str, default=None,
-                        help="GPU name from clusters.yaml (default: first)")
+                        help="GPU name from clusters.json (default: first)")
     parser.add_argument("--out", type=Path, default=_DEFAULT_OUT_DIR)
     args = parser.parse_args(argv)
 

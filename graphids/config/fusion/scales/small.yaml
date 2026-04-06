@@ -1,6 +1,0 @@
-fusion:
-  method_args:
-    scale: small
-    hidden_dim: 128
-    num_layers: 3
-    batch_size: 128

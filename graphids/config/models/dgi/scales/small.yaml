@@ -1,9 +1,0 @@
-model:
-  init_args:
-    scale: small
-    hidden_dims: [80, 40, 16]
-    latent_dim: 16
-    heads: 1
-    embedding_dim: 4
-    dropout: 0.1
-    proj_dim: 32

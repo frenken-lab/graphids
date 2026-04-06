@@ -1,7 +1,9 @@
 """Autoencoder/self-supervised model family exports."""
 
-from .dgi import DGIModule, GraphInfomaxModel
-from .vgae import GraphAutoencoderNeighborhood, VGAEModule
+from .dgi import GraphInfomaxModel
+from .dgi_module import DGIModule
+from .vgae import GraphAutoencoderNeighborhood
+from .vgae_module import VGAEModule
 
 __all__ = [
     "GraphAutoencoderNeighborhood",

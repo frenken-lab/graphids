@@ -1,138 +1,34 @@
-"""Path and identity helpers derived from runtime config and topology."""
+"""Path composition, identity hashing, and lightweight resolvers.
+
+Pure path helpers (``compute_identity_hash``, ``checkpoint_path``,
+``data_dir``, ``cache_dir``) plus thin resolvers that read but never
+write: dataset catalog, checkpoint probes, run-dir identity parsing,
+and the lake-write env-var gate.
+
+Filesystem *writes* (run records, config snapshots, atomic-write
+primitive) live in ``graphids.core.io``.
+"""
 
 from __future__ import annotations
 
+import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
-
-from .base import PROJECT_ROOT
-from .runtime import (
-    CKPT_SUBPATH,
-    COMPLETE_MARKER,
-    LAST_CKPT_SUBPATH,
+from .constants import (
+    CATALOG_SUBPATH,
+    DATASET_REGISTRY_PATH,
     PREPROCESSING_VERSION,
 )
-from .topology import PIPELINE_YAML
-
-
-class LakeWriteError(PermissionError):
-    """Raised when lake write is attempted without KD_GAT_LAKE_WRITE=1."""
-
-
-def require_lake_write() -> None:
-    """Gate all data-lake writes behind KD_GAT_LAKE_WRITE=1.
-
-    SLURM jobs get this via _preamble.sh → .env. Direct CLI invocations
-    on login nodes or interactive sessions are blocked by default.
-    """
-    if os.environ.get("KD_GAT_LAKE_WRITE") != "1":
-        raise LakeWriteError(
-            "Lake write blocked: set KD_GAT_LAKE_WRITE=1 in environment "
-            "(SLURM jobs get this from .env via _preamble.sh). "
-            "For read-only runs, use --dry-run."
-        )
-
-
-class PathContext(BaseModel):
-    """Frozen path model — single source for all run-related paths."""
-
-    model_config = ConfigDict(frozen=True)
-
-    lake_root: str
-    user: str
-    dataset: str
-    model_type: str
-    scale: str
-    stage: str
-    identity: str
-    kd_tag: str
-    seed: int
-
-    @property
-    def run_dir(self) -> Path:
-        return Path(
-            f"{self.lake_root}/dev/{self.user}/{self.dataset}/"
-            f"{self.model_type}_{self.scale}_{self.stage}"
-            f"{self.identity}{self.kd_tag}/seed_{self.seed}"
-        )
-
-    @property
-    def ckpt_file(self) -> Path:
-        return self.run_dir / CKPT_SUBPATH
-
-    @property
-    def complete_marker(self) -> Path:
-        return self.run_dir / COMPLETE_MARKER
-
-    @property
-    def last_ckpt_file(self) -> Path:
-        return self.run_dir / LAST_CKPT_SUBPATH
-
-    @property
-    def resolved_ckpt(self) -> Path:
-        """Best-available checkpoint: ``ckpt_file`` if present, else ``last_ckpt_file``.
-
-        Fusion RL (DQN/bandit) never writes a ``best_model.ckpt`` because they
-        don't track a validation-loss minimum — they only produce ``last.ckpt``.
-        """
-        return self.ckpt_file if self.ckpt_file.exists() else self.last_ckpt_file
-
-    @property
-    def ckpt_dir(self) -> Path:
-        return self.run_dir / PurePosixPath(CKPT_SUBPATH).parent
-
-_DATASET_REGISTRY: Path = PROJECT_ROOT / "configs" / "datasets" / "dataset_registry.json"
-DEFAULT_DATASET: str = "set_01"
-
-CATALOG_SUBPATH: str = "catalog/kd_gat.duckdb"
-
-
-def catalog_path(lake_root: str) -> Path:
-    """Return the DuckDB experiment catalog path for a given lake root."""
-    return Path(lake_root) / CATALOG_SUBPATH
-
-_catalog_cache: dict[str, dict[str, Any]] | None = None
-
-
-def load_catalog() -> dict[str, dict[str, Any]]:
-    """Load dataset catalog from ``configs/datasets/dataset_registry.json``.
-
-    The on-disk registry is domain-nested (``{"automotive": {"hcrl_ch":
-    {...}}}``). This function flattens to ``{dataset_name: {metadata_dict}}``
-    and injects ``entry["name"]`` from the dict key so downstream consumers
-    don't need to care about the domain layer.
-    """
-    import json
-
-    global _catalog_cache
-    if _catalog_cache is not None:
-        return _catalog_cache
-    if not _DATASET_REGISTRY.is_file():
-        raise FileNotFoundError(f"Dataset registry missing: {_DATASET_REGISTRY}")
-    registry = json.loads(_DATASET_REGISTRY.read_text())
-    catalog: dict[str, dict[str, Any]] = {}
-    for domain, datasets in registry.items():
-        if not isinstance(datasets, dict):
-            continue
-        for name, entry in datasets.items():
-            flat = {"name": name, "domain": domain, **entry}
-            catalog[name] = flat
-    _catalog_cache = catalog
-    return catalog
-
-
-def dataset_names() -> list[str]:
-    """Return list of dataset names (for dagster partitions, etc.)."""
-    return [k for k in load_catalog() if not k.startswith("_")]
+from .schemas import PathContext
+from .topology import PIPELINE_TOPOLOGY, STAGES
 
 
 def compute_preprocessing_hash() -> str:
     import hashlib
 
-    from graphids.core.preprocessing.datasets.can_bus import (
+    from graphids.core.data.datasets.can_bus import (
         N_EDGE_FEATURES,
         N_NODE_FEATURES,
     )
@@ -162,7 +58,7 @@ def cache_dir(lake_root: str, dataset: str) -> Path:
 def compute_identity_hash(stage: str, cfg: Any) -> str:
     import hashlib
 
-    stage_def = PIPELINE_YAML.get("stages", {}).get(stage, {})
+    stage_def = PIPELINE_TOPOLOGY.get("stages", {}).get(stage, {})
     keys = stage_def.get("identity_keys", [])
     if not keys:
         return ""
@@ -194,10 +90,10 @@ def checkpoint_path(
     seed: int,
     cfg: Any,
     *,
-    gat_stage: str = "curriculum",
+    gat_stage: str = "supervised",
 ) -> Path:
     """Resolve checkpoint path for a given model. Delegates to PathContext."""
-    stage = PIPELINE_YAML.get("ckpt_stages", {}).get(model_type, model_type)
+    stage = PIPELINE_TOPOLOGY.get("ckpt_stages", {}).get(model_type, model_type)
     if model_type == "gat":
         stage = gat_stage
     identity = compute_identity_hash(stage, cfg)
@@ -212,3 +108,133 @@ def checkpoint_path(
         kd_tag="",
         seed=seed,
     ).ckpt_file
+
+
+# -----------------------------------------------------------------------------
+# Lake-write gate
+# -----------------------------------------------------------------------------
+
+
+class LakeWriteError(PermissionError):
+    """Raised when lake write is attempted without KD_GAT_LAKE_WRITE=1."""
+
+
+def require_lake_write() -> None:
+    """Gate all data-lake writes behind KD_GAT_LAKE_WRITE=1.
+
+    SLURM jobs get this via _preamble.sh → .env. Direct CLI invocations
+    on login nodes or interactive sessions are blocked by default.
+    """
+    if os.environ.get("KD_GAT_LAKE_WRITE") != "1":
+        raise LakeWriteError(
+            "Lake write blocked: set KD_GAT_LAKE_WRITE=1 in environment "
+            "(SLURM jobs get this from .env via _preamble.sh). "
+            "For read-only runs, use --dry-run."
+        )
+
+
+# -----------------------------------------------------------------------------
+# Dataset catalog
+# -----------------------------------------------------------------------------
+
+_catalog_cache: dict[str, dict[str, Any]] | None = None
+
+
+def catalog_path(lake_root: str) -> Path:
+    """Return the DuckDB experiment catalog path for a given lake root."""
+    return Path(lake_root) / CATALOG_SUBPATH
+
+
+def load_catalog() -> dict[str, dict[str, Any]]:
+    """Load dataset catalog from ``configs/datasets/dataset_registry.json``.
+
+    The on-disk registry is domain-nested (``{"automotive": {"hcrl_ch":
+    {...}}}``). This function flattens to ``{dataset_name: {metadata_dict}}``
+    and injects ``entry["name"]`` from the dict key so downstream consumers
+    don't need to care about the domain layer.
+    """
+    global _catalog_cache
+    if _catalog_cache is not None:
+        return _catalog_cache
+    if not DATASET_REGISTRY_PATH.is_file():
+        raise FileNotFoundError(f"Dataset registry missing: {DATASET_REGISTRY_PATH}")
+    registry = json.loads(DATASET_REGISTRY_PATH.read_text())
+    catalog: dict[str, dict[str, Any]] = {}
+    for domain, datasets in registry.items():
+        if not isinstance(datasets, dict):
+            continue
+        for name, entry in datasets.items():
+            flat = {"name": name, "domain": domain, **entry}
+            catalog[name] = flat
+    _catalog_cache = catalog
+    return catalog
+
+
+def dataset_names() -> list[str]:
+    """Return list of dataset names (for dagster partitions, etc.)."""
+    return [k for k in load_catalog() if not k.startswith("_")]
+
+
+# -----------------------------------------------------------------------------
+# Checkpoint resolution
+# -----------------------------------------------------------------------------
+
+
+def resolve_checkpoint(path_ctx: PathContext) -> Path:
+    """Best-available checkpoint: ``ckpt_file`` if present, else ``last_ckpt_file``.
+
+    The only filesystem probe outside of a write path — lives here rather
+    than on ``PathContext`` so the Pydantic model stays side-effect free.
+    """
+    return path_ctx.ckpt_file if path_ctx.ckpt_file.exists() else path_ctx.last_ckpt_file
+
+
+# -----------------------------------------------------------------------------
+# Run-dir identity parser
+# -----------------------------------------------------------------------------
+
+
+def parse_identity_from_run_dir(run_dir: str) -> dict[str, Any]:
+    """Extract identity fields from a run_dir path.
+
+    Path convention:
+        {lake_root}/dev/{user}/{dataset}/{model}_{scale}_{stage}{identity}{kd_tag}/seed_{seed}
+    """
+    parts = Path(run_dir).parts
+    seed_part = parts[-1]  # "seed_42"
+    seed = int(seed_part.split("_", 1)[1])
+    dir_name = parts[-2]
+    dataset = parts[-3]
+    user = parts[-4]
+
+    kd_tag = ""
+    if dir_name.endswith("_kd"):
+        kd_tag = "_kd"
+        dir_name = dir_name[: -len("_kd")]
+
+    last_underscore = dir_name.rfind("_")
+    identity_hash = "_" + dir_name[last_underscore + 1 :]
+    remainder = dir_name[:last_underscore]
+
+    stage = ""
+    for s in STAGES:
+        suffix = f"_{s}"
+        if remainder.endswith(suffix):
+            stage = s
+            remainder = remainder[: -len(suffix)]
+            break
+
+    last_us = remainder.rfind("_")
+    model_type = remainder[:last_us]
+    scale = remainder[last_us + 1 :]
+
+    return {
+        "dataset": dataset,
+        "user": user,
+        "seed": seed,
+        "model_family": model_type,
+        "scale": scale,
+        "stage": stage,
+        "identity_hash": identity_hash,
+        "kd_tag": kd_tag,
+    }

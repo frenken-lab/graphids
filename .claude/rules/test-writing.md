@@ -72,12 +72,13 @@ Examples from the kept tests:
 Only two markers are registered. See `pyproject.toml`.
 
 - `@pytest.mark.slow` — >30s. Deselect with `-m "not slow"`.
-- `@pytest.mark.slurm` — requires SLURM submission: runs `pl.Trainer`,
-  imports `GraphIDSCLI`, or hits CUDA. **Not** for "touches torch" — every
-  test touches torch via `conftest.py`. Reserve for heavy imports.
+- `@pytest.mark.slurm` — requires SLURM submission: runs `pl.Trainer.fit`,
+  hits CUDA, or instantiates models against real datasets. **Not** for
+  "touches torch" — every test touches torch via `conftest.py`, and
+  `tests/test_instantiate.py` even builds a full `pl.Trainer` on the
+  login node without fitting. Reserve for jobs that actually train.
 
-Over-marking means the test never runs. Only 1 file (`test_merge_parity.py`)
-is currently slurm-marked; `@pytest.mark.slow` classes in
+Over-marking means the test never runs. `@pytest.mark.slow` classes in
 `test_gat.py`/`test_vgae.py`/`test_fusion.py` use `fast_dev_run` on CPU.
 
 ## Fixtures and conventions

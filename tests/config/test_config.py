@@ -5,21 +5,19 @@ from __future__ import annotations
 import graphlib
 
 import pytest
-import yaml
 from pydantic import ValidationError
 
-from graphids.config import (
-    CONFIG_DIR,
-    PIPELINE_YAML,
+from graphids.config.constants import CONFIG_DIR
+from graphids.config.jsonnet import render
+from graphids.config.paths import dataset_names, load_catalog
+from graphids.config.schemas import KDEntry, TrainingRunConfig
+from graphids.config.topology import (
+    PIPELINE_TOPOLOGY,
     STAGE_DEPENDENCIES,
     STAGES,
     VALID_FUSION_METHODS,
     VALID_MODEL_TYPES,
     VALID_SCALES,
-    KDEntry,
-    TrainingRunConfig,
-    dataset_names,
-    load_catalog,
 )
 
 # ---------------------------------------------------------------------------
@@ -36,8 +34,13 @@ def test_catalog_loads_all_datasets():
 
 def test_catalog_entries_have_required_fields():
     required = {
-        "name", "domain", "csv_dir", "csv_columns",
-        "train_subdir", "test_subdirs", "attack_types",
+        "name",
+        "domain",
+        "csv_dir",
+        "csv_columns",
+        "train_subdir",
+        "test_subdirs",
+        "attack_types",
     }
     for name, entry in load_catalog().items():
         missing = required - set(entry.keys())
@@ -80,23 +83,26 @@ def test_no_cycles():
     assert len(order) == len(STAGES)
 
 
-@pytest.mark.parametrize("before,after", [
-    ("autoencoder", "curriculum"),
-    ("autoencoder", "fusion"),
-    ("curriculum", "fusion"),
-])
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        ("autoencoder", "supervised"),
+        ("autoencoder", "fusion"),
+        ("supervised", "fusion"),
+    ],
+)
 def test_ordering(before, after):
     order = _topo_order()
     assert order.index(before) < order.index(after)
 
 
 def test_default_stages_are_valid():
-    bad = [s for s in PIPELINE_YAML["default_stages"] if s not in STAGES]
+    bad = [s for s in PIPELINE_TOPOLOGY["default_stages"] if s not in STAGES]
     assert not bad, f"default_stages has unknown stages: {bad}"
 
 
 def test_stages_have_identity_keys():
-    for name, sdef in PIPELINE_YAML["stages"].items():
+    for name, sdef in PIPELINE_TOPOLOGY["stages"].items():
         assert "identity_keys" in sdef, f"Stage '{name}' missing identity_keys"
 
 
@@ -113,11 +119,11 @@ def test_stages_have_identity_keys():
 
 def test_resource_model_set_for_fusion_assets():
     """Fusion StageConfigs should have resource_model set to the fusion method."""
-    from graphids.config import expand_recipe_configs
     from graphids.orchestrate.planning import enumerate_assets
+    from graphids.orchestrate.recipes import expand_recipe_configs
 
-    recipe = yaml.safe_load((CONFIG_DIR / "recipes" / "ablation.yaml").read_text())
-    specs = enumerate_assets(PIPELINE_YAML, expand_recipe_configs(recipe))
+    recipe = render(CONFIG_DIR / "recipes" / "ablation.jsonnet")
+    specs = enumerate_assets(PIPELINE_TOPOLOGY, expand_recipe_configs(recipe))
     fusion_specs = [s for s in specs if s.stage == "fusion"]
     assert fusion_specs, "No fusion specs found in ablation recipe"
     for spec in fusion_specs:
@@ -176,10 +182,10 @@ class TestRecipeRoundTrip:
 
     @pytest.mark.parametrize(
         "recipe_name",
-        sorted(p.name for p in (CONFIG_DIR / "recipes").glob("*.yaml")),
+        sorted(p.name for p in (CONFIG_DIR / "recipes").glob("*.jsonnet")),
     )
     def test_recipe_configs_validate(self, recipe_name):
-        raw = yaml.safe_load((CONFIG_DIR / "recipes" / recipe_name).read_text())
+        raw = render(CONFIG_DIR / "recipes" / recipe_name)
         # Recipes may use 'defaults' (old format) or 'selection' (new format)
         defaults = raw.get("defaults", {})
         if defaults:

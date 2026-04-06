@@ -7,12 +7,12 @@
 
 | Layer | Tool | Where |
 |-------|------|-------|
-| Training metrics | WandbLogger + CSVLogger | `trainer.yaml` loggers |
-| Full config logging | WandbSaveConfigCallback | `cli.py` |
-| CSVLogger save_dir | `link_arguments` → `default_root_dir` | `cli.py` |
-| GPU memory telemetry | DeviceStatsMonitor | `trainer.yaml` callbacks |
+| Training metrics | WandbLogger + CSVLogger | `trainer.logger` list in stage libsonnet |
+| Full config logging | `instantiate()` pushes rendered jsonnet dict to `wandb.config` | `graphids/core/instantiate.py` |
+| CSVLogger save_dir | `_build_loggers` patches `init_args.save_dir` to `default_root_dir` | `graphids/core/instantiate.py` |
+| GPU memory telemetry | DeviceStatsMonitor (forced) | `_build_callbacks` in `graphids/core/instantiate.py` |
 | GPU system metrics | wandb pynvml (util%, temp, power) | Automatic, 15s interval |
-| Op-level profiling | PyTorchProfiler (chrome traces) | `scripts/submit.sh profile` |
+| Op-level profiling | PyTorchProfiler (chrome traces) | `scripts/slurm/submit.sh profile` |
 | SLURM resource profiler | sacct: RSS, CPU%, wall time | `python -m graphids profile` |
 | VRAM probe | `_probe_bytes_per_node()`, KD-aware | `datamodule.py` (prefers `_step()`, falls back to `forward()`) |
 | Orchestration UI | dagster webserver + daemon | `scripts/dev/dagster-ui.sh` |
@@ -38,7 +38,7 @@
 module load nvhpc/25.1  # nsys 2024.7.1.84
 nsys profile --pytorch=autograd-shapes-nvtx -t cuda,nvtx,osrt,cudnn,cublas \
   -o /fs/scratch/PAS1266/profiles/my_run \
-  python -m graphids fit --config graphids/config/stages/autoencoder.yaml
+  python -m graphids fit --config configs/stages/autoencoder.jsonnet
 
 # Results (no GUI needed):
 nsys stats my_run.nsys-rep                                          # summary

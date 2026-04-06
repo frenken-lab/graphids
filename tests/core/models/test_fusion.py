@@ -75,7 +75,8 @@ class TestFusionRewardCalculator:
     """FusionRewardCalculator requires vgae_weights + paper reward constants.
 
     Reward constants live in ``configs/fusion/reward.libsonnet`` and are
-    passed through by the method libsonnets; Python has no defaults.
+    passed through by the method libsonnets; missing constants fall back
+    to the libsonnet (no hardcoded defaults).
     """
 
     # Paper values from configs/fusion/reward.libsonnet — kept in sync by
@@ -125,7 +126,7 @@ class TestFusionRewardCalculator:
         import shutil
         import subprocess
 
-        from graphids.config import PROJECT_ROOT
+        from graphids.config.constants import PROJECT_ROOT
 
         jsonnet_bin = shutil.which("jsonnet")
         if not jsonnet_bin:

@@ -11,15 +11,23 @@ Every function, file, and abstraction must earn its place. Before writing code, 
 ## Key Commands
 
 ```bash
-# Training
-python -m graphids fit --config graphids/config/stages/autoencoder.yaml
-python -m graphids fit --config graphids/config/stages/normal.yaml --config graphids/config/models/gat/scales/small.yaml
+# Training — jsonnet stages (Phase 1 migration 2026-04-05). Each stage
+# has sensible TLA defaults so zero-arg invocation works as a smoke test.
+python -m graphids fit --config configs/stages/autoencoder.jsonnet
+python -m graphids fit --tla 'scale="large"' --config configs/stages/normal.jsonnet
+
+# Pass TLAs to stages (JSON-encoded values; unquoted bare strings also accepted)
+python -m graphids fit \
+    --tla 'dataset="hcrl_sa"' \
+    --tla 'fusion_method="dqn"' \
+    --config configs/stages/fusion.jsonnet \
+    --model.init_args.lr=0.005
 
 # Evaluation
-python -m graphids test --config graphids/config/stages/autoencoder.yaml --ckpt_path best.ckpt
+python -m graphids test --config configs/stages/autoencoder.jsonnet --ckpt_path best.ckpt
 
-# Analysis artifacts (embeddings, CKA, loss landscape)
-python -m graphids analyze --config graphids/config/stages/analyze_vgae.yaml \
+# Analysis artifacts (Jsonnet — Analyzer config, NOT in CLI chain)
+python -m graphids analyze --config configs/stages/analyze_vgae.jsonnet \
     --analyzer.ckpt_path path/to/best.ckpt --analyzer.dataset hcrl_sa
 ```
 
@@ -27,7 +35,7 @@ python -m graphids analyze --config graphids/config/stages/analyze_vgae.yaml \
 
 Three entry points, zero overlap:
 
-**Training** — `python -m graphids fit|test|validate|predict` → `GraphIDSCLI` (extends `LightningCLI`). `GraphIDSCLI`, `WandbSaveConfigCallback`, and `CLI_KWARGS` live in `graphids/_lightning.py`; `graphids/cli.py` is a thin lazy-import shim (`run_lightning()`).
+**Training** — `python -m graphids fit|test|validate|predict` → `graphids/commands/train.py::main()` (stdlib argparse, Phase 3). Renders the jsonnet stage with any `--tla` flags, gates through `validate_config`, and calls `graphids.core.instantiate.instantiate(rendered) → InstantiatedRun` which handles class_path import, signature-filtered link_arguments, forced callbacks (ModelCheckpoint/EarlyStopping/DeviceStatsMonitor/ResourceProfileCallback/RunRecordCallback), logger wiring, and wandb config forwarding. `ResourceProfileCallback`/`RunRecordCallback` live in `graphids/callbacks.py`. `GraphIDSCLI`, `LightningCLI`, `_lightning.py`, and `cli.py` were deleted in Phase 3.
 
 **Operational commands** — registered in `_COMMAND_MODULES` dict in `__main__.py`. Convention: module name = command name (`-` → `_`), each exports `main(argv)`. Adding a subcommand = one file + one dict entry.
 
@@ -55,13 +63,13 @@ Three entry points, zero overlap:
 |---------|---------|
 | `dg launch --assets ...` | Materialize assets |
 | `dg list defs` | List all assets |
-| `python -m graphids.orchestrate validate` | Validate recipe config chains |
+| `dg list defs` | Validate dagster definitions |
 
-**Config resolution** — `ConfigResolver` in `orchestrate/resolve.py` is the exclusive merge path for pipeline runs. It merges trainer/resource/KD overrides, validates cross-field constraints (including YAML-aware checks via naive deep merge), and emits an audit trail. `assets.py` calls `resolver.resolve()` → `ResolvedConfig` (TrainingSpec + ResourceSpec + paths). See frenken-lab/graphids#19.
+**Config resolution** — `ConfigResolver` in `orchestrate/resolve.py` is the exclusive merge path for pipeline runs. It packs trainer/resource/KD overrides into a typed TLA dict via `TrainingContract.build_tla_dict`, renders the stage jsonnet via `graphids.config.jsonnet.render_config`, validates cross-field constraints, and emits an audit trail. `assets.py` calls `resolver.resolve()` → `ResolvedConfig` (TrainingSpec + ResourceSpec + paths). See frenken-lab/graphids#19 and `docs/reference/config-architecture.md`.
 
-**SLURM submission** — all jobs via `scripts/submit.sh <profile> [args]`. Resource profiles read from `config/resources/` (per-model profile YAMLs + `clusters.yaml` + `submit_profiles.yaml`). See `rules/slurm-hpc.md`.
+**SLURM submission** — all jobs via `scripts/slurm/submit.sh <profile> [args]`. The preamble hard-fails if the `jsonnet` binary is missing (see `docs/decisions/0010-jsonnet-binary.md`). Resource profiles read from `configs/resources/` (`job_profiles.json`, `clusters.json`, `submit_profiles.yaml`). See `rules/slurm-hpc.md`.
 
-Fusion uses a single `stages/fusion.yaml` + per-method overlays in `config/fusion/methods/{method}.yaml`. Config resolution in `component.py` composes the stage YAML with the method overlay from the recipe.
+Fusion uses a single `configs/stages/fusion.jsonnet` that dispatches on the `fusion_method` TLA over the 4 method libsonnets in `configs/fusion/methods/`.
 
 ## Session Start
 

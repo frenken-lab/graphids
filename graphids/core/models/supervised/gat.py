@@ -13,19 +13,6 @@ from torch_geometric.nn import (
 from torch_geometric.nn.aggr import MultiAggregation
 
 from .._conv import InputEncoder, _make_conv, conv_forward, resolve_edge_dim
-from .._training import (
-    GraphModuleBase,
-    KDAuxiliary,
-    teacher_on_device, binary_test_metrics,
-)
-
-
-def _focal_loss(logits, targets, gamma: float = 2.0):
-    """Focal loss (Lin et al. 2017) for class-imbalanced classification."""
-    ce = F.cross_entropy(logits, targets, reduction="none")
-    pt = torch.exp(-ce)
-    return ((1 - pt) ** gamma * ce).mean()
-
 
 class GATWithJK(nn.Module):
     """Graph Attention Network with Jumping Knowledge connections.
@@ -109,6 +96,8 @@ class GATWithJK(nn.Module):
     @classmethod
     def from_config(cls, cfg, num_ids: int, in_ch: int) -> "GATWithJK":
         """Construct from a config."""
+        conv_type = getattr(cfg, "conv_type", "gatv2")
+        edge_dim = getattr(cfg, "edge_dim", 11)
         return cls(
             num_ids=num_ids,
             in_channels=in_ch,
@@ -116,14 +105,14 @@ class GATWithJK(nn.Module):
             out_channels=cfg.num_classes,
             num_layers=cfg.layers,
             heads=cfg.heads,
-            dropout=cfg.dropout,
+            dropout=getattr(cfg, "dropout", 0.2),
             num_fc_layers=cfg.fc_layers,
             embedding_dim=cfg.embedding_dim,
-            conv_type=cfg.conv_type,
-            edge_dim=resolve_edge_dim(cfg.conv_type, cfg.edge_dim),
-            pool_aggrs=cfg.pool_aggrs,
-            proj_dim=cfg.proj_dim,
-            use_checkpointing=cfg.gradient_checkpointing,
+            conv_type=conv_type,
+            edge_dim=resolve_edge_dim(conv_type, edge_dim),
+            pool_aggrs=getattr(cfg, "pool_aggrs", None),
+            proj_dim=getattr(cfg, "proj_dim", 0),
+            use_checkpointing=getattr(cfg, "gradient_checkpointing", True),
         )
 
     def _pool(self, x, batch):
@@ -180,124 +169,3 @@ class GATWithJK(nn.Module):
         for layer in self.fc_layers:
             x = layer(x)
         return x
-
-# ---------------------------------------------------------------------------
-# Lightning training module
-# ---------------------------------------------------------------------------
-
-
-class GATModule(GraphModuleBase):
-    """GAT supervised classification (normal vs attack).
-
-    When teacher is provided, adds soft-label KD:
-      kd_loss = KL_div(student_logits/T, teacher_logits/T) * T^2
-      total = alpha * kd_loss + (1-alpha) * task_loss
-    """
-
-    def __init__(
-        self,
-        # --- architecture ---
-        hidden: int = 48,
-        layers: int = 3,
-        heads: int = 8,
-        dropout: float = 0.2,
-        fc_layers: int = 3,
-        embedding_dim: int = 16,
-        conv_type: str = "gatv2",
-        edge_dim: int = 11,
-        pool_aggrs: list[str] | None = None,
-        proj_dim: int = 0,
-        # --- training ---
-        gradient_checkpointing: bool = True,
-        compile_model: bool = False,
-        loss_fn: str = "ce",
-        focal_gamma: float = 2.0,
-        loss_weight: float = 10.0,
-        # --- identity / dynamic ---
-        scale: str = "small",
-        model_type: str = "gat",
-        lake_root: str = os.environ.get("KD_GAT_LAKE_ROOT"),
-        dataset: str = "",
-        seed: int = 42,
-        gat_stage: str = "curriculum",
-        variational: bool = True,  # upstream VGAE type — identity key for curriculum
-        auxiliaries: list[KDAuxiliary] | None = None,
-        num_ids: int = 0,
-        in_channels: int = 0,
-        num_classes: int = 2,
-    ):
-        super().__init__()
-        if pool_aggrs is None:
-            pool_aggrs = ["mean"]
-        if auxiliaries is None:
-            auxiliaries = []
-        self.save_hyperparameters()
-        self.model = None
-        self.teacher = None
-        self.test_metrics = binary_test_metrics()
-        if loss_fn == "weighted_ce":
-            w = torch.tensor([1.0, loss_weight])
-            self.loss_fn = nn.CrossEntropyLoss(weight=w)
-        elif loss_fn == "focal":
-            self.loss_fn = functools.partial(_focal_loss, gamma=focal_gamma)
-        else:
-            self.loss_fn = F.cross_entropy
-        if num_ids > 0:
-            self._build()
-
-    def _build(self):
-        hp = self.hparams
-        self.model = GATWithJK.from_config(hp, hp.num_ids, hp.in_channels)
-        if hp.compile_model:
-            from .._training import try_compile
-            self.model = try_compile(self.model, conv_type=hp.conv_type, dynamic=True)
-        if self.teacher is None:
-            self._install_kd_teacher()
-
-    def forward(self, batch):
-        return self.model(batch)
-
-    def _step(self, batch):
-        logits = self(batch)
-        task_loss = self.loss_fn(logits, batch.y)
-        acc = (logits.argmax(1) == batch.y).float().mean()
-        if self.teacher is None:
-            return task_loss, acc
-        kd_loss = self._kd_loss(batch, logits)
-        return self._apply_kd(task_loss, kd_loss), acc
-
-    def _kd_loss(self, batch, logits: torch.Tensor) -> torch.Tensor:
-        """Hinton soft-label KD: KL(student/T || teacher/T) · T²."""
-        with teacher_on_device(self, batch.x.device):
-            with torch.no_grad():
-                t_logits = self.teacher(batch)
-        T = self._kd_cfg.temperature
-        return F.kl_div(
-            F.log_softmax(logits / T, dim=-1),
-            F.softmax(t_logits / T, dim=-1),
-            reduction="batchmean",
-        ) * (T ** 2)
-
-    def _training_step_inner(self, batch, _idx):
-        loss, acc = self._step(batch)
-        self.log("train_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
-        self.log("train_acc", acc, prog_bar=True, batch_size=batch.num_graphs)
-        return loss
-
-    def training_step(self, batch, batch_idx):
-        return self._oom_safe_step(batch, batch_idx, self._training_step_inner)
-
-    def validation_step(self, batch, _idx):
-        loss, acc = self._step(batch)
-        self.log("val_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
-        self.log("val_acc", acc, prog_bar=True, batch_size=batch.num_graphs)
-
-    def test_step(self, batch, _idx, dataloader_idx=0):
-        logits = self(batch)
-        scores = F.softmax(logits, dim=1)[:, 1]
-        self.test_metrics.update(scores, batch.y)
-
-    def predict_step(self, batch, _idx):
-        logits = self(batch)
-        scores = F.softmax(logits, dim=1)[:, 1]
-        return {"preds": logits.argmax(1), "scores": scores, "labels": batch.y}

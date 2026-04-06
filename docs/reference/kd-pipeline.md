@@ -55,33 +55,39 @@ KDEntry validation (contracts.py:12)
   model_path, vgae_latent_weight, vgae_recon_weight
   │
   ▼
-_expand_sweep emits auxiliaries list (recipe_expand.py:117-119)
-  over["auxiliaries"] = [kd_payload]
+Jsonnet recipe expansion emits auxiliaries list (configs/_lib/recipes.libsonnet)
+  auxiliaries: [kd_payload]
   │
   ▼
 enumerate_assets (planning.py)
   - Sets kd_tag="_kd" on StageConfig (distinct identity hash)
-  - Appends config/models/{family}/kd.yaml to config chain
   - _resolve_kd_teachers: for each KD aux, looks up teacher_config by name,
     validates it exists/has no aux/produces the student's stage, wires as
     upstream. Fails loud on any mismatch.
   - Stores raw payload in StageConfig.kd_overrides
   │
   ▼
-ConfigResolver.resolve (resolve.py:101-105)
-  JSON-encodes: runtime_overrides["model.init_args.auxiliaries"] = '[{...}]'
+ConfigResolver.resolve (resolve.py)
+  Packs kd_overrides into jsonnet_tla["auxiliaries"] via
+  TrainingContract.build_tla_dict (typed dict, not stringified)
   │
   ▼
-TrainingContract.to_override_dict (ops.py:143-145)
-  Passes runtime_overrides through to CLI arg dict
+render_config(jsonnet_path, jsonnet_tla)  (config/jsonnet.py)
+  Stage libsonnet merges vgae.kd / gat.kd overlay when auxiliaries is
+  non-empty, producing model.init_args.auxiliaries = [{type: "kd", ...}]
   │
   ▼
-LightningCLI (via run_lightning)
-  Parses --model.init_args.auxiliaries=[{"type":"kd",...}]
-  jsonargparse validates against list[KDAuxiliary] | None
+validate_config(rendered)  (config/schemas.py)
+  Pydantic gate: rejects null list fields, enforces class_path namespacing
   │
   ▼
-Model.__init__(auxiliaries=[...])
+graphids.core.instantiate.instantiate (core/instantiate.py)
+  _coerce_kd_auxiliaries: each list item promoted dict → SimpleNamespace
+  so Model._install_kd_teacher can call getattr(a, "type", None)
+  Model(**init_args) — direct importlib instantiation, no jsonargparse
+  │
+  ▼
+Model.__init__(auxiliaries=[SimpleNamespace(type="kd", alpha=..., ...)])
   save_hyperparameters() stores auxiliaries
   │
   ▼
@@ -120,7 +126,7 @@ at CLI parse time.
 | `_apply_kd` | `core/models/_training.py` | Convex combo: α·kd + (1−α)·task |
 | `prepare_kd` | `core/models/_training.py` | Teacher checkpoint path resolution + load + projection layer |
 | `checkpoint_path` | `config/paths.py` | Teacher checkpoint path from identity keys |
-| `kd_overrides` | `orchestrate/planning.py` | StageConfig field for KD payload |
+| `kd_overrides` | `config/shared.py` | StageConfig field for KD payload |
 | `kd.yaml` overlays | `config/models/{vgae,gat}/` | Default KD hyperparameters |
 
 ## Schema relationship

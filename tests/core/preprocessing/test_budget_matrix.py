@@ -17,8 +17,8 @@ from unittest.mock import patch
 
 import pytest
 
-from graphids.config import PROJECT_ROOT
-from graphids.core.preprocessing.budget import node_budget
+from graphids.config.constants import PROJECT_ROOT
+from graphids.core.data.budget import node_budget
 
 # Real dataset statistics (from cache_metadata.json). Only used to vary the
 # *input* to the budget function; tests never assert on the specific numbers.
@@ -63,8 +63,8 @@ def _run(tmp_path, *, dataset, probe, gpu, conv_type="gatv2"):
         return bpn, bwd_mult
 
     with (
-        patch("graphids.core.preprocessing.budget.cache_dir", return_value=tmp_path),
-        patch("graphids.core.preprocessing.budget._probe_vram", mock_probe_vram),
+        patch("graphids.core.data.budget.cache_dir", return_value=tmp_path),
+        patch("graphids.core.data.budget._probe_vram", mock_probe_vram),
         patch("torch.cuda.is_available", return_value=True),
         patch("torch.cuda.mem_get_info", return_value=(free, free)),
     ):
@@ -128,7 +128,7 @@ def test_gps_budget_scales_monotonically_with_vram(tmp_path):
     budgets = {}
     for gpu, free in sorted(GPU_TYPES.items(), key=lambda kv: kv[1]):
         with (
-            patch("graphids.core.preprocessing.budget.cache_dir", return_value=tmp_path),
+            patch("graphids.core.data.budget.cache_dir", return_value=tmp_path),
             patch("torch.cuda.is_available", return_value=True),
             patch("torch.cuda.mem_get_info", return_value=(free, free)),
         ):
@@ -156,7 +156,7 @@ def test_fallback_binding_when_no_model(tmp_path, dataset):
     metadata = tmp_path / "cache_metadata.json"
     metadata.write_text(f'{{"graph_stats":{{"node_count":{{"mean":{mean_nodes}}}}}}}')
 
-    with patch("graphids.core.preprocessing.budget.cache_dir", return_value=tmp_path):
+    with patch("graphids.core.data.budget.cache_dir", return_value=tmp_path):
         result = node_budget(dataset, str(tmp_path), model=None)
 
     assert result.binding == "fallback"

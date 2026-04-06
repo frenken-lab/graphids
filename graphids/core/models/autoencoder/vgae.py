@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-import os
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .._conv import InputEncoder, build_conv_stack, build_encoder_stack, _make_conv, conv_forward, resolve_edge_dim
-from .._training import (
-    GraphModuleBase,
-    KDAuxiliary,
-    teacher_on_device,
-    binary_test_metrics,
+from .._conv import (
+    InputEncoder,
+    build_conv_stack,
+    build_encoder_stack,
+    conv_forward,
+    resolve_edge_dim,
 )
 
 
@@ -83,8 +81,13 @@ class GraphAutoencoderNeighborhood(nn.Module):
         gat_in_dim = self.input_encoder.out_dim
         self.gat_in_dim = gat_in_dim
         self.encoder_layers, self.encoder_bns, self.latent_in_dim = build_encoder_stack(
-            hidden_dims, latent_dim, gat_in_dim, conv_type, self._edge_dim,
-            encoder_heads=encoder_heads, batch_norm=batch_norm,
+            hidden_dims,
+            latent_dim,
+            gat_in_dim,
+            conv_type,
+            self._edge_dim,
+            encoder_heads=encoder_heads,
+            batch_norm=batch_norm,
         )
         self.variational = variational
         self.z_mean = nn.Linear(self.latent_in_dim, latent_dim)
@@ -101,8 +104,12 @@ class GraphAutoencoderNeighborhood(nn.Module):
         # Replace last target with in_channels for reconstruction output
         decoder_targets[-1] = in_channels
         self.decoder_layers, self.decoder_bns = build_conv_stack(
-            conv_type, latent_dim, decoder_targets, self._edge_dim,
-            heads_first=decoder_heads, batch_norm=batch_norm,
+            conv_type,
+            latent_dim,
+            decoder_targets,
+            self._edge_dim,
+            heads_first=decoder_heads,
+            batch_norm=batch_norm,
         )
         # Remove the batch norm for the last decoder layer (sigmoid output, no BN)
         if batch_norm and len(self.decoder_bns) == len(decoder_targets):
@@ -155,7 +162,9 @@ class GraphAutoencoderNeighborhood(nn.Module):
         return z, kl_loss
 
     def decode_node(self, z, edge_index, edge_attr=None, batch=None):
-        assert z.size(-1) == self.latent_dim, f"Expected {self.latent_dim}D input, got {z.size(-1)}D"
+        assert z.size(-1) == self.latent_dim, (
+            f"Expected {self.latent_dim}D input, got {z.size(-1)}D"
+        )
         x = z
 
         for i, conv in enumerate(self.decoder_layers):
@@ -237,11 +246,13 @@ class GraphAutoencoderNeighborhood(nn.Module):
         neg_keys = (node_range.unsqueeze(1) * num_ids + neg_ids).reshape(-1)
         is_collision = torch.isin(neg_keys, pos_keys)
         neg_logits = logits.gather(1, neg_ids).reshape(-1)[~is_collision]
-        neg_loss = -F.logsigmoid(-neg_logits).mean() if neg_logits.numel() > 0 else logits.new_zeros(1)
+        neg_loss = (
+            -F.logsigmoid(-neg_logits).mean() if neg_logits.numel() > 0 else logits.new_zeros(1)
+        )
         return pos_loss + neg_loss
 
     @classmethod
-    def from_config(cls, cfg, num_ids: int, in_ch: int) -> "GraphAutoencoderNeighborhood":
+    def from_config(cls, cfg, num_ids: int, in_ch: int) -> GraphAutoencoderNeighborhood:
         """Construct from a config."""
         conv_type = cfg.conv_type
         return cls(
@@ -292,7 +303,10 @@ class GraphAutoencoderNeighborhood(nn.Module):
 
     @torch.no_grad()
     def score_difficulty(
-        self, graphs: list, canid_weight: float = 1.0, batch_size: int = 500,
+        self,
+        graphs: list,
+        canid_weight: float = 1.0,
+        batch_size: int = 500,
     ) -> list[float]:
         """Score reconstruction difficulty for curriculum learning.
 
@@ -301,7 +315,7 @@ class GraphAutoencoderNeighborhood(nn.Module):
         """
         from torch_geometric.utils import scatter
 
-        from graphids.core.preprocessing.datamodule import make_graph_loader
+        from graphids.core.data.sampler import make_graph_loader
 
         device = next(self.parameters()).device
         was_training = self.training
@@ -312,8 +326,11 @@ class GraphAutoencoderNeighborhood(nn.Module):
                 batch = batch.to(device, non_blocking=True)
                 edge_attr = getattr(batch, "edge_attr", None)
                 cont, canid_logits, _, _, _, _ = self(
-                    batch.x, batch.edge_index, batch.batch,
-                    edge_attr=edge_attr, node_id=batch.node_id,
+                    batch.x,
+                    batch.edge_index,
+                    batch.batch,
+                    edge_attr=edge_attr,
+                    node_id=batch.node_id,
                 )
                 node_mse = (cont - batch.x).pow(2).mean(dim=1)
                 graph_mse = scatter(node_mse, batch.batch, reduce="mean")
@@ -323,167 +340,3 @@ class GraphAutoencoderNeighborhood(nn.Module):
             return scores
         finally:
             self.train(was_training)
-
-# ---------------------------------------------------------------------------
-# Lightning training module
-# ---------------------------------------------------------------------------
-
-
-class VGAEModule(GraphModuleBase):
-    """VGAE training: reconstruct node features + CAN IDs + neighborhood.
-
-    When teacher is provided, adds dual-signal KD loss:
-      kd_loss = latent_w * MSE(project(z_s), z_t) + recon_w * MSE(recon_s, recon_t)
-      total = alpha * kd_loss + (1-alpha) * task_loss
-    """
-
-    def __init__(
-        self,
-        # --- architecture ---
-        conv_type: str = "gatv2",
-        hidden_dims: list[int] | None = None,
-        latent_dim: int = 48,
-        heads: int = 4,
-        embedding_dim: int = 32,
-        dropout: float = 0.15,
-        edge_dim: int = 11,
-        proj_dim: int = 0,
-        variational: bool = True,
-        mask_ratio: float = 0.3,
-        k_neg: int = 32,
-        canid_weight: float = 0.1,
-        nbr_weight: float = 0.05,
-        kl_weight: float = 0.01,
-        # --- training ---
-        lr: float = 0.003,
-        weight_decay: float = 0.0001,
-        gradient_checkpointing: bool = True,
-        compile_model: bool = False,
-        # --- identity / dynamic ---
-        scale: str = "small",
-        model_type: str = "vgae",
-        lake_root: str = os.environ.get("KD_GAT_LAKE_ROOT"),
-        dataset: str = "",
-        seed: int = 42,
-        gat_stage: str = "curriculum",
-        auxiliaries: list[KDAuxiliary] | None = None,
-        num_ids: int = 0,
-        in_channels: int = 0,
-        num_classes: int = 2,
-    ):
-        super().__init__()
-        if auxiliaries is None:
-            auxiliaries = []
-        self.save_hyperparameters()
-        self._init_threshold_metrics()
-        self.model = None
-        self.teacher = None
-        self.projection = None
-        self.test_metrics = binary_test_metrics()
-        if num_ids > 0:
-            self._build()
-
-    def _build(self):
-        hp = self.hparams
-        self.model = GraphAutoencoderNeighborhood.from_config(hp, hp.num_ids, hp.in_channels)
-        if hp.compile_model:
-            from .._training import try_compile
-            self.model = try_compile(self.model, conv_type=hp.conv_type, dynamic=True)
-        if self.teacher is None:
-            self._install_kd_teacher()
-
-    def forward(self, batch):
-        edge_attr = getattr(batch, "edge_attr", None)
-        mask_ratio = self.hparams.mask_ratio if self.training else 0.0
-        return self.model(
-            batch.x, batch.edge_index, batch.batch,
-            edge_attr=edge_attr, mask_ratio=mask_ratio, node_id=batch.node_id,
-        )
-
-    def _task_loss(self, batch):
-        cont_out, canid_logits, nbr_logits, z, kl_loss, mask = self(batch)
-        target = batch.x
-        if mask is not None:
-            recon = F.mse_loss(cont_out[mask], target[mask])
-        else:
-            recon = F.mse_loss(cont_out, target)
-        canid = F.cross_entropy(canid_logits, batch.node_id)
-        nbr_loss = GraphAutoencoderNeighborhood.neighborhood_loss_negsampled(
-            nbr_logits, batch.node_id, batch.edge_index,
-            self.hparams.num_ids, k_neg=self.hparams.k_neg,
-        )
-        hp = self.hparams
-        task_loss = recon + hp.canid_weight * canid + hp.nbr_weight * nbr_loss + hp.kl_weight * kl_loss
-        return task_loss, cont_out, z
-
-    def _step(self, batch):
-        task_loss, cont_out, z = self._task_loss(batch)
-        if self.teacher is None:
-            return task_loss
-        kd_loss = self._kd_loss(batch, cont_out, z)
-        return self._apply_kd(task_loss, kd_loss)
-
-    def _kd_loss(self, batch, cont_out: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
-        """Dual-signal KD: latent MSE + reconstruction MSE against the teacher."""
-        with teacher_on_device(self, batch.x.device):
-            with torch.no_grad():
-                t_cont, _, _, t_z, _, _ = self.teacher(
-                    batch.x, batch.edge_index, batch.batch,
-                    edge_attr=getattr(batch, "edge_attr", None),
-                    node_id=batch.node_id,
-                )
-        z_s = self.projection(z) if self.projection is not None else z
-        min_n = min(z_s.size(0), t_z.size(0))
-        latent_kd = F.mse_loss(z_s[:min_n], t_z[:min_n])
-        min_r = min(cont_out.size(0), t_cont.size(0))
-        recon_kd = F.mse_loss(cont_out[:min_r], t_cont[:min_r])
-        kd = self._kd_cfg
-        return kd.vgae_latent_weight * latent_kd + kd.vgae_recon_weight * recon_kd
-
-    def _training_step_inner(self, batch, _idx):
-        loss = self._step(batch)
-        self.log("train_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
-        return loss
-
-    def training_step(self, batch, batch_idx):
-        return self._oom_safe_step(batch, batch_idx, self._training_step_inner)
-
-    def validation_step(self, batch, _idx):
-        loss = self._step(batch)
-        self.log("val_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
-
-    def _per_graph_errors(self, batch):
-        """Compute weighted per-graph anomaly errors from a batch."""
-        from torch_geometric.utils import scatter
-        edge_attr = getattr(batch, "edge_attr", None)
-        cont, canid_logits, nbr_logits, _, _, _ = self.model(
-            batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr, node_id=batch.node_id,
-        )
-        per_node_se = (cont - batch.x).pow(2).mean(dim=1)
-        recon = scatter(per_node_se, batch.batch, dim=0, reduce="max")
-        canid_err = F.cross_entropy(canid_logits, batch.node_id, reduction="none")
-        canid_per_graph = scatter(canid_err, batch.batch, dim=0, reduce="max")
-        nbr_targets = self.model.create_neighborhood_targets(batch.node_id, batch.edge_index, batch.batch)
-        nbr_err = F.binary_cross_entropy_with_logits(nbr_logits, nbr_targets, reduction="none").mean(dim=1)
-        nbr_per_graph = scatter(nbr_err, batch.batch, dim=0, reduce="max")
-        hp = self.hparams
-        return recon + hp.canid_weight * canid_per_graph + hp.nbr_weight * nbr_per_graph
-
-    def test_step(self, batch, _idx, dataloader_idx=0):
-        errors = self._per_graph_errors(batch)
-        self.roc_metric.update(errors.detach(), batch.y.detach())
-
-    def on_test_epoch_end(self):
-        self._log_thresholded_metrics()
-
-    def predict_step(self, batch, _idx):
-        errors = self._per_graph_errors(batch)
-        return {"errors": errors, "labels": batch.y}
-
-    def configure_optimizers(self):
-        params = list(self.model.parameters())
-        if self.projection is not None:
-            params += list(self.projection.parameters())
-        opt = torch.optim.Adam(params, lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=self.trainer.max_epochs)
-        return {"optimizer": opt, "lr_scheduler": {"scheduler": scheduler, "interval": "epoch"}}

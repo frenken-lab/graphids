@@ -1,7 +1,13 @@
-"""Lightning training helpers shared across VGAE, GAT, and DGI modules."""
+"""Lightning training helpers shared across VGAE, GAT, and DGI modules.
+
+KD is no longer a cross-cutting concern on these modules — it lives in
+``graphids.core.losses.distillation`` as composable loss wrappers. This
+file used to own ``_install_kd_teacher``, ``prepare_kd``, ``KDAuxiliary``
+and ``teacher_on_device``; all five were deleted when KD collapsed to
+"just a loss function" (Option B refactor).
+"""
 
 import contextlib
-from typing import TypedDict
 
 import pytorch_lightning as pl
 import torch
@@ -11,8 +17,9 @@ from graphids.log import get_logger
 _log = get_logger(__name__)
 
 
-def try_compile(model: torch.nn.Module, *, conv_type: str | None = None,
-                **kwargs) -> torch.nn.Module:
+def try_compile(
+    model: torch.nn.Module, *, conv_type: str | None = None, **kwargs
+) -> torch.nn.Module:
     """Attempt ``torch.compile``; fall back to eager on inductor failure.
 
     Skips compile entirely for conv types that use ``to_dense_batch()``
@@ -27,8 +34,11 @@ def try_compile(model: torch.nn.Module, *, conv_type: str | None = None,
     # Tensor.item() → graph break → repeated recompilation → CUDA crash.
     _INCOMPATIBLE_CONV_TYPES = frozenset({"gps"})
     if conv_type in _INCOMPATIBLE_CONV_TYPES:
-        _log.warning("compile_skipped", conv_type=conv_type,
-                     reason="to_dense_batch Tensor.item() causes graph breaks and CUDA crash")
+        _log.warning(
+            "compile_skipped",
+            conv_type=conv_type,
+            reason="to_dense_batch Tensor.item() causes graph breaks and CUDA crash",
+        )
         return model
     if not hasattr(torch, "compile"):
         return model
@@ -46,7 +56,7 @@ def try_compile(model: torch.nn.Module, *, conv_type: str | None = None,
 
 
 class GraphModuleBase(pl.LightningModule):
-    """Shared base for VGAE, GAT, DGI — lazy setup, OOM guard, threshold metrics, KD plumbing.
+    """Shared base for VGAE, GAT, DGI — lazy setup, OOM guard, threshold metrics.
 
     Subclasses must implement ``_build()`` which constructs ``self.model`` and any
     other architecture components using ``self.hparams`` (populated by ``setup``).
@@ -55,11 +65,8 @@ class GraphModuleBase(pl.LightningModule):
     ``__init__`` to enable ``BinaryROC`` accumulation and ``_find_threshold()``.
     GAT (supervised) does not need this.
 
-    KD support: subclasses that distill from a teacher call ``_install_kd_teacher()``
-    at the end of ``_build()``. This handles teacher loading, the ``__dict__`` hack
-    that keeps the teacher off Lightning's auto-transfer path, and projection layer
-    creation (VGAE only). Subclasses then implement ``_kd_loss()`` and ``_step()``
-    applies it via the shared ``_apply_kd()`` helper.
+    KD is not a base-class concern anymore — it lives entirely in
+    ``graphids.core.losses.distillation`` as composable loss wrappers.
     """
 
     # -- Lazy model construction ------------------------------------------------
@@ -75,32 +82,6 @@ class GraphModuleBase(pl.LightningModule):
     def _build(self):
         raise NotImplementedError
 
-    # -- KD plumbing ------------------------------------------------------------
-
-    def _install_kd_teacher(self) -> None:
-        """Resolve KD config, load + freeze teacher, install off the Lightning auto-transfer path.
-
-        No-op if ``hparams.auxiliaries`` has no ``kd`` entry. Subclasses call this
-        once at the end of ``_build()``. Sets ``self.teacher``, ``self.projection``
-        (VGAE only, for latent alignment), and ``self._kd_cfg`` (cached entry).
-        """
-        hp = self.hparams
-        auxiliaries = getattr(hp, "auxiliaries", None) or []
-        kd_cfg = next((a for a in auxiliaries if getattr(a, "type", None) == "kd"), None)
-        if kd_cfg is None:
-            return
-        teacher, projection = prepare_kd(hp, hp.model_type, torch.device("cpu"))
-        # Bypass nn.Module.__setattr__ so Lightning won't auto-move teacher to GPU.
-        # teacher_on_device() is the only code path that moves it onto the accelerator.
-        self.__dict__["teacher"] = teacher
-        self.projection = projection
-        self._kd_cfg = kd_cfg
-
-    def _apply_kd(self, task_loss: torch.Tensor, kd_loss: torch.Tensor) -> torch.Tensor:
-        """Convex combination of task loss and KD loss: α·kd + (1−α)·task."""
-        alpha = self._kd_cfg.alpha
-        return alpha * kd_loss + (1 - alpha) * task_loss
-
     # -- Optimizer ----------------------------------------------------------------
 
     def configure_optimizers(self):
@@ -112,7 +93,8 @@ class GraphModuleBase(pl.LightningModule):
         max_epochs = getattr(self.trainer, "max_epochs", None)
         if max_epochs and max_epochs > 1:
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=max_epochs,
+                optimizer,
+                T_max=max_epochs,
             )
             return {"optimizer": optimizer, "lr_scheduler": scheduler}
         return optimizer
@@ -188,33 +170,6 @@ class GraphModuleBase(pl.LightningModule):
             self.test_threshold = checkpoint["test_threshold"]
 
 
-class KDAuxiliary(TypedDict, total=False):
-    """Student-side KD config — runtime subset of ``KDEntry``.
-
-    Validated by jsonargparse at parse time. This is what a LightningModule
-    receives in its ``auxiliaries`` list after planning has consumed and
-    resolved orchestration-only fields.
-
-    Relationship to ``KDEntry`` (``graphids/config/contracts.py``):
-        - ``type``, ``alpha``, ``temperature``, ``vgae_latent_weight``,
-          ``vgae_recon_weight``, ``teacher_scale``, ``model_path`` — shared
-        - ``teacher_config`` — present on ``KDEntry``, absent here: it is
-          a planning-only field that resolves to an upstream dependency
-          + ``model_path`` before the student module ever sees the config.
-    """
-    type: str
-    alpha: float
-    # VGAE KD
-    vgae_latent_weight: float
-    vgae_recon_weight: float
-    # GAT KD
-    temperature: float
-    # Teacher resolution (dev path)
-    teacher_scale: str
-    model_path: str
-
-
-
 @contextlib.contextmanager
 def eval_mode(model):
     """Context manager: set model.eval(), restore original training state on exit.
@@ -229,25 +184,6 @@ def eval_mode(model):
         model.train(was_training)
 
 
-@contextlib.contextmanager
-def teacher_on_device(module, device):
-    """Move KD teacher to *device* for inference, return to CPU after.
-
-    Teacher is stored outside ``nn.Module._modules`` (via ``__dict__``) so
-    Lightning never auto-transfers it to GPU.  This context manager is the
-    only code path that moves it onto the accelerator.
-    """
-    teacher = module.teacher
-    if teacher is None:
-        yield
-        return
-    teacher.to(device)
-    try:
-        yield
-    finally:
-        teacher.to("cpu")
-
-
 def binary_test_metrics():
     """Standard binary classification MetricCollection shared by all Lightning modules."""
     from torchmetrics import MetricCollection
@@ -259,15 +195,23 @@ def binary_test_metrics():
         BinaryRecall,
         BinarySpecificity,
     )
-    return MetricCollection({
-        "accuracy": BinaryAccuracy(), "f1": BinaryF1Score(),
-        "precision": BinaryPrecision(), "recall": BinaryRecall(),
-        "specificity": BinarySpecificity(), "auc": BinaryAUROC(),
-    })
+
+    return MetricCollection(
+        {
+            "accuracy": BinaryAccuracy(),
+            "f1": BinaryF1Score(),
+            "precision": BinaryPrecision(),
+            "recall": BinaryRecall(),
+            "specificity": BinarySpecificity(),
+            "auc": BinaryAUROC(),
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
-# Model loading + KD preparation (used by module __init__)
+# Model loading — used by the dev-path train CLI, fusion stages, and
+# ``graphids.instantiate._build_loss`` when it needs to load a KD teacher
+# checkpoint into a ``SoftLabelDistillation`` / ``FeatureDistillation``.
 # ---------------------------------------------------------------------------
 
 
@@ -287,10 +231,7 @@ def safe_load_checkpoint(model_type: str, ckpt_path, *, map_location="cpu"):
 
     dotted = _MODULE_PATHS.get(model_type)
     if dotted is None:
-        raise KeyError(
-            f"No module class for '{model_type}'. "
-            f"Available: {list(_MODULE_PATHS)}"
-        )
+        raise KeyError(f"No module class for '{model_type}'. Available: {list(_MODULE_PATHS)}")
     module_path, cls_name = dotted.rsplit(".", 1)
     cls = getattr(importlib.import_module(module_path), cls_name)
 
@@ -298,63 +239,19 @@ def safe_load_checkpoint(model_type: str, ckpt_path, *, map_location="cpu"):
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
     return cls.load_from_checkpoint(
-        str(ckpt_path), map_location=map_location, weights_only=True,
+        str(ckpt_path),
+        map_location=map_location,
+        weights_only=True,
     )
 
 
 def load_inner_model(
-    model_type: str, ckpt_path, device,
+    model_type: str,
+    ckpt_path,
+    device,
 ) -> tuple[torch.nn.Module, object]:
     """Load a Lightning checkpoint, return (inner nn.Module on device in eval, hparams cfg)."""
     module = safe_load_checkpoint(model_type, ckpt_path)
     model = module.model
     model.to(device).eval()
     return model, module.hparams
-
-
-def prepare_kd(
-    cfg, model_type: str, device,
-) -> tuple[torch.nn.Module | None, torch.nn.Linear | None]:
-    """Resolve teacher checkpoint, load + freeze, create projection if needed.
-
-    Returns (teacher, projection) when KD is active, (None, None) otherwise.
-    Called by module __init__ or pipeline build_module.
-    """
-    from pathlib import Path
-
-    if not any(getattr(a, "type", None) == "kd" for a in (getattr(cfg, "auxiliaries", None) or [])):
-        return None, None
-
-    kd = next(a for a in getattr(cfg, "auxiliaries", []) if a.type == "kd")
-    if getattr(kd, "model_path", None):
-        teacher_path = Path(kd.model_path)
-    else:
-        import copy
-
-        from graphids.config import checkpoint_path
-        teacher_scale = getattr(kd, "teacher_scale", "large")
-        teacher_cfg = copy.copy(cfg)
-        teacher_cfg.scale = teacher_scale
-        teacher_path = checkpoint_path(
-            cfg.lake_root, cfg.dataset, model_type, teacher_scale, cfg.seed, teacher_cfg,
-            gat_stage=getattr(cfg, "gat_stage", "curriculum"),
-        )
-        if not teacher_path.exists():
-            raise FileNotFoundError(
-                f"Teacher checkpoint not found: {teacher_path}. "
-                f"Train {model_type}/{teacher_scale} first, or set model_path explicitly."
-            )
-
-    teacher, tcfg = load_inner_model(model_type, teacher_path, device)
-    teacher.requires_grad_(False)
-
-    # Projection layer for VGAE latent space alignment
-    projection = None
-    if model_type == "vgae":
-        s_dim = cfg.latent_dim
-        t_dim = tcfg.latent_dim
-        if s_dim != t_dim:
-            _log.info("projection_layer", student_dim=s_dim, teacher_dim=t_dim)
-            projection = torch.nn.Linear(s_dim, t_dim).to(device)
-
-    return teacher, projection

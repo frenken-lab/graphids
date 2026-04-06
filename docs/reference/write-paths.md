@@ -88,7 +88,7 @@ All Lightning writes land under `trainer.default_root_dir`, set by dagster via `
 | What | Path | Who writes | Config |
 |------|------|-----------|--------|
 | Run data (metrics, system stats) | `$WANDB_DIR/{project}/{run_id}/` | WandbLogger | `trainer.yaml` logger list |
-| Full jsonargparse config | wandb run config | WandbSaveConfigCallback | `cli.py` save_config_callback |
+| Full rendered jsonnet config | wandb run config | `instantiate()` pushes `rendered` dict via `logger.experiment.config.update(rendered, allow_val_change=True)` | `graphids/core/instantiate.py` |
 
 `_preamble.sh` sets `WANDB_DIR=/fs/scratch/PAS1266/wandb` (scratch, 90-day purge). Auth via `~/.netrc`.
 
@@ -166,7 +166,7 @@ Consolidated to `.env`. `dagster-ui.sh` asserts `DAGSTER_HOME` is set. `__main__
 
 ### RESOLVED: test SLURM logs in-repo
 
-`scripts/submit.sh tests` submits pytest to SLURM (`cpu` partition, 8 CPUs, 16GB).
+`scripts/slurm/submit.sh tests` submits pytest to SLURM (`cpu` partition, 8 CPUs, 16GB).
 
 ### RESOLVED: smoke test duplication
 

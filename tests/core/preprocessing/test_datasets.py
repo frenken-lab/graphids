@@ -12,7 +12,7 @@ class TestInferAttackType:
 
     @pytest.fixture
     def infer(self):
-        from graphids.core.preprocessing.datasets.can_bus import CANBusDataset
+        from graphids.core.data.datasets.can_bus import CANBusDataset
         return CANBusDataset._infer_attack_type
 
     @pytest.mark.parametrize("stem,parent,expected", [
@@ -59,7 +59,7 @@ class TestCANBusDatasetBuildGraphs:
                 w.writerow([ts, aid, payload, 0])
 
     def test_produces_valid_data_objects(self, tmp_path):
-        from graphids.core.preprocessing.datasets.can_bus import CANBusDataset
+        from graphids.core.data.datasets.can_bus import CANBusDataset
         self._write_minimal_csv(tmp_path / "raw" / "normal_test.csv")
         ds = CANBusDataset(
             root=str(tmp_path / "processed"), raw_dir=str(tmp_path / "raw"),

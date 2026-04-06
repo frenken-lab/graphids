@@ -13,20 +13,17 @@ from __future__ import annotations
 from pathlib import Path
 
 import dagster as dg
-from graphids.log import get_logger
 
-from graphids.config import (
-    CONFIG_DIR,
-    DAGSTER_IO_DIR_TEMPLATE,
-    PIPELINE_YAML,
-    dataset_names,
-    expand_recipe_configs,
-)
-from graphids.config.yaml_utils import read_yaml
-from graphids.core.contracts import TrainingSpec
+from graphids.config.constants import CONFIG_DIR, DAGSTER_IO_DIR_TEMPLATE
+from graphids.config.jsonnet import render
+from graphids.config.paths import dataset_names
+from graphids.config.topology import PIPELINE_TOPOLOGY
+from graphids.log import get_logger
 from graphids.orchestrate.assets import make_training_asset
 from graphids.orchestrate.checks import make_asset_checks
+from graphids.orchestrate.contracts import TrainingSpec
 from graphids.orchestrate.planning import enumerate_assets
+from graphids.orchestrate.recipes import expand_recipe_configs
 from graphids.slurm import ResourceSpec, SlurmJobClient, SubprocessSlurmJobClient
 
 RECIPES_DIR = CONFIG_DIR / "recipes"
@@ -54,9 +51,20 @@ class SlurmTrainingResource(dg.ConfigurableResource):
         on_state=None,
         run_test: bool = True,
         analysis_spec=None,
+        dry_run: bool = False,
     ) -> tuple[str, int]:
-        """Submit SLURM job and poll. Returns (state, job_id)."""
-        return self._client().run_training_job(
+        """Submit SLURM job and poll. Returns (state, job_id).
+
+        ``dry_run`` at the asset level overrides the resource-level default.
+        """
+        client = self._client()
+        if dry_run and not self.dry_run:
+            client = SubprocessSlurmJobClient(
+                dry_run=True,
+                poll_interval=self.poll_interval,
+                max_unknown=self.max_unknown,
+            )
+        return client.run_training_job(
             training_spec=training_spec,
             resources=resources,
             job_name=job_name,
@@ -84,19 +92,21 @@ class SlurmTrainingComponent(dg.Component, dg.Model, dg.Resolvable):
 
     def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
         recipe_env = dg.EnvVar("KD_GAT_RECIPE").get_value()
-        recipe_path = Path(recipe_env) if recipe_env else RECIPES_DIR / "ablation.yaml"
-        recipe = expand_recipe_configs(read_yaml(recipe_path))
+        recipe_path = Path(recipe_env) if recipe_env else RECIPES_DIR / "ablation.jsonnet"
+        recipe = expand_recipe_configs(render(recipe_path))
 
         # 1. Enumerate training configs (pure data)
-        stage_configs = enumerate_assets(PIPELINE_YAML, recipe)
+        stage_configs = enumerate_assets(PIPELINE_TOPOLOGY, recipe)
 
         # 2. Partitions
         datasets = dataset_names()
         seeds = [str(s) for s in recipe.get("sweep", {}).get("seeds", [42])]
-        partitions = dg.MultiPartitionsDefinition({
-            "dataset": dg.StaticPartitionsDefinition(datasets),
-            "seed": dg.StaticPartitionsDefinition(seeds),
-        })
+        partitions = dg.MultiPartitionsDefinition(
+            {
+                "dataset": dg.StaticPartitionsDefinition(datasets),
+                "seed": dg.StaticPartitionsDefinition(seeds),
+            }
+        )
 
         lake_root = dg.EnvVar("KD_GAT_LAKE_ROOT").get_value() or "experimentruns"
 
@@ -116,8 +126,11 @@ class SlurmTrainingComponent(dg.Component, dg.Model, dg.Resolvable):
         executor = dg.multiprocess_executor.configured(executor_cfg)
 
         get_logger(__name__).info(
-            "orchestrator_init", recipe=recipe_path.name,
-            num_assets=len(assets), datasets=datasets, seeds=seeds,
+            "orchestrator_init",
+            recipe=recipe_path.name,
+            num_assets=len(assets),
+            datasets=datasets,
+            seeds=seeds,
             dry_run=self.dry_run,
         )
 

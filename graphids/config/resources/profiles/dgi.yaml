@@ -1,8 +1,0 @@
-resources:
-  family: dgi
-  # DGI architecture similar to VGAE — collation-bound, needs many workers.
-  by_scale:
-    small:
-      autoencoder: {mode: gpu_train, time: "4:00:00", cpus: 20, workers: 18}
-    large:
-      autoencoder: {mode: gpu_train, time: "4:00:00", cpus: 20, workers: 18}

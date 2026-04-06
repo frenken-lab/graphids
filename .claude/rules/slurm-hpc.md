@@ -15,21 +15,21 @@
 - Test on small datasets (`hcrl_ch`) before large ones (`set_02`+).
 - SLURM logs go to `slurm_logs/`, experiment outputs to `experimentruns/`.
 - Heavy tests use `@pytest.mark.slurm` — auto-skipped on login nodes.
-- **Always run tests via SLURM.** Submit with `scripts/submit.sh tests [-k pattern]`.
+- **Always run tests via SLURM.** Submit with `scripts/slurm/submit.sh tests [-k pattern]`.
 
 ## Job Submission
 
-All SLURM jobs are submitted via the unified launcher `scripts/submit.sh <job> [args...]`:
+All SLURM jobs are submitted via the unified launcher `scripts/slurm/submit.sh <job> [args...]`:
 
 | Job | Command |
 |-----|---------|
-| Tests | `scripts/submit.sh tests [-k pattern] [-x]` |
-| Cache rebuild | `scripts/submit.sh rebuild-caches --all --delete-existing` |
-| Config validation | `scripts/submit.sh validate` |
-| Loss landscape | `scripts/submit.sh landscape <model_type> <dataset> <ckpt_path>` |
-| Preprocessing test | `scripts/submit.sh preprocessing-test` |
-| Ablation run | `scripts/submit.sh ablation [--recipe X] [--dataset X]` |
-| Profiling | `scripts/submit.sh profile` |
+| Tests | `scripts/slurm/submit.sh tests [-k pattern] [-x]` |
+| Cache rebuild | `scripts/slurm/submit.sh rebuild-caches --all --delete-existing` |
+| Config validation | `scripts/slurm/submit.sh validate` |
+| Loss landscape | `scripts/slurm/submit.sh landscape <model_type> <dataset> <ckpt_path>` |
+| Preprocessing test | `scripts/slurm/submit.sh preprocessing-test` |
+| Ablation run | `scripts/slurm/submit.sh ablation [--recipe X] [--dataset X]` |
+| Profiling | `scripts/slurm/submit.sh profile` |
 
 submit.sh handles `.env` sourcing, account selection, and resource defaults. Landscape auto-selects gpu vs cpu partition based on model type.
 
@@ -120,6 +120,6 @@ Data staging uses a 3-tier storage hierarchy. `python -m graphids stage-data` ma
 - Git, ruff
 
 **Must go through SLURM:**
-- `python -m graphids.cli <any stage>` — all training/evaluation
+- `python -m graphids fit|test|validate|predict` — all training/evaluation
 - `python -m pytest` — test suite
 - Any script that imports and runs models

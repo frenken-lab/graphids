@@ -1,8 +1,8 @@
-"""Dagster orchestration CLI: python -m graphids.orchestrate <command>
+"""Dagster orchestration CLI: python -m graphids.orchestrate.
 
-Commands:
-    validate          — validate dagster defs + recipe/lightning config chains
-    validate-dagster  — validate dagster defs only
+The legacy validate commands were removed in the config reorg. Use
+``dg launch`` / ``dg list defs`` for dagster, and rely on the Pydantic
+validation gates in the resolver.
 """
 
 from __future__ import annotations
@@ -13,16 +13,11 @@ import sys
 def main() -> None:
     cmd = sys.argv[1] if len(sys.argv) > 1 else None
 
-    if cmd == "validate":
-        from graphids.orchestrate.validate import main as validate_main
-        validate_main(sys.argv[2:])
-    elif cmd == "validate-dagster":
-        from graphids.orchestrate.validate import main as validate_main
-        validate_main(["--skip-lightning", *sys.argv[2:]])
-    else:
-        print("Usage: python -m graphids.orchestrate <command>", file=sys.stderr)
-        print("Commands: validate, validate-dagster", file=sys.stderr)
+    if cmd:
+        print("No orchestrate subcommands remain. Use dg CLI or graphids commands.", file=sys.stderr)
         sys.exit(1)
+    print("Usage: python -m graphids.orchestrate", file=sys.stderr)
+    sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ import pytest
 import torch
 from torch_geometric.data import Data
 
-from graphids.core.preprocessing.budget import (
+from graphids.core.data.budget import (
     _FALLBACK_BYTES_PER_NODE,
     _SAFETY_MARGIN,
     BudgetResult,
@@ -77,7 +77,7 @@ def test_fallback_when_no_model(tmp_path):
     metadata = tmp_path / "cache_metadata.json"
     metadata.write_text('{"graph_stats":{"node_count":{"mean":30.0}}}')
 
-    with patch("graphids.core.preprocessing.budget.cache_dir", return_value=tmp_path):
+    with patch("graphids.core.data.budget.cache_dir", return_value=tmp_path):
         result = node_budget("test", str(tmp_path), model=None)
 
     assert isinstance(result, BudgetResult)
@@ -95,7 +95,7 @@ def test_budget_scales_with_free_vram(tmp_path):
 
     def run_with_free(free_bytes):
         with (
-            patch("graphids.core.preprocessing.budget.cache_dir", return_value=tmp_path),
+            patch("graphids.core.data.budget.cache_dir", return_value=tmp_path),
             patch("torch.cuda.is_available", return_value=True),
             patch("torch.cuda.mem_get_info", return_value=(free_bytes, free_bytes)),
         ):
@@ -112,7 +112,7 @@ def test_quadratic_path_for_gps(tmp_path):
     metadata = tmp_path / "cache_metadata.json"
     metadata.write_text('{"graph_stats":{"node_count":{"mean":30.0}}}')
 
-    with patch("graphids.core.preprocessing.budget.cache_dir", return_value=tmp_path):
+    with patch("graphids.core.data.budget.cache_dir", return_value=tmp_path):
         result = node_budget(
             "test", str(tmp_path), conv_type="gps", heads=4, model=None,
         )
@@ -140,8 +140,8 @@ def _run_with_probe(tmp_path, bytes_per_node=2000, free_gb=16, mean_nodes=28.2):
     free = int(free_gb * 1024**3)
 
     with (
-        patch("graphids.core.preprocessing.budget.cache_dir", return_value=tmp_path),
-        patch("graphids.core.preprocessing.budget._probe_vram", mock),
+        patch("graphids.core.data.budget.cache_dir", return_value=tmp_path),
+        patch("graphids.core.data.budget._probe_vram", mock),
         patch("torch.cuda.is_available", return_value=True),
         patch("torch.cuda.mem_get_info", return_value=(free, free)),
     ):
@@ -171,8 +171,8 @@ def test_edge_aware_margin_reduces_budget_vs_balanced(tmp_path):
             f'"edge_count":{{"mean":126.9,"p95":{edge_p95}}}}}}}'
         )
         with (
-            patch("graphids.core.preprocessing.budget.cache_dir", return_value=tmp_path),
-            patch("graphids.core.preprocessing.budget._probe_vram", mock),
+            patch("graphids.core.data.budget.cache_dir", return_value=tmp_path),
+            patch("graphids.core.data.budget._probe_vram", mock),
             patch("torch.cuda.is_available", return_value=True),
             patch("torch.cuda.mem_get_info", return_value=(free, free)),
         ):

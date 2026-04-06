@@ -1,12 +1,6 @@
 """SLURM infrastructure: resource profiles, job submission, accounting."""
 
-from graphids.slurm.resources import (
-    ResourceSpec,
-    apply_resource_overrides,
-    get_resources,
-    scale_resources,
-)
-from graphids.slurm.slurm import (
+from graphids.slurm.client import (
     SlurmJobClient,
     SubprocessSlurmJobClient,
     job_accounting,
@@ -14,6 +8,12 @@ from graphids.slurm.slurm import (
     sacct_by_user,
     sacct_query,
     submit,
+)
+from graphids.slurm.resources import (
+    ResourceSpec,
+    apply_resource_overrides,
+    get_resources,
+    scale_resources,
 )
 
 __all__ = [

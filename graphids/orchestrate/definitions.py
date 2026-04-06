@@ -10,8 +10,8 @@ Otherwise: human-readable stderr for validation / dg list defs.
 
 import os
 
-from graphids.config import SLURM_LOG_DIR
 from graphids.log import configure_logging
+from graphids.slurm.env import SLURM_LOG_DIR
 
 # ---------------------------------------------------------------------------
 # Logging configuration — process-global, affects resolve.py + slurm.py too

@@ -1,38 +1,15 @@
-# GraphIDS Compact Config System
+# GraphIDS Config System
 
-This is a composition-first YAML config system designed to be compact, robust, and extensible.
+Jsonnet stages live under the repo-root `configs/` tree and are rendered via
+`graphids.config.jsonnet.render_config(...)`. Pydantic validation runs in
+`graphids.config.schemas` before any Lightning instantiation.
 
-## Composition order (lowest to highest precedence)
+## Sources of truth
 
-1. `defaults/global.yaml`
-2. `defaults/trainer.yaml`
-3. `defaults/io.yaml`
-4. `datasets/{dataset}.yaml`
-5. `stages/{stage}.yaml`
-6. `models/{model_family}/base.yaml`
-7. `models/{model_family}/scales/{scale}.yaml`
-8. If `stage=fusion`:
-   - `fusion/base.yaml`
-   - `fusion/scales/{scale}.yaml`
-   - `fusion/methods/{fusion_method}.yaml`
-9. `resources/profiles/{family}.yaml` selected by cluster + stage + scale (+ method for fusion)
-10. `recipes/{recipe}.yaml` overrides
-11. CLI / environment overrides
+- `configs/stages/*.jsonnet` — stage composition (autoencoder/normal/curriculum/fusion)
+- `configs/models/*.libsonnet` + `configs/fusion/**` — model/fusion building blocks
+- `configs/resources/job_profiles.json` — static resource profiles per family/scale/stage
+- `configs/resources/clusters.json` — cluster → partition/gres mapping
+- `configs/recipes/*.jsonnet` — pipeline recipes (sweep dimensions)
 
-## Design choices
-
-- Axis-first: one file per concern, minimal duplication.
-- Bandit is a first-class peer fusion method under `fusion/methods/bandit.yaml`.
-- Run legality enforced by `topology.py` import-time assertions.
-
-## Suggested resolver outputs
-
-A resolver should materialize a single effective config per run and write:
-- `resolved/config.yaml`
-- `resolved/provenance.yaml` (which files and override order)
-
-## Environment override convention
-
-Use `KD_GAT__` prefix and double underscore path separators, for example:
-- `KD_GAT__MODEL__INIT_ARGS__LR=0.001`
-- `KD_GAT__TRAINER__MAX_EPOCHS=200`
+See `docs/reference/config-architecture.md` for the full config flow.

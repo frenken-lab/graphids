@@ -9,7 +9,7 @@ from graphids.log import get_logger
 from ._nn import TensorReplayBuffer, build_mlp_body
 from .fusion_baselines import FusionModuleBase
 from .fusion_features import STATE_DIM
-from .fusion_reward import FusionRewardCalculator
+from .fusion_reward import FusionRewardCalculator, resolve_reward_kwargs
 
 log = get_logger(__name__)
 
@@ -82,7 +82,7 @@ class DQNFusionModule(FusionModuleBase):
         self.loss_fn = nn.SmoothL1Loss()
 
         self._buffer = TensorReplayBuffer(buffer_size, state_dim)
-        self.reward_calc = FusionRewardCalculator(**(reward_kwargs or {}))
+        self.reward_calc = FusionRewardCalculator(**resolve_reward_kwargs(reward_kwargs))
 
         log.info("dqn_agent_initialized", actions=alpha_steps, state_dim=state_dim)
 

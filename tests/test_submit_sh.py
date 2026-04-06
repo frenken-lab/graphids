@@ -1,4 +1,4 @@
-"""Tests for scripts/submit.sh argument quoting and profile parsing."""
+"""Tests for scripts/slurm/submit.sh argument quoting and profile parsing."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 PROJECT_ROOT = str(Path(__file__).resolve().parents[1])
-SUBMIT_SH = f"{PROJECT_ROOT}/scripts/submit.sh"
+SUBMIT_SH = f"{PROJECT_ROOT}/scripts/slurm/submit.sh"
 
 
 def _get_wrap_string(*extra_args: str) -> str:

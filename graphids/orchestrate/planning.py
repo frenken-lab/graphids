@@ -2,49 +2,36 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any
 
-from graphids.config import STAGE_MODEL_MAP, TrainingRunConfig, compute_identity_hash
-from graphids.core.contracts import TrainingContract
+from graphids.config.constants import FAMILY_FOR_MODEL_TYPE
+from graphids.config.paths import compute_identity_hash
+from graphids.config.topology import STAGE_FAMILY_MAP
+from graphids.orchestrate.contracts import TrainingContract
+from graphids.orchestrate.recipes import TrainingRunConfig
+from graphids.orchestrate.shared import StageConfig
 
 # Recipe key -> identity key (where names differ)
 _RECIPE_TO_IDENTITY = {"fusion_method": "method"}
 
+# Default model_type per family (first entry in axes.json model_types_by_family)
+_DEFAULT_MODEL_TYPE: dict[str, str] = {}
+for _mt, _fam in FAMILY_FOR_MODEL_TYPE.items():
+    _DEFAULT_MODEL_TYPE.setdefault(_fam, _mt)
 
-def _identity_value(key: str, merged: TrainingRunConfig | dict, stages: list[str]) -> Any:
-    if key == "gat_stage":
-        return "curriculum" if "curriculum" in stages else "normal"
+
+def _identity_value(
+    key: str, merged: TrainingRunConfig | dict, stages: list[str], *, family: str = ""
+) -> Any:
     _get = merged.get if isinstance(merged, dict) else lambda k, d=None: getattr(merged, k, d)
     for rk, ik in _RECIPE_TO_IDENTITY.items():
         if ik == key:
             return _get(rk)
     val = _get(key)
-    # model_type=None means "use stage default" — resolve for stable identity hashes
+    # model_type=None means "use stage default" — resolve per-family for stable identity hashes
     if key == "model_type" and val is None:
-        return "vgae"
+        return _DEFAULT_MODEL_TYPE.get(family, "vgae")
     return val
-
-
-@dataclass(frozen=True)
-class StageConfig:
-    """Training config for one asset. Pure data, no dagster dependency."""
-
-    asset_name: str
-    stage: str
-    model_type: str
-    scale: str
-    config_files: tuple[str, ...] = ()
-    model_init_overrides: dict[str, Any] = field(default_factory=dict)
-    identity: str = ""
-    kd_tag: str = ""
-    resource_model: str = ""  # model key for resource lookup (fusion method for fusion stages)
-    kd_overrides: dict[str, Any] = field(default_factory=dict)  # raw KDEntry payload
-    trainer_overrides: dict[str, str] = field(default_factory=dict)
-    stage_overrides: dict[str, str] = field(default_factory=dict)
-    resource_overrides: dict[str, str | int] = field(default_factory=dict)
-    upstream_asset_names: tuple[str, ...] = ()
-    upstream_model_families: dict[str, str] = field(default_factory=dict)
 
 
 def _resolve_kd_teachers(
@@ -106,7 +93,7 @@ def _resolve_kd_teachers(
         teacher_asset = tc_map[stage]
         if teacher_asset not in upstream_names:
             upstream_names.append(teacher_asset)
-            upstream_models[teacher_asset] = STAGE_MODEL_MAP[stage]
+            upstream_models[teacher_asset] = STAGE_FAMILY_MAP[stage]
 
 
 def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
@@ -132,7 +119,8 @@ def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
                 continue
             stage_def = stages_def[stage]
             id_keys = stage_def.get("identity_keys", [])
-            id_cfg = {k: _identity_value(k, merged, stages) for k in id_keys}
+            family = stage_def.get("family", "")
+            id_cfg = {k: _identity_value(k, merged, stages, family=family) for k in id_keys}
             identity = compute_identity_hash(stage, id_cfg)
             kd_tag = "_kd" if has_kd else ""
             asset_name = f"{stage}{identity}{kd_tag}"
@@ -160,24 +148,21 @@ def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
 
             stage_def = stages_def[stage]
             id_keys = stage_def.get("identity_keys", [])
-            id_cfg = {k: _identity_value(k, merged, stages) for k in id_keys}
+            family = stage_def.get("family", "")
+            id_cfg = {k: _identity_value(k, merged, stages, family=family) for k in id_keys}
             identity = compute_identity_hash(stage, id_cfg)
-            model_family = STAGE_MODEL_MAP[stage]
+            model_family = STAGE_FAMILY_MAP[stage]
             # Only override unsupervised model_family when model_type IS an
             # unsupervised model (vgae, dgi). A GAT curriculum sweep sets
             # model_type="gat" but the upstream autoencoder must stay VGAE.
             _UNSUPERVISED_MODELS = {"vgae", "dgi"}
-            if (merged.model_type is not None
-                    and stage_def.get("learning_type") == "unsupervised"
-                    and merged.model_type in _UNSUPERVISED_MODELS):
+            if (
+                merged.model_type is not None
+                and stage_def.get("learning_type") == "unsupervised"
+                and merged.model_type in _UNSUPERVISED_MODELS
+            ):
                 model_family = merged.model_type
-            config_files = TrainingContract.resolve_config_files(
-                stage,
-                merged.scale,
-                model_family=model_family,
-                fusion_method=merged.fusion_method,
-                include_kd_overlay=bool(merged.auxiliaries),
-            )
+            jsonnet_path = TrainingContract.resolve_jsonnet_path(stage)
 
             model_keys = set(stage_def.get("model_keys", id_keys))
             overrides: dict[str, str] = {}
@@ -203,7 +188,7 @@ def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
             upstream_models: dict[str, str] = {}
             seen_models: set[str] = set()
             for dep in stage_def.get("depends_on", []):
-                dep_model = dep["model"]
+                dep_model = dep["family"]
                 dep_asset = stage_map.get(dep["stage"])
                 if not dep_asset or dep_model in seen_models:
                     continue
@@ -231,7 +216,7 @@ def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
                 stage=stage,
                 model_type=model_dir,
                 scale=merged.scale,
-                config_files=tuple(config_files),
+                jsonnet_path=jsonnet_path,
                 model_init_overrides=overrides,
                 identity=identity,
                 kd_tag="_kd" if has_kd else "",

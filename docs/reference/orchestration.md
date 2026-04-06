@@ -13,15 +13,14 @@ asset submits a single SLURM job that runs train → test → analyze.
 | File | LOC | Role |
 |---|---:|---|
 | `__init__.py` | 11 | Package docstring |
-| `__main__.py` | 29 | CLI: `validate`, `validate-dagster` |
+| `__main__.py` | 29 | CLI stub (validation moved into resolver gates) |
 | `definitions.py` | 35 | Dagster discovery entry (via `pyproject.toml`); configures logging, instantiates `SlurmTrainingComponent`, calls `build_defs_for_component` |
 | `component.py` | 138 | `SlurmTrainingComponent` (`dg.Component`) + `SlurmTrainingResource` (`dg.ConfigurableResource`). Assembles `Definitions(assets, asset_checks, resources, executor)` |
-| `planning.py` | 187 | Pure data: `StageConfig` dataclass + `enumerate_assets(pipeline, recipe) → list[StageConfig]`. Two-pass expansion with canonical dedup, identity hashing, KD teacher resolution. No dagster imports |
-| `resolve.py` | 312 | `ConfigResolver` — the exclusive merge path (ADR 0009). Takes a `StageConfig` and produces `ResolvedConfig(spec, resources, paths, audit)`. Runs override merge + cross-field validation + jsonargparse schema check + convention checks in one pass |
+| `planning.py` | 187 | Pure data: `enumerate_assets(pipeline, recipe) → list[StageConfig]` (StageConfig lives in `graphids.config.shared`). Two-pass expansion with canonical dedup, identity hashing, KD teacher resolution. No dagster imports |
+| `resolve.py` | 312 | `ConfigResolver` — the exclusive merge path (ADR 0009). Takes a `StageConfig` and produces `ResolvedConfig(spec, resources, paths, audit)`. Runs override merge + Pydantic gates (`validate_config` + stage cross-field validation) in one pass |
 | `assets.py` | 195 | `make_training_asset(cfg)` factory + shared dagster-context helpers (`partition_keys`, `paths_for_context`, `_runtime_lake_root`, `_runtime_user`, `_touch_complete`). One `@dg.asset` per `StageConfig`; bundles train→test→analyze into a single SLURM job |
 | `checks.py` | 124 | `make_asset_checks(cfg_lookup)` — one `@dg.multi_asset_check` op per training asset, emitting a blocking `checkpoint_complete_*` check and a non-blocking `analysis_complete_*` check (where supported) with `can_subset=True` |
 | `analysis.py` | 48 | Analysis spec/output helpers: `supports_analysis`, `build_analysis_spec`, `output_status`, `ANALYSIS_MANIFEST_NAME`. Shared by `assets.py` and `checks.py` |
-| `validate.py` | 92 | Dev CLI (`python -m graphids.orchestrate validate`): loads dagster defs, validates recipe schema, dedupes unique config chains, runs `ConfigResolver.resolve_and_validate` on each |
 
 ## Layered structure (no cycles)
 
@@ -36,11 +35,9 @@ FACTORIES  assets.py (uses analysis, planning, resolve)
                │
 HUB        component.py (uses assets, checks, planning)
                │
-ENTRIES    definitions.py           validate.py
-               │                         │
-           (dagster dg CLI)            __main__.py
-                                         │
-                                 (python -m graphids.orchestrate)
+ENTRIES    definitions.py
+               │
+           (dagster dg CLI)
 ```
 
 ## Runtime architecture
@@ -66,8 +63,9 @@ SlurmTrainingComponent (dg.Component)
 └── Per-materialization (assets._train body):
     └── ConfigResolver.resolve_and_validate(cfg, dataset, seed)
         ├── merges trainer + stage + KD + resource overrides
-        ├── _validate_cross_fields (workers ≤ cpus-1, curriculum epoch sync, GPU partition, RL dead config)
-        ├── validate_cli_chain → jsonargparse.parse_object (catches typos, null fields, type errors)
+        ├── render_config(jsonnet_path, jsonnet_tla) → dict
+        ├── validate_config(rendered) → ValidatedConfig (Pydantic gate)
+        ├── validate_stage_config(...) (workers ≤ cpus-1, curriculum epoch sync, GPU partition, RL dead config)
         └── returns ResolvedConfig → submit_and_wait
 ```
 

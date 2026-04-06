@@ -1,223 +1,66 @@
 """Exclusive config merge path for pipeline runs.
 
-ConfigResolver subsumes the two separate override merge sites (trainer
-overrides in execution.py, resource overrides in assets.py) into a single
-validated resolution with cross-field checks and an audit trail.
-
-``validate_cli_chain`` runs the resolved spec through the full jsonargparse
-schema + convention checks, so override-key typos, null list fields, and
-logger/callback wiring mismatches die at planning time (ADR 0009).
+ConfigResolver is the single point that turns a ``StageConfig`` + its
+planner-derived overrides into a fully rendered, validated
+``ResolvedConfig``. It builds the typed TLA dict, calls
+``render_config(spec.jsonnet_path, spec.jsonnet_tla)``, runs the Pydantic
+structural gate (``graphids.config.validate_config``), runs cross-field
+rules against the combined ``(spec, resources, stage_cfg, merged)``
+tuple, and emits an audit trail of every override applied.
 """
 
 from __future__ import annotations
 
-import contextlib
-import io
-import json
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal
 
-import yaml
-
+from graphids.config.jsonnet import render
+from graphids.config.schemas import (
+    PathContext,
+    ValidatedConfig,
+    validate_config,
+)
 from graphids.log import get_logger
-
-from graphids.config import PathContext
-from graphids.config.yaml_utils import merge_yaml_chain
-from graphids.core.contracts import TrainingContract, TrainingSpec
-from graphids.orchestrate.planning import StageConfig
+from graphids.orchestrate.contracts import TrainingContract, TrainingSpec
+from graphids.orchestrate.cross_field import validate_stage_config
+from graphids.orchestrate.shared import StageConfig
 from graphids.slurm import ResourceSpec, apply_resource_overrides, get_resources
 
 log = get_logger(__name__)
 
-# Fusion stages optimize val_acc/max; all others val_loss/min.
+# Fusion stages optimize val_acc/max; all others val_loss/min. Used for the
+# stage-convention warning in `_warn_stage_monitor_mismatch` — a divergence
+# is not fatal (``ValidatedConfig`` already forces checkpoint/early_stopping
+# to agree) but a stage whose monitors don't match its archetype is almost
+# always a mistake that should surface in the orchestrator logs.
 _STAGE_MONITORS = {
     "autoencoder": ("val_loss", "min"),
-    "normal": ("val_loss", "min"),
-    "curriculum": ("val_loss", "min"),
+    "supervised": ("val_loss", "min"),
     "fusion": ("val_acc", "max"),
 }
 
 
-# ---------------------------------------------------------------------------
-# Cross-field validation rules
-#
-# Each constraint that spans TrainingSpec + ResourceSpec + merged YAML lives
-# as a single ValidationRule. `applies` gates the rule (so curriculum-only
-# checks don't run on other stages); `check` returns the violation messages
-# or an empty list. Severity decides error-vs-warning at the call site.
-# Adding a rule = adding one entry to _RULES. Each rule is independently
-# unit-testable (see tests/orchestrate/test_overrides.py::TestValidationRules).
-# ---------------------------------------------------------------------------
+def _warn_stage_monitor_mismatch(validated: ValidatedConfig, stage: str, label: str) -> None:
+    """Log a warning if a stage's monitor/mode diverges from its archetype.
 
-
-RuleFn = Callable[[TrainingSpec, ResourceSpec, StageConfig, dict[str, Any]], list[str]]
-RulePred = Callable[[TrainingSpec, ResourceSpec, StageConfig, dict[str, Any]], bool]
-
-
-@dataclass(frozen=True)
-class ValidationRule:
-    """One cross-field constraint applied during config resolution."""
-
-    name: str
-    severity: Literal["error", "warning"]
-    applies: RulePred
-    check: RuleFn
-
-
-def _data_init(merged: dict[str, Any]) -> dict[str, Any]:
-    return merged.get("data", {}).get("init_args", {}) or {}
-
-
-def _always(spec, res, cfg, merged) -> bool:  # noqa: ARG001
-    return True
-
-
-def _is_gpu_stage(spec, res, cfg, merged) -> bool:  # noqa: ARG001
-    return cfg.stage != "evaluation" and bool(res.gres)
-
-
-def _is_curriculum(spec, res, cfg, merged) -> bool:  # noqa: ARG001
-    return cfg.stage == "curriculum"
-
-
-def _is_fusion_rl(spec, res, cfg, merged) -> bool:  # noqa: ARG001
-    return cfg.stage == "fusion" and cfg.model_type in ("dqn", "bandit")
-
-
-def _check_num_workers_within_cpus(spec, res, cfg, merged) -> list[str]:  # noqa: ARG001
-    max_workers = res.cpus_per_task - 1
-    if res.num_workers > max_workers:
-        return [
-            f"num_workers={res.num_workers} exceeds "
-            f"cpus_per_task-1={max_workers}"
-        ]
-    return []
-
-
-def _check_yaml_num_workers_within_cpus(spec, res, cfg, merged) -> list[str]:  # noqa: ARG001
-    max_workers = res.cpus_per_task - 1
-    yaml_workers = _data_init(merged).get("num_workers")
-    if yaml_workers is not None and int(yaml_workers) > max_workers:
-        return [
-            f"data.init_args.num_workers={yaml_workers} in YAML exceeds "
-            f"cpus_per_task-1={max_workers} in resource profile"
-        ]
-    return []
-
-
-def _check_gpu_partition_consistency(spec, res, cfg, merged) -> list[str]:  # noqa: ARG001
-    if "gpu" not in res.partition:
-        return [
-            f"gres={res.gres!r} set but partition="
-            f"{res.partition!r} is not a GPU partition"
-        ]
-    return []
-
-
-def _check_curriculum_epoch_sync(spec, res, cfg, merged) -> list[str]:  # noqa: ARG001
-    data_max = _data_init(merged).get("max_epochs")
-    trainer_max = (merged.get("trainer") or {}).get("max_epochs")
-    if (
-        data_max is not None
-        and trainer_max is not None
-        and int(data_max) != int(trainer_max)
-    ):
-        return [
-            f"CurriculumDataModule.max_epochs={data_max} != "
-            f"trainer.max_epochs={trainer_max} — curriculum "
-            f"difficulty ramp will be scheduled over the wrong epoch count"
-        ]
-    return []
-
-
-def _check_fusion_rl_batch_size_override(spec, res, cfg, merged) -> list[str]:  # noqa: ARG001
-    if "data.init_args.batch_size" in spec.runtime_overrides:
-        return [
-            f"batch_size override has no effect for RL fusion method "
-            f"'{cfg.model_type}' — episode_sample_size controls batch size"
-        ]
-    return []
-
-
-def _check_fusion_rl_batch_size_yaml(spec, res, cfg, merged) -> list[str]:  # noqa: ARG001
-    yaml_bs = _data_init(merged).get("batch_size")
-    if yaml_bs is not None:
-        return [
-            f"data.init_args.batch_size={yaml_bs} has no effect for RL method "
-            f"'{cfg.model_type}' — episode_sample_size controls batch size"
-        ]
-    return []
-
-
-_RULES: tuple[ValidationRule, ...] = (
-    ValidationRule(
-        name="num_workers_within_cpus",
-        severity="error",
-        applies=_always,
-        check=_check_num_workers_within_cpus,
-    ),
-    ValidationRule(
-        name="yaml_num_workers_within_cpus",
-        severity="error",
-        applies=_always,
-        check=_check_yaml_num_workers_within_cpus,
-    ),
-    ValidationRule(
-        name="gpu_partition_consistency",
-        severity="error",
-        applies=_is_gpu_stage,
-        check=_check_gpu_partition_consistency,
-    ),
-    ValidationRule(
-        name="curriculum_epoch_sync",
-        severity="error",
-        applies=_is_curriculum,
-        check=_check_curriculum_epoch_sync,
-    ),
-    ValidationRule(
-        name="fusion_rl_batch_size_override",
-        severity="error",
-        applies=_is_fusion_rl,
-        check=_check_fusion_rl_batch_size_override,
-    ),
-    ValidationRule(
-        name="fusion_rl_batch_size_yaml",
-        severity="warning",
-        applies=_is_fusion_rl,
-        check=_check_fusion_rl_batch_size_yaml,
-    ),
-)
-
-
-def _convention_errors(dumped: dict, stage: str, label: str) -> list[str]:
-    """Return fatal convention errors; emit non-fatal warnings via log."""
-    errors: list[str] = []
-    trainer = dumped.get("trainer") or {}
-    logger_on = trainer.get("logger", True) is not False
-    for cb in trainer.get("callbacks") or []:
-        cp = cb.get("class_path", "")
-        if "LearningRateMonitor" in cp and not logger_on:
-            errors.append(f"{cp.rsplit('.', 1)[-1]} requires trainer.logger=true")
-    model_args = dumped.get("model", {}).get("init_args") or {}
-    for fld in ("pool_aggrs", "hidden_dims", "auxiliaries"):
-        if fld in model_args and model_args[fld] is None:
-            errors.append(f"model.init_args.{fld} is null")
-    exp = _STAGE_MONITORS.get(stage)
-    if exp:
-        for ns in ("checkpoint", "early_stopping"):
-            cfg = dumped.get(ns) or {}
-            if not isinstance(cfg, dict):
-                continue
-            for field, expected in zip(("monitor", "mode"), exp):
-                val = cfg.get(field)
-                if val is not None and val != expected:
-                    log.warning(
-                        "convention_mismatch",
-                        asset=label, ns=ns, field=field,
-                        got=val, expected=expected,
-                    )
-    return errors
+    ``ValidatedConfig`` already enforces checkpoint and early_stopping
+    internal agreement. This check is softer: it compares the agreed-upon
+    monitor+mode against the expected value for the stage family (e.g.
+    fusion must be maximizing ``val_acc``; every other stage must be
+    minimizing ``val_loss``). Not fatal — a legitimate override may want a
+    different metric — but always interesting to surface.
+    """
+    expected = _STAGE_MONITORS.get(stage)
+    if expected is None:
+        return
+    exp_monitor, exp_mode = expected
+    if validated.checkpoint.monitor != exp_monitor or validated.checkpoint.mode != exp_mode:
+        log.warning(
+            "stage_monitor_mismatch",
+            asset=label,
+            stage=stage,
+            got=f"{validated.checkpoint.monitor}/{validated.checkpoint.mode}",
+            expected=f"{exp_monitor}/{exp_mode}",
+        )
 
 
 @dataclass(frozen=True)
@@ -238,6 +81,9 @@ class ResolvedConfig:
     resources: ResourceSpec
     paths: PathContext
     audit: tuple[OverrideRecord, ...]
+    # Phase 2: typed view of the rendered jsonnet dict. Assets can read
+    # ``resolved.validated.model.class_path`` etc. without re-rendering.
+    validated: ValidatedConfig | None = None
 
 
 class ConfigResolver:
@@ -265,33 +111,53 @@ class ConfigResolver:
 
         # --- Paths ---
         paths = PathContext(
-            lake_root=self._lake_root, user=self._user, dataset=dataset,
-            model_type=cfg.model_type, scale=cfg.scale, stage=cfg.stage,
-            identity=cfg.identity, kd_tag=cfg.kd_tag, seed=seed,
+            lake_root=self._lake_root,
+            user=self._user,
+            dataset=dataset,
+            model_type=cfg.model_type,
+            scale=cfg.scale,
+            stage=cfg.stage,
+            identity=cfg.identity,
+            kd_tag=cfg.kd_tag,
+            seed=seed,
         )
 
-        # --- Build TrainingSpec with all overrides merged ---
-        runtime_overrides: dict[str, Any] = {}
-
+        # --- Audit trail (recipe overrides, KD, resources) ---
         if cfg.trainer_overrides:
-            runtime_overrides.update(cfg.trainer_overrides)
             for k, v in cfg.trainer_overrides.items():
                 audit.append(OverrideRecord(key=k, value=v, source="recipe_trainer"))
 
         if cfg.stage_overrides:
-            runtime_overrides.update(cfg.stage_overrides)
             for k, v in cfg.stage_overrides.items():
-                audit.append(OverrideRecord(key=k, value=v, source="stage_override", stage=cfg.stage))
+                audit.append(
+                    OverrideRecord(key=k, value=v, source="stage_override", stage=cfg.stage)
+                )
 
         if cfg.kd_overrides:
-            key = "model.init_args.auxiliaries"
-            val = json.dumps([cfg.kd_overrides])
-            runtime_overrides[key] = val
-            audit.append(OverrideRecord(key=key, value=val, source="kd"))
+            audit.append(
+                OverrideRecord(
+                    key="model.init_args.auxiliaries",
+                    value="<kd entry>",
+                    source="kd",
+                )
+            )
 
-        # Auto-resume from last.ckpt is handled at training time in
-        # train_entrypoint.py — NOT here. The orchestrator runs on a different
-        # node (NFS-cached); checking exists() here creates a race condition.
+        # --- Build TLA dict for jsonnet render ---
+        # Auto-resume ckpt_path is handled at training time in
+        # train_entrypoint.py — NOT here. The orchestrator runs on a
+        # different node (NFS-cached); checking exists() here creates a
+        # race condition.
+        tla = TrainingContract.build_tla_dict(
+            cfg,
+            dataset=dataset,
+            seed=seed,
+            run_dir=str(paths.run_dir),
+            upstream_ckpts=upstream_ckpts,
+            upstream_model_families=cfg.upstream_model_families,
+            kd_overrides=cfg.kd_overrides or None,
+            trainer_overrides=cfg.trainer_overrides or None,
+            stage_overrides=cfg.stage_overrides or None,
+        )
 
         spec = TrainingSpec(
             stage=cfg.stage,
@@ -300,27 +166,49 @@ class ConfigResolver:
             dataset=dataset,
             seed=seed,
             run_dir=str(paths.run_dir),
-            config_files=cfg.config_files,
+            jsonnet_path=cfg.jsonnet_path,
+            jsonnet_tla=tla,
             model_init_overrides=cfg.model_init_overrides,
             upstream_ckpt_paths=upstream_ckpts,
             upstream_model_families=cfg.upstream_model_families,
-            runtime_overrides=runtime_overrides,
         )
 
         # --- Build ResourceSpec with overrides ---
         resources = get_resources(
-            cfg.resource_model or cfg.model_type, cfg.scale, cfg.stage,
+            cfg.resource_model or cfg.model_type,
+            cfg.scale,
+            cfg.stage,
         )
         if cfg.resource_overrides:
             resources = apply_resource_overrides(resources, cfg.resource_overrides)
             for k, v in cfg.resource_overrides.items():
                 audit.append(OverrideRecord(key=k, value=v, source="recipe_resource"))
 
-        # --- Merge YAML chain for cross-field validation ---
-        merged_yaml = merge_yaml_chain(cfg.config_files, runtime_overrides)
+            # --- Render the jsonnet chain ---
+            rendered = render(spec.jsonnet_path, spec.jsonnet_tla)
 
-        # --- Cross-field validation ---
-        self._validate_cross_fields(spec, resources, cfg, merged_yaml)
+        # --- Phase 2: Pydantic structural + convention validation ---
+        # Raises ConfigValidationError (ValueError subclass) with an
+        # actionable message on null list fields, monitor mismatches,
+        # un-namespaced class_paths, or unknown top-level keys.
+        try:
+            validated = validate_config(rendered)
+        except ValueError as e:
+            raise ValueError(
+                f"{cfg.asset_name} config validation (run_dir={paths.run_dir}): {e}"
+            ) from e
+        _warn_stage_monitor_mismatch(validated, cfg.stage, cfg.asset_name)
+
+        # --- Cross-field validation (Pydantic stage gate) ---
+        try:
+            validate_stage_config(
+                spec=spec,
+                resources=resources,
+                cfg=cfg,
+                merged=rendered,
+            )
+        except ValueError as e:
+            raise ValueError(f"{cfg.asset_name} cross-field validation: {e}") from e
 
         audit_tuple = tuple(audit)
         if audit_tuple:
@@ -340,6 +228,7 @@ class ConfigResolver:
             resources=resources,
             paths=paths,
             audit=audit_tuple,
+            validated=validated,
         )
 
     def resolve_and_validate(
@@ -349,71 +238,21 @@ class ConfigResolver:
         dataset: str,
         seed: int,
         upstream_ckpts: dict[str, str] | None = None,
-    ) -> "ResolvedConfig":
-        """Resolve + pre-validate in one call. Used by assets.py and validate.py."""
-        resolved = self.resolve(
-            cfg, dataset=dataset, seed=seed, upstream_ckpts=upstream_ckpts or {},
-        )
-        self.validate_cli_chain(resolved.spec)
-        return resolved
+    ) -> ResolvedConfig:
+        """Thin alias for :meth:`resolve`.
 
-    def validate_cli_chain(self, spec: TrainingSpec) -> None:
-        """Pre-validate spec through jsonargparse schema + convention checks (ADR 0009)."""
-        from graphids._lightning import schema_parser  # lazy torch import
-
-        parser = schema_parser()
-        merged = merge_yaml_chain(
-            spec.config_files, TrainingContract.to_override_dict(spec),
-        )
-        label = f"{spec.stage}/{spec.model_family}_{spec.scale}"
-
-        # jsonargparse calls sys.exit() on parse errors; capture stderr + catch.
-        err_buf = io.StringIO()
-        try:
-            with contextlib.redirect_stderr(err_buf):
-                parsed = parser.parse_object(merged)
-        except (Exception, SystemExit) as e:
-            msg = next(
-                (ln for ln in reversed(err_buf.getvalue().splitlines()) if ln.strip()),
-                str(e),
-            )
-            raise ValueError(f"{label} schema (run_dir={spec.run_dir}): {msg}") from e
-
-        dumped = yaml.safe_load(
-            parser.dump(parsed, skip_link_targets=False, skip_none=False)
-        )
-        errors = _convention_errors(dumped, spec.stage, label)
-        if errors:
-            raise ValueError(f"{label} conventions: " + "; ".join(errors))
-
-    def _validate_cross_fields(
-        self,
-        spec: TrainingSpec,
-        resources: ResourceSpec,
-        cfg: StageConfig,
-        merged_yaml: dict[str, Any],
-    ) -> None:
-        """Validate constraints that span TrainingSpec, ResourceSpec, and YAML configs.
-
-        Thin dispatcher over _RULES. Each rule is a ValidationRule with its
-        own `applies` predicate and `check` function; errors are collected
-        and raised as a single ValueError, warnings are logged and do not
-        fail resolution. See the _RULES tuple at module top for the full list.
+        Kept as a distinct entry point for call-site documentation:
+        assets.py / validate.py use this name to signal "I want the full
+        validated resolution, not just spec construction". Phase 3
+        collapsed the implementation because ``resolve()`` already runs
+        ``validate_config`` and the Phase-2-scheduled jsonargparse safety
+        net has been deleted along with ``LightningCLI``.
         """
-        errors: list[str] = []
-        for rule in _RULES:
-            if not rule.applies(spec, resources, cfg, merged_yaml):
-                continue
-            messages = rule.check(spec, resources, cfg, merged_yaml)
-            if not messages:
-                continue
-            if rule.severity == "error":
-                errors.extend(messages)
-            else:
-                for msg in messages:
-                    log.warning("convention_mismatch", rule=rule.name, msg=msg)
-        if errors:
-            raise ValueError(
-                f"Cross-field validation failed for {cfg.asset_name}:\n"
-                + "\n".join(f"  - {e}" for e in errors)
-            )
+        return self.resolve(
+            cfg,
+            dataset=dataset,
+            seed=seed,
+            upstream_ckpts=upstream_ckpts or {},
+        )
+
+    # Cross-field validation moved to graphids.config.schemas.

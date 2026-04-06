@@ -14,7 +14,7 @@
 Phase 1 (jsonnet)
     └── Phase 2 (Pydantic)
             ├── Phase 3 (strip LightningCLI)
-            │       └── Phase 4 (strip jsonargparse)
+            │       └── Phase 4 (jsonargparse retooling)
             │               └── Phase 5 (Dagster boundaries)
             └── Phase 6 (PyIceberg)  ← independent of 3/4/5, run in parallel
                     └── Phase 7 (sweeps)
@@ -28,97 +28,75 @@ Phase 6 is fully independent — start it alongside Phase 2 since it only touche
 
 **Goal:** Replace YAML chain + `merge_yaml_chain` + override plumbing with
 jsonnet. **Full migration, single PR — no shadow path, no dual-write.** Git
-history is the rollback. `jsonargparse` / `LightningCLI` stay (Phases 3–4
-strip those).
-
-**Detailed plan:** [`docs/phase1_jsonnet.md`](./phase1_jsonnet.md) — commit-by-commit
-migration order, shim design, one-shot parity gate, gotchas, verification.
-
-High-level shape:
-
-1. Install `go-jsonnet` binary (not Python wrapper — faster, no JVM)
-2. Port the 20 YAML files that feed `merge_yaml_chain` to jsonnet under `configs/` (repo root)
-3. Lazy fields (dataset, seed, run_dir, upstream ckpts, KD auxiliaries, recipe overrides) become TLAs; recipe expansion + planning stay in Python
-4. Add `graphids/config/jsonnet.py::render_config(jsonnet_path, tla_dict) → dict`
-5. **One-shot parity gate** in Commit 2: `test_jsonnet_parity.py` diffs `render_config(...)` against `merge_yaml_chain(...)` across every recipe chain. Deleted in the same commit that deletes `merge_yaml_chain`.
-6. Swap `TrainingSpec`, `TrainingContract`, `StageConfig`, `ConfigResolver`, `train_entrypoint`, `_lightning._BOOTSTRAP`, `cli.run_lightning` (adds `.jsonnet` preprocessor for dev path)
-7. Delete `graphids/config/{stages,models,fusion,defaults/trainer.yaml}/`, `merge_yaml_chain`, `deep_merge`, `apply_dotted_overrides`, `to_override_dict`, `resolve_config_files`, `default_config_files`
-
-**Exit criteria:**
-
-- `grep -r merge_yaml_chain graphids/ tests/` → empty
-- `ls graphids/config/stages/` → no such directory
-- `python -m graphids.orchestrate validate` passes on ablation/smoke_test/final_eval
-- `dg launch smoke_test` runs one asset per stage (autoencoder, normal, curriculum, fusion) to COMPLETED
-- `python -m graphids fit --config configs/stages/autoencoder.jsonnet --trainer.max_epochs 1` runs on gpudebug
-- Net LOC change is **negative** (jsonnet absorbs Python plumbing)
+history is the rollback. `LightningCLI` stays until Phase 3; jsonargparse is
+retooled in Phase 4 for analyzer configs.
 
 ---
 
 ## Phase 2 — Pydantic Validation Layer
 
+**Goal:** Insert a torch-free Pydantic validation layer between
+`render_config(...)` and downstream consumers. Replace
+`orchestrate.resolve._convention_errors` (hand-rolled post-hoc linting
+over the rendered dict) with real typed `@model_validator` rules so
+structural errors, null list fields, monitor-wiring mismatches, and
+un-namespaced `class_path` strings die at planning time with an actionable
+message.
 ---
 
 ## Phase 3 — Strip LightningCLI
 
 **Goal:** Remove LightningCLI, keep Lightning Trainer.
 
-1. Write explicit `train.py` entrypoint — stdlib `argparse` for `--config` and `--tla`, calls `render_config`, calls `model_validate`, instantiates model/datamodule/trainer directly:
-   ```python
-   parser = argparse.ArgumentParser()
-   parser.add_argument("--config", required=True)
-   parser.add_argument("--tla", nargs="*", default=[])
-   ```
-2. Make `LightningModule.__init__` take flat explicit typed args (not `**kwargs` or namespace objects)
-3. Verify `save_hyperparameters()` still works — call it explicitly with a flat dict, not relying on CLI injection
-4. Fix `load_from_checkpoint` — pass constructor args explicitly at load time:
-   ```python
-   model = MyModel.load_from_checkpoint(ckpt_path, lr=cfg.lr, strict=True)
-   ```
-5. Delete `LightningCLI` instantiation
-6. Run one full pretrain + finetune cycle end-to-end through new entrypoint
+**NOT verified:**
 
-**Exit criteria:** SLURM jobs launch via `python train.py --config configs/pretrain.jsonnet --tla partition=gpu` with no LightningCLI in the call stack.
+`WandbLogger` is not constructed in default stage configs; first
+production sweep is the first real exercise
 
 ---
 
-## Phase 4 — Strip jsonargparse
+## Phase 4 — Jsonargparse Retooling
 
-**Goal:** Remove the last jsonargparse dependency.
+- Upgrade dependency to `jsonargparse[all,shtab,argcomplete]>=4.47.0`
+- Switch analyzer configs (`configs/stages/analyze_*.jsonnet`) to Jsonnet
+- Update `commands/analyze.py` to use `ArgumentParser(parser_mode="jsonnet")`
+  with `--config` so analyzer configs parse as Jsonnet while CLI overrides
+  still work (`--analyzer.ckpt_path=...`)
+- Use type hints (e.g. `Literal["vgae","gat","fusion"]`) to tighten analyzer
+  validation at parse time
+- Docs: refresh usage examples and reference tables to point at `.jsonnet`
+- ***
+  What this means for your stack
 
-1. Audit for any remaining `jsonargparse` imports outside LightningCLI — list them
-2. Replace any standalone `ArgumentParser` from jsonargparse with stdlib `argparse`
-3. Replace any `add_class_arguments` / `instantiate_classes` usage with explicit Pydantic `model_validate` + direct `__init__` calls
-4. `pip uninstall jsonargparse` — fix any import errors
-5. Run full test suite
+| Concern                                                       | jsonnet handles | jsonargparse handles     |
+| ------------------------------------------------------------- | --------------- | ------------------------ |
+| Config composition, inheritance, mixins                       | ✓               | ✗                        |
+| Lazy field computation (`self.lr * 1000`)                     | ✓               | ✗                        |
+| Import chaining across files                                  | ✓               | ✗                        |
+| Conditional config logic                                      | ✓               | ✗                        |
+| ExtVars / TLA injection                                       | ✓               | ✗ (delegates to jsonnet) |
+| CLI override on top of rendered config                        | ✗               | ✓                        |
+| Typed argument validation (paths, URLs, restricted numbers)   | ✗               | ✓                        |
+| Relative path resolution from config location                 | ✗               | ✓                        |
+| Argument linking (batch_size → model + datamodule)            | ✗               | ✓                        |
+| Class signature introspection (auto-add args from `__init__`) | ✗               | ✓                        |
+| Env var override (`APP_LR=1e-4`)                              | ✗               | ✓                        |
+| `--print_config` for debugging                                | ✗               | ✓                        |
+| Pydantic / dataclass / attrs native support                   | ✗               | ✓                        |
 
-**Exit criteria:** `grep -r jsonargparse .` returns nothing.
+The argument linking feature in particular is probably replacing a chunk of your custom resolver right now — if batch_size or seq_len appears in multiple config sections and you're manually keeping them in sync, link_arguments eliminates that entirely.
 
----
+## Phase 5 — Dagster Asset Config Boundaries ✓
 
-## Phase 5 — Dagster Asset Config Boundaries
+**Completed 2026-04-05.**
 
-**Goal:** Each Dagster asset owns its config slice; checkpoint paths flow as asset outputs, not config fields.
-
-1. Define per-asset `Config` classes subclassing Dagster's `Config` (Pydantic-compatible) — launch-time-known fields only
-2. Checkpoint path returned as asset output (`-> str`), received as upstream input by downstream asset — remove from all config models:
-
-   ```python
-   @asset
-   def pretrain(config: PretrainConfig) -> str:
-       ...
-       return checkpoint_path   # artifact, not config
-
-   @asset
-   def finetune(config: FinetuneConfig, pretrain: str) -> str:
-       # pretrain is the checkpoint — arrives via Dagster, not config
-       ...
-   ```
-
-3. SLURM job receives `config_path` + `tla` overrides as env vars set by Dagster, not baked into the DAG definition
-4. Add sensors for long-running jobs if non-blocking asset execution is needed
-
-**Exit criteria:** `FinetuneConfig` has no `checkpoint` field. Checkpoint arrives via Dagster asset dependency.
+`TrainingAssetConfig(dg.Config)` in `orchestrate/asset_config.py` provides
+launch-time overridable knobs (`run_test`, `run_analysis`, `dry_run`).
+Asset function returns `dg.Output[str]` with metadata. Checkpoint paths
+already flowed via Dagster asset I/O — `upstream_ckpt_paths` in
+`TrainingSpec` is populated from asset inputs at resolution time, not from
+config. Identity fields stay in `StageConfig` (planner-derived, not
+overridable).
 
 ---
 
@@ -178,7 +156,7 @@ High-level shape:
 | Lightning `Trainer`, DDP, callbacks, `LightningModule` | **Keep**                     |
 | DuckDB for querying                                    | **Keep**                     |
 | LightningCLI                                           | **Remove** (Phase 3)         |
-| jsonargparse                                           | **Remove** (Phase 4)         |
+| jsonargparse                                           | **Keep** (Phase 4)           |
 | YAML config chain                                      | **Remove** (Phase 1)         |
 | Custom resolver                                        | **Remove** (Phase 1)         |
 | DuckDB rebuild script                                  | **Remove** (Phase 6)         |
