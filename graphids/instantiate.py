@@ -270,12 +270,20 @@ def _build_loss(
     )
 
 
-def _inject_loss_fn(model_init_args: dict[str, Any]) -> dict[str, Any]:
+_CLASS_PATH_TO_MODEL_TYPE: dict[str, str] = {
+    "VGAEModule": "vgae",
+    "GATModule": "gat",
+    "DGIModule": "dgi",
+}
+
+# Loss params that live at init_args top-level in jsonnet but belong to VGAETaskLoss
+_VGAE_LOSS_KEYS = frozenset({"canid_weight", "nbr_weight", "kl_weight", "k_neg"})
+
+
+def _inject_loss_fn(model_init_args: dict[str, Any], *, class_path: str = "") -> dict[str, Any]:
     """Pop loss/distillation config from init_args, build loss, inject as ``loss_fn``.
 
-    Returns a NEW dict — leaves the caller's copy alone. Silently drops
-    any stale ``auxiliaries`` list (the pre-refactor KD config shape) —
-    it has no meaning in the new layout.
+    Returns a NEW dict — leaves the caller's copy alone.
     """
     init_args = dict(model_init_args)
     init_args.pop("auxiliaries", None)  # dead field from pre-Option-B config
@@ -283,6 +291,15 @@ def _inject_loss_fn(model_init_args: dict[str, Any]) -> dict[str, Any]:
     loss_cfg = init_args.pop("loss_config", None)
     kd_cfg = init_args.pop("distillation_config", None)
     model_type = init_args.get("model_type")
+
+    # Infer model_type from class_path when not in init_args
+    if not model_type and class_path:
+        cls_name = class_path.rsplit(".", 1)[-1]
+        model_type = _CLASS_PATH_TO_MODEL_TYPE.get(cls_name)
+
+    # Jsonnet puts VGAE loss params at init_args top-level, not under loss_config
+    if model_type == "vgae" and loss_cfg is None:
+        loss_cfg = {k: init_args.pop(k) for k in _VGAE_LOSS_KEYS if k in init_args}
 
     # Student latent dim needs to flow into FeatureDistillation for the
     # projection layer decision — pass it through on the kd_cfg dict.
@@ -448,7 +465,10 @@ def instantiate(
     datamodule = dm_cls(**(merged["data"].get("init_args") or {}))
 
     # -- model ---------------------------------------------------------------
-    model_init = _inject_loss_fn(merged["model"].get("init_args") or {})
+    model_init = _inject_loss_fn(
+        merged["model"].get("init_args") or {},
+        class_path=merged["model"]["class_path"],
+    )
     accepted = _init_kwargs(model_cls)
     model = model_cls(**{k: v for k, v in model_init.items() if k in accepted})
 

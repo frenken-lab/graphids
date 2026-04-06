@@ -84,6 +84,7 @@ class TestVGAEFastDevRun:
     def test_vgae(self, vgae_cfg):
         import pytorch_lightning as pl
 
+        from graphids.core.losses.autoencoder import VGAETaskLoss
         from graphids.core.models.autoencoder.vgae_module import VGAEModule
 
         loader = DataLoader([make_graph() for _ in range(16)], batch_size=4)
@@ -92,10 +93,9 @@ class TestVGAEFastDevRun:
             latent_dim=vgae_cfg.latent_dim,
             heads=vgae_cfg.heads,
             embedding_dim=vgae_cfg.embedding_dim,
+            loss_fn=VGAETaskLoss(),
             gradient_checkpointing=False,
             compile_model=False,
-            num_ids=NUM_IDS,
-            in_channels=IN_CHANNELS,
         )
         trainer = pl.Trainer(fast_dev_run=True, accelerator="cpu", enable_progress_bar=False)
         trainer.fit(module, loader, loader)
@@ -103,6 +103,7 @@ class TestVGAEFastDevRun:
 
 class TestVGAECheckpointRoundtrip:
     def test_save_load_produces_identical_output(self, tmp_path):
+        from graphids.core.losses.autoencoder import VGAETaskLoss
         from graphids.core.models.autoencoder.vgae_module import VGAEModule
 
         kwargs = dict(
@@ -110,10 +111,9 @@ class TestVGAECheckpointRoundtrip:
             latent_dim=16,
             heads=2,
             embedding_dim=4,
+            loss_fn=VGAETaskLoss(),
             gradient_checkpointing=False,
             compile_model=False,
-            num_ids=NUM_IDS,
-            in_channels=IN_CHANNELS,
         )
         m1 = VGAEModule(**kwargs)
         m1.eval()

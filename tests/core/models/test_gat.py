@@ -46,21 +46,28 @@ class TestGAT:
 class TestGATFastDevRun:
     @staticmethod
     def _make_module(cfg):
+        from graphids.core.losses.classification import (
+            CrossEntropyLoss,
+            FocalLoss,
+            WeightedCrossEntropyLoss,
+        )
         from graphids.core.models.supervised.gat_module import GATModule
 
+        loss_map = {
+            "ce": CrossEntropyLoss,
+            "focal": FocalLoss,
+            "weighted_ce": WeightedCrossEntropyLoss,
+        }
+        loss_fn = loss_map[cfg.loss_fn]()
         return GATModule(
             hidden=cfg.hidden,
             layers=cfg.layers,
             heads=cfg.heads,
             fc_layers=cfg.fc_layers,
             embedding_dim=cfg.embedding_dim,
-            loss_fn=cfg.loss_fn,
-            focal_gamma=cfg.focal_gamma,
-            loss_weight=cfg.loss_weight,
+            loss_fn=loss_fn,
             gradient_checkpointing=False,
             compile_model=False,
-            num_ids=NUM_IDS,
-            in_channels=IN_CHANNELS,
         )
 
     def test_gat(self, gat_cfg):
@@ -84,6 +91,7 @@ class TestGATFastDevRun:
 
 class TestGATCheckpointRoundtrip:
     def test_gat(self, gat_cfg, tmp_path):
+        from graphids.core.losses.classification import CrossEntropyLoss
         from graphids.core.models.supervised.gat_module import GATModule
 
         def _mk():
@@ -93,10 +101,9 @@ class TestGATCheckpointRoundtrip:
                 heads=gat_cfg.heads,
                 fc_layers=gat_cfg.fc_layers,
                 embedding_dim=gat_cfg.embedding_dim,
+                loss_fn=CrossEntropyLoss(),
                 gradient_checkpointing=False,
                 compile_model=False,
-                num_ids=NUM_IDS,
-                in_channels=IN_CHANNELS,
             )
 
         m1 = _mk()
