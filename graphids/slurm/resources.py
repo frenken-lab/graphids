@@ -96,10 +96,9 @@ def get_resources(model_type: str, scale: str, stage: str) -> ResourceSpec:
     Resolves cluster-agnostic ``mode`` field to concrete ``partition``/``gres``
     using the ``clusters`` mapping + hostname detection.
     """
-    # Fusion uses method-specific profiles under job_profiles.json.
-    family = (
-        "fusion" if model_type in {"bandit", "dqn", "mlp", "weighted_avg", "fusion"} else model_type
-    )
+    from graphids.config.constants import FAMILY_FOR_MODEL_TYPE
+
+    family = FAMILY_FOR_MODEL_TYPE.get(model_type, model_type)
     raw_profile = _load_profile(family).get("resources", {})
     by_scale = raw_profile.get("by_scale", {})
 

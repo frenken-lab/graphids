@@ -83,7 +83,8 @@
           scale: scale,
           stages: $._stage_chain(sweep.stage),
         }
-        + (if method != null then { fusion_method: method } else {});
+        + (if method != null then { fusion_method: method } else {})
+        + (if std.objectHas(sweep, 'kd') && sweep.kd != null then { auxiliaries: [sweep.kd] } else {});
         local axis_overrides = {
           [k]: axis_map[k]
           for k in std.objectFields(axis_map)

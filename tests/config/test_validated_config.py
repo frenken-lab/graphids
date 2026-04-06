@@ -48,7 +48,7 @@ class TestRenderedStagesValidate:
     def test_default_stage_validates(self, stage: str) -> None:
         rendered = render(TrainingContract.resolve_jsonnet_path(stage))
         vc = validate_config(rendered)
-        assert vc.data.class_path.startswith("graphids.core.preprocessing.")
+        assert vc.data.class_path.startswith("graphids.core.data.")
         assert vc.model.class_path.startswith("graphids.core.models.")
 
     @pytest.mark.parametrize("scale", ["small", "large"])
@@ -80,20 +80,16 @@ class TestRenderedStagesValidate:
         rendered = render(
             TrainingContract.resolve_jsonnet_path("autoencoder"),
             tla={
-                "auxiliaries": [
-                    {
-                        "type": "kd",
-                        "alpha": 0.7,
-                        "vgae_latent_weight": 0.5,
-                        "vgae_recon_weight": 0.5,
-                    }
-                ]
+                "distillation_config": {
+                    "type": "kd",
+                    "alpha": 0.7,
+                    "vgae_latent_weight": 0.5,
+                    "vgae_recon_weight": 0.5,
+                },
             },
         )
         vc = validate_config(rendered)
-        aux = vc.model.init_args["auxiliaries"]
-        assert isinstance(aux, list) and len(aux) == 1
-        assert aux[0]["type"] == "kd"
+        assert vc.model.init_args.get("distillation_config", {}).get("type") == "kd"
 
     def test_ckpt_path_preserved_when_set(self) -> None:
         """Auto-resume ``ckpt_path`` TLA surfaces as a top-level field."""
@@ -130,7 +126,7 @@ def valid_dict() -> dict:
             "default_root_dir": "",
         },
         "data": {
-            "class_path": "graphids.core.preprocessing.datamodule.CANBusDataModule",
+            "class_path": "graphids.core.data.datamodule.CANBusDataModule",
             "init_args": {"batch_size": 8192, "dataset": "hcrl_ch"},
         },
         "model": {

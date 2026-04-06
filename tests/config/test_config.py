@@ -184,7 +184,9 @@ class TestRecipeRoundTrip:
 
     @pytest.mark.parametrize(
         "recipe_name",
-        sorted(p.name for p in (CONFIG_DIR / "recipes").glob("*.jsonnet")),
+        sorted(
+            p.name for p in (CONFIG_DIR / "recipes").glob("*.jsonnet") if not p.name.startswith("_")
+        ),
     )
     def test_recipe_configs_validate(self, recipe_name):
         raw = render(CONFIG_DIR / "recipes" / recipe_name)

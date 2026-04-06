@@ -201,12 +201,12 @@ class TrainingContract:
             elif family == "supervised":
                 tla["gat_ckpt_path"] = ckpt
 
-        # KD auxiliaries (empty list = no KD). The planner already produced
-        # the payload as a plain dict from the KDEntry model.
+        # KD distillation config (null = no KD). Jsonnet stages accept
+        # `distillation_config` as the TLA name.
         if kd_overrides:
-            tla["auxiliaries"] = [dict(kd_overrides)]
+            tla["distillation_config"] = dict(kd_overrides)
         else:
-            tla["auxiliaries"] = []
+            tla["distillation_config"] = None
 
         if ckpt_path is not None:
             tla["ckpt_path"] = ckpt_path

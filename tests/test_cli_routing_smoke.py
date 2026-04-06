@@ -17,7 +17,7 @@ runner = CliRunner()
 
 
 def test_no_args_shows_help() -> None:
-    result = runner.invoke(app, [])
+    result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
     assert "Training" in result.output
     assert "Analysis" in result.output

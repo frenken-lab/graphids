@@ -33,7 +33,7 @@
   },
 
   data: {
-    class_path: 'graphids.core.preprocessing.datamodule.FusionDataModule',
+    class_path: 'graphids.core.data.datamodule.FusionDataModule',
     init_args: {
       max_samples: 150000,
       max_val_samples: 30000,
