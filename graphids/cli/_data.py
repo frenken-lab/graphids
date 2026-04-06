@@ -38,7 +38,7 @@ def stage_data(
     dataset: Annotated[str, typer.Option(help="Single dataset to stage")] = "",
 ) -> None:
     """Stage data from NFS to scratch/TMPDIR for fast training I/O."""
-    from graphids.slurm.staging import stage_data as _stage
+    from graphids.slurm.ops.staging import stage_data as _stage
 
     _stage(cache_only=cache, raw_only=raw, skip_tmpdir=skip_tmpdir, dataset=dataset)
 

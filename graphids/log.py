@@ -116,7 +116,9 @@ def configure_logging(
     root.addHandler(handler)
 
     # Inject SLURM job ID into all records if running under SLURM
-    slurm_job = os.environ.get("SLURM_JOB_ID")
+    from graphids.slurm.env import slurm_job_id
+
+    slurm_job = slurm_job_id()
     if slurm_job:
 
         class _SlurmFilter(logging.Filter):

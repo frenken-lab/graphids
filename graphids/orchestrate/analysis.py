@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from graphids.core.analysis.schemas import AnalysisContract, AnalysisSpec
-from graphids.orchestrate.shared import StageConfig
+from graphids.core.analysis.schemas import AnalysisSpec, expected_outputs
+from graphids.orchestrate.planning import StageConfig
 
 ANALYSIS_MANIFEST_NAME = "analysis_manifest.json"
 ANALYSIS_SUPPORTED_MODELS = frozenset({"vgae", "gat", "dgi"})
@@ -45,6 +45,6 @@ def build_analysis_spec(
 def output_status(spec: AnalysisSpec) -> tuple[tuple[str, ...], list[str]]:
     """Return expected output names and currently existing output names."""
     output_dir = Path(spec.output_dir)
-    expected = AnalysisContract.expected_outputs(spec)
+    expected = expected_outputs(spec)
     existing = [name for name in expected if (output_dir / name).exists()]
     return expected, existing

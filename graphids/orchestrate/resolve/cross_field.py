@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 from graphids.log import get_logger
 from graphids.orchestrate.contracts import TrainingSpec
-from graphids.orchestrate.shared import StageConfig
+from graphids.orchestrate.planning import StageConfig
 from graphids.slurm.resources import ResourceSpec
 
 RuleFn = Callable[[TrainingSpec, ResourceSpec, StageConfig, dict[str, Any]], list[str]]

@@ -1,8 +1,10 @@
 """Dagster-based pipeline orchestrator.
 
-Assets represent trained model checkpoints. SlurmTrainingComponent reads
-the pipeline topology + a Jsonnet recipe, generates tagged assets with
-IOManager checkpoint handoff and SLURM submission via SlurmTrainingResource.
+Module layout:
+- dagster/   : Dagster-facing component, assets, checks, resources
+- planning/  : pure planning + recipe expansion + StageConfig
+- resolve/   : ConfigResolver + cross-field validation
+- ops/       : CLI entry points (from-spec, pipeline-status, catalog)
 
 Entry points:
   dg list defs                              — list all assets

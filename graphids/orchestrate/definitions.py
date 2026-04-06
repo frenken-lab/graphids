@@ -11,12 +11,12 @@ Otherwise: human-readable stderr for validation / dg list defs.
 import os
 
 from graphids.log import configure_logging
-from graphids.slurm.env import SLURM_LOG_DIR
+from graphids.slurm.env import SLURM_LOG_DIR, slurm_job_id
 
 # ---------------------------------------------------------------------------
 # Logging configuration — process-global, affects resolve.py + slurm.py too
 # ---------------------------------------------------------------------------
-_slurm_job = os.environ.get("SLURM_JOB_ID")
+_slurm_job = slurm_job_id()
 if _slurm_job:
     configure_logging(jsonl_path=f"{SLURM_LOG_DIR}/orchestrator_{_slurm_job}.jsonl")
 else:
@@ -26,7 +26,7 @@ else:
 
 from dagster.components import build_defs_for_component  # noqa: E402
 
-from graphids.orchestrate.component import SlurmTrainingComponent  # noqa: E402
+from graphids.orchestrate.dagster.component import SlurmTrainingComponent  # noqa: E402
 
 component = SlurmTrainingComponent(
     dry_run=os.environ.get("KD_GAT_DRY_RUN", "").lower() in ("1", "true"),

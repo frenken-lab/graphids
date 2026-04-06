@@ -13,7 +13,7 @@ import argparse
 from graphids.core.train_entrypoint import run_training_from_spec
 
 from graphids.config.topology import STAGE_FAMILY_MAP
-from graphids.orchestrate.contracts import TrainingContract, TrainingSpec
+from graphids.orchestrate.contracts import TrainingSpec, normalize_scale, resolve_jsonnet_path
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -25,7 +25,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--fusion-method", default="dqn")
     args = parser.parse_args(argv)
 
-    scale = TrainingContract.normalize_scale(args.scale)
+    scale = normalize_scale(args.scale)
     family = args.model_family or STAGE_FAMILY_MAP.get(args.stage)
     if not family:
         raise ValueError(f"Cannot infer model family for stage '{args.stage}'. Use --model-family.")
@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> None:
         dataset=args.dataset,
         seed=42,
         run_dir="",
-        jsonnet_path=TrainingContract.resolve_jsonnet_path(args.stage),
+        jsonnet_path=resolve_jsonnet_path(args.stage),
         jsonnet_tla=tla,
     )
 

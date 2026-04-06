@@ -92,7 +92,7 @@ root_module = "graphids"
 defs_module = "graphids.orchestrate"
 code_location_target_module = "graphids.orchestrate.definitions"
 registry_modules = [
-    "graphids.orchestrate.component",
+    "graphids.orchestrate.dagster.component",
 ]
 
 [tool.mypy]

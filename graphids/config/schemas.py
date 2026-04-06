@@ -3,8 +3,8 @@
 Scope: validation of a rendered dict produced by
 ``graphids.config.jsonnet.render_config``. Nothing else lives here:
 
-- Recipe envelope Pydantic      → ``graphids.orchestrate.recipes``
-- Cross-field orchestration rules → ``graphids.orchestrate.cross_field``
+- Recipe envelope Pydantic      → ``graphids.orchestrate.planning.recipes``
+- Cross-field orchestration rules → ``graphids.orchestrate.resolve.cross_field``
 - Filesystem I/O                → ``graphids.core.io``
 
 ``PathContext`` is a pure string-composition frozen model used by both

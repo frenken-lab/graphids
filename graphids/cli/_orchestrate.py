@@ -19,7 +19,7 @@ def from_spec(
     if phase not in ("train", "test", "analyze"):
         raise typer.BadParameter(f"--phase must be train, test, or analyze (got {phase!r})")
 
-    from graphids.orchestrate.entrypoint import run_from_spec
+    from graphids.orchestrate.ops.entrypoint import run_from_spec
 
     run_from_spec(phase, spec_file)
 
@@ -37,7 +37,7 @@ def pipeline_status(
     follow: Annotated[bool, typer.Option("-f", help="Follow log output (like tail -f)")] = False,
 ) -> None:
     """Show aggregated pipeline status from DuckDB catalog."""
-    from graphids.orchestrate.logger import show_pipeline_status
+    from graphids.orchestrate.ops.status import show_pipeline_status
 
     show_pipeline_status(
         dataset=dataset,
@@ -58,7 +58,7 @@ def rebuild_catalog(
 ) -> None:
     """Rebuild DuckDB catalog from run_record.json sidecars."""
     from graphids.config.constants import LAKE_ROOT
-    from graphids.orchestrate.catalog import rebuild_catalog as _rebuild
+    from graphids.orchestrate.ops.catalog import rebuild_catalog as _rebuild
 
     _rebuild(
         lake_root=lake_root or LAKE_ROOT,
@@ -73,6 +73,6 @@ def finalize_record(
     run_dir: Annotated[Path, typer.Option(help="Path to run directory")],
 ) -> None:
     """(Internal) Update run_record.json sidecar with phase markers + wall time."""
-    from graphids.orchestrate.finalize import finalize_run_record
+    from graphids.orchestrate.ops.finalize import finalize_run_record
 
     finalize_run_record(run_dir)

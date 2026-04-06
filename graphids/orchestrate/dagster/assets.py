@@ -4,80 +4,25 @@ Each training asset bundles train → test → analyze in a single SLURM job.
 Analysis runs inside the GPU job (not in-process on the dagster worker).
 """
 
-import os
-from pathlib import Path
-
 import dagster as dg
 
-from graphids.config.constants import COMPLETE_MARKER
-from graphids.config.schemas import PathContext
 from graphids.log import get_logger
 from graphids.orchestrate.analysis import build_analysis_spec, supports_analysis
-from graphids.orchestrate.asset_config import (
+from graphids.orchestrate.dagster.asset_config import (
     TrainingAssetConfig,  # noqa: TC001 — Dagster resolves at runtime
 )
+from graphids.orchestrate.dagster.runtime import (
+    _runtime_lake_root,
+    _runtime_user,
+    _touch_complete,
+    partition_keys,
+)
+from graphids.orchestrate.dagster.resources import SlurmTrainingResource
+from graphids.orchestrate.planning import StageConfig
 from graphids.orchestrate.resolve import ConfigResolver
-from graphids.orchestrate.shared import StageConfig
 from graphids.slurm import job_accounting, scale_resources
 
 log = get_logger(__name__)
-
-
-def _runtime_lake_root() -> str:
-    return os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns")
-
-
-def _runtime_user() -> str:
-    return os.environ.get("USER", "unknown")
-
-
-def _touch_complete(run_dir: Path) -> None:
-    """Write the ``.complete`` marker after a successful run.
-
-    Uses ``fsync`` on both the file and its parent directory so the marker
-    is durable on NFS before this function returns — otherwise dagster and
-    downstream resume-from-checkpoint checks can race the kernel cache.
-    """
-    marker = run_dir / COMPLETE_MARKER
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(marker), os.O_CREAT | os.O_WRONLY, 0o664)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    dir_fd = os.open(str(marker.parent), os.O_RDONLY)
-    try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
-
-
-def partition_keys(context) -> tuple[str, int]:
-    """Extract (dataset, seed) from a dagster multi-partition context."""
-    return (
-        context.partition_key.keys_by_dimension["dataset"],
-        int(context.partition_key.keys_by_dimension["seed"]),
-    )
-
-
-def paths_for_context(context, cfg: StageConfig) -> PathContext:
-    """Build a PathContext for one materialization from dagster context + StageConfig.
-
-    Reads lake_root/user from env at call time so the same helper serves both
-    asset materialization and asset-check bodies.
-    """
-    dataset, seed = partition_keys(context)
-    return PathContext(
-        lake_root=_runtime_lake_root(),
-        user=_runtime_user(),
-        dataset=dataset,
-        seed=seed,
-        model_type=cfg.model_type,
-        scale=cfg.scale,
-        stage=cfg.stage,
-        identity=cfg.identity,
-        kd_tag=cfg.kd_tag,
-    )
 
 
 def _asset_description(cfg: StageConfig) -> str:
@@ -105,9 +50,13 @@ def make_training_asset(
         kinds={"checkpoint"},
         tags={"stage": cfg.stage, "model_type": cfg.model_type, "scale": cfg.scale},
         description=_asset_description(cfg),
-        required_resource_keys={"slurm"},
     )
-    def _train(context, config: TrainingAssetConfig, **upstream_ckpts: str) -> dg.Output[str]:
+    def _train(
+        context: dg.AssetExecutionContext,
+        config: TrainingAssetConfig,
+        slurm: dg.ResourceParam[SlurmTrainingResource],
+        **upstream_ckpts: str,
+    ) -> dg.Output[str]:
         dataset, seed = partition_keys(context)
         log.info(
             "asset_start",
@@ -165,7 +114,7 @@ def make_training_asset(
                 )
             )
 
-        state, job_id = context.resources.slurm.submit_and_wait(
+        state, job_id = slurm.submit_and_wait(
             training_spec=resolved.spec,
             resources=resources,
             job_name=f"{cfg.asset_name}_{dataset}_s{seed}",

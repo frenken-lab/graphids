@@ -20,9 +20,9 @@ from graphids.config.schemas import (
     validate_config,
 )
 from graphids.log import get_logger
-from graphids.orchestrate.contracts import TrainingContract, TrainingSpec
-from graphids.orchestrate.cross_field import validate_stage_config
-from graphids.orchestrate.shared import StageConfig
+from graphids.orchestrate.contracts import TrainingSpec, build_tla_dict
+from graphids.orchestrate.planning import StageConfig
+from graphids.orchestrate.resolve.cross_field import validate_stage_config
 from graphids.slurm import ResourceSpec, apply_resource_overrides, get_resources
 
 log = get_logger(__name__)
@@ -147,7 +147,7 @@ class ConfigResolver:
         # train_entrypoint.py — NOT here. The orchestrator runs on a
         # different node (NFS-cached); checking exists() here creates a
         # race condition.
-        tla = TrainingContract.build_tla_dict(
+        tla = build_tla_dict(
             cfg,
             dataset=dataset,
             seed=seed,

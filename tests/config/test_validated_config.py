@@ -29,7 +29,7 @@ from graphids.config.schemas import (
     ValidatedConfig,
     validate_config,
 )
-from graphids.orchestrate.contracts import TrainingContract
+from graphids.orchestrate.contracts import resolve_jsonnet_path
 
 # ---------------------------------------------------------------------------
 # Happy path --every stage variant this repo ships validates
@@ -46,7 +46,7 @@ class TestRenderedStagesValidate:
 
     @pytest.mark.parametrize("stage", ["autoencoder", "supervised"])
     def test_default_stage_validates(self, stage: str) -> None:
-        rendered = render(TrainingContract.resolve_jsonnet_path(stage))
+        rendered = render(resolve_jsonnet_path(stage))
         vc = validate_config(rendered)
         assert vc.data.class_path.startswith("graphids.core.data.")
         assert vc.model.class_path.startswith("graphids.core.models.")
@@ -54,7 +54,7 @@ class TestRenderedStagesValidate:
     @pytest.mark.parametrize("scale", ["small", "large"])
     def test_scale_variants_validate(self, scale: str) -> None:
         rendered = render(
-            TrainingContract.resolve_jsonnet_path("autoencoder"),
+            resolve_jsonnet_path("autoencoder"),
             tla={"scale": scale},
         )
         vc = validate_config(rendered)
@@ -65,7 +65,7 @@ class TestRenderedStagesValidate:
     @pytest.mark.parametrize("method", ["bandit", "dqn", "mlp", "weighted_avg"])
     def test_fusion_method_dispatch_validates(self, method: str) -> None:
         rendered = render(
-            TrainingContract.resolve_jsonnet_path("fusion"),
+            resolve_jsonnet_path("fusion"),
             tla={"fusion_method": method},
         )
         vc = validate_config(rendered)
@@ -78,7 +78,7 @@ class TestRenderedStagesValidate:
     def test_vgae_with_kd_auxiliary_validates(self) -> None:
         """VGAE student stage with a KD auxiliary must round-trip."""
         rendered = render(
-            TrainingContract.resolve_jsonnet_path("autoencoder"),
+            resolve_jsonnet_path("autoencoder"),
             tla={
                 "distillation_config": {
                     "type": "kd",
@@ -94,7 +94,7 @@ class TestRenderedStagesValidate:
     def test_ckpt_path_preserved_when_set(self) -> None:
         """Auto-resume ``ckpt_path`` TLA surfaces as a top-level field."""
         rendered = render(
-            TrainingContract.resolve_jsonnet_path("autoencoder"),
+            resolve_jsonnet_path("autoencoder"),
             tla={"ckpt_path": "/tmp/resume.ckpt"},
         )
         vc = validate_config(rendered)

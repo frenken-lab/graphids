@@ -20,7 +20,7 @@ from graphids.config.topology import (
     STAGE_DEPENDENCIES,
     STAGES,
 )
-from graphids.orchestrate.recipes import KDEntry, TrainingRunConfig
+from graphids.orchestrate.planning import KDEntry, TrainingRunConfig
 
 # ---------------------------------------------------------------------------
 # Dataset catalog (configs/datasets/dataset_registry.json)
@@ -122,7 +122,7 @@ def test_stages_have_identity_keys():
 def test_resource_model_set_for_fusion_assets():
     """Fusion StageConfigs should have resource_model set to the fusion method."""
     from graphids.orchestrate.planning import enumerate_assets
-    from graphids.orchestrate.recipes import expand_recipe_configs
+    from graphids.orchestrate.planning import expand_recipe_configs
 
     recipe = render(CONFIG_DIR / "recipes" / "ablation.jsonnet")
     specs = enumerate_assets(PIPELINE_TOPOLOGY, expand_recipe_configs(recipe))

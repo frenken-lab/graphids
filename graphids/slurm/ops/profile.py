@@ -17,7 +17,7 @@ import re
 import subprocess
 from dataclasses import asdict, dataclass, field
 
-from graphids.slurm import parse_elapsed, sacct_query
+from graphids.slurm.core.accounting import parse_elapsed, sacct_query
 
 
 # ---------------------------------------------------------------------------

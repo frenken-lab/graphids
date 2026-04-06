@@ -2,7 +2,7 @@
 
 The render -> validate -> instantiate -> trainer.<method> chain lives here
 so both ``graphids.cli._training`` (dev path) and
-``graphids.orchestrate.entrypoint`` (pipeline path) call the same code.
+``graphids.orchestrate.ops.entrypoint`` (pipeline path) call the same code.
 """
 
 from __future__ import annotations

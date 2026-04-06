@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from graphids.config.constants import CONFIG_DIR
 from graphids.config.jsonnet import render
-from graphids.orchestrate.recipes import expand_recipe_configs
+from graphids.orchestrate.planning import expand_recipe_configs
 
 
 class TestRecipeOverrideExpansion:

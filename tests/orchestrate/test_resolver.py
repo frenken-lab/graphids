@@ -5,15 +5,15 @@ from __future__ import annotations
 
 import pytest
 
-from graphids.orchestrate.contracts import TrainingContract, TrainingSpec
+from graphids.orchestrate.contracts import TrainingSpec, resolve_jsonnet_path
+from graphids.orchestrate.planning import StageConfig
 from graphids.orchestrate.resolve import ConfigResolver
-from graphids.orchestrate.shared import StageConfig
 from graphids.slurm import apply_resource_overrides, scale_resources
 from graphids.slurm.resources import ResourceSpec
 
 
 def _jpath(stage: str) -> str:
-    return TrainingContract.resolve_jsonnet_path(stage)
+    return resolve_jsonnet_path(stage)
 
 
 # ---------------------------------------------------------------------------

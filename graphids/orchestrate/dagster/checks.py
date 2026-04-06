@@ -22,8 +22,8 @@ from graphids.orchestrate.analysis import (
     output_status,
     supports_analysis,
 )
-from graphids.orchestrate.assets import paths_for_context
-from graphids.orchestrate.shared import StageConfig
+from graphids.orchestrate.dagster.runtime import paths_for_context
+from graphids.orchestrate.planning import StageConfig
 
 
 def _ckpt_result(
@@ -109,7 +109,7 @@ def _make_asset_checks(asset_name: str, cfg: StageConfig) -> dg.AssetChecksDefin
         specs=specs,
         can_subset=True,
     )
-    def _checks(context):
+    def _checks(context: dg.AssetCheckExecutionContext):
         paths = paths_for_context(context, cfg)
         selected = {key.name for key in context.selected_asset_check_keys}
 

@@ -29,6 +29,8 @@ from pathlib import Path
 import pytorch_lightning as pl
 import torch
 
+from graphids.slurm.env import slurm_job_id, slurm_job_partition
+
 _PROFILE_FIELDS = [
     "epoch",
     "global_step",
@@ -66,6 +68,20 @@ class ResourceProfileCallback(pl.Callback):
         self._file = open(path, "w", newline="")  # noqa: SIM115
         self._writer = csv.DictWriter(self._file, fieldnames=_PROFILE_FIELDS)
         self._writer.writeheader()
+
+
+def _slurm_job_id() -> int | None:
+    job_id = slurm_job_id()
+    if not job_id:
+        return None
+    try:
+        return int(job_id)
+    except ValueError:
+        return None
+
+
+def _slurm_partition() -> str | None:
+    return slurm_job_partition()
 
     def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
         self._step_start = time.perf_counter()
@@ -157,10 +173,8 @@ class RunRecordCallback(pl.Callback):
             user=identity["user"],
             graphids_version=graphids.__version__,
             started_at=datetime.now(UTC).isoformat(),
-            slurm_job_id=(
-                int(os.environ["SLURM_JOB_ID"]) if "SLURM_JOB_ID" in os.environ else None
-            ),
-            slurm_partition=os.environ.get("SLURM_JOB_PARTITION"),
+            slurm_job_id=_slurm_job_id(),
+            slurm_partition=_slurm_partition(),
             source="dagster" if "DAGSTER_RUN_ID" in os.environ else "cli",
         )
         write_run_record(self._record, Path(root))

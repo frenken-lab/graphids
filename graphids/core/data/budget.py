@@ -242,8 +242,10 @@ def autosize_workers(
     (or ``os.cpu_count()`` outside SLURM). Falls back to ``(2, default_pf)``
     when the GPU probe is unavailable.
     """
-    slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
-    max_cpus = int(slurm_cpus) if slurm_cpus else os.cpu_count()
+    from graphids.slurm.env import slurm_cpus_per_task
+
+    slurm_cpus = slurm_cpus_per_task()
+    max_cpus = slurm_cpus if slurm_cpus else os.cpu_count()
     bwd_mult = result.backward_multiplier or 2.0
     t_c, t_g, _n_graphs = calibrate_at_budget(
         model,

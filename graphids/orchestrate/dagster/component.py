@@ -19,59 +19,12 @@ from graphids.config.jsonnet import render
 from graphids.config.paths import dataset_names
 from graphids.config.topology import PIPELINE_TOPOLOGY
 from graphids.log import get_logger
-from graphids.orchestrate.assets import make_training_asset
-from graphids.orchestrate.checks import make_asset_checks
-from graphids.orchestrate.contracts import TrainingSpec
-from graphids.orchestrate.planning import enumerate_assets
-from graphids.orchestrate.recipes import expand_recipe_configs
-from graphids.slurm import ResourceSpec, SlurmJobClient, SubprocessSlurmJobClient
+from graphids.orchestrate.dagster.assets import make_training_asset
+from graphids.orchestrate.dagster.checks import make_asset_checks
+from graphids.orchestrate.dagster.resources import SlurmTrainingResource
+from graphids.orchestrate.planning import enumerate_assets, expand_recipe_configs
 
 RECIPES_DIR = CONFIG_DIR / "recipes"
-
-
-class SlurmTrainingResource(dg.ConfigurableResource):
-    """Submits training jobs to SLURM and polls for completion."""
-
-    dry_run: bool = False
-    poll_interval: int = 60
-    max_unknown: int = 5
-
-    def _client(self) -> SlurmJobClient:
-        return SubprocessSlurmJobClient(
-            dry_run=self.dry_run,
-            poll_interval=self.poll_interval,
-            max_unknown=self.max_unknown,
-        )
-
-    def submit_and_wait(
-        self,
-        training_spec: TrainingSpec,
-        resources: ResourceSpec,
-        job_name: str,
-        on_state=None,
-        run_test: bool = True,
-        analysis_spec=None,
-        dry_run: bool = False,
-    ) -> tuple[str, int]:
-        """Submit SLURM job and poll. Returns (state, job_id).
-
-        ``dry_run`` at the asset level overrides the resource-level default.
-        """
-        client = self._client()
-        if dry_run and not self.dry_run:
-            client = SubprocessSlurmJobClient(
-                dry_run=True,
-                poll_interval=self.poll_interval,
-                max_unknown=self.max_unknown,
-            )
-        return client.run_training_job(
-            training_spec=training_spec,
-            resources=resources,
-            job_name=job_name,
-            on_state=on_state,
-            run_test=run_test,
-            analysis_spec=analysis_spec,
-        )
 
 
 # ---------------------------------------------------------------------------

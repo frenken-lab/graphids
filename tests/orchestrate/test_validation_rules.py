@@ -7,8 +7,8 @@ test instead of a StageConfig fixture round-trip.
 
 from __future__ import annotations
 
-from graphids.orchestrate.contracts import TrainingContract, TrainingSpec
-from graphids.orchestrate.cross_field import (
+from graphids.orchestrate.contracts import TrainingSpec, resolve_jsonnet_path
+from graphids.orchestrate.resolve.cross_field import (
     _RULES,
     _check_datamodule_epoch_sync,
     _check_fusion_rl_batch_size_override,
@@ -20,7 +20,7 @@ from graphids.orchestrate.cross_field import (
     _is_gpu_stage,
     _is_supervised,
 )
-from graphids.orchestrate.shared import StageConfig
+from graphids.orchestrate.planning import StageConfig
 from graphids.slurm.resources import ResourceSpec
 
 # ---------------------------------------------------------------------------
@@ -36,7 +36,7 @@ def _spec(stage="autoencoder", jsonnet_tla=None) -> TrainingSpec:
         dataset="hcrl_sa",
         seed=42,
         run_dir="/tmp/test",
-        jsonnet_path=TrainingContract.resolve_jsonnet_path(
+        jsonnet_path=resolve_jsonnet_path(
             stage if stage in ("autoencoder", "supervised", "fusion") else "autoencoder"
         ),
         jsonnet_tla=jsonnet_tla or {},

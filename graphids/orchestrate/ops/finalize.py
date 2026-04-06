@@ -7,8 +7,6 @@ phase marker status and SLURM wall time from sacct.
 """
 
 from __future__ import annotations
-
-import os
 from pathlib import Path
 
 from graphids.config.constants import PHASE_MARKERS
@@ -29,9 +27,11 @@ def finalize_run_record(run_dir: Path) -> None:
 
     # SLURM wall time from sacct
     wall_time_seconds = None
-    job_id_str = os.environ.get("SLURM_JOB_ID")
+    from graphids.slurm.env import slurm_job_id
+
+    job_id_str = slurm_job_id()
     if job_id_str:
-        from graphids.slurm import parse_elapsed, sacct_query
+        from graphids.slurm.core.accounting import parse_elapsed, sacct_query
 
         out = sacct_query([int(job_id_str)], "Elapsed")
         if out:

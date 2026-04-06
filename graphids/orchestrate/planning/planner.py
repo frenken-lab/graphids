@@ -7,9 +7,9 @@ from typing import Any
 from graphids.config.constants import FAMILY_FOR_MODEL_TYPE
 from graphids.config.paths import compute_identity_hash
 from graphids.config.topology import STAGE_FAMILY_MAP
-from graphids.orchestrate.contracts import TrainingContract
-from graphids.orchestrate.recipes import TrainingRunConfig
-from graphids.orchestrate.shared import StageConfig
+from graphids.orchestrate.contracts import resolve_jsonnet_path
+from graphids.orchestrate.planning.recipes import TrainingRunConfig
+from graphids.orchestrate.planning.shared import StageConfig
 
 # Recipe key -> identity key (where names differ)
 _RECIPE_TO_IDENTITY = {"fusion_method": "method"}
@@ -162,7 +162,7 @@ def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
                 and merged.model_type in _UNSUPERVISED_MODELS
             ):
                 model_family = merged.model_type
-            jsonnet_path = TrainingContract.resolve_jsonnet_path(stage)
+            jsonnet_path = resolve_jsonnet_path(stage)
 
             model_keys = set(stage_def.get("model_keys", id_keys))
             overrides: dict[str, str] = {}
