@@ -54,9 +54,9 @@ class TestGATFastDevRun:
         from graphids.core.models.supervised.gat_module import GATModule
 
         loss_map = {
-            "ce": CrossEntropyLoss,
-            "focal": FocalLoss,
-            "weighted_ce": WeightedCrossEntropyLoss,
+            "ce": lambda: CrossEntropyLoss(),
+            "focal": lambda: FocalLoss(),
+            "weighted_ce": lambda: WeightedCrossEntropyLoss([1.0, 10.0]),
         }
         loss_fn = loss_map[cfg.loss_fn]()
         return GATModule(
