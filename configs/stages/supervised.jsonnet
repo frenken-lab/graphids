@@ -65,6 +65,7 @@ function(
         dataset: dataset,
         seed: seed,
         conv_type: conv_type,
+        heads: $.model.init_args.heads,
         sampler: sampler,
       } + (if sampler == 'curriculum' then {
         curriculum_start_ratio: curriculum_start_ratio,

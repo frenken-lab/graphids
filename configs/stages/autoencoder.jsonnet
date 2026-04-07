@@ -50,6 +50,7 @@ function(
         dataset: dataset,
         seed: seed,
         conv_type: conv_type,
+        heads: $.model.init_args.heads,  // late-bind from model libsonnet
       },
     },
 
