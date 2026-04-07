@@ -26,8 +26,8 @@ class StageConfig:
     kd_tag: str = ""
     resource_model: str = ""  # model key for resource lookup (fusion method for fusion stages)
     kd_overrides: dict[str, Any] = field(default_factory=dict)  # raw KDEntry payload
-    trainer_overrides: dict[str, str] = field(default_factory=dict)
-    stage_overrides: dict[str, str] = field(default_factory=dict)
+    trainer_overrides: dict[str, Any] = field(default_factory=dict)
+    stage_overrides: dict[str, Any] = field(default_factory=dict)
     resource_overrides: dict[str, str | int] = field(default_factory=dict)
     upstream_asset_names: tuple[str, ...] = ()
     upstream_model_families: dict[str, str] = field(default_factory=dict)

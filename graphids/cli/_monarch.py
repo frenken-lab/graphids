@@ -36,6 +36,22 @@ def _check_monarch() -> None:
         raise typer.Exit(code=1)
 
 
+def _coerce_value(v: str) -> object:
+    """Coerce CLI string to int/float/bool/null where unambiguous."""
+    if v.lower() in ("true", "false"):
+        return v.lower() == "true"
+    if v.lower() == "null":
+        return None
+    try:
+        return int(v)
+    except ValueError:
+        pass
+    try:
+        return float(v)
+    except ValueError:
+        return v
+
+
 @app.command("monarch-run", rich_help_panel="Orchestration")
 def monarch_run(
     dataset: Annotated[str, typer.Option(help="Dataset name")] = _D.get("dataset", "hcrl_ch"),
@@ -69,10 +85,10 @@ def monarch_run(
     """Run the 3-stage pipeline in a single SLURM allocation via Monarch."""
     from graphids.monarch.job import pipeline_job_spec
 
-    overrides: dict[str, str] = {}
+    overrides: dict[str, object] = {}
     for item in trainer_override or []:
         k, _, v = item.partition("=")
-        overrides[k] = v
+        overrides[k] = _coerce_value(v)
 
     stage_list = [s.strip() for s in stages.split(",")]
     spec = pipeline_job_spec(scale, stages=stage_list, fusion_method=fusion_method, dataset=dataset)
