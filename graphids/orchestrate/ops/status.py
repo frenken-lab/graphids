@@ -1,21 +1,25 @@
-"""Pipeline status: aggregated view of dagster assets backed by the DuckDB catalog.
+"""Pipeline status: aggregated view of training assets backed by the DuckDB catalog.
 
-Operation layer — argparse surface lives in
-``graphids.commands.pipeline_status``. The public entry point is
-:func:`show_pipeline_status`; ``_LOG_FILTERS`` is re-exported so the
-argparse shim can build ``choices=`` from its keys.
+Topology comes from the planner (``enumerate_assets``), status from
+the DuckDB catalog. No dagster dependency.
+
+The public entry point is :func:`show_pipeline_status`; ``_LOG_FILTERS``
+is re-exported so the CLI shim can build ``choices=`` from its keys.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from graphids.config.constants import LAKE_ROOT
+from graphids.config.constants import CONFIG_DIR, LAKE_ROOT
 from graphids.config.paths import catalog_path
 from graphids.slurm.env import SLURM_LOG_DIR
+
+RECIPES_DIR = CONFIG_DIR / "recipes"
 
 # ---------------------------------------------------------------------------
 # Constants + dataclass
@@ -47,12 +51,45 @@ class RecipeAssetStatus:
 
 
 # ---------------------------------------------------------------------------
+# Topology from planner (replaces dagster AssetGraph)
+# ---------------------------------------------------------------------------
+
+
+def _load_topology(recipe_path: str | Path | None = None) -> list:
+    """Load asset topology from the planner.
+
+    Returns a list of ``StageConfig`` objects with ``asset_name``,
+    ``stage``, ``upstream_asset_names``, ``model_type``, ``scale``,
+    and ``model_init_overrides`` — everything needed for the status table.
+    """
+    from graphids.config.jsonnet import render
+    from graphids.config.topology import PIPELINE_TOPOLOGY
+    from graphids.orchestrate.planning import enumerate_assets, expand_recipe_configs
+
+    if recipe_path is None:
+        recipe_env = os.environ.get("KD_GAT_RECIPE")
+        recipe_path = Path(recipe_env) if recipe_env else RECIPES_DIR / "ablation.jsonnet"
+
+    raw = render(Path(recipe_path))
+    expanded = expand_recipe_configs(raw)
+    return enumerate_assets(PIPELINE_TOPOLOGY, expanded)
+
+
+def _asset_description(cfg) -> str:
+    """Human-readable asset description from a StageConfig."""
+    parts = [cfg.model_type, cfg.scale]
+    for k, v in sorted(cfg.model_init_overrides.items()):
+        parts.append(f"{k}={v}")
+    return f"{cfg.stage} ({', '.join(parts)})"
+
+
+# ---------------------------------------------------------------------------
 # Catalog view (the only source)
 # ---------------------------------------------------------------------------
 
 
 def _phase_symbol(phases: dict, key: str) -> str:
-    """Phase symbol: ✓ (passed), ✗ (failed), - (unrecorded / in-progress).
+    """Phase symbol: checkmark (passed), x (failed), - (unrecorded / in-progress).
 
     ``None`` is treated as unrecorded because DuckDB's ``read_json_auto``
     with ``union_by_name=true`` inflates an empty ``phases: {}`` dict to a
@@ -61,7 +98,7 @@ def _phase_symbol(phases: dict, key: str) -> str:
     val = phases.get(key)
     if val is None:
         return "-"
-    return "✓" if val else "✗"
+    return "\u2713" if val else "\u2717"
 
 
 def _format_wall_time(seconds: float | None) -> str:
@@ -74,18 +111,20 @@ def _format_wall_time(seconds: float | None) -> str:
 
 def _collect_from_catalog(
     *,
+    recipe_path: str | Path | None = None,
     dataset: str | None = None,
     seed: int = 42,
 ) -> list[RecipeAssetStatus]:
-    """Load topology from dagster AssetGraph, status from DuckDB catalog.
+    """Load topology from planner, status from DuckDB catalog.
 
     The catalog row's ``asset_name`` column (computed as
     ``stage || identity_hash || kd_tag`` in ``rebuild_catalog``) matches the
-    dagster asset name exactly — single dict lookup, no fuzzy matching.
+    planner asset name exactly — single dict lookup, no fuzzy matching.
     """
     import duckdb
 
-    from graphids.orchestrate.definitions import defs
+    stage_configs = _load_topology(recipe_path)
+    config_by_name = {cfg.asset_name: cfg for cfg in stage_configs}
 
     cat = catalog_path(LAKE_ROOT)
     if not cat.exists():
@@ -129,19 +168,18 @@ def _collect_from_catalog(
             "job_id": job_id_str or "",
         }
 
-    ag = defs.resolve_asset_graph()
+    # Build status list from planner topology (replaces dagster AssetGraph)
     status_map: dict[str, str] = {}
     out: list[RecipeAssetStatus] = []
 
-    all_keys = sorted(
-        ag.get_all_asset_keys(),
-        key=lambda k: (_STAGE_ORDER.get(ag.get(k).group_name, 99), k.path[0]),
+    all_names = sorted(
+        config_by_name.keys(),
+        key=lambda n: (_STAGE_ORDER.get(config_by_name[n].stage, 99), n),
     )
 
-    for key in all_keys:
-        name = key.path[0]
-        node = ag.get(key)
-        parents = sorted(p.path[0] for p in node.parent_keys)
+    for name in all_names:
+        cfg = config_by_name[name]
+        parents = sorted(cfg.upstream_asset_names)
 
         hit = catalog_by_name.get(name)
         if hit is not None:
@@ -168,8 +206,8 @@ def _collect_from_catalog(
         out.append(
             RecipeAssetStatus(
                 asset=name,
-                stage=node.group_name,
-                label=node.description or f"{node.group_name} ({name})",
+                stage=cfg.stage,
+                label=_asset_description(cfg),
                 status=status,
                 train=train,
                 test=test,
@@ -239,7 +277,7 @@ def _render_grouped_table(
         "BLOCKED": "magenta",
         "WAITING": "dim",
     }
-    phase_styles = {"✓": "green", "✗": "red bold", "-": "dim"}
+    phase_styles = {"\u2713": "green", "\u2717": "red bold", "-": "dim"}
 
     for stage, group in groupby(rows, key=lambda r: r.stage):
         items = list(group)
@@ -261,7 +299,7 @@ def _render_grouped_table(
 
         for r in items:
             ss = status_styles.get(r.status, "")
-            # Strip stage prefix from label: "curriculum (gat, small)" → "gat, small"
+            # Strip stage prefix from label: "curriculum (gat, small)" -> "gat, small"
             label = r.label
             if label.startswith(f"{r.stage} (") and label.endswith(")"):
                 label = label[len(r.stage) + 2 : -1]
@@ -341,6 +379,7 @@ def _render_log(log_path: Path, *, event_filter: str | None, follow: bool) -> No
 
 def show_pipeline_status(
     *,
+    recipe_path: str | None = None,
     dataset: str | None = None,
     seed: int = 42,
     as_json: bool = False,
@@ -353,8 +392,8 @@ def show_pipeline_status(
     When ``log_filter`` is set (a key into :data:`_LOG_FILTERS`), this
     reads the orchestrator JSONL at ``log_file`` (or the latest if omitted)
     and pretty-prints matching events, optionally tailing. Otherwise it
-    joins the dagster asset graph with the DuckDB catalog and renders a
-    grouped-by-stage table (or JSON when ``as_json`` is set).
+    reads asset topology from the planner and joins with the DuckDB catalog
+    to render a grouped-by-stage table (or JSON when ``as_json`` is set).
     """
     # --- Log mode ---
     if log_filter is not None:
@@ -366,7 +405,7 @@ def show_pipeline_status(
         return
 
     # --- Recipe-aware grouped view ---
-    rows = _collect_from_catalog(dataset=dataset, seed=seed)
+    rows = _collect_from_catalog(recipe_path=recipe_path, dataset=dataset, seed=seed)
 
     if not rows:
         print("No assets defined in current recipe.")

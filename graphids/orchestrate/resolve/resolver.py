@@ -12,6 +12,7 @@ tuple, and emits an audit trail of every override applied.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from graphids.config.jsonnet import render
 from graphids.config.schemas import (
@@ -84,6 +85,7 @@ class ResolvedConfig:
     # Phase 2: typed view of the rendered jsonnet dict. Assets can read
     # ``resolved.validated.model.class_path`` etc. without re-rendering.
     validated: ValidatedConfig | None = None
+    rendered: dict[str, Any] | None = None
 
 
 class ConfigResolver:
@@ -229,6 +231,7 @@ class ConfigResolver:
             paths=paths,
             audit=audit_tuple,
             validated=validated,
+            rendered=rendered,
         )
 
     def resolve_and_validate(

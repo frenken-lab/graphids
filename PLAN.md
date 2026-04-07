@@ -1,59 +1,92 @@
 # GraphIDS Session Plan
 
-> Last updated: 2026-04-06 (session 35 — Monarch integration)
+> Last updated: 2026-04-06 (session 36 — Monarch ConfigResolver + spike)
 
-## What this session did (2026-04-06, session 35 — Monarch integration)
+## What this session did (2026-04-06, session 36)
+
+Rewired Monarch actor to use `ConfigResolver.resolve()` (same path as
+dagster) and validated end-to-end on a GPU compute node.
+
+### ConfigResolver integration (the main event)
+- **Replaced hand-rolled `_prepare_stage`** with `ConfigResolver.resolve()`.
+  Actor builds a `StageConfig` (via `_build_stage_config`) matching planner
+  output, passes it to the resolver. All TLA construction, identity hashing,
+  path computation, rendering, and validation now use the canonical path.
+- **Fixed 4 bugs** in the old actor:
+  1. Path divergence — used `"vgae"/"gat"/method` instead of family names
+     (`"unsupervised"/"supervised"/"fusion"`). Checkpoints now land at same
+     paths as dagster.
+  2. Missing `model_type` in identity dict (crashed autoencoder).
+  3. Missing `loss_fn` / `method` (would crash supervised / fusion).
+  4. No cross-field validation (skipped `validate_stage_config`).
+- **Added `rendered` field to `ResolvedConfig`** — resolver already renders
+  internally; actor is in-process so re-rendering is wasted work.
+- **Identity + model_type verified** — actor and planner produce identical
+  hashes for all 3 stages (autoencoder, supervised, fusion).
+- **Deleted `_STAGE_META`** — replaced by topology lookups + `STAGE_FAMILY_MAP`.
+
+### Other changes
+- **Extracted `monarch/_setup.py`** — `ensure_spawn`, `touch_marker`,
+  `bootstrap_staging` shared by actors and pipeline controller.
+- **Stage-aware `pipeline_job_spec`** — accepts `stages` list, avoids
+  12h GPU waste when fusion excluded. 2-stage: 9h vs 3-stage: 21h.
+- **`__supervise__` verified correct** — absorbs structural failures,
+  endpoint errors still reach `_run_with_retry` via `Future.get()`.
+- **Fixed `_preamble.sh` eval bug** — rsync progress with parentheses
+  broke `eval $(stage-data)`. Fixed with `grep '^export '`.
+- **Added `loss_fn`** to `PipelineConfig`, `PipelineActor`, CLI.
+- **Spike script** — `scripts/spike_monarch.py` + `spike-monarch` submit
+  profile. **ALL 5 STEPS PASSED** on gpudebug (p0255):
+  torchmonarch import → env vars → bootstrap_staging → ConfigResolver
+  `_prepare_stage` → VGAEModule fast_dev_run fit (GPU, 100K params).
+- **Full Monarch pipeline validated** — `run_pipeline` from login node
+  with autoencoder `fast_dev_run`. Monarch submitted SLURM job, spawned
+  actor, ran Lightning fit, returned checkpoint path at correct location:
+  `unsupervised_small_autoencoder_ff9f9014/seed_42/checkpoints/best_model.ckpt`
+  (matches dagster planner convention). Eval stage had lenient failure
+  (expected — fast_dev_run doesn't write a real checkpoint).
+- **Monarch↔OSC compatibility fixes:**
+  - `exclusive=True` on `SlurmJob` — bypasses `clusterscope` library
+    which can't parse OSC's multi-GRES `sinfo` output (10+ GRES types
+    per node cause `ValueError` in comma-split parsing).
+  - `scripts/slurm/monarch_python.sh` — worker wrapper that sources
+    `.env` + CUDA config before exec'ing venv Python. Monarch's bare
+    `srun python -c '...'` skips `_preamble.sh`, so workers were missing
+    `KD_GAT_LAKE_WRITE` etc. The wrapper is the `python_exe` for SlurmJob.
+  - Fixed `_preamble.sh` eval bug — rsync progress with parentheses
+    broke `eval $(stage-data)`. Fixed with `grep '^export '`.
+- **Track 2 finding:** `slurm/pipeline.py`, dagster, `ops/entrypoint.py`
+  still needed for the dagster path. No code to remove yet.
+
+## Next session — Dagster↔Monarch boundary + multi-stage run
+
+### Track 1: Full 3-stage pipeline
+Run `monarch-run` with all 3 stages (autoencoder → supervised → fusion)
+on the real `hcrl_ch` dataset. This validates checkpoint threading
+between stages and dataset caching on the actor.
+
+### Track 2: Dagster ↔ Monarch boundary decision
+Both paths now work end-to-end. Decide:
+- **Option A:** Dagster plans sweeps → Monarch executes each pipeline
+  (dagster asset calls `run_pipeline` instead of `SubprocessSlurmJobClient`).
+  Removes `slurm/pipeline.py` generate_script/SubprocessSlurmJobClient.
+- **Option B:** Keep dagster path for sweeps, Monarch for interactive
+  single-pipeline runs. Both paths coexist indefinitely.
+- **Option C:** Drop dagster entirely for linear pipelines, keep only
+  for multi-recipe sweeps.
+
+### Known deferred items
+- `instantiate.py` broken imports (`graphids.callbacks`,
+  `CurriculumEpochCallback`) — fire at training time, not import time.
+- `analyze` command interface: `--tla 'ckpt_path="..."'` (jsonnet TLA).
+- Fusion stage absorbs `auxiliaries=[]` and `vgae_ckpt_path=null` as
+  ignored TLAs.
+
+## Previous session (2026-04-06, session 35 — Monarch integration)
 
 Added `graphids/monarch/` subpackage for running the 3-stage pipeline
 (autoencoder → supervised → fusion) in a single SLURM allocation via
 PyTorch Monarch actors. Zero modifications to existing training code.
-
-- **`monarch/__init__.py`** — `available()` import guard
-- **`monarch/actors.py`** — `PipelineActor` with `train_autoencoder`,
-  `train_supervised`, `train_fusion` endpoints wrapping `_execute()`.
-  `__supervise__` fault handler. Falls back to plain class without monarch.
-- **`monarch/job.py`** — `MonarchJobSpec` + `pipeline_job_spec()` aggregates
-  resource profiles across stages. `create_slurm_job()` / `connect_or_create()`
-  for SlurmJob lifecycle.
-- **`monarch/pipeline.py`** — `PipelineConfig` + `run_pipeline()` controller
-  with retry logic.
-- **`cli/_monarch.py`** — `monarch-run` command with `--dry-run` mode.
-- Installed `torchmonarch==0.4.0` (PyPI package name, NOT `monarch`).
-  Verified: imports, `SlurmJob` construction, `Actor` + `@endpoint` wiring.
-
-## Next session — Monarch substitution + SLURM spike
-
-Two tracks:
-
-### Track 1: SLURM compute-node spike
-Submit an actual Monarch job via `salloc` to verify:
-1. Worker processes inherit SLURM env vars (TMPDIR, etc.)
-2. `bootstrap_staging()` works inside `spawn_procs(bootstrap=)`
-3. `PipelineActor` can be spawned and `train_stage` runs Lightning
-4. Single-stage autoencoder training completes inside an actor endpoint
-
-### Track 2: Substitute Monarch for obsolete code
-With Monarch handling single-allocation lifecycle, identify and remove
-code that Monarch now replaces:
-- `graphids/slurm/pipeline.py` — `generate_script()`, `SubprocessSlurmJobClient`,
-  `write_training_spec()` may be partially obsolete for Monarch-path runs
-- `scripts/slurm/submit.sh` — Monarch's `SlurmJob` replaces sbatch generation
-  for pipeline runs (keep for standalone jobs like tests, caches)
-- `graphids/orchestrate/dagster/` — evaluate what dagster still owns vs what
-  the Monarch controller replaces for simple linear pipelines
-- `graphids/orchestrate/ops/entrypoint.py` — `from-spec` phases may merge
-  with actor endpoints
-
-**Guiding principle:** Monarch is the new execution path for multi-stage
-pipelines. Dagster may remain for sweep orchestration (which configs to
-run), but job-level lifecycle (submission, polling, env setup, phase
-sequencing) moves to Monarch.
-
-**Known items:**
-- `actors.py` at 333 lines (target <320 — need to extract utilities)
-- Fusion resource profile over-allocates (CPU-only but GPU partition)
-- `__supervise__` absorbs failures but doesn't restart — verify this
-  doesn't silently swallow real errors
 
 ---
 

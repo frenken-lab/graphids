@@ -31,3 +31,20 @@ class StageConfig:
     resource_overrides: dict[str, str | int] = field(default_factory=dict)
     upstream_asset_names: tuple[str, ...] = ()
     upstream_model_families: dict[str, str] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a plain dict (Monarch endpoint args must be serializable)."""
+        import dataclasses as _dc
+
+        return _dc.asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> StageConfig:
+        """Reconstruct from a dict (inverse of ``to_dict``).
+
+        ``dataclasses.asdict`` converts tuples to lists — coerce back.
+        """
+        d = dict(d)
+        if "upstream_asset_names" in d:
+            d["upstream_asset_names"] = tuple(d["upstream_asset_names"])
+        return cls(**d)
