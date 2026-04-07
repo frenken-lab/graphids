@@ -21,19 +21,39 @@ PyTorch Monarch actors. Zero modifications to existing training code.
 - Installed `torchmonarch==0.4.0` (PyPI package name, NOT `monarch`).
   Verified: imports, `SlurmJob` construction, `Actor` + `@endpoint` wiring.
 
-## Next session — Monarch SLURM spike
+## Next session — Monarch substitution + SLURM spike
 
-Submit an actual Monarch job via `salloc` or `sbatch` to verify:
+Two tracks:
+
+### Track 1: SLURM compute-node spike
+Submit an actual Monarch job via `salloc` to verify:
 1. Worker processes inherit SLURM env vars (TMPDIR, etc.)
-2. `PipelineActor` can be spawned on a compute node
-3. Single-stage autoencoder training runs inside an actor endpoint
-4. `stage_data()` stdout capture works inside the actor
+2. `bootstrap_staging()` works inside `spawn_procs(bootstrap=)`
+3. `PipelineActor` can be spawned and `train_stage` runs Lightning
+4. Single-stage autoencoder training completes inside an actor endpoint
+
+### Track 2: Substitute Monarch for obsolete code
+With Monarch handling single-allocation lifecycle, identify and remove
+code that Monarch now replaces:
+- `graphids/slurm/pipeline.py` — `generate_script()`, `SubprocessSlurmJobClient`,
+  `write_training_spec()` may be partially obsolete for Monarch-path runs
+- `scripts/slurm/submit.sh` — Monarch's `SlurmJob` replaces sbatch generation
+  for pipeline runs (keep for standalone jobs like tests, caches)
+- `graphids/orchestrate/dagster/` — evaluate what dagster still owns vs what
+  the Monarch controller replaces for simple linear pipelines
+- `graphids/orchestrate/ops/entrypoint.py` — `from-spec` phases may merge
+  with actor endpoints
+
+**Guiding principle:** Monarch is the new execution path for multi-stage
+pipelines. Dagster may remain for sweep orchestration (which configs to
+run), but job-level lifecycle (submission, polling, env setup, phase
+sequencing) moves to Monarch.
 
 **Known items:**
-- `connect_or_create()` untested (needs a running allocation)
-- `__supervise__` fault recovery untested
-- Fusion stage resource profile may over-allocate (fusion is CPU-only
-  but we request GPU partition for the combined allocation)
+- `actors.py` at 333 lines (target <320 — need to extract utilities)
+- Fusion resource profile over-allocates (CPU-only but GPU partition)
+- `__supervise__` absorbs failures but doesn't restart — verify this
+  doesn't silently swallow real errors
 
 ---
 
