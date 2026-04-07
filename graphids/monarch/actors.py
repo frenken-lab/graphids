@@ -113,13 +113,28 @@ class PipelineActor(Actor):
             run.datamodule._test_datasets = self._cached_datasets["test"]
         return run
 
+    @staticmethod
+    def _clone_to_cpu(dataset: Any) -> Any:
+        """Deep-clone a PyG dataset/list to CPU tensors.
+
+        PyG Data.to() is in-place — after training, cached references
+        would point to CUDA tensors. Cloning ensures the cache always
+        holds CPU data (Monarch pattern: data on CPU, move to GPU at
+        computation time).
+        """
+        if isinstance(dataset, dict):
+            return {k: [d.clone().cpu() for d in v] for k, v in dataset.items()}
+        if isinstance(dataset, (list, tuple)):
+            return [d.clone().cpu() for d in dataset]
+        return dataset
+
     def _cache_datasets_from(self, datamodule: Any) -> None:
-        """Cache datasets from a datamodule after first load."""
+        """Cache CPU copies of datasets from a datamodule after setup."""
         if self._cached_datasets is None and datamodule._train_ds is not None:
             self._cached_datasets = {
-                "train": datamodule._train_ds,
-                "val": datamodule._val_ds,
-                "test": datamodule._test_datasets,
+                "train": self._clone_to_cpu(datamodule._train_ds),
+                "val": self._clone_to_cpu(datamodule._val_ds),
+                "test": self._clone_to_cpu(datamodule._test_datasets),
             }
             log.info("datasets_cached", num_train=len(datamodule._train_ds))
 
@@ -157,6 +172,11 @@ class PipelineActor(Actor):
 
         log.info("stage_train", stage=stage_config.get("stage"), run_dir=run_dir)
         run.trainer.fit(run.model, datamodule=run.datamodule)
+
+        # Cache CPU clones after first load. Must happen after fit()
+        # (setup() populates datasets during fit), but we clone to CPU
+        # so CUDA in-place mutations from PrefetchLoader don't poison
+        # the cache. Subsequent stages/retries get clean CPU data.
         self._cache_datasets_from(run.datamodule)
         touch_marker(Path(run_dir) / PHASE_MARKERS["train"])
         log.info("stage_train_complete", stage=stage_config.get("stage"), ckpt=ckpt_path)
