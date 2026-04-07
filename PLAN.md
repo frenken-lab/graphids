@@ -1,8 +1,43 @@
 # GraphIDS Session Plan
 
-> Last updated: 2026-04-06 (session 34 — docs audit & compaction)
+> Last updated: 2026-04-06 (session 35 — Monarch integration)
 
-## What this session did (2026-04-06, session 34 — docs audit & compaction)
+## What this session did (2026-04-06, session 35 — Monarch integration)
+
+Added `graphids/monarch/` subpackage for running the 3-stage pipeline
+(autoencoder → supervised → fusion) in a single SLURM allocation via
+PyTorch Monarch actors. Zero modifications to existing training code.
+
+- **`monarch/__init__.py`** — `available()` import guard
+- **`monarch/actors.py`** — `PipelineActor` with `train_autoencoder`,
+  `train_supervised`, `train_fusion` endpoints wrapping `_execute()`.
+  `__supervise__` fault handler. Falls back to plain class without monarch.
+- **`monarch/job.py`** — `MonarchJobSpec` + `pipeline_job_spec()` aggregates
+  resource profiles across stages. `create_slurm_job()` / `connect_or_create()`
+  for SlurmJob lifecycle.
+- **`monarch/pipeline.py`** — `PipelineConfig` + `run_pipeline()` controller
+  with retry logic.
+- **`cli/_monarch.py`** — `monarch-run` command with `--dry-run` mode.
+- Installed `torchmonarch==0.4.0` (PyPI package name, NOT `monarch`).
+  Verified: imports, `SlurmJob` construction, `Actor` + `@endpoint` wiring.
+
+## Next session — Monarch SLURM spike
+
+Submit an actual Monarch job via `salloc` or `sbatch` to verify:
+1. Worker processes inherit SLURM env vars (TMPDIR, etc.)
+2. `PipelineActor` can be spawned on a compute node
+3. Single-stage autoencoder training runs inside an actor endpoint
+4. `stage_data()` stdout capture works inside the actor
+
+**Known items:**
+- `connect_or_create()` untested (needs a running allocation)
+- `__supervise__` fault recovery untested
+- Fusion stage resource profile may over-allocate (fusion is CPU-only
+  but we request GPU partition for the combined allocation)
+
+---
+
+## Previous session (2026-04-06, session 34 — docs audit & compaction)
 
 Audited all docs against the refactored codebase and fixed stale references:
 

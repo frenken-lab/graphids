@@ -33,6 +33,7 @@ configure_logging()
 # Register command modules (each decorates app with @app.command)
 import graphids.cli._analysis  # noqa: E402, F401
 import graphids.cli._data  # noqa: E402, F401
+import graphids.cli._monarch  # noqa: E402, F401
 import graphids.cli._orchestrate  # noqa: E402, F401
 import graphids.cli._slurm  # noqa: E402, F401
 import graphids.cli._training  # noqa: E402, F401

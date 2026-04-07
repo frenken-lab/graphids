@@ -34,27 +34,6 @@ def run_from_spec(phase: str, spec_file: Path) -> None:
         return
 
     # phase == "analyze"
-    from graphids.core.analysis.analyzer import Analyzer
-    from graphids.orchestrate.analysis import ANALYSIS_MANIFEST_NAME, output_status
+    from graphids.orchestrate.analysis import run_analysis
 
-    spec = from_envelope(payload, AnalysisSpec)
-
-    runner_payload = spec.model_dump(mode="python")
-    runner_payload.pop("metadata", None)
-    Analyzer(**runner_payload).run()
-
-    output_dir = Path(spec.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    expected, existing = output_status(spec)
-    manifest = {
-        "contract": AnalysisSpec.CONTRACT_NAME,
-        "version": AnalysisSpec.CONTRACT_VERSION,
-        "asset": spec.metadata.get("asset_name", "unknown"),
-        "dataset": spec.dataset,
-        "seed": spec.seed,
-        "checkpoint_path": spec.ckpt_path,
-        "output_dir": str(output_dir),
-        "expected_outputs": list(expected),
-        "existing_outputs": existing,
-    }
-    (output_dir / ANALYSIS_MANIFEST_NAME).write_text(json.dumps(manifest, indent=2))
+    run_analysis(from_envelope(payload, AnalysisSpec))

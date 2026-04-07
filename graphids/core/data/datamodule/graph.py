@@ -132,6 +132,8 @@ class GraphDataModule(pl.LightningDataModule):
         self._active_batches = None  # concatenated active tiers for current epoch
 
     def setup(self, stage: str | None = None) -> None:
+        if self._train_ds is not None:
+            return  # datasets pre-injected (e.g. by Monarch actor)
         hp = self.hparams
         self._train_ds, self._val_ds, self._test_datasets = load_datasets(
             dataset=hp["dataset"],
