@@ -176,23 +176,16 @@ def create_slurm_job(spec: MonarchJobSpec) -> Any:
     regular SLURM jobs. Without it, workers miss ``KD_GAT_LAKE_WRITE``
     and other ``.env`` vars.
 
-    ``exclusive=True`` requests the full node. Required on OSC because
-    Monarch calls ``share_node()`` → ``clusterscope`` internally when
-    ``exclusive=False``, and clusterscope can't parse OSC's multi-GRES
-    sinfo output (10+ GRES types cause ``ValueError``).
+    ``exclusive=False`` allows shared nodes. Requires monkey-patching
+    ``clusterscope.slurm.partition.get_partition_resources`` because OSC's
+    sinfo outputs 10+ comma-separated GRES types per line, but clusterscope
+    assumes exactly 2 fields (``gres, cpus = line.split(",")``).
     """
     from pathlib import Path
 
     from monarch.job import SlurmJob  # type: ignore[import-not-found]
 
-    # Patch clusterscope partition validation — its GRES parser assumes
-    # exactly 2 comma-separated fields but OSC nodes have 10+ GRES types.
-    try:
-        import clusterscope.validate as _csv
-
-        _csv.validate_partition_exists = lambda *a, **kw: None
-    except ImportError:
-        pass
+    _patch_clusterscope()
 
     from graphids.config.constants import PROJECT_ROOT
     from graphids.slurm.env import SLURM_LOG_DIR
@@ -216,5 +209,67 @@ def create_slurm_job(spec: MonarchJobSpec) -> Any:
             "--signal=B:USR1@300",
             "--export=ALL",
         ),
-        exclusive=True,
+        exclusive=False,
     )
+
+
+def _patch_clusterscope() -> None:
+    """Fix clusterscope's sinfo CSV parsers for OSC's multi-GRES output.
+
+    OSC nodes report 10+ comma-separated GRES types per sinfo line.
+    clusterscope assumes exactly 2 fields (``a, b = line.split(",")``).
+    We patch ``partition.py`` and ``cluster_info.py`` to use
+    ``rpartition(",")`` (split on last comma) instead.
+    """
+    try:
+        import clusterscope.cluster_info as _cci
+        import clusterscope.slurm.partition as _csp
+        from clusterscope.shell import run_cli
+        from clusterscope.slurm.parser import parse_gres
+    except ImportError:
+        return
+
+    # --- partition.py: get_partition_resources ---
+    def _fixed_get_partition_resources(partition: str) -> dict:
+        result = run_cli(["sinfo", "-o", "%G,%c", f"--partition={partition}", "--noheader"])
+        max_gpus = 0
+        max_cpus = 0
+        for line in result.strip().split("\n"):
+            if not line:
+                continue
+            gres, _, cpus = line.rpartition(",")
+            max_gpus = max(max_gpus, parse_gres(gres))
+            max_cpus = max(max_cpus, int(cpus.rstrip("+")))
+        return {"max_gpus": max_gpus, "max_cpus": max_cpus}
+
+    _csp.get_partition_resources = _fixed_get_partition_resources
+
+    # --- cluster_info.py: get_gpu_generation_and_count ---
+    def _fixed_get_gpu(self):
+        cmd = ["sinfo", "-o", "%G,%P", "--noheader"]
+        if self.partition:
+            cmd.extend(["-p", self.partition])
+        result = run_cli(cmd)
+        results = []
+        seen = set()
+        for line in result.strip().splitlines():
+            gres, _, partition = line.rpartition(",")
+            partition = partition.strip("* ")
+            key = gres.split("(")[0] + partition
+            if key in seen:
+                continue
+            seen.add(key)
+            parts = gres.split(":")
+            if len(parts) >= 3:
+                gpu_gen = parts[1]
+                gpu_count = int(parts[2].split("(")[0])
+                results.append(
+                    _cci.GPUInfo(
+                        gpu_gen=gpu_gen, gpu_count=gpu_count, vendor="nvidia", partition=partition
+                    )
+                )
+        if not results:
+            raise RuntimeError(f"No GPU information found")
+        return results
+
+    _cci.SlurmClusterInfo.get_gpu_generation_and_count = _fixed_get_gpu

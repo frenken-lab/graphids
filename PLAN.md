@@ -1,8 +1,70 @@
 # GraphIDS Session Plan
 
-> Last updated: 2026-04-06 (session 36 — Monarch ConfigResolver + spike)
+> Last updated: 2026-04-07 (session 37 — config consolidation + shared nodes)
 
-## What this session did (2026-04-06, session 36)
+## What this session did (2026-04-07, session 37)
+
+Config consolidation, jsonnet simplification, and Monarch shared-node support.
+
+### Config changes
+- **Dataset-aware resources:** `configs/resources/dataset_scaling.json` with
+  per-dataset time_scale factors. `hcrl_sa` allocation 21h → 4h.
+- **Pipeline defaults single source:** `axes.json` `pipeline_defaults` read
+  by both jsonnet TLA defaults and Python CLI. Zero three-way drift.
+- **Jsonnet merge chain 8→4 steps:** defaults flattened, model libsonnets
+  pre-merge base+scale, 3 analyze configs → 1 with model_type dispatch.
+- **Callbacks declared in jsonnet:** 6 forced callbacks moved from Python
+  to `defaults.libsonnet` named callbacks object with late-binding
+  `trainer.callbacks` list via `$` reference.
+- **Fusion configs → `configs/models/fusion/`:** mirrors `graphids/` structure.
+
+### instantiate.py 505→150 lines
+- Loss construction → `core/losses/build.py`
+- Link arguments → jsonnet stages (cross-links in data/model init_args)
+- Callbacks/loggers → config-driven generic instantiation loop
+
+### Monarch improvements
+- `--trainer-override` / `-O` CLI flag (wired through to jsonnet TLAs)
+- SLURM logs write to data lake via native `log_dir` param
+- `exclusive=False` with clusterscope multi-GRES parser patch (rpartition)
+- Dagster bloat removed: `slurm/core/submit.py`, `slurm/pipeline.py`
+- `orchestrate/definitions.py` → `orchestrate/dagster/definitions.py`
+
+### Partially fixed: autoencoder memory ceiling
+The autoencoder profile requests 181G (20 CPUs × 9.2G mem_per_cpu) because
+the full dataset was too large to fit in fewer workers' memory. Sessions
+34-35 pre-batched the training data to reduce per-worker memory, but the
+resource profile was never updated to reflect the reduced footprint.
+**Status:** pre-batching landed, profile still oversized. Next step: profile
+actual peak memory on hcrl_sa with pre-batched data, then right-size the
+autoencoder entry in `job_profiles.json` and add mem scaling to
+`dataset_scaling.json`.
+
+### Practice run submitted
+Job 46503000 on gpudebug (shared, 32G/4CPU, 3 epochs, hcrl_sa, seed 55).
+Pending on Priority — validates checkpoint threading across all 3 stages.
+
+## Next session
+
+### Track 1: Validate 3-stage pipeline
+If practice run succeeded, review output. If still queued, resubmit.
+Then run full training on `hcrl_sa` with production epochs.
+
+### Track 2: Right-size autoencoder memory
+Profile peak memory with pre-batched data on a compute node. Update
+`job_profiles.json` autoencoder entry. Add mem scaling to
+`dataset_scaling.json`.
+
+### Track 3: Dagster deletion
+`rm -rf orchestrate/dagster/` + remove `[tool.dg]` from pyproject.toml.
+Gated on successful Monarch sweep validation.
+
+### Known deferred items
+- `analyze` command interface: `--tla 'ckpt_path="..."'` (jsonnet TLA)
+- Fusion stage absorbs `auxiliaries=[]` and `vgae_ckpt_path=null` as
+  ignored TLAs
+
+## What session 36 did (2026-04-06)
 
 Rewired Monarch actor to use `ConfigResolver.resolve()` (same path as
 dagster) and validated end-to-end on a GPU compute node.
