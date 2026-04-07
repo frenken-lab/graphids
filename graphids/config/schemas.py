@@ -15,7 +15,7 @@ touching the filesystem.
 from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -87,44 +87,43 @@ class TrainerSection(BaseModel):
     callbacks: list[dict] | None = None
 
 
-class _MonitorBlock(BaseModel):
-    """Shared base — forces strict mode enum for the monitored callbacks."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    monitor: str = Field(..., min_length=1)
-    mode: Literal["min", "max"]
-
-
-class CheckpointSection(_MonitorBlock):
-    save_top_k: int = 1
-    save_last: bool = True
-    filename: str = "best_model"
-
-
-class EarlyStoppingSection(_MonitorBlock):
-    patience: int = 100
-
-
 _MODEL_LIST_FIELDS: tuple[str, ...] = ("pool_aggrs", "hidden_dims", "auxiliaries")
 _ALLOWED_CLASS_PATH_ROOTS: tuple[str, ...] = (
     "graphids.",
+    "lightning.pytorch.",
     "pytorch_lightning.",
 )
+
+
+def _find_callback(callbacks: list[dict], name: str) -> dict | None:
+    """Find a callback entry by class name suffix in trainer.callbacks list."""
+    for cb in callbacks:
+        if isinstance(cb, dict) and name in cb.get("class_path", ""):
+            return cb
+    return None
 
 
 class ValidatedConfig(BaseModel):
     """Typed representation of a rendered stage config."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="allow")
 
     seed_everything: int
     trainer: TrainerSection
     data: ClassPathBlock
     model: ClassPathBlock
-    checkpoint: CheckpointSection
-    early_stopping: EarlyStoppingSection
+    callbacks: dict[str, Any] = Field(default_factory=dict)
     ckpt_path: str | None = None
+
+    @property
+    def checkpoint_monitor(self) -> str | None:
+        cb = _find_callback(self.trainer.callbacks or [], "ModelCheckpoint")
+        return cb["init_args"]["monitor"] if cb else None
+
+    @property
+    def checkpoint_mode(self) -> str | None:
+        cb = _find_callback(self.trainer.callbacks or [], "ModelCheckpoint")
+        return cb["init_args"]["mode"] if cb else None
 
     @model_validator(mode="after")
     def _no_null_list_fields(self) -> ValidatedConfig:
@@ -143,14 +142,19 @@ class ValidatedConfig(BaseModel):
 
     @model_validator(mode="after")
     def _monitor_pair_consistent(self) -> ValidatedConfig:
-        if (
-            self.checkpoint.monitor != self.early_stopping.monitor
-            or self.checkpoint.mode != self.early_stopping.mode
-        ):
+        cbs = self.trainer.callbacks or []
+        ckpt = _find_callback(cbs, "ModelCheckpoint")
+        es = _find_callback(cbs, "EarlyStopping")
+        if not ckpt or not es:
+            return self
+        ckpt_m = ckpt["init_args"].get("monitor")
+        ckpt_mode = ckpt["init_args"].get("mode")
+        es_m = es["init_args"].get("monitor")
+        es_mode = es["init_args"].get("mode")
+        if ckpt_m != es_m or ckpt_mode != es_mode:
             raise ValueError(
-                f"checkpoint ({self.checkpoint.monitor}/{self.checkpoint.mode}) "
-                f"and early_stopping ({self.early_stopping.monitor}/"
-                f"{self.early_stopping.mode}) must track the same metric+mode"
+                f"ModelCheckpoint ({ckpt_m}/{ckpt_mode}) and "
+                f"EarlyStopping ({es_m}/{es_mode}) must track the same metric+mode"
             )
         return self
 
@@ -158,13 +162,11 @@ class ValidatedConfig(BaseModel):
     def _lr_monitor_requires_logger(self) -> ValidatedConfig:
         if self.trainer.logger is not False:
             return self
-        for cb in self.trainer.callbacks or []:
-            cp = cb.get("class_path", "") if isinstance(cb, dict) else ""
-            if "LearningRateMonitor" in cp:
-                raise ValueError(
-                    "LearningRateMonitor callback requires trainer.logger "
-                    "to be true; got trainer.logger=false"
-                )
+        if _find_callback(self.trainer.callbacks or [], "LearningRateMonitor"):
+            raise ValueError(
+                "LearningRateMonitor callback requires trainer.logger "
+                "to be true; got trainer.logger=false"
+            )
         return self
 
     @model_validator(mode="after")

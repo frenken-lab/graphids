@@ -138,6 +138,7 @@ def build_single_recipe(
     variational: bool,
     loss_fn: str,
     fusion_method: str,
+    trainer_overrides: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build a synthetic expanded recipe for a single pipeline config.
 
@@ -158,7 +159,7 @@ def build_single_recipe(
         "defaults": defaults,
         "configs": {"default": {}},
         "sweep": {},
-        "trainer_overrides": {},
+        "trainer_overrides": dict(trainer_overrides or {}),
         "stage_overrides": {},
         "resource_overrides": {},
     }

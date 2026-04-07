@@ -1,20 +1,21 @@
 // Fusion stage — dispatch on fusion_method TLA over the 4 method overlays.
 //
-// Unlike the other stages, fusion overrides every trainer default (cpu,
-// precision 32, 1500 epochs, no gradient clip) — those live in
-// fusion.base, applied after defaults.trainer so the base block wins.
+// Unlike the other stages, fusion overrides trainer defaults (cpu,
+// precision 32, 1500 epochs, no gradient clip) via deep-merge from
+// fusion.base, applied after defaults so the base block wins.
 
 local defaults = import '../_lib/defaults.libsonnet';
 local helpers = import '../_lib/helpers.libsonnet';
-local fusion = import '../fusion.libsonnet';
+local fusion = import '../models/fusion.libsonnet';
+local pd = (import '../matrix/axes.json').pipeline_defaults;
 
 function(
-  dataset='hcrl_ch',
-  seed=42,
+  dataset=pd.dataset,
+  seed=pd.seed,
   run_dir='',
 
-  fusion_method='bandit',
-  scale='small',
+  fusion_method=pd.fusion_method,
+  scale=pd.scale,
 
   // Upstream teacher checkpoints.
   gat_ckpt_path=null,
@@ -25,17 +26,12 @@ function(
   ckpt_path=null,
 )
 
-  defaults.trainer
-  + defaults.checkpoint
-  + defaults.early_stopping
-
-  // Fusion base fully replaces trainer/checkpoint/early_stopping/data.
-  + { trainer+: fusion.base.trainer }
-  + { checkpoint+: fusion.base.checkpoint }
-  + { early_stopping+: fusion.base.early_stopping }
-  + { data: fusion.base.data }
-
-  // Method-specific model class + init_args
+  defaults
+  + {
+    callbacks+: fusion.base.callbacks,
+    trainer+: fusion.base.trainer,
+    data: fusion.base.data,
+  }
   + fusion.methods[fusion_method]
 
   + {
@@ -48,6 +44,7 @@ function(
     data+: {
       init_args+: {
         dataset: dataset,
+        seed: seed,
       } + (if gat_ckpt_path != null
            then { gat_ckpt_path: gat_ckpt_path }
            else {}),

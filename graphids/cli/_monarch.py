@@ -8,6 +8,9 @@ from typing import Annotated
 import typer
 
 from graphids.cli.app import app
+from graphids.config.constants import PIPELINE_DEFAULTS
+
+_D = PIPELINE_DEFAULTS
 
 
 def _print_spec(spec: object) -> None:
@@ -35,31 +38,48 @@ def _check_monarch() -> None:
 
 @app.command("monarch-run", rich_help_panel="Orchestration")
 def monarch_run(
-    dataset: Annotated[str, typer.Option(help="Dataset name")] = "hcrl_ch",
-    seed: Annotated[int, typer.Option(help="Random seed")] = 42,
-    scale: Annotated[str, typer.Option(help="Model scale (small/large)")] = "small",
-    fusion_method: Annotated[str, typer.Option("--fusion-method", help="Fusion method")] = "bandit",
-    stages: Annotated[
-        str, typer.Option(help="Comma-separated stages to run")
-    ] = "autoencoder,supervised,fusion",
+    dataset: Annotated[str, typer.Option(help="Dataset name")] = _D.get("dataset", "hcrl_ch"),
+    seed: Annotated[int, typer.Option(help="Random seed")] = _D.get("seed", 42),
+    scale: Annotated[str, typer.Option(help="Model scale (small/large)")] = _D.get(
+        "scale", "small"
+    ),
+    fusion_method: Annotated[str, typer.Option("--fusion-method", help="Fusion method")] = _D.get(
+        "fusion_method", "bandit"
+    ),
+    stages: Annotated[str, typer.Option(help="Comma-separated stages to run")] = ",".join(
+        _D.get("stages", ["autoencoder", "supervised", "fusion"])
+    ),
     conv_type: Annotated[
         str, typer.Option("--conv-type", help="Conv type (gat/gatv2/transformer)")
-    ] = "gatv2",
+    ] = _D.get("conv_type", "gatv2"),
     variational: Annotated[
         bool, typer.Option("--variational/--no-variational", help="VGAE variational mode")
-    ] = True,
+    ] = _D.get("variational", True),
     loss_fn: Annotated[
         str, typer.Option("--loss-fn", help="Loss function (focal/ce/weighted_ce)")
-    ] = "focal",
+    ] = _D.get("loss_fn", "focal"),
+    trainer_override: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--trainer-override", "-O", help="Dotted trainer override (e.g. trainer.max_epochs=3)"
+        ),
+    ] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Print allocation spec only")] = False,
 ) -> None:
     """Run the 3-stage pipeline in a single SLURM allocation via Monarch."""
     from graphids.monarch.job import pipeline_job_spec
 
+    overrides: dict[str, str] = {}
+    for item in trainer_override or []:
+        k, _, v = item.partition("=")
+        overrides[k] = v
+
     stage_list = [s.strip() for s in stages.split(",")]
-    spec = pipeline_job_spec(scale, stages=stage_list, fusion_method=fusion_method)
+    spec = pipeline_job_spec(scale, stages=stage_list, fusion_method=fusion_method, dataset=dataset)
 
     if dry_run:
+        if overrides:
+            typer.echo(f"Overrides:  {overrides}")
         _print_spec(spec)
         raise typer.Exit()
 
@@ -76,6 +96,7 @@ def monarch_run(
         conv_type=conv_type,
         variational=variational,
         loss_fn=loss_fn,
+        tla_overrides=overrides,
     )
     checkpoints = run_pipeline(cfg)
     for stage_name, ckpt in checkpoints.items():
@@ -120,7 +141,7 @@ def monarch_sweep(
         typer.echo(f"Chains:   {len(chains)}")
         typer.echo()
         for chain in chains:
-            spec = chain_job_spec(chain.stages)
+            spec = chain_job_spec(chain.stages, dataset=chain.dataset)
             stage_names = [s.stage for s in chain.stages]
             typer.echo(f"  {chain.chain_id}")
             typer.echo(f"    stages:    {' → '.join(stage_names)}")

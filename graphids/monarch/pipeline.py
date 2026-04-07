@@ -19,9 +19,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any
 
+from graphids.config.constants import PIPELINE_DEFAULTS
 from graphids.log import get_logger
 
 log = get_logger(__name__)
+
+_D = PIPELINE_DEFAULTS
 
 
 # ---------------------------------------------------------------------------
@@ -33,17 +36,17 @@ log = get_logger(__name__)
 class PipelineConfig:
     """What to run in a single Monarch allocation (monarch-run CLI)."""
 
-    dataset: str = "hcrl_ch"
-    seed: int = 42
-    scale: str = "small"
+    dataset: str = _D.get("dataset", "hcrl_ch")
+    seed: int = _D.get("seed", 42)
+    scale: str = _D.get("scale", "small")
     lake_root: str = ""
-    fusion_method: str = "bandit"
+    fusion_method: str = _D.get("fusion_method", "bandit")
     stages: list[str] = field(
-        default_factory=lambda: ["autoencoder", "supervised", "fusion"],
+        default_factory=lambda: list(_D.get("stages", ["autoencoder", "supervised", "fusion"])),
     )
-    conv_type: str = "gatv2"
-    variational: bool = True
-    loss_fn: str = "focal"
+    conv_type: str = _D.get("conv_type", "gatv2")
+    variational: bool = _D.get("variational", True)
+    loss_fn: str = _D.get("loss_fn", "focal")
     tla_overrides: dict[str, Any] = field(default_factory=dict)
     max_retries: int = 2
 
@@ -53,8 +56,8 @@ class SweepConfig:
     """Full sweep run configuration (monarch-sweep CLI)."""
 
     recipe_path: str
-    datasets: list[str] = field(default_factory=lambda: ["hcrl_ch"])
-    seeds: list[int] = field(default_factory=lambda: [42])
+    datasets: list[str] = field(default_factory=lambda: [_D.get("dataset", "hcrl_ch")])
+    seeds: list[int] = field(default_factory=lambda: [_D.get("seed", 42)])
     lake_root: str = ""
     max_retries: int = 2
     max_concurrent: int = 0  # 0 = all parallel
@@ -103,6 +106,7 @@ def build_pipeline_stages(config: PipelineConfig) -> list[Any]:
         variational=config.variational,
         loss_fn=config.loss_fn,
         fusion_method=config.fusion_method,
+        trainer_overrides=config.tla_overrides,
     )
 
     configs = enumerate_assets(PIPELINE_TOPOLOGY, recipe)
@@ -139,7 +143,9 @@ def run_chain(
     from graphids.monarch.job import chain_job_spec, create_slurm_job
 
     lake_root = lake_root or LAKE_ROOT
-    spec = chain_job_spec(chain.stages, job_name=f"graphids-{chain.chain_id}")
+    spec = chain_job_spec(
+        chain.stages, job_name=f"graphids-{chain.chain_id}", dataset=chain.dataset
+    )
 
     configure(
         enable_log_forwarding=True,

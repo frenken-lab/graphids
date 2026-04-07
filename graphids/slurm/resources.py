@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from graphids.config.constants import PROJECT_ROOT
 
 _CLUSTERS_PATH = PROJECT_ROOT / "configs" / "resources" / "clusters.json"
+_DATASET_SCALING_PATH = PROJECT_ROOT / "configs" / "resources" / "dataset_scaling.json"
 _JOB_PROFILES_PATH = PROJECT_ROOT / "configs" / "resources" / "job_profiles.json"
 _SUBMIT_PROFILES_PATH = PROJECT_ROOT / "configs" / "resources" / "submit_profiles.json"
 
@@ -90,11 +91,67 @@ def _load_profile(family: str) -> dict:
     return profile
 
 
-def get_resources(model_type: str, scale: str, stage: str) -> ResourceSpec:
+def _load_dataset_scaling() -> dict:
+    import json
+
+    if not _DATASET_SCALING_PATH.exists():
+        return {}
+    return json.loads(_DATASET_SCALING_PATH.read_text()).get("datasets", {})
+
+
+_MIN_TIME_MINUTES = 15
+_TIME_ROUND_MINUTES = 15
+
+
+def _apply_dataset_scaling(
+    spec: ResourceSpec,
+    dataset: str,
+    family: str,
+) -> ResourceSpec:
+    """Apply dataset-specific time scaling to a ResourceSpec.
+
+    Checks for an absolute override keyed by family first. Falls back to
+    ``time_scale`` multiplier with floor and rounding.
+    """
+    from graphids.log import get_logger
+
+    scaling = _load_dataset_scaling()
+    ds_entry = scaling.get(dataset)
+    if ds_entry is None:
+        get_logger(__name__).warning("dataset_scaling_missing", dataset=dataset)
+        return spec
+
+    # Absolute override wins (keyed by family name)
+    overrides = ds_entry.get("overrides", {})
+    override = overrides.get(family)
+    if override:
+        return dataclasses.replace(spec, **override)
+
+    # Multiplicative time scaling
+    time_scale = ds_entry.get("time_scale", 1.0)
+    if time_scale == 1.0:
+        return spec
+
+    import math
+
+    raw_minutes = spec.time_minutes * time_scale
+    clamped = max(_MIN_TIME_MINUTES, raw_minutes)
+    rounded = math.ceil(clamped / _TIME_ROUND_MINUTES) * _TIME_ROUND_MINUTES
+    h, m = divmod(rounded, 60)
+    new_time = f"{h}:{m:02d}:00"
+
+    return dataclasses.replace(spec, time=new_time)
+
+
+def get_resources(
+    model_type: str, scale: str, stage: str, *, dataset: str | None = None
+) -> ResourceSpec:
     """Look up resource profile for (model_type, scale, stage).
 
     Resolves cluster-agnostic ``mode`` field to concrete ``partition``/``gres``
-    using the ``clusters`` mapping + hostname detection.
+    using the ``clusters`` mapping + hostname detection. When ``dataset`` is
+    provided, applies dataset-specific time scaling from
+    ``configs/resources/dataset_scaling.json``.
     """
     from graphids.config.constants import FAMILY_FOR_MODEL_TYPE
 
@@ -165,6 +222,9 @@ def get_resources(model_type: str, scale: str, stage: str) -> ResourceSpec:
                 f"({max_mem_mb // 1024}G). "
                 f"Increase cpus or reduce mem."
             )
+
+    if dataset is not None:
+        result = _apply_dataset_scaling(result, dataset, family)
 
     return result
 

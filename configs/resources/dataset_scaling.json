@@ -1,0 +1,16 @@
+{
+  "_reference_dataset": "hcrl_ch",
+  "datasets": {
+    "hcrl_ch": { "time_scale": 1.0 },
+    "hcrl_sa": {
+      "time_scale": 0.15,
+      "overrides": {
+        "fusion": { "time": "2:00:00" }
+      }
+    },
+    "set_01": { "time_scale": 1.0 },
+    "set_02": { "time_scale": 0.85 },
+    "set_03": { "time_scale": 0.90 },
+    "set_04": { "time_scale": 0.75 }
+  }
+}

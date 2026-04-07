@@ -34,10 +34,17 @@ class MonarchJobSpec:
             object.__setattr__(self, "account", SLURM_ACCOUNT)
 
 
-_STAGE_MODEL_TYPE: dict[str, str] = {
-    "autoencoder": "vgae",
-    "supervised": "gat",
-}
+def _default_model_type(stage: str) -> str:
+    """Look up the default model_type for a stage via topology + axes."""
+    from graphids.config.constants import FAMILY_FOR_MODEL_TYPE
+    from graphids.config.topology import STAGE_FAMILY_MAP
+
+    family = STAGE_FAMILY_MAP[stage]
+    # Reverse lookup: first model_type that maps to this family
+    for mt, fam in FAMILY_FOR_MODEL_TYPE.items():
+        if fam == family:
+            return mt
+    raise KeyError(f"No model_type found for family {family!r}")
 
 
 def pipeline_job_spec(
@@ -45,6 +52,7 @@ def pipeline_job_spec(
     *,
     stages: list[str] | None = None,
     fusion_method: str = "bandit",
+    dataset: str | None = None,
 ) -> MonarchJobSpec:
     """Compute a combined allocation for the requested pipeline stages.
 
@@ -61,9 +69,10 @@ def pipeline_job_spec(
     resources = []
     for stage in stages:
         if stage == "fusion":
-            resources.append(get_resources(fusion_method, scale, stage))
+            resources.append(get_resources(fusion_method, scale, stage, dataset=dataset))
         else:
-            resources.append(get_resources(_STAGE_MODEL_TYPE[stage], scale, stage))
+            model = _default_model_type(stage)
+            resources.append(get_resources(model, scale, stage, dataset=dataset))
 
     total_minutes = sum(r.time_minutes for r in resources) + 30
     h, m = divmod(total_minutes, 60)
@@ -91,6 +100,7 @@ def chain_job_spec(
     stages: list[Any],
     *,
     job_name: str = "graphids-monarch",
+    dataset: str | None = None,
 ) -> MonarchJobSpec:
     """Compute a combined allocation for a chain of ``StageConfig`` objects.
 
@@ -103,7 +113,7 @@ def chain_job_spec(
     resources = []
     for cfg in stages:
         model = cfg.resource_model or cfg.model_type
-        resources.append(get_resources(model, cfg.scale, cfg.stage))
+        resources.append(get_resources(model, cfg.scale, cfg.stage, dataset=dataset))
 
     total_minutes = sum(r.time_minutes for r in resources) + 30
     h, m = divmod(total_minutes, 60)
@@ -166,15 +176,30 @@ def create_slurm_job(spec: MonarchJobSpec) -> Any:
     regular SLURM jobs. Without it, workers miss ``KD_GAT_LAKE_WRITE``
     and other ``.env`` vars.
 
-    ``exclusive=True`` requests the full node, bypassing Monarch's
-    ``share_node()`` → ``clusterscope`` path which can't parse OSC's
-    multi-GRES sinfo output (10+ GRES types cause ``ValueError``).
+    ``exclusive=True`` requests the full node. Required on OSC because
+    Monarch calls ``share_node()`` → ``clusterscope`` internally when
+    ``exclusive=False``, and clusterscope can't parse OSC's multi-GRES
+    sinfo output (10+ GRES types cause ``ValueError``).
     """
+    from pathlib import Path
+
     from monarch.job import SlurmJob  # type: ignore[import-not-found]
 
+    # Patch clusterscope partition validation — its GRES parser assumes
+    # exactly 2 comma-separated fields but OSC nodes have 10+ GRES types.
+    try:
+        import clusterscope.validate as _csv
+
+        _csv.validate_partition_exists = lambda *a, **kw: None
+    except ImportError:
+        pass
+
     from graphids.config.constants import PROJECT_ROOT
+    from graphids.slurm.env import SLURM_LOG_DIR
 
     worker_python = str(PROJECT_ROOT / "scripts" / "slurm" / "monarch_python.sh")
+    log_dir = Path(SLURM_LOG_DIR)
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     return SlurmJob(
         meshes={"pipeline": 1},
@@ -185,6 +210,7 @@ def create_slurm_job(spec: MonarchJobSpec) -> Any:
         cpus_per_task=spec.cpus,
         gpus_per_node=spec.gpus_per_node,
         python_exe=worker_python,
+        log_dir=str(log_dir),
         slurm_args=(
             f"--account={spec.account}",
             "--signal=B:USR1@300",

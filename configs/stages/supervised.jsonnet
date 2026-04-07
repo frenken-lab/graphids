@@ -11,15 +11,16 @@
 local defaults = import '../_lib/defaults.libsonnet';
 local helpers = import '../_lib/helpers.libsonnet';
 local sup = import '../models/supervised.libsonnet';
+local pd = (import '../matrix/axes.json').pipeline_defaults;
 
 function(
-  dataset='hcrl_ch',
-  seed=42,
+  dataset=pd.dataset,
+  seed=pd.seed,
   run_dir='',
 
-  scale='small',
-  conv_type='gatv2',
-  loss_fn='focal',
+  scale=pd.scale,
+  conv_type=pd.conv_type,
+  loss_fn=pd.loss_fn,
   model_type='gat',
 
   // Sampler toggle: 'default' or 'curriculum'
@@ -43,12 +44,8 @@ function(
   ckpt_path=null,
 )
 
-  defaults.trainer
-  + defaults.checkpoint
-  + defaults.early_stopping
-
-  + sup[model_type].base
-  + sup[model_type].scales[scale]
+  defaults
+  + sup[model_type][scale]
 
   + {
     seed_everything: seed,
@@ -66,6 +63,8 @@ function(
         batch_size: 8192,
         dynamic_batching: true,
         dataset: dataset,
+        seed: seed,
+        conv_type: conv_type,
         sampler: sampler,
       } + (if sampler == 'curriculum' then {
         curriculum_start_ratio: curriculum_start_ratio,
@@ -81,6 +80,8 @@ function(
 
     model+: {
       init_args+: {
+        dataset: dataset,
+        seed: seed,
         conv_type: conv_type,
         loss_fn: loss_fn,
       } + (if distillation_config != null

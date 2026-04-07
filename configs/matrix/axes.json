@@ -1,4 +1,13 @@
 {
+  "pipeline_defaults": {
+    "dataset": "hcrl_ch",
+    "seed": 42,
+    "scale": "small",
+    "conv_type": "gatv2",
+    "variational": true,
+    "loss_fn": "focal",
+    "fusion_method": "bandit"
+  },
   "axes": {
     "datasets": ["hcrl_ch", "hcrl_sa", "set_01", "set_02", "set_03", "set_04"],
     "scales": ["small", "large"],

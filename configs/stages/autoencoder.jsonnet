@@ -8,15 +8,16 @@
 local defaults = import '../_lib/defaults.libsonnet';
 local helpers = import '../_lib/helpers.libsonnet';
 local unsup = import '../models/unsupervised.libsonnet';
+local pd = (import '../matrix/axes.json').pipeline_defaults;
 
 function(
-  dataset='hcrl_ch',
-  seed=42,
+  dataset=pd.dataset,
+  seed=pd.seed,
   run_dir='',
 
-  scale='small',
-  conv_type='gatv2',
-  variational=true,
+  scale=pd.scale,
+  conv_type=pd.conv_type,
+  variational=pd.variational,
   model_type='vgae',
 
   // KD — loss-level distillation config (null = no distillation)
@@ -27,12 +28,8 @@ function(
   ckpt_path=null,
 )
 
-  defaults.trainer
-  + defaults.checkpoint
-  + defaults.early_stopping
-
-  + unsup[model_type].base
-  + unsup[model_type].scales[scale]
+  defaults
+  + unsup[model_type][scale]
 
   + {
     seed_everything: seed,
@@ -51,11 +48,15 @@ function(
         num_workers: null,  // auto-sized from GPU-first sizing chain
         dynamic_batching: true,
         dataset: dataset,
+        seed: seed,
+        conv_type: conv_type,
       },
     },
 
     model+: {
       init_args+: {
+        dataset: dataset,
+        seed: seed,
         conv_type: conv_type,
         variational: variational,
       } + (if distillation_config != null

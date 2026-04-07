@@ -90,7 +90,7 @@ suppress_warnings = ["project_and_activated_venv_mismatch"]
 [tool.dg.project]
 root_module = "graphids"
 defs_module = "graphids.orchestrate"
-code_location_target_module = "graphids.orchestrate.definitions"
+code_location_target_module = "graphids.orchestrate.dagster.definitions"
 registry_modules = [
     "graphids.orchestrate.dagster.component",
 ]

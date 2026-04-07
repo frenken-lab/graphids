@@ -10,7 +10,6 @@ from .constants import (
     PROJECT_ROOT,
     VALID_FUSION_METHODS,
     VALID_MODEL_FAMILIES,
-    VALID_SCALES,
 )
 
 # Post Phase 1: jsonnet sources live at <repo>/configs/, not under graphids/
@@ -25,9 +24,6 @@ STAGES: dict[str, tuple[str, str, str]] = {
 }
 
 PIPELINE_TOPOLOGY: dict[str, Any] = {
-    "families": list(VALID_MODEL_FAMILIES),
-    "fusion_methods": list(VALID_FUSION_METHODS),
-    "scales": list(VALID_SCALES),
     "stages": _STAGE_DEFS,
     "default_stages": _topology.get("default_stages", []),
     "ckpt_stages": _topology.get("ckpt_stages", {}),
@@ -46,20 +42,15 @@ STAGE_DEPENDENCIES: dict[str, list[tuple[str, str]]] = {
 # jsonnet. Missing files fail fast at package import time with an
 # actionable path — no silent fallbacks.
 for _family in VALID_MODEL_FAMILIES:
-    if _family == "fusion":
-        continue  # fusion uses configs/fusion.libsonnet, not configs/models/
     _lib = _CONFIGS_DIR / "models" / f"{_family}.libsonnet"
     if not _lib.exists():
         raise FileNotFoundError(f"Missing model libsonnet: {_lib}")
 
-_fusion_lib = _CONFIGS_DIR / "fusion.libsonnet"
-if not _fusion_lib.exists():
-    raise FileNotFoundError(f"Missing fusion dispatch libsonnet: {_fusion_lib}")
-_fusion_base = _CONFIGS_DIR / "fusion" / "base.libsonnet"
+_fusion_base = _CONFIGS_DIR / "models" / "fusion" / "base.libsonnet"
 if not _fusion_base.exists():
     raise FileNotFoundError(f"Missing fusion base libsonnet: {_fusion_base}")
 for _method in VALID_FUSION_METHODS:
-    _method_file = _CONFIGS_DIR / "fusion" / "methods" / f"{_method}.libsonnet"
+    _method_file = _CONFIGS_DIR / "models" / "fusion" / "methods" / f"{_method}.libsonnet"
     if not _method_file.exists():
         raise FileNotFoundError(f"Missing fusion method libsonnet: {_method_file}")
 

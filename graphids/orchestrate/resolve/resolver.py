@@ -54,12 +54,12 @@ def _warn_stage_monitor_mismatch(validated: ValidatedConfig, stage: str, label: 
     if expected is None:
         return
     exp_monitor, exp_mode = expected
-    if validated.checkpoint.monitor != exp_monitor or validated.checkpoint.mode != exp_mode:
+    if validated.checkpoint_monitor != exp_monitor or validated.checkpoint_mode != exp_mode:
         log.warning(
             "stage_monitor_mismatch",
             asset=label,
             stage=stage,
-            got=f"{validated.checkpoint.monitor}/{validated.checkpoint.mode}",
+            got=f"{validated.checkpoint_monitor}/{validated.checkpoint_mode}",
             expected=f"{exp_monitor}/{exp_mode}",
         )
 
@@ -180,6 +180,7 @@ class ConfigResolver:
             cfg.resource_model or cfg.model_type,
             cfg.scale,
             cfg.stage,
+            dataset=dataset,
         )
         if cfg.resource_overrides:
             resources = apply_resource_overrides(resources, cfg.resource_overrides)

@@ -1,12 +1,10 @@
-"""Dagster-based pipeline orchestrator.
+"""Pipeline orchestration — shared planning, resolution, and ops.
 
 Module layout:
-- dagster/   : Dagster-facing component, assets, checks, resources
-- planning/  : pure planning + recipe expansion + StageConfig
+- planning/  : recipe expansion + StageConfig + enumerate_assets
 - resolve/   : ConfigResolver + cross-field validation
-- ops/       : CLI entry points (from-spec, pipeline-status, catalog)
-
-Entry points:
-  dg list defs                              — list all assets
-  dg launch --assets autoencoder_*          — materialize assets
+- contracts/ : TrainingSpec + TLA dict construction
+- ops/       : shared ops (from-spec, finalize, catalog, status)
+- analysis.py: shared analysis runner (Monarch + dagster)
+- dagster/   : dagster-specific component, assets, checks, resources, definitions
 """

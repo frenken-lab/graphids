@@ -23,7 +23,11 @@ from pathlib import Path
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
 CONFIG_DIR: Path = PROJECT_ROOT / "configs"
 
-_axes = json.loads((CONFIG_DIR / "matrix" / "axes.json").read_text()).get("axes", {})
+_axes_file = json.loads((CONFIG_DIR / "matrix" / "axes.json").read_text())
+_axes = _axes_file.get("axes", {})
+
+# Pipeline-wide defaults — single source of truth for CLI, PipelineConfig, jsonnet TLAs.
+PIPELINE_DEFAULTS: dict[str, object] = _axes_file.get("pipeline_defaults", {})
 VALID_SCALES: frozenset[str] = frozenset(_axes.get("scales", ["small", "large"]))
 VALID_FUSION_METHODS: frozenset[str] = frozenset(_axes.get("fusion_methods", []))
 
@@ -54,11 +58,6 @@ PHASE_MARKERS: dict[str, str] = {
     "analyze": ".analyze_complete",
 }
 RUN_RECORD_FILENAME: str = "run_record.json"
-DEFAULT_MODEL_TYPE: str = "vgae"
-DEFAULT_SCALE: str = next(iter(VALID_SCALES)) if VALID_SCALES else "small"
-DEFAULT_STAGE: str = "autoencoder"
-
-DEFAULT_DATASET: str = "set_01"
 DAGSTER_IO_DIR_TEMPLATE: str = "{lake_root}/.dagster/io"
 CATALOG_SUBPATH: str = "catalog/kd_gat.duckdb"
 DATASET_REGISTRY_PATH: Path = PROJECT_ROOT / "configs" / "datasets" / "dataset_registry.json"
