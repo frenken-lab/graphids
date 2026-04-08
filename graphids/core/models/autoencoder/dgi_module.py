@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 
 from ..base import GraphModuleBase, binary_test_metrics
+from .dgi import GraphInfomaxModel
 
 # ---------------------------------------------------------------------------
 # Lightning training module
@@ -66,9 +67,12 @@ class DGIModule(GraphModuleBase):
             node_id=batch.node_id,
         )
 
-    def _training_step_inner(self, batch, _idx):
+    def _step(self, batch):
         pos_z, neg_z, summary = self(batch)
-        loss = self.model.dgi_loss(pos_z, neg_z, summary, batch.batch)
+        return self.model.dgi_loss(pos_z, neg_z, summary, batch.batch)
+
+    def _training_step_inner(self, batch, _idx):
+        loss = self._step(batch)
         self.log("train_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
         return loss
 

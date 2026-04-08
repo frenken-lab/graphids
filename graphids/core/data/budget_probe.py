@@ -33,8 +33,14 @@ def _find_cached_datasets(lake_root: str) -> list[str]:
     return available
 
 
-def _instantiate_model(model_type: str, scale: str, num_ids: int, in_channels: int):
-    """Instantiate a model by rendering the model Jsonnet and importing the class directly."""
+def _instantiate_model(
+    model_type: str, scale: str, num_ids: int, in_channels: int, conv_type: str | None = None
+):
+    """Instantiate a model by rendering the model Jsonnet and importing the class directly.
+
+    When *conv_type* is provided it overrides the jsonnet default so the probe
+    can measure VRAM for different convolution backends (O(E) vs O(N²)).
+    """
     import importlib
     import inspect
 
@@ -51,6 +57,10 @@ def _instantiate_model(model_type: str, scale: str, num_ids: int, in_channels: i
     init_args = dict(model_cfg["model"].get("init_args", {}))
     init_args["num_ids"] = num_ids
     init_args["in_channels"] = in_channels
+
+    # Override conv_type if caller requests a different backend.
+    if conv_type is not None:
+        init_args["conv_type"] = conv_type
 
     # loss_fn is an nn.Module excluded from jsonnet — build a default for probing.
     loss_fn = build_loss(model_type, init_args.pop("loss_config", None), distillation_config=None)
@@ -132,8 +142,9 @@ def _probe_combo(
     dataset_name: str,
     lake_root: str,
     device,
+    conv_type: str | None = None,
 ) -> list[dict]:
-    """Run VRAM probe + multi-point calibration for one (model, scale, dataset).
+    """Run VRAM probe + multi-point calibration for one (model, scale, dataset, conv_type).
 
     Measures at multiple fractions of the VRAM budget so downstream plots
     can fit the throughput model (α, β, γ) from raw data points.
@@ -145,6 +156,7 @@ def _probe_combo(
     from graphids.core.data.budget import (
         _probe_vram,
         calibrate_at_budget,
+        conv_complexity,
         node_budget,
     )
     from graphids.core.data.datasets.can_bus import CANBusDataset
@@ -159,13 +171,13 @@ def _probe_combo(
     num_ids = ds.num_arb_ids
 
     # --- Instantiate model ---
-    model = _instantiate_model(model_type, scale, num_ids, in_channels)
+    model = _instantiate_model(model_type, scale, num_ids, in_channels, conv_type=conv_type)
     model = model.to(device)
 
+    # Resolve effective conv_type (may come from jsonnet default if not overridden).
+    effective_conv = conv_type or getattr(model, "hparams", {}).get("conv_type", "gatv2")
+
     # --- Replicate training VRAM footprint before measuring ---
-    # Training allocates optimizer state (Adam: 2× params) and torch.compile
-    # graph caches before the first real step. Allocate them here so
-    # torch.cuda.mem_get_info() in node_budget() sees realistic free VRAM.
     step_fn = getattr(model, "_step", None)
     _warmup_training_state(model, ds, device, step_fn)
 
@@ -178,13 +190,15 @@ def _probe_combo(
         lake_root,
         model=model,
         train_dataset=ds,
-        conv_type=getattr(model, "hparams", {}).get("conv_type", "gatv2"),
+        conv_type=effective_conv,
     )
 
     # --- Multi-point calibration ---
     shared = {
         "model_type": model_type,
         "scale": scale,
+        "conv_type": effective_conv,
+        "complexity": conv_complexity(effective_conv),
         "dataset": dataset_name,
         "bytes_per_node": bytes_per_node,
         "backward_multiplier": round(backward_mult, 2),
@@ -227,7 +241,7 @@ def _format_table(results: list[dict]) -> str:
         return "No results."
 
     header = (
-        f"{'model':<12} {'scale':<6} {'dataset':<10} {'frac':>5} "
+        f"{'model':<12} {'scale':<6} {'conv':<12} {'cplx':<5} {'dataset':<10} {'frac':>5} "
         f"{'target':>10} {'graphs':>7} "
         f"{'T_c(ms)':>9} {'T_g(ms)':>9} "
         f"{'B/node':>8} {'bwd':>5} {'budget':>10}"
@@ -236,7 +250,8 @@ def _format_table(results: list[dict]) -> str:
 
     for r in results:
         lines.append(
-            f"{r['model_type']:<12} {r['scale']:<6} {r['dataset']:<10} "
+            f"{r['model_type']:<12} {r['scale']:<6} {r['conv_type']:<12} "
+            f"{r['complexity']:<5} {r['dataset']:<10} "
             f"{r['fraction']:>5.2f} "
             f"{r['target_nodes']:>10,} {r['n_graphs']:>7,} "
             f"{r['t_collation_ms']:>9.2f} {r['t_gpu_ms']:>9.2f} "
@@ -251,13 +266,15 @@ def run_probe_budget(
     *,
     model_types: list[str],
     scales: list[str],
+    conv_types: list[str] | None = None,
     datasets: list[str] | None,
     lake_root: str,
     json_output: bool = False,
     dry_run: bool = False,
 ) -> None:
-    """Run VRAM probe + multi-point calibration over ``(model, scale, dataset)``.
+    """Run VRAM probe + multi-point calibration over ``(model, scale, conv_type, dataset)``.
 
+    When ``conv_types`` is ``None``, uses each model's jsonnet default (gatv2).
     When ``datasets`` is ``None``, auto-discovers all datasets that have a
     ``cache_metadata.json`` sidecar under ``lake_root``. Writes results to
     ``{lake_root}/reference/budget_calibration.csv`` unless ``dry_run`` is
@@ -279,12 +296,16 @@ def run_probe_budget(
         print(f"ERROR: no cached datasets found under {lake_root}", file=sys.stderr)
         sys.exit(1)
 
-    total = len(model_types) * len(scales) * len(resolved_datasets)
+    # None → [None] means "use jsonnet default"; explicit list sweeps conv types.
+    resolved_conv_types: list[str | None] = conv_types if conv_types else [None]
+
+    total = len(model_types) * len(scales) * len(resolved_conv_types) * len(resolved_datasets)
     log.info(
         "profile_budget_start",
         combos=total,
         models=model_types,
         scales=scales,
+        conv_types=conv_types,
         datasets=resolved_datasets,
     )
 
@@ -293,15 +314,19 @@ def run_probe_budget(
 
     for model_type in model_types:
         for scale in scales:
-            for dataset_name in resolved_datasets:
-                label = f"{model_type}/{scale}/{dataset_name}"
-                try:
-                    rows = _probe_combo(model_type, scale, dataset_name, lake_root, device)
-                    results.extend(rows)
-                    log.info("probe_done", label=label, points=len(rows))
-                except Exception as e:
-                    log.error("probe_failed", label=label, error=str(e))
-                    errors.append({"label": label, "error": str(e)})
+            for ct in resolved_conv_types:
+                for dataset_name in resolved_datasets:
+                    ct_label = ct or "default"
+                    label = f"{model_type}/{scale}/{ct_label}/{dataset_name}"
+                    try:
+                        rows = _probe_combo(
+                            model_type, scale, dataset_name, lake_root, device, conv_type=ct
+                        )
+                        results.extend(rows)
+                        log.info("probe_done", label=label, points=len(rows))
+                    except Exception as e:
+                        log.error("probe_failed", label=label, error=str(e))
+                        errors.append({"label": label, "error": str(e)})
 
     # --- Write to data lake ---
     out_path = None

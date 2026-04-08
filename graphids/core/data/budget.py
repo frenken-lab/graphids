@@ -48,6 +48,14 @@ _FALLBACK_BYTES_PER_NODE = int(os.environ.get("KD_GAT_BUDGET_FALLBACK_BPN", "327
 # DERIVED: conv types with O(N²) global attention (not O(E) over edges).
 _QUADRATIC_CONV_TYPES = frozenset({"gps"})
 
+# All conv types supported by graphids.core.models._conv._make_conv.
+VALID_CONV_TYPES = frozenset({"gat", "gatv2", "transformer", "gps"})
+
+
+def conv_complexity(conv_type: str) -> str:
+    """Return memory complexity class: ``'O(E)'`` for sparse, ``'O(N²)'`` for dense."""
+    return "O(N²)" if conv_type in _QUADRATIC_CONV_TYPES else "O(E)"
+
 
 # ---------------------------------------------------------------------------
 # Section 1: Constants + helpers (above) and shared utilities
