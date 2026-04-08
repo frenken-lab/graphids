@@ -133,7 +133,7 @@ def monarch_sweep(
     if datasets:
         dataset_list = [d.strip() for d in datasets.split(",")]
     else:
-        from graphids.config.paths import dataset_names
+        from graphids.config.topology import dataset_names
 
         dataset_list = dataset_names()
 

@@ -23,7 +23,7 @@ _CLASS_PATH_TO_MODEL_TYPE: dict[str, str] = {
 
 
 def build_loss(
-    model_type: str,
+    model_type: str | None,
     loss_config: dict[str, Any] | None,
     distillation_config: dict[str, Any] | None,
 ):

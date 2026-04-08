@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Literal
 
 import torch
 
-from graphids.config.paths import cache_dir, data_dir
+from graphids.config.topology import cache_dir, data_dir
 from graphids.core.models.base import safe_load_checkpoint
 from graphids.log import get_logger
 
@@ -29,7 +28,7 @@ class Analyzer:
         dataset: str,
         model_type: Literal["vgae", "gat", "fusion"],
         # --- paths ---
-        lake_root: str = os.environ.get("KD_GAT_LAKE_ROOT"),
+        lake_root: str | None = None,
         output_dir: str = "artifacts/",
         # --- artifact toggles ---
         embeddings: bool = True,
@@ -56,6 +55,10 @@ class Analyzer:
         vgae_ckpt_path: str = "",
         gat_ckpt_path: str = "",
     ):
+        if lake_root is None:
+            from graphids.config.settings import get_settings
+
+            lake_root = get_settings().lake_root
         self.ckpt_path = ckpt_path
         self.dataset = dataset
         self.model_type = model_type

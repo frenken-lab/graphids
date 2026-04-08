@@ -1,19 +1,20 @@
 """SLURM-scoped environment variables.
 
-Kept out of ``graphids.config.constants`` because SLURM account / log
-directory are SLURM infrastructure concerns, not config composition.
-Callers (``slurm/pipeline.py``, ``commands/pipeline_status.py``) import
-from here.
+``KD_GAT_SLURM_*`` env vars are read from ``graphids.config.settings``.
+SLURM-injected vars (``SLURM_JOB_ID`` etc.) stay as direct ``os.environ``
+reads because they are only set inside a running job.
 """
 
 from __future__ import annotations
 
 import os
 
-from graphids.config.constants import LAKE_ROOT, PROJECT_ROOT
+from graphids.config.constants import PROJECT_ROOT
+from graphids.config.settings import get_settings
 
-SLURM_ACCOUNT: str = os.environ.get("KD_GAT_SLURM_ACCOUNT", "PAS1266")
-SLURM_LOG_DIR: str = os.environ.get("KD_GAT_SLURM_LOG_DIR", f"{LAKE_ROOT}/slurm")
+_s = get_settings()
+SLURM_ACCOUNT: str = _s.slurm_account
+SLURM_LOG_DIR: str = _s.slurm_log_dir
 
 # Shell script paths sourced by generated sbatch scripts
 PREAMBLE_PATH: str = str(PROJECT_ROOT / "scripts" / "slurm" / "_preamble.sh")

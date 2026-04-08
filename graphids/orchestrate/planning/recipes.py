@@ -27,20 +27,26 @@ from pydantic import (  # noqa: F401 (AfterValidator resolved by model_rebuild)
     ConfigDict,
     Field,
     field_validator,
-    model_validator,
 )
 
 from graphids.config.constants import (
     CONFIG_DIR,
     VALID_FUSION_METHODS,
-    VALID_MODEL_TYPES,
     VALID_SCALES,
+    ModelType,  # noqa: F401 (resolved by model_rebuild)
 )
 from graphids.config.jsonnet import render
-from graphids.config.topology import STAGES
-from graphids.config.validators import (
-    check_in,  # noqa: F401 (resolved by model_rebuild)
-)
+from graphids.config.topology import TOPOLOGY  # noqa: F401 (used in field default)
+
+
+def check_in(valid, label):  # noqa: F401 (resolved by model_rebuild)
+    def _v(v):
+        if v not in valid:
+            raise ValueError(f"{label}={v!r} not in {sorted(valid)}")
+        return v
+
+    return _v
+
 
 # Type aliases — evaluated eagerly, immune to __future__.annotations quote-stripping.
 _ConvType = Literal["gatv2", "gat", "gps"]
@@ -67,7 +73,9 @@ class TrainingRunConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    stages: tuple[str, ...] = ("autoencoder", "supervised", "fusion")
+    stages: tuple[Annotated[str, AfterValidator(check_in(TOPOLOGY.stages, "stage"))], ...] = tuple(
+        TOPOLOGY.default_stages
+    )
     scale: Annotated[str, AfterValidator(check_in(VALID_SCALES, "scale"))] = "small"
     conv_type: _ConvType = "gatv2"
     loss_fn: _LossFn = "focal"
@@ -75,7 +83,7 @@ class TrainingRunConfig(BaseModel):
         str, AfterValidator(check_in(VALID_FUSION_METHODS, "fusion_method"))
     ] = "bandit"
     variational: bool = True
-    model_type: str | None = None
+    model_type: ModelType | None = None
     auxiliaries: tuple[KDEntry, ...] = ()
 
     @field_validator("stages", mode="before")
@@ -87,25 +95,11 @@ class TrainingRunConfig(BaseModel):
     @classmethod
     def _coerce_auxiliaries(cls, v: Any) -> Any:
         if isinstance(v, list):
-            return tuple(KDEntry(**x) if isinstance(x, dict) else x for x in v)
+            return tuple(KDEntry.model_validate(x) if isinstance(x, dict) else x for x in v)
         return v
-
-    @field_validator("model_type")
-    @classmethod
-    def _valid_model_type(cls, v: str | None) -> str | None:
-        if v is not None and v not in VALID_MODEL_TYPES:
-            raise ValueError(f"model_type={v!r} not in {sorted(VALID_MODEL_TYPES)}")
-        return v
-
-    @model_validator(mode="after")
-    def _stages_exist(self) -> TrainingRunConfig:
-        bad = [s for s in self.stages if s not in STAGES]
-        if bad:
-            raise ValueError(f"Unknown stages: {bad}. Valid: {sorted(STAGES)}")
-        return self
 
     def merge(self, overrides: dict[str, Any]) -> TrainingRunConfig:
-        return TrainingRunConfig(**{**self.model_dump(), **overrides})
+        return TrainingRunConfig.model_validate({**self.model_dump(), **overrides})
 
 
 # Resolve deferred Annotated/Literal annotations (from __future__ import annotations).
@@ -149,9 +143,11 @@ class _RecipeEnvelope(BaseModel):
     @field_validator("stage_overrides")
     @classmethod
     def _valid_stage_names(cls, v: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-        bad = [s for s in v if s not in STAGES]
+        bad = [s for s in v if s not in TOPOLOGY.stages]
         if bad:
-            raise ValueError(f"Unknown stages in stage_overrides: {bad}. Valid: {sorted(STAGES)}")
+            raise ValueError(
+                f"Unknown stages in stage_overrides: {bad}. Valid: {sorted(TOPOLOGY.stages)}"
+            )
         return v
 
 

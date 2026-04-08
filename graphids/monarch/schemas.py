@@ -6,7 +6,7 @@ crash at config construction, not deep in jsonnet rendering.
 
 from __future__ import annotations
 
-from typing import Annotated, Any  # noqa: F401 (resolved by model_rebuild)
+from typing import Annotated, Any, Literal  # noqa: F401 (resolved by model_rebuild)
 
 from pydantic import (  # noqa: F401 (AfterValidator resolved by model_rebuild)
     AfterValidator,
@@ -20,11 +20,27 @@ from graphids.config.constants import (  # noqa: F401 (resolved by model_rebuild
     VALID_FUSION_METHODS,
     VALID_SCALES,
 )
-from graphids.config.topology import STAGES  # noqa: F401 (resolved by model_rebuild)
-from graphids.config.validators import (  # noqa: F401 (resolved by model_rebuild)
-    check_all_in,
-    check_in,
-)
+from graphids.config.topology import TOPOLOGY  # noqa: F401 (resolved by model_rebuild)
+
+
+def check_in(valid, label):  # noqa: F401 (resolved by model_rebuild)
+    def _v(v):
+        if v not in valid:
+            raise ValueError(f"{label}={v!r} not in {sorted(valid)}")
+        return v
+
+    return _v
+
+
+def check_all_in(valid, label):  # noqa: F401 (resolved by model_rebuild)
+    def _v(v):
+        bad = [x for x in v if x not in valid]
+        if bad:
+            raise ValueError(f"Unknown {label}(s): {bad}. Valid: {sorted(valid)}")
+        return v
+
+    return _v
+
 
 _D = PIPELINE_DEFAULTS
 
@@ -43,12 +59,12 @@ class PipelineConfig(BaseModel):
     fusion_method: Annotated[
         str, AfterValidator(check_in(VALID_FUSION_METHODS, "fusion_method"))
     ] = _D.get("fusion_method", "bandit")
-    stages: Annotated[list[str], AfterValidator(check_all_in(STAGES, "stage"))] = Field(
+    stages: Annotated[list[str], AfterValidator(check_all_in(TOPOLOGY.stages, "stage"))] = Field(
         default_factory=lambda: list(_D.get("stages", ["autoencoder", "supervised", "fusion"])),
     )
-    conv_type: str = _D.get("conv_type", "gatv2")
+    conv_type: Literal["gatv2", "gat", "gps"] = _D.get("conv_type", "gatv2")
     variational: bool = _D.get("variational", True)
-    loss_fn: str = _D.get("loss_fn", "focal")
+    loss_fn: Literal["focal", "ce", "weighted_ce"] = _D.get("loss_fn", "focal")
     tla_overrides: dict[str, Any] = Field(default_factory=dict)
     max_retries: int = 2
 

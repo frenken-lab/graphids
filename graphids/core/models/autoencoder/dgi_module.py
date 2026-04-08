@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-import os
+from graphids.config.constants import (
+    ModelType,  # noqa: F401 (used in __init__ annotation)
+)
 
 from ..base import GraphModuleBase, binary_test_metrics
 from .dgi import GraphInfomaxModel
@@ -33,14 +35,18 @@ class DGIModule(GraphModuleBase):
         compile_model: bool = False,
         # --- identity / dynamic ---
         scale: str = "small",
-        model_type: str = "dgi",
-        lake_root: str = os.environ.get("KD_GAT_LAKE_ROOT"),
+        model_type: ModelType = "dgi",
+        lake_root: str | None = None,
         dataset: str = "",
         seed: int = 42,
         num_ids: int = 0,
         in_channels: int = 0,
         num_classes: int = 2,
     ):
+        if lake_root is None:
+            from graphids.config.settings import get_settings
+
+            lake_root = get_settings().lake_root
         super().__init__()
         self.save_hyperparameters()
         self.model = None

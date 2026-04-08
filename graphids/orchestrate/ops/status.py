@@ -10,13 +10,15 @@ is re-exported so the CLI shim can build ``choices=`` from its keys.
 from __future__ import annotations
 
 import json
-import os
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from graphids.config.constants import CONFIG_DIR, LAKE_ROOT
-from graphids.config.paths import catalog_path
+from graphids.config.topology import (
+    TOPOLOGY,  # noqa: F401 (used in module body)
+    catalog_path,
+)
 from graphids.slurm.env import SLURM_LOG_DIR
 
 RECIPES_DIR = CONFIG_DIR / "recipes"
@@ -27,7 +29,7 @@ RECIPES_DIR = CONFIG_DIR / "recipes"
 
 _FAILED_STATES = frozenset({"FAILED", "TIMEOUT", "OUT_OF_MEMORY", "CANCELLED"})
 _RUNNING_STATES = frozenset({"RUNNING", "PENDING"})
-_STAGE_ORDER = {"autoencoder": 0, "supervised": 1, "fusion": 2}
+_STAGE_ORDER = {s: i for i, s in enumerate(TOPOLOGY.default_stages)}
 
 _CATALOG_STATUS_MAP = {
     "completed": "COMPLETED",
@@ -63,16 +65,17 @@ def _load_topology(recipe_path: str | Path | None = None) -> list:
     and ``model_init_overrides`` — everything needed for the status table.
     """
     from graphids.config.jsonnet import render
-    from graphids.config.topology import PIPELINE_TOPOLOGY
     from graphids.orchestrate.planning import enumerate_assets, expand_recipe_configs
 
     if recipe_path is None:
-        recipe_env = os.environ.get("KD_GAT_RECIPE")
+        from graphids.config.settings import get_settings
+
+        recipe_env = get_settings().recipe
         recipe_path = Path(recipe_env) if recipe_env else RECIPES_DIR / "ablation.jsonnet"
 
     raw = render(Path(recipe_path))
     expanded = expand_recipe_configs(raw)
-    return enumerate_assets(PIPELINE_TOPOLOGY, expanded)
+    return enumerate_assets(TOPOLOGY.model_dump(), expanded)
 
 
 def _asset_description(cfg) -> str:

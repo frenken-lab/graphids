@@ -21,13 +21,12 @@ from __future__ import annotations
 
 import importlib
 import math
-import os
 
 import pytorch_lightning as pl
 import torch
 from torch_geometric.data import InMemoryDataset
 
-from graphids.config.paths import cache_dir, data_dir, load_catalog
+from graphids.config.topology import cache_dir, data_dir, load_catalog
 from graphids.core.data.budget import autosize_workers, node_budget
 from graphids.core.data.sampler import (
     NodeBudgetBatchSampler,
@@ -90,7 +89,7 @@ class GraphDataModule(pl.LightningDataModule):
         self,
         dataset: str,
         dataset_cls: str = "graphids.core.data.datasets.can_bus.CANBusDataset",
-        lake_root: str = os.environ.get("KD_GAT_LAKE_ROOT"),
+        lake_root: str | None = None,
         batch_size: int = 32,
         num_workers: int | None = None,
         prefetch_factor: int = 2,
@@ -110,6 +109,10 @@ class GraphDataModule(pl.LightningDataModule):
         canid_weight: float = 0.1,
         num_tiers: int = 10,
     ):
+        if lake_root is None:
+            from graphids.config.settings import get_settings
+
+            lake_root = get_settings().lake_root
         super().__init__()
         self.save_hyperparameters()
         # Resolve dataset_cls class-path string → actual class

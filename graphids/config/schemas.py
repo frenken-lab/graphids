@@ -1,81 +1,24 @@
-"""Pydantic schemas for structural validation of rendered jsonnet configs.
-
-Scope: validation of a rendered dict produced by
-``graphids.config.jsonnet.render_config``. Nothing else lives here:
-
-- Recipe envelope Pydantic      → ``graphids.orchestrate.planning.recipes``
-- Cross-field orchestration rules → ``graphids.orchestrate.resolve.cross_field``
-- Filesystem I/O                → ``graphids.core.io``
-
-``PathContext`` is a pure string-composition frozen model used by both
-the resolver and callers that need to build run-dir paths without
-touching the filesystem.
-"""
+"""Pydantic schemas for structural validation of rendered jsonnet configs."""
 
 from __future__ import annotations
 
-from pathlib import Path, PurePosixPath
 from typing import Any, Literal  # noqa: F401 (resolved by model_rebuild)
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .constants import CKPT_SUBPATH, COMPLETE_MARKER, LAST_CKPT_SUBPATH
-
-
-class PathContext(BaseModel):
-    """Frozen path model — single source for all run-related paths."""
-
-    model_config = ConfigDict(frozen=True)
-
-    lake_root: str
-    user: str
-    dataset: str
-    model_type: str
-    scale: str
-    stage: str
-    identity: str
-    kd_tag: str
-    seed: int
-
-    @property
-    def run_dir(self) -> Path:
-        return Path(
-            f"{self.lake_root}/dev/{self.user}/{self.dataset}/"
-            f"{self.model_type}_{self.scale}_{self.stage}"
-            f"{self.identity}{self.kd_tag}/seed_{self.seed}"
-        )
-
-    @property
-    def ckpt_file(self) -> Path:
-        return self.run_dir / CKPT_SUBPATH
-
-    @property
-    def complete_marker(self) -> Path:
-        return self.run_dir / COMPLETE_MARKER
-
-    @property
-    def last_ckpt_file(self) -> Path:
-        return self.run_dir / LAST_CKPT_SUBPATH
-
-    @property
-    def ckpt_dir(self) -> Path:
-        return self.run_dir / PurePosixPath(CKPT_SUBPATH).parent
+_MinMaxMode = Literal["min", "max"]
+_MODEL_LIST_FIELDS = ("pool_aggrs", "hidden_dims", "auxiliaries")
+_ALLOWED_CLASS_PATH_ROOTS = ("graphids.", "lightning.pytorch.", "pytorch_lightning.")
 
 
 class ClassPathBlock(BaseModel):
-    """``{class_path, init_args}`` instantiation block used by data and model."""
-
     model_config = ConfigDict(extra="forbid")
-
     class_path: str = Field(..., min_length=1)
     init_args: dict[str, Any] = Field(default_factory=dict)
 
 
 class TrainerSection(BaseModel):
-    """Lightning ``Trainer`` kwargs block (allow extras)."""
-
     model_config = ConfigDict(extra="allow")
-
     accelerator: str | None = None
     devices: Any | None = None
     precision: str | int | None = None
@@ -87,20 +30,8 @@ class TrainerSection(BaseModel):
     callbacks: list[dict] | None = None
 
 
-_MinMaxMode = Literal["min", "max"]
-_MODEL_LIST_FIELDS: tuple[str, ...] = ("pool_aggrs", "hidden_dims", "auxiliaries")
-_ALLOWED_CLASS_PATH_ROOTS: tuple[str, ...] = (
-    "graphids.",
-    "lightning.pytorch.",
-    "pytorch_lightning.",
-)
-
-
 class _MonitorBlock(BaseModel):
-    """Shared base — forces strict mode enum for monitored callbacks."""
-
     model_config = ConfigDict(extra="forbid")
-
     monitor: str = Field(..., min_length=1)
     mode: _MinMaxMode
 
@@ -115,30 +46,15 @@ class EarlyStoppingSection(_MonitorBlock):
     patience: int = 100
 
 
-# Resolve deferred Literal annotation (from __future__ import annotations).
 _MonitorBlock.model_rebuild()
 CheckpointSection.model_rebuild()
 EarlyStoppingSection.model_rebuild()
 
 
 class CallbacksSection(BaseModel):
-    """Named callbacks dict emitted by defaults.libsonnet.
-
-    ``checkpoint`` and ``early_stopping`` are typed strictly.
-    Other callbacks are validated as ``ClassPathBlock`` (class_path + init_args).
-    """
-
     model_config = ConfigDict(extra="allow")
-
     checkpoint: ClassPathBlock
     early_stopping: ClassPathBlock
-
-    @model_validator(mode="after")
-    def _validate_monitor_blocks(self) -> CallbacksSection:
-        """Parse checkpoint/early_stopping init_args through typed Pydantic models."""
-        CheckpointSection.model_validate(self.checkpoint.init_args)
-        EarlyStoppingSection.model_validate(self.early_stopping.init_args)
-        return self
 
     @model_validator(mode="after")
     def _monitor_pair_consistent(self) -> CallbacksSection:
@@ -152,11 +68,12 @@ class CallbacksSection(BaseModel):
         return self
 
 
+class ConfigValidationError(ValueError):
+    pass
+
+
 class ValidatedConfig(BaseModel):
-    """Typed representation of a rendered stage config."""
-
     model_config = ConfigDict(extra="forbid")
-
     seed_everything: int
     trainer: TrainerSection
     data: ClassPathBlock
@@ -209,13 +126,8 @@ class ValidatedConfig(BaseModel):
         return self
 
 
-class ConfigValidationError(ValueError):
-    """Raised when a rendered jsonnet config fails structural/convention checks."""
-
-
 def validate_config(rendered: dict[str, Any]) -> ValidatedConfig:
-    """Validate a rendered jsonnet config and return the typed view."""
     try:
         return ValidatedConfig.model_validate(rendered)
-    except Exception as e:  # pragma: no cover - bubbled with context
+    except Exception as e:
         raise ConfigValidationError(str(e)) from e

@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from pydantic import BaseModel, ConfigDict, Field
 
 from graphids.config.constants import PROJECT_ROOT
+from graphids.config.topology import TOPOLOGY
 from graphids.contracts import from_envelope as _from_envelope
 from graphids.contracts import to_envelope as _to_envelope
 
@@ -64,13 +65,8 @@ class TrainingSpec(BaseModel):
 
 _STAGES_DIR = CONFIGS_DIR / "stages"
 
-# Stage -> jsonnet filename (all fusion methods share one stage file;
-# method dispatch happens inside fusion.jsonnet via the fusion_method TLA).
-_STAGE_JSONNET: dict[str, str] = {
-    "autoencoder": "autoencoder.jsonnet",
-    "supervised": "supervised.jsonnet",
-    "fusion": "fusion.jsonnet",
-}
+# Convention: stage name == jsonnet filename (topology.py validates existence).
+_STAGE_JSONNET: dict[str, str] = {s: f"{s}.jsonnet" for s in TOPOLOGY.stages}
 
 
 def to_envelope(spec: TrainingSpec, *, metadata: dict[str, Any] | None = None):
@@ -79,12 +75,6 @@ def to_envelope(spec: TrainingSpec, *, metadata: dict[str, Any] | None = None):
 
 def from_envelope(payload: dict[str, Any]) -> TrainingSpec:
     return _from_envelope(payload, TrainingSpec)
-
-
-def normalize_scale(scale: str) -> str:
-    if scale not in {"small", "large"}:
-        raise ValueError(f"Unsupported scale '{scale}'. Expected: small or large.")
-    return scale
 
 
 def resolve_jsonnet_path(stage: str) -> str:
@@ -128,9 +118,8 @@ def build_tla_dict(
     # stage_tlas in topology.json declares every non-common TLA the
     # stage's jsonnet function accepts. Gate ALL optional TLAs through
     # it — no if/elif per stage, no unknown-parameter crashes.
-    from graphids.config.topology import _STAGE_DEFS
-
-    accepted = set(_STAGE_DEFS.get(stage_cfg.stage, {}).get("stage_tlas", []))
+    stage_def = TOPOLOGY.stages.get(stage_cfg.stage)
+    accepted = set(stage_def.stage_tlas) if stage_def else set()
 
     # Model knobs from planner (conv_type, loss_fn, variational)
     for key in ("conv_type", "variational", "loss_fn"):
@@ -166,7 +155,6 @@ __all__ = [
     "TrainingSpec",
     "build_tla_dict",
     "from_envelope",
-    "normalize_scale",
     "resolve_jsonnet_path",
     "to_envelope",
 ]

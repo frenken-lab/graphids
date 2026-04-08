@@ -18,7 +18,7 @@ from graphids.config.constants import (
     PHASE_MARKERS,
     RUN_RECORD_FILENAME,
 )
-from graphids.config.paths import catalog_path
+from graphids.config.topology import catalog_path
 from graphids.log import get_logger
 
 log = get_logger(__name__)
@@ -30,7 +30,6 @@ def _backfill_legacy_runs(lake_root: str, *, dry_run: bool = False) -> int:
     Reconstructs from config_snapshot.json + phase markers + metrics.csv.
     Returns count of sidecars written.
     """
-    from graphids.config.paths import parse_identity_from_run_dir
     from graphids.core.io import write_run_record
     from graphids.core.run_record import RunRecord
 
@@ -46,7 +45,7 @@ def _backfill_legacy_runs(lake_root: str, *, dry_run: bool = False) -> int:
 
         run_dir = str(seed_dir)
         try:
-            identity = parse_identity_from_run_dir(run_dir)
+            identity = RunDirIdentity.from_run_dir(run_dir)
         except (IndexError, ValueError):
             log.warning("backfill_skip_parse", run_dir=run_dir)
             continue
@@ -74,14 +73,14 @@ def _backfill_legacy_runs(lake_root: str, *, dry_run: bool = False) -> int:
         record = RunRecord(
             status=status,
             run_dir=run_dir,
-            stage=identity["stage"],
-            model_family=identity["model_family"],
-            scale=identity["scale"],
-            dataset=identity["dataset"],
-            seed=identity["seed"],
-            identity_hash=identity["identity_hash"],
-            kd_tag=identity["kd_tag"],
-            user=identity["user"],
+            stage=identity.stage,
+            model_family=identity.model_family,
+            scale=identity.scale,
+            dataset=identity.dataset,
+            seed=identity.seed,
+            identity_hash=identity.identity_hash,
+            kd_tag=identity.kd_tag,
+            user=identity.user,
             graphids_version=graphids_version,
             started_at=started_at,
             source="cli",
@@ -149,7 +148,7 @@ def _rebuild_catalog(lake_root: str, *, dry_run: bool = False) -> int:
         log.info("rebuild_dry_run", sidecar_count=len(sidecars))
         return len(sidecars)
 
-    from graphids.config.paths import require_lake_write
+    from graphids.config.settings import require_lake_write
 
     require_lake_write()
     cat_path.parent.mkdir(parents=True, exist_ok=True)

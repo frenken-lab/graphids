@@ -37,29 +37,78 @@ dev-time tensor shape/NaN guards where Pydantic can't reach.
 **Current usage (10 files):** `BaseModel`, `ConfigDict` (frozen/extra), `Field`,
 `model_validator(mode="after")`, `field_validator`, `model_validate`/`model_dump`/
 `model_dump_json`/`model_validate_json`, `create_model`, `model_rebuild`, `Literal`,
-`ClassVar`, `arbitrary_types_allowed`.
+`ClassVar`, `arbitrary_types_allowed`, `AfterValidator` (via `check_in`/`check_all_in`
+factories in `graphids/config/validators.py`).
 
-**Ignored features that would help:**
+**Handrolled replacements (completed session 38):** `Literal["min","max"]` for monitor
+mode, `StageConfig`/`ResourceSpec` promoted to Pydantic, `AwareDatetime` for timestamps.
 
-- `pydantic-settings` `BaseSettings` — already a dependency but never imported. 25+
-  scattered `os.environ.get("KD_GAT_*")` across 12 files with manual type coercion.
-  One `BaseSettings` subclass with `env_prefix="KD_GAT_"` replaces all of them.
-- `@computed_field` — `PathContext` has 5 properties invisible to `model_dump()`;
-  `ResourceSpec` has 2. These are the exact use case.
-- `Annotated[str, AfterValidator(...)]` — 10+ identical set-membership validators in
-  `recipes.py` and `monarch/schemas.py` all doing `if v not in SET: raise ValueError`.
-- `model_json_schema()` — never called. Could auto-generate config documentation.
-- Discriminated unions — manual dispatch where Pydantic could handle it.
+### Unused features — verified audit (2026-04-08)
 
-**Handrolled replacements:**
+#### P0: `pydantic-settings` `BaseSettings` — env var consolidation
 
-- `_MonitorBlock.mode` model_validator checks `mode in ("min","max")` — `Literal["min","max"]` does this natively. 3 lines to delete.
-- `StageConfig`/`ResourceSpec` are stdlib dataclasses with manual `to_dict()`/`from_dict()` — Pydantic provides `model_dump()`/`model_validate()` natively.
-- `RunRecord` timestamps stored as `str` with manual `.isoformat()` — `AwareDatetime` handles this.
-- Contract envelope serialization hand-builds versioned wrappers around `model_dump()`.
+Already a dependency (`pyproject.toml:22`), never imported. 19 `os.environ.get`
+calls across 14 files with manual type coercion. Verified problems:
 
-**Priority:** P0: `Literal` for mode, `@computed_field`. P1: `BaseSettings` for env vars,
-`Annotated` validators. P2: promote dataclasses to Pydantic, `model_json_schema()`.
+| Problem | Scope |
+|---------|-------|
+| `KD_GAT_LAKE_ROOT` read 9× (only `constants.py:69` is canonical) | `runtime.py`, `staging.py`, `fusion_states.py`, 5 `__init__` defaults |
+| 6 `__init__` default-arg uses bake at import time, not call time | `graph.py:93`, `fusion.py:40`, `vgae_module.py:58`, `dgi_module.py:37`, `gat_module.py:49`, `analyzer.py:32` |
+| `KD_GAT_SCRATCH` read in 2 files with no shared constant | `cache.py:51`, `staging.py:80` |
+| Manual `float()`/`int()`/`.lower()` coercion | `budget.py:37-46`, `resources.py:63`, `definitions.py:32` |
+
+One `BaseSettings` subclass with `env_prefix="KD_GAT_"` would: (a) eliminate all 19
+scattered reads, (b) fix the import-time baking bug in 6 `__init__` defaults,
+(c) give typed coercion for free (`float`, `int`, `bool`, `Path`).
+
+Centralization modules already exist (`config/constants.py`, `slurm/env.py`) but only
+cover 3 vars each — the rest are ad-hoc.
+
+#### P1: Remaining `AfterValidator` / `Literal` gaps
+
+`check_in`/`check_all_in` factories exist and most fields use them. Remaining gaps:
+
+| Location | Current | Fix |
+|----------|---------|-----|
+| `recipes.py:93-98` `_valid_model_type` | `@field_validator` with `None` guard | `Annotated[str, AfterValidator(check_in(VALID_MODEL_TYPES, ...))] \| None` |
+| `recipes.py:100-105` `_stages_exist` | `@model_validator` iterating tuple | `tuple[Annotated[str, AfterValidator(check_in(STAGES, ...))], ...]` |
+| `recipes.py:149-155` `_valid_stage_names` | `@field_validator` on dict keys | Keep — dict-key validation has no clean `Annotated` equivalent |
+| `contracts/__init__.py:84-87` `normalize_scale` | Hardcoded `{"small", "large"}` | Use `VALID_SCALES` from constants, or delete if callers already Pydantic-validated |
+| `monarch/schemas.py:49,51` `conv_type`, `loss_fn` | Plain `str`, no validation | Use `_ConvType`/`_LossFn` Literals from `recipes.py`, or `AfterValidator(check_in(...))` |
+
+Net: ~15 lines deleted across 3 files. `_valid_stage_names` stays (dict-key validation).
+
+#### P2: `@computed_field` — narrower than expected
+
+`PathContext` has 5 properties, `ValidatedConfig` has 2, `ResourceSpec` has 2 — all
+invisible to `model_dump()`. However:
+
+- `PathContext` is never `model_dump()`'d. It lives on `ResolvedConfig` (a dataclass)
+  and consumers access `.paths.run_dir` directly. **No serialization gap in practice.**
+- `ResourceSpec.mem_mb`/`time_minutes` are consumed by internal code, never serialized.
+- `ValidatedConfig.checkpoint_monitor`/`checkpoint_mode` are convenience accessors.
+
+`@computed_field` would be correct but the serialization gap doesn't bite today.
+Convert if/when these models need to round-trip through JSON (e.g., DuckDB catalog
+ingestion). Low urgency.
+
+#### Skip: Discriminated unions
+
+No `Union[...]` annotations exist in Pydantic models. All dispatch is on bare strings
+in function args (`build_loss`, `_make_conv`, `build_tla_dict`). Replacing these with
+discriminated unions requires promoting `loss_config` dicts into typed Pydantic models
+with `type: Literal[...]` fields — a non-trivial schema change for marginal benefit.
+Strongest candidate if ever revisited: `loss_config` in `build.py` (already has a
+`"type"` key acting as discriminator).
+
+#### Skip: `model_json_schema()`
+
+Never called. Could auto-generate config docs from Pydantic models. Low value — jsonnet
+is the user-facing config surface, not Pydantic schemas.
+
+**Priority summary:** ~~P0: `BaseSettings`~~ done (session 39). ~~P1: validator gaps~~ done
+(session 39). P2: `@computed_field` (correct but not urgent). Skip: discriminated unions,
+`model_json_schema()`.
 
 ---
 

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from graphids.config.topology import PIPELINE_TOPOLOGY
+from graphids.config.topology import TOPOLOGY
 from graphids.orchestrate.planning import enumerate_assets
 
 
@@ -51,7 +51,7 @@ class TestKDTeacherResolution:
                 "student": _student(teacher_config="teacher", scale="small"),
             }
         )
-        specs = enumerate_assets(PIPELINE_TOPOLOGY, recipe)
+        specs = enumerate_assets(TOPOLOGY.model_dump(), recipe)
         student_specs = [s for s in specs if s.kd_tag == "_kd"]
         assert student_specs, "no KD student asset produced"
         student = student_specs[0]
@@ -69,7 +69,7 @@ class TestKDTeacherResolution:
             }
         )
         with pytest.raises(ValueError, match="missing teacher_config"):
-            enumerate_assets(PIPELINE_TOPOLOGY, recipe)
+            enumerate_assets(TOPOLOGY.model_dump(), recipe)
 
     def test_teacher_config_not_found_raises(self):
         recipe = _recipe(
@@ -79,7 +79,7 @@ class TestKDTeacherResolution:
             }
         )
         with pytest.raises(ValueError, match="does not name a config"):
-            enumerate_assets(PIPELINE_TOPOLOGY, recipe)
+            enumerate_assets(TOPOLOGY.model_dump(), recipe)
 
     def test_teacher_with_own_auxiliaries_raises(self):
         """A config used as teacher must not itself have KD auxiliaries.
@@ -104,7 +104,7 @@ class TestKDTeacherResolution:
             }
         )
         with pytest.raises(ValueError, match="has its own auxiliaries"):
-            enumerate_assets(PIPELINE_TOPOLOGY, recipe)
+            enumerate_assets(TOPOLOGY.model_dump(), recipe)
 
     def test_teacher_missing_student_stage_raises(self):
         """Teacher must produce the same stage the student needs."""
@@ -119,7 +119,7 @@ class TestKDTeacherResolution:
             }
         )
         with pytest.raises(ValueError, match="does not produce a 'supervised' asset"):
-            enumerate_assets(PIPELINE_TOPOLOGY, recipe)
+            enumerate_assets(TOPOLOGY.model_dump(), recipe)
 
     def test_key_order_insensitive(self):
         """Renaming/reordering configs must not rewire the student teacher.
@@ -141,8 +141,8 @@ class TestKDTeacherResolution:
                 "student": _student(teacher_config="beta_large", scale="small"),
             }
         )
-        specs_a = enumerate_assets(PIPELINE_TOPOLOGY, recipe_a)
-        specs_b = enumerate_assets(PIPELINE_TOPOLOGY, recipe_b)
+        specs_a = enumerate_assets(TOPOLOGY.model_dump(), recipe_a)
+        specs_b = enumerate_assets(TOPOLOGY.model_dump(), recipe_b)
 
         def student_upstream(specs):
             kd = next(s for s in specs if s.kd_tag == "_kd")

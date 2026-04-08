@@ -8,12 +8,13 @@ from pathlib import Path
 import dagster as dg
 
 from graphids.config.constants import COMPLETE_MARKER
-from graphids.config.schemas import PathContext
+from graphids.config.topology import PathContext
+from graphids.config.settings import get_settings
 from graphids.orchestrate.planning import StageConfig
 
 
 def _runtime_lake_root() -> str:
-    return os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns")
+    return get_settings().lake_root
 
 
 def _runtime_user() -> str:
@@ -41,7 +42,9 @@ def _touch_complete(run_dir: Path) -> None:
         os.close(dir_fd)
 
 
-def partition_keys(context: dg.AssetExecutionContext | dg.AssetCheckExecutionContext) -> tuple[str, int]:
+def partition_keys(
+    context: dg.AssetExecutionContext | dg.AssetCheckExecutionContext,
+) -> tuple[str, int]:
     """Extract (dataset, seed) from a dagster multi-partition context."""
     return (
         context.partition_key.keys_by_dimension["dataset"],

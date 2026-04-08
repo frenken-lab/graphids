@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-import os
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from graphids.config.constants import (
+    ModelType,  # noqa: F401 (used in __init__ annotation)
+)
 
 from ..base import GraphModuleBase, binary_test_metrics
 from .vgae import GraphAutoencoderNeighborhood
@@ -54,8 +56,8 @@ class VGAEModule(GraphModuleBase):
         compile_model: bool = False,
         # --- identity / dynamic ---
         scale: str = "small",
-        model_type: str = "vgae",
-        lake_root: str = os.environ.get("KD_GAT_LAKE_ROOT"),
+        model_type: ModelType = "vgae",
+        lake_root: str | None = None,
         dataset: str = "",
         seed: int = 42,
         gat_stage: str = "supervised",
@@ -63,6 +65,10 @@ class VGAEModule(GraphModuleBase):
         in_channels: int = 0,
         num_classes: int = 2,
     ):
+        if lake_root is None:
+            from graphids.config.settings import get_settings
+
+            lake_root = get_settings().lake_root
         super().__init__()
         # loss_fn is an nn.Module; don't serialize it into hyperparameters.
         self.save_hyperparameters(ignore=["loss_fn"])

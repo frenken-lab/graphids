@@ -1,54 +1,91 @@
 """Centralized config constants.
 
-Layer 1 — project-wide literal constants (filenames, subpaths, topology
-keys loaded from ``configs/matrix/axes.json``).
+Layer 1 — typed model for ``configs/matrix/axes.json`` plus project-wide
+literal constants (filenames, subpaths).
 
-Layer 2 — the single lake-root env var. Every other env var that used
-to live here has moved to the module that reads it:
-
-- ``SLURM_ACCOUNT`` / ``SLURM_LOG_DIR`` → ``graphids.slurm.env``
-- ``BUDGET_*``                          → ``graphids.core.data.budget``
-- ``WANDB_WRITE_DIR``                   → ``graphids.core.instantiate``
-
-``LAKE_ROOT`` stays because dozens of call sites read it; moving it is
-its own refactor pass.
+Layer 2 — ``LAKE_ROOT`` alias (reads from ``get_settings().lake_root``).
+All ``KD_GAT_*`` env vars live in ``graphids.config.settings``.
 """
 
 from __future__ import annotations
 
-import json
-import os
 from pathlib import Path
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, computed_field
+
+# ---------------------------------------------------------------------------
+# Paths (no dependencies)
+# ---------------------------------------------------------------------------
 
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
 CONFIG_DIR: Path = PROJECT_ROOT / "configs"
 
-_axes_file = json.loads((CONFIG_DIR / "matrix" / "axes.json").read_text())
-_axes = _axes_file.get("axes", {})
+# ---------------------------------------------------------------------------
+# Pydantic model for axes.json
+# ---------------------------------------------------------------------------
 
-# Pipeline-wide defaults — single source of truth for CLI, PipelineConfig, jsonnet TLAs.
-PIPELINE_DEFAULTS: dict[str, object] = _axes_file.get("pipeline_defaults", {})
-VALID_SCALES: frozenset[str] = frozenset(_axes.get("scales", ["small", "large"]))
-VALID_FUSION_METHODS: frozenset[str] = frozenset(_axes.get("fusion_methods", []))
 
-# Model families = organizational units (unsupervised, supervised, fusion)
-VALID_MODEL_FAMILIES: frozenset[str] = frozenset(_axes.get("model_families", []))
+class PipelineAxes(BaseModel):
+    """Typed view of the ``axes`` block in ``axes.json``."""
 
-# Model types = architecture dispatch keys (vgae, dgi, gat)
-_types_by_family: dict[str, list[str]] = _axes.get("model_types_by_family", {})
-VALID_MODEL_TYPES: frozenset[str] = frozenset(
-    t for fam, types in _types_by_family.items() if fam != "fusion" for t in types
-)
-FAMILY_FOR_MODEL_TYPE: dict[str, str] = {
-    t: fam for fam, types in _types_by_family.items() for t in types
-}
+    model_config = ConfigDict(frozen=True)
+
+    datasets: list[str]
+    scales: list[str]
+    model_families: list[str]
+    model_types_by_family: dict[str, list[str]]
+    fusion_methods: list[str]
+    stages_by_family: dict[str, list[str]] = {}
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def valid_model_types(self) -> frozenset[str]:
+        """Architecture dispatch keys (excludes fusion family)."""
+        return frozenset(
+            t for fam, types in self.model_types_by_family.items() if fam != "fusion" for t in types
+        )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def family_for_model_type(self) -> dict[str, str]:
+        return {t: fam for fam, types in self.model_types_by_family.items() for t in types}
+
+
+class AxesConfig(BaseModel):
+    """Typed view of ``configs/matrix/axes.json``."""
+
+    model_config = ConfigDict(frozen=True)
+
+    pipeline_defaults: dict[str, Any] = {}
+    axes: PipelineAxes
+
+
+# ---------------------------------------------------------------------------
+# Load and validate
+# ---------------------------------------------------------------------------
+
+AXES = AxesConfig.model_validate_json((CONFIG_DIR / "matrix" / "axes.json").read_bytes())
+
+# ---------------------------------------------------------------------------
+# Backward-compat module-level names
+# ---------------------------------------------------------------------------
+
+PIPELINE_DEFAULTS: dict[str, Any] = AXES.pipeline_defaults
+VALID_SCALES: frozenset[str] = frozenset(AXES.axes.scales)
+VALID_FUSION_METHODS: frozenset[str] = frozenset(AXES.axes.fusion_methods)
+VALID_MODEL_FAMILIES: frozenset[str] = frozenset(AXES.axes.model_families)
+VALID_MODEL_TYPES: frozenset[str] = AXES.axes.valid_model_types
+FAMILY_FOR_MODEL_TYPE: dict[str, str] = AXES.axes.family_for_model_type
+
+# Static Literal for type-checking; keep in sync with axes.json model_types.
+ModelType = Literal["vgae", "dgi", "gat"]
 
 # ---------------------------------------------------------------------------
 # Layer 1 — project constants (no env vars)
 # ---------------------------------------------------------------------------
 
 PREPROCESSING_VERSION: str = "8.0.0"
-MAX_DATA_BYTES: int = 8
 CKPT_SUBPATH: str = "checkpoints/best_model.ckpt"
 LAST_CKPT_SUBPATH: str = "checkpoints/last.ckpt"
 COMPLETE_MARKER: str = ".complete"
@@ -63,7 +100,9 @@ CATALOG_SUBPATH: str = "catalog/kd_gat.duckdb"
 DATASET_REGISTRY_PATH: Path = PROJECT_ROOT / "configs" / "datasets" / "dataset_registry.json"
 
 # ---------------------------------------------------------------------------
-# Layer 2 — lake root (single remaining env var — broad reach, kept here)
+# Layer 2 — lake root alias (source of truth: graphids.config.settings)
 # ---------------------------------------------------------------------------
 
-LAKE_ROOT: str = os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns")
+from graphids.config.settings import get_settings  # noqa: E402
+
+LAKE_ROOT: str = get_settings().lake_root

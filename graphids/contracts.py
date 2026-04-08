@@ -36,15 +36,11 @@ def to_envelope(spec: BaseModel, *, metadata: dict[str, Any] | None = None) -> C
 
 def from_envelope(payload: dict[str, Any], spec_cls: type[SpecT]) -> SpecT:
     """Validate and deserialize a contract envelope into a spec."""
-    envelope = ContractEnvelope(**payload)
+    envelope = ContractEnvelope.model_validate(payload)
     contract = getattr(spec_cls, "CONTRACT_NAME", None)
     version = getattr(spec_cls, "CONTRACT_VERSION", None)
     if envelope.contract != contract:
-        raise ValueError(
-            f"Unexpected contract {envelope.contract!r}; expected {contract!r}"
-        )
+        raise ValueError(f"Unexpected contract {envelope.contract!r}; expected {contract!r}")
     if envelope.version != version:
-        raise ValueError(
-            f"Unsupported contract version {envelope.version}; expected {version}"
-        )
-    return spec_cls(**envelope.payload)
+        raise ValueError(f"Unsupported contract version {envelope.version}; expected {version}")
+    return spec_cls.model_validate(envelope.payload)

@@ -16,8 +16,7 @@ import dagster as dg
 
 from graphids.config.constants import CONFIG_DIR, DAGSTER_IO_DIR_TEMPLATE
 from graphids.config.jsonnet import render
-from graphids.config.paths import dataset_names
-from graphids.config.topology import PIPELINE_TOPOLOGY
+from graphids.config.topology import dataset_names
 from graphids.log import get_logger
 from graphids.orchestrate.dagster.assets import make_training_asset
 from graphids.orchestrate.dagster.checks import make_asset_checks
@@ -49,7 +48,7 @@ class SlurmTrainingComponent(dg.Component, dg.Model, dg.Resolvable):
         recipe = expand_recipe_configs(render(recipe_path))
 
         # 1. Enumerate training configs (pure data)
-        stage_configs = enumerate_assets(PIPELINE_TOPOLOGY, recipe)
+        stage_configs = enumerate_assets(TOPOLOGY.model_dump(), recipe)
 
         # 2. Partitions
         datasets = dataset_names()

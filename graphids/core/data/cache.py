@@ -5,12 +5,10 @@ Operation layer — argparse surface lives in ``graphids.commands.rebuild_caches
 
 from __future__ import annotations
 
-import os
 import shutil
-from pathlib import Path
 
 from graphids.config.constants import LAKE_ROOT, PREPROCESSING_VERSION
-from graphids.config.paths import cache_dir
+from graphids.config.topology import cache_dir
 from graphids.log import get_logger
 
 log = get_logger(__name__)
@@ -48,9 +46,11 @@ def rebuild_caches(datasets: list[str], *, delete_existing: bool = False) -> Non
         )
 
     # Invalidate scratch staging marker so next GPU job re-stages
-    scratch = os.environ.get("KD_GAT_SCRATCH")
-    if scratch:
-        marker = Path(scratch) / "kd-gat-data" / "cache" / ".staged_marker"
+    from graphids.config.settings import get_settings
+
+    scratch = get_settings().scratch
+    if scratch is not None:
+        marker = scratch / "kd-gat-data" / "cache" / ".staged_marker"
         if marker.exists():
             marker.unlink()
             log.info("invalidated_staging_marker", path=str(marker))

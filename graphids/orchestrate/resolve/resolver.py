@@ -15,11 +15,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from graphids.config.jsonnet import render
-from graphids.config.schemas import (
-    PathContext,
-    ValidatedConfig,
-    validate_config,
-)
+from graphids.config.schemas import ValidatedConfig, validate_config
+from graphids.config.topology import PathContext
 from graphids.log import get_logger
 from graphids.orchestrate.contracts import TrainingSpec, build_tla_dict
 from graphids.orchestrate.planning import StageConfig
@@ -28,32 +25,18 @@ from graphids.slurm import ResourceSpec, apply_resource_overrides, get_resources
 
 log = get_logger(__name__)
 
-# Fusion stages optimize val_acc/max; all others val_loss/min. Used for the
-# stage-convention warning in `_warn_stage_monitor_mismatch` — a divergence
-# is not fatal (``ValidatedConfig`` already forces checkpoint/early_stopping
-# to agree) but a stage whose monitors don't match its archetype is almost
-# always a mistake that should surface in the orchestrator logs.
-_STAGE_MONITORS = {
-    "autoencoder": ("val_loss", "min"),
-    "supervised": ("val_loss", "min"),
-    "fusion": ("val_acc", "max"),
-}
-
 
 def _warn_stage_monitor_mismatch(validated: ValidatedConfig, stage: str, label: str) -> None:
     """Log a warning if a stage's monitor/mode diverges from its archetype.
 
-    ``ValidatedConfig`` already enforces checkpoint and early_stopping
-    internal agreement. This check is softer: it compares the agreed-upon
-    monitor+mode against the expected value for the stage family (e.g.
-    fusion must be maximizing ``val_acc``; every other stage must be
-    minimizing ``val_loss``). Not fatal — a legitimate override may want a
-    different metric — but always interesting to surface.
+    Fusion family → val_acc/max; everything else → val_loss/min.
+    Derived from ``TOPOLOGY.stage_family_map`` so adding a stage to topology.json
+    is sufficient — no Python dict to keep in sync.
     """
-    expected = _STAGE_MONITORS.get(stage)
-    if expected is None:
+    family = TOPOLOGY.stage_family_map.get(stage)
+    if family is None:
         return
-    exp_monitor, exp_mode = expected
+    exp_monitor, exp_mode = ("val_acc", "max") if family == "fusion" else ("val_loss", "min")
     if validated.checkpoint_monitor != exp_monitor or validated.checkpoint_mode != exp_mode:
         log.warning(
             "stage_monitor_mismatch",

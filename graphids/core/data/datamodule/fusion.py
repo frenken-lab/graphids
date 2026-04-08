@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import gc
 import math
-import os
 from pathlib import Path
 
 import pytorch_lightning as pl
@@ -37,7 +36,7 @@ class FusionDataModule(pl.LightningDataModule):
     def __init__(
         self,
         dataset: str = "",
-        lake_root: str = os.environ.get("KD_GAT_LAKE_ROOT"),
+        lake_root: str | None = None,
         vgae_ckpt_path: str = "",
         gat_ckpt_path: str = "",
         cached_states_dir: str = "",
@@ -52,6 +51,10 @@ class FusionDataModule(pl.LightningDataModule):
         stride: int = 100,
         val_fraction: float = 0.2,
     ):
+        if lake_root is None:
+            from graphids.config.settings import get_settings
+
+            lake_root = get_settings().lake_root
         super().__init__()
         self.save_hyperparameters()
         is_rl = method in ("dqn", "bandit")

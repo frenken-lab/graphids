@@ -57,7 +57,7 @@ def build_pipeline_stages(config: PipelineConfig) -> list[Any]:
 
     Returns StageConfigs in topological order (matching ``config.stages``).
     """
-    from graphids.config.topology import PIPELINE_TOPOLOGY
+    from graphids.config.topology import TOPOLOGY
     from graphids.monarch.sweep import build_single_recipe
     from graphids.orchestrate.planning import enumerate_assets
 
@@ -71,7 +71,7 @@ def build_pipeline_stages(config: PipelineConfig) -> list[Any]:
         trainer_overrides=config.tla_overrides,
     )
 
-    configs = enumerate_assets(PIPELINE_TOPOLOGY, recipe)
+    configs = enumerate_assets(TOPOLOGY.model_dump(), recipe)
 
     # Order by the user's requested stage order
     stage_order = {s: i for i, s in enumerate(config.stages)}

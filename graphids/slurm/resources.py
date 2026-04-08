@@ -8,7 +8,6 @@ and override functions that produce and mutate it — rather than in
 
 from __future__ import annotations
 
-import os
 import re
 import socket
 
@@ -60,7 +59,9 @@ class ResourceSpec(BaseModel):
 
 def _detect_cluster() -> str:
     """Detect OSC cluster from hostname, with env var override."""
-    override = os.environ.get("KD_GAT_CLUSTER")
+    from graphids.config.settings import get_settings
+
+    override = get_settings().cluster
     if override:
         return override.lower()
     host = socket.gethostname().lower()

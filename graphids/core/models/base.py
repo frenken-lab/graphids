@@ -388,11 +388,11 @@ class RunRecordCallback(pl.Callback):
         from datetime import datetime
 
         import graphids
-        from graphids.core.io import parse_identity_from_run_dir, write_run_record
+        from graphids.core.io import write_run_record
         from graphids.core.run_record import RunRecord
 
         try:
-            identity = parse_identity_from_run_dir(root)
+            identity = RunDirIdentity.from_run_dir(root)
         except (IndexError, ValueError):
             self._enabled = False
             return
@@ -400,14 +400,14 @@ class RunRecordCallback(pl.Callback):
         self._record = RunRecord(
             status="started",
             run_dir=root,
-            stage=identity["stage"],
-            model_family=identity["model_family"],
-            scale=identity["scale"],
-            dataset=identity["dataset"],
-            seed=identity["seed"],
-            identity_hash=identity["identity_hash"],
-            kd_tag=identity["kd_tag"],
-            user=identity["user"],
+            stage=identity.stage,
+            model_family=identity.model_family,
+            scale=identity.scale,
+            dataset=identity.dataset,
+            seed=identity.seed,
+            identity_hash=identity.identity_hash,
+            kd_tag=identity.kd_tag,
+            user=identity.user,
             graphids_version=graphids.__version__,
             started_at=datetime.now(datetime.UTC if hasattr(datetime, "UTC") else None).isoformat(),
             slurm_job_id=_slurm_job_id(),

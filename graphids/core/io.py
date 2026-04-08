@@ -17,23 +17,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from graphids.config.constants import RUN_RECORD_FILENAME
-from graphids.config.paths import require_lake_write
+from graphids.config.settings import require_lake_write
 
 if TYPE_CHECKING:
     from graphids.core.run_record import RunRecord
 
 
-# Re-export so existing ``from graphids.core.io import ...`` callers
-# that haven't been updated yet don't break.  Remove once all consumers
-# point at ``graphids.config.paths``.
-from graphids.config.paths import (  # noqa: E402, F401
-    LakeWriteError,
-    catalog_path,
-    dataset_names,
-    load_catalog,
-    parse_identity_from_run_dir,
-    resolve_checkpoint,
-)
+from graphids.config.settings import LakeWriteError  # noqa: E402, F401
 
 # -----------------------------------------------------------------------------
 # Atomic text write (NFS/GPFS-safe: temp + fsync + rename)

@@ -15,7 +15,7 @@ from pathlib import Path
 import dagster as dg
 
 from graphids.config.constants import PHASE_MARKERS
-from graphids.config.schemas import PathContext
+from graphids.config.topology import PathContext
 from graphids.orchestrate.analysis import (
     ANALYSIS_MANIFEST_NAME,
     build_analysis_spec,

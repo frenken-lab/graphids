@@ -9,7 +9,6 @@ CLI surface: ``python -m graphids extract-fusion-states``.
 from __future__ import annotations
 
 import math
-import os
 from pathlib import Path
 
 import torch
@@ -164,11 +163,12 @@ def extract_fusion_states(
     val_fraction: float = 0.2,
 ) -> None:
     """Load VGAE + GAT checkpoints, cache fusion states to ``output_dir``."""
+    from graphids.config.settings import get_settings
     from graphids.core.data.datamodule.graph import load_datasets
     from graphids.core.data.datasets.can_bus import CANBusDataset
     from graphids.core.models.base import load_inner_model
 
-    lake_root = os.environ.get("KD_GAT_LAKE_ROOT", "experimentruns")
+    lake_root = get_settings().lake_root
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     log.info("loading_upstream_models", vgae=vgae_ckpt, gat=gat_ckpt, device=str(device))

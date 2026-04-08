@@ -8,8 +8,7 @@ import this module directly. Under SLURM: JSONL to a per-run log file.
 Otherwise: human-readable stderr for validation / dg list defs.
 """
 
-import os
-
+from graphids.config.settings import get_settings
 from graphids.log import configure_logging
 from graphids.slurm.env import SLURM_LOG_DIR, slurm_job_id
 
@@ -29,7 +28,7 @@ from dagster.components import build_defs_for_component  # noqa: E402
 from graphids.orchestrate.dagster.component import SlurmTrainingComponent  # noqa: E402
 
 component = SlurmTrainingComponent(
-    dry_run=os.environ.get("KD_GAT_DRY_RUN", "").lower() in ("1", "true"),
+    dry_run=get_settings().dry_run,
 )
 
 defs = build_defs_for_component(component)

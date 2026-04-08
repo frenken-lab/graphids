@@ -15,7 +15,7 @@ from pathlib import Path
 
 from graphids.config.constants import CONFIG_DIR
 from graphids.config.jsonnet import render
-from graphids.config.paths import cache_dir
+from graphids.config.topology import cache_dir
 from graphids.log import get_logger
 
 log = get_logger(__name__)
@@ -23,7 +23,7 @@ log = get_logger(__name__)
 
 def _find_cached_datasets(lake_root: str) -> list[str]:
     """Return dataset names that have cache_metadata.json on disk."""
-    from graphids.config.paths import dataset_names
+    from graphids.config.topology import dataset_names
 
     available = []
     for ds in dataset_names():
@@ -152,7 +152,7 @@ def _probe_combo(
     """
     import torch
 
-    from graphids.config.paths import data_dir
+    from graphids.config.topology import data_dir
     from graphids.core.data.budget import (
         _probe_vram,
         calibrate_at_budget,
@@ -334,7 +334,7 @@ def run_probe_budget(
         import csv
         import os
 
-        from graphids.config.paths import require_lake_write
+        from graphids.config.settings import require_lake_write
 
         require_lake_write()
         out_dir = Path(lake_root) / "reference"

@@ -76,12 +76,14 @@ def stage_data(
     stage_raw = not cache_only
     stage_cache = not raw_only
 
-    lake_root = os.environ.get("KD_GAT_LAKE_ROOT", "")
-    scratch_env = os.environ.get("KD_GAT_SCRATCH")
-    if not scratch_env:
+    from graphids.config.settings import get_settings
+
+    _s = get_settings()
+    lake_root = _s.lake_root
+    if _s.scratch is None:
         log.error("KD_GAT_SCRATCH not set. Source .env before running.")
         sys.exit(1)
-    scratch = Path(scratch_env)
+    scratch = _s.scratch
     scratch_data = scratch / "kd-gat-data"
     tmpdir = os.environ.get("TMPDIR", "")
 
@@ -89,14 +91,13 @@ def stage_data(
     if lake_root and Path(lake_root, "raw").is_dir():
         data_root = Path(lake_root)
         log.info("using_ess_lake", path=str(data_root))
+    elif _s.data_root is not None:
+        data_root = _s.data_root
     else:
-        data_root_env = os.environ.get("KD_GAT_DATA_ROOT")
-        if not data_root_env:
-            log.error(
-                "No data source found. Set KD_GAT_LAKE_ROOT (with raw/ subdir) or KD_GAT_DATA_ROOT."
-            )
-            sys.exit(1)
-        data_root = Path(data_root_env)
+        log.error(
+            "No data source found. Set KD_GAT_LAKE_ROOT (with raw/ subdir) or KD_GAT_DATA_ROOT."
+        )
+        sys.exit(1)
 
     log.info(
         "staging_start",

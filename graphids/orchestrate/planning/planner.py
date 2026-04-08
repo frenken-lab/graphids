@@ -5,8 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from graphids.config.constants import FAMILY_FOR_MODEL_TYPE
-from graphids.config.paths import compute_identity_hash
-from graphids.config.topology import STAGE_FAMILY_MAP
+from graphids.config.topology import compute_identity_hash
 from graphids.orchestrate.contracts import resolve_jsonnet_path
 from graphids.orchestrate.planning.recipes import TrainingRunConfig
 from graphids.orchestrate.planning.shared import StageConfig
@@ -93,7 +92,7 @@ def _resolve_kd_teachers(
         teacher_asset = tc_map[stage]
         if teacher_asset not in upstream_names:
             upstream_names.append(teacher_asset)
-            upstream_models[teacher_asset] = STAGE_FAMILY_MAP[stage]
+            upstream_models[teacher_asset] = TOPOLOGY.stage_family_map[stage]
 
 
 def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
@@ -151,7 +150,7 @@ def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
             family = stage_def.get("family", "")
             id_cfg = {k: _identity_value(k, merged, stages, family=family) for k in id_keys}
             identity = compute_identity_hash(stage, id_cfg)
-            model_family = STAGE_FAMILY_MAP[stage]
+            model_family = TOPOLOGY.stage_family_map[stage]
             # Only override unsupervised model_family when model_type IS an
             # unsupervised model (vgae, dgi). A GAT curriculum sweep sets
             # model_type="gat" but the upstream autoencoder must stay VGAE.

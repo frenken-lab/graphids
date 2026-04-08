@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-import os
-
 import torch.nn as nn
 import torch.nn.functional as F
+
+from graphids.config.constants import (
+    ModelType,  # noqa: F401 (used in __init__ annotation)
+)
 
 from ..base import GraphModuleBase, binary_test_metrics
 from .gat import GATWithJK
@@ -45,8 +47,8 @@ class GATModule(GraphModuleBase):
         compile_model: bool = False,
         # --- identity / dynamic ---
         scale: str = "small",
-        model_type: str = "gat",
-        lake_root: str = os.environ.get("KD_GAT_LAKE_ROOT"),
+        model_type: ModelType = "gat",
+        lake_root: str | None = None,
         dataset: str = "",
         seed: int = 42,
         gat_stage: str = "supervised",
@@ -55,6 +57,10 @@ class GATModule(GraphModuleBase):
         in_channels: int = 0,
         num_classes: int = 2,
     ):
+        if lake_root is None:
+            from graphids.config.settings import get_settings
+
+            lake_root = get_settings().lake_root
         super().__init__()
         if pool_aggrs is None:
             pool_aggrs = ["mean"]
