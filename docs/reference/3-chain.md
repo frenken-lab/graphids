@@ -1,3 +1,10 @@
+> **Superseded (2026-04-08).** Dagster was removed; the 3-handoff model
+> (plan → serialize → deserialize on SLURM node) no longer applies. Monarch
+> actors call `ConfigResolver.resolve()` in-process — no JSON envelope, no
+> `from-spec`, no serialization boundary. The validation table below is
+> still accurate for what `validate_config` and `validate_stage_config`
+> catch. See `docs/reference/orchestration.md` for the current architecture.
+
 Here's the current state of the 3-stage chain, with evidence for every claim.
 
 ## What dagster actually takes in

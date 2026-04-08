@@ -53,8 +53,7 @@ def output_status(spec: AnalysisSpec) -> tuple[tuple[str, ...], list[str]]:
 def run_analysis(spec: AnalysisSpec) -> None:
     """Run the analyzer and write a manifest sidecar.
 
-    Shared by the Monarch actor ``eval_stage`` endpoint and the
-    dagster ``from-spec --phase analyze`` path in ``entrypoint.py``.
+    Called by the Monarch actor ``eval_stage`` endpoint.
     """
     import json
 

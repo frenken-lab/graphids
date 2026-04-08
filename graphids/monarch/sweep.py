@@ -46,12 +46,11 @@ def plan_chains(
     5. Cross product with datasets × seeds → ``ChainSpec`` list
     """
     from graphids.config.jsonnet import render
-    from graphids.config.topology import TOPOLOGY
     from graphids.orchestrate.planning import enumerate_assets, expand_recipe_configs
 
     raw = render(Path(recipe_path))
     expanded = expand_recipe_configs(raw)
-    configs = enumerate_assets(TOPOLOGY.model_dump(), expanded)
+    configs = enumerate_assets(expanded)
 
     log.info("sweep_plan", num_assets=len(configs), datasets=datasets, seeds=seeds)
 

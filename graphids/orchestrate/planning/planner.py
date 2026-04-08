@@ -4,228 +4,164 @@ from __future__ import annotations
 
 from typing import Any
 
-from graphids.config.constants import FAMILY_FOR_MODEL_TYPE
-from graphids.config.topology import compute_identity_hash
+from pydantic import BaseModel, ConfigDict, Field
+
+from graphids.config.topology import TOPOLOGY, compute_identity_hash
 from graphids.orchestrate.contracts import resolve_jsonnet_path
 from graphids.orchestrate.planning.recipes import TrainingRunConfig
-from graphids.orchestrate.planning.shared import StageConfig
 
-# Recipe key -> identity key (where names differ)
-_RECIPE_TO_IDENTITY = {"fusion_method": "method"}
-
-# Default model_type per family (first entry in axes.json model_types_by_family)
-_DEFAULT_MODEL_TYPE: dict[str, str] = {}
-for _mt, _fam in FAMILY_FOR_MODEL_TYPE.items():
-    _DEFAULT_MODEL_TYPE.setdefault(_fam, _mt)
+_UNSUPERVISED_MODELS = frozenset({"vgae", "dgi"})
 
 
-def _identity_value(
-    key: str, merged: TrainingRunConfig | dict, stages: list[str], *, family: str = ""
-) -> Any:
-    _get = merged.get if isinstance(merged, dict) else lambda k, d=None: getattr(merged, k, d)
-    for rk, ik in _RECIPE_TO_IDENTITY.items():
-        if ik == key:
-            return _get(rk)
-    val = _get(key)
-    # model_type=None means "use stage default" — resolve per-family for stable identity hashes
-    if key == "model_type" and val is None:
-        return _DEFAULT_MODEL_TYPE.get(family, "vgae")
-    return val
+class StageConfig(BaseModel):
+    """Training config for one asset. Pure data, no torch/Lightning imports."""
+
+    model_config = ConfigDict(frozen=True)
+
+    asset_name: str
+    stage: str
+    model_type: str
+    scale: str
+    jsonnet_path: str = ""
+    model_init_overrides: dict[str, Any] = Field(default_factory=dict)
+    identity: str = ""
+    kd_tag: str = ""
+    resource_model: str = ""  # model key for resource lookup (fusion method for fusion stages)
+    kd_overrides: dict[str, Any] = Field(default_factory=dict)
+    trainer_overrides: dict[str, Any] = Field(default_factory=dict)
+    stage_overrides: dict[str, Any] = Field(default_factory=dict)
+    resource_overrides: dict[str, str | int] = Field(default_factory=dict)
+    upstream_asset_names: tuple[str, ...] = ()
+    upstream_model_families: dict[str, str] = Field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a plain dict (Monarch endpoint args must be serializable)."""
+        return self.model_dump()
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> StageConfig:
+        """Reconstruct from a dict (inverse of ``to_dict``)."""
+        return cls.model_validate(d)
+
+    @classmethod
+    def from_recipe(
+        cls,
+        *,
+        asset_name: str,
+        stage: str,
+        merged: TrainingRunConfig,
+        recipe: dict[str, Any],
+        upstream_names: list[str],
+        upstream_models: dict[str, str],
+    ) -> StageConfig:
+        """Build a StageConfig from merged recipe config + topology."""
+        stage_def = TOPOLOGY.stages[stage]
+
+        model_type = stage_def.family
+        if (
+            merged.model_type is not None
+            and stage_def.learning_type == "unsupervised"
+            and merged.model_type in _UNSUPERVISED_MODELS
+        ):
+            model_type = merged.model_type
+
+        id_cfg = merged.identity_for(stage)
+        accepted = set(stage_def.stage_tlas)
+
+        return cls(
+            asset_name=asset_name,
+            stage=stage,
+            model_type=model_type,
+            scale=merged.scale,
+            jsonnet_path=resolve_jsonnet_path(stage),
+            model_init_overrides={
+                k: str(v).lower() if isinstance(v, bool) else str(v)
+                for k, v in id_cfg.items()
+                if v is not None and k in accepted
+            },
+            identity=compute_identity_hash(stage, id_cfg),
+            kd_tag="_kd" if merged.auxiliaries else "",
+            resource_model=merged.fusion_method if stage == "fusion" else model_type,
+            kd_overrides=(
+                merged.auxiliaries[0].model_dump(exclude_none=True) if merged.auxiliaries else {}
+            ),
+            trainer_overrides=recipe.get("trainer_overrides", {}),
+            stage_overrides=recipe.get("stage_overrides", {}).get(stage, {}),
+            resource_overrides=recipe.get("resource_overrides", {}),
+            upstream_asset_names=tuple(sorted(upstream_names)),
+            upstream_model_families=upstream_models,
+        )
 
 
-def _resolve_kd_teachers(
-    *,
-    student_config: str,
-    stage: str,
-    auxiliaries: tuple,
-    recipe: dict,
-    default_cfg: TrainingRunConfig,
-    config_stages: dict[str, dict[str, str]],
-    upstream_names: list[str],
-    upstream_models: dict[str, str],
-) -> None:
-    """Wire KD teacher assets as upstream dependencies by explicit recipe config name.
+def enumerate_assets(recipe: dict) -> list[StageConfig]:
+    """Enumerate unique training assets from an expanded recipe.
 
-    Each KD auxiliary must name its teacher via ``teacher_config`` (a key in
-    ``recipe["configs"]``). We validate that the named config exists, trains
-    without its own KD auxiliaries, and produces an asset for the student's
-    current stage. All mismatches raise with the student name + stage + the
-    set of valid alternatives so the failure is actionable.
-
-    This replaces the legacy scale-based inference (iterate configs, first
-    match wins) which silently rewired the student to different teachers
-    when recipe key order changed. See ``docs/reference/orchestration-risks.md``
-    item #2.
-    """
-    for idx, aux in enumerate(auxiliaries):
-        teacher_config = getattr(aux, "teacher_config", None)
-        if teacher_config is None:
-            raise ValueError(
-                f"KD student '{student_config}' (stage '{stage}', auxiliary "
-                f"index {idx}): missing teacher_config. Explicitly name the "
-                f"recipe config to use as teacher (e.g., "
-                f"teacher_config: baseline_large). Silent scale-based "
-                f"inference was removed — it depended on recipe key order."
-            )
-        if teacher_config not in recipe["configs"]:
-            raise ValueError(
-                f"KD student '{student_config}' (stage '{stage}'): "
-                f"teacher_config='{teacher_config}' does not name a config "
-                f"in this recipe. Available configs: "
-                f"{sorted(recipe['configs'].keys())}"
-            )
-        tc_overrides = recipe["configs"][teacher_config]
-        tc_merged = default_cfg.merge(tc_overrides or {})
-        if tc_merged.auxiliaries:
-            raise ValueError(
-                f"KD student '{student_config}' (stage '{stage}'): "
-                f"teacher_config='{teacher_config}' has its own auxiliaries "
-                f"— teachers must train without KD."
-            )
-        tc_map = config_stages.get(teacher_config, {})
-        if stage not in tc_map:
-            raise ValueError(
-                f"KD student '{student_config}' (stage '{stage}'): "
-                f"teacher_config='{teacher_config}' does not produce a "
-                f"'{stage}' asset. Teacher stages: {sorted(tc_map.keys())}"
-            )
-        teacher_asset = tc_map[stage]
-        if teacher_asset not in upstream_names:
-            upstream_names.append(teacher_asset)
-            upstream_models[teacher_asset] = TOPOLOGY.stage_family_map[stage]
-
-
-def enumerate_assets(pipeline: dict, recipe: dict) -> list[StageConfig]:
-    """Two-pass enumeration: compute canonical keys, then build configs with resolved deps.
-
-    Expects an already-expanded recipe (output of ``expand_recipe_configs``).
+    Single pass builds StageConfigs with topology deps. KD teacher
+    deps are wired in a post-pass (requires all asset names known).
     """
     default_cfg = TrainingRunConfig(**recipe.get("defaults", {}))
-    stages_def = pipeline["stages"]
 
-    # Pass 1: canonical key map
-    canonical: dict[tuple[str, str], str] = {}
-    config_stages: dict[str, dict[str, str]] = {}
+    config_stages: dict[str, dict[str, str]] = {}  # config_name → stage → asset_name
+    built: dict[str, StageConfig] = {}
+    kd_deferred: list[tuple[str, str, tuple]] = []
 
-    for config_name, config_overrides in recipe["configs"].items():
-        merged = default_cfg.merge(config_overrides or {})
-        stages = list(merged.stages)
-        has_kd = bool(merged.auxiliaries)
+    for config_name, overrides in recipe["configs"].items():
+        merged = default_cfg.merge(overrides or {})
         config_stages[config_name] = {}
 
-        for stage in stages:
-            if stage not in stages_def:
-                continue
-            stage_def = stages_def[stage]
-            id_keys = stage_def.get("identity_keys", [])
-            family = stage_def.get("family", "")
-            id_cfg = {k: _identity_value(k, merged, stages, family=family) for k in id_keys}
-            identity = compute_identity_hash(stage, id_cfg)
-            kd_tag = "_kd" if has_kd else ""
-            asset_name = f"{stage}{identity}{kd_tag}"
-
-            dedup_key = (stage, f"{identity}{kd_tag}")
-            if dedup_key not in canonical:
-                canonical[dedup_key] = asset_name
-            config_stages[config_name][stage] = canonical[dedup_key]
-
-    # Pass 2: build StageConfigs
-    built: dict[str, StageConfig] = {}
-
-    for config_name, config_overrides in recipe["configs"].items():
-        merged = default_cfg.merge(config_overrides or {})
-        stages = list(merged.stages)
-        has_kd = bool(merged.auxiliaries)
-        stage_map = config_stages[config_name]
-
-        for stage in stages:
-            if stage not in stages_def:
-                continue
-            asset_name = stage_map.get(stage)
-            if not asset_name or asset_name in built:
+        for stage in merged.stages:
+            if stage not in TOPOLOGY.stages:
                 continue
 
-            stage_def = stages_def[stage]
-            id_keys = stage_def.get("identity_keys", [])
-            family = stage_def.get("family", "")
-            id_cfg = {k: _identity_value(k, merged, stages, family=family) for k in id_keys}
-            identity = compute_identity_hash(stage, id_cfg)
-            model_family = TOPOLOGY.stage_family_map[stage]
-            # Only override unsupervised model_family when model_type IS an
-            # unsupervised model (vgae, dgi). A GAT curriculum sweep sets
-            # model_type="gat" but the upstream autoencoder must stay VGAE.
-            _UNSUPERVISED_MODELS = {"vgae", "dgi"}
-            if (
-                merged.model_type is not None
-                and stage_def.get("learning_type") == "unsupervised"
-                and merged.model_type in _UNSUPERVISED_MODELS
-            ):
-                model_family = merged.model_type
-            jsonnet_path = resolve_jsonnet_path(stage)
+            asset_name = merged.asset_key(stage)
+            config_stages[config_name][stage] = asset_name
+            if asset_name in built:
+                continue
 
-            model_keys = set(stage_def.get("model_keys", id_keys))
-            overrides: dict[str, str] = {}
-            for key in id_keys:
-                if key not in model_keys:
-                    continue
-                if key == "scale":
-                    continue
-                if key == "method" and stage == "fusion":
-                    continue
-                # variational is VGAE-only; DGI doesn't accept it
-                if key == "variational" and model_family == "dgi":
-                    continue
-                val = id_cfg.get(key)
-                if val is not None:
-                    overrides[key] = str(val).lower() if isinstance(val, bool) else str(val)
-
-            kd_payload: dict[str, Any] = {}
-            if has_kd and merged.auxiliaries:
-                kd_payload = merged.auxiliaries[0].model_dump(exclude_none=True)
-
+            # Topology deps (stages are in topo order, so earlier stages are resolved)
+            stage_def = TOPOLOGY.stages[stage]
             upstream_names: list[str] = []
             upstream_models: dict[str, str] = {}
-            seen_models: set[str] = set()
-            for dep in stage_def.get("depends_on", []):
-                dep_model = dep["family"]
-                dep_asset = stage_map.get(dep["stage"])
-                if not dep_asset or dep_model in seen_models:
-                    continue
-                seen_models.add(dep_model)
-                upstream_names.append(dep_asset)
-                upstream_models[dep_asset] = dep_model
+            seen_families: set[str] = set()
+            for dep in stage_def.depends_on:
+                dep_asset = config_stages[config_name].get(dep["stage"])
+                if dep_asset and dep["family"] not in seen_families:
+                    seen_families.add(dep["family"])
+                    upstream_names.append(dep_asset)
+                    upstream_models[dep_asset] = dep["family"]
 
-            if has_kd:
-                _resolve_kd_teachers(
-                    student_config=config_name,
-                    stage=stage,
-                    auxiliaries=merged.auxiliaries,
-                    recipe=recipe,
-                    default_cfg=default_cfg,
-                    config_stages=config_stages,
-                    upstream_names=upstream_names,
-                    upstream_models=upstream_models,
-                )
-
-            model_dir = model_family
-            res_model = merged.fusion_method if stage == "fusion" else model_family
-
-            built[asset_name] = StageConfig(
+            built[asset_name] = StageConfig.from_recipe(
                 asset_name=asset_name,
                 stage=stage,
-                model_type=model_dir,
-                scale=merged.scale,
-                jsonnet_path=jsonnet_path,
-                model_init_overrides=overrides,
-                identity=identity,
-                kd_tag="_kd" if has_kd else "",
-                resource_model=res_model,
-                kd_overrides=kd_payload,
-                trainer_overrides=recipe.get("trainer_overrides", {}),
-                stage_overrides=recipe.get("stage_overrides", {}).get(stage, {}),
-                resource_overrides=recipe.get("resource_overrides", {}),
-                upstream_asset_names=tuple(sorted(set(upstream_names))),
-                upstream_model_families=upstream_models,
+                merged=merged,
+                recipe=recipe,
+                upstream_names=upstream_names,
+                upstream_models=upstream_models,
             )
+
+            if merged.auxiliaries:
+                kd_deferred.append((asset_name, stage, merged.auxiliaries))
+
+    # Post-pass: wire KD teacher checkpoints as upstream deps
+    for asset_name, stage, auxiliaries in kd_deferred:
+        cfg = built[asset_name]
+        upstream = list(cfg.upstream_asset_names)
+        models = dict(cfg.upstream_model_families)
+        for aux in auxiliaries:
+            teacher_asset = config_stages.get(aux.teacher_config or "", {}).get(stage)
+            if teacher_asset is None:
+                raise ValueError(
+                    f"KD '{asset_name}': teacher_config='{aux.teacher_config}' "
+                    f"has no '{stage}' asset. Check recipe configs."
+                )
+            if teacher_asset not in upstream:
+                upstream.append(teacher_asset)
+                models[teacher_asset] = TOPOLOGY.stage_family_map[stage]
+        built[asset_name] = cfg.model_copy(
+            update={
+                "upstream_asset_names": tuple(sorted(set(upstream))),
+                "upstream_model_families": models,
+            }
+        )
 
     return list(built.values())

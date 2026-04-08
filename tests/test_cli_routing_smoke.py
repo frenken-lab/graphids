@@ -59,7 +59,6 @@ def test_all_expected_commands_registered() -> None:
         "rebuild-caches",
         "stage-data",
         "extract-fusion-states",
-        "from-spec",
         "pipeline-status",
         "rebuild-catalog",
         "submit-profile",

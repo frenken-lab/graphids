@@ -31,12 +31,24 @@ from pydantic import (  # noqa: F401 (AfterValidator resolved by model_rebuild)
 
 from graphids.config.constants import (
     CONFIG_DIR,
+    FAMILY_FOR_MODEL_TYPE,
     VALID_FUSION_METHODS,
     VALID_SCALES,
     ModelType,  # noqa: F401 (resolved by model_rebuild)
 )
 from graphids.config.jsonnet import render
-from graphids.config.topology import TOPOLOGY  # noqa: F401 (used in field default)
+from graphids.config.topology import (  # noqa: F401 (used in field default)
+    TOPOLOGY,
+    compute_identity_hash,
+)
+
+# identity key → recipe field name (where topology and recipe names differ)
+_IDENTITY_TO_RECIPE: dict[str, str] = {"method": "fusion_method"}
+
+# family → default model_type (first model_type for each family)
+_DEFAULT_MODEL_TYPE: dict[str, str] = {}
+for _mt, _fam in FAMILY_FOR_MODEL_TYPE.items():
+    _DEFAULT_MODEL_TYPE.setdefault(_fam, _mt)
 
 
 def check_in(valid, label):  # noqa: F401 (resolved by model_rebuild)
@@ -100,6 +112,23 @@ class TrainingRunConfig(BaseModel):
 
     def merge(self, overrides: dict[str, Any]) -> TrainingRunConfig:
         return TrainingRunConfig.model_validate({**self.model_dump(), **overrides})
+
+    def identity_for(self, stage: str) -> dict[str, Any]:
+        """Identity key values for a stage, mapped from recipe fields."""
+        stage_def = TOPOLOGY.stages[stage]
+        result: dict[str, Any] = {}
+        for key in stage_def.identity_keys:
+            val = getattr(self, _IDENTITY_TO_RECIPE.get(key, key), None)
+            if key == "model_type" and val is None:
+                val = _DEFAULT_MODEL_TYPE.get(stage_def.family, "vgae")
+            result[key] = val
+        return result
+
+    def asset_key(self, stage: str) -> str:
+        """Unique asset identifier: ``{stage}{identity_hash}{kd_tag}``."""
+        identity = compute_identity_hash(stage, self.identity_for(stage))
+        kd_tag = "_kd" if self.auxiliaries else ""
+        return f"{stage}{identity}{kd_tag}"
 
 
 # Resolve deferred Annotated/Literal annotations (from __future__ import annotations).

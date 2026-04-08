@@ -64,7 +64,7 @@ graphids/
     _training.py                   # fit/test/validate/predict commands
     _analysis.py                   # analyze command (jsonargparse + jsonnet)
     _data.py                       # rebuild-caches, stage-data, rebuild-catalog
-    _orchestrate.py                # from-spec, pipeline-status
+    _orchestrate.py                # pipeline-status, rebuild-catalog, _finalize-record
     _slurm.py                      # job-stats, submit-profile
   config/
     __init__.py                    # public API facade
@@ -79,22 +79,13 @@ graphids/
     monitoring/
       callbacks.py                 # ResourceProfileCallback, RunRecordCallback (pl.Callback)
   orchestrate/
-    contracts/                     # TrainingSpec, build_tla_dict, resolve_jsonnet_path
+    contracts.py                   # TrainingSpec, build_tla_dict, resolve_jsonnet_path
+    resolve.py                     # ConfigResolver + cross-field validation
+    analysis.py                    # shared analysis runner (Monarch)
     planning/
-      planner.py                   # enumerate_assets
+      planner.py                   # StageConfig, enumerate_assets
       recipes.py                   # recipe expansion wrapper
-      shared.py                    # StageConfig
-    resolve/
-      resolver.py                  # ConfigResolver
-      cross_field.py               # cross-field Pydantic validation
-    dagster/
-      assets.py                    # @asset definitions
-      checks.py                    # freshness checks
-      component.py                 # SlurmTrainingComponent
-      resources.py                 # SlurmTrainingResource
-      runtime.py                   # partition keys, path context, complete marker
     ops/
-      entrypoint.py                # run_from_spec (dagster→SLURM transport)
       catalog.py                   # DuckDB catalog rebuild
       finalize.py                  # _finalize-record
       status.py                    # pipeline-status aggregation

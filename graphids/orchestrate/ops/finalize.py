@@ -7,6 +7,7 @@ phase marker status and SLURM wall time from sacct.
 """
 
 from __future__ import annotations
+
 from pathlib import Path
 
 from graphids.config.constants import PHASE_MARKERS

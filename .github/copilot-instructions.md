@@ -8,7 +8,7 @@
 ## High-level architecture
 - **Config pipeline:** Jsonnet stage configs (`configs/stages/*.jsonnet`) are the single source of composition. Every path renders configs via `graphids.config.jsonnet.render_config(...)`, validates with `graphids.config.schemas.validate_config(...)`, then instantiates the Lightning stack through `graphids.instantiate.instantiate(...)`.
 - **CLI routes:** Typer-based CLI in `graphids/cli/` — `app.py` defines the root app, submodules (`_training.py`, `_analysis.py`, `_data.py`, `_orchestrate.py`, `_slurm.py`) register commands via `@app.command()`. `graphids/__main__.py` imports the submodules to register all commands.
-- **Pipeline path:** Dagster materializes assets (`graphids.orchestrate.dagster`), `ConfigResolver` (`orchestrate/resolve/resolver.py`) builds TLAs, then SLURM jobs run `python -m graphids from-spec` with the rendered spec.
+- **Pipeline path:** Monarch actors execute the 3-stage pipeline in a single SLURM allocation. `ConfigResolver` (`orchestrate/resolve.py`) builds TLAs, renders jsonnet, and validates before in-process training via `instantiate()`.
 - **SLURM submission:** All jobs (tests, validation, profiling, cache rebuilds, etc.) are launched through `scripts/slurm/submit.sh`, which reads resource profiles from `configs/resources/*.json`.
 
 ## Key conventions

@@ -44,10 +44,7 @@ Three entry points, zero overlap:
 |---------|---------|
 | `python -m graphids analyze` | Analysis artifacts from checkpoints |
 | `python -m graphids analyze landscape` | 2D loss landscape (folded into analyze) |
-| `python -m graphids from-spec --phase {train,test,analyze}` | Run stage from canonical spec (dagster→SLURM transport) |
-| `python -m graphids pipeline-status` | Aggregated status (DuckDB catalog if available, else dagster + SLURM) |
-| `python -m graphids pipeline-status --log [FILTER]` | Orchestrator event log (all/failures/retries/completions/submissions/polls) |
-| `python -m graphids pipeline-status --log -f` | Follow orchestrator log (like tail -f) |
+| `python -m graphids pipeline-status` | Aggregated status (DuckDB catalog + planner topology) |
 | `python -m graphids job-stats <job_ids>` | sacct resource profiler |
 | `python -m graphids profile` | Profiled training run (PyTorchProfiler) |
 | `python -m graphids probe-budget` | Hardware cost model measurement (multi-point, writes CSV to lake) |
@@ -58,15 +55,7 @@ Three entry points, zero overlap:
 | `python -m graphids rebuild-catalog` | Rebuild DuckDB catalog from run_record.json sidecars |
 | `python -m graphids _finalize-record` | (internal) Update sidecar with phases + wall_time after test+analyze |
 
-**Dagster** — own entry point, never called through `python -m graphids`:
-
-| Command | Purpose |
-|---------|---------|
-| `dg launch --assets ...` | Materialize assets |
-| `dg list defs` | List all assets |
-| `dg list defs` | Validate dagster definitions |
-
-**Config resolution** — `ConfigResolver` in `orchestrate/resolve/resolver.py` is the exclusive merge path for pipeline runs. It packs trainer/resource/KD overrides into a typed TLA dict via `graphids.orchestrate.contracts.build_tla_dict`, renders the stage jsonnet via `graphids.config.jsonnet.render_config`, validates cross-field constraints, and emits an audit trail. `orchestrate/dagster/assets.py` calls `resolver.resolve()` → `ResolvedConfig` (TrainingSpec + ResourceSpec + paths). See frenken-lab/graphids#19 and `docs/reference/config-architecture.md`.
+**Config resolution** — `ConfigResolver` in `orchestrate/resolve.py` is the exclusive merge path for pipeline runs. It packs trainer/resource/KD overrides into a typed TLA dict via `graphids.orchestrate.contracts.build_tla_dict`, renders the stage jsonnet via `graphids.config.jsonnet.render_config`, validates cross-field constraints, and emits an audit trail. Monarch actors call `resolver.resolve()` → `ResolvedConfig` (TrainingSpec + ResourceSpec + paths). See `docs/reference/config-architecture.md`.
 
 **SLURM submission** — all jobs via `scripts/slurm/submit.sh <profile> [args]`. The preamble hard-fails if the `jsonnet` binary is missing (see `docs/decisions/0010-jsonnet-binary.md`). Resource profiles read from `configs/resources/` (`job_profiles.json`, `clusters.json`, `submit_profiles.yaml`). See `rules/slurm-hpc.md`.
 

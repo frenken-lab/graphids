@@ -1,14 +1,10 @@
 """Orchestration → execution boundary specs and helpers.
 
-Planner-side typed boundary values for the training path:
+- ``TrainingSpec`` — canonical training input for the execution layer.
+- ``build_tla_dict`` — packs a ``StageConfig`` into the TLA dict each
+  stage's jsonnet function consumes.
 
-- ``TrainingSpec`` — canonical training input handed from orchestration
-  (dagster, CLI ``from-spec``) to the execution layer.
-- Envelope helpers live in ``graphids.contracts``.
-
-``AnalysisSpec`` + envelope helpers live next to ``analyzer.py`` in
-``graphids.core.analysis.schemas`` because they validate analyzer init
-kwargs — the schema belongs with its consumer.
+``AnalysisSpec`` lives in ``graphids.core.analysis.schemas``.
 """
 
 from __future__ import annotations
@@ -19,33 +15,21 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from graphids.config.constants import PROJECT_ROOT
 from graphids.config.topology import TOPOLOGY
-from graphids.contracts import from_envelope as _from_envelope
-from graphids.contracts import to_envelope as _to_envelope
 
 if TYPE_CHECKING:
-    from graphids.orchestrate.planning.shared import StageConfig
+    from graphids.orchestrate.planning import StageConfig
 
 
 CONFIGS_DIR = PROJECT_ROOT / "configs"
 
 
-# -----------------------------------------------------------------------------
-# Pydantic models — boundary values
-# -----------------------------------------------------------------------------
-
-
 class TrainingSpec(BaseModel):
-    """Canonical execution input shared by CLI and orchestrators.
-
-    Carries a single ``jsonnet_path`` + typed ``jsonnet_tla`` dict. Everything
-    the stage function needs to render a fully-merged config is in
-    ``jsonnet_tla``; ``build_tla_dict`` is the only site that constructs it.
-    """
+    """Canonical execution input shared by CLI and orchestrators."""
 
     model_config = ConfigDict(extra="forbid")
 
     CONTRACT_NAME: ClassVar[str] = "graphids.training_spec"
-    CONTRACT_VERSION: ClassVar[int] = 2  # bumped for jsonnet_path/jsonnet_tla fields
+    CONTRACT_VERSION: ClassVar[int] = 2
 
     stage: str
     model_family: str
@@ -56,10 +40,7 @@ class TrainingSpec(BaseModel):
     jsonnet_path: str
     jsonnet_tla: dict[str, Any] = Field(default_factory=dict)
     model_init_overrides: dict[str, Any] = Field(default_factory=dict)
-    upstream_ckpt_paths: dict[str, str] = Field(
-        default_factory=dict,
-        description="Populated from Dagster asset I/O at materialization time, not from config.",
-    )
+    upstream_ckpt_paths: dict[str, str] = Field(default_factory=dict)
     upstream_model_families: dict[str, str] = Field(default_factory=dict)
 
 
@@ -67,14 +48,6 @@ _STAGES_DIR = CONFIGS_DIR / "stages"
 
 # Convention: stage name == jsonnet filename (topology.py validates existence).
 _STAGE_JSONNET: dict[str, str] = {s: f"{s}.jsonnet" for s in TOPOLOGY.stages}
-
-
-def to_envelope(spec: TrainingSpec, *, metadata: dict[str, Any] | None = None):
-    return _to_envelope(spec, metadata=metadata)
-
-
-def from_envelope(payload: dict[str, Any]) -> TrainingSpec:
-    return _from_envelope(payload, TrainingSpec)
 
 
 def resolve_jsonnet_path(stage: str) -> str:
@@ -154,7 +127,5 @@ def build_tla_dict(
 __all__ = [
     "TrainingSpec",
     "build_tla_dict",
-    "from_envelope",
     "resolve_jsonnet_path",
-    "to_envelope",
 ]

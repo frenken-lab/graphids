@@ -12,16 +12,13 @@ Data:
   extract-fusion-states            — extract VGAE+GAT latent states for fusion
 
 Orchestration:
-  from-spec --phase {train,test,analyze}  — run stage from canonical spec
+  monarch-run / monarch-sweep      — run pipeline via Monarch actors
   pipeline-status                  — aggregated status from DuckDB catalog
   rebuild-catalog                  — rebuild DuckDB from run_record.json sidecars
 
 SLURM:
   submit-profile <job>             — print resource profile for submit.sh
   probe-budget                     — hardware cost model measurement
-
-Dagster (separate entry point):
-  dg launch --assets ...           — materialize assets
 """
 
 from __future__ import annotations

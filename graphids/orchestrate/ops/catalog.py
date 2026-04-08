@@ -1,152 +1,42 @@
 """Rebuild DuckDB experiment catalog from run_record.json sidecars.
 
-Operation layer — argparse surface lives in
-``graphids.commands.rebuild_catalog``. Scans ``{lake_root}/dev/`` for
-sidecars, ingests via DuckDB ``read_json_auto()``, and backfills legacy
-runs (no sidecar) from ``config_snapshot.json`` + ``metrics.csv`` + markers.
+Scans ``{lake_root}/dev/`` for sidecars and ingests via DuckDB
+``read_json_auto()``. The ``runs`` table includes a computed
+``asset_name`` column (``stage || identity_hash || kd_tag``) for
+exact-match joins with planner topology in ``pipeline-status``.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
 
-from graphids.config.constants import (
-    CATALOG_SUBPATH,
-    PHASE_MARKERS,
-    RUN_RECORD_FILENAME,
-)
+from graphids.config.constants import CATALOG_SUBPATH, RUN_RECORD_FILENAME
 from graphids.config.topology import catalog_path
 from graphids.log import get_logger
 
 log = get_logger(__name__)
 
 
-def _backfill_legacy_runs(lake_root: str, *, dry_run: bool = False) -> int:
-    """Write run_record.json for runs that don't have one yet.
-
-    Reconstructs from config_snapshot.json + phase markers + metrics.csv.
-    Returns count of sidecars written.
-    """
-    from graphids.core.io import write_run_record
-    from graphids.core.run_record import RunRecord
-
-    dev_root = Path(lake_root) / "dev"
-    if not dev_root.exists():
-        return 0
-
-    count = 0
-    for seed_dir in sorted(dev_root.glob("*/*/seed_*")):
-        sidecar = seed_dir / RUN_RECORD_FILENAME
-        if sidecar.exists():
-            continue
-
-        run_dir = str(seed_dir)
-        try:
-            identity = RunDirIdentity.from_run_dir(run_dir)
-        except (IndexError, ValueError):
-            log.warning("backfill_skip_parse", run_dir=run_dir)
-            continue
-
-        # Determine status from markers
-        phases = {phase: (seed_dir / marker).exists() for phase, marker in PHASE_MARKERS.items()}
-        has_complete = (seed_dir / ".complete").exists()
-        status = "completed" if has_complete or phases.get("train", False) else "started"
-
-        # Extract metrics from CSVLogger if available
-        metrics = _read_csv_metrics(seed_dir)
-
-        # Read config_snapshot.json for version info
-        graphids_version = "unknown"
-        if (seed_dir / "config_snapshot.json").exists():
-            graphids_version = "pre-sidecar"
-
-        # Approximate started_at from directory mtime
-        try:
-            mtime = seed_dir.stat().st_mtime
-            started_at = datetime.fromtimestamp(mtime, tz=UTC).isoformat()
-        except OSError:
-            started_at = datetime.now(UTC).isoformat()
-
-        record = RunRecord(
-            status=status,
-            run_dir=run_dir,
-            stage=identity.stage,
-            model_family=identity.model_family,
-            scale=identity.scale,
-            dataset=identity.dataset,
-            seed=identity.seed,
-            identity_hash=identity.identity_hash,
-            kd_tag=identity.kd_tag,
-            user=identity.user,
-            graphids_version=graphids_version,
-            started_at=started_at,
-            source="cli",
-            metrics=metrics,
-            phases=phases,
-        )
-
-        if dry_run:
-            log.info("backfill_dry_run", run_dir=run_dir, status=status, metrics_count=len(metrics))
-        else:
-            write_run_record(record, seed_dir)
-            log.info("backfill_written", run_dir=run_dir, status=status)
-        count += 1
-
-    return count
-
-
-def _read_csv_metrics(seed_dir: Path) -> dict[str, float]:
-    """Read final metrics from CSVLogger metrics.csv using polars."""
-    versions = sorted(seed_dir.glob("lightning_logs/version_*"), key=lambda p: p.stat().st_mtime)
-    if not versions:
-        return {}
-
-    csv_path = versions[-1] / "metrics.csv"
-    if not csv_path.exists():
-        return {}
-
-    try:
-        import polars as pl
-
-        df = pl.read_csv(csv_path)
-        if df.is_empty():
-            return {}
-
-        metrics: dict[str, float] = {}
-        for col in df.columns:
-            if col in ("step", "epoch"):
-                continue
-            series = df[col].drop_nulls()
-            if series.is_empty():
-                continue
-            metrics[col] = round(float(series[-1]), 6)
-
-        # Count epochs
-        if "epoch" in df.columns:
-            metrics["epochs_run"] = float(df["epoch"].drop_nulls().max() + 1)
-
-        return metrics
-    except Exception:
-        return {}
-
-
-def _rebuild_catalog(lake_root: str, *, dry_run: bool = False) -> int:
-    """Ingest all run_record.json files into DuckDB catalog. Returns row count."""
+def rebuild_catalog(
+    *,
+    lake_root: str,
+    dry_run: bool = False,
+) -> None:
+    """Ingest all run_record.json sidecars into the DuckDB catalog."""
     cat_path = catalog_path(lake_root)
     glob_pattern = str(Path(lake_root) / "dev" / "**" / RUN_RECORD_FILENAME)
 
-    # Check if any sidecars exist
     sidecars = list(Path(lake_root).glob(f"dev/**/{RUN_RECORD_FILENAME}"))
     if not sidecars:
         log.info("no_sidecars_found", lake_root=lake_root)
-        return 0
+        print("No sidecars found.")
+        return
 
     if dry_run:
-        log.info("rebuild_dry_run", sidecar_count=len(sidecars))
-        return len(sidecars)
+        print(f"Would ingest {len(sidecars)} sidecar(s)")
+        return
 
     from graphids.config.settings import require_lake_write
 
@@ -155,12 +45,6 @@ def _rebuild_catalog(lake_root: str, *, dry_run: bool = False) -> int:
     db = duckdb.connect(str(cat_path))
 
     try:
-        # Drop old experiments table if it exists (legacy schema)
-        db.execute("DROP TABLE IF EXISTS experiments")
-
-        # Ingest all sidecars in one shot. ``asset_name`` is computed so that
-        # ``pipeline-status`` can do an exact dict lookup against dagster's
-        # asset graph (asset name = ``f"{stage}{identity_hash}{kd_tag}"``).
         db.execute(
             """
             CREATE OR REPLACE TABLE runs AS
@@ -175,7 +59,6 @@ def _rebuild_catalog(lake_root: str, *, dry_run: bool = False) -> int:
 
         count = db.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
 
-        # Summary stats
         summary = db.execute("""
             SELECT status, COUNT(*) AS n
             FROM runs GROUP BY status ORDER BY n DESC
@@ -187,34 +70,6 @@ def _rebuild_catalog(lake_root: str, *, dry_run: bool = False) -> int:
             breakdown={s: n for s, n in summary},
             catalog_path=str(cat_path),
         )
-
-        return count
+        print(f"Catalog rebuilt: {count} run(s) in {lake_root}/{CATALOG_SUBPATH}")
     finally:
         db.close()
-
-
-def rebuild_catalog(
-    *,
-    lake_root: str,
-    backfill_only: bool = False,
-    skip_backfill: bool = False,
-    dry_run: bool = False,
-) -> None:
-    """Backfill sidecars then ingest them into the DuckDB catalog.
-
-    ``skip_backfill`` and ``backfill_only`` are mutually useful: the former
-    skips the legacy sidecar reconstruction step, the latter stops after
-    it. Both default to ``False`` (i.e. full rebuild).
-    """
-    if not skip_backfill:
-        backfilled = _backfill_legacy_runs(lake_root, dry_run=dry_run)
-        print(f"Backfilled {backfilled} legacy run(s)")
-
-    if backfill_only:
-        return
-
-    count = _rebuild_catalog(lake_root, dry_run=dry_run)
-    if dry_run:
-        print(f"Would ingest {count} sidecar(s)")
-    else:
-        print(f"Catalog rebuilt: {count} run(s) in {lake_root}/{CATALOG_SUBPATH}")

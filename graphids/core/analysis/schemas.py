@@ -1,4 +1,4 @@
-"""Analysis layer schemas — ``AnalysisSpec`` + envelope helpers.
+"""Analysis layer schemas — ``AnalysisSpec`` + output manifest.
 
 Lives next to ``analyzer.py`` because ``AnalysisSpec`` is the typed view
 of ``Analyzer.__init__`` kwargs. The orchestrator produces an
@@ -10,9 +10,6 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-from graphids.contracts import from_envelope as _from_envelope
-from graphids.contracts import to_envelope as _to_envelope
 
 
 class AnalysisSpec(BaseModel):
@@ -63,14 +60,6 @@ class AnalysisSpec(BaseModel):
         if self.fusion_policy and not self.gat_ckpt_path:
             raise ValueError("fusion_policy=true requires gat_ckpt_path")
         return self
-
-
-def to_envelope(spec: AnalysisSpec, *, metadata: dict[str, Any] | None = None):
-    return _to_envelope(spec, metadata=metadata)
-
-
-def from_envelope(envelope: dict[str, Any]) -> AnalysisSpec:
-    return _from_envelope(envelope, AnalysisSpec)
 
 
 def expected_outputs(spec: AnalysisSpec) -> tuple[str, ...]:

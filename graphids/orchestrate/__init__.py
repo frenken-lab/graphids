@@ -1,10 +1,9 @@
-"""Pipeline orchestration — shared planning, resolution, and ops.
+"""Pipeline orchestration — planning, resolution, and ops.
 
 Module layout:
-- planning/  : recipe expansion + StageConfig + enumerate_assets
-- resolve/   : ConfigResolver + cross-field validation
-- contracts/ : TrainingSpec + TLA dict construction
-- ops/       : shared ops (from-spec, finalize, catalog, status)
-- analysis.py: shared analysis runner (Monarch + dagster)
-- dagster/   : dagster-specific component, assets, checks, resources, definitions
+- contracts.py : TrainingSpec + TLA dict construction
+- planning/    : recipe expansion + StageConfig + enumerate_assets
+- resolve.py   : ConfigResolver + cross-field validation
+- ops/         : finalize, catalog, status (CLI entry points)
+- analysis.py  : shared analysis runner (Monarch)
 """

@@ -8,7 +8,8 @@ test instead of a StageConfig fixture round-trip.
 from __future__ import annotations
 
 from graphids.orchestrate.contracts import TrainingSpec, resolve_jsonnet_path
-from graphids.orchestrate.resolve.cross_field import (
+from graphids.orchestrate.planning import StageConfig
+from graphids.orchestrate.resolve import (
     _RULES,
     _check_datamodule_epoch_sync,
     _check_fusion_rl_batch_size_override,
@@ -20,7 +21,6 @@ from graphids.orchestrate.resolve.cross_field import (
     _is_gpu_stage,
     _is_supervised,
 )
-from graphids.orchestrate.planning import StageConfig
 from graphids.slurm.resources import ResourceSpec
 
 # ---------------------------------------------------------------------------

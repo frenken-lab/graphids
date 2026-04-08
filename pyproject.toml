@@ -30,7 +30,6 @@ dependencies = [
     "uvicorn>=0.30",
     "duckdb>=1.0.0",
     "typer[all]>=0.12",
-    "dagster-dg-cli>=1.12.21",
     "alembic>=1.18",
     "wandb>=0.25.1",
 ]
@@ -80,20 +79,6 @@ ignore = ["E501", "E402", "E741", "W291", "W292", "W293", "F541", "B905", "B017"
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 "tests/*" = ["F401"]
-
-[tool.dg]
-directory_type = "project"
-
-[tool.dg.cli]
-suppress_warnings = ["project_and_activated_venv_mismatch"]
-
-[tool.dg.project]
-root_module = "graphids"
-defs_module = "graphids.orchestrate"
-code_location_target_module = "graphids.orchestrate.dagster.definitions"
-registry_modules = [
-    "graphids.orchestrate.dagster.component",
-]
 
 [tool.mypy]
 python_version = "3.12"
