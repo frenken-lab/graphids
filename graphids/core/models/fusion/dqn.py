@@ -1,17 +1,17 @@
+"""Vanilla DQN for dynamic fusion of GAT and VGAE outputs.
+
+Fusion treats each graph as an independent context, so there is no
+bootstrapped next state: ``targets = rewards`` and no target network
+is needed. For a closed-form alternative, see ``BanditFusionModule``.
+"""
+
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from graphids.log import get_logger
-
-from ._nn import TensorReplayBuffer, build_mlp_body
-from .fusion_baselines import FusionModuleBase
-from .fusion_features import STATE_DIM
-from .fusion_reward import FusionRewardCalculator, resolve_reward_kwargs
-
-log = get_logger(__name__)
+from .base import STATE_DIM, FusionModuleBase, build_mlp_body
 
 
 class QNetwork(nn.Module):
@@ -28,19 +28,8 @@ class QNetwork(nn.Module):
         return self.net(x)
 
 
-# ---------------------------------------------------------------------------
-# DQN Fusion Agent (vectorized training)
-# See ~/plans/fusion-redesign.md for RL vs supervised analysis
-# ---------------------------------------------------------------------------
-
-
 class DQNFusionModule(FusionModuleBase):
-    """Vanilla DQN with gradient updates for dynamic fusion of GAT and VGAE outputs.
-
-    Fusion treats each graph as an independent context, so there is no
-    bootstrapped next state: ``targets = rewards`` and no target network
-    is needed. For a closed-form alternative, see ``BanditFusionModule``.
-    """
+    """Vanilla DQN with gradient updates for dynamic fusion."""
 
     def __init__(
         self,
@@ -60,54 +49,34 @@ class DQNFusionModule(FusionModuleBase):
         gpu_training_steps: int = 1,
         reward_kwargs: dict | None = None,
     ):
-        super().__init__()
+        super().__init__(
+            state_dim=state_dim,
+            alpha_steps=alpha_steps,
+            batch_size=batch_size,
+            buffer_size=buffer_size,
+            decision_threshold=decision_threshold,
+            reward_kwargs=reward_kwargs,
+        )
         self.save_hyperparameters()
-        self.automatic_optimization = False
 
-        self.register_buffer("_alpha_values_t", torch.linspace(0, 1, alpha_steps))
-        self.action_dim = alpha_steps
-        self.state_dim = state_dim
         self.epsilon = epsilon
         self.epsilon_decay = epsilon_decay
         self.min_epsilon = min_epsilon
-        self.batch_size = batch_size
-        self.decision_threshold = decision_threshold
         self.gpu_training_steps = gpu_training_steps
 
-        # Network (nn.Module child — Lightning auto-transfers and checkpoints)
         self.q_network = QNetwork(state_dim, alpha_steps, hidden_dim, num_layers)
-
-        # Optimizer and loss
         self.optimizer = optim.AdamW(self.q_network.parameters(), lr=lr, weight_decay=weight_decay)
         self.loss_fn = nn.SmoothL1Loss()
-
-        self._buffer = TensorReplayBuffer(buffer_size, state_dim)
-        self.reward_calc = FusionRewardCalculator(**resolve_reward_kwargs(reward_kwargs))
-
-        log.info("dqn_agent_initialized", actions=alpha_steps, state_dim=state_dim)
 
     def configure_optimizers(self):
         return self.optimizer
 
-    # ------------------------------------------------------------------
-    # Lightning training entry point
-    # ------------------------------------------------------------------
-
-    def training_step(self, batch, batch_idx):
-        states, labels = batch
-        result = self.train_episode(states, labels)
-        for k, v in result.items():
-            if v is not None:
-                self.log(k, float(v), prog_bar=(k in ("avg_reward", "accuracy")))
-
-    # ------------------------------------------------------------------
-    # Action selection
-    # ------------------------------------------------------------------
+    # -- Exploration strategy ------------------------------------------------
 
     def select_action_batch(
         self, states: torch.Tensor, training: bool = True
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Epsilon-greedy batch action selection. Returns (actions, alphas, norm_states)."""
+        """Epsilon-greedy batch action selection."""
         norm_states = self.reward_calc.normalize(states)
 
         with torch.no_grad():
@@ -116,23 +85,41 @@ class DQNFusionModule(FusionModuleBase):
 
         if training:
             rand_mask = torch.rand(len(states)) < self.epsilon
-            random_actions = torch.randint(0, self.action_dim, (len(states),))
+            random_actions = torch.randint(0, self.alpha_steps, (len(states),))
             actions = torch.where(rand_mask, random_actions, greedy_actions)
         else:
             actions = greedy_actions
 
-        alphas = self._alpha_values_t[actions]
+        alphas = self.alpha_values[actions]
         return actions, alphas, norm_states
 
-    # ------------------------------------------------------------------
-    # Training
-    # ------------------------------------------------------------------
+    # -- Learning update -----------------------------------------------------
 
-    def train_step(self) -> float | None:
+    def train_episode(self, states: torch.Tensor, labels: torch.Tensor) -> dict:
+        actions, alphas, norm_states = self.select_action_batch(states, training=True)
+        preds = (alphas > self.decision_threshold).long()
+        rewards = self.reward_calc.compute(preds, labels, norm_states, alphas)
+        self._buffer.add_batch(norm_states, actions, rewards)
+
+        loss = None
+        for _ in range(self.gpu_training_steps):
+            loss = self._gradient_step()
+
+        self.epsilon = max(self.min_epsilon, self.epsilon * self.epsilon_decay)
+
+        return {
+            "avg_reward": rewards.mean().item(),
+            "avg_alpha": alphas.mean().item(),
+            "epsilon": self.epsilon,
+            "loss": loss,
+        }
+
+    # -- DQN-specific internals ----------------------------------------------
+
+    def _gradient_step(self) -> float | None:
         """One DQN gradient step from replay buffer.
 
-        Fusion has no real next-state: targets = rewards (pure reward
-        regression, no bootstrapping), so no target network is needed.
+        targets = rewards (no bootstrapping — each graph is independent).
         """
         if len(self._buffer) < self.batch_size:
             return None
@@ -145,83 +132,14 @@ class DQNFusionModule(FusionModuleBase):
         current_q = self.q_network(states).gather(1, actions.unsqueeze(1)).squeeze(1)
         loss = self.loss_fn(current_q, rewards)
 
-        opt = self.optimizer
-        opt.zero_grad()
+        self.optimizer.zero_grad()
         self.manual_backward(loss)
         torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), max_norm=1.0)
-        opt.step()
+        self.optimizer.step()
 
         return loss.item()
 
-    # ------------------------------------------------------------------
-    # Training episode (called from fusion pipeline)
-    # ------------------------------------------------------------------
-
-    def train_episode(
-        self, states: torch.Tensor, labels: torch.Tensor
-    ) -> dict:
-        """One training episode: select → reward → replay → gradient steps → epsilon decay.
-
-        Args:
-            states: [N, D] raw state features
-            labels: [N] ground truth labels
-
-        Returns:
-            Dict with avg_reward, avg_alpha, epsilon, loss.
-        """
-        actions, alphas, norm_states = self.select_action_batch(states, training=True)
-        preds = (alphas > self.decision_threshold).long()
-        rewards = self.reward_calc.compute(preds, labels, norm_states, alphas)
-        self._buffer.add_batch(norm_states, actions, rewards)
-
-        loss = None
-        for _ in range(self.gpu_training_steps):
-            loss = self.train_step()
-
-        self.epsilon = max(self.min_epsilon, self.epsilon * self.epsilon_decay)
-
-        return {
-            "avg_reward": rewards.mean().item(),
-            "avg_alpha": alphas.mean().item(),
-            "epsilon": self.epsilon,
-            "loss": loss,
-        }
-
-    # ------------------------------------------------------------------
-    # Inference
-    # ------------------------------------------------------------------
-
-    def predict(self, states: torch.Tensor) -> dict:
-        """Greedy fused prediction (no exploration)."""
-        from .fusion_reward import fused_predict
-        return fused_predict(self, states)
-
     def q_values(self, norm_states: torch.Tensor) -> torch.Tensor:
-        """Compute Q-values for normalized states. Shape: [N, action_dim]."""
+        """Q-values for normalized states. Shape: [N, action_dim]."""
         with torch.no_grad():
             return self.q_network(norm_states.to(self.device)).cpu()
-
-    # ------------------------------------------------------------------
-    # Validation
-    # ------------------------------------------------------------------
-
-    def validate_batch(self, states: torch.Tensor, labels: torch.Tensor) -> dict:
-        """Greedy evaluation with proper fused prediction."""
-        was_training = self.q_network.training
-        self.q_network.eval()
-
-        result = self.predict(states)
-        preds, norm_states, alphas = result["preds"], result["norm_states"], result["alphas"]
-
-        correct = (preds == labels).sum().item()
-        rewards = self.reward_calc.compute(preds, labels, norm_states, alphas)
-
-        if was_training:
-            self.q_network.train()
-
-        return {
-            "accuracy": correct / len(labels),
-            "avg_reward": rewards.mean().item(),
-            "avg_alpha": alphas.mean().item(),
-            "alpha_std": alphas.std().item(),
-        }

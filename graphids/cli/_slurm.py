@@ -30,7 +30,7 @@ def probe_budget(
 ) -> None:
     """Measure hardware cost model (VRAM probe + calibration). Requires GPU."""
     from graphids.config.constants import LAKE_ROOT, VALID_MODEL_TYPES, VALID_SCALES
-    from graphids.core.monitoring.profilers.budget import run_probe_budget
+    from graphids.core.data.budget_probe import run_probe_budget
 
     run_probe_budget(
         model_types=model_type or sorted(VALID_MODEL_TYPES),

@@ -30,11 +30,11 @@
       init_args: {},
     },
     resource_profile: {
-      class_path: 'graphids.core.monitoring.callbacks.ResourceProfileCallback',
+      class_path: 'graphids.core.models.base.ResourceProfileCallback',
       init_args: { log_every_n_steps: 50 },
     },
     run_record: {
-      class_path: 'graphids.core.monitoring.callbacks.RunRecordCallback',
+      class_path: 'graphids.core.models.base.RunRecordCallback',
       init_args: { enabled: true },
     },
     curriculum: {

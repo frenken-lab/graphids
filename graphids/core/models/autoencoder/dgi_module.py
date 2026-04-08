@@ -2,12 +2,8 @@ from __future__ import annotations
 
 import os
 
-import torch
-import torch.nn as nn
-from torch_geometric.nn import global_mean_pool
+from ..base import GraphModuleBase, binary_test_metrics
 
-from .._conv import InputEncoder, build_encoder_stack, conv_forward, resolve_edge_dim
-from .._training import GraphModuleBase, binary_test_metrics
 # ---------------------------------------------------------------------------
 # Lightning training module
 # ---------------------------------------------------------------------------
@@ -56,14 +52,18 @@ class DGIModule(GraphModuleBase):
         hp = self.hparams
         self.model = GraphInfomaxModel.from_config(hp, hp.num_ids, hp.in_channels)
         if hp.compile_model:
-            from .._training import try_compile
+            from ..base import try_compile
+
             self.model = try_compile(self.model, conv_type=hp.conv_type, dynamic=True)
 
     def forward(self, batch):
         edge_attr = getattr(batch, "edge_attr", None)
         return self.model(
-            batch.x, batch.edge_index, batch.batch,
-            edge_attr=edge_attr, node_id=batch.node_id,
+            batch.x,
+            batch.edge_index,
+            batch.batch,
+            edge_attr=edge_attr,
+            node_id=batch.node_id,
         )
 
     def _training_step_inner(self, batch, _idx):
@@ -83,9 +83,13 @@ class DGIModule(GraphModuleBase):
     def _per_graph_scores(self, batch):
         """Compute per-graph anomaly scores (1 - mean discriminator confidence)."""
         from torch_geometric.utils import scatter
+
         pos_z = self.model.encode(
-            batch.x, batch.edge_index, getattr(batch, "edge_attr", None),
-            batch.batch, batch.node_id,
+            batch.x,
+            batch.edge_index,
+            getattr(batch, "edge_attr", None),
+            batch.batch,
+            batch.node_id,
         )
         summary = self.model.summarize(pos_z, batch.batch)
         node_scores = self.model.discriminate(pos_z, summary, batch.batch)

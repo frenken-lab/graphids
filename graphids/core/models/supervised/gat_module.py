@@ -5,7 +5,7 @@ import os
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .._training import GraphModuleBase, binary_test_metrics
+from ..base import GraphModuleBase, binary_test_metrics
 from .gat import GATWithJK
 
 # ---------------------------------------------------------------------------
@@ -71,7 +71,7 @@ class GATModule(GraphModuleBase):
         hp = self.hparams
         self.model = GATWithJK.from_config(hp, hp.num_ids, hp.in_channels)
         if hp.compile_model:
-            from .._training import try_compile
+            from ..base import try_compile
 
             self.model = try_compile(self.model, conv_type=hp.conv_type, dynamic=True)
 

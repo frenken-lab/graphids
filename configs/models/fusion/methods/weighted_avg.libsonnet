@@ -3,7 +3,7 @@
 
 {
   model: {
-    class_path: 'graphids.core.models.fusion.fusion_baselines.WeightedAvgModule',
+    class_path: 'graphids.core.models.fusion.weighted_avg.WeightedAvgModule',
     init_args: {
       lr: 0.01,
       decision_threshold: 0.5,

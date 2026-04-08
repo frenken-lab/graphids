@@ -7,7 +7,7 @@ from typing import Annotated
 
 import typer
 
-from graphids.cli.app import app
+from graphids.cli.app import app, parse_tla
 from graphids.config.constants import PIPELINE_DEFAULTS
 
 _D = PIPELINE_DEFAULTS
@@ -34,22 +34,6 @@ def _check_monarch() -> None:
             err=True,
         )
         raise typer.Exit(code=1)
-
-
-def _coerce_value(v: str) -> object:
-    """Coerce CLI string to int/float/bool/null where unambiguous."""
-    if v.lower() in ("true", "false"):
-        return v.lower() == "true"
-    if v.lower() == "null":
-        return None
-    try:
-        return int(v)
-    except ValueError:
-        pass
-    try:
-        return float(v)
-    except ValueError:
-        return v
 
 
 @app.command("monarch-run", rich_help_panel="Orchestration")
@@ -80,28 +64,18 @@ def monarch_run(
             "--trainer-override", "-O", help="Dotted trainer override (e.g. trainer.max_epochs=3)"
         ),
     ] = None,
+    partition: Annotated[
+        str | None, typer.Option(help="Override SLURM partition (e.g. gpudebug)")
+    ] = None,
+    time: Annotated[str | None, typer.Option(help="Override wall time (e.g. 1:00:00)")] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Print allocation spec only")] = False,
 ) -> None:
     """Run the 3-stage pipeline in a single SLURM allocation via Monarch."""
-    from graphids.monarch.job import pipeline_job_spec
+    from graphids.monarch.job import chain_job_spec
+    from graphids.monarch.pipeline import PipelineConfig, build_pipeline_stages, run_pipeline
 
-    overrides: dict[str, object] = {}
-    for item in trainer_override or []:
-        k, _, v = item.partition("=")
-        overrides[k] = _coerce_value(v)
-
+    overrides = parse_tla(trainer_override)
     stage_list = [s.strip() for s in stages.split(",")]
-    spec = pipeline_job_spec(scale, stages=stage_list, fusion_method=fusion_method, dataset=dataset)
-
-    if dry_run:
-        if overrides:
-            typer.echo(f"Overrides:  {overrides}")
-        _print_spec(spec)
-        raise typer.Exit()
-
-    _check_monarch()
-
-    from graphids.monarch.pipeline import PipelineConfig, run_pipeline
 
     cfg = PipelineConfig(
         dataset=dataset,
@@ -114,7 +88,25 @@ def monarch_run(
         loss_fn=loss_fn,
         tla_overrides=overrides,
     )
-    checkpoints = run_pipeline(cfg)
+
+    from dataclasses import replace
+
+    stage_cfgs = build_pipeline_stages(cfg)
+    spec = chain_job_spec(stage_cfgs, dataset=dataset)
+    if partition:
+        spec = replace(spec, partition=partition)
+    if time:
+        spec = replace(spec, time=time)
+
+    if dry_run:
+        if overrides:
+            typer.echo(f"Overrides:  {overrides}")
+        _print_spec(spec)
+        raise typer.Exit()
+
+    _check_monarch()
+
+    checkpoints = run_pipeline(cfg, job_spec_override=spec)
     for stage_name, ckpt in checkpoints.items():
         typer.echo(f"{stage_name}: {ckpt}")
 
@@ -136,7 +128,6 @@ def monarch_sweep(
     """Run a recipe sweep via Monarch (replaces dg launch)."""
     from graphids.monarch.sweep import plan_chains
 
-    # Parse inputs
     recipe_path = str(Path(recipe).resolve())
     seed_list = [int(s.strip()) for s in seeds.split(",")]
     if datasets:

@@ -79,7 +79,7 @@ class TestForcedCallbacks:
             ModelCheckpoint,
         )
 
-        from graphids.core.monitoring.callbacks import ResourceProfileCallback, RunRecordCallback
+        from graphids.core.models.base import ResourceProfileCallback, RunRecordCallback
 
         merged = render("configs/stages/autoencoder.jsonnet", tla=None)
         run = instantiate(merged, seed_everything=False)

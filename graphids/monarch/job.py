@@ -34,68 +34,6 @@ class MonarchJobSpec:
             object.__setattr__(self, "account", SLURM_ACCOUNT)
 
 
-def _default_model_type(stage: str) -> str:
-    """Look up the default model_type for a stage via topology + axes."""
-    from graphids.config.constants import FAMILY_FOR_MODEL_TYPE
-    from graphids.config.topology import STAGE_FAMILY_MAP
-
-    family = STAGE_FAMILY_MAP[stage]
-    # Reverse lookup: first model_type that maps to this family
-    for mt, fam in FAMILY_FOR_MODEL_TYPE.items():
-        if fam == family:
-            return mt
-    raise KeyError(f"No model_type found for family {family!r}")
-
-
-def pipeline_job_spec(
-    scale: str = "small",
-    *,
-    stages: list[str] | None = None,
-    fusion_method: str = "bandit",
-    dataset: str | None = None,
-) -> MonarchJobSpec:
-    """Compute a combined allocation for the requested pipeline stages.
-
-    Only aggregates resources for stages that will actually run.
-    GPU partition is used when any GPU stage (autoencoder, supervised)
-    is present.  Fusion is CPU-only — including it inflates wall time
-    but not partition/mem/cpus (those are dominated by GPU stages).
-    """
-    from graphids.slurm.resources import get_resources
-
-    if stages is None:
-        stages = ["autoencoder", "supervised", "fusion"]
-
-    resources = []
-    for stage in stages:
-        if stage == "fusion":
-            resources.append(get_resources(fusion_method, scale, stage, dataset=dataset))
-        else:
-            model = _default_model_type(stage)
-            resources.append(get_resources(model, scale, stage, dataset=dataset))
-
-    total_minutes = sum(r.time_minutes for r in resources) + 30
-    h, m = divmod(total_minutes, 60)
-
-    # GPU stages drive partition and GPU count
-    gpu_resources = [r for r in resources if r.gres]
-    if gpu_resources:
-        partition = gpu_resources[0].partition
-        parts = gpu_resources[0].gres.split(":")
-        gpus = int(parts[-1]) if parts[-1].isdigit() else 1
-    else:
-        partition = resources[0].partition
-        gpus = 0
-
-    return MonarchJobSpec(
-        partition=partition,
-        time=f"{h}:{m:02d}:00",
-        mem=f"{max(r.mem_mb for r in resources) // 1024}G",
-        cpus=max(r.cpus_per_task for r in resources),
-        gpus_per_node=gpus,
-    )
-
-
 def chain_job_spec(
     stages: list[Any],
     *,
@@ -105,8 +43,7 @@ def chain_job_spec(
     """Compute a combined allocation for a chain of ``StageConfig`` objects.
 
     Driven by ``StageConfig.resource_model`` and ``StageConfig.scale`` —
-    no hardcoded model type mapping needed. Falls back to
-    ``pipeline_job_spec`` logic for resource aggregation.
+    no hardcoded model type mapping needed.
     """
     from graphids.slurm.resources import get_resources
 
@@ -134,35 +71,6 @@ def chain_job_spec(
         cpus=max(r.cpus_per_task for r in resources),
         gpus_per_node=gpus,
         job_name=job_name,
-    )
-
-
-def scale_job_spec(spec: MonarchJobSpec, reason: str) -> MonarchJobSpec:
-    """Inflate a MonarchJobSpec after OOM or TIMEOUT.
-
-    Builds a temporary ``ResourceSpec``, applies ``scale_resources``,
-    and maps the result back to a ``MonarchJobSpec``.
-    """
-    from graphids.slurm.resources import ResourceSpec, scale_resources
-
-    gres = f"gpu:{spec.gpus_per_node}" if spec.gpus_per_node else ""
-    tmp = ResourceSpec(
-        partition=spec.partition,
-        time=spec.time,
-        mem=spec.mem,
-        cpus_per_task=spec.cpus,
-        num_workers=0,
-        gres=gres,
-    )
-    scaled = scale_resources(tmp, reason)
-    return MonarchJobSpec(
-        partition=scaled.partition,
-        time=scaled.time,
-        mem=scaled.mem,
-        cpus=scaled.cpus_per_task,
-        gpus_per_node=spec.gpus_per_node,
-        account=spec.account,
-        job_name=spec.job_name,
     )
 
 

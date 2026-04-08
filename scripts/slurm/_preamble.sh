@@ -36,6 +36,10 @@ export WANDB_SILENT=true
 
 if [[ "${SKIP_CUDA_CONF:-0}" != "1" ]]; then
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
+    # torch.compiler.reset() only clears dynamo state, not the inductor
+    # disk cache. Stale artifacts from prior jobs on shared nodes can
+    # cause compilation failures. (pytorch/pytorch#172024)
+    rm -rf "/tmp/torchinductor_${USER:-$LOGNAME}"
 fi
 
 # Data staging: NFS → scratch → TMPDIR (node-local SSD)

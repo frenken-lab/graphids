@@ -95,35 +95,86 @@ _ALLOWED_CLASS_PATH_ROOTS: tuple[str, ...] = (
 )
 
 
-def _find_callback(callbacks: list[dict], name: str) -> dict | None:
-    """Find a callback entry by class name suffix in trainer.callbacks list."""
-    for cb in callbacks:
-        if isinstance(cb, dict) and name in cb.get("class_path", ""):
-            return cb
-    return None
+class _MonitorBlock(BaseModel):
+    """Shared base — forces strict mode enum for monitored callbacks."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    monitor: str = Field(..., min_length=1)
+    mode: str
+
+    @model_validator(mode="after")
+    def _mode_is_min_or_max(self) -> _MonitorBlock:
+        if self.mode not in ("min", "max"):
+            raise ValueError(f"mode must be 'min' or 'max', got {self.mode!r}")
+        return self
+
+
+class CheckpointSection(_MonitorBlock):
+    save_top_k: int = 1
+    save_last: bool = True
+    filename: str = "best_model"
+
+
+class EarlyStoppingSection(_MonitorBlock):
+    patience: int = 100
+
+
+# Resolve deferred Literal annotation (from __future__ import annotations).
+_MonitorBlock.model_rebuild()
+CheckpointSection.model_rebuild()
+EarlyStoppingSection.model_rebuild()
+
+
+class CallbacksSection(BaseModel):
+    """Named callbacks dict emitted by defaults.libsonnet.
+
+    ``checkpoint`` and ``early_stopping`` are typed strictly.
+    Other callbacks are validated as ``ClassPathBlock`` (class_path + init_args).
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    checkpoint: ClassPathBlock
+    early_stopping: ClassPathBlock
+
+    @model_validator(mode="after")
+    def _validate_monitor_blocks(self) -> CallbacksSection:
+        """Parse checkpoint/early_stopping init_args through typed Pydantic models."""
+        CheckpointSection.model_validate(self.checkpoint.init_args)
+        EarlyStoppingSection.model_validate(self.early_stopping.init_args)
+        return self
+
+    @model_validator(mode="after")
+    def _monitor_pair_consistent(self) -> CallbacksSection:
+        ckpt = CheckpointSection.model_validate(self.checkpoint.init_args)
+        es = EarlyStoppingSection.model_validate(self.early_stopping.init_args)
+        if ckpt.monitor != es.monitor or ckpt.mode != es.mode:
+            raise ValueError(
+                f"ModelCheckpoint ({ckpt.monitor}/{ckpt.mode}) and "
+                f"EarlyStopping ({es.monitor}/{es.mode}) must track the same metric+mode"
+            )
+        return self
 
 
 class ValidatedConfig(BaseModel):
     """Typed representation of a rendered stage config."""
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     seed_everything: int
     trainer: TrainerSection
     data: ClassPathBlock
     model: ClassPathBlock
-    callbacks: dict[str, Any] = Field(default_factory=dict)
-    ckpt_path: str | None = None
+    callbacks: CallbacksSection
 
     @property
-    def checkpoint_monitor(self) -> str | None:
-        cb = _find_callback(self.trainer.callbacks or [], "ModelCheckpoint")
-        return cb["init_args"]["monitor"] if cb else None
+    def checkpoint_monitor(self) -> str:
+        return self.callbacks.checkpoint.init_args["monitor"]
 
     @property
-    def checkpoint_mode(self) -> str | None:
-        cb = _find_callback(self.trainer.callbacks or [], "ModelCheckpoint")
-        return cb["init_args"]["mode"] if cb else None
+    def checkpoint_mode(self) -> str:
+        return self.callbacks.checkpoint.init_args["mode"]
 
     @model_validator(mode="after")
     def _no_null_list_fields(self) -> ValidatedConfig:
@@ -141,32 +192,15 @@ class ValidatedConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _monitor_pair_consistent(self) -> ValidatedConfig:
-        cbs = self.trainer.callbacks or []
-        ckpt = _find_callback(cbs, "ModelCheckpoint")
-        es = _find_callback(cbs, "EarlyStopping")
-        if not ckpt or not es:
-            return self
-        ckpt_m = ckpt["init_args"].get("monitor")
-        ckpt_mode = ckpt["init_args"].get("mode")
-        es_m = es["init_args"].get("monitor")
-        es_mode = es["init_args"].get("mode")
-        if ckpt_m != es_m or ckpt_mode != es_mode:
-            raise ValueError(
-                f"ModelCheckpoint ({ckpt_m}/{ckpt_mode}) and "
-                f"EarlyStopping ({es_m}/{es_mode}) must track the same metric+mode"
-            )
-        return self
-
-    @model_validator(mode="after")
     def _lr_monitor_requires_logger(self) -> ValidatedConfig:
         if self.trainer.logger is not False:
             return self
-        if _find_callback(self.trainer.callbacks or [], "LearningRateMonitor"):
-            raise ValueError(
-                "LearningRateMonitor callback requires trainer.logger "
-                "to be true; got trainer.logger=false"
-            )
+        for cb in self.trainer.callbacks or []:
+            if isinstance(cb, dict) and "LearningRateMonitor" in cb.get("class_path", ""):
+                raise ValueError(
+                    "LearningRateMonitor callback requires trainer.logger "
+                    "to be true; got trainer.logger=false"
+                )
         return self
 
     @model_validator(mode="after")

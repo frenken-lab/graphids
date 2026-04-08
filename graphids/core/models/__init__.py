@@ -8,15 +8,14 @@ Family-oriented namespaces:
 
 Public API re-exported from submodules:
 
-    from graphids.core.models import STATE_DIM, LAYOUT, EXTRACTORS
+    from graphids.core.models import STATE_DIM, LAYOUT
     from graphids.core.models import GraphModuleBase
 """
 
 from . import autoencoder, fusion, supervised
-from ._training import GraphModuleBase
+from .base import LAYOUT, STATE_DIM, FeatureLayout, GraphModuleBase
 from .fusion.bandit import BanditFusionModule
 from .fusion.dqn import DQNFusionModule
-from .fusion.fusion_features import EXTRACTORS, LAYOUT, STATE_DIM, FeatureLayout
 
 __all__ = [
     "autoencoder",
@@ -25,7 +24,6 @@ __all__ = [
     "GraphModuleBase",
     "BanditFusionModule",
     "DQNFusionModule",
-    "EXTRACTORS",
     "LAYOUT",
     "STATE_DIM",
     "FeatureLayout",

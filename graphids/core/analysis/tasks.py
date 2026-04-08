@@ -6,7 +6,7 @@ from pathlib import Path
 
 import torch
 
-from graphids.core.models._training import safe_load_checkpoint
+from graphids.core.models.base import safe_load_checkpoint
 from graphids.log import get_logger
 
 log = get_logger(__name__)

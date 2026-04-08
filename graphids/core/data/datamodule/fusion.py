@@ -21,7 +21,6 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from graphids.core.data.datasets.can_bus import CANBusDataset
-from graphids.core.data.sampler import make_graph_loader
 from graphids.log import get_logger
 
 from .graph import load_datasets
@@ -64,34 +63,6 @@ class FusionDataModule(pl.LightningDataModule):
     def steps_per_epoch(self) -> int:
         return math.ceil(len(self.train_cache["states"]) / self._batch_size)
 
-    @staticmethod
-    def cache_predictions(
-        models: dict[str, torch.nn.Module],
-        data,
-        device: torch.device,
-        max_samples: int = 150_000,
-        batch_size: int = 256,
-    ) -> dict[str, torch.Tensor]:
-        """Run registered extractors over data, produce N-D state vectors for fusion."""
-        from graphids.core.models.fusion.fusion_features import EXTRACTORS
-
-        active = [(name, ext) for name, ext in EXTRACTORS.items() if name in models]
-        for model in models.values():
-            model.eval()
-
-        capped = data[:max_samples]
-        loader = make_graph_loader(capped, batch_size=batch_size)
-
-        states, labels = [], []
-        with torch.no_grad():
-            for batch in loader:
-                batch = batch.to(device, non_blocking=True)
-                feats = [ext.extract(models[name], batch, device) for name, ext in active]
-                states.append(torch.cat(feats, dim=1))  # [B, total_dim]
-                labels.append(batch.y)
-
-        return {"states": torch.cat(states), "labels": torch.cat(labels)}
-
     def setup(self, stage=None):
         if self.train_cache is not None:
             return
@@ -104,7 +75,7 @@ class FusionDataModule(pl.LightningDataModule):
             return
 
         # Slow path: load upstream models and extract on GPU
-        from graphids.core.models._training import load_inner_model
+        from graphids.core.models.base import load_inner_model
 
         train_ds, val_ds, _ = load_datasets(
             dataset=hp.dataset,
@@ -137,15 +108,17 @@ class FusionDataModule(pl.LightningDataModule):
                     pct=round(usage_pct, 1),
                 )
 
+        from graphids.core.data.fusion_states import cache_predictions
+
         models = {"vgae": vgae, "gat": gat}
-        self.train_cache = self.cache_predictions(
+        self.train_cache = cache_predictions(
             models,
             list(train_ds),
             device,
             hp.max_samples,
             batch_size=hp.eval_batch_size,
         )
-        self.val_cache = self.cache_predictions(
+        self.val_cache = cache_predictions(
             models,
             list(val_ds),
             device,
@@ -160,7 +133,7 @@ class FusionDataModule(pl.LightningDataModule):
 
     def _load_cached_states(self, cached_states_dir: str) -> None:
         """Load pre-extracted fusion states from disk. No GPU needed."""
-        from graphids.core.models.fusion.states import (
+        from graphids.core.data.fusion_states import (
             FUSION_STATES_DIR,
             TRAIN_FILENAME,
             VAL_FILENAME,

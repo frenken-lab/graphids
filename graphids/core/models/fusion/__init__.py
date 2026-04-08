@@ -1,9 +1,11 @@
 """Fusion policy model family exports."""
 
+from ..base import FeatureLayout
 from .bandit import BanditFusionModule
+from .base import LAYOUT, STATE_DIM, FusionModuleBase
 from .dqn import DQNFusionModule
-from .fusion_baselines import FusionModuleBase, MLPFusionModule, WeightedAvgModule
-from .fusion_features import EXTRACTORS, LAYOUT, STATE_DIM, FeatureLayout
+from .mlp import MLPFusionModule
+from .weighted_avg import WeightedAvgModule
 
 __all__ = [
     "BanditFusionModule",
@@ -11,7 +13,6 @@ __all__ = [
     "FusionModuleBase",
     "MLPFusionModule",
     "WeightedAvgModule",
-    "EXTRACTORS",
     "LAYOUT",
     "STATE_DIM",
     "FeatureLayout",

@@ -58,7 +58,7 @@ def extract_fusion_states(
     val_fraction: Annotated[float, typer.Option(help="Validation split fraction")] = 0.2,
 ) -> None:
     """Extract VGAE + GAT latent states for fusion model training."""
-    from graphids.core.models.fusion.states import extract_fusion_states as _extract
+    from graphids.core.data.fusion_states import extract_fusion_states as _extract
 
     _extract(
         vgae_ckpt=vgae_ckpt,

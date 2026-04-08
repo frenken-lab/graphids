@@ -42,7 +42,7 @@ def build_loss(
         VGAETaskLoss,
         WeightedCrossEntropyLoss,
     )
-    from graphids.core.models._training import load_inner_model
+    from graphids.core.models.base import load_inner_model
 
     loss_cfg = dict(loss_config or {})
 

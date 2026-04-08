@@ -47,6 +47,9 @@ function(
         seed: seed,
       } + (if gat_ckpt_path != null
            then { gat_ckpt_path: gat_ckpt_path }
+           else {})
+        + (if vgae_ckpt_path != null
+           then { vgae_ckpt_path: vgae_ckpt_path }
            else {}),
     },
   } + (if ckpt_path != null then { ckpt_path: ckpt_path } else {})

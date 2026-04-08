@@ -9,7 +9,7 @@ from typing import Literal
 import torch
 
 from graphids.config.paths import cache_dir, data_dir
-from graphids.core.models._training import safe_load_checkpoint
+from graphids.core.models.base import safe_load_checkpoint
 from graphids.log import get_logger
 
 from .tasks import run_attention, run_cka, run_embeddings, run_fusion_policy, run_landscape

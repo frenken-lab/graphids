@@ -25,7 +25,7 @@ def collect_and_save_embeddings(
     batch_size: int = 256,
 ) -> None:
     """Run inference on val_data, collect embeddings + labels, save as NPZ."""
-    from graphids.core.models._training import eval_mode
+    from graphids.core.models.base import eval_mode
 
     with eval_mode(model):
         data = val_data[:max_samples]
@@ -82,7 +82,7 @@ def collect_and_save_attention(
         )
         return
 
-    from graphids.core.models._training import eval_mode
+    from graphids.core.models.base import eval_mode
 
     with eval_mode(model):
         data = val_data[:max_samples]

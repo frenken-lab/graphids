@@ -17,10 +17,9 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from graphids.config.constants import PROJECT_ROOT
 from graphids.contracts import from_envelope as _from_envelope
 from graphids.contracts import to_envelope as _to_envelope
-
-from graphids.config.constants import PROJECT_ROOT
 
 if TYPE_CHECKING:
     from graphids.orchestrate.planning.shared import StageConfig
@@ -126,38 +125,38 @@ def build_tla_dict(
         "stage_overrides": dict(stage_overrides or {}),
     }
 
-    # model_init_overrides carry planner-derived per-model knobs
-    # (conv_type, loss_fn, variational). Map the ones the stage
-    # accepts; stringified bool "true"/"false" re-cast to real bool.
+    # stage_tlas in topology.json declares every non-common TLA the
+    # stage's jsonnet function accepts. Gate ALL optional TLAs through
+    # it — no if/elif per stage, no unknown-parameter crashes.
+    from graphids.config.topology import _STAGE_DEFS
+
+    accepted = set(_STAGE_DEFS.get(stage_cfg.stage, {}).get("stage_tlas", []))
+
+    # Model knobs from planner (conv_type, loss_fn, variational)
     for key in ("conv_type", "variational", "loss_fn"):
-        if key in stage_cfg.model_init_overrides:
+        if key in stage_cfg.model_init_overrides and key in accepted:
             val = stage_cfg.model_init_overrides[key]
             if key == "variational":
                 tla[key] = val in (True, "true", "True")
             else:
                 tla[key] = val
 
-    if stage_cfg.stage == "fusion":
+    if "fusion_method" in accepted:
         tla["fusion_method"] = stage_cfg.resource_model or stage_cfg.model_type
 
-    # Upstream checkpoint paths wire to the correct TLA based on which
-    # upstream model family produced them. Fusion reads gat_ckpt_path;
-    # GAT students with VGAE/DGI teachers read vgae_ckpt_path.
+    # Upstream checkpoint paths
     for upstream_asset, ckpt in upstream_ckpts.items():
         family = upstream_model_families.get(upstream_asset)
-        if family == "unsupervised":
+        if family == "unsupervised" and "vgae_ckpt_path" in accepted:
             tla["vgae_ckpt_path"] = ckpt
-        elif family == "supervised":
+        elif family == "supervised" and "gat_ckpt_path" in accepted:
             tla["gat_ckpt_path"] = ckpt
 
-    # KD distillation config (null = no KD). Jsonnet stages accept
-    # `distillation_config` as the TLA name.
-    if kd_overrides:
-        tla["distillation_config"] = dict(kd_overrides)
-    else:
-        tla["distillation_config"] = None
+    # KD distillation config
+    if "distillation_config" in accepted:
+        tla["distillation_config"] = dict(kd_overrides) if kd_overrides else None
 
-    if ckpt_path is not None:
+    if ckpt_path is not None and "ckpt_path" in accepted:
         tla["ckpt_path"] = ckpt_path
 
     return tla

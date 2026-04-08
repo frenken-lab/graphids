@@ -66,7 +66,7 @@ def make_graph_loader(
             dataset,
             batch_size=None,
             shuffle=shuffle,
-            collate_fn=_identity,
+            collate_fn=_clone_collate,
             **common,
         )
     elif batch_sampler is not None:
@@ -229,7 +229,7 @@ def build_curriculum_tiers(
     import math
     from pathlib import Path
 
-    from graphids.core.models._training import load_inner_model
+    from graphids.core.models.base import load_inner_model
 
     if not vgae_ckpt_path:
         raise ValueError(
@@ -286,6 +286,11 @@ class CurriculumEpochCallback(pl.Callback):
             dm._select_active_tiers(trainer.current_epoch)
 
 
-def _identity(x):
-    """Identity collate_fn for ``make_graph_loader(batch_size=None)``."""
-    return x
+def _clone_collate(x):
+    """Clone collate_fn for ``make_graph_loader(batch_size=None)``.
+
+    Pre-batched items are stored Batch objects reused across epochs.
+    PrefetchLoader calls ``pin_memory()`` then ``.to(device)`` in-place —
+    without cloning, epoch 2 tries to pin already-CUDA tensors and crashes.
+    """
+    return x.clone() if hasattr(x, "clone") else x

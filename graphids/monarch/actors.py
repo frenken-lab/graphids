@@ -96,6 +96,25 @@ class PipelineActor(Actor):
 
     # -- dataset cache --------------------------------------------------------
 
+    @staticmethod
+    def _release_gpu() -> None:
+        """Force-free GPU memory and compilation state between stages.
+
+        Without explicit cleanup the previous stage's model/optimizer
+        sit on GPU while the next stage tries to allocate (OOM on V100).
+        ``torch.compiler.reset()`` clears dynamo compilation caches —
+        different models hit recompile limits otherwise.
+        """
+        import gc
+
+        import torch
+
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+        torch.compiler.reset()
+
     def _instantiate_and_inject(self, resolved: Any) -> Any:
         """Instantiate Lightning stack from resolved config, injecting cached datasets.
 
@@ -103,6 +122,8 @@ class PipelineActor(Actor):
         Validation already happened inside the resolver — no redundant
         ``validate_config()`` call.
         """
+        self._release_gpu()
+
         from graphids.instantiate import instantiate
 
         run = instantiate(resolved.rendered, validated=resolved.validated)
@@ -115,15 +136,22 @@ class PipelineActor(Actor):
 
     @staticmethod
     def _clone_to_cpu(dataset: Any) -> Any:
-        """Deep-clone a PyG dataset/list to CPU tensors.
+        """Deep-clone a PyG dataset to CPU tensors.
 
-        PyG Data.to() is in-place — after training, cached references
-        would point to CUDA tensors. Cloning ensures the cache always
-        holds CPU data (Monarch pattern: data on CPU, move to GPU at
-        computation time).
+        PyG Data.to() is in-place — PrefetchLoader mutates dataset items
+        to CUDA during training. Must deep-copy to CPU or the cache
+        poisons all subsequent stages and retries.
+
+        Uses PyG's own ``InMemoryDataset.copy().cpu()`` which deep-clones
+        the backing store and preserves the dataset API (num_nodes_per_graph,
+        num_arb_ids, etc.).
         """
+        from torch_geometric.data import InMemoryDataset
+
         if isinstance(dataset, dict):
-            return {k: [d.clone().cpu() for d in v] for k, v in dataset.items()}
+            return {k: PipelineActor._clone_to_cpu(v) for k, v in dataset.items()}
+        if isinstance(dataset, InMemoryDataset):
+            return dataset.copy().cpu()
         if isinstance(dataset, (list, tuple)):
             return [d.clone().cpu() for d in dataset]
         return dataset
@@ -171,7 +199,13 @@ class PipelineActor(Actor):
         run = self._instantiate_and_inject(resolved)
 
         log.info("stage_train", stage=stage_config.get("stage"), run_dir=run_dir)
-        run.trainer.fit(run.model, datamodule=run.datamodule)
+        try:
+            run.trainer.fit(run.model, datamodule=run.datamodule)
+        except Exception:
+            # Invalidate cache so retries get a fresh dataset load
+            # instead of re-injecting the same poisoned state.
+            self._cached_datasets = None
+            raise
 
         # Cache CPU clones after first load. Must happen after fit()
         # (setup() populates datasets during fit), but we clone to CPU

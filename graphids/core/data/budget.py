@@ -144,7 +144,7 @@ def calibrate_at_budget(
     t_collation = statistics.median(collation_samples)
 
     # --- T_gpu: forward at budget size × backward_multiplier ---
-    from graphids.core.models._training import eval_mode
+    from graphids.core.models.base import eval_mode
 
     batch = batch.to(model.device)
     fn = getattr(model, "_step", None) or model
@@ -308,7 +308,7 @@ def _probe_vram(model, dataset, step_fn=None) -> tuple[int, float]:
 
     # ~2000 nodes — large enough for stable VRAM measurement,
     # small enough to be fast during DataLoader setup.
-    from graphids.core.models._training import eval_mode
+    from graphids.core.models.base import eval_mode
 
     graphs = _collect_graphs(dataset, 2000)
     batch = Batch.from_data_list(graphs).to(model.device)
