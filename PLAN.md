@@ -1,59 +1,66 @@
 # GraphIDS Session Plan
 
-> Last updated: 2026-04-07 (session 37 — config consolidation + shared nodes)
+> Last updated: 2026-04-08 (session 38 — pipeline validation + probe fixes)
 
-## What this session did (2026-04-07, session 37)
+## What this session did (2026-04-08, session 38)
 
-Config consolidation, jsonnet simplification, and Monarch shared-node support.
+3-stage Monarch pipeline validated end-to-end. Autoencoder resource profile
+right-sized. probe-budget fixed and re-validated with training-realistic
+VRAM measurement.
 
-### Config changes
-- **Dataset-aware resources:** `configs/resources/dataset_scaling.json` with
-  per-dataset time_scale factors. `hcrl_sa` allocation 21h → 4h.
-- **Pipeline defaults single source:** `axes.json` `pipeline_defaults` read
-  by both jsonnet TLA defaults and Python CLI. Zero three-way drift.
-- **Jsonnet merge chain 8→4 steps:** defaults flattened, model libsonnets
-  pre-merge base+scale, 3 analyze configs → 1 with model_type dispatch.
-- **Callbacks declared in jsonnet:** 6 forced callbacks moved from Python
-  to `defaults.libsonnet` named callbacks object with late-binding
-  `trainer.callbacks` list via `$` reference.
-- **Fusion configs → `configs/models/fusion/`:** mirrors `graphids/` structure.
+### Track 1: 3-stage pipeline — PASSED
+Job 46510583 on gpudebug (hcrl_sa, seed 54, 3 epochs). All 3 stages
+completed in ~4.5 min: autoencoder (2m37s), supervised (47s), fusion (43s).
+Checkpoints at `dev/rf15/hcrl_sa/*/seed_54/checkpoints/best_model.ckpt`.
 
-### instantiate.py 505→150 lines
-- Loss construction → `core/losses/build.py`
-- Link arguments → jsonnet stages (cross-links in data/model init_args)
-- Callbacks/loggers → config-driven generic instantiation loop
+**Fixes during validation:**
+- **`safe_load_checkpoint` loss_fn reconstruction** (`core/models/base.py`):
+  VGAEModule/GATModule exclude `loss_fn` from `save_hyperparameters`
+  (it's an nn.Module). `load_from_checkpoint` failed because `loss_fn`
+  is a required kwarg with no default. Fix: rebuild `loss_fn` from saved
+  hparams via `build_loss()` and pass as extra kwarg.
 
-### Monarch improvements
-- `--trainer-override` / `-O` CLI flag (wired through to jsonnet TLAs)
-- SLURM logs write to data lake via native `log_dir` param
-- `exclusive=False` with clusterscope multi-GRES parser patch (rpartition)
-- Dagster bloat removed: `slurm/core/submit.py`, `slurm/pipeline.py`
-- `orchestrate/definitions.py` → `orchestrate/dagster/definitions.py`
+### Track 2: Autoencoder resource profile right-sized
+- `job_profiles.json` autoencoder: 20 CPUs/18 workers → 4 CPUs/2 workers.
+  Memory auto-derives from `mem_per_cpu` (181G → 36G). Pre-batching
+  eliminated the collation bottleneck that required 18 workers.
 
-### Partially fixed: autoencoder memory ceiling
-The autoencoder profile requests 181G (20 CPUs × 9.2G mem_per_cpu) because
-the full dataset was too large to fit in fewer workers' memory. Sessions
-34-35 pre-batched the training data to reduce per-worker memory, but the
-resource profile was never updated to reflect the reduced footprint.
-**Status:** pre-batching landed, profile still oversized. Next step: profile
-actual peak memory on hcrl_sa with pre-batched data, then right-size the
-autoencoder entry in `job_profiles.json` and add mem scaling to
-`dataset_scaling.json`.
+### Track 2b: probe-budget fixed
+Three bugs fixed in `budget_probe.py`:
+1. **Missing `family` TLA** — `_expand.jsonnet` needs `family` to select
+   the libsonnet. Now looked up via `FAMILY_FOR_MODEL_TYPE`.
+2. **Computed import in `_expand.jsonnet`** — jsonnet doesn't allow
+   `import (family + '.libsonnet')`. Replaced with static dispatch via
+   `libs` object keyed by family name.
+3. **Missing `loss_fn`** — `_instantiate_model` now builds via
+   `build_loss()`, matching `safe_load_checkpoint`.
 
-### Practice run submitted
-Job 46503000 on gpudebug (shared, 32G/4CPU, 3 epochs, hcrl_sa, seed 55).
-Pending on Priority — validates checkpoint threading across all 3 stages.
+**Probe now replicates training VRAM footprint:** `_warmup_training_state`
+creates Adam optimizer and runs one fwd+bwd+step before measuring, so
+`torch.cuda.mem_get_info()` reflects optimizer state and compile caches.
+Impact: <0.3% budget change (GNN optimizer state is tiny vs 16GB VRAM).
+
+### Probe results (job 46511451, V100 16GB, hcrl_sa/hcrl_ch/set_01)
+48 data points (4 fractions × 4 models × 3 datasets). DGI failed
+(pre-existing `GraphInfomaxModel` undefined). CSV written to
+`/fs/ess/PAS1266/kd-gat/reference/budget_calibration.csv`.
+
+### Pre-batch timing analysis
+`docs/reference/prebatch-timing.md` — documents the CPU-GPU pipeline with
+real numbers. Pre-batching moves collation from per-step (386ms) to one-time
+setup. Per-step CPU cost drops to pin_memory (6ms) + H2D queue (10ms),
+fully hidden by GPU step time (155ms+). Workers=0 is correct for
+pre-batched path; PrefetchLoader overlaps H2D via CUDA streams.
 
 ## Next session
 
-### Track 1: Validate 3-stage pipeline
-If practice run succeeded, review output. If still queued, resubmit.
-Then run full training on `hcrl_sa` with production epochs.
+### Track 1: Production run
+Run full training on `hcrl_sa` with production epochs (not fast_dev_run).
+All 3 stages.
 
-### Track 2: Right-size autoencoder memory
-Profile peak memory with pre-batched data on a compute node. Update
-`job_profiles.json` autoencoder entry. Add mem scaling to
-`dataset_scaling.json`.
+### Track 2: DGI model fix
+`GraphInfomaxModel` undefined — probe and training both broken for DGI.
+Fix or remove DGI from `VALID_MODEL_TYPES`.
 
 ### Track 3: Dagster deletion
 `rm -rf orchestrate/dagster/` + remove `[tool.dg]` from pyproject.toml.

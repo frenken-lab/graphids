@@ -1,7 +1,6 @@
 """Profile the budget module's sizing chain on real hardware.
 
-Operation layer — argparse surface lives in
-``graphids.commands.probe_budget``.
+Operation layer — CLI surface lives in ``graphids.cli._slurm``.
 
 Instantiates each (model_type, scale) with random weights, loads cached
 datasets, runs _probe_vram() for VRAM measurements, then calibrate_at_budget()
@@ -39,16 +38,24 @@ def _instantiate_model(model_type: str, scale: str, num_ids: int, in_channels: i
     import importlib
     import inspect
 
+    from graphids.config.constants import FAMILY_FOR_MODEL_TYPE
+    from graphids.core.losses.build import build_loss
+
+    family = FAMILY_FOR_MODEL_TYPE[model_type]
     model_cfg = render(
         CONFIG_DIR / "models" / "_expand.jsonnet",
-        tla={"model_type": model_type, "scale": scale},
+        tla={"family": family, "model_type": model_type, "scale": scale},
     )
 
     class_path = model_cfg["model"]["class_path"]
     init_args = dict(model_cfg["model"].get("init_args", {}))
     init_args["num_ids"] = num_ids
     init_args["in_channels"] = in_channels
-    init_args["compile_model"] = False
+
+    # loss_fn is an nn.Module excluded from jsonnet — build a default for probing.
+    loss_fn = build_loss(model_type, init_args.pop("loss_config", None), distillation_config=None)
+    if loss_fn is not None:
+        init_args["loss_fn"] = loss_fn
 
     module_path, class_name = class_path.rsplit(".", 1)
     cls = getattr(importlib.import_module(module_path), class_name)
@@ -60,6 +67,60 @@ def _instantiate_model(model_type: str, scale: str, num_ids: int, in_channels: i
         init_args = {k: v for k, v in init_args.items() if k in valid}
 
     return cls(**init_args)
+
+
+def _warmup_training_state(model, dataset, device, step_fn) -> None:
+    """Allocate optimizer state and torch.compile caches in VRAM.
+
+    Replicates the VRAM footprint of a real training step so that
+    subsequent ``torch.cuda.mem_get_info()`` calls reflect actual free
+    VRAM during training — not the inflated value before optimizer/compile.
+
+    Uses the LightningModule's own ``configure_optimizers`` to match the
+    real optimizer (Adam, lr schedule, weight decay, etc.).
+    """
+    import torch
+
+    if device.type != "cuda" or step_fn is None:
+        return
+
+    from torch_geometric.data import Batch
+
+    from graphids.core.data.budget import _collect_graphs, _extract_loss
+
+    # Build Adam from hparams — configure_optimizers() needs a Trainer
+    # (for scheduler T_max), but we only need the optimizer to allocate
+    # its m/v state tensors in VRAM.
+    hp = model.hparams
+    lr = getattr(hp, "lr", 1e-3)
+    wd = getattr(hp, "weight_decay", 1e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
+
+    # One real fwd+bwd+step to allocate Adam state tensors + compile caches
+    warmup_graphs = _collect_graphs(dataset, 500)
+    warmup_batch = Batch.from_data_list(warmup_graphs).to(device)
+    was_training = model.training
+    model.train()
+    loss = _extract_loss(step_fn(warmup_batch))
+    loss.backward()
+    optimizer.step()  # noqa: probe — allocates Adam m/v state in VRAM
+    optimizer.zero_grad(set_to_none=True)  # noqa: probe — free grad tensors
+    if not was_training:
+        model.eval()
+    del warmup_batch, loss, warmup_graphs
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
+
+    # Keep optimizer alive so its state tensors stay in VRAM.
+    # Stash on the model so it isn't garbage collected before node_budget().
+    model._probe_optimizer = optimizer
+
+    log.info(
+        "warmup_training_state",
+        optimizer=type(optimizer).__name__,
+        param_count=sum(p.numel() for p in model.parameters()),
+        compiled=hasattr(model, "_orig_mod"),
+    )
 
 
 _CALIBRATION_FRACTIONS = [0.25, 0.50, 0.75, 1.0]
@@ -101,11 +162,17 @@ def _probe_combo(
     model = _instantiate_model(model_type, scale, num_ids, in_channels)
     model = model.to(device)
 
-    # --- VRAM probe ---
+    # --- Replicate training VRAM footprint before measuring ---
+    # Training allocates optimizer state (Adam: 2× params) and torch.compile
+    # graph caches before the first real step. Allocate them here so
+    # torch.cuda.mem_get_info() in node_budget() sees realistic free VRAM.
     step_fn = getattr(model, "_step", None)
+    _warmup_training_state(model, ds, device, step_fn)
+
+    # --- VRAM probe (with optimizer + compile state already resident) ---
     bytes_per_node, backward_mult = _probe_vram(model, ds, step_fn=step_fn)
 
-    # --- Node budget ---
+    # --- Node budget (free VRAM now reflects optimizer + compile overhead) ---
     result = node_budget(
         dataset_name,
         lake_root,

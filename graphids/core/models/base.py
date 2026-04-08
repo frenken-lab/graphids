@@ -215,7 +215,24 @@ def safe_load_checkpoint(model_type: str, ckpt_path, *, map_location="cpu"):
     ckpt_path = Path(ckpt_path)
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
-    return cls.load_from_checkpoint(str(ckpt_path), map_location=map_location, weights_only=True)
+
+    # loss_fn is excluded from save_hyperparameters (it's an nn.Module) so
+    # load_from_checkpoint can't reconstruct it. Rebuild from saved hparams.
+    extra_kwargs: dict = {}
+    if model_type in {"vgae", "gat"}:
+        from graphids.core.losses.build import _VGAE_LOSS_KEYS, build_loss
+
+        ckpt = torch.load(str(ckpt_path), map_location=map_location, weights_only=True)
+        hp = ckpt.get("hyper_parameters", {})
+        if model_type == "vgae":
+            loss_cfg = {k: hp[k] for k in _VGAE_LOSS_KEYS if k in hp}
+        else:
+            loss_cfg = hp.get("loss_config")
+        extra_kwargs["loss_fn"] = build_loss(model_type, loss_cfg, distillation_config=None)
+
+    return cls.load_from_checkpoint(
+        str(ckpt_path), map_location=map_location, weights_only=True, **extra_kwargs
+    )
 
 
 def load_inner_model(model_type: str, ckpt_path, device) -> tuple[torch.nn.Module, object]:
