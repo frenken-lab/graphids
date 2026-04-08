@@ -26,9 +26,10 @@ python -m graphids fit \
 # Evaluation
 python -m graphids test --config configs/stages/autoencoder.jsonnet --ckpt_path best.ckpt
 
-# Analysis artifacts (Jsonnet — Analyzer config, NOT in CLI chain)
-python -m graphids analyze --config configs/stages/analyze_vgae.jsonnet \
-    --analyzer.ckpt_path path/to/best.ckpt --analyzer.dataset hcrl_sa
+# Analysis artifacts (single config dispatches by model_type)
+python -m graphids analyze --config configs/stages/analyze.jsonnet \
+    --tla 'model_type="vgae"' --analyzer.ckpt_path path/to/best.ckpt \
+    --analyzer.dataset hcrl_sa
 ```
 
 ## CLI Architecture

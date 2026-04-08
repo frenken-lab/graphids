@@ -8,6 +8,11 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from graphids.core.models.base import safe_load_checkpoint
+from graphids.log import get_logger
+
+log = get_logger(__name__)
+
 
 def _unbiased_hsic(K: torch.Tensor, L: torch.Tensor) -> float:
     n = K.shape[0]
@@ -28,20 +33,32 @@ def _linear_cka(X: np.ndarray, Y: np.ndarray) -> float:
 
 def compute_and_save_cka(
     student: torch.nn.Module,
-    teacher: torch.nn.Module,
     val_data: list,
     device: torch.device,
     output_dir: Path,
     *,
+    teacher_ckpt: str,
     max_samples: int = 500,
 ) -> None:
-    """Compute layer-wise CKA between student and teacher, save to JSON."""
-    student_reps = _collect_reps(student, val_data, device, max_samples=max_samples)
-    teacher_reps = _collect_reps(teacher, val_data, device, max_samples=max_samples)
+    """Load teacher, compute layer-wise CKA vs student, save to JSON."""
+    log.info("artifact_start", artifact="cka")
+    teacher_module = safe_load_checkpoint("gat", teacher_ckpt, map_location=device)
+    teacher_module.eval()
+    try:
+        student_reps = _collect_reps(student, val_data, device, max_samples=max_samples)
+        teacher_reps = _collect_reps(
+            teacher_module.model, val_data, device, max_samples=max_samples
+        )
 
-    n_layers = min(len(teacher_reps), len(student_reps))
-    scores = {f"layer_{i}": _linear_cka(teacher_reps[i], student_reps[i]) for i in range(n_layers)}
-    (output_dir / "cka.json").write_text(json.dumps(scores, indent=2))
+        n_layers = min(len(teacher_reps), len(student_reps))
+        scores = {
+            f"layer_{i}": _linear_cka(teacher_reps[i], student_reps[i]) for i in range(n_layers)
+        }
+        (output_dir / "cka.json").write_text(json.dumps(scores, indent=2))
+    finally:
+        del teacher_module
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 def _collect_reps(model, data, device, max_samples: int = 500) -> list[np.ndarray]:

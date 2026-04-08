@@ -19,9 +19,16 @@ KD sub-schema referenced inside sweep blocks and defaults.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal  # noqa: F401 (resolved by model_rebuild)
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (  # noqa: F401 (AfterValidator resolved by model_rebuild)
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from graphids.config.constants import (
     CONFIG_DIR,
@@ -31,6 +38,13 @@ from graphids.config.constants import (
 )
 from graphids.config.jsonnet import render
 from graphids.config.topology import STAGES
+from graphids.config.validators import (
+    check_in,  # noqa: F401 (resolved by model_rebuild)
+)
+
+# Type aliases — evaluated eagerly, immune to __future__.annotations quote-stripping.
+_ConvType = Literal["gatv2", "gat", "gps"]
+_LossFn = Literal["focal", "ce", "weighted_ce"]
 
 
 class KDEntry(BaseModel):
@@ -39,34 +53,13 @@ class KDEntry(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     type: Literal["kd"] = "kd"
-    alpha: float = 0.7
+    alpha: float = Field(default=0.7, ge=0.0, le=1.0)
     teacher_config: str | None = None
-    teacher_scale: str = "large"
-    temperature: float | None = None
+    teacher_scale: Annotated[str, AfterValidator(check_in(VALID_SCALES, "teacher_scale"))] = "large"
+    temperature: float | None = Field(default=None, gt=0.0)
     model_path: str | None = None
     vgae_latent_weight: float | None = None
     vgae_recon_weight: float | None = None
-
-    @field_validator("teacher_scale")
-    @classmethod
-    def _valid_scale(cls, v: str) -> str:
-        if v not in VALID_SCALES:
-            raise ValueError(f"teacher_scale={v!r} not in {sorted(VALID_SCALES)}")
-        return v
-
-    @field_validator("alpha")
-    @classmethod
-    def _alpha_range(cls, v: float) -> float:
-        if not 0.0 <= v <= 1.0:
-            raise ValueError(f"alpha={v} must be in [0, 1]")
-        return v
-
-    @field_validator("temperature")
-    @classmethod
-    def _temperature_positive(cls, v: float | None) -> float | None:
-        if v is not None and v <= 0:
-            raise ValueError(f"temperature={v} must be positive")
-        return v
 
 
 class TrainingRunConfig(BaseModel):
@@ -75,10 +68,12 @@ class TrainingRunConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     stages: tuple[str, ...] = ("autoencoder", "supervised", "fusion")
-    scale: str = "small"
-    conv_type: str = "gatv2"
-    loss_fn: str = "focal"
-    fusion_method: str = "bandit"
+    scale: Annotated[str, AfterValidator(check_in(VALID_SCALES, "scale"))] = "small"
+    conv_type: _ConvType = "gatv2"
+    loss_fn: _LossFn = "focal"
+    fusion_method: Annotated[
+        str, AfterValidator(check_in(VALID_FUSION_METHODS, "fusion_method"))
+    ] = "bandit"
     variational: bool = True
     model_type: str | None = None
     auxiliaries: tuple[KDEntry, ...] = ()
@@ -93,34 +88,6 @@ class TrainingRunConfig(BaseModel):
     def _coerce_auxiliaries(cls, v: Any) -> Any:
         if isinstance(v, list):
             return tuple(KDEntry(**x) if isinstance(x, dict) else x for x in v)
-        return v
-
-    @field_validator("scale")
-    @classmethod
-    def _valid_scale(cls, v: str) -> str:
-        if v not in VALID_SCALES:
-            raise ValueError(f"scale={v!r} not in {sorted(VALID_SCALES)}")
-        return v
-
-    @field_validator("conv_type")
-    @classmethod
-    def _valid_conv_type(cls, v: str) -> str:
-        if v not in {"gatv2", "gat", "gps"}:
-            raise ValueError("conv_type must be one of: gatv2, gat, gps")
-        return v
-
-    @field_validator("loss_fn")
-    @classmethod
-    def _valid_loss_fn(cls, v: str) -> str:
-        if v not in {"focal", "ce", "weighted_ce"}:
-            raise ValueError("loss_fn must be one of: focal, ce, weighted_ce")
-        return v
-
-    @field_validator("fusion_method")
-    @classmethod
-    def _valid_fusion_method(cls, v: str) -> str:
-        if v not in VALID_FUSION_METHODS:
-            raise ValueError(f"fusion_method={v!r} not in {sorted(VALID_FUSION_METHODS)}")
         return v
 
     @field_validator("model_type")
@@ -139,6 +106,11 @@ class TrainingRunConfig(BaseModel):
 
     def merge(self, overrides: dict[str, Any]) -> TrainingRunConfig:
         return TrainingRunConfig(**{**self.model_dump(), **overrides})
+
+
+# Resolve deferred Annotated/Literal annotations (from __future__ import annotations).
+KDEntry.model_rebuild()
+TrainingRunConfig.model_rebuild()
 
 
 class _SweepSpec(BaseModel):

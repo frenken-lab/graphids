@@ -12,9 +12,6 @@ from graphids.config.paths import cache_dir, data_dir
 from graphids.core.models.base import safe_load_checkpoint
 from graphids.log import get_logger
 
-from .tasks import run_attention, run_cka, run_embeddings, run_fusion_policy, run_landscape
-from .validation import validate_inputs
-
 log = get_logger(__name__)
 
 
@@ -83,14 +80,11 @@ class Analyzer:
         self.vgae_ckpt_path = vgae_ckpt_path
         self.gat_ckpt_path = gat_ckpt_path
 
-        validate_inputs(
-            ckpt_path=self.ckpt_path,
-            cka=self.cka,
-            cka_teacher_ckpt=self.cka_teacher_ckpt,
-            fusion_policy=self.fusion_policy,
-            vgae_ckpt_path=self.vgae_ckpt_path,
-            gat_ckpt_path=self.gat_ckpt_path,
-        )
+        # Runtime file-existence checks (schema deps validated by AnalysisSpec).
+        if not Path(self.ckpt_path).exists():
+            raise FileNotFoundError(f"Checkpoint not found: {self.ckpt_path}")
+        if self.cka and not Path(self.cka_teacher_ckpt).exists():
+            raise FileNotFoundError(f"Teacher checkpoint not found: {self.cka_teacher_ckpt}")
 
     def run(self) -> None:
         """Load models, load data, generate all enabled artifacts."""
@@ -113,43 +107,54 @@ class Analyzer:
         val_data = self._load_val_data()
 
         if self.embeddings:
-            run_embeddings(
-                model=model,
-                val_data=val_data,
-                device=device,
-                output_dir=self.output_dir,
+            from .embeddings import collect_and_save_embeddings
+
+            log.info("artifact_start", artifact="embeddings")
+            collect_and_save_embeddings(
+                model,
+                val_data,
+                device,
+                self.output_dir,
                 model_type=self.model_type,
                 max_samples=self.embedding_max_samples,
                 batch_size=self.batch_size,
             )
 
         if self.attention:
-            run_attention(
-                model=model,
-                val_data=val_data,
-                device=device,
-                output_dir=self.output_dir,
+            from .embeddings import collect_and_save_attention
+
+            log.info("artifact_start", artifact="attention")
+            collect_and_save_attention(
+                model,
+                val_data,
+                device,
+                self.output_dir,
                 max_samples=self.attention_max_samples,
             )
 
         if self.cka:
-            run_cka(
-                model=model,
-                val_data=val_data,
-                device=device,
-                output_dir=self.output_dir,
+            from .cka import compute_and_save_cka
+
+            compute_and_save_cka(
+                model,
+                val_data,
+                device,
+                self.output_dir,
                 teacher_ckpt=self.cka_teacher_ckpt,
                 max_samples=self.cka_max_samples,
             )
 
         if self.landscape:
-            run_landscape(
-                model=model,
-                model_type=self.model_type,
-                val_data=val_data,
-                device=device,
-                output_dir=self.output_dir,
-                hparams=hparams,
+            from .loss_landscape import compute_and_save_loss_landscape
+
+            log.info("artifact_start", artifact="landscape")
+            compute_and_save_loss_landscape(
+                model,
+                self.model_type,
+                val_data,
+                device,
+                self.output_dir,
+                hparams,
                 resolution=self.landscape_resolution,
                 scale=self.landscape_scale,
                 max_graphs=self.landscape_max_graphs,
@@ -158,6 +163,8 @@ class Analyzer:
             )
 
         if self.fusion_policy:
+            from .fusion_policy import run_fusion_policy
+
             run_fusion_policy(
                 module=module,
                 dataset=self.dataset,

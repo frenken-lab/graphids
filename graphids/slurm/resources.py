@@ -8,11 +8,11 @@ and override functions that produce and mutate it — rather than in
 
 from __future__ import annotations
 
-import dataclasses
 import os
 import re
 import socket
-from dataclasses import dataclass
+
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from graphids.config.constants import PROJECT_ROOT
 
@@ -26,8 +26,9 @@ _SLURM_TIME_RE = re.compile(
 )
 
 
-@dataclass(frozen=True)
-class ResourceSpec:
+class ResourceSpec(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     partition: str
     time: str
     mem: str
@@ -35,12 +36,14 @@ class ResourceSpec:
     num_workers: int
     gres: str = ""
 
-    def __post_init__(self) -> None:
-        if not _SLURM_TIME_RE.match(self.time):
+    @field_validator("time")
+    @classmethod
+    def _validate_time_format(cls, v: str) -> str:
+        if not _SLURM_TIME_RE.match(v):
             raise ValueError(
-                f"Invalid SLURM time format: {self.time!r}. "
-                f"Expected H:MM:SS, HH:MM:SS, or D-HH:MM:SS."
+                f"Invalid SLURM time format: {v!r}. Expected H:MM:SS, HH:MM:SS, or D-HH:MM:SS."
             )
+        return v
 
     @property
     def mem_mb(self) -> int:
@@ -125,7 +128,7 @@ def _apply_dataset_scaling(
     overrides = ds_entry.get("overrides", {})
     override = overrides.get(family)
     if override:
-        return dataclasses.replace(spec, **override)
+        return spec.model_copy(update=override)
 
     # Multiplicative time scaling
     time_scale = ds_entry.get("time_scale", 1.0)
@@ -140,7 +143,7 @@ def _apply_dataset_scaling(
     h, m = divmod(rounded, 60)
     new_time = f"{h}:{m:02d}:00"
 
-    return dataclasses.replace(spec, time=new_time)
+    return spec.model_copy(update={"time": new_time})
 
 
 def get_resources(
@@ -273,13 +276,13 @@ def apply_resource_overrides(
     """
     if not overrides:
         return spec
-    valid = {f.name for f in dataclasses.fields(ResourceSpec)}
+    valid = set(ResourceSpec.model_fields.keys())
     unknown = set(overrides) - valid
     if unknown:
         raise ValueError(
             f"Unknown resource override keys: {sorted(unknown)}. Valid: {sorted(valid)}"
         )
-    return dataclasses.replace(spec, **overrides)
+    return spec.model_copy(update=overrides)
 
 
 # ---------------------------------------------------------------------------

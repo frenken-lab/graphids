@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from graphids.contracts import from_envelope as _from_envelope
 from graphids.contracts import to_envelope as _to_envelope
@@ -53,6 +53,16 @@ class AnalysisSpec(BaseModel):
     gat_ckpt_path: str = ""
 
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_conditional_deps(self) -> AnalysisSpec:
+        if self.cka and not self.cka_teacher_ckpt:
+            raise ValueError("cka=true requires cka_teacher_ckpt")
+        if self.fusion_policy and not self.vgae_ckpt_path:
+            raise ValueError("fusion_policy=true requires vgae_ckpt_path")
+        if self.fusion_policy and not self.gat_ckpt_path:
+            raise ValueError("fusion_policy=true requires gat_ckpt_path")
+        return self
 
 
 def to_envelope(spec: AnalysisSpec, *, metadata: dict[str, Any] | None = None):

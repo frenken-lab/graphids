@@ -6,11 +6,25 @@ crash at config construction, not deep in jsonnet rendering.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any  # noqa: F401 (resolved by model_rebuild)
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (  # noqa: F401 (AfterValidator resolved by model_rebuild)
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+)
 
-from graphids.config.constants import PIPELINE_DEFAULTS
+from graphids.config.constants import (  # noqa: F401 (resolved by model_rebuild)
+    PIPELINE_DEFAULTS,
+    VALID_FUSION_METHODS,
+    VALID_SCALES,
+)
+from graphids.config.topology import STAGES  # noqa: F401 (resolved by model_rebuild)
+from graphids.config.validators import (  # noqa: F401 (resolved by model_rebuild)
+    check_all_in,
+    check_in,
+)
 
 _D = PIPELINE_DEFAULTS
 
@@ -22,10 +36,14 @@ class PipelineConfig(BaseModel):
 
     dataset: str = _D.get("dataset", "hcrl_ch")
     seed: int = _D.get("seed", 42)
-    scale: str = _D.get("scale", "small")
+    scale: Annotated[str, AfterValidator(check_in(VALID_SCALES, "scale"))] = _D.get(
+        "scale", "small"
+    )
     lake_root: str = ""
-    fusion_method: str = _D.get("fusion_method", "bandit")
-    stages: list[str] = Field(
+    fusion_method: Annotated[
+        str, AfterValidator(check_in(VALID_FUSION_METHODS, "fusion_method"))
+    ] = _D.get("fusion_method", "bandit")
+    stages: Annotated[list[str], AfterValidator(check_all_in(STAGES, "stage"))] = Field(
         default_factory=lambda: list(_D.get("stages", ["autoencoder", "supervised", "fusion"])),
     )
     conv_type: str = _D.get("conv_type", "gatv2")
@@ -34,21 +52,9 @@ class PipelineConfig(BaseModel):
     tla_overrides: dict[str, Any] = Field(default_factory=dict)
     max_retries: int = 2
 
-    @model_validator(mode="after")
-    def _validate_axes(self) -> PipelineConfig:
-        from graphids.config.constants import VALID_FUSION_METHODS, VALID_SCALES
-        from graphids.config.topology import STAGES
 
-        if self.scale not in VALID_SCALES:
-            raise ValueError(f"scale={self.scale!r} not in {sorted(VALID_SCALES)}")
-        for s in self.stages:
-            if s not in STAGES:
-                raise ValueError(f"stage={s!r} not in {sorted(STAGES)}")
-        if "fusion" in self.stages and self.fusion_method not in VALID_FUSION_METHODS:
-            raise ValueError(
-                f"fusion_method={self.fusion_method!r} not in {sorted(VALID_FUSION_METHODS)}"
-            )
-        return self
+# Resolve deferred Annotated annotations (from __future__ import annotations).
+PipelineConfig.model_rebuild()
 
 
 class SweepConfig(BaseModel):

@@ -15,7 +15,7 @@ touching the filesystem.
 from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Literal  # noqa: F401 (resolved by model_rebuild)
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -87,6 +87,7 @@ class TrainerSection(BaseModel):
     callbacks: list[dict] | None = None
 
 
+_MinMaxMode = Literal["min", "max"]
 _MODEL_LIST_FIELDS: tuple[str, ...] = ("pool_aggrs", "hidden_dims", "auxiliaries")
 _ALLOWED_CLASS_PATH_ROOTS: tuple[str, ...] = (
     "graphids.",
@@ -101,13 +102,7 @@ class _MonitorBlock(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     monitor: str = Field(..., min_length=1)
-    mode: str
-
-    @model_validator(mode="after")
-    def _mode_is_min_or_max(self) -> _MonitorBlock:
-        if self.mode not in ("min", "max"):
-            raise ValueError(f"mode must be 'min' or 'max', got {self.mode!r}")
-        return self
+    mode: _MinMaxMode
 
 
 class CheckpointSection(_MonitorBlock):
