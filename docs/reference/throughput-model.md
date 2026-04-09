@@ -1,8 +1,6 @@
 # Throughput Model & Budget System
 
 > Cost model for GNN training throughput, GPU optimization framework, and budget implementation.
-> Rewritten 2026-04-03 to correct sections 2, 3, 5 (previous version wrongly advocated
-> shrinking batches instead of scaling the data pipeline).
 
 ---
 
@@ -280,8 +278,8 @@ These help once the GPU is actually busy:
 | torch.compile | Memory-bound (operator fusion) | Enabled | Consider disabling for VGAE (5% util, wastes 4-8GB VRAM pool) |
 | Tensor core alignment | Compute-bound (FP16 dims ÷ 8) | Not audited | Audit hidden dims |
 | CUDA Graphs | Overhead-bound (kernel launch) | Not used | Future: capture training step as graph |
-| expandable_segments | Overhead-bound (VRAM pool) | Not set | Enable in _preamble.sh |
-| pin_memory | Overhead-bound (H2D transfer) | Verify enabled | Check DataModule |
+| expandable_segments | Overhead-bound (VRAM pool) | Done | `_preamble.sh:32` |
+| pin_memory | Overhead-bound (H2D transfer) | Done | `sampler.py:35` default |
 | Gradient accumulation | Memory-bound (simulate larger batch) | Not needed | VRAM headroom exists |
 
 > **Sources:**
@@ -305,56 +303,29 @@ These help once the GPU is actually busy:
 
 ## 3. Budget Implementation (budget.py)
 
-### Current state
+`node_budget()` (`graphids/core/data/budget.py`) — called at DataLoader setup.
+Reads `cache_metadata.json` for mean_nodes, queries free VRAM via
+`torch.cuda.mem_get_info()`, subtracts teacher VRAM reservation, runs
+`_probe_vram()` (~2000 nodes) for bytes_per_node + backward_multiplier,
+applies edge-aware p95 margin, and returns `BudgetResult.budget`.
 
-`node_budget()` computes the VRAM-limited batch size and measures timing
-coefficients (γ, α, β). It does NOT yet compute the full sizing chain
-(workers, CPUs, memory). The throughput floor exists in the code but is
-vestigial from the old "cap the batch" design — it should be removed in
-favor of the GPU-first chain.
+`calibrate_at_budget()` — measures T_collation (3-sample wall-clock median of
+`Batch.from_data_list`) and T_gpu (`BenchmarkTimer` forward x backward_multiplier)
+at the actual operating batch size.
 
-```
-node_budget()                                    [budget.py]
-  ├─ probe()
-  │    ├─ Batch.from_data_list(~70 graphs)      ← TIMED → γ
-  │    ├─ model.forward(small batch)            ← TIMED
-  │    ├─ model.forward(large batch)            ← TIMED → α, β (two-point)
-  │    ├─ model.train(); loss.backward()        ← TIMED → backward_multiplier
-  │    └─ (bytes_per_node, bytes_per_edge, CostCoefficients)
-  ├─ mem_budget = free_vram × 0.85 / effective_bpn
-  └─ budget = mem_budget                         ← VRAM is the only batch constraint
-```
+`compute_resource_profile()` + `autosize_workers()` — derive workers =
+ceil(T_collation / T_gpu), prefetch_factor (2 or 4), cpus = workers + 2,
+memory_gb. Used by val/test auto-sizing (num_workers=None) and the
+`probe-budget` CLI. Pre-batched training paths use num_workers=0.
 
-### What needs to change
+`ResourceProfile` fields use microseconds: `t_collation_us`, `t_gpu_us`.
 
-The budget system should output a full `ResourceProfile`, not just a node
-count. The measurements already exist — it's arithmetic on existing values:
+`expandable_segments:True` is set in `scripts/slurm/_preamble.sh:32`
+(resolves torch.compile pool inflation). `pin_memory=True` is the default
+in `sampler.py:35`.
 
-```python
-@dataclass
-class ResourceProfile:
-    # From VRAM probe (existing)
-    node_budget: int
-    graphs_per_batch: int
-    # From timing probe (existing measurements, new computation)
-    t_collation_ms: float      # γ × graphs_per_batch
-    t_gpu_ms: float            # (α + β × node_budget) × backward_multiplier
-    # From the sizing chain (new)
-    workers: int               # ceil(t_collation / t_gpu)
-    prefetch_factor: int       # 2-4
-    cpus: int                  # workers + 2
-    memory_gb: int             # workers × worker_rss + base
-```
-
-### Known probe bug: torch.compile pool inflation
-
-The probe runs after `torch.compile`, which inflates the VRAM reserved pool
-by 4-8 GB. The probe sees reduced free VRAM and underestimates the batch
-by 2-3x. Active VRAM utilization is only 19-37% despite the probe trying
-to fill it.
-
-Fix: set `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` so the allocator
-returns unused segments, or probe before compile.
+The alpha/beta/gamma fit (two-point solve) is a post-hoc analysis in
+`graphids/plots/transforms.py:104`, not part of the budget runtime.
 
 ### Measured probe values
 
@@ -393,18 +364,6 @@ graph to eliminate per-kernel launch overhead).
 
 VGAE large and GAT large/small are the practical targets: 3-13 workers,
 feasible on OSC Pitzer.
-
-### Correctness of existing components
-
-| Component | Status | Evidence |
-|---|---|---|
-| `mem_budget` | **Correct but conservative** | torch.compile pool inflation underestimates by 2-3x |
-| `_SAFETY_MARGIN = 0.85` | **Adequate** | Covers allocator frag + optimizer + P/N error |
-| `BenchmarkTimer` for GPU | **Proper** | CUDA sync, multi-sample, outlier-robust |
-| Linear VRAM extrapolation | **Valid** | P/N error < 0.2% |
-| α,β two-point solve | **Correct** | Clamping ≥ 0 handles noise |
-| γ measurement | **Bug: contaminated by GPU state** | DGI large γ inflated 3000x |
-| `throughput_budget` | **Remove** | Vestigial from old "cap the batch" design |
 
 ---
 

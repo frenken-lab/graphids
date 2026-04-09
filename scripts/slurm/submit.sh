@@ -21,7 +21,7 @@ mkdir -p "$SLURM_LOG_DIR"
 
 command -v jsonnet >/dev/null 2>&1 || {
     echo "submit.sh: jsonnet binary not found on PATH." >&2
-    echo "  Install go-jsonnet 0.20.0+ to ~/.local/bin/ — see docs/decisions/0010-jsonnet-binary.md" >&2
+    echo "  Install go-jsonnet 0.20.0+ to ~/.local/bin/ — see ADR 0010 in docs/decisions/README.md" >&2
     exit 1
 }
 

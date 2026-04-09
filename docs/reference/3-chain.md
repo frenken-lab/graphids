@@ -1,200 +1,65 @@
-> **Superseded (2026-04-08).** Dagster was removed; the 3-handoff model
-> (plan → serialize → deserialize on SLURM node) no longer applies. Monarch
-> actors call `ConfigResolver.resolve()` in-process — no JSON envelope, no
-> `from-spec`, no serialization boundary. The validation table below is
-> still accurate for what `validate_config` and `validate_stage_config`
-> catch. See `docs/reference/orchestration.md` for the current architecture.
+# 3-Stage Training Chain
 
-Here's the current state of the 3-stage chain, with evidence for every claim.
+The three stages are: **autoencoder -> supervised -> fusion**.
 
-## What dagster actually takes in
-
-**Exactly three inputs, all read at `SlurmTrainingComponent.build_defs()` time:**
-
-| Input             | Source                                                               | Read at     | File:line            |
-| ----------------- | -------------------------------------------------------------------- | ----------- | -------------------- |
-| Recipe Jsonnet    | `KD_GAT_RECIPE` env var (defaults to `configs/recipes/ablation.jsonnet`) | build_defs  | `component.py:86-87` |
-| Pipeline topology | `PIPELINE_YAML` (static, from `topology.py`)                         | import time | `component.py:91`    |
-| Dataset catalog   | `dataset_names()` → per-dataset YAMLs                                | build_defs  | `component.py:94`    |
-
-**There is no dagster-level CLI override mechanism for pipeline runs.** Dagster's configurable resources (e.g. `SlurmTrainingResource.dry_run`) are set at Component construction (`definitions.py:32` reads `KD_GAT_DRY_RUN`), not per-run. All per-run variation goes through the **recipe YAML**, which carries four blocks of override data:
-
-```yaml
-# smoke_test.yaml (verified example)
-seeds: [99]
-selection:
-  datasets: [hcrl_sa]
-  model_families: [vgae, gat, fusion]
-  scales: [small]
-  stages: { vgae: [autoencoder], gat: [normal, curriculum], fusion: [fusion] }
-  fusion_methods: [bandit, dqn, mlp, weighted_avg]
-trainer_overrides: # → runtime_overrides, all stages
-  trainer.max_epochs: 50
-stage_overrides: # → runtime_overrides, scoped to one stage
-  curriculum:
-    data.init_args.max_epochs: "50"
-resource_overrides: # → ResourceSpec.apply_resource_overrides
-  time: "1:00:00"
-  partition: gpudebug
-```
-
-The only "CLI override" in the dagster path is environment-level:
-
-- `KD_GAT_RECIPE=/path/to/recipe.yaml` — swap recipes
-- `KD_GAT_DRY_RUN=1` — skip sbatch, return path-only
-- `KD_GAT_LAKE_ROOT=/fs/ess/...` — change output root
-- `USER` — dev vs production namespace
-
-Dev path (`python -m graphids fit --config configs/stages/autoencoder.jsonnet --set model.init_args.lr=0.01`) bypasses dagster entirely — that's the `cli/_training.py` Typer route, documented in CLAUDE.md under "Training".
-
-## The 3 handoffs (per ADR 0009)
+## Data flow (Monarch path)
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│ HANDOFF 1: Plan  (dagster worker, CPU, pre-SLURM)              │
-│                                                                 │
-│  KD_GAT_RECIPE ─► read_yaml                                    │
-│       ▼                                                         │
-│  expand_recipe_configs()         ← Pydantic: recipe shape       │
-│       ▼                                                         │
-│  enumerate_assets(pipeline, recipe)  ← TrainingRunConfig        │
-│       │                                validates identity       │
-│       ▼                                fields (stages, scale,   │
-│  list[StageConfig]                     conv_type, KDEntry)      │
-│       ▼                                                         │
-│  ConfigResolver.resolve_and_validate(cfg, dataset, seed)        │
-│       ├─ build jsonnet_tla (trainer+stage+kd+upstream ckpts)   │
-│       ├─ apply_resource_overrides → ResourceSpec                │
-│       ├─ render_config(jsonnet_path, jsonnet_tla)              │
-│       ├─ validate_config(rendered)  ← Pydantic ValidatedConfig  │
-│       │                              catches: extra top-level  │
-│       │                              keys, null list fields,   │
-│       │                              monitor mismatch,         │
-│       │                              un-namespaced class_path, │
-│       │                              LR monitor + logger=false │
-│       └─ validate_stage_config     ← num_workers≤cpus-1,        │
-│                                      curriculum epoch sync,    │
-│                                      GPU partition, RL         │
-│                                      batch_size dead-config    │
-│       ▼                                                         │
-│  ResolvedConfig(TrainingSpec, ResourceSpec, PathContext, audit) │
-└──────────┬──────────────────────────────────────────────────────┘
-           │
-           │  ── SERIALIZATION BOUNDARY (JSON envelope) ──
-           │
-┌──────────▼──────────────────────────────────────────────────────┐
-│ HANDOFF 2: Submit  (dagster worker, still CPU)                 │
-│                                                                 │
-│  graphids.orchestrate.contracts.to_envelope(training_spec)      │
-│       ▼                                                         │
-│  write_training_spec → /fs/.../specs/<job>_<uuid>.json          │
-│       ▼                                                         │
-│  generate_script(resources, spec_file, ...)                     │
-│       ▼                                                         │
-│  sbatch ─► SLURM queue                                          │
-└──────────┬──────────────────────────────────────────────────────┘
-           │
-           │  ── RUN BOUNDARY (sbatch → GPU node) ──
-           │
-┌──────────▼──────────────────────────────────────────────────────┐
-│ HANDOFF 3: Run  (SLURM worker, GPU)                            │
-│                                                                 │
-│  python -m graphids from-spec --phase train --spec-file X.json  │
-│       ▼                                                         │
-│  graphids.orchestrate.contracts.from_envelope(X)  → TrainingSpec │
-│       ▼                                                         │
-│  render_config(spec.jsonnet_path, spec.jsonnet_tla)             │
-│       ▼                                                         │
-│  validate_config(merged)            ← belt-and-braces           │
-│       ▼                                Pydantic re-validation   │
-│  snapshot_config(merged, run_dir)   ← config_snapshot.yaml      │
-│       ▼                                                         │
-│  instantiate(merged, validated=...) ← importlib class_paths,    │
-│       ▼                                forced callbacks,        │
-│  trainer.fit(model, datamodule=data)  signature-filtered links  │
-└─────────────────────────────────────────────────────────────────┘
+CLI (monarch-run / monarch-sweep)
+|
++- expand_recipe_configs(raw_recipe)       -> normalized dict
++- enumerate_assets(recipe)                -> list[StageConfig]
+|     StageConfig: stage, model_type, scale, identity,
+|     trainer_overrides, stage_overrides, kd_overrides,
+|     resource_overrides, upstream_asset_names
+|     -- graphids/orchestrate/planning/planner.py
+|
++- PipelineActor.train_stage(stage_config, dataset, seed, upstream_ckpts)
+   +- ResolvedConfig.resolve(cfg, ...)     -- orchestrate/resolve.py
+       +- _build_tla_dict(cfg, ...)        -> typed TLA dict
+       +- get_resources / apply_resource_overrides
+       +- render(jsonnet_path, tla)
+       +- validate_config(rendered)        -> ValidatedConfig  (Pydantic)
+       +- _validate_cross_fields(...)      -> num_workers<=cpus-1, epoch sync
+       +- returns ResolvedConfig(paths, validated, rendered)
+           +- instantiate(rendered, validated=...) -> fit
 ```
 
-That's **three handoffs, two boundaries**. Everything between the boundaries is either pure data (`TrainingSpec` on the wire) or pure instantiation (`graphids.instantiate.instantiate` on the SLURM side). Zero additional merges, zero additional override sources, zero string round-trips.
+No JSON envelope, no serialization boundary. Resolver output feeds
+directly to `graphids.instantiate.instantiate`.
 
 ## Where validation catches what
 
-| Failure mode                                                         | Caught at                                        | How                                                          |
-| -------------------------------------------------------------------- | ------------------------------------------------ | ------------------------------------------------------------ |
-| Recipe YAML has an unknown key (`sedes` instead of `seeds`)          | Handoff 1, step 1                                | `expand_recipe_configs` pydantic model with `extra="forbid"` |
-| Invalid stage, scale, fusion_method, conv_type, loss_fn              | Handoff 1, step 1                                | `TrainingRunConfig` field validators (`contracts.py:73-113`) |
-| KD alpha out of [0,1], invalid teacher_scale                         | Handoff 1, step 1                                | `KDEntry` field validators (`contracts.py:25-44`)            |
-| Pipeline topology references a missing model config file             | Import time                                      | `topology.py` import-time assertions                         |
-| Missing identity keys for a stage                                    | Handoff 1, step 2                                | `compute_identity_hash` raises `KeyError`                    |
-| `trainer_overrides.trainer.max_epoch` (typo in trainer key)          | Handoff 3 (instantiation)                        | stage libsonnet merge — typo is silently accepted as a new dotted key; caught when the Trainer constructor rejects the arg. Pre-Phase-3 `validate_cli_chain` used to catch this at handoff 1; consider re-adding stage-libsonnet override validation if this becomes a pain point. |
-| Wrong type on an override value (`lr: "high"`)                       | Handoff 3 (instantiation)                        | `VGAEModule.__init__` rejects non-float `lr` via Python's type system |
-| `num_workers > cpus_per_task - 1`                                    | **Handoff 1, step 3**                            | `validate_stage_config` (`config/schemas.py`)                |
-| `data.init_args.num_workers` in rendered config > cpus               | **Handoff 1, step 3**                            | `validate_stage_config` reads rendered dict                  |
-| `CurriculumDataModule.max_epochs != trainer.max_epochs`              | **Handoff 1, step 3**                            | `validate_stage_config` catches the sync gap                 |
-| `gres=gpu:1` with `partition=cpu`                                    | **Handoff 1, step 3**                            | `validate_stage_config`                                      |
-| Fusion RL (`dqn`/`bandit`) with a `batch_size` override              | **Handoff 1, step 3**                            | `validate_stage_config` reads `spec.jsonnet_tla`             |
-| `pool_aggrs`, `hidden_dims`, `auxiliaries` serialized as `null`      | **Handoff 1, step 3**                            | `ValidatedConfig._no_null_list_fields` model validator       |
-| `LearningRateMonitor` with `trainer.logger=false`                    | **Handoff 1, step 3**                            | `ValidatedConfig._lr_monitor_requires_logger` model validator |
-| `checkpoint` + `early_stopping` track different monitors/modes       | **Handoff 1, step 3**                            | `ValidatedConfig._monitor_pair_consistent` model validator   |
-| `data.class_path` / `model.class_path` not under a known namespace   | **Handoff 1, step 3**                            | `ValidatedConfig._class_paths_namespaced` model validator    |
-| Extra top-level key in rendered dict (typo at stage libsonnet level) | **Handoff 1, step 3**                            | `ValidatedConfig` has `extra="forbid"` on root               |
-| KD auxiliaries malformed (bad keys on a ``KDEntry``)                 | **Handoff 1, step 1**                            | `KDEntry` Pydantic validator (pre-TLA)                       |
-| Physically bad config that slipped past step 3                       | Handoff 3 (safety net)                           | `validate_config` runs again on the SLURM worker             |
+| Failure mode | Caught at | Where |
+|---|---|---|
+| Invalid stage, scale, fusion_method, conv_type, loss_fn | `TrainingRunConfig` construction | `planning/recipes.py:74-85` |
+| KD alpha out of [0,1], invalid teacher_scale | `KDEntry` validators | `planning/recipes.py:54-67` |
+| Missing model config file | Import time | `config/topology.py` assertions |
+| Missing identity keys for a stage | `compute_identity_hash` | `config/topology.py` |
+| `pool_aggrs`, `hidden_dims`, `auxiliaries` as null | `ValidatedConfig._no_null_list_fields` | `config/schemas.py` |
+| `LearningRateMonitor` with `trainer.logger=false` | `ValidatedConfig._lr_monitor_requires_logger` | `config/schemas.py` |
+| `checkpoint` + `early_stopping` monitor/mode mismatch | `ValidatedConfig` via `CallbacksSection` | `config/schemas.py` |
+| `data.class_path` / `model.class_path` not namespaced | `ValidatedConfig._class_paths_namespaced` | `config/schemas.py` |
+| Extra top-level key in rendered dict | `ValidatedConfig(extra="forbid")` | `config/schemas.py` |
+| `num_workers > cpus_per_task - 1` | `_validate_cross_fields` | `orchestrate/resolve.py` |
+| `CurriculumDataModule.max_epochs != trainer.max_epochs` | `_validate_cross_fields` | `orchestrate/resolve.py` |
+| Stage monitor family mismatch (val_acc vs val_loss) | `ResolvedConfig.resolve` warning | `orchestrate/resolve.py` |
 
-**Structural failures are caught before sbatch.** The SLURM side's `validate_config` is redundant — it runs again as a safety net, but by construction it can only fire if the JSON envelope was corrupted in transit. The validation desert that ADR 0009 fixed is gone. (Phase 3 narrowed the set of failures caught at handoff 1: dotted-key typos that the pre-Phase-3 jsonargparse pass used to catch now fail at instantiation time instead.)
+**Structural failures are caught before the SLURM job starts.** The Monarch
+actor runs `ResolvedConfig.resolve()` in-process and the result flows
+directly into `instantiate()`.
 
-## What the resolver "catches as early as possible" in one sentence
+## Key files
 
-`ConfigResolver.resolve_and_validate()` — called from `assets._train` exactly once per materialization — runs the full override merge + jsonnet render + Pydantic `ValidatedConfig` gate + cross-field validation in a single pass, **before** `submit_and_wait` is invoked. After that point, the SLURM job sees exactly one JSON envelope and does nothing except deserialize and instantiate. No additional merges, no additional validators, no additional override sources.
-
-## What the "minimum passthroughs" look like in practice
-
-After handoff 1, the only things that cross the boundary are the fields of `TrainingSpec`:
-
-```python
-# graphids/orchestrate/contracts/__init__.py (post Phase 1)
-TrainingSpec(
-    stage, model_family, scale, dataset, seed, run_dir,
-    jsonnet_path,                  # str              — configs/stages/<stage>.jsonnet
-    jsonnet_tla,                   # dict[str, Any]   — typed TLA dict
-    model_init_overrides,          # dict[str, Any]   — identity-derived per-model tweaks
-    upstream_ckpt_paths,           # dict[str, str]   — for KD/staged handoff
-    upstream_model_families,       # dict[str, str]
-)
-```
-
-`jsonnet_tla` is a **typed dict matching the stage function's TLA signature** — ints stay ints, bools stay bools, recipe overrides stay as sub-dicts. Example for an autoencoder stage:
-
-```python
-{
-    "dataset": "hcrl_ch",
-    "seed": 42,
-    "run_dir": "/fs/.../autoencoder_abc123/seed_42",
-    "scale": "small",
-    "conv_type": "gatv2",
-    "variational": True,
-    "auxiliaries": [],                               # empty = no KD
-    "vgae_ckpt_path": None,
-    "trainer_overrides": {"trainer.max_epochs": "50"},
-    "stage_overrides": {},
-}
-```
-
-Every override source (trainer, stage, KD, upstream ckpts) is packed into this dict at handoff 1, inside `ConfigResolver.resolve()` via `graphids.orchestrate.contracts.build_tla_dict()`:
-
-```python
-# orchestrate/contracts/__init__.py
-tla = graphids.orchestrate.contracts.build_tla_dict(
-    cfg,
-    dataset=dataset, seed=seed, run_dir=run_dir,
-    upstream_ckpts=upstream_ckpts,
-    upstream_model_families=cfg.upstream_model_families,
-    kd_overrides=cfg.kd_overrides or None,
-    trainer_overrides=cfg.trainer_overrides or None,
-    stage_overrides=cfg.stage_overrides or None,
-)
-```
-
-SLURM side then calls `render_config(spec.jsonnet_path, spec.jsonnet_tla)`, re-runs `validate_config` as a belt-and-braces gate, snapshots `config_snapshot.yaml`, and hands the rendered dict to `graphids.instantiate.instantiate`. No additional merge layers, no additional CLI construction, no stringification round-trip, no additional validation gates that could reject what handoff 1 already blessed.
-
-**In short**: dagster takes in exactly one env var (`KD_GAT_RECIPE`) pointing at one YAML file. All override flavors flow through that file, get packed into `jsonnet_tla` inside `ConfigResolver`, get jsonnet-rendered + jsonargparse-validated at planning time (pre-sbatch), then cross one JSON boundary to a SLURM worker that does no merging of its own. The "CLI override" story is: there is no runtime CLI for the pipeline path — all variation lives in the recipe, and the recipe is the single input that ConfigResolver turns into a fully-validated asset plan before anything hits the queue.
+| File | Role |
+|---|---|
+| `graphids/orchestrate/planning/recipes.py` | `TrainingRunConfig`, `KDEntry`, `expand_recipe_configs` |
+| `graphids/orchestrate/planning/planner.py` | `StageConfig`, `enumerate_assets` |
+| `graphids/orchestrate/resolve.py` | `ResolvedConfig.resolve`, `_build_tla_dict`, `_validate_cross_fields` |
+| `graphids/orchestrate/actors.py` | `PipelineActor` — `train_stage` / `eval_stage` endpoints |
+| `graphids/orchestrate/monarch.py` | `PipelineConfig`, `SweepConfig`, `plan_chains`, `run_chain`, `run_sweep` |
+| `graphids/config/schemas.py` | `ValidatedConfig`, `validate_config` |
+| `graphids/config/topology.py` | Stage DAG, identity keys, import-time assertions |
+| `configs/stages/autoencoder.jsonnet` | Stage 1 jsonnet function |
+| `configs/stages/supervised.jsonnet` | Stage 2 jsonnet function |
+| `configs/stages/fusion.jsonnet` | Stage 3 jsonnet function |

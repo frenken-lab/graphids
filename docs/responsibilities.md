@@ -1,27 +1,38 @@
-Here's the clean responsibility map:
+# Module Responsibilities
 
-**Jsonnet** — structure and composition only. Inheritance between configs, environment overlays (dev vs slurm vs cluster), shared blocks that get reused across experiments. It produces a raw dict. No validation, no types, just the shape of the config file.
+**Jsonnet** (`configs/`) — structure and composition only. Stage functions produce a raw
+merged dict. No validation, no types.
 
-**Jsonargparse** — CLI binding and override injection. Takes the resolved jsonnet dict and lets you do `--model.heads 8` on the command line without rewriting the config file. Also handles lazy vs eager: some values (like dataset size) can't be known until runtime, jsonargparse lets you defer those. It produces a namespace or dict with CLI overrides merged in.
+**`render_config`** (`graphids/config/jsonnet.py`) — subprocess shim that calls the `jsonnet`
+binary with typed `--tla-code` args (JSON-encoded so ints/bools/null round-trip correctly).
+Returns the rendered dict.
 
-**Pydantic** — validation at the Python boundary only. Takes the resolved+overridden dict and turns it into a typed Python object with guarantees. This is where you catch "heads must be > 0" or "vgae_ckpt_path must exist on disk". Fails fast with a clear error before any training starts. Lives inline next to whatever it's validating — `GATConfig` next to the GAT model, `CANBusConfig` next to the dataset.
+**Pydantic / `validate_config`** (`graphids/config/schemas.py`) — validation gate immediately
+after render. Catches null list fields, monitor/mode mismatches, un-namespaced class_paths,
+and LearningRateMonitor without a logger. Fails fast before any torch import.
 
-**Dagster** — orchestration and run tracking only. Knows about dependencies between pipeline stages (VGAE must train before GAT, GAT must train before fusion). Owns the run record/sidecar. Does not know about model internals.
+**`instantiate`** (`graphids/instantiate.py`) — imports class_paths via importlib,
+applies signature-filtered link_arguments, builds forced callbacks (ModelCheckpoint,
+EarlyStopping, OTelTrainingCallback), wires OTelTrainingLogger, and returns
+a wired `(trainer, model, datamodule)` triple.
 
-**Slurm** — resource allocation only. CPUs, GPUs, memory, wall time. Dagster tells slurm what to run, slurm decides where and when.
+**Monarch** (`graphids/orchestrate/monarch.py`, `graphids/cli/_monarch.py`) — custom
+SLURM-backed pipeline orchestrator. Enumerates `StageConfig`s from recipes, calls
+`ResolvedConfig.resolve` per stage, submits SLURM jobs via torchmonarch actors.
+
+**SLURM** (`graphids/slurm/`, `scripts/slurm/submit.sh`) — resource allocation and job
+submission. CPUs, GPUs, memory, wall time. All jobs submitted via `submit.sh <profile>`.
 
 The pipeline is strictly one-directional:
 
 ```
-jsonnet resolves
+jsonnet renders (render_config)
     ↓
-jsonargparse merges CLI overrides
+Pydantic validates (validate_config → ValidatedConfig)
     ↓
-Pydantic validates → typed Python objects
+instantiate → (trainer, model, datamodule)
     ↓
-your code runs — dagster tracks it, slurm executes it
+trainer.fit / trainer.test
 ```
 
-Nothing flows backwards. Dagster doesn't touch configs. Pydantic doesn't know about CLI. Jsonnet doesn't know about types. Each layer hands off to the next and gets out of the way.
-
-The thing currently in `contracts/` that does NFS/GPS writes and I/O specs — that's not config and it's not types. That's infrastructure that belongs in a `core/io.py` or alongside the dagster assets that actually trigger those writes.
+> Authoritative detail: `.claude/rules/config-system.md`

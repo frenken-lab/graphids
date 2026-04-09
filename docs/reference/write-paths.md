@@ -1,190 +1,135 @@
 # GraphIDS Write Path Inventory
 
-> Audited 2026-03-30. Updated same day after consolidation.
+> Audited 2026-04-09.
 
 ## The Rule
 
 - **Code** lives in `~/KD-GAT/` (NFS). Read-only at runtime.
-- **ALL runtime writes** go to `/fs/ess/PAS1266/kd-gat/` (ESS), routed via `KD_GAT_LAKE_ROOT` env var.
-- **Scratch** (`/fs/scratch/PAS1266/`) is for transient data: wandb run files, dagster state DB, staged data.
+- **ALL runtime writes** go to `/fs/ess/PAS1266/kd-gat/` (ESS), routed via `KD_GAT_LAKE_ROOT`.
+- **Scratch** (`/fs/scratch/PAS1266/`) is for transient data: staged data copies.
 - **Nothing** should write to the repo directory. Ever.
-- **All training goes through dagster.** No direct CLI runs to ESS. Dagster sets `default_root_dir`, `instantiate.py` pins `dirpath`.
 
 ## Single Source of Truth
 
-`graphids/config/constants.py` declares write path constants. Python code imports them — no hardcoded path strings.
+`graphids/config/constants.py` declares write path constants. `graphids/config/settings.py` owns all `KD_GAT_*` env vars.
 
-```
-config/constants.py → instantiate.py, dagster/component.py, slurm/pipeline.py
-```
-
-Constants exported: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `COMPLETE_MARKER`, `DAGSTER_IO_DIR_TEMPLATE`, `DAGSTER_HOME_DEFAULT`
+Constants: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `COMPLETE_MARKER`, `PHASE_MARKERS`, `CATALOG_SUBPATH`
 
 ## Filesystem Layout
 
 ```
-/fs/ess/PAS1266/kd-gat/                          ← $KD_GAT_LAKE_ROOT (persistent, shared)
-├── dev/{user}/{dataset}/                         ← run_dir() base
-│   └── {model}_{scale}_{stage}{identity}{kd}/
-│       └── seed_{N}/                             ← trainer.default_root_dir
-│           ├── checkpoints/
-│           │   ├── best_model.ckpt               ← ModelCheckpoint (dirpath pinned by instantiate.py)
-│           │   └── last.ckpt                     ← ModelCheckpoint (save_last: true)
-│           ├── lightning_logs/version_*/
-│           │   ├── metrics.csv                   ← CSVLogger (diagnostics only)
-│           │   ├── hparams.yaml                  ← save_hyperparameters()
-│           │   └── config.yaml                   ← SaveConfigCallback
-│           └── .complete                         ← dagster marker
-├── .dagster/io/{asset_key}/{partition}.json       ← IOManager sidecar
-├── raw/{dataset}/                                ← source CSV data
-├── cache/v{ver}/{dataset}/                       ← preprocessed graph .pt files
-└── slurm_logs/                                   ← SLURM stdout/stderr
+/fs/ess/PAS1266/kd-gat/                          <-- $KD_GAT_LAKE_ROOT (persistent, shared)
++-- dev/{user}/{dataset}/
+|   +-- {model}_{scale}_{stage}{identity}{kd}/
+|       +-- seed_{N}/                             <-- trainer.default_root_dir
+|           +-- checkpoints/
+|           |   +-- best_model.ckpt               <-- ModelCheckpoint (dirpath pinned by instantiate.py)
+|           |   +-- last.ckpt                     <-- ModelCheckpoint (save_last: true)
+|           +-- traces.jsonl                      <-- OTel spans (wire_file_exporters, SimpleSpanProcessor)
+|           +-- metrics.jsonl                     <-- OTel metrics (PeriodicExportingMetricReader, 10s)
+|           +-- artifacts/                        <-- analysis outputs (embeddings, CKA, landscape)
+|           +-- .complete                         <-- Monarch marker (eval_stage done)
+|           +-- .train_complete                   <-- Monarch marker (fit done)
+|           +-- .test_complete                    <-- Monarch marker (test done)
+|           +-- .analyze_complete                 <-- Monarch marker (analyze done)
++-- catalog/kd_gat.duckdb                        <-- rebuilt from traces.jsonl (rebuild-catalog)
++-- raw/{dataset}/                               <-- source CSV data
++-- cache/v{ver}/{dataset}/                      <-- preprocessed graph .pt files
++-- slurm/                                       <-- SLURM stdout/stderr (default)
 
-/fs/scratch/PAS1266/                              ← transient (90-day purge)
-├── wandb/                                        ← $WANDB_DIR (currently dead)
-├── dagster/                                      ← $DAGSTER_HOME (SQLite event log)
-└── kd-gat-data/                                  ← staged data (scratch → TMPDIR)
+/fs/scratch/PAS1266/                             <-- transient (90-day purge)
++-- kd-gat-data/                                 <-- staged data (scratch -> TMPDIR)
 
-$TMPDIR/kd-gat-data/                              ← per-job local SSD (ephemeral)
+$TMPDIR/kd-gat-data/                             <-- per-job local SSD (ephemeral)
 ```
 
-Key change from initial audit: checkpoints are now at `{run_dir}/checkpoints/`, **decoupled from CSVLogger versioning**. CSVLogger still writes to `lightning_logs/version_N/` but nothing depends on that path.
+Checkpoint dirpath is pinned at runtime: `instantiate.py` sets `ModelCheckpoint.dirpath` to `{default_root_dir}/checkpoints` derived from `CKPT_SUBPATH` (`constants.py:89`).
 
 ## Write Path Detail
 
 ### 1. Lightning (via Trainer)
 
-All Lightning writes land under `trainer.default_root_dir`, set by dagster via `--trainer.default_root_dir={rd}`.
+All Lightning writes land under `trainer.default_root_dir` from the rendered jsonnet config.
 
-| What | Relative path | Who writes | Config |
-|------|---------------|-----------|--------|
-| Best checkpoint | `checkpoints/best_model.ckpt` | ModelCheckpoint | `trainer.yaml`, `instantiate.py` pins dirpath |
-| Resume checkpoint | `checkpoints/last.ckpt` | ModelCheckpoint | `save_last: true` in trainer.yaml |
-| Metrics CSV | `lightning_logs/version_*/metrics.csv` | CSVLogger | Lightning default logger |
-| Hyperparameters | `lightning_logs/version_*/hparams.yaml` | CSVLogger | automatic |
-| Resolved config | `lightning_logs/version_*/config.yaml` | SaveConfigCallback | `instantiate.py` (overwrite: True) |
+| What | Relative path | Who writes |
+|------|---------------|-----------|
+| Best checkpoint | `checkpoints/best_model.ckpt` | ModelCheckpoint |
+| Resume checkpoint | `checkpoints/last.ckpt` | ModelCheckpoint (`save_last: true`) |
+| OTel spans | `traces.jsonl` | `wire_file_exporters` -> `SimpleSpanProcessor` -> `ConsoleSpanExporter` |
+| OTel metrics | `metrics.jsonl` | `wire_file_exporters` -> `PeriodicExportingMetricReader` (10s) |
 
-**Checkpoint path is pinned**: `instantiate.py` `_build_callbacks` sets `ModelCheckpoint.dirpath` to `{default_root_dir}/checkpoints`. Derived from `CKPT_SUBPATH` (loaded from `write_paths.yaml`). No version directory in checkpoint path.
+### 2. OTel Instrumentation
 
-**CSVLogger versioning is irrelevant**: metrics/hparams/config go to `lightning_logs/version_N/` but nothing depends on the version number. Auto-increment on crash is harmless.
+`graphids/core/monitoring.py` — `OTelTrainingCallback` creates a `training.fit` span on fit start; records per-batch VRAM gauges, per-epoch events (LR, early stopping), final metrics, and best checkpoint path as span attributes. Discovers upstream stage `traces.jsonl` files and records span links for KD lineage.
 
-### 2. Dagster Orchestration
+`graphids/core/otel.py` — `wire_file_exporters(run_dir)` wires the file exporters (Phase B). Called from `cli/_training.py:37` and `orchestrate/actors.py:130`. Wandb Weave OTLP export is optional when `WANDB_API_KEY` is set.
 
-| What | Path | Who writes | Constant |
-|------|------|-----------|----------|
-| Checkpoint path sidecar | `{lake_root}/.dagster/io/{asset_key}/{partition}.json` | CheckpointPathIOManager | `DAGSTER_IO_DIR_TEMPLATE` |
-| Run completion marker | `{run_dir}/.complete` | _make_asset after COMPLETED | `COMPLETE_MARKER` |
-| Event log + run history | `$DAGSTER_HOME/storage/` (SQLite) | dagster internals | `DAGSTER_HOME` in `.env` |
+`OTelTrainingLogger` captures Lightning `self.log()` calls as OTel histograms.
 
-### 3. SLURM
+### 3. Monarch Orchestration
 
 | What | Path | Who writes | Code |
 |------|------|-----------|------|
-| Job stdout/stderr | `{SLURM_LOG_DIR}/{name}_%j.{out,err}` | sbatch/OS | `slurm.py` |
-| Log rotation (30d) | deletes from SLURM_LOG_DIR | _epilog.sh | cleanup |
+| Train complete marker | `{run_dir}/.train_complete` | `actors.py` after `trainer.fit` | `PHASE_MARKERS["train"]` |
+| Test complete marker | `{run_dir}/.test_complete` | `actors.py` after `trainer.test` | `PHASE_MARKERS["test"]` |
+| Analyze complete marker | `{run_dir}/.analyze_complete` | `actors.py` after `run_analysis` | `PHASE_MARKERS["analyze"]` |
+| Run complete marker | `{run_dir}/.complete` | `actors.py` at `eval_stage` end | `COMPLETE_MARKER` |
+| Analysis artifacts | `{run_dir}/artifacts/` | `run_analysis` via `AnalysisSpec` | `actors.py:182` |
 
-### 4. Wandb
-
-| What | Path | Who writes | Config |
-|------|------|-----------|--------|
-| Run data (metrics, system stats) | `$WANDB_DIR/{project}/{run_id}/` | WandbLogger | `trainer.yaml` logger list |
-| Full rendered jsonnet config | wandb run config | `instantiate()` pushes `rendered` dict via `logger.experiment.config.update(rendered, allow_val_change=True)` | `graphids/instantiate.py` |
-
-`_preamble.sh` sets `WANDB_DIR=/fs/scratch/PAS1266/wandb` (scratch, 90-day purge). Auth via `~/.netrc`.
-
-### 5. Data / Preprocessing
-
-| What | Path | Who writes | Code |
-|------|------|-----------|------|
-| Graph cache .pt files | `{lake_root}/cache/v{ver}/{dataset}/` | atomic_save | `preprocessing/utils.py` |
-| NFS advisory lock | `{cache_dir}/.lock` | preprocessing/utils.py | flock |
-| Staging marker | `{scratch}/kd-gat-data/.staged_marker` | stage_data.sh | rsync guard |
-| Node-local staged data | `$TMPDIR/kd-gat-data/` | stage_data.sh | per-job copy |
-
-### 6. Analysis Artifacts
+### 4. SLURM
 
 | What | Path | Who writes |
 |------|------|-----------|
-| Embeddings, CKA, landscape | `{analyzer.output_dir}/` (required CLI param) | Analyzer.run() |
+| Job stdout/stderr | `{slurm_log_dir}/{name}_%j.{out,err}` | sbatch/OS |
 
-## Execution Order
+`slurm_log_dir` defaults to `{lake_root}/slurm` (`settings.py:46`); override via `KD_GAT_SLURM_LOG_DIR`.
+
+### 5. Data / Preprocessing
+
+| What | Path | Who writes |
+|------|------|-----------|
+| Graph cache .pt files | `{lake_root}/cache/v{ver}/{dataset}/` | `preprocessing/utils.py` (atomic_save) |
+| NFS advisory lock | `{cache_dir}/.lock` | preprocessing/utils.py |
+| Staging marker | `{scratch}/kd-gat-data/.staged_marker` | stage_data.sh |
+| Node-local staged data | `$TMPDIR/kd-gat-data/` | stage_data.sh |
+
+### 6. DuckDB Catalog
+
+`{lake_root}/catalog/kd_gat.duckdb` — `runs` table rebuilt by `orchestrate/ops/catalog.py` from `traces.jsonl` files. Scans `{lake_root}/dev/**/traces.jsonl`, filters `training.fit` spans, extracts identity/status/metrics as columns. Disposable — rebuildable via `python -m graphids rebuild-catalog`. Requires `KD_GAT_LAKE_WRITE=1`.
+
+## Execution Order (Monarch path)
 
 ```
-DAGSTER (login node)                    SLURM JOB (compute node)
-────────────────────                    ────────────────────────
-_make_asset() called
-├─ read: ckpt + .complete (skip?)
-├─ slurm.submit() ──────────────────►  sbatch allocates node
-│   ├─ mkdir SLURM_LOG_DIR              │
-│   └─ sbatch --output/--error          │
-│                                       ├─ _preamble.sh
-│                                       │   ├─ source .env
-│                                       │   ├─ stage_data.sh → .staged_marker
-│                                       │   └─ mkdir KD_GAT_STAGE_DIR
-│                                       │
-│                                       ├─ python -m graphids fit
-│                                       │   ├─ instantiate.py pins ModelCheckpoint.dirpath
-│                                       │   ├─ SaveConfigCallback → config.yaml
-│                                       │   ├─ DataModule.setup()
-│                                       │   │   ├─ acquire .lock
-│                                       │   │   ├─ torch.save → cache .pt
-│                                       │   │   └─ release .lock
-│                                       │   ├─ training loop
-│                                       │   │   ├─ CSVLogger → metrics.csv
-│                                       │   │   ├─ ModelCheckpoint → best_model.ckpt
-│                                       │   │   └─ ModelCheckpoint → last.ckpt
-│                                       │   └─ trainer.fit() returns
-│                                       │
-│   slurm.poll() ◄──────────────────   ├─ _epilog.sh (log cleanup)
-│   state = COMPLETED                   └─ job exits
-│
-├─ .complete marker touch
-├─ IOManager → sidecar .json
-└─ return ckpt_path
-
-dagster SQLite — writes throughout (login node)
-analyzer — separate invocation, after all training
+LOGIN NODE (Monarch)                    SLURM JOB (compute node)
+--------------------                    ------------------------
+monarch.run_pipeline()
++- check .complete marker (skip?)
++- submit SLURM job ----------------->  sbatch allocates node
+|                                       +- _preamble.sh (env, venv, stage data)
+|                                       +- actors.py::train_stage()
+|                                       |   +- wire_file_exporters(run_dir)
+|                                       |   |   +- opens traces.jsonl, metrics.jsonl
+|                                       |   +- instantiate() -> trainer/model/datamodule
+|                                       |   |   +- ModelCheckpoint.dirpath pinned
+|                                       |   +- trainer.fit()
+|                                       |   |   +- OTelTrainingCallback spans + gauges
+|                                       |   |   +- OTelTrainingLogger -> metrics.jsonl
+|                                       |   |   +- ModelCheckpoint -> best_model.ckpt
+|                                       |   +- touch .train_complete
+|                                       +- actors.py::eval_stage()
+|                                       |   +- trainer.test() -> touch .test_complete
+|                                       |   +- run_analysis() -> artifacts/ -> touch .analyze_complete
+|                                       |   +- touch .complete
+|                                       +- _epilog.sh (GPU utilization report)
++- poll -> COMPLETED
 ```
 
-## Resolved Issues
-
-### RESOLVED: version_0 crash reuse → decoupled
-
-Checkpoints now write to `{run_dir}/checkpoints/` via explicit `dirpath` pin in `instantiate.py`. CSVLogger version auto-increment is irrelevant — nothing depends on `lightning_logs/version_N/`. No version number in any checkpoint path.
-
-### RESOLVED: last.ckpt resume was dead code
-
-`save_last: true` added to ModelCheckpoint in `trainer.yaml` and `fusion.yaml`. Resume path in `component.py` uses `LAST_CKPT_SUBPATH` constant from `write_paths.yaml`.
-
-### RESOLVED: DAGSTER_HOME in two places
-
-Consolidated to `.env`. `dagster-ui.sh` asserts `DAGSTER_HOME` is set. `__main__.py run` errors if unset. Pending: `dagster-ui.sh` needs `source .env`.
-
-### RESOLVED: MLflow in-repo writes
-
-`MLFLOW_TRACKING_URI` removed from `.env`. All MLflow references cleaned from `.gitignore`, `ci.yml`, `data_loader.py`, and 2 stale skills deleted.
-
-### RESOLVED: test SLURM logs in-repo
-
-`scripts/slurm/submit.sh tests` submits pytest to SLURM (`cpu` partition, 8 CPUs, 16GB).
-
-### RESOLVED: smoke test duplication
-
-`smoke_test()` deleted. `orchestrate/__main__.py` deleted. Single entry point at `graphids/__main__.py`. Training goes through dagster only.
-
-## Open Issues
-
-- `experimentruns` fallback: `LAKE_ROOT` defaults to relative in-repo path when `KD_GAT_LAKE_ROOT` unset. `.env.example` should include it.
-- `production` path never used: `run_dir()` always emits `dev/{user}`. Remove claim from docs.
-- `dagster-ui.sh` needs `source .env`: script asserts `DAGSTER_HOME` but doesn't source it.
-
-## Env Var → Path Mapping
+## Env Var -> Path Mapping
 
 | Env var | Default | Set in | Controls |
 |---------|---------|--------|----------|
-| `KD_GAT_LAKE_ROOT` | `"experimentruns"` (relative) | `.env` → `/fs/ess/PAS1266/kd-gat` | All experiment IO |
-| `KD_GAT_SLURM_LOG_DIR` | `constants.yaml` → ESS | `.env` → ESS | SLURM stdout/stderr |
-| `WANDB_DIR` | (none) | `_preamble.sh` → scratch | wandb run data (dead) |
-| `DAGSTER_HOME` | (none — errors if unset) | `.env` → scratch | dagster state |
-| `TMPDIR` | (SLURM sets) | OS | per-job local SSD |
-| `KD_GAT_STAGE_DIR` | (none) | `_preamble.sh` | staged data on local SSD |
+| `KD_GAT_LAKE_ROOT` | `"experimentruns"` (relative) | `.env` -> `/fs/ess/PAS1266/kd-gat` | All experiment IO |
+| `KD_GAT_SLURM_LOG_DIR` | `{lake_root}/slurm` (derived) | `.env` | SLURM stdout/stderr |
+| `KD_GAT_LAKE_WRITE` | `false` | `.env` (set to `1` in SLURM jobs) | Guards catalog/lake writes |
+| `WANDB_API_KEY` | (none) | `.env` | Enables Wandb Weave OTLP export |
+| `TMPDIR` | (SLURM sets) | OS | Per-job local SSD |

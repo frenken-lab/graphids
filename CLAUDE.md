@@ -57,7 +57,7 @@ Three entry points, zero overlap:
 
 **Config resolution** — `resolve_config()` in `orchestrate/resolve.py` is the exclusive merge path for pipeline runs. It packs trainer/resource/KD overrides into a typed TLA dict via `graphids.orchestrate.contracts.build_tla_dict`, renders the stage jsonnet via `graphids.config.jsonnet.render_config`, and validates cross-field constraints. Monarch actors call `resolve_config(cfg, ...)` → `ResolvedConfig` (TrainingSpec + ResourceSpec + paths). See `docs/reference/config-architecture.md`.
 
-**SLURM submission** — all jobs via `scripts/slurm/submit.sh <profile> [args]`. The preamble hard-fails if the `jsonnet` binary is missing (see `docs/decisions/0010-jsonnet-binary.md`). Resource profiles read from `configs/resources/` (`job_profiles.json`, `clusters.json`, `submit_profiles.yaml`). See `rules/slurm-hpc.md`.
+**SLURM submission** — all jobs via `scripts/slurm/submit.sh <profile> [args]`. The preamble hard-fails if the `jsonnet` binary is missing (see ADR 0010 in `docs/decisions/README.md`). Resource profiles read from `configs/resources/` (`job_profiles.json`, `clusters.json`, `submit_profiles.yaml`). See `rules/slurm-hpc.md`.
 
 Fusion uses a single `configs/stages/fusion.jsonnet` that dispatches on the `fusion_method` TLA over the 4 method libsonnets in `configs/fusion/methods/`.
 
