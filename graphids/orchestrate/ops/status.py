@@ -17,14 +17,15 @@ from graphids.config.topology import (
 
 RECIPES_DIR = CONFIG_DIR / "recipes"
 
-_FAILED_STATES = frozenset({"FAILED", "TIMEOUT", "OUT_OF_MEMORY", "CANCELLED"})
-_RUNNING_STATES = frozenset({"RUNNING", "PENDING"})
+_FAILED_STATES = frozenset({"FAILED", "TIMEOUT", "OUT_OF_MEMORY", "CANCELLED", "ERROR"})
+_RUNNING_STATES = frozenset({"RUNNING", "PENDING", "UNSET"})
 _STAGE_ORDER = {s: i for i, s in enumerate(TOPOLOGY.default_stages)}
 
-_CATALOG_STATUS_MAP = {
-    "completed": "COMPLETED",
-    "failed": "FAILED",
-    "started": "RUNNING",
+# OTel StatusCode → pipeline display status
+_OTEL_STATUS_MAP = {
+    "OK": "COMPLETED",
+    "ERROR": "FAILED",
+    "UNSET": "RUNNING",
 }
 
 
@@ -79,19 +80,22 @@ def _collect_statuses(
             f"Catalog not found at {cat}. Run: python -m graphids rebuild-catalog"
         )
 
+    # The catalog now has OTel span data with run_dir encoding identity.
+    # run_dir pattern: .../{dataset}/{family}_{scale}_{stage}_{hash}/seed_{N}
     query = """
         SELECT
-            asset_name,
-            status,
-            to_json(phases) AS phases_json,
-            wall_time_seconds,
-            CAST(slurm_job_id AS VARCHAR) AS slurm_job_id_str
+            run_dir,
+            status_code,
+            slurm_job_id,
+            epochs_run,
+            start_time,
+            end_time
         FROM runs
-        WHERE seed = ?
+        WHERE run_dir LIKE '%/seed_' || CAST(? AS VARCHAR) || '%'
     """
     params: list = [seed]
     if dataset:
-        query += " AND dataset = ?"
+        query += " AND run_dir LIKE '%/' || ? || '/%'"
         params.append(dataset)
 
     db = duckdb.connect(str(cat), read_only=True)
@@ -100,19 +104,27 @@ def _collect_statuses(
     finally:
         db.close()
 
+    # Build lookup keyed on the directory component that matches asset_name
+    # (the {family}_{scale}_{stage}_{hash} segment before /seed_N)
     catalog_by_name: dict[str, dict] = {}
-    for asset_name, rec_status, phases_json, wall_s, job_id_str in rows:
+    for run_dir, status_code, slurm_jid, _epochs_run, _start_t, _end_t in rows:
+        if not run_dir:
+            continue
+        # Extract the identity segment: parent of seed_N dir
+        parts = Path(run_dir).parts
+        # Find seed_N component, take its parent name as asset_name
+        asset_name = None
+        for i, p in enumerate(parts):
+            if p.startswith("seed_") and i > 0:
+                asset_name = parts[i - 1]
+                break
         if not asset_name:
             continue
-        try:
-            phases = json.loads(phases_json) if phases_json else {}
-        except (TypeError, ValueError):
-            phases = {}
         catalog_by_name[asset_name] = {
-            "status": _CATALOG_STATUS_MAP.get(rec_status, (rec_status or "").upper()),
-            "phases": phases if isinstance(phases, dict) else {},
-            "wall_time_seconds": wall_s,
-            "job_id": job_id_str or "",
+            "status": _OTEL_STATUS_MAP.get(status_code or "", (status_code or "").upper()),
+            "phases": {},
+            "wall_time_seconds": None,
+            "job_id": slurm_jid or "",
         }
 
     status_map: dict[str, str] = {}

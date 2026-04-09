@@ -1,9 +1,9 @@
-"""Rebuild DuckDB experiment catalog from run_record.json sidecars.
+"""Rebuild DuckDB experiment catalog from traces.jsonl span data.
 
-Scans ``{lake_root}/dev/`` for sidecars and ingests via DuckDB
-``read_json_auto()``. The ``runs`` table includes a computed
-``asset_name`` column (``stage || identity_hash || kd_tag``) for
-exact-match joins with planner topology in ``pipeline-status``.
+Scans ``{lake_root}/dev/`` for ``traces.jsonl`` files produced by
+OTelTrainingCallback and ingests ``training.fit`` spans via DuckDB
+``read_json_auto()``. The ``runs`` table extracts identity, status,
+and timing from OTel span attributes.
 """
 
 from __future__ import annotations
@@ -12,11 +12,13 @@ from pathlib import Path
 
 import duckdb
 
-from graphids.config.constants import CATALOG_SUBPATH, RUN_RECORD_FILENAME
+from graphids.config.constants import CATALOG_SUBPATH
 from graphids.config.topology import catalog_path
 from graphids.log import get_logger
 
 log = get_logger(__name__)
+
+_TRACES_FILENAME = "traces.jsonl"
 
 
 def rebuild_catalog(
@@ -24,18 +26,18 @@ def rebuild_catalog(
     lake_root: str,
     dry_run: bool = False,
 ) -> None:
-    """Ingest all run_record.json sidecars into the DuckDB catalog."""
+    """Ingest all traces.jsonl span data into the DuckDB catalog."""
     cat_path = catalog_path(lake_root)
-    glob_pattern = str(Path(lake_root) / "dev" / "**" / RUN_RECORD_FILENAME)
+    glob_pattern = str(Path(lake_root) / "dev" / "**" / _TRACES_FILENAME)
 
-    sidecars = list(Path(lake_root).glob(f"dev/**/{RUN_RECORD_FILENAME}"))
-    if not sidecars:
-        log.info("no_sidecars_found", lake_root=lake_root)
-        print("No sidecars found.")
+    traces_files = list(Path(lake_root).glob(f"dev/**/{_TRACES_FILENAME}"))
+    if not traces_files:
+        log.info("no_traces_found", lake_root=lake_root)
+        print("No traces.jsonl files found.")
         return
 
     if dry_run:
-        print(f"Would ingest {len(sidecars)} sidecar(s)")
+        print(f"Would ingest from {len(traces_files)} traces.jsonl file(s)")
         return
 
     from graphids.config.settings import require_lake_write
@@ -45,14 +47,28 @@ def rebuild_catalog(
     db = duckdb.connect(str(cat_path))
 
     try:
+        # OTel ConsoleSpanExporter writes one JSON object per span.
+        # Filter to training.fit spans which carry run identity as attributes.
         db.execute(
             """
             CREATE OR REPLACE TABLE runs AS
             SELECT
-                *,
-                stage || identity_hash || COALESCE(kd_tag, '') AS asset_name,
+                json_extract_string(resource, '$.attributes."service.name"') AS service,
+                json_extract_string(resource, '$.attributes."slurm.job_id"') AS slurm_job_id,
+                name AS span_name,
+                json_extract_string(status, '$.status_code') AS status_code,
+                start_time,
+                end_time,
+                json_extract_string(attributes, '$."ml.run_dir"') AS run_dir,
+                json_extract_string(attributes, '$."ml.model_class"') AS model_class,
+                CAST(json_extract(attributes, '$."ml.max_epochs"') AS INTEGER) AS max_epochs,
+                CAST(json_extract(attributes, '$."ml.epochs_run"') AS INTEGER) AS epochs_run,
+                CAST(json_extract(attributes, '$."ml.metric.val_loss"') AS DOUBLE) AS val_loss,
+                CAST(json_extract(attributes, '$."ml.metric.train_loss"') AS DOUBLE) AS train_loss,
                 current_timestamp AS catalog_updated_at
-            FROM read_json_auto(?, maximum_object_size=1048576, union_by_name=true)
+            FROM read_json_auto(?, format='newline_delimited', maximum_object_size=1048576,
+                                union_by_name=true)
+            WHERE name = 'training.fit'
         """,
             [glob_pattern],
         )
@@ -60,8 +76,8 @@ def rebuild_catalog(
         count = db.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
 
         summary = db.execute("""
-            SELECT status, COUNT(*) AS n
-            FROM runs GROUP BY status ORDER BY n DESC
+            SELECT status_code, COUNT(*) AS n
+            FROM runs GROUP BY status_code ORDER BY n DESC
         """).fetchall()
 
         log.info(

@@ -31,6 +31,75 @@ class PipelineActor(Actor):
         self.lake_root = lake_root
         self.user = user or os.environ.get("USER", "unknown")
         self._cached_datasets: dict[str, Any] | None = None
+        self._setup_otel()
+
+    def _setup_otel(self) -> None:
+        """Phase A: OTel providers for Monarch worker (bypasses __main__.py)."""
+        import atexit
+        import logging
+        import sys
+
+        from opentelemetry import metrics, trace
+        from opentelemetry._logs import set_logger_provider
+        from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+        from opentelemetry.sdk._logs.export import (
+            BatchLogRecordProcessor,
+            ConsoleLogRecordExporter,
+        )
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+        resource = Resource.create({
+            "service.name": "graphids.monarch",
+            "slurm.job_id": os.environ.get("SLURM_JOB_ID", ""),
+        })
+        self._tracer_provider = TracerProvider(resource=resource)
+        if os.environ.get("WANDB_API_KEY"):
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+                OTLPSpanExporter,
+            )
+
+            self._tracer_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(
+                endpoint="https://trace.wandb.ai/otel/v1/traces",
+                headers={"wandb-api-key": os.environ["WANDB_API_KEY"]},
+            )))
+        trace.set_tracer_provider(self._tracer_provider)
+        metrics.set_meter_provider(MeterProvider(resource=resource))
+
+        lp = LoggerProvider(resource=resource)
+        lp.add_log_record_processor(BatchLogRecordProcessor(ConsoleLogRecordExporter(out=sys.stderr)))
+        set_logger_provider(lp)
+        logging.getLogger("graphids").addHandler(LoggingHandler(logger_provider=lp))
+        self._logger_provider = lp
+        atexit.register(lambda: (self._tracer_provider.shutdown(), lp.shutdown()))
+
+    def _wire_file_exporters(self, run_dir: Path) -> None:
+        """Phase B: add file exporters once run_dir is known for a stage."""
+        from opentelemetry import metrics
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.metrics.export import (
+            ConsoleMetricExporter,
+            PeriodicExportingMetricReader,
+        )
+        from opentelemetry.sdk.trace.export import (
+            ConsoleSpanExporter,
+            SimpleSpanProcessor,
+        )
+
+        run_dir.mkdir(parents=True, exist_ok=True)
+        self._tracer_provider.add_span_processor(SimpleSpanProcessor(
+            ConsoleSpanExporter(out=open(run_dir / "traces.jsonl", "a"))  # noqa: SIM115
+        ))
+        mp = MeterProvider(
+            resource=self._tracer_provider.resource,
+            metric_readers=[PeriodicExportingMetricReader(
+                ConsoleMetricExporter(out=open(run_dir / "metrics.jsonl", "a")),  # noqa: SIM115
+                export_interval_millis=10_000,
+            )],
+        )
+        metrics.set_meter_provider(mp)
 
     # -- resolve + instantiate --------------------------------------------------
 
@@ -121,6 +190,9 @@ class PipelineActor(Actor):
             log.info("stage_skip_complete", stage=stage_config.get("stage"), run_dir=str(run_dir))
             return ckpt_path
 
+        # Phase B: wire file exporters for this stage's run_dir
+        self._wire_file_exporters(run_dir)
+
         run = self._instantiate(resolved)
 
         log.info("stage_train", stage=stage_config.get("stage"), run_dir=str(run_dir))
@@ -179,14 +251,6 @@ class PipelineActor(Actor):
                 touch_marker(run_dir / PHASE_MARKERS["analyze"])
             except Exception as exc:
                 log.warning("stage_analyze_failed", stage=stage_config.get("stage"), error=str(exc))
-
-        # Finalize run record
-        try:
-            from graphids.orchestrate.ops.finalize import finalize_run_record
-
-            finalize_run_record(run_dir)
-        except Exception as exc:
-            log.warning("finalize_failed", stage=stage_config.get("stage"), error=str(exc))
 
         touch_marker(resolved.paths.complete_marker)
         log.info("stage_eval_complete", stage=stage_config.get("stage"))

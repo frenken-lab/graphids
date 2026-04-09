@@ -16,12 +16,46 @@ def _execute(
     method: str = "fit",
     ckpt_path: str | None = None,
 ) -> None:
-    """Core chain: validate -> instantiate -> trainer.<method>."""
+    """Core chain: validate -> instantiate -> Phase B exporters -> trainer.<method>."""
+    from pathlib import Path
+
+    from opentelemetry import metrics
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import (
+        ConsoleMetricExporter,
+        PeriodicExportingMetricReader,
+    )
+    from opentelemetry.sdk.trace.export import ConsoleSpanExporter, SimpleSpanProcessor
+
     from graphids.config.schemas import validate_config
     from graphids.instantiate import instantiate
 
     validated = validate_config(rendered)
     run = instantiate(rendered, validated=validated)
+
+    # Phase B: wire file exporters now that run_dir is known.
+    run_dir = Path(run.trainer.default_root_dir) if run.trainer.default_root_dir else None
+    if run_dir is not None:
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        # Import SDK reference from __main__ (Phase A created it)
+        from graphids.__main__ import _tracer_provider
+
+        _tracer_provider.add_span_processor(SimpleSpanProcessor(
+            ConsoleSpanExporter(out=open(run_dir / "traces.jsonl", "a"))  # noqa: SIM115
+        ))
+
+        # MeterProvider readers are constructor-only — create a new one
+        # with the file exporter and replace the global provider.
+        mp = MeterProvider(
+            resource=_tracer_provider.resource,
+            metric_readers=[PeriodicExportingMetricReader(
+                ConsoleMetricExporter(out=open(run_dir / "metrics.jsonl", "a")),  # noqa: SIM115
+                export_interval_millis=10_000,
+            )],
+        )
+        metrics.set_meter_provider(mp)
+
     getattr(run.trainer, method)(run.model, datamodule=run.datamodule, ckpt_path=ckpt_path)
 
 

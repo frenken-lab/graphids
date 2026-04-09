@@ -31,7 +31,9 @@ dependencies = [
     "duckdb>=1.0.0",
     "typer[all]>=0.12",
     "alembic>=1.18",
-    "wandb>=0.25.1",
+    "opentelemetry-api>=1.25",
+    "opentelemetry-sdk>=1.25",
+    "opentelemetry-exporter-otlp-proto-http>=1.25",
 ]
 
 [project.optional-dependencies]

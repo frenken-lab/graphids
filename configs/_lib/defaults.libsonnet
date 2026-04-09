@@ -25,20 +25,12 @@
         patience: 100,
       },
     },
-    device_stats: {
-      class_path: 'pytorch_lightning.callbacks.DeviceStatsMonitor',
-      init_args: {},
-    },
-    resource_profile: {
-      class_path: 'graphids.core.models.base.ResourceProfileCallback',
-      init_args: { log_every_n_steps: 50 },
-    },
-    run_record: {
-      class_path: 'graphids.core.models.base.RunRecordCallback',
-      init_args: { enabled: true },
-    },
     curriculum: {
       class_path: 'graphids.core.data.sampler.CurriculumEpochCallback',
+      init_args: {},
+    },
+    otel: {
+      class_path: 'graphids.core.monitoring.OTelTrainingCallback',
       init_args: {},
     },
   },
@@ -51,5 +43,11 @@
     gradient_clip_val: 1.0,
     log_every_n_steps: 50,
     callbacks: [$.callbacks[k] for k in std.objectFields($.callbacks)],
+    logger: [
+      {
+        class_path: 'graphids.core.monitoring.OTelTrainingLogger',
+        init_args: {},
+      },
+    ],
   },
 }

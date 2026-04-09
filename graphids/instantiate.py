@@ -10,7 +10,6 @@ from __future__ import annotations
 import copy
 import importlib
 import inspect
-import os
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
@@ -21,7 +20,6 @@ from graphids.config.constants import CKPT_SUBPATH
 from graphids.config.schemas import ValidatedConfig
 
 _CKPT_DIR = str(PurePosixPath(CKPT_SUBPATH).parent)
-_WANDB_WRITE_DIR: str = os.environ.get("WANDB_DIR", "/fs/scratch/PAS1266/wandb")
 
 
 def _import_class(class_path: str) -> type:
@@ -70,24 +68,13 @@ def _instantiate_callbacks(
 
 def _instantiate_loggers(
     logger_cfg: bool | list | dict | None,
-    default_root_dir: str | None,
 ) -> list | bool | None:
-    """Instantiate logger list, patching save_dir at runtime."""
+    """Instantiate logger list from config."""
     if logger_cfg is None or isinstance(logger_cfg, bool):
         return logger_cfg
     if not isinstance(logger_cfg, list):
         logger_cfg = [logger_cfg]
-    loggers = []
-    for entry in logger_cfg:
-        entry = copy.deepcopy(entry)
-        init_args = entry.setdefault("init_args", {})
-        cp = entry.get("class_path", "")
-        if "WandbLogger" in cp:
-            init_args["save_dir"] = _WANDB_WRITE_DIR
-        elif "CSVLogger" in cp and default_root_dir:
-            init_args["save_dir"] = default_root_dir
-        loggers.append(_instantiate_block(entry))
-    return loggers
+    return [_instantiate_block(entry) for entry in logger_cfg]
 
 
 @dataclass
@@ -135,16 +122,7 @@ def instantiate(
     trainer_cfg["callbacks"] = _instantiate_callbacks(
         trainer_cfg.pop("callbacks", []), default_root_dir
     )
-    trainer_cfg["logger"] = _instantiate_loggers(trainer_cfg.pop("logger", None), default_root_dir)
+    trainer_cfg["logger"] = _instantiate_loggers(trainer_cfg.pop("logger", None))
     trainer = pl.Trainer(**trainer_cfg)
-
-    # -- wandb config forwarding --
-    for lg in trainer.loggers or []:
-        if type(lg).__name__ == "WandbLogger":
-            try:
-                lg.experiment.config.update(rendered, allow_val_change=True)
-            except Exception:
-                pass
-            break
 
     return InstantiatedRun(trainer=trainer, model=model, datamodule=datamodule, merged=merged)

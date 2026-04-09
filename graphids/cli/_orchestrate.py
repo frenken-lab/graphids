@@ -1,8 +1,7 @@
-"""Orchestration commands: pipeline-status, rebuild-catalog, _finalize-record."""
+"""Orchestration commands: pipeline-status, rebuild-catalog."""
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -26,18 +25,8 @@ def rebuild_catalog(
     lake_root: Annotated[str | None, typer.Option(help="Lake root path")] = None,
     dry_run: Annotated[bool, typer.Option(help="Print actions without executing")] = False,
 ) -> None:
-    """Rebuild DuckDB catalog from run_record.json sidecars."""
+    """Rebuild DuckDB catalog from traces.jsonl span data."""
     from graphids.config.constants import LAKE_ROOT
     from graphids.orchestrate.ops.catalog import rebuild_catalog as _rebuild
 
     _rebuild(lake_root=lake_root or LAKE_ROOT, dry_run=dry_run)
-
-
-@app.command("_finalize-record", hidden=True)
-def finalize_record(
-    run_dir: Annotated[Path, typer.Option(help="Path to run directory")],
-) -> None:
-    """(Internal) Update run_record.json sidecar with phase markers + wall time."""
-    from graphids.orchestrate.ops.finalize import finalize_run_record
-
-    finalize_run_record(run_dir)

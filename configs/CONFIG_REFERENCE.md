@@ -80,9 +80,8 @@ Defaults: `configs/_lib/defaults.libsonnet` (trainer, checkpoint, early_stopping
 
 ### Forced callbacks
 
-`ModelCheckpoint` and `EarlyStopping` are force-registered by
-`graphids/instantiate.py` — immune to config list replacement.
-`DeviceStatsMonitor` and `ResourceProfileCallback` also forced.
+`ModelCheckpoint` and `EarlyStopping` are declared in `defaults.libsonnet`.
+`OTelTrainingCallback` replaces the former DeviceStatsMonitor and ResourceProfileCallback.
 
 ---
 
