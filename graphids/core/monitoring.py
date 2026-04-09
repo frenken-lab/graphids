@@ -1,31 +1,95 @@
-"""OpenTelemetry Lightning callback + logger.
+"""OpenTelemetry Lightning callback + logger + SLURM resource detector.
 
 Replaces ResourceProfileCallback + RunRecordCallback + DeviceStatsMonitor
 (callback) and WandbLogger + CSVLogger (logger).
 
-Callback controls span lifecycle (fit start/end, batch timing, VRAM gauges).
-Logger captures ``self.log()`` calls from LightningModules as OTel metrics.
+Callback controls span lifecycle (fit start/end, batch timing, VRAM gauges,
+epoch events, cross-stage span links). Logger captures ``self.log()`` calls
+from LightningModules as OTel histograms.
 """
 
 from __future__ import annotations
 
+import json
+import os
 import time
+from pathlib import Path
 from typing import Any
 
+import pynvml
 import pytorch_lightning as pl
 import torch
 from opentelemetry import metrics, trace
+from opentelemetry.sdk.resources import Resource, ResourceDetector
+from opentelemetry.trace import (
+    Link,  # noqa: F401 — re-exported for type use
+    SpanContext,
+    TraceFlags,
+)
+
+# ---------------------------------------------------------------------------
+# SLURM Resource Detector
+# ---------------------------------------------------------------------------
+
+_SLURM_KEYS = (
+    "SLURM_JOB_ID",
+    "SLURM_JOB_PARTITION",
+    "SLURM_NODELIST",
+    "SLURM_GPUS_ON_NODE",
+    "SLURM_MEM_PER_NODE",
+    "SLURM_CLUSTER_NAME",
+    "SLURM_JOB_NUM_NODES",
+    "CUDA_VISIBLE_DEVICES",
+)
+
+_ATTR_NAMES = {
+    "SLURM_JOB_ID": "slurm.job_id",
+    "SLURM_JOB_PARTITION": "slurm.partition",
+    "SLURM_NODELIST": "slurm.nodelist",
+    "SLURM_GPUS_ON_NODE": "slurm.gpus_on_node",
+    "SLURM_MEM_PER_NODE": "slurm.mem_per_node",
+    "SLURM_CLUSTER_NAME": "slurm.cluster_name",
+    "SLURM_JOB_NUM_NODES": "slurm.num_nodes",
+    "CUDA_VISIBLE_DEVICES": "slurm.cuda_visible_devices",
+}
+
+
+class SlurmResourceDetector(ResourceDetector):
+    """Harvest SLURM environment variables into OTel resource attributes."""
+
+    def detect(self) -> Resource:
+        attrs = {}
+        for env_key in _SLURM_KEYS:
+            val = os.environ.get(env_key)
+            if val:
+                attrs[_ATTR_NAMES[env_key]] = val
+        return Resource(attrs)
+
+
+# ---------------------------------------------------------------------------
+# OTel Training Callback
+# ---------------------------------------------------------------------------
 
 
 class OTelTrainingCallback(pl.Callback):
     """Per-run span + resource gauges via OpenTelemetry.
 
     Creates a ``training.fit`` span on fit start, records per-batch VRAM
-    and timing as OTel gauges/histograms, and closes the span with final
-    metrics on fit end (or exception).
+    and timing as OTel gauges/histograms, per-epoch events with LR and
+    early stopping state, and closes the span with final metrics on fit
+    end (or exception). Discovers upstream stage spans and records them
+    as span links for cross-stage lineage.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        stage: str = "",
+        dataset: str = "",
+        scale: str = "",
+        seed: int = 0,
+        model_type: str = "",
+    ) -> None:
         self._span: trace.Span | None = None
         self._tracer = trace.get_tracer(__name__)
         meter = metrics.get_meter(__name__)
@@ -33,33 +97,60 @@ class OTelTrainingCallback(pl.Callback):
         self._batch_dur = meter.create_histogram("ml.batch.duration_s", unit="s")
         self._cuda_alloc = meter.create_gauge("ml.cuda.allocated_mb", unit="MiB")
         self._cuda_reserved = meter.create_gauge("ml.cuda.reserved_mb", unit="MiB")
+        self._gpu_util = meter.create_gauge("ml.gpu.utilization_pct", unit="%")
+        self._gpu_temp = meter.create_gauge("ml.gpu.temperature_c", unit="degC")
+        self._gpu_power = meter.create_gauge("ml.gpu.power_w", unit="W")
         self._step_start: float = 0.0
+        self._nvml_handle: object | None = None
+        self._identity = {
+            "ml.stage": stage,
+            "ml.dataset": dataset,
+            "ml.scale": scale,
+            "ml.seed": seed,
+            "ml.model_type": model_type,
+        }
 
     # -- lifecycle ------------------------------------------------------------
 
     def on_fit_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        self._span = self._tracer.start_span("training.fit")
+        # Discover upstream span links before creating the span
+        links = self._discover_upstream_links(trainer)
+        self._span = self._tracer.start_span("training.fit", links=links or None)
         ctx = trace.set_span_in_context(self._span)
-        # Attach as current so child spans (epochs, batches) nest correctly
         self._token = trace.context_api.attach(ctx)
+
         root_dir = trainer.default_root_dir or ""
         self._span.set_attribute("ml.run_dir", root_dir)
         self._span.set_attribute("ml.model_class", type(pl_module).__name__)
         self._span.set_attribute("ml.max_epochs", trainer.max_epochs or 0)
 
+        # Identity attributes from jsonnet config
+        for k, v in self._identity.items():
+            if v:
+                self._span.set_attribute(k, v)
+
+        # Initialize NVML for hardware-level GPU stats
+        if torch.cuda.is_available():
+            pynvml.nvmlInit()
+            device_idx = pl_module.device.index or 0
+            self._nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(device_idx)
+
     def on_fit_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         if self._span is None:
             return
-        # Record final callback metrics as span attributes
         for k, v in trainer.callback_metrics.items():
             val = float(v) if isinstance(v, (int, float, torch.Tensor)) else None
             if val is not None:
                 self._span.set_attribute(f"ml.metric.{k}", round(val, 6))
         self._span.set_attribute("ml.epochs_run", trainer.current_epoch + 1)
+        ckpt_cb = trainer.checkpoint_callback
+        if ckpt_cb is not None and ckpt_cb.best_model_path:
+            self._span.set_attribute("ml.checkpoint.best_path", str(ckpt_cb.best_model_path))
         self._span.set_status(trace.StatusCode.OK)
         self._span.end()
         trace.context_api.detach(self._token)
         self._span = None
+        self._shutdown_nvml()
 
     def on_exception(
         self,
@@ -74,6 +165,31 @@ class OTelTrainingCallback(pl.Callback):
         self._span.end()
         trace.context_api.detach(self._token)
         self._span = None
+        self._shutdown_nvml()
+
+    def _shutdown_nvml(self) -> None:
+        if self._nvml_handle is not None:
+            pynvml.nvmlShutdown()
+            self._nvml_handle = None
+
+    # -- per-epoch events -----------------------------------------------------
+
+    def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        if self._span is None:
+            return
+        cb = trainer.callback_metrics
+        attrs: dict[str, Any] = {"epoch": trainer.current_epoch}
+        for key in ("train_loss", "val_loss"):
+            v = cb.get(key)
+            if v is not None:
+                attrs[key] = round(float(v), 6)
+        if trainer.optimizers:
+            attrs["lr"] = trainer.optimizers[0].param_groups[0]["lr"]
+        es = trainer.early_stopping_callback
+        if es is not None:
+            attrs["early_stopping.wait_count"] = es.wait_count
+            attrs["early_stopping.best_score"] = round(float(es.best_score), 6)
+        self._span.add_event("epoch.end", attributes=attrs)
 
     # -- per-batch metrics ----------------------------------------------------
 
@@ -98,7 +214,6 @@ class OTelTrainingCallback(pl.Callback):
         attrs = {"ml.global_step": trainer.global_step}
         self._batch_dur.record(elapsed, attrs)
 
-        # Loss from outputs (Lightning returns dict or tensor)
         loss_val = None
         if isinstance(outputs, dict) and "loss" in outputs:
             loss_val = float(outputs["loss"])
@@ -115,6 +230,63 @@ class OTelTrainingCallback(pl.Callback):
             self._cuda_reserved.set(
                 torch.cuda.memory_reserved() / (1024 * 1024), attrs
             )
+        # Hardware GPU stats via NVML (utilization, temp, power)
+        if self._nvml_handle is not None:
+            util = pynvml.nvmlDeviceGetUtilizationRates(self._nvml_handle)
+            self._gpu_util.set(util.gpu, attrs)
+            self._gpu_temp.set(
+                pynvml.nvmlDeviceGetTemperature(self._nvml_handle, pynvml.NVML_TEMPERATURE_GPU),
+                attrs,
+            )
+            self._gpu_power.set(
+                pynvml.nvmlDeviceGetPowerUsage(self._nvml_handle) / 1000.0, attrs
+            )
+
+    # -- cross-stage span links -----------------------------------------------
+
+    def _discover_upstream_links(self, trainer: pl.Trainer) -> list[Link]:
+        """Read upstream traces.jsonl to create span links for KD lineage."""
+        links: list[Link] = []
+        dm = trainer.datamodule
+        if dm is None:
+            return links
+        for attr in ("vgae_ckpt_path", "gat_ckpt_path"):
+            ckpt_path = getattr(dm, attr, None)
+            if not ckpt_path:
+                continue
+            # checkpoints/best_model.ckpt → run_dir (up 2 levels)
+            upstream_run_dir = Path(ckpt_path).parent.parent
+            traces_file = upstream_run_dir / "traces.jsonl"
+            if not traces_file.exists():
+                continue
+            try:
+                with open(traces_file) as f:
+                    for line in f:
+                        span_data = json.loads(line)
+                        if span_data.get("name") != "training.fit":
+                            continue
+                        ctx = span_data.get("context", {})
+                        links.append(Link(
+                            context=SpanContext(
+                                trace_id=int(ctx["trace_id"], 16),
+                                span_id=int(ctx["span_id"], 16),
+                                is_remote=True,
+                                trace_flags=TraceFlags(0x01),
+                            ),
+                            attributes={
+                                "ml.link.stage": attr.removesuffix("_ckpt_path"),
+                                "ml.link.ckpt_path": str(ckpt_path),
+                            },
+                        ))
+                        break
+            except (json.JSONDecodeError, KeyError, ValueError):
+                continue
+        return links
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
 def _flatten(d: dict[str, Any], prefix: str = "") -> dict[str, Any]:
@@ -134,6 +306,11 @@ def _coerce(v: Any) -> str | int | float | bool:
     if isinstance(v, (str, int, float, bool)):
         return v
     return str(v)
+
+
+# ---------------------------------------------------------------------------
+# OTel Training Logger
+# ---------------------------------------------------------------------------
 
 
 class OTelTrainingLogger(pl.loggers.Logger):

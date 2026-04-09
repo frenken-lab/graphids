@@ -53,8 +53,17 @@ class ResourceSpec(BaseModel):
 
     @property
     def time_minutes(self) -> int:
-        parts = self.time.split(":")
-        return int(parts[0]) * 60 + int(parts[1])
+        """Parse [D-]HH:MM:SS → total minutes."""
+        s = self.time
+        days = 0
+        if "-" in s:
+            d, s = s.split("-", 1)
+            days = int(d)
+        parts = s.split(":")
+        # HH:MM:SS or MM:SS
+        if len(parts) == 3:
+            return days * 24 * 60 + int(parts[0]) * 60 + int(parts[1])
+        return days * 24 * 60 + int(parts[0])
 
 
 def _detect_cluster() -> str:

@@ -156,7 +156,7 @@ _JOB_NAME_RE = re.compile(
 
 
 def _parse_job_name(job_name: str) -> dict[str, str]:
-    """Extract stage/dataset/seed from dagster job name like autoencoder_bf355e79_set_01_s42."""
+    """Extract stage/dataset/seed from job name like autoencoder_bf355e79_set_01_s42."""
     m = _JOB_NAME_RE.match(job_name)
     if m:
         return m.groupdict()

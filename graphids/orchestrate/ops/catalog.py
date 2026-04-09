@@ -65,6 +65,13 @@ def rebuild_catalog(
                 CAST(json_extract(attributes, '$."ml.epochs_run"') AS INTEGER) AS epochs_run,
                 CAST(json_extract(attributes, '$."ml.metric.val_loss"') AS DOUBLE) AS val_loss,
                 CAST(json_extract(attributes, '$."ml.metric.train_loss"') AS DOUBLE) AS train_loss,
+                json_extract_string(attributes, '$."ml.checkpoint.best_path"') AS best_ckpt_path,
+                json_extract_string(attributes, '$."ml.stage"') AS stage,
+                json_extract_string(attributes, '$."ml.dataset"') AS dataset,
+                json_extract_string(attributes, '$."ml.scale"') AS scale,
+                CAST(json_extract(attributes, '$."ml.seed"') AS INTEGER) AS seed,
+                json_extract_string(attributes, '$."ml.model_type"') AS model_type,
+                links AS upstream_links,
                 current_timestamp AS catalog_updated_at
             FROM read_json_auto(?, format='newline_delimited', maximum_object_size=1048576,
                                 union_by_name=true)

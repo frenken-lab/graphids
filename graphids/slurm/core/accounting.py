@@ -68,7 +68,7 @@ def job_accounting(job_id: int) -> dict[str, str | int]:
 
     sacct emits multiple rows per job — the parent row carries Elapsed, the
     ``.batch`` child row carries MaxRSS. This walks both and returns the
-    merged postmortem used by dagster asset metadata.
+    merged postmortem used by pipeline status reporting.
     """
     out = sacct_query([job_id], "JobID,Elapsed,MaxRSS", units="G")
     wall, rss = "", ""

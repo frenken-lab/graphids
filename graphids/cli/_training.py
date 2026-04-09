@@ -12,20 +12,31 @@ def _run_trainer_method(
     overrides: list[str] | None,
     ckpt_path: str | None,
 ) -> None:
-    """Shared render -> validate -> instantiate -> trainer.<method> chain."""
+    """Render -> validate -> instantiate -> wire OTel -> trainer.<method>."""
+    from pathlib import Path
+
+    from graphids.config.jsonnet import render_config
+    from graphids.config.schemas import validate_config
+    from graphids.core.otel import wire_file_exporters
+    from graphids.instantiate import instantiate
     from graphids.orchestrate._setup import ensure_spawn
 
     ensure_spawn()
 
-    from graphids.core.train_entrypoint import run_training
+    rendered = render_config(config, tla=parse_tla(tla))
+    from graphids.cli.app import apply_overrides
 
-    run_training(
-        config_path=config,
-        tla=parse_tla(tla),
-        overrides=overrides,
-        ckpt_path=ckpt_path,
-        method=method,
-    )
+    apply_overrides(rendered, overrides)
+    if ckpt_path and "ckpt_path" not in rendered:
+        rendered["ckpt_path"] = ckpt_path
+
+    validated = validate_config(rendered)
+    run = instantiate(rendered, validated=validated)
+
+    if run.trainer.default_root_dir:
+        wire_file_exporters(Path(run.trainer.default_root_dir))
+
+    getattr(run.trainer, method)(run.model, datamodule=run.datamodule, ckpt_path=ckpt_path)
 
 
 @app.command(rich_help_panel="Training")

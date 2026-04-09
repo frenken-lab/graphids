@@ -94,7 +94,6 @@ PHASE_MARKERS: dict[str, str] = {
     "test": ".test_complete",
     "analyze": ".analyze_complete",
 }
-DAGSTER_IO_DIR_TEMPLATE: str = "{lake_root}/.dagster/io"
 CATALOG_SUBPATH: str = "catalog/kd_gat.duckdb"
 DATASET_REGISTRY_PATH: Path = PROJECT_ROOT / "configs" / "datasets" / "dataset_registry.json"
 

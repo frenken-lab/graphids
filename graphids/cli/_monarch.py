@@ -71,9 +71,12 @@ def monarch_run(
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Print allocation spec only")] = False,
 ) -> None:
     """Run the 3-stage pipeline in a single SLURM allocation via Monarch."""
-    from graphids.orchestrate.job import chain_job_spec
-    from graphids.orchestrate.pipeline import build_pipeline_stages, run_chain
-    from graphids.orchestrate.schemas import PipelineConfig
+    from graphids.orchestrate.monarch import (
+        PipelineConfig,
+        build_pipeline_stages,
+        chain_job_spec,
+        run_chain,
+    )
 
     overrides = parse_tla(trainer_override)
     stage_list = [s.strip() for s in stages.split(",")]
@@ -107,7 +110,7 @@ def monarch_run(
 
     _check_monarch()
 
-    from graphids.orchestrate.sweep import ChainSpec
+    from graphids.orchestrate.monarch import ChainSpec
 
     chain = ChainSpec(
         chain_id=f"pipeline_{dataset}_s{seed}",
@@ -137,7 +140,7 @@ def monarch_sweep(
     ] = False,
 ) -> None:
     """Run a recipe sweep via Monarch (replaces dg launch)."""
-    from graphids.orchestrate.sweep import plan_chains
+    from graphids.orchestrate.monarch import plan_chains
 
     recipe_path = str(Path(recipe).resolve())
     seed_list = [int(s.strip()) for s in seeds.split(",")]
@@ -151,7 +154,7 @@ def monarch_sweep(
     chains = plan_chains(recipe_path, dataset_list, seed_list)
 
     if dry_run:
-        from graphids.orchestrate.job import chain_job_spec
+        from graphids.orchestrate.monarch import chain_job_spec
 
         typer.echo(f"Recipe:   {recipe}")
         typer.echo(f"Datasets: {dataset_list}")
@@ -168,8 +171,7 @@ def monarch_sweep(
 
     _check_monarch()
 
-    from graphids.orchestrate.pipeline import run_sweep
-    from graphids.orchestrate.schemas import SweepConfig
+    from graphids.orchestrate.monarch import SweepConfig, run_sweep
 
     cfg = SweepConfig(
         recipe_path=recipe_path,
