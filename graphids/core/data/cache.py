@@ -9,7 +9,7 @@ import shutil
 
 from graphids.config.constants import LAKE_ROOT, PREPROCESSING_VERSION
 from graphids.config.topology import cache_dir
-from graphids.log import get_logger
+from graphids._otel import get_logger
 
 log = get_logger(__name__)
 

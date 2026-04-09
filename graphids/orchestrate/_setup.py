@@ -7,10 +7,7 @@ No torch imports at module level (safe on login nodes).
 from __future__ import annotations
 
 import importlib
-import io
 import os
-import re
-from contextlib import redirect_stdout
 from pathlib import Path
 
 _SPAWN_SET = False
@@ -56,19 +53,6 @@ def bootstrap_staging(dataset: str) -> None:
     """Stage data to TMPDIR and set env vars. Intended for
     ``spawn_procs(bootstrap=lambda: bootstrap_staging("hcrl_ch"))``.
 
-    ``stage_data()`` prints ``export K=V`` lines to stdout for bash eval.
-    We capture and apply them to ``os.environ`` directly.
-
-    Note: ``.env`` vars (``KD_GAT_LAKE_WRITE`` etc.) are set by
-    ``scripts/slurm/monarch_python.sh`` before Python starts — not here.
+    TODO: Reimplement — stage_data was deleted in slurm/ cleanup.
+    Data staging is now handled by _preamble.sh before Python starts.
     """
-    from graphids.slurm.ops.staging import stage_data
-
-    buf = io.StringIO()
-    with redirect_stdout(buf):
-        stage_data(dataset=dataset)
-
-    for line in buf.getvalue().splitlines():
-        m = re.match(r"^export (\w+)=(.*)$", line)
-        if m:
-            os.environ[m.group(1)] = m.group(2)

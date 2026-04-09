@@ -1,8 +1,8 @@
-"""Instantiate Trainer/model/datamodule from a rendered config dict.
+"""Instantiate Lightning components from rendered config dicts.
 
-The only path from jsonnet output to a runnable Lightning stack. Both
-``cli/_training.py`` (dev) and ``orchestrate/actors.py`` (Monarch) call
-``instantiate()``.
+Each component (model, datamodule, callbacks, loggers, trainer) has its
+own method. ``build_run`` composes them. Callers pick the granularity
+they need.
 """
 
 from __future__ import annotations
@@ -22,94 +22,148 @@ from graphids.config.schemas import ValidatedConfig
 _CKPT_DIR = str(PurePosixPath(CKPT_SUBPATH).parent)
 
 
-def _import_class(class_path: str) -> type:
-    """Import a class from a dotted ``module.ClassName`` string."""
-    module_name, _, cls_name = class_path.rpartition(".")
-    if not module_name:
-        raise ValueError(f"class_path must be dotted: {class_path!r}")
-    mod = importlib.import_module(module_name)
-    try:
-        return getattr(mod, cls_name)
-    except AttributeError as e:
-        raise ImportError(f"{cls_name!r} not found in {module_name!r}") from e
-
-
-def _instantiate_block(block: dict[str, Any]) -> Any:
-    """Instantiate a ``{class_path, init_args}`` dict."""
-    cls = _import_class(block["class_path"])
-    return cls(**(block.get("init_args") or {}))
-
-
 @dataclass
 class InstantiatedRun:
-    """Output of :func:`instantiate`."""
-
     trainer: pl.Trainer
     model: pl.LightningModule
     datamodule: pl.LightningDataModule
     merged: dict[str, Any]
 
 
-def instantiate(
-    rendered: dict[str, Any],
-    *,
-    validated: ValidatedConfig | None = None,
-    seed_everything: bool = True,
-) -> InstantiatedRun:
-    """Instantiate the full Lightning stack from a rendered config dict."""
-    from graphids.config.schemas import validate_config
-    from graphids.core.losses.build import inject_loss_fn
+class Instantiator:
+    """Construct Lightning objects from rendered config dicts."""
 
-    merged = copy.deepcopy(rendered)
-    if validated is None:
-        validated = validate_config(merged)
+    # -- primitives --
 
-    if seed_everything:
-        pl.seed_everything(merged["seed_everything"], workers=True)
+    @staticmethod
+    def import_class(class_path: str) -> type:
+        module_name, _, cls_name = class_path.rpartition(".")
+        if not module_name:
+            raise ValueError(f"class_path must be dotted: {class_path!r}")
+        mod = importlib.import_module(module_name)
+        try:
+            return getattr(mod, cls_name)
+        except AttributeError as e:
+            raise ImportError(f"{cls_name!r} not found in {module_name!r}") from e
 
-    # -- datamodule --
-    datamodule = _instantiate_block(merged["data"])
-
-    # -- model (signature-filtered: skip kwargs the class doesn't accept) --
-    model_cls = _import_class(merged["model"]["class_path"])
-    model_init = inject_loss_fn(
-        merged["model"].get("init_args") or {},
-        class_path=merged["model"]["class_path"],
-    )
-    try:
-        sig = inspect.signature(model_cls.__init__)
-    except (TypeError, ValueError):
-        sig = None
-    if sig is not None:
+    @staticmethod
+    def filter_kwargs(cls: type, kwargs: dict[str, Any]) -> dict[str, Any]:
+        try:
+            sig = inspect.signature(cls.__init__)
+        except (TypeError, ValueError):
+            return kwargs
+        if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
+            return kwargs
         accepted = {
             name for name, p in sig.parameters.items()
             if name != "self" and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)
         }
-        model_init = {k: v for k, v in model_init.items() if k in accepted}
-    model = model_cls(**model_init)
+        return {k: v for k, v in kwargs.items() if k in accepted}
 
-    # -- trainer (callbacks + loggers from config) --
-    trainer_cfg = dict(merged.get("trainer") or {})
-    default_root_dir = trainer_cfg.get("default_root_dir")
+    @classmethod
+    def build_block(cls, block: dict[str, Any]) -> Any:
+        """Instantiate a ``{class_path, init_args}`` dict."""
+        klass = cls.import_class(block["class_path"])
+        return klass(**(block.get("init_args") or {}))
 
-    # Callbacks: patch ModelCheckpoint.dirpath at runtime
-    callbacks = []
-    for entry in trainer_cfg.pop("callbacks", []):
-        if "ModelCheckpoint" in entry.get("class_path", "") and default_root_dir:
-            entry = copy.deepcopy(entry)
-            entry.setdefault("init_args", {})["dirpath"] = f"{default_root_dir}/{_CKPT_DIR}"
-        callbacks.append(_instantiate_block(entry))
-    trainer_cfg["callbacks"] = callbacks
+    # -- components --
 
-    # Loggers: handle bool / list / dict
-    logger_cfg = trainer_cfg.pop("logger", None)
-    if isinstance(logger_cfg, (list, dict)):
-        if not isinstance(logger_cfg, list):
-            logger_cfg = [logger_cfg]
-        trainer_cfg["logger"] = [_instantiate_block(e) for e in logger_cfg]
-    else:
-        trainer_cfg["logger"] = logger_cfg  # None or bool passthrough
+    @classmethod
+    def build_model(cls, class_path: str, init_args: dict[str, Any]) -> pl.LightningModule:
+        klass = cls.import_class(class_path)
+        return klass(**cls.filter_kwargs(klass, init_args))
 
-    trainer = pl.Trainer(**trainer_cfg)
+    @classmethod
+    def build_model_from_spec(
+        cls, model_type: str, scale: str, *,
+        num_ids: int, in_channels: int, conv_type: str | None = None,
+    ) -> pl.LightningModule:
+        """Render model jsonnet → inject runtime params → build."""
+        from graphids.config.constants import CONFIG_DIR, FAMILY_FOR_MODEL_TYPE
+        from graphids.config.jsonnet import render
+        from graphids.core.losses.build import build_loss
 
-    return InstantiatedRun(trainer=trainer, model=model, datamodule=datamodule, merged=merged)
+        family = FAMILY_FOR_MODEL_TYPE[model_type]
+        model_cfg = render(
+            CONFIG_DIR / "models" / "_expand.jsonnet",
+            tla={"family": family, "model_type": model_type, "scale": scale},
+        )
+        init_args = dict(model_cfg["model"].get("init_args", {}))
+        init_args["num_ids"] = num_ids
+        init_args["in_channels"] = in_channels
+        if conv_type is not None:
+            init_args["conv_type"] = conv_type
+        loss_fn = build_loss(model_type, init_args.pop("loss_config", None), distillation_config=None)
+        if loss_fn is not None:
+            init_args["loss_fn"] = loss_fn
+        return cls.build_model(model_cfg["model"]["class_path"], init_args)
+
+    @classmethod
+    def build_model_from_config(cls, merged: dict[str, Any]) -> pl.LightningModule:
+        """Build model from rendered config with loss injection."""
+        from graphids.core.losses.build import inject_loss_fn
+
+        init_args = inject_loss_fn(
+            merged["model"].get("init_args") or {},
+            class_path=merged["model"]["class_path"],
+        )
+        return cls.build_model(merged["model"]["class_path"], init_args)
+
+    @classmethod
+    def build_datamodule(cls, merged: dict[str, Any]) -> pl.LightningDataModule:
+        return cls.build_block(merged["data"])
+
+    @classmethod
+    def build_callbacks(cls, merged: dict[str, Any]) -> list:
+        trainer_cfg = merged.get("trainer") or {}
+        default_root_dir = trainer_cfg.get("default_root_dir")
+        callbacks = []
+        for entry in (trainer_cfg.get("callbacks") or []):
+            if "ModelCheckpoint" in entry.get("class_path", "") and default_root_dir:
+                entry = copy.deepcopy(entry)
+                entry.setdefault("init_args", {})["dirpath"] = f"{default_root_dir}/{_CKPT_DIR}"
+            callbacks.append(cls.build_block(entry))
+        return callbacks
+
+    @classmethod
+    def build_loggers(cls, merged: dict[str, Any]) -> list | bool | None:
+        logger_cfg = (merged.get("trainer") or {}).get("logger")
+        if isinstance(logger_cfg, (list, dict)):
+            entries = logger_cfg if isinstance(logger_cfg, list) else [logger_cfg]
+            return [cls.build_block(e) for e in entries]
+        return logger_cfg  # None or bool
+
+    @classmethod
+    def build_trainer(cls, merged: dict[str, Any]) -> pl.Trainer:
+        trainer_cfg = dict(merged.get("trainer") or {})
+        trainer_cfg.pop("callbacks", None)
+        trainer_cfg.pop("logger", None)
+        trainer_cfg["callbacks"] = cls.build_callbacks(merged)
+        trainer_cfg["logger"] = cls.build_loggers(merged)
+        return pl.Trainer(**trainer_cfg)
+
+    # -- composition --
+
+    @classmethod
+    def build_run(
+        cls, rendered: dict[str, Any], *,
+        validated: ValidatedConfig | None = None,
+        seed_everything: bool = True,
+    ) -> InstantiatedRun:
+        from graphids.config.schemas import validate_config
+
+        merged = copy.deepcopy(rendered)
+        if validated is None:
+            validated = validate_config(merged)
+        if seed_everything:
+            pl.seed_everything(merged["seed_everything"], workers=True)
+
+        return InstantiatedRun(
+            model=cls.build_model_from_config(merged),
+            datamodule=cls.build_datamodule(merged),
+            trainer=cls.build_trainer(merged),
+            merged=merged,
+        )
+
+
+instantiate = Instantiator.build_run

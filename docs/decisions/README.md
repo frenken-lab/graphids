@@ -41,6 +41,22 @@ go-jsonnet is 10-100x faster than libjsonnet, requires no C++ compile step on OS
 
 **icontract** (Design by Contract) — Marginal benefit. Overlap with Pydantic for config validation is near-total. Only use case: `SLOW`-gated tensor shape/NaN contracts during development. Not adopted.
 
+**PySlurm** (Cython SLURM bindings) — Technically viable on OSC (`libslurmfull.so` at `/usr/lib64/slurm/`, PySlurm 25.5.0 matches SLURM 25.05). Not adopted: tight version coupling (every SLURM upgrade requires rebuild), GPL-2.0 license, replaces only ~330 lines of sacct subprocess calls. Full report in `docs/reference/slurm-library-evaluation.md`.
+
+**simple_slurm** (subprocess sbatch wrapper) — Installs trivially, no version coupling, clean script-generation API. But solves a problem we don't have (sbatch generation — `submit.sh` exists), lacks sacct parsing, AGPL-3.0 license, squeue broken on array jobs (issue #44), hijacks root logger at import time (issue #42). Net code savings: ~0. Not adopted.
+
+**pyslurmutils** (SLURM REST executor) — Blocked on OSC: requires `slurmrestd` daemon which is not available. Not adopted.
+
+**slurm-pipeline** (shell-script pipeline DAGs) — Pipeline model doesn't fit (expects `TASK:` stdout protocol). Heavy deps (pandas+plotly). Stale (no updates since Oct 2024). Not adopted.
+
+**Parsl** (parallel workflow library) — Strong SLURM support, auto-scaling pilot jobs, active maintenance (UChicago/Argonne, weekly releases). Not needed for current fixed 3-stage pipeline (Monarch actors are better fit). **Worth revisiting if large hyperparameter sweeps are needed.**
+
+**Globus Compute / funcX** (federated FaaS) — Cloud-routed task dispatch. Adds complexity without benefit for single-cluster use. Not adopted.
+
+**Garden AI, Cascade, ProxyStore, Colmena, GlassBox** — Domain-specific or wrong phase. Not relevant. See `docs/reference/slurm-library-evaluation.md`.
+
+**python-fire** (CLI generator) — Zero-boilerplate CLI from introspection. No benefit over Typer: loses type validation, repeatable `--tla` flags, and structured help. Not adopted.
+
 **pydantic-settings** — Adopted (session 39). `GraphIDSSettings(BaseSettings)` with `env_prefix="KD_GAT_"` replaced 19 scattered `os.environ.get()` calls.
 
 **OpenTelemetry** — Adopted (session 39). Replaced wandb + RunRecordCallback + ResourceProfileCallback + CSVLogger + custom logging with unified OTel stack. See `docs/reference/observability.md`.

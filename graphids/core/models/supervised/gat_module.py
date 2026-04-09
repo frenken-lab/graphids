@@ -90,6 +90,22 @@ class GATModule(GraphModuleBase):
         acc = (logits.argmax(1) == batch.y).float().mean()
         return loss, acc
 
+    def extract_features(self, batch, device: torch.device) -> torch.Tensor:
+        """7-D fusion features: [prob_0, prob_1, emb_mean, emb_std, emb_max, emb_min, confidence]."""
+        import math
+        import torch.nn.functional as F
+
+        logits, emb = self.model(batch, return_embedding=True)
+        probs = F.softmax(logits, dim=1)
+        entropy = -(probs * (probs + 1e-8).log()).sum(dim=1)
+        conf = (1.0 - entropy / math.log(2)).clamp(0.0, 1.0)
+        return torch.cat([
+            probs,
+            emb.mean(1, keepdim=True), emb.std(1, keepdim=True),
+            emb.max(1).values.unsqueeze(1), emb.min(1).values.unsqueeze(1),
+            conf.unsqueeze(1),
+        ], dim=1)
+
     def _training_step_inner(self, batch, _idx):
         loss, acc = self._step(batch)
         bs = batch.num_graphs

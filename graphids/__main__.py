@@ -12,7 +12,7 @@ Data:
   extract-fusion-states            — extract VGAE+GAT latent states for fusion
 
 Orchestration:
-  monarch-run / monarch-sweep      — run pipeline via Monarch actors
+  monarch-run                       — run pipeline via Monarch actors
   pipeline-status                  — aggregated status from DuckDB catalog
   rebuild-catalog                  — rebuild DuckDB from traces.jsonl span data
 
@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import os
 
-from graphids.core.otel import init_providers
+from graphids._otel import init_providers
 
 init_providers(
     "graphids",

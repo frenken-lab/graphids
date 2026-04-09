@@ -156,7 +156,7 @@ class GraphDataModule(pl.LightningDataModule):
         Pre-batching is deferred to the first ``train_dataloader()`` call
         because ``node_budget()`` needs the model on GPU.
         """
-        from graphids.core.data.sampler import build_curriculum_tiers
+        from graphids.core.data.curriculum import build_curriculum_tiers
 
         hp = self.hparams
         scores, normal_tiers, attack_indices, full_dataset, dataset_sizes = build_curriculum_tiers(

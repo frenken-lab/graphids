@@ -2,14 +2,10 @@
 
 Module layout:
 - planning/    : recipe expansion + StageConfig + enumerate_assets
-- resolve.py   : ResolvedConfig + cross-field validation
-- schemas.py   : PipelineConfig, SweepConfig (CLI input models)
+- resolve.py   : ResolvedConfig
+- monarch.py   : PipelineConfig, JobSpec, build_pipeline_stages, run_chain
 - actors.py    : PipelineActor (Monarch)
-- pipeline.py  : run_chain, run_sweep, build_pipeline_stages
-- sweep.py     : ChainSpec, plan_chains, decompose_dag
-- job.py       : JobSpec
-- _setup.py    : ensure_spawn, touch_marker, bootstrap_staging
-- analysis.py  : shared analysis runner
+- _setup.py    : ensure_spawn, touch_marker
 - ops/         : finalize, catalog, status (CLI entry points)
 """
 

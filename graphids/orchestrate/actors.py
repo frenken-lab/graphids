@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from graphids.log import get_logger
+from graphids._otel import get_logger
 from graphids.orchestrate._setup import ensure_spawn, touch_marker
 
 log = get_logger(__name__)
@@ -31,7 +31,7 @@ class PipelineActor(Actor):
         self.lake_root = lake_root
         self.user = user or os.environ.get("USER", "unknown")
         self._cached_datasets: dict[str, Any] | None = None
-        from graphids.core.otel import init_providers
+        from graphids._otel import init_providers
 
         init_providers("graphids.monarch")
 
@@ -125,7 +125,7 @@ class PipelineActor(Actor):
             return ckpt_path
 
         # Phase B: wire file exporters for this stage's run_dir
-        from graphids.core.otel import wire_file_exporters
+        from graphids._otel import wire_file_exporters
 
         wire_file_exporters(run_dir)
 

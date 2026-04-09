@@ -17,7 +17,7 @@ def _run_trainer_method(
 
     from graphids.config.jsonnet import render_config
     from graphids.config.schemas import validate_config
-    from graphids.core.otel import wire_file_exporters
+    from graphids._otel import wire_file_exporters
     from graphids.instantiate import instantiate
     from graphids.orchestrate._setup import ensure_spawn
 

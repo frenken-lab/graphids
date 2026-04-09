@@ -16,7 +16,7 @@ from torch_geometric.data import Data, InMemoryDataset
 
 from graphids.core.data.graph_pipeline import sliding_window_graphs
 from graphids.core.data.io import atomic_save, nfs_lock, vocab_from_column
-from graphids.log import get_logger
+from graphids._otel import get_logger
 
 log = get_logger(__name__)
 

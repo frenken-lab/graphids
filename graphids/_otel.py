@@ -1,12 +1,13 @@
-"""OpenTelemetry provider lifecycle — single source for Phase A + Phase B.
+"""Single indirection point for all observability.
 
-Phase A (``init_providers``): TracerProvider, MeterProvider, LoggerProvider,
-optional Wandb Weave OTLP, stdlib logging bridge, atexit shutdown.
+Every module imports from here, never from opentelemetry or logging directly.
+Swap the implementation by changing THIS file only.
 
-Phase B (``wire_file_exporters``): per-run ``traces.jsonl`` + ``metrics.jsonl``
-once ``run_dir`` is known.
+Consumer API (19 files):
+    from graphids._otel import get_tracer, get_logger
 
-Both CLI (``__main__.py``) and Monarch (``actors.py``) call the same functions.
+Lifecycle API (called by __main__.py and actors.py):
+    from graphids._otel import init_providers, wire_file_exporters
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from opentelemetry import metrics, trace
+from opentelemetry import metrics as _metrics, trace
 from opentelemetry._logs import set_logger_provider
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk._logs.export import (
@@ -40,8 +41,29 @@ from opentelemetry.sdk.trace.export import (
 
 from graphids.core.monitoring import SlurmResourceDetector
 
+
 # ---------------------------------------------------------------------------
-# Provider container
+# Consumer API — every module uses these
+# ---------------------------------------------------------------------------
+
+
+def get_tracer(name: str) -> trace.Tracer:
+    """Return an OTel tracer."""
+    return trace.get_tracer(name)
+
+
+def get_meter(name: str) -> _metrics.Meter:
+    """Return an OTel meter for recording metrics."""
+    return _metrics.get_meter(name)
+
+
+def get_logger(name: str) -> logging.Logger:
+    """Return a stdlib logger bridged to OTel via LoggingHandler."""
+    return logging.getLogger(name)
+
+
+# ---------------------------------------------------------------------------
+# Provider lifecycle
 # ---------------------------------------------------------------------------
 
 
@@ -64,18 +86,13 @@ def get_providers() -> OTelProviders:
     return _providers
 
 
-# ---------------------------------------------------------------------------
-# Phase A
-# ---------------------------------------------------------------------------
-
-
 def init_providers(
     service_name: str = "graphids",
     *,
     wandb_entity: str = "",
     wandb_project: str = "graphids",
 ) -> OTelProviders:
-    """Create and register all OTel providers (Phase A).
+    """Create and register all OTel providers.
 
     Safe to call once per process. Both ``__main__`` and Monarch actors
     call this with different ``service_name`` values.
@@ -88,8 +105,6 @@ def init_providers(
         **({"wandb.project": wandb_project} if wandb_project else {}),
     }).merge(SlurmResourceDetector().detect())
 
-    # TracerProvider — keep SDK reference (API type lacks add_span_processor,
-    # see opentelemetry-python#3713).
     tp = TracerProvider(resource=resource)
     if os.environ.get("WANDB_API_KEY"):
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
@@ -102,10 +117,8 @@ def init_providers(
         )))
     trace.set_tracer_provider(tp)
 
-    # MeterProvider — placeholder; Phase B replaces with file-backed provider.
-    metrics.set_meter_provider(MeterProvider(resource=resource))
+    _metrics.set_meter_provider(MeterProvider(resource=resource))
 
-    # LoggerProvider — stderr + stdlib bridge.
     lp = LoggerProvider(resource=resource)
     lp.add_log_record_processor(
         BatchLogRecordProcessor(ConsoleLogRecordExporter(out=sys.stderr))
@@ -119,22 +132,11 @@ def init_providers(
     return _providers
 
 
-# ---------------------------------------------------------------------------
-# Phase B
-# ---------------------------------------------------------------------------
-
-
 def wire_file_exporters(run_dir: Path) -> None:
-    """Add per-run file exporters for ``traces.jsonl`` and ``metrics.jsonl``.
-
-    For multi-stage runs (Monarch), shuts down the previous stage's span
-    processor so spans don't leak across ``traces.jsonl`` files.
-    """
+    """Add per-run file exporters for ``traces.jsonl`` and ``metrics.jsonl``."""
     p = get_providers()
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    # Shut down previous stage's processor (no-op after shutdown, stays
-    # registered but inert).
     if p._file_span_processor is not None:
         p._file_span_processor.shutdown()
 
@@ -150,4 +152,4 @@ def wire_file_exporters(run_dir: Path) -> None:
             export_interval_millis=10_000,
         )],
     )
-    metrics.set_meter_provider(mp)
+    _metrics.set_meter_provider(mp)

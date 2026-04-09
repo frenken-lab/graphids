@@ -31,7 +31,7 @@ import polars as pl
 import torch
 from torch_geometric.data import Data
 
-from graphids.log import get_logger
+from graphids._otel import get_logger
 
 
 def _rle_boundaries(frame: pl.DataFrame) -> tuple[list[int], list[int], list[int]]:

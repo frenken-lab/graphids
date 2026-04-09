@@ -113,6 +113,27 @@ class VGAEModule(GraphModuleBase):
         outputs = self(batch)
         return self.loss_fn(outputs, batch)
 
+    def extract_features(self, batch, device: torch.device) -> torch.Tensor:
+        """8-D fusion features: [recon_err, nbr_err, canid_err, z_mean, z_std, z_max, z_min, confidence]."""
+        import torch.nn.functional as F
+        from torch_geometric.utils import scatter
+
+        edge_attr = getattr(batch, "edge_attr", None) if getattr(self.model, "_uses_edge_attr", False) else None
+        cont, canid_logits, nbr_logits, z, _, _ = self.model(
+            batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr, node_id=batch.node_id,
+        )
+        b = batch.batch
+        recon_err = scatter((cont - batch.x).pow(2).mean(1), b, dim=0, reduce="mean")
+        canid_err = scatter(F.cross_entropy(canid_logits, batch.node_id, reduction="none"), b, dim=0, reduce="mean")
+        nbr_targets = self.model.create_neighborhood_targets(batch.node_id, batch.edge_index, b)
+        nbr_err = scatter(F.binary_cross_entropy_with_logits(nbr_logits, nbr_targets, reduction="none").mean(1), b, dim=0, reduce="mean")
+        z_mean = scatter(z.mean(1), b, dim=0, reduce="mean")
+        z_std = scatter(z.std(1), b, dim=0, reduce="mean")
+        z_max = scatter(z.max(1).values, b, dim=0, reduce="max")
+        z_min = scatter(z.min(1).values, b, dim=0, reduce="min")
+        conf = 1.0 / (1.0 + recon_err)
+        return torch.stack([recon_err, nbr_err, canid_err, z_mean, z_std, z_max, z_min, conf], dim=1)
+
     def _training_step_inner(self, batch, _idx):
         loss = self._step(batch)
         bs = batch.num_graphs

@@ -20,7 +20,7 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from graphids.core.data.datasets.can_bus import CANBusDataset
-from graphids.log import get_logger
+from graphids._otel import get_logger
 
 from .graph import load_datasets
 

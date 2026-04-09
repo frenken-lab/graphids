@@ -1,4 +1,4 @@
-"""SLURM commands: submit-profile, probe-budget."""
+"""SLURM commands: probe-budget."""
 
 from __future__ import annotations
 
@@ -6,17 +6,14 @@ from typing import Annotated
 
 import typer
 
+from graphids._otel import get_logger, get_meter
 from graphids.cli.app import app
 
-
-@app.command("submit-profile", rich_help_panel="SLURM")
-def submit_profile(
-    job: Annotated[str | None, typer.Argument(help="Job profile name")] = None,
-) -> None:
-    """Print SLURM resource profile for scripts/slurm/submit.sh."""
-    from graphids.slurm.resources import print_submit_profile
-
-    print_submit_profile(job)
+log = get_logger(__name__)
+meter = get_meter("graphids.budget")
+_bpn_gauge = meter.create_gauge("budget.bytes_per_node", description="VRAM bytes per graph node")
+_budget_gauge = meter.create_gauge("budget.max_nodes", description="Max nodes per batch")
+_bwd_gauge = meter.create_gauge("budget.backward_multiplier", description="Backward/forward VRAM ratio")
 
 
 @app.command("probe-budget", rich_help_panel="SLURM")
@@ -26,29 +23,66 @@ def probe_budget(
     scale: Annotated[list[str] | None, typer.Option(help="Scale(s) to probe")] = None,
     conv_type: Annotated[
         list[str] | None,
-        typer.Option(
-            help="Conv type(s) to probe (e.g. gatv2, gps). Default: model's jsonnet default"
-        ),
+        typer.Option(help="Conv type(s) to probe (e.g. gatv2, gps)"),
     ] = None,
     lake_root: Annotated[str | None, typer.Option(help="Lake root path")] = None,
-    json_: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
     dry_run: Annotated[bool, typer.Option(help="Print plan without probing")] = False,
 ) -> None:
-    """Measure hardware cost model (VRAM probe + calibration). Requires GPU.
+    """Measure VRAM budget across (model × scale × conv_type × dataset). Requires GPU."""
+    import torch
 
-    Sweeps (model_type × scale × conv_type × dataset). Use --conv-type to
-    compare O(E) sparse convs (gatv2, gat, transformer) vs O(N²) dense
-    attention (gps).
-    """
     from graphids.config.constants import LAKE_ROOT, VALID_MODEL_TYPES, VALID_SCALES
-    from graphids.core.data.budget_probe import run_probe_budget
+    from graphids.config.topology import cache_dir, data_dir, dataset_names
+    from graphids.core.data.budget import node_budget
+    from graphids.instantiate import Instantiator
 
-    run_probe_budget(
-        model_types=model_type or sorted(VALID_MODEL_TYPES),
-        scales=scale or sorted(VALID_SCALES),
-        conv_types=conv_type,
-        datasets=dataset,
-        lake_root=lake_root or LAKE_ROOT,
-        json_output=json_,
-        dry_run=dry_run,
-    )
+    if not torch.cuda.is_available():
+        log.error("probe_budget_no_gpu")
+        raise typer.Exit(1)
+
+    lk = lake_root or LAKE_ROOT
+    models = model_type or sorted(VALID_MODEL_TYPES)
+    scales = scale or sorted(VALID_SCALES)
+    convs: list[str | None] = conv_type if conv_type else [None]
+
+    if dataset:
+        datasets = list(dataset)
+    else:
+        datasets = [ds for ds in dataset_names()
+                    if (cache_dir(lk, ds) / "cache_metadata.json").exists()]
+    if not datasets:
+        log.error("probe_budget_no_datasets", lake_root=lk)
+        raise typer.Exit(1)
+
+    combos = [(m, s, c, d) for m in models for s in scales for c in convs for d in datasets]
+    log.info("probe_budget_start", combos=len(combos))
+
+    if dry_run:
+        for m, s, c, d in combos:
+            log.info("probe_budget_plan", model=m, scale=s, conv=c or "default", dataset=d)
+        raise typer.Exit()
+
+    device = torch.device("cuda")
+
+    for mt, sc, ct, ds in combos:
+        label = f"{mt}/{sc}/{ct or 'default'}/{ds}"
+        try:
+            from graphids.core.data.datasets.can_bus import CANBusDataset
+            train_ds = CANBusDataset(root=cache_dir(lk, ds), raw_dir=data_dir(lk, ds), split="train")
+            model = Instantiator.build_model_from_spec(
+                mt, sc, num_ids=train_ds.num_arb_ids,
+                in_channels=train_ds[0].x.shape[1], conv_type=ct,
+            ).to(device)
+
+            eff_conv = ct or getattr(model, "hparams", {}).get("conv_type", "gatv2")
+            r = node_budget(ds, lk, model=model, train_dataset=train_ds, conv_type=eff_conv)
+
+            attrs = {"model_type": mt, "scale": sc, "conv_type": eff_conv, "dataset": ds}
+            _bpn_gauge.set(r.bytes_per_node or 0, attributes=attrs)
+            _budget_gauge.set(r.budget, attributes=attrs)
+            _bwd_gauge.set(r.backward_multiplier or 0, attributes=attrs)
+
+            del model; torch.cuda.empty_cache()
+            log.info("probe_done", label=label, budget=r.budget, bpn=r.bytes_per_node)
+        except Exception as e:
+            log.error("probe_failed", label=label, error=str(e))

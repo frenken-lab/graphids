@@ -8,9 +8,8 @@ from typing import Any
 from graphids.config.jsonnet import render
 from graphids.config.schemas import validate_config
 from graphids.config.topology import TOPOLOGY, PathContext
-from graphids.log import get_logger
+from graphids._otel import get_logger
 from graphids.orchestrate.planning import StageConfig
-from graphids.slurm import apply_resource_overrides, get_resources
 
 log = get_logger(__name__)
 
@@ -66,40 +65,6 @@ def _build_tla_dict(
     return tla
 
 
-# ---------------------------------------------------------------------------
-# Cross-field validation
-# ---------------------------------------------------------------------------
-
-
-def _validate_cross_fields(cfg: StageConfig, resources: Any, rendered: dict[str, Any]) -> None:
-    """Resource/config mismatches that neither Pydantic nor jsonnet can see."""
-    errors: list[str] = []
-    data_init = rendered.get("data", {}).get("init_args", {}) or {}
-    max_workers = resources.cpus_per_task - 1
-
-    if resources.num_workers > max_workers:
-        errors.append(f"num_workers={resources.num_workers} exceeds cpus_per_task-1={max_workers}")
-
-    rendered_workers = data_init.get("num_workers")
-    if rendered_workers is not None and int(rendered_workers) > max_workers:
-        errors.append(
-            f"data.init_args.num_workers={rendered_workers} in rendered config "
-            f"exceeds cpus_per_task-1={max_workers} in resource profile"
-        )
-
-    if cfg.stage == "supervised":
-        data_max = data_init.get("max_epochs")
-        trainer_max = (rendered.get("trainer") or {}).get("max_epochs")
-        if data_max is not None and trainer_max is not None and int(data_max) != int(trainer_max):
-            errors.append(
-                f"data.init_args.max_epochs={data_max} != trainer.max_epochs={trainer_max}"
-                f" — difficulty ramp will be scheduled over the wrong epoch count"
-            )
-
-    if errors:
-        raise ValueError("; ".join(errors))
-
-
 @dataclass(frozen=True)
 class ResolvedConfig:
     """Rendered, validated config ready for instantiation."""
@@ -146,12 +111,6 @@ class ResolvedConfig:
             stage_overrides=cfg.stage_overrides or None,
         )
 
-        resources = get_resources(
-            cfg.resource_model or cfg.model_type, cfg.scale, cfg.stage, dataset=dataset
-        )
-        if cfg.resource_overrides:
-            resources = apply_resource_overrides(resources, cfg.resource_overrides)
-
         rendered = render(cfg.jsonnet_path, tla)
 
         try:
@@ -171,10 +130,5 @@ class ResolvedConfig:
                     got=f"{validated.checkpoint_monitor}/{validated.checkpoint_mode}",
                     expected=f"{exp_monitor}/{exp_mode}",
                 )
-
-        try:
-            _validate_cross_fields(cfg, resources, rendered)
-        except ValueError as e:
-            raise ValueError(f"{cfg.asset_name} cross-field validation: {e}") from e
 
         return cls(paths=paths, validated=validated, rendered=rendered)

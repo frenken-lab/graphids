@@ -22,7 +22,7 @@ from typing import NamedTuple
 import pytorch_lightning as pl
 import torch
 
-from graphids.log import get_logger
+from graphids._otel import get_logger
 
 _log = get_logger(__name__)
 

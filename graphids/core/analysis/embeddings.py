@@ -8,7 +8,7 @@ import numpy as np
 import torch
 
 from graphids.core.data.sampler import make_graph_loader
-from graphids.log import get_logger
+from graphids._otel import get_logger
 
 log = get_logger(__name__)
 

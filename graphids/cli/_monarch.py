@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -72,9 +71,9 @@ def monarch_run(
 ) -> None:
     """Run the 3-stage pipeline in a single SLURM allocation via Monarch."""
     from graphids.orchestrate.monarch import (
+        JobSpec,
         PipelineConfig,
         build_pipeline_stages,
-        chain_job_spec,
         run_chain,
     )
 
@@ -93,14 +92,14 @@ def monarch_run(
         tla_overrides=overrides,
     )
 
-    from dataclasses import replace
-
     stage_cfgs = build_pipeline_stages(cfg)
-    spec = chain_job_spec(stage_cfgs, dataset=dataset)
-    if partition:
-        spec = replace(spec, partition=partition)
-    if time:
-        spec = replace(spec, time=time)
+
+    spec = JobSpec(
+        partition=partition or "gpu",
+        time=time or "4:00:00",
+        mem="40G",
+        cpus=8,
+    )
 
     if dry_run:
         if overrides:
@@ -110,82 +109,9 @@ def monarch_run(
 
     _check_monarch()
 
-    from graphids.orchestrate.monarch import ChainSpec
-
-    chain = ChainSpec(
-        chain_id=f"pipeline_{dataset}_s{seed}",
-        stages=stage_cfgs,
-        dataset=dataset,
-        seed=seed,
-    )
     checkpoints = run_chain(
-        chain, max_retries=cfg.max_retries, lake_root=cfg.lake_root, job_spec_override=spec
+        stage_cfgs, spec, dataset=dataset, seed=seed,
+        max_retries=cfg.max_retries, lake_root=cfg.lake_root,
     )
     for stage_name, ckpt in checkpoints.items():
         typer.echo(f"{stage_name}: {ckpt}")
-
-
-@app.command("monarch-sweep", rich_help_panel="Orchestration")
-def monarch_sweep(
-    recipe: Annotated[str, typer.Option(help="Path to recipe jsonnet file")],
-    datasets: Annotated[
-        str, typer.Option(help="Comma-separated dataset names (default: from registry)")
-    ] = "",
-    seeds: Annotated[str, typer.Option(help="Comma-separated seeds")] = "42",
-    max_concurrent: Annotated[
-        int, typer.Option("--max-concurrent", help="Max parallel chains (0=all)")
-    ] = 0,
-    dry_run: Annotated[
-        bool, typer.Option("--dry-run", help="Plan only, print chains and specs")
-    ] = False,
-) -> None:
-    """Run a recipe sweep via Monarch (replaces dg launch)."""
-    from graphids.orchestrate.monarch import plan_chains
-
-    recipe_path = str(Path(recipe).resolve())
-    seed_list = [int(s.strip()) for s in seeds.split(",")]
-    if datasets:
-        dataset_list = [d.strip() for d in datasets.split(",")]
-    else:
-        from graphids.config.topology import dataset_names
-
-        dataset_list = dataset_names()
-
-    chains = plan_chains(recipe_path, dataset_list, seed_list)
-
-    if dry_run:
-        from graphids.orchestrate.monarch import chain_job_spec
-
-        typer.echo(f"Recipe:   {recipe}")
-        typer.echo(f"Datasets: {dataset_list}")
-        typer.echo(f"Seeds:    {seed_list}")
-        typer.echo(f"Chains:   {len(chains)}")
-        typer.echo()
-        for chain in chains:
-            spec = chain_job_spec(chain.stages, dataset=chain.dataset)
-            stage_names = [s.stage for s in chain.stages]
-            typer.echo(f"  {chain.chain_id}")
-            typer.echo(f"    stages:    {' → '.join(stage_names)}")
-            typer.echo(f"    partition: {spec.partition}  time: {spec.time}  mem: {spec.mem}")
-        raise typer.Exit()
-
-    _check_monarch()
-
-    from graphids.orchestrate.monarch import SweepConfig, run_sweep
-
-    cfg = SweepConfig(
-        recipe_path=recipe_path,
-        datasets=dataset_list,
-        seeds=seed_list,
-        max_retries=2,
-        max_concurrent=max_concurrent,
-    )
-    results = run_sweep(cfg)
-
-    ok = sum(1 for v in results.values() if isinstance(v, dict))
-    failed = len(results) - ok
-    typer.echo(f"\nSweep complete: {ok}/{len(results)} succeeded, {failed} failed")
-
-    for chain_id, v in results.items():
-        if isinstance(v, str):
-            typer.echo(f"  FAILED: {chain_id}: {v}", err=True)

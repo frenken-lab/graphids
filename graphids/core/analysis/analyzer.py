@@ -1,4 +1,4 @@
-"""Post-training artifact generation. jsonargparse reads __init__ for config."""
+"""Post-training artifact generation."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import torch
 
 from graphids.config.topology import cache_dir, data_dir
 from graphids.core.models.base import safe_load_checkpoint
-from graphids.log import get_logger
+from graphids._otel import get_logger
 
 log = get_logger(__name__)
 
@@ -23,7 +23,7 @@ class Analyzer:
 
     def __init__(
         self,
-        # --- required (no defaults → jsonargparse enforces) ---
+        # --- required ---
         ckpt_path: str,
         dataset: str,
         model_type: Literal["vgae", "gat", "fusion"],

@@ -14,7 +14,7 @@ import duckdb
 
 from graphids.config.constants import CATALOG_SUBPATH
 from graphids.config.topology import catalog_path
-from graphids.log import get_logger
+from graphids._otel import get_logger
 
 log = get_logger(__name__)
 

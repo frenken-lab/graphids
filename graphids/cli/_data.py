@@ -1,4 +1,4 @@
-"""Data commands: rebuild-caches, stage-data, extract-fusion-states."""
+"""Data commands: rebuild-caches, extract-fusion-states."""
 
 from __future__ import annotations
 
@@ -30,19 +30,6 @@ def rebuild_caches(
     _rebuild(datasets, delete_existing=delete_existing)
 
 
-@app.command("stage-data", rich_help_panel="Data")
-def stage_data(
-    cache: Annotated[bool, typer.Option(help="Stage cached (preprocessed) data only")] = False,
-    raw: Annotated[bool, typer.Option(help="Stage raw data only")] = False,
-    skip_tmpdir: Annotated[bool, typer.Option(help="Skip TMPDIR staging")] = False,
-    dataset: Annotated[str, typer.Option(help="Single dataset to stage")] = "",
-) -> None:
-    """Stage data from NFS to scratch/TMPDIR for fast training I/O."""
-    from graphids.slurm.ops.staging import stage_data as _stage
-
-    _stage(cache_only=cache, raw_only=raw, skip_tmpdir=skip_tmpdir, dataset=dataset)
-
-
 @app.command("extract-fusion-states", rich_help_panel="Data")
 def extract_fusion_states(
     vgae_ckpt: Annotated[str, typer.Option(help="Path to VGAE checkpoint")],
@@ -61,8 +48,7 @@ def extract_fusion_states(
     from graphids.core.data.fusion_states import extract_fusion_states as _extract
 
     _extract(
-        vgae_ckpt=vgae_ckpt,
-        gat_ckpt=gat_ckpt,
+        checkpoints={"vgae": vgae_ckpt, "gat": gat_ckpt},
         dataset=dataset,
         output_dir=output_dir,
         max_samples=max_samples,

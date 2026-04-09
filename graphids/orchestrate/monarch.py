@@ -1,12 +1,10 @@
-"""Monarch pipeline orchestration — schemas, job specs, sweep planning, execution.
+"""Monarch pipeline orchestration — schemas, job specs, execution.
 
-Consolidates the former schemas.py, job.py, sweep.py, and pipeline.py into
-one module. All public symbols are consumed exclusively by cli/_monarch.py.
+All public symbols are consumed exclusively by cli/_monarch.py.
 """
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal  # noqa: F401 (resolved by model_rebuild)
@@ -24,7 +22,7 @@ from graphids.config.constants import (  # noqa: F401 (resolved by model_rebuild
     VALID_SCALES,
 )
 from graphids.config.topology import TOPOLOGY  # noqa: F401 (resolved by model_rebuild)
-from graphids.log import get_logger
+from graphids._otel import get_logger
 from graphids.orchestrate.planning import StageConfig
 from graphids.orchestrate.planning.recipes import (  # noqa: F401 (resolved by model_rebuild)
     TrainingRunConfig,
@@ -93,19 +91,6 @@ class PipelineConfig(BaseModel):
 PipelineConfig.model_rebuild()
 
 
-class SweepConfig(BaseModel):
-    """Full sweep run configuration (monarch-sweep CLI)."""
-
-    model_config = ConfigDict(frozen=True)
-
-    recipe_path: str
-    datasets: list[str] = Field(default_factory=lambda: [_D.get("dataset", "hcrl_ch")])
-    seeds: list[int] = Field(default_factory=lambda: [_D.get("seed", 42)])
-    lake_root: str = ""
-    max_retries: int = 2
-    max_concurrent: int = 0  # 0 = all parallel
-
-
 # ---------------------------------------------------------------------------
 # SLURM job spec
 # ---------------------------------------------------------------------------
@@ -125,9 +110,9 @@ class JobSpec:
 
     def __post_init__(self) -> None:
         if not self.account:
-            from graphids.slurm.env import SLURM_ACCOUNT
+            from graphids._slurm import slurm_account
 
-            object.__setattr__(self, "account", SLURM_ACCOUNT)
+            object.__setattr__(self, "account", slurm_account())
 
     def create_job(self) -> Any:
         """Create a Monarch SlurmJob from this spec."""
@@ -136,9 +121,9 @@ class JobSpec:
         _patch_clusterscope()
 
         from graphids.config.constants import PROJECT_ROOT
-        from graphids.slurm.env import SLURM_LOG_DIR
+        from graphids._slurm import slurm_log_dir
 
-        log_dir = Path(SLURM_LOG_DIR)
+        log_dir = Path(slurm_log_dir())
         log_dir.mkdir(parents=True, exist_ok=True)
 
         return SlurmJob(
@@ -158,42 +143,6 @@ class JobSpec:
             ),
             exclusive=False,
         )
-
-
-def chain_job_spec(
-    stages: list[Any],
-    *,
-    job_name: str = "graphids-monarch",
-    dataset: str | None = None,
-) -> JobSpec:
-    """Compute a combined allocation covering all stages in a chain."""
-    from graphids.slurm.resources import get_resources
-
-    resources = [
-        get_resources(cfg.resource_model or cfg.model_type, cfg.scale, cfg.stage, dataset=dataset)
-        for cfg in stages
-    ]
-
-    total_minutes = sum(r.time_minutes for r in resources) + 30
-    h, m = divmod(total_minutes, 60)
-
-    gpu_resources = [r for r in resources if r.gres]
-    if gpu_resources:
-        partition = gpu_resources[0].partition
-        parts = gpu_resources[0].gres.split(":")
-        gpus = int(parts[-1]) if parts[-1].isdigit() else 1
-    else:
-        partition = resources[0].partition
-        gpus = 0
-
-    return JobSpec(
-        partition=partition,
-        time=f"{h}:{m:02d}:00",
-        mem=f"{max(r.mem_mb for r in resources) // 1024}G",
-        cpus=max(r.cpus_per_task for r in resources),
-        gpus_per_node=gpus,
-        job_name=job_name,
-    )
 
 
 def _patch_clusterscope() -> None:
@@ -250,89 +199,6 @@ def _patch_clusterscope() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Sweep planning
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class ChainSpec:
-    """One maximal DAG path — becomes one Monarch allocation."""
-
-    chain_id: str
-    stages: list[StageConfig]
-    dataset: str
-    seed: int
-
-
-def plan_chains(
-    recipe_path: str | Path,
-    datasets: list[str],
-    seeds: list[int],
-) -> list[ChainSpec]:
-    """Expand a recipe into Monarch chain specs."""
-    from graphids.config.jsonnet import render
-    from graphids.orchestrate.planning import enumerate_assets, expand_recipe_configs
-
-    raw = render(Path(recipe_path))
-    expanded = expand_recipe_configs(raw)
-    configs = enumerate_assets(expanded)
-
-    log.info("sweep_plan", num_assets=len(configs), datasets=datasets, seeds=seeds)
-
-    chains = _decompose_dag(configs)
-
-    specs: list[ChainSpec] = []
-    for idx, chain in enumerate(chains):
-        leaf = chain[-1]
-        label = f"{leaf.stage}_{leaf.identity or leaf.asset_name}"
-        for ds in datasets:
-            for seed in seeds:
-                specs.append(
-                    ChainSpec(
-                        chain_id=f"chain_{idx}_{label}_{ds}_s{seed}",
-                        stages=chain,
-                        dataset=ds,
-                        seed=seed,
-                    )
-                )
-
-    log.info("sweep_chains", num_chains=len(specs), num_unique_dags=len(chains))
-    return specs
-
-
-def _decompose_dag(configs: list[StageConfig]) -> list[list[StageConfig]]:
-    """Decompose a DAG of StageConfigs into maximal root-to-leaf chains."""
-    by_name: dict[str, StageConfig] = {c.asset_name: c for c in configs}
-    has_downstream: set[str] = set()
-    for cfg in configs:
-        for upstream in cfg.upstream_asset_names:
-            has_downstream.add(upstream)
-
-    leaves = [c for c in configs if c.asset_name not in has_downstream]
-    if not leaves:
-        return [[c] for c in configs]
-
-    def _walk_to_root(leaf: StageConfig) -> list[StageConfig]:
-        visited: set[str] = set()
-        order: list[StageConfig] = []
-
-        def _visit(cfg: StageConfig) -> None:
-            if cfg.asset_name in visited:
-                return
-            visited.add(cfg.asset_name)
-            for upstream_name in cfg.upstream_asset_names:
-                upstream = by_name.get(upstream_name)
-                if upstream is not None:
-                    _visit(upstream)
-            order.append(cfg)
-
-        _visit(leaf)
-        return order
-
-    return [_walk_to_root(leaf) for leaf in leaves]
-
-
-# ---------------------------------------------------------------------------
 # Pipeline execution
 # ---------------------------------------------------------------------------
 
@@ -356,7 +222,13 @@ def build_pipeline_stages(config: PipelineConfig) -> list[StageConfig]:
 
 
 def run_chain(
-    chain: ChainSpec, max_retries: int = 2, lake_root: str = "", job_spec_override: JobSpec | None = None
+    stages: list[StageConfig],
+    spec: JobSpec,
+    *,
+    dataset: str,
+    seed: int,
+    max_retries: int = 2,
+    lake_root: str = "",
 ) -> dict[str, str]:
     """Run one chain in a single SLURM allocation. Returns {stage: ckpt_path}."""
     from monarch.config import configure  # type: ignore[import-not-found]
@@ -366,9 +238,6 @@ def run_chain(
     from graphids.orchestrate.actors import PipelineActor
 
     lake_root = lake_root or LAKE_ROOT
-    spec = job_spec_override or chain_job_spec(
-        chain.stages, job_name=f"graphids-{chain.chain_id}", dataset=chain.dataset
-    )
     configure(
         enable_log_forwarding=True,
         process_exit_timeout="60s",
@@ -381,17 +250,17 @@ def run_chain(
     try:
         proc_mesh = job.state().pipeline.spawn_procs(
             per_host={"gpus": spec.gpus_per_node},
-            bootstrap=lambda: bootstrap_staging(chain.dataset),
+            bootstrap=lambda: bootstrap_staging(dataset),
         )
         actor = proc_mesh.spawn("pipeline", PipelineActor, lake_root=lake_root)
 
         checkpoints: dict[str, str] = {}
-        for cfg in chain.stages:
+        for cfg in stages:
             upstream = {n: checkpoints[n] for n in cfg.upstream_asset_names if n in checkpoints}
             call = lambda c=cfg, u=upstream: actor.train_stage.call_one(  # noqa: E731
                 stage_config=c.model_dump(),
-                dataset=chain.dataset,
-                seed=chain.seed,
+                dataset=dataset,
+                seed=seed,
                 upstream_ckpts=u,
             )
             for attempt in range(max_retries + 1):
@@ -405,41 +274,21 @@ def run_chain(
                             f"{cfg.stage} failed after {max_retries + 1} attempts"
                         ) from exc
 
-        for cfg in chain.stages:
+        for cfg in stages:
             upstream = {n: checkpoints[n] for n in cfg.upstream_asset_names if n in checkpoints}
             try:
                 actor.eval_stage.call_one(
                     stage_config=cfg.model_dump(),
-                    dataset=chain.dataset,
-                    seed=chain.seed,
+                    dataset=dataset,
+                    seed=seed,
                     upstream_ckpts=upstream,
                 ).get()
             except Exception as exc:
                 log.warning("eval_failed", stage=cfg.stage, error=str(exc))
 
-        return {cfg.stage: checkpoints.get(cfg.asset_name, "") for cfg in chain.stages}
+        return {cfg.stage: checkpoints.get(cfg.asset_name, "") for cfg in stages}
     finally:
         try:
             job.kill()
         except Exception:
             pass
-
-
-def run_sweep(config: SweepConfig) -> dict[str, dict[str, str] | str]:
-    """Run all recipe chains in parallel. Returns {chain_id: checkpoints | error_str}."""
-    chains = plan_chains(config.recipe_path, config.datasets, config.seeds)
-    results: dict[str, dict[str, str] | str] = {}
-
-    with ThreadPoolExecutor(max_workers=config.max_concurrent or len(chains) or 1) as pool:
-        futures = {
-            pool.submit(run_chain, c, max_retries=config.max_retries, lake_root=config.lake_root): c
-            for c in chains
-        }
-        for future in as_completed(futures):
-            chain = futures[future]
-            try:
-                results[chain.chain_id] = future.result()
-            except Exception as exc:
-                results[chain.chain_id] = str(exc)
-
-    return results
