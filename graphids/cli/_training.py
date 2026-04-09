@@ -13,7 +13,7 @@ def _run_trainer_method(
     ckpt_path: str | None,
 ) -> None:
     """Shared render -> validate -> instantiate -> trainer.<method> chain."""
-    from graphids.monarch._setup import ensure_spawn
+    from graphids.orchestrate._setup import ensure_spawn
 
     ensure_spawn()
 

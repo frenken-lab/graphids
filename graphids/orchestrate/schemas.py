@@ -21,15 +21,10 @@ from graphids.config.constants import (  # noqa: F401 (resolved by model_rebuild
     VALID_SCALES,
 )
 from graphids.config.topology import TOPOLOGY  # noqa: F401 (resolved by model_rebuild)
-
-
-def check_in(valid, label):  # noqa: F401 (resolved by model_rebuild)
-    def _v(v):
-        if v not in valid:
-            raise ValueError(f"{label}={v!r} not in {sorted(valid)}")
-        return v
-
-    return _v
+from graphids.orchestrate.planning.recipes import (  # noqa: F401 (resolved by model_rebuild)
+    TrainingRunConfig,
+    check_in,
+)
 
 
 def check_all_in(valid, label):  # noqa: F401 (resolved by model_rebuild)
@@ -67,6 +62,17 @@ class PipelineConfig(BaseModel):
     loss_fn: Literal["focal", "ce", "weighted_ce"] = _D.get("loss_fn", "focal")
     tla_overrides: dict[str, Any] = Field(default_factory=dict)
     max_retries: int = 2
+
+    def to_training_run(self) -> TrainingRunConfig:
+        """Convert CLI fields to a planner-ready TrainingRunConfig."""
+        return TrainingRunConfig(
+            stages=tuple(self.stages),
+            scale=self.scale,
+            conv_type=self.conv_type,
+            variational=self.variational,
+            loss_fn=self.loss_fn,
+            fusion_method=self.fusion_method,
+        )
 
 
 # Resolve deferred Annotated annotations (from __future__ import annotations).

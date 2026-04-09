@@ -1,9 +1,26 @@
-"""Pipeline orchestration — planning, resolution, and ops.
+"""Pipeline orchestration — planning, resolution, execution, and ops.
 
 Module layout:
-- contracts.py : TrainingSpec + TLA dict construction
 - planning/    : recipe expansion + StageConfig + enumerate_assets
-- resolve.py   : ConfigResolver + cross-field validation
+- resolve.py   : ResolvedConfig + cross-field validation
+- schemas.py   : PipelineConfig, SweepConfig (CLI input models)
+- actors.py    : PipelineActor (Monarch)
+- pipeline.py  : run_chain, run_sweep, build_pipeline_stages
+- sweep.py     : ChainSpec, plan_chains, decompose_dag
+- job.py       : JobSpec
+- _setup.py    : ensure_spawn, touch_marker, bootstrap_staging
+- analysis.py  : shared analysis runner
 - ops/         : finalize, catalog, status (CLI entry points)
-- analysis.py  : shared analysis runner (Monarch)
 """
+
+from __future__ import annotations
+
+
+def available() -> bool:
+    """Return True if the monarch package is importable."""
+    try:
+        import monarch  # noqa: F401
+
+        return True
+    except ImportError:
+        return False

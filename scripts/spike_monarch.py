@@ -60,7 +60,7 @@ def main() -> int:
     # -- Step 3: bootstrap_staging --------------------------------------------
     _header(3, "bootstrap_staging")
     try:
-        from graphids.monarch._setup import bootstrap_staging
+        from graphids.orchestrate._setup import bootstrap_staging
 
         bootstrap_staging("hcrl_ch")
         stage_dir = os.environ.get("KD_GAT_STAGE_DIR", "<unset>")
@@ -74,7 +74,7 @@ def main() -> int:
     # -- Step 4: PipelineActor + config rendering -----------------------------
     _header(4, "PipelineActor + _prepare_stage")
     try:
-        from graphids.monarch.actors import PipelineActor
+        from graphids.orchestrate.actors import PipelineActor
 
         # Use TMPDIR as lake_root so we don't pollute the experiment lake
         spike_lake = os.path.join(tmpdir or "/tmp", "graphids-spike")

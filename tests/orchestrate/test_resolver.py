@@ -1,23 +1,17 @@
-"""ConfigResolver end-to-end tests: resource overrides, trainer overrides,
-stage overrides, cross-field validation over the rendered jsonnet config."""
+"""resolve_config end-to-end tests: overrides flow through to rendered config,
+cross-field validation catches resource/config mismatches."""
 
 from __future__ import annotations
 
 import pytest
 
-from graphids.orchestrate.contracts import TrainingSpec, resolve_jsonnet_path
 from graphids.orchestrate.planning import StageConfig
-from graphids.orchestrate.resolve import ConfigResolver
+from graphids.orchestrate.resolve import ResolvedConfig
 from graphids.slurm import apply_resource_overrides, scale_resources
 from graphids.slurm.resources import ResourceSpec
 
-
-def _jpath(stage: str) -> str:
-    return resolve_jsonnet_path(stage)
-
-
 # ---------------------------------------------------------------------------
-# apply_resource_overrides
+# apply_resource_overrides (unit tests — no resolver needed)
 # ---------------------------------------------------------------------------
 
 
@@ -57,166 +51,71 @@ class TestApplyResourceOverrides:
 
 
 # ---------------------------------------------------------------------------
-# Trainer / recipe override → jsonnet_tla → rendered dict
+# resolve_config end-to-end
 # ---------------------------------------------------------------------------
 
 
-class TestTrainerOverrideFlow:
-    @pytest.fixture()
-    def resolver(self, tmp_path) -> ConfigResolver:
-        return ConfigResolver(lake_root=str(tmp_path), user="test")
+def _resolve(tmp_path, **stage_kwargs):
+    cfg = StageConfig(**stage_kwargs)
+    return ResolvedConfig.resolve(
+        cfg,
+        lake_root=str(tmp_path),
+        user="test",
+        dataset="hcrl_sa",
+        seed=42,
+    )
 
-    def test_trainer_overrides_in_tla(self, resolver):
-        cfg = StageConfig(
-            asset_name="test",
+
+class TestResolveConfig:
+    def test_trainer_overrides_applied(self, tmp_path):
+        """trainer_overrides flow through to rendered config."""
+        resolved = _resolve(
+            tmp_path,
             stage="autoencoder",
             model_type="vgae",
             scale="small",
-            jsonnet_path=_jpath("autoencoder"),
             trainer_overrides={"trainer.max_epochs": "2"},
         )
-        resolved = resolver.resolve(
-            cfg,
-            dataset="hcrl_sa",
-            seed=42,
-            upstream_ckpts={},
-        )
-        assert resolved.spec.jsonnet_tla["trainer_overrides"]["trainer.max_epochs"] == "2"
+        assert resolved.rendered["trainer"]["max_epochs"] == 2
 
-    def test_empty_trainer_overrides_noop(self, resolver):
-        cfg = StageConfig(
-            asset_name="test",
+    def test_empty_overrides_use_defaults(self, tmp_path):
+        resolved = _resolve(
+            tmp_path,
             stage="autoencoder",
             model_type="vgae",
             scale="small",
-            jsonnet_path=_jpath("autoencoder"),
         )
-        resolved = resolver.resolve(
-            cfg,
-            dataset="hcrl_sa",
-            seed=42,
-            upstream_ckpts={},
-        )
-        assert resolved.spec.jsonnet_tla["trainer_overrides"] == {}
+        assert resolved.rendered["trainer"]["max_epochs"] > 0
 
-    def test_audit_records_trainer_overrides(self, resolver):
-        cfg = StageConfig(
-            asset_name="test",
-            stage="autoencoder",
-            model_type="vgae",
-            scale="small",
-            jsonnet_path=_jpath("autoencoder"),
-            trainer_overrides={"trainer.max_epochs": "2"},
-        )
-        resolved = resolver.resolve(
-            cfg,
-            dataset="hcrl_sa",
-            seed=42,
-            upstream_ckpts={},
-        )
-        sources = {r.source for r in resolved.audit}
-        assert "recipe_trainer" in sources
-        keys = {r.key for r in resolved.audit}
-        assert "trainer.max_epochs" in keys
-
-    def test_audit_records_resource_overrides(self, resolver):
-        cfg = StageConfig(
-            asset_name="test",
-            stage="autoencoder",
-            model_type="vgae",
-            scale="small",
-            jsonnet_path=_jpath("autoencoder"),
-            resource_overrides={"time": "0:15:00", "partition": "gpudebug"},
-        )
-        resolved = resolver.resolve(
-            cfg,
-            dataset="hcrl_sa",
-            seed=42,
-            upstream_ckpts={},
-        )
-        sources = {r.source for r in resolved.audit}
-        assert "recipe_resource" in sources
-        keys = {r.key for r in resolved.audit}
-        assert "time" in keys
-        assert "partition" in keys
-
-    def test_cross_field_workers_exceeds_cpus_raises(self, resolver):
-        """num_workers > cpus_per_task - 1 should fail validation."""
-        cfg = StageConfig(
-            asset_name="test",
-            stage="autoencoder",
-            model_type="vgae",
-            scale="small",
-            jsonnet_path=_jpath("autoencoder"),
-            resource_overrides={"cpus_per_task": 2, "num_workers": 4},
-        )
-        with pytest.raises(ValueError, match="num_workers.*exceeds"):
-            resolver.resolve(
-                cfg,
-                dataset="hcrl_sa",
-                seed=42,
-                upstream_ckpts={},
-            )
-
-
-# ---------------------------------------------------------------------------
-# Rendered-config cross-field validation via resolver
-# ---------------------------------------------------------------------------
-
-
-class TestRenderedConfigValidation:
-    @pytest.fixture()
-    def resolver(self, tmp_path) -> ConfigResolver:
-        return ConfigResolver(lake_root=str(tmp_path), user="test")
-
-    def test_stage_overrides_applied(self, resolver):
-        """stage_overrides propagate into jsonnet_tla under stage_overrides."""
-        cfg = StageConfig(
-            asset_name="test_supervised",
+    def test_stage_overrides_applied(self, tmp_path):
+        """stage_overrides propagate into rendered config."""
+        resolved = _resolve(
+            tmp_path,
             stage="supervised",
             model_type="gat",
             scale="small",
-            jsonnet_path=_jpath("supervised"),
             trainer_overrides={"trainer.max_epochs": "300"},
             stage_overrides={"data.init_args.max_epochs": "300"},
         )
-        resolved = resolver.resolve(cfg, dataset="hcrl_sa", seed=42, upstream_ckpts={})
-        assert resolved.spec.jsonnet_tla["stage_overrides"]["data.init_args.max_epochs"] == "300"
-        sources = {r.source for r in resolved.audit}
-        assert "stage_override" in sources
-        stages = {r.stage for r in resolved.audit if r.source == "stage_override"}
-        assert "supervised" in stages
+        assert resolved.rendered["data"]["init_args"]["max_epochs"] == 300
 
-    def test_supervised_epoch_match_passes(self, resolver):
-        cfg = StageConfig(
-            asset_name="test_supervised",
+    def test_cross_field_workers_exceeds_cpus_raises(self, tmp_path):
+        """num_workers > cpus_per_task - 1 should fail validation."""
+        with pytest.raises(ValueError, match="num_workers.*exceeds"):
+            _resolve(
+                tmp_path,
+                stage="autoencoder",
+                model_type="vgae",
+                scale="small",
+                resource_overrides={"cpus_per_task": 2, "num_workers": 4},
+            )
+
+    def test_supervised_resolves(self, tmp_path):
+        resolved = _resolve(
+            tmp_path,
             stage="supervised",
             model_type="gat",
             scale="small",
-            jsonnet_path=_jpath("supervised"),
         )
-        resolved = resolver.resolve(
-            cfg,
-            dataset="hcrl_sa",
-            seed=42,
-            upstream_ckpts={},
-        )
-        assert resolved.spec is not None
-
-    def test_missing_jsonnet_path_raises(self, resolver):
-        cfg = StageConfig(
-            asset_name="test",
-            stage="autoencoder",
-            model_type="vgae",
-            scale="small",
-            jsonnet_path="/nonexistent/path.jsonnet",
-        )
-        from graphids.config.jsonnet import JsonnetError
-
-        with pytest.raises(JsonnetError):
-            resolver.resolve(
-                cfg,
-                dataset="hcrl_sa",
-                seed=42,
-                upstream_ckpts={},
-            )
+        assert resolved.validated is not None
+        assert resolved.rendered is not None

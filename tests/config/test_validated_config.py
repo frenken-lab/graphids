@@ -29,7 +29,7 @@ from graphids.config.schemas import (
     ValidatedConfig,
     validate_config,
 )
-from graphids.orchestrate.contracts import resolve_jsonnet_path
+from graphids.orchestrate.planning import resolve_jsonnet_path
 
 # ---------------------------------------------------------------------------
 # Happy path --every stage variant this repo ships validates

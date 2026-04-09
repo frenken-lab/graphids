@@ -1,20 +1,9 @@
-"""Recipe envelope Pydantic + expansion facade.
+"""Recipe expansion and planning models.
 
-A recipe is a Jsonnet file under ``configs/recipes/*.jsonnet`` that
-declares a set of sweeps and/or a selection block. It renders to a raw
-dict (via ``graphids.config.jsonnet.render``) whose shape is validated
-here through ``_RecipeEnvelope`` before being handed to the Jsonnet-side
-expansion (``configs/recipes/_expand.jsonnet``) that produces
-``{defaults, configs, sweep, trainer_overrides, stage_overrides,
-resource_overrides}``.
-
-Pydantic survives the YAML→Jsonnet migration because Jsonnet has no
-enums, no typed fields, and no ``extra="forbid"``. The envelope schema
-catches typos in user-written recipe files that Jsonnet happily accepts.
-
-``TrainingRunConfig`` is the typed view of the ``defaults`` block used
-by ``enumerate_assets`` when planning StageConfigs. ``KDEntry`` is the
-KD sub-schema referenced inside sweep blocks and defaults.
+``expand_recipe_configs`` renders a recipe jsonnet through the expansion
+pipeline (``configs/recipes/_expand.jsonnet``). ``TrainingRunConfig`` is
+the typed view of the expanded ``defaults`` block used by
+``enumerate_assets`` when building StageConfigs.
 """
 
 from __future__ import annotations
@@ -37,10 +26,7 @@ from graphids.config.constants import (
     ModelType,  # noqa: F401 (resolved by model_rebuild)
 )
 from graphids.config.jsonnet import render
-from graphids.config.topology import (  # noqa: F401 (used in field default)
-    TOPOLOGY,
-    compute_identity_hash,
-)
+from graphids.config.topology import TOPOLOGY  # noqa: F401 (used in field default)
 
 # identity key → recipe field name (where topology and recipe names differ)
 _IDENTITY_TO_RECIPE: dict[str, str] = {"method": "fusion_method"}
@@ -124,75 +110,23 @@ class TrainingRunConfig(BaseModel):
             result[key] = val
         return result
 
-    def asset_key(self, stage: str) -> str:
-        """Unique asset identifier: ``{stage}{identity_hash}{kd_tag}``."""
-        identity = compute_identity_hash(stage, self.identity_for(stage))
-        kd_tag = "_kd" if self.auxiliaries else ""
-        return f"{stage}{identity}{kd_tag}"
-
 
 # Resolve deferred Annotated/Literal annotations (from __future__ import annotations).
 KDEntry.model_rebuild()
 TrainingRunConfig.model_rebuild()
 
 
-class _SweepSpec(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    model_family: str
-    stage: str
-    scale: str | list[str] = "small"
-    fusion_method: str | list[str] | None = None
-    model_overrides: dict[str, Any] = Field(default_factory=dict)
-    kd: KDEntry | None = None
-
-
-class _SelectionSpec(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    datasets: list[str] = Field(default_factory=list)
-    model_families: list[str] = Field(default_factory=list)
-    scales: list[str] = Field(default_factory=list)
-    stages: dict[str, list[str]] = Field(default_factory=dict)
-    fusion_methods: list[str] = Field(default_factory=list)
-
-
-class _RecipeEnvelope(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    recipe: dict[str, Any] = Field(default_factory=dict)
-    seeds: list[int] = Field(default_factory=list)
-    overrides: dict[str, Any] = Field(default_factory=dict)
-    selection: _SelectionSpec | None = None
-    sweeps: list[_SweepSpec] = Field(default_factory=list)
-    trainer_overrides: dict[str, Any] = Field(default_factory=dict)
-    stage_overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    resource_overrides: dict[str, Any] = Field(default_factory=dict)
-
-    @field_validator("stage_overrides")
-    @classmethod
-    def _valid_stage_names(cls, v: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-        bad = [s for s in v if s not in TOPOLOGY.stages]
-        if bad:
-            raise ValueError(
-                f"Unknown stages in stage_overrides: {bad}. Valid: {sorted(TOPOLOGY.stages)}"
-            )
-        return v
-
-
 def expand_recipe_configs(raw_recipe: dict[str, Any]) -> dict[str, Any]:
-    """Normalize a rendered recipe dict to an orchestrator-ready config list.
+    """Expand a rendered recipe dict to an orchestrator-ready config list.
 
     ``raw_recipe`` is the output of rendering a ``configs/recipes/*.jsonnet``
-    file. Pydantic validates the envelope shape, then Jsonnet expands
-    sweeps/selections via ``configs/recipes/_expand.jsonnet``.
+    file. Jsonnet expansion (``configs/recipes/_expand.jsonnet``) handles
+    sweep/selection cartesian products, override flattening, and defaults.
     """
-    envelope = _RecipeEnvelope(**raw_recipe)
-    payload = envelope.model_dump(exclude_none=True)
     return render(
         CONFIG_DIR / "recipes" / "_expand.jsonnet",
         tla={
-            "recipe": payload,
+            "recipe": raw_recipe,
             "valid_scales": sorted(VALID_SCALES),
             "valid_fusion_methods": sorted(VALID_FUSION_METHODS),
         },

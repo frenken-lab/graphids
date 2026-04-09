@@ -4,13 +4,27 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
+from graphids.config.constants import FAMILY_FOR_MODEL_TYPE, PROJECT_ROOT
 from graphids.config.topology import TOPOLOGY, compute_identity_hash
-from graphids.orchestrate.contracts import resolve_jsonnet_path
 from graphids.orchestrate.planning.recipes import TrainingRunConfig
 
-_UNSUPERVISED_MODELS = frozenset({"vgae", "dgi"})
+_STAGES_DIR = PROJECT_ROOT / "configs" / "stages"
+_STAGE_JSONNET: dict[str, str] = {s: f"{s}.jsonnet" for s in TOPOLOGY.stages}
+
+
+def resolve_jsonnet_path(stage: str) -> str:
+    """Return the absolute path to the jsonnet file for a stage."""
+    filename = _STAGE_JSONNET.get(stage)
+    if filename is None:
+        raise ValueError(
+            f"No jsonnet stage file for stage={stage!r}. Known: {sorted(_STAGE_JSONNET)}"
+        )
+    return str(_STAGES_DIR / filename)
+
+
+_UNSUPERVISED_MODELS = frozenset(k for k, v in FAMILY_FOR_MODEL_TYPE.items() if v == "unsupervised")
 
 
 class StageConfig(BaseModel):
@@ -18,14 +32,11 @@ class StageConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    asset_name: str
     stage: str
     model_type: str
     scale: str
-    jsonnet_path: str = ""
     model_init_overrides: dict[str, Any] = Field(default_factory=dict)
     identity: str = ""
-    kd_tag: str = ""
     resource_model: str = ""  # model key for resource lookup (fusion method for fusion stages)
     kd_overrides: dict[str, Any] = Field(default_factory=dict)
     trainer_overrides: dict[str, Any] = Field(default_factory=dict)
@@ -34,20 +45,25 @@ class StageConfig(BaseModel):
     upstream_asset_names: tuple[str, ...] = ()
     upstream_model_families: dict[str, str] = Field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize to a plain dict (Monarch endpoint args must be serializable)."""
-        return self.model_dump()
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def kd_tag(self) -> str:
+        return "_kd" if self.kd_overrides else ""
 
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> StageConfig:
-        """Reconstruct from a dict (inverse of ``to_dict``)."""
-        return cls.model_validate(d)
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def asset_name(self) -> str:
+        return f"{self.stage}{self.identity}{self.kd_tag}"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def jsonnet_path(self) -> str:
+        return resolve_jsonnet_path(self.stage)
 
     @classmethod
     def from_recipe(
         cls,
         *,
-        asset_name: str,
         stage: str,
         merged: TrainingRunConfig,
         recipe: dict[str, Any],
@@ -57,30 +73,25 @@ class StageConfig(BaseModel):
         """Build a StageConfig from merged recipe config + topology."""
         stage_def = TOPOLOGY.stages[stage]
 
-        model_type = stage_def.family
-        if (
-            merged.model_type is not None
+        model_type = (
+            merged.model_type
+            if merged.model_type
             and stage_def.learning_type == "unsupervised"
             and merged.model_type in _UNSUPERVISED_MODELS
-        ):
-            model_type = merged.model_type
+            else stage_def.family
+        )
 
         id_cfg = merged.identity_for(stage)
         accepted = set(stage_def.stage_tlas)
 
         return cls(
-            asset_name=asset_name,
             stage=stage,
             model_type=model_type,
             scale=merged.scale,
-            jsonnet_path=resolve_jsonnet_path(stage),
             model_init_overrides={
-                k: str(v).lower() if isinstance(v, bool) else str(v)
-                for k, v in id_cfg.items()
-                if v is not None and k in accepted
+                k: v for k, v in id_cfg.items() if v is not None and k in accepted
             },
             identity=compute_identity_hash(stage, id_cfg),
-            kd_tag="_kd" if merged.auxiliaries else "",
             resource_model=merged.fusion_method if stage == "fusion" else model_type,
             kd_overrides=(
                 merged.auxiliaries[0].model_dump(exclude_none=True) if merged.auxiliaries else {}
@@ -113,11 +124,6 @@ def enumerate_assets(recipe: dict) -> list[StageConfig]:
             if stage not in TOPOLOGY.stages:
                 continue
 
-            asset_name = merged.asset_key(stage)
-            config_stages[config_name][stage] = asset_name
-            if asset_name in built:
-                continue
-
             # Topology deps (stages are in topo order, so earlier stages are resolved)
             stage_def = TOPOLOGY.stages[stage]
             upstream_names: list[str] = []
@@ -130,17 +136,20 @@ def enumerate_assets(recipe: dict) -> list[StageConfig]:
                     upstream_names.append(dep_asset)
                     upstream_models[dep_asset] = dep["family"]
 
-            built[asset_name] = StageConfig.from_recipe(
-                asset_name=asset_name,
+            cfg = StageConfig.from_recipe(
                 stage=stage,
                 merged=merged,
                 recipe=recipe,
                 upstream_names=upstream_names,
                 upstream_models=upstream_models,
             )
+            config_stages[config_name][stage] = cfg.asset_name
+            if cfg.asset_name in built:
+                continue
+            built[cfg.asset_name] = cfg
 
             if merged.auxiliaries:
-                kd_deferred.append((asset_name, stage, merged.auxiliaries))
+                kd_deferred.append((cfg.asset_name, stage, merged.auxiliaries))
 
     # Post-pass: wire KD teacher checkpoints as upstream deps
     for asset_name, stage, auxiliaries in kd_deferred:

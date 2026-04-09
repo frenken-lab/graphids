@@ -40,7 +40,7 @@ dg launch --assets '*'
     -> expand_recipe_configs(recipe)
     -> enumerate_assets(PIPELINE_YAML, recipe) -> list[StageConfig]
        # StageConfig.jsonnet_path = "configs/stages/<stage>.jsonnet"
-    -> ConfigResolver.resolve(cfg, ...)
+    -> resolve_config(cfg, ...)
        # Builds TrainingSpec(jsonnet_path, jsonnet_tla)
        # render_config → validate_config → cross-field rules
     -> SlurmTrainingResource.submit_and_wait(spec, resources)
@@ -58,8 +58,8 @@ dg launch --assets '*'
 
 ### Route C: Validation (resolver gate)
 
-Validation runs inside `ConfigResolver.resolve` on asset materialization:
-`render_config(...)` → `validate_config(rendered)` → `validate_stage_config`
+Validation runs inside `resolve_config` on asset materialization:
+`render_config(...)` → `validate_config(rendered)` → `cross-field validation`
 (cross-field rules that depend on ResourceSpec).
 
 ### Route D: Operational commands (no LightningCLI)
@@ -197,8 +197,8 @@ consistency.
 
 | Call site | What it does |
 |---|---|
-| `ConfigResolver.resolve()` | Calls `validate_config(rendered)` after `render_config`; attaches the typed view to `ResolvedConfig.validated` |
-| `ConfigResolver.resolve_and_validate()` | Thin alias for `resolve()` (Phase 3 deleted the jsonargparse second pass). `dagster/assets.py` and orchestrate/validate.py use this name to signal "fully validated". |
+| `resolve_config()` | Calls `validate_config(rendered)` after `render_config`; attaches the typed view to `ResolvedConfig.validated` |
+| `resolve_config_and_validate()` | Thin alias for `resolve()` (Phase 3 deleted the jsonargparse second pass). `dagster/assets.py` and orchestrate/validate.py use this name to signal "fully validated". |
 | `train_entrypoint._instantiate_from_spec()` | Calls `validate_config` on the SLURM worker before `instantiate(...)` — belt-and-braces second pass |
 | `instantiate()` | Re-validates if caller didn't pass a `ValidatedConfig` — ensures downstream code can trust `run.merged` shape |
 
@@ -284,7 +284,7 @@ every step that `GraphIDSCLI` used to own:
 | L1 | jsonnet rendering shells out per-render (~5 ms subprocess cost) | Low | Parity harness renders ~100 configs in 500 ms; not a hot path. Swap in `_gojsonnet` bindings if needed. |
 | L2 | `jsonargparse` remains only in `commands/analyze.py` (Analyzer config) — `LightningCLI` fully removed | Low | Phase 4 retools analyze configs to Jsonnet + `parser_mode="jsonnet"` while keeping jsonargparse. |
 | L3 | Fusion stage absorbs `auxiliaries` + `vgae_ckpt_path` as unused TLAs because `build_tla_dict` always emits them | Low | Could filter TLAs per stage; current form is simpler. |
-| L4 | No recipe schema versioning | Low | Add `version: 1` to `_RecipeEnvelope` in a later phase. |
+| L4 | No recipe schema versioning | Low | Recipe envelope removed; Jsonnet handles shape validation directly. |
 
 ### Comparison matrix
 

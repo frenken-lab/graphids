@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from graphids.log import get_logger
 from graphids.orchestrate.planning import StageConfig
@@ -128,37 +127,3 @@ def _walk_to_root(
 
     _visit(leaf)
     return order
-
-
-def build_single_recipe(
-    stages: list[str],
-    scale: str,
-    conv_type: str,
-    variational: bool,
-    loss_fn: str,
-    fusion_method: str,
-    trainer_overrides: dict[str, str] | None = None,
-) -> dict[str, Any]:
-    """Build a synthetic expanded recipe for a single pipeline config.
-
-    Produces the same shape as ``expand_recipe_configs`` output so
-    ``enumerate_assets`` can consume it. Used by ``monarch-run`` to
-    go through the planner instead of duplicating its logic.
-    """
-    defaults: dict[str, Any] = {
-        "stages": list(stages),
-        "scale": scale,
-        "conv_type": conv_type,
-        "variational": variational,
-        "loss_fn": loss_fn,
-        "fusion_method": fusion_method,
-    }
-
-    return {
-        "defaults": defaults,
-        "configs": {"default": {}},
-        "sweep": {},
-        "trainer_overrides": dict(trainer_overrides or {}),
-        "stage_overrides": {},
-        "resource_overrides": {},
-    }

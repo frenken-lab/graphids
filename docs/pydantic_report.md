@@ -10,7 +10,7 @@ Features actively used across 10 files with `from pydantic` imports:
 |---------|-------|
 | `BaseModel` + `ConfigDict` | All 10 Pydantic files |
 | `frozen=True` | `PathContext`, `KDEntry`, `TrainingRunConfig`, `PipelineConfig`, `SweepConfig` |
-| `extra="forbid"` | `ValidatedConfig`, `TrainingSpec`, `AnalysisSpec`, `RunRecord`, `_RecipeEnvelope`, `_SweepSpec`, `_SelectionSpec`, `ClassPathBlock`, `_MonitorBlock` |
+| `extra="forbid"` | `ValidatedConfig`, `TrainingSpec`, `AnalysisSpec`, `RunRecord`, `KDEntry`, `TrainingRunConfig`, `ClassPathBlock`, `_MonitorBlock` |
 | `extra="allow"` | `TrainerSection`, `CallbacksSection` |
 | `Field(default_factory=...)` | `contracts.py:20`, `orchestrate/contracts/__init__.py:57-62`, `recipes.py:158-175` |
 | `Field(min_length=1)` | `ClassPathBlock.class_path` (schemas.py:70), `_MonitorBlock.monitor` (schemas.py:103) |
@@ -40,7 +40,7 @@ The project has 25+ `os.environ.get("KD_GAT_*")` calls scattered across 12 files
 
 ### 2c. Discriminated unions
 
-`RunRecord.source` uses `Literal["dagster", "cli"]` but there is no discriminated union dispatch. The callback sections in `CallbacksSection` (schemas.py:128-157) manually parse `checkpoint` and `early_stopping` init_args through separate `model_validate` calls instead of using a discriminated union on `class_path`. Similarly, `_RecipeEnvelope` has `sweeps: list[_SweepSpec]` where sweeps could be discriminated by `model_family` or `stage`.
+`RunRecord.source` uses `Literal["dagster", "cli"]` but there is no discriminated union dispatch. The callback sections in `CallbacksSection` (schemas.py:128-157) manually parse `checkpoint` and `early_stopping` init_args through separate `model_validate` calls instead of using a discriminated union on `class_path`.
 
 ### 2d. `Annotated` validators for reusable constraints
 

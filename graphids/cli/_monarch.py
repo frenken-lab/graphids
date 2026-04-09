@@ -14,7 +14,7 @@ _D = PIPELINE_DEFAULTS
 
 
 def _print_spec(spec: object) -> None:
-    """Print a MonarchJobSpec for dry-run output."""
+    """Print a JobSpec for dry-run output."""
     typer.echo(f"Partition:  {spec.partition}")
     typer.echo(f"Time:       {spec.time}")
     typer.echo(f"Memory:     {spec.mem}")
@@ -26,7 +26,7 @@ def _print_spec(spec: object) -> None:
 
 def _check_monarch() -> None:
     """Exit with error if monarch is not installed."""
-    from graphids.monarch import available
+    from graphids.orchestrate import available
 
     if not available():
         typer.echo(
@@ -71,8 +71,9 @@ def monarch_run(
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Print allocation spec only")] = False,
 ) -> None:
     """Run the 3-stage pipeline in a single SLURM allocation via Monarch."""
-    from graphids.monarch.job import chain_job_spec
-    from graphids.monarch.pipeline import PipelineConfig, build_pipeline_stages, run_pipeline
+    from graphids.orchestrate.job import chain_job_spec
+    from graphids.orchestrate.pipeline import build_pipeline_stages, run_chain
+    from graphids.orchestrate.schemas import PipelineConfig
 
     overrides = parse_tla(trainer_override)
     stage_list = [s.strip() for s in stages.split(",")]
@@ -106,7 +107,17 @@ def monarch_run(
 
     _check_monarch()
 
-    checkpoints = run_pipeline(cfg, job_spec_override=spec)
+    from graphids.orchestrate.sweep import ChainSpec
+
+    chain = ChainSpec(
+        chain_id=f"pipeline_{dataset}_s{seed}",
+        stages=stage_cfgs,
+        dataset=dataset,
+        seed=seed,
+    )
+    checkpoints = run_chain(
+        chain, max_retries=cfg.max_retries, lake_root=cfg.lake_root, job_spec_override=spec
+    )
     for stage_name, ckpt in checkpoints.items():
         typer.echo(f"{stage_name}: {ckpt}")
 
@@ -126,7 +137,7 @@ def monarch_sweep(
     ] = False,
 ) -> None:
     """Run a recipe sweep via Monarch (replaces dg launch)."""
-    from graphids.monarch.sweep import plan_chains
+    from graphids.orchestrate.sweep import plan_chains
 
     recipe_path = str(Path(recipe).resolve())
     seed_list = [int(s.strip()) for s in seeds.split(",")]
@@ -140,7 +151,7 @@ def monarch_sweep(
     chains = plan_chains(recipe_path, dataset_list, seed_list)
 
     if dry_run:
-        from graphids.monarch.job import chain_job_spec
+        from graphids.orchestrate.job import chain_job_spec
 
         typer.echo(f"Recipe:   {recipe}")
         typer.echo(f"Datasets: {dataset_list}")
@@ -157,7 +168,8 @@ def monarch_sweep(
 
     _check_monarch()
 
-    from graphids.monarch.pipeline import SweepConfig, run_sweep
+    from graphids.orchestrate.pipeline import run_sweep
+    from graphids.orchestrate.schemas import SweepConfig
 
     cfg = SweepConfig(
         recipe_path=recipe_path,
@@ -166,12 +178,12 @@ def monarch_sweep(
         max_retries=2,
         max_concurrent=max_concurrent,
     )
-    result = run_sweep(cfg)
+    results = run_sweep(cfg)
 
-    ok = sum(1 for r in result.results.values() if r.ok)
-    failed = sum(1 for r in result.results.values() if not r.ok)
-    typer.echo(f"\nSweep complete: {ok}/{result.num_chains} succeeded, {failed} failed")
+    ok = sum(1 for v in results.values() if isinstance(v, dict))
+    failed = len(results) - ok
+    typer.echo(f"\nSweep complete: {ok}/{len(results)} succeeded, {failed} failed")
 
-    for chain_id, r in result.results.items():
-        if not r.ok:
-            typer.echo(f"  FAILED: {chain_id}: {r.error}", err=True)
+    for chain_id, v in results.items():
+        if isinstance(v, str):
+            typer.echo(f"  FAILED: {chain_id}: {v}", err=True)

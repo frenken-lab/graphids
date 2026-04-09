@@ -1,6 +1,10 @@
 """Planning-only orchestration helpers (pure data, no torch/Lightning imports)."""
 
-from graphids.orchestrate.planning.planner import StageConfig, enumerate_assets
+from graphids.orchestrate.planning.planner import (
+    StageConfig,
+    enumerate_assets,
+    resolve_jsonnet_path,
+)
 from graphids.orchestrate.planning.recipes import (
     KDEntry,
     TrainingRunConfig,
