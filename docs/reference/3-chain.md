@@ -16,11 +16,11 @@ CLI (monarch-run / monarch-sweep)
 |
 +- PipelineActor.train_stage(stage_config, dataset, seed, upstream_ckpts)
    +- ResolvedConfig.resolve(cfg, ...)     -- orchestrate/resolve.py
-       +- _build_tla_dict(cfg, ...)        -> typed TLA dict
-       +- get_resources / apply_resource_overrides
-       +- render(jsonnet_path, tla)
+       +- PathContext(...)                 -- config/topology.py
+       +- _build_tla_dict(cfg, ...)        -> typed TLA dict (private)
+       +- render(jsonnet_path, tla)        -- config/jsonnet.py
        +- validate_config(rendered)        -> ValidatedConfig  (Pydantic)
-       +- _validate_cross_fields(...)      -> num_workers<=cpus-1, epoch sync
+       +- monitor/mode consistency check   -> inline log warning
        +- returns ResolvedConfig(paths, validated, rendered)
            +- instantiate(rendered, validated=...) -> fit
 ```
@@ -41,9 +41,7 @@ directly to `graphids.instantiate.instantiate`.
 | `checkpoint` + `early_stopping` monitor/mode mismatch | `ValidatedConfig` via `CallbacksSection` | `config/schemas.py` |
 | `data.class_path` / `model.class_path` not namespaced | `ValidatedConfig._class_paths_namespaced` | `config/schemas.py` |
 | Extra top-level key in rendered dict | `ValidatedConfig(extra="forbid")` | `config/schemas.py` |
-| `num_workers > cpus_per_task - 1` | `_validate_cross_fields` | `orchestrate/resolve.py` |
-| `CurriculumDataModule.max_epochs != trainer.max_epochs` | `_validate_cross_fields` | `orchestrate/resolve.py` |
-| Stage monitor family mismatch (val_acc vs val_loss) | `ResolvedConfig.resolve` warning | `orchestrate/resolve.py` |
+| Stage monitor family mismatch (val_acc vs val_loss) | `ResolvedConfig.resolve` inline log warning | `orchestrate/resolve.py` |
 
 **Structural failures are caught before the SLURM job starts.** The Monarch
 actor runs `ResolvedConfig.resolve()` in-process and the result flows
@@ -55,9 +53,13 @@ directly into `instantiate()`.
 |---|---|
 | `graphids/orchestrate/planning/recipes.py` | `TrainingRunConfig`, `KDEntry`, `expand_recipe_configs` |
 | `graphids/orchestrate/planning/planner.py` | `StageConfig`, `enumerate_assets` |
-| `graphids/orchestrate/resolve.py` | `ResolvedConfig.resolve`, `_build_tla_dict`, `_validate_cross_fields` |
-| `graphids/orchestrate/actors.py` | `PipelineActor` — `train_stage` / `eval_stage` endpoints |
-| `graphids/orchestrate/monarch.py` | `PipelineConfig`, `SweepConfig`, `plan_chains`, `run_chain`, `run_sweep` |
+| `graphids/orchestrate/resolve.py` | `ResolvedConfig.resolve` (classmethod), private `_build_tla_dict` |
+| `graphids/orchestrate/stage.py` | `build`, `train`, `evaluate`, `run_stage` (single-stage primitives) |
+| `graphids/orchestrate/actors.py` | `PipelineActor` — thin endpoint wrapper (`train_stage` / `eval_stage` / `analyze_stage`) |
+| `graphids/orchestrate/chain.py` | `run_chain(actor, stages, …) → ChainResult` |
+| `graphids/orchestrate/allocate.py` | `JobSpec`, `build_slurm_job`, `spawn_actor` |
+| `graphids/orchestrate/analyze.py` | pipeline-level `analyze` + `run_single_analysis` |
+| `graphids/orchestrate/run.py` | `PipelineConfig`, `build_pipeline_stages`, `run_pipeline` driver |
 | `graphids/config/schemas.py` | `ValidatedConfig`, `validate_config` |
 | `graphids/config/topology.py` | Stage DAG, identity keys, import-time assertions |
 | `configs/stages/autoencoder.jsonnet` | Stage 1 jsonnet function |

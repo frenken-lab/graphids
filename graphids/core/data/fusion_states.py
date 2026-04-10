@@ -83,6 +83,7 @@ def extract_fusion_states(
         checkpoints: ``{model_type: ckpt_path}`` e.g. ``{"vgae": "/path/to/best.ckpt", "gat": "..."}``.
     """
     from graphids.core.data.datamodule.graph import GraphDataModule
+    from graphids.core.data.datasets.can_bus import CANBusSource
     from graphids.core.models.base import load_inner_model
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -93,10 +94,11 @@ def extract_fusion_states(
         model, _ = load_inner_model(model_type, Path(ckpt_path), device)
         models[model_type] = model
 
-    dm = GraphDataModule(
-        dataset=dataset, seed=seed, window_size=window_size,
-        stride=stride, val_fraction=val_fraction, dynamic_batching=False,
+    source = CANBusSource(
+        name=dataset, seed=seed, window_size=window_size,
+        stride=stride, val_fraction=val_fraction,
     )
+    dm = GraphDataModule(dataset=source, dynamic_batching=False)
     dm.setup("fit")
     train_ds, val_ds = dm.train_dataset, dm.val_dataset
 

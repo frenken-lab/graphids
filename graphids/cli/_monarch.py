@@ -70,12 +70,8 @@ def monarch_run(
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Print allocation spec only")] = False,
 ) -> None:
     """Run the 3-stage pipeline in a single SLURM allocation via Monarch."""
-    from graphids.orchestrate.monarch import (
-        JobSpec,
-        PipelineConfig,
-        build_pipeline_stages,
-        run_chain,
-    )
+    from graphids.orchestrate.allocate import JobSpec
+    from graphids.orchestrate.run import PipelineConfig, build_pipeline_stages, run_pipeline
 
     overrides = parse_tla(trainer_override)
     stage_list = [s.strip() for s in stages.split(",")]
@@ -92,8 +88,6 @@ def monarch_run(
         tla_overrides=overrides,
     )
 
-    stage_cfgs = build_pipeline_stages(cfg)
-
     spec = JobSpec(
         partition=partition or "gpu",
         time=time or "4:00:00",
@@ -102,6 +96,9 @@ def monarch_run(
     )
 
     if dry_run:
+        # Show what would run without touching Monarch
+        stage_cfgs = build_pipeline_stages(cfg)
+        typer.echo(f"Stages:     {[s.asset_name for s in stage_cfgs]}")
         if overrides:
             typer.echo(f"Overrides:  {overrides}")
         _print_spec(spec)
@@ -109,9 +106,8 @@ def monarch_run(
 
     _check_monarch()
 
-    checkpoints = run_chain(
-        stage_cfgs, spec, dataset=dataset, seed=seed,
-        max_retries=cfg.max_retries, lake_root=cfg.lake_root,
-    )
-    for stage_name, ckpt in checkpoints.items():
+    result = run_pipeline(cfg, spec)
+    for stage_name, ckpt in result.checkpoints_by_stage().items():
         typer.echo(f"{stage_name}: {ckpt}")
+    if result.analyzed_assets:
+        typer.echo(f"analyzed: {', '.join(result.analyzed_assets)}")

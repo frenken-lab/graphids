@@ -32,7 +32,7 @@ Constants: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `COMPLETE_MARKER`, `PHASE_MARKER
 |           +-- .train_complete                   <-- Monarch marker (fit done)
 |           +-- .test_complete                    <-- Monarch marker (test done)
 |           +-- .analyze_complete                 <-- Monarch marker (analyze done)
-+-- catalog/kd_gat.duckdb                        <-- rebuilt from traces.jsonl (rebuild-catalog)
++-- catalog/kd_gat.duckdb                        <-- (catalog builder removed 2026-04-10, pending redesign)
 +-- raw/{dataset}/                               <-- source CSV data
 +-- cache/v{ver}/{dataset}/                      <-- preprocessed graph .pt files
 +-- slurm/                                       <-- SLURM stdout/stderr (default)
@@ -62,7 +62,7 @@ All Lightning writes land under `trainer.default_root_dir` from the rendered jso
 
 `graphids/core/monitoring.py` — `OTelTrainingCallback` creates a `training.fit` span on fit start; records per-batch VRAM gauges, per-epoch events (LR, early stopping), final metrics, and best checkpoint path as span attributes. Discovers upstream stage `traces.jsonl` files and records span links for KD lineage.
 
-`graphids/core/otel.py` — `wire_file_exporters(run_dir)` wires the file exporters (Phase B). Called from `cli/_training.py:37` and `orchestrate/actors.py:130`. Wandb Weave OTLP export is optional when `WANDB_API_KEY` is set.
+`graphids/core/otel.py` — `wire_file_exporters(run_dir)` wires the file exporters (Phase B). Called from `cli/_training.py:37` and `orchestrate/stage.py::train`. Wandb Weave OTLP export is optional when `WANDB_API_KEY` is set.
 
 `OTelTrainingLogger` captures Lightning `self.log()` calls as OTel histograms.
 
@@ -70,11 +70,11 @@ All Lightning writes land under `trainer.default_root_dir` from the rendered jso
 
 | What | Path | Who writes | Code |
 |------|------|-----------|------|
-| Train complete marker | `{run_dir}/.train_complete` | `actors.py` after `trainer.fit` | `PHASE_MARKERS["train"]` |
-| Test complete marker | `{run_dir}/.test_complete` | `actors.py` after `trainer.test` | `PHASE_MARKERS["test"]` |
-| Analyze complete marker | `{run_dir}/.analyze_complete` | `actors.py` after `run_analysis` | `PHASE_MARKERS["analyze"]` |
-| Run complete marker | `{run_dir}/.complete` | `actors.py` at `eval_stage` end | `COMPLETE_MARKER` |
-| Analysis artifacts | `{run_dir}/artifacts/` | `run_analysis` via `AnalysisSpec` | `actors.py:182` |
+| Train complete marker | `{run_dir}/.train_complete` | `stage.py::train` after `trainer.fit` | `PHASE_MARKERS["train"]` |
+| Test complete marker | `{run_dir}/.test_complete` | `stage.py::evaluate` after `trainer.test` | `PHASE_MARKERS["test"]` |
+| Analyze complete marker | `{run_dir}/.analyze_complete` | `actors.py::analyze_stage` after `run_single_analysis` | `PHASE_MARKERS["analyze"]` |
+| Run complete marker | `{run_dir}/.complete` | `actors.py::eval_stage` at end | `COMPLETE_MARKER` |
+| Analysis artifacts | `{run_dir}/artifacts/` | `analyze.py::run_single_analysis` via `AnalysisSpec` | `analyze.py` |
 
 ### 4. SLURM
 
@@ -95,33 +95,41 @@ All Lightning writes land under `trainer.default_root_dir` from the rendered jso
 
 ### 6. DuckDB Catalog
 
-`{lake_root}/catalog/kd_gat.duckdb` — `runs` table rebuilt by `orchestrate/ops/catalog.py` from `traces.jsonl` files. Scans `{lake_root}/dev/**/traces.jsonl`, filters `training.fit` spans, extracts identity/status/metrics as columns. Disposable — rebuildable via `python -m graphids rebuild-catalog`. Requires `KD_GAT_LAKE_WRITE=1`.
+`{lake_root}/catalog/kd_gat.duckdb` — DuckDB catalog over `training.fit` OTel spans from `traces.jsonl`. The builder (`orchestrate/ops/catalog.py`) and `rebuild-catalog` CLI were removed 2026-04-10 pending redesign; no current way to populate. Disposable once rebuilt.
 
 ## Execution Order (Monarch path)
 
 ```
 LOGIN NODE (Monarch)                    SLURM JOB (compute node)
 --------------------                    ------------------------
-monarch.run_pipeline()
-+- check .complete marker (skip?)
-+- submit SLURM job ----------------->  sbatch allocates node
-|                                       +- _preamble.sh (env, venv, stage data)
+run.run_pipeline()
++- build_pipeline_stages(config)
++- configure_monarch()
++- build_slurm_job(job_spec) --------->  sbatch allocates node
++- spawn_actor(job, ...)                +- _preamble.sh (env, venv, stage data)
++- run_chain(actor, stages, ...)        |
 |                                       +- actors.py::train_stage()
-|                                       |   +- wire_file_exporters(run_dir)
-|                                       |   |   +- opens traces.jsonl, metrics.jsonl
-|                                       |   +- instantiate() -> trainer/model/datamodule
-|                                       |   |   +- ModelCheckpoint.dirpath pinned
-|                                       |   +- trainer.fit()
-|                                       |   |   +- OTelTrainingCallback spans + gauges
-|                                       |   |   +- OTelTrainingLogger -> metrics.jsonl
-|                                       |   |   +- ModelCheckpoint -> best_model.ckpt
-|                                       |   +- touch .train_complete
+|                                       |   +- ResolvedConfig.resolve(...)
+|                                       |   +- stage.build(resolved)
+|                                       |   |   +- gc + torch.cuda reset
+|                                       |   |   +- instantiate() -> trainer/model/datamodule
+|                                       |   +- stage.train(artifacts, resolved)
+|                                       |   |   +- wire_file_exporters(run_dir)
+|                                       |   |   +- trainer.fit()
+|                                       |   |   +- touch .train_complete
+|                                       |   -> ckpt_path
 |                                       +- actors.py::eval_stage()
-|                                       |   +- trainer.test() -> touch .test_complete
-|                                       |   +- run_analysis() -> artifacts/ -> touch .analyze_complete
+|                                       |   +- stage.build(resolved)
+|                                       |   +- stage.evaluate(artifacts, resolved, ckpt)
+|                                       |   |   +- trainer.test() -> touch .test_complete
 |                                       |   +- touch .complete
-|                                       +- _epilog.sh (GPU utilization report)
-+- poll -> COMPLETED
++- analyze(actor, stages, chain, ...)   |
+|                                       +- actors.py::analyze_stage()
+|                                       |   +- run_single_analysis(spec)
+|                                       |   |   +- Analyzer(...).run()
+|                                       |   |   +- write analysis_manifest.json
+|                                       |   +- touch .analyze_complete
++- finally: job.kill()                  +- _epilog.sh (GPU utilization report)
 ```
 
 ## Env Var -> Path Mapping

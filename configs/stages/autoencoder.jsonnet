@@ -41,14 +41,19 @@ function(
     data: {
       class_path: 'graphids.core.data.datamodule.GraphDataModule',
       init_args: {
-        window_size: 100,
-        stride: 100,
-        val_fraction: 0.2,
+        dataset: {
+          class_path: 'graphids.core.data.datasets.can_bus.CANBusSource',
+          init_args: {
+            name: dataset,
+            seed: seed,
+            window_size: 100,
+            stride: 100,
+            val_fraction: 0.2,
+          },
+        },
         batch_size: 8192,
         num_workers: null,  // auto-sized from GPU-first sizing chain
         dynamic_batching: true,
-        dataset: dataset,
-        seed: seed,
         conv_type: conv_type,
         heads: $.model.init_args.heads,  // late-bind from model libsonnet
       },

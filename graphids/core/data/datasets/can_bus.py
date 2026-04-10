@@ -1,19 +1,22 @@
 """CAN bus dataset — I/O, vocab, and feature schema.
 
 Everything CAN-bus-specific lives here: hex payload parsing, byte-column
-feature expressions, attack-type taxonomy, and the ``CANBusDataset`` adapter.
-The general sliding-window pipeline lives in ``graph_pipeline.py``.
+feature expressions, attack-type taxonomy, and the ``CANBusDataset`` +
+``CANBusSource`` adapters. The general sliding-window pipeline lives in
+``graph_pipeline.py``.
 """
 
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 import polars as pl
 import torch
 from torch_geometric.data import Data, InMemoryDataset
 
+from graphids.core.data.cache import DatasetState
 from graphids.core.data.graph_pipeline import GraphPipeline
 from graphids.core.data.io import atomic_save, nfs_lock, vocab_from_column
 from graphids._otel import get_logger
@@ -359,3 +362,71 @@ class CANBusDataset(InMemoryDataset):
         combined = parse_payload(combined)
 
         return combined.collect()
+
+
+# ---------------------------------------------------------------------------
+# CANBusSource — dataset source wrapper for the process-level cache
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CANBusSource:
+    """CAN bus dataset source — produces train/val/test splits on demand.
+
+    ``get_or_build`` in ``graphids.core.data.cache`` memoizes the
+    ``DatasetState`` returned by ``build()`` under ``cache_key`` so
+    multi-stage runs sharing a process pay preprocessing + mmap cost
+    once instead of per-stage.
+
+    ``name`` is a catalog entry (e.g. ``hcrl_sa``, ``set_01``). The
+    catalog is loaded at build time via
+    ``graphids.config.topology.load_catalog`` — no name validation at
+    construction, since the catalog may shift.
+    """
+
+    name: str
+    lake_root: str | None = None
+    window_size: int = 100
+    stride: int = 100
+    val_fraction: float = 0.2
+    seed: int = 42
+
+    def resolved_lake_root(self) -> str:
+        """Return ``lake_root`` falling back to the global settings value."""
+        if self.lake_root:
+            return self.lake_root
+        from graphids.config.settings import get_settings
+
+        return get_settings().lake_root
+
+    @property
+    def cache_key(self) -> str:
+        return (
+            f"canbus|{self.resolved_lake_root()}|{self.name}"
+            f"|w{self.window_size}|s{self.stride}"
+            f"|v{self.val_fraction}|seed{self.seed}"
+        )
+
+    def build(self) -> DatasetState:
+        from graphids.config.topology import cache_dir, data_dir, load_catalog
+
+        lake_root = self.resolved_lake_root()
+        root = cache_dir(lake_root, self.name)
+        raw = data_dir(lake_root, self.name)
+        common = dict(
+            window_size=self.window_size,
+            stride=self.stride,
+            val_fraction=self.val_fraction,
+            seed=self.seed,
+        )
+        train_ds = CANBusDataset(root=root, raw_dir=raw, split="train", **common)
+        val_ds = CANBusDataset(root=root, raw_dir=raw, split="val", **common)
+
+        test_datasets: dict[str, CANBusDataset] = {}
+        for subdir in load_catalog()[self.name].get("test_subdirs", []):
+            test_raw = raw / subdir
+            if test_raw.exists():
+                test_datasets[subdir] = CANBusDataset(
+                    root=root, raw_dir=test_raw, split="test", **common,
+                )
+        return DatasetState(train=train_ds, val=val_ds, test=test_datasets)

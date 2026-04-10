@@ -5,7 +5,9 @@ parsed JSON as a dict.  TLAs are passed through ``tla_codes`` so jsonnet
 receives real typed values (ints stay ints, bools stay bools, ``None``
 becomes jsonnet ``null``).
 
-No torch dep, no package-level side effects — safe to import on login nodes.
+No torch dep, no package-level side effects — safe to import on login
+nodes even without ``_jsonnet`` installed (the C binding is imported
+lazily inside ``render_config``).
 """
 
 from __future__ import annotations
@@ -13,8 +15,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
-
-import _jsonnet
 
 
 class JsonnetError(RuntimeError):
@@ -42,6 +42,8 @@ def render_config(
         Parsed JSON output.  Always a dict — jsonnet programs that emit
         arrays or scalars raise ``JsonnetError``.
     """
+    import _jsonnet  # noqa: PLC0415  — deferred so module import is safe without the binding
+
     tla_codes = {k: json.dumps(v) for k, v in tla.items()} if tla else {}
     try:
         raw = _jsonnet.evaluate_file(str(jsonnet_path), tla_codes=tla_codes)

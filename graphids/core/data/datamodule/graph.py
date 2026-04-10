@@ -1,7 +1,9 @@
 """Dataset-agnostic graph DataModule.
 
-``dataset_cls`` is a dotted class-path string resolved via ``importlib``,
-so adding a new graph domain is config-only — no subclass needed.
+Accepts any object with a ``cache_key: str`` + ``build() -> DatasetState``
+(the ``Dataset`` protocol consumed by ``graphids.core.data.cache``).
+Preprocessing and split logic live in the dataset class; the datamodule
+only wraps DataLoaders, batching, and the curriculum toggle.
 
 Curriculum learning is a ``sampler="curriculum"`` toggle. When enabled,
 ``setup()`` scores graphs via VGAE and buckets normals into difficulty
@@ -10,14 +12,13 @@ tiers. A ``CurriculumEpochCallback`` selects active tiers each epoch.
 
 from __future__ import annotations
 
-import importlib
 import math
 
 import torch
 from torch_geometric.data import Batch, InMemoryDataset
 
-from graphids.config.topology import cache_dir, data_dir, load_catalog
 from graphids.core.data.budget import autosize_workers, node_budget
+from graphids.core.data.cache import get_or_build
 from graphids.core.data.sampler import NodeBudgetBatchSampler
 
 
@@ -61,9 +62,12 @@ def _prebatched_loader(batches, *, shuffle: bool = True, device: torch.device | 
 
 
 class GraphDataModule:
-    """Dataset-agnostic graph DataModule.
+    """Graph DataModule that wraps a Dataset source.
 
-    ``dataset_cls`` is a dotted class-path string resolved via importlib.
+    ``dataset`` is any object satisfying the Dataset protocol consumed
+    by ``graphids.core.data.cache.get_or_build``: ``cache_key: str`` +
+    ``build() -> DatasetState``. The datamodule owns loader/batching
+    policy; the dataset owns preprocessing and splits.
 
     Curriculum toggle:
         Pass ``sampler="curriculum"`` + ``vgae_ckpt_path`` to enable
@@ -73,16 +77,10 @@ class GraphDataModule:
 
     def __init__(
         self,
-        dataset: str,
-        dataset_cls: str = "graphids.core.data.datasets.can_bus.CANBusDataset",
-        lake_root: str | None = None,
+        dataset,
         batch_size: int = 32,
         num_workers: int | None = None,
         prefetch_factor: int = 2,
-        window_size: int = 100,
-        stride: int = 100,
-        val_fraction: float = 0.2,
-        seed: int = 42,
         dynamic_batching: bool = True,
         conv_type: str = "gatv2",
         heads: int = 4,
@@ -95,15 +93,9 @@ class GraphDataModule:
         canid_weight: float = 0.1,
         num_tiers: int = 10,
     ):
-        if lake_root is None:
-            from graphids.config.settings import get_settings
-            lake_root = get_settings().lake_root
+        self.dataset = dataset
         # Store init args as a dict for downstream kwargs access.
         self.hparams = {k: v for k, v in locals().items() if k != "self"}
-        module_path, cls_name = dataset_cls.rsplit(".", 1)
-        self._dataset_cls: type[InMemoryDataset] = getattr(
-            importlib.import_module(module_path), cls_name
-        )
         self._train_ds: InMemoryDataset | None = None
         self._val_ds: InMemoryDataset | None = None
         self._test_datasets: dict[str, InMemoryDataset] = {}
@@ -123,31 +115,12 @@ class GraphDataModule:
     def setup(self, stage: str | None = None) -> None:
         if self._train_ds is not None:
             return
-        hp = self.hparams
-        self._train_ds, self._val_ds, self._test_datasets = self._load_datasets()
-        if hp["sampler"] == "curriculum":
+        state = get_or_build(self.dataset)
+        self._train_ds = state.train
+        self._val_ds = state.val
+        self._test_datasets = state.test
+        if self.hparams["sampler"] == "curriculum":
             self._setup_curriculum()
-
-    def _load_datasets(self):
-        """Load train/val/test datasets from cache."""
-        hp = self.hparams
-        root = cache_dir(hp["lake_root"], hp["dataset"])
-        raw = data_dir(hp["lake_root"], hp["dataset"])
-        common = dict(
-            window_size=hp["window_size"], stride=hp["stride"],
-            val_fraction=hp["val_fraction"], seed=hp["seed"],
-        )
-        train_ds = self._dataset_cls(root=root, raw_dir=raw, split="train", **common)
-        val_ds = self._dataset_cls(root=root, raw_dir=raw, split="val", **common)
-
-        test_datasets = {}
-        for subdir in load_catalog()[hp["dataset"]].get("test_subdirs", []):
-            test_raw = raw / subdir
-            if test_raw.exists():
-                test_datasets[subdir] = self._dataset_cls(
-                    root=root, raw_dir=test_raw, split="test", **common,
-                )
-        return train_ds, val_ds, test_datasets
 
     def _setup_curriculum(self) -> None:
         """Score graphs by VGAE difficulty, bucket into tiers + attack tier."""
@@ -220,7 +193,7 @@ class GraphDataModule:
         """Probe VRAM budget for the given dataset (or train_ds)."""
         hp = self.hparams
         return node_budget(
-            hp["dataset"], hp["lake_root"],
+            self.dataset.name, self.dataset.resolved_lake_root(),
             conv_type=hp.get("conv_type", "gatv2"),
             heads=hp.get("heads", 4),
             train_dataset=dataset or self._train_ds,

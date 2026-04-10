@@ -1,14 +1,23 @@
-"""Pipeline actor — sequences training stages in one SLURM allocation."""
+"""Pipeline actor — thin Monarch endpoint wrapper around stage primitives.
+
+The real work lives in ``graphids.orchestrate.stage``; this module
+exists only because Monarch requires its endpoints to live on an
+``Actor`` subclass. When the orchestrate refactor finishes and Monarch
+can dispatch to free functions via ``call_one``, this file goes away.
+"""
 
 from __future__ import annotations
 
-import gc
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from graphids._otel import get_logger
 from graphids.orchestrate._setup import ensure_spawn, touch_marker
+from graphids.orchestrate.stage import build, evaluate, train
+
+if TYPE_CHECKING:
+    from graphids.orchestrate.resolve import ResolvedConfig
 
 log = get_logger(__name__)
 
@@ -24,18 +33,21 @@ except ImportError:
 
 
 class PipelineActor(Actor):
-    """Runs all pipeline stages, caching datasets across stages."""
+    """Runs all pipeline stages in one allocation.
+
+    Dataset reuse is handled by the process-level ``get_or_build``
+    cache inside the datamodule — no actor-side dataset state.
+    """
 
     def __init__(self, lake_root: str, user: str = "") -> None:
         ensure_spawn()
         self.lake_root = lake_root
         self.user = user or os.environ.get("USER", "unknown")
-        self._cached_datasets: dict[str, Any] | None = None
         from graphids._otel import init_providers
 
         init_providers("graphids.monarch")
 
-    # -- resolve + instantiate --------------------------------------------------
+    # -- resolve ---------------------------------------------------------------
 
     def _resolve(
         self,
@@ -43,8 +55,7 @@ class PipelineActor(Actor):
         dataset: str,
         seed: int,
         upstream_ckpts: dict[str, str],
-    ) -> Any:
-        """Resolve a StageConfig dict into a ResolvedConfig."""
+    ) -> "ResolvedConfig":
         from graphids.orchestrate.planning import StageConfig
         from graphids.orchestrate.resolve import ResolvedConfig
 
@@ -58,52 +69,7 @@ class PipelineActor(Actor):
             upstream_ckpts=upstream_ckpts,
         )
 
-    def _instantiate(self, resolved: Any) -> Any:
-        """Instantiate training stack, injecting cached datasets. Frees GPU first."""
-        import torch
-
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.reset_peak_memory_stats()
-        torch.compiler.reset()
-
-        from graphids.instantiate import instantiate
-
-        run = instantiate(resolved.rendered, validated=resolved.validated)
-
-        if self._cached_datasets is not None:
-            run.datamodule._train_ds = self._cached_datasets["train"]
-            run.datamodule._val_ds = self._cached_datasets["val"]
-            run.datamodule._test_datasets = self._cached_datasets["test"]
-        return run
-
-    # -- dataset cache ----------------------------------------------------------
-
-    @staticmethod
-    def _clone_to_cpu(dataset: Any) -> Any:
-        """Deep-clone a PyG dataset to CPU (Data.to() is in-place)."""
-        from torch_geometric.data import InMemoryDataset
-
-        if isinstance(dataset, dict):
-            return {k: PipelineActor._clone_to_cpu(v) for k, v in dataset.items()}
-        if isinstance(dataset, InMemoryDataset):
-            return dataset.copy().cpu()
-        if isinstance(dataset, (list, tuple)):
-            return [d.clone().cpu() for d in dataset]
-        return dataset
-
-    def _cache_datasets_from(self, datamodule: Any) -> None:
-        """Cache CPU copies of datasets from a datamodule after setup."""
-        if self._cached_datasets is None and datamodule._train_ds is not None:
-            self._cached_datasets = {
-                "train": self._clone_to_cpu(datamodule._train_ds),
-                "val": self._clone_to_cpu(datamodule._val_ds),
-                "test": self._clone_to_cpu(datamodule._test_datasets),
-            }
-            log.info("datasets_cached", num_train=len(datamodule._train_ds))
-
-    # -- stage endpoints --------------------------------------------------------
+    # -- stage endpoints -------------------------------------------------------
 
     @endpoint
     def train_stage(
@@ -114,34 +80,20 @@ class PipelineActor(Actor):
         upstream_ckpts: dict[str, str] | None = None,
     ) -> str:
         """Train a single stage. Returns checkpoint path. Idempotent."""
-        from graphids.config.constants import PHASE_MARKERS
-
         resolved = self._resolve(stage_config, dataset, seed, upstream_ckpts or {})
-        ckpt_path = str(resolved.paths.ckpt_file)
-        run_dir = Path(str(resolved.paths.run_dir))
+        ckpt_file = Path(str(resolved.paths.ckpt_file))
 
-        if resolved.paths.ckpt_file.exists() and resolved.paths.complete_marker.exists():
-            log.info("stage_skip_complete", stage=stage_config.get("stage"), run_dir=str(run_dir))
-            return ckpt_path
+        if ckpt_file.exists() and resolved.paths.complete_marker.exists():
+            log.info(
+                "stage_skip_complete",
+                stage=stage_config.get("stage"),
+                run_dir=str(resolved.paths.run_dir),
+            )
+            return str(ckpt_file)
 
-        # Phase B: wire file exporters for this stage's run_dir
-        from graphids._otel import wire_file_exporters
-
-        wire_file_exporters(run_dir)
-
-        run = self._instantiate(resolved)
-
-        log.info("stage_train", stage=stage_config.get("stage"), run_dir=str(run_dir))
-        try:
-            run.trainer.fit(run.model, datamodule=run.datamodule)
-        except Exception:
-            self._cached_datasets = None
-            raise
-
-        self._cache_datasets_from(run.datamodule)
-        touch_marker(run_dir / PHASE_MARKERS["train"])
-        log.info("stage_train_complete", stage=stage_config.get("stage"), ckpt=ckpt_path)
-        return ckpt_path
+        artifacts = build(resolved)
+        ckpt = train(artifacts, resolved)
+        return str(ckpt)
 
     @endpoint
     def eval_stage(
@@ -151,47 +103,62 @@ class PipelineActor(Actor):
         seed: int,
         upstream_ckpts: dict[str, str] | None = None,
     ) -> None:
-        """Run test + analyze + finalize for a completed stage. All lenient."""
-        from graphids.config.constants import PHASE_MARKERS
+        """Run test + finalize for a completed stage. Lenient.
 
+        Analyze is **not** run here — it's a pipeline-level concern
+        dispatched by ``graphids.orchestrate.analyze`` via the
+        ``analyze_stage`` endpoint below.
+        """
         resolved = self._resolve(stage_config, dataset, seed, upstream_ckpts or {})
-        ckpt_path = str(resolved.paths.ckpt_file)
-        run_dir = Path(str(resolved.paths.run_dir))
-        model_type = stage_config.get("model_type", "")
+        ckpt_file = Path(str(resolved.paths.ckpt_file))
 
-        run = self._instantiate(resolved)
-
-        # Test (lenient)
-        try:
-            log.info("stage_test", stage=stage_config.get("stage"))
-            run.trainer.test(run.model, datamodule=run.datamodule, ckpt_path=ckpt_path)
-            touch_marker(run_dir / PHASE_MARKERS["test"])
-        except Exception as exc:
-            log.warning("stage_test_failed", stage=stage_config.get("stage"), error=str(exc))
-
-        # Analyze (lenient, model-dependent)
-        if model_type in ("vgae", "gat", "dgi"):
-            try:
-                from graphids.core.analysis.schemas import AnalysisSpec
-                from graphids.orchestrate.analysis import run_analysis
-
-                spec = AnalysisSpec(
-                    ckpt_path=ckpt_path,
-                    dataset=dataset,
-                    model_type=model_type,
-                    output_dir=str(Path(ckpt_path).resolve().parent.parent / "artifacts"),
-                    seed=seed,
-                )
-                log.info("stage_analyze", model_type=model_type)
-                run_analysis(spec)
-                touch_marker(run_dir / PHASE_MARKERS["analyze"])
-            except Exception as exc:
-                log.warning("stage_analyze_failed", stage=stage_config.get("stage"), error=str(exc))
+        artifacts = build(resolved)
+        evaluate(artifacts, resolved, ckpt_file)
 
         touch_marker(resolved.paths.complete_marker)
         log.info("stage_eval_complete", stage=stage_config.get("stage"))
 
-    # -- fault tolerance --------------------------------------------------------
+    @endpoint
+    def analyze_stage(
+        self,
+        stage_config: dict[str, Any],
+        dataset: str,
+        seed: int,
+        ckpt_path: str,
+    ) -> None:
+        """Run the analyzer for one stage's checkpoint.
+
+        Dispatched by the pipeline-level ``analyze`` driver once
+        ``run_chain`` finishes. Lenient on failure — a bad analyzer
+        run shouldn't kill the chain.
+        """
+        from graphids.config.constants import PHASE_MARKERS
+        from graphids.core.analysis.schemas import AnalysisSpec
+        from graphids.orchestrate.analyze import run_single_analysis
+
+        resolved = self._resolve(stage_config, dataset, seed, {})
+        model_type = stage_config.get("model_type", "")
+        ckpt_file = Path(ckpt_path)
+
+        try:
+            spec = AnalysisSpec(
+                ckpt_path=str(ckpt_file),
+                dataset=dataset,
+                model_type=model_type,
+                output_dir=str(ckpt_file.resolve().parent.parent / "artifacts"),
+                seed=seed,
+            )
+            log.info("stage_analyze", model_type=model_type)
+            run_single_analysis(spec)
+            touch_marker(Path(str(resolved.paths.run_dir)) / PHASE_MARKERS["analyze"])
+        except Exception as exc:
+            log.warning(
+                "stage_analyze_failed",
+                stage=stage_config.get("stage"),
+                error=str(exc),
+            )
+
+    # -- fault tolerance -------------------------------------------------------
 
     def __supervise__(self, failure: Any) -> bool:
         """Monarch supervision hook — absorb child mesh failures."""

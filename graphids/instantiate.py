@@ -68,10 +68,29 @@ class Instantiator:
         return {k: v for k, v in kwargs.items() if k in accepted}
 
     @classmethod
+    def _resolve_nested(cls, value: Any) -> Any:
+        """Recursively instantiate any ``{class_path, init_args}`` dicts inside ``value``.
+
+        Lets jsonnet compose nested class_path blocks inside an outer
+        ``init_args``. Plain dicts (including KD auxiliary config) are
+        walked key-by-key and left alone if they don't carry a
+        ``class_path`` key.
+        """
+        if isinstance(value, dict):
+            if "class_path" in value:
+                return cls.build_block(value)
+            return {k: cls._resolve_nested(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [cls._resolve_nested(v) for v in value]
+        return value
+
+    @classmethod
     def build_block(cls, block: dict[str, Any]) -> Any:
-        """Instantiate a ``{class_path, init_args}`` dict."""
+        """Instantiate a ``{class_path, init_args}`` dict (recursing into nested blocks)."""
         klass = cls.import_class(block["class_path"])
-        return klass(**(block.get("init_args") or {}))
+        init_args = block.get("init_args") or {}
+        resolved = {k: cls._resolve_nested(v) for k, v in init_args.items()}
+        return klass(**resolved)
 
     # -- components --
 

@@ -22,7 +22,7 @@ def rebuild_caches(
 ) -> None:
     """Rebuild preprocessed graph caches from raw dataset files."""
     from graphids.config.topology import dataset_names
-    from graphids.core.data.cache import rebuild_caches as _rebuild
+    from graphids.core.data.rebuild import rebuild_caches as _rebuild
 
     datasets = list(dataset_names()) if all_ else (dataset or [])
     if not datasets:

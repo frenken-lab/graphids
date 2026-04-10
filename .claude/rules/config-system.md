@@ -13,10 +13,11 @@ with Jsonnet-backed configs (`cli/_analysis.py`).
 1. Recipe YAML + pipeline topology declare which stage+scale chains exist.
 2. `enumerate_assets` produces `StageConfig`s carrying `jsonnet_path` +
    planner-derived identity knobs.
-3. `ConfigResolver.resolve` packs trainer/stage/KD/upstream-ckpt overrides
-   into a typed TLA dict via `graphids.orchestrate.contracts.build_tla_dict`.
-4. `render_config(spec.jsonnet_path, spec.jsonnet_tla)` produces the merged
-   dict — identical on login node, dagster worker, and SLURM node.
+3. `ResolvedConfig.resolve` (classmethod on `orchestrate/resolve.py`)
+   packs trainer/stage/KD/upstream-ckpt overrides into a typed TLA
+   dict via the private `_build_tla_dict` helper in the same file.
+4. `render(stage.jsonnet_path, tla)` from `graphids.config.jsonnet`
+   produces the merged dict — identical on login node and SLURM node.
 5. `validate_config(rendered) → ValidatedConfig` runs Pydantic validators
    (null list fields, monitor consistency, class_path namespacing, etc.)
    on the jsonnet output. Raises `ConfigValidationError` on any violation.
@@ -59,13 +60,12 @@ configs/                           # repo root — jsonnet sources
 
 graphids/
   instantiate.py                   # instantiate(rendered) → InstantiatedRun (trainer, model, datamodule)
-  contracts.py                     # TrainingRunConfig, KDEntry
   cli/
     app.py                         # Typer root app, shared options (parse_tla, apply_overrides)
     _training.py                   # fit/test/validate/predict commands
     _analysis.py                   # analyze command (jsonargparse + jsonnet)
-    _data.py                       # rebuild-caches, stage-data, rebuild-catalog
-    _orchestrate.py                # pipeline-status, rebuild-catalog, _finalize-record
+    _data.py                       # rebuild-caches, stage-data, extract-fusion-states
+    _monarch.py                    # monarch-run (pipeline execution)
     _slurm.py                      # job-stats, submit-profile
   config/
     __init__.py                    # public API facade
@@ -79,16 +79,17 @@ graphids/
     callbacks.py                   # CallbackBase, ModelCheckpoint, EarlyStopping
     monitoring.py                  # OTelTrainingCallback, OTelTrainingLogger
   orchestrate/
-    contracts.py                   # TrainingSpec, build_tla_dict, resolve_jsonnet_path
-    resolve.py                     # ConfigResolver + cross-field validation
-    analysis.py                    # shared analysis runner (Monarch)
+    run.py                         # PipelineConfig, build_pipeline_stages, run_pipeline driver
+    allocate.py                    # JobSpec, build_slurm_job, spawn_actor, configure_monarch
+    chain.py                       # run_chain(actor, stages, …) — pure loop + ChainResult
+    stage.py                       # build, train, evaluate, run_stage (single-stage primitives)
+    analyze.py                     # pipeline-level analyze + run_single_analysis helper
+    actors.py                      # PipelineActor — thin endpoint wrapper around stage.py
+    resolve.py                     # ResolvedConfig.resolve + private _build_tla_dict
+    _setup.py                      # ensure_spawn, touch_marker
     planning/
-      planner.py                   # StageConfig, enumerate_assets
-      recipes.py                   # recipe expansion wrapper
-    ops/
-      catalog.py                   # DuckDB catalog rebuild
-      finalize.py                  # _finalize-record
-      status.py                    # pipeline-status aggregation
+      planner.py                   # StageConfig, enumerate_assets, resolve_jsonnet_path
+      recipes.py                   # TrainingRunConfig, KDEntry, expand_recipe_configs
   slurm/
     env.py                         # centralized SLURM env var reads
     core/
@@ -114,18 +115,19 @@ python -m graphids fit \
     --config configs/stages/autoencoder.jsonnet \
     --model.init_args.lr=0.005
 
-# Pipeline path (dagster → SLURM)
-dg launch --assets 'autoencoder_*'
+# Pipeline path (Monarch → single SLURM allocation)
+python -m graphids monarch-run --dataset hcrl_sa
 
-# Validation runs inside ConfigResolver during orchestration
+# Validation runs inside ResolvedConfig.resolve during orchestration
 ```
 
 ## Stage function convention
 
 Every `stages/*.jsonnet` is a top-level function with sensible defaults
-for every TLA. `graphids.orchestrate.contracts.build_tla_dict` is the single site that
-packs a `StageConfig` into the TLA dict each stage consumes. Adding a new
-TLA means updating both the jsonnet signature AND `build_tla_dict`.
+for every TLA. The private `_build_tla_dict` helper in
+`graphids/orchestrate/resolve.py` is the single site that packs a
+`StageConfig` into the TLA dict each stage consumes. Adding a new TLA
+means updating both the jsonnet signature AND `_build_tla_dict`.
 
 ```jsonnet
 function(
@@ -175,11 +177,12 @@ renders correctly after editing.
    tree: every `(model_family)` has a libsonnet, every stage has a
    `.jsonnet`, every fusion method has a method libsonnet. Missing files
    fail at package import.
-6. **`ConfigResolver.resolve`** — renders every unique chain on asset
-   materialization, runs `validate_config` + `validate_stage_config` (Pydantic
-   cross-field rules), and catches override typos, null list fields, and
-   logger/callback wiring mismatches. No jsonargparse schema pass — deleted
-   in Phase 3.
+6. **`ResolvedConfig.resolve`** — for each stage on actor invocation,
+   renders the jsonnet, runs `validate_config` (Pydantic — null list
+   fields, monitor consistency, class_path namespacing, logger/callback
+   wiring), and emits an inline log warning if the checkpoint
+   `monitor`/`mode` pair doesn't match the stage family convention.
+   No jsonargparse schema pass — deleted in Phase 3.
 
 ## Null preservation
 
@@ -221,6 +224,7 @@ via OTel SimpleSpanProcessor + PeriodicExportingMetricReader. The
 
 ## DuckDB catalog
 
-`{lake_root}/catalog/kd_gat.duckdb` — `runs` table rebuilt from
-`traces.jsonl` OTel spans. Disposable — rebuildable via
-`python -m graphids rebuild-catalog`.
+`{lake_root}/catalog/kd_gat.duckdb` — intended to hold a `runs` table
+built from `traces.jsonl` OTel spans. Builder + `rebuild-catalog` CLI
+were removed 2026-04-10 pending redesign — `traces.jsonl` files are
+still written and can be queried ad-hoc via DuckDB's `read_json_auto`.

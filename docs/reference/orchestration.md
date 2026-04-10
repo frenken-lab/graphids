@@ -1,78 +1,119 @@
 # Orchestration — `graphids/orchestrate/`
 
-> Status: **implemented** | Dagster removed: 2026-04-08
+> Status: **implemented** | Refactor: 2026-04-10 (session 42)
 
-Pipeline orchestration for the KD-GAT training matrix. Monarch actors
-execute the 3-stage pipeline (autoencoder -> supervised -> fusion) in a
-single SLURM allocation. `ResolvedConfig.resolve` is the exclusive merge
-path that turns a `StageConfig` into a rendered, validated config.
+Pipeline orchestration for the KD-GAT training matrix. A single
+Monarch `SlurmJob` hosts a `PipelineActor` that executes the 3-stage
+pipeline (`autoencoder → supervised → fusion`) one stage at a time.
+Each file owns one verb at one level; composition happens only in the
+explicit `run_*` drivers.
 
 ## Layout
 
 | Module | Role |
 |---|---|
-| `monarch.py` | `PipelineConfig`, `SweepConfig`, `JobSpec`, `ChainSpec`; `run_chain`, `run_sweep`, `plan_chains`, `build_pipeline_stages`, `chain_job_spec` |
-| `actors.py` | `PipelineActor` — `train_stage` + `eval_stage` endpoints; dataset caching across stages |
-| `resolve.py` | `ResolvedConfig.resolve` + `_build_tla_dict` + cross-field validation |
-| `analysis.py` | Shared analysis runner (called by `eval_stage`) |
-| `_setup.py` | `ensure_spawn`, `touch_marker`, `bootstrap_staging` |
-| `planning/` | `planner.py`: `StageConfig`, `enumerate_assets`; `recipes.py`: `TrainingRunConfig`, `expand_recipe_configs` |
-| `ops/` | `status.py`: `pipeline-status` CLI; `catalog.py`: DuckDB rebuild from OTel traces |
+| `run.py` | `PipelineConfig` schema, `build_pipeline_stages`, `PipelineResult`, and the top-level `run_pipeline(config, job_spec)` driver — the only module that sees every layer |
+| `allocate.py` | `JobSpec`, `build_slurm_job`, `spawn_actor`, `configure_monarch` — SLURM allocation with zero pipeline knowledge |
+| `chain.py` | `run_chain(actor, stages, …) → ChainResult` — pure loop over `train_stage` then `eval_stage`, decoupled from the SlurmJob lifecycle |
+| `analyze.py` | Pipeline-level `analyze(actor, stages, chain, …)` + `run_single_analysis(spec)` — runs once after `run_chain` returns, over the full dict of checkpoints |
+| `stage.py` | Single-stage primitives: `build(resolved)`, `train(artifacts, resolved)`, `evaluate(artifacts, resolved, ckpt)`, `run_stage(resolved)` driver |
+| `actors.py` | `PipelineActor` — thin Monarch endpoint wrapper around `stage.py` primitives (`train_stage`, `eval_stage`, `analyze_stage` endpoints) |
+| `resolve.py` | `ResolvedConfig.resolve` classmethod + private `_build_tla_dict`; inline monitor/mode consistency check |
+| `_setup.py` | `ensure_spawn`, `touch_marker` |
+| `planning/` | `planner.py`: `StageConfig`, `enumerate_assets`, `resolve_jsonnet_path`; `recipes.py`: `TrainingRunConfig`, `KDEntry`, `expand_recipe_configs`, `check_in` |
 
 ## Layered structure (no cycles)
 
 ```
-LEAVES     planning/ (pure data, Pydantic models)
+LEAVES     planning/  (pure data, Pydantic models)
                |
-RESOLVE    resolve.py <-- planning, config, slurm
+RESOLVE    resolve.py          <-- planning, config, slurm
                |
-ACTOR      actors.py <-- resolve, planning, instantiate
+STAGE      stage.py            <-- resolve, instantiate  (build, train, evaluate, run_stage)
                |
-PIPELINE   monarch.py <-- actors, planning, slurm
+ACTOR      actors.py           <-- stage  (Monarch endpoint wrapper)
                |
-OPS        ops/ <-- planning (status), config (catalog)
+CHAIN      chain.py            <-- planning  (run_chain over actor endpoints)
+               |
+ANALYZE    analyze.py          <-- chain, planning  (pipeline-level driver)
+               |
+ALLOCATE   allocate.py         <-- actors, slurm
+               |
+DRIVER     run.py              <-- allocate, chain, analyze, planning
 ```
 
-## Runtime architecture (Monarch path)
+Each layer composes only its Layer N+1 peers. `run_pipeline` is the
+only module that sees the full picture.
+
+## Runtime architecture
 
 ```
-monarch-run / monarch-sweep  (cli/_monarch.py)
+monarch-run  (cli/_monarch.py)
 |
-+-- build_pipeline_stages(PipelineConfig)     -> list[StageConfig]   [monarch.py]
-|     +-- enumerate_assets(recipe)
++-- PipelineConfig(**kwargs)                                         [run.py]
+|     -> validates dataset/scale/stages/fusion_method
 |
-+-- run_chain(ChainSpec)                                             [monarch.py]
-    +-- chain_job_spec(stages) -> JobSpec
-    +-- JobSpec.create_job()   -> monarch SlurmJob
-    +-- PipelineActor (actors.py) spawned on proc_mesh
-        +-- train_stage(stage_config, dataset, seed, upstream_ckpts) -> ckpt_path
-        |   +-- ResolvedConfig.resolve(cfg, lake_root, user, dataset, seed, upstream_ckpts)
-        |       +-- PathContext(...)
-        |       +-- _build_tla_dict(...)          -> typed TLA dict
-        |       +-- apply_resource_overrides(...)  -> ResourceSpec
-        |       +-- render(jsonnet_path, tla)       -> dict
-        |       +-- validate_config(rendered)       -> ValidatedConfig
-        |       +-- _validate_cross_fields(...)
-        |   -> instantiate(resolved.rendered) -> run
-        |   -> run.trainer.fit(...)
-        |
-        +-- eval_stage(stage_config, ...) -- test + analyze + phase markers (lenient)
++-- JobSpec(partition=..., time=..., mem=..., cpus=...)              [allocate.py]
+|
++-- run_pipeline(config, job_spec) -> PipelineResult                 [run.py]
+    |
+    +-- build_pipeline_stages(config) -> list[StageConfig]           [run.py]
+    |     +-- enumerate_assets(recipe)                               [planning/planner.py]
+    |
+    +-- configure_monarch()                                          [allocate.py]
+    +-- build_slurm_job(job_spec) -> SlurmJob                        [allocate.py]
+    |     +-- patch_clusterscope_for_osc()                           [graphids/_slurm.py]
+    +-- spawn_actor(job, gpus_per_node, lake_root) -> PipelineActor  [allocate.py]
+    |
+    +-- run_chain(actor, stages, dataset, seed, max_retries)         [chain.py]
+    |   | -> ChainResult(checkpoints, stage_to_asset)
+    |   |
+    |   +-- for each stage: actor.train_stage.call_one(...)          [actors.py + stage.py]
+    |   |     +-- ResolvedConfig.resolve(cfg, ...)                   [resolve.py]
+    |   |     +-- build(resolved) -> InstantiatedRun                 [stage.py]
+    |   |     |     -> gc.collect + torch.cuda.empty_cache
+    |   |     |     -> instantiate(resolved.rendered)                [graphids/instantiate.py]
+    |   |     +-- train(artifacts, resolved) -> ckpt_path            [stage.py]
+    |   |           -> wire_file_exporters(run_dir)
+    |   |           -> trainer.fit(model, datamodule)
+    |   |           -> touch_marker(run_dir/.train_done)
+    |   |
+    |   +-- for each stage: actor.eval_stage.call_one(...)           [actors.py + stage.py]
+    |       +-- build(resolved)
+    |       +-- evaluate(artifacts, resolved, ckpt) -> metrics        [stage.py]
+    |       |     -> trainer.test(...)
+    |       |     -> touch_marker(run_dir/.test_done)
+    |       +-- touch_marker(run_dir/.complete)
+    |
+    +-- analyze(actor, stages, chain, dataset, seed)                 [analyze.py]
+    |     +-- for analyzable stages (vgae/dgi/gat):
+    |         actor.analyze_stage.call_one(...)                      [actors.py]
+    |           +-- run_single_analysis(spec)                        [analyze.py]
+    |                 -> Analyzer(...).run()
+    |                 -> write analysis_manifest.json
+    |                 -> touch_marker(run_dir/.analyze_done)
+    |
+    +-- finally: job.kill()                                          [run.py]
 ```
 
-`run_sweep` fans out `plan_chains` results over a `ThreadPoolExecutor`,
-one `run_chain` call per `ChainSpec`.
+Train-stage retries are bounded by `config.max_retries`; eval-stage
+and analyze-stage failures are logged as warnings and don't fail the
+chain.
 
 ## Key decisions
 
 | Decision | Rationale |
 |---|---|
-| `ResolvedConfig.resolve` is the exclusive merge path | All override sources (trainer, stage, KD, resource) flow through one call |
-| Monarch over Dagster | Single SLURM allocation for 3-stage pipeline; no inter-job queue wait |
-| In-process execution | Resolver output feeds directly to `instantiate()` — no serialization boundary |
-| Dataset caching in actor | `PipelineActor` holds CPU copies across stages, avoiding redundant preprocessing I/O |
+| Each file owns one verb at one level | No function composes two of its peers; composition happens only in explicit drivers. See `plans/kd-gat-orchestrate-refactor.md`. |
+| Dataset caching sits **below** `build()` | Process-level `get_or_build` in `core/data/cache.py`, keyed on the dataset's `cache_key`. No actor-side dataset state. |
+| `analyze` is pipeline-level, not per-stage | Runs once after `run_chain` returns over the full dict of trained checkpoints; fixed-cost setup amortizes across stages. |
+| `build` is dumb | Pure importlib class_path instantiation (plus GPU reset) — no cache knowledge, no dataset knowledge. |
+| `ResolvedConfig.resolve` is the exclusive merge path | All override sources (trainer, stage, KD) flow through one classmethod call. |
+| Monarch over Dagster | Single SLURM allocation for 3-stage pipeline; no inter-job queue wait. |
 
 ## Cross-references
 
 - [`config-architecture.md`](config-architecture.md) — jsonnet + Pydantic layer
 - [`write-paths.md`](write-paths.md) — lake layout, `PathContext`, identity hash
 - [ADR 0009 — Collapse override handoff chain](../decisions/README.md)
+- `plans/kd-gat-orchestrate-refactor.md` — design decisions for this layout
