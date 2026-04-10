@@ -10,14 +10,10 @@ resolve via ``graphids.core.data.datamodule.X``.
 
 from __future__ import annotations
 
-from graphids.core.data.sampler import make_graph_loader
-
 from .fusion import FusionDataModule
-from .graph import GraphDataModule, load_datasets
+from .graph import GraphDataModule
 
 __all__ = [
     "FusionDataModule",
     "GraphDataModule",
-    "load_datasets",
-    "make_graph_loader",
 ]

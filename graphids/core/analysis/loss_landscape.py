@@ -13,7 +13,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from graphids.core.data.sampler import make_graph_loader
+from torch_geometric.loader import DataLoader as PyGDataLoader
 from graphids._otel import get_logger
 
 log = get_logger(__name__)
@@ -190,7 +190,7 @@ def compute_and_save_loss_landscape(
     else:
         data = val_data
 
-    dataloader = make_graph_loader(data, batch_size=min(256, len(data)))
+    dataloader = PyGDataLoader(data, batch_size=min(256, len(data)))
 
     log.info("loss_landscape_start", model=model_type, resolution=resolution, scale=scale)
     result = _sweep_grid(model, loss_fn, dataloader, device, hparams, resolution, scale, seed)

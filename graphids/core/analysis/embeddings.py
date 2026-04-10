@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from graphids.core.data.sampler import make_graph_loader
+from torch_geometric.loader import DataLoader as PyGDataLoader
 from graphids._otel import get_logger
 
 log = get_logger(__name__)
@@ -29,7 +29,7 @@ def collect_and_save_embeddings(
 
     with eval_mode(model):
         data = val_data[:max_samples]
-        loader = make_graph_loader(data, batch_size=batch_size)
+        loader = PyGDataLoader(data, batch_size=batch_size)
 
         all_emb, all_labels = [], []
         for batch in loader:
@@ -86,7 +86,7 @@ def collect_and_save_attention(
 
     with eval_mode(model):
         data = val_data[:max_samples]
-        loader = make_graph_loader(data, batch_size=1)
+        loader = PyGDataLoader(data, batch_size=1)
 
         attn_export: dict[str, np.ndarray] = {}
         sample_idx = 0

@@ -17,10 +17,6 @@ function(
   fusion_method=pd.fusion_method,
   scale=pd.scale,
 
-  // Upstream teacher checkpoints.
-  gat_ckpt_path=null,
-  vgae_ckpt_path=null,
-
   trainer_overrides={},
   stage_overrides={},
   ckpt_path=null,
@@ -43,14 +39,8 @@ function(
 
     data+: {
       init_args+: {
-        dataset: dataset,
-        seed: seed,
-      } + (if gat_ckpt_path != null
-           then { gat_ckpt_path: gat_ckpt_path }
-           else {})
-        + (if vgae_ckpt_path != null
-           then { vgae_ckpt_path: vgae_ckpt_path }
-           else {}),
+        cached_states_dir: run_dir,
+      },
     },
   } + (if ckpt_path != null then { ckpt_path: ckpt_path } else {})
 

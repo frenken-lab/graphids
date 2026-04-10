@@ -315,14 +315,14 @@ class GraphAutoencoderNeighborhood(nn.Module):
         """
         from torch_geometric.utils import scatter
 
-        from graphids.core.data.sampler import make_graph_loader
+        from torch_geometric.loader import DataLoader as PyGDataLoader
 
         device = next(self.parameters()).device
         was_training = self.training
         self.eval()
         try:
             scores: list[float] = []
-            for batch in make_graph_loader(graphs, batch_size=batch_size):
+            for batch in PyGDataLoader(graphs, batch_size=batch_size):
                 batch = batch.to(device, non_blocking=True)
                 edge_attr = getattr(batch, "edge_attr", None)
                 cont, canid_logits, _, _, _, _ = self(

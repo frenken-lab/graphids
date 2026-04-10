@@ -1,17 +1,12 @@
-"""Frozen VGAE+GAT state caching for fusion training.
+"""Fusion DataModule — serves pre-extracted VGAE+GAT state vectors.
 
-Independent of the graph family — serves ``TensorDataset`` batches of
-precomputed state vectors, not PyG graph batches. Two paths:
-
-- **Fast path** (``cached_states_dir`` set): load pre-extracted state
-  tensors from disk. No GPU needed.
-- **Slow path**: load VGAE + GAT checkpoints, run them over CAN data,
-  concatenate registered extractor outputs into ``[N, total_dim]`` tensors.
+Loads cached state tensors from disk (produced by
+``python -m graphids extract-fusion-states``). Independent of the graph
+family — serves ``TensorDataset`` batches of dense vectors, not PyG graphs.
 """
 
 from __future__ import annotations
 
-import gc
 import math
 from pathlib import Path
 
@@ -19,42 +14,27 @@ import pytorch_lightning as pl
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
-from graphids.core.data.datasets.can_bus import CANBusDataset
 from graphids._otel import get_logger
-
-from .graph import load_datasets
+from graphids.core.data.fusion_states import FUSION_STATES_DIR, TRAIN_FILENAME, VAL_FILENAME
 
 log = get_logger(__name__)
 
 
 class FusionDataModule(pl.LightningDataModule):
-    """Loads frozen VGAE+GAT, caches state vectors, serves DataLoaders.
+    """Loads pre-extracted VGAE+GAT state vectors, serves DataLoaders.
 
-    Wraps CAN data loading internally — callers never touch raw graph data.
+    Requires ``cached_states_dir`` pointing to the output of
+    ``python -m graphids extract-fusion-states``. If not set, raises
+    with instructions.
     """
 
     def __init__(
         self,
-        dataset: str = "",
-        lake_root: str | None = None,
-        vgae_ckpt_path: str = "",
-        gat_ckpt_path: str = "",
         cached_states_dir: str = "",
         method: str = "bandit",
         batch_size: int = 128,
         episode_sample_size: int = 20000,
-        max_samples: int = 150000,
-        max_val_samples: int = 30000,
-        eval_batch_size: int = 256,
-        seed: int = 42,
-        window_size: int = 100,
-        stride: int = 100,
-        val_fraction: float = 0.2,
     ):
-        if lake_root is None:
-            from graphids.config.settings import get_settings
-
-            lake_root = get_settings().lake_root
         super().__init__()
         self.save_hyperparameters()
         is_rl = method in ("dqn", "bandit")
@@ -71,78 +51,13 @@ class FusionDataModule(pl.LightningDataModule):
             return
 
         hp = self.hparams
+        if not hp.cached_states_dir:
+            raise ValueError(
+                "cached_states_dir is required — run "
+                "'python -m graphids extract-fusion-states' first"
+            )
 
-        # Fast path: load pre-extracted states from disk (no GPU needed)
-        if hp.cached_states_dir:
-            self._load_cached_states(hp.cached_states_dir)
-            return
-
-        # Slow path: load upstream models and extract on GPU
-        from graphids.core.models.base import load_inner_model
-
-        train_ds, val_ds, _ = load_datasets(
-            dataset=hp.dataset,
-            lake_root=hp.lake_root,
-            seed=hp.seed,
-            window_size=hp.window_size,
-            stride=hp.stride,
-            train_val_split=1.0 - hp.val_fraction,
-            dataset_cls=CANBusDataset,
-        )
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        if not hp.vgae_ckpt_path:
-            raise ValueError("vgae_ckpt_path is empty — upstream VGAE checkpoint not wired")
-        if not hp.gat_ckpt_path:
-            raise ValueError("gat_ckpt_path is empty — upstream GAT checkpoint not wired")
-        vgae, _ = load_inner_model("vgae", Path(hp.vgae_ckpt_path), device)
-        gat, _ = load_inner_model("gat", Path(hp.gat_ckpt_path), device)
-
-        # Fusion pre-flight: warn if both models consume > 85% of VRAM
-        if torch.cuda.is_available():
-            allocated = torch.cuda.memory_allocated(device)
-            total = torch.cuda.get_device_properties(device).total_memory
-            usage_pct = allocated / total * 100
-            if usage_pct > 85:
-                log.warning(
-                    "fusion_setup_vram_high",
-                    allocated_mb=round(allocated / 1e6, 1),
-                    total_mb=round(total / 1e6, 1),
-                    pct=round(usage_pct, 1),
-                )
-
-        from graphids.core.data.fusion_states import cache_predictions
-
-        models = {"vgae": vgae, "gat": gat}
-        self.train_cache = cache_predictions(
-            models,
-            list(train_ds),
-            device,
-            hp.max_samples,
-            batch_size=hp.eval_batch_size,
-        )
-        self.val_cache = cache_predictions(
-            models,
-            list(val_ds),
-            device,
-            hp.max_val_samples,
-            batch_size=hp.eval_batch_size,
-        )
-
-        del vgae, gat, models
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-    def _load_cached_states(self, cached_states_dir: str) -> None:
-        """Load pre-extracted fusion states from disk. No GPU needed."""
-        from graphids.core.data.fusion_states import (
-            FUSION_STATES_DIR,
-            TRAIN_FILENAME,
-            VAL_FILENAME,
-        )
-
-        states_dir = Path(cached_states_dir)
+        states_dir = Path(hp.cached_states_dir)
         # Support both direct dir and parent dir containing fusion_states/
         if not (states_dir / TRAIN_FILENAME).exists():
             states_dir = states_dir / FUSION_STATES_DIR

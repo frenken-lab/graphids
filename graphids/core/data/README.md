@@ -7,7 +7,6 @@ data/
   io.py                    # NFS-safe primitives: atomic_save, nfs_lock, vocab_from_column
   sampler.py               # NodeBudgetBatchSampler, PrefetchLoader
   budget.py                # GPU memory budget computation for dynamic batching
-  budget_probe.py          # VRAM probing (measures actual GPU cost per graph)
   cache.py                 # Preprocessed cache management
   fusion_states.py         # Extract VGAE/GAT embeddings for fusion stage input
   schemas.py               # Shared Pydantic schemas

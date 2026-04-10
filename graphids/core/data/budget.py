@@ -21,9 +21,19 @@ from torch_geometric.data import Batch
 
 from graphids._otel import get_logger
 from graphids.config.topology import cache_dir
-from graphids.core.data.sampler import collect_batch
 
 log = get_logger(__name__)
+
+
+def collect_batch(dataset, target_nodes: int) -> Batch:
+    """Collect graphs until reaching ``target_nodes`` total. No DataLoader overhead."""
+    graphs, total = [], 0
+    for g in dataset:
+        graphs.append(g)
+        total += g.num_nodes
+        if total >= target_nodes:
+            break
+    return Batch.from_data_list(graphs)
 VALID_CONV_TYPES = frozenset({"gat", "gatv2", "transformer", "gps"})
 
 

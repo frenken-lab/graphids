@@ -143,7 +143,7 @@ def _wide_to_long(lf: pl.LazyFrame, sensor_cols: list[str]) -> pl.LazyFrame:
 #             .cast(pl.Int64)
 #             .alias("node_id")
 #         )
-#         data, slices, num_graphs = sliding_window_graphs(
+#         data, slices, num_graphs = GraphPipeline(...).run(
 #             df, self.window_size, self.stride,
 #             node_stat_exprs=NODE_STAT_EXPRS,
 #             edge_stat_exprs=EDGE_STAT_EXPRS,

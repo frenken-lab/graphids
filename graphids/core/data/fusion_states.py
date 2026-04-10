@@ -17,7 +17,7 @@ from pathlib import Path
 import torch
 
 from graphids._otel import get_logger
-from graphids.core.data.sampler import make_graph_loader
+from torch_geometric.loader import DataLoader as PyGDataLoader
 
 log = get_logger(__name__)
 
@@ -49,7 +49,7 @@ def extract_states(
         model.eval()
 
     capped = data[:max_samples]
-    loader = make_graph_loader(capped, batch_size=batch_size)
+    loader = PyGDataLoader(capped, batch_size=batch_size)
 
     states, labels = [], []
     with torch.no_grad():
@@ -80,12 +80,9 @@ def extract_fusion_states(
     Args:
         checkpoints: ``{model_type: ckpt_path}`` e.g. ``{"vgae": "/path/to/best.ckpt", "gat": "..."}``.
     """
-    from graphids.config.settings import get_settings
-    from graphids.core.data.datamodule.graph import load_datasets
-    from graphids.core.data.datasets.can_bus import CANBusDataset
+    from graphids.core.data.datamodule.graph import GraphDataModule
     from graphids.core.models.base import load_inner_model
 
-    lake_root = get_settings().lake_root
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     models = {}
@@ -94,11 +91,12 @@ def extract_fusion_states(
         model, _ = load_inner_model(model_type, Path(ckpt_path), device)
         models[model_type] = model
 
-    train_ds, val_ds, _ = load_datasets(
-        dataset=dataset, lake_root=lake_root, seed=seed,
-        window_size=window_size, stride=stride,
-        train_val_split=1.0 - val_fraction, dataset_cls=CANBusDataset,
+    dm = GraphDataModule(
+        dataset=dataset, seed=seed, window_size=window_size,
+        stride=stride, val_fraction=val_fraction, dynamic_batching=False,
     )
+    dm.setup("fit")
+    train_ds, val_ds = dm.train_dataset, dm.val_dataset
 
     log.info("extracting_train", n_graphs=len(train_ds), max_samples=max_samples)
     train_cache = extract_states(models, list(train_ds), device, max_samples, batch_size)

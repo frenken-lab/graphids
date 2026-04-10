@@ -1,93 +1,12 @@
-"""Batch building, samplers, and DataLoader factory for graph data.
+"""Node-budget batch sampler for variable-size graphs.
 
-Decomposed by granularity:
-- ``collect_batch`` — one batch to a node budget (probing, extraction)
-- ``make_loader`` — DataLoader with spawn/prefetch defaults (training)
-- ``NodeBudgetBatchSampler`` — bin-packing sampler (training)
+Bin-packing sampler that yields index batches where total nodes <= a budget.
+Bucket-shuffle for low batch-to-batch size variance.
 """
 
 from __future__ import annotations
 
 import torch
-from torch_geometric.data import Batch
-
-
-# ---------------------------------------------------------------------------
-# Primitive: one batch to a node budget
-# ---------------------------------------------------------------------------
-
-
-def collect_batch(dataset, target_nodes: int) -> Batch:
-    """Collect graphs until reaching ``target_nodes`` total. No DataLoader overhead."""
-    graphs, total = [], 0
-    for g in dataset:
-        graphs.append(g)
-        total += g.num_nodes
-        if total >= target_nodes:
-            break
-    return Batch.from_data_list(graphs)
-
-
-# ---------------------------------------------------------------------------
-# DataLoader factory
-# ---------------------------------------------------------------------------
-
-
-def _worker_init(worker_id: int) -> None:
-    import torch.multiprocessing as mp
-    mp.set_sharing_strategy("file_system")
-
-
-def _clone_collate(x):
-    """Pre-batched items need cloning — PrefetchLoader pins in-place."""
-    return x.clone() if hasattr(x, "clone") else x
-
-
-def make_loader(
-    dataset, *, batch_sampler=None, batch_size=1, shuffle=False,
-    num_workers: int = 0, pin_memory: bool = True, device: torch.device | None = None,
-    **kwargs,
-):
-    """DataLoader with spawn/persistent_workers/PrefetchLoader defaults.
-
-    Args:
-        batch_size: ``None`` for pre-batched datasets (identity collation).
-        device: wraps with PrefetchLoader for async H2D transfer.
-    """
-    if device is not None:
-        pin_memory = False
-
-    if num_workers > 0:
-        kwargs.setdefault("persistent_workers", True)
-        kwargs.setdefault("multiprocessing_context", "spawn")
-        kwargs.setdefault("worker_init_fn", _worker_init)
-
-    common = dict(num_workers=num_workers, pin_memory=pin_memory, **kwargs)
-
-    if batch_size is None:
-        from torch.utils.data import DataLoader as TorchDataLoader
-        loader = TorchDataLoader(dataset, batch_size=None, shuffle=shuffle,
-                                 collate_fn=_clone_collate, **common)
-    elif batch_sampler is not None:
-        from torch_geometric.loader import DataLoader as PyGDataLoader
-        loader = PyGDataLoader(dataset, batch_sampler=batch_sampler, **common)
-    else:
-        from torch_geometric.loader import DataLoader as PyGDataLoader
-        loader = PyGDataLoader(dataset, batch_size=batch_size, shuffle=shuffle, **common)
-
-    if device is not None:
-        from torch_geometric.loader import PrefetchLoader
-        return PrefetchLoader(loader, device=device)
-    return loader
-
-
-# Backward compat
-make_graph_loader = make_loader
-
-
-# ---------------------------------------------------------------------------
-# Node-budget batch sampler
-# ---------------------------------------------------------------------------
 
 
 class NodeBudgetBatchSampler(torch.utils.data.Sampler[list[int]]):

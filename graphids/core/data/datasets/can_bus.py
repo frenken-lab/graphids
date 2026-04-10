@@ -14,7 +14,7 @@ import polars as pl
 import torch
 from torch_geometric.data import Data, InMemoryDataset
 
-from graphids.core.data.graph_pipeline import sliding_window_graphs
+from graphids.core.data.graph_pipeline import GraphPipeline
 from graphids.core.data.io import atomic_save, nfs_lock, vocab_from_column
 from graphids._otel import get_logger
 
@@ -109,9 +109,9 @@ NODE_STAT_EXPRS: list[pl.Expr] = [
 # Requires columns: timestamp, byte_0..7, _wid.
 # Note: bidir is computed separately via self-join (not expressible as a single expression).
 EDGE_STAT_EXPRS: list[pl.Expr] = [
-    pl.col("timestamp").diff().over("_wid").cast(pl.Float32).alias("iat"),
+    pl.col("timestamp").diff().cast(pl.Float32).alias("iat"),
     *[
-        pl.col(f"byte_{i}").diff().abs().over("_wid").cast(pl.Float32).alias(f"byte_{i}_diff")
+        pl.col(f"byte_{i}").diff().abs().cast(pl.Float32).alias(f"byte_{i}_diff")
         for i in range(8)
     ],
 ]
@@ -315,10 +315,7 @@ class CANBusDataset(InMemoryDataset):
             pl.col("arb_id").replace_strict(vocab, default=oov).cast(pl.Int64).alias("node_id")
         )
 
-        data, slices, num_graphs = sliding_window_graphs(
-            df,
-            self.window_size,
-            self.stride,
+        pipeline = GraphPipeline(
             node_stat_exprs=NODE_STAT_EXPRS,
             edge_stat_exprs=EDGE_STAT_EXPRS,
             node_col_order=NODE_COL_ORDER,
@@ -326,6 +323,7 @@ class CANBusDataset(InMemoryDataset):
             label_exprs=LABEL_EXPRS,
             edge_base_cols=EDGE_BASE_COLS,
         )
+        data, slices, num_graphs = pipeline.run(df, self.window_size, self.stride)
         del df
         return data, slices, num_arb_ids, num_graphs
 

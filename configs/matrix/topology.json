@@ -25,7 +25,7 @@
         {"family": "supervised", "stage": "supervised"}
       ],
       "identity_keys": ["scale", "loss_fn", "method", "conv_type"],
-      "stage_tlas": ["fusion_method", "gat_ckpt_path", "vgae_ckpt_path", "ckpt_path"]
+      "stage_tlas": ["fusion_method", "ckpt_path"]
     }
   },
   "default_stages": ["autoencoder", "supervised", "fusion"],

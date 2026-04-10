@@ -1,6 +1,6 @@
 """Preprocessing tests: feature computation produces correct shapes and values.
 
-Tests exercise the production path (sliding_window_graphs) with CAN bus
+Tests exercise the production path (GraphPipeline) with CAN bus
 schema constants. The pipeline is domain-agnostic; the CAN-specific Polars
 expressions and column layouts are injected as parameters.
 """
@@ -28,7 +28,7 @@ def _get_graph(data, slices, idx):
 
 
 def test_sliding_window_graphs_shapes_and_values():
-    """sliding_window_graphs produces Data objects with correct shapes and edge features."""
+    """GraphPipeline produces Data objects with correct shapes and edge features."""
     import polars as pl
 
     from graphids.core.data.datasets.can_bus import (
@@ -41,7 +41,7 @@ def test_sliding_window_graphs_shapes_and_values():
         NODE_COL_ORDER,
         NODE_STAT_EXPRS,
     )
-    from graphids.core.data.graph_pipeline import sliding_window_graphs
+    from graphids.core.data.graph_pipeline import GraphPipeline
 
     n_rows = 20
     rng = np.random.default_rng(0)
@@ -56,10 +56,7 @@ def test_sliding_window_graphs_shapes_and_values():
             "attack_type": [0] * n_rows,
         }
     )
-    data, slices, num_graphs = sliding_window_graphs(
-        df,
-        window_size=10,
-        stride=5,
+    pipeline = GraphPipeline(
         node_stat_exprs=NODE_STAT_EXPRS,
         edge_stat_exprs=EDGE_STAT_EXPRS,
         node_col_order=NODE_COL_ORDER,
@@ -67,6 +64,7 @@ def test_sliding_window_graphs_shapes_and_values():
         label_exprs=LABEL_EXPRS,
         edge_base_cols=EDGE_BASE_COLS,
     )
+    data, slices, num_graphs = pipeline.run(df, window_size=10, stride=5)
     assert num_graphs > 0
     g = _get_graph(data, slices, 0)
     assert g.x.shape[1] == N_NODE_FEATURES
@@ -98,7 +96,7 @@ def test_sliding_window_graphs_edge_freq():
         NODE_COL_ORDER,
         NODE_STAT_EXPRS,
     )
-    from graphids.core.data.graph_pipeline import sliding_window_graphs
+    from graphids.core.data.graph_pipeline import GraphPipeline
 
     # 10 rows, 2 node IDs → many repeated (src, dst) pairs
     node_ids = [0, 1, 0, 1, 0, 1, 0, 1, 0, 1]
@@ -112,10 +110,7 @@ def test_sliding_window_graphs_edge_freq():
             "attack_type": [0] * 10,
         }
     )
-    data, slices, num_graphs = sliding_window_graphs(
-        df,
-        window_size=10,
-        stride=10,
+    pipeline = GraphPipeline(
         node_stat_exprs=NODE_STAT_EXPRS,
         edge_stat_exprs=EDGE_STAT_EXPRS,
         node_col_order=NODE_COL_ORDER,
@@ -123,6 +118,7 @@ def test_sliding_window_graphs_edge_freq():
         label_exprs=LABEL_EXPRS,
         edge_base_cols=EDGE_BASE_COLS,
     )
+    data, slices, num_graphs = pipeline.run(df, window_size=10, stride=10)
     assert num_graphs == 1
     g = _get_graph(data, slices, 0)
     freq_idx = EDGE_COL_ORDER.index("edge_freq")
@@ -148,7 +144,7 @@ def test_skewness_kurtosis_clamped():
         NODE_COL_ORDER,
         NODE_STAT_EXPRS,
     )
-    from graphids.core.data.graph_pipeline import sliding_window_graphs
+    from graphids.core.data.graph_pipeline import GraphPipeline
 
     # Extreme byte values: one constant column + one high-variance column
     # to provoke large skewness/kurtosis before clamping.
@@ -169,10 +165,7 @@ def test_skewness_kurtosis_clamped():
             "attack_type": [0] * n_rows,
         }
     )
-    data, slices, num_graphs = sliding_window_graphs(
-        df,
-        window_size=50,
-        stride=50,
+    pipeline = GraphPipeline(
         node_stat_exprs=NODE_STAT_EXPRS,
         edge_stat_exprs=EDGE_STAT_EXPRS,
         node_col_order=NODE_COL_ORDER,
@@ -180,6 +173,7 @@ def test_skewness_kurtosis_clamped():
         label_exprs=LABEL_EXPRS,
         edge_base_cols=EDGE_BASE_COLS,
     )
+    data, slices, num_graphs = pipeline.run(df, window_size=50, stride=50)
     assert num_graphs > 0
     g = _get_graph(data, slices, 0)
     skew_idx = NODE_COL_ORDER.index("skewness")

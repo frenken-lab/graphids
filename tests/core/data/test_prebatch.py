@@ -1,7 +1,7 @@
 """Pre-batching pipeline tests.
 
 Tests the pre-batch path: NodeBudgetBatchSampler plans → Batch.from_data_list
-→ plain list of Batches → make_graph_loader(batch_size=None).
+→ plain list of Batches → prebatched_loader.
 """
 
 from __future__ import annotations
@@ -12,7 +12,8 @@ import torch
 from conftest import make_graph
 from torch_geometric.data import Batch
 
-from graphids.core.data.sampler import NodeBudgetBatchSampler, make_graph_loader
+from graphids.core.data.datamodule.graph import _prebatched_loader
+from graphids.core.data.sampler import NodeBudgetBatchSampler
 
 
 def _prebatch(graphs, budget):
@@ -73,10 +74,10 @@ class TestPreBatch:
         assert torch.allclose(all_x_pre, all_x_orig)
 
     def test_dataloader_yields_batches_directly(self):
-        """INVARIANT: make_graph_loader(batch_size=None) yields Batch objects, not nested."""
+        """INVARIANT: prebatched_loader yields Batch objects, not nested."""
         graphs = _make_graphs(n_graphs=20)
         batches = _prebatch(graphs, budget=100)
-        loader = make_graph_loader(batches, batch_size=None, shuffle=False, num_workers=0)
+        loader = _prebatched_loader(batches, shuffle=False)
 
         yielded = list(loader)
         assert len(yielded) == len(batches)
@@ -86,7 +87,7 @@ class TestPreBatch:
         """INVARIANT: shuffle=True permutes batch order across iterations."""
         graphs = _make_graphs(n_graphs=60, node_range=(4, 10))
         batches = _prebatch(graphs, budget=30)
-        loader = make_graph_loader(batches, batch_size=None, shuffle=True, num_workers=0)
+        loader = _prebatched_loader(batches, shuffle=True)
 
         order_1 = [b.num_nodes for b in loader]
         order_2 = [b.num_nodes for b in loader]
@@ -189,7 +190,7 @@ class TestTierPreBatch:
             active.extend(tier_batches[i])
         active.extend(attack_batches)
 
-        loader = make_graph_loader(active, batch_size=None, shuffle=False, num_workers=0)
+        loader = _prebatched_loader(active, shuffle=False)
         yielded = list(loader)
         assert len(yielded) == len(active)
         assert all(isinstance(b, Batch) for b in yielded)
