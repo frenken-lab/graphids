@@ -26,7 +26,7 @@ class Analyzer:
         # --- required ---
         ckpt_path: str,
         dataset: str,
-        model_type: Literal["vgae", "gat", "fusion"],
+        model_type: Literal["vgae", "dgi", "gat", "fusion"],
         # --- paths ---
         lake_root: str | None = None,
         output_dir: str = "artifacts/",

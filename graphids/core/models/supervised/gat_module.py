@@ -52,7 +52,6 @@ class GATModule(GraphModuleBase):
         lake_root: str | None = None,
         dataset: str = "",
         seed: int = 42,
-        gat_stage: str = "supervised",
         variational: bool = True,  # upstream VGAE type — identity key for supervised
         num_ids: int = 0,
         in_channels: int = 0,

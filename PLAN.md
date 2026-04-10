@@ -1,6 +1,84 @@
 # GraphIDS Session Plan
 
-> Last updated: 2026-04-10 (session 40 — Drop PyTorch Lightning Phase 1-5)
+> Last updated: 2026-04-10 (session 41 — core/ audit + DGI parity)
+
+## What this session did (2026-04-10, session 41)
+
+### core/ audit
+
+- **Replaced `pynvml` direct usage with `torch.cuda` NVML wrappers** in
+  `graphids/core/monitoring.py`. Dropped ~16 lines, eliminated an
+  undeclared transitive dep, removed the `_nvml_handle` attribute +
+  `_shutdown_nvml` lifecycle helper. `torch.cuda.{utilization,
+  temperature, power_draw, memory_allocated, memory_reserved}` are all
+  present in torch 2.8.0+cu128 (verified on login node).
+  **TODO on compute node**: verify `torch.cuda.power_draw()` unit — docs
+  say W, historical NVML passthrough is mW. Kept `/1000.0` divisor to
+  match pre-swap behavior.
+- **Deleted `_trainer` write-only dead state** — Trainer assigned
+  `model._trainer = self` at 4 sites, `base.py` + `fusion/base.py`
+  initialised it to `None`, nothing ever read it. Leftover from the
+  Lightning migration (where `self.trainer` was a public API). Removed
+  all 6 lines plus the now-unused `TYPE_CHECKING` import of `Trainer`.
+- **Fixed `fusion_states.py:57`** — added defensive `.clone()` before
+  `.to(device)` per `.claude/rules/critical-constraints.md` (PyG
+  `Data.to()` is in-place).
+
+### DGI parity with VGAE/GAT
+
+DGI was trainable (`GraphInfomaxModel` and `DGIModule` existed) but
+multiple downstream features silently skipped or crashed on DGI
+checkpoints. Restored full parity:
+
+- **Analyzer dispatch** — `analyzer.py` `Literal` and `schemas.py`
+  `AnalysisSpec.model_type` now accept `"dgi"`. Added a cross-field
+  validator that enforces `cka=true` → `model_type="gat"` since
+  `_collect_reps` calls `model(g, return_intermediate=True)` which only
+  `GATWithJK` implements.
+- **Embeddings artifact** — added a DGI branch in
+  `analysis/embeddings.py::collect_and_save_embeddings` that calls
+  `GraphInfomaxModel.encode(...)` and mean-pools per-graph (mirrors the
+  VGAE path; DGI `encode` returns `z` only, no KL).
+- **Loss landscape** — added `_dgi_loss` to `analysis/loss_landscape.py`
+  and registered it in `_LOSS_FN`. Uses `GraphInfomaxModel.forward(...)`
+  + `model.dgi_loss(pos_z, neg_z, summary, batch.batch)`.
+- **Fusion state extraction** — added `DGIModule.extract_features(batch,
+  device) → Tensor[N, 8]`. 8-D shape matches `VGAEModule` (also 8). Features
+  derived from the discriminator: `[anomaly, pos_mean, pos_spread,
+  z_mean, z_std, z_max, z_min, conf]` where `pos_score` is
+  `discriminate(z, summary, batch)` and `anomaly = 1 − pos_mean`.
+  No changes to `data/fusion_states.py` — that loop is already
+  model-agnostic over anything with `extract_features`.
+- **`analyze.jsonnet` dispatcher** — added a `dgi:` entry (embeddings +
+  landscape, same as VGAE).
+- **Budget profiler** — verified DGI is reachable. `probe-budget`
+  already iterates `sorted(VALID_MODEL_TYPES)` which includes `"dgi"`
+  via `axes.json`, and `BudgetProfiler.probe` calls `model._step(batch)`
+  which `DGIModule` implements. No code changes needed — PLAN.md's
+  "GraphInfomaxModel undefined" claim was stale.
+
+### Verified on login node (CPU)
+
+- DGIModule constructs via `Instantiator.build_model_from_spec` path
+  (confirmed by direct instantiation; jsonnet render step skipped since
+  `_jsonnet` isn't installed on login node — pre-existing issue)
+- DGI forward + `_step(batch)` returns finite loss, `.backward()` succeeds
+- `DGIModule.extract_features` returns shape `(N, 8)` with finite values
+- `_dgi_loss` from loss_landscape returns finite positive scalar
+- Analyzer DGI embedding path produces `(N, latent_dim)` tensor
+- `ruff check` passes on all edited files
+- All imports resolve; `_trainer` attribute absent from `GraphModuleBase`
+
+### Not verified on compute node
+
+- `python -m graphids probe-budget --model-type dgi` (needs GPU)
+- `python -m graphids analyze --tla 'model_type="dgi"' ...` against a
+  real DGI checkpoint
+- DGI fusion states integration with `FusionDataModule`
+  (`extract_fusion_states` with `{"dgi": ckpt}` in the checkpoints dict)
+- `torch.cuda.power_draw()` returned-value unit on V100
+
+## What this session did (2026-04-10, session 40 — Drop PyTorch Lightning Phase 1-5)
 
 ## What this session did (2026-04-10, session 40)
 
@@ -102,7 +180,6 @@ script before loading any pre-session-40 checkpoints.
 - Fusion stage absorbs `auxiliaries=[]` and `vgae_ckpt_path=null` as
   ignored TLAs
 - Cross-stage trace propagation (pipeline-level spans linking stages)
-- DGI model fix (`GraphInfomaxModel` undefined)
 - Dagster deletion (`rm -rf orchestrate/dagster/`)
 
 ## What session 39 did (2026-04-08)
@@ -150,12 +227,7 @@ and contain expected spans/metrics. Then `rebuild-catalog` + `pipeline-status`.
 
 Run full training on `hcrl_sa` with production epochs. All 3 stages.
 
-### Track 3: DGI model fix
-
-`GraphInfomaxModel` undefined — probe and training both broken for DGI.
-Fix or remove DGI from `VALID_MODEL_TYPES`.
-
-### Track 4: Dagster deletion
+### Track 3: Dagster deletion
 
 `rm -rf orchestrate/dagster/` + remove `[tool.dg]` from pyproject.toml.
 Gated on successful Monarch sweep validation.
@@ -212,9 +284,9 @@ Impact: <0.3% budget change (GNN optimizer state is tiny vs 16GB VRAM).
 
 ### Probe results (job 46511451, V100 16GB, hcrl_sa/hcrl_ch/set_01)
 
-48 data points (4 fractions × 4 models × 3 datasets). DGI failed
-(pre-existing `GraphInfomaxModel` undefined). CSV written to
-`/fs/ess/PAS1266/kd-gat/reference/budget_calibration.csv`.
+48 data points (4 fractions × 4 models × 3 datasets). DGI previously
+failed (`GraphInfomaxModel` undefined — now fixed in session 41). CSV
+written to `/fs/ess/PAS1266/kd-gat/reference/budget_calibration.csv`.
 
 ### Pre-batch timing analysis
 

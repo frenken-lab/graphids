@@ -114,7 +114,28 @@ def _gat_loss(model, dataloader, device: torch.device, _cfg) -> float:
     return total / max(count, 1)
 
 
-_LOSS_FN = {"vgae": _vgae_loss, "gat": _gat_loss}
+@torch.no_grad()
+def _dgi_loss(model, dataloader, device: torch.device, _cfg) -> float:
+    """DGI contrastive mutual-information loss (real vs shuffled node features)."""
+    model.eval()
+    total, count = 0.0, 0
+    for batch in dataloader:
+        batch = batch.clone().to(device)
+        edge_attr = getattr(batch, "edge_attr", None)
+        pos_z, neg_z, summary = model(
+            batch.x,
+            batch.edge_index,
+            batch.batch,
+            edge_attr=edge_attr,
+            node_id=batch.node_id,
+        )
+        loss = model.dgi_loss(pos_z, neg_z, summary, batch.batch)
+        total += loss.item() * batch.num_graphs
+        count += batch.num_graphs
+    return total / max(count, 1)
+
+
+_LOSS_FN = {"vgae": _vgae_loss, "gat": _gat_loss, "dgi": _dgi_loss}
 
 
 # ---------------------------------------------------------------------------

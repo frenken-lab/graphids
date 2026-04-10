@@ -16,15 +16,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-import pynvml
 import torch
 from opentelemetry import metrics, trace
 from opentelemetry.sdk.resources import Resource, ResourceDetector
-from opentelemetry.trace import (
-    Link,  # noqa: F401 — re-exported for type use
-    SpanContext,
-    TraceFlags,
-)
+from opentelemetry.trace import Link, SpanContext, TraceFlags
 
 from graphids.core.callbacks import CallbackBase
 
@@ -102,7 +97,6 @@ class OTelTrainingCallback(CallbackBase):
         self._gpu_temp = meter.create_gauge("ml.gpu.temperature_c", unit="degC")
         self._gpu_power = meter.create_gauge("ml.gpu.power_w", unit="W")
         self._step_start: float = 0.0
-        self._nvml_handle: object | None = None
         self._identity = {
             "ml.stage": stage,
             "ml.dataset": dataset,
@@ -130,12 +124,6 @@ class OTelTrainingCallback(CallbackBase):
             if v:
                 self._span.set_attribute(k, v)
 
-        # Initialize NVML for hardware-level GPU stats
-        if torch.cuda.is_available():
-            pynvml.nvmlInit()
-            device_idx = model.device.index or 0
-            self._nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(device_idx)
-
     def on_fit_end(self, trainer, model: torch.nn.Module) -> None:
         if self._span is None:
             return
@@ -151,7 +139,6 @@ class OTelTrainingCallback(CallbackBase):
         self._span.end()
         trace.context_api.detach(self._token)
         self._span = None
-        self._shutdown_nvml()
 
     def on_exception(
         self,
@@ -166,12 +153,6 @@ class OTelTrainingCallback(CallbackBase):
         self._span.end()
         trace.context_api.detach(self._token)
         self._span = None
-        self._shutdown_nvml()
-
-    def _shutdown_nvml(self) -> None:
-        if self._nvml_handle is not None:
-            pynvml.nvmlShutdown()
-            self._nvml_handle = None
 
     # -- per-epoch events -----------------------------------------------------
 
@@ -223,25 +204,17 @@ class OTelTrainingCallback(CallbackBase):
         if loss_val is not None:
             self._loss_hist.record(loss_val, attrs)
 
-        # VRAM gauges (only when CUDA is available)
+        # VRAM + hardware GPU stats via torch.cuda (NVML wrappers, no pynvml init needed)
         if torch.cuda.is_available():
-            self._cuda_alloc.set(
-                torch.cuda.memory_allocated() / (1024 * 1024), attrs
-            )
-            self._cuda_reserved.set(
-                torch.cuda.memory_reserved() / (1024 * 1024), attrs
-            )
-        # Hardware GPU stats via NVML (utilization, temp, power)
-        if self._nvml_handle is not None:
-            util = pynvml.nvmlDeviceGetUtilizationRates(self._nvml_handle)
-            self._gpu_util.set(util.gpu, attrs)
-            self._gpu_temp.set(
-                pynvml.nvmlDeviceGetTemperature(self._nvml_handle, pynvml.NVML_TEMPERATURE_GPU),
-                attrs,
-            )
-            self._gpu_power.set(
-                pynvml.nvmlDeviceGetPowerUsage(self._nvml_handle) / 1000.0, attrs
-            )
+            dev = model.device.index or 0
+            self._cuda_alloc.set(torch.cuda.memory_allocated(dev) / (1024 * 1024), attrs)
+            self._cuda_reserved.set(torch.cuda.memory_reserved(dev) / (1024 * 1024), attrs)
+            self._gpu_util.set(torch.cuda.utilization(dev), attrs)
+            self._gpu_temp.set(torch.cuda.temperature(dev), attrs)
+            # TODO(verify on compute node): torch.cuda.power_draw() unit — stable docs
+            # say W but NVML nvmlDeviceGetPowerUsage returns mW and historical PyTorch
+            # forwards it raw. /1000.0 matches pre-swap pynvml behavior.
+            self._gpu_power.set(torch.cuda.power_draw(dev) / 1000.0, attrs)
 
     # -- cross-stage span links -----------------------------------------------
 

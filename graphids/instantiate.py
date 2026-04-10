@@ -173,7 +173,7 @@ class Instantiator:
         if validated is None:
             validated = validate_config(merged)
         if seed_all:
-            seed_everything(merged["seed_everything"], workers=True)
+            seed_everything(merged["seed_everything"])
 
         return InstantiatedRun(
             model=cls.build_model_from_config(merged),

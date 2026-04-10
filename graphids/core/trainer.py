@@ -56,7 +56,7 @@ class MetricAccumulator:
 # ---------------------------------------------------------------------------
 
 
-def seed_everything(seed: int, workers: bool = True) -> None:
+def seed_everything(seed: int) -> None:
     """Seed Python, NumPy, and PyTorch for reproducibility.
 
     ``torch.manual_seed`` already seeds CPU + all CUDA + MPS + XPU.
@@ -152,7 +152,6 @@ class Trainer:
     ) -> None:
         self.datamodule = datamodule
         model.to(self._device)
-        model._trainer = self  # noqa: SLF001
 
         datamodule.setup("fit")
         model.setup(datamodule)
@@ -202,7 +201,6 @@ class Trainer:
     ) -> dict[str, float]:
         self.datamodule = datamodule
         model.to(self._device)
-        model._trainer = self  # noqa: SLF001
 
         datamodule.setup("test")
         model.setup(datamodule)
@@ -239,7 +237,6 @@ class Trainer:
     ) -> dict[str, float]:
         self.datamodule = datamodule
         model.to(self._device)
-        model._trainer = self  # noqa: SLF001
 
         datamodule.setup("fit")
         model.setup(datamodule)
@@ -259,7 +256,6 @@ class Trainer:
     ) -> list:
         self.datamodule = datamodule
         model.to(self._device)
-        model._trainer = self  # noqa: SLF001
 
         datamodule.setup("predict")
         model.setup(datamodule)

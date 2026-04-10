@@ -54,7 +54,9 @@ def extract_states(
     states, labels = [], []
     with torch.no_grad():
         for batch in loader:
-            batch = batch.to(device, non_blocking=True)
+            # PyG Data.to() is in-place — clone first to keep the source
+            # batch pristine in case multiple consumers share it.
+            batch = batch.clone().to(device, non_blocking=True)
             feats = [model.extract_features(batch, device) for model in models.values()]
             states.append(torch.cat(feats, dim=1))
             labels.append(batch.y)

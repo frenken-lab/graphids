@@ -6,11 +6,18 @@
 //
 // Artifacts by model_type:
 //   vgae   → embeddings, loss landscape (51×51)
+//   dgi    → embeddings, loss landscape (51×51) — unsupervised, same shape as VGAE
 //   gat    → embeddings, attention, CKA, loss landscape
 //   fusion → fusion policy visualization
 
 local artifacts = {
   vgae: {
+    embeddings: true,
+    landscape: true,
+    landscape_resolution: 51,
+    landscape_scale: 1.0,
+  },
+  dgi: {
     embeddings: true,
     landscape: true,
     landscape_resolution: 51,

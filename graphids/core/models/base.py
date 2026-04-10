@@ -18,16 +18,13 @@ import contextlib
 import importlib
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import Any, NamedTuple
 
 import torch
 import torch.nn as nn
 
 from graphids._otel import get_logger
 from graphids.core.trainer import MetricAccumulator
-
-if TYPE_CHECKING:
-    from graphids.core.trainer import Trainer
 
 _log = get_logger(__name__)
 
@@ -87,7 +84,6 @@ class GraphModuleBase(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self._metric_acc = MetricAccumulator()
-        self._trainer: Trainer | None = None
         # Non-persistent buffer that tracks device through .to()/.cuda()/.cpu()
         # — robust even for parameter-free modules (HF Transformers pattern).
         self.register_buffer("_device_tracker", torch.empty(0), persistent=False)

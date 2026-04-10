@@ -31,18 +31,23 @@ def collect_and_save_embeddings(
         data = val_data[:max_samples]
         loader = PyGDataLoader(data, batch_size=batch_size)
 
+        from torch_geometric.utils import scatter
+
         all_emb, all_labels = [], []
         for batch in loader:
             batch = batch.clone().to(device)
+            edge_attr = getattr(batch, "edge_attr", None)
             if model_type == "vgae":
                 # VGAE encode() returns (z, kl_loss); z is per-node
-                edge_attr = getattr(batch, "edge_attr", None)
                 z, _ = model.encode(
                     batch.x, batch.edge_index, edge_attr, batch.batch, batch.node_id
                 )
-                # Pool per-node z to per-graph via mean
-                from torch_geometric.utils import scatter
-
+                emb = scatter(z, batch.batch, dim=0, reduce="mean")
+            elif model_type == "dgi":
+                # DGI encode() returns per-node z (no KL term)
+                z = model.encode(
+                    batch.x, batch.edge_index, edge_attr, batch.batch, batch.node_id
+                )
                 emb = scatter(z, batch.batch, dim=0, reduce="mean")
             else:
                 # GATWithJK: forward(data, return_embedding=True) -> (logits, emb)

@@ -60,7 +60,6 @@ class VGAEModule(GraphModuleBase):
         lake_root: str | None = None,
         dataset: str = "",
         seed: int = 42,
-        gat_stage: str = "supervised",
         num_ids: int = 0,
         in_channels: int = 0,
         num_classes: int = 2,

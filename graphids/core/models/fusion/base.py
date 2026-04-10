@@ -242,7 +242,6 @@ class FusionModuleBase(nn.Module):
     ):
         super().__init__()
         self._metric_acc = MetricAccumulator()
-        self._trainer = None
         # Non-persistent buffer that tracks device through .to()/.cuda()/.cpu()
         self.register_buffer("_device_tracker", torch.empty(0), persistent=False)
         self.state_dim = state_dim

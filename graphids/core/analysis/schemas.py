@@ -7,7 +7,7 @@ of ``Analyzer.__init__`` kwargs. The orchestrator produces an
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -22,7 +22,7 @@ class AnalysisSpec(BaseModel):
 
     ckpt_path: str
     dataset: str
-    model_type: str
+    model_type: Literal["vgae", "dgi", "gat", "fusion"]
     output_dir: str
 
     embeddings: bool = True
@@ -55,6 +55,9 @@ class AnalysisSpec(BaseModel):
     def _validate_conditional_deps(self) -> AnalysisSpec:
         if self.cka and not self.cka_teacher_ckpt:
             raise ValueError("cka=true requires cka_teacher_ckpt")
+        if self.cka and self.model_type != "gat":
+            # CKA uses model(g, return_intermediate=True), only GATWithJK supports this
+            raise ValueError(f"cka=true only supported for model_type='gat', got {self.model_type!r}")
         if self.fusion_policy and not self.vgae_ckpt_path:
             raise ValueError("fusion_policy=true requires vgae_ckpt_path")
         if self.fusion_policy and not self.gat_ckpt_path:

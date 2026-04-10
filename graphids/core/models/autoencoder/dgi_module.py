@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import torch
+
 from graphids.config.constants import (
     ModelType,  # noqa: F401 (used in __init__ annotation)
 )
@@ -76,6 +78,43 @@ class DGIModule(GraphModuleBase):
     def _step(self, batch):
         pos_z, neg_z, summary = self(batch)
         return self.model.dgi_loss(pos_z, neg_z, summary, batch.batch)
+
+    def extract_features(self, batch, device: torch.device) -> torch.Tensor:
+        """8-D fusion features: [anomaly, pos_mean, pos_spread, z_mean, z_std, z_max, z_min, conf].
+
+        Shape matches VGAE/GAT (8D / 7D) for concat-friendly fusion state vectors.
+        Features are derived from the DGI discriminator (node–summary agreement):
+        graphs with low real-vs-summary agreement are anomalous.
+        """
+        from torch_geometric.utils import scatter
+
+        edge_attr = getattr(batch, "edge_attr", None)
+        z = self.model.encode(
+            batch.x,
+            batch.edge_index,
+            edge_attr,
+            batch.batch,
+            batch.node_id,
+        )
+        summary = self.model.summarize(z, batch.batch)
+        pos_scores = self.model.discriminate(z, summary, batch.batch)  # per-node [0,1]
+
+        b = batch.batch
+        pos_mean = scatter(pos_scores, b, dim=0, reduce="mean")
+        # per-graph std via E[X²] − E[X]² (scatter has no native "std" reduce)
+        pos_sq_mean = scatter(pos_scores.pow(2), b, dim=0, reduce="mean")
+        pos_spread = (pos_sq_mean - pos_mean.pow(2)).clamp(min=0).sqrt()
+        anomaly = 1.0 - pos_mean
+
+        z_mean = scatter(z.mean(1), b, dim=0, reduce="mean")
+        z_std = scatter(z.std(1), b, dim=0, reduce="mean")
+        z_max = scatter(z.max(1).values, b, dim=0, reduce="max")
+        z_min = scatter(z.min(1).values, b, dim=0, reduce="min")
+        conf = 1.0 / (1.0 + anomaly)
+        return torch.stack(
+            [anomaly, pos_mean, pos_spread, z_mean, z_std, z_max, z_min, conf],
+            dim=1,
+        )
 
     def _training_step_inner(self, batch, _idx):
         loss = self._step(batch)
