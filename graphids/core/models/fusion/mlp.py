@@ -10,7 +10,10 @@ from .base import STATE_DIM, FusionModuleBase
 
 
 class MLPFusionModule(FusionModuleBase):
-    """Same state as DQN, but trained with BCE loss via Lightning instead of RL episodes."""
+    """Same state as DQN, but trained with BCE loss instead of RL episodes."""
+
+    # Standard supervised training — trainer handles backward + step
+    automatic_optimization = True
 
     def __init__(
         self,
@@ -19,7 +22,7 @@ class MLPFusionModule(FusionModuleBase):
         lr: float = 0.001,
     ):
         super().__init__()
-        self.save_hyperparameters()
+        self.hparams = self._capture_hparams(locals())
 
         layers: list[nn.Module] = []
         in_dim = state_dim
@@ -38,7 +41,7 @@ class MLPFusionModule(FusionModuleBase):
         states, labels = batch
         logits = self(states)
         loss = self.loss_fn(logits, labels.float())
-        self.log("train_loss", loss, prog_bar=True)
+        self.log("train_loss", loss)
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -47,8 +50,8 @@ class MLPFusionModule(FusionModuleBase):
         loss = self.loss_fn(logits, labels.float())
         preds = (logits > 0).long()
         acc = (preds == labels).float().mean()
-        self.log("val_loss", loss, prog_bar=True)
-        self.log("val_acc", acc, prog_bar=True)
+        self.log("val_loss", loss)
+        self.log("val_acc", acc)
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
         states, labels = batch
@@ -56,5 +59,5 @@ class MLPFusionModule(FusionModuleBase):
         preds = (logits > 0).long()
         self.test_metrics.update(preds, labels)
 
-    def configure_optimizers(self):
-        return optim.Adam(self.parameters(), lr=self.lr)
+    def build_optimizers(self, max_epochs: int):
+        return optim.Adam(self.parameters(), lr=self.lr), None

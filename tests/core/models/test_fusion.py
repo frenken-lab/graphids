@@ -21,6 +21,7 @@ class TestFusionBaselineTestStep:
     @staticmethod
     def _make_module(name):
         from graphids.core.models.fusion.fusion_features import STATE_DIM
+
         from graphids.core.models.fusion.mlp import MLPFusionModule
         from graphids.core.models.fusion.weighted_avg import WeightedAvgModule
 
@@ -43,22 +44,6 @@ class TestFusionBaselineTestStep:
         assert "accuracy" in result
         assert "f1" in result
         assert all(0.0 <= v.item() <= 1.0 for v in result.values())
-
-    @pytest.mark.slow
-    @pytest.mark.parametrize("module_name", ["mlp", "weighted_avg"])
-    def test_test_step_via_lightning_trainer(self, module_name):
-        import pytorch_lightning as pl
-        from torch.utils.data import TensorDataset  # noqa: test-only tensor wrapping
-
-        module = self._make_module(module_name)
-        states, labels = self._make_fusion_batch(64)
-        loader = torch.utils.data.DataLoader(TensorDataset(states, labels), batch_size=16)
-        trainer = pl.Trainer(
-            accelerator="cpu", logger=False, enable_checkpointing=False, enable_progress_bar=False
-        )
-        trainer.test(module, dataloaders=loader, verbose=False)
-        result = module.test_metrics.compute()
-        assert "accuracy" in result
 
     @pytest.mark.parametrize("module_name", ["mlp", "weighted_avg"])
     def test_metrics_reset_between_scenarios(self, module_name):
@@ -151,46 +136,44 @@ class TestFusionCheckpointRoundtrip:
     """Fusion checkpoint save/load format consistency."""
 
     def test_mlp_roundtrip(self, tmp_path):
-        import pytorch_lightning as pl
-
         from graphids.core.models.fusion.fusion_features import STATE_DIM
+
         from graphids.core.models.fusion.mlp import MLPFusionModule
 
         m1 = MLPFusionModule(state_dim=STATE_DIM)
         m1.eval()
-        trainer = pl.Trainer(enable_checkpointing=False, logger=False)
-        trainer.strategy.connect(m1)
-        ckpt_path = str(tmp_path / "mlp.ckpt")
-        trainer.save_checkpoint(ckpt_path)
-        m2 = MLPFusionModule.load_from_checkpoint(ckpt_path)
+        ckpt_path = tmp_path / "mlp.ckpt"
+        torch.save({"state_dict": m1.state_dict()}, ckpt_path)
+
+        m2 = MLPFusionModule(state_dim=STATE_DIM)
+        m2.load_state_dict(torch.load(ckpt_path, weights_only=True)["state_dict"])
         m2.eval()
         x = torch.rand(8, STATE_DIM)
         with torch.no_grad():
             torch.testing.assert_close(m1(x), m2(x))
 
     def test_weighted_avg_roundtrip(self, tmp_path):
-        import pytorch_lightning as pl
+        from graphids.core.models.fusion.fusion_features import STATE_DIM
 
         from graphids.core.models.fusion.weighted_avg import WeightedAvgModule
 
         m1 = WeightedAvgModule()
-        from graphids.core.models.fusion.fusion_features import STATE_DIM
-
         m1.weight.data.fill_(0.7)
         m1.eval()
-        trainer = pl.Trainer(enable_checkpointing=False, logger=False)
-        trainer.strategy.connect(m1)
-        ckpt_path = str(tmp_path / "wavg.ckpt")
-        trainer.save_checkpoint(ckpt_path)
-        m2 = WeightedAvgModule.load_from_checkpoint(ckpt_path)
+        ckpt_path = tmp_path / "wavg.ckpt"
+        torch.save({"state_dict": m1.state_dict()}, ckpt_path)
+
+        m2 = WeightedAvgModule()
+        m2.load_state_dict(torch.load(ckpt_path, weights_only=True)["state_dict"])
         m2.eval()
         x = torch.rand(8, STATE_DIM)
         with torch.no_grad():
             torch.testing.assert_close(m1(x), m2(x))
 
     def test_dqn_roundtrip(self, tmp_path):
-        from graphids.core.models.fusion.dqn import DQNFusionModule
         from graphids.core.models.fusion.fusion_features import STATE_DIM
+
+        from graphids.core.models.fusion.dqn import DQNFusionModule
 
         sd = STATE_DIM
         a1 = DQNFusionModule(

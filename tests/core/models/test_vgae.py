@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 import torch
-from conftest import EDGE_DIM, IN_CHANNELS, NUM_IDS, make_batch, make_graph, make_variable_batch
+from conftest import (
+    EDGE_DIM,
+    IN_CHANNELS,
+    NUM_IDS,
+    make_batch,
+    make_graph,
+    make_variable_batch,
+)
 from torch_geometric.loader import DataLoader
 
 
@@ -82,12 +89,10 @@ class TestVGAEConvTypes:
 @pytest.mark.slow
 class TestVGAEFastDevRun:
     def test_vgae(self, vgae_cfg):
-        import pytorch_lightning as pl
-
+        """INVARIANT: VGAEModule.training_step produces a finite, backpropagable loss."""
         from graphids.core.losses.autoencoder import VGAETaskLoss
         from graphids.core.models.autoencoder.vgae_module import VGAEModule
 
-        loader = DataLoader([make_graph() for _ in range(16)], batch_size=4)
         module = VGAEModule(
             hidden_dims=vgae_cfg.hidden_dims,
             latent_dim=vgae_cfg.latent_dim,
@@ -99,8 +104,13 @@ class TestVGAEFastDevRun:
             gradient_checkpointing=False,
             compile_model=False,
         )
-        trainer = pl.Trainer(fast_dev_run=True, accelerator="cpu", enable_progress_bar=False)
-        trainer.fit(module, loader, loader)
+        module.train()
+        batch = make_batch(4)
+        loss = module.training_step(batch, 0)
+        assert loss is not None and torch.isfinite(loss)
+        loss.backward()
+        grads = [p.grad for p in module.parameters() if p.grad is not None]
+        assert len(grads) > 0, "No gradients after backward"
 
 
 class TestVGAECheckpointRoundtrip:

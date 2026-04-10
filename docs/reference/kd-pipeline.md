@@ -71,13 +71,13 @@ graphids.instantiate.instantiate (instantiate.py)
   |
   v
 Model.__init__(loss_fn=SoftLabelDistillation | FeatureDistillation)
-  Model stores loss_fn; save_hyperparameters(ignore=["loss_fn"])
+  Model stores loss_fn; _capture_hparams(locals(), ignore=["loss_fn"])
   |
   v
 Model.training_step -> self.loss_fn(outputs, batch)
   Loss module handles teacher forward + KD math internally.
   last_hard_loss / last_soft_loss populated after each forward
-  so LightningModule can log components.
+  so the training module can log components.
 ```
 
 ## Key code

@@ -6,8 +6,9 @@ import gc
 import math
 from pathlib import Path
 
-import pytorch_lightning as pl
 import torch
+
+from graphids.core.callbacks import CallbackBase
 
 
 def build_curriculum_tiers(
@@ -29,7 +30,8 @@ def build_curriculum_tiers(
     scores = vgae.score_difficulty(normals, canid_weight=canid_weight)
     if not isinstance(scores, torch.Tensor):
         scores = torch.tensor(scores, dtype=torch.float)
-    del vgae; gc.collect()
+    del vgae
+    gc.collect()
 
     full_dataset = normals + attacks
     dataset_sizes = torch.tensor([g.num_nodes for g in full_dataset], dtype=torch.long)
@@ -42,10 +44,10 @@ def build_curriculum_tiers(
     return scores, normal_tier_indices, attack_indices, full_dataset, dataset_sizes
 
 
-class CurriculumEpochCallback(pl.Callback):
+class CurriculumEpochCallback(CallbackBase):
     """Select active curriculum tiers each epoch. No-op when datamodule doesn't use tiers."""
 
-    def on_train_epoch_start(self, trainer, pl_module):
+    def on_train_epoch_start(self, trainer, model):
         dm = trainer.datamodule
         if getattr(dm, "_tier_batches", None) is not None:
             dm._select_active_tiers(trainer.current_epoch)

@@ -203,7 +203,7 @@ class TestConventionRulesEnforced:
         bad = copy.deepcopy(valid_dict)
         bad["trainer"]["logger"] = False
         bad["trainer"]["callbacks"] = [
-            {"class_path": "pytorch_lightning.callbacks.LearningRateMonitor"}
+            {"class_path": "graphids.core.callbacks.LearningRateMonitor"}
         ]
         with pytest.raises(ConfigValidationError, match="LearningRateMonitor"):
             validate_config(bad)
@@ -212,7 +212,7 @@ class TestConventionRulesEnforced:
         """Differential: same callback passes when logger is on (default)."""
         ok = copy.deepcopy(valid_dict)
         ok["trainer"]["callbacks"] = [
-            {"class_path": "pytorch_lightning.callbacks.LearningRateMonitor"}
+            {"class_path": "graphids.core.callbacks.LearningRateMonitor"}
         ]
         validate_config(ok)  # no raise
 
@@ -247,11 +247,11 @@ class TestConventionRulesEnforced:
             validate_config(bad)
 
     def test_trainer_extra_kwargs_allowed(self, valid_dict: dict) -> None:
-        """CONTRACT: Trainer accepts ~50 kwargs; TrainerSection must allow extras.
+        """CONTRACT: TrainerSection must allow extra kwargs.
 
-        Phase 2 is deliberately lenient on ``trainer``. Phase 3 narrows
-        this to an explicit typed subset as part of the LightningCLI
-        strip.
+        Stage jsonnets may emit trainer kwargs that aren't consumed by
+        ``TrainerConfig`` (they're ignored by the instantiator). The
+        Pydantic validator should not reject them at the schema layer.
         """
         ok = copy.deepcopy(valid_dict)
         ok["trainer"]["detect_anomaly"] = True

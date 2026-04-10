@@ -17,12 +17,17 @@ from __future__ import annotations
 import contextlib
 import importlib
 from pathlib import Path
-from typing import NamedTuple
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, NamedTuple
 
-import pytorch_lightning as pl
 import torch
+import torch.nn as nn
 
 from graphids._otel import get_logger
+from graphids.core.trainer import MetricAccumulator
+
+if TYPE_CHECKING:
+    from graphids.core.trainer import Trainer
 
 _log = get_logger(__name__)
 
@@ -33,8 +38,8 @@ _log = get_logger(__name__)
 
 
 def try_compile(
-    model: torch.nn.Module, *, conv_type: str | None = None, **kwargs
-) -> torch.nn.Module:
+    model: nn.Module, *, conv_type: str | None = None, **kwargs
+) -> nn.Module:
     """Attempt ``torch.compile``; fall back to eager on inductor failure.
 
     Skips compile entirely for conv types that use ``to_dense_batch()``
@@ -64,34 +69,65 @@ def try_compile(
 # ---------------------------------------------------------------------------
 
 
-class GraphModuleBase(pl.LightningModule):
+class GraphModuleBase(nn.Module):
     """Shared base for VGAE, GAT, DGI — lazy setup, OOM guard, threshold metrics.
 
     Subclasses must implement ``_build()`` which constructs ``self.model`` and any
     other architecture components using ``self.hparams`` (populated by ``setup``).
     """
 
-    def setup(self, stage=None):
-        if self.model is None:
-            dm = self.trainer.datamodule
-            if dm is not None:
-                self.hparams.num_ids = dm.num_ids
-                self.hparams.in_channels = dm.in_channels
-                self.hparams.num_classes = dm.num_classes
+    automatic_optimization = True
+
+    @staticmethod
+    def _capture_hparams(local_vars: dict[str, Any], ignore: tuple[str, ...] = ()) -> SimpleNamespace:
+        """Capture ``__init__`` kwargs as a ``SimpleNamespace`` for ``self.hparams``."""
+        skip = {"self", "__class__", *ignore}
+        return SimpleNamespace(**{k: v for k, v in local_vars.items() if k not in skip})
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._metric_acc = MetricAccumulator()
+        self._trainer: Trainer | None = None
+        # Non-persistent buffer that tracks device through .to()/.cuda()/.cpu()
+        # — robust even for parameter-free modules (HF Transformers pattern).
+        self.register_buffer("_device_tracker", torch.empty(0), persistent=False)
+
+    @property
+    def device(self) -> torch.device:
+        return self._device_tracker.device
+
+    # -- logging (replaces pl self.log / self.log_dict) ----------------------
+
+    def log(self, name: str, value: Any, *, batch_size: int = 1, **_kwargs) -> None:
+        """Store a metric for the trainer to read after this step."""
+        v = float(value.detach()) if isinstance(value, torch.Tensor) else float(value)
+        self._metric_acc.update(name, v, batch_size)
+
+    def log_dict(self, metrics: dict[str, Any], **kwargs) -> None:
+        for k, v in metrics.items():
+            self.log(k, v, **kwargs)
+
+    # -- setup + optimizers --------------------------------------------------
+
+    def setup(self, datamodule=None):
+        if self.model is None and datamodule is not None:
+            self.hparams.num_ids = datamodule.num_ids
+            self.hparams.in_channels = datamodule.in_channels
+            self.hparams.num_classes = datamodule.num_classes
             self._build()
 
     def _build(self):
         raise NotImplementedError
 
-    def configure_optimizers(self):
+    def build_optimizers(self, max_epochs: int) -> tuple[torch.optim.Optimizer | None, Any]:
+        """Return ``(optimizer, scheduler_or_None)``. Called by Trainer."""
         lr = getattr(self.hparams, "lr", 1e-3)
         wd = getattr(self.hparams, "weight_decay", 0.0)
-        optimizer = torch.optim.Adam(self.parameters(), lr=lr, weight_decay=wd)
-        max_epochs = getattr(self.trainer, "max_epochs", None)
-        if max_epochs and max_epochs > 1:
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs)
-            return {"optimizer": optimizer, "lr_scheduler": scheduler}
-        return optimizer
+        opt = torch.optim.Adam(self.parameters(), lr=lr, weight_decay=wd)
+        if max_epochs > 1:
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max_epochs)
+            return opt, scheduler
+        return opt, None
 
     def _oom_safe_step(self, batch, batch_idx, step_fn):
         try:
@@ -168,7 +204,7 @@ def eval_mode(model):
 
 
 def binary_test_metrics():
-    """Standard binary classification MetricCollection shared by all Lightning modules."""
+    """Standard binary classification MetricCollection shared by all modules."""
     from torchmetrics import MetricCollection
     from torchmetrics.classification import (
         BinaryAccuracy,
@@ -205,7 +241,11 @@ _MODULE_PATHS: dict[str, str] = {
 
 
 def safe_load_checkpoint(model_type: str, ckpt_path, *, map_location="cpu"):
-    """Load a Lightning checkpoint by model type, raising on missing files."""
+    """Load a checkpoint by model type, raising on missing files.
+
+    Supports both new raw-PyTorch format (``state_dict`` key) and legacy
+    Lightning format (``hyper_parameters`` + wrapped state dict).
+    """
     dotted = _MODULE_PATHS.get(model_type)
     if dotted is None:
         raise KeyError(f"No module class for '{model_type}'. Available: {list(_MODULE_PATHS)}")
@@ -216,27 +256,33 @@ def safe_load_checkpoint(model_type: str, ckpt_path, *, map_location="cpu"):
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
-    # loss_fn is excluded from save_hyperparameters (it's an nn.Module) so
-    # load_from_checkpoint can't reconstruct it. Rebuild from saved hparams.
+    ckpt = torch.load(str(ckpt_path), map_location=map_location, weights_only=True)
+    hp = ckpt.get("hyper_parameters", {})
+
+    # Rebuild loss_fn for models that exclude it from hyperparameters
     extra_kwargs: dict = {}
     if model_type in {"vgae", "gat"}:
         from graphids.core.losses.build import _VGAE_LOSS_KEYS, build_loss
 
-        ckpt = torch.load(str(ckpt_path), map_location=map_location, weights_only=True)
-        hp = ckpt.get("hyper_parameters", {})
         if model_type == "vgae":
             loss_cfg = {k: hp[k] for k in _VGAE_LOSS_KEYS if k in hp}
         else:
             loss_cfg = hp.get("loss_config")
         extra_kwargs["loss_fn"] = build_loss(model_type, loss_cfg, distillation_config=None)
 
-    return cls.load_from_checkpoint(
-        str(ckpt_path), map_location=map_location, weights_only=True, **extra_kwargs
-    )
+    # Reconstruct the module with saved hyperparameters
+    init_kwargs = {**hp, **extra_kwargs}
+    module = cls(**init_kwargs)
+    module.load_state_dict(ckpt["state_dict"])
+
+    if hasattr(module, "on_load_checkpoint"):
+        module.on_load_checkpoint(ckpt)
+
+    return module
 
 
-def load_inner_model(model_type: str, ckpt_path, device) -> tuple[torch.nn.Module, object]:
-    """Load a Lightning checkpoint, return (inner nn.Module on device in eval, hparams cfg)."""
+def load_inner_model(model_type: str, ckpt_path, device) -> tuple[nn.Module, object]:
+    """Load checkpoint, return (inner nn.Module on device in eval, hparams cfg)."""
     module = safe_load_checkpoint(model_type, ckpt_path)
     model = module.model
     model.to(device).eval()

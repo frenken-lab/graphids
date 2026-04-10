@@ -9,7 +9,7 @@ Steps:
   2. SLURM env var inheritance (TMPDIR, CUDA_VISIBLE_DEVICES)
   3. bootstrap_staging (NFS -> TMPDIR)
   4. Config rendering via _prepare_stage
-  5. Lightning instantiation + single-batch fit (fast_dev_run)
+  5. Trainer instantiation + 1-epoch fit
 
 Usage: scripts/slurm/submit.sh spike-monarch
 """
@@ -89,16 +89,16 @@ def main() -> int:
         model_type, ckpt_path, run_dir, resolved = actor._prepare_stage(
             stage="autoencoder",
             fusion_method="bandit",
-            tla_overrides={"trainer_overrides": {"trainer.fast_dev_run": 1}},
+            tla_overrides={"trainer_overrides": {"trainer.max_epochs": 1}},
             vgae_ckpt_path=None,
             gat_ckpt_path=None,
         )
         print(f"  model_type={model_type}")
         print(f"  run_dir={run_dir}")
-        fdr = resolved.rendered.get("trainer", {}).get("fast_dev_run")
-        print(f"  trainer.fast_dev_run={fdr}")
-        if fdr != 1:
-            print("  WARN: fast_dev_run not propagated — training will be long")
+        me = resolved.rendered.get("trainer", {}).get("max_epochs")
+        print(f"  trainer.max_epochs={me}")
+        if me != 1:
+            print("  WARN: max_epochs override not propagated — training will be long")
         print("  PASS")
     except Exception as e:
         print(f"  FAIL: {e}")
@@ -108,8 +108,8 @@ def main() -> int:
         _report(failures, t0)
         return 1
 
-    # -- Step 5: Lightning instantiation + fit --------------------------------
-    _header(5, "Lightning fast_dev_run fit")
+    # -- Step 5: Trainer instantiation + fit ----------------------------------
+    _header(5, "Trainer 1-epoch fit")
     try:
         run = actor._instantiate_and_inject(resolved)
         print(f"  trainer: {type(run.trainer).__name__}")
@@ -124,7 +124,7 @@ def main() -> int:
     except Exception as e:
         print(f"  FAIL: {e}")
         traceback.print_exc()
-        failures.append("lightning_fit")
+        failures.append("trainer_fit")
 
     _report(failures, t0)
     return 1 if failures else 0

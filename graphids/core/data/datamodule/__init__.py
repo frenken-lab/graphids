@@ -1,4 +1,4 @@
-"""LightningDataModules for graph datasets.
+"""DataModules for graph and fusion datasets.
 
 ``GraphDataModule`` accepts a ``dataset_cls`` class-path string so adding
 a new graph domain is config-only — no subclass needed. Curriculum learning

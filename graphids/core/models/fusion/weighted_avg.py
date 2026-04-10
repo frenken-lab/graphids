@@ -16,13 +16,16 @@ from .base import LAYOUT, FusionModuleBase
 class WeightedAvgModule(FusionModuleBase):
     """Learns a single scalar alpha blending VGAE and GAT confidence."""
 
+    # Standard supervised training — trainer handles backward + step
+    automatic_optimization = True
+
     def __init__(
         self,
         lr: float = 0.01,
         decision_threshold: float = 0.5,
     ):
         super().__init__()
-        self.save_hyperparameters()
+        self.hparams = self._capture_hparams(locals())
         self.weight = nn.Parameter(torch.zeros(1))
         self.loss_fn = nn.BCELoss()
         self.lr = lr
@@ -41,8 +44,8 @@ class WeightedAvgModule(FusionModuleBase):
         states, labels = batch
         scores = self(states)
         loss = self.loss_fn(scores, labels.float())
-        self.log("train_loss", loss, prog_bar=True)
-        self.log("alpha", torch.sigmoid(self.weight).item(), prog_bar=True)
+        self.log("train_loss", loss)
+        self.log("alpha", torch.sigmoid(self.weight).item())
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -51,8 +54,8 @@ class WeightedAvgModule(FusionModuleBase):
         loss = self.loss_fn(scores, labels.float())
         preds = (scores > self.decision_threshold).long()
         acc = (preds == labels).float().mean()
-        self.log("val_loss", loss, prog_bar=True)
-        self.log("val_acc", acc, prog_bar=True)
+        self.log("val_loss", loss)
+        self.log("val_acc", acc)
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
         states, labels = batch
@@ -60,5 +63,5 @@ class WeightedAvgModule(FusionModuleBase):
         preds = (scores > self.decision_threshold).long()
         self.test_metrics.update(preds, labels)
 
-    def configure_optimizers(self):
-        return optim.Adam(self.parameters(), lr=self.lr)
+    def build_optimizers(self, max_epochs: int):
+        return optim.Adam(self.parameters(), lr=self.lr), None

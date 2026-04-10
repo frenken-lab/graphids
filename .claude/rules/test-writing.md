@@ -15,7 +15,7 @@ Seen in this repo (all deleted in the 2026-04-04 audit):
 - `pytest.raises(ValidationError)` for `frozen=True` assignment → Pydantic's job
 - `pytest.raises(ValidationError)` for `extra="forbid"` typos → Pydantic's job
 - `pytest.raises(TypeError)` for a required kwarg being required → Python's job
-- `hasattr(module, "test_metrics")` on a LightningModule subclass → Lightning's job
+- `hasattr(module, "test_metrics")` where the base class always sets it → base class's job
 - `isinstance(cfg.stages, tuple)` after annotating `stages: tuple[...]` → Pydantic's job
 - Tests that `torchmetrics.reset()` works → torchmetrics' job
 
@@ -72,14 +72,14 @@ Examples from the kept tests:
 Only two markers are registered. See `pyproject.toml`.
 
 - `@pytest.mark.slow` — >30s. Deselect with `-m "not slow"`.
-- `@pytest.mark.slurm` — requires SLURM submission: runs `pl.Trainer.fit`,
+- `@pytest.mark.slurm` — requires SLURM submission: runs `Trainer.fit`,
   hits CUDA, or instantiates models against real datasets. **Not** for
   "touches torch" — every test touches torch via `conftest.py`, and
-  `tests/test_instantiate.py` even builds a full `pl.Trainer` on the
+  `tests/test_instantiate.py` even builds a full `Trainer` on the
   login node without fitting. Reserve for jobs that actually train.
 
 Over-marking means the test never runs. `@pytest.mark.slow` classes in
-`test_gat.py`/`test_vgae.py`/`test_fusion.py` use `fast_dev_run` on CPU.
+`test_gat.py`/`test_vgae.py`/`test_fusion.py` exercise training_step on CPU.
 
 ## Fixtures and conventions
 
@@ -94,10 +94,9 @@ Over-marking means the test never runs. `@pytest.mark.slow` classes in
   formula mirror in disguise.
 - **No silent `pytest.skip()`** for missing fixture files. Either assert
   the file exists or don't parametrize it.
-- **Don't import `torch`/`pytorch_lightning` inside test function bodies**
-  unless lazy import is genuinely needed (e.g. to isolate Lightning from
-  a lightweight test). Pre-existing lazy imports in
-  `test_fusion.py:22,86,119,139,155` are grandfathered but discouraged.
+- **Don't import `torch` inside test function bodies** unless lazy
+  import is genuinely needed (e.g. to isolate a heavy submodule from
+  a lightweight test).
 
 ## Organization
 

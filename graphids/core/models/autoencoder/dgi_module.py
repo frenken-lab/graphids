@@ -8,15 +8,15 @@ from ..base import GraphModuleBase, binary_test_metrics
 from .dgi import GraphInfomaxModel
 
 # ---------------------------------------------------------------------------
-# Lightning training module
+# Training module
 # ---------------------------------------------------------------------------
 
 
 class DGIModule(GraphModuleBase):
-    """DGI contrastive training: maximize node–summary mutual information.
+    """DGI contrastive training: maximize node-summary mutual information.
 
     Anomaly scoring at test time uses discriminator confidence:
-    low discriminator agreement → anomalous graph.
+    low discriminator agreement -> anomalous graph.
     """
 
     def __init__(
@@ -48,7 +48,7 @@ class DGIModule(GraphModuleBase):
 
             lake_root = get_settings().lake_root
         super().__init__()
-        self.save_hyperparameters()
+        self.hparams = self._capture_hparams(locals())
         self.model = None
         self._init_threshold_metrics()
         self.test_metrics = binary_test_metrics()
@@ -79,7 +79,7 @@ class DGIModule(GraphModuleBase):
 
     def _training_step_inner(self, batch, _idx):
         loss = self._step(batch)
-        self.log("train_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
+        self.log("train_loss", loss, batch_size=batch.num_graphs)
         return loss
 
     def training_step(self, batch, batch_idx):
@@ -88,7 +88,7 @@ class DGIModule(GraphModuleBase):
     def validation_step(self, batch, _idx):
         pos_z, neg_z, summary = self(batch)
         loss = self.model.dgi_loss(pos_z, neg_z, summary, batch.batch)
-        self.log("val_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
+        self.log("val_loss", loss, batch_size=batch.num_graphs)
 
     def _per_graph_scores(self, batch):
         """Compute per-graph anomaly scores (1 - mean discriminator confidence)."""

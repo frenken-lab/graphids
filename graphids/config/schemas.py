@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 _MinMaxMode = Literal["min", "max"]
 _MODEL_LIST_FIELDS = ("pool_aggrs", "hidden_dims", "auxiliaries")
-_ALLOWED_CLASS_PATH_ROOTS = ("graphids.", "lightning.pytorch.", "pytorch_lightning.")
+_ALLOWED_CLASS_PATH_ROOTS = ("graphids.",)
 
 
 class ClassPathBlock(BaseModel):

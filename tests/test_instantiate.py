@@ -57,42 +57,35 @@ def test_stage_instantiates(stage_tla):
         f"configs/stages/{stage}.jsonnet",
         tla=tla or None,
     )
-    run = instantiate(merged, seed_everything=False)
+    run = instantiate(merged, seed_all=False)
     assert run.trainer is not None
     assert run.model is not None
     assert run.datamodule is not None
 
 
 class TestForcedCallbacks:
-    """Phase 3 constructs the forced callback set explicitly.
+    """The callback set wired by defaults.libsonnet must land on every trainer.
 
-    INVARIANT: the five callbacks that LightningCLI used to force via
-    ``add_lightning_class_args`` (ModelCheckpoint, EarlyStopping,
-    DeviceStatsMonitor, ResourceProfileCallback, RunRecordCallback) must
-    still land on every trainer regardless of stage.
+    INVARIANT: ModelCheckpoint, EarlyStopping, OTelTrainingCallback, and
+    CurriculumEpochCallback are present for every stage.
     """
 
-    def test_autoencoder_has_full_forced_set(self):
-        from pytorch_lightning.callbacks import (
-            DeviceStatsMonitor,
-            EarlyStopping,
-            ModelCheckpoint,
-        )
-
-        from graphids.core.models.base import ResourceProfileCallback, RunRecordCallback
+    def test_autoencoder_has_full_callback_set(self):
+        from graphids.core.callbacks import EarlyStopping, ModelCheckpoint
+        from graphids.core.data.curriculum import CurriculumEpochCallback
+        from graphids.core.monitoring import OTelTrainingCallback
 
         merged = render("configs/stages/autoencoder.jsonnet", tla=None)
-        run = instantiate(merged, seed_everything=False)
+        run = instantiate(merged, seed_all=False)
         cbs = run.trainer.callbacks
         cb_types = {type(cb) for cb in cbs}
         for required in (
             ModelCheckpoint,
             EarlyStopping,
-            DeviceStatsMonitor,
-            ResourceProfileCallback,
-            RunRecordCallback,
+            OTelTrainingCallback,
+            CurriculumEpochCallback,
         ):
-            assert required in cb_types, f"missing forced callback {required.__name__}"
+            assert required in cb_types, f"missing callback {required.__name__}"
 
 
 class TestLinkArguments:
@@ -106,7 +99,7 @@ class TestLinkArguments:
 
     def test_vgae_receives_linked_dataset_and_seed(self):
         merged = render("configs/stages/autoencoder.jsonnet", tla=None)
-        run = instantiate(merged, seed_everything=False)
+        run = instantiate(merged, seed_all=False)
         assert run.merged["model"]["init_args"]["dataset"] == "hcrl_ch"
         assert run.merged["model"]["init_args"]["seed"] == 42
         assert run.merged["data"]["init_args"]["seed"] == 42
@@ -117,7 +110,7 @@ class TestLinkArguments:
             "configs/stages/fusion.jsonnet",
             tla={"fusion_method": "bandit"},
         )
-        run = instantiate(merged, seed_everything=False)
+        run = instantiate(merged, seed_all=False)
         # BanditFusionModule.__init__ does NOT accept `dataset` — the link
         # must be skipped rather than set.
         from graphids.core.models.fusion.bandit import BanditFusionModule
@@ -148,7 +141,7 @@ class TestKDAuxiliariesCoercion:
     def test_distillation_config_builds_loss(self):
         """CONTRACT: distillation_config TLA produces a wrapped loss_fn."""
         merged = render("configs/stages/autoencoder.jsonnet", tla=None)
-        run = instantiate(merged, seed_everything=False)
+        run = instantiate(merged, seed_all=False)
         # Without distillation_config, loss_fn is plain VGAETaskLoss
         assert type(run.model.loss_fn).__name__ == "VGAETaskLoss"
 
@@ -156,7 +149,7 @@ class TestKDAuxiliariesCoercion:
         """CONTRACT: null distillation_config still produces a valid loss."""
         merged = render("configs/stages/autoencoder.jsonnet", tla=None)
         assert merged["model"]["init_args"].get("distillation_config") is None
-        run = instantiate(merged, seed_everything=False)
+        run = instantiate(merged, seed_all=False)
         assert run.model.loss_fn is not None
 
 
@@ -168,12 +161,12 @@ class TestCheckpointDirpathPatched:
     """
 
     def test_dirpath_set_to_run_dir_subpath(self, tmp_path):
-        from pytorch_lightning.callbacks import ModelCheckpoint
+        from graphids.core.callbacks import ModelCheckpoint
 
         merged = render(
             "configs/stages/autoencoder.jsonnet",
             tla={"run_dir": str(tmp_path)},
         )
-        run = instantiate(merged, seed_everything=False)
+        run = instantiate(merged, seed_all=False)
         ckpt = next(cb for cb in run.trainer.callbacks if isinstance(cb, ModelCheckpoint))
         assert ckpt.dirpath == f"{tmp_path}/checkpoints"

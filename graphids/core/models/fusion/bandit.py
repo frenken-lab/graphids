@@ -58,7 +58,7 @@ class BanditFusionModule(FusionModuleBase):
             decision_threshold=decision_threshold,
             reward_kwargs=reward_kwargs,
         )
-        self.save_hyperparameters()
+        self.hparams = self._capture_hparams(locals())
 
         self.ucb_alpha = ucb_alpha
         self.lambda_reg = lambda_reg
@@ -81,8 +81,10 @@ class BanditFusionModule(FusionModuleBase):
         self._episode = 0
         self._ucb_widths: list[float] = []
 
-    def configure_optimizers(self):
-        return self.backbone_optimizer
+    def build_optimizers(self, max_epochs: int):
+        # Bandit manages its own optimizer (backbone_optimizer).
+        # Return it so the trainer can save/restore state.
+        return self.backbone_optimizer, None
 
     # -- Exploration strategy ------------------------------------------------
 

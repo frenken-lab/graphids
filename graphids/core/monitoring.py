@@ -1,11 +1,11 @@
-"""OpenTelemetry Lightning callback + logger + SLURM resource detector.
+"""OpenTelemetry training callback + logger + SLURM resource detector.
 
 Replaces ResourceProfileCallback + RunRecordCallback + DeviceStatsMonitor
 (callback) and WandbLogger + CSVLogger (logger).
 
 Callback controls span lifecycle (fit start/end, batch timing, VRAM gauges,
-epoch events, cross-stage span links). Logger captures ``self.log()`` calls
-from LightningModules as OTel histograms.
+epoch events, cross-stage span links). Logger captures ``model.log()`` calls
+from training modules as OTel histograms.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 import pynvml
-import pytorch_lightning as pl
 import torch
 from opentelemetry import metrics, trace
 from opentelemetry.sdk.resources import Resource, ResourceDetector
@@ -26,6 +25,8 @@ from opentelemetry.trace import (
     SpanContext,
     TraceFlags,
 )
+
+from graphids.core.callbacks import CallbackBase
 
 # ---------------------------------------------------------------------------
 # SLURM Resource Detector
@@ -71,7 +72,7 @@ class SlurmResourceDetector(ResourceDetector):
 # ---------------------------------------------------------------------------
 
 
-class OTelTrainingCallback(pl.Callback):
+class OTelTrainingCallback(CallbackBase):
     """Per-run span + resource gauges via OpenTelemetry.
 
     Creates a ``training.fit`` span on fit start, records per-batch VRAM
@@ -112,7 +113,7 @@ class OTelTrainingCallback(pl.Callback):
 
     # -- lifecycle ------------------------------------------------------------
 
-    def on_fit_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+    def on_fit_start(self, trainer, model: torch.nn.Module) -> None:
         # Discover upstream span links before creating the span
         links = self._discover_upstream_links(trainer)
         self._span = self._tracer.start_span("training.fit", links=links or None)
@@ -121,7 +122,7 @@ class OTelTrainingCallback(pl.Callback):
 
         root_dir = trainer.default_root_dir or ""
         self._span.set_attribute("ml.run_dir", root_dir)
-        self._span.set_attribute("ml.model_class", type(pl_module).__name__)
+        self._span.set_attribute("ml.model_class", type(model).__name__)
         self._span.set_attribute("ml.max_epochs", trainer.max_epochs or 0)
 
         # Identity attributes from jsonnet config
@@ -132,10 +133,10 @@ class OTelTrainingCallback(pl.Callback):
         # Initialize NVML for hardware-level GPU stats
         if torch.cuda.is_available():
             pynvml.nvmlInit()
-            device_idx = pl_module.device.index or 0
+            device_idx = model.device.index or 0
             self._nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(device_idx)
 
-    def on_fit_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+    def on_fit_end(self, trainer, model: torch.nn.Module) -> None:
         if self._span is None:
             return
         for k, v in trainer.callback_metrics.items():
@@ -154,8 +155,8 @@ class OTelTrainingCallback(pl.Callback):
 
     def on_exception(
         self,
-        trainer: pl.Trainer,
-        pl_module: pl.LightningModule,
+        trainer,
+        model: torch.nn.Module,
         exception: BaseException,
     ) -> None:
         if self._span is None:
@@ -174,7 +175,7 @@ class OTelTrainingCallback(pl.Callback):
 
     # -- per-epoch events -----------------------------------------------------
 
-    def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+    def on_train_epoch_end(self, trainer, model: torch.nn.Module) -> None:
         if self._span is None:
             return
         cb = trainer.callback_metrics
@@ -195,8 +196,8 @@ class OTelTrainingCallback(pl.Callback):
 
     def on_train_batch_start(
         self,
-        trainer: pl.Trainer,
-        pl_module: pl.LightningModule,
+        trainer,
+        model: torch.nn.Module,
         batch: Any,
         batch_idx: int,
     ) -> None:
@@ -204,8 +205,8 @@ class OTelTrainingCallback(pl.Callback):
 
     def on_train_batch_end(
         self,
-        trainer: pl.Trainer,
-        pl_module: pl.LightningModule,
+        trainer,
+        model: torch.nn.Module,
         outputs: Any,
         batch: Any,
         batch_idx: int,
@@ -244,7 +245,7 @@ class OTelTrainingCallback(pl.Callback):
 
     # -- cross-stage span links -----------------------------------------------
 
-    def _discover_upstream_links(self, trainer: pl.Trainer) -> list[Link]:
+    def _discover_upstream_links(self, trainer) -> list[Link]:
         """Read upstream traces.jsonl to create span links for KD lineage."""
         links: list[Link] = []
         dm = trainer.datamodule
@@ -254,7 +255,7 @@ class OTelTrainingCallback(pl.Callback):
             ckpt_path = getattr(dm, attr, None)
             if not ckpt_path:
                 continue
-            # checkpoints/best_model.ckpt → run_dir (up 2 levels)
+            # checkpoints/best_model.ckpt -> run_dir (up 2 levels)
             upstream_run_dir = Path(ckpt_path).parent.parent
             traces_file = upstream_run_dir / "traces.jsonl"
             if not traces_file.exists():
@@ -313,15 +314,14 @@ def _coerce(v: Any) -> str | int | float | bool:
 # ---------------------------------------------------------------------------
 
 
-class OTelTrainingLogger(pl.loggers.Logger):
-    """Lightning Logger that emits ``self.log()`` calls as OTel histograms.
+class OTelTrainingLogger:
+    """Logger that emits ``model.log()`` calls as OTel histograms.
 
     Replaces WandbLogger + CSVLogger. Each unique metric name gets a
     cached histogram instrument to avoid repeated ``create_histogram``.
     """
 
     def __init__(self) -> None:
-        super().__init__()
         self._meter = metrics.get_meter(__name__)
         self._instruments: dict[str, metrics.Histogram] = {}
 

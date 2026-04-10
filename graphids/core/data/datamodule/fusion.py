@@ -10,17 +10,20 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-import pytorch_lightning as pl
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from graphids._otel import get_logger
-from graphids.core.data.fusion_states import FUSION_STATES_DIR, TRAIN_FILENAME, VAL_FILENAME
+from graphids.core.data.fusion_states import (
+    FUSION_STATES_DIR,
+    TRAIN_FILENAME,
+    VAL_FILENAME,
+)
 
 log = get_logger(__name__)
 
 
-class FusionDataModule(pl.LightningDataModule):
+class FusionDataModule:
     """Loads pre-extracted VGAE+GAT state vectors, serves DataLoaders.
 
     Requires ``cached_states_dir`` pointing to the output of
@@ -35,8 +38,7 @@ class FusionDataModule(pl.LightningDataModule):
         batch_size: int = 128,
         episode_sample_size: int = 20000,
     ):
-        super().__init__()
-        self.save_hyperparameters()
+        self.hparams = {k: v for k, v in locals().items() if k != "self"}
         is_rl = method in ("dqn", "bandit")
         self._batch_size = episode_sample_size if is_rl else batch_size
         self.train_cache: dict | None = None
@@ -51,13 +53,13 @@ class FusionDataModule(pl.LightningDataModule):
             return
 
         hp = self.hparams
-        if not hp.cached_states_dir:
+        if not hp["cached_states_dir"]:
             raise ValueError(
                 "cached_states_dir is required — run "
                 "'python -m graphids extract-fusion-states' first"
             )
 
-        states_dir = Path(hp.cached_states_dir)
+        states_dir = Path(hp["cached_states_dir"])
         # Support both direct dir and parent dir containing fusion_states/
         if not (states_dir / TRAIN_FILENAME).exists():
             states_dir = states_dir / FUSION_STATES_DIR

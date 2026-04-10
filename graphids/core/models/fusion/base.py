@@ -10,9 +10,13 @@ validation_step / test_step with standard loss-based flows.
 
 from __future__ import annotations
 
-import pytorch_lightning as pl
+from types import SimpleNamespace
+from typing import Any
+
 import torch
 import torch.nn as nn
+
+from graphids.core.trainer import MetricAccumulator
 
 from ..base import LAYOUT, STATE_DIM, binary_test_metrics
 
@@ -96,7 +100,7 @@ class FusionRewardCalculator(torch.nn.Module):
     """Vectorized fusion reward from state features, predictions, and labels.
 
     Extends nn.Module so ``_vgae_weights`` auto-transfers to GPU when the owning
-    LightningModule is moved to a device.
+    module is moved to a device.
 
     All shaping coefficients are required kwargs — sourced from
     ``configs/models/fusion/reward.libsonnet`` via the jsonnet config.
@@ -213,9 +217,18 @@ def fused_predict(agent, states: torch.Tensor) -> dict:
 # ---------------------------------------------------------------------------
 
 
-class FusionModuleBase(pl.LightningModule):
+class FusionModuleBase(nn.Module):
     """Base for all fusion models. RL subclasses get the full training loop
     for free by implementing ``select_action_batch`` and ``train_episode``."""
+
+    # RL subclasses (Bandit, DQN) set this to False
+    automatic_optimization = False
+
+    @staticmethod
+    def _capture_hparams(local_vars: dict[str, Any], ignore: tuple[str, ...] = ()) -> SimpleNamespace:
+        """Capture ``__init__`` kwargs as a ``SimpleNamespace``."""
+        skip = {"self", "__class__", *ignore}
+        return SimpleNamespace(**{k: v for k, v in local_vars.items() if k not in skip})
 
     def __init__(
         self,
@@ -228,7 +241,10 @@ class FusionModuleBase(pl.LightningModule):
         reward_kwargs: dict | None = None,
     ):
         super().__init__()
-        self.automatic_optimization = False
+        self._metric_acc = MetricAccumulator()
+        self._trainer = None
+        # Non-persistent buffer that tracks device through .to()/.cuda()/.cpu()
+        self.register_buffer("_device_tracker", torch.empty(0), persistent=False)
         self.state_dim = state_dim
         self.batch_size = batch_size
         self.decision_threshold = decision_threshold
@@ -242,6 +258,29 @@ class FusionModuleBase(pl.LightningModule):
 
         self.test_metrics = binary_test_metrics()
 
+    @property
+    def device(self) -> torch.device:
+        return self._device_tracker.device
+
+    # -- logging (replaces pl self.log / self.log_dict) ----------------------
+
+    def log(self, name: str, value: Any, *, batch_size: int = 1, **_kwargs) -> None:
+        v = float(value.detach()) if isinstance(value, torch.Tensor) else float(value)
+        self._metric_acc.update(name, v, batch_size)
+
+    def log_dict(self, metrics: dict[str, Any], **kwargs) -> None:
+        for k, v in metrics.items():
+            self.log(k, v, **kwargs)
+
+    # -- setup (no-op by default, overridden if needed) ----------------------
+
+    def setup(self, datamodule=None):
+        pass
+
+    def build_optimizers(self, max_epochs: int) -> tuple[torch.optim.Optimizer | None, Any]:
+        """Default: no optimizer (RL models manage their own). Override in subclasses."""
+        return None, None
+
     # -- Subclass contract ---------------------------------------------------
 
     def select_action_batch(
@@ -254,7 +293,7 @@ class FusionModuleBase(pl.LightningModule):
         """One training episode. Returns metric dict for logging."""
         raise NotImplementedError
 
-    # -- Lightning hooks (shared by all RL fusion) ---------------------------
+    # -- Training hooks (shared by all RL fusion) ----------------------------
 
     def training_step(self, batch, batch_idx):
         states, labels = batch
@@ -297,3 +336,9 @@ class FusionModuleBase(pl.LightningModule):
 
     def on_test_epoch_end(self):
         self.log_dict(self.test_metrics.compute())
+
+    def on_save_checkpoint(self, checkpoint):
+        pass
+
+    def on_load_checkpoint(self, checkpoint):
+        pass

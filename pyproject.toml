@@ -13,7 +13,7 @@ dependencies = [
     "torch-scatter",
     "torch-sparse",
     "torch-cluster",
-    "pytorch-lightning>=2.6.0",
+    "torchmetrics>=1.8.0",
     "numpy>=1.26.4",
     "polars>=1.0.0",
     "pandas>=2.2.3",
@@ -64,10 +64,9 @@ format = "flat"
 testpaths = ["tests"]
 markers = [
     "slow: marks tests as slow (>30s, deselect with '-m not slow')",
-    "slurm: marks tests that require SLURM submission (torch imports, CUDA, fast_dev_run)",
+    "slurm: marks tests that require SLURM submission (torch imports, CUDA, full training)",
 ]
 filterwarnings = [
-    "ignore:The `srun` command is available:UserWarning:lightning_fabric",
     "ignore:Can't initialize NVML:UserWarning:torch.cuda",
     "ignore:.*torch_geometric.distributed.*has been deprecated:DeprecationWarning",
 ]
@@ -96,7 +95,7 @@ disallow_untyped_defs = true
 module = [
     "torch.*",
     "torch_geometric.*",
-    "pytorch_lightning.*",
+    "torchmetrics.*",
     "optuna.*",
     "sklearn.*",
     "umap.*",

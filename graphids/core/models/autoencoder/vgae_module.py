@@ -12,7 +12,7 @@ from ..base import GraphModuleBase, binary_test_metrics
 from .vgae import GraphAutoencoderNeighborhood
 
 # ---------------------------------------------------------------------------
-# Lightning training module
+# Training module
 # ---------------------------------------------------------------------------
 
 
@@ -70,8 +70,7 @@ class VGAEModule(GraphModuleBase):
 
             lake_root = get_settings().lake_root
         super().__init__()
-        # loss_fn is an nn.Module; don't serialize it into hyperparameters.
-        self.save_hyperparameters(ignore=["loss_fn"])
+        self.hparams = self._capture_hparams(locals(), ignore=("loss_fn",))
         self.loss_fn = loss_fn
         self._init_threshold_metrics()
         self.model = None
@@ -137,7 +136,7 @@ class VGAEModule(GraphModuleBase):
     def _training_step_inner(self, batch, _idx):
         loss = self._step(batch)
         bs = batch.num_graphs
-        self.log("train_loss", loss, prog_bar=True, batch_size=bs)
+        self.log("train_loss", loss, batch_size=bs)
         # Log KD components separately when FeatureDistillation is active.
         from graphids.core.losses.distillation import FeatureDistillation
 
@@ -153,7 +152,7 @@ class VGAEModule(GraphModuleBase):
 
     def validation_step(self, batch, _idx):
         loss = self._step(batch)
-        self.log("val_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
+        self.log("val_loss", loss, batch_size=batch.num_graphs)
 
     def _per_graph_errors(self, batch):
         """Compute weighted per-graph anomaly errors from a batch.
@@ -197,7 +196,7 @@ class VGAEModule(GraphModuleBase):
         errors = self._per_graph_errors(batch)
         return {"errors": errors, "labels": batch.y}
 
-    def configure_optimizers(self):
+    def build_optimizers(self, max_epochs: int):
         params = list(self.model.parameters())
         # FeatureDistillation's optional projection layer — if KD is active
         # and the student/teacher latent dims differ, its weights need to
@@ -205,5 +204,5 @@ class VGAEModule(GraphModuleBase):
         if hasattr(self.loss_fn, "projection") and self.loss_fn.projection is not None:
             params += list(self.loss_fn.projection.parameters())
         opt = torch.optim.Adam(params, lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=self.trainer.max_epochs)
-        return {"optimizer": opt, "lr_scheduler": {"scheduler": scheduler, "interval": "epoch"}}
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max_epochs)
+        return opt, scheduler

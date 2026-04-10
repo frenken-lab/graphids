@@ -8,7 +8,7 @@
 {
   callbacks: {
     checkpoint: {
-      class_path: 'pytorch_lightning.callbacks.ModelCheckpoint',
+      class_path: 'graphids.core.callbacks.ModelCheckpoint',
       init_args: {
         monitor: 'val_loss',
         mode: 'min',
@@ -18,7 +18,7 @@
       },
     },
     early_stopping: {
-      class_path: 'pytorch_lightning.callbacks.EarlyStopping',
+      class_path: 'graphids.core.callbacks.EarlyStopping',
       init_args: {
         monitor: 'val_loss',
         mode: 'min',
@@ -26,7 +26,7 @@
       },
     },
     curriculum: {
-      class_path: 'graphids.core.data.sampler.CurriculumEpochCallback',
+      class_path: 'graphids.core.data.curriculum.CurriculumEpochCallback',
       init_args: {},
     },
     otel: {

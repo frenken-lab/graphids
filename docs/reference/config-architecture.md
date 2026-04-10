@@ -90,7 +90,7 @@ ValidatedConfig (extra="forbid")
 | `_no_null_list_fields` | `model.init_args.{pool_aggrs, hidden_dims, auxiliaries}` must not be null | jsonargparse rejects these at instantiation with a cryptic error |
 | `_monitor_pair_consistent` | `checkpoint.monitor/mode == early_stopping.monitor/mode` | Divergent monitors = typo in the stage libsonnet |
 | `_lr_monitor_requires_logger` | `LearningRateMonitor` callback needs `trainer.logger != False` | LR monitor is silently disabled without a logger |
-| `_class_paths_namespaced` | `data.class_path` and `model.class_path` must start with `graphids.` or `pytorch_lightning.` | Catches relative imports and stray modules |
+| `_class_paths_namespaced` | `data.class_path` and `model.class_path` must start with `graphids.` | Catches relative imports and stray modules |
 
 Stage-archetype monitor mismatches (fusion must be `val_acc/max`, every
 other stage `val_loss/min`) are a **warning** in `orchestrate/resolve.py`
@@ -126,7 +126,7 @@ OTelTrainingCallback. Logger: OTelTrainingLogger.
 | Forced callbacks | `_build_callbacks(merged, default_root_dir)` — explicit construction |
 | Path patching | inline in `_build_callbacks` (checkpoint dirpath) and `_build_loggers` (logger save_dir) |
 | KD loss injection | `inject_loss_fn` pops `distillation_config`, builds loss via `build_loss()` |
-| seed_everything | explicit `pl.seed_everything(merged["seed_everything"], workers=True)` |
+| seed_everything | explicit `graphids.core.trainer.seed_everything(merged["seed_everything"])` |
 
 ---
 

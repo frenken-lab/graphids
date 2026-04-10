@@ -1,6 +1,6 @@
 """Typer CLI app for GraphIDS.
 
-No torch / pytorch_lightning imports at module level — safe on login nodes.
+No torch / model imports at module level — safe on login nodes.
 Heavy imports are deferred to inside command functions.
 """
 

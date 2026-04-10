@@ -16,15 +16,15 @@ in this repo:
 
 Both classes are plain ``nn.Module``. They're built by
 ``graphids.instantiate._build_loss`` when the config has a
-``distillation_config`` block, and injected into the LightningModule as
+``distillation_config`` block, and injected into the student module as
 its ``loss_fn``. No trainer plugin, no callback, no IO. The teacher is
 held on CPU by default and moved to the student's device lazily inside
 ``forward`` — ``nn.Module`` storage is bypassed (``__dict__`` assignment)
-so Lightning's auto-transfer doesn't try to shuttle it around.
+so ``.to()``/``.cuda()`` doesn't try to shuttle it around.
 
 Both expose ``last_hard_loss`` / ``last_soft_loss`` (or
 ``last_task_loss`` / ``last_kd_loss``) after each ``forward`` call so the
-LightningModule can log the two components separately without having to
+student module can log the two components separately without having to
 re-run either pass.
 """
 
@@ -95,7 +95,7 @@ class SoftLabelDistillation(nn.Module):
         self.alpha = alpha
         _attach_teacher(self, teacher)
 
-        # Populated on every forward() call so the LightningModule can log them.
+        # Populated on every forward() call so the training module can log them.
         self.last_hard_loss: torch.Tensor | None = None
         self.last_soft_loss: torch.Tensor | None = None
 
@@ -162,7 +162,7 @@ class FeatureDistillation(nn.Module):
         self.projection = projection
         _attach_teacher(self, teacher)
 
-        # Populated on every forward() call so the LightningModule can log them.
+        # Populated on every forward() call so the training module can log them.
         self.last_task_loss: torch.Tensor | None = None
         self.last_kd_loss: torch.Tensor | None = None
 

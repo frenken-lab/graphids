@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -11,7 +12,7 @@ from ..base import GraphModuleBase, binary_test_metrics
 from .gat import GATWithJK
 
 # ---------------------------------------------------------------------------
-# Lightning training module
+# Training module
 # ---------------------------------------------------------------------------
 
 
@@ -64,9 +65,7 @@ class GATModule(GraphModuleBase):
         super().__init__()
         if pool_aggrs is None:
             pool_aggrs = ["mean"]
-        # ``loss_fn`` is an nn.Module and shouldn't be serialized into the
-        # hyperparameter dict — save_hyperparameters ignores it explicitly.
-        self.save_hyperparameters(ignore=["loss_fn"])
+        self.hparams = self._capture_hparams(locals(), ignore=("loss_fn",))
         self.loss_fn = loss_fn
         self.model = None
         self.test_metrics = binary_test_metrics()
@@ -93,7 +92,6 @@ class GATModule(GraphModuleBase):
     def extract_features(self, batch, device: torch.device) -> torch.Tensor:
         """7-D fusion features: [prob_0, prob_1, emb_mean, emb_std, emb_max, emb_min, confidence]."""
         import math
-        import torch.nn.functional as F
 
         logits, emb = self.model(batch, return_embedding=True)
         probs = F.softmax(logits, dim=1)
@@ -109,11 +107,9 @@ class GATModule(GraphModuleBase):
     def _training_step_inner(self, batch, _idx):
         loss, acc = self._step(batch)
         bs = batch.num_graphs
-        self.log("train_loss", loss, prog_bar=True, batch_size=bs)
-        self.log("train_acc", acc, prog_bar=True, batch_size=bs)
-        # Log KD components separately when distillation is active. The
-        # SoftLabelDistillation wrapper stores the two detached scalars on
-        # itself after each forward() call, so no extra passes are needed.
+        self.log("train_loss", loss, batch_size=bs)
+        self.log("train_acc", acc, batch_size=bs)
+        # Log KD components separately when distillation is active.
         from graphids.core.losses.distillation import SoftLabelDistillation
 
         if isinstance(self.loss_fn, SoftLabelDistillation):
@@ -128,8 +124,8 @@ class GATModule(GraphModuleBase):
 
     def validation_step(self, batch, _idx):
         loss, acc = self._step(batch)
-        self.log("val_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
-        self.log("val_acc", acc, prog_bar=True, batch_size=batch.num_graphs)
+        self.log("val_loss", loss, batch_size=batch.num_graphs)
+        self.log("val_acc", acc, batch_size=batch.num_graphs)
 
     def test_step(self, batch, _idx, dataloader_idx=0):
         logits = self(batch)

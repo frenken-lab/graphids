@@ -1,4 +1,4 @@
-"""Dataset-agnostic graph LightningDataModule.
+"""Dataset-agnostic graph DataModule.
 
 ``dataset_cls`` is a dotted class-path string resolved via ``importlib``,
 so adding a new graph domain is config-only — no subclass needed.
@@ -13,7 +13,6 @@ from __future__ import annotations
 import importlib
 import math
 
-import pytorch_lightning as pl
 import torch
 from torch_geometric.data import Batch, InMemoryDataset
 
@@ -35,8 +34,8 @@ def _spawn_loader(
     device: torch.device | None = None,
 ):
     """PyGDataLoader with spawn/persistent_workers defaults + PrefetchLoader."""
-    from torch_geometric.loader import DataLoader as PyGDataLoader
     import torch.multiprocessing as mp
+    from torch_geometric.loader import DataLoader as PyGDataLoader
 
     kw: dict = dict(num_workers=num_workers, pin_memory=device is None)
     if num_workers > 0:
@@ -61,7 +60,7 @@ def _prebatched_loader(batches, *, shuffle: bool = True, device: torch.device | 
     return _prefetch(loader, device)
 
 
-class GraphDataModule(pl.LightningDataModule):
+class GraphDataModule:
     """Dataset-agnostic graph DataModule.
 
     ``dataset_cls`` is a dotted class-path string resolved via importlib.
@@ -99,8 +98,8 @@ class GraphDataModule(pl.LightningDataModule):
         if lake_root is None:
             from graphids.config.settings import get_settings
             lake_root = get_settings().lake_root
-        super().__init__()
-        self.save_hyperparameters()
+        # Store init args as a dict for downstream kwargs access.
+        self.hparams = {k: v for k, v in locals().items() if k != "self"}
         module_path, cls_name = dataset_cls.rsplit(".", 1)
         self._dataset_cls: type[InMemoryDataset] = getattr(
             importlib.import_module(module_path), cls_name
@@ -114,6 +113,12 @@ class GraphDataModule(pl.LightningDataModule):
         self._tier_sizes: list[torch.Tensor] | None = None  # per-tier node counts
         self._tier_batches: list[list[Batch]] | None = None  # pre-batched tiers
         self._active_batches: list[Batch] | None = None
+        # Device for PrefetchLoader — set by trainer via _set_device()
+        self._device: torch.device | None = None
+
+    def _set_device(self, device: torch.device | None) -> None:
+        """Called by Trainer to tell the datamodule which device to prefetch to."""
+        self._device = device
 
     def setup(self, stage: str | None = None) -> None:
         if self._train_ds is not None:
@@ -214,12 +219,11 @@ class GraphDataModule(pl.LightningDataModule):
     def _budget_result(self, dataset=None):
         """Probe VRAM budget for the given dataset (or train_ds)."""
         hp = self.hparams
-        model, model_hp = self._model_and_hp()
         return node_budget(
             hp["dataset"], hp["lake_root"],
-            conv_type=model_hp.get("conv_type", hp.get("conv_type", "gatv2")),
-            heads=model_hp.get("heads", hp.get("heads", 4)),
-            model=model, train_dataset=dataset or self._train_ds,
+            conv_type=hp.get("conv_type", "gatv2"),
+            heads=hp.get("heads", 4),
+            train_dataset=dataset or self._train_ds,
         )
 
     def _prebatch(self, graphs, sizes) -> list[Batch]:
@@ -233,16 +237,7 @@ class GraphDataModule(pl.LightningDataModule):
         return [Batch.from_data_list([graphs[i] for i in plan]) for plan in sampler]
 
     def _prefetch_device(self):
-        trainer = getattr(self, "trainer", None)
-        if trainer and torch.cuda.is_available():
-            return trainer.strategy.root_device
-        return None
-
-    def _model_and_hp(self):
-        trainer = getattr(self, "trainer", None)
-        model = trainer.lightning_module if trainer else None
-        model_hp = getattr(model, "hparams", {}) if model else {}
-        return model, model_hp
+        return self._device if torch.cuda.is_available() else None
 
     # -- DataLoaders ----------------------------------------------------------
 
@@ -274,8 +269,7 @@ class GraphDataModule(pl.LightningDataModule):
 
         result = self._budget_result(dataset)
         if nw is None:
-            model, _ = self._model_and_hp()
-            nw, pf = autosize_workers(model, dataset, result, default_prefetch=pf)
+            nw, pf = autosize_workers(None, dataset, result, default_prefetch=pf)
 
         num_steps = max(1, math.ceil(len(dataset) * result.mean_nodes / result.budget))
         sampler = NodeBudgetBatchSampler(

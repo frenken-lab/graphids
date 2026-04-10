@@ -57,7 +57,7 @@ class DQNFusionModule(FusionModuleBase):
             decision_threshold=decision_threshold,
             reward_kwargs=reward_kwargs,
         )
-        self.save_hyperparameters()
+        self.hparams = self._capture_hparams(locals())
 
         self.epsilon = epsilon
         self.epsilon_decay = epsilon_decay
@@ -65,11 +65,15 @@ class DQNFusionModule(FusionModuleBase):
         self.gpu_training_steps = gpu_training_steps
 
         self.q_network = QNetwork(state_dim, alpha_steps, hidden_dim, num_layers)
-        self.optimizer = optim.AdamW(self.q_network.parameters(), lr=lr, weight_decay=weight_decay)
+        self._dqn_optimizer = optim.AdamW(
+            self.q_network.parameters(), lr=lr, weight_decay=weight_decay,
+        )
         self.loss_fn = nn.SmoothL1Loss()
 
-    def configure_optimizers(self):
-        return self.optimizer
+    def build_optimizers(self, max_epochs: int):
+        # DQN manages its own optimizer internally.
+        # Return it so the trainer can save/restore state.
+        return self._dqn_optimizer, None
 
     # -- Exploration strategy ------------------------------------------------
 
@@ -132,10 +136,10 @@ class DQNFusionModule(FusionModuleBase):
         current_q = self.q_network(states).gather(1, actions.unsqueeze(1)).squeeze(1)
         loss = self.loss_fn(current_q, rewards)
 
-        self.optimizer.zero_grad()
-        self.manual_backward(loss)
+        self._dqn_optimizer.zero_grad()
+        loss.backward()
         torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), max_norm=1.0)
-        self.optimizer.step()
+        self._dqn_optimizer.step()
 
         return loss.item()
 

@@ -59,7 +59,7 @@ class PipelineActor(Actor):
         )
 
     def _instantiate(self, resolved: Any) -> Any:
-        """Instantiate Lightning stack, injecting cached datasets. Frees GPU first."""
+        """Instantiate training stack, injecting cached datasets. Frees GPU first."""
         import torch
 
         gc.collect()

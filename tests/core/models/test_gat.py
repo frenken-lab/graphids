@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 import torch
-from conftest import EDGE_DIM, IN_CHANNELS, NUM_IDS, make_batch, make_graph, make_variable_batch
+from conftest import (
+    EDGE_DIM,
+    IN_CHANNELS,
+    NUM_IDS,
+    make_batch,
+    make_graph,
+    make_variable_batch,
+)
 from torch_geometric.loader import DataLoader
 
 
@@ -73,11 +80,15 @@ class TestGATFastDevRun:
         )
 
     def test_gat(self, gat_cfg):
-        import pytorch_lightning as pl
-
-        loader = DataLoader([make_graph() for _ in range(16)], batch_size=4)
-        trainer = pl.Trainer(fast_dev_run=True, accelerator="cpu", enable_progress_bar=False)
-        trainer.fit(self._make_module(gat_cfg), loader, loader)
+        """INVARIANT: GATModule.training_step produces a finite, backpropagable loss."""
+        module = self._make_module(gat_cfg)
+        module.train()
+        batch = make_batch(4)
+        loss = module.training_step(batch, 0)
+        assert loss is not None and torch.isfinite(loss)
+        loss.backward()
+        grads = [p.grad for p in module.parameters() if p.grad is not None]
+        assert len(grads) > 0, "No gradients after backward"
 
     @pytest.mark.parametrize("loss_fn", ["ce", "weighted_ce", "focal"])
     def test_gat_loss_variant_produces_finite_loss(self, gat_cfg, loss_fn):

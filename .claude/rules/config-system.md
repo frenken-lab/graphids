@@ -1,11 +1,12 @@
 # GraphIDS Config System
 
 Jsonnet composition + Pydantic validation + direct instantiation.
-Phases 1–4 (completed 2026-04-05) replaced YAML chains + LightningCLI with
+Replaced YAML + LightningCLI with
 `render_config(jsonnet_path, tla) → dict` → `validate_config` (Pydantic) →
 `graphids.instantiate.instantiate` (importlib class_path instantiation with
-signature-filtered link_arguments). Analyzer CLI uses jsonargparse with
-Jsonnet-backed configs (`cli/_analysis.py`).
+signature-filtered link_arguments). PyTorch Lightning was removed in favor
+of a custom `graphids.core.trainer.Trainer`. Analyzer CLI uses jsonargparse
+with Jsonnet-backed configs (`cli/_analysis.py`).
 
 ## Architecture
 
@@ -74,10 +75,9 @@ graphids/
     schemas.py                     # validate_config → ValidatedConfig (Pydantic)
     jsonnet.py                     # render_config(path, tla) subprocess shim
   core/
-    run_record.py                  # RunRecord sidecar schema
-    train_entrypoint.py            # render_config → validate_config → snapshot → instantiate → fit
-    monitoring/
-      callbacks.py                 # ResourceProfileCallback, RunRecordCallback (pl.Callback)
+    trainer.py                     # Trainer, TrainerConfig, seed_everything, MetricAccumulator
+    callbacks.py                   # CallbackBase, ModelCheckpoint, EarlyStopping
+    monitoring.py                  # OTelTrainingCallback, OTelTrainingLogger
   orchestrate/
     contracts.py                   # TrainingSpec, build_tla_dict, resolve_jsonnet_path
     resolve.py                     # ConfigResolver + cross-field validation
@@ -207,20 +207,20 @@ The `identity_hash` suffix is an 8-char SHA256 derived from the stage's
 `compute_identity_hash()` in `paths.py`. **Missing identity keys raise
 `KeyError`** — never silently hash to defaults.
 
-## Run record sidecars
+## Observability (OpenTelemetry)
 
-Every training run writes `{run_dir}/run_record.json` — a structured JSON
-sidecar that is the source of truth for experiment status and metrics.
-Written atomically (temp + fsync + rename).
+Every training run writes `{run_dir}/traces.jsonl` + `{run_dir}/metrics.jsonl`
+via OTel SimpleSpanProcessor + PeriodicExportingMetricReader. The
+`training.fit` span is the source of truth for experiment status + metrics.
 
-- **`RunRecord`** Pydantic model in `core/run_record.py`
-- **`RunRecordCallback`** in `core/monitoring/callbacks.py` — writes sidecar on
-  `on_fit_start`/`on_fit_end`/`on_exception`
-- **`_finalize-record`** command — called in generated sbatch script
-  after test+analyze to add phase markers + sacct wall_time
+- **`OTelTrainingCallback`** in `core/monitoring.py` — creates span on
+  `on_fit_start`, closes on `on_fit_end`/`on_exception`, records per-batch
+  VRAM + timing as histograms/gauges
+- **`OTelTrainingLogger`** in `core/monitoring.py` — emits `model.log()`
+  metrics as OTel histograms
 
 ## DuckDB catalog
 
 `{lake_root}/catalog/kd_gat.duckdb` — `runs` table rebuilt from
-`run_record.json` sidecars. Disposable — rebuildable via
+`traces.jsonl` OTel spans. Disposable — rebuildable via
 `python -m graphids rebuild-catalog`.
