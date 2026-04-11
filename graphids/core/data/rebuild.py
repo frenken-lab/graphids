@@ -52,7 +52,7 @@ def rebuild_caches(datasets: list[str], *, delete_existing: bool = False) -> Non
 
     scratch = get_settings().scratch
     if scratch is not None:
-        marker = scratch / "kd-gat-data" / "cache" / ".staged_marker"
+        marker = scratch / "graphids-data" / "cache" / ".staged_marker"
         if marker.exists():
             marker.unlink()
             log.info("invalidated_staging_marker", path=str(marker))

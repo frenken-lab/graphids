@@ -1,6 +1,6 @@
 """Centralized environment settings via pydantic-settings.
 
-Single source of truth for all ``KD_GAT_*`` environment variables.
+Single source of truth for all ``GRAPHIDS_*`` environment variables.
 Typed, validated, read once at first access via ``get_settings()``.
 """
 
@@ -14,9 +14,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class GraphIDSSettings(BaseSettings):
-    """All ``KD_GAT_*`` env vars — typed, with defaults."""
+    """All ``GRAPHIDS_*`` env vars — typed, with defaults."""
 
-    model_config = SettingsConfigDict(env_prefix="KD_GAT_", frozen=True)
+    model_config = SettingsConfigDict(env_prefix="GRAPHIDS_", frozen=True)
 
     # --- Paths ---
     lake_root: str = "experimentruns"
@@ -65,6 +65,6 @@ class LakeWriteError(PermissionError):
 def require_lake_write() -> None:
     if not get_settings().lake_write:
         raise LakeWriteError(
-            "Lake write blocked: set KD_GAT_LAKE_WRITE=1 "
+            "Lake write blocked: set GRAPHIDS_LAKE_WRITE=1 "
             "(SLURM jobs get this from .env via _preamble.sh)"
         )

@@ -378,7 +378,7 @@ documented in `docs/reference/observability-data-layers.md` (838 lines):
   retries, skips, mid-flight rows. Synchronous push on stage enter/exit
   via a new `WorkflowDB` class hooked into `_run_one_stage`. ~200 lines.
 - **Layer 3** (designed, old builder deleted): redesigned DuckDB catalog
-  at `{lake_root}/catalog/kd_gat.duckdb` with `runs` + `epoch_events` +
+  at `{lake_root}/catalog/graphids.duckdb` with `runs` + `epoch_events` +
   `hyperparams` tables + `leaderboard` and `metrics_timeseries` views.
   Stateless `CREATE OR REPLACE` rebuild via `rebuild-catalog` CLI.
   ~250 lines including tests.

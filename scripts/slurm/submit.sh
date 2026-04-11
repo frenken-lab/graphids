@@ -16,7 +16,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$PROJECT_ROOT"
 source .env
-SLURM_LOG_DIR="${KD_GAT_SLURM_LOG_DIR:-${KD_GAT_LAKE_ROOT:-experimentruns}/slurm}"
+SLURM_LOG_DIR="${GRAPHIDS_SLURM_LOG_DIR:-${GRAPHIDS_LAKE_ROOT:-experimentruns}/slurm}"
 mkdir -p "$SLURM_LOG_DIR"
 
 command -v jsonnet >/dev/null 2>&1 || {
@@ -32,7 +32,7 @@ shift
 PROFILE=$(source .venv/bin/activate && python -m graphids submit-profile "$JOB")
 read -r PARTITION CPUS MEM TIME SIGNAL MODE GRES COMMAND <<< "$PROFILE"
 
-ACCT="--account=${KD_GAT_SLURM_ACCOUNT}"
+ACCT="--account=${GRAPHIDS_SLURM_ACCOUNT}"
 PREAMBLE="source ${SCRIPT_DIR}/_preamble.sh"
 
 ENV=""

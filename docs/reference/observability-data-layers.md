@@ -16,7 +16,7 @@ rebuilt on demand for experiment analytics. They never merge.
 |---|---|---|---|---|---|
 | **1. Source of truth** | `{run_dir}/traces.jsonl`, `metrics.jsonl`, `checkpoints/*.ckpt`, `.complete` marker | One directory per training run | Append-only, fsync'd via OTel `SimpleSpanProcessor` + `torch.save` | Layers 2 + 3, debuggers, manual inspection | N/A — authoritative |
 | **2. Workflow state** | `{lake_root}/workflow.db` (SQLite + WAL) | One row per stage × retry attempt | Synchronous INSERT/UPDATE from `_run_one_stage` | Driver (resume, retry), debugger, SLO dashboards | **No** — primary store |
-| **3. Analytics catalog** | `{lake_root}/catalog/kd_gat.duckdb` (DuckDB) | One row per `training.fit` span | Stateless `CREATE OR REPLACE` rebuild via `rebuild-catalog` CLI | Researcher (leaderboards, ablation plots, sweep analysis) | **Yes** — always from Layer 1 |
+| **3. Analytics catalog** | `{lake_root}/catalog/graphids.duckdb` (DuckDB) | One row per `training.fit` span | Stateless `CREATE OR REPLACE` rebuild via `rebuild-catalog` CLI | Researcher (leaderboards, ablation plots, sweep analysis) | **Yes** — always from Layer 1 |
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -33,7 +33,7 @@ rebuilt on demand for experiment analytics. They never merge.
        │ (on stage enter/exit)                       │ (on rebuild-catalog)
        ▼                                             ▼
 ┌────────────────────────────┐   ┌──────────────────────────────────┐
-│ Layer 2 — workflow.db      │   │ Layer 3 — kd_gat.duckdb          │
+│ Layer 2 — workflow.db      │   │ Layer 3 — graphids.duckdb        │
 │ SQLite (stdlib, WAL mode)  │   │ DuckDB (already a declared dep)  │
 │                            │   │                                  │
 │ pipeline_runs              │   │ runs                             │
@@ -691,7 +691,7 @@ ORDER BY timestamp;
   time.
 - **DuckDB is already a declared dependency** in `pyproject.toml` — no
   new cost.
-- **Corruption is cheap to recover from**: `rm catalog/kd_gat.duckdb &&
+- **Corruption is cheap to recover from**: `rm catalog/graphids.duckdb &&
   python -m graphids rebuild-catalog`.
 
 ---
@@ -700,7 +700,7 @@ ORDER BY timestamp;
 
 ```sql
 -- ATTACH both databases in one DuckDB session
-ATTACH '{lake_root}/catalog/kd_gat.duckdb' AS cat (TYPE DUCKDB);
+ATTACH '{lake_root}/catalog/graphids.duckdb' AS cat (TYPE DUCKDB);
 ATTACH '{lake_root}/workflow.db'          AS wf  (TYPE SQLITE);
 
 -- Does retry-recovered training produce worse val_loss?

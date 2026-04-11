@@ -4,21 +4,21 @@
 
 ## The Rule
 
-- **Code** lives in `~/KD-GAT/` (NFS). Read-only at runtime.
-- **ALL runtime writes** go to `/fs/ess/PAS1266/kd-gat/` (ESS), routed via `KD_GAT_LAKE_ROOT`.
+- **Code** lives in `~/graphids/` (NFS). Read-only at runtime.
+- **ALL runtime writes** go to `/fs/ess/PAS1266/graphids/` (ESS), routed via `GRAPHIDS_LAKE_ROOT`.
 - **Scratch** (`/fs/scratch/PAS1266/`) is for transient data: staged data copies.
 - **Nothing** should write to the repo directory. Ever.
 
 ## Single Source of Truth
 
-`graphids/config/constants.py` declares write path constants. `graphids/config/settings.py` owns all `KD_GAT_*` env vars.
+`graphids/config/constants.py` declares write path constants. `graphids/config/settings.py` owns all `GRAPHIDS_*` env vars.
 
 Constants: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `COMPLETE_MARKER`, `PHASE_MARKERS`, `CATALOG_SUBPATH`
 
 ## Filesystem Layout
 
 ```
-/fs/ess/PAS1266/kd-gat/                          <-- $KD_GAT_LAKE_ROOT (persistent, shared)
+/fs/ess/PAS1266/graphids/                        <-- $GRAPHIDS_LAKE_ROOT (persistent, shared)
 +-- dev/{user}/{dataset}/
 |   +-- {model}_{scale}_{stage}{identity}{kd}/
 |       +-- seed_{N}/                             <-- trainer.default_root_dir
@@ -32,15 +32,15 @@ Constants: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `COMPLETE_MARKER`, `PHASE_MARKER
 |           +-- .train_complete                   <-- pipeline marker (fit done)
 |           +-- .test_complete                    <-- pipeline marker (test done)
 |           +-- .analyze_complete                 <-- pipeline marker (analyze done)
-+-- catalog/kd_gat.duckdb                        <-- (catalog builder removed 2026-04-10, pending redesign)
++-- catalog/graphids.duckdb                      <-- (catalog builder removed 2026-04-10, pending redesign)
 +-- raw/{dataset}/                               <-- source CSV data
 +-- cache/v{ver}/{dataset}/                      <-- preprocessed graph .pt files
 +-- slurm/                                       <-- SLURM stdout/stderr (default)
 
 /fs/scratch/PAS1266/                             <-- transient (90-day purge)
-+-- kd-gat-data/                                 <-- staged data (scratch -> TMPDIR)
++-- graphids-data/                               <-- staged data (scratch -> TMPDIR)
 
-$TMPDIR/kd-gat-data/                             <-- per-job local SSD (ephemeral)
+$TMPDIR/graphids-data/                           <-- per-job local SSD (ephemeral)
 ```
 
 Checkpoint dirpath is pinned at runtime: `instantiate.py` sets `ModelCheckpoint.dirpath` to `{default_root_dir}/checkpoints` derived from `CKPT_SUBPATH` (`constants.py:89`).
@@ -82,7 +82,7 @@ All Lightning writes land under `trainer.default_root_dir` from the rendered jso
 |------|------|-----------|
 | Job stdout/stderr | `{slurm_log_dir}/{name}_%j.{out,err}` | sbatch/OS |
 
-`slurm_log_dir` defaults to `{lake_root}/slurm` (`settings.py:46`); override via `KD_GAT_SLURM_LOG_DIR`.
+`slurm_log_dir` defaults to `{lake_root}/slurm` (`settings.py:46`); override via `GRAPHIDS_SLURM_LOG_DIR`.
 
 ### 5. Data / Preprocessing
 
@@ -90,12 +90,12 @@ All Lightning writes land under `trainer.default_root_dir` from the rendered jso
 |------|------|-----------|
 | Graph cache .pt files | `{lake_root}/cache/v{ver}/{dataset}/` | `preprocessing/utils.py` (atomic_save) |
 | NFS advisory lock | `{cache_dir}/.lock` | preprocessing/utils.py |
-| Staging marker | `{scratch}/kd-gat-data/.staged_marker` | stage_data.sh |
-| Node-local staged data | `$TMPDIR/kd-gat-data/` | stage_data.sh |
+| Staging marker | `{scratch}/graphids-data/.staged_marker` | stage_data.sh |
+| Node-local staged data | `$TMPDIR/graphids-data/` | stage_data.sh |
 
 ### 6. DuckDB Catalog
 
-`{lake_root}/catalog/kd_gat.duckdb` — DuckDB catalog over `training.fit` OTel spans from `traces.jsonl`. The builder (`orchestrate/ops/catalog.py`) and `rebuild-catalog` CLI were removed 2026-04-10 pending redesign; no current way to populate. Disposable once rebuilt.
+`{lake_root}/catalog/graphids.duckdb` — DuckDB catalog over `training.fit` OTel spans from `traces.jsonl`. The builder (`orchestrate/ops/catalog.py`) and `rebuild-catalog` CLI were removed 2026-04-10 pending redesign; no current way to populate. Disposable once rebuilt.
 
 ## Execution Order (pipeline path)
 
@@ -131,8 +131,8 @@ python -m graphids pipeline-run
 
 | Env var | Default | Set in | Controls |
 |---------|---------|--------|----------|
-| `KD_GAT_LAKE_ROOT` | `"experimentruns"` (relative) | `.env` -> `/fs/ess/PAS1266/kd-gat` | All experiment IO |
-| `KD_GAT_SLURM_LOG_DIR` | `{lake_root}/slurm` (derived) | `.env` | SLURM stdout/stderr |
-| `KD_GAT_LAKE_WRITE` | `false` | `.env` (set to `1` in SLURM jobs) | Guards catalog/lake writes |
+| `GRAPHIDS_LAKE_ROOT` | `"experimentruns"` (relative) | `.env` -> `/fs/ess/PAS1266/graphids` | All experiment IO |
+| `GRAPHIDS_SLURM_LOG_DIR` | `{lake_root}/slurm` (derived) | `.env` | SLURM stdout/stderr |
+| `GRAPHIDS_LAKE_WRITE` | `false` | `.env` (set to `1` in SLURM jobs) | Guards catalog/lake writes |
 | `WANDB_API_KEY` | (none) | `.env` | Enables Wandb Weave OTLP export |
 | `TMPDIR` | (SLURM sets) | OS | Per-job local SSD |

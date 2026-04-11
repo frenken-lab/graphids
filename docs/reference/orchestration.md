@@ -2,7 +2,7 @@
 
 > Status: **implemented** | Refactor: 2026-04-10
 
-Pipeline orchestration for the KD-GAT training matrix. `run_pipeline`
+Pipeline orchestration for the GraphIDS training matrix. `run_pipeline`
 executes the 3-stage chain (`autoencoder → supervised → fusion`)
 in-process, looping `build → train → evaluate → analyze` over each
 stage within a single SLURM allocation. No actor framework, no cross-

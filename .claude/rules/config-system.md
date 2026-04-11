@@ -195,7 +195,7 @@ compute-bound.
 ## Environment variables
 
 Infrastructure env vars use `os.environ.get()` in `config/constants.py`
-and `slurm/env.py` with `KD_GAT_` prefix:
+and `slurm/env.py` with `GRAPHIDS_` prefix:
 
 - SLURM: `SLURM_ACCOUNT`, `SLURM_PARTITION`, `SLURM_GPU_TYPE`
 - Run metadata: `SWEEP_ID`, `USER_TAGS`, `CKPT_PATH`
@@ -204,7 +204,7 @@ and `slurm/env.py` with `KD_GAT_` prefix:
 
 `{lake_root}/{production|dev/user}/{dataset}/{model_type}_{scale}_{stage}_{identity_hash}/seed_{N}`
 
-`lake_root` defaults to `experimentruns` when `KD_GAT_LAKE_ROOT` is unset.
+`lake_root` defaults to `experimentruns` when `GRAPHIDS_LAKE_ROOT` is unset.
 The `identity_hash` suffix is an 8-char SHA256 derived from the stage's
 `identity_keys` (defined in `topology.py`). Computed by
 `compute_identity_hash()` in `paths.py`. **Missing identity keys raise
@@ -224,7 +224,7 @@ via OTel SimpleSpanProcessor + PeriodicExportingMetricReader. The
 
 ## DuckDB catalog
 
-`{lake_root}/catalog/kd_gat.duckdb` — intended to hold a `runs` table
+`{lake_root}/catalog/graphids.duckdb` — intended to hold a `runs` table
 built from `traces.jsonl` OTel spans. Builder + `rebuild-catalog` CLI
 were removed 2026-04-10 pending redesign — `traces.jsonl` files are
 still written and can be queried ad-hoc via DuckDB's `read_json_auto`.

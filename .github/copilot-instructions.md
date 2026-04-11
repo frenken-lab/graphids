@@ -1,4 +1,4 @@
-# Copilot instructions for KD-GAT (GraphIDS)
+# Copilot instructions for GraphIDS
 
 ## Build, test, lint
 - **Lint:** `ruff check graphids/ tests/`

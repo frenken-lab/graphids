@@ -3,7 +3,7 @@
 ## Environment
 
 - **Cluster**: OSC Pitzer (Ohio Supercomputer Center), RHEL 9, SLURM
-- **Account**: PAS1266 (`$KD_GAT_SLURM_ACCOUNT` in `.env`). Must `source .env` before `sbatch` on login node.
+- **Account**: PAS1266 (`$GRAPHIDS_SLURM_ACCOUNT` in `.env`). Must `source .env` before `sbatch` on login node.
 - **GPU**: 2x V100 per node, ~362 GB RAM, gpu partition
 - **Python**: 3.12 via `module load python/3.12`, uv venv `.venv/`
 - **Home**: `/users/PAS2022/rf15/` (NFS, permanent)
@@ -101,16 +101,16 @@ Data staging uses a 3-tier storage hierarchy. `python -m graphids stage-data` ma
 
 | Tier | Path | Speed | Persistence | Use |
 |------|------|-------|-------------|-----|
-| **NFS** (home) | `~/KD-GAT/data/` | Slow | Permanent | Source of truth |
-| **Scratch** (GPFS) | `/fs/scratch/PAS1266/kd-gat-data/` | Fast | 90-day purge | Shared across jobs |
-| **TMPDIR** (local SSD) | `$TMPDIR/kd-gat-data/` | Fastest | Per-job only | Training I/O |
+| **NFS** (home) | `~/graphids/data/` | Slow | Permanent | Source of truth |
+| **Scratch** (GPFS) | `/fs/scratch/PAS1266/graphids-data/` | Fast | 90-day purge | Shared across jobs |
+| **TMPDIR** (local SSD) | `$TMPDIR/graphids-data/` | Fastest | Per-job only | Training I/O |
 
 ### Smart Caching
 
 `stage_data.sh` uses marker files (`.staged_marker`) to skip redundant copies:
 
 1. **NFS → Scratch**: Skipped if marker exists and source file count matches. The 90-day scratch purge deletes the marker, triggering a fresh sync automatically.
-2. **Scratch → TMPDIR**: Skipped if `$TMPDIR/kd-gat-data/cache/` already exists (shouldn't happen since TMPDIR is per-job, but guards against re-sourcing).
+2. **Scratch → TMPDIR**: Skipped if `$TMPDIR/graphids-data/cache/` already exists (shouldn't happen since TMPDIR is per-job, but guards against re-sourcing).
 
 ## Login Node Safety
 

@@ -93,18 +93,18 @@ Project `.env` (sourced by `_preamble.sh`):
 
 | Variable                 | Purpose                          |
 |--------------------------|----------------------------------|
-| `KD_GAT_LAKE_ROOT`      | ESS data lake root               |
-| `KD_GAT_SLURM_ACCOUNT`  | SLURM account (PAS1266)          |
-| `KD_GAT_SLURM_LOG_DIR`  | SLURM log directory              |
-| `KD_GAT_SCRATCH`        | Scratch filesystem root          |
-| `KD_GAT_DATA_ROOT`      | Raw data directory               |
-| `KD_GAT_LAKE_WRITE`     | Write guard for ESS (1=enabled)  |
-| `KD_GAT_CLUSTER`        | Override auto-detected cluster   |
-| `KD_GAT_DRY_RUN`        | Skip sbatch (1=dry run)          |
+| `GRAPHIDS_LAKE_ROOT`      | ESS data lake root               |
+| `GRAPHIDS_SLURM_ACCOUNT`  | SLURM account (PAS1266)          |
+| `GRAPHIDS_SLURM_LOG_DIR`  | SLURM log directory              |
+| `GRAPHIDS_SCRATCH`        | Scratch filesystem root          |
+| `GRAPHIDS_DATA_ROOT`      | Raw data directory               |
+| `GRAPHIDS_LAKE_WRITE`     | Write guard for ESS (1=enabled)  |
+| `GRAPHIDS_CLUSTER`        | Override auto-detected cluster   |
+| `GRAPHIDS_DRY_RUN`        | Skip sbatch (1=dry run)          |
 
 Python reads: `graphids/config/constants.py` and `graphids/slurm/env.py`.
-Budget tuning: `KD_GAT_BUDGET_SAFETY_MARGIN`, `KD_GAT_BUDGET_GRAD_MULT`,
-`KD_GAT_BUDGET_FALLBACK_BPN` in `core/data/budget.py`.
+Budget tuning: `GRAPHIDS_BUDGET_SAFETY_MARGIN`, `GRAPHIDS_BUDGET_GRAD_MULT`,
+`GRAPHIDS_BUDGET_FALLBACK_BPN` in `core/data/budget.py`.
 
 ### HPC resource profiles
 
@@ -117,7 +117,7 @@ Cluster mapping: `configs/resources/clusters.json`.
 | ascend     | `nextgen`     | `gpu:a100:1`    |
 | cardinal   | `batch`       | `gpu:h100:1`    |
 
-Auto-detected from hostname; override with `KD_GAT_CLUSTER`.
+Auto-detected from hostname; override with `GRAPHIDS_CLUSTER`.
 
 ### Submit profiles (`scripts/slurm/submit.sh`)
 
@@ -138,10 +138,10 @@ Full list: `configs/resources/submit_profiles.json`.
 
 | Tier             | Path                          | Persistence  | Use                          |
 |------------------|-------------------------------|--------------|------------------------------|
-| NFS (home)       | `~/KD-GAT/data/`             | Permanent    | Raw data source of truth     |
-| ESS (GPFS)       | `/fs/ess/PAS1266/kd-gat/`    | Permanent    | Lake root: runs, catalog     |
+| NFS (home)       | `~/graphids/data/`           | Permanent    | Raw data source of truth     |
+| ESS (GPFS)       | `/fs/ess/PAS1266/graphids/`  | Permanent    | Lake root: runs, catalog     |
 | Scratch (GPFS)   | `/fs/scratch/PAS1266/`       | 90-day purge | wandb, data staging          |
-| TMPDIR (local)   | `$TMPDIR/kd-gat-data/`       | Per-job      | Training I/O                 |
+| TMPDIR (local)   | `$TMPDIR/graphids-data/`     | Per-job      | Training I/O                 |
 
 ### Run directory template
 

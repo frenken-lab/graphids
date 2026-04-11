@@ -57,6 +57,6 @@ go-jsonnet is 10-100x faster than libjsonnet, requires no C++ compile step on OS
 
 **python-fire** (CLI generator) — Zero-boilerplate CLI from introspection. No benefit over Typer: loses type validation, repeatable `--tla` flags, and structured help. Not adopted.
 
-**pydantic-settings** — Adopted (session 39). `GraphIDSSettings(BaseSettings)` with `env_prefix="KD_GAT_"` replaced 19 scattered `os.environ.get()` calls.
+**pydantic-settings** — Adopted (session 39). `GraphIDSSettings(BaseSettings)` with `env_prefix="GRAPHIDS_"` replaced 19 scattered `os.environ.get()` calls.
 
 **OpenTelemetry** — Adopted (session 39). Replaced wandb + RunRecordCallback + ResourceProfileCallback + CSVLogger + custom logging with unified OTel stack. See `docs/reference/observability.md`.

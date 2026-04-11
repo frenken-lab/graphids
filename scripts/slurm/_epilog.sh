@@ -11,6 +11,6 @@ if [[ -n "${SLURM_JOB_ID:-}" ]]; then
 fi
 
 # Rotate old logs (30-day retention)
-_LOG_DIR="${KD_GAT_SLURM_LOG_DIR:-${KD_GAT_LAKE_ROOT:-experimentruns}/slurm}"
+_LOG_DIR="${GRAPHIDS_SLURM_LOG_DIR:-${GRAPHIDS_LAKE_ROOT:-experimentruns}/slurm}"
 find "$_LOG_DIR" \
     \( -name "*.out" -o -name "*.err" \) -mtime +30 -delete 2>/dev/null || true

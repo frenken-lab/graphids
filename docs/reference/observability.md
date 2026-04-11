@@ -56,7 +56,7 @@ OTel data in `traces.jsonl`/`metrics.jsonl` is **Layer 1** of a
 three-layer architecture. **Layer 2** is a proposed workflow SQLite
 (`{lake_root}/workflow.db`) for orchestration state (retries, skips,
 mid-flight rows). **Layer 3** is the DuckDB analytics catalog
-(`{lake_root}/catalog/kd_gat.duckdb`) rebuilt on demand from Layer 1 —
+(`{lake_root}/catalog/graphids.duckdb`) rebuilt on demand from Layer 1 —
 the old `orchestrate/ops/catalog.py` builder was removed 2026-04-10
 pending redesign. Full schemas, write models, query patterns, and
 implementation plan in
@@ -95,7 +95,7 @@ ncu --kernel-name "scatter_mean" --launch-count 5 \
   python -m graphids fit ...
 ```
 
-**WARNING:** ncu replays each kernel 10-100x. KD-GAT bottleneck is CPU-side (data loading), so ncu priority is LOW.
+**WARNING:** ncu replays each kernel 10-100x. GraphIDS bottleneck is CPU-side (data loading), so ncu priority is LOW.
 
 ### PyG-specific notes
 

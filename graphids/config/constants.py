@@ -4,7 +4,7 @@ Layer 1 — typed model for ``configs/matrix/axes.json`` plus project-wide
 literal constants (filenames, subpaths).
 
 Layer 2 — ``LAKE_ROOT`` alias (reads from ``get_settings().lake_root``).
-All ``KD_GAT_*`` env vars live in ``graphids.config.settings``.
+All ``GRAPHIDS_*`` env vars live in ``graphids.config.settings``.
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ PHASE_MARKERS: dict[str, str] = {
     "test": ".test_complete",
     "analyze": ".analyze_complete",
 }
-CATALOG_SUBPATH: str = "catalog/kd_gat.duckdb"
+CATALOG_SUBPATH: str = "catalog/graphids.duckdb"
 DATASET_REGISTRY_PATH: Path = PROJECT_ROOT / "configs" / "datasets" / "dataset_registry.json"
 
 # ---------------------------------------------------------------------------

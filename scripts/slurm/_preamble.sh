@@ -22,7 +22,7 @@ module load python/3.12
 source .venv/bin/activate
 set -a; source ./.env; set +a
 
-SLURM_LOG_DIR="${KD_GAT_SLURM_LOG_DIR:-${KD_GAT_LAKE_ROOT:-experimentruns}/slurm}"
+SLURM_LOG_DIR="${GRAPHIDS_SLURM_LOG_DIR:-${GRAPHIDS_LAKE_ROOT:-experimentruns}/slurm}"
 mkdir -p "$SLURM_LOG_DIR"
 
 # Group-writable umask for shared ESS data lake
@@ -42,6 +42,6 @@ if [[ "${SKIP_STAGE_DATA:-0}" != "1" ]]; then
 fi
 
 if [[ -n "${TMPDIR:-}" ]]; then
-    export KD_GAT_STAGE_DIR="$TMPDIR/kd-gat-stage"
-    mkdir -p "$KD_GAT_STAGE_DIR"
+    export GRAPHIDS_STAGE_DIR="$TMPDIR/graphids-stage"
+    mkdir -p "$GRAPHIDS_STAGE_DIR"
 fi
