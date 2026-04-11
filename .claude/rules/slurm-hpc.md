@@ -24,7 +24,7 @@ All SLURM jobs are submitted via the unified launcher `scripts/slurm/submit.sh <
 | Job | Command |
 |-----|---------|
 | Tests | `scripts/slurm/submit.sh tests [-k pattern] [-x]` |
-| Cache rebuild | `scripts/slurm/submit.sh rebuild-caches --all --delete-existing` |
+| Cache rebuild | `scripts/slurm/submit.sh rebuild-caches --all --delete-existing --yes` |
 | Config validation | `scripts/slurm/submit.sh validate` |
 | Loss landscape | `scripts/slurm/submit.sh landscape <model_type> <dataset> <ckpt_path>` |
 | Preprocessing test | `scripts/slurm/submit.sh preprocessing-test` |

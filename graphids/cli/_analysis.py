@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from graphids.cli.app import ConfigPath, TlaList, app, parse_tla
+from typing import Any
+
+from graphids.cli.app import ConfigPath, TlaList, app
 
 
 @app.command(rich_help_panel="Analysis")
@@ -15,7 +17,7 @@ def analyze(
     from graphids.core.analysis.analyzer import Analyzer
     from graphids.core.analysis.schemas import AnalysisSpec
 
-    tla_dict = parse_tla(tla)
+    tla_dict: dict[str, Any] = dict(tla or [])
     rendered = render_config(config, tla=tla_dict or None)
     spec = AnalysisSpec.model_validate(rendered)
     Analyzer(**spec.model_dump(exclude={"metadata"})).run()

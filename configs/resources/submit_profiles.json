@@ -63,14 +63,14 @@
       "mode": "gpu",
       "command": "python -m graphids extract-fusion-states"
     },
-    "spike-monarch": {
-      "partition": "gpudebug",
-      "cpus": 4,
-      "mem": "36G",
-      "time": "1:00:00",
+    "pipeline-run": {
+      "partition": "gpu",
+      "cpus": 8,
+      "mem": "40G",
+      "time": "6:00:00",
       "signal": "",
       "mode": "gpu",
-      "command": "python scripts/spike_monarch.py"
+      "command": "python -m graphids pipeline-run"
     }
   }
 }

@@ -26,28 +26,28 @@ python -m graphids fit \
   -> trainer.fit(model, datamodule=datamodule, ckpt_path=...)
 ```
 
-### Route B: Pipeline (Monarch -> SLURM -> in-process)
+### Route B: Pipeline (in-process 3-stage chain inside one SLURM allocation)
 
 ```
-python -m graphids monarch-run --dataset hcrl_sa --seed 42 --scale small
-  -> cli/_monarch.py (Typer @app.command)
+python -m graphids pipeline-run --dataset hcrl_sa --seed 42 --scale small
+  -> cli/_pipeline.py (Typer @app.command)
   -> PipelineConfig(**kwargs) -> TrainingRunConfig
-  -> build_pipeline_stages(config) -> list[StageConfig]
-     +- enumerate_assets(recipe)
-  -> JobSpec.create_job() -> monarch SlurmJob
-     +- patch_clusterscope_for_osc()
-  -> run_chain(stages, spec, dataset=..., seed=..., max_retries=...)
-    -> job.state().pipeline.spawn_procs(per_host={"gpus": N})
-    -> PipelineActor spawned on proc_mesh:
-        train_stage(stage_config, dataset, seed, upstream_ckpts)
-          -> ResolvedConfig.resolve(cfg, lake_root, user, dataset, seed, upstream_ckpts)
-              +- PathContext(...)
-              +- _build_tla_dict(...)                (private, resolve.py)
-              +- render(jsonnet_path, tla)           (config/jsonnet.py)
-              +- validate_config(rendered)           (config/schemas.py)
-              +- monitor/mode consistency check      (inline log warning)
-          -> instantiate(resolved.rendered, validated=resolved.validated)
-          -> trainer.fit(model, datamodule)
+  -> run_pipeline(config)                            (orchestrate/run.py)
+     +- ensure_spawn()
+     +- build_pipeline_stages(config) -> list[StageConfig]
+     |    +- enumerate_assets(recipe)
+     +- for each StageConfig (with per-stage retry):
+        +- ResolvedConfig.resolve(cfg, lake_root, user, dataset, seed, upstream_ckpts)
+        |    +- PathContext(...)
+        |    +- _build_tla_dict(...)                 (private, resolve.py)
+        |    +- render(jsonnet_path, tla)            (config/jsonnet.py)
+        |    +- validate_config(rendered)            (config/schemas.py)
+        |    +- monitor/mode consistency check       (inline log warning)
+        +- skip if .complete marker present
+        +- stage.build(rendered, validated)          -> (trainer, model, datamodule)
+        +- stage.train(artifacts, ...)               -> trainer.fit, touch .train_complete
+        +- stage.evaluate(artifacts, ...)            -> trainer.test, touch .test_complete + .complete
+        +- if analyzable: run_single_analysis(spec)  -> touch .analyze_complete
 ```
 
 ### Route C: Validation (resolver gate)
@@ -58,7 +58,7 @@ Validation runs inside `ResolvedConfig.resolve()`:
 ### Route D: Operational commands (no training)
 
 ```
-python -m graphids {analyze|profile|rebuild-caches|stage-data|...}
+python -m graphids {analyze|rebuild-caches|extract-fusion-states|probe-budget|pipeline-run}
   -> __main__.py imports cli submodules
   -> Typer @app.command() dispatch per submodule
 ```
@@ -122,7 +122,7 @@ OTelTrainingCallback. Logger: OTelTrainingLogger.
 
 ### instantiate() responsibilities
 
-`graphids.instantiate.instantiate(rendered, validated=None)`:
+`graphids.orchestrate.instantiate.instantiate(rendered, validated=None)`:
 
 | Step | How |
 |---|---|
@@ -140,7 +140,7 @@ OTelTrainingCallback. Logger: OTelTrainingLogger.
 | File | Role | Torch? |
 |---|---|---|
 | `cli/_training.py` | Dev-path Typer entry — `fit/test/validate/predict`, `--config`, `--tla`, `--ckpt_path` | Lazy |
-| `cli/_monarch.py` | `monarch-run`, `monarch-sweep` commands | Lazy |
+| `cli/_pipeline.py` | `pipeline-run` command (in-process 3-stage chain) | Lazy |
 | `instantiate.py` | `instantiate(rendered) -> InstantiatedRun` — importlib, link_arguments, forced callbacks | Yes |
 | `__main__.py` | Imports `cli/` submodules to register Typer commands; OTel Phase A init | Lazy |
 | `config/jsonnet.py` | `render_config(path, tla)` subprocess shim | No |
@@ -149,12 +149,9 @@ OTelTrainingCallback. Logger: OTelTrainingLogger.
 | `orchestrate/planning/recipes.py` | `TrainingRunConfig`, `KDEntry` | No |
 | `orchestrate/planning/planner.py` | `StageConfig`, `enumerate_assets` | No |
 | `orchestrate/resolve.py` | `ResolvedConfig.resolve` — builds TLA, renders, validates, cross-field checks | No |
-| `orchestrate/run.py` | `PipelineConfig`, `build_pipeline_stages`, `run_pipeline` driver | No |
-| `orchestrate/allocate.py` | `JobSpec`, `build_slurm_job`, `spawn_actor` | No |
-| `orchestrate/chain.py` | `run_chain(actor, stages, …) → ChainResult` | No |
-| `orchestrate/stage.py` | `build`, `train`, `evaluate`, `run_stage` primitives | Yes |
-| `orchestrate/analyze.py` | pipeline-level `analyze` + `run_single_analysis` helper | Yes |
-| `orchestrate/actors.py` | `PipelineActor` — thin Monarch endpoint wrapper (`train_stage` / `eval_stage` / `analyze_stage`) | Yes |
+| `orchestrate/run.py` | `PipelineConfig`, `build_pipeline_stages`, `run_pipeline` (in-process driver) | No |
+| `orchestrate/stage.py` | `build`, `train`, `evaluate` primitives (shared by `fit`/`test` CLI + `run_pipeline`) | Yes |
+| `orchestrate/analyze.py` | `run_single_analysis` (per-checkpoint analyzer + manifest sidecar) | Yes |
 | `core/monitoring.py` | `OTelTrainingCallback`, `OTelTrainingLogger` | Yes |
 | `core/otel.py` | `init_providers`, `wire_file_exporters` | No |
 

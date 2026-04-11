@@ -1,34 +1,33 @@
-"""Phase 3 direct instantiator smoke tests.
+"""Direct instantiator smoke tests.
 
-``graphids.core.instantiate.instantiate`` replaces the old
+``graphids.orchestrate.instantiate.build_run`` replaces the old
 ``build_cli``/``GraphIDSCLI`` path. These tests exercise the full chain
 for every stage + fusion method variant the repo ships:
 
-    render_config(jsonnet) → validate_config → instantiate(...)
+    render(jsonnet) → validate_config → build_run(...)
 
-so the CI surface catches link_arguments regressions, KD auxiliary
-coercion, forced callback wiring, and class_path imports without having
-to launch a SLURM job. No ``trainer.fit`` — these are structural tests.
+so the CI surface catches signature filtering, KD auxiliary coercion,
+forced callback wiring, and class_path imports without having to launch
+a SLURM job. No ``trainer.fit`` — these are structural tests.
 
 REGRESSION: fusion models (Bandit/DQN/MLP/WeightedAvg) do NOT accept
-``dataset``/``conv_type``/``heads`` in ``__init__``. jsonargparse's
-``link_arguments`` silently skipped unaccepted links via signature
-inspection; the Phase 3 replacement must preserve that behavior or every
-fusion instantiation blows up with a TypeError.
+``dataset``/``conv_type``/``heads`` in ``__init__``. ``filter_kwargs``
+must drop unaccepted keys or every fusion instantiation blows up with a
+TypeError.
 """
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from graphids.config.jsonnet import render
-from graphids.instantiate import _init_kwargs, instantiate
+from graphids.orchestrate.instantiate import build_run, filter_kwargs
 
 _STAGE_CASES: list[tuple[str, dict]] = [
     ("autoencoder", {}),
     ("autoencoder", {"scale": "large"}),
-    # KD case omitted — requires a real teacher checkpoint on disk.
-    # KD loss wiring is covered by TestKDAuxiliariesCoercion.
     ("supervised", {"scale": "small"}),
     ("fusion", {"fusion_method": "bandit"}),
     ("fusion", {"fusion_method": "dqn"}),
@@ -57,7 +56,7 @@ def test_stage_instantiates(stage_tla):
         f"configs/stages/{stage}.jsonnet",
         tla=tla or None,
     )
-    run = instantiate(merged, seed_all=False)
+    run = build_run(merged, seed_all=False)
     assert run.trainer is not None
     assert run.model is not None
     assert run.datamodule is not None
@@ -76,7 +75,7 @@ class TestForcedCallbacks:
         from graphids.core.monitoring import OTelTrainingCallback
 
         merged = render("configs/stages/autoencoder.jsonnet", tla=None)
-        run = instantiate(merged, seed_all=False)
+        run = build_run(merged, seed_all=False)
         cbs = run.trainer.callbacks
         cb_types = {type(cb) for cb in cbs}
         for required in (
@@ -88,85 +87,77 @@ class TestForcedCallbacks:
             assert required in cb_types, f"missing callback {required.__name__}"
 
 
-class TestLinkArguments:
-    """INVARIANT: signature-filtered link_arguments propagation.
+class TestSignatureFiltering:
+    """INVARIANT: ``filter_kwargs`` drops unaccepted init kwargs.
 
-    REGRESSION: fusion models don't accept ``dataset``/``conv_type``; the
-    pre-Phase-3 jsonargparse CLI filtered this via target signature
-    inspection. ``_apply_link_arguments`` must do the same or fusion
-    instantiation raises TypeError.
+    REGRESSION: fusion models don't accept ``dataset``/``conv_type``;
+    ``filter_kwargs`` must drop these or fusion instantiation raises
+    TypeError at build_run time.
     """
 
     def test_vgae_receives_linked_dataset_and_seed(self):
         merged = render("configs/stages/autoencoder.jsonnet", tla=None)
-        run = instantiate(merged, seed_all=False)
-        assert run.merged["model"]["init_args"]["dataset"] == "hcrl_ch"
-        assert run.merged["model"]["init_args"]["seed"] == 42
-        assert run.merged["data"]["init_args"]["seed"] == 42
-        assert run.merged["data"]["init_args"]["conv_type"] == "gatv2"
+        assert merged["model"]["init_args"]["dataset"] == "hcrl_ch"
+        assert merged["model"]["init_args"]["seed"] == 42
+        # build_run instantiates without crashing, which exercises that
+        # VGAEModule accepts these linked kwargs.
+        run = build_run(merged, seed_all=False)
+        assert run.model is not None
 
     def test_fusion_model_skips_unaccepted_links(self):
-        merged = render(
-            "configs/stages/fusion.jsonnet",
-            tla={"fusion_method": "bandit"},
-        )
-        run = instantiate(merged, seed_all=False)
-        # BanditFusionModule.__init__ does NOT accept `dataset` — the link
-        # must be skipped rather than set.
         from graphids.core.models.fusion.bandit import BanditFusionModule
 
-        assert "dataset" not in _init_kwargs(BanditFusionModule)
-        assert "dataset" not in run.merged["model"]["init_args"]
+        # BanditFusionModule.__init__ does NOT accept `dataset` — verify
+        # that filter_kwargs drops it rather than passing it through.
+        accepted = set(inspect.signature(BanditFusionModule.__init__).parameters) - {"self"}
+        assert "dataset" not in accepted
+        stripped = filter_kwargs(BanditFusionModule, {"dataset": "x", "num_models": 3})
+        assert "dataset" not in stripped
 
-    def test_init_kwargs_matches_signature(self):
-        """``_init_kwargs`` helper mirrors ``inspect.signature``, sans self/varargs."""
-        from graphids.core.models.autoencoder.vgae_module import VGAEModule
-
-        params = _init_kwargs(VGAEModule)
-        # Sanity-check a few known kwargs:
-        assert "dataset" in params
-        assert "seed" in params
-        assert "lr" in params
-        assert "self" not in params
+        # And build_run succeeds on the fusion stage (end-to-end proof).
+        merged = render("configs/stages/fusion.jsonnet", tla={"fusion_method": "bandit"})
+        run = build_run(merged, seed_all=False)
+        assert run.model is not None
 
 
 class TestKDAuxiliariesCoercion:
-    """CONTRACT: KD auxiliaries list items must support attribute access.
+    """CONTRACT: loss_fn wiring for KD auxiliaries."""
 
-    Pre-Phase-3 jsonargparse wrapped TypedDict list items as Namespace
-    objects so ``_install_kd_teacher`` could call ``getattr(a, 'type')``.
-    Phase 3 coerces to ``SimpleNamespace`` instead — same contract.
-    """
-
-    def test_distillation_config_builds_loss(self):
-        """CONTRACT: distillation_config TLA produces a wrapped loss_fn."""
+    def test_default_loss_fn_built(self):
+        """CONTRACT: VGAE stage builds a wrapped loss_fn (no distillation)."""
         merged = render("configs/stages/autoencoder.jsonnet", tla=None)
-        run = instantiate(merged, seed_all=False)
-        # Without distillation_config, loss_fn is plain VGAETaskLoss
+        run = build_run(merged, seed_all=False)
         assert type(run.model.loss_fn).__name__ == "VGAETaskLoss"
 
     def test_no_distillation_config_default(self):
         """CONTRACT: null distillation_config still produces a valid loss."""
         merged = render("configs/stages/autoencoder.jsonnet", tla=None)
         assert merged["model"]["init_args"].get("distillation_config") is None
-        run = instantiate(merged, seed_all=False)
+        run = build_run(merged, seed_all=False)
         assert run.model.loss_fn is not None
 
 
-class TestCheckpointDirpathPatched:
-    """REGRESSION: ModelCheckpoint.dirpath must track ``trainer.default_root_dir``.
+class TestCheckpointDirpathConvention:
+    """REGRESSION: ModelCheckpoint writes to ``{default_root_dir}/checkpoints``.
 
-    Pre-Phase-3 ``patch_config_paths`` set this on the parsed Namespace
-    before instantiation. Phase 3 does the same in ``_build_callbacks``.
+    The ``/checkpoints`` subdir convention is owned by ``ModelCheckpoint``
+    itself (``_resolve_dirpath``), not by the instantiator or jsonnet.
     """
 
-    def test_dirpath_set_to_run_dir_subpath(self, tmp_path):
+    def test_default_dirpath_tracks_trainer_root(self, tmp_path):
+        from unittest.mock import MagicMock
+
         from graphids.core.callbacks import ModelCheckpoint
 
-        merged = render(
-            "configs/stages/autoencoder.jsonnet",
-            tla={"run_dir": str(tmp_path)},
-        )
-        run = instantiate(merged, seed_all=False)
-        ckpt = next(cb for cb in run.trainer.callbacks if isinstance(cb, ModelCheckpoint))
-        assert ckpt.dirpath == f"{tmp_path}/checkpoints"
+        cb = ModelCheckpoint()
+        trainer = MagicMock(default_root_dir=str(tmp_path))
+        assert cb._resolve_dirpath(trainer) == tmp_path / "checkpoints"
+
+    def test_explicit_dirpath_overrides_default(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        from graphids.core.callbacks import ModelCheckpoint
+
+        cb = ModelCheckpoint(dirpath=str(tmp_path / "custom"))
+        trainer = MagicMock(default_root_dir="/ignored")
+        assert cb._resolve_dirpath(trainer) == tmp_path / "custom"

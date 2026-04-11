@@ -258,7 +258,7 @@ transparent.
 
 4. **`logging.basicConfig()` called at import time** (issue #42).
    `scancel.py` calls `logging.basicConfig()` at module level, hijacking
-   the root logger. Conflicts with `graphids.log` structured logging.
+   the root logger. Conflicts with `graphids._otel` structured logging.
 
 5. **`squeue` wrapper crashes on array jobs** (issue #44).
    `update_squeue()` raises `ValueError` when parsing array job IDs like

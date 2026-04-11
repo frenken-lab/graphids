@@ -88,8 +88,10 @@ _WORST = {"min": float("inf"), "max": float("-inf")}
 class ModelCheckpoint(CallbackBase):
     """Save best + last checkpoints based on a monitored metric.
 
-    Writes to ``dirpath/`` which is injected by the instantiator
-    (same as Lightning's ``ModelCheckpoint``).
+    Writes to ``{trainer.default_root_dir}/checkpoints/`` unless an
+    explicit ``dirpath`` is set. The ``/checkpoints`` subdir convention
+    is owned here so neither jsonnet nor the instantiator has to wire
+    it from the trainer's run_dir.
     """
 
     monitor: str = "val_loss"
@@ -108,12 +110,15 @@ class ModelCheckpoint(CallbackBase):
         self.best_score = _WORST[self.mode]
         self._compare = _OPS[self.mode]
 
+    def _resolve_dirpath(self, trainer: Trainer) -> Path:
+        return Path(self.dirpath) if self.dirpath else Path(trainer.default_root_dir) / "checkpoints"
+
     def on_train_epoch_end(self, trainer: Trainer, model: torch.nn.Module) -> None:
         current = trainer.callback_metrics.get(self.monitor)
         if current is None:
             return
 
-        dirpath = Path(self.dirpath or trainer.default_root_dir)
+        dirpath = self._resolve_dirpath(trainer)
         dirpath.mkdir(parents=True, exist_ok=True)
 
         ckpt = _build_checkpoint(trainer, model)

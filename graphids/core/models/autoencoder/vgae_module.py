@@ -20,7 +20,7 @@ class VGAEModule(GraphModuleBase):
     """VGAE training: reconstruct node features + CAN IDs + neighborhood.
 
     Loss selection is decoupled from this module: ``loss_fn`` is an
-    ``nn.Module`` built by :func:`graphids.instantiate._build_loss` from
+    ``nn.Module`` built by :func:`graphids.core.losses.build.build_loss` from
     the config's ``loss_config`` / ``distillation_config`` blocks and
     injected here. The default base loss is
     :class:`~graphids.core.losses.autoencoder.VGAETaskLoss`; when KD is

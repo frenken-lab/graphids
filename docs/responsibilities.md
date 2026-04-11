@@ -16,12 +16,12 @@ applies signature-filtered link_arguments, builds forced callbacks (ModelCheckpo
 EarlyStopping, OTelTrainingCallback), wires OTelTrainingLogger, and returns
 a wired `(trainer, model, datamodule)` triple.
 
-**Monarch** (`graphids/orchestrate/run.py`, `graphids/cli/_monarch.py`) — custom
-SLURM-backed pipeline orchestrator. `run_pipeline` composes `build_pipeline_stages`
-(planner) → `allocate.build_slurm_job` → `spawn_actor` → `run_chain` (loops over
-`train_stage` then `eval_stage` endpoints on `PipelineActor`) → pipeline-level
-`analyze` → `job.kill()`. Each primitive lives in its own sibling module; only
-`run.py` sees the full picture.
+**Pipeline driver** (`graphids/orchestrate/run.py`, `graphids/cli/_pipeline.py`) —
+`run_pipeline(config)` composes `build_pipeline_stages` (planner) → for each
+stage: `ResolvedConfig.resolve` → `stage.build` → `stage.train` → `stage.evaluate`
+→ `analyze.run_single_analysis` (per-stage, lenient). Runs in-process inside
+whatever SLURM allocation `submit.sh pipeline-run` hands it. Only `run.py` sees
+the full picture.
 
 **SLURM** (`graphids/slurm/`, `scripts/slurm/submit.sh`) — resource allocation and job
 submission. CPUs, GPUs, memory, wall time. All jobs submitted via `submit.sh <profile>`.

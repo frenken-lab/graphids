@@ -94,8 +94,7 @@ def init_providers(
 ) -> OTelProviders:
     """Create and register all OTel providers.
 
-    Safe to call once per process. Both ``__main__`` and Monarch actors
-    call this with different ``service_name`` values.
+    Safe to call once per process. Called from ``__main__`` on import.
     """
     global _providers  # noqa: PLW0603
 

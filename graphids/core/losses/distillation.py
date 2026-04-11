@@ -15,7 +15,7 @@ in this repo:
   on those features. Used by VGAE curriculum training.
 
 Both classes are plain ``nn.Module``. They're built by
-``graphids.instantiate._build_loss`` when the config has a
+``graphids.core.losses.build.build_loss`` when the config has a
 ``distillation_config`` block, and injected into the student module as
 its ``loss_fn``. No trainer plugin, no callback, no IO. The teacher is
 held on CPU by default and moved to the student's device lazily inside

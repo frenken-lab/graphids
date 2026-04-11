@@ -3,7 +3,7 @@
 Jsonnet composition + Pydantic validation + direct instantiation.
 Replaced YAML + LightningCLI with
 `render_config(jsonnet_path, tla) → dict` → `validate_config` (Pydantic) →
-`graphids.instantiate.instantiate` (importlib class_path instantiation with
+`graphids.orchestrate.instantiate.instantiate` (importlib class_path instantiation with
 signature-filtered link_arguments). PyTorch Lightning was removed in favor
 of a custom `graphids.core.trainer.Trainer`. Analyzer CLI uses jsonargparse
 with Jsonnet-backed configs (`cli/_analysis.py`).
@@ -21,7 +21,7 @@ with Jsonnet-backed configs (`cli/_analysis.py`).
 5. `validate_config(rendered) → ValidatedConfig` runs Pydantic validators
    (null list fields, monitor consistency, class_path namespacing, etc.)
    on the jsonnet output. Raises `ConfigValidationError` on any violation.
-6. `graphids.instantiate.instantiate(rendered, validated=...) →
+6. `graphids.orchestrate.instantiate.instantiate(rendered, validated=...) →
    InstantiatedRun` imports class_paths via `importlib`, applies
    signature-filtered link_arguments, builds forced callbacks, and returns
    a wired `(trainer, model, datamodule)` triple.
@@ -59,14 +59,15 @@ configs/                           # repo root — jsonnet sources
     └── methods/{bandit,dqn,mlp,weighted_avg}.libsonnet
 
 graphids/
-  instantiate.py                   # instantiate(rendered) → InstantiatedRun (trainer, model, datamodule)
   cli/
-    app.py                         # Typer root app, shared options (parse_tla, apply_overrides)
+    app.py                         # Typer root app + @app.callback (--verbose, init_providers), shared option types + _parse_kv_pair + apply_overrides + _complete_* helpers
     _training.py                   # fit/test/validate/predict commands
-    _analysis.py                   # analyze command (jsonargparse + jsonnet)
-    _data.py                       # rebuild-caches, stage-data, extract-fusion-states
-    _monarch.py                    # monarch-run (pipeline execution)
-    _slurm.py                      # job-stats, submit-profile
+    _analysis.py                   # analyze command
+    _data.py                       # rebuild-caches (with --yes gate), extract-fusion-states
+    _pipeline.py                   # pipeline-run (in-process 3-stage chain)
+    _slurm.py                      # probe-budget (typer.progressbar over combos)
+  orchestrate/
+    instantiate.py                 # instantiate(rendered) → InstantiatedRun (trainer, model, datamodule)
   config/
     __init__.py                    # public API facade
     constants.py                   # CONFIG_DIR, PROJECT_ROOT, env var defaults
@@ -79,12 +80,9 @@ graphids/
     callbacks.py                   # CallbackBase, ModelCheckpoint, EarlyStopping
     monitoring.py                  # OTelTrainingCallback, OTelTrainingLogger
   orchestrate/
-    run.py                         # PipelineConfig, build_pipeline_stages, run_pipeline driver
-    allocate.py                    # JobSpec, build_slurm_job, spawn_actor, configure_monarch
-    chain.py                       # run_chain(actor, stages, …) — pure loop + ChainResult
-    stage.py                       # build, train, evaluate, run_stage (single-stage primitives)
-    analyze.py                     # pipeline-level analyze + run_single_analysis helper
-    actors.py                      # PipelineActor — thin endpoint wrapper around stage.py
+    run.py                         # PipelineConfig, build_pipeline_stages, run_pipeline (in-process driver)
+    stage.py                       # build, train, evaluate (single-stage primitives; shared by CLI + run_pipeline)
+    analyze.py                     # run_single_analysis (per-checkpoint analyzer + manifest sidecar)
     resolve.py                     # ResolvedConfig.resolve + private _build_tla_dict
     _setup.py                      # ensure_spawn, touch_marker
     planning/
@@ -115,8 +113,10 @@ python -m graphids fit \
     --config configs/stages/autoencoder.jsonnet \
     --model.init_args.lr=0.005
 
-# Pipeline path (Monarch → single SLURM allocation)
-python -m graphids monarch-run --dataset hcrl_sa
+# Pipeline path (in-process 3-stage chain inside one SLURM allocation)
+python -m graphids pipeline-run --dataset hcrl_sa
+# …or submit via the helper:
+scripts/slurm/submit.sh pipeline-run --dataset hcrl_sa
 
 # Validation runs inside ResolvedConfig.resolve during orchestration
 ```
@@ -177,7 +177,7 @@ renders correctly after editing.
    tree: every `(model_family)` has a libsonnet, every stage has a
    `.jsonnet`, every fusion method has a method libsonnet. Missing files
    fail at package import.
-6. **`ResolvedConfig.resolve`** — for each stage on actor invocation,
+6. **`ResolvedConfig.resolve`** — called once per stage by `run_pipeline`,
    renders the jsonnet, runs `validate_config` (Pydantic — null list
    fields, monitor consistency, class_path namespacing, logger/callback
    wiring), and emits an inline log warning if the checkpoint

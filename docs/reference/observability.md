@@ -6,13 +6,13 @@
 
 OpenTelemetry is the single observability layer. Three signal types share one `Resource` and use the same exporter pattern.
 
-**Phase A** (process startup — `graphids/core/otel.py:init_providers`, called from `__main__.py` or Monarch actor):
+**Phase A** (process startup — `graphids/_otel.py:init_providers`, called from the Typer `@app.callback()` in `graphids/cli/app.py`):
 - `TracerProvider` + optional Wandb Weave OTLP exporter (gated on `WANDB_API_KEY`)
 - `MeterProvider` placeholder (replaced by Phase B once `run_dir` is known)
 - `LoggerProvider` -> `ConsoleLogRecordExporter(out=stderr)` + `LoggingHandler` bridges stdlib logging -> OTel
 - `SlurmResourceDetector` merges SLURM env vars (`SLURM_JOB_ID`, partition, nodelist, etc.) into the shared `Resource`
 
-**Phase B** (after `run_dir` is known — `graphids/core/otel.py:wire_file_exporters`, called from `_training.py:37` or `actors.py:130`):
+**Phase B** (after `run_dir` is known — `graphids/_otel.py:wire_file_exporters`, called from `cli/_training.py::_prepare` and `orchestrate/stage.py::train`):
 - `SimpleSpanProcessor` -> `ConsoleSpanExporter(out=run_dir/traces.jsonl)`
 - `PeriodicExportingMetricReader` (10s) -> `ConsoleMetricExporter(out=run_dir/metrics.jsonl)`
 
@@ -22,13 +22,12 @@ OpenTelemetry is the single observability layer. Three signal types share one `R
 |-------|------|-------|
 | Training metrics | `OTelTrainingLogger` (Lightning Logger) | `configs/_lib/defaults.libsonnet` trainer.logger |
 | Span lifecycle + VRAM + GPU stats | `OTelTrainingCallback` (Lightning Callback) | `configs/_lib/defaults.libsonnet` callbacks.otel |
-| Structured logging | `_StructuredAdapter` -> `LoggingHandler` | `graphids/log.py` + `graphids/core/otel.py` |
+| Structured logging | `_StructuredAdapter` -> `LoggingHandler` | `graphids/_otel.py` |
 | Traces (per-run) | `traces.jsonl` via `ConsoleSpanExporter` | `{run_dir}/traces.jsonl` |
 | Metrics (per-run) | `metrics.jsonl` via `ConsoleMetricExporter` | `{run_dir}/metrics.jsonl` |
-| Wandb Weave (optional) | OTLP HTTP exporter to `trace.wandb.ai` | `graphids/core/otel.py`, gated on `WANDB_API_KEY` |
+| Wandb Weave (optional) | OTLP HTTP exporter to `trace.wandb.ai` | `graphids/_otel.py`, gated on `WANDB_API_KEY` |
 | Op-level profiling | PyTorchProfiler (chrome traces) | `scripts/slurm/submit.sh profile` |
-| SLURM resource profiler | sacct: RSS, CPU%, wall time | `python -m graphids job-stats` |
-| DuckDB catalog | Rebuilt from `traces.jsonl` spans | `python -m graphids rebuild-catalog` |
+| DuckDB catalog | (removed 2026-04-10 pending redesign) | — |
 | SLURM job accounting | sacct summary + log rotation | `_epilog.sh` |
 | CUDA alloc config | `expandable_segments:True,garbage_collection_threshold:0.8` | `_preamble.sh` |
 | Mixed precision | `precision: 16-mixed` | `configs/_lib/defaults.libsonnet` |
@@ -51,17 +50,17 @@ Installed via `defaults.libsonnet trainer.logger`. Lightning Logger implementati
 - `log_metrics`: each unique metric name -> cached OTel histogram (instruments created on first use)
 - `log_hyperparams`: flattened params -> span attributes via `hparam.*` prefix
 
-## DuckDB catalog
+## Storage layers
 
-`rebuild-catalog` scans `{lake_root}/dev/**/{traces.jsonl}` and ingests `training.fit` spans into a `runs` table:
-
-```sql
-SELECT status_code, run_dir, model_class, max_epochs, epochs_run,
-       val_loss, train_loss, slurm_job_id, start_time, end_time
-FROM runs
-```
-
-Status codes: `OK` (completed), `ERROR` (failed), `UNSET` (in-progress).
+OTel data in `traces.jsonl`/`metrics.jsonl` is **Layer 1** of a
+three-layer architecture. **Layer 2** is a proposed workflow SQLite
+(`{lake_root}/workflow.db`) for orchestration state (retries, skips,
+mid-flight rows). **Layer 3** is the DuckDB analytics catalog
+(`{lake_root}/catalog/kd_gat.duckdb`) rebuilt on demand from Layer 1 —
+the old `orchestrate/ops/catalog.py` builder was removed 2026-04-10
+pending redesign. Full schemas, write models, query patterns, and
+implementation plan in
+[`observability-data-layers.md`](observability-data-layers.md).
 
 ## GPU profiling tools
 

@@ -2,22 +2,29 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Annotated
 
 import typer
 
-from graphids.cli.app import app
+from graphids.cli.app import _complete_dataset, app
 
 
 @app.command("rebuild-caches", rich_help_panel="Data")
 def rebuild_caches(
     dataset: Annotated[
         list[str] | None,
-        typer.Option(help="Dataset name(s) to rebuild"),
+        typer.Option(help="Dataset name(s) to rebuild", autocompletion=_complete_dataset),
     ] = None,
     all_: Annotated[bool, typer.Option("--all", help="Rebuild all datasets")] = False,
     delete_existing: Annotated[
         bool, typer.Option(help="Delete stale cache before rebuilding")
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes", "-y", help="Skip confirmation prompt (required for non-interactive use)"
+        ),
     ] = False,
 ) -> None:
     """Rebuild preprocessed graph caches from raw dataset files."""
@@ -27,6 +34,16 @@ def rebuild_caches(
     datasets = list(dataset_names()) if all_ else (dataset or [])
     if not datasets:
         raise typer.BadParameter("Provide --dataset names or --all")
+
+    if delete_existing and not yes:
+        prompt = f"Delete existing cache directories for: {', '.join(datasets)}?"
+        if sys.stdin.isatty():
+            typer.confirm(prompt, abort=True)
+        else:
+            raise typer.BadParameter(
+                "--delete-existing in a non-interactive shell requires --yes/-y"
+            )
+
     _rebuild(datasets, delete_existing=delete_existing)
 
 

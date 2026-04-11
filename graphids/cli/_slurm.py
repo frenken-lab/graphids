@@ -7,7 +7,13 @@ from typing import Annotated
 import typer
 
 from graphids._otel import get_logger, get_meter
-from graphids.cli.app import app
+from graphids.cli.app import (
+    _complete_conv_type,
+    _complete_dataset,
+    _complete_model_type,
+    _complete_scale,
+    app,
+)
 
 log = get_logger(__name__)
 meter = get_meter("graphids.budget")
@@ -18,12 +24,21 @@ _bwd_gauge = meter.create_gauge("budget.backward_multiplier", description="Backw
 
 @app.command("probe-budget", rich_help_panel="SLURM")
 def probe_budget(
-    dataset: Annotated[list[str] | None, typer.Option(help="Dataset(s) to probe")] = None,
-    model_type: Annotated[list[str] | None, typer.Option(help="Model type(s) to probe")] = None,
-    scale: Annotated[list[str] | None, typer.Option(help="Scale(s) to probe")] = None,
+    dataset: Annotated[
+        list[str] | None,
+        typer.Option(help="Dataset(s) to probe", autocompletion=_complete_dataset),
+    ] = None,
+    model_type: Annotated[
+        list[str] | None,
+        typer.Option(help="Model type(s) to probe", autocompletion=_complete_model_type),
+    ] = None,
+    scale: Annotated[
+        list[str] | None,
+        typer.Option(help="Scale(s) to probe", autocompletion=_complete_scale),
+    ] = None,
     conv_type: Annotated[
         list[str] | None,
-        typer.Option(help="Conv type(s) to probe (e.g. gatv2, gps)"),
+        typer.Option(help="Conv type(s) to probe", autocompletion=_complete_conv_type),
     ] = None,
     lake_root: Annotated[str | None, typer.Option(help="Lake root path")] = None,
     dry_run: Annotated[bool, typer.Option(help="Print plan without probing")] = False,
@@ -34,7 +49,7 @@ def probe_budget(
     from graphids.config.constants import LAKE_ROOT, VALID_MODEL_TYPES, VALID_SCALES
     from graphids.config.topology import cache_dir, data_dir, dataset_names
     from graphids.core.data.budget import node_budget
-    from graphids.instantiate import Instantiator
+    from graphids.core.models.factory import build_model_from_spec
 
     if not torch.cuda.is_available():
         log.error("probe_budget_no_gpu")
@@ -64,25 +79,26 @@ def probe_budget(
 
     device = torch.device("cuda")
 
-    for mt, sc, ct, ds in combos:
-        label = f"{mt}/{sc}/{ct or 'default'}/{ds}"
-        try:
-            from graphids.core.data.datasets.can_bus import CANBusDataset
-            train_ds = CANBusDataset(root=cache_dir(lk, ds), raw_dir=data_dir(lk, ds), split="train")
-            model = Instantiator.build_model_from_spec(
-                mt, sc, num_ids=train_ds.num_arb_ids,
-                in_channels=train_ds[0].x.shape[1], conv_type=ct,
-            ).to(device)
+    with typer.progressbar(combos, label="probing", item_show_func=lambda c: c and f"{c[0]}/{c[1]}/{c[2] or 'default'}/{c[3]}") as bar:
+        for mt, sc, ct, ds in bar:
+            label = f"{mt}/{sc}/{ct or 'default'}/{ds}"
+            try:
+                from graphids.core.data.datasets.can_bus import CANBusDataset
+                train_ds = CANBusDataset(root=cache_dir(lk, ds), raw_dir=data_dir(lk, ds), split="train")
+                model = build_model_from_spec(
+                    mt, sc, num_ids=train_ds.num_arb_ids,
+                    in_channels=train_ds[0].x.shape[1], conv_type=ct,
+                ).to(device)
 
-            eff_conv = ct or getattr(model, "hparams", {}).get("conv_type", "gatv2")
-            r = node_budget(ds, lk, model=model, train_dataset=train_ds, conv_type=eff_conv)
+                eff_conv = ct or getattr(model, "hparams", {}).get("conv_type", "gatv2")
+                r = node_budget(ds, lk, model=model, train_dataset=train_ds, conv_type=eff_conv)
 
-            attrs = {"model_type": mt, "scale": sc, "conv_type": eff_conv, "dataset": ds}
-            _bpn_gauge.set(r.bytes_per_node or 0, attributes=attrs)
-            _budget_gauge.set(r.budget, attributes=attrs)
-            _bwd_gauge.set(r.backward_multiplier or 0, attributes=attrs)
+                attrs = {"model_type": mt, "scale": sc, "conv_type": eff_conv, "dataset": ds}
+                _bpn_gauge.set(r.bytes_per_node or 0, attributes=attrs)
+                _budget_gauge.set(r.budget, attributes=attrs)
+                _bwd_gauge.set(r.backward_multiplier or 0, attributes=attrs)
 
-            del model; torch.cuda.empty_cache()
-            log.info("probe_done", label=label, budget=r.budget, bpn=r.bytes_per_node)
-        except Exception as e:
-            log.error("probe_failed", label=label, error=str(e))
+                del model; torch.cuda.empty_cache()
+                log.info("probe_done", label=label, budget=r.budget, bpn=r.bytes_per_node)
+            except Exception as e:
+                log.error("probe_failed", label=label, error=str(e))

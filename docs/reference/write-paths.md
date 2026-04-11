@@ -28,10 +28,10 @@ Constants: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `COMPLETE_MARKER`, `PHASE_MARKER
 |           +-- traces.jsonl                      <-- OTel spans (wire_file_exporters, SimpleSpanProcessor)
 |           +-- metrics.jsonl                     <-- OTel metrics (PeriodicExportingMetricReader, 10s)
 |           +-- artifacts/                        <-- analysis outputs (embeddings, CKA, landscape)
-|           +-- .complete                         <-- Monarch marker (eval_stage done)
-|           +-- .train_complete                   <-- Monarch marker (fit done)
-|           +-- .test_complete                    <-- Monarch marker (test done)
-|           +-- .analyze_complete                 <-- Monarch marker (analyze done)
+|           +-- .complete                         <-- pipeline marker (evaluate done)
+|           +-- .train_complete                   <-- pipeline marker (fit done)
+|           +-- .test_complete                    <-- pipeline marker (test done)
+|           +-- .analyze_complete                 <-- pipeline marker (analyze done)
 +-- catalog/kd_gat.duckdb                        <-- (catalog builder removed 2026-04-10, pending redesign)
 +-- raw/{dataset}/                               <-- source CSV data
 +-- cache/v{ver}/{dataset}/                      <-- preprocessed graph .pt files
@@ -62,18 +62,18 @@ All Lightning writes land under `trainer.default_root_dir` from the rendered jso
 
 `graphids/core/monitoring.py` — `OTelTrainingCallback` creates a `training.fit` span on fit start; records per-batch VRAM gauges, per-epoch events (LR, early stopping), final metrics, and best checkpoint path as span attributes. Discovers upstream stage `traces.jsonl` files and records span links for KD lineage.
 
-`graphids/core/otel.py` — `wire_file_exporters(run_dir)` wires the file exporters (Phase B). Called from `cli/_training.py:37` and `orchestrate/stage.py::train`. Wandb Weave OTLP export is optional when `WANDB_API_KEY` is set.
+`graphids/_otel.py` — `wire_file_exporters(run_dir)` wires the file exporters (Phase B). Called from `cli/_training.py::_prepare` and `orchestrate/stage.py::train`. Wandb Weave OTLP export is optional when `WANDB_API_KEY` is set.
 
 `OTelTrainingLogger` captures Lightning `self.log()` calls as OTel histograms.
 
-### 3. Monarch Orchestration
+### 3. Pipeline Markers
 
 | What | Path | Who writes | Code |
 |------|------|-----------|------|
 | Train complete marker | `{run_dir}/.train_complete` | `stage.py::train` after `trainer.fit` | `PHASE_MARKERS["train"]` |
 | Test complete marker | `{run_dir}/.test_complete` | `stage.py::evaluate` after `trainer.test` | `PHASE_MARKERS["test"]` |
-| Analyze complete marker | `{run_dir}/.analyze_complete` | `actors.py::analyze_stage` after `run_single_analysis` | `PHASE_MARKERS["analyze"]` |
-| Run complete marker | `{run_dir}/.complete` | `actors.py::eval_stage` at end | `COMPLETE_MARKER` |
+| Analyze complete marker | `{run_dir}/.analyze_complete` | `run.py::_run_one_stage` after `run_single_analysis` | `PHASE_MARKERS["analyze"]` |
+| Run complete marker | `{run_dir}/.complete` | `stage.py::evaluate` at end (unconditional) | `COMPLETE_MARKER` |
 | Analysis artifacts | `{run_dir}/artifacts/` | `analyze.py::run_single_analysis` via `AnalysisSpec` | `analyze.py` |
 
 ### 4. SLURM
@@ -97,39 +97,34 @@ All Lightning writes land under `trainer.default_root_dir` from the rendered jso
 
 `{lake_root}/catalog/kd_gat.duckdb` — DuckDB catalog over `training.fit` OTel spans from `traces.jsonl`. The builder (`orchestrate/ops/catalog.py`) and `rebuild-catalog` CLI were removed 2026-04-10 pending redesign; no current way to populate. Disposable once rebuilt.
 
-## Execution Order (Monarch path)
+## Execution Order (pipeline path)
 
 ```
-LOGIN NODE (Monarch)                    SLURM JOB (compute node)
---------------------                    ------------------------
-run.run_pipeline()
-+- build_pipeline_stages(config)
-+- configure_monarch()
-+- build_slurm_job(job_spec) --------->  sbatch allocates node
-+- spawn_actor(job, ...)                +- _preamble.sh (env, venv, stage data)
-+- run_chain(actor, stages, ...)        |
-|                                       +- actors.py::train_stage()
-|                                       |   +- ResolvedConfig.resolve(...)
-|                                       |   +- stage.build(resolved)
-|                                       |   |   +- gc + torch.cuda reset
-|                                       |   |   +- instantiate() -> trainer/model/datamodule
-|                                       |   +- stage.train(artifacts, resolved)
-|                                       |   |   +- wire_file_exporters(run_dir)
-|                                       |   |   +- trainer.fit()
-|                                       |   |   +- touch .train_complete
-|                                       |   -> ckpt_path
-|                                       +- actors.py::eval_stage()
-|                                       |   +- stage.build(resolved)
-|                                       |   +- stage.evaluate(artifacts, resolved, ckpt)
-|                                       |   |   +- trainer.test() -> touch .test_complete
-|                                       |   +- touch .complete
-+- analyze(actor, stages, chain, ...)   |
-|                                       +- actors.py::analyze_stage()
-|                                       |   +- run_single_analysis(spec)
-|                                       |   |   +- Analyzer(...).run()
-|                                       |   |   +- write analysis_manifest.json
-|                                       |   +- touch .analyze_complete
-+- finally: job.kill()                  +- _epilog.sh (GPU utilization report)
+SLURM JOB (compute node)
+------------------------
+_preamble.sh (env, venv, stage data)
+python -m graphids pipeline-run
++- run.run_pipeline(config)
+|  +- ensure_spawn()
+|  +- build_pipeline_stages(config)
+|  +- for each StageConfig (with retry):
+|     +- ResolvedConfig.resolve(...)
+|     +- skip if .complete marker present
+|     +- stage.build(rendered, validated)
+|     |   +- gc + torch.cuda reset
+|     |   +- instantiate() -> trainer/model/datamodule
+|     +- stage.train(artifacts, ...)
+|     |   +- wire_file_exporters(run_dir)
+|     |   +- trainer.fit() -> touch .train_complete
+|     +- stage.evaluate(artifacts, ...)
+|     |   +- trainer.test() -> touch .test_complete
+|     |   +- touch .complete (unconditional)
+|     +- if analyzable (vgae/dgi/gat):
+|        run_single_analysis(spec)
+|        +- Analyzer(...).run()
+|        +- write analysis_manifest.json
+|        +- touch .analyze_complete
++- _epilog.sh (GPU utilization report)
 ```
 
 ## Env Var -> Path Mapping

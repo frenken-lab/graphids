@@ -20,7 +20,7 @@ class GATModule(GraphModuleBase):
     """GAT supervised classification (normal vs attack).
 
     Loss selection is decoupled from this module: ``loss_fn`` is an
-    ``nn.Module`` built by :func:`graphids.instantiate._build_loss` from
+    ``nn.Module`` built by :func:`graphids.core.losses.build.build_loss` from
     the config's ``loss_config`` / ``distillation_config`` blocks and
     injected here. When it's a
     :class:`~graphids.core.losses.distillation.SoftLabelDistillation`,

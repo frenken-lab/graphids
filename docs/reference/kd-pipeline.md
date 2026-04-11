@@ -60,7 +60,7 @@ render_config(jsonnet_path, jsonnet_tla)  (config/jsonnet.py)
 validate_config(rendered)  (config/schemas.py)
   |
   v
-graphids.instantiate.instantiate (instantiate.py)
+graphids.orchestrate.instantiate.instantiate (orchestrate/instantiate.py)
   inject_loss_fn() (losses/build.py:105) pops distillation_config from
   init_args, calls build_loss() which:
     - Loads teacher checkpoint via load_inner_model() (base.py:238)

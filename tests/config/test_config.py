@@ -15,7 +15,7 @@ from graphids.config.constants import (
 )
 from graphids.config.jsonnet import render
 from graphids.config.topology import TOPOLOGY, dataset_names, load_catalog
-from graphids.orchestrate.planning import KDEntry, TrainingRunConfig
+from graphids.orchestrate.config import KDEntry, TrainingRunConfig
 
 # ---------------------------------------------------------------------------
 # Dataset catalog (configs/datasets/dataset_registry.json)

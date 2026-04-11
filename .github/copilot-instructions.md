@@ -6,14 +6,14 @@
 - **Single test:** `scripts/slurm/submit.sh tests -k <pattern>`
 
 ## High-level architecture
-- **Config pipeline:** Jsonnet stage configs (`configs/stages/*.jsonnet`) are the single source of composition. Every path renders configs via `graphids.config.jsonnet.render_config(...)`, validates with `graphids.config.schemas.validate_config(...)`, then instantiates the Lightning stack through `graphids.instantiate.instantiate(...)`.
-- **CLI routes:** Typer-based CLI in `graphids/cli/` — `app.py` defines the root app, submodules (`_training.py`, `_analysis.py`, `_data.py`, `_orchestrate.py`, `_slurm.py`) register commands via `@app.command()`. `graphids/__main__.py` imports the submodules to register all commands.
-- **Pipeline path:** Monarch actors execute the 3-stage pipeline in a single SLURM allocation. `ConfigResolver` (`orchestrate/resolve.py`) builds TLAs, renders jsonnet, and validates before in-process training via `instantiate()`.
+- **Config pipeline:** Jsonnet stage configs (`configs/stages/*.jsonnet`) are the single source of composition. Every path renders configs via `graphids.config.jsonnet.render(...)`, validates with `graphids.config.schemas.validate_config(...)`, then instantiates the custom-trainer stack through `graphids.orchestrate.instantiate.instantiate(...)`. (PyTorch Lightning was dropped — the project uses a custom `graphids.core.trainer.Trainer`.)
+- **CLI routes:** Typer-based CLI in `graphids/cli/` — `app.py` defines the root app, submodules (`_training.py`, `_analysis.py`, `_data.py`, `_pipeline.py`, `_slurm.py`) register commands via `@app.command()`. `graphids/__main__.py` imports the submodules to register all commands.
+- **Pipeline path:** `graphids/orchestrate/run.py::run_pipeline` executes the 3-stage chain in-process inside a single SLURM allocation — `build → train → evaluate → analyze` per stage, no actor framework. `ResolvedConfig.resolve()` (classmethod in `orchestrate/resolve.py`) builds the TLA dict via private `_build_tla_dict`, renders jsonnet, and validates before in-process training via `instantiate()`.
 - **SLURM submission:** All jobs (tests, validation, profiling, cache rebuilds, etc.) are launched through `scripts/slurm/submit.sh`, which reads resource profiles from `configs/resources/*.json`.
 
 ## Key conventions
-- **Logging:** use `from graphids.log import get_logger` and `log.info("event_name", key=value)` (structured kwargs, no format strings).
-- **Jsonnet stages:** every `configs/stages/*.jsonnet` is a top-level function with defaults. Adding a new TLA requires updating both the jsonnet signature and `build_tla_dict` in `graphids.orchestrate.contracts`.
+- **Logging:** use `from graphids._otel import get_logger` and `log.info("event_name", key=value)` (structured kwargs, no format strings). Handlers/level are installed by the Typer root callback (`cli/app.py`) via `init_providers()`; add `--verbose/-v` to the CLI to bump the graphids logger to DEBUG.
+- **Jsonnet stages:** every `configs/stages/*.jsonnet` is a top-level function with defaults. Adding a new TLA requires updating both the jsonnet signature and the private `_build_tla_dict` helper in `graphids.orchestrate.resolve`.
 - **Jsonnet merge semantics:** nested merges must use `+:` (a bare `+` on nested dicts replaces the subtree). Lists replace on conflict.
 - **Tests on HPC:** never run `pytest` directly on login nodes; submit via `scripts/slurm/submit.sh tests` and use `@pytest.mark.slurm` only for tests that actually train or require CUDA.
 - **PyTorch/PyG safety:** `Data.to()` is in-place—use `data.clone().to(device)`; always use spawn multiprocessing for DataLoaders; save/restore `model.training` around `model.eval()`; clamp skewness/kurtosis features to ±10 to avoid fp16 overflow.

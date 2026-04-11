@@ -24,11 +24,6 @@ def slurm_account() -> str:
     return get_settings().slurm_account
 
 
-def slurm_log_dir() -> str:
-    from graphids.config.settings import get_settings
-    return get_settings().slurm_log_dir
-
-
 def slurm_job_id() -> str | None:
     return os.environ.get("SLURM_JOB_ID")
 
@@ -97,7 +92,6 @@ __all__ = [
     "slurm_account",
     "slurm_cpus_per_task",
     "slurm_job_id",
-    "slurm_log_dir",
     "timestr_to_mins",
     "timestr_to_secs",
 ]

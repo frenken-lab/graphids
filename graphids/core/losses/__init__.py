@@ -1,7 +1,7 @@
 """Composable loss modules for GraphIDS training.
 
 All losses in this package are ``nn.Module`` so they can be swapped in
-and out via :func:`graphids.instantiate._build_loss` without touching
+and out via :func:`graphids.core.losses.build.build_loss` without touching
 the training module. Knowledge distillation is expressed as a wrapper
 around a base loss, not as trainer / callback / IO infrastructure.
 

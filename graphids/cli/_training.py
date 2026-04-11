@@ -1,42 +1,48 @@
-"""Training commands: fit, test, validate, predict."""
+"""Training commands: fit, test, validate, predict.
+
+All four commands share the same prelude (render → validate → build)
+with the pipeline driver (``orchestrate/run.py``), then dispatch
+through ``orchestrate.stage.train`` / ``orchestrate.stage.evaluate``
+so the CLI and the pipeline loop produce identical markers, OTel
+wiring, and GPU-reset semantics. ``validate`` / ``predict`` don't
+have phase markers, so they call the trainer directly after ``build``.
+"""
 
 from __future__ import annotations
 
-from graphids.cli.app import CkptPath, ConfigPath, SetList, TlaList, app, parse_tla
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
+from graphids.cli.app import CkptPath, ConfigPath, SetList, TlaList, app
+from graphids.orchestrate.config import ResolvedConfig
 
 
-def _run_trainer_method(
-    method: str,
-    config: str,
-    tla: list[str] | None,
-    overrides: list[str] | None,
-    ckpt_path: str | None,
-) -> None:
-    """Render -> validate -> instantiate -> wire OTel -> trainer.<method>."""
-    from pathlib import Path
+def _prepare(
+    config: Path,
+    tla: list[Any] | None,
+    overrides: list[Any] | None,
+) -> tuple[ResolvedConfig, object]:
+    """Shared prelude: render → apply_overrides → resolve → wire OTel → build.
 
-    from graphids.config.jsonnet import render_config
-    from graphids.config.schemas import validate_config
+    Returns ``(resolved, artifacts)``. Heavy imports live inside the
+    function so the app stays login-node-safe.
+    """
     from graphids._otel import wire_file_exporters
-    from graphids.instantiate import instantiate
-    from graphids.orchestrate._setup import ensure_spawn
+    from graphids._spawn import ensure_spawn
+    from graphids.cli.app import apply_overrides
+    from graphids.config.jsonnet import render_config
+    from graphids.orchestrate.stage import build
 
     ensure_spawn()
 
-    rendered = render_config(config, tla=parse_tla(tla))
-    from graphids.cli.app import apply_overrides
-
+    rendered = render_config(config, tla=dict(tla or []) or None)
     apply_overrides(rendered, overrides)
-    if ckpt_path and "ckpt_path" not in rendered:
-        rendered["ckpt_path"] = ckpt_path
-
-    validated = validate_config(rendered)
-    run = instantiate(rendered, validated=validated)
-
-    if run.trainer.default_root_dir:
-        wire_file_exporters(Path(run.trainer.default_root_dir))
-
-    getattr(run.trainer, method)(run.model, datamodule=run.datamodule, ckpt_path=ckpt_path)
+    resolved = ResolvedConfig.from_rendered(rendered, stage_name=config.stem)
+    if resolved.run_dir is not None:
+        wire_file_exporters(resolved.run_dir)
+    artifacts = build(resolved)
+    return resolved, artifacts
 
 
 @app.command(rich_help_panel="Training")
@@ -47,7 +53,10 @@ def fit(
     ckpt_path: CkptPath = None,
 ) -> None:
     """Train a model from a jsonnet stage config."""
-    _run_trainer_method("fit", config, tla, set_, ckpt_path)
+    from graphids.orchestrate.stage import train
+
+    resolved, artifacts = _prepare(config, tla, set_)
+    train(artifacts, resolved, resume_from=ckpt_path)
 
 
 @app.command(rich_help_panel="Training")
@@ -58,7 +67,13 @@ def test(
     ckpt_path: CkptPath = None,
 ) -> None:
     """Evaluate a trained model on the test set."""
-    _run_trainer_method("test", config, tla, set_, ckpt_path)
+    from graphids.orchestrate.stage import evaluate
+
+    resolved, artifacts = _prepare(config, tla, set_)
+    # When --ckpt-path is explicit, it overrides the resolved ckpt_file.
+    if ckpt_path:
+        resolved = replace(resolved, ckpt_file=Path(ckpt_path))
+    evaluate(artifacts, resolved)
 
 
 @app.command(rich_help_panel="Training")
@@ -69,7 +84,12 @@ def validate(
     ckpt_path: CkptPath = None,
 ) -> None:
     """Run the validation loop."""
-    _run_trainer_method("validate", config, tla, set_, ckpt_path)
+    _resolved, artifacts = _prepare(config, tla, set_)
+    artifacts.trainer.validate(
+        artifacts.model,
+        datamodule=artifacts.datamodule,
+        ckpt_path=ckpt_path,
+    )
 
 
 @app.command(rich_help_panel="Training")
@@ -80,4 +100,9 @@ def predict(
     ckpt_path: CkptPath = None,
 ) -> None:
     """Run the prediction loop."""
-    _run_trainer_method("predict", config, tla, set_, ckpt_path)
+    _resolved, artifacts = _prepare(config, tla, set_)
+    artifacts.trainer.predict(
+        artifacts.model,
+        datamodule=artifacts.datamodule,
+        ckpt_path=ckpt_path,
+    )

@@ -8,7 +8,7 @@ from typer.testing import CliRunner
 # Register all command modules
 import graphids.cli._analysis  # noqa: F401
 import graphids.cli._data  # noqa: F401
-import graphids.cli._orchestrate  # noqa: F401
+import graphids.cli._pipeline  # noqa: F401
 import graphids.cli._slurm  # noqa: F401
 import graphids.cli._training  # noqa: F401
 from graphids.cli.app import app
@@ -42,12 +42,6 @@ def test_analyze_help() -> None:
     assert "--config" in result.output
 
 
-def test_submit_profile_routes() -> None:
-    result = runner.invoke(app, ["submit-profile", "tests"])
-    assert result.exit_code == 0
-    assert "cpu" in result.output
-
-
 def test_all_expected_commands_registered() -> None:
     names = {c.name or c.callback.__name__ for c in app.registered_commands}
     expected = {
@@ -57,11 +51,8 @@ def test_all_expected_commands_registered() -> None:
         "predict",
         "analyze",
         "rebuild-caches",
-        "stage-data",
         "extract-fusion-states",
-        "pipeline-status",
-        "rebuild-catalog",
-        "submit-profile",
+        "pipeline-run",
         "probe-budget",
     }
     missing = expected - names

@@ -125,6 +125,30 @@ class ValidatedConfig(BaseModel):
                 )
         return self
 
+    @model_validator(mode="after")
+    def _monitor_pair_matches_stage_family(self) -> ValidatedConfig:
+        """Gate checkpoint/monitor mode against the stage-family convention.
+
+        Fusion stages track ``val_acc/max``; every other family tracks
+        ``val_loss/min``. Mismatches are a silent-bug magnet (training
+        completes but ModelCheckpoint picks the wrong epoch) so we fail
+        loudly at validate-time instead of warning at resolve-time.
+        Family is derived from ``model.class_path``: anything under
+        ``graphids.core.models.fusion`` is the fusion stage.
+        """
+        is_fusion = ".models.fusion" in self.model.class_path
+        exp_monitor, exp_mode = ("val_acc", "max") if is_fusion else ("val_loss", "min")
+        got_monitor = self.checkpoint_monitor
+        got_mode = self.checkpoint_mode
+        if got_monitor != exp_monitor or got_mode != exp_mode:
+            family = "fusion" if is_fusion else "supervised/unsupervised"
+            raise ValueError(
+                f"{family} stages must track {exp_monitor}/{exp_mode}; "
+                f"got {got_monitor}/{got_mode} "
+                f"(model.class_path={self.model.class_path!r})"
+            )
+        return self
+
 
 def validate_config(rendered: dict[str, Any]) -> ValidatedConfig:
     try:
