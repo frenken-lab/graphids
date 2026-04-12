@@ -32,6 +32,61 @@ from graphids.orchestrate.instantiate import build_run
 log = get_logger(__name__)
 
 
+def _stack_predict_results(results: list[dict]) -> dict[str, torch.Tensor]:
+    """Concatenate per-batch ``predict_step`` dicts into a single tensor dict."""
+    if not results:
+        return {}
+    keys: set[str] = set()
+    for r in results:
+        keys.update(r.keys())
+    stacked: dict[str, torch.Tensor] = {}
+    for k in keys:
+        tensors = [r[k].detach().cpu() for r in results if k in r and torch.is_tensor(r[k])]
+        if tensors:
+            stacked[k] = torch.cat(tensors)
+    return stacked
+
+
+def _save_split_predictions(artifacts: InstantiatedRun, split: str, out_dir: Path) -> None:
+    """Run ``predict_step`` over train/val loader and save tensors to disk."""
+    dm = artifacts.datamodule
+    loader_fn = getattr(dm, f"{split}_dataloader", None)
+    if loader_fn is None:
+        return
+    try:
+        loader = loader_fn()
+    except Exception as exc:
+        log.warning("save_predictions_no_loader", split=split, error=str(exc))
+        return
+    if loader is None:
+        return
+    try:
+        results = artifacts.trainer.predict_on(artifacts.model, loader)
+        stacked = _stack_predict_results(results)
+    except Exception as exc:
+        log.warning("save_predictions_failed", split=split, error=str(exc))
+        return
+    if not stacked:
+        return
+    out_dir.mkdir(parents=True, exist_ok=True)
+    torch.save(stacked, out_dir / f"{split}.pt")
+    log.info("save_predictions", split=split, path=str(out_dir / f"{split}.pt"),
+             n=int(next(iter(stacked.values())).shape[0]))
+
+
+def _save_test_predictions(model: Any, out_dir: Path) -> None:
+    """Persist ``model._test_predictions`` (one tensor dict per test set)."""
+    preds = getattr(model, "_test_predictions", None)
+    if not preds:
+        return
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for name, tensors in preds.items():
+        if not tensors:
+            continue
+        torch.save(tensors, out_dir / f"{name}.pt")
+    log.info("save_test_predictions", sets=list(preds.keys()), dir=str(out_dir))
+
+
 def build(resolved: ResolvedConfig) -> InstantiatedRun:
     """Instantiate trainer + model + datamodule from a resolved config.
 
@@ -68,6 +123,9 @@ def train(
     )
     if run_dir is not None:
         touch_marker(run_dir / PHASE_MARKERS["train"])
+        pred_dir = run_dir / "predictions"
+        _save_split_predictions(artifacts, "train", pred_dir)
+        _save_split_predictions(artifacts, "val", pred_dir)
     log.info(
         "stage_train_complete",
         stage=stage_name,
@@ -98,6 +156,7 @@ def evaluate(
         )
         if run_dir is not None:
             touch_marker(run_dir / PHASE_MARKERS["test"])
+            _save_test_predictions(artifacts.model, run_dir / "predictions" / "test")
         result: dict[str, Any] = metrics or {}
     except Exception as exc:
         log.warning("stage_test_failed", stage=stage_name, error=str(exc))

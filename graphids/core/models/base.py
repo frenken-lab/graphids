@@ -111,6 +111,12 @@ class GraphModuleBase(nn.Module):
             self.hparams.in_channels = datamodule.in_channels
             self.hparams.num_classes = datamodule.num_classes
             self._build()
+        if datamodule is not None:
+            # Capture test-set names for per-loader metric breakdowns (issue #26).
+            # Falls back to a single "test" bucket for datamodules that don't
+            # expose a dict of named test datasets.
+            ds = getattr(datamodule, "test_datasets", None)
+            self._test_set_names = list(ds.keys()) if ds else ["test"]
 
     def _build(self):
         raise NotImplementedError
@@ -153,26 +159,107 @@ class GraphModuleBase(nn.Module):
         best = torch.argmax(j)
         return float(thresholds[best]) if best < len(thresholds) else None
 
+    # -- per-test-set evaluation (issue #26) ---------------------------------
+
     def on_test_epoch_start(self):
         self.test_metrics.reset()
         if hasattr(self, "roc_metric"):
             self.roc_metric.reset()
+        names = getattr(self, "_test_set_names", None) or ["test"]
+        # One MetricCollection per test-set, keys prefixed for structured logs.
+        self._per_set_metrics = {
+            n: self.test_metrics.clone(prefix=f"test/{n}/") for n in names
+        }
+        # Per-set buffers — scores/labels always; preds when the model emits
+        # them directly (classifier flavor) or after thresholding (recon).
+        self._test_buffers = {
+            n: {"preds": [], "scores": [], "labels": []} for n in names
+        }
+        # Filled in on_test_epoch_end; stage.evaluate reads to persist to disk.
+        self._test_predictions: dict[str, dict[str, torch.Tensor]] = {}
+
+    def _record_test_batch(self, dataloader_idx: int, *, scores, labels, preds=None) -> None:
+        """Buffer one batch's predictions under the right test-set bucket."""
+        names = getattr(self, "_test_set_names", ["test"])
+        name = names[dataloader_idx] if dataloader_idx < len(names) else names[-1]
+        buf = self._test_buffers[name]
+        buf["scores"].append(scores.detach().cpu())
+        buf["labels"].append(labels.detach().cpu())
+        if preds is not None:
+            buf["preds"].append(preds.detach().cpu())
 
     def on_test_epoch_end(self):
-        self.log_dict(self.test_metrics.compute())
+        """Classifier flavor — compute per-set + aggregate metrics from buffers.
+
+        Models that override with `_log_thresholded_metrics` (VGAE, DGI) take
+        the threshold path instead.
+        """
+        self._log_classifier_metrics()
+        self._finalize_test_predictions()
+
+    def _log_classifier_metrics(self) -> None:
+        """Per-set + aggregate metrics, assuming test_metrics takes raw scores."""
+        if not getattr(self, "_per_set_metrics", None):
+            return
+        all_scores, all_labels = [], []
+        for name, coll in self._per_set_metrics.items():
+            buf = self._test_buffers[name]
+            if not buf["scores"]:
+                continue
+            scores = torch.cat(buf["scores"])
+            labels = torch.cat(buf["labels"]).long()
+            coll.update(scores, labels)
+            self.log_dict(coll.compute())
+            all_scores.append(scores)
+            all_labels.append(labels)
+        if all_scores:
+            self.test_metrics.update(torch.cat(all_scores), torch.cat(all_labels))
+            self.log_dict(self.test_metrics.compute())
 
     def _log_thresholded_metrics(self):
+        """Threshold flavor — one global threshold, per-set metrics at it."""
         if not self.roc_metric.preds:
             return
-        scores = torch.cat(self.roc_metric.preds).cpu()
-        labels = torch.cat(self.roc_metric.target).cpu().long()
+        pooled_scores = torch.cat(self.roc_metric.preds).cpu()
+        pooled_labels = torch.cat(self.roc_metric.target).cpu().long()
         if self.test_threshold is None:
-            self.test_threshold = self._find_threshold() or float(scores.median())
-        preds = (scores >= self.test_threshold).long()
-        self.test_metrics.update(preds, labels)
+            self.test_threshold = self._find_threshold() or float(pooled_scores.median())
+
+        # Aggregate (preserves existing semantics).
+        agg_preds = (pooled_scores >= self.test_threshold).long()
+        self.test_metrics.update(agg_preds, pooled_labels)
         metrics = self.test_metrics.compute()
         metrics["threshold"] = self.test_threshold
         self.log_dict(metrics)
+
+        # Per-set metrics at the same global threshold.
+        if getattr(self, "_per_set_metrics", None):
+            for name, coll in self._per_set_metrics.items():
+                buf = self._test_buffers[name]
+                if not buf["scores"]:
+                    continue
+                scores = torch.cat(buf["scores"])
+                labels = torch.cat(buf["labels"]).long()
+                preds = (scores >= self.test_threshold).long()
+                coll.update(preds, labels)
+                self.log_dict(coll.compute())
+                # Materialize derived preds so _finalize_test_predictions persists them.
+                buf["preds"] = [preds]
+        self._finalize_test_predictions()
+
+    def _finalize_test_predictions(self) -> None:
+        """Concatenate per-set buffers into a {name: {key: Tensor}} dict."""
+        if not getattr(self, "_test_buffers", None):
+            return
+        self._test_predictions = {
+            name: {
+                k: torch.cat(v) if v else torch.empty(0)
+                for k, v in buf.items()
+                if v  # skip empty keys (e.g. preds on score-only models)
+            }
+            for name, buf in self._test_buffers.items()
+            if buf["scores"]  # only sets we actually saw batches for
+        }
 
     def on_save_checkpoint(self, checkpoint):
         if getattr(self, "test_threshold", None) is not None:

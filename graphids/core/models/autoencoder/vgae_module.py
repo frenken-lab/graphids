@@ -187,6 +187,7 @@ class VGAEModule(GraphModuleBase):
     def test_step(self, batch, _idx, dataloader_idx=0):
         errors = self._per_graph_errors(batch)
         self.roc_metric.update(errors.detach(), batch.y.detach())
+        self._record_test_batch(dataloader_idx, scores=errors, labels=batch.y)
 
     def on_test_epoch_end(self):
         self._log_thresholded_metrics()

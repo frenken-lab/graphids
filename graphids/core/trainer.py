@@ -275,6 +275,17 @@ class Trainer:
                     results.append(out)
         return results
 
+    def predict_on(self, model: nn.Module, loader: Any) -> list[dict]:
+        """Run ``predict_step`` over a single loader. Assumes model/dm set up."""
+        model.eval()
+        results: list[dict] = []
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(loader):
+                out = model.predict_step(batch, batch_idx)
+                if isinstance(out, dict):
+                    results.append(out)
+        return results
+
     # -- inner loops ---------------------------------------------------------
 
     def _train_one_epoch(

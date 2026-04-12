@@ -129,7 +129,12 @@ class GATModule(GraphModuleBase):
     def test_step(self, batch, _idx, dataloader_idx=0):
         logits = self(batch)
         scores = F.softmax(logits, dim=1)[:, 1]
-        self.test_metrics.update(scores, batch.y)
+        self._record_test_batch(
+            dataloader_idx,
+            preds=logits.argmax(1),
+            scores=scores,
+            labels=batch.y,
+        )
 
     def predict_step(self, batch, _idx):
         logits = self(batch)
