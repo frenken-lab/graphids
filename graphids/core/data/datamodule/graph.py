@@ -86,11 +86,10 @@ class GraphDataModule:
         heads: int = 4,
         # --- curriculum toggle ---
         sampler: str = "standard",
-        vgae_ckpt_path: str = "",
+        scorer: dict | None = None,  # {class_path, init_args} — see core.data.curriculum
         curriculum_start_ratio: float = 1.0,
         curriculum_end_ratio: float = 10.0,
         max_epochs: int = 300,
-        canid_weight: float = 0.1,
         num_tiers: int = 10,
     ):
         self.dataset = dataset
@@ -123,17 +122,15 @@ class GraphDataModule:
             self._setup_curriculum()
 
     def _setup_curriculum(self) -> None:
-        """Score graphs by VGAE difficulty, bucket into tiers + attack tier."""
-        from graphids.core.data.curriculum import build_curriculum_tiers
+        """Score graphs via the configured strategy, bucket into tiers + attack tier."""
+        from graphids.core.data.curriculum import build_curriculum_tiers, make_scorer
 
         hp = self.hparams
+        scorer = make_scorer(hp["scorer"])
         scores, normal_tiers, attack_indices, full_dataset, dataset_sizes = (
             build_curriculum_tiers(
-                self._train_ds,
-                vgae_ckpt_path=hp["vgae_ckpt_path"],
-                canid_weight=hp["canid_weight"],
+                self._train_ds, scorer,
                 num_tiers=hp.get("num_tiers", 10),
-                seed=hp["seed"],
             )
         )
         # Build per-tier graph lists + size tensors for _prebatch
@@ -277,21 +274,24 @@ class GraphDataModule:
         )
 
     def _select_active_tiers(self, epoch: int) -> None:
-        """Select difficulty tiers based on curriculum ratio.
+        """Assemble ``self._active_batches`` for ``epoch``.
 
-        Called by ``CurriculumEpochCallback.on_train_epoch_start``.
-        Tier 0 = easiest, last tier = attacks (always active).
+        Tier 0 = easiest, last tier = attacks (always active). The active
+        count comes from :func:`curriculum.active_tier_count`; this method
+        only handles the concatenation.
         """
+        from graphids.core.data.curriculum import active_tier_count
+
         hp = self.hparams
-        ratio = hp["curriculum_start_ratio"] + (
-            hp["curriculum_end_ratio"] - hp["curriculum_start_ratio"]
-        ) * min(epoch / max(hp["max_epochs"] - 1, 1), 1.0)
         n_normal = len(self._tier_batches) - 1  # last tier is attacks
-        active_count = max(1, min(n_normal, math.ceil(
-            ratio * n_normal / hp["curriculum_end_ratio"],
-        )))
+        count = active_tier_count(
+            epoch, n_normal,
+            start_ratio=hp["curriculum_start_ratio"],
+            end_ratio=hp["curriculum_end_ratio"],
+            max_epochs=hp["max_epochs"],
+        )
         active: list[Batch] = []
-        for i in range(active_count):
+        for i in range(count):
             active.extend(self._tier_batches[i])
         active.extend(self._tier_batches[-1])  # attacks always active
         self._active_batches = active

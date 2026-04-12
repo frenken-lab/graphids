@@ -33,7 +33,13 @@ function(
   curriculum_max_epochs=300,
   num_tiers=10,
 
-  // Upstream checkpoint (VGAE teacher for curriculum scoring)
+  // Curriculum difficulty scorer: {class_path, init_args} dict. Any class
+  // exposing `.score(graphs) -> Tensor` works — see core/data/curriculum.py
+  // for VGAEScorer and RandomScorer. Leave null to fall back to a VGAE
+  // scorer built from `vgae_ckpt_path` + `canid_weight` (legacy default).
+  curriculum_scorer=null,
+
+  // Upstream checkpoint (VGAE teacher for curriculum scoring + KD lineage)
   vgae_ckpt_path=null,
 
   // KD — loss-level distillation config (null = no distillation)
@@ -75,13 +81,16 @@ function(
       } + (if sampler == 'curriculum' then {
         curriculum_start_ratio: curriculum_start_ratio,
         curriculum_end_ratio: curriculum_end_ratio,
-        canid_weight: canid_weight,
         max_epochs: curriculum_max_epochs,
         num_tiers: num_tiers,
-      } else {})
-        + (if vgae_ckpt_path != null
-           then { vgae_ckpt_path: vgae_ckpt_path }
-           else {}),
+        scorer:
+          if curriculum_scorer != null then curriculum_scorer
+          else if vgae_ckpt_path != null then {
+            class_path: 'graphids.core.data.curriculum.VGAEScorer',
+            init_args: { ckpt_path: vgae_ckpt_path, canid_weight: canid_weight },
+          }
+          else null,
+      } else {}),
     },
 
     model+: {
