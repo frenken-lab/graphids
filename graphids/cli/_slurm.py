@@ -98,7 +98,9 @@ def probe_budget(
                 _budget_gauge.set(r.budget, attributes=attrs)
                 _bwd_gauge.set(r.backward_multiplier or 0, attributes=attrs)
 
-                del model; torch.cuda.empty_cache()
+                del model
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
                 log.info("probe_done", label=label, budget=r.budget, bpn=r.bytes_per_node)
             except Exception as e:
                 log.error("probe_failed", label=label, error=str(e))

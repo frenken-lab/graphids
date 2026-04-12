@@ -80,9 +80,12 @@ class BudgetProfiler:
         model.eval()
         fn = getattr(model, "_step", None) or model
 
-        # Warmup (JIT, autotuning)
-        with torch.no_grad():
-            fn(batch)
+        # Warmup: JIT, autotuning, AND CUDA profiler (CUPTI) init.
+        # Wrapping in tp.profile absorbs profiler setup cost so the
+        # measurement pass below doesn't include it.  See issue #28.
+        with tp.profile(activities=[tp.ProfilerActivity.CUDA], profile_memory=True):
+            with torch.no_grad():
+                fn(batch)
         torch.cuda.synchronize(dev)
 
         # Forward-only pass: measure fwd peak + timing
@@ -90,6 +93,7 @@ class BudgetProfiler:
             with torch.profiler.record_function("forward"):
                 with torch.no_grad():
                     fn(batch)
+        torch.cuda.synchronize(dev)
         fwd_evts = fwd_p.key_averages()
         fwd_peak = max((e.cuda_memory_usage for e in fwd_evts), default=0)
         t_fwd = sum(e.cuda_time_total for e in fwd_evts) / 1e6
@@ -108,6 +112,7 @@ class BudgetProfiler:
                         loss = loss["loss"]
                 with torch.profiler.record_function("backward"):
                     loss.backward()
+            torch.cuda.synchronize(dev)
             bwd_peak = max((e.cuda_memory_usage for e in bwd_p.key_averages()), default=fwd_peak)
             model.zero_grad(set_to_none=True)
 
@@ -162,6 +167,9 @@ class BudgetProfiler:
             return 2, default_prefetch
 
         graphs = batch.to_data_list()
+        # Drain pending CUDA work so async ops don't inflate CPU timing (#28)
+        if model.device.type == "cuda":
+            torch.cuda.synchronize(model.device)
         tc = []
         for _ in range(3):
             t0 = time.perf_counter(); Batch.from_data_list(graphs); tc.append(time.perf_counter() - t0)
