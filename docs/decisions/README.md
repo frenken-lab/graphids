@@ -20,8 +20,8 @@ The VRAM probe must run *before* DataLoader construction to size `NodeBudgetBatc
 **0005 — Wandb removed as direct dependency; OTel replaces it.**
 WandbLogger/CSVLogger replaced by OpenTelemetry (`OTelTrainingCallback` + `OTelTrainingLogger`). Wandb Weave receives traces optionally via OTLP when `WANDB_API_KEY` is set. Model Registry and Data Artifacts were rejected (quota limits, no `file://` support).
 
-**0006 — Dagster removed; Monarch actors replaced it.**
-Dagster's multi-job model (one SLURM job per asset) caused queue-wait overhead between pipeline stages. Monarch actors run the 3-stage chain in a single SLURM allocation with in-process `ResolvedConfig.resolve()` — no serialization boundary, no inter-job wait.
+**0006 — Dagster removed; in-process pipeline loop in a single SLURM allocation.**
+Dagster's multi-job model (one SLURM job per asset) caused queue-wait overhead between pipeline stages. `run_pipeline` (`graphids/orchestrate/run.py`) loops `resolve → build → train → evaluate → analyze` over each stage in the same Python process inside the allocation created by `submit.sh pipeline-run` — no serialization boundary, no inter-job wait. (Monarch actors were tried as the in-process mechanism in session 42 and removed in session 43; a plain loop is sufficient.)
 
 **0007 — Config system: independent axes + typed contract.**
 Config combinatorial explosion (scale x model in one file) and parallel topology declarations caused silent drift. Fix: independent config axes in jsonnet, `TrainingRunConfig` (Pydantic, `extra="forbid"`) for boundary parameters, `ConfigResolver` for cross-field validation. Don't adopt Hydra, don't mirror every `__init__` signature.
@@ -30,7 +30,7 @@ Config combinatorial explosion (scale x model in one file) and parallel topology
 Custom `_FastCollate` was 1.6x slower than warm `Batch.from_data_list()` over full training (warm cache via `persistent_workers=True`). Both paths are now moot — prebatching collates all batches once at setup with `num_workers=0`.
 
 **0009 — Collapse override handoff chain.**
-The original 9-step handoff stringified override dicts across process boundaries, with validation only inside the SLURM job. Collapsed to 3 steps: `enumerate_assets` -> `ResolvedConfig.resolve` (render + validate) -> `instantiate`. Override typos now fail before job submission.
+The original 9-step handoff stringified override dicts across process boundaries, with validation only inside the SLURM job. Collapsed to 3 steps: `build_pipeline_stages` -> `ResolvedConfig.resolve` (render + validate) -> `instantiate`. Override typos now fail before job submission. (The earlier sweep-mode entry point `enumerate_assets` was deleted with the recipes machinery in session 45; campaigns drive multi-cell sweeps now.)
 
 **0010 — Use go-jsonnet binary, not the jsonnet PyPI package.**
 go-jsonnet is 10-100x faster than libjsonnet, requires no C++ compile step on OSC, and installs as a single static binary to `~/.local/bin/jsonnet`. Python access via `subprocess.run` in `graphids/config/jsonnet.py` (~5ms per render, not a hot path).
@@ -41,7 +41,7 @@ go-jsonnet is 10-100x faster than libjsonnet, requires no C++ compile step on OS
 
 **icontract** (Design by Contract) — Marginal benefit. Overlap with Pydantic for config validation is near-total. Only use case: `SLOW`-gated tensor shape/NaN contracts during development. Not adopted.
 
-**PySlurm** (Cython SLURM bindings) — Technically viable on OSC (`libslurmfull.so` at `/usr/lib64/slurm/`, PySlurm 25.5.0 matches SLURM 25.05). Not adopted: tight version coupling (every SLURM upgrade requires rebuild), GPL-2.0 license, replaces only ~330 lines of sacct subprocess calls. Full report in `docs/reference/slurm-library-evaluation.md`.
+**PySlurm** (Cython SLURM bindings) — Technically viable on OSC (`libslurmfull.so` at `/usr/lib64/slurm/`, PySlurm 25.5.0 matches SLURM 25.05). Not adopted: tight version coupling (every SLURM upgrade requires rebuild), GPL-2.0 license, replaces only ~330 lines of sacct subprocess calls.
 
 **simple_slurm** (subprocess sbatch wrapper) — Installs trivially, no version coupling, clean script-generation API. But solves a problem we don't have (sbatch generation — `submit.sh` exists), lacks sacct parsing, AGPL-3.0 license, squeue broken on array jobs (issue #44), hijacks root logger at import time (issue #42). Net code savings: ~0. Not adopted.
 
@@ -49,11 +49,11 @@ go-jsonnet is 10-100x faster than libjsonnet, requires no C++ compile step on OS
 
 **slurm-pipeline** (shell-script pipeline DAGs) — Pipeline model doesn't fit (expects `TASK:` stdout protocol). Heavy deps (pandas+plotly). Stale (no updates since Oct 2024). Not adopted.
 
-**Parsl** (parallel workflow library) — Strong SLURM support, auto-scaling pilot jobs, active maintenance (UChicago/Argonne, weekly releases). Not needed for current fixed 3-stage pipeline (Monarch actors are better fit). **Worth revisiting if large hyperparameter sweeps are needed.**
+**Parsl** (parallel workflow library) — Strong SLURM support, auto-scaling pilot jobs, active maintenance (UChicago/Argonne, weekly releases). Not needed for current fixed 3-stage pipeline (the in-process loop is sufficient). **Worth revisiting if large hyperparameter sweeps outgrow the campaign manifest.**
 
 **Globus Compute / funcX** (federated FaaS) — Cloud-routed task dispatch. Adds complexity without benefit for single-cluster use. Not adopted.
 
-**Garden AI, Cascade, ProxyStore, Colmena, GlassBox** — Domain-specific or wrong phase. Not relevant. See `docs/reference/slurm-library-evaluation.md`.
+**Garden AI, Cascade, ProxyStore, Colmena, GlassBox** — Domain-specific or wrong phase. Not relevant.
 
 **python-fire** (CLI generator) — Zero-boilerplate CLI from introspection. No benefit over Typer: loses type validation, repeatable `--tla` flags, and structured help. Not adopted.
 

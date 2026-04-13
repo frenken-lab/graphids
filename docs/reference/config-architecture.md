@@ -79,7 +79,7 @@ every path. Torch-free, deterministic.
 ```
 ValidatedConfig (extra="forbid")
 +-- seed_everything: int
-+-- trainer: TrainerSection    (extra="allow" -- Lightning Trainer has ~50 kwargs)
++-- trainer: TrainerSection    (extra="allow" -- TrainerConfig dataclass kwargs flow through)
 +-- data: ClassPathBlock       (extra="forbid"; class_path required)
 +-- model: ClassPathBlock      (extra="forbid"; class_path required)
 +-- checkpoint: CheckpointSection  (mode: Literal["min","max"])

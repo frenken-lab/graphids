@@ -25,11 +25,16 @@ All SLURM jobs are submitted via the unified launcher `scripts/slurm/submit.sh <
 |-----|---------|
 | Tests | `scripts/slurm/submit.sh tests [-k pattern] [-x]` |
 | Cache rebuild | `scripts/slurm/submit.sh rebuild-caches --all --delete-existing --yes` |
-| Config validation | `scripts/slurm/submit.sh validate` |
 | Loss landscape | `scripts/slurm/submit.sh landscape <model_type> <dataset> <ckpt_path>` |
-| Preprocessing test | `scripts/slurm/submit.sh preprocessing-test` |
-| Ablation run | `scripts/slurm/submit.sh ablation [--recipe X] [--dataset X]` |
+| Pipeline run | `scripts/slurm/submit.sh pipeline-run --dataset hcrl_sa` |
+| Probe budget | `scripts/slurm/submit.sh probe-budget [--dataset X]` |
+| Extract fusion states | `scripts/slurm/submit.sh extract-fusion-states` |
+| Ablation campaign | `scripts/slurm/submit.sh ablation [--dataset X]` |
 | Profiling | `scripts/slurm/submit.sh profile` |
+
+Source of truth for the table: `configs/resources/submit_profiles.json` —
+`python -m graphids submit-profile <job>` prints the resource tuple
+that `submit.sh` consumes.
 
 submit.sh handles `.env` sourcing, account selection, and resource defaults. Landscape auto-selects gpu vs cpu partition based on model type.
 

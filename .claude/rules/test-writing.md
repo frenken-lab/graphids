@@ -79,7 +79,7 @@ Only two markers are registered. See `pyproject.toml`.
   login node without fitting. Reserve for jobs that actually train.
 
 Over-marking means the test never runs. `@pytest.mark.slow` classes in
-`test_gat.py`/`test_vgae.py`/`test_fusion.py` exercise training_step on CPU.
+`test_gat.py` / `test_vgae.py` exercise training_step on CPU.
 
 ## Fixtures and conventions
 

@@ -43,28 +43,30 @@ Constants: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `COMPLETE_MARKER`, `PHASE_MARKER
 $TMPDIR/graphids-data/                           <-- per-job local SSD (ephemeral)
 ```
 
-Checkpoint dirpath is pinned at runtime: `instantiate.py` sets `ModelCheckpoint.dirpath` to `{default_root_dir}/checkpoints` derived from `CKPT_SUBPATH` (`constants.py:89`).
+Checkpoint dirpath is owned by `core.callbacks.ModelCheckpoint._resolve_dirpath`: `{default_root_dir}/checkpoints` unless an explicit `dirpath` is configured. The `/checkpoints` subdir convention lives on the callback, not the instantiator.
 
 ## Write Path Detail
 
-### 1. Lightning (via Trainer)
+### 1. Trainer (custom, post-Lightning)
 
-All Lightning writes land under `trainer.default_root_dir` from the rendered jsonnet config.
+All training writes land under `trainer.default_root_dir` from the rendered jsonnet config.
 
 | What | Relative path | Who writes |
 |------|---------------|-----------|
-| Best checkpoint | `checkpoints/best_model.ckpt` | ModelCheckpoint |
-| Resume checkpoint | `checkpoints/last.ckpt` | ModelCheckpoint (`save_last: true`) |
+| Best checkpoint | `checkpoints/best_model.ckpt` | `core.callbacks.ModelCheckpoint` (self-describing — `class_path` + `state_dict` + `hyper_parameters`) |
+| Resume checkpoint | `checkpoints/last.ckpt` | `ModelCheckpoint` (`save_last: true`) |
+| Train/val predictions | `predictions/{train,val}.pt` | `orchestrate.stage.train` after `trainer.fit` |
+| Per-test-set predictions | `predictions/test/{set_name}.pt` | `orchestrate.stage.evaluate` |
 | OTel spans | `traces.jsonl` | `wire_file_exporters` -> `SimpleSpanProcessor` -> `ConsoleSpanExporter` |
 | OTel metrics | `metrics.jsonl` | `wire_file_exporters` -> `PeriodicExportingMetricReader` (10s) |
 
 ### 2. OTel Instrumentation
 
-`graphids/core/monitoring.py` — `OTelTrainingCallback` creates a `training.fit` span on fit start; records per-batch VRAM gauges, per-epoch events (LR, early stopping), final metrics, and best checkpoint path as span attributes. Discovers upstream stage `traces.jsonl` files and records span links for KD lineage.
+`graphids/core/monitoring.py` — `OTelTrainingCallback` creates a `training.fit` span on fit start; records per-batch VRAM gauges, per-epoch events (LR, early stopping), final metrics, and best checkpoint path as span attributes. Tags the span with `campaign.manifest`/`campaign.cell_id` when `GRAPHIDS_CAMPAIGN_CELL` is set so `cell_statuses()` can derive cell state from `traces.jsonl`. Discovers upstream stage `traces.jsonl` files and records span links for KD lineage.
 
 `graphids/_otel.py` — `wire_file_exporters(run_dir)` wires the file exporters (Phase B). Called from `cli/_training.py::_prepare` and `orchestrate/stage.py::train`. Wandb Weave OTLP export is optional when `WANDB_API_KEY` is set.
 
-`OTelTrainingLogger` captures Lightning `self.log()` calls as OTel histograms.
+`OTelTrainingLogger` captures `model.log()` calls as OTel histograms via the custom `LoggerBase` protocol.
 
 ### 3. Pipeline Markers
 

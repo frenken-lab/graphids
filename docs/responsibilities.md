@@ -11,10 +11,11 @@ Returns the rendered dict.
 after render. Catches null list fields, monitor/mode mismatches, un-namespaced class_paths,
 and LearningRateMonitor without a logger. Fails fast before any torch import.
 
-**`instantiate`** (`graphids/instantiate.py`) — imports class_paths via importlib,
-applies signature-filtered link_arguments, builds forced callbacks (ModelCheckpoint,
-EarlyStopping, OTelTrainingCallback), wires OTelTrainingLogger, and returns
-a wired `(trainer, model, datamodule)` triple.
+**`instantiate`** (`graphids/orchestrate/instantiate.py`) — imports class_paths via
+importlib, applies signature-filtered link_arguments, builds forced callbacks
+(`ModelCheckpoint`, `EarlyStopping`, `OTelTrainingCallback`, `VRAMDriftCallback`
+when CUDA is available), wires `OTelTrainingLogger`, and returns a wired
+`(trainer, model, datamodule)` triple.
 
 **Pipeline driver** (`graphids/orchestrate/run.py`, `graphids/cli/_pipeline.py`) —
 `run_pipeline(config)` composes `build_pipeline_stages` (planner) → for each

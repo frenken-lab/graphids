@@ -20,8 +20,8 @@ OpenTelemetry is the single observability layer. Three signal types share one `R
 
 | Layer | Tool | Where |
 |-------|------|-------|
-| Training metrics | `OTelTrainingLogger` (Lightning Logger) | `configs/_lib/defaults.libsonnet` trainer.logger |
-| Span lifecycle + VRAM + GPU stats | `OTelTrainingCallback` (Lightning Callback) | `configs/_lib/defaults.libsonnet` callbacks.otel |
+| Training metrics | `OTelTrainingLogger` (custom logger protocol) | `configs/_lib/defaults.libsonnet` trainer.logger |
+| Span lifecycle + VRAM + GPU stats | `OTelTrainingCallback` (custom callback protocol) | `configs/_lib/defaults.libsonnet` callbacks.otel |
 | Structured logging | `_StructuredAdapter` -> `LoggingHandler` | `graphids/_otel.py` |
 | Traces (per-run) | `traces.jsonl` via `ConsoleSpanExporter` | `{run_dir}/traces.jsonl` |
 | Metrics (per-run) | `metrics.jsonl` via `ConsoleMetricExporter` | `{run_dir}/metrics.jsonl` |
@@ -45,7 +45,7 @@ Installed via `defaults.libsonnet callbacks.otel`. Lifecycle:
 
 ## OTelTrainingLogger (`graphids/core/monitoring.py`)
 
-Installed via `defaults.libsonnet trainer.logger`. Lightning Logger implementation:
+Installed via `defaults.libsonnet trainer.logger`. Implements the custom `LoggerBase` protocol used by `core.trainer.Trainer`:
 
 - `log_metrics`: each unique metric name -> cached OTel histogram (instruments created on first use)
 - `log_hyperparams`: flattened params -> span attributes via `hparam.*` prefix

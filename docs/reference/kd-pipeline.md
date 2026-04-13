@@ -11,9 +11,9 @@ Large ("teacher") models are trained first; their knowledge is compressed into s
 - **VGAE KD** (`FeatureDistillation`): `a * (latent_w * MSE(z_s, z_t) + recon_w * MSE(cont_s, cont_t)) + (1-a) * task_loss`
 
 Both loss classes live in `graphids/core/losses/distillation.py`. The teacher is held on
-CPU via `__dict__` assignment (bypassing `nn.Module` registration so Lightning doesn't
-auto-transfer it) and moved to the student device only during `forward` via
-`_run_teacher_on()` (`distillation.py:52`).
+CPU via `__dict__` assignment (bypasses `nn.Module` submodule registration so it isn't
+copied into the student's `state_dict` or auto-moved by `.to(device)`) and shuttled to
+the student device only during `forward` via `_run_teacher_on()` (`distillation.py:52`).
 
 ## How to enable KD
 
@@ -84,7 +84,7 @@ Model.training_step -> self.loss_fn(outputs, batch)
 | `KDEntry` | `graphids/orchestrate/config.py` | KD auxiliary Pydantic schema |
 | `SoftLabelDistillation` | `graphids/core/losses/distillation.py:62` | Hinton soft-label KD loss (GAT) |
 | `FeatureDistillation` | `graphids/core/losses/distillation.py:123` | Feature-based KD loss (VGAE) |
-| `_attach_teacher` | `graphids/core/losses/distillation.py:38` | Parks teacher in `__dict__`, bypasses Lightning auto-transfer |
+| `_attach_teacher` | `graphids/core/losses/distillation.py:38` | Parks teacher in `__dict__`, bypasses `nn.Module` submodule registration so it stays out of the student's state_dict and `.to(device)` |
 | `_run_teacher_on` | `graphids/core/losses/distillation.py:52` | Move teacher to device, run under `no_grad`, move back |
 | `build_loss` | `graphids/core/losses/build.py:25` | Builds base loss + optional KD wrapper from config dicts |
 | `inject_loss_fn` | `graphids/core/losses/build.py:105` | Pops loss/distillation config from init_args, injects `loss_fn` |
@@ -97,6 +97,7 @@ Model.training_step -> self.loss_fn(outputs, batch)
 2. **DGI has no KD support** — `DGIModule` has no `distillation_config` wiring in
    `inject_loss_fn` (only `"gat"` and `"vgae"` are in `_LOSS_MODEL_TYPES`,
    `build.py:13`).
-3. **Teacher stored via `__dict__`** — bypasses `nn.Module` registration so Lightning
-   never auto-transfers to GPU. `_run_teacher_on` handles per-step movement. Localized
-   to `_attach_teacher()` in `distillation.py:38`.
+3. **Teacher stored via `__dict__`** — bypasses `nn.Module` submodule registration so
+   the teacher stays out of the student's state_dict and isn't auto-moved by `.to(device)`.
+   `_run_teacher_on` handles per-step movement. Localized to `_attach_teacher()` in
+   `distillation.py:38`.
