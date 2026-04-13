@@ -23,6 +23,7 @@ from __future__ import annotations
 # init_providers() + log-level setup runs inside ``app.py``'s @app.callback,
 # so this module has no import-time side effects beyond decorator registration.
 import graphids.cli._analysis  # noqa: F401
+import graphids.cli._campaign  # noqa: F401
 import graphids.cli._data  # noqa: F401
 import graphids.cli._pipeline  # noqa: F401
 import graphids.cli._slurm  # noqa: F401
