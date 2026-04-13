@@ -66,7 +66,7 @@ All training writes land under `trainer.default_root_dir` from the rendered json
 
 `graphids/_otel.py` — `wire_file_exporters(run_dir)` wires the file exporters (Phase B). Called from `cli/_training.py::_prepare` and `orchestrate/stage.py::train`. Wandb Weave OTLP export is optional when `WANDB_API_KEY` is set.
 
-`OTelTrainingLogger` captures `model.log()` calls as OTel histograms via the custom `LoggerBase` protocol.
+`OTelTrainingLogger` captures `model.log()` calls as OTel histograms. Trainer wires it via `self.loggers` and calls `log_metrics` / `log_hyperparams` directly — no abstract base class, duck typing via attribute access.
 
 ### 3. Pipeline Markers
 

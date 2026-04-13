@@ -10,38 +10,12 @@ import operator
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any
 
 import torch
 
 if TYPE_CHECKING:
     from graphids.core.trainer import Trainer
-
-
-# ---------------------------------------------------------------------------
-# Protocols
-# ---------------------------------------------------------------------------
-
-
-@runtime_checkable
-class TrainingCallback(Protocol):
-    """Hook protocol called by :class:`Trainer` at lifecycle boundaries."""
-
-    def on_fit_start(self, trainer: Trainer, model: torch.nn.Module) -> None: ...
-    def on_fit_end(self, trainer: Trainer, model: torch.nn.Module) -> None: ...
-    def on_exception(self, trainer: Trainer, model: torch.nn.Module, exception: BaseException) -> None: ...
-    def on_train_epoch_start(self, trainer: Trainer, model: torch.nn.Module) -> None: ...
-    def on_train_epoch_end(self, trainer: Trainer, model: torch.nn.Module) -> None: ...
-    def on_train_batch_start(self, trainer: Trainer, model: torch.nn.Module, batch: Any, batch_idx: int) -> None: ...
-    def on_train_batch_end(self, trainer: Trainer, model: torch.nn.Module, outputs: Any, batch: Any, batch_idx: int) -> None: ...
-
-
-@runtime_checkable
-class TrainingLogger(Protocol):
-    """Logger protocol — receives metrics from ``model.log()`` calls."""
-
-    def log_metrics(self, metrics_dict: dict[str, float], step: int | None = None) -> None: ...
-    def log_hyperparams(self, params: dict[str, Any]) -> None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -177,20 +151,17 @@ class EarlyStopping(CallbackBase):
 def _build_checkpoint(trainer: Trainer, model: torch.nn.Module) -> dict[str, Any]:
     """Build a raw-PyTorch checkpoint dict."""
     cls = type(model)
+    hp = model.hparams
     ckpt: dict[str, Any] = {
         "state_dict": model.state_dict(),
         "epoch": trainer.current_epoch,
         "global_step": trainer.global_step,
         "class_path": f"{cls.__module__}.{cls.__name__}",
+        "hyper_parameters": vars(hp) if hasattr(hp, "__dict__") else dict(hp),
     }
-    if hasattr(model, "hparams"):
-        hp = model.hparams
-        ckpt["hyper_parameters"] = vars(hp) if hasattr(hp, "__dict__") else dict(hp)
     if trainer.callback_metrics:
         ckpt["metrics"] = {k: float(v) for k, v in trainer.callback_metrics.items()}
-    # Let model add custom state (e.g. test_threshold)
-    if hasattr(model, "on_save_checkpoint"):
-        model.on_save_checkpoint(ckpt)
+    model.on_save_checkpoint(ckpt)
     # Optimizer + scheduler + scaler state for resume
     if trainer._optimizers:
         ckpt["optimizer_states"] = [opt.state_dict() for opt in trainer._optimizers]

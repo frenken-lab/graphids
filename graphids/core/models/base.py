@@ -16,12 +16,16 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import math
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, NamedTuple
 
 import torch
 import torch.nn as nn
+from torchmetrics import Metric
+from torchmetrics.functional.classification import binary_roc
+from torchmetrics.utilities.data import dim_zero_cat
 
 from graphids._otel import get_logger
 from graphids.core.trainer import MetricAccumulator
@@ -59,6 +63,40 @@ def try_compile(
         _log.warning("torch_compile_failed", model=type(model).__name__, fallback="eager")
         torch._dynamo.reset()
         return model
+
+
+# ---------------------------------------------------------------------------
+# BinaryYoudenJThreshold — custom Metric
+# ---------------------------------------------------------------------------
+
+
+class BinaryYoudenJThreshold(Metric):
+    """Buffer pooled scores/labels; compute() returns the Youden-J threshold.
+
+    Replaces the prior ``BinaryROC() + _find_threshold()`` pair. The
+    ``.preds`` / ``.target`` list states are read directly by
+    ``_log_thresholded_metrics`` (same attribute names as the old
+    ``BinaryROC`` to preserve that access pattern).
+    """
+
+    full_state_update = False
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.add_state("preds", default=[], dist_reduce_fx="cat")
+        self.add_state("target", default=[], dist_reduce_fx="cat")
+
+    def update(self, preds: torch.Tensor, target: torch.Tensor) -> None:
+        self.preds.append(preds)
+        self.target.append(target)
+
+    def compute(self) -> torch.Tensor:
+        p = dim_zero_cat(self.preds)
+        t = dim_zero_cat(self.target).long()
+        fpr, tpr, thr = binary_roc(p, t)
+        if thr.numel() < 2:
+            return torch.tensor(float("nan"), device=thr.device)
+        return thr[torch.argmax(tpr - fpr)]
 
 
 # ---------------------------------------------------------------------------
@@ -145,19 +183,9 @@ class GraphModuleBase(nn.Module):
             return None
 
     def _init_threshold_metrics(self):
-        """Call in ``__init__`` for modules that need Youden-J threshold."""
-        from torchmetrics.classification import BinaryROC
-
-        self.roc_metric = BinaryROC()
+        """Call in ``__init__`` for modules that need a Youden-J threshold."""
+        self.roc_metric = BinaryYoudenJThreshold()
         self.test_threshold: float | None = None
-
-    def _find_threshold(self) -> float | None:
-        fpr, tpr, thresholds = self.roc_metric.compute()
-        if thresholds.numel() < 2:
-            return None
-        j = tpr - fpr
-        best = torch.argmax(j)
-        return float(thresholds[best]) if best < len(thresholds) else None
 
     # -- per-test-set evaluation (issue #26) ---------------------------------
 
@@ -210,11 +238,14 @@ class GraphModuleBase(nn.Module):
             labels = torch.cat(buf["labels"]).long()
             coll.update(scores, labels)
             self.log_dict(coll.compute())
+            self._log_operating_points(scores, labels, prefix=f"test/{name}/")
             all_scores.append(scores)
             all_labels.append(labels)
         if all_scores:
-            self.test_metrics.update(torch.cat(all_scores), torch.cat(all_labels))
+            pooled_s, pooled_l = torch.cat(all_scores), torch.cat(all_labels)
+            self.test_metrics.update(pooled_s, pooled_l)
             self.log_dict(self.test_metrics.compute())
+            self._log_operating_points(pooled_s, pooled_l, prefix="test/")
 
     def _log_thresholded_metrics(self):
         """Threshold flavor — one global threshold, per-set metrics at it."""
@@ -223,7 +254,8 @@ class GraphModuleBase(nn.Module):
         pooled_scores = torch.cat(self.roc_metric.preds).cpu()
         pooled_labels = torch.cat(self.roc_metric.target).cpu().long()
         if self.test_threshold is None:
-            self.test_threshold = self._find_threshold() or float(pooled_scores.median())
+            thr = float(self.roc_metric.compute())
+            self.test_threshold = thr if not math.isnan(thr) else float(pooled_scores.median())
 
         # Aggregate (preserves existing semantics).
         agg_preds = (pooled_scores >= self.test_threshold).long()
@@ -231,6 +263,8 @@ class GraphModuleBase(nn.Module):
         metrics = self.test_metrics.compute()
         metrics["threshold"] = self.test_threshold
         self.log_dict(metrics)
+        # Operating points are score-based — valid on raw scores pre-threshold.
+        self._log_operating_points(pooled_scores, pooled_labels, prefix="test/")
 
         # Per-set metrics at the same global threshold.
         if getattr(self, "_per_set_metrics", None):
@@ -243,9 +277,39 @@ class GraphModuleBase(nn.Module):
                 preds = (scores >= self.test_threshold).long()
                 coll.update(preds, labels)
                 self.log_dict(coll.compute())
+                self._log_operating_points(scores, labels, prefix=f"test/{name}/")
                 # Materialize derived preds so _finalize_test_predictions persists them.
                 buf["preds"] = [preds]
         self._finalize_test_predictions()
+
+    def _log_operating_points(
+        self,
+        scores: torch.Tensor,
+        labels: torch.Tensor,
+        *,
+        prefix: str = "",
+        min_recall: float = 0.95,
+        min_precision: float = 0.99,
+    ) -> None:
+        """Precision@recall and recall@precision — canonical IDS operating points.
+
+        Skipped when labels are single-class (no positives or no negatives);
+        the functional metrics raise in that regime.
+        """
+        if labels.unique().numel() < 2:
+            return
+        from torchmetrics.functional.classification import (
+            binary_precision_at_fixed_recall,
+            binary_recall_at_fixed_precision,
+        )
+        prec, thr_p = binary_precision_at_fixed_recall(scores, labels, min_recall=min_recall)
+        rec, thr_r = binary_recall_at_fixed_precision(scores, labels, min_precision=min_precision)
+        self.log_dict({
+            f"{prefix}precision@{min_recall:g}recall": float(prec),
+            f"{prefix}threshold@{min_recall:g}recall": float(thr_p),
+            f"{prefix}recall@{min_precision:g}precision": float(rec),
+            f"{prefix}threshold@{min_precision:g}precision": float(thr_r),
+        })
 
     def _finalize_test_predictions(self) -> None:
         """Concatenate per-set buffers into a {name: {key: Tensor}} dict."""
@@ -287,12 +351,24 @@ def eval_mode(model):
 
 
 def binary_test_metrics():
-    """Standard binary classification MetricCollection shared by all modules."""
+    """Standard binary classification MetricCollection shared by all modules.
+
+    MCC is the chance-corrected summary for imbalanced binary data (CAN
+    intrusion is ~1% positive — F1 and accuracy can both look good while
+    MCC exposes a dominant-class classifier). AP (area under PR curve) is
+    the correct curve metric for imbalanced data. ECE measures probability
+    calibration — only meaningful on classifier scores in [0, 1]; on
+    threshold-flavor models (VGAE/DGI) it degenerates same as AUROC does,
+    tracked as a pre-existing known issue.
+    """
     from torchmetrics import MetricCollection
     from torchmetrics.classification import (
         BinaryAccuracy,
         BinaryAUROC,
+        BinaryAveragePrecision,
+        BinaryCalibrationError,
         BinaryF1Score,
+        BinaryMatthewsCorrCoef,
         BinaryPrecision,
         BinaryRecall,
         BinarySpecificity,
@@ -306,6 +382,9 @@ def binary_test_metrics():
             "recall": BinaryRecall(),
             "specificity": BinarySpecificity(),
             "auc": BinaryAUROC(),
+            "ap": BinaryAveragePrecision(),
+            "mcc": BinaryMatthewsCorrCoef(),
+            "ece": BinaryCalibrationError(),
         }
     )
 

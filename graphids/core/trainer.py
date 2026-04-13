@@ -30,25 +30,42 @@ _log = get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class MetricAccumulator:
-    """Weighted running mean across batches within one epoch phase."""
+class MetricAccumulator(nn.Module):
+    """Dynamic-keyed dict of ``torchmetrics.MeanMetric`` — batch-weighted mean.
 
-    __slots__ = ("_sums", "_counts")
+    Wraps ``MeanMetric`` so ``model.log("name", value, batch_size=N)`` can
+    write to an on-demand bucket. ``nan_strategy="error"`` hard-fails the
+    run on NaN loss — under ``precision: 16-mixed`` a silent NaN in
+    ``callback_metrics`` fools ``EarlyStopping`` (NaN < inf is False) and
+    wastes the full patience window before giving up.
+    """
 
-    def __init__(self) -> None:
-        self._sums: dict[str, float] = {}
-        self._counts: dict[str, float] = {}
+    def __init__(self, nan_strategy: str = "error") -> None:
+        super().__init__()
+        from torchmetrics import MeanMetric
+
+        self._MeanMetric = MeanMetric
+        self._nan_strategy = nan_strategy
+        self._metrics: nn.ModuleDict = nn.ModuleDict()
 
     def update(self, name: str, value: float, batch_size: int = 1) -> None:
-        self._sums[name] = self._sums.get(name, 0.0) + value * batch_size
-        self._counts[name] = self._counts.get(name, 0.0) + batch_size
+        if name not in self._metrics:
+            self._metrics[name] = self._MeanMetric(nan_strategy=self._nan_strategy)
+        self._metrics[name].update(float(value), weight=batch_size)
 
     def compute(self) -> dict[str, float]:
-        return {k: self._sums[k] / self._counts[k] for k in self._sums if self._counts[k]}
+        # Skip un-updated buckets — MeanMetric returns NaN for those, which
+        # would overwrite good values across phase boundaries (train_loss
+        # written by train epoch, then NaN'd by val epoch's compute).
+        return {
+            k: float(m.compute())
+            for k, m in self._metrics.items()
+            if m.update_called
+        }
 
     def reset(self) -> None:
-        self._sums.clear()
-        self._counts.clear()
+        for m in self._metrics.values():
+            m.reset()
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +117,8 @@ class Trainer:
     ) -> None:
         self.config = config
         self.callbacks: list[CallbackBase] = list(callbacks or [])
-        self.logger = logger
+        # build_loggers returns a list or a falsy (None/False); normalize once.
+        self.loggers: list = list(logger) if isinstance(logger, list) else []
 
         # Public state (read by callbacks + model code)
         self.max_epochs: int = config.max_epochs
@@ -135,9 +153,6 @@ class Trainer:
 
     @staticmethod
     def _resolve_device(accelerator: str) -> torch.device:
-        if accelerator in ("auto", "gpu", "cuda"):
-            if torch.cuda.is_available():
-                return torch.device("cuda")
         if accelerator == "cpu":
             return torch.device("cpu")
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -209,8 +224,7 @@ class Trainer:
             self._load_model_weights(ckpt_path, model)
 
         model.eval()
-        if hasattr(model, "on_test_epoch_start"):
-            model.on_test_epoch_start()
+        model.on_test_epoch_start()
 
         with torch.no_grad():
             test_loaders = datamodule.test_dataloader()
@@ -220,12 +234,10 @@ class Trainer:
                 for batch_idx, batch in enumerate(loader):
                     model.test_step(batch, batch_idx, dataloader_idx=dl_idx)
 
-        if hasattr(model, "on_test_epoch_end"):
-            model.on_test_epoch_end()
+        model.on_test_epoch_end()
 
-        if hasattr(model, "_metric_acc"):
-            self.callback_metrics.update(model._metric_acc.compute())
-            model._metric_acc.reset()
+        self.callback_metrics.update(model._metric_acc.compute())
+        model._metric_acc.reset()
 
         return dict(self.callback_metrics)
 
@@ -263,26 +275,22 @@ class Trainer:
         if ckpt_path:
             self._load_model_weights(ckpt_path, model)
 
-        model.eval()
-        results = []
-        with torch.no_grad():
-            loaders = datamodule.test_dataloader()
-            if not isinstance(loaders, list):
-                loaders = [loaders]
-            for loader in loaders:
-                for batch_idx, batch in enumerate(loader):
-                    out = model.predict_step(batch, batch_idx)
-                    results.append(out)
+        loaders = datamodule.test_dataloader()
+        if not isinstance(loaders, list):
+            loaders = [loaders]
+        results: list = []
+        for loader in loaders:
+            results.extend(self.predict_on(model, loader))
         return results
 
-    def predict_on(self, model: nn.Module, loader: Any) -> list[dict]:
+    def predict_on(self, model: nn.Module, loader: Any) -> list:
         """Run ``predict_step`` over a single loader. Assumes model/dm set up."""
         model.eval()
-        results: list[dict] = []
+        results: list = []
         with torch.no_grad():
             for batch_idx, batch in enumerate(loader):
                 out = model.predict_step(batch, batch_idx)
-                if isinstance(out, dict):
+                if out is not None:
                     results.append(out)
         return results
 
@@ -329,9 +337,7 @@ class Trainer:
                     output = model.training_step(batch, batch_idx)
 
             # Flush step-level metrics from model.log()
-            if hasattr(model, "_metric_acc"):
-                step_metrics = model._metric_acc.compute()
-                self.callback_metrics.update(step_metrics)
+            self.callback_metrics.update(model._metric_acc.compute())
 
             if self.global_step % self.config.log_every_n_steps == 0:
                 self._log_metrics(step=self.global_step)
@@ -340,9 +346,8 @@ class Trainer:
             self.global_step += 1
 
         # Epoch-level train metrics
-        if hasattr(model, "_metric_acc"):
-            self.callback_metrics.update(model._metric_acc.compute())
-            model._metric_acc.reset()
+        self.callback_metrics.update(model._metric_acc.compute())
+        model._metric_acc.reset()
 
     def _validate_one_epoch(
         self,
@@ -359,9 +364,8 @@ class Trainer:
                 with torch.amp.autocast(self._device.type, enabled=use_amp):
                     model.validation_step(batch, batch_idx)
 
-        if hasattr(model, "_metric_acc"):
-            self.callback_metrics.update(model._metric_acc.compute())
-            model._metric_acc.reset()
+        self.callback_metrics.update(model._metric_acc.compute())
+        model._metric_acc.reset()
 
         self._log_metrics(step=self.global_step)
 
@@ -376,23 +380,13 @@ class Trainer:
     # -- logging -------------------------------------------------------------
 
     def _log_hyperparams(self, model: nn.Module) -> None:
-        if not self.logger:
-            return
-        hp = {}
-        if hasattr(model, "hparams") and hasattr(model.hparams, "__dict__"):
-            hp = vars(model.hparams)
-        loggers = self.logger if isinstance(self.logger, list) else [self.logger]
-        for lg in loggers:
-            if hasattr(lg, "log_hyperparams"):
-                lg.log_hyperparams(hp)
+        hp = vars(model.hparams) if hasattr(model.hparams, "__dict__") else {}
+        for lg in self.loggers:
+            lg.log_hyperparams(hp)
 
     def _log_metrics(self, step: int | None = None) -> None:
-        if not self.logger:
-            return
-        loggers = self.logger if isinstance(self.logger, list) else [self.logger]
-        for lg in loggers:
-            if hasattr(lg, "log_metrics"):
-                lg.log_metrics(dict(self.callback_metrics), step=step)
+        for lg in self.loggers:
+            lg.log_metrics(dict(self.callback_metrics), step=step)
 
     # -- checkpoint resume ---------------------------------------------------
 
@@ -405,11 +399,7 @@ class Trainer:
         scaler: torch.amp.GradScaler,
     ) -> None:
         """Resume training from a checkpoint."""
-        ckpt = torch.load(ckpt_path, map_location=self._device, weights_only=True)
-
-        if "state_dict" in ckpt:
-            model.load_state_dict(ckpt["state_dict"])
-
+        ckpt = self._load_ckpt_into(ckpt_path, model)
         self.current_epoch = ckpt.get("epoch", 0) + 1
         self.global_step = ckpt.get("global_step", 0)
 
@@ -420,9 +410,6 @@ class Trainer:
         if "scaler" in ckpt:
             scaler.load_state_dict(ckpt["scaler"])
 
-        if hasattr(model, "on_load_checkpoint"):
-            model.on_load_checkpoint(ckpt)
-
         _log.info(
             "resumed_from_checkpoint",
             path=ckpt_path,
@@ -432,14 +419,13 @@ class Trainer:
 
     def _load_model_weights(self, ckpt_path: str, model: nn.Module) -> None:
         """Load model weights only (for test/validate/predict)."""
-        ckpt = torch.load(ckpt_path, map_location=self._device, weights_only=True)
-
-        if "state_dict" in ckpt:
-            model.load_state_dict(ckpt["state_dict"])
-        else:
-            model.load_state_dict(ckpt)
-
-        if hasattr(model, "on_load_checkpoint"):
-            model.on_load_checkpoint(ckpt)
-
+        self._load_ckpt_into(ckpt_path, model)
         _log.info("loaded_checkpoint", path=ckpt_path)
+
+    def _load_ckpt_into(self, ckpt_path: str, model: nn.Module) -> dict:
+        """Load ckpt, restore weights, fire ``on_load_checkpoint``. Return raw dict."""
+        ckpt = torch.load(ckpt_path, map_location=self._device, weights_only=True)
+        state = ckpt["state_dict"] if "state_dict" in ckpt else ckpt
+        model.load_state_dict(state)
+        model.on_load_checkpoint(ckpt)
+        return ckpt
