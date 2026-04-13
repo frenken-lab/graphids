@@ -207,3 +207,51 @@ def _atomic_save(obj: Any, path: Path) -> None:
     finally:
         os.close(fd)
     tmp.rename(path)
+
+
+# ---------------------------------------------------------------------------
+# VRAMDriftCallback
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class VRAMDriftCallback(CallbackBase):
+    """Warn when free VRAM shrinks past ``threshold`` between epochs.
+
+    The node-budget probe captures ``free`` once at build time. Over a
+    long run the actual free pool drifts — co-resident CUDA processes on
+    shared nodes, activation checkpoint leaks in PyG, growing OTel
+    exporter caches. We capture a baseline at ``on_fit_start`` and
+    compare at each epoch boundary. Epoch boundaries deliberately avoid
+    transient allocations (teacher params are moved on/off GPU per-step
+    in KD; checking between epochs catches persistent leaks only).
+    Log-and-warn: re-probing mid-run would race optimizer state, so the
+    researcher decides whether to abort.
+    """
+
+    threshold: float = 0.20
+
+    baseline_free: int = field(init=False, default=0)
+    _warned: bool = field(init=False, default=False)
+
+    def on_fit_start(self, trainer: Trainer, model: torch.nn.Module) -> None:
+        if not torch.cuda.is_available():
+            return
+        self.baseline_free = max(1, torch.cuda.mem_get_info()[0])
+
+    def on_train_epoch_start(self, trainer: Trainer, model: torch.nn.Module) -> None:
+        if not torch.cuda.is_available() or self.baseline_free <= 1 or self._warned:
+            return
+        current = torch.cuda.mem_get_info()[0]
+        drift = (self.baseline_free - current) / self.baseline_free
+        if drift > self.threshold:
+            from graphids._otel import get_logger
+            get_logger(__name__).warning(
+                "vram_drift_detected",
+                baseline_free=self.baseline_free, current_free=current,
+                drift_frac=round(drift, 3),
+                threshold=self.threshold, epoch=trainer.current_epoch,
+            )
+            # Warn once per run — repeated warnings add noise without
+            # extra signal. Abort is the researcher's call.
+            self._warned = True

@@ -91,9 +91,24 @@ def build_callbacks(merged: dict[str, Any]) -> list:
 
     ``ModelCheckpoint.dirpath`` is wired in jsonnet from ``run_dir``
     (see ``configs/_lib/defaults.libsonnet``) — no runtime patching.
+
+    Appends a ``VRAMDriftCallback`` when CUDA is available so long runs
+    surface co-resident-process / activation-leak drift without needing
+    each stage jsonnet to opt in. Cheap to run (two ``mem_get_info``
+    calls per epoch), and skipped entirely on login nodes.
     """
+    import torch
+
+    from graphids.config.settings import get_settings
+    from graphids.core.callbacks import VRAMDriftCallback
+
     entries = (merged.get("trainer") or {}).get("callbacks") or []
-    return [build_block(entry) for entry in entries]
+    callbacks = [build_block(entry) for entry in entries]
+    if torch.cuda.is_available():
+        callbacks.append(
+            VRAMDriftCallback(threshold=get_settings().vram_drift_threshold),
+        )
+    return callbacks
 
 
 def build_loggers(merged: dict[str, Any]) -> list | bool | None:
