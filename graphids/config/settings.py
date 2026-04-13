@@ -41,9 +41,6 @@ class GraphIDSSettings(BaseSettings):
     slurm_log_dir: str = ""
     cluster: str = ""
 
-    # --- Recipe ---
-    recipe: str = ""
-
     @model_validator(mode="after")
     def _derive_slurm_log_dir(self) -> GraphIDSSettings:
         if not self.slurm_log_dir:

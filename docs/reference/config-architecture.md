@@ -34,8 +34,7 @@ python -m graphids pipeline-run --dataset hcrl_sa --seed 42 --scale small
   -> PipelineConfig(**kwargs) -> TrainingRunConfig
   -> run_pipeline(config)                            (orchestrate/run.py)
      +- ensure_spawn()
-     +- build_pipeline_stages(config) -> list[StageConfig]
-     |    +- enumerate_assets(recipe)
+     +- build_pipeline_stages(config) -> list[StageConfig]   (orchestrate/planning.py)
      +- for each StageConfig (with per-stage retry):
         +- ResolvedConfig.resolve(cfg, lake_root, user, dataset, seed, upstream_ckpts)
         |    +- PathContext(...)
@@ -146,8 +145,8 @@ OTelTrainingCallback. Logger: OTelTrainingLogger.
 | `config/jsonnet.py` | `render_config(path, tla)` subprocess shim | No |
 | `config/schemas.py` | `ValidatedConfig`, `validate_config`, `ConfigValidationError` | No |
 | `config/topology.py` | Stage DAG, valid types/scales, import-time assertions | No |
-| `orchestrate/planning/recipes.py` | `TrainingRunConfig`, `KDEntry` | No |
-| `orchestrate/planning/planner.py` | `StageConfig`, `enumerate_assets` | No |
+| `orchestrate/config.py` | `PipelineConfig`, `StageConfig`, `TrainingRunConfig`, `KDEntry`, `ResolvedConfig`, `InstantiatedRun`, `PipelineResult` | No |
+| `orchestrate/planning.py` | `build_pipeline_stages`, `resolve_jsonnet_path` | No |
 | `orchestrate/resolve.py` | `ResolvedConfig.resolve` — builds TLA, renders, validates, cross-field checks | No |
 | `orchestrate/run.py` | `PipelineConfig`, `build_pipeline_stages`, `run_pipeline` (in-process driver) | No |
 | `orchestrate/stage.py` | `build`, `train`, `evaluate` primitives (shared by `fit`/`test` CLI + `run_pipeline`) | Yes |

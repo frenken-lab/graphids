@@ -10,9 +10,14 @@ with Jsonnet-backed configs (`cli/_analysis.py`).
 
 ## Architecture
 
-1. Recipe YAML + pipeline topology declare which stage+scale chains exist.
-2. `enumerate_assets` produces `StageConfig`s carrying `jsonnet_path` +
-   planner-derived identity knobs.
+1. `PipelineConfig` (Typer CLI args for `pipeline-run`) + pipeline
+   topology declare which stage+scale chain to execute.
+2. `build_pipeline_stages(config)` in `orchestrate/planning.py`
+   produces `StageConfig`s carrying `jsonnet_path` + planner-derived
+   identity knobs. Single-config path. (The old recipe-sweep /
+   `enumerate_assets` / cartesian-expansion machinery was deleted
+   2026-04-12; replacement designed in
+   `~/plans/graphids-campaign-manifest.md`.)
 3. `ResolvedConfig.resolve` (classmethod on `orchestrate/resolve.py`)
    packs trainer/stage/KD/upstream-ckpt overrides into a typed TLA
    dict via the private `_build_tla_dict` helper in the same file.
@@ -33,14 +38,12 @@ with Jsonnet-backed configs (`cli/_analysis.py`).
 configs/                           # repo root — jsonnet sources
 ├── _lib/
 │   ├── defaults.libsonnet         # trainer / checkpoint / early_stopping defaults
-│   ├── helpers.libsonnet          # apply_dotted() for recipe overrides
-│   └── recipes.libsonnet          # recipe expansion logic
+│   └── helpers.libsonnet          # apply_dotted() for trainer/stage overrides
 ├── datasets/
 │   └── dataset_registry.json      # dataset catalog (domain → dataset metadata)
 ├── matrix/
 │   ├── axes.json                  # valid model types / scales / fusion methods
 │   └── topology.json              # stage DAG + identity keys
-├── recipes/                       # pipeline recipes (sweep dimensions)
 ├── stages/
 │   ├── autoencoder.jsonnet        # function(dataset, seed, run_dir, scale, conv_type, ...)
 │   ├── supervised.jsonnet         # (was normal.jsonnet + curriculum.jsonnet)
@@ -85,9 +88,9 @@ graphids/
     analyze.py                     # run_single_analysis (per-checkpoint analyzer + manifest sidecar)
     resolve.py                     # ResolvedConfig.resolve + private _build_tla_dict
     _setup.py                      # ensure_spawn, touch_marker
-    planning/
-      planner.py                   # StageConfig, enumerate_assets, resolve_jsonnet_path
-      recipes.py                   # TrainingRunConfig, KDEntry, expand_recipe_configs
+    config.py                      # PipelineConfig, StageConfig, TrainingRunConfig,
+                                   # KDEntry, ResolvedConfig, InstantiatedRun, PipelineResult
+    planning.py                    # build_pipeline_stages, resolve_jsonnet_path
   slurm/
     env.py                         # centralized SLURM env var reads
     core/

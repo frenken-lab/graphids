@@ -10,6 +10,8 @@ Jsonnet stages live under the repo-root `configs/` tree and are rendered via
 - `configs/models/*.libsonnet` + `configs/fusion/**` — model/fusion building blocks
 - `configs/resources/job_profiles.json` — static resource profiles per family/scale/stage
 - `configs/resources/clusters.json` — cluster → partition/gres mapping
-- `configs/recipes/*.jsonnet` — pipeline recipes (sweep dimensions)
+<!-- configs/recipes/ + sweep/cartesian expansion deleted 2026-04-12.
+     Replacement (campaign manifest + append-only status log) designed in
+     ~/plans/graphids-campaign-manifest.md. -->
 
 See `docs/reference/config-architecture.md` for the full config flow.

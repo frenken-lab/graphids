@@ -1,13 +1,9 @@
-"""Property-based tests for node_budget() with mocked VRAM probes.
+"""Property-based tests for node_budget() — formula-free paths only.
 
-These tests exercise *invariants* (monotonicity, memory-boundedness, sqrt
-scaling for GPS) without re-implementing the formula from budget.py. Any
-refactor to the budget math that preserves these properties leaves the
-tests green.
-
-The per-model VRAM probe values that used to live here were deliberately
-removed — they were hardware measurements from a specific date and served
-only as static fixtures for property tests, not as behavioral guarantees.
+The 40 tests that patched ``budget._probe_vram`` were deleted 2026-04-13
+after ``_probe_vram`` ceased to exist in the production module. The
+remaining tests exercise the GPS quadratic path and the fallback-when-
+no-model path — both of which work without the vanished private probe.
 """
 
 from __future__ import annotations
@@ -28,14 +24,6 @@ DATASETS = {
     "set_01":  (28.2, 35),
 }
 
-# Generic probe archetypes — NOT measured values. Small / medium / large
-# represent scale bands so monotonicity tests have >=2 probe magnitudes.
-PROBE_ARCHETYPES = {
-    "small":  (20_000, 1.5),
-    "medium": (60_000, 1.4),
-    "large":  (200_000, 1.5),
-}
-
 _clusters = json.loads(
     (PROJECT_ROOT / "configs" / "resources" / "clusters.json").read_text()
 )
@@ -43,76 +31,6 @@ GPU_TYPES = {
     name: int(spec["free_gb"] * 1024**3)
     for name, spec in _clusters["gpu_vram"].items()
 }
-
-
-def _run(tmp_path, *, dataset, probe, gpu, conv_type="gatv2"):
-    """Run node_budget with a mocked VRAM probe."""
-    mean_nodes, p95_nodes = DATASETS[dataset]
-    bpn, bwd_mult = PROBE_ARCHETYPES[probe]
-    free = GPU_TYPES[gpu]
-
-    edge_mean = mean_nodes * 4.5
-    edge_p95 = p95_nodes * 4.5
-    metadata = tmp_path / "cache_metadata.json"
-    metadata.write_text(
-        f'{{"graph_stats":{{"node_count":{{"mean":{mean_nodes},"p95":{p95_nodes}}},'
-        f'"edge_count":{{"mean":{edge_mean},"p95":{edge_p95}}}}}}}'
-    )
-
-    def mock_probe_vram(model, ds, step_fn=None):
-        return bpn, bwd_mult
-
-    with (
-        patch("graphids.core.data.budget.cache_dir", return_value=tmp_path),
-        patch("graphids.core.data.budget._probe_vram", mock_probe_vram),
-        patch("torch.cuda.is_available", return_value=True),
-        patch("torch.cuda.mem_get_info", return_value=(free, free)),
-    ):
-        return node_budget(
-            dataset, str(tmp_path), conv_type=conv_type,
-            model=True, train_dataset=True,
-        )
-
-
-# ---------------------------------------------------------------------------
-# Invariants (no formula-mirroring)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("dataset", list(DATASETS))
-@pytest.mark.parametrize("probe", list(PROBE_ARCHETYPES))
-@pytest.mark.parametrize("gpu", list(GPU_TYPES))
-def test_budget_is_positive_and_memory_bound(tmp_path, dataset, probe, gpu):
-    """Budget is >=1, binding is 'memory', and budget equals the memory ceiling."""
-    result = _run(tmp_path, dataset=dataset, probe=probe, gpu=gpu)
-    assert result.budget >= 1
-    assert result.binding == "memory"
-    assert result.budget == result.mem_budget
-
-
-# ---------------------------------------------------------------------------
-# Monotonicity properties — independent of the specific formula
-# ---------------------------------------------------------------------------
-
-
-def test_larger_gpu_gives_larger_or_equal_budget(tmp_path):
-    """More VRAM ⇒ budget does not decrease."""
-    budgets = {
-        gpu: _run(tmp_path, dataset="set_01", probe="medium", gpu=gpu).budget
-        for gpu in ("v100_16gb", "a100_40gb", "a100_80gb")
-    }
-    assert budgets["a100_40gb"] >= budgets["v100_16gb"]
-    assert budgets["a100_80gb"] >= budgets["a100_40gb"]
-
-
-@pytest.mark.parametrize("dataset", list(DATASETS))
-def test_larger_probe_gives_smaller_or_equal_mem_budget(tmp_path, dataset):
-    """More bytes/node ⇒ mem_budget does not increase."""
-    small = _run(tmp_path, dataset=dataset, probe="small", gpu="v100_16gb").mem_budget
-    medium = _run(tmp_path, dataset=dataset, probe="medium", gpu="v100_16gb").mem_budget
-    large = _run(tmp_path, dataset=dataset, probe="large", gpu="v100_16gb").mem_budget
-    assert medium <= small
-    assert large <= medium
 
 
 # ---------------------------------------------------------------------------

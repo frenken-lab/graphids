@@ -51,9 +51,9 @@ Only `vgae_weights` in `reward_kwargs` is configurable.
 
 ### KD auxiliaries
 
-Schema: `KDEntry` in `graphids/orchestrate/planning/recipes.py`.
-Fields: `type`, `alpha`, `temperature`, `teacher_config`, `teacher_scale`,
-`model_path`, `vgae_latent_weight`, `vgae_recon_weight`.
+Schema: `KDEntry` in `graphids/orchestrate/config.py`.
+Fields: `type`, `alpha`, `temperature`, `model_path`,
+`vgae_latent_weight`, `vgae_recon_weight`.
 
 ---
 

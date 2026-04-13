@@ -5,7 +5,7 @@ Module layout (Layer 0 → 5, each layer depends only on layers below):
 - ``config.py``        (Layer 0) — frozen data types: PipelineConfig,
                          StageConfig, TrainingRunConfig, KDEntry,
                          ResolvedConfig, InstantiatedRun, PipelineResult.
-- ``planning.py``      (Layer 1) — enumerate_assets, build_pipeline_stages,
+- ``planning.py``      (Layer 1) — build_pipeline_stages,
                          resolve_jsonnet_path. Pure data.
 - ``resolve.py``       (Layer 2) — resolve_config (StageConfig → ResolvedConfig).
                          CLI callers go through ``ResolvedConfig.from_rendered``.
@@ -27,7 +27,7 @@ from graphids.orchestrate.config import (
     TrainingRunConfig,
 )
 from graphids.orchestrate.instantiate import build_run
-from graphids.orchestrate.planning import build_pipeline_stages, enumerate_assets
+from graphids.orchestrate.planning import build_pipeline_stages
 from graphids.orchestrate.resolve import resolve_config
 from graphids.orchestrate.run import run_pipeline
 
@@ -41,7 +41,6 @@ __all__ = [
     "TrainingRunConfig",
     "build_pipeline_stages",
     "build_run",
-    "enumerate_assets",
     "resolve_config",
     "run_pipeline",
 ]

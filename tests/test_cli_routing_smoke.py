@@ -7,6 +7,7 @@ from typer.testing import CliRunner
 
 # Register all command modules
 import graphids.cli._analysis  # noqa: F401
+import graphids.cli._campaign  # noqa: F401
 import graphids.cli._data  # noqa: F401
 import graphids.cli._pipeline  # noqa: F401
 import graphids.cli._slurm  # noqa: F401

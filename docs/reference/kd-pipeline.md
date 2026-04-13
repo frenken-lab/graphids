@@ -15,38 +15,35 @@ CPU via `__dict__` assignment (bypassing `nn.Module` registration so Lightning d
 auto-transfer it) and moved to the student device only during `forward` via
 `_run_teacher_on()` (`distillation.py:52`).
 
-## How to enable KD in a recipe
+## How to enable KD
 
-Add a `kd:` block (a `KDEntry`) to the sweep entry and set `teacher_config` to the name
-of the recipe config that produces the teacher checkpoint:
+Construct a `TrainingRunConfig` with an `auxiliaries` tuple containing one or more
+`KDEntry` records, with `model_path` pointing at the teacher checkpoint:
 
-```yaml
-sweeps:
-  - model_family: gat
-    scale: small
-    kd:
-      alpha: 0.7
-      teacher_config: gat_large          # REQUIRED: names another recipe config
-      temperature: 4.0                   # GAT only
+```python
+KDEntry(alpha=0.7, temperature=4.0, model_path="/path/to/teacher_best.ckpt")
 ```
 
-`teacher_config` is planning-only: `enumerate_assets` (`planner.py:107`) resolves it to
-an upstream asset dependency so the teacher trains first. The resolved checkpoint path
-flows through as `kd_overrides["teacher_ckpt"]` on `StageConfig` and is passed to the
-stage as the `distillation_config` TLA.
+`TrainingRunConfig.auxiliaries` flows through `StageConfig.for_stage` into
+`kd_overrides` (first entry only, flattened via `model_dump(exclude_none=True)`),
+then into the jsonnet TLA `distillation_config`. The `pipeline-run` CLI does not
+currently expose an `auxiliaries` field on `PipelineConfig` — KD is reached
+programmatically or via the forthcoming campaign manifest (see
+`~/plans/graphids-campaign-manifest.md`). The planning-time cross-config
+teacher resolution that existed in the old recipe sweep (`teacher_config` /
+`teacher_scale` fields + `enumerate_assets` post-pass) was deleted 2026-04-12.
 
 ## Data flow
 
 ```
-Recipe kd: block (KDEntry fields: type, alpha, teacher_config, teacher_scale,
-  temperature, model_path, vgae_latent_weight, vgae_recon_weight)
+TrainingRunConfig.auxiliaries (tuple[KDEntry, ...])
+  KDEntry fields: type, alpha, temperature, model_path,
+                  vgae_latent_weight, vgae_recon_weight
   |
   v
-enumerate_assets (planner.py:107)
+StageConfig.for_stage (orchestrate/config.py)
   - Sets kd_tag="_kd" on StageConfig (distinct identity hash)
-  - Post-pass: looks up teacher asset by teacher_config name,
-    wires as upstream_asset_names. Raises on missing asset.
-  - Stores raw payload in StageConfig.kd_overrides (planner.py:41)
+  - kd_overrides = auxiliaries[0].model_dump(exclude_none=True)
   |
   v
 ResolvedConfig.resolve (resolve.py)
@@ -84,15 +81,14 @@ Model.training_step -> self.loss_fn(outputs, batch)
 
 | Symbol | Location | Role |
 |--------|----------|------|
-| `KDEntry` | `graphids/orchestrate/planning/recipes.py:54` | Recipe-side Pydantic schema |
+| `KDEntry` | `graphids/orchestrate/config.py` | KD auxiliary Pydantic schema |
 | `SoftLabelDistillation` | `graphids/core/losses/distillation.py:62` | Hinton soft-label KD loss (GAT) |
 | `FeatureDistillation` | `graphids/core/losses/distillation.py:123` | Feature-based KD loss (VGAE) |
 | `_attach_teacher` | `graphids/core/losses/distillation.py:38` | Parks teacher in `__dict__`, bypasses Lightning auto-transfer |
 | `_run_teacher_on` | `graphids/core/losses/distillation.py:52` | Move teacher to device, run under `no_grad`, move back |
 | `build_loss` | `graphids/core/losses/build.py:25` | Builds base loss + optional KD wrapper from config dicts |
 | `inject_loss_fn` | `graphids/core/losses/build.py:105` | Pops loss/distillation config from init_args, injects `loss_fn` |
-| `kd_overrides` | `graphids/orchestrate/planning/planner.py:41` | `StageConfig` field carrying the KD payload dict |
-| `enumerate_assets` | `graphids/orchestrate/planning/planner.py:107` | Wires teacher asset as upstream dependency |
+| `kd_overrides` | `graphids/orchestrate/config.py` (`StageConfig.kd_overrides`) | `StageConfig` field carrying the KD payload dict |
 
 ## Known issues
 

@@ -82,14 +82,12 @@ _LossFn = Literal["focal", "ce", "weighted_ce"]
 
 
 class KDEntry(BaseModel):
-    """Recipe-side KD config schema — superset of ``KDAuxiliary``."""
+    """KD auxiliary config schema — one entry per teacher."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     type: Literal["kd"] = "kd"
     alpha: float = Field(default=0.7, ge=0.0, le=1.0)
-    teacher_config: str | None = None
-    teacher_scale: Annotated[str, AfterValidator(check_in(VALID_SCALES, "teacher_scale"))] = "large"
     temperature: float | None = Field(default=None, gt=0.0)
     model_path: str | None = None
     vgae_latent_weight: float | None = None
@@ -113,9 +111,6 @@ class TrainingRunConfig(BaseModel):
     variational: bool = True
     model_type: ModelType | None = None
     auxiliaries: tuple[KDEntry, ...] = ()
-
-    def merge(self, overrides: dict[str, Any]) -> TrainingRunConfig:
-        return TrainingRunConfig.model_validate({**self.model_dump(), **overrides})
 
     def identity_for(self, stage: str) -> dict[str, Any]:
         """Identity key values for a stage, mapped from recipe fields."""

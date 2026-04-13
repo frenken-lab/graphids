@@ -21,8 +21,8 @@ Seen in this repo (all deleted in the 2026-04-04 audit):
 
 Keep only:
 - Custom `@field_validator` logic (e.g. `TrainingRunConfig.stages` "Unknown stages")
-- Custom `.merge()` inheritance semantics
-- Domain-specific coercion (e.g. `teacher_config: str | None` roundtrip)
+- Custom bounds / cross-field checks that Pydantic's `Literal`/`ge/le`
+  alone don't cover (e.g. `KDEntry.alpha` in [0, 1])
 
 ### 2. Does the test re-implement the code under test?
 

@@ -18,7 +18,8 @@ node plumbing — the whole pipeline runs in the Python process that
 | `analyze.py` | `run_single_analysis(spec)` — writes analysis artifacts + manifest sidecar for one checkpoint. Called per-stage from `run_pipeline`. |
 | `resolve.py` | `ResolvedConfig.resolve` classmethod + private `_build_tla_dict`; inline monitor/mode consistency check |
 | `_setup.py` | `ensure_spawn`, `touch_marker` |
-| `planning/` | `planner.py`: `StageConfig`, `enumerate_assets`, `resolve_jsonnet_path`; `recipes.py`: `TrainingRunConfig`, `KDEntry`, `expand_recipe_configs`, `check_in` |
+| `planning.py` | `build_pipeline_stages(cfg)` + `resolve_jsonnet_path(stage)`. Pure planning, no side effects. |
+| `config.py` | Frozen data types: `PipelineConfig`, `StageConfig`, `TrainingRunConfig`, `KDEntry`, `ResolvedConfig`, `InstantiatedRun`, `PipelineResult` |
 
 ## Execution flow
 
@@ -31,8 +32,7 @@ pipeline-run  (cli/_pipeline.py)
 +-- run_pipeline(config) -> PipelineResult              [run.py]
     |
     +-- ensure_spawn()                                  [_setup.py]
-    +-- build_pipeline_stages(config) -> list[StageConfig]
-    |     +-- enumerate_assets(recipe)                  [planning/planner.py]
+    +-- build_pipeline_stages(config) -> list[StageConfig]   [planning.py]
     |
     +-- for each StageConfig (with retry):
     |     +-- ResolvedConfig.resolve(cfg, ...)          [resolve.py]
