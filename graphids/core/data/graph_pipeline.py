@@ -68,7 +68,7 @@ class GraphPipeline:
 
     def run(self, df: pl.DataFrame, window_size: int, stride: int) -> tuple[Data, dict, int]:
         """Execute the full pipeline. Returns (Data, slices, num_graphs)."""
-        df = df.with_row_index("_row")
+        df = df.with_row_index("_row").with_columns(pl.col("_row").cast(pl.Int64))
         n_rows = len(df)
         n_windows = max(0, (n_rows - window_size) // stride + 1)
         if n_windows == 0:

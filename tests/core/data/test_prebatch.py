@@ -19,14 +19,11 @@ from graphids.core.data.sampler import NodeBudgetBatchSampler
 def _prebatch(graphs, budget):
     """Helper: run sampler + collate, same logic as GraphDataModule."""
     sizes = torch.tensor([g.num_nodes for g in graphs], dtype=torch.long)
-    mean_nodes = sizes.float().mean().item()
-    num_steps = max(1, math.ceil(len(graphs) * mean_nodes / budget))
     sampler = NodeBudgetBatchSampler(
         sizes,
         max_num=budget,
         shuffle=False,
         skip_too_big=True,
-        num_steps=num_steps,
     )
     plans = list(sampler)
     return [Batch.from_data_list([graphs[i] for i in plan]) for plan in plans]
@@ -121,15 +118,11 @@ class TestTierPreBatch:
         tier_batches = []
         for tier_idx in normal_tiers:
             tier_sizes = sizes[tier_idx]
-            num_steps = max(
-                1, math.ceil(len(tier_idx) * sizes[tier_idx].float().mean().item() / budget)
-            )
             sampler = NodeBudgetBatchSampler(
                 tier_sizes,
                 max_num=budget,
                 shuffle=False,
                 skip_too_big=True,
-                num_steps=num_steps,
             )
             plans = list(sampler)
             tier_batches.append(
@@ -138,15 +131,11 @@ class TestTierPreBatch:
 
         # Pre-batch attacks
         atk_sizes = sizes[attack_indices]
-        num_steps = max(
-            1, math.ceil(len(attack_indices) * atk_sizes.float().mean().item() / budget)
-        )
         sampler = NodeBudgetBatchSampler(
             atk_sizes,
             max_num=budget,
             shuffle=False,
             skip_too_big=True,
-            num_steps=num_steps,
         )
         plans = list(sampler)
         attack_batches = [

@@ -12,14 +12,12 @@ tiers. A ``CurriculumEpochCallback`` selects active tiers each epoch.
 
 from __future__ import annotations
 
-import math
-
 import torch
 from torch_geometric.data import Batch, InMemoryDataset
 
 from graphids.core.data.budget import autosize_workers, node_budget
 from graphids.core.data.cache import get_or_build
-from graphids.core.data.sampler import NodeBudgetBatchSampler
+from graphids.core.data.sampler import NodeBudgetBatchSampler, pack_offline
 
 
 def _prefetch(loader, device: torch.device | None):
@@ -122,7 +120,22 @@ class GraphDataModule:
             self._setup_curriculum()
 
     def _setup_curriculum(self) -> None:
-        """Score graphs via the configured strategy, bucket into tiers + attack tier."""
+        """Score graphs via the configured strategy, bucket into tiers + attack tier.
+
+        Batching divergence from the dynamic-batching path: each tier is
+        pre-packed INDEPENDENTLY (``_curriculum_train_dataloader`` calls
+        ``_prebatch`` once per tier). The node/edge budgets returned by
+        the probe apply *per tier*, not across tiers. Because
+        ``_active_batches`` is built by concatenating pre-packed tier
+        batches (no re-packing), the system-wide VRAM peak is still
+        bounded by a single-batch budget — the contract the callback /
+        prebatch guard depend on.
+
+        DO NOT add a cross-tier packer (e.g. "mix tiers in a single
+        batch" for gradient smoothing) without revisiting memory sizing:
+        packing across tiers would require a fresh probe because the
+        budget result was computed against tier-slice graph populations.
+        """
         from graphids.core.data.curriculum import build_curriculum_tiers, make_scorer
 
         hp = self.hparams
@@ -137,12 +150,25 @@ class GraphDataModule:
         self._tier_graphs = []
         self._tier_sizes = []
         for tier_idx in normal_tiers:
+            if not tier_idx:
+                continue  # empty tier — scorer may produce this at the extremes
             self._tier_graphs.append([full_dataset[i] for i in tier_idx])
             self._tier_sizes.append(dataset_sizes[tier_idx])
         # Attack tier (always active)
         if attack_indices:
             self._tier_graphs.append([full_dataset[i] for i in attack_indices])
             self._tier_sizes.append(dataset_sizes[attack_indices])
+
+        # Invariant: every stored tier has graphs AND its sizes aligned.
+        # Empty tiers or mismatched lengths would build a silently dead
+        # dataloader entry; fail loud so callers see it at setup() time.
+        assert len(self._tier_graphs) == len(self._tier_sizes), (
+            f"tier bookkeeping mismatch: "
+            f"{len(self._tier_graphs)} graph lists vs "
+            f"{len(self._tier_sizes)} size tensors"
+        )
+        for i, (g, s) in enumerate(zip(self._tier_graphs, self._tier_sizes)):
+            assert len(g) == len(s) > 0, f"tier {i} is empty or length-mismatched"
 
     # -- Properties (available after setup) -----------------------------------
 
@@ -196,15 +222,39 @@ class GraphDataModule:
             train_dataset=dataset or self._train_ds,
         )
 
-    def _prebatch(self, graphs, sizes) -> list[Batch]:
-        """Pre-collate graphs into Batches using NodeBudgetBatchSampler."""
+    def _prebatch(self, graphs, sizes, edge_sizes=None) -> list[Batch]:
+        """Pre-collate graphs into Batches via first-fit-decreasing packing.
+
+        Uses ``pack_offline`` instead of the live sampler: prebatch doesn't
+        need epoch-to-epoch randomness (``_prebatched_loader`` shuffles
+        batch order separately), so FFD's tighter packing is a pure win.
+
+        Invariant: every emitted plan stays within the probed (node, edge)
+        envelope. Asserted here so a future packer regression surfaces
+        immediately instead of waiting for a CUDA OOM.
+        """
         result = self._budget_result(graphs)
-        num_steps = max(1, math.ceil(len(graphs) * result.mean_nodes / result.budget))
-        sampler = NodeBudgetBatchSampler(
+        if edge_sizes is None:
+            edge_sizes = torch.tensor(
+                [int(g.num_edges) for g in graphs], dtype=torch.long,
+            )
+        plans = pack_offline(
             sizes, max_num=result.budget,
-            shuffle=False, skip_too_big=True, num_steps=num_steps,
+            edge_sizes=edge_sizes, max_edges=result.edge_budget,
+            skip_too_big=True,
         )
-        return [Batch.from_data_list([graphs[i] for i in plan]) for plan in sampler]
+        for plan in plans:
+            tot_n = sum(int(sizes[i]) for i in plan)
+            tot_e = sum(int(edge_sizes[i]) for i in plan)
+            if tot_n > result.budget or (
+                result.edge_budget is not None and tot_e > result.edge_budget
+            ):
+                raise RuntimeError(
+                    "packer produced an oversized batch: "
+                    f"nodes={tot_n}/{result.budget}, "
+                    f"edges={tot_e}/{result.edge_budget}"
+                )
+        return [Batch.from_data_list([graphs[i] for i in plan]) for plan in plans]
 
     def _prefetch_device(self):
         return self._device if torch.cuda.is_available() else None
@@ -241,10 +291,10 @@ class GraphDataModule:
         if nw is None:
             nw, pf = autosize_workers(None, dataset, result, default_prefetch=pf)
 
-        num_steps = max(1, math.ceil(len(dataset) * result.mean_nodes / result.budget))
         sampler = NodeBudgetBatchSampler(
             dataset.num_nodes_per_graph, max_num=result.budget,
-            shuffle=shuffle, skip_too_big=True, num_steps=num_steps,
+            edge_sizes=dataset.num_edges_per_graph, max_edges=result.edge_budget,
+            shuffle=shuffle, skip_too_big=True,
         )
         return _spawn_loader(
             dataset, batch_sampler=sampler,
