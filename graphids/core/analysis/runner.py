@@ -18,7 +18,7 @@ from graphids.core.analysis.schemas import AnalysisSpec
 log = get_logger(__name__)
 
 ANALYSIS_MANIFEST_NAME = "analysis_manifest.json"
-ANALYZABLE_MODEL_TYPES: frozenset[str] = frozenset({"vgae", "dgi", "gat"})
+ANALYZABLE_MODEL_TYPES: frozenset[str] = frozenset({"vgae", "dgi", "gat", "fusion"})
 
 
 def analysis_spec_for(
@@ -27,19 +27,37 @@ def analysis_spec_for(
     dataset: str,
     model_type: str,
     seed: int,
+    upstream_ckpts: dict[str, str] | None = None,
+    upstream_families: dict[str, str] | None = None,
 ) -> AnalysisSpec:
     """Build the canonical ``AnalysisSpec`` for a stage checkpoint.
 
     Owns the ``{run_dir}/artifacts`` layout convention so orchestration
     callers don't have to reconstruct ``ckpt_file.parent.parent`` path
     arithmetic inline.
+
+    For ``model_type='fusion'``, walks ``upstream_ckpts`` + ``upstream_families``
+    to populate ``vgae_ckpt_path`` / ``gat_ckpt_path`` and enable
+    ``fusion_policy=True`` (the ``AnalysisSpec`` validator requires both).
     """
+    extras: dict[str, str | bool] = {}
+    if model_type == "fusion" and upstream_ckpts and upstream_families:
+        for asset, ckpt in upstream_ckpts.items():
+            family = upstream_families.get(asset)
+            if family == "unsupervised":
+                extras["vgae_ckpt_path"] = ckpt
+            elif family == "supervised":
+                extras["gat_ckpt_path"] = ckpt
+        if "vgae_ckpt_path" in extras and "gat_ckpt_path" in extras:
+            extras["fusion_policy"] = True
+
     return AnalysisSpec(
         ckpt_path=str(ckpt_file),
         dataset=dataset,
         model_type=model_type,
         output_dir=str(ckpt_file.resolve().parent.parent / "artifacts"),
         seed=seed,
+        **extras,
     )
 
 

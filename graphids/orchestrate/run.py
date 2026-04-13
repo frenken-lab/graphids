@@ -83,6 +83,8 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
                 run_single_analysis(analysis_spec_for(
                     ckpt_file, dataset=config.dataset,
                     model_type=cfg.model_type, seed=config.seed,
+                    upstream_ckpts=upstream_ckpts,
+                    upstream_families=cfg.upstream_model_families,
                 ))
                 touch_marker(run_dir / PHASE_MARKERS["analyze"])
                 did_analyze = True

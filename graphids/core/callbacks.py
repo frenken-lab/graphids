@@ -176,10 +176,12 @@ class EarlyStopping(CallbackBase):
 
 def _build_checkpoint(trainer: Trainer, model: torch.nn.Module) -> dict[str, Any]:
     """Build a raw-PyTorch checkpoint dict."""
+    cls = type(model)
     ckpt: dict[str, Any] = {
         "state_dict": model.state_dict(),
         "epoch": trainer.current_epoch,
         "global_step": trainer.global_step,
+        "class_path": f"{cls.__module__}.{cls.__name__}",
     }
     if hasattr(model, "hparams"):
         hp = model.hparams

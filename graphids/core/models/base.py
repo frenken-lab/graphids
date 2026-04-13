@@ -311,35 +311,31 @@ def binary_test_metrics():
 
 
 # ---------------------------------------------------------------------------
-# Checkpoint loading registry
+# Checkpoint loading
 # ---------------------------------------------------------------------------
-
-_MODULE_PATHS: dict[str, str] = {
-    "vgae": "graphids.core.models.autoencoder.vgae_module.VGAEModule",
-    "gat": "graphids.core.models.supervised.gat_module.GATModule",
-    "dgi": "graphids.core.models.autoencoder.dgi_module.DGIModule",
-    "fusion": "graphids.core.models.fusion.bandit.BanditFusionModule",
-    "dqn": "graphids.core.models.fusion.dqn.DQNFusionModule",
-}
 
 
 def safe_load_checkpoint(model_type: str, ckpt_path, *, map_location="cpu"):
-    """Load a checkpoint by model type, raising on missing files.
+    """Load a checkpoint, dispatching on the ``class_path`` saved at write time.
 
-    Supports both new raw-PyTorch format (``state_dict`` key) and legacy
-    Lightning format (``hyper_parameters`` + wrapped state dict).
+    ``model_type`` is used only to know which loss_fn to rebuild for VGAE/GAT
+    (loss is excluded from hyperparameters). Class lookup uses the
+    self-describing ``class_path`` written by ``core.callbacks._build_checkpoint``.
     """
-    dotted = _MODULE_PATHS.get(model_type)
-    if dotted is None:
-        raise KeyError(f"No module class for '{model_type}'. Available: {list(_MODULE_PATHS)}")
-    module_path, cls_name = dotted.rsplit(".", 1)
-    cls = getattr(importlib.import_module(module_path), cls_name)
-
     ckpt_path = Path(ckpt_path)
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
     ckpt = torch.load(str(ckpt_path), map_location=map_location, weights_only=True)
+    dotted = ckpt.get("class_path")
+    if not dotted:
+        raise KeyError(
+            f"Checkpoint {ckpt_path} missing 'class_path'. Re-train with the "
+            "current callbacks.ModelCheckpoint to produce self-describing checkpoints."
+        )
+    module_path, cls_name = dotted.rsplit(".", 1)
+    cls = getattr(importlib.import_module(module_path), cls_name)
+
     hp = ckpt.get("hyper_parameters", {})
 
     # Rebuild loss_fn for models that exclude it from hyperparameters
