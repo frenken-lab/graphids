@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import os
+import time
+from dataclasses import asdict
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -14,12 +19,45 @@ from graphids.cli.app import (
     _complete_scale,
     app,
 )
+from graphids.config.constants import PROJECT_ROOT
 
 log = get_logger(__name__)
 meter = get_meter("graphids.budget")
 _bpn_gauge = meter.create_gauge("budget.bytes_per_node", description="VRAM bytes per graph node")
 _budget_gauge = meter.create_gauge("budget.max_nodes", description="Max nodes per batch")
 _bwd_gauge = meter.create_gauge("budget.backward_multiplier", description="Backward/forward VRAM ratio")
+
+
+@app.command("submit-profile", rich_help_panel="SLURM")
+def submit_profile(job: str) -> None:
+    """Print resource profile fields for ``scripts/slurm/submit.sh``.
+
+    Reads ``configs/resources/submit_profiles.json`` and prints
+    ``partition cpus mem time signal mode gres command`` on a single line.
+    submit.sh ``read``s the result. Empty signal/gres → ``NONE``.
+    """
+    profiles = json.loads(
+        (PROJECT_ROOT / "configs" / "resources" / "submit_profiles.json").read_text()
+    )["submit_profiles"]
+    if job not in profiles:
+        log.error("submit_profile_unknown", job=job, available=sorted(profiles))
+        raise typer.Exit(1)
+    p = profiles[job]
+    gres = "gpu:1" if p["mode"] == "gpu" else "NONE"
+    signal = p.get("signal") or "NONE"
+    print(f"{p['partition']} {p['cpus']} {p['mem']} {p['time']} {signal} {p['mode']} {gres} {p['command']}")
+
+
+def _sidecar_path() -> Path:
+    """Where probe-budget writes its flat JSONL row-per-combo log.
+
+    Lives under SLURM_LOG_DIR if running in a job; otherwise PROJECT_ROOT/runs.
+    """
+    base = os.environ.get("SLURM_LOG_DIR") or str(PROJECT_ROOT / "runs")
+    job = os.environ.get("SLURM_JOB_ID", "local")
+    p = Path(base) / f"budget_probe_{job}.jsonl"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
 
 
 @app.command("probe-budget", rich_help_panel="SLURM")
@@ -78,8 +116,10 @@ def probe_budget(
         raise typer.Exit()
 
     device = torch.device("cuda")
+    sidecar = _sidecar_path()
+    log.info("probe_budget_sidecar", path=str(sidecar))
 
-    with typer.progressbar(combos, label="probing", item_show_func=lambda c: c and f"{c[0]}/{c[1]}/{c[2] or 'default'}/{c[3]}") as bar:
+    with sidecar.open("a") as sink, typer.progressbar(combos, label="probing", item_show_func=lambda c: c and f"{c[0]}/{c[1]}/{c[2] or 'default'}/{c[3]}") as bar:
         for mt, sc, ct, ds in bar:
             label = f"{mt}/{sc}/{ct or 'default'}/{ds}"
             try:
@@ -98,9 +138,15 @@ def probe_budget(
                 _budget_gauge.set(r.budget, attributes=attrs)
                 _bwd_gauge.set(r.backward_multiplier or 0, attributes=attrs)
 
+                row = {"ts": time.time(), **attrs, **asdict(r)}
+                sink.write(json.dumps(row) + "\n"); sink.flush()
+
                 del model
                 torch.cuda.synchronize()
                 torch.cuda.empty_cache()
                 log.info("probe_done", label=label, budget=r.budget, bpn=r.bytes_per_node)
             except Exception as e:
                 log.error("probe_failed", label=label, error=str(e))
+                sink.write(json.dumps({"ts": time.time(), "model_type": mt, "scale": sc,
+                                       "conv_type": ct, "dataset": ds, "error": str(e)}) + "\n")
+                sink.flush()
