@@ -1,8 +1,9 @@
 """Data module: datasets, datamodules, sampling, and preprocessing.
 
 Public API:
-    from graphids.core.data import CANBusDataset
-    ds = CANBusDataset(root="cache/set_01", raw_dir="data/train", split="train")
+    from graphids.core.data import CANBusSource
+    source = CANBusSource(name="hcrl_sa")  # preferred: source→build→DatasetState
+    state = source.build()                 # train/val/test_* split scoping done here
 """
 
 from __future__ import annotations

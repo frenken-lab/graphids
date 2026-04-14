@@ -14,7 +14,7 @@ Orchestration:
   pipeline-run                     — run the full 3-stage pipeline in-process
 
 SLURM:
-  probe-budget                     — hardware cost model measurement
+  submit-profile                   — print resource profile (consumed by submit.sh)
 """
 
 from __future__ import annotations
@@ -22,12 +22,12 @@ from __future__ import annotations
 # Register command modules (each decorates app with @app.command).
 # init_providers() + log-level setup runs inside ``app.py``'s @app.callback,
 # so this module has no import-time side effects beyond decorator registration.
-import graphids.cli._analysis  # noqa: F401
-import graphids.cli._campaign  # noqa: F401
-import graphids.cli._data  # noqa: F401
-import graphids.cli._pipeline  # noqa: F401
-import graphids.cli._slurm  # noqa: F401
-import graphids.cli._training  # noqa: F401
+# ``submit-profile`` lives directly in ``app.py`` (no domain coupling).
+import graphids.cli.analysis  # noqa: F401
+import graphids.cli.campaign  # noqa: F401
+import graphids.cli.data  # noqa: F401
+import graphids.cli.pipeline  # noqa: F401
+import graphids.cli.training  # noqa: F401
 from graphids.cli.app import app
 
 

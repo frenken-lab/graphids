@@ -11,8 +11,8 @@ Jsonnet replaced YAML chains for config composition; Hydra's defaults lists offe
 **0002 — Forced callbacks via explicit construction.**
 Stage configs that set `trainer.callbacks` silently dropped ModelCheckpoint/EarlyStopping (jsonnet list replacement). Critical callbacks now live in top-level namespaces (`checkpoint.*`, `early_stopping.*`) and are constructed by `instantiate._build_callbacks()`, immune to stage overrides.
 
-**0003 — Consolidate train/test/analyze into one SLURM job.**
-Separate SLURM jobs for each phase caused analysis to run on CPU dagster workers and introduced process-boundary failures. A single job runs all three phases sequentially with per-phase markers (`.train_complete`, `.test_complete`, `.analyze_complete`).
+**0003 — Consolidate train/test/analyze into one SLURM job.** *(partially superseded 2026-04-14: analyze decoupled, `.complete` + `.analyze_complete` markers retired; train/test still in-process.)*
+Separate SLURM jobs for each phase caused analysis to run on CPU dagster workers and introduced process-boundary failures. A single job runs all three phases sequentially with per-phase markers (`.train_complete`, `.test_complete`, `.analyze_complete`). The analyze phase was later decoupled back out (run `python -m graphids analyze` after the pipeline) because its in-line failures were masking test crashes via the unconditional `.complete` marker.
 
 **0004 — Keep custom VRAM probe, reject Lightning profilers.**
 The VRAM probe must run *before* DataLoader construction to size `NodeBudgetBatchSampler`. All Lightning profilers/callbacks run *after* the DataLoader is built — lifecycle mismatch makes them unusable for batch sizing.
@@ -21,7 +21,7 @@ The VRAM probe must run *before* DataLoader construction to size `NodeBudgetBatc
 WandbLogger/CSVLogger replaced by OpenTelemetry (`OTelTrainingCallback` + `OTelTrainingLogger`). Wandb Weave receives traces optionally via OTLP when `WANDB_API_KEY` is set. Model Registry and Data Artifacts were rejected (quota limits, no `file://` support).
 
 **0006 — Dagster removed; in-process pipeline loop in a single SLURM allocation.**
-Dagster's multi-job model (one SLURM job per asset) caused queue-wait overhead between pipeline stages. `run_pipeline` (`graphids/orchestrate/run.py`) loops `resolve → build → train → evaluate → analyze` over each stage in the same Python process inside the allocation created by `submit.sh pipeline-run` — no serialization boundary, no inter-job wait. (Monarch actors were tried as the in-process mechanism in session 42 and removed in session 43; a plain loop is sufficient.)
+Dagster's multi-job model (one SLURM job per asset) caused queue-wait overhead between pipeline stages. `run_pipeline` (`graphids/orchestrate/run.py`) loops `resolve → build → train → evaluate` over each stage in the same Python process inside the allocation created by `submit.sh pipeline-run` — no serialization boundary, no inter-job wait. (Monarch actors were tried as the in-process mechanism in session 42 and removed in session 43; a plain loop is sufficient. Analysis was decoupled out 2026-04-14; see ADR 0003 supersession note.)
 
 **0007 — Config system: independent axes + typed contract.**
 Config combinatorial explosion (scale x model in one file) and parallel topology declarations caused silent drift. Fix: independent config axes in jsonnet, `TrainingRunConfig` (Pydantic, `extra="forbid"`) for boundary parameters, `ConfigResolver` for cross-field validation. Don't adopt Hydra, don't mirror every `__init__` signature.

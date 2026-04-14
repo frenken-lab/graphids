@@ -321,7 +321,7 @@ class ResolvedConfig:
     """
 
     rendered: dict[str, Any]
-    validated: "ValidatedConfig"
+    validated: ValidatedConfig
     stage_name: str
     run_dir: Path | None
     ckpt_file: Path | None
@@ -355,8 +355,8 @@ class ResolvedConfig:
 class InstantiatedRun:
     """A wired (trainer, model, datamodule) triple built from a rendered config."""
 
-    trainer: "Trainer"
-    model: "nn.Module"
+    trainer: Trainer
+    model: nn.Module
     datamodule: Any
 
 
@@ -365,13 +365,11 @@ class PipelineResult:
     """Composite result of a full pipeline run."""
 
     checkpoints: dict[str, str]  # asset_name -> ckpt path
-    analyzed_assets: list[str]  # asset_names whose analyzer succeeded
     stage_to_asset: dict[str, str]  # stage -> asset_name
 
     def checkpoints_by_stage(self) -> dict[str, str]:
         return {
-            stage: self.checkpoints.get(asset, "")
-            for stage, asset in self.stage_to_asset.items()
+            stage: self.checkpoints.get(asset, "") for stage, asset in self.stage_to_asset.items()
         }
 
 

@@ -1,14 +1,13 @@
 """Pipeline topology and path resolution.
 
-Typed ``Topology`` model for ``topology.json``, path models
-(``PathContext``, ``RunDirIdentity``), identity hashing, and dataset catalog.
+Typed ``Topology`` model for ``topology.json``, ``PathContext`` for run_dir
+construction, identity hashing, and dataset catalog.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -18,7 +17,6 @@ from pydantic import BaseModel, ConfigDict, FilePath, TypeAdapter, computed_fiel
 from .constants import (
     CATALOG_SUBPATH,
     CKPT_SUBPATH,
-    COMPLETE_MARKER,
     CONFIG_DIR,
     DATASET_REGISTRY_PATH,
     LAST_CKPT_SUBPATH,
@@ -26,6 +24,7 @@ from .constants import (
     PROJECT_ROOT,
     VALID_FUSION_METHODS,
     VALID_MODEL_FAMILIES,
+    VALID_SCALES,
 )
 
 _CONFIGS_DIR = PROJECT_ROOT / "configs"
@@ -63,14 +62,48 @@ class Topology(BaseModel):
                 for m in VALID_FUSION_METHODS
             ),
             *(_CONFIGS_DIR / "stages" / f"{s}.jsonnet" for s in self.stages),
-            _CONFIGS_DIR / "resources" / "job_profiles.json",
         ]
         for p in required:
             _file_check.validate_python(p)
-        profiles = json.loads((_CONFIGS_DIR / "resources" / "job_profiles.json").read_text())
-        if missing := VALID_MODEL_FAMILIES - profiles.keys():
-            raise ValueError(f"Missing resource profiles: {sorted(missing)}")
+        _validate_submit_profiles(self)
         return self
+
+
+def _validate_submit_profiles(topology: Topology) -> None:
+    """Import-time shape check for ``configs/resources/submit_profiles.json``.
+
+    Catches three drift modes at package load instead of sbatch time:
+
+    1. ``stages`` entry in a composed profile not declared in ``stage_profiles``.
+    2. ``stage_profiles`` entry missing required ``cpus`` / ``scaling`` fields.
+    3. ``scale_mult`` key outside ``VALID_SCALES``.
+    """
+    path = _CONFIGS_DIR / "resources" / "submit_profiles.json"
+    cfg = json.loads(path.read_text())
+    stage_profiles = cfg.get("stage_profiles", {})
+    for name, sp in stage_profiles.items():
+        if "cpus" not in sp:
+            raise ValueError(f"stage_profiles[{name!r}] missing 'cpus'")
+        sc = sp.get("scaling")
+        if not sc or "time_min" not in sc or "mem_gb" not in sc:
+            raise ValueError(
+                f"stage_profiles[{name!r}] must have scaling.time_min and scaling.mem_gb"
+            )
+        for block_name, block in (("time_min", sc["time_min"]), ("mem_gb", sc["mem_gb"])):
+            bad = set((block.get("scale_mult") or {}).keys()) - VALID_SCALES
+            if bad:
+                raise ValueError(
+                    f"stage_profiles[{name!r}].scaling.{block_name}.scale_mult has "
+                    f"unknown scale(s) {sorted(bad)}; valid: {sorted(VALID_SCALES)}"
+                )
+    for name, p in cfg["submit_profiles"].items():
+        if "stages" in p:
+            unknown = [s for s in p["stages"] if s not in stage_profiles]
+            if unknown:
+                raise ValueError(
+                    f"submit_profiles[{name!r}].stages refers to unknown stage_profiles "
+                    f"{unknown}; declared: {sorted(stage_profiles)}"
+                )
 
 
 TOPOLOGY = Topology.model_validate_json((CONFIG_DIR / "matrix" / "topology.json").read_bytes())
@@ -86,54 +119,15 @@ def _walk(cfg: Any, dotted_key: str):
 
 
 def compute_identity_hash(stage: str, cfg: Any) -> str:
-    stage_def = TOPOLOGY.stages.get(stage)
-    if stage_def is None:
-        return ""
+    # Unknown stages raise immediately; an empty-string fallback used to collide
+    # silently across typos and produce bogus run dirs.
+    stage_def = TOPOLOGY.stages[stage]
     keys = stage_def.identity_keys
     unresolved = [k for k in keys if _walk(cfg, k) is None]
     if unresolved:
         raise KeyError(f"Identity keys {unresolved} missing for stage '{stage}'")
     pairs = [f"{k}={_walk(cfg, k)}" for k in sorted(keys)]
     return "_" + hashlib.sha256("|".join(pairs).encode()).hexdigest()[:8]
-
-
-class RunDirIdentity(BaseModel):
-    model_config = ConfigDict(frozen=True)
-    dataset: str
-    user: str
-    seed: int
-    model_family: str
-    scale: str
-    stage: str
-    identity_hash: str
-    kd_tag: str = ""
-
-    @classmethod
-    def from_run_dir(cls, run_dir: str) -> RunDirIdentity:
-        parts = Path(run_dir).parts
-        seed = int(parts[-1].split("_", 1)[1])
-        dir_name, dataset, user = parts[-2], parts[-3], parts[-4]
-        kd_tag = ""
-        if dir_name.endswith("_kd"):
-            kd_tag, dir_name = "_kd", dir_name[:-3]
-        last_us = dir_name.rfind("_")
-        identity_hash, remainder = "_" + dir_name[last_us + 1 :], dir_name[:last_us]
-        stage = ""
-        for s in TOPOLOGY.stages:
-            if remainder.endswith(f"_{s}"):
-                stage, remainder = s, remainder[: -len(s) - 1]
-                break
-        split = remainder.rfind("_")
-        return cls(
-            dataset=dataset,
-            user=user,
-            seed=seed,
-            model_family=remainder[:split],
-            scale=remainder[split + 1 :],
-            stage=stage,
-            identity_hash=identity_hash,
-            kd_tag=kd_tag,
-        )
 
 
 class PathContext(BaseModel):
@@ -161,51 +155,15 @@ class PathContext(BaseModel):
         return self.run_dir / CKPT_SUBPATH
 
     @property
-    def complete_marker(self) -> Path:
-        return self.run_dir / COMPLETE_MARKER
-
-    @property
     def last_ckpt_file(self) -> Path:
         return self.run_dir / LAST_CKPT_SUBPATH
-
-    @property
-    def ckpt_dir(self) -> Path:
-        return self.run_dir / "checkpoints"
 
     def resolve_ckpt(self) -> Path:
         return self.ckpt_file if self.ckpt_file.exists() else self.last_ckpt_file
 
-    @classmethod
-    def for_checkpoint(
-        cls,
-        lake_root: str,
-        dataset: str,
-        model_type: str,
-        scale: str,
-        seed: int,
-        cfg: Any,
-        *,
-        gat_stage: str = "supervised",
-    ) -> Path:
-        stage = (
-            gat_stage if model_type == "gat" else TOPOLOGY.ckpt_stages.get(model_type, model_type)
-        )
-        return cls(
-            lake_root=lake_root,
-            user=os.environ.get("USER", "unknown"),
-            dataset=dataset,
-            model_type=model_type,
-            scale=scale,
-            stage=stage,
-            identity=compute_identity_hash(stage, cfg),
-            kd_tag="",
-            seed=seed,
-        ).ckpt_file
-
 
 def data_dir(lake_root: str, dataset: str) -> Path:
-    candidate = Path(lake_root) / "raw" / dataset
-    return candidate if candidate.exists() else Path("data") / "automotive" / dataset
+    return Path(lake_root) / "raw" / dataset
 
 
 def cache_dir(lake_root: str, dataset: str) -> Path:

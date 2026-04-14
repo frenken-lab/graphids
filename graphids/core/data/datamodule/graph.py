@@ -23,13 +23,19 @@ from graphids.core.data.sampler import NodeBudgetBatchSampler, pack_offline
 def _prefetch(loader, device: torch.device | None):
     if device is not None:
         from torch_geometric.loader import PrefetchLoader
+
         return PrefetchLoader(loader, device=device)
     return loader
 
 
 def _spawn_loader(
-    dataset, *, batch_size=1, batch_sampler=None, shuffle=False,
-    num_workers: int = 0, prefetch_factor: int = 2,
+    dataset,
+    *,
+    batch_size=1,
+    batch_sampler=None,
+    shuffle=False,
+    num_workers: int = 0,
+    prefetch_factor: int = 2,
     device: torch.device | None = None,
 ):
     """PyGDataLoader with spawn/persistent_workers defaults + PrefetchLoader."""
@@ -38,9 +44,12 @@ def _spawn_loader(
 
     kw: dict = dict(num_workers=num_workers, pin_memory=device is None)
     if num_workers > 0:
-        kw.update(persistent_workers=True, multiprocessing_context="spawn",
-                  worker_init_fn=lambda _: mp.set_sharing_strategy("file_system"),
-                  prefetch_factor=prefetch_factor)
+        kw.update(
+            persistent_workers=True,
+            multiprocessing_context="spawn",
+            worker_init_fn=lambda _: mp.set_sharing_strategy("file_system"),
+            prefetch_factor=prefetch_factor,
+        )
     if batch_sampler is not None:
         loader = PyGDataLoader(dataset, batch_sampler=batch_sampler, **kw)
     else:
@@ -53,7 +62,9 @@ def _prebatched_loader(batches, *, shuffle: bool = True, device: torch.device | 
     from torch.utils.data import DataLoader as TorchDataLoader
 
     loader = TorchDataLoader(
-        batches, batch_size=None, shuffle=shuffle,
+        batches,
+        batch_size=None,
+        shuffle=shuffle,
         collate_fn=lambda x: x.clone() if hasattr(x, "clone") else x,
     )
     return _prefetch(loader, device)
@@ -82,6 +93,12 @@ class GraphDataModule:
         dynamic_batching: bool = True,
         conv_type: str = "gatv2",
         heads: int = 4,
+        # --- label-scope toggle ---
+        # "benign": restrict train loader to y == 0 graphs (unsupervised
+        #   reconstruction stages — VGAE/DGI — must see normal traffic only;
+        #   attack rows pollute the reconstruction prior).
+        # None: full train set (supervised stages).
+        label_filter: str | None = None,
         # --- curriculum toggle ---
         sampler: str = "standard",
         scorer: dict | None = None,  # {class_path, init_args} — see core.data.curriculum
@@ -104,10 +121,17 @@ class GraphDataModule:
         self._active_batches: list[Batch] | None = None
         # Device for PrefetchLoader — set by trainer via _set_device()
         self._device: torch.device | None = None
+        # Model handle — set by trainer via _set_model() so _budget_result
+        # can run a real probe (otherwise node_budget falls back to a static bpn).
+        self._model = None
 
     def _set_device(self, device: torch.device | None) -> None:
         """Called by Trainer to tell the datamodule which device to prefetch to."""
         self._device = device
+
+    def _set_model(self, model) -> None:
+        """Called by Trainer so dynamic-batching probes can measure this model."""
+        self._model = model
 
     def setup(self, stage: str | None = None) -> None:
         if self._train_ds is not None:
@@ -140,11 +164,10 @@ class GraphDataModule:
 
         hp = self.hparams
         scorer = make_scorer(hp["scorer"])
-        scores, normal_tiers, attack_indices, full_dataset, dataset_sizes = (
-            build_curriculum_tiers(
-                self._train_ds, scorer,
-                num_tiers=hp.get("num_tiers", 10),
-            )
+        scores, normal_tiers, attack_indices, full_dataset, dataset_sizes = build_curriculum_tiers(
+            self._train_ds,
+            scorer,
+            num_tiers=hp.get("num_tiers", 10),
         )
         # Build per-tier graph lists + size tensors for _prebatch
         self._tier_graphs = []
@@ -213,12 +236,20 @@ class GraphDataModule:
     # -- Shared helpers -------------------------------------------------------
 
     def _budget_result(self, dataset=None):
-        """Probe VRAM budget for the given dataset (or train_ds)."""
+        """Probe VRAM budget for the given dataset (or train_ds).
+
+        When ``_set_model`` has supplied a model AND CUDA is available,
+        ``node_budget`` runs a one-shot fwd+bwd profile to derive the
+        per-node / per-edge byte cost. Otherwise it falls back to the
+        static ``_FALLBACK_BPN`` constant (binding="fallback").
+        """
         hp = self.hparams
         return node_budget(
-            self.dataset.name, self.dataset.resolved_lake_root(),
+            self.dataset.name,
+            self.dataset.resolved_lake_root(),
             conv_type=hp.get("conv_type", "gatv2"),
             heads=hp.get("heads", 4),
+            model=self._model,
             train_dataset=dataset or self._train_ds,
         )
 
@@ -236,11 +267,14 @@ class GraphDataModule:
         result = self._budget_result(graphs)
         if edge_sizes is None:
             edge_sizes = torch.tensor(
-                [int(g.num_edges) for g in graphs], dtype=torch.long,
+                [int(g.num_edges) for g in graphs],
+                dtype=torch.long,
             )
         plans = pack_offline(
-            sizes, max_num=result.budget,
-            edge_sizes=edge_sizes, max_edges=result.edge_budget,
+            sizes,
+            max_num=result.budget,
+            edge_sizes=edge_sizes,
+            max_edges=result.edge_budget,
             skip_too_big=True,
         )
         for plan in plans:
@@ -261,12 +295,36 @@ class GraphDataModule:
 
     # -- DataLoaders ----------------------------------------------------------
 
+    def _effective_train_ds(self):
+        """Train dataset with ``label_filter`` applied (view over _train_ds).
+
+        For VGAE/DGI reconstruction stages, ``label_filter="benign"`` drops
+        y != 0 graphs from the training view. val/test loaders see the
+        unfiltered splits. The subset is a PyG index_select view — cheap
+        to construct, no tensor copies.
+        """
+        ds = self._train_ds
+        if self.hparams.get("label_filter") != "benign":
+            return ds
+        full_y = ds._data.y.view(-1)
+        if ds._indices is None:
+            y = full_y
+        else:
+            y = full_y[torch.as_tensor(ds._indices, dtype=torch.long)]
+        benign_local = (y == 0).nonzero(as_tuple=False).flatten().tolist()
+        if not benign_local:
+            raise RuntimeError(
+                "label_filter='benign' produced an empty training set — "
+                "check that the train tensor contains y == 0 graphs."
+            )
+        return ds[benign_local]
+
     def train_dataloader(self):
         if self.hparams["sampler"] == "curriculum":
             return self._curriculum_train_dataloader()
         if self.hparams["dynamic_batching"]:
             return self._prebatched_train_dataloader()
-        return self._build_loader(self._train_ds, shuffle=True)
+        return self._build_loader(self._effective_train_ds(), shuffle=True)
 
     def val_dataloader(self):
         return self._build_loader(self._val_ds, shuffle=False)
@@ -282,9 +340,12 @@ class GraphDataModule:
 
         if not hp["dynamic_batching"]:
             return _spawn_loader(
-                dataset, batch_size=max(8, hp["batch_size"]),
-                shuffle=shuffle, num_workers=nw if nw is not None else 2,
-                device=device, prefetch_factor=pf,
+                dataset,
+                batch_size=max(8, hp["batch_size"]),
+                shuffle=shuffle,
+                num_workers=nw if nw is not None else 2,
+                device=device,
+                prefetch_factor=pf,
             )
 
         result = self._budget_result(dataset)
@@ -292,23 +353,33 @@ class GraphDataModule:
             nw, pf = autosize_workers(None, dataset, result, default_prefetch=pf)
 
         sampler = NodeBudgetBatchSampler(
-            dataset.num_nodes_per_graph, max_num=result.budget,
-            edge_sizes=dataset.num_edges_per_graph, max_edges=result.edge_budget,
-            shuffle=shuffle, skip_too_big=True,
+            dataset.num_nodes_per_graph,
+            max_num=result.budget,
+            edge_sizes=dataset.num_edges_per_graph,
+            max_edges=result.edge_budget,
+            shuffle=shuffle,
+            skip_too_big=True,
         )
         return _spawn_loader(
-            dataset, batch_sampler=sampler,
-            num_workers=nw, device=device, prefetch_factor=pf,
+            dataset,
+            batch_sampler=sampler,
+            num_workers=nw,
+            device=device,
+            prefetch_factor=pf,
         )
 
     def _prebatched_train_dataloader(self):
         """Pre-batched training: collate once, shuffle batch order per epoch."""
         if self._prebatched_train is None:
+            train_ds = self._effective_train_ds()
             self._prebatched_train = self._prebatch(
-                self._train_ds, self._train_ds.num_nodes_per_graph,
+                train_ds,
+                train_ds.num_nodes_per_graph,
             )
         return _prebatched_loader(
-            self._prebatched_train, shuffle=True, device=self._prefetch_device(),
+            self._prebatched_train,
+            shuffle=True,
+            device=self._prefetch_device(),
         )
 
     def _curriculum_train_dataloader(self):
@@ -320,7 +391,9 @@ class GraphDataModule:
             ]
             self._select_active_tiers(0)
         return _prebatched_loader(
-            self._active_batches, shuffle=True, device=self._prefetch_device(),
+            self._active_batches,
+            shuffle=True,
+            device=self._prefetch_device(),
         )
 
     def _select_active_tiers(self, epoch: int) -> None:
@@ -335,7 +408,8 @@ class GraphDataModule:
         hp = self.hparams
         n_normal = len(self._tier_batches) - 1  # last tier is attacks
         count = active_tier_count(
-            epoch, n_normal,
+            epoch,
+            n_normal,
             start_ratio=hp["curriculum_start_ratio"],
             end_ratio=hp["curriculum_end_ratio"],
             max_epochs=hp["max_epochs"],

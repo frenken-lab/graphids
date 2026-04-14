@@ -64,7 +64,7 @@ def test_sliding_window_graphs_shapes_and_values():
         label_exprs=LABEL_EXPRS,
         edge_base_cols=EDGE_BASE_COLS,
     )
-    data, slices, num_graphs = pipeline.run(df, window_size=10, stride=5)
+    data, slices, num_graphs, _ = pipeline.run(df, window_size=10, stride=5)
     assert num_graphs > 0
     g = _get_graph(data, slices, 0)
     assert g.x.shape[1] == N_NODE_FEATURES
@@ -118,7 +118,7 @@ def test_sliding_window_graphs_edge_freq():
         label_exprs=LABEL_EXPRS,
         edge_base_cols=EDGE_BASE_COLS,
     )
-    data, slices, num_graphs = pipeline.run(df, window_size=10, stride=10)
+    data, slices, num_graphs, _ = pipeline.run(df, window_size=10, stride=10)
     assert num_graphs == 1
     g = _get_graph(data, slices, 0)
     freq_idx = EDGE_COL_ORDER.index("edge_freq")
@@ -173,7 +173,7 @@ def test_skewness_kurtosis_clamped():
         label_exprs=LABEL_EXPRS,
         edge_base_cols=EDGE_BASE_COLS,
     )
-    data, slices, num_graphs = pipeline.run(df, window_size=50, stride=50)
+    data, slices, num_graphs, _ = pipeline.run(df, window_size=50, stride=50)
     assert num_graphs > 0
     g = _get_graph(data, slices, 0)
     skew_idx = NODE_COL_ORDER.index("skewness")

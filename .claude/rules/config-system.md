@@ -2,11 +2,13 @@
 
 Jsonnet composition + Pydantic validation + direct instantiation.
 Replaced YAML + LightningCLI with
-`render_config(jsonnet_path, tla) → dict` → `validate_config` (Pydantic) →
+`render(jsonnet_path, tla) → dict` → `validate_config` (Pydantic) →
 `graphids.orchestrate.instantiate.instantiate` (importlib class_path instantiation with
 signature-filtered link_arguments). PyTorch Lightning was removed in favor
-of a custom `graphids.core.trainer.Trainer`. Analyzer CLI uses jsonargparse
-with Jsonnet-backed configs (`cli/_analysis.py`).
+of a custom `graphids.core.trainer.Trainer`. Analyzer CLI is pure Typer —
+derives `model_type` from the checkpoint's self-describing `class_path`
+and dispatches artifacts via `ARTIFACTS_BY_MODEL_TYPE` in
+`core/analysis/schemas.py` (no jsonnet stage).
 
 ## Architecture
 
@@ -53,9 +55,7 @@ configs/                           # repo root — jsonnet sources
 │   ├── unsupervised.libsonnet     # { base, scales: {small, large}, kd } (was vgae + dgi)
 │   └── supervised.libsonnet       # (was gat)
 ├── resources/
-│   ├── clusters.json              # cluster → partition/gres mapping
-│   ├── job_profiles.json          # per-family/scale/stage resource sizing
-│   └── submit_profiles.json       # scripts/slurm/submit.sh profiles
+│   └── submit_profiles.json       # scripts/slurm/submit.sh profiles (static / scaling / composed-via-stages)
 ├── fusion.libsonnet               # { base, methods: {bandit, dqn, mlp, weighted_avg} }
 └── fusion/
     ├── base.libsonnet
@@ -63,29 +63,27 @@ configs/                           # repo root — jsonnet sources
 
 graphids/
   cli/
-    app.py                         # Typer root app + @app.callback (--verbose, init_providers), shared option types + _parse_kv_pair + apply_overrides + _complete_* helpers
-    _training.py                   # fit/test/validate/predict commands
-    _analysis.py                   # analyze command
-    _data.py                       # rebuild-caches (with --yes gate), extract-fusion-states
-    _pipeline.py                   # pipeline-run (in-process 3-stage chain)
-    _slurm.py                      # probe-budget (typer.progressbar over combos)
+    app.py                         # Typer root app + @app.callback (--verbose, init_providers), shared option types + _parse_kv_pair + apply_overrides + _complete_* helpers + submit-profile
+    training.py                    # fit/test/validate/predict commands
+    analysis.py                    # analyze command
+    data.py                        # rebuild-caches (with --yes gate), extract-fusion-states
+    pipeline.py                    # pipeline-run (in-process 3-stage chain)
+    campaign.py                    # campaign sub-app: status/next/freeze/verify
   orchestrate/
     instantiate.py                 # instantiate(rendered) → InstantiatedRun (trainer, model, datamodule)
   config/
     __init__.py                    # public API facade
     constants.py                   # CONFIG_DIR, PROJECT_ROOT, env var defaults
-    topology.py                    # stage DAG + import-time jsonnet-tree assertions
-    paths.py                       # run_dir, compute_identity_hash
+    topology.py                    # stage DAG, PathContext/run_dir, compute_identity_hash, import-time jsonnet-tree + submit-profile assertions
     schemas.py                     # validate_config → ValidatedConfig (Pydantic)
-    jsonnet.py                     # render_config(path, tla) subprocess shim
+    jsonnet.py                     # render(path, tla) via _jsonnet C bindings
   core/
     trainer.py                     # Trainer, TrainerConfig, seed_everything, MetricAccumulator
     callbacks.py                   # CallbackBase, ModelCheckpoint, EarlyStopping
     monitoring.py                  # OTelTrainingCallback, OTelTrainingLogger
   orchestrate/
-    run.py                         # PipelineConfig, build_pipeline_stages, run_pipeline (in-process driver)
+    run.py                         # run_pipeline (in-process 3-stage driver; no analysis calls)
     stage.py                       # build, train, evaluate (single-stage primitives; shared by CLI + run_pipeline)
-    analyze.py                     # run_single_analysis (per-checkpoint analyzer + manifest sidecar)
     resolve.py                     # ResolvedConfig.resolve + private _build_tla_dict
     _setup.py                      # ensure_spawn, touch_marker
     config.py                      # PipelineConfig, StageConfig, TrainingRunConfig,
@@ -108,7 +106,7 @@ graphids/
 # Dev path (no TLAs needed — stages default for smoke)
 python -m graphids fit --config configs/stages/autoencoder.jsonnet
 
-# Dev path with TLAs (preprocessor harvests them and passes to render_config)
+# Dev path with TLAs (preprocessor harvests them and passes to render)
 python -m graphids fit \
     --tla 'dataset="hcrl_sa"' \
     --tla 'scale="large"' \
@@ -157,11 +155,11 @@ renders correctly after editing.
 
 ## Robustness
 
-1. **Typed TLA round-trip.** `render_config` passes every TLA through
+1. **Typed TLA round-trip.** `render` passes every TLA through
    `--tla-code <k>=<json.dumps(v)>` so ints stay ints, bools stay bools,
    lists stay lists, `None` becomes jsonnet `null`.
 2. **Pydantic gate (`ValidatedConfig`)** — runs immediately after
-   `render_config`: null list fields in `model.init_args`, monitor
+   `render`: null list fields in `model.init_args`, monitor
    mismatch between `checkpoint` and `early_stopping`, un-namespaced
    `class_path` strings, and `LearningRateMonitor` without `logger`
    all die with an actionable error before any torch import.

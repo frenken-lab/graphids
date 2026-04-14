@@ -6,10 +6,9 @@
 #   scripts/slurm/submit.sh tests [-k pattern] [-x]
 #   scripts/slurm/submit.sh rebuild-caches [--dataset hcrl_ch | --all] [--delete-existing]
 #   scripts/slurm/submit.sh validate
-#   scripts/slurm/submit.sh landscape <model_type> <dataset> <ckpt_path> [--resolution N]
+#   scripts/slurm/submit.sh analyze --ckpt-path <path> --dataset <name> [--cka-teacher-ckpt <p>]
 #   scripts/slurm/submit.sh ablation [--recipe X --dataset X --seed X]
 #   scripts/slurm/submit.sh profile [stage scale dataset]
-#   scripts/slurm/submit.sh probe-budget [args]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,18 +27,32 @@ command -v jsonnet >/dev/null 2>&1 || {
 JOB="${1:?Usage: scripts/slurm/submit.sh <job> [args...]}"
 shift
 
-# Read resource profile from YAML (single source of truth)
-PROFILE=$(source .venv/bin/activate && python -m graphids submit-profile "$JOB")
+# Sniff --dataset and --scale from args so submit-profile can auto-size.
+# Non-destructive: args are forwarded to the downstream command unchanged.
+DATASET=""
+SCALE=""
+for (( i=1; i<=$#; i++ )); do
+    case "${!i}" in
+        --dataset) j=$((i+1)); DATASET="${!j:-}" ;;
+        --dataset=*) DATASET="${!i#--dataset=}" ;;
+        --scale) j=$((i+1)); SCALE="${!j:-}" ;;
+        --scale=*) SCALE="${!i#--scale=}" ;;
+    esac
+done
+
+PROFILE_ARGS=("$JOB")
+[[ -n "$DATASET" ]] && PROFILE_ARGS+=(--dataset "$DATASET")
+[[ -n "$SCALE" ]] && PROFILE_ARGS+=(--scale "$SCALE")
+
+# Read resource profile (auto-sized from dataset + scale when provided)
+PROFILE=$(source .venv/bin/activate && python -m graphids submit-profile "${PROFILE_ARGS[@]}")
 read -r PARTITION CPUS MEM TIME SIGNAL MODE GRES COMMAND <<< "$PROFILE"
 
 ACCT="--account=${GRAPHIDS_SLURM_ACCOUNT}"
 PREAMBLE="source ${SCRIPT_DIR}/_preamble.sh"
 
 ENV=""
-case "$MODE" in
-    cpu)     ENV="SKIP_CUDA_CONF=1 SKIP_STAGE_DATA=1 " ;;
-    cpu-raw) ENV="SKIP_CUDA_CONF=1 STAGE_DATA_ARGS=--raw " ;;
-esac
+[[ "$MODE" == "cpu" ]] && ENV="SKIP_CUDA_CONF=1 "
 
 GPU_ARGS=()
 [[ -n "$GRES" && "$GRES" != "NONE" ]] && GPU_ARGS=(--gres="$GRES")

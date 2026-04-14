@@ -13,7 +13,7 @@
 
 `graphids/config/constants.py` declares write path constants. `graphids/config/settings.py` owns all `GRAPHIDS_*` env vars.
 
-Constants: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `COMPLETE_MARKER`, `PHASE_MARKERS`, `CATALOG_SUBPATH`
+Constants: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `PHASE_MARKERS`, `CATALOG_SUBPATH`
 
 ## Filesystem Layout
 
@@ -27,11 +27,9 @@ Constants: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `COMPLETE_MARKER`, `PHASE_MARKER
 |           |   +-- last.ckpt                     <-- ModelCheckpoint (save_last: true)
 |           +-- traces.jsonl                      <-- OTel spans (wire_file_exporters, SimpleSpanProcessor)
 |           +-- metrics.jsonl                     <-- OTel metrics (PeriodicExportingMetricReader, 10s)
-|           +-- artifacts/                        <-- analysis outputs (embeddings, CKA, landscape)
-|           +-- .complete                         <-- pipeline marker (evaluate done)
-|           +-- .train_complete                   <-- pipeline marker (fit done)
-|           +-- .test_complete                    <-- pipeline marker (test done)
-|           +-- .analyze_complete                 <-- pipeline marker (analyze done)
+|           +-- artifacts/                        <-- analysis outputs (written by `graphids analyze`, not the pipeline driver)
+|           +-- .train_complete                   <-- phase marker (fit done; diagnostic only)
+|           +-- .test_complete                    <-- phase marker (test done; diagnostic only)
 +-- catalog/graphids.duckdb                      <-- (catalog builder removed 2026-04-10, pending redesign)
 +-- raw/{dataset}/                               <-- source CSV data
 +-- cache/v{ver}/{dataset}/                      <-- preprocessed graph .pt files
@@ -64,19 +62,20 @@ All training writes land under `trainer.default_root_dir` from the rendered json
 
 `graphids/core/monitoring.py` — `OTelTrainingCallback` creates a `training.fit` span on fit start; records per-batch VRAM gauges, per-epoch events (LR, early stopping), final metrics, and best checkpoint path as span attributes. Tags the span with `campaign.manifest`/`campaign.cell_id` when `GRAPHIDS_CAMPAIGN_CELL` is set so `cell_statuses()` can derive cell state from `traces.jsonl`. Discovers upstream stage `traces.jsonl` files and records span links for KD lineage.
 
-`graphids/_otel.py` — `wire_file_exporters(run_dir)` wires the file exporters (Phase B). Called from `cli/_training.py::_prepare` and `orchestrate/stage.py::train`. Wandb Weave OTLP export is optional when `WANDB_API_KEY` is set.
+`graphids/_otel.py` — `wire_file_exporters(run_dir)` wires the file exporters (Phase B). Called from `cli/training.py::_prepare` and `orchestrate/stage.py::train`. Wandb Weave OTLP export is optional when `WANDB_API_KEY` is set.
 
 `OTelTrainingLogger` captures `model.log()` calls as OTel histograms. Trainer wires it via `self.loggers` and calls `log_metrics` / `log_hyperparams` directly — no abstract base class, duck typing via attribute access.
 
-### 3. Pipeline Markers
+### 3. Phase Markers
+
+Diagnostic only — `run_pipeline`'s resume skip-check reads
+`checkpoints/best_model.ckpt` directly, not these markers.
 
 | What | Path | Who writes | Code |
 |------|------|-----------|------|
-| Train complete marker | `{run_dir}/.train_complete` | `stage.py::train` after `trainer.fit` | `PHASE_MARKERS["train"]` |
-| Test complete marker | `{run_dir}/.test_complete` | `stage.py::evaluate` after `trainer.test` | `PHASE_MARKERS["test"]` |
-| Analyze complete marker | `{run_dir}/.analyze_complete` | `run.py::_run_one_stage` after `run_single_analysis` | `PHASE_MARKERS["analyze"]` |
-| Run complete marker | `{run_dir}/.complete` | `stage.py::evaluate` at end (unconditional) | `COMPLETE_MARKER` |
-| Analysis artifacts | `{run_dir}/artifacts/` | `analyze.py::run_single_analysis` via `AnalysisSpec` | `analyze.py` |
+| Train phase marker | `{run_dir}/.train_complete` | `stage.py::train` after `trainer.fit` | `PHASE_MARKERS["train"]` |
+| Test phase marker | `{run_dir}/.test_complete` | `stage.py::evaluate` after `trainer.test` | `PHASE_MARKERS["test"]` |
+| Analysis artifacts | `{run_dir}/artifacts/` | `core/analysis/analyzer.py` via `python -m graphids analyze` (not pipeline) | `analyze.py` |
 
 ### 4. SLURM
 
@@ -90,10 +89,10 @@ All training writes land under `trainer.default_root_dir` from the rendered json
 
 | What | Path | Who writes |
 |------|------|-----------|
-| Graph cache .pt files | `{lake_root}/cache/v{ver}/{dataset}/` | `preprocessing/utils.py` (atomic_save) |
-| NFS advisory lock | `{cache_dir}/.lock` | preprocessing/utils.py |
-| Staging marker | `{scratch}/graphids-data/.staged_marker` | stage_data.sh |
-| Node-local staged data | `$TMPDIR/graphids-data/` | stage_data.sh |
+| Graph cache .pt files | `{lake_root}/cache/v{ver}/{dataset}/processed/data_*.pt` | `core/data/io.py::atomic_save` |
+| Cache metadata (v2) | `{lake_root}/cache/v{ver}/{dataset}/cache_metadata.json` | `core/data/metadata.py::merge_split_into_metadata` |
+| NFS advisory lock | `{cache_dir}/processed/.lock` | `core/data/io.py::nfs_lock` |
+| Metadata merge lock | `{cache_dir}/.metadata_lock` | `core/data/metadata.py` (fcntl.flock) |
 
 ### 6. DuckDB Catalog
 
@@ -111,22 +110,21 @@ python -m graphids pipeline-run
 |  +- build_pipeline_stages(config)
 |  +- for each StageConfig (with retry):
 |     +- ResolvedConfig.resolve(...)
-|     +- skip if .complete marker present
-|     +- stage.build(rendered, validated)
+|     +- skip if checkpoints/best_model.ckpt exists     <-- checkpoint is authoritative
+|     +- stage.build(resolved)
 |     |   +- gc + torch.cuda reset
 |     |   +- instantiate() -> trainer/model/datamodule
-|     +- stage.train(artifacts, ...)
+|     +- stage.train(artifacts, resolved)
 |     |   +- wire_file_exporters(run_dir)
 |     |   +- trainer.fit() -> touch .train_complete
-|     +- stage.evaluate(artifacts, ...)
-|     |   +- trainer.test() -> touch .test_complete
-|     |   +- touch .complete (unconditional)
-|     +- if analyzable (vgae/dgi/gat):
-|        run_single_analysis(spec)
-|        +- Analyzer(...).run()
-|        +- write analysis_manifest.json
-|        +- touch .analyze_complete
+|     +- stage.evaluate(artifacts, resolved)
+|         +- trainer.test() -> touch .test_complete
+|         +- save predictions/test/*.pt
 +- _epilog.sh (GPU utilization report)
+
+# Analysis is decoupled: run after the pipeline finishes.
+python -m graphids analyze --ckpt-path <run_dir>/checkpoints/best_model.ckpt \
+    --dataset <dataset>
 ```
 
 ## Env Var -> Path Mapping

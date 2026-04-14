@@ -14,7 +14,7 @@ rebuilt on demand for experiment analytics. They never merge.
 
 | Layer | Store | Grain | Write model | Consumer | Rebuildable? |
 |---|---|---|---|---|---|
-| **1. Source of truth** | `{run_dir}/traces.jsonl`, `metrics.jsonl`, `checkpoints/*.ckpt`, `.complete` marker | One directory per training run | Append-only, fsync'd via OTel `SimpleSpanProcessor` + `torch.save` | Layers 2 + 3, debuggers, manual inspection | N/A — authoritative |
+| **1. Source of truth** | `{run_dir}/traces.jsonl`, `metrics.jsonl`, `checkpoints/*.ckpt`, `.train_complete`/`.test_complete` phase markers | One directory per training run | Append-only, fsync'd via OTel `SimpleSpanProcessor` + `torch.save` | Layers 2 + 3, debuggers, manual inspection | N/A — authoritative |
 | **2. Workflow state** | `{lake_root}/workflow.db` (SQLite + WAL) | One row per stage × retry attempt | Synchronous INSERT/UPDATE from `_run_one_stage` | Driver (resume, retry), debugger, SLO dashboards | **No** — primary store |
 | **3. Analytics catalog** | `{lake_root}/catalog/graphids.duckdb` (DuckDB) | One row per `training.fit` span | Stateless `CREATE OR REPLACE` rebuild via `rebuild-catalog` CLI | Researcher (leaderboards, ablation plots, sweep analysis) | **Yes** — always from Layer 1 |
 
@@ -119,9 +119,12 @@ The key span is `training.fit`, emitted by
 `ml.train.loss`, `ml.cuda.allocated_mb`, `ml.cuda.reserved_mb`,
 `ml.gpu.utilization_pct`, `ml.gpu.temperature_c`, `ml.gpu.power_w`.
 
-**`{run_dir}/.complete`, `.train_complete`, `.test_complete`,
-`.analyze_complete`** — phase markers, `touch_marker` at
-`orchestrate/_setup.py:33` (fsync of file + parent dir for NFS safety).
+**`{run_dir}/.train_complete`, `.test_complete`** — phase markers,
+`touch_marker` at `orchestrate/_setup.py:33` (fsync of file + parent dir for
+NFS safety). Diagnostic only — the pipeline driver's resume skip-check
+reads `checkpoints/best_model.ckpt` directly, not these markers. The
+former `.complete` / `.analyze_complete` markers were removed 2026-04-14
+when analysis was decoupled from the pipeline driver.
 
 Layer 1 is the ground truth. Layers 2 and 3 can be lost and rebuilt
 (Layer 3 automatically, Layer 2 with effort) as long as Layer 1
@@ -331,15 +334,17 @@ def _run_one_stage(
     run_dir = Path(str(resolved.paths.run_dir))
     ckpt_file = Path(str(resolved.paths.ckpt_file))
 
-    # HOOK 2: Marker-hit skip path
-    if ckpt_file.exists() and resolved.paths.complete_marker.exists():
+    # HOOK 2: Checkpoint-hit skip path (best_model.ckpt is the resume authority
+    # since 2026-04-14; the old .complete / .analyze_complete markers were retired
+    # when analysis was decoupled from the driver).
+    if ckpt_file.exists():
         db.record_skip(
             pipeline_run_id=pipeline_run_id, asset_name=cfg.asset_name,
             stage=cfg.stage, model_type=cfg.model_type,
-            reason="complete_marker_exists",
+            reason="best_ckpt_exists",
             run_dir=str(run_dir), ckpt_path=str(ckpt_file),
         )
-        return str(ckpt_file), (run_dir / PHASE_MARKERS["analyze"]).exists()
+        return str(ckpt_file)
 
     # HOOK 3: Actual attempt — insert on entry
     attempt_id = db.start_attempt(
@@ -611,7 +616,7 @@ def rebuild_catalog(*, lake_root: str, dry_run: bool = False) -> None:
 
 ### CLI wiring
 
-Add to `graphids/cli/_data.py` or a new `graphids/cli/_catalog.py`:
+Add to `graphids/cli/data.py` or a new `graphids/cli/catalog.py`:
 
 ```python
 @app.command("rebuild-catalog", rich_help_panel="Analytics")
@@ -759,7 +764,7 @@ layers because both derive it from `ResolvedConfig.resolve`.
 | Open `WorkflowDB` in `run_pipeline`; thread `pipeline_run_id` + `attempt` through `_run_one_stage` | ~15 | existing |
 | `tests/workflow/test_db.py` — differential test using an in-memory DB | ~80 | new |
 | `graphids/catalog/schema.sql` + `build.py` | ~200 | new package |
-| `rebuild-catalog` CLI command | ~15 | existing `cli/_data.py` |
+| `rebuild-catalog` CLI command | ~15 | existing `cli/data.py` |
 | `configs/resources/submit_profiles.json` — add `rebuild-catalog` entry | ~9 | existing |
 | `tests/catalog/test_rebuild.py` — fixture with synthetic traces.jsonl | ~100 | new |
 | Update `docs/reference/observability.md` to point here | ~5 | existing |

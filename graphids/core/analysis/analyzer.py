@@ -7,9 +7,9 @@ from typing import Literal
 
 import torch
 
+from graphids._otel import get_logger
 from graphids.config.topology import cache_dir, data_dir
 from graphids.core.models.base import safe_load_checkpoint
-from graphids._otel import get_logger
 
 log = get_logger(__name__)
 
@@ -189,10 +189,14 @@ class Analyzer:
 
         root = cache_dir(self.lake_root, self.dataset)
         raw = data_dir(self.lake_root, self.dataset)
+        # val shares train's tensor (split_tag defaults to "train"); we only
+        # read the cache, so source_dirs isn't needed here. val_fraction
+        # must match training (0.2 — the CANBusSource default).
         val_ds = CANBusDataset(
             root=root,
             raw_dir=raw,
             split="val",
+            val_fraction=0.2,
             seed=self.seed,
             window_size=self.window_size,
             stride=self.stride,

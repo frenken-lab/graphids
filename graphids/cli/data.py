@@ -47,6 +47,44 @@ def rebuild_caches(
     _rebuild(datasets, delete_existing=delete_existing)
 
 
+@app.command("validate-metadata", rich_help_panel="Data")
+def validate_metadata_cli(
+    dataset: Annotated[
+        str,
+        typer.Option(help="Dataset name to validate", autocompletion=_complete_dataset),
+    ],
+) -> None:
+    """Validate cache_metadata.json against v2 schema + catalog expectations."""
+    from graphids.config.constants import LAKE_ROOT, PREPROCESSING_VERSION
+    from graphids.config.topology import cache_dir, load_catalog
+    from graphids.core.data.metadata import load_metadata, validate_metadata
+
+    catalog = load_catalog()
+    if dataset not in catalog:
+        raise typer.BadParameter(f"Unknown dataset {dataset!r}")
+
+    cdir = cache_dir(LAKE_ROOT, dataset)
+    try:
+        meta = load_metadata(cdir)
+    except (FileNotFoundError, ValueError) as exc:
+        typer.echo(f"FAIL: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    errors = validate_metadata(
+        meta,
+        dataset=dataset,
+        test_subdirs=catalog[dataset].get("test_subdirs") or [],
+        preprocessing_version=PREPROCESSING_VERSION,
+    )
+    if errors:
+        typer.echo(f"FAIL: {len(errors)} validation error(s) for {dataset}:", err=True)
+        for err in errors:
+            typer.echo(f"  - {err}", err=True)
+        raise typer.Exit(code=1)
+    splits = list(meta.get("splits") or {})
+    typer.echo(f"OK: {dataset} — {len(splits)} splits ({', '.join(splits)})")
+
+
 @app.command("extract-fusion-states", rich_help_panel="Data")
 def extract_fusion_states(
     vgae_ckpt: Annotated[str, typer.Option(help="Path to VGAE checkpoint")],

@@ -25,18 +25,16 @@ All SLURM jobs are submitted via the unified launcher `scripts/slurm/submit.sh <
 |-----|---------|
 | Tests | `scripts/slurm/submit.sh tests [-k pattern] [-x]` |
 | Cache rebuild | `scripts/slurm/submit.sh rebuild-caches --all --delete-existing --yes` |
-| Loss landscape | `scripts/slurm/submit.sh landscape <model_type> <dataset> <ckpt_path>` |
+| Analyze ckpt  | `scripts/slurm/submit.sh analyze --ckpt-path <p> --dataset <name>` |
 | Pipeline run | `scripts/slurm/submit.sh pipeline-run --dataset hcrl_sa` |
-| Probe budget | `scripts/slurm/submit.sh probe-budget [--dataset X]` |
 | Extract fusion states | `scripts/slurm/submit.sh extract-fusion-states` |
-| Ablation campaign | `scripts/slurm/submit.sh ablation [--dataset X]` |
 | Profiling | `scripts/slurm/submit.sh profile` |
 
 Source of truth for the table: `configs/resources/submit_profiles.json` —
 `python -m graphids submit-profile <job>` prints the resource tuple
 that `submit.sh` consumes.
 
-submit.sh handles `.env` sourcing, account selection, and resource defaults. Landscape auto-selects gpu vs cpu partition based on model type.
+submit.sh handles `.env` sourcing, account selection, and resource defaults.
 
 ## Writing SLURM Job Scripts
 
@@ -68,7 +66,7 @@ When creating or modifying a SLURM `.sh` or '.sbatch' script, follow these conve
 #SBATCH --partition=cpu
 ```
 
-CPU preamble: `SKIP_CUDA_CONF=1 SKIP_STAGE_DATA=1 source "$SCRIPT_DIR/_preamble.sh"`
+CPU preamble: `SKIP_CUDA_CONF=1 source "$SCRIPT_DIR/_preamble.sh"`
 
 ### Required Environment Setup
 
@@ -78,13 +76,11 @@ All boilerplate is in shared sourced scripts:
 # Auto-detect project root from script location
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Preamble: env setup, venv, .env, CUDA config, data staging
+# Preamble: env setup, venv, .env, CUDA alloc config
 source "$SCRIPT_DIR/_preamble.sh"
 
 # Override before sourcing:
 #   SKIP_CUDA_CONF=1   — for CPU-only jobs
-#   SKIP_STAGE_DATA=1  — skip data staging
-#   STAGE_DATA_ARGS="--raw"  — for preprocessing jobs
 ```
 
 ```bash
@@ -95,27 +91,17 @@ JOB_LOG_PREFIX="ray" source "$SCRIPT_DIR/_epilog.sh"
 ### Key Patterns
 
 - **`--signal=B:USR1@300`** — sends USR1 five minutes before wall time for graceful shutdown
-- **`_preamble.sh`** — sets up Python 3.12, venv, .env, CUDA memory config, data staging
+- **`_preamble.sh`** — sets up Python 3.12, venv, .env, CUDA memory config
 - **`_epilog.sh`** — GPU utilization report (resource right-sizing)
 
-## Data Staging Protocol
+## Data I/O
 
-Data staging uses a 3-tier storage hierarchy. `python -m graphids stage-data` manages this automatically (called by `_preamble.sh`).
-
-### Storage Tiers
-
-| Tier | Path | Speed | Persistence | Use |
-|------|------|-------|-------------|-----|
-| **NFS** (home) | `~/graphids/data/` | Slow | Permanent | Source of truth |
-| **Scratch** (GPFS) | `/fs/scratch/PAS1266/graphids-data/` | Fast | 90-day purge | Shared across jobs |
-| **TMPDIR** (local SSD) | `$TMPDIR/graphids-data/` | Fastest | Per-job only | Training I/O |
-
-### Smart Caching
-
-`stage_data.sh` uses marker files (`.staged_marker`) to skip redundant copies:
-
-1. **NFS → Scratch**: Skipped if marker exists and source file count matches. The 90-day scratch purge deletes the marker, triggering a fresh sync automatically.
-2. **Scratch → TMPDIR**: Skipped if `$TMPDIR/graphids-data/cache/` already exists (shouldn't happen since TMPDIR is per-job, but guards against re-sourcing).
+Jobs read raw CSVs and cache tensors directly from ESS NFS
+(`/fs/ess/PAS1266/graphids/{raw,cache}/`). The old `stage-data` command
+(NFS → scratch → TMPDIR) was removed 2026-04-14 after rebuild confirmed
+direct NFS reads are fast enough for our working set. If training ever
+becomes I/O-bound, reintroduce a real staging command — don't paper over
+with a silent eval.
 
 ## Login Node Safety
 

@@ -54,6 +54,10 @@ function(
         batch_size: 8192,
         num_workers: null,  // auto-sized from GPU-first sizing chain
         dynamic_batching: true,
+        // Reconstruction stages train on benign traffic only — attack rows
+        // would teach the decoder to reproduce anomalies. Supervised stages
+        // omit this field (defaults to null = full train set).
+        label_filter: 'benign',
         conv_type: conv_type,
         heads: $.model.init_args.heads,  // late-bind from model libsonnet
       },

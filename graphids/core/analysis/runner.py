@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from graphids._otel import get_logger
-from graphids.core.analysis.schemas import AnalysisSpec
+from graphids.core.analysis.schemas import ARTIFACTS_BY_MODEL_TYPE, AnalysisSpec
 
 log = get_logger(__name__)
 
@@ -39,17 +40,21 @@ def analysis_spec_for(
     For ``model_type='fusion'``, walks ``upstream_ckpts`` + ``upstream_families``
     to populate ``vgae_ckpt_path`` / ``gat_ckpt_path`` and enable
     ``fusion_policy=True`` (the ``AnalysisSpec`` validator requires both).
+
+    Per-model artifact toggles come from ``ARTIFACTS_BY_MODEL_TYPE`` — the
+    single dispatch site shared with the CLI.
     """
-    extras: dict[str, str | bool] = {}
+    kwargs: dict[str, Any] = dict(ARTIFACTS_BY_MODEL_TYPE.get(model_type, {}))
+
     if model_type == "fusion" and upstream_ckpts and upstream_families:
         for asset, ckpt in upstream_ckpts.items():
             family = upstream_families.get(asset)
             if family == "unsupervised":
-                extras["vgae_ckpt_path"] = ckpt
+                kwargs["vgae_ckpt_path"] = ckpt
             elif family == "supervised":
-                extras["gat_ckpt_path"] = ckpt
-        if "vgae_ckpt_path" in extras and "gat_ckpt_path" in extras:
-            extras["fusion_policy"] = True
+                kwargs["gat_ckpt_path"] = ckpt
+        if "vgae_ckpt_path" in kwargs and "gat_ckpt_path" in kwargs:
+            kwargs["fusion_policy"] = True
 
     return AnalysisSpec(
         ckpt_path=str(ckpt_file),
@@ -57,7 +62,7 @@ def analysis_spec_for(
         model_type=model_type,
         output_dir=str(ckpt_file.resolve().parent.parent / "artifacts"),
         seed=seed,
-        **extras,
+        **kwargs,
     )
 
 

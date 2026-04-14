@@ -8,7 +8,6 @@ feature expressions, attack-type taxonomy, and the ``CANBusDataset`` +
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,10 +15,12 @@ import polars as pl
 import torch
 from torch_geometric.data import Data, InMemoryDataset
 
+from graphids._otel import get_logger
+from graphids.config.constants import PREPROCESSING_VERSION
 from graphids.core.data.cache import DatasetState
 from graphids.core.data.graph_pipeline import GraphPipeline
 from graphids.core.data.io import atomic_save, nfs_lock, vocab_from_column
-from graphids._otel import get_logger
+from graphids.core.data.metadata import merge_split_into_metadata
 
 log = get_logger(__name__)
 
@@ -113,10 +114,7 @@ NODE_STAT_EXPRS: list[pl.Expr] = [
 # Note: bidir is computed separately via self-join (not expressible as a single expression).
 EDGE_STAT_EXPRS: list[pl.Expr] = [
     pl.col("timestamp").diff().cast(pl.Float32).alias("iat"),
-    *[
-        pl.col(f"byte_{i}").diff().abs().cast(pl.Float32).alias(f"byte_{i}_diff")
-        for i in range(8)
-    ],
+    *[pl.col(f"byte_{i}").diff().abs().cast(pl.Float32).alias(f"byte_{i}_diff") for i in range(8)],
 ]
 
 # Label aggregations per window: y (binary attack) + attack_type (multiclass).
@@ -132,6 +130,17 @@ LABEL_EXPRS: list[pl.Expr] = [
 
 # Columns required by edge-feature computation (byte diffs need byte_0..7).
 EDGE_BASE_COLS: list[str] = [f"byte_{i}" for i in range(8)]
+
+
+def _describe(t: torch.Tensor) -> dict[str, float | int]:
+    """min/max/mean/p95/p99 of a 1-D tensor — the cache_metadata stat block."""
+    return {
+        "min": int(t.min().item()),
+        "max": int(t.max().item()),
+        "mean": float(t.mean().item()),
+        "p95": float(t.quantile(0.95).item()),
+        "p99": float(t.quantile(0.99).item()),
+    }
 
 
 def parse_payload(lf: pl.LazyFrame) -> pl.LazyFrame:
@@ -176,8 +185,11 @@ class CANBusDataset(InMemoryDataset):
         self,
         root: str | Path,
         raw_dir: str | Path,
+        *,
+        val_fraction: float,
         split: str = "train",
-        val_fraction: float = 0.15,
+        source_dirs: list[str] | None = None,
+        split_tag: str | None = None,
         window_size: int = 50,
         stride: int = 25,
         seed: int = 42,
@@ -187,6 +199,15 @@ class CANBusDataset(InMemoryDataset):
         self.raw_data_dir = Path(raw_dir)
         self.split = split
         self.val_fraction = val_fraction
+        self.source_dirs = source_dirs
+        # train/val share one tensor ("data_train.pt"); test splits are
+        # one tensor per subdir (caller passes split_tag="test_<subdir>").
+        if split_tag is None:
+            if split in ("train", "val"):
+                split_tag = "train"
+            else:
+                raise ValueError(f"split_tag is required for split={split!r}")
+        self.split_tag = split_tag
         self.window_size = window_size
         self.stride = stride
         self.seed = seed
@@ -199,8 +220,7 @@ class CANBusDataset(InMemoryDataset):
 
     @property
     def processed_file_names(self) -> list[str]:
-        tag = "train" if self.split in ("train", "val") else "test"
-        return [f"data_{tag}.pt"]
+        return [f"data_{self.split_tag}.pt"]
 
     def _load_num_arb_ids(self) -> None:
         # Always derive from actual data — num_arb_ids.txt can be stale/corrupted
@@ -252,62 +272,138 @@ class CANBusDataset(InMemoryDataset):
             marker = Path(self.processed_dir) / ".complete"
             if Path(self.processed_paths[0]).exists() and marker.exists():
                 return
-            data, slices, num_arb_ids, num_graphs = self._build_graphs()
-            atomic_save([data, slices], Path(self.processed_paths[0]))
+            data, slices, num_arb_ids, num_graphs, num_raw = self._build_graphs()
+            tensor_path = Path(self.processed_paths[0])
+            atomic_save([data, slices], tensor_path)
             (Path(self.processed_dir) / "num_arb_ids.txt").write_text(str(num_arb_ids))
-            self._write_cache_metadata(slices, num_graphs)
+
+            bytes_on_disk = tensor_path.stat().st_size
+            dataset_name = Path(self.root).name
+            invariants = {
+                "preprocessing_version": PREPROCESSING_VERSION,
+                "window_size": self.window_size,
+                "stride": self.stride,
+                "val_fraction": self.val_fraction,
+                "seed": self.seed,
+            }
+
+            if self.split == "train":
+                # Deterministic train/val partition (mirrors
+                # _apply_train_val_split). We write both entries here so the
+                # single train build fully populates the metadata without
+                # needing val to re-enter process().
+                gen = torch.Generator().manual_seed(self.seed)
+                perm = torch.randperm(num_graphs, generator=gen)
+                n_val = int(num_graphs * self.val_fraction)
+                val_idx = perm[:n_val]
+                train_idx = perm[n_val:]
+
+                train_entry = self._build_split_entry(
+                    data,
+                    slices,
+                    indices=train_idx,
+                    num_raw_samples=num_raw,
+                    bytes_on_disk=bytes_on_disk,
+                    source_dirs=self.source_dirs,
+                )
+                # val shares train's tensor — entry is minimal (no graph_stats
+                # or per-split raw_samples; consumers that want a val
+                # distribution must slice the train tensor themselves).
+                val_entry = {
+                    "num_graphs": int(val_idx.numel()),
+                    "derived_from": "train",
+                    "val_fraction_seed": [self.val_fraction, self.seed],
+                }
+                merge_split_into_metadata(
+                    Path(self.root),
+                    "train",
+                    train_entry,
+                    invariants=invariants,
+                    dataset_name=dataset_name,
+                    num_arb_ids=num_arb_ids,
+                )
+                merge_split_into_metadata(
+                    Path(self.root),
+                    "val",
+                    val_entry,
+                    invariants=invariants,
+                    dataset_name=dataset_name,
+                    num_arb_ids=num_arb_ids,
+                )
+            else:  # split == "test": one tensor = one test subdir
+                test_entry = self._build_split_entry(
+                    data,
+                    slices,
+                    indices=None,
+                    num_raw_samples=num_raw,
+                    bytes_on_disk=bytes_on_disk,
+                    source_dirs=self.source_dirs,
+                )
+                merge_split_into_metadata(
+                    Path(self.root),
+                    self.split_tag,
+                    test_entry,
+                    invariants=invariants,
+                    dataset_name=dataset_name,
+                    num_arb_ids=num_arb_ids,
+                )
             marker.write_text("ok")
 
-    def _write_cache_metadata(self, slices: dict, num_graphs: int) -> None:
-        """Write graph statistics to cache_metadata.json for DynamicBatchSampler."""
-        import json
-        import tempfile
+    def _build_split_entry(
+        self,
+        data: Data,
+        slices: dict,
+        *,
+        indices: torch.Tensor | None = None,
+        num_raw_samples: int | None = None,
+        bytes_on_disk: int | None = None,
+        source_dirs: list[str] | None = None,
+        extra: dict | None = None,
+    ) -> dict:
+        """Compose a per-split metadata entry from graph tensors.
 
-        node_t = (slices["x"][1:] - slices["x"][:-1]).float()
-        edge_t = (slices["edge_index"][1:] - slices["edge_index"][:-1]).float()
+        ``indices`` (when given) scopes stats + attack balance to a
+        post-split subset — used so ``splits.train`` / ``splits.val``
+        report their own slice of the shared train tensor.
+        """
+        node_diffs = (slices["x"][1:] - slices["x"][:-1]).float()
+        edge_diffs = (slices["edge_index"][1:] - slices["edge_index"][:-1]).float()
+        attack_types = data.attack_type
+        if indices is not None:
+            idx = torch.as_tensor(indices, dtype=torch.long)
+            node_t = node_diffs.index_select(0, idx)
+            edge_t = edge_diffs.index_select(0, idx)
+            attack_types = attack_types.index_select(0, idx)
+        else:
+            node_t = node_diffs
+            edge_t = edge_diffs
 
-        meta = {
-            "window_size": self.window_size,
-            "stride": self.stride,
-            "num_graphs": num_graphs,
+        balance: dict[str, int] = {}
+        for t in attack_types.tolist():
+            name = ATTACK_TYPE_NAMES.get(int(t), f"unknown_{int(t)}")
+            balance[name] = balance.get(name, 0) + 1
+
+        entry: dict = {
+            "num_graphs": int(node_t.numel()),
             "graph_stats": {
-                "node_count": {
-                    "min": int(node_t.min().item()),
-                    "max": int(node_t.max().item()),
-                    "mean": float(node_t.mean().item()),
-                    "p95": float(node_t.quantile(0.95).item()),
-                    "p99": float(node_t.quantile(0.99).item()),
-                },
-                "edge_count": {
-                    "min": int(edge_t.min().item()),
-                    "max": int(edge_t.max().item()),
-                    "mean": float(edge_t.mean().item()),
-                    "p95": float(edge_t.quantile(0.95).item()),
-                    "p99": float(edge_t.quantile(0.99).item()),
-                },
+                "node_count": _describe(node_t),
+                "edge_count": _describe(edge_t),
             },
+            "attack_balance": balance,
         }
-        # NFS-safe atomic write: tmpfile → fsync → rename
-        out_path = Path(self.root) / "cache_metadata.json"
-        fd, tmp = tempfile.mkstemp(dir=out_path.parent, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(meta, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            fd = -1  # owned by fdopen now
-            os.rename(tmp, out_path)
-        except BaseException:
-            if fd >= 0:
-                os.close(fd)
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-            raise
-        log.info("cache_metadata_written", path=str(out_path), num_graphs=num_graphs)
+        if source_dirs is not None:
+            entry["source_dirs"] = list(source_dirs)
+        if num_raw_samples is not None:
+            entry["num_raw_samples"] = int(num_raw_samples)
+        if bytes_on_disk is not None:
+            entry["bytes_on_disk"] = int(bytes_on_disk)
+        if extra:
+            entry.update(extra)
+        return entry
 
     # ── pipeline ──────────────────────────────────────────────────────
 
-    def _build_graphs(self) -> tuple[Data, dict, int, int]:
+    def _build_graphs(self) -> tuple[Data, dict, int, int, int]:
         df = self._read_raw()
         log.info("raw_loaded", rows=len(df))
 
@@ -326,9 +422,13 @@ class CANBusDataset(InMemoryDataset):
             label_exprs=LABEL_EXPRS,
             edge_base_cols=EDGE_BASE_COLS,
         )
-        data, slices, num_graphs = pipeline.run(df, self.window_size, self.stride)
+        data, slices, num_graphs, num_raw_samples = pipeline.run(
+            df,
+            self.window_size,
+            self.stride,
+        )
         del df
-        return data, slices, num_arb_ids, num_graphs
+        return data, slices, num_arb_ids, num_graphs, num_raw_samples
 
     @staticmethod
     def _infer_attack_type(csv_path: Path) -> int:
@@ -340,12 +440,31 @@ class CANBusDataset(InMemoryDataset):
         return 0
 
     def _read_raw(self) -> pl.DataFrame:
-        """Lazy-scan CSVs, parse hex, compute entropy, tag attack types. Collect once."""
+        """Lazy-scan CSVs from declared source_dirs, parse hex, tag attack types.
+
+        Scope is explicit: only subdirs in ``self.source_dirs`` are read.
+        Recursive glob over ``raw_data_dir`` would silently pull every
+        train+test CSV into one tensor (contamination; see plan §1.2).
+        """
+        if not self.source_dirs:
+            raise ValueError(
+                f"CANBusDataset split={self.split!r} has no source_dirs; "
+                "cannot build cache from raw CSVs. Caller must pass "
+                "source_dirs=[...] at construction."
+            )
         frames = []
-        for csv_path in sorted(self.raw_data_dir.rglob("*.csv")):
-            at = self._infer_attack_type(csv_path)
-            lf = pl.scan_csv(csv_path).with_columns(pl.lit(at).alias("attack_type"))
-            frames.append(lf)
+        for sub in self.source_dirs:
+            sub_path = self.raw_data_dir / sub
+            if not sub_path.is_dir():
+                raise FileNotFoundError(
+                    f"Declared source_dir {sub!r} missing under {self.raw_data_dir}"
+                )
+            for csv_path in sorted(sub_path.rglob("*.csv")):
+                at = self._infer_attack_type(csv_path)
+                lf = pl.scan_csv(csv_path).with_columns(pl.lit(at).alias("attack_type"))
+                frames.append(lf)
+        if not frames:
+            raise ValueError(f"No CSVs under any of {self.source_dirs!r} in {self.raw_data_dir}")
 
         combined = pl.concat(frames).sort("timestamp")
 
@@ -410,23 +529,56 @@ class CANBusSource:
     def build(self) -> DatasetState:
         from graphids.config.topology import cache_dir, data_dir, load_catalog
 
+        entry = load_catalog()[self.name]
         lake_root = self.resolved_lake_root()
         root = cache_dir(lake_root, self.name)
         raw = data_dir(lake_root, self.name)
+
+        # Train scope is explicit: attack-free + with-attacks subdirs from
+        # the catalog. Missing fields are skipped so datasets without a
+        # with-attacks split still work.
+        train_dirs = [s for s in (entry.get("train_subdir"), entry.get("train_attack_subdir")) if s]
+        if not train_dirs:
+            raise ValueError(
+                f"Catalog entry for {self.name!r} declares no train_subdir "
+                f"or train_attack_subdir; cannot build training cache."
+            )
         common = dict(
             window_size=self.window_size,
             stride=self.stride,
             val_fraction=self.val_fraction,
             seed=self.seed,
         )
-        train_ds = CANBusDataset(root=root, raw_dir=raw, split="train", **common)
-        val_ds = CANBusDataset(root=root, raw_dir=raw, split="val", **common)
+        train_ds = CANBusDataset(
+            root=root,
+            raw_dir=raw,
+            split="train",
+            source_dirs=train_dirs,
+            split_tag="train",
+            **common,
+        )
+        val_ds = CANBusDataset(
+            root=root,
+            raw_dir=raw,
+            split="val",
+            source_dirs=train_dirs,
+            split_tag="train",
+            **common,
+        )
 
+        # Per-test-subdir tensors: each subdir gets its own data_test_<name>.pt,
+        # preventing the "all test_N eval against test_01" regression
+        # (plan §1.3).
         test_datasets: dict[str, CANBusDataset] = {}
-        for subdir in load_catalog()[self.name].get("test_subdirs", []):
-            test_raw = raw / subdir
-            if test_raw.exists():
-                test_datasets[subdir] = CANBusDataset(
-                    root=root, raw_dir=test_raw, split="test", **common,
-                )
+        for subdir in entry.get("test_subdirs", []):
+            if not (raw / subdir).is_dir():
+                continue
+            test_datasets[subdir] = CANBusDataset(
+                root=root,
+                raw_dir=raw,
+                split="test",
+                source_dirs=[subdir],
+                split_tag=f"test_{subdir}",
+                **common,
+            )
         return DatasetState(train=train_ds, val=val_ds, test=test_datasets)

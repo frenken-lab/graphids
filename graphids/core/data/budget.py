@@ -1,7 +1,8 @@
 """VRAM budget → batch size → worker count.
 
-Wraps ``torch.profiler`` to measure forward/backward memory and timing.
-Peak VRAM is decomposed into:
+Measures forward/backward memory via the CUDA allocator high-water mark
+(``torch.cuda.max_memory_allocated``) and timing via wall-clock around
+``torch.cuda.synchronize``. Peak VRAM is decomposed into:
 - ``fixed_overhead`` — teacher params (frozen, on-GPU during forward only
   but batch-size-invariant). Reserved from ``free`` before sizing.
 - ``bytes_per_node`` / ``bytes_per_edge`` — scaling cost. Budget picks the
@@ -12,7 +13,6 @@ Workers sized by ``ceil((t_io + t_collation) / t_gpu)``.
 
 from __future__ import annotations
 
-import json
 import math
 import os
 import random
@@ -21,11 +21,11 @@ import time
 from dataclasses import dataclass
 
 import torch
-import torch.profiler as tp
 from torch_geometric.data import Batch
 
 from graphids._otel import get_logger
 from graphids.config.topology import cache_dir
+from graphids.core.data.metadata import load_metadata
 
 log = get_logger(__name__)
 
@@ -66,8 +66,10 @@ def _teacher_param_bytes(model) -> int:
 
 def _settings():
     from graphids.config.settings import get_settings
+
     s = get_settings()
     return s.budget_safety_margin, s.budget_grad_mult, s.budget_fallback_bpn
+
 
 _SAFETY, _GRAD_MULT, _FALLBACK_BPN = _settings()
 
@@ -75,28 +77,30 @@ _SAFETY, _GRAD_MULT, _FALLBACK_BPN = _settings()
 @dataclass
 class BudgetResult:
     """Output of ``BudgetProfiler.node_budget``."""
-    budget: int                       # max nodes per batch
+
+    budget: int  # max nodes per batch
     mean_nodes: float
     binding: str
     bytes_per_node: int | None = None
     bytes_per_edge: int | None = None  # per-edge scaling cost (from same probe)
-    edge_budget: int | None = None     # max edges per batch (dual constraint)
-    fixed_overhead: int = 0            # teacher params + framework (non-scaling)
+    edge_budget: int | None = None  # max edges per batch (dual constraint)
+    fixed_overhead: int = 0  # teacher params + framework (non-scaling)
     backward_multiplier: float | None = None
     t_fwd: float = 0.0
-    t_io: float = 0.0                  # median dataset __getitem__ time / sample
+    t_io: float = 0.0  # median dataset __getitem__ time / sample
 
 
 class BudgetProfiler:
     """Profile VRAM usage and compute batch/worker sizing.
 
-    Inherits measurement from ``torch.profiler.profile`` with
-    ``record_function`` tags to separate forward from backward peaks.
+    Uses the CUDA allocator high-water mark (``max_memory_allocated``)
+    around fwd / bwd passes — same numbers torch's own profiler reports,
+    minus the per-op overhead and the API-rename treadmill.
     """
 
     @staticmethod
     def probe(model, batch) -> tuple[int, int, float, float, int]:
-        """Profile one forward + one training step via ``torch.profiler``.
+        """Measure fwd + train-step VRAM and forward wall-time.
 
         Peak VRAM is split into ``fixed`` (teacher params — on-GPU during
         forward but batch-invariant) and ``scalable`` (activations +
@@ -107,7 +111,7 @@ class BudgetProfiler:
             bytes_per_node: ``scalable_peak / num_nodes``
             bytes_per_edge: ``scalable_peak / num_edges``
             backward_multiplier: ``bwd_peak / fwd_peak`` (measured)
-            t_fwd_seconds: forward CUDA time in seconds
+            t_fwd_seconds: forward wall-clock seconds (sync'd)
             fixed_bytes: teacher param bytes (reserved before sizing)
         """
         dev = model.device
@@ -115,40 +119,37 @@ class BudgetProfiler:
         model.eval()
         fn = getattr(model, "_step", None) or model
 
-        # Warmup: JIT, autotuning, AND CUDA profiler (CUPTI) init.
-        # Wrapping in tp.profile absorbs profiler setup cost so the
-        # measurement pass below doesn't include it.  See issue #28.
-        with tp.profile(activities=[tp.ProfilerActivity.CUDA], profile_memory=True):
-            with torch.no_grad():
-                fn(batch)
+        # Warmup: trigger lazy CUDA init, cuDNN autotuning, kernel JIT.
+        # Without this the first measured pass includes one-time setup
+        # cost that inflates both timing and peak VRAM.
+        with torch.no_grad():
+            fn(batch)
         torch.cuda.synchronize(dev)
 
-        # Forward-only pass: measure fwd peak + timing
-        with tp.profile(activities=[tp.ProfilerActivity.CUDA], profile_memory=True) as fwd_p:
-            with torch.profiler.record_function("forward"):
-                with torch.no_grad():
-                    fn(batch)
+        # Forward-only: peak VRAM + wall time
+        torch.cuda.reset_peak_memory_stats(dev)
         torch.cuda.synchronize(dev)
-        fwd_evts = fwd_p.key_averages()
-        fwd_peak = max((e.cuda_memory_usage for e in fwd_evts), default=0)
-        t_fwd = sum(e.cuda_time_total for e in fwd_evts) / 1e6
+        t0 = time.perf_counter()
+        with torch.no_grad():
+            fn(batch)
+        torch.cuda.synchronize(dev)
+        t_fwd = time.perf_counter() - t0
+        fwd_peak = torch.cuda.max_memory_allocated(dev)
 
-        # Full training step: measure bwd peak
+        # Full training step: peak VRAM through backward
         bwd_peak = fwd_peak
         step_fn = getattr(model, "_step", None)
         if step_fn is not None:
             model.train()
-            with tp.profile(activities=[tp.ProfilerActivity.CUDA], profile_memory=True) as bwd_p:
-                with torch.profiler.record_function("train_step"):
-                    loss = step_fn(batch.clone())
-                    if isinstance(loss, (tuple, list)):
-                        loss = loss[0]
-                    elif isinstance(loss, dict):
-                        loss = loss["loss"]
-                with torch.profiler.record_function("backward"):
-                    loss.backward()
+            torch.cuda.reset_peak_memory_stats(dev)
+            loss = step_fn(batch.clone())
+            if isinstance(loss, (tuple, list)):
+                loss = loss[0]
+            elif isinstance(loss, dict):
+                loss = loss["loss"]
+            loss.backward()
             torch.cuda.synchronize(dev)
-            bwd_peak = max((e.cuda_memory_usage for e in bwd_p.key_averages()), default=fwd_peak)
+            bwd_peak = torch.cuda.max_memory_allocated(dev)
             model.zero_grad(set_to_none=True)
 
         model.train() if was_training else model.eval()
@@ -165,8 +166,13 @@ class BudgetProfiler:
 
     @staticmethod
     def node_budget(
-        dataset: str, lake_root: str, *, conv_type: str = "gatv2",
-        heads: int = 4, model=None, train_dataset=None,
+        dataset: str,
+        lake_root: str,
+        *,
+        conv_type: str = "gatv2",
+        heads: int = 4,
+        model=None,
+        train_dataset=None,
     ) -> BudgetResult:
         """Pack budget: ``(free - fixed) × safety / bpn`` per dimension.
 
@@ -178,7 +184,10 @@ class BudgetProfiler:
                 f"Unknown conv_type {conv_type!r}; expected one of {sorted(VALID_CONV_TYPES)}"
             )
 
-        stats = json.loads((cache_dir(lake_root, dataset) / "cache_metadata.json").read_text())["graph_stats"]
+        # v2 schema: graph_stats lives per-split. Budget sampler is built
+        # against the training dataset, so train's stats drive sizing.
+        meta = load_metadata(cache_dir(lake_root, dataset))
+        stats = meta["splits"]["train"]["graph_stats"]
         mean_nodes = stats["node_count"]["mean"]
         free = torch.cuda.mem_get_info()[0] if torch.cuda.is_available() else 12 * 1024**3
 
@@ -194,7 +203,8 @@ class BudgetProfiler:
         if model and train_dataset and torch.cuda.is_available():
             b = collect_batch(train_dataset, 2000).to(model.device)
             bpn_node, bpn_edge, bwd, t_fwd, fixed = BudgetProfiler.probe(model, b)
-            del b; torch.cuda.empty_cache()
+            del b
+            torch.cuda.empty_cache()
 
         # Reserve fixed overhead (teacher params) before scaling math. Teacher
         # is on-GPU during every forward; its bytes don't grow with V/E so
@@ -212,15 +222,24 @@ class BudgetProfiler:
         edge_budget = max(1, int(free_scalable * _SAFETY / bpn_edge)) if bpn_edge > 0 else None
         binding = "memory" if (model and train_dataset) else "fallback"
         return BudgetResult(
-            budget=budget, mean_nodes=mean_nodes, binding=binding,
-            bytes_per_node=bpn_node, bytes_per_edge=bpn_edge,
-            edge_budget=edge_budget, fixed_overhead=fixed,
-            backward_multiplier=bwd, t_fwd=t_fwd,
+            budget=budget,
+            mean_nodes=mean_nodes,
+            binding=binding,
+            bytes_per_node=bpn_node,
+            bytes_per_edge=bpn_edge,
+            edge_budget=edge_budget,
+            fixed_overhead=fixed,
+            backward_multiplier=bwd,
+            t_fwd=t_fwd,
         )
 
     @staticmethod
     def autosize_workers(
-        model, dataset, result: BudgetResult, *, default_prefetch: int = 2,
+        model,
+        dataset,
+        result: BudgetResult,
+        *,
+        default_prefetch: int = 2,
     ) -> tuple[int, int]:
         """``ceil((t_io + t_collation) / t_gpu)`` → ``(num_workers, prefetch_factor)``.
 
@@ -230,6 +249,7 @@ class BudgetProfiler:
         collation and undersized workers whenever data lived off-TMPDIR.
         """
         from graphids._slurm import slurm_cpus_per_task
+
         if model.device.type != "cuda" or result.t_fwd <= 0:
             return 2, default_prefetch
 
@@ -258,7 +278,9 @@ class BudgetProfiler:
         graphs = batch.to_data_list()
         tc = []
         for _ in range(3):
-            t0 = time.perf_counter(); Batch.from_data_list(graphs); tc.append(time.perf_counter() - t0)
+            t0 = time.perf_counter()
+            Batch.from_data_list(graphs)
+            tc.append(time.perf_counter() - t0)
         t_coll = statistics.median(tc)
 
         t_worker = t_io + t_coll

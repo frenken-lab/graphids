@@ -13,18 +13,22 @@ class TestInferAttackType:
     @pytest.fixture
     def infer(self):
         from graphids.core.data.datasets.can_bus import CANBusDataset
+
         return CANBusDataset._infer_attack_type
 
-    @pytest.mark.parametrize("stem,parent,expected", [
-        ("normal_driving", "benign", 0),
-        ("dos_attack", "test", 1),
-        ("fuzzing_data", "attacks", 2),
-        ("fuzzy_data", "attacks", 2),
-        ("gear_spoof", "test", 3),
-        ("rpm_attack", "test", 4),
-        ("flooding_test", "attacks", 5),
-        ("unknown_file", "unknown_dir", 0),
-    ])
+    @pytest.mark.parametrize(
+        "stem,parent,expected",
+        [
+            ("normal_driving", "benign", 0),
+            ("dos_attack", "test", 1),
+            ("fuzzing_data", "attacks", 2),
+            ("fuzzy_data", "attacks", 2),
+            ("gear_spoof", "test", 3),
+            ("rpm_attack", "test", 4),
+            ("flooding_test", "attacks", 5),
+            ("unknown_file", "unknown_dir", 0),
+        ],
+    )
     def test_known_patterns(self, infer, stem, parent, expected, tmp_path):
         p = tmp_path / parent / f"{stem}.csv"
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -47,6 +51,7 @@ class TestCANBusDatasetBuildGraphs:
     @staticmethod
     def _write_minimal_csv(path, n_rows=200, n_ids=5):
         import csv
+
         path.parent.mkdir(parents=True, exist_ok=True)
         rng = np.random.default_rng(42)
         with open(path, "w", newline="") as f:
@@ -60,10 +65,18 @@ class TestCANBusDatasetBuildGraphs:
 
     def test_produces_valid_data_objects(self, tmp_path):
         from graphids.core.data.datasets.can_bus import CANBusDataset
-        self._write_minimal_csv(tmp_path / "raw" / "normal_test.csv")
+
+        self._write_minimal_csv(tmp_path / "raw" / "train_01_attack_free" / "normal.csv")
         ds = CANBusDataset(
-            root=str(tmp_path / "processed"), raw_dir=str(tmp_path / "raw"),
-            split="train", window_size=50, stride=50, seed=42,
+            root=str(tmp_path / "processed"),
+            raw_dir=str(tmp_path / "raw"),
+            split="train",
+            val_fraction=0.2,
+            source_dirs=["train_01_attack_free"],
+            split_tag="train",
+            window_size=50,
+            stride=50,
+            seed=42,
         )
         assert len(ds) > 0
         g = ds[0]

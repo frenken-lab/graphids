@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated
 
 import typer
 
@@ -40,9 +40,9 @@ def pipeline_run(
             "--fusion-method", help="Fusion method", autocompletion=_complete_fusion_method
         ),
     ] = _defaults.fusion_method,
-    stages: Annotated[
-        str, typer.Option(help="Comma-separated stages to run")
-    ] = ",".join(_defaults.stages),
+    stages: Annotated[str, typer.Option(help="Comma-separated stages to run")] = ",".join(
+        _defaults.stages
+    ),
     conv_type: Annotated[
         str,
         typer.Option("--conv-type", help="Conv type", autocompletion=_complete_conv_type),
@@ -100,5 +100,3 @@ def pipeline_run(
     result = run_pipeline(cfg)
     for stage_name, ckpt in result.checkpoints_by_stage().items():
         typer.echo(f"{stage_name}: {ckpt}")
-    if result.analyzed_assets:
-        typer.echo(f"analyzed: {', '.join(result.analyzed_assets)}")

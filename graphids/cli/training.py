@@ -31,12 +31,12 @@ def _prepare(
     from graphids._otel import wire_file_exporters
     from graphids._spawn import ensure_spawn
     from graphids.cli.app import apply_overrides
-    from graphids.config.jsonnet import render_config
+    from graphids.config.jsonnet import render
     from graphids.orchestrate.stage import build
 
     ensure_spawn()
 
-    rendered = render_config(config, tla=dict(tla or []) or None)
+    rendered = render(config, tla=dict(tla or []) or None)
     apply_overrides(rendered, overrides)
     resolved = ResolvedConfig.from_rendered(rendered, stage_name=config.stem)
     if resolved.run_dir is not None:

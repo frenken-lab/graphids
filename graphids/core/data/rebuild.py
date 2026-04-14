@@ -1,6 +1,6 @@
 """Rebuild preprocessed graph caches after preprocessing changes.
 
-Operation layer — CLI surface lives in ``graphids.cli._data``.
+Operation layer — CLI surface lives in ``graphids.cli.data``.
 """
 
 from __future__ import annotations

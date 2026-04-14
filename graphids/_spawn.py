@@ -2,7 +2,7 @@
 
 Must run before any CUDA-touching DataLoader worker is spawned, per
 critical-constraints.md — fork + CUDA is a silent segfault. Called
-once at the entry of each training command (``cli/_training.py::fit``
+once at the entry of each training command (``cli/training.py::fit``
 and ``orchestrate/run.py::run_pipeline``).
 """
 

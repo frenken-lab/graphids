@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
 # scripts/slurm/_preamble.sh — sourced by SLURM job scripts.
-# Sets up Python environment, env vars, and data staging.
-#
-# Lightning handles: GPU monitoring (DeviceStatsMonitor callback),
-# USR1/timeout (SLURMEnvironment plugin), checkpointing (ModelCheckpoint).
+# Sets up Python environment + env vars.
 #
 # Override before sourcing:
-#   SKIP_STAGE_DATA=1  — skip data staging (tests, fusion jobs)
 #   SKIP_CUDA_CONF=1   — skip CUDA alloc config (CPU-only jobs)
 
 set -euo pipefail
@@ -36,10 +32,12 @@ if [[ "${SKIP_CUDA_CONF:-0}" != "1" ]]; then
     rm -rf "/tmp/torchinductor_${USER:-$LOGNAME}"
 fi
 
-# Data staging: NFS → scratch → TMPDIR (node-local SSD)
-if [[ "${SKIP_STAGE_DATA:-0}" != "1" ]]; then
-    eval "$(python -m graphids stage-data ${STAGE_DATA_ARGS:---cache} | grep '^export ')"
-fi
+# NOTE: `python -m graphids stage-data` (NFS → scratch → TMPDIR) used to
+# run here. The command was deleted in an earlier refactor; the call
+# itself remained because its `grep '^export '` pipe swallowed the
+# error. Rebuild + training jobs read directly from ESS NFS and work
+# fine. If training ever gets I/O-bound, reintroduce a real stage-data
+# command — don't paper over with another silent eval.
 
 if [[ -n "${TMPDIR:-}" ]]; then
     export GRAPHIDS_STAGE_DIR="$TMPDIR/graphids-stage"

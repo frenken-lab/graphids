@@ -108,16 +108,20 @@ Budget tuning: `GRAPHIDS_BUDGET_SAFETY_MARGIN`, `GRAPHIDS_BUDGET_GRAD_MULT`,
 
 ### HPC resource profiles
 
-Source of truth: `configs/resources/job_profiles.json` (per family/scale/stage).
-Cluster mapping: `configs/resources/clusters.json`.
+Single source of truth: `configs/resources/submit_profiles.json`. Three shapes:
 
-| Cluster    | GPU partition | GRES            |
-|------------|---------------|-----------------|
-| pitzer     | `gpu`         | `gpu:1`         |
-| ascend     | `nextgen`     | `gpu:a100:1`    |
-| cardinal   | `batch`       | `gpu:h100:1`    |
+- **static** — fixed `time` + `mem` (e.g. `tests`, `analyze`, `profile`).
+- **scaling** — `scaling.{time_min, mem_gb}` with `base + per_mraw * num_raw_samples`
+  interpolated from `cache_metadata.json.aggregate.num_raw_samples` for the
+  `--dataset` passed to `submit.sh`. Falls back to the `defaults` block when
+  `--dataset` is absent. `rebuild-caches` uses this.
+- **composed** — `stages: [<stage_profile_key>, ...]` pulling from top-level
+  `stage_profiles`. `time = sum(stages)`, `cpus/mem = max(stages)`. Scale
+  (small/large) applied via `scale_mult`. `pipeline-run` uses this.
 
-Auto-detected from hostname; override with `GRAPHIDS_CLUSTER`.
+`submit-profile <job> [--dataset X] [--scale small|large]` prints the resolved
+row that `submit.sh` parses. `graphids/config/topology.py::_validate_submit_profiles`
+catches unknown stage references and out-of-range scale keys at import time.
 
 ### Submit profiles (`scripts/slurm/submit.sh`)
 
@@ -126,7 +130,6 @@ Auto-detected from hostname; override with `GRAPHIDS_CLUSTER`.
 | tests          | cpu       | 1:00  | `python -m pytest`                    |
 | rebuild-caches | cpu       | 4:00  | `python -m graphids rebuild-caches`   |
 | profile        | gpudebug  | 1:00  | `python -m graphids profile`          |
-| probe-budget   | gpudebug  | 1:00  | `python -m graphids probe-budget`     |
 
 Full list: `configs/resources/submit_profiles.json`.
 
@@ -164,13 +167,17 @@ Computed by `compute_identity_hash()` in `graphids/config/paths.py`.
 
 ### Analyzer artifacts
 
-Single `analyze.jsonnet` dispatches by `model_type` TLA:
+`ARTIFACTS_BY_MODEL_TYPE` in `core/analysis/schemas.py` dispatches by the
+checkpoint's self-describing `class_path` — both `analyze` CLI and the
+pipeline driver go through `analysis_spec_for`, so the toggles below fire
+automatically without a per-run config.
 
-| `--tla model_type=` | embeddings | attention | cka | landscape   | fusion_policy |
-|----------------------|------------|-----------|-----|-------------|---------------|
-| `vgae`               | yes        | --        | --  | yes (51x51) | --            |
-| `gat`                | yes        | yes       | yes | yes         | --            |
-| `fusion`             | --         | --        | --  | --          | yes           |
+| model_type | embeddings | attention | cka | landscape   | fusion_policy |
+|------------|------------|-----------|-----|-------------|---------------|
+| `vgae`     | yes        | --        | --  | yes (51x51) | --            |
+| `dgi`      | yes        | --        | --  | yes (51x51) | --            |
+| `gat`      | yes        | yes       | yes | yes         | --            |
+| `fusion`   | --         | --        | --  | --          | yes (needs upstream ckpts) |
 
 | Artifact       | File                                  | Contents                            |
 |----------------|---------------------------------------|-------------------------------------|
@@ -180,7 +187,8 @@ Single `analyze.jsonnet` dispatches by `model_type` TLA:
 | Landscape      | `loss_landscape_{model_type}.parquet` | x, y, loss grid                     |
 | Fusion policy  | `dqn_policy.json`                     | alphas, labels, q_values            |
 
-### Data staging
+### Data I/O
 
-`_preamble.sh` → `python -m graphids stage-data`:
-NFS → Scratch → TMPDIR. `.staged_marker` skips redundant copies.
+Jobs read raw CSVs and cached tensors directly from ESS NFS
+(`/fs/ess/PAS1266/graphids/{raw,cache}/`). No scratch/TMPDIR staging
+today — the old `stage-data` command was removed 2026-04-14.

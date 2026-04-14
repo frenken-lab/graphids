@@ -6,12 +6,11 @@ Verifies that commands are registered and --help works without importing torch.
 from typer.testing import CliRunner
 
 # Register all command modules
-import graphids.cli._analysis  # noqa: F401
-import graphids.cli._campaign  # noqa: F401
-import graphids.cli._data  # noqa: F401
-import graphids.cli._pipeline  # noqa: F401
-import graphids.cli._slurm  # noqa: F401
-import graphids.cli._training  # noqa: F401
+import graphids.cli.analysis  # noqa: F401
+import graphids.cli.campaign  # noqa: F401
+import graphids.cli.data  # noqa: F401
+import graphids.cli.pipeline  # noqa: F401
+import graphids.cli.training  # noqa: F401
 from graphids.cli.app import app
 
 runner = CliRunner()
@@ -40,7 +39,8 @@ def test_fit_help() -> None:
 def test_analyze_help() -> None:
     result = runner.invoke(app, ["analyze", "--help"])
     assert result.exit_code == 0
-    assert "--config" in result.output
+    assert "--ckpt-path" in result.output
+    assert "--dataset" in result.output
 
 
 def test_all_expected_commands_registered() -> None:
@@ -54,7 +54,6 @@ def test_all_expected_commands_registered() -> None:
         "rebuild-caches",
         "extract-fusion-states",
         "pipeline-run",
-        "probe-budget",
     }
     missing = expected - names
     assert not missing, f"Missing commands: {missing}"

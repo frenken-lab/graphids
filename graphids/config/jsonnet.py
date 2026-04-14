@@ -7,7 +7,7 @@ becomes jsonnet ``null``).
 
 No torch dep, no package-level side effects — safe to import on login
 nodes even without ``_jsonnet`` installed (the C binding is imported
-lazily inside ``render_config``).
+lazily inside ``render``).
 """
 
 from __future__ import annotations
@@ -21,26 +21,15 @@ class JsonnetError(RuntimeError):
     """Raised when jsonnet evaluation fails."""
 
 
-def render_config(
+def render(
     jsonnet_path: str | Path,
     tla: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Render a ``.jsonnet`` file with top-level arguments.
 
-    Parameters
-    ----------
-    jsonnet_path:
-        Path to a ``.jsonnet`` file.  May be a top-level function of TLAs
-        or a plain object.
-    tla:
-        Top-level argument dict.  Keys must match the jsonnet function's
-        parameter names; values are JSON-serialized via ``json.dumps``.
-
-    Returns
-    -------
-    dict[str, Any]
-        Parsed JSON output.  Always a dict — jsonnet programs that emit
-        arrays or scalars raise ``JsonnetError``.
+    TLAs are JSON-serialized via ``json.dumps`` so jsonnet receives real
+    typed values (ints stay ints, bools stay bools, ``None`` → jsonnet ``null``).
+    Raises ``JsonnetError`` on evaluation failure or non-object output.
     """
     import _jsonnet  # noqa: PLC0415  — deferred so module import is safe without the binding
 
@@ -56,8 +45,3 @@ def render_config(
             f"jsonnet output for {jsonnet_path} is {type(parsed).__name__}, expected object"
         )
     return parsed
-
-
-def render(jsonnet_path: str | Path, tla: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Short alias to render a Jsonnet config."""
-    return render_config(jsonnet_path, tla)

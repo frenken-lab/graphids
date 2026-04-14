@@ -66,14 +66,19 @@ class GraphPipeline:
             f"first label expr must be aliased 'y', got {self.label_names[0]!r}"
         )
 
-    def run(self, df: pl.DataFrame, window_size: int, stride: int) -> tuple[Data, dict, int]:
-        """Execute the full pipeline. Returns (Data, slices, num_graphs)."""
+    def run(
+        self,
+        df: pl.DataFrame,
+        window_size: int,
+        stride: int,
+    ) -> tuple[Data, dict, int, int]:
+        """Execute the full pipeline. Returns (Data, slices, num_graphs, num_raw_samples)."""
         df = df.with_row_index("_row").with_columns(pl.col("_row").cast(pl.Int64))
         n_rows = len(df)
         n_windows = max(0, (n_rows - window_size) // stride + 1)
         if n_windows == 0:
             log.warning("no_complete_windows", n_rows=n_rows, window_size=window_size)
-            return Data(), {}, 0
+            return Data(), {}, 0, n_rows
 
         log.info("windowing", n_windows=n_windows, window_size=window_size, stride=stride)
         half = window_size // 2
@@ -96,12 +101,16 @@ class GraphPipeline:
         node_stats = self._compute_graph_structure(node_stats, edge_df)
         label_maps = self._map_labels(labels)
 
-        return self._build_pyg_data(node_stats, edge_df, label_maps)
+        data, slices, num_graphs = self._build_pyg_data(node_stats, edge_df, label_maps)
+        return data, slices, num_graphs, n_rows
 
     # -- Step 1: Aggregate via group_by_dynamic --------------------------------
 
     def _aggregate(
-        self, lf: pl.LazyFrame, every: str, period: str,
+        self,
+        lf: pl.LazyFrame,
+        every: str,
+        period: str,
     ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
         """Node stats, edges, and labels via ``group_by_dynamic``."""
         dyn = dict(every=every, period=period, closed="left")
@@ -109,7 +118,8 @@ class GraphPipeline:
         node_stats = (
             lf.group_by_dynamic("_row", **dyn, group_by="node_id")
             .agg(*self.node_stat_exprs)
-            .fill_null(0).fill_nan(0)
+            .fill_null(0)
+            .fill_nan(0)
             .rename({"_row": "_wid"})
             .collect()
         )
@@ -165,7 +175,8 @@ class GraphPipeline:
 
     @staticmethod
     def _compute_graph_structure(
-        node_stats: pl.DataFrame, edge_df: pl.DataFrame,
+        node_stats: pl.DataFrame,
+        edge_df: pl.DataFrame,
     ) -> pl.DataFrame:
         """Compute clustering coefficient + in/out degree, update placeholders."""
         in_deg = (
@@ -180,19 +191,25 @@ class GraphPipeline:
         )
 
         # Triangle counting on undirected edges
-        edge_pairs = pl.concat([
-            edge_df.select("_wid", pl.col("src").alias("u"), pl.col("dst").alias("v")),
-            edge_df.select("_wid", pl.col("dst").alias("u"), pl.col("src").alias("v")),
-        ]).unique(["_wid", "u", "v"])
+        edge_pairs = pl.concat(
+            [
+                edge_df.select("_wid", pl.col("src").alias("u"), pl.col("dst").alias("v")),
+                edge_df.select("_wid", pl.col("dst").alias("u"), pl.col("src").alias("v")),
+            ]
+        ).unique(["_wid", "u", "v"])
 
         two_paths = edge_pairs.join(
             edge_pairs.select("_wid", pl.col("u").alias("_mid"), pl.col("v").alias("w")),
-            left_on=["_wid", "v"], right_on=["_wid", "_mid"], how="inner",
+            left_on=["_wid", "v"],
+            right_on=["_wid", "_mid"],
+            how="inner",
         ).filter(pl.col("u") != pl.col("w"))
 
         tri = two_paths.join(
-            edge_pairs, left_on=["_wid", "u", "w"],
-            right_on=["_wid", "u", "v"], how="semi",
+            edge_pairs,
+            left_on=["_wid", "u", "w"],
+            right_on=["_wid", "u", "v"],
+            how="semi",
         )
         del two_paths
 
@@ -225,8 +242,7 @@ class GraphPipeline:
         del tri_per_node, undirected_deg
 
         node_stats = (
-            node_stats
-            .update(cc, on=["_wid", "node_id"])
+            node_stats.update(cc, on=["_wid", "node_id"])
             .update(in_deg, on=["_wid", "node_id"])
             .update(out_deg, on=["_wid", "node_id"])
         )
@@ -269,29 +285,35 @@ class GraphPipeline:
             (pl.cum_count("node_id").over("_wid") - 1).cast(pl.Int64).alias("_local_id")
         )
         id_map = node_stats.select("_wid", "node_id", "_local_id")
-        edge_df = (
-            edge_df
-            .join(id_map.rename({"node_id": "src", "_local_id": "src_local"}),
-                  on=["_wid", "src"], how="left")
-            .join(id_map.rename({"node_id": "dst", "_local_id": "dst_local"}),
-                  on=["_wid", "dst"], how="left")
+        edge_df = edge_df.join(
+            id_map.rename({"node_id": "src", "_local_id": "src_local"}),
+            on=["_wid", "src"],
+            how="left",
+        ).join(
+            id_map.rename({"node_id": "dst", "_local_id": "dst_local"}),
+            on=["_wid", "dst"],
+            how="left",
         )
 
         # Polars → torch (data is already contiguous by window order)
         cat_x = (
             node_stats.select(self.node_col_order)
-            .fill_null(0).fill_nan(0).to_torch(dtype=pl.Float32)
+            .fill_null(0)
+            .fill_nan(0)
+            .to_torch(dtype=pl.Float32)
         )
-        cat_node_id = torch.from_numpy(
-            node_stats["node_id"].cast(pl.Int64).to_numpy().copy()
+        cat_node_id = torch.from_numpy(node_stats["node_id"].cast(pl.Int64).to_numpy().copy())
+        cat_edge_index = torch.stack(
+            [
+                torch.from_numpy(edge_df["src_local"].cast(pl.Int64).to_numpy().copy()),
+                torch.from_numpy(edge_df["dst_local"].cast(pl.Int64).to_numpy().copy()),
+            ]
         )
-        cat_edge_index = torch.stack([
-            torch.from_numpy(edge_df["src_local"].cast(pl.Int64).to_numpy().copy()),
-            torch.from_numpy(edge_df["dst_local"].cast(pl.Int64).to_numpy().copy()),
-        ])
         cat_edge_attr = (
             edge_df.select(list(self.edge_col_order))
-            .fill_null(0).fill_nan(0).to_torch(dtype=pl.Float32)
+            .fill_null(0)
+            .fill_nan(0)
+            .to_torch(dtype=pl.Float32)
         )
 
         # Slice boundaries via Polars group_by + torch.cumsum
@@ -301,32 +323,44 @@ class GraphPipeline:
         node_counts = torch.from_numpy(
             node_stats.group_by("_wid", maintain_order=True).len()["len"].to_numpy().copy()
         )
-        node_cumsum = torch.cat([
-            torch.zeros(1, dtype=torch.long), node_counts.cumsum(0).to(torch.long),
-        ])
+        node_cumsum = torch.cat(
+            [
+                torch.zeros(1, dtype=torch.long),
+                node_counts.cumsum(0).to(torch.long),
+            ]
+        )
 
         edge_counts = torch.from_numpy(
             edge_df.group_by("_wid", maintain_order=True).len()["len"].to_numpy().copy()
         )
-        edge_cumsum = torch.cat([
-            torch.zeros(1, dtype=torch.long), edge_counts.cumsum(0).to(torch.long),
-        ])
+        edge_cumsum = torch.cat(
+            [
+                torch.zeros(1, dtype=torch.long),
+                edge_counts.cumsum(0).to(torch.long),
+            ]
+        )
 
         graph_idx = torch.arange(num_graphs + 1, dtype=torch.long)
         label_tensors = {
             name: torch.tensor(
-                [label_maps[name].get(w, 0) for w in kept_wids], dtype=torch.long,
+                [label_maps[name].get(w, 0) for w in kept_wids],
+                dtype=torch.long,
             )
             for name in self.label_names
         }
 
         data = Data(
-            x=cat_x, edge_index=cat_edge_index, edge_attr=cat_edge_attr,
-            node_id=cat_node_id, **label_tensors,
+            x=cat_x,
+            edge_index=cat_edge_index,
+            edge_attr=cat_edge_attr,
+            node_id=cat_node_id,
+            **label_tensors,
         )
         slices = {
-            "x": node_cumsum, "edge_index": edge_cumsum,
-            "edge_attr": edge_cumsum, "node_id": node_cumsum,
+            "x": node_cumsum,
+            "edge_index": edge_cumsum,
+            "edge_attr": edge_cumsum,
+            "node_id": node_cumsum,
             **{name: graph_idx for name in self.label_names},
         }
         log.info("graphs_built", count=num_graphs)

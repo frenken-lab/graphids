@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal  # noqa: F401 (resolved by model_rebuild)
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-_MinMaxMode = Literal["min", "max"]
 _MODEL_LIST_FIELDS = ("pool_aggrs", "hidden_dims", "auxiliaries")
 _ALLOWED_CLASS_PATH_ROOTS = ("graphids.",)
 
@@ -30,25 +29,12 @@ class TrainerSection(BaseModel):
     callbacks: list[dict] | None = None
 
 
-class _MonitorBlock(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    monitor: str = Field(..., min_length=1)
-    mode: _MinMaxMode
-
-
-class CheckpointSection(_MonitorBlock):
-    save_top_k: int = 1
-    save_last: bool = True
-    filename: str = "best_model"
-
-
-class EarlyStoppingSection(_MonitorBlock):
-    patience: int = 100
-
-
-_MonitorBlock.model_rebuild()
-CheckpointSection.model_rebuild()
-EarlyStoppingSection.model_rebuild()
+def _monitor_pair(block: ClassPathBlock, label: str) -> tuple[str, str]:
+    args = block.init_args
+    monitor, mode = args.get("monitor"), args.get("mode")
+    if not monitor or mode not in ("min", "max"):
+        raise ValueError(f"{label} init_args must set monitor and mode ∈ {{min, max}}")
+    return monitor, mode
 
 
 class CallbacksSection(BaseModel):
@@ -58,12 +44,12 @@ class CallbacksSection(BaseModel):
 
     @model_validator(mode="after")
     def _monitor_pair_consistent(self) -> CallbacksSection:
-        ckpt = CheckpointSection.model_validate(self.checkpoint.init_args)
-        es = EarlyStoppingSection.model_validate(self.early_stopping.init_args)
-        if ckpt.monitor != es.monitor or ckpt.mode != es.mode:
+        ckpt = _monitor_pair(self.checkpoint, "callbacks.checkpoint")
+        es = _monitor_pair(self.early_stopping, "callbacks.early_stopping")
+        if ckpt != es:
             raise ValueError(
-                f"ModelCheckpoint ({ckpt.monitor}/{ckpt.mode}) and "
-                f"EarlyStopping ({es.monitor}/{es.mode}) must track the same metric+mode"
+                f"ModelCheckpoint ({ckpt[0]}/{ckpt[1]}) and "
+                f"EarlyStopping ({es[0]}/{es[1]}) must track the same metric+mode"
             )
         return self
 

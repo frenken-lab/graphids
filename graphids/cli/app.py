@@ -123,8 +123,8 @@ CkptPath = Annotated[
 #
 # Each ``_complete_*`` takes an ``incomplete`` prefix (typer passes whatever the
 # user has typed so far after ``<TAB>``) and returns the matching values. These
-# are wired via ``autocompletion=`` on the relevant Options in ``_pipeline.py``,
-# ``_data.py``, and ``_slurm.py``. Values come from the authoritative source
+# are wired via ``autocompletion=`` on the relevant Options in ``pipeline.py``
+# and ``data.py``. Values come from the authoritative source
 # (topology catalog, pydantic Literal, axes.json frozenset) — no hardcoded lists
 # that can drift. Each helper defers its imports so ``--help`` stays fast.
 
@@ -189,3 +189,134 @@ def apply_overrides(
                 cur[part] = nxt
             cur = nxt
         cur[parts[-1]] = typed_val
+
+
+# ---------------------------------------------------------------------------
+# Meta commands — operational lookups that don't fit any domain panel
+# ---------------------------------------------------------------------------
+
+
+@app.command("submit-profile", rich_help_panel="Meta")
+def submit_profile(
+    job: str,
+    dataset: Annotated[
+        str | None,
+        typer.Option(
+            "--dataset",
+            help="Size mem/time from this dataset's cache_metadata.json",
+            autocompletion=_complete_dataset,
+        ),
+    ] = None,
+    scale: Annotated[
+        str,
+        typer.Option(
+            "--scale", help="Model scale for per-stage scaling", autocompletion=_complete_scale
+        ),
+    ] = "small",
+) -> None:
+    """Print resource profile fields for ``scripts/slurm/submit.sh``.
+
+    Reads ``configs/resources/submit_profiles.json`` and prints
+    ``partition cpus mem time signal mode gres command`` on a single line.
+
+    Profiles fall into three shapes:
+    - static (``time`` + ``mem`` fields present) — emit as-is
+    - scaling (``scaling`` block) — size from ``--dataset``'s num_raw_samples;
+      fall back to ``defaults`` when ``--dataset`` is omitted
+    - composed (``stages`` list) — per-stage sizing then compose:
+      ``time = sum(stages)``, ``cpus/mem = max(stages)``
+    """
+    from graphids._otel import get_logger
+    from graphids.config.constants import PROJECT_ROOT
+
+    log = get_logger(__name__)
+    config = json.loads(
+        (PROJECT_ROOT / "configs" / "resources" / "submit_profiles.json").read_text()
+    )
+    submit_profiles = config["submit_profiles"]
+    stage_profiles = config.get("stage_profiles", {})
+    if job not in submit_profiles:
+        log.error("submit_profile_unknown", job=job, available=sorted(submit_profiles))
+        raise typer.Exit(1)
+    p = submit_profiles[job]
+
+    num_raw = _load_num_raw_samples(dataset) if dataset else None
+    cpus, mem_str, time_str = _resolve_resources(p, stage_profiles, num_raw, scale)
+
+    gres = "gpu:1" if p["mode"] == "gpu" else "NONE"
+    signal = p.get("signal") or "NONE"
+    print(
+        f"{p['partition']} {cpus} {mem_str} {time_str} {signal} {p['mode']} {gres} {p['command']}"
+    )
+
+
+def _load_num_raw_samples(dataset: str) -> int | None:
+    """Load ``aggregate.num_raw_samples`` from the dataset's cache metadata."""
+    from graphids.config.constants import LAKE_ROOT
+    from graphids.config.topology import cache_dir
+    from graphids.core.data.metadata import load_metadata
+
+    try:
+        meta = load_metadata(cache_dir(LAKE_ROOT, dataset))
+    except (FileNotFoundError, ValueError):
+        return None
+    return int(meta.get("aggregate", {}).get("num_raw_samples") or 0) or None
+
+
+def _eval_scaling(block: dict[str, Any], num_raw: int | None, scale: str) -> float:
+    """Compute ``base + per_mraw * mraw``, multiplied by scale factor if present."""
+    mraw = (num_raw or 0) / 1e6
+    value = block["base"] + block.get("per_mraw", 0.0) * mraw
+    mults = block.get("scale_mult") or {}
+    return float(value * mults.get(scale, 1.0))
+
+
+def _size_from_scaling(
+    profile: dict[str, Any], num_raw: int | None, scale: str
+) -> tuple[int, float, float]:
+    """Return ``(cpus, mem_gb, time_min)`` for a profile with a ``scaling`` block."""
+    sc = profile["scaling"]
+    return (
+        int(profile["cpus"]),
+        _eval_scaling(sc["mem_gb"], num_raw, scale),
+        _eval_scaling(sc["time_min"], num_raw, scale),
+    )
+
+
+def _resolve_resources(
+    profile: dict[str, Any],
+    stage_profiles: dict[str, Any],
+    num_raw: int | None,
+    scale: str,
+) -> tuple[int, str, str]:
+    """Resolve (cpus, mem, time) for any profile shape. Returns sbatch-ready strings."""
+    import math
+
+    if "stages" in profile:
+        if num_raw is None:
+            d = profile["defaults"]
+            return int(d["cpus"]), str(d["mem"]), str(d["time"])
+        per_stage = [
+            _size_from_scaling(stage_profiles[s], num_raw, scale) for s in profile["stages"]
+        ]
+        cpus = max(c for c, _, _ in per_stage)
+        mem_gb = max(m for _, m, _ in per_stage)
+        time_min = sum(t for _, _, t in per_stage)
+    elif "scaling" in profile:
+        if num_raw is None:
+            d = profile["defaults"]
+            return int(profile["cpus"]), str(d["mem"]), str(d["time"])
+        cpus, mem_gb, time_min = _size_from_scaling(profile, num_raw, scale)
+    else:
+        return int(profile["cpus"]), str(profile["mem"]), str(profile["time"])
+
+    return cpus, f"{math.ceil(mem_gb)}G", _format_time(time_min)
+
+
+def _format_time(minutes: float) -> str:
+    """Convert float minutes to ``H:MM:SS`` (ceil to whole minute)."""
+    import math
+
+    total_min = max(1, math.ceil(minutes))
+    h, m = divmod(total_min, 60)
+    return f"{h}:{m:02d}:00"

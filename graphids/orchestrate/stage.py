@@ -25,7 +25,7 @@ import torch
 
 from graphids._fs import touch_marker
 from graphids._otel import get_logger
-from graphids.config.constants import COMPLETE_MARKER, PHASE_MARKERS
+from graphids.config.constants import PHASE_MARKERS
 from graphids.orchestrate.config import InstantiatedRun, ResolvedConfig
 from graphids.orchestrate.instantiate import build_run
 
@@ -70,8 +70,12 @@ def _save_split_predictions(artifacts: InstantiatedRun, split: str, out_dir: Pat
         return
     out_dir.mkdir(parents=True, exist_ok=True)
     torch.save(stacked, out_dir / f"{split}.pt")
-    log.info("save_predictions", split=split, path=str(out_dir / f"{split}.pt"),
-             n=int(next(iter(stacked.values())).shape[0]))
+    log.info(
+        "save_predictions",
+        split=split,
+        path=str(out_dir / f"{split}.pt"),
+        n=int(next(iter(stacked.values())).shape[0]),
+    )
 
 
 def _save_test_predictions(model: Any, out_dir: Path) -> None:
@@ -138,30 +142,24 @@ def evaluate(
     artifacts: InstantiatedRun,
     resolved: ResolvedConfig,
 ) -> dict[str, Any]:
-    """Run the test phase and return metrics. Lenient on failure.
+    """Run the test phase and return metrics.
 
-    Touches the ``test`` phase marker on success and the ``complete``
-    marker unconditionally (so the chain's resume check sees the stage
-    as finished even if test itself crashed).
+    Writes the ``test`` phase marker on success (test-predictions sidecar).
+    Resume-skip authority lives in ``run_pipeline`` and checks the best
+    checkpoint file directly; a crashed test leaves no best.ckpt improvement
+    so the stage re-runs naturally.
     """
     stage_name = resolved.stage_name
     run_dir = resolved.run_dir
     ckpt_file = resolved.ckpt_file
-    try:
-        log.info("stage_test", stage=stage_name)
-        metrics = artifacts.trainer.test(
-            artifacts.model,
-            datamodule=artifacts.datamodule,
-            ckpt_path=str(ckpt_file) if ckpt_file is not None else None,
-        )
-        if run_dir is not None:
-            touch_marker(run_dir / PHASE_MARKERS["test"])
-            _save_test_predictions(artifacts.model, run_dir / "predictions" / "test")
-        result: dict[str, Any] = metrics or {}
-    except Exception as exc:
-        log.warning("stage_test_failed", stage=stage_name, error=str(exc))
-        result = {}
+    log.info("stage_test", stage=stage_name)
+    metrics = artifacts.trainer.test(
+        artifacts.model,
+        datamodule=artifacts.datamodule,
+        ckpt_path=str(ckpt_file) if ckpt_file is not None else None,
+    )
     if run_dir is not None:
-        touch_marker(run_dir / COMPLETE_MARKER)
+        touch_marker(run_dir / PHASE_MARKERS["test"])
+        _save_test_predictions(artifacts.model, run_dir / "predictions" / "test")
     log.info("stage_complete", stage=stage_name)
-    return result
+    return metrics or {}

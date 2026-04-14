@@ -26,33 +26,33 @@ python -m graphids fit \
 # Evaluation
 python -m graphids test --config configs/stages/autoencoder.jsonnet --ckpt_path best.ckpt
 
-# Analysis artifacts (single config dispatches by model_type)
-python -m graphids analyze --config configs/stages/analyze.jsonnet \
-    --tla 'model_type="vgae"' --analyzer.ckpt_path path/to/best.ckpt \
-    --analyzer.dataset hcrl_sa
+# Analysis artifacts (auto-dispatches by ckpt class_path → model_type)
+python -m graphids analyze --ckpt-path path/to/best.ckpt --dataset hcrl_sa
+# Fusion models need upstream ckpts:
+python -m graphids analyze --ckpt-path fusion.ckpt --dataset hcrl_sa \
+    --vgae-ckpt vgae.ckpt --gat-ckpt gat.ckpt
 ```
 
 ## CLI Architecture
 
 Three entry points, zero overlap:
 
-**Training** — `python -m graphids fit|test|validate|predict` → `graphids/cli/_training.py` (Typer). Renders the jsonnet stage with any `--tla` flags, gates through `validate_config`, and calls `graphids.orchestrate.instantiate.instantiate(rendered) → InstantiatedRun` which handles class_path import, signature-filtered link_arguments, forced callbacks (ModelCheckpoint/EarlyStopping/DeviceStatsMonitor/ResourceProfileCallback/RunRecordCallback), logger wiring, and wandb config forwarding. Callbacks live in `graphids/core/monitoring/callbacks.py`.
+**Training** — `python -m graphids fit|test|validate|predict` → `graphids/cli/training.py` (Typer). Renders the jsonnet stage with any `--tla` flags, gates through `validate_config`, and calls `graphids.orchestrate.instantiate.instantiate(rendered) → InstantiatedRun` which handles class_path import, signature-filtered link_arguments, forced callbacks (ModelCheckpoint/EarlyStopping/DeviceStatsMonitor/ResourceProfileCallback/RunRecordCallback), logger wiring, and wandb config forwarding. Callbacks live in `graphids/core/monitoring/callbacks.py`.
 
-**Operational commands** — Typer CLI in `graphids/cli/`. `app.py` defines the root app with shared option types (`ConfigPath`/`TlaList`/`SetList`/`CkptPath`) — `--tla` and `--set` run their `key=value` payload through `_parse_kv_pair` via Typer's `parser=` hook, and `apply_overrides` consumes the pre-parsed list-of-pairs directly. Submodules register commands via `@app.command()` decorators: `_training.py`, `_analysis.py`, `_data.py`, `_pipeline.py`, `_slurm.py`. `graphids/__main__.py` imports these submodules to register all commands.
+**Operational commands** — Typer CLI in `graphids/cli/`. `app.py` defines the root app with shared option types (`ConfigPath`/`TlaList`/`SetList`/`CkptPath`) — `--tla` and `--set` run their `key=value` payload through `_parse_kv_pair` via Typer's `parser=` hook, and `apply_overrides` consumes the pre-parsed list-of-pairs directly. Submodules register commands via `@app.command()` decorators: `training.py`, `analysis.py`, `data.py`, `pipeline.py`, `campaign.py`. `graphids/__main__.py` imports these submodules to register all commands.
 
 | Command | Purpose |
 |---------|---------|
 | `python -m graphids pipeline-run` | Run the full 3-stage chain in-process (one SLURM allocation) |
 | `python -m graphids analyze` | Analysis artifacts from checkpoints (loss-landscape folded in via TLA) |
-| `python -m graphids probe-budget` | Hardware cost model measurement across (model × scale × conv × dataset) |
 | `python -m graphids rebuild-caches` | Rebuild preprocessed graph caches |
 | `python -m graphids extract-fusion-states` | Extract VGAE+GAT latent states for fusion training |
 
-**Pipeline driver** — `graphids/orchestrate/run.py::run_pipeline(config)` loops `ResolvedConfig.resolve → build → train → evaluate → run_single_analysis` over each stage in the same Python process, with per-stage retries. No actor framework; runs inside the SLURM allocation created by `scripts/slurm/submit.sh pipeline-run`.
+**Pipeline driver** — `graphids/orchestrate/run.py::run_pipeline(config)` loops `ResolvedConfig.resolve → build → train → evaluate` over each stage in the same Python process, with per-stage retries. Resume skip-check is authoritative on `best_model.ckpt` existence — the prior `.complete` marker (a Dagster-era workaround) was removed once the pipeline gained direct checkpoint awareness. Analysis is decoupled: run `python -m graphids analyze --ckpt-path <p>` after training. No actor framework; runs inside the SLURM allocation created by `scripts/slurm/submit.sh pipeline-run`.
 
-**Config resolution** — Two entry points both produce a `ResolvedConfig` (frozen dataclass in `orchestrate/config.py` with fields `rendered / validated / stage_name / run_dir / ckpt_file`). **Pipeline path:** `orchestrate/resolve.py::resolve_config(cfg, lake_root, user, dataset, seed, upstream_ckpts)` builds a `PathContext` (`config/topology.py`), packs TLAs via `StageConfig.to_tla_dict(...)` — the single mapping site from schema fields to jsonnet TLA names, owned by `StageConfig` in `orchestrate/config.py` — renders the stage jsonnet via `render(...)` from `config/jsonnet.py`, and gates the output through `validate_config(...)` from `config/schemas.py`. **CLI path:** `ResolvedConfig.from_rendered(rendered, stage_name=...)`, called from `cli/_training.py::_prepare` after `render_config(config_path, tla=...)` has already produced the rendered dict — it only validates + pulls `run_dir` / `ckpt_file` from `trainer.default_root_dir`, skipping the `PathContext` step. Adding a new TLA means editing `StageConfig.to_tla_dict` + the relevant jsonnet stage signature. See `docs/reference/config-architecture.md`.
+**Config resolution** — Two entry points both produce a `ResolvedConfig` (frozen dataclass in `orchestrate/config.py` with fields `rendered / validated / stage_name / run_dir / ckpt_file`). **Pipeline path:** `orchestrate/resolve.py::resolve_config(cfg, lake_root, user, dataset, seed, upstream_ckpts)` builds a `PathContext` (`config/topology.py`), packs TLAs via `StageConfig.to_tla_dict(...)` — the single mapping site from schema fields to jsonnet TLA names, owned by `StageConfig` in `orchestrate/config.py` — renders the stage jsonnet via `render(...)` from `config/jsonnet.py`, and gates the output through `validate_config(...)` from `config/schemas.py`. **CLI path:** `ResolvedConfig.from_rendered(rendered, stage_name=...)`, called from `cli/training.py::_prepare` after `render(config_path, tla=...)` has already produced the rendered dict — it only validates + pulls `run_dir` / `ckpt_file` from `trainer.default_root_dir`, skipping the `PathContext` step. Adding a new TLA means editing `StageConfig.to_tla_dict` + the relevant jsonnet stage signature. See `docs/reference/config-architecture.md`.
 
-**SLURM submission** — all jobs via `scripts/slurm/submit.sh <profile> [args]`. The preamble hard-fails if the `jsonnet` binary is missing (see ADR 0010 in `docs/decisions/README.md`). Resource profiles read from `configs/resources/` (`job_profiles.json`, `clusters.json`, `submit_profiles.yaml`). See `rules/slurm-hpc.md`.
+**SLURM submission** — all jobs via `scripts/slurm/submit.sh <profile> [args]`. The preamble hard-fails if the `jsonnet` binary is missing (see ADR 0010 in `docs/decisions/README.md`). Resource profile is the single `configs/resources/submit_profiles.json` — static profiles have fixed time/mem; profiles with a `scaling` block auto-size from `cache_metadata.json.aggregate.num_raw_samples`; composed profiles (`pipeline-run`) sum per-stage time and max per-stage cpus/mem from `stage_profiles`. See `rules/slurm-hpc.md`.
 
 Fusion uses a single `configs/stages/fusion.jsonnet` that dispatches on the `fusion_method` TLA over the 4 method libsonnets in `configs/fusion/methods/`.
 

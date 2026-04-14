@@ -1,4 +1,31 @@
 {
+  "_comment": "Static profiles have fixed time/mem. Profiles with a 'scaling' block auto-size from cache_metadata.json.aggregate.num_raw_samples; profiles with a 'stages' list compose per-stage (time=sum, cpus/mem=max). 'defaults' is the fallback when --dataset is not provided.",
+  "stage_profiles": {
+    "autoencoder": {
+      "mode": "gpu",
+      "cpus": 8,
+      "scaling": {
+        "time_min": {"base": 5.0, "per_mraw": 0.3, "scale_mult": {"small": 1.0, "large": 2.0}},
+        "mem_gb":   {"base": 12.0, "per_mraw": 0.20, "scale_mult": {"small": 1.0, "large": 1.3}}
+      }
+    },
+    "supervised": {
+      "mode": "gpu",
+      "cpus": 8,
+      "scaling": {
+        "time_min": {"base": 8.0, "per_mraw": 0.5, "scale_mult": {"small": 1.0, "large": 2.2}},
+        "mem_gb":   {"base": 14.0, "per_mraw": 0.25, "scale_mult": {"small": 1.0, "large": 1.4}}
+      }
+    },
+    "fusion": {
+      "mode": "gpu",
+      "cpus": 4,
+      "scaling": {
+        "time_min": {"base": 3.0, "per_mraw": 0.10, "scale_mult": {"small": 1.0, "large": 1.3}},
+        "mem_gb":   {"base": 8.0, "per_mraw": 0.05, "scale_mult": {"small": 1.0, "large": 1.2}}
+      }
+    }
+  },
   "submit_profiles": {
     "tests": {
       "partition": "cpu",
@@ -11,21 +38,15 @@
     },
     "rebuild-caches": {
       "partition": "cpu",
-      "cpus": 4,
-      "mem": "128G",
-      "time": "3:00:00",
-      "signal": "",
-      "mode": "cpu-raw",
-      "command": "python -m graphids rebuild-caches"
-    },
-    "ablation": {
-      "partition": "cpu",
-      "cpus": 4,
-      "mem": "8G",
-      "time": "24:00:00",
+      "cpus": 6,
       "signal": "",
       "mode": "cpu",
-      "command": "dg launch --assets '*' --partition 'set_01|42'"
+      "command": "python -m graphids rebuild-caches",
+      "scaling": {
+        "time_min": {"base": 2.0, "per_mraw": 0.083},
+        "mem_gb":   {"base": 5.0, "per_mraw": 0.61}
+      },
+      "defaults": {"time": "1:00:00", "mem": "54G"}
     },
     "profile": {
       "partition": "gpudebug",
@@ -36,23 +57,14 @@
       "mode": "gpu",
       "command": "python -m graphids profile"
     },
-    "probe-budget": {
-      "partition": "gpudebug",
-      "cpus": 8,
-      "mem": "36G",
-      "time": "01:00:00",
-      "signal": "",
-      "mode": "gpu",
-      "command": "python -m graphids probe-budget"
-    },
-    "landscape": {
+    "analyze": {
       "partition": "gpu",
       "cpus": 4,
       "mem": "32G",
       "time": "2:00:00",
       "signal": "",
       "mode": "gpu",
-      "command": "python -m graphids analyze landscape"
+      "command": "python -m graphids analyze"
     },
     "extract-fusion-states": {
       "partition": "gpu",
@@ -65,12 +77,11 @@
     },
     "pipeline-run": {
       "partition": "gpu",
-      "cpus": 8,
-      "mem": "40G",
-      "time": "6:00:00",
       "signal": "",
       "mode": "gpu",
-      "command": "python -m graphids pipeline-run"
+      "command": "python -m graphids pipeline-run",
+      "stages": ["autoencoder", "supervised", "fusion"],
+      "defaults": {"cpus": 8, "mem": "40G", "time": "6:00:00"}
     }
   }
 }

@@ -50,7 +50,7 @@ ResolvedConfig.resolve (resolve.py)
   kd_overrides -> jsonnet_tla["distillation_config"] (resolve.py:60-61)
   |
   v
-render_config(jsonnet_path, jsonnet_tla)  (config/jsonnet.py)
+render(jsonnet_path, jsonnet_tla)  (config/jsonnet.py)
   Stage jsonnet emits model.init_args.distillation_config when non-null
   |
   v

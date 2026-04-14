@@ -157,6 +157,18 @@ class Trainer:
             return torch.device("cpu")
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    def _wire_datamodule(self, datamodule: Any, model: nn.Module) -> None:
+        """Push device + model handles into the datamodule.
+
+        Both setters are no-ops on datamodules that don't define them, so
+        this stays compatible with FusionDataModule etc. that don't use
+        VRAM probing or PrefetchLoader.
+        """
+        for name, value in (("_set_device", self._device), ("_set_model", model)):
+            setter = getattr(datamodule, name, None)
+            if setter is not None:
+                setter(value)
+
     # -- public API ----------------------------------------------------------
 
     def fit(
@@ -167,6 +179,7 @@ class Trainer:
     ) -> None:
         self.datamodule = datamodule
         model.to(self._device)
+        self._wire_datamodule(datamodule, model)
 
         datamodule.setup("fit")
         model.setup(datamodule)
@@ -216,6 +229,7 @@ class Trainer:
     ) -> dict[str, float]:
         self.datamodule = datamodule
         model.to(self._device)
+        self._wire_datamodule(datamodule, model)
 
         datamodule.setup("test")
         model.setup(datamodule)
@@ -249,6 +263,7 @@ class Trainer:
     ) -> dict[str, float]:
         self.datamodule = datamodule
         model.to(self._device)
+        self._wire_datamodule(datamodule, model)
 
         datamodule.setup("fit")
         model.setup(datamodule)
@@ -268,6 +283,7 @@ class Trainer:
     ) -> list:
         self.datamodule = datamodule
         model.to(self._device)
+        self._wire_datamodule(datamodule, model)
 
         datamodule.setup("predict")
         model.setup(datamodule)

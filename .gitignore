@@ -44,10 +44,9 @@ data/loss_landscapes/
 data/sweep_state/
 data/sweep_results/
 
-# ===== RAY / LIGHTNING / DAGSTER =====
+# ===== RAY / LIGHTNING =====
 ray_results/
 wandb/
-.dagster/
 
 # ===== OSC OnDemand =====
 .ondemand/
@@ -109,6 +108,7 @@ slurm-*.out
 # ===== DENO NOTEBOOKS =====
 notebooks/node_modules/
 notebooks/deno.lock
+.claude/scheduled_tasks.lock
 tmlr_output/
 users/
 .gitnexus

@@ -19,7 +19,7 @@ python -m graphids fit \
     --model.init_args.lr=0.01
   -> __main__.py
   -> cli._training (Typer @app.command)
-  -> render_config(jsonnet_path, tla)
+  -> render(jsonnet_path, tla)
   -> validate_config(rendered)  # Pydantic gate
   -> _apply_overrides(merged, overrides)
   -> instantiate(merged, validated=...)
@@ -30,7 +30,7 @@ python -m graphids fit \
 
 ```
 python -m graphids pipeline-run --dataset hcrl_sa --seed 42 --scale small
-  -> cli/_pipeline.py (Typer @app.command)
+  -> cli/pipeline.py (Typer @app.command)
   -> PipelineConfig(**kwargs) -> TrainingRunConfig
   -> run_pipeline(config)                            (orchestrate/run.py)
      +- ensure_spawn()
@@ -42,11 +42,12 @@ python -m graphids pipeline-run --dataset hcrl_sa --seed 42 --scale small
         |    +- render(jsonnet_path, tla)            (config/jsonnet.py)
         |    +- validate_config(rendered)            (config/schemas.py)
         |    +- monitor/mode consistency check       (inline log warning)
-        +- skip if .complete marker present
-        +- stage.build(rendered, validated)          -> (trainer, model, datamodule)
-        +- stage.train(artifacts, ...)               -> trainer.fit, touch .train_complete
-        +- stage.evaluate(artifacts, ...)            -> trainer.test, touch .test_complete + .complete
-        +- if analyzable: run_single_analysis(spec)  -> touch .analyze_complete
+        +- skip if checkpoints/best_model.ckpt exists  (checkpoint is authoritative)
+        +- stage.build(resolved)                       -> (trainer, model, datamodule)
+        +- stage.train(artifacts, resolved)            -> trainer.fit, touch .train_complete
+        +- stage.evaluate(artifacts, resolved)         -> trainer.test, touch .test_complete
+
+# Analysis runs separately after the pipeline via `python -m graphids analyze`.
 ```
 
 ### Route C: Validation (resolver gate)
@@ -57,13 +58,13 @@ Validation runs inside `ResolvedConfig.resolve()`:
 ### Route D: Operational commands (no training)
 
 ```
-python -m graphids {analyze|rebuild-caches|extract-fusion-states|probe-budget|pipeline-run}
+python -m graphids {analyze|rebuild-caches|extract-fusion-states|pipeline-run}
   -> __main__.py imports cli submodules
   -> Typer @app.command() dispatch per submodule
 ```
 
 **Key invariant:** Routes A and B render configs through the same
-`graphids.config.jsonnet.render_config` shim. One composition primitive,
+`graphids.config.jsonnet.render` shim. One composition primitive,
 one subprocess call to `go-jsonnet`.
 
 ---
@@ -71,7 +72,7 @@ one subprocess call to `go-jsonnet`.
 ## 2. Pydantic Validation Layer
 
 `graphids/config/schemas.py::validate_config(rendered) -> ValidatedConfig`
-is the structural gate that runs **immediately after** `render_config` on
+is the structural gate that runs **immediately after** `render` on
 every path. Torch-free, deterministic.
 
 ### Schema tree
@@ -104,7 +105,7 @@ because they're advisory, not fatal.
 
 | Call site | What it does |
 |---|---|
-| `ResolvedConfig.resolve()` | Calls `validate_config(rendered)` after `render_config`; attaches typed view to `ResolvedConfig.validated` |
+| `ResolvedConfig.resolve()` | Calls `validate_config(rendered)` after `render`; attaches typed view to `ResolvedConfig.validated` |
 | `instantiate()` | Re-validates if caller didn't pass a `ValidatedConfig` |
 
 ---
@@ -138,11 +139,11 @@ OTelTrainingCallback. Logger: OTelTrainingLogger.
 
 | File | Role | Torch? |
 |---|---|---|
-| `cli/_training.py` | Dev-path Typer entry — `fit/test/validate/predict`, `--config`, `--tla`, `--ckpt_path` | Lazy |
-| `cli/_pipeline.py` | `pipeline-run` command (in-process 3-stage chain) | Lazy |
+| `cli/training.py` | Dev-path Typer entry — `fit/test/validate/predict`, `--config`, `--tla`, `--ckpt_path` | Lazy |
+| `cli/pipeline.py` | `pipeline-run` command (in-process 3-stage chain) | Lazy |
 | `instantiate.py` | `instantiate(rendered) -> InstantiatedRun` — importlib, link_arguments, forced callbacks | Yes |
 | `__main__.py` | Imports `cli/` submodules to register Typer commands; OTel Phase A init | Lazy |
-| `config/jsonnet.py` | `render_config(path, tla)` subprocess shim | No |
+| `config/jsonnet.py` | `render(path, tla)` via `_jsonnet` C bindings | No |
 | `config/schemas.py` | `ValidatedConfig`, `validate_config`, `ConfigValidationError` | No |
 | `config/topology.py` | Stage DAG, valid types/scales, import-time assertions | No |
 | `orchestrate/config.py` | `PipelineConfig`, `StageConfig`, `TrainingRunConfig`, `KDEntry`, `ResolvedConfig`, `InstantiatedRun`, `PipelineResult` | No |
@@ -150,7 +151,7 @@ OTelTrainingCallback. Logger: OTelTrainingLogger.
 | `orchestrate/resolve.py` | `ResolvedConfig.resolve` — builds TLA, renders, validates, cross-field checks | No |
 | `orchestrate/run.py` | `PipelineConfig`, `build_pipeline_stages`, `run_pipeline` (in-process driver) | No |
 | `orchestrate/stage.py` | `build`, `train`, `evaluate` primitives (shared by `fit`/`test` CLI + `run_pipeline`) | Yes |
-| `orchestrate/analyze.py` | `run_single_analysis` (per-checkpoint analyzer + manifest sidecar) | Yes |
+| `core/analysis/runner.py` | `run_single_analysis`, `analysis_spec_for` — invoked by `graphids analyze` CLI, not by the pipeline driver | Yes |
 | `core/monitoring.py` | `OTelTrainingCallback`, `OTelTrainingLogger` | Yes |
 | `core/otel.py` | `init_providers`, `wire_file_exporters` | No |
 
@@ -176,5 +177,4 @@ OTelTrainingCallback. Logger: OTelTrainingLogger.
 | # | Issue | Severity |
 |---|---|---|
 | L1 | jsonnet rendering shells out per-render (~5 ms subprocess cost) | Low |
-| L2 | `jsonargparse` remains only in `cli/_analysis.py` (Analyzer config) | Low |
-| L3 | Fusion stage absorbs unused TLAs (`auxiliaries`, `vgae_ckpt_path`) | Low |
+| L2 | Fusion stage absorbs unused TLAs (`auxiliaries`, `vgae_ckpt_path`) | Low |

@@ -12,7 +12,7 @@ OpenTelemetry is the single observability layer. Three signal types share one `R
 - `LoggerProvider` -> `ConsoleLogRecordExporter(out=stderr)` + `LoggingHandler` bridges stdlib logging -> OTel
 - `SlurmResourceDetector` merges SLURM env vars (`SLURM_JOB_ID`, partition, nodelist, etc.) into the shared `Resource`
 
-**Phase B** (after `run_dir` is known — `graphids/_otel.py:wire_file_exporters`, called from `cli/_training.py::_prepare` and `orchestrate/stage.py::train`):
+**Phase B** (after `run_dir` is known — `graphids/_otel.py:wire_file_exporters`, called from `cli/training.py::_prepare` and `orchestrate/stage.py::train`):
 - `SimpleSpanProcessor` -> `ConsoleSpanExporter(out=run_dir/traces.jsonl)`
 - `PeriodicExportingMetricReader` (10s) -> `ConsoleMetricExporter(out=run_dir/metrics.jsonl)`
 
