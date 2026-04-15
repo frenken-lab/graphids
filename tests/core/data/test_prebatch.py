@@ -23,7 +23,6 @@ def _prebatch(graphs, budget):
         sizes,
         max_num=budget,
         shuffle=False,
-        skip_too_big=True,
     )
     plans = list(sampler)
     return [Batch.from_data_list([graphs[i] for i in plan]) for plan in plans]
@@ -122,7 +121,6 @@ class TestTierPreBatch:
                 tier_sizes,
                 max_num=budget,
                 shuffle=False,
-                skip_too_big=True,
             )
             plans = list(sampler)
             tier_batches.append(
@@ -135,7 +133,6 @@ class TestTierPreBatch:
             atk_sizes,
             max_num=budget,
             shuffle=False,
-            skip_too_big=True,
         )
         plans = list(sampler)
         attack_batches = [

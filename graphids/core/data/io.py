@@ -1,4 +1,4 @@
-"""NFS-safe I/O primitives and vocab construction — shared across dataset adapters."""
+"""NFS-safe I/O primitives shared across dataset adapters."""
 
 from __future__ import annotations
 
@@ -8,14 +8,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
-import polars as pl
 import torch
-
-
-def vocab_from_column(series: pl.Series) -> tuple[dict[str, int], int]:
-    """Build dense vocabulary. Index 0 = OOV. Returns (mapping, oov_index)."""
-    uniques = series.unique().sort()
-    return {tok: idx + 1 for idx, tok in enumerate(uniques.to_list())}, 0
 
 
 @contextmanager

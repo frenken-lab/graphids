@@ -96,8 +96,10 @@ class OTelTrainingCallback(CallbackBase):
         meter = get_providers().meter.get_meter(__name__)
         self._loss_hist = meter.create_histogram("ml.train.loss", unit="1")
         self._batch_dur = meter.create_histogram("ml.batch.duration_s", unit="s")
-        self._cuda_alloc = meter.create_gauge("ml.cuda.allocated_mb", unit="MiB")
-        self._cuda_reserved = meter.create_gauge("ml.cuda.reserved_mb", unit="MiB")
+        # Per-batch PEAK, not instantaneous: gauge was reading between-batch
+        # lows and understating working set by ~10x vs reserved.
+        self._cuda_alloc = meter.create_gauge("ml.cuda.allocated_peak_mb", unit="MiB")
+        self._cuda_reserved = meter.create_gauge("ml.cuda.reserved_peak_mb", unit="MiB")
         self._gpu_util = meter.create_gauge("ml.gpu.utilization_pct", unit="%")
         self._gpu_temp = meter.create_gauge("ml.gpu.temperature_c", unit="degC")
         self._gpu_power = meter.create_gauge("ml.gpu.power_w", unit="W")
@@ -188,6 +190,8 @@ class OTelTrainingCallback(CallbackBase):
         batch_idx: int,
     ) -> None:
         self._step_start = time.monotonic()
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats(model.device.index or 0)
 
     def on_train_batch_end(
         self,
@@ -215,8 +219,8 @@ class OTelTrainingCallback(CallbackBase):
         # VRAM + hardware GPU stats via torch.cuda (NVML wrappers, no pynvml init needed)
         if torch.cuda.is_available():
             dev = model.device.index or 0
-            self._cuda_alloc.set(torch.cuda.memory_allocated(dev) / (1024 * 1024), attrs)
-            self._cuda_reserved.set(torch.cuda.memory_reserved(dev) / (1024 * 1024), attrs)
+            self._cuda_alloc.set(torch.cuda.max_memory_allocated(dev) / (1024 * 1024), attrs)
+            self._cuda_reserved.set(torch.cuda.max_memory_reserved(dev) / (1024 * 1024), attrs)
             self._gpu_util.set(torch.cuda.utilization(dev), attrs)
             self._gpu_temp.set(torch.cuda.temperature(dev), attrs)
             # TODO(verify on compute node): torch.cuda.power_draw() unit — stable docs

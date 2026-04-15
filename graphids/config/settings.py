@@ -29,7 +29,6 @@ class GraphIDSSettings(BaseSettings):
 
     # --- Budget tuning ---
     budget_safety_margin: float = 0.85
-    budget_grad_mult: float = 2.0
     budget_fallback_bpn: int = 32768
     # Fraction of baseline scalable VRAM that may be lost before the drift
     # callback warns. 0.20 avoids allocator-fragmentation false positives;

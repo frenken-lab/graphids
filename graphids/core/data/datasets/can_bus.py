@@ -19,7 +19,7 @@ from graphids._otel import get_logger
 from graphids.config.constants import PREPROCESSING_VERSION
 from graphids.core.data.cache import DatasetState
 from graphids.core.data.graph_pipeline import GraphPipeline
-from graphids.core.data.io import atomic_save, nfs_lock, vocab_from_column
+from graphids.core.data.io import atomic_save, nfs_lock
 from graphids.core.data.metadata import merge_split_into_metadata
 
 log = get_logger(__name__)
@@ -407,11 +407,12 @@ class CANBusDataset(InMemoryDataset):
         df = self._read_raw()
         log.info("raw_loaded", rows=len(df))
 
-        # Vocabulary
-        vocab, oov = vocab_from_column(df["arb_id"])
+        # Vocabulary: index 0 = OOV, real ids start at 1
+        uniques = df["arb_id"].unique().sort().to_list()
+        vocab = {tok: idx + 1 for idx, tok in enumerate(uniques)}
         num_arb_ids = len(vocab) + 1  # global vocab size for embedding table
         df = df.with_columns(
-            pl.col("arb_id").replace_strict(vocab, default=oov).cast(pl.Int64).alias("node_id")
+            pl.col("arb_id").replace_strict(vocab, default=0).cast(pl.Int64).alias("node_id")
         )
 
         pipeline = GraphPipeline(

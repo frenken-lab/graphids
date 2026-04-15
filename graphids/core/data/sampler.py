@@ -9,11 +9,22 @@ dense-edge graphs from OOMing even when the node budget would admit them.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
 import torch
 
 from graphids._otel import get_logger
 
 log = get_logger(__name__)
+
+
+@dataclass
+class _Bin:
+    """FFD bin for ``pack_offline``: list of graph indices + running sums."""
+
+    indices: list[int] = field(default_factory=list)
+    n_sum: int = 0
+    e_sum: int = 0
 
 
 class NodeBudgetBatchSampler(torch.utils.data.Sampler[list[int]]):
@@ -22,18 +33,22 @@ class NodeBudgetBatchSampler(torch.utils.data.Sampler[list[int]]):
     - ``sizes`` / ``max_num``: per-graph node counts, max nodes per batch.
     - ``edge_sizes`` / ``max_edges`` (optional): per-graph edge counts, max
       edges per batch. A batch closes when adding a graph would exceed
-      EITHER budget. A graph exceeding either budget on its own is oversize
-      (skipped when ``skip_too_big=True``, else yielded alone).
+      EITHER budget. A graph exceeding either budget on its own is skipped
+      (with a one-line per-epoch summary warning).
 
     Bucket-shuffle keeps batch-to-batch size variance low. ``indices``
     maps local positions to dataset-global indices (for curriculum subsets).
     """
 
     def __init__(
-        self, sizes: torch.Tensor, max_num: int, *,
-        edge_sizes: torch.Tensor | None = None, max_edges: int | None = None,
-        shuffle: bool = True, num_buckets: int = 20,
-        skip_too_big: bool = True,
+        self,
+        sizes: torch.Tensor,
+        max_num: int,
+        *,
+        edge_sizes: torch.Tensor | None = None,
+        max_edges: int | None = None,
+        shuffle: bool = True,
+        num_buckets: int = 20,
         indices: torch.Tensor | list[int] | None = None,
     ):
         if max_num <= 0:
@@ -44,13 +59,10 @@ class NodeBudgetBatchSampler(torch.utils.data.Sampler[list[int]]):
         if edge_sizes is not None:
             if len(edge_sizes) != len(self.sizes):
                 raise ValueError(
-                    f"edge_sizes length ({len(edge_sizes)}) "
-                    f"!= sizes length ({len(self.sizes)})"
+                    f"edge_sizes length ({len(edge_sizes)}) != sizes length ({len(self.sizes)})"
                 )
             if max_edges is None or max_edges <= 0:
-                raise ValueError(
-                    "max_edges must be a positive int when edge_sizes is given"
-                )
+                raise ValueError("max_edges must be a positive int when edge_sizes is given")
             self.edge_sizes: torch.Tensor | None = edge_sizes.to(torch.long)
             self.max_edges: int | None = int(max_edges)
         else:
@@ -59,7 +71,6 @@ class NodeBudgetBatchSampler(torch.utils.data.Sampler[list[int]]):
 
         self.shuffle = shuffle
         self.num_buckets = max(1, int(num_buckets))
-        self.skip_too_big = skip_too_big
         if indices is not None:
             idx = torch.as_tensor(indices, dtype=torch.long)
             if len(idx) != len(self.sizes):
@@ -67,11 +78,14 @@ class NodeBudgetBatchSampler(torch.utils.data.Sampler[list[int]]):
             self._index_map: list[int] | None = idx.tolist()
         else:
             self._index_map = None
+        # Populated by __iter__ after a full pass; read by __len__ so the
+        # DataLoader progress-bar probe doesn't trigger a separate full pack.
+        self._cached_len: int | None = None
 
     def _bucket_shuffled(self) -> list[int]:
         sorted_idx = torch.argsort(self.sizes).tolist()
         bs = max(1, (len(self.sizes) + self.num_buckets - 1) // self.num_buckets)
-        buckets = [sorted_idx[i:i + bs] for i in range(0, len(sorted_idx), bs)]
+        buckets = [sorted_idx[i : i + bs] for i in range(0, len(sorted_idx), bs)]
         order = torch.randperm(len(buckets)).tolist()
         out: list[int] = []
         for b in order:
@@ -91,17 +105,11 @@ class NodeBudgetBatchSampler(torch.utils.data.Sampler[list[int]]):
             return True
         return False
 
-    def _would_exceed(self, cur_n: int, cur_e: int, n_i: int, e_i: int) -> bool:
-        if cur_n + n_i > self.max_num:
-            return True
-        if self.max_edges is not None and cur_e + e_i > self.max_edges:
-            return True
-        return False
-
     def __iter__(self):
         local = self._bucket_shuffled() if self.shuffle else list(range(len(self.sizes)))
         has_edges = self.edge_sizes is not None
         skipped = 0
+        count = 0
         batch: list[int] = []
         cur_n, cur_e = 0, 0
         warn = not getattr(self, "_mute_warn", False)
@@ -109,20 +117,23 @@ class NodeBudgetBatchSampler(torch.utils.data.Sampler[list[int]]):
             n_i = int(self.sizes[i].item())
             e_i = int(self.edge_sizes[i].item()) if has_edges else 0
             if self._oversize(n_i, e_i):
-                if self.skip_too_big:
-                    skipped += 1
-                    continue
-                if batch:
-                    yield self._emit(batch); batch, cur_n, cur_e = [], 0, 0
-                yield self._emit([i])
+                skipped += 1
                 continue
-            if self._would_exceed(cur_n, cur_e, n_i, e_i) and batch:
-                yield self._emit(batch); batch, cur_n, cur_e = [], 0, 0
+            # Inline exceed check — called only here, no helper needed.
+            if batch and (
+                cur_n + n_i > self.max_num
+                or (self.max_edges is not None and cur_e + e_i > self.max_edges)
+            ):
+                yield self._emit(batch)
+                count += 1
+                batch, cur_n, cur_e = [], 0, 0
             batch.append(i)
             cur_n += n_i
             cur_e += e_i
         if batch:
             yield self._emit(batch)
+            count += 1
+        self._cached_len = count
         if skipped and warn:
             # One summary line per epoch, not per-graph. A non-zero count
             # here is a real signal — either the dataset has outlier giants
@@ -130,11 +141,17 @@ class NodeBudgetBatchSampler(torch.utils.data.Sampler[list[int]]):
             # shrinks silently otherwise. Muted when __len__ probes.
             log.warning(
                 "sampler_skipped_oversize",
-                n_skipped=skipped, n_total=len(self.sizes),
-                max_nodes=self.max_num, max_edges=self.max_edges,
+                n_skipped=skipped,
+                n_total=len(self.sizes),
+                max_nodes=self.max_num,
+                max_edges=self.max_edges,
             )
 
     def __len__(self) -> int:
+        # Fast path: reuse the count from the most recent __iter__.
+        if self._cached_len is not None:
+            return self._cached_len
+        # Cold path: DataLoader may probe __len__ before the first epoch.
         self._mute_warn = True
         try:
             return sum(1 for _ in self.__iter__())
@@ -143,9 +160,11 @@ class NodeBudgetBatchSampler(torch.utils.data.Sampler[list[int]]):
 
 
 def pack_offline(
-    sizes: torch.Tensor, max_num: int, *,
-    edge_sizes: torch.Tensor | None = None, max_edges: int | None = None,
-    skip_too_big: bool = True,
+    sizes: torch.Tensor,
+    max_num: int,
+    *,
+    edge_sizes: torch.Tensor | None = None,
+    max_edges: int | None = None,
 ) -> list[list[int]]:
     """First-fit-decreasing packing for the prebatch path.
 
@@ -176,34 +195,32 @@ def pack_offline(
     edges_l = edge_sizes.to(torch.long) if has_edges else None
     order = torch.argsort(sizes_l, descending=True).tolist()
 
-    # bins: list of [indices, node_sum, edge_sum]
-    bins: list[list] = []
+    bins: list[_Bin] = []
     skipped = 0
     for i in order:
         n_i = int(sizes_l[i].item())
         e_i = int(edges_l[i].item()) if has_edges else 0
         oversize = n_i > max_num or (max_edges is not None and e_i > max_edges)
         if oversize:
-            if skip_too_big:
-                skipped += 1
-                continue
-            bins.append([[i], n_i, e_i])
+            skipped += 1
             continue
         placed = False
         for b in bins:
-            if b[1] + n_i <= max_num and (
-                max_edges is None or b[2] + e_i <= max_edges
-            ):
-                b[0].append(i); b[1] += n_i; b[2] += e_i
+            if b.n_sum + n_i <= max_num and (max_edges is None or b.e_sum + e_i <= max_edges):
+                b.indices.append(i)
+                b.n_sum += n_i
+                b.e_sum += e_i
                 placed = True
                 break
         if not placed:
-            bins.append([[i], n_i, e_i])
+            bins.append(_Bin(indices=[i], n_sum=n_i, e_sum=e_i))
 
     if skipped:
         log.warning(
             "sampler_skipped_oversize",
-            n_skipped=skipped, n_total=len(sizes_l),
-            max_nodes=max_num, max_edges=max_edges,
+            n_skipped=skipped,
+            n_total=len(sizes_l),
+            max_nodes=max_num,
+            max_edges=max_edges,
         )
-    return [b[0] for b in bins]
+    return [b.indices for b in bins]

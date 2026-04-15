@@ -9,13 +9,14 @@ packing with no knowledge of the underlying protocol.
 Pipeline steps (methods on ``GraphPipeline``):
 
 1. ``_aggregate`` — ``group_by_dynamic`` for node stats, edge adjacency,
-   and per-window labels in a single scan of the data.
+   and per-window labels, fused via ``pl.collect_all`` over one scan.
 2. ``_add_bidir_flag`` — mark edges whose reverse also exists.
 3. ``_compute_graph_structure`` — clustering coefficient (triangle counting)
    and in/out degree via Polars joins + ``DataFrame.update``.
-4. ``_map_labels`` — per-window ``y`` (binary) and auxiliary labels.
-5. ``_build_pyg_data`` — local ID assignment via ``cum_count().over()``,
+4. ``_build_pyg_data`` — local ID assignment via ``cum_count().over()``,
    Polars pre-sort, bulk ``to_torch``, and ``torch.cumsum`` for slices.
+   Labels are left-joined onto the kept-window order and converted
+   directly to torch — no Python dict lookup.
 """
 
 from __future__ import annotations
@@ -99,9 +100,8 @@ class GraphPipeline:
 
         edge_df = self._add_bidir_flag(edge_df)
         node_stats = self._compute_graph_structure(node_stats, edge_df)
-        label_maps = self._map_labels(labels)
 
-        data, slices, num_graphs = self._build_pyg_data(node_stats, edge_df, label_maps)
+        data, slices, num_graphs = self._build_pyg_data(node_stats, edge_df, labels)
         return data, slices, num_graphs, n_rows
 
     # -- Step 1: Aggregate via group_by_dynamic --------------------------------
@@ -112,23 +112,23 @@ class GraphPipeline:
         every: str,
         period: str,
     ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
-        """Node stats, edges, and labels via ``group_by_dynamic``."""
+        """Node stats, edges, and labels via fused ``group_by_dynamic``.
+
+        ``pl.collect_all`` shares the scan + common subexpressions across
+        the three lazy frames — one pass over the DataFrame, not three.
+        """
         dyn = dict(every=every, period=period, closed="left")
 
-        node_stats = (
+        node_stats_lf = (
             lf.group_by_dynamic("_row", **dyn, group_by="node_id")
             .agg(*self.node_stat_exprs)
             .fill_null(0)
             .fill_nan(0)
             .rename({"_row": "_wid"})
-            .collect()
         )
 
-        labels = (
-            lf.group_by_dynamic("_row", **dyn)
-            .agg(*self.label_exprs)
-            .rename({"_row": "_wid"})
-            .collect()
+        labels_lf = (
+            lf.group_by_dynamic("_row", **dyn).agg(*self.label_exprs).rename({"_row": "_wid"})
         )
 
         # Edges: shift-1 temporal adjacency within each window
@@ -138,7 +138,7 @@ class GraphPipeline:
             *self.edge_stat_exprs,
         ]
         edge_list_cols = ["src", "dst"] + [e.meta.output_name() for e in self.edge_stat_exprs]
-        edge_df = (
+        edge_df_lf = (
             lf.select("_row", "node_id", "timestamp", *self.edge_base_cols)
             .group_by_dynamic("_row", **dyn)
             .agg(*edge_agg)
@@ -148,9 +148,9 @@ class GraphPipeline:
             .with_columns(
                 pl.len().over(["_wid", "src", "dst"]).cast(pl.Float32).alias("edge_freq"),
             )
-            .collect()
         )
 
+        node_stats, labels, edge_df = pl.collect_all([node_stats_lf, labels_lf, edge_df_lf])
         log.info("features_computed", stat_rows=len(node_stats), edge_rows=len(edge_df))
         return node_stats, edge_df, labels
 
@@ -249,22 +249,13 @@ class GraphPipeline:
         log.info("graph_structure_features_computed")
         return node_stats
 
-    # -- Step 4: Label mapping -------------------------------------------------
-
-    def _map_labels(self, labels: pl.DataFrame) -> dict[str, dict[int, int]]:
-        """Build per-window label lookup dicts."""
-        return {
-            name: dict(zip(labels["_wid"].to_list(), labels[name].to_list()))
-            for name in self.label_names
-        }
-
-    # -- Step 5: Build PyG Data ------------------------------------------------
+    # -- Step 4: Build PyG Data ------------------------------------------------
 
     def _build_pyg_data(
         self,
         node_stats: pl.DataFrame,
         edge_df: pl.DataFrame,
-        label_maps: dict[str, dict[int, int]],
+        labels: pl.DataFrame,
     ) -> tuple[Data, dict, int]:
         """Local IDs, pre-sort by window size, convert to (Data, slices)."""
         # Keep only windows that have edges
@@ -317,8 +308,8 @@ class GraphPipeline:
         )
 
         # Slice boundaries via Polars group_by + torch.cumsum
-        kept_wids = node_stats.group_by("_wid", maintain_order=True).first()["_wid"].to_list()
-        num_graphs = len(kept_wids)
+        kept_wids_df = node_stats.group_by("_wid", maintain_order=True).first().select("_wid")
+        num_graphs = len(kept_wids_df)
 
         node_counts = torch.from_numpy(
             node_stats.group_by("_wid", maintain_order=True).len()["len"].to_numpy().copy()
@@ -341,11 +332,10 @@ class GraphPipeline:
         )
 
         graph_idx = torch.arange(num_graphs + 1, dtype=torch.long)
+        # Align labels to kept-window order via left-join; missing wids → 0.
+        labels_aligned = kept_wids_df.join(labels, on="_wid", how="left").fill_null(0)
         label_tensors = {
-            name: torch.tensor(
-                [label_maps[name].get(w, 0) for w in kept_wids],
-                dtype=torch.long,
-            )
+            name: torch.from_numpy(labels_aligned[name].cast(pl.Int64).to_numpy().copy())
             for name in self.label_names
         }
 

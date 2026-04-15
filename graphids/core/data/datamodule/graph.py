@@ -128,13 +128,20 @@ class GraphDataModule:
         # Curriculum: populated by _setup_curriculum, pre-batched on first epoch
         self._tier_graphs: list[list] | None = None  # per-tier graph lists
         self._tier_sizes: list[torch.Tensor] | None = None  # per-tier node counts
+        self._tier_edge_sizes: list[torch.Tensor] | None = None  # per-tier edge counts
         self._tier_batches: list[list[Batch]] | None = None  # pre-batched tiers
         self._active_batches: list[Batch] | None = None
         # Device for PrefetchLoader — set by trainer via _set_device()
         self._device: torch.device | None = None
-        # Model handle — set by trainer via _set_model() so _budget_result
+        # Model handle — set by trainer via _set_model() so _ensure_budget
         # can run a real probe (otherwise node_budget falls back to a static bpn).
         self._model = None
+        # One probe per fit; bpn_node/bpn_edge are model properties, not split
+        # properties, so every loader / prebatch consumer reuses this.
+        self._budget = None
+        # Memoize (dataset_id, shuffle) → loader; val/test used to rebuild
+        # sampler + re-run probe + re-time workers every epoch.
+        self._loader_cache: dict[tuple[int, bool], object] = {}
 
     def _set_device(self, device: torch.device | None) -> None:
         """Called by Trainer to tell the datamodule which device to prefetch to."""
@@ -178,31 +185,38 @@ class GraphDataModule:
         scores, normal_tiers, attack_indices, full_dataset, dataset_sizes = build_curriculum_tiers(
             self._train_ds,
             scorer,
-            num_tiers=hp.get("num_tiers", 10),
+            num_tiers=hp["num_tiers"],
+        )
+        dataset_edge_sizes = torch.tensor(
+            [int(g.num_edges) for g in full_dataset], dtype=torch.long
         )
         # Build per-tier graph lists + size tensors for _prebatch
         self._tier_graphs = []
         self._tier_sizes = []
+        self._tier_edge_sizes = []
         for tier_idx in normal_tiers:
             if not tier_idx:
                 continue  # empty tier — scorer may produce this at the extremes
             self._tier_graphs.append([full_dataset[i] for i in tier_idx])
             self._tier_sizes.append(dataset_sizes[tier_idx])
+            self._tier_edge_sizes.append(dataset_edge_sizes[tier_idx])
         # Attack tier (always active)
         if attack_indices:
             self._tier_graphs.append([full_dataset[i] for i in attack_indices])
             self._tier_sizes.append(dataset_sizes[attack_indices])
+            self._tier_edge_sizes.append(dataset_edge_sizes[attack_indices])
 
         # Invariant: every stored tier has graphs AND its sizes aligned.
         # Empty tiers or mismatched lengths would build a silently dead
         # dataloader entry; fail loud so callers see it at setup() time.
-        assert len(self._tier_graphs) == len(self._tier_sizes), (
-            f"tier bookkeeping mismatch: "
-            f"{len(self._tier_graphs)} graph lists vs "
-            f"{len(self._tier_sizes)} size tensors"
+        assert len(self._tier_graphs) == len(self._tier_sizes) == len(self._tier_edge_sizes), (
+            f"tier bookkeeping mismatch: {len(self._tier_graphs)} graphs / "
+            f"{len(self._tier_sizes)} node-sizes / {len(self._tier_edge_sizes)} edge-sizes"
         )
-        for i, (g, s) in enumerate(zip(self._tier_graphs, self._tier_sizes)):
-            assert len(g) == len(s) > 0, f"tier {i} is empty or length-mismatched"
+        for i, (g, s, e) in enumerate(
+            zip(self._tier_graphs, self._tier_sizes, self._tier_edge_sizes)
+        ):
+            assert len(g) == len(s) == len(e) > 0, f"tier {i} empty or length-mismatched"
 
     # -- Properties (available after setup) -----------------------------------
 
@@ -234,6 +248,9 @@ class GraphDataModule:
 
     @property
     def num_classes(self) -> int:
+        # Clamp to 2: benign-only train splits (VGAE/DGI reconstruction stages)
+        # have y.unique().numel() == 1, but downstream classifiers need at
+        # least 2 logits to size their output heads.
         ds = self._train_ds or next(iter(self._test_datasets.values()), None)
         assert ds is not None, "call setup() first"
         return max(2, int(ds._data.y.unique().numel()))
@@ -246,25 +263,33 @@ class GraphDataModule:
 
     # -- Shared helpers -------------------------------------------------------
 
-    def _budget_result(self, dataset=None):
-        """Probe VRAM budget for the given dataset (or train_ds).
+    def _ensure_budget(self):
+        """Probe once per fit; cache the result.
 
-        When ``_set_model`` has supplied a model AND CUDA is available,
-        ``node_budget`` runs a one-shot fwd+bwd profile to derive the
-        per-node / per-edge byte cost. Otherwise it falls back to the
-        static ``_FALLBACK_BPN`` constant (binding="fallback").
+        ``bpn_node`` / ``bpn_edge`` from ``budget.probe`` are properties of
+        the *model*, not the split — val and test packing reuse the
+        train-time probe. When CUDA is available, the model must be wired
+        (via ``_set_model``) before this fires; otherwise we silently cache
+        a ``_FALLBACK_BPN`` budget that underperforms by orders of magnitude.
         """
-        hp = self.hparams
-        return node_budget(
-            self.dataset.name,
-            self.dataset.resolved_lake_root(),
-            conv_type=hp.get("conv_type", "gatv2"),
-            heads=hp.get("heads", 4),
-            model=self._model,
-            train_dataset=dataset or self._train_ds,
-        )
+        if self._budget is None:
+            if torch.cuda.is_available() and self._model is None:
+                raise RuntimeError(
+                    "_ensure_budget called on a CUDA device without a wired model. "
+                    "Trainer must call datamodule._set_model(model) before the first "
+                    "train_dataloader() / val_dataloader() request."
+                )
+            hp = self.hparams
+            self._budget = node_budget(
+                self.dataset.name,
+                conv_type=hp["conv_type"],
+                heads=hp["heads"],
+                model=self._model,
+                train_dataset=self._train_ds,
+            )
+        return self._budget
 
-    def _prebatch(self, graphs, sizes, edge_sizes=None) -> list[Batch]:
+    def _prebatch(self, graphs, sizes, edge_sizes) -> list[Batch]:
         """Pre-collate graphs into Batches via first-fit-decreasing packing.
 
         Uses ``pack_offline`` instead of the live sampler: prebatch doesn't
@@ -274,19 +299,17 @@ class GraphDataModule:
         Invariant: every emitted plan stays within the probed (node, edge)
         envelope. Asserted here so a future packer regression surfaces
         immediately instead of waiting for a CUDA OOM.
+
+        Caller owns ``sizes`` / ``edge_sizes`` — both are required. The
+        dataset exposes ``num_nodes_per_graph`` / ``num_edges_per_graph``
+        as precomputed tensors; callers pass those directly.
         """
-        result = self._budget_result(graphs)
-        if edge_sizes is None:
-            edge_sizes = torch.tensor(
-                [int(g.num_edges) for g in graphs],
-                dtype=torch.long,
-            )
+        result = self._ensure_budget()
         plans = pack_offline(
             sizes,
             max_num=result.budget,
             edge_sizes=edge_sizes,
             max_edges=result.edge_budget,
-            skip_too_big=True,
         )
         for plan in plans:
             tot_n = sum(int(sizes[i]) for i in plan)
@@ -315,7 +338,7 @@ class GraphDataModule:
         to construct, no tensor copies.
         """
         ds = self._train_ds
-        if self.hparams.get("label_filter") != "benign":
+        if self.hparams["label_filter"] != "benign":
             return ds
         full_y = ds._data.y.view(-1)
         if ds._indices is None:
@@ -344,13 +367,21 @@ class GraphDataModule:
         return [self._build_loader(ds, shuffle=False) for ds in self._test_datasets.values()]
 
     def _build_loader(self, dataset, shuffle: bool):
+        key = (id(dataset), shuffle)
+        cached = self._loader_cache.get(key)
+        if cached is not None:
+            return cached
+
         hp = self.hparams
-        nw = hp.get("num_workers")
-        pf = hp.get("prefetch_factor", 2)
+        nw = hp["num_workers"]
+        pf = hp["prefetch_factor"]
         device = self._prefetch_device()
+        # Note: on the dynamic-batching path, val/test batch boundaries shift
+        # with the probed budget — per-example metrics (AUROC, accuracy) are
+        # unaffected, but any per-batch aggregation would drift across VRAM tiers.
 
         if not hp["dynamic_batching"]:
-            return _spawn_loader(
+            loader = _spawn_loader(
                 dataset,
                 batch_size=max(8, hp["batch_size"]),
                 shuffle=shuffle,
@@ -358,8 +389,10 @@ class GraphDataModule:
                 device=device,
                 prefetch_factor=pf,
             )
+            self._loader_cache[key] = loader
+            return loader
 
-        result = self._budget_result(dataset)
+        result = self._ensure_budget()
         if nw is None:
             nw, pf = autosize_workers(self._model, dataset, result, default_prefetch=pf)
 
@@ -369,15 +402,16 @@ class GraphDataModule:
             edge_sizes=dataset.num_edges_per_graph,
             max_edges=result.edge_budget,
             shuffle=shuffle,
-            skip_too_big=True,
         )
-        return _spawn_loader(
+        loader = _spawn_loader(
             dataset,
             batch_sampler=sampler,
             num_workers=nw,
             device=device,
             prefetch_factor=pf,
         )
+        self._loader_cache[key] = loader
+        return loader
 
     def _prebatched_train_dataloader(self):
         """Pre-batched training: collate once, shuffle batch order per epoch."""
@@ -386,6 +420,7 @@ class GraphDataModule:
             self._prebatched_train = self._prebatch(
                 train_ds,
                 train_ds.num_nodes_per_graph,
+                train_ds.num_edges_per_graph,
             )
         return _prebatched_loader(
             self._prebatched_train,
@@ -394,11 +429,18 @@ class GraphDataModule:
         )
 
     def _curriculum_train_dataloader(self):
-        """Tier-based curriculum: pre-batch each tier once, select active per epoch."""
+        """Tier-based curriculum: pre-batch each tier once, select active per epoch.
+
+        Hidden contract: requires a ``CurriculumEpochCallback`` in the trainer's
+        callback list to advance ``_select_active_tiers(epoch)`` each epoch.
+        Without it, training stays on tier 0 forever.
+        """
         if self._tier_batches is None:
             self._tier_batches = [
-                self._prebatch(graphs, sizes)
-                for graphs, sizes in zip(self._tier_graphs, self._tier_sizes)
+                self._prebatch(graphs, sizes, edge_sizes)
+                for graphs, sizes, edge_sizes in zip(
+                    self._tier_graphs, self._tier_sizes, self._tier_edge_sizes
+                )
             ]
             self._select_active_tiers(0)
         return _prebatched_loader(

@@ -70,7 +70,6 @@ def test_gps_budget_scales_monotonically_with_vram(tmp_path):
         ):
             budgets[gpu] = node_budget(
                 "set_01",
-                str(tmp_path),
                 conv_type="gps",
                 heads=4,
                 model=None,
@@ -95,7 +94,7 @@ def test_fallback_binding_when_no_model(tmp_path, dataset):
     _write_metadata(tmp_path / "cache_metadata.json", mean_nodes)
 
     with patch("graphids.core.data.budget.cache_dir", return_value=tmp_path):
-        result = node_budget(dataset, str(tmp_path), model=None)
+        result = node_budget(dataset, model=None)
 
     assert result.binding == "fallback"
     assert result.budget > 0
