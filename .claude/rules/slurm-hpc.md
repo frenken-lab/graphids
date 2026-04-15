@@ -19,22 +19,36 @@
 
 ## Job Submission
 
-All SLURM jobs are submitted via the unified launcher `scripts/slurm/submit.sh <job> [args...]`:
+Two launchers, distinct scopes:
+
+**Training / ablations: `scripts/run <preset.jsonnet> [options]`.**
+The preset owns run specifics; flags map to TLAs internally so you never
+type nested JSON quotes. Defaults to the `fit-long` profile (gpu, 4hr);
+`--smoke` swaps to `fit` (gpudebug 1hr). Honors `SBATCH_DEP=afterok:<jid>`
+for afterok chains. See `scripts/run --help`-style comment in the file
+for the full flag list (`--dataset`, `--seed`, `--scale`, `--cluster`,
+`--ckpt`, `--vgae-ckpt`, `--gat-ckpt`, `--lake-root`, `--set`, `--dry-run`).
+
+```bash
+scripts/run configs/ablations/unsupervised/vgae.jsonnet --dataset set_01 --seed 42
+scripts/run configs/ablations/fusion/dqn.jsonnet \
+    --dataset set_01 --seed 42 --vgae-ckpt <p> --gat-ckpt <p> --cluster cardinal
+```
+
+**Ops: `scripts/slurm/submit.sh <profile> [args...]`** for non-training jobs.
 
 | Job | Command |
 |-----|---------|
 | Tests | `scripts/slurm/submit.sh tests [-k pattern] [-x]` |
 | Cache rebuild | `scripts/slurm/submit.sh rebuild-caches --all --delete-existing --yes` |
 | Analyze ckpt  | `scripts/slurm/submit.sh analyze --ckpt-path <p> --dataset <name>` |
-| Pipeline run | `scripts/slurm/submit.sh pipeline-run --dataset hcrl_sa` |
 | Extract fusion states | `scripts/slurm/submit.sh extract-fusion-states` |
 | Profiling | `scripts/slurm/submit.sh profile` |
+| Pipeline run (archived) | `scripts/slurm/submit.sh pipeline-run --dataset hcrl_sa` |
 
-Source of truth for the table: `configs/resources/submit_profiles.json` —
-`python -m graphids submit-profile <job>` prints the resource tuple
-that `submit.sh` consumes.
-
-submit.sh handles `.env` sourcing, account selection, and resource defaults.
+Source of truth for resource sizing: `configs/resources/submit_profiles.json`.
+`python -m graphids submit-profile <job>` prints the resource tuple that
+both launchers consume. Both handle `.env` sourcing + account selection.
 
 ## Writing SLURM Job Scripts
 
@@ -111,6 +125,6 @@ with a silent eval.
 - Git, ruff
 
 **Must go through SLURM:**
-- `python -m graphids fit|test|validate|predict` — all training/evaluation
+- `python -m graphids fit|test` — all training/evaluation
 - `python -m pytest` — test suite
 - Any script that imports and runs models

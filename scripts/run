@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# Launch a GraphIDS preset as a SLURM job. Single-config invocation —
+# the jsonnet preset owns the run specifics (stage, model, dataset+seed
+# defaults, run_dir derivation); this script only owns the knobs that
+# vary per invocation.
+#
+# Usage:
+#   scripts/run <preset.jsonnet> [options]
+#
+# Options:
+#   --dataset NAME        dataset TLA (default: preset's own default)
+#   --seed N              seed TLA
+#   --scale small|large   scale TLA
+#   --cluster NAME        sbatch --clusters=NAME (default: current cluster)
+#   --smoke               use 'fit' profile (gpudebug 1hr) instead of 'fit-long'
+#   --ckpt PATH           ckpt_path TLA (resume)
+#   --vgae-ckpt PATH      vgae_ckpt_path TLA (fusion/curriculum)
+#   --gat-ckpt PATH       gat_ckpt_path TLA (fusion)
+#   --lake-root PATH      lake_root TLA (override preset default)
+#   --set KEY=VAL         dotted-path override passthrough (repeatable)
+#   --dry-run             print the sbatch invocation, don't submit
+#
+# Env:
+#   SBATCH_DEP=afterok:<jid>  chain this job behind another (same as submit.sh).
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
+source .env
+
+PRESET="${1:?Usage: scripts/run <preset.jsonnet> [options]}"
+shift
+[[ -f "$PRESET" ]] || { echo "scripts/run: preset not found: $PRESET" >&2; exit 2; }
+
+command -v jsonnet >/dev/null 2>&1 || {
+    echo "scripts/run: jsonnet binary not found on PATH." >&2
+    echo "  Install go-jsonnet 0.20.0+ to ~/.local/bin/ — see ADR 0010." >&2
+    exit 1
+}
+
+PROFILE="fit-long"
+CLUSTER=""
+DATASET=""
+SCALE=""
+DRY_RUN=""
+TLAS=()
+SETS=()
+
+_push_str_tla() { TLAS+=(--tla "$1=\"$2\""); }
+_push_int_tla() { TLAS+=(--tla "$1=$2"); }
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dataset)     DATASET="$2";  _push_str_tla dataset          "$2"; shift 2 ;;
+        --seed)                       _push_int_tla seed             "$2"; shift 2 ;;
+        --scale)       SCALE="$2";    _push_str_tla scale            "$2"; shift 2 ;;
+        --ckpt)                       _push_str_tla ckpt_path        "$2"; shift 2 ;;
+        --vgae-ckpt)                  _push_str_tla vgae_ckpt_path   "$2"; shift 2 ;;
+        --gat-ckpt)                   _push_str_tla gat_ckpt_path    "$2"; shift 2 ;;
+        --lake-root)                  _push_str_tla lake_root        "$2"; shift 2 ;;
+        --cluster)     CLUSTER="$2";                                       shift 2 ;;
+        --smoke)       PROFILE="fit";                                      shift ;;
+        --set)         SETS+=(--set "$2");                                 shift 2 ;;
+        --dry-run)     DRY_RUN=1;                                          shift ;;
+        *) echo "scripts/run: unknown arg: $1" >&2; exit 2 ;;
+    esac
+done
+
+SLURM_LOG_DIR="${GRAPHIDS_SLURM_LOG_DIR:-${GRAPHIDS_LAKE_ROOT:-experimentruns}/slurm}"
+mkdir -p "$SLURM_LOG_DIR"
+
+PROFILE_ARGS=("$PROFILE")
+[[ -n "$DATASET" ]] && PROFILE_ARGS+=(--dataset "$DATASET")
+[[ -n "$SCALE" ]]   && PROFILE_ARGS+=(--scale "$SCALE")
+PROFILE_LINE=$(source .venv/bin/activate && python -m graphids submit-profile "${PROFILE_ARGS[@]}")
+read -r PARTITION CPUS MEM TIME SIGNAL MODE GRES COMMAND <<< "$PROFILE_LINE"
+
+JOBNAME="graphids-$(basename "$PRESET" .jsonnet)"
+PREAMBLE="source ${SCRIPT_DIR}/slurm/_preamble.sh"
+
+ENV=""
+[[ "$MODE" == "cpu" ]] && ENV="SKIP_CUDA_CONF=1 "
+
+SBATCH=(sbatch
+    --account="${GRAPHIDS_SLURM_ACCOUNT}"
+    --partition="$PARTITION"
+    --cpus-per-task="$CPUS"
+    --mem="$MEM"
+    --time="$TIME"
+    --job-name="$JOBNAME"
+    --output="${SLURM_LOG_DIR}/${JOBNAME}_%j.out"
+    --error="${SLURM_LOG_DIR}/${JOBNAME}_%j.err"
+)
+[[ -n "$CLUSTER" ]] && SBATCH+=(--clusters="$CLUSTER")
+[[ -n "$GRES" && "$GRES" != "NONE" ]] && SBATCH+=(--gres="$GRES")
+[[ -n "$SIGNAL" && "$SIGNAL" != "NONE" ]] && SBATCH+=(--signal="B:${SIGNAL}")
+[[ -n "${SBATCH_DEP:-}" ]] && SBATCH+=(--dependency="$SBATCH_DEP")
+
+INNER="$COMMAND --config $PRESET"
+for t in ${TLAS[@]+"${TLAS[@]}"}; do INNER+=" $(printf '%q' "$t")"; done
+for s in ${SETS[@]+"${SETS[@]}"}; do INNER+=" $(printf '%q' "$s")"; done
+
+WRAP="${ENV}${PREAMBLE} && ${INNER}"
+
+if [[ -n "$DRY_RUN" ]]; then
+    printf '%q ' "${SBATCH[@]}"
+    printf -- '--wrap=%q\n' "$WRAP"
+    exit 0
+fi
+
+"${SBATCH[@]}" --wrap="$WRAP"

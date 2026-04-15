@@ -47,8 +47,6 @@ def test_all_expected_commands_registered() -> None:
     expected = {
         "fit",
         "test",
-        "validate",
-        "predict",
         "analyze",
         "rebuild-caches",
         "extract-fusion-states",

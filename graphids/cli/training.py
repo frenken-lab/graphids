@@ -1,11 +1,10 @@
-"""Training commands: fit, test, validate, predict.
+"""Training commands: fit, test.
 
-All four commands share the same prelude (render → validate → build)
-with the pipeline driver (``orchestrate/run.py``), then dispatch
-through ``orchestrate.stage.train`` / ``orchestrate.stage.evaluate``
-so the CLI and the pipeline loop produce identical markers, OTel
-wiring, and GPU-reset semantics. ``validate`` / ``predict`` don't
-have phase markers, so they call the trainer directly after ``build``.
+Both share the same prelude (render → validate → build) with the
+pipeline driver (``orchestrate/run.py``), then dispatch through
+``orchestrate.stage.train`` / ``orchestrate.stage.evaluate`` so the
+CLI and the pipeline loop produce identical markers, OTel wiring,
+and GPU-reset semantics.
 """
 
 from __future__ import annotations
@@ -74,35 +73,3 @@ def test(
     if ckpt_path:
         resolved = replace(resolved, ckpt_file=Path(ckpt_path))
     evaluate(artifacts, resolved)
-
-
-@app.command(rich_help_panel="Training")
-def validate(
-    config: ConfigPath,
-    tla: TlaList = None,
-    set_: SetList = None,
-    ckpt_path: CkptPath = None,
-) -> None:
-    """Run the validation loop."""
-    _resolved, artifacts = _prepare(config, tla, set_)
-    artifacts.trainer.validate(
-        artifacts.model,
-        datamodule=artifacts.datamodule,
-        ckpt_path=ckpt_path,
-    )
-
-
-@app.command(rich_help_panel="Training")
-def predict(
-    config: ConfigPath,
-    tla: TlaList = None,
-    set_: SetList = None,
-    ckpt_path: CkptPath = None,
-) -> None:
-    """Run the prediction loop."""
-    _resolved, artifacts = _prepare(config, tla, set_)
-    artifacts.trainer.predict(
-        artifacts.model,
-        datamodule=artifacts.datamodule,
-        ckpt_path=ckpt_path,
-    )

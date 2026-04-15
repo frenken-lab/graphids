@@ -11,17 +11,18 @@ Every function, file, and abstraction must earn its place. Before writing code, 
 ## Key Commands
 
 ```bash
-# Training — jsonnet stages (Phase 1 migration 2026-04-05). Each stage
-# has sensible TLA defaults so zero-arg invocation works as a smoke test.
+# Preferred: SLURM launch via scripts/run — one preset, real flags, no
+# nested quotes. Preset owns run specifics; flags map to TLAs internally.
+scripts/run configs/ablations/unsupervised/vgae.jsonnet --dataset set_01 --seed 42
+scripts/run configs/ablations/fusion/dqn.jsonnet \
+    --dataset set_01 --seed 42 \
+    --vgae-ckpt /path/best.ckpt --gat-ckpt /path/best.ckpt \
+    --cluster cardinal
+scripts/run configs/ablations/unsupervised/vgae.jsonnet --smoke --dry-run  # gpudebug 1hr
+
+# Direct CLI (login-node smoke / non-SLURM). Stages default for zero-arg.
 python -m graphids fit --config configs/stages/autoencoder.jsonnet
 python -m graphids fit --tla 'scale="large"' --config configs/stages/supervised.jsonnet
-
-# Pass TLAs to stages (JSON-encoded values; unquoted bare strings also accepted)
-python -m graphids fit \
-    --tla 'dataset="hcrl_sa"' \
-    --tla 'fusion_method="dqn"' \
-    --config configs/stages/fusion.jsonnet \
-    --model.init_args.lr=0.005
 
 # Evaluation
 python -m graphids test --config configs/stages/autoencoder.jsonnet --ckpt_path best.ckpt
@@ -37,7 +38,7 @@ python -m graphids analyze --ckpt-path fusion.ckpt --dataset hcrl_sa \
 
 Three entry points, zero overlap:
 
-**Training** — `python -m graphids fit|test|validate|predict` → `graphids/cli/training.py` (Typer). Renders the jsonnet stage with any `--tla` flags, gates through `validate_config`, and calls `graphids.orchestrate.instantiate.instantiate(rendered) → InstantiatedRun` which handles class_path import, signature-filtered link_arguments, forced callbacks (ModelCheckpoint/EarlyStopping/DeviceStatsMonitor/ResourceProfileCallback/RunRecordCallback), logger wiring, and wandb config forwarding. Callbacks live in `graphids/core/monitoring/callbacks.py`.
+**Training** — `python -m graphids fit|test` → `graphids/cli/training.py` (Typer). Renders the jsonnet stage with any `--tla` flags, gates through `validate_config`, and calls `graphids.orchestrate.instantiate.instantiate(rendered) → InstantiatedRun` which handles class_path import, signature-filtered link_arguments, forced callbacks (ModelCheckpoint/EarlyStopping/DeviceStatsMonitor/ResourceProfileCallback/RunRecordCallback), logger wiring, and wandb config forwarding. Callbacks live in `graphids/core/monitoring/callbacks.py`. For SLURM submission, prefer `scripts/run <preset.jsonnet> [--dataset X --seed N --scale s --cluster c]` — it builds TLAs from flags so you never type nested JSON quotes.
 
 **Operational commands** — Typer CLI in `graphids/cli/`. `app.py` defines the root app with shared option types (`ConfigPath`/`TlaList`/`SetList`/`CkptPath`) — `--tla` and `--set` run their `key=value` payload through `_parse_kv_pair` via Typer's `parser=` hook, and `apply_overrides` consumes the pre-parsed list-of-pairs directly. Submodules register commands via `@app.command()` decorators: `training.py`, `analysis.py`, `data.py`, `pipeline.py`. `graphids/__main__.py` imports these submodules to register all commands.
 

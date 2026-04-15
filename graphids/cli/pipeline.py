@@ -23,7 +23,7 @@ from graphids.orchestrate.config import PipelineConfig
 _defaults = PipelineConfig()
 
 
-@app.command("pipeline-run", rich_help_panel="Orchestration")
+@app.command("pipeline-run", rich_help_panel="Archive (deprecated)")
 def pipeline_run(
     dataset: Annotated[
         str,
@@ -70,7 +70,13 @@ def pipeline_run(
     ] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Print stage list only")] = False,
 ) -> None:
-    """Run the full pipeline in-process inside the current SLURM allocation."""
+    """Run the full pipeline in-process inside the current SLURM allocation.
+
+    DEPRECATED: prefer launching individual ablation presets via
+    ``scripts/run <preset.jsonnet>``. Kept for now as the fallback for
+    chain-in-one-allocation runs; its fate will be decided after the
+    ablation workflow stabilizes.
+    """
     from graphids.orchestrate import build_pipeline_stages, run_pipeline
 
     overrides = dict(trainer_override or [])

@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Unified SLURM job launcher. Run from login node.
+# SLURM launcher for ops (tests, caches, analyze, extract, profile). Run from login node.
+# For training / ablation runs use ``scripts/run <preset.jsonnet>`` — it
+# builds TLAs from real flags so you don't type nested JSON quotes.
 # Submit profiles are read from configs/resources/submit_profiles.json via Python.
 #
 # Usage:
 #   scripts/slurm/submit.sh tests [-k pattern] [-x]
 #   scripts/slurm/submit.sh rebuild-caches [--dataset hcrl_ch | --all] [--delete-existing]
-#   scripts/slurm/submit.sh validate
 #   scripts/slurm/submit.sh analyze --ckpt-path <path> --dataset <name> [--cka-teacher-ckpt <p>]
-#   scripts/slurm/submit.sh ablation [--recipe X --dataset X --seed X]
+#   scripts/slurm/submit.sh extract-fusion-states --vgae-ckpt <p> --gat-ckpt <p> ...
 #   scripts/slurm/submit.sh profile [stage scale dataset]
 set -euo pipefail
 

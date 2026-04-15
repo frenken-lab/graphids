@@ -16,19 +16,31 @@ work unchanged.
 
 ## Running
 
+Preferred launch — `scripts/run` builds TLAs from real flags:
+
 ```bash
-# single ablation cell (dataset + seed default to hcrl_ch / 42)
-python -m graphids fit --config configs/ablations/conv_type/gps.jsonnet
+# single ablation cell (preset defaults handle dataset/seed/scale)
+scripts/run configs/ablations/conv_type/gps.jsonnet
 
 # dataset + seed override
-python -m graphids fit \
-    --config configs/ablations/gat_loss/focal.jsonnet \
-    --tla 'dataset="hcrl_sa"' --tla 'seed=123'
+scripts/run configs/ablations/gat_loss/focal.jsonnet --dataset hcrl_sa --seed 123
 
-# ablations that need upstream checkpoints (gat_sampling/curriculum_vgae, fusion/*)
-python -m graphids fit \
-    --config configs/ablations/gat_sampling/curriculum_vgae.jsonnet \
-    --tla 'vgae_ckpt_path="/fs/ess/.../best.ckpt"'
+# ablations that need upstream checkpoints (curriculum_vgae, fusion/*)
+scripts/run configs/ablations/gat_sampling/curriculum_vgae.jsonnet \
+    --vgae-ckpt /fs/ess/.../best.ckpt
+
+# cluster override (submit from pitzer, target cardinal)
+scripts/run configs/ablations/fusion/dqn.jsonnet \
+    --vgae-ckpt <p> --gat-ckpt <p> --cluster cardinal
+
+# smoke test on gpudebug (1hr)
+scripts/run configs/ablations/unsupervised/vgae.jsonnet --smoke --dry-run
+```
+
+Non-SLURM (login-node smoke only) — direct CLI still works:
+
+```bash
+python -m graphids fit --config configs/ablations/conv_type/gps.jsonnet
 ```
 
 ## Conventions
