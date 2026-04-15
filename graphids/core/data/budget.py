@@ -2,10 +2,14 @@
 
 Measures forward/backward memory via the CUDA allocator high-water mark
 (``torch.cuda.max_memory_allocated``) and timing via wall-clock around
-``torch.cuda.synchronize``. Captures ``memory_allocated`` before the probe
-as ``resident`` (model + optimizer + persistent buffers + any KD teacher)
-and subtracts it from the peak to isolate the batch-scaling cost. That
-scaling cost divided by batch (V, E) yields per-node / per-edge byte cost.
+``torch.cuda.synchronize``. The probe is **two-point**: runs forward +
+backward on a small batch and a larger one, then takes the slope
+``(peak_big - peak_small) / (nodes_big - nodes_small)`` as ``bpn_node``.
+The y-intercept of that line absorbs every fixed cost (model params,
+optimizer state, cuDNN workspaces, allocator baseline, KD teacher) —
+no resident-subtract heuristic. Single-point estimates systematically
+over-charge small batches with the fixed costs, inflating bpn_node by
+~3-4× and capping packed batches well below the real hardware limit.
 
 Workers sized by ``ceil((t_io + t_collation) / t_gpu)``.
 """
@@ -73,32 +77,15 @@ def collect_batch(dataset, target_nodes: int) -> Batch:
     return Batch.from_data_list(graphs)
 
 
-def probe(model, batch) -> tuple[int, int, float, float]:
-    """Measure batch-scaling VRAM and forward wall-time.
+def _step_peaks(model, batch) -> tuple[int, int, float]:
+    """Measure (fwd_peak, bwd_peak, t_fwd) for one batch on a warmed model.
 
-    Returns ``(bpn_node, bpn_edge, bwd_mult, t_fwd_seconds)``. ``resident``
-    is captured **after warmup** — the first forward can grow persistent
-    cuDNN workspaces and allocator caches that are non-scaling but would
-    otherwise be attributed to the batch. Subtracting post-warmup resident
-    from both peaks isolates the marginal per-batch cost.
-
-    Caller owns batch lifecycle (``collect_batch(...).clone()`` upstream),
-    so we never clone internally.
+    Caller owns warmup + lifecycle.
     """
     dev = model.device
     fn = getattr(model, "_step", None) or model
 
     with _eval_mode(model):
-        # Warmup: trigger lazy CUDA init, cuDNN autotuning, kernel JIT.
-        with torch.no_grad():
-            fn(batch)
-        torch.cuda.synchronize(dev)
-
-        # Capture resident AFTER warmup — post-warmup allocator state is the
-        # baseline for the measured fwd/bwd peaks.
-        resident = torch.cuda.memory_allocated(dev)
-
-        # Forward-only: peak VRAM + wall time
         torch.cuda.reset_peak_memory_stats(dev)
         t0 = time.perf_counter()
         with torch.no_grad():
@@ -107,7 +94,6 @@ def probe(model, batch) -> tuple[int, int, float, float]:
         t_fwd = time.perf_counter() - t0
         fwd_peak = torch.cuda.max_memory_allocated(dev)
 
-    # Full training step: peak VRAM through backward
     bwd_peak = fwd_peak
     step_fn = getattr(model, "_step", None)
     if step_fn is not None:
@@ -123,14 +109,46 @@ def probe(model, batch) -> tuple[int, int, float, float]:
         bwd_peak = torch.cuda.max_memory_allocated(dev)
         model.zero_grad(set_to_none=True)
 
-    # Subtract resident from both peaks: per-node / per-edge cost is purely
-    # the batch-scaling portion, not model params + KD teacher + workspaces.
-    fwd_scaling = max(1, fwd_peak - resident)
-    bwd_scaling = max(1, bwd_peak - resident)
-    bpn_node = max(1, bwd_scaling // max(1, batch.num_nodes))
-    bpn_edge = max(1, bwd_scaling // max(1, int(batch.num_edges)))
+    return fwd_peak, bwd_peak, t_fwd
+
+
+def probe(model, batch_small, batch_big) -> tuple[int, int, float, float]:
+    """Two-point linear fit of VRAM vs. batch size.
+
+    Runs a warmup on ``batch_small`` (trigger lazy CUDA init, cuDNN
+    autotuning, kernel JIT, allocator baseline), then full fwd+bwd passes
+    on both batches. ``bpn_node`` is the slope of ``bwd_peak`` vs. nodes
+    across the two points; the intercept (fixed overhead) drops out.
+    Same for ``bpn_edge``.
+
+    Returns ``(bpn_node, bpn_edge, bwd_mult, t_fwd_seconds)``. ``t_fwd``
+    is from the larger batch, which is more representative of real
+    training steps than the warmup-sized one.
+
+    Caller owns batch lifecycles.
+    """
+    dev = model.device
+
+    # Warmup on the smaller batch — sets up cuDNN autotuning + allocator cache.
+    with _eval_mode(model):
+        with torch.no_grad():
+            (getattr(model, "_step", None) or model)(batch_small)
+    torch.cuda.synchronize(dev)
+
+    fwd_s, bwd_s, _ = _step_peaks(model, batch_small)
+    fwd_b, bwd_b, t_fwd_big = _step_peaks(model, batch_big)
+
+    dn = max(1, batch_big.num_nodes - batch_small.num_nodes)
+    de = max(1, int(batch_big.num_edges) - int(batch_small.num_edges))
+    # Clamp to avoid pathologies when allocator caching makes the big probe
+    # report lower peak than the small one (rare but possible at small deltas).
+    bpn_node = max(1, (bwd_b - bwd_s) // dn)
+    bpn_edge = max(1, (bwd_b - bwd_s) // de)
+
+    fwd_scaling = max(1, fwd_b - fwd_s)
+    bwd_scaling = max(1, bwd_b - bwd_s)
     bwd_mult = max(1.0, bwd_scaling / fwd_scaling) if fwd_scaling > 0 else _BWD_MULT_FALLBACK
-    return bpn_node, bpn_edge, bwd_mult, t_fwd
+    return bpn_node, bpn_edge, bwd_mult, t_fwd_big
 
 
 def node_budget(
@@ -158,9 +176,14 @@ def node_budget(
     bpn_node, bpn_edge = _FALLBACK_BPN, 0
     bwd, t_fwd = None, 0.0
     if model and train_dataset and torch.cuda.is_available():
-        b = collect_batch(train_dataset, 2000).clone().to(model.device)
-        bpn_node, bpn_edge, bwd, t_fwd = probe(model, b)
-        del b
+        dev = model.device
+        # Two-point probe. Small batch amortizes warmup / cuDNN autotuning;
+        # big batch drives the slope. 10× ratio is enough for the fixed-cost
+        # intercept to cancel out without inflating probe runtime.
+        small = collect_batch(train_dataset, 2000).clone().to(dev)
+        big = collect_batch(train_dataset, 20000).clone().to(dev)
+        bpn_node, bpn_edge, bwd, t_fwd = probe(model, small, big)
+        del small, big
         torch.cuda.empty_cache()
 
     free_scalable = max(1, int(free * _SAFETY))

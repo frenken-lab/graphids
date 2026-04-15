@@ -1,31 +1,5 @@
 {
-  "_comment": "Static profiles have fixed time/mem. Profiles with a 'scaling' block auto-size from cache_metadata.json.aggregate.num_raw_samples; profiles with a 'stages' list compose per-stage (time=sum, cpus/mem=max). 'defaults' is the fallback when --dataset is not provided.",
-  "stage_profiles": {
-    "autoencoder": {
-      "mode": "gpu",
-      "cpus": 8,
-      "scaling": {
-        "time_min": {"base": 5.0, "per_mraw": 0.3, "scale_mult": {"small": 1.0, "large": 2.0}},
-        "mem_gb":   {"base": 12.0, "per_mraw": 0.20, "scale_mult": {"small": 1.0, "large": 1.3}}
-      }
-    },
-    "supervised": {
-      "mode": "gpu",
-      "cpus": 8,
-      "scaling": {
-        "time_min": {"base": 8.0, "per_mraw": 0.5, "scale_mult": {"small": 1.0, "large": 2.2}},
-        "mem_gb":   {"base": 14.0, "per_mraw": 0.25, "scale_mult": {"small": 1.0, "large": 1.4}}
-      }
-    },
-    "fusion": {
-      "mode": "gpu",
-      "cpus": 4,
-      "scaling": {
-        "time_min": {"base": 3.0, "per_mraw": 0.10, "scale_mult": {"small": 1.0, "large": 1.3}},
-        "mem_gb":   {"base": 8.0, "per_mraw": 0.05, "scale_mult": {"small": 1.0, "large": 1.2}}
-      }
-    }
-  },
+  "_comment": "Static profiles have fixed time/mem. Profiles with a 'scaling' block auto-size from cache_metadata.json.aggregate.num_raw_samples; 'defaults' is the fallback when --dataset is not provided.",
   "submit_profiles": {
     "tests": {
       "partition": "cpu",
@@ -67,21 +41,31 @@
       "command": "python -m graphids analyze"
     },
     "fit": {
-      "partition": "gpudebug",
-      "cpus": 4,
-      "mem": "32G",
-      "time": "1:00:00",
+      "partitions": {
+        "pitzer":   {"short": "gpudebug", "long": "gpu"},
+        "cardinal": {"short": "debug",    "long": "gpu"},
+        "ascend":   {"short": "debug",    "long": "gpu"}
+      },
+      "cpus": 8,
+      "mem": "48G",
+      "time_short": "1:00:00",
+      "time_long":  "4:00:00",
       "signal": "",
       "mode": "gpu",
       "command": "python -m graphids fit"
     },
-    "fit-long": {
-      "partition": "gpu",
-      "cpus": 8,
-      "mem": "48G",
-      "time": "4:00:00",
+    "fit-cpu": {
+      "partitions": {
+        "pitzer":   {"short": "debug-cpu", "long": "cpu"},
+        "cardinal": {"short": "debug",     "long": "cpu"},
+        "ascend":   {"short": "debug",     "long": "cpu"}
+      },
+      "cpus": 16,
+      "mem": "32G",
+      "time_short": "1:00:00",
+      "time_long":  "4:00:00",
       "signal": "",
-      "mode": "gpu",
+      "mode": "cpu",
       "command": "python -m graphids fit"
     },
     "extract-fusion-states": {
@@ -92,14 +76,6 @@
       "signal": "",
       "mode": "gpu",
       "command": "python -m graphids extract-fusion-states"
-    },
-    "pipeline-run": {
-      "partition": "gpu",
-      "signal": "",
-      "mode": "gpu",
-      "command": "python -m graphids pipeline-run",
-      "stages": ["autoencoder", "supervised", "fusion"],
-      "defaults": {"cpus": 8, "mem": "40G", "time": "6:00:00"}
     }
   }
 }

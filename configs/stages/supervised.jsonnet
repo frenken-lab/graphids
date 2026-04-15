@@ -73,8 +73,7 @@ function(
             val_fraction: 0.2,
           },
         },
-        batch_size: 8192,
-        dynamic_batching: true,
+        dynamic_batching: true,  // batch_size is unused on this path — sampler uses probe budget
         conv_type: conv_type,
         heads: $.model.init_args.heads,
         sampler: sampler,

@@ -18,4 +18,4 @@ Axis 3: Dependency — does it derive from another config value
 
 - Independent: LAKE_ROOT, SLURM_ACCOUNT, PREPROCESSING_VERSION
 - Derived: SLURM_LOG_DIR = f"{LAKE_ROOT}/slurm" — can't resolve before LAKE_ROOT
-- Composed: PathContext.run_dir — needs config values + runtime args (user, dataset, seed)
+- Composed: preset `run_dir` — computed inside the jsonnet preset from `(lake_root, dataset, seed)` TLAs via `configs/ablations/_paths.libsonnet`

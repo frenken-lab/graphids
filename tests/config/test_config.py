@@ -1,28 +1,13 @@
-"""Config layer tests: dataset catalog + custom pydantic validators.
+"""Config layer tests: dataset catalog only.
 
-Topology DAG tests (test_fusion_has_dependencies, test_no_cycles,
-test_ordering, test_default_stages_are_valid, test_stages_have_identity_keys)
-were deleted 2026-04-13 — they referenced ``STAGES`` / ``STAGE_DEPENDENCIES``
-/ ``PIPELINE_TOPOLOGY`` module-level names that were never actually imported
-in this file, and would have been duplicating import-time assertions in
-``graphids.config.topology`` anyway.
-
-``test_custom_stage_validator_rejects_unknown`` was also deleted: the
-production error message changed from ``"Unknown stages"`` to Pydantic's
-``"stage='bogus' not in [...]"``, making the regex match brittle with
-no real invariant behind it.
+Topology/pipeline-config tests were deleted when the pipeline route
+collapsed into the single ablation-preset route (2026-04-15). Pydantic
+built-ins are tested upstream and intentionally absent here.
 """
 
 from __future__ import annotations
 
-import pytest
-
 from graphids.config.topology import dataset_names, load_catalog
-from graphids.orchestrate.config import KDEntry, TrainingRunConfig
-
-# ---------------------------------------------------------------------------
-# Dataset catalog (configs/datasets/dataset_registry.json)
-# ---------------------------------------------------------------------------
 
 
 def test_catalog_loads_all_datasets():
@@ -56,29 +41,3 @@ def test_catalog_test_subdirs_populated():
     """Every dataset must have at least one test subdir for evaluation."""
     for name, entry in load_catalog().items():
         assert entry["test_subdirs"], f"Dataset '{name}' has empty test_subdirs"
-
-
-# Topology DAG invariants are enforced by import-time assertions in
-# ``graphids.config.topology`` — the ``from graphids...`` imports above
-# already exercise them. A missing file or bad ordering prevents
-# collection, which is a louder signal than a test failure.
-
-
-# ---------------------------------------------------------------------------
-# TrainingRunConfig + KDEntry — project-specific validators only.
-# Pydantic built-ins (frozen, extra=forbid, Literal coercion, required
-# kwargs) are tested upstream by Pydantic and intentionally absent here.
-# ---------------------------------------------------------------------------
-
-
-def test_training_run_config_defaults():
-    cfg = TrainingRunConfig()
-    assert cfg.model_type is None
-    assert cfg.auxiliaries == ()
-
-
-def test_kd_entry_custom_alpha_bounds():
-    """Custom 0..1 alpha bound + default type='kd' discriminator."""
-    kd = KDEntry(alpha=0.5)
-    assert kd.type == "kd"
-    assert kd.alpha == 0.5

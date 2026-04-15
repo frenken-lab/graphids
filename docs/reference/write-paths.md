@@ -20,7 +20,7 @@ Constants: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `PHASE_MARKERS`, `CATALOG_SUBPAT
 ```
 /fs/ess/PAS1266/graphids/                        <-- $GRAPHIDS_LAKE_ROOT (persistent, shared)
 +-- dev/{user}/{dataset}/
-|   +-- {model}_{scale}_{stage}{identity}{kd}/
+|   +-- ablations/{group}/{variant}/
 |       +-- seed_{N}/                             <-- trainer.default_root_dir
 |           +-- checkpoints/
 |           |   +-- best_model.ckpt               <-- ModelCheckpoint (dirpath pinned by instantiate.py)
@@ -68,8 +68,8 @@ All training writes land under `trainer.default_root_dir` from the rendered json
 
 ### 3. Phase Markers
 
-Diagnostic only — `run_pipeline`'s resume skip-check reads
-`checkpoints/best_model.ckpt` directly, not these markers.
+Diagnostic only — resume is authoritative on `checkpoints/best_model.ckpt`
+existence, not these markers.
 
 | What | Path | Who writes | Code |
 |------|------|-----------|------|
@@ -98,31 +98,28 @@ Diagnostic only — `run_pipeline`'s resume skip-check reads
 
 `{lake_root}/catalog/graphids.duckdb` — DuckDB catalog over `training.fit` OTel spans from `traces.jsonl`. The builder (`orchestrate/ops/catalog.py`) and `rebuild-catalog` CLI were removed 2026-04-10 pending redesign; no current way to populate. Disposable once rebuilt.
 
-## Execution Order (pipeline path)
+## Execution Order
 
 ```
 SLURM JOB (compute node)
 ------------------------
-_preamble.sh (env, venv, stage data)
-python -m graphids pipeline-run
-+- run.run_pipeline(config)
-|  +- ensure_spawn()
-|  +- build_pipeline_stages(config)
-|  +- for each StageConfig (with retry):
-|     +- ResolvedConfig.resolve(...)
-|     +- skip if checkpoints/best_model.ckpt exists     <-- checkpoint is authoritative
-|     +- stage.build(resolved)
-|     |   +- gc + torch.cuda reset
-|     |   +- instantiate() -> trainer/model/datamodule
-|     +- stage.train(artifacts, resolved)
-|     |   +- wire_file_exporters(run_dir)
-|     |   +- trainer.fit() -> touch .train_complete
-|     +- stage.evaluate(artifacts, resolved)
-|         +- trainer.test() -> touch .test_complete
-|         +- save predictions/test/*.pt
-+- _epilog.sh (GPU utilization report)
+_preamble.sh (env, venv)
+python -m graphids fit --config <preset.jsonnet> --tla dataset=... --tla seed=...
++- ensure_spawn()
++- render(config, tla)
++- apply_overrides(rendered, --set ...)
++- ResolvedConfig.from_rendered(rendered)
++- build(resolved)
+|   +- gc + torch.cuda reset
+|   +- build_run(rendered) -> trainer/model/datamodule
++- wire_file_exporters(run_dir)
++- train(artifacts, resolved, resume_from=...)
+|   +- trainer.fit() -> touch .train_complete
+# (separate invocation for eval)
+python -m graphids test --config <preset.jsonnet> --tla dataset=... --tla seed=...
++- ... evaluate(...) -> trainer.test() -> touch .test_complete
 
-# Analysis is decoupled: run after the pipeline finishes.
+# Analysis is decoupled:
 python -m graphids analyze --ckpt-path <run_dir>/checkpoints/best_model.ckpt \
     --dataset <dataset>
 ```

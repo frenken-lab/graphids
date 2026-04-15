@@ -1,38 +1,3 @@
 {
-  "stages": {
-    "autoencoder": {
-      "learning_type": "unsupervised",
-      "family": "unsupervised",
-      "mode": "gpu_train",
-      "depends_on": [],
-      "identity_keys": ["scale", "conv_type", "variational", "model_type"],
-      "stage_tlas": ["conv_type", "variational", "model_type", "distillation_config", "ckpt_path"]
-    },
-    "supervised": {
-      "learning_type": "supervised",
-      "family": "supervised",
-      "mode": "gpu_train",
-      "depends_on": [{"family": "unsupervised", "stage": "autoencoder"}],
-      "identity_keys": ["scale", "conv_type", "loss_fn", "model_type"],
-      "stage_tlas": ["conv_type", "loss_fn", "model_type", "vgae_ckpt_path", "distillation_config", "ckpt_path"]
-    },
-    "fusion": {
-      "learning_type": "rl_fusion",
-      "family": "fusion",
-      "mode": "cpu_train",
-      "depends_on": [
-        {"family": "unsupervised", "stage": "autoencoder"},
-        {"family": "supervised", "stage": "supervised"}
-      ],
-      "identity_keys": ["scale", "loss_fn", "method", "conv_type"],
-      "stage_tlas": ["fusion_method", "ckpt_path"]
-    }
-  },
-  "default_stages": ["autoencoder", "supervised", "fusion"],
-  "ckpt_stages": {
-    "vgae": "autoencoder",
-    "dgi": "autoencoder",
-    "gat": "supervised",
-    "fusion": "fusion"
-  }
+  "stages": ["autoencoder", "supervised", "fusion"]
 }

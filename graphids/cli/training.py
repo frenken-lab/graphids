@@ -27,6 +27,7 @@ def _prepare(
     Returns ``(resolved, artifacts)``. Heavy imports live inside the
     function so the app stays login-node-safe.
     """
+    from graphids._cpu import configure_cpu_threads
     from graphids._otel import wire_file_exporters
     from graphids._spawn import ensure_spawn
     from graphids.cli.app import apply_overrides
@@ -34,6 +35,7 @@ def _prepare(
     from graphids.orchestrate.stage import build
 
     ensure_spawn()
+    configure_cpu_threads()
 
     rendered = render(config, tla=dict(tla or []) or None)
     apply_overrides(rendered, overrides)

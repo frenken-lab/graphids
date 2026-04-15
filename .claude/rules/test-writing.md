@@ -20,9 +20,9 @@ Seen in this repo (all deleted in the 2026-04-04 audit):
 - Tests that `torchmetrics.reset()` works → torchmetrics' job
 
 Keep only:
-- Custom `@field_validator` logic (e.g. `TrainingRunConfig.stages` "Unknown stages")
+- Custom `@field_validator` logic
 - Custom bounds / cross-field checks that Pydantic's `Literal`/`ge/le`
-  alone don't cover (e.g. `KDEntry.alpha` in [0, 1])
+  alone don't cover
 
 ### 2. Does the test re-implement the code under test?
 

@@ -1,7 +1,8 @@
 # Module Responsibilities
 
-**Jsonnet** (`configs/`) — structure and composition only. Stage functions produce a raw
-merged dict. No validation, no types.
+**Jsonnet** (`configs/`) — structure and composition only. Every preset
+under `configs/ablations/*.jsonnet` produces a raw merged dict and
+computes its own `run_dir`. No validation, no types.
 
 **`render`** (`graphids/config/jsonnet.py`) — `_jsonnet` C-binding call with typed
 `tla_codes` args (JSON-encoded so ints/bools/null round-trip correctly).
@@ -11,22 +12,21 @@ Returns the rendered dict.
 after render. Catches null list fields, monitor/mode mismatches, un-namespaced class_paths,
 and LearningRateMonitor without a logger. Fails fast before any torch import.
 
-**`instantiate`** (`graphids/orchestrate/instantiate.py`) — imports class_paths via
-importlib, applies signature-filtered link_arguments, builds forced callbacks
-(`ModelCheckpoint`, `EarlyStopping`, `OTelTrainingCallback`, `VRAMDriftCallback`
-when CUDA is available), wires `OTelTrainingLogger`, and returns a wired
-`(trainer, model, datamodule)` triple.
+**`build_run`** (`graphids/orchestrate/instantiate.py`) — imports class_paths via
+importlib, applies `filter_kwargs` against each target's `__init__`
+signature, builds forced callbacks (`ModelCheckpoint`, `EarlyStopping`,
+`OTelTrainingCallback`, `VRAMDriftCallback` when CUDA is available), wires
+`OTelTrainingLogger`, and returns an `InstantiatedRun(trainer, model,
+datamodule)`.
 
-**Pipeline driver** (`graphids/orchestrate/run.py`, `graphids/cli/pipeline.py`) —
-`run_pipeline(config)` composes `build_pipeline_stages` (planner) → for each
-stage: `ResolvedConfig.resolve` → `stage.build` → `stage.train` → `stage.evaluate`.
-Runs in-process inside whatever SLURM allocation `submit.sh pipeline-run` hands
-it. Skips a stage when `checkpoints/best_model.ckpt` is already on disk.
-Analysis is intentionally not part of the driver — run `python -m graphids
-analyze --ckpt-path <p>` once training is done.
+**Stage primitives** (`graphids/orchestrate/stage.py`) — `build`, `train`,
+`evaluate`. `fit` / `test` call these directly. No pipeline driver. Multi-stage
+chains are bash loops submitting each preset with `SBATCH_DEP=afterok:<jid>`.
 
-**SLURM** (`graphids/slurm/`, `scripts/slurm/submit.sh`) — resource allocation and job
-submission. CPUs, GPUs, memory, wall time. All jobs submitted via `submit.sh <profile>`.
+**SLURM** (`graphids/slurm/`, `scripts/run`, `scripts/slurm/submit.sh`) —
+resource allocation and job submission. `scripts/run` launches training
+presets; `submit.sh` covers non-training jobs (tests, rebuild-caches,
+analyze, etc.). Both read `configs/resources/submit_profiles.json`.
 
 The pipeline is strictly one-directional:
 
@@ -35,7 +35,7 @@ jsonnet renders (render)
     ↓
 Pydantic validates (validate_config → ValidatedConfig)
     ↓
-instantiate → (trainer, model, datamodule)
+ResolvedConfig.from_rendered → build_run → (trainer, model, datamodule)
     ↓
 trainer.fit / trainer.test
 ```

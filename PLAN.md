@@ -1,12 +1,117 @@
 # GraphIDS Session Plan
 
-> Last updated: 2026-04-15 (session 49 — ablation tree + NDJSON observability)
+> Last updated: 2026-04-15 (session 50 — pipeline route deleted, single route remains)
+
+## This session (50)
+
+- **Deleted the pipeline route.** `orchestrate/run.py`, `orchestrate/planning.py`,
+  `orchestrate/resolve.py`, `cli/pipeline.py` gone. `orchestrate/config.py`
+  trimmed to `ResolvedConfig` + `InstantiatedRun` only (PipelineConfig,
+  StageConfig, TrainingRunConfig, KDEntry, PipelineResult removed).
+  `config/topology.py` reduced to import-time jsonnet-tree validation +
+  dataset catalog + path helpers (PathContext, compute_identity_hash,
+  StageDef/Topology model deleted). `configs/matrix/topology.json`
+  shrunk to just a stage-name list. `docs/reference/kd-pipeline.md` and
+  `observability-data-layers.md` deleted as stale. ADRs 0003 / 0006 /
+  0007 / 0009 annotated as (partially) superseded.
+- **Cluster-aware single `fit` profile.** `fit` + `fit-long` in
+  `submit_profiles.json` collapsed to one `fit` with
+  `partitions.<cluster>.{short,long}` + `time_short` / `time_long`.
+  `submit-profile` CLI gained `--cluster` (default `pitzer`) and
+  `--length` (default `long`); patches `profile.partition` / `profile.time`
+  from the partitions map before falling through to `_resolve_resources`.
+  `scripts/run` default `--cluster=pitzer` (or `$GRAPHIDS_CLUSTER`);
+  `--smoke` sets `length=short`; always passes `--clusters=$CLUSTER`.
+  `--walltime HH:MM:SS` added so submissions can right-size below the
+  profile's default. `stage_profiles` composition block and the
+  pipeline-only completion helpers (`_literal_field_values`,
+  `_complete_conv_type`, `_complete_loss_fn`, `_complete_fusion_method`)
+  removed with the pipeline route.
+- **Two-point budget probe.** `graphids/core/data/budget.py::probe`
+  rewritten to run fwd+bwd at two batch sizes (2k + 20k nodes) and take
+  the slope `(bwd_big - bwd_small) / (nodes_big - nodes_small)` as
+  `bpn_node`. Fixed overhead (cuDNN workspaces, optimizer state, KD
+  teacher, allocator baseline) drops out into the implicit intercept —
+  no more `resident` subtraction. Validated on set_01/vgae/H100:
+  `bpn_node` fell from 25,677 B/node to 9,019 B/node (−65%); budget
+  rose from 3.29 M nodes to 10.47 M (+218%). Safety margin bumped
+  0.85 → 0.95 in `settings.py` (two-point slope's intercept already
+  covers fixed costs). Dead `batch_size: 8192` removed from
+  `configs/stages/{autoencoder,supervised}.jsonnet` (unused on the
+  dynamic-batching path — sampler uses probe budget). `critical-constraints.md`
+  gained a "Two-point probe" bullet.
+- **Fusion CPU path.** New `fit-cpu` submit profile (cpus=16, mem=32G,
+  mode=cpu) with cluster-indexed partitions (Pitzer `debug-cpu`/`cpu`,
+  Cardinal `debug`/`cpu`, Ascend `debug`/`cpu`). `scripts/run --cpu`
+  flag selects it. New `graphids/_cpu.py::configure_cpu_threads()`
+  reads `SLURM_CPUS_PER_TASK` and pins `torch.set_num_threads(N)` +
+  `torch.set_num_interop_threads(1)` + `OMP_NUM_THREADS` + `MKL_NUM_THREADS`
+  at process start (called from `cli/training.py::_prepare` right after
+  `ensure_spawn()`). Idempotent via module flag.
+- **Tests** — `test_config.py` shed TrainingRunConfig/KDEntry cases;
+  `test_submit_profile.py` shed pipeline-composition regressions;
+  `test_cli_routing_smoke.py` dropped the `pipeline-run` expectation;
+  `test_budget_matrix.py` fixed the stale `cache_dir` patch (budget.py
+  no longer reads cache metadata). All 26 non-training tests green.
+- **Docs swept** — `CLAUDE.md`, `.claude/rules/config-system.md`,
+  `.claude/rules/slurm-hpc.md`, `docs/responsibilities.md`,
+  `docs/reference/orchestration.md`, `docs/reference/config-architecture.md`,
+  `docs/reference/write-paths.md`, `configs/CONFIG_REFERENCE.md`,
+  `graphids/config/VALIDATION_CHECKLIST.md`,
+  `.github/copilot-instructions.md` rewritten to describe the single route.
+
+Multi-stage chains are now a bash loop over `scripts/run <preset>` with
+`SBATCH_DEP=afterok:<jid>` deps — `scripts/ablation/launch_set_01.sh`
+already does this. Orchestration to rebuild: TBD, next session.
+
+## Handoff — next-session triage
+
+**Running at commit time** (Cardinal `debug`, `--smoke --walltime 0:30:00`):
+
+| Job ID | Preset | Dataset | Seed |
+|---:|---|---|---:|
+| 8568397 | `configs/ablations/unsupervised/gae.jsonnet` | set_01 | 42 |
+| 8568398 | `configs/ablations/unsupervised/dgi.jsonnet` | set_01 | 42 |
+
+**First things to check next session**:
+
+1. `squeue --me -M cardinal` / `sacct -M cardinal -j 8568397,8568398
+   --format=JobID,State,ExitCode,Elapsed,MaxRSS -P` — expect COMPLETED
+   0:0, elapsed ~13 min (matches prior VGAE calibration).
+2. Pull probe numbers from stderr:
+   `grep budget_probed /fs/ess/PAS1266/graphids/slurm_logs/graphids-{gae,dgi}_{8568397,8568398}.err`.
+   Expect similar correction ratio to VGAE (bpn_node falls ~3×;
+   budget rises ~3×).
+3. GPU/VRAM summary via `graphids.core.run_io.load_metrics(run_dir)` on
+   `/fs/ess/PAS1266/graphids/dev/rf15/set_01/ablations/unsupervised/{gae,dgi}/seed_42`.
+   `ml.gpu.utilization_pct`, `ml.cuda.allocated_peak_mb`, `ml.batch.duration_s`
+   are the columns of interest. Tag each query with a time cutoff — metrics.jsonl
+   is append-only, so prior runs accumulate in the same file.
+4. After both finish: compare train/val loss curves across VGAE vs GAE vs DGI
+   on set_01 (`train_loss`, `val_loss` metric rows). That's the ablation's
+   actual output.
+
+**Reference for VGAE calibration pair** (same dataset, same seed, pre- vs
+post-probe change):
+
+| | 8567784 (single-point, 0.85) | 8568190 (two-point, 0.95) |
+|---|---:|---:|
+| bpn_node (B/node) | 25,677 | 9,019 |
+| budget_nodes | 3,290,292 | 10,469,479 |
+| Wall | 12:53 | 12:46 |
+| Allocated peak VRAM | 16,649 MB | 16,649 MB |
+| GPU util mean | 99.26% | 98.89% |
+
+VRAM didn't move because the benign train split (2.64 M nodes) already
+fit in one batch under *both* budgets — set_01 is dataset-capped, not
+hardware-capped. The probe-cal win will show up on GAT (unfiltered train,
+~5× more nodes) and on set_02/03/04.
 
 PLAN.md is current-session work only. Historical session changelogs live in
 git log; durable verdicts live in `docs/decisions/README.md`; living architecture
 lives in `docs/reference/`.
 
-## Active
+## Active (carried from prior sessions)
 
 - **Re-run seed=42 unsupervised cells under new format** — in-flight Cardinal
   jobs 8557733 (VGAE), 8557737 (GAE), 8557738 (DGI, PD QOSMax) were submitted

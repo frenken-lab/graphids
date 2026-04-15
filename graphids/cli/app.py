@@ -122,11 +122,10 @@ CkptPath = Annotated[
 # ---------------------------------------------------------------------------
 #
 # Each ``_complete_*`` takes an ``incomplete`` prefix (typer passes whatever the
-# user has typed so far after ``<TAB>``) and returns the matching values. These
-# are wired via ``autocompletion=`` on the relevant Options in ``pipeline.py``
-# and ``data.py``. Values come from the authoritative source
-# (topology catalog, pydantic Literal, axes.json frozenset) — no hardcoded lists
-# that can drift. Each helper defers its imports so ``--help`` stays fast.
+# user has typed so far after ``<TAB>``) and returns the matching values. Values
+# come from the authoritative source (dataset catalog, axes.json frozenset) — no
+# hardcoded lists that can drift. Each helper defers its imports so ``--help``
+# stays fast.
 
 
 def _complete_dataset(incomplete: str) -> list[str]:
@@ -141,37 +140,10 @@ def _complete_scale(incomplete: str) -> list[str]:
     return sorted(v for v in VALID_SCALES if v.startswith(incomplete))
 
 
-def _complete_fusion_method(incomplete: str) -> list[str]:
-    from graphids.config.constants import VALID_FUSION_METHODS
-
-    return sorted(v for v in VALID_FUSION_METHODS if v.startswith(incomplete))
-
-
 def _complete_model_type(incomplete: str) -> list[str]:
     from graphids.config.constants import VALID_MODEL_TYPES
 
     return sorted(v for v in VALID_MODEL_TYPES if v.startswith(incomplete))
-
-
-def _literal_field_values(field_name: str) -> tuple[str, ...]:
-    """Extract allowed values from a ``PipelineConfig`` Literal-typed field.
-
-    Single source of truth for conv_type / loss_fn completion: the pydantic
-    model owns the Literal, we just read its arguments via ``typing.get_args``.
-    """
-    from typing import get_args
-
-    from graphids.orchestrate.config import PipelineConfig
-
-    return get_args(PipelineConfig.model_fields[field_name].annotation)
-
-
-def _complete_conv_type(incomplete: str) -> list[str]:
-    return [v for v in _literal_field_values("conv_type") if v.startswith(incomplete)]
-
-
-def _complete_loss_fn(incomplete: str) -> list[str]:
-    return [v for v in _literal_field_values("loss_fn") if v.startswith(incomplete)]
 
 
 def apply_overrides(
@@ -213,6 +185,14 @@ def submit_profile(
             "--scale", help="Model scale for per-stage scaling", autocompletion=_complete_scale
         ),
     ] = "small",
+    cluster: Annotated[
+        str,
+        typer.Option("--cluster", help="Target cluster (picks partition for fit-shape profiles)"),
+    ] = "pitzer",
+    length: Annotated[
+        str,
+        typer.Option("--length", help="short (debug queue, ~1h) or long (batch queue, ~4h)"),
+    ] = "long",
 ) -> None:
     """Print resource profile fields for ``scripts/slurm/submit.sh``.
 
@@ -220,11 +200,12 @@ def submit_profile(
     ``partition cpus mem time signal mode gres command`` on a single line.
 
     Profiles fall into three shapes:
-    - static (``time`` + ``mem`` fields present) — emit as-is
+    - static (``partition`` + ``time`` + ``mem`` fields) — emit as-is.
     - scaling (``scaling`` block) — size from ``--dataset``'s num_raw_samples;
-      fall back to ``defaults`` when ``--dataset`` is omitted
-    - composed (``stages`` list) — per-stage sizing then compose:
-      ``time = sum(stages)``, ``cpus/mem = max(stages)``
+      fall back to ``defaults`` when ``--dataset`` is omitted.
+    - fit-shape (``partitions`` map + ``time_short`` / ``time_long``) —
+      pick partition from ``partitions[cluster][length]`` and time from
+      ``time_{length}``. One profile covers every cluster × length combo.
     """
     from graphids._otel import get_logger
     from graphids.config.constants import PROJECT_ROOT
@@ -234,14 +215,28 @@ def submit_profile(
         (PROJECT_ROOT / "configs" / "resources" / "submit_profiles.json").read_text()
     )
     submit_profiles = config["submit_profiles"]
-    stage_profiles = config.get("stage_profiles", {})
     if job not in submit_profiles:
         log.error("submit_profile_unknown", job=job, available=sorted(submit_profiles))
         raise typer.Exit(1)
-    p = submit_profiles[job]
+    p = dict(submit_profiles[job])
+
+    if "partitions" in p:
+        cluster_map = p["partitions"].get(cluster)
+        if cluster_map is None:
+            log.error(
+                "submit_profile_unknown_cluster",
+                cluster=cluster,
+                available=sorted(p["partitions"]),
+            )
+            raise typer.Exit(1)
+        if length not in cluster_map:
+            log.error("submit_profile_unknown_length", length=length, available=sorted(cluster_map))
+            raise typer.Exit(1)
+        p["partition"] = cluster_map[length]
+        p["time"] = p[f"time_{length}"]
 
     num_raw = _load_num_raw_samples(dataset) if dataset else None
-    cpus, mem_str, time_str = _resolve_resources(p, stage_profiles, num_raw, scale)
+    cpus, mem_str, time_str = _resolve_resources(p, num_raw, scale)
 
     gres = "gpu:1" if p["mode"] == "gpu" else "NONE"
     signal = p.get("signal") or "NONE"
@@ -285,32 +280,19 @@ def _size_from_scaling(
 
 def _resolve_resources(
     profile: dict[str, Any],
-    stage_profiles: dict[str, Any],
     num_raw: int | None,
     scale: str,
 ) -> tuple[int, str, str]:
-    """Resolve (cpus, mem, time) for any profile shape. Returns sbatch-ready strings."""
+    """Resolve (cpus, mem, time) for a profile. Returns sbatch-ready strings."""
     import math
 
-    if "stages" in profile:
-        if num_raw is None:
-            d = profile["defaults"]
-            return int(d["cpus"]), str(d["mem"]), str(d["time"])
-        per_stage = [
-            _size_from_scaling(stage_profiles[s], num_raw, scale) for s in profile["stages"]
-        ]
-        cpus = max(c for c, _, _ in per_stage)
-        mem_gb = max(m for _, m, _ in per_stage)
-        time_min = sum(t for _, _, t in per_stage)
-    elif "scaling" in profile:
+    if "scaling" in profile:
         if num_raw is None:
             d = profile["defaults"]
             return int(profile["cpus"]), str(d["mem"]), str(d["time"])
         cpus, mem_gb, time_min = _size_from_scaling(profile, num_raw, scale)
-    else:
-        return int(profile["cpus"]), str(profile["mem"]), str(profile["time"])
-
-    return cpus, f"{math.ceil(mem_gb)}G", _format_time(time_min)
+        return cpus, f"{math.ceil(mem_gb)}G", _format_time(time_min)
+    return int(profile["cpus"]), str(profile["mem"]), str(profile["time"])
 
 
 def _format_time(minutes: float) -> str:

@@ -51,9 +51,12 @@ Only `vgae_weights` in `reward_kwargs` is configurable.
 
 ### KD auxiliaries
 
-Schema: `KDEntry` in `graphids/orchestrate/config.py`.
-Fields: `type`, `alpha`, `temperature`, `model_path`,
-`vgae_latent_weight`, `vgae_recon_weight`.
+Jsonnet TLA `distillation_config` (a dict) flows into
+`model.init_args.distillation_config`; `inject_loss_fn` in
+`graphids/core/losses/build.py` pops it and wraps the base loss with
+`SoftLabelDistillation` (GAT) or `FeatureDistillation` (VGAE) from
+`core/losses/distillation.py`. Fields: `type`, `alpha`, `temperature`,
+`model_path`, `vgae_latent_weight`, `vgae_recon_weight`.
 
 ---
 
@@ -108,20 +111,18 @@ Budget tuning: `GRAPHIDS_BUDGET_SAFETY_MARGIN`, `GRAPHIDS_BUDGET_GRAD_MULT`,
 
 ### HPC resource profiles
 
-Single source of truth: `configs/resources/submit_profiles.json`. Three shapes:
+Single source of truth: `configs/resources/submit_profiles.json`. Two shapes:
 
-- **static** — fixed `time` + `mem` (e.g. `tests`, `analyze`, `profile`).
+- **static** — fixed `time` + `mem` (e.g. `tests`, `analyze`, `profile`,
+  `fit`, `fit-long`).
 - **scaling** — `scaling.{time_min, mem_gb}` with `base + per_mraw * num_raw_samples`
   interpolated from `cache_metadata.json.aggregate.num_raw_samples` for the
   `--dataset` passed to `submit.sh`. Falls back to the `defaults` block when
   `--dataset` is absent. `rebuild-caches` uses this.
-- **composed** — `stages: [<stage_profile_key>, ...]` pulling from top-level
-  `stage_profiles`. `time = sum(stages)`, `cpus/mem = max(stages)`. Scale
-  (small/large) applied via `scale_mult`. `pipeline-run` uses this.
 
 `submit-profile <job> [--dataset X] [--scale small|large]` prints the resolved
 row that `submit.sh` parses. `graphids/config/topology.py::_validate_submit_profiles`
-catches unknown stage references and out-of-range scale keys at import time.
+catches out-of-range `scale_mult` keys at import time.
 
 ### Submit profiles (`scripts/slurm/submit.sh`)
 
@@ -148,12 +149,14 @@ Full list: `configs/resources/submit_profiles.json`.
 
 ### Run directory template
 
+Every preset under `configs/ablations/*.jsonnet` computes its own
+`run_dir` via `configs/ablations/_paths.libsonnet`:
+
 ```
-{lake_root}/{production|dev/user}/{dataset}/{family}_{scale}_{stage}_{identity_hash}/seed_{N}
+{lake_root}/{dataset}/ablations/{group}/{variant}/seed_{N}
 ```
 
-Identity hash: 8-char SHA256 from stage identity keys (defined in `topology.py`).
-Computed by `compute_identity_hash()` in `graphids/config/paths.py`.
+No Python planner, no identity-hash layer.
 
 ### Logged metrics
 
@@ -168,9 +171,9 @@ Computed by `compute_identity_hash()` in `graphids/config/paths.py`.
 ### Analyzer artifacts
 
 `ARTIFACTS_BY_MODEL_TYPE` in `core/analysis/schemas.py` dispatches by the
-checkpoint's self-describing `class_path` — both `analyze` CLI and the
-pipeline driver go through `analysis_spec_for`, so the toggles below fire
-automatically without a per-run config.
+checkpoint's self-describing `class_path` — the `analyze` CLI reads the
+ckpt, looks up the spec via `analysis_spec_for`, and fires the toggles
+below automatically without a per-run config.
 
 | model_type | embeddings | attention | cka | landscape   | fusion_policy |
 |------------|------------|-----------|-----|-------------|---------------|

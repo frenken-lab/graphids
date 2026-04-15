@@ -12,12 +12,14 @@
 #   --seed N              seed TLA
 #   --scale small|large   scale TLA
 #   --cluster NAME        sbatch --clusters=NAME (default: current cluster)
-#   --smoke               use 'fit' profile (gpudebug 1hr) instead of 'fit-long'
+#   --smoke               use the short/debug queue (~1hr) instead of the long/batch queue (~4hr)
+#   --cpu                 submit to the CPU partition (fit-cpu profile; fusion-style jobs)
 #   --ckpt PATH           ckpt_path TLA (resume)
 #   --vgae-ckpt PATH      vgae_ckpt_path TLA (fusion/curriculum)
 #   --gat-ckpt PATH       gat_ckpt_path TLA (fusion)
 #   --lake-root PATH      lake_root TLA (override preset default)
 #   --set KEY=VAL         dotted-path override passthrough (repeatable)
+#   --walltime HH:MM:SS   sbatch --time override (default: from submit profile)
 #   --dry-run             print the sbatch invocation, don't submit
 #
 # Env:
@@ -39,11 +41,13 @@ command -v jsonnet >/dev/null 2>&1 || {
     exit 1
 }
 
-PROFILE="fit-long"
-CLUSTER=""
+CLUSTER="${GRAPHIDS_CLUSTER:-pitzer}"
+LENGTH="long"
+PROFILE="fit"
 DATASET=""
 SCALE=""
 DRY_RUN=""
+WALLTIME=""
 TLAS=()
 SETS=()
 
@@ -60,8 +64,10 @@ while [[ $# -gt 0 ]]; do
         --gat-ckpt)                   _push_str_tla gat_ckpt_path    "$2"; shift 2 ;;
         --lake-root)                  _push_str_tla lake_root        "$2"; shift 2 ;;
         --cluster)     CLUSTER="$2";                                       shift 2 ;;
-        --smoke)       PROFILE="fit";                                      shift ;;
+        --smoke)       LENGTH="short";                                     shift ;;
+        --cpu)         PROFILE="fit-cpu";                                  shift ;;
         --set)         SETS+=(--set "$2");                                 shift 2 ;;
+        --walltime)    WALLTIME="$2";                                      shift 2 ;;
         --dry-run)     DRY_RUN=1;                                          shift ;;
         *) echo "scripts/run: unknown arg: $1" >&2; exit 2 ;;
     esac
@@ -70,11 +76,12 @@ done
 SLURM_LOG_DIR="${GRAPHIDS_SLURM_LOG_DIR:-${GRAPHIDS_LAKE_ROOT:-experimentruns}/slurm}"
 mkdir -p "$SLURM_LOG_DIR"
 
-PROFILE_ARGS=("$PROFILE")
+PROFILE_ARGS=("$PROFILE" --cluster "$CLUSTER" --length "$LENGTH")
 [[ -n "$DATASET" ]] && PROFILE_ARGS+=(--dataset "$DATASET")
 [[ -n "$SCALE" ]]   && PROFILE_ARGS+=(--scale "$SCALE")
 PROFILE_LINE=$(source .venv/bin/activate && python -m graphids submit-profile "${PROFILE_ARGS[@]}")
 read -r PARTITION CPUS MEM TIME SIGNAL MODE GRES COMMAND <<< "$PROFILE_LINE"
+[[ -n "$WALLTIME" ]] && TIME="$WALLTIME"
 
 JOBNAME="graphids-$(basename "$PRESET" .jsonnet)"
 PREAMBLE="source ${SCRIPT_DIR}/slurm/_preamble.sh"
@@ -92,7 +99,7 @@ SBATCH=(sbatch
     --output="${SLURM_LOG_DIR}/${JOBNAME}_%j.out"
     --error="${SLURM_LOG_DIR}/${JOBNAME}_%j.err"
 )
-[[ -n "$CLUSTER" ]] && SBATCH+=(--clusters="$CLUSTER")
+SBATCH+=(--clusters="$CLUSTER")
 [[ -n "$GRES" && "$GRES" != "NONE" ]] && SBATCH+=(--gres="$GRES")
 [[ -n "$SIGNAL" && "$SIGNAL" != "NONE" ]] && SBATCH+=(--signal="B:${SIGNAL}")
 [[ -n "${SBATCH_DEP:-}" ]] && SBATCH+=(--dependency="$SBATCH_DEP")

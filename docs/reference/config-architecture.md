@@ -7,73 +7,47 @@
 
 ## 1. CLI Routes
 
-Three routes end in training, plus operational commands:
+One training route + operational commands:
 
-### Route A: Dev CLI (interactive)
+### Route A: Train a preset
 
 ```
 python -m graphids fit \
     --tla 'dataset="hcrl_ch"' \
     --tla 'scale="small"' \
-    --config configs/stages/autoencoder.jsonnet \
-    --model.init_args.lr=0.01
+    --config configs/ablations/unsupervised/vgae.jsonnet \
+    --set model.init_args.lr=0.01
   -> __main__.py
-  -> cli._training (Typer @app.command)
+  -> cli.training (Typer @app.command)
   -> render(jsonnet_path, tla)
-  -> validate_config(rendered)  # Pydantic gate
-  -> _apply_overrides(merged, overrides)
-  -> instantiate(merged, validated=...)
-  -> trainer.fit(model, datamodule=datamodule, ckpt_path=...)
+  -> apply_overrides(rendered, --set ...)
+  -> ResolvedConfig.from_rendered(rendered)    # validates + pulls run_dir
+  -> build(resolved)  ->  train(artifacts, resolved, resume_from=--ckpt-path)
 ```
 
-### Route B: Pipeline (in-process 3-stage chain inside one SLURM allocation)
+Every ablation preset under `configs/ablations/*.jsonnet` computes its
+own `run_dir` from `(lake_root, dataset, seed)` via `_paths.libsonnet`.
+The SLURM wrapper (`scripts/run`) just forwards TLAs.
+
+Multi-stage chains (e.g. `autoencoder → supervised → fusion`) are a
+bash loop in `scripts/ablation/launch_set_01.sh` that submits each
+preset with `SBATCH_DEP=afterok:<jid>` between them. There is no
+in-process pipeline driver.
+
+### Route B: Operational commands (no training)
 
 ```
-python -m graphids pipeline-run --dataset hcrl_sa --seed 42 --scale small
-  -> cli/pipeline.py (Typer @app.command)
-  -> PipelineConfig(**kwargs) -> TrainingRunConfig
-  -> run_pipeline(config)                            (orchestrate/run.py)
-     +- ensure_spawn()
-     +- build_pipeline_stages(config) -> list[StageConfig]   (orchestrate/planning.py)
-     +- for each StageConfig (with per-stage retry):
-        +- ResolvedConfig.resolve(cfg, lake_root, user, dataset, seed, upstream_ckpts)
-        |    +- PathContext(...)
-        |    +- _build_tla_dict(...)                 (private, resolve.py)
-        |    +- render(jsonnet_path, tla)            (config/jsonnet.py)
-        |    +- validate_config(rendered)            (config/schemas.py)
-        |    +- monitor/mode consistency check       (inline log warning)
-        +- skip if checkpoints/best_model.ckpt exists  (checkpoint is authoritative)
-        +- stage.build(resolved)                       -> (trainer, model, datamodule)
-        +- stage.train(artifacts, resolved)            -> trainer.fit, touch .train_complete
-        +- stage.evaluate(artifacts, resolved)         -> trainer.test, touch .test_complete
-
-# Analysis runs separately after the pipeline via `python -m graphids analyze`.
-```
-
-### Route C: Validation (resolver gate)
-
-Validation runs inside `ResolvedConfig.resolve()`:
-`render(...)` -> `validate_config(rendered)` -> inline monitor/mode consistency check (log warning on mismatch).
-
-### Route D: Operational commands (no training)
-
-```
-python -m graphids {analyze|rebuild-caches|extract-fusion-states|pipeline-run}
+python -m graphids {analyze|rebuild-caches|extract-fusion-states|submit-profile}
   -> __main__.py imports cli submodules
   -> Typer @app.command() dispatch per submodule
 ```
-
-**Key invariant:** Routes A and B render configs through the same
-`graphids.config.jsonnet.render` shim. One composition primitive,
-one subprocess call to `go-jsonnet`.
 
 ---
 
 ## 2. Pydantic Validation Layer
 
 `graphids/config/schemas.py::validate_config(rendered) -> ValidatedConfig`
-is the structural gate that runs **immediately after** `render` on
-every path. Torch-free, deterministic.
+runs immediately after `render` on every path. Torch-free, deterministic.
 
 ### Schema tree
 
@@ -92,46 +66,33 @@ ValidatedConfig (extra="forbid")
 
 | Validator | Rule | Why it exists |
 |---|---|---|
-| `_no_null_list_fields` | `model.init_args.{pool_aggrs, hidden_dims, auxiliaries}` must not be null | jsonargparse rejects these at instantiation with a cryptic error |
+| `_no_null_list_fields` | `model.init_args.{pool_aggrs, hidden_dims, auxiliaries}` must not be null | Instantiation rejects null lists with a cryptic error |
 | `_monitor_pair_consistent` | `checkpoint.monitor/mode == early_stopping.monitor/mode` | Divergent monitors = typo in the stage libsonnet |
 | `_lr_monitor_requires_logger` | `LearningRateMonitor` callback needs `trainer.logger != False` | LR monitor is silently disabled without a logger |
 | `_class_paths_namespaced` | `data.class_path` and `model.class_path` must start with `graphids.` | Catches relative imports and stray modules |
-
-Stage-archetype monitor mismatches (fusion must be `val_acc/max`, every
-other stage `val_loss/min`) are a **warning** in `orchestrate/resolve.py`
-because they're advisory, not fatal.
-
-### Integration points
-
-| Call site | What it does |
-|---|---|
-| `ResolvedConfig.resolve()` | Calls `validate_config(rendered)` after `render`; attaches typed view to `ResolvedConfig.validated` |
-| `instantiate()` | Re-validates if caller didn't pass a `ValidatedConfig` |
 
 ---
 
 ## 3. Forced Callbacks + Direct Instantiation
 
-Critical callbacks are protected by living at top-level namespaces in the
-rendered dict — `checkpoint.*`, `early_stopping.*`, etc. — and being
-constructed explicitly by `instantiate._build_callbacks()`. Any stage-level
-`trainer.callbacks` appends user callbacks; it cannot drop the forced set.
+Critical callbacks are constructed explicitly by
+`instantiate._build_callbacks()`. Any stage-level `trainer.callbacks`
+appends user callbacks; it cannot drop the forced set.
 
-Forced callbacks (from `defaults.libsonnet`): ModelCheckpoint, EarlyStopping,
-OTelTrainingCallback. Logger: OTelTrainingLogger.
+Forced callbacks (from `defaults.libsonnet`): ModelCheckpoint,
+EarlyStopping, OTelTrainingCallback. Logger: OTelTrainingLogger.
 
-### instantiate() responsibilities
+### build_run() responsibilities
 
-`graphids.orchestrate.instantiate.instantiate(rendered, validated=None)`:
+`graphids.orchestrate.instantiate.build_run(rendered, validated=None)`:
 
 | Step | How |
 |---|---|
 | Class-path import | `importlib.import_module` + `getattr` |
-| link_arguments | `_apply_link_arguments(merged, dm_cls, model_cls)` — signature-filtered |
-| Forced callbacks | `_build_callbacks(merged, default_root_dir)` — explicit construction |
-| Path patching | inline in `_build_callbacks` (checkpoint dirpath) and `_build_loggers` (logger save_dir) |
+| Signature-filtered kwargs | `filter_kwargs(klass, init_args)` |
+| Callbacks / logger | `build_callbacks(rendered)` / `build_loggers(rendered)` — explicit construction |
 | KD loss injection | `inject_loss_fn` pops `distillation_config`, builds loss via `build_loss()` |
-| seed_everything | explicit `graphids.core.trainer.seed_everything(merged["seed_everything"])` |
+| seed_everything | explicit `seed_everything(rendered["seed_everything"])` |
 
 ---
 
@@ -139,42 +100,14 @@ OTelTrainingCallback. Logger: OTelTrainingLogger.
 
 | File | Role | Torch? |
 |---|---|---|
-| `cli/training.py` | Dev-path Typer entry — `fit/test/validate/predict`, `--config`, `--tla`, `--ckpt_path` | Lazy |
-| `cli/pipeline.py` | `pipeline-run` command (in-process 3-stage chain) | Lazy |
-| `instantiate.py` | `instantiate(rendered) -> InstantiatedRun` — importlib, link_arguments, forced callbacks | Yes |
-| `__main__.py` | Imports `cli/` submodules to register Typer commands; OTel Phase A init | Lazy |
+| `cli/training.py` | `fit` / `test` — renders preset, builds + runs | Lazy |
+| `instantiate.py` | `build_run(rendered) -> InstantiatedRun` — importlib, filter_kwargs, callback wiring | Yes |
+| `__main__.py` | Imports `cli/` submodules to register Typer commands | Lazy |
 | `config/jsonnet.py` | `render(path, tla)` via `_jsonnet` C bindings | No |
 | `config/schemas.py` | `ValidatedConfig`, `validate_config`, `ConfigValidationError` | No |
-| `config/topology.py` | Stage DAG, valid types/scales, import-time assertions | No |
-| `orchestrate/config.py` | `PipelineConfig`, `StageConfig`, `TrainingRunConfig`, `KDEntry`, `ResolvedConfig`, `InstantiatedRun`, `PipelineResult` | No |
-| `orchestrate/planning.py` | `build_pipeline_stages`, `resolve_jsonnet_path` | No |
-| `orchestrate/resolve.py` | `ResolvedConfig.resolve` — builds TLA, renders, validates, cross-field checks | No |
-| `orchestrate/run.py` | `PipelineConfig`, `build_pipeline_stages`, `run_pipeline` (in-process driver) | No |
-| `orchestrate/stage.py` | `build`, `train`, `evaluate` primitives (shared by `fit`/`test` CLI + `run_pipeline`) | Yes |
-| `core/analysis/runner.py` | `run_single_analysis`, `analysis_spec_for` — invoked by `graphids analyze` CLI, not by the pipeline driver | Yes |
+| `config/topology.py` | Stage-file existence check, dataset catalog, path helpers | No |
+| `orchestrate/config.py` | `ResolvedConfig`, `InstantiatedRun` | No |
+| `orchestrate/stage.py` | `build`, `train`, `evaluate` primitives | Yes |
+| `core/analysis/runner.py` | `run_single_analysis` — invoked by `graphids analyze` CLI | Yes |
 | `core/monitoring.py` | `OTelTrainingCallback`, `OTelTrainingLogger` | Yes |
-| `core/otel.py` | `init_providers`, `wire_file_exporters` | No |
-
----
-
-## 5. Architecture Evaluation
-
-### Strengths
-
-| # | Strength |
-|---|---|
-| S1 | **Single composition primitive** — jsonnet replaces custom deep-merge + dotted-override + stringification |
-| S2 | **Torch-free config boundary** — jsonnet.py, schemas.py, resolve.py never import torch |
-| S3 | **Typed TLA round-trip** — ints stay ints, bools stay bools via `--tla-code` JSON encoding |
-| S4 | **Single convergence point** — every path ends at `instantiate(rendered, validated=...)` |
-| S5 | **Forced callbacks via explicit construction** — stage jsonnets can add but never drop critical callbacks |
-| S6 | **Import-time config validation** — `topology.py` cross-validates jsonnet tree at package import |
-| S7 | **Pydantic `extra="forbid"`** — typos caught at construction time |
-| S8 | **Content-addressed run dirs** — deterministic, filesystem-navigable, resumable |
-
-### Known limitations
-
-| # | Issue | Severity |
-|---|---|---|
-| L1 | jsonnet rendering shells out per-render (~5 ms subprocess cost) | Low |
-| L2 | Fusion stage absorbs unused TLAs (`auxiliaries`, `vgae_ckpt_path`) | Low |
+| `_otel.py` | `init_providers`, `wire_file_exporters` | No |

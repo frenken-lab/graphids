@@ -1,14 +1,13 @@
-"""Single-stage primitives — Layer 4 of the orchestrate stack.
+"""Single-stage primitives.
 
 ``build`` / ``train`` / ``evaluate`` are the atomic verbs between a
 ``ResolvedConfig`` and a running ``Trainer``. Each takes the resolved
-config directly so callers (CLI + pipeline driver) don't have to
-unpack ``rendered`` / ``validated`` / ``run_dir`` / ``ckpt_file``
-into positional arguments at every call site.
+config directly so callers don't have to unpack ``rendered`` /
+``validated`` / ``run_dir`` / ``ckpt_file`` into positional arguments at
+every call site.
 
 ``wire_file_exporters`` is called once by the caller per stage, not by
-these primitives — callers that run ``build → train → evaluate`` wire
-it once, not twice (one per primitive call).
+these primitives.
 
 When ``resolved.run_dir`` is ``None`` (CLI smoke with no
 ``default_root_dir``), the primitives skip all filesystem side effects:
@@ -145,9 +144,6 @@ def evaluate(
     """Run the test phase and return metrics.
 
     Writes the ``test`` phase marker on success (test-predictions sidecar).
-    Resume-skip authority lives in ``run_pipeline`` and checks the best
-    checkpoint file directly; a crashed test leaves no best.ckpt improvement
-    so the stage re-runs naturally.
     """
     stage_name = resolved.stage_name
     run_dir = resolved.run_dir

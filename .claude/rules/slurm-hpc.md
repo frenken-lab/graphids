@@ -44,7 +44,6 @@ scripts/run configs/ablations/fusion/dqn.jsonnet \
 | Analyze ckpt  | `scripts/slurm/submit.sh analyze --ckpt-path <p> --dataset <name>` |
 | Extract fusion states | `scripts/slurm/submit.sh extract-fusion-states` |
 | Profiling | `scripts/slurm/submit.sh profile` |
-| Pipeline run (archived) | `scripts/slurm/submit.sh pipeline-run --dataset hcrl_sa` |
 
 Source of truth for resource sizing: `configs/resources/submit_profiles.json`.
 `python -m graphids submit-profile <job>` prints the resource tuple that

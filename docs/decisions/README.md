@@ -11,8 +11,8 @@ Jsonnet replaced YAML chains for config composition; Hydra's defaults lists offe
 **0002 — Forced callbacks via explicit construction.**
 Stage configs that set `trainer.callbacks` silently dropped ModelCheckpoint/EarlyStopping (jsonnet list replacement). Critical callbacks now live in top-level namespaces (`checkpoint.*`, `early_stopping.*`) and are constructed by `instantiate._build_callbacks()`, immune to stage overrides.
 
-**0003 — Consolidate train/test/analyze into one SLURM job.** *(partially superseded 2026-04-14: analyze decoupled, `.complete` + `.analyze_complete` markers retired; train/test still in-process.)*
-Separate SLURM jobs for each phase caused analysis to run on CPU dagster workers and introduced process-boundary failures. A single job runs all three phases sequentially with per-phase markers (`.train_complete`, `.test_complete`, `.analyze_complete`). The analyze phase was later decoupled back out (run `python -m graphids analyze` after the pipeline) because its in-line failures were masking test crashes via the unconditional `.complete` marker.
+**0003 — Consolidate train/test/analyze into one SLURM job.** *(superseded 2026-04-15: pipeline deleted entirely — each ablation preset trains+evals in one job; analysis is a separate `graphids analyze` invocation.)*
+Original context: separate SLURM jobs per phase caused analysis to run on CPU dagster workers and introduced process-boundary failures.
 
 **0004 — Keep custom VRAM probe, reject Lightning profilers.**
 The VRAM probe must run *before* DataLoader construction to size `NodeBudgetBatchSampler`. All Lightning profilers/callbacks run *after* the DataLoader is built — lifecycle mismatch makes them unusable for batch sizing.
@@ -20,17 +20,17 @@ The VRAM probe must run *before* DataLoader construction to size `NodeBudgetBatc
 **0005 — Wandb removed as direct dependency; OTel replaces it.**
 WandbLogger/CSVLogger replaced by OpenTelemetry (`OTelTrainingCallback` + `OTelTrainingLogger`). Wandb Weave receives traces optionally via OTLP when `WANDB_API_KEY` is set. Model Registry and Data Artifacts were rejected (quota limits, no `file://` support).
 
-**0006 — Dagster removed; in-process pipeline loop in a single SLURM allocation.**
-Dagster's multi-job model (one SLURM job per asset) caused queue-wait overhead between pipeline stages. `run_pipeline` (`graphids/orchestrate/run.py`) loops `resolve → build → train → evaluate` over each stage in the same Python process inside the allocation created by `submit.sh pipeline-run` — no serialization boundary, no inter-job wait. (Monarch actors were tried as the in-process mechanism in session 42 and removed in session 43; a plain loop is sufficient. Analysis was decoupled out 2026-04-14; see ADR 0003 supersession note.)
+**0006 — Dagster removed; pipeline driver deleted.** *(updated 2026-04-15: the Python pipeline driver was itself removed — multi-stage chains are a bash loop over `scripts/run <preset.jsonnet>` with `SBATCH_DEP=afterok:<jid>`.)*
+Dagster's multi-job model caused queue-wait overhead between stages; the Python in-process driver that replaced it duplicated declarations the jsonnet presets already made (`run_dir`, identity hash, stage DAG, upstream family mapping). Dropping the driver collapsed the two routes into one.
 
-**0007 — Config system: independent axes + typed contract.**
-Config combinatorial explosion (scale x model in one file) and parallel topology declarations caused silent drift. Fix: independent config axes in jsonnet, `TrainingRunConfig` (Pydantic, `extra="forbid"`) for boundary parameters, `ConfigResolver` for cross-field validation. Don't adopt Hydra, don't mirror every `__init__` signature.
+**0007 — Config system: independent axes + typed contract.** *(simplified 2026-04-15: `TrainingRunConfig` / `StageConfig` / `ResolvedConfig.resolve` deleted with the pipeline. Each ablation preset is now a self-contained jsonnet function; validation is Pydantic `ValidatedConfig` on the rendered dict only.)*
+Original context: config combinatorial explosion (scale x model in one file) and parallel topology declarations caused silent drift. Fix: independent config axes in jsonnet, Pydantic `extra="forbid"` validator on the rendered dict. Don't adopt Hydra, don't mirror every `__init__` signature.
 
 **0008 — No custom collation; prebatched path supersedes both.**
 Custom `_FastCollate` was 1.6x slower than warm `Batch.from_data_list()` over full training (warm cache via `persistent_workers=True`). Both paths are now moot — prebatching collates all batches once at setup with `num_workers=0`.
 
-**0009 — Collapse override handoff chain.**
-The original 9-step handoff stringified override dicts across process boundaries, with validation only inside the SLURM job. Collapsed to 3 steps: `build_pipeline_stages` -> `ResolvedConfig.resolve` (render + validate) -> `instantiate`. Override typos now fail before job submission. (The earlier sweep-mode entry point `enumerate_assets` was deleted with the recipes machinery in session 45; multi-run ablations live under `configs/ablations/` as explicit jsonnet presets.)
+**0009 — Collapse override handoff chain.** *(superseded 2026-04-15: the remaining two-step handoff (`ResolvedConfig.resolve → instantiate`) collapsed to one: `ResolvedConfig.from_rendered → build_run`.)*
+Original context: a 9-step handoff stringified override dicts across process boundaries, with validation only inside the SLURM job. Collapsed iteratively; the final path is `render → apply_overrides → ResolvedConfig.from_rendered → build_run`.
 
 **0010 — Use go-jsonnet binary, not the jsonnet PyPI package.**
 go-jsonnet is 10-100x faster than libjsonnet, requires no C++ compile step on OSC, and installs as a single static binary to `~/.local/bin/jsonnet`. Python access via `subprocess.run` in `graphids/config/jsonnet.py` (~5ms per render, not a hot path).

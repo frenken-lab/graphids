@@ -51,9 +51,8 @@ function(
             val_fraction: 0.2,
           },
         },
-        batch_size: 8192,
         num_workers: null,  // auto-sized from GPU-first sizing chain
-        dynamic_batching: true,
+        dynamic_batching: true,  // batch_size is unused on this path — sampler uses probe budget
         // Reconstruction stages train on benign traffic only — attack rows
         // would teach the decoder to reproduce anomalies. Supervised stages
         // omit this field (defaults to null = full train set).

@@ -28,7 +28,12 @@ class GraphIDSSettings(BaseSettings):
     dry_run: bool = False
 
     # --- Budget tuning ---
-    budget_safety_margin: float = 0.85
+    # The two-point probe isolates the batch-scaling slope (bpn_node) and
+    # leaves fixed overhead in an implicit intercept — resident / optimizer
+    # state / cuDNN workspaces are already accounted for. That lets us push
+    # the pack ceiling close to full VRAM without the old 0.85 cushion that
+    # was covering up measurement bias in the single-probe estimator.
+    budget_safety_margin: float = 0.95
     budget_fallback_bpn: int = 32768
     # Fraction of baseline scalable VRAM that may be lost before the drift
     # callback warns. 0.20 avoids allocator-fragmentation false positives;

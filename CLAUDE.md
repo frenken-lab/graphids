@@ -1,8 +1,11 @@
 # GraphIDS: CAN Bus Intrusion Detection via Knowledge Distillation
 
-CAN bus intrusion detection using a 3-stage knowledge distillation pipeline:
-VGAE (unsupervised reconstruction) → GAT (supervised classification) → fusion.
-Large models are compressed into small models via KD auxiliaries for edge deployment.
+CAN bus intrusion detection via a 3-stage knowledge distillation chain:
+VGAE (unsupervised reconstruction) → GAT (supervised classification) →
+fusion. Large models compress into small models via KD auxiliaries for
+edge deployment. Stages are trained as independent ablation presets;
+cross-stage chaining is a bash loop with SLURM `afterok` deps, not an
+in-process driver.
 
 ## Code Philosophy
 
@@ -11,8 +14,8 @@ Every function, file, and abstraction must earn its place. Before writing code, 
 ## Key Commands
 
 ```bash
-# Preferred: SLURM launch via scripts/run — one preset, real flags, no
-# nested quotes. Preset owns run specifics; flags map to TLAs internally.
+# SLURM launch via scripts/run — one preset, real flags, no nested quotes.
+# Preset owns run_dir + model/stage specifics; flags map to TLAs internally.
 scripts/run configs/ablations/unsupervised/vgae.jsonnet --dataset set_01 --seed 42
 scripts/run configs/ablations/fusion/dqn.jsonnet \
     --dataset set_01 --seed 42 \
@@ -20,14 +23,14 @@ scripts/run configs/ablations/fusion/dqn.jsonnet \
     --cluster cardinal
 scripts/run configs/ablations/unsupervised/vgae.jsonnet --smoke --dry-run  # gpudebug 1hr
 
-# Direct CLI (login-node smoke / non-SLURM). Stages default for zero-arg.
+# Direct CLI (login-node smoke / non-SLURM).
 python -m graphids fit --config configs/stages/autoencoder.jsonnet
 python -m graphids fit --tla 'scale="large"' --config configs/stages/supervised.jsonnet
 
 # Evaluation
-python -m graphids test --config configs/stages/autoencoder.jsonnet --ckpt_path best.ckpt
+python -m graphids test --config configs/stages/autoencoder.jsonnet --ckpt-path best.ckpt
 
-# Analysis artifacts (auto-dispatches by ckpt class_path → model_type)
+# Analysis (auto-dispatches by ckpt class_path → model_type)
 python -m graphids analyze --ckpt-path path/to/best.ckpt --dataset hcrl_sa
 # Fusion models need upstream ckpts:
 python -m graphids analyze --ckpt-path fusion.ckpt --dataset hcrl_sa \
@@ -36,24 +39,21 @@ python -m graphids analyze --ckpt-path fusion.ckpt --dataset hcrl_sa \
 
 ## CLI Architecture
 
-Three entry points, zero overlap:
+**Training** — `python -m graphids fit|test` → `graphids/cli/training.py` (Typer). `_prepare()` renders the jsonnet, applies any `--set` overrides, builds a `ResolvedConfig.from_rendered`, wires OTel file exporters, and calls `build(resolved)`. Then `fit` calls `train(artifacts, resolved, resume_from=--ckpt-path)`; `test` calls `evaluate(artifacts, resolved)`. For SLURM submission, use `scripts/run <preset.jsonnet> [--dataset X --seed N --scale s --cluster c]` — it builds TLAs from flags so you never type nested JSON quotes.
 
-**Training** — `python -m graphids fit|test` → `graphids/cli/training.py` (Typer). Renders the jsonnet stage with any `--tla` flags, gates through `validate_config`, and calls `graphids.orchestrate.instantiate.instantiate(rendered) → InstantiatedRun` which handles class_path import, signature-filtered link_arguments, forced callbacks (ModelCheckpoint/EarlyStopping/DeviceStatsMonitor/ResourceProfileCallback/RunRecordCallback), logger wiring, and wandb config forwarding. Callbacks live in `graphids/core/monitoring/callbacks.py`. For SLURM submission, prefer `scripts/run <preset.jsonnet> [--dataset X --seed N --scale s --cluster c]` — it builds TLAs from flags so you never type nested JSON quotes.
-
-**Operational commands** — Typer CLI in `graphids/cli/`. `app.py` defines the root app with shared option types (`ConfigPath`/`TlaList`/`SetList`/`CkptPath`) — `--tla` and `--set` run their `key=value` payload through `_parse_kv_pair` via Typer's `parser=` hook, and `apply_overrides` consumes the pre-parsed list-of-pairs directly. Submodules register commands via `@app.command()` decorators: `training.py`, `analysis.py`, `data.py`, `pipeline.py`. `graphids/__main__.py` imports these submodules to register all commands.
+**Operational commands** — `graphids/cli/`. `app.py` owns the root app + shared option types (`ConfigPath`/`TlaList`/`SetList`/`CkptPath`). `--tla` and `--set` parse `key=value` via `_parse_kv_pair` (Typer `parser=` hook). Submodules register commands via `@app.command()`: `training.py`, `analysis.py`, `data.py`. `submit-profile` lives in `app.py`. `graphids/__main__.py` imports submodules to register commands.
 
 | Command | Purpose |
 |---------|---------|
-| `python -m graphids pipeline-run` | Run the full 3-stage chain in-process (one SLURM allocation) |
-| `python -m graphids analyze` | Analysis artifacts from checkpoints (loss-landscape folded in via TLA) |
+| `python -m graphids fit` / `test` | Train or evaluate one preset |
+| `python -m graphids analyze` | Analysis artifacts from checkpoints |
 | `python -m graphids rebuild-caches` | Rebuild preprocessed graph caches |
-| `python -m graphids extract-fusion-states` | Extract VGAE+GAT latent states for fusion training |
+| `python -m graphids extract-fusion-states` | Extract VGAE+GAT latent states for fusion |
+| `python -m graphids submit-profile <job>` | Print sbatch resource fields for `submit.sh` |
 
-**Pipeline driver** — `graphids/orchestrate/run.py::run_pipeline(config)` loops `ResolvedConfig.resolve → build → train → evaluate` over each stage in the same Python process, with per-stage retries. Resume skip-check is authoritative on `best_model.ckpt` existence — the prior `.complete` marker (a Dagster-era workaround) was removed once the pipeline gained direct checkpoint awareness. Analysis is decoupled: run `python -m graphids analyze --ckpt-path <p>` after training. No actor framework; runs inside the SLURM allocation created by `scripts/slurm/submit.sh pipeline-run`.
+**Config resolution** — Single path: `render(config_path, tla=...)` (`config/jsonnet.py`) → `apply_overrides(rendered, --set ...)` (`cli/app.py`) → `ResolvedConfig.from_rendered(rendered, stage_name=<basename>)` (validates + pulls `run_dir` / `ckpt_file` from `trainer.default_root_dir`). Every preset under `configs/ablations/` computes its own `run_dir` from `(lake_root, dataset, seed)` via `_paths.libsonnet`, so there is no Python planner / identity-hash layer. See `docs/reference/config-architecture.md`.
 
-**Config resolution** — Two entry points both produce a `ResolvedConfig` (frozen dataclass in `orchestrate/config.py` with fields `rendered / validated / stage_name / run_dir / ckpt_file`). **Pipeline path:** `orchestrate/resolve.py::resolve_config(cfg, lake_root, user, dataset, seed, upstream_ckpts)` builds a `PathContext` (`config/topology.py`), packs TLAs via `StageConfig.to_tla_dict(...)` — the single mapping site from schema fields to jsonnet TLA names, owned by `StageConfig` in `orchestrate/config.py` — renders the stage jsonnet via `render(...)` from `config/jsonnet.py`, and gates the output through `validate_config(...)` from `config/schemas.py`. **CLI path:** `ResolvedConfig.from_rendered(rendered, stage_name=...)`, called from `cli/training.py::_prepare` after `render(config_path, tla=...)` has already produced the rendered dict — it only validates + pulls `run_dir` / `ckpt_file` from `trainer.default_root_dir`, skipping the `PathContext` step. Adding a new TLA means editing `StageConfig.to_tla_dict` + the relevant jsonnet stage signature. See `docs/reference/config-architecture.md`.
-
-**SLURM submission** — all jobs via `scripts/slurm/submit.sh <profile> [args]`. The preamble hard-fails if the `jsonnet` binary is missing (see ADR 0010 in `docs/decisions/README.md`). Resource profile is the single `configs/resources/submit_profiles.json` — static profiles have fixed time/mem; profiles with a `scaling` block auto-size from `cache_metadata.json.aggregate.num_raw_samples`; composed profiles (`pipeline-run`) sum per-stage time and max per-stage cpus/mem from `stage_profiles`. See `rules/slurm-hpc.md`.
+**SLURM submission** — training jobs via `scripts/run <preset.jsonnet>`; non-training jobs via `scripts/slurm/submit.sh <profile>`. The preamble hard-fails if the `jsonnet` binary is missing (see ADR 0010 in `docs/decisions/README.md`). Resource sizing: `configs/resources/submit_profiles.json` — static profiles have fixed time/mem; profiles with a `scaling` block auto-size from `cache_metadata.json.aggregate.num_raw_samples`. See `rules/slurm-hpc.md`.
 
 Fusion uses a single `configs/stages/fusion.jsonnet` that dispatches on the `fusion_method` TLA over the 4 method libsonnets in `configs/fusion/methods/`.
 
