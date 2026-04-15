@@ -18,7 +18,7 @@ local _vgae_base = {
       nbr_weight: 0.05,
       kl_weight: 0.01,
       lr: 0.002,
-      compile_model: true,
+      compile_model: false,
       gradient_checkpointing: true,
     },
   },

@@ -28,6 +28,18 @@ def _prefetch(loader, device: torch.device | None):
     return loader
 
 
+def _worker_init_file_system(_worker_id: int) -> None:
+    # Module-level — local lambdas can't be pickled for ``spawn`` workers.
+    import torch.multiprocessing as mp
+
+    mp.set_sharing_strategy("file_system")
+
+
+def _clone_collate(x):
+    # Module-level — prebatched loaders need a picklable collate under spawn.
+    return x.clone() if hasattr(x, "clone") else x
+
+
 def _spawn_loader(
     dataset,
     *,
@@ -39,7 +51,6 @@ def _spawn_loader(
     device: torch.device | None = None,
 ):
     """PyGDataLoader with spawn/persistent_workers defaults + PrefetchLoader."""
-    import torch.multiprocessing as mp
     from torch_geometric.loader import DataLoader as PyGDataLoader
 
     kw: dict = dict(num_workers=num_workers, pin_memory=device is None)
@@ -47,7 +58,7 @@ def _spawn_loader(
         kw.update(
             persistent_workers=True,
             multiprocessing_context="spawn",
-            worker_init_fn=lambda _: mp.set_sharing_strategy("file_system"),
+            worker_init_fn=_worker_init_file_system,
             prefetch_factor=prefetch_factor,
         )
     if batch_sampler is not None:
@@ -65,7 +76,7 @@ def _prebatched_loader(batches, *, shuffle: bool = True, device: torch.device | 
         batches,
         batch_size=None,
         shuffle=shuffle,
-        collate_fn=lambda x: x.clone() if hasattr(x, "clone") else x,
+        collate_fn=_clone_collate,
     )
     return _prefetch(loader, device)
 
@@ -350,7 +361,7 @@ class GraphDataModule:
 
         result = self._budget_result(dataset)
         if nw is None:
-            nw, pf = autosize_workers(None, dataset, result, default_prefetch=pf)
+            nw, pf = autosize_workers(self._model, dataset, result, default_prefetch=pf)
 
         sampler = NodeBudgetBatchSampler(
             dataset.num_nodes_per_graph,

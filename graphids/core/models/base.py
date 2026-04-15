@@ -38,9 +38,7 @@ _log = get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def try_compile(
-    model: nn.Module, *, conv_type: str | None = None, **kwargs
-) -> nn.Module:
+def try_compile(model: nn.Module, *, conv_type: str | None = None, **kwargs) -> nn.Module:
     """Attempt ``torch.compile``; fall back to eager on inductor failure.
 
     Skips compile entirely for conv types that use ``to_dense_batch()``
@@ -55,14 +53,10 @@ def try_compile(
             reason="to_dense_batch Tensor.item() causes graph breaks and CUDA crash",
         )
         return model
-    if not hasattr(torch, "compile"):
-        return model
-    try:
-        return torch.compile(model, **kwargs)
-    except Exception:
-        _log.warning("torch_compile_failed", model=type(model).__name__, fallback="eager")
-        torch._dynamo.reset()
-        return model
+    # torch.compile is lazy — errors surface at first forward, not here.
+    # A broad except at wrap time masked zero real failures and swallowed
+    # config bugs. Let exceptions propagate.
+    return torch.compile(model, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -113,11 +107,29 @@ class GraphModuleBase(nn.Module):
 
     automatic_optimization = True
 
-    @staticmethod
-    def _capture_hparams(local_vars: dict[str, Any], ignore: tuple[str, ...] = ()) -> SimpleNamespace:
-        """Capture ``__init__`` kwargs as a ``SimpleNamespace`` for ``self.hparams``."""
-        skip = {"self", "__class__", *ignore}
-        return SimpleNamespace(**{k: v for k, v in local_vars.items() if k not in skip})
+    @property
+    def hparams(self) -> SimpleNamespace:
+        """Snapshot of the declared ``__init__`` params, read from ``self``.
+
+        Subclasses assign each ``__init__`` argument to ``self`` explicitly
+        (``self.conv_type = conv_type`` etc.). This property reads them back
+        via ``inspect.signature(type(self).__init__)`` — standard signature
+        introspection, not frame inspection. ``nn.Module`` values (e.g. a
+        ``loss_fn`` argument) are skipped: they belong in the state_dict,
+        not the hparams blob.
+        """
+        import inspect
+
+        sig = inspect.signature(type(self).__init__)
+        ns: dict[str, Any] = {}
+        for name in sig.parameters:
+            if name == "self":
+                continue
+            val = getattr(self, name, None)
+            if isinstance(val, nn.Module):
+                continue
+            ns[name] = val
+        return SimpleNamespace(**ns)
 
     def __init__(self) -> None:
         super().__init__()
@@ -195,14 +207,10 @@ class GraphModuleBase(nn.Module):
             self.roc_metric.reset()
         names = getattr(self, "_test_set_names", None) or ["test"]
         # One MetricCollection per test-set, keys prefixed for structured logs.
-        self._per_set_metrics = {
-            n: self.test_metrics.clone(prefix=f"test/{n}/") for n in names
-        }
+        self._per_set_metrics = {n: self.test_metrics.clone(prefix=f"test/{n}/") for n in names}
         # Per-set buffers — scores/labels always; preds when the model emits
         # them directly (classifier flavor) or after thresholding (recon).
-        self._test_buffers = {
-            n: {"preds": [], "scores": [], "labels": []} for n in names
-        }
+        self._test_buffers = {n: {"preds": [], "scores": [], "labels": []} for n in names}
         # Filled in on_test_epoch_end; stage.evaluate reads to persist to disk.
         self._test_predictions: dict[str, dict[str, torch.Tensor]] = {}
 
@@ -302,14 +310,17 @@ class GraphModuleBase(nn.Module):
             binary_precision_at_fixed_recall,
             binary_recall_at_fixed_precision,
         )
+
         prec, thr_p = binary_precision_at_fixed_recall(scores, labels, min_recall=min_recall)
         rec, thr_r = binary_recall_at_fixed_precision(scores, labels, min_precision=min_precision)
-        self.log_dict({
-            f"{prefix}precision@{min_recall:g}recall": float(prec),
-            f"{prefix}threshold@{min_recall:g}recall": float(thr_p),
-            f"{prefix}recall@{min_precision:g}precision": float(rec),
-            f"{prefix}threshold@{min_precision:g}precision": float(thr_r),
-        })
+        self.log_dict(
+            {
+                f"{prefix}precision@{min_recall:g}recall": float(prec),
+                f"{prefix}threshold@{min_recall:g}recall": float(thr_p),
+                f"{prefix}recall@{min_precision:g}precision": float(rec),
+                f"{prefix}threshold@{min_precision:g}precision": float(thr_r),
+            }
+        )
 
     def _finalize_test_predictions(self) -> None:
         """Concatenate per-set buffers into a {name: {key: Tensor}} dict."""

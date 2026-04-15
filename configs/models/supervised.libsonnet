@@ -16,7 +16,7 @@ local _gat_base = {
       focal_gamma: 2.0,
       loss_weight: 10.0,
       pool_aggrs: ['mean'],
-      compile_model: true,
+      compile_model: false,
     },
   },
   data: {

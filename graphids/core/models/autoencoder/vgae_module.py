@@ -57,19 +57,34 @@ class VGAEModule(GraphModuleBase):
         # --- identity / dynamic ---
         scale: str = "small",
         model_type: ModelType = "vgae",
-        lake_root: str | None = None,
         dataset: str = "",
         seed: int = 42,
         num_ids: int = 0,
         in_channels: int = 0,
         num_classes: int = 2,
     ):
-        if lake_root is None:
-            from graphids.config.settings import get_settings
-
-            lake_root = get_settings().lake_root
         super().__init__()
-        self.hparams = self._capture_hparams(locals(), ignore=("loss_fn",))
+        self.conv_type = conv_type
+        self.hidden_dims = hidden_dims
+        self.latent_dim = latent_dim
+        self.heads = heads
+        self.embedding_dim = embedding_dim
+        self.dropout = dropout
+        self.edge_dim = edge_dim
+        self.proj_dim = proj_dim
+        self.variational = variational
+        self.mask_ratio = mask_ratio
+        self.lr = lr
+        self.weight_decay = weight_decay
+        self.gradient_checkpointing = gradient_checkpointing
+        self.compile_model = compile_model
+        self.scale = scale
+        self.model_type = model_type
+        self.dataset = dataset
+        self.seed = seed
+        self.num_ids = num_ids
+        self.in_channels = in_channels
+        self.num_classes = num_classes
         self.loss_fn = loss_fn
         self._init_threshold_metrics()
         self.model = None
@@ -116,21 +131,38 @@ class VGAEModule(GraphModuleBase):
         import torch.nn.functional as F
         from torch_geometric.utils import scatter
 
-        edge_attr = getattr(batch, "edge_attr", None) if getattr(self.model, "_uses_edge_attr", False) else None
+        edge_attr = (
+            getattr(batch, "edge_attr", None)
+            if getattr(self.model, "_uses_edge_attr", False)
+            else None
+        )
         cont, canid_logits, nbr_logits, z, _, _ = self.model(
-            batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr, node_id=batch.node_id,
+            batch.x,
+            batch.edge_index,
+            batch.batch,
+            edge_attr=edge_attr,
+            node_id=batch.node_id,
         )
         b = batch.batch
         recon_err = scatter((cont - batch.x).pow(2).mean(1), b, dim=0, reduce="mean")
-        canid_err = scatter(F.cross_entropy(canid_logits, batch.node_id, reduction="none"), b, dim=0, reduce="mean")
+        canid_err = scatter(
+            F.cross_entropy(canid_logits, batch.node_id, reduction="none"), b, dim=0, reduce="mean"
+        )
         nbr_targets = self.model.create_neighborhood_targets(batch.node_id, batch.edge_index, b)
-        nbr_err = scatter(F.binary_cross_entropy_with_logits(nbr_logits, nbr_targets, reduction="none").mean(1), b, dim=0, reduce="mean")
+        nbr_err = scatter(
+            F.binary_cross_entropy_with_logits(nbr_logits, nbr_targets, reduction="none").mean(1),
+            b,
+            dim=0,
+            reduce="mean",
+        )
         z_mean = scatter(z.mean(1), b, dim=0, reduce="mean")
         z_std = scatter(z.std(1), b, dim=0, reduce="mean")
         z_max = scatter(z.max(1).values, b, dim=0, reduce="max")
         z_min = scatter(z.min(1).values, b, dim=0, reduce="min")
         conf = 1.0 / (1.0 + recon_err)
-        return torch.stack([recon_err, nbr_err, canid_err, z_mean, z_std, z_max, z_min, conf], dim=1)
+        return torch.stack(
+            [recon_err, nbr_err, canid_err, z_mean, z_std, z_max, z_min, conf], dim=1
+        )
 
     def _training_step_inner(self, batch, _idx):
         loss = self._step(batch)

@@ -25,11 +25,10 @@ class WeightedAvgModule(FusionModuleBase):
         decision_threshold: float = 0.5,
     ):
         super().__init__()
-        self.hparams = self._capture_hparams(locals())
-        self.weight = nn.Parameter(torch.zeros(1))
-        self.loss_fn = nn.BCELoss()
         self.lr = lr
         self.decision_threshold = decision_threshold
+        self.weight = nn.Parameter(torch.zeros(1))
+        self.loss_fn = nn.BCELoss()
 
         self._vgae_conf_idx = LAYOUT["vgae"].confidence_idx
         self._gat_conf_idx = LAYOUT["gat"].confidence_idx

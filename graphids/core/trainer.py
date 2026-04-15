@@ -57,11 +57,7 @@ class MetricAccumulator(nn.Module):
         # Skip un-updated buckets — MeanMetric returns NaN for those, which
         # would overwrite good values across phase boundaries (train_loss
         # written by train epoch, then NaN'd by val epoch's compute).
-        return {
-            k: float(m.compute())
-            for k, m in self._metrics.items()
-            if m.update_called
-        }
+        return {k: float(m.compute()) for k, m in self._metrics.items() if m.update_called}
 
     def reset(self) -> None:
         for m in self._metrics.values():
@@ -74,18 +70,10 @@ class MetricAccumulator(nn.Module):
 
 
 def seed_everything(seed: int) -> None:
-    """Seed Python, NumPy, and PyTorch for reproducibility.
-
-    ``torch.manual_seed`` already seeds CPU + all CUDA + MPS + XPU.
-    ``use_deterministic_algorithms`` is strictly stronger than setting
-    ``cudnn.deterministic`` + ``cudnn.benchmark`` individually.
-    ``warn_only=True`` because PyG's ``scatter_add_`` has no deterministic
-    CUDA implementation.
-    """
+    """Seed Python, NumPy, and PyTorch RNGs. ``torch.manual_seed`` covers CPU + CUDA."""
     random.seed(seed)
     np.random.seed(seed)
-    torch.manual_seed(seed)  # covers CPU + all CUDA devices
-    torch.use_deterministic_algorithms(True, warn_only=True)
+    torch.manual_seed(seed)
 
 
 # ---------------------------------------------------------------------------
@@ -160,14 +148,13 @@ class Trainer:
     def _wire_datamodule(self, datamodule: Any, model: nn.Module) -> None:
         """Push device + model handles into the datamodule.
 
-        Both setters are no-ops on datamodules that don't define them, so
-        this stays compatible with FusionDataModule etc. that don't use
-        VRAM probing or PrefetchLoader.
+        Every datamodule MUST implement ``_set_device`` and ``_set_model``.
+        DMs that don't move batches (e.g. FusionDataModule) implement them
+        as no-ops — but the method must exist. Silent getattr fallbacks
+        previously hid DM-wiring bugs as cpu/cuda mismatches at the first op.
         """
-        for name, value in (("_set_device", self._device), ("_set_model", model)):
-            setter = getattr(datamodule, name, None)
-            if setter is not None:
-                setter(value)
+        datamodule._set_device(self._device)
+        datamodule._set_model(model)
 
     # -- public API ----------------------------------------------------------
 
@@ -178,11 +165,13 @@ class Trainer:
         ckpt_path: str | None = None,
     ) -> None:
         self.datamodule = datamodule
-        model.to(self._device)
         self._wire_datamodule(datamodule, model)
 
         datamodule.setup("fit")
         model.setup(datamodule)
+        # Must move AFTER setup(): _build() creates self.model and may wrap it
+        # in torch.compile — moving before setup leaves the inner module on CPU.
+        model.to(self._device)
 
         opt, sched = model.build_optimizers(self.max_epochs)
         self._optimizers = [opt] if opt else []
@@ -228,22 +217,25 @@ class Trainer:
         ckpt_path: str | None = None,
     ) -> dict[str, float]:
         self.datamodule = datamodule
-        model.to(self._device)
         self._wire_datamodule(datamodule, model)
 
         datamodule.setup("test")
         model.setup(datamodule)
+        model.to(self._device)
 
         if ckpt_path:
             self._load_model_weights(ckpt_path, model)
+
+        # test_dataloader() may trigger BudgetProfiler.probe() which needs
+        # autograd for a backward pass — must build it BEFORE torch.no_grad.
+        test_loaders = datamodule.test_dataloader()
+        if not isinstance(test_loaders, list):
+            test_loaders = [test_loaders]
 
         model.eval()
         model.on_test_epoch_start()
 
         with torch.no_grad():
-            test_loaders = datamodule.test_dataloader()
-            if not isinstance(test_loaders, list):
-                test_loaders = [test_loaders]
             for dl_idx, loader in enumerate(test_loaders):
                 for batch_idx, batch in enumerate(loader):
                     model.test_step(batch, batch_idx, dataloader_idx=dl_idx)
@@ -262,11 +254,11 @@ class Trainer:
         ckpt_path: str | None = None,
     ) -> dict[str, float]:
         self.datamodule = datamodule
-        model.to(self._device)
         self._wire_datamodule(datamodule, model)
 
         datamodule.setup("fit")
         model.setup(datamodule)
+        model.to(self._device)
 
         if ckpt_path:
             self._load_model_weights(ckpt_path, model)
@@ -282,11 +274,11 @@ class Trainer:
         ckpt_path: str | None = None,
     ) -> list:
         self.datamodule = datamodule
-        model.to(self._device)
         self._wire_datamodule(datamodule, model)
 
         datamodule.setup("predict")
         model.setup(datamodule)
+        model.to(self._device)
 
         if ckpt_path:
             self._load_model_weights(ckpt_path, model)
@@ -343,7 +335,8 @@ class Trainer:
                     scaler.unscale_(opt)
                     if self.config.gradient_clip_val:
                         nn.utils.clip_grad_norm_(
-                            model.parameters(), self.config.gradient_clip_val,
+                            model.parameters(),
+                            self.config.gradient_clip_val,
                         )
                     scaler.step(opt)
                     scaler.update()
@@ -371,11 +364,13 @@ class Trainer:
         datamodule: Any,
         use_amp: bool,
     ) -> None:
+        # val_dataloader() may trigger BudgetProfiler.probe() which needs
+        # autograd for a backward pass — must build it BEFORE torch.no_grad.
+        val_loader = datamodule.val_dataloader()
+        if val_loader is None:
+            return
         model.eval()
         with torch.no_grad():
-            val_loader = datamodule.val_dataloader()
-            if val_loader is None:
-                return
             for batch_idx, batch in enumerate(val_loader):
                 with torch.amp.autocast(self._device.type, enabled=use_amp):
                     model.validation_step(batch, batch_idx)
@@ -440,8 +435,16 @@ class Trainer:
 
     def _load_ckpt_into(self, ckpt_path: str, model: nn.Module) -> dict:
         """Load ckpt, restore weights, fire ``on_load_checkpoint``. Return raw dict."""
+        from graphids.core.callbacks import _strip_orig_mod_prefix
+
         ckpt = torch.load(ckpt_path, map_location=self._device, weights_only=True)
         state = ckpt["state_dict"] if "state_dict" in ckpt else ckpt
+        # Align ckpt to target's compile-prefix convention. Save strips
+        # ``_orig_mod.``; target may or may not have it depending on whether
+        # this run has compile_model enabled. Remap via the target's keys.
+        stripped = _strip_orig_mod_prefix(state)
+        remap = {k.replace("_orig_mod.", ""): k for k in model.state_dict().keys()}
+        state = {remap.get(k, k): v for k, v in stripped.items()}
         model.load_state_dict(state)
         model.on_load_checkpoint(ckpt)
         return ckpt

@@ -224,11 +224,21 @@ class FusionModuleBase(nn.Module):
     # RL subclasses (Bandit, DQN) set this to False
     automatic_optimization = False
 
-    @staticmethod
-    def _capture_hparams(local_vars: dict[str, Any], ignore: tuple[str, ...] = ()) -> SimpleNamespace:
-        """Capture ``__init__`` kwargs as a ``SimpleNamespace``."""
-        skip = {"self", "__class__", *ignore}
-        return SimpleNamespace(**{k: v for k, v in local_vars.items() if k not in skip})
+    @property
+    def hparams(self) -> SimpleNamespace:
+        """See ``GraphModuleBase.hparams`` — same contract."""
+        import inspect
+
+        sig = inspect.signature(type(self).__init__)
+        ns: dict[str, Any] = {}
+        for name in sig.parameters:
+            if name == "self":
+                continue
+            val = getattr(self, name, None)
+            if isinstance(val, nn.Module):
+                continue
+            ns[name] = val
+        return SimpleNamespace(**ns)
 
     def __init__(
         self,
@@ -245,11 +255,13 @@ class FusionModuleBase(nn.Module):
         # Non-persistent buffer that tracks device through .to()/.cuda()/.cpu()
         self.register_buffer("_device_tracker", torch.empty(0), persistent=False)
         self.state_dim = state_dim
+        self.alpha_steps = alpha_steps
         self.batch_size = batch_size
+        self.buffer_size = buffer_size
         self.decision_threshold = decision_threshold
+        self.reward_kwargs = reward_kwargs
 
         self.register_buffer("alpha_values", torch.linspace(0, 1, alpha_steps))
-        self.alpha_steps = alpha_steps
 
         if reward_kwargs is not None:
             self.reward_calc = FusionRewardCalculator(**reward_kwargs)

@@ -22,7 +22,11 @@ class MLPFusionModule(FusionModuleBase):
         lr: float = 0.001,
     ):
         super().__init__()
-        self.hparams = self._capture_hparams(locals())
+        # state_dim is also set by the base, but we re-declare it here so
+        # the subclass signature remains the authoritative list of hparams.
+        self.state_dim = state_dim
+        self.hidden_dims = hidden_dims
+        self.lr = lr
 
         layers: list[nn.Module] = []
         in_dim = state_dim
@@ -32,7 +36,6 @@ class MLPFusionModule(FusionModuleBase):
         layers.append(nn.Linear(in_dim, 1))
         self.model = nn.Sequential(*layers)
         self.loss_fn = nn.BCEWithLogitsLoss()
-        self.lr = lr
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.model(x).squeeze(-1)

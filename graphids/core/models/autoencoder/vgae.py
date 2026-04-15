@@ -313,9 +313,8 @@ class GraphAutoencoderNeighborhood(nn.Module):
         Per-graph score = mean_node_MSE + canid_weight * mean_node_CE.
         Higher score = harder to reconstruct = more difficult sample.
         """
-        from torch_geometric.utils import scatter
-
         from torch_geometric.loader import DataLoader as PyGDataLoader
+        from torch_geometric.utils import scatter
 
         device = next(self.parameters()).device
         was_training = self.training
@@ -323,7 +322,7 @@ class GraphAutoencoderNeighborhood(nn.Module):
         try:
             scores: list[float] = []
             for batch in PyGDataLoader(graphs, batch_size=batch_size):
-                batch = batch.to(device, non_blocking=True)
+                batch = batch.clone().to(device, non_blocking=True)
                 edge_attr = getattr(batch, "edge_attr", None)
                 cont, canid_logits, _, _, _, _ = self(
                     batch.x,

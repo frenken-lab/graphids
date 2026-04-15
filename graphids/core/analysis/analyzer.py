@@ -100,86 +100,88 @@ class Analyzer:
             output_dir=str(self.output_dir),
         )
 
+        from graphids.core.models.base import eval_mode
+
         # Load model from checkpoint (with migration guard)
         module = safe_load_checkpoint(self.model_type, self.ckpt_path, map_location=device)
-        module.eval()
-        model = module.model
-        hparams = module.hparams
+        with eval_mode(module):
+            model = module.model
+            hparams = module.hparams
 
-        # Load validation data
-        val_data = self._load_val_data()
+            # Load validation data
+            val_data = self._load_val_data()
 
-        if self.embeddings:
-            from .embeddings import collect_and_save_embeddings
+            if self.embeddings:
+                from .embeddings import collect_and_save_embeddings
 
-            log.info("artifact_start", artifact="embeddings")
-            collect_and_save_embeddings(
-                model,
-                val_data,
-                device,
-                self.output_dir,
-                model_type=self.model_type,
-                max_samples=self.embedding_max_samples,
-                batch_size=self.batch_size,
-            )
+                log.info("artifact_start", artifact="embeddings")
+                collect_and_save_embeddings(
+                    model,
+                    val_data,
+                    device,
+                    self.output_dir,
+                    model_type=self.model_type,
+                    max_samples=self.embedding_max_samples,
+                    batch_size=self.batch_size,
+                )
 
-        if self.attention:
-            from .embeddings import collect_and_save_attention
+            if self.attention:
+                from .embeddings import collect_and_save_attention
 
-            log.info("artifact_start", artifact="attention")
-            collect_and_save_attention(
-                model,
-                val_data,
-                device,
-                self.output_dir,
-                max_samples=self.attention_max_samples,
-            )
+                log.info("artifact_start", artifact="attention")
+                collect_and_save_attention(
+                    model,
+                    val_data,
+                    device,
+                    self.output_dir,
+                    max_samples=self.attention_max_samples,
+                )
 
-        if self.cka:
-            from .cka import compute_and_save_cka
+            if self.cka:
+                from .cka import compute_and_save_cka
 
-            compute_and_save_cka(
-                model,
-                val_data,
-                device,
-                self.output_dir,
-                teacher_ckpt=self.cka_teacher_ckpt,
-                max_samples=self.cka_max_samples,
-            )
+                compute_and_save_cka(
+                    model,
+                    val_data,
+                    device,
+                    self.output_dir,
+                    teacher_ckpt=self.cka_teacher_ckpt,
+                    max_samples=self.cka_max_samples,
+                )
 
-        if self.landscape:
-            from .loss_landscape import compute_and_save_loss_landscape
+            if self.landscape:
+                from .loss_landscape import compute_and_save_loss_landscape
 
-            log.info("artifact_start", artifact="landscape")
-            compute_and_save_loss_landscape(
-                model,
-                self.model_type,
-                val_data,
-                device,
-                self.output_dir,
-                hparams,
-                resolution=self.landscape_resolution,
-                scale=self.landscape_scale,
-                max_graphs=self.landscape_max_graphs,
-                dataset=self.dataset,
-                seed=self.seed,
-            )
+                log.info("artifact_start", artifact="landscape")
+                compute_and_save_loss_landscape(
+                    model,
+                    self.model_type,
+                    val_data,
+                    device,
+                    self.output_dir,
+                    hparams,
+                    resolution=self.landscape_resolution,
+                    scale=self.landscape_scale,
+                    max_graphs=self.landscape_max_graphs,
+                    dataset=self.dataset,
+                    seed=self.seed,
+                )
 
-        if self.fusion_policy:
-            from .fusion_policy import run_fusion_policy
+            if self.fusion_policy:
+                from .fusion_policy import run_fusion_policy
 
-            run_fusion_policy(
-                module=module,
-                dataset=self.dataset,
-                lake_root=self.lake_root,
-                seed=self.seed,
-                vgae_ckpt_path=self.vgae_ckpt_path,
-                gat_ckpt_path=self.gat_ckpt_path,
-                window_size=self.window_size,
-                stride=self.stride,
-                output_dir=self.output_dir,
-                device=device,
-            )
+                run_fusion_policy(
+                    module=module,
+                    dataset=self.dataset,
+                    lake_root=self.lake_root,
+                    seed=self.seed,
+                    vgae_ckpt_path=self.vgae_ckpt_path,
+                    gat_ckpt_path=self.gat_ckpt_path,
+                    window_size=self.window_size,
+                    stride=self.stride,
+                    output_dir=self.output_dir,
+                    device=device,
+                )
 
         log.info("analyzer_done", output_dir=str(self.output_dir))
 

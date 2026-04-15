@@ -57,16 +57,20 @@ class DQNFusionModule(FusionModuleBase):
             decision_threshold=decision_threshold,
             reward_kwargs=reward_kwargs,
         )
-        self.hparams = self._capture_hparams(locals())
-
+        self.lr = lr
         self.epsilon = epsilon
         self.epsilon_decay = epsilon_decay
         self.min_epsilon = min_epsilon
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.weight_decay = weight_decay
         self.gpu_training_steps = gpu_training_steps
 
         self.q_network = QNetwork(state_dim, alpha_steps, hidden_dim, num_layers)
         self._dqn_optimizer = optim.AdamW(
-            self.q_network.parameters(), lr=lr, weight_decay=weight_decay,
+            self.q_network.parameters(),
+            lr=lr,
+            weight_decay=weight_decay,
         )
         self.loss_fn = nn.SmoothL1Loss()
 

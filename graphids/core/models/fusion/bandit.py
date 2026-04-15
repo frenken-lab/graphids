@@ -58,10 +58,11 @@ class BanditFusionModule(FusionModuleBase):
             decision_threshold=decision_threshold,
             reward_kwargs=reward_kwargs,
         )
-        self.hparams = self._capture_hparams(locals())
-
         self.ucb_alpha = ucb_alpha
         self.lambda_reg = lambda_reg
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.backbone_lr = backbone_lr
         self.backbone_retrain_freq = backbone_retrain_freq
         self.backbone_epochs = backbone_epochs
 

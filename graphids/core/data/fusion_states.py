@@ -15,9 +15,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import torch
+from torch_geometric.loader import DataLoader as PyGDataLoader
 
 from graphids._otel import get_logger
-from torch_geometric.loader import DataLoader as PyGDataLoader
 
 log = get_logger(__name__)
 
@@ -45,14 +45,17 @@ def extract_states(
     Returns:
         ``{"states": Tensor[N, D_total], "labels": Tensor[N]}``
     """
-    for model in models.values():
-        model.eval()
+    from contextlib import ExitStack
+
+    from graphids.core.models.base import eval_mode
 
     capped = data[:max_samples]
     loader = PyGDataLoader(capped, batch_size=batch_size)
 
     states, labels = [], []
-    with torch.no_grad():
+    with ExitStack() as stack, torch.no_grad():
+        for model in models.values():
+            stack.enter_context(eval_mode(model))
         for batch in loader:
             # PyG Data.to() is in-place — clone first to keep the source
             # batch pristine in case multiple consumers share it.
@@ -95,8 +98,11 @@ def extract_fusion_states(
         models[model_type] = model
 
     source = CANBusSource(
-        name=dataset, seed=seed, window_size=window_size,
-        stride=stride, val_fraction=val_fraction,
+        name=dataset,
+        seed=seed,
+        window_size=window_size,
+        stride=stride,
+        val_fraction=val_fraction,
     )
     dm = GraphDataModule(dataset=source, dynamic_batching=False)
     dm.setup("fit")
@@ -116,6 +122,9 @@ def extract_fusion_states(
     torch.save(train_cache, out / TRAIN_FILENAME)
     torch.save(val_cache, out / VAL_FILENAME)
 
-    log.info("states_saved", output_dir=str(out),
-             train_shape=list(train_cache["states"].shape),
-             val_shape=list(val_cache["states"].shape))
+    log.info(
+        "states_saved",
+        output_dir=str(out),
+        train_shape=list(train_cache["states"].shape),
+        val_shape=list(val_cache["states"].shape),
+    )

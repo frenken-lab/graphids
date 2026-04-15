@@ -86,9 +86,14 @@ class OTelTrainingCallback(CallbackBase):
         seed: int = 0,
         model_type: str = "",
     ) -> None:
+        from graphids._otel import get_providers
+
         self._span: trace.Span | None = None
         self._tracer = trace.get_tracer(__name__)
-        meter = metrics.get_meter(__name__)
+        # Meter must come from our local provider, NOT the global —
+        # ``_metrics.set_meter_provider`` is one-shot so the file-exporter
+        # MeterProvider never reaches the global registry.
+        meter = get_providers().meter.get_meter(__name__)
         self._loss_hist = meter.create_histogram("ml.train.loss", unit="1")
         self._batch_dur = meter.create_histogram("ml.batch.duration_s", unit="s")
         self._cuda_alloc = meter.create_gauge("ml.cuda.allocated_mb", unit="MiB")
@@ -249,18 +254,20 @@ class OTelTrainingCallback(CallbackBase):
                         if span_data.get("name") != "training.fit":
                             continue
                         ctx = span_data.get("context", {})
-                        links.append(Link(
-                            context=SpanContext(
-                                trace_id=int(ctx["trace_id"], 16),
-                                span_id=int(ctx["span_id"], 16),
-                                is_remote=True,
-                                trace_flags=TraceFlags(0x01),
-                            ),
-                            attributes={
-                                "ml.link.stage": attr.removesuffix("_ckpt_path"),
-                                "ml.link.ckpt_path": str(ckpt_path),
-                            },
-                        ))
+                        links.append(
+                            Link(
+                                context=SpanContext(
+                                    trace_id=int(ctx["trace_id"], 16),
+                                    span_id=int(ctx["span_id"], 16),
+                                    is_remote=True,
+                                    trace_flags=TraceFlags(0x01),
+                                ),
+                                attributes={
+                                    "ml.link.stage": attr.removesuffix("_ckpt_path"),
+                                    "ml.link.ckpt_path": str(ckpt_path),
+                                },
+                            )
+                        )
                         break
             except (json.JSONDecodeError, KeyError, ValueError):
                 continue
@@ -304,7 +311,10 @@ class OTelTrainingLogger:
     """
 
     def __init__(self) -> None:
-        self._meter = metrics.get_meter(__name__)
+        from graphids._otel import get_providers
+
+        # Same rationale as OTelTrainingCallback — local meter only.
+        self._meter = get_providers().meter.get_meter(__name__)
         self._instruments: dict[str, metrics.Histogram] = {}
 
     @property

@@ -201,7 +201,7 @@ class BudgetProfiler:
         bpn_node, bpn_edge = _FALLBACK_BPN, 0
         bwd, t_fwd, fixed = None, 0.0, 0
         if model and train_dataset and torch.cuda.is_available():
-            b = collect_batch(train_dataset, 2000).to(model.device)
+            b = collect_batch(train_dataset, 2000).clone().to(model.device)
             bpn_node, bpn_edge, bwd, t_fwd, fixed = BudgetProfiler.probe(model, b)
             del b
             torch.cuda.empty_cache()
@@ -250,7 +250,10 @@ class BudgetProfiler:
         """
         from graphids._slurm import slurm_cpus_per_task
 
-        if model.device.type != "cuda" or result.t_fwd <= 0:
+        # Defensive: datamodule may not have wired the model before the first
+        # loader build (e.g. probe fallback paths). Without a live handle we
+        # can't time the GPU, so fall back to conservative defaults.
+        if model is None or model.device.type != "cuda" or result.t_fwd <= 0:
             return 2, default_prefetch
 
         t_gpu = result.t_fwd * (result.backward_multiplier or _GRAD_MULT)

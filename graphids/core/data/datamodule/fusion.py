@@ -48,6 +48,13 @@ class FusionDataModule:
     def steps_per_epoch(self) -> int:
         return math.ceil(len(self.train_cache["states"]) / self._batch_size)
 
+    def _set_device(self, device: torch.device | None) -> None:
+        # Fusion batches stay on CPU; fusion modules move tensors inside forward.
+        pass
+
+    def _set_model(self, model) -> None:
+        pass
+
     def setup(self, stage=None):
         if self.train_cache is not None:
             return

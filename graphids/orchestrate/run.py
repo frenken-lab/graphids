@@ -64,6 +64,14 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
             return str(ckpt_file)
 
         wire_file_exporters(run_dir)
+
+        # Fusion needs a cached tensor of VGAE+GAT latent states on val data;
+        # the ckpts alone aren't enough because fusion trains on upstream
+        # forward outputs, not upstream weights. Orchestrator-level glue
+        # because neither model alone owns the cache (needs both + val data).
+        if cfg.stage == "fusion":
+            _ensure_fusion_states_cache(cfg, resolved, upstream_ckpts, config)
+
         artifacts = build(resolved)
         train(artifacts, resolved)
         evaluate(artifacts, resolved)
@@ -79,6 +87,55 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
         checkpoints[cfg.asset_name] = ckpt
 
     return PipelineResult(checkpoints=checkpoints, stage_to_asset=stage_to_asset)
+
+
+def _ensure_fusion_states_cache(
+    cfg: StageConfig,
+    resolved,
+    upstream_ckpts: dict[str, str],
+    config: PipelineConfig,
+) -> None:
+    """Build ``{run_dir}/fusion_states/{train,val}.pt`` if missing.
+
+    Maps the asset-name-keyed ``upstream_ckpts`` (e.g. ``autoencoder_abcd1234``)
+    to the model-type-keyed ``{vgae: ..., gat: ...}`` that
+    ``extract_fusion_states`` expects, using the same family mapping that
+    ``StageConfig.to_tla_dict`` uses for jsonnet TLA injection.
+    """
+    from graphids.core.data.fusion_states import (
+        FUSION_STATES_DIR,
+        TRAIN_FILENAME,
+        VAL_FILENAME,
+        extract_fusion_states,
+    )
+
+    cache_dir = resolved.run_dir / FUSION_STATES_DIR
+    if (cache_dir / TRAIN_FILENAME).exists() and (cache_dir / VAL_FILENAME).exists():
+        log.info("fusion_states_cache_hit", path=str(cache_dir))
+        return
+
+    family_to_type = {"unsupervised": "vgae", "supervised": "gat"}
+    ckpts_by_type: dict[str, str] = {}
+    for asset, ckpt in upstream_ckpts.items():
+        family = cfg.upstream_model_families.get(asset)
+        model_type = family_to_type.get(family)
+        if model_type is None:
+            continue
+        ckpts_by_type[model_type] = ckpt
+
+    missing = {"vgae", "gat"} - ckpts_by_type.keys()
+    if missing:
+        raise RuntimeError(
+            f"fusion stage missing upstream ckpts for {missing}; got assets {list(upstream_ckpts)}",
+        )
+
+    log.info("extracting_fusion_states", run_dir=str(resolved.run_dir))
+    extract_fusion_states(
+        checkpoints=ckpts_by_type,
+        dataset=config.dataset,
+        output_dir=str(resolved.run_dir),
+        seed=config.seed,
+    )
 
 
 def _retry(

@@ -32,7 +32,9 @@ class CallbackBase:
     def on_fit_end(self, trainer: Trainer, model: torch.nn.Module) -> None:
         pass
 
-    def on_exception(self, trainer: Trainer, model: torch.nn.Module, exception: BaseException) -> None:
+    def on_exception(
+        self, trainer: Trainer, model: torch.nn.Module, exception: BaseException
+    ) -> None:
         pass
 
     def on_train_epoch_start(self, trainer: Trainer, model: torch.nn.Module) -> None:
@@ -41,11 +43,18 @@ class CallbackBase:
     def on_train_epoch_end(self, trainer: Trainer, model: torch.nn.Module) -> None:
         pass
 
-    def on_train_batch_start(self, trainer: Trainer, model: torch.nn.Module, batch: Any, batch_idx: int) -> None:
+    def on_train_batch_start(
+        self, trainer: Trainer, model: torch.nn.Module, batch: Any, batch_idx: int
+    ) -> None:
         pass
 
     def on_train_batch_end(
-        self, trainer: Trainer, model: torch.nn.Module, outputs: Any, batch: Any, batch_idx: int,
+        self,
+        trainer: Trainer,
+        model: torch.nn.Module,
+        outputs: Any,
+        batch: Any,
+        batch_idx: int,
     ) -> None:
         pass
 
@@ -85,7 +94,9 @@ class ModelCheckpoint(CallbackBase):
         self._compare = _OPS[self.mode]
 
     def _resolve_dirpath(self, trainer: Trainer) -> Path:
-        return Path(self.dirpath) if self.dirpath else Path(trainer.default_root_dir) / "checkpoints"
+        return (
+            Path(self.dirpath) if self.dirpath else Path(trainer.default_root_dir) / "checkpoints"
+        )
 
     def on_train_epoch_end(self, trainer: Trainer, model: torch.nn.Module) -> None:
         current = trainer.callback_metrics.get(self.monitor)
@@ -148,12 +159,24 @@ class EarlyStopping(CallbackBase):
 # ---------------------------------------------------------------------------
 
 
+def _strip_orig_mod_prefix(state: dict[str, Any]) -> dict[str, Any]:
+    """Drop ``_orig_mod.`` prefix injected by ``torch.compile``'s OptimizedModule.
+
+    Makes ckpts interchangeable between ``compile_model=True`` and
+    ``compile_model=False`` — otherwise strict ``load_state_dict`` crashes
+    with missing/unexpected keys on a compile-mode mismatch.
+    """
+    # ``_orig_mod.`` can appear mid-key (e.g. ``model._orig_mod.encoder.weight``)
+    # when compile wraps an inner submodule; ``replace`` handles every position.
+    return {k.replace("_orig_mod.", ""): v for k, v in state.items()}
+
+
 def _build_checkpoint(trainer: Trainer, model: torch.nn.Module) -> dict[str, Any]:
     """Build a raw-PyTorch checkpoint dict."""
     cls = type(model)
     hp = model.hparams
     ckpt: dict[str, Any] = {
-        "state_dict": model.state_dict(),
+        "state_dict": _strip_orig_mod_prefix(model.state_dict()),
         "epoch": trainer.current_epoch,
         "global_step": trainer.global_step,
         "class_path": f"{cls.__module__}.{cls.__name__}",
@@ -219,11 +242,14 @@ class VRAMDriftCallback(CallbackBase):
         drift = (self.baseline_free - current) / self.baseline_free
         if drift > self.threshold:
             from graphids._otel import get_logger
+
             get_logger(__name__).warning(
                 "vram_drift_detected",
-                baseline_free=self.baseline_free, current_free=current,
+                baseline_free=self.baseline_free,
+                current_free=current,
                 drift_frac=round(drift, 3),
-                threshold=self.threshold, epoch=trainer.current_epoch,
+                threshold=self.threshold,
+                epoch=trainer.current_epoch,
             )
             # Warn once per run — repeated warnings add noise without
             # extra signal. Abort is the researcher's call.

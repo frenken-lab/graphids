@@ -38,19 +38,30 @@ class DGIModule(GraphModuleBase):
         # --- identity / dynamic ---
         scale: str = "small",
         model_type: ModelType = "dgi",
-        lake_root: str | None = None,
         dataset: str = "",
         seed: int = 42,
         num_ids: int = 0,
         in_channels: int = 0,
         num_classes: int = 2,
     ):
-        if lake_root is None:
-            from graphids.config.settings import get_settings
-
-            lake_root = get_settings().lake_root
         super().__init__()
-        self.hparams = self._capture_hparams(locals())
+        self.conv_type = conv_type
+        self.hidden_dims = hidden_dims
+        self.latent_dim = latent_dim
+        self.heads = heads
+        self.embedding_dim = embedding_dim
+        self.dropout = dropout
+        self.edge_dim = edge_dim
+        self.proj_dim = proj_dim
+        self.gradient_checkpointing = gradient_checkpointing
+        self.compile_model = compile_model
+        self.scale = scale
+        self.model_type = model_type
+        self.dataset = dataset
+        self.seed = seed
+        self.num_ids = num_ids
+        self.in_channels = in_channels
+        self.num_classes = num_classes
         self.model = None
         self._init_threshold_metrics()
         self.test_metrics = binary_test_metrics()

@@ -19,7 +19,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from opentelemetry import metrics as _metrics, trace
+from opentelemetry import metrics as _metrics
+from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk._logs.export import (
@@ -41,7 +42,6 @@ from opentelemetry.sdk.trace.export import (
 
 from graphids.core.monitoring import SlurmResourceDetector
 
-
 # ---------------------------------------------------------------------------
 # Consumer API — every module uses these
 # ---------------------------------------------------------------------------
@@ -53,18 +53,44 @@ def get_tracer(name: str) -> trace.Tracer:
 
 
 def get_meter(name: str) -> _metrics.Meter:
-    """Return an OTel meter for recording metrics."""
-    return _metrics.get_meter(name)
+    """Return a meter bound to our local ``MeterProvider``.
+
+    Do NOT use the global ``_metrics.get_meter`` — it resolves against
+    the first-set provider, which has no file exporter, so recordings
+    go to ``/dev/null``. Our local provider is swapped per-stage by
+    ``wire_file_exporters``; instruments must be created AFTER that swap.
+    """
+    return get_providers().meter.get_meter(name)
 
 
 # Reserved attrs on stdlib LogRecord — user kwargs with these names would
 # collide at emit time. LogRecord reserved names as of CPython 3.12:
-_LOGRECORD_ATTRS = frozenset({
-    "args", "asctime", "created", "exc_info", "exc_text", "filename",
-    "funcName", "levelname", "levelno", "lineno", "message", "module",
-    "msecs", "msg", "name", "pathname", "process", "processName",
-    "relativeCreated", "stack_info", "thread", "threadName",
-})
+_LOGRECORD_ATTRS = frozenset(
+    {
+        "args",
+        "asctime",
+        "created",
+        "exc_info",
+        "exc_text",
+        "filename",
+        "funcName",
+        "levelname",
+        "levelno",
+        "lineno",
+        "message",
+        "module",
+        "msecs",
+        "msg",
+        "name",
+        "pathname",
+        "process",
+        "processName",
+        "relativeCreated",
+        "stack_info",
+        "thread",
+        "threadName",
+    }
+)
 # Stdlib Logger._log kwargs that must pass through, not be promoted to extra:
 _PASSTHROUGH = frozenset({"exc_info", "stack_info", "stacklevel", "extra"})
 
@@ -115,9 +141,16 @@ def get_logger(name: str) -> StructuredLogger:
 
 @dataclass
 class OTelProviders:
-    """Holds SDK-level provider references (API types lack add_span_processor)."""
+    """Holds SDK-level provider references (API types lack add_span_processor).
+
+    ``meter`` is held locally — never route through the global
+    ``metrics.get_meter`` because ``set_meter_provider`` is one-shot. Any
+    second call (e.g. ``wire_file_exporters`` per stage) silently refuses
+    and the file exporter never receives data.
+    """
 
     tracer: TracerProvider
+    meter: MeterProvider
     logger: LoggerProvider
     _file_span_processor: SimpleSpanProcessor | None = field(default=None, repr=False)
 
@@ -144,11 +177,13 @@ def init_providers(
     """
     global _providers  # noqa: PLW0603
 
-    resource = Resource.create({
-        "service.name": service_name,
-        **({"wandb.entity": wandb_entity} if wandb_entity else {}),
-        **({"wandb.project": wandb_project} if wandb_project else {}),
-    }).merge(SlurmResourceDetector().detect())
+    resource = Resource.create(
+        {
+            "service.name": service_name,
+            **({"wandb.entity": wandb_entity} if wandb_entity else {}),
+            **({"wandb.project": wandb_project} if wandb_project else {}),
+        }
+    ).merge(SlurmResourceDetector().detect())
 
     tp = TracerProvider(resource=resource)
     if os.environ.get("WANDB_API_KEY"):
@@ -156,24 +191,30 @@ def init_providers(
             OTLPSpanExporter,
         )
 
-        tp.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(
-            endpoint="https://trace.wandb.ai/otel/v1/traces",
-            headers={"wandb-api-key": os.environ["WANDB_API_KEY"]},
-        )))
+        tp.add_span_processor(
+            BatchSpanProcessor(
+                OTLPSpanExporter(
+                    endpoint="https://trace.wandb.ai/otel/v1/traces",
+                    headers={"wandb-api-key": os.environ["WANDB_API_KEY"]},
+                )
+            )
+        )
     trace.set_tracer_provider(tp)
 
-    _metrics.set_meter_provider(MeterProvider(resource=resource))
+    # MeterProvider is held LOCALLY on OTelProviders. We never call
+    # ``_metrics.set_meter_provider`` — see ``get_meter`` above.
+    # Start with an empty-reader provider; ``wire_file_exporters``
+    # replaces it with one that has a per-stage file reader.
+    mp = MeterProvider(resource=resource)
 
     lp = LoggerProvider(resource=resource)
-    lp.add_log_record_processor(
-        BatchLogRecordProcessor(ConsoleLogRecordExporter(out=sys.stderr))
-    )
+    lp.add_log_record_processor(BatchLogRecordProcessor(ConsoleLogRecordExporter(out=sys.stderr)))
     set_logger_provider(lp)
     logging.getLogger("graphids").addHandler(LoggingHandler(logger_provider=lp))
 
-    atexit.register(lambda: (tp.shutdown(), lp.shutdown()))
+    atexit.register(lambda: (tp.shutdown(), _providers.meter.shutdown(), lp.shutdown()))
 
-    _providers = OTelProviders(tracer=tp, logger=lp)
+    _providers = OTelProviders(tracer=tp, meter=mp, logger=lp)
     return _providers
 
 
@@ -190,11 +231,18 @@ def wire_file_exporters(run_dir: Path) -> None:
     )
     p.tracer.add_span_processor(p._file_span_processor)
 
-    mp = MeterProvider(
+    # Swap in a fresh MeterProvider with the per-stage file reader. Do NOT
+    # call ``_metrics.set_meter_provider`` — it's one-shot and refuses the
+    # second call silently (see OTel SDK source). Instead update our local
+    # handle; callbacks pick it up via ``get_providers().meter`` on next
+    # instantiation (which happens per stage in the orchestrator).
+    p.meter.shutdown()
+    p.meter = MeterProvider(
         resource=p.tracer.resource,
-        metric_readers=[PeriodicExportingMetricReader(
-            ConsoleMetricExporter(out=open(run_dir / "metrics.jsonl", "a")),  # noqa: SIM115
-            export_interval_millis=10_000,
-        )],
+        metric_readers=[
+            PeriodicExportingMetricReader(
+                ConsoleMetricExporter(out=open(run_dir / "metrics.jsonl", "a")),  # noqa: SIM115
+                export_interval_millis=10_000,
+            )
+        ],
     )
-    _metrics.set_meter_provider(mp)

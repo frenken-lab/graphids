@@ -49,7 +49,6 @@ class GATModule(GraphModuleBase):
         # --- identity / dynamic ---
         scale: str = "small",
         model_type: ModelType = "gat",
-        lake_root: str | None = None,
         dataset: str = "",
         seed: int = 42,
         variational: bool = True,  # upstream VGAE type — identity key for supervised
@@ -57,14 +56,29 @@ class GATModule(GraphModuleBase):
         in_channels: int = 0,
         num_classes: int = 2,
     ):
-        if lake_root is None:
-            from graphids.config.settings import get_settings
-
-            lake_root = get_settings().lake_root
         super().__init__()
         if pool_aggrs is None:
             pool_aggrs = ["mean"]
-        self.hparams = self._capture_hparams(locals(), ignore=("loss_fn",))
+        self.hidden = hidden
+        self.layers = layers
+        self.heads = heads
+        self.dropout = dropout
+        self.fc_layers = fc_layers
+        self.embedding_dim = embedding_dim
+        self.conv_type = conv_type
+        self.edge_dim = edge_dim
+        self.pool_aggrs = pool_aggrs
+        self.proj_dim = proj_dim
+        self.gradient_checkpointing = gradient_checkpointing
+        self.compile_model = compile_model
+        self.scale = scale
+        self.model_type = model_type
+        self.dataset = dataset
+        self.seed = seed
+        self.variational = variational
+        self.num_ids = num_ids
+        self.in_channels = in_channels
+        self.num_classes = num_classes
         self.loss_fn = loss_fn
         self.model = None
         self.test_metrics = binary_test_metrics()
@@ -96,12 +110,17 @@ class GATModule(GraphModuleBase):
         probs = F.softmax(logits, dim=1)
         entropy = -(probs * (probs + 1e-8).log()).sum(dim=1)
         conf = (1.0 - entropy / math.log(2)).clamp(0.0, 1.0)
-        return torch.cat([
-            probs,
-            emb.mean(1, keepdim=True), emb.std(1, keepdim=True),
-            emb.max(1).values.unsqueeze(1), emb.min(1).values.unsqueeze(1),
-            conf.unsqueeze(1),
-        ], dim=1)
+        return torch.cat(
+            [
+                probs,
+                emb.mean(1, keepdim=True),
+                emb.std(1, keepdim=True),
+                emb.max(1).values.unsqueeze(1),
+                emb.min(1).values.unsqueeze(1),
+                conf.unsqueeze(1),
+            ],
+            dim=1,
+        )
 
     def _training_step_inner(self, batch, _idx):
         loss, acc = self._step(batch)
