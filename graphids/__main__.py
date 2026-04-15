@@ -24,7 +24,6 @@ from __future__ import annotations
 # so this module has no import-time side effects beyond decorator registration.
 # ``submit-profile`` lives directly in ``app.py`` (no domain coupling).
 import graphids.cli.analysis  # noqa: F401
-import graphids.cli.campaign  # noqa: F401
 import graphids.cli.data  # noqa: F401
 import graphids.cli.pipeline  # noqa: F401
 import graphids.cli.training  # noqa: F401

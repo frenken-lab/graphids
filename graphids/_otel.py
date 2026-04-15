@@ -218,8 +218,23 @@ def init_providers(
     return _providers
 
 
+def _jsonl_span(span) -> str:
+    """One-line JSON per span for traces.jsonl (ndjson)."""
+    return span.to_json(indent=None) + "\n"
+
+
+def _jsonl_metrics(data) -> str:
+    """One-line JSON per flush for metrics.jsonl (ndjson)."""
+    return data.to_json(indent=None) + "\n"
+
+
 def wire_file_exporters(run_dir: Path) -> None:
-    """Add per-run file exporters for ``traces.jsonl`` and ``metrics.jsonl``."""
+    """Add per-run file exporters for ``traces.jsonl`` and ``metrics.jsonl``.
+
+    Uses ``indent=None`` formatters so both files are true NDJSON (one
+    record per line), directly consumable by ``polars.read_ndjson`` and
+    ``duckdb.read_json_auto`` without custom splitting.
+    """
     p = get_providers()
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -227,7 +242,10 @@ def wire_file_exporters(run_dir: Path) -> None:
         p._file_span_processor.shutdown()
 
     p._file_span_processor = SimpleSpanProcessor(
-        ConsoleSpanExporter(out=open(run_dir / "traces.jsonl", "a"))  # noqa: SIM115
+        ConsoleSpanExporter(
+            out=open(run_dir / "traces.jsonl", "a"),  # noqa: SIM115
+            formatter=_jsonl_span,
+        )
     )
     p.tracer.add_span_processor(p._file_span_processor)
 
@@ -241,7 +259,10 @@ def wire_file_exporters(run_dir: Path) -> None:
         resource=p.tracer.resource,
         metric_readers=[
             PeriodicExportingMetricReader(
-                ConsoleMetricExporter(out=open(run_dir / "metrics.jsonl", "a")),  # noqa: SIM115
+                ConsoleMetricExporter(
+                    out=open(run_dir / "metrics.jsonl", "a"),  # noqa: SIM115
+                    formatter=_jsonl_metrics,
+                ),
                 export_interval_millis=10_000,
             )
         ],

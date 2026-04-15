@@ -4,11 +4,9 @@ Pure planning: ``PipelineConfig`` → ``list[StageConfig]``. No torch
 imports, no jsonnet subprocess at module scope, no side effects.
 
 One entry point: ``build_pipeline_stages(cfg)`` for ``pipeline-run``.
-The old recipe/sweep machinery (``enumerate_assets``,
-``expand_recipe_configs``, cartesian expansion via
-``configs/_lib/recipes.libsonnet``) was deleted 2026-04-12; see
-``~/plans/graphids-campaign-manifest.md`` for the replacement design
-(campaign manifest + append-only status log).
+Multi-run ablations are explicit jsonnet presets under
+``configs/ablations/`` — one file per run, invoked via
+``python -m graphids fit --config <file>``.
 """
 
 from __future__ import annotations

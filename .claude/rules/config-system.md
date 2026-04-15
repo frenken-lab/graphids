@@ -18,8 +18,8 @@ and dispatches artifacts via `ARTIFACTS_BY_MODEL_TYPE` in
    produces `StageConfig`s carrying `jsonnet_path` + planner-derived
    identity knobs. Single-config path. (The old recipe-sweep /
    `enumerate_assets` / cartesian-expansion machinery was deleted
-   2026-04-12; replacement designed in
-   `~/plans/graphids-campaign-manifest.md`.)
+   2026-04-12. Multi-run ablations live under `configs/ablations/`
+   as explicit jsonnet presets — one file per run.)
 3. `ResolvedConfig.resolve` (classmethod on `orchestrate/resolve.py`)
    packs trainer/stage/KD/upstream-ckpt overrides into a typed TLA
    dict via the private `_build_tla_dict` helper in the same file.
@@ -68,7 +68,6 @@ graphids/
     analysis.py                    # analyze command
     data.py                        # rebuild-caches (with --yes gate), extract-fusion-states
     pipeline.py                    # pipeline-run (in-process 3-stage chain)
-    campaign.py                    # campaign sub-app: status/next/freeze/verify
   orchestrate/
     instantiate.py                 # instantiate(rendered) → InstantiatedRun (trainer, model, datamodule)
   config/

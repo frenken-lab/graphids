@@ -60,7 +60,11 @@ GPU_ARGS=()
 SIG_ARGS=()
 [[ -n "$SIGNAL" && "$SIGNAL" != "NONE" ]] && SIG_ARGS=(--signal="B:${SIGNAL}")
 
+# Optional: SBATCH_DEP="afterok:<jobid>[:<jobid>...]" chains jobs.
+DEP_ARGS=()
+[[ -n "${SBATCH_DEP:-}" ]] && DEP_ARGS=(--dependency="$SBATCH_DEP")
+
 sbatch "$ACCT" --partition="$PARTITION" --cpus-per-task="$CPUS" --mem="$MEM" \
-    --time="$TIME" --job-name="graphids-${JOB}" "${GPU_ARGS[@]}" "${SIG_ARGS[@]}" \
+    --time="$TIME" --job-name="graphids-${JOB}" "${GPU_ARGS[@]}" "${SIG_ARGS[@]}" "${DEP_ARGS[@]}" \
     --output="${SLURM_LOG_DIR}/${JOB}_%j.out" --error="${SLURM_LOG_DIR}/${JOB}_%j.err" \
     --wrap="${ENV}${PREAMBLE} && ${COMMAND}$([ $# -gt 0 ] && printf ' %q' "$@")"

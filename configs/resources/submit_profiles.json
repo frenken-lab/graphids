@@ -66,6 +66,24 @@
       "mode": "gpu",
       "command": "python -m graphids analyze"
     },
+    "fit": {
+      "partition": "gpudebug",
+      "cpus": 4,
+      "mem": "32G",
+      "time": "1:00:00",
+      "signal": "",
+      "mode": "gpu",
+      "command": "python -m graphids fit"
+    },
+    "fit-long": {
+      "partition": "gpu",
+      "cpus": 8,
+      "mem": "48G",
+      "time": "4:00:00",
+      "signal": "",
+      "mode": "gpu",
+      "command": "python -m graphids fit"
+    },
     "extract-fusion-states": {
       "partition": "gpu",
       "cpus": 4,

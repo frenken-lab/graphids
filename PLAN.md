@@ -1,6 +1,6 @@
 # GraphIDS Session Plan
 
-> Last updated: 2026-04-14 (session 48 — submit-profile auto-sizing)
+> Last updated: 2026-04-15 (session 49 — ablation tree + NDJSON observability)
 
 PLAN.md is current-session work only. Historical session changelogs live in
 git log; durable verdicts live in `docs/decisions/README.md`; living architecture
@@ -8,17 +8,63 @@ lives in `docs/reference/`.
 
 ## Active
 
-- **Validate GPU-first auto-sizing end-to-end** — job 46763851
-  (`pipeline-run --dataset hcrl_ch -O trainer.max_epochs=3` on gpudebug/1hr)
-  pending. Watch for `probe_done` in `traces.jsonl` + `node_budget.binding
-  == "memory"`.
-- **Harvest training-time coefficients** — once a few real pipeline runs
-  land, write a script that reads `traces.jsonl` + sacct MaxRSS and refits
-  the `stage_profiles` scaling blocks (currently placeholders). Today's
-  training coefficients are unverified guesses with ~40min/small,
-  ~80min/large worst-case budgets.
+- **Re-run seed=42 unsupervised cells under new format** — in-flight Cardinal
+  jobs 8557733 (VGAE), 8557737 (GAE), 8557738 (DGI, PD QOSMax) were submitted
+  before two late-session changes: (a) `_otel.py` switch to NDJSON formatters,
+  (b) lake_root fix pointing paths at `/fs/ess/PAS1266/graphids/dev/rf15`.
+  Those three will finish writing pretty-print JSON to
+  `/users/PAS2022/rf15/graphids/experimentruns/...`. Plan: let them finish
+  (data still useful during current session), re-run under new format post
+  training, move or rsync to lake.
+- **Calibrate fit/fit-long time budgets on set_01** — `fit-long` is 4 h/gpu
+  static; set_01 small VGAE on H100 took ~23 min. Pitzer V100 will be
+  different. Re-fit once a few real set_01 runs land.
+- **Harvest training-time coefficients** — previous session's TODO still open.
+  Now that `run_io.load_traces`/`load_metrics` exist, the harvester script
+  has a parser to build on.
 
 ## Recently landed (this session)
+
+- **Campaigns subsystem deleted** (−753 LOC): `graphids/campaigns/`
+  + `graphids/cli/campaign.py` + `campaigns/` YAML + `tests/campaigns/` +
+  all cross-refs (CLAUDE.md, `.claude/rules/config-system.md`, 4 docs in
+  `docs/`, monitoring.py OTel `campaign.*` attrs, `__main__.py` register).
+  Superseded by an explicit `configs/ablations/` jsonnet tree.
+- **`configs/ablations/` tree** — 16 jsonnets across 5 groups (conv_type,
+  unsupervised, gat_sampling, gat_loss, fusion) + `_paths.libsonnet`
+  helper + `README.md`. Each ablation locks one axis and auto-computes
+  `run_dir` + upstream ckpt paths from `(dataset, seed, lake_root)` TLAs.
+  Submit calls collapse to `--tla dataset=... --tla seed=...` — no
+  `--set` overrides, no explicit ckpt paths.
+- **NDJSON observability** — `graphids/_otel.py::wire_file_exporters`
+  now passes `formatter=lambda x: x.to_json(indent=None) + "\n"` to
+  `ConsoleSpanExporter` and `ConsoleMetricExporter`. `traces.jsonl` and
+  `metrics.jsonl` are now true ndjson (one OTel record per line),
+  directly consumable by `polars.read_ndjson` and `duckdb.read_json_auto`.
+- **`graphids/core/run_io.py`** — polars parser for `metrics.jsonl` +
+  `traces.jsonl`. Accepts rendered config dict / run_dir path / file
+  path. Flattens histogram/gauge/sum data points into a long-format
+  DataFrame; handles empty-file case (returns empty DF with correct
+  schema) for runs still in progress.
+- **Submit infra**: `fit` + `fit-long` profiles added to
+  `configs/resources/submit_profiles.json` (gpudebug 1h / gpu 4h).
+  `scripts/slurm/submit.sh` now passes `SBATCH_DEP` env var through as
+  `--dependency=` so dependent stages can chain on upstream `afterok`.
+- **Ablation runbook + launcher** — `docs/plans/ablation-set_01.md`
+  (54 → 51 jobs after deduping baseline GAT with Stage 1's focal cell)
+  + `scripts/ablation/launch_set_01.sh` which loops over
+  `(seeds, groups, variants)`, captures per-seed upstream jobids, and
+  submits dependent stages with `SBATCH_DEP=afterok:<jid>[:<jid>]`.
+  Supports `--dry-run` and `--seed <N>` for seed-wave execution.
+- **Fair-share diagnosis** — first bulk launch (54 jobs Pitzer gpu) sat
+  `PD Reason=Priority` >7 hours. Hypothesized per-user deprioritization,
+  cancelled, resubmitted single job — also sat PD. Actual cause: queue
+  saturation (test-only start estimate ~2.5 days Pitzer, ~3 days
+  Ascend, ~20 days Cardinal batch). Moved to Cardinal debug (1 h
+  walltime, `QOSMaxJobsPerUserLimit=2`): jobs start in seconds. Use
+  Cardinal debug for any ablation cell that fits under 1 h.
+
+## Recently landed (session 48)
 
 - **Pipeline fragility audit follow-ups** (decouple + resume-from-ckpt):
   `run_pipeline` no longer calls analysis — analysis runs via `python -m
@@ -69,7 +115,7 @@ lives in `docs/reference/`.
   `tests/test_submit_profile.py` (invariants: composition rules,
   monotonicity, static profile unchanged, defaults fallback).
 
-## Recently landed (last session)
+## Recently landed (session 47)
 
 - **Preprocessing data-correctness fix (§5.0)**: `CANBusDataset` no longer
   rglobs the dataset root; reads from explicit `source_dirs`. Train scope

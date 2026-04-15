@@ -129,15 +129,6 @@ class OTelTrainingCallback(CallbackBase):
             if v:
                 self._span.set_attribute(k, v)
 
-        # Campaign context (opt-in via env var, format "<manifest>::<cell_id>").
-        # Tagging the existing span avoids a parallel status log — the
-        # campaign CLI recovers cell state by querying traces.jsonl.
-        raw = os.environ.get("GRAPHIDS_CAMPAIGN_CELL", "")
-        manifest, _, cell_id = raw.partition("::")
-        if manifest and cell_id:
-            self._span.set_attribute("campaign.manifest", manifest)
-            self._span.set_attribute("campaign.cell_id", cell_id)
-
     def on_fit_end(self, trainer, model: torch.nn.Module) -> None:
         if self._span is None:
             return

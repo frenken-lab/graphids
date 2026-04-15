@@ -28,8 +28,8 @@ KDEntry(alpha=0.7, temperature=4.0, model_path="/path/to/teacher_best.ckpt")
 `kd_overrides` (first entry only, flattened via `model_dump(exclude_none=True)`),
 then into the jsonnet TLA `distillation_config`. The `pipeline-run` CLI does not
 currently expose an `auxiliaries` field on `PipelineConfig` — KD is reached
-programmatically or via the forthcoming campaign manifest (see
-`~/plans/graphids-campaign-manifest.md`). The planning-time cross-config
+programmatically or via an explicit ablation jsonnet under
+`configs/ablations/`. The planning-time cross-config
 teacher resolution that existed in the old recipe sweep (`teacher_config` /
 `teacher_scale` fields + `enumerate_assets` post-pass) was deleted 2026-04-12.
 

@@ -30,7 +30,7 @@ Config combinatorial explosion (scale x model in one file) and parallel topology
 Custom `_FastCollate` was 1.6x slower than warm `Batch.from_data_list()` over full training (warm cache via `persistent_workers=True`). Both paths are now moot — prebatching collates all batches once at setup with `num_workers=0`.
 
 **0009 — Collapse override handoff chain.**
-The original 9-step handoff stringified override dicts across process boundaries, with validation only inside the SLURM job. Collapsed to 3 steps: `build_pipeline_stages` -> `ResolvedConfig.resolve` (render + validate) -> `instantiate`. Override typos now fail before job submission. (The earlier sweep-mode entry point `enumerate_assets` was deleted with the recipes machinery in session 45; campaigns drive multi-cell sweeps now.)
+The original 9-step handoff stringified override dicts across process boundaries, with validation only inside the SLURM job. Collapsed to 3 steps: `build_pipeline_stages` -> `ResolvedConfig.resolve` (render + validate) -> `instantiate`. Override typos now fail before job submission. (The earlier sweep-mode entry point `enumerate_assets` was deleted with the recipes machinery in session 45; multi-run ablations live under `configs/ablations/` as explicit jsonnet presets.)
 
 **0010 — Use go-jsonnet binary, not the jsonnet PyPI package.**
 go-jsonnet is 10-100x faster than libjsonnet, requires no C++ compile step on OSC, and installs as a single static binary to `~/.local/bin/jsonnet`. Python access via `subprocess.run` in `graphids/config/jsonnet.py` (~5ms per render, not a hot path).
@@ -49,7 +49,7 @@ go-jsonnet is 10-100x faster than libjsonnet, requires no C++ compile step on OS
 
 **slurm-pipeline** (shell-script pipeline DAGs) — Pipeline model doesn't fit (expects `TASK:` stdout protocol). Heavy deps (pandas+plotly). Stale (no updates since Oct 2024). Not adopted.
 
-**Parsl** (parallel workflow library) — Strong SLURM support, auto-scaling pilot jobs, active maintenance (UChicago/Argonne, weekly releases). Not needed for current fixed 3-stage pipeline (the in-process loop is sufficient). **Worth revisiting if large hyperparameter sweeps outgrow the campaign manifest.**
+**Parsl** (parallel workflow library) — Strong SLURM support, auto-scaling pilot jobs, active maintenance (UChicago/Argonne, weekly releases). Not needed for current fixed 3-stage pipeline (the in-process loop is sufficient). **Worth revisiting if large hyperparameter sweeps outgrow the explicit `configs/ablations/` tree.**
 
 **Globus Compute / funcX** (federated FaaS) — Cloud-routed task dispatch. Adds complexity without benefit for single-cluster use. Not adopted.
 

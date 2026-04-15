@@ -60,7 +60,7 @@ All training writes land under `trainer.default_root_dir` from the rendered json
 
 ### 2. OTel Instrumentation
 
-`graphids/core/monitoring.py` — `OTelTrainingCallback` creates a `training.fit` span on fit start; records per-batch VRAM gauges, per-epoch events (LR, early stopping), final metrics, and best checkpoint path as span attributes. Tags the span with `campaign.manifest`/`campaign.cell_id` when `GRAPHIDS_CAMPAIGN_CELL` is set so `cell_statuses()` can derive cell state from `traces.jsonl`. Discovers upstream stage `traces.jsonl` files and records span links for KD lineage.
+`graphids/core/monitoring.py` — `OTelTrainingCallback` creates a `training.fit` span on fit start; records per-batch VRAM gauges, per-epoch events (LR, early stopping), final metrics, and best checkpoint path as span attributes. Discovers upstream stage `traces.jsonl` files and records span links for KD lineage.
 
 `graphids/_otel.py` — `wire_file_exporters(run_dir)` wires the file exporters (Phase B). Called from `cli/training.py::_prepare` and `orchestrate/stage.py::train`. Wandb Weave OTLP export is optional when `WANDB_API_KEY` is set.
 
