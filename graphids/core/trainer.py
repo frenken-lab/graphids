@@ -11,6 +11,7 @@ Single-GPU only (project uses 1x V100). Handles:
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass
 from typing import Any
@@ -30,38 +31,40 @@ _log = get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class MetricAccumulator(nn.Module):
-    """Dynamic-keyed dict of ``torchmetrics.MeanMetric`` — batch-weighted mean.
+class MetricAccumulator:
+    """Dynamic-keyed batch-weighted mean.
 
-    Wraps ``MeanMetric`` so ``model.log("name", value, batch_size=N)`` can
-    write to an on-demand bucket. ``nan_strategy="error"`` hard-fails the
-    run on NaN loss — under ``precision: 16-mixed`` a silent NaN in
-    ``callback_metrics`` fools ``EarlyStopping`` (NaN < inf is False) and
-    wastes the full patience window before giving up.
+    Plain ``dict[str, (sum, count)]`` — NOT an ``nn.Module``. These are
+    transient per-phase accumulators; storing them in a ``ModuleDict``
+    both pollutes the parent's ``state_dict`` and rejects keys with
+    ``"."`` (add_module's attribute-name check), breaking metric names
+    like ``"test/precision@0.95recall"``.
+
+    NaN detection hard-fails the run — under ``precision: 16-mixed`` a
+    silent NaN in ``callback_metrics`` fools ``EarlyStopping``
+    (``NaN < inf`` is False) and wastes the full patience window.
     """
 
     def __init__(self, nan_strategy: str = "error") -> None:
-        super().__init__()
-        from torchmetrics import MeanMetric
-
-        self._MeanMetric = MeanMetric
         self._nan_strategy = nan_strategy
-        self._metrics: nn.ModuleDict = nn.ModuleDict()
+        self._sums: dict[str, float] = {}
+        self._counts: dict[str, float] = {}
 
     def update(self, name: str, value: float, batch_size: int = 1) -> None:
-        if name not in self._metrics:
-            self._metrics[name] = self._MeanMetric(nan_strategy=self._nan_strategy)
-        self._metrics[name].update(float(value), weight=batch_size)
+        v = float(value)
+        if math.isnan(v):
+            if self._nan_strategy == "error":
+                raise ValueError(f"NaN encountered in metric {name!r}")
+            return
+        self._sums[name] = self._sums.get(name, 0.0) + v * batch_size
+        self._counts[name] = self._counts.get(name, 0.0) + batch_size
 
     def compute(self) -> dict[str, float]:
-        # Skip un-updated buckets — MeanMetric returns NaN for those, which
-        # would overwrite good values across phase boundaries (train_loss
-        # written by train epoch, then NaN'd by val epoch's compute).
-        return {k: float(m.compute()) for k, m in self._metrics.items() if m.update_called}
+        return {k: self._sums[k] / self._counts[k] for k in self._sums if self._counts.get(k)}
 
     def reset(self) -> None:
-        for m in self._metrics.values():
-            m.reset()
+        self._sums.clear()
+        self._counts.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +182,7 @@ class Trainer:
 
         # GradScaler(enabled=False) is a complete no-op passthrough —
         # all methods become identity. No branching needed in the loop.
-        use_amp = "16" in self.config.precision and self._device.type == "cuda"
+        use_amp = "16" in str(self.config.precision) and self._device.type == "cuda"
         scaler = torch.amp.GradScaler(enabled=use_amp)
 
         if ckpt_path:
@@ -196,9 +199,17 @@ class Trainer:
 
                 self._dispatch("on_train_epoch_end", model)
 
-                for s in self._schedulers:
-                    if s is not None:
-                        s.step()
+                # Skip scheduler.step() when the optimizer hasn't stepped
+                # this run — GradScaler skips opt.step() on inf/nan grads,
+                # which is common on early fp16 batches while the scale warms
+                # up. Stepping the scheduler anyway trips PyTorch's
+                # "lr_scheduler.step() before optimizer.step()" warning and
+                # silently burns the first LR value.
+                opt_stepped = any(getattr(o, "_opt_called", False) for o in self._optimizers)
+                if opt_stepped:
+                    for s in self._schedulers:
+                        if s is not None:
+                            s.step()
 
                 if self.should_stop:
                     _log.info("early_stopping", epoch=epoch)
@@ -263,7 +274,7 @@ class Trainer:
         if ckpt_path:
             self._load_model_weights(ckpt_path, model)
 
-        use_amp = "16" in self.config.precision and self._device.type == "cuda"
+        use_amp = "16" in str(self.config.precision) and self._device.type == "cuda"
         self._validate_one_epoch(model, datamodule, use_amp)
         return dict(self.callback_metrics)
 

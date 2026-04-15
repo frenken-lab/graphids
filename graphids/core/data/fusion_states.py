@@ -87,15 +87,18 @@ def extract_fusion_states(
     """
     from graphids.core.data.datamodule.graph import GraphDataModule
     from graphids.core.data.datasets.can_bus import CANBusSource
-    from graphids.core.models.base import load_inner_model
+    from graphids.core.models.base import safe_load_checkpoint
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    # Load the wrapper module (not inner nn.Module): extract_features lives
+    # on the module class (VGAEModule/GATModule), not on self.model.
     models = {}
     for model_type, ckpt_path in checkpoints.items():
         log.info("loading_model", model_type=model_type, ckpt=ckpt_path)
-        model, _ = load_inner_model(model_type, Path(ckpt_path), device)
-        models[model_type] = model
+        module = safe_load_checkpoint(model_type, Path(ckpt_path), map_location=device)
+        module.to(device).eval()
+        models[model_type] = module
 
     source = CANBusSource(
         name=dataset,

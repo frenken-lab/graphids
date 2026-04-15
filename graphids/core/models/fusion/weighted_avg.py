@@ -24,9 +24,8 @@ class WeightedAvgModule(FusionModuleBase):
         lr: float = 0.01,
         decision_threshold: float = 0.5,
     ):
-        super().__init__()
+        super().__init__(decision_threshold=decision_threshold)
         self.lr = lr
-        self.decision_threshold = decision_threshold
         self.weight = nn.Parameter(torch.zeros(1))
         self.loss_fn = nn.BCELoss()
 
@@ -59,8 +58,7 @@ class WeightedAvgModule(FusionModuleBase):
     def test_step(self, batch, batch_idx, dataloader_idx=0):
         states, labels = batch
         scores = self(states)
-        preds = (scores > self.decision_threshold).long()
-        self.test_metrics.update(preds, labels)
+        self.test_metrics.update(scores, labels)
 
     def build_optimizers(self, max_epochs: int):
         return optim.Adam(self.parameters(), lr=self.lr), None

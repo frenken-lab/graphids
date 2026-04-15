@@ -12,11 +12,15 @@ failure mode into a silent "stage marked done but artifacts missing"
 trap; decoupling gives researchers explicit control over when analyzers
 run (and lets them re-run one without re-training anything).
 
-Resume semantics: a stage is skipped when its ``best_model.ckpt`` is on
-disk. That file is the last artifact any successful training writes, so
-its presence means "training finished at least one best epoch and saved
-it." A mid-epoch crash leaves only ``last.ckpt`` (if that) — no skip,
-and the trainer's own resume-from-last path takes over on the next run.
+Resume semantics: a stage is skipped only when its ``.test_complete``
+phase marker is on disk. That marker is touched at the end of
+``evaluate()`` — so its presence means "train ran to completion AND the
+test pass succeeded." Ckpt existence alone is insufficient: a crashed
+eval (e.g. bad metric dtype) leaves a ``best_model.ckpt`` behind but
+no ``.test_complete`` marker, so the stage correctly re-runs. If the
+ckpt exists but the marker doesn't, we resume training from the ckpt
+instead of re-training from scratch (trainer's own resume path handles
+the epoch/optimizer/scheduler state).
 """
 
 from __future__ import annotations
@@ -34,7 +38,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
     """Run train+evaluate for each stage in the configured chain."""
     from graphids._otel import wire_file_exporters
     from graphids._spawn import ensure_spawn
-    from graphids.config.constants import LAKE_ROOT
+    from graphids.config.constants import LAKE_ROOT, PHASE_MARKERS
     from graphids.orchestrate.planning import build_pipeline_stages
     from graphids.orchestrate.resolve import resolve_config
     from graphids.orchestrate.stage import build, evaluate, train
@@ -58,8 +62,12 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
         )
         assert resolved.run_dir is not None and resolved.ckpt_file is not None
         run_dir, ckpt_file = resolved.run_dir, resolved.ckpt_file
+        test_marker = run_dir / PHASE_MARKERS["test"]
 
-        if ckpt_file.exists():
+        # Skip only when train + eval BOTH succeeded last time. Ckpt-alone
+        # is not enough: eval can crash after the best ckpt is written
+        # (e.g. a metric dtype bug) and leave the stage half-done.
+        if test_marker.exists() and ckpt_file.exists():
             log.info("stage_skip_complete", stage=cfg.stage, run_dir=str(run_dir))
             return str(ckpt_file)
 
@@ -73,7 +81,12 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
             _ensure_fusion_states_cache(cfg, resolved, upstream_ckpts, config)
 
         artifacts = build(resolved)
-        train(artifacts, resolved)
+        # If a ckpt exists without a test_complete marker, training finished
+        # but eval crashed — resume from that ckpt so we don't redo training.
+        resume_from = str(ckpt_file) if ckpt_file.exists() else None
+        if resume_from:
+            log.info("stage_resume_post_train", stage=cfg.stage, ckpt=resume_from)
+        train(artifacts, resolved, resume_from=resume_from)
         evaluate(artifacts, resolved)
         return str(ckpt_file)
 

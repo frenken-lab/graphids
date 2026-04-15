@@ -212,9 +212,12 @@ class OTelTrainingCallback(CallbackBase):
 
         loss_val = None
         if isinstance(outputs, dict) and "loss" in outputs:
-            loss_val = float(outputs["loss"])
+            loss_t = outputs["loss"]
+            if isinstance(loss_t, torch.Tensor):
+                loss_t = loss_t.detach()
+            loss_val = float(loss_t)
         elif isinstance(outputs, torch.Tensor):
-            loss_val = float(outputs)
+            loss_val = float(outputs.detach())
         if loss_val is not None:
             self._loss_hist.record(loss_val, attrs)
 

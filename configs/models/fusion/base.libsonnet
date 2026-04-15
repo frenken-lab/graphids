@@ -15,7 +15,7 @@
 
   trainer: {
     accelerator: 'cpu',
-    precision: 32,
+    precision: '32-true',
     max_epochs: 1500,
     gradient_clip_val: null,
     log_every_n_steps: 10,

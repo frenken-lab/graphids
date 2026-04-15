@@ -267,7 +267,7 @@ class FusionModuleBase(nn.Module):
             self.reward_calc = FusionRewardCalculator(**reward_kwargs)
         self._buffer = TensorReplayBuffer(buffer_size, state_dim)
 
-        self.test_metrics = binary_test_metrics()
+        self.test_metrics = binary_test_metrics(threshold=decision_threshold)
 
     @property
     def device(self) -> torch.device:
@@ -340,7 +340,9 @@ class FusionModuleBase(nn.Module):
     def test_step(self, batch, batch_idx, dataloader_idx=0):
         states, labels = batch
         result = self.predict(states)
-        self.test_metrics.update(result["preds"], labels)
+        # Curve metrics (AUROC/AP/ECE) require float scores; hard-pred
+        # metrics binarize internally at decision_threshold.
+        self.test_metrics.update(result["fused_scores"].float(), labels)
 
     def on_test_epoch_start(self):
         self.test_metrics.reset()

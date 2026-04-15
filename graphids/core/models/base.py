@@ -240,6 +240,10 @@ class GraphModuleBase(nn.Module):
         """Per-set + aggregate metrics, assuming test_metrics takes raw scores."""
         if not getattr(self, "_per_set_metrics", None):
             return
+        # _record_test_batch buffers on CPU — match the metric collections to
+        # the buffer device (some states, e.g. BinaryMCC's confusion matrix,
+        # raise on cross-device updates).
+        self.test_metrics = self.test_metrics.cpu()
         all_scores, all_labels = [], []
         for name, coll in self._per_set_metrics.items():
             buf = self._test_buffers[name]
@@ -247,6 +251,8 @@ class GraphModuleBase(nn.Module):
                 continue
             scores = torch.cat(buf["scores"])
             labels = torch.cat(buf["labels"]).long()
+            coll = coll.cpu()
+            self._per_set_metrics[name] = coll
             coll.update(scores, labels)
             self.log_dict(coll.compute())
             self._log_operating_points(scores, labels, prefix=f"test/{name}/")
@@ -268,9 +274,13 @@ class GraphModuleBase(nn.Module):
             thr = float(self.roc_metric.compute())
             self.test_threshold = thr if not math.isnan(thr) else float(pooled_scores.median())
 
-        # Aggregate (preserves existing semantics).
-        agg_preds = (pooled_scores >= self.test_threshold).long()
-        self.test_metrics.update(agg_preds, pooled_labels)
+        # Rebuild the aggregate + per-set collections at the discovered
+        # threshold so hard-pred metrics binarize at Youden-J while curve
+        # metrics (AUROC/AP/ECE) operate on raw scores per their contract.
+        self.test_metrics = binary_test_metrics(threshold=self.test_threshold).to(
+            pooled_scores.device
+        )
+        self.test_metrics.update(pooled_scores, pooled_labels)
         metrics = self.test_metrics.compute()
         metrics["threshold"] = self.test_threshold
         self.log_dict(metrics)
@@ -279,18 +289,19 @@ class GraphModuleBase(nn.Module):
 
         # Per-set metrics at the same global threshold.
         if getattr(self, "_per_set_metrics", None):
-            for name, coll in self._per_set_metrics.items():
+            for name in list(self._per_set_metrics):
                 buf = self._test_buffers[name]
                 if not buf["scores"]:
                     continue
                 scores = torch.cat(buf["scores"])
                 labels = torch.cat(buf["labels"]).long()
-                preds = (scores >= self.test_threshold).long()
-                coll.update(preds, labels)
+                coll = binary_test_metrics(threshold=self.test_threshold).to(scores.device)
+                coll.update(scores, labels)
+                self._per_set_metrics[name] = coll
                 self.log_dict(coll.compute())
                 self._log_operating_points(scores, labels, prefix=f"test/{name}/")
                 # Materialize derived preds so _finalize_test_predictions persists them.
-                buf["preds"] = [preds]
+                buf["preds"] = [(scores >= self.test_threshold).long()]
         self._finalize_test_predictions()
 
     def _log_operating_points(
@@ -316,14 +327,16 @@ class GraphModuleBase(nn.Module):
 
         prec, thr_p = binary_precision_at_fixed_recall(scores, labels, min_recall=min_recall)
         rec, thr_r = binary_recall_at_fixed_precision(scores, labels, min_precision=min_precision)
-        self.log_dict(
-            {
-                f"{prefix}precision@{min_recall:g}recall": float(prec),
-                f"{prefix}threshold@{min_recall:g}recall": float(thr_p),
-                f"{prefix}recall@{min_precision:g}precision": float(rec),
-                f"{prefix}threshold@{min_precision:g}precision": float(thr_r),
-            }
-        )
+        # torchmetrics returns NaN when the target operating point is
+        # unreachable (e.g. max precision < min_precision). That's a valid
+        # "no such threshold" sentinel, not a metric value — skip it.
+        candidates = {
+            f"{prefix}precision@{min_recall:g}recall": float(prec),
+            f"{prefix}threshold@{min_recall:g}recall": float(thr_p),
+            f"{prefix}recall@{min_precision:g}precision": float(rec),
+            f"{prefix}threshold@{min_precision:g}precision": float(thr_r),
+        }
+        self.log_dict({k: v for k, v in candidates.items() if not math.isnan(v)})
 
     def _finalize_test_predictions(self) -> None:
         """Concatenate per-set buffers into a {name: {key: Tensor}} dict."""
@@ -364,16 +377,25 @@ def eval_mode(model):
         model.train(was_training)
 
 
-def binary_test_metrics():
+def binary_test_metrics(threshold: float = 0.5):
     """Standard binary classification MetricCollection shared by all modules.
 
+    Contract: ``update(preds, target)`` expects ``preds`` to be a **float**
+    tensor of probabilities in [0, 1] (or logits) and ``target`` to be
+    long/int. Curve metrics (AUROC, AP, ECE) validate this and raise on int
+    preds. The hard-pred metrics (accuracy/f1/precision/recall/specificity/
+    MCC) apply ``threshold`` internally. Passing already-thresholded int
+    preds is wrong: it crashes the curve metrics.
+
+    ``threshold`` is forwarded to every metric that accepts it. For
+    threshold-flavor models (VGAE/DGI), rebuild the collection after
+    Youden-J discovery; for fusion models, pass the agent's
+    ``decision_threshold`` at construction time.
+
     MCC is the chance-corrected summary for imbalanced binary data (CAN
-    intrusion is ~1% positive — F1 and accuracy can both look good while
-    MCC exposes a dominant-class classifier). AP (area under PR curve) is
-    the correct curve metric for imbalanced data. ECE measures probability
-    calibration — only meaningful on classifier scores in [0, 1]; on
-    threshold-flavor models (VGAE/DGI) it degenerates same as AUROC does,
-    tracked as a pre-existing known issue.
+    intrusion is ~1% positive). AP (area under PR curve) is the correct
+    curve metric for imbalanced data. ECE measures probability calibration
+    — meaningful only on classifier scores in [0, 1].
     """
     from torchmetrics import MetricCollection
     from torchmetrics.classification import (
@@ -390,14 +412,14 @@ def binary_test_metrics():
 
     return MetricCollection(
         {
-            "accuracy": BinaryAccuracy(),
-            "f1": BinaryF1Score(),
-            "precision": BinaryPrecision(),
-            "recall": BinaryRecall(),
-            "specificity": BinarySpecificity(),
+            "accuracy": BinaryAccuracy(threshold=threshold),
+            "f1": BinaryF1Score(threshold=threshold),
+            "precision": BinaryPrecision(threshold=threshold),
+            "recall": BinaryRecall(threshold=threshold),
+            "specificity": BinarySpecificity(threshold=threshold),
+            "mcc": BinaryMatthewsCorrCoef(threshold=threshold),
             "auc": BinaryAUROC(),
             "ap": BinaryAveragePrecision(),
-            "mcc": BinaryMatthewsCorrCoef(),
             "ece": BinaryCalibrationError(),
         }
     )
