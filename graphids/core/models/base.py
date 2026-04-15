@@ -157,9 +157,12 @@ class GraphModuleBase(nn.Module):
 
     def setup(self, datamodule=None):
         if self.model is None and datamodule is not None:
-            self.hparams.num_ids = datamodule.num_ids
-            self.hparams.in_channels = datamodule.in_channels
-            self.hparams.num_classes = datamodule.num_classes
+            # Write to self directly: ``self.hparams`` is a computed
+            # property — assigning ``self.hparams.x = v`` would land on a
+            # throwaway SimpleNamespace.
+            self.num_ids = datamodule.num_ids
+            self.in_channels = datamodule.in_channels
+            self.num_classes = datamodule.num_classes
             self._build()
         if datamodule is not None:
             # Capture test-set names for per-loader metric breakdowns (issue #26).
