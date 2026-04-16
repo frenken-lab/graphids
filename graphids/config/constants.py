@@ -91,7 +91,6 @@ PHASE_MARKERS: dict[str, str] = {
     "train": ".train_complete",
     "test": ".test_complete",
 }
-CATALOG_SUBPATH: str = "catalog/graphids.duckdb"
 DATASET_REGISTRY_PATH: Path = PROJECT_ROOT / "configs" / "datasets" / "dataset_registry.json"
 
 # ---------------------------------------------------------------------------

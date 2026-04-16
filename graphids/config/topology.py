@@ -15,7 +15,6 @@ from typing import Any
 from pydantic import FilePath, TypeAdapter
 
 from .constants import (
-    CATALOG_SUBPATH,
     CONFIG_DIR,
     DATASET_REGISTRY_PATH,
     PREPROCESSING_VERSION,
@@ -76,10 +75,6 @@ def data_dir(lake_root: str, dataset: str) -> Path:
 
 def cache_dir(lake_root: str, dataset: str) -> Path:
     return Path(lake_root) / "cache" / f"v{PREPROCESSING_VERSION}" / dataset
-
-
-def catalog_path(lake_root: str) -> Path:
-    return Path(lake_root) / CATALOG_SUBPATH
 
 
 @lru_cache(maxsize=1)

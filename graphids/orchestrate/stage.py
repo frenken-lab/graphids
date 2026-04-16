@@ -19,6 +19,7 @@ from __future__ import annotations
 import gc
 import json
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +27,8 @@ import torch
 
 from graphids._fs import touch_marker
 from graphids._otel import get_logger
-from graphids.config.constants import PHASE_MARKERS, PROJECT_ROOT
+from graphids.catalog import Catalog
+from graphids.config.constants import LAKE_ROOT, PHASE_MARKERS, PROJECT_ROOT
 from graphids.orchestrate.config import InstantiatedRun, ResolvedConfig
 from graphids.orchestrate.instantiate import build_run
 
@@ -163,22 +165,37 @@ def evaluate(
     """Run the test phase and return metrics.
 
     On success, writes the test-phase marker, the per-test-set prediction
-    sidecars, and ``summary.json``. The Phase 2 catalog writer will slot
-    in next to ``_write_summary`` — same preconditions (run_dir set,
-    test run completed).
+    sidecars, ``summary.json``, and the catalog row (runs + metrics in
+    one transaction on the lake-wide DuckDB file). Timestamps are stamped
+    here — ``traces.jsonl`` remains authoritative for spans, but the
+    catalog row stands alone.
     """
     stage_name = resolved.stage_name
     run_dir = resolved.run_dir
     ckpt_file = resolved.ckpt_file
     log.info("stage_test", stage=stage_name)
+    started_at_ns = time.time_ns()
     metrics = artifacts.trainer.test(
         artifacts.model,
         datamodule=artifacts.datamodule,
         ckpt_path=str(ckpt_file) if ckpt_file is not None else None,
     )
+    ended_at_ns = time.time_ns()
     if run_dir is not None:
         touch_marker(run_dir / PHASE_MARKERS["test"])
         _save_test_predictions(artifacts.model, run_dir / "predictions" / "test")
         _write_summary(run_dir, metrics or {}, ckpt_file)
+        run_id = Catalog(LAKE_ROOT).record_run(
+            run_dir,
+            metrics=metrics or {},
+            git_sha=_git_sha(),
+            status="ok",
+            started_at_ns=started_at_ns,
+            ended_at_ns=ended_at_ns,
+        )
+        if run_id is None:
+            log.info("catalog_skip_non_ablation", run_dir=str(run_dir))
+        else:
+            log.info("catalog_recorded_run", run_id=run_id)
     log.info("stage_complete", stage=stage_name)
     return metrics or {}

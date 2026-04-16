@@ -13,7 +13,7 @@
 
 `graphids/config/constants.py` declares write path constants. `graphids/config/settings.py` owns all `GRAPHIDS_*` env vars.
 
-Constants: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `PHASE_MARKERS`, `CATALOG_SUBPATH`
+Constants: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `PHASE_MARKERS` (all in `graphids/config/constants.py`). Catalog database path (`catalog/graphids.duckdb`) lives in `graphids.catalog.CATALOG_SUBPATH`.
 
 ## Filesystem Layout
 
@@ -30,7 +30,10 @@ Constants: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `PHASE_MARKERS`, `CATALOG_SUBPAT
 |           +-- artifacts/                        <-- analysis outputs (written by `graphids analyze`, not the pipeline driver)
 |           +-- .train_complete                   <-- phase marker (fit done; diagnostic only)
 |           +-- .test_complete                    <-- phase marker (test done; diagnostic only)
-+-- catalog/graphids.duckdb                      <-- (catalog builder removed 2026-04-10, pending redesign)
+|           +-- summary.json                      <-- final metrics + git_sha + status (stage.evaluate)
+|           +-- resolved.json                     <-- Pydantic-validated rendered config (cli/training._prepare)
+|           +-- overrides.json                    <-- TLA dict + --set payload (cli/training._prepare)
++-- catalog/graphids.duckdb                      <-- lake-wide catalog (runs + metrics tables)
 +-- raw/{dataset}/                               <-- source CSV data
 +-- cache/v{ver}/{dataset}/                      <-- preprocessed graph .pt files
 +-- slurm/                                       <-- SLURM stdout/stderr (default)
