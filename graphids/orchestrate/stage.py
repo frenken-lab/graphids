@@ -155,7 +155,27 @@ def evaluate(
         ckpt_path=str(ckpt_file) if ckpt_file is not None else None,
     )
     if run_dir is not None:
+        import json
+        import subprocess
+
+        from graphids.config.constants import PROJECT_ROOT
+
         touch_marker(run_dir / PHASE_MARKERS["test"])
         _save_test_predictions(artifacts.model, run_dir / "predictions" / "test")
+        git_sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=PROJECT_ROOT, text=True
+        ).strip()
+        (run_dir / "summary.json").write_text(
+            json.dumps(
+                {
+                    "metrics": metrics,
+                    "git_sha": git_sha,
+                    "status": "ok",
+                    "best_ckpt": str(ckpt_file.relative_to(run_dir)) if ckpt_file else None,
+                },
+                indent=2,
+                default=str,
+            )
+        )
     log.info("stage_complete", stage=stage_name)
     return metrics or {}

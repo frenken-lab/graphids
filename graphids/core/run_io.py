@@ -97,10 +97,7 @@ def load_metrics(config: Mapping[str, Any] | str | Path) -> pl.DataFrame:
     for line in path.read_text().splitlines():
         if not line.strip():
             continue
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+        rec = json.loads(line)
         for rm in rec.get("resource_metrics", []):
             for sm in rm.get("scope_metrics", []):
                 for m in sm.get("metrics", []):
@@ -139,10 +136,7 @@ def load_traces(config: Mapping[str, Any] | str | Path) -> pl.DataFrame:
     for line in path.read_text().splitlines():
         if not line.strip():
             continue
-        try:
-            span = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+        span = json.loads(line)
         rows.append(
             {
                 "name": span.get("name"),

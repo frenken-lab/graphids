@@ -446,9 +446,10 @@ class Trainer:
 
     def _load_ckpt_into(self, ckpt_path: str, model: nn.Module) -> dict:
         """Load ckpt, restore weights, fire ``on_load_checkpoint``. Return raw dict."""
+        from graphids._fs import atomic_load
         from graphids.core.callbacks import _strip_orig_mod_prefix
 
-        ckpt = torch.load(ckpt_path, map_location=self._device, weights_only=True)
+        ckpt = atomic_load(ckpt_path, map_location=self._device, weights_only=True)
         state = ckpt["state_dict"] if "state_dict" in ckpt else ckpt
         # Align ckpt to target's compile-prefix convention. Save strips
         # ``_orig_mod.``; target may or may not have it depending on whether

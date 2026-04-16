@@ -13,6 +13,7 @@ Lifecycle API (called by __main__.py and actors.py):
 from __future__ import annotations
 
 import atexit
+import json
 import logging
 import os
 import sys
@@ -214,6 +215,19 @@ def init_providers(
 
     atexit.register(lambda: (tp.shutdown(), _providers.meter.shutdown(), lp.shutdown()))
 
+    # Trampoline SLURM signals to sys.exit so the atexit registered
+    # above fires before the process dies. SIGUSR1 is what
+    # ``--signal=B:USR1@300`` delivers 5 minutes before wall; SIGTERM
+    # covers ``scancel`` and kernel TERM. SIGKILL bypasses Python — no
+    # defense.
+    import signal as _sig
+
+    def _on_term(signum, _frame):
+        sys.exit(128 + signum)
+
+    for s in (_sig.SIGUSR1, _sig.SIGTERM):
+        _sig.signal(s, _on_term)
+
     _providers = OTelProviders(tracer=tp, meter=mp, logger=lp)
     return _providers
 
@@ -224,8 +238,13 @@ def _jsonl_span(span) -> str:
 
 
 def _jsonl_metrics(data) -> str:
-    """One-line JSON per flush for metrics.jsonl (ndjson)."""
-    return data.to_json(indent=None) + "\n"
+    """One-line JSON per flush for metrics.jsonl (ndjson).
+
+    OTel SDK 1.40's ``MetricsData.to_json(indent=...)`` ignores the arg
+    and always pretty-prints — parse and re-dump compactly so each
+    export is a single NDJSON record.
+    """
+    return json.dumps(json.loads(data.to_json()), separators=(",", ":")) + "\n"
 
 
 def wire_file_exporters(run_dir: Path) -> None:
@@ -241,7 +260,14 @@ def wire_file_exporters(run_dir: Path) -> None:
     if p._file_span_processor is not None:
         p._file_span_processor.shutdown()
 
-    p._file_span_processor = SimpleSpanProcessor(
+    # BatchSpanProcessor (vs SimpleSpanProcessor) buffers spans on a
+    # background thread and flushes on ``shutdown()`` — paired with the
+    # ``try/finally`` shutdown around ``trainer.fit()`` in ``stage.train``,
+    # this means a normally-exiting or exception-raising fit always
+    # flushes its spans, where the prior simple processor only flushed at
+    # span-end (and so left empty traces.jsonl files when SLURM SIGTERM'd
+    # mid-fit before the master ``training.fit`` span closed).
+    p._file_span_processor = BatchSpanProcessor(
         ConsoleSpanExporter(
             out=open(run_dir / "traces.jsonl", "a"),  # noqa: SIM115
             formatter=_jsonl_span,

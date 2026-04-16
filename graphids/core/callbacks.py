@@ -7,7 +7,6 @@ curriculum callbacks need minimal changes.
 from __future__ import annotations
 
 import operator
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -99,6 +98,8 @@ class ModelCheckpoint(CallbackBase):
         )
 
     def on_train_epoch_end(self, trainer: Trainer, model: torch.nn.Module) -> None:
+        from graphids._fs import atomic_save
+
         current = trainer.callback_metrics.get(self.monitor)
         if current is None:
             return
@@ -109,13 +110,12 @@ class ModelCheckpoint(CallbackBase):
         ckpt = _build_checkpoint(trainer, model)
 
         if self.save_last:
-            last_path = dirpath / "last.ckpt"
-            _atomic_save(ckpt, last_path)
+            atomic_save(ckpt, dirpath / "last.ckpt")
 
         if self._compare(current, self.best_score):
             self.best_score = current
             best_path = dirpath / f"{self.filename}.ckpt"
-            _atomic_save(ckpt, best_path)
+            atomic_save(ckpt, best_path)
             self.best_model_path = str(best_path)
 
 
@@ -191,18 +191,6 @@ def _build_checkpoint(trainer: Trainer, model: torch.nn.Module) -> dict[str, Any
     if trainer._schedulers:
         ckpt["lr_schedulers"] = [s.state_dict() for s in trainer._schedulers if s is not None]
     return ckpt
-
-
-def _atomic_save(obj: Any, path: Path) -> None:
-    """Write checkpoint atomically via temp + fsync + rename (NFS safe)."""
-    tmp = path.with_suffix(".tmp")
-    torch.save(obj, str(tmp))
-    fd = os.open(str(tmp), os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    tmp.rename(path)
 
 
 # ---------------------------------------------------------------------------

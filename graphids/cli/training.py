@@ -9,6 +9,7 @@ and GPU-reset semantics.
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,12 @@ def _prepare(
     resolved = ResolvedConfig.from_rendered(rendered, stage_name=config.stem)
     if resolved.run_dir is not None:
         wire_file_exporters(resolved.run_dir)
+        resolved.run_dir.joinpath("resolved.json").write_text(
+            resolved.validated.model_dump_json(indent=2)
+        )
+        resolved.run_dir.joinpath("overrides.json").write_text(
+            json.dumps({"tla": dict(tla or []), "set": list(overrides or [])}, indent=2)
+        )
     artifacts = build(resolved)
     return resolved, artifacts
 

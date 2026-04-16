@@ -16,7 +16,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
-import torch
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Per-model artifact toggles. Fusion's ``fusion_policy`` flag is only
@@ -66,7 +65,9 @@ def derive_model_type(ckpt_path: str | Path) -> str:
     path = Path(ckpt_path)
     if not path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {path}")
-    ckpt = torch.load(str(path), map_location="cpu", weights_only=True)
+    from graphids._fs import atomic_load
+
+    ckpt = atomic_load(path, map_location="cpu", weights_only=True)
     class_path = ckpt.get("class_path")
     if not class_path:
         raise KeyError(
@@ -124,7 +125,9 @@ class AnalysisSpec(BaseModel):
             raise ValueError("cka=true requires cka_teacher_ckpt")
         if self.cka and self.model_type != "gat":
             # CKA uses model(g, return_intermediate=True), only GATWithJK supports this
-            raise ValueError(f"cka=true only supported for model_type='gat', got {self.model_type!r}")
+            raise ValueError(
+                f"cka=true only supported for model_type='gat', got {self.model_type!r}"
+            )
         if self.fusion_policy and not self.vgae_ckpt_path:
             raise ValueError("fusion_policy=true requires vgae_ckpt_path")
         if self.fusion_policy and not self.gat_ckpt_path:

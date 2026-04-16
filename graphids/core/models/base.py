@@ -441,7 +441,9 @@ def safe_load_checkpoint(model_type: str, ckpt_path, *, map_location="cpu"):
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
-    ckpt = torch.load(str(ckpt_path), map_location=map_location, weights_only=True)
+    from graphids._fs import atomic_load
+
+    ckpt = atomic_load(ckpt_path, map_location=map_location, weights_only=True)
     dotted = ckpt.get("class_path")
     if not dotted:
         raise KeyError(
