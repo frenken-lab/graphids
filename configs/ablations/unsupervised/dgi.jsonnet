@@ -14,7 +14,11 @@ function(
     run_dir=paths.run_dir(lake_root, dataset, 'unsupervised', 'dgi', seed),
     conv_type=conv_type,
     model_type='dgi',
-    trainer_overrides=trainer_overrides,
+    // DGI contrastive task converges ~3x slower than VGAE reconstruction:
+    // val_loss=1.37 (random) until epoch ~165, then descends to 0.75 still
+    // dropping at epoch 299. CosineAnnealingLR is near-zero by then. Bump
+    // T_max so peak LR persists through the breakthrough phase.
+    trainer_overrides={ 'trainer.max_epochs': 800 } + trainer_overrides,
     stage_overrides=stage_overrides,
     ckpt_path=ckpt_path,
   )

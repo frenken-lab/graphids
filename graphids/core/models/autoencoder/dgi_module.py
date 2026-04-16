@@ -17,8 +17,17 @@ from .dgi import GraphInfomaxModel
 class DGIModule(GraphModuleBase):
     """DGI contrastive training: maximize node-summary mutual information.
 
-    Anomaly scoring at test time uses discriminator confidence:
-    low discriminator agreement -> anomalous graph.
+    Training: DGI contrastive loss on (pos_z, neg_z, summary) triples.
+    Anomaly scoring at test time: OCGIN-style L2 distance between the pooled
+    node embedding of a query graph and the centroid of training-normal
+    pooled embeddings (Zhao & Akoglu 2021, arxiv:2103.04494). The
+    discriminator-confidence score used in DGI's original formulation is a
+    known-bad signal for graph-level anomaly detection — it saturates to ~1
+    on all normal-ish graphs once the contrastive loss converges, collapsing
+    the score range for both benign and attack windows. Centroid distance
+    in latent space preserves separability because the encoder's contrastive
+    objective produces representations where out-of-distribution graphs
+    drift away from the training manifold.
     """
 
     def __init__(
@@ -65,6 +74,11 @@ class DGIModule(GraphModuleBase):
         self.model = None
         self._init_threshold_metrics()
         self.test_metrics = binary_test_metrics()
+        # OCGIN scoring head: centroid of training-normal pooled embeddings.
+        # Populated by calibrate_svdd_center() at on_fit_end; persists through
+        # state_dict so test/analyze paths pick it up automatically.
+        self.register_buffer("svdd_center", torch.zeros(latent_dim))
+        self.register_buffer("svdd_calibrated", torch.tensor(False))
         if num_ids > 0:
             self._build()
 
@@ -140,20 +154,58 @@ class DGIModule(GraphModuleBase):
         loss = self.model.dgi_loss(pos_z, neg_z, summary, batch.batch)
         self.log("val_loss", loss, batch_size=batch.num_graphs)
 
-    def _per_graph_scores(self, batch):
-        """Compute per-graph anomaly scores (1 - mean discriminator confidence)."""
-        from torch_geometric.utils import scatter
+    def _pooled_latent(self, batch) -> torch.Tensor:
+        """Per-graph pooled latent: mean(encode(x)) over nodes in each graph."""
+        from torch_geometric.nn import global_mean_pool
 
-        pos_z = self.model.encode(
+        z = self.model.encode(
             batch.x,
             batch.edge_index,
             getattr(batch, "edge_attr", None),
             batch.batch,
             batch.node_id,
         )
-        summary = self.model.summarize(pos_z, batch.batch)
-        node_scores = self.model.discriminate(pos_z, summary, batch.batch)
-        return 1 - scatter(node_scores, batch.batch, dim=0, reduce="mean")
+        return global_mean_pool(z, batch.batch)  # [num_graphs, latent_dim]
+
+    def _per_graph_scores(self, batch):
+        """OCGIN score: L2 distance from SVDD centroid in pooled-latent space.
+
+        Requires ``calibrate_svdd_center`` to have run at least once; raises
+        if called before calibration (no silent fallback to discriminator
+        scoring — that's the failure mode we're fixing).
+        """
+        if not bool(self.svdd_calibrated.item()):
+            raise RuntimeError(
+                "DGIModule.svdd_center is uncalibrated. Run "
+                "calibrate_svdd_center(train_loader, device) after fit or "
+                "load a checkpoint with svdd_calibrated=True."
+            )
+        pooled = self._pooled_latent(batch)
+        return (pooled - self.svdd_center).pow(2).sum(dim=1)
+
+    @torch.no_grad()
+    def calibrate_svdd_center(self, train_loader, device) -> None:
+        """Fit ``svdd_center`` = mean of pooled latents over training-normal graphs.
+
+        Runs a single pass over ``train_loader`` in eval mode. The caller is
+        responsible for passing the benign-only loader (the autoencoder stage
+        already filters with ``label_filter='benign'``).
+        """
+        was_training = self.training
+        self.eval()
+        total = torch.zeros(self.hparams.latent_dim, device=device)
+        count = 0
+        for batch in train_loader:
+            batch = batch.clone().to(device)
+            pooled = self._pooled_latent(batch)
+            total += pooled.sum(dim=0)
+            count += pooled.shape[0]
+        if count == 0:
+            raise RuntimeError("calibrate_svdd_center: empty train loader")
+        self.svdd_center.copy_(total / count)
+        self.svdd_calibrated.fill_(True)
+        if was_training:
+            self.train()
 
     def test_step(self, batch, _idx, dataloader_idx=0):
         scores = self._per_graph_scores(batch)

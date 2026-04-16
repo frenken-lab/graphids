@@ -143,6 +143,60 @@ def _describe(t: torch.Tensor) -> dict[str, float | int]:
     }
 
 
+def _slice_rows_for_graphs(cum_slices: torch.Tensor, graph_idx: torch.Tensor) -> torch.Tensor:
+    """Flatten ragged per-graph row indices into a single long row-index tensor.
+
+    ``cum_slices`` is the cumulative offset tensor stored in ``slices[key]``
+    (shape ``(num_graphs + 1,)``). Returns a ``(sum_of_widths,)`` long tensor
+    suitable for ``tensor.index_select(0, rows)``.
+    """
+    starts = cum_slices[graph_idx].to(torch.long)
+    ends = cum_slices[graph_idx + 1].to(torch.long)
+    widths = ends - starts
+    # Repeat starts by each graph's width, then add intra-graph offsets.
+    base = torch.repeat_interleave(starts, widths)
+    offsets = torch.arange(int(widths.sum().item()), dtype=torch.long)
+    offsets -= torch.repeat_interleave(widths.cumsum(0) - widths, widths)
+    return base + offsets
+
+
+def _compute_scaler(
+    data: Data, slices: dict, num_graphs: int, val_fraction: float, seed: int
+) -> dict[str, torch.Tensor]:
+    """Fit per-column (mean, std) on the train partition only.
+
+    Uses the same seeded permutation as ``_apply_train_val_split`` so the
+    val rows are excluded from the scaler fit — any other choice leaks val
+    statistics into training.
+    """
+    gen = torch.Generator().manual_seed(seed)
+    perm = torch.randperm(num_graphs, generator=gen)
+    n_val = int(num_graphs * val_fraction)
+    train_idx = perm[n_val:]
+
+    scaler: dict[str, torch.Tensor] = {}
+    for key in ("x", "edge_attr"):
+        if not hasattr(data, key) or getattr(data, key) is None:
+            continue
+        tensor = getattr(data, key)
+        rows = _slice_rows_for_graphs(slices[key], train_idx)
+        train_rows = tensor.index_select(0, rows).to(torch.float32)
+        scaler[f"{key}_mean"] = train_rows.mean(dim=0)
+        scaler[f"{key}_std"] = train_rows.std(dim=0).clamp_min(1e-6)
+        del train_rows
+    return scaler
+
+
+def _apply_scaler(data: Data, scaler: dict[str, torch.Tensor]) -> None:
+    """Apply (mean, std) z-score to ``data.x`` and ``data.edge_attr`` in place."""
+    for key in ("x", "edge_attr"):
+        mean_key, std_key = f"{key}_mean", f"{key}_std"
+        if mean_key not in scaler:
+            continue
+        tensor = getattr(data, key)
+        setattr(data, key, ((tensor - scaler[mean_key]) / scaler[std_key]).to(tensor.dtype))
+
+
 def parse_payload(lf: pl.LazyFrame) -> pl.LazyFrame:
     """Parse hex payload column into 8 byte columns + Shannon entropy.
 
@@ -273,6 +327,22 @@ class CANBusDataset(InMemoryDataset):
             if Path(self.processed_paths[0]).exists() and marker.exists():
                 return
             data, slices, num_arb_ids, num_graphs, num_raw = self._build_graphs()
+            # Z-score standardize x + edge_attr. Train tensor fits the scaler
+            # on train-only indices (val leakage guard) and saves it; test
+            # tensors load that scaler so inference-time features are in the
+            # same coordinate system as training.
+            scaler_path = Path(self.processed_dir) / "feature_scaler.pt"
+            if self.split == "train":
+                scaler = _compute_scaler(data, slices, num_graphs, self.val_fraction, self.seed)
+                torch.save(scaler, scaler_path)
+            else:
+                if not scaler_path.exists():
+                    raise FileNotFoundError(
+                        f"feature_scaler.pt missing at {scaler_path}; "
+                        "build the 'train' split before any 'test' split"
+                    )
+                scaler = torch.load(scaler_path, map_location="cpu", weights_only=False)
+            _apply_scaler(data, scaler)
             tensor_path = Path(self.processed_paths[0])
             atomic_save([data, slices], tensor_path)
             (Path(self.processed_dir) / "num_arb_ids.txt").write_text(str(num_arb_ids))

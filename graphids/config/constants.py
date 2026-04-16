@@ -84,7 +84,7 @@ assert set(get_args(ModelType)) == VALID_MODEL_TYPES, (
 # Layer 1 — project constants (no env vars)
 # ---------------------------------------------------------------------------
 
-PREPROCESSING_VERSION: str = "8.0.0"
+PREPROCESSING_VERSION: str = "9.0.0"
 CKPT_SUBPATH: str = "checkpoints/best_model.ckpt"
 LAST_CKPT_SUBPATH: str = "checkpoints/last.ckpt"
 PHASE_MARKERS: dict[str, str] = {
