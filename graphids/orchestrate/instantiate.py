@@ -1,11 +1,10 @@
 """Instantiation — Layer 3 of the orchestrate stack.
 
-Flat module (no class wrapper): each verb is a module-level function.
-``build_run`` composes model + datamodule + trainer + callbacks +
-loggers from a rendered config dict into an ``InstantiatedRun``.
-Every ``{class_path, init_args}`` block is resolved via ``importlib``,
-with signature-filtered kwargs so jsonnet can pass fields the target
-class doesn't accept without raising ``TypeError``.
+``build_run`` is the only public entry point. It composes model +
+datamodule + trainer + callbacks + loggers from a rendered config dict
+into an ``InstantiatedRun``. Every ``{class_path, init_args}`` block is
+resolved via ``importlib``, with signature-filtered kwargs so jsonnet
+can pass fields the target class doesn't accept without raising.
 """
 
 from __future__ import annotations
@@ -24,23 +23,7 @@ from graphids.orchestrate.config import InstantiatedRun
 
 # Derived once at import time so adding a field to TrainerConfig
 # doesn't require editing this module.
-_TRAINER_CONFIG_KEYS: frozenset[str] = frozenset(
-    f.name for f in dataclasses.fields(TrainerConfig)
-)
-
-# Re-export for existing tests that import filter_kwargs from this module.
-__all__ = [
-    "build_block",
-    "build_callbacks",
-    "build_datamodule",
-    "build_loggers",
-    "build_model",
-    "build_model_from_config",
-    "build_run",
-    "build_trainer",
-    "filter_kwargs",
-    "import_class",
-]
+_TRAINER_CONFIG_KEYS: frozenset[str] = frozenset(f.name for f in dataclasses.fields(TrainerConfig))
 
 
 def _resolve_nested(value: Any) -> Any:
@@ -53,14 +36,14 @@ def _resolve_nested(value: Any) -> Any:
     """
     if isinstance(value, dict):
         if "class_path" in value:
-            return build_block(value)
+            return _build_block(value)
         return {k: _resolve_nested(v) for k, v in value.items()}
     if isinstance(value, list):
         return [_resolve_nested(v) for v in value]
     return value
 
 
-def build_block(block: dict[str, Any]) -> Any:
+def _build_block(block: dict[str, Any]) -> Any:
     """Instantiate a ``{class_path, init_args}`` dict (recursing into nested blocks)."""
     klass = import_class(block["class_path"])
     init_args = block.get("init_args") or {}
@@ -68,25 +51,18 @@ def build_block(block: dict[str, Any]) -> Any:
     return klass(**resolved)
 
 
-def build_model(class_path: str, init_args: dict[str, Any]) -> nn.Module:
+def _build_model(merged: dict[str, Any]) -> nn.Module:
+    """Build model from rendered config with loss injection + signature filtering."""
+    class_path = merged["model"]["class_path"]
+    init_args = inject_loss_fn(
+        merged["model"].get("init_args") or {},
+        class_path=class_path,
+    )
     klass = import_class(class_path)
     return klass(**filter_kwargs(klass, init_args))
 
 
-def build_model_from_config(merged: dict[str, Any]) -> nn.Module:
-    """Build model from rendered config with loss injection."""
-    init_args = inject_loss_fn(
-        merged["model"].get("init_args") or {},
-        class_path=merged["model"]["class_path"],
-    )
-    return build_model(merged["model"]["class_path"], init_args)
-
-
-def build_datamodule(merged: dict[str, Any]) -> Any:
-    return build_block(merged["data"])
-
-
-def build_callbacks(merged: dict[str, Any]) -> list:
+def _build_callbacks(merged: dict[str, Any]) -> list:
     """Instantiate the callback list from ``trainer.callbacks``.
 
     ``ModelCheckpoint.dirpath`` is wired in jsonnet from ``run_dir``
@@ -103,7 +79,7 @@ def build_callbacks(merged: dict[str, Any]) -> list:
     from graphids.core.callbacks import VRAMDriftCallback
 
     entries = (merged.get("trainer") or {}).get("callbacks") or []
-    callbacks = [build_block(entry) for entry in entries]
+    callbacks = [_build_block(entry) for entry in entries]
     if torch.cuda.is_available():
         callbacks.append(
             VRAMDriftCallback(threshold=get_settings().vram_drift_threshold),
@@ -111,21 +87,21 @@ def build_callbacks(merged: dict[str, Any]) -> list:
     return callbacks
 
 
-def build_loggers(merged: dict[str, Any]) -> list | bool | None:
+def _build_loggers(merged: dict[str, Any]) -> list | bool | None:
     logger_cfg = (merged.get("trainer") or {}).get("logger")
     if isinstance(logger_cfg, (list, dict)):
         entries = logger_cfg if isinstance(logger_cfg, list) else [logger_cfg]
-        return [build_block(e) for e in entries]
+        return [_build_block(e) for e in entries]
     return logger_cfg  # None or bool
 
 
-def build_trainer(merged: dict[str, Any]) -> Trainer:
+def _build_trainer(merged: dict[str, Any]) -> Trainer:
     trainer_dict = merged.get("trainer") or {}
     cfg_kwargs = {k: v for k, v in trainer_dict.items() if k in _TRAINER_CONFIG_KEYS}
     return Trainer(
         config=TrainerConfig(**cfg_kwargs),
-        callbacks=build_callbacks(merged),
-        logger=build_loggers(merged),
+        callbacks=_build_callbacks(merged),
+        logger=_build_loggers(merged),
     )
 
 
@@ -142,7 +118,7 @@ def build_run(
         seed_everything(merged["seed_everything"])
 
     return InstantiatedRun(
-        model=build_model_from_config(merged),
-        datamodule=build_datamodule(merged),
-        trainer=build_trainer(merged),
+        model=_build_model(merged),
+        datamodule=_build_block(merged["data"]),
+        trainer=_build_trainer(merged),
     )

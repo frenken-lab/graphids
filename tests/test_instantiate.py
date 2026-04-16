@@ -22,8 +22,9 @@ import inspect
 
 import pytest
 
+from graphids._reflect import filter_kwargs
 from graphids.config.jsonnet import render
-from graphids.orchestrate.instantiate import build_run, filter_kwargs
+from graphids.orchestrate.instantiate import build_run
 
 _STAGE_CASES: list[tuple[str, dict]] = [
     ("autoencoder", {}),

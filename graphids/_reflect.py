@@ -1,9 +1,8 @@
 """Reflection helpers for class-path instantiation.
 
-Used by ``orchestrate.instantiate`` (to build the full trainer stack)
-and ``core.models.factory`` (for ad-hoc model instantiation from a
-``(model_type, scale)`` spec). One source of truth so the two code
-paths can't diverge on VAR_KEYWORD/VAR_POSITIONAL edge cases.
+Used by ``orchestrate.instantiate`` to build the trainer stack from
+rendered jsonnet. Kept out of orchestrate/ so analyzer / fusion-state
+extraction paths can share the same VAR_KEYWORD/VAR_POSITIONAL handling.
 """
 
 from __future__ import annotations
@@ -36,7 +35,8 @@ def _accepted_kwargs(cls: type) -> frozenset[str] | None:
     if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
         return None
     return frozenset(
-        name for name, p in sig.parameters.items()
+        name
+        for name, p in sig.parameters.items()
         if name != "self" and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)
     )
 
