@@ -10,10 +10,6 @@ Data:
   rebuild-caches                   — rebuild preprocessed graph caches
   extract-fusion-states            — extract VGAE+GAT latent states for fusion
 
-Catalog:
-  catalog-query                    — filter rows from the cross-run parquet catalog
-  catalog-rebuild                  — backfill catalog rows from existing summary.json files
-
 SLURM:
   submit-profile                   — print resource profile (consumed by submit.sh)
 """
@@ -25,7 +21,6 @@ from __future__ import annotations
 # so this module has no import-time side effects beyond decorator registration.
 # ``submit-profile`` lives directly in ``app.py`` (no domain coupling).
 import graphids.cli.analysis  # noqa: F401
-import graphids.cli.catalog  # noqa: F401
 import graphids.cli.data  # noqa: F401
 import graphids.cli.training  # noqa: F401
 from graphids.cli.app import app

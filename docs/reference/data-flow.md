@@ -86,8 +86,8 @@ Storage hierarchy:
 |  6. GPU forward + backward                                         |
 |     VGAE: ~10ms  |  GAT: ~25ms                                     |
 |                                                                     |
-|  WRITES: OTelTrainingCallback (spans + VRAM gauges),                |
-|          OTelTrainingLogger (metrics), ModelCheckpoint              |
+|  WRITES: MLflowTrainingCallback (per-epoch metrics, peak VRAM),     |
+|          ModelCheckpoint (best/last ckpts + SHA256 sidecar)         |
 +---------------------------------------------------------------------+
 
 CURRICULUM PATH (sampler="curriculum"):

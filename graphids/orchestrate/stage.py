@@ -17,9 +17,6 @@ no markers, no file exporters, no ckpt_path hand-off to ``.test()``.
 from __future__ import annotations
 
 import gc
-import json
-import subprocess
-import time
 from pathlib import Path
 from typing import Any
 
@@ -27,8 +24,7 @@ import torch
 
 from graphids._fs import touch_marker
 from graphids._otel import get_logger
-from graphids.catalog import Catalog
-from graphids.config.constants import LAKE_ROOT, PHASE_MARKERS, PROJECT_ROOT
+from graphids.config.constants import PHASE_MARKERS
 from graphids.orchestrate.config import InstantiatedRun, ResolvedConfig
 from graphids.orchestrate.instantiate import build_run
 
@@ -94,23 +90,6 @@ def _save_test_predictions(model: Any, out_dir: Path) -> None:
     log.info("save_test_predictions", sets=list(preds.keys()), dir=str(out_dir))
 
 
-def _git_sha() -> str:
-    return subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=PROJECT_ROOT, text=True
-    ).strip()
-
-
-def _write_summary(run_dir: Path, metrics: dict[str, Any], ckpt_file: Path | None) -> None:
-    """Write ``summary.json`` — final metrics + git SHA + best-ckpt relpath."""
-    payload = {
-        "metrics": metrics,
-        "git_sha": _git_sha(),
-        "status": "ok",
-        "best_ckpt": str(ckpt_file.relative_to(run_dir)) if ckpt_file else None,
-    }
-    (run_dir / "summary.json").write_text(json.dumps(payload, indent=2, default=str))
-
-
 def build(resolved: ResolvedConfig) -> InstantiatedRun:
     """Instantiate trainer + model + datamodule from a resolved config.
 
@@ -133,18 +112,27 @@ def train(
 ) -> Path | None:
     """Fit the model and return the canonical checkpoint path.
 
-    Touches the train phase marker on success. Caller is expected to
-    have wired OTel file exporters for this stage's run_dir already.
+    Starts the MLflow run before fit so ``MLflowTrainingCallback`` has an
+    active run to log per-epoch metrics into; the callback closes it at
+    ``on_fit_end`` (or ``on_exception``). ``end_training_run`` in finally
+    is a safety net for callback-raises-during-teardown.
     """
+    from graphids._mlflow import end_training_run, start_training_run
+
     stage_name = resolved.stage_name
     run_dir = resolved.run_dir
     ckpt_file = resolved.ckpt_file
     log.info("stage_train", stage=stage_name, run_dir=str(run_dir) if run_dir else "")
-    artifacts.trainer.fit(
-        artifacts.model,
-        datamodule=artifacts.datamodule,
-        ckpt_path=resume_from,
-    )
+    if run_dir is not None:
+        start_training_run(run_dir, resolved.validated.model_dump())
+    try:
+        artifacts.trainer.fit(
+            artifacts.model,
+            datamodule=artifacts.datamodule,
+            ckpt_path=resume_from,
+        )
+    finally:
+        end_training_run()
     if run_dir is not None:
         touch_marker(run_dir / PHASE_MARKERS["train"])
         pred_dir = run_dir / "predictions"
@@ -165,37 +153,28 @@ def evaluate(
     """Run the test phase and return metrics.
 
     On success, writes the test-phase marker, the per-test-set prediction
-    sidecars, ``summary.json``, and the catalog row (runs + metrics in
-    one transaction on the lake-wide DuckDB file). Timestamps are stamped
-    here — ``traces.jsonl`` remains authoritative for spans, but the
-    catalog row stands alone.
+    sidecars, and the MLflow run row (params + final scalars + tags).
+    ``traces.jsonl`` remains authoritative for timeseries / spans; MLflow
+    is the queryable index for cross-run comparison.
     """
     stage_name = resolved.stage_name
     run_dir = resolved.run_dir
     ckpt_file = resolved.ckpt_file
     log.info("stage_test", stage=stage_name)
-    started_at_ns = time.time_ns()
     metrics = artifacts.trainer.test(
         artifacts.model,
         datamodule=artifacts.datamodule,
         ckpt_path=str(ckpt_file) if ckpt_file is not None else None,
     )
-    ended_at_ns = time.time_ns()
     if run_dir is not None:
+        from graphids._mlflow import log_test_run
+
         touch_marker(run_dir / PHASE_MARKERS["test"])
         _save_test_predictions(artifacts.model, run_dir / "predictions" / "test")
-        _write_summary(run_dir, metrics or {}, ckpt_file)
-        run_id = Catalog(LAKE_ROOT).record_run(
+        log_test_run(
             run_dir,
+            resolved_config=resolved.validated.model_dump(),
             metrics=metrics or {},
-            git_sha=_git_sha(),
-            status="ok",
-            started_at_ns=started_at_ns,
-            ended_at_ns=ended_at_ns,
         )
-        if run_id is None:
-            log.info("catalog_skip_non_ablation", run_dir=str(run_dir))
-        else:
-            log.info("catalog_recorded_run", run_id=run_id)
     log.info("stage_complete", stage=stage_name)
     return metrics or {}

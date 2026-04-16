@@ -111,16 +111,44 @@ PLAN.md is current-session work only. Historical session changelogs live in
 git log; durable verdicts live in `docs/decisions/README.md`; living architecture
 lives in `docs/reference/`.
 
+## Calibration priors — set_01 seed=42 unsupervised (Cardinal H100)
+
+Harvested 2026-04-16 from `traces.jsonl` + slurm err logs for the latest
+completed run per model. These rows are pre-MLflow (no `resolved.json`,
+no DuckDB row); re-runs under the new sink should reproduce the same
+cell and supersede these numbers.
+
+| Model | Jobid | Epochs (run/max) | Wall | train_loss | val_loss | bpn_node | budget_nodes | t_fwd (ms) | End state |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| VGAE | 8570663 | 1182 / 1200 | 45:31 | 0.676 | 0.663 | 9,019 | 10,469,479 | 5.7 | early-stopped @ep 1181 |
+| GAE  | 8570664 | 1200 / 1200 | 45:34 | 0.649 | 0.639 | 9,019 | 10,469,479 | 5.6 | max_epochs reached |
+| DGI  | 8569086 |  800 /  800 | 31:05 | 0.0045 | 0.0010 | 9,707 |  9,727,437 | 5.7 | max_epochs reached |
+
+All 3: Cardinal `debug` partition, 1× H100 94 GB, `conv_type=gatv2`,
+`scale=small`, `binding=memory`, `bwd_mult=1.0` (VGAE/GAE) / `1.05` (DGI).
+VRAM drift warning fires at epoch 1 in all 3 (21–23% below baseline free);
+benign — allocator reshape, not a leak. DGI loss is on a different scale
+(InfoNCE discriminator, not reconstruction) — don't cross-compare with
+VGAE/GAE loss numbers.
+
+Priors for next runs:
+- Walltime: 50 min covers VGAE/GAE at max_epochs=1200 with headroom.
+  DGI at max_epochs=800 fits in 35 min.
+- Memory binding is dataset-capped, not hardware-capped: set_01 train
+  (2.64 M nodes) already fits one batch under 10 M budget. The probe-cal
+  win will show on GAT (unfiltered train, ~5× nodes) and on set_02/03/04.
+- VGAE hit early-stopping at 98% of max_epochs → consider bumping
+  `max_epochs` to 1500+ or relaxing `patience` before the re-run so
+  convergence isn't truncated by the budget.
+
 ## Active (carried from prior sessions)
 
-- **Re-run seed=42 unsupervised cells under new format** — in-flight Cardinal
-  jobs 8557733 (VGAE), 8557737 (GAE), 8557738 (DGI, PD QOSMax) were submitted
-  before two late-session changes: (a) `_otel.py` switch to NDJSON formatters,
-  (b) lake_root fix pointing paths at `/fs/ess/PAS1266/graphids/dev/rf15`.
-  Those three will finish writing pretty-print JSON to
-  `/users/PAS2022/rf15/graphids/experimentruns/...`. Plan: let them finish
-  (data still useful during current session), re-run under new format post
-  training, move or rsync to lake.
+- **Re-run seed=42 unsupervised cells under new format** — prior Cardinal
+  jobs (VGAE 8570663, GAE 8570664, DGI 8569086) completed before the
+  Phase 1+2 run-dir sidecars and MLflow sink shipped. No `resolved.json`,
+  no DuckDB catalog row, no MLflow row. Re-run under the new sink to
+  populate MLflow and validate the sink end-to-end. Priors table above
+  has target walltime + expected metrics.
 - **Calibrate fit/fit-long time budgets on set_01** — `fit-long` is 4 h/gpu
   static; set_01 small VGAE on H100 took ~23 min. Pitzer V100 will be
   different. Re-fit once a few real set_01 runs land.

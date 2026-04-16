@@ -1,66 +1,64 @@
 # Observability & Profiling
 
-> Updated: 2026-04-09 | Environment: OSC Pitzer, V100 (16 GB), CUDA 12.6, PyTorch 2.8, PyG 2.7
+> Updated: 2026-04-16 | Environment: OSC Pitzer, V100 (16 GB), CUDA 12.6, PyTorch 2.8, PyG 2.7
 
 ## Architecture
 
-OpenTelemetry is the single observability layer. Three signal types share one `Resource` and use the same exporter pattern.
+Two stores: **MLflow** for run-level metadata + scalar metrics timeseries + device telemetry, **OTel** for spans + structured-log events. They share a `Resource` populated by `SlurmResourceDetector` and an identity-derived `run_name` that links rows across both.
 
 **Phase A** (process startup — `graphids/_otel.py:init_providers`, called from the Typer `@app.callback()` in `graphids/cli/app.py`):
 - `TracerProvider` + optional Wandb Weave OTLP exporter (gated on `WANDB_API_KEY`)
-- `MeterProvider` placeholder (replaced by Phase B once `run_dir` is known)
 - `LoggerProvider` -> `ConsoleLogRecordExporter(out=stderr)` + `LoggingHandler` bridges stdlib logging -> OTel
-- `SlurmResourceDetector` merges SLURM env vars (`SLURM_JOB_ID`, partition, nodelist, etc.) into the shared `Resource`
+- `SlurmResourceDetector` merges SLURM env vars into the shared `Resource`
 
-**Phase B** (after `run_dir` is known — `graphids/_otel.py:wire_file_exporters`, called from `cli/training.py::_prepare` and `orchestrate/stage.py::train`):
-- `SimpleSpanProcessor` -> `ConsoleSpanExporter(out=run_dir/traces.jsonl)`
-- `PeriodicExportingMetricReader` (10s) -> `ConsoleMetricExporter(out=run_dir/metrics.jsonl)`
+**Phase B** (after `run_dir` is known — `graphids/_otel.py:wire_file_exporters`, called from `cli/training.py::_prepare`):
+- `BatchSpanProcessor` -> `ConsoleSpanExporter(out=run_dir/traces.jsonl)` — the `training.fit` span + structured-log events
+
+**Phase C** (at fit-start — `graphids/_mlflow.py::start_training_run`, called from `orchestrate/stage.py::train`):
+- Opens MLflow run (SQLite backend at `{lake_root}/mlflow.db`), logs params/tags/cache_digest
+- Enables MLflow system-metrics sampler (background thread, 5s interval) — GPU util, VRAM, CPU, memory, disk, network
+- `MLflowTrainingCallback` appends per-epoch `train_loss`/`val_loss`/`lr`/`early_stop.wait` at `step=epoch`
+- At fit-end: peak VRAM + epochs_run + ckpt SHA256 tag, run closes with status FINISHED (or FAILED on exception)
 
 ## Wired tooling
 
 | Layer | Tool | Where |
 |-------|------|-------|
-| Training metrics | `OTelTrainingLogger` (duck-typed `log_metrics`/`log_hyperparams`) | `configs/_lib/defaults.libsonnet` trainer.logger |
-| Span lifecycle + VRAM + GPU stats | `OTelTrainingCallback` (subclass of `CallbackBase`) | `configs/_lib/defaults.libsonnet` callbacks.otel |
+| Run metadata + scalar metrics | MLflow SQLite backend | `graphids/_mlflow.py` |
+| Per-epoch metrics | `MLflowTrainingCallback` | `configs/_lib/defaults.libsonnet` callbacks.mlflow |
+| Device telemetry (GPU/CPU/mem) | MLflow system-metrics sampler (psutil + nvidia-ml-py) | `_mlflow.start_training_run` |
 | Structured logging | `_StructuredAdapter` -> `LoggingHandler` | `graphids/_otel.py` |
-| Traces (per-run) | `traces.jsonl` via `ConsoleSpanExporter` | `{run_dir}/traces.jsonl` |
-| Metrics (per-run) | `metrics.jsonl` via `ConsoleMetricExporter` | `{run_dir}/metrics.jsonl` |
+| Traces + log events (per-run) | `traces.jsonl` via `ConsoleSpanExporter` | `{run_dir}/traces.jsonl` |
 | Wandb Weave (optional) | OTLP HTTP exporter to `trace.wandb.ai` | `graphids/_otel.py`, gated on `WANDB_API_KEY` |
 | Op-level profiling | PyTorchProfiler (chrome traces) | `scripts/slurm/submit.sh profile` |
-| DuckDB catalog | (removed 2026-04-10 pending redesign) | — |
 | SLURM job accounting | sacct summary + log rotation | `_epilog.sh` |
 | CUDA alloc config | `expandable_segments:True,garbage_collection_threshold:0.8` | `_preamble.sh` |
 | Mixed precision | `precision: 16-mixed` | `configs/_lib/defaults.libsonnet` |
 | Gradient checkpointing | `use_reentrant=False` | `_conv.py` |
 
-## OTelTrainingCallback (`graphids/core/monitoring.py`)
+## MLflowTrainingCallback (`graphids/core/mlflow_callback.py`)
 
-Installed via `defaults.libsonnet callbacks.otel`. Lifecycle:
+Installed via `defaults.libsonnet callbacks.mlflow`. Run lifecycle is owned by `_mlflow.start_training_run` (called from `stage.train` before `trainer.fit`); this callback only writes into the active run.
 
-- `on_fit_start`: opens `training.fit` span; sets `ml.run_dir`, `ml.model_class`, `ml.max_epochs`, identity attrs (stage, dataset, scale, seed, model_type); initializes NVML; discovers upstream `traces.jsonl` files via `vgae_ckpt_path`/`gat_ckpt_path` on the datamodule and records them as OTel span links for cross-stage KD lineage
-- `on_train_batch_start/end`: batch duration histogram, loss histogram, VRAM gauges (allocated + reserved MiB), NVML hardware gauges (GPU utilization %, temperature, power W)
-- `on_train_epoch_end`: span event `epoch.end` with train_loss, val_loss, LR, early_stopping wait count + best score
-- `on_fit_end`: final `callback_metrics` as span attributes, `ml.epochs_run`, `ml.checkpoint.best_path`, status OK
-- `on_exception`: records exception, status ERROR
+- `on_train_epoch_end`: `mlflow.log_metrics({train_loss, val_loss, lr, early_stop.wait, early_stop.best_score}, step=current_epoch)`
+- `on_fit_end`: `log_final_fit(peak_vram_mb, epochs_run, best_ckpt_path, run_dir)` + `end_training_run("FINISHED")`
+- `on_exception`: `end_training_run("FAILED")`
 
-## OTelTrainingLogger (`graphids/core/monitoring.py`)
-
-Installed via `defaults.libsonnet trainer.logger`. Trainer calls `log_metrics` / `log_hyperparams` directly on each entry of `self.loggers` (duck-typed — no abstract base class):
-
-- `log_metrics`: each unique metric name -> cached OTel histogram (instruments created on first use)
-- `log_hyperparams`: flattened params -> span attributes via `hparam.*` prefix
+Device telemetry is captured by MLflow's background system-metrics thread while the run is active — no per-batch NVML hooks needed. Span lifecycle for `training.fit` is a single span created implicitly via `trainer.fit` wrapping; cross-stage KD lineage (VGAE→GAT→fusion) is recoverable via `graphids.ckpt_sha256` tags + upstream ckpt paths stored in downstream `resolved.json`.
 
 ## Storage layers
 
-OTel data in `traces.jsonl`/`metrics.jsonl` is **Layer 1** of a
-three-layer architecture. **Layer 2** is a proposed workflow SQLite
-(`{lake_root}/workflow.db`) for orchestration state (retries, skips,
-mid-flight rows). **Layer 3** is the DuckDB analytics catalog
-(`{lake_root}/catalog/graphids.duckdb`) rebuilt on demand from Layer 1 —
-the old `orchestrate/ops/catalog.py` builder was removed 2026-04-10
-pending redesign. Full schemas, write models, query patterns, and
-implementation plan in
-[`observability-data-layers.md`](observability-data-layers.md).
+- **MLflow run store** (`{lake_root}/mlflow.db` + `mlartifacts/`) — authoritative
+  for run metadata, params, per-epoch scalar metrics, and device telemetry.
+  One fit-phase row (opened at fit-start, closed at fit-end) + one test-phase
+  row (post-hoc sink in `stage.evaluate`), both sharing `run_name =
+  {group}_{variant}_{dataset}_seed{N}[_{cluster}]` and distinguished by the
+  `graphids.phase` tag. Query via `mlflow.search_runs` or
+  `client.get_metric_history(run_id, key)`.
+- **Per-run traces** (`{run_dir}/traces.jsonl`) — OTel spans + structured-log
+  events (`budget_probed`, `vram_drift_detected`, `early_stopping`, etc.).
+  Parsed by `graphids/core/run_io.py::load_traces` (polars NDJSON). Useful
+  for debugging single runs; not a query surface for cross-run analysis.
 
 ## GPU profiling tools
 
@@ -104,13 +102,13 @@ ncu --kernel-name "scatter_mean" --launch-count 5 \
 
 ## Tool decisions (don't re-investigate)
 
-**Adopt**: OpenTelemetry (traces + metrics + logs), DuckDB catalog from traces.jsonl, PyTorchProfiler, nsys (one-off), torch.cuda memory APIs, sacct profiler
+**Adopt**: OpenTelemetry (traces + metrics + logs), MLflow run store (SQLite on GPFS, file artifacts), PyTorchProfiler, nsys (one-off), torch.cuda memory APIs, sacct profiler
 
 **Skip** (with reasons):
 - **nvprof**: deprecated. **ncu**: 10-100x slower, only after nsys finds bad kernel. **DCGM**: needs admin (error -37 conflicts with SLURM GPU accounting).
 - **cuGraph/cugraph-pyg**: graph classification, not sampling. **kvikIO/GDS**: no OSC infra.
 - **cudnn.benchmark**: CNN-only. **channels_last**: image tensors. **TF32**: Ampere+ only. **CUDA Graphs**: variable-size batches.
-- **MLflow**: NFS locking. **Aim**: RocksDB NFS issues. **Neptune**: dead. **DVC**: duplicates staging. **pytorch_memlab**: abandoned.
+- **Aim**: RocksDB NFS issues. **Neptune**: dead. **DVC**: duplicates staging. **pytorch_memlab**: abandoned. **MLflow file-store backend**: deprecated Feb 2026; we use the SQLite backend.
 - **torch.compile `reduce-overhead`**: increases memory. Use default mode only.
 - **wandb (direct dep)**: removed — OTel + optional Weave OTLP. Wandb Weave receives traces when `WANDB_API_KEY` is set.
 

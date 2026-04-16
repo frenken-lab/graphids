@@ -35,6 +35,7 @@ dependencies = [
     "opentelemetry-api>=1.25",
     "opentelemetry-sdk>=1.25",
     "opentelemetry-exporter-otlp-proto-http>=1.25",
+    "mlflow-skinny>=2.17",
 ]
 
 [project.optional-dependencies]

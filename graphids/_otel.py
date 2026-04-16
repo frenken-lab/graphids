@@ -1,26 +1,25 @@
-"""Single indirection point for all observability.
+"""Single indirection point for tracing + structured logging.
 
 Every module imports from here, never from opentelemetry or logging directly.
-Swap the implementation by changing THIS file only.
+Metrics formerly routed through OTel live in MLflow now
+(``graphids/_mlflow.py``); this module owns only spans + log events.
 
-Consumer API (19 files):
-    from graphids._otel import get_tracer, get_logger
+Consumer API:
+    from graphids._otel import get_logger
 
-Lifecycle API (called by __main__.py and actors.py):
+Lifecycle API (called by ``cli/app.py`` and ``cli/training.py``):
     from graphids._otel import init_providers, wire_file_exporters
 """
 
 from __future__ import annotations
 
 import atexit
-import json
 import logging
 import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from opentelemetry import metrics as _metrics
 from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
@@ -28,12 +27,7 @@ from opentelemetry.sdk._logs.export import (
     BatchLogRecordProcessor,
     ConsoleLogRecordExporter,
 )
-from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import (
-    ConsoleMetricExporter,
-    PeriodicExportingMetricReader,
-)
-from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.resources import Resource, ResourceDetector
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import (
     BatchSpanProcessor,
@@ -41,28 +35,33 @@ from opentelemetry.sdk.trace.export import (
     SimpleSpanProcessor,
 )
 
-from graphids.core.monitoring import SlurmResourceDetector
-
 # ---------------------------------------------------------------------------
-# Consumer API — every module uses these
+# SLURM → OTel resource attrs (inlined from deleted core/monitoring.py)
 # ---------------------------------------------------------------------------
 
+_SLURM_ENV_TO_ATTR = {
+    "SLURM_JOB_ID": "slurm.job_id",
+    "SLURM_JOB_PARTITION": "slurm.partition",
+    "SLURM_NODELIST": "slurm.nodelist",
+    "SLURM_GPUS_ON_NODE": "slurm.gpus_on_node",
+    "SLURM_MEM_PER_NODE": "slurm.mem_per_node",
+    "SLURM_CLUSTER_NAME": "slurm.cluster_name",
+    "SLURM_JOB_NUM_NODES": "slurm.num_nodes",
+    "CUDA_VISIBLE_DEVICES": "slurm.cuda_visible_devices",
+}
 
-def get_tracer(name: str) -> trace.Tracer:
-    """Return an OTel tracer."""
-    return trace.get_tracer(name)
+
+class _SlurmResourceDetector(ResourceDetector):
+    def detect(self) -> Resource:
+        attrs = {
+            attr: os.environ[env] for env, attr in _SLURM_ENV_TO_ATTR.items() if os.environ.get(env)
+        }
+        return Resource(attrs)
 
 
-def get_meter(name: str) -> _metrics.Meter:
-    """Return a meter bound to our local ``MeterProvider``.
-
-    Do NOT use the global ``_metrics.get_meter`` — it resolves against
-    the first-set provider, which has no file exporter, so recordings
-    go to ``/dev/null``. Our local provider is swapped per-stage by
-    ``wire_file_exporters``; instruments must be created AFTER that swap.
-    """
-    return get_providers().meter.get_meter(name)
-
+# ---------------------------------------------------------------------------
+# Structured logging — the sole consumer API
+# ---------------------------------------------------------------------------
 
 # Reserved attrs on stdlib LogRecord — user kwargs with these names would
 # collide at emit time. LogRecord reserved names as of CPython 3.12:
@@ -119,8 +118,6 @@ class _StructuredAdapter(logging.LoggerAdapter):
         return msg, kwargs
 
 
-# Public return type. Alias exists so call sites can ``from graphids._otel
-# import StructuredLogger`` for annotations without importing the impl.
 StructuredLogger = logging.LoggerAdapter
 
 
@@ -128,9 +125,7 @@ def get_logger(name: str) -> StructuredLogger:
     """Return a structured logger bridged to OTel via LoggingHandler.
 
     Supports ``log.info("event", key=value)`` — free kwargs are promoted to
-    the stdlib ``extra`` dict, which OTel maps to span attributes. The
-    adapter is the sole logging indirection; swap the implementation here
-    to re-wire every call site.
+    the stdlib ``extra`` dict, which OTel maps to span attributes.
     """
     return _StructuredAdapter(logging.getLogger(name), {})
 
@@ -142,16 +137,9 @@ def get_logger(name: str) -> StructuredLogger:
 
 @dataclass
 class OTelProviders:
-    """Holds SDK-level provider references (API types lack add_span_processor).
-
-    ``meter`` is held locally — never route through the global
-    ``metrics.get_meter`` because ``set_meter_provider`` is one-shot. Any
-    second call (e.g. ``wire_file_exporters`` per stage) silently refuses
-    and the file exporter never receives data.
-    """
+    """Holds SDK-level provider references (API types lack add_span_processor)."""
 
     tracer: TracerProvider
-    meter: MeterProvider
     logger: LoggerProvider
     _file_span_processor: SimpleSpanProcessor | None = field(default=None, repr=False)
 
@@ -159,8 +147,7 @@ class OTelProviders:
 _providers: OTelProviders | None = None
 
 
-def get_providers() -> OTelProviders:
-    """Return initialised providers. Raises if ``init_providers`` was not called."""
+def _get_providers() -> OTelProviders:
     if _providers is None:
         raise RuntimeError("OTel not initialised — call init_providers() first")
     return _providers
@@ -172,10 +159,7 @@ def init_providers(
     wandb_entity: str = "",
     wandb_project: str = "graphids",
 ) -> OTelProviders:
-    """Create and register all OTel providers.
-
-    Safe to call once per process. Called from ``__main__`` on import.
-    """
+    """Create and register OTel providers. Safe to call once per process."""
     global _providers  # noqa: PLW0603
 
     resource = Resource.create(
@@ -184,7 +168,7 @@ def init_providers(
             **({"wandb.entity": wandb_entity} if wandb_entity else {}),
             **({"wandb.project": wandb_project} if wandb_project else {}),
         }
-    ).merge(SlurmResourceDetector().detect())
+    ).merge(_SlurmResourceDetector().detect())
 
     tp = TracerProvider(resource=resource)
     if os.environ.get("WANDB_API_KEY"):
@@ -202,18 +186,12 @@ def init_providers(
         )
     trace.set_tracer_provider(tp)
 
-    # MeterProvider is held LOCALLY on OTelProviders. We never call
-    # ``_metrics.set_meter_provider`` — see ``get_meter`` above.
-    # Start with an empty-reader provider; ``wire_file_exporters``
-    # replaces it with one that has a per-stage file reader.
-    mp = MeterProvider(resource=resource)
-
     lp = LoggerProvider(resource=resource)
     lp.add_log_record_processor(BatchLogRecordProcessor(ConsoleLogRecordExporter(out=sys.stderr)))
     set_logger_provider(lp)
     logging.getLogger("graphids").addHandler(LoggingHandler(logger_provider=lp))
 
-    atexit.register(lambda: (tp.shutdown(), _providers.meter.shutdown(), lp.shutdown()))
+    atexit.register(lambda: (tp.shutdown(), lp.shutdown()))
 
     # Trampoline SLURM signals to sys.exit so the atexit registered
     # above fires before the process dies. SIGUSR1 is what
@@ -228,7 +206,7 @@ def init_providers(
     for s in (_sig.SIGUSR1, _sig.SIGTERM):
         _sig.signal(s, _on_term)
 
-    _providers = OTelProviders(tracer=tp, meter=mp, logger=lp)
+    _providers = OTelProviders(tracer=tp, logger=lp)
     return _providers
 
 
@@ -237,36 +215,24 @@ def _jsonl_span(span) -> str:
     return span.to_json(indent=None) + "\n"
 
 
-def _jsonl_metrics(data) -> str:
-    """One-line JSON per flush for metrics.jsonl (ndjson).
-
-    OTel SDK 1.40's ``MetricsData.to_json(indent=...)`` ignores the arg
-    and always pretty-prints — parse and re-dump compactly so each
-    export is a single NDJSON record.
-    """
-    return json.dumps(json.loads(data.to_json()), separators=(",", ":")) + "\n"
-
-
 def wire_file_exporters(run_dir: Path) -> None:
-    """Add per-run file exporters for ``traces.jsonl`` and ``metrics.jsonl``.
+    """Add per-run file exporter for ``traces.jsonl``.
 
-    Uses ``indent=None`` formatters so both files are true NDJSON (one
-    record per line), directly consumable by ``polars.read_ndjson`` and
-    ``duckdb.read_json_auto`` without custom splitting.
+    Metrics no longer land on disk — MLflow captures scalar metrics and
+    system telemetry (see ``graphids/_mlflow.py``). Only the span stream
+    is written here, for the single ``training.fit`` span and any
+    structured-log events emitted via ``_otel``.
     """
-    p = get_providers()
+    p = _get_providers()
     run_dir.mkdir(parents=True, exist_ok=True)
 
     if p._file_span_processor is not None:
         p._file_span_processor.shutdown()
 
-    # BatchSpanProcessor (vs SimpleSpanProcessor) buffers spans on a
-    # background thread and flushes on ``shutdown()`` — paired with the
-    # ``try/finally`` shutdown around ``trainer.fit()`` in ``stage.train``,
-    # this means a normally-exiting or exception-raising fit always
-    # flushes its spans, where the prior simple processor only flushed at
-    # span-end (and so left empty traces.jsonl files when SLURM SIGTERM'd
-    # mid-fit before the master ``training.fit`` span closed).
+    # BatchSpanProcessor buffers on a background thread; the atexit-
+    # registered shutdown in init_providers guarantees flush on normal
+    # exit and on exception, so the master ``training.fit`` span always
+    # lands in traces.jsonl.
     p._file_span_processor = BatchSpanProcessor(
         ConsoleSpanExporter(
             out=open(run_dir / "traces.jsonl", "a"),  # noqa: SIM115
@@ -274,22 +240,3 @@ def wire_file_exporters(run_dir: Path) -> None:
         )
     )
     p.tracer.add_span_processor(p._file_span_processor)
-
-    # Swap in a fresh MeterProvider with the per-stage file reader. Do NOT
-    # call ``_metrics.set_meter_provider`` — it's one-shot and refuses the
-    # second call silently (see OTel SDK source). Instead update our local
-    # handle; callbacks pick it up via ``get_providers().meter`` on next
-    # instantiation (which happens per stage in the orchestrator).
-    p.meter.shutdown()
-    p.meter = MeterProvider(
-        resource=p.tracer.resource,
-        metric_readers=[
-            PeriodicExportingMetricReader(
-                ConsoleMetricExporter(
-                    out=open(run_dir / "metrics.jsonl", "a"),  # noqa: SIM115
-                    formatter=_jsonl_metrics,
-                ),
-                export_interval_millis=10_000,
-            )
-        ],
-    )

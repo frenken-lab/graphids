@@ -66,14 +66,14 @@ def test_stage_instantiates(stage_tla):
 class TestForcedCallbacks:
     """The callback set wired by defaults.libsonnet must land on every trainer.
 
-    INVARIANT: ModelCheckpoint, EarlyStopping, OTelTrainingCallback, and
+    INVARIANT: ModelCheckpoint, EarlyStopping, MLflowTrainingCallback, and
     CurriculumEpochCallback are present for every stage.
     """
 
     def test_autoencoder_has_full_callback_set(self):
         from graphids.core.callbacks import EarlyStopping, ModelCheckpoint
         from graphids.core.data.curriculum import CurriculumEpochCallback
-        from graphids.core.monitoring import OTelTrainingCallback
+        from graphids.core.mlflow_callback import MLflowTrainingCallback
 
         merged = render("configs/stages/autoencoder.jsonnet", tla=None)
         run = build_run(merged, seed_all=False)
@@ -82,7 +82,7 @@ class TestForcedCallbacks:
         for required in (
             ModelCheckpoint,
             EarlyStopping,
-            OTelTrainingCallback,
+            MLflowTrainingCallback,
             CurriculumEpochCallback,
         ):
             assert required in cb_types, f"missing callback {required.__name__}"

@@ -15,9 +15,8 @@ and LearningRateMonitor without a logger. Fails fast before any torch import.
 **`build_run`** (`graphids/orchestrate/instantiate.py`) — imports class_paths via
 importlib, applies `filter_kwargs` against each target's `__init__`
 signature, builds forced callbacks (`ModelCheckpoint`, `EarlyStopping`,
-`OTelTrainingCallback`, `VRAMDriftCallback` when CUDA is available), wires
-`OTelTrainingLogger`, and returns an `InstantiatedRun(trainer, model,
-datamodule)`.
+`MLflowTrainingCallback`, `VRAMDriftCallback` when CUDA is available),
+and returns an `InstantiatedRun(trainer, model, datamodule)`.
 
 **Stage primitives** (`graphids/orchestrate/stage.py`) — `build`, `train`,
 `evaluate`. `fit` / `test` call these directly. No pipeline driver. Multi-stage

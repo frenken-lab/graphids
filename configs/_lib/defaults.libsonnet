@@ -29,8 +29,8 @@
       class_path: 'graphids.core.data.curriculum.CurriculumEpochCallback',
       init_args: {},
     },
-    otel: {
-      class_path: 'graphids.core.monitoring.OTelTrainingCallback',
+    mlflow: {
+      class_path: 'graphids.core.mlflow_callback.MLflowTrainingCallback',
       init_args: {},
     },
     svdd_calibration: {
@@ -49,11 +49,6 @@
     gradient_clip_val: 1.0,
     log_every_n_steps: 50,
     callbacks: [$.callbacks[k] for k in std.objectFields($.callbacks)],
-    logger: [
-      {
-        class_path: 'graphids.core.monitoring.OTelTrainingLogger',
-        init_args: {},
-      },
-    ],
+    logger: [],
   },
 }

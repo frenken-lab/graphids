@@ -84,7 +84,7 @@ Defaults: `configs/_lib/defaults.libsonnet` (trainer, checkpoint, early_stopping
 ### Forced callbacks
 
 `ModelCheckpoint` and `EarlyStopping` are declared in `defaults.libsonnet`.
-`OTelTrainingCallback` replaces the former DeviceStatsMonitor and ResourceProfileCallback.
+`MLflowTrainingCallback` (`graphids/core/mlflow_callback.py`) logs per-epoch metrics + fit-end peak VRAM to MLflow. Device telemetry is captured by MLflow's background system-metrics sampler (psutil + nvidia-ml-py, 5s interval).
 
 ---
 

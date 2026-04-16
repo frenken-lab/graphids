@@ -2,7 +2,7 @@
 
 Jsonnet composition + Pydantic validation + direct instantiation.
 `render(jsonnet_path, tla) → dict` → `validate_config` (Pydantic) →
-`graphids.orchestrate.build_run` (importlib class_path instantiation
+`graphids.orchestrate.instantiate.build_run` (importlib class_path instantiation
 with signature-filtered kwargs). PyTorch Lightning was removed in favor
 of a custom `graphids.core.trainer.Trainer`. Analyzer CLI is pure Typer —
 derives `model_type` from the checkpoint's self-describing `class_path`
@@ -90,7 +90,9 @@ graphids/
   core/
     trainer.py                     # Trainer, TrainerConfig, seed_everything
     callbacks.py                   # CallbackBase, ModelCheckpoint, EarlyStopping, VRAMDriftCallback
-    monitoring.py                  # OTelTrainingCallback, OTelTrainingLogger
+    monitoring.py                  # SlurmResourceDetector (OTel resource attrs only)
+    mlflow_callback.py             # MLflowTrainingCallback (per-epoch metrics + fit-end finalize)
+  _mlflow.py                       # start/end_training_run, log_epoch_metrics, log_test_run
 ```
 
 ## Running
@@ -188,18 +190,25 @@ Every ablation preset computes its own `run_dir` via
 unset. Path logic lives in jsonnet next to the preset; there is no
 Python planner / identity-hash layer.
 
-## Observability (OpenTelemetry)
+## Observability (MLflow + OpenTelemetry)
 
-Every training run writes `{run_dir}/traces.jsonl` + `{run_dir}/metrics.jsonl`
-as NDJSON via OTel SimpleSpanProcessor + PeriodicExportingMetricReader.
-The `training.fit` span is the source of truth for experiment status +
-metrics.
+Two stores: **MLflow** owns run-level metadata + per-epoch scalar metrics
+timeseries + device telemetry; **OTel** owns `traces.jsonl` for the
+`training.fit` span and structured-log events.
 
-- **`OTelTrainingCallback`** (`core/monitoring.py`) — creates span on
-  `on_fit_start`, closes on `on_fit_end` / `on_exception`, records
-  per-batch VRAM + timing as histograms/gauges.
-- **`OTelTrainingLogger`** (`core/monitoring.py`) — emits `model.log()`
-  metrics as OTel histograms.
-- **`run_io.load_traces` / `load_metrics`** (`core/run_io.py`) — polars
-  parser; flattens OTel histogram/gauge/sum data points into a long-format
-  DataFrame.
+- **MLflow run lifecycle** (`graphids/_mlflow.py`): `start_training_run`
+  opens the run at fit-start (SQLite backend at `{lake_root}/mlflow.db`,
+  artifacts under `{lake_root}/mlartifacts/`), logs params + identity
+  tags + cache digest, and enables the system-metrics sampler (psutil +
+  nvidia-ml-py, 5s interval).
+- **`MLflowTrainingCallback`** (`core/mlflow_callback.py`): appends
+  `train_loss`/`val_loss`/`lr`/`early_stop.wait` at `step=epoch`; stamps
+  `peak_vram_mb` + `epochs_run` + ckpt SHA256 at `on_fit_end`; closes
+  the run with FINISHED / FAILED.
+- **`log_test_run`** (`_mlflow.py`): self-contained test-phase sink,
+  shares `run_name` with the fit row, distinguished by `graphids.phase` tag.
+- **OTel `traces.jsonl`** (`{run_dir}/`): single `training.fit` span +
+  structured-log events (`budget_probed`, `vram_drift_detected`, etc).
+  Parsed by `run_io.load_traces`.
+- Query MLflow via `mlflow.search_runs(filter_string=...)` or
+  `client.get_metric_history(run_id, key)`.

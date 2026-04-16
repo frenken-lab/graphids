@@ -80,7 +80,8 @@ Critical callbacks are constructed explicitly by
 appends user callbacks; it cannot drop the forced set.
 
 Forced callbacks (from `defaults.libsonnet`): ModelCheckpoint,
-EarlyStopping, OTelTrainingCallback. Logger: OTelTrainingLogger.
+EarlyStopping, MLflowTrainingCallback, CurriculumEpochCallback,
+SVDDCalibrationCallback. No trainer logger (MLflow callback handles metrics).
 
 ### build_run() responsibilities
 
@@ -109,5 +110,7 @@ EarlyStopping, OTelTrainingCallback. Logger: OTelTrainingLogger.
 | `orchestrate/config.py` | `ResolvedConfig`, `InstantiatedRun` | No |
 | `orchestrate/stage.py` | `build`, `train`, `evaluate` primitives | Yes |
 | `core/analysis/runner.py` | `run_single_analysis` — invoked by `graphids analyze` CLI | Yes |
-| `core/monitoring.py` | `OTelTrainingCallback`, `OTelTrainingLogger` | Yes |
+| `core/monitoring.py` | `SlurmResourceDetector` (OTel resource attrs) | No |
+| `core/mlflow_callback.py` | `MLflowTrainingCallback` (per-epoch metrics + finalize) | Yes |
+| `_mlflow.py` | `start_training_run`, `log_epoch_metrics`, `log_test_run`, lifecycle | Lazy |
 | `_otel.py` | `init_providers`, `wire_file_exporters` | No |

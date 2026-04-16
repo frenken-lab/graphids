@@ -1,24 +1,12 @@
 """Orchestration — render/validate a rendered config, instantiate, train.
 
 - ``config.py``        — ResolvedConfig, InstantiatedRun.
-- ``instantiate.py``   — build_run (+ build_model / datamodule / trainer / ...).
+- ``instantiate.py``   — build_run (class_path resolver).
 - ``stage.py``         — build, train, evaluate primitives.
+
+Import from the submodules directly. No re-export shim — call sites use
+``from graphids.orchestrate.stage import build`` etc.
 
 No planner, no cross-stage driver: multi-stage runs are a bash loop over
 ``scripts/run <preset.jsonnet>`` with ``SBATCH_DEP=afterok:<jid>`` deps.
 """
-
-from __future__ import annotations
-
-from graphids.orchestrate.config import InstantiatedRun, ResolvedConfig
-from graphids.orchestrate.instantiate import build_run
-from graphids.orchestrate.stage import build, evaluate, train
-
-__all__ = [
-    "InstantiatedRun",
-    "ResolvedConfig",
-    "build",
-    "build_run",
-    "evaluate",
-    "train",
-]
