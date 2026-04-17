@@ -188,7 +188,15 @@ def _cache_digest_tags(resolved_config: dict[str, Any]) -> dict[str, str]:
     from graphids.config.constants import LAKE_ROOT
 
     data_init = (resolved_config.get("data") or {}).get("init_args") or {}
-    dataset = data_init.get("dataset")
+    # ``dataset`` is a class_path wrapper: {class_path: CANBusSource, init_args: {name: ...}}.
+    # Older plain-string configs are still accepted.
+    ds_field = data_init.get("dataset")
+    if isinstance(ds_field, dict):
+        dataset = (ds_field.get("init_args") or {}).get("name")
+    elif isinstance(ds_field, str):
+        dataset = ds_field
+    else:
+        dataset = None
     cache_version = data_init.get("cache_version") or data_init.get("version")
     if not (LAKE_ROOT and dataset):
         return {}
@@ -282,10 +290,17 @@ def start_training_run(run_dir: Path, resolved_config: dict[str, Any]) -> str | 
         experiment = f"graphids/{identity.group}/{identity.variant}"
 
         client = MlflowClient(tracking_uri=uri)
-        _ensure_experiment(client, experiment)
+        # Two concurrent jobs against a fresh sqlite DB both see no schema
+        # and both try to run the initial CREATE TABLE DDL; the loser
+        # raises "table X already exists". The schema is idempotent in
+        # intent — retry once after a brief back-off and the second call
+        # connects to the now-initialized DB cleanly.
+        _call_with_retry_on_schema_race(lambda: _ensure_experiment(client, experiment))
         mlflow.set_experiment(experiment)
 
-        mlflow.start_run(run_name=run_name, tags={"graphids.phase": "fit"})
+        _call_with_retry_on_schema_race(
+            lambda: mlflow.start_run(run_name=run_name, tags={"graphids.phase": "fit"})
+        )
         mlflow.log_params(_flatten_params(resolved_config))
         tags = {
             **_identity_tags(identity, run_dir, cluster),
@@ -299,6 +314,26 @@ def start_training_run(run_dir: Path, resolved_config: dict[str, Any]) -> str | 
     except Exception as exc:
         log.warning("mlflow_start_failed", error=str(exc), run_dir=str(run_dir))
         return None
+
+
+def _call_with_retry_on_schema_race(fn, *, delay_s: float = 2.0):
+    """Call ``fn``; retry once if it raises an ``already exists`` DDL error.
+
+    MLflow's SqlAlchemyStore initializes tables lazily on first connect.
+    With concurrent cold-start jobs, two processes can race on the DDL —
+    the loser sees "table metrics already exists". Schema is already
+    there, so a retry picks it up cleanly.
+    """
+    import time
+
+    try:
+        return fn()
+    except Exception as exc:
+        if "already exists" not in str(exc):
+            raise
+        log.info("mlflow_schema_race_retry", error=str(exc))
+        time.sleep(delay_s)
+        return fn()
 
 
 def log_epoch_metrics(epoch: int, metrics: dict[str, float]) -> None:

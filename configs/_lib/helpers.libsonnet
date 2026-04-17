@@ -27,20 +27,4 @@
       { [path[0]]: value }
     else
       { [path[0]]+: $._nest(path[1:], value) },
-
-  // Wire identity TLAs into the OTel callback init_args so they
-  // become span attributes on the training.fit span.
-  otel_identity(stage, dataset, scale, seed, model_type=''):: {
-    callbacks+: {
-      otel+: {
-        init_args+: {
-          stage: stage,
-          dataset: dataset,
-          scale: scale,
-          seed: seed,
-          model_type: model_type,
-        },
-      },
-    },
-  },
 }

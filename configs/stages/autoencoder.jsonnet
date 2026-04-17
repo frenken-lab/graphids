@@ -74,6 +74,5 @@ function(
     },
   } + (if ckpt_path != null then { ckpt_path: ckpt_path } else {})
 
-  + helpers.otel_identity('autoencoder', dataset, scale, seed, model_type)
   + helpers.apply_dotted(trainer_overrides)
   + helpers.apply_dotted(stage_overrides)
