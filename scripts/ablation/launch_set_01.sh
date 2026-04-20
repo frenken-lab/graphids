@@ -70,16 +70,42 @@ _open_parents() {
     done
 }
 
-_fit() {
-    local cfg="$1" seed="$2"
-    MLFLOW_PARENT_RUN_ID="$(_parent_for "$cfg")" \
+_submit_fit() {
+    # Echoes fit jid on stdout; submission banner flows to stderr.
+    local cfg="$1" seed="$2" line
+    line=$(MLFLOW_PARENT_RUN_ID="$(_parent_for "$cfg")" \
         scripts/run "$cfg" --dataset "$DATASET" --seed "$seed" --lake-root "$LAKE_ROOT" \
-        "${CLUSTER_ARGS[@]}" "${DRY_RUN_FLAG[@]}"
+        "${CLUSTER_ARGS[@]}" "${DRY_RUN_FLAG[@]}" 2>&1 | tee /dev/stderr | tail -n 1)
+    if [[ ${#DRY_RUN_FLAG[@]} -gt 0 ]]; then echo "0"; else echo "${line##* }"; fi
+}
+
+_chain_test() {
+    # afterok CPU test job. Inherits parent MLflow run. Output to stderr so
+    # _fit_jid's stdout stays clean for jid capture.
+    local cfg="$1" seed="$2" jid="$3"
+    local group variant ckpt cmd
+    group="$(basename "$(dirname "$cfg")")"
+    variant="$(basename "$cfg" .jsonnet)"
+    ckpt="${LAKE_ROOT}/${DATASET}/ablations/${group}/${variant}/seed_${seed}/checkpoints/best_model.ckpt"
+    cmd="python -m graphids test --config ${cfg} --tla dataset=\"${DATASET}\" --tla seed=${seed} --tla lake_root=\"${LAKE_ROOT}\" --ckpt-path ${ckpt}"
+    MLFLOW_PARENT_RUN_ID="$(_parent_for "$cfg")" \
+        SBATCH_DEP="afterok:${jid}" \
+        scripts/run --mode cpu --command "$cmd" \
+        "${CLUSTER_ARGS[@]}" "${DRY_RUN_FLAG[@]}" >&2
+}
+
+_fit() {
+    # Submit fit + afterok test chain. No stdout capture path.
+    local jid
+    jid=$(_submit_fit "$@")
+    _chain_test "$1" "$2" "$jid"
 }
 _fit_jid() {
-    local line
-    line=$(_fit "$@" 2>&1 | tee /dev/stderr | tail -n 1)
-    [[ ${#DRY_RUN_FLAG[@]} -gt 0 ]] && echo "0" || echo "${line##* }"
+    # Submit fit + afterok test chain; echo fit jid for downstream deps.
+    local jid
+    jid=$(_submit_fit "$@")
+    _chain_test "$1" "$2" "$jid"
+    echo "$jid"
 }
 
 # -- Open all parent runs upfront (one per group/variant) --------------

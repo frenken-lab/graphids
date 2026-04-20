@@ -39,17 +39,24 @@ profile collapse for the SLURM surface.
 
 ## Still-open follow-ups
 
-- **Fit → test chaining.** Existing MLflow rows are fit-phase only.
-  `stage.evaluate` has to be invoked explicitly (`python -m graphids test`).
-  Options: (a) auto-chain in `fit` after best ckpt saves; (b) per-run
-  afterok CPU test job from the ablation launcher. Blocks Phase 3's
-  real-data leaderboard output.
 - **Retroactive eval on existing fit-only ckpts.** One-shot sweep script
   to populate MLflow test rows for historical runs. Sizable compute
   (~20 fit-only ckpts × 5 min CPU each) but straightforward.
 - **Phase 4 — seed-expansion launcher wrapper.** Bash: take `--seeds
   1,2,3` and loop. Low priority given N ≤ 3 screening workflow already
   uses the existing `--seed` loop.
+- **Stage 3 states-jid capture broken in dry-run (pre-existing).**
+  `STATES_JID[$SEED]="${line##* }"` extracts the last whitespace token;
+  in dry-run this is the tail of the sbatch `--wrap` arg, not the jid.
+  Real-run behavior is correct (last line is
+  `"Submitted batch job NNN"`). Fix by matching `sbatch` output
+  explicitly or dropping dry-run display of downstream dep fields.
+- **`_paths.libsonnet` uses `best.ckpt` but ModelCheckpoint writes
+  `best_model.ckpt`.** Affects `vgae_ckpt()` / `gat_ckpt()` helpers and
+  Stage 3 `extract-fusion-states` invocation. Latent bug — curriculum_vgae
+  and fusion chains will fail to find the upstream ckpt. Fix in one pass
+  across `_paths.libsonnet:11,14`, `scripts/ablation/launch_set_01.sh:134-135`,
+  `CLAUDE.md:22,31,34`, `configs/ablations/README.md`.
 
 ## Open issues
 
