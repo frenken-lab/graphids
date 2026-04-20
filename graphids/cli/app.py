@@ -6,7 +6,9 @@ Heavy imports are deferred to inside command functions.
 
 from __future__ import annotations
 
+import datetime
 import json
+import statistics
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -289,7 +291,11 @@ def _resolve_fit_time(
         minutes=mins,
         fallback=fallback,
     )
-    return f"{mins // 60}:{mins % 60:02d}:00"
+    # sbatch accepts HH:MM:SS up to 7 days; format explicitly from total_seconds
+    # since timedelta's default str emits "D days, H:MM:SS" when days>0.
+    td = datetime.timedelta(minutes=mins)
+    total = int(td.total_seconds())
+    return f"{total // 3600:02d}:{(total % 3600) // 60:02d}:00"
 
 
 def _estimate_walltime_minutes(cluster: str, group: str, dataset: str) -> int | None:
@@ -305,6 +311,7 @@ def _estimate_walltime_minutes(cluster: str, group: str, dataset: str) -> int | 
         from graphids._mlflow import ensure_tracking_uri
     except ImportError:
         return None
+
     uri = ensure_tracking_uri()
     if uri is None:
         return None
@@ -341,10 +348,8 @@ def _estimate_walltime_minutes(cluster: str, group: str, dataset: str) -> int | 
     ]
     if len(elapsed) < 3:
         return None
-    elapsed.sort()
-    # p95 by rank — no numpy dep for a 3–50 item list
-    idx = max(0, min(len(elapsed) - 1, int(math.ceil(0.95 * len(elapsed))) - 1))
-    p95 = elapsed[idx]
+    # statistics.quantiles requires n>=2; the len(elapsed) < 3 guard above covers it.
+    p95 = statistics.quantiles(elapsed, n=100, method="inclusive")[94]
     return max(10, min(int(math.ceil(p95 * 1.5)), 7 * 24 * 60))
 
 
