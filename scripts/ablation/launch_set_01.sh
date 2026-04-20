@@ -72,11 +72,13 @@ _open_parents() {
 
 _submit_fit() {
     # Echoes fit jid on stdout; submission banner flows to stderr.
+    # sbatch with --clusters=X prints "Submitted batch job NNN on cluster X" —
+    # take field 4 (the jid), not $NF (which is the cluster name).
     local cfg="$1" seed="$2" line
     line=$(MLFLOW_PARENT_RUN_ID="$(_parent_for "$cfg")" \
         scripts/run "$cfg" --dataset "$DATASET" --seed "$seed" --lake-root "$LAKE_ROOT" \
         "${CLUSTER_ARGS[@]}" "${DRY_RUN_FLAG[@]}" 2>&1 | tee /dev/stderr | tail -n 1)
-    if [[ ${#DRY_RUN_FLAG[@]} -gt 0 ]]; then echo "0"; else echo "${line##* }"; fi
+    if [[ ${#DRY_RUN_FLAG[@]} -gt 0 ]]; then echo "0"; else echo "$line" | awk '{print $4}'; fi
 }
 
 _chain_test() {
@@ -166,7 +168,12 @@ for SEED in "${SEEDS[@]}"; do
     line=$(SBATCH_DEP="afterok:${VGAE_JID[$SEED]}:${FOCAL_JID[$SEED]}" \
         scripts/run --mode gpu --mem 36G --time 0:30:00 --command "$CMD" \
         "${DRY_RUN_FLAG[@]}" 2>&1 | tee /dev/stderr | tail -n 1)
-    STATES_JID[$SEED]="${line##* }"
+    # Extract jid from "Submitted batch job NNN on cluster X" (field 4).
+    if [[ ${#DRY_RUN_FLAG[@]} -gt 0 ]]; then
+        STATES_JID[$SEED]="0"
+    else
+        STATES_JID[$SEED]=$(echo "$line" | awk '{print $4}')
+    fi
     echo "  seed=${SEED} -> states jid=${STATES_JID[$SEED]}"
 done
 

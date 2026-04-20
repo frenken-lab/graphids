@@ -73,9 +73,18 @@ class VGAETaskLoss(nn.Module):
             k_neg=self.k_neg,
         )
 
-        return (
+        total = (
             recon
             + self.canid_weight * canid
             + self.nbr_weight * nbr_loss
             + self.kl_weight * kl_loss
         )
+        if not torch.isfinite(total):
+            raise ValueError(
+                "VGAETaskLoss non-finite: "
+                f"recon={recon.item():.6g} canid={canid.item():.6g} "
+                f"nbr={nbr_loss.item():.6g} kl={kl_loss.item():.6g} "
+                f"weights=(canid={self.canid_weight},nbr={self.nbr_weight},kl={self.kl_weight}) "
+                f"training={self.training}"
+            )
+        return total
