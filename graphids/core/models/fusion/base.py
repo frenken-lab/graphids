@@ -18,7 +18,10 @@ import torch.nn as nn
 
 from graphids.core.trainer import MetricAccumulator
 
-from ..base import LAYOUT, STATE_DIM, binary_test_metrics
+from ..base import (
+    LAYOUT,
+    STATE_DIM,
+)
 
 # ---------------------------------------------------------------------------
 # NN building blocks (shared by bandit + DQN)
@@ -267,7 +270,9 @@ class FusionModuleBase(nn.Module):
             self.reward_calc = FusionRewardCalculator(**reward_kwargs)
         self._buffer = TensorReplayBuffer(buffer_size, state_dim)
 
-        self.test_metrics = binary_test_metrics(threshold=decision_threshold)
+        from ..base import classification_test_metrics
+
+        self.test_metrics = classification_test_metrics(2)
 
     @property
     def device(self) -> torch.device:
@@ -340,9 +345,11 @@ class FusionModuleBase(nn.Module):
     def test_step(self, batch, batch_idx, dataloader_idx=0):
         states, labels = batch
         result = self.predict(states)
-        # Curve metrics (AUROC/AP/ECE) require float scores; hard-pred
-        # metrics binarize internally at decision_threshold.
-        self.test_metrics.update(result["fused_scores"].float(), labels)
+        fused = result["fused_scores"].float()
+        # (N, 2) probs — decision metrics argmax at 0.5 (= fused > 0.5);
+        # curve metrics consume the continuous class-1 prob.
+        probs = torch.stack([1.0 - fused, fused], dim=1)
+        self.test_metrics.update(probs, labels)
 
     def on_test_epoch_start(self):
         self.test_metrics.reset()

@@ -211,8 +211,9 @@ class GraphModuleBase(nn.Module):
         names = getattr(self, "_test_set_names", None) or ["test"]
         # One MetricCollection per test-set, keys prefixed for structured logs.
         self._per_set_metrics = {n: self.test_metrics.clone(prefix=f"test/{n}/") for n in names}
-        # Per-set buffers — scores/labels always; preds when the model emits
-        # them directly (classifier flavor) or after thresholding (recon).
+        # ``scores`` holds 1-D scores for threshold-flavor (VGAE/DGI) and (N,K)
+        # probabilities for classifier-flavor (GAT/fusion). ``preds`` is
+        # optional hard predictions when the model emits them directly.
         self._test_buffers = {n: {"preds": [], "scores": [], "labels": []} for n in names}
         # Filled in on_test_epoch_end; stage.evaluate reads to persist to disk.
         self._test_predictions: dict[str, dict[str, torch.Tensor]] = {}
@@ -237,32 +238,36 @@ class GraphModuleBase(nn.Module):
         self._finalize_test_predictions()
 
     def _log_classifier_metrics(self) -> None:
-        """Per-set + aggregate metrics, assuming test_metrics takes raw scores."""
+        """Per-set + aggregate metrics from buffered ``(N, K)`` probabilities.
+
+        Buffers on CPU — ``BinaryMCC``'s confusion matrix and friends raise on
+        cross-device updates, so the collections get moved to match.
+        """
         if not getattr(self, "_per_set_metrics", None):
             return
-        # _record_test_batch buffers on CPU — match the metric collections to
-        # the buffer device (some states, e.g. BinaryMCC's confusion matrix,
-        # raise on cross-device updates).
         self.test_metrics = self.test_metrics.cpu()
-        all_scores, all_labels = [], []
+        all_probs, all_labels = [], []
         for name, coll in self._per_set_metrics.items():
             buf = self._test_buffers[name]
             if not buf["scores"]:
                 continue
-            scores = torch.cat(buf["scores"])
+            probs = torch.cat(buf["scores"]).float()
             labels = torch.cat(buf["labels"]).long()
             coll = coll.cpu()
             self._per_set_metrics[name] = coll
-            coll.update(scores, labels)
+            coll.update(probs, labels)
             self.log_dict(coll.compute())
-            self._log_operating_points(scores, labels, prefix=f"test/{name}/")
-            all_scores.append(scores)
+            # Operating points are binary-specific — reconstruct class-1 score.
+            if probs.ndim == 2 and probs.shape[1] == 2:
+                self._log_operating_points(probs[:, 1], labels, prefix=f"test/{name}/")
+            all_probs.append(probs)
             all_labels.append(labels)
-        if all_scores:
-            pooled_s, pooled_l = torch.cat(all_scores), torch.cat(all_labels)
-            self.test_metrics.update(pooled_s, pooled_l)
+        if all_probs:
+            pooled_p, pooled_l = torch.cat(all_probs), torch.cat(all_labels)
+            self.test_metrics.update(pooled_p, pooled_l)
             self.log_dict(self.test_metrics.compute())
-            self._log_operating_points(pooled_s, pooled_l, prefix="test/")
+            if pooled_p.ndim == 2 and pooled_p.shape[1] == 2:
+                self._log_operating_points(pooled_p[:, 1], pooled_l, prefix="test/")
 
     def _log_thresholded_metrics(self):
         """Threshold flavor — one global threshold, per-set metrics at it."""
@@ -375,6 +380,77 @@ def eval_mode(model):
         yield
     finally:
         model.train(was_training)
+
+
+def classification_test_metrics(num_classes: int):
+    """Unified classifier-flavor test metrics — aggregate, macro, weighted, per-class.
+
+    Contract: ``update(probs, target)`` where ``probs`` is ``(N, K)`` float in the
+    simplex and ``target`` is ``(N,)`` long. Decision metrics (accuracy/F1/
+    precision/recall/specificity/MCC) argmax internally; curve metrics
+    (AUROC/AP/ECE) consume the raw probabilities.
+
+    Per-class decomposition uses ``ClasswiseWrapper`` — its dict return is
+    merged flat into ``MetricCollection.compute()``, so ``log_dict(compute())``
+    just works. Missing classes return 0 for their F1 (torchmetrics `#1494
+    <https://github.com/Lightning-AI/torchmetrics/issues/1494>`_), which pulls
+    the macro down; report ``weighted`` alongside ``macro``.
+    """
+    from torchmetrics import MetricCollection
+    from torchmetrics.classification import (
+        MulticlassAccuracy,
+        MulticlassAUROC,
+        MulticlassAveragePrecision,
+        MulticlassCalibrationError,
+        MulticlassF1Score,
+        MulticlassMatthewsCorrCoef,
+        MulticlassPrecision,
+        MulticlassRecall,
+        MulticlassSpecificity,
+    )
+    from torchmetrics.wrappers import ClasswiseWrapper
+
+    labels = (
+        ["benign", "attack"] if num_classes == 2 else [f"class_{i}" for i in range(num_classes)]
+    )
+    k = {"num_classes": num_classes}
+
+    def cw(metric, prefix):
+        return ClasswiseWrapper(metric, labels=labels, prefix=prefix)
+
+    return MetricCollection(
+        {
+            # Aggregate scalars — no per-class ambiguity.
+            "accuracy": MulticlassAccuracy(**k, average="micro"),
+            "mcc": MulticlassMatthewsCorrCoef(**k),
+            "ece": MulticlassCalibrationError(**k),
+            # Macro + weighted averages.
+            "f1_macro": MulticlassF1Score(**k, average="macro"),
+            "f1_weighted": MulticlassF1Score(**k, average="weighted"),
+            "precision_macro": MulticlassPrecision(**k, average="macro"),
+            "precision_weighted": MulticlassPrecision(**k, average="weighted"),
+            "recall_macro": MulticlassRecall(**k, average="macro"),
+            "recall_weighted": MulticlassRecall(**k, average="weighted"),
+            "specificity_macro": MulticlassSpecificity(**k, average="macro"),
+            "specificity_weighted": MulticlassSpecificity(**k, average="weighted"),
+            "auc_macro": MulticlassAUROC(**k, average="macro"),
+            "auc_weighted": MulticlassAUROC(**k, average="weighted"),
+            "ap_macro": MulticlassAveragePrecision(**k, average="macro", thresholds=None),
+            "ap_weighted": MulticlassAveragePrecision(**k, average="weighted", thresholds=None),
+            # Per-class — ClasswiseWrapper expands into class-named keys.
+            "f1_pc": cw(MulticlassF1Score(**k, average=None), "f1_per_class/"),
+            "precision_pc": cw(MulticlassPrecision(**k, average=None), "precision_per_class/"),
+            "recall_pc": cw(MulticlassRecall(**k, average=None), "recall_per_class/"),
+            "specificity_pc": cw(
+                MulticlassSpecificity(**k, average=None), "specificity_per_class/"
+            ),
+            "auc_pc": cw(MulticlassAUROC(**k, average=None), "auc_per_class/"),
+            "ap_pc": cw(
+                MulticlassAveragePrecision(**k, average=None, thresholds=None),
+                "pr_auc_per_class/",
+            ),
+        }
+    )
 
 
 def binary_test_metrics(threshold: float = 0.5):

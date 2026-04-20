@@ -58,10 +58,8 @@ class MLPFusionModule(FusionModuleBase):
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
         states, labels = batch
-        logits = self(states)
-        # sigmoid > 0.5 ↔ logits > 0; pass probs so curve metrics get floats
-        # and hard-pred metrics binarize at the default 0.5 threshold.
-        self.test_metrics.update(torch.sigmoid(logits), labels)
+        p1 = torch.sigmoid(self(states))
+        self.test_metrics.update(torch.stack([1.0 - p1, p1], dim=1), labels)
 
     def build_optimizers(self, max_epochs: int):
         return optim.Adam(self.parameters(), lr=self.lr), None

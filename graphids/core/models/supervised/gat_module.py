@@ -8,7 +8,7 @@ from graphids.config.constants import (
     ModelType,  # noqa: F401 (used in __init__ annotation)
 )
 
-from ..base import GraphModuleBase, binary_test_metrics
+from ..base import GraphModuleBase, classification_test_metrics
 from .gat import GATWithJK
 
 # ---------------------------------------------------------------------------
@@ -81,7 +81,7 @@ class GATModule(GraphModuleBase):
         self.num_classes = num_classes
         self.loss_fn = loss_fn
         self.model = None
-        self.test_metrics = binary_test_metrics()
+        self.test_metrics = classification_test_metrics(num_classes)
         if num_ids > 0:
             self._build()
 
@@ -147,11 +147,11 @@ class GATModule(GraphModuleBase):
 
     def test_step(self, batch, _idx, dataloader_idx=0):
         logits = self(batch)
-        scores = F.softmax(logits, dim=1)[:, 1]
+        probs = F.softmax(logits, dim=1)
         self._record_test_batch(
             dataloader_idx,
-            preds=logits.argmax(1),
-            scores=scores,
+            preds=probs.argmax(1),
+            scores=probs,  # (N, K) — consumed by classification_test_metrics
             labels=batch.y,
         )
 
