@@ -1,46 +1,11 @@
 {
-  "_comment": "Static profiles have fixed time/mem. Profiles with a 'scaling' block auto-size from cache_metadata.json.aggregate.num_raw_samples; 'defaults' is the fallback when --dataset is not provided.",
+  "_comment": "Two generic profiles. Per-job cpus/mem/time/command come from scripts/run flags — never bake a new profile. The 'gpu' and 'cpu' entries carry cluster-partition maps + per-length wall defaults only.",
   "submit_profiles": {
-    "tests": {
-      "partition": "cpu",
+    "gpu": {
+      "mode": "gpu",
       "cpus": 8,
-      "mem": "16G",
-      "time": "1:00:00",
-      "signal": "",
-      "mode": "cpu",
-      "command": "python -m pytest"
-    },
-    "rebuild-caches": {
-      "partition": "cpu",
-      "cpus": 6,
-      "signal": "",
-      "mode": "cpu",
-      "command": "python -m graphids rebuild-caches",
-      "scaling": {
-        "time_min": {"base": 2.0, "per_mraw": 0.083},
-        "mem_gb":   {"base": 5.0, "per_mraw": 0.61}
-      },
-      "defaults": {"time": "1:00:00", "mem": "54G"}
-    },
-    "profile": {
-      "partition": "gpudebug",
-      "cpus": 4,
-      "mem": "36G",
-      "time": "1:00:00",
-      "signal": "",
-      "mode": "gpu",
-      "command": "python -m graphids profile"
-    },
-    "analyze": {
-      "partition": "gpu",
-      "cpus": 4,
-      "mem": "32G",
-      "time": "2:00:00",
-      "signal": "",
-      "mode": "gpu",
-      "command": "python -m graphids analyze"
-    },
-    "fit": {
+      "mem": "48G",
+      "signal": "USR1@300",
       "partitions": {
         "pitzer":   {"short": "gpudebug", "long": "gpu"},
         "cardinal": {"short": "debug",    "long": "gpu"},
@@ -50,38 +15,23 @@
         "pitzer":   {"short": "1:00:00", "long": "3:00:00"},
         "cardinal": {"short": "1:00:00", "long": "1:15:00"},
         "ascend":   {"short": "1:00:00", "long": "1:45:00"}
-      },
-      "cpus": 8,
-      "mem": "48G",
-      "signal": "",
-      "mode": "gpu",
-      "command": "python -m graphids fit"
+      }
     },
-    "fit-cpu": {
+    "cpu": {
+      "mode": "cpu",
+      "cpus": 8,
+      "mem": "16G",
+      "signal": "",
       "partitions": {
         "pitzer":   {"short": "debug-cpu", "long": "cpu"},
         "cardinal": {"short": "debug",     "long": "cpu"},
         "ascend":   {"short": "debug",     "long": "cpu"}
       },
       "times": {
-        "pitzer":   {"short": "1:00:00", "long": "6:00:00"},
+        "pitzer":   {"short": "1:00:00", "long": "4:00:00"},
         "cardinal": {"short": "1:00:00", "long": "3:00:00"},
         "ascend":   {"short": "1:00:00", "long": "4:00:00"}
-      },
-      "cpus": 16,
-      "mem": "32G",
-      "signal": "",
-      "mode": "cpu",
-      "command": "python -m graphids fit"
-    },
-    "extract-fusion-states": {
-      "partition": "gpu",
-      "cpus": 4,
-      "mem": "36G",
-      "time": "0:30:00",
-      "signal": "",
-      "mode": "gpu",
-      "command": "python -m graphids extract-fusion-states"
+      }
     }
   }
 }

@@ -1,29 +1,25 @@
 #!/usr/bin/env bash
-# Launch a GraphIDS preset as a SLURM job. Single-config invocation —
-# the jsonnet preset owns the run specifics (stage, model, dataset+seed
-# defaults, run_dir derivation); this script only owns the knobs that
-# vary per invocation.
+# Single SLURM submitter. Two modes:
 #
-# Usage:
-#   scripts/run <preset.jsonnet> [options]
+#   1. Training (preset-oriented) — the common path:
+#        scripts/run <preset.jsonnet> [--dataset X --seed N --scale s
+#            --cluster c --smoke --cpu --ckpt PATH --vgae-ckpt PATH
+#            --gat-ckpt PATH --lake-root PATH --set KEY=VAL --mem M
+#            --time T --time-from-history --dry-run]
 #
-# Options:
-#   --dataset NAME        dataset TLA (default: preset's own default)
-#   --seed N              seed TLA
-#   --scale small|large   scale TLA
-#   --cluster NAME        sbatch --clusters=NAME (default: current cluster)
-#   --smoke               use the short/debug queue (~1hr) instead of the long/batch queue (~4hr)
-#   --cpu                 submit to the CPU partition (fit-cpu profile; fusion-style jobs)
-#   --ckpt PATH           ckpt_path TLA (resume)
-#   --vgae-ckpt PATH      vgae_ckpt_path TLA (fusion/curriculum)
-#   --gat-ckpt PATH       gat_ckpt_path TLA (fusion)
-#   --lake-root PATH      lake_root TLA (override preset default)
-#   --set KEY=VAL         dotted-path override passthrough (repeatable)
-#   --walltime HH:MM:SS   sbatch --time override (default: from submit profile)
-#   --dry-run             print the sbatch invocation, don't submit
+#   2. Ops (generic command) — everything that's not `graphids fit`:
+#        scripts/run --command "python -m graphids rebuild-caches --all" \
+#            --mode cpu --mem 54G --time 4:00:00
+#        scripts/run --command "python -m pytest" --mode cpu --length short
+#        scripts/run --command "python -m graphids test --config X --ckpt Y" --mode cpu
+#
+# Profile is a single-word selector — `gpu` or `cpu` — from
+# configs/resources/submit_profiles.json. Per-job specifics (cpus, mem, time,
+# command) are args, never new JSON entries.
 #
 # Env:
-#   SBATCH_DEP=afterok:<jid>  chain this job behind another (same as submit.sh).
+#   SBATCH_DEP=afterok:<jid>   chain this job behind another
+#   MLFLOW_PARENT_RUN_ID=<id>  link this run under a parent MLflow run
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,65 +27,115 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 source .env
 
-PRESET="${1:?Usage: scripts/run <preset.jsonnet> [options]}"
-shift
-[[ -f "$PRESET" ]] || { echo "scripts/run: preset not found: $PRESET" >&2; exit 2; }
-
 command -v jsonnet >/dev/null 2>&1 || {
     echo "scripts/run: jsonnet binary not found on PATH." >&2
     echo "  Install go-jsonnet 0.20.0+ to ~/.local/bin/ — see ADR 0010." >&2
     exit 1
 }
 
+PROFILES_JSON="$PROJECT_ROOT/configs/resources/submit_profiles.json"
+
+# -- Arg parsing -------------------------------------------------------------
+PRESET=""
+COMMAND=""
+MODE=""                 # gpu | cpu (default: gpu for preset, required for --command)
+LENGTH="long"           # short | long
 CLUSTER="${GRAPHIDS_CLUSTER:-pitzer}"
-LENGTH="long"
-PROFILE="fit"
 DATASET=""
 SCALE=""
+GROUP=""
+MEM_OVERRIDE=""
+TIME_OVERRIDE=""
+TIME_FROM_HISTORY=""
 DRY_RUN=""
-WALLTIME=""
 TLAS=()
 SETS=()
 
 _push_str_tla() { TLAS+=(--tla "$1=\"$2\""); }
 _push_int_tla() { TLAS+=(--tla "$1=$2"); }
 
+# First positional (if present and not starting with --) is a preset path.
+if [[ $# -gt 0 && "$1" != --* ]]; then
+    PRESET="$1"
+    shift
+    [[ -f "$PRESET" ]] || { echo "scripts/run: preset not found: $PRESET" >&2; exit 2; }
+    GROUP="$(basename "$(dirname "$PRESET")")"
+fi
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --dataset)     DATASET="$2";  _push_str_tla dataset          "$2"; shift 2 ;;
-        --seed)                       _push_int_tla seed             "$2"; shift 2 ;;
-        --scale)       SCALE="$2";    _push_str_tla scale            "$2"; shift 2 ;;
-        --ckpt)                       _push_str_tla ckpt_path        "$2"; shift 2 ;;
-        --vgae-ckpt)                  _push_str_tla vgae_ckpt_path   "$2"; shift 2 ;;
-        --gat-ckpt)                   _push_str_tla gat_ckpt_path    "$2"; shift 2 ;;
-        --lake-root)                  _push_str_tla lake_root        "$2"; shift 2 ;;
-        --cluster)     CLUSTER="$2";                                       shift 2 ;;
-        --smoke)       LENGTH="short";                                     shift ;;
-        --cpu)         PROFILE="fit-cpu";                                  shift ;;
-        --set)         SETS+=(--set "$2");                                 shift 2 ;;
-        --walltime)    WALLTIME="$2";                                      shift 2 ;;
-        --dry-run)     DRY_RUN=1;                                          shift ;;
+        --command)                    COMMAND="$2";                        shift 2 ;;
+        --mode)                       MODE="$2";                           shift 2 ;;
+        --length)                     LENGTH="$2";                         shift 2 ;;
+        --cluster)                    CLUSTER="$2";                        shift 2 ;;
+        --mem)                        MEM_OVERRIDE="$2";                   shift 2 ;;
+        --time)                       TIME_OVERRIDE="$2";                  shift 2 ;;
+        --time-from-history)          TIME_FROM_HISTORY=1;                 shift ;;
+        --smoke)                      LENGTH="short";                      shift ;;
+        --cpu)                        MODE="cpu";                          shift ;;
+        --dataset)  DATASET="$2";     _push_str_tla dataset        "$2";   shift 2 ;;
+        --seed)                       _push_int_tla seed           "$2";   shift 2 ;;
+        --scale)    SCALE="$2";       _push_str_tla scale          "$2";   shift 2 ;;
+        --ckpt)                       _push_str_tla ckpt_path      "$2";   shift 2 ;;
+        --vgae-ckpt)                  _push_str_tla vgae_ckpt_path "$2";   shift 2 ;;
+        --gat-ckpt)                   _push_str_tla gat_ckpt_path  "$2";   shift 2 ;;
+        --lake-root)                  _push_str_tla lake_root      "$2";   shift 2 ;;
+        --set)                        SETS+=(--set "$2");                  shift 2 ;;
+        --dry-run)                    DRY_RUN=1;                           shift ;;
         *) echo "scripts/run: unknown arg: $1" >&2; exit 2 ;;
     esac
 done
 
+# Preset path implies fit command + gpu mode by default.
+if [[ -n "$PRESET" && -z "$COMMAND" ]]; then
+    INNER="python -m graphids fit --config $PRESET"
+    for t in ${TLAS[@]+"${TLAS[@]}"}; do INNER+=" $(printf '%q' "$t")"; done
+    for s in ${SETS[@]+"${SETS[@]}"}; do INNER+=" $(printf '%q' "$s")"; done
+    COMMAND="$INNER"
+    [[ -z "$MODE" ]] && MODE="gpu"
+    JOBNAME="graphids-$(basename "$PRESET" .jsonnet)"
+elif [[ -n "$COMMAND" ]]; then
+    [[ -z "$MODE" ]] && { echo "scripts/run: --command requires --mode gpu|cpu" >&2; exit 2; }
+    # Derive a job name from the first "meaningful" word after "python -m graphids".
+    JOBNAME="graphids-$(echo "$COMMAND" | awk '{for(i=1;i<=NF;i++) if ($i ~ /^[a-z]/ && $i != "python" && $i != "graphids" && $i != "-m") {print $i; exit}}')"
+    [[ -z "$JOBNAME" || "$JOBNAME" == "graphids-" ]] && JOBNAME="graphids-cmd"
+else
+    echo "scripts/run: need either <preset.jsonnet> or --command \"...\"" >&2
+    exit 2
+fi
+
+# -- Read the profile --------------------------------------------------------
+PROFILE_JSON=$(python - <<PY
+import json, sys
+profiles = json.load(open("$PROFILES_JSON"))["submit_profiles"]
+p = profiles["$MODE"]
+partition = p["partitions"]["$CLUSTER"]["$LENGTH"]
+time_default = p["times"]["$CLUSTER"]["$LENGTH"]
+print(f"{partition}|{p['cpus']}|{p['mem']}|{time_default}|{p.get('signal') or 'NONE'}")
+PY
+)
+IFS='|' read -r PARTITION CPUS MEM TIME SIGNAL <<< "$PROFILE_JSON"
+
+# Apply overrides.
+[[ -n "$MEM_OVERRIDE" ]] && MEM="$MEM_OVERRIDE"
+[[ -n "$TIME_OVERRIDE" ]] && TIME="$TIME_OVERRIDE"
+
+# Optional MLflow walltime estimation (fit-only, requires group + dataset).
+if [[ -n "$TIME_FROM_HISTORY" && -z "$TIME_OVERRIDE" && -n "$GROUP" && -n "$DATASET" && "$LENGTH" == "long" ]]; then
+    EST=$(python - <<PY
+from graphids.slurm.sizing import estimate_walltime_minutes, format_hms
+mins = estimate_walltime_minutes("$CLUSTER", "$GROUP", "$DATASET")
+print(format_hms(mins) if mins else "")
+PY
+)
+    [[ -n "$EST" ]] && TIME="$EST"
+fi
+
+# -- Build the sbatch invocation --------------------------------------------
 SLURM_LOG_DIR="${GRAPHIDS_SLURM_LOG_DIR:-${GRAPHIDS_LAKE_ROOT:-experimentruns}/slurm}"
 mkdir -p "$SLURM_LOG_DIR"
 
-PROFILE_ARGS=("$PROFILE" --cluster "$CLUSTER" --length "$LENGTH")
-[[ -n "$DATASET" ]] && PROFILE_ARGS+=(--dataset "$DATASET")
-[[ -n "$SCALE" ]]   && PROFILE_ARGS+=(--scale "$SCALE")
-# Preset-dir basename = ablation group (conv_type / gat_loss / unsupervised / ...).
-# Enables MLflow-history-based walltime estimation in submit-profile.
-GROUP="$(basename "$(dirname "$PRESET")")"
-[[ "$GROUP" != "ablations" && "$GROUP" != "stages" ]] && PROFILE_ARGS+=(--group "$GROUP")
-PROFILE_LINE=$(source .venv/bin/activate && python -m graphids submit-profile "${PROFILE_ARGS[@]}")
-read -r PARTITION CPUS MEM TIME SIGNAL MODE GRES COMMAND <<< "$PROFILE_LINE"
-[[ -n "$WALLTIME" ]] && TIME="$WALLTIME"
-
-JOBNAME="graphids-$(basename "$PRESET" .jsonnet)"
 PREAMBLE="source ${SCRIPT_DIR}/slurm/_preamble.sh"
-
 ENV=""
 [[ "$MODE" == "cpu" ]] && ENV="SKIP_CUDA_CONF=1 "
 
@@ -102,17 +148,13 @@ SBATCH=(sbatch
     --job-name="$JOBNAME"
     --output="${SLURM_LOG_DIR}/${JOBNAME}_%j.out"
     --error="${SLURM_LOG_DIR}/${JOBNAME}_%j.err"
+    --clusters="$CLUSTER"
 )
-SBATCH+=(--clusters="$CLUSTER")
-[[ -n "$GRES" && "$GRES" != "NONE" ]] && SBATCH+=(--gres="$GRES")
+[[ "$MODE" == "gpu" ]] && SBATCH+=(--gres="gpu:1")
 [[ -n "$SIGNAL" && "$SIGNAL" != "NONE" ]] && SBATCH+=(--signal="B:${SIGNAL}")
 [[ -n "${SBATCH_DEP:-}" ]] && SBATCH+=(--dependency="$SBATCH_DEP")
 
-INNER="$COMMAND --config $PRESET"
-for t in ${TLAS[@]+"${TLAS[@]}"}; do INNER+=" $(printf '%q' "$t")"; done
-for s in ${SETS[@]+"${SETS[@]}"}; do INNER+=" $(printf '%q' "$s")"; done
-
-WRAP="${ENV}${PREAMBLE} && ${INNER}"
+WRAP="${ENV}${PREAMBLE} && ${COMMAND}"
 
 if [[ -n "$DRY_RUN" ]]; then
     printf '%q ' "${SBATCH[@]}"

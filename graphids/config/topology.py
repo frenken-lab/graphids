@@ -21,7 +21,6 @@ from .constants import (
     PROJECT_ROOT,
     VALID_FUSION_METHODS,
     VALID_MODEL_FAMILIES,
-    VALID_SCALES,
 )
 
 _CONFIGS_DIR = PROJECT_ROOT / "configs"
@@ -46,23 +45,23 @@ def _validate_config_tree(stage_names: list[str]) -> None:
 def _validate_submit_profiles() -> None:
     """Import-time shape check for ``configs/resources/submit_profiles.json``.
 
-    Catches ``scale_mult`` keys outside ``VALID_SCALES`` at package load
-    instead of sbatch time.
+    Enforces the two-profile (gpu, cpu) invariant — catches accidental
+    profile proliferation at package load instead of at sbatch time.
     """
     path = _CONFIGS_DIR / "resources" / "submit_profiles.json"
     cfg = json.loads(path.read_text())
-    for name, p in cfg["submit_profiles"].items():
-        sc = p.get("scaling")
-        if not sc:
-            continue
-        for block_name in ("time_min", "mem_gb"):
-            block = sc.get(block_name) or {}
-            bad = set((block.get("scale_mult") or {}).keys()) - VALID_SCALES
-            if bad:
-                raise ValueError(
-                    f"submit_profiles[{name!r}].scaling.{block_name}.scale_mult has "
-                    f"unknown scale(s) {sorted(bad)}; valid: {sorted(VALID_SCALES)}"
-                )
+    profiles = cfg.get("submit_profiles") or {}
+    expected = {"gpu", "cpu"}
+    actual = set(profiles)
+    if actual != expected:
+        raise ValueError(
+            f"submit_profiles.json must have exactly {sorted(expected)} entries, "
+            f"got {sorted(actual)}. Per-job profiles belong in scripts/run flags."
+        )
+    for name, p in profiles.items():
+        for key in ("mode", "cpus", "mem", "partitions", "times"):
+            if key not in p:
+                raise ValueError(f"submit_profiles[{name!r}] missing required key {key!r}")
 
 
 STAGES: list[str] = json.loads((CONFIG_DIR / "matrix" / "topology.json").read_bytes())["stages"]

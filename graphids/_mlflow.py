@@ -29,6 +29,7 @@ from graphids._otel import get_logger
 log = get_logger(__name__)
 
 _TRACKING_URI_ENV = "MLFLOW_TRACKING_URI"
+_PARENT_RUN_ENV = "MLFLOW_PARENT_RUN_ID"
 _BACKEND_DB_SUBPATH = "mlflow.db"
 _ARTIFACT_SUBPATH = "mlartifacts"
 _SYSTEM_METRICS_INTERVAL_S = 5
@@ -230,6 +231,18 @@ def _checkpoint_hash_tag(run_dir: Path) -> dict[str, str]:
     return {}
 
 
+def _parent_run_tag() -> dict[str, str]:
+    """Link a child run to its parent. MLflow reserves ``mlflow.parentRunId``.
+
+    The launcher opens the parent on the login node and exports the run_id
+    via :data:`MLFLOW_PARENT_RUN_ID`; child processes read it here and pass
+    it as a tag at ``start_run`` time (the public API for cross-process
+    parent linking — ``nested=True`` only works within one process).
+    """
+    parent_id = os.environ.get(_PARENT_RUN_ENV, "").strip()
+    return {"mlflow.parentRunId": parent_id} if parent_id else {}
+
+
 def _identity_tags(identity: RunIdentity, run_dir: Path, cluster: str | None) -> dict[str, str]:
     return {
         "graphids.run_id": run_name_for(identity, cluster=cluster),
@@ -299,7 +312,9 @@ def start_training_run(run_dir: Path, resolved_config: dict[str, Any]) -> str | 
         mlflow.set_experiment(experiment)
 
         _call_with_retry_on_schema_race(
-            lambda: mlflow.start_run(run_name=run_name, tags={"graphids.phase": "fit"})
+            lambda: mlflow.start_run(
+                run_name=run_name, tags={"graphids.phase": "fit", **_parent_run_tag()}
+            )
         )
         mlflow.log_params(_flatten_params(resolved_config))
         tags = {
@@ -427,7 +442,9 @@ def log_test_run(
         _ensure_experiment(client, experiment)
         mlflow.set_experiment(experiment)
 
-        with mlflow.start_run(run_name=run_name, tags={"graphids.phase": "test"}):
+        with mlflow.start_run(
+            run_name=run_name, tags={"graphids.phase": "test", **_parent_run_tag()}
+        ):
             scalars = _scalar_metrics(metrics)
             if scalars:
                 mlflow.log_metrics(scalars)
@@ -443,4 +460,60 @@ def log_test_run(
         return run_name
     except Exception as exc:
         log.warning("mlflow_test_failed", error=str(exc), run_dir=str(run_dir))
+        return None
+
+
+def start_parent_run(
+    *,
+    group: str,
+    variant: str,
+    dataset: str,
+    cluster: str | None = None,
+    child_seeds: list[int] | None = None,
+) -> str | None:
+    """Open + immediately close an MLflow parent run for one ablation axis.
+
+    The parent exists only for UI grouping + cross-seed ``search_runs`` pivots
+    (see `MLflow parent/child docs
+    <https://mlflow.org/docs/latest/ml/traditional-ml/tutorials/hyperparameter-tuning/part1-child-runs/>`_).
+    Returns the run_id so the launcher can export it as ``MLFLOW_PARENT_RUN_ID``
+    for child jobs; children stamp it as ``mlflow.parentRunId`` at their own
+    ``start_run`` time — MLflow's supported pattern for cross-process linking.
+    """
+    try:
+        import mlflow
+        from mlflow.tracking import MlflowClient
+    except ImportError:
+        log.warning("mlflow_parent_skip_no_install")
+        return None
+
+    try:
+        uri = ensure_tracking_uri()
+        if not uri:
+            log.warning("mlflow_parent_skip_no_uri")
+            return None
+        mlflow.set_tracking_uri(uri)
+        experiment = f"graphids/{group}/{variant}"
+        client = MlflowClient(tracking_uri=uri)
+        _call_with_retry_on_schema_race(lambda: _ensure_experiment(client, experiment))
+        mlflow.set_experiment(experiment)
+
+        parent_name = f"{group}_{variant}_{dataset}"
+        if cluster:
+            parent_name = f"{parent_name}_{cluster}"
+        tags = {
+            "graphids.phase": "parent",
+            "graphids.group": group,
+            "graphids.variant": variant,
+            "graphids.dataset": dataset,
+            "graphids.cluster": cluster or "",
+        }
+        if child_seeds:
+            tags["graphids.child_seeds"] = ",".join(str(s) for s in child_seeds)[:_MAX_TAG_VALUE]
+        with mlflow.start_run(run_name=parent_name, tags=tags) as run:
+            run_id = run.info.run_id
+        log.info("mlflow_parent_started", run_id=run_id, run_name=parent_name)
+        return run_id
+    except Exception as exc:
+        log.warning("mlflow_parent_failed", error=str(exc), group=group, variant=variant)
         return None

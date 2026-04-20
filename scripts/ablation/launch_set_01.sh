@@ -36,9 +36,44 @@ LAKE_ROOT="${GRAPHIDS_LAKE_ROOT:?GRAPHIDS_LAKE_ROOT must be set in .env}/dev/${U
 CLUSTER_ARGS=()
 [[ -n "$CLUSTER" ]] && CLUSTER_ARGS=(--cluster "$CLUSTER")
 
+# Parent MLflow run per (group, variant) — children link via
+# MLFLOW_PARENT_RUN_ID. Keyed "group/variant" → run_id.
+declare -A PARENT
+
+_parent_for() {
+    # scripts/ablations/<group>/<variant>.jsonnet → PARENT[group/variant]
+    local cfg="$1"
+    local group variant
+    group="$(basename "$(dirname "$cfg")")"
+    variant="$(basename "$cfg" .jsonnet)"
+    echo "${PARENT[${group}/${variant}]:-}"
+}
+
+_open_parents() {
+    local pair group variant rid seeds_csv
+    seeds_csv="$(IFS=,; echo "${SEEDS[*]}")"
+    for pair in "$@"; do
+        group=${pair%/*}; variant=${pair#*/}
+        if [[ ${#DRY_RUN_FLAG[@]} -gt 0 ]]; then
+            PARENT[$pair]="dry_run_$pair"
+            echo "  parent $pair → (dry-run)"
+            continue
+        fi
+        if rid=$(python -m graphids mlflow-start-parent \
+                --group "$group" --variant "$variant" --dataset "$DATASET" \
+                --cluster "$CLUSTER" --seeds "$seeds_csv" 2>/dev/null); then
+            PARENT[$pair]="$rid"
+            echo "  parent $pair → $rid"
+        else
+            echo "  parent $pair → (skipped: mlflow unavailable; children un-grouped)"
+        fi
+    done
+}
+
 _fit() {
     local cfg="$1" seed="$2"
-    scripts/run "$cfg" --dataset "$DATASET" --seed "$seed" --lake-root "$LAKE_ROOT" \
+    MLFLOW_PARENT_RUN_ID="$(_parent_for "$cfg")" \
+        scripts/run "$cfg" --dataset "$DATASET" --seed "$seed" --lake-root "$LAKE_ROOT" \
         "${CLUSTER_ARGS[@]}" "${DRY_RUN_FLAG[@]}"
 }
 _fit_jid() {
@@ -46,6 +81,15 @@ _fit_jid() {
     line=$(_fit "$@" 2>&1 | tee /dev/stderr | tail -n 1)
     [[ ${#DRY_RUN_FLAG[@]} -gt 0 ]] && echo "0" || echo "${line##* }"
 }
+
+# -- Open all parent runs upfront (one per group/variant) --------------
+echo "=== Opening MLflow parent runs ==="
+_open_parents \
+    unsupervised/vgae unsupervised/gae unsupervised/dgi \
+    conv_type/gat conv_type/gatv2 conv_type/gps \
+    gat_sampling/none gat_sampling/curriculum_random gat_sampling/curriculum_vgae \
+    gat_loss/ce gat_loss/weighted_ce gat_loss/focal \
+    fusion/bandit fusion/dqn fusion/mlp fusion/weighted_avg
 
 # -- Stage 0: baseline VGAEs -------------------------------------------
 declare -A VGAE_JID
@@ -84,18 +128,18 @@ for SEED in "${SEEDS[@]}"; do
 done
 
 # -- Stage 3: extract-fusion-states (afterok Stage 0 + Stage 1 focal) --
-# extract-fusion-states isn't an ablation preset — it's an op, keep using submit.sh.
 declare -A STATES_JID
 echo "=== Stage 3: extract-fusion-states (${#SEEDS[@]} jobs) ==="
 for SEED in "${SEEDS[@]}"; do
     VGAE_CKPT="${LAKE_ROOT}/${DATASET}/ablations/unsupervised/vgae/seed_${SEED}/best.ckpt"
     GAT_CKPT="${LAKE_ROOT}/${DATASET}/ablations/gat_loss/focal/seed_${SEED}/best.ckpt"
     OUT="${LAKE_ROOT}/${DATASET}/ablations/fusion_states/seed_${SEED}"
+    CMD="python -m graphids extract-fusion-states \
+--vgae-ckpt ${VGAE_CKPT} --gat-ckpt ${GAT_CKPT} \
+--dataset ${DATASET} --seed ${SEED} --output-dir ${OUT}"
     line=$(SBATCH_DEP="afterok:${VGAE_JID[$SEED]}:${FOCAL_JID[$SEED]}" \
-        scripts/slurm/submit.sh extract-fusion-states \
-        --vgae-ckpt "${VGAE_CKPT}" --gat-ckpt "${GAT_CKPT}" \
-        --dataset "${DATASET}" --seed "${SEED}" --output-dir "${OUT}" \
-        2>&1 | tee /dev/stderr | tail -n 1)
+        scripts/run --mode gpu --mem 36G --time 0:30:00 --command "$CMD" \
+        "${DRY_RUN_FLAG[@]}" 2>&1 | tee /dev/stderr | tail -n 1)
     STATES_JID[$SEED]="${line##* }"
     echo "  seed=${SEED} -> states jid=${STATES_JID[$SEED]}"
 done
