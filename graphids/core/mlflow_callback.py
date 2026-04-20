@@ -72,7 +72,36 @@ class MLflowTrainingCallback(CallbackBase):
             best_ckpt_path=best_path,
             run_dir=run_dir,
         )
+        self._check_budget_utilization(trainer, peak_vram_mb)
         end_training_run(status="FINISHED")
+
+    def _check_budget_utilization(self, trainer, peak_vram_mb: float) -> None:
+        """Warn + tag when actual VRAM peak is far below the probed budget's
+        target. Catches silently-conservative budgets that would otherwise
+        masquerade as a healthy run at 20–30% GPU memory utilization.
+        """
+        import mlflow
+
+        from graphids._otel import get_logger
+
+        budget = getattr(getattr(trainer, "datamodule", None), "_budget", None)
+        if budget is None or budget.target_bytes <= 0 or peak_vram_mb <= 0:
+            return
+        peak_bytes = int(peak_vram_mb * 1024 * 1024)
+        utilization = peak_bytes / budget.target_bytes
+        pct = round(utilization * 100, 1)
+        mlflow.set_tag("graphids.budget_utilization_pct", str(pct))
+        mlflow.set_tag("graphids.budget_binding", budget.binding)
+        if utilization < 0.4:
+            mlflow.set_tag("graphids.budget_underutilized", "true")
+            get_logger(__name__).warning(
+                "budget_underutilized",
+                peak_vram_mb=round(peak_vram_mb, 1),
+                target_mb=budget.target_bytes // (1024 * 1024),
+                utilization_pct=pct,
+                binding=budget.binding,
+                threshold_pct=40.0,
+            )
 
     def on_exception(
         self,

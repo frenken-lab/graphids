@@ -1,6 +1,9 @@
 """Property-based tests for node_budget() — formula-free paths only.
 
-Covers the two non-probe paths:
+Covers the two non-probe paths, both of which require
+``GRAPHIDS_ALLOW_FALLBACK_BUDGET=1`` to opt into a conservative
+hardcoded budget instead of a RuntimeError:
+
 - GPS conv: closed-form sqrt scaling from free VRAM.
 - No-model fallback: emits binding='fallback' with a default bpn.
 
@@ -30,7 +33,12 @@ GPU_TYPES: dict[str, int] = {
 }
 
 
-def test_gps_budget_scales_monotonically_with_vram():
+@pytest.fixture
+def allow_fallback(monkeypatch):
+    monkeypatch.setenv("GRAPHIDS_ALLOW_FALLBACK_BUDGET", "1")
+
+
+def test_gps_budget_scales_monotonically_with_vram(allow_fallback):
     """Ranking of GPU sizes is preserved in the GPS quadratic budget."""
     budgets = {}
     for gpu, free in sorted(GPU_TYPES.items(), key=lambda kv: kv[1]):
@@ -48,8 +56,22 @@ def test_gps_budget_scales_monotonically_with_vram():
 
 
 @pytest.mark.parametrize("dataset", DATASETS)
-def test_fallback_binding_when_no_model(dataset):
+def test_fallback_binding_when_no_model(dataset, allow_fallback):
     """Without a model, node_budget reports binding='fallback' and budget > 0."""
     result = node_budget(dataset, model=None)
     assert result.binding == "fallback"
     assert result.budget > 0
+    # Dual-budget invariant: edge_budget must be set even on the fallback path,
+    # or pack_offline raises downstream when edge_sizes is passed.
+    assert result.edge_budget is not None and result.edge_budget > 0
+    # target_bytes must be non-zero so MLflowTrainingCallback's utilization
+    # check has a denominator to compare against.
+    assert result.target_bytes > 0
+
+
+def test_fallback_raises_without_env_opt_in():
+    """Prereq missing + no env opt-in → loud RuntimeError. Silent fallbacks
+    produce under-utilized runs that look successful but waste GPU memory.
+    """
+    with pytest.raises(RuntimeError, match="GRAPHIDS_ALLOW_FALLBACK_BUDGET"):
+        node_budget("set_01", model=None)

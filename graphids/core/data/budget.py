@@ -11,6 +11,13 @@ no resident-subtract heuristic. Single-point estimates systematically
 over-charge small batches with the fixed costs, inflating bpn_node by
 ~3-4× and capping packed batches well below the real hardware limit.
 
+GPS uses a **three-point quadratic probe** instead (``probe_quadratic``):
+global attention memory scales as O(V²·heads), so a linear fit is wrong.
+The quadratic coefficients (α, β, γ) are solved for via least-squares,
+and the node budget is the positive root of ``α·V² + β·V + γ = free·safety``.
+Edge budget is derived from the empirical edges-per-node ratio on the
+probe batches themselves — not a hardcoded multiplier.
+
 Workers sized by ``ceil((t_io + t_collation) / t_gpu)``.
 """
 
@@ -53,6 +60,39 @@ class BudgetResult:
     binding: str = "memory"
     backward_multiplier: float | None = None
     t_fwd: float = 0.0
+    # Bytes the budget was solved against (= free * safety at probe time).
+    # Consumed by MLflowTrainingCallback to warn on under-utilization.
+    target_bytes: int = 0
+
+
+_FALLBACK_ENV = "GRAPHIDS_ALLOW_FALLBACK_BUDGET"
+
+
+def _fallback_allowed() -> bool:
+    return os.environ.get(_FALLBACK_ENV, "0") == "1"
+
+
+def _require_probe_prereqs(model, train_dataset, conv_type: str) -> None:
+    """Raise unless CUDA + model + train_dataset are all present, or the env
+    opt-in is set. Silent fallbacks produce conservative budgets that can
+    leave 60-80% of GPU memory on the table — a correctness hazard that
+    looks like a successful run. Fail loudly instead.
+    """
+    if _fallback_allowed():
+        return
+    missing = []
+    if not torch.cuda.is_available():
+        missing.append("CUDA")
+    if model is None:
+        missing.append("model")
+    if train_dataset is None:
+        missing.append("train_dataset")
+    if missing:
+        raise RuntimeError(
+            f"budget probe prerequisites missing: {', '.join(missing)} "
+            f"(conv_type={conv_type}). Set {_FALLBACK_ENV}=1 to allow a "
+            f"conservative hardcoded budget (may silently under-utilize GPU)."
+        )
 
 
 @contextmanager
@@ -151,6 +191,120 @@ def probe(model, batch_small, batch_big) -> tuple[int, int, float, float]:
     return bpn_node, bpn_edge, bwd_mult, t_fwd_big
 
 
+def probe_quadratic(model, batches: list[Batch]) -> tuple[float, float, float, float]:
+    """Three-point quadratic fit of ``peak_bwd = α·V² + β·V + γ`` for GPS.
+
+    Runs warmup on the smallest batch (cuDNN autotuning, allocator baseline),
+    then full fwd+bwd on every batch and collects (V, peak) pairs. Fits the
+    quadratic via least-squares in float64 — the intercept γ absorbs every
+    fixed cost, α isolates the O(V²) attention term, β picks up O(V) linear
+    contributions (MPNN branch + feature projections).
+
+    Returns ``(alpha, beta, gamma, t_fwd_last)``. Caller solves the quadratic
+    against the free-VRAM target and handles degenerate fits.
+
+    Caller owns batch lifecycles; batches should be ordered ascending by
+    ``num_nodes`` so the smallest is used for warmup.
+    """
+    dev = model.device
+
+    with _eval_mode(model):
+        with torch.no_grad():
+            (getattr(model, "_step", None) or model)(batches[0])
+    torch.cuda.synchronize(dev)
+
+    vs: list[int] = []
+    peaks: list[int] = []
+    t_fwd_last = 0.0
+    for b in batches:
+        _, bwd_peak, t_fwd = _step_peaks(model, b)
+        vs.append(int(b.num_nodes))
+        peaks.append(bwd_peak)
+        t_fwd_last = t_fwd
+
+    A = torch.tensor([[v * v, v, 1.0] for v in vs], dtype=torch.float64)
+    y = torch.tensor(peaks, dtype=torch.float64)
+    coeffs = torch.linalg.lstsq(A, y.unsqueeze(1)).solution.squeeze(1)
+    alpha, beta, gamma = (float(c) for c in coeffs)
+    return alpha, beta, gamma, t_fwd_last
+
+
+_GPS_PROBE_SIZES = (500, 1500, 4000)
+
+
+def _gps_budget(dataset: str, free: int, heads: int, model, train_dataset) -> BudgetResult:
+    """Quadratic-probe path for GPS. Returns a ``BudgetResult`` with both
+    node and edge budgets. Raises if probe prerequisites (CUDA + model +
+    dataset) are missing unless ``GRAPHIDS_ALLOW_FALLBACK_BUDGET=1``. Falls
+    back silently only when the quadratic fit itself degenerates (α≤0 or
+    negative discriminant) — that's a measurement edge case, not a missing
+    prerequisite.
+    """
+    _require_probe_prereqs(model, train_dataset, conv_type="gps")
+
+    if not torch.cuda.is_available() or model is None or train_dataset is None:
+        # Opted-in fallback (env var set). Conservative sqrt formula with a
+        # 10× node-to-edge ratio that will never be the binding axis.
+        budget = max(1, int(math.sqrt(free / (heads * 6))))
+        target = max(1, int(free * _SAFETY))
+        return BudgetResult(
+            budget=budget,
+            edge_budget=budget * 10,
+            binding="fallback",
+            target_bytes=target,
+        )
+
+    dev = model.device
+    batches = [collect_batch(train_dataset, n).clone().to(dev) for n in _GPS_PROBE_SIZES]
+    total_v = sum(int(b.num_nodes) for b in batches)
+    total_e = sum(int(b.num_edges) for b in batches)
+    epn = total_e / max(1, total_v)
+
+    alpha, beta, gamma, t_fwd = probe_quadratic(model, batches)
+    del batches
+    torch.cuda.empty_cache()
+
+    target = free * _SAFETY
+    disc = beta * beta - 4 * alpha * (gamma - target)
+    if alpha <= 0 or disc < 0:
+        budget = max(1, int(math.sqrt(free / (heads * 6))))
+        binding = "memory_fallback"
+        log.warning(
+            "gps_probe_degenerate",
+            alpha=alpha,
+            beta=beta,
+            gamma=gamma,
+            discriminant=disc,
+        )
+    else:
+        budget = max(1, int((-beta + math.sqrt(disc)) / (2 * alpha)))
+        binding = "memory"
+
+    edge_budget = max(1, int(budget * epn * 1.1))
+
+    log.info(
+        "budget_probed",
+        dataset=dataset,
+        conv_type="gps",
+        binding=binding,
+        free_mb=free // (1024 * 1024),
+        alpha_bytes_per_v2=round(alpha, 4),
+        beta_bytes_per_v=round(beta, 2),
+        gamma_bytes=int(gamma),
+        budget_nodes=budget,
+        budget_edges=edge_budget,
+        edges_per_node=round(epn, 2),
+        t_fwd_ms=round(t_fwd * 1000, 1),
+    )
+    return BudgetResult(
+        budget=budget,
+        edge_budget=edge_budget,
+        binding=binding,
+        t_fwd=t_fwd,
+        target_bytes=int(target),
+    )
+
+
 def node_budget(
     dataset: str,
     *,
@@ -167,11 +321,10 @@ def node_budget(
     """
     free = torch.cuda.mem_get_info()[0] if torch.cuda.is_available() else 12 * 1024**3
 
-    # gps conv: hardcoded formula pending proper profiling. Skip probe since
-    # gps attention memory scales as O((V+E)^2) and the linear probe can't fit.
     if conv_type == "gps":
-        b = int(math.sqrt(free / (heads * 6)))
-        return BudgetResult(budget=b, binding="memory")
+        return _gps_budget(dataset, free, heads, model, train_dataset)
+
+    _require_probe_prereqs(model, train_dataset, conv_type=conv_type)
 
     bpn_node, bpn_edge = _FALLBACK_BPN, 0
     bwd, t_fwd = None, 0.0
@@ -188,7 +341,10 @@ def node_budget(
 
     free_scalable = max(1, int(free * _SAFETY))
     budget = max(1, free_scalable // max(1, bpn_node))
-    edge_budget = max(1, free_scalable // bpn_edge) if bpn_edge > 0 else None
+    # bpn_edge=0 only reachable via opt-in fallback; give a non-None edge
+    # budget so pack_offline's dual-budget invariant holds. 10× node budget
+    # is a conservative ceiling — real CAN graphs sit at 1–10 edges/node.
+    edge_budget = max(1, free_scalable // bpn_edge) if bpn_edge > 0 else budget * 10
     binding = "memory" if (model and train_dataset) else "fallback"
     log.info(
         "budget_probed",
@@ -209,6 +365,7 @@ def node_budget(
         binding=binding,
         backward_multiplier=bwd,
         t_fwd=t_fwd,
+        target_bytes=free_scalable,
     )
 
 
