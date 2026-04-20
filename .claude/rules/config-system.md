@@ -64,7 +64,7 @@ configs/
 │   ├── unsupervised.libsonnet     # { base, scales, kd }
 │   └── supervised.libsonnet
 ├── resources/
-│   └── submit_profiles.json       # static + scaling profiles for submit.sh
+│   └── submit_profiles.json       # two entries: gpu, cpu (per-cluster partitions + per-length wall defaults)
 ├── fusion.libsonnet               # { base, methods: {bandit, dqn, mlp, weighted_avg} }
 └── fusion/
     ├── base.libsonnet
@@ -72,7 +72,7 @@ configs/
 
 graphids/
   cli/
-    app.py                         # Typer root app + shared option types + apply_overrides + submit-profile
+    app.py                         # Typer root app + shared option types + apply_overrides + mlflow-start-parent
     training.py                    # fit / test commands
     analysis.py                    # analyze command
     data.py                        # rebuild-caches, extract-fusion-states

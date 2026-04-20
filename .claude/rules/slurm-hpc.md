@@ -15,7 +15,7 @@
 - Test on small datasets (`hcrl_ch`) before large ones (`set_02`+).
 - SLURM logs go to `slurm_logs/`, experiment outputs to `experimentruns/`.
 - Heavy tests use `@pytest.mark.slurm` — auto-skipped on login nodes.
-- **Always run tests via SLURM.** Submit with `scripts/slurm/submit.sh tests [-k pattern]`.
+- **Always run tests via SLURM.** Submit with `scripts/run --mode cpu --length short --command "python -m pytest [-k pattern]"`.
 
 ## Job Submission
 
@@ -35,19 +35,23 @@ scripts/run configs/ablations/fusion/dqn.jsonnet \
     --dataset set_01 --seed 42 --vgae-ckpt <p> --gat-ckpt <p> --cluster cardinal
 ```
 
-**Ops: `scripts/slurm/submit.sh <profile> [args...]`** for non-training jobs.
+**Ops: `scripts/run --mode {gpu|cpu} --command "..." [--mem M --time T --length short|long]`.**
+
+One script. No per-job profile registration.
 
 | Job | Command |
 |-----|---------|
-| Tests | `scripts/slurm/submit.sh tests [-k pattern] [-x]` |
-| Cache rebuild | `scripts/slurm/submit.sh rebuild-caches --all --delete-existing --yes` |
-| Analyze ckpt  | `scripts/slurm/submit.sh analyze --ckpt-path <p> --dataset <name>` |
-| Extract fusion states | `scripts/slurm/submit.sh extract-fusion-states` |
-| Profiling | `scripts/slurm/submit.sh profile` |
+| Tests | `scripts/run --mode cpu --length short --command "python -m pytest [-k pattern]"` |
+| Cache rebuild | `scripts/run --mode cpu --mem 54G --time 4:00:00 --command "python -m graphids rebuild-caches --all --delete-existing --yes"` |
+| Analyze ckpt | `scripts/run --mode gpu --mem 32G --time 2:00:00 --command "python -m graphids analyze --ckpt-path <p> --dataset <name>"` |
+| Extract fusion states | `scripts/run --mode gpu --mem 36G --time 0:30:00 --command "python -m graphids extract-fusion-states ..."` |
+| Profiling | `scripts/run --mode gpu --length short --command "python -m graphids profile"` |
 
-Source of truth for resource sizing: `configs/resources/submit_profiles.json`.
-`python -m graphids submit-profile <job>` prints the resource tuple that
-both launchers consume. Both handle `.env` sourcing + account selection.
+Source of truth for `partition` + `cpus` + per-length walltime defaults:
+`configs/resources/submit_profiles.json` (only `gpu` and `cpu` entries —
+per-job overrides flow through flags). Optional `--time-from-history`
+opts into MLflow-history walltime estimation (library:
+`graphids.slurm.sizing`).
 
 ## Writing SLURM Job Scripts
 

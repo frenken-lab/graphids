@@ -111,28 +111,26 @@ Budget tuning: `GRAPHIDS_BUDGET_SAFETY_MARGIN`, `GRAPHIDS_BUDGET_GRAD_MULT`,
 
 ### HPC resource profiles
 
-Single source of truth: `configs/resources/submit_profiles.json`. Two shapes:
+Single source of truth: `configs/resources/submit_profiles.json`. Exactly two
+entries — `gpu` and `cpu`. Each carries per-cluster `partitions` and per-length
+`times` defaults. Per-job mem/time/command are flags on `scripts/run`, never
+new JSON entries. `graphids/config/topology.py::_validate_submit_profiles`
+enforces the two-entry invariant at import time.
 
-- **static** — fixed `time` + `mem` (e.g. `tests`, `analyze`, `profile`,
-  `fit`, `fit-long`).
-- **scaling** — `scaling.{time_min, mem_gb}` with `base + per_mraw * num_raw_samples`
-  interpolated from `cache_metadata.json.aggregate.num_raw_samples` for the
-  `--dataset` passed to `submit.sh`. Falls back to the `defaults` block when
-  `--dataset` is absent. `rebuild-caches` uses this.
+Optional MLflow-history walltime estimation lives in
+`graphids.slurm.sizing.estimate_walltime_minutes`; `scripts/run --time-from-history`
+opts into it for fit jobs with enough history (≥3 prior FINISHED runs).
 
-`submit-profile <job> [--dataset X] [--scale small|large]` prints the resolved
-row that `submit.sh` parses. `graphids/config/topology.py::_validate_submit_profiles`
-catches out-of-range `scale_mult` keys at import time.
+### Submission surface
 
-### Submit profiles (`scripts/slurm/submit.sh`)
-
-| Profile        | Partition | Time  | Command                               |
-|----------------|-----------|-------|---------------------------------------|
-| tests          | cpu       | 1:00  | `python -m pytest`                    |
-| rebuild-caches | cpu       | 4:00  | `python -m graphids rebuild-caches`   |
-| profile        | gpudebug  | 1:00  | `python -m graphids profile`          |
-
-Full list: `configs/resources/submit_profiles.json`.
+| Use | Command |
+|-----|---------|
+| Training preset | `scripts/run <preset.jsonnet> [--dataset X --seed N --smoke]` |
+| Test / eval (CPU) | `scripts/run --mode cpu --command "python -m graphids test --config X --ckpt Y"` |
+| Tests | `scripts/run --mode cpu --length short --command "python -m pytest [-k pattern]"` |
+| Cache rebuild | `scripts/run --mode cpu --mem 54G --time 4:00:00 --command "python -m graphids rebuild-caches --all"` |
+| Analyze ckpt | `scripts/run --mode gpu --mem 32G --time 2:00:00 --command "python -m graphids analyze ..."` |
+| Profiling | `scripts/run --mode gpu --length short --command "python -m graphids profile"` |
 
 ---
 
@@ -160,13 +158,22 @@ No Python planner, no identity-hash layer.
 
 ### Logged metrics
 
-| Model       | train step            | val step        | test epoch                                        |
-|-------------|-----------------------|-----------------|---------------------------------------------------|
-| VGAE/DGI    | train_loss            | val_loss        | accuracy, f1, precision, recall, specificity, auc |
-| GAT         | train_loss, train_acc | val_loss, val_acc | accuracy, f1, precision, recall, specificity, auc |
-| DQN         | avg_reward, epsilon   | val_acc         | --                                                |
-| Bandit      | accuracy, avg_reward  | val_acc         | --                                                |
-| MLP/WAvg    | train_loss            | val_loss, val_acc | accuracy, f1, precision, recall, specificity, auc |
+Classifier-flavor models (GAT, all fusion) emit the unified
+`classification_test_metrics` set on `test_epoch`: `accuracy`, `mcc`, `ece`;
+`{f1,precision,recall,specificity,auc,ap}_{macro,weighted}`; and per-class
+`{f1,precision,recall,specificity,auc,ap}_per_class/<name>` via
+`torchmetrics.wrappers.ClasswiseWrapper` (class names default to
+`["benign","attack"]` for binary). Threshold-flavor models (VGAE/DGI) keep
+`binary_test_metrics(threshold=Youden-J)`: `accuracy, f1, precision, recall,
+specificity, mcc, auc, ap, ece` plus the discovered `threshold`.
+
+| Model       | train step            | val step          | test epoch |
+|-------------|-----------------------|-------------------|-----------|
+| VGAE / DGI  | `train_loss`          | `val_loss`        | binary @ Youden-J |
+| GAT         | `train_loss, train_acc` | `val_loss, val_acc` | classifier (unified) |
+| DQN         | `avg_reward, epsilon` | `val_acc`         | classifier (unified) |
+| Bandit      | `accuracy, avg_reward`| `val_acc`         | classifier (unified) |
+| MLP / WAvg  | `train_loss`          | `val_loss, val_acc` | classifier (unified) |
 
 ### Analyzer artifacts
 

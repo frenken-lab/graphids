@@ -30,7 +30,7 @@ Two stores: **MLflow** for run-level metadata + scalar metrics timeseries + devi
 | Structured logging | `_StructuredAdapter` -> `LoggingHandler` | `graphids/_otel.py` |
 | Traces + log events (per-run) | `traces.jsonl` via `ConsoleSpanExporter` | `{run_dir}/traces.jsonl` |
 | Wandb Weave (optional) | OTLP HTTP exporter to `trace.wandb.ai` | `graphids/_otel.py`, gated on `WANDB_API_KEY` |
-| Op-level profiling | PyTorchProfiler (chrome traces) | `scripts/slurm/submit.sh profile` |
+| Op-level profiling | PyTorchProfiler (chrome traces) | `scripts/run --mode gpu --length short --command "python -m graphids profile"` |
 | SLURM job accounting | sacct summary + log rotation | `_epilog.sh` |
 | CUDA alloc config | `expandable_segments:True,garbage_collection_threshold:0.8` | `_preamble.sh` |
 | Mixed precision | `precision: 16-mixed` | `configs/_lib/defaults.libsonnet` |

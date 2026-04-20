@@ -22,10 +22,12 @@ and returns an `InstantiatedRun(trainer, model, datamodule)`.
 `evaluate`. `fit` / `test` call these directly. No pipeline driver. Multi-stage
 chains are bash loops submitting each preset with `SBATCH_DEP=afterok:<jid>`.
 
-**SLURM** (`graphids/slurm/`, `scripts/run`, `scripts/slurm/submit.sh`) —
-resource allocation and job submission. `scripts/run` launches training
-presets; `submit.sh` covers non-training jobs (tests, rebuild-caches,
-analyze, etc.). Both read `configs/resources/submit_profiles.json`.
+**SLURM** (`graphids/slurm/`, `scripts/run`) — resource allocation and
+job submission. One script: `scripts/run <preset.jsonnet>` for training;
+`scripts/run --mode {gpu|cpu} --command "..."` for everything else.
+Reads `configs/resources/submit_profiles.json` (two entries only: `gpu`,
+`cpu`). Optional `graphids.slurm.sizing.estimate_walltime_minutes` queries
+MLflow history when invoked with `--time-from-history`.
 
 The pipeline is strictly one-directional:
 

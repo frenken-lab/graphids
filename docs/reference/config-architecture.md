@@ -37,7 +37,7 @@ in-process pipeline driver.
 ### Route B: Operational commands (no training)
 
 ```
-python -m graphids {analyze|rebuild-caches|extract-fusion-states|submit-profile}
+python -m graphids {analyze|rebuild-caches|extract-fusion-states|compare|mlflow-start-parent}
   -> __main__.py imports cli submodules
   -> Typer @app.command() dispatch per submodule
 ```
