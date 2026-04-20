@@ -91,6 +91,10 @@ class MLflowTrainingCallback(CallbackBase):
         utilization = peak_bytes / budget.target_bytes
         pct = round(utilization * 100, 1)
         mlflow.set_tag("graphids.budget_utilization_pct", str(pct))
+        # Tag value domain is the BudgetBinding Literal from budget.py —
+        # {"measured", "measured_degenerate_fallback", "opted_in_fallback"}.
+        # Pre-Apr-2026 runs stamped {"memory", "memory_fallback", "fallback"};
+        # consumers filtering this tag across history must accept both domains.
         mlflow.set_tag("graphids.budget_binding", budget.binding)
         if utilization < 0.4:
             mlflow.set_tag("graphids.budget_underutilized", "true")

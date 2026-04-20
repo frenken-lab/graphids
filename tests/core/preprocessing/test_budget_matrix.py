@@ -59,7 +59,7 @@ def test_gps_budget_scales_monotonically_with_vram(allow_fallback):
 def test_fallback_binding_when_no_model(dataset, allow_fallback):
     """Without a model, node_budget reports binding='fallback' and budget > 0."""
     result = node_budget(dataset, model=None)
-    assert result.binding == "fallback"
+    assert result.binding == "opted_in_fallback"
     assert result.budget > 0
     # Dual-budget invariant: edge_budget must be set even on the fallback path,
     # or pack_offline raises downstream when edge_sizes is passed.

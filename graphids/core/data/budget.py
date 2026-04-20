@@ -29,6 +29,7 @@ import random
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 import torch
@@ -37,6 +38,18 @@ from torch_geometric.data import Batch
 from graphids._otel import get_logger
 
 log = get_logger(__name__)
+
+
+# Three disjoint states for how BudgetResult.budget was derived. Named by
+# *why* (the reason for this value), not *what* (its implementation). Stamped
+# as MLflow tag ``graphids.budget_binding`` by
+# MLflowTrainingCallback._check_budget_utilization — downstream dashboards
+# filter on these exact strings, so rename impact is cross-cutting.
+BudgetBinding = Literal[
+    "measured",  # probe ran, fit was valid
+    "measured_degenerate_fallback",  # probe ran but fit degenerate → formula
+    "opted_in_fallback",  # prereqs missing + GRAPHIDS_ALLOW_FALLBACK_BUDGET=1
+]
 
 
 _BWD_MULT_FALLBACK = 2.0
@@ -58,7 +71,7 @@ class BudgetResult:
 
     budget: int  # max nodes per batch
     edge_budget: int | None = None
-    binding: str = "memory"
+    binding: BudgetBinding = "measured"
     backward_multiplier: float | None = None
     t_fwd: float = 0.0
     # Bytes the budget was solved against (= free * safety at probe time).
@@ -265,7 +278,7 @@ def _gps_budget(dataset: str, free: int, heads: int, model, train_dataset) -> Bu
         return BudgetResult(
             budget=budget,
             edge_budget=edge_budget,
-            binding="fallback",
+            binding="opted_in_fallback",
             target_bytes=target,
         )
 
@@ -290,7 +303,7 @@ def _gps_budget(dataset: str, free: int, heads: int, model, train_dataset) -> Bu
         # sqrt budget; edge_budget below uses the empirical epn from the probe
         # batches (not the fallback's 10× ratio) since we actually measured it.
         budget, _ = _fallback_budget_pair(free, heads)
-        binding = "memory_fallback"
+        binding = "measured_degenerate_fallback"
         log.warning(
             "gps_probe_degenerate",
             alpha=alpha,
@@ -300,7 +313,7 @@ def _gps_budget(dataset: str, free: int, heads: int, model, train_dataset) -> Bu
         )
     else:
         budget = max(1, int(max(real_positive)))
-        binding = "memory"
+        binding = "measured"
 
     edge_budget = max(1, int(budget * epn * settings.empirical_epn_headroom))
 
@@ -374,7 +387,7 @@ def node_budget(
         if bpn_edge > 0
         else int(budget * settings.fallback_edge_node_ratio)
     )
-    binding = "memory" if (model and train_dataset) else "fallback"
+    binding = "measured" if (model and train_dataset) else "opted_in_fallback"
     log.info(
         "budget_probed",
         dataset=dataset,
