@@ -151,7 +151,10 @@ class GraphAutoencoderNeighborhood(nn.Module):
             )
         mu = self.z_mean(x)
         if self.variational:
-            logvar = self.z_logvar(x).clamp(-20, 20)
+            # Clamp to ±10 so exp(logvar) stays inside fp16 range (~65504) under
+            # autocast — at ±20, exp(20)≈4.85e8 overflows fp16 and propagates NaN
+            # through the KL term during validation.
+            logvar = self.z_logvar(x).clamp(-10, 10)
             std = torch.exp(0.5 * logvar)
             eps = torch.randn_like(std)
             z = mu + eps * std
