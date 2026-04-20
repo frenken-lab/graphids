@@ -79,6 +79,10 @@ mkdir -p "$SLURM_LOG_DIR"
 PROFILE_ARGS=("$PROFILE" --cluster "$CLUSTER" --length "$LENGTH")
 [[ -n "$DATASET" ]] && PROFILE_ARGS+=(--dataset "$DATASET")
 [[ -n "$SCALE" ]]   && PROFILE_ARGS+=(--scale "$SCALE")
+# Preset-dir basename = ablation group (conv_type / gat_loss / unsupervised / ...).
+# Enables MLflow-history-based walltime estimation in submit-profile.
+GROUP="$(basename "$(dirname "$PRESET")")"
+[[ "$GROUP" != "ablations" && "$GROUP" != "stages" ]] && PROFILE_ARGS+=(--group "$GROUP")
 PROFILE_LINE=$(source .venv/bin/activate && python -m graphids submit-profile "${PROFILE_ARGS[@]}")
 read -r PARTITION CPUS MEM TIME SIGNAL MODE GRES COMMAND <<< "$PROFILE_LINE"
 [[ -n "$WALLTIME" ]] && TIME="$WALLTIME"

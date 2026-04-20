@@ -191,8 +191,15 @@ def submit_profile(
     ] = "pitzer",
     length: Annotated[
         str,
-        typer.Option("--length", help="short (debug queue, ~1h) or long (batch queue, ~4h)"),
+        typer.Option("--length", help="short (debug queue) or long (batch queue)"),
     ] = "long",
+    group: Annotated[
+        str | None,
+        typer.Option(
+            "--group",
+            help="Ablation group (conv_type / gat_loss / ...) — enables MLflow history lookup",
+        ),
+    ] = None,
 ) -> None:
     """Print resource profile fields for ``scripts/slurm/submit.sh``.
 
@@ -203,9 +210,10 @@ def submit_profile(
     - static (``partition`` + ``time`` + ``mem`` fields) — emit as-is.
     - scaling (``scaling`` block) — size from ``--dataset``'s num_raw_samples;
       fall back to ``defaults`` when ``--dataset`` is omitted.
-    - fit-shape (``partitions`` map + ``time_short`` / ``time_long``) —
-      pick partition from ``partitions[cluster][length]`` and time from
-      ``time_{length}``. One profile covers every cluster × length combo.
+    - fit-shape (``partitions`` + ``times`` per-cluster maps) — pick partition
+      from ``partitions[cluster][length]`` and time from MLflow history for
+      matching ``(cluster, group, dataset)`` runs (p95 × 1.5 buffer) if
+      available; fall back to ``times[cluster][length]`` otherwise.
     """
     from graphids._otel import get_logger
     from graphids.config.constants import PROJECT_ROOT
@@ -233,7 +241,8 @@ def submit_profile(
             log.error("submit_profile_unknown_length", length=length, available=sorted(cluster_map))
             raise typer.Exit(1)
         p["partition"] = cluster_map[length]
-        p["time"] = p[f"time_{length}"]
+        # Time resolution: try MLflow history first, then per-cluster static.
+        p["time"] = _resolve_fit_time(p, cluster, length, group, dataset, log)
 
     num_raw = _load_num_raw_samples(dataset) if dataset else None
     cpus, mem_str, time_str = _resolve_resources(p, num_raw, scale)
@@ -243,6 +252,100 @@ def submit_profile(
     print(
         f"{p['partition']} {cpus} {mem_str} {time_str} {signal} {p['mode']} {gres} {p['command']}"
     )
+
+
+def _resolve_fit_time(
+    p: dict,
+    cluster: str,
+    length: str,
+    group: str | None,
+    dataset: str | None,
+    log,
+) -> str:
+    """Resolve walltime for a fit-shape profile. History-first, static fallback.
+
+    Query MLflow for prior FINISHED fit-phase runs matching
+    ``(cluster, group, dataset)``. If ≥3 runs exist, use ``p95 × 1.5`` as the
+    walltime (bounded by the per-cluster long/short static as a ceiling for
+    ``short`` length to keep smoke tests inside the debug partition limit).
+    Otherwise fall back to ``times[cluster][length]`` — a hand-calibrated
+    per-cluster static that acknowledges GPU-throughput differences.
+    """
+    fallback = p["times"][cluster][length]
+    if not group or not dataset:
+        return fallback
+    if length == "short":
+        # Short runs are smoke tests capped by debug-queue wall limits; never
+        # trust history (a slow "long" run would push short past the cap).
+        return fallback
+    mins = _estimate_walltime_minutes(cluster, group, dataset)
+    if mins is None:
+        return fallback
+    log.info(
+        "walltime_from_history",
+        cluster=cluster,
+        group=group,
+        dataset=dataset,
+        minutes=mins,
+        fallback=fallback,
+    )
+    return f"{mins // 60}:{mins % 60:02d}:00"
+
+
+def _estimate_walltime_minutes(cluster: str, group: str, dataset: str) -> int | None:
+    """Query MLflow for prior ``(cluster, group, dataset)`` FINISHED fit runs.
+
+    Returns ``ceil(p95(elapsed_mins) * 1.5)``, clamped to ``[10, 10080]``
+    (10 min floor, 7-day SLURM ceiling). ``None`` if fewer than 3 matching
+    runs exist — the caller falls back to the per-cluster static.
+    """
+    import math
+
+    try:
+        from graphids._mlflow import ensure_tracking_uri
+    except ImportError:
+        return None
+    uri = ensure_tracking_uri()
+    if uri is None:
+        return None
+    try:
+        from mlflow.tracking import MlflowClient
+    except ImportError:
+        return None
+    try:
+        client = MlflowClient(tracking_uri=uri)
+        experiments = [e.experiment_id for e in client.search_experiments()]
+        if not experiments:
+            return None
+        # Use slurm.slurm_cluster_name (set by SLURM itself, always correct)
+        # over graphids.cluster (derived from settings.cluster, can be empty
+        # when the submitter shell's GRAPHIDS_CLUSTER isn't exported into the
+        # job env). Same source-of-truth reasoning as the unsupervised runs'
+        # backfill script.
+        filter_str = (
+            f"tags.`slurm.slurm_cluster_name` = '{cluster}' "
+            f"AND tags.`graphids.group` = '{group}' "
+            f"AND tags.`graphids.dataset` = '{dataset}' "
+            f"AND tags.`graphids.phase` = 'fit' "
+            f"AND attributes.status = 'FINISHED'"
+        )
+        runs = client.search_runs(
+            experiment_ids=experiments, filter_string=filter_str, max_results=50
+        )
+    except Exception:
+        return None
+    elapsed = [
+        (r.info.end_time - r.info.start_time) / 60000
+        for r in runs
+        if r.info.end_time and r.info.start_time and r.info.end_time > r.info.start_time
+    ]
+    if len(elapsed) < 3:
+        return None
+    elapsed.sort()
+    # p95 by rank — no numpy dep for a 3–50 item list
+    idx = max(0, min(len(elapsed) - 1, int(math.ceil(0.95 * len(elapsed))) - 1))
+    p95 = elapsed[idx]
+    return max(10, min(int(math.ceil(p95 * 1.5)), 7 * 24 * 60))
 
 
 def _load_num_raw_samples(dataset: str) -> int | None:

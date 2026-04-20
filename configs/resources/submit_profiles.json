@@ -46,10 +46,13 @@
         "cardinal": {"short": "debug",    "long": "gpu"},
         "ascend":   {"short": "debug",    "long": "gpu"}
       },
+      "times": {
+        "pitzer":   {"short": "1:00:00", "long": "3:00:00"},
+        "cardinal": {"short": "1:00:00", "long": "1:15:00"},
+        "ascend":   {"short": "1:00:00", "long": "1:45:00"}
+      },
       "cpus": 8,
       "mem": "48G",
-      "time_short": "1:00:00",
-      "time_long":  "4:00:00",
       "signal": "",
       "mode": "gpu",
       "command": "python -m graphids fit"
@@ -60,10 +63,13 @@
         "cardinal": {"short": "debug",     "long": "cpu"},
         "ascend":   {"short": "debug",     "long": "cpu"}
       },
+      "times": {
+        "pitzer":   {"short": "1:00:00", "long": "6:00:00"},
+        "cardinal": {"short": "1:00:00", "long": "3:00:00"},
+        "ascend":   {"short": "1:00:00", "long": "4:00:00"}
+      },
       "cpus": 16,
       "mem": "32G",
-      "time_short": "1:00:00",
-      "time_long":  "4:00:00",
       "signal": "",
       "mode": "cpu",
       "command": "python -m graphids fit"
