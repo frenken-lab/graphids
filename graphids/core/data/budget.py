@@ -30,6 +30,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 from torch_geometric.data import Batch
 
@@ -70,6 +71,22 @@ _FALLBACK_ENV = "GRAPHIDS_ALLOW_FALLBACK_BUDGET"
 
 def _fallback_allowed() -> bool:
     return os.environ.get(_FALLBACK_ENV, "0") == "1"
+
+
+def _fallback_budget_pair(free: int, heads: int) -> tuple[int, int]:
+    """Conservative (node_budget, edge_budget) pair when a real probe can't run.
+
+    Called by (a) _gps_budget's opt-in-fallback branch and (b) node_budget's
+    linear opt-in-fallback branch. For the GPS degenerate-fit branch, only
+    the node half of this pair is used — the edge half there comes from the
+    empirical edges-per-node measured on the (failed) probe batches.
+    """
+    from graphids.config.settings import get_settings
+
+    s = get_settings()
+    budget = max(1, int(math.sqrt(free / (heads * s.gps_fallback_attention_divisor))))
+    edge_budget = int(budget * s.fallback_edge_node_ratio)
+    return budget, edge_budget
 
 
 def _require_probe_prereqs(model, train_dataset, conv_type: str) -> None:
@@ -222,11 +239,9 @@ def probe_quadratic(model, batches: list[Batch]) -> tuple[float, float, float, f
         peaks.append(bwd_peak)
         t_fwd_last = t_fwd
 
-    A = torch.tensor([[v * v, v, 1.0] for v in vs], dtype=torch.float64)
-    y = torch.tensor(peaks, dtype=torch.float64)
-    coeffs = torch.linalg.lstsq(A, y.unsqueeze(1)).solution.squeeze(1)
-    alpha, beta, gamma = (float(c) for c in coeffs)
-    return alpha, beta, gamma, t_fwd_last
+    # polyfit returns coefficients in ASCENDING order: [gamma, beta, alpha].
+    gamma, beta, alpha = np.polynomial.polynomial.polyfit(vs, peaks, 2)
+    return float(alpha), float(beta), float(gamma), t_fwd_last
 
 
 _GPS_PROBE_SIZES = (500, 1500, 4000)
@@ -244,12 +259,12 @@ def _gps_budget(dataset: str, free: int, heads: int, model, train_dataset) -> Bu
 
     if not torch.cuda.is_available() or model is None or train_dataset is None:
         # Opted-in fallback (env var set). Conservative sqrt formula with a
-        # 10× node-to-edge ratio that will never be the binding axis.
-        budget = max(1, int(math.sqrt(free / (heads * 6))))
+        # node-to-edge ratio (from settings) that will never be the binding axis.
+        budget, edge_budget = _fallback_budget_pair(free, heads)
         target = max(1, int(free * _SAFETY))
         return BudgetResult(
             budget=budget,
-            edge_budget=budget * 10,
+            edge_budget=edge_budget,
             binding="fallback",
             target_bytes=target,
         )
@@ -264,23 +279,30 @@ def _gps_budget(dataset: str, free: int, heads: int, model, train_dataset) -> Bu
     del batches
     torch.cuda.empty_cache()
 
+    from graphids.config.settings import get_settings
+
+    settings = get_settings()
     target = free * _SAFETY
-    disc = beta * beta - 4 * alpha * (gamma - target)
-    if alpha <= 0 or disc < 0:
-        budget = max(1, int(math.sqrt(free / (heads * 6))))
+    roots = np.roots([alpha, beta, gamma - target])
+    real_positive = [r.real for r in roots if abs(r.imag) < 1e-9 and r.real > 0]
+    if not real_positive:
+        # Degenerate fit — node half of the fallback pair is the right conservative
+        # sqrt budget; edge_budget below uses the empirical epn from the probe
+        # batches (not the fallback's 10× ratio) since we actually measured it.
+        budget, _ = _fallback_budget_pair(free, heads)
         binding = "memory_fallback"
         log.warning(
             "gps_probe_degenerate",
             alpha=alpha,
             beta=beta,
             gamma=gamma,
-            discriminant=disc,
+            roots=roots.tolist(),
         )
     else:
-        budget = max(1, int((-beta + math.sqrt(disc)) / (2 * alpha)))
+        budget = max(1, int(max(real_positive)))
         binding = "memory"
 
-    edge_budget = max(1, int(budget * epn * 1.1))
+    edge_budget = max(1, int(budget * epn * settings.empirical_epn_headroom))
 
     log.info(
         "budget_probed",
@@ -339,12 +361,19 @@ def node_budget(
         del small, big
         torch.cuda.empty_cache()
 
+    from graphids.config.settings import get_settings
+
+    settings = get_settings()
     free_scalable = max(1, int(free * _SAFETY))
     budget = max(1, free_scalable // max(1, bpn_node))
     # bpn_edge=0 only reachable via opt-in fallback; give a non-None edge
-    # budget so pack_offline's dual-budget invariant holds. 10× node budget
-    # is a conservative ceiling — real CAN graphs sit at 1–10 edges/node.
-    edge_budget = max(1, free_scalable // bpn_edge) if bpn_edge > 0 else budget * 10
+    # budget so pack_offline's dual-budget invariant holds. fallback_edge_node_ratio
+    # (default 10×) is a conservative ceiling — real CAN graphs sit at 1–10 edges/node.
+    edge_budget = (
+        max(1, free_scalable // bpn_edge)
+        if bpn_edge > 0
+        else int(budget * settings.fallback_edge_node_ratio)
+    )
     binding = "memory" if (model and train_dataset) else "fallback"
     log.info(
         "budget_probed",

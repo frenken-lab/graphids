@@ -40,6 +40,15 @@ class GraphIDSSettings(BaseSettings):
     # genuine leaks / co-resident processes cross it quickly.
     vram_drift_threshold: float = 0.20
 
+    # --- Budget fallback constants ---
+    # Used by _gps_budget and node_budget when the probe can't run or degenerates.
+    # Single source so callers don't inline magic numbers.
+    gps_fallback_attention_divisor: int = 6  # budget = sqrt(free / (heads * divisor))
+    fallback_edge_node_ratio: float = (
+        10.0  # edge_budget = budget * this when no per-batch epn measured
+    )
+    empirical_epn_headroom: float = 1.1  # multiplier on measured edges-per-node when probe succeeds
+
     # --- SLURM ---
     slurm_account: str = "PAS1266"
     slurm_log_dir: str = ""
