@@ -51,12 +51,6 @@ profile collapse for the SLURM surface.
   Real-run behavior is correct (last line is
   `"Submitted batch job NNN"`). Fix by matching `sbatch` output
   explicitly or dropping dry-run display of downstream dep fields.
-- **`_paths.libsonnet` uses `best.ckpt` but ModelCheckpoint writes
-  `best_model.ckpt`.** Affects `vgae_ckpt()` / `gat_ckpt()` helpers and
-  Stage 3 `extract-fusion-states` invocation. Latent bug — curriculum_vgae
-  and fusion chains will fail to find the upstream ckpt. Fix in one pass
-  across `_paths.libsonnet:11,14`, `scripts/ablation/launch_set_01.sh:134-135`,
-  `CLAUDE.md:22,31,34`, `configs/ablations/README.md`.
 
 ## Open issues
 

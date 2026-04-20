@@ -27,7 +27,7 @@ scripts/run configs/ablations/gat_loss/focal.jsonnet --dataset hcrl_sa --seed 12
 
 # ablations that need upstream checkpoints (curriculum_vgae, fusion/*)
 scripts/run configs/ablations/gat_sampling/curriculum_vgae.jsonnet \
-    --vgae-ckpt /fs/ess/.../best.ckpt
+    --vgae-ckpt /fs/ess/.../checkpoints/best_model.ckpt
 
 # cluster override (submit from pitzer, target cardinal)
 scripts/run configs/ablations/fusion/dqn.jsonnet \

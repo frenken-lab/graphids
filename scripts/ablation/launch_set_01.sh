@@ -157,8 +157,8 @@ done
 declare -A STATES_JID
 echo "=== Stage 3: extract-fusion-states (${#SEEDS[@]} jobs) ==="
 for SEED in "${SEEDS[@]}"; do
-    VGAE_CKPT="${LAKE_ROOT}/${DATASET}/ablations/unsupervised/vgae/seed_${SEED}/best.ckpt"
-    GAT_CKPT="${LAKE_ROOT}/${DATASET}/ablations/gat_loss/focal/seed_${SEED}/best.ckpt"
+    VGAE_CKPT="${LAKE_ROOT}/${DATASET}/ablations/unsupervised/vgae/seed_${SEED}/checkpoints/best_model.ckpt"
+    GAT_CKPT="${LAKE_ROOT}/${DATASET}/ablations/gat_loss/focal/seed_${SEED}/checkpoints/best_model.ckpt"
     OUT="${LAKE_ROOT}/${DATASET}/ablations/fusion_states/seed_${SEED}"
     CMD="python -m graphids extract-fusion-states \
 --vgae-ckpt ${VGAE_CKPT} --gat-ckpt ${GAT_CKPT} \

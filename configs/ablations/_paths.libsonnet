@@ -8,10 +8,7 @@
     '%s/%s/ablations/%s/%s/seed_%d' % [lake_root, dataset, group, variant, seed],
 
   vgae_ckpt(lake_root, dataset, seed)::
-    '%s/%s/ablations/unsupervised/vgae/seed_%d/best.ckpt' % [lake_root, dataset, seed],
-
-  gat_ckpt(lake_root, dataset, seed)::
-    '%s/%s/ablations/baseline_gat/seed_%d/best.ckpt' % [lake_root, dataset, seed],
+    '%s/%s/ablations/unsupervised/vgae/seed_%d/checkpoints/best_model.ckpt' % [lake_root, dataset, seed],
 
   states_dir(lake_root, dataset, seed)::
     '%s/%s/ablations/fusion_states/seed_%d' % [lake_root, dataset, seed],

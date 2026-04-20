@@ -19,7 +19,7 @@ Every function, file, and abstraction must earn its place. Before writing code, 
 scripts/run configs/ablations/unsupervised/vgae.jsonnet --dataset set_01 --seed 42
 scripts/run configs/ablations/fusion/dqn.jsonnet \
     --dataset set_01 --seed 42 \
-    --vgae-ckpt /path/best.ckpt --gat-ckpt /path/best.ckpt \
+    --vgae-ckpt /path/checkpoints/best_model.ckpt --gat-ckpt /path/checkpoints/best_model.ckpt \
     --cluster cardinal
 scripts/run configs/ablations/unsupervised/vgae.jsonnet --smoke --dry-run  # gpudebug 1hr
 
@@ -28,13 +28,13 @@ python -m graphids fit --config configs/stages/autoencoder.jsonnet
 python -m graphids fit --tla 'scale="large"' --config configs/stages/supervised.jsonnet
 
 # Evaluation
-python -m graphids test --config configs/stages/autoencoder.jsonnet --ckpt-path best.ckpt
+python -m graphids test --config configs/stages/autoencoder.jsonnet --ckpt-path checkpoints/best_model.ckpt
 
 # Analysis (auto-dispatches by ckpt class_path → model_type)
-python -m graphids analyze --ckpt-path path/to/best.ckpt --dataset hcrl_sa
+python -m graphids analyze --ckpt-path path/to/checkpoints/best_model.ckpt --dataset hcrl_sa
 # Fusion models need upstream ckpts:
-python -m graphids analyze --ckpt-path fusion.ckpt --dataset hcrl_sa \
-    --vgae-ckpt vgae.ckpt --gat-ckpt gat.ckpt
+python -m graphids analyze --ckpt-path fusion/checkpoints/best_model.ckpt --dataset hcrl_sa \
+    --vgae-ckpt vgae/checkpoints/best_model.ckpt --gat-ckpt gat/checkpoints/best_model.ckpt
 ```
 
 ## CLI Architecture

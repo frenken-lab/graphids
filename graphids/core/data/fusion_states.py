@@ -83,7 +83,7 @@ def extract_fusion_states(
     """Load model checkpoints, extract and cache fusion states to ``output_dir``.
 
     Args:
-        checkpoints: ``{model_type: ckpt_path}`` e.g. ``{"vgae": "/path/to/best.ckpt", "gat": "..."}``.
+        checkpoints: ``{model_type: ckpt_path}`` e.g. ``{"vgae": "/path/to/checkpoints/best_model.ckpt", "gat": "..."}``.
     """
     from graphids.core.data.datamodule.graph import GraphDataModule
     from graphids.core.data.datasets.can_bus import CANBusSource
