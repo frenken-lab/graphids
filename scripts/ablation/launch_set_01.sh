@@ -70,30 +70,34 @@ _open_parents() {
     done
 }
 
+_ckpt_for() {
+    # Matches ModelCheckpoint.filename="best_model" + _paths.libsonnet::run_dir.
+    # Kept as a single helper so the convention lives in one place.
+    local cfg="$1" seed="$2" group variant
+    group="$(basename "$(dirname "$cfg")")"
+    variant="$(basename "$cfg" .jsonnet)"
+    echo "${LAKE_ROOT}/${DATASET}/ablations/${group}/${variant}/seed_${seed}/checkpoints/best_model.ckpt"
+}
+
 _submit_fit() {
-    # Echoes fit jid on stdout; submission banner flows to stderr.
-    # sbatch with --clusters=X prints "Submitted batch job NNN on cluster X" —
-    # take field 4 (the jid), not $NF (which is the cluster name).
-    local cfg="$1" seed="$2" line
-    line=$(MLFLOW_PARENT_RUN_ID="$(_parent_for "$cfg")" \
+    # scripts/run emits jid on stdout (sbatch --parsable); banner to stderr.
+    local cfg="$1" seed="$2"
+    MLFLOW_PARENT_RUN_ID="$(_parent_for "$cfg")" \
         scripts/run "$cfg" --dataset "$DATASET" --seed "$seed" --lake-root "$LAKE_ROOT" \
-        "${CLUSTER_ARGS[@]}" "${DRY_RUN_FLAG[@]}" 2>&1 | tee /dev/stderr | tail -n 1)
-    if [[ ${#DRY_RUN_FLAG[@]} -gt 0 ]]; then echo "0"; else echo "$line" | awk '{print $4}'; fi
+        "${CLUSTER_ARGS[@]}" "${DRY_RUN_FLAG[@]}"
 }
 
 _chain_test() {
-    # afterok CPU test job. Inherits parent MLflow run. Output to stderr so
-    # _fit_jid's stdout stays clean for jid capture.
-    local cfg="$1" seed="$2" jid="$3"
-    local group variant ckpt cmd
-    group="$(basename "$(dirname "$cfg")")"
-    variant="$(basename "$cfg" .jsonnet)"
-    ckpt="${LAKE_ROOT}/${DATASET}/ablations/${group}/${variant}/seed_${seed}/checkpoints/best_model.ckpt"
-    cmd="python -m graphids test --config ${cfg} --tla dataset=\"${DATASET}\" --tla seed=${seed} --tla lake_root=\"${LAKE_ROOT}\" --ckpt-path ${ckpt}"
+    # afterok CPU test job. Inherits parent MLflow run. scripts/run's stdout
+    # (jid) is thrown away — we don't chain anything off the test job.
+    local cfg="$1" seed="$2" jid="$3" ckpt
+    ckpt=$(_ckpt_for "$cfg" "$seed")
     MLFLOW_PARENT_RUN_ID="$(_parent_for "$cfg")" \
         SBATCH_DEP="afterok:${jid}" \
-        scripts/run --mode cpu --command "$cmd" \
-        "${CLUSTER_ARGS[@]}" "${DRY_RUN_FLAG[@]}" >&2
+        scripts/run "$cfg" --action test --mode cpu --length short \
+        --dataset "$DATASET" --seed "$seed" --lake-root "$LAKE_ROOT" \
+        --ckpt-path "$ckpt" \
+        "${CLUSTER_ARGS[@]}" "${DRY_RUN_FLAG[@]}" >/dev/null
 }
 
 _fit() {
@@ -165,15 +169,9 @@ for SEED in "${SEEDS[@]}"; do
     CMD="python -m graphids extract-fusion-states \
 --vgae-ckpt ${VGAE_CKPT} --gat-ckpt ${GAT_CKPT} \
 --dataset ${DATASET} --seed ${SEED} --output-dir ${OUT}"
-    line=$(SBATCH_DEP="afterok:${VGAE_JID[$SEED]}:${FOCAL_JID[$SEED]}" \
+    STATES_JID[$SEED]=$(SBATCH_DEP="afterok:${VGAE_JID[$SEED]}:${FOCAL_JID[$SEED]}" \
         scripts/run --mode gpu --mem 36G --time 0:30:00 --command "$CMD" \
-        "${DRY_RUN_FLAG[@]}" 2>&1 | tee /dev/stderr | tail -n 1)
-    # Extract jid from "Submitted batch job NNN on cluster X" (field 4).
-    if [[ ${#DRY_RUN_FLAG[@]} -gt 0 ]]; then
-        STATES_JID[$SEED]="0"
-    else
-        STATES_JID[$SEED]=$(echo "$line" | awk '{print $4}')
-    fi
+        "${DRY_RUN_FLAG[@]}")
     echo "  seed=${SEED} -> states jid=${STATES_JID[$SEED]}"
 done
 

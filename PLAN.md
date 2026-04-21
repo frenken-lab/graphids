@@ -45,17 +45,20 @@ profile collapse for the SLURM surface.
 - **Phase 4 — seed-expansion launcher wrapper.** Bash: take `--seeds
   1,2,3` and loop. Low priority given N ≤ 3 screening workflow already
   uses the existing `--seed` loop.
-- **Stage 3 states-jid capture broken in dry-run (pre-existing).**
-  `STATES_JID[$SEED]="${line##* }"` extracts the last whitespace token;
-  in dry-run this is the tail of the sbatch `--wrap` arg, not the jid.
-  Real-run behavior is correct (last line is
-  `"Submitted batch job NNN"`). Fix by matching `sbatch` output
-  explicitly or dropping dry-run display of downstream dep fields.
+- **Find fp16 overflow site in VGAE forward.** With precision=16-mixed,
+  all model outputs go NaN on first val epoch (confirmed via
+  `VGAETaskLoss non-finite: recon=nan canid=nan nbr=nan kl=nan`). fp32
+  fits fine. Need per-layer `isfinite` instrumentation to pinpoint the
+  op; likely attention softmax with large logits or a post-norm
+  activation saturating. Workaround: `--set trainer.precision="32-true"`
+  for VGAE presets until fixed.
 
 ## Open issues
 
-- **#18** Validate GPU-first auto-sizing on SLURM — unblocked by probe
-  rewrite; run one training job to confirm.
+- **#18** Validate GPU-first auto-sizing on SLURM — **partially closed**:
+  budget probe ran cleanly on V100 (449k node budget, binding=measured,
+  15.8 GB free) on job 46959925 before the unrelated VGAE NaN crash.
+  Final close awaits a fit that completes past the probe.
 - **#32** Add WaDi dataset module.
 
 ## Reference
