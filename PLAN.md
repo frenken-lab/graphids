@@ -37,6 +37,28 @@ profile collapse for the SLURM surface.
   commands submit with `--mode cpu` — no GPU allocation, no separate
   profile needed.
 
+## Next session — Cardinal seed 42 in flight
+
+Full `set_01` × seed 42 DAG submitted to Cardinal (2026-04-21). Jids
+`8691643`–`8691677` (33 jobs: 16 GPU fit + 16 CPU test + 1
+extract-fusion-states). Stage 3 hit a one-shot dep race on first
+submission → retried successfully as jid `8691669`. See
+`.claude/rules/` + `~/lab-setup-guide/docs/ml-workflows/hpc-training-nuances.md`
+for the cluster-selection + race-condition lessons.
+
+**Resume checklist when jobs finish**:
+
+1. `squeue -u $USER -M cardinal` — confirm all 33 done or in expected state
+2. `sacct -M cardinal -j 8691643-8691677 -o JobID,State,Elapsed,ExitCode` — scan for FAILED
+3. Verify ckpts: `find /fs/ess/PAS1266/graphids/dev/rf15/set_01/ablations -name best_model.ckpt -newer /tmp` (16 expected; VGAE + 10 standalone + curriculum_vgae + 4 fusion)
+4. MLflow parent linkage: `sqlite3 /fs/ess/PAS1266/graphids/mlflow.db "SELECT count(*) FROM tags WHERE key='mlflow.parentRunId' AND value IN (SELECT run_uuid FROM runs WHERE name LIKE '%_set_01_seed42_cardinal')"`
+5. If all green: launch seeds 123 + 777 via `scripts/ablation/launch_set_01.sh --seed 123 --cluster cardinal` (and 777). N=3 screening set complete.
+6. Run `python -m graphids compare {leaderboard|effect-size|expected-max} <group> set_01` over each axis to verify Phase 3 analysis pipeline works on real multi-seed data.
+
+**Note**: Pitzer run earlier today produced an under-trained VGAE ckpt
+(walltime hit at epoch ~700/1200); Cardinal's fresh run will overwrite it.
+No data to reconcile.
+
 ## Still-open follow-ups
 
 - **Retroactive eval on existing fit-only ckpts.** One-shot sweep script
@@ -45,20 +67,26 @@ profile collapse for the SLURM surface.
 - **Phase 4 — seed-expansion launcher wrapper.** Bash: take `--seeds
   1,2,3` and loop. Low priority given N ≤ 3 screening workflow already
   uses the existing `--seed` loop.
-- **Find fp16 overflow site in VGAE forward.** With precision=16-mixed,
-  all model outputs go NaN on first val epoch (confirmed via
-  `VGAETaskLoss non-finite: recon=nan canid=nan nbr=nan kl=nan`). fp32
-  fits fine. Need per-layer `isfinite` instrumentation to pinpoint the
-  op; likely attention softmax with large logits or a post-norm
-  activation saturating. Workaround: `--set trainer.precision="32-true"`
-  for VGAE presets until fixed.
+- **HF dataset export pipeline.** Design drafted at
+  `~/plans/hf-dataset-design.md`. Implementation starts once seed 42
+  completes cleanly: `graphids/analysis/export_hf.py` reads MLflow +
+  run_dirs, assembles the bucket tree, pushes versioned revision.
+  Paper build (`~/kd-gat-paper/data/pull_data.py`) consumes from HF
+  so rendering is device-agnostic.
+- **fp16 overflow — hcrl_sa only.** Confirmed NOT a regression:
+  set_01 fp16 ran clean on V100 past the crash window (job 46974907).
+  hcrl_sa has outlier features under the train-only scaler (cache v9)
+  that push something in VGAE's forward past fp16 range. Low
+  priority — smoke tests on hcrl_sa can use `--set
+  trainer.precision="32-true"`; real ablation uses set_01.
+- **Launcher retry on cross-stage dep race (task #12).** Stage 3's
+  first submission failed with "Job dependency problem" because
+  Cardinal's scheduler hadn't registered the upstream focal jid yet.
+  Either sleep 2-5s between stage boundaries or retry with backoff
+  on that specific error.
 
 ## Open issues
 
-- **#18** Validate GPU-first auto-sizing on SLURM — **partially closed**:
-  budget probe ran cleanly on V100 (449k node budget, binding=measured,
-  15.8 GB free) on job 46959925 before the unrelated VGAE NaN crash.
-  Final close awaits a fit that completes past the probe.
 - **#32** Add WaDi dataset module.
 
 ## Reference
