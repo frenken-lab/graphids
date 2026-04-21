@@ -152,20 +152,30 @@ def _flatten_params(obj: Any, parent: str = "") -> dict[str, str]:
     return out
 
 
+def _sanitize_metric_name(name: str) -> str:
+    """Make a metric key safe for MLflow's name validator.
+
+    MLflow allows alphanumerics plus ``_ - . : / <space>`` only. Operating-point
+    keys like ``test/precision@0.95recall`` embed ``@`` and would otherwise
+    fail the whole ``log_metrics`` call (and thus the whole test-phase row).
+    """
+    return name.replace("@", "_at_")
+
+
 def _scalar_metrics(metrics: dict[str, Any]) -> dict[str, float]:
     """Flatten trainer metrics dict to ``{name: float}``.
 
     Accepts flat and one-deep nested (per-test-subdir) shapes. Non-numeric
-    values are skipped.
+    values are skipped. Metric names are sanitized for MLflow's validator.
     """
     out: dict[str, float] = {}
     for k, v in metrics.items():
         if isinstance(v, dict):
             for sk, sv in v.items():
                 if isinstance(sv, (int, float)) and not isinstance(sv, bool):
-                    out[f"{k}/{sk}"] = float(sv)
+                    out[_sanitize_metric_name(f"{k}/{sk}")] = float(sv)
         elif isinstance(v, (int, float)) and not isinstance(v, bool):
-            out[k] = float(v)
+            out[_sanitize_metric_name(k)] = float(v)
     return out
 
 
