@@ -358,15 +358,16 @@ class GraphDataModule:
             return self._curriculum_train_dataloader()
         if self.hparams["dynamic_batching"]:
             return self._prebatched_train_dataloader()
-        return self._build_loader(self._effective_train_ds(), shuffle=True)
+        return self._build_train_loader(self._effective_train_ds(), shuffle=True)
 
     def val_dataloader(self):
-        return self._build_loader(self._val_ds, shuffle=False)
+        return self._build_eval_loader(self._val_ds)
 
     def test_dataloader(self):
-        return [self._build_loader(ds, shuffle=False) for ds in self._test_datasets.values()]
+        return [self._build_eval_loader(ds) for ds in self._test_datasets.values()]
 
-    def _build_loader(self, dataset, shuffle: bool):
+    def _build_train_loader(self, dataset, shuffle: bool):
+        """Training loader. Uses dynamic batching (budget probe) when enabled."""
         key = (id(dataset), shuffle)
         cached = self._loader_cache.get(key)
         if cached is not None:
@@ -376,9 +377,6 @@ class GraphDataModule:
         nw = hp["num_workers"]
         pf = hp["prefetch_factor"]
         device = self._prefetch_device()
-        # Note: on the dynamic-batching path, val/test batch boundaries shift
-        # with the probed budget — per-example metrics (AUROC, accuracy) are
-        # unaffected, but any per-batch aggregation would drift across VRAM tiers.
 
         if not hp["dynamic_batching"]:
             loader = _spawn_loader(
@@ -409,6 +407,34 @@ class GraphDataModule:
             num_workers=nw,
             device=device,
             prefetch_factor=pf,
+        )
+        self._loader_cache[key] = loader
+        return loader
+
+    def _build_eval_loader(self, dataset):
+        """Val / test loader. Fixed batch size — no budget probe.
+
+        The budget probe is a training-throughput optimization: dynamic
+        batching maximizes per-step GPU utilization on heterogeneous graph
+        sizes. Evaluation iterates sequentially under ``torch.no_grad`` —
+        per-example metrics (AUROC, accuracy) are batch-boundary-invariant,
+        and the probe itself requires CUDA + a wired model (blocking CPU
+        test jobs). Use a fixed batch size from ``hparams["batch_size"]``.
+        """
+        key = (id(dataset), False)
+        cached = self._loader_cache.get(key)
+        if cached is not None:
+            return cached
+
+        hp = self.hparams
+        nw = hp["num_workers"]
+        loader = _spawn_loader(
+            dataset,
+            batch_size=max(8, hp["batch_size"]),
+            shuffle=False,
+            num_workers=nw if nw is not None else 2,
+            device=self._prefetch_device(),
+            prefetch_factor=hp["prefetch_factor"],
         )
         self._loader_cache[key] = loader
         return loader

@@ -237,8 +237,6 @@ class Trainer:
         if ckpt_path:
             self._load_model_weights(ckpt_path, model)
 
-        # test_dataloader() may trigger budget.probe() which needs
-        # autograd for a backward pass — must build it BEFORE torch.no_grad.
         test_loaders = datamodule.test_dataloader()
         if not isinstance(test_loaders, list):
             test_loaders = [test_loaders]
@@ -375,8 +373,6 @@ class Trainer:
         datamodule: Any,
         use_amp: bool,
     ) -> None:
-        # val_dataloader() may trigger budget.probe() which needs
-        # autograd for a backward pass — must build it BEFORE torch.no_grad.
         val_loader = datamodule.val_dataloader()
         if val_loader is None:
             return
