@@ -7,6 +7,8 @@ from torch.utils.checkpoint import checkpoint
 from torch_geometric.nn import GATConv, GATv2Conv, GPSConv, TransformerConv
 from torch_geometric.nn.norm import GraphNorm
 
+from .id_encoding import IdEncoder
+
 # Conv types whose layers accept edge_attr
 _EDGE_ATTR_CONV_TYPES = frozenset(("transformer", "gatv2", "gps"))
 
@@ -17,29 +19,24 @@ def resolve_edge_dim(conv_type: str, edge_dim: int | None) -> int | None:
 
 
 class InputEncoder(nn.Module):
-    """Shared input encoding for VGAE and GAT models.
+    """Shared input encoding for VGAE, GAT, and DGI.
 
-    Encapsulates CAN ID embedding, optional feature projection, and the
-    concatenation of embedding + continuous features. Both VGAE and GAT
-    use identical input encoding logic.
-
-    Attribute names (id_embedding, feat_proj) are preserved for clarity,
-    though composing this as ``self.input_encoder`` changes state_dict
-    key prefixes (acceptable on pre-sweep branch).
+    Composes a pluggable ``IdEncoder`` (identity → vector) with an
+    optional continuous-feature projection. ``InputEncoder`` does not
+    branch on the identity-encoding strategy — that lives on the
+    encoder instance.
     """
 
     def __init__(
         self,
-        num_ids: int,
+        id_encoder: IdEncoder,
         in_channels: int,
-        embedding_dim: int,
         conv_type: str = "gat",
         edge_dim: int | None = None,
         proj_dim: int = 0,
     ):
         super().__init__()
-        self.id_embedding = nn.Embedding(num_ids, embedding_dim)
-        self.num_ids = num_ids
+        self.id_encoder = id_encoder
         self.conv_type = conv_type
         self._uses_edge_attr = conv_type in _EDGE_ATTR_CONV_TYPES
         self._edge_dim = edge_dim if self._uses_edge_attr else None
@@ -51,19 +48,10 @@ class InputEncoder(nn.Module):
             self.feat_proj = None
 
         cont_dim = proj_dim if proj_dim > 0 else in_channels
-        self.out_dim = embedding_dim + cont_dim
+        self.out_dim = id_encoder.out_dim + cont_dim
 
     def forward(self, x: Tensor, node_id: Tensor) -> Tensor:
-        """Encode node features with CAN ID embedding.
-
-        Args:
-            x: Continuous features ``[num_nodes, in_channels]``.
-            node_id: Global CAN ID indices ``[num_nodes]`` for embedding lookup.
-
-        Returns:
-            Encoded features ``[num_nodes, out_dim]``.
-        """
-        id_emb = self.id_embedding(node_id)
+        id_emb = self.id_encoder(node_id)
         if self.feat_proj is not None:
             x = self.feat_proj(x)
         return torch.cat([id_emb, x], dim=1)
@@ -81,8 +69,13 @@ class _ProjectedGPS(nn.Module):
         self.out_channels = channels
         self.heads = 1  # output is already channels-wide
 
-    def forward(self, x: Tensor, edge_index: Tensor, edge_attr: Tensor | None = None,
-                batch: Tensor | None = None) -> Tensor:
+    def forward(
+        self,
+        x: Tensor,
+        edge_index: Tensor,
+        edge_attr: Tensor | None = None,
+        batch: Tensor | None = None,
+    ) -> Tensor:
         x = self.proj(x)
         return self.gps(x, edge_index, batch=batch, edge_attr=edge_attr)
 
@@ -104,7 +97,11 @@ def _make_conv(
         # Inner GATv2Conv uses concat=False to preserve dimensionality.
         channels = out_dim * heads
         inner = GATv2Conv(
-            channels, channels, heads=heads, concat=False, edge_dim=edge_dim,
+            channels,
+            channels,
+            heads=heads,
+            concat=False,
+            edge_dim=edge_dim,
         )
         gps = GPSConv(channels, inner, heads=heads, attn_type="multihead", dropout=0.1)
         if in_dim != channels:
@@ -170,16 +167,26 @@ def build_encoder_stack(
         encoder_targets = hidden_dims
 
     convs, norms = build_conv_stack(
-        conv_type, in_dim, encoder_targets, edge_dim,
-        heads_first=encoder_heads, batch_norm=batch_norm,
+        conv_type,
+        in_dim,
+        encoder_targets,
+        edge_dim,
+        heads_first=encoder_heads,
+        batch_norm=batch_norm,
     )
     return convs, norms, encoder_targets[-1]
 
 
 def _conv_forward_inner(
-    conv, x: Tensor, edge_index: Tensor, edge_attr: Tensor | None,
-    bn: nn.Module | None, batch: Tensor | None,
-    activation, dropout_p: float, training: bool,
+    conv,
+    x: Tensor,
+    edge_index: Tensor,
+    edge_attr: Tensor | None,
+    bn: nn.Module | None,
+    batch: Tensor | None,
+    activation,
+    dropout_p: float,
+    training: bool,
 ) -> Tensor:
     """Full conv block: conv → norm → activation → dropout."""
     x = conv(x, edge_index, edge_attr) if edge_attr is not None else conv(x, edge_index)
@@ -218,7 +225,17 @@ def conv_forward(
     if use_checkpointing and x.requires_grad:
         return checkpoint(
             _conv_forward_inner,
-            conv, x, edge_index, edge_attr, bn, batch, activation, dropout_p, training,
+            conv,
+            x,
+            edge_index,
+            edge_attr,
+            bn,
+            batch,
+            activation,
+            dropout_p,
+            training,
             use_reentrant=False,
         )
-    return _conv_forward_inner(conv, x, edge_index, edge_attr, bn, batch, activation, dropout_p, training)
+    return _conv_forward_inner(
+        conv, x, edge_index, edge_attr, bn, batch, activation, dropout_p, training
+    )

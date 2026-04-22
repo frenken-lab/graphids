@@ -43,13 +43,23 @@ data/automotive/<dataset>/
         v  8. Returns (Data, slices, num_graphs) from bulk tensors
         v  9. atomic_save() -> torch.save + fsync + rename
         |
-        +---> {lake_root}/cache/v8.0.0/{dataset}/processed/data_train.pt
-        +---> {lake_root}/cache/v8.0.0/{dataset}/processed/data_test.pt
-        +---> {lake_root}/cache/v8.0.0/{dataset}/cache_metadata.json
-        +---> {lake_root}/cache/v8.0.0/{dataset}/processed/.complete
+        +---> {lake_root}/cache/v9.0.0/{dataset}/processed/data_train.pt
+        +---> {lake_root}/cache/v9.0.0/{dataset}/processed/data_test.pt
+        +---> {lake_root}/cache/v9.0.0/{dataset}/cache_metadata.json
+        +---> {lake_root}/cache/v9.0.0/{dataset}/processed/.complete
 ```
 
-`num_arb_ids` is derived at load time from `data._data.node_id.max() + 1`.
+`num_arb_ids` is read at load time from `cache_metadata.json`. The
+authoritative value is written from the *shared* arb-id vocab built
+in `CANBusSource.build()` (scans every split's source_dirs before any
+tensor is constructed) and persisted as `{root}/vocab.json`. Index 0
+is reserved for UNK; real ids start at 1. The earlier per-split
+`node_id.max() + 1` derivation was removed because test subdirs can
+contain arb_ids absent from train, which under-sized the embedding
+table relative to the real deployment vocabulary and crashed at
+inference. See `graphids/core/data/vocab.py`,
+`graphids/core/data/metadata.py` (schema v3; `vocab_digest` is an
+invariant cache key), and `~/plans/oov-embedding-handling.md`.
 
 ## Phase 2: Training Data Loading
 

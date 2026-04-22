@@ -49,6 +49,8 @@ class VGAEModule(GraphModuleBase):
         proj_dim: int = 0,
         variational: bool = True,
         mask_ratio: float = 0.3,
+        id_encoder_class_path: str = "graphids.core.models.id_encoding.LookupIdEncoder",
+        id_encoder_kwargs: dict | None = None,
         # --- training ---
         lr: float = 0.003,
         weight_decay: float = 0.0001,
@@ -74,6 +76,8 @@ class VGAEModule(GraphModuleBase):
         self.proj_dim = proj_dim
         self.variational = variational
         self.mask_ratio = mask_ratio
+        self.id_encoder_class_path = id_encoder_class_path
+        self.id_encoder_kwargs = id_encoder_kwargs or {}
         self.lr = lr
         self.weight_decay = weight_decay
         self.gradient_checkpointing = gradient_checkpointing
@@ -93,8 +97,15 @@ class VGAEModule(GraphModuleBase):
             self._build()
 
     def _build(self):
+        from graphids._reflect import import_class
+
         hp = self.hparams
-        self.model = GraphAutoencoderNeighborhood.from_config(hp, hp.num_ids, hp.in_channels)
+        encoder_cls = import_class(hp.id_encoder_class_path)
+        encoder_kwargs = {"embedding_dim": hp.embedding_dim, **(hp.id_encoder_kwargs or {})}
+        id_encoder = encoder_cls.from_vocab_size(num_ids=hp.num_ids, **encoder_kwargs)
+        self.model = GraphAutoencoderNeighborhood.from_config(
+            hp, id_encoder, hp.num_ids, hp.in_channels
+        )
         if hp.compile_model:
             from ..base import try_compile
 

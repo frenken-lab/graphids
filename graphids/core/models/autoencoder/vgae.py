@@ -41,13 +41,13 @@ class GraphAutoencoderNeighborhood(nn.Module):
 
     def __init__(
         self,
+        id_encoder,
         num_ids,
         in_channels,
         hidden_dims=None,
         latent_dim=32,
         encoder_heads=4,
         decoder_heads=4,
-        embedding_dim=8,
         dropout=0.35,
         batch_norm=True,
         mlp_hidden=None,
@@ -59,15 +59,17 @@ class GraphAutoencoderNeighborhood(nn.Module):
     ):
         super().__init__()
 
-        # Shared input encoding (ID embedding + optional projection)
+        # Shared input encoding (ID encoder + optional projection)
         self.input_encoder = InputEncoder(
-            num_ids=num_ids,
+            id_encoder=id_encoder,
             in_channels=in_channels,
-            embedding_dim=embedding_dim,
             conv_type=conv_type,
             edge_dim=edge_dim,
             proj_dim=proj_dim,
         )
+        # ``num_ids`` sizes the CAN-ID classifier head and the
+        # neighbor-reconstruction target space; distinct from the
+        # encoder's internal vocab handling.
         self.num_ids = num_ids
         self.dropout_rate = dropout
         self.batch_norm = batch_norm
@@ -255,16 +257,16 @@ class GraphAutoencoderNeighborhood(nn.Module):
         return pos_loss + neg_loss
 
     @classmethod
-    def from_config(cls, cfg, num_ids: int, in_ch: int) -> GraphAutoencoderNeighborhood:
+    def from_config(cls, cfg, id_encoder, num_ids: int, in_ch: int) -> GraphAutoencoderNeighborhood:
         """Construct from a config."""
         conv_type = cfg.conv_type
         return cls(
+            id_encoder=id_encoder,
             num_ids=num_ids,
             in_channels=in_ch,
             hidden_dims=list(cfg.hidden_dims),
             latent_dim=cfg.latent_dim,
             encoder_heads=cfg.heads,
-            embedding_dim=cfg.embedding_dim,
             dropout=cfg.dropout,
             conv_type=conv_type,
             edge_dim=resolve_edge_dim(conv_type, cfg.edge_dim),

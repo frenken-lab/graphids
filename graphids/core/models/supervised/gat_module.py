@@ -43,6 +43,8 @@ class GATModule(GraphModuleBase):
         edge_dim: int = 11,
         pool_aggrs: list[str] | None = None,
         proj_dim: int = 0,
+        id_encoder_class_path: str = "graphids.core.models.id_encoding.LookupIdEncoder",
+        id_encoder_kwargs: dict | None = None,
         # --- training ---
         gradient_checkpointing: bool = True,
         compile_model: bool = False,
@@ -77,6 +79,8 @@ class GATModule(GraphModuleBase):
         self.seed = seed
         self.variational = variational
         self.num_ids = num_ids
+        self.id_encoder_class_path = id_encoder_class_path
+        self.id_encoder_kwargs = id_encoder_kwargs or {}
         self.in_channels = in_channels
         self.num_classes = num_classes
         self.loss_fn = loss_fn
@@ -86,8 +90,13 @@ class GATModule(GraphModuleBase):
             self._build()
 
     def _build(self):
+        from graphids._reflect import import_class
+
         hp = self.hparams
-        self.model = GATWithJK.from_config(hp, hp.num_ids, hp.in_channels)
+        encoder_cls = import_class(hp.id_encoder_class_path)
+        encoder_kwargs = {"embedding_dim": hp.embedding_dim, **(hp.id_encoder_kwargs or {})}
+        id_encoder = encoder_cls.from_vocab_size(num_ids=hp.num_ids, **encoder_kwargs)
+        self.model = GATWithJK.from_config(hp, id_encoder, hp.in_channels)
         if hp.compile_model:
             from ..base import try_compile
 

@@ -37,30 +37,105 @@ profile collapse for the SLURM surface.
   commands submit with `--mode cpu` — no GPU allocation, no separate
   profile needed.
 
-## Next session — Cardinal seed 42 in flight
+## 2026-04-22 session — Stages 1+2 OOV handling + pluggable IdEncoder
 
-Full `set_01` × seed 42 DAG submitted to Cardinal (2026-04-21). Jids
-`8691643`–`8691677` (33 jobs: 16 GPU fit + 16 CPU test + 1
-extract-fusion-states). Stage 3 hit a one-shot dep race on first
-submission → retried successfully as jid `8691669`. See
-`.claude/rules/` + `~/lab-setup-guide/docs/ml-workflows/hpc-training-nuances.md`
-for the cluster-selection + race-condition lessons.
+Driven by the 2026-04-21 Cardinal DAG failure: all 10 fit-then-test
+jobs crashed with `IndexError: index out of range in self` at the
+CAN-ID embedding lookup. Diagnosed as per-split vocab drift — each
+split built its own `arb_id → index` mapping, so test subdirs with
+novel arb_ids over-flowed the train-sized embedding table. Research
+pass, design decision, and implementation in one session.
 
-**Resume checklist when jobs finish**:
+- **Research.** `~/plans/oov-embedding-handling.md` (v2, 2021–2026
+  source gate, >20 cites per source). Verdict: industrial recsys has
+  converged on hash-bucketed embeddings for dynamic/OOV vocabs; CAN
+  IDS literature has no standard treatment. Three-stage plan.
+- **Stage 1 — shared vocab (fix the crash).** New
+  `graphids/core/data/vocab.py` + `CANBusSource.build()` scans union
+  of all splits' source_dirs, persists `vocab.json`, digest stamped
+  into `cache_metadata.json`. `METADATA_SCHEMA_VERSION` bumped 2→3.
+  Rebuild verified jid 47041299 (14 min, 6 datasets; set_01 has 2046
+  unique arb_ids + UNK@0 = 2047).
+- **Pluggable `IdEncoder` architecture.** New
+  `graphids/core/models/id_encoding/` with `IdEncoder` base,
+  `LookupIdEncoder` (Stage 3 `p_unk_drop` plumbing), `HashIdEncoder`
+  (Stage 2 primary). `InputEncoder` takes `id_encoder: IdEncoder`;
+  VGAE/GAT/DGI Module wrappers gained `id_encoder_class_path` +
+  `id_encoder_kwargs` config surface. `from_vocab_size` classmethod
+  bridges `datamodule.num_ids` → encoder-native params.
+- **Stage 2 ablation presets.** Three jsonnet presets under
+  `configs/ablations/id_encoding/`: `lookup.jsonnet` (baseline),
+  `learned_unk.jsonnet` (Stage 3 `p_unk_drop=0.1`), `hash.jsonnet`
+  (Stage 2 HashIdEncoder, `k=2`, `num_buckets_factor=4`).
+  All three validate through the Pydantic gate.
+- **Paper.** `~/kd-gat-paper/paper/content/methodology.md` gained a
+  new §"Handling Out-of-Vocabulary Arbitration IDs" subsection with
+  9 new 2021–2026 bib entries (Monolith, Unified Embedding, Yan hash,
+  recsys surveys, CAN-IDS survey, ROAD, CAN-MIRGU, CAN-BERT).
+- **State-dict break.** `input_encoder.id_embedding.weight` →
+  `input_encoder.id_encoder.embedding.weight`. Ckpts from the 2026-04-21
+  Cardinal DAG are formally unloadable by design.
 
-1. `squeue -u $USER -M cardinal` — confirm all 33 done or in expected state
-2. `sacct -M cardinal -j 8691643-8691677 -o JobID,State,Elapsed,ExitCode` — scan for FAILED
-3. Verify ckpts: `find /fs/ess/PAS1266/graphids/dev/rf15/set_01/ablations -name best_model.ckpt -newer /tmp` (16 expected; VGAE + 10 standalone + curriculum_vgae + 4 fusion)
-4. MLflow parent linkage: `sqlite3 /fs/ess/PAS1266/graphids/mlflow.db "SELECT count(*) FROM tags WHERE key='mlflow.parentRunId' AND value IN (SELECT run_uuid FROM runs WHERE name LIKE '%_set_01_seed42_cardinal')"`
-5. If all green: launch seeds 123 + 777 via `scripts/ablation/launch_set_01.sh --seed 123 --cluster cardinal` (and 777). N=3 screening set complete.
-6. Run `python -m graphids compare {leaderboard|effect-size|expected-max} <group> set_01` over each axis to verify Phase 3 analysis pipeline works on real multi-seed data.
+## Next session — validate then relaunch
 
-**Note**: Pitzer run earlier today produced an under-trained VGAE ckpt
-(walltime hit at epoch ~700/1200); Cardinal's fresh run will overwrite it.
-No data to reconcile.
+Preconditions are all met: caches rebuilt (jid 47041299, 2026-04-22),
+state-dict refactor + pluggable IdEncoder landed, ckpt compat guard
+in `orchestrate/stage._check_ckpt_compat`, stale 2026-04-21 ckpts
+deleted. 15 local-safe tests pass.
+
+### Step 1 — SLURM sanity (two jobs, parallel)
+
+```bash
+# (a) full test suite — catches GPS conv, curriculum, fast-dev-run regressions
+scripts/run --mode cpu --length short --command "python -m pytest tests/ -x"
+
+# (b) single fit smoke on gpudebug — proves Stages 1+2 end-to-end on real data
+scripts/run configs/ablations/unsupervised/vgae.jsonnet --dataset set_01 --seed 42 --smoke
+```
+
+Both should be green before Step 2. If (b) passes, training works
+against the new shared-vocab caches; if (a) passes, no refactor
+regression in the model layers. Expected wall: (a) ~20 min, (b) ~1h.
+
+### Step 2 — full set_01 DAG + id_encoding ablation
+
+```bash
+# Existing ablation axes (conv_type, gat_loss, gat_sampling, fusion, unsupervised)
+scripts/ablation/launch_set_01.sh --seed 42 --cluster cardinal
+
+# New id_encoding axis: 3 presets side-by-side on one seed first
+for variant in lookup learned_unk hash; do
+  scripts/run configs/ablations/id_encoding/$variant.jsonnet \
+      --dataset set_01 --seed 42 --cluster cardinal
+done
+```
+
+### Step 3 — scale to N=3 + compare
+
+Once seed 42 is green across all axes, mirror the launches for
+`--seed 123` and `--seed 777`. Then:
+
+```bash
+python -m graphids compare effect-size id_encoding set_01
+python -m graphids compare leaderboard id_encoding set_01
+```
+
+`compare effect-size` reports Cohen's d + bootstrap CI across the
+three arms on every per-attack-category metric — the paper's
+Stage-2 evidence table.
+
+### Step 4 — paper data pipeline
+
+Once N=3 is in, run `graphids/analysis/export_hf.py` (design at
+`~/plans/hf-dataset-design.md`) to push the leaderboard +
+effect-size tables to HF, then `~/kd-gat-paper/data/pull_data.py`
+pulls them so paper rendering is device-agnostic.
 
 ## Still-open follow-ups
 
+None blocking the next session. All Stage 1+2 correctness work is
+landed; the remaining items are verification (SLURM jobs above) and
+paper-pipeline integration.
 - **Retroactive eval on existing fit-only ckpts.** One-shot sweep script
   to populate MLflow test rows for historical runs. Sizable compute
   (~20 fit-only ckpts × 5 min CPU each) but straightforward.

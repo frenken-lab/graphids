@@ -90,6 +90,46 @@ def _save_test_predictions(model: Any, out_dir: Path) -> None:
     log.info("save_test_predictions", sets=list(preds.keys()), dir=str(out_dir))
 
 
+_DEFAULT_ID_ENCODER = "graphids.core.models.id_encoding.LookupIdEncoder"
+
+
+def _check_ckpt_compat(ckpt_path: str | Path, resolved: ResolvedConfig) -> None:
+    """Raise a clear error if ckpt's topology disagrees with the current config.
+
+    Catches the common silent-mismatch cases:
+    - wrong Module class (e.g. ckpt=VGAEModule but config=GATModule)
+    - wrong id encoder (ckpt=LookupIdEncoder but config=HashIdEncoder)
+
+    Shape-level state_dict mismatches are still caught by strict load;
+    this helper turns the most common of those into an actionable message
+    before the torch error fires.
+    """
+    from graphids._fs import atomic_load
+
+    ckpt = atomic_load(str(ckpt_path), map_location="cpu", weights_only=True)
+    cfg_model = resolved.rendered.get("model") or {}
+    cfg_init = cfg_model.get("init_args") or {}
+
+    ckpt_cls = ckpt.get("class_path")
+    cfg_cls = cfg_model.get("class_path")
+    if ckpt_cls and cfg_cls and ckpt_cls != cfg_cls:
+        raise ValueError(
+            f"Checkpoint Module class {ckpt_cls!r} does not match config "
+            f"model.class_path {cfg_cls!r}. Re-train or point at a compatible "
+            f"ckpt. ckpt_path={ckpt_path}"
+        )
+
+    ckpt_hp = ckpt.get("hyper_parameters") or {}
+    ckpt_enc = ckpt_hp.get("id_encoder_class_path", _DEFAULT_ID_ENCODER)
+    cfg_enc = cfg_init.get("id_encoder_class_path", _DEFAULT_ID_ENCODER)
+    if ckpt_enc != cfg_enc:
+        raise ValueError(
+            f"Checkpoint id_encoder_class_path {ckpt_enc!r} does not match "
+            f"config id_encoder_class_path {cfg_enc!r}. Switching encoder "
+            f"between runs requires a fresh fit. ckpt_path={ckpt_path}"
+        )
+
+
 def build(resolved: ResolvedConfig) -> InstantiatedRun:
     """Instantiate trainer + model + datamodule from a resolved config.
 
@@ -123,6 +163,8 @@ def train(
     run_dir = resolved.run_dir
     ckpt_file = resolved.ckpt_file
     log.info("stage_train", stage=stage_name, run_dir=str(run_dir) if run_dir else "")
+    if resume_from is not None:
+        _check_ckpt_compat(resume_from, resolved)
     if run_dir is not None:
         start_training_run(run_dir, resolved.validated.model_dump())
     try:
@@ -161,6 +203,8 @@ def evaluate(
     run_dir = resolved.run_dir
     ckpt_file = resolved.ckpt_file
     log.info("stage_test", stage=stage_name)
+    if ckpt_file is not None:
+        _check_ckpt_compat(ckpt_file, resolved)
     metrics = artifacts.trainer.test(
         artifacts.model,
         datamodule=artifacts.datamodule,

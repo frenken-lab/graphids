@@ -65,8 +65,17 @@ class TestCANBusDatasetBuildGraphs:
 
     def test_produces_valid_data_objects(self, tmp_path):
         from graphids.core.data.datasets.can_bus import CANBusDataset
+        from graphids.core.data.vocab import persist_vocab, scan_arb_ids
 
         self._write_minimal_csv(tmp_path / "raw" / "train_01_attack_free" / "normal.csv")
+        # Shared-vocab setup mirrors CANBusSource.build() — scan every
+        # source_dir, build vocab, persist. This exercises the Stage-1
+        # path end-to-end on synthetic data.
+        vocab = {
+            tok: i + 1
+            for i, tok in enumerate(scan_arb_ids(tmp_path / "raw", ["train_01_attack_free"]))
+        }
+        digest = persist_vocab(vocab, tmp_path / "processed" / "vocab.json")
         ds = CANBusDataset(
             root=str(tmp_path / "processed"),
             raw_dir=str(tmp_path / "raw"),
@@ -77,6 +86,8 @@ class TestCANBusDatasetBuildGraphs:
             window_size=50,
             stride=50,
             seed=42,
+            shared_vocab=vocab,
+            shared_vocab_digest=digest,
         )
         assert len(ds) > 0
         g = ds[0]

@@ -247,6 +247,8 @@ class CANBusDataset(InMemoryDataset):
         window_size: int = 50,
         stride: int = 25,
         seed: int = 42,
+        shared_vocab: dict | None = None,
+        shared_vocab_digest: str | None = None,
         transform=None,
         pre_transform=None,
     ):
@@ -265,6 +267,8 @@ class CANBusDataset(InMemoryDataset):
         self.window_size = window_size
         self.stride = stride
         self.seed = seed
+        self._shared_vocab = shared_vocab
+        self._shared_vocab_digest = shared_vocab_digest
         super().__init__(str(root), transform, pre_transform)
         self.load(self.processed_paths[0])
         self._load_num_arb_ids()
@@ -277,8 +281,16 @@ class CANBusDataset(InMemoryDataset):
         return [f"data_{self.split_tag}.pt"]
 
     def _load_num_arb_ids(self) -> None:
-        # Always derive from actual data — num_arb_ids.txt can be stale/corrupted
-        self.num_arb_ids = int(self._data.node_id.max().item()) + 1
+        # Source of truth is ``cache_metadata.json`` (written by
+        # ``merge_split_into_metadata`` from the shared-vocab size). The
+        # old ``node_id.max() + 1`` fallback under-reported ``num_arb_ids``
+        # when a split didn't contain every arb_id, causing the model's
+        # embedding table to be under-sized and crashing at test time
+        # with IndexError. See ``~/plans/oov-embedding-handling.md``.
+        from graphids.core.data.metadata import load_metadata
+
+        meta = load_metadata(Path(self.root))
+        self.num_arb_ids = int(meta["num_arb_ids"])
 
     # ── Size tensors for NodeBudgetBatchSampler ───────────────────────
     # Derived from slices at zero I/O cost — the slice tensors are small
@@ -355,6 +367,7 @@ class CANBusDataset(InMemoryDataset):
                 "stride": self.stride,
                 "val_fraction": self.val_fraction,
                 "seed": self.seed,
+                "vocab_digest": self._shared_vocab_digest,
             }
 
             if self.split == "train":
@@ -477,10 +490,15 @@ class CANBusDataset(InMemoryDataset):
         df = self._read_raw()
         log.info("raw_loaded", rows=len(df))
 
-        # Vocabulary: index 0 = OOV, real ids start at 1
-        uniques = df["arb_id"].unique().sort().to_list()
-        vocab = {tok: idx + 1 for idx, tok in enumerate(uniques)}
-        num_arb_ids = len(vocab) + 1  # global vocab size for embedding table
+        if self._shared_vocab is None:
+            raise ValueError(
+                f"CANBusDataset cannot build cache for split={self.split!r} without "
+                f"shared_vocab. Construct via CANBusSource.build(), which scans all "
+                f"splits' source_dirs and persists a shared vocab. "
+                f"Root: {self.root}"
+            )
+        vocab = self._shared_vocab
+        num_arb_ids = len(vocab) + 1  # +1 for UNK at index 0
         df = df.with_columns(
             pl.col("arb_id").replace_strict(vocab, default=0).cast(pl.Int64).alias("node_id")
         )
@@ -614,11 +632,28 @@ class CANBusSource:
                 f"Catalog entry for {self.name!r} declares no train_subdir "
                 f"or train_attack_subdir; cannot build training cache."
             )
+
+        # Shared vocab: scanned once across train + every present test
+        # subdir so every split maps an arb_id to the same embedding row.
+        # Persisted under {root}/vocab.json; its digest becomes a cache
+        # invariant (see ``metadata.INVARIANT_KEYS``) so adding a subdir
+        # with new arb_ids forces a clean rebuild.
+        from graphids.core.data.vocab import persist_vocab, scan_arb_ids
+
+        present_test_subdirs = [sd for sd in entry.get("test_subdirs", []) if (raw / sd).is_dir()]
+        all_sources = list(train_dirs) + present_test_subdirs
+        # Dense index starting at 1; 0 reserved for UNK. scan_arb_ids
+        # returns sorted uniques, so enumerate order is deterministic.
+        shared_vocab = {tok: i + 1 for i, tok in enumerate(scan_arb_ids(raw, all_sources))}
+        shared_vocab_digest = persist_vocab(shared_vocab, Path(root) / "vocab.json")
+
         common = dict(
             window_size=self.window_size,
             stride=self.stride,
             val_fraction=self.val_fraction,
             seed=self.seed,
+            shared_vocab=shared_vocab,
+            shared_vocab_digest=shared_vocab_digest,
         )
         train_ds = CANBusDataset(
             root=root,
@@ -641,9 +676,7 @@ class CANBusSource:
         # preventing the "all test_N eval against test_01" regression
         # (plan §1.3).
         test_datasets: dict[str, CANBusDataset] = {}
-        for subdir in entry.get("test_subdirs", []):
-            if not (raw / subdir).is_dir():
-                continue
+        for subdir in present_test_subdirs:
             test_datasets[subdir] = CANBusDataset(
                 root=root,
                 raw_dir=raw,

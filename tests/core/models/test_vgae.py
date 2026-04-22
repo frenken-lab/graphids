@@ -21,14 +21,15 @@ class TestVGAEConvTypes:
     @pytest.fixture(params=["gatv2", "gps"], ids=["gatv2", "gps"])
     def model_and_conv(self, request):
         from graphids.core.models.autoencoder.vgae import GraphAutoencoderNeighborhood
+        from graphids.core.models.id_encoding import LookupIdEncoder
 
         m = GraphAutoencoderNeighborhood(
+            id_encoder=LookupIdEncoder(num_ids=NUM_IDS, embedding_dim=4),
             num_ids=NUM_IDS,
             in_channels=IN_CHANNELS,
             hidden_dims=[32, 16],
             latent_dim=16,
             encoder_heads=2,
-            embedding_dim=4,
             dropout=0.0,
             conv_type=request.param,
             edge_dim=EDGE_DIM,

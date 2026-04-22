@@ -23,6 +23,7 @@ INVARIANTS = {
     "stride": 100,
     "val_fraction": 0.2,
     "seed": 42,
+    "vocab_digest": "a" * 64,
 }
 
 

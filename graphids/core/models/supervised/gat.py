@@ -10,6 +10,7 @@ from torch_geometric.nn.aggr import MultiAggregation
 
 from .._conv import InputEncoder, _make_conv, conv_forward, resolve_edge_dim
 
+
 class GATWithJK(nn.Module):
     """Graph Attention Network with Jumping Knowledge connections.
 
@@ -21,7 +22,7 @@ class GATWithJK(nn.Module):
 
     def __init__(
         self,
-        num_ids,
+        id_encoder,
         in_channels,
         hidden_channels,
         out_channels,
@@ -29,7 +30,6 @@ class GATWithJK(nn.Module):
         heads=4,
         dropout=0.2,
         num_fc_layers=3,
-        embedding_dim=8,
         use_checkpointing=False,
         conv_type="gat",
         edge_dim=None,
@@ -38,11 +38,10 @@ class GATWithJK(nn.Module):
     ):
         super().__init__()
 
-        # Shared input encoding (ID embedding + optional projection)
+        # Shared input encoding (ID encoder + optional projection)
         self.input_encoder = InputEncoder(
-            num_ids=num_ids,
+            id_encoder=id_encoder,
             in_channels=in_channels,
-            embedding_dim=embedding_dim,
             conv_type=conv_type,
             edge_dim=edge_dim,
             proj_dim=proj_dim,
@@ -90,12 +89,12 @@ class GATWithJK(nn.Module):
         self.fc_layers.append(nn.Linear(fc_input_dim, out_channels))
 
     @classmethod
-    def from_config(cls, cfg, num_ids: int, in_ch: int) -> "GATWithJK":
+    def from_config(cls, cfg, id_encoder, in_ch: int) -> GATWithJK:
         """Construct from a config."""
         conv_type = getattr(cfg, "conv_type", "gatv2")
         edge_dim = getattr(cfg, "edge_dim", 11)
         return cls(
-            num_ids=num_ids,
+            id_encoder=id_encoder,
             in_channels=in_ch,
             hidden_channels=cfg.hidden,
             out_channels=cfg.num_classes,
@@ -103,7 +102,6 @@ class GATWithJK(nn.Module):
             heads=cfg.heads,
             dropout=getattr(cfg, "dropout", 0.2),
             num_fc_layers=cfg.fc_layers,
-            embedding_dim=cfg.embedding_dim,
             conv_type=conv_type,
             edge_dim=resolve_edge_dim(conv_type, edge_dim),
             pool_aggrs=getattr(cfg, "pool_aggrs", None),

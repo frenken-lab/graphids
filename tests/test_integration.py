@@ -20,18 +20,24 @@ from conftest import IN_CHANNELS, NUM_IDS, make_batch
 class TestConfigToModel:
     """Config → GATWithJK.from_config → correct output shape."""
 
-    @pytest.mark.parametrize("num_classes, n_graphs", [
-        (2, 3),
-        (5, 4),
-        (7, 2),
-    ], ids=["default_binary", "five_class", "seven_class"])
+    @pytest.mark.parametrize(
+        "num_classes, n_graphs",
+        [
+            (2, 3),
+            (5, 4),
+            (7, 2),
+        ],
+        ids=["default_binary", "five_class", "seven_class"],
+    )
     def test_gat_output_shape_matches_num_classes(self, gat_cfg, num_classes, n_graphs):
+        from graphids.core.models.id_encoding import LookupIdEncoder
         from graphids.core.models.supervised.gat import GATWithJK
 
         cfg = copy.deepcopy(gat_cfg)
         cfg.num_classes = num_classes
 
-        model = GATWithJK.from_config(cfg, num_ids=NUM_IDS, in_ch=IN_CHANNELS)
+        id_encoder = LookupIdEncoder(num_ids=NUM_IDS, embedding_dim=cfg.embedding_dim)
+        model = GATWithJK.from_config(cfg, id_encoder=id_encoder, in_ch=IN_CHANNELS)
         model.eval()
 
         batch = make_batch(n_graphs=n_graphs)
@@ -41,4 +47,3 @@ class TestConfigToModel:
         assert out.shape == (n_graphs, num_classes), (
             f"Expected ({n_graphs}, {num_classes}), got {out.shape}"
         )
-

@@ -18,10 +18,11 @@ from torch_geometric.loader import DataLoader
 class TestGAT:
     @pytest.fixture()
     def model(self):
+        from graphids.core.models.id_encoding import LookupIdEncoder
         from graphids.core.models.supervised.gat import GATWithJK
 
         return GATWithJK(
-            num_ids=NUM_IDS,
+            id_encoder=LookupIdEncoder(num_ids=NUM_IDS, embedding_dim=4),
             in_channels=IN_CHANNELS,
             hidden_channels=16,
             out_channels=2,
@@ -29,7 +30,6 @@ class TestGAT:
             heads=2,
             dropout=0.0,
             num_fc_layers=2,
-            embedding_dim=4,
             conv_type="gatv2",
             edge_dim=EDGE_DIM,
             pool_aggrs=("mean",),

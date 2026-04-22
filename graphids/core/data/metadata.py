@@ -17,9 +17,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-METADATA_SCHEMA_VERSION = 2
+METADATA_SCHEMA_VERSION = 3
 
-INVARIANT_KEYS = ("preprocessing_version", "window_size", "stride", "val_fraction", "seed")
+INVARIANT_KEYS = (
+    "preprocessing_version",
+    "window_size",
+    "stride",
+    "val_fraction",
+    "seed",
+    "vocab_digest",
+)
 
 
 def load_metadata(cache_dir: Path | str) -> dict[str, Any]:
