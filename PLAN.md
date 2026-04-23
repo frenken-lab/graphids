@@ -76,55 +76,110 @@ pass, design decision, and implementation in one session.
   `input_encoder.id_encoder.embedding.weight`. Ckpts from the 2026-04-21
   Cardinal DAG are formally unloadable by design.
 
-## Next session — validate then relaunch
+## 2026-04-23 session — launcher generalization + seed 42 launch
 
-Preconditions are all met: caches rebuilt (jid 47041299, 2026-04-22),
-state-dict refactor + pluggable IdEncoder landed, ckpt compat guard
-in `orchestrate/stage._check_ckpt_compat`, stale 2026-04-21 ckpts
-deleted. 15 local-safe tests pass.
+Preconditions from the 2026-04-22 session were all met before launch:
+caches rebuilt (jid 47041299), state-dict refactor + pluggable
+IdEncoder landed, ckpt compat guard in place, stale 2026-04-21 ckpts
+deleted. SLURM sanity pytest (jid 47045029) green; Pitzer V100 VGAE
+smoke (jid 47045030) walltimed at gpudebug's 1h limit with
+checkpoints written (expected compute-tiny behavior per commit
+6522722).
 
-### Step 1 — SLURM sanity (two jobs, parallel)
+- **Launcher generalized.** `scripts/ablation/launch_set_01.sh` →
+  `launch_ofat.sh` (git mv). Added `--dataset <name>` flag (default
+  `set_01`). DAG shape unchanged.
+- **id_encoding folded into Stage 1.** Three variants
+  (`lookup`/`learned_unk`/`hash`) added to the parallel standalone
+  pool. Stage 1 count 10 → 13. Removes the manual for-loop from
+  PLAN's prior Step 2.
+- **Cardinal fit wall bumped to 1:30:00.** `configs/resources/
+  submit_profiles.json` — the prior 1:15:00 cut one pre-rebuild gat
+  fit to 6 minutes of margin (69.3 min elapsed). 90 min gives 20+
+  min safety margin across all 19 historical variants; VGAE on
+  Cardinal has zero prior FINISHED data so this is the one-line
+  insurance.
+- **Docs synced.** 6 doc references updated to the new launcher
+  filename + Stage 1 variant list (README, config-system rule,
+  config-architecture reference, copilot-instructions,
+  PLAN).
 
-```bash
-# (a) full test suite — catches GPS conv, curriculum, fast-dev-run regressions
-scripts/run --mode cpu --length short --command "python -m pytest tests/ -x"
+### Seed 42 launched (39 SLURM jobs on Cardinal)
 
-# (b) single fit smoke on gpudebug — proves Stages 1+2 end-to-end on real data
-scripts/run configs/ablations/unsupervised/vgae.jsonnet --dataset set_01 --seed 42 --smoke
+```
+Stage 0: 2 jobs  (vgae fit+test)              JIDs 8724431–8724432
+Stage 1: 26 jobs (13 fits + 13 tests)          JIDs 8724433–8724460
+Stage 2: 2 jobs  (curriculum_vgae fit+test)    JIDs 8724461–8724462
+Stage 3: 1 job   (extract-fusion-states)       JID  8724464
+Stage 4: 8 jobs  (4 fusion fits + 4 tests)     JIDs 8724465–8724472
 ```
 
-Both should be green before Step 2. If (b) passes, training works
-against the new shared-vocab caches; if (a) passes, no refactor
-regression in the model layers. Expected wall: (a) ~20 min, (b) ~1h.
+**Dep race hit again** — Stage 3 first submission failed with "Job
+dependency problem"; re-submitted manually after a few-second pause.
+Launcher bug (PLAN's open #12) is still live; must be fixed before
+seed 123 / 777 mirror launches.
 
-### Step 2 — full set_01 DAG + id_encoding ablation
+**MLflow parents skipped** — all 19 `python -m graphids
+mlflow-start-parent` calls returned nonzero ("mlflow unavailable");
+children will log to MLflow but won't link via `MLFLOW_PARENT_RUN_ID`.
+Recoverable post-hoc by stamping `mlflow.parentRunId` tags across the
+child runs by (group, variant, dataset).
+
+## Next session — triage seed 42 + fix launcher race
+
+### Step 1 — inspect seed 42 results
 
 ```bash
-# Existing ablation axes (conv_type, gat_loss, gat_sampling, fusion, unsupervised)
-scripts/ablation/launch_set_01.sh --seed 42 --cluster cardinal
-
-# New id_encoding axis: 3 presets side-by-side on one seed first
-for variant in lookup learned_unk hash; do
-  scripts/run configs/ablations/id_encoding/$variant.jsonnet \
-      --dataset set_01 --seed 42 --cluster cardinal
-done
+squeue -M cardinal -u $USER -o '%.10i %.22j %.2t %.10M %.10l %R' | head -50
+sacct -M cardinal -u $USER --starttime=2026-04-23 --format=JobID,JobName%30,State,Elapsed,ExitCode -P
 ```
 
-### Step 3 — scale to N=3 + compare
+Check each stage:
+- Stage 0 (vgae 8724431): did it finish within 90min? Post-rebuild
+  VGAE on Cardinal H100 is untested.
+- Stage 1 standalone: 13 fits — all COMPLETED? Which ones bumped the
+  90min wall vs completed cleanly?
+- Stage 3 (extract-fusion-states 8724464): needs both upstream ckpts
+  to exist, so this is the end-to-end dep-resolution test.
+- Stage 4 (fusion × 4): each runs afterok states — same dep-race
+  class, but only one dep edge so less brittle than Stage 3.
 
-Once seed 42 is green across all axes, mirror the launches for
-`--seed 123` and `--seed 777`. Then:
+### Step 2 — fix the launcher dep-race (blocks seed 123/777)
 
+Two options, smaller is better:
+1. **Sleep 3s between stage boundaries** in `launch_ofat.sh`
+   (between Stage 1 submission loop and Stage 3's `SBATCH_DEP=`
+   call). Cheapest.
+2. **Retry-with-backoff on "Job dependency problem"** in
+   `scripts/run`. Cleaner but touches the hot path.
+
+### Step 3 — fix MLflow parent-run failure
+
+Diagnose why `python -m graphids mlflow-start-parent` returned
+nonzero during the 2026-04-23 launch. Likely either (a) the launcher
+sourced `.env` but `MLFLOW_TRACKING_URI` wasn't exported, or (b) the
+SQLite lock from the system-metrics sampler. If parents can't be
+recovered at submit time, add a post-hoc one-shot to stamp
+`mlflow.parentRunId` on existing child rows keyed by (group,
+variant, dataset).
+
+### Step 4 — scale to N=3 + compare
+
+Once seed 42 is green (or failures are understood), mirror launches
+for `--seed 123` and `--seed 777`:
+
+```bash
+scripts/ablation/launch_ofat.sh --dataset set_01 --seed 123 --cluster cardinal
+scripts/ablation/launch_ofat.sh --dataset set_01 --seed 777 --cluster cardinal
+```
+
+Then:
 ```bash
 python -m graphids compare effect-size id_encoding set_01
 python -m graphids compare leaderboard id_encoding set_01
 ```
 
-`compare effect-size` reports Cohen's d + bootstrap CI across the
-three arms on every per-attack-category metric — the paper's
-Stage-2 evidence table.
-
-### Step 4 — paper data pipeline
+### Step 5 — paper data pipeline
 
 Once N=3 is in, run `graphids/analysis/export_hf.py` (design at
 `~/plans/hf-dataset-design.md`) to push the leaderboard +
@@ -154,11 +209,20 @@ paper-pipeline integration.
   that push something in VGAE's forward past fp16 range. Low
   priority — smoke tests on hcrl_sa can use `--set
   trainer.precision="32-true"`; real ablation uses set_01.
-- **Launcher retry on cross-stage dep race (task #12).** Stage 3's
-  first submission failed with "Job dependency problem" because
-  Cardinal's scheduler hadn't registered the upstream focal jid yet.
-  Either sleep 2-5s between stage boundaries or retry with backoff
-  on that specific error.
+- **Launcher retry on cross-stage dep race (task #12, FIRED AGAIN
+  2026-04-23).** Stage 3's first submission failed with "Job
+  dependency problem" because Cardinal's scheduler hadn't registered
+  the upstream focal jid yet. This has now fired twice — elevated
+  priority. Must be fixed before seed 123 / 777 launches. Fix:
+  sleep 3s between stage boundaries in `launch_ofat.sh` OR
+  retry-with-backoff on that specific error in `scripts/run`.
+- **MLflow parent-run creation silently fails at submit time
+  (2026-04-23).** All 19 `python -m graphids mlflow-start-parent`
+  calls returned nonzero during the seed 42 launch — children logged
+  but aren't grouped. Cause unknown (possibly env var not exported
+  under the launcher's subshell, or SQLite lock from system-metrics
+  sampler). Either fix at source, add `set -x` / stderr capture, or
+  add a post-hoc stamp-by-tag script.
 
 ## Open issues
 

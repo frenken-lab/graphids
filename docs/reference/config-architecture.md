@@ -30,7 +30,7 @@ own `run_dir` from `(lake_root, dataset, seed)` via `_paths.libsonnet`.
 The SLURM wrapper (`scripts/run`) just forwards TLAs.
 
 Multi-stage chains (e.g. `autoencoder → supervised → fusion`) are a
-bash loop in `scripts/ablation/launch_set_01.sh` that submits each
+bash loop in `scripts/ablation/launch_ofat.sh` that submits each
 preset with `SBATCH_DEP=afterok:<jid>` between them. There is no
 in-process pipeline driver.
 

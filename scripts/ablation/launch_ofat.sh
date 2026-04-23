@@ -1,26 +1,29 @@
 #!/usr/bin/env bash
-# Launch the set_01 ablation study with SLURM dependency chains.
-# See docs/plans/ablation-set_01.md for the runbook.
+# Launch the OFAT ablation study for a given dataset with SLURM dependency chains.
+# See configs/ablations/README.md §Design for the design rationale.
 #
 # Delegates per-job submission to ``scripts/run``, which owns TLA
 # construction + resource lookup. This script only owns the DAG
 # shape (which presets, which seeds, which afterok edges).
 #
 # Usage:
-#   scripts/ablation/launch_set_01.sh                # submit everything
-#   scripts/ablation/launch_set_01.sh --dry-run      # print commands, no submit
-#   scripts/ablation/launch_set_01.sh --seed 42      # only one seed
-#   scripts/ablation/launch_set_01.sh --cluster cardinal  # target cluster
+#   scripts/ablation/launch_ofat.sh                          # set_01, seeds 42/123/777
+#   scripts/ablation/launch_ofat.sh --dataset set_02         # different dataset
+#   scripts/ablation/launch_ofat.sh --dry-run                # print commands, no submit
+#   scripts/ablation/launch_ofat.sh --seed 42                # only one seed
+#   scripts/ablation/launch_ofat.sh --cluster cardinal       # target cluster
 set -euo pipefail
 
 DRY_RUN_FLAG=()
 SEEDS=(42 123 777)
 CLUSTER=""
+DATASET=set_01
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run)  DRY_RUN_FLAG=(--dry-run); shift ;;
         --seed)     SEEDS=("$2"); shift 2 ;;
         --cluster)  CLUSTER="$2"; shift 2 ;;
+        --dataset)  DATASET="$2"; shift 2 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
@@ -30,7 +33,6 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$PROJECT_ROOT"
 source .env
 
-DATASET=set_01
 LAKE_ROOT="${GRAPHIDS_LAKE_ROOT:?GRAPHIDS_LAKE_ROOT must be set in .env}/dev/${USER}"
 
 CLUSTER_ARGS=()
@@ -121,6 +123,7 @@ _open_parents \
     conv_type/gat conv_type/gatv2 conv_type/gps \
     gat_sampling/none gat_sampling/curriculum_random gat_sampling/curriculum_vgae \
     gat_loss/ce gat_loss/weighted_ce gat_loss/focal \
+    id_encoding/lookup id_encoding/learned_unk id_encoding/hash \
     fusion/bandit fusion/dqn fusion/mlp fusion/weighted_avg
 
 # -- Stage 0: baseline VGAEs -------------------------------------------
@@ -133,7 +136,7 @@ done
 
 # -- Stage 1: standalone ablation groups -------------------------------
 declare -A FOCAL_JID
-echo "=== Stage 1: standalone (10 × ${#SEEDS[@]} jobs) ==="
+echo "=== Stage 1: standalone (13 × ${#SEEDS[@]} jobs) ==="
 for SEED in "${SEEDS[@]}"; do
     for CT in gat gatv2 gps; do
         _fit "configs/ablations/conv_type/${CT}.jsonnet" "$SEED"
@@ -146,6 +149,9 @@ for SEED in "${SEEDS[@]}"; do
     done
     for LOSS in ce weighted_ce; do
         _fit "configs/ablations/gat_loss/${LOSS}.jsonnet" "$SEED"
+    done
+    for IDENC in lookup learned_unk hash; do
+        _fit "configs/ablations/id_encoding/${IDENC}.jsonnet" "$SEED"
     done
     # focal doubles as the baseline GAT for fusion — capture its jid.
     FOCAL_JID[$SEED]=$(_fit_jid configs/ablations/gat_loss/focal.jsonnet "$SEED")
@@ -186,6 +192,7 @@ done
 
 echo ""
 echo "=== Launched ==="
+echo "Dataset:            ${DATASET}"
 echo "Stage 0 VGAE jids:  ${VGAE_JID[*]}"
 echo "Stage 1 focal jids: ${FOCAL_JID[*]}"
 echo "Stage 3 state jids: ${STATES_JID[*]}"

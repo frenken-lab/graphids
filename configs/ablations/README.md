@@ -80,10 +80,12 @@ for screening but cannot see interactions (e.g. `conv_type=gps` ×
 needed, are a targeted factorial over top-2 of each axis — not a full
 grid expansion.
 
-**DAG** (`scripts/ablation/launch_set_01.sh`):
+**DAG** (`scripts/ablation/launch_ofat.sh`):
 
 1. Baseline VGAE fit — upstream for Stages 2 + 3
-2. 10 standalone variants in parallel (no cross-deps)
+2. 13 standalone variants in parallel (no cross-deps): `conv_type/*`,
+   `unsupervised/{gae,dgi}`, `gat_sampling/{none,curriculum_random}`,
+   `gat_loss/*`, `id_encoding/*`
 3. `curriculum_vgae` afterok: VGAE — needs the pretrained encoder
 4. `extract-fusion-states` afterok: VGAE + `gat_loss/focal` — cached
    latents shared across all fusion methods
