@@ -73,10 +73,17 @@ def _reset_settings_cache() -> None:
 
 
 class LakeWriteError(PermissionError):
-    pass
+    """Raised when a lake-writing operation runs without
+    ``GRAPHIDS_LAKE_WRITE=1``. Gate against accidental writes from
+    login-node smoke runs or from interactive sessions.
+    """
 
 
 def require_lake_write() -> None:
+    """Guard called by lake-writing code paths. Raises
+    :class:`LakeWriteError` unless ``GRAPHIDS_LAKE_WRITE=1`` is set —
+    SLURM jobs get this from ``.env`` via ``scripts/slurm/_preamble.sh``.
+    """
     if not get_settings().lake_write:
         raise LakeWriteError(
             "Lake write blocked: set GRAPHIDS_LAKE_WRITE=1 "

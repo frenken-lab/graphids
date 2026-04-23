@@ -126,7 +126,12 @@ class ModelCheckpoint(CallbackBase):
 
 @dataclass
 class EarlyStopping(CallbackBase):
-    """Stop training when monitored metric stops improving."""
+    """Stop training when monitored metric stops improving.
+
+    Flips ``trainer.should_stop`` at the epoch boundary — doesn't raise.
+    The fit loop observes the flag after the scheduler step so the
+    current epoch's metrics are logged before exit.
+    """
 
     monitor: str = "val_loss"
     mode: str = "min"

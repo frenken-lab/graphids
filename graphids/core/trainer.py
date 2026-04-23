@@ -167,6 +167,15 @@ class Trainer:
         datamodule: Any,
         ckpt_path: str | None = None,
     ) -> None:
+        """Fit the model.
+
+        Wires datamodule → device → model.setup → device.to(), then runs
+        the train/val loop up to ``max_epochs`` or until a callback flips
+        ``trainer.should_stop``. ``ckpt_path`` resumes weights +
+        optimizer + scheduler + AMP scaler state; ``on_exception`` fires
+        on any raise so callbacks can close MLflow runs cleanly before
+        re-raising.
+        """
         self.datamodule = datamodule
         self._wire_datamodule(datamodule, model)
 
@@ -227,6 +236,12 @@ class Trainer:
         datamodule: Any,
         ckpt_path: str | None = None,
     ) -> dict[str, float]:
+        """Evaluate on all test dataloaders, return aggregated metrics.
+
+        Multiple test loaders (e.g. one per attack subdir) are dispatched
+        with a ``dataloader_idx`` so ``test_step`` can name metrics per
+        subdir.
+        """
         self.datamodule = datamodule
         self._wire_datamodule(datamodule, model)
 
@@ -262,6 +277,12 @@ class Trainer:
         datamodule: Any,
         ckpt_path: str | None = None,
     ) -> dict[str, float]:
+        """Run one validation pass, return aggregated metrics.
+
+        Setups with ``"fit"`` (not ``"validate"``) because the val
+        loader is built there; the train loader is allocated but never
+        iterated.
+        """
         self.datamodule = datamodule
         self._wire_datamodule(datamodule, model)
 
@@ -282,6 +303,10 @@ class Trainer:
         datamodule: Any,
         ckpt_path: str | None = None,
     ) -> list:
+        """Run ``predict_step`` over every test loader and return the
+        concatenated list. Setups with ``"predict"`` so datamodules can
+        swap in a predict-specific loader.
+        """
         self.datamodule = datamodule
         self._wire_datamodule(datamodule, model)
 

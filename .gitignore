@@ -102,6 +102,9 @@ slurm-*.out
 # Snakemake working directory
 .snakemake/
 
+# ===== MKDOCS =====
+site/
+
 # ===== GENERATED FIGURES =====
 *.png
 *.jpg

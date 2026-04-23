@@ -111,6 +111,16 @@ def build_run(
     validated: ValidatedConfig | None = None,
     seed_all: bool = True,
 ) -> InstantiatedRun:
+    """Instantiate trainer + model + datamodule from a rendered config dict.
+
+    The single public entry point for orchestration. Deep-copies
+    ``rendered`` before walking it so callers can reuse the dict, runs
+    :func:`graphids.config.schemas.validate_config` if ``validated`` is
+    not already supplied, seeds torch/numpy/python RNGs from
+    ``seed_everything`` unless opted out, then resolves every
+    ``{class_path, init_args}`` block via ``importlib`` with
+    signature-filtered kwargs.
+    """
     merged = copy.deepcopy(rendered)
     if validated is None:
         validate_config(merged)

@@ -38,6 +38,11 @@ def _monitor_pair(block: ClassPathBlock, label: str) -> tuple[str, str]:
 
 
 class CallbacksSection(BaseModel):
+    """Forced-callback block. Cross-field validator keeps
+    ``checkpoint`` and ``early_stopping`` tracking the same
+    ``(monitor, mode)`` so a best-epoch ckpt matches the stop trigger.
+    """
+
     model_config = ConfigDict(extra="allow")
     checkpoint: ClassPathBlock
     early_stopping: ClassPathBlock
@@ -55,10 +60,19 @@ class CallbacksSection(BaseModel):
 
 
 class ConfigValidationError(ValueError):
-    pass
+    """Raised by :func:`validate_config` when the rendered dict fails
+    any Pydantic check. Wraps Pydantic's ``ValidationError`` so callers
+    can catch one exception type regardless of which rule fired.
+    """
 
 
 class ValidatedConfig(BaseModel):
+    """The rendered-config contract. ``extra="forbid"`` at the top
+    level catches typos in ``configs/ablations/*.jsonnet``; nested
+    ``TrainerSection`` stays permissive so Lightning trainer kwargs
+    pass through unchecked.
+    """
+
     model_config = ConfigDict(extra="forbid")
     seed_everything: int
     trainer: TrainerSection
@@ -137,6 +151,17 @@ class ValidatedConfig(BaseModel):
 
 
 def validate_config(rendered: dict[str, Any]) -> ValidatedConfig:
+    """Validate a rendered jsonnet dict before any torch import.
+
+    Called by ``ResolvedConfig.from_rendered`` immediately after
+    :func:`graphids.config.jsonnet.render`. Fails fast on null list
+    fields, monitor/mode mismatches, un-namespaced ``class_path`` strings,
+    and ``LearningRateMonitor`` without a logger.
+
+    Raises:
+        ConfigValidationError: any validation failure, with the Pydantic
+            error text preserved as the message.
+    """
     try:
         return ValidatedConfig.model_validate(rendered)
     except Exception as e:

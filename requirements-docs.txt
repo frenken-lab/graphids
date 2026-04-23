@@ -1,0 +1,5 @@
+# Docs build dependencies — kept separate from runtime deps.
+# Install: uv pip install -r requirements-docs.txt
+mkdocs-material>=9.7,<10
+mkdocstrings[python]>=1.0,<2
+pymdown-extensions>=10.19,<11
