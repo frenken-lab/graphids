@@ -45,3 +45,75 @@ Worst case across all model/scale combos: VGAE small at 15.2/154.6 = 9.8% overhe
 
 Workers add IPC serialization overhead (~2-5 ms) for zero benefit when each
 `__getitem__` is O(1) list lookup. See `graphids/core/data/datamodule/graph.py:328`.
+
+## Generalization and limits — the probe is dataset- and scale-conditional
+
+The "~100% GPU util" line above is true for the regime it was measured in
+(hcrl_sa, ~400k-node budgets, V100). It does **not** generalize to all
+combinations. A counter-measurement from set_01 makes the pattern
+explicit.
+
+### set_01, VGAE small, V100 (job 47045030, 2026-04-22)
+
+| Metric | Value | Source |
+|---|---|---|
+| GPU 0 utilization — mean | 27.4% | MLflow `system/gpu_0_utilization_percentage`, 5s sampling, 643 points |
+| GPU 0 utilization — median | 16.0% | same |
+| Fraction of samples < 80% | 86.0% | same |
+| GPU VRAM usage — median | 93.3% | `system/gpu_0_memory_usage_percentage` |
+| Wall-clock, 197 epochs | 54:31 | sacct |
+
+VRAM is packed correctly — the two-point probe is sized right. But GPU
+compute idles ~86% of the time.
+
+### Why the probe doesn't predict this
+
+Per-step util obeys `GPU_util ≈ T_gpu / (T_gpu + T_cpu_step)`. Both
+terms scale with the workload:
+
+| Term | hcrl_sa VGAE-small (Apr 7) | set_01 VGAE-small (Apr 22) | Scaling |
+|---|---|---|---|
+| T_gpu | ~155 ms | **~5 ms (est.)** | ∝ batch_nodes × model_FLOPs |
+| T_cpu_step | ~15 ms (pin+H2D) | ~20-30 ms (clone+dispatch) | relatively flat |
+
+Under the April probe, T_gpu ≫ T_cpu — prebatch fully hides the CPU
+step. Under a smaller model or tighter node budget, T_gpu shrinks
+faster than T_cpu does, and util drops mechanically even with the
+same pipeline. **This is a workload characteristic, not a regression.**
+
+### What's load-bearing in the pipeline (don't "fix" these)
+
+- **`pin_memory=device is None`** at `_spawn_loader` (graph.py:56) and
+  missing from `_prebatched_loader` (graph.py:71-81) is deliberate.
+  PyG's `PrefetchLoader` (called from `_prefetch`, graph.py:23-27)
+  owns pinning + async H2D on its own CUDA stream. Enabling
+  `pin_memory=True` at the DataLoader level would double-pin.
+- **`_clone_collate`** at graph.py:38-40 runs every step because
+  PyG `Data.to(device)` is in-place (see `critical-constraints.md`)
+  and the pre-built batches are shared state. This is the last
+  main-process CPU cost in the prebatch path.
+
+### Configuration guidance
+
+- **Smoke runs (`--smoke` → gpudebug 1h wall).** Expect low GPU util
+  on small models / small datasets. Measure correctness (no NaN, no
+  IndexError, loss curve shape), not throughput.
+- **Production fits.** Use `--length long` (gpu partition, 4h+) and
+  `scale="medium"` or `"large"` so T_gpu dominates. For set_01, move
+  to `--cluster cardinal` (H100) — the compute headroom lets you
+  push node budgets high enough to saturate. The April hcrl_sa probe
+  numbers are representative of this regime.
+- **Don't chase GPU util on smoke runs.** A compute-tiny model on a
+  V100 will show 20-40% util no matter how well the data pipeline is
+  tuned — that's hardware + model, not pipeline.
+
+### Diagnostic hierarchy
+
+1. `MLflow system/gpu_*` metrics (5s sampler, already on) — aggregate
+   util, memory, power. Queryable across runs.
+2. OTel `ml.batch.duration_s` in `traces.jsonl` — per-step wall.
+3. Explicit `nvidia-smi dmon -s u` during a live run — real-time
+   nvml counters.
+
+Never reason about throughput from wall-clock alone — matches the
+`feedback_device_metrics_first` lesson.
