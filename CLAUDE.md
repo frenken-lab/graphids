@@ -43,14 +43,13 @@ python -m graphids analyze --ckpt-path fusion/checkpoints/best_model.ckpt --data
 
 **Operational commands** — `graphids/cli/`. `app.py` owns the root app + shared option types (`ConfigPath`/`TlaList`/`SetList`/`CkptPath`). `--tla` and `--set` parse `key=value` via `_parse_kv_pair` (Typer `parser=` hook). Submodules register commands via `@app.command()`: `training.py`, `analysis.py`, `data.py`, `compare.py`. `graphids/__main__.py` imports submodules to register commands.
 
-| Command | Purpose |
-|---------|---------|
-| `python -m graphids fit` / `test` | Train or evaluate one preset |
-| `python -m graphids analyze` | Analysis artifacts from checkpoints |
-| `python -m graphids rebuild-caches` | Rebuild preprocessed graph caches |
-| `python -m graphids extract-fusion-states` | Extract VGAE+GAT latent states for fusion |
-| `python -m graphids compare {leaderboard\|ties\|effect-size\|expected-max}` | Cross-variant MLflow comparison |
-| `python -m graphids mlflow-start-parent` | Open a parent MLflow run for an ablation axis |
+| Command                                                                     | Purpose                                       |
+| --------------------------------------------------------------------------- | --------------------------------------------- |
+| `python -m graphids fit` / `test`                                           | Train or evaluate one preset                  |
+| `python -m graphids analyze`                                                | Analysis artifacts from checkpoints           |
+| `python -m graphids rebuild-caches`                                         | Rebuild preprocessed graph caches             |
+| `python -m graphids extract-fusion-states`                                  | Extract VGAE+GAT latent states for fusion     |
+| `python -m graphids compare {leaderboard\|ties\|effect-size\|expected-max}` | Cross-variant MLflow comparison               |
 
 **Config resolution** — Single path: `render(config_path, tla=...)` (`config/jsonnet.py`) → `apply_overrides(rendered, --set ...)` (`cli/app.py`) → `ResolvedConfig.from_rendered(rendered, stage_name=<basename>)` (validates + pulls `run_dir` / `ckpt_file` from `trainer.default_root_dir`). Every preset under `configs/ablations/` computes its own `run_dir` from `(lake_root, dataset, seed)` via `_paths.libsonnet`, so there is no Python planner / identity-hash layer. See `docs/reference/config-architecture.md`.
 
@@ -69,3 +68,7 @@ modular rule files covering architecture, config, constraints, code style, SLURM
 > Environment variables: See `~/.claude/rules/secrets-and-env-vars.md`
 
 GitNexus CLI is available for code intelligence (`npx gitnexus query|context|impact|cypher` against the indexed graph at `.gitnexus/`). Optional — reach for it when grep/Read aren't enough. Not required before edits. Do not run `npx gitnexus analyze` — it auto-injects a block of "MUST" rules into this file.
+
+## USER NOTE
+
+I want to look into this https://mlflow.org/blog/opentelemetry-tracing-support/ consolidate logging

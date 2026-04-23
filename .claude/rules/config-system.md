@@ -33,7 +33,7 @@ One route. `scripts/run <preset.jsonnet>` or `python -m graphids fit` →
 
 Multi-stage chains (e.g. the KD chain autoencoder → supervised →
 fusion) are bash loops that submit each preset with
-`SBATCH_DEP=afterok:<jid>` — see `scripts/ablation/launch_ofat.sh`.
+`SBATCH_DEP=afterok:<jid>` — see `scripts/ablation/launch_ofat.py`.
 No in-process pipeline driver, no planner, no identity-hash layer.
 
 Full tree: `docs/reference/config-architecture.md`.
@@ -72,7 +72,7 @@ configs/
 
 graphids/
   cli/
-    app.py                         # Typer root app + shared option types + apply_overrides + mlflow-start-parent
+    app.py                         # Typer root app + shared option types + apply_overrides
     training.py                    # fit / test commands
     analysis.py                    # analyze command
     data.py                        # rebuild-caches, extract-fusion-states

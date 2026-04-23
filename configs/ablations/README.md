@@ -80,7 +80,7 @@ for screening but cannot see interactions (e.g. `conv_type=gps` ×
 needed, are a targeted factorial over top-2 of each axis — not a full
 grid expansion.
 
-**DAG** (`scripts/ablation/launch_ofat.sh`):
+**DAG** (`scripts/ablation/launch_ofat.py`):
 
 1. Baseline VGAE fit — upstream for Stages 2 + 3
 2. 13 standalone variants in parallel (no cross-deps): `conv_type/*`,

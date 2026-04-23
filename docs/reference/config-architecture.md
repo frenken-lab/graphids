@@ -30,14 +30,14 @@ own `run_dir` from `(lake_root, dataset, seed)` via `_paths.libsonnet`.
 The SLURM wrapper (`scripts/run`) just forwards TLAs.
 
 Multi-stage chains (e.g. `autoencoder → supervised → fusion`) are a
-bash loop in `scripts/ablation/launch_ofat.sh` that submits each
+Python DAG driver (`scripts/ablation/launch_ofat.py`) that submits each
 preset with `SBATCH_DEP=afterok:<jid>` between them. There is no
 in-process pipeline driver.
 
 ### Route B: Operational commands (no training)
 
 ```
-python -m graphids {analyze|rebuild-caches|extract-fusion-states|compare|mlflow-start-parent}
+python -m graphids {analyze|rebuild-caches|extract-fusion-states|compare}
   -> __main__.py imports cli submodules
   -> Typer @app.command() dispatch per submodule
 ```

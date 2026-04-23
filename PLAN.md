@@ -104,73 +104,93 @@ checkpoints written (expected compute-tiny behavior per commit
   config-architecture reference, copilot-instructions,
   PLAN).
 
-### Seed 42 launched (39 SLURM jobs on Cardinal)
+### Seed 42 outcome — 11/19 fits succeeded
 
-```
-Stage 0: 2 jobs  (vgae fit+test)              JIDs 8724431–8724432
-Stage 1: 26 jobs (13 fits + 13 tests)          JIDs 8724433–8724460
-Stage 2: 2 jobs  (curriculum_vgae fit+test)    JIDs 8724461–8724462
-Stage 3: 1 job   (extract-fusion-states)       JID  8724464
-Stage 4: 8 jobs  (4 fusion fits + 4 tests)     JIDs 8724465–8724472
-```
+| Category | Count | Detail |
+|---|---:|---|
+| COMPLETED | 11 | gat, gatv2, gps, none, curriculum_random, ce, weighted_ce, lookup, learned_unk, hash, focal (22–37 min each) |
+| FAILED (walltime) | 3 | **vgae, gae, dgi** — max_epochs=1200 × ~9 s/ep ≈ 180 min, ran into the 1:30 wall |
+| CASCADE-CANCELLED | 6 | curriculum_vgae, extract-states, bandit, dqn, mlp, weighted_avg (afterok on failed vgae/focal) |
+| OUT_OF_MEMORY | 1 | gat test job at default 16G (fixed forward via 32G) |
 
-**Dep race hit again** — Stage 3 first submission failed with "Job
-dependency problem"; re-submitted manually after a few-second pause.
-Launcher bug (PLAN's open #12) is still live; must be fixed before
-seed 123 / 777 mirror launches.
+Root cause identified: unsupervised models (VGAE/GAE/DGI) have
+`max_epochs=1200` which at ~9 s/epoch on H100 needs ~3 h, not 90 min.
 
-**MLflow parents skipped** — all 19 `python -m graphids
-mlflow-start-parent` calls returned nonzero ("mlflow unavailable");
-children will log to MLflow but won't link via `MLFLOW_PARENT_RUN_ID`.
-Recoverable post-hoc by stamping `mlflow.parentRunId` tags across the
-child runs by (group, variant, dataset).
+### Phase A simplification (executed 2026-04-23)
 
-## Next session — triage seed 42 + fix launcher race
+Driven by user push-back on the accumulating custom orchestration
+burden. Seed 42 validated the complaint: dep-race fired, MLflow
+parents silently failed, tests OOM'd, unsupervised walltimed, stale
+`.train_complete` markers drifted.
 
-### Step 1 — inspect seed 42 results
+- **Python DAG driver.** `launch_ofat.sh` (203 LOC) replaced by
+  `launch_ofat.py` (431 LOC). Jids held in memory ⇒ Stage 3 dep-race
+  (open #12, fired twice) **eliminated by design**.
+- **Per-group walltime override.** Unsupervised group gets
+  `--time 3:30:00`; others use profile default. No more walltime on
+  VGAE/GAE/DGI re-launches.
+- **MLflow-backed idempotent skip.** Queries latest fit status per
+  `(variant, seed)`; skips re-submission if FINISHED. Filesystem
+  `.train_complete` markers retired — they drifted across refactors.
+- **Venv guard.** Launcher fails fast if `VIRTUAL_ENV` isn't
+  `graphids/.venv` (symlinked `python` binary made site-packages
+  isolation depend on the env var alone).
+- **Stage-1 test OOM fixed.** `_chain_test` now passes `--mem 32G`
+  (was inheriting 16G profile default).
+- **`backfill_mlflow.py` deleted** (148 LOC). One-shot recovery
+  script that kept being re-invoked — accept occasional historical
+  data gaps.
+
+### Phase B simplification (executed 2026-04-23)
+
+Honest deletion of obsolete custom code:
+
+- **`mlflow_reap_zombies.py` deleted** (127 LOC). RUNNING zombies
+  now surface in MLflow UI until next submit overwrites them. User
+  can run `sacct` manually if they care. The alternative was a cron
+  cross-referencing SLURM with MLflow — exactly the "custom
+  orchestration that breaks" the user flagged.
+- **`start_parent_run` deleted** (54 LOC) from `_mlflow.py` plus
+  `_parent_run_tag` helper (10 LOC) and `MLFLOW_PARENT_RUN_ID`
+  constant. Launcher no longer creates parents; children are
+  filterable by `graphids.*` tags without a parent_run_id.
+- **`mlflow-start-parent` CLI deleted** (36 LOC) from `cli/app.py`.
+- **`_call_with_retry_on_schema_race` deleted** (20 LOC). MLflow 3
+  handles this better; the rare "table already exists" race wasn't
+  worth the wrapper.
+
+**Cumulative LOC delta: −184** (deleted: `mlflow_reap_zombies.py`
+−127, `backfill_mlflow.py` −148, `launch_ofat.sh` −203, parent-run
+plumbing −101; added: `launch_ofat.py` +431, minor docs +4).
+
+The 428-LOC `_mlflow.py` remaining is doing real work: 5 short
+lifecycle functions + helpers for tag/param/metric shaping that
+MLflow can't do natively. Further inlining would move complexity to
+callsites without deleting it — stopped here.
+
+## Next session — re-launch seed 42
 
 ```bash
-squeue -M cardinal -u $USER -o '%.10i %.22j %.2t %.10M %.10l %R' | head -50
-sacct -M cardinal -u $USER --starttime=2026-04-23 --format=JobID,JobName%30,State,Elapsed,ExitCode -P
+source ~/graphids/.venv/bin/activate
+scripts/ablation/launch_ofat.py --dataset set_01 --seed 42 --cluster cardinal
 ```
 
-Check each stage:
-- Stage 0 (vgae 8724431): did it finish within 90min? Post-rebuild
-  VGAE on Cardinal H100 is untested.
-- Stage 1 standalone: 13 fits — all COMPLETED? Which ones bumped the
-  90min wall vs completed cleanly?
-- Stage 3 (extract-fusion-states 8724464): needs both upstream ckpts
-  to exist, so this is the end-to-end dep-resolution test.
-- Stage 4 (fusion × 4): each runs afterok states — same dep-race
-  class, but only one dep edge so less brittle than Stage 3.
+Expected behavior:
+- **Skip 11 completed Stage 1 variants** (MLflow status = FINISHED).
+- **Submit ~9 new jobs**: vgae + gae + dgi (with 3:30 wall),
+  curriculum_vgae afterok vgae, extract-states afterok vgae+focal,
+  4 fusion methods afterok states.
+- **Test chains** re-submit for ALL variants — tests were either
+  OOM'd or cascade-cancelled. Tests now spec `--mem 32G`.
 
-### Step 2 — fix the launcher dep-race (blocks seed 123/777)
-
-Two options, smaller is better:
-1. **Sleep 3s between stage boundaries** in `launch_ofat.sh`
-   (between Stage 1 submission loop and Stage 3's `SBATCH_DEP=`
-   call). Cheapest.
-2. **Retry-with-backoff on "Job dependency problem"** in
-   `scripts/run`. Cleaner but touches the hot path.
-
-### Step 3 — fix MLflow parent-run failure
-
-Diagnose why `python -m graphids mlflow-start-parent` returned
-nonzero during the 2026-04-23 launch. Likely either (a) the launcher
-sourced `.env` but `MLFLOW_TRACKING_URI` wasn't exported, or (b) the
-SQLite lock from the system-metrics sampler. If parents can't be
-recovered at submit time, add a post-hoc one-shot to stamp
-`mlflow.parentRunId` on existing child rows keyed by (group,
-variant, dataset).
-
-### Step 4 — scale to N=3 + compare
+### Step 2 — scale to N=3 + compare
 
 Once seed 42 is green (or failures are understood), mirror launches
 for `--seed 123` and `--seed 777`:
 
 ```bash
-scripts/ablation/launch_ofat.sh --dataset set_01 --seed 123 --cluster cardinal
-scripts/ablation/launch_ofat.sh --dataset set_01 --seed 777 --cluster cardinal
+scripts/ablation/launch_ofat.py --dataset set_01 --seed 123 --cluster cardinal
+scripts/ablation/launch_ofat.py --dataset set_01 --seed 777 --cluster cardinal
 ```
 
 Then:
@@ -179,7 +199,7 @@ python -m graphids compare effect-size id_encoding set_01
 python -m graphids compare leaderboard id_encoding set_01
 ```
 
-### Step 5 — paper data pipeline
+### Step 3 — paper data pipeline
 
 Once N=3 is in, run `graphids/analysis/export_hf.py` (design at
 `~/plans/hf-dataset-design.md`) to push the leaderboard +
@@ -209,20 +229,55 @@ paper-pipeline integration.
   that push something in VGAE's forward past fp16 range. Low
   priority — smoke tests on hcrl_sa can use `--set
   trainer.precision="32-true"`; real ablation uses set_01.
-- **Launcher retry on cross-stage dep race (task #12, FIRED AGAIN
-  2026-04-23).** Stage 3's first submission failed with "Job
-  dependency problem" because Cardinal's scheduler hadn't registered
-  the upstream focal jid yet. This has now fired twice — elevated
-  priority. Must be fixed before seed 123 / 777 launches. Fix:
-  sleep 3s between stage boundaries in `launch_ofat.sh` OR
-  retry-with-backoff on that specific error in `scripts/run`.
-- **MLflow parent-run creation silently fails at submit time
-  (2026-04-23).** All 19 `python -m graphids mlflow-start-parent`
-  calls returned nonzero during the seed 42 launch — children logged
-  but aren't grouped. Cause unknown (possibly env var not exported
-  under the launcher's subshell, or SQLite lock from system-metrics
-  sampler). Either fix at source, add `set -x` / stderr capture, or
-  add a post-hoc stamp-by-tag script.
+- ~~Launcher dep-race (task #12)~~ — **RESOLVED** by Python DAG
+  driver (Phase A 2026-04-23). Jids held in memory; no scheduler
+  query between stages.
+- ~~MLflow parent-run creation silently fails~~ — **RESOLVED** by
+  deletion (Phase B 2026-04-23). Parent runs removed from the
+  design; `mlflow-start-parent` CLI + `start_parent_run` gone.
+- **MLflow tracking — three-plan decision set**
+  (drafted 2026-04-23, all gated on seed 42 finishing cleanly):
+  - **`~/plans/mlflow-tracking-simplification.md`** (574 lines) —
+    moderate plan. One experiment per `(dataset, axis)`, no
+    parent/child, status-gated resume (5 statuses), upstream
+    lineage via `graphids.upstream.{vgae,gat}_run_id` tags. All 5
+    open questions resolved with principles. Net ~-80 LOC.
+  - **`~/plans/mlflow-tracking-plan-review.md`** (228 lines) —
+    neutral ML-engineer review informed by SOTA (MLtraq, Aim, SEML,
+    Hydra+submitit, DuckDB+Parquet). Flags 6 plan gaps: no
+    alternatives considered, no tests for resume matrix, no SQLite
+    contention verification, upstream tag couples to MLflow
+    internals (should be `run_dir` not `run_id`), missing
+    git-SHA-mid-resume scenario (Q6), reversibility of
+    parent-run deletion.
+  - **`~/plans/mlflow-maximalist.md`** (941 lines) — inverse
+    direction: use MLflow to the hilt, cut custom wrapper code.
+    Eight features evaluated + rejected (autolog = Lightning-only;
+    evaluate = tabular-only; projects = no SLURM backend; nested
+    runs = wrong semantic for OFAT; UI-based compare lacks
+    bootstrap CI; `log_inputs(models=...)` is Databricks-only;
+    no batch system-metrics API; `search_logged_models` no tag
+    filter). Two worth adopting: `mlflow.data.Dataset` +
+    `log_input` (-23 LOC, UI lineage), `MlflowClient.create_logged_model()`
+    metadata-only (+10 LOC, first-class upstream entity without
+    triggering the artifact-store ban).
+  - **Recommended synthesis (Option C):** adopt moderate plan as-is,
+    then layer MetaDataset (clear win) + LoggedModel (queryability)
+    from the maximalist. Net ~-97 LOC. Also adopt review's #2 (resume
+    matrix tests), #3 (swap to `upstream_run_dir` tag), and #7 (stamp
+    `uv.lock` hash + python version).
+  - **`~/plans/ablation-orchestration-evaluation.md`** (716 lines) —
+    evaluates Optuna / Hydra+submitit+optuna-sweeper / Ray Tune /
+    Metaflow / NNI / SEML / Dagster as ablation-framework candidates.
+    Verdict: **don't adopt any.** Evidence-based findings: Optuna
+    alone is hyperopt-only (no DAG); MLflow's `MlflowStorage` for
+    Optuna (v2.22.0+) actually *restores* parent/child the moderate
+    plan deliberately deletes; Hydra+submitit doesn't express
+    `afterok` natively (the real pain point); NNI archived Sept 2024;
+    SEML replaces MLflow (wrong direction); dagster-slurm +
+    metaflow-slurm require login-node drivers (violates OSC policy).
+    **The Stage 3 dep-race is a 5–15 LOC bash retry**, not a
+    framework problem. Keep jsonnet + `launch_ofat.sh`.
 
 ## Open issues
 
