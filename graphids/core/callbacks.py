@@ -247,37 +247,3 @@ class VRAMDriftCallback(CallbackBase):
             # Warn once per run — repeated warnings add noise without
             # extra signal. Abort is the researcher's call.
             self._warned = True
-
-
-# ---------------------------------------------------------------------------
-# SVDDCalibrationCallback — OCGIN-style post-fit centroid fit for DGI
-# ---------------------------------------------------------------------------
-
-
-class SVDDCalibrationCallback(CallbackBase):
-    """Fit the OCGIN centroid on the trained encoder at ``on_fit_end``.
-
-    Only fires for models exposing ``calibrate_svdd_center`` (currently
-    :class:`~graphids.core.models.autoencoder.dgi_module.DGIModule`). This
-    keeps the callback auto-registerable for any future SVDD-scored module
-    without extra wiring — the autoencoder stage adds it unconditionally and
-    it no-ops on VGAE/GAE.
-    """
-
-    def on_fit_end(self, trainer: Trainer, model: torch.nn.Module) -> None:
-        fit = getattr(model, "calibrate_svdd_center", None)
-        if fit is None:
-            return
-        datamodule = getattr(trainer, "datamodule", None)
-        if datamodule is None:
-            return
-        loader = datamodule.train_dataloader()
-        device = next(model.parameters()).device
-        fit(loader, device)
-        from graphids._otel import get_logger
-
-        get_logger(__name__).info(
-            "svdd_centroid_calibrated",
-            latent_dim=int(model.svdd_center.numel()),
-            norm=float(model.svdd_center.norm().item()),
-        )

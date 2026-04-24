@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import shutil
 
+from graphids._otel import get_logger
 from graphids.config.constants import LAKE_ROOT, PREPROCESSING_VERSION
 from graphids.config.topology import cache_dir
-from graphids._otel import get_logger
 
 log = get_logger(__name__)
 

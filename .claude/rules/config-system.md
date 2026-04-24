@@ -33,7 +33,7 @@ One route. `scripts/run <preset.jsonnet>` or `python -m graphids fit` →
 
 Multi-stage chains (e.g. the KD chain autoencoder → supervised →
 fusion) are bash loops that submit each preset with
-`SBATCH_DEP=afterok:<jid>` — see `scripts/ablation/launch_ofat.py`.
+`SBATCH_DEP=afterok:<jid>` — see `graphids.slurm.dag` (CLI: `python -m graphids launch-ablation`).
 No in-process pipeline driver, no planner, no identity-hash layer.
 
 Full tree: `docs/reference/config-architecture.md`.

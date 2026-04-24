@@ -30,9 +30,12 @@ own `run_dir` from `(lake_root, dataset, seed)` via `_paths.libsonnet`.
 The SLURM wrapper (`scripts/run`) just forwards TLAs.
 
 Multi-stage chains (e.g. `autoencoder → supervised → fusion`) are a
-Python DAG driver (`scripts/ablation/launch_ofat.py`) that submits each
-preset with `SBATCH_DEP=afterok:<jid>` between them. There is no
-in-process pipeline driver.
+Python DAG driver (`graphids.slurm.dag`, CLI `python -m graphids
+launch-ablation`). Topology is a declarative `OFAT_DAG` tuple of
+`FitNode`/`ExtractStatesNode`; the executor walks it in topological
+order, submitting each node via `scripts/run` with `SBATCH_DEP=afterok`
+derived from the in-memory jid map. There is no in-process pipeline
+driver.
 
 ### Route B: Operational commands (no training)
 
@@ -80,8 +83,8 @@ Critical callbacks are constructed explicitly by
 appends user callbacks; it cannot drop the forced set.
 
 Forced callbacks (from `defaults.libsonnet`): ModelCheckpoint,
-EarlyStopping, MLflowTrainingCallback, CurriculumEpochCallback,
-SVDDCalibrationCallback. No trainer logger (MLflow callback handles metrics).
+EarlyStopping, MLflowTrainingCallback, CurriculumEpochCallback. No
+trainer logger (MLflow callback handles metrics).
 
 ### build_run() responsibilities
 

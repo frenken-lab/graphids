@@ -79,10 +79,12 @@ class DGIModule(GraphModuleBase):
         self._init_threshold_metrics()
         self.test_metrics = binary_test_metrics()
         # OCGIN scoring head: centroid of training-normal pooled embeddings.
-        # Populated by calibrate_svdd_center() at on_fit_end; persists through
-        # state_dict so test/analyze paths pick it up automatically.
+        # Re-fit fresh at test-start by stage.evaluate — the centroid is a
+        # deterministic statistic of (encoder weights, benign train data), so
+        # persisting it in state_dict just added a stale-calibration failure
+        # mode. Zero init here means an uncalibrated forward pass will raise
+        # in _per_graph_scores rather than silently return bogus scores.
         self.register_buffer("svdd_center", torch.zeros(latent_dim))
-        self.register_buffer("svdd_calibrated", torch.tensor(False))
         if num_ids > 0:
             self._build()
 
@@ -179,15 +181,15 @@ class DGIModule(GraphModuleBase):
     def _per_graph_scores(self, batch):
         """OCGIN score: L2 distance from SVDD centroid in pooled-latent space.
 
-        Requires ``calibrate_svdd_center`` to have run at least once; raises
-        if called before calibration (no silent fallback to discriminator
-        scoring — that's the failure mode we're fixing).
+        The centroid is fit fresh at test-start by ``stage.evaluate`` — not
+        persisted in state_dict. A zero centroid means calibration was
+        skipped, so raise rather than return magnitude-only scores.
         """
-        if not bool(self.svdd_calibrated.item()):
+        if not torch.any(self.svdd_center):
             raise RuntimeError(
-                "DGIModule.svdd_center is uncalibrated. Run "
-                "calibrate_svdd_center(train_loader, device) after fit or "
-                "load a checkpoint with svdd_calibrated=True."
+                "DGIModule.svdd_center is zero. Call "
+                "calibrate_svdd_center(train_loader, device) before scoring "
+                "(stage.evaluate does this automatically for the test phase)."
             )
         pooled = self._pooled_latent(batch)
         return (pooled - self.svdd_center).pow(2).sum(dim=1)
@@ -212,7 +214,6 @@ class DGIModule(GraphModuleBase):
         if count == 0:
             raise RuntimeError("calibrate_svdd_center: empty train loader")
         self.svdd_center.copy_(total / count)
-        self.svdd_calibrated.fill_(True)
         if was_training:
             self.train()
 

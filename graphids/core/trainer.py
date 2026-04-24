@@ -252,6 +252,16 @@ class Trainer:
         if ckpt_path:
             self._load_model_weights(ckpt_path, model)
 
+        # OCGIN centroid fit: deterministic statistic of (trained encoder,
+        # benign train data), so re-fit at test-start rather than persisting
+        # through state_dict (which deadlocked on callback/ckpt-save ordering
+        # and shipped uncalibrated ckpts — Cardinal jid 8772115). No-op for
+        # models that don't expose calibrate_svdd_center.
+        calibrate = getattr(model, "calibrate_svdd_center", None)
+        if calibrate is not None:
+            datamodule.setup("fit")
+            calibrate(datamodule.train_dataloader(), self._device)
+
         test_loaders = datamodule.test_dataloader()
         if not isinstance(test_loaders, list):
             test_loaders = [test_loaders]
@@ -478,6 +488,15 @@ class Trainer:
         stripped = _strip_orig_mod_prefix(state)
         remap = {k.replace("_orig_mod.", ""): k for k in model.state_dict().keys()}
         state = {remap.get(k, k): v for k, v in stripped.items()}
-        model.load_state_dict(state)
+        # strict=False tolerates removed buffers (e.g. DGI svdd_calibrated,
+        # dropped when we moved centroid fit from state_dict to test-start);
+        # log unexpected/missing keys so architecture drift stays visible.
+        result = model.load_state_dict(state, strict=False)
+        if result.missing_keys or result.unexpected_keys:
+            _log.info(
+                "load_state_dict_partial",
+                missing=list(result.missing_keys),
+                unexpected=list(result.unexpected_keys),
+            )
         model.on_load_checkpoint(ckpt)
         return ckpt

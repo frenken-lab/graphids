@@ -168,6 +168,55 @@ lifecycle functions + helpers for tag/param/metric shaping that
 MLflow can't do natively. Further inlining would move complexity to
 callsites without deleting it — stopped here.
 
+## 2026-04-24 session — DGI bug RCA, cluster-tag fix, DAG into the library
+
+Triage of the Cardinal re-launch surfaced three bugs + one architectural
+cleanup.
+
+### DGI test uncalibrated centroid (Cardinal jid 8772115)
+
+DGI test FAILED at 41s with `DGIModule.svdd_center is uncalibrated`.
+Root cause: `SVDDCalibrationCallback.on_fit_end` calibrated the
+in-memory buffers but never re-saved the ckpt. `ModelCheckpoint` only
+writes in `on_train_epoch_end`, so both `best_model.ckpt` and
+`last.ckpt` shipped with `svdd_calibrated=False` baked into state_dict.
+Latent since commit `9c35c47` (2026-04-16) — first DGI test to actually
+run because the earlier Cardinal runs all walltimed or crashed before
+test.
+
+**Fix:** delete the persistence path entirely. Centroid is a
+deterministic function of `(encoder, benign train data)` — re-fit fresh
+at `Trainer.test()` start, don't persist in state_dict. Deleted
+`SVDDCalibrationCallback`, `svdd_calibrated` buffer, jsonnet
+registration, and `scripts/recalibrate_dgi.py`. Added `strict=False`
+load with a log line in `Trainer._load_model_weights` so old-format
+ckpts still load. Regression verified end-to-end: seed 42 DGI test (jid
+8815229) FINISHED, 28 metric keys populated.
+
+### gh#40 — empty `graphids.cluster` MLflow tag
+
+`GraphIDSSettings.cluster` now falls back to `SLURM_CLUSTER_NAME` when
+`GRAPHIDS_CLUSTER` isn't exported. Works from any submission path
+without per-script coordination. Historical rows stay empty; fix is
+forward-only.
+
+### Launcher into the library (Option A)
+
+`scripts/ablation/launch_ofat.py` (432 LOC) migrated to
+`graphids/slurm/dag.py` + `graphids/cli/ablation.py`. Topology is now a
+declarative `OFAT_DAG` tuple of `FitNode`/`ExtractStatesNode` consumed
+by a topological executor. CLI: `python -m graphids launch-ablation
+[--dataset X --seed N --cluster c --dry-run]`.
+
+Pathway to the declarative future already set up: lift `OFAT_DAG` into
+`configs/ablation_dag.py` (step 1) → load from jsonnet (step 2) → emit
+Mermaid/Graphviz from the loaded DAG (step 3).
+
+### Session net
+
+-117 LOC on bugs + -70 LOC on launcher move. Full test suite green
+through all three changes (121 passed).
+
 ## Next session — triage the seed 42 re-launch (SLURM jobs live)
 
 **Re-launch submitted 2026-04-23 via `launch_ofat.py` — 22 jobs on Cardinal.**

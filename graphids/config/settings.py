@@ -6,6 +6,7 @@ Typed, validated, read once at first access via ``get_settings()``.
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -58,6 +59,16 @@ class GraphIDSSettings(BaseSettings):
     def _derive_slurm_log_dir(self) -> GraphIDSSettings:
         if not self.slurm_log_dir:
             object.__setattr__(self, "slurm_log_dir", f"{self.lake_root}/slurm")
+        return self
+
+    @model_validator(mode="after")
+    def _derive_cluster(self) -> GraphIDSSettings:
+        # Fall back to SLURM_CLUSTER_NAME when GRAPHIDS_CLUSTER isn't
+        # exported by the submitter shell. SLURM sets SLURM_CLUSTER_NAME in
+        # every job environment, so this works from any submission path
+        # without per-script coordination (see gh#40).
+        if not self.cluster:
+            object.__setattr__(self, "cluster", os.environ.get("SLURM_CLUSTER_NAME", ""))
         return self
 
 

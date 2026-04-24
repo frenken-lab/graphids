@@ -33,12 +33,6 @@
       class_path: 'graphids.core.mlflow_callback.MLflowTrainingCallback',
       init_args: {},
     },
-    svdd_calibration: {
-      // Fits OCGIN centroid at on_fit_end for modules exposing
-      // calibrate_svdd_center (DGI). No-op for VGAE/GAT/fusion.
-      class_path: 'graphids.core.callbacks.SVDDCalibrationCallback',
-      init_args: {},
-    },
   },
 
   trainer: {
