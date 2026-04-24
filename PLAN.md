@@ -168,20 +168,75 @@ lifecycle functions + helpers for tag/param/metric shaping that
 MLflow can't do natively. Further inlining would move complexity to
 callsites without deleting it — stopped here.
 
-## Next session — re-launch seed 42
+## Next session — triage the seed 42 re-launch (SLURM jobs live)
+
+**Re-launch submitted 2026-04-23 via `launch_ofat.py` — 22 jobs on Cardinal.**
+Python launcher held jids in memory so Stage 3 submitted in one shot
+(no dep-race). Idempotent skip correctly skipped 11 completed Stage 1
+variants. 3:30 wall applied to unsupervised group.
+
+### Queued jids
+
+```
+Stage 0 (re-run, walltimed previously, 3:30:00 wall):
+  8772107  graphids-fit-vgae
+  8772112  graphids-fit-gae
+  8772114  graphids-fit-dgi
+Stage 2 (afterok VGAE):
+  8772125  graphids-fit-curriculum_vgae
+Stage 3 (afterok VGAE only — focal already FINISHED so no focal dep):
+  8772127  graphids-extract-fusion-states
+Stage 4 (afterok states):
+  8772128  graphids-fit-bandit
+  8772130  graphids-fit-dqn
+  8772214  graphids-fit-mlp
+  8772216  graphids-fit-weighted_avg
+Test chains (13 for completed Stage 1 variants, --mem 32G):
+  8772108-8772126 and 8772129/8772211/8772215/8772217 (fusion tests)
+```
+
+### First command to run next session
 
 ```bash
 source ~/graphids/.venv/bin/activate
-scripts/ablation/launch_ofat.py --dataset set_01 --seed 42 --cluster cardinal
+sacct -M cardinal -u $USER --starttime=2026-04-23 \
+    --format=JobID,JobName%30,State,Elapsed,ExitCode -P \
+    | grep -v '\.ba\|\.ex' | column -t -s '|'
 ```
 
-Expected behavior:
-- **Skip 11 completed Stage 1 variants** (MLflow status = FINISHED).
-- **Submit ~9 new jobs**: vgae + gae + dgi (with 3:30 wall),
-  curriculum_vgae afterok vgae, extract-states afterok vgae+focal,
-  4 fusion methods afterok states.
-- **Test chains** re-submit for ALL variants — tests were either
-  OOM'd or cascade-cancelled. Tests now spec `--mem 32G`.
+### Success criteria
+
+- **All 3 unsupervised fits FINISHED** at 3:30 wall (VGAE should need ~3h
+  at 9 s/epoch × 1200 epochs; earlier runs walltimed on 1:30 wall).
+  If any walltime again, bump `LONG_WALL_TIME` in `launch_ofat.py` to
+  `4:00:00`.
+- **curriculum_vgae FINISHED** afterok vgae.
+- **extract-fusion-states FINISHED** afterok vgae (focal ckpt from
+  2026-04-23 already on disk).
+- **4 fusion methods FINISHED** afterok states.
+- **Test chains complete** for all variants — the 13 Stage 1 tests now
+  run with `--mem 32G` (the 16G default OOM'd gat test 8724434).
+
+### Known gotchas
+
+- **`QOSMaxJobsPerUserLimit`** on Cardinal throttled several test jobs
+  to PD (concurrency cap, not failure). They'll drain as other jobs
+  finish. Not actionable.
+- **Zombie RUNNING MLflow rows are possible.** `mlflow_reap_zombies.py`
+  was deleted 2026-04-23; if SLURM kills a fit and MLflow status
+  doesn't flip to FAILED, the row stays RUNNING in the UI. Next submit
+  (re-run) will replace it correctly because idempotent skip checks
+  `status == FINISHED`, not "any non-zero status." Zombies are
+  cosmetic, not operational.
+
+### Triage decision tree
+
+| Seed 42 state | Action |
+|---|---|
+| All 9 jobs FINISHED | Proceed to seed 123 / 777 launches: `scripts/ablation/launch_ofat.py --dataset set_01 --seed 123 --cluster cardinal` |
+| Unsupervised walltimed again | Bump `LONG_WALL_TIME` → `4:00:00` in `launch_ofat.py:34`, resubmit via same command (idempotent skip handles already-done variants) |
+| Stage 3 or 4 FAILED | Check logs at `/fs/ess/PAS1266/graphids/slurm_logs/graphids-<name>_<jid>.err`; resubmit via same launcher command |
+| Test jobs FAILED | Likely a real bug (OOM at 32G would be new, or classification_test_metrics regression). Inspect one stderr; resubmit test manually |
 
 ### Step 2 — scale to N=3 + compare
 
