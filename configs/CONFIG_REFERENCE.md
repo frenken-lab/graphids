@@ -113,24 +113,25 @@ Budget tuning: `GRAPHIDS_BUDGET_SAFETY_MARGIN`, `GRAPHIDS_BUDGET_GRAD_MULT`,
 
 Single source of truth: `configs/resources/submit_profiles.json`. Exactly two
 entries — `gpu` and `cpu`. Each carries per-cluster `partitions` and per-length
-`times` defaults. Per-job mem/time/command are flags on `scripts/run`, never
-new JSON entries. `graphids/config/topology.py::_validate_submit_profiles`
+`times` defaults. Per-job mem/time/command are flags on `python -m graphids
+submit`, never new JSON entries. `graphids/config/topology.py::_validate_submit_profiles`
 enforces the two-entry invariant at import time.
 
 Optional MLflow-history walltime estimation lives in
-`graphids.slurm.sizing.estimate_walltime_minutes`; `scripts/run --time-from-history`
-opts into it for fit jobs with enough history (≥3 prior FINISHED runs).
+`graphids.slurm.sizing.estimate_walltime_minutes`; `python -m graphids submit
+--time-from-history` opts into it for fit jobs with enough history (≥3 prior
+FINISHED runs).
 
 ### Submission surface
 
 | Use | Command |
 |-----|---------|
-| Training preset | `scripts/run <preset.jsonnet> [--dataset X --seed N --smoke]` |
-| Test / eval (CPU) | `scripts/run --mode cpu --command "python -m graphids test --config X --ckpt Y"` |
-| Tests | `scripts/run --mode cpu --length short --command "python -m pytest [-k pattern]"` |
-| Cache rebuild | `scripts/run --mode cpu --mem 54G --time 4:00:00 --command "python -m graphids rebuild-caches --all"` |
-| Analyze ckpt | `scripts/run --mode gpu --mem 32G --time 2:00:00 --command "python -m graphids analyze ..."` |
-| Profiling | `scripts/run --mode gpu --length short --command "python -m graphids profile"` |
+| Training preset | `python -m graphids submit <preset.jsonnet> [--dataset X --seed N --smoke]` |
+| Test / eval (CPU) | `python -m graphids submit --mode cpu --command "python -m graphids test --config X --ckpt Y"` |
+| Tests | `python -m graphids submit --mode cpu --length short --command "python -m pytest [-k pattern]"` |
+| Cache rebuild | `python -m graphids submit --mode cpu --mem-gb 54 --timeout-min 240 --command "python -m graphids rebuild-caches --all"` |
+| Analyze ckpt | `python -m graphids submit --mode gpu --mem-gb 32 --timeout-min 120 --command "python -m graphids analyze ..."` |
+| Profiling | `python -m graphids submit --mode gpu --length short --command "python -m graphids profile"` |
 
 ---
 

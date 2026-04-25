@@ -52,11 +52,15 @@ class _Aggregate:
 def _fetch_test_runs(group: str, dataset: str, metric: str) -> pd.DataFrame:
     """Return one DataFrame row per test-phase child run for ``(group, dataset)``.
 
-    Columns: ``variant``, ``seed``, ``value``. Drops rows with a missing metric.
+    Columns: ``variant``, ``seed``, ``value``. Tag-filter across all
+    experiments — works uniformly on the old ``graphids/{group}/{variant}``
+    layout and the new ``graphids/{dataset}/{group}`` layout without a
+    dual path. Test phase is always-fresh (one row per attempt), so we
+    dedup to the latest FINISHED row per ``(variant, seed)``.
     """
     import mlflow
 
-    from graphids._mlflow import ensure_tracking_uri
+    from graphids._mlflow import build_search_filter, ensure_tracking_uri
 
     uri = ensure_tracking_uri()
     if not uri:
@@ -65,20 +69,12 @@ def _fetch_test_runs(group: str, dataset: str, metric: str) -> pd.DataFrame:
         )
     mlflow.set_tracking_uri(uri)
 
-    # One experiment per (group, variant) — search across all variants in the group
-    # by walking experiments whose name starts with ``graphids/{group}/``.
-    from mlflow.tracking import MlflowClient
-
-    client = MlflowClient(tracking_uri=uri)
-    prefix = f"graphids/{group}/"
-    exps = [e for e in client.search_experiments() if e.name.startswith(prefix)]
-    if not exps:
-        return pd.DataFrame(columns=["variant", "seed", "value"])
-
-    filter_string = f'tags."graphids.phase" = "test" AND tags."graphids.dataset" = "{dataset}"'
     df = mlflow.search_runs(
-        experiment_ids=[e.experiment_id for e in exps],
-        filter_string=filter_string,
+        search_all_experiments=True,
+        filter_string=build_search_filter(
+            dataset=dataset, group=group, phase="test", status="FINISHED"
+        ),
+        order_by=["attributes.start_time DESC"],
         output_format="pandas",
     )
     if df.empty:
@@ -96,7 +92,9 @@ def _fetch_test_runs(group: str, dataset: str, metric: str) -> pd.DataFrame:
         }
     ).dropna()
     out["seed"] = out["seed"].astype(int)
-    return out
+    # Keep the most recent FINISHED attempt per (variant, seed) — order_by
+    # DESC above, so ``keep='first'`` picks the newest.
+    return out.drop_duplicates(subset=["variant", "seed"], keep="first").reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------

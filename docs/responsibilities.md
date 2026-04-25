@@ -20,14 +20,16 @@ and returns an `InstantiatedRun(trainer, model, datamodule)`.
 
 **Stage primitives** (`graphids/orchestrate/stage.py`) — `build`, `train`,
 `evaluate`. `fit` / `test` call these directly. No pipeline driver. Multi-stage
-chains are bash loops submitting each preset with `SBATCH_DEP=afterok:<jid>`.
+chains are an in-memory DAG (`graphids.slurm.dag.OFAT_DAG`) calling
+`graphids.slurm.submit.submit()` with `dep_jids` afterok chaining.
 
-**SLURM** (`graphids/slurm/`, `scripts/run`) — resource allocation and
-job submission. One script: `scripts/run <preset.jsonnet>` for training;
-`scripts/run --mode {gpu|cpu} --command "..."` for everything else.
-Reads `configs/resources/submit_profiles.json` (two entries only: `gpu`,
-`cpu`). Optional `graphids.slurm.sizing.estimate_walltime_minutes` queries
-MLflow history when invoked with `--time-from-history`.
+**SLURM** (`graphids/slurm/`, `graphids/cli/submit.py`) — resource allocation
+and job submission. One Typer command: `python -m graphids submit <preset.jsonnet>`
+for training; `python -m graphids submit --mode {gpu|cpu} --command "..."` for
+everything else. Library entrypoint is `graphids.slurm.submit.submit()`. Reads
+`configs/resources/submit_profiles.json` (two entries only: `gpu`, `cpu`).
+Optional `graphids.slurm.sizing.estimate_walltime_minutes` queries MLflow
+history when invoked with `--time-from-history`.
 
 The pipeline is strictly one-directional:
 

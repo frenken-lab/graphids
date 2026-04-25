@@ -193,18 +193,17 @@ def init_providers(
 
     atexit.register(lambda: (tp.shutdown(), lp.shutdown()))
 
-    # Trampoline SLURM signals to sys.exit so the atexit registered
-    # above fires before the process dies. SIGUSR1 is what
-    # ``--signal=B:USR1@300`` delivers 5 minutes before wall; SIGTERM
-    # covers ``scancel`` and kernel TERM. SIGKILL bypasses Python — no
-    # defense.
+    # Trampoline SIGTERM so atexit flushes before the process dies.
+    # SIGUSR2 is owned by submitit's checkpoint handler (preemption
+    # auto-resume — see graphids.slurm.submit._TrainingJob.checkpoint);
+    # its normal exit path through submitit.core._submit lets atexit
+    # fire cleanly, so we don't trampoline it. SIGKILL bypasses Python.
     import signal as _sig
 
     def _on_term(signum, _frame):
         sys.exit(128 + signum)
 
-    for s in (_sig.SIGUSR1, _sig.SIGTERM):
-        _sig.signal(s, _on_term)
+    _sig.signal(_sig.SIGTERM, _on_term)
 
     _providers = OTelProviders(tracer=tp, logger=lp)
     return _providers

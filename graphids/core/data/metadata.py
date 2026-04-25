@@ -44,7 +44,7 @@ def load_metadata(cache_dir: Path | str) -> dict[str, Any]:
         raise ValueError(
             f"cache_metadata.json at {path} has schema version "
             f"{version!r}, expected {METADATA_SCHEMA_VERSION}. "
-            "Run `scripts/run --mode cpu --mem 54G --time 4:00:00 "
+            "Run `python -m graphids submit --mode cpu --mem-gb 54 --timeout-min 240 "
             '--command "python -m graphids rebuild-caches --delete-existing --yes"`.'
         )
     return meta

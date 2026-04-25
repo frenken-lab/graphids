@@ -1,6 +1,6 @@
 """Direct instantiator smoke tests.
 
-``graphids.orchestrate.instantiate.build_run`` replaces the old
+``graphids.orchestrate.build_run`` replaces the old
 ``build_cli``/``GraphIDSCLI`` path. These tests exercise the full chain
 for every stage + fusion method variant the repo ships:
 
@@ -24,7 +24,7 @@ import pytest
 
 from graphids._reflect import filter_kwargs
 from graphids.config.jsonnet import render
-from graphids.orchestrate.instantiate import build_run
+from graphids.orchestrate import build_run
 
 _STAGE_CASES: list[tuple[str, dict]] = [
     ("autoencoder", {}),

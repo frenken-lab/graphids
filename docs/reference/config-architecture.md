@@ -27,15 +27,16 @@ python -m graphids fit \
 
 Every ablation preset under `configs/ablations/*.jsonnet` computes its
 own `run_dir` from `(lake_root, dataset, seed)` via `_paths.libsonnet`.
-The SLURM wrapper (`scripts/run`) just forwards TLAs.
+The SLURM submitter (`python -m graphids submit`, library:
+`graphids.slurm.submit.submit()`) just forwards TLAs.
 
 Multi-stage chains (e.g. `autoencoder → supervised → fusion`) are a
 Python DAG driver (`graphids.slurm.dag`, CLI `python -m graphids
 launch-ablation`). Topology is a declarative `OFAT_DAG` tuple of
 `FitNode`/`ExtractStatesNode`; the executor walks it in topological
-order, submitting each node via `scripts/run` with `SBATCH_DEP=afterok`
-derived from the in-memory jid map. There is no in-process pipeline
-driver.
+order, calling `graphids.slurm.submit.submit()` directly with `dep_jids`
+derived from the in-memory jid map. There is no subprocess and no
+in-process pipeline driver.
 
 ### Route B: Operational commands (no training)
 

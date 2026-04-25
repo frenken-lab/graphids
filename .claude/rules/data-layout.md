@@ -45,12 +45,15 @@ thing to get right before touching anything in `graphids/_mlflow.py`,
 
 | Signal | Where | Reader |
 |---|---|---|
-| Run metadata (params, tags, timestamps) | `mlflow.db` | `mlflow.search_runs` |
+| Run metadata (params, tags, timestamps) | `mlflow.db` | `mlflow.search_runs` + `graphids._mlflow.build_search_filter(...)` |
 | Per-epoch scalar metrics (train/val_loss, lr) | `mlflow.db` | `client.get_metric_history(run_id, key)` |
 | Device telemetry (GPU util, VRAM, CPU, mem) | `mlflow.db` (system-metrics sampler, 5s) | MLflow UI charts |
 | Final test metrics | `mlflow.db` (test-phase row) | `search_runs` filter `tags.graphids.phase = 'test'` |
+| Dataset identity (cache digest) | `mlflow.db` `Dataset` entity | `search_runs` filter `dataset.digest = '...'`; MLflow UI "Used Datasets" panel |
+| Upstream teacher lineage | `mlflow.db` fit-phase tags `graphids.upstream.<role>.run_dir` + `.ckpt_path` | `search_runs` filter `tags.graphids.upstream.unsupervised_vgae.run_dir = '...'` |
+| LoggedModel (ckpt metadata entity) | `mlflow.db` (MLflow 3) | `search_logged_models(source_run_id, model_type)` |
 | Checkpoint bytes | `{run_dir}/checkpoints/` | `torch.load` via `_fs.atomic_load` |
-| Checkpoint SHA256 | `.sha256` sidecar + MLflow tag `graphids.ckpt_sha256` | `atomic_load` verifies; tag is provenance |
+| Checkpoint SHA256 | `.sha256` sidecar + MLflow tag `graphids.ckpt_sha256` + `LoggedModel.tags.graphids.ckpt_sha256` | `atomic_load` verifies; tag is provenance |
 | Span lifecycle + log events | `{run_dir}/traces.jsonl` | `jq` / manual grep for debugging |
 | Validated jsonnet config | `{run_dir}/resolved.json` | replay / debugging |
 
@@ -59,12 +62,17 @@ thing to get right before touching anything in `graphids/_mlflow.py`,
 1. **Never `mlflow.log_artifact` or `mlflow.pytorch.log_model`.** Checkpoints
    stay as filesystem paths so resume, KD-student teacher loading, and fusion
    upstream-ckpt flow all work via direct paths. MLflow rows link to them via
-   the `graphids.run_dir` tag.
+   the `graphids.run_dir` tag. MLflow-3 `LoggedModel` (metadata-only via
+   `MlflowClient.create_logged_model`) is OK — it takes no artifact bytes.
+   `mlflow.data.Dataset` / `mlflow.log_input` is OK for the same reason.
 
 2. **Two MLflow rows per run under the same `run_name`.** Fit phase (`tags.graphids.phase = 'fit'`)
    and test phase (`tags.graphids.phase = 'test'`). `run_name` is deterministic:
    `{group}_{variant}_{dataset}_seed{N}[_{cluster}]`. Filter by the phase tag
-   when `search_runs` returns what looks like duplicates.
+   when `search_runs` returns what looks like duplicates. **Fit is resumable**
+   (status-gated: FAILED/KILLED → resume same `run_id`); **test is always-fresh**
+   (new `run_id` each invocation; `compare.py` dedups to latest FINISHED per
+   (variant, seed)).
 
 3. **MLflow run lifecycle spans `stage.train` + the callback.**
    `_mlflow.start_training_run` opens the run in `stage.train::train` before
@@ -76,11 +84,25 @@ thing to get right before touching anything in `graphids/_mlflow.py`,
 
 5. **Query path is MLflow, not OTel.** `traces.jsonl` is for single-run
    debugging; don't build cross-run analysis on it. Use `mlflow.search_runs`
-   + `client.get_metric_history`.
+   + `client.get_metric_history`. All graphids-identity filter_strings flow
+   through `graphids._mlflow.build_search_filter(...)` — don't hand-compose.
 
 6. **`atomic_save`/`atomic_load` hashing is load-time integrity** on GPFS —
    independent of MLflow's provenance tagging. Both serve real purposes; don't
    collapse.
+
+7. **Experiments are per-axis (post-2026-04-24).** Layout is
+   `graphids/{dataset}/{group}`, not the old `graphids/{group}/{variant}`.
+   Historical rows remain in old experiment names; all queries go through
+   `build_search_filter` with tag predicates, so old + new rows are found
+   uniformly.
+
+8. **Upstream lineage is filesystem-path-based.** Fit runs that consume an
+   upstream ckpt (curriculum_vgae's VGAE teacher, fusion's vgae+gat
+   teachers) stamp `graphids.upstream.<group>_<variant>.run_dir` +
+   `.ckpt_path` tags. `run_dir` is stable identity; `LoggedModel.model_id`
+   is a secondary handle reachable via `search_logged_models(source_run_id)`
+   once the upstream fit's LoggedModel is registered.
 
 ## Anti-patterns seen before
 
@@ -88,3 +110,5 @@ thing to get right before touching anything in `graphids/_mlflow.py`,
 - Adding a parallel `summary.json` under run_dir "because MLflow might not have loaded" — no
 - Writing custom metrics to `metrics.jsonl` "because that's what OTel does" — deleted 2026-04-16; use `mlflow.log_metrics(..., step=epoch)` via the callback
 - Re-opening the fit-phase MLflow run in `evaluate` to append test metrics — rejected; separate rows share `run_name` and are distinguished by `graphids.phase`
+- Hand-composing `search_runs` `filter_string=` — use `build_search_filter(...)` so old + new layout, phase gating, and cluster tag selection stay consistent
+- Reading `active_run().data.tags` immediately after `set_tags` — it's a snapshot at `start_run` time, stale for post-start writes. Re-fetch via `MlflowClient().get_run(run_id)` when inspecting just-set tags

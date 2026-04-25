@@ -10,12 +10,13 @@ and GPU-reset semantics.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from graphids.cli.app import CkptPath, ConfigPath, SetList, TlaList, app
-from graphids.orchestrate.config import ResolvedConfig
+from graphids.orchestrate import ResolvedConfig
 
 
 def _prepare(
@@ -30,12 +31,20 @@ def _prepare(
     """
     from graphids._cpu import configure_cpu_threads
     from graphids._mlflow import ensure_tracking_uri
-    from graphids._otel import wire_file_exporters
+    from graphids._otel import init_providers, wire_file_exporters
     from graphids._spawn import ensure_spawn
     from graphids.cli.app import apply_overrides
     from graphids.config.jsonnet import render
-    from graphids.orchestrate.stage import build
+    from graphids.orchestrate import build
 
+    # Idempotent — Typer's root callback calls this on the CLI path. On the
+    # submitit compute-node path, _TrainingJob.__call__ bypasses the callback,
+    # so we initialise here too. Guarded by _providers global; second call no-ops.
+    init_providers(
+        "graphids",
+        wandb_entity=os.environ.get("WANDB_ENTITY", ""),
+        wandb_project=os.environ.get("WANDB_PROJECT", "graphids"),
+    )
     ensure_spawn()
     configure_cpu_threads()
     ensure_tracking_uri()
@@ -63,7 +72,7 @@ def fit(
     ckpt_path: CkptPath = None,
 ) -> None:
     """Train a model from a jsonnet stage config."""
-    from graphids.orchestrate.stage import train
+    from graphids.orchestrate import train
 
     resolved, artifacts = _prepare(config, tla, set_)
     train(artifacts, resolved, resume_from=ckpt_path)
@@ -77,7 +86,7 @@ def test(
     ckpt_path: CkptPath = None,
 ) -> None:
     """Evaluate a trained model on the test set."""
-    from graphids.orchestrate.stage import evaluate
+    from graphids.orchestrate import evaluate
 
     resolved, artifacts = _prepare(config, tla, set_)
     # When --ckpt-path is explicit, it overrides the resolved ckpt_file.

@@ -30,7 +30,6 @@ from __future__ import annotations
 import os
 
 from graphids._otel import get_logger
-from graphids._slurm import slurm_cpus_per_task
 
 log = get_logger(__name__)
 
@@ -39,7 +38,8 @@ _CONFIGURED = False
 
 def allocated_cpus() -> int:
     """CPU quota visible to this process. SLURM cgroup > os.cpu_count()."""
-    return slurm_cpus_per_task() or os.cpu_count() or 1
+    slurm = os.environ.get("SLURM_CPUS_PER_TASK")
+    return (int(slurm) if slurm and slurm.isdigit() else None) or os.cpu_count() or 1
 
 
 def configure_cpu_threads() -> int:

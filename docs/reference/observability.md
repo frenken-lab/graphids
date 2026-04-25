@@ -15,10 +15,12 @@ Two stores: **MLflow** for run-level metadata + scalar metrics timeseries + devi
 - `BatchSpanProcessor` -> `ConsoleSpanExporter(out=run_dir/traces.jsonl)` — the `training.fit` span + structured-log events
 
 **Phase C** (at fit-start — `graphids/_mlflow.py::start_training_run`, called from `orchestrate/stage.py::train`):
-- Opens MLflow run (SQLite backend at `{lake_root}/mlflow.db`), logs params/tags/cache_digest
-- Enables MLflow system-metrics sampler (background thread, 5s interval) — GPU util, VRAM, CPU, memory, disk, network
-- `MLflowTrainingCallback` appends per-epoch `train_loss`/`val_loss`/`lr`/`early_stop.wait` at `step=epoch`
-- At fit-end: peak VRAM + epochs_run + ckpt SHA256 tag, run closes with status FINISHED (or FAILED on exception)
+- Opens MLflow run in per-axis experiment `graphids/{dataset}/{group}` (SQLite backend at `{lake_root}/mlflow.db`). **Idempotent**: search_runs by `run_name` + phase=fit; FAILED/KILLED → resume same `run_id`; TERMINATED → new (reaper owns); RUNNING/FINISHED → refuse unless `GRAPHIDS_FORCE_RESUME=1`; git-SHA change → new run (option b: don't mix commits in one row).
+- Logs params (via `_flatten_params`), tags (via `_build_tags`: identity + SLURM + git SHA + `uv.lock` hash + python version + checkpoint hash + upstream-teacher `run_dir`/`ckpt_path` for curriculum_vgae / fusion).
+- `mlflow.log_input(MetaDataset(...), context="train")` — first-class dataset entity with digest of `cache_metadata.json`; visible under "Used Datasets" in UI, filterable via `dataset.digest = '...'` in search_runs.
+- Enables MLflow system-metrics sampler (background thread, 5s interval) — GPU util, VRAM, CPU, memory, disk, network.
+- `MLflowTrainingCallback` appends per-epoch `train_loss`/`val_loss`/`lr`/`early_stop.wait` at `step=epoch`.
+- At fit-end: peak VRAM + epochs_run + ckpt SHA256 tag + `MlflowClient.create_logged_model` (metadata-only LoggedModel entity with `source_run_id`, `model_type={group}_{variant}`, and ckpt tags). Run closes FINISHED (or FAILED on exception).
 
 ## Wired tooling
 
@@ -30,7 +32,7 @@ Two stores: **MLflow** for run-level metadata + scalar metrics timeseries + devi
 | Structured logging | `_StructuredAdapter` -> `LoggingHandler` | `graphids/_otel.py` |
 | Traces + log events (per-run) | `traces.jsonl` via `ConsoleSpanExporter` | `{run_dir}/traces.jsonl` |
 | Wandb Weave (optional) | OTLP HTTP exporter to `trace.wandb.ai` | `graphids/_otel.py`, gated on `WANDB_API_KEY` |
-| Op-level profiling | PyTorchProfiler (chrome traces) | `scripts/run --mode gpu --length short --command "python -m graphids profile"` |
+| Op-level profiling | PyTorchProfiler (chrome traces) | `python -m graphids submit --mode gpu --length short --command "python -m graphids profile"` |
 | SLURM job accounting | sacct summary + log rotation | `_epilog.sh` |
 | CUDA alloc config | `expandable_segments:True,garbage_collection_threshold:0.8` | `_preamble.sh` |
 | Mixed precision | `precision: 16-mixed` | `configs/_lib/defaults.libsonnet` |

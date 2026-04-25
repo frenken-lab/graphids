@@ -11,7 +11,7 @@ and dispatches artifacts via `ARTIFACTS_BY_MODEL_TYPE` in
 
 ## Architecture
 
-One route. `scripts/run <preset.jsonnet>` or `python -m graphids fit` →
+One route. `python -m graphids submit <preset.jsonnet>` (SLURM) or `python -m graphids fit` (in-process) →
 
 1. `render(config_path, tla)` from `graphids.config.jsonnet` renders the
    merged dict. Every preset under `configs/ablations/` is a top-level
@@ -91,8 +91,8 @@ graphids/
     trainer.py                     # Trainer, TrainerConfig, seed_everything
     callbacks.py                   # CallbackBase, ModelCheckpoint, EarlyStopping, VRAMDriftCallback
     monitoring.py                  # SlurmResourceDetector (OTel resource attrs only)
-    mlflow_callback.py             # MLflowTrainingCallback (per-epoch metrics + fit-end finalize)
-  _mlflow.py                       # start/end_training_run, log_epoch_metrics, log_test_run
+    mlflow_callback.py             # MLflowTrainingCallback (per-epoch metrics + fit-end finalize + LoggedModel)
+  _mlflow.py                       # start/end_training_run, log_epoch_metrics, log_test_run, build_search_filter, _dataset_for, _register_logged_model, _upstream_tags
 ```
 
 ## Running
@@ -110,7 +110,7 @@ python -m graphids fit \
     --set model.init_args.lr=0.005
 
 # SLURM ablation
-scripts/run configs/ablations/unsupervised/vgae.jsonnet --dataset set_01 --seed 42
+python -m graphids submit configs/ablations/unsupervised/vgae.jsonnet --dataset set_01 --seed 42
 ```
 
 ## Stage / ablation function convention
@@ -118,7 +118,8 @@ scripts/run configs/ablations/unsupervised/vgae.jsonnet --dataset set_01 --seed 
 Every `stages/*.jsonnet` and `ablations/**/*.jsonnet` is a top-level
 function with sensible defaults for every TLA. Adding a new TLA means
 updating the jsonnet signature + (if the TLA is launcher-level) the
-`_push_*_tla` dispatch in `scripts/run`.
+matching flat flag in `graphids/cli/submit.py` and the `_build_tlas`
+helper in `graphids/slurm/submit.py`.
 
 ```jsonnet
 function(
@@ -198,17 +199,30 @@ timeseries + device telemetry; **OTel** owns `traces.jsonl` for the
 
 - **MLflow run lifecycle** (`graphids/_mlflow.py`): `start_training_run`
   opens the run at fit-start (SQLite backend at `{lake_root}/mlflow.db`,
-  artifacts under `{lake_root}/mlartifacts/`), logs params + identity
-  tags + cache digest, and enables the system-metrics sampler (psutil +
-  nvidia-ml-py, 5s interval).
+  artifacts under `{lake_root}/mlartifacts/`), in per-axis experiment
+  `graphids/{dataset}/{group}`. **Idempotent**: status-gated resume on
+  matching `run_name` + `phase=fit` (FAILED/KILLED resume; TERMINATED →
+  new; RUNNING/FINISHED refuse unless `GRAPHIDS_FORCE_RESUME=1`; git-SHA
+  change → new). Logs params, identity tags via `_build_tags`
+  (identity + SLURM + git SHA + `uv.lock` hash + python version +
+  upstream-teacher `run_dir`/`ckpt_path` tags for presets with upstream
+  checkpoints), `mlflow.log_input(MetaDataset(...))` for dataset lineage,
+  and the system-metrics sampler (psutil + nvidia-ml-py, 5s interval).
 - **`MLflowTrainingCallback`** (`core/mlflow_callback.py`): appends
-  `train_loss`/`val_loss`/`lr`/`early_stop.wait` at `step=epoch`; stamps
-  `peak_vram_mb` + `epochs_run` + ckpt SHA256 at `on_fit_end`; closes
-  the run with FINISHED / FAILED.
+  `train_loss`/`val_loss`/`lr`/`early_stop.wait` at `step=epoch`; at
+  `on_fit_end` stamps `peak_vram_mb` + `epochs_run` + ckpt SHA256,
+  registers a metadata-only `LoggedModel` via
+  `MlflowClient.create_logged_model(source_run_id=..., model_type='{group}_{variant}', tags={ckpt_path, run_dir, sha256})`,
+  and closes the run FINISHED / FAILED.
 - **`log_test_run`** (`_mlflow.py`): self-contained test-phase sink,
-  shares `run_name` with the fit row, distinguished by `graphids.phase` tag.
+  **always-fresh** (new `run_id` each call, no resume). Shares `run_name`
+  with the fit row; distinguished by `graphids.phase` tag. `compare.py`
+  dedups to latest FINISHED per `(variant, seed)`.
 - **OTel `traces.jsonl`** (`{run_dir}/`): single `training.fit` span +
   structured-log events (`budget_probed`, `vram_drift_detected`, etc).
   Parsed by `run_io.load_traces`.
-- Query MLflow via `mlflow.search_runs(filter_string=...)` or
-  `client.get_metric_history(run_id, key)`.
+- Query MLflow via `mlflow.search_runs(filter_string=build_search_filter(...))` or
+  `client.get_metric_history(run_id, key)`. Never hand-compose filter
+  strings — `graphids._mlflow.build_search_filter` is the one entry point
+  so all graphids identity fields (dataset, group, variant, seed, phase,
+  cluster, run_name, run_dir, status) stay consistent across callers.

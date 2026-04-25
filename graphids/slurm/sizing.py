@@ -1,9 +1,10 @@
 """Optional walltime estimation from MLflow history.
 
-Used by ``scripts/run --time-from-history`` to set a tighter wall limit for
-fit jobs on ``(cluster, group, dataset)`` combinations with ≥3 prior FINISHED
-runs. Returns ``None`` when there's nothing to estimate from; callers fall
-back to the static per-length default in ``submit_profiles.json``.
+Used by ``python -m graphids submit --time-from-history`` to set a tighter
+wall limit for fit jobs on ``(cluster, group, dataset)`` combinations with
+≥3 prior FINISHED runs. Returns ``None`` when there's nothing to estimate
+from; callers fall back to the static per-length default in
+``submit_profiles.json``.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ def estimate_walltime_minutes(cluster: str, group: str, dataset: str) -> int | N
     job env).
     """
     try:
-        from graphids._mlflow import ensure_tracking_uri
+        from graphids._mlflow import build_search_filter, ensure_tracking_uri
     except ImportError:
         return None
 
@@ -39,15 +40,16 @@ def estimate_walltime_minutes(cluster: str, group: str, dataset: str) -> int | N
         experiments = [e.experiment_id for e in client.search_experiments()]
         if not experiments:
             return None
-        filter_str = (
-            f"tags.`slurm.slurm_cluster_name` = '{cluster}' "
-            f"AND tags.`graphids.group` = '{group}' "
-            f"AND tags.`graphids.dataset` = '{dataset}' "
-            f"AND tags.`graphids.phase` = 'fit' "
-            f"AND attributes.status = 'FINISHED'"
-        )
         runs = client.search_runs(
-            experiment_ids=experiments, filter_string=filter_str, max_results=50
+            experiment_ids=experiments,
+            filter_string=build_search_filter(
+                cluster=cluster,
+                group=group,
+                dataset=dataset,
+                phase="fit",
+                status="FINISHED",
+            ),
+            max_results=50,
         )
     except Exception:
         return None

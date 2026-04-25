@@ -15,43 +15,46 @@
 - Test on small datasets (`hcrl_ch`) before large ones (`set_02`+).
 - SLURM logs go to `slurm_logs/`, experiment outputs to `experimentruns/`.
 - Heavy tests use `@pytest.mark.slurm` — auto-skipped on login nodes.
-- **Always run tests via SLURM.** Submit with `scripts/run --mode cpu --length short --command "python -m pytest [-k pattern]"`.
+- **Always run tests via SLURM.** Submit with `python -m graphids submit --mode cpu --length short --command "python -m pytest [-k pattern]"`.
 
 ## Job Submission
 
-Two launchers, distinct scopes:
+One Typer command, `python -m graphids submit`, two shapes:
 
-**Training / ablations: `scripts/run <preset.jsonnet> [options]`.**
+**Training / ablations: `python -m graphids submit <preset.jsonnet> [options]`.**
 The preset owns run specifics; flags map to TLAs internally so you never
-type nested JSON quotes. Defaults to the `fit-long` profile (gpu, 4hr);
-`--smoke` swaps to `fit` (gpudebug 1hr). Honors `SBATCH_DEP=afterok:<jid>`
-for afterok chains. See `scripts/run --help`-style comment in the file
-for the full flag list (`--dataset`, `--seed`, `--scale`, `--cluster`,
-`--ckpt`, `--vgae-ckpt`, `--gat-ckpt`, `--lake-root`, `--set`, `--dry-run`).
+type nested JSON quotes. Defaults to `gpu` mode + `long` length (per-cluster
+wall in `submit_profiles.json`); `--smoke` swaps to `short` (gpudebug 1hr).
+`--dep <jid>` chains `afterok` (repeatable); env `SBATCH_DEP` is a fallback.
+Full flag list via `python -m graphids submit --help`. Backed by
+`submitit.AutoExecutor`; library entrypoint is
+`graphids.slurm.submit.submit()` (used directly by `graphids.slurm.dag`
+for the OFAT DAG).
 
 ```bash
-scripts/run configs/ablations/unsupervised/vgae.jsonnet --dataset set_01 --seed 42
-scripts/run configs/ablations/fusion/dqn.jsonnet \
+python -m graphids submit configs/ablations/unsupervised/vgae.jsonnet --dataset set_01 --seed 42
+python -m graphids submit configs/ablations/fusion/dqn.jsonnet \
     --dataset set_01 --seed 42 --vgae-ckpt <p> --gat-ckpt <p> --cluster cardinal
 ```
 
-**Ops: `scripts/run --mode {gpu|cpu} --command "..." [--mem M --time T --length short|long]`.**
+**Ops: `python -m graphids submit --mode {gpu|cpu} --command "..." [--mem-gb N --timeout-min M --length short|long]`.**
 
-One script. No per-job profile registration.
+No per-job profile registration.
 
 | Job | Command |
 |-----|---------|
-| Tests | `scripts/run --mode cpu --length short --command "python -m pytest [-k pattern]"` |
-| Cache rebuild | `scripts/run --mode cpu --mem 54G --time 4:00:00 --command "python -m graphids rebuild-caches --all --delete-existing --yes"` |
-| Analyze ckpt | `scripts/run --mode gpu --mem 32G --time 2:00:00 --command "python -m graphids analyze --ckpt-path <p> --dataset <name>"` |
-| Extract fusion states | `scripts/run --mode gpu --mem 36G --time 0:30:00 --command "python -m graphids extract-fusion-states ..."` |
-| Profiling | `scripts/run --mode gpu --length short --command "python -m graphids profile"` |
+| Tests | `python -m graphids submit --mode cpu --length short --command "python -m pytest [-k pattern]"` |
+| Cache rebuild | `python -m graphids submit --mode cpu --mem-gb 54 --timeout-min 240 --command "python -m graphids rebuild-caches --all --delete-existing --yes"` |
+| Analyze ckpt | `python -m graphids submit --mode gpu --mem-gb 32 --timeout-min 120 --command "python -m graphids analyze --ckpt-path <p> --dataset <name>"` |
+| Extract fusion states | `python -m graphids submit --mode gpu --mem-gb 36 --timeout-min 30 --command "python -m graphids extract-fusion-states ..."` |
+| Profiling | `python -m graphids submit --mode gpu --length short --command "python -m graphids profile"` |
 
-Source of truth for `partition` + `cpus` + per-length walltime defaults:
-`configs/resources/submit_profiles.json` (only `gpu` and `cpu` entries —
-per-job overrides flow through flags). Optional `--time-from-history`
-opts into MLflow-history walltime estimation (library:
-`graphids.slurm.sizing`).
+Source of truth for `partition` + `cpus_per_task` + `mem_gb` + `timeout_min`:
+`configs/resources/submit_profiles.json`, keyed `[mode][cluster][length]`.
+Entries are raw submitit AutoExecutor kwargs — no translation layer.
+Per-job overrides flow through flags (`--mem-gb`, `--timeout-min`). Optional
+`--time-from-history` opts into MLflow-history walltime estimation
+(library: `graphids.slurm.sizing`).
 
 ## Writing SLURM Job Scripts
 
@@ -107,7 +110,7 @@ JOB_LOG_PREFIX="ray" source "$SCRIPT_DIR/_epilog.sh"
 
 ### Key Patterns
 
-- **`--signal=B:USR1@300`** — sends USR1 five minutes before wall time for graceful shutdown
+- **Preemption auto-resume** — profiles set `slurm_signal_delay_s=300`, which makes submitit's sbatch emit `--signal=USR2@300`. SIGUSR2 five minutes before walltime triggers `_TrainingJob.checkpoint()` → `DelayedSubmission` with `ckpt_path={run_dir}/checkpoints/last.ckpt` → submitit sbatch-queues the resumed job via afterany. No manual resubmit loop. (USR2 because NCCL catches USR1.)
 - **`_preamble.sh`** — sets up Python 3.12, venv, .env, CUDA memory config
 - **`_epilog.sh`** — GPU utilization report (resource right-sizing)
 

@@ -423,8 +423,6 @@ def autosize_workers(
     Worker time has two components: dataset ``__getitem__`` (real I/O) plus
     ``Batch.from_data_list`` (collation, CPU-bound).
     """
-    from graphids._slurm import slurm_cpus_per_task
-
     if model is None or model.device.type != "cuda" or result.t_fwd <= 0:
         return 2, default_prefetch
 
@@ -451,6 +449,7 @@ def autosize_workers(
     t_coll = time.perf_counter() - t0
 
     t_worker = t_io + t_coll
-    max_cpus = slurm_cpus_per_task() or os.cpu_count()
+    slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
+    max_cpus = (int(slurm_cpus) if slurm_cpus and slurm_cpus.isdigit() else None) or os.cpu_count()
     w = max(1, min(math.ceil(t_worker / t_gpu), max(1, max_cpus - 2)))
     return w, 4 if w >= 8 else 2

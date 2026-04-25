@@ -11,9 +11,9 @@ Data:
   extract-fusion-states            — extract VGAE+GAT latent states for fusion
 
 SLURM:
+  submit                           — submit one SLURM job (preset.jsonnet or --command)
   launch-ablation                  — submit the OFAT ablation DAG (topology
                                      in ``graphids.slurm.dag.OFAT_DAG``)
-  (single jobs: use scripts/run <preset.jsonnet> or scripts/run --mode cpu --command "...")
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ import graphids.cli.ablation  # noqa: F401
 import graphids.cli.analysis  # noqa: F401
 import graphids.cli.compare  # noqa: F401
 import graphids.cli.data  # noqa: F401
+import graphids.cli.submit  # noqa: F401
 import graphids.cli.training  # noqa: F401
 from graphids.cli.app import app
 

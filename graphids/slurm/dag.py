@@ -1,14 +1,12 @@
 """OFAT ablation DAG — declarative topology + topological submission.
 
 The DAG is expressed as a tuple of :class:`FitNode`\\ s plus one
-:class:`ExtractStatesNode`. ``execute_dag`` walks it in topological order,
-submits each node via ``scripts/run`` with ``SBATCH_DEP=afterok:<jid>``
-derived from the in-memory jid map, and chains an afterok test job for
-each fit.
-
-Why in-process: holding jids in memory eliminates the Stage 3 dep-race
-that ``launch_ofat.sh`` suffered — no second ``sacct`` poll between
-stages. See PLAN.md "Phase A simplification (executed 2026-04-23)".
+:class:`ExtractStatesNode`. ``execute_dag`` walks it in topological
+order, submits each node via :func:`graphids.slurm.submit.submit`,
+and chains an afterok test job for each fit. Dependencies are passed
+as ``dep_jids`` ints held in memory — no scheduler re-query between
+stages (kills the Stage 3 dep-race). See PLAN.md "Phase A simplification
+(executed 2026-04-23)".
 
 Current shape is declarative data (OFAT_DAG) consumed by an imperative
 executor. Future evolution: load the DAG from a jsonnet file so the
@@ -18,11 +16,12 @@ topology becomes inspectable (``jsonnet configs/ablation_dag.jsonnet``).
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from graphids.slurm.submit import load_dotenv, submit
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -32,8 +31,8 @@ DEFAULT_DATASET: str = "set_01"
 
 # Groups whose presets exceed the profile's default `long` wall.
 # Empirical (2026-04-23, Cardinal H100): VGAE/GAE/DGI at max_epochs=1200,
-# ~9 s/epoch → ~180 min needed. Profile default is 1:30 on Cardinal.
-LONG_WALL_TIME: str = "3:30:00"
+# ~9 s/epoch → ~180 min needed. Profile default is 90 min on Cardinal.
+LONG_TIMEOUT_MIN: int = 210
 
 # Sentinel for "fit already FINISHED per MLflow; no new jid, still chain test".
 _FIT_ALREADY_COMPLETE: int = -1
@@ -55,7 +54,7 @@ class FitNode:
     group: str
     variant: str
     deps: tuple[str, ...] = ()
-    walltime: str | None = None  # None → use profile default
+    timeout_min: int | None = None  # None → use profile default
 
 
 @dataclass(frozen=True)
@@ -68,8 +67,8 @@ class ExtractStatesNode:
 
     name: str = EXTRACT_STATES_NAME
     deps: tuple[str, ...] = ("vgae", "focal")
-    walltime: str = "0:30:00"
-    mem: str = "36G"
+    timeout_min: int = 30
+    mem_gb: int = 36
 
 
 DagNode = FitNode | ExtractStatesNode
@@ -94,9 +93,11 @@ class DagResult:
 
 OFAT_DAG: tuple[DagNode, ...] = (
     # Stage 0 — unsupervised baselines (VGAE jid needed downstream).
-    FitNode("vgae", "unsupervised/vgae.jsonnet", "unsupervised", "vgae", walltime=LONG_WALL_TIME),
-    FitNode("gae", "unsupervised/gae.jsonnet", "unsupervised", "gae", walltime=LONG_WALL_TIME),
-    FitNode("dgi", "unsupervised/dgi.jsonnet", "unsupervised", "dgi", walltime=LONG_WALL_TIME),
+    FitNode(
+        "vgae", "unsupervised/vgae.jsonnet", "unsupervised", "vgae", timeout_min=LONG_TIMEOUT_MIN
+    ),
+    FitNode("gae", "unsupervised/gae.jsonnet", "unsupervised", "gae", timeout_min=LONG_TIMEOUT_MIN),
+    FitNode("dgi", "unsupervised/dgi.jsonnet", "unsupervised", "dgi", timeout_min=LONG_TIMEOUT_MIN),
     # Stage 1 — standalone parallel variants.
     FitNode("gat", "conv_type/gat.jsonnet", "conv_type", "gat"),
     FitNode("gatv2", "conv_type/gatv2.jsonnet", "conv_type", "gatv2"),
@@ -155,22 +156,16 @@ def fit_is_complete(dataset: str, group: str, variant: str, seed: int) -> bool:
     """
     import mlflow
 
-    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
-    if not tracking_uri:
-        lake = os.environ.get("GRAPHIDS_LAKE_ROOT")
-        if lake:
-            tracking_uri = f"sqlite:///{lake}/mlflow.db"
-    if tracking_uri:
-        mlflow.set_tracking_uri(tracking_uri)
+    from graphids._mlflow import build_search_filter, ensure_tracking_uri
+
+    uri = ensure_tracking_uri()
+    if uri:
+        mlflow.set_tracking_uri(uri)
 
     df = mlflow.search_runs(
         search_all_experiments=True,
-        filter_string=(
-            f"tags.`graphids.dataset` = '{dataset}' AND "
-            f"tags.`graphids.group` = '{group}' AND "
-            f"tags.`graphids.variant` = '{variant}' AND "
-            f"tags.`graphids.seed` = '{seed}' AND "
-            f"tags.`graphids.phase` = 'fit'"
+        filter_string=build_search_filter(
+            dataset=dataset, group=group, variant=variant, seed=seed, phase="fit"
         ),
         order_by=["attributes.start_time DESC"],
         max_results=1,
@@ -179,24 +174,12 @@ def fit_is_complete(dataset: str, group: str, variant: str, seed: int) -> bool:
 
 
 # --------------------------------------------------------------------------
-# Submission helpers — thin wrappers around ``scripts/run``.
+# Submission helpers — direct calls into ``graphids.slurm.submit.submit``.
 # --------------------------------------------------------------------------
 
 
 def _run_dir(lake_root: Path, dataset: str, group: str, variant: str, seed: int) -> Path:
     return lake_root / dataset / "ablations" / group / variant / f"seed_{seed}"
-
-
-def _run_scripts_run(cmd: list[str], env: dict[str, str], *, context: str) -> str:
-    """Invoke ``scripts/run`` and return its stdout (jid) or raise."""
-    result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        sys.stderr.write(result.stderr)
-        raise RuntimeError(f"scripts/run failed for {context} (exit {result.returncode})")
-    jid_str = result.stdout.strip()
-    if not jid_str:
-        raise RuntimeError(f"scripts/run returned empty stdout for {context}")
-    return jid_str
 
 
 def submit_fit(
@@ -212,7 +195,8 @@ def submit_fit(
 ) -> int:
     """Submit a fit job. Returns jid (>0), or ``_FIT_ALREADY_COMPLETE``.
 
-    Dry-run returns 0 as a non-chaining sentinel.
+    Dry-run returns :data:`graphids.slurm.submit.DRY_RUN_JID` (0) as a
+    non-chaining sentinel.
     """
     if fit_is_complete(dataset, node.group, node.variant, seed):
         print(
@@ -221,31 +205,14 @@ def submit_fit(
         )
         return _FIT_ALREADY_COMPLETE
 
-    cfg = configs_root / node.preset_path
-    cmd: list[str] = [
-        "scripts/run",
-        str(cfg),
-        "--dataset",
-        dataset,
-        "--seed",
-        str(seed),
-        "--lake-root",
-        str(lake_root),
-    ]
-    if cluster:
-        cmd += ["--cluster", cluster]
-    if node.walltime:
-        cmd += ["--time", node.walltime]
-    if dry_run:
-        cmd += ["--dry-run"]
-
-    env = os.environ.copy()
-    live_deps = [str(j) for j in dep_jids if j > 0]
-    if live_deps:
-        env["SBATCH_DEP"] = "afterok:" + ":".join(live_deps)
-
-    jid_str = _run_scripts_run(cmd, env, context=f"{node.group}/{node.variant} seed_{seed}")
-    return 0 if dry_run else int(jid_str)
+    return submit(
+        preset=configs_root / node.preset_path,
+        tlas=[("dataset", dataset), ("seed", seed), ("lake_root", str(lake_root))],
+        cluster=cluster or None,
+        timeout_min=node.timeout_min,
+        dep_jids=dep_jids,
+        dry_run=dry_run,
+    )
 
 
 def chain_test(
@@ -264,49 +231,30 @@ def chain_test(
     Runs without dep if fit was already complete (``_FIT_ALREADY_COMPLETE``)
     — test fires immediately against the existing ckpt.
 
-    ``--mem 32G`` because ``classification_test_metrics`` buffers full
+    ``mem_gb=32`` because ``classification_test_metrics`` buffers full
     (N, K) probs on CPU; the 16G profile default OOM'd on seed 42 (test-gat
     8724434 at 16.77G). Long-term fix is stream-compute via torchmetrics.
     """
     if fit_jid == 0:  # dry-run sentinel — don't chain
         return
 
-    cfg = configs_root / node.preset_path
     ckpt = (
         _run_dir(lake_root, dataset, node.group, node.variant, seed)
         / "checkpoints"
         / "best_model.ckpt"
     )
-    cmd: list[str] = [
-        "scripts/run",
-        str(cfg),
-        "--action",
-        "test",
-        "--mode",
-        "cpu",
-        "--length",
-        "short",
-        "--mem",
-        "32G",
-        "--dataset",
-        dataset,
-        "--seed",
-        str(seed),
-        "--lake-root",
-        str(lake_root),
-        "--ckpt-path",
-        str(ckpt),
-    ]
-    if cluster:
-        cmd += ["--cluster", cluster]
-    if dry_run:
-        cmd += ["--dry-run"]
-
-    env = os.environ.copy()
-    if fit_jid > 0:
-        env["SBATCH_DEP"] = f"afterok:{fit_jid}"
-
-    _run_scripts_run(cmd, env, context=f"test {node.group}/{node.variant} seed_{seed}")
+    submit(
+        preset=configs_root / node.preset_path,
+        action="test",
+        mode="cpu",
+        length="short",
+        mem_gb=32,
+        tlas=[("dataset", dataset), ("seed", seed), ("lake_root", str(lake_root))],
+        ckpt_path=str(ckpt),
+        cluster=cluster or None,
+        dep_jids=(fit_jid,) if fit_jid > 0 else (),
+        dry_run=dry_run,
+    )
 
 
 def submit_extract_states(
@@ -334,30 +282,15 @@ def submit_extract_states(
         f"--vgae-ckpt {vgae_ckpt} --gat-ckpt {gat_ckpt} "
         f"--dataset {dataset} --seed {seed} --output-dir {out}"
     )
-
-    cmd: list[str] = [
-        "scripts/run",
-        "--mode",
-        "gpu",
-        "--mem",
-        node.mem,
-        "--time",
-        node.walltime,
-        "--command",
-        inner,
-    ]
-    if cluster:
-        cmd += ["--cluster", cluster]
-    if dry_run:
-        cmd += ["--dry-run"]
-
-    env = os.environ.copy()
-    live_deps = [str(j) for j in dep_jids if j > 0]
-    if live_deps:
-        env["SBATCH_DEP"] = "afterok:" + ":".join(live_deps)
-
-    jid_str = _run_scripts_run(cmd, env, context=f"extract-fusion-states seed_{seed}")
-    return 0 if dry_run else int(jid_str)
+    return submit(
+        command=inner,
+        mode="gpu",
+        mem_gb=node.mem_gb,
+        timeout_min=node.timeout_min,
+        cluster=cluster or None,
+        dep_jids=dep_jids,
+        dry_run=dry_run,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -367,29 +300,15 @@ def submit_extract_states(
 
 def _toposort(nodes: Iterable[DagNode]) -> list[DagNode]:
     """Stable topological sort by dep-names. Raises on cycle or missing dep."""
-    node_list = list(nodes)
-    by_name = {n.name: n for n in node_list}
-    order: list[DagNode] = []
-    visited: set[str] = set()
-    visiting: set[str] = set()
+    from graphlib import TopologicalSorter
 
-    def visit(n: DagNode) -> None:
-        if n.name in visited:
-            return
-        if n.name in visiting:
-            raise RuntimeError(f"DAG cycle at {n.name}")
-        visiting.add(n.name)
+    by_name = {n.name: n for n in nodes}
+    for n in by_name.values():
         for dep in n.deps:
             if dep not in by_name:
                 raise RuntimeError(f"node {n.name!r} deps on unknown {dep!r}")
-            visit(by_name[dep])
-        visiting.discard(n.name)
-        visited.add(n.name)
-        order.append(n)
-
-    for n in node_list:
-        visit(n)
-    return order
+    ts = TopologicalSorter({n.name: set(n.deps) for n in by_name.values()})
+    return [by_name[name] for name in ts.static_order()]
 
 
 def execute_dag(
@@ -464,22 +383,6 @@ def execute_dag(
 # --------------------------------------------------------------------------
 
 
-def load_dotenv(path: Path) -> None:
-    """Populate os.environ from a bash-style .env. Ignores comments/blanks."""
-    if not path.exists():
-        return
-    for raw in path.read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[len("export ") :]
-        if "=" not in line:
-            continue
-        k, _, v = line.partition("=")
-        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-
-
 def launch_ablation(
     *,
     dataset: str = DEFAULT_DATASET,
@@ -490,11 +393,10 @@ def launch_ablation(
 ) -> DagResult:
     """Submit the full OFAT DAG for ``seeds`` against ``dataset``.
 
-    Changes CWD to ``project_root`` (so ``scripts/run`` resolves) and
-    sources ``.env`` for ``GRAPHIDS_LAKE_ROOT`` / ``USER``.
+    Sources ``.env`` for ``GRAPHIDS_LAKE_ROOT`` / ``USER``; submit() itself
+    is CWD-agnostic (uses absolute paths throughout).
     """
     project_root = project_root or Path(__file__).resolve().parents[2]
-    os.chdir(project_root)
     load_dotenv(project_root / ".env")
 
     lake_env = os.environ.get("GRAPHIDS_LAKE_ROOT")

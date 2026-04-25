@@ -14,14 +14,14 @@ Every function, file, and abstraction must earn its place. Before writing code, 
 ## Key Commands
 
 ```bash
-# SLURM launch via scripts/run — one preset, real flags, no nested quotes.
+# SLURM launch via `python -m graphids submit` — one preset, real flags, no nested quotes.
 # Preset owns run_dir + model/stage specifics; flags map to TLAs internally.
-scripts/run configs/ablations/unsupervised/vgae.jsonnet --dataset set_01 --seed 42
-scripts/run configs/ablations/fusion/dqn.jsonnet \
+python -m graphids submit configs/ablations/unsupervised/vgae.jsonnet --dataset set_01 --seed 42
+python -m graphids submit configs/ablations/fusion/dqn.jsonnet \
     --dataset set_01 --seed 42 \
     --vgae-ckpt /path/checkpoints/best_model.ckpt --gat-ckpt /path/checkpoints/best_model.ckpt \
     --cluster cardinal
-scripts/run configs/ablations/unsupervised/vgae.jsonnet --smoke --dry-run  # gpudebug 1hr
+python -m graphids submit configs/ablations/unsupervised/vgae.jsonnet --smoke --dry-run  # gpudebug 1hr
 
 # Direct CLI (login-node smoke / non-SLURM).
 python -m graphids fit --config configs/stages/autoencoder.jsonnet
@@ -39,7 +39,7 @@ python -m graphids analyze --ckpt-path fusion/checkpoints/best_model.ckpt --data
 
 ## CLI Architecture
 
-**Training** — `python -m graphids fit|test` → `graphids/cli/training.py` (Typer). `_prepare()` renders the jsonnet, applies any `--set` overrides, builds a `ResolvedConfig.from_rendered`, wires OTel file exporters, and calls `build(resolved)`. Then `fit` calls `train(artifacts, resolved, resume_from=--ckpt-path)`; `test` calls `evaluate(artifacts, resolved)`. For SLURM submission, use `scripts/run <preset.jsonnet> [--dataset X --seed N --scale s --cluster c]` — it builds TLAs from flags so you never type nested JSON quotes.
+**Training** — `python -m graphids fit|test` → `graphids/cli/training.py` (Typer). `_prepare()` renders the jsonnet, applies any `--set` overrides, builds a `ResolvedConfig.from_rendered`, wires OTel file exporters, and calls `build(resolved)`. Then `fit` calls `train(artifacts, resolved, resume_from=--ckpt-path)`; `test` calls `evaluate(artifacts, resolved)`. For SLURM submission, use `python -m graphids submit <preset.jsonnet> [--dataset X --seed N --scale s --cluster c]` — it builds TLAs from flags so you never type nested JSON quotes.
 
 **Operational commands** — `graphids/cli/`. `app.py` owns the root app + shared option types (`ConfigPath`/`TlaList`/`SetList`/`CkptPath`). `--tla` and `--set` parse `key=value` via `_parse_kv_pair` (Typer `parser=` hook). Submodules register commands via `@app.command()`: `training.py`, `analysis.py`, `data.py`, `compare.py`. `graphids/__main__.py` imports submodules to register commands.
 
@@ -53,7 +53,7 @@ python -m graphids analyze --ckpt-path fusion/checkpoints/best_model.ckpt --data
 
 **Config resolution** — Single path: `render(config_path, tla=...)` (`config/jsonnet.py`) → `apply_overrides(rendered, --set ...)` (`cli/app.py`) → `ResolvedConfig.from_rendered(rendered, stage_name=<basename>)` (validates + pulls `run_dir` / `ckpt_file` from `trainer.default_root_dir`). Every preset under `configs/ablations/` computes its own `run_dir` from `(lake_root, dataset, seed)` via `_paths.libsonnet`, so there is no Python planner / identity-hash layer. See `docs/reference/config-architecture.md`.
 
-**SLURM submission** — one script, `scripts/run`. Two usage patterns: `scripts/run <preset.jsonnet> [--dataset X --seed N ...]` for training (implicit `--mode gpu`, fit command), or `scripts/run --mode {gpu\|cpu} --command "..." [--mem M --time T]` for ops. Only two profile entries in `configs/resources/submit_profiles.json`: `gpu` and `cpu`, each with per-cluster partitions and per-length wall defaults. Per-job mem/time/command are flags, never JSON. Optional `--time-from-history` consults MLflow for tighter walltime via `graphids.slurm.sizing`. See `rules/slurm-hpc.md`.
+**SLURM submission** — one Typer command, `python -m graphids submit`, backed by `submitit.AutoExecutor` (no subprocess, no sbatch-stdout parsing). Two usage patterns: `python -m graphids submit <preset.jsonnet> [--dataset X --seed N ...]` for training (implicit `--mode gpu`, fit command), or `python -m graphids submit --mode {gpu\|cpu} --command "..." [--mem-gb N --timeout-min M]` for ops. Implementation: `graphids.slurm.submit.submit()` is the pure-Python entrypoint; the CLI wrapper lives at `graphids/cli/submit.py`; `graphids/slurm/dag.py` calls `submit()` directly. Profile JSON (`configs/resources/submit_profiles.json`) stores raw submitit kwargs keyed `[mode][cluster][length]` — no Python-side text parsing. `slurm_setup` sources `scripts/slurm/_preamble.sh` inside the sbatch shell. Optional `--time-from-history` consults MLflow for tighter walltime via `graphids.slurm.sizing`. See `rules/slurm-hpc.md`.
 
 Fusion uses a single `configs/stages/fusion.jsonnet` that dispatches on the `fusion_method` TLA over the 4 method libsonnets in `configs/fusion/methods/`.
 

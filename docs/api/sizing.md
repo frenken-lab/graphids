@@ -1,7 +1,7 @@
 # SLURM: Sizing
 
-Optional walltime estimation from MLflow run history. ``scripts/run
---time-from-history`` calls ``estimate_walltime_minutes`` to tighten
+Optional walltime estimation from MLflow run history. ``python -m graphids
+submit --time-from-history`` calls ``estimate_walltime_minutes`` to tighten
 the wall limit for ``(cluster, group, dataset)`` combinations with ≥3
 prior FINISHED runs; ``None`` means fall back to the static per-length
 default in ``configs/resources/submit_profiles.json``.

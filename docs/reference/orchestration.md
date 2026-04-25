@@ -43,5 +43,5 @@ fit | test  (cli/training.py)
 | Decision | Rationale |
 |---|---|
 | Jsonnet preset owns `run_dir` | Every `configs/ablations/*.jsonnet` computes `run_dir` from `(lake_root, dataset, seed)` via `_paths.libsonnet`. Path logic lives next to the config, not in a Python planner. |
-| No in-process multi-stage driver | A bash loop over `scripts/run <preset>` with `afterok` deps does this without a parallel Python declaration. |
+| No in-process multi-stage driver | An in-memory DAG (`graphids.slurm.dag.OFAT_DAG`) calling `graphids.slurm.submit.submit()` with `dep_jids` holds jids between stages; no scheduler re-query (kills the Stage 3 dep-race). |
 | `build` / `train` / `evaluate` are dumb primitives | No `ResolvedConfig` knowledge, no cache knowledge. Same primitives used by `fit` and `test`. |

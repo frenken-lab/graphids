@@ -6,7 +6,7 @@ These fix real crashes — DO NOT VIOLATE:
 - **Use spawn multiprocessing.** Never `fork` with CUDA. Set `mp_start_method='spawn'` and `multiprocessing_context='spawn'` on all DataLoaders.
 - **NFS filesystem.** `.nfs*` ghost files appear on delete. Already in `.gitignore`.
 - **No GUI on HPC.** Git auth via SSH key, not HTTPS.
-- **Never run pytest on login nodes.** Always submit via `scripts/run --mode cpu --command "python -m pytest"`.
+- **Never run pytest on login nodes.** Always submit via `python -m graphids submit --mode cpu --command "python -m pytest"`.
 - **Dual-budget node+edge sampling.** The sampler closes a batch when adding a graph would exceed EITHER `max_nodes` OR `max_edges` (probed jointly by `budget.probe`). Single-axis node-only budgets allowed edge-heavy batches to OOM. Live sampler walks indices; `pack_offline` (FFD) is used at prebatch time for ~10-20% tighter packing.
 - **Two-point probe for `bpn_node` / `bpn_edge`.** `budget.probe` runs fwd+bwd at two batch sizes (2k + 20k nodes) and takes the slope of peak-vs-nodes; the single-point probe it replaced charged small batches with fixed overhead (cuDNN workspaces, optimizer state, KD teacher), inflating bpn by ~3-4× and capping packs at ~20% of real VRAM on H100. Keep both probe points. `GRAPHIDS_BUDGET_SAFETY_MARGIN=0.95` leans on the slope-fit's implicit intercept to cover fixed costs — do NOT drop it below 0.90 without restoring a resident-subtract pathway.
 - **Save/restore model.training state.** Always save and restore `model.training` around `model.eval()` calls in utility functions — leaking eval mode silently disables dropout/batchnorm.

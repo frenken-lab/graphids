@@ -59,13 +59,6 @@ class CallbacksSection(BaseModel):
         return self
 
 
-class ConfigValidationError(ValueError):
-    """Raised by :func:`validate_config` when the rendered dict fails
-    any Pydantic check. Wraps Pydantic's ``ValidationError`` so callers
-    can catch one exception type regardless of which rule fired.
-    """
-
-
 class ValidatedConfig(BaseModel):
     """The rendered-config contract. ``extra="forbid"`` at the top
     level catches typos in ``configs/ablations/*.jsonnet``; nested
@@ -156,13 +149,7 @@ def validate_config(rendered: dict[str, Any]) -> ValidatedConfig:
     Called by ``ResolvedConfig.from_rendered`` immediately after
     :func:`graphids.config.jsonnet.render`. Fails fast on null list
     fields, monitor/mode mismatches, un-namespaced ``class_path`` strings,
-    and ``LearningRateMonitor`` without a logger.
-
-    Raises:
-        ConfigValidationError: any validation failure, with the Pydantic
-            error text preserved as the message.
+    and ``LearningRateMonitor`` without a logger. Raises Pydantic's
+    ``ValidationError`` (subclass of ``ValueError``) on any failure.
     """
-    try:
-        return ValidatedConfig.model_validate(rendered)
-    except Exception as e:
-        raise ConfigValidationError(str(e)) from e
+    return ValidatedConfig.model_validate(rendered)
