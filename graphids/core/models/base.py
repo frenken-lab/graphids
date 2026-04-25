@@ -333,8 +333,12 @@ class GraphModuleBase(nn.Module):
                 coll = binary_test_metrics(threshold=self.test_threshold).to(scores.device)
                 coll.update(scores, labels)
                 self._per_set_metrics[name] = coll
-                self.log_dict(coll.compute())
-                self._log_operating_points(scores, labels, prefix=f"test/{name}/")
+                # Prefix per-set keys so they don't collide with the aggregate
+                # `accuracy`/`f1`/etc. above (MetricAccumulator batch-averages
+                # collisions, silently corrupting the aggregate).
+                prefix = f"test/{name}/"
+                self.log_dict({f"{prefix}{k}": v for k, v in coll.compute().items()})
+                self._log_operating_points(scores, labels, prefix=prefix)
                 # Materialize derived preds so _finalize_test_predictions persists them.
                 buf["preds"] = [(scores >= self.test_threshold).long()]
         self._finalize_test_predictions()
