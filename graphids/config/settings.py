@@ -13,14 +13,36 @@ from pathlib import Path
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 
 class GraphIDSSettings(BaseSettings):
     """All ``GRAPHIDS_*`` env vars — typed, with defaults."""
 
-    model_config = SettingsConfigDict(env_prefix="GRAPHIDS_", frozen=True)
+    model_config = SettingsConfigDict(
+        env_prefix="GRAPHIDS_",
+        env_file=str(_PROJECT_ROOT / ".env"),
+        env_file_encoding="utf-8",
+        extra="ignore",  # .env is multi-consumer (shell scripts read vars not declared here)
+        frozen=True,
+    )
 
     # --- Paths ---
-    lake_root: str = "experimentruns"
+    # Required. No default — a relative fallback ("experimentruns") used to
+    # silently create a stub mlflow.db / state tree under CWD when
+    # GRAPHIDS_LAKE_ROOT was unexported. Auto-loaded from the project's .env
+    # so login-node invocations don't need `set -a; source ./.env`.
+    #
+    # ``lake_root`` is the SHARED data root: mlflow.db (cross-user metadata),
+    # cache/, mlartifacts/, slurm_logs/. ``run_root`` is the PER-USER root
+    # where this user's run_dirs / checkpoints / traces / predictions land.
+    # On OSC the convention is ``run_root = lake_root / dev / $USER``, but
+    # we keep them as independent env vars so each can move independently
+    # without conflating shared and per-user state — that conflation is
+    # what produced the 2026-04-24 lake_root drift between Python and
+    # the jsonnet preset defaults.
+    lake_root: str
+    run_root: str
     scratch: Path | None = None
 
     # --- Budget tuning ---

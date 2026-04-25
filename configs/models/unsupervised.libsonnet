@@ -12,7 +12,6 @@ local _vgae_base = {
       conv_type: 'gatv2',
       edge_dim: 11,
       variational: true,
-      mask_ratio: 0.3,
       k_neg: 32,
       canid_weight: 0.1,
       nbr_weight: 0.05,

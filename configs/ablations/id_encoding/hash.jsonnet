@@ -7,29 +7,26 @@
 // count next_pow2(num_buckets_factor * num_ids) = 4x vocab is a
 // standard sweet spot between collision rate and parameter count.
 local stage = import '../../stages/supervised.jsonnet';
-local paths = import '../_paths.libsonnet';
 local pd = (import '../../matrix/axes.json').pipeline_defaults;
 
 function(
   dataset=pd.dataset, seed=pd.seed,
-  lake_root='/fs/ess/PAS1266/graphids/dev/rf15',
   scale=pd.scale, conv_type=pd.conv_type, loss_fn=pd.loss_fn,
   sampler='default',
   k=2, num_buckets_factor=4,
-  trainer_overrides={}, stage_overrides={}, ckpt_path=null,
+  ckpt_path=null,
 )
-  stage(
-    dataset=dataset, seed=seed, scale=scale,
-    run_dir=paths.run_dir(lake_root, dataset, 'id_encoding', 'hash', seed),
-    conv_type=conv_type, loss_fn=loss_fn, sampler=sampler,
-    trainer_overrides=trainer_overrides,
-    stage_overrides={
-      'model.init_args.id_encoder_class_path': 'graphids.core.models.id_encoding.HashIdEncoder',
-      'model.init_args.id_encoder_kwargs': {
-        k: k,
-        seed: seed,
-        num_buckets_factor: num_buckets_factor,
-      },
-    } + stage_overrides,
-    ckpt_path=ckpt_path,
+  std.mergePatch(
+    stage(
+      dataset=dataset, seed=seed, scale=scale,
+      run_dir=std.native('paths.run_dir')(dataset, 'id_encoding', 'hash', seed),
+      conv_type=conv_type, loss_fn=loss_fn, sampler=sampler,
+      ckpt_path=ckpt_path,
+    ) + {
+      model+: { init_args+: {
+        id_encoder_class_path: 'graphids.core.models.id_encoding.HashIdEncoder',
+        id_encoder_kwargs: { k: k, seed: seed, num_buckets_factor: num_buckets_factor },
+      } },
+    },
+    std.extVar('overrides'),
   )

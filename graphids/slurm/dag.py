@@ -15,12 +15,12 @@ topology becomes inspectable (``jsonnet configs/ablation_dag.jsonnet``).
 
 from __future__ import annotations
 
-import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from graphids.config import paths
 from graphids.slurm.submit import load_dotenv, submit
 
 if TYPE_CHECKING:
@@ -178,8 +178,13 @@ def fit_is_complete(dataset: str, group: str, variant: str, seed: int) -> bool:
 # --------------------------------------------------------------------------
 
 
-def _run_dir(lake_root: Path, dataset: str, group: str, variant: str, seed: int) -> Path:
-    return lake_root / dataset / "ablations" / group / variant / f"seed_{seed}"
+def _run_dir(dataset: str, group: str, variant: str, seed: int) -> Path:
+    """Path-typed wrapper over :func:`graphids.config.paths.run_dir`.
+
+    Single source of truth (``RUN_ROOT`` from settings) is shared with the
+    jsonnet presets via :mod:`graphids.config.jsonnet` ``native_callbacks``.
+    """
+    return Path(paths.run_dir(dataset, group, variant, seed))
 
 
 def submit_fit(
@@ -187,18 +192,18 @@ def submit_fit(
     seed: int,
     *,
     dataset: str,
-    lake_root: Path,
     cluster: str,
     configs_root: Path,
     dep_jids: Sequence[int] = (),
     dry_run: bool = False,
+    force_refit: bool = False,
 ) -> int:
     """Submit a fit job. Returns jid (>0), or ``_FIT_ALREADY_COMPLETE``.
 
     Dry-run returns :data:`graphids.slurm.submit.DRY_RUN_JID` (0) as a
     non-chaining sentinel.
     """
-    if fit_is_complete(dataset, node.group, node.variant, seed):
+    if not force_refit and fit_is_complete(dataset, node.group, node.variant, seed):
         print(
             f"  [skip] fit already FINISHED in MLflow: {node.group}/{node.variant} seed_{seed}",
             file=sys.stderr,
@@ -207,7 +212,7 @@ def submit_fit(
 
     return submit(
         preset=configs_root / node.preset_path,
-        tlas=[("dataset", dataset), ("seed", seed), ("lake_root", str(lake_root))],
+        tlas=[("dataset", dataset), ("seed", seed)],
         cluster=cluster or None,
         timeout_min=node.timeout_min,
         dep_jids=dep_jids,
@@ -220,7 +225,6 @@ def chain_test(
     seed: int,
     *,
     dataset: str,
-    lake_root: Path,
     cluster: str,
     configs_root: Path,
     fit_jid: int,
@@ -238,18 +242,19 @@ def chain_test(
     if fit_jid == 0:  # dry-run sentinel — don't chain
         return
 
-    ckpt = (
-        _run_dir(lake_root, dataset, node.group, node.variant, seed)
-        / "checkpoints"
-        / "best_model.ckpt"
-    )
+    ckpt = _run_dir(dataset, node.group, node.variant, seed) / "checkpoints" / "best_model.ckpt"
+    # length="long" routes to the regular `cpu` partition (uncapped) instead
+    # of `debug-cpu` (QOSMaxJobsPerUserLimit caps concurrency to ~4 jobs).
+    # Tests finish in 5–10 min; timeout_min=30 is safe overkill that lets a
+    # batch of 19 tests drain in parallel rather than serialize behind the cap.
     submit(
         preset=configs_root / node.preset_path,
         action="test",
         mode="cpu",
-        length="short",
+        length="long",
         mem_gb=32,
-        tlas=[("dataset", dataset), ("seed", seed), ("lake_root", str(lake_root))],
+        timeout_min=30,
+        tlas=[("dataset", dataset), ("seed", seed)],
         ckpt_path=str(ckpt),
         cluster=cluster or None,
         dep_jids=(fit_jid,) if fit_jid > 0 else (),
@@ -262,21 +267,14 @@ def submit_extract_states(
     seed: int,
     *,
     dataset: str,
-    lake_root: Path,
     cluster: str,
     dep_jids: Sequence[int] = (),
     dry_run: bool = False,
 ) -> int:
     """Submit fusion-state extraction. Afterok (vgae, focal) by convention."""
-    vgae_ckpt = (
-        _run_dir(lake_root, dataset, "unsupervised", "vgae", seed)
-        / "checkpoints"
-        / "best_model.ckpt"
-    )
-    gat_ckpt = (
-        _run_dir(lake_root, dataset, "gat_loss", "focal", seed) / "checkpoints" / "best_model.ckpt"
-    )
-    out = lake_root / dataset / "ablations" / "fusion_states" / f"seed_{seed}"
+    vgae_ckpt = Path(paths.vgae_ckpt(dataset, seed))
+    gat_ckpt = _run_dir(dataset, "gat_loss", "focal", seed) / "checkpoints" / "best_model.ckpt"
+    out = Path(paths.states_dir(dataset, seed))
     inner = (
         f"python -m graphids extract-fusion-states "
         f"--vgae-ckpt {vgae_ckpt} --gat-ckpt {gat_ckpt} "
@@ -317,9 +315,9 @@ def execute_dag(
     dataset: str,
     seeds: Sequence[int],
     cluster: str,
-    lake_root: Path,
     configs_root: Path,
     dry_run: bool = False,
+    force_refit: bool = False,
 ) -> DagResult:
     """Submit every (node, seed) pair in topological order.
 
@@ -343,11 +341,11 @@ def execute_dag(
                     n,
                     seed,
                     dataset=dataset,
-                    lake_root=lake_root,
                     cluster=cluster,
                     configs_root=configs_root,
                     dep_jids=dep_jids,
                     dry_run=dry_run,
+                    force_refit=force_refit,
                 )
                 result.jids[(n.name, seed)] = jid
                 if jid == _FIT_ALREADY_COMPLETE:
@@ -356,7 +354,6 @@ def execute_dag(
                     n,
                     seed,
                     dataset=dataset,
-                    lake_root=lake_root,
                     cluster=cluster,
                     configs_root=configs_root,
                     fit_jid=jid,
@@ -367,7 +364,6 @@ def execute_dag(
                     n,
                     seed,
                     dataset=dataset,
-                    lake_root=lake_root,
                     cluster=cluster,
                     dep_jids=dep_jids,
                     dry_run=dry_run,
@@ -389,27 +385,24 @@ def launch_ablation(
     seeds: Sequence[int] = DEFAULT_SEEDS,
     cluster: str = "",
     dry_run: bool = False,
+    force_refit: bool = False,
     project_root: Path | None = None,
 ) -> DagResult:
     """Submit the full OFAT DAG for ``seeds`` against ``dataset``.
 
-    Sources ``.env`` for ``GRAPHIDS_LAKE_ROOT`` / ``USER``; submit() itself
-    is CWD-agnostic (uses absolute paths throughout).
+    Sources ``.env`` so ``GRAPHIDS_RUN_ROOT`` is set in this process; the
+    actual run-dir derivation lives in :mod:`graphids.config.paths` and
+    flows into the jsonnet presets via ``native_callbacks``.
     """
     project_root = project_root or Path(__file__).resolve().parents[2]
     load_dotenv(project_root / ".env")
-
-    lake_env = os.environ.get("GRAPHIDS_LAKE_ROOT")
-    if not lake_env:
-        raise RuntimeError("GRAPHIDS_LAKE_ROOT must be set in .env")
-    lake_root = Path(lake_env) / "dev" / os.environ["USER"]
 
     return execute_dag(
         OFAT_DAG,
         dataset=dataset,
         seeds=seeds,
         cluster=cluster,
-        lake_root=lake_root,
         configs_root=project_root / "configs" / "ablations",
         dry_run=dry_run,
+        force_refit=force_refit,
     )

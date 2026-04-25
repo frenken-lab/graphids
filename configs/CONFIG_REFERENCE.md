@@ -96,7 +96,8 @@ Project `.env` (sourced by `_preamble.sh`):
 
 | Variable                 | Purpose                          |
 |--------------------------|----------------------------------|
-| `GRAPHIDS_LAKE_ROOT`      | ESS data lake root               |
+| `GRAPHIDS_LAKE_ROOT`      | ESS data lake root (shared: mlflow.db, cache, mlartifacts) |
+| `GRAPHIDS_RUN_ROOT`       | Per-user run root (run_dirs / checkpoints) — `${LAKE_ROOT}/dev/${USER}` on OSC |
 | `GRAPHIDS_SLURM_ACCOUNT`  | SLURM account (PAS1266)          |
 | `GRAPHIDS_SLURM_LOG_DIR`  | SLURM log directory              |
 | `GRAPHIDS_SCRATCH`        | Scratch filesystem root          |
@@ -149,10 +150,11 @@ FINISHED runs).
 ### Run directory template
 
 Every preset under `configs/ablations/*.jsonnet` computes its own
-`run_dir` via `configs/ablations/_paths.libsonnet`:
+`run_dir` via `std.native('paths.run_dir')(...)` — registered by
+`graphids.config.jsonnet.render()` against `graphids.config.paths.run_dir`:
 
 ```
-{lake_root}/{dataset}/ablations/{group}/{variant}/seed_{N}
+{run_root}/{dataset}/ablations/{group}/{variant}/seed_{N}
 ```
 
 No Python planner, no identity-hash layer.

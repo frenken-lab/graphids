@@ -60,7 +60,9 @@ class TestBuildCurriculumTiers:
         # INVARIANT: attack indices come after all normals and point to y=1.
         ds = _mk_dataset(n_normal=30, n_attack=10)
         _, tiers, attacks, full, _ = build_curriculum_tiers(
-            ds, RandomScorer(seed=0), num_tiers=5,
+            ds,
+            RandomScorer(seed=0),
+            num_tiers=5,
         )
         tier_set = {i for t in tiers for i in t}
         assert tier_set.isdisjoint(attacks)
@@ -156,10 +158,11 @@ class TestBucketByScore:
             assert scores[a].max() <= scores[b].min()
 
     def test_uneven_split(self):
-        # 23 scores, 5 tiers → ceil(23/5) = 5 per bin, last one smaller.
+        # 23 scores, 5 tiers → np.array_split spreads the remainder across
+        # the first ``n % k`` bins: 23 = 5 + 5 + 5 + 4 + 4.
         scores = torch.arange(23, dtype=torch.float)
         tiers = bucket_by_score(scores, num_tiers=5)
-        assert [len(t) for t in tiers] == [5, 5, 5, 5, 3]
+        assert [len(t) for t in tiers] == [5, 5, 5, 4, 4]
 
     def test_rejects_empty(self):
         with pytest.raises(ValueError, match="empty"):

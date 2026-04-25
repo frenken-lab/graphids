@@ -366,6 +366,17 @@ class GraphDataModule:
     def test_dataloader(self):
         return [self._build_eval_loader(ds) for ds in self._test_datasets.values()]
 
+    def train_eval_dataloader(self):
+        """Train split with eval-style fixed-batch loader (no budget probe).
+
+        Used by SVDD calibration / centroid statistics that iterate the
+        effective (label-filtered) train split once under no_grad. Bypassing
+        dynamic batching means CPU test jobs without CUDA can still run the
+        calibration — the budget probe is a training-throughput optimization
+        and the centroid is batch-boundary-invariant.
+        """
+        return self._build_eval_loader(self._effective_train_ds())
+
     def _build_train_loader(self, dataset, shuffle: bool):
         """Training loader. Uses dynamic batching (budget probe) when enabled."""
         key = (id(dataset), shuffle)

@@ -217,75 +217,138 @@ Mermaid/Graphviz from the loaded DAG (step 3).
 -117 LOC on bugs + -70 LOC on launcher move. Full test suite green
 through all three changes (121 passed).
 
-## Next session — triage the seed 42 re-launch (SLURM jobs live)
+## 2026-04-24 evening session — drift fix + library consolidation
 
-**Re-launch submitted 2026-04-23 via `launch_ofat.py` — 22 jobs on Cardinal.**
-Python launcher held jids in memory so Stage 3 submitted in one shot
-(no dep-race). Idempotent skip correctly skipped 11 completed Stage 1
-variants. 3:30 wall applied to unsupervised group.
+Started with a Pitzer fusion-fit crash (`ModuleNotFoundError: No module
+named '_jsonnet'`): commit `8e14e06`'s `uv sync` had pruned the
+undeclared C-binding dep. Cascaded into a full audit pass.
 
-### Queued jids
+### Drift / settings fixes
 
-```
-Stage 0 (re-run, walltimed previously, 3:30:00 wall):
-  8772107  graphids-fit-vgae
-  8772112  graphids-fit-gae
-  8772114  graphids-fit-dgi
-Stage 2 (afterok VGAE):
-  8772125  graphids-fit-curriculum_vgae
-Stage 3 (afterok VGAE only — focal already FINISHED so no focal dep):
-  8772127  graphids-extract-fusion-states
-Stage 4 (afterok states):
-  8772128  graphids-fit-bandit
-  8772130  graphids-fit-dqn
-  8772214  graphids-fit-mlp
-  8772216  graphids-fit-weighted_avg
-Test chains (13 for completed Stage 1 variants, --mem 32G):
-  8772108-8772126 and 8772129/8772211/8772215/8772217 (fusion tests)
-```
+- **`jsonnet>=0.20`** declared in `pyproject.toml`; `uv.lock` pins
+  `jsonnet==0.22.0` (manylinux wheel, no compile). ADR 0010 reversed —
+  PyPI binding is now load-bearing-correct, hand-installed go-jsonnet
+  binary at `~/.local/bin/jsonnet` deprecated.
+- **`filelock>=3.13`** declared; `core/data/io.py` deleted (42 LOC) —
+  `nfs_lock` → `filelock.FileLock`, duplicate `atomic_save` consolidated
+  to `_fs.atomic_save`.
+- **Fail-fast settings**: `lake_root` no longer defaults to relative
+  `"experimentruns"` (silent CWD pollution gone). `GraphIDSSettings`
+  auto-loads `./.env` via pydantic-settings `env_file=...`, so login-node
+  invocations don't need `set -a; source ./.env`. `extra="ignore"` so
+  shell-only `GRAPHIDS_*` vars in `.env` don't break validation.
+- **`GRAPHIDS_RUN_ROOT` introduced** as a separate env var distinct from
+  `GRAPHIDS_LAKE_ROOT`. The two were silently conflated under one name —
+  `LAKE_ROOT=/fs/ess/PAS1266/graphids` (shared: mlflow.db, cache,
+  mlartifacts) was being used as the root for run_dirs as well, but the
+  jsonnet preset defaults hard-coded `/fs/ess/PAS1266/graphids/dev/rf15`
+  (per-user). Naive consolidation would have orphaned every existing
+  ckpt. Now they're independent vars.
+
+### `_mlflow.py` defensive-wrapper purge
+
+668 → 614 LOC; 16 try/except blocks → 4. Module philosophy reversed
+from "every MLflow call try/swallow" to "MLflow is required, failures
+propagate." Removed: ImportError guards (mlflow is a hard dep), broad
+`except Exception` outer wrappers in `start_training_run`, `log_test_run`,
+`log_epoch_metrics`, `log_final_fit`, `_register_logged_model`. Narrowed:
+`_git_sha_tag` (`CalledProcessError, FileNotFoundError`),
+`log_params` resume conflict (`MlflowException`), `end_training_run`
+cleanup (`MlflowException`, kept logged-not-raised so secondary failure
+doesn't shadow primary training exception via `__context__`). Aligns
+with `feedback_no_backward_compat_fallbacks` rule.
+
+### Three jsonnet consolidations (all landed)
+
+1. **`std.extVar('run_root')`**: `lake_root` TLA default removed from
+   all 19 ablation presets (was duplicated 19× and drifting from
+   settings). Set once in `render()` from `RUN_ROOT`.
+2. **`std.native('paths.X')(...)`**: `configs/ablations/_paths.libsonnet`
+   deleted. `graphids/config/paths.py` is canonical for run_dir /
+   vgae_ckpt / states_dir; jsonnet calls into it via `native_callbacks`
+   registered by `render()`. `slurm/dag.py:_run_dir` is a Path-typed
+   wrapper, drops its `lake_root` parameter and the duplicate scheme.
+   **Upstream `_jsonnet` bug worked around**: native callback param names
+   of length ≥2 raise "binding parameter a second time" when called
+   positionally with mixed local/literal args; single-letter names dodge
+   it.
+3. **`std.mergePatch` + `ext_code`**: `configs/_lib/helpers.libsonnet`
+   deleted; `cli/app.py:apply_overrides` deleted (replaced with
+   `dotted_to_nested`). `--set a.b.c=v` flags now flow as
+   `std.extVar('overrides')` and apply via `std.mergePatch` at each
+   preset's apex. Stages no longer take `trainer_overrides` /
+   `stage_overrides` TLAs; presets express group defaults as nested
+   objects directly. One mechanism replaces three duplications.
+
+### Files touched
+
+| Concern | Files |
+|---|---|
+| Created | `graphids/config/paths.py` |
+| Deleted | `core/data/io.py`, `configs/ablations/_paths.libsonnet`, `configs/_lib/helpers.libsonnet`, `cli/app.py:apply_overrides` |
+| Modified Python | `pyproject.toml`, `uv.lock`, `.env`, `settings.py`, `constants.py`, `jsonnet.py`, `cli/app.py`, `cli/training.py`, `slurm/dag.py`, `_mlflow.py`, `core/data/datasets/can_bus.py` |
+| Modified jsonnet | All 3 stages + all 19 ablation presets |
+| Modified docs | `docs/decisions/README.md` (ADR 0010), `.claude/rules/{config-system,data-layout}.md`, `docs/reference/{config-architecture,observability,data-flow,orchestration,write-paths}.md`, `configs/CONFIG_REFERENCE.md`, `configs/ablations/README.md`, `CLAUDE.md` |
+
+### Render snapshots verified identical
+
+Rendered four representative presets pre/post each stage and diff'd —
+zero output drift across all 3 consolidations. 133 tests pass.
+
+### Pitzer seed 42 status (live)
+
+| Tier | Fits | Tests |
+|---|---|---|
+| Stage 0 unsupervised (3) | ✓ all FINISHED on Cardinal | vgae ✓, gae ✓, dgi resubmitted (CUDA-on-CPU budget probe pre-existing bug) |
+| Stage 1 (13: conv_type/gat_loss/gat_sampling/id_encoding) | ✓ all FINISHED on Cardinal | 7 ✓; 6 failed at 21:36 ET on transient settings.py state — **resubmitted at 22:50 ET** |
+| Stage 2 curriculum_vgae | ✓ FINISHED | ✓ FINISHED |
+| Stage 3 extract-fusion-states | ✓ FINISHED on Pitzer | n/a |
+| Stage 4 fusion (4) | ✓ all FINISHED on Pitzer | 3 ✓; bandit failed on stale `lake_root` TLA (pre-Stage-A) — **resubmitted** |
+
+**All 20 fits FINISHED, 19 tests in flight on Pitzer at session end.**
+
+## Next session — first order of business: triage seed 42 test re-run
+
+**Tests resubmitted at 22:50 ET — jids 47079986–47080005.** Most should
+finish overnight; 3 known concerns to verify:
+
+1. **dgi-test specifically**: previous failure was
+   `RuntimeError: budget probe prerequisites missing: CUDA (conv_type=gatv2)`
+   on a CPU test. Pre-existing bug — commit `a224f8c` ("Skip budget probe
+   for val/test dataloaders") presumably doesn't cover the test path DGI
+   takes. If it fails again: investigate `core/data/budget.py` test-path
+   skip logic. Workaround: set `GRAPHIDS_ALLOW_FALLBACK_BUDGET=1`.
+2. **18 cosmetic zombie RUNNING rows** in MLflow from the earlier failed
+   tests (those tests opened MLflow rows that the new no-swallow
+   `end_run` would have closed FAILED, but they crashed before reaching
+   that). Cosmetic only — `compare.py` filters to FINISHED. To clean:
+   manually `UPDATE runs SET status='FAILED' WHERE status='RUNNING' AND
+   end_time IS NULL` on `/fs/ess/PAS1266/graphids/mlflow.db`, or accept
+   them.
+3. **Stage A cluster context**: SLURM jobs are pickled at submission;
+   the in-flight 19 tests will use whatever `graphids/` source tree is
+   on disk at job-start time. With Stages A/B/C all landed and
+   semantics-preserving, results should match what Cardinal produced
+   for the same fit ckpts.
 
 ### First command to run next session
 
 ```bash
 source ~/graphids/.venv/bin/activate
-sacct -M cardinal -u $USER --starttime=2026-04-23 \
-    --format=JobID,JobName%30,State,Elapsed,ExitCode -P \
-    | grep -v '\.ba\|\.ex' | column -t -s '|'
+set -a && source ./.env && set +a
+sacct -u $USER --starttime=2026-04-24T22:00 \
+    --format=JobID,JobName%32,State,Elapsed,ExitCode -P \
+    | grep -v '\.ba\|\.ex\|\.0' | column -t -s '|'
 ```
-
-### Success criteria
-
-- **All 3 unsupervised fits FINISHED** at 3:30 wall (VGAE should need ~3h
-  at 9 s/epoch × 1200 epochs; earlier runs walltimed on 1:30 wall).
-  If any walltime again, bump `LONG_WALL_TIME` in `launch_ofat.py` to
-  `4:00:00`.
-- **curriculum_vgae FINISHED** afterok vgae.
-- **extract-fusion-states FINISHED** afterok vgae (focal ckpt from
-  2026-04-23 already on disk).
-- **4 fusion methods FINISHED** afterok states.
-- **Test chains complete** for all variants — the 13 Stage 1 tests now
-  run with `--mem 32G` (the 16G default OOM'd gat test 8724434).
-
-### Known gotchas
-
-- **`QOSMaxJobsPerUserLimit`** on Cardinal throttled several test jobs
-  to PD (concurrency cap, not failure). They'll drain as other jobs
-  finish. Not actionable.
-- **Zombie RUNNING MLflow rows are possible.** `mlflow_reap_zombies.py`
-  was deleted 2026-04-23; if SLURM kills a fit and MLflow status
-  doesn't flip to FAILED, the row stays RUNNING in the UI. Next submit
-  (re-run) will replace it correctly because idempotent skip checks
-  `status == FINISHED`, not "any non-zero status." Zombies are
-  cosmetic, not operational.
 
 ### Triage decision tree
 
-| Seed 42 state | Action |
+| State | Action |
 |---|---|
-| All 9 jobs FINISHED | Proceed to seed 123 / 777 launches: `scripts/ablation/launch_ofat.py --dataset set_01 --seed 123 --cluster cardinal` |
-| Unsupervised walltimed again | Bump `LONG_WALL_TIME` → `4:00:00` in `launch_ofat.py:34`, resubmit via same command (idempotent skip handles already-done variants) |
-| Stage 3 or 4 FAILED | Check logs at `/fs/ess/PAS1266/graphids/slurm_logs/graphids-<name>_<jid>.err`; resubmit via same launcher command |
-| Test jobs FAILED | Likely a real bug (OOM at 32G would be new, or classification_test_metrics regression). Inspect one stderr; resubmit test manually |
+| All 19 tests FINISHED | Proceed to N=3: `python -m graphids launch-ablation --dataset set_01 --seed 123 --cluster pitzer` then `--seed 777` |
+| dgi-test fails again | Debug `core/data/budget.py` val/test skip path; the budget probe shouldn't fire on CPU-mode test dataloaders |
+| Bandit-test fails | Stale TLA shouldn't be possible post-Stage-A; if it fails, the launcher's `chain_test` call needs investigation — submitted via current code, not pickled state |
+| Other test fails | Likely real bug. Inspect stderr at `/fs/ess/PAS1266/graphids/slurm_logs/<jid>_0_log.err`; resubmit just that test |
 
 ### Step 2 — scale to N=3 + compare
 

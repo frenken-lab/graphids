@@ -1,24 +1,23 @@
 // Ablation: autoencoder stage, locked model_type='dgi' (Deep Graph Infomax).
 local stage = import '../../stages/autoencoder.jsonnet';
-local paths = import '../_paths.libsonnet';
 local pd = (import '../../matrix/axes.json').pipeline_defaults;
 
 function(
   dataset=pd.dataset, seed=pd.seed,
-  lake_root='/fs/ess/PAS1266/graphids/dev/rf15',
   scale=pd.scale, conv_type=pd.conv_type,
-  trainer_overrides={}, stage_overrides={}, ckpt_path=null,
+  ckpt_path=null,
 )
-  stage(
+  std.mergePatch(
+    stage(
     dataset=dataset, seed=seed, scale=scale,
-    run_dir=paths.run_dir(lake_root, dataset, 'unsupervised', 'dgi', seed),
+    run_dir=std.native('paths.run_dir')(dataset, 'unsupervised', 'dgi', seed),
     conv_type=conv_type,
     model_type='dgi',
     // DGI contrastive task converges ~3x slower than VGAE reconstruction:
     // val_loss=1.37 (random) until epoch ~165, then descends to 0.75 still
     // dropping at epoch 299. CosineAnnealingLR is near-zero by then. Bump
     // T_max so peak LR persists through the breakthrough phase.
-    trainer_overrides={ 'trainer.max_epochs': 800 } + trainer_overrides,
-    stage_overrides=stage_overrides,
     ckpt_path=ckpt_path,
-  )
+    // precision='32-true' — see vgae.jsonnet for rationale (cache v10
+    // z_benign post-standardization magnitudes vs fp16 range).
+  ) + { trainer+: { max_epochs: 800, precision: '32-true' } }, std.extVar('overrides'))

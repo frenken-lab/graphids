@@ -48,7 +48,6 @@ class VGAEModule(GraphModuleBase):
         edge_dim: int = 11,
         proj_dim: int = 0,
         variational: bool = True,
-        mask_ratio: float = 0.3,
         id_encoder_class_path: str = "graphids.core.models.id_encoding.LookupIdEncoder",
         id_encoder_kwargs: dict | None = None,
         # --- training ---
@@ -56,6 +55,14 @@ class VGAEModule(GraphModuleBase):
         weight_decay: float = 0.0001,
         gradient_checkpointing: bool = True,
         compile_model: bool = False,
+        # --- anomaly scoring (decoupled from training-loss weights) ---
+        # Frenken et al. 2025 §8.2 composite_error = α·E_node + β·E_neighbor + γ·E_CANID
+        # with α=1.0, β=20.0, γ=0.3 — chosen empirically for discrimination, NOT
+        # the same as the training-loss component weights (canid_weight=0.1,
+        # nbr_weight=0.05) which were chosen for ELBO gradient balance.
+        score_recon_weight: float = 1.0,
+        score_canid_weight: float = 0.3,
+        score_nbr_weight: float = 20.0,
         # --- identity / dynamic ---
         scale: str = "small",
         model_type: ModelType = "vgae",
@@ -75,13 +82,15 @@ class VGAEModule(GraphModuleBase):
         self.edge_dim = edge_dim
         self.proj_dim = proj_dim
         self.variational = variational
-        self.mask_ratio = mask_ratio
         self.id_encoder_class_path = id_encoder_class_path
         self.id_encoder_kwargs = id_encoder_kwargs or {}
         self.lr = lr
         self.weight_decay = weight_decay
         self.gradient_checkpointing = gradient_checkpointing
         self.compile_model = compile_model
+        self.score_recon_weight = score_recon_weight
+        self.score_canid_weight = score_canid_weight
+        self.score_nbr_weight = score_nbr_weight
         self.scale = scale
         self.model_type = model_type
         self.dataset = dataset
@@ -123,13 +132,11 @@ class VGAEModule(GraphModuleBase):
 
     def forward(self, batch):
         edge_attr = getattr(batch, "edge_attr", None)
-        mask_ratio = self.hparams.mask_ratio if self.training else 0.0
         return self.model(
             batch.x,
             batch.edge_index,
             batch.batch,
             edge_attr=edge_attr,
-            mask_ratio=mask_ratio,
             node_id=batch.node_id,
         )
 
@@ -147,7 +154,7 @@ class VGAEModule(GraphModuleBase):
             if getattr(self.model, "_uses_edge_attr", False)
             else None
         )
-        cont, canid_logits, nbr_logits, z, _, _ = self.model(
+        cont, canid_logits, nbr_logits, z, _ = self.model(
             batch.x,
             batch.edge_index,
             batch.batch,
@@ -179,6 +186,14 @@ class VGAEModule(GraphModuleBase):
         loss = self._step(batch)
         bs = batch.num_graphs
         self.log("train_loss", loss, batch_size=bs)
+        # Per-component VGAETaskLoss telemetry — recon-dominance after the
+        # sigmoid + masking deletions is the diagnostic to watch.
+        task_loss = self._task_loss_module()
+        if task_loss.last_recon is not None:
+            self.log("train_recon", task_loss.last_recon, batch_size=bs)
+            self.log("train_canid", task_loss.last_canid, batch_size=bs)
+            self.log("train_nbr", task_loss.last_nbr, batch_size=bs)
+            self.log("train_kl", task_loss.last_kl, batch_size=bs)
         # Log KD components separately when FeatureDistillation is active.
         from graphids.core.losses.distillation import FeatureDistillation
 
@@ -199,15 +214,20 @@ class VGAEModule(GraphModuleBase):
     def _per_graph_errors(self, batch):
         """Compute weighted per-graph anomaly errors from a batch.
 
-        Reads the recon / canid / nbr weighting off ``self.loss_fn`` (via
-        ``_task_loss_module``) so training and test scoring share the same
-        weighting by construction.
+        Anomaly-scoring weights (``score_*_weight``) are decoupled from the
+        training-loss weights — the latter are chosen for ELBO gradient
+        balance, the former for benign-vs-attack discrimination per
+        Frenken et al. 2025 §8.2 (α=1.0, β=20.0, γ=0.3 by default).
+
+        Per-component errors are MEAN-pooled per graph to align with the
+        training objective (``F.mse_loss`` defaults to mean reduction) and
+        with ``extract_features`` (used by fusion). MAX-pooling produced
+        score inversions when benign graphs had outlier nodes.
         """
         from torch_geometric.utils import scatter
 
-        task = self._task_loss_module()
         edge_attr = getattr(batch, "edge_attr", None)
-        cont, canid_logits, nbr_logits, _, _, _ = self.model(
+        cont, canid_logits, nbr_logits, _, _ = self.model(
             batch.x,
             batch.edge_index,
             batch.batch,
@@ -215,17 +235,21 @@ class VGAEModule(GraphModuleBase):
             node_id=batch.node_id,
         )
         per_node_se = (cont - batch.x).pow(2).mean(dim=1)
-        recon = scatter(per_node_se, batch.batch, dim=0, reduce="max")
+        recon = scatter(per_node_se, batch.batch, dim=0, reduce="mean")
         canid_err = F.cross_entropy(canid_logits, batch.node_id, reduction="none")
-        canid_per_graph = scatter(canid_err, batch.batch, dim=0, reduce="max")
+        canid_per_graph = scatter(canid_err, batch.batch, dim=0, reduce="mean")
         nbr_targets = self.model.create_neighborhood_targets(
             batch.node_id, batch.edge_index, batch.batch
         )
         nbr_err = F.binary_cross_entropy_with_logits(
             nbr_logits, nbr_targets, reduction="none"
         ).mean(dim=1)
-        nbr_per_graph = scatter(nbr_err, batch.batch, dim=0, reduce="max")
-        return recon + task.canid_weight * canid_per_graph + task.nbr_weight * nbr_per_graph
+        nbr_per_graph = scatter(nbr_err, batch.batch, dim=0, reduce="mean")
+        return (
+            self.score_recon_weight * recon
+            + self.score_canid_weight * canid_per_graph
+            + self.score_nbr_weight * nbr_per_graph
+        )
 
     def test_step(self, batch, _idx, dataloader_idx=0):
         errors = self._per_graph_errors(batch)

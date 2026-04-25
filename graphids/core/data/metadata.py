@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import fcntl
 import json
-import os
-import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from graphids._fs import atomic_write_text
 
 METADATA_SCHEMA_VERSION = 3
 
@@ -26,6 +26,7 @@ INVARIANT_KEYS = (
     "val_fraction",
     "seed",
     "vocab_digest",
+    "scaler_strategy",
 )
 
 
@@ -183,20 +184,7 @@ def merge_split_into_metadata(
             meta["splits"][split_name] = split_entry
             meta["aggregate"] = _aggregate(meta["splits"])
 
-            fd, tmp = tempfile.mkstemp(dir=cache_dir, suffix=".tmp")
-            try:
-                with os.fdopen(fd, "w") as f:
-                    json.dump(meta, f, indent=2, sort_keys=True)
-                    f.flush()
-                    os.fsync(f.fileno())
-                fd = -1
-                os.rename(tmp, meta_path)
-            except BaseException:
-                if fd >= 0:
-                    os.close(fd)
-                if os.path.exists(tmp):
-                    os.unlink(tmp)
-                raise
+            atomic_write_text(meta_path, json.dumps(meta, indent=2, sort_keys=True))
             return meta
         finally:
             fcntl.flock(lockf.fileno(), fcntl.LOCK_UN)

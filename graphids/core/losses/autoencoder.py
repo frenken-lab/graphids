@@ -26,8 +26,8 @@ import torch.nn.functional as F
 class VGAETaskLoss(nn.Module):
     """VGAE reconstruction loss: recon MSE + CAN-ID CE + neighborhood + KL.
 
-    ``forward(student_outputs, batch)`` unpacks the 6-tuple
-    ``(cont_out, canid_logits, nbr_logits, z, kl_loss, mask)`` returned by
+    ``forward(student_outputs, batch)`` unpacks the 5-tuple
+    ``(cont_out, canid_logits, nbr_logits, z, kl_loss)`` returned by
     ``GraphAutoencoderNeighborhood``. The ``z`` latent is not used by the
     task loss itself but ``FeatureDistillation`` reads it off
     ``student_outputs`` directly when wrapping this loss.
@@ -48,15 +48,21 @@ class VGAETaskLoss(nn.Module):
         self.kl_weight = kl_weight
         self.k_neg = k_neg
         self.num_ids = num_ids  # populated by VGAEModule.setup() from dm.num_ids
+        # Populated each forward() so VGAEModule._training_step_inner can log
+        # per-component losses to MLflow. Recon-dominance is the failure
+        # mode to watch after the sigmoid + masking deletions: if recon
+        # collapses to ~0 while canid_weight*canid and nbr_weight*nbr stay
+        # large, the encoder isn't learning structure.
+        self.last_recon: torch.Tensor | None = None
+        self.last_canid: torch.Tensor | None = None
+        self.last_nbr: torch.Tensor | None = None
+        self.last_kl: torch.Tensor | None = None
 
     def forward(self, student_outputs: tuple, batch) -> torch.Tensor:
-        cont_out, canid_logits, nbr_logits, _z, kl_loss, mask = student_outputs
+        cont_out, canid_logits, nbr_logits, _z, kl_loss = student_outputs
         target = batch.x
 
-        if mask is not None:
-            recon = F.mse_loss(cont_out[mask], target[mask])
-        else:
-            recon = F.mse_loss(cont_out, target)
+        recon = F.mse_loss(cont_out, target)
 
         canid = F.cross_entropy(canid_logits, batch.node_id)
 
@@ -87,4 +93,8 @@ class VGAETaskLoss(nn.Module):
                 f"weights=(canid={self.canid_weight},nbr={self.nbr_weight},kl={self.kl_weight}) "
                 f"training={self.training}"
             )
+        self.last_recon = recon.detach()
+        self.last_canid = canid.detach()
+        self.last_nbr = nbr_loss.detach()
+        self.last_kl = kl_loss.detach()
         return total

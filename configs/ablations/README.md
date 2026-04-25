@@ -61,7 +61,8 @@ axis's run — the fusion/curriculum/states pipelines always use the
 reference upstream, not the best-performing one.
 
 **Reference condition** (from `configs/matrix/axes.json::pipeline_defaults`
-plus `configs/ablations/_paths.libsonnet` for upstream ckpts):
+plus `graphids.config.paths` — registered as jsonnet native_callbacks
+via `render()` — for upstream ckpts):
 
 | Axis | Reference value |
 |---|---|

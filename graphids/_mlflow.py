@@ -12,17 +12,39 @@ Backend: SQLite at ``{lake_root}/mlflow.db``. Artifacts at
 VRAM, CPU, memory, disk, network) are captured automatically by
 MLflow's background sampling thread while any run is active.
 
-Every MLflow call is wrapped in try/swallow: a logging hiccup must not
-fail a training job.
+MLflow is a hard dependency. Failures here are real bugs — they propagate.
+The single tolerated soft-failure is ``MlflowException`` on ``log_params``
+during resume, where altered config values trip MLflow's immutable-param
+rule and we'd rather keep the original params than abort the run. The
+other "log + don't re-raise" path is :func:`end_training_run`, because a
+secondary failure during cleanup would shadow the primary training
+exception via Python's ``__context__`` chaining.
 """
 
 from __future__ import annotations
 
 import hashlib
 import os
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import mlflow
+from mlflow.data.meta_dataset import MetaDataset
+from mlflow.data.sources import LocalArtifactDatasetSource
+from mlflow.exceptions import MlflowException
+from mlflow.tracking import MlflowClient
+from mlflow.utils.validation import (
+    MAX_ENTITY_KEY_LENGTH as _MAX_PARAM_KEY,
+)
+from mlflow.utils.validation import (
+    MAX_PARAM_VAL_LENGTH as _MAX_PARAM_VALUE,
+)
+from mlflow.utils.validation import (
+    MAX_TAG_VAL_LENGTH as _MAX_TAG_VALUE,
+)
 
 from graphids._otel import get_logger
 
@@ -32,17 +54,7 @@ _TRACKING_URI_ENV = "MLFLOW_TRACKING_URI"
 _BACKEND_DB_SUBPATH = "mlflow.db"
 _ARTIFACT_SUBPATH = "mlartifacts"
 _SYSTEM_METRICS_INTERVAL_S = 5
-
-# MLflow's own limits — import so we track the installed version.
-from mlflow.utils.validation import (  # noqa: E402
-    MAX_ENTITY_KEY_LENGTH as _MAX_PARAM_KEY,
-)
-from mlflow.utils.validation import (
-    MAX_PARAM_VAL_LENGTH as _MAX_PARAM_VALUE,
-)
-from mlflow.utils.validation import (
-    MAX_TAG_VAL_LENGTH as _MAX_TAG_VALUE,
-)
+_FORCE_RESUME_ENV = "GRAPHIDS_FORCE_RESUME"
 
 _system_metrics_configured = False
 
@@ -144,7 +156,7 @@ def ensure_tracking_uri() -> str | None:
     return default
 
 
-def _ensure_experiment(client, name: str) -> None:  # noqa: ANN001 — MlflowClient
+def _ensure_experiment(client: MlflowClient, name: str) -> None:
     """Create experiment if missing. ``mlartifacts/`` stays empty (data-layout.md)."""
     if client.get_experiment_by_name(name) is not None:
         return
@@ -231,7 +243,7 @@ def _upstream_tags(resolved_config: dict[str, Any]) -> dict[str, str]:
     return tags
 
 
-def _dataset_for(resolved_config: dict[str, Any]):
+def _dataset_for(resolved_config: dict[str, Any]) -> MetaDataset | None:
     """Return a :class:`mlflow.data.MetaDataset` for this run's cache, or ``None``.
 
     Metadata-only dataset entity. Digest = SHA256 of ``cache_metadata.json``
@@ -239,7 +251,8 @@ def _dataset_for(resolved_config: dict[str, Any]):
     ``mlflow.log_input(ds, context=...)`` at run start stamps dataset identity
     as a first-class UI entity + filter surface (``dataset.name`` /
     ``dataset.digest`` in ``search_runs``) without calling the banned
-    ``log_artifact`` path.
+    ``log_artifact`` path. ``None`` means "no cache_metadata.json on disk" —
+    not an error, the run still gets logged.
     """
     from graphids.config.constants import LAKE_ROOT
 
@@ -265,15 +278,7 @@ def _dataset_for(resolved_config: dict[str, Any]):
             break
     if cache_dir is None:
         return None
-    try:
-        digest = hashlib.sha256((cache_dir / "cache_metadata.json").read_bytes()).hexdigest()[:16]
-    except OSError:
-        return None
-    try:
-        from mlflow.data.meta_dataset import MetaDataset
-        from mlflow.data.sources import LocalArtifactDatasetSource
-    except ImportError:
-        return None
+    digest = hashlib.sha256((cache_dir / "cache_metadata.json").read_bytes()).hexdigest()[:16]
     return MetaDataset(
         source=LocalArtifactDatasetSource(uri=f"file://{cache_dir}"),
         name=dataset,
@@ -284,27 +289,22 @@ def _dataset_for(resolved_config: dict[str, Any]):
 def _checkpoint_hash_tag(run_dir: Path) -> dict[str, str]:
     """Read ``.sha256`` sidecar for ``best_model.ckpt`` if present."""
     sidecar = run_dir / "checkpoints" / "best_model.ckpt.sha256"
-    if sidecar.exists():
-        try:
-            return {"graphids.ckpt_sha256": sidecar.read_text().strip().split()[0][:_MAX_TAG_VALUE]}
-        except OSError:
-            pass
-    return {}
+    if not sidecar.exists():
+        return {}
+    return {"graphids.ckpt_sha256": sidecar.read_text().strip().split()[0][:_MAX_TAG_VALUE]}
 
 
 def _git_sha_tag() -> dict[str, str]:
-    """Grab current HEAD SHA. Swallows failure (detached head, no git, etc)."""
+    """Grab current HEAD SHA. Empty dict on detached head / no git / not-a-repo cwd."""
+    from graphids.config.constants import PROJECT_ROOT
+
     try:
-        import subprocess
-
-        from graphids.config.constants import PROJECT_ROOT
-
         sha = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=PROJECT_ROOT, text=True, stderr=subprocess.DEVNULL
         ).strip()
-        return {"git_sha": sha}
-    except Exception:
+    except (subprocess.CalledProcessError, FileNotFoundError):
         return {}
+    return {"git_sha": sha}
 
 
 _SLURM_TAG_ENVS = (
@@ -326,8 +326,6 @@ def _build_tags(
     Cache digest is captured by ``_dataset_for`` + ``mlflow.log_input`` as a
     first-class MetaDataset entity, not a tag.
     """
-    import sys
-
     from graphids.config.constants import PROJECT_ROOT
 
     tags: dict[str, str] = {
@@ -344,16 +342,10 @@ def _build_tags(
     for k in _SLURM_TAG_ENVS:
         if k in os.environ:
             tags[f"slurm.{k.lower()}"] = os.environ[k][:_MAX_TAG_VALUE]
-    try:
-        lock = Path(PROJECT_ROOT) / "uv.lock"
-        if lock.exists():
-            tags["graphids.uv_lock_hash"] = hashlib.sha256(lock.read_bytes()).hexdigest()[:16]
-    except Exception:
-        pass
+    lock = Path(PROJECT_ROOT) / "uv.lock"
+    if lock.exists():
+        tags["graphids.uv_lock_hash"] = hashlib.sha256(lock.read_bytes()).hexdigest()[:16]
     return tags
-
-
-_FORCE_RESUME_ENV = "GRAPHIDS_FORCE_RESUME"
 
 
 def _resume_decision(existing_run: Any, cur_git_sha: str | None, force: bool) -> str:
@@ -396,8 +388,11 @@ def start_training_run(run_dir: Path, resolved_config: dict[str, Any]) -> str | 
     **Idempotent.** Searches for an existing fit run with this ``run_name``
     in the per-axis experiment; resumes FAILED/KILLED, refuses RUNNING/
     FINISHED (unless ``GRAPHIDS_FORCE_RESUME=1``), creates a fresh run for
-    TERMINATED (reaper owns) and for git-SHA discontinuities. Returns
-    ``None`` on refusal so callers know no MLflow row is active.
+    TERMINATED (reaper owns) and for git-SHA discontinuities. ``None``
+    return values are the legitimate skip cases (non-ablation run_dir,
+    no LAKE_ROOT, status-gated refusal). MLflow connection / schema /
+    permission failures propagate so the SLURM job dies before training
+    runs untracked.
 
     Logs params, identity tags, SLURM provenance, reproducibility tags,
     and git SHA up-front. System metrics sampling is enabled for the
@@ -409,117 +404,86 @@ def start_training_run(run_dir: Path, resolved_config: dict[str, Any]) -> str | 
         log.info("mlflow_skip_non_ablation", run_dir=str(run_dir))
         return None
 
-    try:
-        import mlflow
-        from mlflow.tracking import MlflowClient
-    except ImportError:
-        log.warning("mlflow_skip_no_install")
+    uri = ensure_tracking_uri()
+    if not uri:
+        log.warning("mlflow_skip_no_uri")
         return None
 
-    try:
-        uri = ensure_tracking_uri()
-        if not uri:
-            log.warning("mlflow_skip_no_uri")
+    global _system_metrics_configured  # noqa: PLW0603
+    if not _system_metrics_configured:
+        mlflow.config.enable_system_metrics_logging()
+        mlflow.config.set_system_metrics_sampling_interval(_SYSTEM_METRICS_INTERVAL_S)
+        _system_metrics_configured = True
+    mlflow.set_tracking_uri(uri)
+
+    from graphids.config.settings import get_settings
+
+    cluster = get_settings().cluster or None
+    run_name = run_name_for(identity, cluster=cluster)
+    experiment = f"graphids/{identity.dataset}/{identity.group}"
+
+    client = MlflowClient(tracking_uri=uri)
+    _ensure_experiment(client, experiment)
+    exp = client.get_experiment_by_name(experiment)
+    mlflow.set_experiment(experiment)
+
+    force = os.environ.get(_FORCE_RESUME_ENV, "").lower() in ("1", "true", "yes")
+    cur_git_sha = _git_sha_tag().get("git_sha")
+    hits = client.search_runs(
+        experiment_ids=[exp.experiment_id] if exp else None,
+        filter_string=build_search_filter(run_name=run_name, phase="fit"),
+        order_by=["attributes.start_time DESC"],
+        max_results=1,
+    )
+    resume_run_id: str | None = None
+    if hits:
+        decision = _resume_decision(hits[0], cur_git_sha, force)
+        if decision == "refuse":
+            log.warning(
+                "mlflow_skip_refuse_existing",
+                status=hits[0].info.status,
+                run_id=hits[0].info.run_id,
+                run_name=run_name,
+            )
             return None
-        global _system_metrics_configured  # noqa: PLW0603
-        if not _system_metrics_configured:
-            try:
-                mlflow.config.enable_system_metrics_logging()
-                mlflow.config.set_system_metrics_sampling_interval(_SYSTEM_METRICS_INTERVAL_S)
-                _system_metrics_configured = True
-            except Exception as exc:
-                log.warning("mlflow_system_metrics_config_failed", error=str(exc))
-        mlflow.set_tracking_uri(uri)
-        from graphids.config.settings import get_settings
+        if decision == "resume":
+            resume_run_id = hits[0].info.run_id
 
-        cluster = get_settings().cluster or None
-        run_name = run_name_for(identity, cluster=cluster)
-        experiment = f"graphids/{identity.dataset}/{identity.group}"
+    if resume_run_id:
+        mlflow.start_run(run_id=resume_run_id)
+        log.info("mlflow_fit_run_resumed", run_id=resume_run_id, run_name=run_name)
+    else:
+        mlflow.start_run(run_name=run_name, tags={"graphids.phase": "fit"})
 
-        client = MlflowClient(tracking_uri=uri)
-        _ensure_experiment(client, experiment)
-        exp = client.get_experiment_by_name(experiment)
-        mlflow.set_experiment(experiment)
+    try:
+        mlflow.log_params(_flatten_params(resolved_config))
+    except MlflowException as exc:
+        # Resuming with altered config trips MLflow's immutable-param rule.
+        # Original params stay; log the drift and continue.
+        log.warning("mlflow_log_params_conflict", error=str(exc))
 
-        force = os.environ.get(_FORCE_RESUME_ENV, "").lower() in ("1", "true", "yes")
-        cur_git_sha = _git_sha_tag().get("git_sha")
-        hits = client.search_runs(
-            experiment_ids=[exp.experiment_id] if exp else None,
-            filter_string=build_search_filter(run_name=run_name, phase="fit"),
-            order_by=["attributes.start_time DESC"],
-            max_results=1,
-        )
-        resume_run_id: str | None = None
-        if hits:
-            decision = _resume_decision(hits[0], cur_git_sha, force)
-            if decision == "refuse":
-                log.warning(
-                    "mlflow_skip_refuse_existing",
-                    status=hits[0].info.status,
-                    run_id=hits[0].info.run_id,
-                    run_name=run_name,
-                )
-                return None
-            if decision == "resume":
-                resume_run_id = hits[0].info.run_id
-
-        if resume_run_id:
-            mlflow.start_run(run_id=resume_run_id)
-            log.info("mlflow_fit_run_resumed", run_id=resume_run_id, run_name=run_name)
-        else:
-            mlflow.start_run(run_name=run_name, tags={"graphids.phase": "fit"})
-
-        try:
-            mlflow.log_params(_flatten_params(resolved_config))
-        except Exception as exc:
-            # Resuming with altered config hits ``ParamValueAlreadyLoggedWithDifferentValueError``.
-            # Not fatal — the original params stay; log a warning so drift is visible.
-            log.warning("mlflow_log_params_failed", error=str(exc))
-        mlflow.set_tags(_build_tags(identity, run_dir, resolved_config))
-        if force and resume_run_id:
-            mlflow.set_tag("graphids.resume.forced", "true")
-        dataset = _dataset_for(resolved_config)
-        if dataset is not None:
-            mlflow.log_input(dataset, context="train")
-        log.info(
-            "mlflow_fit_run_started",
-            run_name=run_name,
-            experiment=experiment,
-            resumed=bool(resume_run_id),
-        )
-        return run_name
-    except Exception as exc:
-        log.warning(
-            "mlflow_start_failed",
-            error=str(exc),
-            error_type=type(exc).__name__,
-            run_dir=str(run_dir),
-        )
-        # Outer failure path must not leave a dangling active run — otherwise
-        # the callback-free exit path logs against whatever happened to be
-        # open and confuses downstream queries.
-        try:
-            import mlflow
-
-            if mlflow.active_run() is not None:
-                mlflow.end_run(status="FAILED")
-        except Exception:
-            pass
-        return None
+    mlflow.set_tags(_build_tags(identity, run_dir, resolved_config))
+    if force and resume_run_id:
+        mlflow.set_tag("graphids.resume.forced", "true")
+    dataset = _dataset_for(resolved_config)
+    if dataset is not None:
+        mlflow.log_input(dataset, context="train")
+    log.info(
+        "mlflow_fit_run_started",
+        run_name=run_name,
+        experiment=experiment,
+        resumed=bool(resume_run_id),
+    )
+    return run_name
 
 
 def log_epoch_metrics(epoch: int, metrics: dict[str, float]) -> None:
     """Log per-epoch scalar metrics to the active MLflow run. No-op if none."""
-    try:
-        import mlflow
-
-        if mlflow.active_run() is None:
-            return
-        clean = {k: float(v) for k, v in metrics.items() if v is not None}
-        if clean:
-            mlflow.log_metrics(clean, step=epoch)
-    except Exception as exc:
-        log.warning("mlflow_epoch_log_failed", error=str(exc), epoch=epoch)
+    if mlflow.active_run() is None:
+        return
+    clean = {k: float(v) for k, v in metrics.items() if v is not None}
+    if clean:
+        mlflow.log_metrics(clean, step=epoch)
 
 
 def _register_logged_model(
@@ -528,7 +492,7 @@ def _register_logged_model(
     identity: RunIdentity,
     run_dir: Path,
     best_ckpt_path: str,
-) -> str | None:
+) -> str:
     """Register a metadata-only ``LoggedModel`` pointing at this run's ckpt.
 
     ``create_logged_model`` takes metadata only (no artifact bytes), so this
@@ -541,26 +505,20 @@ def _register_logged_model(
     → upstream ``run_id`` → ``search_logged_models(source_run_id=upstream_run_id,
     model_type='<group>_<variant>')`` returns this LoggedModel.
     """
-    try:
-        from mlflow.tracking import MlflowClient
-
-        client = MlflowClient()
-        sha_tag = _checkpoint_hash_tag(run_dir)
-        lm = client.create_logged_model(
-            experiment_id=experiment_id,
-            name=f"{identity.variant}_seed{identity.seed}",
-            source_run_id=run_id,
-            model_type=f"{identity.group}_{identity.variant}",
-            tags={
-                "graphids.ckpt_path": best_ckpt_path[:_MAX_TAG_VALUE],
-                "graphids.run_dir": str(run_dir)[:_MAX_TAG_VALUE],
-                **sha_tag,
-            },
-        )
-        return lm.model_id
-    except Exception as exc:
-        log.warning("mlflow_logged_model_failed", error=str(exc))
-        return None
+    client = MlflowClient()
+    sha_tag = _checkpoint_hash_tag(run_dir)
+    lm = client.create_logged_model(
+        experiment_id=experiment_id,
+        name=f"{identity.variant}_seed{identity.seed}",
+        source_run_id=run_id,
+        model_type=f"{identity.group}_{identity.variant}",
+        tags={
+            "graphids.ckpt_path": best_ckpt_path[:_MAX_TAG_VALUE],
+            "graphids.run_dir": str(run_dir)[:_MAX_TAG_VALUE],
+            **sha_tag,
+        },
+    )
+    return lm.model_id
 
 
 def log_final_fit(
@@ -573,50 +531,44 @@ def log_final_fit(
     """Stamp peak VRAM + epochs run + checkpoint hash + LoggedModel on the active run.
 
     Called from ``MLflowTrainingCallback.on_fit_end`` before the run closes.
+    No-op if no run is active.
     """
-    try:
-        import mlflow
+    active = mlflow.active_run()
+    if active is None:
+        return
+    mlflow.log_metrics({"peak_vram_mb": float(peak_vram_mb), "epochs_run": float(epochs_run)})
+    tags: dict[str, str] = {}
+    if best_ckpt_path:
+        tags["graphids.best_ckpt_path"] = best_ckpt_path[:_MAX_TAG_VALUE]
+    tags.update(_checkpoint_hash_tag(run_dir))
 
-        active = mlflow.active_run()
-        if active is None:
-            return
-        mlflow.log_metrics(
-            {
-                "peak_vram_mb": float(peak_vram_mb),
-                "epochs_run": float(epochs_run),
-            }
+    identity = parse_run_dir(run_dir)
+    if identity is not None and best_ckpt_path:
+        model_id = _register_logged_model(
+            active.info.run_id,
+            active.info.experiment_id,
+            identity,
+            run_dir,
+            best_ckpt_path,
         )
-        tags: dict[str, str] = {}
-        if best_ckpt_path:
-            tags["graphids.best_ckpt_path"] = best_ckpt_path[:_MAX_TAG_VALUE]
-        tags.update(_checkpoint_hash_tag(run_dir))
-
-        identity = parse_run_dir(run_dir)
-        if identity is not None and best_ckpt_path:
-            model_id = _register_logged_model(
-                active.info.run_id,
-                active.info.experiment_id,
-                identity,
-                run_dir,
-                best_ckpt_path,
-            )
-            if model_id:
-                tags["graphids.logged_model_id"] = model_id
-        if tags:
-            mlflow.set_tags(tags)
-    except Exception as exc:
-        log.warning("mlflow_final_fit_log_failed", error=str(exc))
+        tags["graphids.logged_model_id"] = model_id
+    if tags:
+        mlflow.set_tags(tags)
 
 
 def end_training_run(status: str = "FINISHED") -> None:
-    """End the active MLflow run. Idempotent; swallowed on error."""
-    try:
-        import mlflow
+    """End the active MLflow run, if any.
 
-        if mlflow.active_run() is not None:
-            mlflow.end_run(status=status)
-    except Exception as exc:
-        log.warning("mlflow_end_failed", error=str(exc))
+    Catches and logs ``MlflowException``: this is a cleanup path and a
+    secondary failure here would shadow the primary training exception
+    via Python's ``__context__`` chaining (see module docstring).
+    """
+    if mlflow.active_run() is None:
+        return
+    try:
+        mlflow.end_run(status=status)
+    except MlflowException as exc:
+        log.error("mlflow_end_failed", error=str(exc), status=status)
 
 
 def log_test_run(
@@ -625,44 +577,38 @@ def log_test_run(
     resolved_config: dict[str, Any],
     metrics: dict[str, Any],
 ) -> str | None:
-    """Self-contained MLflow run for the test phase (post-hoc sink)."""
+    """Self-contained MLflow run for the test phase (post-hoc sink).
+
+    Returns the ``run_name`` written, or ``None`` for non-ablation run_dirs
+    or when no LAKE_ROOT is configured. MLflow failures propagate.
+    """
     identity = parse_run_dir(run_dir)
     if identity is None:
         log.info("mlflow_test_skip_non_ablation", run_dir=str(run_dir))
         return None
 
-    try:
-        import mlflow
-        from mlflow.tracking import MlflowClient
-    except ImportError:
-        log.warning("mlflow_test_skip_no_install")
+    uri = ensure_tracking_uri()
+    if not uri:
+        log.warning("mlflow_test_skip_no_uri")
         return None
+    mlflow.set_tracking_uri(uri)
 
-    try:
-        uri = ensure_tracking_uri()
-        if not uri:
-            log.warning("mlflow_test_skip_no_uri")
-            return None
-        mlflow.set_tracking_uri(uri)
-        from graphids.config.settings import get_settings
+    from graphids.config.settings import get_settings
 
-        cluster = get_settings().cluster or None
-        run_name = run_name_for(identity, cluster=cluster)
-        experiment = f"graphids/{identity.dataset}/{identity.group}"
-        client = MlflowClient(tracking_uri=uri)
-        _ensure_experiment(client, experiment)
-        mlflow.set_experiment(experiment)
+    cluster = get_settings().cluster or None
+    run_name = run_name_for(identity, cluster=cluster)
+    experiment = f"graphids/{identity.dataset}/{identity.group}"
+    client = MlflowClient(tracking_uri=uri)
+    _ensure_experiment(client, experiment)
+    mlflow.set_experiment(experiment)
 
-        with mlflow.start_run(run_name=run_name, tags={"graphids.phase": "test"}):
-            scalars = _scalar_metrics(metrics)
-            if scalars:
-                mlflow.log_metrics(scalars)
-            mlflow.set_tags({**_build_tags(identity, run_dir, resolved_config), "status": "ok"})
-            dataset = _dataset_for(resolved_config)
-            if dataset is not None:
-                mlflow.log_input(dataset, context="test")
-        log.info("mlflow_test_run_logged", run_name=run_name, experiment=experiment)
-        return run_name
-    except Exception as exc:
-        log.warning("mlflow_test_failed", error=str(exc), run_dir=str(run_dir))
-        return None
+    with mlflow.start_run(run_name=run_name, tags={"graphids.phase": "test"}):
+        scalars = _scalar_metrics(metrics)
+        if scalars:
+            mlflow.log_metrics(scalars)
+        mlflow.set_tags({**_build_tags(identity, run_dir, resolved_config), "status": "ok"})
+        dataset = _dataset_for(resolved_config)
+        if dataset is not None:
+            mlflow.log_input(dataset, context="test")
+    log.info("mlflow_test_run_logged", run_name=run_name, experiment=experiment)
+    return run_name

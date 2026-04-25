@@ -6,7 +6,6 @@
 // works with zero TLAs (dev smoke).
 
 local defaults = import '../_lib/defaults.libsonnet';
-local helpers = import '../_lib/helpers.libsonnet';
 local unsup = import '../models/unsupervised.libsonnet';
 local pd = (import '../matrix/axes.json').pipeline_defaults;
 
@@ -23,8 +22,6 @@ function(
   // KD — loss-level distillation config (null = no distillation)
   distillation_config=null,
 
-  trainer_overrides={},
-  stage_overrides={},
   ckpt_path=null,
 )
 
@@ -73,6 +70,3 @@ function(
            else {}),
     },
   } + (if ckpt_path != null then { ckpt_path: ckpt_path } else {})
-
-  + helpers.apply_dotted(trainer_overrides)
-  + helpers.apply_dotted(stage_overrides)

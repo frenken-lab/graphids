@@ -23,6 +23,7 @@ import math
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+import numpy as np
 import torch
 
 from graphids._reflect import import_class
@@ -118,20 +119,18 @@ def make_scorer(spec: Any) -> DifficultyScorer:
 
 
 def bucket_by_score(scores: torch.Tensor, num_tiers: int) -> list[list[int]]:
-    """Sort indices by score (ascending) and split into ``num_tiers`` equal-size bins.
+    """Sort indices by score (ascending) and split into ``num_tiers`` near-equal bins.
 
-    Pure function over ``scores``: returns a list of index lists where tier 0
-    holds the lowest-scoring indices and tier K-1 holds the highest. The last
-    tier may be smaller when ``len(scores)`` is not divisible by ``num_tiers``.
+    Tier 0 holds the lowest-scoring indices, tier K-1 the highest. When
+    ``len(scores)`` is not divisible by ``num_tiers``, ``np.array_split``
+    spreads the remainder across the first ``n % num_tiers`` bins (sizes
+    differ by at most 1).
     """
-    n = scores.numel()
-    if n == 0:
+    if scores.numel() == 0:
         raise ValueError("bucket_by_score: empty score tensor")
     if num_tiers < 1:
         raise ValueError(f"bucket_by_score: num_tiers must be >= 1, got {num_tiers}")
-    order = torch.argsort(scores).tolist()
-    step = max(1, math.ceil(n / num_tiers))
-    return [order[i:i + step] for i in range(0, n, step)]
+    return [a.tolist() for a in np.array_split(torch.argsort(scores).numpy(), num_tiers)]
 
 
 # ---------------------------------------------------------------------------
@@ -140,8 +139,12 @@ def bucket_by_score(scores: torch.Tensor, num_tiers: int) -> list[list[int]]:
 
 
 def active_tier_count(
-    epoch: int, num_tiers: int, *,
-    start_ratio: float, end_ratio: float, max_epochs: int,
+    epoch: int,
+    num_tiers: int,
+    *,
+    start_ratio: float,
+    end_ratio: float,
+    max_epochs: int,
 ) -> int:
     """How many curriculum tiers should be active at ``epoch``.
 
@@ -167,7 +170,10 @@ def active_tier_count(
 
 
 def build_curriculum_tiers(
-    train_ds, scorer: DifficultyScorer, *, num_tiers: int = 10,
+    train_ds,
+    scorer: DifficultyScorer,
+    *,
+    num_tiers: int = 10,
 ) -> tuple[torch.Tensor, list[list[int]], list[int], list, torch.Tensor]:
     """Wire the three curriculum pieces into a single setup-time call.
 
@@ -189,9 +195,7 @@ def build_curriculum_tiers(
     if not isinstance(scores, torch.Tensor):
         scores = torch.tensor(scores, dtype=torch.float)
     if scores.numel() != len(normals):
-        raise ValueError(
-            f"scorer returned {scores.numel()} scores for {len(normals)} graphs"
-        )
+        raise ValueError(f"scorer returned {scores.numel()} scores for {len(normals)} graphs")
 
     normal_tier_indices = bucket_by_score(scores, num_tiers)
 

@@ -19,14 +19,22 @@ python -m graphids fit \
     --set model.init_args.lr=0.01
   -> __main__.py
   -> cli.training (Typer @app.command)
-  -> render(jsonnet_path, tla)
-  -> apply_overrides(rendered, --set ...)
+  -> dotted_to_nested(--set ...)               # cli/app.py
+  -> render(jsonnet_path, tla, set_overrides)  # passes overrides as ext_code
+                                               # registers paths.* native_callbacks
   -> ResolvedConfig.from_rendered(rendered)    # validates + pulls run_dir
   -> build(resolved)  ->  train(artifacts, resolved, resume_from=--ckpt-path)
 ```
 
 Every ablation preset under `configs/ablations/*.jsonnet` computes its
-own `run_dir` from `(lake_root, dataset, seed)` via `_paths.libsonnet`.
+own `run_dir` via `std.native('paths.run_dir')(dataset, group, variant,
+seed)` — `render()` registers `graphids.config.paths.run_dir` (and
+`vgae_ckpt`, `states_dir`) as jsonnet native callbacks so both
+languages share one path scheme. `run_root` flows in via
+`std.extVar('run_root')` from `GRAPHIDS_RUN_ROOT` (per-user, distinct
+from `LAKE_ROOT`). User `--set` flags apply via `std.mergePatch` at
+each preset's apex.
+
 The SLURM submitter (`python -m graphids submit`, library:
 `graphids.slurm.submit.submit()`) just forwards TLAs.
 
@@ -106,11 +114,14 @@ trainer logger (MLflow callback handles metrics).
 | File | Role | Torch? |
 |---|---|---|
 | `cli/training.py` | `fit` / `test` — renders preset, builds + runs | Lazy |
+| `cli/app.py` | Typer root + `dotted_to_nested` for `--set` | No |
 | `instantiate.py` | `build_run(rendered) -> InstantiatedRun` — importlib, filter_kwargs, callback wiring | Yes |
 | `__main__.py` | Imports `cli/` submodules to register Typer commands | Lazy |
-| `config/jsonnet.py` | `render(path, tla)` via `_jsonnet` C bindings | No |
-| `config/schemas.py` | `ValidatedConfig`, `validate_config`, `ConfigValidationError` | No |
-| `config/topology.py` | Stage-file existence check, dataset catalog, path helpers | No |
+| `config/jsonnet.py` | `render(path, tla, set_overrides)` — passes `run_root` ext_code + `paths.*` native_callbacks | No |
+| `config/paths.py` | Canonical `run_dir` / `vgae_ckpt` / `states_dir` scheme (shared with jsonnet) | No |
+| `config/settings.py` | `GraphIDSSettings` — pydantic-settings, auto-loads `./.env` | No |
+| `config/schemas.py` | `ValidatedConfig`, `validate_config` | No |
+| `config/topology.py` | Stage-file existence check, dataset catalog | No |
 | `orchestrate/config.py` | `ResolvedConfig`, `InstantiatedRun` | No |
 | `orchestrate/stage.py` | `build`, `train`, `evaluate` primitives | Yes |
 | `core/analysis/runner.py` | `run_single_analysis` — invoked by `graphids analyze` CLI | Yes |

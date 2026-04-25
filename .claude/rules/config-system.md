@@ -13,12 +13,18 @@ and dispatches artifacts via `ARTIFACTS_BY_MODEL_TYPE` in
 
 One route. `python -m graphids submit <preset.jsonnet>` (SLURM) or `python -m graphids fit` (in-process) →
 
-1. `render(config_path, tla)` from `graphids.config.jsonnet` renders the
-   merged dict. Every preset under `configs/ablations/` is a top-level
-   function that computes its own `run_dir` from `(lake_root, dataset,
-   seed)` via `configs/ablations/_paths.libsonnet`.
-2. `apply_overrides(rendered, --set ...)` applies dotted-path overrides
-   in-place on the rendered dict (`cli/app.py`).
+1. `render(config_path, tla, set_overrides)` from `graphids.config.jsonnet`
+   renders the merged dict. Every preset under `configs/ablations/` is a
+   top-level function that computes its own `run_dir` via
+   `std.native('paths.run_dir')(dataset, group, variant, seed)` —
+   registered as a Python `native_callback` pointing at
+   `graphids.config.paths.run_dir`. `run_root` flows in as
+   `std.extVar('run_root')` (set once by `render` from `RUN_ROOT`),
+   replacing the per-preset TLA default that used to drift.
+2. `--set a.b.c=v` flags pass through `cli/app.py:dotted_to_nested` →
+   `render(set_overrides=...)` → `std.extVar('overrides')` → applied
+   via `std.mergePatch` at each ablation preset's apex. One mechanism;
+   no Python in-place mutator, no jsonnet `apply_dotted` recursion.
 3. `ResolvedConfig.from_rendered(rendered, stage_name=<basename>)`
    (`orchestrate/config.py`) runs `validate_config` (Pydantic — null list
    fields, monitor consistency, class_path namespacing, logger/callback
@@ -43,10 +49,8 @@ Full tree: `docs/reference/config-architecture.md`.
 ```
 configs/
 ├── _lib/
-│   ├── defaults.libsonnet         # trainer / checkpoint / early_stopping defaults
-│   └── helpers.libsonnet          # apply_dotted() for trainer/stage overrides
+│   └── defaults.libsonnet         # trainer / checkpoint / early_stopping defaults
 ├── ablations/
-│   ├── _paths.libsonnet           # run_dir / ckpt / states_dir derivations
 │   ├── unsupervised/{vgae,gae,dgi}.jsonnet
 │   ├── fusion/{bandit,dqn,mlp,weighted_avg}.jsonnet
 │   ├── conv_type/ gat_sampling/ gat_loss/
@@ -72,7 +76,7 @@ configs/
 
 graphids/
   cli/
-    app.py                         # Typer root app + shared option types + apply_overrides
+    app.py                         # Typer root app + shared option types + dotted_to_nested
     training.py                    # fit / test commands
     analysis.py                    # analyze command
     data.py                        # rebuild-caches, extract-fusion-states
@@ -83,10 +87,12 @@ graphids/
     stage.py                       # build, train, evaluate
   config/
     __init__.py                    # public API facade
-    constants.py                   # CONFIG_DIR, PROJECT_ROOT, env var defaults
-    topology.py                    # stage-file existence check, dataset catalog, path helpers
+    constants.py                   # CONFIG_DIR, PROJECT_ROOT, LAKE_ROOT, RUN_ROOT
+    settings.py                    # GraphIDSSettings — pydantic-settings auto-loads ./.env
+    paths.py                       # run_dir / vgae_ckpt / states_dir — canonical scheme
+    topology.py                    # stage-file existence check, dataset catalog
     schemas.py                     # validate_config → ValidatedConfig (Pydantic)
-    jsonnet.py                     # render(path, tla) via _jsonnet C bindings
+    jsonnet.py                     # render(path, tla, set_overrides) — registers native_callbacks
   core/
     trainer.py                     # Trainer, TrainerConfig, seed_everything
     callbacks.py                   # CallbackBase, ModelCheckpoint, EarlyStopping, VRAMDriftCallback
@@ -122,17 +128,32 @@ matching flat flag in `graphids/cli/submit.py` and the `_build_tlas`
 helper in `graphids/slurm/submit.py`.
 
 ```jsonnet
+// Stage (configs/stages/*.jsonnet) — no overrides TLAs.
 function(
   dataset='hcrl_ch', seed=42, run_dir='',
   scale='small', conv_type='gatv2', variational=true,
   auxiliaries=[], vgae_ckpt_path=null,
-  trainer_overrides={}, stage_overrides={}, ckpt_path=null,
+  ckpt_path=null,
 )
   defaults.trainer + defaults.checkpoint + defaults.early_stopping
   + vgae.base + vgae.scales[scale]
   + { seed_everything: seed, trainer+: {...}, data: {...}, model+: {...} }
-  + helpers.apply_dotted(trainer_overrides)
-  + helpers.apply_dotted(stage_overrides)
+
+// Ablation preset (configs/ablations/**/*.jsonnet) — wraps stage in mergePatch.
+function(
+  dataset=pd.dataset, seed=pd.seed,
+  scale=pd.scale, conv_type=pd.conv_type,
+  ckpt_path=null,
+)
+  std.mergePatch(
+    stage(
+      dataset=dataset, seed=seed, scale=scale,
+      run_dir=std.native('paths.run_dir')(dataset, 'unsupervised', 'vgae', seed),
+      conv_type=conv_type, model_type='vgae', variational=true,
+      ckpt_path=ckpt_path,
+    ) + { trainer+: { max_epochs: 1200 } },  // group defaults as nested obj
+    std.extVar('overrides'),                 // user --set flags
+  )
 ```
 
 ## Merge semantics
@@ -172,24 +193,42 @@ compute-bound.
 
 ## Environment variables
 
-Infrastructure env vars use `os.environ.get()` in `config/constants.py`
-and `slurm/env.py` with `GRAPHIDS_` prefix:
+Typed in `GraphIDSSettings` (`config/settings.py`); pydantic-settings
+auto-loads `./.env` from the project root, so login-node invocations
+don't need `set -a; source ./.env`. `extra="ignore"` so shell-only
+`GRAPHIDS_*` vars in `.env` (read by `_preamble.sh` etc.) don't trip
+validation.
 
-- SLURM: `SLURM_ACCOUNT`, `SLURM_PARTITION`, `SLURM_GPU_TYPE`
-- Run metadata: `SWEEP_ID`, `USER_TAGS`, `CKPT_PATH`
+Two distinct path roots — **don't conflate**:
+
+- **`GRAPHIDS_LAKE_ROOT`** — shared lake (cross-user) for `mlflow.db`,
+  `cache/`, `mlartifacts/`, `slurm_logs/`. Read by `_mlflow.py`,
+  `_dataset_for`, `_preamble.sh`. On OSC: `/fs/ess/PAS1266/graphids`.
+- **`GRAPHIDS_RUN_ROOT`** — per-user root for run_dirs / checkpoints /
+  traces / predictions. Read by `paths.run_dir / vgae_ckpt /
+  states_dir`. On OSC: `${LAKE_ROOT}/dev/${USER}`. Both required;
+  conflating them is what produced the 2026-04-24 drift between Python
+  settings and the (now-deleted) jsonnet preset TLA defaults.
+
+Other envs: `SLURM_ACCOUNT`, `SLURM_PARTITION`, `SLURM_GPU_TYPE`,
+`SWEEP_ID`, `USER_TAGS`, `CKPT_PATH`, `GRAPHIDS_FORCE_RESUME`,
+`GRAPHIDS_ALLOW_FALLBACK_BUDGET`, `GRAPHIDS_BUDGET_SAFETY_MARGIN`,
+`GRAPHIDS_VRAM_DRIFT_THRESHOLD`.
 
 ## Path layout
 
-Every ablation preset computes its own `run_dir` via
-`configs/ablations/_paths.libsonnet`:
+Path scheme lives in **`graphids/config/paths.py`** (Python) and is
+exposed to jsonnet via `native_callbacks` in `render()` —
+`std.native('paths.run_dir')(dataset, group, variant, seed)` etc. Both
+sides call the same Python source of truth, no parallel jsonnet impl.
 
 ```
-{lake_root}/{dataset}/ablations/{group}/{variant}/seed_{N}
+{RUN_ROOT}/{dataset}/ablations/{group}/{variant}/seed_{N}
 ```
 
-`lake_root` defaults to `experimentruns` when `GRAPHIDS_LAKE_ROOT` is
-unset. Path logic lives in jsonnet next to the preset; there is no
-Python planner / identity-hash layer.
+`run_root` is required (no default — fail-fast). `slurm/dag.py`
+imports `from graphids.config import paths` and uses the same module;
+no separate `_run_dir` math.
 
 ## Observability (MLflow + OpenTelemetry)
 
@@ -198,11 +237,16 @@ timeseries + device telemetry; **OTel** owns `traces.jsonl` for the
 `training.fit` span and structured-log events.
 
 - **MLflow run lifecycle** (`graphids/_mlflow.py`): `start_training_run`
-  opens the run at fit-start (SQLite backend at `{lake_root}/mlflow.db`,
-  artifacts under `{lake_root}/mlartifacts/`), in per-axis experiment
-  `graphids/{dataset}/{group}`. **Idempotent**: status-gated resume on
-  matching `run_name` + `phase=fit` (FAILED/KILLED resume; TERMINATED →
-  new; RUNNING/FINISHED refuse unless `GRAPHIDS_FORCE_RESUME=1`; git-SHA
+  opens the run at fit-start (SQLite backend at `{LAKE_ROOT}/mlflow.db`,
+  artifacts under `{LAKE_ROOT}/mlartifacts/`), in per-axis experiment
+  `graphids/{dataset}/{group}`. **MLflow is a hard dep — failures
+  propagate** (since 2026-04-24). The only soft-failure paths are
+  `MlflowException` on resume `log_params` conflict (immutable-param
+  rule when config drifted) and `end_training_run` cleanup (logged-not-
+  raised so secondary failure can't shadow primary training exception
+  via `__context__`). **Idempotent**: status-gated resume on matching
+  `run_name` + `phase=fit` (FAILED/KILLED resume; TERMINATED → new;
+  RUNNING/FINISHED refuse unless `GRAPHIDS_FORCE_RESUME=1`; git-SHA
   change → new). Logs params, identity tags via `_build_tags`
   (identity + SLURM + git SHA + `uv.lock` hash + python version +
   upstream-teacher `run_dir`/`ckpt_path` tags for presets with upstream

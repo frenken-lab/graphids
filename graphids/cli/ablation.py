@@ -21,12 +21,25 @@ def launch_ablation_cli(
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Print commands, do not submit")
     ] = False,
+    force_refit: Annotated[
+        bool,
+        typer.Option(
+            "--force-refit",
+            help=(
+                "Re-fit even if MLflow shows a FINISHED prior run. Use after "
+                "a code change that invalidates earlier ckpts (e.g. scaler / "
+                "decoder / objective changes) — status alone doesn't carry "
+                "code-version semantics."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Submit the OFAT ablation DAG to SLURM.
 
     Topology + per-group walltime overrides live in
-    ``graphids.slurm.dag.OFAT_DAG``. Idempotent — skips any ``(variant,
-    seed)`` whose latest fit attempt is already FINISHED in MLflow.
+    ``graphids.slurm.dag.OFAT_DAG``. Idempotent by default — skips any
+    ``(variant, seed)`` whose latest fit attempt is already FINISHED in
+    MLflow. Pass ``--force-refit`` to override.
     """
     from graphids.slurm.dag import DEFAULT_SEEDS, launch_ablation
 
@@ -36,6 +49,7 @@ def launch_ablation_cli(
         seeds=seeds,
         cluster=cluster,
         dry_run=dry_run,
+        force_refit=force_refit,
     )
 
     print("", file=sys.stderr)

@@ -1,7 +1,7 @@
 """Single indirection point for tracing + structured logging.
 
-Every module imports from here, never from opentelemetry or logging directly.
-Metrics formerly routed through OTel live in MLflow now
+Every module imports from here, never from opentelemetry / structlog / logging
+directly. Metrics formerly routed through OTel live in MLflow now
 (``graphids/_mlflow.py``); this module owns only spans + log events.
 
 Consumer API:
@@ -9,6 +9,12 @@ Consumer API:
 
 Lifecycle API (called by ``cli/app.py`` and ``cli/training.py``):
     from graphids._otel import init_providers, wire_file_exporters
+
+Logging stack: call sites use ``log.info("event", key=value)``. ``structlog``'s
+``render_to_log_kwargs`` processor lifts the kwargs into stdlib's ``extra=``
+dict; the contrib ``LoggingHandler`` (replacement for the deprecated
+``opentelemetry.sdk._logs.LoggingHandler``) bridges the resulting LogRecord
+into the OTel log signal.
 """
 
 from __future__ import annotations
@@ -20,9 +26,11 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import structlog
 from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
-from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.instrumentation.logging.handler import LoggingHandler
+from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import (
     BatchLogRecordProcessor,
     ConsoleLogRecordExporter,
@@ -60,74 +68,34 @@ class _SlurmResourceDetector(ResourceDetector):
 
 
 # ---------------------------------------------------------------------------
-# Structured logging — the sole consumer API
+# Structured logging — sole consumer API
 # ---------------------------------------------------------------------------
 
-# Reserved attrs on stdlib LogRecord — user kwargs with these names would
-# collide at emit time. LogRecord reserved names as of CPython 3.12:
-_LOGRECORD_ATTRS = frozenset(
-    {
-        "args",
-        "asctime",
-        "created",
-        "exc_info",
-        "exc_text",
-        "filename",
-        "funcName",
-        "levelname",
-        "levelno",
-        "lineno",
-        "message",
-        "module",
-        "msecs",
-        "msg",
-        "name",
-        "pathname",
-        "process",
-        "processName",
-        "relativeCreated",
-        "stack_info",
-        "thread",
-        "threadName",
-    }
-)
-# Stdlib Logger._log kwargs that must pass through, not be promoted to extra:
-_PASSTHROUGH = frozenset({"exc_info", "stack_info", "stacklevel", "extra"})
 
+def get_logger(name: str) -> structlog.stdlib.BoundLogger:
+    """Return a structlog logger bridged to OTel via the contrib LoggingHandler.
 
-class _StructuredAdapter(logging.LoggerAdapter):
-    """LoggerAdapter that promotes free kwargs into ``extra=`` structured fields.
-
-    Call sites use ``log.info("event_name", key=value, ...)``; stdlib Logger
-    would reject free kwargs with TypeError. This adapter collects them into
-    the stdlib ``extra`` dict, which the OTel ``LoggingHandler`` maps to span
-    attributes. Collisions with LogRecord reserved names are prefixed ``x_``.
+    Call sites use ``log.info("event", key=value)`` — kwargs are lifted into
+    the stdlib ``extra`` dict by ``render_to_log_kwargs``, which OTel maps to
+    log-record attributes.
     """
-
-    def process(self, msg, kwargs):
-        fields: dict = {}
-        for k in list(kwargs):
-            if k in _PASSTHROUGH:
-                continue
-            v = kwargs.pop(k)
-            fields[f"x_{k}" if k in _LOGRECORD_ATTRS else k] = v
-        if fields:
-            merged = dict(kwargs.get("extra") or {})
-            merged.update(fields)
-            kwargs["extra"] = merged
-        return msg, kwargs
+    return structlog.get_logger(name)
 
 
-StructuredLogger = logging.LoggerAdapter
-
-
-def get_logger(name: str) -> StructuredLogger:
-    """Return a structured logger bridged to OTel via LoggingHandler.
-
-    Supports ``log.info("event", key=value)`` — free kwargs are promoted to
-    the stdlib ``extra`` dict, which OTel maps to span attributes.
-    """
-    return _StructuredAdapter(logging.getLogger(name), {})
+def _configure_structlog() -> None:
+    """Idempotent — structlog.configure is itself idempotent on repeat calls."""
+    structlog.configure(
+        processors=[
+            structlog.stdlib.add_log_level,
+            structlog.stdlib.add_logger_name,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.format_exc_info,
+            structlog.stdlib.render_to_log_kwargs,
+        ],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +158,8 @@ def init_providers(
     lp.add_log_record_processor(BatchLogRecordProcessor(ConsoleLogRecordExporter(out=sys.stderr)))
     set_logger_provider(lp)
     logging.getLogger("graphids").addHandler(LoggingHandler(logger_provider=lp))
+
+    _configure_structlog()
 
     atexit.register(lambda: (tp.shutdown(), lp.shutdown()))
 

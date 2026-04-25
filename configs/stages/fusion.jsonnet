@@ -5,7 +5,6 @@
 // fusion.base, applied after defaults so the base block wins.
 
 local defaults = import '../_lib/defaults.libsonnet';
-local helpers = import '../_lib/helpers.libsonnet';
 local fusion = import '../models/fusion.libsonnet';
 local pd = (import '../matrix/axes.json').pipeline_defaults;
 
@@ -17,8 +16,6 @@ function(
   fusion_method=pd.fusion_method,
   scale=pd.scale,
 
-  trainer_overrides={},
-  stage_overrides={},
   ckpt_path=null,
 )
 
@@ -43,6 +40,3 @@ function(
       },
     },
   } + (if ckpt_path != null then { ckpt_path: ckpt_path } else {})
-
-  + helpers.apply_dotted(trainer_overrides)
-  + helpers.apply_dotted(stage_overrides)

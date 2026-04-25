@@ -4,7 +4,6 @@
 data/
   __init__.py              # Public API: CANBusDataset, GraphDataModule, FusionDataModule
   graph_pipeline.py        # Domain-agnostic: sliding window -> PyG graphs (10-step pipeline)
-  io.py                    # NFS-safe primitives: atomic_save, nfs_lock, vocab_from_column
   sampler.py               # NodeBudgetBatchSampler, PrefetchLoader
   budget.py                # GPU memory budget computation for dynamic batching
   cache.py                 # Preprocessed cache management

@@ -1,14 +1,16 @@
 # GraphIDS Data Layout — Where Things Go and Why
 
-Two write roots: the **lake** (cross-run catalog) and the **run_dir** (per-run
-filesystem tree). Knowing which is which and what lives in each is the main
-thing to get right before touching anything in `graphids/_mlflow.py`,
-`graphids/orchestrate/stage.py`, or `graphids/core/callbacks.py`.
+**Three roots — keep them straight.** `LAKE_ROOT` (shared, cross-user)
+holds metadata + caches that everyone reads. `RUN_ROOT` (per-user) holds
+this user's experiment writes. `run_dir` is the per-(variant,seed) leaf
+under `RUN_ROOT`. Conflating `LAKE_ROOT` and `RUN_ROOT` is what produced
+the 2026-04-24 drift between Python settings and the (now-deleted)
+jsonnet TLA defaults — that bug is impossible by construction now.
 
 ## The tree
 
 ```
-{LAKE_ROOT}/                                  # /fs/ess/PAS1266/graphids/dev/rf15 in prod
+{LAKE_ROOT}/                                  # /fs/ess/PAS1266/graphids in prod (shared, all PAS1266 users)
 ├── mlflow.db                                 # MLflow SQLite backend — SOURCE OF TRUTH for:
 │                                             #   run identity + timestamps, params (flattened
 │                                             #   resolved.json), per-epoch scalar metrics
@@ -19,8 +21,11 @@ thing to get right before touching anything in `graphids/_mlflow.py`,
 │                                             #   experiment but graphids keeps ckpts on the
 │                                             #   filesystem (see below). Do NOT call
 │                                             #   mlflow.log_artifact / mlflow.pytorch.log_model.
-│
-└── {dataset}/ablations/{group}/{variant}/seed_{N}/    # run_dir (jsonnet _paths.libsonnet)
+├── cache/v{ver}/{dataset}/                   # Preprocessed graph caches (shared).
+└── slurm_logs/                               # SLURM stdout/stderr (shared).
+
+{RUN_ROOT}/                                   # /fs/ess/PAS1266/graphids/dev/${USER} in prod (per-user)
+└── {dataset}/ablations/{group}/{variant}/seed_{N}/    # run_dir — paths.run_dir() in graphids/config/paths.py
     ├── checkpoints/
     │   ├── best_model.ckpt                   # ModelCheckpoint via _fs.atomic_save
     │   ├── best_model.ckpt.sha256            # integrity sidecar — VERIFIED on load by
@@ -79,8 +84,9 @@ thing to get right before touching anything in `graphids/_mlflow.py`,
    `trainer.fit`; `MLflowTrainingCallback.on_fit_end` closes it. If you read
    the callback in isolation you won't see where the run came from.
 
-4. **`{run_dir}/artifacts/` ≠ `{lake_root}/mlartifacts/`.** First is analyzer
-   output. Second is MLflow's declared-but-unused artifact root. Don't confuse.
+4. **`{run_dir}/artifacts/` ≠ `{LAKE_ROOT}/mlartifacts/`.** First is analyzer
+   output (per-user, under `RUN_ROOT`). Second is MLflow's declared-but-unused
+   artifact root (shared). Don't confuse.
 
 5. **Query path is MLflow, not OTel.** `traces.jsonl` is for single-run
    debugging; don't build cross-run analysis on it. Use `mlflow.search_runs`
@@ -112,3 +118,5 @@ thing to get right before touching anything in `graphids/_mlflow.py`,
 - Re-opening the fit-phase MLflow run in `evaluate` to append test metrics — rejected; separate rows share `run_name` and are distinguished by `graphids.phase`
 - Hand-composing `search_runs` `filter_string=` — use `build_search_filter(...)` so old + new layout, phase gating, and cluster tag selection stay consistent
 - Reading `active_run().data.tags` immediately after `set_tags` — it's a snapshot at `start_run` time, stale for post-start writes. Re-fetch via `MlflowClient().get_run(run_id)` when inspecting just-set tags
+- Treating `LAKE_ROOT` and `RUN_ROOT` as the same path — they're not, on OSC `RUN_ROOT = ${LAKE_ROOT}/dev/${USER}` but each is its own env var
+- Wrapping every MLflow call in `try/except Exception` — MLflow is a hard dep, failures propagate. The only legitimate soft-failures are documented in `_mlflow.py` module docstring

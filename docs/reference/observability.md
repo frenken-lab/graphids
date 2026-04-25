@@ -15,7 +15,7 @@ Two stores: **MLflow** for run-level metadata + scalar metrics timeseries + devi
 - `BatchSpanProcessor` -> `ConsoleSpanExporter(out=run_dir/traces.jsonl)` — the `training.fit` span + structured-log events
 
 **Phase C** (at fit-start — `graphids/_mlflow.py::start_training_run`, called from `orchestrate/stage.py::train`):
-- Opens MLflow run in per-axis experiment `graphids/{dataset}/{group}` (SQLite backend at `{lake_root}/mlflow.db`). **Idempotent**: search_runs by `run_name` + phase=fit; FAILED/KILLED → resume same `run_id`; TERMINATED → new (reaper owns); RUNNING/FINISHED → refuse unless `GRAPHIDS_FORCE_RESUME=1`; git-SHA change → new run (option b: don't mix commits in one row).
+- Opens MLflow run in per-axis experiment `graphids/{dataset}/{group}` (SQLite backend at `{LAKE_ROOT}/mlflow.db` — shared, distinct from per-user `RUN_ROOT`). **MLflow is a hard dep** (since 2026-04-24); failures propagate. Only soft-failure paths are documented in `_mlflow.py` module docstring. **Idempotent**: search_runs by `run_name` + phase=fit; FAILED/KILLED → resume same `run_id`; TERMINATED → new (reaper owns); RUNNING/FINISHED → refuse unless `GRAPHIDS_FORCE_RESUME=1`; git-SHA change → new run (option b: don't mix commits in one row).
 - Logs params (via `_flatten_params`), tags (via `_build_tags`: identity + SLURM + git SHA + `uv.lock` hash + python version + checkpoint hash + upstream-teacher `run_dir`/`ckpt_path` for curriculum_vgae / fusion).
 - `mlflow.log_input(MetaDataset(...), context="train")` — first-class dataset entity with digest of `cache_metadata.json`; visible under "Used Datasets" in UI, filterable via `dataset.digest = '...'` in search_runs.
 - Enables MLflow system-metrics sampler (background thread, 5s interval) — GPU util, VRAM, CPU, memory, disk, network.
@@ -50,7 +50,7 @@ Device telemetry is captured by MLflow's background system-metrics thread while 
 
 ## Storage layers
 
-- **MLflow run store** (`{lake_root}/mlflow.db` + `mlartifacts/`) — authoritative
+- **MLflow run store** (`{LAKE_ROOT}/mlflow.db` + `mlartifacts/`) — authoritative
   for run metadata, params, per-epoch scalar metrics, and device telemetry.
   One fit-phase row (opened at fit-start, closed at fit-end) + one test-phase
   row (post-hoc sink in `stage.evaluate`), both sharing `run_name =

@@ -24,16 +24,19 @@ def _prepare(
     tla: list[Any] | None,
     overrides: list[Any] | None,
 ) -> tuple[ResolvedConfig, object]:
-    """Shared prelude: render → apply_overrides → resolve → wire OTel → build.
+    """Shared prelude: render → resolve → wire OTel → build.
 
-    Returns ``(resolved, artifacts)``. Heavy imports live inside the
-    function so the app stays login-node-safe.
+    Returns ``(resolved, artifacts)``. ``--set`` overrides flow into render
+    as ``std.extVar('overrides')`` and are applied by ``std.mergePatch`` at
+    each ablation preset's apex (one mechanism, replaces the prior in-place
+    Python mutator + jsonnet ``apply_dotted`` pair). Heavy imports live
+    inside the function so the app stays login-node-safe.
     """
     from graphids._cpu import configure_cpu_threads
     from graphids._mlflow import ensure_tracking_uri
     from graphids._otel import init_providers, wire_file_exporters
     from graphids._spawn import ensure_spawn
-    from graphids.cli.app import apply_overrides
+    from graphids.cli.app import dotted_to_nested
     from graphids.config.jsonnet import render
     from graphids.orchestrate import build
 
@@ -49,8 +52,11 @@ def _prepare(
     configure_cpu_threads()
     ensure_tracking_uri()
 
-    rendered = render(config, tla=dict(tla or []) or None)
-    apply_overrides(rendered, overrides)
+    rendered = render(
+        config,
+        tla=dict(tla or []) or None,
+        set_overrides=dotted_to_nested(overrides),
+    )
     resolved = ResolvedConfig.from_rendered(rendered, stage_name=config.stem)
     if resolved.run_dir is not None:
         wire_file_exporters(resolved.run_dir)

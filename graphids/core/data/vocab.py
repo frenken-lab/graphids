@@ -18,12 +18,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import tempfile
 from pathlib import Path
 from typing import Any
 
 import polars as pl
+
+from graphids._fs import atomic_write_text
 
 UNK_INDEX = 0
 
@@ -77,24 +77,13 @@ def vocab_digest(vocab: dict[Any, int]) -> str:
 def persist_vocab(vocab: dict[Any, int], path: Path | str) -> str:
     """Atomically write vocab as JSON under ``path``; return its digest."""
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     digest = vocab_digest(vocab)
     payload = {
         "digest": digest,
         "unk_index": UNK_INDEX,
         "entries": {str(k): v for k, v in vocab.items()},
     }
-    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(payload, f, indent=2, sort_keys=True)
-            f.flush()
-            os.fsync(f.fileno())
-        os.rename(tmp, path)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
+    atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True))
     return digest
 
 

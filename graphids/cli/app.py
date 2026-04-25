@@ -134,14 +134,18 @@ def _complete_dataset(incomplete: str) -> list[str]:
     return [n for n in dataset_names() if n.startswith(incomplete)]
 
 
-def apply_overrides(
-    rendered: dict[str, Any],
-    overrides: list[tuple[str, Any]] | None,
-) -> None:
-    """Apply pre-parsed ``dotted.path=value`` overrides in-place on a rendered dict."""
+def dotted_to_nested(overrides: list[tuple[str, Any]] | None) -> dict[str, Any]:
+    """Expand ``[(dotted.path, value), ...]`` into a nested dict.
+
+    Output is fed to ``render(set_pairs=...)`` which passes it as the
+    ``overrides`` ``std.extVar`` consumed by every ablation preset's
+    ``std.mergePatch(...)`` apex. Single entry point for ``--set`` flag
+    handling — replaces the prior in-place ``apply_overrides`` mutator.
+    """
+    out: dict[str, Any] = {}
     for key, typed_val in overrides or []:
         parts = key.split(".")
-        cur: Any = rendered
+        cur = out
         for part in parts[:-1]:
             nxt = cur.get(part)
             if not isinstance(nxt, dict):
@@ -149,3 +153,4 @@ def apply_overrides(
                 cur[part] = nxt
             cur = nxt
         cur[parts[-1]] = typed_val
+    return out

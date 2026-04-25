@@ -41,7 +41,7 @@ class TestVGAEConvTypes:
         model, _ = model_and_conv
         batch = make_batch(3)
         n = batch.x.size(0)
-        cont, canid, nbr, z, kl, mask = model(
+        cont, canid, nbr, z, kl = model(
             batch.x,
             batch.edge_index,
             batch.batch,
@@ -56,7 +56,7 @@ class TestVGAEConvTypes:
     def test_gradient_flow(self, model_and_conv):
         model, conv_type = model_and_conv
         batch = make_batch(2)
-        cont, canid, nbr, _, kl, _ = model(
+        cont, canid, nbr, _, kl = model(
             batch.x,
             batch.edge_index,
             batch.batch,

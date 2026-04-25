@@ -32,8 +32,8 @@ Custom `_FastCollate` was 1.6x slower than warm `Batch.from_data_list()` over fu
 **0009 — Collapse override handoff chain.** *(superseded 2026-04-15: the remaining two-step handoff (`ResolvedConfig.resolve → instantiate`) collapsed to one: `ResolvedConfig.from_rendered → build_run`.)*
 Original context: a 9-step handoff stringified override dicts across process boundaries, with validation only inside the SLURM job. Collapsed iteratively; the final path is `render → apply_overrides → ResolvedConfig.from_rendered → build_run`.
 
-**0010 — Use go-jsonnet binary, not the jsonnet PyPI package.**
-go-jsonnet is 10-100x faster than libjsonnet, requires no C++ compile step on OSC, and installs as a single static binary to `~/.local/bin/jsonnet`. Python access via `subprocess.run` in `graphids/config/jsonnet.py` (~5ms per render, not a hot path).
+**0010 — Use the `jsonnet` PyPI package (libjsonnet C bindings), declared in `pyproject.toml`.** *(reversed 2026-04-24: original ADR mandated the go-jsonnet binary at `~/.local/bin/jsonnet` via `subprocess.run`. In practice `graphids/config/jsonnet.py` has been calling `import _jsonnet` for months; the binding survived in the venv as an undeclared install until commit `8e14e06`'s `uv sync` pruned it, crashing 4 fusion fits on Cardinal seed 42 with `ModuleNotFoundError`.)*
+The hand-installed binary at `~/.local/bin/jsonnet` is filesystem state outside the lockfile — fragile across machines, fresh checkouts, and home-dir cleanup. The PyPI package ships manylinux2014 cp312 wheels (`jsonnet==0.22.0`, no compile on install), is pinned in `uv.lock`, and survives `uv sync`. Render is ~5 ms per call; the 10–100x perf claim of go-jsonnet is irrelevant at our render volume.
 
 ## Library Evaluations (don't re-investigate)
 

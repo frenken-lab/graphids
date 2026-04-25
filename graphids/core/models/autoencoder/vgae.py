@@ -186,16 +186,22 @@ class GraphAutoencoderNeighborhood(nn.Module):
                     training=self.training,
                     use_checkpointing=self.use_checkpointing,
                 )
-            else:  # Last decoder layer — sigmoid constrains output to [0,1]
-                x = torch.sigmoid(
-                    conv_forward(
-                        conv,
-                        x,
-                        edge_index,
-                        edge_attr,
-                        activation=None,
-                        use_checkpointing=self.use_checkpointing,
-                    )
+            else:
+                # Last decoder layer — linear (no terminal nonlinearity).
+                # Inputs are z-score standardized to N(0,1), so output range
+                # must include negatives + values >1; the previous sigmoid
+                # wrapped this conv and clamped output to [0,1], producing
+                # a structural reconstruction floor on every feature value
+                # outside that range regardless of benign/attack semantics.
+                # Matches AnomalyDAE / DOMINANT / GAD-NR convention for
+                # arbitrary-valued attribute decoders.
+                x = conv_forward(
+                    conv,
+                    x,
+                    edge_index,
+                    edge_attr,
+                    activation=None,
+                    use_checkpointing=self.use_checkpointing,
                 )
         cont_out = x  # shape: [num_nodes, in_channels]
         canid_logits = self.canid_classifier(z)
@@ -275,36 +281,12 @@ class GraphAutoencoderNeighborhood(nn.Module):
             variational=getattr(cfg, "variational", True),
         )
 
-    def forward(self, x, edge_index, batch, edge_attr=None, mask_ratio: float = 0.0, node_id=None):
-        """Forward pass through the GraphAutoencoderNeighborhood.
-
-        Args:
-            x: Continuous node features [num_nodes, in_channels].
-            edge_index: Edge indices [2, num_edges].
-            batch: Batch assignment vector.
-            edge_attr: Optional edge features for TransformerConv/GATv2Conv.
-            mask_ratio: Fraction of features to mask during training
-                (GraphMAE-style). Masked features are zeroed before encoding;
-                the returned mask indicates which (node, feature) positions
-                were masked for selective reconstruction loss. Set to 0.0 to
-                disable (inference, or legacy behavior).
-            node_id: Global CAN ID indices [num_nodes] for embedding lookup.
-
-        Returns:
-            tuple: (cont_out, canid_logits, neighbor_logits, z, kl_loss, mask).
-            mask is a bool tensor [num_nodes, in_channels] or None if mask_ratio=0.
-        """
-        mask = None
-        if mask_ratio > 0.0 and self.training:
-            mask = torch.rand_like(x) < mask_ratio
-            x = x.clone()
-            x[mask] = 0.0
-
+    def forward(self, x, edge_index, batch, edge_attr=None, node_id=None):
         ea = edge_attr if self._uses_edge_attr else None
         z, kl_loss = self.encode(x, edge_index, edge_attr=ea, batch=batch, node_id=node_id)
         cont_out, canid_logits = self.decode_node(z, edge_index, edge_attr=ea, batch=batch)
         neighbor_logits = self.neighborhood_decoder(z)
-        return cont_out, canid_logits, neighbor_logits, z, kl_loss, mask
+        return cont_out, canid_logits, neighbor_logits, z, kl_loss
 
     @torch.no_grad()
     def score_difficulty(
@@ -329,7 +311,7 @@ class GraphAutoencoderNeighborhood(nn.Module):
             for batch in PyGDataLoader(graphs, batch_size=batch_size):
                 batch = batch.clone().to(device, non_blocking=True)
                 edge_attr = getattr(batch, "edge_attr", None)
-                cont, canid_logits, _, _, _, _ = self(
+                cont, canid_logits, _, _, _ = self(
                     batch.x,
                     batch.edge_index,
                     batch.batch,

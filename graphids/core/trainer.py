@@ -262,7 +262,7 @@ class Trainer:
         calibrate = getattr(model, "calibrate_svdd_center", None)
         if calibrate is not None:
             datamodule.setup("fit")
-            calibrate(datamodule.train_dataloader(), self._device)
+            calibrate(datamodule.train_eval_dataloader(), self._device)
 
         test_loaders = datamodule.test_dataloader()
         if not isinstance(test_loaders, list):

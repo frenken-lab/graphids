@@ -22,7 +22,7 @@ DATASET_REGISTRY_PATH: Path = CONFIG_DIR / "datasets" / "dataset_registry.json"
 # Filename / subpath literals
 # ---------------------------------------------------------------------------
 
-PREPROCESSING_VERSION: str = "9.0.0"
+PREPROCESSING_VERSION: str = "10.0.0"
 CKPT_SUBPATH: str = "checkpoints/best_model.ckpt"
 LAST_CKPT_SUBPATH: str = "checkpoints/last.ckpt"
 PHASE_MARKERS: dict[str, str] = {
@@ -52,9 +52,10 @@ assert set(get_args(ModelType)) == _axes_types, (
 )
 
 # ---------------------------------------------------------------------------
-# LAKE_ROOT alias (source of truth: graphids.config.settings)
+# Path-root aliases (source of truth: graphids.config.settings)
 # ---------------------------------------------------------------------------
 
 from graphids.config.settings import get_settings  # noqa: E402
 
 LAKE_ROOT: str = get_settings().lake_root
+RUN_ROOT: str = get_settings().run_root

@@ -169,10 +169,10 @@ class FeatureDistillation(nn.Module):
     def forward(self, student_outputs: tuple, batch) -> torch.Tensor:
         task = self.base_loss(student_outputs, batch)
 
-        cont_out, _canid, _nbr, z, _kl, _mask = student_outputs
+        cont_out, _canid, _nbr, z, _kl = student_outputs
         edge_attr = getattr(batch, "edge_attr", None)
 
-        t_cont, _, _, t_z, _, _ = _run_teacher_on(
+        t_cont, _, _, t_z, _ = _run_teacher_on(
             batch.x.device,
             self.teacher,
             batch.x,

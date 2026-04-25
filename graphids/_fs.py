@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +55,29 @@ def atomic_save(obj: Any, path: Path) -> None:
         os.close(fd)
     tmp.rename(path)
     path.with_suffix(path.suffix + ".sha256").write_text(_sha256_file(path) + "\n")
+    _fsync_dir(path.parent)
+
+
+def atomic_write_text(path: Path, content: str) -> None:
+    """Write ``content`` to ``path`` atomically (tempfile + fsync + rename).
+
+    NFS-safe: the temp file is fsynced before rename, and the parent dir
+    is fsynced after rename so other clients see the new file without
+    waiting for attribute-cache expiry. Use for JSON / other text payloads;
+    ``atomic_save`` is the torch-binary equivalent.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.rename(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
     _fsync_dir(path.parent)
 
 
