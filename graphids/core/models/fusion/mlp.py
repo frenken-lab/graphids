@@ -22,11 +22,9 @@ class MLPFusionModule(FusionModuleBase):
         lr: float = 0.001,
     ):
         super().__init__()
-        # state_dim is also set by the base, but we re-declare it here so
-        # the subclass signature remains the authoritative list of hparams.
-        self.state_dim = state_dim
-        self.hidden_dims = hidden_dims
-        self.lr = lr
+        # state_dim is also set by the base, but we re-declare it in the
+        # subclass signature so it's the authoritative list of hparams.
+        self._store_init_kwargs(locals())
 
         layers: list[nn.Module] = []
         in_dim = state_dim

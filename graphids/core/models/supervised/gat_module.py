@@ -59,31 +59,9 @@ class GATModule(GraphModuleBase):
         num_classes: int = 2,
     ):
         super().__init__()
-        if pool_aggrs is None:
-            pool_aggrs = ["mean"]
-        self.hidden = hidden
-        self.layers = layers
-        self.heads = heads
-        self.dropout = dropout
-        self.fc_layers = fc_layers
-        self.embedding_dim = embedding_dim
-        self.conv_type = conv_type
-        self.edge_dim = edge_dim
-        self.pool_aggrs = pool_aggrs
-        self.proj_dim = proj_dim
-        self.gradient_checkpointing = gradient_checkpointing
-        self.compile_model = compile_model
-        self.scale = scale
-        self.model_type = model_type
-        self.dataset = dataset
-        self.seed = seed
-        self.variational = variational
-        self.num_ids = num_ids
-        self.id_encoder_class_path = id_encoder_class_path
-        self.id_encoder_kwargs = id_encoder_kwargs or {}
-        self.in_channels = in_channels
-        self.num_classes = num_classes
-        self.loss_fn = loss_fn
+        self._store_init_kwargs(locals())
+        self.pool_aggrs = self.pool_aggrs or ["mean"]
+        self.id_encoder_kwargs = self.id_encoder_kwargs or {}
         self.model = None
         self.test_metrics = classification_test_metrics(num_classes)
         if num_ids > 0:

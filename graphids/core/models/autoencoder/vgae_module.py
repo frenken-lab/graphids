@@ -73,32 +73,8 @@ class VGAEModule(GraphModuleBase):
         num_classes: int = 2,
     ):
         super().__init__()
-        self.conv_type = conv_type
-        self.hidden_dims = hidden_dims
-        self.latent_dim = latent_dim
-        self.heads = heads
-        self.embedding_dim = embedding_dim
-        self.dropout = dropout
-        self.edge_dim = edge_dim
-        self.proj_dim = proj_dim
-        self.variational = variational
-        self.id_encoder_class_path = id_encoder_class_path
-        self.id_encoder_kwargs = id_encoder_kwargs or {}
-        self.lr = lr
-        self.weight_decay = weight_decay
-        self.gradient_checkpointing = gradient_checkpointing
-        self.compile_model = compile_model
-        self.score_recon_weight = score_recon_weight
-        self.score_canid_weight = score_canid_weight
-        self.score_nbr_weight = score_nbr_weight
-        self.scale = scale
-        self.model_type = model_type
-        self.dataset = dataset
-        self.seed = seed
-        self.num_ids = num_ids
-        self.in_channels = in_channels
-        self.num_classes = num_classes
-        self.loss_fn = loss_fn
+        self._store_init_kwargs(locals())
+        self.id_encoder_kwargs = self.id_encoder_kwargs or {}
         self._init_threshold_metrics()
         self.model = None
         self.test_metrics = binary_test_metrics()

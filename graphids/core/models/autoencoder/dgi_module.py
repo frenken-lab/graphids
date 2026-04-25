@@ -56,25 +56,8 @@ class DGIModule(GraphModuleBase):
         num_classes: int = 2,
     ):
         super().__init__()
-        self.conv_type = conv_type
-        self.hidden_dims = hidden_dims
-        self.latent_dim = latent_dim
-        self.heads = heads
-        self.embedding_dim = embedding_dim
-        self.dropout = dropout
-        self.edge_dim = edge_dim
-        self.proj_dim = proj_dim
-        self.gradient_checkpointing = gradient_checkpointing
-        self.compile_model = compile_model
-        self.scale = scale
-        self.model_type = model_type
-        self.dataset = dataset
-        self.seed = seed
-        self.num_ids = num_ids
-        self.in_channels = in_channels
-        self.num_classes = num_classes
-        self.id_encoder_class_path = id_encoder_class_path
-        self.id_encoder_kwargs = id_encoder_kwargs or {}
+        self._store_init_kwargs(locals())
+        self.id_encoder_kwargs = self.id_encoder_kwargs or {}
         self.model = None
         self._init_threshold_metrics()
         self.test_metrics = binary_test_metrics()

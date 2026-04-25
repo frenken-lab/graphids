@@ -243,6 +243,12 @@ class FusionModuleBase(nn.Module):
             ns[name] = val
         return SimpleNamespace(**ns)
 
+    def _store_init_kwargs(self, locals_dict: dict) -> None:
+        """See ``GraphModuleBase._store_init_kwargs`` — same contract."""
+        from ..base import store_init_kwargs
+
+        store_init_kwargs(self, locals_dict)
+
     def __init__(
         self,
         *,
@@ -257,12 +263,7 @@ class FusionModuleBase(nn.Module):
         self._metric_acc = MetricAccumulator()
         # Non-persistent buffer that tracks device through .to()/.cuda()/.cpu()
         self.register_buffer("_device_tracker", torch.empty(0), persistent=False)
-        self.state_dim = state_dim
-        self.alpha_steps = alpha_steps
-        self.batch_size = batch_size
-        self.buffer_size = buffer_size
-        self.decision_threshold = decision_threshold
-        self.reward_kwargs = reward_kwargs
+        self._store_init_kwargs(locals())
 
         self.register_buffer("alpha_values", torch.linspace(0, 1, alpha_steps))
 

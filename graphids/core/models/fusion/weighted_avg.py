@@ -25,7 +25,7 @@ class WeightedAvgModule(FusionModuleBase):
         decision_threshold: float = 0.5,
     ):
         super().__init__(decision_threshold=decision_threshold)
-        self.lr = lr
+        self._store_init_kwargs(locals())
         self.weight = nn.Parameter(torch.zeros(1))
         self.loss_fn = nn.BCELoss()
 

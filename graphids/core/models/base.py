@@ -34,6 +34,32 @@ _log = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Init-kwarg storage helper — shared by GraphModuleBase + FusionModuleBase
+# ---------------------------------------------------------------------------
+
+
+def store_init_kwargs(obj: nn.Module, locals_dict: dict) -> None:
+    """Mirror every ``__init__`` kwarg from ``locals()`` onto ``obj``.
+
+    Replaces the per-subclass ``self.X = X`` setattr block. Pair with the
+    inspect-driven ``hparams`` property which reads the same signature
+    back. Call from the subclass ``__init__`` immediately after
+    ``super().__init__()``; computed defaults (e.g.
+    ``self.id_encoder_kwargs = self.id_encoder_kwargs or {}``) and derived
+    attrs (``self.model = None``, ``test_metrics``, ``_build()``) stay
+    explicit afterward.
+    """
+    import inspect
+
+    sig = inspect.signature(type(obj).__init__)
+    for name in sig.parameters:
+        if name == "self":
+            continue
+        if name in locals_dict:
+            setattr(obj, name, locals_dict[name])
+
+
+# ---------------------------------------------------------------------------
 # torch.compile helper
 # ---------------------------------------------------------------------------
 
@@ -137,6 +163,10 @@ class GraphModuleBase(nn.Module):
         # Non-persistent buffer that tracks device through .to()/.cuda()/.cpu()
         # — robust even for parameter-free modules (HF Transformers pattern).
         self.register_buffer("_device_tracker", torch.empty(0), persistent=False)
+
+    def _store_init_kwargs(self, locals_dict: dict) -> None:
+        """See :func:`store_init_kwargs`."""
+        store_init_kwargs(self, locals_dict)
 
     @property
     def device(self) -> torch.device:
