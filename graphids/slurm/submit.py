@@ -26,6 +26,7 @@ submitit's ``srun python -u -m submitit.core._submit``.
 from __future__ import annotations
 
 import json
+import math
 import os
 import shlex
 import sys
@@ -42,7 +43,33 @@ _PROFILES: dict[str, Any] = json.loads(
 )
 _PREAMBLE_SH = _PROJECT_ROOT / "scripts" / "slurm" / "_preamble.sh"
 
+# Cluster memory-per-cpu policy (GB/core). When the requested ``mem_gb``
+# exceeds ``cpus_per_task * mem_per_cpu_gb``, SLURM auto-bumps allocated
+# CPUs to satisfy the ratio. Slurm 25.05+ then aborts ``srun`` with
+# ``SLURM_CPUS_PER_TASK`` (allocation) ≠ ``SLURM_TRES_PER_TASK`` (directive).
+# Pre-computing ``cpus_per_task`` from ``mem_gb`` keeps directive and
+# allocation consistent — no auto-bump, no divergence. Values are
+# conservative lower bounds: over-provisioning is harmless, under-estimating
+# the ratio re-triggers the bump.
+CLUSTER_MEM_PER_CPU_GB: dict[str, int] = {
+    "pitzer": 4,
+    "cardinal": 4,
+    "ascend": 4,
+}
+
 DRY_RUN_JID: int = 0
+
+
+def _align_cpus_to_mem(params: dict[str, Any], cluster: str) -> None:
+    """Bump ``cpus_per_task`` so SLURM doesn't have to. Mutates in place.
+
+    The profile's ``cpus_per_task`` becomes the floor (parallelism need);
+    ``ceil(mem_gb / mem_per_cpu)`` is the SLURM-policy minimum. Take the max.
+    """
+    ratio = CLUSTER_MEM_PER_CPU_GB[cluster]
+    floor = int(params.get("cpus_per_task", 1))
+    mem_gb = int(params["mem_gb"])
+    params["cpus_per_task"] = max(floor, math.ceil(mem_gb / ratio))
 
 
 def load_dotenv(path: Path) -> None:
@@ -170,6 +197,7 @@ def submit(  # noqa: PLR0913 — every flag is a real public surface
             mins = estimate_walltime_minutes(cluster, preset.parent.name, dataset)
             if mins:
                 params["timeout_min"] = mins
+    _align_cpus_to_mem(params, cluster)
 
     # --- Build the work unit -----------------------------------------------
     import submitit
