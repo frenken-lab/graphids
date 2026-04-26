@@ -92,16 +92,11 @@ class DagResult:
 # a free standalone fit.
 
 OFAT_DAG: tuple[DagNode, ...] = (
-    # Stage 0 — unsupervised baselines (VGAE jid needed downstream).
+    # Stage 0 — VGAE baseline (jid needed downstream by curriculum_vgae + extract_states).
     FitNode(
         "vgae", "unsupervised/vgae.jsonnet", "unsupervised", "vgae", timeout_min=LONG_TIMEOUT_MIN
     ),
-    FitNode("gae", "unsupervised/gae.jsonnet", "unsupervised", "gae", timeout_min=LONG_TIMEOUT_MIN),
-    FitNode("dgi", "unsupervised/dgi.jsonnet", "unsupervised", "dgi", timeout_min=LONG_TIMEOUT_MIN),
     # Stage 1 — standalone parallel variants.
-    FitNode("gat", "conv_type/gat.jsonnet", "conv_type", "gat"),
-    FitNode("gatv2", "conv_type/gatv2.jsonnet", "conv_type", "gatv2"),
-    FitNode("gps", "conv_type/gps.jsonnet", "conv_type", "gps"),
     FitNode("none", "gat_sampling/none.jsonnet", "gat_sampling", "none"),
     FitNode(
         "curriculum_random",

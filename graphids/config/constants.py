@@ -36,7 +36,7 @@ PHASE_MARKERS: dict[str, str] = {
 # falls out of sync with axes.json's model_types_by_family (excluding fusion).
 # ---------------------------------------------------------------------------
 
-ModelType = Literal["vgae", "dgi", "gat"]
+ModelType = Literal["vgae", "gat"]
 
 _axes_types = frozenset(
     t

@@ -13,7 +13,7 @@
     "scales": ["small", "large"],
     "model_families": ["unsupervised", "supervised", "fusion"],
     "model_types_by_family": {
-      "unsupervised": ["vgae", "dgi"],
+      "unsupervised": ["vgae"],
       "supervised": ["gat"],
       "fusion": ["bandit", "dqn", "mlp", "weighted_avg"]
     },

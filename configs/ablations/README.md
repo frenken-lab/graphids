@@ -8,10 +8,10 @@ work unchanged.
 
 | Group | Stage | Locked axis | Files |
 |---|---|---|---|
-| `conv_type/` | supervised | `conv_type` | gat, gatv2, gps |
-| `unsupervised/` | autoencoder | `model_type` × `variational` | vgae, gae, dgi |
+| `unsupervised/` | autoencoder | (baseline only) | vgae |
 | `gat_sampling/` | supervised | `sampler` + scorer class | none, curriculum_random, curriculum_vgae |
 | `gat_loss/` | supervised | `loss_fn` | ce, focal, weighted_ce |
+| `id_encoding/` | supervised | `id_encoder` | lookup, learned_unk, hash |
 | `fusion/` | fusion | `fusion_method` | bandit, dqn, mlp, weighted_avg |
 
 ## Running
@@ -20,7 +20,7 @@ Preferred launch — `python -m graphids submit` builds TLAs from real flags:
 
 ```bash
 # single ablation cell (preset defaults handle dataset/seed/scale)
-python -m graphids submit configs/ablations/conv_type/gps.jsonnet
+python -m graphids submit configs/ablations/gat_loss/focal.jsonnet
 
 # dataset + seed override
 python -m graphids submit configs/ablations/gat_loss/focal.jsonnet --dataset hcrl_sa --seed 123
@@ -40,7 +40,7 @@ python -m graphids submit configs/ablations/unsupervised/vgae.jsonnet --smoke --
 Non-SLURM (login-node smoke only) — direct CLI still works:
 
 ```bash
-python -m graphids fit --config configs/ablations/conv_type/gps.jsonnet
+python -m graphids fit --config configs/ablations/gat_loss/focal.jsonnet
 ```
 
 ## Conventions
@@ -66,27 +66,26 @@ via `render()` — for upstream ckpts):
 
 | Axis | Reference value |
 |---|---|
-| `conv_type` | `gatv2` |
-| `variational` (unsupervised) | `true` → VGAE |
+| `conv_type` | `gatv2` (locked — no longer ablated; chosen from prior screening) |
+| `variational` (unsupervised) | `true` → VGAE (locked — no longer ablated) |
 | `loss_fn` | `focal` |
 | `sampler` | `default` (non-curriculum) |
 | `scale` | `small` |
+| `id_encoder` | `lookup` |
 | Upstream for fusion | VGAE ckpt + `gat_loss/focal` ckpt |
 | `fusion_method` (for non-fusion ablations) | n/a — fusion axis only varies within its own stage |
 
-**Trade-off**: OFAT is linear in variant count (5 axes × 3–4 variants =
-16 runs per seed) vs. `3·3·3·3·4 = 324` for full factorial. Efficient
-for screening but cannot see interactions (e.g. `conv_type=gps` ×
-`gat_loss=weighted_ce` as a joint effect). Interaction follow-ups, if
-needed, are a targeted factorial over top-2 of each axis — not a full
-grid expansion.
+**Trade-off**: OFAT is linear in variant count (4 axes × 3–4 variants ≈
+13 runs per seed) vs. full factorial. Efficient for screening but cannot
+see interactions (e.g. `gat_loss=weighted_ce` × `id_encoding=hash` as a
+joint effect). Interaction follow-ups, if needed, are a targeted
+factorial over top-2 of each axis — not a full grid expansion.
 
 **DAG** (`graphids.slurm.dag.OFAT_DAG`, CLI `python -m graphids launch-ablation`):
 
 1. Baseline VGAE fit — upstream for Stages 2 + 3
-2. 13 standalone variants in parallel (no cross-deps): `conv_type/*`,
-   `unsupervised/{gae,dgi}`, `gat_sampling/{none,curriculum_random}`,
-   `gat_loss/*`, `id_encoding/*`
+2. 8 standalone variants in parallel (no cross-deps):
+   `gat_sampling/{none,curriculum_random}`, `gat_loss/*`, `id_encoding/*`
 3. `curriculum_vgae` afterok: VGAE — needs the pretrained encoder
 4. `extract-fusion-states` afterok: VGAE + `gat_loss/focal` — cached
    latents shared across all fusion methods
