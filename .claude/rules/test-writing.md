@@ -10,19 +10,13 @@ not already guarantee. Before adding one, answer all three questions.
 If the assertion would only fire when Pydantic / Lightning / torch / Python
 itself is broken — **delete**. Framework correctness is tested upstream.
 
-Seen in this repo (all deleted in the 2026-04-04 audit):
-- `pytest.raises(ValidationError)` for `Literal[...]` rejection → Pydantic's job
-- `pytest.raises(ValidationError)` for `frozen=True` assignment → Pydantic's job
-- `pytest.raises(ValidationError)` for `extra="forbid"` typos → Pydantic's job
-- `pytest.raises(TypeError)` for a required kwarg being required → Python's job
-- `hasattr(module, "test_metrics")` where the base class always sets it → base class's job
-- `isinstance(cfg.stages, tuple)` after annotating `stages: tuple[...]` → Pydantic's job
-- Tests that `torchmetrics.reset()` works → torchmetrics' job
+Patterns deleted from this repo (all framework's job, not ours):
+- `pytest.raises(ValidationError)` for `Literal[...]` / `frozen=True` / `extra="forbid"`
+- `pytest.raises(TypeError)` for a required kwarg being required
+- `isinstance(cfg.stages, tuple)` after annotating `stages: tuple[...]`
 
-Keep only:
-- Custom `@field_validator` logic
-- Custom bounds / cross-field checks that Pydantic's `Literal`/`ge/le`
-  alone don't cover
+Keep only custom `@field_validator` logic and cross-field checks that
+Pydantic's `Literal`/`ge/le` alone don't cover.
 
 ### 2. Does the test re-implement the code under test?
 
@@ -58,14 +52,6 @@ liability — every future refactor will fight it for no gain.
 
 Put the reason in the docstring OR as a `# REGRESSION: <context>` /
 `# INVARIANT: <property>` / `# CONTRACT: <api guarantee>` comment.
-
-Examples from the kept tests:
-- `test_set_node_budget_finalizes_inner_sampler` — guards the subset-index
-  boundary bug (memory: `trace_indices_across_subset_boundaries`)
-- `test_node_features_skewness_clamped` — guards the ±10 clamp rule
-  (critical-constraints.md, fp16 overflow at 1e17)
-- `test_matches_networkx_random` — cross-validates scipy clustering impl
-  against a reference
 
 ## Markers
 
@@ -111,20 +97,11 @@ Over-marking means the test never runs. `@pytest.mark.slow` classes in
 
 - Duplicating `topology.py` import-time assertions as pytest functions
   (import-time failure = louder signal than test failure)
-- Hardcoding VRAM probe measurements into a test fixture dict
-- Asserting `STAGE_DEPENDENCIES["fusion"] == <hardcoded tuple>`
-- Meta-tests like `test_rules_list_has_unique_names` or
-  `test_validation_rule_is_frozen`
-- Duplicate smoke tests that shadow richer tests in `core/models/`
+- Hardcoding VRAM probe measurements or `STAGE_DEPENDENCIES` tuples
+  into a test fixture dict — both drift the moment the producer changes
+- Meta-tests like `test_rules_list_has_unique_names` — rule shape is
+  ruff/pydantic's job, not pytest's
 - Using `trainer.strategy.connect(module)` private Lightning API for
-  checkpoint roundtrip tests — use `torch.save(m.state_dict(), ...)` and
-  `load_state_dict(torch.load(..., weights_only=True))` instead (see
-  `test_gat.py::TestGATCheckpointRoundtrip` for the canonical shape)
-
-## Self-check before committing a new test
-
-1. Can you cite the specific bug or invariant this guards? (If no → delete)
-2. Does the assertion re-use logic from the code under test? (If yes → rewrite)
-3. Could this test be made differential or property-based? (If yes → do it)
-4. Is the marker actually required, or are you overtagging? (If overtagging → remove)
-5. Would a ruff check + an import-time assertion catch this? (If yes → delete)
+  checkpoint roundtrip — use `torch.save(m.state_dict(), ...)` +
+  `load_state_dict(torch.load(..., weights_only=True))` instead
+  (canonical shape: `test_gat.py::TestGATCheckpointRoundtrip`)

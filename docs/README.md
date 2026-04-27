@@ -1,11 +1,16 @@
 # Documentation Lifecycle
 
+> Rules for maintaining `docs/`. Site entry point is [`index.md`](index.md);
+> module map is [`responsibilities.md`](responsibilities.md).
+
 ## Structure
 
 ```
 docs/
   decisions/    # ADRs — final verdicts, permanent
   reference/    # Living docs for current architecture
+  drafts/       # Work-in-progress (not site-rendered)
+  api/          # Auto-generated from docstrings
 ```
 
 Work items are tracked as **GitHub issues** (`gh issue list`), not files.
@@ -15,7 +20,7 @@ Work items are tracked as **GitHub issues** (`gh issue list`), not files.
 ### Decision Records (`decisions/`)
 - **Created when:** a tool/approach is evaluated and a final verdict is reached
 - **Format:** title, context, decision, rationale, consequences, sources
-- **Naming:** `NNNN-short-title.md` (sequential). Next available: 0009
+- **Naming:** `NNNN-short-title.md` (sequential)
 - **Never deleted.** If reversed, add "Superseded by NNNN" header
 - **Max ~50 lines.** Decision + rationale, not full research
 
@@ -31,10 +36,6 @@ Work items are tracked as **GitHub issues** (`gh issue list`), not files.
 - **Closed when resolved.** The fix is in git
 - **Labels:** `config`, `orchestration`, `performance`, `models`, `evaluation`, `blocked`, `bug`
 - When an issue becomes a decision, the decision goes to `decisions/` and the issue is closed
-
-## Session Hygiene
-
-Backlog items are tracked as GitHub issues. At session start, check for stale issues.
 
 ## What Goes Where
 

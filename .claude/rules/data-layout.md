@@ -1,4 +1,4 @@
-# GraphIDS Data Layout — Where Things Go and Why
+# GraphIDS Data Layout — Store Ownership
 
 **Three roots — keep them straight.** `LAKE_ROOT` (shared, cross-user)
 holds metadata + caches that everyone reads. `RUN_ROOT` (per-user) holds
@@ -7,44 +7,10 @@ under `RUN_ROOT`. Conflating `LAKE_ROOT` and `RUN_ROOT` is what produced
 the 2026-04-24 drift between Python settings and the (now-deleted)
 jsonnet TLA defaults — that bug is impossible by construction now.
 
-## The tree
-
-```
-{LAKE_ROOT}/                                  # /fs/ess/PAS1266/graphids in prod (shared, all PAS1266 users)
-├── mlflow.db                                 # MLflow SQLite backend — SOURCE OF TRUTH for:
-│                                             #   run identity + timestamps, params (flattened
-│                                             #   resolved.json), per-epoch scalar metrics
-│                                             #   (via get_metric_history), final metrics,
-│                                             #   tags (graphids.*, git_sha, slurm.*)
-├── mlartifacts/                              # MLflow artifact store — INTENTIONALLY EMPTY.
-│                                             #   MLflow requires artifact_location per
-│                                             #   experiment but graphids keeps ckpts on the
-│                                             #   filesystem (see below). Do NOT call
-│                                             #   mlflow.log_artifact / mlflow.pytorch.log_model.
-├── cache/v{ver}/{dataset}/                   # Preprocessed graph caches (shared).
-└── slurm_logs/                               # SLURM stdout/stderr (shared).
-
-{RUN_ROOT}/                                   # /fs/ess/PAS1266/graphids/dev/${USER} in prod (per-user)
-└── {dataset}/ablations/{group}/{variant}/seed_{N}/    # run_dir — paths.run_dir() in graphids/config/paths.py
-    ├── checkpoints/
-    │   ├── best_model.ckpt                   # ModelCheckpoint via _fs.atomic_save
-    │   ├── best_model.ckpt.sha256            # integrity sidecar — VERIFIED on load by
-    │   │                                     #   atomic_load; also stamped as MLflow tag
-    │   ├── last.ckpt
-    │   └── last.ckpt.sha256
-    ├── predictions/
-    │   ├── train.pt / val.pt                 # stage.train post-fit predict_step
-    │   └── test/{set_name}.pt                # stage.evaluate per-test-subdir
-    ├── artifacts/                            # `graphids analyze` output (UMAP, CKA, confusion
-    │                                         #   matrices). DIFFERENT FROM {lake}/mlartifacts/.
-    ├── traces.jsonl                          # OTel: single training.fit span + structured log
-    │                                         #   events (budget_probed, vram_drift_detected).
-    │                                         #   Not a cross-run query surface.
-    ├── resolved.json                         # Pydantic-validated jsonnet render
-    ├── overrides.json                        # TLA dict + --set payload
-    ├── .train_complete / .test_complete      # phase markers (diagnostic only; resume reads
-    │                                         #   checkpoints/best_model.ckpt directly)
-```
+> Filesystem tree + per-file write-path inventory:
+> `docs/reference/write-paths.md`. This file owns the **store-ownership
+> table** ("for signal X, query where?") and the rules that prevent
+> duplicating stores.
 
 ## Store ownership — don't duplicate
 

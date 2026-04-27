@@ -1,7 +1,8 @@
 # Config Architecture
 
 > Jsonnet composition -> Pydantic validation -> direct instantiation.
-> For file layout, stage conventions, and running examples, see `.claude/rules/config-system.md`.
+> For merge semantics, null preservation, env vars, path scheme, and
+> observability wiring, see `.claude/rules/config-system.md`.
 
 ---
 
@@ -132,3 +133,106 @@ trainer logger (MLflow callback handles metrics).
 | `core/mlflow_callback.py` | `MLflowTrainingCallback` (per-epoch metrics + finalize) | Yes |
 | `_mlflow.py` | `start_training_run`, `log_epoch_metrics`, `log_test_run`, lifecycle | Lazy |
 | `_otel.py` | `init_providers`, `wire_file_exporters` | No |
+
+---
+
+## 5. File Layout
+
+```
+configs/
+├── _lib/defaults.libsonnet        # trainer / checkpoint / early_stopping defaults
+├── ablations/{unsupervised,fusion,gat_sampling,gat_loss,id_encoding}/*.jsonnet
+├── stages/{autoencoder,supervised,fusion}.jsonnet
+├── models/
+│   ├── {supervised,unsupervised,fusion}.libsonnet
+│   └── fusion/{base,reward}.libsonnet + fusion/methods/*.libsonnet
+├── plans/ofat.jsonnet             # multi-stage DAG topology
+├── datasets/dataset_registry.json
+├── matrix/{axes,topology}.json    # valid model types / stage existence
+└── resources/submit_profiles.json # raw submitit kwargs, [mode][cluster][length]
+```
+
+`graphids/` package layout: see `ls graphids/` — every name is self-describing.
+The non-obvious ones: `orchestrate.py` is a single module (not a subpackage)
+holding `ResolvedConfig`, `InstantiatedRun`, `build_run`, `build`, `train`,
+`evaluate`. `_mlflow.py` owns the entire MLflow surface (run lifecycle,
+search filter, logged-model registration, dataset lineage).
+
+---
+
+## 6. Running
+
+```bash
+# Local dev — renders defaults, trains to run_dir from jsonnet
+python -m graphids fit --config configs/stages/autoencoder.jsonnet
+
+# Override via TLA
+python -m graphids fit \
+    --tla 'dataset="hcrl_sa"' \
+    --tla 'scale="large"' \
+    --tla 'variational=false' \
+    --config configs/stages/autoencoder.jsonnet \
+    --set model.init_args.lr=0.005
+
+# SLURM ablation
+python -m graphids submit configs/ablations/unsupervised/vgae.jsonnet --dataset set_01 --seed 42
+```
+
+---
+
+## 7. Stage / Ablation Function Convention
+
+Every `stages/*.jsonnet` and `ablations/**/*.jsonnet` is a top-level
+function with sensible defaults for every TLA. Adding a new TLA means
+updating the jsonnet signature + (if the TLA is launcher-level) the
+matching flat flag in `graphids/cli/submit.py` (which appends to the
+inline `flag_tlas` list — there is no separate helper).
+
+```jsonnet
+// Stage (configs/stages/*.jsonnet) — no overrides TLAs.
+function(
+  dataset='hcrl_ch', seed=42, run_dir='',
+  scale='small', conv_type='gatv2', variational=true,
+  auxiliaries=[], vgae_ckpt_path=null,
+  ckpt_path=null,
+)
+  defaults.trainer + defaults.checkpoint + defaults.early_stopping
+  + vgae.base + vgae.scales[scale]
+  + { seed_everything: seed, trainer+: {...}, data: {...}, model+: {...} }
+
+// Ablation preset (configs/ablations/**/*.jsonnet) — wraps stage in mergePatch.
+function(
+  dataset=pd.dataset, seed=pd.seed,
+  scale=pd.scale, conv_type=pd.conv_type,
+  ckpt_path=null,
+)
+  std.mergePatch(
+    stage(
+      dataset=dataset, seed=seed, scale=scale,
+      run_dir=std.native('paths.run_dir')(dataset, 'unsupervised', 'vgae', seed),
+      conv_type=conv_type, model_type='vgae', variational=true,
+      ckpt_path=ckpt_path,
+    ) + { trainer+: { max_epochs: 1200 } },  // group defaults as nested obj
+    std.extVar('overrides'),                 // user --set flags
+  )
+```
+
+---
+
+## 8. Robustness
+
+1. **Typed TLA round-trip.** `render` passes every TLA through
+   `--tla-code <k>=<json.dumps(v)>` so ints stay ints, bools stay bools,
+   lists stay lists, `None` becomes jsonnet `null`.
+2. **Pydantic gate (`ValidatedConfig`)** — null list fields in
+   `model.init_args`, monitor mismatch between `checkpoint` and
+   `early_stopping`, un-namespaced `class_path` strings, and
+   `LearningRateMonitor` without `logger` all die with an actionable
+   error before any torch import.
+3. **Signature-filtered kwargs** — `build_run` runs every class_path's
+   `init_args` through `filter_kwargs(klass, init_args)` so jsonnet can
+   pass fields the target class doesn't accept without raising.
+4. **`topology.py` import-time assertions** — every model family has a
+   libsonnet, every stage has a `.jsonnet`, every fusion method has a
+   method libsonnet; `submit_profiles.json` `scale_mult` keys are in
+   `VALID_SCALES`. Missing files / bad keys fail at package import.

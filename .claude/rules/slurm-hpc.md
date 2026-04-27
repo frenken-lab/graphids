@@ -15,7 +15,7 @@
 - Test on small datasets (`hcrl_ch`) before large ones (`set_02`+).
 - SLURM logs go to `slurm_logs/`, experiment outputs to `experimentruns/`.
 - Heavy tests use `@pytest.mark.slurm` — auto-skipped on login nodes.
-- **Always run tests via SLURM.** Submit with `python -m graphids submit --mode cpu --length short --command "python -m pytest [-k pattern]"`.
+- **Never run `pytest` on login nodes.** Submit via `python -m graphids submit --mode cpu --length short --command "python -m pytest [-k pattern]"`.
 
 ## Job Submission
 
@@ -41,8 +41,6 @@ python -m graphids submit configs/ablations/fusion/dqn.jsonnet \
 
 **Ops: `python -m graphids submit --mode {gpu|cpu} --command "..." [--mem-gb N --timeout-min M --length short|long]`.**
 
-No per-job profile registration.
-
 | Job | Command |
 |-----|---------|
 | Tests | `python -m graphids submit --mode cpu --length short --command "python -m pytest [-k pattern]"` |
@@ -58,63 +56,13 @@ Per-job overrides flow through flags (`--mem-gb`, `--timeout-min`). Optional
 `--time-from-history` opts into MLflow-history walltime estimation
 (library: `graphids.slurm.sizing`).
 
-## Writing SLURM Job Scripts
-
-When creating or modifying a SLURM `.sh` or '.sbatch' script, follow these conventions:
-
-### Available Partitions
-
-| Partition | Use | Max time | Notes |
-|-----------|-----|----------|-------|
-| `gpu` | Training, sweeps, evaluation | 7 days | 2x V100 per node |
-| `gpudebug` | Smoke tests (Layer 2) | 1 hour | Priority scheduling |
-| `cpu` | Tests, export, preprocessing | 7 days | No GPU |
-| `debug-cpu` | Quick CPU validation | 1 hour | Priority scheduling |
-
-**There is NO `serial` partition on Pitzer.** CPU jobs use `--partition=cpu`.
-
-### Required SBATCH Directives
-
-**GPU jobs:**
-
-```bash
-#SBATCH --partition=gpu
-#SBATCH --gres=gpu:1
-```
-
-**CPU jobs** (tests, export, preprocessing):
-
-```bash
-#SBATCH --partition=cpu
-```
-
-CPU preamble: `SKIP_CUDA_CONF=1 source "$SCRIPT_DIR/_preamble.sh"`
-
-### Required Environment Setup
-
-All boilerplate is in shared sourced scripts:
-
-```bash
-# Auto-detect project root from script location
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# Preamble: env setup, venv, .env, CUDA alloc config
-source "$SCRIPT_DIR/_preamble.sh"
-
-# Override before sourcing:
-#   SKIP_CUDA_CONF=1   — for CPU-only jobs
-```
-
-```bash
-# Epilog: GPU utilization report
-JOB_LOG_PREFIX="ray" source "$SCRIPT_DIR/_epilog.sh"
-```
-
-### Key Patterns
-
-- **Preemption auto-resume** — profiles set `slurm_signal_delay_s=300`, which makes submitit's sbatch emit `--signal=USR2@300`. SIGUSR2 five minutes before walltime triggers `_TrainingJob.checkpoint()` → `DelayedSubmission` with `ckpt_path={run_dir}/checkpoints/last.ckpt` → submitit sbatch-queues the resumed job via afterany. No manual resubmit loop. (USR2 because NCCL catches USR1.)
-- **`_preamble.sh`** — sets up Python 3.12, venv, .env, CUDA memory config
-- **`_epilog.sh`** — GPU utilization report (resource right-sizing)
+**Preemption auto-resume** — profiles set `slurm_signal_delay_s=300`, so
+submitit's sbatch emits `--signal=USR2@300`. SIGUSR2 five minutes before
+walltime triggers `_TrainingJob.checkpoint()` → `DelayedSubmission` with
+`ckpt_path={run_dir}/checkpoints/last.ckpt` → submitit sbatch-queues the
+resumed job via afterany. No manual resubmit loop. (USR2 because NCCL
+catches USR1.) `scripts/slurm/_preamble.sh` is sourced inside the sbatch
+shell via `slurm_setup`; `_epilog.sh` reports GPU utilization.
 
 ## Data I/O
 

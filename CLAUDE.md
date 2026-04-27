@@ -68,6 +68,12 @@ python -m graphids analyze --ckpt-path fusion/checkpoints/best_model.ckpt --data
 
 Fusion uses a single `configs/stages/fusion.jsonnet` that dispatches on the `fusion_method` TLA over the 4 method libsonnets in `configs/models/fusion/methods/`.
 
+## Code Style
+
+Logging — `from graphids._otel import get_logger; log = get_logger(__name__)` (stdlib + structured kwargs). Events: `log.info("event_name", key=value)`, no format strings. Handlers (OTel LoggingHandler, SLURM sinks) installed by `init_providers()` in `_otel.py`, called from the Typer root callback in `cli/app.py`. Level set there via `--verbose/-v`. Under SLURM: JSONL → `{SLURM_LOG_DIR}/orchestrator_{job_id}.jsonl`. Otherwise: human-readable stderr.
+
+Git — short summary line, body explains why not what. Push via SSH (`git@github.com:`), not HTTPS.
+
 ## Session Start
 
 Always read `PLAN.md` before starting work. Update it after completing any task.
