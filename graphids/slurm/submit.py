@@ -1,17 +1,22 @@
-"""SLURM submitter — thin wrapper over ``submitit.AutoExecutor``.
+"""SLURM submitter — one function, two shapes.
 
-Two shapes, one function:
+:func:`submit` is the single entrypoint for both the Typer ``submit``
+command and any programmatic caller. It accepts the full CLI flag
+surface (``preset`` / ``--dataset`` / ``--seed`` / ``--depends-on`` /
+``--skip-if-finished`` / ...), resolves dependencies + flag→TLA mapping
+inline, and dispatches to ``submitit.AutoExecutor``.
 
-* **preset mode** ships a ``_TrainingJob`` (Python callable) that imports
-  and invokes ``graphids.cli.training.{fit,test}`` directly on the compute
-  node. Exceptions come back as real Python tracebacks via submitit's
-  pickled result/error files; ``job.result()`` returns whatever the
-  training command returns. ``_TrainingJob.checkpoint()`` makes SLURM
-  preemption auto-requeue with ``ckpt_path`` pointing at
-  ``{run_dir}/checkpoints/last.ckpt``. The profile sets
-  ``slurm_signal_delay_s=300`` so sbatch sends SIGUSR2 five minutes
-  before walltime; submitit's handler catches it and sbatch-queues the
-  resumed job via afterany. No manual resubmit loop.
+Two payload shapes via ``preset`` XOR ``command``:
+
+* **preset mode** — ``submit`` renders the jsonnet on the login node and
+  ships a pickled :class:`_TrainingJob` that calls
+  ``graphids.cli.training.run_rendered`` on the compute node (no jsonnet
+  re-evaluation, no submission/execution config drift).
+  ``_TrainingJob.checkpoint()`` makes SLURM preemption auto-requeue with
+  ``ckpt_path`` pointing at ``{run_dir}/checkpoints/last.ckpt``. The
+  profile sets ``slurm_signal_delay_s=300`` so sbatch sends SIGUSR2 five
+  minutes before walltime; submitit's handler catches it and
+  sbatch-queues the resumed job via afterany.
 
 * **ops mode** (``--command``) ships ``submitit.helpers.CommandFunction``
   — shell strings genuinely need a shell.
@@ -79,35 +84,40 @@ def ensure_env_loaded() -> None:
 
 @dataclass
 class _TrainingJob:
-    """Pickle-safe callable that invokes ``graphids.cli.training.{fit,test}``.
+    """Pickle-safe callable that invokes ``graphids.cli.training.run_rendered``.
+
+    The rendered config dict is produced ONCE by ``submit()`` on the login
+    node (with TLAs + ``--set`` overrides already baked in) and pickled
+    into this payload. The compute node never re-evaluates jsonnet —
+    submission-time and execution-time configs cannot drift while the job
+    sits in the queue. ``run_dir`` is read from
+    ``rendered['trainer']['default_root_dir']`` so there is no separate
+    field to keep in sync.
 
     ``checkpoint()`` is called by submitit's SIGUSR2 handler when SLURM
     sends the preemption signal (``slurm_signal_delay_s`` seconds before
     walltime; see profile). We look up ``{run_dir}/checkpoints/last.ckpt``
-    and return a ``DelayedSubmission`` so submitit sbatch-queues the resumed
-    job with that ckpt as the resume source — free preemption recovery.
-
-    ``run_dir`` is rendered once at submit time (pure function of preset +
-    tlas + RUN_ROOT) and stamped into the pickled payload, so the compute
-    node never re-renders jsonnet during preemption recovery.
+    and return a ``DelayedSubmission`` so submitit sbatch-queues the
+    resumed job with that ckpt as the resume source.
     """
 
     action: str  # "fit" | "test"
-    config: str
-    tlas: list[tuple[str, Any]] = field(default_factory=list)
-    sets: list[tuple[str, Any]] = field(default_factory=list)
+    rendered: dict[str, Any]
+    stage_name: str
+    tla_log: list[tuple[str, Any]] = field(default_factory=list)
+    set_log: list[tuple[str, Any]] = field(default_factory=list)
     ckpt_path: str | None = None
-    run_dir: str | None = None
 
     def __call__(self) -> None:
-        from graphids.cli.training import fit, test
+        from graphids.cli.training import run_rendered
 
-        fn = fit if self.action == "fit" else test
-        fn(
-            config=Path(self.config),
-            tla=list(self.tlas) or None,
-            set_=list(self.sets) or None,
-            ckpt_path=Path(self.ckpt_path) if self.ckpt_path else None,
+        run_rendered(
+            action=self.action,
+            rendered=self.rendered,
+            stage_name=self.stage_name,
+            tla_log=self.tla_log,
+            set_log=self.set_log,
+            ckpt_path=self.ckpt_path,
         )
 
     def checkpoint(self, *args: Any, **kwargs: Any):  # noqa: ANN401 — submitit API
@@ -117,90 +127,195 @@ class _TrainingJob:
         return submitit.helpers.DelayedSubmission(replace(self, ckpt_path=resume))
 
     def _last_ckpt(self) -> str | None:
-        if not self.run_dir:
+        run_dir = (self.rendered.get("trainer") or {}).get("default_root_dir")
+        if not run_dir:
             return None
-        last = Path(self.run_dir) / "checkpoints" / "last.ckpt"
+        last = Path(run_dir) / "checkpoints" / "last.ckpt"
         return str(last) if last.exists() else None
 
 
 # --------------------------------------------------------------------------
-# The one real entrypoint
+# The one entrypoint
 # --------------------------------------------------------------------------
 
 
-def submit(  # noqa: PLR0913 — every flag is a real public surface
+def _infer_group_variant(preset: Path, name: str | None) -> tuple[str, str]:
+    """Resolve ``(group, variant)`` from ``--name`` or the preset path convention.
+
+    Convention: ``configs/ablations/<group>/<variant>.jsonnet``. ``--name``
+    overrides the convention as ``"group/variant"``. Raises
+    :class:`typer.BadParameter` when neither resolves — used by
+    ``--skip-if-finished`` to feed the MLflow filter.
+    """
+    import typer  # noqa: PLC0415
+
+    if name:
+        if "/" not in name:
+            raise typer.BadParameter(f"--name must be 'group/variant' (got {name!r})")
+        group, _, variant = name.partition("/")
+        return group, variant
+    parts = preset.parts
+    if "ablations" in parts:
+        idx = parts.index("ablations")
+        if idx + 2 < len(parts):
+            return parts[idx + 1], preset.stem
+    raise typer.BadParameter(
+        f"--skip-if-finished cannot infer group/variant from {preset}. "
+        "Pass --name <group>/<variant> explicitly."
+    )
+
+
+def submit(  # noqa: PLR0913 — every flag is a real CLI surface
     *,
     preset: Path | None = None,
     command: str | None = None,
     action: str = "fit",
     mode: str | None = None,
     length: str = "long",
+    smoke: bool = False,
+    cpu: bool = False,
     cluster: str | None = None,
-    tlas: Sequence[tuple[str, Any]] = (),
-    sets: Sequence[tuple[str, Any]] = (),
+    dataset: str | None = None,
+    seed: int | None = None,
+    scale: str | None = None,
+    ckpt_tla: str | None = None,
     ckpt_path: str | None = None,
+    lake_root: str | None = None,
     mem_gb: int | None = None,
     timeout_min: int | None = None,
     time_from_history: bool = False,
-    dep_jids: Sequence[int] = (),
+    tla: Sequence[tuple[str, Any]] | None = None,
+    set_: Sequence[tuple[str, Any]] | None = None,
+    depends_on: str | None = None,
+    name: str | None = None,
+    skip_if_finished: bool = False,
     dry_run: bool = False,
 ) -> int | None:
-    """Submit one SLURM job via submitit. Returns the jid, or ``None`` for dry-run.
+    """Submit one SLURM job via submitit.
 
-    ``tlas`` / ``sets`` are passed verbatim to ``_TrainingJob``; callers
-    (CLI / dag.py) build the list themselves — no flat-flag→TLA sugar
-    layer here. ``ckpt_path`` is the fit/test ``--ckpt-path`` passthrough,
-    distinct from any ``ckpt_path`` TLA the caller may include in ``tlas``.
+    Single entrypoint for both the Typer ``submit`` command and any
+    programmatic callers. Returns the jid on success, ``None`` when the
+    run was skipped (``--skip-if-finished`` hit a FINISHED upstream) or
+    when ``--dry-run`` was set. The Typer wrapper prints ``0`` on
+    ``None`` (non-chaining sentinel for ``afterok:$jid``).
 
-    ``dep_jids`` are afterok dependency jids; non-positive values
-    (typically ``0`` from a skipped upstream's ``--skip-if-finished``) are
-    filtered before the dependency string is composed. Real SLURM jids are
-    always positive.
+    Two shapes via ``preset`` XOR ``command``: training mode renders the
+    preset on the login node and ships a pickled ``_TrainingJob``;
+    ops mode ships ``submitit.helpers.CommandFunction(['bash','-c',...])``.
+
+    Raises :class:`typer.BadParameter` on invalid flag combinations or
+    unresolved dependencies.
     """
-    ensure_env_loaded()
+    import typer  # noqa: PLC0415
 
     if preset is None and not command:
-        raise ValueError("submit() needs preset= or command=")
-    if mode is None:
+        raise typer.BadParameter('supply a preset path or --command "..."')
+    # --depends-on (MLflow-resolved upstream ckpts) and --ckpt-path
+    # (resume the current preset) look similar but mean different things.
+    if depends_on and ckpt_path:
+        raise typer.BadParameter(
+            "--ckpt-path resumes the *current* preset; --depends-on injects "
+            "upstream teacher ckpts. Different semantics — pass them on "
+            "separate invocations."
+        )
+
+    # --- High-level flags → TLA pairs --------------------------------------
+    # --ckpt-tla writes the ``ckpt_path`` TLA (jsonnet field), distinct from
+    # --ckpt-path (fit/test passthrough).
+    flag_tlas: list[tuple[str, Any]] = []
+    for key, val in (
+        ("dataset", dataset),
+        ("scale", scale),
+        ("ckpt_path", ckpt_tla),
+        ("lake_root", lake_root),
+    ):
+        if val:
+            flag_tlas.append((key, val))
+    if seed is not None:
+        flag_tlas.append(("seed", seed))
+
+    # Resolve --depends-on BEFORE user --tla so explicit --tla overrides
+    # (last-wins on flag_tlas). Hard error on resolution failure.
+    afterok_jids: list[int] = []
+    if depends_on:
+        from graphids.slurm.dependencies import (  # noqa: PLC0415
+            DependencyResolutionError,
+            parse_depends_on,
+            resolve_all,
+        )
+
+        if not dataset:
+            raise typer.BadParameter("--depends-on requires --dataset")
+        try:
+            specs = parse_depends_on(depends_on, default_seed=seed)
+            dep_tlas, afterok_jids = resolve_all(specs, dataset)
+            flag_tlas.extend(dep_tlas)
+        except DependencyResolutionError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+
+    flag_tlas.extend(tla or ())
+
+    if skip_if_finished:
         if preset is None:
-            raise ValueError("--command requires mode='gpu' or 'cpu'")
-        mode = "gpu"
+            raise typer.BadParameter("--skip-if-finished requires a preset (no --command form)")
+        group, variant = _infer_group_variant(preset, name)
+        if not dataset or seed is None:
+            raise typer.BadParameter(
+                "--skip-if-finished needs both --dataset and --seed so the MLflow lookup is unambiguous"
+            )
+        from graphids._mlflow import is_finished  # noqa: PLC0415
+
+        phase = "test" if action == "test" else "fit"
+        if is_finished(dataset=dataset, group=group, variant=variant, seed=seed, phase=phase):
+            return None
+
+    # --- Resolve mode / cluster / profile params ---------------------------
+    ensure_env_loaded()
+    effective_mode = "cpu" if cpu else (mode or ("gpu" if preset else None))
+    if effective_mode is None:
+        raise typer.BadParameter("--command requires --mode gpu|cpu")
+    effective_length = "short" if smoke else length
     cluster = cluster or os.environ.get("GRAPHIDS_CLUSTER", "pitzer")
 
-    params: dict[str, Any] = dict(_PROFILES[mode][cluster][length])
+    params: dict[str, Any] = dict(_PROFILES[effective_mode][cluster][effective_length])
     if mem_gb is not None:
         params["mem_gb"] = mem_gb
     if timeout_min is not None:
         params["timeout_min"] = timeout_min
-    if time_from_history and timeout_min is None and preset and length == "long":
-        from graphids.slurm.sizing import estimate_walltime_minutes
+    if (
+        time_from_history
+        and timeout_min is None
+        and preset
+        and effective_length == "long"
+        and dataset
+    ):
+        from graphids.slurm.sizing import estimate_walltime_minutes  # noqa: PLC0415
 
-        dataset = next((v for k, v in tlas if k == "dataset"), None)
-        if dataset:
-            mins = estimate_walltime_minutes(cluster, preset.parent.name, dataset)
-            if mins:
-                params["timeout_min"] = mins
+        mins = estimate_walltime_minutes(cluster, preset.parent.name, dataset)
+        if mins:
+            params["timeout_min"] = mins
     _align_cpus_to_mem(params, cluster)
 
     # --- Build the work unit -----------------------------------------------
-    import submitit
-    from submitit.helpers import CommandFunction
+    import submitit  # noqa: PLC0415
+    from submitit.helpers import CommandFunction  # noqa: PLC0415
 
     payload: Any
     if preset and not command:
-        # Render once on the login node so the SIGUSR2 handler on the compute
-        # node doesn't have to re-evaluate jsonnet to find last.ckpt.
-        from graphids.config.jsonnet import render
+        # Render ONCE on the login node — TLAs + --set overrides are baked
+        # into the rendered dict that ships in the pickled payload. The
+        # compute node never re-evaluates jsonnet, so the config can't
+        # drift between submission and execution.
+        from graphids.config.jsonnet import render_with_flags  # noqa: PLC0415
 
-        rendered = render(preset, tla=dict(tlas) or None)
-        rendered_run_dir = (rendered.get("trainer") or {}).get("default_root_dir") or None
+        rendered = render_with_flags(preset, flag_tlas, set_)
         payload = _TrainingJob(
             action=action,
-            config=str(preset),
-            tlas=list(tlas),
-            sets=list(sets),
+            rendered=rendered,
+            stage_name=preset.stem,
+            tla_log=list(flag_tlas),
+            set_log=list(set_ or []),
             ckpt_path=ckpt_path,
-            run_dir=rendered_run_dir,
         )
         jobname = f"graphids-{action}-{preset.stem}"
     else:
@@ -211,15 +326,14 @@ def submit(  # noqa: PLR0913 — every flag is a real public surface
     # --- Assemble additional SLURM params (cluster, dep, signal) -----------
     additional = dict(params.pop("slurm_additional_parameters", {}))
     additional["clusters"] = cluster
-    # afterok dep jids come from --depends-on resolution (RUNNING upstream
-    # contributes its slurm.slurm_job_id MLflow tag). Real SLURM jids are
-    # always positive; defensively filter to be safe.
-    live_deps = [str(j) for j in dep_jids if j > 0]
+    # afterok dep jids from --depends-on (RUNNING upstream contributes its
+    # slurm.slurm_job_id MLflow tag). Real SLURM jids are always positive.
+    live_deps = [str(j) for j in afterok_jids if j > 0]
     if live_deps:
         additional["dependency"] = f"afterok:{':'.join(live_deps)}"
 
     setup = [f"source {_PREAMBLE_SH}"]
-    if mode == "cpu":
+    if effective_mode == "cpu":
         setup.insert(0, "export SKIP_CUDA_CONF=1")
 
     log_dir = os.environ.get("GRAPHIDS_SLURM_LOG_DIR")
@@ -285,11 +399,11 @@ def _print_dry_run(executor: Any, payload: Any, jobname: str) -> None:  # noqa: 
 
 def _describe_payload(payload: Any) -> str:  # noqa: ANN401
     if isinstance(payload, _TrainingJob):
-        bits = [f"{payload.action} config={payload.config}"]
-        if payload.tlas:
-            bits.append(f"tlas={payload.tlas}")
-        if payload.sets:
-            bits.append(f"sets={payload.sets}")
+        bits = [f"{payload.action} stage={payload.stage_name}"]
+        if payload.tla_log:
+            bits.append(f"tlas={payload.tla_log}")
+        if payload.set_log:
+            bits.append(f"sets={payload.set_log}")
         if payload.ckpt_path:
             bits.append(f"ckpt={payload.ckpt_path}")
         return " ".join(bits)

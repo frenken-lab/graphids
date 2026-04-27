@@ -117,6 +117,28 @@ CkptPath = Annotated[
     str | None, typer.Option("--ckpt-path", help="Checkpoint path for trainer method")
 ]
 
+# Plan-workflow shared options (used by ``run`` + ``status`` so the two
+# sibling commands present an identical surface — change here, both update).
+PlanPath = Annotated[
+    Path,
+    typer.Argument(
+        help="Plan jsonnet (e.g. configs/plans/ofat.jsonnet).",
+        exists=True,
+        dir_okay=False,
+        resolve_path=True,
+    ),
+]
+PlanDataset = Annotated[str, typer.Option("--dataset", help="Dataset TLA")]
+PlanSeed = Annotated[int, typer.Option("--seed", help="Seed TLA")]
+PlanVariants = Annotated[
+    str | None,
+    typer.Option(
+        "--variants",
+        metavar="A,B,...",
+        help="Subset of node names (transitive upstream deps auto-included).",
+    ),
+]
+
 
 # ---------------------------------------------------------------------------
 # Shell completion helpers
@@ -133,25 +155,3 @@ def _complete_dataset(incomplete: str) -> list[str]:
     from graphids.config.topology import dataset_names
 
     return [n for n in dataset_names() if n.startswith(incomplete)]
-
-
-def dotted_to_nested(overrides: list[tuple[str, Any]] | None) -> dict[str, Any]:
-    """Expand ``[(dotted.path, value), ...]`` into a nested dict.
-
-    Output is fed to ``render(set_pairs=...)`` which passes it as the
-    ``overrides`` ``std.extVar`` consumed by every ablation preset's
-    ``std.mergePatch(...)`` apex. Single entry point for ``--set`` flag
-    handling — replaces the prior in-place ``apply_overrides`` mutator.
-    """
-    out: dict[str, Any] = {}
-    for key, typed_val in overrides or []:
-        parts = key.split(".")
-        cur = out
-        for part in parts[:-1]:
-            nxt = cur.get(part)
-            if not isinstance(nxt, dict):
-                nxt = {}
-                cur[part] = nxt
-            cur = nxt
-        cur[parts[-1]] = typed_val
-    return out

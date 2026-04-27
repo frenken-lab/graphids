@@ -66,6 +66,18 @@ _OPS = {"min": operator.lt, "max": operator.gt}
 _WORST = {"min": float("inf"), "max": float("-inf")}
 
 
+def _resolve_mode_state(mode: str) -> tuple[Any, float]:
+    """Return ``(compare_fn, worst_score)`` for ``mode ∈ {'min', 'max'}``.
+
+    Raises ``ValueError`` for any other value. Shared ``__post_init__``
+    helper for ModelCheckpoint and EarlyStopping so both callbacks stay
+    in sync on what 'better' means and what the initial sentinel is.
+    """
+    if mode not in _OPS:
+        raise ValueError(f"mode must be 'min' or 'max', got {mode!r}")
+    return _OPS[mode], _WORST[mode]
+
+
 @dataclass
 class ModelCheckpoint(CallbackBase):
     """Save best + last checkpoints based on a monitored metric.
@@ -87,10 +99,7 @@ class ModelCheckpoint(CallbackBase):
     best_score: float = field(init=False)
 
     def __post_init__(self) -> None:
-        if self.mode not in _OPS:
-            raise ValueError(f"mode must be 'min' or 'max', got {self.mode!r}")
-        self.best_score = _WORST[self.mode]
-        self._compare = _OPS[self.mode]
+        self._compare, self.best_score = _resolve_mode_state(self.mode)
 
     def _resolve_dirpath(self, trainer: Trainer) -> Path:
         return (
@@ -141,10 +150,7 @@ class EarlyStopping(CallbackBase):
     best_score: float = field(init=False)
 
     def __post_init__(self) -> None:
-        if self.mode not in _OPS:
-            raise ValueError(f"mode must be 'min' or 'max', got {self.mode!r}")
-        self.best_score = _WORST[self.mode]
-        self._compare = _OPS[self.mode]
+        self._compare, self.best_score = _resolve_mode_state(self.mode)
 
     def on_train_epoch_end(self, trainer: Trainer, model: torch.nn.Module) -> None:
         current = trainer.callback_metrics.get(self.monitor)
@@ -196,11 +202,6 @@ def _build_checkpoint(trainer: Trainer, model: torch.nn.Module) -> dict[str, Any
     if trainer._schedulers:
         ckpt["lr_schedulers"] = [s.state_dict() for s in trainer._schedulers if s is not None]
     return ckpt
-
-
-# ---------------------------------------------------------------------------
-# VRAMDriftCallback
-# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------

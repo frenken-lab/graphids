@@ -19,8 +19,51 @@ implementation, no drift between Python and jsonnet.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
+
+
+def dotted_to_nested(overrides: Sequence[tuple[str, Any]] | None) -> dict[str, Any]:
+    """Expand ``[(dotted.path, value), ...]`` into a nested dict.
+
+    Output is fed to ``render(set_overrides=...)`` which passes it as the
+    ``overrides`` ``std.extVar`` consumed by every ablation preset's
+    ``std.mergePatch(...)`` apex. Single entry point for ``--set`` flag
+    shaping.
+    """
+    out: dict[str, Any] = {}
+    for key, typed_val in overrides or []:
+        parts = key.split(".")
+        cur = out
+        for part in parts[:-1]:
+            nxt = cur.get(part)
+            if not isinstance(nxt, dict):
+                nxt = {}
+                cur[part] = nxt
+            cur = nxt
+        cur[parts[-1]] = typed_val
+    return out
+
+
+def render_with_flags(
+    preset: str | Path,
+    tla: Sequence[tuple[str, Any]] | None = None,
+    set_: Sequence[tuple[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Render a preset from Typer-parsed ``--tla`` / ``--set`` flag pairs.
+
+    Convenience wrapper that turns ``[(key, value), ...]`` lists (the shape
+    Typer's ``parser=`` callback produces) into ``render()``'s ``tla`` dict
+    + ``set_overrides`` nested dict in one call. Used by ``cli/training.py``
+    and ``slurm/submit.py`` so the flag-list → render-input transform lives
+    in one place.
+    """
+    return render(
+        preset,
+        tla=dict(tla or []) or None,
+        set_overrides=dotted_to_nested(set_),
+    )
 
 
 def render(

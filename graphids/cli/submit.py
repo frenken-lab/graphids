@@ -1,7 +1,11 @@
-"""Typer ``submit`` command — SLURM submitter front-end.
+"""Typer ``submit`` command — Typer-decorated forward to ``slurm.submit.submit``.
 
-Thin wrapper: parse flags, hand off to :func:`graphids.slurm.submit.submit`.
-Preset mode is the positional argument; ``--command`` is the ops form.
+All submission logic (depends-on resolution, skip-if-finished MLflow
+check, flat-flag → TLA construction, submitit dispatch) lives in
+:func:`graphids.slurm.submit.submit`. This module only declares the
+Typer surface; the body forwards every flag verbatim and prints the
+returned jid (``0`` when skipped or dry-run, for ``jid=$(graphids submit ...)``
+bash-capture compat).
 """
 
 from __future__ import annotations
@@ -15,32 +19,8 @@ import typer
 from graphids.cli.app import SetList, TlaList, app
 
 
-def _infer_group_variant(preset: Path, name: str | None) -> tuple[str, str]:
-    """Resolve ``(group, variant)`` from ``--name`` or the preset path convention.
-
-    Convention: ``configs/ablations/<group>/<variant>.jsonnet``. ``--name``
-    overrides the convention as ``"group/variant"``. Raises
-    :class:`typer.BadParameter` when neither resolves — used by
-    ``--skip-if-finished`` to feed the MLflow filter.
-    """
-    if name:
-        if "/" not in name:
-            raise typer.BadParameter(f"--name must be 'group/variant' (got {name!r})")
-        group, _, variant = name.partition("/")
-        return group, variant
-    parts = preset.parts
-    if "ablations" in parts:
-        idx = parts.index("ablations")
-        if idx + 2 < len(parts):
-            return parts[idx + 1], preset.stem
-    raise typer.BadParameter(
-        f"--skip-if-finished cannot infer group/variant from {preset}. "
-        "Pass --name <group>/<variant> explicitly."
-    )
-
-
 @app.command("submit", rich_help_panel="SLURM", no_args_is_help=True)
-def submit_cli(  # noqa: PLR0913 — every flag is a real surface
+def submit_cli(  # noqa: PLR0913 — every flag is a real CLI surface
     preset: Annotated[
         Path | None,
         typer.Argument(
@@ -156,93 +136,33 @@ def submit_cli(  # noqa: PLR0913 — every flag is a real surface
     """
     from graphids.slurm.submit import submit
 
-    if preset is None and not command:
-        raise typer.BadParameter('supply a preset path or --command "..."')
-
-    # --depends-on (MLflow-resolved upstream ckpts) and --ckpt-path
-    # (resume the current preset) look similar but mean different things.
-    # Refuse to guess.
-    if depends_on and ckpt_path:
-        raise typer.BadParameter(
-            "--ckpt-path resumes the *current* preset; --depends-on injects "
-            "upstream teacher ckpts. Different semantics — pass them on "
-            "separate invocations."
-        )
-
-    # Flat flags → TLA pairs. --ckpt-tla writes the ``ckpt_path`` TLA
-    # (jsonnet field), distinct from --ckpt-path (fit/test passthrough).
-    flag_tlas: list[tuple[str, object]] = []
-    for key, val in (
-        ("dataset", dataset),
-        ("scale", scale),
-        ("ckpt_path", ckpt_tla),
-        ("lake_root", lake_root),
-    ):
-        if val:
-            flag_tlas.append((key, val))
-    if seed is not None:
-        flag_tlas.append(("seed", seed))
-
-    # Resolve --depends-on BEFORE user --tla so explicit --tla overrides
-    # (last-wins on flag_tlas). Hard error on resolution failure: deps are
-    # load-bearing — silently continuing with no teacher TLAs would render
-    # but produce a wrong run. RUNNING upstreams contribute afterok jids.
-    afterok_jids: list[int] = []
-    if depends_on:
-        from graphids.slurm.dependencies import (
-            DependencyResolutionError,
-            parse_depends_on,
-            resolve_all,
-        )
-
-        if not dataset:
-            raise typer.BadParameter("--depends-on requires --dataset")
-        try:
-            specs = parse_depends_on(depends_on, default_seed=seed)
-            dep_tlas, afterok_jids = resolve_all(specs, dataset)
-            flag_tlas.extend(dep_tlas)
-        except DependencyResolutionError as exc:
-            raise typer.BadParameter(str(exc)) from exc
-
-    flag_tlas.extend(tla or ())
-
-    if skip_if_finished:
-        if preset is None:
-            raise typer.BadParameter("--skip-if-finished requires a preset (no --command form)")
-        group, variant = _infer_group_variant(preset, name)
-        ds = next((v for k, v in flag_tlas if k == "dataset"), None)
-        sd = next((v for k, v in flag_tlas if k == "seed"), None)
-        if not ds or sd is None:
-            raise typer.BadParameter(
-                "--skip-if-finished needs both --dataset and --seed so the MLflow lookup is unambiguous"
-            )
-        from graphids._mlflow import is_finished
-
-        phase = "test" if action == "test" else "fit"
-        if is_finished(dataset=str(ds), group=group, variant=variant, seed=int(sd), phase=phase):
-            print(0)
-            sys.stdout.flush()
-            return
-
     jid = submit(
         preset=preset,
         command=command,
         action=action,
-        mode="cpu" if cpu else mode,
-        length="short" if smoke else length,
+        mode=mode,
+        length=length,
+        smoke=smoke,
+        cpu=cpu,
         cluster=cluster,
-        tlas=flag_tlas,
-        sets=set_ or (),
+        dataset=dataset,
+        seed=seed,
+        scale=scale,
+        ckpt_tla=ckpt_tla,
         ckpt_path=ckpt_path,
+        lake_root=lake_root,
         mem_gb=mem_gb,
         timeout_min=timeout_min,
         time_from_history=time_from_history,
-        dep_jids=tuple(afterok_jids),
+        tla=tla,
+        set_=set_,
+        depends_on=depends_on,
+        name=name,
+        skip_if_finished=skip_if_finished,
         dry_run=dry_run,
     )
 
-    # Stdout contract: print the (fit) jid only — bash callers do
-    # ``jid=$(graphids submit ...)``. Dry-run / skip-if-finished emit 0 as a
-    # non-chaining sentinel so ``afterok:$jid`` doesn't reference a real job.
+    # Stdout contract: jid on submit, 0 on skip/dry-run (non-chaining sentinel
+    # so ``afterok:$jid`` doesn't reference a real job).
     print(jid if jid is not None else 0)
     sys.stdout.flush()

@@ -3,12 +3,14 @@
 Three layers in one file:
 
 * :class:`ResolvedConfig` / :class:`InstantiatedRun` — boundary types.
-* :func:`build_run` — class_path resolver for trainer + model + datamodule.
-* :func:`build` / :func:`train` / :func:`evaluate` — atomic stage primitives.
+* :func:`build_run` — class_path resolver for trainer + model + datamodule
+  (with optional ``reset_gpu=True`` GPU-state reset preamble for the
+  production fit/test path).
+* :func:`train` / :func:`evaluate` — atomic stage primitives.
 
-No planner, no cross-stage driver: multi-stage runs are an in-memory DAG
-in :mod:`graphids.slurm.dag` that calls :func:`graphids.slurm.submit.submit`
-directly with ``dep_jids`` afterok chaining.
+No planner, no cross-stage driver: each stage is a separate
+:func:`graphids.slurm.submit.submit` invocation. Multi-stage workflows
+live in plan jsonnets rendered to JSONL by :mod:`graphids.slurm.run`.
 """
 
 from __future__ import annotations
@@ -156,8 +158,23 @@ def build_run(
     *,
     validated: ValidatedConfig | None = None,
     seed_all: bool = True,
+    reset_gpu: bool = False,
 ) -> InstantiatedRun:
-    """Instantiate trainer + model + datamodule from a rendered config dict."""
+    """Instantiate trainer + model + datamodule from a rendered config dict.
+
+    ``reset_gpu=True`` runs ``gc.collect`` + ``torch.cuda.empty_cache`` +
+    ``torch.cuda.reset_peak_memory_stats`` + ``torch.compiler.reset``
+    before instantiation — the production fit/test path needs this to
+    free state from any prior in-process build (compiled-model leftovers
+    between fit and test, etc.). Tests pass ``reset_gpu=False`` so unit
+    tests don't touch CUDA.
+    """
+    if reset_gpu:
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+        torch.compiler.reset()
     merged = copy.deepcopy(rendered)
     if validated is None:
         validate_config(merged)
@@ -255,16 +272,6 @@ def _check_ckpt_compat(ckpt_path: str | Path, resolved: ResolvedConfig) -> None:
             raise ValueError(
                 f"{label} mismatch: ckpt={ckpt_val!r} cfg={cfg_val!r} ckpt_path={ckpt_path}"
             )
-
-
-def build(resolved: ResolvedConfig) -> InstantiatedRun:
-    """Instantiate trainer + model + datamodule, resetting GPU state first."""
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
-    torch.compiler.reset()
-    return build_run(resolved.rendered, validated=resolved.validated)
 
 
 def train(

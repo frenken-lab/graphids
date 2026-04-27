@@ -377,6 +377,26 @@ class GraphDataModule:
         """
         return self._build_eval_loader(self._effective_train_ds())
 
+    def _make_fixed_batch_loader(self, dataset, *, shuffle: bool):
+        """Build a fixed-batch-size PyG loader from hparams. No budget probe.
+
+        Shared by the non-dynamic-batching train path and every eval path
+        (val/test) — both want the same hp-derived defaults (``batch_size``
+        floor of 8, ``num_workers`` fallback of 2, prefetch factor + device
+        from hp / ``_prefetch_device``). The dynamic-batching train path
+        uses ``_spawn_loader`` directly with a ``batch_sampler``.
+        """
+        hp = self.hparams
+        nw = hp["num_workers"]
+        return _spawn_loader(
+            dataset,
+            batch_size=max(8, hp["batch_size"]),
+            shuffle=shuffle,
+            num_workers=nw if nw is not None else 2,
+            device=self._prefetch_device(),
+            prefetch_factor=hp["prefetch_factor"],
+        )
+
     def _build_train_loader(self, dataset, shuffle: bool):
         """Training loader. Uses dynamic batching (budget probe) when enabled."""
         key = (id(dataset), shuffle)
@@ -385,22 +405,13 @@ class GraphDataModule:
             return cached
 
         hp = self.hparams
-        nw = hp["num_workers"]
-        pf = hp["prefetch_factor"]
-        device = self._prefetch_device()
-
         if not hp["dynamic_batching"]:
-            loader = _spawn_loader(
-                dataset,
-                batch_size=max(8, hp["batch_size"]),
-                shuffle=shuffle,
-                num_workers=nw if nw is not None else 2,
-                device=device,
-                prefetch_factor=pf,
-            )
+            loader = self._make_fixed_batch_loader(dataset, shuffle=shuffle)
             self._loader_cache[key] = loader
             return loader
 
+        nw = hp["num_workers"]
+        pf = hp["prefetch_factor"]
         result = self._ensure_budget()
         if nw is None:
             nw, pf = autosize_workers(self._model, dataset, result, default_prefetch=pf)
@@ -416,7 +427,7 @@ class GraphDataModule:
             dataset,
             batch_sampler=sampler,
             num_workers=nw,
-            device=device,
+            device=self._prefetch_device(),
             prefetch_factor=pf,
         )
         self._loader_cache[key] = loader
@@ -436,17 +447,7 @@ class GraphDataModule:
         cached = self._loader_cache.get(key)
         if cached is not None:
             return cached
-
-        hp = self.hparams
-        nw = hp["num_workers"]
-        loader = _spawn_loader(
-            dataset,
-            batch_size=max(8, hp["batch_size"]),
-            shuffle=False,
-            num_workers=nw if nw is not None else 2,
-            device=self._prefetch_device(),
-            prefetch_factor=hp["prefetch_factor"],
-        )
+        loader = self._make_fixed_batch_loader(dataset, shuffle=False)
         self._loader_cache[key] = loader
         return loader
 

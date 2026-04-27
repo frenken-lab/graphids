@@ -1,10 +1,11 @@
 """Training commands: fit, test.
 
-Both share the same prelude (render → validate → build) with the
-pipeline driver (``orchestrate/run.py``), then dispatch through
-``orchestrate.stage.train`` / ``orchestrate.stage.evaluate`` so the
-CLI and the pipeline loop produce identical markers, OTel wiring,
-and GPU-reset semantics.
+CLI path renders the jsonnet preset, then hands the rendered dict to
+:func:`run_rendered`. The submitit compute-node path
+(``slurm.submit._TrainingJob.__call__``) calls :func:`run_rendered`
+directly with a dict that was rendered ONCE on the login node — so the
+compute node never re-evaluates jsonnet, and the
+submission-time/execution-time config can't drift while the job is queued.
 """
 
 from __future__ import annotations
@@ -76,28 +77,16 @@ def _configure_cpu_threads() -> None:
     _THREADS_SET = True
 
 
-def _prepare(
-    config: Path,
-    tla: list[Any] | None,
-    overrides: list[Any] | None,
-) -> tuple[ResolvedConfig, object]:
-    """Shared prelude: render → resolve → wire OTel → build.
+def _setup_runtime() -> None:
+    """Idempotent boot: providers + spawn + threads + MLflow URI.
 
-    Returns ``(resolved, artifacts)``. ``--set`` overrides flow into render
-    as ``std.extVar('overrides')`` and are applied by ``std.mergePatch`` at
-    each ablation preset's apex (one mechanism, replaces the prior in-place
-    Python mutator + jsonnet ``apply_dotted`` pair). Heavy imports live
-    inside the function so the app stays login-node-safe.
+    Runs from both the CLI path (Typer's root callback set up providers
+    already; this re-call is a no-op) and the submitit compute-node path
+    (callback was never invoked; this is the only place these get set).
     """
     from graphids._mlflow import ensure_tracking_uri
-    from graphids._otel import init_providers, wire_file_exporters
-    from graphids.cli.app import dotted_to_nested
-    from graphids.config.jsonnet import render
-    from graphids.orchestrate import build
+    from graphids._otel import init_providers
 
-    # Idempotent — Typer's root callback calls this on the CLI path. On the
-    # submitit compute-node path, _TrainingJob.__call__ bypasses the callback,
-    # so we initialise here too. Guarded by _providers global; second call no-ops.
     init_providers(
         "graphids",
         wandb_entity=os.environ.get("WANDB_ENTITY", ""),
@@ -107,22 +96,66 @@ def _prepare(
     _configure_cpu_threads()
     ensure_tracking_uri()
 
-    rendered = render(
-        config,
-        tla=dict(tla or []) or None,
-        set_overrides=dotted_to_nested(overrides),
-    )
-    resolved = ResolvedConfig.from_rendered(rendered, stage_name=config.stem)
+
+def run_rendered(
+    *,
+    action: str,
+    rendered: dict[str, Any],
+    stage_name: str,
+    tla_log: list[tuple[str, Any]] | None = None,
+    set_log: list[tuple[str, Any]] | None = None,
+    ckpt_path: str | None = None,
+) -> None:
+    """Run fit/test from a pre-rendered config dict.
+
+    The single compute-node entrypoint shared by the CLI ``fit``/``test``
+    commands and ``slurm.submit._TrainingJob.__call__``. ``rendered`` was
+    produced by :func:`graphids.config.jsonnet.render` (with TLAs +
+    ``--set`` overrides already baked in); we never re-evaluate jsonnet
+    here. ``tla_log`` / ``set_log`` are the original flag lists, kept
+    only for the ``overrides.json`` provenance sidecar — the rendered
+    dict is the source of truth for execution.
+    """
+    from graphids._otel import wire_file_exporters
+    from graphids.orchestrate import build_run, evaluate, train
+
+    _setup_runtime()
+    resolved = ResolvedConfig.from_rendered(rendered, stage_name=stage_name)
     if resolved.run_dir is not None:
         wire_file_exporters(resolved.run_dir)
         resolved.run_dir.joinpath("resolved.json").write_text(
             resolved.validated.model_dump_json(indent=2)
         )
         resolved.run_dir.joinpath("overrides.json").write_text(
-            json.dumps({"tla": dict(tla or []), "set": list(overrides or [])}, indent=2)
+            json.dumps({"tla": dict(tla_log or []), "set": list(set_log or [])}, indent=2)
         )
-    artifacts = build(resolved)
-    return resolved, artifacts
+    artifacts = build_run(resolved.rendered, validated=resolved.validated, reset_gpu=True)
+    if action == "fit":
+        train(artifacts, resolved, resume_from=ckpt_path)
+        return
+    if ckpt_path:
+        resolved = replace(resolved, ckpt_file=Path(ckpt_path))
+    evaluate(artifacts, resolved)
+
+
+def _dispatch(
+    action: str,
+    config: Path,
+    tla: list[Any] | None,
+    set_: list[Any] | None,
+    ckpt_path: str | None,
+) -> None:
+    """Render the preset, then call :func:`run_rendered` — shared fit/test body."""
+    from graphids.config.jsonnet import render_with_flags
+
+    run_rendered(
+        action=action,
+        rendered=render_with_flags(config, tla, set_),
+        stage_name=config.stem,
+        tla_log=list(tla or []),
+        set_log=list(set_ or []),
+        ckpt_path=ckpt_path,
+    )
 
 
 @app.command(rich_help_panel="Training")
@@ -133,10 +166,7 @@ def fit(
     ckpt_path: CkptPath = None,
 ) -> None:
     """Train a model from a jsonnet stage config."""
-    from graphids.orchestrate import train
-
-    resolved, artifacts = _prepare(config, tla, set_)
-    train(artifacts, resolved, resume_from=ckpt_path)
+    _dispatch("fit", config, tla, set_, ckpt_path)
 
 
 @app.command(rich_help_panel="Training")
@@ -147,10 +177,4 @@ def test(
     ckpt_path: CkptPath = None,
 ) -> None:
     """Evaluate a trained model on the test set."""
-    from graphids.orchestrate import evaluate
-
-    resolved, artifacts = _prepare(config, tla, set_)
-    # When --ckpt-path is explicit, it overrides the resolved ckpt_file.
-    if ckpt_path:
-        resolved = replace(resolved, ckpt_file=Path(ckpt_path))
-    evaluate(artifacts, resolved)
+    _dispatch("test", config, tla, set_, ckpt_path)

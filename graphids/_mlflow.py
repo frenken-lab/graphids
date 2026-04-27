@@ -246,6 +246,45 @@ def _ensure_experiment(client: MlflowClient, name: str) -> None:
     client.create_experiment(name, artifact_location=artifact_location)
 
 
+def _open_phase_run(run_dir: Path, phase: str) -> tuple[RunIdentity, str, str, MlflowClient] | None:
+    """Pre-flight shared by ``start_training_run`` and ``log_test_run``.
+
+    Resolves ``(identity, run_name, experiment_name, client)`` from
+    ``run_dir``, sets the MLflow tracking URI, enables system-metrics
+    sampling once-per-process, and switches MLflow to the per-axis
+    experiment. Returns ``None`` for the two legitimate skip cases:
+    off-tree ``run_dir`` (not under ``ablations/``) or no LAKE_ROOT/URI
+    configured. ``phase`` parameterizes the skip log event names so
+    fit/test skips are distinguishable in the trace.
+    """
+    identity = parse_run_dir(run_dir)
+    if identity is None:
+        log.info(f"mlflow_skip_non_ablation_{phase}", run_dir=str(run_dir))
+        return None
+    uri = ensure_tracking_uri()
+    if not uri:
+        log.warning(f"mlflow_skip_no_uri_{phase}")
+        return None
+    mlflow.set_tracking_uri(uri)
+
+    global _system_metrics_configured  # noqa: PLW0603
+    if not _system_metrics_configured:
+        mlflow.config.enable_system_metrics_logging()
+        mlflow.config.set_system_metrics_sampling_interval(_SYSTEM_METRICS_INTERVAL_S)
+        _system_metrics_configured = True
+
+    from graphids.config.settings import get_settings
+
+    cluster = get_settings().cluster or None
+    run_name = run_name_for(identity, cluster=cluster)
+    experiment = f"graphids/{identity.dataset}/{identity.group}"
+
+    client = MlflowClient(tracking_uri=uri)
+    _ensure_experiment(client, experiment)
+    mlflow.set_experiment(experiment)
+    return identity, run_name, experiment, client
+
+
 def _flatten_params(obj: Any, parent: str = "") -> dict[str, str]:
     out: dict[str, str] = {}
     if isinstance(obj, dict):
@@ -479,33 +518,11 @@ def start_training_run(run_dir: Path, resolved_config: dict[str, Any]) -> str | 
     process. Per-epoch metrics are appended later by
     ``MLflowTrainingCallback``.
     """
-    identity = parse_run_dir(run_dir)
-    if identity is None:
-        log.info("mlflow_skip_non_ablation", run_dir=str(run_dir))
+    opened = _open_phase_run(run_dir, phase="fit")
+    if opened is None:
         return None
-
-    uri = ensure_tracking_uri()
-    if not uri:
-        log.warning("mlflow_skip_no_uri")
-        return None
-
-    global _system_metrics_configured  # noqa: PLW0603
-    if not _system_metrics_configured:
-        mlflow.config.enable_system_metrics_logging()
-        mlflow.config.set_system_metrics_sampling_interval(_SYSTEM_METRICS_INTERVAL_S)
-        _system_metrics_configured = True
-    mlflow.set_tracking_uri(uri)
-
-    from graphids.config.settings import get_settings
-
-    cluster = get_settings().cluster or None
-    run_name = run_name_for(identity, cluster=cluster)
-    experiment = f"graphids/{identity.dataset}/{identity.group}"
-
-    client = MlflowClient(tracking_uri=uri)
-    _ensure_experiment(client, experiment)
+    identity, run_name, experiment, client = opened
     exp = client.get_experiment_by_name(experiment)
-    mlflow.set_experiment(experiment)
 
     force = os.environ.get(_FORCE_RESUME_ENV, "").lower() in ("1", "true", "yes")
     cur_git_sha = _git_sha_tag().get("git_sha")
@@ -662,25 +679,10 @@ def log_test_run(
     Returns the ``run_name`` written, or ``None`` for non-ablation run_dirs
     or when no LAKE_ROOT is configured. MLflow failures propagate.
     """
-    identity = parse_run_dir(run_dir)
-    if identity is None:
-        log.info("mlflow_test_skip_non_ablation", run_dir=str(run_dir))
+    opened = _open_phase_run(run_dir, phase="test")
+    if opened is None:
         return None
-
-    uri = ensure_tracking_uri()
-    if not uri:
-        log.warning("mlflow_test_skip_no_uri")
-        return None
-    mlflow.set_tracking_uri(uri)
-
-    from graphids.config.settings import get_settings
-
-    cluster = get_settings().cluster or None
-    run_name = run_name_for(identity, cluster=cluster)
-    experiment = f"graphids/{identity.dataset}/{identity.group}"
-    client = MlflowClient(tracking_uri=uri)
-    _ensure_experiment(client, experiment)
-    mlflow.set_experiment(experiment)
+    identity, run_name, experiment, _client = opened
 
     with mlflow.start_run(run_name=run_name, tags={"graphids.phase": "test"}):
         scalars = _scalar_metrics(metrics)

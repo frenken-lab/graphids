@@ -25,7 +25,7 @@ from typing import Annotated
 
 import typer
 
-from graphids.cli.app import app
+from graphids.cli.app import PlanDataset, PlanPath, PlanSeed, PlanVariants, app
 
 
 def _load_plan(
@@ -51,28 +51,13 @@ def _load_plan(
 
 @app.command("run", rich_help_panel="Plan", no_args_is_help=True)
 def run_cli(
-    plan_path: Annotated[
-        Path,
-        typer.Argument(
-            help="Plan jsonnet (e.g. configs/plans/ofat.jsonnet).",
-            exists=True,
-            dir_okay=False,
-            resolve_path=True,
-        ),
-    ],
-    dataset: Annotated[str, typer.Option("--dataset", help="Dataset TLA")],
-    seed: Annotated[int, typer.Option("--seed", help="Seed TLA")],
+    plan_path: PlanPath,
+    dataset: PlanDataset,
+    seed: PlanSeed,
     cluster: Annotated[
         str, typer.Option("--cluster", help="Target cluster (e.g. cardinal, pitzer)")
     ] = "pitzer",
-    variants: Annotated[
-        str | None,
-        typer.Option(
-            "--variants",
-            metavar="A,B,...",
-            help="Subset of node names (transitive upstream deps auto-included).",
-        ),
-    ] = None,
+    variants: PlanVariants = None,
 ) -> None:
     """Render a plan to a JSONL blueprint of ``graphids submit`` invocations.
 
@@ -88,25 +73,10 @@ def run_cli(
 
 @app.command("status", rich_help_panel="Plan")
 def status_cli(
-    plan_path: Annotated[
-        Path,
-        typer.Argument(
-            help="Plan jsonnet.",
-            exists=True,
-            dir_okay=False,
-            resolve_path=True,
-        ),
-    ],
-    dataset: Annotated[str, typer.Option("--dataset", help="Dataset TLA")],
-    seed: Annotated[int, typer.Option("--seed", help="Seed TLA")],
-    variants: Annotated[
-        str | None,
-        typer.Option(
-            "--variants",
-            metavar="A,B,...",
-            help="Subset of node names (transitive upstream deps auto-included).",
-        ),
-    ] = None,
+    plan_path: PlanPath,
+    dataset: PlanDataset,
+    seed: PlanSeed,
+    variants: PlanVariants = None,
     fmt: Annotated[
         str,
         typer.Option("--format", "-f", help="table | json"),

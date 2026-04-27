@@ -1,4 +1,4 @@
-"""Tests for ``graphids/cli/submit.py`` — preset-path inference helper.
+"""Tests for ``graphids/slurm/submit.py:_infer_group_variant`` — preset-path inference.
 
 Used by ``--skip-if-finished`` to feed the MLflow filter. If this returns
 the wrong ``(group, variant)`` we either (a) silently skip the wrong run,
@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 import typer
 
-from graphids.cli.submit import _infer_group_variant
+from graphids.slurm.submit import _infer_group_variant
 
 
 # CONTRACT: the canonical layout
