@@ -1,6 +1,4 @@
 // Ablation: fusion stage, locked fusion_method='bandit'.
-// cached_states_dir (shared across all 4 fusion methods for a seed) is
-// auto-derived from (dataset, seed) — produced by extract-fusion-states.
 local stage = import '../../stages/fusion.jsonnet';
 local pd = (import '../../matrix/axes.json').pipeline_defaults;
 
@@ -11,12 +9,10 @@ function(
 )
   std.mergePatch(
     stage(
-    dataset=dataset, seed=seed, scale=scale,
-    run_dir=std.native('paths.run_dir')(dataset, 'fusion', 'bandit', seed),
-    fusion_method='bandit',
-    ckpt_path=ckpt_path,
-  ) + {
-    data+: { init_args+: {
-      cached_states_dir: std.native('paths.states_dir')(dataset, seed),
-    } },
-  }, std.extVar('overrides'))
+      dataset=dataset, seed=seed, scale=scale,
+      run_dir=std.native('paths.run_dir')(dataset, 'fusion', 'bandit', seed),
+      fusion_method='bandit',
+      ckpt_path=ckpt_path,
+    ),
+    std.extVar('overrides'),
+  )

@@ -22,9 +22,10 @@ app = typer.Typer(
 
 # ---------------------------------------------------------------------------
 # Root callback — runs once per CLI invocation before any subcommand.
-# Scoped to cheap setup only (logging level + OTel providers). ensure_spawn()
-# imports torch and so stays inside command bodies so ``<cmd> --help`` keeps
-# its fast path on login nodes.
+# Scoped to cheap setup only (logging level + OTel providers). Spawn-method
+# + CPU-thread setup imports torch and so stays inside command bodies
+# (training.py:_ensure_spawn / _configure_cpu_threads) so ``<cmd> --help``
+# keeps its fast path on login nodes.
 # ---------------------------------------------------------------------------
 
 

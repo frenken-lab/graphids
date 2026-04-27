@@ -10,6 +10,7 @@ and GPU-reset semantics.
 from __future__ import annotations
 
 import json
+import multiprocessing
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -17,6 +18,62 @@ from typing import Any
 
 from graphids.cli.app import CkptPath, ConfigPath, SetList, TlaList, app
 from graphids.orchestrate import ResolvedConfig
+
+_SPAWN_SET = False
+_THREADS_SET = False
+
+
+def _ensure_spawn() -> None:
+    """Set mp start method to ``spawn`` + tensor IPC to ``file_system``.
+
+    Must run before any CUDA-touching DataLoader worker is spawned —
+    fork + CUDA is a silent segfault (see critical-constraints.md).
+    Idempotent.
+    """
+    global _SPAWN_SET  # noqa: PLW0603
+    if _SPAWN_SET:
+        return
+    import torch.multiprocessing  # noqa: PLC0415
+
+    try:
+        multiprocessing.set_start_method("spawn", force=True)
+    except RuntimeError:
+        pass
+    torch.multiprocessing.set_sharing_strategy("file_system")
+    _SPAWN_SET = True
+
+
+def _configure_cpu_threads() -> None:
+    """Pin torch + OMP thread counts to the SLURM CPU quota. Idempotent.
+
+    PyTorch defaults intra-op threads to ``os.cpu_count()`` (node-wide,
+    ignoring SLURM cgroup affinity). On a node with ``--cpus-per-task=16``,
+    torch will spawn 64+ threads across NUMA domains and BLAS backends will
+    fight for cores. We pin intra-op to the allocation, interop to 1
+    (cross-op fork-join double-subscribes once intra-op fills the quota),
+    and mirror to ``OMP_NUM_THREADS`` / ``MKL_NUM_THREADS`` so BLAS backends
+    that read env (not torch) stay in sync.
+    """
+    global _THREADS_SET  # noqa: PLW0603
+    if _THREADS_SET:
+        return
+    import torch  # noqa: PLC0415
+
+    slurm = os.environ.get("SLURM_CPUS_PER_TASK")
+    n = (int(slurm) if slurm and slurm.isdigit() else None) or os.cpu_count() or 1
+    os.environ["OMP_NUM_THREADS"] = str(n)
+    os.environ["MKL_NUM_THREADS"] = str(n)
+    torch.set_num_threads(n)
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        # Some torch op already launched — log and continue with whatever
+        # interop count is locked in. Intra-op is still applied, and that's
+        # where CPU-bound ops get most of their wins.
+        from graphids._otel import get_logger  # noqa: PLC0415
+
+        get_logger(__name__).warning("cpu_threads_interop_locked", intra_op=n)
+    _THREADS_SET = True
 
 
 def _prepare(
@@ -32,10 +89,8 @@ def _prepare(
     Python mutator + jsonnet ``apply_dotted`` pair). Heavy imports live
     inside the function so the app stays login-node-safe.
     """
-    from graphids._cpu import configure_cpu_threads
     from graphids._mlflow import ensure_tracking_uri
     from graphids._otel import init_providers, wire_file_exporters
-    from graphids._spawn import ensure_spawn
     from graphids.cli.app import dotted_to_nested
     from graphids.config.jsonnet import render
     from graphids.orchestrate import build
@@ -48,8 +103,8 @@ def _prepare(
         wandb_entity=os.environ.get("WANDB_ENTITY", ""),
         wandb_project=os.environ.get("WANDB_PROJECT", "graphids"),
     )
-    ensure_spawn()
-    configure_cpu_threads()
+    _ensure_spawn()
+    _configure_cpu_threads()
     ensure_tracking_uri()
 
     rendered = render(

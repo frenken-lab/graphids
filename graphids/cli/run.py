@@ -1,17 +1,20 @@
 """``graphids run`` and ``graphids status`` — plan-driven workflow.
 
-A *plan* is a jsonnet file declaring ``{ nodes: [...] }``. Each entry
-becomes one ``graphids submit`` invocation in the rendered bash artifact.
+A *plan* is a jsonnet file declaring ``{ nodes: [...] }``. ``graphids
+run`` renders it to **JSONL** on stdout — one row per node, with a
+``submit_command`` string for each. It does not submit anything; the
+user (or an LLM walking the JSONL) iterates row by row and invokes
+``graphids submit`` per node.
 
-    # Render the artifact (does NOT submit):
-    graphids run    <plan.jsonnet> --dataset X --seed Y --cluster C > runme.sh
-    bash runme.sh   # actually submits
+    # Render the blueprint (does NOT submit):
+    graphids run    <plan.jsonnet> --dataset X --seed Y --cluster C
 
     # Inspect MLflow status across the plan (read-only):
     graphids status <plan.jsonnet> --dataset X --seed Y
 
 Use ``graphids submit <preset.jsonnet>`` for atomic one-shot submissions
-(no plan needed).
+(no plan needed). See ``.claude/rules/single-submission-primitive.md``
+for the architectural commitment behind this shape.
 """
 
 from __future__ import annotations
@@ -70,45 +73,17 @@ def run_cli(
             help="Subset of node names (transitive upstream deps auto-included).",
         ),
     ] = None,
-    force: Annotated[
-        bool,
-        typer.Option(
-            "--force",
-            help="Emit without --skip-if-finished on each line. Default: skip FINISHED nodes.",
-        ),
-    ] = False,
-    output: Annotated[
-        Path | None,
-        typer.Option(
-            "--output",
-            "-o",
-            help="Write the bash artifact to FILE (default: stdout).",
-        ),
-    ] = None,
 ) -> None:
-    """Render a plan to an executable bash artifact composed of `graphids submit` calls.
+    """Render a plan to a JSONL blueprint of ``graphids submit`` invocations.
 
-    Does not submit. Pipe to ``bash`` or save with ``--output FILE``.
+    Does not submit. Stdout. Each line: one JSON object per topo-sorted node
+    with a ``submit_command`` string. Pipe to ``jq`` or iterate manually.
     """
-    from graphids.slurm.run import render_plan_script
+    from graphids.slurm.run import render_plan_jsonl
 
     nodes = _load_plan(plan_path, dataset=dataset, seed=seed, variants=variants)
-    invocation = "graphids run " + " ".join(sys.argv[2:])  # everything after `graphids run`
-    script = render_plan_script(
-        nodes,
-        dataset=dataset,
-        seed=seed,
-        cluster=cluster,
-        skip_finished=not force,
-        invocation=invocation,
-    )
-    if output:
-        output.write_text(script)
-        # Make it executable for the user's convenience.
-        output.chmod(output.stat().st_mode | 0o111)
-    else:
-        sys.stdout.write(script)
-        sys.stdout.flush()
+    sys.stdout.write(render_plan_jsonl(nodes, dataset=dataset, seed=seed, cluster=cluster))
+    sys.stdout.flush()
 
 
 @app.command("status", rich_help_panel="Plan")

@@ -25,11 +25,13 @@ One Typer command, `python -m graphids submit`, two shapes:
 The preset owns run specifics; flags map to TLAs internally so you never
 type nested JSON quotes. Defaults to `gpu` mode + `long` length (per-cluster
 wall in `submit_profiles.json`); `--smoke` swaps to `short` (gpudebug 1hr).
-`--dep <jid>` chains `afterok` (repeatable); env `SBATCH_DEP` is a fallback.
-Full flag list via `python -m graphids submit --help`. Backed by
-`submitit.AutoExecutor`; library entrypoint is
-`graphids.slurm.submit.submit()` (used directly by `graphids.slurm.dag`
-for the OFAT DAG).
+`--depends-on <variant>[:<seed>]` is the **only** dep mechanism: FINISHED
+upstream → inject ckpt TLA; RUNNING upstream → also add its
+`slurm.slurm_job_id` as an `afterok` dep. One primitive — no separate
+`--dep` flag, no `SBATCH_DEP` env fallback. See
+`.claude/rules/single-submission-primitive.md`. Full flag list via
+`python -m graphids submit --help`. Backed by `submitit.AutoExecutor`;
+library entrypoint is `graphids.slurm.submit.submit()`.
 
 ```bash
 python -m graphids submit configs/ablations/unsupervised/vgae.jsonnet --dataset set_01 --seed 42

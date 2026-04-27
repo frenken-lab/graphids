@@ -211,15 +211,12 @@ def submit(  # noqa: PLR0913 — every flag is a real public surface
     # --- Assemble additional SLURM params (cluster, dep, signal) -----------
     additional = dict(params.pop("slurm_additional_parameters", {}))
     additional["clusters"] = cluster
-    # Filter non-positive jids: bash artifacts pass `0` (or `--dep ""` after
-    # shell expansion) when an upstream node was skipped via
-    # --skip-if-finished. Treat 0 as "no real upstream", drop it from the
-    # afterok string. Real SLURM jids are always positive.
+    # afterok dep jids come from --depends-on resolution (RUNNING upstream
+    # contributes its slurm.slurm_job_id MLflow tag). Real SLURM jids are
+    # always positive; defensively filter to be safe.
     live_deps = [str(j) for j in dep_jids if j > 0]
     if live_deps:
         additional["dependency"] = f"afterok:{':'.join(live_deps)}"
-    elif os.environ.get("SBATCH_DEP"):
-        additional["dependency"] = os.environ["SBATCH_DEP"]
 
     setup = [f"source {_PREAMBLE_SH}"]
     if mode == "cpu":

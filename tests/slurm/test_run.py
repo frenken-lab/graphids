@@ -1,21 +1,24 @@
-"""Tests for ``graphids/slurm/run.py`` — bash-artifact renderer.
+"""Tests for ``graphids/slurm/run.py`` — JSONL blueprint renderer.
 
-The renderer is a pure function: ``(nodes, dataset, seed, cluster,
-skip_finished) → bash string``. Tests assert on the rendered string;
-no submission is exercised. A ``bash -n`` parse-only check guards against
-syntax-broken artifacts shipping silently.
+The renderer is a pure function: ``(nodes, dataset, seed, cluster) →
+JSONL string``. Tests assert on the parsed JSONL rows; no submission is
+exercised. Each row is a literal `graphids submit` invocation that the
+user (or an LLM walking the JSONL) runs directly.
+
+See ``.claude/rules/single-submission-primitive.md`` for the
+architectural commitment behind the JSONL shape.
 """
 
 from __future__ import annotations
 
-import shutil
-import subprocess
+import json
+from typing import Any
 
 import pytest
 
 from graphids.config.jsonnet import render
 from graphids.slurm.dag import Node, parse_plan
-from graphids.slurm.run import _var_for, render_plan_script
+from graphids.slurm.run import render_plan_jsonl
 
 
 @pytest.fixture(scope="module")
@@ -24,113 +27,122 @@ def ofat_nodes() -> tuple[Node, ...]:
 
 
 @pytest.fixture(scope="module")
-def ofat_script(ofat_nodes: tuple[Node, ...]) -> str:
-    return render_plan_script(ofat_nodes, dataset="set_01", seed=42, cluster="cardinal")
+def ofat_rows(ofat_nodes: tuple[Node, ...]) -> list[dict[str, Any]]:
+    out = render_plan_jsonl(ofat_nodes, dataset="set_01", seed=42, cluster="cardinal")
+    return [json.loads(line) for line in out.splitlines() if line.strip()]
 
 
-# CONTRACT: ``_var_for`` must produce a bash-safe identifier for any Node name.
-# REGRESSION: kebab-case node names (``vgae-test``, ``extract-states``) blew up
-# bash assignment if not converted; assert the conversion explicitly.
-def test_var_for_kebab_to_snake() -> None:
-    assert _var_for("vgae") == "JID_VGAE"
-    assert _var_for("vgae-test") == "JID_VGAE_TEST"
-    assert _var_for("extract-states") == "JID_EXTRACT_STATES"
+_REQUIRED_FIELDS = {
+    "name",
+    "preset",
+    "command",
+    "action",
+    "deps",
+    "mode",
+    "length",
+    "mem_gb",
+    "timeout_min",
+    "submit_command",
+}
 
 
-# CONTRACT: artifact starts with the bash shebang + strict-mode pragma.
-def test_emits_shebang_and_strict_mode(ofat_script: str) -> None:
-    lines = ofat_script.splitlines()
-    assert lines[0] == "#!/usr/bin/env bash"
-    assert "set -euo pipefail" in lines[:5]
+# CONTRACT: every row has the documented schema. Missing fields would break
+# downstream LLM/user iteration that reads them by name.
+def test_every_row_has_full_schema(ofat_rows: list[dict[str, Any]]) -> None:
+    for row in ofat_rows:
+        assert set(row.keys()) == _REQUIRED_FIELDS, f"{row['name']}: {set(row.keys())}"
 
 
-# CONTRACT: header records the invocation and a content-addressed plan_hash.
-def test_header_has_plan_hash(ofat_script: str) -> None:
-    head = ofat_script.splitlines()[:4]
-    hash_line = next(line for line in head if "plan_hash=" in line)
-    assert "31 nodes" in hash_line  # 15 fits + 15 tests + 1 command
-    # 8-char hex digest
-    digest = hash_line.split("plan_hash=")[1]
-    assert len(digest) == 8 and all(c in "0123456789abcdef" for c in digest)
+# CONTRACT: every row is valid JSON on its own line — the JSONL invariant.
+# REGRESSION risk: embedding a literal newline in a submit_command would split
+# one row into two parse-failed lines.
+def test_each_line_parses_as_json(ofat_nodes: tuple[Node, ...]) -> None:
+    out = render_plan_jsonl(ofat_nodes, dataset="set_01", seed=42, cluster="cardinal")
+    for line in out.splitlines():
+        json.loads(line)
 
 
-# CONTRACT: every preset line bakes (dataset, seed, cluster) explicitly.
+# CONTRACT: every preset row's submit_command bakes (dataset, seed, cluster).
 # REGRESSION risk: forgetting `--cluster` would route every job to the env-var
-# fallback ("pitzer"), silently submitting Cardinal-targeted plans to the wrong cluster.
-def test_preset_lines_bake_dataset_seed_cluster(ofat_script: str) -> None:
-    vgae_line = _line_for(ofat_script, "JID_VGAE=")
-    assert "--dataset set_01" in vgae_line
-    assert "--seed 42" in vgae_line
-    assert "--cluster cardinal" in vgae_line
+# fallback ("pitzer"), silently submitting Cardinal-targeted plans wrong.
+def test_preset_submit_commands_bake_dataset_seed_cluster(
+    ofat_rows: list[dict[str, Any]],
+) -> None:
+    vgae = next(r for r in ofat_rows if r["name"] == "vgae")
+    assert "--dataset set_01" in vgae["submit_command"]
+    assert "--seed 42" in vgae["submit_command"]
+    assert "--cluster cardinal" in vgae["submit_command"]
 
 
-# CONTRACT: dep wiring uses the upstream's shell variable, not a literal jid.
-def test_dep_chain_uses_shell_var(ofat_script: str) -> None:
-    test_line = _line_for(ofat_script, "JID_VGAE_TEST=")
-    assert '--dep "$JID_VGAE"' in test_line
+# CONTRACT: deps are listed by node-name, not by jid or shell var. The blueprint
+# is data — the user/LLM honors deps by ordering, not by SLURM afterok plumbing.
+def test_deps_are_node_names(ofat_rows: list[dict[str, Any]]) -> None:
+    vgae_test = next(r for r in ofat_rows if r["name"] == "vgae-test")
+    assert vgae_test["deps"] == ["vgae"]
+    extract = next(r for r in ofat_rows if r["name"] == "extract-states")
+    assert sorted(extract["deps"]) == ["focal", "vgae"]
 
 
-# CONTRACT: command-mode nodes use --command, NOT a preset path, and reference
-# both upstream deps (extract-states fans in vgae + focal).
-def test_command_node_uses_command_form(ofat_script: str) -> None:
-    line = _line_for(ofat_script, "JID_EXTRACT_STATES=")
-    assert "--command " in line
-    assert "extract-fusion-states" in line
-    assert '--dep "$JID_VGAE"' in line
-    assert '--dep "$JID_FOCAL"' in line
+# CONTRACT: command-mode rows have preset=None and a non-null command string;
+# their submit_command uses --command (shell-quoted), not a preset path.
+def test_command_row_shape(ofat_rows: list[dict[str, Any]]) -> None:
+    extract = next(r for r in ofat_rows if r["name"] == "extract-states")
+    assert extract["preset"] is None
+    assert extract["command"] is not None
+    assert "extract-fusion-states" in extract["command"]
+    assert "--command " in extract["submit_command"]
+    assert "extract-fusion-states" in extract["submit_command"]
 
 
-# CONTRACT: command-mode nodes do NOT get --skip-if-finished — they have no
+# CONTRACT: command-mode rows do NOT get --skip-if-finished — they have no
 # (group, variant) for the MLflow lookup.
-def test_command_node_omits_skip_if_finished(ofat_script: str) -> None:
-    line = _line_for(ofat_script, "JID_EXTRACT_STATES=")
-    assert "--skip-if-finished" not in line
+def test_command_row_omits_skip_if_finished(ofat_rows: list[dict[str, Any]]) -> None:
+    extract = next(r for r in ofat_rows if r["name"] == "extract-states")
+    assert "--skip-if-finished" not in extract["submit_command"]
 
 
-# CONTRACT: every preset line has --skip-if-finished by default; --force omits it.
-def test_skip_if_finished_default_on(ofat_nodes: tuple[Node, ...]) -> None:
-    script = render_plan_script(ofat_nodes, dataset="set_01", seed=42, cluster="cardinal")
-    preset_lines = [l for l in script.splitlines() if "graphids submit configs/" in l]
-    assert all("--skip-if-finished" in script.split(l)[1].split("\n\n")[0] for l in preset_lines)
+# CONTRACT: every preset row's submit_command carries --skip-if-finished by
+# default. Re-running a partially-completed plan must short-circuit FINISHED
+# nodes via MLflow without forcing the user to filter the JSONL.
+def test_preset_rows_carry_skip_if_finished(ofat_rows: list[dict[str, Any]]) -> None:
+    preset_rows = [r for r in ofat_rows if r["preset"] is not None]
+    for row in preset_rows:
+        assert "--skip-if-finished" in row["submit_command"], row["name"]
 
 
-def test_force_omits_skip_if_finished(ofat_nodes: tuple[Node, ...]) -> None:
-    script = render_plan_script(
-        ofat_nodes, dataset="set_01", seed=42, cluster="cardinal", skip_finished=False
-    )
-    assert "--skip-if-finished" not in script
+# CONTRACT: --depends-on is NOT auto-emitted. The user adds it for same-batch
+# parallel queueing; sequential workflows don't need it. Auto-injection would
+# turn `submit_command` into pipeline-specific orchestration logic, not a
+# primitive — see .claude/rules/single-submission-primitive.md.
+def test_depends_on_not_auto_emitted(ofat_rows: list[dict[str, Any]]) -> None:
+    for row in ofat_rows:
+        assert "--depends-on" not in row["submit_command"], row["name"]
 
 
-# CONTRACT: test-action peers get `--action test` and the test-resource overrides.
-def test_test_peer_has_test_action_and_cpu_overrides(ofat_script: str) -> None:
-    line = _line_for(ofat_script, "JID_VGAE_TEST=")
-    assert "--action test" in line
-    assert "--mode cpu" in line
-    assert "--mem-gb 32" in line
-    assert "--timeout-min 30" in line
+# CONTRACT: test-action peers get --action test and the test-resource overrides
+# (cpu/long/32GB/30min) baked into submit_command.
+def test_test_peer_overrides(ofat_rows: list[dict[str, Any]]) -> None:
+    vgae_test = next(r for r in ofat_rows if r["name"] == "vgae-test")
+    cmd = vgae_test["submit_command"]
+    assert "--action test" in cmd
+    assert "--mode cpu" in cmd
+    assert "--mem-gb 32" in cmd
+    assert "--timeout-min 30" in cmd
 
 
-# CONTRACT: render is deterministic. Same inputs → byte-identical output.
+# CONTRACT: render is deterministic. Same inputs → byte-identical JSONL.
 def test_render_deterministic(ofat_nodes: tuple[Node, ...]) -> None:
-    a = render_plan_script(ofat_nodes, dataset="set_01", seed=42, cluster="cardinal")
-    b = render_plan_script(ofat_nodes, dataset="set_01", seed=42, cluster="cardinal")
+    a = render_plan_jsonl(ofat_nodes, dataset="set_01", seed=42, cluster="cardinal")
+    b = render_plan_jsonl(ofat_nodes, dataset="set_01", seed=42, cluster="cardinal")
     assert a == b
 
 
-# CONTRACT: artifact is syntactically valid bash. Catches any quoting / line-
-# continuation bug before the user ever pipes the script into a shell.
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
-def test_artifact_parses_under_bash_n(ofat_script: str) -> None:
-    result = subprocess.run(
-        ["bash", "-n"], input=ofat_script, text=True, capture_output=True, check=False
-    )
-    assert result.returncode == 0, f"bash -n rejected the script:\n{result.stderr}"
-
-
-def _line_for(script: str, prefix: str) -> str:
-    """Return the full multi-line `JID_X=$(...)` block whose first line starts with prefix."""
-    blocks = script.split("\n\n")
-    for block in blocks:
-        if block.lstrip().startswith(prefix):
-            return block
-    raise AssertionError(f"no block starting with {prefix!r} in script")
+# CONTRACT: rows appear in topological order — upstream nodes precede their
+# downstream consumers. The user/LLM can iterate top-to-bottom and never
+# encounter an unresolved dep.
+def test_rows_emit_in_topo_order(ofat_rows: list[dict[str, Any]]) -> None:
+    seen: set[str] = set()
+    for row in ofat_rows:
+        for dep in row["deps"]:
+            assert dep in seen, f"{row['name']} depends on {dep!r} which appears later"
+        seen.add(row["name"])

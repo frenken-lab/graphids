@@ -14,18 +14,17 @@ numbers are not pinned, names are.
 # Atomic — one preset, one job. Most common interactive use.
 python -m graphids submit <preset.jsonnet> --dataset X --seed N [opts]
 
-# Plan — multi-node DAG. `run` RENDERS a bash artifact; it does not submit.
-python -m graphids run  configs/plans/ofat.jsonnet --dataset X --seed N --cluster C > runme.sh
-bash runme.sh                                                          # actually submits
+# Plan — multi-node DAG. `run` RENDERS a JSONL blueprint; it does not submit.
+python -m graphids run  configs/plans/ofat.jsonnet --dataset X --seed N --cluster C
 python -m graphids status configs/plans/ofat.jsonnet --dataset X --seed N   # read-only MLflow
 ```
 
-The plan is *data*; the bash script is the *action*. Each line in the
-artifact is one ``graphids submit`` primitive call — the same atomic
-entrypoint a user would invoke by hand. afterok deps thread via shell
-variables (``JID_<NAME>=$(graphids submit ...)`` then
-``--dep "$JID_<UPSTREAM>"`` downstream). `run` and `submit` compose;
-they don't duplicate.
+The plan is *data*; the JSONL is the *blueprint*. Each row carries a
+literal ``submit_command`` string — the same atomic ``graphids submit``
+invocation a user would run by hand. The user (or an LLM walking the
+JSONL) iterates row by row in topo order. There is **no executable
+artifact**, no Python pipeline driver, no second submission path —
+see ``.claude/rules/single-submission-primitive.md``.
 
 ## Atomic: `graphids submit <preset>`
 
@@ -38,9 +37,17 @@ Login-node phase (until `sbatch` returns):
    `--lake-root`).
 2. **`--depends-on` resolution** (optional). For each `<variant>:<seed>`
    spec, `graphids/slurm/dependencies.py:resolve_dependency` calls
-   `_mlflow.latest_run(..., status="FINISHED")`, reads the upstream's
-   `graphids.run_dir` tag, and injects `<role>_ckpt_path` TLAs (e.g.
-   `vgae_ckpt_path`). The producer→consumer-TLA mapping lives in
+   `_mlflow.latest_run(...)` and dispatches by status:
+   * **FINISHED** → reads `graphids.run_dir` tag, injects `<role>_ckpt_path`
+     TLA (e.g. `vgae_ckpt_path`). No SLURM dependency.
+   * **RUNNING** → injects the same TLA (path is deterministic from
+     `run_dir`) AND adds `slurm.slurm_job_id` from the upstream's MLflow
+     tag as an `afterok` dep. Downstream queues now and waits.
+   * **missing / FAILED / KILLED** → hard error.
+
+   `resolve_all` returns `(tla_pairs, afterok_jids)` and the CLI passes
+   both into `submit()`. One primitive — no separate `--dep` flag, no
+   `SBATCH_DEP` env fallback. Producer→consumer-TLA mapping lives in
    `DEPENDS_ON_TLA`.
 3. **`--skip-if-finished` short-circuit** (optional). Infers
    `(group, variant)` from the preset path, calls
@@ -111,8 +118,9 @@ Preemption recovery (5 min before walltime):
 
 A *plan* is a jsonnet file declaring `{ nodes: [Node, ...] }`. The plan
 itself is the topology source of truth — there is no parallel Python
-declaration. `graphids run` is a **renderer**: it emits a bash script
-composed of `graphids submit` invocations and exits. No SLURM contact.
+declaration. `graphids run` is a **JSONL blueprint renderer**: it
+emits one JSON object per node and exits. No SLURM contact, no
+executable artifact.
 
 1. **`graphids/cli/run.py:run_cli`** renders the plan via
    `config.jsonnet.render` (passing `dataset` + `seed` as TLAs) and parses
@@ -123,30 +131,26 @@ composed of `graphids submit` invocations and exits. No SLURM contact.
    `<group>/<variant>.jsonnet` preset path; the plan only declares
    `preset:`. Off-convention paths must declare `group` / `variant`
    explicitly or fail validation.
-3. **`graphids/slurm/run.py:render_plan_script`** toposorts via
-   `graphlib` and emits one bash assignment per node:
-   `JID_<NAME>=$(graphids submit ...)`. Preset lines bake `(dataset, seed,
-   cluster)` and the node's mode / length / mem / timeout overrides;
-   command lines emit `--command "..."`. Upstream deps are referenced as
-   `--dep "$JID_<UPSTREAM>"`.
-4. **`--skip-if-finished`** is appended to every *preset* line by default
-   (`--force` opts out). Command-mode nodes don't get it — they have no
-   `(group, variant)` for the MLflow lookup. When a preset is skipped at
-   bash-execution time, `graphids submit` prints `0`; downstream
-   `--dep "$JID_X"` becomes `--dep "0"`, which `submit()` filters out
-   (`j > 0`) before composing the SLURM `afterok:` string.
-5. **Header** carries the original CLI invocation, the node count, and
-   a content-addressed `plan_hash=<8-hex>` derived from the toposorted
-   `(name, deps, preset, command)` tuples — same inputs always produce
-   the same hash.
+3. **`graphids/slurm/run.py:render_plan_jsonl`** toposorts via
+   `graphlib` and emits one JSON line per node. Each row's
+   `submit_command` is the literal `graphids submit ...` invocation,
+   baked with `(dataset, seed, cluster)` plus the node's mode / length /
+   mem / timeout overrides. `deps` are listed by node name (not jid, not
+   shell var) — the user/LLM honors them by ordering.
+4. **`--skip-if-finished`** is included in every *preset* row's
+   `submit_command` by default. Command-mode rows omit it (no
+   `(group, variant)` for the MLflow lookup). `--depends-on` is **not**
+   auto-emitted — the user adds it for same-batch SLURM-level parallel
+   queueing (RUNNING upstream → afterok). For sequential workflows it's
+   not needed; the FINISHED check via `--skip-if-finished` covers
+   re-runnability.
 
 Composition the user does:
 
 ```bash
-graphids run plan.jsonnet --dataset X --seed N --cluster C > runme.sh
-# review / edit / commit runme.sh
-bash runme.sh
-# every line is a graphids submit invocation; jids capture into shell vars
+graphids run plan.jsonnet --dataset X --seed N --cluster C
+# read JSONL, decide which rows to run, copy/paste each submit_command.
+# Or pipe through jq for filtering / ordering / templating.
 ```
 
 ## Status: `graphids status <plan.jsonnet>`
@@ -162,7 +166,7 @@ machine-readable shape.
 |---|---|---|
 | `--ckpt-tla` | Set the jsonnet `ckpt_path` TLA. | `flag_tlas` → `_TrainingJob.tlas` → consumed by the preset. |
 | `--ckpt-path` | Resume the *current* preset — passthrough to `python -m graphids fit/test --ckpt-path`. | `_TrainingJob.ckpt_path` → `cli.training.fit(ckpt_path=...)`. |
-| `--depends-on V[:S]` | MLflow lookup → inject upstream-teacher ckpt as TLA (e.g. `vgae_ckpt_path`). | `flag_tlas` via `dependencies.build_dependency_tlas`. Conflicts with `--ckpt-path`. |
+| `--depends-on V[:S]` | MLflow lookup → inject upstream-teacher ckpt as TLA (e.g. `vgae_ckpt_path`). RUNNING upstream → also add `slurm.slurm_job_id` as afterok dep. | `flag_tlas` + `dep_jids` via `dependencies.resolve_all`. Conflicts with `--ckpt-path`. |
 
 In a plan, `--depends-on` semantics fall out of the topology — fusion
 nodes depend on `extract-states`, which writes a tensor cache to
@@ -187,7 +191,7 @@ it queries 50 historical rows for a group p95, so it stays separate.
 | `graphids/cli/run.py` | Plan CLI (`run` + `status`). |
 | `graphids/cli/training.py` | `fit` / `test` Typer commands; `_prepare` for compute-node setup. |
 | `graphids/slurm/submit.py` | Library `submit()`; `_TrainingJob` payload + `checkpoint()`. |
-| `graphids/slurm/run.py` | `render_plan_script` — toposort + emit bash artifact (no submission). |
+| `graphids/slurm/run.py` | `render_plan_jsonl` — toposort + emit JSONL blueprint (no submission, no executable artifact). |
 | `graphids/slurm/dag.py` | `Node` (Pydantic), `parse_plan`, `toposort`, `filter_with_upstream`. |
 | `graphids/slurm/dependencies.py` | `--depends-on` registry + resolution. |
 | `graphids/slurm/status.py` | Per-node MLflow status query + table/json formatters. |

@@ -33,6 +33,16 @@ function(
 
     trainer+: {
       default_root_dir: run_dir,
+      // VGAE training plateaus for ~50% of epochs at the standardization
+      // floor before breakthrough — bump max_epochs so EarlyStopping
+      // (patience 100) has runway after the breakthrough phase.
+      max_epochs: 1200,
+      // cache v10 z_benign scaler divides by benign-only stddev (smaller
+      // than benign+attack used in v9), so post-standardization attack-row
+      // magnitudes can exceed fp16's max (~65504). 32-true is the safe
+      // default; override back via --set trainer.precision='16-mixed'
+      // once a (dataset, scaler_strategy) pair is empirically validated.
+      precision: '32-true',
     },
 
     data: {

@@ -101,26 +101,18 @@ def submit_cli(  # noqa: PLR0913 — every flag is a real surface
     ] = False,
     tla: TlaList = None,
     set_: SetList = None,
-    dep: Annotated[
-        list[int] | None,
-        typer.Option(
-            "--dep",
-            metavar="JID",
-            help="afterok dep jid (repeatable). Env SBATCH_DEP is a fallback.",
-        ),
-    ] = None,
     depends_on: Annotated[
         str | None,
         typer.Option(
             "--depends-on",
             metavar="<variant>[:<seed>][,...]",
             help=(
-                "Resolve upstream teacher ckpts via MLflow → inject as TLAs. "
-                "E.g. --depends-on vgae:42,focal:42 looks up the latest "
-                "FINISHED vgae and focal fit runs and passes their ckpt "
-                "paths as vgae_ckpt_path and gat_ckpt_path TLAs. ':seed' "
-                "defaults to --seed if omitted. Distinct from --dep (afterok "
-                "scheduler dep) — the two compose."
+                "Resolve upstream teacher(s) via MLflow → inject ckpt path TLA, "
+                "and (when upstream is RUNNING) add its slurm_job_id as an "
+                "afterok dep. FINISHED upstream → TLA only; RUNNING → TLA + "
+                "afterok; missing/FAILED/KILLED → hard error. ':seed' defaults "
+                "to --seed if omitted. Single primitive — see "
+                ".claude/rules/single-submission-primitive.md."
             ),
         ),
     ] = None,
@@ -194,19 +186,21 @@ def submit_cli(  # noqa: PLR0913 — every flag is a real surface
     # Resolve --depends-on BEFORE user --tla so explicit --tla overrides
     # (last-wins on flag_tlas). Hard error on resolution failure: deps are
     # load-bearing — silently continuing with no teacher TLAs would render
-    # but produce a wrong run.
+    # but produce a wrong run. RUNNING upstreams contribute afterok jids.
+    afterok_jids: list[int] = []
     if depends_on:
         from graphids.slurm.dependencies import (
             DependencyResolutionError,
-            build_dependency_tlas,
             parse_depends_on,
+            resolve_all,
         )
 
         if not dataset:
             raise typer.BadParameter("--depends-on requires --dataset")
         try:
             specs = parse_depends_on(depends_on, default_seed=seed)
-            flag_tlas.extend(build_dependency_tlas(specs, dataset))
+            dep_tlas, afterok_jids = resolve_all(specs, dataset)
+            flag_tlas.extend(dep_tlas)
         except DependencyResolutionError as exc:
             raise typer.BadParameter(str(exc)) from exc
 
@@ -243,7 +237,7 @@ def submit_cli(  # noqa: PLR0913 — every flag is a real surface
         mem_gb=mem_gb,
         timeout_min=timeout_min,
         time_from_history=time_from_history,
-        dep_jids=tuple(dep or ()),
+        dep_jids=tuple(afterok_jids),
         dry_run=dry_run,
     )
 

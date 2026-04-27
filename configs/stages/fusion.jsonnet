@@ -36,7 +36,10 @@ function(
 
     data+: {
       init_args+: {
-        cached_states_dir: run_dir,
+        // Fusion training reads VGAE+GAT state tensors written once by
+        // `extract-fusion-states` per (dataset, seed) — shared across all
+        // fusion methods, so the cache lives outside any single run_dir.
+        cached_states_dir: std.native('paths.states_dir')(dataset, seed),
       },
     },
   } + (if ckpt_path != null then { ckpt_path: ckpt_path } else {})

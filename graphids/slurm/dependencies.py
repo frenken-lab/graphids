@@ -1,18 +1,17 @@
-"""Resolve ``--depends-on <variant>[:<seed>]`` into upstream-ckpt TLAs via MLflow tags.
+"""Resolve ``--depends-on <variant>[:<seed>]`` into ckpt TLAs and/or afterok jids.
 
-The variant→TLA mapping (:data:`DEPENDS_ON_TLA`) is the single source of
-truth for the CLI's ``--depends-on`` flag (atomic submissions). Plan
-nodes don't go through this — ``configs/plans/*.jsonnet`` declares
-upstream ckpts directly via ``std.native('paths.best_ckpt')(...)``.
-Each entry maps a *producer* variant name (e.g. ``"vgae"``) to the TLA
-name a *consumer* preset uses to receive that producer's ckpt path
-(e.g. ``"vgae_ckpt_path"``).
+One CLI primitive (`--depends-on`) covers two cases via MLflow lookup:
 
-The resolver queries MLflow for the latest FINISHED fit run matching
-``(dataset, variant, seed)``, reads its ``graphids.run_dir`` tag, and
-returns ``<run_dir>/checkpoints/best_model.ckpt``. All resolution
-failures raise :class:`DependencyResolutionError` with an actionable
-message — the CLI boundary surfaces the message verbatim.
+- Upstream **FINISHED** → inject ``<role>_ckpt_path`` TLA only. Downstream
+  reads the existing checkpoint; no SLURM dependency needed.
+- Upstream **RUNNING** → inject the TLA (path is deterministic from
+  ``run_dir``) AND add the upstream's ``slurm.slurm_job_id`` as an afterok
+  dep. Downstream queues now and waits on the running upstream.
+- Upstream **missing / FAILED / KILLED** → hard error. User re-submits
+  upstream, then retries.
+
+Both cases share the same flag and same registry. No second knob, no
+``--dep`` jid plumbing — see ``.claude/rules/single-submission-primitive.md``.
 """
 
 from __future__ import annotations
@@ -34,7 +33,7 @@ DEPENDS_ON_TLA: dict[str, str] = {
 
 
 class DependencyResolutionError(Exception):
-    """``--depends-on`` could not be resolved (not found, missing tag, missing ckpt)."""
+    """``--depends-on`` could not be resolved (missing run, bad state, missing tag)."""
 
 
 @dataclass(frozen=True)
@@ -63,49 +62,68 @@ def parse_depends_on(raw: str, default_seed: int | None) -> list[DependencySpec]
     return specs
 
 
-def resolve_dependency(dep: DependencySpec, dataset: str) -> Path:
-    """Look up the latest FINISHED fit run for ``dep`` and return the ckpt path.
+def resolve_dependency(dep: DependencySpec, dataset: str) -> tuple[Path, int | None]:
+    """Look up upstream MLflow row; dispatch by status.
 
-    Raises :class:`DependencyResolutionError` with an actionable message
-    on any of: no matching run, missing ``graphids.run_dir`` tag (pre-2026-04
-    rows), or ckpt deleted from disk. MLflow transient errors propagate.
+    Returns ``(ckpt_path, afterok_jid)``. ``ckpt_path`` is always set
+    (read from ``graphids.run_dir`` tag — works for both FINISHED and
+    RUNNING since the tag is stamped at fit-start). ``afterok_jid`` is
+    set only when the upstream is currently RUNNING (read from the
+    ``slurm.slurm_job_id`` tag). Both terminal-bad statuses (FAILED,
+    KILLED) and missing rows raise :class:`DependencyResolutionError`.
     """
     from graphids._mlflow import latest_run
 
-    row = latest_run(
-        dataset=dataset, variant=dep.variant, seed=dep.seed, phase="fit", status="FINISHED"
-    )
+    row = latest_run(dataset=dataset, variant=dep.variant, seed=dep.seed, phase="fit")
     if row is None:
         raise DependencyResolutionError(
-            f"--depends-on {dep.variant}:{dep.seed}: no FINISHED fit run in "
-            f"MLflow for dataset={dataset}. Submit it first: "
+            f"--depends-on {dep.variant}:{dep.seed}: no fit run in MLflow for "
+            f"dataset={dataset}. Submit it first: "
             f"`graphids submit configs/ablations/<group>/{dep.variant}.jsonnet "
             f"--dataset {dataset} --seed {dep.seed}`"
         )
+    status = str(row.get("status", ""))
+    if status not in ("FINISHED", "RUNNING"):
+        raise DependencyResolutionError(
+            f"--depends-on {dep.variant}:{dep.seed}: upstream status is {status!r}. "
+            f"Need FINISHED (use existing ckpt) or RUNNING (afterok dep) — "
+            f"re-submit it."
+        )
     run_dir_tag = row.get("tags.graphids.run_dir")
     if not run_dir_tag or not isinstance(run_dir_tag, str):
-        tla = DEPENDS_ON_TLA.get(dep.variant, "<role>_ckpt_path")
         raise DependencyResolutionError(
             f"--depends-on {dep.variant}:{dep.seed}: MLflow run "
-            f"{row.get('run_id', '<unknown>')} has no graphids.run_dir tag "
-            f"(probably a pre-2026-04 run). Re-fit or pass --tla {tla}=<path> manually."
+            f"{row.get('run_id', '<unknown>')} has no graphids.run_dir tag."
         )
-
     ckpt = Path(run_dir_tag) / "checkpoints" / "best_model.ckpt"
-    if not ckpt.exists():
+    if status == "FINISHED":
+        if not ckpt.exists():
+            raise DependencyResolutionError(
+                f"--depends-on {dep.variant}:{dep.seed}: ckpt missing on disk: "
+                f"{ckpt}. Run was FINISHED but checkpoint was deleted/moved."
+            )
+        return ckpt, None
+    # RUNNING — ckpt may not exist yet; afterok gates the downstream submit.
+    jid_tag = row.get("tags.slurm.slurm_job_id")
+    if not jid_tag or not isinstance(jid_tag, str) or not jid_tag.isdigit():
         raise DependencyResolutionError(
-            f"--depends-on {dep.variant}:{dep.seed}: ckpt missing on disk: "
-            f"{ckpt}. Run was FINISHED but checkpoint was deleted/moved."
+            f"--depends-on {dep.variant}:{dep.seed}: upstream RUNNING but no "
+            f"valid slurm.slurm_job_id tag — was it submitted via `graphids submit`?"
         )
-    return ckpt
+    return ckpt, int(jid_tag)
 
 
-def build_dependency_tlas(specs: list[DependencySpec], dataset: str) -> list[tuple[str, str]]:
-    """Resolve each spec via :func:`resolve_dependency` and return TLA pairs.
+def resolve_all(
+    specs: list[DependencySpec], dataset: str
+) -> tuple[list[tuple[str, str]], list[int]]:
+    """Resolve every spec, returning ``(tla_pairs, afterok_jids)``.
 
-    Variants not in :data:`DEPENDS_ON_TLA` raise :class:`typer.BadParameter`.
+    Each spec contributes one TLA (always) and at most one jid (only
+    when the upstream is currently RUNNING). Variants not in
+    :data:`DEPENDS_ON_TLA` raise :class:`typer.BadParameter`.
     """
     tlas: list[tuple[str, str]] = []
+    jids: list[int] = []
     for spec in specs:
         if spec.variant not in DEPENDS_ON_TLA:
             raise typer.BadParameter(
@@ -113,7 +131,8 @@ def build_dependency_tlas(specs: list[DependencySpec], dataset: str) -> list[tup
                 f"Register it in graphids/slurm/dependencies.py:DEPENDS_ON_TLA "
                 f"or pass --tla manually. Known: {sorted(DEPENDS_ON_TLA)}"
             )
-        tla_name = DEPENDS_ON_TLA[spec.variant]
-        ckpt = resolve_dependency(spec, dataset)
-        tlas.append((tla_name, str(ckpt)))
-    return tlas
+        ckpt, jid = resolve_dependency(spec, dataset)
+        tlas.append((DEPENDS_ON_TLA[spec.variant], str(ckpt)))
+        if jid is not None:
+            jids.append(jid)
+    return tlas, jids

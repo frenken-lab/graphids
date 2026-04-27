@@ -2,7 +2,7 @@
 
 Jsonnet composition + Pydantic validation + direct instantiation.
 `render(jsonnet_path, tla) → dict` → `validate_config` (Pydantic) →
-`graphids.orchestrate.instantiate.build_run` (importlib class_path instantiation
+`graphids.orchestrate.build_run` (importlib class_path instantiation
 with signature-filtered kwargs). PyTorch Lightning was removed in favor
 of a custom `graphids.core.trainer.Trainer`. Analyzer CLI is pure Typer —
 derives `model_type` from the checkpoint's self-describing `class_path`
@@ -26,11 +26,11 @@ One route. `python -m graphids submit <preset.jsonnet>` (SLURM) or `python -m gr
    via `std.mergePatch` at each ablation preset's apex. One mechanism;
    no Python in-place mutator, no jsonnet `apply_dotted` recursion.
 3. `ResolvedConfig.from_rendered(rendered, stage_name=<basename>)`
-   (`orchestrate/config.py`) runs `validate_config` (Pydantic — null list
+   (`orchestrate.py`) runs `validate_config` (Pydantic — null list
    fields, monitor consistency, class_path namespacing, logger/callback
    wiring) and pulls `run_dir` / `ckpt_file` from
    `trainer.default_root_dir`.
-4. `build(resolved)` (`orchestrate/stage.py`) runs `build_run` which
+4. `build(resolved)` (`orchestrate.py`) runs `build_run` which
    imports class_paths via `importlib`, applies `filter_kwargs` against
    each target's `__init__` signature, builds callbacks + logger, and
    returns an `InstantiatedRun(trainer, model, datamodule)`.
@@ -56,58 +56,23 @@ Full tree: `docs/reference/config-architecture.md`.
 
 ```
 configs/
-├── _lib/
-│   └── defaults.libsonnet         # trainer / checkpoint / early_stopping defaults
-├── ablations/
-│   ├── unsupervised/{vgae,gae,dgi}.jsonnet
-│   ├── fusion/{bandit,dqn,mlp,weighted_avg}.jsonnet
-│   ├── conv_type/ gat_sampling/ gat_loss/
-│   └── README.md
-├── datasets/
-│   └── dataset_registry.json      # dataset catalog (domain → dataset metadata)
-├── matrix/
-│   ├── axes.json                  # valid model types / scales / fusion methods
-│   └── topology.json              # stage name list (existence check only)
-├── stages/
-│   ├── autoencoder.jsonnet
-│   ├── supervised.jsonnet
-│   └── fusion.jsonnet
+├── _lib/defaults.libsonnet        # trainer / checkpoint / early_stopping defaults
+├── ablations/{unsupervised,fusion,gat_sampling,gat_loss,id_encoding}/*.jsonnet
+├── stages/{autoencoder,supervised,fusion}.jsonnet
 ├── models/
-│   ├── unsupervised.libsonnet     # { base, scales, kd }
-│   └── supervised.libsonnet
-├── resources/
-│   └── submit_profiles.json       # two entries: gpu, cpu (per-cluster partitions + per-length wall defaults)
-├── fusion.libsonnet               # { base, methods: {bandit, dqn, mlp, weighted_avg} }
-└── fusion/
-    ├── base.libsonnet
-    └── methods/{bandit,dqn,mlp,weighted_avg}.libsonnet
-
-graphids/
-  cli/
-    app.py                         # Typer root app + shared option types + dotted_to_nested
-    training.py                    # fit / test commands
-    analysis.py                    # analyze command
-    data.py                        # rebuild-caches, extract-fusion-states
-  orchestrate/
-    __init__.py                    # re-exports
-    config.py                      # ResolvedConfig, InstantiatedRun
-    instantiate.py                 # build_run (trainer, model, datamodule)
-    stage.py                       # build, train, evaluate
-  config/
-    __init__.py                    # public API facade
-    constants.py                   # CONFIG_DIR, PROJECT_ROOT, LAKE_ROOT, RUN_ROOT
-    settings.py                    # GraphIDSSettings — pydantic-settings auto-loads ./.env
-    paths.py                       # run_dir / vgae_ckpt / states_dir — canonical scheme
-    topology.py                    # stage-file existence check, dataset catalog
-    schemas.py                     # validate_config → ValidatedConfig (Pydantic)
-    jsonnet.py                     # render(path, tla, set_overrides) — registers native_callbacks
-  core/
-    trainer.py                     # Trainer, TrainerConfig, seed_everything
-    callbacks.py                   # CallbackBase, ModelCheckpoint, EarlyStopping, VRAMDriftCallback
-    monitoring.py                  # SlurmResourceDetector (OTel resource attrs only)
-    mlflow_callback.py             # MLflowTrainingCallback (per-epoch metrics + fit-end finalize + LoggedModel)
-  _mlflow.py                       # start/end_training_run, log_epoch_metrics, log_test_run, build_search_filter, _dataset_for, _register_logged_model, _upstream_tags
+│   ├── {supervised,unsupervised,fusion}.libsonnet
+│   └── fusion/{base,reward}.libsonnet + fusion/methods/*.libsonnet
+├── plans/ofat.jsonnet             # multi-stage DAG topology
+├── datasets/dataset_registry.json
+├── matrix/{axes,topology}.json    # valid model types / stage existence
+└── resources/submit_profiles.json # raw submitit kwargs, [mode][cluster][length]
 ```
+
+`graphids/` package layout: see `ls graphids/` — every name is self-describing.
+The non-obvious ones: `orchestrate.py` is a single module (not a subpackage)
+holding `ResolvedConfig`, `InstantiatedRun`, `build_run`, `build`, `train`,
+`evaluate`. `_mlflow.py` owns the entire MLflow surface (run lifecycle,
+search filter, logged-model registration, dataset lineage).
 
 ## Running
 
@@ -202,26 +167,9 @@ compute-bound.
 ## Environment variables
 
 Typed in `GraphIDSSettings` (`config/settings.py`); pydantic-settings
-auto-loads `./.env` from the project root, so login-node invocations
-don't need `set -a; source ./.env`. `extra="ignore"` so shell-only
-`GRAPHIDS_*` vars in `.env` (read by `_preamble.sh` etc.) don't trip
-validation.
-
-Two distinct path roots — **don't conflate**:
-
-- **`GRAPHIDS_LAKE_ROOT`** — shared lake (cross-user) for `mlflow.db`,
-  `cache/`, `mlartifacts/`, `slurm_logs/`. Read by `_mlflow.py`,
-  `_dataset_for`, `_preamble.sh`. On OSC: `/fs/ess/PAS1266/graphids`.
-- **`GRAPHIDS_RUN_ROOT`** — per-user root for run_dirs / checkpoints /
-  traces / predictions. Read by `paths.run_dir / vgae_ckpt /
-  states_dir`. On OSC: `${LAKE_ROOT}/dev/${USER}`. Both required;
-  conflating them is what produced the 2026-04-24 drift between Python
-  settings and the (now-deleted) jsonnet preset TLA defaults.
-
-Other envs: `SLURM_ACCOUNT`, `SLURM_PARTITION`, `SLURM_GPU_TYPE`,
-`SWEEP_ID`, `USER_TAGS`, `CKPT_PATH`, `GRAPHIDS_FORCE_RESUME`,
-`GRAPHIDS_ALLOW_FALLBACK_BUDGET`, `GRAPHIDS_BUDGET_SAFETY_MARGIN`,
-`GRAPHIDS_VRAM_DRIFT_THRESHOLD`.
+auto-loads `./.env` from the project root. `extra="ignore"` so shell-only
+`GRAPHIDS_*` vars (read by `_preamble.sh` etc.) don't trip validation.
+Path roots (`LAKE_ROOT` vs `RUN_ROOT`): see `data-layout.md`.
 
 ## Path layout
 
@@ -240,45 +188,24 @@ no separate `_run_dir` math.
 
 ## Observability (MLflow + OpenTelemetry)
 
-Two stores: **MLflow** owns run-level metadata + per-epoch scalar metrics
-timeseries + device telemetry; **OTel** owns `traces.jsonl` for the
-`training.fit` span and structured-log events.
+Storage layout + store-ownership table: `data-layout.md`. This file owns
+the wiring details:
 
-- **MLflow run lifecycle** (`graphids/_mlflow.py`): `start_training_run`
-  opens the run at fit-start (SQLite backend at `{LAKE_ROOT}/mlflow.db`,
-  artifacts under `{LAKE_ROOT}/mlartifacts/`), in per-axis experiment
-  `graphids/{dataset}/{group}`. **MLflow is a hard dep — failures
-  propagate** (since 2026-04-24). The only soft-failure paths are
-  `MlflowException` on resume `log_params` conflict (immutable-param
-  rule when config drifted) and `end_training_run` cleanup (logged-not-
-  raised so secondary failure can't shadow primary training exception
-  via `__context__`). **Idempotent**: status-gated resume on matching
-  `run_name` + `phase=fit` (FAILED/KILLED resume; TERMINATED → new;
-  RUNNING/FINISHED refuse unless `GRAPHIDS_FORCE_RESUME=1`; git-SHA
-  change → new). Logs params, identity tags via `_build_tags`
-  (identity + SLURM + git SHA + `uv.lock` hash + python version +
-  upstream-teacher `run_dir`/`ckpt_path` tags for presets with upstream
-  checkpoints), `mlflow.log_input(MetaDataset(...))` for dataset lineage,
-  and the system-metrics sampler (psutil + nvidia-ml-py, 5s interval).
-- **`MLflowTrainingCallback`** (`core/mlflow_callback.py`): forwards
-  every key in `trainer.callback_metrics` to MLflow at `step=epoch`,
-  plus `lr` (from `trainer.optimizers[0]`) and `early_stop.wait` /
-  `early_stop.best_score` (from the `EarlyStopping` callback). The
-  model layer gates what gets named (e.g. `train_loss`, `val_loss`,
-  `val_loss_benign`, `val_loss_attack`); the callback does not
-  whitelist. At `on_fit_end` stamps `peak_vram_mb` + `epochs_run` + ckpt SHA256,
-  registers a metadata-only `LoggedModel` via
-  `MlflowClient.create_logged_model(source_run_id=..., model_type='{group}_{variant}', tags={ckpt_path, run_dir, sha256})`,
-  and closes the run FINISHED / FAILED.
-- **`log_test_run`** (`_mlflow.py`): self-contained test-phase sink,
-  **always-fresh** (new `run_id` each call, no resume). Shares `run_name`
-  with the fit row; distinguished by `graphids.phase` tag. `compare.py`
-  dedups to latest FINISHED per `(variant, seed)`.
-- **OTel `traces.jsonl`** (`{run_dir}/`): single `training.fit` span +
-  structured-log events (`budget_probed`, `vram_drift_detected`, etc).
-  Parsed by `run_io.load_traces`.
-- Query MLflow via `mlflow.search_runs(filter_string=build_search_filter(...))` or
-  `client.get_metric_history(run_id, key)`. Never hand-compose filter
-  strings — `graphids._mlflow.build_search_filter` is the one entry point
-  so all graphids identity fields (dataset, group, variant, seed, phase,
-  cluster, run_name, run_dir, status) stay consistent across callers.
+- **Lifecycle wiring**: `_mlflow.start_training_run` opens the fit run
+  inside `orchestrate.train` before `trainer.fit`; `MLflowTrainingCallback`
+  (`core/mlflow_callback.py`) forwards `callback_metrics` per epoch and
+  closes the run in `on_fit_end`. Test phase opens its own always-fresh
+  run via `_mlflow.log_test_run`. Experiment is per-axis: `graphids/{dataset}/{group}`.
+- **Resume gating** (fit only): status-gated on matching `run_name` +
+  `phase=fit` (FAILED/KILLED → resume; RUNNING/FINISHED refuse unless
+  `GRAPHIDS_FORCE_RESUME=1`; git-SHA change → new run).
+- **Failure mode**: MLflow is a hard dep, exceptions propagate. Two
+  documented soft-failures: `MlflowException` on resume `log_params`
+  conflict, and `end_training_run` cleanup (logged-not-raised so secondary
+  failures don't shadow training exceptions via `__context__`).
+- **Query API**: always go through `_mlflow.build_search_filter(...)`.
+  Hand-composed `filter_string=` strings drift across callers (dataset,
+  group, variant, seed, phase, cluster, status all need consistent quoting).
+- **OTel `traces.jsonl`** (per-`run_dir`): single `training.fit` span +
+  structured-log events. Single-run debugging only — cross-run analysis
+  is MLflow's job.

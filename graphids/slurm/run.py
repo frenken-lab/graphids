@@ -1,60 +1,56 @@
-"""Render a plan jsonnet to an executable bash artifact.
+"""Render a plan jsonnet to a JSONL blueprint.
 
-The plan is *data*; the bash script is the *action*. ``graphids run``
-emits this script — it does not submit anything itself. The user
-reviews, then executes via ``bash`` (or pipes ``| bash`` if trusted).
+The plan is *data*; the JSONL is the *blueprint*. ``graphids run``
+emits this — it does not submit anything itself, and it does not
+produce an executable artifact. The user (or an LLM walking the
+JSONL) iterates row by row and decides how to invoke each
+``submit_command``.
 
-Each line is one ``graphids submit`` primitive call. ``afterok`` deps
-thread via shell-variable capture: each line writes ``JID_<NAME>=$(...)``,
-downstream lines read ``--dep "$JID_<UPSTREAM>"``.
+One row per plan node. Schema::
 
-Re-runnability: every preset line carries ``--skip-if-finished`` (default
-ON, ``--force`` opts out) so MLflow short-circuits already-completed
-nodes. A skipped node prints ``0``; downstream lines pass ``--dep "0"``,
-which :func:`graphids.slurm.submit.submit` filters out before composing
-the SLURM dependency string. Command-mode nodes don't get
-``--skip-if-finished`` — they're not MLflow-tracked.
+    {
+      "name":           "vgae",
+      "preset":         "configs/ablations/unsupervised/vgae.jsonnet",  // or null
+      "command":        null,                                            // or shell string
+      "action":         "fit",
+      "deps":           ["upstream-node-name", ...],
+      "mode":           "gpu",
+      "length":         "long",
+      "mem_gb":         null,
+      "timeout_min":    210,
+      "submit_command": "graphids submit configs/ablations/... --skip-if-finished"
+    }
+
+``submit_command`` is the literal one-shot invocation for this node.
+It includes ``--skip-if-finished`` for preset nodes (MLflow short-
+circuit on re-runs); command nodes omit it (no MLflow row to check).
+``--depends-on`` is **not** auto-emitted — the user adds it when they
+want same-batch SLURM-level parallelism (RUNNING upstream → afterok).
+For sequential-with-FINISHED workflows it's not needed; the FINISHED
+check via ``--skip-if-finished`` covers re-runnability.
+
+See ``.claude/rules/single-submission-primitive.md`` for the full
+architectural commitment behind this shape.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import shlex
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
-
     from graphids.slurm.dag import Node
 
 
-def _var_for(name: str) -> str:
-    """``vgae-test`` → ``JID_VGAE_TEST``. Bash-safe identifier."""
-    return "JID_" + name.upper().replace("-", "_")
-
-
-def _plan_hash(nodes: Iterable[Node]) -> str:
-    """8-hex-digit content hash of the toposorted plan. Header comment only."""
-    payload = json.dumps(
-        [
-            {"name": n.name, "deps": list(n.deps), "preset": n.preset_path, "command": n.command}
-            for n in nodes
-        ],
-        sort_keys=True,
-    )
-    return hashlib.sha256(payload.encode()).hexdigest()[:8]
-
-
-def _preset_line(
+def _preset_submit_command(
     node: Node,
     *,
     dataset: str,
     seed: int,
     cluster: str,
-    skip_finished: bool,
 ) -> str:
-    """Render one ``graphids submit <preset>`` line."""
+    """Render the literal `graphids submit` invocation for a preset node."""
     parts = [
         "graphids submit",
         f"configs/ablations/{node.preset_path}",
@@ -64,7 +60,7 @@ def _preset_line(
     ]
     if node.action == "test":
         parts.append("--action test")
-    if node.mode != "gpu":  # default is gpu; only emit overrides
+    if node.mode != "gpu":
         parts.append(f"--mode {node.mode}")
     if node.length != "long":
         parts.append(f"--length {node.length}")
@@ -72,16 +68,12 @@ def _preset_line(
         parts.append(f"--mem-gb {node.mem_gb}")
     if node.timeout_min is not None:
         parts.append(f"--timeout-min {node.timeout_min}")
-    for dep_name in node.deps:
-        parts.append(f'--dep "${_var_for(dep_name)}"')
-    if skip_finished:
-        parts.append("--skip-if-finished")
-    inner = " \\\n    ".join(parts)
-    return f"{_var_for(node.name)}=$({inner})"
+    parts.append("--skip-if-finished")
+    return " ".join(parts)
 
 
-def _command_line(node: Node, *, cluster: str) -> str:
-    """Render one ``graphids submit --command "..."`` line."""
+def _command_submit_command(node: Node, *, cluster: str) -> str:
+    """Render the literal `graphids submit --command` invocation for a command node."""
     assert node.command is not None
     parts = [
         "graphids submit",
@@ -93,50 +85,44 @@ def _command_line(node: Node, *, cluster: str) -> str:
         parts.append(f"--mem-gb {node.mem_gb}")
     if node.timeout_min is not None:
         parts.append(f"--timeout-min {node.timeout_min}")
-    for dep_name in node.deps:
-        parts.append(f'--dep "${_var_for(dep_name)}"')
-    inner = " \\\n    ".join(parts)
-    return f"{_var_for(node.name)}=$({inner})"
+    return " ".join(parts)
 
 
-def render_plan_script(
+def _row(node: Node, *, dataset: str, seed: int, cluster: str) -> dict[str, Any]:
+    """Build the JSONL row dict for one node."""
+    submit_command = (
+        _command_submit_command(node, cluster=cluster)
+        if node.is_command
+        else _preset_submit_command(node, dataset=dataset, seed=seed, cluster=cluster)
+    )
+    return {
+        "name": node.name,
+        "preset": (
+            f"configs/ablations/{node.preset_path}" if node.preset_path is not None else None
+        ),
+        "command": node.command,
+        "action": node.action,
+        "deps": list(node.deps),
+        "mode": node.mode,
+        "length": node.length,
+        "mem_gb": node.mem_gb,
+        "timeout_min": node.timeout_min,
+        "submit_command": submit_command,
+    }
+
+
+def render_plan_jsonl(
     nodes: tuple[Node, ...],
     *,
     dataset: str,
     seed: int,
     cluster: str,
-    skip_finished: bool = True,
-    invocation: str | None = None,
 ) -> str:
-    """Return an executable bash script that submits the toposorted plan.
-
-    ``invocation`` is the original CLI line (for the header comment) — pass
-    ``None`` for the default placeholder. Output is deterministic for a
-    given (nodes, dataset, seed, cluster, skip_finished).
-    """
+    """Return the plan as JSONL — one JSON object per topo-sorted node."""
     from graphids.slurm.dag import toposort
 
     ordered = toposort(nodes)
-    header = [
-        "#!/usr/bin/env bash",
-        f"# Generated by: {invocation}" if invocation else "# Generated by `graphids run`",
-        f"# {len(ordered)} nodes; plan_hash={_plan_hash(ordered)}",
-        "set -euo pipefail",
-        "",
-    ]
-    body: list[str] = []
-    for node in ordered:
-        if node.is_command:
-            body.append(_command_line(node, cluster=cluster))
-        else:
-            body.append(
-                _preset_line(
-                    node,
-                    dataset=dataset,
-                    seed=seed,
-                    cluster=cluster,
-                    skip_finished=skip_finished,
-                )
-            )
-        body.append("")
-    return "\n".join(header + body)
+    return (
+        "\n".join(json.dumps(_row(n, dataset=dataset, seed=seed, cluster=cluster)) for n in ordered)
+        + "\n"
+    )

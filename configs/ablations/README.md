@@ -82,9 +82,19 @@ see interactions (e.g. `gat_loss=weighted_ce` × `id_encoding=hash` as a
 joint effect). Interaction follow-ups, if needed, are a targeted
 factorial over top-2 of each axis — not a full grid expansion.
 
-**DAG** (declared in `configs/plans/ofat.jsonnet`; submit via
-`python -m graphids run configs/plans/ofat.jsonnet --dataset X --seed N --cluster C`;
-status via `python -m graphids status configs/plans/ofat.jsonnet --dataset X --seed N`):
+**DAG** (declared in `configs/plans/ofat.jsonnet`. `graphids run`
+renders it to a **JSONL blueprint** on stdout — one row per node with a
+literal `submit_command` string. The user (or an LLM walking the JSONL)
+iterates row by row and invokes `graphids submit` per node; there is no
+pipeline driver and no executable artifact. See
+`.claude/rules/single-submission-primitive.md`.
+
+```bash
+python -m graphids run    configs/plans/ofat.jsonnet --dataset X --seed N --cluster C
+python -m graphids status configs/plans/ofat.jsonnet --dataset X --seed N
+```
+
+Topology:
 
 1. Baseline VGAE fit — upstream for Stages 2 + 3
 2. 8 standalone variants in parallel (no cross-deps):

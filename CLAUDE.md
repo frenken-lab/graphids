@@ -4,8 +4,10 @@ CAN bus intrusion detection via a 3-stage knowledge distillation chain:
 VGAE (unsupervised reconstruction) → GAT (supervised classification) →
 fusion. Large models compress into small models via KD auxiliaries for
 edge deployment. Stages are trained as independent ablation presets;
-cross-stage chaining is a bash loop with SLURM `afterok` deps, not an
-in-process driver.
+multi-stage pipelines (`configs/plans/*.jsonnet`) render to a **JSONL
+blueprint** via `graphids run` — the user/LLM walks the rows and
+invokes `graphids submit` per node. No pipeline driver. See
+`.claude/rules/single-submission-primitive.md`.
 
 ## Code Philosophy
 
@@ -22,10 +24,15 @@ python -m graphids submit configs/ablations/unsupervised/vgae.jsonnet --dataset 
 python -m graphids submit configs/ablations/fusion/dqn.jsonnet \
     --dataset set_01 --seed 42 --depends-on vgae:42,focal:42 --cluster cardinal
 # Idempotent re-submission: --skip-if-finished prints 0 (no submit) when MLflow
-# already has a FINISHED row. Pairs with bash $JID capture for re-runnable manifests.
+# already has a FINISHED row. Use it on every plan-blueprint row.
 python -m graphids submit configs/ablations/gat_loss/focal.jsonnet \
     --dataset set_01 --seed 42 --skip-if-finished
 python -m graphids submit configs/ablations/unsupervised/vgae.jsonnet --smoke --dry-run  # gpudebug 1hr
+
+# Plan blueprint — JSONL on stdout, one row per node, each with a literal
+# submit_command. Walk it manually or via jq; never auto-execute.
+python -m graphids run configs/plans/ofat.jsonnet --dataset set_01 --seed 42 --cluster cardinal
+python -m graphids status configs/plans/ofat.jsonnet --dataset set_01 --seed 42
 
 # Direct CLI (login-node smoke / non-SLURM).
 python -m graphids fit --config configs/stages/autoencoder.jsonnet
@@ -59,7 +66,7 @@ python -m graphids analyze --ckpt-path fusion/checkpoints/best_model.ckpt --data
 
 **SLURM submission** — one Typer command, `python -m graphids submit`, backed by `submitit.AutoExecutor` (no subprocess, no sbatch-stdout parsing). Two usage patterns: `python -m graphids submit <preset.jsonnet> [--dataset X --seed N ...]` for training (implicit `--mode gpu`, fit command), or `python -m graphids submit --mode {gpu\|cpu} --command "..." [--mem-gb N --timeout-min M]` for ops. Implementation: `graphids.slurm.submit.submit()` is the pure-Python entrypoint; the CLI wrapper lives at `graphids/cli/submit.py`; `graphids/slurm/dag.py` calls `submit()` directly. Profile JSON (`configs/resources/submit_profiles.json`) stores raw submitit kwargs keyed `[mode][cluster][length]` — no Python-side text parsing. `slurm_setup` sources `scripts/slurm/_preamble.sh` inside the sbatch shell. Optional `--time-from-history` consults MLflow for tighter walltime via `graphids.slurm.sizing`. See `rules/slurm-hpc.md`.
 
-Fusion uses a single `configs/stages/fusion.jsonnet` that dispatches on the `fusion_method` TLA over the 4 method libsonnets in `configs/fusion/methods/`.
+Fusion uses a single `configs/stages/fusion.jsonnet` that dispatches on the `fusion_method` TLA over the 4 method libsonnets in `configs/models/fusion/methods/`.
 
 ## Session Start
 
