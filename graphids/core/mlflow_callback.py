@@ -2,8 +2,10 @@
 
 Replaces ``OTelTrainingCallback``'s ML-specific hooks. Lifecycle:
 
-- ``on_train_epoch_end``: append ``train_loss`` / ``val_loss`` / ``lr`` /
-  ``early_stop.wait`` at ``step=epoch``.
+- ``on_train_epoch_end``: append every metric the model logged via
+  ``self.log(...)`` (read from ``trainer.callback_metrics``) plus ``lr`` /
+  ``early_stop.wait`` at ``step=epoch``. The model layer gates what gets
+  named; this callback does not whitelist.
 - ``on_fit_end``: stamp ``peak_vram_mb`` + ``epochs_run`` + best-ckpt hash
   + best-ckpt path tag, then close the run with status ``FINISHED``.
 - ``on_exception``: close the run with status ``FAILED``.
@@ -36,11 +38,7 @@ class MLflowTrainingCallback(CallbackBase):
         from graphids._mlflow import log_epoch_metrics
 
         cb = trainer.callback_metrics
-        metrics: dict[str, float] = {}
-        for key in ("train_loss", "val_loss"):
-            v = cb.get(key)
-            if v is not None:
-                metrics[key] = float(v)
+        metrics: dict[str, float] = {k: float(v) for k, v in cb.items() if v is not None}
         if trainer.optimizers:
             metrics["lr"] = float(trainer.optimizers[0].param_groups[0]["lr"])
         es = getattr(trainer, "early_stopping_callback", None)

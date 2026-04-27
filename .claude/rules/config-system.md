@@ -260,9 +260,13 @@ timeseries + device telemetry; **OTel** owns `traces.jsonl` for the
   upstream-teacher `run_dir`/`ckpt_path` tags for presets with upstream
   checkpoints), `mlflow.log_input(MetaDataset(...))` for dataset lineage,
   and the system-metrics sampler (psutil + nvidia-ml-py, 5s interval).
-- **`MLflowTrainingCallback`** (`core/mlflow_callback.py`): appends
-  `train_loss`/`val_loss`/`lr`/`early_stop.wait` at `step=epoch`; at
-  `on_fit_end` stamps `peak_vram_mb` + `epochs_run` + ckpt SHA256,
+- **`MLflowTrainingCallback`** (`core/mlflow_callback.py`): forwards
+  every key in `trainer.callback_metrics` to MLflow at `step=epoch`,
+  plus `lr` (from `trainer.optimizers[0]`) and `early_stop.wait` /
+  `early_stop.best_score` (from the `EarlyStopping` callback). The
+  model layer gates what gets named (e.g. `train_loss`, `val_loss`,
+  `val_loss_benign`, `val_loss_attack`); the callback does not
+  whitelist. At `on_fit_end` stamps `peak_vram_mb` + `epochs_run` + ckpt SHA256,
   registers a metadata-only `LoggedModel` via
   `MlflowClient.create_logged_model(source_run_id=..., model_type='{group}_{variant}', tags={ckpt_path, run_dir, sha256})`,
   and closes the run FINISHED / FAILED.

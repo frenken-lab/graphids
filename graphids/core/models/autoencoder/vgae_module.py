@@ -187,6 +187,23 @@ class VGAEModule(GraphModuleBase):
         loss = self._step(batch)
         self.log("val_loss", loss, batch_size=batch.num_graphs)
 
+        # VGAE trains benign-only; the val split contains both classes. The
+        # aggregate val_loss above mixes in-distribution (benign) and OOD
+        # (attack) reconstruction error, so it can't say which side is
+        # failing. The benign-attack gap is the diagnostic — benign-val
+        # should track train_loss; attack-val should be much higher.
+        from torch_geometric.data import Batch as PyGBatch
+
+        data_list = batch.to_data_list()
+        y = batch.y.view(-1)
+        for label, mask in (("benign", y == 0), ("attack", y != 0)):
+            n = int(mask.sum())
+            if not n:
+                continue
+            idx = mask.nonzero(as_tuple=False).flatten().tolist()
+            sub_loss = self._step(PyGBatch.from_data_list([data_list[i] for i in idx]))
+            self.log(f"val_loss_{label}", sub_loss, batch_size=n)
+
     def _per_graph_errors(self, batch):
         """Compute weighted per-graph anomaly errors from a batch.
 

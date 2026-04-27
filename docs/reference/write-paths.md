@@ -63,7 +63,7 @@ All training writes land under `trainer.default_root_dir` from the rendered json
 
 `graphids/_mlflow.py::start_training_run` opens the MLflow run in `stage.train` before `trainer.fit`, logs params + tags + cache digest, and enables the MLflow system-metrics sampler (psutil + nvidia-ml-py, 5s interval).
 
-`graphids/core/mlflow_callback.py::MLflowTrainingCallback` appends `train_loss`/`val_loss`/`lr`/`early_stop.wait` at `step=epoch` via `on_train_epoch_end`, stamps `peak_vram_mb` + `epochs_run` + ckpt SHA256 tag at `on_fit_end`, and closes the run (FINISHED / FAILED via `on_exception`).
+`graphids/core/mlflow_callback.py::MLflowTrainingCallback` forwards every key in `trainer.callback_metrics` (whatever the model logged via `self.log(...)`) plus `lr` + `early_stop.{wait,best_score}` to MLflow at `step=epoch` via `on_train_epoch_end`, stamps `peak_vram_mb` + `epochs_run` + ckpt SHA256 tag at `on_fit_end`, and closes the run (FINISHED / FAILED via `on_exception`).
 
 `graphids/_otel.py::wire_file_exporters` wires the `traces.jsonl` span exporter (Phase B). Structured-log events emitted via `log.info("event_name", ...)` land here alongside the single `training.fit` span. Wandb Weave OTLP export is optional when `WANDB_API_KEY` is set.
 

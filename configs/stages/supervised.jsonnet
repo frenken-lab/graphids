@@ -55,6 +55,13 @@ function(
 
     trainer+: {
       default_root_dir: run_dir,
+      // z_benign scaler (cache v10) leaves attack-row z-scores far above
+      // fp16's max (~65504), causing NaN val_loss in epoch 0. Mirrors the
+      // override in unsupervised/vgae.jsonnet:29; fusion already runs in
+      // fp32 via configs/models/fusion/base.libsonnet:18. Override back to
+      // 16-mixed via --set trainer.precision='16-mixed' once a (dataset,
+      // scaler_strategy) pair is empirically validated.
+      precision: '32-true',
     },
 
     data+: {

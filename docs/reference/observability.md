@@ -19,7 +19,7 @@ Two stores: **MLflow** for run-level metadata + scalar metrics timeseries + devi
 - Logs params (via `_flatten_params`), tags (via `_build_tags`: identity + SLURM + git SHA + `uv.lock` hash + python version + checkpoint hash + upstream-teacher `run_dir`/`ckpt_path` for curriculum_vgae / fusion).
 - `mlflow.log_input(MetaDataset(...), context="train")` — first-class dataset entity with digest of `cache_metadata.json`; visible under "Used Datasets" in UI, filterable via `dataset.digest = '...'` in search_runs.
 - Enables MLflow system-metrics sampler (background thread, 5s interval) — GPU util, VRAM, CPU, memory, disk, network.
-- `MLflowTrainingCallback` appends per-epoch `train_loss`/`val_loss`/`lr`/`early_stop.wait` at `step=epoch`.
+- `MLflowTrainingCallback` forwards every key in `trainer.callback_metrics` (whatever the model layer logged via `self.log(...)`) plus `lr` and `early_stop.{wait,best_score}` to MLflow at `step=epoch`.
 - At fit-end: peak VRAM + epochs_run + ckpt SHA256 tag + `MlflowClient.create_logged_model` (metadata-only LoggedModel entity with `source_run_id`, `model_type={group}_{variant}`, and ckpt tags). Run closes FINISHED (or FAILED on exception).
 
 ## Wired tooling
@@ -35,14 +35,14 @@ Two stores: **MLflow** for run-level metadata + scalar metrics timeseries + devi
 | Op-level profiling | PyTorchProfiler (chrome traces) | `python -m graphids submit --mode gpu --length short --command "python -m graphids profile"` |
 | SLURM job accounting | sacct summary + log rotation | `_epilog.sh` |
 | CUDA alloc config | `expandable_segments:True,garbage_collection_threshold:0.8` | `_preamble.sh` |
-| Mixed precision | `precision: 16-mixed` | `configs/_lib/defaults.libsonnet` |
+| Mixed precision | `precision: 16-mixed` (default); supervised stage overrides to `32-true` | `configs/_lib/defaults.libsonnet`; `configs/stages/supervised.jsonnet` |
 | Gradient checkpointing | `use_reentrant=False` | `_conv.py` |
 
 ## MLflowTrainingCallback (`graphids/core/mlflow_callback.py`)
 
 Installed via `defaults.libsonnet callbacks.mlflow`. Run lifecycle is owned by `_mlflow.start_training_run` (called from `stage.train` before `trainer.fit`); this callback only writes into the active run.
 
-- `on_train_epoch_end`: `mlflow.log_metrics({train_loss, val_loss, lr, early_stop.wait, early_stop.best_score}, step=current_epoch)`
+- `on_train_epoch_end`: `mlflow.log_metrics({**trainer.callback_metrics, lr, early_stop.wait, early_stop.best_score}, step=current_epoch)` — passthrough, not a whitelist. The current model surface logs `train_loss`, `val_loss`; VGAE additionally logs per-component telemetry (`train_recon`, `train_canid`, `train_nbr`, `train_kl`) and per-class val splits (`val_loss_benign`, `val_loss_attack`); GAT/MLP/WAvg add `train_acc`/`val_acc`. Adding a `self.log(...)` call in any module flows to MLflow without callback changes.
 - `on_fit_end`: `log_final_fit(peak_vram_mb, epochs_run, best_ckpt_path, run_dir)` + `end_training_run("FINISHED")`
 - `on_exception`: `end_training_run("FAILED")`
 
