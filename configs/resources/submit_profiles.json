@@ -1,5 +1,10 @@
 {
-  "_comment": "Profile entries are raw submitit AutoExecutor kwargs — no parsers in Python. Per-job mem_gb / timeout_min / command come from flags at submit time. slurm_signal_delay_s triggers submitit's checkpoint handler on SIGUSR2 N seconds before walltime — this is how _TrainingJob.checkpoint() gets called for auto-resume from last.ckpt on preemption.",
+  "_comment": "Profile entries are raw submitit AutoExecutor kwargs — no parsers in Python. Per-job mem_gb / timeout_min / command come from flags at submit time. slurm_signal_delay_s triggers submitit's checkpoint handler on SIGUSR2 N seconds before walltime — this is how _TrainingJob.checkpoint() gets called for auto-resume from last.ckpt on preemption. cluster_policy.mem_per_cpu_gb is the SLURM ratio used to keep cpus_per_task aligned with mem_gb (see _align_cpus_to_mem in slurm/submit.py).",
+  "cluster_policy": {
+    "pitzer":   {"mem_per_cpu_gb": 4},
+    "cardinal": {"mem_per_cpu_gb": 4},
+    "ascend":   {"mem_per_cpu_gb": 4}
+  },
   "gpu": {
     "pitzer": {
       "short": {"slurm_partition": "gpudebug", "cpus_per_task": 8, "mem_gb": 48, "timeout_min": 60,  "gpus_per_node": 1, "slurm_signal_delay_s": 300},

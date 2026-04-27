@@ -37,10 +37,18 @@ One route. `python -m graphids submit <preset.jsonnet>` (SLURM) or `python -m gr
 5. `train(artifacts, resolved, resume_from=...)` then `evaluate(...)`
    run fit/test and touch `.train_complete` / `.test_complete` markers.
 
-Multi-stage chains (e.g. the KD chain autoencoder → supervised →
-fusion) are bash loops that submit each preset with
-`SBATCH_DEP=afterok:<jid>` — see `graphids.slurm.dag` (CLI: `python -m graphids launch-ablation`).
-No in-process pipeline driver, no planner, no identity-hash layer.
+Multi-stage runs use a *plan* — a jsonnet file declaring `{ nodes: [...] }`.
+Shipped plans live under `configs/plans/`; `configs/plans/ofat.jsonnet`
+is the OFAT topology. `python -m graphids run <plan.jsonnet> --dataset X
+--seed N --cluster C` walks the plan in topological order via submitit,
+threading each node's jid into downstream deps' `afterok`. FINISHED nodes
+are skipped via an MLflow check before submission; `--force` overrides.
+`python -m graphids status <plan.jsonnet> --dataset X --seed N` queries
+MLflow per node and prints a status table. No bash manifest, no parser —
+the plan jsonnet IS the artifact.
+
+For atomic one-shot submissions (no plan), use `python -m graphids submit
+<preset.jsonnet>`.
 
 Full tree: `docs/reference/config-architecture.md`.
 
@@ -124,8 +132,8 @@ python -m graphids submit configs/ablations/unsupervised/vgae.jsonnet --dataset 
 Every `stages/*.jsonnet` and `ablations/**/*.jsonnet` is a top-level
 function with sensible defaults for every TLA. Adding a new TLA means
 updating the jsonnet signature + (if the TLA is launcher-level) the
-matching flat flag in `graphids/cli/submit.py` and the `_build_tlas`
-helper in `graphids/slurm/submit.py`.
+matching flat flag in `graphids/cli/submit.py` (which appends to the
+inline `flag_tlas` list — there is no separate helper).
 
 ```jsonnet
 // Stage (configs/stages/*.jsonnet) — no overrides TLAs.

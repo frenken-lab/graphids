@@ -24,6 +24,9 @@ INVARIANTS = {
     "val_fraction": 0.2,
     "seed": 42,
     "vocab_digest": "a" * 64,
+    # Source of truth for required keys: graphids.core.data.metadata.INVARIANT_KEYS.
+    # Co-update this fixture whenever that tuple grows.
+    "scaler_strategy": "standard",
 }
 
 

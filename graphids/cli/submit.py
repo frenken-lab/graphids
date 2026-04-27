@@ -15,6 +15,30 @@ import typer
 from graphids.cli.app import SetList, TlaList, app
 
 
+def _infer_group_variant(preset: Path, name: str | None) -> tuple[str, str]:
+    """Resolve ``(group, variant)`` from ``--name`` or the preset path convention.
+
+    Convention: ``configs/ablations/<group>/<variant>.jsonnet``. ``--name``
+    overrides the convention as ``"group/variant"``. Raises
+    :class:`typer.BadParameter` when neither resolves — used by
+    ``--skip-if-finished`` to feed the MLflow filter.
+    """
+    if name:
+        if "/" not in name:
+            raise typer.BadParameter(f"--name must be 'group/variant' (got {name!r})")
+        group, _, variant = name.partition("/")
+        return group, variant
+    parts = preset.parts
+    if "ablations" in parts:
+        idx = parts.index("ablations")
+        if idx + 2 < len(parts):
+            return parts[idx + 1], preset.stem
+    raise typer.BadParameter(
+        f"--skip-if-finished cannot infer group/variant from {preset}. "
+        "Pass --name <group>/<variant> explicitly."
+    )
+
+
 @app.command("submit", rich_help_panel="SLURM", no_args_is_help=True)
 def submit_cli(  # noqa: PLR0913 — every flag is a real surface
     preset: Annotated[
@@ -44,18 +68,23 @@ def submit_cli(  # noqa: PLR0913 — every flag is a real surface
     dataset: Annotated[str | None, typer.Option("--dataset", help="Dataset TLA")] = None,
     seed: Annotated[int | None, typer.Option("--seed", help="Seed TLA")] = None,
     scale: Annotated[str | None, typer.Option("--scale", help="Scale TLA")] = None,
-    ckpt: Annotated[
+    ckpt_tla: Annotated[
         str | None,
-        typer.Option("--ckpt", help="ckpt_path TLA (jsonnet field, distinct from --ckpt-path)"),
+        typer.Option(
+            "--ckpt-tla",
+            help=(
+                "Set the ``ckpt_path`` TLA (jsonnet field). Distinct from "
+                "--ckpt-path (resume passthrough) and --depends-on (MLflow lookup)."
+            ),
+        ),
     ] = None,
     ckpt_path: Annotated[
         str | None,
         typer.Option(
-            "--ckpt-path", help="Passthrough to `python -m graphids {fit,test} --ckpt-path`"
+            "--ckpt-path",
+            help="Resume current preset — passthrough to `python -m graphids {fit,test} --ckpt-path`",
         ),
     ] = None,
-    vgae_ckpt: Annotated[str | None, typer.Option("--vgae-ckpt", help="vgae_ckpt_path TLA")] = None,
-    gat_ckpt: Annotated[str | None, typer.Option("--gat-ckpt", help="gat_ckpt_path TLA")] = None,
     lake_root: Annotated[str | None, typer.Option("--lake-root", help="lake_root TLA")] = None,
     mem_gb: Annotated[
         int | None, typer.Option("--mem-gb", help="Override profile memory (integer GB)")
@@ -80,6 +109,45 @@ def submit_cli(  # noqa: PLR0913 — every flag is a real surface
             help="afterok dep jid (repeatable). Env SBATCH_DEP is a fallback.",
         ),
     ] = None,
+    depends_on: Annotated[
+        str | None,
+        typer.Option(
+            "--depends-on",
+            metavar="<variant>[:<seed>][,...]",
+            help=(
+                "Resolve upstream teacher ckpts via MLflow → inject as TLAs. "
+                "E.g. --depends-on vgae:42,focal:42 looks up the latest "
+                "FINISHED vgae and focal fit runs and passes their ckpt "
+                "paths as vgae_ckpt_path and gat_ckpt_path TLAs. ':seed' "
+                "defaults to --seed if omitted. Distinct from --dep (afterok "
+                "scheduler dep) — the two compose."
+            ),
+        ),
+    ] = None,
+    name: Annotated[
+        str | None,
+        typer.Option(
+            "--name",
+            help=(
+                "<group>/<variant> identity (e.g. 'unsupervised/vgae'). "
+                "Default: inferred from preset path "
+                "configs/ablations/<group>/<variant>.jsonnet. Required when "
+                "preset is off-convention and --skip-if-finished is set."
+            ),
+        ),
+    ] = None,
+    skip_if_finished: Annotated[
+        bool,
+        typer.Option(
+            "--skip-if-finished",
+            help=(
+                "Query MLflow before submitting; if latest run for "
+                "(dataset, group, variant, seed, phase=fit|test) is FINISHED, "
+                "print 0 to stdout and exit 0 without submitting. Plans "
+                "use this per-node for reentrant `graphids run`."
+            ),
+        ),
+    ] = False,
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Print sbatch argv to stderr; do not submit")
     ] = False,
@@ -94,27 +162,73 @@ def submit_cli(  # noqa: PLR0913 — every flag is a real surface
     On success, prints the jid on stdout (for bash-capture compat:
     ``jid=$(graphids submit ...)``).
     """
-    from graphids.slurm.submit import DRY_RUN_JID, submit
+    from graphids.slurm.submit import submit
 
     if preset is None and not command:
         raise typer.BadParameter('supply a preset path or --command "..."')
 
-    # Flat flags → TLA pairs. ``ckpt`` becomes the ``ckpt_path`` TLA (jsonnet
-    # field) — distinct from ``ckpt_path`` (fit/test --ckpt-path passthrough).
+    # --depends-on (MLflow-resolved upstream ckpts) and --ckpt-path
+    # (resume the current preset) look similar but mean different things.
+    # Refuse to guess.
+    if depends_on and ckpt_path:
+        raise typer.BadParameter(
+            "--ckpt-path resumes the *current* preset; --depends-on injects "
+            "upstream teacher ckpts. Different semantics — pass them on "
+            "separate invocations."
+        )
+
+    # Flat flags → TLA pairs. --ckpt-tla writes the ``ckpt_path`` TLA
+    # (jsonnet field), distinct from --ckpt-path (fit/test passthrough).
     flag_tlas: list[tuple[str, object]] = []
     for key, val in (
         ("dataset", dataset),
         ("scale", scale),
-        ("ckpt_path", ckpt),
-        ("vgae_ckpt_path", vgae_ckpt),
-        ("gat_ckpt_path", gat_ckpt),
+        ("ckpt_path", ckpt_tla),
         ("lake_root", lake_root),
     ):
         if val:
             flag_tlas.append((key, val))
     if seed is not None:
         flag_tlas.append(("seed", seed))
+
+    # Resolve --depends-on BEFORE user --tla so explicit --tla overrides
+    # (last-wins on flag_tlas). Hard error on resolution failure: deps are
+    # load-bearing — silently continuing with no teacher TLAs would render
+    # but produce a wrong run.
+    if depends_on:
+        from graphids.slurm.dependencies import (
+            DependencyResolutionError,
+            build_dependency_tlas,
+            parse_depends_on,
+        )
+
+        if not dataset:
+            raise typer.BadParameter("--depends-on requires --dataset")
+        try:
+            specs = parse_depends_on(depends_on, default_seed=seed)
+            flag_tlas.extend(build_dependency_tlas(specs, dataset))
+        except DependencyResolutionError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+
     flag_tlas.extend(tla or ())
+
+    if skip_if_finished:
+        if preset is None:
+            raise typer.BadParameter("--skip-if-finished requires a preset (no --command form)")
+        group, variant = _infer_group_variant(preset, name)
+        ds = next((v for k, v in flag_tlas if k == "dataset"), None)
+        sd = next((v for k, v in flag_tlas if k == "seed"), None)
+        if not ds or sd is None:
+            raise typer.BadParameter(
+                "--skip-if-finished needs both --dataset and --seed so the MLflow lookup is unambiguous"
+            )
+        from graphids._mlflow import is_finished
+
+        phase = "test" if action == "test" else "fit"
+        if is_finished(dataset=str(ds), group=group, variant=variant, seed=int(sd), phase=phase):
+            print(0)
+            sys.stdout.flush()
+            return
 
     jid = submit(
         preset=preset,
@@ -133,10 +247,8 @@ def submit_cli(  # noqa: PLR0913 — every flag is a real surface
         dry_run=dry_run,
     )
 
-    # Stdout contract: jid only (bash callers do ``jid=$(graphids submit ...)``).
-    # Dry-run emits 0 as a non-chaining sentinel.
-    if dry_run and jid == DRY_RUN_JID:
-        print(DRY_RUN_JID)
-    else:
-        print(jid)
+    # Stdout contract: print the (fit) jid only — bash callers do
+    # ``jid=$(graphids submit ...)``. Dry-run / skip-if-finished emit 0 as a
+    # non-chaining sentinel so ``afterok:$jid`` doesn't reference a real job.
+    print(jid if jid is not None else 0)
     sys.stdout.flush()

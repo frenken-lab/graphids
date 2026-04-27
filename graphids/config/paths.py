@@ -27,9 +27,19 @@ def run_dir(dataset: str, group: str, variant: str, seed: int) -> str:
     return f"{RUN_ROOT}/{dataset}/ablations/{group}/{variant}/seed_{int(seed)}"
 
 
+def best_ckpt(dataset: str, group: str, variant: str, seed: int) -> str:
+    """Best-model checkpoint path for an ablation run.
+
+    Equivalent to ``f"{run_dir(...)}/checkpoints/best_model.ckpt"`` —
+    callers should prefer this over jsonnet string-concat so the suffix
+    lives in one place.
+    """
+    return f"{run_dir(dataset, group, variant, seed)}/checkpoints/best_model.ckpt"
+
+
 def vgae_ckpt(dataset: str, seed: int) -> str:
-    """Best-model checkpoint path for the unsupervised vgae upstream."""
-    return f"{RUN_ROOT}/{dataset}/ablations/unsupervised/vgae/seed_{int(seed)}/checkpoints/best_model.ckpt"
+    """Best-model checkpoint for the unsupervised vgae upstream (shorthand)."""
+    return best_ckpt(dataset, "unsupervised", "vgae", seed)
 
 
 def states_dir(dataset: str, seed: int) -> str:

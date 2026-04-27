@@ -34,7 +34,7 @@ for the OFAT DAG).
 ```bash
 python -m graphids submit configs/ablations/unsupervised/vgae.jsonnet --dataset set_01 --seed 42
 python -m graphids submit configs/ablations/fusion/dqn.jsonnet \
-    --dataset set_01 --seed 42 --vgae-ckpt <p> --gat-ckpt <p> --cluster cardinal
+    --dataset set_01 --seed 42 --depends-on vgae:42,focal:42 --cluster cardinal
 ```
 
 **Ops: `python -m graphids submit --mode {gpu|cpu} --command "..." [--mem-gb N --timeout-min M --length short|long]`.**

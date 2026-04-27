@@ -38,13 +38,16 @@ each preset's apex.
 The SLURM submitter (`python -m graphids submit`, library:
 `graphids.slurm.submit.submit()`) just forwards TLAs.
 
-Multi-stage chains (e.g. `autoencoder → supervised → fusion`) are a
-Python DAG driver (`graphids.slurm.dag`, CLI `python -m graphids
-launch-ablation`). Topology is a declarative `OFAT_DAG` tuple of
-`FitNode`/`ExtractStatesNode`; the executor walks it in topological
-order, calling `graphids.slurm.submit.submit()` directly with `dep_jids`
-derived from the in-memory jid map. There is no subprocess and no
-in-process pipeline driver.
+Multi-stage chains (e.g. `autoencoder → supervised → fusion`) come from
+a *plan* — a jsonnet file declaring `{ nodes: [...] }`. Shipped plans
+live under `configs/plans/`; `configs/plans/ofat.jsonnet` is the OFAT
+topology. `python -m graphids run <plan.jsonnet> --dataset X --seed N
+--cluster C` walks the plan in topological order via submitit,
+threading each node's jid into downstream deps' `afterok`. FINISHED
+nodes are skipped via an MLflow check before submission; `--force`
+overrides. `python -m graphids status <plan.jsonnet>` queries MLflow
+per node. No bash manifest, no parser — the plan jsonnet IS the
+artifact.
 
 ### Route B: Operational commands (no training)
 

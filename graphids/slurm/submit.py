@@ -43,53 +43,32 @@ _PROFILES: dict[str, Any] = json.loads(
 )
 _PREAMBLE_SH = _PROJECT_ROOT / "scripts" / "slurm" / "_preamble.sh"
 
-# Cluster memory-per-cpu policy (GB/core). When the requested ``mem_gb``
-# exceeds ``cpus_per_task * mem_per_cpu_gb``, SLURM auto-bumps allocated
-# CPUs to satisfy the ratio. Slurm 25.05+ then aborts ``srun`` with
-# ``SLURM_CPUS_PER_TASK`` (allocation) ≠ ``SLURM_TRES_PER_TASK`` (directive).
-# Pre-computing ``cpus_per_task`` from ``mem_gb`` keeps directive and
-# allocation consistent — no auto-bump, no divergence. Values are
-# conservative lower bounds: over-provisioning is harmless, under-estimating
-# the ratio re-triggers the bump.
-CLUSTER_MEM_PER_CPU_GB: dict[str, int] = {
-    "pitzer": 4,
-    "cardinal": 4,
-    "ascend": 4,
-}
-
-DRY_RUN_JID: int = 0
-
 
 def _align_cpus_to_mem(params: dict[str, Any], cluster: str) -> None:
     """Bump ``cpus_per_task`` so SLURM doesn't have to. Mutates in place.
 
-    The profile's ``cpus_per_task`` becomes the floor (parallelism need);
-    ``ceil(mem_gb / mem_per_cpu)`` is the SLURM-policy minimum. Take the max.
+    The profile's ``cpus_per_task`` is the floor (parallelism need);
+    ``ceil(mem_gb / mem_per_cpu_gb)`` is the SLURM-policy minimum. Take the max.
+    Cluster ratio data is in ``configs/resources/submit_profiles.json``
+    under ``cluster_policy``.
     """
-    ratio = CLUSTER_MEM_PER_CPU_GB[cluster]
+    ratio = int(_PROFILES["cluster_policy"][cluster]["mem_per_cpu_gb"])
     floor = int(params.get("cpus_per_task", 1))
     mem_gb = int(params["mem_gb"])
     params["cpus_per_task"] = max(floor, math.ceil(mem_gb / ratio))
 
 
-def load_dotenv(path: Path) -> None:
-    """Populate ``os.environ`` from a bash-style ``.env``. Comments/blanks skipped."""
-    if not path.exists():
-        return
-    for raw in path.read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[7:]
-        if "=" not in line:
-            continue
-        k, _, v = line.partition("=")
-        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-
-
 def ensure_env_loaded() -> None:
-    load_dotenv(_PROJECT_ROOT / ".env")
+    """Populate ``os.environ`` from ``.env`` via ``python-dotenv`` (transitive via pydantic-settings).
+
+    Distinct from ``GraphIDSSettings``'s pydantic-settings load: that one
+    builds a typed Settings object but does NOT mutate ``os.environ``, and
+    ``submit()`` reads vars (``SLURM_ACCOUNT``, ``LAKE_ROOT``, ...) via
+    ``os.environ.get`` so the SLURM env composes with the inherited shell.
+    """
+    from dotenv import load_dotenv
+
+    load_dotenv(_PROJECT_ROOT / ".env", override=False)
 
 
 # --------------------------------------------------------------------------
@@ -104,9 +83,13 @@ class _TrainingJob:
 
     ``checkpoint()`` is called by submitit's SIGUSR2 handler when SLURM
     sends the preemption signal (``slurm_signal_delay_s`` seconds before
-    walltime; see profile). We look up the run's ``last.ckpt`` and return
-    a ``DelayedSubmission`` so submitit sbatch-queues the resumed job with
-    that ckpt as the resume source — free preemption recovery.
+    walltime; see profile). We look up ``{run_dir}/checkpoints/last.ckpt``
+    and return a ``DelayedSubmission`` so submitit sbatch-queues the resumed
+    job with that ckpt as the resume source — free preemption recovery.
+
+    ``run_dir`` is rendered once at submit time (pure function of preset +
+    tlas + RUN_ROOT) and stamped into the pickled payload, so the compute
+    node never re-renders jsonnet during preemption recovery.
     """
 
     action: str  # "fit" | "test"
@@ -114,6 +97,7 @@ class _TrainingJob:
     tlas: list[tuple[str, Any]] = field(default_factory=list)
     sets: list[tuple[str, Any]] = field(default_factory=list)
     ckpt_path: str | None = None
+    run_dir: str | None = None
 
     def __call__(self) -> None:
         from graphids.cli.training import fit, test
@@ -133,16 +117,10 @@ class _TrainingJob:
         return submitit.helpers.DelayedSubmission(replace(self, ckpt_path=resume))
 
     def _last_ckpt(self) -> str | None:
-        """Render the preset (jsonnet only — no torch) to find the run's last.ckpt."""
-        try:
-            from graphids.config.jsonnet import render
-
-            rendered = render(Path(self.config), tla=dict(self.tlas) or None)
-            run_dir = Path(rendered["trainer"]["default_root_dir"])
-            last = run_dir / "checkpoints" / "last.ckpt"
-            return str(last) if last.exists() else None
-        except Exception:
+        if not self.run_dir:
             return None
+        last = Path(self.run_dir) / "checkpoints" / "last.ckpt"
+        return str(last) if last.exists() else None
 
 
 # --------------------------------------------------------------------------
@@ -166,13 +144,18 @@ def submit(  # noqa: PLR0913 — every flag is a real public surface
     time_from_history: bool = False,
     dep_jids: Sequence[int] = (),
     dry_run: bool = False,
-) -> int:
-    """Submit one SLURM job via submitit. Returns the jid, or :data:`DRY_RUN_JID`.
+) -> int | None:
+    """Submit one SLURM job via submitit. Returns the jid, or ``None`` for dry-run.
 
     ``tlas`` / ``sets`` are passed verbatim to ``_TrainingJob``; callers
     (CLI / dag.py) build the list themselves — no flat-flag→TLA sugar
     layer here. ``ckpt_path`` is the fit/test ``--ckpt-path`` passthrough,
     distinct from any ``ckpt_path`` TLA the caller may include in ``tlas``.
+
+    ``dep_jids`` are afterok dependency jids; non-positive values
+    (typically ``0`` from a skipped upstream's ``--skip-if-finished``) are
+    filtered before the dependency string is composed. Real SLURM jids are
+    always positive.
     """
     ensure_env_loaded()
 
@@ -205,12 +188,19 @@ def submit(  # noqa: PLR0913 — every flag is a real public surface
 
     payload: Any
     if preset and not command:
+        # Render once on the login node so the SIGUSR2 handler on the compute
+        # node doesn't have to re-evaluate jsonnet to find last.ckpt.
+        from graphids.config.jsonnet import render
+
+        rendered = render(preset, tla=dict(tlas) or None)
+        rendered_run_dir = (rendered.get("trainer") or {}).get("default_root_dir") or None
         payload = _TrainingJob(
             action=action,
             config=str(preset),
             tlas=list(tlas),
             sets=list(sets),
             ckpt_path=ckpt_path,
+            run_dir=rendered_run_dir,
         )
         jobname = f"graphids-{action}-{preset.stem}"
     else:
@@ -221,6 +211,10 @@ def submit(  # noqa: PLR0913 — every flag is a real public surface
     # --- Assemble additional SLURM params (cluster, dep, signal) -----------
     additional = dict(params.pop("slurm_additional_parameters", {}))
     additional["clusters"] = cluster
+    # Filter non-positive jids: bash artifacts pass `0` (or `--dep ""` after
+    # shell expansion) when an upstream node was skipped via
+    # --skip-if-finished. Treat 0 as "no real upstream", drop it from the
+    # afterok string. Real SLURM jids are always positive.
     live_deps = [str(j) for j in dep_jids if j > 0]
     if live_deps:
         additional["dependency"] = f"afterok:{':'.join(live_deps)}"
@@ -251,7 +245,7 @@ def submit(  # noqa: PLR0913 — every flag is a real public surface
 
     if dry_run:
         _print_dry_run(executor, payload, jobname)
-        return DRY_RUN_JID
+        return None
 
     job = executor.submit(payload)
     print(f"Submitted job {job.job_id} on cluster {cluster}", file=sys.stderr)

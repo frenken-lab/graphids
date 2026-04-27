@@ -20,8 +20,10 @@ and returns an `InstantiatedRun(trainer, model, datamodule)`.
 
 **Stage primitives** (`graphids/orchestrate/stage.py`) — `build`, `train`,
 `evaluate`. `fit` / `test` call these directly. No pipeline driver. Multi-stage
-chains are an in-memory DAG (`graphids.slurm.dag.OFAT_DAG`) calling
-`graphids.slurm.submit.submit()` with `dep_jids` afterok chaining.
+chains are declared in a *plan jsonnet* (`configs/plans/*.jsonnet`); `python
+-m graphids run <plan>` parses it via `graphids.slurm.dag` (Pydantic),
+toposorts, and calls `graphids.slurm.submit.submit()` per node with `dep_jids`
+afterok chaining held in memory.
 
 **SLURM** (`graphids/slurm/`, `graphids/cli/submit.py`) — resource allocation
 and job submission. One Typer command: `python -m graphids submit <preset.jsonnet>`

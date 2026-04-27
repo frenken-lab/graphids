@@ -1,12 +1,13 @@
 # Orchestration — `graphids/orchestrate/`
 
-> Status: **implemented** | Last refactor: 2026-04-15 (pipeline route
-> deleted — one route, ablation presets own their own run_dir)
+> Status: **implemented** | Last refactor: 2026-04-26 (plan jsonnet
+> replaces in-memory `OFAT_DAG`)
 
 A training run is a jsonnet preset rendered to a dict, validated, then
 fed through `build → train → evaluate`. No planner, no cross-stage
-driver. Multi-stage chains are built in bash by submitting each preset
-with `SBATCH_DEP=afterok:<jid>` between them.
+driver in-process. Multi-stage chains are declared in a *plan jsonnet*
+(`configs/plans/*.jsonnet`); `python -m graphids run <plan>` parses,
+toposorts, and submits per-node — see `submit-flow.md`.
 
 ## Layout
 
@@ -43,5 +44,5 @@ fit | test  (cli/training.py)
 | Decision | Rationale |
 |---|---|
 | Path scheme is one Python module | `graphids.config.paths` defines `run_dir`/`vgae_ckpt`/`states_dir`. Jsonnet calls into it via `std.native('paths.run_dir')(...)` — registered as `native_callbacks` in `render()`. `slurm/dag.py` imports the same module. No parallel jsonnet implementation. |
-| No in-process multi-stage driver | An in-memory DAG (`graphids.slurm.dag.OFAT_DAG`) calling `graphids.slurm.submit.submit()` with `dep_jids` holds jids between stages; no scheduler re-query (kills the Stage 3 dep-race). |
+| No in-process multi-stage driver | A *plan jsonnet* (`configs/plans/*.jsonnet`) declares the topology; `python -m graphids run <plan>` parses it (Pydantic), toposorts, and calls `graphids.slurm.submit.submit()` per node with `dep_jids` held in memory. No scheduler re-query (kills the Stage 3 dep-race). See `submit-flow.md`. |
 | `build` / `train` / `evaluate` are dumb primitives | No `ResolvedConfig` knowledge, no cache knowledge. Same primitives used by `fit` and `test`. |

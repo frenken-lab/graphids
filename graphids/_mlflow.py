@@ -113,7 +113,7 @@ def build_search_filter(
 ) -> str:
     """Compose an ``AND``-joined ``mlflow.search_runs`` filter_string.
 
-    Superset of the filters used by :func:`graphids.slurm.dag.fit_is_complete`,
+    Superset of the filters used by :func:`is_finished`,
     :func:`graphids.slurm.sizing.estimate_walltime_minutes`, and the future
     resume / compare / upstream-lineage lookups. Any field left ``None`` is
     not filtered. ``cluster`` matches the ``slurm.slurm_cluster_name`` tag
@@ -154,6 +154,86 @@ def ensure_tracking_uri() -> str | None:
     default = f"sqlite:///{Path(LAKE_ROOT) / _BACKEND_DB_SUBPATH}"
     os.environ[_TRACKING_URI_ENV] = default
     return default
+
+
+def latest_run(
+    *,
+    dataset: str,
+    group: str | None = None,
+    variant: str,
+    seed: int | str,
+    phase: str = "fit",
+    status: str | None = None,
+) -> Any:
+    """Return the most recent MLflow row matching the identity, or ``None``.
+
+    Single point of entry for the three "latest run for this identity"
+    callers — :func:`is_finished`,
+    :func:`graphids.slurm.dependencies.resolve_dependency`, and
+    :func:`graphids.slurm.status.query_node_status`. They differ only in
+    the optional ``group`` (depends-on resolves cross-group) and ``status``
+    (depends-on filters to FINISHED) knobs; everything else routes through
+    one ``mlflow.search_runs`` call so the filter shape never drifts.
+
+    Returns a ``pandas.Series`` (the row) or ``None`` for "no match" /
+    "no MLflow tracking URI configured". MLflow exceptions propagate —
+    callers that need soft-fail wrap with their own try/except.
+    """
+    uri = ensure_tracking_uri()
+    if not uri:
+        return None
+    mlflow.set_tracking_uri(uri)
+    df = mlflow.search_runs(
+        search_all_experiments=True,
+        filter_string=build_search_filter(
+            dataset=dataset,
+            group=group,
+            variant=variant,
+            seed=seed,
+            phase=phase,
+            status=status,
+        ),
+        order_by=["attributes.start_time DESC"],
+        max_results=1,
+    )
+    return None if df.empty else df.iloc[0]
+
+
+def is_finished(
+    *,
+    dataset: str,
+    group: str,
+    variant: str,
+    seed: int,
+    phase: str = "fit",
+) -> bool:
+    """Return True iff the *latest* attempt for this identity+phase is FINISHED.
+
+    "Latest" matters because MLflow accumulates history across refactors —
+    an old FINISHED row from a prior code version can coexist with today's
+    FAILED/RUNNING. Only the most recent attempt is trusted. RUNNING (incl.
+    SLURM-killed-but-MLflow-still-RUNNING zombies) returns False so a
+    re-submission is safe; the previous run's MLflow row will be reaped /
+    overwritten on the next ``start_training_run``.
+
+    Soft-fails to ``False`` on any MLflow error (no tracking URI, network
+    blip, schema race) — the caller's preferred behavior is "submit
+    anyway" rather than block on a flaky lookup.
+    """
+    try:
+        row = latest_run(dataset=dataset, group=group, variant=variant, seed=seed, phase=phase)
+    except (MlflowException, OSError) as exc:
+        log.warning(
+            "is_finished_lookup_failed",
+            dataset=dataset,
+            group=group,
+            variant=variant,
+            seed=seed,
+            phase=phase,
+            error=str(exc),
+        )
+        return False
+    return row is not None and row["status"] == "FINISHED"
 
 
 def _ensure_experiment(client: MlflowClient, name: str) -> None:

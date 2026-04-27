@@ -26,12 +26,13 @@ python -m graphids submit configs/ablations/gat_loss/focal.jsonnet
 python -m graphids submit configs/ablations/gat_loss/focal.jsonnet --dataset hcrl_sa --seed 123
 
 # ablations that need upstream checkpoints (curriculum_vgae, fusion/*)
+# --depends-on resolves the latest FINISHED MLflow row → injects ckpt path TLAs.
 python -m graphids submit configs/ablations/gat_sampling/curriculum_vgae.jsonnet \
-    --vgae-ckpt /fs/ess/.../checkpoints/best_model.ckpt
+    --dataset set_01 --seed 42 --depends-on vgae:42
 
 # cluster override (submit from pitzer, target cardinal)
 python -m graphids submit configs/ablations/fusion/dqn.jsonnet \
-    --vgae-ckpt <p> --gat-ckpt <p> --cluster cardinal
+    --dataset set_01 --seed 42 --depends-on vgae:42,focal:42 --cluster cardinal
 
 # smoke test on gpudebug (1hr)
 python -m graphids submit configs/ablations/unsupervised/vgae.jsonnet --smoke --dry-run
@@ -81,7 +82,9 @@ see interactions (e.g. `gat_loss=weighted_ce` × `id_encoding=hash` as a
 joint effect). Interaction follow-ups, if needed, are a targeted
 factorial over top-2 of each axis — not a full grid expansion.
 
-**DAG** (`graphids.slurm.dag.OFAT_DAG`, CLI `python -m graphids launch-ablation`):
+**DAG** (declared in `configs/plans/ofat.jsonnet`; submit via
+`python -m graphids run configs/plans/ofat.jsonnet --dataset X --seed N --cluster C`;
+status via `python -m graphids status configs/plans/ofat.jsonnet --dataset X --seed N`):
 
 1. Baseline VGAE fit — upstream for Stages 2 + 3
 2. 8 standalone variants in parallel (no cross-deps):

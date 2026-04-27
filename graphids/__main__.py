@@ -12,8 +12,10 @@ Data:
 
 SLURM:
   submit                           — submit one SLURM job (preset.jsonnet or --command)
-  launch-ablation                  — submit the OFAT ablation DAG (topology
-                                     in ``graphids.slurm.dag.OFAT_DAG``)
+
+Plan workflow:
+  run                              — submit a plan via submitit, deps via afterok
+  status                           — query MLflow per plan node
 """
 
 from __future__ import annotations
@@ -21,10 +23,10 @@ from __future__ import annotations
 # Register command modules (each decorates app with @app.command).
 # init_providers() + log-level setup runs inside ``app.py``'s @app.callback,
 # so this module has no import-time side effects beyond decorator registration.
-import graphids.cli.ablation  # noqa: F401
 import graphids.cli.analysis  # noqa: F401
 import graphids.cli.compare  # noqa: F401
 import graphids.cli.data  # noqa: F401
+import graphids.cli.run  # noqa: F401
 import graphids.cli.submit  # noqa: F401
 import graphids.cli.training  # noqa: F401
 from graphids.cli.app import app

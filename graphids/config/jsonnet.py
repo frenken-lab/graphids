@@ -57,6 +57,7 @@ def render(
     # raises ``binding parameter a second time``. Single-letter names dodge it.
     native_callbacks = {
         "paths.run_dir": (("a", "b", "c", "d"), paths.run_dir),
+        "paths.best_ckpt": (("a", "b", "c", "d"), paths.best_ckpt),
         "paths.vgae_ckpt": (("a", "b"), paths.vgae_ckpt),
         "paths.states_dir": (("a", "b"), paths.states_dir),
     }
