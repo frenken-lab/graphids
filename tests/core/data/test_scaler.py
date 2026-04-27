@@ -1,9 +1,9 @@
-"""Scaler module contract: strategy dispatch, benign vs joint differential, round-trip.
+"""Scaler module contract: strategy dispatch, benign-fit behavior, round-trip.
 
-Three regression / contract tests guarding the 2026-04-25 promotion of
-scaling out of ``datasets/can_bus.py`` into ``core/data/scaler.py``.
-sklearn's StandardScaler / RobustScaler internals aren't tested here —
-that's sklearn's job.
+Regression / contract tests guarding the 2026-04-25 promotion of scaling
+out of ``datasets/can_bus.py`` into ``core/data/scaler.py``. sklearn's
+StandardScaler / RobustScaler internals aren't tested here — that's
+sklearn's job.
 """
 
 from __future__ import annotations
@@ -23,7 +23,8 @@ def _fixture(num_graphs: int = 6, nodes_per: int = 4, n_feat: int = 3, seed: int
     """Two-graph-class fixture: half benign (y=0), half attack (y=1).
 
     Attack graphs have feature mean shifted by +5σ on feature 0 — large
-    enough that joint-fit and benign-fit produce visibly different stats.
+    enough that the benign-only filter produces a visibly different
+    feature-0 mean from a hypothetical joint fit on the same rows.
     """
     g = torch.Generator().manual_seed(seed)
     n_total = num_graphs * nodes_per
@@ -39,16 +40,18 @@ def _fixture(num_graphs: int = 6, nodes_per: int = 4, n_feat: int = 3, seed: int
     return data, slices, torch.arange(num_graphs, dtype=torch.long)
 
 
-def test_z_benign_differs_from_z_joint_when_attacks_skew_distribution():
-    # CONTRACT: row-selection must actually filter. If z_benign and
-    # z_joint produced the same fitted mean, the benign filter would be
-    # dead code. Differential test, not a formula mirror.
+def test_z_benign_filters_attack_rows_from_fit():
+    # CONTRACT: row-selection must actually filter. If the benign filter
+    # were a no-op, the fitted feature-0 mean would equal the all-rows
+    # mean. Differential test against the all-rows reference, not a
+    # formula mirror. (The prior z_joint strategy that exposed this same
+    # contract via STRATEGIES dispatch was removed; we now compute the
+    # all-rows reference directly from the fixture's tensors.)
     data, slices, train_idx = _fixture()
-    joint = scaler_mod.fit(data, slices, train_idx, strategy="z_joint", keys=("x",))
     benign = scaler_mod.fit(data, slices, train_idx, strategy="z_benign", keys=("x",))
-    assert isinstance(joint["x"], StandardScaler)
-    # Feature-0 mean: joint sees attack-shifted rows, benign does not.
-    assert abs(joint["x"].mean_[0] - benign["x"].mean_[0]) > 1.0
+    assert isinstance(benign["x"], StandardScaler)
+    all_rows_mean_feat0 = float(data.x[:, 0].mean())
+    assert abs(all_rows_mean_feat0 - benign["x"].mean_[0]) > 1.0
 
 
 def test_robust_benign_returns_robust_scaler():

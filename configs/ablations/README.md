@@ -10,9 +10,11 @@ work unchanged.
 |---|---|---|---|
 | `unsupervised/` | autoencoder | (baseline only) | vgae |
 | `gat_sampling/` | supervised | `sampler` + scorer class | none, curriculum_random, curriculum_vgae |
-| `gat_loss/` | supervised | `loss_fn` | ce, focal, weighted_ce |
+| `gat_loss/` | supervised | `loss_fn` | ce, focal, weighted_ce, tau_norm |
 | `id_encoding/` | supervised | `id_encoder` | lookup, learned_unk, hash |
 | `fusion/` | fusion | `fusion_method` | bandit, dqn, mlp, weighted_avg |
+| `scaler/` | supervised | `scaler_strategy` (CANBusSource) | z_benign, robust_benign |
+| `curriculum_direction/` | supervised | curriculum ratio direction with random scorer | low_to_high, high_to_low |
 
 ## Running
 
@@ -73,6 +75,8 @@ via `render()` — for upstream ckpts):
 | `sampler` | `default` (non-curriculum) |
 | `scale` | `small` |
 | `id_encoder` | `lookup` |
+| `scaler_strategy` | `z_benign` (post-#43 default) |
+| Curriculum ratio direction | `low_to_high` (1.0 → 10.0; current code default) |
 | Upstream for fusion | VGAE ckpt + `gat_loss/focal` ckpt |
 | `fusion_method` (for non-fusion ablations) | n/a — fusion axis only varies within its own stage |
 
@@ -97,8 +101,9 @@ python -m graphids status configs/plans/ofat.jsonnet --dataset X --seed N
 Topology:
 
 1. Baseline VGAE fit — upstream for Stages 2 + 3
-2. 8 standalone variants in parallel (no cross-deps):
-   `gat_sampling/{none,curriculum_random}`, `gat_loss/*`, `id_encoding/*`
+2. 13 standalone variants in parallel (no cross-deps):
+   `gat_sampling/{none,curriculum_random}`, `gat_loss/*`, `id_encoding/*`,
+   `scaler/*`, `curriculum_direction/*`
 3. `curriculum_vgae` afterok: VGAE — needs the pretrained encoder
 4. `extract-fusion-states` afterok: VGAE + `gat_loss/focal` — cached
    latents shared across all fusion methods

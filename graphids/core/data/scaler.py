@@ -1,9 +1,9 @@
 """Per-column feature scalers for graph node/edge tensors.
 
-Three strategies compose two axes — row selection (all train rows vs
-benign-only) and reduction (sklearn ``StandardScaler`` mean/std vs
-``RobustScaler`` median/IQR). The reducers come from sklearn; only the
-graph-aware row indexing is custom.
+Two strategies, both fit on benign-only train rows; they differ only in
+the sklearn reducer (``StandardScaler`` mean/std vs ``RobustScaler``
+median/IQR). The reducers come from sklearn; only the graph-aware row
+indexing is custom.
 
 The fit-time / apply-time split matches sklearn's estimator contract:
 ``fit`` returns a dict of fitted estimators keyed by tensor attribute
@@ -11,12 +11,13 @@ The fit-time / apply-time split matches sklearn's estimator contract:
 each. Persistence is plain ``torch.save`` on the dict — sklearn
 estimators pickle natively.
 
-Rationale for benign-only as the default: the supervised stage's task is
-to detect deviations from normal, so the input coordinate system should
-be defined by normal alone. A scaler fit on benign+attack rows bakes the
-training-attack distribution into the input space, which attenuates
-discriminative axes when attack variance dominates and degrades
-zero-day generalization. See ``~/plans/scaler-design-supervised-ood.md``.
+Rationale for benign-only fit: the supervised stage's task is to detect
+deviations from normal, so the input coordinate system should be defined
+by normal alone. A scaler fit on benign+attack rows (the removed
+``z_joint`` strategy) bakes the training-attack distribution into the
+input space, attenuating discriminative axes when attack variance
+dominates and degrading zero-day generalization. See
+``~/plans/scaler-design-supervised-ood.md`` and graphids issue #43.
 """
 
 from __future__ import annotations
@@ -31,15 +32,12 @@ from torch_geometric.data import Data
 # (graph_filter, reducer_class) — strategy resolves to a row selector and
 # an sklearn estimator. Add a strategy by appending here.
 STRATEGIES: Final[dict[str, tuple[str, type]]] = {
-    "z_joint": ("all", StandardScaler),
     "z_benign": ("benign", StandardScaler),
     "robust_benign": ("benign", RobustScaler),
 }
 
 
 def _select_graphs(data: Data, train_idx: Tensor, filter_name: str) -> Tensor:
-    if filter_name == "all":
-        return train_idx
     if filter_name == "benign":
         return train_idx[data.y[train_idx] == 0]
     raise ValueError(f"unknown filter {filter_name!r}")

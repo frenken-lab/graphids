@@ -60,6 +60,14 @@ local extract_states_command =
     + fit_test('id_encoding/lookup.jsonnet')
     + fit_test('id_encoding/learned_unk.jsonnet')
     + fit_test('id_encoding/hash.jsonnet')
+    // scaler axis — each variant's scaler_strategy participates in the
+    // CANBusSource cache_key, so each forces its own cache build.
+    + fit_test('scaler/z_benign.jsonnet')
+    + fit_test('scaler/robust_benign.jsonnet')
+    // curriculum_direction axis — random within-tier ordering, varies
+    // only the ratio-ramp direction. Companion to gat_sampling/curriculum_*.
+    + fit_test('curriculum_direction/low_to_high.jsonnet')
+    + fit_test('curriculum_direction/high_to_low.jsonnet')
     // Stage 2 — curriculum_vgae fans in to vgae.
     + fit_test('gat_sampling/curriculum_vgae.jsonnet', deps=['vgae'])
     // Stage 3 — extract fusion states (vgae + focal encoders → tensor cache).

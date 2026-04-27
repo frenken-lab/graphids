@@ -4,44 +4,89 @@
 > `git log`; durable verdicts in `docs/decisions/README.md`; living
 > architecture in `docs/reference/`; cross-project plans in `~/plans/`.
 
-### Render snapshots verified identical
+### #43 closed — VGAE 5-bug-fix verified
 
-Rendered four representative presets pre/post each stage and diff'd —
-zero output drift across all 3 consolidations. 133 tests pass.
+All 5 enumerated bugs (sigmoid decoder, scoring weights, scaler
+benign-only, mean-pool, masking) are confirmed fixed in main code.
+Verified by post-fix `set_01` seed 42 fit (MLflow run
+`8e06fc6e903045fbb94376e9ef5266d5`): `val_loss = 0.113` vs ~2800
+plateau pre-fix; `test_03_known_vehicle_unknown_attack/auc = 0.76`;
+aggregate MCC flipped from −0.05 → +0.12. Closing comment posted
+to GitHub. Remaining test_01 known-attack F1=0 and test_06 masquerade
+AUC=0.27 are NOT regressions of #43 — different bug surfaces, should
+file as separate issues if pursued.
 
-### Submit chain: render once, pickle the rendered dict
+### Ablation surface — 3 new groups, score_weights walked back
 
-`_TrainingJob` now carries the rendered config dict instead of
-`(config_path, tlas, sets)`. `submit()` renders ONCE on the login node
-with both TLAs **and** `--set` overrides applied (was previously a
-latent bug — login render dropped `--set`, so login-computed `run_dir`
-disagreed with compute-computed `run_dir` for any `--set` touching it).
-Compute node skips jsonnet eval entirely via `training.run_rendered`,
-which is the new shared compute-node entrypoint for both the CLI and
-submitit paths. `cli/submit.py` collapsed into a Typer-decorated forward.
-End-to-end submitit fit smoke not yet run — only verified via dry-run +
-pickle roundtrip + ResolvedConfig consumption.
+- **`scaler/`** — `z_benign` (default), `robust_benign`. Tests scaler
+  fitting population. `z_joint` was added then removed: principled-out
+  for IDS (OOD-attack is dominant deployment risk; joint fitting bakes
+  the training-attack distribution into the input frame). Both code
+  path (`scaler.py:STRATEGIES`) and ablation variant deleted.
+- **`curriculum_direction/`** — `low_to_high` (1.0→10.0, current code
+  default) and `high_to_low` (10.0→1.0, DCL/MID literature direction).
+  Random within-tier ordering — isolates direction from scorer choice.
+- **`score_weights/`** — added then removed in same session. The
+  proposed (α, β, γ) sweep was answering the wrong question; the
+  research-backed approach is per-component z-normalization on benign
+  val (BWGNN/DCOR/AutoGraphAD/GAD-NR pattern), not fixed weights. Left
+  as separate code-change work.
 
-### Submit: one entrypoint, render helper centralized
+`configs/plans/ofat.jsonnet` extended with the 4 new variants in
+Stage 1 (parallel, no upstream deps). Render verified — 39 JSONL rows
+(was 31).
 
-`submit_with_flags` merged into `submit()` — one function takes the
-full CLI flag surface (preset/dataset/seed/depends_on/skip_if_finished/...)
-and dispatches to submitit. The two-function indirection was a leftover
-from when `dag.py` also called the low-level `submit()`; current
-architecture has only one caller (the Typer wrapper). `dotted_to_nested`
-moved from `cli/app.py` to `config/jsonnet.py` and gained a
-`render_with_flags(preset, tla, set_)` companion — both training.py and
-slurm/submit.py now share one render-input transformer instead of
-inlining `render(..., dict(tla or []), dotted_to_nested(set_))`. Removes
-the awkward `slurm → cli` import. 60/60 affected tests pass on SLURM
-(jid 47107452).
+### kd-gat-paper methodology subsection added
+
+Subsection `### Feature Standardization on Benign Training Rows` in
+`paper/content/methodology.md`. 13 new BibTeX entries across 3 .bib
+files. Defends `z_benign` choice with NIDS-context citations
+(ADBench, PyOD, Sommer & Paxson), one-class precedent (Donut,
+Deep SVDD, USAD, GANomaly), and test-time normalization analog
+(AdaBN, TENT, RevIN). Empirical magnitude on `set_01`: median 2.4%
+mean shift across 35 features, max 37%. Uncommitted in
+`~/kd-gat-paper`; not synced to Curvenote.
+
+### Compute-efficiency analysis (`~/plans/compute-efficiency-recalibration.md`)
+
+Three-layer evidence pass on the 13 post-#43 fits:
+
+1. **System telemetry** — GAT GPU util **median 11%** with mem at 99%;
+   VGAE 17% / 98%. Fusion is **0% GPU** across all 4 methods.
+   Conclusion: dataloader-bound, not compute-bound. The "GAT is
+   compute-bound (cg_ratio≈0.21)" comment in
+   `configs/models/supervised.libsonnet:4` is empirically false.
+
+2. **Existing 2026-03-23 plan** (`~/plans/gpu-utilization-and-training-efficiency.md`)
+   — most items still unapplied: `compile_model: true` is still
+   `false`; `exclude_keys=['attack_type']` not used; `set_to_none=True`
+   only in budget probe.
+
+3. **Literature review** (22 primary sources) — published GAT/VGAE
+   recipes use **Adam constant-LR, no scheduler, fixed-epoch or
+   patience=50 early stopping**. Our cosine over 300-1200 epochs is
+   outside published practice. OneCycleLR / Lion-Sophia / linear-LR
+   scaling for GNNs have **no published validation** — earlier
+   recommendations along those lines retracted.
+
+Recommendations summary in the doc, with HIGH-confidence path:
+num_workers bump (4→8 GAT, 2→6 VGAE), fusion → CPU partition,
+constant-LR Adam replacing cosine, epoch budgets aligned with
+Veličković 2018 / Kipf 2016 (200 VGAE, 150 GAT, 100 fusion),
+`compile_model: true`. Estimated 4-6× per-seed compute reduction.
 
 ## Open issues
 
 - **#32** Add WaDi dataset module.
-- **Verify submitit fit end-to-end**: a real `--smoke` fit on Pitzer to
-  confirm `_TrainingJob.__call__ → run_rendered → train` works on a GPU
-  compute node with the new pickled-rendered-dict payload.
+- **Recalibration application** — apply Tier 1.5 (epoch budgets +
+  constant-LR scheduler) and Tier 1.1 (num_workers) from
+  `~/plans/compute-efficiency-recalibration.md`. Verify with one
+  smoke fit before applying to full ablation sweep.
+- **VGAE per-component telemetry gap** — `train_recon`, `train_canid`,
+  `train_nbr`, `train_kl` are not flowing through to MLflow. Log calls
+  in `vgae_module.py:_training_step_inner` are gated on
+  `task_loss.last_recon is not None` — that gate isn't firing.
+  Investigation needed before deeper VGAE diagnosis is possible.
 
 ## Reference
 
