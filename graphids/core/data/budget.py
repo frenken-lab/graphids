@@ -442,14 +442,17 @@ def autosize_workers(
     result: BudgetResult,
     *,
     default_prefetch: int = 2,
-) -> tuple[int, int]:
-    """``ceil((t_io + t_collation) / t_gpu)`` → ``(num_workers, prefetch_factor)``.
+) -> tuple[int, int, dict]:
+    """``ceil((t_io + t_collation) / t_gpu)`` → ``(num_workers, prefetch_factor, diagnostics)``.
 
     Worker time has two components: dataset ``__getitem__`` (real I/O) plus
     ``Batch.from_data_list`` (collation, CPU-bound). Logs the chosen value
-    plus timing components and CPU cap to ``traces.jsonl`` so post-hoc
-    analysis can distinguish "autosize ran and picked N" from "autosize
-    bailed to fallback". MLflow tags downstream via the datamodule.
+    plus timing components and CPU cap to ``traces.jsonl``. The third return
+    value is a diagnostics dict — empty on the two fallback paths, populated
+    with timing components, ratio, raw worker count, and CPU cap on the
+    measured path. The datamodule forwards it to MLflow under the
+    ``graphids.dataloader.*`` tag namespace so post-hoc analysis can
+    distinguish "autosize ran and picked N" from "autosize bailed".
     """
     if model is None or model.device.type != "cuda" or result.t_fwd <= 0:
         log.info(
@@ -461,7 +464,7 @@ def autosize_workers(
             has_cuda=model is not None and model.device.type == "cuda",
             t_fwd=result.t_fwd,
         )
-        return 2, default_prefetch
+        return 2, default_prefetch, {}
 
     t_gpu = result.t_fwd * (result.backward_multiplier or _BWD_MULT_FALLBACK)
     batch = collect_batch(dataset, result.budget)
@@ -473,7 +476,7 @@ def autosize_workers(
             source="fallback_small_batch",
             batch_num_graphs=batch.num_graphs,
         )
-        return 2, default_prefetch
+        return 2, default_prefetch, {}
 
     # Drain pending CUDA work so async ops don't inflate CPU timing (#28)
     torch.cuda.synchronize(model.device)
@@ -499,17 +502,20 @@ def autosize_workers(
     raw = math.ceil(t_worker / t_gpu)
     w = max(1, min(raw, cap))
     pf = 4 if w >= 8 else 2
+    diag = {
+        "t_io_ms": round(t_io * 1000, 2),
+        "t_coll_ms": round(t_coll * 1000, 2),
+        "t_gpu_ms": round(t_gpu * 1000, 2),
+        "ratio": round(t_worker / t_gpu, 3),
+        "raw_w": raw,
+        "cap": cap,
+    }
     log.info(
         "workers_autosized",
         nw=w,
         prefetch_factor=pf,
         source="capped" if raw > cap else "measured",
-        t_io_ms=round(t_io * 1000, 2),
-        t_coll_ms=round(t_coll * 1000, 2),
-        t_gpu_ms=round(t_gpu * 1000, 2),
-        ratio=round(t_worker / t_gpu, 3),
-        raw_w=raw,
-        cap=cap,
         max_cpus=max_cpus,
+        **diag,
     )
-    return w, pf
+    return w, pf, diag

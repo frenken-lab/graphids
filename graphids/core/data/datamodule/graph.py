@@ -418,10 +418,18 @@ class GraphDataModule:
         pf = hp["prefetch_factor"]
         result = self._ensure_budget()
         if nw is None:
-            nw, pf = autosize_workers(self._model, dataset, result, default_prefetch=pf)
-            self._autosize_info = {"num_workers": nw, "prefetch_factor": pf, "source": "autosize"}
+            nw, pf, diag = autosize_workers(self._model, dataset, result, default_prefetch=pf)
+            self._autosize_info = {
+                "num_workers": nw,
+                "prefetch_factor": pf,
+                "source": "autosize",
+                **diag,
+            }
         else:
             self._autosize_info = {"num_workers": nw, "prefetch_factor": pf, "source": "explicit"}
+        from graphids._mlflow import tag_active_run
+
+        tag_active_run({f"graphids.dataloader.{k}": v for k, v in self._autosize_info.items()})
 
         sampler = NodeBudgetBatchSampler(
             dataset.num_nodes_per_graph,

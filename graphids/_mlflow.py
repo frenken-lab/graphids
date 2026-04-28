@@ -583,6 +583,20 @@ def log_epoch_metrics(epoch: int, metrics: dict[str, float]) -> None:
         mlflow.log_metrics(clean, step=epoch)
 
 
+def tag_active_run(tags: dict[str, Any]) -> None:
+    """Stamp tags onto the active MLflow run. No-op if no run is active.
+
+    Values are stringified and truncated to MLflow's max tag length. Use
+    when emitting provenance from a context that doesn't own the run
+    lifecycle (datamodule autosize info, callbacks observing live state).
+    """
+    if mlflow.active_run() is None:
+        return
+    clean = {k: str(v)[:_MAX_TAG_VALUE] for k, v in tags.items() if v is not None}
+    if clean:
+        mlflow.set_tags(clean)
+
+
 def _register_logged_model(
     run_id: str,
     experiment_id: str,
