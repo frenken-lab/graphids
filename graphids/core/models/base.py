@@ -209,9 +209,6 @@ class GraphModuleBase(nn.Module):
         lr = getattr(self.hparams, "lr", 1e-3)
         wd = getattr(self.hparams, "weight_decay", 0.0)
         opt = torch.optim.Adam(self.parameters(), lr=lr, weight_decay=wd)
-        if max_epochs > 1:
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max_epochs)
-            return opt, scheduler
         return opt, None
 
     def _oom_safe_step(self, batch, batch_idx, step_fn):

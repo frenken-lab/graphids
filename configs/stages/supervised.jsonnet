@@ -58,6 +58,21 @@ function(
       // 16-mixed via --set trainer.precision='16-mixed' once a (dataset,
       // scaler_strategy) pair is empirically validated.
       precision: '32-true',
+      // Observed across n=7 post-#43 runs (focal/weighted_ce/sampling/none/
+      // lookup/learned_unk/hash on set_01): val_loss reaches its minimum at
+      // ep 148-185, then drifts up to +0.003 by ep 250 (overfit). Cap at 200
+      // to capture every variant's plateau with margin without paying for
+      // the overfit tail. EarlyStopping below typically fires earlier.
+      max_epochs: 200,
+    },
+
+    callbacks+: {
+      // Default patience=100 means runs stop ~100 epochs after the val_loss
+      // minimum — well into overfit territory (train_loss keeps falling
+      // while val drifts up). Best ep is 148-185 across observed runs;
+      // patience 30 stops within ~30 epochs of plateau without losing the
+      // marginal late improvements.
+      early_stopping+: { init_args+: { patience: 30, min_delta: 0.001 } },
     },
 
     data+: {

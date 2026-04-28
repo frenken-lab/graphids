@@ -145,6 +145,7 @@ class EarlyStopping(CallbackBase):
     monitor: str = "val_loss"
     mode: str = "min"
     patience: int = 100
+    min_delta: float = 0.0
 
     wait_count: int = field(init=False, default=0)
     best_score: float = field(init=False)
@@ -156,7 +157,15 @@ class EarlyStopping(CallbackBase):
         current = trainer.callback_metrics.get(self.monitor)
         if current is None:
             return
-        if self._compare(current, self.best_score):
+        # min_delta: an improvement only counts if it exceeds the prior best
+        # by at least this margin. Default 0.0 preserves strict-inequality
+        # behavior for callers not specifying it.
+        threshold = (
+            self.best_score - self.min_delta
+            if self.mode == "min"
+            else self.best_score + self.min_delta
+        )
+        if self._compare(current, threshold):
             self.best_score = current
             self.wait_count = 0
         else:
