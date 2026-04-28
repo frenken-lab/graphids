@@ -205,42 +205,33 @@ def probe(model, batch_small, batch_big) -> tuple[int, int, float, float]:
     is from the larger batch, which is more representative of real
     training steps than the warmup-sized one.
 
-    The probe runs ``_PROBE_WARMUP_STEPS + 2`` train-mode fwd+bwd passes
-    that consume CUDA + CPU RNG (dropout, any stochastic init refresh).
-    Without protection, training step 1 starts from a probe-shifted RNG —
-    same seed yields different first-batch behavior depending on whether
-    the probe ran, and how its allocator state varied. ``torch.random.fork_rng``
-    rolls RNG state back to pre-probe on exit so post-probe training is
-    deterministic by ``seed_everything`` alone.
-
     Caller owns batch lifecycles.
     """
     dev = model.device
 
-    with torch.random.fork_rng(devices=[dev]):
-        step_fn = getattr(model, "_step", None)
-        if step_fn is not None:
-            was_training = model.training
-            model.train()
-            for _ in range(_PROBE_WARMUP_STEPS):
-                loss = step_fn(batch_big)
-                if isinstance(loss, (tuple, list)):
-                    loss = loss[0]
-                elif isinstance(loss, dict):
-                    loss = loss["loss"]
-                loss.backward()
-                model.zero_grad(set_to_none=True)
-            torch.cuda.synchronize(dev)
-            model.train(was_training)
-        else:
-            # Fallback for models without _step (analyzers, eval-only paths).
-            with _eval_mode(model):
-                with torch.no_grad():
-                    model(batch_small)
-            torch.cuda.synchronize(dev)
+    step_fn = getattr(model, "_step", None)
+    if step_fn is not None:
+        was_training = model.training
+        model.train()
+        for _ in range(_PROBE_WARMUP_STEPS):
+            loss = step_fn(batch_big)
+            if isinstance(loss, (tuple, list)):
+                loss = loss[0]
+            elif isinstance(loss, dict):
+                loss = loss["loss"]
+            loss.backward()
+            model.zero_grad(set_to_none=True)
+        torch.cuda.synchronize(dev)
+        model.train(was_training)
+    else:
+        # Fallback for models without _step (analyzers, eval-only paths).
+        with _eval_mode(model):
+            with torch.no_grad():
+                model(batch_small)
+        torch.cuda.synchronize(dev)
 
-        fwd_s, bwd_s, _ = _step_peaks(model, batch_small)
-        fwd_b, bwd_b, t_fwd_big = _step_peaks(model, batch_big)
+    fwd_s, bwd_s, _ = _step_peaks(model, batch_small)
+    fwd_b, bwd_b, t_fwd_big = _step_peaks(model, batch_big)
 
     dn = max(1, batch_big.num_nodes - batch_small.num_nodes)
     de = max(1, int(batch_big.num_edges) - int(batch_small.num_edges))
