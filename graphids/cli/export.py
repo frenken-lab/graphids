@@ -284,11 +284,19 @@ def push_hf(
 
         bundles: dict[str, list[pd.DataFrame]] = {name: [] for name in fns}
         empty_pairs: list[str] = []
+        missing_metric_pairs: list[str] = []
         for _, row in pairs.iterrows():
             grp, ds = row["group"], row["dataset"]
             row_n = 0
+            metric_missing = False
             for name, fn in fns.items():
-                df_ = fn(grp, ds, metric=metric, seeds=spec.seed_set)
+                try:
+                    df_ = fn(grp, ds, metric=metric, seeds=spec.seed_set)
+                except LookupError:
+                    # Group has rows but doesn't produce this metric — all 4
+                    # fns share _fetch_test_runs so they'd raise identically.
+                    metric_missing = True
+                    break
                 if df_.empty:
                     continue
                 df_ = df_.copy()
@@ -296,14 +304,23 @@ def push_hf(
                 df_["dataset"] = ds
                 bundles[name].append(df_)
                 row_n += len(df_)
-            typer.echo(f"  {grp}/{ds}: {row_n} metric rows")
-            if row_n == 0:
+            if metric_missing:
+                missing_metric_pairs.append(f"{grp}/{ds}")
+                typer.echo(f"  {grp}/{ds}: metric {metric!r} not produced — skipped")
+            elif row_n == 0:
                 empty_pairs.append(f"{grp}/{ds}")
+                typer.echo(f"  {grp}/{ds}: 0 rows after seed filter — skipped")
+            else:
+                typer.echo(f"  {grp}/{ds}: {row_n} metric rows")
 
+        if missing_metric_pairs:
+            typer.echo(
+                f"  WARN: {len(missing_metric_pairs)} pair(s) don't produce metric={metric!r}: "
+                f"{missing_metric_pairs}"
+            )
         if empty_pairs:
             typer.echo(
-                f"  WARN: {len(empty_pairs)} pair(s) had no rows for metric={metric!r}: "
-                f"{empty_pairs}"
+                f"  WARN: {len(empty_pairs)} pair(s) had no rows after seed filter: {empty_pairs}"
             )
 
         for name, parts in bundles.items():

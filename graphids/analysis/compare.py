@@ -95,7 +95,17 @@ def _fetch_test_runs(
 
     metric_col = f"metrics.{metric}"
     if metric_col not in df.columns:
-        return pd.DataFrame(columns=["variant", "seed", "value"])
+        # The (group, dataset) has FINISHED test rows but no column for this
+        # metric — the group simply doesn't produce it (e.g. f1_macro on the
+        # unsupervised VGAE group, which logs AUC). Surface the available
+        # alternatives so callers can pick a different metric or filter the
+        # group out of their snapshot rather than silently dropping it.
+        available = sorted(
+            c.removeprefix("metrics.") for c in df.columns if c.startswith("metrics.")
+        )
+        raise LookupError(
+            f"metric {metric!r} not produced by ({group!r}, {dataset!r}); available: {available}"
+        )
 
     out = pd.DataFrame(
         {

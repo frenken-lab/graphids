@@ -20,6 +20,17 @@ _compare = typer.Typer(
 app.add_typer(_compare, name="compare", rich_help_panel="Analysis")
 
 
+def _call_or_exit(fn, *args, **kwargs):
+    """Catch ``LookupError`` (raised when the metric isn't produced by the
+    group) and exit with the message + available alternatives — better UX
+    than typer's default traceback."""
+    try:
+        return fn(*args, **kwargs)
+    except LookupError as e:
+        typer.echo(f"ERROR: {e}", err=True)
+        raise typer.Exit(code=2) from None
+
+
 @_compare.command("leaderboard")
 def leaderboard_cmd(
     group: Annotated[str, typer.Argument(help="Ablation group (e.g. conv_type)")],
@@ -29,7 +40,7 @@ def leaderboard_cmd(
     """Mean + 95 % bootstrap BCa CI per variant, sorted desc by mean."""
     from graphids.analysis.compare import leaderboard
 
-    df = leaderboard(group, dataset, metric=metric)
+    df = _call_or_exit(leaderboard, group, dataset, metric=metric)
     print(df.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
 
 
@@ -43,7 +54,7 @@ def ties_cmd(
     """Variant pairs within ``tol`` on mean — flag for promote-to-N=3."""
     from graphids.analysis.compare import tie_candidates
 
-    df = tie_candidates(group, dataset, metric=metric, tol=tol)
+    df = _call_or_exit(tie_candidates, group, dataset, metric=metric, tol=tol)
     if df.empty:
         print(f"(no pairs within tol={tol} for metric={metric!r})")
         return
@@ -59,7 +70,7 @@ def effect_size_cmd(
     """Pairwise Cohen's d + mean-difference bootstrap CI (no p-values)."""
     from graphids.analysis.compare import effect_size
 
-    df = effect_size(group, dataset, metric=metric)
+    df = _call_or_exit(effect_size, group, dataset, metric=metric)
     print(df.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
 
 
@@ -72,5 +83,5 @@ def expected_max_cmd(
     """Dodge 2019 expected-max curve per variant, truncated at N."""
     from graphids.analysis.compare import expected_max
 
-    df = expected_max(group, dataset, metric=metric)
+    df = _call_or_exit(expected_max, group, dataset, metric=metric)
     print(df.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
