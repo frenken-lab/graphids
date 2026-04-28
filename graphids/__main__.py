@@ -26,6 +26,7 @@ from __future__ import annotations
 import graphids.cli.analysis  # noqa: F401
 import graphids.cli.compare  # noqa: F401
 import graphids.cli.data  # noqa: F401
+import graphids.cli.export  # noqa: F401
 import graphids.cli.run  # noqa: F401
 import graphids.cli.submit  # noqa: F401
 import graphids.cli.training  # noqa: F401
