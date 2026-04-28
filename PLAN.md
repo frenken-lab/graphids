@@ -6,92 +6,83 @@
 
 ## Current state
 
-### Shipped this session (3 commits on main, unpushed)
+### Shipped this session (2 commits on main, unpushed — 16 unpushed total)
 
-- `0d20b9c` uv.lock regen (post-OTel rip drift)
-- `fdfc518` **GAT recalibration**: max_epochs 300→200, patience 100→30,
-  added `min_delta=0.001` to EarlyStopping (callback gained the field),
-  dropped CosineAnnealingLR from base.py.
-- `95bb8df` **VGAE recalibration** — five coupled changes:
-  1. monitor: `val_discrimination_gap` → `val_discrimination_ratio` (gap
-     shrinks monotonically as both losses converge → useless as max-mode
-     signal; ratio grows as discrimination strengthens). Both ckpt + ES
-     track the ratio. Gap kept as diagnostic only.
-  2. `validation_step` 3 forwards → 1 forward (per-class via masking, not
-     re-batching). val_loss now excludes KL — magnitudes shift, curve
-     shape comparable.
-  3. Tier B z-norm scoring: 6 scalar buffers + fitted flag on the module.
-     `fit_score_norm()` calibrates against benign-val at test-start
-     (trainer.test hook mirrors OCGIN's calibrate_svdd_center pattern).
-     Falls back to fixed-weight composite when buffers empty (older ckpts
-     keep working).
-  4. `extract_features` deduplicated against `_per_component_errors`
-     (now returns z too). Column order preserved for cached fusion states.
-  5. `autoencoder.jsonnet`: max_epochs 1200→600, precision 16-mixed→32-true
-     (fp16 was numerically safe but no throughput win measured); cosine
-     scheduler dropped from VGAEModule.build_optimizers.
+- `7f23df4` **VGAE mask-recon synthesis** — bundles Phase 0 pre-clean
+  (lr=0.006 override drop, score_difficulty relocate to curriculum.py)
+  + the atomic synthesis from `~/plans/vgae-mask-recon-and-latent-density.md`.
+  Cuts variational/canid/nbr heads (-193 LOC), adds 15% random-mask
+  training + 7-round round-robin test + Mahalanobis on mu (diag Σ,
+  eps=1e-3 floor) + KL in score (+160 LOC). Forward 5-tuple→3-tuple.
+  Net -38 LOC across 16 files. Tests: 205 collect, ruff clean.
+  Synthetic-batch instantiation smoke confirms training_step → finite
+  loss, validation_step OK, test_step raises pre-calibration error.
+  No backward-compat fallthroughs; old ckpts loaded by new code raise
+  in `_per_graph_errors`. Fusion cache version bumps 1→2.
+- `0e74e3f` **GPU val/test dynamic batching** — `_build_eval_loader`
+  now reuses the train-time probe to dynamically pack val/test on
+  GPU; falls back to fixed batch_size=32 on CPU. Symptom that drove
+  this: jid 47126749 hit 30% GPU util / 95% VRAM (val ran ~945
+  batch_size=32 batches/epoch through 2 NFS workers, ~36× more
+  forwards than train). Per-example metrics are
+  batch-boundary-invariant, so the change only moves throughput.
 
-### In flight — smoke jid 47125867
+### Pending — Commit 3 smoke verification (the actual `~/plans/...` Commit 3)
 
-Single-forward val + ratio monitor + z-norm calibration **launched but
-not finished**. User is watching the Monitor stream personally. Expected
-~30 min wall on gpudebug. What to verify when it terminates:
+The synthesis hasn't run on real data yet. Smoke must terminate
+before the synthesis can be called passing.
 
-- val_discrimination_ratio trajectory grows ~1.1 → ~1.3 over 50 epochs
-  (matches the prior smoke's same numbers, just on the right metric).
-- Per-epoch time DROPS from 41 s/ep baseline (the goal of the val 3→1
-  refactor). The historical 4.8 s/ep run is the lower bound; likely
-  lands somewhere in between (warm-allocator probe budget regression
-  is still in effect, separately).
-- ModelCheckpoint saves a late-training epoch (not ep 0 like the broken
-  monitor did). Best-epoch should be the highest-ratio epoch.
-- All metrics finite (back on fp32, expected stable).
+**Submit command:**
+```bash
+cd ~/graphids && source .venv/bin/activate && \
+python -m graphids submit configs/ablations/unsupervised/vgae.jsonnet \
+    --dataset set_01 --seed 42 --smoke
+```
 
-### What's not yet covered by the smoke
+**Pass criterion (single, hard):** `val_discrimination_ratio` peak ≥ 1.5.
 
-- Z-norm calibration end-to-end: only fires during `graphids test`, not
-  during `submit ... vgae.jsonnet`. After the smoke fit terminates,
-  running `graphids test --ckpt-path {best.ckpt} --dataset set_01` will
-  exercise the trainer hook + fit_score_norm + branched scoring. ~5 min
-  wall.
-- `extract_features` dedup: only matters when `extract-fusion-states`
-  CLI runs. Verified by import + structural test, not exercised on real
-  data this session.
+**Reference:** old code on seed=43 (jid 47126749) peaked at 1.540 —
+that's the no-regression bar. Plan threshold (1.5) is more permissive
+since old smoke was on a slightly different seed and still had
+lr=0.006.
+
+**Fail action** (verbatim from plan): "**revert Commit `7f23df4`.**
+Don't ablate, don't tune mask_rate, don't try without KL or without
+Mahalanobis. The synthesis stands or falls together." Eval-loader
+fix (`0e74e3f`) stays regardless.
+
+**Sanity checks** (logged but not gating):
+- `train_recon_masked > train_recon_unmasked` per-batch (mask training
+  is firing, encoder isn't echoing v back via some non-feature path)
+- All three score components (recon, mahal, kl) finite + non-zero
+  z-normed values across val (verified post-`fit_score_norm`)
+- GPU util should now be **substantially > 30%** courtesy of `0e74e3f`
+  — if it's still ≤ 50%, something else is starving the dataloader
+  beyond the val-batch-size issue
+
+### After the smoke (regardless of pass/fail)
+
+- Run `graphids test` against the best.ckpt — exercises the
+  `fit_score_norm` two-pass calibration (mu_mean/std, then component
+  norms) and the round-robin scoring path on real data. ~5 min wall.
+- If the smoke passes: open issue or commit to remove the warm-allocator
+  budget-regression note (`6490eb7`) — it may have been the val-batch
+  problem all along, now fixed by `0e74e3f`.
 
 ## Open issues — short list
 
 - **#32** Add WaDi dataset module.
-- **Audit #3** — move `score_difficulty` (vgae.py:271-308, ~38 LOC)
-  out of the model class to `core/data/curriculum.py` where the
-  curriculum scorer interface lives. Single caller (curriculum.py:65).
-  Pure relocation, no behavior change. **Now bundled into Phase 0 of
-  the mask-recon plan** (see `~/plans/vgae-mask-recon-and-latent-density.md`).
-- **VGAE mask-recon + latent density synthesis** — durable design at
-  `~/plans/vgae-mask-recon-and-latent-density.md` (v2, 2026-04-28).
-  **Three commits, one smoke, no ablations.** Commit 1 (pre-clean
-  trivia) lands after current smoke jid 47126749. Commit 2 (atomic
-  synthesis): cut variational/nbr/canid heads (-193 LOC), add mask
-  training + round-robin test scoring + Mahalanobis on mu + KL in
-  score (+160 LOC). Net **-33 LOC**. Commit 3: smoke at set_01
-  seed=42 mask_rate=0.15. Pass: ratio peak ≥ 1.5. Fail: revert.
 - **Tier 1.4 A/B** — cosine→constant LR shipped in two places (base.py
   and vgae_module.py) without controlled validation. One focal GAT pair
   on set_01 seed=42, both at max_epochs=200, would settle whether it
   was the right call. ~50 min/run × 2.
-- **#6 design discussion** — `canid` head was at random-baseline
-  cross-entropy (~0.94) at ep 20 in the prior smoke; either
-  canid_weight=0.1 is too small to drive the head or the head
-  architecture is undersized. User wants to discuss after this batch
-  of changes lands.
-- **`lr: 0.006` stale workaround** in
-  `configs/ablations/unsupervised/vgae.jsonnet:23`. The comment claims
-  the bump escapes a "~2800 floor for ~50% of epochs" — that plateau
-  was the pre-#43 bug and no longer exists post-fix. Override is now
-  unjustified; should drop or rejustify on current data.
+- **#6 design discussion** — `canid` head is now deleted; the prior
+  question about canid_weight tuning is moot. Closing implicitly via
+  `7f23df4`.
 - **Warm-allocator budget regression** — `budget_utilization_pct`
-  dropped 101 → 78.6 between the historical 4.8 s/ep VGAE run and
-  current code (commit `6490eb7`). VGAE got smaller batches without
-  the GAT-specific util benefit. Independent of the val refactor.
+  dropped 101 → 78.6 between historical 4.8 s/ep VGAE run and current
+  code (`6490eb7`). May have been masked by the val-batch issue — wait
+  for the post-`0e74e3f` smoke before re-investigating.
 
 ## Reference
 
