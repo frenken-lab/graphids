@@ -139,6 +139,10 @@ class GraphDataModule:
         # One probe per fit; bpn_node/bpn_edge are model properties, not split
         # properties, so every loader / prebatch consumer reuses this.
         self._budget = None
+        # Worker count actually used for the train loader (autosize result OR
+        # explicit hp). MLflowTrainingCallback tags this; without it the
+        # autosize path is unfalsifiable post-hoc.
+        self._autosize_info: dict | None = None
         # Memoize (dataset_id, shuffle) → loader; val/test used to rebuild
         # sampler + re-run probe + re-time workers every epoch.
         self._loader_cache: dict[tuple[int, bool], object] = {}
@@ -415,6 +419,9 @@ class GraphDataModule:
         result = self._ensure_budget()
         if nw is None:
             nw, pf = autosize_workers(self._model, dataset, result, default_prefetch=pf)
+            self._autosize_info = {"num_workers": nw, "prefetch_factor": pf, "source": "autosize"}
+        else:
+            self._autosize_info = {"num_workers": nw, "prefetch_factor": pf, "source": "explicit"}
 
         sampler = NodeBudgetBatchSampler(
             dataset.num_nodes_per_graph,

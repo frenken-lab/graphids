@@ -35,7 +35,21 @@ class MLflowTrainingCallback(CallbackBase):
     """
 
     def on_train_epoch_end(self, trainer, model: torch.nn.Module) -> None:
+        import mlflow
+
         from graphids._mlflow import log_epoch_metrics
+
+        # Stamp autosize tags on epoch 0 (the dataloader has now been built,
+        # so _autosize_info is populated). Later epochs idempotent-overwrite,
+        # which is harmless. Doing this here — not in on_fit_end — means the
+        # tags survive walltime kills / preemption, which is the common case
+        # for smoke verifications.
+        if trainer.current_epoch == 0:
+            autosize = getattr(getattr(trainer, "datamodule", None), "_autosize_info", None)
+            if autosize is not None:
+                mlflow.set_tag("graphids.num_workers", str(autosize["num_workers"]))
+                mlflow.set_tag("graphids.num_workers_source", autosize["source"])
+                mlflow.set_tag("graphids.prefetch_factor", str(autosize["prefetch_factor"]))
 
         cb = trainer.callback_metrics
         metrics: dict[str, float] = {k: float(v) for k, v in cb.items() if v is not None}

@@ -53,6 +53,7 @@ BudgetBinding = Literal[
 
 
 _BWD_MULT_FALLBACK = 2.0
+_PROBE_WARMUP_STEPS = 3
 
 
 def _settings() -> tuple[float, int]:
@@ -185,11 +186,20 @@ def _step_peaks(model, batch) -> tuple[int, int, float]:
 def probe(model, batch_small, batch_big) -> tuple[int, int, float, float]:
     """Two-point linear fit of VRAM vs. batch size.
 
-    Runs a warmup on ``batch_small`` (trigger lazy CUDA init, cuDNN
-    autotuning, kernel JIT, allocator baseline), then full fwd+bwd passes
-    on both batches. ``bpn_node`` is the slope of ``bwd_peak`` vs. nodes
-    across the two points; the intercept (fixed overhead) drops out.
-    Same for ``bpn_edge``.
+    Runs warmup as N full fwd+bwd training-mode steps on the big batch
+    (matches what training actually does), then measures peak VRAM at
+    small + big batches isolated. ``bpn_node`` is the slope of ``bwd_peak``
+    vs. nodes; the intercept (fixed overhead) drops out. Same for ``bpn_edge``.
+
+    Why training-mode warmup, not the prior single no_grad fwd on the small
+    batch: cold-allocator measurements systematically OVER-estimate per-node
+    cost for architectures with high allocator churn (GAT's multi-head
+    attention especially). Verified empirically on Pitzer V100 (run f85c82b):
+    cold-warmup probe sized GAT batches at 53% of card; doubling the budget
+    (safety_margin=1.5 → effectively halving bpn_node) hit 95% of card with
+    no OOM — proving the 7 GB "headroom" was real and the cold probe was
+    over-conservative. VGAE (simpler decoder, less churn) hits 101% util
+    even with cold warmup, so the bias is architecture-specific.
 
     Returns ``(bpn_node, bpn_edge, bwd_mult, t_fwd_seconds)``. ``t_fwd``
     is from the larger batch, which is more representative of real
@@ -199,11 +209,26 @@ def probe(model, batch_small, batch_big) -> tuple[int, int, float, float]:
     """
     dev = model.device
 
-    # Warmup on the smaller batch — sets up cuDNN autotuning + allocator cache.
-    with _eval_mode(model):
-        with torch.no_grad():
-            (getattr(model, "_step", None) or model)(batch_small)
-    torch.cuda.synchronize(dev)
+    step_fn = getattr(model, "_step", None)
+    if step_fn is not None:
+        was_training = model.training
+        model.train()
+        for _ in range(_PROBE_WARMUP_STEPS):
+            loss = step_fn(batch_big)
+            if isinstance(loss, (tuple, list)):
+                loss = loss[0]
+            elif isinstance(loss, dict):
+                loss = loss["loss"]
+            loss.backward()
+            model.zero_grad(set_to_none=True)
+        torch.cuda.synchronize(dev)
+        model.train(was_training)
+    else:
+        # Fallback for models without _step (analyzers, eval-only paths).
+        with _eval_mode(model):
+            with torch.no_grad():
+                model(batch_small)
+        torch.cuda.synchronize(dev)
 
     fwd_s, bwd_s, _ = _step_peaks(model, batch_small)
     fwd_b, bwd_b, t_fwd_big = _step_peaks(model, batch_big)
@@ -421,14 +446,33 @@ def autosize_workers(
     """``ceil((t_io + t_collation) / t_gpu)`` → ``(num_workers, prefetch_factor)``.
 
     Worker time has two components: dataset ``__getitem__`` (real I/O) plus
-    ``Batch.from_data_list`` (collation, CPU-bound).
+    ``Batch.from_data_list`` (collation, CPU-bound). Logs the chosen value
+    plus timing components and CPU cap to ``traces.jsonl`` so post-hoc
+    analysis can distinguish "autosize ran and picked N" from "autosize
+    bailed to fallback". MLflow tags downstream via the datamodule.
     """
     if model is None or model.device.type != "cuda" or result.t_fwd <= 0:
+        log.info(
+            "workers_autosized",
+            nw=2,
+            prefetch_factor=default_prefetch,
+            source="fallback_no_probe",
+            has_model=model is not None,
+            has_cuda=model is not None and model.device.type == "cuda",
+            t_fwd=result.t_fwd,
+        )
         return 2, default_prefetch
 
     t_gpu = result.t_fwd * (result.backward_multiplier or _BWD_MULT_FALLBACK)
     batch = collect_batch(dataset, result.budget)
     if batch.num_graphs < 2:
+        log.info(
+            "workers_autosized",
+            nw=2,
+            prefetch_factor=default_prefetch,
+            source="fallback_small_batch",
+            batch_num_graphs=batch.num_graphs,
+        )
         return 2, default_prefetch
 
     # Drain pending CUDA work so async ops don't inflate CPU timing (#28)
@@ -451,5 +495,21 @@ def autosize_workers(
     t_worker = t_io + t_coll
     slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
     max_cpus = (int(slurm_cpus) if slurm_cpus and slurm_cpus.isdigit() else None) or os.cpu_count()
-    w = max(1, min(math.ceil(t_worker / t_gpu), max(1, max_cpus - 2)))
-    return w, 4 if w >= 8 else 2
+    cap = max(1, max_cpus - 2)
+    raw = math.ceil(t_worker / t_gpu)
+    w = max(1, min(raw, cap))
+    pf = 4 if w >= 8 else 2
+    log.info(
+        "workers_autosized",
+        nw=w,
+        prefetch_factor=pf,
+        source="capped" if raw > cap else "measured",
+        t_io_ms=round(t_io * 1000, 2),
+        t_coll_ms=round(t_coll * 1000, 2),
+        t_gpu_ms=round(t_gpu * 1000, 2),
+        ratio=round(t_worker / t_gpu, 3),
+        raw_w=raw,
+        cap=cap,
+        max_cpus=max_cpus,
+    )
+    return w, pf
