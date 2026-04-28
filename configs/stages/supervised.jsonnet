@@ -3,10 +3,6 @@
 // Merges the old normal.jsonnet and curriculum.jsonnet into one stage.
 // The `sampler` TLA controls whether curriculum difficulty-ramping is
 // active ('curriculum') or standard batching is used ('default').
-//
-// NOTE: gat.base sets `data.init_args.num_workers: 4`, which overrides
-// the stage's default of null (auto-sized). GAT is compute-bound
-// (cg_ratio ≈ 0.21), so extra workers idle waiting for the GPU.
 
 local defaults = import '../_lib/defaults.libsonnet';
 local sup = import '../models/supervised.libsonnet';

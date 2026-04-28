@@ -1,8 +1,10 @@
 // Supervised model family — GAT classification.
 //
 // Pre-merged configs indexed by scale: sup[model_type][scale].
-// GAT is compute-bound (cg_ratio ≈ 0.21 at W=6); base sets num_workers=4
-// to override the auto-sized default.
+// num_workers is left to the autosizer (budget.py:autosize_workers,
+// `ceil((t_io + t_collation) / t_gpu)` capped at SLURM_CPUS_PER_TASK - 2).
+// Hardcoded overrides go stale when the data path changes — see the prior
+// `num_workers: 4` removed once prebatching landed.
 //
 // KD is handled at the loss level (core/losses/distillation.py), not here.
 
@@ -17,11 +19,6 @@ local _gat_base = {
       loss_weight: 10.0,
       pool_aggrs: ['mean'],
       compile_model: false,
-    },
-  },
-  data: {
-    init_args: {
-      num_workers: 4,
     },
   },
 };
