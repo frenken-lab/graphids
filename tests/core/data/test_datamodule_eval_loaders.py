@@ -1,10 +1,13 @@
 """GraphDataModule val/test loader invariants.
 
 REGRESSION: CPU test jobs crashed because ``test_dataloader`` called
-``_ensure_budget`` which requires CUDA for a backward-pass probe. The
-budget probe is a training-throughput optimization; evaluation iterates
-sequentially and must work on CPU. Asserts val/test loaders build without
-touching the budget path.
+``_ensure_budget`` which requires CUDA for a backward-pass probe. CPU
+eval must continue to work without touching the budget path — the
+fallback fixed-batch loader is the legitimate path there.
+
+(GPU eval, by contrast, now reuses the train-time probe to dynamically
+pack val/test batches. Tested by the val-throughput SLURM smoke, not
+here — these tests are explicitly login-node / CPU-partition.)
 """
 
 from __future__ import annotations
@@ -48,8 +51,11 @@ def _make_dm():
 class TestEvalLoadersCpuOnly:
     """INVARIANT: val / test loaders build on CPU without a wired model.
 
-    ``_ensure_budget`` requires CUDA + a model; val/test paths must not
-    call it. Model is intentionally unwired (``_set_model`` not called).
+    ``_ensure_budget`` requires CUDA + a model. On the CPU branch
+    (``torch.cuda.is_available() == False``) the eval loader must skip
+    the probe and use fixed batches — model is intentionally unwired
+    (``_set_model`` not called) to assert the CPU path does not reach
+    ``_ensure_budget``.
     """
 
     def test_test_dataloader_builds_without_cuda_or_model(self):

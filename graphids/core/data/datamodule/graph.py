@@ -449,20 +449,44 @@ class GraphDataModule:
         return loader
 
     def _build_eval_loader(self, dataset):
-        """Val / test loader. Fixed batch size — no budget probe.
+        """Val / test loader.
 
-        The budget probe is a training-throughput optimization: dynamic
-        batching maximizes per-step GPU utilization on heterogeneous graph
-        sizes. Evaluation iterates sequentially under ``torch.no_grad`` —
-        per-example metrics (AUROC, accuracy) are batch-boundary-invariant,
-        and the probe itself requires CUDA + a wired model (blocking CPU
-        test jobs). Use a fixed batch size from ``hparams["batch_size"]``.
+        GPU path (``dynamic_batching=true`` AND CUDA available): reuses the
+        train-time budget probe to dynamically pack val/test batches at the
+        same VRAM-saturating granularity as training. Val runs every epoch
+        during fit — without this, val pays ~36× more small forwards through
+        a 2-worker NFS chain than train does, dragging GPU util down to
+        ~30% on V100 (jid 47126749, set_01 seed=43, 30225-graph val set →
+        ~945 batches/epoch at batch_size=32 vs ~26 at the probed budget).
+
+        CPU path (no CUDA): falls back to fixed ``batch_size`` (defaulted
+        to 32, ``num_workers`` to 2) — the budget probe needs CUDA + a
+        wired model, which is what motivated commit a224f8c. SVDD
+        calibration via ``train_eval_dataloader`` runs CPU-side test jobs
+        and depends on this fallback.
+
+        Per-example metrics (AUROC, accuracy) and centroid statistics are
+        batch-boundary-invariant, so dynamic vs fixed batching only
+        affects throughput, not numerics.
         """
         key = (id(dataset), False)
         cached = self._loader_cache.get(key)
         if cached is not None:
             return cached
-        loader = self._make_fixed_batch_loader(dataset, shuffle=False)
+
+        if self.hparams["dynamic_batching"] and torch.cuda.is_available():
+            prebatched = self._prebatch(
+                dataset,
+                dataset.num_nodes_per_graph,
+                dataset.num_edges_per_graph,
+            )
+            loader = _prebatched_loader(
+                prebatched,
+                shuffle=False,
+                device=self._prefetch_device(),
+            )
+        else:
+            loader = self._make_fixed_batch_loader(dataset, shuffle=False)
         self._loader_cache[key] = loader
         return loader
 
