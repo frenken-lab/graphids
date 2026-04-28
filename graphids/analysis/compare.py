@@ -22,10 +22,14 @@ and expect the classifier-flavor unified metrics (``f1_macro``,
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 from scipy.stats import bootstrap
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 DEFAULT_METRIC = "f1_macro"
 DEFAULT_TOL = 0.005
@@ -49,7 +53,13 @@ class _Aggregate:
 # ---------------------------------------------------------------------------
 
 
-def _fetch_test_runs(group: str, dataset: str, metric: str) -> pd.DataFrame:
+def _fetch_test_runs(
+    group: str,
+    dataset: str,
+    metric: str,
+    *,
+    seeds: Iterable[int] | None = None,
+) -> pd.DataFrame:
     """Return one DataFrame row per test-phase child run for ``(group, dataset)``.
 
     Columns: ``variant``, ``seed``, ``value``. Tag-filter across all
@@ -57,6 +67,9 @@ def _fetch_test_runs(group: str, dataset: str, metric: str) -> pd.DataFrame:
     layout and the new ``graphids/{dataset}/{group}`` layout without a
     dual path. Test phase is always-fresh (one row per attempt), so we
     dedup to the latest FINISHED row per ``(variant, seed)``.
+
+    ``seeds`` restricts the result to a fixed seed set — used by
+    ``cli/export.py`` to scope a snapshot to its manifest.
     """
     import mlflow
 
@@ -92,6 +105,8 @@ def _fetch_test_runs(group: str, dataset: str, metric: str) -> pd.DataFrame:
         }
     ).dropna()
     out["seed"] = out["seed"].astype(int)
+    if seeds is not None:
+        out = out[out["seed"].isin(set(seeds))]
     # Keep the most recent FINISHED attempt per (variant, seed) — order_by
     # DESC above, so ``keep='first'`` picks the newest.
     return out.drop_duplicates(subset=["variant", "seed"], keep="first").reset_index(drop=True)
@@ -150,13 +165,14 @@ def leaderboard(
     dataset: str,
     *,
     metric: str = DEFAULT_METRIC,
+    seeds: Iterable[int] | None = None,
 ) -> pd.DataFrame:
     """Per-variant leaderboard: mean + 95 % BCa CI, sorted by mean (desc).
 
     Columns: ``variant``, ``n_seeds``, ``mean``, ``ci_low``, ``ci_high``.
     ``ci_low``/``ci_high`` are NaN when ``n_seeds < 3``.
     """
-    raw = _fetch_test_runs(group, dataset, metric)
+    raw = _fetch_test_runs(group, dataset, metric, seeds=seeds)
     aggs = _aggregate_per_variant(raw)
     return pd.DataFrame(
         [
@@ -178,6 +194,7 @@ def tie_candidates(
     *,
     metric: str = DEFAULT_METRIC,
     tol: float = DEFAULT_TOL,
+    seeds: Iterable[int] | None = None,
 ) -> pd.DataFrame:
     """Variant pairs whose mean gap is within ``tol`` — candidates for N=3 promotion.
 
@@ -185,7 +202,7 @@ def tie_candidates(
     ``n_seeds_a``, ``n_seeds_b``. Only pairs where at least one variant has
     n_seeds == 1 (actionable ties in the screening phase).
     """
-    aggs = _aggregate_per_variant(_fetch_test_runs(group, dataset, metric))
+    aggs = _aggregate_per_variant(_fetch_test_runs(group, dataset, metric, seeds=seeds))
     rows = []
     for i, a in enumerate(aggs):
         for b in aggs[i + 1 :]:
@@ -213,6 +230,7 @@ def effect_size(
     dataset: str,
     *,
     metric: str = DEFAULT_METRIC,
+    seeds: Iterable[int] | None = None,
 ) -> pd.DataFrame:
     """Pairwise Cohen's d + mean-difference bootstrap CI (no p-values).
 
@@ -221,7 +239,7 @@ def effect_size(
     ``cohens_d`` is NaN when either variant has n_seeds < 2 (undefined std);
     ``diff_ci_*`` are NaN when either variant has n_seeds < 3.
     """
-    aggs = _aggregate_per_variant(_fetch_test_runs(group, dataset, metric))
+    aggs = _aggregate_per_variant(_fetch_test_runs(group, dataset, metric, seeds=seeds))
     rows = []
     for i, a in enumerate(aggs):
         for b in aggs[i + 1 :]:
@@ -272,6 +290,7 @@ def expected_max(
     dataset: str,
     *,
     metric: str = DEFAULT_METRIC,
+    seeds: Iterable[int] | None = None,
 ) -> pd.DataFrame:
     """Dodge 2019 expected max validation performance as a function of N.
 
@@ -284,7 +303,7 @@ def expected_max(
     """
     from itertools import combinations
 
-    aggs = _aggregate_per_variant(_fetch_test_runs(group, dataset, metric))
+    aggs = _aggregate_per_variant(_fetch_test_runs(group, dataset, metric, seeds=seeds))
     rows = []
     for a in aggs:
         N = int(a.values.size)
