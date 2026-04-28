@@ -5,6 +5,14 @@ scoping; manifests/datasets/README/CITATION buckets are Scope B). Pattern
 lifted from ``~/osc-usage/collect.py::push_to_hf``: stage to tmpdir,
 ``HfApi.upload_folder``, optionally ``create_tag``. Login-node only; no GPU,
 no SLURM dependency.
+
+All MLflow filter strings flow through ``_mlflow.build_search_filter``;
+all run_dir → identity decoding flows through ``_mlflow.parse_run_dir``;
+the ckpt subpath is ``constants.CKPT_SUBPATH``. The remaining subpath
+literals (``traces.jsonl``, ``predictions/test``, ``artifacts``,
+``resolved.json``, ``overrides.json``) mirror their writers in
+``_otel.py``, ``core/models/base.py``, ``core/analysis/runner.py``, and
+``cli/training.py`` respectively — change here only when the writer changes.
 """
 
 from __future__ import annotations
@@ -20,11 +28,51 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from graphids.cli.app import app
+from graphids.config.constants import CKPT_SUBPATH
+from graphids.config.settings import get_settings
 
-_DEFAULT_REPO = "buckeyeguy/graphids-kd-gat"
 _DEFAULT_METRIC = "f1_macro"
+_BUCKETS: tuple[str, ...] = (
+    "checkpoints",
+    "predictions",
+    "analysis",
+    "traces",
+    "provenance",
+)
+
+
+class Manifest(BaseModel):
+    """Snapshot membership: the (datasets, variants, seeds) tuple set."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    datasets: list[str] = Field(min_length=1)
+    variants: list[str] = Field(min_length=1)
+    seeds: list[int] = Field(min_length=1)
+    graphids_sha: str | None = None
+
+    @field_validator("variants")
+    @classmethod
+    def _slash_form(cls, v: list[str]) -> list[str]:
+        bad = [x for x in v if "/" not in x]
+        if bad:
+            raise ValueError(f"must be 'group/variant'; got {bad}")
+        return v
+
+    @property
+    def variant_set(self) -> set[str]:
+        return set(self.variants)
+
+    @property
+    def dataset_set(self) -> set[str]:
+        return set(self.datasets)
+
+    @property
+    def seed_set(self) -> set[int]:
+        return set(self.seeds)
 
 
 def _git_sha(repo_root: Path, *, allow_dirty: bool) -> str:
@@ -47,25 +95,11 @@ def _git_sha(repo_root: Path, *, allow_dirty: bool) -> str:
     return sha
 
 
-def _load_manifest(path: Path) -> dict:
-    """Parse and validate the snapshot manifest JSON.
-
-    Schema: ``{datasets: [...], variants: ['group/variant', ...], seeds: [...],
-    graphids_sha?: '...'}``. ``graphids_sha`` is optional; when present the
-    push aborts unless HEAD matches.
-    """
-    spec = json.loads(path.read_text())
-    required = {"datasets", "variants", "seeds"}
-    missing = required - spec.keys()
-    if missing:
-        sys.exit(f"ERROR: manifest {path} missing keys: {sorted(missing)}")
-    for key in required:
-        if not spec[key]:
-            sys.exit(f"ERROR: manifest {path} has empty '{key}' list")
-    bad = [v for v in spec["variants"] if not isinstance(v, str) or "/" not in v]
-    if bad:
-        sys.exit(f"ERROR: manifest variants must be 'group/variant'; got {bad}")
-    return spec
+def _load_manifest(path: Path) -> Manifest:
+    try:
+        return Manifest.model_validate_json(path.read_text())
+    except ValidationError as e:
+        sys.exit(f"ERROR: invalid manifest {path}:\n{e}")
 
 
 def _stage_run_artifacts(run_dir: Path, key: str, dest_root: Path) -> dict[str, int]:
@@ -75,23 +109,17 @@ def _stage_run_artifacts(run_dir: Path, key: str, dest_root: Path) -> dict[str, 
     layout). Returns a count of files copied per bucket so the caller can
     report a summary.
     """
-    counts: dict[str, int] = {
-        "checkpoints": 0,
-        "predictions": 0,
-        "analysis": 0,
-        "traces": 0,
-        "provenance": 0,
-    }
+    counts: dict[str, int] = {b: 0 for b in _BUCKETS}
 
-    best = run_dir / "checkpoints" / "best_model.ckpt"
+    best = run_dir / CKPT_SUBPATH
     if best.exists():
         ck_dest = dest_root / "artifacts" / "checkpoints"
         ck_dest.mkdir(parents=True, exist_ok=True)
         shutil.copy2(best, ck_dest / f"{key}.ckpt")
         counts["checkpoints"] += 1
-        sha = best.with_suffix(best.suffix + ".sha256")
-        if sha.exists():
-            shutil.copy2(sha, ck_dest / f"{key}.ckpt.sha256")
+        sha_sidecar = best.with_suffix(best.suffix + ".sha256")
+        if sha_sidecar.exists():
+            shutil.copy2(sha_sidecar, ck_dest / f"{key}.ckpt.sha256")
             counts["checkpoints"] += 1
 
     test_preds = run_dir / "predictions" / "test"
@@ -145,7 +173,7 @@ def push_hf(
             ),
         ),
     ],
-    repo_id: Annotated[str, typer.Option("--repo-id")] = _DEFAULT_REPO,
+    repo_id: Annotated[str, typer.Option("--repo-id")] = get_settings().hf_repo_id,
     metric: Annotated[
         str,
         typer.Option("--metric", help="Test-phase metric name to aggregate."),
@@ -181,7 +209,7 @@ def push_hf(
     import mlflow
     import pandas as pd
 
-    from graphids._mlflow import ensure_tracking_uri
+    from graphids._mlflow import build_search_filter, ensure_tracking_uri, parse_run_dir
     from graphids.analysis.compare import (
         effect_size,
         expected_max,
@@ -190,16 +218,12 @@ def push_hf(
     )
 
     spec = _load_manifest(manifest)
-    sel_datasets = set(spec["datasets"])
-    sel_variants = set(spec["variants"])
-    sel_seeds = {int(s) for s in spec["seeds"]}
 
     repo_root = Path(__file__).resolve().parents[2]
     sha = _git_sha(repo_root, allow_dirty=allow_dirty)
-    expected_sha = spec.get("graphids_sha")
-    if expected_sha and sha != expected_sha:
+    if spec.graphids_sha and not sha.startswith(spec.graphids_sha):
         sys.exit(
-            f"ERROR: manifest pins graphids_sha={expected_sha[:7]} but HEAD={sha[:7]}; "
+            f"ERROR: manifest pins graphids_sha={spec.graphids_sha} but HEAD={sha[:7]}; "
             "checkout the pinned commit or update the manifest."
         )
 
@@ -212,25 +236,26 @@ def push_hf(
         sys.exit("MLflow tracking URI not set (GRAPHIDS_LAKE_ROOT or MLFLOW_TRACKING_URI).")
     mlflow.set_tracking_uri(uri)
 
-    test_df = mlflow.search_runs(
+    # One round-trip for both phases — split client-side.
+    all_df = mlflow.search_runs(
         search_all_experiments=True,
-        filter_string="tags.\"graphids.phase\" = 'test' and attributes.status = 'FINISHED'",
+        filter_string=build_search_filter(status="FINISHED"),
         output_format="pandas",
     )
-    if test_df.empty:
-        sys.exit("No FINISHED test-phase runs found in MLflow.")
+    if all_df.empty:
+        sys.exit("No FINISHED runs found in MLflow.")
 
-    test_df = _filter_to_manifest(test_df, sel_variants, sel_datasets, sel_seeds)
+    test_df = _filter_to_manifest(all_df[all_df["tags.graphids.phase"] == "test"], spec)
     if test_df.empty:
         sys.exit(
             "No FINISHED test rows match the manifest filters "
-            f"(datasets={sorted(sel_datasets)}, n_variants={len(sel_variants)}, "
-            f"seeds={sorted(sel_seeds)})."
+            f"(datasets={sorted(spec.dataset_set)}, n_variants={len(spec.variant_set)}, "
+            f"seeds={sorted(spec.seed_set)})."
         )
+    fit_df = _filter_to_manifest(all_df[all_df["tags.graphids.phase"] == "fit"], spec)
 
     pairs = (
         test_df[["tags.graphids.group", "tags.graphids.dataset"]]
-        .dropna()
         .drop_duplicates()
         .rename(
             columns={
@@ -263,7 +288,7 @@ def push_hf(
             grp, ds = row["group"], row["dataset"]
             row_n = 0
             for name, fn in fns.items():
-                df_ = fn(grp, ds, metric=metric, seeds=sel_seeds)
+                df_ = fn(grp, ds, metric=metric, seeds=spec.seed_set)
                 if df_.empty:
                     continue
                 df_ = df_.copy()
@@ -288,9 +313,7 @@ def push_hf(
             pd.concat(parts, ignore_index=True).to_parquet(out, index=False)
             typer.echo(f"  wrote metrics/{name}.parquet ({sum(len(p) for p in parts)} rows)")
 
-        artifact_summary, n_runs_staged = _stage_fit_artifacts(
-            mlflow, sel_variants, sel_datasets, sel_seeds, tmp
-        )
+        artifact_summary, n_runs_staged = _stage_fit_artifacts(fit_df, parse_run_dir, tmp)
 
         # Stable metadata (no timestamp — keeps re-pushes byte-identical).
         # Push timestamp lives in the commit message instead.
@@ -356,49 +379,30 @@ def push_hf(
             typer.echo(f"Tag: {ablation_set}")
 
 
-def _filter_to_manifest(
-    df,
-    sel_variants: set[str],
-    sel_datasets: set[str],
-    sel_seeds: set[int],
-):
+def _filter_to_manifest(df, spec: Manifest):
     """Filter an MLflow ``search_runs`` frame down to the manifest membership."""
     import pandas as pd
 
+    if df.empty:
+        return df.reset_index(drop=True)
     gv = df["tags.graphids.group"].astype(str) + "/" + df["tags.graphids.variant"].astype(str)
     seed = pd.to_numeric(df["tags.graphids.seed"], errors="coerce").astype("Int64")
     mask = (
-        gv.isin(sel_variants)
-        & df["tags.graphids.dataset"].isin(sel_datasets)
-        & seed.isin(sel_seeds)
+        gv.isin(spec.variant_set)
+        & df["tags.graphids.dataset"].isin(spec.dataset_set)
+        & seed.isin(spec.seed_set)
     )
     return df[mask].reset_index(drop=True)
 
 
-def _stage_fit_artifacts(
-    mlflow,
-    sel_variants: set[str],
-    sel_datasets: set[str],
-    sel_seeds: set[int],
-    tmp: Path,
-) -> tuple[dict[str, int], int]:
-    """Discover the latest FINISHED fit row per (variant, dataset, seed) and stage."""
-    summary = {k: 0 for k in ("checkpoints", "predictions", "analysis", "traces", "provenance")}
-    fit_df = mlflow.search_runs(
-        search_all_experiments=True,
-        filter_string=("tags.\"graphids.phase\" = 'fit' and attributes.status = 'FINISHED'"),
-        output_format="pandas",
-    )
-    if fit_df.empty:
-        typer.echo("WARN: no FINISHED fit-phase runs in MLflow; artifacts/ not staged.")
-        return summary, 0
-
-    fit_df = _filter_to_manifest(fit_df, sel_variants, sel_datasets, sel_seeds)
+def _stage_fit_artifacts(fit_df, parse_run_dir, tmp: Path) -> tuple[dict[str, int], int]:
+    """Stage the latest FINISHED fit row's artifacts per (variant, dataset, seed)."""
+    summary = {b: 0 for b in _BUCKETS}
     if fit_df.empty:
         typer.echo("WARN: no fit-phase runs match the manifest; artifacts/ not staged.")
         return summary, 0
 
-    # Latest FINISHED fit per (group, variant, dataset, seed).
+    # Latest FINISHED fit per identity.
     fit_df = fit_df.sort_values("start_time", ascending=False).drop_duplicates(
         subset=[
             "tags.graphids.group",
@@ -412,29 +416,27 @@ def _stage_fit_artifacts(
     typer.echo(f"\nStaging artifacts for {len(fit_df)} fit run(s)...")
     n_runs_staged = 0
     missing_run_dirs = 0
+    off_tree = 0
     for _, frow in fit_df.iterrows():
-        grp = frow.get("tags.graphids.group")
-        var = frow.get("tags.graphids.variant")
-        seed = frow.get("tags.graphids.seed")
         rd = frow.get("tags.graphids.run_dir")
-        if not (grp and var and seed and rd):
+        if not rd:
             continue
         run_dir = Path(rd)
         if not run_dir.exists():
             missing_run_dirs += 1
             continue
-        key = f"{grp}_{var}_{int(seed)}"
+        identity = parse_run_dir(run_dir)
+        if identity is None:
+            off_tree += 1
+            continue
+        key = f"{identity.group}_{identity.variant}_{identity.seed}"
         counts = _stage_run_artifacts(run_dir, key, tmp)
         for k, v in counts.items():
             summary[k] += v
         n_runs_staged += 1
     if missing_run_dirs:
         typer.echo(f"  WARN: {missing_run_dirs} run_dir(s) missing on disk")
-    typer.echo(
-        f"  staged: {summary['checkpoints']} ckpt, "
-        f"{summary['predictions']} pred, "
-        f"{summary['analysis']} analysis, "
-        f"{summary['traces']} traces, "
-        f"{summary['provenance']} provenance"
-    )
+    if off_tree:
+        typer.echo(f"  WARN: {off_tree} run_dir(s) off-tree (non-ablation layout)")
+    typer.echo("  staged: " + ", ".join(f"{summary[b]} {b}" for b in _BUCKETS))
     return summary, n_runs_staged

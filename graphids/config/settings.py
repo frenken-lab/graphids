@@ -71,6 +71,11 @@ class GraphIDSSettings(BaseSettings):
     slurm_account: str = "PAS1266"
     cluster: str = ""
 
+    # --- HuggingFace export ---
+    # Target dataset repo for `python -m graphids push-hf`. Override via
+    # GRAPHIDS_HF_REPO_ID for forks / lab-org migrations without touching code.
+    hf_repo_id: str = "buckeyeguy/graphids-kd-gat"
+
     @model_validator(mode="after")
     def _derive_cluster(self) -> GraphIDSSettings:
         # Fall back to SLURM_CLUSTER_NAME when GRAPHIDS_CLUSTER isn't
