@@ -1,53 +1,43 @@
-"""Single indirection point for tracing + structured logging.
+"""Single indirection for structured logging.
 
-Every module imports from here, never from opentelemetry / structlog / logging
-directly. Metrics formerly routed through OTel live in MLflow now
-(``graphids/_mlflow.py``); this module owns only spans + log events.
+structlog renders one JSON line per event; stdlib ``logging`` distributes
+it to three sync handlers:
 
-Consumer API:
+1. ``sys.stderr`` — always on; lands in SLURM ``*_log.err``.
+2. ``{GRAPHIDS_SLURM_LOG_DIR}/orchestrator_{SLURM_JOB_ID}.jsonl`` — when
+   both env vars are set; restores the per-job structured log surface
+   that older jobs (`orchestrator_46276348.jsonl` etc.) had and that a
+   subsequent refactor lost.
+3. ``{run_dir}/traces.jsonl`` — added by :func:`wire_file_exporters` once
+   the run_dir is known.
+
+All handlers are synchronous: ``log.info("event", k=v)`` writes before
+the call returns. No batching, no background threads, no ``atexit``
+choreography — events survive any signal kill (SIGUSR2 walltime,
+SIGTERM, unhandled exceptions).
+
+Public API (don't break — 19+ call sites):
     from graphids._otel import get_logger
-
-Lifecycle API (called by ``cli/app.py`` and ``cli/training.py``):
     from graphids._otel import init_providers, wire_file_exporters
 
-Logging stack: call sites use ``log.info("event", key=value)``. ``structlog``'s
-``render_to_log_kwargs`` processor lifts the kwargs into stdlib's ``extra=``
-dict; the contrib ``LoggingHandler`` (replacement for the deprecated
-``opentelemetry.sdk._logs.LoggingHandler``) bridges the resulting LogRecord
-into the OTel log signal.
+The previous OTel-backed implementation wired a ``TracerProvider`` plus
+``BatchSpanProcessor`` for a ``training.fit`` master span that no caller
+ever opened (zero ``start_as_current_span`` calls anywhere in graphids),
+so ``traces.jsonl`` was always empty. Logs went through
+``BatchLogRecordProcessor`` which dropped buffered events on SIGUSR2
+walltime kills. Both are gone.
 """
 
 from __future__ import annotations
 
-import atexit
 import logging
 import os
 import sys
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import structlog
-from opentelemetry import trace
-from opentelemetry._logs import set_logger_provider
-from opentelemetry.instrumentation.logging.handler import LoggingHandler
-from opentelemetry.sdk._logs import LoggerProvider
-from opentelemetry.sdk._logs.export import (
-    BatchLogRecordProcessor,
-    ConsoleLogRecordExporter,
-)
-from opentelemetry.sdk.resources import Resource, ResourceDetector
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import (
-    BatchSpanProcessor,
-    ConsoleSpanExporter,
-    SimpleSpanProcessor,
-)
 
-# ---------------------------------------------------------------------------
-# SLURM → OTel resource attrs (inlined from deleted core/monitoring.py)
-# ---------------------------------------------------------------------------
-
-_SLURM_ENV_TO_ATTR = {
+_SLURM_ENV_TO_KEY = {
     "SLURM_JOB_ID": "slurm.job_id",
     "SLURM_JOB_PARTITION": "slurm.partition",
     "SLURM_NODELIST": "slurm.nodelist",
@@ -59,153 +49,97 @@ _SLURM_ENV_TO_ATTR = {
 }
 
 
-class _SlurmResourceDetector(ResourceDetector):
-    def detect(self) -> Resource:
-        attrs = {
-            attr: os.environ[env] for env, attr in _SLURM_ENV_TO_ATTR.items() if os.environ.get(env)
-        }
-        return Resource(attrs)
+def _slurm_context_processor(_logger, _name, event_dict: dict) -> dict:
+    for env, key in _SLURM_ENV_TO_KEY.items():
+        v = os.environ.get(env)
+        if v and key not in event_dict:
+            event_dict[key] = v
+    return event_dict
 
 
-# ---------------------------------------------------------------------------
-# Structured logging — sole consumer API
-# ---------------------------------------------------------------------------
+def _build_handler(stream_or_path) -> logging.Handler:
+    if isinstance(stream_or_path, Path):
+        stream_or_path.parent.mkdir(parents=True, exist_ok=True)
+        h: logging.Handler = logging.FileHandler(stream_or_path, encoding="utf-8")
+    else:
+        h = logging.StreamHandler(stream_or_path)
+    h.setFormatter(logging.Formatter("%(message)s"))
+    return h
 
 
-def get_logger(name: str) -> structlog.stdlib.BoundLogger:
-    """Return a structlog logger bridged to OTel via the contrib LoggingHandler.
+_initialised = False
 
-    Call sites use ``log.info("event", key=value)`` — kwargs are lifted into
-    the stdlib ``extra`` dict by ``render_to_log_kwargs``, which OTel maps to
-    log-record attributes.
+
+def init_providers(
+    service_name: str = "graphids",  # noqa: ARG001
+    *,
+    wandb_entity: str = "",  # noqa: ARG001
+    wandb_project: str = "graphids",  # noqa: ARG001
+) -> None:
+    """Wire structlog → stdlib ``logging.getLogger('graphids')`` with sync handlers.
+
+    Idempotent — second call is a no-op so worker processes that re-init
+    don't clobber handlers attached after the first call.
     """
-    return structlog.get_logger(name)
+    global _initialised  # noqa: PLW0603
+    if _initialised:
+        return
 
+    handlers: list[logging.Handler] = [_build_handler(sys.stderr)]
+    job_id = os.environ.get("SLURM_JOB_ID")
+    log_dir = os.environ.get("GRAPHIDS_SLURM_LOG_DIR")
+    if job_id and log_dir:
+        handlers.append(_build_handler(Path(log_dir) / f"orchestrator_{job_id}.jsonl"))
 
-def _configure_structlog() -> None:
-    """Idempotent — structlog.configure is itself idempotent on repeat calls."""
+    root = logging.getLogger("graphids")
+    root.setLevel(logging.INFO)
+    root.handlers = handlers
+    root.propagate = False
+
     structlog.configure(
         processors=[
             structlog.stdlib.add_log_level,
             structlog.stdlib.add_logger_name,
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.format_exc_info,
-            structlog.stdlib.render_to_log_kwargs,
+            _slurm_context_processor,
+            structlog.processors.JSONRenderer(),
         ],
         logger_factory=structlog.stdlib.LoggerFactory(),
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
     )
-
-
-# ---------------------------------------------------------------------------
-# Provider lifecycle
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class OTelProviders:
-    """Holds SDK-level provider references (API types lack add_span_processor)."""
-
-    tracer: TracerProvider
-    logger: LoggerProvider
-    _file_span_processor: SimpleSpanProcessor | None = field(default=None, repr=False)
-
-
-_providers: OTelProviders | None = None
-
-
-def _get_providers() -> OTelProviders:
-    if _providers is None:
-        raise RuntimeError("OTel not initialised — call init_providers() first")
-    return _providers
-
-
-def init_providers(
-    service_name: str = "graphids",
-    *,
-    wandb_entity: str = "",
-    wandb_project: str = "graphids",
-) -> OTelProviders:
-    """Create and register OTel providers. Safe to call once per process."""
-    global _providers  # noqa: PLW0603
-
-    resource = Resource.create(
-        {
-            "service.name": service_name,
-            **({"wandb.entity": wandb_entity} if wandb_entity else {}),
-            **({"wandb.project": wandb_project} if wandb_project else {}),
-        }
-    ).merge(_SlurmResourceDetector().detect())
-
-    tp = TracerProvider(resource=resource)
-    if os.environ.get("WANDB_API_KEY"):
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
-            OTLPSpanExporter,
-        )
-
-        tp.add_span_processor(
-            BatchSpanProcessor(
-                OTLPSpanExporter(
-                    endpoint="https://trace.wandb.ai/otel/v1/traces",
-                    headers={"wandb-api-key": os.environ["WANDB_API_KEY"]},
-                )
-            )
-        )
-    trace.set_tracer_provider(tp)
-
-    lp = LoggerProvider(resource=resource)
-    lp.add_log_record_processor(BatchLogRecordProcessor(ConsoleLogRecordExporter(out=sys.stderr)))
-    set_logger_provider(lp)
-    logging.getLogger("graphids").addHandler(LoggingHandler(logger_provider=lp))
-
-    _configure_structlog()
-
-    atexit.register(lambda: (tp.shutdown(), lp.shutdown()))
-
-    # Trampoline SIGTERM so atexit flushes before the process dies.
-    # SIGUSR2 is owned by submitit's checkpoint handler (preemption
-    # auto-resume — see graphids.slurm.submit._TrainingJob.checkpoint);
-    # its normal exit path through submitit.core._submit lets atexit
-    # fire cleanly, so we don't trampoline it. SIGKILL bypasses Python.
-    import signal as _sig
-
-    def _on_term(signum, _frame):
-        sys.exit(128 + signum)
-
-    _sig.signal(_sig.SIGTERM, _on_term)
-
-    _providers = OTelProviders(tracer=tp, logger=lp)
-    return _providers
-
-
-def _jsonl_span(span) -> str:
-    """One-line JSON per span for traces.jsonl (ndjson)."""
-    return span.to_json(indent=None) + "\n"
+    _initialised = True
 
 
 def wire_file_exporters(run_dir: Path) -> None:
-    """Add per-run file exporter for ``traces.jsonl``.
+    """Add a per-run JSONL handler at ``{run_dir}/traces.jsonl``.
 
-    Metrics no longer land on disk — MLflow captures scalar metrics and
-    system telemetry (see ``graphids/_mlflow.py``). Only the span stream
-    is written here, for the single ``training.fit`` span and any
-    structured-log events emitted via ``_otel``.
+    Synchronous append-on-write: every ``log.info(...)`` call between now
+    and process exit writes to this file before returning. Calling again
+    with a different ``run_dir`` replaces the handler so successive fits
+    don't bleed events into the prior run's file.
     """
-    p = _get_providers()
+    if not _initialised:
+        init_providers()
     run_dir.mkdir(parents=True, exist_ok=True)
+    root = logging.getLogger("graphids")
+    root.handlers = [h for h in root.handlers if not getattr(h, "_run_handler", False)]
+    handler = _build_handler(run_dir / "traces.jsonl")
+    handler._run_handler = True  # type: ignore[attr-defined]
+    root.addHandler(handler)
 
-    if p._file_span_processor is not None:
-        p._file_span_processor.shutdown()
 
-    # BatchSpanProcessor buffers on a background thread; the atexit-
-    # registered shutdown in init_providers guarantees flush on normal
-    # exit and on exception, so the master ``training.fit`` span always
-    # lands in traces.jsonl.
-    p._file_span_processor = BatchSpanProcessor(
-        ConsoleSpanExporter(
-            out=open(run_dir / "traces.jsonl", "a"),  # noqa: SIM115
-            formatter=_jsonl_span,
-        )
-    )
-    p.tracer.add_span_processor(p._file_span_processor)
+def get_logger(name: str) -> structlog.stdlib.BoundLogger:
+    """Return a structlog logger bridged to stdlib's ``graphids.<name>`` logger.
+
+    Handlers are attached to the ``graphids`` stdlib logger, so the logger
+    name must live under that tree for events to surface. Call sites use
+    ``get_logger(__name__)`` which gives ``graphids.<module>`` — already
+    inside the tree. External names get prefixed.
+    """
+    if not _initialised:
+        init_providers()
+    if not (name == "graphids" or name.startswith("graphids.")):
+        name = f"graphids.{name}"
+    return structlog.get_logger(name)
