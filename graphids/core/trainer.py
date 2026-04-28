@@ -264,6 +264,16 @@ class Trainer:
             datamodule.setup("fit")
             calibrate(datamodule.train_eval_dataloader(), self._device)
 
+        # VGAE per-component z-norm calibration (Tier B). Same lifecycle as
+        # OCGIN above: deterministic statistic of (trained encoder, benign
+        # val data), re-fit at test-start. No-op for models without
+        # fit_score_norm. Skipped if buffers are already populated (e.g.
+        # ckpt was calibrated and reloaded).
+        fit_score_norm = getattr(model, "fit_score_norm", None)
+        if fit_score_norm is not None and not bool(getattr(model, "score_norm_fitted", False)):
+            datamodule.setup("fit")
+            fit_score_norm(datamodule.val_dataloader(), self._device)
+
         test_loaders = datamodule.test_dataloader()
         if not isinstance(test_loaders, list):
             test_loaders = [test_loaders]

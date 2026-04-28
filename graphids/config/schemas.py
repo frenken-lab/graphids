@@ -122,22 +122,32 @@ class ValidatedConfig(BaseModel):
     def _monitor_pair_matches_stage_family(self) -> ValidatedConfig:
         """Gate checkpoint/monitor mode against the stage-family convention.
 
-        Fusion stages track ``val_acc/max``; every other family tracks
-        ``val_loss/min``. Mismatches are a silent-bug magnet (training
-        completes but ModelCheckpoint picks the wrong epoch) so we fail
-        loudly at validate-time instead of warning at resolve-time.
-        Family is derived from ``model.class_path``: anything under
-        ``graphids.core.models.fusion`` is the fusion stage.
+        Allowed pairs by family (anything else is a silent-bug magnet —
+        training completes but ModelCheckpoint picks the wrong epoch):
+
+          * fusion (``.models.fusion`` in class_path): ``val_acc/max``.
+          * unsupervised (``.models.autoencoder``): ``val_loss/min`` OR
+            ``val_discrimination_ratio/max`` (= val_loss_attack /
+            (val_loss_benign + 1e-6), logged by VGAE val_step). The
+            gap variant was retired because it monotonically shrinks as
+            both losses converge — under mode='max' it saved epoch 0.
+          * supervised: ``val_loss/min``.
         """
-        is_fusion = ".models.fusion" in self.model.class_path
-        exp_monitor, exp_mode = ("val_acc", "max") if is_fusion else ("val_loss", "min")
-        got_monitor = self.checkpoint_monitor
-        got_mode = self.checkpoint_mode
-        if got_monitor != exp_monitor or got_mode != exp_mode:
-            family = "fusion" if is_fusion else "supervised/unsupervised"
+        cp = self.model.class_path
+        if ".models.fusion" in cp:
+            allowed = {("val_acc", "max")}
+            family = "fusion"
+        elif ".models.autoencoder" in cp:
+            allowed = {("val_loss", "min"), ("val_discrimination_ratio", "max")}
+            family = "unsupervised"
+        else:
+            allowed = {("val_loss", "min")}
+            family = "supervised"
+        got = (self.checkpoint_monitor, self.checkpoint_mode)
+        if got not in allowed:
             raise ValueError(
-                f"{family} stages must track {exp_monitor}/{exp_mode}; "
-                f"got {got_monitor}/{got_mode} "
+                f"{family} stages must track one of {sorted(allowed)}; "
+                f"got {got[0]}/{got[1]} "
                 f"(model.class_path={self.model.class_path!r})"
             )
         return self

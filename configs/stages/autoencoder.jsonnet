@@ -31,17 +31,40 @@ function(
   + {
     seed_everything: seed,
 
+    callbacks+: {
+      // val_loss is benign-only (label_filter='benign' below) so it can't
+      // detect when discrimination emerges. val_discrimination_ratio =
+      // val_loss_attack / (val_loss_benign + 1e-6) is logged per-epoch
+      // from vgae_module.validation_step. We monitor the RATIO not the
+      // GAP because the gap (attack - benign) decreases monotonically as
+      // both losses converge toward zero — under mode='max', ModelCheckpoint
+      // would save epoch 0's untrained weights. The ratio grows as the
+      // model learns to separate the classes (smoke 687f3a07: 1.11 → 1.35
+      // over 50 ep while gap shrank 0.204 → 0.087). Checkpoint and
+      // EarlyStopping must track the same (monitor, mode) pair (enforced
+      // by config/schemas.py:CallbacksSection) so the saved best-epoch
+      // ckpt is the same epoch the stop trigger fires on.
+      checkpoint+:      { init_args+: { monitor: 'val_discrimination_ratio', mode: 'max' } },
+      early_stopping+: { init_args+: { monitor: 'val_discrimination_ratio', mode: 'max' } },
+    },
+
     trainer+: {
       default_root_dir: run_dir,
-      // VGAE training plateaus for ~50% of epochs at the standardization
-      // floor before breakthrough — bump max_epochs so EarlyStopping
-      // (patience 100) has runway after the breakthrough phase.
-      max_epochs: 1200,
-      // cache v10 z_benign scaler divides by benign-only stddev (smaller
-      // than benign+attack used in v9), so post-standardization attack-row
-      // magnitudes can exceed fp16's max (~65504). 32-true is the safe
-      // default; override back via --set trainer.precision='16-mixed'
-      // once a (dataset, scaler_strategy) pair is empirically validated.
+      // 600-epoch ceiling. EarlyStopping monitors val_discrimination_ratio
+      // (above), so the run typically stops well before this; the cap is
+      // a hard upper bound, not a target. 1200 was the prior ceiling
+      // chosen for cosine-LR runway; with constant LR + a real stop
+      // signal the doubled budget bought nothing.
+      max_epochs: 600,
+      // 32-true: 16-mixed was tried (smoke 687f3a07, 50/50 epochs all-finite
+      // with the logvar ±10 clamp and moment ±10 clamps in place) but gave
+      // no throughput improvement (40.8 s/ep fp16 vs ~41 s/ep fp32). The
+      // 8.5× regression vs the historical 4.8 s/ep run is NOT a precision
+      // issue (suspect: validation_step running 3 forwards per batch,
+      // separately tracked). The budget probe is calibrated for fp32 and
+      // the fp16 smoke triggered an OOM absorbed by _oom_safe_step,
+      // indicating the budget is over-aggressive under fp16. Stay on
+      // 32-true until the throughput regression is solved.
       precision: '32-true',
     },
 

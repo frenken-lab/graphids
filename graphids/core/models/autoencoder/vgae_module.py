@@ -34,6 +34,18 @@ class VGAEModule(GraphModuleBase):
     :meth:`_task_loss_module` helper which unwraps KD if present.
     """
 
+    # Calibration state for benign-val z-normalization (Tier B). Six scalar
+    # statistics + a fitted flag; serialized via state_dict so a ckpt's
+    # scoring head is reproducible without re-running calibration. Filled
+    # by fit_score_norm() at test-start (mirrors OCGIN's calibrate_svdd_center
+    # pattern at trainer.test, see trainer.py:262-265 for the rationale —
+    # callback-based calibration deadlocked on ckpt-save ordering).
+    def _register_score_norm_buffers(self) -> None:
+        for name in ("recon", "canid", "nbr"):
+            self.register_buffer(f"score_{name}_mean", torch.tensor(0.0))
+            self.register_buffer(f"score_{name}_std", torch.tensor(1.0))
+        self.register_buffer("score_norm_fitted", torch.tensor(False))
+
     def __init__(
         self,
         *,
@@ -78,6 +90,7 @@ class VGAEModule(GraphModuleBase):
         self._init_threshold_metrics()
         self.model = None
         self.test_metrics = binary_test_metrics()
+        self._register_score_norm_buffers()
         if num_ids > 0:
             self._build()
 
@@ -121,42 +134,23 @@ class VGAEModule(GraphModuleBase):
         return self.loss_fn(outputs, batch)
 
     def extract_features(self, batch, device: torch.device) -> torch.Tensor:
-        """8-D fusion features: [recon_err, nbr_err, canid_err, z_mean, z_std, z_max, z_min, confidence]."""
-        import torch.nn.functional as F
+        """8-D fusion features: [recon, nbr, canid, z_mean, z_std, z_max, z_min, confidence].
+
+        Single forward via ``_per_component_errors`` — the three component
+        errors and ``z`` come from the same pass; the four z-statistics and
+        the confidence scalar are derived locally. Output column order is
+        preserved for backward-compat with cached fusion-state files.
+        """
         from torch_geometric.utils import scatter
 
-        edge_attr = (
-            getattr(batch, "edge_attr", None)
-            if getattr(self.model, "_uses_edge_attr", False)
-            else None
-        )
-        cont, canid_logits, nbr_logits, z, _ = self.model(
-            batch.x,
-            batch.edge_index,
-            batch.batch,
-            edge_attr=edge_attr,
-            node_id=batch.node_id,
-        )
+        recon, canid, nbr, z = self._per_component_errors(batch)
         b = batch.batch
-        recon_err = scatter((cont - batch.x).pow(2).mean(1), b, dim=0, reduce="mean")
-        canid_err = scatter(
-            F.cross_entropy(canid_logits, batch.node_id, reduction="none"), b, dim=0, reduce="mean"
-        )
-        nbr_targets = self.model.create_neighborhood_targets(batch.node_id, batch.edge_index, b)
-        nbr_err = scatter(
-            F.binary_cross_entropy_with_logits(nbr_logits, nbr_targets, reduction="none").mean(1),
-            b,
-            dim=0,
-            reduce="mean",
-        )
         z_mean = scatter(z.mean(1), b, dim=0, reduce="mean")
         z_std = scatter(z.std(1), b, dim=0, reduce="mean")
         z_max = scatter(z.max(1).values, b, dim=0, reduce="max")
         z_min = scatter(z.min(1).values, b, dim=0, reduce="min")
-        conf = 1.0 / (1.0 + recon_err)
-        return torch.stack(
-            [recon_err, nbr_err, canid_err, z_mean, z_std, z_max, z_min, conf], dim=1
-        )
+        conf = 1.0 / (1.0 + recon)
+        return torch.stack([recon, nbr, canid, z_mean, z_std, z_max, z_min, conf], dim=1)
 
     def _training_step_inner(self, batch, _idx):
         loss = self._step(batch)
@@ -184,65 +178,154 @@ class VGAEModule(GraphModuleBase):
         return self._oom_safe_step(batch, batch_idx, self._training_step_inner)
 
     def validation_step(self, batch, _idx):
-        loss = self._step(batch)
-        self.log("val_loss", loss, batch_size=batch.num_graphs)
+        """Single forward + label-mask aggregation.
 
-        # VGAE trains benign-only; the val split contains both classes. The
-        # aggregate val_loss above mixes in-distribution (benign) and OOD
-        # (attack) reconstruction error, so it can't say which side is
-        # failing. The benign-attack gap is the diagnostic — benign-val
-        # should track train_loss; attack-val should be much higher.
-        from torch_geometric.data import Batch as PyGBatch
+        Old design ran ``_step(batch)`` three times (full / benign-subset /
+        attack-subset) to log the per-class reconstruction split — three
+        forward passes for the same diagnostic information. The forward
+        already computes predictions for every node regardless of label;
+        the subset distinction is purely an aggregation choice on per-graph
+        errors. Replaced with one forward via ``_per_component_errors`` and
+        ``tensor[mask].mean()`` for the per-class numbers.
 
-        data_list = batch.to_data_list()
+        ``val_loss`` here drops the KL term that training loss includes.
+        KL is regularization (encoder spread, not held-out fit) and isn't
+        cleanly per-graph; per-class signal lives in the recon-class
+        components. Old val_loss numbers won't be directly comparable.
+        """
+        recon, canid, nbr, _ = self._per_component_errors(batch)
+        tl = self._task_loss_module()
+        per_graph = recon + tl.canid_weight * canid + tl.nbr_weight * nbr
+        bs = batch.num_graphs
+        self.log("val_loss", per_graph.mean(), batch_size=bs)
+
         y = batch.y.view(-1)
+        sub: dict[str, torch.Tensor] = {}
         for label, mask in (("benign", y == 0), ("attack", y != 0)):
             n = int(mask.sum())
             if not n:
                 continue
-            idx = mask.nonzero(as_tuple=False).flatten().tolist()
-            sub_loss = self._step(PyGBatch.from_data_list([data_list[i] for i in idx]))
-            self.log(f"val_loss_{label}", sub_loss, batch_size=n)
+            v = per_graph[mask].mean()
+            self.log(f"val_loss_{label}", v, batch_size=n)
+            sub[label] = v
+        # gap shrinks monotonically as both losses converge → useless under
+        # mode='max'. ratio grows as discrimination strengthens → the right
+        # monitor. Gap kept as diagnostic for absolute-error convergence.
+        if "benign" in sub and "attack" in sub:
+            self.log("val_discrimination_gap", sub["attack"] - sub["benign"], batch_size=bs)
+            self.log(
+                "val_discrimination_ratio", sub["attack"] / (sub["benign"] + 1e-6), batch_size=bs
+            )
 
-    def _per_graph_errors(self, batch):
-        """Compute weighted per-graph anomaly errors from a batch.
+    def _per_component_errors(
+        self, batch
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Per-graph (recon, canid, nbr) errors plus the per-node latent ``z``.
 
-        Anomaly-scoring weights (``score_*_weight``) are decoupled from the
-        training-loss weights — the latter are chosen for ELBO gradient
-        balance, the former for benign-vs-attack discrimination per
-        Frenken et al. 2025 §8.2 (α=1.0, β=20.0, γ=0.3 by default).
+        ``z`` is returned (not discarded) so ``extract_features`` can compute
+        its z-statistics without a second forward pass. Callers that don't
+        need it can unpack with ``_``. No weighting / no normalization.
 
         Per-component errors are MEAN-pooled per graph to align with the
-        training objective (``F.mse_loss`` defaults to mean reduction) and
-        with ``extract_features`` (used by fusion). MAX-pooling produced
-        score inversions when benign graphs had outlier nodes.
+        training objective (``F.mse_loss`` defaults to mean reduction).
+        MAX-pooling produced score inversions when benign graphs had outlier
+        nodes.
         """
         from torch_geometric.utils import scatter
 
         edge_attr = getattr(batch, "edge_attr", None)
-        cont, canid_logits, nbr_logits, _, _ = self.model(
+        cont, canid_logits, nbr_logits, z, _ = self.model(
             batch.x,
             batch.edge_index,
             batch.batch,
             edge_attr=edge_attr,
             node_id=batch.node_id,
         )
-        per_node_se = (cont - batch.x).pow(2).mean(dim=1)
-        recon = scatter(per_node_se, batch.batch, dim=0, reduce="mean")
-        canid_err = F.cross_entropy(canid_logits, batch.node_id, reduction="none")
-        canid_per_graph = scatter(canid_err, batch.batch, dim=0, reduce="mean")
+        recon = scatter((cont - batch.x).pow(2).mean(dim=1), batch.batch, dim=0, reduce="mean")
+        canid = scatter(
+            F.cross_entropy(canid_logits, batch.node_id, reduction="none"),
+            batch.batch,
+            dim=0,
+            reduce="mean",
+        )
         nbr_targets = self.model.create_neighborhood_targets(
             batch.node_id, batch.edge_index, batch.batch
         )
-        nbr_err = F.binary_cross_entropy_with_logits(
-            nbr_logits, nbr_targets, reduction="none"
-        ).mean(dim=1)
-        nbr_per_graph = scatter(nbr_err, batch.batch, dim=0, reduce="mean")
+        nbr = scatter(
+            F.binary_cross_entropy_with_logits(nbr_logits, nbr_targets, reduction="none").mean(
+                dim=1
+            ),
+            batch.batch,
+            dim=0,
+            reduce="mean",
+        )
+        return recon, canid, nbr, z
+
+    def _per_graph_errors(self, batch):
+        """Per-graph anomaly score. Two scoring paths:
+
+        - **Z-norm (Tier B):** when ``fit_score_norm`` has populated the
+          benign-val mean/std buffers (``score_norm_fitted=True``), score
+          each component in σ-units against benign val and aggregate by
+          max — a single component spiking is the attack signal.
+        - **Fixed weights (legacy):** ``α·recon + γ·canid + β·nbr`` with
+          dataset-tuned coefficients. Used when calibration hasn't run
+          (e.g. older ckpts without the buffers) so old runs still score.
+        """
+        recon, canid, nbr, _ = self._per_component_errors(batch)
+        if bool(self.score_norm_fitted):
+            eps = 1e-6
+            z_recon = (recon - self.score_recon_mean) / (self.score_recon_std + eps)
+            z_canid = (canid - self.score_canid_mean) / (self.score_canid_std + eps)
+            z_nbr = (nbr - self.score_nbr_mean) / (self.score_nbr_std + eps)
+            return torch.stack([z_recon, z_canid, z_nbr], dim=0).amax(dim=0)
         return (
             self.score_recon_weight * recon
-            + self.score_canid_weight * canid_per_graph
-            + self.score_nbr_weight * nbr_per_graph
+            + self.score_canid_weight * canid
+            + self.score_nbr_weight * nbr
         )
+
+    @torch.no_grad()
+    def fit_score_norm(self, val_loader, device: torch.device) -> None:
+        """Compute benign-val per-component mean/std and write buffers.
+
+        Filters each batch's val rows to label==0 (benign) before computing
+        component errors, so the calibration is against the in-distribution
+        side only — attacks are OOD by construction. Mirrors OCGIN's
+        ``calibrate_svdd_center`` lifecycle: fit once at test-start.
+        """
+        from torch_geometric.data import Batch as PyGBatch
+
+        was_training = self.training
+        self.eval()
+        all_recon, all_canid, all_nbr = [], [], []
+        for batch in val_loader:
+            batch = batch.clone().to(device)
+            y = batch.y.view(-1)
+            benign_idx = (y == 0).nonzero(as_tuple=False).flatten().tolist()
+            if not benign_idx:
+                continue
+            sub = PyGBatch.from_data_list([batch.to_data_list()[i] for i in benign_idx])
+            r, c, n, _ = self._per_component_errors(sub)
+            all_recon.append(r.cpu())
+            all_canid.append(c.cpu())
+            all_nbr.append(n.cpu())
+        if was_training:
+            self.train()
+        if not all_recon:
+            raise RuntimeError("fit_score_norm: no benign rows in val loader")
+        r = torch.cat(all_recon)
+        c = torch.cat(all_canid)
+        n = torch.cat(all_nbr)
+        if len(r) < 100:
+            raise RuntimeError(f"fit_score_norm: need >=100 benign val graphs, got {len(r)}")
+        self.score_recon_mean.copy_(r.mean())
+        self.score_recon_std.copy_(r.std())
+        self.score_canid_mean.copy_(c.mean())
+        self.score_canid_std.copy_(c.std())
+        self.score_nbr_mean.copy_(n.mean())
+        self.score_nbr_std.copy_(n.std())
+        self.score_norm_fitted.fill_(True)
 
     def test_step(self, batch, _idx, dataloader_idx=0):
         errors = self._per_graph_errors(batch)
@@ -264,5 +347,4 @@ class VGAEModule(GraphModuleBase):
         if hasattr(self.loss_fn, "projection") and self.loss_fn.projection is not None:
             params += list(self.loss_fn.projection.parameters())
         opt = torch.optim.Adam(params, lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max_epochs)
-        return opt, scheduler
+        return opt, None
