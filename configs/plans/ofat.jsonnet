@@ -12,8 +12,11 @@ function(dataset, seed)
 
 // `name` defaults to the variant (preset stem) — override only when the
 // plan needs distinct topology nodes for the same preset. group / variant
-// are derived from the preset path by `graphids.slurm.dag.Node`.
-local fit_test(preset, name=null, deps=[], timeout_min=null) =
+// are derived from the preset path by `graphids.slurm.dag.Node`. `mode`
+// defaults to gpu (the submit primitive's implicit default); pass mode='cpu'
+// for fits that don't actually use the GPU (fusion methods — system metrics
+// confirm 0% GPU compute across all 4) so they don't squat gpu allocation.
+local fit_test(preset, name=null, deps=[], timeout_min=null, mode=null) =
   local stem = std.split(std.split(preset, '/')[1], '.')[0];
   local nm = if name != null then name else stem;
   [
@@ -22,6 +25,7 @@ local fit_test(preset, name=null, deps=[], timeout_min=null) =
       preset: preset,
       action: 'fit',
       deps: deps,
+      [if mode != null then 'mode']: mode,
       [if timeout_min != null then 'timeout_min']: timeout_min,
     },
     {
@@ -80,8 +84,10 @@ local extract_states_command =
       timeout_min: 30,
     }]
     // Stage 4 — fusion methods fan out from extract-states.
-    + fit_test('fusion/bandit.jsonnet', deps=['extract-states'])
-    + fit_test('fusion/dqn.jsonnet', deps=['extract-states'])
-    + fit_test('fusion/mlp.jsonnet', deps=['extract-states'])
-    + fit_test('fusion/weighted_avg.jsonnet', deps=['extract-states']),
+    // mode='cpu' because fusion runs on cached state tensors with 0% GPU
+    // compute (telemetry across all 4 methods, set_01).
+    + fit_test('fusion/bandit.jsonnet', deps=['extract-states'], mode='cpu')
+    + fit_test('fusion/dqn.jsonnet', deps=['extract-states'], mode='cpu')
+    + fit_test('fusion/mlp.jsonnet', deps=['extract-states'], mode='cpu')
+    + fit_test('fusion/weighted_avg.jsonnet', deps=['extract-states'], mode='cpu'),
 }
