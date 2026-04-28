@@ -133,6 +133,39 @@ class VGAEModule(GraphModuleBase):
         """Return the base VGAETaskLoss, unwrapping FeatureDistillation if present."""
         return getattr(self.loss_fn, "base_loss", self.loss_fn)
 
+    def forward(self, batch):
+        # Unmasked encode/decode → (cont, z, kl). Used by callers that want
+        # deterministic-from-weights output (checkpoint roundtrip test) and
+        # by budget.probe's eval-mode fallback. The masked train/val regime
+        # lives in _step / *_step_inner; the round-robin test regime lives
+        # in _score_via_round_robin.
+        edge_attr = getattr(batch, "edge_attr", None)
+        return self.model(
+            batch.x,
+            batch.edge_index,
+            batch.batch,
+            edge_attr=edge_attr,
+            node_id=batch.node_id,
+        )
+
+    def _step(self, batch):
+        # Budget probe entrypoint — training-shape masked forward + loss with
+        # no .log() calls (logging mid-probe would mix probe metrics into the
+        # real train stream). Probe runs this under model.train() and calls
+        # .backward() on the returned scalar.
+        edge_attr = getattr(batch, "edge_attr", None)
+        x_m, nid_m, _mask = self.model.apply_random_mask(
+            batch.x, batch.node_id, mask_rate=self.hparams.mask_rate
+        )
+        outputs = self.model(
+            x_m,
+            batch.edge_index,
+            batch.batch,
+            edge_attr=edge_attr,
+            node_id=nid_m,
+        )
+        return self.loss_fn(outputs, batch)
+
     def _training_step_inner(self, batch, _idx):
         edge_attr = getattr(batch, "edge_attr", None)
         x_m, nid_m, mask = self.model.apply_random_mask(
