@@ -4,89 +4,93 @@
 > `git log`; durable verdicts in `docs/decisions/README.md`; living
 > architecture in `docs/reference/`; cross-project plans in `~/plans/`.
 
-### #43 closed — VGAE 5-bug-fix verified
+## Current state
 
-All 5 enumerated bugs (sigmoid decoder, scoring weights, scaler
-benign-only, mean-pool, masking) are confirmed fixed in main code.
-Verified by post-fix `set_01` seed 42 fit (MLflow run
-`8e06fc6e903045fbb94376e9ef5266d5`): `val_loss = 0.113` vs ~2800
-plateau pre-fix; `test_03_known_vehicle_unknown_attack/auc = 0.76`;
-aggregate MCC flipped from −0.05 → +0.12. Closing comment posted
-to GitHub. Remaining test_01 known-attack F1=0 and test_06 masquerade
-AUC=0.27 are NOT regressions of #43 — different bug surfaces, should
-file as separate issues if pursued.
+### Shipped this session (3 commits on main, unpushed)
 
-### Ablation surface — 3 new groups, score_weights walked back
+- `0d20b9c` uv.lock regen (post-OTel rip drift)
+- `fdfc518` **GAT recalibration**: max_epochs 300→200, patience 100→30,
+  added `min_delta=0.001` to EarlyStopping (callback gained the field),
+  dropped CosineAnnealingLR from base.py.
+- `95bb8df` **VGAE recalibration** — five coupled changes:
+  1. monitor: `val_discrimination_gap` → `val_discrimination_ratio` (gap
+     shrinks monotonically as both losses converge → useless as max-mode
+     signal; ratio grows as discrimination strengthens). Both ckpt + ES
+     track the ratio. Gap kept as diagnostic only.
+  2. `validation_step` 3 forwards → 1 forward (per-class via masking, not
+     re-batching). val_loss now excludes KL — magnitudes shift, curve
+     shape comparable.
+  3. Tier B z-norm scoring: 6 scalar buffers + fitted flag on the module.
+     `fit_score_norm()` calibrates against benign-val at test-start
+     (trainer.test hook mirrors OCGIN's calibrate_svdd_center pattern).
+     Falls back to fixed-weight composite when buffers empty (older ckpts
+     keep working).
+  4. `extract_features` deduplicated against `_per_component_errors`
+     (now returns z too). Column order preserved for cached fusion states.
+  5. `autoencoder.jsonnet`: max_epochs 1200→600, precision 16-mixed→32-true
+     (fp16 was numerically safe but no throughput win measured); cosine
+     scheduler dropped from VGAEModule.build_optimizers.
 
-- **`scaler/`** — `z_benign` (default), `robust_benign`. Tests scaler
-  fitting population. `z_joint` was added then removed: principled-out
-  for IDS (OOD-attack is dominant deployment risk; joint fitting bakes
-  the training-attack distribution into the input frame). Both code
-  path (`scaler.py:STRATEGIES`) and ablation variant deleted.
-- **`curriculum_direction/`** — `low_to_high` (1.0→10.0, current code
-  default) and `high_to_low` (10.0→1.0, DCL/MID literature direction).
-  Random within-tier ordering — isolates direction from scorer choice.
-- **`score_weights/`** — added then removed in same session. The
-  proposed (α, β, γ) sweep was answering the wrong question; the
-  research-backed approach is per-component z-normalization on benign
-  val (BWGNN/DCOR/AutoGraphAD/GAD-NR pattern), not fixed weights. Left
-  as separate code-change work.
+### In flight — smoke jid 47125867
 
-`configs/plans/ofat.jsonnet` extended with the 4 new variants in
-Stage 1 (parallel, no upstream deps). Render verified — 39 JSONL rows
-(was 31).
+Single-forward val + ratio monitor + z-norm calibration **launched but
+not finished**. User is watching the Monitor stream personally. Expected
+~30 min wall on gpudebug. What to verify when it terminates:
 
-### kd-gat-paper methodology subsection added
+- val_discrimination_ratio trajectory grows ~1.1 → ~1.3 over 50 epochs
+  (matches the prior smoke's same numbers, just on the right metric).
+- Per-epoch time DROPS from 41 s/ep baseline (the goal of the val 3→1
+  refactor). The historical 4.8 s/ep run is the lower bound; likely
+  lands somewhere in between (warm-allocator probe budget regression
+  is still in effect, separately).
+- ModelCheckpoint saves a late-training epoch (not ep 0 like the broken
+  monitor did). Best-epoch should be the highest-ratio epoch.
+- All metrics finite (back on fp32, expected stable).
 
-Subsection `### Feature Standardization on Benign Training Rows` in
-`paper/content/methodology.md`. 13 new BibTeX entries across 3 .bib
-files. Defends `z_benign` choice with NIDS-context citations
-(ADBench, PyOD, Sommer & Paxson), one-class precedent (Donut,
-Deep SVDD, USAD, GANomaly), and test-time normalization analog
-(AdaBN, TENT, RevIN). Empirical magnitude on `set_01`: median 2.4%
-mean shift across 35 features, max 37%. Uncommitted in
-`~/kd-gat-paper`; not synced to Curvenote.
+### What's not yet covered by the smoke
 
-### Compute-efficiency analysis (`~/plans/compute-efficiency-recalibration.md`)
+- Z-norm calibration end-to-end: only fires during `graphids test`, not
+  during `submit ... vgae.jsonnet`. After the smoke fit terminates,
+  running `graphids test --ckpt-path {best.ckpt} --dataset set_01` will
+  exercise the trainer hook + fit_score_norm + branched scoring. ~5 min
+  wall.
+- `extract_features` dedup: only matters when `extract-fusion-states`
+  CLI runs. Verified by import + structural test, not exercised on real
+  data this session.
 
-Three-layer evidence pass on the 13 post-#43 fits:
-
-1. **System telemetry** — GAT GPU util **median 11%** with mem at 99%;
-   VGAE 17% / 98%. Fusion is **0% GPU** across all 4 methods.
-   Conclusion: dataloader-bound, not compute-bound. The "GAT is
-   compute-bound (cg_ratio≈0.21)" comment in
-   `configs/models/supervised.libsonnet:4` is empirically false.
-
-2. **Existing 2026-03-23 plan** (`~/plans/gpu-utilization-and-training-efficiency.md`)
-   — most items still unapplied: `compile_model: true` is still
-   `false`; `exclude_keys=['attack_type']` not used; `set_to_none=True`
-   only in budget probe.
-
-3. **Literature review** (22 primary sources) — published GAT/VGAE
-   recipes use **Adam constant-LR, no scheduler, fixed-epoch or
-   patience=50 early stopping**. Our cosine over 300-1200 epochs is
-   outside published practice. OneCycleLR / Lion-Sophia / linear-LR
-   scaling for GNNs have **no published validation** — earlier
-   recommendations along those lines retracted.
-
-Recommendations summary in the doc, with HIGH-confidence path:
-num_workers bump (4→8 GAT, 2→6 VGAE), fusion → CPU partition,
-constant-LR Adam replacing cosine, epoch budgets aligned with
-Veličković 2018 / Kipf 2016 (200 VGAE, 150 GAT, 100 fusion),
-`compile_model: true`. Estimated 4-6× per-seed compute reduction.
-
-## Open issues
+## Open issues — short list
 
 - **#32** Add WaDi dataset module.
-- **Recalibration application** — apply Tier 1.5 (epoch budgets +
-  constant-LR scheduler) and Tier 1.1 (num_workers) from
-  `~/plans/compute-efficiency-recalibration.md`. Verify with one
-  smoke fit before applying to full ablation sweep.
-- **VGAE per-component telemetry gap** — `train_recon`, `train_canid`,
-  `train_nbr`, `train_kl` are not flowing through to MLflow. Log calls
-  in `vgae_module.py:_training_step_inner` are gated on
-  `task_loss.last_recon is not None` — that gate isn't firing.
-  Investigation needed before deeper VGAE diagnosis is possible.
+- **Audit #3** — move `score_difficulty` (vgae.py:291-328, ~38 LOC)
+  out of the model class to `core/data/curriculum.py` where the
+  curriculum scorer interface lives. Pure relocation, no behavior change.
+- **Audit #4** — inline + delete `from_config` (vgae.py:265-282).
+  cfg→kwargs translator with no logic; caller can build inline.
+- **Audit #5** — `build_encoder_stack` should return the targets it
+  picks so the decoder reverses *those*, not a duplicate derivation
+  (vgae.py:101-104). Drift risk between encoder/decoder construction.
+- **Audit #6 cleanup** — stale module docstring in vgae_module.py:22-35
+  (references `score_*_weight` "read back off self.loss_fn" no longer
+  true), unused `import torch.nn.functional as F` inside extract_features,
+  `ModelType` noqa is wrong (it IS used in annotation).
+- **Tier 1.4 A/B** — cosine→constant LR shipped in two places (base.py
+  and vgae_module.py) without controlled validation. One focal GAT pair
+  on set_01 seed=42, both at max_epochs=200, would settle whether it
+  was the right call. ~50 min/run × 2.
+- **#6 design discussion** — `canid` head was at random-baseline
+  cross-entropy (~0.94) at ep 20 in the prior smoke; either
+  canid_weight=0.1 is too small to drive the head or the head
+  architecture is undersized. User wants to discuss after this batch
+  of changes lands.
+- **`lr: 0.006` stale workaround** in
+  `configs/ablations/unsupervised/vgae.jsonnet:23`. The comment claims
+  the bump escapes a "~2800 floor for ~50% of epochs" — that plateau
+  was the pre-#43 bug and no longer exists post-fix. Override is now
+  unjustified; should drop or rejustify on current data.
+- **Warm-allocator budget regression** — `budget_utilization_pct`
+  dropped 101 → 78.6 between the historical 4.8 s/ep VGAE run and
+  current code (commit `6490eb7`). VGAE got smaller batches without
+  the GAT-specific util benefit. Independent of the val refactor.
 
 ## Reference
 
