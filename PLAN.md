@@ -61,18 +61,10 @@ not finished**. User is watching the Monitor stream personally. Expected
 ## Open issues — short list
 
 - **#32** Add WaDi dataset module.
-- **Audit #3** — move `score_difficulty` (vgae.py:291-328, ~38 LOC)
+- **Audit #3** — move `score_difficulty` (vgae.py:271-308, ~38 LOC)
   out of the model class to `core/data/curriculum.py` where the
-  curriculum scorer interface lives. Pure relocation, no behavior change.
-- **Audit #4** — inline + delete `from_config` (vgae.py:265-282).
-  cfg→kwargs translator with no logic; caller can build inline.
-- **Audit #5** — `build_encoder_stack` should return the targets it
-  picks so the decoder reverses *those*, not a duplicate derivation
-  (vgae.py:101-104). Drift risk between encoder/decoder construction.
-- **Audit #6 cleanup** — stale module docstring in vgae_module.py:22-35
-  (references `score_*_weight` "read back off self.loss_fn" no longer
-  true), unused `import torch.nn.functional as F` inside extract_features,
-  `ModelType` noqa is wrong (it IS used in annotation).
+  curriculum scorer interface lives. Single caller (curriculum.py:65).
+  Pure relocation, no behavior change.
 - **Tier 1.4 A/B** — cosine→constant LR shipped in two places (base.py
   and vgae_module.py) without controlled validation. One focal GAT pair
   on set_01 seed=42, both at max_epochs=200, would settle whether it

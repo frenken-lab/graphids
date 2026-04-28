@@ -4,9 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from graphids.config.constants import (
-    ModelType,  # noqa: F401 (used in __init__ annotation)
-)
+from graphids.config.constants import ModelType
 
 from ..base import GraphModuleBase, binary_test_metrics
 from .vgae import GraphAutoencoderNeighborhood
@@ -28,10 +26,12 @@ class VGAEModule(GraphModuleBase):
     :class:`~graphids.core.losses.distillation.FeatureDistillation`.
 
     The loss module owns ``canid_weight`` / ``nbr_weight`` / ``kl_weight``
-    / ``k_neg`` / ``num_ids``. Because ``_per_graph_errors`` (used at test
-    time) needs the same weights to score anomalies consistently with
-    training, it reads them back off ``self.loss_fn`` via the
-    :meth:`_task_loss_module` helper which unwraps KD if present.
+    / ``k_neg`` / ``num_ids`` for the training objective; these are read
+    back via :meth:`_task_loss_module` (which unwraps KD if present) for
+    per-class val aggregation and per-component telemetry. Anomaly scoring
+    at test time is decoupled — see ``score_*_weight`` hparams and
+    :meth:`_per_graph_errors` for the legacy fixed-weight and Tier B
+    z-norm calibrated paths.
     """
 
     # Calibration state for benign-val z-normalization (Tier B). Six scalar
@@ -97,12 +97,25 @@ class VGAEModule(GraphModuleBase):
     def _build(self):
         from graphids._reflect import import_class
 
+        from .._conv import resolve_edge_dim
+
         hp = self.hparams
         encoder_cls = import_class(hp.id_encoder_class_path)
         encoder_kwargs = {"embedding_dim": hp.embedding_dim, **(hp.id_encoder_kwargs or {})}
         id_encoder = encoder_cls.from_vocab_size(num_ids=hp.num_ids, **encoder_kwargs)
-        self.model = GraphAutoencoderNeighborhood.from_config(
-            hp, id_encoder, hp.num_ids, hp.in_channels
+        self.model = GraphAutoencoderNeighborhood(
+            id_encoder=id_encoder,
+            num_ids=hp.num_ids,
+            in_channels=hp.in_channels,
+            hidden_dims=list(hp.hidden_dims),
+            latent_dim=hp.latent_dim,
+            encoder_heads=hp.heads,
+            dropout=hp.dropout,
+            conv_type=hp.conv_type,
+            edge_dim=resolve_edge_dim(hp.conv_type, hp.edge_dim),
+            proj_dim=hp.proj_dim,
+            use_checkpointing=hp.gradient_checkpointing,
+            variational=getattr(hp, "variational", True),
         )
         if hp.compile_model:
             from ..base import try_compile

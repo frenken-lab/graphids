@@ -153,11 +153,13 @@ def build_encoder_stack(
     edge_dim: int | None,
     encoder_heads: int = 1,
     batch_norm: bool = True,
-) -> tuple[nn.ModuleList, nn.ModuleList, int]:
+) -> tuple[nn.ModuleList, nn.ModuleList, list[int]]:
     """Normalize hidden_dims and build the encoder conv stack.
 
     Shared by VGAE and DGI encoders. Returns (conv_layers, norm_layers,
-    latent_in_dim) where latent_in_dim is the last encoder target dimension.
+    encoder_targets) — the per-layer output-dim list, so callers can mirror
+    it for a decoder without re-deriving the normalization (use
+    ``encoder_targets[-1]`` for the latent-in dim).
     """
     if hidden_dims is None or len(hidden_dims) == 0:
         hidden_dims = [max(128, latent_dim * 2), latent_dim]
@@ -174,7 +176,7 @@ def build_encoder_stack(
         heads_first=encoder_heads,
         batch_norm=batch_norm,
     )
-    return convs, norms, encoder_targets[-1]
+    return convs, norms, encoder_targets
 
 
 def _conv_forward_inner(

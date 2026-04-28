@@ -9,7 +9,6 @@ from .._conv import (
     build_conv_stack,
     build_encoder_stack,
     conv_forward,
-    resolve_edge_dim,
 )
 
 
@@ -82,7 +81,7 @@ class GraphAutoencoderNeighborhood(nn.Module):
         # Encoder conv stack (shared with DGI)
         gat_in_dim = self.input_encoder.out_dim
         self.gat_in_dim = gat_in_dim
-        self.encoder_layers, self.encoder_bns, self.latent_in_dim = build_encoder_stack(
+        self.encoder_layers, self.encoder_bns, encoder_targets = build_encoder_stack(
             hidden_dims,
             latent_dim,
             gat_in_dim,
@@ -91,17 +90,13 @@ class GraphAutoencoderNeighborhood(nn.Module):
             encoder_heads=encoder_heads,
             batch_norm=batch_norm,
         )
+        self.latent_in_dim = encoder_targets[-1]
         self.variational = variational
         self.z_mean = nn.Linear(self.latent_in_dim, latent_dim)
         if variational:
             self.z_logvar = nn.Linear(self.latent_in_dim, latent_dim)
 
         # Decoder: mirror of encoder, final layer outputs continuous features
-        # Recompute encoder_targets (same logic as build_encoder_stack)
-        if hidden_dims is not None and len(hidden_dims) >= 2 and hidden_dims[-1] == latent_dim:
-            encoder_targets = hidden_dims[:-1]
-        else:
-            encoder_targets = hidden_dims if hidden_dims else [max(128, latent_dim * 2), latent_dim]
         decoder_targets = list(reversed(encoder_targets))
         # Replace last target with in_channels for reconstruction output
         decoder_targets[-1] = in_channels
@@ -261,25 +256,6 @@ class GraphAutoencoderNeighborhood(nn.Module):
             -F.logsigmoid(-neg_logits).mean() if neg_logits.numel() > 0 else logits.new_zeros(1)
         )
         return pos_loss + neg_loss
-
-    @classmethod
-    def from_config(cls, cfg, id_encoder, num_ids: int, in_ch: int) -> GraphAutoencoderNeighborhood:
-        """Construct from a config."""
-        conv_type = cfg.conv_type
-        return cls(
-            id_encoder=id_encoder,
-            num_ids=num_ids,
-            in_channels=in_ch,
-            hidden_dims=list(cfg.hidden_dims),
-            latent_dim=cfg.latent_dim,
-            encoder_heads=cfg.heads,
-            dropout=cfg.dropout,
-            conv_type=conv_type,
-            edge_dim=resolve_edge_dim(conv_type, cfg.edge_dim),
-            proj_dim=cfg.proj_dim,
-            use_checkpointing=cfg.gradient_checkpointing,
-            variational=getattr(cfg, "variational", True),
-        )
 
     def forward(self, x, edge_index, batch, edge_attr=None, node_id=None):
         ea = edge_attr if self._uses_edge_attr else None

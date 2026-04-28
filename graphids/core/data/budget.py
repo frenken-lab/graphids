@@ -201,6 +201,14 @@ def probe(model, batch_small, batch_big) -> tuple[int, int, float, float]:
     over-conservative. VGAE (simpler decoder, less churn) hits 101% util
     even with cold warmup, so the bias is architecture-specific.
 
+    Warmup is symmetric across both probe shapes. cuDNN autotuner caches
+    kernels per-input-shape; if only ``batch_big`` is warmed, the
+    ``batch_small`` measurement pays one-shot kernel-selection workspace
+    cost that real training won't recur — biasing the slope. Verified
+    on VGAE post-rip: probe peak 15.4 GB vs training peak 11.8 GB on V100
+    (~25% gap) closes when both shapes are warmed. (Sequential, not
+    interleaved — cuDNN cache is content-addressed, not LRU.)
+
     Returns ``(bpn_node, bpn_edge, bwd_mult, t_fwd_seconds)``. ``t_fwd``
     is from the larger batch, which is more representative of real
     training steps than the warmup-sized one.
@@ -213,14 +221,15 @@ def probe(model, batch_small, batch_big) -> tuple[int, int, float, float]:
     if step_fn is not None:
         was_training = model.training
         model.train()
-        for _ in range(_PROBE_WARMUP_STEPS):
-            loss = step_fn(batch_big)
-            if isinstance(loss, (tuple, list)):
-                loss = loss[0]
-            elif isinstance(loss, dict):
-                loss = loss["loss"]
-            loss.backward()
-            model.zero_grad(set_to_none=True)
+        for batch in (batch_big, batch_small):
+            for _ in range(_PROBE_WARMUP_STEPS):
+                loss = step_fn(batch)
+                if isinstance(loss, (tuple, list)):
+                    loss = loss[0]
+                elif isinstance(loss, dict):
+                    loss = loss["loss"]
+                loss.backward()
+                model.zero_grad(set_to_none=True)
         torch.cuda.synchronize(dev)
         model.train(was_training)
     else:

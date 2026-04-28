@@ -57,7 +57,7 @@ class GraphInfomaxModel(nn.Module):
 
         # Encoder conv stack (same architecture as VGAE encoder)
         gat_in_dim = self.input_encoder.out_dim
-        self.encoder_layers, self.encoder_bns, self.latent_in_dim = build_encoder_stack(
+        self.encoder_layers, self.encoder_bns, encoder_targets = build_encoder_stack(
             hidden_dims,
             latent_dim,
             gat_in_dim,
@@ -66,6 +66,7 @@ class GraphInfomaxModel(nn.Module):
             encoder_heads=encoder_heads,
             batch_norm=batch_norm,
         )
+        self.latent_in_dim = encoder_targets[-1]
         self.z_proj = nn.Linear(self.latent_in_dim, latent_dim)
 
         # Bilinear discriminator: scores node–summary pairs
