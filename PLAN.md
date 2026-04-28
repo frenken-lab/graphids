@@ -64,7 +64,16 @@ not finished**. User is watching the Monitor stream personally. Expected
 - **Audit #3** — move `score_difficulty` (vgae.py:271-308, ~38 LOC)
   out of the model class to `core/data/curriculum.py` where the
   curriculum scorer interface lives. Single caller (curriculum.py:65).
-  Pure relocation, no behavior change.
+  Pure relocation, no behavior change. **Now bundled into Phase 0 of
+  the mask-recon plan** (see `~/plans/vgae-mask-recon-and-latent-density.md`).
+- **VGAE mask-recon + latent density synthesis** — durable design at
+  `~/plans/vgae-mask-recon-and-latent-density.md` (v2, 2026-04-28).
+  **Three commits, one smoke, no ablations.** Commit 1 (pre-clean
+  trivia) lands after current smoke jid 47126749. Commit 2 (atomic
+  synthesis): cut variational/nbr/canid heads (-193 LOC), add mask
+  training + round-robin test scoring + Mahalanobis on mu + KL in
+  score (+160 LOC). Net **-33 LOC**. Commit 3: smoke at set_01
+  seed=42 mask_rate=0.15. Pass: ratio peak ≥ 1.5. Fail: revert.
 - **Tier 1.4 A/B** — cosine→constant LR shipped in two places (base.py
   and vgae_module.py) without controlled validation. One focal GAT pair
   on set_01 seed=42, both at max_epochs=200, would settle whether it
