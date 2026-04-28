@@ -7,7 +7,6 @@ local pd = (import '../../matrix/axes.json').pipeline_defaults;
 function(
   dataset=pd.dataset, seed=pd.seed,
   scale=pd.scale, conv_type=pd.conv_type, loss_fn=pd.loss_fn,
-  canid_weight=0.1,
   curriculum_start_ratio=1.0, curriculum_end_ratio=10.0,
   curriculum_max_epochs=300, num_tiers=10,
   ckpt_path=null,
@@ -19,7 +18,6 @@ function(
     conv_type=conv_type, loss_fn=loss_fn,
     sampler='curriculum',
     vgae_ckpt_path=std.native('paths.vgae_ckpt')(dataset, seed),
-    canid_weight=canid_weight,
     curriculum_start_ratio=curriculum_start_ratio,
     curriculum_end_ratio=curriculum_end_ratio,
     curriculum_max_epochs=curriculum_max_epochs,

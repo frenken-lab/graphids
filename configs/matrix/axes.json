@@ -4,7 +4,6 @@
     "seed": 42,
     "scale": "small",
     "conv_type": "gatv2",
-    "variational": true,
     "loss_fn": "focal",
     "fusion_method": "bandit"
   },

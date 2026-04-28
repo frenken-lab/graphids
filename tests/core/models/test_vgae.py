@@ -41,7 +41,7 @@ class TestVGAEConvTypes:
         model, _ = model_and_conv
         batch = make_batch(3)
         n = batch.x.size(0)
-        cont, canid, nbr, z, kl = model(
+        cont, z, kl = model(
             batch.x,
             batch.edge_index,
             batch.batch,
@@ -49,28 +49,33 @@ class TestVGAEConvTypes:
             node_id=batch.node_id,
         )
         assert cont.shape == (n, IN_CHANNELS)
-        assert canid.shape == (n, NUM_IDS)
         assert z.shape[0] == n
-        assert kl.dim() == 0
+        # kl is per-node (mean over latent dims) so per-graph KL can be
+        # scatter-aggregated at test time.
+        assert kl.shape == (n,)
 
     def test_gradient_flow(self, model_and_conv):
         model, conv_type = model_and_conv
         batch = make_batch(2)
-        cont, canid, nbr, _, kl = model(
+        cont, _z, kl = model(
             batch.x,
             batch.edge_index,
             batch.batch,
             edge_attr=batch.edge_attr,
             node_id=batch.node_id,
         )
-        # Gradient-flow verification (not training — raw autograd check)
-        torch.autograd.backward(cont.sum() + canid.sum() + nbr.sum() + kl)
-        # GPS encoder_bns have no gradient by design (batch norm in GPS path)
+        # Gradient-flow verification (not training — raw autograd check).
+        # mask_token is a frozen Parameter (requires_grad=False) so it is
+        # excluded from the dead-grad sweep below.
+        torch.autograd.backward(cont.sum() + kl.sum())
+        # GPS encoder_bns have no gradient by design (batch norm in GPS path).
+        # mask_token by design has requires_grad=False.
         exclude = {"encoder_bns"} if conv_type == "gps" else set()
+        exclude.add("mask_token")
         dead = [
             n
             for n, p in model.named_parameters()
-            if p.grad is None and not any(ex in n for ex in exclude)
+            if p.requires_grad and p.grad is None and not any(ex in n for ex in exclude)
         ]
         assert not dead, f"No gradient: {dead}"
 

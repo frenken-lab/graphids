@@ -46,27 +46,53 @@ class DifficultyScorer(Protocol):
 class VGAEScorer:
     """Reconstruction-difficulty scoring via a trained VGAE checkpoint.
 
-    Loads the VGAE on CPU, scores via ``model.score_difficulty``, then
-    releases the VGAE immediately (curriculum scoring runs once at setup
-    and we don't want to hold the checkpoint in RAM for the whole run).
+    Loads the VGAE on CPU, computes per-graph reconstruction MSE
+    (higher = harder), then releases the VGAE immediately (curriculum
+    scoring runs once at setup and we don't want to hold the
+    checkpoint in RAM for the whole run). Uses the model's unmasked
+    forward — curriculum scoring measures "how hard is this graph
+    overall" not "how hard is each node from its neighbors", so the
+    test-time round-robin path doesn't apply.
     """
 
-    def __init__(self, ckpt_path: str, canid_weight: float = 0.1) -> None:
+    def __init__(self, ckpt_path: str) -> None:
         if not ckpt_path:
             raise ValueError("VGAEScorer requires a non-empty ckpt_path")
         self.ckpt_path = ckpt_path
-        self.canid_weight = canid_weight
 
+    @torch.no_grad()
     def score(self, graphs: list) -> torch.Tensor:
+        from torch_geometric.loader import DataLoader as PyGDataLoader
+        from torch_geometric.utils import scatter
+
         from graphids.core.models.base import load_inner_model
 
         vgae, _ = load_inner_model("vgae", Path(self.ckpt_path), torch.device("cpu"))
         try:
-            raw = vgae.score_difficulty(graphs, canid_weight=self.canid_weight)
+            device = next(vgae.parameters()).device
+            was_training = vgae.training
+            vgae.eval()
+            try:
+                scores: list[float] = []
+                for batch in PyGDataLoader(graphs, batch_size=500):
+                    batch = batch.clone().to(device, non_blocking=True)
+                    edge_attr = getattr(batch, "edge_attr", None)
+                    cont, _z, _kl = vgae(
+                        batch.x,
+                        batch.edge_index,
+                        batch.batch,
+                        edge_attr=edge_attr,
+                        node_id=batch.node_id,
+                    )
+                    node_mse = (cont - batch.x).pow(2).mean(dim=1)
+                    graph_mse = scatter(node_mse, batch.batch, reduce="mean")
+                    scores.extend(graph_mse.tolist())
+            finally:
+                vgae.train(was_training)
         finally:
             del vgae
             gc.collect()
-        return raw if isinstance(raw, torch.Tensor) else torch.tensor(raw, dtype=torch.float)
+        return torch.tensor(scores, dtype=torch.float)
 
 
 class RandomScorer:

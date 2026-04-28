@@ -24,6 +24,11 @@ log = get_logger(__name__)
 FUSION_STATES_DIR = "fusion_states"
 TRAIN_FILENAME = "train_states.pt"
 VAL_FILENAME = "val_states.pt"
+# Bumped to 2 in commit 2 of the VGAE mask-recon synthesis: VGAE 8-D feature
+# columns swapped from [recon, nbr, canid, ...] to [recon, mahal, kl, ...].
+# Old cached files are silently incompatible by content; the version field
+# forces one-time regen instead of pretending to load them.
+CACHE_VERSION = 2
 
 
 def extract_states(
@@ -119,6 +124,8 @@ def extract_fusion_states(
 
     train_cache = {k: v.cpu() for k, v in train_cache.items()}
     val_cache = {k: v.cpu() for k, v in val_cache.items()}
+    train_cache["version"] = CACHE_VERSION
+    val_cache["version"] = CACHE_VERSION
 
     out = Path(output_dir) / FUSION_STATES_DIR
     out.mkdir(parents=True, exist_ok=True)

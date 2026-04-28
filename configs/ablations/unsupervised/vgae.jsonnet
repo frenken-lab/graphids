@@ -1,10 +1,6 @@
-// Ablation: autoencoder stage, locked model_type='vgae', variational=true.
-//
-// Bumps peak LR 0.002 → 0.006: post-standardization (cache v9.0.0) training
-// plateaus at the ~2800 floor for ~50% of epochs before breaking through.
-// Higher LR pushes through the stuck phase faster.
-// (max_epochs=1200 + precision='32-true' moved into the autoencoder stage —
-// they apply to every VGAE run, not just this preset.)
+// Ablation: autoencoder stage, locked model_type='vgae'.
+// lr override (0.002→0.006) dropped 2026-04-28 — workaround for pre-#43 plateau bug, no longer needed.
+// `variational` TLA dropped 2026-04-28 — locked at always-on after the mask-recon synthesis.
 local stage = import '../../stages/autoencoder.jsonnet';
 local pd = (import '../../matrix/axes.json').pipeline_defaults;
 
@@ -18,8 +14,8 @@ function(
       dataset=dataset, seed=seed, scale=scale,
       run_dir=std.native('paths.run_dir')(dataset, 'unsupervised', 'vgae', seed),
       conv_type=conv_type,
-      model_type='vgae', variational=true,
+      model_type='vgae',
       ckpt_path=ckpt_path,
-    ) + { model+: { init_args+: { lr: 0.006 } } },
+    ),
     std.extVar('overrides'),
   )

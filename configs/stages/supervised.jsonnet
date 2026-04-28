@@ -24,14 +24,13 @@ function(
   // Curriculum-specific (ignored when sampler='default')
   curriculum_start_ratio=1.0,
   curriculum_end_ratio=10.0,
-  canid_weight=0.1,
   curriculum_max_epochs=300,
   num_tiers=10,
 
   // Curriculum difficulty scorer: {class_path, init_args} dict. Any class
   // exposing `.score(graphs) -> Tensor` works — see core/data/curriculum.py
   // for VGAEScorer and RandomScorer. Leave null to fall back to a VGAE
-  // scorer built from `vgae_ckpt_path` + `canid_weight` (legacy default).
+  // scorer built from `vgae_ckpt_path` (recon-MSE difficulty).
   curriculum_scorer=null,
 
   // Upstream checkpoint (VGAE teacher for curriculum scoring + KD lineage)
@@ -101,7 +100,7 @@ function(
           if curriculum_scorer != null then curriculum_scorer
           else if vgae_ckpt_path != null then {
             class_path: 'graphids.core.data.curriculum.VGAEScorer',
-            init_args: { ckpt_path: vgae_ckpt_path, canid_weight: canid_weight },
+            init_args: { ckpt_path: vgae_ckpt_path },
           }
           else null,
       } else {}),

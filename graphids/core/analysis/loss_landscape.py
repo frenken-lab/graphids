@@ -75,15 +75,23 @@ def _perturb_model(
 
 @torch.no_grad()
 def _vgae_loss(model, dataloader, device: torch.device, cfg) -> float:
-    """VGAE reconstruction + CAN ID + neighborhood + KL loss (from config weights)."""
+    """VGAE reconstruction + KL loss for landscape geometry.
+
+    Unmasked forward — landscape visualizes the loss surface around
+    trained weights; random masking would inject noise into the
+    geometry. ``kl_weight`` falls back to the loss-config default
+    (0.01) when not present on ``cfg`` (module ``hparams`` doesn't
+    carry it; loss-fn weights live on the loss module instead).
+    """
     from graphids.core.models.base import eval_mode
 
+    kl_weight = float(getattr(cfg, "kl_weight", 0.01))
     total, count = 0.0, 0
     with eval_mode(model):
         for batch in dataloader:
             batch = batch.clone().to(device)
             edge_attr = getattr(batch, "edge_attr", None)
-            cont, canid_logits, nbr_logits, _z, kl_loss, _ = model(
+            cont, _z, kl_per_node = model(
                 batch.x,
                 batch.edge_index,
                 batch.batch,
@@ -91,12 +99,7 @@ def _vgae_loss(model, dataloader, device: torch.device, cfg) -> float:
                 node_id=batch.node_id,
             )
             recon = F.mse_loss(cont, batch.x)
-            canid = F.cross_entropy(canid_logits, batch.node_id)
-            nbr_targets = model.create_neighborhood_targets(
-                batch.node_id, batch.edge_index, batch.batch
-            )
-            nbr = F.binary_cross_entropy_with_logits(nbr_logits, nbr_targets)
-            loss = recon + cfg.canid_weight * canid + cfg.nbr_weight * nbr + cfg.kl_weight * kl_loss
+            loss = recon + kl_weight * kl_per_node.mean()
             total += loss.item() * batch.num_graphs
             count += batch.num_graphs
     return total / max(count, 1)

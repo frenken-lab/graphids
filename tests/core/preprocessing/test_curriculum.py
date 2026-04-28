@@ -123,11 +123,11 @@ class TestMakeScorer:
         # (Construction is cheap; scoring is what touches disk.)
         spec = {
             "class_path": "graphids.core.data.curriculum.VGAEScorer",
-            "init_args": {"ckpt_path": "/nonexistent.ckpt", "canid_weight": 0.2},
+            "init_args": {"ckpt_path": "/nonexistent.ckpt"},
         }
         s = make_scorer(spec)
         assert isinstance(s, VGAEScorer)
-        assert s.canid_weight == 0.2
+        assert s.ckpt_path == "/nonexistent.ckpt"
 
     def test_none_raises(self):
         # REGRESSION: curriculum with no scorer must fail loud, not silently.

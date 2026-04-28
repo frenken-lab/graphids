@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from graphids._otel import get_logger
 from graphids.core.data.fusion_states import (
+    CACHE_VERSION,
     FUSION_STATES_DIR,
     TRAIN_FILENAME,
     VAL_FILENAME,
@@ -79,6 +80,18 @@ class FusionDataModule:
 
         self.train_cache = torch.load(train_path, map_location="cpu", weights_only=True)
         self.val_cache = torch.load(val_path, map_location="cpu", weights_only=True)
+        for which, cache, path in (
+            ("train", self.train_cache, train_path),
+            ("val", self.val_cache, val_path),
+        ):
+            v = cache.get("version")
+            if v != CACHE_VERSION:
+                raise RuntimeError(
+                    f"Fusion {which} cache at {path} has version={v}, expected "
+                    f"{CACHE_VERSION}. Re-run "
+                    "'python -m graphids extract-fusion-states' to regenerate "
+                    "(VGAE 8-D feature columns changed in the mask-recon synthesis)."
+                )
         log.info(
             "loaded_cached_states",
             dir=str(states_dir),

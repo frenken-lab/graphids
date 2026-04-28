@@ -11,10 +11,9 @@ local _vgae_base = {
     init_args: {
       conv_type: 'gatv2',
       edge_dim: 11,
-      variational: true,
-      k_neg: 32,
-      canid_weight: 0.1,
-      nbr_weight: 0.05,
+      // mask-recon training: 15% random node masking per batch.
+      mask_rate: 0.15,
+      // routed to VGAETaskLoss via inject_loss_fn (loss-builder owns the kw).
       kl_weight: 0.01,
       lr: 0.002,
       compile_model: false,
@@ -55,7 +54,9 @@ local _dgi_base = {
         latent_dim: 64,
         heads: 4,
         embedding_dim: 32,
-        dropout: 0.15,
+        // 0.1 (was 0.15) — under 15% input masking + dropout, compound noise
+        // stalled training; encoder dropout drops to match small variant.
+        dropout: 0.1,
         proj_dim: 48,
       } },
     },

@@ -16,7 +16,6 @@ function(
 
   scale=pd.scale,
   conv_type=pd.conv_type,
-  variational=pd.variational,
   model_type='vgae',
 
   // KD — loss-level distillation config (null = no distillation)
@@ -97,7 +96,6 @@ function(
         dataset: dataset,
         seed: seed,
         conv_type: conv_type,
-        variational: variational,
       } + (if distillation_config != null
            then { distillation_config: distillation_config }
            else {}),
