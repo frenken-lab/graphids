@@ -33,6 +33,9 @@ class Node(BaseModel):
     variant: str | None = None
     # Command mode:
     command: str | None = None
+    # Cross-plan prerequisites: variant names resolved to --depends-on at render time.
+    # e.g. ('vgae',) → --depends-on vgae:42.  Empty = no cross-plan deps.
+    cross_plan_deps: tuple[str, ...] = ()
     # Resource overrides (None → profile default):
     mode: Literal["gpu", "cpu"] = "gpu"
     length: Literal["short", "long"] = "long"

@@ -160,7 +160,7 @@ class VGAEModule(GraphModuleBase):
         # real train stream). Probe runs this under model.train() and calls
         # .backward() on the returned scalar.
         edge_attr = getattr(batch, "edge_attr", None)
-        x_m, nid_m, _mask = self.model.apply_random_mask(
+        x_m, nid_m, mask = self.model.apply_random_mask(
             batch.x, batch.node_id, mask_rate=self.hparams.mask_rate
         )
         outputs = self.model(
@@ -170,7 +170,7 @@ class VGAEModule(GraphModuleBase):
             edge_attr=edge_attr,
             node_id=nid_m,
         )
-        return self.loss_fn(outputs, batch)
+        return self.loss_fn(outputs, batch, mask=mask)
 
     def _training_step_inner(self, batch, _idx):
         edge_attr = getattr(batch, "edge_attr", None)
@@ -184,7 +184,7 @@ class VGAEModule(GraphModuleBase):
             edge_attr=edge_attr,
             node_id=nid_m,
         )
-        loss = self.loss_fn(outputs, batch)
+        loss = self.loss_fn(outputs, batch, mask=mask)
         bs = batch.num_graphs
         self.log("train_loss", loss, batch_size=bs)
 
@@ -230,7 +230,7 @@ class VGAEModule(GraphModuleBase):
         from torch_geometric.utils import scatter
 
         edge_attr = getattr(batch, "edge_attr", None)
-        x_m, nid_m, _mask = self.model.apply_random_mask(
+        x_m, nid_m, mask = self.model.apply_random_mask(
             batch.x, batch.node_id, mask_rate=self.hparams.mask_rate
         )
         cont, _canid, _nbr, _z, _kl = self.model(
@@ -240,7 +240,14 @@ class VGAEModule(GraphModuleBase):
             edge_attr=edge_attr,
             node_id=nid_m,
         )
-        recon = scatter((cont - batch.x).pow(2).mean(dim=1), batch.batch, dim=0, reduce="mean")
+        # Masked-node recon only — matches _score(). All-node recon dilutes the
+        # signal: unmasked nodes reconstruct near-perfectly for both benign and
+        # attack (model sees their features), collapsing the ratio toward 1.0.
+        recon_per_node = (cont - batch.x).pow(2).mean(dim=1)
+        mask_f = mask.to(recon_per_node.dtype)
+        recon_sum = scatter(recon_per_node * mask_f, batch.batch, dim=0, reduce="sum")
+        mask_count = scatter(mask_f, batch.batch, dim=0, reduce="sum")
+        recon = recon_sum / mask_count.clamp(min=1.0)
 
         bs = batch.num_graphs
         self.log("val_loss", recon.mean(), batch_size=bs)

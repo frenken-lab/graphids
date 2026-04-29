@@ -58,17 +58,28 @@ def run_cli(
         str, typer.Option("--cluster", help="Target cluster (e.g. cardinal, pitzer)")
     ] = "pitzer",
     variants: PlanVariants = None,
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="Write JSONL blueprint to file instead of stdout."),
+    ] = None,
 ) -> None:
     """Render a plan to a JSONL blueprint of ``graphids submit`` invocations.
 
-    Does not submit. Stdout. Each line: one JSON object per topo-sorted node
-    with a ``submit_command`` string. Pipe to ``jq`` or iterate manually.
+    Does not submit. By default writes to stdout; use --output to save as a
+    persistent artifact. Each line: one JSON object per topo-sorted node with
+    a ``submit_command`` string. Pipe to ``jq`` or iterate manually.
     """
     from graphids.slurm.run import render_plan_jsonl
 
     nodes = _load_plan(plan_path, dataset=dataset, seed=seed, variants=variants)
-    sys.stdout.write(render_plan_jsonl(nodes, dataset=dataset, seed=seed, cluster=cluster))
-    sys.stdout.flush()
+    jsonl = render_plan_jsonl(nodes, dataset=dataset, seed=seed, cluster=cluster)
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(jsonl)
+        typer.echo(f"blueprint → {output}", err=True)
+    else:
+        sys.stdout.write(jsonl)
+        sys.stdout.flush()
 
 
 @app.command("status", rich_help_panel="Plan")
@@ -76,21 +87,28 @@ def status_cli(
     plan_path: PlanPath,
     dataset: PlanDataset,
     seed: PlanSeed,
+    cluster: Annotated[
+        str, typer.Option("--cluster", help="Target cluster (e.g. cardinal, pitzer)")
+    ] = "pitzer",
     variants: PlanVariants = None,
     fmt: Annotated[
         str,
         typer.Option("--format", "-f", help="table | json"),
     ] = "table",
 ) -> None:
-    """Query MLflow per plan node, report status."""
+    """Query MLflow per plan node, report status.
+
+    PENDING/FAILED/KILLED rows include the submit_command for that cluster
+    so you can copy-paste without opening the blueprint file.
+    """
     from graphids.slurm.status import format_json, format_table, query_all
 
     nodes = _load_plan(plan_path, dataset=dataset, seed=seed, variants=variants)
     statuses = query_all(nodes, dataset=dataset, seed=seed)
     if fmt == "table":
-        sys.stdout.write(format_table(statuses, dataset=dataset, seed=seed))
+        sys.stdout.write(format_table(statuses, dataset=dataset, seed=seed, cluster=cluster))
     elif fmt == "json":
-        sys.stdout.write(format_json(statuses, dataset=dataset, seed=seed))
+        sys.stdout.write(format_json(statuses, dataset=dataset, seed=seed, cluster=cluster))
     else:
         raise typer.BadParameter(f"--format must be table|json (got {fmt!r})")
     sys.stdout.flush()

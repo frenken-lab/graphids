@@ -63,21 +63,33 @@ class VGAETaskLoss(nn.Module):
         self.last_nbr: torch.Tensor | None = None
         self.last_kl: torch.Tensor | None = None
 
-    def forward(self, student_outputs: tuple, batch) -> torch.Tensor:
+    def forward(
+        self,
+        student_outputs: tuple,
+        batch,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         cont_out, canid_logits, nbr_logits, _z, kl_per_node = student_outputs
 
         recon = F.mse_loss(cont_out, batch.x)
-        canid = F.cross_entropy(canid_logits, batch.node_id)
 
-        # Lazy import breaks the circular dep between the model package
-        # and the losses package. neighborhood_loss_negsampled is a pure
-        # tensor op that lives as a staticmethod on the autoencoder.
+        # Canid CE + nbr BCE on masked nodes only — for unmasked nodes the
+        # model received node_id as input, so predicting it back is trivial
+        # identity recovery that dilutes the gradient signal.
+        if mask is not None and mask.any():
+            canid = F.cross_entropy(canid_logits[mask], batch.node_id[mask])
+            src_masked = mask[batch.edge_index[0]]
+            nbr_edge_index = batch.edge_index[:, src_masked]
+        else:
+            canid = F.cross_entropy(canid_logits, batch.node_id)
+            nbr_edge_index = batch.edge_index
+
         from graphids.core.models.autoencoder.vgae import GraphAutoencoderNeighborhood
 
         nbr_loss = GraphAutoencoderNeighborhood.neighborhood_loss_negsampled(
             nbr_logits,
             batch.node_id,
-            batch.edge_index,
+            nbr_edge_index,
             self.num_ids,
             k_neg=self.k_neg,
         )

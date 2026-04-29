@@ -11,8 +11,6 @@ invokes `graphids submit` per node. No pipeline driver. See
 
 ## Code Philosophy
 
-Every function, file, and abstraction must earn its place. Before writing code, answer: does a dependency already do this? Can this be inlined? Does this file need to exist or can it be 10 lines somewhere else? If you can't justify it in one sentence, delete it. When a plan says simplify — that means less code, not different code.
-
 ## Key Commands
 
 ```bash
@@ -54,13 +52,13 @@ python -m graphids analyze --ckpt-path fusion/checkpoints/best_model.ckpt --data
 
 **Operational commands** — `graphids/cli/`. `app.py` owns the root app + shared option types (`ConfigPath`/`TlaList`/`SetList`/`CkptPath`). `--tla` and `--set` parse `key=value` via `_parse_kv_pair` (Typer `parser=` hook). Submodules register commands via `@app.command()`: `training.py`, `analysis.py`, `data.py`, `compare.py`. `graphids/__main__.py` imports submodules to register commands.
 
-| Command                                                                     | Purpose                                       |
-| --------------------------------------------------------------------------- | --------------------------------------------- |
-| `python -m graphids fit` / `test`                                           | Train or evaluate one preset                  |
-| `python -m graphids analyze`                                                | Analysis artifacts from checkpoints           |
-| `python -m graphids rebuild-caches`                                         | Rebuild preprocessed graph caches             |
-| `python -m graphids extract-fusion-states`                                  | Extract VGAE+GAT latent states for fusion     |
-| `python -m graphids compare {leaderboard\|ties\|effect-size\|expected-max}` | Cross-variant MLflow comparison               |
+| Command                                                                     | Purpose                                   |
+| --------------------------------------------------------------------------- | ----------------------------------------- |
+| `python -m graphids fit` / `test`                                           | Train or evaluate one preset              |
+| `python -m graphids analyze`                                                | Analysis artifacts from checkpoints       |
+| `python -m graphids rebuild-caches`                                         | Rebuild preprocessed graph caches         |
+| `python -m graphids extract-fusion-states`                                  | Extract VGAE+GAT latent states for fusion |
+| `python -m graphids compare {leaderboard\|ties\|effect-size\|expected-max}` | Cross-variant MLflow comparison           |
 
 **Config resolution** — Single path: `render(config_path, tla=..., set_overrides=...)` (`config/jsonnet.py`) → `ResolvedConfig.from_rendered(rendered, stage_name=<basename>)` (validates + pulls `run_dir` / `ckpt_file` from `trainer.default_root_dir`). `--set a.b.c=v` flags expand to a nested dict via `cli/app.py:dotted_to_nested` and apply via `std.mergePatch(rendered, std.extVar('overrides'))` at each ablation preset's apex (one mechanism, no Python in-place mutator). Every preset computes its own `run_dir` via `std.native('paths.run_dir')(dataset, group, variant, seed)` — `render()` registers `graphids.config.paths` functions as `native_callbacks`, so jsonnet and `slurm/dag.py` share one source of truth. `run_root` flows in via `std.extVar('run_root')` from `GRAPHIDS_RUN_ROOT` (per-user, distinct from the shared `GRAPHIDS_LAKE_ROOT` which holds mlflow.db / cache / mlartifacts). See `docs/reference/config-architecture.md`.
 
@@ -68,24 +66,4 @@ python -m graphids analyze --ckpt-path fusion/checkpoints/best_model.ckpt --data
 
 Fusion uses a single `configs/stages/fusion.jsonnet` that dispatches on the `fusion_method` TLA over the 4 method libsonnets in `configs/models/fusion/methods/`.
 
-## Code Style
-
-Logging — `from graphids._otel import get_logger; log = get_logger(__name__)` (stdlib + structured kwargs). Events: `log.info("event_name", key=value)`, no format strings. Handlers (OTel LoggingHandler, SLURM sinks) installed by `init_providers()` in `_otel.py`, called from the Typer root callback in `cli/app.py`. Level set there via `--verbose/-v`. Under SLURM: JSONL → `{SLURM_LOG_DIR}/orchestrator_{job_id}.jsonl`. Otherwise: human-readable stderr.
-
-Git — short summary line, body explains why not what. Push via SSH (`git@github.com:`), not HTTPS.
-
-## Session Start
-
-Always read `PLAN.md` before starting work. Update it after completing any task.
-
 ## Rules (auto-loaded from `.claude/rules/`)
-
-modular rule files covering architecture, config, constraints, code style, SLURM, experiment tracking, PyTorch compat, shell environment, and project structure. See `.claude/rules/` directly.
-
-> Environment variables: See `~/.claude/rules/secrets-and-env-vars.md`
-
-GitNexus CLI is available for code intelligence (`npx gitnexus query|context|impact|cypher` against the indexed graph at `.gitnexus/`). Optional — reach for it when grep/Read aren't enough. Not required before edits. Do not run `npx gitnexus analyze` — it auto-injects a block of "MUST" rules into this file.
-
-## USER NOTE
-
-I want to look into this https://mlflow.org/blog/opentelemetry-tracing-support/ consolidate logging

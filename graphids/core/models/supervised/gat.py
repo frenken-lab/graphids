@@ -7,6 +7,7 @@ from torch_geometric.nn import (
     global_mean_pool,
 )
 from torch_geometric.nn.aggr import MultiAggregation
+from torch_geometric.utils import add_self_loops, remove_self_loops
 
 from .._conv import InputEncoder, _make_conv, conv_forward, resolve_edge_dim
 
@@ -52,6 +53,15 @@ class GATWithJK(nn.Module):
         self._uses_edge_attr = self.input_encoder._uses_edge_attr
         self._proj_dim = proj_dim
 
+        # GATv2Conv runs remove_self_loops + add_self_loops inside its forward,
+        # which creates edge-count-shaped intermediates inside the checkpoint region.
+        # Under VRAM pressure the use_reentrant=False recompute produces a count
+        # off by 1, triggering CheckpointError. Fix: pre-add self-loops once here
+        # (same fill_value='mean' GATv2Conv uses) and disable inside each layer so
+        # the checkpoint region sees a stable edge_index with no edge-count ops.
+        self._prepend_self_loops = conv_type == "gatv2"
+        conv_kwargs: dict = {"add_self_loops": False} if self._prepend_self_loops else {}
+
         # GAT layers
         self.convs = nn.ModuleList()
         for i in range(num_layers):
@@ -63,6 +73,7 @@ class GATWithJK(nn.Module):
                     hidden_channels,
                     heads=heads,
                     edge_dim=edge_dim if self._uses_edge_attr else None,
+                    **conv_kwargs,
                 )
             )
 
@@ -126,6 +137,20 @@ class GATWithJK(nn.Module):
         node_id = data.node_id
 
         x = self.input_encoder(x, node_id)
+
+        # Pre-add self-loops once outside the checkpoint region.  Each GATv2Conv
+        # layer was constructed with add_self_loops=False so it won't touch the
+        # edge structure again — the checkpoint region is edge-count-stable.
+        if self._prepend_self_loops:
+            num_nodes = x.size(0)
+            if edge_attr is not None:
+                edge_index, edge_attr = remove_self_loops(edge_index, edge_attr)
+                edge_index, edge_attr = add_self_loops(
+                    edge_index, edge_attr, fill_value="mean", num_nodes=num_nodes
+                )
+            else:
+                edge_index, _ = remove_self_loops(edge_index)
+                edge_index, _ = add_self_loops(edge_index, num_nodes=num_nodes)
 
         attention_weights = [] if return_attention_weights else None
 

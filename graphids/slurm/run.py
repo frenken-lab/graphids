@@ -24,10 +24,9 @@ One row per plan node. Schema::
 ``submit_command`` is the literal one-shot invocation for this node.
 It includes ``--skip-if-finished`` for preset nodes (MLflow short-
 circuit on re-runs); command nodes omit it (no MLflow row to check).
-``--depends-on`` is **not** auto-emitted — the user adds it when they
-want same-batch SLURM-level parallelism (RUNNING upstream → afterok).
-For sequential-with-FINISHED workflows it's not needed; the FINISHED
-check via ``--skip-if-finished`` covers re-runnability.
+``--depends-on`` is auto-emitted for nodes with ``cross_plan_deps``
+declared in the plan jsonnet (e.g. curriculum_vgae → vgae:N).
+For ad-hoc SLURM-level afterok on a RUNNING upstream, add it manually.
 
 See ``.claude/rules/single-submission-primitive.md`` for the full
 architectural commitment behind this shape.
@@ -68,11 +67,13 @@ def _preset_submit_command(
         parts.append(f"--mem-gb {node.mem_gb}")
     if node.timeout_min is not None:
         parts.append(f"--timeout-min {node.timeout_min}")
+    if node.cross_plan_deps:
+        parts.append(f"--depends-on {','.join(f'{v}:{seed}' for v in node.cross_plan_deps)}")
     parts.append("--skip-if-finished")
     return " ".join(parts)
 
 
-def _command_submit_command(node: Node, *, cluster: str) -> str:
+def _command_submit_command(node: Node, *, cluster: str, seed: int) -> str:
     """Render the literal `graphids submit --command` invocation for a command node."""
     assert node.command is not None
     parts = [
@@ -85,17 +86,22 @@ def _command_submit_command(node: Node, *, cluster: str) -> str:
         parts.append(f"--mem-gb {node.mem_gb}")
     if node.timeout_min is not None:
         parts.append(f"--timeout-min {node.timeout_min}")
+    if node.cross_plan_deps:
+        parts.append(f"--depends-on {','.join(f'{v}:{seed}' for v in node.cross_plan_deps)}")
     return " ".join(parts)
+
+
+def node_submit_command(node: Node, *, dataset: str, seed: int, cluster: str) -> str:
+    """Render the submit_command for any node type."""
+    if node.is_command:
+        return _command_submit_command(node, cluster=cluster, seed=seed)
+    return _preset_submit_command(node, dataset=dataset, seed=seed, cluster=cluster)
 
 
 def _row(node: Node, *, dataset: str, seed: int, cluster: str) -> dict[str, Any]:
     """Build the JSONL row dict for one node."""
-    submit_command = (
-        _command_submit_command(node, cluster=cluster)
-        if node.is_command
-        else _preset_submit_command(node, dataset=dataset, seed=seed, cluster=cluster)
-    )
-    return {
+    submit_command = node_submit_command(node, dataset=dataset, seed=seed, cluster=cluster)
+    row = {
         "name": node.name,
         "preset": (
             f"configs/ablations/{node.preset_path}" if node.preset_path is not None else None
@@ -109,6 +115,7 @@ def _row(node: Node, *, dataset: str, seed: int, cluster: str) -> dict[str, Any]
         "timeout_min": node.timeout_min,
         "submit_command": submit_command,
     }
+    return {k: v for k, v in row.items() if v is not None}
 
 
 def render_plan_jsonl(

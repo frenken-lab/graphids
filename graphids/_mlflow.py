@@ -142,15 +142,13 @@ def build_search_filter(
     return " AND ".join(clauses)
 
 
-def ensure_tracking_uri() -> str | None:
+def ensure_tracking_uri() -> str:
     """Set ``MLFLOW_TRACKING_URI`` in env if unset. Safe to call from workers."""
     uri = os.environ.get(_TRACKING_URI_ENV)
     if uri:
         return uri
     from graphids.config.constants import LAKE_ROOT
 
-    if not LAKE_ROOT:
-        return None
     default = f"sqlite:///{Path(LAKE_ROOT) / _BACKEND_DB_SUBPATH}"
     os.environ[_TRACKING_URI_ENV] = default
     return default

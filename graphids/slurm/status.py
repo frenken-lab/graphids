@@ -79,32 +79,56 @@ def _summarize(statuses: list[NodeStatus]) -> dict[str, int]:
     return counts
 
 
-def format_table(statuses: list[NodeStatus], *, dataset: str, seed: int) -> str:
-    """Human-readable status table via ``rich`` (already a Typer dep)."""
+_ACTIONABLE = {"PENDING", "FAILED", "KILLED"}
+
+
+def format_table(
+    statuses: list[NodeStatus], *, dataset: str, seed: int, cluster: str = "pitzer"
+) -> str:
+    """Human-readable status table via ``rich`` (already a Typer dep).
+
+    PENDING/FAILED/KILLED rows include the literal submit_command so the
+    user can copy-paste without consulting the blueprint file.
+    """
     from io import StringIO
 
     from rich.console import Console
     from rich.table import Table
 
+    from graphids.slurm.run import node_submit_command
+
     table = Table(title=f"Plan: dataset={dataset} seed={seed}", expand=False)
     table.add_column("Node")
     table.add_column("Status")
     table.add_column("Run ID")
+    table.add_column("Submit Command", no_wrap=False)
     for s in statuses:
         style = _STATUS_STYLE.get(s.status, "")
+        cmd = (
+            node_submit_command(s.node, dataset=dataset, seed=seed, cluster=cluster)
+            if s.status in _ACTIONABLE
+            else ""
+        )
         table.add_row(
-            s.node.name, f"[{style}]{s.status}[/{style}]" if style else s.status, s.run_id or "—"
+            s.node.name,
+            f"[{style}]{s.status}[/{style}]" if style else s.status,
+            s.run_id or "—",
+            cmd,
         )
     counts = _summarize(statuses)
     summary = ", ".join(f"{v} {k}" for k, v in sorted(counts.items()))
     buf = StringIO()
-    Console(file=buf, force_terminal=True, width=120).print(table)
+    Console(file=buf, force_terminal=True, width=180).print(table)
     buf.write(f"\nSummary: {len(statuses)} nodes — {summary}\n")
     return buf.getvalue()
 
 
-def format_json(statuses: list[NodeStatus], *, dataset: str, seed: int) -> str:
+def format_json(
+    statuses: list[NodeStatus], *, dataset: str, seed: int, cluster: str = "pitzer"
+) -> str:
     """Machine-readable; for piping into jq / scripts."""
+    from graphids.slurm.run import node_submit_command
+
     payload = {
         "plan": {"dataset": dataset, "seed": seed},
         "nodes": [
@@ -118,6 +142,11 @@ def format_json(statuses: list[NodeStatus], *, dataset: str, seed: int) -> str:
                 "status": s.status,
                 "run_id": s.run_id,
                 "end_time": s.end_time,
+                "submit_command": (
+                    node_submit_command(s.node, dataset=dataset, seed=seed, cluster=cluster)
+                    if s.status in _ACTIONABLE
+                    else None
+                ),
             }
             for s in statuses
         ],

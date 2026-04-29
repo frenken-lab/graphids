@@ -34,12 +34,15 @@ slurm_logs/
 results/
 experimentruns/
 *.archive_*
+blueprints/
 
 # ===== CLAUDE CODE RUNTIME =====
 # Isolated agent worktrees from Agent tool's `isolation: "worktree"` mode.
 .claude/worktrees/
 
 # ===== PROJECT DATABASE =====
+mlflow.db
+mlruns/
 data/project.db
 data/project.db.backup
 data/datalake/
