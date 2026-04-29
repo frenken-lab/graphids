@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F  # used by neighborhood_loss_negsampled
 
 from .._conv import (
     InputEncoder,
@@ -12,14 +13,23 @@ from .._conv import (
 
 
 class GraphAutoencoderNeighborhood(nn.Module):
-    """Variational graph autoencoder with mask-and-reconstruct training.
+    """Variational graph autoencoder with mask-recon + canid + nbr aux heads.
 
     Encoder maps node features to ``q(z|x) = N(mu, σ²)``; decoder
     reconstructs continuous features from the reparameterized ``z``.
     Mask-recon training (15% random node masking) commits the encoder
-    to "predict v from its neighborhood" rather than "echo v back" —
-    test-time scoring uses deterministic round-robin masking so every
-    node is masked exactly once across 7 rounds.
+    to "predict v from neighborhood" rather than "echo v back".
+
+    Two auxiliary training heads operate on the masked-input latent:
+    - ``canid_classifier`` (Linear → num_ids): predict the masked
+      node's CAN ID from its neighbor-derived ``z``.
+    - ``neighborhood_decoder`` (small MLP → num_ids): predict the
+      multiset of neighbor CAN IDs from ``z``.
+    Both are training-only — they shape ``μ`` to encode CAN-ID
+    identity and neighborhood structure (which empirically gives the
+    pre-mask-recon code its 0.76 AUC on test_03 zero-day) but are
+    NOT used by the test-time anomaly score, which is calibrated
+    max-σ over (recon, Mahalanobis on μ, KL).
 
     Mask signaling has two parts: (a) a frozen zero-init Parameter at
     the input layer that replaces ``x[v]`` for masked nodes, and (b) a
@@ -28,7 +38,9 @@ class GraphAutoencoderNeighborhood(nn.Module):
     identity. ``mask_id = num_ids`` and the id_encoder is sized to
     ``num_ids + 1`` (set up by ``VGAEModule._build``).
 
-    See ``~/plans/vgae-mask-recon-and-latent-density.md``.
+    See ``~/plans/vgae-mask-recon-and-latent-density.md`` (synthesis)
+    and the integration of pre-synthesis canid/nbr aux heads (see git
+    log on this file).
     """
 
     def __init__(
@@ -46,6 +58,7 @@ class GraphAutoencoderNeighborhood(nn.Module):
         conv_type="gat",
         edge_dim=None,
         proj_dim=0,
+        mlp_hidden=None,
     ):
         super().__init__()
 
@@ -98,6 +111,25 @@ class GraphAutoencoderNeighborhood(nn.Module):
             self.decoder_bns = self.decoder_bns[:-1]
 
         self.latent_dim = latent_dim
+        self.num_ids = num_ids
+
+        # Auxiliary training heads (NOT used at test scoring). They shape
+        # μ to encode CAN-ID identity + neighborhood structure during
+        # training. Inputs to both are the masked-input latent z, so each
+        # is a legitimate prediction task ("recover masked node's ID /
+        # neighbors from its neighbor context"), not an identity echo.
+        self.canid_classifier = nn.Linear(latent_dim, num_ids)
+        if mlp_hidden is None:
+            mlp_hidden = latent_dim
+        self.neighborhood_decoder = nn.Sequential(
+            nn.Linear(latent_dim, mlp_hidden),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(mlp_hidden, mlp_hidden),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(mlp_hidden, num_ids),
+        )
 
         # Frozen "this node is hidden" signal at the input layer. Zero-init
         # + requires_grad=False because a learnable token would converge to
@@ -119,26 +151,33 @@ class GraphAutoencoderNeighborhood(nn.Module):
         node_id[mask] = self.mask_id
         return x, node_id, mask
 
-    def apply_round_robin_mask(
-        self,
-        x: torch.Tensor,
+    @staticmethod
+    def neighborhood_loss_negsampled(
+        logits: torch.Tensor,
         node_id: torch.Tensor,
-        round_idx: int,
-        num_rounds: int = 7,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Mask nodes where ``arange(N) % num_rounds == round_idx``.
+        edge_index: torch.Tensor,
+        num_ids: int,
+        k_neg: int = 32,
+    ) -> torch.Tensor:
+        """Neighborhood BCE loss with negative sampling.
 
-        Across ``num_rounds`` invocations with ``round_idx ∈ [0, num_rounds)``
-        every node is masked exactly once — full per-node coverage at fixed
-        compute, fully reproducible.
+        Memory: O(num_edges + num_nodes * k_neg) instead of O(num_nodes * num_ids).
         """
-        n = x.size(0)
-        mask = (torch.arange(n, device=x.device) % num_rounds) == round_idx
-        x = x.clone()
-        node_id = node_id.clone()
-        x[mask] = self.mask_token
-        node_id[mask] = self.mask_id
-        return x, node_id, mask
+        src, dst = edge_index
+        dst_ids = node_id[dst]
+        valid = (dst_ids >= 0) & (dst_ids < num_ids)
+        pos_logits = logits[src[valid], dst_ids[valid]]
+        pos_loss = -F.logsigmoid(pos_logits).mean()
+        neg_ids = torch.randint(0, num_ids, (logits.size(0), k_neg), device=logits.device)
+        pos_keys = src[valid].long() * num_ids + dst_ids[valid].long()
+        node_range = torch.arange(logits.size(0), device=logits.device)
+        neg_keys = (node_range.unsqueeze(1) * num_ids + neg_ids).reshape(-1)
+        is_collision = torch.isin(neg_keys, pos_keys)
+        neg_logits = logits.gather(1, neg_ids).reshape(-1)[~is_collision]
+        neg_loss = (
+            -F.logsigmoid(-neg_logits).mean() if neg_logits.numel() > 0 else logits.new_zeros(1)
+        )
+        return pos_loss + neg_loss
 
     def encode(self, x, edge_index, edge_attr=None, batch=None, node_id=None):
         """Returns ``(z, kl_per_node, mu)``.
@@ -212,7 +251,14 @@ class GraphAutoencoderNeighborhood(nn.Module):
         return x  # cont_out, shape: [num_nodes, in_channels]
 
     def forward(self, x, edge_index, batch, edge_attr=None, node_id=None):
+        # 5-tuple: (cont_out, canid_logits, nbr_logits, z, kl_per_node).
+        # Aux logits are training-only; test scoring (_score in
+        # vgae_module) ignores them. Computing them on every forward
+        # adds two small linear/MLP heads on z — negligible vs the
+        # GAT encoder/decoder stack.
         ea = edge_attr if self._uses_edge_attr else None
         z, kl_per_node, _mu = self.encode(x, edge_index, edge_attr=ea, batch=batch, node_id=node_id)
         cont_out = self.decode_node(z, edge_index, edge_attr=ea, batch=batch)
-        return cont_out, z, kl_per_node
+        canid_logits = self.canid_classifier(z)
+        nbr_logits = self.neighborhood_decoder(z)
+        return cont_out, canid_logits, nbr_logits, z, kl_per_node

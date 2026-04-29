@@ -13,7 +13,7 @@ from typing import Any
 _LOSS_MODEL_TYPES = frozenset({"gat", "vgae"})
 
 # Loss params that live at init_args top-level in jsonnet but belong to VGAETaskLoss
-_VGAE_LOSS_KEYS = frozenset({"kl_weight"})
+_VGAE_LOSS_KEYS = frozenset({"kl_weight", "canid_weight", "nbr_weight", "k_neg"})
 
 _CLASS_PATH_TO_MODEL_TYPE: dict[str, str] = {
     "VGAEModule": "vgae",
@@ -72,7 +72,12 @@ def build_loss(
         )
 
     # model_type == "vgae"
-    base = VGAETaskLoss(kl_weight=loss_cfg.get("kl_weight", 0.01))
+    base = VGAETaskLoss(
+        kl_weight=loss_cfg.get("kl_weight", 0.01),
+        canid_weight=loss_cfg.get("canid_weight", 0.1),
+        nbr_weight=loss_cfg.get("nbr_weight", 0.05),
+        k_neg=loss_cfg.get("k_neg", 32),
+    )
 
     if not distillation_config:
         return base

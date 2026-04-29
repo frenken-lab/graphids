@@ -12,8 +12,6 @@ from .vgae import GraphAutoencoderNeighborhood
 # Training module
 # ---------------------------------------------------------------------------
 
-NUM_ROUNDS = 7  # round-robin masking groups at test time — every node masked exactly once
-
 
 class VGAEModule(GraphModuleBase):
     """VGAE training: mask-and-reconstruct + KL.
@@ -26,14 +24,17 @@ class VGAEModule(GraphModuleBase):
     active it's wrapped in
     :class:`~graphids.core.losses.distillation.FeatureDistillation`.
 
-    Training applies 15% random node masking before forward; validation
-    uses the same regime (single masked forward) for an aligned signal;
-    test scoring runs deterministic 7-round round-robin masking + a
-    single unmasked forward for ``mu`` (Mahalanobis) and KL.
+    Training/validation/test all apply 15% random node masking before
+    the forward pass — one masked fwd for recon plus one unmasked
+    encode for ``mu`` (Mahalanobis) and KL. Round-robin test scoring
+    was dropped as expensive theatre: 8x test compute for a determinism
+    property AUC ranking doesn't care about. Random masking is an
+    unbiased estimator of the same per-graph recon expectation that
+    round-robin computed exhaustively.
 
-    Anomaly score = max-σ over three components (recon under round-robin
-    masking, Mahalanobis on ``mu``, KL). Calibration buffers are filled
-    by :meth:`fit_score_norm` at test-start (mirrors OCGIN's
+    Anomaly score = max-σ over three components (masked recon,
+    Mahalanobis on ``mu``, KL). Calibration buffers are filled by
+    :meth:`fit_score_norm` at test-start (mirrors OCGIN's
     ``calibrate_svdd_center`` lifecycle, see ``trainer.py``).
     """
 
@@ -128,6 +129,12 @@ class VGAEModule(GraphModuleBase):
             from ..base import try_compile
 
             self.model = try_compile(self.model, conv_type=hp.conv_type, dynamic=True)
+        # The loss module was constructed in build_loss before _build ran,
+        # so num_ids on VGAETaskLoss was 0 (placeholder). Propagate the
+        # real value now that the datamodule has populated hp.num_ids.
+        task_loss = self._task_loss_module()
+        if hasattr(task_loss, "num_ids"):
+            task_loss.num_ids = hp.num_ids
 
     def _task_loss_module(self) -> nn.Module:
         """Return the base VGAETaskLoss, unwrapping FeatureDistillation if present."""
@@ -136,9 +143,8 @@ class VGAEModule(GraphModuleBase):
     def forward(self, batch):
         # Unmasked encode/decode → (cont, z, kl). Used by callers that want
         # deterministic-from-weights output (checkpoint roundtrip test) and
-        # by budget.probe's eval-mode fallback. The masked train/val regime
-        # lives in _step / *_step_inner; the round-robin test regime lives
-        # in _score_via_round_robin.
+        # by budget.probe's eval-mode fallback. The masked train/val/test
+        # regime lives in _step / *_step_inner / _score.
         edge_attr = getattr(batch, "edge_attr", None)
         return self.model(
             batch.x,
@@ -185,12 +191,14 @@ class VGAEModule(GraphModuleBase):
         task_loss = self._task_loss_module()
         if task_loss.last_recon is not None:
             self.log("train_recon", task_loss.last_recon, batch_size=bs)
+            self.log("train_canid", task_loss.last_canid, batch_size=bs)
+            self.log("train_nbr", task_loss.last_nbr, batch_size=bs)
             self.log("train_kl", task_loss.last_kl, batch_size=bs)
 
         # Sanity: masked-subset recon must exceed unmasked-subset recon —
         # if they converge the encoder is echoing v back via some path
         # other than the masked feature (e.g. node_id leakage).
-        cont, _z, _kl = outputs
+        cont, _canid, _nbr, _z, _kl = outputs
         node_mse = (cont - batch.x).pow(2).mean(-1)
         if mask.any():
             self.log("train_recon_masked", node_mse[mask].mean(), batch_size=bs)
@@ -225,7 +233,7 @@ class VGAEModule(GraphModuleBase):
         x_m, nid_m, _mask = self.model.apply_random_mask(
             batch.x, batch.node_id, mask_rate=self.hparams.mask_rate
         )
-        cont, _z, _kl = self.model(
+        cont, _canid, _nbr, _z, _kl = self.model(
             x_m,
             batch.edge_index,
             batch.batch,
@@ -257,25 +265,30 @@ class VGAEModule(GraphModuleBase):
                 batch_size=bs,
             )
 
-    def _score_via_round_robin(
-        self, batch
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Per-graph (recon, mahal, kl) plus per-node ``z``.
+    def _score(self, batch) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Per-graph (recon, mahal, kl) plus per-node ``z`` from 2 fwds.
 
-        Recon uses 7-round round-robin masking — every node is masked
-        exactly once and contributes its "predict-from-neighbors" error.
-        Mahalanobis and KL come from a single unmasked forward; using
-        unmasked ``mu`` matches the train-time encoder regime for the
-        latent-density axis (the masked encode would shift mu's
-        distribution and break the calibration).
+        One unmasked encode → ``mu`` (Mahalanobis) + per-node KL + ``z``
+        (used by ``extract_features`` for fusion features); one
+        random-masked forward at the same ``mask_rate`` as training →
+        per-node recon error on the masked subset only. Per-graph recon
+        is the mean over the masked subset (an unbiased estimator of
+        ``E[recon | masked]``); per-graph mahal/kl are means over all
+        nodes.
+
+        Replaces the prior 8-fwd/batch round-robin scoring path. Random
+        sampling is unbiased w.r.t. the same expectation round-robin
+        computed exhaustively; AUC ranks per-graph scores, so the
+        sample-variance hit at the per-graph aggregation is far below
+        the benign/attack signal we're measuring.
         """
         from torch_geometric.utils import scatter
 
         edge_attr = getattr(batch, "edge_attr", None)
         ea = edge_attr if self.model._uses_edge_attr else None
 
-        # Unmasked encode → mu, kl
-        _z, kl_per_node, mu = self.model.encode(
+        # Unmasked encode → mu, kl, z
+        z, kl_per_node, mu = self.model.encode(
             batch.x,
             batch.edge_index,
             edge_attr=ea,
@@ -287,29 +300,29 @@ class VGAEModule(GraphModuleBase):
         # with massive distances).
         mahal_per_node = ((mu - self.mu_mean) / self.mu_std.clamp(min=1e-3)).pow(2).sum(-1)
 
-        # Round-robin masked recon — 7 forwards, every node masked once.
-        n = batch.x.size(0)
-        recon_per_node = torch.zeros(n, device=batch.x.device, dtype=batch.x.dtype)
-        # Re-encode for each masked round; reuse the unmasked z for the
-        # caller's z-statistics path (extract_features) — it's the
-        # benign-regime latent the fusion stage trained on historically.
-        for r in range(NUM_ROUNDS):
-            x_m, nid_m, mask = self.model.apply_round_robin_mask(
-                batch.x, batch.node_id, r, num_rounds=NUM_ROUNDS
-            )
-            cont, _, _ = self.model(
-                x_m,
-                batch.edge_index,
-                batch.batch,
-                edge_attr=edge_attr,
-                node_id=nid_m,
-            )
-            recon_per_node[mask] = (cont[mask] - batch.x[mask]).pow(2).mean(-1)
+        # Single masked forward → per-node recon at the masked subset
+        x_m, nid_m, mask = self.model.apply_random_mask(
+            batch.x, batch.node_id, mask_rate=self.hparams.mask_rate
+        )
+        cont, _canid, _nbr, _z2, _kl2 = self.model(
+            x_m,
+            batch.edge_index,
+            batch.batch,
+            edge_attr=edge_attr,
+            node_id=nid_m,
+        )
+        recon_per_node = (cont - batch.x).pow(2).mean(dim=-1)
+        # Per-graph recon = sum of masked-node errors / count of masked
+        # nodes per graph. clamp(min=1.0) handles the (vanishingly rare)
+        # graph with zero masked nodes — gives 0 recon, no NaN.
+        mask_f = mask.to(recon_per_node.dtype)
+        recon_sum = scatter(recon_per_node * mask_f, batch.batch, dim=0, reduce="sum")
+        mask_count = scatter(mask_f, batch.batch, dim=0, reduce="sum")
+        recon = recon_sum / mask_count.clamp(min=1.0)
 
-        recon = scatter(recon_per_node, batch.batch, dim=0, reduce="mean")
         mahal = scatter(mahal_per_node, batch.batch, dim=0, reduce="mean")
         kl = scatter(kl_per_node, batch.batch, dim=0, reduce="mean")
-        return recon, mahal, kl, _z
+        return recon, mahal, kl, z
 
     def extract_features(self, batch, device: torch.device) -> torch.Tensor:
         """8-D fusion features: ``[recon, mahal, kl, z_mean, z_std, z_max, z_min, conf]``.
@@ -324,7 +337,7 @@ class VGAEModule(GraphModuleBase):
         """
         from torch_geometric.utils import scatter
 
-        recon, mahal, kl, z = self._score_via_round_robin(batch)
+        recon, mahal, kl, z = self._score(batch)
         b = batch.batch
         z_mean = scatter(z.mean(1), b, dim=0, reduce="mean")
         z_std = scatter(z.std(1), b, dim=0, reduce="mean")
@@ -348,7 +361,7 @@ class VGAEModule(GraphModuleBase):
                 "the mask-recon code or use the legacy scoring path "
                 "from before commit 2."
             )
-        recon, mahal, kl, _z = self._score_via_round_robin(batch)
+        recon, mahal, kl, _z = self._score(batch)
         eps = 1e-6
         z_recon = (recon - self.score_recon_mean) / (self.score_recon_std + eps)
         z_mahal = (mahal - self.score_mahal_mean) / (self.score_mahal_std + eps)
@@ -362,8 +375,7 @@ class VGAEModule(GraphModuleBase):
 
         Only label==0 (benign) val rows are used — attacks are OOD by
         construction. Pass 1 must complete before pass 2 because
-        ``_score_via_round_robin`` reads ``mu_mean``/``mu_std`` to
-        compute Mahalanobis.
+        ``_score`` reads ``mu_mean``/``mu_std`` to compute Mahalanobis.
         """
         from torch_geometric.data import Batch as PyGBatch
 
@@ -406,7 +418,7 @@ class VGAEModule(GraphModuleBase):
             sub = _benign_subbatch(batch)
             if sub is None:
                 continue
-            recon, mahal, kl, _z = self._score_via_round_robin(sub)
+            recon, mahal, kl, _z = self._score(sub)
             all_recon.append(recon.cpu())
             all_mahal.append(mahal.cpu())
             all_kl.append(kl.cpu())

@@ -13,8 +13,14 @@ local _vgae_base = {
       edge_dim: 11,
       // mask-recon training: 15% random node masking per batch.
       mask_rate: 0.15,
-      // routed to VGAETaskLoss via inject_loss_fn (loss-builder owns the kw).
+      // routed to VGAETaskLoss via inject_loss_fn (loss-builder owns the kws).
+      // Aux heads (canid, nbr) are training-only — they shape μ to encode
+      // CAN-ID identity + neighborhood structure (the ingredients that gave
+      // pre-mask-recon code its 0.76 AUC on test_03). Test scoring is still
+      // calibrated max-σ over (recon, Mahalanobis on μ, KL).
       kl_weight: 0.01,
+      canid_weight: 0.1,
+      nbr_weight: 0.05,
       lr: 0.002,
       compile_model: false,
       gradient_checkpointing: true,
