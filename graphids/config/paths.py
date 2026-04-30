@@ -19,12 +19,12 @@ cleanly. Python callers wanting ``Path`` should wrap with ``Path(...)``.
 
 from __future__ import annotations
 
-from graphids.config.constants import RUN_ROOT
+from graphids.config.settings import get_settings
 
 
 def run_dir(dataset: str, group: str, variant: str, seed: int) -> str:
     """Per-(variant, seed) run_dir path."""
-    return f"{RUN_ROOT}/{dataset}/ablations/{group}/{variant}/seed_{int(seed)}"
+    return f"{get_settings().run_root}/{dataset}/ablations/{group}/{variant}/seed_{int(seed)}"
 
 
 def best_ckpt(dataset: str, group: str, variant: str, seed: int) -> str:
@@ -44,4 +44,4 @@ def vgae_ckpt(dataset: str, seed: int) -> str:
 
 def states_dir(dataset: str, seed: int) -> str:
     """Fusion-states directory shared across the 4 fusion methods for a seed."""
-    return f"{RUN_ROOT}/{dataset}/ablations/fusion_states/seed_{int(seed)}"
+    return f"{get_settings().run_root}/{dataset}/ablations/fusion_states/seed_{int(seed)}"

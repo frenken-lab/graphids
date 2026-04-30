@@ -1,10 +1,13 @@
 // Shared helpers for plan files.
 
 {
-  // Produces a fit node + a cpu test peer for one ablation preset.
+  // Produces a fit node + a mode-matched test peer for one ablation preset.
+  // Test inherits the fit node's effective mode (gpu by default, cpu when
+  // the fit node explicitly sets mode='cpu', e.g. fusion stages).
   fit_test(preset, name=null, deps=[], timeout_min=null, mode=null, cross_plan_deps=[])::
     local stem = std.split(std.split(preset, '/')[1], '.')[0];
     local nm = if name != null then name else stem;
+    local effective_mode = if mode != null then mode else 'gpu';
     [
       {
         name: nm,
@@ -20,7 +23,7 @@
         preset: preset,
         action: 'test',
         deps: [nm],
-        mode: 'cpu',
+        mode: effective_mode,
         length: 'long',
         mem_gb: 32,
         timeout_min: 30,

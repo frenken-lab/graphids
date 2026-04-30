@@ -7,7 +7,7 @@ built-ins are tested upstream and intentionally absent here.
 
 from __future__ import annotations
 
-from graphids.config.topology import dataset_names, load_catalog
+from graphids.config.catalog import dataset_names, load_catalog
 
 
 def test_catalog_loads_all_datasets():

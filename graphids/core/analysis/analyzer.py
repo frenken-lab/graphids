@@ -8,7 +8,7 @@ from typing import Literal
 import torch
 
 from graphids._otel import get_logger
-from graphids.config.topology import cache_dir, data_dir
+from graphids.config.catalog import cache_dir, data_dir
 from graphids.core.models.base import safe_load_checkpoint
 
 log = get_logger(__name__)

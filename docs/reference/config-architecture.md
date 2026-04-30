@@ -125,7 +125,7 @@ trainer logger (MLflow callback handles metrics).
 | `config/paths.py` | Canonical `run_dir` / `vgae_ckpt` / `states_dir` scheme (shared with jsonnet) | No |
 | `config/settings.py` | `GraphIDSSettings` — pydantic-settings, auto-loads `./.env` | No |
 | `config/schemas.py` | `ValidatedConfig`, `validate_config` | No |
-| `config/topology.py` | Stage-file existence check, dataset catalog | No |
+| `config/catalog.py` | Dataset catalog (`load_catalog`, `dataset_names`), path helpers (`data_dir`, `cache_dir`) | No |
 | `orchestrate/config.py` | `ResolvedConfig`, `InstantiatedRun` | No |
 | `orchestrate/stage.py` | `build`, `train`, `evaluate` primitives | Yes |
 | `core/analysis/runner.py` | `run_single_analysis` — invoked by `graphids analyze` CLI | Yes |

@@ -1,7 +1,8 @@
 """Project-wide path constants, filename literals, and the ModelType drift guard.
 
-``LAKE_ROOT`` is an alias over ``get_settings().lake_root``; all other
-``GRAPHIDS_*`` env vars live in :mod:`graphids.config.settings`.
+All ``GRAPHIDS_*`` env vars (including ``LAKE_ROOT`` and ``RUN_ROOT``) live in
+:mod:`graphids.config.settings`. Callers that need those roots should call
+``get_settings()`` directly rather than importing from this module.
 """
 
 from __future__ import annotations
@@ -50,12 +51,3 @@ assert set(get_args(ModelType)) == _axes_types, (
     f"ModelType Literal {set(get_args(ModelType))} drifted from axes.json "
     f"{_axes_types}; update both to keep them in sync"
 )
-
-# ---------------------------------------------------------------------------
-# Path-root aliases (source of truth: graphids.config.settings)
-# ---------------------------------------------------------------------------
-
-from graphids.config.settings import get_settings  # noqa: E402
-
-LAKE_ROOT: str = get_settings().lake_root
-RUN_ROOT: str = get_settings().run_root

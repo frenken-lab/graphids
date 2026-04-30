@@ -28,7 +28,7 @@ def rebuild_caches(
     ] = False,
 ) -> None:
     """Rebuild preprocessed graph caches from raw dataset files."""
-    from graphids.config.topology import dataset_names
+    from graphids.config.catalog import dataset_names
     from graphids.core.data.rebuild import rebuild_caches as _rebuild
 
     datasets = list(dataset_names()) if all_ else (dataset or [])
@@ -55,15 +55,16 @@ def validate_metadata_cli(
     ],
 ) -> None:
     """Validate cache_metadata.json against v2 schema + catalog expectations."""
-    from graphids.config.constants import LAKE_ROOT, PREPROCESSING_VERSION
-    from graphids.config.topology import cache_dir, load_catalog
+    from graphids.config.catalog import cache_dir, load_catalog
+    from graphids.config.constants import PREPROCESSING_VERSION
+    from graphids.config.settings import get_settings
     from graphids.core.data.metadata import load_metadata, validate_metadata
 
     catalog = load_catalog()
     if dataset not in catalog:
         raise typer.BadParameter(f"Unknown dataset {dataset!r}")
 
-    cdir = cache_dir(LAKE_ROOT, dataset)
+    cdir = cache_dir(get_settings().lake_root, dataset)
     try:
         meta = load_metadata(cdir)
     except (FileNotFoundError, ValueError) as exc:

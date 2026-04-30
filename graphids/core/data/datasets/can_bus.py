@@ -543,7 +543,7 @@ class CANBusSource:
 
     ``name`` is a catalog entry (e.g. ``hcrl_sa``, ``set_01``). The
     catalog is loaded at build time via
-    ``graphids.config.topology.load_catalog`` — no name validation at
+    ``graphids.config.catalog.load_catalog`` — no name validation at
     construction, since the catalog may shift.
     """
 
@@ -573,7 +573,7 @@ class CANBusSource:
         )
 
     def build(self) -> DatasetState:
-        from graphids.config.topology import cache_dir, data_dir, load_catalog
+        from graphids.config.catalog import cache_dir, data_dir, load_catalog
 
         entry = load_catalog()[self.name]
         lake_root = self.resolved_lake_root()

@@ -1,4 +1,4 @@
-"""Path/catalog helpers and stage-name registry."""
+"""Dataset catalog helpers and filesystem path primitives."""
 
 from __future__ import annotations
 
@@ -7,9 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from .constants import CONFIG_DIR, DATASET_REGISTRY_PATH, PREPROCESSING_VERSION
-
-STAGES: list[str] = json.loads((CONFIG_DIR / "matrix" / "topology.json").read_bytes())["stages"]
+from .constants import DATASET_REGISTRY_PATH, PREPROCESSING_VERSION
 
 
 def data_dir(lake_root: str, dataset: str) -> Path:

@@ -86,11 +86,11 @@ def render(
     import _jsonnet  # noqa: PLC0415  — deferred so module import is safe without the binding
 
     from graphids.config import paths  # noqa: PLC0415
-    from graphids.config.constants import RUN_ROOT  # noqa: PLC0415
+    from graphids.config.settings import get_settings as _get_settings  # noqa: PLC0415
 
     tla_codes = {k: json.dumps(v) for k, v in tla.items()} if tla else {}
     ext_codes = {
-        "run_root": json.dumps(RUN_ROOT),
+        "run_root": json.dumps(_get_settings().run_root),
         "overrides": json.dumps(set_overrides or {}),
     }
     # Single-letter parameter names work around an upstream `_jsonnet` C-binding

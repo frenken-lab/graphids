@@ -45,9 +45,10 @@ hidden dims, latent dim, heads, dropout, proj_dim, fc_layers.
 `configs/fusion/methods/{method}.libsonnet`. Shared trainer config
 (precision=32, max_epochs=50, monitor=val_acc/max) in `configs/fusion/base.libsonnet`.
 
-Reward shaping constants are fixed module-level constants in
-`core/models/fusion/fusion_reward.py` — not tunable via config.
-Only `vgae_weights` in `reward_kwargs` is configurable.
+Reward shaping constants live in `configs/models/fusion/reward.libsonnet` —
+imported by `dqn.libsonnet` and `bandit.libsonnet`, all values flow into
+`reward_kwargs`. They are fixed methodological choices (not ablation axes)
+but are config-tunable.
 
 ### KD auxiliaries
 
@@ -64,14 +65,14 @@ Jsonnet TLA `distillation_config` (a dict) flows into
 
 Defaults: `configs/_lib/defaults.libsonnet` (trainer, checkpoint, early_stopping).
 
-| Setting                | AE / GAT       | Fusion                    |
-|------------------------|----------------|---------------------------|
-| `precision`            | `16-mixed`     | `32` (manual opt)         |
-| `max_epochs`           | `300`          | `50`                      |
-| `gradient_clip_val`    | `1.0`          | `null`                    |
-| `checkpoint.monitor`   | `val_loss/min` | `val_acc/max`             |
-| `early_stopping`       | `val_loss/min, patience=100` | `val_acc/max`  |
-| `DynamicBatchSampler`  | active         | inactive                  |
+| Setting                | AE (VGAE)                             | GAT                      | Fusion               |
+|------------------------|---------------------------------------|--------------------------|----------------------|
+| `precision`            | `32-true`                             | `32-true`                | `32-true`            |
+| `max_epochs`           | `600`                                 | `200`                    | `1500`               |
+| `gradient_clip_val`    | `1.0`                                 | `1.0`                    | `null`               |
+| `checkpoint.monitor`   | `val_discrimination_ratio/max`        | `val_loss/min`           | `val_acc/max`        |
+| `early_stopping`       | `val_discrimination_ratio/max, p=100` | `val_loss/min, p=30`     | `val_acc/max, p=200` |
+| `DynamicBatchSampler`  | active                                | active                   | inactive             |
 
 ### LR schedulers (in code, not config)
 
@@ -115,8 +116,7 @@ Budget tuning: `GRAPHIDS_BUDGET_SAFETY_MARGIN`, `GRAPHIDS_BUDGET_GRAD_MULT`,
 Single source of truth: `configs/resources/submit_profiles.json`. Exactly two
 entries — `gpu` and `cpu`. Each carries per-cluster `partitions` and per-length
 `times` defaults. Per-job mem/time/command are flags on `python -m graphids
-submit`, never new JSON entries. `graphids/config/topology.py::_validate_submit_profiles`
-enforces the two-entry invariant at import time.
+submit`, never new JSON entries. `graphids/slurm/submit.py` loads the profiles at submission time.
 
 Optional MLflow-history walltime estimation lives in
 `graphids.slurm.sizing.estimate_walltime_minutes`; `python -m graphids submit

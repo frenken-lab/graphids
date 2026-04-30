@@ -1,3 +1,0 @@
-{
-  "stages": ["autoencoder", "supervised", "fusion"]
-}

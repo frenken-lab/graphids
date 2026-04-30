@@ -152,6 +152,6 @@ PlanVariants = Annotated[
 
 
 def _complete_dataset(incomplete: str) -> list[str]:
-    from graphids.config.topology import dataset_names
+    from graphids.config.catalog import dataset_names
 
     return [n for n in dataset_names() if n.startswith(incomplete)]

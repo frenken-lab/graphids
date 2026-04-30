@@ -323,14 +323,11 @@ def submit(  # noqa: PLR0913 — every flag is a real CLI surface
         payload = CommandFunction(["bash", "-c", command])
         jobname = f"graphids-{_jobname_for_cmd(command)}"
 
-    # --- Assemble additional SLURM params (cluster, dep, signal) -----------
+    # --- Assemble additional SLURM params (cluster, signal) ----------------
     additional = dict(params.pop("slurm_additional_parameters", {}))
     additional["clusters"] = cluster
-    # afterok dep jids from --depends-on (RUNNING upstream contributes its
-    # slurm.slurm_job_id MLflow tag). Real SLURM jids are always positive.
+    # Real SLURM jids are always positive; filter out the 0 sentinel.
     live_deps = [str(j) for j in afterok_jids if j > 0]
-    if live_deps:
-        additional["dependency"] = f"afterok:{':'.join(live_deps)}"
 
     setup = [f"source {_PREAMBLE_SH}"]
     if effective_mode == "cpu":
@@ -353,6 +350,8 @@ def submit(  # noqa: PLR0913 — every flag is a real CLI surface
         slurm_additional_parameters=additional,
         **params,
     )
+    if live_deps:
+        executor.update_parameters(slurm_dependency=f"afterok:{':'.join(live_deps)}")
 
     if dry_run:
         _print_dry_run(executor, payload, jobname)

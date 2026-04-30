@@ -8,8 +8,9 @@ from __future__ import annotations
 import shutil
 
 from graphids._otel import get_logger
-from graphids.config.constants import LAKE_ROOT, PREPROCESSING_VERSION
-from graphids.config.topology import cache_dir
+from graphids.config.catalog import cache_dir
+from graphids.config.constants import PREPROCESSING_VERSION
+from graphids.config.settings import get_settings
 
 log = get_logger(__name__)
 
@@ -23,7 +24,7 @@ def rebuild_caches(datasets: list[str], *, delete_existing: bool = False) -> Non
     NFS cache.
     """
     for ds in datasets:
-        cdir = cache_dir(LAKE_ROOT, ds)
+        cdir = cache_dir(get_settings().lake_root, ds)
         if delete_existing and cdir.exists():
             log.info("removing_stale_cache", dataset=ds, path=str(cdir))
             shutil.rmtree(cdir)
@@ -48,7 +49,6 @@ def rebuild_caches(datasets: list[str], *, delete_existing: bool = False) -> Non
         )
 
     # Invalidate scratch staging marker so next GPU job re-stages
-    from graphids.config.settings import get_settings
 
     scratch = get_settings().scratch
     if scratch is not None:

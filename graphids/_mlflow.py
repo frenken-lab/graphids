@@ -147,9 +147,9 @@ def ensure_tracking_uri() -> str:
     uri = os.environ.get(_TRACKING_URI_ENV)
     if uri:
         return uri
-    from graphids.config.constants import LAKE_ROOT
+    from graphids.config.settings import get_settings
 
-    default = f"sqlite:///{Path(LAKE_ROOT) / _BACKEND_DB_SUBPATH}"
+    default = f"sqlite:///{Path(get_settings().lake_root) / _BACKEND_DB_SUBPATH}"
     os.environ[_TRACKING_URI_ENV] = default
     return default
 
@@ -238,9 +238,10 @@ def _ensure_experiment(client: MlflowClient, name: str) -> None:
     """Create experiment if missing. ``mlartifacts/`` stays empty (data-layout.md)."""
     if client.get_experiment_by_name(name) is not None:
         return
-    from graphids.config.constants import LAKE_ROOT
+    from graphids.config.settings import get_settings
 
-    artifact_location = f"file://{Path(LAKE_ROOT) / _ARTIFACT_SUBPATH}" if LAKE_ROOT else None
+    lake_root = get_settings().lake_root
+    artifact_location = f"file://{Path(lake_root) / _ARTIFACT_SUBPATH}" if lake_root else None
     client.create_experiment(name, artifact_location=artifact_location)
 
 
@@ -371,8 +372,9 @@ def _dataset_for(resolved_config: dict[str, Any]) -> MetaDataset | None:
     ``log_artifact`` path. ``None`` means "no cache_metadata.json on disk" —
     not an error, the run still gets logged.
     """
-    from graphids.config.constants import LAKE_ROOT
+    from graphids.config.settings import get_settings
 
+    lake_root = get_settings().lake_root
     data_init = (resolved_config.get("data") or {}).get("init_args") or {}
     ds_field = data_init.get("dataset")
     if isinstance(ds_field, dict):
@@ -382,12 +384,12 @@ def _dataset_for(resolved_config: dict[str, Any]) -> MetaDataset | None:
     else:
         dataset = None
     cache_version = data_init.get("cache_version") or data_init.get("version")
-    if not (LAKE_ROOT and dataset):
+    if not (lake_root and dataset):
         return None
     candidates = []
     if cache_version:
-        candidates.append(Path(LAKE_ROOT) / "cache" / f"v{cache_version}" / dataset)
-    candidates.append(Path(LAKE_ROOT) / "cache" / dataset)
+        candidates.append(Path(lake_root) / "cache" / f"v{cache_version}" / dataset)
+    candidates.append(Path(lake_root) / "cache" / dataset)
     cache_dir: Path | None = None
     for candidate in candidates:
         if (candidate / "cache_metadata.json").exists():

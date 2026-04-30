@@ -117,7 +117,7 @@ nav:
           - Constants: api/constants.md
           - Settings: api/settings.md
           - Jsonnet: api/jsonnet.md
-          - Topology: api/topology.md
+          - Catalog: api/catalog.md
       - Orchestrate:
           - Config: api/orchestrate_config.md
           - Instantiate: api/orchestrate_instantiate.md
