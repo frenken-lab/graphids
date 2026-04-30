@@ -41,7 +41,7 @@ dependencies = [
 
 [project.optional-dependencies]
 analysis = ["umap-learn>=0.5", "seaborn>=0.13", "torch-cka>=0.21", "huggingface-hub>=0.24"]
-dev = ["pytest>=7.0.0", "httpx>=0.27", "ruff>=0.4"]
+dev = ["pytest>=7.0.0", "httpx>=0.27", "ruff>=0.15.12"]
 baselines = ["pygod>=1.1"]
 db = ["psycopg[binary]>=3.1"]
 
