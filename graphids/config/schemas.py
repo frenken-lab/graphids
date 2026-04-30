@@ -131,7 +131,7 @@ class ValidatedConfig(BaseModel):
             (val_loss_benign + 1e-6), logged by VGAE val_step). The
             gap variant was retired because it monotonically shrinks as
             both losses converge — under mode='max' it saved epoch 0.
-          * supervised: ``val_loss/min``.
+          * supervised: ``val_auroc/max``.
         """
         cp = self.model.class_path
         if ".models.fusion" in cp:
@@ -141,7 +141,7 @@ class ValidatedConfig(BaseModel):
             allowed = {("val_loss", "min"), ("val_discrimination_ratio", "max")}
             family = "unsupervised"
         else:
-            allowed = {("val_loss", "min")}
+            allowed = {("val_auroc", "max")}
             family = "supervised"
         got = (self.checkpoint_monitor, self.checkpoint_mode)
         if got not in allowed:
