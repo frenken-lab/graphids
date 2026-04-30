@@ -14,9 +14,6 @@ local _gat_base = {
     init_args: {
       conv_type: 'gatv2',
       edge_dim: 11,
-      loss_fn: 'ce',
-      focal_gamma: 2.0,
-      loss_weight: 10.0,
       pool_aggrs: ['mean'],
       compile_model: false,
     },

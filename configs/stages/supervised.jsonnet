@@ -8,6 +8,14 @@ local defaults = import '../_lib/defaults.libsonnet';
 local sup = import '../models/supervised.libsonnet';
 local pd = (import '../matrix/axes.json').pipeline_defaults;
 
+// Maps the loss_fn string TLA to the loss_config dict consumed by inject_loss_fn.
+// weights: [benign, attack] — 10x attack weight mirrors the old loss_weight scalar.
+local _loss_configs = {
+  ce: { type: 'ce' },
+  focal: { type: 'focal', gamma: 2.0 },
+  weighted_ce: { type: 'weighted_ce', weights: [1.0, 10.0] },
+};
+
 function(
   dataset=pd.dataset,
   seed=pd.seed,
@@ -111,7 +119,7 @@ function(
         dataset: dataset,
         seed: seed,
         conv_type: conv_type,
-        loss_fn: loss_fn,
+        loss_config: _loss_configs[loss_fn],
       } + (if distillation_config != null
            then { distillation_config: distillation_config }
            else {}),

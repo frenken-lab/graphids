@@ -10,8 +10,8 @@
     checkpoint: {
       class_path: 'graphids.core.callbacks.ModelCheckpoint',
       init_args: {
-        monitor: 'val_loss',
-        mode: 'min',
+        monitor: 'val_auroc',
+        mode: 'max',
         save_top_k: 1,
         save_last: true,
         filename: 'best_model',
@@ -20,8 +20,8 @@
     early_stopping: {
       class_path: 'graphids.core.callbacks.EarlyStopping',
       init_args: {
-        monitor: 'val_loss',
-        mode: 'min',
+        monitor: 'val_auroc',
+        mode: 'max',
         patience: 100,
       },
     },

@@ -64,6 +64,8 @@ class GATModule(GraphModuleBase):
         self.id_encoder_kwargs = self.id_encoder_kwargs or {}
         self.model = None
         self.test_metrics = classification_test_metrics(num_classes)
+        self._val_probs: list[torch.Tensor] = []
+        self._val_labels: list[torch.Tensor] = []
         if num_ids > 0:
             self._build()
 
@@ -128,9 +130,26 @@ class GATModule(GraphModuleBase):
         return self._oom_safe_step(batch, batch_idx, self._training_step_inner)
 
     def validation_step(self, batch, _idx):
-        loss, acc = self._step(batch)
-        self.log("val_loss", loss, batch_size=batch.num_graphs)
-        self.log("val_acc", acc, batch_size=batch.num_graphs)
+        logits = self(batch)
+        loss = self.loss_fn(logits, batch.y, graph=batch)
+        probs = F.softmax(logits, dim=1)
+        acc = (probs.argmax(1) == batch.y).float().mean()
+        bs = batch.num_graphs
+        self.log("val_loss", loss, batch_size=bs)
+        self.log("val_acc", acc, batch_size=bs)
+        self._val_probs.append(probs[:, 1].detach().cpu())
+        self._val_labels.append(batch.y.detach().cpu())
+
+    def on_validation_epoch_end(self) -> None:
+        if not self._val_probs:
+            return
+        from torchmetrics.functional.classification import binary_auroc
+
+        probs = torch.cat(self._val_probs)
+        labels = torch.cat(self._val_labels)
+        self.log("val_auroc", binary_auroc(probs, labels))
+        self._val_probs.clear()
+        self._val_labels.clear()
 
     def test_step(self, batch, _idx, dataloader_idx=0):
         logits = self(batch)

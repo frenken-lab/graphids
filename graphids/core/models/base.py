@@ -231,6 +231,9 @@ class GraphModuleBase(nn.Module):
 
     # -- per-test-set evaluation (issue #26) ---------------------------------
 
+    def on_validation_epoch_end(self) -> None:
+        """Override to flush epoch-level val metrics into _metric_acc before compute."""
+
     def on_test_epoch_start(self):
         self.test_metrics.reset()
         if hasattr(self, "roc_metric"):

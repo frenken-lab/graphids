@@ -434,6 +434,9 @@ class Trainer:
                 with torch.amp.autocast(self._device.type, enabled=use_amp):
                     model.validation_step(batch, batch_idx)
 
+        # Flush epoch-level metrics (e.g. AUROC) into _metric_acc before compute.
+        model.on_validation_epoch_end()
+
         self.callback_metrics.update(model._metric_acc.compute())
         model._metric_acc.reset()
 
