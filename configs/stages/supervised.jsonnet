@@ -32,7 +32,7 @@ function(
   // Curriculum-specific (ignored when sampler='default')
   curriculum_start_ratio=1.0,
   curriculum_end_ratio=10.0,
-  curriculum_max_epochs=300,
+  curriculum_max_epochs=200,
   num_tiers=10,
 
   // Curriculum difficulty scorer: {class_path, init_args} dict. Any class
@@ -79,7 +79,7 @@ function(
       // while val drifts up). Best ep is 148-185 across observed runs;
       // patience 30 stops within ~30 epochs of plateau without losing the
       // marginal late improvements.
-      early_stopping+: { init_args+: { patience: 30, min_delta: 0.001 } },
+      early_stopping+: { init_args+: { patience: 60, min_delta: 0.001 } },
     },
 
     data+: {

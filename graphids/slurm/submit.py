@@ -317,11 +317,11 @@ def submit(  # noqa: PLR0913 — every flag is a real CLI surface
             set_log=list(set_ or []),
             ckpt_path=ckpt_path,
         )
-        jobname = f"graphids-{action}-{preset.stem}"
+        jobname = _jobname_from_rendered(rendered)
     else:
         assert command is not None
         payload = CommandFunction(["bash", "-c", command])
-        jobname = f"graphids-{_jobname_for_cmd(command)}"
+        jobname = _jobname_for_cmd(command)
 
     # --- Assemble additional SLURM params (cluster, signal) ----------------
     additional = dict(params.pop("slurm_additional_parameters", {}))
@@ -369,6 +369,43 @@ def submit(  # noqa: PLR0913 — every flag is a real CLI surface
 
 def _raise_account() -> str:
     raise RuntimeError("GRAPHIDS_SLURM_ACCOUNT must be set (source .env)")
+
+
+def _jobname_from_rendered(rendered: dict[str, Any]) -> str:
+    """Derive a compact SLURM job name from the rendered config dict.
+
+    Format: {model_type}-{scale}-{variant}
+    Example: gat-sm-focal, vgae-lg-default, fusion-sm-dqn
+    Falls back gracefully when any field is absent.
+    """
+    # GATModule→gat, VGAEModule→vgae, DQNFusionModule→fusion (keyword scan)
+    class_path = (rendered.get("model") or {}).get("class_path", "")
+    stem = class_path.rsplit(".", 1)[-1].lower()
+    if "fusion" in stem:
+        model_type = "fusion"
+    elif "gat" in stem:
+        model_type = "gat"
+    elif "vgae" in stem:
+        model_type = "vgae"
+    else:
+        model_type = stem.removesuffix("module") or "job"
+
+    # small → sm, large → lg, etc.
+    init_args = ((rendered.get("model") or {}).get("init_args")) or {}
+    scale = str(init_args.get("scale", ""))
+    scale_short = scale[:2] if scale else ""
+
+    # Parse variant from run_dir: ablations/{group}/{variant}/seed_N
+    run_dir = (rendered.get("trainer") or {}).get("default_root_dir", "")
+    variant = ""
+    if run_dir:
+        parts = Path(run_dir).parts
+        if "ablations" in parts:
+            idx = parts.index("ablations")
+            if idx + 2 < len(parts):
+                variant = parts[idx + 2]
+
+    return "-".join(p for p in [model_type, scale_short, variant] if p)
 
 
 def _jobname_for_cmd(command: str) -> str:
