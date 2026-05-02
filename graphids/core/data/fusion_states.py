@@ -28,7 +28,7 @@ VAL_FILENAME = "val_states.pt"
 # v4 — TensorDict cache shape; per-extractor named feature dicts replace the
 # flat [N, 15] state vector + LAYOUT offsets. Old caches are incompatible by
 # format (top-level keys changed); the version field forces re-extraction.
-CACHE_VERSION = 4
+CACHE_VERSION = 5  # v5: DGI extract_features now returns dict (pos_stats/conf/z_stats), not flat 8D tensor
 
 
 def extract_states(

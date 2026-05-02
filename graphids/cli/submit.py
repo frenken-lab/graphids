@@ -62,13 +62,13 @@ def submit_cli(
     ] = None,
 ) -> None:
     """Submit one row to SLURM via Parsl SlurmProvider. Prints jid on stdout."""
-    from graphids.blueprint import TrainRow
+    from graphids.blueprint import BlueprintArray
     from graphids.slurm import submit_row
 
     raw = sys.stdin.read() if row == "-" else row
-    train_row = TrainRow.model_validate(json.loads(raw))
+    row_obj = BlueprintArray.model_validate([json.loads(raw)])[0]
     jid = submit_row(
-        train_row,
+        row_obj,
         cluster=cluster,
         length=length,
         ckpt_path=ckpt_path,

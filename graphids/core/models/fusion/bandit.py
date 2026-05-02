@@ -1,7 +1,9 @@
 """Neural-LinUCB contextual bandit (Xu et al., ICLR 2022).
 
-Uses torchrl's ``LossModule`` for the backbone-MSE refit so the
-sample → loss → step skeleton is shared with DQN through ``RLFusionBase``.
+Backbone is gradient-trained (MSE between θ_a·z(s) and stored reward);
+the per-arm θ is updated analytically via Sherman-Morrison ridge. No
+torchrl LossModule — would be a vestigial wrapper here since θ is not
+gradient-trained and there's no target net.
 """
 
 from __future__ import annotations
@@ -9,9 +11,9 @@ from __future__ import annotations
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from tensordict import TensorDict
-from torchrl.objectives import LossModule
 
 from .base import RLFusionBase, build_mlp_body
 
@@ -26,31 +28,9 @@ class _Backbone(nn.Module):
         return self.net(x)
 
 
-class _LinUCBLoss(LossModule):
-    """torchrl LossModule: MSE between predicted reward (z·θ_a) and stored
-    reward. ``theta`` is a buffer on the parent module — we hold a Python
-    reference (not registered) so the optimizer only updates the backbone."""
-
-    def __init__(self, backbone: _Backbone, theta: torch.Tensor):
-        super().__init__()
-        self.backbone = backbone
-        # Plain attribute — nn.Module.__setattr__ stores non-Parameter tensors
-        # without registering as a buffer, so the optimizer only sees backbone params.
-        self._theta = theta
-
-    def forward(self, td: TensorDict) -> TensorDict:
-        states = td["observation"]
-        actions = td["action"]
-        rewards = td["next", "reward"].squeeze(-1)
-        z = self.backbone(states)
-        preds = (self._theta[actions] * z).sum(dim=1)
-        loss = nn.functional.mse_loss(preds, rewards)
-        return TensorDict({"loss": loss}, batch_size=[])
-
-
 class BanditFusionModule(RLFusionBase):
     """Neural-LinUCB: backbone + per-arm ridge with Sherman-Morrison online
-    updates, and a frequency-gated backbone refit (via torchrl LossModule)."""
+    updates, and a frequency-gated backbone refit."""
 
     def __init__(
         self,
@@ -87,9 +67,6 @@ class BanditFusionModule(RLFusionBase):
         self.register_buffer("b", torch.zeros(alpha_steps, d))
         self.register_buffer("theta", torch.zeros(alpha_steps, d))
 
-        # torchrl LossModule wired to the same backbone + theta buffer.
-        self.loss_module = _LinUCBLoss(self.backbone, self.theta)
-
         # gpu_training_steps drives RLFusionBase._learn_step's inner loop.
         self.gpu_training_steps = backbone_epochs
 
@@ -98,6 +75,17 @@ class BanditFusionModule(RLFusionBase):
         self._ucb_widths: list[float] = []
 
     # -- RLFusionBase hooks --------------------------------------------------
+
+    def _compute_loss(self, sample: TensorDict) -> torch.Tensor:
+        """MSE between predicted reward (θ_a · z(s)) and stored reward.
+        Gradients flow into the backbone only; θ is updated analytically
+        in ``_update_linear`` and held as a buffer (no autograd)."""
+        states = sample["observation"]
+        actions = sample["action"]
+        rewards = sample["next", "reward"].squeeze(-1)
+        z = self.backbone(states)
+        preds = (self.theta[actions] * z).sum(dim=1)
+        return F.mse_loss(preds, rewards)
 
     def _score_actions(self, td: TensorDict, training: bool) -> None:
         states = td["observation"]

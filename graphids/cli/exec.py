@@ -41,10 +41,12 @@ def exec_cli(
         ),
     ] = None,
 ) -> None:
-    """Execute one row in-process. Dispatches on `row.action` (fit | test)."""
-    from graphids.blueprint import TrainRow
+    """Execute one row in-process. Dispatches on `row.action` (fit | test | extract | cmd)."""
+    from graphids.blueprint import BlueprintArray
     from graphids.orchestrate import run_row
 
     raw = sys.stdin.read() if row == "-" else row
-    train_row = TrainRow.model_validate(json.loads(raw))
-    run_row(train_row, ckpt_path=ckpt_path)
+    # Wrap in a singleton list so the discriminated union picks the right
+    # row type by ``action``. BlueprintArray is the canonical Row validator.
+    row_obj = BlueprintArray.model_validate([json.loads(raw)])[0]
+    run_row(row_obj, ckpt_path=ckpt_path)

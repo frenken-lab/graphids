@@ -20,10 +20,10 @@ from torch_geometric.nn import global_mean_pool
 from graphids.config.constants import ModelType
 
 from .._conv import InputEncoder, build_encoder_stack, conv_forward, resolve_edge_dim
-from ..base import GraphModuleBase, binary_test_metrics
+from .._detector import ScoreBasedDetectorMixin
 
 
-class DGI(GraphModuleBase):
+class DGI(ScoreBasedDetectorMixin):
     """Collapsed DGI — arch + trainer-bridge in one ``nn.Module``.
 
     No ``loss_fn`` kwarg: the contrastive MI loss is intrinsic to the
@@ -59,13 +59,11 @@ class DGI(GraphModuleBase):
         num_classes: int = 2,
     ):
         super().__init__()
-        self._init_threshold_metrics()
-        self.test_metrics = binary_test_metrics()
         # OCGIN scoring head: centroid of training-normal pooled embeddings.
-        # Re-fit at test-start by ``trainer.evaluate`` — the centroid is a
-        # deterministic statistic of (encoder weights, benign train data).
-        # Zero init means an uncalibrated forward pass raises in
-        # ``_per_graph_scores`` rather than returning bogus scores.
+        # Re-fit at test-start by ``Trainer.test`` via ``on_test_setup`` —
+        # the centroid is a deterministic statistic of (encoder weights,
+        # benign train data). Zero init means an uncalibrated forward pass
+        # raises in ``score`` rather than returning bogus scores.
         self.register_buffer("svdd_center", torch.zeros(latent_dim))
         self._init_post(locals())
 
@@ -177,12 +175,9 @@ class DGI(GraphModuleBase):
     # Trainer-bridge hooks
     # ------------------------------------------------------------------
 
-    def _step(self, batch):
+    def training_step(self, batch, _idx):
         pos_z, neg_z, summary = self(batch)
-        return self.dgi_loss(pos_z, neg_z, summary, batch.batch)
-
-    def _training_step_inner(self, batch, _idx):
-        loss = self._step(batch)
+        loss = self.dgi_loss(pos_z, neg_z, summary, batch.batch)
         self.log("train_loss", loss, batch_size=batch.num_graphs)
         return loss
 
@@ -202,19 +197,25 @@ class DGI(GraphModuleBase):
         )
         return global_mean_pool(z, batch.batch)
 
-    def _per_graph_scores(self, batch):
+    def score(self, batch) -> torch.Tensor:
         """OCGIN score: L2 distance from SVDD centroid in pooled-latent space."""
         if not torch.any(self.svdd_center):
             raise RuntimeError(
                 "DGI.svdd_center is zero. Call "
-                "calibrate_svdd_center(train_loader, device) before scoring "
-                "(stage.evaluate does this automatically for the test phase)."
+                "on_test_setup(datamodule, device) before scoring "
+                "(Trainer.test does this automatically for the test phase)."
             )
         pooled = self._pooled_latent(batch)
         return (pooled - self.svdd_center).pow(2).sum(dim=1)
 
+    def on_test_setup(self, datamodule, device) -> None:
+        """Fit SVDD center from training-normal graphs at test-start.
+        Always re-fits (no idempotence flag — center isn't persisted in
+        state_dict; see Cardinal jid 8772115 for ckpt-ordering rationale)."""
+        self._calibrate_svdd_center(datamodule.train_eval_dataloader(), device)
+
     @torch.no_grad()
-    def calibrate_svdd_center(self, train_loader, device) -> None:
+    def _calibrate_svdd_center(self, train_loader, device) -> None:
         """Fit svdd_center = mean of pooled latents over training-normal graphs."""
         was_training = self.training
         self.eval()
@@ -226,25 +227,18 @@ class DGI(GraphModuleBase):
             total += pooled.sum(dim=0)
             count += pooled.shape[0]
         if count == 0:
-            raise RuntimeError("calibrate_svdd_center: empty train loader")
+            raise RuntimeError("_calibrate_svdd_center: empty train loader")
         self.svdd_center.copy_(total / count)
         if was_training:
             self.train()
 
-    def test_step(self, batch, _idx, dataloader_idx=0):
-        scores = self._per_graph_scores(batch)
-        self.roc_metric.update(scores.detach(), batch.y.detach())
-        self._record_test_batch(dataloader_idx, scores=scores, labels=batch.y)
+    def extract_features(self, batch, device: torch.device) -> dict[str, torch.Tensor]:
+        """Per-graph fusion features as named tensors (symmetric to VGAE/GAT).
 
-    def on_test_epoch_end(self):
-        self._log_thresholded_metrics()
-
-    def predict_step(self, batch, _idx):
-        scores = self._per_graph_scores(batch)
-        return {"scores": scores, "labels": batch.y}
-
-    def extract_features(self, batch, device: torch.device) -> torch.Tensor:
-        """8-D fusion features: [anomaly, pos_mean, pos_spread, z_mean, z_std, z_max, z_min, conf]."""
+        - ``pos_stats`` [N, 3] — anomaly, pos_mean, pos_spread (discriminator-derived)
+        - ``conf``      [N, 1] — 1 / (1 + anomaly)
+        - ``z_stats``   [N, 4] — z_mean, z_std, z_max, z_min (latent-pooled)
+        """
         from torch_geometric.utils import scatter
 
         edge_attr = getattr(batch, "edge_attr", None)
@@ -268,8 +262,8 @@ class DGI(GraphModuleBase):
         z_std = scatter(z.std(1), b, dim=0, reduce="mean")
         z_max = scatter(z.max(1).values, b, dim=0, reduce="max")
         z_min = scatter(z.min(1).values, b, dim=0, reduce="min")
-        conf = 1.0 / (1.0 + anomaly)
-        return torch.stack(
-            [anomaly, pos_mean, pos_spread, z_mean, z_std, z_max, z_min, conf],
-            dim=1,
-        )
+        return {
+            "pos_stats": torch.stack([anomaly, pos_mean, pos_spread], dim=1),
+            "conf": (1.0 / (1.0 + anomaly)).unsqueeze(-1),
+            "z_stats": torch.stack([z_mean, z_std, z_max, z_min], dim=1),
+        }

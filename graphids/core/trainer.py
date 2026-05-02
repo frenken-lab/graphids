@@ -19,7 +19,7 @@ import torch
 import torch.nn as nn
 from structlog import get_logger
 
-from graphids.core.callbacks import CallbackBase, EarlyStopping, ModelCheckpoint
+from graphids.core.callbacks import CallbackBase, EarlyStopping, ModelCheckpoint, MLflowTrainingCallback
 
 _log = get_logger(__name__)
 
@@ -230,25 +230,14 @@ class Trainer:
         """
         self._prep(model, datamodule, "test", ckpt_path)
 
-        # OCGIN centroid fit: deterministic statistic of (trained encoder,
-        # benign train data), so re-fit at test-start rather than persisting
-        # through state_dict (which deadlocked on callback/ckpt-save ordering
-        # and shipped uncalibrated ckpts — Cardinal jid 8772115). No-op for
-        # models that don't expose calibrate_svdd_center.
-        calibrate = getattr(model, "calibrate_svdd_center", None)
-        if calibrate is not None:
-            datamodule.setup("fit")
-            calibrate(datamodule.train_eval_dataloader(), self._device)
-
-        # VGAE per-component z-norm calibration (Tier B). Same lifecycle as
-        # OCGIN above: deterministic statistic of (trained encoder, benign
-        # val data), re-fit at test-start. No-op for models without
-        # fit_score_norm. Skipped if buffers are already populated (e.g.
-        # ckpt was calibrated and reloaded).
-        fit_score_norm = getattr(model, "fit_score_norm", None)
-        if fit_score_norm is not None and not bool(getattr(model, "score_norm_fitted", False)):
-            datamodule.setup("fit")
-            fit_score_norm(datamodule.val_dataloader(), self._device)
+        # Score-based detectors (VGAE/DGI) need their calibration buffers
+        # (z-norm stats, SVDD center) refit at test-start — they're
+        # deterministic functions of (trained encoder, fit-phase data) and
+        # were NOT persisted through state_dict (callback/ckpt-save ordering
+        # deadlock shipped uncalibrated ckpts; Cardinal jid 8772115). The
+        # model's ``on_test_setup`` hook owns this; default is no-op.
+        datamodule.setup("fit")
+        model.on_test_setup(datamodule, self._device)
 
         model.eval()
         model.on_test_epoch_start()
@@ -314,8 +303,22 @@ class Trainer:
         for batch_idx, batch in enumerate(datamodule.train_dataloader()):
             self._dispatch("on_train_batch_start", model, batch, batch_idx)
 
-            with torch.amp.autocast(self._device.type, enabled=use_amp):
-                output = model.training_step(batch, batch_idx)
+            try:
+                with torch.amp.autocast(self._device.type, enabled=use_amp):
+                    output = model.training_step(batch, batch_idx)
+            except torch.cuda.OutOfMemoryError:
+                # Skip the batch — empty cache so the next batch isn't OOM
+                # for the same fragmentation reason. Loss not accumulated;
+                # optimizer not stepped. Cross-cutting runtime concern; lives
+                # here, not on the model.
+                torch.cuda.empty_cache()
+                _log.warning(
+                    "oom_batch_skipped",
+                    batch_idx=batch_idx,
+                    num_graphs=getattr(batch, "num_graphs", None),
+                    num_nodes=getattr(batch, "num_nodes", None),
+                )
+                output = None
 
             if auto_opt and opt is not None:
                 loss = (

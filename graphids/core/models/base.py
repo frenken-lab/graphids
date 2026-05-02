@@ -92,6 +92,150 @@ class _ModelBase(nn.Module):
         for k, v in metrics.items():
             self.log(k, v, **kwargs)
 
+    # -- per-test-set evaluation (issue #26) ---------------------------------
+    #
+    # Generic plumbing shared by every model family. Subclasses implement
+    # ``test_step`` to call ``_record_test_batch(dataloader_idx, scores=...,
+    # labels=..., preds=...)``; the default ``on_test_epoch_*`` lifecycle
+    # buckets predictions per test loader, computes per-set + aggregate
+    # ``self.test_metrics`` from the buffered ``(N, K)`` probabilities, and
+    # exposes the concatenated buffers as ``self._test_predictions`` for
+    # ``stage.evaluate`` to persist.
+
+    def setup(self, datamodule=None) -> None:
+        """Capture per-test-set names from the datamodule.
+
+        Falls back to a single ``"test"`` bucket for datamodules that don't
+        expose a dict of named test datasets. Subclasses that override
+        ``setup`` (e.g. ``GraphModuleBase`` for lazy ``_build()``) should
+        call ``super().setup(datamodule)``.
+        """
+        if datamodule is not None:
+            ds = getattr(datamodule, "test_datasets", None)
+            self._test_set_names = list(ds.keys()) if ds else ["test"]
+
+    def on_test_setup(self, datamodule, device) -> None:
+        """Fired after ``_prep`` (model on device, ckpt loaded) and before
+        ``model.eval()`` + the test loop. Default no-op. Score-based
+        detectors (VGAE/DGI) override to fit calibration buffers from a
+        fit-phase loader."""
+
+    def on_test_epoch_start(self) -> None:
+        if hasattr(self, "test_metrics"):
+            self.test_metrics.reset()
+        if hasattr(self, "roc_metric"):
+            self.roc_metric.reset()
+        names = getattr(self, "_test_set_names", None) or ["test"]
+        if hasattr(self, "test_metrics"):
+            self._per_set_metrics = {
+                n: self.test_metrics.clone(prefix=f"test/{n}/") for n in names
+            }
+        # ``scores`` holds 1-D scores for threshold-flavor (VGAE/DGI) and (N,K)
+        # probabilities for classifier-flavor (GAT/fusion). ``preds`` is
+        # optional hard predictions when the model emits them directly.
+        self._test_buffers = {n: {"preds": [], "scores": [], "labels": []} for n in names}
+        # Filled in on_test_epoch_end; stage.evaluate reads to persist to disk.
+        self._test_predictions: dict[str, dict[str, torch.Tensor]] = {}
+
+    def _record_test_batch(self, dataloader_idx: int, *, scores, labels, preds=None) -> None:
+        """Buffer one batch's predictions under the right test-set bucket."""
+        names = getattr(self, "_test_set_names", ["test"])
+        name = names[dataloader_idx] if dataloader_idx < len(names) else names[-1]
+        buf = self._test_buffers[name]
+        buf["scores"].append(scores.detach().cpu())
+        buf["labels"].append(labels.detach().cpu())
+        if preds is not None:
+            buf["preds"].append(preds.detach().cpu())
+
+    def on_test_epoch_end(self) -> None:
+        """Classifier flavor — per-set + aggregate metrics from buffers.
+
+        Models that override (VGAE, DGI) take the threshold path via
+        ``_log_thresholded_metrics`` instead.
+        """
+        self._log_classifier_metrics()
+        self._finalize_test_predictions()
+
+    def _log_classifier_metrics(self) -> None:
+        """Per-set + aggregate metrics from buffered ``(N, K)`` probabilities.
+
+        Buffers on CPU — ``BinaryMCC``'s confusion matrix and friends raise on
+        cross-device updates, so the collections get moved to match.
+        """
+        if not getattr(self, "_per_set_metrics", None):
+            return
+        self.test_metrics = self.test_metrics.cpu()
+        all_probs, all_labels = [], []
+        for name, coll in self._per_set_metrics.items():
+            buf = self._test_buffers[name]
+            if not buf["scores"]:
+                continue
+            probs = torch.cat(buf["scores"]).float()
+            labels = torch.cat(buf["labels"]).long()
+            coll = coll.cpu()
+            self._per_set_metrics[name] = coll
+            coll.update(probs, labels)
+            self.log_dict(coll.compute())
+            # Operating points are binary-specific — reconstruct class-1 score.
+            if probs.ndim == 2 and probs.shape[1] == 2:
+                self._log_operating_points(probs[:, 1], labels, prefix=f"test/{name}/")
+            all_probs.append(probs)
+            all_labels.append(labels)
+        if all_probs:
+            pooled_p, pooled_l = torch.cat(all_probs), torch.cat(all_labels)
+            self.test_metrics.update(pooled_p, pooled_l)
+            self.log_dict(self.test_metrics.compute())
+            if pooled_p.ndim == 2 and pooled_p.shape[1] == 2:
+                self._log_operating_points(pooled_p[:, 1], pooled_l, prefix="test/")
+
+    def _log_operating_points(
+        self,
+        scores: torch.Tensor,
+        labels: torch.Tensor,
+        *,
+        prefix: str = "",
+        min_recall: float = 0.95,
+        min_precision: float = 0.99,
+    ) -> None:
+        """Precision@recall and recall@precision — canonical IDS operating points.
+
+        Skipped when labels are single-class (no positives or no negatives);
+        the functional metrics raise in that regime.
+        """
+        if labels.unique().numel() < 2:
+            return
+        from torchmetrics.functional.classification import (
+            binary_precision_at_fixed_recall,
+            binary_recall_at_fixed_precision,
+        )
+
+        prec, thr_p = binary_precision_at_fixed_recall(scores, labels, min_recall=min_recall)
+        rec, thr_r = binary_recall_at_fixed_precision(scores, labels, min_precision=min_precision)
+        # torchmetrics returns NaN when the target operating point is
+        # unreachable (e.g. max precision < min_precision). That's a valid
+        # "no such threshold" sentinel, not a metric value — skip it.
+        candidates = {
+            f"{prefix}precision@{min_recall:g}recall": float(prec),
+            f"{prefix}threshold@{min_recall:g}recall": float(thr_p),
+            f"{prefix}recall@{min_precision:g}precision": float(rec),
+            f"{prefix}threshold@{min_precision:g}precision": float(thr_r),
+        }
+        self.log_dict({k: v for k, v in candidates.items() if not math.isnan(v)})
+
+    def _finalize_test_predictions(self) -> None:
+        """Concatenate per-set buffers into a {name: {key: Tensor}} dict."""
+        if not getattr(self, "_test_buffers", None):
+            return
+        self._test_predictions = {
+            name: {
+                k: torch.cat(v) if v else torch.empty(0)
+                for k, v in buf.items()
+                if v  # skip empty keys (e.g. preds on score-only models)
+            }
+            for name, buf in self._test_buffers.items()
+            if buf["scores"]  # only sets we actually saw batches for
+        }
+
 
 # ---------------------------------------------------------------------------
 # torch.compile helper
@@ -149,12 +293,7 @@ class GraphModuleBase(_ModelBase):
                 self.num_classes = datamodule.num_classes
                 self._build()
                 self._built = True
-        if datamodule is not None:
-            # Capture test-set names for per-loader metric breakdowns (issue #26).
-            # Falls back to a single "test" bucket for datamodules that don't
-            # expose a dict of named test datasets.
-            ds = getattr(datamodule, "test_datasets", None)
-            self._test_set_names = list(ds.keys()) if ds else ["test"]
+        super().setup(datamodule)
 
     def _build(self):
         raise NotImplementedError
@@ -190,31 +329,12 @@ class GraphModuleBase(_ModelBase):
             **(getattr(hp, "id_encoder_kwargs", None) or {}),
         )
 
-    def _training_step_inner(self, batch, batch_idx):
-        raise NotImplementedError
-
-    def training_step(self, batch, batch_idx):
-        return self._oom_safe_step(batch, batch_idx, self._training_step_inner)
-
     def build_optimizers(self, max_epochs: int) -> tuple[torch.optim.Optimizer | None, Any]:
         """Return ``(optimizer, scheduler_or_None)``. Called by Trainer."""
         lr = getattr(self.hparams, "lr", 1e-3)
         wd = getattr(self.hparams, "weight_decay", 0.0)
         opt = torch.optim.Adam(self.parameters(), lr=lr, weight_decay=wd)
         return opt, None
-
-    def _oom_safe_step(self, batch, batch_idx, step_fn):
-        try:
-            return step_fn(batch, batch_idx)
-        except torch.cuda.OutOfMemoryError:
-            torch.cuda.empty_cache()
-            _log.warning(
-                "oom_batch_skipped",
-                batch_idx=batch_idx,
-                num_graphs=batch.num_graphs,
-                num_nodes=batch.num_nodes,
-            )
-            return None
 
     def _init_threshold_metrics(self):
         """Call in ``__init__`` for modules that need a Youden-J threshold."""
@@ -223,75 +343,10 @@ class GraphModuleBase(_ModelBase):
         self.roc_metric = BinaryYoudenJThreshold()
         self.test_threshold: float | None = None
 
-    # -- per-test-set evaluation (issue #26) ---------------------------------
+    # -- threshold-flavor test path (VGAE/DGI) -------------------------------
 
     def on_validation_epoch_end(self) -> None:
         """Override to flush epoch-level val metrics into _metric_acc before compute."""
-
-    def on_test_epoch_start(self):
-        self.test_metrics.reset()
-        if hasattr(self, "roc_metric"):
-            self.roc_metric.reset()
-        names = getattr(self, "_test_set_names", None) or ["test"]
-        # One MetricCollection per test-set, keys prefixed for structured logs.
-        self._per_set_metrics = {n: self.test_metrics.clone(prefix=f"test/{n}/") for n in names}
-        # ``scores`` holds 1-D scores for threshold-flavor (VGAE/DGI) and (N,K)
-        # probabilities for classifier-flavor (GAT/fusion). ``preds`` is
-        # optional hard predictions when the model emits them directly.
-        self._test_buffers = {n: {"preds": [], "scores": [], "labels": []} for n in names}
-        # Filled in on_test_epoch_end; stage.evaluate reads to persist to disk.
-        self._test_predictions: dict[str, dict[str, torch.Tensor]] = {}
-
-    def _record_test_batch(self, dataloader_idx: int, *, scores, labels, preds=None) -> None:
-        """Buffer one batch's predictions under the right test-set bucket."""
-        names = getattr(self, "_test_set_names", ["test"])
-        name = names[dataloader_idx] if dataloader_idx < len(names) else names[-1]
-        buf = self._test_buffers[name]
-        buf["scores"].append(scores.detach().cpu())
-        buf["labels"].append(labels.detach().cpu())
-        if preds is not None:
-            buf["preds"].append(preds.detach().cpu())
-
-    def on_test_epoch_end(self):
-        """Classifier flavor — compute per-set + aggregate metrics from buffers.
-
-        Models that override with `_log_thresholded_metrics` (VGAE, DGI) take
-        the threshold path instead.
-        """
-        self._log_classifier_metrics()
-        self._finalize_test_predictions()
-
-    def _log_classifier_metrics(self) -> None:
-        """Per-set + aggregate metrics from buffered ``(N, K)`` probabilities.
-
-        Buffers on CPU — ``BinaryMCC``'s confusion matrix and friends raise on
-        cross-device updates, so the collections get moved to match.
-        """
-        if not getattr(self, "_per_set_metrics", None):
-            return
-        self.test_metrics = self.test_metrics.cpu()
-        all_probs, all_labels = [], []
-        for name, coll in self._per_set_metrics.items():
-            buf = self._test_buffers[name]
-            if not buf["scores"]:
-                continue
-            probs = torch.cat(buf["scores"]).float()
-            labels = torch.cat(buf["labels"]).long()
-            coll = coll.cpu()
-            self._per_set_metrics[name] = coll
-            coll.update(probs, labels)
-            self.log_dict(coll.compute())
-            # Operating points are binary-specific — reconstruct class-1 score.
-            if probs.ndim == 2 and probs.shape[1] == 2:
-                self._log_operating_points(probs[:, 1], labels, prefix=f"test/{name}/")
-            all_probs.append(probs)
-            all_labels.append(labels)
-        if all_probs:
-            pooled_p, pooled_l = torch.cat(all_probs), torch.cat(all_labels)
-            self.test_metrics.update(pooled_p, pooled_l)
-            self.log_dict(self.test_metrics.compute())
-            if pooled_p.ndim == 2 and pooled_p.shape[1] == 2:
-                self._log_operating_points(pooled_p[:, 1], pooled_l, prefix="test/")
 
     def _log_thresholded_metrics(self):
         """Threshold flavor — one global threshold, per-set metrics at it."""
@@ -336,54 +391,6 @@ class GraphModuleBase(_ModelBase):
                 # Materialize derived preds so _finalize_test_predictions persists them.
                 buf["preds"] = [(scores >= self.test_threshold).long()]
         self._finalize_test_predictions()
-
-    def _log_operating_points(
-        self,
-        scores: torch.Tensor,
-        labels: torch.Tensor,
-        *,
-        prefix: str = "",
-        min_recall: float = 0.95,
-        min_precision: float = 0.99,
-    ) -> None:
-        """Precision@recall and recall@precision — canonical IDS operating points.
-
-        Skipped when labels are single-class (no positives or no negatives);
-        the functional metrics raise in that regime.
-        """
-        if labels.unique().numel() < 2:
-            return
-        from torchmetrics.functional.classification import (
-            binary_precision_at_fixed_recall,
-            binary_recall_at_fixed_precision,
-        )
-
-        prec, thr_p = binary_precision_at_fixed_recall(scores, labels, min_recall=min_recall)
-        rec, thr_r = binary_recall_at_fixed_precision(scores, labels, min_precision=min_precision)
-        # torchmetrics returns NaN when the target operating point is
-        # unreachable (e.g. max precision < min_precision). That's a valid
-        # "no such threshold" sentinel, not a metric value — skip it.
-        candidates = {
-            f"{prefix}precision@{min_recall:g}recall": float(prec),
-            f"{prefix}threshold@{min_recall:g}recall": float(thr_p),
-            f"{prefix}recall@{min_precision:g}precision": float(rec),
-            f"{prefix}threshold@{min_precision:g}precision": float(thr_r),
-        }
-        self.log_dict({k: v for k, v in candidates.items() if not math.isnan(v)})
-
-    def _finalize_test_predictions(self) -> None:
-        """Concatenate per-set buffers into a {name: {key: Tensor}} dict."""
-        if not getattr(self, "_test_buffers", None):
-            return
-        self._test_predictions = {
-            name: {
-                k: torch.cat(v) if v else torch.empty(0)
-                for k, v in buf.items()
-                if v  # skip empty keys (e.g. preds on score-only models)
-            }
-            for name, buf in self._test_buffers.items()
-            if buf["scores"]  # only sets we actually saw batches for
-        }
 
     def on_save_checkpoint(self, checkpoint):
         if getattr(self, "test_threshold", None) is not None:
@@ -474,6 +481,12 @@ def safe_load_checkpoint(model_type: str, ckpt_path, *, map_location="cpu"):
     # no key collision because the new layer names don't start with ``model.``.
     if not hasattr(module, "model") and any(k.startswith("model.") for k in state_dict):
         state_dict = {k.removeprefix("model."): v for k, v in state_dict.items()}
+    # VGAE: ``mask_token`` was a top-level (frozen) Parameter; it's now the
+    # buffer ``masker.mask_token`` on a RandomNodeMasker submodule. Remap
+    # legacy keys so old ckpts load cleanly. ``mask_id`` was a plain int and
+    # was never in state_dict — no remap needed.
+    if "mask_token" in state_dict and "masker.mask_token" not in state_dict:
+        state_dict["masker.mask_token"] = state_dict.pop("mask_token")
     module.load_state_dict(state_dict)
 
     if hasattr(module, "on_load_checkpoint"):

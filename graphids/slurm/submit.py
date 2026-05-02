@@ -24,7 +24,7 @@ from typing import Any
 from parsl.launchers import SrunLauncher
 from parsl.providers import SlurmProvider
 
-from graphids.blueprint import TrainRow
+from graphids.blueprint import Row, TrainRow
 
 _PROFILES = Path(__file__).resolve().parents[2] / "configs" / "resources" / "submit_profiles.json"
 
@@ -80,7 +80,7 @@ def _build_provider(
     )
 
 
-def _build_command(row: TrainRow, ckpt_path: str | None) -> str:
+def _build_command(row: Row, ckpt_path: str | None) -> str:
     """Bash command the SLURM job runs: in-process row execution via the CLI."""
     row_json = row.model_dump_json()
     parts = ["python", "-m", "graphids", "exec", "--row", shlex.quote(row_json)]
@@ -89,8 +89,16 @@ def _build_command(row: TrainRow, ckpt_path: str | None) -> str:
     return " ".join(parts)
 
 
+def _jobname(row: Row) -> str:
+    """SLURM job name. TrainRow carries a structured ``identity.jobname``;
+    ExtractRow / CmdRow only carry ``name`` (no MLflow run identity)."""
+    if isinstance(row, TrainRow):
+        return row.identity.jobname
+    return row.name
+
+
 def submit_row(
-    row: TrainRow,
+    row: Row,
     *,
     cluster: str,
     length: str = "long",
@@ -122,4 +130,4 @@ def submit_row(
         profile, account=account, venv_path=venv_path, extra_directives=extras
     )
     command = _build_command(row, ckpt_path)
-    return provider.submit(command, tasks_per_node=1, job_name=row.identity.jobname)
+    return provider.submit(command, tasks_per_node=1, job_name=_jobname(row))

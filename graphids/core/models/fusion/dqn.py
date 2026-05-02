@@ -99,6 +99,9 @@ class DQNFusionModule(RLFusionBase):
 
     # -- RLFusionBase hooks --------------------------------------------------
 
+    def _compute_loss(self, sample: TensorDict) -> torch.Tensor:
+        return self.loss_module(sample)["loss"]
+
     def _score_actions(self, td: TensorDict, training: bool) -> None:
         (self.explore_policy if training else self.q_actor)(td)
 

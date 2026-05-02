@@ -226,14 +226,10 @@ class GAT(GraphModuleBase):
     # Trainer-bridge hooks
     # ------------------------------------------------------------------
 
-    def _step(self, batch):
+    def training_step(self, batch, _idx):
         logits = self(batch)
         loss = self.loss_fn(logits, batch.y, graph=batch)
         acc = (logits.argmax(1) == batch.y).float().mean()
-        return loss, acc
-
-    def _training_step_inner(self, batch, _idx):
-        loss, acc = self._step(batch)
         bs = batch.num_graphs
         self.log("train_loss", loss, batch_size=bs)
         self.log("train_acc", acc, batch_size=bs)

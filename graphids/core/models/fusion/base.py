@@ -22,7 +22,7 @@ from tensordict import TensorDict
 from torchrl.data import LazyTensorStorage, TensorDictReplayBuffer
 from torchrl.data.replay_buffers.samplers import RandomSampler
 
-from ..base import _ModelBase
+from ..base import _ModelBase, classification_test_metrics
 from .reward import FusionRewardCalculator
 
 __all__ = [
@@ -75,8 +75,6 @@ class FusionModuleBase(_ModelBase):
         self.register_buffer("alpha_values", torch.linspace(0, 1, alpha_steps))
         if reward_kwargs is not None:
             self.reward_calc = FusionRewardCalculator(**reward_kwargs)
-        from ..base import classification_test_metrics
-
         self.test_metrics = classification_test_metrics(2)
 
     def build_optimizers(self, max_epochs: int):
@@ -134,22 +132,22 @@ class FusionModuleBase(_ModelBase):
     def test_step(self, batch, batch_idx, dataloader_idx=0):
         td, labels = batch
         fused = self.predict(td)["fused_scores"].float()
-        self.test_metrics.update(torch.stack([1.0 - fused, fused], dim=1), labels)
-
-    def on_test_epoch_start(self):
-        self.test_metrics.reset()
-
-    def on_test_epoch_end(self):
-        self.log_dict(self.test_metrics.compute())
+        probs = torch.stack([1.0 - fused, fused], dim=1)
+        self._record_test_batch(dataloader_idx, scores=probs, labels=labels)
 
 
 class RLFusionBase(FusionModuleBase):
     """torchrl replay buffer + unified act/learn flow.
 
+    Subclass implements:
+    - ``_compute_loss(sample) -> Tensor`` — scalar loss from a buffer
+      sample. DQN delegates to a torchrl ``DQNLoss``; Bandit computes
+      MSE inline. The optimizer scope (``self._optimizer``) is whatever
+      params the subclass actually trains — it does NOT have to match
+      a single ``loss_module``.
+
     Subclass sets in ``__init__``:
-    - ``self.loss_module`` — a torchrl ``LossModule`` (callable
-      ``td → {"loss": tensor}``).
-    - ``self._optimizer`` — optimizer over ``loss_module.parameters()``.
+    - ``self._optimizer`` — optimizer over the trainable params.
 
     Hooks:
     - ``_score_actions(td, training)`` — write ``td['action']``.
@@ -174,6 +172,10 @@ class RLFusionBase(FusionModuleBase):
         return self._optimizer, None
 
     # -- subclass hooks ------------------------------------------------------
+
+    def _compute_loss(self, sample: TensorDict) -> torch.Tensor:
+        """Scalar loss from a replay-buffer sample. Subclass must implement."""
+        raise NotImplementedError
 
     def _score_actions(self, td: TensorDict, training: bool) -> None:
         raise NotImplementedError
@@ -244,12 +246,15 @@ class RLFusionBase(FusionModuleBase):
         if not self._should_learn() or len(self._rb) < self.batch_size:
             return None
         last: float | None = None
+        # Clip whatever the optimizer actually trains — keeps Bandit
+        # (backbone-only) and DQN (loss_module incl. target net) honest.
+        clip_params = [p for g in self._optimizer.param_groups for p in g["params"]]
         for _ in range(self.gpu_training_steps):
             sample = self._rb.sample().to(self.device)
-            loss = self.loss_module(sample)["loss"]
+            loss = self._compute_loss(sample)
             self._optimizer.zero_grad()
             loss.backward()
-            nn.utils.clip_grad_norm_(self.loss_module.parameters(), max_norm=1.0)
+            nn.utils.clip_grad_norm_(clip_params, max_norm=1.0)
             self._optimizer.step()
             self._after_optim_step()
             last = float(loss.detach().item())

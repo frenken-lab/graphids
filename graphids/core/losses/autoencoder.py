@@ -20,6 +20,36 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def neighborhood_loss_negsampled(
+    logits: torch.Tensor,
+    node_id: torch.Tensor,
+    edge_index: torch.Tensor,
+    num_ids: int,
+    k_neg: int = 32,
+) -> torch.Tensor:
+    """NCE-style neighborhood prediction loss for VGAE.
+
+    Per source node, positives are observed (src, dst-id) pairs; negatives
+    are ``k_neg`` random IDs sampled per node, with collisions against
+    actual positives filtered out.
+    """
+    src, dst = edge_index
+    dst_ids = node_id[dst]
+    valid = (dst_ids >= 0) & (dst_ids < num_ids)
+    pos_logits = logits[src[valid], dst_ids[valid]]
+    pos_loss = -F.logsigmoid(pos_logits).mean()
+    neg_ids = torch.randint(0, num_ids, (logits.size(0), k_neg), device=logits.device)
+    pos_keys = src[valid].long() * num_ids + dst_ids[valid].long()
+    node_range = torch.arange(logits.size(0), device=logits.device)
+    neg_keys = (node_range.unsqueeze(1) * num_ids + neg_ids).reshape(-1)
+    is_collision = torch.isin(neg_keys, pos_keys)
+    neg_logits = logits.gather(1, neg_ids).reshape(-1)[~is_collision]
+    neg_loss = (
+        -F.logsigmoid(-neg_logits).mean() if neg_logits.numel() > 0 else logits.new_zeros(1)
+    )
+    return pos_loss + neg_loss
+
+
 class VGAETaskLoss(nn.Module):
     """VGAE training loss: recon MSE + canid CE + neighborhood BCE + KL.
 
@@ -56,7 +86,7 @@ class VGAETaskLoss(nn.Module):
         self.nbr_weight = nbr_weight
         self.k_neg = k_neg
         self.num_ids = num_ids  # populated by VGAEModule._build() from dm.num_ids
-        # Populated each forward() so VGAEModule._training_step_inner can
+        # Populated each forward() so VGAE.training_step can
         # log per-component telemetry to MLflow.
         self.last_recon: torch.Tensor | None = None
         self.last_canid: torch.Tensor | None = None
@@ -84,9 +114,7 @@ class VGAETaskLoss(nn.Module):
             canid = F.cross_entropy(canid_logits, batch.node_id)
             nbr_edge_index = batch.edge_index
 
-        from graphids.core.models.autoencoder.vgae import VGAE
-
-        nbr_loss = VGAE.neighborhood_loss_negsampled(
+        nbr_loss = neighborhood_loss_negsampled(
             nbr_logits,
             batch.node_id,
             nbr_edge_index,

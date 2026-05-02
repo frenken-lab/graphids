@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from graphids.config.constants import ModelType
 
@@ -27,10 +26,10 @@ from .._conv import (
     conv_forward,
     resolve_edge_dim,
 )
-from ..base import GraphModuleBase, binary_test_metrics
+from .._detector import ScoreBasedDetectorMixin
 
 
-class VGAE(GraphModuleBase):
+class VGAE(ScoreBasedDetectorMixin):
     """Collapsed VGAE — arch + trainer-bridge in one ``nn.Module``.
 
     Loss selection is decoupled: ``loss_fn`` is an ``nn.Module``
@@ -39,7 +38,7 @@ class VGAE(GraphModuleBase):
 
     Anomaly score = max-σ over three components (masked recon,
     Mahalanobis on ``mu``, KL). Calibration buffers are filled by
-    :meth:`fit_score_norm` at test-start.
+    :meth:`on_test_setup` at test-start.
     """
 
     def __init__(
@@ -80,8 +79,6 @@ class VGAE(GraphModuleBase):
         num_classes: int = 2,
     ):
         super().__init__()
-        self._init_threshold_metrics()
-        self.test_metrics = binary_test_metrics()
         self._register_score_norm_buffers(latent_dim)
         self._init_post(locals())
 
@@ -158,8 +155,14 @@ class VGAE(GraphModuleBase):
             nn.Linear(mlp_hidden, hp.num_ids),
         )
 
-        self.mask_token = nn.Parameter(torch.zeros(hp.in_channels), requires_grad=False)
-        self.mask_id: int = hp.num_ids
+        from .._masking import RandomNodeMasker
+
+        # mask_id == num_ids indexes the +1 vocab slot reserved by the id encoder.
+        self.masker = RandomNodeMasker(
+            in_channels=hp.in_channels,
+            mask_id=hp.num_ids,
+            mask_rate=hp.mask_rate,
+        )
 
         # Propagate true num_ids into the loss module (constructed with
         # placeholder default before datamodule was attached).
@@ -187,41 +190,6 @@ class VGAE(GraphModuleBase):
     # ------------------------------------------------------------------
     # Architecture primitives
     # ------------------------------------------------------------------
-
-    def apply_random_mask(
-        self, x: torch.Tensor, node_id: torch.Tensor, mask_rate: float = 0.15
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        n = x.size(0)
-        mask = torch.rand(n, device=x.device) < mask_rate
-        x = x.clone()
-        node_id = node_id.clone()
-        x[mask] = self.mask_token
-        node_id[mask] = self.mask_id
-        return x, node_id, mask
-
-    @staticmethod
-    def neighborhood_loss_negsampled(
-        logits: torch.Tensor,
-        node_id: torch.Tensor,
-        edge_index: torch.Tensor,
-        num_ids: int,
-        k_neg: int = 32,
-    ) -> torch.Tensor:
-        src, dst = edge_index
-        dst_ids = node_id[dst]
-        valid = (dst_ids >= 0) & (dst_ids < num_ids)
-        pos_logits = logits[src[valid], dst_ids[valid]]
-        pos_loss = -F.logsigmoid(pos_logits).mean()
-        neg_ids = torch.randint(0, num_ids, (logits.size(0), k_neg), device=logits.device)
-        pos_keys = src[valid].long() * num_ids + dst_ids[valid].long()
-        node_range = torch.arange(logits.size(0), device=logits.device)
-        neg_keys = (node_range.unsqueeze(1) * num_ids + neg_ids).reshape(-1)
-        is_collision = torch.isin(neg_keys, pos_keys)
-        neg_logits = logits.gather(1, neg_ids).reshape(-1)[~is_collision]
-        neg_loss = (
-            -F.logsigmoid(-neg_logits).mean() if neg_logits.numel() > 0 else logits.new_zeros(1)
-        )
-        return pos_loss + neg_loss
 
     def encode(self, x, edge_index, edge_attr=None, batch=None, node_id=None):
         """Returns ``(z, kl_per_node, mu)``."""
@@ -302,9 +270,7 @@ class VGAE(GraphModuleBase):
     def _masked_forward(self, batch):
         """Training-shape random-masked forward. Returns (outputs, mask)."""
         edge_attr = getattr(batch, "edge_attr", None)
-        x_m, nid_m, mask = self.apply_random_mask(
-            batch.x, batch.node_id, mask_rate=self.hparams.mask_rate
-        )
+        x_m, nid_m, mask = self.masker(batch.x, batch.node_id)
         outputs = self._forward_tensors(
             x_m, batch.edge_index, batch.batch, edge_attr=edge_attr, node_id=nid_m
         )
@@ -323,11 +289,7 @@ class VGAE(GraphModuleBase):
     # Trainer-bridge hooks
     # ------------------------------------------------------------------
 
-    def _step(self, batch):
-        outputs, mask = self._masked_forward(batch)
-        return self.loss_fn(outputs, batch, mask=mask)
-
-    def _training_step_inner(self, batch, _idx):
+    def training_step(self, batch, _idx):
         outputs, mask = self._masked_forward(batch)
         loss = self.loss_fn(outputs, batch, mask=mask)
         bs = batch.num_graphs
@@ -412,11 +374,13 @@ class VGAE(GraphModuleBase):
             "z_stats": torch.stack([z_mean, z_std, z_max, z_min], dim=1),
         }
 
-    def _per_graph_errors(self, batch):
+    def score(self, batch) -> torch.Tensor:
+        """Per-graph anomaly score: max-σ over (recon, Mahalanobis, KL)
+        in the calibrated z-norm space."""
         if not bool(self.score_norm_fitted):
             raise RuntimeError(
-                "VGAE scoring requires fit_score_norm() to have run. "
-                "If loading an old ckpt without mask_token, retrain under "
+                "VGAE scoring requires on_test_setup() to have run. "
+                "If loading an old ckpt without masker.mask_token, retrain under "
                 "the mask-recon code or use the legacy scoring path."
             )
         recon, mahal, kl, _z = self._score(batch)
@@ -426,8 +390,14 @@ class VGAE(GraphModuleBase):
         z_kl = (kl - self.score_kl_mean) / (self.score_kl_std + eps)
         return torch.stack([z_recon, z_mahal, z_kl], dim=0).amax(dim=0)
 
+    def on_test_setup(self, datamodule, device) -> None:
+        """Fit z-norm calibration buffers from benign val if not already
+        populated. Idempotent: skips if a calibrated ckpt was reloaded."""
+        if not bool(self.score_norm_fitted):
+            self._fit_score_norm(datamodule.val_dataloader(), device)
+
     @torch.no_grad()
-    def fit_score_norm(self, val_loader, device: torch.device) -> None:
+    def _fit_score_norm(self, val_loader, device: torch.device) -> None:
         """Two-pass calibration on benign val."""
         from torch_geometric.data import Batch as PyGBatch
 
@@ -457,7 +427,7 @@ class VGAE(GraphModuleBase):
             )
             mus.append(mu.cpu())
         if not mus:
-            raise RuntimeError("fit_score_norm: no benign rows in val loader")
+            raise RuntimeError("_fit_score_norm: no benign rows in val loader")
         mu_all = torch.cat(mus, dim=0)
         self.mu_mean.copy_(mu_all.mean(dim=0).to(self.mu_mean.device))
         self.mu_std.copy_(mu_all.std(dim=0).clamp(min=1e-3).to(self.mu_std.device))
@@ -478,21 +448,9 @@ class VGAE(GraphModuleBase):
 
         if len(all_recon) == 0 or sum(len(t) for t in all_recon) < 100:
             n = sum(len(t) for t in all_recon)
-            raise RuntimeError(f"fit_score_norm: need >=100 benign val graphs, got {n}")
+            raise RuntimeError(f"_fit_score_norm: need >=100 benign val graphs, got {n}")
         for name, vals in (("recon", all_recon), ("mahal", all_mahal), ("kl", all_kl)):
             cat = torch.cat(vals)
             getattr(self, f"score_{name}_mean").copy_(cat.mean())
             getattr(self, f"score_{name}_std").copy_(cat.std())
         self.score_norm_fitted.fill_(True)
-
-    def test_step(self, batch, _idx, dataloader_idx=0):
-        errors = self._per_graph_errors(batch)
-        self.roc_metric.update(errors.detach(), batch.y.detach())
-        self._record_test_batch(dataloader_idx, scores=errors, labels=batch.y)
-
-    def on_test_epoch_end(self):
-        self._log_thresholded_metrics()
-
-    def predict_step(self, batch, _idx):
-        errors = self._per_graph_errors(batch)
-        return {"errors": errors, "labels": batch.y}
