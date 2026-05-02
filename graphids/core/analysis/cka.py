@@ -46,9 +46,7 @@ def compute_and_save_cka(
     teacher_module.eval()
     try:
         student_reps = _collect_reps(student, val_data, device, max_samples=max_samples)
-        teacher_reps = _collect_reps(
-            teacher_module.model, val_data, device, max_samples=max_samples
-        )
+        teacher_reps = _collect_reps(teacher_module, val_data, device, max_samples=max_samples)
 
         n_layers = min(len(teacher_reps), len(student_reps))
         scores = {

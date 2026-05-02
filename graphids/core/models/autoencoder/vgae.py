@@ -1,148 +1,196 @@
+"""Variational graph autoencoder — collapsed arch + trainer-bridge.
+
+The single :class:`VGAE` class is both the architecture (encoder /
+decoder / aux heads / mask token / score-norm calibration buffers) and
+the trainer-bridge (``training_step``/``validation_step``/``test_step``,
+score primitives, fusion-feature extractor). No wrapper module — see
+``~/plans/graphids-collapse-model-modules.md`` Phase 1.
+
+Encoder maps node features to ``q(z|x) = N(mu, σ²)``; decoder
+reconstructs continuous features from the reparameterized ``z``.
+Mask-recon training (15% random node masking) commits the encoder to
+"predict v from neighborhood" rather than "echo v back".
+"""
+
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F  # used by neighborhood_loss_negsampled
+import torch.nn.functional as F
+
+from graphids.config.constants import ModelType
 
 from .._conv import (
     InputEncoder,
     build_conv_stack,
     build_encoder_stack,
     conv_forward,
+    resolve_edge_dim,
 )
+from ..base import GraphModuleBase, binary_test_metrics
 
 
-class GraphAutoencoderNeighborhood(nn.Module):
-    """Variational graph autoencoder with mask-recon + canid + nbr aux heads.
+class VGAE(GraphModuleBase):
+    """Collapsed VGAE — arch + trainer-bridge in one ``nn.Module``.
 
-    Encoder maps node features to ``q(z|x) = N(mu, σ²)``; decoder
-    reconstructs continuous features from the reparameterized ``z``.
-    Mask-recon training (15% random node masking) commits the encoder
-    to "predict v from neighborhood" rather than "echo v back".
+    Loss selection is decoupled: ``loss_fn`` is an ``nn.Module``
+    instantiated by :func:`graphids.orchestrate._instantiate` from the
+    rendered_config's ``model.init_args.loss_fn`` class_path block.
 
-    Two auxiliary training heads operate on the masked-input latent:
-    - ``canid_classifier`` (Linear → num_ids): predict the masked
-      node's CAN ID from its neighbor-derived ``z``.
-    - ``neighborhood_decoder`` (small MLP → num_ids): predict the
-      multiset of neighbor CAN IDs from ``z``.
-    Both are training-only — they shape ``μ`` to encode CAN-ID
-    identity and neighborhood structure (which empirically gives the
-    pre-mask-recon code its 0.76 AUC on test_03 zero-day) but are
-    NOT used by the test-time anomaly score, which is calibrated
-    max-σ over (recon, Mahalanobis on μ, KL).
-
-    Mask signaling has two parts: (a) a frozen zero-init Parameter at
-    the input layer that replaces ``x[v]`` for masked nodes, and (b) a
-    reserved ``mask_id`` slot in the id_encoder vocab. Both must hide
-    — masking only continuous bytes leaves the encoder access to v's
-    identity. ``mask_id = num_ids`` and the id_encoder is sized to
-    ``num_ids + 1`` (set up by ``VGAEModule._build``).
-
-    See ``~/plans/vgae-mask-recon-and-latent-density.md`` (synthesis)
-    and the integration of pre-synthesis canid/nbr aux heads (see git
-    log on this file).
+    Anomaly score = max-σ over three components (masked recon,
+    Mahalanobis on ``mu``, KL). Calibration buffers are filled by
+    :meth:`fit_score_norm` at test-start.
     """
 
     def __init__(
         self,
-        id_encoder,
-        num_ids,
-        in_channels,
-        hidden_dims=None,
-        latent_dim=32,
-        encoder_heads=4,
-        decoder_heads=4,
-        dropout=0.1,
-        batch_norm=True,
-        use_checkpointing=False,
-        conv_type="gat",
-        edge_dim=None,
-        proj_dim=0,
-        mlp_hidden=None,
+        *,
+        loss_fn: nn.Module,
+        # --- architecture ---
+        conv_type: str = "gatv2",
+        hidden_dims: list[int] | None = None,
+        latent_dim: int = 48,
+        heads: int = 4,
+        embedding_dim: int = 32,
+        dropout: float = 0.1,
+        edge_dim: int = 11,
+        proj_dim: int = 0,
+        gradient_checkpointing: bool = True,
+        compile_model: bool = False,
+        batch_norm: bool = True,
+        mlp_hidden: int | None = None,
+        id_encoder_class_path: str = "graphids.core.models.id_encoding.LookupIdEncoder",
+        id_encoder_kwargs: dict | None = None,
+        # --- training ---
+        lr: float = 0.003,
+        weight_decay: float = 0.0001,
+        mask_rate: float = 0.15,
+        # --- anomaly scoring (config-schema stability; calibrated max-σ
+        # path doesn't read these). ---
+        score_recon_weight: float = 1.0,
+        score_mahal_weight: float = 1.0,
+        score_kl_weight: float = 1.0,
+        # --- identity / dynamic ---
+        scale: str = "small",
+        model_type: ModelType = "vgae",
+        dataset: str = "",
+        seed: int = 42,
+        num_ids: int = 0,
+        in_channels: int = 0,
+        num_classes: int = 2,
     ):
         super().__init__()
+        self._init_threshold_metrics()
+        self.test_metrics = binary_test_metrics()
+        self._register_score_norm_buffers(latent_dim)
+        self._init_post(locals())
 
-        # Shared input encoding (ID encoder + optional projection)
+    # ------------------------------------------------------------------
+    # Construction
+    # ------------------------------------------------------------------
+
+    def _register_score_norm_buffers(self, latent_dim: int) -> None:
+        for name in ("recon", "mahal", "kl"):
+            self.register_buffer(f"score_{name}_mean", torch.tensor(0.0))
+            self.register_buffer(f"score_{name}_std", torch.tensor(1.0))
+        self.register_buffer("mu_mean", torch.zeros(latent_dim))
+        self.register_buffer("mu_std", torch.ones(latent_dim))
+        self.register_buffer("score_norm_fitted", torch.tensor(False))
+
+    def _build(self):
+        hp = self.hparams
+        # +1 vocab slot for the reserved mask_id (= num_ids).
+        id_encoder = self._build_id_encoder(num_ids_offset=1)
+        edge_dim = resolve_edge_dim(hp.conv_type, hp.edge_dim)
+
         self.input_encoder = InputEncoder(
             id_encoder=id_encoder,
-            in_channels=in_channels,
-            conv_type=conv_type,
+            in_channels=hp.in_channels,
+            conv_type=hp.conv_type,
             edge_dim=edge_dim,
-            proj_dim=proj_dim,
+            proj_dim=hp.proj_dim,
         )
-        self.dropout_rate = dropout
-        self.batch_norm = batch_norm
-        self.use_checkpointing = use_checkpointing
-        self.conv_type = conv_type
+        self.dropout_rate = hp.dropout
+        self.batch_norm = hp.batch_norm
+        self.use_checkpointing = hp.gradient_checkpointing
+        self.conv_type = hp.conv_type
         self._uses_edge_attr = self.input_encoder._uses_edge_attr
         self._edge_dim = self.input_encoder._edge_dim
-        self._proj_dim = proj_dim
-        self.in_channels = in_channels
+        self._proj_dim = hp.proj_dim
 
-        # Encoder conv stack (shared with DGI)
         gat_in_dim = self.input_encoder.out_dim
         self.gat_in_dim = gat_in_dim
         self.encoder_layers, self.encoder_bns, encoder_targets = build_encoder_stack(
-            hidden_dims,
-            latent_dim,
+            list(hp.hidden_dims) if hp.hidden_dims else None,
+            hp.latent_dim,
             gat_in_dim,
-            conv_type,
+            hp.conv_type,
             self._edge_dim,
-            encoder_heads=encoder_heads,
-            batch_norm=batch_norm,
+            encoder_heads=hp.heads,
+            batch_norm=hp.batch_norm,
         )
         self.latent_in_dim = encoder_targets[-1]
-        self.z_mean = nn.Linear(self.latent_in_dim, latent_dim)
-        self.z_logvar = nn.Linear(self.latent_in_dim, latent_dim)
+        self.z_mean = nn.Linear(self.latent_in_dim, hp.latent_dim)
+        self.z_logvar = nn.Linear(self.latent_in_dim, hp.latent_dim)
 
-        # Decoder: mirror of encoder, final layer outputs continuous features
         decoder_targets = list(reversed(encoder_targets))
-        decoder_targets[-1] = in_channels
+        decoder_targets[-1] = hp.in_channels
         self.decoder_layers, self.decoder_bns = build_conv_stack(
-            conv_type,
-            latent_dim,
+            hp.conv_type,
+            hp.latent_dim,
             decoder_targets,
             self._edge_dim,
-            heads_first=decoder_heads,
-            batch_norm=batch_norm,
+            heads_first=hp.heads,
+            batch_norm=hp.batch_norm,
         )
-        # Last decoder layer is linear (no BN)
-        if batch_norm and len(self.decoder_bns) == len(decoder_targets):
+        if hp.batch_norm and len(self.decoder_bns) == len(decoder_targets):
             self.decoder_bns = self.decoder_bns[:-1]
 
-        self.latent_dim = latent_dim
-        self.num_ids = num_ids
-
-        # Auxiliary training heads (NOT used at test scoring). They shape
-        # μ to encode CAN-ID identity + neighborhood structure during
-        # training. Inputs to both are the masked-input latent z, so each
-        # is a legitimate prediction task ("recover masked node's ID /
-        # neighbors from its neighbor context"), not an identity echo.
-        self.canid_classifier = nn.Linear(latent_dim, num_ids)
-        if mlp_hidden is None:
-            mlp_hidden = latent_dim
+        self.canid_classifier = nn.Linear(hp.latent_dim, hp.num_ids)
+        mlp_hidden = hp.mlp_hidden if hp.mlp_hidden is not None else hp.latent_dim
         self.neighborhood_decoder = nn.Sequential(
-            nn.Linear(latent_dim, mlp_hidden),
+            nn.Linear(hp.latent_dim, mlp_hidden),
             nn.ReLU(),
-            nn.Dropout(dropout),
+            nn.Dropout(hp.dropout),
             nn.Linear(mlp_hidden, mlp_hidden),
             nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(mlp_hidden, num_ids),
+            nn.Dropout(hp.dropout),
+            nn.Linear(mlp_hidden, hp.num_ids),
         )
 
-        # Frozen "this node is hidden" signal at the input layer. Zero-init
-        # + requires_grad=False because a learnable token would converge to
-        # the empirical mean of node features, defeating the purpose of
-        # masking. id_encoder side reserves slot num_ids for the same
-        # signal in identity space.
-        self.mask_token = nn.Parameter(torch.zeros(in_channels), requires_grad=False)
-        self.mask_id: int = num_ids
+        self.mask_token = nn.Parameter(torch.zeros(hp.in_channels), requires_grad=False)
+        self.mask_id: int = hp.num_ids
+
+        # Propagate true num_ids into the loss module (constructed with
+        # placeholder default before datamodule was attached).
+        task_loss = self._task_loss_module()
+        if hasattr(task_loss, "num_ids"):
+            task_loss.num_ids = hp.num_ids
+
+        if hp.compile_model:
+            from ..base import try_compile
+
+            try_compile(self, conv_type=hp.conv_type, dynamic=True)
+
+    def _task_loss_module(self) -> nn.Module:
+        """Return base VGAETaskLoss, unwrapping FeatureDistillation if present."""
+        return getattr(self.loss_fn, "base_loss", self.loss_fn)
+
+    @staticmethod
+    def _rebuild_excluded_kwargs(hp: dict) -> dict:
+        """Rebuild ``loss_fn`` from saved hp keys (loss_fn isn't pickleable)."""
+        from graphids.core.losses.build import _VGAE_LOSS_KEYS, build_loss
+
+        loss_cfg = {k: hp[k] for k in _VGAE_LOSS_KEYS if k in hp}
+        return {"loss_fn": build_loss("vgae", loss_cfg, distillation_config=None)}
+
+    # ------------------------------------------------------------------
+    # Architecture primitives
+    # ------------------------------------------------------------------
 
     def apply_random_mask(
         self, x: torch.Tensor, node_id: torch.Tensor, mask_rate: float = 0.15
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Replace ``mask_rate`` fraction of (x, node_id) rows with mask token + mask_id."""
         n = x.size(0)
         mask = torch.rand(n, device=x.device) < mask_rate
         x = x.clone()
@@ -159,10 +207,6 @@ class GraphAutoencoderNeighborhood(nn.Module):
         num_ids: int,
         k_neg: int = 32,
     ) -> torch.Tensor:
-        """Neighborhood BCE loss with negative sampling.
-
-        Memory: O(num_edges + num_nodes * k_neg) instead of O(num_nodes * num_ids).
-        """
         src, dst = edge_index
         dst_ids = node_id[dst]
         valid = (dst_ids >= 0) & (dst_ids < num_ids)
@@ -180,15 +224,7 @@ class GraphAutoencoderNeighborhood(nn.Module):
         return pos_loss + neg_loss
 
     def encode(self, x, edge_index, edge_attr=None, batch=None, node_id=None):
-        """Returns ``(z, kl_per_node, mu)``.
-
-        ``kl_per_node`` is per-node KL divergence (mean over latent dims).
-        Training loss takes ``.mean()`` for a scalar gradient; test-time
-        scoring scatter-means to per-graph for the KL anomaly axis.
-        ``mu`` is the encoder's mean output, pre-reparameterization —
-        used for Mahalanobis scoring (avoids reparam noise polluting
-        latent-density signal).
-        """
+        """Returns ``(z, kl_per_node, mu)``."""
         x = self.input_encoder(x, node_id)
         for i, conv in enumerate(self.encoder_layers):
             bn = self.encoder_bns[i] if self.batch_norm else None
@@ -204,9 +240,6 @@ class GraphAutoencoderNeighborhood(nn.Module):
                 use_checkpointing=self.use_checkpointing,
             )
         mu = self.z_mean(x)
-        # Clamp to ±10 so exp(logvar) stays inside fp16 range (~65504) under
-        # autocast — at ±20, exp(20)≈4.85e8 overflows fp16 and propagates NaN
-        # through the KL term during validation.
         logvar = self.z_logvar(x).clamp(-10, 10)
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
@@ -215,8 +248,8 @@ class GraphAutoencoderNeighborhood(nn.Module):
         return z, kl_per_node, mu
 
     def decode_node(self, z, edge_index, edge_attr=None, batch=None):
-        assert z.size(-1) == self.latent_dim, (
-            f"Expected {self.latent_dim}D input, got {z.size(-1)}D"
+        assert z.size(-1) == self.hparams.latent_dim, (
+            f"Expected {self.hparams.latent_dim}D input, got {z.size(-1)}D"
         )
         x = z
 
@@ -235,11 +268,6 @@ class GraphAutoencoderNeighborhood(nn.Module):
                     use_checkpointing=self.use_checkpointing,
                 )
             else:
-                # Last decoder layer — linear (no terminal nonlinearity).
-                # Inputs are z-score standardized to N(0,1), so output range
-                # must include negatives + values >1; matches AnomalyDAE /
-                # DOMINANT / GAD-NR convention for arbitrary-valued attribute
-                # decoders.
                 x = conv_forward(
                     conv,
                     x,
@@ -248,17 +276,219 @@ class GraphAutoencoderNeighborhood(nn.Module):
                     activation=None,
                     use_checkpointing=self.use_checkpointing,
                 )
-        return x  # cont_out, shape: [num_nodes, in_channels]
+        return x
 
-    def forward(self, x, edge_index, batch, edge_attr=None, node_id=None):
-        # 5-tuple: (cont_out, canid_logits, nbr_logits, z, kl_per_node).
-        # Aux logits are training-only; test scoring (_score in
-        # vgae_module) ignores them. Computing them on every forward
-        # adds two small linear/MLP heads on z — negligible vs the
-        # GAT encoder/decoder stack.
+    def _forward_tensors(self, x, edge_index, batch_idx, edge_attr=None, node_id=None):
+        """Tensor-form forward → 5-tuple. Used by callers with unpacked tensors."""
         ea = edge_attr if self._uses_edge_attr else None
-        z, kl_per_node, _mu = self.encode(x, edge_index, edge_attr=ea, batch=batch, node_id=node_id)
-        cont_out = self.decode_node(z, edge_index, edge_attr=ea, batch=batch)
+        z, kl_per_node, _mu = self.encode(
+            x, edge_index, edge_attr=ea, batch=batch_idx, node_id=node_id
+        )
+        cont_out = self.decode_node(z, edge_index, edge_attr=ea, batch=batch_idx)
         canid_logits = self.canid_classifier(z)
         nbr_logits = self.neighborhood_decoder(z)
         return cont_out, canid_logits, nbr_logits, z, kl_per_node
+
+    def forward(self, batch):
+        edge_attr = getattr(batch, "edge_attr", None)
+        return self._forward_tensors(
+            batch.x,
+            batch.edge_index,
+            batch.batch,
+            edge_attr=edge_attr,
+            node_id=batch.node_id,
+        )
+
+    def _masked_forward(self, batch):
+        """Training-shape random-masked forward. Returns (outputs, mask)."""
+        edge_attr = getattr(batch, "edge_attr", None)
+        x_m, nid_m, mask = self.apply_random_mask(
+            batch.x, batch.node_id, mask_rate=self.hparams.mask_rate
+        )
+        outputs = self._forward_tensors(
+            x_m, batch.edge_index, batch.batch, edge_attr=edge_attr, node_id=nid_m
+        )
+        return outputs, mask
+
+    def _per_graph_masked_recon(self, cont, x, mask, batch_idx):
+        from torch_geometric.utils import scatter
+
+        recon_per_node = (cont - x).pow(2).mean(dim=-1)
+        mask_f = mask.to(recon_per_node.dtype)
+        recon_sum = scatter(recon_per_node * mask_f, batch_idx, dim=0, reduce="sum")
+        mask_count = scatter(mask_f, batch_idx, dim=0, reduce="sum")
+        return recon_sum / mask_count.clamp(min=1.0)
+
+    # ------------------------------------------------------------------
+    # Trainer-bridge hooks
+    # ------------------------------------------------------------------
+
+    def _step(self, batch):
+        outputs, mask = self._masked_forward(batch)
+        return self.loss_fn(outputs, batch, mask=mask)
+
+    def _training_step_inner(self, batch, _idx):
+        outputs, mask = self._masked_forward(batch)
+        loss = self.loss_fn(outputs, batch, mask=mask)
+        bs = batch.num_graphs
+        self.log("train_loss", loss, batch_size=bs)
+
+        task_loss = self._task_loss_module()
+        if task_loss.last_recon is not None:
+            self.log("train_recon", task_loss.last_recon, batch_size=bs)
+            self.log("train_canid", task_loss.last_canid, batch_size=bs)
+            self.log("train_nbr", task_loss.last_nbr, batch_size=bs)
+            self.log("train_kl", task_loss.last_kl, batch_size=bs)
+
+        from graphids.core.losses.distillation import FeatureDistillation
+
+        if isinstance(self.loss_fn, FeatureDistillation):
+            if self.loss_fn.last_task_loss is not None:
+                self.log("train_task_loss", self.loss_fn.last_task_loss, batch_size=bs)
+            if self.loss_fn.last_kd_loss is not None:
+                self.log("train_kd_loss", self.loss_fn.last_kd_loss, batch_size=bs)
+        return loss
+
+    def validation_step(self, batch, _idx):
+        (cont, _canid, _nbr, _z, _kl), mask = self._masked_forward(batch)
+        recon = self._per_graph_masked_recon(cont, batch.x, mask, batch.batch)
+
+        bs = batch.num_graphs
+        self.log("val_loss", recon.mean(), batch_size=bs)
+
+        y = batch.y.view(-1)
+        sub: dict[str, torch.Tensor] = {}
+        for label, m in (("benign", y == 0), ("attack", y != 0)):
+            n = int(m.sum())
+            if not n:
+                continue
+            v = recon[m].mean()
+            self.log(f"val_loss_{label}", v, batch_size=n)
+            sub[label] = v
+        if "benign" in sub and "attack" in sub:
+            self.log("val_discrimination_gap", sub["attack"] - sub["benign"], batch_size=bs)
+            self.log(
+                "val_discrimination_ratio",
+                sub["attack"] / (sub["benign"] + 1e-6),
+                batch_size=bs,
+            )
+
+    def _score(self, batch) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        from torch_geometric.utils import scatter
+
+        edge_attr = getattr(batch, "edge_attr", None)
+        ea = edge_attr if self._uses_edge_attr else None
+
+        z, kl_per_node, mu = self.encode(
+            batch.x,
+            batch.edge_index,
+            edge_attr=ea,
+            batch=batch.batch,
+            node_id=batch.node_id,
+        )
+        mahal_per_node = ((mu - self.mu_mean) / self.mu_std.clamp(min=1e-3)).pow(2).sum(-1)
+
+        (cont, _canid, _nbr, _z2, _kl2), mask = self._masked_forward(batch)
+        recon = self._per_graph_masked_recon(cont, batch.x, mask, batch.batch)
+
+        mahal = scatter(mahal_per_node, batch.batch, dim=0, reduce="mean")
+        kl = scatter(kl_per_node, batch.batch, dim=0, reduce="mean")
+        return recon, mahal, kl, z
+
+    def extract_features(self, batch, device: torch.device) -> torch.Tensor:
+        """8-D fusion features: [recon, mahal, kl, z_mean, z_std, z_max, z_min, conf]."""
+        from torch_geometric.utils import scatter
+
+        recon, mahal, kl, z = self._score(batch)
+        b = batch.batch
+        z_mean = scatter(z.mean(1), b, dim=0, reduce="mean")
+        z_std = scatter(z.std(1), b, dim=0, reduce="mean")
+        z_max = scatter(z.max(1).values, b, dim=0, reduce="max")
+        z_min = scatter(z.min(1).values, b, dim=0, reduce="min")
+        conf = 1.0 / (1.0 + recon)
+        return torch.stack([recon, mahal, kl, z_mean, z_std, z_max, z_min, conf], dim=1)
+
+    def _per_graph_errors(self, batch):
+        if not bool(self.score_norm_fitted):
+            raise RuntimeError(
+                "VGAE scoring requires fit_score_norm() to have run. "
+                "If loading an old ckpt without mask_token, retrain under "
+                "the mask-recon code or use the legacy scoring path."
+            )
+        recon, mahal, kl, _z = self._score(batch)
+        eps = 1e-6
+        z_recon = (recon - self.score_recon_mean) / (self.score_recon_std + eps)
+        z_mahal = (mahal - self.score_mahal_mean) / (self.score_mahal_std + eps)
+        z_kl = (kl - self.score_kl_mean) / (self.score_kl_std + eps)
+        return torch.stack([z_recon, z_mahal, z_kl], dim=0).amax(dim=0)
+
+    @torch.no_grad()
+    def fit_score_norm(self, val_loader, device: torch.device) -> None:
+        """Two-pass calibration on benign val."""
+        from torch_geometric.data import Batch as PyGBatch
+
+        was_training = self.training
+        self.eval()
+
+        def _benign_subbatch(batch):
+            y = batch.y.view(-1)
+            benign_idx = (y == 0).nonzero(as_tuple=False).flatten().tolist()
+            if not benign_idx:
+                return None
+            return PyGBatch.from_data_list([batch.to_data_list()[i] for i in benign_idx])
+
+        mus: list[torch.Tensor] = []
+        for batch in val_loader:
+            batch = batch.clone().to(device)
+            sub = _benign_subbatch(batch)
+            if sub is None:
+                continue
+            ea = getattr(sub, "edge_attr", None) if self._uses_edge_attr else None
+            _z, _kl, mu = self.encode(
+                sub.x,
+                sub.edge_index,
+                edge_attr=ea,
+                batch=sub.batch,
+                node_id=sub.node_id,
+            )
+            mus.append(mu.cpu())
+        if not mus:
+            raise RuntimeError("fit_score_norm: no benign rows in val loader")
+        mu_all = torch.cat(mus, dim=0)
+        self.mu_mean.copy_(mu_all.mean(dim=0).to(self.mu_mean.device))
+        self.mu_std.copy_(mu_all.std(dim=0).clamp(min=1e-3).to(self.mu_std.device))
+
+        all_recon, all_mahal, all_kl = [], [], []
+        for batch in val_loader:
+            batch = batch.clone().to(device)
+            sub = _benign_subbatch(batch)
+            if sub is None:
+                continue
+            recon, mahal, kl, _z = self._score(sub)
+            all_recon.append(recon.cpu())
+            all_mahal.append(mahal.cpu())
+            all_kl.append(kl.cpu())
+
+        if was_training:
+            self.train()
+
+        if len(all_recon) == 0 or sum(len(t) for t in all_recon) < 100:
+            n = sum(len(t) for t in all_recon)
+            raise RuntimeError(f"fit_score_norm: need >=100 benign val graphs, got {n}")
+        for name, vals in (("recon", all_recon), ("mahal", all_mahal), ("kl", all_kl)):
+            cat = torch.cat(vals)
+            getattr(self, f"score_{name}_mean").copy_(cat.mean())
+            getattr(self, f"score_{name}_std").copy_(cat.std())
+        self.score_norm_fitted.fill_(True)
+
+    def test_step(self, batch, _idx, dataloader_idx=0):
+        errors = self._per_graph_errors(batch)
+        self.roc_metric.update(errors.detach(), batch.y.detach())
+        self._record_test_batch(dataloader_idx, scores=errors, labels=batch.y)
+
+    def on_test_epoch_end(self):
+        self._log_thresholded_metrics()
+
+    def predict_step(self, batch, _idx):
+        errors = self._per_graph_errors(batch)
+        return {"errors": errors, "labels": batch.y}

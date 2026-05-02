@@ -84,9 +84,9 @@ class VGAETaskLoss(nn.Module):
             canid = F.cross_entropy(canid_logits, batch.node_id)
             nbr_edge_index = batch.edge_index
 
-        from graphids.core.models.autoencoder.vgae import GraphAutoencoderNeighborhood
+        from graphids.core.models.autoencoder.vgae import VGAE
 
-        nbr_loss = GraphAutoencoderNeighborhood.neighborhood_loss_negsampled(
+        nbr_loss = VGAE.neighborhood_loss_negsampled(
             nbr_logits,
             batch.node_id,
             nbr_edge_index,

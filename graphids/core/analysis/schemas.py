@@ -51,8 +51,11 @@ ARTIFACTS_BY_MODEL_TYPE: dict[str, dict[str, bool | int | float]] = {
 # and read by ``safe_load_checkpoint`` — no drift risk.
 _CLASS_PATH_TO_MODEL_TYPE: tuple[tuple[str, str], ...] = (
     ("vgae_module", "vgae"),
+    ("autoencoder.vgae.VGAE", "vgae"),
     ("dgi_module", "dgi"),
+    ("autoencoder.dgi.DGI", "dgi"),
     ("gat_module", "gat"),
+    ("supervised.gat.GAT", "gat"),
     ("BanditFusion", "fusion"),
     ("DQNFusion", "fusion"),
     ("MLPFusion", "fusion"),

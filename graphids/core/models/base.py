@@ -7,7 +7,7 @@ Graph family:
 
 Shared:
 - ``binary_test_metrics`` — standard MetricCollection for all families
-- ``safe_load_checkpoint`` / ``load_inner_model`` — checkpoint loading registry
+- ``safe_load_checkpoint`` — checkpoint loading via class_path registry
 - ``LAYOUT`` / ``STATE_DIM`` / ``FeatureLayout`` — fusion state vector contract
 - ``schema_for`` auto-generated Pydantic model configs
 """
@@ -168,14 +168,19 @@ class GraphModuleBase(_LoggingModule):
     # -- setup + optimizers --------------------------------------------------
 
     def setup(self, datamodule=None):
-        if self.model is None and datamodule is not None:
-            # Write to self directly: ``self.hparams`` is a computed
-            # property — assigning ``self.hparams.x = v`` would land on a
-            # throwaway SimpleNamespace.
-            self.num_ids = datamodule.num_ids
-            self.in_channels = datamodule.in_channels
-            self.num_classes = datamodule.num_classes
-            self._build()
+        if datamodule is not None:
+            already_built = getattr(self, "_built", False) or (
+                getattr(self, "model", "_sentinel") not in (None, "_sentinel")
+            )
+            if not already_built:
+                # Write to self directly: ``self.hparams`` is a computed
+                # property — assigning ``self.hparams.x = v`` would land on a
+                # throwaway SimpleNamespace.
+                self.num_ids = datamodule.num_ids
+                self.in_channels = datamodule.in_channels
+                self.num_classes = datamodule.num_classes
+                self._build()
+                self._built = True
         if datamodule is not None:
             # Capture test-set names for per-loader metric breakdowns (issue #26).
             # Falls back to a single "test" bucket for datamodules that don't
@@ -185,6 +190,43 @@ class GraphModuleBase(_LoggingModule):
 
     def _build(self):
         raise NotImplementedError
+
+    def _init_post(self, locals_dict: dict) -> None:
+        """Default ``__init__`` tail for collapsed-arch subclasses.
+
+        Mirrors declared kwargs onto ``self`` (via ``_store_init_kwargs``),
+        normalizes ``id_encoder_kwargs`` (None → {}), and lazy-builds when
+        ``num_ids`` is already known (e.g. tests instantiate without a
+        datamodule). Sets ``self._built`` so ``setup()`` doesn't re-build.
+        """
+        self._store_init_kwargs(locals_dict)
+        if hasattr(self, "id_encoder_kwargs"):
+            self.id_encoder_kwargs = self.id_encoder_kwargs or {}
+        self._built = False
+        if int(getattr(self, "num_ids", 0)) > 0:
+            self._build()
+            self._built = True
+
+    def _build_id_encoder(self, *, num_ids_offset: int = 0):
+        """Construct the ID encoder from ``self.hparams`` settings.
+
+        ``num_ids_offset`` adds reserved vocab slots (e.g. VGAE's mask_id).
+        """
+        from .id_encoding import build_encoder
+
+        hp = self.hparams
+        return build_encoder(
+            hp.id_encoder_class_path,
+            hp.num_ids + num_ids_offset,
+            hp.embedding_dim,
+            **(getattr(hp, "id_encoder_kwargs", None) or {}),
+        )
+
+    def _training_step_inner(self, batch, batch_idx):
+        raise NotImplementedError
+
+    def training_step(self, batch, batch_idx):
+        return self._oom_safe_step(batch, batch_idx, self._training_step_inner)
 
     def build_optimizers(self, max_epochs: int) -> tuple[torch.optim.Optimizer | None, Any]:
         """Return ``(optimizer, scheduler_or_None)``. Called by Trainer."""
@@ -428,39 +470,43 @@ def safe_load_checkpoint(model_type: str, ckpt_path, *, map_location="cpu"):
             f"Checkpoint {ckpt_path} missing 'class_path'. Re-train with the "
             "current callbacks.ModelCheckpoint to produce self-describing checkpoints."
         )
+    # Legacy class_path remap: the *_module.py wrappers were collapsed into
+    # the arch class file (Phase 1+2). Old ckpts saved the wrapper path; new
+    # code only ships the collapsed class.
+    _LEGACY_CLASS_PATHS = {
+        "graphids.core.models.autoencoder.vgae_module.VGAEModule": "graphids.core.models.autoencoder.vgae.VGAE",
+        "graphids.core.models.autoencoder.dgi_module.DGIModule": "graphids.core.models.autoencoder.dgi.DGI",
+        "graphids.core.models.supervised.gat_module.GATModule": "graphids.core.models.supervised.gat.GAT",
+    }
+    dotted = _LEGACY_CLASS_PATHS.get(dotted, dotted)
     module_path, cls_name = dotted.rsplit(".", 1)
     cls = getattr(importlib.import_module(module_path), cls_name)
 
     hp = ckpt.get("hyper_parameters", {})
 
-    # Rebuild loss_fn for models that exclude it from hyperparameters
-    extra_kwargs: dict = {}
-    if model_type in {"vgae", "gat"}:
-        from graphids.core.losses.build import _VGAE_LOSS_KEYS, build_loss
-
-        if model_type == "vgae":
-            loss_cfg = {k: hp[k] for k in _VGAE_LOSS_KEYS if k in hp}
-        else:
-            loss_cfg = hp.get("loss_config")
-        extra_kwargs["loss_fn"] = build_loss(model_type, loss_cfg, distillation_config=None)
+    # Per-class hook for rebuilding excluded init kwargs (e.g. ``loss_fn``,
+    # which can't be pickled into ``hyper_parameters``). Each class that needs
+    # something rebuilt declares ``_rebuild_excluded_kwargs(hp) -> dict`` as a
+    # classmethod or staticmethod. Default: nothing extra.
+    rebuild = getattr(cls, "_rebuild_excluded_kwargs", None)
+    extra_kwargs: dict = rebuild(hp) if rebuild is not None else {}
 
     # Reconstruct the module with saved hyperparameters
     init_kwargs = {**hp, **extra_kwargs}
     module = cls(**init_kwargs)
-    module.load_state_dict(ckpt["state_dict"])
+    state_dict = ckpt["state_dict"]
+    # Old wrapper ckpts prefixed every key with ``model.`` (the
+    # ``self.model = nn.Module(...)`` indirection collapsed away). Strip when
+    # the loaded class declares no top-level ``model`` attribute — there's
+    # no key collision because the new layer names don't start with ``model.``.
+    if not hasattr(module, "model") and any(k.startswith("model.") for k in state_dict):
+        state_dict = {k.removeprefix("model."): v for k, v in state_dict.items()}
+    module.load_state_dict(state_dict)
 
     if hasattr(module, "on_load_checkpoint"):
         module.on_load_checkpoint(ckpt)
 
     return module
-
-
-def load_inner_model(model_type: str, ckpt_path, device) -> tuple[nn.Module, object]:
-    """Load checkpoint, return (inner nn.Module on device in eval, hparams cfg)."""
-    module = safe_load_checkpoint(model_type, ckpt_path)
-    model = module.model
-    model.to(device).eval()
-    return model, module.hparams
 
 
 # ---------------------------------------------------------------------------

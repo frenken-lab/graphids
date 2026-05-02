@@ -27,7 +27,8 @@ VAL_FILENAME = "val_states.pt"
 # columns swapped from [recon, nbr, canid, ...] to [recon, mahal, kl, ...].
 # Old cached files are silently incompatible by content; the version field
 # forces one-time regen instead of pretending to load them.
-CACHE_VERSION = 2
+CACHE_VERSION = 3  # bumped for VGAE/DGI/GAT module collapse — extract_features
+# call path changed (no .model wrapper), regenerate caches.
 
 
 def extract_states(

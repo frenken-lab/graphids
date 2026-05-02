@@ -2,7 +2,7 @@
 
 Family-oriented namespaces:
 
-    from graphids.core.models.autoencoder import VGAEModule, DGIModule
+    from graphids.core.models.autoencoder import VGAE, DGI
     from graphids.core.models.supervised import GATModule
     from graphids.core.models.fusion import BanditFusionModule, DQNFusionModule
 

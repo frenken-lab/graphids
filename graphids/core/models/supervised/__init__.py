@@ -1,6 +1,5 @@
 """Supervised graph model family exports."""
 
-from .gat import GATWithJK
-from .gat_module import GATModule
+from .gat import GAT
 
-__all__ = ["GATWithJK", "GATModule"]
+__all__ = ["GAT"]

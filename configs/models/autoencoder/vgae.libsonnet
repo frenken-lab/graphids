@@ -11,7 +11,7 @@ local _scales = {
 function(scale='small', conv_type='gatv2', mask_rate=0.15, lr=0.002)
   {
     model: {
-      class_path: 'graphids.core.models.autoencoder.vgae_module.VGAEModule',
+      class_path: 'graphids.core.models.autoencoder.vgae.VGAE',
       init_args: {
         conv_type: conv_type,
         edge_dim: 11,

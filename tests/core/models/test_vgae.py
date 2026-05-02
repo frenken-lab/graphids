@@ -1,4 +1,10 @@
-"""VGAE + GPS conv: architecture, forward pass, gradient flow, checkpoint roundtrip."""
+"""VGAE: architecture, forward pass, gradient flow, checkpoint roundtrip.
+
+After the Phase-1 collapse, ``VGAE`` is the single class — arch + trainer
+bridge in one ``nn.Module``. Tensor-form forward is exposed as
+``_forward_tensors`` (used by the curriculum scorer and these unit
+tests); ``forward(batch)`` is the trainer-facing entry point.
+"""
 
 from __future__ import annotations
 
@@ -15,33 +21,41 @@ from conftest import (
 from torch_geometric.loader import DataLoader
 
 
+def _make_vgae(*, conv_type: str = "gatv2", **overrides):
+    from graphids.core.losses.autoencoder import VGAETaskLoss
+    from graphids.core.models.autoencoder.vgae import VGAE
+
+    kwargs = dict(
+        loss_fn=VGAETaskLoss(),
+        hidden_dims=[32, 16],
+        latent_dim=16,
+        heads=2,
+        embedding_dim=4,
+        dropout=0.0,
+        conv_type=conv_type,
+        edge_dim=EDGE_DIM,
+        proj_dim=0,
+        num_ids=NUM_IDS,
+        in_channels=IN_CHANNELS,
+        gradient_checkpointing=False,
+        compile_model=False,
+    )
+    kwargs.update(overrides)
+    return VGAE(**kwargs)
+
+
 class TestVGAEConvTypes:
     """Forward pass, gradient flow, and variable-size graphs for each conv type."""
 
     @pytest.fixture(params=["gatv2", "gps"], ids=["gatv2", "gps"])
     def model_and_conv(self, request):
-        from graphids.core.models.autoencoder.vgae import GraphAutoencoderNeighborhood
-        from graphids.core.models.id_encoding import LookupIdEncoder
-
-        m = GraphAutoencoderNeighborhood(
-            id_encoder=LookupIdEncoder(num_ids=NUM_IDS, embedding_dim=4),
-            num_ids=NUM_IDS,
-            in_channels=IN_CHANNELS,
-            hidden_dims=[32, 16],
-            latent_dim=16,
-            encoder_heads=2,
-            dropout=0.0,
-            conv_type=request.param,
-            edge_dim=EDGE_DIM,
-            proj_dim=0,
-        )
-        return m, request.param
+        return _make_vgae(conv_type=request.param), request.param
 
     def test_forward_shapes(self, model_and_conv):
         model, _ = model_and_conv
         batch = make_batch(3)
         n = batch.x.size(0)
-        cont, canid_logits, nbr_logits, z, kl = model(
+        cont, canid_logits, nbr_logits, z, kl = model._forward_tensors(
             batch.x,
             batch.edge_index,
             batch.batch,
@@ -52,30 +66,25 @@ class TestVGAEConvTypes:
         assert canid_logits.shape == (n, NUM_IDS)
         assert nbr_logits.shape == (n, NUM_IDS)
         assert z.shape[0] == n
-        # kl is per-node (mean over latent dims) so per-graph KL can be
-        # scatter-aggregated at test time.
         assert kl.shape == (n,)
 
     def test_gradient_flow(self, model_and_conv):
         model, conv_type = model_and_conv
         batch = make_batch(2)
-        cont, canid_logits, nbr_logits, _z, kl = model(
+        cont, canid_logits, nbr_logits, _z, kl = model._forward_tensors(
             batch.x,
             batch.edge_index,
             batch.batch,
             edge_attr=batch.edge_attr,
             node_id=batch.node_id,
         )
-        # Gradient-flow verification (not training — raw autograd check).
-        # mask_token is a frozen Parameter (requires_grad=False) so it is
-        # excluded from the dead-grad sweep below. Sum all four head
-        # outputs so canid_classifier + neighborhood_decoder weights also
-        # see gradient.
         torch.autograd.backward(cont.sum() + canid_logits.sum() + nbr_logits.sum() + kl.sum())
         # GPS encoder_bns have no gradient by design (batch norm in GPS path).
         # mask_token by design has requires_grad=False.
+        # torchmetrics modules (roc_metric, test_metrics) have no learnable
+        # params either.
         exclude = {"encoder_bns"} if conv_type == "gps" else set()
-        exclude.add("mask_token")
+        exclude.update({"mask_token", "roc_metric", "test_metrics"})
         dead = [
             n
             for n, p in model.named_parameters()
@@ -86,7 +95,7 @@ class TestVGAEConvTypes:
     def test_variable_size_graphs(self, model_and_conv):
         model, _ = model_and_conv
         batch = make_variable_batch([3, 15])
-        out = model(
+        out = model._forward_tensors(
             batch.x,
             batch.edge_index,
             batch.batch,
@@ -99,20 +108,12 @@ class TestVGAEConvTypes:
 @pytest.mark.slow
 class TestVGAEFastDevRun:
     def test_vgae(self, vgae_cfg):
-        """INVARIANT: VGAEModule.training_step produces a finite, backpropagable loss."""
-        from graphids.core.losses.autoencoder import VGAETaskLoss
-        from graphids.core.models.autoencoder.vgae_module import VGAEModule
-
-        module = VGAEModule(
+        """INVARIANT: VGAE.training_step produces a finite, backpropagable loss."""
+        module = _make_vgae(
             hidden_dims=vgae_cfg.hidden_dims,
             latent_dim=vgae_cfg.latent_dim,
             heads=vgae_cfg.heads,
             embedding_dim=vgae_cfg.embedding_dim,
-            loss_fn=VGAETaskLoss(),
-            num_ids=NUM_IDS,
-            in_channels=IN_CHANNELS,
-            gradient_checkpointing=False,
-            compile_model=False,
         )
         module.train()
         batch = make_batch(4)
@@ -125,25 +126,11 @@ class TestVGAEFastDevRun:
 
 class TestVGAECheckpointRoundtrip:
     def test_save_load_produces_identical_output(self, tmp_path):
-        from graphids.core.losses.autoencoder import VGAETaskLoss
-        from graphids.core.models.autoencoder.vgae_module import VGAEModule
-
-        kwargs = dict(
-            hidden_dims=[32, 16],
-            latent_dim=16,
-            heads=2,
-            embedding_dim=4,
-            loss_fn=VGAETaskLoss(),
-            num_ids=NUM_IDS,
-            in_channels=IN_CHANNELS,
-            gradient_checkpointing=False,
-            compile_model=False,
-        )
-        m1 = VGAEModule(**kwargs)
+        m1 = _make_vgae()
         m1.eval()
         torch.save(m1.state_dict(), tmp_path / "v.ckpt")
 
-        m2 = VGAEModule(**kwargs)
+        m2 = _make_vgae()
         m2.load_state_dict(torch.load(tmp_path / "v.ckpt", weights_only=True))
         m2.eval()
 

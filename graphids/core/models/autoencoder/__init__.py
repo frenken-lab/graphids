@@ -1,13 +1,6 @@
 """Autoencoder/self-supervised model family exports."""
 
-from .dgi import GraphInfomaxModel
-from .dgi_module import DGIModule
-from .vgae import GraphAutoencoderNeighborhood
-from .vgae_module import VGAEModule
+from .dgi import DGI
+from .vgae import VGAE
 
-__all__ = [
-    "GraphAutoencoderNeighborhood",
-    "VGAEModule",
-    "GraphInfomaxModel",
-    "DGIModule",
-]
+__all__ = ["VGAE", "DGI"]

@@ -105,7 +105,8 @@ class Analyzer:
         # Load model from checkpoint (with migration guard)
         module = safe_load_checkpoint(self.model_type, self.ckpt_path, map_location=device)
         with eval_mode(module):
-            model = module.model
+            # All families collapsed — the loaded module IS the model.
+            model = module
             hparams = module.hparams
 
             # Load validation data

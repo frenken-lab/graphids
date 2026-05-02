@@ -1,5 +1,5 @@
 // DGI model primitive — contrastive-pretraining unsupervised architecture.
-// OCGIN-style centroid scoring at test time (see DGIModule docstring).
+// OCGIN-style centroid scoring at test time (see DGI docstring).
 
 local _scales = {
   small: { latent_dim: 48, embedding_dim: 32, heads: 4 },
@@ -9,7 +9,7 @@ local _scales = {
 function(scale='small', conv_type='gatv2', dropout=0.15, lr=0.001)
   {
     model: {
-      class_path: 'graphids.core.models.autoencoder.dgi_module.DGIModule',
+      class_path: 'graphids.core.models.autoencoder.dgi.DGI',
       init_args: {
         conv_type: conv_type,
         edge_dim: 11,

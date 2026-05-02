@@ -10,7 +10,7 @@ local _scales = {
 function(scale='small', conv_type='gatv2', dropout=0.3, lr=0.001)
   {
     model: {
-      class_path: 'graphids.core.models.supervised.gat_module.GATModule',
+      class_path: 'graphids.core.models.supervised.gat.GAT',
       init_args: {
         conv_type: conv_type,
         edge_dim: 11,

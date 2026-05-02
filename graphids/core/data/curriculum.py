@@ -19,6 +19,7 @@ Config format (consistent with the rest of the repo): scorer specs use
 from __future__ import annotations
 
 import gc
+import importlib
 import math
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -64,9 +65,9 @@ class VGAEScorer:
         from torch_geometric.loader import DataLoader as PyGDataLoader
         from torch_geometric.utils import scatter
 
-        from graphids.core.models.base import load_inner_model
+        from graphids.core.models.base import safe_load_checkpoint
 
-        vgae, _ = load_inner_model("vgae", Path(self.ckpt_path), torch.device("cpu"))
+        vgae = safe_load_checkpoint("vgae", Path(self.ckpt_path), map_location="cpu")
         try:
             device = next(vgae.parameters()).device
             was_training = vgae.training
@@ -75,14 +76,7 @@ class VGAEScorer:
                 scores: list[float] = []
                 for batch in PyGDataLoader(graphs, batch_size=500):
                     batch = batch.clone().to(device, non_blocking=True)
-                    edge_attr = getattr(batch, "edge_attr", None)
-                    cont, _z, _kl = vgae(
-                        batch.x,
-                        batch.edge_index,
-                        batch.batch,
-                        edge_attr=edge_attr,
-                        node_id=batch.node_id,
-                    )
+                    cont, _canid, _nbr, _z, _kl = vgae(batch)
                     node_mse = (cont - batch.x).pow(2).mean(dim=1)
                     graph_mse = scatter(node_mse, batch.batch, reduce="mean")
                     scores.extend(graph_mse.tolist())
