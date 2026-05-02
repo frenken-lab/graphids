@@ -56,9 +56,9 @@ class Analyzer:
         gat_ckpt_path: str = "",
     ):
         if lake_root is None:
-            from graphids.config.settings import get_settings
+            from graphids.config.catalog import lake_root as _lake_root
 
-            lake_root = get_settings().lake_root
+            lake_root = _lake_root()
         self.ckpt_path = ckpt_path
         self.dataset = dataset
         self.model_type = model_type

@@ -29,6 +29,18 @@ from .constants import DATASET_REGISTRY_PATH, PREPROCESSING_VERSION
 # ---------------------------------------------------------------------------
 
 
+def lake_root() -> str:
+    """Resolve `$GRAPHIDS_LAKE_ROOT`, fail-fast if unset.
+
+    Cross-user shared root: holds mlflow.db, cache/, mlartifacts/,
+    slurm_logs/. Distinct from `$GRAPHIDS_RUN_ROOT` (per-user run writes).
+    """
+    lr = os.environ.get("GRAPHIDS_LAKE_ROOT")
+    if not lr:
+        raise RuntimeError("GRAPHIDS_LAKE_ROOT unset — set it to the shared data lake root")
+    return lr
+
+
 def data_dir(lake_root: str, dataset: str) -> Path:
     """Path to raw CSVs for a dataset: ``{lake_root}/raw/{dataset}``."""
     return Path(lake_root) / "raw" / dataset

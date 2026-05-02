@@ -34,29 +34,61 @@ _log = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Init-kwarg storage helper — shared by GraphModuleBase + FusionModuleBase
+# Logging mixin — shared base for GraphModuleBase + FusionModuleBase
 # ---------------------------------------------------------------------------
 
 
-def store_init_kwargs(obj: nn.Module, locals_dict: dict) -> None:
-    """Mirror every ``__init__`` kwarg from ``locals()`` onto ``obj``.
+class _LoggingModule(nn.Module):
+    """Shared infra for every model module: metric accumulator, device
+    tracker, init-kwarg mirroring, ``hparams`` snapshot, ``log``/``log_dict``.
 
-    Replaces the per-subclass ``self.X = X`` setattr block. Pair with the
-    inspect-driven ``hparams`` property which reads the same signature
-    back. Call from the subclass ``__init__`` immediately after
-    ``super().__init__()``; computed defaults (e.g.
-    ``self.id_encoder_kwargs = self.id_encoder_kwargs or {}``) and derived
-    attrs (``self.model = None``, ``test_metrics``, ``_build()``) stay
-    explicit afterward.
+    Subclasses call ``self._store_init_kwargs(locals())`` from their own
+    ``__init__`` immediately after ``super().__init__()`` to mirror every
+    declared kwarg onto ``self`` and cache the param-name list for cheap
+    ``hparams`` reads. ``nn.Module`` values are skipped from ``hparams``
+    (they belong in state_dict, not the hparams blob).
     """
-    import inspect
 
-    sig = inspect.signature(type(obj).__init__)
-    for name in sig.parameters:
-        if name == "self":
-            continue
-        if name in locals_dict:
-            setattr(obj, name, locals_dict[name])
+    def __init__(self) -> None:
+        super().__init__()
+        self._metric_acc = MetricAccumulator()
+        # Non-persistent buffer that tracks device through .to()/.cuda()/.cpu()
+        # — robust even for parameter-free modules (HF Transformers pattern).
+        self.register_buffer("_device_tracker", torch.empty(0), persistent=False)
+        self._hparam_names: tuple[str, ...] = ()
+
+    def _store_init_kwargs(self, locals_dict: dict) -> None:
+        import inspect
+
+        sig = inspect.signature(type(self).__init__)
+        names = tuple(n for n in sig.parameters if n != "self")
+        for n in names:
+            if n in locals_dict:
+                setattr(self, n, locals_dict[n])
+        self._hparam_names = names
+
+    @property
+    def hparams(self) -> SimpleNamespace:
+        ns: dict[str, Any] = {}
+        for name in self._hparam_names:
+            val = getattr(self, name, None)
+            if isinstance(val, nn.Module):
+                continue
+            ns[name] = val
+        return SimpleNamespace(**ns)
+
+    @property
+    def device(self) -> torch.device:
+        return self._device_tracker.device
+
+    def log(self, name: str, value: Any, *, batch_size: int = 1, **_kwargs) -> None:
+        """Store a metric for the trainer to read after this step."""
+        v = float(value.detach()) if isinstance(value, torch.Tensor) else float(value)
+        self._metric_acc.update(name, v, batch_size)
+
+    def log_dict(self, metrics: dict[str, Any], **kwargs) -> None:
+        for k, v in metrics.items():
+            self.log(k, v, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +156,7 @@ class BinaryYoudenJThreshold(Metric):
 # ---------------------------------------------------------------------------
 
 
-class GraphModuleBase(nn.Module):
+class GraphModuleBase(_LoggingModule):
     """Shared base for VGAE, GAT, DGI — lazy setup, OOM guard, threshold metrics.
 
     Subclasses must implement ``_build()`` which constructs ``self.model`` and any
@@ -132,56 +164,6 @@ class GraphModuleBase(nn.Module):
     """
 
     automatic_optimization = True
-
-    @property
-    def hparams(self) -> SimpleNamespace:
-        """Snapshot of the declared ``__init__`` params, read from ``self``.
-
-        Subclasses assign each ``__init__`` argument to ``self`` explicitly
-        (``self.conv_type = conv_type`` etc.). This property reads them back
-        via ``inspect.signature(type(self).__init__)`` — standard signature
-        introspection, not frame inspection. ``nn.Module`` values (e.g. a
-        ``loss_fn`` argument) are skipped: they belong in the state_dict,
-        not the hparams blob.
-        """
-        import inspect
-
-        sig = inspect.signature(type(self).__init__)
-        ns: dict[str, Any] = {}
-        for name in sig.parameters:
-            if name == "self":
-                continue
-            val = getattr(self, name, None)
-            if isinstance(val, nn.Module):
-                continue
-            ns[name] = val
-        return SimpleNamespace(**ns)
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._metric_acc = MetricAccumulator()
-        # Non-persistent buffer that tracks device through .to()/.cuda()/.cpu()
-        # — robust even for parameter-free modules (HF Transformers pattern).
-        self.register_buffer("_device_tracker", torch.empty(0), persistent=False)
-
-    def _store_init_kwargs(self, locals_dict: dict) -> None:
-        """See :func:`store_init_kwargs`."""
-        store_init_kwargs(self, locals_dict)
-
-    @property
-    def device(self) -> torch.device:
-        return self._device_tracker.device
-
-    # -- logging (replaces pl self.log / self.log_dict) ----------------------
-
-    def log(self, name: str, value: Any, *, batch_size: int = 1, **_kwargs) -> None:
-        """Store a metric for the trainer to read after this step."""
-        v = float(value.detach()) if isinstance(value, torch.Tensor) else float(value)
-        self._metric_acc.update(name, v, batch_size)
-
-    def log_dict(self, metrics: dict[str, Any], **kwargs) -> None:
-        for k, v in metrics.items():
-            self.log(k, v, **kwargs)
 
     # -- setup + optimizers --------------------------------------------------
 
@@ -416,124 +398,10 @@ def eval_mode(model):
         model.train(was_training)
 
 
-def classification_test_metrics(num_classes: int):
-    """Unified classifier-flavor test metrics — aggregate, macro, weighted, per-class.
-
-    Contract: ``update(probs, target)`` where ``probs`` is ``(N, K)`` float in the
-    simplex and ``target`` is ``(N,)`` long. Decision metrics (accuracy/F1/
-    precision/recall/specificity/MCC) argmax internally; curve metrics
-    (AUROC/AP/ECE) consume the raw probabilities.
-
-    Per-class decomposition uses ``ClasswiseWrapper`` — its dict return is
-    merged flat into ``MetricCollection.compute()``, so ``log_dict(compute())``
-    just works. Missing classes return 0 for their F1 (torchmetrics `#1494
-    <https://github.com/Lightning-AI/torchmetrics/issues/1494>`_), which pulls
-    the macro down; report ``weighted`` alongside ``macro``.
-    """
-    from torchmetrics import MetricCollection
-    from torchmetrics.classification import (
-        MulticlassAccuracy,
-        MulticlassAUROC,
-        MulticlassAveragePrecision,
-        MulticlassCalibrationError,
-        MulticlassF1Score,
-        MulticlassMatthewsCorrCoef,
-        MulticlassPrecision,
-        MulticlassRecall,
-        MulticlassSpecificity,
-    )
-    from torchmetrics.wrappers import ClasswiseWrapper
-
-    labels = (
-        ["benign", "attack"] if num_classes == 2 else [f"class_{i}" for i in range(num_classes)]
-    )
-    k = {"num_classes": num_classes}
-
-    def cw(metric, prefix):
-        return ClasswiseWrapper(metric, labels=labels, prefix=prefix)
-
-    return MetricCollection(
-        {
-            # Aggregate scalars — no per-class ambiguity.
-            "accuracy": MulticlassAccuracy(**k, average="micro"),
-            "mcc": MulticlassMatthewsCorrCoef(**k),
-            "ece": MulticlassCalibrationError(**k),
-            # Macro + weighted averages.
-            "f1_macro": MulticlassF1Score(**k, average="macro"),
-            "f1_weighted": MulticlassF1Score(**k, average="weighted"),
-            "precision_macro": MulticlassPrecision(**k, average="macro"),
-            "precision_weighted": MulticlassPrecision(**k, average="weighted"),
-            "recall_macro": MulticlassRecall(**k, average="macro"),
-            "recall_weighted": MulticlassRecall(**k, average="weighted"),
-            "specificity_macro": MulticlassSpecificity(**k, average="macro"),
-            "specificity_weighted": MulticlassSpecificity(**k, average="weighted"),
-            "auc_macro": MulticlassAUROC(**k, average="macro"),
-            "auc_weighted": MulticlassAUROC(**k, average="weighted"),
-            "ap_macro": MulticlassAveragePrecision(**k, average="macro", thresholds=None),
-            "ap_weighted": MulticlassAveragePrecision(**k, average="weighted", thresholds=None),
-            # Per-class — ClasswiseWrapper expands into class-named keys.
-            "f1_pc": cw(MulticlassF1Score(**k, average=None), "f1_per_class/"),
-            "precision_pc": cw(MulticlassPrecision(**k, average=None), "precision_per_class/"),
-            "recall_pc": cw(MulticlassRecall(**k, average=None), "recall_per_class/"),
-            "specificity_pc": cw(
-                MulticlassSpecificity(**k, average=None), "specificity_per_class/"
-            ),
-            "auc_pc": cw(MulticlassAUROC(**k, average=None), "auc_per_class/"),
-            "ap_pc": cw(
-                MulticlassAveragePrecision(**k, average=None, thresholds=None),
-                "pr_auc_per_class/",
-            ),
-        }
-    )
-
-
-def binary_test_metrics(threshold: float = 0.5):
-    """Standard binary classification MetricCollection shared by all modules.
-
-    Contract: ``update(preds, target)`` expects ``preds`` to be a **float**
-    tensor of probabilities in [0, 1] (or logits) and ``target`` to be
-    long/int. Curve metrics (AUROC, AP, ECE) validate this and raise on int
-    preds. The hard-pred metrics (accuracy/f1/precision/recall/specificity/
-    MCC) apply ``threshold`` internally. Passing already-thresholded int
-    preds is wrong: it crashes the curve metrics.
-
-    ``threshold`` is forwarded to every metric that accepts it. For
-    threshold-flavor models (VGAE/DGI), rebuild the collection after
-    Youden-J discovery; for fusion models, pass the agent's
-    ``decision_threshold`` at construction time.
-
-    MCC is the chance-corrected summary for imbalanced binary data (CAN
-    intrusion is ~1% positive). AP (area under PR curve) is the correct
-    curve metric for imbalanced data. ECE measures probability calibration
-    — meaningful only on classifier scores in [0, 1].
-    """
-    from torchmetrics import MetricCollection
-    from torchmetrics.classification import (
-        BinaryAccuracy,
-        BinaryAUROC,
-        BinaryAveragePrecision,
-        BinaryCalibrationError,
-        BinaryF1Score,
-        BinaryMatthewsCorrCoef,
-        BinaryPrecision,
-        BinaryRecall,
-        BinarySpecificity,
-    )
-
-    return MetricCollection(
-        {
-            "accuracy": BinaryAccuracy(threshold=threshold),
-            "f1": BinaryF1Score(threshold=threshold),
-            "precision": BinaryPrecision(threshold=threshold),
-            "recall": BinaryRecall(threshold=threshold),
-            "specificity": BinarySpecificity(threshold=threshold),
-            "mcc": BinaryMatthewsCorrCoef(threshold=threshold),
-            "auc": BinaryAUROC(),
-            "ap": BinaryAveragePrecision(),
-            "ece": BinaryCalibrationError(),
-        }
-    )
-
+# Re-exported from ._metrics so existing `from ..base import binary_test_metrics`
+# imports keep working without dragging the factories' torchmetrics deps into
+# this module's import time.
+from ._metrics import binary_test_metrics, classification_test_metrics  # noqa: E402, F401
 
 # ---------------------------------------------------------------------------
 # Checkpoint loading
@@ -625,30 +493,3 @@ def _build_layout() -> tuple[dict[str, FeatureLayout], int]:
 
 
 LAYOUT, STATE_DIM = _build_layout()
-
-
-# ---------------------------------------------------------------------------
-# Auto-generated Pydantic model schemas
-# ---------------------------------------------------------------------------
-
-
-def _build_schemas():
-    """Lazy-build so model imports don't fire at package import time."""
-    from graphids.core._schema_gen import schema_for
-    from graphids.core.models.autoencoder.dgi_module import DGIModule
-    from graphids.core.models.autoencoder.vgae_module import VGAEModule
-    from graphids.core.models.fusion.bandit import BanditFusionModule
-    from graphids.core.models.fusion.dqn import DQNFusionModule
-    from graphids.core.models.fusion.mlp import MLPFusionModule
-    from graphids.core.models.fusion.weighted_avg import WeightedAvgModule
-    from graphids.core.models.supervised.gat_module import GATModule
-
-    return {
-        "VGAEConfig": schema_for(VGAEModule),
-        "DGIConfig": schema_for(DGIModule),
-        "GATConfig": schema_for(GATModule),
-        "BanditConfig": schema_for(BanditFusionModule),
-        "DQNConfig": schema_for(DQNFusionModule),
-        "MLPFusionConfig": schema_for(MLPFusionModule),
-        "WeightedAvgConfig": schema_for(WeightedAvgModule),
-    }

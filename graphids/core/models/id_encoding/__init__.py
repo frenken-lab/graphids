@@ -8,8 +8,8 @@ not know which strategy is in use.
 Research basis: ``~/plans/oov-embedding-handling.md``.
 """
 
-from .base import IdEncoder
+from .base import IdEncoder, build_encoder
 from .hash_embedding import HashIdEncoder
 from .lookup import UNK_INDEX, LookupIdEncoder
 
-__all__ = ["HashIdEncoder", "IdEncoder", "LookupIdEncoder", "UNK_INDEX"]
+__all__ = ["HashIdEncoder", "IdEncoder", "LookupIdEncoder", "UNK_INDEX", "build_encoder"]

@@ -35,46 +35,57 @@ compute-bound.
 
 ## Environment variables
 
-Typed in `GraphIDSSettings` (`config/settings.py`); pydantic-settings
-auto-loads `./.env` from the project root. `extra="ignore"` so shell-only
-`GRAPHIDS_*` vars (read by `_preamble.sh` etc.) don't trip validation.
-Path roots (`LAKE_ROOT` vs `RUN_ROOT`): see `data-layout.md`.
+Read directly from `os.environ` at the call sites that need them
+(`graphids/runtime.py`, `graphids/slurm/submit.py`, `graphids/_mlflow.py`).
+The old typed `GraphIDSSettings` / `config/settings.py` was deleted in
+the 2026-05-01 four-step rebuild — pydantic-settings was paying for
+nothing once the surface shrank. Path roots (`LAKE_ROOT` vs `RUN_ROOT`):
+see `data-layout.md`.
 
 ## Path layout
 
-Path scheme lives in **`graphids/config/paths.py`** (Python) and is
-exposed to jsonnet via `native_callbacks` in `render()` —
-`std.native('paths.run_dir')(dataset, group, variant, seed)` etc. Both
-sides call the same Python source of truth, no parallel jsonnet impl.
+Path scheme is computed inside the plan jsonnets themselves using
+`run_root` + `dataset` + `group` + `variant` + `seed` TLAs. There is no
+longer a Python `graphids/config/paths.py` (deleted 2026-05-01) and no
+`native_callbacks` shim — jsonnet owns path math, and the rendered
+`run_dir` flows through the validated `TrainRow` to every consumer
+(orchestrate, MLflow, ckpt I/O). Single source of truth, single
+direction.
 
 ```
 {RUN_ROOT}/{dataset}/ablations/{group}/{variant}/seed_{N}
 ```
 
-`run_root` is required (no default — fail-fast). `slurm/dag.py`
-imports `from graphids.config import paths` and uses the same module;
-no separate `_run_dir` math.
+`run_root` is required (no default — fail-fast).
 
-## Observability (MLflow + OpenTelemetry)
+## Observability (MLflow + structlog)
 
 Storage layout + store-ownership table: `data-layout.md`. This file owns
 the wiring details:
 
 - **Lifecycle wiring**: `_mlflow.start_training_run` opens the fit run
-  inside `orchestrate.train` before `trainer.fit`; `MLflowTrainingCallback`
-  (`core/mlflow_callback.py`) forwards `callback_metrics` per epoch and
-  closes the run in `on_fit_end`. Test phase opens its own always-fresh
-  run via `_mlflow.log_test_run`. Experiment is per-axis: `graphids/{dataset}/{group}`.
+  inside `orchestrate.run_row` before `trainer.fit`;
+  `MLflowTrainingCallback` (`graphids/_mlflow.py`) emits one `log_batch`
+  per epoch via the sanitized-metric path and closes the run in
+  `on_fit_end`. Test phase opens its own always-fresh run via
+  `_mlflow.log_test_run`. Experiment is per-axis:
+  `graphids/{dataset}/{group}`.
 - **Resume gating** (fit only): status-gated on matching `run_name` +
   `phase=fit` (FAILED/KILLED → resume; RUNNING/FINISHED refuse unless
-  `GRAPHIDS_FORCE_RESUME=1`; git-SHA change → new run).
+  `GRAPHIDS_FORCE_RESUME=1`; git-SHA change → new run). Real-sqlite
+  resume matrix is exercised by tests in `tests/test_mlflow.py`.
 - **Failure mode**: MLflow is a hard dep, exceptions propagate. Two
   documented soft-failures: `MlflowException` on resume `log_params`
-  conflict, and `end_training_run` cleanup (logged-not-raised so secondary
-  failures don't shadow training exceptions via `__context__`).
+  conflict, and `end_training_run` cleanup (logged-not-raised so
+  secondary failures don't shadow training exceptions via `__context__`).
 - **Query API**: always go through `_mlflow.build_search_filter(...)`.
   Hand-composed `filter_string=` strings drift across callers (dataset,
-  group, variant, seed, phase, cluster, status all need consistent quoting).
-- **OTel `traces.jsonl`** (per-`run_dir`): single `training.fit` span +
-  structured-log events. Single-run debugging only — cross-run analysis
-  is MLflow's job.
+  group, variant, seed, phase, cluster, status all need consistent
+  quoting).
+- **No OTel.** `_otel.py` was deleted 2026-05-01 — it was structlog
+  config under a misleading name (spans were never opened, `traces.jsonl`
+  was always empty). The salvageable parts (structlog → JSON stderr,
+  SLURM-context auto-injection) inlined into
+  `graphids/runtime.py:_configure_logging`. Single sink: stderr → SLURM
+  `*_log.err`. Cross-run analysis is MLflow's job; single-run debugging
+  is `slurm_logs/<jid>.err`.

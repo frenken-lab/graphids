@@ -1,8 +1,9 @@
 """Project-wide path constants and filename literals.
 
-`GRAPHIDS_*` env vars (including `LAKE_ROOT` and `RUN_ROOT`) belong in
-:mod:`graphids.config.settings`. This module is import-safe with no
-external deps so it can be loaded from anywhere.
+`GRAPHIDS_*` env vars are read directly from `os.environ` at the call
+sites that need them. `lake_root()` and `_run_root()` in
+:mod:`graphids.config.catalog` are the two shared readers. This module
+is import-safe with no external deps so it can be loaded from anywhere.
 """
 
 from __future__ import annotations

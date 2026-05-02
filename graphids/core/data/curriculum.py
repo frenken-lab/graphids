@@ -26,7 +26,6 @@ from typing import Any, Protocol, runtime_checkable
 import numpy as np
 import torch
 
-from graphids._reflect import import_class
 from graphids.core.callbacks import CallbackBase
 
 # ---------------------------------------------------------------------------
@@ -135,7 +134,8 @@ def make_scorer(spec: Any) -> DifficultyScorer:
         )
     if "class_path" not in spec:
         raise ValueError(f"scorer spec missing 'class_path': {spec!r}")
-    cls = import_class(spec["class_path"])
+    mod, _, cls_name = spec["class_path"].rpartition(".")
+    cls = getattr(importlib.import_module(mod), cls_name)
     return cls(**spec.get("init_args", {}))
 
 

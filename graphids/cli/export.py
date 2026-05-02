@@ -200,9 +200,8 @@ def push_hf(
         leaderboard,
         tie_candidates,
     )
-    from graphids.config.settings import get_settings
 
-    repo_id = repo_id or get_settings().hf_repo_id
+    repo_id = repo_id or os.environ.get("GRAPHIDS_HF_REPO_ID", "buckeyeguy/graphids-kd-gat")
 
     spec = _load_manifest(manifest)
     sha = _git_sha(Path(__file__).resolve().parents[2], allow_dirty=allow_dirty)

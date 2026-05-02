@@ -5,13 +5,14 @@ Operation layer — CLI surface lives in ``graphids.cli.data``.
 
 from __future__ import annotations
 
+import os
 import shutil
+from pathlib import Path
 
 from structlog import get_logger
 
-from graphids.config.catalog import cache_dir
+from graphids.config.catalog import cache_dir, lake_root
 from graphids.config.constants import PREPROCESSING_VERSION
-from graphids.config.settings import get_settings
 
 log = get_logger(__name__)
 
@@ -24,8 +25,9 @@ def rebuild_caches(datasets: list[str], *, delete_existing: bool = False) -> Non
     marker on completion so the next GPU job re-stages from the refreshed
     NFS cache.
     """
+    lr = lake_root()
     for ds in datasets:
-        cdir = cache_dir(get_settings().lake_root, ds)
+        cdir = cache_dir(lr, ds)
         if delete_existing and cdir.exists():
             log.info("removing_stale_cache", dataset=ds, path=str(cdir))
             shutil.rmtree(cdir)
@@ -34,7 +36,7 @@ def rebuild_caches(datasets: list[str], *, delete_existing: bool = False) -> Non
         from graphids.core.data.datamodule.graph import GraphDataModule
         from graphids.core.data.datasets.can_bus import CANBusSource
 
-        source = CANBusSource(name=ds, lake_root=LAKE_ROOT)
+        source = CANBusSource(name=ds, lake_root=lr)
         dm = GraphDataModule(dataset=source)
         dm.setup("fit")
 
@@ -50,10 +52,9 @@ def rebuild_caches(datasets: list[str], *, delete_existing: bool = False) -> Non
         )
 
     # Invalidate scratch staging marker so next GPU job re-stages
-
-    scratch = get_settings().scratch
-    if scratch is not None:
-        marker = scratch / "graphids-data" / "cache" / ".staged_marker"
+    scratch_env = os.environ.get("GRAPHIDS_SCRATCH")
+    if scratch_env:
+        marker = Path(scratch_env) / "graphids-data" / "cache" / ".staged_marker"
         if marker.exists():
             marker.unlink()
             log.info("invalidated_staging_marker", path=str(marker))

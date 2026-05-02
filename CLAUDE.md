@@ -3,41 +3,30 @@
 CAN bus intrusion detection via a 3-stage knowledge distillation chain:
 VGAE (unsupervised reconstruction) → GAT (supervised classification) →
 fusion. Large models compress into small models via KD auxiliaries for
-edge deployment. Stages are trained as independent ablation presets;
-multi-stage pipelines (`configs/plans/*.jsonnet`) render to a **JSONL
-blueprint** via `graphids run` — the user/LLM walks the rows and
-invokes `graphids submit` per node. No pipeline driver. See
-`.claude/rules/single-submission-primitive.md`.
-
-## Code Philosophy
+edge deployment. Stages are trained as independent ablation rows;
+multi-stage pipelines (`configs/plans/*.jsonnet`) render to a JSON
+blueprint via `graphids run` — the user/LLM walks the rows and invokes
+`graphids exec` (in-process) or `graphids submit` (SLURM) per row. No
+pipeline driver. See `.claude/rules/single-submission-primitive.md`.
 
 ## Key Commands
 
 ```bash
-# SLURM launch via `python -m graphids submit` — one preset, real flags, no nested quotes.
-# Preset owns run_dir + model/stage specifics; flags map to TLAs internally.
-python -m graphids submit configs/ablations/unsupervised/vgae.jsonnet --dataset set_01 --seed 42
-# Fusion: --depends-on resolves teacher ckpts via MLflow (vgae → vgae_ckpt_path TLA;
-# focal → gat_ckpt_path TLA). No more hand-typed paths.
-python -m graphids submit configs/ablations/fusion/dqn.jsonnet \
-    --dataset set_01 --seed 42 --depends-on vgae:42,focal:42 --cluster cardinal
-# Idempotent re-submission: --skip-if-finished prints 0 (no submit) when MLflow
-# already has a FINISHED row. Use it on every plan-blueprint row.
-python -m graphids submit configs/ablations/gat_loss/focal.jsonnet \
-    --dataset set_01 --seed 42 --skip-if-finished
-python -m graphids submit configs/ablations/unsupervised/vgae.jsonnet --smoke --dry-run  # gpudebug 1hr
+# Four-step chassis: render → blueprint → exec → submit.
+# Step 1+2: render a plan jsonnet, validate as a Blueprint, write JSON array.
+python -m graphids run configs/plans/ofat.jsonnet --dataset hcrl_sa --seed 42 -o plan.json
 
-# Plan blueprint — JSONL on stdout, one row per node, each with a literal
-# submit_command. Walk it manually or via jq; never auto-execute.
-python -m graphids run configs/plans/ofat.jsonnet --dataset set_01 --seed 42 --cluster cardinal
-python -m graphids status configs/plans/ofat.jsonnet --dataset set_01 --seed 42
+# Step 3: execute one row in-process (login-node smoke / non-SLURM).
+jq -c '.[0]' plan.json | xargs -I{} python -m graphids exec --row {}
+echo '<row-json>' | python -m graphids exec --row -
 
-# Direct CLI (login-node smoke / non-SLURM).
-python -m graphids fit --config configs/stages/autoencoder.jsonnet
-python -m graphids fit --tla 'scale="large"' --config configs/stages/supervised.jsonnet
-
-# Evaluation
-python -m graphids test --config configs/stages/autoencoder.jsonnet --ckpt-path checkpoints/best_model.ckpt
+# Step 4: submit one row to SLURM via Parsl. Prints jid on stdout.
+jq -c '.[]' plan.json | while read row; do
+    python -m graphids submit --row "$row" --cluster pitzer --length long
+done
+# Same-batch dependency chain (afterok = data dep, afterany = preempt-resume):
+python -m graphids submit --row "$row" --cluster cardinal \
+    --depends-on-afterok 12345 --ckpt-path /path/to/upstream/best.ckpt
 
 # Analysis (auto-dispatches by ckpt class_path → model_type)
 python -m graphids analyze --ckpt-path path/to/checkpoints/best_model.ckpt --dataset hcrl_sa
@@ -48,22 +37,42 @@ python -m graphids analyze --ckpt-path fusion/checkpoints/best_model.ckpt --data
 
 ## CLI Architecture
 
-**Training** — `python -m graphids fit|test` → `graphids/cli/training.py` (Typer). `_prepare()` renders the jsonnet, applies any `--set` overrides, builds a `ResolvedConfig.from_rendered`, wires OTel file exporters, and calls `build(resolved)`. Then `fit` calls `train(artifacts, resolved, resume_from=--ckpt-path)`; `test` calls `evaluate(artifacts, resolved)`. All three primitives (`build`/`train`/`evaluate`) plus `ResolvedConfig`, `InstantiatedRun`, and `build_run` live in the single `graphids/orchestrate.py` module — `from graphids.orchestrate import ...`. For SLURM submission, use `python -m graphids submit <preset.jsonnet> [--dataset X --seed N --scale s --cluster c]` — it builds TLAs from flags so you never type nested JSON quotes.
+The four user-facing primitives are pure stages. Each does exactly one
+thing and feeds the next; no stage submits, queries MLflow, or
+orchestrates multiple jobs.
 
-**Operational commands** — `graphids/cli/`. `app.py` owns the root app + shared option types (`ConfigPath`/`TlaList`/`SetList`/`CkptPath`). `--tla` and `--set` parse `key=value` via `_parse_kv_pair` (Typer `parser=` hook). Submodules register commands via `@app.command()`: `training.py`, `analysis.py`, `data.py`, `compare.py`. `graphids/__main__.py` imports submodules to register commands.
+| Stage   | Command                       | Module                  | What it does                                                                   |
+| ------- | ----------------------------- | ----------------------- | ------------------------------------------------------------------------------ |
+| render  | `graphids run <plan>`         | `graphids/cli/run.py`   | Renders plan jsonnet, validates as `BlueprintArray`, writes JSON to stdout.    |
+| exec    | `graphids exec --row <json>`  | `graphids/cli/exec.py`  | Executes one row in-process via `graphids.orchestrate.run_row`. Dispatches on `row.action` (fit/test). |
+| submit  | `graphids submit --row <json>`| `graphids/cli/submit.py`| Submits one row to SLURM via Parsl `SlurmProvider`. Prints jid.                |
+| ops     | `graphids analyze` / `export` / `data` | `graphids/cli/{analysis,export,data}.py` | One-shot ops: ckpt analysis, HF push, cache rebuild.                            |
 
-| Command                                                                     | Purpose                                   |
-| --------------------------------------------------------------------------- | ----------------------------------------- |
-| `python -m graphids fit` / `test`                                           | Train or evaluate one preset              |
-| `python -m graphids analyze`                                                | Analysis artifacts from checkpoints       |
-| `python -m graphids rebuild-caches`                                         | Rebuild preprocessed graph caches         |
-| `python -m graphids extract-fusion-states`                                  | Extract VGAE+GAT latent states for fusion |
-| `python -m graphids compare {leaderboard\|ties\|effect-size\|expected-max}` | Cross-variant MLflow comparison           |
+`graphids/__main__.py` imports each submodule to register Typer commands.
+`app.py` owns the root app + shared option types.
 
-**Config resolution** — Single path: `render(config_path, tla=..., set_overrides=...)` (`config/jsonnet.py`) → `ResolvedConfig.from_rendered(rendered, stage_name=<basename>)` (validates + pulls `run_dir` / `ckpt_file` from `trainer.default_root_dir`). `--set a.b.c=v` flags expand to a nested dict via `cli/app.py:dotted_to_nested` and apply via `std.mergePatch(rendered, std.extVar('overrides'))` at each ablation preset's apex (one mechanism, no Python in-place mutator). Every preset computes its own `run_dir` via `std.native('paths.run_dir')(dataset, group, variant, seed)` — `render()` registers `graphids.config.paths` functions as `native_callbacks`, so jsonnet and `slurm/dag.py` share one source of truth. `run_root` flows in via `std.extVar('run_root')` from `GRAPHIDS_RUN_ROOT` (per-user, distinct from the shared `GRAPHIDS_LAKE_ROOT` which holds mlflow.db / cache / mlartifacts). See `docs/reference/config-architecture.md`.
+**Config resolution** — Single path: `render(config_path, tla=...)`
+(`graphids/config/jsonnet.py`) returns a dict; `BlueprintArray` /
+`TrainRow` (`graphids/blueprint.py`) validates it. `run_row` walks
+nested `class_path` blocks and instantiates via importlib with
+signature-filtered kwargs. Loss fragments are true
+`{class_path, init_args}` blocks — no `inject_loss_fn` helper. See
+`docs/reference/config-architecture.md`.
 
-**SLURM submission** — one Typer command, `python -m graphids submit`, backed by `submitit.AutoExecutor` (no subprocess, no sbatch-stdout parsing). Two usage patterns: `python -m graphids submit <preset.jsonnet> [--dataset X --seed N ...]` for training (implicit `--mode gpu`, fit command), or `python -m graphids submit --mode {gpu\|cpu} --command "..." [--mem-gb N --timeout-min M]` for ops. Implementation: `graphids.slurm.submit.submit()` is the pure-Python entrypoint; the CLI wrapper lives at `graphids/cli/submit.py`; `graphids/slurm/dag.py` calls `submit()` directly. Profile JSON (`configs/resources/submit_profiles.json`) stores raw submitit kwargs keyed `[mode][cluster][length]` — no Python-side text parsing. `slurm_setup` sources `scripts/slurm/_preamble.sh` inside the sbatch shell. Optional `--time-from-history` consults MLflow for tighter walltime via `graphids.slurm.sizing`. See `rules/slurm-hpc.md`.
+**SLURM submission** — `graphids submit` is the ONLY caller of
+`SlurmProvider.submit`. The sbatch script carries the literal command
+`python -m graphids exec --row '<json>' [--ckpt-path X]` — no pickle,
+no stale-pickle bug. Profiles in `configs/resources/submit_profiles.json`
+keyed `[mode][cluster][length]` translate to Parsl `SlurmProvider`
+kwargs (partition, cores, mem, walltime, gpus, signal-delay).
+`SrunLauncher` wraps the command. Preempt-resume kept via SIGUSR2 trap
+in `graphids/runtime.py` that re-submits the row with `--ckpt-path
+last.ckpt` and `--dependency=afterany:$SLURM_JOB_ID`.
 
-Fusion uses a single `configs/stages/fusion.jsonnet` that dispatches on the `fusion_method` TLA over the 4 method libsonnets in `configs/models/fusion/methods/`.
+Library entrypoint: `graphids.slurm.submit_row(row, cluster=..., ...)`.
+See `.claude/rules/slurm-hpc.md`.
+
+Fusion uses a single `configs/models/fusion/` module that dispatches on
+the `fusion_method` TLA over the method libsonnets.
 
 ## Rules (auto-loaded from `.claude/rules/`)

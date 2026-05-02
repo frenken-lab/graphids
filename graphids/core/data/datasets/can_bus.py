@@ -14,10 +14,10 @@ from pathlib import Path
 import polars as pl
 import torch
 from filelock import FileLock
+from structlog import get_logger
 from torch_geometric.data import Data, InMemoryDataset
 
 from graphids._fs import atomic_save
-from structlog import get_logger
 from graphids.config.constants import PREPROCESSING_VERSION
 from graphids.core.data import scaler as scaler_mod
 from graphids.core.data.cache import DatasetState
@@ -559,9 +559,9 @@ class CANBusSource:
         """Return ``lake_root`` falling back to the global settings value."""
         if self.lake_root:
             return self.lake_root
-        from graphids.config.settings import get_settings
+        from graphids.config.catalog import lake_root
 
-        return get_settings().lake_root
+        return lake_root()
 
     @property
     def cache_key(self) -> str:

@@ -102,16 +102,18 @@ class VGAEModule(GraphModuleBase):
             self._build()
 
     def _build(self):
-        from graphids._reflect import import_class
-
         from .._conv import resolve_edge_dim
+        from ..id_encoding import build_encoder
 
         hp = self.hparams
-        encoder_cls = import_class(hp.id_encoder_class_path)
-        encoder_kwargs = {"embedding_dim": hp.embedding_dim, **(hp.id_encoder_kwargs or {})}
         # +1 vocab slot for the reserved mask_id (= num_ids); see
         # GraphAutoencoderNeighborhood docstring.
-        id_encoder = encoder_cls.from_vocab_size(num_ids=hp.num_ids + 1, **encoder_kwargs)
+        id_encoder = build_encoder(
+            hp.id_encoder_class_path,
+            hp.num_ids + 1,
+            hp.embedding_dim,
+            **(hp.id_encoder_kwargs or {}),
+        )
         self.model = GraphAutoencoderNeighborhood(
             id_encoder=id_encoder,
             num_ids=hp.num_ids,
@@ -154,36 +156,35 @@ class VGAEModule(GraphModuleBase):
             node_id=batch.node_id,
         )
 
+    def _masked_forward(self, batch):
+        """Training-shape random-masked forward. Returns (outputs, mask)."""
+        edge_attr = getattr(batch, "edge_attr", None)
+        x_m, nid_m, mask = self.model.apply_random_mask(
+            batch.x, batch.node_id, mask_rate=self.hparams.mask_rate
+        )
+        outputs = self.model(x_m, batch.edge_index, batch.batch, edge_attr=edge_attr, node_id=nid_m)
+        return outputs, mask
+
+    def _per_graph_masked_recon(self, cont, x, mask, batch_idx):
+        """Per-graph mean recon error over masked nodes only (unbiased estimator)."""
+        from torch_geometric.utils import scatter
+
+        recon_per_node = (cont - x).pow(2).mean(dim=-1)
+        mask_f = mask.to(recon_per_node.dtype)
+        recon_sum = scatter(recon_per_node * mask_f, batch_idx, dim=0, reduce="sum")
+        mask_count = scatter(mask_f, batch_idx, dim=0, reduce="sum")
+        return recon_sum / mask_count.clamp(min=1.0)
+
     def _step(self, batch):
         # Budget probe entrypoint — training-shape masked forward + loss with
         # no .log() calls (logging mid-probe would mix probe metrics into the
         # real train stream). Probe runs this under model.train() and calls
         # .backward() on the returned scalar.
-        edge_attr = getattr(batch, "edge_attr", None)
-        x_m, nid_m, mask = self.model.apply_random_mask(
-            batch.x, batch.node_id, mask_rate=self.hparams.mask_rate
-        )
-        outputs = self.model(
-            x_m,
-            batch.edge_index,
-            batch.batch,
-            edge_attr=edge_attr,
-            node_id=nid_m,
-        )
+        outputs, mask = self._masked_forward(batch)
         return self.loss_fn(outputs, batch, mask=mask)
 
     def _training_step_inner(self, batch, _idx):
-        edge_attr = getattr(batch, "edge_attr", None)
-        x_m, nid_m, mask = self.model.apply_random_mask(
-            batch.x, batch.node_id, mask_rate=self.hparams.mask_rate
-        )
-        outputs = self.model(
-            x_m,
-            batch.edge_index,
-            batch.batch,
-            edge_attr=edge_attr,
-            node_id=nid_m,
-        )
+        outputs, mask = self._masked_forward(batch)
         loss = self.loss_fn(outputs, batch, mask=mask)
         bs = batch.num_graphs
         self.log("train_loss", loss, batch_size=bs)
@@ -194,16 +195,6 @@ class VGAEModule(GraphModuleBase):
             self.log("train_canid", task_loss.last_canid, batch_size=bs)
             self.log("train_nbr", task_loss.last_nbr, batch_size=bs)
             self.log("train_kl", task_loss.last_kl, batch_size=bs)
-
-        # Sanity: masked-subset recon must exceed unmasked-subset recon —
-        # if they converge the encoder is echoing v back via some path
-        # other than the masked feature (e.g. node_id leakage).
-        cont, _canid, _nbr, _z, _kl = outputs
-        node_mse = (cont - batch.x).pow(2).mean(-1)
-        if mask.any():
-            self.log("train_recon_masked", node_mse[mask].mean(), batch_size=bs)
-        if (~mask).any():
-            self.log("train_recon_unmasked", node_mse[~mask].mean(), batch_size=bs)
 
         from graphids.core.losses.distillation import FeatureDistillation
 
@@ -227,27 +218,11 @@ class VGAEModule(GraphModuleBase):
         ``val_loss`` (regularization, not held-out fit; the per-graph
         signal is in the recon-class components).
         """
-        from torch_geometric.utils import scatter
-
-        edge_attr = getattr(batch, "edge_attr", None)
-        x_m, nid_m, mask = self.model.apply_random_mask(
-            batch.x, batch.node_id, mask_rate=self.hparams.mask_rate
-        )
-        cont, _canid, _nbr, _z, _kl = self.model(
-            x_m,
-            batch.edge_index,
-            batch.batch,
-            edge_attr=edge_attr,
-            node_id=nid_m,
-        )
         # Masked-node recon only — matches _score(). All-node recon dilutes the
         # signal: unmasked nodes reconstruct near-perfectly for both benign and
         # attack (model sees their features), collapsing the ratio toward 1.0.
-        recon_per_node = (cont - batch.x).pow(2).mean(dim=1)
-        mask_f = mask.to(recon_per_node.dtype)
-        recon_sum = scatter(recon_per_node * mask_f, batch.batch, dim=0, reduce="sum")
-        mask_count = scatter(mask_f, batch.batch, dim=0, reduce="sum")
-        recon = recon_sum / mask_count.clamp(min=1.0)
+        (cont, _canid, _nbr, _z, _kl), mask = self._masked_forward(batch)
+        recon = self._per_graph_masked_recon(cont, batch.x, mask, batch.batch)
 
         bs = batch.num_graphs
         self.log("val_loss", recon.mean(), batch_size=bs)
@@ -307,25 +282,11 @@ class VGAEModule(GraphModuleBase):
         # with massive distances).
         mahal_per_node = ((mu - self.mu_mean) / self.mu_std.clamp(min=1e-3)).pow(2).sum(-1)
 
-        # Single masked forward → per-node recon at the masked subset
-        x_m, nid_m, mask = self.model.apply_random_mask(
-            batch.x, batch.node_id, mask_rate=self.hparams.mask_rate
-        )
-        cont, _canid, _nbr, _z2, _kl2 = self.model(
-            x_m,
-            batch.edge_index,
-            batch.batch,
-            edge_attr=edge_attr,
-            node_id=nid_m,
-        )
-        recon_per_node = (cont - batch.x).pow(2).mean(dim=-1)
-        # Per-graph recon = sum of masked-node errors / count of masked
-        # nodes per graph. clamp(min=1.0) handles the (vanishingly rare)
-        # graph with zero masked nodes — gives 0 recon, no NaN.
-        mask_f = mask.to(recon_per_node.dtype)
-        recon_sum = scatter(recon_per_node * mask_f, batch.batch, dim=0, reduce="sum")
-        mask_count = scatter(mask_f, batch.batch, dim=0, reduce="sum")
-        recon = recon_sum / mask_count.clamp(min=1.0)
+        # Single masked forward → per-graph recon over the masked subset.
+        # Per-graph recon clamp(min=1.0) handles the (vanishingly rare) graph
+        # with zero masked nodes — gives 0 recon, no NaN.
+        (cont, _canid, _nbr, _z2, _kl2), mask = self._masked_forward(batch)
+        recon = self._per_graph_masked_recon(cont, batch.x, mask, batch.batch)
 
         mahal = scatter(mahal_per_node, batch.batch, dim=0, reduce="mean")
         kl = scatter(kl_per_node, batch.batch, dim=0, reduce="mean")
@@ -433,17 +394,13 @@ class VGAEModule(GraphModuleBase):
         if was_training:
             self.train()
 
-        r = torch.cat(all_recon)
-        m = torch.cat(all_mahal)
-        k = torch.cat(all_kl)
-        if len(r) < 100:
-            raise RuntimeError(f"fit_score_norm: need >=100 benign val graphs, got {len(r)}")
-        self.score_recon_mean.copy_(r.mean())
-        self.score_recon_std.copy_(r.std())
-        self.score_mahal_mean.copy_(m.mean())
-        self.score_mahal_std.copy_(m.std())
-        self.score_kl_mean.copy_(k.mean())
-        self.score_kl_std.copy_(k.std())
+        if len(all_recon) == 0 or sum(len(t) for t in all_recon) < 100:
+            n = sum(len(t) for t in all_recon)
+            raise RuntimeError(f"fit_score_norm: need >=100 benign val graphs, got {n}")
+        for name, vals in (("recon", all_recon), ("mahal", all_mahal), ("kl", all_kl)):
+            cat = torch.cat(vals)
+            getattr(self, f"score_{name}_mean").copy_(cat.mean())
+            getattr(self, f"score_{name}_std").copy_(cat.std())
         self.score_norm_fitted.fill_(True)
 
     def test_step(self, batch, _idx, dataloader_idx=0):

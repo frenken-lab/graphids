@@ -3,66 +3,81 @@
 ## Environment
 
 - **Cluster**: OSC Pitzer (Ohio Supercomputer Center), RHEL 9, SLURM
-- **Account**: PAS1266 (`$GRAPHIDS_SLURM_ACCOUNT` in `.env`). Must `source .env` before `sbatch` on login node.
-- **GPU**: 2x V100 per node, ~362 GB RAM, gpu partition
+- **Account**: PAS1266 (`$GRAPHIDS_SLURM_ACCOUNT` in `.env`). Must `source .env` before submitting on a login node.
+- **GPU**: Pitzer 2x V100 / Cardinal H100 / Ascend A100. See `~/.claude/projects/-users-PAS2022-rf15-graphids/memory/reference_osc_gpu_clusters.md`.
 - **Python**: 3.12 via `module load python/3.12`, uv venv `.venv/`
 - **Home**: `/users/PAS2022/rf15/` (NFS, permanent)
 - **Scratch**: `/fs/scratch/PAS1266/` (GPFS, 90-day purge)
 
 ## Rules
 
-- Spawn/fork CUDA rule: See critical-constraints.md.
-- Test on small datasets (`hcrl_ch`) before large ones (`set_02`+).
-- SLURM logs go to `slurm_logs/`, experiment outputs to `experimentruns/`.
+- Spawn/fork CUDA rule: see `critical-constraints.md`.
+- Test on small datasets (`hcrl_sa`) before large ones (`set_02`+).
+- SLURM logs go to `slurm_logs/`; experiment outputs to `{RUN_ROOT}/...`.
 - Heavy tests use `@pytest.mark.slurm` — auto-skipped on login nodes.
-- **Never run `pytest` on login nodes.** Submit via `python -m graphids submit --mode cpu --length short --command "python -m pytest [-k pattern]"`.
+- **Never run `pytest` on login nodes.** Submit a one-row ops job (see below).
 
-## Job Submission
+## Job Submission — four-step chassis
 
-One Typer command, `python -m graphids submit`, two shapes:
-
-**Training / ablations: `python -m graphids submit <preset.jsonnet> [options]`.**
-The preset owns run specifics; flags map to TLAs internally so you never
-type nested JSON quotes. Defaults to `gpu` mode + `long` length (per-cluster
-wall in `submit_profiles.json`); `--smoke` swaps to `short` (gpudebug 1hr).
-`--depends-on <variant>[:<seed>]` is the **only** dep mechanism: FINISHED
-upstream → inject ckpt TLA; RUNNING upstream → also add its
-`slurm.job_id` as an `afterok` dep. One primitive — no separate
-`--dep` flag, no `SBATCH_DEP` env fallback. See
-`.claude/rules/single-submission-primitive.md`. Full flag list via
-`python -m graphids submit --help`. Backed by `submitit.AutoExecutor`;
-library entrypoint is `graphids.slurm.submit.submit()`.
+The CLI surface is `graphids run | exec | submit`. There is no
+`python -m graphids fit/test`, no submitit, no `--mode` / `--command`
+ops shortcut — every job is a row. See
+`.claude/rules/single-submission-primitive.md`.
 
 ```bash
-python -m graphids submit configs/ablations/unsupervised/vgae.jsonnet --dataset set_01 --seed 42
-python -m graphids submit configs/ablations/fusion/dqn.jsonnet \
-    --dataset set_01 --seed 42 --depends-on vgae:42,focal:42 --cluster cardinal
+# Render + validate one plan into a JSON array.
+python -m graphids run configs/plans/ofat.jsonnet --dataset hcrl_sa --seed 42 -o plan.json
+
+# Submit each row to SLURM. graphids submit is the ONLY caller of
+# parsl.providers.SlurmProvider.submit. Prints jid on stdout.
+jq -c '.[]' plan.json | while read row; do
+    python -m graphids submit --row "$row" --cluster pitzer --length long
+done
+
+# Same-batch deps (afterok = data dep, afterany = preempt-resume chain).
+python -m graphids submit --row "$row" --cluster cardinal \
+    --depends-on-afterok 12345 --ckpt-path /path/to/upstream/best.ckpt
 ```
 
-**Ops: `python -m graphids submit --mode {gpu|cpu} --command "..." [--mem-gb N --timeout-min M --length short|long]`.**
+The sbatch script body is a literal bash string:
+`python -m graphids exec --row '<json>' [--ckpt-path X]`. Wrapped by
+`SrunLauncher`. **No pickle** of Python closures — code fixes committed
+after submission DO reach a pending job, because the job re-imports the
+current source at exec time. (Contrast: the old submitit path pickled
+the entire closure and was vulnerable to source drift.)
 
-| Job | Command |
-|-----|---------|
-| Tests | `python -m graphids submit --mode cpu --length short --command "python -m pytest [-k pattern]"` |
-| Cache rebuild | `python -m graphids submit --mode cpu --mem-gb 54 --timeout-min 240 --command "python -m graphids rebuild-caches --all --delete-existing --yes"` |
-| Analyze ckpt | `python -m graphids submit --mode gpu --mem-gb 32 --timeout-min 120 --command "python -m graphids analyze --ckpt-path <p> --dataset <name>"` |
-| Extract fusion states | `python -m graphids submit --mode gpu --mem-gb 36 --timeout-min 30 --command "python -m graphids extract-fusion-states ..."` |
-| Profiling | `python -m graphids submit --mode gpu --length short --command "python -m graphids profile"` |
+### One-shot ops
 
-Source of truth for `partition` + `cpus_per_task` + `mem_gb` + `timeout_min`:
+Ops jobs (test runs, cache rebuilds, analysis) are still rows — author
+a small plan jsonnet under `configs/plans/ops/` that emits a single row
+with the right `action` / `command` / `resources`, then run the same
+`graphids run | submit` pair. Resist adding a `--mode/--command` ops
+shortcut to `submit`; that's exactly the multi-shape entry point this
+chassis avoids.
+
+| Job             | Where it lives                                                |
+|-----------------|---------------------------------------------------------------|
+| Tests           | one-row plan invoking `python -m pytest [-k pattern]`         |
+| Cache rebuild   | one-row plan invoking `python -m graphids data rebuild ...`   |
+| Analyze ckpt    | one-row plan invoking `python -m graphids analyze ...`        |
+
+### Profiles
+
+Source of truth for `partition` / `cpus_per_task` / `mem_gb` /
+`timeout_min` / `gpus_per_node` / `slurm_signal_delay_s`:
 `configs/resources/submit_profiles.json`, keyed `[mode][cluster][length]`.
-Entries are raw submitit AutoExecutor kwargs — no translation layer.
-Per-job overrides flow through flags (`--mem-gb`, `--timeout-min`). Optional
-`--time-from-history` opts into MLflow-history walltime estimation
-(library: `graphids.slurm.sizing`).
+`graphids/slurm/submit.py:_build_provider` translates each profile dict
+into Parsl `SlurmProvider` kwargs (mins → `HH:MM:SS` walltime;
+`slurm_signal_delay_s` → `#SBATCH --signal=USR2@N` directive).
 
-**Preemption auto-resume** — profiles set `slurm_signal_delay_s=300`, so
-submitit's sbatch emits `--signal=USR2@300`. SIGUSR2 five minutes before
-walltime triggers `_TrainingJob.checkpoint()` → `DelayedSubmission` with
-`ckpt_path={run_dir}/checkpoints/last.ckpt` → submitit sbatch-queues the
-resumed job via afterany. No manual resubmit loop. (USR2 because NCCL
-catches USR1.) `scripts/slurm/_preamble.sh` is sourced inside the sbatch
-shell via `slurm_setup`; `_epilog.sh` reports GPU utilization.
+### Preemption auto-resume
+
+Profiles set `slurm_signal_delay_s=300`, so Parsl's sbatch script emits
+`--signal=USR2@300`. The SIGUSR2 trap lives in `graphids/runtime.py` —
+five minutes before walltime, the process re-submits the row with
+`--ckpt-path={run_dir}/checkpoints/last.ckpt` and
+`--depends-on-afterany=$SLURM_JOB_ID`. No manual resubmit loop. (USR2
+because NCCL catches USR1.)
 
 ## Data I/O
 
@@ -76,11 +91,12 @@ with a silent eval.
 ## Login Node Safety
 
 **Safe on login node:**
-- Import checks: `python -c "from graphids.config import schemas; print('OK')"`
-- DuckDB queries: `duckdb < data/datalake/queries/leaderboard.sql`
-- Git, ruff
+- Import checks: `python -c "from graphids.blueprint import TrainRow; print('OK')"`
+- `graphids run <plan> -o plan.json` (pure render — no torch import)
+- `graphids exec --row <tiny-cpu-row>` for quick CPU smoke (rare; prefer SLURM)
+- DuckDB queries; git; ruff
 
-**Must go through SLURM:**
-- `python -m graphids fit|test` — all training/evaluation
-- `python -m pytest` — test suite
-- Any script that imports and runs models
+**Must go through SLURM (`graphids submit`):**
+- Anything that imports torch / instantiates a model / hits CUDA
+- The pytest suite
+- Cache rebuilds and dataset preprocessing

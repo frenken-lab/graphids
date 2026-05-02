@@ -55,14 +55,13 @@ _BWD_MULT_FALLBACK = 2.0
 _PROBE_WARMUP_STEPS = 3
 
 
-def _settings() -> tuple[float, int]:
-    from graphids.config.settings import get_settings
+import os as _os
 
-    s = get_settings()
-    return s.budget_safety_margin, s.budget_fallback_bpn
-
-
-_SAFETY, _FALLBACK_BPN = _settings()
+_SAFETY = float(_os.environ.get("GRAPHIDS_BUDGET_SAFETY_MARGIN", "0.95"))
+_FALLBACK_BPN = int(_os.environ.get("GRAPHIDS_BUDGET_FALLBACK_BPN", "32768"))
+_GPS_ATTN_DIVISOR = int(_os.environ.get("GRAPHIDS_GPS_FALLBACK_ATTENTION_DIVISOR", "6"))
+_FALLBACK_EDGE_NODE_RATIO = float(_os.environ.get("GRAPHIDS_FALLBACK_EDGE_NODE_RATIO", "10.0"))
+_EMPIRICAL_EPN_HEADROOM = float(_os.environ.get("GRAPHIDS_EMPIRICAL_EPN_HEADROOM", "1.1"))
 
 
 @dataclass(frozen=True)
@@ -94,11 +93,8 @@ def _fallback_budget_pair(free: int, heads: int) -> tuple[int, int]:
     the node half of this pair is used — the edge half there comes from the
     empirical edges-per-node measured on the (failed) probe batches.
     """
-    from graphids.config.settings import get_settings
-
-    s = get_settings()
-    budget = max(1, int(math.sqrt(free / (heads * s.gps_fallback_attention_divisor))))
-    edge_budget = int(budget * s.fallback_edge_node_ratio)
+    budget = max(1, int(math.sqrt(free / (heads * _GPS_ATTN_DIVISOR))))
+    edge_budget = int(budget * _FALLBACK_EDGE_NODE_RATIO)
     return budget, edge_budget
 
 
@@ -325,9 +321,6 @@ def _gps_budget(dataset: str, free: int, heads: int, model, train_dataset) -> Bu
     del batches
     torch.cuda.empty_cache()
 
-    from graphids.config.settings import get_settings
-
-    settings = get_settings()
     target = free * _SAFETY
     roots = np.roots([alpha, beta, gamma - target])
     real_positive = [r.real for r in roots if abs(r.imag) < 1e-9 and r.real > 0]
@@ -348,7 +341,7 @@ def _gps_budget(dataset: str, free: int, heads: int, model, train_dataset) -> Bu
         budget = max(1, int(max(real_positive)))
         binding = "measured"
 
-    edge_budget = max(1, int(budget * epn * settings.empirical_epn_headroom))
+    edge_budget = max(1, int(budget * epn * _EMPIRICAL_EPN_HEADROOM))
 
     log.info(
         "budget_probed",
@@ -407,9 +400,6 @@ def node_budget(
         del small, big
         torch.cuda.empty_cache()
 
-    from graphids.config.settings import get_settings
-
-    settings = get_settings()
     free_scalable = max(1, int(free * _SAFETY))
     budget = max(1, free_scalable // max(1, bpn_node))
     # bpn_edge=0 only reachable via opt-in fallback; give a non-None edge
@@ -418,7 +408,7 @@ def node_budget(
     edge_budget = (
         max(1, free_scalable // bpn_edge)
         if bpn_edge > 0
-        else int(budget * settings.fallback_edge_node_ratio)
+        else int(budget * _FALLBACK_EDGE_NODE_RATIO)
     )
     binding = "measured" if (model and train_dataset) else "opted_in_fallback"
     log.info(

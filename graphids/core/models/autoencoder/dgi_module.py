@@ -74,12 +74,12 @@ class DGIModule(GraphModuleBase):
             self._build()
 
     def _build(self):
-        from graphids._reflect import import_class
+        from ..id_encoding import build_encoder
 
         hp = self.hparams
-        encoder_cls = import_class(hp.id_encoder_class_path)
-        encoder_kwargs = {"embedding_dim": hp.embedding_dim, **(hp.id_encoder_kwargs or {})}
-        id_encoder = encoder_cls.from_vocab_size(num_ids=hp.num_ids, **encoder_kwargs)
+        id_encoder = build_encoder(
+            hp.id_encoder_class_path, hp.num_ids, hp.embedding_dim, **(hp.id_encoder_kwargs or {})
+        )
         self.model = GraphInfomaxModel.from_config(hp, id_encoder, hp.in_channels)
         if hp.compile_model:
             from ..base import try_compile

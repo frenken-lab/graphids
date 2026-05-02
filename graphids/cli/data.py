@@ -55,16 +55,15 @@ def validate_metadata_cli(
     ],
 ) -> None:
     """Validate cache_metadata.json against v2 schema + catalog expectations."""
-    from graphids.config.catalog import cache_dir, load_catalog
+    from graphids.config.catalog import cache_dir, lake_root, load_catalog
     from graphids.config.constants import PREPROCESSING_VERSION
-    from graphids.config.settings import get_settings
     from graphids.core.data.metadata import load_metadata, validate_metadata
 
     catalog = load_catalog()
     if dataset not in catalog:
         raise typer.BadParameter(f"Unknown dataset {dataset!r}")
 
-    cdir = cache_dir(get_settings().lake_root, dataset)
+    cdir = cache_dir(lake_root(), dataset)
     try:
         meta = load_metadata(cdir)
     except (FileNotFoundError, ValueError) as exc:

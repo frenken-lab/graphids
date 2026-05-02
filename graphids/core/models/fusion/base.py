@@ -10,17 +10,15 @@ validation_step / test_step with standard loss-based flows.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any
 
 import torch
 import torch.nn as nn
 
-from graphids.core.trainer import MetricAccumulator
-
 from ..base import (
     LAYOUT,
     STATE_DIM,
+    _LoggingModule,
 )
 
 # ---------------------------------------------------------------------------
@@ -220,34 +218,12 @@ def fused_predict(agent, states: torch.Tensor) -> dict:
 # ---------------------------------------------------------------------------
 
 
-class FusionModuleBase(nn.Module):
+class FusionModuleBase(_LoggingModule):
     """Base for all fusion models. RL subclasses get the full training loop
     for free by implementing ``select_action_batch`` and ``train_episode``."""
 
     # RL subclasses (Bandit, DQN) set this to False
     automatic_optimization = False
-
-    @property
-    def hparams(self) -> SimpleNamespace:
-        """See ``GraphModuleBase.hparams`` — same contract."""
-        import inspect
-
-        sig = inspect.signature(type(self).__init__)
-        ns: dict[str, Any] = {}
-        for name in sig.parameters:
-            if name == "self":
-                continue
-            val = getattr(self, name, None)
-            if isinstance(val, nn.Module):
-                continue
-            ns[name] = val
-        return SimpleNamespace(**ns)
-
-    def _store_init_kwargs(self, locals_dict: dict) -> None:
-        """See ``GraphModuleBase._store_init_kwargs`` — same contract."""
-        from ..base import store_init_kwargs
-
-        store_init_kwargs(self, locals_dict)
 
     def __init__(
         self,
@@ -260,9 +236,6 @@ class FusionModuleBase(nn.Module):
         reward_kwargs: dict | None = None,
     ):
         super().__init__()
-        self._metric_acc = MetricAccumulator()
-        # Non-persistent buffer that tracks device through .to()/.cuda()/.cpu()
-        self.register_buffer("_device_tracker", torch.empty(0), persistent=False)
         self._store_init_kwargs(locals())
 
         self.register_buffer("alpha_values", torch.linspace(0, 1, alpha_steps))
@@ -274,20 +247,6 @@ class FusionModuleBase(nn.Module):
         from ..base import classification_test_metrics
 
         self.test_metrics = classification_test_metrics(2)
-
-    @property
-    def device(self) -> torch.device:
-        return self._device_tracker.device
-
-    # -- logging (replaces pl self.log / self.log_dict) ----------------------
-
-    def log(self, name: str, value: Any, *, batch_size: int = 1, **_kwargs) -> None:
-        v = float(value.detach()) if isinstance(value, torch.Tensor) else float(value)
-        self._metric_acc.update(name, v, batch_size)
-
-    def log_dict(self, metrics: dict[str, Any], **kwargs) -> None:
-        for k, v in metrics.items():
-            self.log(k, v, **kwargs)
 
     # -- setup (no-op by default, overridden if needed) ----------------------
 
