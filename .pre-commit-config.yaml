@@ -9,6 +9,10 @@ repos:
     rev: v5.0.0
     hooks:
       - id: check-yaml
+        # mkdocs.yml uses ``!!python/name:`` tags that the standard SafeLoader
+        # rejects; mkdocs has its own loader. ``--unsafe`` opts into the
+        # FullLoader for syntax checking only.
+        args: [--unsafe]
       - id: check-toml
       - id: check-merge-conflict
       - id: debug-statements
@@ -27,3 +31,12 @@ repos:
         files: ^graphids/config/
         additional_dependencies: [pydantic>=2.10]
         args: [--config-file=pyproject.toml]
+  - repo: local
+    hooks:
+      - id: lint-docs
+        name: lint mkdocs site (Griffe symbol resolution + nav symmetry)
+        entry: python scripts/lint_docs.py
+        language: python
+        additional_dependencies: [griffe>=2.0, pyyaml>=6.0]
+        files: ^(docs/.*\.md|mkdocs\.yml|graphids/.*\.py|scripts/lint_docs\.py)$
+        pass_filenames: false

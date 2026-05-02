@@ -9,6 +9,14 @@ edit_uri: edit/main/docs/
 
 copyright: Copyright &copy; 2024-2026 Robert Frenken
 
+# Top-level docs/README.md is a GitHub-only landing page; drafts/ is a
+# scratchpad for in-flight docs. Both are excluded from the published
+# site so `mkdocs build --strict` doesn't fail on them. The leading slash
+# anchors the pattern (otherwise it would match e.g. decisions/README.md).
+exclude_docs: |
+  /README.md
+  /drafts/
+
 theme:
   name: material
   palette:
@@ -110,25 +118,15 @@ nav:
       - Orchestration: reference/orchestration.md
       - Observability: reference/observability.md
       - Write paths: reference/write-paths.md
+      - Submit flow: reference/submit-flow.md
       - Prebatch timing: reference/prebatch-timing.md
+      - PyTorch compat: reference/pytorch-compat.md
   - API Reference:
-      - Config:
-          - Schemas: api/config.md
-          - Constants: api/constants.md
-          - Settings: api/settings.md
-          - Jsonnet: api/jsonnet.md
-          - Catalog: api/catalog.md
-      - Orchestrate:
-          - Config: api/orchestrate_config.md
-          - Instantiate: api/orchestrate_instantiate.md
-          - Stage: api/orchestrate_stage.md
-      - Core:
-          - Trainer: api/trainer.md
-          - Callbacks: api/callbacks.md
-      - Data:
-          - Vocab: api/vocab.md
-          - Sampler: api/sampler.md
-          - Budget: api/budget.md
-      - SLURM:
-          - Sizing: api/sizing.md
+      - Orchestrate: api/orchestrate.md
+      - CLI: api/cli.md
+      - Trainer & Callbacks: api/trainer.md
+      - Data: api/data.md
+      - Models: api/models.md
+      - Config: api/config.md
+      - SLURM: api/slurm.md
   - Decisions: decisions/README.md
