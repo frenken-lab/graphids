@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
+from graphids.core._ckpt import build_checkpoint, strip_orig_mod_prefix
+
 if TYPE_CHECKING:
     from graphids.core.trainer import Trainer
 
@@ -116,7 +118,7 @@ class ModelCheckpoint(CallbackBase):
         dirpath = self._resolve_dirpath(trainer)
         dirpath.mkdir(parents=True, exist_ok=True)
 
-        ckpt = _build_checkpoint(trainer, model)
+        ckpt = build_checkpoint(trainer, model)
 
         if self.save_last:
             atomic_save(ckpt, dirpath / "last.ckpt")
@@ -174,43 +176,7 @@ class EarlyStopping(CallbackBase):
                 trainer.should_stop = True
 
 
-# ---------------------------------------------------------------------------
-# Checkpoint helpers
-# ---------------------------------------------------------------------------
-
-
-def _strip_orig_mod_prefix(state: dict[str, Any]) -> dict[str, Any]:
-    """Drop ``_orig_mod.`` prefix injected by ``torch.compile``'s OptimizedModule.
-
-    Makes ckpts interchangeable between ``compile_model=True`` and
-    ``compile_model=False`` — otherwise strict ``load_state_dict`` crashes
-    with missing/unexpected keys on a compile-mode mismatch.
-    """
-    # ``_orig_mod.`` can appear mid-key (e.g. ``model._orig_mod.encoder.weight``)
-    # when compile wraps an inner submodule; ``replace`` handles every position.
-    return {k.replace("_orig_mod.", ""): v for k, v in state.items()}
-
-
-def _build_checkpoint(trainer: Trainer, model: torch.nn.Module) -> dict[str, Any]:
-    """Build a raw-PyTorch checkpoint dict."""
-    cls = type(model)
-    hp = model.hparams
-    ckpt: dict[str, Any] = {
-        "state_dict": _strip_orig_mod_prefix(model.state_dict()),
-        "epoch": trainer.current_epoch,
-        "global_step": trainer.global_step,
-        "class_path": f"{cls.__module__}.{cls.__name__}",
-        "hyper_parameters": vars(hp) if hasattr(hp, "__dict__") else dict(hp),
-    }
-    if trainer.callback_metrics:
-        ckpt["metrics"] = {k: float(v) for k, v in trainer.callback_metrics.items()}
-    model.on_save_checkpoint(ckpt)
-    # Optimizer + scheduler + scaler state for resume
-    if trainer._optimizers:
-        ckpt["optimizer_states"] = [opt.state_dict() for opt in trainer._optimizers]
-    if trainer._schedulers:
-        ckpt["lr_schedulers"] = [s.state_dict() for s in trainer._schedulers if s is not None]
-    return ckpt
+# Checkpoint save/load helpers live in :mod:`graphids.core._ckpt`.
 
 
 # ---------------------------------------------------------------------------
@@ -245,13 +211,11 @@ class TauNormCallback(CallbackBase):
     (``fc_layers[:-1]``) are encoder-side in Kang's framing and are
     left untouched — only the logit-producing weight matrix is normed.
 
-    Ordering: this callback's ``on_fit_end`` MUST run before
-    ``MLflowTrainingCallback.on_fit_end``, so that ``log_final_fit``
-    reads (and SHA256-tags) the τ-normed checkpoint. The defaults
-    libsonnet builds ``trainer.callbacks`` from ``$.callbacks`` via
-    ``std.objectFields`` (alphabetic). The preset registers this
-    callback under the key ``kang_tau_norm`` so it sorts before
-    ``mlflow``.
+    Ordering: registered under the key ``kang_tau_norm`` so it sorts
+    alphabetically before ``mlflow`` in ``$.callbacks`` — the defaults
+    libsonnet builds ``trainer.callbacks`` from ``std.objectFields``,
+    which preserves the dict-key ordering. Any future post-fit consumer
+    that reads the saved checkpoint must run after this callback.
     """
 
     tau: float = 0.5
@@ -279,7 +243,7 @@ class TauNormCallback(CallbackBase):
 
         best_path = Path(ckpt_cb.best_model_path)
         ckpt = atomic_load(best_path, map_location="cpu", weights_only=True)
-        state: dict[str, torch.Tensor] = _strip_orig_mod_prefix(ckpt["state_dict"])
+        state: dict[str, torch.Tensor] = strip_orig_mod_prefix(ckpt["state_dict"])
 
         weight_key = self._resolve_classifier_key(state)
         weight = state[weight_key]
@@ -381,111 +345,4 @@ class VRAMDriftCallback(CallbackBase):
             # extra signal. Abort is the researcher's call.
             self._warned = True
 
-# ---------------------------------------------------------------------------
-# MLflowTrainingCallback
-# ---------------------------------------------------------------------------
-
-
-class MLflowTrainingCallback(CallbackBase):
-    """Per-epoch + fit-end MLflow logging. Lifecycle opened/closed by this callback.
-
-    The MLflow run is started in ``stage.train`` via
-    ``_mlflow.start_training_run`` before ``trainer.fit`` runs. This
-    callback only writes into the already-active run, then finalizes and
-    closes it. Keeps the trainer + CLI layer free of MLflow knowledge.
-    """
-
-    def on_train_epoch_end(self, trainer, model: torch.nn.Module) -> None:
-        import mlflow
-
-        from graphids._mlflow import log_epoch_metrics
-
-        # Stamp autosize tags on epoch 0 (the dataloader has now been built,
-        # so _autosize_info is populated). Later epochs idempotent-overwrite,
-        # which is harmless. Doing this here — not in on_fit_end — means the
-        # tags survive walltime kills / preemption, which is the common case
-        # for smoke verifications.
-        if trainer.current_epoch == 0:
-            autosize = getattr(getattr(trainer, "datamodule", None), "_autosize_info", None)
-            if autosize is not None:
-                mlflow.set_tag("graphids.num_workers", str(autosize["num_workers"]))
-                mlflow.set_tag("graphids.num_workers_source", autosize["source"])
-                mlflow.set_tag("graphids.prefetch_factor", str(autosize["prefetch_factor"]))
-
-        cb = trainer.callback_metrics
-        metrics: dict[str, float] = {k: float(v) for k, v in cb.items() if v is not None}
-        if trainer.optimizers:
-            metrics["lr"] = float(trainer.optimizers[0].param_groups[0]["lr"])
-        es = getattr(trainer, "early_stopping_callback", None)
-        if es is not None:
-            metrics["early_stop.wait"] = float(es.wait_count)
-            if es.best_score is not None:
-                metrics["early_stop.best_score"] = float(es.best_score)
-        log_epoch_metrics(trainer.current_epoch, metrics)
-
-    def on_fit_end(self, trainer, model: torch.nn.Module) -> None:
-        from graphids._mlflow import end_training_run, log_final_fit
-
-        peak_vram_mb = 0.0
-        if torch.cuda.is_available():
-            try:
-                dev = getattr(model, "device", None)
-                idx = dev.index if dev is not None and dev.index is not None else 0
-                peak_vram_mb = torch.cuda.max_memory_allocated(idx) / (1024 * 1024)
-            except (AttributeError, RuntimeError):
-                peak_vram_mb = torch.cuda.max_memory_allocated() / (1024 * 1024)
-        best_path = ""
-        ckpt_cb = getattr(trainer, "checkpoint_callback", None)
-        if ckpt_cb is not None and getattr(ckpt_cb, "best_model_path", ""):
-            best_path = str(ckpt_cb.best_model_path)
-        run_dir = Path(trainer.default_root_dir) if trainer.default_root_dir else Path()
-        log_final_fit(
-            peak_vram_mb=peak_vram_mb,
-            epochs_run=trainer.current_epoch + 1,
-            best_ckpt_path=best_path,
-            run_dir=run_dir,
-        )
-        self._check_budget_utilization(trainer, peak_vram_mb)
-        end_training_run(status="FINISHED")
-
-    def _check_budget_utilization(self, trainer, peak_vram_mb: float) -> None:
-        """Warn + tag when actual VRAM peak is far below the probed budget's
-        target. Catches silently-conservative budgets that would otherwise
-        masquerade as a healthy run at 20–30% GPU memory utilization.
-        """
-        import mlflow
-        from structlog import get_logger
-
-        budget = getattr(getattr(trainer, "datamodule", None), "_budget", None)
-        if budget is None or budget.target_bytes <= 0 or peak_vram_mb <= 0:
-            return
-        peak_bytes = int(peak_vram_mb * 1024 * 1024)
-        utilization = peak_bytes / budget.target_bytes
-        pct = round(utilization * 100, 1)
-        mlflow.set_tag("graphids.budget_utilization_pct", str(pct))
-        # Tag value domain is the BudgetBinding Literal from budget.py —
-        # {"measured", "measured_degenerate_fallback", "opted_in_fallback"}.
-        # Pre-Apr-2026 runs stamped {"memory", "memory_fallback", "fallback"};
-        # consumers filtering this tag across history must accept both domains.
-        mlflow.set_tag("graphids.budget_binding", budget.binding)
-        if utilization < 0.4:
-            mlflow.set_tag("graphids.budget_underutilized", "true")
-            get_logger(__name__).warning(
-                "budget_underutilized",
-                peak_vram_mb=round(peak_vram_mb, 1),
-                target_mb=budget.target_bytes // (1024 * 1024),
-                utilization_pct=pct,
-                binding=budget.binding,
-                threshold_pct=40.0,
-            )
-
-    def on_exception(
-        self,
-        trainer,
-        model: torch.nn.Module,
-        exception: BaseException,
-    ) -> None:
-        from graphids._mlflow import end_training_run
-
-        del trainer, model, exception
-        end_training_run(status="FAILED")
+# MLflowTrainingCallback lives in :mod:`graphids._mlflow` (single source).

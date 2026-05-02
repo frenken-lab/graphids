@@ -11,8 +11,6 @@
 
 function(source,
          label_filter=null,
-         conv_type='gatv2',
-         heads=4,
          sampler='standard',
          scorer=null,
          curriculum_start_ratio=1.0,
@@ -20,14 +18,14 @@ function(source,
          curriculum_max_epochs=300,
          num_tiers=10,
          overrides={})
+  // conv_type/heads are model properties — read by GraphModuleBase.compute_budget
+  // off the model's own hparams, not duplicated onto the DataModule.
   {
     data: {
       class_path: 'graphids.core.data.datamodule.GraphDataModule',
       init_args: std.mergePatch(
         {
           dataset: source,
-          conv_type: conv_type,
-          heads: heads,
           sampler: sampler,
         }
         + (if label_filter != null then { label_filter: label_filter } else {})

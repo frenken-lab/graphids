@@ -44,11 +44,9 @@ class FusionDataModule:
     def steps_per_epoch(self) -> int:
         return math.ceil(self.train_td.batch_size[0] / self._batch_size)
 
-    def _set_device(self, device: torch.device | None) -> None:
-        # Fusion batches stay on CPU; modules move per-step.
-        pass
-
-    def _set_model(self, model) -> None:
+    def bind(self, *, model, device: torch.device | None) -> None:
+        # No-op: fusion batches stay on CPU; modules move per-step.
+        # The contract still requires the method exist (see GraphDataModule.bind).
         pass
 
     def _load_one(self, path: Path, which: str) -> TensorDict:

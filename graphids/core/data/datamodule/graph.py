@@ -102,8 +102,6 @@ class GraphDataModule:
         num_workers: int | None = None,
         prefetch_factor: int = 2,
         dynamic_batching: bool = True,
-        conv_type: str = "gatv2",
-        heads: int = 4,
         # --- label-scope toggle ---
         # "benign": restrict train loader to y == 0 graphs (unsupervised
         #   reconstruction stages — VGAE/DGI — must see normal traffic only;
@@ -131,29 +129,33 @@ class GraphDataModule:
         self._tier_edge_sizes: list[torch.Tensor] | None = None  # per-tier edge counts
         self._tier_batches: list[list[Batch]] | None = None  # pre-batched tiers
         self._active_batches: list[Batch] | None = None
-        # Device for PrefetchLoader — set by trainer via _set_device()
+        # Device for PrefetchLoader and model handle for the VRAM probe in
+        # ``_ensure_budget`` — both populated by Trainer.bind() before setup().
+        # ``BudgetResult`` is cached on the *model* (``model._budget_cache``),
+        # not here — bpn_node/bpn_edge are model+data properties, so the model
+        # is the single owner. DM just routes the call.
         self._device: torch.device | None = None
-        # Model handle — set by trainer via _set_model() so _ensure_budget
-        # can run a real probe (otherwise node_budget falls back to a static bpn).
         self._model = None
-        # One probe per fit; bpn_node/bpn_edge are model properties, not split
-        # properties, so every loader / prebatch consumer reuses this.
-        self._budget = None
         # Worker count actually used for the train loader (autosize result OR
-        # explicit hp). MLflowTrainingCallback tags this; without it the
-        # autosize path is unfalsifiable post-hoc.
+        # explicit hp). Read at epoch 0 by
+        # :class:`graphids._mlflow.MLflowTrainingCallback._stamp_run_config`
+        # → ``params.graphids.{num_workers,prefetch_factor}`` +
+        # ``tags.graphids.num_workers_source``. Without this dict the autosize
+        # path is unfalsifiable post-hoc.
         self._autosize_info: dict | None = None
         # Memoize (dataset_id, shuffle) → loader; val/test used to rebuild
         # sampler + re-run probe + re-time workers every epoch.
         self._loader_cache: dict[tuple[int, bool], object] = {}
 
-    def _set_device(self, device: torch.device | None) -> None:
-        """Called by Trainer to tell the datamodule which device to prefetch to."""
-        self._device = device
+    def bind(self, *, model, device: torch.device | None) -> None:
+        """Wire the trainer's model + device into the DM before ``setup()``.
 
-    def _set_model(self, model) -> None:
-        """Called by Trainer so dynamic-batching probes can measure this model."""
+        Required because the DM is constructed by the config system before
+        the Trainer/model exist; a no-op contract on DMs that don't move
+        batches keeps the call site uniform (see :class:`FusionDataModule`).
+        """
         self._model = model
+        self._device = device
 
     def setup(self, stage: str | None = None) -> None:
         if self._train_ds is not None:
@@ -268,30 +270,25 @@ class GraphDataModule:
     # -- Shared helpers -------------------------------------------------------
 
     def _ensure_budget(self):
-        """Probe once per fit; cache the result.
+        """Route to ``model.compute_budget`` — the model owns the probe.
 
-        ``bpn_node`` / ``bpn_edge`` from ``budget.probe`` are properties of
-        the *model*, not the split — val and test packing reuse the
-        train-time probe. When CUDA is available, the model must be wired
-        (via ``_set_model``) before this fires; otherwise we silently cache
-        a ``_FALLBACK_BPN`` budget that underperforms by orders of magnitude.
+        When CUDA is available, the model must be wired (via ``bind``)
+        before this fires; otherwise the static-bpn fallback path runs
+        without the actual conv_type/heads and underperforms by orders
+        of magnitude.
         """
-        if self._budget is None:
-            if torch.cuda.is_available() and self._model is None:
-                raise RuntimeError(
-                    "_ensure_budget called on a CUDA device without a wired model. "
-                    "Trainer must call datamodule._set_model(model) before the first "
-                    "train_dataloader() / val_dataloader() request."
-                )
-            hp = self.hparams
-            self._budget = node_budget(
-                self.dataset.name,
-                conv_type=hp["conv_type"],
-                heads=hp["heads"],
-                model=self._model,
-                train_dataset=self._train_ds,
+        if torch.cuda.is_available() and self._model is None:
+            raise RuntimeError(
+                "_ensure_budget called on a CUDA device without a wired model. "
+                "Trainer must call datamodule.bind(model=..., device=...) before "
+                "the first train_dataloader() / val_dataloader() request."
             )
-        return self._budget
+        if self._model is None:
+            # CPU fallback path (tests / cache rebuild) — call node_budget
+            # directly with the linear-probe defaults; no model means no probe
+            # anyway, so conv_type/heads only affect the fallback formula.
+            return node_budget(self.dataset.name, train_dataset=self._train_ds)
+        return self._model.compute_budget(self._train_ds, self.dataset.name)
 
     def _prebatch(self, graphs, sizes, edge_sizes) -> list[Batch]:
         """Pre-collate graphs into Batches via first-fit-decreasing packing.
@@ -427,9 +424,10 @@ class GraphDataModule:
             }
         else:
             self._autosize_info = {"num_workers": nw, "prefetch_factor": pf, "source": "explicit"}
-        from graphids._mlflow import tag_active_run
-
-        tag_active_run({f"graphids.dataloader.{k}": v for k, v in self._autosize_info.items()})
+        # MLflow tagging of ``_autosize_info`` happens in
+        # :class:`graphids._mlflow.MLflowTrainingCallback._stamp_run_config`
+        # at epoch 0 — after the dataloader has been built but before any
+        # training-step metrics are logged.
 
         sampler = NodeBudgetBatchSampler(
             dataset.num_nodes_per_graph,

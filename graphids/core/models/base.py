@@ -24,7 +24,7 @@ import torch
 import torch.nn as nn
 from structlog import get_logger
 
-from graphids.core.trainer import MetricAccumulator
+from graphids.core._metric_acc import MetricAccumulator
 
 _log = get_logger(__name__)
 
@@ -276,6 +276,26 @@ class GraphModuleBase(_ModelBase):
     """
 
     automatic_optimization = True
+    _budget_cache: Any = None  # one BudgetResult per fit (see compute_budget)
+
+    # -- VRAM budget ---------------------------------------------------------
+
+    def compute_budget(self, train_dataset, dataset_name: str) -> Any:
+        """Probe-once VRAM budget. ``conv_type`` / ``heads`` are model
+        properties, so the probe lives here — not on the DataModule, which
+        would have to mirror them as parallel hp.
+
+        ``BudgetResult`` is cached on the model: ``bpn_node`` / ``bpn_edge``
+        depend on the model + data, not on which split (train/val/test) is
+        packing right now, so val and test loaders reuse the train-time probe.
+        """
+        if self._budget_cache is None:
+            from graphids.core.data.budget import node_budget
+
+            self._budget_cache = node_budget(
+                dataset_name, model=self, train_dataset=train_dataset
+            )
+        return self._budget_cache
 
     # -- setup + optimizers --------------------------------------------------
 

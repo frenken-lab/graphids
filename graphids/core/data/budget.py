@@ -42,8 +42,8 @@ log = get_logger(__name__)
 # Three disjoint states for how BudgetResult.budget was derived. Named by
 # *why* (the reason for this value), not *what* (its implementation). Stamped
 # as MLflow tag ``graphids.budget_binding`` by
-# MLflowTrainingCallback._check_budget_utilization — downstream dashboards
-# filter on these exact strings, so rename impact is cross-cutting.
+# :class:`graphids._mlflow.MLflowTrainingCallback.on_fit_end` — downstream
+# dashboards filter on these exact strings, so rename impact is cross-cutting.
 BudgetBinding = Literal[
     "measured",  # probe ran, fit was valid
     "measured_degenerate_fallback",  # probe ran but fit degenerate → formula
@@ -74,7 +74,10 @@ class BudgetResult:
     backward_multiplier: float | None = None
     t_fwd: float = 0.0
     # Bytes the budget was solved against (= free * safety at probe time).
-    # Consumed by MLflowTrainingCallback to warn on under-utilization.
+    # Logged as param ``graphids.budget_target_bytes`` at epoch 0 by
+    # :class:`graphids._mlflow.MLflowTrainingCallback._stamp_run_config`.
+    # Pair with metric ``graphids.peak_vram_mb`` (logged at fit-end) to compute
+    # post-hoc utilization without baking a threshold into the tag.
     target_bytes: int = 0
 
 
@@ -96,6 +99,20 @@ def _fallback_budget_pair(free: int, heads: int) -> tuple[int, int]:
     budget = max(1, int(math.sqrt(free / (heads * _GPS_ATTN_DIVISOR))))
     edge_budget = int(budget * _FALLBACK_EDGE_NODE_RATIO)
     return budget, edge_budget
+
+
+def _resolve_model_hp(
+    model, conv_type: str | None, heads: int | None
+) -> tuple[str, int]:
+    """Pull conv_type/heads off model.hparams when present; else use the
+    explicit kwargs (or the canonical defaults). Single seam — every
+    caller that used to thread these through the API surface now goes
+    through here.
+    """
+    if model is not None:
+        hp = model.hparams
+        return hp.conv_type, hp.heads
+    return (conv_type or "gatv2", heads or 4)
 
 
 def _require_probe_prereqs(model, train_dataset, conv_type: str) -> None:
@@ -369,18 +386,23 @@ def _gps_budget(dataset: str, free: int, heads: int, model, train_dataset) -> Bu
 def node_budget(
     dataset: str,
     *,
-    conv_type: str = "gatv2",
-    heads: int = 4,
     model=None,
     train_dataset=None,
+    conv_type: str | None = None,
+    heads: int | None = None,
 ) -> BudgetResult:
     """Pack budget: ``free × safety / bpn`` per dimension.
+
+    Production callers pass ``model`` only — ``conv_type`` and ``heads``
+    are read off ``model.hparams``. The explicit kwargs exist for the
+    no-model fallback path (tests, cache-rebuild CPU runs).
 
     ``free`` from ``mem_get_info`` already excludes resident allocation, and
     ``bpn`` from the probe is purely batch-scaling — so one multiply gives
     the max batch that fits without double-counting.
     """
     free = torch.cuda.mem_get_info()[0] if torch.cuda.is_available() else 12 * 1024**3
+    conv_type, heads = _resolve_model_hp(model, conv_type, heads)
 
     if conv_type == "gps":
         return _gps_budget(dataset, free, heads, model, train_dataset)

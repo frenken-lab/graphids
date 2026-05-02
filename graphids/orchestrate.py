@@ -19,7 +19,9 @@ from graphids._mlflow import (
     start_training_run,
 )
 from graphids.blueprint import ExtractRow, Row, TrainRow
-from graphids.core.trainer import Trainer, TrainerConfig, seed_everything
+import torch_geometric
+
+from graphids.core.trainer import Trainer, TrainerConfig
 
 
 def _instantiate(spec: dict[str, Any]) -> Any:
@@ -50,7 +52,7 @@ def _build(row: TrainRow, run_id: str) -> tuple[Any, Any, list, TrainerConfig]:
 
 def train(row: TrainRow, *, ckpt_path: str | None = None) -> None:
     """Open MLflow run, instantiate, fit, close. FAILED on any exception."""
-    seed_everything(row.meta.seed)
+    torch_geometric.seed_everything(row.meta.seed)
     run_id = start_training_run(row, phase="fit")
     try:
         model, dm, callbacks, cfg = _build(row, run_id)
@@ -63,7 +65,7 @@ def train(row: TrainRow, *, ckpt_path: str | None = None) -> None:
 
 def evaluate(row: TrainRow, *, ckpt_path: str | None = None) -> dict[str, float]:
     """Open MLflow run, instantiate, test, log returned metrics, close."""
-    seed_everything(row.meta.seed)
+    torch_geometric.seed_everything(row.meta.seed)
     run_id = start_training_run(row, phase="test")
     try:
         model, dm, callbacks, cfg = _build(row, run_id)

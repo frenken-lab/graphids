@@ -54,7 +54,7 @@ class TestEvalLoadersCpuOnly:
     ``_ensure_budget`` requires CUDA + a model. On the CPU branch
     (``torch.cuda.is_available() == False``) the eval loader must skip
     the probe and use fixed batches — model is intentionally unwired
-    (``_set_model`` not called) to assert the CPU path does not reach
+    (``bind`` not called) to assert the CPU path does not reach
     ``_ensure_budget``.
     """
 
