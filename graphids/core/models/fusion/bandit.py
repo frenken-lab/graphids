@@ -1,8 +1,7 @@
-"""Neural-LinUCB contextual bandit for fusion (Xu et al., ICLR 2022).
+"""Neural-LinUCB contextual bandit (Xu et al., ICLR 2022).
 
-Neural backbone learns representations, per-arm ridge regression provides
-UCB exploration on the last layer. No target network, no gamma, no sequential
-dependency — each graph is an independent context.
+Uses torchrl's ``LossModule`` for the backbone-MSE refit so the
+sample → loss → step skeleton is shared with DQN through ``RLFusionBase``.
 """
 
 from __future__ import annotations
@@ -11,14 +10,14 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from tensordict import TensorDict
+from torchrl.objectives import LossModule
 
-from .base import STATE_DIM, FusionModuleBase, build_mlp_body
+from .base import RLFusionBase, build_mlp_body
 
 
-class Backbone(nn.Module):
-    """MLP backbone that outputs representations (no final prediction layer)."""
-
-    def __init__(self, state_dim: int, hidden_dim: int = 128, num_layers: int = 3):
+class _Backbone(nn.Module):
+    def __init__(self, state_dim: int, hidden_dim: int, num_layers: int):
         super().__init__()
         self.net = build_mlp_body(state_dim, hidden_dim, num_layers)
         self.out_dim = hidden_dim
@@ -27,22 +26,41 @@ class Backbone(nn.Module):
         return self.net(x)
 
 
-class BanditFusionModule(FusionModuleBase):
-    """Neural-LinUCB: deep backbone + per-arm linear UCB.
+class _LinUCBLoss(LossModule):
+    """torchrl LossModule: MSE between predicted reward (z·θ_a) and stored
+    reward. ``theta`` is a buffer on the parent module — we hold a Python
+    reference (not registered) so the optimizer only updates the backbone."""
 
-    Action space: K discrete alpha values in [0, 1].
-    State: 15-D fusion feature vector (VGAE 8-D + GAT 7-D).
-    """
+    def __init__(self, backbone: _Backbone, theta: torch.Tensor):
+        super().__init__()
+        self.backbone = backbone
+        # Plain attribute — nn.Module.__setattr__ stores non-Parameter tensors
+        # without registering as a buffer, so the optimizer only sees backbone params.
+        self._theta = theta
+
+    def forward(self, td: TensorDict) -> TensorDict:
+        states = td["observation"]
+        actions = td["action"]
+        rewards = td["next", "reward"].squeeze(-1)
+        z = self.backbone(states)
+        preds = (self._theta[actions] * z).sum(dim=1)
+        loss = nn.functional.mse_loss(preds, rewards)
+        return TensorDict({"loss": loss}, batch_size=[])
+
+
+class BanditFusionModule(RLFusionBase):
+    """Neural-LinUCB: backbone + per-arm ridge with Sherman-Morrison online
+    updates, and a frequency-gated backbone refit (via torchrl LossModule)."""
 
     def __init__(
         self,
-        state_dim: int = STATE_DIM,
+        state_dim: int = 15,
         alpha_steps: int = 21,
         ucb_alpha: float = 1.0,
         lambda_reg: float = 1.0,
         hidden_dim: int = 128,
         num_layers: int = 3,
-        backbone_lr: float = 0.001,
+        backbone_lr: float = 1e-3,
         backbone_retrain_freq: int = 50,
         backbone_epochs: int = 5,
         buffer_size: int = 100_000,
@@ -51,98 +69,82 @@ class BanditFusionModule(FusionModuleBase):
         reward_kwargs: dict | None = None,
     ):
         super().__init__(
+            buffer_size=buffer_size,
+            batch_size=batch_size,
             state_dim=state_dim,
             alpha_steps=alpha_steps,
-            batch_size=batch_size,
-            buffer_size=buffer_size,
             decision_threshold=decision_threshold,
             reward_kwargs=reward_kwargs,
         )
         self._store_init_kwargs(locals())
 
-        # Neural backbone
-        self.backbone = Backbone(state_dim, hidden_dim, num_layers)
-        self.backbone_optimizer = optim.AdamW(self.backbone.parameters(), lr=backbone_lr)
+        self.backbone = _Backbone(state_dim, hidden_dim, num_layers)
         d = self.backbone.out_dim
 
-        # Per-arm ridge regression (registered buffers — auto-checkpointed)
         self.register_buffer(
-            "A_inv",
-            torch.eye(d).unsqueeze(0).repeat(alpha_steps, 1, 1) / lambda_reg,
+            "A_inv", torch.eye(d).unsqueeze(0).repeat(alpha_steps, 1, 1) / lambda_reg
         )
         self.register_buffer("b", torch.zeros(alpha_steps, d))
         self.register_buffer("theta", torch.zeros(alpha_steps, d))
 
+        # torchrl LossModule wired to the same backbone + theta buffer.
+        self.loss_module = _LinUCBLoss(self.backbone, self.theta)
+
+        # gpu_training_steps drives RLFusionBase._learn_step's inner loop.
+        self.gpu_training_steps = backbone_epochs
+
+        self._optimizer = optim.AdamW(self.backbone.parameters(), lr=backbone_lr)
         self._episode = 0
         self._ucb_widths: list[float] = []
 
-    def build_optimizers(self, max_epochs: int):
-        # Bandit manages its own optimizer (backbone_optimizer).
-        # Return it so the trainer can save/restore state.
-        return self.backbone_optimizer, None
+    # -- RLFusionBase hooks --------------------------------------------------
 
-    # -- Exploration strategy ------------------------------------------------
+    def _score_actions(self, td: TensorDict, training: bool) -> None:
+        states = td["observation"]
+        z = self.backbone(states)
+        mu = torch.einsum("kd,nd->nk", self.theta, z)
+        if training and self.ucb_alpha > 0:
+            Az = torch.einsum("kij,nj->nki", self.A_inv, z)
+            ucb = self.ucb_alpha * torch.sqrt(
+                (z.unsqueeze(1) * Az).sum(dim=2).clamp(min=0.0)
+            )
+            scores = mu + ucb
+            self._ucb_widths.append(ucb.mean().item())
+        else:
+            scores = mu
+        td["action"] = scores.argmax(dim=1)
 
-    def select_action_batch(
-        self, states: torch.Tensor, training: bool = True
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """UCB-based action selection for a batch of contexts."""
-        norm_states = self.reward_calc.normalize(states)
-
-        with torch.no_grad():
-            z = self.backbone(norm_states.to(self.device))
-            mu = torch.einsum("kd,nd->nk", self.theta, z)
-
-            if training:
-                Az = torch.einsum("kij,nj->nki", self.A_inv, z)
-                ucb = self.ucb_alpha * torch.sqrt((z.unsqueeze(1) * Az).sum(dim=2).clamp(min=0.0))
-                scores = mu + ucb
-                self._ucb_widths.append(ucb.mean().item())
-            else:
-                scores = mu
-
-        actions = scores.argmax(dim=1)
-        alphas = self.alpha_values[actions]
-        return actions, alphas, norm_states
-
-    # -- Learning update -----------------------------------------------------
-
-    def train_episode(self, states: torch.Tensor, labels: torch.Tensor) -> dict:
-        actions, alphas, norm_states = self.select_action_batch(states, training=True)
-
-        anomaly_scores, gat_probs = self.reward_calc.derive_scores(norm_states)
-        fused_scores = (1 - alphas) * anomaly_scores + alphas * gat_probs
-        preds = (fused_scores > self.decision_threshold).long()
-
-        rewards = self.reward_calc.compute(preds, labels, norm_states, alphas)
-        self.update_linear(norm_states, actions, rewards)
-        self._buffer.add_batch(norm_states.cpu(), actions.cpu(), rewards.cpu())
-
+    def _after_act(self, actions, norm_states, rewards) -> None:
+        self._update_linear(norm_states.to(self.device), actions, rewards)
         self._episode += 1
-        backbone_loss = None
-        if self._episode % self.backbone_retrain_freq == 0:
-            backbone_loss = self.retrain_backbone()
 
-        correct = (preds == labels).sum().item()
-        result = {
-            "accuracy": correct / len(labels),
-            "avg_reward": rewards.mean().item(),
-            "avg_alpha": alphas.mean().item(),
-            "alpha_std": alphas.std().item(),
-            "avg_ucb_width": float(np.mean(self._ucb_widths[-50:])) if self._ucb_widths else 0.0,
+    def _should_learn(self) -> bool:
+        return self._episode % self.backbone_retrain_freq == 0
+
+    def _after_learn(self) -> None:
+        # Reset ridge state after each backbone refit (theta is now stale w.r.t. new z).
+        d = self.backbone.out_dim
+        self.A_inv.copy_(
+            torch.eye(d, device=self.A_inv.device).unsqueeze(0).repeat(self.alpha_steps, 1, 1)
+            / self.lambda_reg
+        )
+        self.b.zero_()
+        self.theta.zero_()
+
+    def _extra_metrics(self) -> dict:
+        return {
+            "avg_ucb_width": float(np.mean(self._ucb_widths[-50:]))
+            if self._ucb_widths
+            else 0.0,
         }
-        if backbone_loss is not None:
-            result["backbone_loss"] = backbone_loss
-        return result
 
-    # -- Bandit-specific internals -------------------------------------------
+    # -- Sherman-Morrison ----------------------------------------------------
 
-    def update_linear(
+    def _update_linear(
         self, states: torch.Tensor, actions: torch.Tensor, rewards: torch.Tensor
     ) -> None:
-        """Sherman-Morrison incremental update to per-arm ridge regression."""
         with torch.no_grad():
-            z = self.backbone(states.to(self.device))
+            z = self.backbone(states)
             for a in range(self.alpha_steps):
                 mask = actions == a
                 if not mask.any():
@@ -152,49 +154,11 @@ class BanditFusionModule(FusionModuleBase):
                 for i in range(len(z_a)):
                     zi = z_a[i]
                     Az = self.A_inv[a] @ zi
-                    denom = 1.0 + zi @ Az
-                    self.A_inv[a] -= torch.outer(Az, Az) / denom
+                    self.A_inv[a] -= torch.outer(Az, Az) / (1.0 + zi @ Az)
                     self.b[a] += r_a[i] * zi
                 self.theta[a] = self.A_inv[a] @ self.b[a]
 
-    def retrain_backbone(self) -> float | None:
-        """Retrain backbone on buffered experiences. Returns avg loss or None."""
-        if len(self._buffer) < self.batch_size:
-            return None
-
-        was_training = self.backbone.training
-        self.backbone.train()
-        total_loss = 0.0
-        for _ in range(self.backbone_epochs):
-            states, actions, rewards = self._buffer.sample(self.batch_size)
-            states = states.to(self.device)
-            actions = actions.to(self.device)
-            rewards = rewards.to(self.device)
-
-            z = self.backbone(states)
-            preds = (self.theta[actions] * z).sum(dim=1)
-            loss = nn.functional.mse_loss(preds, rewards)
-
-            self.backbone_optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.backbone.parameters(), max_norm=1.0)
-            self.backbone_optimizer.step()
-            total_loss += loss.item()
-
-        self.backbone.train(was_training)
-
-        d = self.backbone.out_dim
-        self.A_inv.copy_(
-            torch.eye(d, device=self.A_inv.device).unsqueeze(0).repeat(self.alpha_steps, 1, 1)
-            / self.lambda_reg
-        )
-        self.b.zero_()
-        self.theta.zero_()
-
-        return total_loss / self.backbone_epochs
-
     def q_values(self, norm_states: torch.Tensor) -> torch.Tensor:
-        """Per-arm expected rewards for normalized states. Shape: [N, K]."""
         with torch.no_grad():
             z = self.backbone(norm_states.to(self.device))
             return torch.einsum("kd,nd->nk", self.theta, z).cpu()

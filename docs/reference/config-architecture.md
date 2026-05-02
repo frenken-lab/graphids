@@ -53,7 +53,7 @@ artifact.
 ### Route B: Operational commands (no training)
 
 ```
-python -m graphids {analyze|rebuild-caches|extract-fusion-states|compare}
+python -m graphids {analyze|rebuild-caches|compare}
   -> __main__.py imports cli submodules
   -> Typer @app.command() dispatch per submodule
 ```

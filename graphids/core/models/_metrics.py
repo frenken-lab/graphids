@@ -1,21 +1,55 @@
-"""MetricCollection factories shared by every model family.
+"""MetricCollection factories + custom Metric subclasses shared by every model family.
 
-Two flavors:
+Factories (lazy torchmetrics import):
 
 - ``classification_test_metrics(num_classes)`` — multiclass, used by GAT
-  and fusion modules. ``update(probs, target)`` with ``(N, K)`` simplex
-  probabilities. Per-class decomposition via ``ClasswiseWrapper``.
+  and fusion modules.
 - ``binary_test_metrics(threshold=0.5)`` — binary, used by VGAE/DGI
-  threshold-flavor and any binary classifier. ``update(preds, target)``
-  with float scores in [0, 1]; hard-pred metrics binarize at ``threshold``
-  internally.
+  threshold-flavor and any binary classifier.
 
-Lives outside ``base.py`` so importing a metric factory doesn't drag in
-``GraphModuleBase`` and the entire torchmetrics + structlog stack at
-collection time.
+Custom Metric (eager torchmetrics import — required for class definition):
+
+- ``BinaryYoudenJThreshold`` — pools scores/labels and returns the
+  Youden-J threshold on ``compute()``.
 """
 
 from __future__ import annotations
+
+from typing import Any
+
+import torch
+from torchmetrics import Metric
+from torchmetrics.functional.classification import binary_roc
+from torchmetrics.utilities.data import dim_zero_cat
+
+
+class BinaryYoudenJThreshold(Metric):
+    """Buffer pooled scores/labels; ``compute()`` returns the Youden-J threshold.
+
+    Replaces the prior ``BinaryROC() + _find_threshold()`` pair. The
+    ``.preds`` / ``.target`` list states are read directly by
+    ``_log_thresholded_metrics`` (same attribute names as the old
+    ``BinaryROC`` to preserve that access pattern).
+    """
+
+    full_state_update = False
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.add_state("preds", default=[], dist_reduce_fx="cat")
+        self.add_state("target", default=[], dist_reduce_fx="cat")
+
+    def update(self, preds: torch.Tensor, target: torch.Tensor) -> None:
+        self.preds.append(preds)
+        self.target.append(target)
+
+    def compute(self) -> torch.Tensor:
+        p = dim_zero_cat(self.preds)
+        t = dim_zero_cat(self.target).long()
+        fpr, tpr, thr = binary_roc(p, t)
+        if thr.numel() < 2:
+            return torch.tensor(float("nan"), device=thr.device)
+        return thr[torch.argmax(tpr - fpr)]
 
 
 def classification_test_metrics(num_classes: int):

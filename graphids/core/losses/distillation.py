@@ -119,6 +119,15 @@ class SoftLabelDistillation(nn.Module):
         self.last_soft_loss = soft.detach()
         return self.alpha * soft + (1 - self.alpha) * hard
 
+    def log_components(self, model, *, batch_size: int, prefix: str = "") -> None:
+        """Log per-component losses from the most recent ``forward`` call."""
+        for name, value in (
+            ("hard_loss", self.last_hard_loss),
+            ("soft_loss", self.last_soft_loss),
+        ):
+            if value is not None:
+                model.log(f"{prefix}{name}", value, batch_size=batch_size)
+
 
 class FeatureDistillation(nn.Module):
     """Feature-based KD wrapper for VGAE reconstruction loss.
@@ -194,3 +203,12 @@ class FeatureDistillation(nn.Module):
         self.last_task_loss = task.detach()
         self.last_kd_loss = kd.detach()
         return self.alpha * kd + (1 - self.alpha) * task
+
+    def log_components(self, model, *, batch_size: int, prefix: str = "") -> None:
+        """Log per-component losses from the most recent ``forward`` call."""
+        for name, value in (
+            ("task_loss", self.last_task_loss),
+            ("kd_loss", self.last_kd_loss),
+        ):
+            if value is not None:
+                model.log(f"{prefix}{name}", value, batch_size=batch_size)

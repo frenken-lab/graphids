@@ -1,29 +1,28 @@
-"""Supervised MLP baseline: binary classification from fusion state vectors."""
+"""Supervised MLP baseline: binary classification from flattened fusion features."""
 
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from tensordict import TensorDict
 
-from .base import STATE_DIM, FusionModuleBase
+from .base import FusionModuleBase, flatten_features
 
 
 class MLPFusionModule(FusionModuleBase):
-    """Same state as DQN, but trained with BCE loss instead of RL episodes."""
+    """Same features as DQN, trained with BCE instead of RL."""
 
-    # Standard supervised training — trainer handles backward + step
     automatic_optimization = True
 
     def __init__(
         self,
-        state_dim: int = STATE_DIM,
+        state_dim: int = 15,
         hidden_dims: tuple[int, ...] = (64, 32),
-        lr: float = 0.001,
+        lr: float = 1e-3,
+        decision_threshold: float = 0.5,
     ):
-        super().__init__()
-        # state_dim is also set by the base, but we re-declare it in the
-        # subclass signature so it's the authoritative list of hparams.
+        super().__init__(state_dim=state_dim, decision_threshold=decision_threshold)
         self._store_init_kwargs(locals())
 
         layers: list[nn.Module] = []
@@ -33,31 +32,10 @@ class MLPFusionModule(FusionModuleBase):
             in_dim = h
         layers.append(nn.Linear(in_dim, 1))
         self.model = nn.Sequential(*layers)
-        self.loss_fn = nn.BCEWithLogitsLoss()
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.model(x).squeeze(-1)
-
-    def training_step(self, batch, batch_idx):
-        states, labels = batch
-        logits = self(states)
-        loss = self.loss_fn(logits, labels.float())
-        self.log("train_loss", loss)
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        states, labels = batch
-        logits = self(states)
-        loss = self.loss_fn(logits, labels.float())
-        preds = (logits > 0).long()
-        acc = (preds == labels).float().mean()
-        self.log("val_loss", loss)
-        self.log("val_acc", acc)
-
-    def test_step(self, batch, batch_idx, dataloader_idx=0):
-        states, labels = batch
-        p1 = torch.sigmoid(self(states))
-        self.test_metrics.update(torch.stack([1.0 - p1, p1], dim=1), labels)
+    def forward_scores(self, td: TensorDict) -> torch.Tensor:
+        x = flatten_features(td).to(self.device)
+        return torch.sigmoid(self.model(x).squeeze(-1))
 
     def build_optimizers(self, max_epochs: int):
         return optim.Adam(self.parameters(), lr=self.lr), None

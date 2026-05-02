@@ -4,7 +4,8 @@
 local reward = import '_reward.libsonnet';
 
 function(decision_threshold=0.5, lr=0.001, epsilon=0.2, epsilon_decay=0.995,
-         min_epsilon=0.01, buffer_size=50000, weight_decay=0.00001)
+         min_epsilon=0.01, buffer_size=50000, weight_decay=0.00001,
+         double_dqn=true, target_eps=0.995)
   {
     model: {
       class_path: 'graphids.core.models.fusion.dqn.DQNFusionModule',
@@ -17,6 +18,8 @@ function(decision_threshold=0.5, lr=0.001, epsilon=0.2, epsilon_decay=0.995,
         buffer_size: buffer_size,
         weight_decay: weight_decay,
         gpu_training_steps: 1,
+        double_dqn: double_dqn,
+        target_eps: target_eps,
         reward_kwargs: reward,
       },
     },

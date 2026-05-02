@@ -1,4 +1,8 @@
-"""Data commands: rebuild-caches, extract-fusion-states."""
+"""Data commands: rebuild-caches, validate-metadata.
+
+Fusion-state extraction is no longer a Typer command — it's an
+``ExtractRow`` in fusion plan jsonnets, dispatched by ``graphids exec/submit``.
+"""
 
 from __future__ import annotations
 
@@ -85,32 +89,3 @@ def validate_metadata_cli(
     typer.echo(f"OK: {dataset} — {len(splits)} splits ({', '.join(splits)})")
 
 
-@app.command("extract-fusion-states", rich_help_panel="Data")
-def extract_fusion_states(
-    vgae_ckpt: Annotated[str, typer.Option(help="Path to VGAE checkpoint")],
-    gat_ckpt: Annotated[str, typer.Option(help="Path to GAT checkpoint")],
-    dataset: Annotated[str, typer.Option(help="Dataset name")],
-    output_dir: Annotated[str, typer.Option(help="Output directory for fusion states")],
-    max_samples: Annotated[int, typer.Option(help="Max training samples")] = 150_000,
-    max_val_samples: Annotated[int, typer.Option(help="Max validation samples")] = 30_000,
-    batch_size: Annotated[int, typer.Option(help="Batch size for extraction")] = 256,
-    seed: Annotated[int, typer.Option(help="Random seed")] = 42,
-    window_size: Annotated[int, typer.Option(help="Sliding window size")] = 100,
-    stride: Annotated[int, typer.Option(help="Sliding window stride")] = 100,
-    val_fraction: Annotated[float, typer.Option(help="Validation split fraction")] = 0.2,
-) -> None:
-    """Extract VGAE + GAT latent states for fusion model training."""
-    from graphids.core.data.fusion_states import extract_fusion_states as _extract
-
-    _extract(
-        checkpoints={"vgae": vgae_ckpt, "gat": gat_ckpt},
-        dataset=dataset,
-        output_dir=output_dir,
-        max_samples=max_samples,
-        max_val_samples=max_val_samples,
-        batch_size=batch_size,
-        seed=seed,
-        window_size=window_size,
-        stride=stride,
-        val_fraction=val_fraction,
-    )

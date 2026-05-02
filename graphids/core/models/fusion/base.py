@@ -1,315 +1,140 @@
-"""Fusion model family base — shared RL training loop, reward, and NN utilities.
+"""Fusion model bases.
 
-FusionModuleBase: RL subclasses implement ``select_action_batch`` and
-``train_episode``. Everything else — training_step, predict, validate_batch,
-test hooks, reward computation, replay buffer — lives here.
+All fusion modules consume a feature **TensorDict** (output of
+an ``ExtractRow`` in a fusion plan), not a flat state vector. Modules that need a
+flat input (Q-network for DQN/Bandit, MLP) call ``flatten_features(td)``
+to concatenate every leaf tensor along the feature dim.
 
-Supervised subclasses (MLP, WeightedAvg) override training_step /
-validation_step / test_step with standard loss-based flows.
+- ``FusionModuleBase`` — predict / training_step / validation_step /
+  test_step. Branches on ``automatic_optimization``: supervised path
+  (MLP, WeightedAvg) implements ``forward_scores(td) -> probs``; RL path
+  comes from ``RLFusionBase``.
+
+- ``RLFusionBase`` — torchrl replay buffer + act → reward → push → learn.
+  Subclasses provide a torchrl ``LossModule`` plus three hooks.
 """
 
 from __future__ import annotations
 
-from typing import Any
-
 import torch
 import torch.nn as nn
+from tensordict import TensorDict
+from torchrl.data import LazyTensorStorage, TensorDictReplayBuffer
+from torchrl.data.replay_buffers.samplers import RandomSampler
 
-from ..base import (
-    LAYOUT,
-    STATE_DIM,
-    _LoggingModule,
-)
+from ..base import _ModelBase
+from .reward import FusionRewardCalculator
 
-# ---------------------------------------------------------------------------
-# NN building blocks (shared by bandit + DQN)
-# ---------------------------------------------------------------------------
+__all__ = [
+    "FusionModuleBase",
+    "FusionRewardCalculator",
+    "RLFusionBase",
+    "build_mlp_body",
+    "flatten_features",
+]
 
 
 def build_mlp_body(state_dim: int, hidden_dim: int, num_layers: int) -> nn.Sequential:
-    """Build MLP trunk: [Linear -> LayerNorm -> ReLU -> Dropout(0.2)] x N."""
+    """[Linear → LayerNorm → ReLU → Dropout(0.2)] x N."""
     layers: list[nn.Module] = []
     in_dim = state_dim
     for _ in range(num_layers):
         layers.extend(
-            [
-                nn.Linear(in_dim, hidden_dim),
-                nn.LayerNorm(hidden_dim),
-                nn.ReLU(),
-                nn.Dropout(0.2),
-            ]
+            [nn.Linear(in_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.ReLU(), nn.Dropout(0.2)]
         )
         in_dim = hidden_dim
     return nn.Sequential(*layers)
 
 
-class TensorReplayBuffer:
-    """Fixed-size circular buffer backed by contiguous tensors.
-
-    Stores (state, action, reward) triples only — next_state is always
-    identical to state in the current fusion formulation.
-    """
-
-    def __init__(self, capacity: int, state_dim: int):
-        self.capacity = capacity
-        self.states = torch.zeros(capacity, state_dim)
-        self.actions = torch.zeros(capacity, dtype=torch.long)
-        self.rewards = torch.zeros(capacity)
-        self._pos = 0
-        self._size = 0
-
-    def add_batch(self, states: torch.Tensor, actions: torch.Tensor, rewards: torch.Tensor):
-        n = len(states)
-        if n >= self.capacity:
-            states = states[-self.capacity :]
-            actions = actions[-self.capacity :]
-            rewards = rewards[-self.capacity :]
-            n = self.capacity
-
-        end = self._pos + n
-        if end <= self.capacity:
-            self.states[self._pos : end] = states
-            self.actions[self._pos : end] = actions
-            self.rewards[self._pos : end] = rewards
-        else:
-            first = self.capacity - self._pos
-            self.states[self._pos :] = states[:first]
-            self.actions[self._pos :] = actions[:first]
-            self.rewards[self._pos :] = rewards[:first]
-            rest = n - first
-            self.states[:rest] = states[first:]
-            self.actions[:rest] = actions[first:]
-            self.rewards[:rest] = rewards[first:]
-
-        self._pos = (self._pos + n) % self.capacity
-        self._size = min(self._size + n, self.capacity)
-
-    def sample(self, batch_size: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        idx = torch.randint(0, self._size, (batch_size,))
-        return self.states[idx], self.actions[idx], self.rewards[idx]
-
-    def __len__(self):
-        return self._size
+def flatten_features(td: TensorDict) -> torch.Tensor:
+    """Concatenate every leaf tensor along the last dim. Stable order:
+    sorted nested-key path so the same TD always yields the same layout."""
+    leaves = sorted(td.keys(include_nested=True, leaves_only=True))
+    return torch.cat([td[k] for k in leaves], dim=-1)
 
 
-# ---------------------------------------------------------------------------
-# Reward calculator (shared by bandit + DQN)
-# ---------------------------------------------------------------------------
+def feature_dim(td: TensorDict) -> int:
+    """Total flat feature dim implied by ``flatten_features(td)``."""
+    return sum(td[k].size(-1) for k in td.keys(include_nested=True, leaves_only=True))
 
 
-class FusionRewardCalculator(torch.nn.Module):
-    """Vectorized fusion reward from state features, predictions, and labels.
-
-    Extends nn.Module so ``_vgae_weights`` auto-transfers to GPU when the owning
-    module is moved to a device.
-
-    All shaping coefficients are required kwargs — sourced from
-    ``configs/models/fusion/reward.libsonnet`` via the jsonnet config.
-    """
-
-    def __init__(
-        self,
-        *,
-        vgae_weights: list[float] | tuple[float, ...],
-        correct: float,
-        incorrect: float,
-        confidence_weight: float,
-        combined_conf_weight: float,
-        disagreement_penalty: float,
-        overconf_penalty: float,
-        balance_weight: float,
-    ) -> None:
-        super().__init__()
-
-        vgae = LAYOUT["vgae"]
-        gat = LAYOUT["gat"]
-        self._confidence_indices = [fl.confidence_idx for fl in LAYOUT.values()]
-        self._vgae_error_slice = slice(vgae.offset, vgae.offset + 3)
-        self._gat_logit_slice = slice(gat.offset, gat.offset + 2)
-        self._vgae_conf_idx = vgae.confidence_idx
-        self._gat_conf_idx = gat.confidence_idx
-
-        self.register_buffer("_vgae_weights", torch.tensor(vgae_weights, dtype=torch.float32))
-
-        self._reward_correct = correct
-        self._reward_incorrect = incorrect
-        self._confidence_weight = confidence_weight
-        self._combined_conf_weight = combined_conf_weight
-        self._disagreement_penalty = disagreement_penalty
-        self._overconf_penalty = overconf_penalty
-        self._balance_weight = balance_weight
-
-    def normalize(self, states: torch.Tensor) -> torch.Tensor:
-        """Clamp confidence features to [0, 1]. Returns a new tensor."""
-        states = states.clone().float()
-        for idx in self._confidence_indices:
-            states[:, idx].clamp_(0.0, 1.0)
-        return states
-
-    def derive_scores(self, states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Derive anomaly_score and gat_prob from state features. [N, D] -> ([N], [N])."""
-        vgae_errors = states[:, self._vgae_error_slice]
-        anomaly_scores = (vgae_errors * self._vgae_weights).sum(dim=1).clamp(0.0, 1.0)
-
-        gat_logits = states[:, self._gat_logit_slice]
-        gat_probs = torch.softmax(gat_logits, dim=1)[:, 1]
-
-        return anomaly_scores, gat_probs
-
-    def compute(
-        self,
-        preds: torch.Tensor,
-        labels: torch.Tensor,
-        states: torch.Tensor,
-        alphas: torch.Tensor,
-    ) -> torch.Tensor:
-        """Vectorized reward computation. All inputs [N] or [N, D]. Returns [N]."""
-        anomaly_scores, gat_probs = self.derive_scores(states)
-        vgae_conf = states[:, self._vgae_conf_idx]
-        gat_conf = states[:, self._gat_conf_idx]
-        combined_conf = torch.max(vgae_conf, gat_conf)
-
-        correct = preds == labels
-        base_reward = torch.where(correct, self._reward_correct, self._reward_incorrect)
-        model_agreement = 1.0 - (anomaly_scores - gat_probs).abs()
-
-        # Correct path
-        max_score = torch.max(anomaly_scores, gat_probs)
-        confidence = torch.where(labels == 1, max_score, 1.0 - max_score)
-        confidence_bonus = (
-            self._confidence_weight * confidence + self._combined_conf_weight * combined_conf
-        )
-        correct_reward = base_reward + model_agreement + confidence_bonus
-
-        # Wrong path
-        disagreement_term = self._disagreement_penalty * (1.0 - model_agreement)
-        fused_confidence = alphas * gat_probs + (1 - alphas) * anomaly_scores
-        overconf_term = torch.where(
-            preds == 1,
-            self._overconf_penalty * fused_confidence,
-            self._overconf_penalty * (1.0 - fused_confidence),
-        )
-        wrong_reward = base_reward + disagreement_term + overconf_term
-
-        total_reward = torch.where(correct, correct_reward, wrong_reward)
-        balance_bonus = self._balance_weight * (1.0 - (alphas - 0.5).abs() * 2)
-        return total_reward + balance_bonus
-
-
-def fused_predict(agent, states: torch.Tensor) -> dict:
-    """Greedy fused prediction shared by DQN and bandit agents.
-
-    Requires agent to have: select_action_batch, reward_calc, decision_threshold.
-    """
-    actions, alphas, norm_states = agent.select_action_batch(states, training=False)
-    anomaly_scores, gat_probs = agent.reward_calc.derive_scores(norm_states)
-    fused_scores = (1 - alphas) * anomaly_scores + alphas * gat_probs
-    preds = (fused_scores > agent.decision_threshold).long()
-    return {
-        "preds": preds,
-        "fused_scores": fused_scores,
-        "alphas": alphas,
-        "norm_states": norm_states,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Fusion module base class
-# ---------------------------------------------------------------------------
-
-
-class FusionModuleBase(_LoggingModule):
-    """Base for all fusion models. RL subclasses get the full training loop
-    for free by implementing ``select_action_batch`` and ``train_episode``."""
-
-    # RL subclasses (Bandit, DQN) set this to False
+class FusionModuleBase(_ModelBase):
     automatic_optimization = False
 
     def __init__(
         self,
         *,
-        state_dim: int = STATE_DIM,
+        state_dim: int,
         alpha_steps: int = 21,
         batch_size: int = 128,
-        buffer_size: int = 100_000,
         decision_threshold: float = 0.5,
         reward_kwargs: dict | None = None,
     ):
         super().__init__()
         self._store_init_kwargs(locals())
-
         self.register_buffer("alpha_values", torch.linspace(0, 1, alpha_steps))
-
         if reward_kwargs is not None:
             self.reward_calc = FusionRewardCalculator(**reward_kwargs)
-        self._buffer = TensorReplayBuffer(buffer_size, state_dim)
-
         from ..base import classification_test_metrics
 
         self.test_metrics = classification_test_metrics(2)
 
-    # -- setup (no-op by default, overridden if needed) ----------------------
-
-    def setup(self, datamodule=None):
-        pass
-
-    def build_optimizers(self, max_epochs: int) -> tuple[torch.optim.Optimizer | None, Any]:
-        """Default: no optimizer (RL models manage their own). Override in subclasses."""
+    def build_optimizers(self, max_epochs: int):
         return None, None
 
-    # -- Subclass contract ---------------------------------------------------
+    # -- shared prediction / training / validation / test --------------------
 
-    def select_action_batch(
-        self, states: torch.Tensor, training: bool = True
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Pick actions for a batch of states. Returns (actions, alphas, norm_states)."""
-        raise NotImplementedError
+    def predict(self, td: TensorDict) -> dict:
+        if self.automatic_optimization:
+            scores = self.forward_scores(td)
+            return {"fused_scores": scores, "preds": (scores > self.decision_threshold).long()}
+        # RL path: greedy action → fused score
+        actions, alphas, td_norm = self.select_action_batch(td, training=False)
+        anomaly, gat = self.reward_calc.derive_scores(td_norm)
+        fused = (1 - alphas) * anomaly + alphas * gat
+        return {
+            "fused_scores": fused,
+            "preds": (fused > self.decision_threshold).long(),
+            "alphas": alphas,
+            "td_norm": td_norm,
+        }
 
-    def train_episode(self, states: torch.Tensor, labels: torch.Tensor) -> dict:
-        """One training episode. Returns metric dict for logging."""
-        raise NotImplementedError
-
-    # -- Training hooks (shared by all RL fusion) ----------------------------
+    def _supervised_loss(self, td, labels):
+        scores = self.forward_scores(td)
+        loss = nn.functional.binary_cross_entropy(
+            scores.clamp(1e-7, 1 - 1e-7), labels.float()
+        )
+        return scores, loss
 
     def training_step(self, batch, batch_idx):
-        states, labels = batch
-        result = self.train_episode(states, labels)
-        for k, v in result.items():
+        td, labels = batch
+        if self.automatic_optimization:
+            _, loss = self._supervised_loss(td, labels)
+            self.log("train_loss", loss)
+            return loss
+        for k, v in self.train_episode(td, labels).items():
             if v is not None:
                 self.log(k, float(v), prog_bar=(k in ("avg_reward", "accuracy")))
 
-    def predict(self, states: torch.Tensor) -> dict:
-        """Greedy fused prediction (no exploration)."""
-        return fused_predict(self, states)
-
-    def validate_batch(self, states: torch.Tensor, labels: torch.Tensor) -> dict:
-        """Greedy evaluation — shared by bandit and DQN."""
-        result = self.predict(states)
-        preds, norm_states, alphas = result["preds"], result["norm_states"], result["alphas"]
-
-        correct = (preds == labels).sum().item()
-        rewards = self.reward_calc.compute(preds, labels, norm_states, alphas)
-
-        return {
-            "accuracy": correct / len(labels),
-            "avg_reward": rewards.mean().item(),
-            "avg_alpha": alphas.mean().item(),
-            "alpha_std": alphas.std().item(),
-        }
-
     def validation_step(self, batch, batch_idx):
-        states, labels = batch
-        metrics = self.validate_batch(states, labels)
-        self.log("val_acc", metrics.get("accuracy", 0.0), prog_bar=True)
+        td, labels = batch
+        if self.automatic_optimization:
+            scores, loss = self._supervised_loss(td, labels)
+            preds = (scores > self.decision_threshold).long()
+            self.log("val_loss", loss)
+            self.log("val_acc", (preds == labels).float().mean(), prog_bar=True)
+            return
+        result = self.predict(td)
+        preds, td_norm, alphas = result["preds"], result["td_norm"], result["alphas"]
+        rewards = self.reward_calc.compute(td_norm, preds, labels, alphas)
+        self.log("val_acc", (preds == labels).float().mean().item(), prog_bar=True)
+        self.log("avg_reward", rewards.mean().item())
+        self.log("avg_alpha", alphas.mean().item())
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
-        states, labels = batch
-        result = self.predict(states)
-        fused = result["fused_scores"].float()
-        # (N, 2) probs — decision metrics argmax at 0.5 (= fused > 0.5);
-        # curve metrics consume the continuous class-1 prob.
-        probs = torch.stack([1.0 - fused, fused], dim=1)
-        self.test_metrics.update(probs, labels)
+        td, labels = batch
+        fused = self.predict(td)["fused_scores"].float()
+        self.test_metrics.update(torch.stack([1.0 - fused, fused], dim=1), labels)
 
     def on_test_epoch_start(self):
         self.test_metrics.reset()
@@ -317,8 +142,116 @@ class FusionModuleBase(_LoggingModule):
     def on_test_epoch_end(self):
         self.log_dict(self.test_metrics.compute())
 
-    def on_save_checkpoint(self, checkpoint):
-        pass
 
-    def on_load_checkpoint(self, checkpoint):
-        pass
+class RLFusionBase(FusionModuleBase):
+    """torchrl replay buffer + unified act/learn flow.
+
+    Subclass sets in ``__init__``:
+    - ``self.loss_module`` — a torchrl ``LossModule`` (callable
+      ``td → {"loss": tensor}``).
+    - ``self._optimizer`` — optimizer over ``loss_module.parameters()``.
+
+    Hooks:
+    - ``_score_actions(td, training)`` — write ``td['action']``.
+    - ``_after_act(actions, obs, rewards)`` — online update.
+    - ``_should_learn()`` — gate the optim step (default: every step).
+    - ``_after_optim_step()`` — post-step (DQN target sync).
+    - ``_after_learn()`` — post-batch (Bandit ridge reset).
+    - ``_extra_metrics()`` — extra log fields.
+    """
+
+    automatic_optimization = False
+
+    def __init__(self, *, buffer_size: int, batch_size: int, **kw):
+        super().__init__(batch_size=batch_size, **kw)
+        self._rb = TensorDictReplayBuffer(
+            storage=LazyTensorStorage(max_size=buffer_size, device=torch.device("cpu")),
+            sampler=RandomSampler(),
+            batch_size=batch_size,
+        )
+
+    def build_optimizers(self, max_epochs: int):
+        return self._optimizer, None
+
+    # -- subclass hooks ------------------------------------------------------
+
+    def _score_actions(self, td: TensorDict, training: bool) -> None:
+        raise NotImplementedError
+
+    def _after_act(self, actions, obs, rewards) -> None:
+        return None
+
+    def _should_learn(self) -> bool:
+        return True
+
+    def _after_optim_step(self) -> None:
+        return None
+
+    def _after_learn(self) -> None:
+        return None
+
+    def _extra_metrics(self) -> dict:
+        return {}
+
+    # -- concrete RL flow ----------------------------------------------------
+
+    def select_action_batch(self, features_td: TensorDict, training: bool = True):
+        """Returns ``(actions[N], alphas[N], normalized_features_td[N])``."""
+        td_norm = self.reward_calc.normalize(features_td).to(self.device)
+        obs = flatten_features(td_norm)
+        inner = TensorDict({"observation": obs}, batch_size=[obs.size(0)], device=self.device)
+        with torch.no_grad():
+            self._score_actions(inner, training=training)
+        actions = inner["action"].detach().cpu()
+        return actions, self.alpha_values[actions], td_norm.cpu()
+
+    def train_episode(self, features_td: TensorDict, labels: torch.Tensor) -> dict:
+        actions, alphas, td_norm = self.select_action_batch(features_td, training=True)
+        preds = (alphas > self.decision_threshold).long()
+        rewards = self.reward_calc.compute(td_norm, preds, labels, alphas)
+
+        obs = flatten_features(td_norm)  # CPU flat tensor for buffer
+        self._after_act(actions, obs, rewards)
+
+        n = obs.size(0)
+        ones = torch.ones(n, 1, dtype=torch.bool)
+        self._rb.extend(
+            TensorDict(
+                {
+                    "observation": obs,
+                    "action": actions,
+                    "next": TensorDict(
+                        {
+                            "observation": obs,
+                            "reward": rewards.float().unsqueeze(-1),
+                            "done": ones,
+                            "terminated": ones,
+                        },
+                        batch_size=[n],
+                    ),
+                },
+                batch_size=[n],
+            )
+        )
+        return {
+            "avg_reward": rewards.mean().item(),
+            "avg_alpha": alphas.mean().item(),
+            "loss": self._learn_step(),
+            **self._extra_metrics(),
+        }
+
+    def _learn_step(self) -> float | None:
+        if not self._should_learn() or len(self._rb) < self.batch_size:
+            return None
+        last: float | None = None
+        for _ in range(self.gpu_training_steps):
+            sample = self._rb.sample().to(self.device)
+            loss = self.loss_module(sample)["loss"]
+            self._optimizer.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(self.loss_module.parameters(), max_norm=1.0)
+            self._optimizer.step()
+            self._after_optim_step()
+            last = float(loss.detach().item())
+        self._after_learn()
+        return last

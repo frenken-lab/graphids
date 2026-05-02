@@ -14,6 +14,8 @@ dependencies = [
     "torch-sparse",
     "torch-cluster",
     "torchmetrics>=1.8.0",
+    "torchrl>=0.6",
+    "tensordict>=0.6",
     "numpy>=1.26.4",
     "polars>=1.0.0",
     "pandas>=2.2.3",

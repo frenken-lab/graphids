@@ -41,12 +41,12 @@ The four user-facing primitives are pure stages. Each does exactly one
 thing and feeds the next; no stage submits, queries MLflow, or
 orchestrates multiple jobs.
 
-| Stage   | Command                       | Module                  | What it does                                                                   |
-| ------- | ----------------------------- | ----------------------- | ------------------------------------------------------------------------------ |
-| render  | `graphids run <plan>`         | `graphids/cli/run.py`   | Renders plan jsonnet, validates as `BlueprintArray`, writes JSON to stdout.    |
-| exec    | `graphids exec --row <json>`  | `graphids/cli/exec.py`  | Executes one row in-process via `graphids.orchestrate.run_row`. Dispatches on `row.action` (fit/test). |
-| submit  | `graphids submit --row <json>`| `graphids/cli/submit.py`| Submits one row to SLURM via Parsl `SlurmProvider`. Prints jid.                |
-| ops     | `graphids analyze` / `export` / `data` | `graphids/cli/{analysis,export,data}.py` | One-shot ops: ckpt analysis, HF push, cache rebuild.                            |
+| Stage  | Command                                | Module                                   | What it does                                                                                           |
+| ------ | -------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| render | `graphids run <plan>`                  | `graphids/cli/run.py`                    | Renders plan jsonnet, validates as `BlueprintArray`, writes JSON to stdout.                            |
+| exec   | `graphids exec --row <json>`           | `graphids/cli/exec.py`                   | Executes one row in-process via `graphids.orchestrate.run_row`. Dispatches on `row.action` (fit/test). |
+| submit | `graphids submit --row <json>`         | `graphids/cli/submit.py`                 | Submits one row to SLURM via Parsl `SlurmProvider`. Prints jid.                                        |
+| ops    | `graphids analyze` / `export` / `data` | `graphids/cli/{analysis,export,data}.py` | One-shot ops: ckpt analysis, HF push, cache rebuild.                                                   |
 
 `graphids/__main__.py` imports each submodule to register Typer commands.
 `app.py` owns the root app + shared option types.
@@ -76,3 +76,32 @@ Fusion uses a single `configs/models/fusion/` module that dispatches on
 the `fusion_method` TLA over the method libsonnets.
 
 ## Rules (auto-loaded from `.claude/rules/`)
+
+## TODOs
+
+There are open TODOs in codebase that have questions
+
+Additional:
+
+- why is extract states in specific models, in data directory, own cli call this needs
+  to be simplified
+
+Option 1: Extract after a model is trained
+
+- pros: compute and job call efficient
+- cons: stricter when come training time of fusion must accept the dicts
+
+Option 2: Extract during fusion training
+
+- pros: more modular, can delcare upfront what to extract for embeddings
+- con: might need GPU? models need to forward pass each sample for each model, though they are
+  not that big
+
+Option 3: Extract as its own job type
+
+- pros: singular and modular
+- cons: another thing in the pipeline
+
+torchrl does have a pipeline API like sklearn - which may lend credence to option 2 if there are
+some cpu forward pass accelerators that are easy to collect the extractions. the lack of a backward
+pass has me leaning towards this configuration

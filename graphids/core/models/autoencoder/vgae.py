@@ -340,13 +340,9 @@ class VGAE(GraphModuleBase):
             self.log("train_nbr", task_loss.last_nbr, batch_size=bs)
             self.log("train_kl", task_loss.last_kl, batch_size=bs)
 
-        from graphids.core.losses.distillation import FeatureDistillation
-
-        if isinstance(self.loss_fn, FeatureDistillation):
-            if self.loss_fn.last_task_loss is not None:
-                self.log("train_task_loss", self.loss_fn.last_task_loss, batch_size=bs)
-            if self.loss_fn.last_kd_loss is not None:
-                self.log("train_kd_loss", self.loss_fn.last_kd_loss, batch_size=bs)
+        log_fn = getattr(self.loss_fn, "log_components", None)
+        if log_fn is not None:
+            log_fn(self, batch_size=bs, prefix="train_")
         return loss
 
     def validation_step(self, batch, _idx):
@@ -395,8 +391,13 @@ class VGAE(GraphModuleBase):
         kl = scatter(kl_per_node, batch.batch, dim=0, reduce="mean")
         return recon, mahal, kl, z
 
-    def extract_features(self, batch, device: torch.device) -> torch.Tensor:
-        """8-D fusion features: [recon, mahal, kl, z_mean, z_std, z_max, z_min, conf]."""
+    def extract_features(self, batch, device: torch.device) -> dict[str, torch.Tensor]:
+        """Per-graph fusion features as named tensors.
+
+        - ``errors``   [N, 3] — recon, mahal, kl (anomaly evidence)
+        - ``conf``     [N, 1] — 1 / (1 + recon)
+        - ``z_stats``  [N, 4] — z_mean, z_std, z_max, z_min
+        """
         from torch_geometric.utils import scatter
 
         recon, mahal, kl, z = self._score(batch)
@@ -405,8 +406,11 @@ class VGAE(GraphModuleBase):
         z_std = scatter(z.std(1), b, dim=0, reduce="mean")
         z_max = scatter(z.max(1).values, b, dim=0, reduce="max")
         z_min = scatter(z.min(1).values, b, dim=0, reduce="min")
-        conf = 1.0 / (1.0 + recon)
-        return torch.stack([recon, mahal, kl, z_mean, z_std, z_max, z_min, conf], dim=1)
+        return {
+            "errors": torch.stack([recon, mahal, kl], dim=1),
+            "conf": (1.0 / (1.0 + recon)).unsqueeze(-1),
+            "z_stats": torch.stack([z_mean, z_std, z_max, z_min], dim=1),
+        }
 
     def _per_graph_errors(self, batch):
         if not bool(self.score_norm_fitted):

@@ -238,13 +238,9 @@ class GAT(GraphModuleBase):
         self.log("train_loss", loss, batch_size=bs)
         self.log("train_acc", acc, batch_size=bs)
 
-        from graphids.core.losses.distillation import SoftLabelDistillation
-
-        if isinstance(self.loss_fn, SoftLabelDistillation):
-            if self.loss_fn.last_hard_loss is not None:
-                self.log("train_hard_loss", self.loss_fn.last_hard_loss, batch_size=bs)
-            if self.loss_fn.last_soft_loss is not None:
-                self.log("train_soft_loss", self.loss_fn.last_soft_loss, batch_size=bs)
+        log_fn = getattr(self.loss_fn, "log_components", None)
+        if log_fn is not None:
+            log_fn(self, batch_size=bs, prefix="train_")
         return loss
 
     def validation_step(self, batch, _idx):
@@ -284,20 +280,27 @@ class GAT(GraphModuleBase):
         scores = F.softmax(logits, dim=1)[:, 1]
         return {"preds": logits.argmax(1), "scores": scores, "labels": batch.y}
 
-    def extract_features(self, batch, device: torch.device) -> torch.Tensor:
-        """7-D fusion features: [prob_0, prob_1, emb_mean, emb_std, emb_max, emb_min, confidence]."""
+    def extract_features(self, batch, device: torch.device) -> dict[str, torch.Tensor]:
+        """Per-graph fusion features as named tensors.
+
+        - ``probs``     [N, 2] — prob_0, prob_1
+        - ``conf``      [N, 1] — 1 - entropy / log(2)
+        - ``emb_stats`` [N, 4] — emb_mean, emb_std, emb_max, emb_min
+        """
         logits, emb = self(batch, return_embedding=True)
         probs = F.softmax(logits, dim=1)
         entropy = -(probs * (probs + 1e-8).log()).sum(dim=1)
         conf = (1.0 - entropy / math.log(2)).clamp(0.0, 1.0)
-        return torch.cat(
-            [
-                probs,
-                emb.mean(1, keepdim=True),
-                emb.std(1, keepdim=True),
-                emb.max(1).values.unsqueeze(1),
-                emb.min(1).values.unsqueeze(1),
-                conf.unsqueeze(1),
-            ],
-            dim=1,
-        )
+        return {
+            "probs": probs,
+            "conf": conf.unsqueeze(-1),
+            "emb_stats": torch.cat(
+                [
+                    emb.mean(1, keepdim=True),
+                    emb.std(1, keepdim=True),
+                    emb.max(1).values.unsqueeze(1),
+                    emb.min(1).values.unsqueeze(1),
+                ],
+                dim=1,
+            ),
+        }

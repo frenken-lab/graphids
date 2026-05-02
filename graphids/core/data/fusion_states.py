@@ -1,13 +1,14 @@
-"""Extract and cache state vectors from any model with ``extract_features``.
+"""Extract and cache fusion features as a TensorDict.
 
-General-purpose: given a dict of ``{name: model}``, runs each model's
-``extract_features(batch, device)`` method on the dataset, concatenates
-the per-model feature vectors, and saves to disk.
+Each upstream model implements ``extract_features(batch, device) -> dict[str, Tensor]``
+returning per-graph named feature tensors. This module collects those dicts
+under the model name (``vgae``, ``gat``, ...), stacks across batches, and saves
+the resulting nested TensorDict to disk. No flat state vector, no offsets —
+the fusion side reads keys directly.
 
-Models must implement ``extract_features(batch, device) → Tensor[N, D]``
-on their module class (VGAE, GAT, or any future model).
-
-CLI surface: ``python -m graphids extract-fusion-states``.
+Invoked as the first row of ``configs/plans/fusion.jsonnet`` (an ``ExtractRow``);
+``graphids exec/submit`` dispatch routes through ``orchestrate.run_row`` →
+``orchestrate.extract`` → ``extract_fusion_states``. Idempotent on ``output_dir``.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from pathlib import Path
 
 import torch
 from structlog import get_logger
+from tensordict import TensorDict
 from torch_geometric.loader import DataLoader as PyGDataLoader
 
 log = get_logger(__name__)
@@ -23,12 +25,10 @@ log = get_logger(__name__)
 FUSION_STATES_DIR = "fusion_states"
 TRAIN_FILENAME = "train_states.pt"
 VAL_FILENAME = "val_states.pt"
-# Bumped to 2 in commit 2 of the VGAE mask-recon synthesis: VGAE 8-D feature
-# columns swapped from [recon, nbr, canid, ...] to [recon, mahal, kl, ...].
-# Old cached files are silently incompatible by content; the version field
-# forces one-time regen instead of pretending to load them.
-CACHE_VERSION = 3  # bumped for VGAE/DGI/GAT module collapse — extract_features
-# call path changed (no .model wrapper), regenerate caches.
+# v4 — TensorDict cache shape; per-extractor named feature dicts replace the
+# flat [N, 15] state vector + LAYOUT offsets. Old caches are incompatible by
+# format (top-level keys changed); the version field forces re-extraction.
+CACHE_VERSION = 4
 
 
 def extract_states(
@@ -37,18 +37,12 @@ def extract_states(
     device: torch.device,
     max_samples: int = 150_000,
     batch_size: int = 256,
-) -> dict[str, torch.Tensor]:
-    """Run ``model.extract_features`` for each model, concatenate feature vectors.
+) -> TensorDict:
+    """Run each model's ``extract_features`` and collect into a TensorDict.
 
-    Args:
-        models: ``{name: model}`` — each model must have ``extract_features(batch, device)``.
-        data: list of PyG Data objects.
-        device: target device.
-        max_samples: cap on number of graphs to process.
-        batch_size: batch size for the graph loader.
-
-    Returns:
-        ``{"states": Tensor[N, D_total], "labels": Tensor[N]}``
+    Returns a TensorDict with shape ``[N]`` and keys:
+      - ``<model_name>``: nested TensorDict of that model's named feature tensors.
+      - ``labels``: ``[N]`` int.
     """
     from contextlib import ExitStack
 
@@ -57,19 +51,23 @@ def extract_states(
     capped = data[:max_samples]
     loader = PyGDataLoader(capped, batch_size=batch_size)
 
-    states, labels = [], []
+    chunks: list[TensorDict] = []
+    labels_chunks: list[torch.Tensor] = []
     with ExitStack() as stack, torch.no_grad():
         for model in models.values():
             stack.enter_context(eval_mode(model))
         for batch in loader:
-            # PyG Data.to() is in-place — clone first to keep the source
-            # batch pristine in case multiple consumers share it.
+            # PyG Data.to() is in-place — clone first to keep the source pristine.
             batch = batch.clone().to(device, non_blocking=True)
-            feats = [model.extract_features(batch, device) for model in models.values()]
-            states.append(torch.cat(feats, dim=1))
-            labels.append(batch.y)
+            n = batch.y.size(0)
+            per_model = {name: m.extract_features(batch, device) for name, m in models.items()}
+            chunk = TensorDict(per_model, batch_size=[n])
+            chunks.append(chunk)
+            labels_chunks.append(batch.y)
 
-    return {"states": torch.cat(states), "labels": torch.cat(labels)}
+    td = torch.cat(chunks, dim=0)
+    td["labels"] = torch.cat(labels_chunks)
+    return td
 
 
 def extract_fusion_states(
@@ -85,19 +83,30 @@ def extract_fusion_states(
     stride: int = 100,
     val_fraction: float = 0.2,
 ) -> None:
-    """Load model checkpoints, extract and cache fusion states to ``output_dir``.
+    """Load model checkpoints, extract and cache fusion features.
 
-    Args:
-        checkpoints: ``{model_type: ckpt_path}`` e.g. ``{"vgae": "/path/to/checkpoints/best_model.ckpt", "gat": "..."}``.
+    Idempotent on ``output_dir``: if a valid cache (matching ``CACHE_VERSION``)
+    already exists, return without re-running extractors.
     """
+    out = Path(output_dir) / FUSION_STATES_DIR
+    train_path = out / TRAIN_FILENAME
+    val_path = out / VAL_FILENAME
+    if train_path.exists() and val_path.exists():
+        try:
+            v_train = torch.load(train_path, map_location="cpu", weights_only=False).get("version")
+            v_val = torch.load(val_path, map_location="cpu", weights_only=False).get("version")
+            if v_train == CACHE_VERSION and v_val == CACHE_VERSION:
+                log.info("cache_hit", output_dir=str(out), version=CACHE_VERSION)
+                return
+        except Exception as e:
+            log.warning("cache_check_failed", error=str(e))
+
     from graphids.core.data.datamodule.graph import GraphDataModule
     from graphids.core.data.datasets.can_bus import CANBusSource
     from graphids.core.models.base import safe_load_checkpoint
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Load the wrapper module (not inner nn.Module): extract_features lives
-    # on the module class (VGAEModule/GATModule), not on self.model.
     models = {}
     for model_type, ckpt_path in checkpoints.items():
         log.info("loading_model", model_type=model_type, ckpt=ckpt_path)
@@ -117,24 +126,22 @@ def extract_fusion_states(
     train_ds, val_ds = dm.train_dataset, dm.val_dataset
 
     log.info("extracting_train", n_graphs=len(train_ds), max_samples=max_samples)
-    train_cache = extract_states(models, list(train_ds), device, max_samples, batch_size)
+    train_td = extract_states(models, list(train_ds), device, max_samples, batch_size)
 
     log.info("extracting_val", n_graphs=len(val_ds), max_samples=max_val_samples)
-    val_cache = extract_states(models, list(val_ds), device, max_val_samples, batch_size)
+    val_td = extract_states(models, list(val_ds), device, max_val_samples, batch_size)
 
-    train_cache = {k: v.cpu() for k, v in train_cache.items()}
-    val_cache = {k: v.cpu() for k, v in val_cache.items()}
-    train_cache["version"] = CACHE_VERSION
-    val_cache["version"] = CACHE_VERSION
+    train_td = train_td.cpu()
+    val_td = val_td.cpu()
 
-    out = Path(output_dir) / FUSION_STATES_DIR
     out.mkdir(parents=True, exist_ok=True)
-    torch.save(train_cache, out / TRAIN_FILENAME)
-    torch.save(val_cache, out / VAL_FILENAME)
+    torch.save({"td": train_td.to_dict(), "version": CACHE_VERSION}, train_path)
+    torch.save({"td": val_td.to_dict(), "version": CACHE_VERSION}, val_path)
 
     log.info(
         "states_saved",
         output_dir=str(out),
-        train_shape=list(train_cache["states"].shape),
-        val_shape=list(val_cache["states"].shape),
+        train_n=train_td.batch_size[0],
+        val_n=val_td.batch_size[0],
+        keys=list(train_td.keys(include_nested=True, leaves_only=True)),
     )

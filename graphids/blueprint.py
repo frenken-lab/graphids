@@ -2,6 +2,7 @@
 
 A blueprint is an ordered list of rows. Each row is one of:
     fit / test  → carries `rendered_config` + `upstreams` + `identity`
+    extract     → one-shot fusion-feature extraction (idempotent on output_dir)
     cmd         → carries `command` only
 
 Validation is one call: `BlueprintArray.model_validate(rendered_array)`.
@@ -69,7 +70,30 @@ class CmdRow(_StrictModel):
     resources: Resources
 
 
-Row = TrainRow | CmdRow
+class ExtractRow(_StrictModel):
+    """One-shot extraction of fusion features from upstream model ckpts.
+
+    Idempotent: ``run_row`` short-circuits when a valid cache already exists
+    at ``output_dir``. Cached outputs are reused across N fusion fit/test
+    rows via Parsl ``--depends-on-afterok`` chaining.
+    """
+
+    name: str
+    action: Literal["extract"]
+    dataset: str
+    extractor_ckpts: dict[str, str]
+    output_dir: str
+    resources: Resources
+    max_samples: int = 150_000
+    max_val_samples: int = 30_000
+    batch_size: int = 256
+    seed: int = 42
+    window_size: int = 100
+    stride: int = 100
+    val_fraction: float = 0.2
+
+
+Row = TrainRow | CmdRow | ExtractRow
 
 
 class BlueprintArray(RootModel[list[Row]]):

@@ -45,4 +45,24 @@ local accelerator_for(mode) = if mode == 'cpu' then 'cpu' else 'auto';
     command: command,
     resources: { mode: mode, length: length },
   },
+  // One-shot fusion-feature extraction. Idempotent on output_dir — repeated
+  // submissions hit the cache check in `extract_fusion_states`.
+  extract(name, dataset, extractor_ckpts, output_dir,
+          mode='gpu', length='short',
+          max_samples=150000, max_val_samples=30000, batch_size=256,
+          seed=42, window_size=100, stride=100, val_fraction=0.2):: {
+    name: name,
+    action: 'extract',
+    dataset: dataset,
+    extractor_ckpts: extractor_ckpts,
+    output_dir: output_dir,
+    resources: { mode: mode, length: length },
+    max_samples: max_samples,
+    max_val_samples: max_val_samples,
+    batch_size: batch_size,
+    seed: seed,
+    window_size: window_size,
+    stride: stride,
+    val_fraction: val_fraction,
+  },
 }

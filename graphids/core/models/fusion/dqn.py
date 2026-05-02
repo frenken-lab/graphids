@@ -1,45 +1,38 @@
-"""Vanilla DQN for dynamic fusion of GAT and VGAE outputs.
+"""DQN fusion: torchrl ``DQNLoss`` + ``EGreedyModule`` over ``QValueActor``.
 
-Fusion treats each graph as an independent context, so there is no
-bootstrapped next state: ``targets = rewards`` and no target network
-is needed. For a closed-form alternative, see ``BanditFusionModule``.
+Subclasses ``RLFusionBase`` and contributes only the DQN-specific math:
+the Q-actor + epsilon-greedy explorer, the ``DQNLoss`` (with ``double_dqn``
+toggle and ``delay_value`` target net), and ``SoftUpdate`` Polyak sync.
+``gamma=0`` because each graph is an independent context.
 """
 
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from tensordict import TensorDict
+from tensordict.nn import TensorDictModule, TensorDictSequential
+from torchrl.data import Categorical
+from torchrl.modules import MLP, EGreedyModule, QValueActor
+from torchrl.objectives import DQNLoss
+from torchrl.objectives.utils import SoftUpdate
 
-from .base import STATE_DIM, FusionModuleBase, build_mlp_body
-
-
-class QNetwork(nn.Module):
-    """Q-network with configurable depth and width."""
-
-    def __init__(self, state_dim, action_dim, hidden_dim=128, num_layers=3):
-        super().__init__()
-        self.net = nn.Sequential(
-            *build_mlp_body(state_dim, hidden_dim, num_layers),
-            nn.Linear(hidden_dim, action_dim),
-        )
-
-    def forward(self, x):
-        return self.net(x)
+from .base import RLFusionBase
 
 
-class DQNFusionModule(FusionModuleBase):
-    """Vanilla DQN with gradient updates for dynamic fusion."""
-
+class DQNFusionModule(RLFusionBase):
     def __init__(
         self,
-        state_dim: int = STATE_DIM,
+        state_dim: int = 15,
         alpha_steps: int = 21,
         lr: float = 1e-3,
         epsilon: float = 0.2,
         epsilon_decay: float = 0.995,
         min_epsilon: float = 0.01,
-        buffer_size: int = 50000,
+        buffer_size: int = 50_000,
         batch_size: int = 128,
         *,
         hidden_dim: int = 128,
@@ -47,100 +40,85 @@ class DQNFusionModule(FusionModuleBase):
         weight_decay: float = 1e-5,
         decision_threshold: float = 0.5,
         gpu_training_steps: int = 1,
+        double_dqn: bool = True,
+        target_eps: float = 0.995,
         reward_kwargs: dict | None = None,
     ):
         super().__init__(
+            buffer_size=buffer_size,
+            batch_size=batch_size,
             state_dim=state_dim,
             alpha_steps=alpha_steps,
-            batch_size=batch_size,
-            buffer_size=buffer_size,
             decision_threshold=decision_threshold,
             reward_kwargs=reward_kwargs,
         )
         self._store_init_kwargs(locals())
 
-        self.q_network = QNetwork(state_dim, alpha_steps, hidden_dim, num_layers)
-        self._dqn_optimizer = optim.AdamW(
-            self.q_network.parameters(),
-            lr=lr,
-            weight_decay=weight_decay,
+        action_spec = Categorical(n=alpha_steps, shape=(), dtype=torch.long)
+
+        trunk = MLP(
+            in_features=state_dim,
+            out_features=alpha_steps,
+            num_cells=[hidden_dim] * num_layers,
+            activation_class=nn.ReLU,
         )
-        self.loss_fn = nn.SmoothL1Loss()
+        self.q_value_module = TensorDictModule(
+            trunk, in_keys=["observation"], out_keys=["action_value"]
+        )
+        self.q_actor = QValueActor(
+            module=self.q_value_module,
+            spec=action_spec,
+            in_keys=["observation"],
+            action_space="categorical",
+        )
 
-    def build_optimizers(self, max_epochs: int):
-        # DQN manages its own optimizer internally.
-        # Return it so the trainer can save/restore state.
-        return self._dqn_optimizer, None
+        ratio = max(min_epsilon / max(epsilon, 1e-9), 1e-9)
+        annealing_num_steps = max(1, int(math.log(ratio) / math.log(epsilon_decay)))
+        self._egreedy = EGreedyModule(
+            spec=action_spec,
+            eps_init=epsilon,
+            eps_end=min_epsilon,
+            annealing_num_steps=annealing_num_steps,
+            action_key="action",
+        )
+        self.explore_policy = TensorDictSequential(self.q_actor, self._egreedy)
 
-    # -- Exploration strategy ------------------------------------------------
+        self.loss_module = DQNLoss(
+            value_network=self.q_actor,
+            loss_function="smooth_l1",
+            delay_value=True,
+            double_dqn=double_dqn,
+            action_space="categorical",
+        )
+        self.loss_module.make_value_estimator(gamma=0.0)
+        self._target_updater = SoftUpdate(self.loss_module, eps=target_eps)
 
-    def select_action_batch(
-        self, states: torch.Tensor, training: bool = True
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Epsilon-greedy batch action selection."""
-        norm_states = self.reward_calc.normalize(states)
+        self._optimizer = optim.AdamW(
+            self.loss_module.parameters(), lr=lr, weight_decay=weight_decay
+        )
 
-        with torch.no_grad():
-            q_values = self.q_network(norm_states.to(self.device))
-            greedy_actions = q_values.argmax(dim=1).cpu()
+    # -- RLFusionBase hooks --------------------------------------------------
 
-        if training:
-            rand_mask = torch.rand(len(states)) < self.epsilon
-            random_actions = torch.randint(0, self.alpha_steps, (len(states),))
-            actions = torch.where(rand_mask, random_actions, greedy_actions)
-        else:
-            actions = greedy_actions
+    def _score_actions(self, td: TensorDict, training: bool) -> None:
+        (self.explore_policy if training else self.q_actor)(td)
 
-        alphas = self.alpha_values[actions]
-        return actions, alphas, norm_states
+    def _after_act(self, actions, norm_states, rewards) -> None:
+        self._egreedy.step(int(norm_states.size(0)))
 
-    # -- Learning update -----------------------------------------------------
+    def _after_optim_step(self) -> None:
+        self._target_updater.step()
 
-    def train_episode(self, states: torch.Tensor, labels: torch.Tensor) -> dict:
-        actions, alphas, norm_states = self.select_action_batch(states, training=True)
-        preds = (alphas > self.decision_threshold).long()
-        rewards = self.reward_calc.compute(preds, labels, norm_states, alphas)
-        self._buffer.add_batch(norm_states, actions, rewards)
+    def _extra_metrics(self) -> dict:
+        return {"epsilon": float(self._egreedy.eps.item())}
 
-        loss = None
-        for _ in range(self.gpu_training_steps):
-            loss = self._gradient_step()
-
-        self.epsilon = max(self.min_epsilon, self.epsilon * self.epsilon_decay)
-
-        return {
-            "avg_reward": rewards.mean().item(),
-            "avg_alpha": alphas.mean().item(),
-            "epsilon": self.epsilon,
-            "loss": loss,
-        }
-
-    # -- DQN-specific internals ----------------------------------------------
-
-    def _gradient_step(self) -> float | None:
-        """One DQN gradient step from replay buffer.
-
-        targets = rewards (no bootstrapping — each graph is independent).
-        """
-        if len(self._buffer) < self.batch_size:
-            return None
-
-        states, actions, rewards = self._buffer.sample(self.batch_size)
-        states = states.to(self.device)
-        actions = actions.to(self.device)
-        rewards = rewards.to(self.device)
-
-        current_q = self.q_network(states).gather(1, actions.unsqueeze(1)).squeeze(1)
-        loss = self.loss_fn(current_q, rewards)
-
-        self._dqn_optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), max_norm=1.0)
-        self._dqn_optimizer.step()
-
-        return loss.item()
+    # -- analysis ------------------------------------------------------------
 
     def q_values(self, norm_states: torch.Tensor) -> torch.Tensor:
-        """Q-values for normalized states. Shape: [N, action_dim]."""
+        td = TensorDict(
+            {"observation": norm_states.to(self.device)},
+            batch_size=[norm_states.size(0)],
+            device=self.device,
+        )
         with torch.no_grad():
-            return self.q_network(norm_states.to(self.device)).cpu()
+            self.q_value_module(td)
+        return td["action_value"].detach().cpu()

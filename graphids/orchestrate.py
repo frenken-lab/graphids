@@ -18,7 +18,7 @@ from graphids._mlflow import (
     end_training_run,
     start_training_run,
 )
-from graphids.blueprint import TrainRow
+from graphids.blueprint import ExtractRow, Row, TrainRow
 from graphids.core.trainer import Trainer, TrainerConfig, seed_everything
 
 
@@ -78,7 +78,28 @@ def evaluate(row: TrainRow, *, ckpt_path: str | None = None) -> dict[str, float]
     return metrics
 
 
-def run_row(row: TrainRow, *, ckpt_path: str | None = None) -> None:
+def extract(row: ExtractRow) -> None:
+    """One-shot fusion-feature extraction. Idempotent on ``row.output_dir``."""
+    from graphids.core.data.fusion_states import extract_fusion_states
+
+    extract_fusion_states(
+        checkpoints=row.extractor_ckpts,
+        dataset=row.dataset,
+        output_dir=row.output_dir,
+        max_samples=row.max_samples,
+        max_val_samples=row.max_val_samples,
+        batch_size=row.batch_size,
+        seed=row.seed,
+        window_size=row.window_size,
+        stride=row.stride,
+        val_fraction=row.val_fraction,
+    )
+
+
+def run_row(row: Row, *, ckpt_path: str | None = None) -> None:
     runtime.setup()
+    if isinstance(row, ExtractRow):
+        extract(row)
+        return
     runtime.register_preempt_handler(row)
     {"fit": train, "test": evaluate}[row.action](row, ckpt_path=ckpt_path)

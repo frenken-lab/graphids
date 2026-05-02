@@ -6,9 +6,8 @@ Graph family:
 - ``eval_mode`` — context manager that restores training state
 
 Shared:
-- ``binary_test_metrics`` — standard MetricCollection for all families
+- ``_ModelBase`` — mixin shared by ``GraphModuleBase`` + ``FusionModuleBase``
 - ``safe_load_checkpoint`` — checkpoint loading via class_path registry
-- ``LAYOUT`` / ``STATE_DIM`` / ``FeatureLayout`` — fusion state vector contract
 - ``schema_for`` auto-generated Pydantic model configs
 """
 
@@ -19,14 +18,11 @@ import importlib
 import math
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, NamedTuple
+from typing import Any
 
 import torch
 import torch.nn as nn
 from structlog import get_logger
-from torchmetrics import Metric
-from torchmetrics.functional.classification import binary_roc
-from torchmetrics.utilities.data import dim_zero_cat
 
 from graphids.core.trainer import MetricAccumulator
 
@@ -34,19 +30,25 @@ _log = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Logging mixin — shared base for GraphModuleBase + FusionModuleBase
+# _ModelBase — shared mixin for every model module
 # ---------------------------------------------------------------------------
 
 
-class _LoggingModule(nn.Module):
-    """Shared infra for every model module: metric accumulator, device
-    tracker, init-kwarg mirroring, ``hparams`` snapshot, ``log``/``log_dict``.
+class _ModelBase(nn.Module):
+    """Shared infra for every model module:
+
+    - ``MetricAccumulator`` — buffers per-step ``log()`` values for the trainer
+      to flush at epoch boundaries (PL-style ``self.log("name", value)`` API).
+    - ``_device_tracker`` — non-persistent buffer that tracks device through
+      ``.to()``/``.cuda()``/``.cpu()`` even for parameter-free modules.
+    - ``_store_init_kwargs(locals())`` — mirrors every declared ``__init__``
+      kwarg onto ``self`` and caches the param-name list for cheap ``hparams``.
+    - ``hparams`` — ``SimpleNamespace`` snapshot of init kwargs (skips
+      ``nn.Module`` values; those belong in ``state_dict``).
+    - ``log()`` / ``log_dict()`` — push to ``MetricAccumulator``.
 
     Subclasses call ``self._store_init_kwargs(locals())`` from their own
-    ``__init__`` immediately after ``super().__init__()`` to mirror every
-    declared kwarg onto ``self`` and cache the param-name list for cheap
-    ``hparams`` reads. ``nn.Module`` values are skipped from ``hparams``
-    (they belong in state_dict, not the hparams blob).
+    ``__init__`` immediately after ``super().__init__()``.
     """
 
     def __init__(self) -> None:
@@ -118,45 +120,11 @@ def try_compile(model: nn.Module, *, conv_type: str | None = None, **kwargs) -> 
 
 
 # ---------------------------------------------------------------------------
-# BinaryYoudenJThreshold — custom Metric
-# ---------------------------------------------------------------------------
-
-
-class BinaryYoudenJThreshold(Metric):
-    """Buffer pooled scores/labels; compute() returns the Youden-J threshold.
-
-    Replaces the prior ``BinaryROC() + _find_threshold()`` pair. The
-    ``.preds`` / ``.target`` list states are read directly by
-    ``_log_thresholded_metrics`` (same attribute names as the old
-    ``BinaryROC`` to preserve that access pattern).
-    """
-
-    full_state_update = False
-
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self.add_state("preds", default=[], dist_reduce_fx="cat")
-        self.add_state("target", default=[], dist_reduce_fx="cat")
-
-    def update(self, preds: torch.Tensor, target: torch.Tensor) -> None:
-        self.preds.append(preds)
-        self.target.append(target)
-
-    def compute(self) -> torch.Tensor:
-        p = dim_zero_cat(self.preds)
-        t = dim_zero_cat(self.target).long()
-        fpr, tpr, thr = binary_roc(p, t)
-        if thr.numel() < 2:
-            return torch.tensor(float("nan"), device=thr.device)
-        return thr[torch.argmax(tpr - fpr)]
-
-
-# ---------------------------------------------------------------------------
 # Graph model base class (VGAE, GAT, DGI)
 # ---------------------------------------------------------------------------
 
 
-class GraphModuleBase(_LoggingModule):
+class GraphModuleBase(_ModelBase):
     """Shared base for VGAE, GAT, DGI — lazy setup, OOM guard, threshold metrics.
 
     Subclasses must implement ``_build()`` which constructs ``self.model`` and any
@@ -250,6 +218,8 @@ class GraphModuleBase(_LoggingModule):
 
     def _init_threshold_metrics(self):
         """Call in ``__init__`` for modules that need a Youden-J threshold."""
+        from ._metrics import BinaryYoudenJThreshold
+
         self.roc_metric = BinaryYoudenJThreshold()
         self.test_threshold: float | None = None
 
@@ -443,7 +413,10 @@ def eval_mode(model):
 # Re-exported from ._metrics so existing `from ..base import binary_test_metrics`
 # imports keep working without dragging the factories' torchmetrics deps into
 # this module's import time.
-from ._metrics import binary_test_metrics, classification_test_metrics  # noqa: E402, F401
+from ._metrics import (  # noqa: E402, F401
+    binary_test_metrics,
+    classification_test_metrics,
+)
 
 # ---------------------------------------------------------------------------
 # Checkpoint loading
@@ -509,33 +482,3 @@ def safe_load_checkpoint(model_type: str, ckpt_path, *, map_location="cpu"):
     return module
 
 
-# ---------------------------------------------------------------------------
-# Fusion state vector contract
-# ---------------------------------------------------------------------------
-
-
-class FeatureLayout(NamedTuple):
-    """Offset, dim, and confidence index of one extractor inside the state vector."""
-
-    offset: int
-    dim: int
-    confidence_idx: int
-
-
-# Canonical ordering — must match extractor registry in core/data/fusion_states.py.
-_EXTRACTOR_DIMS = [
-    ("vgae", 8, 7),  # (name, feature_dim, confidence_index_within_block)
-    ("gat", 7, 6),
-]
-
-
-def _build_layout() -> tuple[dict[str, FeatureLayout], int]:
-    layout: dict[str, FeatureLayout] = {}
-    offset = 0
-    for name, dim, conf_idx in _EXTRACTOR_DIMS:
-        layout[name] = FeatureLayout(offset, dim, offset + conf_idx)
-        offset += dim
-    return layout, offset
-
-
-LAYOUT, STATE_DIM = _build_layout()

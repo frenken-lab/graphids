@@ -1,19 +1,12 @@
 """Models package for CAN-Graph.
 
-Family-oriented namespaces:
-
     from graphids.core.models.autoencoder import VGAE, DGI
     from graphids.core.models.supervised import GATModule
     from graphids.core.models.fusion import BanditFusionModule, DQNFusionModule
-
-Public API re-exported from submodules:
-
-    from graphids.core.models import STATE_DIM, LAYOUT
-    from graphids.core.models import GraphModuleBase
 """
 
 from . import autoencoder, fusion, supervised
-from .base import LAYOUT, STATE_DIM, FeatureLayout, GraphModuleBase
+from .base import GraphModuleBase
 from .fusion.bandit import BanditFusionModule
 from .fusion.dqn import DQNFusionModule
 
@@ -24,7 +17,4 @@ __all__ = [
     "GraphModuleBase",
     "BanditFusionModule",
     "DQNFusionModule",
-    "LAYOUT",
-    "STATE_DIM",
-    "FeatureLayout",
 ]
