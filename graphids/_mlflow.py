@@ -6,8 +6,9 @@ no fluent-API magic. Public surfaces:
 Lifecycle (write):
 - ``ensure_tracking_uri()`` — set tracking URI from $MLFLOW_TRACKING_URI (fail-fast)
 - ``start_training_run(row, phase)`` / ``end_training_run(run_id, status)``
-- ``MLflowTrainingCallback(run_id)`` — :class:`graphids.core.callbacks.CallbackBase`
-  subclass that forwards per-epoch metrics via ``client.log_batch`` (one RPC/epoch)
+- ``MLflowTrainingCallback`` — :class:`graphids.core.callbacks.CallbackBase`
+  subclass that forwards per-epoch metrics via ``client.log_batch`` (one RPC/epoch);
+  reads ``run_id`` from ``$GRAPHIDS_MLFLOW_RUN_ID`` (set by orchestrate)
 
 Read helpers (no-op against MLflow on their own — pair with `client.search_runs`):
 - ``build_search_filter(...)`` — compose `filter_string` from graphids tag schema
@@ -119,8 +120,11 @@ class MLflowTrainingCallback(CallbackBase):
     run wall-time (``end_time - start_time``).
     """
 
-    def __init__(self, run_id: str) -> None:
-        self.run_id = run_id
+    def __init__(self, run_id: str | None = None) -> None:
+        # run_id is set by orchestrate via ``GRAPHIDS_MLFLOW_RUN_ID`` before
+        # ``_instantiate`` runs, so the libsonnet's empty ``init_args: {}`` is
+        # honest. Direct callers (tests) may pass ``run_id`` explicitly.
+        self.run_id = run_id or os.environ["GRAPHIDS_MLFLOW_RUN_ID"]
         self._client = MlflowClient()
         self._run_config_stamped = False
 
@@ -154,6 +158,60 @@ class MLflowTrainingCallback(CallbackBase):
         budget = getattr(model, "_budget_cache", None)
         if budget is not None:
             self._client.set_tag(self.run_id, "graphids.budget_binding", budget.binding)
+        self._register_logged_model(trainer, model)
+
+    def _register_logged_model(self, trainer: Any, model: Any) -> None:
+        """Register the best ckpt as a metadata-only ``LoggedModel`` (no bytes).
+
+        Per data-layout.md: ckpt bytes stay on disk; LoggedModel is a secondary
+        handle that exposes the run→ckpt link to ``search_logged_models``
+        (cross-run ckpt queries by tag, dataset linkage). Idempotent on resume:
+        query by ``source_run_id`` first, ``set_logged_model_tags`` if found,
+        else ``create_logged_model``. Finalized to READY at the end.
+        """
+        from pathlib import Path
+
+        ckpt_cb = getattr(trainer, "checkpoint_callback", None)
+        if ckpt_cb is None or not getattr(ckpt_cb, "best_model_path", ""):
+            return
+        best_path = Path(ckpt_cb.best_model_path)
+        if not best_path.exists():
+            return
+        sha_sidecar = best_path.with_suffix(best_path.suffix + ".sha256")
+        sha = sha_sidecar.read_text().strip() if sha_sidecar.exists() else ""
+
+        run = self._client.get_run(self.run_id)
+        run_tags = run.data.tags
+        tags = {
+            "graphids.ckpt_path": str(best_path),
+            "graphids.ckpt_sha256": sha,
+            "graphids.dataset": run_tags["graphids.dataset"],
+            "graphids.group": run_tags["graphids.group"],
+            "graphids.variant": run_tags["graphids.variant"],
+            "graphids.seed": run_tags["graphids.seed"],
+        }
+        params = {"graphids.run_dir": run_tags["graphids.run_dir"]}
+        model_type = f"{type(model).__module__}.{type(model).__name__}"
+
+        existing = self._client.search_logged_models(
+            experiment_ids=[run.info.experiment_id],
+            filter_string=f"source_run_id = '{self.run_id}'",
+            max_results=1,
+        )
+        if existing:
+            model_id = existing[0].model_id
+            self._client.set_logged_model_tags(model_id, tags)
+        else:
+            lm = self._client.create_logged_model(
+                experiment_id=run.info.experiment_id,
+                name=run.info.run_name,
+                source_run_id=self.run_id,
+                model_type=model_type,
+                tags=tags,
+                params=params,
+            )
+            model_id = lm.model_id
+        self._client.finalize_logged_model(model_id, status="READY")
 
     def _stamp_run_config(self, trainer: Any) -> None:
         """One-shot at epoch 0 — DM and probe state are populated by then.

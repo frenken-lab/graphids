@@ -5,6 +5,7 @@ open/close the MLflow run, dispatch on ``row.action``. Loop lives in
 from __future__ import annotations
 
 import importlib
+import os
 import time
 from typing import Any
 
@@ -13,7 +14,6 @@ from mlflow.tracking import MlflowClient
 
 from graphids import runtime
 from graphids._mlflow import (
-    MLflowTrainingCallback,
     _scalar_metrics,
     end_training_run,
     start_training_run,
@@ -33,19 +33,15 @@ def _instantiate(spec: dict[str, Any]) -> Any:
     return getattr(importlib.import_module(mod), attr)(**ia)
 
 
-def _build(row: TrainRow, run_id: str) -> tuple[Any, Any, list, TrainerConfig]:
-    """Instantiate model + datamodule + callbacks + TrainerConfig. The
-    ``mlflow`` callback dict-key is replaced by :class:`MLflowTrainingCallback`
-    bound to the live ``run_id`` (the bare class has no run_id to instantiate)."""
+def _build(row: TrainRow) -> tuple[Any, Any, list, TrainerConfig]:
+    """Instantiate model + datamodule + callbacks + TrainerConfig. All
+    callbacks go through ``_instantiate``; ``MLflowTrainingCallback`` reads its
+    run_id from ``$GRAPHIDS_MLFLOW_RUN_ID`` (set by ``train``/``evaluate``
+    before this call)."""
     rc = row.rendered_config
     model = _instantiate(rc["model"])
     datamodule = _instantiate(rc["data"])
-    callbacks: list = []
-    for name, spec in rc.get("callbacks", {}).items():
-        if name == "mlflow":
-            callbacks.append(MLflowTrainingCallback(run_id=run_id))
-        else:
-            callbacks.append(_instantiate(spec))
+    callbacks = [_instantiate(spec) for spec in rc.get("callbacks", {}).values()]
     trainer_cfg = TrainerConfig(**{k: v for k, v in rc["trainer"].items() if k != "callbacks"})
     return model, datamodule, callbacks, trainer_cfg
 
@@ -54,8 +50,9 @@ def train(row: TrainRow, *, ckpt_path: str | None = None) -> None:
     """Open MLflow run, instantiate, fit, close. FAILED on any exception."""
     torch_geometric.seed_everything(row.meta.seed)
     run_id = start_training_run(row, phase="fit")
+    os.environ["GRAPHIDS_MLFLOW_RUN_ID"] = run_id
     try:
-        model, dm, callbacks, cfg = _build(row, run_id)
+        model, dm, callbacks, cfg = _build(row)
         Trainer(cfg, callbacks=callbacks).fit(model, dm, ckpt_path=ckpt_path)
     except BaseException:
         end_training_run(run_id, status="FAILED")
@@ -67,8 +64,9 @@ def evaluate(row: TrainRow, *, ckpt_path: str | None = None) -> dict[str, float]
     """Open MLflow run, instantiate, test, log returned metrics, close."""
     torch_geometric.seed_everything(row.meta.seed)
     run_id = start_training_run(row, phase="test")
+    os.environ["GRAPHIDS_MLFLOW_RUN_ID"] = run_id
     try:
-        model, dm, callbacks, cfg = _build(row, run_id)
+        model, dm, callbacks, cfg = _build(row)
         metrics = Trainer(cfg, callbacks=callbacks).test(model, dm, ckpt_path=ckpt_path)
         ts = int(time.time() * 1000)
         ms = [Metric(k, float(v), ts, 0) for k, v in _scalar_metrics(metrics).items()]

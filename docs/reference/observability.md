@@ -16,11 +16,10 @@ Two stores: **MLflow** for run-level metadata + scalar metrics timeseries + devi
 
 **Phase C** (at fit-start — `graphids/_mlflow.py::start_training_run`, called from `orchestrate/stage.py::train`):
 - Opens MLflow run in per-axis experiment `graphids/{dataset}/{group}` (SQLite backend at `{LAKE_ROOT}/mlflow.db` — shared, distinct from per-user `RUN_ROOT`). **MLflow is a hard dep** (since 2026-04-24); failures propagate. Only soft-failure paths are documented in `_mlflow.py` module docstring. **Idempotent**: search_runs by `run_name` + phase=fit; FAILED/KILLED → resume same `run_id`; TERMINATED → new (reaper owns); RUNNING/FINISHED → refuse unless `GRAPHIDS_FORCE_RESUME=1`; git-SHA change → new run (option b: don't mix commits in one row).
-- Logs params (via `_flatten_params`), tags (via `_build_tags`: identity + SLURM + git SHA + `uv.lock` hash + python version + checkpoint hash + upstream-teacher `run_dir`/`ckpt_path` for curriculum_vgae / fusion).
-- `mlflow.log_input(MetaDataset(...), context="train")` — first-class dataset entity with digest of `cache_metadata.json`; visible under "Used Datasets" in UI, filterable via `dataset.digest = '...'` in search_runs.
+- Tags identity: `graphids.{phase, run_dir, dataset, group, variant, seed, model_type, scale}` + SLURM (`slurm.job_id`, `slurm.cluster_name`) when set. Upstream-teacher lineage is **not** a run-level tag — it lives on the `LoggedModel` entity (see fit-end below).
 - Enables MLflow system-metrics sampler (background thread, 5s interval) — GPU util, VRAM, CPU, memory, disk, network.
-- `MLflowTrainingCallback` forwards every key in `trainer.callback_metrics` (whatever the model layer logged via `self.log(...)`) plus `lr` and `early_stop.{wait,best_score}` to MLflow at `step=epoch`.
-- At fit-end: peak VRAM + epochs_run + ckpt SHA256 tag + `MlflowClient.create_logged_model` (metadata-only LoggedModel entity with `source_run_id`, `model_type={group}_{variant}`, and ckpt tags). Run closes FINISHED (or FAILED on exception).
+- `MLflowTrainingCallback` forwards every key in `trainer.callback_metrics` (whatever the model layer logged via `self.log(...)`) to MLflow via one `log_batch` per epoch at `step=epoch`. At epoch 0 it stamps `params.graphids.{budget_target_bytes, num_workers, prefetch_factor}` + `tags.graphids.num_workers_source` (one-shot).
+- At fit-end: `metrics.graphids.peak_vram_mb` (single point at `step=current_epoch`), `tags.graphids.budget_binding`, and `MlflowClient.create_logged_model` — metadata-only `LoggedModel` (no artifact bytes) with `name=run_name`, `model_type={fq_python_class}`, `source_run_id`, `tags.graphids.{ckpt_path, ckpt_sha256, dataset, group, variant, seed}`, `params.graphids.run_dir`. Idempotent on resume (query-first by `source_run_id`, update tags or create). Run closes FINISHED (or FAILED on exception).
 
 ## Wired tooling
 

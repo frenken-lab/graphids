@@ -21,10 +21,9 @@ jsonnet TLA defaults — that bug is impossible by construction now.
 | Device telemetry (GPU util, VRAM, CPU, mem) | `mlflow.db` (system-metrics sampler, 5s) | MLflow UI charts |
 | Final test metrics | `mlflow.db` (test-phase row) | `search_runs` filter `tags.graphids.phase = 'test'` |
 | Dataset identity (cache digest) | `mlflow.db` `Dataset` entity | `search_runs` filter `dataset.digest = '...'`; MLflow UI "Used Datasets" panel |
-| Upstream teacher lineage | `mlflow.db` fit-phase tags `graphids.upstream.<role>.run_dir` + `.ckpt_path` | `search_runs` filter `tags.graphids.upstream.unsupervised_vgae.run_dir = '...'` |
-| LoggedModel (ckpt metadata entity) | `mlflow.db` (MLflow 3) | `search_logged_models(source_run_id, model_type)` |
+| LoggedModel (ckpt metadata entity, upstream lineage handle) | `mlflow.db` (MLflow 3) | `search_logged_models(experiment_ids=[...], filter_string="source_run_id = '...'")` |
 | Checkpoint bytes | `{run_dir}/checkpoints/` | `torch.load` via `_fs.atomic_load` |
-| Checkpoint SHA256 | `.sha256` sidecar + MLflow tag `graphids.ckpt_sha256` + `LoggedModel.tags.graphids.ckpt_sha256` | `atomic_load` verifies; tag is provenance |
+| Checkpoint SHA256 | `.sha256` sidecar + `LoggedModel.tags.graphids.ckpt_sha256` | `atomic_load` verifies; LoggedModel tag is provenance |
 | Span lifecycle + log events | `{run_dir}/traces.jsonl` | `jq` / manual grep for debugging |
 | Validated jsonnet config | `{run_dir}/resolved.json` | replay / debugging |
 
@@ -69,12 +68,17 @@ jsonnet TLA defaults — that bug is impossible by construction now.
    `build_search_filter` with tag predicates, so old + new rows are found
    uniformly.
 
-8. **Upstream lineage is filesystem-path-based.** Fit runs that consume an
-   upstream ckpt (curriculum_vgae's VGAE teacher, fusion's vgae+gat
-   teachers) stamp `graphids.upstream.<group>_<variant>.run_dir` +
-   `.ckpt_path` tags. `run_dir` is stable identity; `LoggedModel.model_id`
-   is a secondary handle reachable via `search_logged_models(source_run_id)`
-   once the upstream fit's LoggedModel is registered.
+8. **Upstream lineage flows through `LoggedModel`.** Each fit's
+   `MLflowTrainingCallback.on_fit_end` registers a metadata-only
+   `LoggedModel` (no artifact bytes) carrying `tags.graphids.ckpt_path`,
+   `ckpt_sha256`, and mirrored identity (`dataset/group/variant/seed`),
+   plus `params.graphids.run_dir`. Downstream (curriculum_vgae's VGAE
+   teacher, fusion's vgae+gat teachers) resolves an upstream ckpt by
+   `client.search_logged_models(experiment_ids=[...], filter_string="tags.\`graphids.group\` = '...' AND tags.\`graphids.variant\` = '...' AND tags.\`graphids.seed\` = '...'")`,
+   then reads `lm.tags["graphids.ckpt_path"]`. The filesystem path is
+   still the load-bearing identity; `LoggedModel` is just the index.
+   No `graphids.upstream.*` run-level tags exist — that scheme was
+   superseded by LoggedModel before any code shipped with it.
 
 ## Anti-patterns seen before
 

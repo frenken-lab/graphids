@@ -131,7 +131,7 @@ def _filter_to_manifest(df, spec: Manifest):
     return df[mask].reset_index(drop=True)
 
 
-def _stage_fit_artifacts(fit_df, parse_run_dir, tmp: Path) -> tuple[dict[str, int], int]:
+def _stage_fit_artifacts(fit_df, tmp: Path) -> tuple[dict[str, int], int]:
     summary = {b: 0 for b in _BUCKETS}
     if fit_df.empty:
         typer.echo("WARN: no fit-phase runs match the manifest; artifacts/ not staged.")
@@ -148,7 +148,7 @@ def _stage_fit_artifacts(fit_df, parse_run_dir, tmp: Path) -> tuple[dict[str, in
     )
 
     typer.echo(f"\nStaging artifacts for {len(fit_df)} fit run(s)...")
-    n_runs_staged = missing_run_dirs = off_tree = 0
+    n_runs_staged = missing_run_dirs = 0
     for _, frow in fit_df.iterrows():
         rd = frow.get("tags.graphids.run_dir")
         if not rd:
@@ -157,19 +157,13 @@ def _stage_fit_artifacts(fit_df, parse_run_dir, tmp: Path) -> tuple[dict[str, in
         if not run_dir.exists():
             missing_run_dirs += 1
             continue
-        identity = parse_run_dir(run_dir)
-        if identity is None:
-            off_tree += 1
-            continue
-        key = f"{identity.group}_{identity.variant}_{identity.seed}"
+        key = f"{frow['tags.graphids.group']}_{frow['tags.graphids.variant']}_{frow['tags.graphids.seed']}"
         counts = _stage_run_artifacts(run_dir, key, tmp)
         for k, v in counts.items():
             summary[k] += v
         n_runs_staged += 1
     if missing_run_dirs:
         typer.echo(f"  WARN: {missing_run_dirs} run_dir(s) missing on disk")
-    if off_tree:
-        typer.echo(f"  WARN: {off_tree} run_dir(s) off-tree (non-ablation layout)")
     typer.echo("  staged: " + ", ".join(f"{summary[b]} {b}" for b in _BUCKETS))
     return summary, n_runs_staged
 
@@ -193,7 +187,7 @@ def push_hf(
     import mlflow
     import pandas as pd
 
-    from graphids._mlflow import build_search_filter, ensure_tracking_uri, parse_run_dir
+    from graphids._mlflow import build_search_filter, ensure_tracking_uri
     from graphids.analysis.compare import (
         effect_size,
         expected_max,
@@ -292,7 +286,7 @@ def push_hf(
             pd.concat(parts, ignore_index=True).to_parquet(out, index=False)
             typer.echo(f"  wrote metrics/{name}.parquet ({sum(len(p) for p in parts)} rows)")
 
-        artifact_summary, n_runs_staged = _stage_fit_artifacts(fit_df, parse_run_dir, tmp)
+        artifact_summary, n_runs_staged = _stage_fit_artifacts(fit_df, tmp)
 
         metadata = {
             "ablation_set": ablation_set,
