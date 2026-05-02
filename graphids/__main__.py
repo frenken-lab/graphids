@@ -1,35 +1,20 @@
 """CLI entry point: python -m graphids <subcommand>
 
-Training:
-  fit / test                       — Trainer methods on jsonnet stage configs
+Surface (the four-step chassis):
+  Plans:     run     render+validate plan.jsonnet → JSON array
+  Execution: exec    run one row in-process
+  SLURM:     submit  submit one row via Parsl SlurmProvider; prints jid
 
-Analysis:
-  analyze                          — generate analysis artifacts from checkpoints
-
-Data:
-  rebuild-caches                   — rebuild preprocessed graph caches
-  extract-fusion-states            — extract VGAE+GAT latent states for fusion
-
-SLURM:
-  submit                           — submit one SLURM job (preset.jsonnet or --command)
-
-Plan workflow:
-  run                              — submit a plan via submitit, deps via afterok
-  status                           — query MLflow per plan node
+`analyze`, `rebuild-caches`, `extract-fusion-states`, `push-hf`, etc. are
+separate subsystems not on this chassis. They're outside this rebuild's scope
+and stay un-registered until they're ported.
 """
 
 from __future__ import annotations
 
-# Register command modules (each decorates app with @app.command).
-# init_providers() + log-level setup runs inside ``app.py``'s @app.callback,
-# so this module has no import-time side effects beyond decorator registration.
-import graphids.cli.analysis  # noqa: F401
-import graphids.cli.compare  # noqa: F401
-import graphids.cli.data  # noqa: F401
-import graphids.cli.export  # noqa: F401
+import graphids.cli.exec  # noqa: F401
 import graphids.cli.run  # noqa: F401
 import graphids.cli.submit  # noqa: F401
-import graphids.cli.training  # noqa: F401
 from graphids.cli.app import app
 
 

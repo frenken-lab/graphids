@@ -12,8 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import torch
-
-from graphids._otel import get_logger
+from structlog import get_logger
 
 log = get_logger(__name__)
 

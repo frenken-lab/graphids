@@ -1,207 +1,214 @@
 # Config Reference
 
-> Audited: 2026-04-08. Parameter details live in jsonnet/libsonnet sources
-> and Python `__init__` signatures — this doc covers conceptual structure
-> and infrastructure that isn't obvious from reading the code.
+> Audited: 2026-05-01 (post-mirror redesign).
+> Architecture: see `~/plans/graphids-jsonnet-design.md`.
+
+The `configs/` tree mirrors `graphids/core/` so each leaf is a primitive
+configuration of one Python class. There is no spec layer — plans bind
+primitives directly via the barrel `configs/index.libsonnet`.
+
+```
+configs/
+├── index.libsonnet       BARREL — single import: `local g = import '../index.libsonnet'`
+├── models/               ↔ graphids/core/models/
+│   ├── autoencoder/{vgae,dgi}.libsonnet
+│   ├── supervised/gat.libsonnet
+│   └── fusion/{bandit,dqn,mlp,weighted_avg,_reward}.libsonnet
+├── losses/               ↔ graphids/core/losses/
+│   └── {focal,ce,weighted_ce}.libsonnet
+├── data/                 ↔ graphids/core/data/
+│   ├── datasets.json     dataset registry
+│   ├── source/can_bus.libsonnet
+│   └── datamodule/{graph,fusion}.libsonnet
+├── compose/              ARCHETYPE COMPOSERS — no Python equivalent (pure config glue)
+│   └── {unsupervised,supervised,fusion}.libsonnet
+├── _kit/                 INFRASTRUCTURE — trainer, callbacks, validate, row builder
+│   └── {trainer,callbacks,validate,row}.libsonnet
+├── plans/                ENTRY POINTS — what Python evaluates
+│   └── {unsupervised,supervised,supervised_ablations,fusion,ofat}.jsonnet
+└── resources/submit_profiles.json
+```
+
+**Three extensions, three roles**: `.libsonnet` = function/value (imported),
+`.jsonnet` = top-level entry point (evaluated), `.json` = pure data.
 
 ---
 
 ## 1. Datasets
 
-Catalog: `configs/datasets/dataset_registry.json`
+Registry: `data/datasets.json`. One entry per dataset with metadata that
+doesn't reduce to the dataset name (attack types, notes).
 
-| Dataset   | Source                   | Attack types                              |
-|-----------|--------------------------|-------------------------------------------|
-| `hcrl_ch` | HCRL Challenge (Korea U) | dos, fuzzing, gear_spoofing, rpm_spoofing |
-| `hcrl_sa` | HCRL Scenario Anomaly    | mixed                                     |
-| `set_01`–`set_04` | Automotive CAN  | mixed, suppress, masquerade               |
+| Dataset | Source | Attack types |
+|---|---|---|
+| `hcrl_ch` | HCRL Challenge | dos, fuzzing, gear_spoofing, rpm_spoofing |
+| `hcrl_sa` | HCRL Scenario Anomaly | mixed |
+| `set_01`–`set_04` | Automotive CAN | mixed, suppress, masquerade |
 
-DataModules: `graphids/core/data/datamodule/graph.py` (GraphDataModule)
-and `fusion.py` (FusionDataModule). No CurriculumDataModule — curriculum
-was removed; GraphDataModule handles all non-fusion stages.
+Source primitive (`data/source/can_bus.libsonnet`) does the registry
+lookup + emits the `CANBusSource` block. Unknown dataset names fail loudly
+at render with a list of valid options.
+
+Datamodules (`data/datamodule/`):
+
+| File | Class | Used by |
+|---|---|---|
+| `graph.libsonnet` | `GraphDataModule` | unsupervised + supervised archetypes |
+| `fusion.libsonnet` | `FusionDataModule` | fusion archetype (cache_dir IS the source) |
 
 ---
 
-## 2. Model Parameters
+## 2. Models
 
-Parameter values and scales live in jsonnet libsonnets — read those directly:
+Each architecture has its own libsonnet under `models/<family>/`:
 
-| Family       | Libsonnet                          | Module                                        |
-|--------------|------------------------------------|-----------------------------------------------|
-| Unsupervised | `configs/models/unsupervised.libsonnet` | `core/models/autoencoder/vgae_module.py`, `dgi_module.py` |
-| Supervised   | `configs/models/supervised.libsonnet`   | `core/models/supervised/gat_module.py`   |
-| Fusion       | `configs/fusion.libsonnet` + `configs/fusion/methods/*.libsonnet` | `core/models/fusion/{bandit,dqn,mlp,weighted_avg}.py` |
+| Family | Libsonnet | Module |
+|---|---|---|
+| Unsupervised | `models/autoencoder/{vgae,dgi}.libsonnet` | `core/models/autoencoder/{vgae,dgi}_module.py` |
+| Supervised | `models/supervised/gat.libsonnet` | `core/models/supervised/gat_module.py` |
+| Fusion | `models/fusion/{bandit,dqn,mlp,weighted_avg}.libsonnet` | `core/models/fusion/*.py` |
+
+Each is `function(scale='small', conv_type='gatv2', ...) → {model: {...}}`.
 
 ### Scale axis
+Per-architecture `_scales = {small, large}` maps embedded in each model
+libsonnet. Not a primitive — it's a TLA parameter the model primitive consumes.
 
-Each libsonnet defines `base` (shared) + `scales.small` / `scales.large`.
-Stage jsonnet merges `base + scales[scale]`. Key dimensions that vary by scale:
-hidden dims, latent dim, heads, dropout, proj_dim, fc_layers.
+### Fusion methodology
+Reward shaping constants live in `models/fusion/_reward.libsonnet`,
+imported by `bandit.libsonnet` + `dqn.libsonnet` (the two RL methods).
+MLP + weighted_avg are supervised baselines without reward signals.
 
-### Fusion methods
-
-4 methods: `bandit`, `dqn`, `mlp`, `weighted_avg`. Method-specific params
-(buffer_size, epsilon, ucb_alpha, etc.) live in
-`configs/fusion/methods/{method}.libsonnet`. Shared trainer config
-(precision=32, max_epochs=50, monitor=val_acc/max) in `configs/fusion/base.libsonnet`.
-
-Reward shaping constants live in `configs/models/fusion/reward.libsonnet` —
-imported by `dqn.libsonnet` and `bandit.libsonnet`, all values flow into
-`reward_kwargs`. They are fixed methodological choices (not ablation axes)
-but are config-tunable.
-
-### KD auxiliaries
-
-Jsonnet TLA `distillation_config` (a dict) flows into
-`model.init_args.distillation_config`; `inject_loss_fn` in
-`graphids/core/losses/build.py` pops it and wraps the base loss with
-`SoftLabelDistillation` (GAT) or `FeatureDistillation` (VGAE) from
-`core/losses/distillation.py`. Fields: `type`, `alpha`, `temperature`,
-`model_path`, `vgae_latent_weight`, `vgae_recon_weight`.
+### Loss primitives
+| File | Type fragment (consumed by Python `inject_loss_fn`) |
+|---|---|
+| `losses/focal.libsonnet` | `{type: 'focal', gamma: 2.0}` |
+| `losses/ce.libsonnet` | `{type: 'ce'}` |
+| `losses/weighted_ce.libsonnet` | `{type: 'weighted_ce', weights: [...]}` |
 
 ---
 
-## 3. Trainer Defaults
+## 3. Archetype composers (`compose/`)
 
-Defaults: `configs/_lib/defaults.libsonnet` (trainer, checkpoint, early_stopping).
+Three composers own group-shared composition:
 
-| Setting                | AE (VGAE)                             | GAT                      | Fusion               |
-|------------------------|---------------------------------------|--------------------------|----------------------|
-| `precision`            | `32-true`                             | `32-true`                | `32-true`            |
-| `max_epochs`           | `600`                                 | `200`                    | `1500`               |
-| `gradient_clip_val`    | `1.0`                                 | `1.0`                    | `null`               |
-| `checkpoint.monitor`   | `val_discrimination_ratio/max`        | `val_loss/min`           | `val_acc/max`        |
-| `early_stopping`       | `val_discrimination_ratio/max, p=100` | `val_loss/min, p=30`     | `val_acc/max, p=200` |
-| `DynamicBatchSampler`  | active                                | active                   | inactive             |
+| Composer | Used by | Owns |
+|---|---|---|
+| `unsupervised.libsonnet` | VGAE, DGI | label_filter='benign' default, monitor flexible |
+| `supervised.libsonnet` | GAT (all loss/sampling/scaler/id_encoding bindings) | full train set, monitor=val_auroc, patience=50 |
+| `fusion.libsonnet` | bandit, dqn, mlp, weighted_avg | cpu mode, precision=32-true, max_epochs=1500, patience=200, upstreams=[vgae, focal] |
 
-### LR schedulers (in code, not config)
+Each composer enforces:
+- `default_root_dir` from `paths.run_dir(meta...)` — single source
+- `seed_everything = meta.seed`
+- `v.spec(...)` apex validation (every binding contract-checked)
+- Trainer base + archetype-specific overrides + per-call `trainer_overrides`
 
-| Module          | Optimizer | Scheduler                |
-|-----------------|-----------|--------------------------|
-| VGAE/GAT/DGI   | Adam      | CosineAnnealingLR        |
-| DQN/Bandit      | Adam      | none                     |
-| MLP/WeightedAvg | Adam      | none                     |
-
-### Forced callbacks
-
-`ModelCheckpoint` and `EarlyStopping` are declared in `defaults.libsonnet`.
-`MLflowTrainingCallback` (`graphids/core/mlflow_callback.py`) logs per-epoch metrics + fit-end peak VRAM to MLflow. Device telemetry is captured by MLflow's background system-metrics sampler (psutil + nvidia-ml-py, 5s interval).
+Adding a new archetype = one new file in `compose/`.
 
 ---
 
-## 4. Resources
+## 4. Callbacks (`_kit/callbacks.libsonnet`)
 
-### Environment variables
+Universal trio + extras knob:
 
-Project `.env` (sourced by `_preamble.sh`):
-
-| Variable                 | Purpose                          |
-|--------------------------|----------------------------------|
-| `GRAPHIDS_LAKE_ROOT`      | ESS data lake root (shared: mlflow.db, cache, mlartifacts) |
-| `GRAPHIDS_RUN_ROOT`       | Per-user run root (run_dirs / checkpoints) — `${LAKE_ROOT}/dev/${USER}` on OSC |
-| `GRAPHIDS_SLURM_ACCOUNT`  | SLURM account (PAS1266)          |
-| `GRAPHIDS_SLURM_LOG_DIR`  | SLURM log directory              |
-| `GRAPHIDS_SCRATCH`        | Scratch filesystem root          |
-| `GRAPHIDS_DATA_ROOT`      | Raw data directory               |
-| `GRAPHIDS_LAKE_WRITE`     | Write guard for ESS (1=enabled)  |
-| `GRAPHIDS_CLUSTER`        | Override auto-detected cluster   |
-| `GRAPHIDS_DRY_RUN`        | Skip sbatch (1=dry run)          |
-
-Python reads: `graphids/config/constants.py` and `graphids/slurm/env.py`.
-Budget tuning: `GRAPHIDS_BUDGET_SAFETY_MARGIN`, `GRAPHIDS_BUDGET_GRAD_MULT`,
-`GRAPHIDS_BUDGET_FALLBACK_BPN` in `core/data/budget.py`.
-
-### HPC resource profiles
-
-Single source of truth: `configs/resources/submit_profiles.json`. Exactly two
-entries — `gpu` and `cpu`. Each carries per-cluster `partitions` and per-length
-`times` defaults. Per-job mem/time/command are flags on `python -m graphids
-submit`, never new JSON entries. `graphids/slurm/submit.py` loads the profiles at submission time.
-
-Optional MLflow-history walltime estimation lives in
-`graphids.slurm.sizing.estimate_walltime_minutes`; `python -m graphids submit
---time-from-history` opts into it for fit jobs with enough history (≥3 prior
-FINISHED runs).
-
-### Submission surface
-
-| Use | Command |
-|-----|---------|
-| Training preset | `python -m graphids submit <preset.jsonnet> [--dataset X --seed N --smoke]` |
-| Test / eval (CPU) | `python -m graphids submit --mode cpu --command "python -m graphids test --config X --ckpt Y"` |
-| Tests | `python -m graphids submit --mode cpu --length short --command "python -m pytest [-k pattern]"` |
-| Cache rebuild | `python -m graphids submit --mode cpu --mem-gb 54 --timeout-min 240 --command "python -m graphids rebuild-caches --all"` |
-| Analyze ckpt | `python -m graphids submit --mode gpu --mem-gb 32 --timeout-min 120 --command "python -m graphids analyze ..."` |
-| Profiling | `python -m graphids submit --mode gpu --length short --command "python -m graphids profile"` |
-
----
-
-## 5. Storage & IO
-
-### Storage tiers
-
-| Tier             | Path                          | Persistence  | Use                          |
-|------------------|-------------------------------|--------------|------------------------------|
-| NFS (home)       | `~/graphids/data/`           | Permanent    | Raw data source of truth     |
-| ESS (GPFS)       | `/fs/ess/PAS1266/graphids/`  | Permanent    | Lake root: runs, catalog     |
-| Scratch (GPFS)   | `/fs/scratch/PAS1266/`       | 90-day purge | wandb, data staging          |
-| TMPDIR (local)   | `$TMPDIR/graphids-data/`     | Per-job      | Training I/O                 |
-
-### Run directory template
-
-Every preset under `configs/ablations/*.jsonnet` computes its own
-`run_dir` via `std.native('paths.run_dir')(...)` — registered by
-`graphids.config.jsonnet.render()` against `graphids.config.paths.run_dir`:
-
-```
-{run_root}/{dataset}/ablations/{group}/{variant}/seed_{N}
+```jsonnet
+function(monitor, mode, patience, extras={}) → {
+  callbacks: { checkpoint, early_stopping, mlflow } + extras
+}
 ```
 
-No Python planner, no identity-hash layer.
+- **Universal** (mandatory): checkpoint, early_stopping, mlflow.
+- **Optional** (per-binding): pass via composer's `callback_extras={...}`
+  (used by curriculum bindings to add `CurriculumEpochCallback`).
+- **Auto-injected** (Python-side): `VRAMDriftCallback` added at instantiation
+  if CUDA available. Not in jsonnet.
 
-### Logged metrics
+`trainer.callbacks` (the LIST Lightning consumes) is late-bound from
+`$.callbacks` (the DICT) at the apex via:
+```jsonnet
+callbacks: [$.callbacks[k] for k in std.objectFields($.callbacks)]
+```
+in `_kit/trainer.libsonnet`. Any callback added to the dict (universal trio,
+extras) is auto-listed.
 
-Classifier-flavor models (GAT, all fusion) emit the unified
-`classification_test_metrics` set on `test_epoch`: `accuracy`, `mcc`, `ece`;
-`{f1,precision,recall,specificity,auc,ap}_{macro,weighted}`; and per-class
-`{f1,precision,recall,specificity,auc,ap}_per_class/<name>` via
-`torchmetrics.wrappers.ClasswiseWrapper` (class names default to
-`["benign","attack"]` for binary). Threshold-flavor models (VGAE/DGI) keep
-`binary_test_metrics(threshold=Youden-J)`: `accuracy, f1, precision, recall,
-specificity, mcc, auc, ap, ece` plus the discovered `threshold`.
+---
 
-| Model       | train step            | val step          | test epoch |
-|-------------|-----------------------|-------------------|-----------|
-| VGAE / DGI  | `train_loss`          | `val_loss`        | binary @ Youden-J |
-| GAT         | `train_loss, train_acc` | `val_loss, val_acc` | classifier (unified) |
-| DQN         | `avg_reward, epsilon` | `val_acc`         | classifier (unified) |
-| Bandit      | `accuracy, avg_reward`| `val_acc`         | classifier (unified) |
-| MLP / WAvg  | `train_loss`          | `val_loss, val_acc` | classifier (unified) |
+## 5. Plans
 
-### Analyzer artifacts
+A plan is `function(dataset, seed) → list[row]`. Each row is self-contained
+(rendered_config + identity + upstreams + resources). Plans emit a JSON
+array, not JSONL.
 
-`ARTIFACTS_BY_MODEL_TYPE` in `core/analysis/schemas.py` dispatches by the
-checkpoint's self-describing `class_path` — the `analyze` CLI reads the
-ckpt, looks up the spec via `analysis_spec_for`, and fires the toggles
-below automatically without a per-run config.
+Plans bind primitives directly — there is no spec layer:
 
-| model_type | embeddings | attention | cka | landscape   | fusion_policy |
-|------------|------------|-----------|-----|-------------|---------------|
-| `vgae`     | yes        | --        | --  | yes (51x51) | --            |
-| `dgi`      | yes        | --        | --  | yes (51x51) | --            |
-| `gat`      | yes        | yes       | yes | yes         | --            |
-| `fusion`   | --         | --        | --  | --          | yes (needs upstream ckpts) |
+```jsonnet
+local g = import '../index.libsonnet';
+function(dataset, seed)
+  local vgae = g.compose.unsupervised(
+    model = g.models.autoencoder.vgae(),
+    data  = g.data.datamodule.graph(
+      source       = g.data.source.can_bus(dataset, seed),
+      label_filter = 'benign',
+    ),
+    monitor = 'val_discrimination_ratio',
+    meta    = { group: 'unsupervised', variant: 'vgae', ...},
+  );
+  [g.row.fit('vgae', vgae), g.row.test('vgae', vgae)]
+```
 
-| Artifact       | File                                  | Contents                            |
-|----------------|---------------------------------------|-------------------------------------|
-| Embeddings     | `embeddings.npz`                      | embeddings, labels, model_type      |
-| Attention      | `attention_weights.npz`               | per-sample per-layer alpha weights  |
-| CKA            | `cka.json`                            | per-layer student/teacher similarity|
-| Landscape      | `loss_landscape_{model_type}.parquet` | x, y, loss grid                     |
-| Fusion policy  | `dqn_policy.json`                     | alphas, labels, q_values            |
+| Plan | Rows | Purpose |
+|---|---|---|
+| `unsupervised.jsonnet` | 4 | VGAE + DGI fit/test |
+| `supervised.jsonnet` | 2 | GAT focal fit/test (single-binding spike) |
+| `fusion.jsonnet` | 8 | All 4 fusion methods fit/test |
+| `supervised_ablations.jsonnet` | 3 | loss + upstreams stress test |
+| `ofat.jsonnet` | 22 | Full one-factor-at-a-time sweep across every axis |
 
-### Data I/O
+Row builder (`_kit/row.libsonnet`):
+- `row.fit(name, rendered)` — fit row
+- `row.test(name, rendered)` — test row (action='test', same identity)
+- `row.cmd(name, command, mode, length)` — non-binding command row
 
-Jobs read raw CSVs and cached tensors directly from ESS NFS
-(`/fs/ess/PAS1266/graphids/{raw,cache}/`). No scratch/TMPDIR staging
-today — the old `stage-data` command was removed 2026-04-14.
+Identity strings synthesized via `std.format` from `_meta`.
+
+---
+
+## 6. Resources
+
+Two strings on each row's `resources`: `mode` (gpu/cpu) + `length` (short/long).
+Cluster-specific numerics (`mem_gb`, `timeout_min`, `partition`,
+`cpus_per_task`) translate at submit time via
+`resources/submit_profiles.json` keyed `[mode][cluster][length]`.
+
+The blueprint is **portable across clusters** — never pre-bake cluster numbers.
+
+---
+
+## 7. Native callbacks (Python ↔ jsonnet bridge)
+
+```
+ext_codes:        run_root, overrides
+tla_codes:        per-call top-level args (dataset, seed, scale, ...)
+native_callbacks: paths.run_dir, paths.best_ckpt, paths.states_dir
+```
+
+Three natives — all FS-rooted paths, source-of-truth `graphids/config/paths.py`.
+Identity strings (run_name, jobname) are computed in jsonnet via `std.format`,
+not via natives.
+
+Binding: `gojsonnet` (Go implementation, full stdlib including SHA family).
+
+---
+
+## 8. Removed (post-mirror redesign 2026-05-01)
+
+| Old | New |
+|---|---|
+| `configs/specs/<group>/<v>.libsonnet` (16 files) | inlined in `configs/plans/*.jsonnet` |
+| `configs/_lib/{trainer,callbacks,validate,row}.libsonnet` | `configs/_kit/...` |
+| `configs/_lib/compose/*.libsonnet` | `configs/compose/...` |
+| `configs/_lib/source/*.libsonnet` | `configs/data/source/...` |
+| `configs/_lib/datamodule/*.libsonnet` | `configs/data/datamodule/...` |
+| `configs/_lib/loss/*.libsonnet` | `configs/losses/...` |
+| `configs/_lib/models/*.libsonnet` | `configs/models/<family>/...` |

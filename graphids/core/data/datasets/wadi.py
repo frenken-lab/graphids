@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import polars as pl
 
-from graphids._otel import get_logger
+from structlog import get_logger
 
 log = get_logger(__name__)
 

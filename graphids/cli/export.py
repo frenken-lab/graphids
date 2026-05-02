@@ -194,7 +194,12 @@ def push_hf(
     import pandas as pd
 
     from graphids._mlflow import build_search_filter, ensure_tracking_uri, parse_run_dir
-    from graphids.analysis.compare import effect_size, expected_max, leaderboard, tie_candidates
+    from graphids.analysis.compare import (
+        effect_size,
+        expected_max,
+        leaderboard,
+        tie_candidates,
+    )
     from graphids.config.settings import get_settings
 
     repo_id = repo_id or get_settings().hf_repo_id

@@ -1,40 +1,27 @@
-// Fusion plan: extract VGAE+GAT latent states, then train fusion methods.
-//
-// Prerequisites (from separate plans, both must be FINISHED):
-//   - unsupervised.jsonnet: vgae
-//   - ofat.jsonnet: focal  (gat_loss/focal)
-// Ckpt paths are auto-derived from (dataset, seed) via paths.best_ckpt.
+// Fusion archetype — all 4 methods (bandit/dqn/mlp/weighted_avg) fit/test.
 
-local lib = import '_lib.libsonnet';
+local g = import '../index.libsonnet';
 
 function(dataset, seed)
+  local meta(variant) = {
+    group: 'fusion', variant: variant,
+    dataset: dataset, seed: seed,
+    model_type: 'fusion', scale: 'small',
+  };
+  local fuse(variant, model) = g.compose.fusion(
+    model  = model,
+    method = variant,
+    meta   = meta(variant),
+  );
 
-local extract_states_command =
-  std.join(' ', [
-    'python -m graphids extract-fusion-states',
-    '--vgae-ckpt ' + std.native('paths.best_ckpt')(dataset, 'unsupervised', 'vgae', seed),
-    '--gat-ckpt ' + std.native('paths.best_ckpt')(dataset, 'gat_loss', 'focal', seed),
-    '--dataset ' + dataset,
-    '--seed ' + seed,
-    '--output-dir ' + std.native('paths.states_dir')(dataset, seed),
-  ]);
+  local bandit       = fuse('bandit',       g.models.fusion.bandit());
+  local dqn          = fuse('dqn',          g.models.fusion.dqn());
+  local mlp          = fuse('mlp',          g.models.fusion.mlp());
+  local weighted_avg = fuse('weighted_avg', g.models.fusion.weighted_avg());
 
-{
-  nodes:
-    // Extract VGAE + focal GAT latent states → tensor cache.
-    [{
-      name: 'extract-states',
-      command: extract_states_command,
-      deps: [],
-      cross_plan_deps: ['vgae', 'focal'],
-      mode: 'gpu',
-      mem_gb: 36,
-      timeout_min: 30,
-    }]
-    // Fusion methods fan out from extract-states.
-    // mode='cpu': fusion runs on cached state tensors (0% GPU compute confirmed).
-    + lib.fit_test('fusion/bandit.jsonnet', deps=['extract-states'], mode='cpu')
-    + lib.fit_test('fusion/dqn.jsonnet', deps=['extract-states'], mode='cpu')
-    + lib.fit_test('fusion/mlp.jsonnet', deps=['extract-states'], mode='cpu')
-    + lib.fit_test('fusion/weighted_avg.jsonnet', deps=['extract-states'], mode='cpu'),
-}
+  [
+    g.row.fit('bandit',       bandit),       g.row.test('bandit',       bandit),
+    g.row.fit('dqn',          dqn),          g.row.test('dqn',          dqn),
+    g.row.fit('mlp',          mlp),          g.row.test('mlp',          mlp),
+    g.row.fit('weighted_avg', weighted_avg), g.row.test('weighted_avg', weighted_avg),
+  ]

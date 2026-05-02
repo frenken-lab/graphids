@@ -93,8 +93,7 @@ class MLflowTrainingCallback(CallbackBase):
         masquerade as a healthy run at 20–30% GPU memory utilization.
         """
         import mlflow
-
-        from graphids._otel import get_logger
+        from structlog import get_logger
 
         budget = getattr(getattr(trainer, "datamodule", None), "_budget", None)
         if budget is None or budget.target_bytes <= 0 or peak_vram_mb <= 0:

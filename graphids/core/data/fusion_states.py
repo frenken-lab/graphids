@@ -15,9 +15,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import torch
+from structlog import get_logger
 from torch_geometric.loader import DataLoader as PyGDataLoader
-
-from graphids._otel import get_logger
 
 log = get_logger(__name__)
 

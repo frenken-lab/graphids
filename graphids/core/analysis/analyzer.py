@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import Literal
 
 import torch
+from structlog import get_logger
 
-from graphids._otel import get_logger
 from graphids.config.catalog import cache_dir, data_dir
 from graphids.core.models.base import safe_load_checkpoint
 

@@ -13,7 +13,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from graphids._otel import get_logger
+from structlog import get_logger
+
 from graphids.core.analysis.schemas import ARTIFACTS_BY_MODEL_TYPE, AnalysisSpec
 
 log = get_logger(__name__)

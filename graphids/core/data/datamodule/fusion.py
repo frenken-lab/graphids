@@ -11,9 +11,9 @@ import math
 from pathlib import Path
 
 import torch
+from structlog import get_logger
 from torch.utils.data import DataLoader, TensorDataset
 
-from graphids._otel import get_logger
 from graphids.core.data.fusion_states import (
     CACHE_VERSION,
     FUSION_STATES_DIR,

@@ -41,7 +41,7 @@ Login-node phase (until `sbatch` returns):
    * **FINISHED** → reads `graphids.run_dir` tag, injects `<role>_ckpt_path`
      TLA (e.g. `vgae_ckpt_path`). No SLURM dependency.
    * **RUNNING** → injects the same TLA (path is deterministic from
-     `run_dir`) AND adds `slurm.slurm_job_id` from the upstream's MLflow
+     `run_dir`) AND adds `slurm.job_id` from the upstream's MLflow
      tag as an `afterok` dep. Downstream queues now and waits.
    * **missing / FAILED / KILLED** → hard error.
 
@@ -166,7 +166,7 @@ machine-readable shape.
 |---|---|---|
 | `--ckpt-tla` | Set the jsonnet `ckpt_path` TLA. | `flag_tlas` → `_TrainingJob.tlas` → consumed by the preset. |
 | `--ckpt-path` | Resume the *current* preset — passthrough to `python -m graphids fit/test --ckpt-path`. | `_TrainingJob.ckpt_path` → `cli.training.fit(ckpt_path=...)`. |
-| `--depends-on V[:S]` | MLflow lookup → inject upstream-teacher ckpt as TLA (e.g. `vgae_ckpt_path`). RUNNING upstream → also add `slurm.slurm_job_id` as afterok dep. | `flag_tlas` + `dep_jids` via `dependencies.resolve_all`. Conflicts with `--ckpt-path`. |
+| `--depends-on V[:S]` | MLflow lookup → inject upstream-teacher ckpt as TLA (e.g. `vgae_ckpt_path`). RUNNING upstream → also add `slurm.job_id` as afterok dep. | `flag_tlas` + `dep_jids` via `dependencies.resolve_all`. Conflicts with `--ckpt-path`. |
 
 In a plan, `--depends-on` semantics fall out of the topology — fusion
 nodes depend on `extract-states`, which writes a tensor cache to

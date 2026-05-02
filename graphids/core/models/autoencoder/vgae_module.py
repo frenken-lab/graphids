@@ -17,12 +17,12 @@ class VGAEModule(GraphModuleBase):
     """VGAE training: mask-and-reconstruct + KL.
 
     Loss selection is decoupled from this module: ``loss_fn`` is an
-    ``nn.Module`` built by :func:`graphids.core.losses.build.build_loss` from
-    the config's ``loss_config`` / ``distillation_config`` blocks and
-    injected here. The base loss is
-    :class:`~graphids.core.losses.autoencoder.VGAETaskLoss`; when KD is
-    active it's wrapped in
-    :class:`~graphids.core.losses.distillation.FeatureDistillation`.
+    ``nn.Module`` instantiated by :func:`graphids.orchestrate._instantiate`
+    from the rendered_config's ``model.init_args.loss_fn`` class_path block
+    (see ``configs/losses/vgae_task.libsonnet``) and passed in as a kwarg.
+    Default base loss is :class:`~graphids.core.losses.autoencoder.VGAETaskLoss`;
+    KD wrappers like :class:`~graphids.core.losses.distillation.FeatureDistillation`
+    can be added by emitting a different class_path block.
 
     Training/validation/test all apply 15% random node masking before
     the forward pass — one masked fwd for recon plus one unmasked

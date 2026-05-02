@@ -7,8 +7,8 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from structlog import get_logger
 
-from graphids._otel import get_logger
 from graphids.core.models.base import safe_load_checkpoint
 
 log = get_logger(__name__)

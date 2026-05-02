@@ -23,11 +23,11 @@ from typing import Any, NamedTuple
 
 import torch
 import torch.nn as nn
+from structlog import get_logger
 from torchmetrics import Metric
 from torchmetrics.functional.classification import binary_roc
 from torchmetrics.utilities.data import dim_zero_cat
 
-from graphids._otel import get_logger
 from graphids.core.trainer import MetricAccumulator
 
 _log = get_logger(__name__)

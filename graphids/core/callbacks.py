@@ -266,8 +266,9 @@ class TauNormCallback(CallbackBase):
             pass
 
     def on_fit_end(self, trainer: Trainer, model: torch.nn.Module) -> None:
+        from structlog import get_logger
+
         from graphids._fs import atomic_load, atomic_save
-        from graphids._otel import get_logger
 
         log = get_logger(__name__)
 
@@ -366,7 +367,7 @@ class VRAMDriftCallback(CallbackBase):
         current = torch.cuda.mem_get_info()[0]
         drift = (self.baseline_free - current) / self.baseline_free
         if drift > self.threshold:
-            from graphids._otel import get_logger
+            from structlog import get_logger
 
             get_logger(__name__).warning(
                 "vram_drift_detected",

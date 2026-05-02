@@ -39,16 +39,11 @@ def _main(
 ) -> None:
     """GraphIDS CLI — shared setup for every subcommand."""
     import logging
-    import os
 
-    from graphids._otel import init_providers
+    from graphids.runtime import _configure_logging
 
     logging.getLogger("graphids").setLevel(logging.DEBUG if verbose else logging.INFO)
-    init_providers(
-        "graphids",
-        wandb_entity=os.environ.get("WANDB_ENTITY", ""),
-        wandb_project=os.environ.get("WANDB_PROJECT", "graphids"),
-    )
+    _configure_logging()
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
 

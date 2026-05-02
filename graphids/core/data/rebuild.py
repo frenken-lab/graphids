@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import shutil
 
-from graphids._otel import get_logger
+from structlog import get_logger
+
 from graphids.config.catalog import cache_dir
 from graphids.config.constants import PREPROCESSING_VERSION
 from graphids.config.settings import get_settings

@@ -1,1 +1,5 @@
-"""SLURM submission helpers — kept as a library, never a CLI surface."""
+"""SLURM submission via Parsl primitives. One public function: ``submit_row``."""
+
+from graphids.slurm.submit import submit_row
+
+__all__ = ["submit_row"]

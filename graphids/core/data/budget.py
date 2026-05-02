@@ -33,9 +33,8 @@ from typing import Literal
 
 import numpy as np
 import torch
+from structlog import get_logger
 from torch_geometric.data import Batch
-
-from graphids._otel import get_logger
 
 log = get_logger(__name__)
 

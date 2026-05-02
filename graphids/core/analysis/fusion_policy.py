@@ -7,8 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-
-from graphids._otel import get_logger
+from structlog import get_logger
 
 log = get_logger(__name__)
 

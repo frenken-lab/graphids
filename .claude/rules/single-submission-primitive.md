@@ -12,7 +12,7 @@
 | Submit one job | `graphids submit <preset.jsonnet>` | Atomic submitit call. Returns jid. The ONLY place that calls `submitit.AutoExecutor.submit`. |
 | Pipeline blueprint | `graphids run <plan.jsonnet>` | Renders the plan to **JSONL on stdout** — one row per node, with `submit_command` strings. Does not submit anything. Does not write an executable file. |
 | Plan status | `graphids status <plan.jsonnet>` | Read-only MLflow query per node. Renders a table or JSON. Does not submit. |
-| Same-batch deps | `graphids submit ... --depends-on <variant>:<seed>` | One flag dispatches: FINISHED upstream → inject ckpt as TLA; RUNNING upstream → afterok on its `slurm.slurm_job_id` MLflow tag; missing → hard error. |
+| Same-batch deps | `graphids submit ... --depends-on <variant>:<seed>` | One flag dispatches: FINISHED upstream → inject ckpt as TLA; RUNNING upstream → afterok on its `slurm.job_id` MLflow tag; missing → hard error. |
 
 ## What this rule blocks
 

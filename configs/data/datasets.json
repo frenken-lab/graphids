@@ -1,0 +1,26 @@
+{
+  "hcrl_ch": {
+    "attack_types": ["dos", "fuzzing", "gear_spoofing", "rpm_spoofing"],
+    "notes": "HCRL CAN — Challenge variant; per-attack labelled test splits."
+  },
+  "hcrl_sa": {
+    "attack_types": ["mixed"],
+    "notes": "HCRL CAN — Scenario Anomaly; mixed-attack test splits."
+  },
+  "set_01": {
+    "attack_types": ["mixed", "suppress", "masquerade"],
+    "notes": "Automotive CAN Set 01; suppress/masquerade variants present."
+  },
+  "set_02": {
+    "attack_types": ["mixed", "suppress", "masquerade"],
+    "notes": "Automotive CAN Set 02."
+  },
+  "set_03": {
+    "attack_types": ["mixed", "suppress", "masquerade"],
+    "notes": "Automotive CAN Set 03."
+  },
+  "set_04": {
+    "attack_types": ["mixed", "suppress", "masquerade"],
+    "notes": "Automotive CAN Set 04."
+  }
+}

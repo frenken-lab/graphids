@@ -44,6 +44,8 @@ class DGIModule(GraphModuleBase):
         id_encoder_class_path: str = "graphids.core.models.id_encoding.LookupIdEncoder",
         id_encoder_kwargs: dict | None = None,
         # --- training ---
+        lr: float = 1e-3,
+        weight_decay: float = 1e-4,
         gradient_checkpointing: bool = True,
         compile_model: bool = False,
         # --- identity / dynamic ---

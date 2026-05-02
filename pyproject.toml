@@ -33,8 +33,8 @@ dependencies = [
     "alembic>=1.18",
     "nvidia-ml-py>=11.5",
     "mlflow-skinny>=2.17",
-    "submitit>=1.5",
-    "jsonnet>=0.20",
+    "parsl>=2024.10",
+    "gojsonnet>=0.22",
     "filelock>=3.13",
     "structlog>=24.0",
 ]

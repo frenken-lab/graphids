@@ -420,6 +420,17 @@ wheels = [
 ]
 
 [[package]]
+name = "gojsonnet"
+version = "0.22.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f6/b4/446bd29ddde73dc1009a836dc9f3644b6722173f3d091bb31238962cbebe/gojsonnet-0.22.0.tar.gz", hash = "sha256:b00f09e019d403fc5fb0e691e043115dd84548e055c018638e22b6b7e9829d09", size = 581887, upload-time = "2026-03-24T16:10:24.206Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ea/90/b2bff4a86c9d3926bf4e4f76d1e19a0305abb411d78e11db11c1166e9028/gojsonnet-0.22.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:342810a282f5f501a45588d0d468ac13327d3d0a33de5182506d1a79b48b4f7e", size = 2125470, upload-time = "2026-03-24T16:09:58.618Z" },
+    { url = "https://files.pythonhosted.org/packages/97/e8/e092f107e9510bcd45e805a544c1a13a2f1d6ce28c882a06de1f0d7ba4c6/gojsonnet-0.22.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:ac7cae7ba9fcaf3c4c2c2377204a6fea8c4bcb6d2e4b2a42b71e6f83bdcf9855", size = 3604954, upload-time = "2026-03-24T16:10:00.437Z" },
+    { url = "https://files.pythonhosted.org/packages/24/ce/1c6f5e50efbc272549e792a7c77554c23b3c6c48017aa51615ef7a6b9124/gojsonnet-0.22.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:7645cb88583dd2372f6fd6a99be073333c9c66acd18ce7c686ab836d081c613b", size = 3835228, upload-time = "2026-03-24T16:10:02.349Z" },
+]
+
+[[package]]
 name = "google-auth"
 version = "2.49.2"
 source = { registry = "https://pypi.org/simple" }
@@ -441,7 +452,7 @@ dependencies = [
     { name = "duckdb" },
     { name = "fastapi" },
     { name = "filelock" },
-    { name = "jsonnet" },
+    { name = "gojsonnet" },
     { name = "mlflow-skinny" },
     { name = "networkx" },
     { name = "numpy" },
@@ -493,9 +504,9 @@ requires-dist = [
     { name = "duckdb", specifier = ">=1.0.0" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "filelock", specifier = ">=3.13" },
+    { name = "gojsonnet", specifier = ">=0.22" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "huggingface-hub", marker = "extra == 'analysis'", specifier = ">=0.24" },
-    { name = "jsonnet", specifier = ">=0.20" },
     { name = "mlflow-skinny", specifier = ">=2.17" },
     { name = "networkx", specifier = ">=3.2" },
     { name = "numpy", specifier = ">=1.26.4" },
@@ -668,18 +679,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/41/f2/d34e8b3a08a9cc79a50b2208a93dce981fe615b64d5a4d4abee421d898df/joblib-1.5.3.tar.gz", hash = "sha256:8561a3269e6801106863fd0d6d84bb737be9e7631e33aaed3fb9ce5953688da3", size = 331603, upload-time = "2025-12-15T08:41:46.427Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7b/91/984aca2ec129e2757d1e4e3c81c3fcda9d0f85b74670a094cc443d9ee949/joblib-1.5.3-py3-none-any.whl", hash = "sha256:5fc3c5039fc5ca8c0276333a188bbd59d6b7ab37fe6632daa76bc7f9ec18e713", size = 309071, upload-time = "2025-12-15T08:41:44.973Z" },
-]
-
-[[package]]
-name = "jsonnet"
-version = "0.22.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/bd/90/b35ecd8d60c910874a645d153d4084e07950bc746b4e77dbbe54e199d1cf/jsonnet-0.22.0.tar.gz", hash = "sha256:eae5d9bf23c778baad39390f88c13c03b2090dfb5dfa148d6e217df8c1448258", size = 529697, upload-time = "2026-03-24T14:51:45.956Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/48/b9/d0ead4a4a5fbcee2807127aed41063d7482aa969a41d6d6a7c0194cc2686/jsonnet-0.22.0-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:42d86e5b2740e31a5e970997d470f517d9073c8a743ddb09ae69069e37529aa6", size = 443379, upload-time = "2026-03-24T14:51:38.804Z" },
-    { url = "https://files.pythonhosted.org/packages/68/9a/b1bb5a0ce21a0fc1ace044d28e69003e63f88b15bc22fcb14ca7e74cf63b/jsonnet-0.22.0-cp38-abi3-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:a1136eefea98f01d654984e868f10faac2749d062464881491ec79ae5c38dc0e", size = 6739976, upload-time = "2026-03-24T14:51:40.153Z" },
-    { url = "https://files.pythonhosted.org/packages/ba/b7/3270203be535725bf4b1ded5574f07c5cf530a954e2e1b4760efb5bb1e55/jsonnet-0.22.0-cp38-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:aefd2c07038eb9412ae6c46e49b7cfec74f10c53007755b176f7e075e70646f4", size = 7524407, upload-time = "2026-03-24T14:51:42.027Z" },
-    { url = "https://files.pythonhosted.org/packages/90/b1/91bd98399359b255b906cfce28d898d96d52348e37502859ccb469c083fa/jsonnet-0.22.0-cp38-abi3-win_amd64.whl", hash = "sha256:46df8787b30b001b39d9d551b3d85892d99a699cf3311a63f7bcef080d8a18ff", size = 305494, upload-time = "2026-03-24T14:51:44.272Z" },
 ]
 
 [[package]]

@@ -20,12 +20,12 @@ class GATModule(GraphModuleBase):
     """GAT supervised classification (normal vs attack).
 
     Loss selection is decoupled from this module: ``loss_fn`` is an
-    ``nn.Module`` built by :func:`graphids.core.losses.build.build_loss` from
-    the config's ``loss_config`` / ``distillation_config`` blocks and
-    injected here. When it's a
+    ``nn.Module`` instantiated by :func:`graphids.orchestrate._instantiate`
+    from the rendered_config's ``model.init_args.loss_fn`` class_path block
+    (see ``configs/losses/{focal,ce,weighted_ce}.libsonnet``) and passed in
+    as a kwarg. When the block resolves to a
     :class:`~graphids.core.losses.distillation.SoftLabelDistillation`,
-    training automatically becomes a KD run — no branching here, no
-    teacher attribute on ``self``, no base-class plumbing.
+    training automatically becomes a KD run — no branching here.
     """
 
     def __init__(
@@ -46,6 +46,8 @@ class GATModule(GraphModuleBase):
         id_encoder_class_path: str = "graphids.core.models.id_encoding.LookupIdEncoder",
         id_encoder_kwargs: dict | None = None,
         # --- training ---
+        lr: float = 1e-3,
+        weight_decay: float = 1e-4,
         gradient_checkpointing: bool = True,
         compile_model: bool = False,
         # --- identity / dynamic ---

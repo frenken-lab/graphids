@@ -14,10 +14,10 @@ in this repo:
   ``cont_out`` (reconstruction) tensors; the wrapper adds MSE alignment
   on those features. Used by VGAE curriculum training.
 
-Both classes are plain ``nn.Module``. They're built by
-``graphids.core.losses.build.build_loss`` when the config has a
-``distillation_config`` block, and injected into the student module as
-its ``loss_fn``. No trainer plugin, no callback, no IO. The teacher is
+Both classes are plain ``nn.Module``. They're built like any other loss —
+via a class_path block in the rendered_config's ``model.init_args.loss_fn``,
+instantiated by :func:`graphids.orchestrate._instantiate`, and passed into
+the student as ``loss_fn``. No trainer plugin, no callback, no IO. The teacher is
 held on CPU by default and moved to the student's device lazily inside
 ``forward`` — ``nn.Module`` storage is bypassed (``__dict__`` assignment)
 so ``.to()``/``.cuda()`` doesn't try to shuttle it around.

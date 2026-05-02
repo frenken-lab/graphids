@@ -17,7 +17,7 @@ from filelock import FileLock
 from torch_geometric.data import Data, InMemoryDataset
 
 from graphids._fs import atomic_save
-from graphids._otel import get_logger
+from structlog import get_logger
 from graphids.config.constants import PREPROCESSING_VERSION
 from graphids.core.data import scaler as scaler_mod
 from graphids.core.data.cache import DatasetState

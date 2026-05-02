@@ -17,8 +17,8 @@ from typing import Any
 
 import torch
 import torch.nn as nn
+from structlog import get_logger
 
-from graphids._otel import get_logger
 from graphids.core.callbacks import CallbackBase, EarlyStopping, ModelCheckpoint
 
 _log = get_logger(__name__)
