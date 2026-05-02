@@ -122,3 +122,4 @@ notebooks/deno.lock
 tmlr_output/
 users/
 .gitnexus
+tmp/
