@@ -124,7 +124,7 @@ nav:
   - API Reference:
       - Orchestrate: api/orchestrate.md
       - CLI: api/cli.md
-      - Trainer & Callbacks: api/trainer.md
+      - Callbacks: api/callbacks.md
       - Data: api/data.md
       - Models: api/models.md
       - Config: api/config.md

@@ -1,19 +1,11 @@
-"""Step 1 of the Lightning-migration spike: wrapper-shim.
+"""Lightning-migration smoke: model + ``pl.Trainer.fit()`` roundtrip.
 
-Question: does ``pl.Trainer.fit()`` drive our existing ``GraphModuleBase``
-contract end-to-end without modifying the model? If yes, full
-inheritance migration is mechanical. If no, we surface the exact
-contract break.
-
-Strategy: do NOT touch ``graphids.core.models.base``. Wrap an existing
-VGAE in a thin ``pl.LightningModule`` that delegates ``training_step`` /
-``validation_step`` / ``configure_optimizers`` to the inner model.
-
-Smoke = ``pl.Trainer(fast_dev_run=True, accelerator='cpu')`` with a
-tiny synthetic DataLoader of ``make_batch()``. fast_dev_run runs 1
-train + 1 val batch then exits — exercises every Lightning hook
-(setup, training_step, optimizer.step, validation_step, on_*_end)
-without committing to a real fit.
+Drives ``pl.Trainer(fast_dev_run=True, accelerator='cpu')`` over a tiny
+synthetic DataLoader of ``make_batch()``. fast_dev_run runs 1 train + 1
+val batch then exits — exercises every Lightning hook (setup,
+training_step, optimizer.step, validation_step, on_*_end) without
+committing to a real fit. Kept as a login-node smoke gate after the
+2026-05-02 inheritance flip (``_ModelBase(pl.LightningModule)``).
 """
 
 from __future__ import annotations
@@ -53,27 +45,6 @@ def _identity_collate(items):
     return items[0]
 
 
-class LightningWrap(pl.LightningModule):
-    """Thin shim — delegates to inner ``GraphModuleBase`` without
-    touching it. Tests whether Lightning's training engine accepts
-    our existing contract."""
-
-    def __init__(self, inner: torch.nn.Module) -> None:
-        super().__init__()
-        self.inner = inner
-
-    def training_step(self, batch, batch_idx):
-        return self.inner.training_step(batch, batch_idx)
-
-    def validation_step(self, batch, batch_idx):
-        return self.inner.validation_step(batch, batch_idx)
-
-    def configure_optimizers(self):
-        # Inner is now a LightningModule itself post-migration; just
-        # delegate to its own configure_optimizers.
-        return self.inner.configure_optimizers()
-
-
 def _make_vgae() -> VGAE:
     """Match tests/core/models/test_vgae.py::_make_vgae."""
     return VGAE(
@@ -94,9 +65,6 @@ def _make_vgae() -> VGAE:
 
 
 def main() -> int:
-    # Post-migration VGAE IS a LightningModule; the wrapper-shim is no longer
-    # needed and would in fact break self.log() (the inner has no trainer
-    # attached when wrapped). Drive Lightning directly.
     model = _make_vgae()
 
     train_loader = DataLoader(
@@ -121,8 +89,6 @@ def main() -> int:
     print(f"current_epoch = {trainer.current_epoch}")
     cm = trainer.callback_metrics
     print(f"callback_metrics keys = {sorted(cm.keys())}")
-    # Post-migration the inner IS a LightningModule, so cm should now be
-    # populated by self.log(...) calls inside training_step/validation_step.
     return 0
 
 

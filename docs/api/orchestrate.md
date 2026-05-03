@@ -4,7 +4,7 @@ Dict→objects→`pl.Trainer.fit` bridge. Walks `row.rendered_config`,
 instantiates each `{class_path, init_args}` block via `importlib`,
 opens/closes the MLflow run, and dispatches on `row.action`. The
 training loop itself is `lightning.pytorch.Trainer`; graphids-specific
-callbacks ship in [`graphids.core.callbacks`](trainer.md).
+callbacks ship in [`graphids.core.callbacks`](callbacks.md).
 
 graphids hooks before Lightning takes over: `dm.bind(model, device)`
 → `dm.setup(stage)` → `model.prepare_from_datamodule(dm)` (lazy
