@@ -27,7 +27,7 @@ from typing import Any, Protocol, runtime_checkable
 import numpy as np
 import torch
 
-from graphids.core.callbacks import CallbackBase
+import lightning.pytorch as pl
 
 # ---------------------------------------------------------------------------
 # Scoring strategy — protocol + built-in implementations
@@ -231,10 +231,14 @@ def build_curriculum_tiers(
 # ---------------------------------------------------------------------------
 
 
-class CurriculumEpochCallback(CallbackBase):
-    """Advance active tiers each epoch. No-op when datamodule isn't tier-batched."""
+class CurriculumEpochCallback(pl.Callback):
+    """Advance active tiers each epoch. No-op when datamodule isn't tier-batched.
 
-    def on_train_epoch_start(self, trainer, model):
-        dm = trainer.datamodule
-        if getattr(dm, "_tier_batches", None) is not None:
+    Reads the DM from ``pl_module._graphids_dm`` (orchestrate stashes it
+    there because graphids passes dataloaders to ``trainer.fit``, not a
+    ``LightningDataModule``)."""
+
+    def on_train_epoch_start(self, trainer, pl_module):
+        dm = getattr(pl_module, "_graphids_dm", None) or getattr(trainer, "datamodule", None)
+        if dm is not None and getattr(dm, "_tier_batches", None) is not None:
             dm._select_active_tiers(trainer.current_epoch)

@@ -6,9 +6,12 @@ Graph family:
 - ``eval_mode`` — context manager that restores training state
 
 Shared:
-- ``_ModelBase`` — mixin shared by ``GraphModuleBase`` + ``FusionModuleBase``
+- ``_ModelBase(pl.LightningModule)`` — mixin shared by ``GraphModuleBase`` +
+  ``FusionModuleBase``. Lightning provides ``self.device``, ``self.log``,
+  ``self.log_dict``, ``self.hparams``, ``self.trainer``, etc.
 - ``safe_load_checkpoint`` — checkpoint loading via class_path registry
-- ``schema_for`` auto-generated Pydantic model configs
+- ``strip_orig_mod_prefix`` — drop ``_orig_mod.`` keys from state_dicts
+  produced under ``torch.compile``
 """
 
 from __future__ import annotations
@@ -17,16 +20,28 @@ import contextlib
 import importlib
 import math
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
+import lightning.pytorch as pl
 import torch
 import torch.nn as nn
 from structlog import get_logger
 
-from graphids.core._metric_acc import MetricAccumulator
-
 _log = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# state_dict utilities — used by safe_load_checkpoint and TauNormCallback
+# ---------------------------------------------------------------------------
+
+
+def strip_orig_mod_prefix(state: dict[str, Any]) -> dict[str, Any]:
+    """Drop ``_orig_mod.`` prefix injected by ``torch.compile``'s OptimizedModule.
+
+    ``_orig_mod.`` can appear mid-key (e.g. ``model._orig_mod.encoder.weight``)
+    when compile wraps an inner submodule; ``replace`` handles every position.
+    """
+    return {k.replace("_orig_mod.", ""): v for k, v in state.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -34,91 +49,73 @@ _log = get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class _ModelBase(nn.Module):
-    """Shared infra for every model module:
+class _ModelBase(pl.LightningModule):
+    """Shared infra for every model module.
 
-    - ``MetricAccumulator`` — buffers per-step ``log()`` values for the trainer
-      to flush at epoch boundaries (PL-style ``self.log("name", value)`` API).
-    - ``_device_tracker`` — non-persistent buffer that tracks device through
-      ``.to()``/``.cuda()``/``.cpu()`` even for parameter-free modules.
+    Lightning provides ``self.device``, ``self.log``, ``self.log_dict``,
+    ``self.hparams``, ``self.trainer``. graphids-specific additions:
+
     - ``_store_init_kwargs(locals())`` — mirrors every declared ``__init__``
-      kwarg onto ``self`` and caches the param-name list for cheap ``hparams``.
-    - ``hparams`` — ``SimpleNamespace`` snapshot of init kwargs (skips
-      ``nn.Module`` values; those belong in ``state_dict``).
-    - ``log()`` / ``log_dict()`` — push to ``MetricAccumulator``.
+      kwarg onto ``self`` AND populates ``self.hparams`` via Lightning's
+      ``save_hyperparameters`` (skipping ``nn.Module`` values which belong
+      in ``state_dict``).
+    - ``prepare_from_datamodule(dm)`` — graphids-side hook called by
+      :func:`graphids.orchestrate.run_row` BEFORE ``trainer.fit/test`` so
+      lazy ``_build()`` runs with DM-supplied ``num_ids`` etc. Distinct
+      from Lightning's ``setup(stage)`` hook.
+    - per-test-set ``test_step`` plumbing (``_record_test_batch`` /
+      ``on_test_epoch_*``).
+    - ``on_save_checkpoint`` injects ``class_path`` and strips
+      ``_orig_mod.`` from the saved ``state_dict``.
 
     Subclasses call ``self._store_init_kwargs(locals())`` from their own
     ``__init__`` immediately after ``super().__init__()``.
     """
 
-    def __init__(self) -> None:
-        super().__init__()
-        self._metric_acc = MetricAccumulator()
-        # Non-persistent buffer that tracks device through .to()/.cuda()/.cpu()
-        # — robust even for parameter-free modules (HF Transformers pattern).
-        self.register_buffer("_device_tracker", torch.empty(0), persistent=False)
-        self._hparam_names: tuple[str, ...] = ()
-
     def _store_init_kwargs(self, locals_dict: dict) -> None:
+        """Mirror declared kwargs onto self AND register with Lightning's hparams.
+
+        Mirroring preserves the ``self.lr``/``self.num_ids`` access pattern
+        every model uses internally; ``save_hyperparameters`` populates
+        ``self.hparams`` so Lightning's ckpt round-trip works without
+        per-class overrides. ``nn.Module`` values (e.g. ``loss_fn``) are
+        excluded from hparams — they belong in ``state_dict``.
+        """
         import inspect
 
         sig = inspect.signature(type(self).__init__)
         names = tuple(n for n in sig.parameters if n != "self")
+        saved: dict[str, Any] = {}
         for n in names:
             if n in locals_dict:
-                setattr(self, n, locals_dict[n])
-        self._hparam_names = names
+                v = locals_dict[n]
+                setattr(self, n, v)
+                if not isinstance(v, nn.Module):
+                    saved[n] = v
+        self.save_hyperparameters(saved)
 
-    @property
-    def hparams(self) -> SimpleNamespace:
-        ns: dict[str, Any] = {}
-        for name in self._hparam_names:
-            val = getattr(self, name, None)
-            if isinstance(val, nn.Module):
-                continue
-            ns[name] = val
-        return SimpleNamespace(**ns)
-
-    @property
-    def device(self) -> torch.device:
-        return self._device_tracker.device
-
-    def log(self, name: str, value: Any, *, batch_size: int = 1, **_kwargs) -> None:
-        """Store a metric for the trainer to read after this step."""
-        v = float(value.detach()) if isinstance(value, torch.Tensor) else float(value)
-        self._metric_acc.update(name, v, batch_size)
-
-    def log_dict(self, metrics: dict[str, Any], **kwargs) -> None:
-        for k, v in metrics.items():
-            self.log(k, v, **kwargs)
-
-    # -- per-test-set evaluation (issue #26) ---------------------------------
+    # -- graphids-side preparation hook --------------------------------------
     #
-    # Generic plumbing shared by every model family. Subclasses implement
-    # ``test_step`` to call ``_record_test_batch(dataloader_idx, scores=...,
-    # labels=..., preds=...)``; the default ``on_test_epoch_*`` lifecycle
-    # buckets predictions per test loader, computes per-set + aggregate
-    # ``self.test_metrics`` from the buffered ``(N, K)`` probabilities, and
-    # exposes the concatenated buffers as ``self._test_predictions`` for
-    # ``stage.evaluate`` to persist.
+    # Lightning's ``setup(stage)`` runs INSIDE ``trainer.fit/test``, after
+    # the dataloaders have been resolved. graphids needs the model lazily
+    # built (with DM-supplied ``num_ids`` / ``in_channels`` / ``num_classes``)
+    # BEFORE the dataloader is constructed because the budget probe requires
+    # an instantiated model. ``prepare_from_datamodule`` is the orchestrate-
+    # level hook that fills the pre-fit gap.
 
-    def setup(self, datamodule=None) -> None:
-        """Capture per-test-set names from the datamodule.
-
-        Falls back to a single ``"test"`` bucket for datamodules that don't
-        expose a dict of named test datasets. Subclasses that override
-        ``setup`` (e.g. ``GraphModuleBase`` for lazy ``_build()``) should
-        call ``super().setup(datamodule)``.
-        """
-        if datamodule is not None:
-            ds = getattr(datamodule, "test_datasets", None)
-            self._test_set_names = list(ds.keys()) if ds else ["test"]
+    def prepare_from_datamodule(self, dm) -> None:
+        """Capture per-test-set names from the DM. Subclasses (e.g.
+        ``GraphModuleBase``) override to also lazy-build on first call."""
+        ds = getattr(dm, "test_datasets", None)
+        self._test_set_names = list(ds.keys()) if ds else ["test"]
 
     def on_test_setup(self, datamodule, device) -> None:
-        """Fired after ``_prep`` (model on device, ckpt loaded) and before
-        ``model.eval()`` + the test loop. Default no-op. Score-based
-        detectors (VGAE/DGI) override to fit calibration buffers from a
-        fit-phase loader."""
+        """Fired by orchestrate.evaluate after the model is on device + ckpt
+        loaded, before ``model.eval()`` + the test loop. Default no-op.
+        Score-based detectors (VGAE/DGI) override to fit calibration
+        buffers from a fit-phase loader."""
+
+    # -- per-test-set evaluation (issue #26) ---------------------------------
 
     def on_test_epoch_start(self) -> None:
         if hasattr(self, "test_metrics"):
@@ -236,6 +233,21 @@ class _ModelBase(nn.Module):
             if buf["scores"]  # only sets we actually saw batches for
         }
 
+    # -- ckpt round-trip -----------------------------------------------------
+
+    def on_save_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        """Inject ``class_path`` and strip ``_orig_mod.`` from the state_dict.
+
+        Lightning's ckpt format has ``state_dict`` + ``hyper_parameters`` but
+        no class identity; ``safe_load_checkpoint`` dispatches on a
+        ``class_path`` we add here. Stripping ``_orig_mod.`` keeps the saved
+        weights portable across runs with/without ``compile_model=True``.
+        """
+        cls = type(self)
+        checkpoint["class_path"] = f"{cls.__module__}.{cls.__name__}"
+        if "state_dict" in checkpoint:
+            checkpoint["state_dict"] = strip_orig_mod_prefix(checkpoint["state_dict"])
+
 
 # ---------------------------------------------------------------------------
 # torch.compile helper
@@ -269,10 +281,11 @@ def try_compile(model: nn.Module, *, conv_type: str | None = None, **kwargs) -> 
 
 
 class GraphModuleBase(_ModelBase):
-    """Shared base for VGAE, GAT, DGI — lazy setup, OOM guard, threshold metrics.
+    """Shared base for VGAE, GAT, DGI — lazy setup, threshold metrics.
 
     Subclasses must implement ``_build()`` which constructs ``self.model`` and any
-    other architecture components using ``self.hparams`` (populated by ``setup``).
+    other architecture components using ``self.hparams`` (populated by
+    ``prepare_from_datamodule``).
     """
 
     automatic_optimization = True
@@ -297,23 +310,24 @@ class GraphModuleBase(_ModelBase):
             )
         return self._budget_cache
 
-    # -- setup + optimizers --------------------------------------------------
+    # -- prepare + optimizers ------------------------------------------------
 
-    def setup(self, datamodule=None):
-        if datamodule is not None:
-            already_built = getattr(self, "_built", False) or (
-                getattr(self, "model", "_sentinel") not in (None, "_sentinel")
-            )
-            if not already_built:
-                # Write to self directly: ``self.hparams`` is a computed
-                # property — assigning ``self.hparams.x = v`` would land on a
-                # throwaway SimpleNamespace.
-                self.num_ids = datamodule.num_ids
-                self.in_channels = datamodule.in_channels
-                self.num_classes = datamodule.num_classes
-                self._build()
-                self._built = True
-        super().setup(datamodule)
+    def prepare_from_datamodule(self, dm) -> None:
+        """Lazy-build with DM-supplied vocab / channel sizes, then capture
+        per-test-set names from the DM (via ``super``)."""
+        already_built = getattr(self, "_built", False) or (
+            getattr(self, "model", "_sentinel") not in (None, "_sentinel")
+        )
+        if not already_built:
+            # Mirror onto self AND into self.hparams so _build() (which reads
+            # ``self.hparams.num_ids`` etc.) sees the DM-resolved values.
+            for k in ("num_ids", "in_channels", "num_classes"):
+                v = getattr(dm, k)
+                setattr(self, k, v)
+                self.hparams[k] = v
+            self._build()
+            self._built = True
+        super().prepare_from_datamodule(dm)
 
     def _build(self):
         raise NotImplementedError
@@ -324,7 +338,8 @@ class GraphModuleBase(_ModelBase):
         Mirrors declared kwargs onto ``self`` (via ``_store_init_kwargs``),
         normalizes ``id_encoder_kwargs`` (None → {}), and lazy-builds when
         ``num_ids`` is already known (e.g. tests instantiate without a
-        datamodule). Sets ``self._built`` so ``setup()`` doesn't re-build.
+        datamodule). Sets ``self._built`` so ``prepare_from_datamodule``
+        doesn't re-build.
         """
         self._store_init_kwargs(locals_dict)
         if hasattr(self, "id_encoder_kwargs"):
@@ -349,12 +364,14 @@ class GraphModuleBase(_ModelBase):
             **(getattr(hp, "id_encoder_kwargs", None) or {}),
         )
 
-    def build_optimizers(self, max_epochs: int) -> tuple[torch.optim.Optimizer | None, Any]:
-        """Return ``(optimizer, scheduler_or_None)``. Called by Trainer."""
+    def configure_optimizers(self):
+        """Adam over all params, using ``self.hparams.lr`` /
+        ``self.hparams.weight_decay`` (with sensible defaults). No scheduler;
+        subclasses that need one override.
+        """
         lr = getattr(self.hparams, "lr", 1e-3)
         wd = getattr(self.hparams, "weight_decay", 0.0)
-        opt = torch.optim.Adam(self.parameters(), lr=lr, weight_decay=wd)
-        return opt, None
+        return torch.optim.Adam(self.parameters(), lr=lr, weight_decay=wd)
 
     def _init_threshold_metrics(self):
         """Call in ``__init__`` for modules that need a Youden-J threshold."""
@@ -366,7 +383,7 @@ class GraphModuleBase(_ModelBase):
     # -- threshold-flavor test path (VGAE/DGI) -------------------------------
 
     def on_validation_epoch_end(self) -> None:
-        """Override to flush epoch-level val metrics into _metric_acc before compute."""
+        """Override in subclasses to compute epoch-level val metrics."""
 
     def _log_thresholded_metrics(self):
         """Threshold flavor — one global threshold, per-set metrics at it."""
@@ -403,8 +420,7 @@ class GraphModuleBase(_ModelBase):
                 coll.update(scores, labels)
                 self._per_set_metrics[name] = coll
                 # Prefix per-set keys so they don't collide with the aggregate
-                # `accuracy`/`f1`/etc. above (MetricAccumulator batch-averages
-                # collisions, silently corrupting the aggregate).
+                # `accuracy`/`f1`/etc. above.
                 prefix = f"test/{name}/"
                 self.log_dict({f"{prefix}{k}": v for k, v in coll.compute().items()})
                 self._log_operating_points(scores, labels, prefix=prefix)
@@ -413,6 +429,7 @@ class GraphModuleBase(_ModelBase):
         self._finalize_test_predictions()
 
     def on_save_checkpoint(self, checkpoint):
+        super().on_save_checkpoint(checkpoint)
         if getattr(self, "test_threshold", None) is not None:
             checkpoint["test_threshold"] = self.test_threshold
 
@@ -455,7 +472,7 @@ def safe_load_checkpoint(model_type: str, ckpt_path, *, map_location="cpu"):
 
     ``model_type`` is used only to know which loss_fn to rebuild for VGAE/GAT
     (loss is excluded from hyperparameters). Class lookup uses the
-    self-describing ``class_path`` written by ``core.callbacks._build_checkpoint``.
+    self-describing ``class_path`` injected by ``_ModelBase.on_save_checkpoint``.
     """
     ckpt_path = Path(ckpt_path)
     if not ckpt_path.exists():
@@ -467,8 +484,8 @@ def safe_load_checkpoint(model_type: str, ckpt_path, *, map_location="cpu"):
     dotted = ckpt.get("class_path")
     if not dotted:
         raise KeyError(
-            f"Checkpoint {ckpt_path} missing 'class_path'. Re-train with the "
-            "current callbacks.ModelCheckpoint to produce self-describing checkpoints."
+            f"Checkpoint {ckpt_path} missing 'class_path'. Re-train under the "
+            "current LightningModule + on_save_checkpoint contract."
         )
     # Legacy class_path remap: the *_module.py wrappers were collapsed into
     # the arch class file (Phase 1+2). Old ckpts saved the wrapper path; new
@@ -482,7 +499,9 @@ def safe_load_checkpoint(model_type: str, ckpt_path, *, map_location="cpu"):
     module_path, cls_name = dotted.rsplit(".", 1)
     cls = getattr(importlib.import_module(module_path), cls_name)
 
-    hp = ckpt.get("hyper_parameters", {})
+    # Lightning serializes self.hparams as an AttributeDict; coerce to plain
+    # dict so the **-spread into init_kwargs is well-defined.
+    hp = dict(ckpt.get("hyper_parameters", {}))
 
     # Per-class hook for rebuilding excluded init kwargs (e.g. ``loss_fn``,
     # which can't be pickled into ``hyper_parameters``). Each class that needs
@@ -491,10 +510,9 @@ def safe_load_checkpoint(model_type: str, ckpt_path, *, map_location="cpu"):
     rebuild = getattr(cls, "_rebuild_excluded_kwargs", None)
     extra_kwargs: dict = rebuild(hp) if rebuild is not None else {}
 
-    # Reconstruct the module with saved hyperparameters
     init_kwargs = {**hp, **extra_kwargs}
     module = cls(**init_kwargs)
-    state_dict = ckpt["state_dict"]
+    state_dict = strip_orig_mod_prefix(ckpt["state_dict"])
     # Old wrapper ckpts prefixed every key with ``model.`` (the
     # ``self.model = nn.Module(...)`` indirection collapsed away). Strip when
     # the loaded class declares no top-level ``model`` attribute — there's
@@ -503,8 +521,7 @@ def safe_load_checkpoint(model_type: str, ckpt_path, *, map_location="cpu"):
         state_dict = {k.removeprefix("model."): v for k, v in state_dict.items()}
     # VGAE: ``mask_token`` was a top-level (frozen) Parameter; it's now the
     # buffer ``masker.mask_token`` on a RandomNodeMasker submodule. Remap
-    # legacy keys so old ckpts load cleanly. ``mask_id`` was a plain int and
-    # was never in state_dict — no remap needed.
+    # legacy keys so old ckpts load cleanly.
     if "mask_token" in state_dict and "masker.mask_token" not in state_dict:
         state_dict["masker.mask_token"] = state_dict.pop("mask_token")
     module.load_state_dict(state_dict)
@@ -513,5 +530,3 @@ def safe_load_checkpoint(model_type: str, ckpt_path, *, map_location="cpu"):
         module.on_load_checkpoint(ckpt)
 
     return module
-
-

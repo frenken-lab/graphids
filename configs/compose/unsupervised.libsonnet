@@ -16,19 +16,22 @@ function(model, data, monitor, meta,
          patience=100,
          callback_extras={})
 
+  local run_dir = std.native('paths.run_dir')(
+    meta.dataset, meta.group, meta.variant, meta.seed
+  );
+
   v.spec(
     trainer
     + model {
       model+: { init_args+: loss },
     }
     + data
-    + callbacks(monitor=monitor, mode='max', patience=patience, extras=callback_extras)
+    + callbacks(monitor=monitor, mode='max', patience=patience,
+                run_dir=run_dir, extras=callback_extras)
     + {
       seed_everything: meta.seed,
       trainer+: {
-        default_root_dir: std.native('paths.run_dir')(
-          meta.dataset, meta.group, meta.variant, meta.seed
-        ),
+        default_root_dir: run_dir,
       } + trainer_overrides,
       _meta: meta,
       // Archetype-fixed: unsupervised reconstruction needs GPU.

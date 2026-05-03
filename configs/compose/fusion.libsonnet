@@ -28,18 +28,21 @@ function(model, method, meta,
     },
   ];
 
+  local run_dir = std.native('paths.run_dir')(
+    meta.dataset, meta.group, meta.variant, meta.seed
+  );
+
   v.spec(
     trainer
     + model
     + datamodule(dataset=meta.dataset, seed=meta.seed, method=method,
                  batch_size=batch_size, episode_sample_size=episode_sample_size)
-    + callbacks(monitor=monitor, mode=mode, patience=patience, extras=callback_extras)
+    + callbacks(monitor=monitor, mode=mode, patience=patience,
+                run_dir=run_dir, extras=callback_extras)
     + {
       seed_everything: meta.seed,
       trainer+: {
-        default_root_dir: std.native('paths.run_dir')(
-          meta.dataset, meta.group, meta.variant, meta.seed
-        ),
+        default_root_dir: run_dir,
         // Fusion archetype trainer overrides. `accelerator` is derived
         // from `_resources.mode` by the row builder (single source of truth).
         precision: '32-true',         // RL methods need fp32

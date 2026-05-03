@@ -77,8 +77,9 @@ class FusionModuleBase(_ModelBase):
             self.reward_calc = FusionRewardCalculator(**reward_kwargs)
         self.test_metrics = classification_test_metrics(2)
 
-    def build_optimizers(self, max_epochs: int):
-        return None, None
+    def configure_optimizers(self):
+        # Subclasses with trainable params (MLP, WeightedAvg, RL) override.
+        return None
 
     # -- shared prediction / training / validation / test --------------------
 
@@ -168,8 +169,10 @@ class RLFusionBase(FusionModuleBase):
             batch_size=batch_size,
         )
 
-    def build_optimizers(self, max_epochs: int):
-        return self._optimizer, None
+    def configure_optimizers(self):
+        # automatic_optimization=False — Lightning still tracks the optimizer
+        # for ckpt round-trip; the manual step happens inside train_episode.
+        return self._optimizer
 
     # -- subclass hooks ------------------------------------------------------
 

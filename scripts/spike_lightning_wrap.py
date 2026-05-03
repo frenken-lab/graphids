@@ -69,10 +69,9 @@ class LightningWrap(pl.LightningModule):
         return self.inner.validation_step(batch, batch_idx)
 
     def configure_optimizers(self):
-        opt, sched = self.inner.build_optimizers(max_epochs=1)
-        if sched is None:
-            return opt
-        return [opt], [sched]
+        # Inner is now a LightningModule itself post-migration; just
+        # delegate to its own configure_optimizers.
+        return self.inner.configure_optimizers()
 
 
 def _make_vgae() -> VGAE:
@@ -95,8 +94,10 @@ def _make_vgae() -> VGAE:
 
 
 def main() -> int:
-    inner = _make_vgae()
-    wrapped = LightningWrap(inner)
+    # Post-migration VGAE IS a LightningModule; the wrapper-shim is no longer
+    # needed and would in fact break self.log() (the inner has no trainer
+    # attached when wrapped). Drive Lightning directly.
+    model = _make_vgae()
 
     train_loader = DataLoader(
         _BatchRepeater(n=4), batch_size=1, collate_fn=_identity_collate
@@ -112,7 +113,7 @@ def main() -> int:
         enable_progress_bar=False,
         logger=False,
     )
-    trainer.fit(wrapped, train_dataloaders=train_loader, val_dataloaders=val_loader)
+    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
 
     print("\n=== Spike result ===")
     print("pl.Trainer.fit completed without raising.")
@@ -120,12 +121,8 @@ def main() -> int:
     print(f"current_epoch = {trainer.current_epoch}")
     cm = trainer.callback_metrics
     print(f"callback_metrics keys = {sorted(cm.keys())}")
-    if not cm:
-        print(
-            "(empty — expected: inner model's self.log() pushes to "
-            "MetricAccumulator, not to Lightning. Confirms the metric-sink "
-            "rebase noted in the migration plan.)"
-        )
+    # Post-migration the inner IS a LightningModule, so cm should now be
+    # populated by self.log(...) calls inside training_step/validation_step.
     return 0
 
 

@@ -37,5 +37,5 @@ class MLPFusionModule(FusionModuleBase):
         x = flatten_features(td).to(self.device)
         return torch.sigmoid(self.model(x).squeeze(-1))
 
-    def build_optimizers(self, max_epochs: int):
-        return optim.Adam(self.parameters(), lr=self.lr), None
+    def configure_optimizers(self):
+        return optim.Adam(self.parameters(), lr=self.lr)

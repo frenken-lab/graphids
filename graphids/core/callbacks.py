@@ -1,182 +1,52 @@
-"""Training callback and logger protocols — pure-Python replacements for Lightning.
+"""graphids-specific Lightning callbacks.
 
-Callback lifecycle mirrors Lightning's hook names so existing OTel and
-curriculum callbacks need minimal changes.
+Lightning's stock ``ModelCheckpoint`` / ``EarlyStopping`` cover the universal
+trio (checkpoint + early-stop + MLflow forwarding); we only own callbacks that
+encode graphids-specific policy:
+
+- :class:`Sha256ModelCheckpoint` — Lightning ``ModelCheckpoint`` + sha256
+  sidecar so :func:`graphids._fs.atomic_load` can verify integrity at load
+  time on GPFS.
+- :class:`TauNormCallback` — Kang et al. ICLR 2020 τ-norm of the GAT
+  classifier head at fit-end.
+- :class:`VRAMDriftCallback` — warn-once when free VRAM shrinks past a
+  threshold across epoch boundaries.
 """
 
 from __future__ import annotations
 
-import operator
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
+import lightning.pytorch as pl
 import torch
 
-from graphids.core._ckpt import build_checkpoint, strip_orig_mod_prefix
-
-if TYPE_CHECKING:
-    from graphids.core.trainer import Trainer
+from graphids.core.models.base import strip_orig_mod_prefix
 
 
 # ---------------------------------------------------------------------------
-# Callback base class (default no-ops)
+# Sha256ModelCheckpoint — Lightning ModelCheckpoint + sha256 sidecar
 # ---------------------------------------------------------------------------
 
 
-class CallbackBase:
-    """Concrete base with no-op defaults so subclasses only override what they need."""
-
-    def on_fit_start(self, trainer: Trainer, model: torch.nn.Module) -> None:
-        pass
-
-    def on_fit_end(self, trainer: Trainer, model: torch.nn.Module) -> None:
-        pass
-
-    def on_exception(
-        self, trainer: Trainer, model: torch.nn.Module, exception: BaseException
-    ) -> None:
-        pass
-
-    def on_train_epoch_start(self, trainer: Trainer, model: torch.nn.Module) -> None:
-        pass
-
-    def on_train_epoch_end(self, trainer: Trainer, model: torch.nn.Module) -> None:
-        pass
-
-    def on_train_batch_start(
-        self, trainer: Trainer, model: torch.nn.Module, batch: Any, batch_idx: int
-    ) -> None:
-        pass
-
-    def on_train_batch_end(
-        self,
-        trainer: Trainer,
-        model: torch.nn.Module,
-        outputs: Any,
-        batch: Any,
-        batch_idx: int,
-    ) -> None:
-        pass
+def _sha256_file(path: Path) -> str:
+    with path.open("rb") as f:
+        return hashlib.file_digest(f, "sha256").hexdigest()
 
 
-# ---------------------------------------------------------------------------
-# ModelCheckpoint
-# ---------------------------------------------------------------------------
+class Sha256ModelCheckpoint(pl.callbacks.ModelCheckpoint):
+    """``pl.callbacks.ModelCheckpoint`` that writes a ``<ckpt>.sha256``
+    sidecar after every save so :func:`graphids._fs.atomic_load` can verify
+    bytes on read (GPFS truncates surprise us; sidecar is the load-time
+    integrity check)."""
 
-_OPS = {"min": operator.lt, "max": operator.gt}
-_WORST = {"min": float("inf"), "max": float("-inf")}
-
-
-def _resolve_mode_state(mode: str) -> tuple[Any, float]:
-    """Return ``(compare_fn, worst_score)`` for ``mode ∈ {'min', 'max'}``.
-
-    Raises ``ValueError`` for any other value. Shared ``__post_init__``
-    helper for ModelCheckpoint and EarlyStopping so both callbacks stay
-    in sync on what 'better' means and what the initial sentinel is.
-    """
-    if mode not in _OPS:
-        raise ValueError(f"mode must be 'min' or 'max', got {mode!r}")
-    return _OPS[mode], _WORST[mode]
-
-
-@dataclass
-class ModelCheckpoint(CallbackBase):
-    """Save best + last checkpoints based on a monitored metric.
-
-    Writes to ``{trainer.default_root_dir}/checkpoints/`` unless an
-    explicit ``dirpath`` is set. The ``/checkpoints`` subdir convention
-    is owned here so neither jsonnet nor the instantiator has to wire
-    it from the trainer's run_dir.
-    """
-
-    monitor: str = "val_loss"
-    mode: str = "min"
-    save_top_k: int = 1
-    save_last: bool = True
-    filename: str = "best_model"
-    dirpath: str = ""
-
-    best_model_path: str = ""
-    best_score: float = field(init=False)
-
-    def __post_init__(self) -> None:
-        self._compare, self.best_score = _resolve_mode_state(self.mode)
-
-    def _resolve_dirpath(self, trainer: Trainer) -> Path:
-        return (
-            Path(self.dirpath) if self.dirpath else Path(trainer.default_root_dir) / "checkpoints"
-        )
-
-    def on_train_epoch_end(self, trainer: Trainer, model: torch.nn.Module) -> None:
-        from graphids._fs import atomic_save
-
-        current = trainer.callback_metrics.get(self.monitor)
-        if current is None:
-            return
-
-        dirpath = self._resolve_dirpath(trainer)
-        dirpath.mkdir(parents=True, exist_ok=True)
-
-        ckpt = build_checkpoint(trainer, model)
-
-        if self.save_last:
-            atomic_save(ckpt, dirpath / "last.ckpt")
-
-        if self._compare(current, self.best_score):
-            self.best_score = current
-            best_path = dirpath / f"{self.filename}.ckpt"
-            atomic_save(ckpt, best_path)
-            self.best_model_path = str(best_path)
-
-
-# ---------------------------------------------------------------------------
-# EarlyStopping
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class EarlyStopping(CallbackBase):
-    """Stop training when monitored metric stops improving.
-
-    Flips ``trainer.should_stop`` at the epoch boundary — doesn't raise.
-    The fit loop observes the flag after the scheduler step so the
-    current epoch's metrics are logged before exit.
-    """
-
-    monitor: str = "val_loss"
-    mode: str = "min"
-    patience: int = 100
-    min_delta: float = 0.0
-
-    wait_count: int = field(init=False, default=0)
-    best_score: float = field(init=False)
-
-    def __post_init__(self) -> None:
-        self._compare, self.best_score = _resolve_mode_state(self.mode)
-
-    def on_train_epoch_end(self, trainer: Trainer, model: torch.nn.Module) -> None:
-        current = trainer.callback_metrics.get(self.monitor)
-        if current is None:
-            return
-        # min_delta: an improvement only counts if it exceeds the prior best
-        # by at least this margin. Default 0.0 preserves strict-inequality
-        # behavior for callers not specifying it.
-        threshold = (
-            self.best_score - self.min_delta
-            if self.mode == "min"
-            else self.best_score + self.min_delta
-        )
-        if self._compare(current, threshold):
-            self.best_score = current
-            self.wait_count = 0
-        else:
-            self.wait_count += 1
-            if self.wait_count >= self.patience:
-                trainer.should_stop = True
-
-
-# Checkpoint save/load helpers live in :mod:`graphids.core._ckpt`.
+    def _save_checkpoint(self, trainer: pl.Trainer, filepath: str) -> None:  # type: ignore[override]
+        super()._save_checkpoint(trainer, filepath)
+        if trainer.is_global_zero:
+            p = Path(filepath)
+            p.with_suffix(p.suffix + ".sha256").write_text(_sha256_file(p) + "\n")
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +71,7 @@ def apply_tau_norm(weight: torch.Tensor, tau: float) -> None:
 
 
 @dataclass
-class TauNormCallback(CallbackBase):
+class TauNormCallback(pl.Callback):
     """Apply Kang ICLR 2020 τ-norm to the GAT classifier head at fit-end.
 
     Tests whether the supervised classifier is imbalance-bottlenecked
@@ -212,15 +82,13 @@ class TauNormCallback(CallbackBase):
     left untouched — only the logit-producing weight matrix is normed.
 
     Ordering: registered under the key ``kang_tau_norm`` so it sorts
-    alphabetically before ``mlflow`` in ``$.callbacks`` — the defaults
-    libsonnet builds ``trainer.callbacks`` from ``std.objectFields``,
-    which preserves the dict-key ordering. Any future post-fit consumer
-    that reads the saved checkpoint must run after this callback.
+    alphabetically before ``mlflow`` in ``$.callbacks`` — Lightning
+    invokes callbacks in registration order.
     """
 
     tau: float = 0.5
 
-    def on_fit_start(self, trainer: Trainer, model: torch.nn.Module) -> None:
+    def on_fit_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         # Tag at start so the τ value is on the run regardless of fit-end ordering.
         try:
             import mlflow
@@ -229,7 +97,7 @@ class TauNormCallback(CallbackBase):
         except Exception:  # noqa: BLE001 — MLflow tag is metadata, must not block training
             pass
 
-    def on_fit_end(self, trainer: Trainer, model: torch.nn.Module) -> None:
+    def on_fit_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         from structlog import get_logger
 
         from graphids._fs import atomic_load, atomic_save
@@ -237,11 +105,12 @@ class TauNormCallback(CallbackBase):
         log = get_logger(__name__)
 
         ckpt_cb = trainer.checkpoint_callback
-        if ckpt_cb is None or not ckpt_cb.best_model_path:
+        best_path_str = getattr(ckpt_cb, "best_model_path", "") if ckpt_cb else ""
+        if not best_path_str:
             log.warning("tau_norm.no_best_ckpt_skipped", tau=self.tau)
             return
 
-        best_path = Path(ckpt_cb.best_model_path)
+        best_path = Path(best_path_str)
         ckpt = atomic_load(best_path, map_location="cpu", weights_only=True)
         state: dict[str, torch.Tensor] = strip_orig_mod_prefix(ckpt["state_dict"])
 
@@ -301,18 +170,17 @@ class TauNormCallback(CallbackBase):
 
 
 @dataclass
-class VRAMDriftCallback(CallbackBase):
+class VRAMDriftCallback(pl.Callback):
     """Warn when free VRAM shrinks past ``threshold`` between epochs.
 
     The node-budget probe captures ``free`` once at build time. Over a
     long run the actual free pool drifts — co-resident CUDA processes on
-    shared nodes, activation checkpoint leaks in PyG, growing OTel
-    exporter caches. We capture a baseline at ``on_fit_start`` and
-    compare at each epoch boundary. Epoch boundaries deliberately avoid
-    transient allocations (teacher params are moved on/off GPU per-step
-    in KD; checking between epochs catches persistent leaks only).
-    Log-and-warn: re-probing mid-run would race optimizer state, so the
-    researcher decides whether to abort.
+    shared nodes, activation checkpoint leaks in PyG. We capture a baseline
+    at ``on_fit_start`` and compare at each epoch boundary. Epoch boundaries
+    deliberately avoid transient allocations (teacher params are moved on/off
+    GPU per-step in KD; checking between epochs catches persistent leaks
+    only). Log-and-warn: re-probing mid-run would race optimizer state, so
+    the researcher decides whether to abort.
     """
 
     threshold: float = 0.20
@@ -320,12 +188,14 @@ class VRAMDriftCallback(CallbackBase):
     baseline_free: int = field(init=False, default=0)
     _warned: bool = field(init=False, default=False)
 
-    def on_fit_start(self, trainer: Trainer, model: torch.nn.Module) -> None:
+    def on_fit_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         if not torch.cuda.is_available():
             return
         self.baseline_free = max(1, torch.cuda.mem_get_info()[0])
 
-    def on_train_epoch_start(self, trainer: Trainer, model: torch.nn.Module) -> None:
+    def on_train_epoch_start(
+        self, trainer: pl.Trainer, pl_module: pl.LightningModule
+    ) -> None:
         if not torch.cuda.is_available() or self.baseline_free <= 1 or self._warned:
             return
         current = torch.cuda.mem_get_info()[0]
@@ -344,5 +214,6 @@ class VRAMDriftCallback(CallbackBase):
             # Warn once per run — repeated warnings add noise without
             # extra signal. Abort is the researcher's call.
             self._warned = True
+
 
 # MLflowTrainingCallback lives in :mod:`graphids._mlflow` (single source).

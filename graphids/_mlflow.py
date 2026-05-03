@@ -6,8 +6,8 @@ no fluent-API magic. Public surfaces:
 Lifecycle (write):
 - ``ensure_tracking_uri()`` — set tracking URI from $MLFLOW_TRACKING_URI (fail-fast)
 - ``start_training_run(row, phase)`` / ``end_training_run(run_id, status)``
-- ``MLflowTrainingCallback`` — :class:`graphids.core.callbacks.CallbackBase`
-  subclass that forwards per-epoch metrics via ``client.log_batch`` (one RPC/epoch);
+- ``MLflowTrainingCallback`` — :class:`lightning.pytorch.Callback` subclass
+  that forwards per-epoch metrics via ``client.log_batch`` (one RPC/epoch);
   reads ``run_id`` from ``$GRAPHIDS_MLFLOW_RUN_ID`` (set by orchestrate)
 
 Read helpers (no-op against MLflow on their own — pair with `client.search_runs`):
@@ -29,12 +29,12 @@ import time
 from dataclasses import dataclass
 from typing import Any, Literal
 
+import lightning.pytorch as pl
 import mlflow
 from mlflow.entities import Metric
 from mlflow.tracking import MlflowClient
 
 from graphids.blueprint import TrainRow
-from graphids.core.callbacks import CallbackBase
 
 _TRACKING_SET = False
 
@@ -98,7 +98,7 @@ def end_training_run(run_id: str, status: str = "FINISHED") -> None:
     MlflowClient().set_terminated(run_id, status=status)
 
 
-class MLflowTrainingCallback(CallbackBase):
+class MLflowTrainingCallback(pl.Callback):
     """Forward `trainer.callback_metrics` to MLflow + record run-scoped state.
 
     Per-epoch: one ``log_batch`` RPC per epoch (single round-trip for every metric).
@@ -128,9 +128,9 @@ class MLflowTrainingCallback(CallbackBase):
         self._client = MlflowClient()
         self._run_config_stamped = False
 
-    def on_train_epoch_end(self, trainer: Any, model: Any) -> None:
+    def on_train_epoch_end(self, trainer: Any, pl_module: Any) -> None:
         if not self._run_config_stamped:
-            self._stamp_run_config(trainer)
+            self._stamp_run_config(trainer, pl_module)
             self._run_config_stamped = True
 
         raw = {k: float(v) for k, v in trainer.callback_metrics.items() if v is not None}
@@ -143,8 +143,8 @@ class MLflowTrainingCallback(CallbackBase):
         ]
         self._client.log_batch(self.run_id, metrics=ms)
 
-    def on_fit_end(self, trainer: Any, model: Any) -> None:
-        peak_mb = _peak_vram_mb(model)
+    def on_fit_end(self, trainer: Any, pl_module: Any) -> None:
+        peak_mb = _peak_vram_mb(pl_module)
         if peak_mb > 0:
             # Single-point series — last==only, so threshold filtering on this
             # metric works as a one-shot "actual peak vs. probed budget" lookup.
@@ -155,12 +155,12 @@ class MLflowTrainingCallback(CallbackBase):
                 peak_mb,
                 step=trainer.current_epoch,
             )
-        budget = getattr(model, "_budget_cache", None)
+        budget = getattr(pl_module, "_budget_cache", None)
         if budget is not None:
             self._client.set_tag(self.run_id, "graphids.budget_binding", budget.binding)
-        self._register_logged_model(trainer, model)
+        self._register_logged_model(trainer, pl_module)
 
-    def _register_logged_model(self, trainer: Any, model: Any) -> None:
+    def _register_logged_model(self, trainer: Any, pl_module: Any) -> None:
         """Register the best ckpt as a metadata-only ``LoggedModel`` (no bytes).
 
         Per data-layout.md: ckpt bytes stay on disk; LoggedModel is a secondary
@@ -191,7 +191,7 @@ class MLflowTrainingCallback(CallbackBase):
             "graphids.seed": run_tags["graphids.seed"],
         }
         params = {"graphids.run_dir": run_tags["graphids.run_dir"]}
-        model_type = f"{type(model).__module__}.{type(model).__name__}"
+        model_type = f"{type(pl_module).__module__}.{type(pl_module).__name__}"
 
         existing = self._client.search_logged_models(
             experiment_ids=[run.info.experiment_id],
@@ -213,20 +213,23 @@ class MLflowTrainingCallback(CallbackBase):
             model_id = lm.model_id
         self._client.finalize_logged_model(model_id, status="READY")
 
-    def _stamp_run_config(self, trainer: Any) -> None:
+    def _stamp_run_config(self, trainer: Any, pl_module: Any) -> None:
         """One-shot at epoch 0 — DM and probe state are populated by then.
 
         Idempotency: params reject same-key/different-value rewrites. Resume
         with a different cluster (different probe target_bytes) would error
         loudly here — surfaced rather than silently shadowed.
+
+        DM is stashed on the LightningModule by ``orchestrate.run_row``
+        (Lightning's ``trainer.datamodule`` is only set when the user passes
+        a ``LightningDataModule`` — graphids passes dataloaders directly).
         """
-        dm = getattr(trainer, "datamodule", None)
+        dm = getattr(pl_module, "_graphids_dm", None) or getattr(trainer, "datamodule", None)
         if dm is None:
             return
 
         # Budget target — read off the model (probe owner after the disentangle).
-        m = getattr(dm, "_model", None)
-        budget = getattr(m, "_budget_cache", None) if m is not None else None
+        budget = getattr(pl_module, "_budget_cache", None)
         if budget is not None and budget.target_bytes > 0:
             self._client.log_param(
                 self.run_id,
