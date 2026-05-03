@@ -23,8 +23,10 @@ Constants: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `PHASE_MARKERS` (all in `graphid
 |   +-- ablations/{group}/{variant}/
 |       +-- seed_{N}/                             <-- trainer.default_root_dir
 |           +-- checkpoints/
-|           |   +-- best_model.ckpt               <-- ModelCheckpoint (dirpath pinned by instantiate.py)
-|           |   +-- last.ckpt                     <-- ModelCheckpoint (save_last: true)
+|           |   +-- best_model.ckpt               <-- Sha256ModelCheckpoint (dirpath pinned in callbacks.libsonnet)
+|           |   +-- best_model.ckpt.sha256        <-- Sha256ModelCheckpoint (atomic_load reads on verify)
+|           |   +-- last.ckpt                     <-- Sha256ModelCheckpoint (save_last: true)
+|           |   +-- last.ckpt.sha256              <-- Sha256ModelCheckpoint
 |           +-- traces.jsonl                      <-- OTel spans (wire_file_exporters, SimpleSpanProcessor)
 |           +-- artifacts/                        <-- analysis outputs (written by `graphids analyze`, not the pipeline driver)
 |           +-- .train_complete                   <-- phase marker (fit done; diagnostic only)
@@ -43,18 +45,19 @@ Constants: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `PHASE_MARKERS` (all in `graphid
 $TMPDIR/graphids-data/                           <-- per-job local SSD (ephemeral)
 ```
 
-Checkpoint dirpath is owned by `core.callbacks.ModelCheckpoint._resolve_dirpath`: `{default_root_dir}/checkpoints` unless an explicit `dirpath` is configured. The `/checkpoints` subdir convention lives on the callback, not the instantiator.
+Checkpoint dirpath is set in `configs/_kit/callbacks.libsonnet` to `{run_dir}/checkpoints` (= `{trainer.default_root_dir}/checkpoints`). Without an explicit `dirpath`, Lightning's `pl.callbacks.ModelCheckpoint` writes under `default_root_dir/lightning_logs/version_N/checkpoints` — which the rest of graphids (resume, KD teacher loading) doesn't read; the explicit `dirpath` in the libsonnet keeps the canonical location.
 
 ## Write Path Detail
 
-### 1. Trainer (custom, post-Lightning)
+### 1. Lightning Trainer
 
-All training writes land under `trainer.default_root_dir` from the rendered jsonnet config.
+All training writes land under `trainer.default_root_dir` from the rendered jsonnet config (= `paths.run_dir(...)`).
 
 | What | Relative path | Who writes |
 |------|---------------|-----------|
-| Best checkpoint | `checkpoints/best_model.ckpt` | `core.callbacks.ModelCheckpoint` (self-describing — `class_path` + `state_dict` + `hyper_parameters`) |
-| Resume checkpoint | `checkpoints/last.ckpt` | `ModelCheckpoint` (`save_last: true`) |
+| Best checkpoint | `checkpoints/best_model.ckpt` | `graphids.core.callbacks.Sha256ModelCheckpoint` (Lightning ckpt format — `state_dict` + `hyper_parameters`; `class_path` injected by `_ModelBase.on_save_checkpoint` for `safe_load_checkpoint` dispatch) |
+| Best ckpt sha256 | `checkpoints/best_model.ckpt.sha256` | `Sha256ModelCheckpoint` (post-save sidecar; `atomic_load` verifies on read) |
+| Resume checkpoint | `checkpoints/last.ckpt` | `Sha256ModelCheckpoint` (`save_last: true`) |
 | Train/val predictions | `predictions/{train,val}.pt` | `orchestrate.stage.train` after `trainer.fit` |
 | Per-test-set predictions | `predictions/test/{set_name}.pt` | `orchestrate.stage.evaluate` |
 | OTel spans + log events | `traces.jsonl` | `wire_file_exporters` -> `BatchSpanProcessor` -> `ConsoleSpanExporter` |
@@ -63,7 +66,7 @@ All training writes land under `trainer.default_root_dir` from the rendered json
 
 `graphids/_mlflow.py::start_training_run` opens the MLflow run in `stage.train` before `trainer.fit`, logs params + tags + cache digest, and enables the MLflow system-metrics sampler (psutil + nvidia-ml-py, 5s interval).
 
-`graphids/core/mlflow_callback.py::MLflowTrainingCallback` forwards every key in `trainer.callback_metrics` (whatever the model logged via `self.log(...)`) plus `lr` + `early_stop.{wait,best_score}` to MLflow at `step=epoch` via `on_train_epoch_end`, stamps `peak_vram_mb` + `epochs_run` + ckpt SHA256 tag at `on_fit_end`, and closes the run (FINISHED / FAILED via `on_exception`).
+`graphids/_mlflow.py::MLflowTrainingCallback` (a `pl.Callback`) forwards every key in `trainer.callback_metrics` (whatever the model logged via `self.log(...)`) to MLflow at `step=epoch` via `on_train_epoch_end`, stamps `peak_vram_mb` + LoggedModel registration at `on_fit_end`. Run lifecycle (open/close FINISHED|FAILED) is owned by `orchestrate.train`/`evaluate`, not the callback.
 
 `graphids/_otel.py::wire_file_exporters` wires the `traces.jsonl` span exporter (Phase B). Structured-log events emitted via `log.info("event_name", ...)` land here alongside the single `training.fit` span. Wandb Weave OTLP export is optional when `WANDB_API_KEY` is set.
 

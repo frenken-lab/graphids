@@ -1,32 +1,33 @@
-# Core: Trainer & Callbacks
+# Core: Callbacks
 
-Pure-PyTorch training loop and callback protocol — Lightning was
-removed. Single-GPU only (project targets 1× V100/H100), handles
-AMP via `GradScaler`, gradient clipping, AMP-safe scheduler
-skipping on inf/nan scale-warmup batches, and a callback lifecycle
-using the same hook names as Lightning so OTel + curriculum
-callbacks ported over without change.
+Lightning owns the training loop. graphids only ships callbacks that
+encode policy Lightning's stock callbacks don't:
 
-The three first-party callbacks live alongside the loop:
+- `Sha256ModelCheckpoint` — `lightning.pytorch.callbacks.ModelCheckpoint`
+  + a `<ckpt>.sha256` sidecar so [`graphids._fs.atomic_load`](../reference/write-paths.md)
+  can verify bytes on read (GPFS truncates surprise us; sidecar is the
+  load-time integrity check).
+- `TauNormCallback` — Kang ICLR 2020 τ-norm of the GAT classifier head
+  at fit-end. Loads from the best ckpt, in-place rescales the final
+  `fc_layers[-1]` `nn.Linear` weight by `‖w_c‖^τ`, re-saves.
+- `VRAMDriftCallback` — warns once when free VRAM shrinks past
+  `threshold` between epochs (probe baseline at fit-start).
 
-- `ModelCheckpoint` — atomic best + last ckpt persistence, owns
-  the `checkpoints/` subdir convention.
-- `EarlyStopping` — flips `trainer.should_stop` at the epoch
-  boundary; the loop observes the flag after the scheduler step
-  so the current epoch's metrics are logged before exit.
-- `TauNormCallback` — Kang ICLR 2020 τ-norm of the GAT classifier
-  head at fit-end; loaded from the best ckpt, in-place rescale,
-  re-saved.
+`pl.callbacks.EarlyStopping` is wired straight from the libsonnet —
+graphids no longer ships its own.
 
 `MLflowTrainingCallback` (in [`graphids._mlflow`](orchestrate.md))
+forwards per-epoch metrics + run-config + LoggedModel registration; it
 is registered alongside but lives in the MLflow surface for
-discoverability. Checkpoint save/load helpers live in
-`graphids.core._ckpt` (private — single ownership for ckpt
-schema, paired with `ModelCheckpoint`'s save side).
+discoverability.
 
-## `graphids.core.trainer`
-
-::: graphids.core.trainer
+The training loop, AMP autocast, gradient clipping, optimizer state,
+scheduler stepping, ckpt save/load schema, and the callback lifecycle
+all live in `lightning.pytorch.Trainer`. The `core/trainer.py`,
+`core/_metric_acc.py`, and `core/_ckpt.py` modules that previously
+re-implemented these were removed in the 2026-05-02 Lightning migration
+(commit `c974185`); see `~/plans/lightning-migration-spike.md` for the
+inventory of what migrated and what was kept.
 
 ## `graphids.core.callbacks`
 
