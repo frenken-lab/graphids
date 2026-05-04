@@ -27,6 +27,11 @@ log = get_logger(__name__)
 # Attack-type taxonomy
 # ---------------------------------------------------------------------------
 
+# Insertion order matters: ``_infer_attack_type`` does substring matching and
+# returns the first hit, so longer/more-specific keys must precede their
+# shorter prefixes (``rpm-accessory`` before ``rpm``, ``speed-accessory``
+# before ``speed``). ``force-neutral`` aliases the ``gear`` family under the
+# can-train-and-test v1.5 filename convention.
 ATTACK_TYPE_CODES: dict[str, int] = {
     "normal": 0,
     "attack_free": 0,
@@ -34,10 +39,21 @@ ATTACK_TYPE_CODES: dict[str, int] = {
     "dos": 1,
     "fuzzy": 2,
     "fuzzing": 2,
+    "force-neutral": 3,
     "gear": 3,
+    "rpm-accessory": 12,
     "rpm": 4,
     "flooding": 5,
     "malfunction": 6,
+    "double": 7,
+    "triple": 8,
+    "interval": 9,
+    "speed-accessory": 11,
+    "speed": 10,
+    "standstill": 13,
+    "systematic": 14,
+    "suppress": 15,
+    "masquerade": 16,
 }
 
 ATTACK_TYPE_NAMES: dict[int, str] = {v: k for k, v in ATTACK_TYPE_CODES.items() if v != 0}
