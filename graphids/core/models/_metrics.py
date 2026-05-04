@@ -84,7 +84,7 @@ REGISTRY: tuple[MetricSpec, ...] = (
     MetricSpec("recall", BinaryRecall, MulticlassRecall),
     MetricSpec("specificity", BinarySpecificity, MulticlassSpecificity),
     MetricSpec("mcc", BinaryMatthewsCorrCoef, MulticlassMatthewsCorrCoef, averaged=False),
-    MetricSpec("auc", BinaryAUROC, MulticlassAUROC, threshold=False),
+    MetricSpec("auroc", BinaryAUROC, MulticlassAUROC, threshold=False),
     MetricSpec("ap", BinaryAveragePrecision, MulticlassAveragePrecision, threshold=False, extra={"thresholds": None}),
     MetricSpec("ece", BinaryCalibrationError, MulticlassCalibrationError, threshold=False, averaged=False),
 )
