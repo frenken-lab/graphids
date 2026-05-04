@@ -1,8 +1,4 @@
-"""Typer app + root callback for GraphIDS.
-
-No torch / model imports at module level — safe on login nodes. Heavy
-imports are deferred to inside command bodies.
-"""
+"""Typer app + root callback. Login-node safe: no torch/model imports here."""
 
 from __future__ import annotations
 
@@ -21,15 +17,12 @@ app = typer.Typer(
 @app.callback()
 def _main(
     ctx: typer.Context,
-    verbose: Annotated[
-        bool,
-        typer.Option("--verbose", "-v", help="Debug-level logging on the graphids logger"),
-    ] = False,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Debug logging")] = False,
 ) -> None:
-    """GraphIDS CLI — shared setup for every subcommand."""
+    """Shared setup for every subcommand."""
     import logging
 
-    from graphids.orchestrate import setup
+    from graphids.runtime import setup
 
     logging.getLogger("graphids").setLevel(logging.DEBUG if verbose else logging.INFO)
     setup(mode="render")

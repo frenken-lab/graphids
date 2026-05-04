@@ -1,6 +1,10 @@
-"""Curriculum sampler tests — exercise the real `build_curriculum_tiers`
-plus `make_scorer` factory resolution. The scoring strategy is injected,
-so VGAE isn't required.
+"""Curriculum primitives — difficulty + schedule.
+
+Two primitives, both pure / stateless beyond hyperparameters:
+- ``score_vgae`` / ``score_random`` (free functions producing per-graph
+  difficulty tensors).
+- ``LinearRampSchedule`` (callable mapping epoch + difficulty + in_scope
+  to per-example weights consumed by ``CurriculumWeightedLoss``).
 """
 
 from __future__ import annotations
@@ -10,190 +14,144 @@ import torch
 from conftest import make_graph
 
 from graphids.core.data.preprocessing.curriculum import (
-    DifficultyScorer,
-    RandomScorer,
-    VGAEScorer,
-    active_tier_count,
-    bucket_by_score,
-    build_curriculum_tiers,
-    make_scorer,
+    LinearRampSchedule,
+    score_random,
 )
 
 
-def _mk_dataset(n_normal=30, n_attack=10):
-    """Train_ds-like list of graphs with y ∈ {0, 1}."""
-    normals = [make_graph() for _ in range(n_normal)]
-    attacks = [make_graph() for _ in range(n_attack)]
-    for g in normals:
+def _mk_graphs(n=30):
+    out = [make_graph() for _ in range(n)]
+    for g in out:
         g.y = torch.tensor([0])
-    for g in attacks:
-        g.y = torch.tensor([1])
-    return normals + attacks
+    return out
 
 
-class _MonotonicScorer:
-    """Deterministic scorer for invariant checks: score[i] = i."""
+class TestScoreRandom:
+    """Random difficulty baseline — control for the curriculum mechanism.
 
-    def score(self, graphs):
-        return torch.arange(len(graphs), dtype=torch.float)
-
-
-class TestBuildCurriculumTiers:
-    """Tier bucketing — decoupled from any particular scoring strategy."""
-
-    def test_all_normals_covered(self):
-        # INVARIANT: every normal graph lives in exactly one tier.
-        ds = _mk_dataset(n_normal=50, n_attack=5)
-        _, tiers, _, _, _ = build_curriculum_tiers(ds, RandomScorer(seed=0), num_tiers=7)
-        flat = [i for tier in tiers for i in tier]
-        assert sorted(flat) == list(range(50))
-
-    def test_tiers_sorted_by_difficulty(self):
-        # INVARIANT: with a monotonic scorer, tier k's mean score ≤ tier k+1.
-        ds = _mk_dataset(n_normal=50, n_attack=0)
-        scores, tiers, _, _, _ = build_curriculum_tiers(ds, _MonotonicScorer(), num_tiers=5)
-        means = [scores[t].mean().item() for t in tiers]
-        for a, b in zip(means, means[1:]):
-            assert a <= b, f"{a} > {b} violates sort order"
-
-    def test_attacks_separate(self):
-        # INVARIANT: attack indices come after all normals and point to y=1.
-        ds = _mk_dataset(n_normal=30, n_attack=10)
-        _, tiers, attacks, full, _ = build_curriculum_tiers(
-            ds,
-            RandomScorer(seed=0),
-            num_tiers=5,
-        )
-        tier_set = {i for t in tiers for i in t}
-        assert tier_set.isdisjoint(attacks)
-        assert len(attacks) == 10
-        for i in attacks:
-            assert int(full[i].y[0]) == 1
-
-    def test_scorer_size_mismatch_raises(self):
-        # CONTRACT: scorer must return len(normals) scores; mismatch must error.
-        class _BrokenScorer:
-            def score(self, graphs):
-                return torch.zeros(len(graphs) - 1)  # off-by-one
-
-        ds = _mk_dataset(n_normal=10, n_attack=0)
-        with pytest.raises(ValueError, match="scorer returned"):
-            build_curriculum_tiers(ds, _BrokenScorer(), num_tiers=3)
-
-
-class TestRandomScorer:
-    """RandomScorer — reference baseline that swaps in for VGAE."""
+    Not a "no-curriculum" condition. ``score_random`` paired with a
+    schedule still hides examples per epoch; it isolates whether the
+    *mechanism* contributes signal independent of any informed difficulty
+    ordering.
+    """
 
     def test_deterministic_under_seed(self):
-        # CONTRACT: same seed → identical scores (reproducibility for ablations).
-        ds = _mk_dataset(n_normal=20, n_attack=0)
-        a = RandomScorer(seed=13).score(ds)
-        b = RandomScorer(seed=13).score(ds)
+        # CONTRACT: same seed → identical scores (ablation reproducibility).
+        ds = _mk_graphs(20)
+        a = score_random(ds, seed=13)
+        b = score_random(ds, seed=13)
         assert torch.equal(a, b)
 
     def test_different_seeds_diverge(self):
-        ds = _mk_dataset(n_normal=20, n_attack=0)
-        a = RandomScorer(seed=1).score(ds)
-        b = RandomScorer(seed=2).score(ds)
+        ds = _mk_graphs(20)
+        a = score_random(ds, seed=1)
+        b = score_random(ds, seed=2)
         assert not torch.equal(a, b)
 
-    def test_satisfies_protocol(self):
-        # CONTRACT: RandomScorer is recognized as a DifficultyScorer.
-        assert isinstance(RandomScorer(), DifficultyScorer)
+    def test_output_shape_and_dtype(self):
+        ds = _mk_graphs(15)
+        out = score_random(ds, seed=0)
+        assert out.shape == (15,)
+        assert out.dtype == torch.float
 
 
-class TestMakeScorer:
-    """Scorer spec resolution."""
+class TestLinearRampSchedule:
+    """Pure callable: (epoch, difficulty, in_scope) → binary weights."""
 
-    def test_class_path_dict(self):
-        spec = {
-            "class_path": "graphids.core.data.preprocessing.curriculum.RandomScorer",
-            "init_args": {"seed": 42},
-        }
-        s = make_scorer(spec)
-        assert isinstance(s, RandomScorer)
-        assert s.seed == 42
+    @staticmethod
+    def _make_inputs(n_in_scope=10, n_out_scope=3):
+        n = n_in_scope + n_out_scope
+        difficulty = torch.arange(n, dtype=torch.float)
+        in_scope = torch.zeros(n, dtype=torch.bool)
+        in_scope[:n_in_scope] = True
+        return difficulty, in_scope
 
-    def test_instance_passthrough(self):
-        s = RandomScorer(seed=5)
-        assert make_scorer(s) is s
+    def test_output_shape_and_dtype(self):
+        # CONTRACT: weights aligned with difficulty; binary {0, 1}.
+        d, s = self._make_inputs()
+        sched = LinearRampSchedule(max_epochs=10)
+        w = sched(0, d, s)
+        assert w.shape == d.shape
+        assert torch.all((w == 0) | (w == 1))
 
-    def test_vgae_spec(self):
-        # CONTRACT: VGAEScorer resolves via class_path without loading the ckpt.
-        # (Construction is cheap; scoring is what touches disk.)
-        spec = {
-            "class_path": "graphids.core.data.preprocessing.curriculum.VGAEScorer",
-            "init_args": {"ckpt_path": "/nonexistent.ckpt"},
-        }
-        s = make_scorer(spec)
-        assert isinstance(s, VGAEScorer)
-        assert s.ckpt_path == "/nonexistent.ckpt"
+    def test_out_of_scope_always_one(self):
+        # INVARIANT: out-of-scope examples bypass the curriculum at every epoch.
+        d, s = self._make_inputs(n_in_scope=10, n_out_scope=4)
+        sched = LinearRampSchedule(max_epochs=20)
+        for epoch in [0, 5, 10, 19, 100]:
+            w = sched(epoch, d, s)
+            assert torch.all(w[~s] == 1.0), f"out-of-scope dropped at epoch {epoch}"
 
-    def test_none_raises(self):
-        # REGRESSION: curriculum with no scorer must fail loud, not silently.
-        with pytest.raises(ValueError, match="scorer spec"):
-            make_scorer(None)
+    def test_first_epoch_uses_start_fraction(self):
+        # CONTRACT: epoch 0 activates ceil(start/end * n_in_scope) easiest.
+        d, s = self._make_inputs(n_in_scope=10, n_out_scope=2)
+        sched = LinearRampSchedule(start_ratio=1.0, end_ratio=10.0, max_epochs=10)
+        w = sched(0, d, s)
+        # 1/10 * 10 = 1 active in-scope. Easiest difficulty = index 0.
+        assert w[0] == 1.0
+        assert w[1:10].sum() == 0.0
+        assert torch.all(w[10:] == 1.0)
 
-    def test_missing_class_path_raises(self):
-        with pytest.raises(ValueError, match="class_path"):
-            make_scorer({"init_args": {"seed": 0}})
+    def test_final_epoch_unlocks_all_in_scope(self):
+        # CONTRACT: epoch max-1 unlocks every in-scope example.
+        d, s = self._make_inputs(n_in_scope=10, n_out_scope=2)
+        sched = LinearRampSchedule(start_ratio=1.0, end_ratio=10.0, max_epochs=10)
+        w = sched(9, d, s)
+        assert torch.all(w == 1.0)
 
+    def test_easiest_unlocked_first(self):
+        # INVARIANT: at any epoch, active in-scope examples are the lowest-
+        # difficulty ones. Sort flipped would unlock hardest first
+        # (anti-curriculum) — regression guard.
+        n = 20
+        difficulty = torch.tensor([float(n - i) for i in range(n)])
+        in_scope = torch.ones(n, dtype=torch.bool)
+        sched = LinearRampSchedule(start_ratio=1.0, end_ratio=10.0, max_epochs=20)
+        w = sched(5, difficulty, in_scope)
+        active_idx = w.nonzero(as_tuple=True)[0].tolist()
+        active_difficulties = difficulty[active_idx]
+        non_active_difficulties = difficulty[w == 0]
+        assert active_difficulties.max() <= non_active_difficulties.min()
 
-class TestBucketByScore:
-    """Pure index-bucketing math — no dataset, no labels."""
-
-    def test_shape(self):
-        scores = torch.arange(20, dtype=torch.float)
-        tiers = bucket_by_score(scores, num_tiers=5)
-        assert len(tiers) == 5
-        assert sum(len(t) for t in tiers) == 20
-        assert sorted(i for t in tiers for i in t) == list(range(20))
-
-    def test_sort_order(self):
-        # INVARIANT: tier k's minimum score ≥ tier (k-1)'s maximum score.
-        torch.manual_seed(0)
-        scores = torch.rand(50)
-        tiers = bucket_by_score(scores, num_tiers=5)
-        for a, b in zip(tiers, tiers[1:]):
-            assert scores[a].max() <= scores[b].min()
-
-    def test_uneven_split(self):
-        # 23 scores, 5 tiers → np.array_split spreads the remainder across
-        # the first ``n % k`` bins: 23 = 5 + 5 + 5 + 4 + 4.
-        scores = torch.arange(23, dtype=torch.float)
-        tiers = bucket_by_score(scores, num_tiers=5)
-        assert [len(t) for t in tiers] == [5, 5, 5, 4, 4]
-
-    def test_rejects_empty(self):
-        with pytest.raises(ValueError, match="empty"):
-            bucket_by_score(torch.empty(0), num_tiers=3)
-
-    def test_rejects_zero_tiers(self):
-        with pytest.raises(ValueError, match="num_tiers"):
-            bucket_by_score(torch.rand(10), num_tiers=0)
-
-
-class TestActiveTierCount:
-    """Pure epoch-to-count gating schedule."""
-
-    def test_start_end_bounds(self):
-        # CONTRACT: epoch 0 uses start_ratio, epoch max-1 uses end_ratio.
-        kw = dict(start_ratio=1.0, end_ratio=10.0, max_epochs=300)
-        assert active_tier_count(0, 10, **kw) == 1
-        assert active_tier_count(299, 10, **kw) == 10
+    def test_monotone_non_decreasing_per_example(self):
+        # INVARIANT: once unlocked, an example stays unlocked. weights[e+1] >= weights[e].
+        d, s = self._make_inputs(n_in_scope=20, n_out_scope=3)
+        sched = LinearRampSchedule(start_ratio=1.0, end_ratio=10.0, max_epochs=20)
+        prev = sched(0, d, s)
+        for e in range(1, 20):
+            cur = sched(e, d, s)
+            assert torch.all(cur >= prev), f"example dropped between epoch {e - 1} and {e}"
+            prev = cur
 
     def test_clamped_past_max_epochs(self):
-        # CONTRACT: running past max_epochs stays at num_tiers, doesn't overflow.
-        kw = dict(start_ratio=1.0, end_ratio=10.0, max_epochs=100)
-        assert active_tier_count(1_000_000, 10, **kw) == 10
+        # CONTRACT: running past max_epochs holds at full visibility.
+        d, s = self._make_inputs(n_in_scope=10, n_out_scope=2)
+        sched = LinearRampSchedule(max_epochs=10)
+        w_end = sched(9, d, s)
+        w_far = sched(10_000, d, s)
+        assert torch.equal(w_end, w_far)
 
-    def test_monotone_non_decreasing(self):
-        # INVARIANT: count never drops as epoch advances — tiers only unlock.
-        kw = dict(start_ratio=1.0, end_ratio=10.0, max_epochs=300)
-        counts = [active_tier_count(e, 10, **kw) for e in range(0, 300, 10)]
-        for a, b in zip(counts, counts[1:]):
-            assert b >= a
+    def test_no_in_scope_returns_all_ones(self):
+        # EDGE CASE: empty in-scope set. Schedule has nothing to gate;
+        # everything is out-of-scope (= weight 1).
+        n = 5
+        d = torch.zeros(n)
+        s = torch.zeros(n, dtype=torch.bool)
+        sched = LinearRampSchedule(max_epochs=10)
+        w = sched(0, d, s)
+        assert torch.all(w == 1.0)
 
-    def test_never_below_one(self):
-        # CONTRACT: always at least one tier active, even with zero ratio.
-        assert active_tier_count(0, 10, start_ratio=0.0, end_ratio=10.0, max_epochs=100) == 1
+    def test_shape_mismatch_rejected(self):
+        sched = LinearRampSchedule(max_epochs=10)
+        with pytest.raises(ValueError, match="must have the same shape"):
+            sched(0, torch.zeros(5), torch.zeros(7, dtype=torch.bool))
+
+    def test_init_validates_args(self):
+        with pytest.raises(ValueError, match="end_ratio"):
+            LinearRampSchedule(start_ratio=1.0, end_ratio=0.0, max_epochs=10)
+        with pytest.raises(ValueError, match="start_ratio"):
+            LinearRampSchedule(start_ratio=-1.0, end_ratio=10.0, max_epochs=10)
+        with pytest.raises(ValueError, match="start_ratio"):
+            LinearRampSchedule(start_ratio=11.0, end_ratio=10.0, max_epochs=10)
+        with pytest.raises(ValueError, match="max_epochs"):
+            LinearRampSchedule(start_ratio=1.0, end_ratio=10.0, max_epochs=0)

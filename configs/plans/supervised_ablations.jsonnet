@@ -26,29 +26,24 @@ function(dataset, seed)
   );
 
   // curriculum_vgae — single-source the upstream ckpt path so the datamodule
-  // scorer wiring AND the row's `_upstreams` lineage can never drift.
+  // difficulty wiring AND the row's `_upstreams` lineage can never drift.
+  // Loss-end curriculum via CurriculumWeightedLoss reading per-graph
+  // difficulty + in_scope attached by GraphDataModule.setup.
   local vgae_ckpt = std.native('paths.best_ckpt')(dataset, 'unsupervised', 'vgae', seed);
   local curriculum_vgae = g.compose.supervised(
     model = g.models.supervised.gat(),
     data  = g.data.datamodule.graph(
-      source  = source,
-      sampler = 'curriculum',
-      scorer  = {
-        class_path: 'graphids.core.data.preprocessing.curriculum.VGAEScorer',
+      source     = source,
+      difficulty = {
+        class_path: 'graphids.core.data.preprocessing.curriculum.score_vgae',
         init_args: { ckpt_path: vgae_ckpt },
       },
     ),
-    loss = g.losses.focal(),
+    loss = g.losses.curriculum(g.losses.focal()),
     meta = meta('gat_sampling', 'curriculum_vgae'),
     upstreams = [
       { role: 'vgae', ckpt_path: vgae_ckpt, ckpt_tla: 'vgae_ckpt_path' },
     ],
-    callback_extras = {
-      curriculum: {
-        class_path: 'graphids.core.data.preprocessing.curriculum.CurriculumEpochCallback',
-        init_args: {},
-      },
-    },
   );
 
   [

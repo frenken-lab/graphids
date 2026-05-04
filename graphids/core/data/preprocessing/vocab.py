@@ -1,17 +1,9 @@
-"""Shared-vocabulary construction for datasets with categorical node IDs.
+"""Shared vocabulary scan + persist (v2).
 
-Every GraphIDS dataset that uses ``nn.Embedding(num_ids, ...)`` over a
-per-node categorical identity (CAN arbitration IDs, sensor names, etc.)
-MUST build its vocab once across all splits (train + val + every test
-subdir) and pass the result to every split at construction time.
-
-Rationale: a per-split vocab drifts the index → physical-id mapping
-across splits and leaves the model's embedding table under-sized at
-test time, because test subdirs can contain attack-injected IDs absent
-from train. Index 0 is reserved for UNK (out-of-vocabulary); real IDs
-start at 1.
-
-Research basis: ``~/plans/oov-embedding-handling.md`` (Stage 1).
+Index 0 reserved for UNK. Real IDs start at 1. Per-split vocab is wrong:
+test subdirs can hold IDs absent from train, leaving the embedding table
+under-sized. The ``Source.build()`` flow scans once and pipes the same
+vocab to every split.
 """
 
 from __future__ import annotations
@@ -29,10 +21,10 @@ UNK_INDEX = 0
 
 
 def scan_arb_ids(raw_dir: Path | str, source_dirs: list[str]) -> list[Any]:
-    """Return sorted unique ``arb_id`` values across every CSV under every source_dir.
+    """Sorted unique ``arb_id`` across every CSV under every source_dir.
 
-    Tolerates both the HCRL ``arbitration_id`` and the in-schema
-    ``arb_id`` column names. Only the id column is materialized.
+    Tolerates both HCRL ``arbitration_id`` and the in-schema ``arb_id``
+    column name.
     """
     raw_dir = Path(raw_dir)
     if not source_dirs:
@@ -45,28 +37,17 @@ def scan_arb_ids(raw_dir: Path | str, source_dirs: list[str]) -> list[Any]:
         for csv_path in sorted(sub_path.rglob("*.csv")):
             lf = pl.scan_csv(csv_path)
             cols = lf.collect_schema().names()
-            if "arbitration_id" in cols:
-                col = "arbitration_id"
-            elif "arb_id" in cols:
-                col = "arb_id"
-            else:
-                raise ValueError(
-                    f"{csv_path} has neither 'arbitration_id' nor 'arb_id' column; got {cols!r}"
-                )
+            col = "arbitration_id" if "arbitration_id" in cols else "arb_id"
+            if col not in cols:
+                raise ValueError(f"{csv_path} has neither arbitration_id nor arb_id; got {cols!r}")
             frames.append(lf.select(pl.col(col).alias("arb_id")))
     if not frames:
-        raise ValueError(f"No CSVs found under any of {source_dirs!r} in {raw_dir}")
-    combined = pl.concat(frames).collect()
-    return combined["arb_id"].unique().sort().to_list()
+        raise ValueError(f"No CSVs under {source_dirs!r} in {raw_dir}")
+    return pl.concat(frames).collect()["arb_id"].unique().sort().to_list()
 
 
 def vocab_digest(vocab: dict[Any, int]) -> str:
-    """Stable SHA256 digest over the vocab's (id, index) pairs.
-
-    Used as a cache invariant — any vocab change forces rebuild. Sorted
-    by index so the digest is insensitive to dict iteration order but
-    sensitive to any (id, index) change.
-    """
+    """SHA256 over (id, index) pairs sorted by index — stable, dict-order insensitive."""
     canon = json.dumps(
         sorted(((str(k), v) for k, v in vocab.items()), key=lambda kv: kv[1]),
         sort_keys=True,
@@ -75,7 +56,7 @@ def vocab_digest(vocab: dict[Any, int]) -> str:
 
 
 def persist_vocab(vocab: dict[Any, int], path: Path | str) -> str:
-    """Atomically write vocab as JSON under ``path``; return its digest."""
+    """Atomic write; return digest."""
     path = Path(path)
     digest = vocab_digest(vocab)
     payload = {
@@ -88,14 +69,9 @@ def persist_vocab(vocab: dict[Any, int], path: Path | str) -> str:
 
 
 def load_vocab(path: Path | str) -> tuple[dict[str, int], str]:
-    """Read a persisted vocab; return ``(entries, digest)``.
-
-    Keys are stringified at persist time (JSON constraint), so reloaded
-    ``entries`` is always ``str → int`` even if the original in-memory
-    vocab was ``int → int``. Callers that pipe the result into polars
-    ``replace_strict`` against a numeric column must cast keys first,
-    otherwise the match silently fails and every row routes to UNK.
+    """Return ``(entries, digest)``. Keys are str (JSON constraint) — cast
+    before piping into polars ``replace_strict`` against numeric columns
+    or every row routes silently to UNK.
     """
-    path = Path(path)
-    payload = json.loads(path.read_text())
+    payload = json.loads(Path(path).read_text())
     return payload["entries"], payload["digest"]

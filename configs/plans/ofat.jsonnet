@@ -56,50 +56,39 @@ function(dataset, seed)
   // ----- gat_sampling axis ----------------------------------------------
   local none = gat_spec('gat_sampling', 'none', g.losses.focal());
 
+  // Loss-end curriculum: the datamodule attaches per-graph difficulty +
+  // in_scope at setup; CurriculumWeightedLoss masks per-example focal
+  // contribution at each training step via the LinearRampSchedule.
   local curriculum_random = g.compose.supervised(
     model = g.models.supervised.gat(),
     data  = g.data.datamodule.graph(
-      source  = source(),
-      sampler = 'curriculum',
-      scorer  = {
-        class_path: 'graphids.core.data.preprocessing.curriculum.RandomScorer',
+      source     = source(),
+      difficulty = {
+        class_path: 'graphids.core.data.preprocessing.curriculum.score_random',
         init_args: { seed: seed },
       },
     ),
-    loss = g.losses.focal(),
+    loss = g.losses.curriculum(g.losses.focal()),
     meta = gat_meta('gat_sampling', 'curriculum_random'),
-    callback_extras = {
-      curriculum: {
-        class_path: 'graphids.core.data.preprocessing.curriculum.CurriculumEpochCallback',
-        init_args: {},
-      },
-    },
   );
 
   // curriculum_vgae — single-source vgae ckpt path, threaded into BOTH the
-  // datamodule scorer wiring AND the row's `_upstreams` lineage.
+  // datamodule difficulty wiring AND the row's `_upstreams` lineage.
   local vgae_ckpt = std.native('paths.best_ckpt')(dataset, 'unsupervised', 'vgae', seed);
   local curriculum_vgae = g.compose.supervised(
     model = g.models.supervised.gat(),
     data  = g.data.datamodule.graph(
-      source  = source(),
-      sampler = 'curriculum',
-      scorer  = {
-        class_path: 'graphids.core.data.preprocessing.curriculum.VGAEScorer',
+      source     = source(),
+      difficulty = {
+        class_path: 'graphids.core.data.preprocessing.curriculum.score_vgae',
         init_args: { ckpt_path: vgae_ckpt },
       },
     ),
-    loss = g.losses.focal(),
+    loss = g.losses.curriculum(g.losses.focal()),
     meta = gat_meta('gat_sampling', 'curriculum_vgae'),
     upstreams = [
       { role: 'vgae', ckpt_path: vgae_ckpt, ckpt_tla: 'vgae_ckpt_path' },
     ],
-    callback_extras = {
-      curriculum: {
-        class_path: 'graphids.core.data.preprocessing.curriculum.CurriculumEpochCallback',
-        init_args: {},
-      },
-    },
   );
 
   // ----- scaler axis ----------------------------------------------------

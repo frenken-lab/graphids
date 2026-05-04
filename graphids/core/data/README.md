@@ -10,10 +10,9 @@ data/
     metadata.py            # cache_metadata.json schema + per-split merge writer
     vocab.py               # Shared arb_id vocabulary + digest
     scaler.py              # Per-column feature scalers (z_benign, robust_benign)
-    curriculum.py          # Difficulty scoring, tier bucketing, epoch-gating callback
+    curriculum.py          # score_vgae / score_random + LinearRampSchedule (loss-end curriculum primitives)
   datamodule/
     graph.py               # GraphDataModule (Lightning) — used by VGAE + GAT stages
-    curriculum.py          # CurriculumDataModule subclass — tier-bucketed train batches
     fusion.py              # FusionDataModule (Lightning) — serves the extract.py cache
     sampler.py             # NodeBudgetBatchSampler + pack_offline (FFD)
   datasets/
@@ -49,7 +48,7 @@ preprocessing/pipeline.py :: GraphPipeline.run()
 Cached .pt files (data_train.pt, data_test_<subdir>.pt) + cache_metadata.json
     |
     v
-DataModule (datamodule/graph.py | curriculum.py | fusion.py)
+DataModule (datamodule/graph.py | fusion.py)
     - loads DatasetState via state.get_or_build(source)
     - wraps in DataLoader with dynamic batching (datamodule/sampler.py)
     - passed to Lightning Trainer

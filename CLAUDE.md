@@ -76,32 +76,3 @@ Fusion uses a single `configs/models/fusion/` module that dispatches on
 the `fusion_method` TLA over the method libsonnets.
 
 ## Rules (auto-loaded from `.claude/rules/`)
-
-## TODOs
-
-There are open TODOs in codebase that have questions
-
-Additional:
-
-- why is extract states in specific models, in data directory, own cli call this needs
-  to be simplified
-
-Option 1: Extract after a model is trained
-
-- pros: compute and job call efficient
-- cons: stricter when come training time of fusion must accept the dicts
-
-Option 2: Extract during fusion training
-
-- pros: more modular, can delcare upfront what to extract for embeddings
-- con: might need GPU? models need to forward pass each sample for each model, though they are
-  not that big
-
-Option 3: Extract as its own job type
-
-- pros: singular and modular
-- cons: another thing in the pipeline
-
-torchrl does have a pipeline API like sklearn - which may lend credence to option 2 if there are
-some cpu forward pass accelerators that are easy to collect the extractions. the lack of a backward
-pass has me leaning towards this configuration

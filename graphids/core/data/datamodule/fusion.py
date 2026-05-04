@@ -1,8 +1,13 @@
-"""Fusion DataModule — serves a pre-extracted TensorDict of fusion features.
+"""Fusion DataModule (v2): pre-extracted TensorDict → batched (features, labels).
 
-Loads the cache produced by an ``ExtractRow`` (see ``configs/plans/fusion.jsonnet``).
-Yields ``(td_batch, labels)`` per step where ``td_batch`` is a nested
-TensorDict keyed by upstream model name (e.g. ``td["vgae", "errors"]``).
+Loads the cache produced by an ``ExtractRow`` (``configs/plans/fusion.jsonnet``).
+Yields ``(features_td, labels)`` per step where ``features_td`` is the
+nested TensorDict minus the ``labels`` leaf — keyed by upstream model
+name (e.g. ``td["vgae", "errors"]``).
+
+Composition: TensorDict's native indexing + ``td.exclude("labels")``.
+Bandit/DQN modes use a single big "batch" of size ``episode_sample_size``
+(RL methods consume an episode at a time, not gradient steps).
 """
 
 from __future__ import annotations
@@ -25,9 +30,18 @@ from graphids.core.data.extract import (
 log = get_logger(__name__)
 
 
-class FusionDataModule(pl.LightningDataModule):
-    """Loads a pre-extracted fusion TensorDict and serves batches."""
+def _load_td(path: Path, which: str) -> TensorDict:
+    blob = torch.load(path, map_location="cpu", weights_only=False)
+    version = blob.get("version") if isinstance(blob, dict) else None
+    if version != CACHE_VERSION:
+        raise RuntimeError(
+            f"fusion {which} cache at {path} has version={version!r}, "
+            f"expected {CACHE_VERSION}; re-run the ExtractRow"
+        )
+    return TensorDict(blob["td"], batch_size=[blob["td"]["labels"].size(0)])
 
+
+class FusionDataModule(pl.LightningDataModule):
     def __init__(
         self,
         cached_states_dir: str = "",
@@ -36,10 +50,10 @@ class FusionDataModule(pl.LightningDataModule):
         episode_sample_size: int = 20000,
     ):
         super().__init__()
-        # See GraphDataModule for why this is ``_hp``, not ``hparams``.
-        self._hp = {k: v for k, v in locals().items() if k != "self"}
-        is_rl = method in ("dqn", "bandit")
-        self._batch_size = episode_sample_size if is_rl else batch_size
+        self.cached_states_dir = cached_states_dir
+        self.method = method
+        # RL methods consume one big episode-sized chunk; gradient methods step.
+        self._batch_size = episode_sample_size if method in ("dqn", "bandit") else batch_size
         self.train_td: TensorDict | None = None
         self.val_td: TensorDict | None = None
 
@@ -47,58 +61,38 @@ class FusionDataModule(pl.LightningDataModule):
     def steps_per_epoch(self) -> int:
         return math.ceil(self.train_td.batch_size[0] / self._batch_size)
 
-    def _load_one(self, path: Path, which: str) -> TensorDict:
-        blob = torch.load(path, map_location="cpu", weights_only=False)
-        version = blob.get("version") if isinstance(blob, dict) else None
-        if version != CACHE_VERSION:
-            raise RuntimeError(
-                f"Fusion {which} cache at {path} has version={version}, expected "
-                f"{CACHE_VERSION}. Re-run the ExtractRow in your fusion plan "
-                "(cache format changed: flat states → TensorDict)."
-            )
-        return TensorDict(blob["td"], batch_size=[blob["td"]["labels"].size(0)])
-
-    def setup(self, stage=None):
+    def setup(self, stage: str | None = None) -> None:
         if self.train_td is not None:
             return
-
-        hp = self._hp
-        if not hp["cached_states_dir"]:
+        if not self.cached_states_dir:
             raise ValueError(
-                "cached_states_dir is required — submit the ExtractRow from "
-                "configs/plans/fusion.jsonnet first (or chain via "
-                "'graphids submit --depends-on-afterok <extract_jid>')"
+                "cached_states_dir is required — submit the ExtractRow first "
+                "or chain via 'graphids submit --depends-on-afterok <jid>'"
             )
+        d = Path(self.cached_states_dir)
+        if not (d / TRAIN_FILENAME).exists():
+            d = d / FUSION_STATES_DIR
+        train_path, val_path = d / TRAIN_FILENAME, d / VAL_FILENAME
+        for p in (train_path, val_path):
+            if not p.exists():
+                raise FileNotFoundError(f"cached fusion states not found: {p}")
 
-        states_dir = Path(hp["cached_states_dir"])
-        if not (states_dir / TRAIN_FILENAME).exists():
-            states_dir = states_dir / FUSION_STATES_DIR
-        train_path = states_dir / TRAIN_FILENAME
-        val_path = states_dir / VAL_FILENAME
-        if not train_path.exists():
-            raise FileNotFoundError(f"Cached train states not found: {train_path}")
-        if not val_path.exists():
-            raise FileNotFoundError(f"Cached val states not found: {val_path}")
-
-        self.train_td = self._load_one(train_path, "train")
-        self.val_td = self._load_one(val_path, "val")
+        self.train_td = _load_td(train_path, "train")
+        self.val_td = _load_td(val_path, "val")
         log.info(
             "loaded_cached_states",
-            dir=str(states_dir),
+            dir=str(d),
             train_n=self.train_td.batch_size[0],
             val_n=self.val_td.batch_size[0],
             keys=list(self.train_td.keys(include_nested=True, leaves_only=True)),
         )
 
-    def _batches(self, td: TensorDict, shuffle: bool):
+    def _batches(self, td: TensorDict, *, shuffle: bool):
         n = td.batch_size[0]
         idx = torch.randperm(n) if shuffle else torch.arange(n)
         for start in range(0, n, self._batch_size):
-            sel = idx[start : start + self._batch_size]
-            sub = td[sel]
-            labels = sub["labels"]
-            features = sub.exclude("labels")
-            yield features, labels
+            sub = td[idx[start : start + self._batch_size]]
+            yield sub.exclude("labels"), sub["labels"]
 
     def train_dataloader(self):
         return self._batches(self.train_td, shuffle=True)

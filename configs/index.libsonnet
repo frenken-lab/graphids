@@ -31,6 +31,7 @@
     ce:          import 'losses/ce.libsonnet',
     weighted_ce: import 'losses/weighted_ce.libsonnet',
     vgae_task:   import 'losses/vgae_task.libsonnet',
+    curriculum:  import 'losses/curriculum.libsonnet',
   },
   data: {
     source: {

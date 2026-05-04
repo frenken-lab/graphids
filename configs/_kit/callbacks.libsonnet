@@ -2,9 +2,9 @@
 // monitor and mode flow into BOTH callbacks (kept in lockstep — checkpoint
 // and early_stop must track the same metric, see CallbacksSection schema).
 
-// `extras` is the merge knob for optional callbacks (e.g.
-// CurriculumEpochCallback). Universal trio (checkpoint, early_stopping,
-// mlflow) is mandatory and not parameterized at this level.
+// `extras` is the merge knob for optional callbacks. Universal trio
+// (checkpoint, early_stopping, mlflow) is mandatory and not parameterized
+// at this level.
 //
 // `run_dir` is the apex's ``trainer.default_root_dir`` — passed through so
 // the checkpoint sidecar lands at ``{run_dir}/checkpoints/`` (matches the

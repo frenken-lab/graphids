@@ -119,8 +119,7 @@ function(monitor, mode, patience, extras={}) → {
 ```
 
 - **Universal** (mandatory): checkpoint, early_stopping, mlflow.
-- **Optional** (per-binding): pass via composer's `callback_extras={...}`
-  (used by curriculum bindings to add `CurriculumEpochCallback`).
+- **Optional** (per-binding): pass via composer's `callback_extras={...}`.
 - **Auto-injected** (Python-side): `VRAMDriftCallback` added at instantiation
   if CUDA available. Not in jsonnet.
 

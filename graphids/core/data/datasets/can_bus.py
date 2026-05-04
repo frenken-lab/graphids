@@ -1,9 +1,19 @@
-"""CAN bus dataset — feature schema, payload parser, source.
+"""CAN bus dataset — protocol parser + domain features + adapter classes.
 
-Everything CAN-bus-specific lives here: hex payload parsing, byte-column
-feature expressions, attack-type taxonomy, and the ``CANBusDataset`` /
-``CANBusSource`` adapters. Generic graph-dataset orchestration (splits,
-scaler fit/apply, metadata merge, mmap load) lives in ``_base.py``.
+Module is sectioned so a reader knows what's CAN-specific vs what's
+graph-pipeline plumbing that just happens to live here:
+
+  §1. CAN protocol constants    — byte layout (CAN-specific)
+  §2. Attack taxonomy           — code/name maps (CAN-specific)
+  §3. Domain feature expressions — Polars aggs over CAN data (CAN-specific)
+  §4. Topology placeholders     — filled by GraphPipeline (NOT CAN-specific)
+  §5. Tensor column orders      — final layouts (concat of §3 + §4)
+  §6. Payload parser            — hex → byte_0..7 + entropy (CAN-specific)
+  §7. Adapter classes           — _read_raw + _scan_vocab hooks
+
+If GraphPipeline ever auto-injects §4 (clustering_coeff, in/out degree)
+via a generic ``WithGraphTopology`` schema mixin, §4 disappears from
+this file and adapters only declare domain knowledge.
 """
 
 from __future__ import annotations
@@ -15,39 +25,31 @@ from typing import Any, ClassVar
 import polars as pl
 from structlog import get_logger
 
-from graphids.core.data.datasets._base import (
-    BaseGraphDataset,
-    BaseGraphSource,
-    GraphSchema,
-)
+from graphids.core.data.datasets._base import BaseGraphDataset, BaseGraphSource, GraphSchema
 
 log = get_logger(__name__)
 
-# ---------------------------------------------------------------------------
-# Attack-type taxonomy
-# ---------------------------------------------------------------------------
 
-# Insertion order matters: ``_infer_attack_type`` does substring matching and
-# returns the first hit, so longer/more-specific keys must precede their
-# shorter prefixes (``rpm-accessory`` before ``rpm``, ``speed-accessory``
-# before ``speed``). ``force-neutral`` aliases the ``gear`` family under the
-# can-train-and-test v1.5 filename convention.
+# ─── §1. CAN protocol constants ───────────────────────────────────────
+
+N_BYTES = 8
+BYTE_COLS = [f"byte_{i}" for i in range(N_BYTES)]
+
+
+# ─── §2. Attack taxonomy ──────────────────────────────────────────────
+
+# Insertion order matters: ``_infer_attack_type`` does substring match and
+# returns the first hit, so longer/more-specific keys precede their prefixes.
 ATTACK_TYPE_CODES: dict[str, int] = {
-    "normal": 0,
-    "attack_free": 0,
-    "benign": 0,
+    "normal": 0, "attack_free": 0, "benign": 0,
     "dos": 1,
-    "fuzzy": 2,
-    "fuzzing": 2,
-    "force-neutral": 3,
-    "gear": 3,
+    "fuzzy": 2, "fuzzing": 2,
+    "force-neutral": 3, "gear": 3,
     "rpm-accessory": 12,
     "rpm": 4,
     "flooding": 5,
     "malfunction": 6,
-    "double": 7,
-    "triple": 8,
-    "interval": 9,
+    "double": 7, "triple": 8, "interval": 9,
     "speed-accessory": 11,
     "speed": 10,
     "standstill": 13,
@@ -55,84 +57,41 @@ ATTACK_TYPE_CODES: dict[str, int] = {
     "suppress": 15,
     "masquerade": 16,
 }
-
 ATTACK_TYPE_NAMES: dict[int, str] = {v: k for k, v in ATTACK_TYPE_CODES.items() if v != 0}
 ATTACK_TYPE_NAMES[0] = "benign"
 
 
-# ---------------------------------------------------------------------------
-# CAN feature schema — column layouts, Polars expressions, helper fns
-# ---------------------------------------------------------------------------
+# ─── §3. Domain feature expressions (CAN-specific) ────────────────────
 
-BYTE_COLS = [f"byte_{i}" for i in range(8)]
-
-# Column order defines tensor layout. Changing order changes model input.
-NODE_COL_ORDER = (
-    [f"{c}_mean" for c in BYTE_COLS]
-    + [f"{c}_std" for c in BYTE_COLS]
-    + [f"{c}_range" for c in BYTE_COLS]
-    + [
-        "msg_count",
-        "entropy_mean",
-        "skewness",
-        "kurtosis",
-        "clustering_coeff",
-        "split_half_ratio",
-        "change_rate",
-        "node_iat_mean",
-        "node_iat_std",
-        "in_degree",
-        "out_degree",
-    ]
-)
-
-N_NODE_FEATURES = len(NODE_COL_ORDER)
-# Edge feature layout: iat + 8 byte diffs + bidirectional flag + freq.
-EDGE_COL_ORDER = (
-    "iat",
-    *(f"byte_{i}_diff" for i in range(8)),
-    "bidir",
-    "edge_freq",
-)
-
-N_EDGE_FEATURES = len(EDGE_COL_ORDER)  # 11
-
-# Polars aggregation expressions for per-node stats within a window.
-# Used by group_by("node_id").agg() and group_by(["_wid", "node_id"]).agg().
-# Requires columns: byte_0..7, entropy, _first_half (bool).
-NODE_STAT_EXPRS: list[pl.Expr] = [
+# Per-node aggs within a window. Inputs: byte_0..7, entropy, _first_half, timestamp.
+DOMAIN_NODE_EXPRS: list[pl.Expr] = [
     *[pl.col(c).mean().alias(f"{c}_mean") for c in BYTE_COLS],
     *[pl.col(c).std().alias(f"{c}_std") for c in BYTE_COLS],
     *[(pl.col(c).max() - pl.col(c).min()).alias(f"{c}_range") for c in BYTE_COLS],
     pl.len().cast(pl.Float32).alias("msg_count"),
     pl.col("entropy").mean().alias("entropy_mean"),
-    pl.mean_horizontal(*[pl.col(c).skew().fill_nan(0).clip(-10, 10) for c in BYTE_COLS]).alias(
-        "skewness"
-    ),
-    pl.mean_horizontal(*[pl.col(c).kurtosis().fill_nan(0).clip(-10, 10) for c in BYTE_COLS]).alias(
-        "kurtosis"
-    ),
-    pl.lit(0.0).alias("clustering_coeff"),  # filled per-window from graph structure
+    # Skew/kurtosis clamped — fp16 max ~65504, raw values can hit 1e17.
+    pl.mean_horizontal(
+        *[pl.col(c).skew().fill_nan(0).clip(-10, 10) for c in BYTE_COLS]
+    ).alias("skewness"),
+    pl.mean_horizontal(
+        *[pl.col(c).kurtosis().fill_nan(0).clip(-10, 10) for c in BYTE_COLS]
+    ).alias("kurtosis"),
     pl.col("_first_half").mean().alias("split_half_ratio"),
     pl.mean_horizontal(
         *[(pl.col(c).diff().abs().drop_nulls() > 0).mean() for c in BYTE_COLS]
     ).alias("change_rate"),
     pl.col("timestamp").diff().mean().cast(pl.Float32).alias("node_iat_mean"),
     pl.col("timestamp").diff().std().fill_nan(0).cast(pl.Float32).alias("node_iat_std"),
-    pl.lit(0.0).alias("in_degree"),  # filled post-hoc from edge_index
-    pl.lit(0.0).alias("out_degree"),  # filled post-hoc from edge_index
 ]
 
-# Polars expressions for vectorized edge feature computation.
-# Used by with_columns() after sort(["_wid", "_row"]).
-# Requires columns: timestamp, byte_0..7, _wid.
-# Note: bidir is computed separately via self-join (not expressible as a single expression).
-EDGE_STAT_EXPRS: list[pl.Expr] = [
+# Per-edge feature exprs (within window, after sort). Inputs: timestamp, byte_0..7.
+DOMAIN_EDGE_EXPRS: list[pl.Expr] = [
     pl.col("timestamp").diff().cast(pl.Float32).alias("iat"),
-    *[pl.col(f"byte_{i}").diff().abs().cast(pl.Float32).alias(f"byte_{i}_diff") for i in range(8)],
+    *[pl.col(c).diff().abs().cast(pl.Float32).alias(f"{c}_diff") for c in BYTE_COLS],
 ]
 
-# Label aggregations per window: y (binary attack) + attack_type (multiclass).
+# Per-window labels: y (binary attack) + attack_type (multiclass mode).
 LABEL_EXPRS: list[pl.Expr] = [
     (pl.col("attack").max() > 0).cast(pl.Int64).alias("y"),
     pl.col("attack_type")
@@ -143,134 +102,127 @@ LABEL_EXPRS: list[pl.Expr] = [
     .alias("attack_type"),
 ]
 
-# Columns required by edge-feature computation (byte diffs need byte_0..7).
-EDGE_BASE_COLS: list[str] = [f"byte_{i}" for i in range(8)]
+
+# ─── §4. Topology placeholders (filled by GraphPipeline, not CAN) ─────
+
+# These columns hold ``0.0`` until GraphPipeline._compute_graph_structure
+# overwrites them via ``DataFrame.update``. They live here only because
+# the schema must declare every column the tensor select reads from.
+# Move to a ``WithGraphTopology`` schema mixin to delete this section.
+TOPOLOGY_NODE_PLACEHOLDERS: list[pl.Expr] = [
+    pl.lit(0.0).alias("clustering_coeff"),
+    pl.lit(0.0).alias("in_degree"),
+    pl.lit(0.0).alias("out_degree"),
+]
+# bidir + edge_freq are filled inside the pipeline's edge aggregation
+# (no placeholder needed — they're added as real columns there).
+
+
+# ─── §5. Tensor column orders ─────────────────────────────────────────
+
+NODE_COL_ORDER = (
+    [f"{c}_mean" for c in BYTE_COLS]
+    + [f"{c}_std" for c in BYTE_COLS]
+    + [f"{c}_range" for c in BYTE_COLS]
+    + ["msg_count", "entropy_mean", "skewness", "kurtosis",
+       "clustering_coeff",  # topology
+       "split_half_ratio", "change_rate", "node_iat_mean", "node_iat_std",
+       "in_degree", "out_degree"]  # topology
+)
+N_NODE_FEATURES = len(NODE_COL_ORDER)
+
+EDGE_COL_ORDER: tuple[str, ...] = (
+    "iat",
+    *(f"{c}_diff" for c in BYTE_COLS),
+    "bidir",
+    "edge_freq",
+)
+N_EDGE_FEATURES = len(EDGE_COL_ORDER)
 
 
 CAN_SCHEMA = GraphSchema(
-    node_stat_exprs=NODE_STAT_EXPRS,
-    edge_stat_exprs=EDGE_STAT_EXPRS,
+    node_stat_exprs=DOMAIN_NODE_EXPRS + TOPOLOGY_NODE_PLACEHOLDERS,
+    edge_stat_exprs=DOMAIN_EDGE_EXPRS,
     node_col_order=NODE_COL_ORDER,
     edge_col_order=EDGE_COL_ORDER,
     label_exprs=LABEL_EXPRS,
-    edge_base_cols=EDGE_BASE_COLS,
+    edge_base_cols=BYTE_COLS,  # byte diffs need byte_0..7
     vocab_column="arb_id",
     attack_type_codes=ATTACK_TYPE_CODES,
     attack_type_names=ATTACK_TYPE_NAMES,
 )
 
 
-def parse_payload(lf: pl.LazyFrame) -> pl.LazyFrame:
-    """Parse hex payload column into 8 byte columns + Shannon entropy.
+# ─── §6. Payload parser ───────────────────────────────────────────────
 
-    Expects a 'payload' column (16-char hex string). Adds byte_0..byte_7
-    (Float32) and entropy (Float32). Passthrough if byte_0 already exists.
+def parse_payload(lf: pl.LazyFrame) -> pl.LazyFrame:
+    """Hex 16-char ``payload`` → ``byte_0..7`` (Float32) + Shannon ``entropy``.
+    Idempotent: passes through if ``byte_0`` already present.
     """
     if "byte_0" in lf.collect_schema().names():
         return lf
     byte_exprs = [
-        pl.col("payload")
-        .str.slice(i * 2, 2)
-        .str.to_integer(base=16, strict=False)
-        .fill_null(0)
-        .cast(pl.Float32)
-        .alias(f"byte_{i}")
-        for i in range(8)
+        pl.col("payload").str.slice(i * 2, 2).str.to_integer(base=16, strict=False)
+        .fill_null(0).cast(pl.Float32).alias(f"byte_{i}")
+        for i in range(N_BYTES)
     ]
     lf = lf.with_columns(byte_exprs)
-    byte_cols = [pl.col(f"byte_{i}") for i in range(8)]
-    row_sum = pl.sum_horizontal(byte_cols).clip(1e-12, None)
-    entropy_terms = [
-        pl.when(c > 0).then(-(c / row_sum) * (c / row_sum).log()).otherwise(0.0) for c in byte_cols
-    ]
-    return lf.with_columns(pl.sum_horizontal(entropy_terms).alias("entropy"))
+    bcols = [pl.col(c) for c in BYTE_COLS]
+    row_sum = pl.sum_horizontal(bcols).clip(1e-12, None)
+    entropy = pl.sum_horizontal(
+        [pl.when(c > 0).then(-(c / row_sum) * (c / row_sum).log()).otherwise(0.0) for c in bcols]
+    ).alias("entropy")
+    return lf.with_columns(entropy)
 
 
-# ---------------------------------------------------------------------------
-# CANBusDataset — only CAN-specific override is _read_raw
-# ---------------------------------------------------------------------------
-
+# ─── §7. Adapter classes ──────────────────────────────────────────────
 
 class CANBusDataset(BaseGraphDataset):
-    """CAN bus intrusion detection graph dataset.
+    """One graph = one sliding window of CAN messages.
 
-    Each graph is one sliding window of CAN messages. Nodes are arbitration
-    IDs, edges are temporal adjacency (shift-1).
+    Nodes are arbitration IDs; edges are temporal adjacency (shift-1).
+    Only override is ``_read_raw``: lazy-scan declared source_dirs,
+    parse hex, tag attack_type from filename.
     """
 
     SCHEMA: ClassVar[GraphSchema] = CAN_SCHEMA
 
     def _read_raw(self) -> pl.DataFrame:
-        """Lazy-scan CSVs from declared source_dirs, parse hex, tag attack types.
-
-        Scope is explicit: only subdirs in ``self.source_dirs`` are read.
-        Recursive glob over ``raw_data_dir`` would silently pull every
-        train+test CSV into one tensor (contamination).
-        """
         if not self.source_dirs:
             raise ValueError(
                 f"CANBusDataset split={self.split!r} has no source_dirs; "
-                "cannot build cache from raw CSVs. Caller must pass "
-                "source_dirs=[...] at construction."
+                "caller must pass source_dirs=[...] (recursive raw_data_dir scan "
+                "would mix train+test → contamination)"
             )
-        frames = []
+        frames: list[pl.LazyFrame] = []
         for sub in self.source_dirs:
             sub_path = self.raw_data_dir / sub
             if not sub_path.is_dir():
-                raise FileNotFoundError(
-                    f"Declared source_dir {sub!r} missing under {self.raw_data_dir}"
-                )
+                raise FileNotFoundError(f"declared source_dir {sub!r} missing under {self.raw_data_dir}")
             for csv_path in sorted(sub_path.rglob("*.csv")):
                 at = self._infer_attack_type(csv_path)
-                lf = pl.scan_csv(csv_path).with_columns(pl.lit(at).alias("attack_type"))
-                frames.append(lf)
+                frames.append(pl.scan_csv(csv_path).with_columns(pl.lit(at).alias("attack_type")))
         if not frames:
-            raise ValueError(f"No CSVs under any of {self.source_dirs!r} in {self.raw_data_dir}")
+            raise ValueError(f"no CSVs under any of {self.source_dirs!r} in {self.raw_data_dir}")
 
         combined = pl.concat(frames).sort("timestamp")
-
-        # Normalize column names: HCRL CSVs use different names than our schema
-        col_names = combined.collect_schema().names()
-        renames = {}
-        if "arbitration_id" in col_names:
-            renames["arbitration_id"] = "arb_id"
-        if "data_field" in col_names:
-            renames["data_field"] = "payload"
+        # HCRL CSVs use different names — alias to schema vocabulary.
+        cols = combined.collect_schema().names()
+        renames = {old: new for old, new in (("arbitration_id", "arb_id"), ("data_field", "payload"))
+                   if old in cols}
         if renames:
             combined = combined.rename(renames)
-
-        combined = parse_payload(combined)
-
-        return combined.collect()
-
-
-# ---------------------------------------------------------------------------
-# CANBusSource — KIND + DATASET_CLS + scan_arb_ids hook
-# ---------------------------------------------------------------------------
+        return parse_payload(combined).collect()
 
 
 @dataclass(frozen=True)
 class CANBusSource(BaseGraphSource):
-    """CAN bus dataset source — produces train/val/test splits on demand.
-
-    ``get_or_build`` in ``graphids.core.data.state`` memoizes the
-    ``DatasetState`` returned by ``build()`` under ``cache_key`` so
-    multi-stage runs sharing a process pay preprocessing + mmap cost
-    once instead of per-stage.
-
-    ``name`` is a catalog entry (e.g. ``hcrl_sa``, ``set_01``). The
-    catalog is loaded at build time via
-    ``graphids.config.catalog.load_catalog`` — no name validation at
-    construction, since the catalog may shift.
-    """
+    """Catalog → vocab-once → train/val/per-test-subdir CANBusDataset."""
 
     KIND: ClassVar[str] = "canbus"
     DATASET_CLS: ClassVar[type[BaseGraphDataset]] = CANBusDataset
 
     def _scan_vocab(self, raw_dir: Path, source_dirs: list[str]) -> list[Any]:
-        # Tolerates both the HCRL ``arbitration_id`` and the in-schema
-        # ``arb_id`` column names — the file-level scanner handles the
-        # alias.
         from graphids.core.data.preprocessing.vocab import scan_arb_ids
 
         return scan_arb_ids(raw_dir, source_dirs)

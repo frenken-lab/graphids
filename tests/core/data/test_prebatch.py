@@ -6,8 +6,6 @@ Tests the pre-batch path: NodeBudgetBatchSampler plans → Batch.from_data_list
 
 from __future__ import annotations
 
-import math
-
 import torch
 from conftest import make_graph
 from torch_geometric.data import Batch
@@ -92,91 +90,3 @@ class TestPreBatch:
         assert order_1 != order_2, "Two shuffled iterations produced identical order"
 
 
-class TestTierPreBatch:
-    """Tier-based curriculum pre-batching invariants."""
-
-    @staticmethod
-    def _make_tiered_batches(n_normal=60, n_attack=15, num_tiers=3, budget=50):
-        """Pre-batch synthetic tiers, mirroring GraphDataModule._prebatch_tiers."""
-        normals = [
-            make_graph(num_nodes=5 + i % 10, num_edges=(5 + i % 10) * 2) for i in range(n_normal)
-        ]
-        attacks = [make_graph(num_nodes=8, num_edges=16) for _ in range(n_attack)]
-        full_dataset = normals + attacks
-        sizes = torch.tensor([g.num_nodes for g in full_dataset], dtype=torch.long)
-
-        # Bucket normals into tiers (ascending index = ascending "difficulty")
-        bucket_size = max(1, math.ceil(n_normal / num_tiers))
-        normal_tiers = [
-            list(range(start, min(start + bucket_size, n_normal)))
-            for start in range(0, n_normal, bucket_size)
-        ]
-        attack_indices = list(range(n_normal, len(full_dataset)))
-
-        # Pre-batch each tier
-        tier_batches = []
-        for tier_idx in normal_tiers:
-            tier_sizes = sizes[tier_idx]
-            sampler = NodeBudgetBatchSampler(
-                tier_sizes,
-                max_num=budget,
-                shuffle=False,
-            )
-            plans = list(sampler)
-            tier_batches.append(
-                [Batch.from_data_list([full_dataset[tier_idx[i]] for i in plan]) for plan in plans]
-            )
-
-        # Pre-batch attacks
-        atk_sizes = sizes[attack_indices]
-        sampler = NodeBudgetBatchSampler(
-            atk_sizes,
-            max_num=budget,
-            shuffle=False,
-        )
-        plans = list(sampler)
-        attack_batches = [
-            Batch.from_data_list([full_dataset[attack_indices[i]] for i in plan]) for plan in plans
-        ]
-
-        return tier_batches, attack_batches, full_dataset, n_normal, n_attack
-
-    def test_all_graphs_across_tiers_covered(self):
-        """INVARIANT: every graph appears in exactly one tier's batches."""
-        tier_batches, attack_batches, full_dataset, n_normal, n_attack = self._make_tiered_batches()
-        normal_graphs = sum(b.num_graphs for tier in tier_batches for b in tier)
-        attack_graphs = sum(b.num_graphs for b in attack_batches)
-        assert normal_graphs == n_normal, (
-            f"Normal tiers have {normal_graphs} graphs, expected {n_normal}"
-        )
-        assert attack_graphs == n_attack, (
-            f"Attack tier has {attack_graphs} graphs, expected {n_attack}"
-        )
-
-    def test_tier_batches_respect_budget(self):
-        """INVARIANT: each batch within each tier respects node budget."""
-        budget = 50
-        tier_batches, attack_batches, *_ = self._make_tiered_batches(budget=budget)
-        for t_idx, tier in enumerate(tier_batches):
-            for b_idx, batch in enumerate(tier):
-                assert batch.num_nodes <= budget, (
-                    f"Tier {t_idx} batch {b_idx}: {batch.num_nodes} nodes > budget {budget}"
-                )
-        for b_idx, batch in enumerate(attack_batches):
-            assert batch.num_nodes <= budget, (
-                f"Attack batch {b_idx}: {batch.num_nodes} nodes > budget {budget}"
-            )
-
-    def test_active_tier_concat_yields_valid_batches(self):
-        """INVARIANT: concatenating active tiers produces a valid loader."""
-        tier_batches, attack_batches, *_ = self._make_tiered_batches(num_tiers=4)
-        # Simulate selecting first 2 tiers + attacks
-        active = []
-        for i in range(2):
-            active.extend(tier_batches[i])
-        active.extend(attack_batches)
-
-        loader = _prebatched_loader(active, shuffle=False)
-        yielded = list(loader)
-        assert len(yielded) == len(active)
-        assert all(isinstance(b, Batch) for b in yielded)

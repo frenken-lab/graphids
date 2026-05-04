@@ -1,156 +1,59 @@
-"""VRAM budget → batch size → worker count.
+"""Budget probe v4: one measurement + allocator baseline.
 
-Measures forward/backward memory via the CUDA allocator high-water mark
-(``torch.cuda.max_memory_allocated``) and timing via wall-clock around
-``torch.cuda.synchronize``. The probe is **two-point**: runs forward +
-backward on a small batch and a larger one, then takes the slope
-``(peak_big - peak_small) / (nodes_big - nodes_small)`` as ``bpn_node``.
-The y-intercept of that line absorbs every fixed cost (model params,
-optimizer state, cuDNN workspaces, allocator baseline, KD teacher) —
-no resident-subtract heuristic. Single-point estimates systematically
-over-charge small batches with the fixed costs, inflating bpn_node by
-~3-4× and capping packed batches well below the real hardware limit.
+The slope-fit was extracting fixed cost as the y-intercept of two probe
+points. The allocator already knows that number — ``torch.cuda.memory_allocated``
+after warmup IS the fixed cost (params + gradient buffers + optimizer state
++ cuDNN workspace cache). Subtract it and divide. No polyfit, no roots.
 
-GPS uses a **three-point quadratic probe** instead (``probe_quadratic``):
-global attention memory scales as O(V²·heads), so a linear fit is wrong.
-The quadratic coefficients (α, β, γ) are solved for via least-squares,
-and the node budget is the positive root of ``α·V² + β·V + γ = free·safety``.
-Edge budget is derived from the empirical edges-per-node ratio on the
-probe batches themselves — not a hardcoded multiplier.
+```
+peak       = baseline + activation(V)
+activation = peak - torch.cuda.memory_allocated()       (one measurement)
+per_node   = activation / V        (linear)
+per_v2     = activation / V²       (quadratic, GPS)
+budget     = solve(target = baseline + activation(V_budget))
+```
 
-Workers sized by ``ceil((t_io + t_collation) / t_gpu)``.
+Composes:
+- ``torch_geometric.profile.profileit`` → peak VRAM + step time
+- ``torch.cuda.memory_allocated`` → baseline (free, no probe)
+- ``torch.cuda.mem_get_info`` → free VRAM
+- ``torch.utils.benchmark.Timer`` → CPU timing for autosize_workers
+- ``os.sched_getaffinity`` → CPU cap
+
+Public surface matches ``budget.py``: ``BudgetResult``, ``node_budget``,
+``autosize_workers``, ``collect_batch``.
 """
 
 from __future__ import annotations
 
 import math
 import os
-import random
-import time
-from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Literal
 
-import numpy as np
 import torch
 from structlog import get_logger
+from torch.utils.benchmark import Timer
 from torch_geometric.data import Batch
+from torch_geometric.profile import profileit
 
 log = get_logger(__name__)
 
-
-# Three disjoint states for how BudgetResult.budget was derived. Named by
-# *why* (the reason for this value), not *what* (its implementation). Stamped
-# as MLflow tag ``graphids.budget_binding`` by
-# :class:`graphids._mlflow.MLflowTrainingCallback.on_fit_end` — downstream
-# dashboards filter on these exact strings, so rename impact is cross-cutting.
-BudgetBinding = Literal[
-    "measured",  # probe ran, fit was valid
-    "measured_degenerate_fallback",  # probe ran but fit degenerate → formula
-    "opted_in_fallback",  # prereqs missing + GRAPHIDS_ALLOW_FALLBACK_BUDGET=1
-]
-
-
-_BWD_MULT_FALLBACK = 2.0
-_PROBE_WARMUP_STEPS = 3
-
-
-import os as _os
-
-_SAFETY = float(_os.environ.get("GRAPHIDS_BUDGET_SAFETY_MARGIN", "0.95"))
-_FALLBACK_BPN = int(_os.environ.get("GRAPHIDS_BUDGET_FALLBACK_BPN", "32768"))
-_GPS_ATTN_DIVISOR = int(_os.environ.get("GRAPHIDS_GPS_FALLBACK_ATTENTION_DIVISOR", "6"))
-_FALLBACK_EDGE_NODE_RATIO = float(_os.environ.get("GRAPHIDS_FALLBACK_EDGE_NODE_RATIO", "10.0"))
-_EMPIRICAL_EPN_HEADROOM = float(_os.environ.get("GRAPHIDS_EMPIRICAL_EPN_HEADROOM", "1.1"))
+_SAFETY = float(os.environ.get("GRAPHIDS_BUDGET_SAFETY_MARGIN", "0.95"))
+_EPN_HEADROOM = float(os.environ.get("GRAPHIDS_EMPIRICAL_EPN_HEADROOM", "1.1"))
+_MB = 1024 * 1024
 
 
 @dataclass(frozen=True)
 class BudgetResult:
-    """Output of ``node_budget`` — the sampler's sizing contract."""
-
-    budget: int  # max nodes per batch
-    edge_budget: int | None = None
-    binding: BudgetBinding = "measured"
-    backward_multiplier: float | None = None
+    budget: int
+    edge_budget: int
+    binding: str = "measured"
+    backward_multiplier: float = 2.0
     t_fwd: float = 0.0
-    # Bytes the budget was solved against (= free * safety at probe time).
-    # Logged as param ``graphids.budget_target_bytes`` at epoch 0 by
-    # :class:`graphids._mlflow.MLflowTrainingCallback._stamp_run_config`.
-    # Pair with metric ``graphids.peak_vram_mb`` (logged at fit-end) to compute
-    # post-hoc utilization without baking a threshold into the tag.
     target_bytes: int = 0
 
 
-_FALLBACK_ENV = "GRAPHIDS_ALLOW_FALLBACK_BUDGET"
-
-
-def _fallback_allowed() -> bool:
-    return os.environ.get(_FALLBACK_ENV, "0") == "1"
-
-
-def _fallback_budget_pair(free: int, heads: int) -> tuple[int, int]:
-    """Conservative (node_budget, edge_budget) pair when a real probe can't run.
-
-    Called by (a) _gps_budget's opt-in-fallback branch and (b) node_budget's
-    linear opt-in-fallback branch. For the GPS degenerate-fit branch, only
-    the node half of this pair is used — the edge half there comes from the
-    empirical edges-per-node measured on the (failed) probe batches.
-    """
-    budget = max(1, int(math.sqrt(free / (heads * _GPS_ATTN_DIVISOR))))
-    edge_budget = int(budget * _FALLBACK_EDGE_NODE_RATIO)
-    return budget, edge_budget
-
-
-def _resolve_model_hp(
-    model, conv_type: str | None, heads: int | None
-) -> tuple[str, int]:
-    """Pull conv_type/heads off model.hparams when present; else use the
-    explicit kwargs (or the canonical defaults). Single seam — every
-    caller that used to thread these through the API surface now goes
-    through here.
-    """
-    if model is not None:
-        hp = model.hparams
-        return hp.conv_type, hp.heads
-    return (conv_type or "gatv2", heads or 4)
-
-
-def _require_probe_prereqs(model, train_dataset, conv_type: str) -> None:
-    """Raise unless CUDA + model + train_dataset are all present, or the env
-    opt-in is set. Silent fallbacks produce conservative budgets that can
-    leave 60-80% of GPU memory on the table — a correctness hazard that
-    looks like a successful run. Fail loudly instead.
-    """
-    if _fallback_allowed():
-        return
-    missing = []
-    if not torch.cuda.is_available():
-        missing.append("CUDA")
-    if model is None:
-        missing.append("model")
-    if train_dataset is None:
-        missing.append("train_dataset")
-    if missing:
-        raise RuntimeError(
-            f"budget probe prerequisites missing: {', '.join(missing)} "
-            f"(conv_type={conv_type}). Set {_FALLBACK_ENV}=1 to allow a "
-            f"conservative hardcoded budget (may silently under-utilize GPU)."
-        )
-
-
-@contextmanager
-def _eval_mode(model):
-    """Save/restore ``model.training`` around a probe. See critical-constraints.md."""
-    was_training = model.training
-    model.eval()
-    try:
-        yield
-    finally:
-        model.train(was_training)
-
-
 def collect_batch(dataset, target_nodes: int) -> Batch:
-    """Collect graphs until reaching ``target_nodes`` total. No DataLoader overhead."""
     graphs, total = [], 0
     for g in dataset:
         graphs.append(g)
@@ -160,226 +63,99 @@ def collect_batch(dataset, target_nodes: int) -> Batch:
     return Batch.from_data_list(graphs)
 
 
-def _step_peaks(model, batch) -> tuple[int, int, float]:
-    """Measure (fwd_peak, bwd_peak, t_fwd) for one batch on a warmed model.
+def _loss(out):
+    if isinstance(out, (tuple, list)):
+        return out[0]
+    if isinstance(out, dict):
+        return out["loss"]
+    return out
 
-    Caller owns warmup + lifecycle.
+
+def probe(
+    model,
+    train_dataset,
+    *,
+    probe_nodes: int = 10000,
+    quadratic: bool = False,
+) -> BudgetResult:
+    """One probe step. Baseline-subtract. Solve.
+
+    Quadratic mode is for GPS-style global attention (memory ∝ V²·heads).
     """
+    if not torch.cuda.is_available() or model is None or train_dataset is None:
+        raise RuntimeError("budget probe requires CUDA + model + train_dataset")
+
     dev = model.device
-    fn = getattr(model, "_step", None) or model
+    step_fn = getattr(model, "_step", None) or model
+    batch = collect_batch(train_dataset, probe_nodes).clone().to(dev)
+    V, E = int(batch.num_nodes), int(batch.num_edges)
 
-    with _eval_mode(model):
-        torch.cuda.reset_peak_memory_stats(dev)
-        t0 = time.perf_counter()
-        with torch.no_grad():
-            fn(batch)
-        torch.cuda.synchronize(dev)
-        t_fwd = time.perf_counter() - t0
-        fwd_peak = torch.cuda.max_memory_allocated(dev)
-
-    bwd_peak = fwd_peak
-    step_fn = getattr(model, "_step", None)
-    if step_fn is not None:
-        model.train()
-        torch.cuda.reset_peak_memory_stats(dev)
-        loss = step_fn(batch)
-        if isinstance(loss, (tuple, list)):
-            loss = loss[0]
-        elif isinstance(loss, dict):
-            loss = loss["loss"]
-        loss.backward()
-        torch.cuda.synchronize(dev)
-        bwd_peak = torch.cuda.max_memory_allocated(dev)
+    was_training = model.training
+    model.train()
+    for _ in range(3):
+        _loss(step_fn(batch)).backward()
         model.zero_grad(set_to_none=True)
-
-    return fwd_peak, bwd_peak, t_fwd
-
-
-def probe(model, batch_small, batch_big) -> tuple[int, int, float, float]:
-    """Two-point linear fit of VRAM vs. batch size.
-
-    Runs warmup as N full fwd+bwd training-mode steps on the big batch
-    (matches what training actually does), then measures peak VRAM at
-    small + big batches isolated. ``bpn_node`` is the slope of ``bwd_peak``
-    vs. nodes; the intercept (fixed overhead) drops out. Same for ``bpn_edge``.
-
-    Why training-mode warmup, not the prior single no_grad fwd on the small
-    batch: cold-allocator measurements systematically OVER-estimate per-node
-    cost for architectures with high allocator churn (GAT's multi-head
-    attention especially). Verified empirically on Pitzer V100 (run f85c82b):
-    cold-warmup probe sized GAT batches at 53% of card; doubling the budget
-    (safety_margin=1.5 → effectively halving bpn_node) hit 95% of card with
-    no OOM — proving the 7 GB "headroom" was real and the cold probe was
-    over-conservative. VGAE (simpler decoder, less churn) hits 101% util
-    even with cold warmup, so the bias is architecture-specific.
-
-    Warmup is symmetric across both probe shapes. cuDNN autotuner caches
-    kernels per-input-shape; if only ``batch_big`` is warmed, the
-    ``batch_small`` measurement pays one-shot kernel-selection workspace
-    cost that real training won't recur — biasing the slope. Verified
-    on VGAE post-rip: probe peak 15.4 GB vs training peak 11.8 GB on V100
-    (~25% gap) closes when both shapes are warmed. (Sequential, not
-    interleaved — cuDNN cache is content-addressed, not LRU.)
-
-    Returns ``(bpn_node, bpn_edge, bwd_mult, t_fwd_seconds)``. ``t_fwd``
-    is from the larger batch, which is more representative of real
-    training steps than the warmup-sized one.
-
-    Caller owns batch lifecycles.
-    """
-    dev = model.device
-
-    step_fn = getattr(model, "_step", None)
-    if step_fn is not None:
-        was_training = model.training
-        model.train()
-        for batch in (batch_big, batch_small):
-            for _ in range(_PROBE_WARMUP_STEPS):
-                loss = step_fn(batch)
-                if isinstance(loss, (tuple, list)):
-                    loss = loss[0]
-                elif isinstance(loss, dict):
-                    loss = loss["loss"]
-                loss.backward()
-                model.zero_grad(set_to_none=True)
-        torch.cuda.synchronize(dev)
-        model.train(was_training)
-    else:
-        # Fallback for models without _step (analyzers, eval-only paths).
-        with _eval_mode(model):
-            with torch.no_grad():
-                model(batch_small)
-        torch.cuda.synchronize(dev)
-
-    fwd_s, bwd_s, _ = _step_peaks(model, batch_small)
-    fwd_b, bwd_b, t_fwd_big = _step_peaks(model, batch_big)
-
-    dn = max(1, batch_big.num_nodes - batch_small.num_nodes)
-    de = max(1, int(batch_big.num_edges) - int(batch_small.num_edges))
-    # Clamp to avoid pathologies when allocator caching makes the big probe
-    # report lower peak than the small one (rare but possible at small deltas).
-    bpn_node = max(1, (bwd_b - bwd_s) // dn)
-    bpn_edge = max(1, (bwd_b - bwd_s) // de)
-
-    fwd_scaling = max(1, fwd_b - fwd_s)
-    bwd_scaling = max(1, bwd_b - bwd_s)
-    bwd_mult = max(1.0, bwd_scaling / fwd_scaling) if fwd_scaling > 0 else _BWD_MULT_FALLBACK
-    return bpn_node, bpn_edge, bwd_mult, t_fwd_big
-
-
-def probe_quadratic(model, batches: list[Batch]) -> tuple[float, float, float, float]:
-    """Three-point quadratic fit of ``peak_bwd = α·V² + β·V + γ`` for GPS.
-
-    Runs warmup on the smallest batch (cuDNN autotuning, allocator baseline),
-    then full fwd+bwd on every batch and collects (V, peak) pairs. Fits the
-    quadratic via least-squares in float64 — the intercept γ absorbs every
-    fixed cost, α isolates the O(V²) attention term, β picks up O(V) linear
-    contributions (MPNN branch + feature projections).
-
-    Returns ``(alpha, beta, gamma, t_fwd_last)``. Caller solves the quadratic
-    against the free-VRAM target and handles degenerate fits.
-
-    Caller owns batch lifecycles; batches should be ordered ascending by
-    ``num_nodes`` so the smallest is used for warmup.
-    """
-    dev = model.device
-
-    with _eval_mode(model):
-        with torch.no_grad():
-            (getattr(model, "_step", None) or model)(batches[0])
     torch.cuda.synchronize(dev)
 
-    vs: list[int] = []
-    peaks: list[int] = []
-    t_fwd_last = 0.0
-    for b in batches:
-        _, bwd_peak, t_fwd = _step_peaks(model, b)
-        vs.append(int(b.num_nodes))
-        peaks.append(bwd_peak)
-        t_fwd_last = t_fwd
+    baseline = torch.cuda.memory_allocated(dev)
 
-    # polyfit returns coefficients in ASCENDING order: [gamma, beta, alpha].
-    gamma, beta, alpha = np.polynomial.polynomial.polyfit(vs, peaks, 2)
-    return float(alpha), float(beta), float(gamma), t_fwd_last
+    @profileit(device=dev.index if dev.index is not None else 0)
+    def _fwd():
+        with torch.no_grad():
+            _loss(step_fn(batch))
 
+    @profileit(device=dev.index if dev.index is not None else 0)
+    def _fwd_bwd():
+        _loss(step_fn(batch)).backward()
+        model.zero_grad(set_to_none=True)
 
-_GPS_PROBE_SIZES = (500, 1500, 4000)
+    model.eval()
+    _, fwd_stats = _fwd()
+    model.train()
+    _, bwd_stats = _fwd_bwd()
+    model.train(was_training)
 
+    peak = int(bwd_stats.max_allocated_gpu * _MB)
+    fwd_peak = int(fwd_stats.max_allocated_gpu * _MB)
+    activation = max(1, peak - baseline)
 
-def _gps_budget(dataset: str, free: int, heads: int, model, train_dataset) -> BudgetResult:
-    """Quadratic-probe path for GPS. Returns a ``BudgetResult`` with both
-    node and edge budgets. Raises if probe prerequisites (CUDA + model +
-    dataset) are missing unless ``GRAPHIDS_ALLOW_FALLBACK_BUDGET=1``. Falls
-    back silently only when the quadratic fit itself degenerates (α≤0 or
-    negative discriminant) — that's a measurement edge case, not a missing
-    prerequisite.
-    """
-    _require_probe_prereqs(model, train_dataset, conv_type="gps")
+    free = torch.cuda.mem_get_info()[0]
+    target = max(1, int(free * _SAFETY))
+    headroom = max(1, target - baseline)
 
-    if not torch.cuda.is_available() or model is None or train_dataset is None:
-        # Opted-in fallback (env var set). Conservative sqrt formula with a
-        # node-to-edge ratio (from settings) that will never be the binding axis.
-        budget, edge_budget = _fallback_budget_pair(free, heads)
-        target = max(1, int(free * _SAFETY))
-        return BudgetResult(
-            budget=budget,
-            edge_budget=edge_budget,
-            binding="opted_in_fallback",
-            target_bytes=target,
-        )
-
-    dev = model.device
-    batches = [collect_batch(train_dataset, n).clone().to(dev) for n in _GPS_PROBE_SIZES]
-    total_v = sum(int(b.num_nodes) for b in batches)
-    total_e = sum(int(b.num_edges) for b in batches)
-    epn = total_e / max(1, total_v)
-
-    alpha, beta, gamma, t_fwd = probe_quadratic(model, batches)
-    del batches
-    torch.cuda.empty_cache()
-
-    target = free * _SAFETY
-    roots = np.roots([alpha, beta, gamma - target])
-    real_positive = [r.real for r in roots if abs(r.imag) < 1e-9 and r.real > 0]
-    if not real_positive:
-        # Degenerate fit — node half of the fallback pair is the right conservative
-        # sqrt budget; edge_budget below uses the empirical epn from the probe
-        # batches (not the fallback's 10× ratio) since we actually measured it.
-        budget, _ = _fallback_budget_pair(free, heads)
-        binding = "measured_degenerate_fallback"
-        log.warning(
-            "gps_probe_degenerate",
-            alpha=alpha,
-            beta=beta,
-            gamma=gamma,
-            roots=roots.tolist(),
-        )
+    if quadratic:
+        alpha = activation / (V * V)
+        budget = max(1, int(math.sqrt(headroom / alpha)))
     else:
-        budget = max(1, int(max(real_positive)))
-        binding = "measured"
+        per_node = activation / V
+        budget = max(1, int(headroom / per_node))
 
-    edge_budget = max(1, int(budget * epn * _EMPIRICAL_EPN_HEADROOM))
+    epn = E / max(1, V)
+    edge_budget = max(1, int(budget * epn * _EPN_HEADROOM))
+    bwd_mult = max(1.0, peak / max(1, fwd_peak))
+
+    del batch
+    torch.cuda.empty_cache()
 
     log.info(
         "budget_probed",
-        dataset=dataset,
-        conv_type="gps",
-        binding=binding,
-        free_mb=free // (1024 * 1024),
-        alpha_bytes_per_v2=round(alpha, 4),
-        beta_bytes_per_v=round(beta, 2),
-        gamma_bytes=int(gamma),
+        quadratic=quadratic,
+        free_mb=free // _MB,
+        baseline_mb=baseline // _MB,
+        peak_mb=peak // _MB,
+        activation_mb=activation // _MB,
         budget_nodes=budget,
         budget_edges=edge_budget,
         edges_per_node=round(epn, 2),
-        t_fwd_ms=round(t_fwd * 1000, 1),
+        bwd_mult=round(bwd_mult, 2),
+        t_fwd_ms=round(fwd_stats.time * 1000, 1),
     )
     return BudgetResult(
         budget=budget,
         edge_budget=edge_budget,
-        binding=binding,
-        t_fwd=t_fwd,
-        target_bytes=int(target),
+        backward_multiplier=bwd_mult,
+        t_fwd=float(fwd_stats.time),
+        target_bytes=target,
     )
 
 
@@ -391,69 +167,21 @@ def node_budget(
     conv_type: str | None = None,
     heads: int | None = None,
 ) -> BudgetResult:
-    """Pack budget: ``free × safety / bpn`` per dimension.
+    if conv_type is None and model is not None:
+        conv_type = getattr(model.hparams, "conv_type", "gatv2")
+    return probe(model, train_dataset, quadratic=(conv_type == "gps"))
 
-    Production callers pass ``model`` only — ``conv_type`` and ``heads``
-    are read off ``model.hparams``. The explicit kwargs exist for the
-    no-model fallback path (tests, cache-rebuild CPU runs).
 
-    ``free`` from ``mem_get_info`` already excludes resident allocation, and
-    ``bpn`` from the probe is purely batch-scaling — so one multiply gives
-    the max batch that fits without double-counting.
-    """
-    free = torch.cuda.mem_get_info()[0] if torch.cuda.is_available() else 12 * 1024**3
-    conv_type, heads = _resolve_model_hp(model, conv_type, heads)
-
-    if conv_type == "gps":
-        return _gps_budget(dataset, free, heads, model, train_dataset)
-
-    _require_probe_prereqs(model, train_dataset, conv_type=conv_type)
-
-    bpn_node, bpn_edge = _FALLBACK_BPN, 0
-    bwd, t_fwd = None, 0.0
-    if model and train_dataset and torch.cuda.is_available():
-        dev = model.device
-        # Two-point probe. Small batch amortizes warmup / cuDNN autotuning;
-        # big batch drives the slope. 10× ratio is enough for the fixed-cost
-        # intercept to cancel out without inflating probe runtime.
-        small = collect_batch(train_dataset, 2000).clone().to(dev)
-        big = collect_batch(train_dataset, 20000).clone().to(dev)
-        bpn_node, bpn_edge, bwd, t_fwd = probe(model, small, big)
-        del small, big
-        torch.cuda.empty_cache()
-
-    free_scalable = max(1, int(free * _SAFETY))
-    budget = max(1, free_scalable // max(1, bpn_node))
-    # bpn_edge=0 only reachable via opt-in fallback; give a non-None edge
-    # budget so pack_offline's dual-budget invariant holds. fallback_edge_node_ratio
-    # (default 10×) is a conservative ceiling — real CAN graphs sit at 1–10 edges/node.
-    edge_budget = (
-        max(1, free_scalable // bpn_edge)
-        if bpn_edge > 0
-        else int(budget * _FALLBACK_EDGE_NODE_RATIO)
-    )
-    binding = "measured" if (model and train_dataset) else "opted_in_fallback"
-    log.info(
-        "budget_probed",
-        dataset=dataset,
-        conv_type=conv_type,
-        binding=binding,
-        free_mb=free // (1024 * 1024),
-        bpn_node=bpn_node,
-        bpn_edge=bpn_edge,
-        budget_nodes=budget,
-        budget_edges=edge_budget,
-        bwd_mult=round(bwd, 2) if bwd is not None else None,
-        t_fwd_ms=round(t_fwd * 1000, 1),
-    )
-    return BudgetResult(
-        budget=budget,
-        edge_budget=edge_budget,
-        binding=binding,
-        backward_multiplier=bwd,
-        t_fwd=t_fwd,
-        target_bytes=free_scalable,
-    )
+def _cpu_cap() -> int:
+    slurm = os.environ.get("SLURM_CPUS_PER_TASK")
+    if slurm and slurm.isdigit():
+        n = int(slurm)
+    else:
+        try:
+            n = len(os.sched_getaffinity(0))
+        except AttributeError:
+            n = os.cpu_count() or 4
+    return max(1, n - 2)
 
 
 def autosize_workers(
@@ -463,70 +191,34 @@ def autosize_workers(
     *,
     default_prefetch: int = 2,
 ) -> tuple[int, int, dict]:
-    """``ceil((t_io + t_collation) / t_gpu)`` → ``(num_workers, prefetch_factor, diagnostics)``.
-
-    Worker time has two components: dataset ``__getitem__`` (real I/O) plus
-    ``Batch.from_data_list`` (collation, CPU-bound). Logs the chosen value
-    plus timing components and CPU cap to ``traces.jsonl``. The third return
-    value is a diagnostics dict — empty on the two fallback paths, populated
-    with timing components, ratio, raw worker count, and CPU cap on the
-    measured path. The datamodule forwards it to MLflow under the
-    ``graphids.dataloader.*`` tag namespace so post-hoc analysis can
-    distinguish "autosize ran and picked N" from "autosize bailed".
-    """
     if model is None or model.device.type != "cuda" or result.t_fwd <= 0:
-        log.info(
-            "workers_autosized",
-            nw=2,
-            prefetch_factor=default_prefetch,
-            source="fallback_no_probe",
-            has_model=model is not None,
-            has_cuda=model is not None and model.device.type == "cuda",
-            t_fwd=result.t_fwd,
-        )
         return 2, default_prefetch, {}
-
-    t_gpu = result.t_fwd * (result.backward_multiplier or _BWD_MULT_FALLBACK)
     batch = collect_batch(dataset, result.budget)
     if batch.num_graphs < 2:
-        log.info(
-            "workers_autosized",
-            nw=2,
-            prefetch_factor=default_prefetch,
-            source="fallback_small_batch",
-            batch_num_graphs=batch.num_graphs,
-        )
         return 2, default_prefetch, {}
-
-    # Drain pending CUDA work so async ops don't inflate CPU timing (#28)
     torch.cuda.synchronize(model.device)
 
-    # I/O timing: sample batch.num_graphs indices, walk dataset __getitem__.
     n = min(batch.num_graphs, len(dataset))
-    idx = random.sample(range(len(dataset)), n)
-    t0 = time.perf_counter()
-    for i in idx:
-        _ = dataset[i]
-    t_io = time.perf_counter() - t0
-
-    # Collation timing (operates on already-loaded Data objects)
+    t_io = Timer(
+        stmt="[ds[i] for i in range(n)]",
+        globals={"ds": dataset, "n": n},
+    ).blocked_autorange(min_run_time=0.1).median
     graphs = batch.to_data_list()
-    t0 = time.perf_counter()
-    Batch.from_data_list(graphs)
-    t_coll = time.perf_counter() - t0
+    t_coll = Timer(
+        stmt="Batch.from_data_list(graphs)",
+        globals={"Batch": Batch, "graphs": graphs},
+    ).blocked_autorange(min_run_time=0.1).median
 
-    t_worker = t_io + t_coll
-    slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
-    max_cpus = (int(slurm_cpus) if slurm_cpus and slurm_cpus.isdigit() else None) or os.cpu_count()
-    cap = max(1, max_cpus - 2)
-    raw = math.ceil(t_worker / t_gpu)
+    t_gpu = result.t_fwd * result.backward_multiplier
+    raw = math.ceil((t_io + t_coll) / t_gpu)
+    cap = _cpu_cap()
     w = max(1, min(raw, cap))
-    pf = 4 if w >= 8 else 2
+    pf = 4 if w >= 8 else default_prefetch
     diag = {
         "t_io_ms": round(t_io * 1000, 2),
         "t_coll_ms": round(t_coll * 1000, 2),
         "t_gpu_ms": round(t_gpu * 1000, 2),
-        "ratio": round(t_worker / t_gpu, 3),
+        "ratio": round((t_io + t_coll) / t_gpu, 3),
         "raw_w": raw,
         "cap": cap,
     }
@@ -535,7 +227,6 @@ def autosize_workers(
         nw=w,
         prefetch_factor=pf,
         source="capped" if raw > cap else "measured",
-        max_cpus=max_cpus,
         **diag,
     )
     return w, pf, diag

@@ -120,6 +120,19 @@ class _ModelBase(pl.LightningModule):
                 names_map = getattr(schema, "attack_type_names", None)
         self._attack_type_names = dict(names_map or {0: "benign"})
 
+    # -- curriculum loss epoch sync ------------------------------------------
+    #
+    # Curriculum-aware losses (``CurriculumWeightedLoss``) read the current
+    # epoch via ``set_epoch`` to evaluate the visibility schedule each step.
+    # Hooking it here keeps every classifier model curriculum-compatible
+    # without per-class plumbing — non-curriculum losses don't expose
+    # ``set_epoch`` so this is a no-op for them.
+
+    def on_train_epoch_start(self) -> None:
+        set_epoch = getattr(getattr(self, "loss_fn", None), "set_epoch", None)
+        if callable(set_epoch):
+            set_epoch(int(self.current_epoch))
+
     def on_test_setup(self, datamodule, device) -> None:
         """Fired by orchestrate.evaluate after the model is on device + ckpt
         loaded, before ``model.eval()`` + the test loop. Default no-op.
