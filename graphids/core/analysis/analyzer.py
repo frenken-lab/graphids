@@ -51,6 +51,7 @@ class Analyzer:
         stride: int = 100,
         batch_size: int = 256,
         seed: int = 42,
+        vocab_scope: str = "train",
         # --- fusion (only needed when fusion_policy=true) ---
         vgae_ckpt_path: str = "",
         gat_ckpt_path: str = "",
@@ -80,6 +81,7 @@ class Analyzer:
         self.stride = stride
         self.batch_size = batch_size
         self.seed = seed
+        self.vocab_scope = vocab_scope
         self.vgae_ckpt_path = vgae_ckpt_path
         self.gat_ckpt_path = gat_ckpt_path
 
@@ -190,7 +192,9 @@ class Analyzer:
         """Load validation dataset using same window_size/stride as training."""
         from graphids.core.data.datasets.can_bus import CANBusDataset
 
-        root = cache_dir(self.lake_root, self.dataset)
+        # Mirrors BaseGraphSource.build(): cache is partitioned by vocab_scope
+        # so the train-only and all-splits regimes coexist on disk.
+        root = cache_dir(self.lake_root, self.dataset) / f"voc_{self.vocab_scope}"
         raw = data_dir(self.lake_root, self.dataset)
         # val shares train's tensor (split_tag defaults to "train"); we only
         # read the cache, so source_dirs isn't needed here. val_fraction

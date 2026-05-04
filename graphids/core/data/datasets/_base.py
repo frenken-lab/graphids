@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 import polars as pl
 import torch
@@ -445,6 +445,15 @@ class BaseGraphSource:
     val_fraction: float = 0.2
     seed: int = 42
     scaler_strategy: str = "z_benign"
+    # ``"train"``: scan only the train/train_attack subdirs — novel test-only
+    # ids route to UNK (index 0). ``"all"``: scan every present split, the
+    # legacy behavior. Default flipped to ``"train"`` because the
+    # can-train-and-test ``test_02``/``test_04`` subdirs hold out a whole
+    # vehicle (Subaru on set_01/02), and ``"all"`` would build trainable
+    # embedding rows for IDs the model has never seen at train time —
+    # exactly the leak the cross-vehicle eval is designed to detect. See
+    # ``.claude/plans/id-vocab-and-masking.md``.
+    vocab_scope: Literal["train", "all"] = "train"
 
     def resolved_lake_root(self) -> str:
         if self.lake_root:
@@ -460,6 +469,7 @@ class BaseGraphSource:
             f"|w{self.window_size}|s{self.stride}"
             f"|v{self.val_fraction}|seed{self.seed}"
             f"|sc:{self.scaler_strategy}"
+            f"|voc:{self.vocab_scope}"
         )
 
     # ── must override ─────────────────────────────────────────────────
@@ -480,7 +490,10 @@ class BaseGraphSource:
 
         entry = load_catalog()[self.name]
         lake_root = self.resolved_lake_root()
-        root = cache_dir(lake_root, self.name)
+        # Partition the cache by ``vocab_scope`` so the two regimes can coexist
+        # on disk for ablation. The vocab digest alone would force a rebuild
+        # rather than a coexistence (it's an INVARIANT_KEY).
+        root = cache_dir(lake_root, self.name) / f"voc_{self.vocab_scope}"
         raw = data_dir(lake_root, self.name)
 
         # Train scope is explicit: attack-free + with-attacks subdirs from
@@ -493,16 +506,21 @@ class BaseGraphSource:
                 f"or train_attack_subdir; cannot build training cache."
             )
 
-        # Shared vocab: scanned once across train + every present test
-        # subdir so every split maps an id to the same embedding row.
-        # Persisted under {root}/vocab.json; its digest becomes a cache
-        # invariant (see ``metadata.INVARIANT_KEYS``) so adding a subdir
-        # with new ids forces a clean rebuild.
+        # Shared vocab: scope-controlled. ``vocab_scope="train"`` scans only
+        # the train/train_attack subdirs so test-only ids route to UNK
+        # (index 0) at lookup time — this is the principled cross-vehicle
+        # default. ``vocab_scope="all"`` retains the legacy union scan for
+        # ablation. Persisted under {root}/vocab.json; the digest becomes a
+        # cache invariant (see ``metadata.INVARIANT_KEYS``) so adding a
+        # subdir with new ids forces a clean rebuild within the same scope.
         present_test_subdirs = [sd for sd in entry.get("test_subdirs", []) if (raw / sd).is_dir()]
-        all_sources = list(train_dirs) + present_test_subdirs
+        if self.vocab_scope == "all":
+            scan_sources = list(train_dirs) + present_test_subdirs
+        else:
+            scan_sources = list(train_dirs)
         # Dense index starting at 1; 0 reserved for UNK. _scan_vocab
         # returns sorted uniques, so enumerate order is deterministic.
-        shared_vocab = {tok: i + 1 for i, tok in enumerate(self._scan_vocab(raw, all_sources))}
+        shared_vocab = {tok: i + 1 for i, tok in enumerate(self._scan_vocab(raw, scan_sources))}
         shared_vocab_digest = persist_vocab(shared_vocab, Path(root) / "vocab.json")
 
         common = dict(
