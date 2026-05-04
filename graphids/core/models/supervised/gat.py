@@ -269,6 +269,7 @@ class GAT(GraphModuleBase):
             preds=probs.argmax(1),
             scores=probs,  # (N, K) — consumed by classification_test_metrics
             labels=batch.y,
+            attack_type=getattr(batch, "attack_type", None),
         )
 
     def predict_step(self, batch, _idx):

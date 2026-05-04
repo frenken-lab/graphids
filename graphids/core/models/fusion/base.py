@@ -134,7 +134,13 @@ class FusionModuleBase(_ModelBase):
         td, labels = batch
         fused = self.predict(td)["fused_scores"].float()
         probs = torch.stack([1.0 - fused, fused], dim=1)
-        self._record_test_batch(dataloader_idx, scores=probs, labels=labels)
+        # attack_type is only present if the upstream extraction pipeline
+        # surfaces it; per-attack AUROC is opt-in and falls back to no-op
+        # cleanly when the tensordict doesn't carry the field.
+        attack_type = td.get("attack_type", None) if hasattr(td, "get") else None
+        self._record_test_batch(
+            dataloader_idx, scores=probs, labels=labels, attack_type=attack_type
+        )
 
 
 class RLFusionBase(FusionModuleBase):

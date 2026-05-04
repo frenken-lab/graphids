@@ -48,7 +48,12 @@ class ScoreBasedDetectorMixin(GraphModuleBase):
     def test_step(self, batch, batch_idx, dataloader_idx: int = 0) -> None:
         scores = self.score(batch)
         self.roc_metric.update(scores.detach(), batch.y.detach())
-        self._record_test_batch(dataloader_idx, scores=scores, labels=batch.y)
+        self._record_test_batch(
+            dataloader_idx,
+            scores=scores,
+            labels=batch.y,
+            attack_type=getattr(batch, "attack_type", None),
+        )
 
     def on_test_epoch_end(self) -> None:
         # _log_thresholded_metrics (on GraphModuleBase) discovers the

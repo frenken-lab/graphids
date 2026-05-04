@@ -108,6 +108,17 @@ class _ModelBase(pl.LightningModule):
         ``GraphModuleBase``) override to also lazy-build on first call."""
         ds = getattr(dm, "test_datasets", None)
         self._test_set_names = list(ds.keys()) if ds else ["test"]
+        # Snapshot the dataset schema's attack-type code → name map so the
+        # per-attack-type AUROC pass at on_test_epoch_end can label its keys
+        # (`test/{subdir}/auroc_per_attack/{name}`). Falls back to a
+        # benign-only map for datasets without a multiclass taxonomy.
+        names_map: dict[int, str] | None = None
+        if ds:
+            first = next(iter(ds.values()))
+            schema = getattr(first, "SCHEMA", None)
+            if schema is not None:
+                names_map = getattr(schema, "attack_type_names", None)
+        self._attack_type_names = dict(names_map or {0: "benign"})
 
     def on_test_setup(self, datamodule, device) -> None:
         """Fired by orchestrate.evaluate after the model is on device + ckpt
@@ -130,11 +141,15 @@ class _ModelBase(pl.LightningModule):
         # ``scores`` holds 1-D scores for threshold-flavor (VGAE/DGI) and (N,K)
         # probabilities for classifier-flavor (GAT/fusion). ``preds`` is
         # optional hard predictions when the model emits them directly.
-        self._test_buffers = {n: {"preds": [], "scores": [], "labels": []} for n in names}
+        self._test_buffers = {
+            n: {"preds": [], "scores": [], "labels": [], "attack_type": []} for n in names
+        }
         # Filled in on_test_epoch_end; stage.evaluate reads to persist to disk.
         self._test_predictions: dict[str, dict[str, torch.Tensor]] = {}
 
-    def _record_test_batch(self, dataloader_idx: int, *, scores, labels, preds=None) -> None:
+    def _record_test_batch(
+        self, dataloader_idx: int, *, scores, labels, preds=None, attack_type=None
+    ) -> None:
         """Buffer one batch's predictions under the right test-set bucket."""
         names = getattr(self, "_test_set_names", ["test"])
         name = names[dataloader_idx] if dataloader_idx < len(names) else names[-1]
@@ -143,6 +158,8 @@ class _ModelBase(pl.LightningModule):
         buf["labels"].append(labels.detach().cpu())
         if preds is not None:
             buf["preds"].append(preds.detach().cpu())
+        if attack_type is not None:
+            buf["attack_type"].append(attack_type.detach().cpu())
 
     def on_test_epoch_end(self) -> None:
         """Classifier flavor — per-set + aggregate metrics from buffers.
@@ -175,7 +192,12 @@ class _ModelBase(pl.LightningModule):
             self.log_dict(coll.compute())
             # Operating points are binary-specific — reconstruct class-1 score.
             if probs.ndim == 2 and probs.shape[1] == 2:
-                self._log_operating_points(probs[:, 1], labels, prefix=f"test/{name}/")
+                class1 = probs[:, 1]
+                self._log_operating_points(class1, labels, prefix=f"test/{name}/")
+                if buf["attack_type"]:
+                    self._log_per_attack_auroc(
+                        name, class1, labels, torch.cat(buf["attack_type"])
+                    )
             all_probs.append(probs)
             all_labels.append(labels)
         if all_probs:
@@ -184,6 +206,53 @@ class _ModelBase(pl.LightningModule):
             self.log_dict(self.test_metrics.compute())
             if pooled_p.ndim == 2 and pooled_p.shape[1] == 2:
                 self._log_operating_points(pooled_p[:, 1], pooled_l, prefix="test/")
+
+    def _log_per_attack_auroc(
+        self,
+        name: str,
+        class1_scores: torch.Tensor,
+        labels: torch.Tensor,
+        attack_type: torch.Tensor,
+    ) -> None:
+        """One-vs-benign binary AUROC per attack code, plus macro mean.
+
+        ``class1_scores`` is the 1-D positive-class score (class-1 prob for
+        classifier flavor; raw score for threshold flavor). ``attack_type``
+        is per-graph (benign = 0). For each non-zero code present, AUROC
+        is computed over the benign∪{this-code} subset; codes lacking
+        either class are skipped (binary AUROC undefined).
+
+        Logged keys: ``test/{name}/auroc_per_attack/{attack_name}`` plus
+        ``test/{name}/auroc_per_attack_macro`` over present codes.
+        """
+        if attack_type.numel() == 0:
+            return
+        from torchmetrics.functional.classification import binary_auroc
+
+        scores = class1_scores.float()
+        labels = labels.long()
+        attack_type = attack_type.long()
+        benign_mask = attack_type == 0
+        names_map = getattr(self, "_attack_type_names", {0: "benign"})
+        prefix = f"test/{name}/auroc_per_attack"
+        per_attack: dict[str, float] = {}
+        for code in attack_type.unique().tolist():
+            if code == 0:
+                continue
+            subset = benign_mask | (attack_type == code)
+            sub_scores = scores[subset]
+            sub_labels = labels[subset]
+            if sub_labels.unique().numel() < 2:
+                continue
+            attack_name = names_map.get(int(code), f"unknown_{int(code)}")
+            value = float(binary_auroc(sub_scores, sub_labels))
+            per_attack[f"{prefix}/{attack_name}"] = value
+        if not per_attack:
+            return
+        per_attack[f"test/{name}/auroc_per_attack_macro"] = sum(per_attack.values()) / len(
+            per_attack
+        )
+        self.log_dict(per_attack)
 
     def _log_operating_points(
         self,
@@ -428,6 +497,10 @@ class GraphModuleBase(_ModelBase):
                 prefix = f"test/{name}/"
                 self.log_dict({f"{prefix}{k}": v for k, v in coll.compute().items()})
                 self._log_operating_points(scores, labels, prefix=prefix)
+                if buf["attack_type"]:
+                    self._log_per_attack_auroc(
+                        name, scores, labels, torch.cat(buf["attack_type"])
+                    )
                 # Materialize derived preds so _finalize_test_predictions persists them.
                 buf["preds"] = [(scores >= self.test_threshold).long()]
         self._finalize_test_predictions()
