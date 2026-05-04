@@ -20,7 +20,7 @@ from torch_geometric.data import Data, InMemoryDataset
 from graphids._fs import atomic_save
 from graphids.config.constants import PREPROCESSING_VERSION
 from graphids.core.data import scaler as scaler_mod
-from graphids.core.data.cache import DatasetState
+from graphids.core.data.state import DatasetState
 from graphids.core.data.graph_pipeline import GraphPipeline
 from graphids.core.data.metadata import merge_split_into_metadata
 
@@ -536,7 +536,7 @@ class CANBusDataset(InMemoryDataset):
 class CANBusSource:
     """CAN bus dataset source — produces train/val/test splits on demand.
 
-    ``get_or_build`` in ``graphids.core.data.cache`` memoizes the
+    ``get_or_build`` in ``graphids.core.data.state`` memoizes the
     ``DatasetState`` returned by ``build()`` under ``cache_key`` so
     multi-stage runs sharing a process pay preprocessing + mmap cost
     once instead of per-stage.

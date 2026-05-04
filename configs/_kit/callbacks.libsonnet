@@ -37,13 +37,11 @@ function(monitor='val_auroc', mode='max', patience=100, run_dir='', extras={})
         },
       },
       // MLflow per-epoch metric forwarding — universal, no parameterization.
-      // Owns nothing the trainer can know on its own; without this, MLflow
-      // rows have no per-epoch metrics. See data-layout.md.
-      //
-      // ``init_args`` is empty: the callback's __init__ reads its ``run_id``
-      // from ``$GRAPHIDS_MLFLOW_RUN_ID``, set by ``orchestrate.train`` /
-      // ``.evaluate`` immediately after ``start_training_run``. Authoritative
-      // construction goes through ``class_path`` like every other callback.
+      // Catalog ``LoggedModel`` lifecycle + graphids-specific run state.
+      // Per-epoch metric forwarding is owned by Lightning's MLFlowLogger
+      // (wired in ``orchestrate._make_trainer``). The callback pulls run_id
+      // + client from ``trainer.logger`` in ``on_train_start``, so
+      // ``init_args`` is genuinely empty.
       mlflow: {
         class_path: 'graphids._mlflow.MLflowTrainingCallback',
         init_args: {},

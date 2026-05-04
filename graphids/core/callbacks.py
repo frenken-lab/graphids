@@ -15,7 +15,6 @@ encode graphids-specific policy:
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -23,17 +22,13 @@ from typing import Any
 import lightning.pytorch as pl
 import torch
 
+from graphids._fs import _sha256_file
 from graphids.core.models.base import strip_orig_mod_prefix
 
 
 # ---------------------------------------------------------------------------
 # Sha256ModelCheckpoint — Lightning ModelCheckpoint + sha256 sidecar
 # ---------------------------------------------------------------------------
-
-
-def _sha256_file(path: Path) -> str:
-    with path.open("rb") as f:
-        return hashlib.file_digest(f, "sha256").hexdigest()
 
 
 class Sha256ModelCheckpoint(pl.callbacks.ModelCheckpoint):
@@ -90,12 +85,14 @@ class TauNormCallback(pl.Callback):
 
     def on_fit_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         # Tag at start so the τ value is on the run regardless of fit-end ordering.
-        try:
-            import mlflow
-
-            mlflow.set_tag("graphids.tau_norm.tau", f"{self.tau:.4f}")
-        except Exception:  # noqa: BLE001 — MLflow tag is metadata, must not block training
-            pass
+        # Go through ``trainer.logger`` (MLFlowLogger) rather than the fluent
+        # ``mlflow.set_tag`` global — the logger is the single source of truth
+        # for the active run and works without an implicit ``start_run`` context.
+        logger = trainer.logger
+        if logger is not None and hasattr(logger, "run_id"):
+            logger.experiment.set_tag(
+                logger.run_id, "graphids.tau_norm.tau", f"{self.tau:.4f}"
+            )
 
     def on_fit_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         from structlog import get_logger
@@ -136,14 +133,16 @@ class TauNormCallback(pl.Callback):
     def _resolve_classifier_key(state: dict[str, torch.Tensor]) -> str:
         """Return the state-dict key of GAT's final ``nn.Linear`` (logit-producing).
 
-        GATWithJK builds ``self.fc_layers`` as ``ModuleList([Linear, ReLU,
-        Dropout, ..., Linear])``. The last entry is always the linear
-        that maps to ``num_classes``. We pick the highest-indexed
-        ``model.fc_layers.<N>.weight`` whose value has 2 rows
-        (``out_channels == num_classes == 2``); intermediate Linear rows
-        match ``fc_input_dim``, so 2-row indexing is unambiguous.
+        GAT builds ``self.fc_layers`` directly on the LightningModule as
+        ``ModuleList([Linear, ReLU, Dropout, ..., Linear])`` (the historical
+        ``self.model = nn.Module(...)`` indirection was collapsed — see
+        ``base.py:516``). The last entry is always the linear that maps to
+        ``num_classes``. We pick the highest-indexed ``fc_layers.<N>.weight``
+        whose value has 2 rows (``out_channels == num_classes == 2``);
+        intermediate Linear rows match ``fc_input_dim``, so 2-row indexing
+        is unambiguous.
         """
-        prefix = "model.fc_layers."
+        prefix = "fc_layers."
         candidates: list[tuple[int, str]] = []
         for k, v in state.items():
             if not (k.startswith(prefix) and k.endswith(".weight")):
@@ -157,7 +156,7 @@ class TauNormCallback(pl.Callback):
             candidates.append((idx, k))
         if not candidates:
             raise KeyError(
-                f"τ-norm: no {prefix}<N>.weight entries found in state_dict — "
+                f"τ-norm: no top-level {prefix}<N>.weight entries found in state_dict — "
                 "TauNormCallback only supports GAT-shaped models (fc_layers ModuleList)"
             )
         # Highest index = last layer = the classifier head.

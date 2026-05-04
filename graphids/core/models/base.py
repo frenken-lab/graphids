@@ -211,11 +211,15 @@ class _ModelBase(pl.LightningModule):
         # torchmetrics returns NaN when the target operating point is
         # unreachable (e.g. max precision < min_precision). That's a valid
         # "no such threshold" sentinel, not a metric value — skip it.
+        # Use ``_at_`` instead of ``@`` — MLflow's metric-name alphabet is
+        # ``[A-Za-z0-9_\-. :/]``; ``@`` would be rejected by ``log_batch``
+        # and kill the whole row. Emit valid keys at the source rather than
+        # sanitizing downstream.
         candidates = {
-            f"{prefix}precision@{min_recall:g}recall": float(prec),
-            f"{prefix}threshold@{min_recall:g}recall": float(thr_p),
-            f"{prefix}recall@{min_precision:g}precision": float(rec),
-            f"{prefix}threshold@{min_precision:g}precision": float(thr_r),
+            f"{prefix}precision_at_{min_recall:g}recall": float(prec),
+            f"{prefix}threshold_at_{min_recall:g}recall": float(thr_p),
+            f"{prefix}recall_at_{min_precision:g}precision": float(rec),
+            f"{prefix}threshold_at_{min_precision:g}precision": float(thr_r),
         }
         self.log_dict({k: v for k, v in candidates.items() if not math.isnan(v)})
 
@@ -303,7 +307,7 @@ class GraphModuleBase(_ModelBase):
         packing right now, so val and test loaders reuse the train-time probe.
         """
         if self._budget_cache is None:
-            from graphids.core.data.budget import node_budget
+            from graphids.core.budget import node_budget
 
             self._budget_cache = node_budget(
                 dataset_name, model=self, train_dataset=train_dataset

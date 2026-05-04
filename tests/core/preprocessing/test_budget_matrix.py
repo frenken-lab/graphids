@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 import pytest
 
-from graphids.core.data.budget import node_budget
+from graphids.core.budget import node_budget
 
 DATASETS = ["hcrl_ch", "hcrl_sa", "set_01"]
 

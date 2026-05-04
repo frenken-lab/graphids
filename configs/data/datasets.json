@@ -1,26 +1,82 @@
 {
   "hcrl_ch": {
     "attack_types": ["dos", "fuzzing", "gear_spoofing", "rpm_spoofing"],
+    "train_subdir": "train_01_attack_free",
+    "train_attack_subdir": "train_02_with_attacks",
+    "test_subdirs": [
+      "test_01_DoS",
+      "test_02_fuzzing",
+      "test_03_gear_spoofing",
+      "test_04_rpm_spoofing"
+    ],
     "notes": "HCRL CAN — Challenge variant; per-attack labelled test splits."
   },
   "hcrl_sa": {
     "attack_types": ["mixed"],
+    "train_subdir": "train_01_attack_free",
+    "train_attack_subdir": "train_02_with_attacks",
+    "test_subdirs": [
+      "test_01_known_vehicle_known_attack",
+      "test_02_unknown_vehicle_known_attack",
+      "test_03_known_vehicle_unknown_attack",
+      "test_04_unknown_vehicle_unknown_attack"
+    ],
     "notes": "HCRL CAN — Scenario Anomaly; mixed-attack test splits."
   },
   "set_01": {
     "attack_types": ["mixed", "suppress", "masquerade"],
+    "train_subdir": "train_01_attack_free",
+    "train_attack_subdir": "train_02_with_attacks",
+    "test_subdirs": [
+      "test_01_known_vehicle_known_attack",
+      "test_02_unknown_vehicle_known_attack",
+      "test_03_known_vehicle_unknown_attack",
+      "test_04_unknown_vehicle_unknown_attack",
+      "test_05_suppress",
+      "test_06_masquerade"
+    ],
     "notes": "Automotive CAN Set 01; suppress/masquerade variants present."
   },
   "set_02": {
     "attack_types": ["mixed", "suppress", "masquerade"],
+    "train_subdir": "train_01_attack_free",
+    "train_attack_subdir": "train_02_with_attacks",
+    "test_subdirs": [
+      "test_01_known_vehicle_known_attack",
+      "test_02_unknown_vehicle_known_attack",
+      "test_03_known_vehicle_unknown_attack",
+      "test_04_unknown_vehicle_unknown_attack",
+      "test_05_suppress",
+      "test_06_masquerade"
+    ],
     "notes": "Automotive CAN Set 02."
   },
   "set_03": {
     "attack_types": ["mixed", "suppress", "masquerade"],
+    "train_subdir": "train_01_attack_free",
+    "train_attack_subdir": "train_02_with_attacks",
+    "test_subdirs": [
+      "test_01_known_vehicle_known_attack",
+      "test_02_unknown_vehicle_known_attack",
+      "test_03_known_vehicle_unknown_attack",
+      "test_04_unknown_vehicle_unknown_attack",
+      "test_05_suppress",
+      "test_06_masquerade"
+    ],
     "notes": "Automotive CAN Set 03."
   },
   "set_04": {
     "attack_types": ["mixed", "suppress", "masquerade"],
+    "train_subdir": "train_01_attack_free",
+    "train_attack_subdir": "train_02_with_attacks",
+    "test_subdirs": [
+      "test_01_known_vehicle_known_attack",
+      "test_02_unknown_vehicle_known_attack",
+      "test_03_known_vehicle_unknown_attack",
+      "test_04_unknown_vehicle_unknown_attack",
+      "test_05_suppress",
+      "test_06_masquerade"
+    ],
     "notes": "Automotive CAN Set 04."
   }
 }

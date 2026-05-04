@@ -232,13 +232,9 @@ def build_curriculum_tiers(
 
 
 class CurriculumEpochCallback(pl.Callback):
-    """Advance active tiers each epoch. No-op when datamodule isn't tier-batched.
-
-    Reads the DM from ``pl_module._graphids_dm`` (orchestrate stashes it
-    there because graphids passes dataloaders to ``trainer.fit``, not a
-    ``LightningDataModule``)."""
+    """Advance active tiers each epoch. No-op when datamodule isn't tier-batched."""
 
     def on_train_epoch_start(self, trainer, pl_module):
-        dm = getattr(pl_module, "_graphids_dm", None) or getattr(trainer, "datamodule", None)
+        dm = getattr(trainer, "datamodule", None)
         if dm is not None and getattr(dm, "_tier_batches", None) is not None:
             dm._select_active_tiers(trainer.current_epoch)

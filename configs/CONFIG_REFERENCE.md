@@ -177,9 +177,9 @@ Identity strings synthesized via `std.format` from `_meta`.
 ## 6. Resources
 
 Two strings on each row's `resources`: `mode` (gpu/cpu) + `length` (short/long).
-Cluster-specific numerics (`mem_gb`, `timeout_min`, `partition`,
-`cpus_per_task`) translate at submit time via
-`resources/submit_profiles.json` keyed `[mode][cluster][length]`.
+Cluster-specific numerics (`partition`, `cores_per_node`, `mem_per_node`,
+`walltime`, `gpus_per_node`) come from `resources/submit_profiles.json`
+keyed `[mode][cluster][length]` — keys map 1:1 to `parsl.providers.SlurmProvider`.
 
 The blueprint is **portable across clusters** — never pre-bake cluster numbers.
 

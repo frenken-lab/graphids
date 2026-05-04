@@ -149,7 +149,7 @@ configs/
 ├── plans/ofat.jsonnet             # multi-stage DAG topology
 ├── datasets/dataset_registry.json
 ├── matrix/{axes,topology}.json    # valid model types / stage existence
-└── resources/submit_profiles.json # raw submitit kwargs, [mode][cluster][length]
+└── resources/submit_profiles.json # raw parsl SlurmProvider kwargs, [mode][cluster][length]
 ```
 
 `graphids/` package layout: see `ls graphids/` — every name is self-describing.

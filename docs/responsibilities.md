@@ -26,12 +26,11 @@ toposorts, and calls `graphids.slurm.submit.submit()` per node with `dep_jids`
 afterok chaining held in memory.
 
 **SLURM** (`graphids/slurm/`, `graphids/cli/submit.py`) — resource allocation
-and job submission. One Typer command: `python -m graphids submit <preset.jsonnet>`
-for training; `python -m graphids submit --mode {gpu|cpu} --command "..."` for
-everything else. Library entrypoint is `graphids.slurm.submit.submit()`. Reads
-`configs/resources/submit_profiles.json` (two entries only: `gpu`, `cpu`).
-Optional `graphids.slurm.sizing.estimate_walltime_minutes` queries MLflow
-history when invoked with `--time-from-history`.
+and job submission. One Typer command: `python -m graphids submit --row <json>`
+submits a single blueprint row. Library entrypoint is
+`graphids.slurm.submit.submit_row()`. Reads
+`configs/resources/submit_profiles.json` keyed `[mode][cluster][length]`
+where each leaf is a `parsl.providers.SlurmProvider` kwargs dict.
 
 The pipeline is strictly one-directional:
 

@@ -174,6 +174,25 @@ class RLFusionBase(FusionModuleBase):
         # for ckpt round-trip; the manual step happens inside train_episode.
         return self._optimizer
 
+    # -- replay buffer ckpt round-trip ---------------------------------------
+    #
+    # Lightning's default ckpt saves state_dict + optimizer_states + hparams,
+    # but NOT the TensorDictReplayBuffer — torchrl's RB lives outside
+    # nn.Module's parameter tree. Without these hooks a SIGUSR2 preempt mid-
+    # training drops the buffer; on resume the DQN target net keeps its
+    # weights but learning restarts from an empty buffer (`_should_learn`
+    # gates on `len(self._rb) >= batch_size`). For DQN that's a real
+    # learning-progress regression on any run that gets preempted.
+
+    def on_save_checkpoint(self, checkpoint: dict) -> None:
+        super().on_save_checkpoint(checkpoint)
+        checkpoint["replay_buffer"] = self._rb.state_dict()
+
+    def on_load_checkpoint(self, checkpoint: dict) -> None:
+        rb_state = checkpoint.get("replay_buffer")
+        if rb_state is not None:
+            self._rb.load_state_dict(rb_state)
+
     # -- subclass hooks ------------------------------------------------------
 
     def _compute_loss(self, sample: TensorDict) -> torch.Tensor:
@@ -248,17 +267,23 @@ class RLFusionBase(FusionModuleBase):
     def _learn_step(self) -> float | None:
         if not self._should_learn() or len(self._rb) < self.batch_size:
             return None
+        # Route through Lightning's LightningOptimizer wrapper so AMP
+        # gradient scaling, gradient accumulation, and DDP optimizer
+        # toggling fire correctly under ``automatic_optimization=False``.
+        # Bare ``self._optimizer.step()`` and ``loss.backward()`` skip
+        # the scaler hook → silent zero grads under bf16/fp16 mixed.
+        opt = self.optimizers()
         last: float | None = None
         # Clip whatever the optimizer actually trains — keeps Bandit
         # (backbone-only) and DQN (loss_module incl. target net) honest.
-        clip_params = [p for g in self._optimizer.param_groups for p in g["params"]]
+        clip_params = [p for g in opt.param_groups for p in g["params"]]
         for _ in range(self.gpu_training_steps):
             sample = self._rb.sample().to(self.device)
             loss = self._compute_loss(sample)
-            self._optimizer.zero_grad()
-            loss.backward()
+            opt.zero_grad()
+            self.manual_backward(loss)
             nn.utils.clip_grad_norm_(clip_params, max_norm=1.0)
-            self._optimizer.step()
+            opt.step()
             self._after_optim_step()
             last = float(loss.detach().item())
         self._after_learn()

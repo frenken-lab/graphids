@@ -8,8 +8,8 @@ submission DO reach a pending job, since the job re-imports current
 source at exec time.
 
 Profiles in `configs/resources/submit_profiles.json`
-(`[mode][cluster][length]`) translate to Parsl `SlurmProvider`
-kwargs. Preempt-resume runs via SIGUSR2 (USR2 because NCCL catches
+(`[mode][cluster][length]`) hold Parsl `SlurmProvider` kwargs
+verbatim — `submit_row` splats them with `**profile`. Preempt-resume runs via SIGUSR2 (USR2 because NCCL catches
 USR1) — `graphids/runtime.py` traps the signal and re-submits the
 row with `--ckpt-path={run_dir}/checkpoints/last.ckpt` and
 `--depends-on-afterany=$SLURM_JOB_ID`.

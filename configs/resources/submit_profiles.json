@@ -1,36 +1,30 @@
 {
-  "_comment": "Profile entries are raw submitit AutoExecutor kwargs — no parsers in Python. Per-job mem_gb / timeout_min / command come from flags at submit time. slurm_signal_delay_s triggers submitit's checkpoint handler on SIGUSR2 N seconds before walltime — this is how _TrainingJob.checkpoint() gets called for auto-resume from last.ckpt on preemption. cluster_policy.mem_per_cpu_gb is the SLURM ratio used to keep cpus_per_task aligned with mem_gb (see _align_cpus_to_mem in slurm/submit.py).",
-  "cluster_policy": {
-    "pitzer":   {"mem_per_cpu_gb": 4},
-    "cardinal": {"mem_per_cpu_gb": 4},
-    "ascend":   {"mem_per_cpu_gb": 4}
-  },
   "gpu": {
     "pitzer": {
-      "short": {"slurm_partition": "gpudebug", "cpus_per_task": 8, "mem_gb": 48, "timeout_min": 60,  "gpus_per_node": 1, "slurm_signal_delay_s": 300},
-      "long":  {"slurm_partition": "gpu",      "cpus_per_task": 8, "mem_gb": 48, "timeout_min": 180, "gpus_per_node": 1, "slurm_signal_delay_s": 300}
+      "short": {"partition": "gpudebug", "cores_per_node": 8, "mem_per_node": 48, "walltime": "01:00:00", "gpus_per_node": 1, "signal_delay_s": 300},
+      "long":  {"partition": "gpu",      "cores_per_node": 8, "mem_per_node": 48, "walltime": "03:00:00", "gpus_per_node": 1, "signal_delay_s": 300}
     },
     "cardinal": {
-      "short": {"slurm_partition": "debug", "cpus_per_task": 8, "mem_gb": 48, "timeout_min": 60, "gpus_per_node": 1, "slurm_signal_delay_s": 300},
-      "long":  {"slurm_partition": "gpu",   "cpus_per_task": 8, "mem_gb": 48, "timeout_min": 90, "gpus_per_node": 1, "slurm_signal_delay_s": 300}
+      "short": {"partition": "debug", "cores_per_node": 8, "mem_per_node": 48, "walltime": "01:00:00", "gpus_per_node": 1, "signal_delay_s": 300},
+      "long":  {"partition": "gpu",   "cores_per_node": 8, "mem_per_node": 48, "walltime": "01:30:00", "gpus_per_node": 1, "signal_delay_s": 300}
     },
     "ascend": {
-      "short": {"slurm_partition": "debug", "cpus_per_task": 8, "mem_gb": 48, "timeout_min": 60,  "gpus_per_node": 1, "slurm_signal_delay_s": 300},
-      "long":  {"slurm_partition": "gpu",   "cpus_per_task": 8, "mem_gb": 48, "timeout_min": 105, "gpus_per_node": 1, "slurm_signal_delay_s": 300}
+      "short": {"partition": "debug", "cores_per_node": 8, "mem_per_node": 48, "walltime": "01:00:00", "gpus_per_node": 1, "signal_delay_s": 300},
+      "long":  {"partition": "gpu",   "cores_per_node": 8, "mem_per_node": 48, "walltime": "01:45:00", "gpus_per_node": 1, "signal_delay_s": 300}
     }
   },
   "cpu": {
     "pitzer": {
-      "short": {"slurm_partition": "debug-cpu", "cpus_per_task": 8, "mem_gb": 16, "timeout_min": 60},
-      "long":  {"slurm_partition": "cpu",       "cpus_per_task": 8, "mem_gb": 16, "timeout_min": 240}
+      "short": {"partition": "debug-cpu", "cores_per_node": 8, "mem_per_node": 16, "walltime": "01:00:00"},
+      "long":  {"partition": "cpu",       "cores_per_node": 8, "mem_per_node": 16, "walltime": "04:00:00"}
     },
     "cardinal": {
-      "short": {"slurm_partition": "debug", "cpus_per_task": 8, "mem_gb": 16, "timeout_min": 60},
-      "long":  {"slurm_partition": "cpu",   "cpus_per_task": 8, "mem_gb": 16, "timeout_min": 180}
+      "short": {"partition": "debug", "cores_per_node": 8, "mem_per_node": 16, "walltime": "01:00:00"},
+      "long":  {"partition": "cpu",   "cores_per_node": 8, "mem_per_node": 16, "walltime": "03:00:00"}
     },
     "ascend": {
-      "short": {"slurm_partition": "debug", "cpus_per_task": 8, "mem_gb": 16, "timeout_min": 60},
-      "long":  {"slurm_partition": "cpu",   "cpus_per_task": 8, "mem_gb": 16, "timeout_min": 240}
+      "short": {"partition": "debug", "cores_per_node": 8, "mem_per_node": 16, "walltime": "01:00:00"},
+      "long":  {"partition": "cpu",   "cores_per_node": 8, "mem_per_node": 16, "walltime": "04:00:00"}
     }
   }
 }

@@ -8,7 +8,7 @@ Public API:
 
 from __future__ import annotations
 
-from .cache import DatasetState, clear_cache, get_or_build
+from .state import DatasetState, clear_cache, get_or_build
 from .datamodule import (
     FusionDataModule,
     GraphDataModule,

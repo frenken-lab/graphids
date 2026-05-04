@@ -63,16 +63,18 @@ chassis avoids.
 
 ### Profiles
 
-Source of truth for `partition` / `cpus_per_task` / `mem_gb` /
-`timeout_min` / `gpus_per_node` / `slurm_signal_delay_s`:
+Source of truth for `partition` / `cores_per_node` / `mem_per_node` /
+`walltime` / `gpus_per_node` / `signal_delay_s`:
 `configs/resources/submit_profiles.json`, keyed `[mode][cluster][length]`.
-`graphids/slurm/submit.py:_build_provider` translates each profile dict
-into Parsl `SlurmProvider` kwargs (mins → `HH:MM:SS` walltime;
-`slurm_signal_delay_s` → `#SBATCH --signal=USR2@N` directive).
+Keys map directly to `parsl.providers.SlurmProvider` kwargs — `submit_row`
+splats them with `**profile`, no translation layer. `signal_delay_s` is
+the one extension: it becomes `#SBATCH --signal=USR2@N` in
+`scheduler_options` so the SIGUSR2 trap in `runtime.py` fires before
+walltime.
 
 ### Preemption auto-resume
 
-Profiles set `slurm_signal_delay_s=300`, so Parsl's sbatch script emits
+Profiles set `signal_delay_s=300`, so Parsl's sbatch script emits
 `--signal=USR2@300`. The SIGUSR2 trap lives in `graphids/runtime.py` —
 five minutes before walltime, the process re-submits the row with
 `--ckpt-path={run_dir}/checkpoints/last.ckpt` and

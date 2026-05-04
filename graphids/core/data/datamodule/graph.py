@@ -1,22 +1,23 @@
 """Dataset-agnostic graph DataModule.
 
 Accepts any object with a ``cache_key: str`` + ``build() -> DatasetState``
-(the ``Dataset`` protocol consumed by ``graphids.core.data.cache``).
+(the ``Dataset`` protocol consumed by ``graphids.core.data.state``).
 Preprocessing and split logic live in the dataset class; the datamodule
-only wraps DataLoaders, batching, and the curriculum toggle.
+only wraps DataLoaders and batching.
 
-Curriculum learning is a ``sampler="curriculum"`` toggle. When enabled,
-``setup()`` scores graphs via VGAE and buckets normals into difficulty
-tiers. A ``CurriculumEpochCallback`` selects active tiers each epoch.
+Curriculum learning lives in :class:`graphids.core.data.datamodule.curriculum.CurriculumDataModule`
+— a subclass that owns scorer/tier state. Plain ``GraphDataModule`` has
+no curriculum branches.
 """
 
 from __future__ import annotations
 
+import lightning.pytorch as pl
 import torch
 from torch_geometric.data import Batch, InMemoryDataset
 
-from graphids.core.data.budget import autosize_workers, node_budget
-from graphids.core.data.cache import get_or_build
+from graphids.core.budget import autosize_workers, node_budget
+from graphids.core.data.state import get_or_build
 from graphids.core.data.sampler import NodeBudgetBatchSampler, pack_offline
 
 
@@ -81,18 +82,13 @@ def _prebatched_loader(batches, *, shuffle: bool = True, device: torch.device | 
     return _prefetch(loader, device)
 
 
-class GraphDataModule:
+class GraphDataModule(pl.LightningDataModule):
     """Graph DataModule that wraps a Dataset source.
 
     ``dataset`` is any object satisfying the Dataset protocol consumed
-    by ``graphids.core.data.cache.get_or_build``: ``cache_key: str`` +
+    by ``graphids.core.data.state.get_or_build``: ``cache_key: str`` +
     ``build() -> DatasetState``. The datamodule owns loader/batching
     policy; the dataset owns preprocessing and splits.
-
-    Curriculum toggle:
-        Pass ``sampler="curriculum"`` + ``vgae_ckpt_path`` to enable
-        VGAE-scored difficulty gating. Requires a
-        ``CurriculumEpochCallback`` in the trainer's callback list.
     """
 
     def __init__(
@@ -108,34 +104,17 @@ class GraphDataModule:
         #   attack rows pollute the reconstruction prior).
         # None: full train set (supervised stages).
         label_filter: str | None = None,
-        # --- curriculum toggle ---
-        sampler: str = "standard",
-        scorer: dict | None = None,  # {class_path, init_args} — see core.data.curriculum
-        curriculum_start_ratio: float = 1.0,
-        curriculum_end_ratio: float = 10.0,
-        max_epochs: int = 300,
-        num_tiers: int = 10,
     ):
+        super().__init__()
         self.dataset = dataset
-        # Store init args as a dict for downstream kwargs access.
-        self.hparams = {k: v for k, v in locals().items() if k != "self"}
+        # Init args dict for downstream kwargs access. Stored under ``_hp``
+        # (not ``hparams``) because ``pl.LightningDataModule.hparams`` is a
+        # read-only property owned by Lightning's HyperparametersMixin.
+        self._hp = {k: v for k, v in locals().items() if k != "self"}
         self._train_ds: InMemoryDataset | None = None
         self._val_ds: InMemoryDataset | None = None
         self._test_datasets: dict[str, InMemoryDataset] = {}
         self._prebatched_train: list[Batch] | None = None
-        # Curriculum: populated by _setup_curriculum, pre-batched on first epoch
-        self._tier_graphs: list[list] | None = None  # per-tier graph lists
-        self._tier_sizes: list[torch.Tensor] | None = None  # per-tier node counts
-        self._tier_edge_sizes: list[torch.Tensor] | None = None  # per-tier edge counts
-        self._tier_batches: list[list[Batch]] | None = None  # pre-batched tiers
-        self._active_batches: list[Batch] | None = None
-        # Device for PrefetchLoader and model handle for the VRAM probe in
-        # ``_ensure_budget`` — both populated by Trainer.bind() before setup().
-        # ``BudgetResult`` is cached on the *model* (``model._budget_cache``),
-        # not here — bpn_node/bpn_edge are model+data properties, so the model
-        # is the single owner. DM just routes the call.
-        self._device: torch.device | None = None
-        self._model = None
         # Worker count actually used for the train loader (autosize result OR
         # explicit hp). Read at epoch 0 by
         # :class:`graphids._mlflow.MLflowTrainingCallback._stamp_run_config`
@@ -147,16 +126,6 @@ class GraphDataModule:
         # sampler + re-run probe + re-time workers every epoch.
         self._loader_cache: dict[tuple[int, bool], object] = {}
 
-    def bind(self, *, model, device: torch.device | None) -> None:
-        """Wire the trainer's model + device into the DM before ``setup()``.
-
-        Required because the DM is constructed by the config system before
-        the Trainer/model exist; a no-op contract on DMs that don't move
-        batches keeps the call site uniform (see :class:`FusionDataModule`).
-        """
-        self._model = model
-        self._device = device
-
     def setup(self, stage: str | None = None) -> None:
         if self._train_ds is not None:
             return
@@ -164,65 +133,6 @@ class GraphDataModule:
         self._train_ds = state.train
         self._val_ds = state.val
         self._test_datasets = state.test
-        if self.hparams["sampler"] == "curriculum":
-            self._setup_curriculum()
-
-    def _setup_curriculum(self) -> None:
-        """Score graphs via the configured strategy, bucket into tiers + attack tier.
-
-        Batching divergence from the dynamic-batching path: each tier is
-        pre-packed INDEPENDENTLY (``_curriculum_train_dataloader`` calls
-        ``_prebatch`` once per tier). The node/edge budgets returned by
-        the probe apply *per tier*, not across tiers. Because
-        ``_active_batches`` is built by concatenating pre-packed tier
-        batches (no re-packing), the system-wide VRAM peak is still
-        bounded by a single-batch budget — the contract the callback /
-        prebatch guard depend on.
-
-        DO NOT add a cross-tier packer (e.g. "mix tiers in a single
-        batch" for gradient smoothing) without revisiting memory sizing:
-        packing across tiers would require a fresh probe because the
-        budget result was computed against tier-slice graph populations.
-        """
-        from graphids.core.data.curriculum import build_curriculum_tiers, make_scorer
-
-        hp = self.hparams
-        scorer = make_scorer(hp["scorer"])
-        scores, normal_tiers, attack_indices, full_dataset, dataset_sizes = build_curriculum_tiers(
-            self._train_ds,
-            scorer,
-            num_tiers=hp["num_tiers"],
-        )
-        dataset_edge_sizes = torch.tensor(
-            [int(g.num_edges) for g in full_dataset], dtype=torch.long
-        )
-        # Build per-tier graph lists + size tensors for _prebatch
-        self._tier_graphs = []
-        self._tier_sizes = []
-        self._tier_edge_sizes = []
-        for tier_idx in normal_tiers:
-            if not tier_idx:
-                continue  # empty tier — scorer may produce this at the extremes
-            self._tier_graphs.append([full_dataset[i] for i in tier_idx])
-            self._tier_sizes.append(dataset_sizes[tier_idx])
-            self._tier_edge_sizes.append(dataset_edge_sizes[tier_idx])
-        # Attack tier (always active)
-        if attack_indices:
-            self._tier_graphs.append([full_dataset[i] for i in attack_indices])
-            self._tier_sizes.append(dataset_sizes[attack_indices])
-            self._tier_edge_sizes.append(dataset_edge_sizes[attack_indices])
-
-        # Invariant: every stored tier has graphs AND its sizes aligned.
-        # Empty tiers or mismatched lengths would build a silently dead
-        # dataloader entry; fail loud so callers see it at setup() time.
-        assert len(self._tier_graphs) == len(self._tier_sizes) == len(self._tier_edge_sizes), (
-            f"tier bookkeeping mismatch: {len(self._tier_graphs)} graphs / "
-            f"{len(self._tier_sizes)} node-sizes / {len(self._tier_edge_sizes)} edge-sizes"
-        )
-        for i, (g, s, e) in enumerate(
-            zip(self._tier_graphs, self._tier_sizes, self._tier_edge_sizes)
-        ):
-            assert len(g) == len(s) == len(e) > 0, f"tier {i} empty or length-mismatched"
 
     # -- Properties (available after setup) -----------------------------------
 
@@ -272,23 +182,26 @@ class GraphDataModule:
     def _ensure_budget(self):
         """Route to ``model.compute_budget`` — the model owns the probe.
 
-        When CUDA is available, the model must be wired (via ``bind``)
-        before this fires; otherwise the static-bpn fallback path runs
-        without the actual conv_type/heads and underperforms by orders
-        of magnitude.
+        Model is read off ``self.trainer.lightning_module`` — Lightning sets
+        ``self.trainer`` automatically when the DM is passed via
+        ``trainer.fit(model, datamodule=dm)``. When CUDA is available the
+        trainer must be present; otherwise the static-bpn fallback path
+        runs without the actual conv_type/heads and underperforms by
+        orders of magnitude.
         """
-        if torch.cuda.is_available() and self._model is None:
+        model = self.trainer.lightning_module if self.trainer is not None else None
+        if torch.cuda.is_available() and model is None:
             raise RuntimeError(
-                "_ensure_budget called on a CUDA device without a wired model. "
-                "Trainer must call datamodule.bind(model=..., device=...) before "
-                "the first train_dataloader() / val_dataloader() request."
+                "_ensure_budget called on a CUDA device without a wired trainer. "
+                "Pass the DM via trainer.fit(model, datamodule=dm) so Lightning "
+                "wires self.trainer before the first dataloader request."
             )
-        if self._model is None:
+        if model is None:
             # CPU fallback path (tests / cache rebuild) — call node_budget
             # directly with the linear-probe defaults; no model means no probe
             # anyway, so conv_type/heads only affect the fallback formula.
             return node_budget(self.dataset.name, train_dataset=self._train_ds)
-        return self._model.compute_budget(self._train_ds, self.dataset.name)
+        return model.compute_budget(self._train_ds, self.dataset.name)
 
     def _prebatch(self, graphs, sizes, edge_sizes) -> list[Batch]:
         """Pre-collate graphs into Batches via first-fit-decreasing packing.
@@ -326,7 +239,9 @@ class GraphDataModule:
         return [Batch.from_data_list([graphs[i] for i in plan]) for plan in plans]
 
     def _prefetch_device(self):
-        return self._device if torch.cuda.is_available() else None
+        if not torch.cuda.is_available() or self.trainer is None:
+            return None
+        return self.trainer.strategy.root_device
 
     # -- DataLoaders ----------------------------------------------------------
 
@@ -339,7 +254,7 @@ class GraphDataModule:
         to construct, no tensor copies.
         """
         ds = self._train_ds
-        if self.hparams["label_filter"] != "benign":
+        if self._hp["label_filter"] != "benign":
             return ds
         full_y = ds._data.y.view(-1)
         if ds._indices is None:
@@ -355,9 +270,7 @@ class GraphDataModule:
         return ds[benign_local]
 
     def train_dataloader(self):
-        if self.hparams["sampler"] == "curriculum":
-            return self._curriculum_train_dataloader()
-        if self.hparams["dynamic_batching"]:
+        if self._hp["dynamic_batching"]:
             return self._prebatched_train_dataloader()
         return self._build_train_loader(self._effective_train_ds(), shuffle=True)
 
@@ -387,7 +300,7 @@ class GraphDataModule:
         from hp / ``_prefetch_device``). The dynamic-batching train path
         uses ``_spawn_loader`` directly with a ``batch_sampler``.
         """
-        hp = self.hparams
+        hp = self._hp
         nw = hp["num_workers"]
         return _spawn_loader(
             dataset,
@@ -405,7 +318,7 @@ class GraphDataModule:
         if cached is not None:
             return cached
 
-        hp = self.hparams
+        hp = self._hp
         if not hp["dynamic_batching"]:
             loader = self._make_fixed_batch_loader(dataset, shuffle=shuffle)
             self._loader_cache[key] = loader
@@ -415,7 +328,8 @@ class GraphDataModule:
         pf = hp["prefetch_factor"]
         result = self._ensure_budget()
         if nw is None:
-            nw, pf, diag = autosize_workers(self._model, dataset, result, default_prefetch=pf)
+            model = self.trainer.lightning_module if self.trainer is not None else None
+            nw, pf, diag = autosize_workers(model, dataset, result, default_prefetch=pf)
             self._autosize_info = {
                 "num_workers": nw,
                 "prefetch_factor": pf,
@@ -472,7 +386,7 @@ class GraphDataModule:
         if cached is not None:
             return cached
 
-        if self.hparams["dynamic_batching"] and torch.cuda.is_available():
+        if self._hp["dynamic_batching"] and torch.cuda.is_available():
             prebatched = self._prebatch(
                 dataset,
                 dataset.num_nodes_per_graph,
@@ -503,47 +417,3 @@ class GraphDataModule:
             device=self._prefetch_device(),
         )
 
-    def _curriculum_train_dataloader(self):
-        """Tier-based curriculum: pre-batch each tier once, select active per epoch.
-
-        Hidden contract: requires a ``CurriculumEpochCallback`` in the trainer's
-        callback list to advance ``_select_active_tiers(epoch)`` each epoch.
-        Without it, training stays on tier 0 forever.
-        """
-        if self._tier_batches is None:
-            self._tier_batches = [
-                self._prebatch(graphs, sizes, edge_sizes)
-                for graphs, sizes, edge_sizes in zip(
-                    self._tier_graphs, self._tier_sizes, self._tier_edge_sizes
-                )
-            ]
-            self._select_active_tiers(0)
-        return _prebatched_loader(
-            self._active_batches,
-            shuffle=True,
-            device=self._prefetch_device(),
-        )
-
-    def _select_active_tiers(self, epoch: int) -> None:
-        """Assemble ``self._active_batches`` for ``epoch``.
-
-        Tier 0 = easiest, last tier = attacks (always active). The active
-        count comes from :func:`curriculum.active_tier_count`; this method
-        only handles the concatenation.
-        """
-        from graphids.core.data.curriculum import active_tier_count
-
-        hp = self.hparams
-        n_normal = len(self._tier_batches) - 1  # last tier is attacks
-        count = active_tier_count(
-            epoch,
-            n_normal,
-            start_ratio=hp["curriculum_start_ratio"],
-            end_ratio=hp["curriculum_end_ratio"],
-            max_epochs=hp["max_epochs"],
-        )
-        active: list[Batch] = []
-        for i in range(count):
-            active.extend(self._tier_batches[i])
-        active.extend(self._tier_batches[-1])  # attacks always active
-        self._active_batches = active

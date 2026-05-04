@@ -5,8 +5,7 @@ data/
   __init__.py              # Public API: CANBusDataset, GraphDataModule, FusionDataModule
   graph_pipeline.py        # Domain-agnostic: sliding window -> PyG graphs (10-step pipeline)
   sampler.py               # NodeBudgetBatchSampler, PrefetchLoader
-  budget.py                # GPU memory budget computation for dynamic batching
-  cache.py                 # Preprocessed cache management
+  state.py                 # DatasetState + process-level get_or_build cache
   fusion_states.py         # Extract VGAE/GAT embeddings for fusion stage input
   schemas.py               # Shared Pydantic schemas
   datamodule/

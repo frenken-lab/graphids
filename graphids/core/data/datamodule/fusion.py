@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
+import lightning.pytorch as pl
 import torch
 from structlog import get_logger
 from tensordict import TensorDict
@@ -24,7 +25,7 @@ from graphids.core.data.fusion_states import (
 log = get_logger(__name__)
 
 
-class FusionDataModule:
+class FusionDataModule(pl.LightningDataModule):
     """Loads a pre-extracted fusion TensorDict and serves batches."""
 
     def __init__(
@@ -34,7 +35,9 @@ class FusionDataModule:
         batch_size: int = 128,
         episode_sample_size: int = 20000,
     ):
-        self.hparams = {k: v for k, v in locals().items() if k != "self"}
+        super().__init__()
+        # See GraphDataModule for why this is ``_hp``, not ``hparams``.
+        self._hp = {k: v for k, v in locals().items() if k != "self"}
         is_rl = method in ("dqn", "bandit")
         self._batch_size = episode_sample_size if is_rl else batch_size
         self.train_td: TensorDict | None = None
@@ -43,11 +46,6 @@ class FusionDataModule:
     @property
     def steps_per_epoch(self) -> int:
         return math.ceil(self.train_td.batch_size[0] / self._batch_size)
-
-    def bind(self, *, model, device: torch.device | None) -> None:
-        # No-op: fusion batches stay on CPU; modules move per-step.
-        # The contract still requires the method exist (see GraphDataModule.bind).
-        pass
 
     def _load_one(self, path: Path, which: str) -> TensorDict:
         blob = torch.load(path, map_location="cpu", weights_only=False)
@@ -64,7 +62,7 @@ class FusionDataModule:
         if self.train_td is not None:
             return
 
-        hp = self.hparams
+        hp = self._hp
         if not hp["cached_states_dir"]:
             raise ValueError(
                 "cached_states_dir is required — submit the ExtractRow from "

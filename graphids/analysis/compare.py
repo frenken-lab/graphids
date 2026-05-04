@@ -73,14 +73,10 @@ def _fetch_test_runs(
     """
     import mlflow
 
-    from graphids._mlflow import build_search_filter, ensure_tracking_uri
+    from graphids._mlflow import build_search_filter
+    from graphids.orchestrate import setup
 
-    uri = ensure_tracking_uri()
-    if not uri:
-        raise RuntimeError(
-            "MLflow tracking URI not set (GRAPHIDS_LAKE_ROOT or MLFLOW_TRACKING_URI)"
-        )
-    mlflow.set_tracking_uri(uri)
+    setup(mode="ops")
 
     df = mlflow.search_runs(
         search_all_experiments=True,
