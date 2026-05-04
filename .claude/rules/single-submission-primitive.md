@@ -2,17 +2,16 @@
 
 > Four pure stages: **render → blueprint → exec → submit**. Pipelines are
 > JSON arrays, not runners. Never add a Python pipeline driver, never emit
-> an executable artifact (bash, shell script, anything that orchestrates
-> jobs in bulk).
+> an executable artifact (bash script, etc.) that orchestrates jobs in bulk.
 
 ## The architecture
 
 | Concern | Tool | What it does |
 |---|---|---|
-| Render plan | `graphids run <plan.jsonnet> -o plan.json` | Renders plan jsonnet, validates as `BlueprintArray`, writes JSON array. No submit, no MLflow query. |
-| Execute one row in-process | `graphids exec --row <json>` | Calls `graphids.orchestrate.run_row(TrainRow)`. Login-node smoke / non-SLURM path. Dispatches on `row.action` (fit/test). |
-| Submit one row to SLURM | `graphids submit --row <json> --cluster <c> [--length L]` | Atomic Parsl `SlurmProvider.submit` call. The ONLY caller of `submit_row`. Returns jid on stdout. |
-| Same-batch deps | `graphids submit --row <json> --depends-on-afterok <jid>` <br> `graphids submit --row <json> --depends-on-afterany <jid>` | Adds `#SBATCH --dependency=after{ok,any}:<jid>`. `afterok` for data deps, `afterany` for preempt-resume chains. |
+| Render plan | `graphids run <plan.jsonnet> -o plan.json` | Renders + validates as `BlueprintArray`, writes JSON. No submit, no MLflow query. |
+| Execute one row | `graphids exec --row <json>` | Calls `orchestrate.run_row(TrainRow)`. Login-node smoke / non-SLURM. Dispatches on `row.action` (fit/test). |
+| Submit one row | `graphids submit --row <json> --cluster <c> [--length L]` | Atomic Parsl `SlurmProvider.submit`. The ONLY caller of `submit_row`. Returns jid on stdout. |
+| Same-batch deps | `--depends-on-afterok <jid>` (data dep) / `--depends-on-afterany <jid>` (preempt-resume chain) | Adds `#SBATCH --dependency=...`. |
 
 The sbatch script carries the literal command
 `python -m graphids exec --row '<json>' [--ckpt-path X]` — no pickle,
@@ -20,87 +19,48 @@ no stale-pickle bug.
 
 ## What this rule blocks
 
-- **Pipeline drivers.** No `python -m graphids run-ofat`, no
-  `slurm/sweep_runner.py`, no `OFAT_DAG.execute()`, no Python loop that
-  walks plan rows calling `submit_row()`. The 2026-04-23 collapse removed
-  `OFAT_DAG`; the 2026-05-01 four-step rebuild deleted `slurm/dag.py`,
-  `slurm/dependencies.py`, `slurm/sizing.py`, `slurm/run.py`,
-  `slurm/status.py`, `cli/training.py`, and `cli/compare.py`. This rule
-  prevents Claude from re-introducing the same shape under a new name.
+- **Pipeline drivers.** No `run-ofat` command, no `OFAT_DAG.execute()`,
+  no Python loop walking plan rows calling `submit_row()`.
 - **Executable artifacts.** `graphids run` outputs JSON (data), not bash
-  (action). The 2026-04-27 deletion removed the bash renderer; do not
-  bring it back. Workflow:
+  (action). Iteration is the user/LLM's job:
   ```
-  graphids run plan.jsonnet --dataset X --seed N -o plan.json
   jq -c '.[]' plan.json | while read row; do
-      graphids submit --row "$row" --cluster pitzer  # user/LLM choice, not generated
+      graphids submit --row "$row" --cluster pitzer
   done
   ```
-  The user (or an LLM walking the array) decides how to iterate. The
-  graphids codebase does not own that loop.
-- **Per-pipeline submission flags.** No `--ofat-mode`, no
-  `--sweep-strategy`, no `--curriculum-driver`. Every new pipeline type
-  adds a `configs/plans/<name>.jsonnet`, nothing else. If a plan needs
-  new declarative fields, add them to `graphids/blueprint.py` (pydantic
-  `TrainRow` / `BlueprintArray`) — never to the CLI surface.
-- **Multi-job entry points.** No `submit-many`, no `submit-batch`, no
-  `graphids status` query helper. If the user wants to submit N jobs,
-  that's N invocations of `graphids submit`. If they want status, they
-  query MLflow directly (or via a read-only ops command — but it must
-  not also submit).
-- **Status command resurrection.** `graphids status` was a thin wrapper
-  over `mlflow.search_runs` keyed by plan blueprint. It got deleted in
-  the 2026-05-01 chassis rebuild. Do not bring it back unless the user
-  explicitly asks; MLflow's own UI + `_mlflow.build_search_filter` cover
-  the use case.
+- **Per-pipeline submission flags.** No `--ofat-mode`, no `--sweep-strategy`.
+  New pipeline types add a `configs/plans/<name>.jsonnet`, nothing else.
+  New declarative state goes on `TrainRow` / `BlueprintArray`
+  (`graphids/blueprint.py`).
+- **Multi-job entry points.** No `submit-many`, no `submit-batch`. N jobs =
+  N invocations of `graphids submit`.
+- **Status command resurrection.** Use MLflow's UI or
+  `_mlflow.build_search_filter` — don't re-introduce `graphids status`.
 
 ## What this rule allows
 
-- New plan jsonnets under `configs/plans/`. They produce new rows;
-  `graphids run` consumes them with no code changes.
-- New ablation rows. They become entries in some plan's array; the same
-  `submit` primitive launches them.
-- New `TrainRow` / `BlueprintArray` fields in `graphids/blueprint.py`
-  when a plan needs new declarative state. Pydantic owns the schema.
-- New cluster profiles in `configs/resources/submit_profiles.json`
-  (`[mode][cluster][length]`).
+- New plan jsonnets under `configs/plans/`. Produce new rows; `graphids run`
+  consumes them with no code changes.
+- New `TrainRow` / `BlueprintArray` fields when a plan needs new state.
+- New cluster profiles in `configs/resources/submit_profiles.json`.
 
 ## Why one primitive
 
-Failure modes the previous architectures had:
+Past failures: `OFAT_DAG` Python orchestrator (~470 LOC, removed c5873de),
+`launch.ablation` helpers (split logic across CLI + driver), bash artifacts
+from `slurm/run.py:render_plan_script` (looked like data, behaved like
+action — removed 2026-04-27), submitit pickle path (code fixes didn't reach
+pending jobs — replaced 2026-05-01 with Parsl + literal exec command in
+sbatch). Each was Claude reaching for "let's add a wrapper that does the
+orchestration." The cost is path proliferation.
 
-1. **`OFAT_DAG` Python class** with hardcoded stage tuples and in-process
-   orchestration (~470 LOC). Removed in c5873de. Each pipeline type
-   would have wanted its own.
-2. **`launch.ablation` + `_build_tlas`** helpers split the submit logic
-   between CLI and pipeline driver. Two paths through every change.
-   Removed in c5873de.
-3. **Executable bash artifact** from `slurm/run.py:render_plan_script`.
-   Looked like data, behaved like action. `set -euo pipefail` made it
-   all-or-nothing; partial re-run was awkward; jids were captured via
-   `$(...)` with no failure surface. Removed 2026-04-27.
-4. **submitit pickle path** — `_TrainingJob.checkpoint()` + pickled
-   closures meant code fixes didn't reach pending jobs. Replaced
-   2026-05-01 with Parsl + literal `python -m graphids exec --row '...'`
-   in the sbatch script. The pickle hazard is now structurally impossible.
+## Decision rule
 
-Each was Claude reaching for "let's add a wrapper that does the
-orchestration." The cost is path proliferation: every refactor has to
-update N call sites, and the divergence between paths becomes the source
-of bugs (2026-04-24 jsonnet/Python `RUN_ROOT` drift was one of these).
-
-## Decision rule for future Claude
-
-If you're tempted to add a function/CLI/script that:
-
-- iterates over multiple `(plan_row, dataset, seed)` combinations and
-  calls `submit_row()` for each, OR
+If you're tempted to add something that:
+- iterates over `(plan_row, dataset, seed)` calling `submit_row()` per row, OR
 - produces a file that, when executed, submits multiple jobs, OR
-- adds a flag to `submit` that changes its behavior based on
-  pipeline-level context (sweep ID, ablation group, etc.), OR
-- re-introduces a `graphids status` style read-and-act helper
+- adds a flag to `submit` keyed on pipeline-level context, OR
+- re-introduces a `graphids status`-style read-and-act helper
 
-→ **Stop.** The right answer is a new plan jsonnet + the existing
-`graphids run` JSON output + the user/LLM iterating over rows. If that
-workflow has a real gap, write it down as an issue first; do not patch
-around it with a new path.
+→ **Stop.** The right answer is a new plan jsonnet + the user/LLM iterating
+over `graphids run` JSON output.
