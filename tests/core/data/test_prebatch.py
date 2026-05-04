@@ -13,7 +13,7 @@ from conftest import make_graph
 from torch_geometric.data import Batch
 
 from graphids.core.data.datamodule.graph import _prebatched_loader
-from graphids.core.data.sampler import NodeBudgetBatchSampler
+from graphids.core.data.datamodule.sampler import NodeBudgetBatchSampler
 
 
 def _prebatch(graphs, budget):

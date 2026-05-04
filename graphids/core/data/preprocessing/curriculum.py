@@ -24,10 +24,9 @@ import math
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+import lightning.pytorch as pl
 import numpy as np
 import torch
-
-import lightning.pytorch as pl
 
 # ---------------------------------------------------------------------------
 # Scoring strategy — protocol + built-in implementations
@@ -118,7 +117,7 @@ def make_scorer(spec: Any) -> DifficultyScorer:
         raise ValueError(
             "curriculum sampler requires a scorer spec; "
             "set data.init_args.scorer to a {class_path, init_args} dict "
-            "(e.g. graphids.core.data.curriculum.VGAEScorer)"
+            "(e.g. graphids.core.data.preprocessing.curriculum.VGAEScorer)"
         )
     if isinstance(spec, DifficultyScorer):
         return spec

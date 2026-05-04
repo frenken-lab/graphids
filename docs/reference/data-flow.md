@@ -57,8 +57,8 @@ is reserved for UNK; real ids start at 1. The earlier per-split
 `node_id.max() + 1` derivation was removed because test subdirs can
 contain arb_ids absent from train, which under-sized the embedding
 table relative to the real deployment vocabulary and crashed at
-inference. See `graphids/core/data/vocab.py`,
-`graphids/core/data/metadata.py` (schema v3; `vocab_digest` is an
+inference. See `graphids/core/data/preprocessing/vocab.py`,
+`graphids/core/data/preprocessing/metadata.py` (schema v3; `vocab_digest` is an
 invariant cache key), and `~/plans/oov-embedding-handling.md`.
 
 ## Phase 2: Training Data Loading

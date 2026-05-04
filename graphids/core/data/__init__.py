@@ -8,12 +8,12 @@ Public API:
 
 from __future__ import annotations
 
-from .state import DatasetState, clear_cache, get_or_build
 from .datamodule import (
     FusionDataModule,
     GraphDataModule,
 )
 from .datasets import ATTACK_TYPE_CODES, ATTACK_TYPE_NAMES, CANBusDataset, CANBusSource
+from .state import DatasetState, clear_cache, get_or_build
 
 __all__ = [
     "GraphDataModule",

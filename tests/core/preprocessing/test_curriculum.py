@@ -9,7 +9,7 @@ import pytest
 import torch
 from conftest import make_graph
 
-from graphids.core.data.curriculum import (
+from graphids.core.data.preprocessing.curriculum import (
     DifficultyScorer,
     RandomScorer,
     VGAEScorer,
@@ -107,7 +107,7 @@ class TestMakeScorer:
 
     def test_class_path_dict(self):
         spec = {
-            "class_path": "graphids.core.data.curriculum.RandomScorer",
+            "class_path": "graphids.core.data.preprocessing.curriculum.RandomScorer",
             "init_args": {"seed": 42},
         }
         s = make_scorer(spec)
@@ -122,7 +122,7 @@ class TestMakeScorer:
         # CONTRACT: VGAEScorer resolves via class_path without loading the ckpt.
         # (Construction is cheap; scoring is what touches disk.)
         spec = {
-            "class_path": "graphids.core.data.curriculum.VGAEScorer",
+            "class_path": "graphids.core.data.preprocessing.curriculum.VGAEScorer",
             "init_args": {"ckpt_path": "/nonexistent.ckpt"},
         }
         s = make_scorer(spec)

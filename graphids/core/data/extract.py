@@ -8,7 +8,7 @@ the fusion side reads keys directly.
 
 Invoked as the first row of ``configs/plans/fusion.jsonnet`` (an ``ExtractRow``);
 ``graphids exec/submit`` dispatch routes through ``orchestrate.run_row`` →
-``orchestrate.extract`` → ``extract_fusion_states``. Idempotent on ``output_dir``.
+``orchestrate.extract`` → ``extract_states``. Idempotent on ``output_dir``.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ VAL_FILENAME = "val_states.pt"
 CACHE_VERSION = 5  # v5: DGI extract_features now returns dict (pos_stats/conf/z_stats), not flat 8D tensor
 
 
-def extract_states(
+def _extract_states(
     models: dict[str, torch.nn.Module],
     data,
     device: torch.device,
@@ -70,7 +70,7 @@ def extract_states(
     return td
 
 
-def extract_fusion_states(
+def extract_states(
     *,
     checkpoints: dict[str, str],
     dataset: str,
@@ -126,10 +126,10 @@ def extract_fusion_states(
     train_ds, val_ds = dm.train_dataset, dm.val_dataset
 
     log.info("extracting_train", n_graphs=len(train_ds), max_samples=max_samples)
-    train_td = extract_states(models, list(train_ds), device, max_samples, batch_size)
+    train_td = _extract_states(models, list(train_ds), device, max_samples, batch_size)
 
     log.info("extracting_val", n_graphs=len(val_ds), max_samples=max_val_samples)
-    val_td = extract_states(models, list(val_ds), device, max_val_samples, batch_size)
+    val_td = _extract_states(models, list(val_ds), device, max_val_samples, batch_size)
 
     train_td = train_td.cpu()
     val_td = val_td.cpu()

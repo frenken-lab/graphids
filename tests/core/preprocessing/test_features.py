@@ -41,7 +41,7 @@ def test_sliding_window_graphs_shapes_and_values():
         NODE_COL_ORDER,
         NODE_STAT_EXPRS,
     )
-    from graphids.core.data.graph_pipeline import GraphPipeline
+    from graphids.core.data.preprocessing.pipeline import GraphPipeline
 
     n_rows = 20
     rng = np.random.default_rng(0)
@@ -96,7 +96,7 @@ def test_sliding_window_graphs_edge_freq():
         NODE_COL_ORDER,
         NODE_STAT_EXPRS,
     )
-    from graphids.core.data.graph_pipeline import GraphPipeline
+    from graphids.core.data.preprocessing.pipeline import GraphPipeline
 
     # 10 rows, 2 node IDs → many repeated (src, dst) pairs
     node_ids = [0, 1, 0, 1, 0, 1, 0, 1, 0, 1]
@@ -144,7 +144,7 @@ def test_skewness_kurtosis_clamped():
         NODE_COL_ORDER,
         NODE_STAT_EXPRS,
     )
-    from graphids.core.data.graph_pipeline import GraphPipeline
+    from graphids.core.data.preprocessing.pipeline import GraphPipeline
 
     # Extreme byte values: one constant column + one high-variance column
     # to provoke large skewness/kurtosis before clamping.

@@ -16,7 +16,7 @@ import torch
 from sklearn.preprocessing import RobustScaler, StandardScaler
 from torch_geometric.data import Data
 
-from graphids.core.data import scaler as scaler_mod
+from graphids.core.data.preprocessing import scaler as scaler_mod
 
 
 def _fixture(num_graphs: int = 6, nodes_per: int = 4, n_feat: int = 3, seed: int = 0):

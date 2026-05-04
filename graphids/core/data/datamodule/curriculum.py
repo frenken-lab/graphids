@@ -3,7 +3,7 @@
 Subclass of :class:`GraphDataModule` that scores graphs via a configured
 scorer at setup time, buckets normals into difficulty tiers (attacks form
 a tier of their own that's always active), and pre-batches each tier
-independently. A :class:`graphids.core.data.curriculum.CurriculumEpochCallback`
+independently. A :class:`graphids.core.data.preprocessing.curriculum.CurriculumEpochCallback`
 selects active tiers each epoch.
 
 Per-tier independent packing is load-bearing for the budget contract:
@@ -69,7 +69,10 @@ class CurriculumDataModule(GraphDataModule):
         )
 
     def _setup_curriculum(self) -> None:
-        from graphids.core.data.curriculum import build_curriculum_tiers, make_scorer
+        from graphids.core.data.preprocessing.curriculum import (
+            build_curriculum_tiers,
+            make_scorer,
+        )
 
         hp = self._hp
         scorer = make_scorer(hp["scorer"])
@@ -110,7 +113,7 @@ class CurriculumDataModule(GraphDataModule):
 
         Tier 0 = easiest, last tier = attacks (always active).
         """
-        from graphids.core.data.curriculum import active_tier_count
+        from graphids.core.data.preprocessing.curriculum import active_tier_count
 
         hp = self._hp
         n_normal = len(self._tier_batches) - 1  # last tier is attacks

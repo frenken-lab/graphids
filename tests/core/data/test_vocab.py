@@ -11,7 +11,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from graphids.core.data.vocab import (
+from graphids.core.data.preprocessing.vocab import (
     load_vocab,
     persist_vocab,
     scan_arb_ids,

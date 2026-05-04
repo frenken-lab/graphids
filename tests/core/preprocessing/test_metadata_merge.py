@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from graphids.core.data.metadata import (
+from graphids.core.data.preprocessing.metadata import (
     METADATA_SCHEMA_VERSION,
     load_metadata,
     merge_split_into_metadata,
@@ -24,7 +24,7 @@ INVARIANTS = {
     "val_fraction": 0.2,
     "seed": 42,
     "vocab_digest": "a" * 64,
-    # Source of truth for required keys: graphids.core.data.metadata.INVARIANT_KEYS.
+    # Source of truth for required keys: graphids.core.data.preprocessing.metadata.INVARIANT_KEYS.
     # Co-update this fixture whenever that tuple grows.
     "scaler_strategy": "standard",
 }

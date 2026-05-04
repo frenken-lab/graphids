@@ -229,9 +229,9 @@ def extract(row: ExtractRow) -> None:
     is identified by ``output_dir``, the producers are identified by the
     ckpt paths fusion's plan jsonnet pins.
     """
-    from graphids.core.data.fusion_states import extract_fusion_states
+    from graphids.core.data.extract import extract_states
 
-    extract_fusion_states(
+    extract_states(
         checkpoints=row.extractor_ckpts,
         dataset=row.dataset,
         output_dir=row.output_dir,

@@ -17,8 +17,8 @@ import torch
 from torch_geometric.data import Batch, InMemoryDataset
 
 from graphids.core.budget import autosize_workers, node_budget
+from graphids.core.data.datamodule.sampler import NodeBudgetBatchSampler, pack_offline
 from graphids.core.data.state import get_or_build
-from graphids.core.data.sampler import NodeBudgetBatchSampler, pack_offline
 
 
 def _prefetch(loader, device: torch.device | None):
@@ -154,7 +154,7 @@ class GraphDataModule(pl.LightningDataModule):
     def num_ids(self) -> int:
         ds = self._train_ds or next(iter(self._test_datasets.values()), None)
         assert ds is not None, "call setup() first"
-        return ds.num_arb_ids
+        return ds.num_ids
 
     @property
     def in_channels(self) -> int:

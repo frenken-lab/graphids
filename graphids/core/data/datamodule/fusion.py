@@ -15,7 +15,7 @@ import torch
 from structlog import get_logger
 from tensordict import TensorDict
 
-from graphids.core.data.fusion_states import (
+from graphids.core.data.extract import (
     CACHE_VERSION,
     FUSION_STATES_DIR,
     TRAIN_FILENAME,

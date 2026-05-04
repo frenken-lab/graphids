@@ -62,7 +62,7 @@ function(dataset, seed)
       source  = source(),
       sampler = 'curriculum',
       scorer  = {
-        class_path: 'graphids.core.data.curriculum.RandomScorer',
+        class_path: 'graphids.core.data.preprocessing.curriculum.RandomScorer',
         init_args: { seed: seed },
       },
     ),
@@ -70,7 +70,7 @@ function(dataset, seed)
     meta = gat_meta('gat_sampling', 'curriculum_random'),
     callback_extras = {
       curriculum: {
-        class_path: 'graphids.core.data.curriculum.CurriculumEpochCallback',
+        class_path: 'graphids.core.data.preprocessing.curriculum.CurriculumEpochCallback',
         init_args: {},
       },
     },
@@ -85,7 +85,7 @@ function(dataset, seed)
       source  = source(),
       sampler = 'curriculum',
       scorer  = {
-        class_path: 'graphids.core.data.curriculum.VGAEScorer',
+        class_path: 'graphids.core.data.preprocessing.curriculum.VGAEScorer',
         init_args: { ckpt_path: vgae_ckpt },
       },
     ),
@@ -96,7 +96,7 @@ function(dataset, seed)
     ],
     callback_extras = {
       curriculum: {
-        class_path: 'graphids.core.data.curriculum.CurriculumEpochCallback',
+        class_path: 'graphids.core.data.preprocessing.curriculum.CurriculumEpochCallback',
         init_args: {},
       },
     },
