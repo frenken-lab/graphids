@@ -29,7 +29,7 @@ import mlflow
 from mlflow.entities import LoggedModelOutput, Metric
 from mlflow.tracking import MlflowClient
 
-from graphids.plan.blueprint import TrainRow
+from graphids.plan.schema import TrainRow
 
 # Identity attribute names on ``TrainRow.meta``; surfaced as ``graphids.{key}`` tags.
 _IDENTITY_KEYS = ("dataset", "group", "variant", "seed", "model_type", "scale")
@@ -44,6 +44,9 @@ _TAG_KEYS = {
     "phase": "graphids.phase",
     "cluster": "slurm.cluster_name",
     "plan_id": "graphids.plan_id",
+    "plan_module": "graphids.plan_module",
+    "git_sha": "graphids.git_sha",
+    "row_name": "graphids.row_name",
 }
 
 
@@ -59,11 +62,21 @@ def configure_tracking_uri() -> None:
 
 
 def identity_tags(row: TrainRow, phase: str) -> dict[str, str]:
-    """Mandatory run-open tags (graphids identity + phase + plan_id + SLURM context)."""
+    """Mandatory run-open tags. Reproduction contract is
+
+        ``git checkout <graphids.git_sha> && graphids run <graphids.plan_module>
+            --dataset <graphids.dataset> --seed <graphids.seed>
+            --filter <graphids.row_name>``
+
+    so all five tags must be present on every fit/test run.
+    """
     tags = {
         "graphids.phase": phase,
         "graphids.run_dir": row.identity.run_dir,
         "graphids.plan_id": row.plan_id,
+        "graphids.plan_module": row.plan_module,
+        "graphids.git_sha": row.git_sha,
+        "graphids.row_name": row.name,
         **{f"graphids.{k}": str(getattr(row.meta, k)) for k in _IDENTITY_KEYS},
     }
     if jid := os.environ.get("SLURM_JOB_ID"):
@@ -82,6 +95,9 @@ def build_search_filter(
     phase: str | None = None,
     cluster: str | None = None,
     plan_id: str | None = None,
+    plan_module: str | None = None,
+    git_sha: str | None = None,
+    row_name: str | None = None,
     status: str | None = None,
 ) -> str:
     """Compose ``MlflowClient.search_runs(filter_string=...)`` from
@@ -96,6 +112,9 @@ def build_search_filter(
         "phase": phase,
         "cluster": cluster,
         "plan_id": plan_id,
+        "plan_module": plan_module,
+        "git_sha": git_sha,
+        "row_name": row_name,
     }
     parts = [f"tags.`{_TAG_KEYS[k]}` = '{v}'" for k, v in items.items() if v is not None]
     if status is not None:

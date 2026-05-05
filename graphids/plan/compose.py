@@ -1,25 +1,92 @@
-"""Single composer for all archetypes.
+"""Apex composer — primitives → RowSpec → fit/test/extract row dicts.
 
-`compose(...)` builds the apex `RowSpec` for any archetype (supervised,
-unsupervised, fusion). Archetype variation lives at the call site —
-`monitor`, `mode`, `loss`, `run_mode`, `trainer_overrides`, `upstreams`.
+Layering (also see ``graphids/plan/__init__.py``)::
 
-`fusion(...)` is a thin convenience wrapper that fills in fusion's
-fixed trainer overlay (precision/clip/max_epochs/log_every) and derives
-its two upstream ckpts (`vgae`, `focal`) from `meta`.
+    plans/<name>.py::build()              ← you write this
+        └── primitives  (spec, GAT, …)    ← leaves          (primitives.py)
+              └── compose() / fusion()    ← apex builder    (this file)
+                    └── RowSpec.fit/test  ← row emitter     (this file)
+                          └── schema.Plan ← typed contract  (schema.py)
+                                └── JSON → graphids exec
+
+This module owns:
+- ``compose(...)`` / ``fusion(...)``: stitch bare ``{class_path, init_args}``
+  blocks + universal trainer/callback overlays into a frozen ``RowSpec``.
+- ``RowSpec``: composer's typed return value. Carries ``rendered`` (the
+  validated ``RenderedConfig``) plus out-of-band identity bits (``meta``,
+  ``resources``, ``upstreams``). ``.fit(name)`` / ``.test(name)`` emit
+  ``TrainRow``-shaped dicts.
+- ``extract(...)``: one-shot row builder for fusion-feature extraction.
+  Doesn't go through ``RowSpec`` (no ``RenderedConfig`` to render).
 """
 
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass, field
 from typing import Any
 
 from graphids.paths import best_ckpt
 from graphids.paths import run_dir as _run_dir
-from graphids.plan.blueprint import ClassPath, RenderedConfig, TrainerCfg
-from graphids.plan.lib import fusion_dm
-from graphids.plan.row import RowSpec
+from graphids.plan.primitives import fusion_dm
+from graphids.plan.schema import ClassPath, RenderedConfig, TrainerCfg
 
+
+# ============================================================== RowSpec
+# Composer output. Not a row yet — call ``.fit()`` / ``.test()``.
+
+@dataclass(frozen=True)
+class RowSpec:
+    """Composer output. ``rendered`` is a frozen :class:`RenderedConfig` —
+    typo'd field access raises ``AttributeError``; constructing one with
+    an unknown key raises ``pydantic.ValidationError`` (``extra="forbid"``).
+    """
+
+    rendered: RenderedConfig
+    meta: dict[str, Any]
+    resources: dict[str, Any]
+    upstreams: list[dict[str, Any]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        required = {"group", "variant", "dataset", "seed", "model_type", "scale"}
+        missing = required - set(self.meta)
+        if missing:
+            raise ValueError(f"RowSpec.meta missing keys: {sorted(missing)}")
+        mode = self.resources.get("mode")
+        if mode not in {"gpu", "cpu"}:
+            raise ValueError(f"RowSpec.resources.mode must be 'gpu'|'cpu', got {mode!r}")
+
+    def fit(self, name: str, *, length: str = "long") -> dict[str, Any]:
+        return _emit("fit", name, self, length)
+
+    def test(self, name: str, *, length: str = "long") -> dict[str, Any]:
+        return _emit("test", name + "-test", self, length)
+
+
+def _accelerator_for(mode: str) -> str:
+    return "cpu" if mode == "cpu" else "auto"
+
+
+def _emit(action: str, name: str, spec: RowSpec, length: str) -> dict[str, Any]:
+    m = spec.meta
+    rendered = spec.rendered.model_dump()
+    rendered["trainer"]["accelerator"] = _accelerator_for(spec.resources["mode"])
+    return {
+        "name": name,
+        "action": action,
+        "identity": {
+            "run_name": f"{m['group']}_{m['variant']}_{m['dataset']}_seed{m['seed']}",
+            "run_dir": _run_dir(m["dataset"], m["group"], m["variant"], m["seed"]),
+            "jobname": f"{m['model_type']}-{m['scale']}-{m['variant']}",
+        },
+        "meta": dict(m),
+        "rendered_config": rendered,
+        "upstreams": list(spec.upstreams),
+        "resources": {"mode": spec.resources["mode"], "length": length},
+    }
+
+
+# ============================================================== compose / fusion
 
 def trainer_base() -> dict[str, Any]:
     """Universal trainer defaults. ``callbacks`` filled by the composer."""
@@ -185,3 +252,43 @@ def fusion(
         patience=patience,
         callback_extras=callback_extras,
     )
+
+
+# ============================================================== one-shot row builders
+
+def extract(
+    *,
+    name: str,
+    dataset: str,
+    extractor_ckpts: dict[str, str],
+    output_dir: str,
+    mode: str = "gpu",
+    length: str = "short",
+    max_samples: int = 150_000,
+    max_val_samples: int = 30_000,
+    batch_size: int = 256,
+    seed: int = 42,
+    window_size: int = 100,
+    stride: int = 100,
+    val_fraction: float = 0.2,
+) -> dict[str, Any]:
+    """One-shot fusion-feature extraction row.
+
+    Doesn't compose a ``RenderedConfig`` — extraction has no Lightning
+    trainer, just an upstream-ckpt dict and an output dir.
+    """
+    return {
+        "name": name,
+        "action": "extract",
+        "dataset": dataset,
+        "extractor_ckpts": dict(extractor_ckpts),
+        "output_dir": output_dir,
+        "resources": {"mode": mode, "length": length},
+        "max_samples": max_samples,
+        "max_val_samples": max_val_samples,
+        "batch_size": batch_size,
+        "seed": seed,
+        "window_size": window_size,
+        "stride": stride,
+        "val_fraction": val_fraction,
+    }

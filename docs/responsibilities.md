@@ -6,24 +6,25 @@ class-path specs + composers into rows that match the `Plan`
 schema.
 
 **Composer** (`graphids/plan/compose.py`) — single `compose(...)`
-plus a thin `fusion(...)` wrapper. Takes bare `{class_path, init_args}`
-blocks (model, data, loss) and emits a frozen
-:class:`graphids.plan.row.RowSpec` whose `rendered` is a typed
-:class:`graphids.plan.blueprint.RenderedConfig` (Pydantic, frozen,
+plus a thin `fusion(...)` wrapper, the `RowSpec` frozen dataclass
+(composer's typed return value), and the `extract(...)` one-shot
+row builder. Takes bare `{class_path, init_args}` blocks (model,
+data, loss) and emits a frozen `RowSpec` whose `rendered` is a typed
+:class:`graphids.plan.schema.RenderedConfig` (Pydantic, frozen,
 `extra="forbid"` — typo'd field at compose time raises
 `ValidationError`).
 
-**Lib** (`graphids/plan/lib.py`) — class-path string constants
-(`GAT`, `VGAE`, `FOCAL`, …) + `spec(cls_path, **init_args)` helper +
-the four primitives that compose / validate (`can_bus` registry
-check, `graph_dm` conditional knobs, `fusion_dm` path derivation,
-`curriculum` deepcopy + reduction injection). Defaults for trivial
-primitives live with the model class itself (e.g. `GAT.__init__`'s
-`_SCALES` table), not duplicated here.
+**Primitives** (`graphids/plan/primitives.py`) — class-path string
+constants (`GAT`, `VGAE`, `FOCAL`, …) + `spec(cls_path, **init_args)`
+helper + the four primitives that compose / validate (`can_bus`
+registry check, `graph_dm` conditional knobs, `fusion_dm` path
+derivation, `curriculum` deepcopy + reduction injection). Defaults
+for trivial primitives live with the model class itself (e.g.
+`GAT.__init__`'s `_SCALES` table), not duplicated here.
 
-**Pydantic / `Plan`** (`graphids/plan/blueprint.py`) —
+**Schema / `Plan`** (`graphids/plan/schema.py`) —
 validation gate. Each row is a discriminated union (`TrainRow` |
-`CmdRow` | `ExtractRow` | `AnalyzeRow`) with `extra="forbid"`.
+`CacheRow` | `ExtractRow` | `AnalyzeRow`) with `extra="forbid"`.
 `TrainRow.rendered_config` is itself a typed `RenderedConfig`
 (`model: ClassPath`, `data: ClassPath`, `trainer: TrainerCfg`,
 `callbacks: dict[str, ClassPath]`) — validation is structural
@@ -62,4 +63,4 @@ orchestrate.run_row → trainer.fit / trainer.test / extract / analyze
 ```
 
 > Authoritative detail: `.claude/rules/config-system.md`,
-> `.claude/rules/single-submission-primitive.md`.
+> `.claude/rules/chassis-invariants.md`.

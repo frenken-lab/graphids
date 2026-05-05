@@ -19,8 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 from graphids.paths import best_ckpt
-from graphids.plan.compose import compose
-from graphids.plan.lib import (
+from graphids.plan import (
     CE,
     FOCAL,
     GAT,
@@ -30,6 +29,7 @@ from graphids.plan.lib import (
     VGAE_TASK,
     WEIGHTED_CE,
     can_bus,
+    compose,
     curriculum,
     graph_dm,
     spec,

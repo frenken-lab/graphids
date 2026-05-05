@@ -38,7 +38,7 @@ from mlflow.entities import LoggedModelInput
 from graphids._fs import atomic_load
 from graphids._mlflow import _find_logged_model_by_ckpt, identity_tags
 from graphids.cli.app import configure_logging
-from graphids.plan.blueprint import AnalyzeRow, CacheRow, ExtractRow, Row, TrainRow
+from graphids.plan.schema import AnalyzeRow, CacheRow, ExtractRow, Row, TrainRow
 from graphids.core.models.base import strip_orig_mod_prefix
 
 

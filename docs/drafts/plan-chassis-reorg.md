@@ -1,7 +1,23 @@
 # Plan-chassis reorganization + plan-id tracking
 
-Status: DRAFT — 2026-05-05
+Status: **SUPERSEDED 2026-05-05.** Steps 1+2 (mechanical reorg + plan-id
+schema/CLI) shipped in commits `5d81480` and `9e275de`. A subsequent
+readability pass landed `lib.py → primitives.py`, `blueprint.py →
+schema.py`, `row.py` folded into `compose.py`, and a `graphids.plan`
+public-API surface for plan authors. The framework eval at
+`docs/drafts/experiment-framework-evaluation.md` evaluated migration to
+Optuna / Ray Tune / Ray Core / Flambe; decision was to keep custom but
+adopt seven design constraints documented at
+`docs/drafts/chassis-design-lessons.md`. Step 4 (TUI) is killed in
+favor of an eventual static-HTML render only if `plans show` outgrows
+the CLI.
+
+References to `plan/blueprint.py`, `plan/lib.py`, `plan/row.py` below
+are stale (those files no longer exist). Kept for history.
+
 Owners: Robert (rf15)
+
+---
 
 Two distinct lifts, sequenced. Step 1 is mechanical. Step 2 is additive
 behavior. Heavy reorg deferred until 2 surfaces real pain.

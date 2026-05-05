@@ -1,8 +1,8 @@
-"""Class_path constants + ``spec()`` helper + composing primitives.
+"""Leaf building blocks for plans — class-path catalog + composing primitives.
 
-Replaces the per-class primitive functions. Plans write::
+Plans write::
 
-    from graphids.plan.lib import spec, GAT, FOCAL, graph_dm, can_bus
+    from graphids.plan import spec, GAT, FOCAL, graph_dm, can_bus
     spec(GAT, scale="large", dropout=0.3)
     graph_dm(source=can_bus(dataset="hcrl_sa", seed=42))
 

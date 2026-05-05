@@ -21,7 +21,8 @@
 
 CLI surface is `graphids run | exec | submit`. No `python -m graphids
 fit/test`, no submitit, no `--mode` ops shortcut — every job is a row.
-See `single-submission-primitive.md` for the canonical example + decision rule.
+See `chassis-invariants.md` for the architectural properties that
+constrain the SLURM submission flow.
 
 The sbatch script body is a literal bash string:
 `python -m graphids exec --row '<json>' [--ckpt-path X]`. **No pickle**

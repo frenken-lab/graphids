@@ -18,23 +18,28 @@ The jsonnet layer (`gojsonnet` + `configs/*.libsonnet`) was deleted
 - **Plans live at `graphids/plan/plans/<name>.py`** and expose
   `def build(*, dataset: str, seed: int) -> list[dict]`.
   `graphids run <name>` imports and calls.
-- **Composers** (`graphids/plan/compose/`) return a frozen
-  :class:`graphids.plan.row.RowSpec`. Its `rendered` field is a
-  *locked* `ml_collections.ConfigDict` — `spec.rendered.trianer` (typo)
-  raises with a "did you mean?" hint. Plan code must not mutate the
-  rendered spec; build a new RowSpec or pass `trainer_overrides=`.
-- **Primitives** (`graphids/plan/primitives/`) return plain dicts of
-  the shape `{"<key>": {"class_path": ..., "init_args": ...}}`. The
-  composer merges, locks, and emits.
+- **Composer** (`graphids/plan/compose.py`) returns a frozen
+  :class:`graphids.plan.compose.RowSpec`. Its `rendered` field is a
+  frozen Pydantic :class:`graphids.plan.schema.RenderedConfig` — typo'd
+  field access raises ``AttributeError``; constructing one with an
+  unknown key raises ``pydantic.ValidationError``. Plan code must not
+  mutate the rendered spec; build a new RowSpec or pass
+  `trainer_overrides=`.
+- **Primitives** (`graphids/plan/primitives.py`) return bare
+  ``{class_path, init_args}`` dicts. The composer merges, validates,
+  and emits.
 - **Loss fragments** are `{"loss_fn": {class_path, init_args}}` blocks
   that the composer `update`s into `model.init_args` — no deep-merge
-  magic, one literal call site (`compose/supervised.py`).
+  magic, one literal call site (`compose.py::compose`).
+- **Plan authors import from `graphids.plan`** (the package's public
+  surface re-exports `compose`, `fusion`, `extract`, primitives, and
+  class-path constants). Internal modules (`schema`, `compose`,
+  `primitives`) are an implementation detail.
 
 ## Path layout
 
-Path math lives in `graphids/plan/catalog.py` (legacy module name —
-re-exported from `graphids.paths`). Plans call
-`run_dir(dataset, group, variant, seed)` and `best_ckpt(...)` directly;
+Path math lives in `graphids/paths.py` (`run_dir`, `best_ckpt`,
+`states_dir`, `load_catalog`). Plans and the composer call it directly;
 no native-callback bridge.
 
 ```
@@ -47,7 +52,7 @@ no native-callback bridge.
 
 Python `None` is a real value (e.g. `gradient_clip_val: None` for
 fusion's RL methods). Pydantic round-trips it as JSON `null` through the
-typed `RenderedConfig` (`graphids/plan/blueprint.py`). Don't replace
+typed `RenderedConfig` (`graphids/plan/schema.py`). Don't replace
 with sentinels.
 
 ## Environment variables

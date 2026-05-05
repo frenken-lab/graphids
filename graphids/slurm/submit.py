@@ -18,7 +18,9 @@ The exports replace the ``runtime.py`` Python calls that v3 dropped;
 ``SLURMEnvironment(auto_requeue=True, requeue_signal=SIGUSR2)`` in
 ``orchestrate_v3._make_trainer`` handles preempt-resume natively.
 
-Per ``single-submission-primitive.md``: ONLY caller of ``SlurmProvider.submit``.
+Per ``chassis-invariants.md`` (drift resistance): ONLY caller of
+``SlurmProvider.submit``. Both ``cli.commands.submit_cli`` (single row)
+and ``cli.plans.plans_submit`` (multi-row) ultimately invoke this.
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ from pathlib import Path
 from parsl.launchers import SrunLauncher
 from parsl.providers import SlurmProvider
 
-from graphids.plan.blueprint import Row, TrainRow
+from graphids.plan.schema import Row, TrainRow
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PROFILES = _REPO_ROOT / "configs" / "resources" / "submit_profiles.json"

@@ -39,7 +39,7 @@ python -m graphids submit --row '<row JSON>' --cluster <c> [--length L]
 ```
 
 The four-step chassis (render → blueprint → exec → submit) is codified
-in `.claude/rules/single-submission-primitive.md`.
+in `.claude/rules/chassis-invariants.md`.
 
 ---
 
@@ -79,7 +79,7 @@ optional knobs), `fusion_dm` (`states_dir(...)` derivation), and
 `curriculum` (deepcopy + `reduction='none'` injection on the base loss).
 
 ```python
-from graphids.plan.lib import GAT, FOCAL, spec, can_bus, graph_dm
+from graphids.plan import GAT, FOCAL, spec, can_bus, graph_dm
 
 spec(GAT, scale="large", dropout=0.3)
 graph_dm(source=can_bus(dataset="hcrl_sa", seed=42))
@@ -123,13 +123,14 @@ over `dataset` / `seed` / `vgae_ckpt` since variants reference them.
 
 ## 3. Pydantic validation
 
-`graphids.plan.blueprint.Plan` is a `RootModel[list[Row]]`
-where `Row` is a discriminated union by `action`:
+`graphids.plan.schema.Plan` wraps the row list with grouping
+metadata (`plan_id`, `plan_module`, `plan_args`, `created_at`,
+`rows: list[Row]`). `Row` is a discriminated union by `action`:
 
 | Action | Class | Notes |
 |---|---|---|
 | fit / test | `TrainRow` | `rendered_config: RenderedConfig` (typed end-to-end), `meta`, `identity`, `upstreams`, `resources` |
-| cmd | `CmdRow` | arbitrary shell command |
+| cache | `CacheRow` | one-shot dataset cache build (vocab scan + windowing) |
 | extract | `ExtractRow` | one-shot fusion-feature extraction (idempotent on `output_dir`) |
 | analyze | `AnalyzeRow` | per-checkpoint artifacts (CKA / embeddings / landscape / fusion-policy) |
 
@@ -206,5 +207,5 @@ done
 4. Done — `graphids run <name>` works immediately.
 
 If the plan needs new declarative state, add a field to the relevant
-row class in `graphids/plan/blueprint.py` (`extra="forbid"` will
+row class in `graphids/plan/schema.py` (`extra="forbid"` will
 reject unknown keys until you do).

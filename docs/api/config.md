@@ -16,12 +16,15 @@ The chassis is split across two top-level modules:
   `dataset_names`, `PREPROCESSING_VERSION`, `CKPT_SUBPATH`,
   `LAST_CKPT_SUBPATH`, `PHASE_MARKERS`, `ModelType`). Torchless;
   import-safe from anywhere including login-node code paths.
-- **`graphids.plan`** — composition + schema. Submodules:
-    - `plan.lib` — class-path registry + spec helpers (`spec`,
+- **`graphids.plan`** — composition + schema. Plan authors import the
+  public API from `graphids.plan` directly (the `__init__` re-exports
+  the surface). Internal modules:
+    - `plan.primitives` — class-path catalog + spec helpers (`spec`,
       `can_bus`, `graph_dm`, `GAT`, `VGAE`, …).
-    - `plan.compose` — `compose(...)` builder.
-    - `plan.row` — `RowSpec` (composer-side mutable builder).
-    - `plan.blueprint` — Pydantic `Row` discriminated union
+    - `plan.compose` — `compose(...)` / `fusion(...)` apex builders,
+      `RowSpec` (composer's frozen return value), and the
+      `extract(...)` one-shot row builder.
+    - `plan.schema` — Pydantic `Row` discriminated union
       (`TrainRow`, `CacheRow`, `ExtractRow`, `AnalyzeRow`),
       `Plan`, `RenderedConfig`, `ClassPath`, `TrainerCfg`.
     - `plan.plans.{ablations,smoke,data}.<name>` — concrete plan
@@ -31,7 +34,7 @@ The chassis is split across two top-level modules:
 `graphids.plan.schemas` were removed in the 2026-05-01 four-step
 rebuild — env vars are read directly at the call sites that need them;
 the row + rendered-config schema lives in
-[`graphids.plan.blueprint`](orchestrate.md).
+[`graphids.plan.schema`](orchestrate.md).
 
 ## `graphids.paths`
 

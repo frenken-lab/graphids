@@ -8,55 +8,77 @@ multi-stage pipelines (Python plans under `graphids/plan/plans/`)
 render to a JSON blueprint via `graphids run` — the user/LLM walks the
 rows and invokes `graphids exec` (in-process) or `graphids submit`
 (SLURM) per row. No pipeline driver. See
-`.claude/rules/single-submission-primitive.md`.
+`.claude/rules/chassis-invariants.md`.
 
 ## Key Commands
 
+The CLI is `graphids` or its short alias `gx` (registered as a console
+script in `pyproject.toml` — both invoke `graphids.__main__:main`).
+Examples below use `gx`.
+
 ```bash
-# Four-step chassis: render → blueprint → exec → submit.
-# Step 1+2: import a Python plan, validate as a Blueprint, write JSON array.
-# `<plan>` is a dotted module under graphids.plan.plans.
-python -m graphids run ofat --dataset hcrl_sa --seed 42 -o plan.json
+# Discover what plans exist + what they'd render
+gx plans available
+gx plans describe ablations.gat_loss -d hcrl_sa -s 42
 
-# Step 3: execute one row in-process (login-node smoke / non-SLURM).
-jq -c '.[0]' plan.json | xargs -I{} python -m graphids exec --row {}
-echo '<row-json>' | python -m graphids exec --row -
+# Render a plan to JSON. Pydantic validates structure; typos raise here.
+gx run ablations.gat_loss --dataset hcrl_sa --seed 42 -o plan.json
+gx run ablations.gat_loss -d hcrl_sa -s 42 --filter 'focal*' -o plan.json
 
-# Step 4: submit one row to SLURM via Parsl. Prints jid on stdout.
-jq -c '.rows[]' plan.json | while read row; do
-    python -m graphids submit --row "$row" --cluster pitzer --length long
-done
+# Smoke one row in-process (no SLURM). Imports torch.
+gx exec --plan plan.json --row-name focal_fit
+gx exec --row "$(jq -c '.rows[0]' plan.json)"
+
+# Submit one row to SLURM via Parsl. Prints jid on stdout.
+gx submit --plan plan.json --row-name focal_fit --cluster pitzer
 # Same-batch dependency chain (afterok = data dep, afterany = preempt-resume):
-python -m graphids submit --row "$row" --cluster cardinal \
-    --depends-on-afterok 12345 --ckpt-path /path/to/upstream/best.ckpt
+gx submit --plan plan.json --row-name focal_test --cluster pitzer \
+    --depends-on-afterok 12345 --ckpt-path /path/to/best.ckpt
+
+# Submit MANY rows from a rendered plan. MLflow-aware filtering.
+gx plans submit --plan plan.json -C pitzer
+gx plans submit --plan plan.json -C pitzer --resume        # skip FINISHED
+gx plans submit --plan plan.json -C pitzer --filter '*-test' --dry-run
+
+# Monitor + evaluate
+gx q                                       # squeue all clusters
+gx qpend                                   # pending jobs + reason
+gx qhist                                   # sacct since today
+gx nodes                                   # sinfo gpu/cpu partitions
+gx disk                                    # du on $RUN_ROOT + scratch
+gx plans show <plan_id>                    # consolidated MLflow table for one plan
+gx plans show <plan_id> --status FAILED --names-only   # machine-readable
+gx plans where <plan_id> --row focal_fit   # run_dir / ckpt / stderr / mlflow run
 
 # Per-checkpoint artifacts (CKA / embeddings / loss landscape / fusion policy)
-# are an `analyze` blueprint action — author a plan under
-# graphids/plan/plans/{smoke,data}/ emitting one AnalyzeRow per checkpoint,
-# then run/exec/submit like any row:
-python -m graphids run ops.analyze_gat --dataset hcrl_sa --seed 42 -o analyze.json
-jq -c '.[0]' analyze.json | xargs -I{} python -m graphids exec --row {}
+# are an `analyze` action — author a plan emitting AnalyzeRow per checkpoint:
+gx run ops.analyze_gat -d hcrl_sa -s 42 -o analyze.json
+gx plans submit --plan analyze.json -C pitzer
 ```
 
 ## CLI Architecture
 
-The four user-facing primitives are pure stages. Each does exactly one
-thing and feeds the next; no stage submits, queries MLflow, or
-orchestrates multiple jobs.
+Render is pure JSON. Submit (single-row or `plans submit` multi-row)
+consumes the JSON. MLflow is the trial-state store. Row JSON is frozen
+in the sbatch script — drift resistance is architectural. See
+`.claude/rules/chassis-invariants.md` for the four properties this
+preserves.
 
 | Stage  | Command                                | Module                                   | What it does                                                                                           |
 | ------ | -------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| render | `graphids run <plan>`                  | `graphids/cli/commands.py`               | Imports `graphids.plan.plans.<plan>`, calls `build(dataset, seed)`, validates as `Plan`, writes JSON. |
-| exec   | `graphids exec --row <json>`           | `graphids/cli/commands.py`               | Executes one row in-process via `graphids.orchestrate.run_row`. Dispatches on `row.action` (fit/test/extract/analyze). |
-| submit | `graphids submit --row <json>`         | `graphids/cli/commands.py`               | Submits one row to SLURM via Parsl `SlurmProvider`. Prints jid.                                        |
-| ops    | `analyze` / `cache` / `extract` rows   | `graphids/plan/plans/{smoke,data,ablations}/*.py` | Ops are rows too — analyze ckpt, HF push, cache rebuild. Same run/exec/submit chassis.        |
+| render | `graphids run <plan>`                  | `graphids/cli/commands.py`               | Imports `graphids.plan.plans.<plan>`, calls `build(dataset, seed)`, validates as `Plan`, writes JSON. `--filter <glob>` subsets rows. |
+| exec   | `graphids exec --row <json>` or `--plan FILE --row-name NAME` | `graphids/cli/commands.py`               | Executes one row in-process via `graphids.orchestrate.run_row`. Dispatches on `row.action` (fit/test/extract/analyze/cache). |
+| submit | `graphids submit --row <json>` or `--plan FILE --row-name NAME` | `graphids/cli/commands.py`               | Submits one row to SLURM via Parsl `SlurmProvider`. Prints jid.                                        |
+| bulk   | `graphids plans submit --plan FILE --cluster X` | `graphids/cli/plans.py`                  | Walks rendered plan, submits rows. `--filter`/`--resume`/`--dry-run`. Each row's outcome is its own log line. |
+| views  | `graphids plans {list,available,describe,show,where}` | `graphids/cli/plans.py`                  | Read-only MLflow + filesystem queries.                                                                 |
+| ops    | `analyze` / `cache` / `extract` rows   | `graphids/plan/plans/{smoke,data,ablations}/*.py` | Ops are rows too — analyze ckpt, HF push, cache rebuild. Same run / submit chassis.           |
 
 `graphids/__main__.py` imports each submodule to register Typer commands.
 `app.py` owns the root app + shared option types.
 
 **Config resolution** — Single path: a Python plan module under
 `graphids/plan/plans/` exposes `build(dataset, seed) -> list[dict]`;
-`Plan` / `TrainRow` (`graphids/plan/blueprint.py`) validates it.
+`Plan` / `TrainRow` (`graphids/plan/schema.py`) validates it.
 `run_row` walks nested `class_path` blocks and instantiates via
 importlib with signature-filtered kwargs. Loss fragments are true
 `{class_path, init_args}` blocks — no `inject_loss_fn` helper.
@@ -65,10 +87,14 @@ whose `rendered` is a locked `ml_collections.ConfigDict` (typo'd field
 access raises with a did-you-mean hint). See
 `docs/reference/config-architecture.md`.
 
-**SLURM submission** — `graphids submit` is the ONLY caller of
-`SlurmProvider.submit`. The sbatch script carries the literal command
+**SLURM submission** — `graphids.slurm.submit.submit_row` is the ONLY
+caller of `SlurmProvider.submit`. Both `graphids submit` (single row)
+and `graphids plans submit` (multi-row, MLflow-aware) ultimately call
+it. The sbatch script carries the literal command
 `python -m graphids exec --row '<json>' [--ckpt-path X]` — no pickle,
-no stale-pickle bug. Profiles in `configs/resources/submit_profiles.json`
+no stale-pickle bug. Row JSON is frozen here at submit time; this is
+the architectural drift-resistance property (see
+`chassis-invariants.md`). Profiles in `configs/resources/submit_profiles.json`
 keyed `[mode][cluster][length]` translate to Parsl `SlurmProvider`
 kwargs (partition, cores, mem, walltime, gpus, signal-delay).
 `SrunLauncher` wraps the command. Preempt-resume kept via SIGUSR2 trap

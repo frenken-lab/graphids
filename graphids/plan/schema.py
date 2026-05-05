@@ -1,6 +1,6 @@
-"""Blueprint schema — the JSON array a Python plan emits.
+"""Plan schema — the JSON object a Python plan emits.
 
-A blueprint is an ordered list of rows. Each row is one of:
+A plan wraps an ordered list of rows. Each row is one of:
     fit / test  → carries `rendered_config` + `upstreams` + `identity`
     extract     → one-shot fusion-feature extraction (idempotent on output_dir)
     analyze     → per-checkpoint artifact generation (CKA / embeddings / …)
@@ -98,11 +98,20 @@ class Resources(_StrictModel):
 
 
 class TrainRow(_StrictModel):
-    """Fit or test row — carries a fully-rendered training config."""
+    """Fit or test row — carries a fully-rendered training config.
+
+    Reproduction-contract fields (``plan_module`` + ``git_sha``) are
+    threaded by ``graphids run`` and surface as MLflow tags. Together
+    with ``plan_id`` and ``meta.dataset`` / ``meta.seed`` they let
+    ``git checkout <git_sha> && graphids run <plan_module> --dataset X
+    --seed Y --filter <name>`` regenerate this exact row deterministically.
+    """
 
     name: str
     action: Literal["fit", "test"]
     plan_id: str
+    plan_module: str
+    git_sha: str
     identity: Identity
     meta: Meta
     rendered_config: RenderedConfig

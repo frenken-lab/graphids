@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from graphids.plan.compose import compose
-from graphids.plan.lib import DGI, VGAE, VGAE_TASK, can_bus, graph_dm, spec
+from graphids.plan import DGI, VGAE, VGAE_TASK, can_bus, compose, graph_dm, spec
 
 
 def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:

@@ -24,9 +24,9 @@ honest — every callback now goes through `_instantiate` uniformly.
 
 ::: graphids.orchestrate
 
-## `graphids.plan.blueprint`
+## `graphids.plan.schema`
 
-`TrainRow` / `ExtractRow` / `AnalyzeRow` / `CmdRow` / `Plan`
+`TrainRow` / `CacheRow` / `ExtractRow` / `AnalyzeRow` / `Plan`
 — the validated row schema produced by `graphids run` and consumed by
 `graphids exec` / `graphids submit`. `RenderedConfig` / `ClassPath` /
 `TrainerCfg` type the per-row training-config payload end-to-end.
@@ -35,4 +35,4 @@ Single source of truth for what a stage needs. `AnalyzeRow` drives
 field on the row is consumed by an entry in
 `graphids.core.artifacts.ARTIFACTS`.
 
-::: graphids.plan.blueprint
+::: graphids.plan.schema

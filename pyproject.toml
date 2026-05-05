@@ -49,6 +49,7 @@ db = ["psycopg[binary]>=3.1"]
 
 [project.scripts]
 graphids = "graphids.__main__:main"
+gx = "graphids.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["graphids"]
@@ -92,7 +93,7 @@ warn_return_any = true
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = "graphids.config.*"
+module = "graphids.plan.*"
 disallow_untyped_defs = true
 
 [[tool.mypy.overrides]]

@@ -7,9 +7,9 @@
   login nodes (`.claude/rules/slurm-hpc.md`).
 
 ## High-level architecture
-- **Four-step chassis (`.claude/rules/single-submission-primitive.md`):**
-  `render → blueprint → exec → submit`. `graphids run <plan.jsonnet> -o
-  plan.json` renders the plan, validates as `BlueprintArray`, writes a JSON
+- **Chassis (`.claude/rules/chassis-invariants.md`):**
+  `render → exec / submit / plans submit`. `graphids run <plan> -o
+  plan.json` renders the plan, validates as `Plan`, writes a JSON
   array. `graphids exec --row <json>` runs one row in-process via
   `graphids.orchestrate.run_row`. `graphids submit --row <json> --cluster
   <c>` submits one row to SLURM via Parsl `SlurmProvider`. The sbatch script

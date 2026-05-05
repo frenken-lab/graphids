@@ -1,10 +1,11 @@
 # CLI
 
-The four-step chassis: **render → blueprint → exec → submit**. Each
-command does exactly one thing and feeds the next; no stage submits,
-queries MLflow across runs, or orchestrates multiple jobs. See
-[`single-submission-primitive.md`](https://github.com/frenken-lab/graphids/blob/main/.claude/rules/single-submission-primitive.md)
-for the architectural rule.
+The chassis: **render → exec / submit**. Render is pure JSON;
+exec runs one row in-process; submit either takes one row or, via
+``plans submit``, walks a rendered plan with MLflow-aware filtering.
+See [`chassis-invariants.md`](https://github.com/frenken-lab/graphids/blob/main/.claude/rules/chassis-invariants.md)
+for the four architectural properties (drift resistance, MLflow as
+state store, reproduction contract, render purity).
 
 | Stage  | Command                          | Module                     |
 |--------|----------------------------------|----------------------------|

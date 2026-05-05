@@ -2,7 +2,7 @@
 
 > Status: **implemented** | Companions: `orchestration.md`,
 > `observability.md`, `config-architecture.md`,
-> `.claude/rules/single-submission-primitive.md`
+> `.claude/rules/chassis-invariants.md`
 
 How a job goes from CLI invocation on the login node to a running
 training process on a compute node, including preemption recovery.
@@ -108,7 +108,7 @@ the compute node needs; no MLflow lookup at submit time, no
 | File | Role |
 |---|---|
 | `graphids/cli/commands.py` | `run` / `exec` / `submit` Typer wrappers. |
-| `graphids/plan/blueprint.py` | `Plan`, `TrainRow`, `ExtractRow`, `AnalyzeRow`, `CmdRow`, `RenderedConfig`, `ClassPath`, `TrainerCfg` — discriminated-union row schema + typed rendered-config schema. |
+| `graphids/plan/schema.py` | `Plan`, `TrainRow`, `CacheRow`, `ExtractRow`, `AnalyzeRow`, `RenderedConfig`, `ClassPath`, `TrainerCfg` — discriminated-union row schema + typed rendered-config schema. |
 | `graphids/orchestrate.py` | `run_row(row)` dispatch, `_instantiate` recursion, `UpstreamLineageCallback`, `_ensure_runtime` (spawn + structlog). Preempt-resume via Lightning's `SLURMEnvironment` plugin. |
 | `graphids/slurm/submit.py` | `submit_row(...)` library entrypoint; one Parsl `SlurmProvider.submit` site. |
 | `configs/resources/submit_profiles.json` | Raw Parsl `SlurmProvider` kwargs keyed `[mode][cluster][length]`. |
