@@ -30,7 +30,7 @@ and `vocab_scope="all"` regimes coexist on disk for ablation. See
 | Checkpoint bytes | `{run_dir}/checkpoints/` | `torch.load` via `_fs.atomic_load` |
 | Checkpoint SHA256 | `.sha256` sidecar + `LoggedModel.tags.graphids.ckpt_sha256` | `atomic_load` verifies |
 | Span lifecycle + log events | `{run_dir}/traces.jsonl` | `jq` for debugging |
-| Validated jsonnet config | `{run_dir}/resolved.json` | replay |
+| Validated rendered config | `{run_dir}/resolved.json` | replay |
 
 ## Key rules
 

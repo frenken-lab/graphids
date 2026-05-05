@@ -1,221 +1,133 @@
-# Submit flow — atomic and plan submission, end to end
+# Submit flow — atomic submission, end to end
 
-> Status: **implemented** | Companions: `orchestration.md` (build/train/evaluate),
-> `observability.md` (MLflow + OTel layout)
+> Status: **implemented** | Companions: `orchestration.md`,
+> `observability.md`, `config-architecture.md`,
+> `.claude/rules/single-submission-primitive.md`
 
-How a job goes from CLI invocation on the login node to a running training
-process on a compute node, including preemption recovery and plan-level
-dep threading. Files referenced are clickable in any IDE-like reader; line
-numbers are not pinned, names are.
+How a job goes from CLI invocation on the login node to a running
+training process on a compute node, including preemption recovery.
 
-## Two entry shapes
+## The chassis
+
+Every job is one row, submitted atomically:
 
 ```bash
-# Atomic — one preset, one job. Most common interactive use.
-python -m graphids submit <preset.jsonnet> --dataset X --seed N [opts]
+# 1. Render a Python plan to a row array.
+graphids run <plan-module> --dataset X --seed N -o plan.json
 
-# Plan — multi-node DAG. `run` RENDERS a JSONL blueprint; it does not submit.
-python -m graphids run  configs/plans/ofat.jsonnet --dataset X --seed N --cluster C
-python -m graphids status configs/plans/ofat.jsonnet --dataset X --seed N   # read-only MLflow
+# 2. Iterate — the user/LLM is the loop. There is NO Python pipeline driver.
+jq -c '.[]' plan.json | while read row; do
+    graphids submit --row "$row" --cluster pitzer --length long
+done
 ```
 
-The plan is *data*; the JSONL is the *blueprint*. Each row carries a
-literal ``submit_command`` string — the same atomic ``graphids submit``
-invocation a user would run by hand. The user (or an LLM walking the
-JSONL) iterates row by row in topo order. There is **no executable
-artifact**, no Python pipeline driver, no second submission path —
-see ``.claude/rules/single-submission-primitive.md``.
+`<plan-module>` is a dotted name under `graphids.configs.plans`
+(e.g. `supervised`, `ofat`, `ops.gat_taunorm_smoke`). See
+`config-architecture.md`.
 
-## Atomic: `graphids submit <preset>`
+## Atomic: `graphids submit --row '<json>'`
 
 Login-node phase (until `sbatch` returns):
 
-1. **`graphids/cli/submit.py:submit_cli`** parses Typer flags. Validates
-   that `--depends-on` and `--ckpt-path` aren't combined (different
-   semantics — see "Three ckpt flags" below). Builds `flag_tlas` from
-   the flat shortcuts (`--dataset`, `--seed`, `--scale`, `--ckpt-tla`,
-   `--lake-root`).
-2. **`--depends-on` resolution** (optional). For each `<variant>:<seed>`
-   spec, `graphids/slurm/dependencies.py:resolve_dependency` calls
-   `_mlflow.latest_run(...)` and dispatches by status:
-   * **FINISHED** → reads `graphids.run_dir` tag, injects `<role>_ckpt_path`
-     TLA (e.g. `vgae_ckpt_path`). No SLURM dependency.
-   * **RUNNING** → injects the same TLA (path is deterministic from
-     `run_dir`) AND adds `slurm.job_id` from the upstream's MLflow
-     tag as an `afterok` dep. Downstream queues now and waits.
-   * **missing / FAILED / KILLED** → hard error.
+1. **`graphids/cli/commands.py:submit_cli`** parses Typer flags, loads
+   the row JSON via `BlueprintArray.model_validate([json.loads(...)])[0]`
+   (validates the row's discriminated-union shape).
+2. **`graphids/slurm/submit.py:submit_row(row, cluster, length, ...)`**
+   is the one library entrypoint and the ONLY caller of Parsl's
+   `SlurmProvider.submit`. Looks up
+   `_PROFILES[mode][cluster][length]` from
+   `configs/resources/submit_profiles.json` (raw `SlurmProvider`
+   kwargs — `**profile` splat, no parser layer). `signal_delay_s` is
+   the one extension: becomes `#SBATCH --signal=USR2@N`.
+3. **The sbatch script body is a literal bash string**:
+   ```
+   python -m graphids exec --row '<row JSON>' [--ckpt-path X]
+   ```
+   No pickle of Python closures. Code edits committed *after* a job
+   queues DO reach it — the job re-imports current source at exec time.
+4. **`SrunLauncher` wraps the command.** `--dependency=afterok:<jid>`
+   (or `afterany`) is set when `--depends-on-afterok` /
+   `--depends-on-afterany` is passed. Returns the jid; CLI prints it.
 
-   `resolve_all` returns `(tla_pairs, afterok_jids)` and the CLI passes
-   both into `submit()`. One primitive — no separate `--dep` flag, no
-   `SBATCH_DEP` env fallback. Producer→consumer-TLA mapping lives in
-   `DEPENDS_ON_TLA`.
-3. **`--skip-if-finished` short-circuit** (optional). Infers
-   `(group, variant)` from the preset path, calls
-   `_mlflow.is_finished(...)`. If FINISHED, prints `0` and exits — the
-   bash idiom `jid=$(graphids submit ...)` still works.
-4. **`graphids/slurm/submit.py:submit()`** — the one library entrypoint.
-   `ensure_env_loaded()` (python-dotenv) populates `os.environ` from
-   `.env`. Looks up `_PROFILES[mode][cluster][length]` from
-   `configs/resources/submit_profiles.json` (raw `submitit.AutoExecutor`
-   kwargs — no parser layer). Applies `--mem-gb` / `--timeout-min`
-   overrides; optional `--time-from-history` queries MLflow via
-   `graphids.slurm.sizing.estimate_walltime_minutes` (group p95 × 1.5).
-   `_align_cpus_to_mem` bumps `cpus_per_task` to satisfy the cluster's
-   `mem_per_cpu_gb` ratio.
-5. **Render the preset once, on the login node.** For preset payloads,
-   `submit()` calls `config.jsonnet.render(preset, tla=...)` and stamps
-   the rendered `trainer.default_root_dir` into the `_TrainingJob`'s
-   `run_dir` field. The compute node never re-renders jsonnet during
-   preemption recovery.
-6. **Build the work unit.** Preset → `_TrainingJob(action, config, tlas,
-   sets, ckpt_path, run_dir)` (pickle-safe dataclass). `--command` →
-   `submitit.helpers.CommandFunction(["bash", "-c", cmd])`.
-7. **Submit via submitit.** `submitit.AutoExecutor(folder=log_dir).submit(payload)`
-   pickles the job, generates the sbatch script with
-   `slurm_setup=["source scripts/slurm/_preamble.sh"]` so module-load and
-   venv-activation run before submitit's `srun python -u -m
-   submitit.core._submit {folder}`. The dependency string
-   `afterok:<jid1>:<jid2>...` is set from `dep_jids`. Returns the jid.
-8. **`submit()` returns** `int | None` — real jid for a successful
-   submission, `None` for `--dry-run`. CLI prints `jid` (or `0` for
-   skip/dry-run) to stdout for bash-capture.
+Compute-node phase:
 
-Compute-node phase (after `_preamble.sh`):
+5. **`srun python -m graphids exec --row '<json>'`** runs in the
+   allocated resources. `_load_row` revalidates via `BlueprintArray`,
+   then `orchestrate.run_row(row, ckpt_path=...)` dispatches on
+   `row.action`.
+6. For `fit` / `test`: `_instantiate` walks the `class_path` tree,
+   `_mlflow.start_training_run` opens the run (status-gated resume),
+   `trainer.fit(...)` or `trainer.test(...)` runs.
+   `MLflowTrainingCallback` forwards per-epoch metrics; `on_fit_end`
+   closes FINISHED.
 
-9. **`srun python -u -m submitit.core._submit {folder}`** unpickles the
-   payload and calls it.
-10. **`_TrainingJob.__call__`** imports `graphids.cli.training.fit` (or
-    `test`) and invokes it as a bare Python function — bypassing Typer's
-    root callback. Provider/spawn/CPU-thread setup that the root callback
-    would have done is duplicated in `_prepare()` for the compute-node
-    path.
-11. **`_prepare()`** wires the run: `init_providers` (OTel + W&B),
-    `ensure_spawn` (CUDA-safe multiprocessing), `configure_cpu_threads`,
-    `ensure_tracking_uri` (MLflow). `render(config, tla, set_overrides)`
-    re-evaluates jsonnet on the compute node — this time for the
-    canonical `ResolvedConfig`. Pydantic validates via
-    `ResolvedConfig.from_rendered`. Writes `resolved.json` and
-    `overrides.json` under `run_dir` for replay/debugging.
-12. **`build(resolved)`** instantiates trainer / model / datamodule via
-    `importlib` + `filter_kwargs`. See `orchestration.md`.
-13. **`train(artifacts, resolved)`** opens an MLflow run via
-    `_mlflow.start_training_run` (status-gated resume — see
-    `observability.md`), runs `trainer.fit(...)`, and
-    `MLflowTrainingCallback.on_fit_end` closes the run FINISHED.
+## Preemption auto-resume
 
-Preemption recovery (5 min before walltime):
+Profiles set `signal_delay_s=300` → `--signal=USR2@300` (USR2 because
+NCCL catches USR1). Five minutes before walltime, Lightning's
+`SLURMEnvironment(auto_requeue=True, requeue_signal=SIGUSR2)` plugin
+(wired by `orchestrate._trainer_kwargs`) catches the signal and calls
+`scontrol requeue $SLURM_JOB_ID` — same job ID, downstream `afterok`
+chains stay valid. The replacement run picks up from
+`{run_dir}/checkpoints/last.ckpt` without manual intervention.
 
-14. SLURM sends SIGUSR2 (USR2 because NCCL catches USR1; configured via
-    `slurm_signal_delay_s=300` in the profile).
-15. submitit's signal handler calls `_TrainingJob.checkpoint()`, which
-    reads `{run_dir}/checkpoints/last.ckpt` if present and returns
-    `submitit.helpers.DelayedSubmission(replace(self, ckpt_path=resume))`.
-    submitit `afterany`-resubmits with that ckpt as the resume source.
-    No manual loop, no jsonnet re-render — `run_dir` was stamped at submit
-    time.
+## Same-batch dependency chains
 
-## Plan: `graphids run <plan.jsonnet>`
-
-A *plan* is a jsonnet file declaring `{ nodes: [Node, ...] }`. The plan
-itself is the topology source of truth — there is no parallel Python
-declaration. `graphids run` is a **JSONL blueprint renderer**: it
-emits one JSON object per node and exits. No SLURM contact, no
-executable artifact.
-
-1. **`graphids/cli/run.py:run_cli`** renders the plan via
-   `config.jsonnet.render` (passing `dataset` + `seed` as TLAs) and parses
-   to `tuple[Node, ...]` via `graphids/slurm/dag.py:parse_plan` (Pydantic
-   `extra="forbid"` — typos die fast). `--variants A,B` filter walks
-   transitive upstream deps via `filter_with_upstream`.
-2. **`Node`** derives `group` / `variant` from the
-   `<group>/<variant>.jsonnet` preset path; the plan only declares
-   `preset:`. Off-convention paths must declare `group` / `variant`
-   explicitly or fail validation.
-3. **`graphids/slurm/run.py:render_plan_jsonl`** toposorts via
-   `graphlib` and emits one JSON line per node. Each row's
-   `submit_command` is the literal `graphids submit ...` invocation,
-   baked with `(dataset, seed, cluster)` plus the node's mode / length /
-   mem / timeout overrides. `deps` are listed by node name (not jid, not
-   shell var) — the user/LLM honors them by ordering.
-4. **`--skip-if-finished`** is included in every *preset* row's
-   `submit_command` by default. Command-mode rows omit it (no
-   `(group, variant)` for the MLflow lookup). `--depends-on` is **not**
-   auto-emitted — the user adds it for same-batch SLURM-level parallel
-   queueing (RUNNING upstream → afterok). For sequential workflows it's
-   not needed; the FINISHED check via `--skip-if-finished` covers
-   re-runnability.
-
-Composition the user does:
+For multi-stage rows in the same plan (e.g. fusion needs an extracted
+states cache), thread dependencies via the submit flag:
 
 ```bash
-graphids run plan.jsonnet --dataset X --seed N --cluster C
-# read JSONL, decide which rows to run, copy/paste each submit_command.
-# Or pipe through jq for filtering / ordering / templating.
+EXTRACT_JID=$(jq -c '.[0]' plan.json | xargs -I{} \
+    graphids submit --row {} --cluster pitzer)
+for r in $(jq -c '.[1:][]' plan.json); do
+    graphids submit --row "$r" --cluster pitzer \
+        --depends-on-afterok "$EXTRACT_JID"
+done
 ```
 
-## Status: `graphids status <plan.jsonnet>`
+`afterok` for data dependencies (downstream waits for upstream FINISH);
+`afterany` for preempt-resume chains (downstream runs whether upstream
+exited cleanly or was preempted).
 
-Reuses `_load_plan` + `query_all` from the run path. `query_all` calls
-`_mlflow.latest_run` once per non-command node (commands report `NA`).
-Output is a `rich` table by default; `--format json` is the
-machine-readable shape.
-
-## Three ckpt flags — when to use which
+## Ckpt flag semantics
 
 | Flag | Semantics | Wired to |
 |---|---|---|
-| `--ckpt-tla` | Set the jsonnet `ckpt_path` TLA. | `flag_tlas` → `_TrainingJob.tlas` → consumed by the preset. |
-| `--ckpt-path` | Resume the *current* preset — passthrough to `python -m graphids fit/test --ckpt-path`. | `_TrainingJob.ckpt_path` → `cli.training.fit(ckpt_path=...)`. |
-| `--depends-on V[:S]` | MLflow lookup → inject upstream-teacher ckpt as TLA (e.g. `vgae_ckpt_path`). RUNNING upstream → also add `slurm.job_id` as afterok dep. | `flag_tlas` + `dep_jids` via `dependencies.resolve_all`. Conflicts with `--ckpt-path`. |
+| `--ckpt-path` | Resume the *current* row from a ckpt — passed to `orchestrate.run_row(row, ckpt_path=...)`. Used by preempt-resume. | `submit_row(..., ckpt_path=...)` → sbatch command suffix. |
+| `--depends-on-afterok <jid>` | Add `#SBATCH --dependency=afterok:<jid>` (data dep). | `SlurmProvider` dependency string. |
+| `--depends-on-afterany <jid>` | Add `#SBATCH --dependency=afterany:<jid>` (preempt-resume chain). | Same. |
 
-In a plan, `--depends-on` semantics fall out of the topology — fusion
-nodes depend on `extract-states`, which writes a tensor cache to
-`paths.states_dir`. Direct upstream-ckpt injection isn't used in the
-shipped OFAT plan.
-
-## One MLflow query helper
-
-Three callers want "latest row for `(dataset, [group], variant, seed,
-phase[, status])`": `_mlflow.is_finished` (skip-if-finished),
-`slurm.dependencies.resolve_dependency` (--depends-on),
-`slurm.status.query_node_status` (plan status). They all route through
-`_mlflow.latest_run` — one filter shape, one ordering, one place to fix
-bugs. `slurm.sizing.estimate_walltime_minutes` is the fourth call site;
-it queries 50 historical rows for a group p95, so it stays separate.
+Upstream-teacher ckpt paths (e.g. VGAE → GAT distillation) flow through
+the row's `upstreams` array, populated at plan-build time via
+`graphids.configs.catalog.best_ckpt(...)`. The row carries everything
+the compute node needs; no MLflow lookup at submit time, no
+`--depends-on V[:S]` flag.
 
 ## File map
 
 | File | Role |
 |---|---|
-| `graphids/cli/submit.py` | Atomic CLI flag surface; flag→TLA shaping; `--skip-if-finished`. |
-| `graphids/cli/run.py` | Plan CLI (`run` + `status`). |
-| `graphids/cli/training.py` | `fit` / `test` Typer commands; `_prepare` for compute-node setup. |
-| `graphids/slurm/submit.py` | Library `submit()`; `_TrainingJob` payload + `checkpoint()`. |
-| `graphids/slurm/run.py` | `render_plan_jsonl` — toposort + emit JSONL blueprint (no submission, no executable artifact). |
-| `graphids/slurm/dag.py` | `Node` (Pydantic), `parse_plan`, `toposort`, `filter_with_upstream`. |
-| `graphids/slurm/dependencies.py` | `--depends-on` registry + resolution. |
-| `graphids/slurm/status.py` | Per-node MLflow status query + table/json formatters. |
-| `graphids/slurm/sizing.py` | Optional `--time-from-history` walltime estimation. |
-| `graphids/_mlflow.py` | `latest_run`, `is_finished`, `start_training_run`, `log_test_run`, tag/filter helpers. |
-| `configs/plans/ofat.jsonnet` | OFAT topology (15 fits + 15 tests + 1 command). |
-| `configs/resources/submit_profiles.json` | Raw `submitit.AutoExecutor` kwargs keyed `[mode][cluster][length]`. |
-| `scripts/slurm/_preamble.sh` | Module load + venv + `.env` on the compute node. |
+| `graphids/cli/commands.py` | `run` / `exec` / `submit` Typer wrappers. |
+| `graphids/configs/blueprint.py` | `BlueprintArray`, `TrainRow`, `ExtractRow`, `AnalyzeRow`, `CmdRow`, `RenderedConfig`, `ClassPath`, `TrainerCfg` — discriminated-union row schema + typed rendered-config schema. |
+| `graphids/orchestrate.py` | `run_row(row)` dispatch, `_instantiate` recursion, `UpstreamLineageCallback`, `_ensure_runtime` (spawn + structlog). Preempt-resume via Lightning's `SLURMEnvironment` plugin. |
+| `graphids/slurm/submit.py` | `submit_row(...)` library entrypoint; one Parsl `SlurmProvider.submit` site. |
+| `configs/resources/submit_profiles.json` | Raw Parsl `SlurmProvider` kwargs keyed `[mode][cluster][length]`. |
+| `graphids/configs/plans/<name>.py` | Plan modules — `build(dataset, seed) → list[dict]`. |
 
 ## Non-obvious invariants
 
-- **`_TrainingJob.__call__` runs `_prepare()` provider setup** because it
-  bypasses Typer's root callback. If `cli.training.fit` is ever
-  refactored to require the Typer callback, the compute-node path
-  silently regresses.
-- **submitit pickles the payload at submission time.** Code edits to
-  `graphids/` that land *after* a job is queued won't reach it.
-  Cancel + resubmit on bug fixes.
-- **`_align_cpus_to_mem` mutates the params dict in place.** Each
-  `submit()` call shallow-copies the profile entry first, so the global
-  `_PROFILES` is not mutated.
-- **MLflow is a hard dep**. Failures propagate from `start_training_run`
-  / `log_test_run`. The two soft-failure paths (`log_params` resume
-  conflict, `end_training_run` cleanup) are documented in `_mlflow.py`'s
-  module docstring.
-- **`run_dir` is stamped into the pickled `_TrainingJob`** so SIGUSR2
-  recovery doesn't re-render jsonnet on the compute node.
+- **No pickle.** The sbatch script carries a literal command string;
+  `graphids/` source on the compute node is whatever's checked out at
+  exec time. Code fixes between submit and exec DO reach the job.
+- **MLflow is a hard dep.** Failures from `start_training_run` /
+  `log_test_run` propagate. The two soft-failure paths
+  (`log_params` resume conflict, `end_training_run` cleanup) are
+  documented in `_mlflow.py`'s module docstring.
+- **`run_dir` is computed in the plan**, baked into the row's
+  `identity`, and consumed by the compute node verbatim. No
+  re-computation, no scheduler re-query.
+- **`graphids submit` is the ONLY caller of `submit_row`.** No
+  `submit-many`, no `submit-batch`, no Python loop calling
+  `submit_row()` per row. N jobs = N invocations of `graphids submit`.
+- **There is no `graphids status`.** Use the MLflow UI or
+  `_mlflow.build_search_filter(...)` for cross-run queries.

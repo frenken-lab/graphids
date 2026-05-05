@@ -38,16 +38,25 @@ class GAT(GraphModuleBase):
     the block resolves to a
     :class:`~graphids.core.losses.distillation.SoftLabelDistillation`,
     training automatically becomes a KD run — no branching here.
+
+    ``scale`` selects per-axis hyperparam presets from :attr:`_SCALES`;
+    explicit ``hidden`` / ``layers`` / ``heads`` kwargs (non-``None``)
+    override the preset.
     """
+
+    _SCALES: dict[str, dict[str, int]] = {
+        "small": {"hidden": 24, "layers": 2, "heads": 4},
+        "large": {"hidden": 64, "layers": 3, "heads": 8},
+    }
 
     def __init__(
         self,
         *,
         loss_fn: nn.Module,
-        # --- architecture ---
-        hidden: int = 48,
-        layers: int = 3,
-        heads: int = 8,
+        # --- architecture (None → resolve from ``scale`` preset) ---
+        hidden: int | None = None,
+        layers: int | None = None,
+        heads: int | None = None,
         dropout: float = 0.2,
         fc_layers: int = 3,
         embedding_dim: int = 16,
@@ -72,6 +81,13 @@ class GAT(GraphModuleBase):
         in_channels: int = 0,
         num_classes: int = 2,
     ):
+        s = self._SCALES.get(scale, {})
+        if hidden is None:
+            hidden = s.get("hidden", 48)
+        if layers is None:
+            layers = s.get("layers", 3)
+        if heads is None:
+            heads = s.get("heads", 8)
         super().__init__()
         self.test_metrics = classification_test_metrics(num_classes)
         self._val_probs: list[torch.Tensor] = []

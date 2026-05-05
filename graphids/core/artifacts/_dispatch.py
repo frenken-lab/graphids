@@ -20,7 +20,7 @@ import torch
 from . import compute, io
 
 if TYPE_CHECKING:
-    from graphids.blueprint import AnalyzeRow
+    from graphids.configs.blueprint import AnalyzeRow
 
 
 @dataclass(frozen=True)

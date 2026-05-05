@@ -41,14 +41,19 @@ class VGAE(ScoreBasedDetectorMixin):
     :meth:`on_test_setup` at test-start.
     """
 
+    _SCALES: dict[str, dict] = {
+        "small": {"latent_dim": 64, "hidden_dims": [64]},
+        "large": {"latent_dim": 128, "hidden_dims": [128]},
+    }
+
     def __init__(
         self,
         *,
         loss_fn: nn.Module,
-        # --- architecture ---
+        # --- architecture (latent_dim/hidden_dims=None → resolve from scale) ---
         conv_type: str = "gatv2",
         hidden_dims: list[int] | None = None,
-        latent_dim: int = 48,
+        latent_dim: int | None = None,
         heads: int = 4,
         embedding_dim: int = 32,
         dropout: float = 0.1,
@@ -78,6 +83,11 @@ class VGAE(ScoreBasedDetectorMixin):
         in_channels: int = 0,
         num_classes: int = 2,
     ):
+        s = self._SCALES.get(scale, {})
+        if latent_dim is None:
+            latent_dim = s.get("latent_dim", 48)
+        if hidden_dims is None:
+            hidden_dims = s.get("hidden_dims")
         super().__init__()
         self._register_score_norm_buffers(latent_dim)
         self._init_post(locals())

@@ -9,10 +9,12 @@ source at exec time.
 
 Profiles in `configs/resources/submit_profiles.json`
 (`[mode][cluster][length]`) hold Parsl `SlurmProvider` kwargs
-verbatim — `submit_row` splats them with `**profile`. Preempt-resume runs via SIGUSR2 (USR2 because NCCL catches
-USR1) — `graphids/runtime.py` traps the signal and re-submits the
-row with `--ckpt-path={run_dir}/checkpoints/last.ckpt` and
-`--depends-on-afterany=$SLURM_JOB_ID`.
+verbatim — `submit_row` splats them with `**profile`. Preempt-resume
+runs via SIGUSR2 (USR2 because NCCL catches USR1) — Lightning's
+`SLURMEnvironment(auto_requeue=True, requeue_signal=SIGUSR2)` plugin
+(wired in `graphids.orchestrate._trainer_kwargs`) calls
+`scontrol requeue $SLURM_JOB_ID`, same job ID, downstream `afterok`
+chains stay valid.
 
 `graphids.slurm.sizing` (MLflow-history walltime estimation) was
 removed in the 2026-05-01 chassis rebuild — use the static

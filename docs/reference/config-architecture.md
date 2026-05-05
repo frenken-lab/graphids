@@ -1,238 +1,209 @@
 # Config Architecture
 
-> Jsonnet composition -> Pydantic validation -> direct instantiation.
-> For merge semantics, null preservation, env vars, path scheme, and
-> observability wiring, see `.claude/rules/config-system.md`.
+> Python composition (`graphids/configs/`) → Pydantic validation
+> (`BlueprintArray`) → direct instantiation (`orchestrate._instantiate`).
+> For composer rules, env vars, path scheme, and observability wiring,
+> see `.claude/rules/config-system.md`.
+
+The pre-2026-05-04 jsonnet layer (`gojsonnet` + `configs/*.libsonnet`)
+was deleted. Don't reach for it. New plans are Python.
 
 ---
 
-## 1. CLI Routes
-
-One training route + operational commands:
-
-### Route A: Train a preset
+## 1. CLI surface
 
 ```
-python -m graphids fit \
-    --tla 'dataset="hcrl_ch"' \
-    --tla 'scale="small"' \
-    --config configs/ablations/unsupervised/vgae.jsonnet \
-    --set model.init_args.lr=0.01
+python -m graphids run <plan> --dataset X --seed N [-o plan.json]
   -> __main__.py
-  -> cli.training (Typer @app.command)
-  -> dotted_to_nested(--set ...)               # cli/app.py
-  -> render(jsonnet_path, tla, set_overrides)  # passes overrides as ext_code
-                                               # registers paths.* native_callbacks
-  -> ResolvedConfig.from_rendered(rendered)    # validates + pulls run_dir
-  -> build(resolved)  ->  train(artifacts, resolved, resume_from=--ckpt-path)
+  -> cli.commands:run_cli
+  -> importlib.import_module(f"graphids.configs.plans.{plan}")
+  -> mod.build(dataset=X, seed=N)              # returns list[dict]
+  -> BlueprintArray.model_validate(rendered)   # raises on schema drift
+  -> sys.stdout / output file (JSON array)
 ```
 
-Every ablation preset under `configs/ablations/*.jsonnet` computes its
-own `run_dir` via `std.native('paths.run_dir')(dataset, group, variant,
-seed)` — `render()` registers `graphids.config.paths.run_dir` (and
-`vgae_ckpt`, `states_dir`) as jsonnet native callbacks so both
-languages share one path scheme. `run_root` flows in via
-`std.extVar('run_root')` from `GRAPHIDS_RUN_ROOT` (per-user, distinct
-from `LAKE_ROOT`). User `--set` flags apply via `std.mergePatch` at
-each preset's apex.
-
-The SLURM submitter (`python -m graphids submit`, library:
-`graphids.slurm.submit.submit()`) just forwards TLAs.
-
-Multi-stage chains (e.g. `autoencoder → supervised → fusion`) come from
-a *plan* — a jsonnet file declaring `{ nodes: [...] }`. Shipped plans
-live under `configs/plans/`; `configs/plans/ofat.jsonnet` is the OFAT
-topology. `python -m graphids run <plan.jsonnet> --dataset X --seed N
---cluster C` walks the plan in topological order via submitit,
-threading each node's jid into downstream deps' `afterok`. FINISHED
-nodes are skipped via an MLflow check before submission; `--force`
-overrides. `python -m graphids status <plan.jsonnet>` queries MLflow
-per node. No bash manifest, no parser — the plan jsonnet IS the
-artifact.
-
-### Route B: Operational commands (no training)
+`<plan>` is a dotted module name under `graphids.configs.plans`
+(e.g. `unsupervised`, `ofat`, `ops.gat_taunorm_smoke`).
 
 ```
-python -m graphids {analyze|rebuild-caches|compare}
-  -> __main__.py imports cli submodules
-  -> Typer @app.command() dispatch per submodule
+python -m graphids exec --row '<row JSON>' [--ckpt-path X]
+  -> orchestrate.run_row(row)                  # in-process dispatch
 ```
+
+```
+python -m graphids submit --row '<row JSON>' --cluster <c> [--length L]
+  -> graphids.slurm.submit.submit_row(row, ...)
+  -> Parsl SlurmProvider.submit (sbatch carries the literal
+     `python -m graphids exec --row '...'` command — no pickle)
+  -> prints jid on stdout
+```
+
+The four-step chassis (render → blueprint → exec → submit) is codified
+in `.claude/rules/single-submission-primitive.md`.
 
 ---
 
-## 2. Pydantic Validation Layer
-
-`graphids/config/schemas.py::validate_config(rendered) -> ValidatedConfig`
-runs immediately after `render` on every path. Torch-free, deterministic.
-
-### Schema tree
+## 2. Composition layers
 
 ```
-ValidatedConfig (extra="forbid")
-+-- seed_everything: int
-+-- trainer: TrainerSection    (extra="allow" -- TrainerConfig dataclass kwargs flow through)
-+-- data: ClassPathBlock       (extra="forbid"; class_path required)
-+-- model: ClassPathBlock      (extra="forbid"; class_path required)
-+-- checkpoint: CheckpointSection  (mode: Literal["min","max"])
-+-- early_stopping: EarlyStoppingSection  (mode: Literal["min","max"])
-+-- ckpt_path: str | None      (auto-resume passthrough)
+graphids/configs/
+├── lib.py                # class-path string constants + spec(...) helper
+│                         # + composing primitives (can_bus, graph_dm,
+│                         #   fusion_dm, curriculum) + REWARD constant
+├── compose.py            # compose(...) + fusion(...) — single composer
+│                         # plus archetype wrapper. Owns trainer_base /
+│                         # callbacks_base assembly.
+├── blueprint.py          # Pydantic schemas: ClassPath, TrainerCfg,
+│                         # RenderedConfig, TrainRow/CmdRow/ExtractRow/
+│                         # AnalyzeRow, BlueprintArray
+├── row.py                # RowSpec dataclass + .fit() / .test() / extract()
+└── plans/                # build(dataset, seed) -> list[dict]
+    ├── unsupervised.py / fusion.py / ofat.py
+    └── ops/              # one-shot ops plans (analyze / extract / smoke)
 ```
 
-### Model validators
+Path math lives in `graphids/config/catalog.py` (separate `config`
+package — historical name, no shim). Composer + plans + lib import
+from there directly.
 
-| Validator | Rule | Why it exists |
+### Lib (class-path strings + `spec()`)
+
+`spec(cls_path, **init_args)` is a 3-line dict builder. The 11 trivial
+"primitive functions" (`gat`, `focal`, `ce`, `bandit`, …) were collapsed
+into named string constants here; defaults live with the model class
+(e.g. `GAT.__init__` reads its own `_SCALES` table for `scale="small"`
+vs `"large"`). Only four primitives stay as functions because they do
+real work: `can_bus` (registry validation), `graph_dm` (conditional
+optional knobs), `fusion_dm` (`states_dir(...)` derivation), and
+`curriculum` (deepcopy + `reduction='none'` injection on the base loss).
+
+```python
+from graphids.configs.lib import GAT, FOCAL, spec, can_bus, graph_dm
+
+spec(GAT, scale="large", dropout=0.3)
+graph_dm(source=can_bus(dataset="hcrl_sa", seed=42))
+```
+
+### Composer
+
+`compose(model, data, *, loss=None, meta, monitor, mode, run_mode,
+trainer_overrides, upstreams, ...)` returns a frozen `RowSpec` whose
+`rendered` is a typed `RenderedConfig` (Pydantic, frozen,
+`extra="forbid"`). The composer is the single site that:
+
+1. Computes `run_dir` via `graphids.config.catalog.run_dir(...)`.
+2. Merges the optional `loss` block into `model.init_args.loss_fn`
+   via an explicit `update` call — no deep-merge magic.
+3. Builds the universal callbacks trio (checkpoint, early_stopping,
+   mlflow) and the `trainer.callbacks` list (alphabetical key order
+   for byte-identical re-renders).
+4. Constructs `RenderedConfig(model=ClassPath(...), data=ClassPath(...),
+   trainer=TrainerCfg(...), callbacks={...}, seed_everything=...)` —
+   typo'd field at compose time raises `pydantic.ValidationError`.
+
+`fusion(...)` is a thin wrapper that auto-derives the `[vgae, focal]`
+upstreams from `meta` and applies the fusion-fixed trainer overlay
+(`precision="32-true"`, `gradient_clip_val=None`, `max_epochs=1500`,
+`log_every_n_steps=10`).
+
+### Plans
+
+Each plan exposes `def build(*, dataset: str, seed: int) -> list[dict]`.
+Plans compose `spec(...)` blocks + composers, then call
+`RowSpec.fit(name)` / `.test(name)` to emit row dicts. The `extract()`
+top-level function in `row.py` builds one-shot fusion-feature rows.
+
+OFAT (`plans/ofat.py`) is the largest surface — uses a declarative
+`SWEEPS` dict (axis → variant → kwargs) over a single `gat_row(...)`
+helper. Adding an ablation row = adding a dict entry. The dict closes
+over `dataset` / `seed` / `vgae_ckpt` since variants reference them.
+
+---
+
+## 3. Pydantic validation
+
+`graphids.configs.blueprint.BlueprintArray` is a `RootModel[list[Row]]`
+where `Row` is a discriminated union by `action`:
+
+| Action | Class | Notes |
 |---|---|---|
-| `_no_null_list_fields` | `model.init_args.{pool_aggrs, hidden_dims, auxiliaries}` must not be null | Instantiation rejects null lists with a cryptic error |
-| `_monitor_pair_consistent` | `checkpoint.monitor/mode == early_stopping.monitor/mode` | Divergent monitors = typo in the stage libsonnet |
-| `_lr_monitor_requires_logger` | `LearningRateMonitor` callback needs `trainer.logger != False` | LR monitor is silently disabled without a logger |
-| `_class_paths_namespaced` | `data.class_path` and `model.class_path` must start with `graphids.` | Catches relative imports and stray modules |
+| fit / test | `TrainRow` | `rendered_config: RenderedConfig` (typed end-to-end), `meta`, `identity`, `upstreams`, `resources` |
+| cmd | `CmdRow` | arbitrary shell command |
+| extract | `ExtractRow` | one-shot fusion-feature extraction (idempotent on `output_dir`) |
+| analyze | `AnalyzeRow` | per-checkpoint artifacts (CKA / embeddings / landscape / fusion-policy) |
+
+All rows: `extra="forbid"`, `frozen=True`. `AnalyzeRow` runs an
+`@model_validator` that enforces conditional dependencies
+(`cka=True ⇒ cka_teacher_ckpt`, `fusion_policy=True ⇒ vgae_ckpt_path`,
+etc.).
+
+`RenderedConfig` is itself typed (`model: ClassPath`, `data: ClassPath`,
+`trainer: TrainerCfg`, `callbacks: dict[str, ClassPath]`,
+`seed_everything: int`). `init_args` stay free-form (`dict[str, Any]`)
+since per-class kwargs aren't worth enumerating in a schema.
 
 ---
 
-## 3. Forced Callbacks + Direct Instantiation
+## 4. Direct instantiation
 
-Critical callbacks are constructed explicitly by
-`instantiate._build_callbacks()`. Any stage-level `trainer.callbacks`
-appends user callbacks; it cannot drop the forced set.
+`graphids.orchestrate._instantiate(spec)` walks `{class_path, init_args}`
+blocks recursively:
 
-Forced callbacks (from `defaults.libsonnet`): ModelCheckpoint,
-EarlyStopping, MLflowTrainingCallback, CurriculumEpochCallback. No
-trainer logger (MLflow callback handles metrics).
-
-### build_run() responsibilities
-
-`graphids.orchestrate.instantiate.build_run(rendered, validated=None)`:
-
-| Step | How |
-|---|---|
-| Class-path import | `importlib.import_module` + `getattr` |
-| Signature-filtered kwargs | `filter_kwargs(klass, init_args)` |
-| Callbacks / logger | `build_callbacks(rendered)` / `build_loggers(rendered)` — explicit construction |
-| KD loss injection | `inject_loss_fn` pops `distillation_config`, builds loss via `build_loss()` |
-| seed_everything | explicit `seed_everything(rendered["seed_everything"])` |
-
----
-
-## 4. Key Files
-
-| File | Role | Torch? |
-|---|---|---|
-| `cli/training.py` | `fit` / `test` — renders preset, builds + runs | Lazy |
-| `cli/app.py` | Typer root + `dotted_to_nested` for `--set` | No |
-| `instantiate.py` | `build_run(rendered) -> InstantiatedRun` — importlib, filter_kwargs, callback wiring | Yes |
-| `__main__.py` | Imports `cli/` submodules to register Typer commands | Lazy |
-| `config/jsonnet.py` | `render(path, tla, set_overrides)` — passes `run_root` ext_code + `paths.*` native_callbacks | No |
-| `config/paths.py` | Canonical `run_dir` / `vgae_ckpt` / `states_dir` scheme (shared with jsonnet) | No |
-| `config/settings.py` | `GraphIDSSettings` — pydantic-settings, auto-loads `./.env` | No |
-| `config/schemas.py` | `ValidatedConfig`, `validate_config` | No |
-| `config/catalog.py` | Dataset catalog (`load_catalog`, `dataset_names`), path helpers (`data_dir`, `cache_dir`) | No |
-| `orchestrate/config.py` | `ResolvedConfig`, `InstantiatedRun` | No |
-| `orchestrate/stage.py` | `build`, `train`, `evaluate` primitives | Yes |
-| `core/artifacts/analyzer.py` | `Analyzer(spec)` — invoked by `analyze` blueprint action via `orchestrate.analyze` | Yes |
-| `core/monitoring.py` | `SlurmResourceDetector` (OTel resource attrs) | No |
-| `core/mlflow_callback.py` | `MLflowTrainingCallback` (per-epoch metrics + finalize) | Yes |
-| `_mlflow.py` | `start_training_run`, `log_epoch_metrics`, `log_test_run`, lifecycle | Lazy |
-| `_otel.py` | `init_providers`, `wire_file_exporters` | No |
-
----
-
-## 5. File Layout
-
-```
-configs/
-├── _lib/defaults.libsonnet        # trainer / checkpoint / early_stopping defaults
-├── ablations/{unsupervised,fusion,gat_sampling,gat_loss,id_encoding}/*.jsonnet
-├── stages/{autoencoder,supervised,fusion}.jsonnet
-├── models/
-│   ├── {supervised,unsupervised,fusion}.libsonnet
-│   └── fusion/{base,reward}.libsonnet + fusion/methods/*.libsonnet
-├── plans/ofat.jsonnet             # multi-stage DAG topology
-├── datasets/dataset_registry.json
-├── matrix/{axes,topology}.json    # valid model types / stage existence
-└── resources/submit_profiles.json # raw parsl SlurmProvider kwargs, [mode][cluster][length]
+```python
+def _instantiate(spec):
+    rec = lambda v: _instantiate(v) if isinstance(v, dict) and "class_path" in v else v
+    init = {k: rec(v) for k, v in spec.get("init_args", {}).items()}
+    mod, _, attr = spec["class_path"].rpartition(".")
+    return getattr(importlib.import_module(mod), attr)(**init)
 ```
 
-`graphids/` package layout: see `ls graphids/` — every name is self-describing.
-The non-obvious ones: `orchestrate.py` is a single module (not a subpackage)
-holding `ResolvedConfig`, `InstantiatedRun`, `build_run`, `build`, `train`,
-`evaluate`. `_mlflow.py` owns the entire MLflow surface (run lifecycle,
-search filter, logged-model registration, dataset lineage).
+This is the same recursive-class_path pattern as
+`hydra.utils.instantiate(cfg, _recursive_=True)`; graphids reuses the
+shape with `class_path` instead of `_target_`.
+
+---
+
+## 5. Path scheme
+
+Path math lives in `graphids/config/catalog.py`. Plans + composer call
+`run_dir(dataset, group, variant, seed)` and `best_ckpt(...)` directly:
+
+```
+{$GRAPHIDS_RUN_ROOT}/{dataset}/ablations/{group}/{variant}/seed_{N}
+```
+
+`GRAPHIDS_RUN_ROOT` is required (no default — fail-fast in
+`_run_root()`). `GRAPHIDS_LAKE_ROOT` is the cross-user shared root
+(MLflow DB, raw CSVs, preprocessed cache). See
+`.claude/rules/data-layout.md`.
 
 ---
 
 ## 6. Running
 
 ```bash
-# Local dev — renders defaults, trains to run_dir from jsonnet
-python -m graphids fit --config configs/stages/autoencoder.jsonnet
+# Render a Python plan to a row array.
+python -m graphids run ofat --dataset hcrl_sa --seed 42 -o plan.json
 
-# Override via TLA
-python -m graphids fit \
-    --tla 'dataset="hcrl_sa"' \
-    --tla 'scale="large"' \
-    --tla 'variational=false' \
-    --config configs/stages/autoencoder.jsonnet \
-    --set model.init_args.lr=0.005
+# Login-node smoke (in-process; non-SLURM).
+jq -c '.[0]' plan.json | xargs -I{} python -m graphids exec --row {}
 
-# SLURM ablation
-python -m graphids submit configs/ablations/unsupervised/vgae.jsonnet --dataset set_01 --seed 42
+# SLURM submission.
+jq -c '.[]' plan.json | while read row; do
+    python -m graphids submit --row "$row" --cluster pitzer --length long
+done
 ```
 
 ---
 
-## 7. Stage / Ablation Function Convention
+## 7. Adding a new plan
 
-Every `stages/*.jsonnet` and `ablations/**/*.jsonnet` is a top-level
-function with sensible defaults for every TLA. Adding a new TLA means
-updating the jsonnet signature + (if the TLA is launcher-level) the
-matching flat flag in `graphids/cli/submit.py` (which appends to the
-inline `flag_tlas` list — there is no separate helper).
+1. Create `graphids/configs/plans/<name>.py` with
+   `def build(*, dataset: str, seed: int) -> list[dict]`.
+2. Compose with `spec(...)` + composing primitives + `compose(...)`.
+3. Add a smoke entry in `tests/configs/test_plans_smoke.py::PLANS`.
+4. Done — `graphids run <name>` works immediately.
 
-```jsonnet
-// Stage (configs/stages/*.jsonnet) — no overrides TLAs.
-function(
-  dataset='hcrl_ch', seed=42, run_dir='',
-  scale='small', conv_type='gatv2', variational=true,
-  auxiliaries=[], vgae_ckpt_path=null,
-  ckpt_path=null,
-)
-  defaults.trainer + defaults.checkpoint + defaults.early_stopping
-  + vgae.base + vgae.scales[scale]
-  + { seed_everything: seed, trainer+: {...}, data: {...}, model+: {...} }
-
-// Ablation preset (configs/ablations/**/*.jsonnet) — wraps stage in mergePatch.
-function(
-  dataset=pd.dataset, seed=pd.seed,
-  scale=pd.scale, conv_type=pd.conv_type,
-  ckpt_path=null,
-)
-  std.mergePatch(
-    stage(
-      dataset=dataset, seed=seed, scale=scale,
-      run_dir=std.native('paths.run_dir')(dataset, 'unsupervised', 'vgae', seed),
-      conv_type=conv_type, model_type='vgae', variational=true,
-      ckpt_path=ckpt_path,
-    ) + { trainer+: { max_epochs: 1200 } },  // group defaults as nested obj
-    std.extVar('overrides'),                 // user --set flags
-  )
-```
-
----
-
-## 8. Robustness
-
-1. **Typed TLA round-trip.** `render` passes every TLA through
-   `--tla-code <k>=<json.dumps(v)>` so ints stay ints, bools stay bools,
-   lists stay lists, `None` becomes jsonnet `null`.
-2. **Pydantic gate (`ValidatedConfig`)** — null list fields in
-   `model.init_args`, monitor mismatch between `checkpoint` and
-   `early_stopping`, un-namespaced `class_path` strings, and
-   `LearningRateMonitor` without `logger` all die with an actionable
-   error before any torch import.
-3. **Signature-filtered kwargs** — `build_run` runs every class_path's
-   `init_args` through `filter_kwargs(klass, init_args)` so jsonnet can
-   pass fields the target class doesn't accept without raising.
-4. **`topology.py` import-time assertions** — every model family has a
-   libsonnet, every stage has a `.jsonnet`, every fusion method has a
-   method libsonnet; `submit_profiles.json` `scale_mult` keys are in
-   `VALID_SCALES`. Missing files / bad keys fail at package import.
+If the plan needs new declarative state, add a field to the relevant
+row class in `graphids/configs/blueprint.py` (`extra="forbid"` will
+reject unknown keys until you do).

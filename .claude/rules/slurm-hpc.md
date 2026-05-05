@@ -31,24 +31,25 @@ pending job, because the job re-imports current source at exec time.
 ### One-shot ops
 
 Ops jobs (test runs, cache rebuilds, analysis) are still rows — author
-a small plan jsonnet under `configs/plans/ops/` emitting a single row
-with the right `action`/`command`/`resources`, then run the same
-`graphids run | submit` pair.
+a small plan module under `graphids/configs/plans/ops/` whose `build()`
+emits a single row with the right `action`/`command`/`resources`, then
+run the same `graphids run | submit` pair.
 
 ### Profiles
 
 Source of truth: `configs/resources/submit_profiles.json`, keyed
 `[mode][cluster][length]`. Keys map directly to `SlurmProvider` kwargs
 — `submit_row` splats them with `**profile`. `signal_delay_s` is the
-one extension: becomes `#SBATCH --signal=USR2@N` so the SIGUSR2 trap in
-`runtime.py` fires before walltime.
+one extension: becomes `#SBATCH --signal=USR2@N` so Lightning's
+`SLURMEnvironment(auto_requeue=True, requeue_signal=SIGUSR2)` plugin
+(wired in `orchestrate._trainer_kwargs`) fires before walltime.
 
 ### Preemption auto-resume
 
 Profiles set `signal_delay_s=300` → `--signal=USR2@300`. Five minutes
-before walltime, the trap re-submits with
-`--ckpt-path={run_dir}/checkpoints/last.ckpt` and
-`--depends-on-afterany=$SLURM_JOB_ID`. (USR2 because NCCL catches USR1.)
+before walltime, Lightning's `SLURMEnvironment` calls
+`scontrol requeue $SLURM_JOB_ID` — same job ID, downstream `afterok`
+deps stay valid. (USR2 because NCCL catches USR1.)
 
 ## Login node safety
 

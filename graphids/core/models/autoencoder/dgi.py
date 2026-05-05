@@ -30,14 +30,19 @@ class DGI(ScoreBasedDetectorMixin):
     architecture (built into the discriminator).
     """
 
+    _SCALES: dict[str, dict[str, int]] = {
+        "small": {"latent_dim": 48, "embedding_dim": 32, "heads": 4},
+        "large": {"latent_dim": 96, "embedding_dim": 64, "heads": 8},
+    }
+
     def __init__(
         self,
-        # --- architecture ---
+        # --- architecture (latent_dim/embedding_dim/heads=None → scale) ---
         conv_type: str = "gatv2",
         hidden_dims: list[int] | None = None,
-        latent_dim: int = 48,
-        heads: int = 4,
-        embedding_dim: int = 32,
+        latent_dim: int | None = None,
+        heads: int | None = None,
+        embedding_dim: int | None = None,
         dropout: float = 0.15,
         edge_dim: int = 11,
         proj_dim: int = 0,
@@ -58,6 +63,13 @@ class DGI(ScoreBasedDetectorMixin):
         in_channels: int = 0,
         num_classes: int = 2,
     ):
+        s = self._SCALES.get(scale, {})
+        if latent_dim is None:
+            latent_dim = s.get("latent_dim", 48)
+        if embedding_dim is None:
+            embedding_dim = s.get("embedding_dim", 32)
+        if heads is None:
+            heads = s.get("heads", 4)
         super().__init__()
         # OCGIN scoring head: centroid of training-normal pooled embeddings.
         # Re-fit at test-start by ``Trainer.test`` via ``on_test_setup`` —

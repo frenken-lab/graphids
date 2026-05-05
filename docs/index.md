@@ -8,14 +8,12 @@ edge deployment.
 ## Where to start
 
 - **[Module responsibilities](responsibilities.md)** — one-page map of
-  what every layer owns (jsonnet → render → validate → build → train).
+  what every layer owns (plan → render → validate → exec/submit).
 - **[Config system](reference/config-architecture.md)** — how a
-  `configs/ablations/*.jsonnet` preset becomes a trained model.
+  Python plan under `graphids/configs/plans/` becomes a trained model.
 - **[Decisions](decisions/README.md)** — the ADR log. Permanent
   verdicts on the tools and patterns that got adopted or rejected.
-- **[API Reference](api/config.md)** — auto-generated from docstrings;
-  starts with `graphids.config.schemas` and grows as modules gain
-  documentation.
+- **[API Reference](api/config.md)** — auto-generated from docstrings.
 
 ## Source
 

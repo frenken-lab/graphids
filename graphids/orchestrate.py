@@ -1,14 +1,10 @@
-"""Dict → objects → Lightning bridge (v3).
-
-Process-level setup lives in ``runtime_v3``. Preempt-resume delegated to
-``pl.plugins.environments.SLURMEnvironment(auto_requeue=True,
-requeue_signal=signal.SIGUSR2)`` — Lightning calls ``scontrol requeue``
-natively, same job ID, ``afterok`` deps stay valid. No custom signal
-handler.
+"""Dict → objects → Lightning bridge.
 
 Lightning owns: train/val loop, AMP, gradient clipping, optimizer state,
 scheduler, callback lifecycle, MLflow run lifecycle (via ``MLFlowLogger``),
-SLURM preempt-resume (via ``SLURMEnvironment`` plugin).
+SLURM preempt-resume (via ``SLURMEnvironment(auto_requeue=True,
+requeue_signal=SIGUSR2)`` — calls ``scontrol requeue``, same job ID,
+downstream ``afterok`` deps stay valid).
 
 graphids owns:
 - ``dm.setup("fit")`` BEFORE ``trainer.fit`` so ``model.prepare_from_datamodule``
@@ -17,12 +13,16 @@ graphids owns:
   right device.
 - VGAE/DGI calibration via ``model.on_test_setup(dm, device)`` after ckpt
   load, before ``trainer.test``.
-- Upstream LM lineage via ``client.log_inputs`` for fusion fits.
+- Upstream LM lineage via ``UpstreamLineageCallback.on_fit_start`` —
+  registered as a callback so the lineage write happens inside Lightning's
+  lifecycle after the run is open, not as an explicit pre-fit side-effect.
 """
 
 from __future__ import annotations
 
+import functools
 import importlib
+import multiprocessing
 import os
 import signal
 from typing import Any
@@ -30,15 +30,29 @@ from typing import Any
 import lightning.pytorch as pl
 import torch
 import torch_geometric
+from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.loggers import MLFlowLogger
 from lightning.pytorch.plugins.environments import SLURMEnvironment
 from mlflow.entities import LoggedModelInput
 
 from graphids._fs import atomic_load
 from graphids._mlflow import _find_logged_model_by_ckpt, identity_tags
-from graphids.blueprint import AnalyzeRow, ExtractRow, Row, TrainRow
+from graphids.cli.app import configure_logging
+from graphids.configs.blueprint import AnalyzeRow, ExtractRow, Row, TrainRow
 from graphids.core.models.base import strip_orig_mod_prefix
-from graphids.runtime import setup
+
+
+@functools.cache
+def _ensure_runtime() -> None:
+    """spawn mp + ``file_system`` sharing + structlog. CUDA-safe + OSC-safe."""
+    import torch.multiprocessing
+
+    configure_logging()
+    try:
+        multiprocessing.set_start_method("spawn", force=True)
+    except RuntimeError:
+        pass
+    torch.multiprocessing.set_sharing_strategy("file_system")
 
 
 def _instantiate(spec: dict[str, Any]) -> Any:
@@ -50,53 +64,13 @@ def _instantiate(spec: dict[str, Any]) -> Any:
 
 
 def _build(row: TrainRow) -> tuple[Any, Any, list, dict]:
-    rc = row.rendered_config
-    callbacks = [_instantiate(spec) for spec in rc.get("callbacks", {}).values()]
+    rc = row.rendered_config.model_dump()
+    callbacks = [_instantiate(spec) for spec in rc["callbacks"].values()]
     return (
         _instantiate(rc["model"]),
         _instantiate(rc["data"]),
         callbacks,
         {k: v for k, v in rc["trainer"].items() if k != "callbacks"},
-    )
-
-
-def _device_from_kwargs(kw: dict) -> torch.device:
-    if kw.get("accelerator") == "cpu":
-        return torch.device("cpu")
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-def _make_trainer(callbacks: list, kw: dict, logger: MLFlowLogger) -> pl.Trainer:
-    """``pl.Trainer`` with graphids defaults + SLURMEnvironment when in a job.
-
-    SLURMEnvironment(auto_requeue=True, requeue_signal=USR2):
-    - traps SIGUSR2 (USR1 conflicts with NCCL)
-    - calls ``scontrol requeue $SLURM_JOB_ID`` — same job ID
-    - downstream ``afterok`` chains stay valid across preemption
-    Pairs with ``submit_row``'s ``--signal=USR2@N`` directive.
-    """
-    plugins: list[Any] = []
-    if os.environ.get("SLURM_JOB_ID"):
-        plugins.append(SLURMEnvironment(auto_requeue=True, requeue_signal=signal.SIGUSR2))
-    return pl.Trainer(
-        callbacks=callbacks,
-        logger=logger,
-        plugins=plugins or None,
-        enable_progress_bar=False,
-        num_sanity_val_steps=0,
-        **kw,
-    )
-
-
-def _logger_for(row: TrainRow, phase: str) -> MLFlowLogger:
-    """``MLFlowLogger`` carrying graphids identity tags. Lifecycle is
-    Lightning's: lazy-open on first ``run_id`` access, FINISHED/FAILED
-    finalize on teardown. Tracking URI from ``MLFLOW_TRACKING_URI`` env.
-    """
-    return MLFlowLogger(
-        experiment_name=f"graphids/{row.meta.dataset}/{row.meta.group}",
-        run_name=row.identity.run_name,
-        tags=identity_tags(row, phase),
     )
 
 
@@ -112,51 +86,82 @@ def _load_state_into_model(ckpt_path: str, model: torch.nn.Module) -> dict:
     return ckpt
 
 
-def _log_upstream_inputs(logger: MLFlowLogger, row: TrainRow) -> None:
-    """``client.log_inputs`` for fusion upstream LM lineage. Triggers lazy
-    run-open as a side effect (we need ``run_id`` before fit).
-    """
-    if not row.upstreams:
-        return
-    client = logger.experiment  # MlflowClient
-    inputs, missing = [], []
-    for u in row.upstreams:
-        lm = _find_logged_model_by_ckpt(client, row.meta.dataset, u.ckpt_path)
-        if lm is None:
-            missing.append(f"{u.role}={u.ckpt_path}")
-        else:
-            inputs.append(LoggedModelInput(model_id=lm.model_id))
-    if inputs:
-        client.log_inputs(run_id=logger.run_id, models=inputs)
-    if missing:
-        import structlog
+class UpstreamLineageCallback(Callback):
+    """Write MLflow ``LoggedModelInput`` lineage edges at fit start.
 
-        structlog.get_logger(__name__).warning(
-            "upstream_lm_missing",
-            run_id=logger.run_id,
-            dataset=row.meta.dataset,
-            missing=missing,
-        )
+    Lives inside the Lightning callback lifecycle so the write happens
+    after the MLflow run is open (no need to dance around lazy
+    ``logger.experiment`` access from outside the trainer).
+    """
+
+    def __init__(self, row: TrainRow) -> None:
+        self._row = row
+
+    def on_fit_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:  # noqa: ARG002
+        logger = trainer.logger
+        if not isinstance(logger, MLFlowLogger):
+            return
+        client = logger.experiment
+        inputs, missing = [], []
+        for u in self._row.upstreams:
+            lm = _find_logged_model_by_ckpt(client, self._row.meta.dataset, u.ckpt_path)
+            if lm is None:
+                missing.append(f"{u.role}={u.ckpt_path}")
+            else:
+                inputs.append(LoggedModelInput(model_id=lm.model_id))
+        if inputs:
+            client.log_inputs(run_id=logger.run_id, models=inputs)
+        if missing:
+            import structlog
+
+            structlog.get_logger(__name__).warning(
+                "upstream_lm_missing",
+                run_id=logger.run_id,
+                dataset=self._row.meta.dataset,
+                missing=missing,
+            )
 
 
 def _prepare(row: TrainRow, *, setup_stage: str) -> tuple[Any, Any, list, dict, torch.device]:
     """Shared bootstrap: seed, build, dm.setup, prepare_from_datamodule."""
     torch_geometric.seed_everything(row.meta.seed)
     model, dm, callbacks, kw = _build(row)
-    device = _device_from_kwargs(kw)
+    device = torch.device(
+        "cpu" if kw.get("accelerator") == "cpu"
+        else "cuda" if torch.cuda.is_available() else "cpu"
+    )
     dm.setup(setup_stage)
     model.prepare_from_datamodule(dm)
     return model, dm, callbacks, kw, device
 
 
+def _trainer_kwargs(callbacks: list, row: TrainRow, kw: dict, phase: str) -> dict[str, Any]:
+    plugins: list[Any] = []
+    if os.environ.get("SLURM_JOB_ID"):
+        plugins.append(SLURMEnvironment(auto_requeue=True, requeue_signal=signal.SIGUSR2))
+    logger = MLFlowLogger(
+        experiment_name=f"graphids/{row.meta.dataset}/{row.meta.group}",
+        run_name=row.identity.run_name,
+        tags=identity_tags(row, phase),
+    )
+    return dict(
+        callbacks=callbacks,
+        logger=logger,
+        plugins=plugins or None,
+        enable_progress_bar=False,
+        num_sanity_val_steps=0,
+        **kw,
+    )
+
+
 def train(row: TrainRow, *, ckpt_path: str | None = None) -> None:
     model, dm, callbacks, kw, device = _prepare(row, setup_stage="fit")
     model.to(device)  # before dataloader build — VRAM probe reads model.device
-
-    logger = _logger_for(row, phase="fit")
-    _log_upstream_inputs(logger, row)  # side-effect: lazy-opens the run
-    trainer = _make_trainer(callbacks, kw, logger)
-    trainer.fit(model, datamodule=dm, ckpt_path=ckpt_path)
+    if row.upstreams:
+        callbacks.append(UpstreamLineageCallback(row))
+    pl.Trainer(**_trainer_kwargs(callbacks, row, kw, "fit")).fit(
+        model, datamodule=dm, ckpt_path=ckpt_path
+    )
 
 
 def evaluate(row: TrainRow, *, ckpt_path: str | None = None) -> dict[str, float]:
@@ -171,8 +176,7 @@ def evaluate(row: TrainRow, *, ckpt_path: str | None = None) -> dict[str, float]
     model.to(device)
     model.on_test_setup(dm, device)
 
-    logger = _logger_for(row, phase="test")
-    trainer = _make_trainer(callbacks, kw, logger)
+    trainer = pl.Trainer(**_trainer_kwargs(callbacks, row, kw, "test"))
     # ckpt_path NOT passed — already restored above so calibration saw
     # trained weights. Lightning's ckpt-load would happen too late.
     trainer.test(model, datamodule=dm)
@@ -205,7 +209,7 @@ def analyze(row: AnalyzeRow) -> None:
 
 
 def run_row(row: Row, *, ckpt_path: str | None = None) -> None:
-    setup()
+    _ensure_runtime()
     if isinstance(row, ExtractRow):
         extract(row)
         return

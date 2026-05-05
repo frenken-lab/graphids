@@ -8,7 +8,7 @@
 
 | Concern | Tool | What it does |
 |---|---|---|
-| Render plan | `graphids run <plan.jsonnet> -o plan.json` | Renders + validates as `BlueprintArray`, writes JSON. No submit, no MLflow query. |
+| Render plan | `graphids run <plan> -o plan.json` | `<plan>` is a dotted module under `graphids.configs.plans` (e.g. `ofat`, `ops.gat_taunorm_smoke`). Imports + calls `build(dataset, seed)`, validates as `BlueprintArray`, writes JSON. No submit, no MLflow query. |
 | Execute one row | `graphids exec --row <json>` | Calls `orchestrate.run_row(TrainRow)`. Login-node smoke / non-SLURM. Dispatches on `row.action` (fit/test). |
 | Submit one row | `graphids submit --row <json> --cluster <c> [--length L]` | Atomic Parsl `SlurmProvider.submit`. The ONLY caller of `submit_row`. Returns jid on stdout. |
 | Same-batch deps | `--depends-on-afterok <jid>` (data dep) / `--depends-on-afterany <jid>` (preempt-resume chain) | Adds `#SBATCH --dependency=...`. |
@@ -29,9 +29,9 @@ no stale-pickle bug.
   done
   ```
 - **Per-pipeline submission flags.** No `--ofat-mode`, no `--sweep-strategy`.
-  New pipeline types add a `configs/plans/<name>.jsonnet`, nothing else.
+  New pipeline types add a `graphids/configs/plans/<name>.py`, nothing else.
   New declarative state goes on `TrainRow` / `BlueprintArray`
-  (`graphids/blueprint.py`).
+  (`graphids/configs/blueprint.py`).
 - **Multi-job entry points.** No `submit-many`, no `submit-batch`. N jobs =
   N invocations of `graphids submit`.
 - **Status command resurrection.** Use MLflow's UI or
@@ -39,8 +39,9 @@ no stale-pickle bug.
 
 ## What this rule allows
 
-- New plan jsonnets under `configs/plans/`. Produce new rows; `graphids run`
-  consumes them with no code changes.
+- New plan modules under `graphids/configs/plans/`. Produce new rows;
+  `graphids run <module>` imports + calls `build(dataset, seed)`.
+- New primitives / composers under `graphids/configs/{primitives,compose}/`.
 - New `TrainRow` / `BlueprintArray` fields when a plan needs new state.
 - New cluster profiles in `configs/resources/submit_profiles.json`.
 
@@ -51,8 +52,9 @@ Past failures: `OFAT_DAG` Python orchestrator (~470 LOC, removed c5873de),
 from `slurm/run.py:render_plan_script` (looked like data, behaved like
 action — removed 2026-04-27), submitit pickle path (code fixes didn't reach
 pending jobs — replaced 2026-05-01 with Parsl + literal exec command in
-sbatch). Each was Claude reaching for "let's add a wrapper that does the
-orchestration." The cost is path proliferation.
+sbatch), jsonnet config layer (replaced 2026-05-04 with Python plans
+under `graphids/configs/plans/`). Each was Claude reaching for "let's add
+a wrapper that does the orchestration." The cost is path proliferation.
 
 ## Decision rule
 
@@ -62,5 +64,6 @@ If you're tempted to add something that:
 - adds a flag to `submit` keyed on pipeline-level context, OR
 - re-introduces a `graphids status`-style read-and-act helper
 
-→ **Stop.** The right answer is a new plan jsonnet + the user/LLM iterating
-over `graphids run` JSON output.
+→ **Stop.** The right answer is a new plan module under
+`graphids/configs/plans/` + the user/LLM iterating over `graphids run`
+JSON output.

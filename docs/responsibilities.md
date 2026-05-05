@@ -1,47 +1,65 @@
 # Module Responsibilities
 
-**Jsonnet** (`configs/`) — structure and composition only. Every preset
-under `configs/ablations/*.jsonnet` produces a raw merged dict and
-computes its own `run_dir`. No validation, no types.
+**Plan modules** (`graphids/configs/plans/`) — Python files exposing
+`build(*, dataset: str, seed: int) -> list[dict]`. Each plan composes
+class-path specs + composers into rows that match the `BlueprintArray`
+schema.
 
-**`render`** (`graphids/config/jsonnet.py`) — `_jsonnet` C-binding call with typed
-`tla_codes` args (JSON-encoded so ints/bools/null round-trip correctly).
-Returns the rendered dict.
+**Composer** (`graphids/configs/compose.py`) — single `compose(...)`
+plus a thin `fusion(...)` wrapper. Takes bare `{class_path, init_args}`
+blocks (model, data, loss) and emits a frozen
+:class:`graphids.configs.row.RowSpec` whose `rendered` is a typed
+:class:`graphids.configs.blueprint.RenderedConfig` (Pydantic, frozen,
+`extra="forbid"` — typo'd field at compose time raises
+`ValidationError`).
 
-**Pydantic / `validate_config`** (`graphids/config/schemas.py`) — validation gate immediately
-after render. Catches null list fields, monitor/mode mismatches, un-namespaced class_paths,
-and LearningRateMonitor without a logger. Fails fast before any torch import.
+**Lib** (`graphids/configs/lib.py`) — class-path string constants
+(`GAT`, `VGAE`, `FOCAL`, …) + `spec(cls_path, **init_args)` helper +
+the four primitives that compose / validate (`can_bus` registry
+check, `graph_dm` conditional knobs, `fusion_dm` path derivation,
+`curriculum` deepcopy + reduction injection). Defaults for trivial
+primitives live with the model class itself (e.g. `GAT.__init__`'s
+`_SCALES` table), not duplicated here.
 
-**`build_run`** (`graphids/orchestrate/instantiate.py`) — imports class_paths via
-importlib, applies `filter_kwargs` against each target's `__init__`
-signature, builds forced callbacks (`ModelCheckpoint`, `EarlyStopping`,
-`MLflowTrainingCallback`, `VRAMDriftCallback` when CUDA is available),
-and returns an `InstantiatedRun(trainer, model, datamodule)`.
+**Pydantic / `BlueprintArray`** (`graphids/configs/blueprint.py`) —
+validation gate. Each row is a discriminated union (`TrainRow` |
+`CmdRow` | `ExtractRow` | `AnalyzeRow`) with `extra="forbid"`.
+`TrainRow.rendered_config` is itself a typed `RenderedConfig`
+(`model: ClassPath`, `data: ClassPath`, `trainer: TrainerCfg`,
+`callbacks: dict[str, ClassPath]`) — validation is structural
+end-to-end. Render bugs surface here before SLURM sees them.
 
-**Stage primitives** (`graphids/orchestrate/stage.py`) — `build`, `train`,
-`evaluate`. `fit` / `test` call these directly. No pipeline driver. Multi-stage
-chains are declared in a *plan jsonnet* (`configs/plans/*.jsonnet`); `python
--m graphids run <plan>` parses it via `graphids.slurm.dag` (Pydantic),
-toposorts, and calls `graphids.slurm.submit.submit()` per node with `dep_jids`
-afterok chaining held in memory.
+**Orchestrate** (`graphids/orchestrate.py`) — `run_row(row)` dispatches
+on `row.action` (fit/test/extract/analyze). For training rows,
+`_instantiate` walks nested `class_path` blocks via importlib with
+signature-filtered kwargs and returns the trainer / model / datamodule.
+Owns module-level runtime setup (`_ensure_runtime`: spawn mp + tensor
+sharing strategy + structlog).
 
-**SLURM** (`graphids/slurm/`, `graphids/cli/submit.py`) — resource allocation
-and job submission. One Typer command: `python -m graphids submit --row <json>`
-submits a single blueprint row. Library entrypoint is
+**SLURM** (`graphids/slurm/`, `graphids/cli/commands.py`) — one Typer
+command: `graphids submit --row <json>` submits a single blueprint row
+via Parsl `SlurmProvider`. Library entrypoint:
 `graphids.slurm.submit.submit_row()`. Reads
 `configs/resources/submit_profiles.json` keyed `[mode][cluster][length]`
 where each leaf is a `parsl.providers.SlurmProvider` kwargs dict.
+Preempt-resume delegated to Lightning's `SLURMEnvironment(auto_requeue=True,
+requeue_signal=SIGUSR2)` plugin (wired by `orchestrate._trainer_kwargs`).
 
 The pipeline is strictly one-directional:
 
 ```
-jsonnet renders (render)
+plan.build(dataset, seed) → list[dict]
     ↓
-Pydantic validates (validate_config → ValidatedConfig)
+BlueprintArray.model_validate
     ↓
-ResolvedConfig.from_rendered → build_run → (trainer, model, datamodule)
+graphids run → JSON array on stdout / file
     ↓
-trainer.fit / trainer.test
+graphids exec --row <json>   (login-node smoke / non-SLURM)
+graphids submit --row <json> (SLURM via Parsl; sbatch carries the literal
+                              `python -m graphids exec --row '...'` cmd)
+    ↓
+orchestrate.run_row → trainer.fit / trainer.test / extract / analyze
 ```
 
-> Authoritative detail: `.claude/rules/config-system.md`
+> Authoritative detail: `.claude/rules/config-system.md`,
+> `.claude/rules/single-submission-primitive.md`.

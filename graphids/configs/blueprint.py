@@ -1,4 +1,4 @@
-"""Blueprint schema — the JSON array emitted by `plan.jsonnet`.
+"""Blueprint schema — the JSON array a Python plan emits.
 
 A blueprint is an ordered list of rows. Each row is one of:
     fit / test  → carries `rendered_config` + `upstreams` + `identity`
@@ -9,6 +9,11 @@ A blueprint is an ordered list of rows. Each row is one of:
 Validation is one call: `BlueprintArray.model_validate(rendered_array)`.
 A row that doesn't validate is a render bug; a render that fails validation
 is a schema gap. Both surface here, before SLURM ever sees them.
+
+The training-config sub-shape (`RenderedConfig`/`ClassPath`/`TrainerCfg`)
+is also typed and frozen — typo'd fields raise :class:`pydantic.ValidationError`
+at compose time rather than failing inside `_instantiate` with a confusing
+``TypeError``. ``init_args`` stay as ``dict[str, Any]`` (free-form class kwargs).
 """
 
 from __future__ import annotations
@@ -20,6 +25,48 @@ from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ClassPath(_StrictModel):
+    """A ``{class_path, init_args}`` instantiation block.
+
+    ``init_args`` stays free-form (``dict[str, Any]``) so per-class kwargs
+    don't need to be enumerated here. Nested ``class_path`` blocks inside
+    ``init_args`` (e.g. ``loss_fn``, ``schedule``, ``difficulty``) are
+    re-validated via Pydantic's recursive validation when typed, or stay
+    as dicts when they're read by ``_instantiate``'s recursive descent.
+    """
+
+    class_path: str
+    init_args: dict[str, Any] = Field(default_factory=dict)
+
+
+class TrainerCfg(_StrictModel):
+    """``pl.Trainer`` kwargs as rendered by the composer.
+
+    ``callbacks`` here mirrors the top-level ``callbacks`` dict for
+    jsonnet-era parity; ``orchestrate._build`` reads the dict, not this
+    list. ``log_every_n_steps`` is fusion-only (``None`` elsewhere).
+    """
+
+    accelerator: str
+    devices: str | int
+    precision: str
+    max_epochs: int
+    gradient_clip_val: float | None
+    callbacks: list[ClassPath]
+    default_root_dir: str
+    log_every_n_steps: int | None = None
+
+
+class RenderedConfig(_StrictModel):
+    """Composer output. Typo'd field access raises ValidationError."""
+
+    model: ClassPath
+    data: ClassPath
+    callbacks: dict[str, ClassPath]
+    trainer: TrainerCfg
+    seed_everything: int
 
 
 class Identity(_StrictModel):
@@ -57,7 +104,7 @@ class TrainRow(_StrictModel):
     action: Literal["fit", "test"]
     identity: Identity
     meta: Meta
-    rendered_config: dict[str, Any]
+    rendered_config: RenderedConfig
     upstreams: list[Upstream] = Field(default_factory=list)
     resources: Resources
 

@@ -5,7 +5,7 @@ the rendered JSON externally (``jq -c '.[]' plan.json | while read row``) —
 no Python pipeline driver, per ``single-submission-primitive.md``.
 
 Usage:
-    graphids run plan.jsonnet --dataset hcrl_sa --seed 42 -o plan.json
+    graphids run supervised --dataset hcrl_sa --seed 42 -o plan.json
     jq -c '.[]' plan.json | while read row; do
         graphids submit --row "$row" --cluster pitzer
     done
@@ -43,7 +43,7 @@ _DepAny = Annotated[
 
 def _load_row(raw: str):
     """Parse single-row JSON (or ``-`` stdin) → validated ``Row`` via discriminated union."""
-    from graphids.blueprint import BlueprintArray
+    from graphids.configs.blueprint import BlueprintArray
 
     text = sys.stdin.read() if raw == "-" else raw
     return BlueprintArray.model_validate([json.loads(text)])[0]
@@ -52,20 +52,32 @@ def _load_row(raw: str):
 @app.command("run", rich_help_panel="Plans", no_args_is_help=True)
 def run_cli(
     plan: Annotated[
-        Path,
-        typer.Argument(exists=True, dir_okay=False, resolve_path=True, help="Plan jsonnet path"),
+        str,
+        typer.Argument(
+            help="Dotted module name under graphids.configs.plans "
+            "(e.g. 'supervised', 'ofat', 'ops.gat_taunorm_smoke'). "
+            "Calls module.build(dataset=..., seed=...).",
+        ),
     ],
-    dataset: Annotated[str, typer.Option("--dataset", help="Dataset TLA (e.g. hcrl_sa)")],
-    seed: Annotated[int, typer.Option("--seed", help="Seed TLA")],
+    dataset: Annotated[str, typer.Option("--dataset", help="Dataset (e.g. hcrl_sa)")],
+    seed: Annotated[int, typer.Option("--seed", help="Random seed")],
     output: Annotated[
         Path | None, typer.Option("--output", "-o", help="Write JSON to file (default: stdout).")
     ] = None,
 ) -> None:
-    """Render a plan, validate, write the row array as JSON."""
-    from graphids.blueprint import BlueprintArray
-    from graphids.config.jsonnet import render
+    """Render a plan, validate, write the row array as JSON.
 
-    blueprint = BlueprintArray.model_validate(render(plan, tla={"dataset": dataset, "seed": seed}))
+    Imports ``graphids.configs.plans.<plan>`` and calls
+    ``build(dataset=..., seed=...)``. The blueprint is validated with
+    Pydantic before serialization; render bugs surface here, not at
+    SLURM submission.
+    """
+    import importlib
+
+    from graphids.configs.blueprint import BlueprintArray
+
+    mod = importlib.import_module(f"graphids.configs.plans.{plan}")
+    blueprint = BlueprintArray.model_validate(mod.build(dataset=dataset, seed=seed))
     out = blueprint.model_dump_json(indent=2) + "\n"
     if output is None:
         sys.stdout.write(out)

@@ -1,6 +1,10 @@
 # GraphIDS Write Path Inventory
 
-> Audited 2026-04-09.
+> Audited 2026-04-09. Jsonnet refs swept 2026-05-04. Some surrounding
+> orchestration details (`stage.py`, `_otel.py`, `_TrainingJob`,
+> `cli/training.py`) predate the four-step chassis rebuild and should
+> be cross-checked against the current source — the file-tree section
+> below remains accurate; the prose may not.
 
 ## The Rule
 
@@ -23,7 +27,7 @@ Constants: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `PHASE_MARKERS` (all in `graphid
 |   +-- ablations/{group}/{variant}/
 |       +-- seed_{N}/                             <-- trainer.default_root_dir
 |           +-- checkpoints/
-|           |   +-- best_model.ckpt               <-- Sha256ModelCheckpoint (dirpath pinned in callbacks.libsonnet)
+|           |   +-- best_model.ckpt               <-- Sha256ModelCheckpoint (dirpath pinned in graphids/configs/compose.py:callbacks_base)
 |           |   +-- best_model.ckpt.sha256        <-- Sha256ModelCheckpoint (atomic_load reads on verify)
 |           |   +-- last.ckpt                     <-- Sha256ModelCheckpoint (save_last: true)
 |           |   +-- last.ckpt.sha256              <-- Sha256ModelCheckpoint
@@ -45,13 +49,13 @@ Constants: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `PHASE_MARKERS` (all in `graphid
 $TMPDIR/graphids-data/                           <-- per-job local SSD (ephemeral)
 ```
 
-Checkpoint dirpath is set in `configs/_kit/callbacks.libsonnet` to `{run_dir}/checkpoints` (= `{trainer.default_root_dir}/checkpoints`). Without an explicit `dirpath`, Lightning's `pl.callbacks.ModelCheckpoint` writes under `default_root_dir/lightning_logs/version_N/checkpoints` — which the rest of graphids (resume, KD teacher loading) doesn't read; the explicit `dirpath` in the libsonnet keeps the canonical location.
+Checkpoint dirpath is set in `graphids/configs/compose.py:callbacks_base` to `{run_dir}/checkpoints` (= `{trainer.default_root_dir}/checkpoints`). Without an explicit `dirpath`, Lightning's `pl.callbacks.ModelCheckpoint` writes under `default_root_dir/lightning_logs/version_N/checkpoints` — which the rest of graphids (resume, KD teacher loading) doesn't read; the explicit `dirpath` in the composer keeps the canonical location.
 
 ## Write Path Detail
 
 ### 1. Lightning Trainer
 
-All training writes land under `trainer.default_root_dir` from the rendered jsonnet config (= `paths.run_dir(...)`).
+All training writes land under `trainer.default_root_dir` from the rendered Python plan config (= `graphids.config.catalog.run_dir(...)`).
 
 | What | Relative path | Who writes |
 |------|---------------|-----------|
@@ -105,28 +109,23 @@ existence, not these markers.
 ## Execution Order
 
 ```
-SLURM JOB (compute node)
-------------------------
+SLURM JOB (compute node) — sbatch carries: python -m graphids exec --row '<json>' [--ckpt-path X]
+-------------------------------------------------------------------------------------------------
 _preamble.sh (env, venv)
-python -m graphids fit --config <preset.jsonnet> --tla dataset=... --tla seed=...
-+- ensure_spawn()
-+- render(config, tla)
-+- apply_overrides(rendered, --set ...)
-+- ResolvedConfig.from_rendered(rendered)
-+- build(resolved)
-|   +- gc + torch.cuda reset
-|   +- build_run(rendered) -> trainer/model/datamodule
-+- wire_file_exporters(run_dir)
-+- train(artifacts, resolved, resume_from=...)
-|   +- trainer.fit() -> touch .train_complete
-# (separate invocation for eval)
-python -m graphids test --config <preset.jsonnet> --tla dataset=... --tla seed=...
-+- ... evaluate(...) -> trainer.test() -> touch .test_complete
+python -m graphids exec --row '<row JSON>' [--ckpt-path X]
++- BlueprintArray.model_validate([row]) → typed Row
++- orchestrate.run_row(row, ckpt_path=...)
+    match row.action:
+      fit  → _instantiate(rendered_config) → trainer/model/datamodule
+             _mlflow.start_training_run (per-axis experiment, run_name = identity)
+             trainer.fit() → MLflowTrainingCallback.on_fit_end → FINISHED
+             touch .train_complete
+      test → _instantiate → trainer.test() → log_test_run → touch .test_complete
 
 # Per-checkpoint artifacts are an `analyze` blueprint row: author a plan
-# under configs/plans/ops/ that emits one AnalyzeRow per checkpoint, then
-# run/exec/submit through the same chassis.
-python -m graphids run configs/plans/ops/analyze_<group>.jsonnet \
+# under graphids/configs/plans/ops/ whose build() emits one AnalyzeRow per
+# checkpoint, then run/exec/submit through the same chassis.
+python -m graphids run ops.analyze_<group> \
     --dataset <dataset> --seed <N> -o analyze.json
 jq -c '.[]' analyze.json | while read row; do
     python -m graphids exec --row "$row"   # or `submit --row "$row" --cluster ...`

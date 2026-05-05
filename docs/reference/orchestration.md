@@ -1,48 +1,42 @@
-# Orchestration — `graphids/orchestrate/`
+# Orchestration — `graphids/orchestrate.py`
 
-> Status: **implemented** | Last refactor: 2026-04-26 (plan jsonnet
-> replaces in-memory `OFAT_DAG`)
+> Status: **implemented** | Last refactor: 2026-05-04 (jsonnet → Python
+> plan layer; Parsl `SlurmProvider` replaces submitit)
 
-A training run is a jsonnet preset rendered to a dict, validated, then
-fed through `build → train → evaluate`. No planner, no cross-stage
-driver in-process. Multi-stage chains are declared in a *plan jsonnet*
-(`configs/plans/*.jsonnet`); `python -m graphids run <plan>` parses,
-toposorts, and submits per-node — see `submit-flow.md`.
+A training run is a Python plan's `build()` output → `BlueprintArray`
+validation → `run_row(row)`. No planner, no cross-stage driver
+in-process. Multi-stage chains are declared in a Python plan
+(`graphids/configs/plans/<name>.py`); `graphids run <name>` emits a
+JSON array, the user/LLM iterates and submits per row — see
+`submit-flow.md`.
 
 ## Layout
 
-| Module | Role |
+`orchestrate.py` is a single module (not a subpackage). Public surface:
+
+| Function | Role |
 |---|---|
-| `config.py` | `ResolvedConfig`, `InstantiatedRun` — boundary types. |
-| `instantiate.py` | `build_run(rendered)` — class_path + signature-filtered kwargs, callback/logger wiring. |
-| `stage.py` | `build(resolved)`, `train(artifacts, resolved)`, `evaluate(artifacts, resolved)`. |
+| `run_row(row, *, ckpt_path=None)` | Top-level dispatch on `row.action`. The only entry called by `graphids exec` and by the SLURM job's `srun` line. |
+| `_instantiate(spec)` | Recursively builds `{class_path, init_args}` blocks via importlib + `getattr`; sub-dicts with their own `class_path` are built bottom-up. |
 
 ## Execution flow
 
 ```
-fit | test  (cli/training.py)
-|
-+-- render(config_path, tla=...)              [config/jsonnet.py]
-+-- apply_overrides(rendered, --set ...)      [cli/app.py]
-+-- ResolvedConfig.from_rendered(rendered)    [orchestrate/config.py]
-|     -> validate_config(...)                 [config/schemas.py]
-|     -> run_dir = trainer.default_root_dir
-+-- build(resolved)                           [stage.py]
-|     -> gc + torch.cuda reset
-|     -> build_run(rendered, validated)       [instantiate.py]
-+-- train(artifacts, resolved, resume_from)   [stage.py]
-|     -> wire_file_exporters(run_dir)
-|     -> trainer.fit(...)
-|     -> touch .train_complete
-+-- evaluate(artifacts, resolved)             [stage.py]
-      -> trainer.test(...)
-      -> touch .test_complete + save predictions
+graphids exec --row '<json>'
+  +-- BlueprintArray.model_validate([row])  → typed Row (discriminated union)
+  +-- run_row(row, ckpt_path=...)
+        +-- match row.action:
+              fit / test  → instantiate trainer/model/datamodule;
+                            open MLflow run; trainer.fit(...) / trainer.test(...)
+              extract     → write fusion features cache (idempotent on output_dir)
+              analyze     → core.artifacts.Analyzer(row) → per-checkpoint artifacts
+              cmd         → run shell command
 ```
 
 ## Key decisions
 
 | Decision | Rationale |
 |---|---|
-| Path scheme is one Python module | `graphids.config.paths` defines `run_dir`/`vgae_ckpt`/`states_dir`. Jsonnet calls into it via `std.native('paths.run_dir')(...)` — registered as `native_callbacks` in `render()`. `slurm/dag.py` imports the same module. No parallel jsonnet implementation. |
-| No in-process multi-stage driver | A *plan jsonnet* (`configs/plans/*.jsonnet`) declares the topology; `python -m graphids run <plan>` parses it (Pydantic), toposorts, and calls `graphids.slurm.submit.submit()` per node with `dep_jids` held in memory. No scheduler re-query (kills the Stage 3 dep-race). See `submit-flow.md`. |
-| `build` / `train` / `evaluate` are dumb primitives | No `ResolvedConfig` knowledge, no cache knowledge. Same primitives used by `fit` and `test`. |
+| Path math is one Python module | `graphids.config.catalog` defines `run_dir` / `best_ckpt` / `states_dir`. Plans import directly via `graphids.configs.catalog`. No native-callback bridge — single source. |
+| No in-process multi-stage driver | A Python plan declares the topology; `graphids run` emits JSON, the user/LLM iterates `graphids submit --row "$row"`. No scheduler re-query. See `submit-flow.md`. |
+| `run_row` is the single dispatch | One entry from CLI, one from the SLURM job. No `fit`/`test` Typer commands; pipeline shape is `run | exec | submit`. |

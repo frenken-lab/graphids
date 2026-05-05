@@ -5,9 +5,9 @@ One module owns three related concerns:
 - raw/cache paths under `LAKE_ROOT` (`data_dir`, `cache_dir`)
 - run paths under `RUN_ROOT` (`run_dir`, `best_ckpt`, `states_dir`)
 
-The run-path functions are also exposed to jsonnet as `std.native('paths.*')`
-by :mod:`graphids.config.jsonnet`. Keeping the schemes here means jsonnet and
-Python share one source — no parallel jsonnet implementation that can drift.
+Plans (`graphids/configs/plans/`) and the composer call `run_dir(...)`
+and `best_ckpt(...)` directly. Single source — there is no separate
+path scheme anywhere else in the tree.
 
 `run_root` is read from `$GRAPHIDS_RUN_ROOT` lazily; the path scheme is
 `{run_root}/{dataset}/ablations/{group}/{variant}/seed_{N}` (and
