@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from graphids.configs.compose import compose
-from graphids.configs.lib import FOCAL, GAT, can_bus, graph_dm, spec
+from graphids.graphids.config.compose import compose
+from graphids.graphids.config.lib import FOCAL, GAT, can_bus, graph_dm, spec
 
 
 def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:

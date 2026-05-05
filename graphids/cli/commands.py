@@ -43,7 +43,7 @@ _DepAny = Annotated[
 
 def _load_row(raw: str):
     """Parse single-row JSON (or ``-`` stdin) → validated ``Row`` via discriminated union."""
-    from graphids.configs.blueprint import BlueprintArray
+    from graphids.graphids.config.blueprint import BlueprintArray
 
     text = sys.stdin.read() if raw == "-" else raw
     return BlueprintArray.model_validate([json.loads(text)])[0]
@@ -74,7 +74,7 @@ def run_cli(
     """
     import importlib
 
-    from graphids.configs.blueprint import BlueprintArray
+    from graphids.graphids.config.blueprint import BlueprintArray
 
     mod = importlib.import_module(f"graphids.configs.plans.{plan}")
     blueprint = BlueprintArray.model_validate(mod.build(dataset=dataset, seed=seed))

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from graphids.config.catalog import run_dir as _run_dir
-from graphids.configs.blueprint import RenderedConfig
+from graphids.graphids.config.blueprint import RenderedConfig
 
 
 @dataclass(frozen=True)

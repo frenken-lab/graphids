@@ -16,9 +16,9 @@ from typing import Any
 
 from graphids.config.catalog import best_ckpt
 from graphids.config.catalog import run_dir as _run_dir
-from graphids.configs.blueprint import ClassPath, RenderedConfig, TrainerCfg
-from graphids.configs.lib import fusion_dm
-from graphids.configs.row import RowSpec
+from graphids.graphids.config.blueprint import ClassPath, RenderedConfig, TrainerCfg
+from graphids.graphids.config.lib import fusion_dm
+from graphids.graphids.config.row import RowSpec
 
 
 def trainer_base() -> dict[str, Any]:

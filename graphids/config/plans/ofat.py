@@ -19,8 +19,8 @@ from __future__ import annotations
 from typing import Any
 
 from graphids.config.catalog import best_ckpt
-from graphids.configs.compose import compose
-from graphids.configs.lib import (
+from graphids.graphids.config.compose import compose
+from graphids.graphids.config.lib import (
     CE,
     FOCAL,
     GAT,

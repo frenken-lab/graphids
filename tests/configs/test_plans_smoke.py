@@ -43,7 +43,7 @@ def env_roots(tmp_path_factory):
 @pytest.mark.parametrize("plan_name", PLANS)
 def test_plan_builds(plan_name: str, env_roots):
     """``build(dataset, seed)`` returns rows that pass BlueprintArray validation."""
-    from graphids.configs.blueprint import BlueprintArray
+    from graphids.graphids.config.configs.blueprint import BlueprintArray
 
     mod = importlib.import_module(f"graphids.configs.plans.{plan_name}")
     rows = mod.build(dataset="hcrl_sa", seed=42)

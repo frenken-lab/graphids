@@ -29,7 +29,7 @@ import mlflow
 from mlflow.entities import LoggedModelOutput, Metric
 from mlflow.tracking import MlflowClient
 
-from graphids.configs.blueprint import TrainRow
+from graphids.graphids.config.blueprint import TrainRow
 
 # Identity attribute names on ``TrainRow.meta``; surfaced as ``graphids.{key}`` tags.
 _IDENTITY_KEYS = ("dataset", "group", "variant", "seed", "model_type", "scale")

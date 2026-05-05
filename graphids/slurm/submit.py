@@ -31,7 +31,7 @@ from pathlib import Path
 from parsl.launchers import SrunLauncher
 from parsl.providers import SlurmProvider
 
-from graphids.configs.blueprint import Row, TrainRow
+from graphids.graphids.config.configs.blueprint import Row, TrainRow
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PROFILES = _REPO_ROOT / "configs" / "resources" / "submit_profiles.json"
