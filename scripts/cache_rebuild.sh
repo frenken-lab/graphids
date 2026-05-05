@@ -26,6 +26,6 @@ PLAN="$(mktemp -t cache_plan_${DATASET}_XXXX.json)"
 python -m graphids run data.rebuild_cache --dataset "$DATASET" --seed 42 -o "$PLAN"
 
 echo "submitting cache rebuild for dataset=$DATASET on cluster=$CLUSTER" >&2
-jq -c '.[]' "$PLAN" | while read -r row; do
+jq -c '.rows[]' "$PLAN" | while read -r row; do
     python -m graphids submit --row "$row" --cluster "$CLUSTER" --length short
 done

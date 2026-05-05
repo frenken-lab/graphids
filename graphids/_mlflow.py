@@ -43,6 +43,7 @@ _TAG_KEYS = {
     "seed": "graphids.seed",
     "phase": "graphids.phase",
     "cluster": "slurm.cluster_name",
+    "plan_id": "graphids.plan_id",
 }
 
 
@@ -58,10 +59,11 @@ def configure_tracking_uri() -> None:
 
 
 def identity_tags(row: TrainRow, phase: str) -> dict[str, str]:
-    """Mandatory run-open tags (graphids identity + phase + SLURM context)."""
+    """Mandatory run-open tags (graphids identity + phase + plan_id + SLURM context)."""
     tags = {
         "graphids.phase": phase,
         "graphids.run_dir": row.identity.run_dir,
+        "graphids.plan_id": row.plan_id,
         **{f"graphids.{k}": str(getattr(row.meta, k)) for k in _IDENTITY_KEYS},
     }
     if jid := os.environ.get("SLURM_JOB_ID"):
@@ -79,6 +81,7 @@ def build_search_filter(
     seed: int | None = None,
     phase: str | None = None,
     cluster: str | None = None,
+    plan_id: str | None = None,
     status: str | None = None,
 ) -> str:
     """Compose ``MlflowClient.search_runs(filter_string=...)`` from
@@ -92,6 +95,7 @@ def build_search_filter(
         "seed": str(seed) if seed is not None else None,
         "phase": phase,
         "cluster": cluster,
+        "plan_id": plan_id,
     }
     parts = [f"tags.`{_TAG_KEYS[k]}` = '{v}'" for k, v in items.items() if v is not None]
     if status is not None:

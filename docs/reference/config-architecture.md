@@ -1,7 +1,7 @@
 # Config Architecture
 
 > Python composition (`graphids/plan/`) → Pydantic validation
-> (`BlueprintArray`) → direct instantiation (`orchestrate._instantiate`).
+> (`Plan`) → direct instantiation (`orchestrate._instantiate`).
 > For composer rules, env vars, path scheme, and observability wiring,
 > see `.claude/rules/config-system.md`.
 
@@ -18,7 +18,7 @@ python -m graphids run <plan> --dataset X --seed N [-o plan.json]
   -> cli.commands:run_cli
   -> importlib.import_module(f"graphids.plan.plans.{plan}")
   -> mod.build(dataset=X, seed=N)              # returns list[dict]
-  -> BlueprintArray.model_validate(rendered)   # raises on schema drift
+  -> Plan.model_validate(rendered)   # raises on schema drift
   -> sys.stdout / output file (JSON array)
 ```
 
@@ -54,12 +54,13 @@ graphids/plan/
 │                         # plus archetype wrapper. Owns trainer_base /
 │                         # callbacks_base assembly.
 ├── blueprint.py          # Pydantic schemas: ClassPath, TrainerCfg,
-│                         # RenderedConfig, TrainRow/CmdRow/ExtractRow/
-│                         # AnalyzeRow, BlueprintArray
+│                         # RenderedConfig, TrainRow/CacheRow/ExtractRow/
+│                         # AnalyzeRow, Plan
 ├── row.py                # RowSpec dataclass + .fit() / .test() / extract()
 └── plans/                # build(dataset, seed) -> list[dict]
-    ├── unsupervised.py / fusion.py / ofat.py
-    └── ops/              # one-shot ops plans (analyze / extract / smoke)
+    ├── ablations/        # ofat.py, unsupervised.py, fusion.py
+    ├── smoke/            # gat_taunorm.py
+    └── data/             # rebuild_cache.py
 ```
 
 Path math lives in `graphids/plan/catalog.py` (separate `config`
@@ -122,7 +123,7 @@ over `dataset` / `seed` / `vgae_ckpt` since variants reference them.
 
 ## 3. Pydantic validation
 
-`graphids.plan.blueprint.BlueprintArray` is a `RootModel[list[Row]]`
+`graphids.plan.blueprint.Plan` is a `RootModel[list[Row]]`
 where `Row` is a discriminated union by `action`:
 
 | Action | Class | Notes |
@@ -189,7 +190,7 @@ python -m graphids run ofat --dataset hcrl_sa --seed 42 -o plan.json
 jq -c '.[0]' plan.json | xargs -I{} python -m graphids exec --row {}
 
 # SLURM submission.
-jq -c '.[]' plan.json | while read row; do
+jq -c '.rows[]' plan.json | while read row; do
     python -m graphids submit --row "$row" --cluster pitzer --length long
 done
 ```

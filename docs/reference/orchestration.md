@@ -3,7 +3,7 @@
 > Status: **implemented** | Last refactor: 2026-05-04 (jsonnet → Python
 > plan layer; Parsl `SlurmProvider` replaces submitit)
 
-A training run is a Python plan's `build()` output → `BlueprintArray`
+A training run is a Python plan's `build()` output → `Plan`
 validation → `run_row(row)`. No planner, no cross-stage driver
 in-process. Multi-stage chains are declared in a Python plan
 (`graphids/plan/plans/<name>.py`); `graphids run <name>` emits a
@@ -23,7 +23,7 @@ JSON array, the user/LLM iterates and submits per row — see
 
 ```
 graphids exec --row '<json>'
-  +-- BlueprintArray.model_validate([row])  → typed Row (discriminated union)
+  +-- Plan.model_validate([row])  → typed Row (discriminated union)
   +-- run_row(row, ckpt_path=...)
         +-- match row.action:
               fit / test  → instantiate trainer/model/datamodule;

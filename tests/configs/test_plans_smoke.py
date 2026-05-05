@@ -2,7 +2,7 @@
 
 Replaces the differential parity tests after the jsonnet sources were
 deleted (Step 6 of the migration). Verifies each plan's ``build()``
-returns a list that passes ``BlueprintArray`` validation — catches
+returns a list that passes ``Plan`` validation — catches
 schema drift, broken imports, and missing primitives at test time
 rather than at submit time.
 
@@ -43,11 +43,21 @@ def env_roots(tmp_path_factory):
 
 @pytest.mark.parametrize("plan_name", PLANS)
 def test_plan_builds(plan_name: str, env_roots):
-    """``build(dataset, seed)`` returns rows that pass BlueprintArray validation."""
-    from graphids.plan.blueprint import BlueprintArray
+    """``build(dataset, seed)`` returns rows that pass ``Plan`` validation."""
+    from graphids.cli.commands import mint_plan_id
+    from graphids.plan.blueprint import Plan
 
     mod = importlib.import_module(f"graphids.plan.plans.{plan_name}")
     rows = mod.build(dataset="hcrl_sa", seed=42)
     assert isinstance(rows, list) and len(rows) > 0
-    blueprint = BlueprintArray.model_validate(rows)
-    assert len(blueprint) == len(rows)
+    plan_id = mint_plan_id()
+    for r in rows:
+        r["plan_id"] = plan_id
+    plan_obj = Plan.model_validate({
+        "plan_id": plan_id,
+        "plan_module": plan_name,
+        "plan_args": {"dataset": "hcrl_sa", "seed": 42},
+        "created_at": "2026-05-05T00:00:00+00:00",
+        "rows": rows,
+    })
+    assert len(plan_obj) == len(rows)

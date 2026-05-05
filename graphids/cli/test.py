@@ -70,7 +70,7 @@ def smoke(
         ],
         check=True,
     )
-    rows = json.loads(Path(plan_path).read_text())
+    rows = json.loads(Path(plan_path).read_text())["rows"]
 
     prev_jid: str | None = None
     for row in rows:

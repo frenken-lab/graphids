@@ -2,7 +2,7 @@
 
 **Plan modules** (`graphids/plan/plans/`) — Python files exposing
 `build(*, dataset: str, seed: int) -> list[dict]`. Each plan composes
-class-path specs + composers into rows that match the `BlueprintArray`
+class-path specs + composers into rows that match the `Plan`
 schema.
 
 **Composer** (`graphids/plan/compose.py`) — single `compose(...)`
@@ -21,7 +21,7 @@ check, `graph_dm` conditional knobs, `fusion_dm` path derivation,
 primitives live with the model class itself (e.g. `GAT.__init__`'s
 `_SCALES` table), not duplicated here.
 
-**Pydantic / `BlueprintArray`** (`graphids/plan/blueprint.py`) —
+**Pydantic / `Plan`** (`graphids/plan/blueprint.py`) —
 validation gate. Each row is a discriminated union (`TrainRow` |
 `CmdRow` | `ExtractRow` | `AnalyzeRow`) with `extra="forbid"`.
 `TrainRow.rendered_config` is itself a typed `RenderedConfig`
@@ -50,7 +50,7 @@ The pipeline is strictly one-directional:
 ```
 plan.build(dataset, seed) → list[dict]
     ↓
-BlueprintArray.model_validate
+Plan.model_validate
     ↓
 graphids run → JSON array on stdout / file
     ↓

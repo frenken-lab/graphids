@@ -23,7 +23,7 @@ jq -c '.[0]' plan.json | xargs -I{} python -m graphids exec --row {}
 echo '<row-json>' | python -m graphids exec --row -
 
 # Step 4: submit one row to SLURM via Parsl. Prints jid on stdout.
-jq -c '.[]' plan.json | while read row; do
+jq -c '.rows[]' plan.json | while read row; do
     python -m graphids submit --row "$row" --cluster pitzer --length long
 done
 # Same-batch dependency chain (afterok = data dep, afterany = preempt-resume):
@@ -46,7 +46,7 @@ orchestrates multiple jobs.
 
 | Stage  | Command                                | Module                                   | What it does                                                                                           |
 | ------ | -------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| render | `graphids run <plan>`                  | `graphids/cli/commands.py`               | Imports `graphids.plan.plans.<plan>`, calls `build(dataset, seed)`, validates as `BlueprintArray`, writes JSON. |
+| render | `graphids run <plan>`                  | `graphids/cli/commands.py`               | Imports `graphids.plan.plans.<plan>`, calls `build(dataset, seed)`, validates as `Plan`, writes JSON. |
 | exec   | `graphids exec --row <json>`           | `graphids/cli/commands.py`               | Executes one row in-process via `graphids.orchestrate.run_row`. Dispatches on `row.action` (fit/test/extract/analyze). |
 | submit | `graphids submit --row <json>`         | `graphids/cli/commands.py`               | Submits one row to SLURM via Parsl `SlurmProvider`. Prints jid.                                        |
 | ops    | `analyze` / `cache` / `extract` rows   | `graphids/plan/plans/{smoke,data,ablations}/*.py` | Ops are rows too — analyze ckpt, HF push, cache rebuild. Same run/exec/submit chassis.        |
@@ -56,7 +56,7 @@ orchestrates multiple jobs.
 
 **Config resolution** — Single path: a Python plan module under
 `graphids/plan/plans/` exposes `build(dataset, seed) -> list[dict]`;
-`BlueprintArray` / `TrainRow` (`graphids/plan/blueprint.py`) validates it.
+`Plan` / `TrainRow` (`graphids/plan/blueprint.py`) validates it.
 `run_row` walks nested `class_path` blocks and instantiates via
 importlib with signature-filtered kwargs. Loss fragments are true
 `{class_path, init_args}` blocks — no `inject_loss_fn` helper.

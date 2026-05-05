@@ -2,7 +2,7 @@
 
 Python-native composition + Pydantic validation + direct instantiation.
 `build(dataset, seed)` (a Python plan under
-`graphids/plan/plans/`) → `list[dict]` → `BlueprintArray.model_validate(...)`
+`graphids/plan/plans/`) → `list[dict]` → `Plan.model_validate(...)`
 → `graphids.orchestrate.run_row` (importlib `class_path` instantiation
 with signature-filtered kwargs).
 

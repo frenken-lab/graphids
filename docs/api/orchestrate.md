@@ -26,7 +26,7 @@ honest — every callback now goes through `_instantiate` uniformly.
 
 ## `graphids.plan.blueprint`
 
-`TrainRow` / `ExtractRow` / `AnalyzeRow` / `CmdRow` / `BlueprintArray`
+`TrainRow` / `ExtractRow` / `AnalyzeRow` / `CmdRow` / `Plan`
 — the validated row schema produced by `graphids run` and consumed by
 `graphids exec` / `graphids submit`. `RenderedConfig` / `ClassPath` /
 `TrainerCfg` type the per-row training-config payload end-to-end.

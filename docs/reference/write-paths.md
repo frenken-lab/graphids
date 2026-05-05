@@ -113,7 +113,7 @@ SLURM JOB (compute node) — sbatch carries: python -m graphids exec --row '<jso
 -------------------------------------------------------------------------------------------------
 _preamble.sh (env, venv)
 python -m graphids exec --row '<row JSON>' [--ckpt-path X]
-+- BlueprintArray.model_validate([row]) → typed Row
++- Plan.model_validate([row]) → typed Row
 +- orchestrate.run_row(row, ckpt_path=...)
     match row.action:
       fit  → _instantiate(rendered_config) → trainer/model/datamodule
@@ -127,7 +127,7 @@ python -m graphids exec --row '<row JSON>' [--ckpt-path X]
 # per checkpoint, then run/exec/submit through the same chassis.
 python -m graphids run smoke.analyze_<group> \
     --dataset <dataset> --seed <N> -o analyze.json
-jq -c '.[]' analyze.json | while read row; do
+jq -c '.rows[]' analyze.json | while read row; do
     python -m graphids exec --row "$row"   # or `submit --row "$row" --cluster ...`
 done
 ```

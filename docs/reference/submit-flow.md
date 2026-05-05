@@ -16,7 +16,7 @@ Every job is one row, submitted atomically:
 graphids run <plan-module> --dataset X --seed N -o plan.json
 
 # 2. Iterate — the user/LLM is the loop. There is NO Python pipeline driver.
-jq -c '.[]' plan.json | while read row; do
+jq -c '.rows[]' plan.json | while read row; do
     graphids submit --row "$row" --cluster pitzer --length long
 done
 ```
@@ -30,7 +30,7 @@ done
 Login-node phase (until `sbatch` returns):
 
 1. **`graphids/cli/commands.py:submit_cli`** parses Typer flags, loads
-   the row JSON via `BlueprintArray.model_validate([json.loads(...)])[0]`
+   the row JSON via `Row TypeAdapter`
    (validates the row's discriminated-union shape).
 2. **`graphids/slurm/submit.py:submit_row(row, cluster, length, ...)`**
    is the one library entrypoint and the ONLY caller of Parsl's
@@ -52,7 +52,7 @@ Login-node phase (until `sbatch` returns):
 Compute-node phase:
 
 5. **`srun python -m graphids exec --row '<json>'`** runs in the
-   allocated resources. `_load_row` revalidates via `BlueprintArray`,
+   allocated resources. `_load_row` revalidates via `Plan`,
    then `orchestrate.run_row(row, ckpt_path=...)` dispatches on
    `row.action`.
 6. For `fit` / `test`: `_instantiate` walks the `class_path` tree,
@@ -108,7 +108,7 @@ the compute node needs; no MLflow lookup at submit time, no
 | File | Role |
 |---|---|
 | `graphids/cli/commands.py` | `run` / `exec` / `submit` Typer wrappers. |
-| `graphids/plan/blueprint.py` | `BlueprintArray`, `TrainRow`, `ExtractRow`, `AnalyzeRow`, `CmdRow`, `RenderedConfig`, `ClassPath`, `TrainerCfg` — discriminated-union row schema + typed rendered-config schema. |
+| `graphids/plan/blueprint.py` | `Plan`, `TrainRow`, `ExtractRow`, `AnalyzeRow`, `CmdRow`, `RenderedConfig`, `ClassPath`, `TrainerCfg` — discriminated-union row schema + typed rendered-config schema. |
 | `graphids/orchestrate.py` | `run_row(row)` dispatch, `_instantiate` recursion, `UpstreamLineageCallback`, `_ensure_runtime` (spawn + structlog). Preempt-resume via Lightning's `SLURMEnvironment` plugin. |
 | `graphids/slurm/submit.py` | `submit_row(...)` library entrypoint; one Parsl `SlurmProvider.submit` site. |
 | `configs/resources/submit_profiles.json` | Raw Parsl `SlurmProvider` kwargs keyed `[mode][cluster][length]`. |

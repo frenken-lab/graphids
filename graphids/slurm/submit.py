@@ -64,7 +64,7 @@ def submit_row(
     profile = dict(json.loads(_PROFILES.read_text())[row.resources.mode][cluster][length])
     delay = profile.pop("signal_delay_s", None)
 
-    directives = []
+    directives = [f"#SBATCH --comment=graphids.plan_id={row.plan_id}"]
     if delay is not None:
         directives.append(f"#SBATCH --signal=USR2@{int(delay)}")
     if depends_on_afterok:

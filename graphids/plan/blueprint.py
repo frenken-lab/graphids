@@ -6,7 +6,7 @@ A blueprint is an ordered list of rows. Each row is one of:
     analyze     → per-checkpoint artifact generation (CKA / embeddings / …)
     cache       → one-shot dataset cache build (vocab scan + windowing)
 
-Validation is one call: `BlueprintArray.model_validate(rendered_array)`.
+Validation is one call: `Plan.model_validate(rendered_object)`.
 A row that doesn't validate is a render bug; a render that fails validation
 is a schema gap. Both surface here, before SLURM ever sees them.
 
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class _StrictModel(BaseModel):
@@ -102,6 +102,7 @@ class TrainRow(_StrictModel):
 
     name: str
     action: Literal["fit", "test"]
+    plan_id: str
     identity: Identity
     meta: Meta
     rendered_config: RenderedConfig
@@ -119,6 +120,7 @@ class CacheRow(_StrictModel):
 
     name: str
     action: Literal["cache"]
+    plan_id: str
     dataset: str
     vocab_scope: Literal["train", "all"] = "train"
     seed: int = 42
@@ -138,6 +140,7 @@ class ExtractRow(_StrictModel):
 
     name: str
     action: Literal["extract"]
+    plan_id: str
     dataset: str
     extractor_ckpts: dict[str, str]
     output_dir: str
@@ -163,6 +166,7 @@ class AnalyzeRow(_StrictModel):
 
     name: str
     action: Literal["analyze"]
+    plan_id: str
     resources: Resources
 
     ckpt_path: str
@@ -215,14 +219,27 @@ class AnalyzeRow(_StrictModel):
 Row = TrainRow | CacheRow | ExtractRow | AnalyzeRow
 
 
-class BlueprintArray(RootModel[list[Row]]):
-    """Top-level blueprint — array of rows in execution order."""
+class Plan(_StrictModel):
+    """Top-level rendered plan — the JSON object ``graphids run`` writes.
+
+    Wraps the row array with grouping metadata. Every row carries the
+    same ``plan_id`` so a single render can be queried as a unit
+    (MLflow tag, sbatch ``--comment``, sacct lookup). ``plan_args``
+    captures the inputs to ``build()`` so a TUI / re-render can
+    reproduce or extend the plan without re-typing arguments.
+    """
+
+    plan_id: str
+    plan_module: str
+    plan_args: dict[str, Any]
+    created_at: str
+    rows: list[Row]
 
     def __iter__(self):  # type: ignore[override]
-        return iter(self.root)
+        return iter(self.rows)
 
     def __len__(self) -> int:
-        return len(self.root)
+        return len(self.rows)
 
     def __getitem__(self, i: int) -> Row:
-        return self.root[i]
+        return self.rows[i]

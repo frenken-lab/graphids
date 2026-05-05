@@ -2,7 +2,7 @@
 
 Python plan → list[dict] → Pydantic validation. The path through the
 system is `plans.<name>.build(dataset, seed) → list[dict]` →
-`BlueprintArray.model_validate(...)` →
+`Plan.model_validate(...)` →
 `graphids.orchestrate.run_row` (importlib instantiation with
 signature-filtered kwargs). See
 [Config system](../reference/config-architecture.md) for the
@@ -23,7 +23,7 @@ The chassis is split across two top-level modules:
     - `plan.row` — `RowSpec` (composer-side mutable builder).
     - `plan.blueprint` — Pydantic `Row` discriminated union
       (`TrainRow`, `CacheRow`, `ExtractRow`, `AnalyzeRow`),
-      `BlueprintArray`, `RenderedConfig`, `ClassPath`, `TrainerCfg`.
+      `Plan`, `RenderedConfig`, `ClassPath`, `TrainerCfg`.
     - `plan.plans.{ablations,smoke,data}.<name>` — concrete plan
       modules exposing `build(*, dataset, seed) → list[dict]`.
 
