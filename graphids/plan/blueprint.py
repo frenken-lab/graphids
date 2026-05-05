@@ -4,7 +4,7 @@ A blueprint is an ordered list of rows. Each row is one of:
     fit / test  → carries `rendered_config` + `upstreams` + `identity`
     extract     → one-shot fusion-feature extraction (idempotent on output_dir)
     analyze     → per-checkpoint artifact generation (CKA / embeddings / …)
-    cmd         → carries `command` only
+    cache       → one-shot dataset cache build (vocab scan + windowing)
 
 Validation is one call: `BlueprintArray.model_validate(rendered_array)`.
 A row that doesn't validate is a render bug; a render that fails validation
@@ -109,12 +109,22 @@ class TrainRow(_StrictModel):
     resources: Resources
 
 
-class CmdRow(_StrictModel):
-    """Non-training row — runs an arbitrary shell command on a SLURM node."""
+class CacheRow(_StrictModel):
+    """One-shot dataset cache build — vocab scan + windowing into PyG tensors.
+
+    Idempotent: ``BaseGraphSource.build()`` short-circuits if the cache
+    partition for ``(dataset, vocab_scope)`` is already present. CPU-only;
+    no model, no MLflow run.
+    """
 
     name: str
-    action: Literal["cmd"]
-    command: str
+    action: Literal["cache"]
+    dataset: str
+    vocab_scope: Literal["train", "all"] = "train"
+    seed: int = 42
+    window_size: int = 100
+    stride: int = 100
+    val_fraction: float = 0.2
     resources: Resources
 
 
@@ -202,7 +212,7 @@ class AnalyzeRow(_StrictModel):
         return self
 
 
-Row = TrainRow | CmdRow | ExtractRow | AnalyzeRow
+Row = TrainRow | CacheRow | ExtractRow | AnalyzeRow
 
 
 class BlueprintArray(RootModel[list[Row]]):

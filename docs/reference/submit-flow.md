@@ -21,8 +21,8 @@ jq -c '.[]' plan.json | while read row; do
 done
 ```
 
-`<plan-module>` is a dotted name under `graphids.configs.plans`
-(e.g. `supervised`, `ofat`, `ops.gat_taunorm_smoke`). See
+`<plan-module>` is a dotted name under `graphids.plan.plans`
+(e.g. `supervised`, `ofat`, `smoke.gat_taunorm`). See
 `config-architecture.md`.
 
 ## Atomic: `graphids submit --row '<json>'`
@@ -99,7 +99,7 @@ exited cleanly or was preempted).
 
 Upstream-teacher ckpt paths (e.g. VGAE → GAT distillation) flow through
 the row's `upstreams` array, populated at plan-build time via
-`graphids.configs.catalog.best_ckpt(...)`. The row carries everything
+`graphids.paths.best_ckpt(...)`. The row carries everything
 the compute node needs; no MLflow lookup at submit time, no
 `--depends-on V[:S]` flag.
 
@@ -108,11 +108,11 @@ the compute node needs; no MLflow lookup at submit time, no
 | File | Role |
 |---|---|
 | `graphids/cli/commands.py` | `run` / `exec` / `submit` Typer wrappers. |
-| `graphids/configs/blueprint.py` | `BlueprintArray`, `TrainRow`, `ExtractRow`, `AnalyzeRow`, `CmdRow`, `RenderedConfig`, `ClassPath`, `TrainerCfg` — discriminated-union row schema + typed rendered-config schema. |
+| `graphids/plan/blueprint.py` | `BlueprintArray`, `TrainRow`, `ExtractRow`, `AnalyzeRow`, `CmdRow`, `RenderedConfig`, `ClassPath`, `TrainerCfg` — discriminated-union row schema + typed rendered-config schema. |
 | `graphids/orchestrate.py` | `run_row(row)` dispatch, `_instantiate` recursion, `UpstreamLineageCallback`, `_ensure_runtime` (spawn + structlog). Preempt-resume via Lightning's `SLURMEnvironment` plugin. |
 | `graphids/slurm/submit.py` | `submit_row(...)` library entrypoint; one Parsl `SlurmProvider.submit` site. |
 | `configs/resources/submit_profiles.json` | Raw Parsl `SlurmProvider` kwargs keyed `[mode][cluster][length]`. |
-| `graphids/configs/plans/<name>.py` | Plan modules — `build(dataset, seed) → list[dict]`. |
+| `graphids/plan/plans/<name>.py` | Plan modules — `build(dataset, seed) → list[dict]`. |
 
 ## Non-obvious invariants
 

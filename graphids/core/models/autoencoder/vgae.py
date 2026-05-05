@@ -17,7 +17,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from graphids.config.constants import ModelType
+from graphids.paths import ModelType
 
 from .._conv import (
     InputEncoder,

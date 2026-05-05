@@ -1,17 +1,20 @@
-"""Dataset catalog helpers and filesystem path scheme.
+"""Project-wide path scheme + dataset registry.
 
-One module owns three related concerns:
-- dataset registry lookup (`load_catalog`, `dataset_names`)
-- raw/cache paths under `LAKE_ROOT` (`data_dir`, `cache_dir`)
-- run paths under `RUN_ROOT` (`run_dir`, `best_ckpt`, `states_dir`)
+Owns three related concerns:
+- dataset registry lookup (``load_catalog``, ``dataset_names``)
+- raw / cache paths under ``$GRAPHIDS_LAKE_ROOT`` (``data_dir``, ``cache_dir``)
+- run paths under ``$GRAPHIDS_RUN_ROOT`` (``run_dir``, ``best_ckpt``, ``states_dir``)
 
-Plans (`graphids/configs/plans/`) and the composer call `run_dir(...)`
-and `best_ckpt(...)` directly. Single source — there is no separate
-path scheme anywhere else in the tree.
+Plans (``graphids.plan.plans.*``) and the composer call ``run_dir(...)``
+and ``best_ckpt(...)`` directly. Single source — no separate path scheme
+anywhere else in the tree.
 
 `run_root` is read from `$GRAPHIDS_RUN_ROOT` lazily; the path scheme is
-`{run_root}/{dataset}/ablations/{group}/{variant}/seed_{N}` (and
-`{run_root}/{dataset}/cached_states/seed_{N}` for fusion).
+``{run_root}/{dataset}/ablations/{group}/{variant}/seed_{N}`` (and
+``{run_root}/{dataset}/cached_states/seed_{N}`` for fusion).
+
+Import-safe: no external deps, no torch — usable from anywhere
+including login-node code paths.
 """
 
 from __future__ import annotations
@@ -20,9 +23,37 @@ import json
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from .constants import DATASET_REGISTRY_PATH, PREPROCESSING_VERSION
+# ---------------------------------------------------------------------------
+# Type aliases
+# ---------------------------------------------------------------------------
+
+# Concrete Literal — Pydantic needs this for field validation. Each model
+# module annotates its `model_type` arg with this so the rendered_config's
+# value is checked at instantiation. (Fusion methods aren't model_types in
+# this sense; their identity is `model_type='fusion'` + a `method` field.)
+ModelType = Literal["vgae", "dgi", "gat", "fusion"]
+
+
+# ---------------------------------------------------------------------------
+# Static path roots / filename literals
+# ---------------------------------------------------------------------------
+
+# This file lives at <project_root>/graphids/paths.py — one parent up from
+# the package, two from this file.
+PROJECT_ROOT: Path = Path(__file__).resolve().parents[1]
+CONFIG_DIR: Path = PROJECT_ROOT / "configs"
+DATASET_REGISTRY_PATH: Path = CONFIG_DIR / "data" / "datasets.json"
+
+PREPROCESSING_VERSION: str = "10.0.0"
+CKPT_SUBPATH: str = "checkpoints/best_model.ckpt"
+LAST_CKPT_SUBPATH: str = "checkpoints/last.ckpt"
+PHASE_MARKERS: dict[str, str] = {
+    "train": ".train_complete",
+    "test": ".test_complete",
+}
+
 
 # ---------------------------------------------------------------------------
 # Lake-root paths (raw CSVs, preprocessed caches)
@@ -48,8 +79,8 @@ def data_dir(lake_root: str, dataset: str) -> Path:
 
 def cache_dir(lake_root: str, dataset: str) -> Path:
     """Path to preprocessed tensor cache. Pinned to
-    :data:`graphids.config.constants.PREPROCESSING_VERSION` so a bump
-    of the version forces rebuild without deleting the old tree.
+    :data:`PREPROCESSING_VERSION` so a bump of the version forces rebuild
+    without deleting the old tree.
     """
     return Path(lake_root) / "cache" / f"v{PREPROCESSING_VERSION}" / dataset
 

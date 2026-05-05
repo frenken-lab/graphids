@@ -38,7 +38,7 @@ from mlflow.entities import LoggedModelInput
 from graphids._fs import atomic_load
 from graphids._mlflow import _find_logged_model_by_ckpt, identity_tags
 from graphids.cli.app import configure_logging
-from graphids.graphids.config.blueprint import AnalyzeRow, ExtractRow, Row, TrainRow
+from graphids.plan.blueprint import AnalyzeRow, CacheRow, ExtractRow, Row, TrainRow
 from graphids.core.models.base import strip_orig_mod_prefix
 
 
@@ -208,6 +208,20 @@ def analyze(row: AnalyzeRow) -> None:
     Analyzer(row).run()
 
 
+def cache(row: CacheRow) -> None:
+    """One-shot dataset cache build. Idempotent on the partition dir."""
+    from graphids.core.data.datasets.can_bus import CANBusSource
+
+    CANBusSource(
+        name=row.dataset,
+        seed=row.seed,
+        window_size=row.window_size,
+        stride=row.stride,
+        val_fraction=row.val_fraction,
+        vocab_scope=row.vocab_scope,
+    ).build()
+
+
 def run_row(row: Row, *, ckpt_path: str | None = None) -> None:
     _ensure_runtime()
     if isinstance(row, ExtractRow):
@@ -215,5 +229,8 @@ def run_row(row: Row, *, ckpt_path: str | None = None) -> None:
         return
     if isinstance(row, AnalyzeRow):
         analyze(row)
+        return
+    if isinstance(row, CacheRow):
+        cache(row)
         return
     {"fit": train, "test": evaluate}[row.action](row, ckpt_path=ckpt_path)

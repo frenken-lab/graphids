@@ -24,7 +24,7 @@ honest — every callback now goes through `_instantiate` uniformly.
 
 ::: graphids.orchestrate
 
-## `graphids.configs.blueprint`
+## `graphids.plan.blueprint`
 
 `TrainRow` / `ExtractRow` / `AnalyzeRow` / `CmdRow` / `BlueprintArray`
 — the validated row schema produced by `graphids run` and consumed by
@@ -35,4 +35,4 @@ Single source of truth for what a stage needs. `AnalyzeRow` drives
 field on the row is consumed by an entry in
 `graphids.core.artifacts.ARTIFACTS`.
 
-::: graphids.configs.blueprint
+::: graphids.plan.blueprint

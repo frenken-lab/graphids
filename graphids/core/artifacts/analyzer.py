@@ -14,7 +14,7 @@ from pathlib import Path
 import torch
 from structlog import get_logger
 
-from graphids.graphids.config.configs.blueprint import AnalyzeRow
+from graphids.plan.blueprint import AnalyzeRow
 from graphids.core.models.base import eval_mode, safe_load_checkpoint
 
 from . import io

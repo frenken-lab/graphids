@@ -3,7 +3,7 @@
 A composer returns a :class:`RowSpec` carrying the rendered training
 config plus out-of-band identity bits (``meta``, ``resources``,
 ``upstreams``). Calling ``.fit(name)`` / ``.test(name)`` emits a dict
-with the shape consumed by :class:`graphids.configs.blueprint.TrainRow`.
+with the shape consumed by :class:`graphids.plan.blueprint.TrainRow`.
 """
 
 from __future__ import annotations
@@ -11,15 +11,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from graphids.config.catalog import run_dir as _run_dir
-from graphids.graphids.config.blueprint import RenderedConfig
+from graphids.paths import run_dir as _run_dir
+from graphids.plan.blueprint import RenderedConfig
 
 
 @dataclass(frozen=True)
 class RowSpec:
     """Composer output. Not a row yet — call ``.fit()`` / ``.test()``.
 
-    ``rendered`` is a frozen :class:`graphids.configs.blueprint.RenderedConfig` —
+    ``rendered`` is a frozen :class:`graphids.plan.blueprint.RenderedConfig` —
     typo'd field access (``spec.rendered.trianer``) raises
     :class:`AttributeError`, and constructing one with an unknown key
     raises :class:`pydantic.ValidationError` (``extra="forbid"``).

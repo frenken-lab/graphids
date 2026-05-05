@@ -31,7 +31,7 @@ pending job, because the job re-imports current source at exec time.
 ### One-shot ops
 
 Ops jobs (test runs, cache rebuilds, analysis) are still rows — author
-a small plan module under `graphids/configs/plans/ops/` whose `build()`
+a small plan module under `graphids/plan/plans/{smoke,data}/` whose `build()`
 emits a single row with the right `action`/`command`/`resources`, then
 run the same `graphids run | submit` pair.
 

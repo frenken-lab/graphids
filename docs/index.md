@@ -10,7 +10,7 @@ edge deployment.
 - **[Module responsibilities](responsibilities.md)** — one-page map of
   what every layer owns (plan → render → validate → exec/submit).
 - **[Config system](reference/config-architecture.md)** — how a
-  Python plan under `graphids/configs/plans/` becomes a trained model.
+  Python plan under `graphids/plan/plans/` becomes a trained model.
 - **[Decisions](decisions/README.md)** — the ADR log. Permanent
   verdicts on the tools and patterns that got adopted or rejected.
 - **[API Reference](api/config.md)** — auto-generated from docstrings.

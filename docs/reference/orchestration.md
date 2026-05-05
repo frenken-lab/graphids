@@ -6,7 +6,7 @@
 A training run is a Python plan's `build()` output → `BlueprintArray`
 validation → `run_row(row)`. No planner, no cross-stage driver
 in-process. Multi-stage chains are declared in a Python plan
-(`graphids/configs/plans/<name>.py`); `graphids run <name>` emits a
+(`graphids/plan/plans/<name>.py`); `graphids run <name>` emits a
 JSON array, the user/LLM iterates and submits per row — see
 `submit-flow.md`.
 
@@ -37,6 +37,6 @@ graphids exec --row '<json>'
 
 | Decision | Rationale |
 |---|---|
-| Path math is one Python module | `graphids.config.catalog` defines `run_dir` / `best_ckpt` / `states_dir`. Plans import directly via `graphids.configs.catalog`. No native-callback bridge — single source. |
+| Path math is one Python module | `graphids.plan.catalog` defines `run_dir` / `best_ckpt` / `states_dir`. Plans import directly via `graphids.paths`. No native-callback bridge — single source. |
 | No in-process multi-stage driver | A Python plan declares the topology; `graphids run` emits JSON, the user/LLM iterates `graphids submit --row "$row"`. No scheduler re-query. See `submit-flow.md`. |
 | `run_row` is the single dispatch | One entry from CLI, one from the SLURM job. No `fit`/`test` Typer commands; pipeline shape is `run | exec | submit`. |

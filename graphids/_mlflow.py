@@ -29,7 +29,7 @@ import mlflow
 from mlflow.entities import LoggedModelOutput, Metric
 from mlflow.tracking import MlflowClient
 
-from graphids.graphids.config.blueprint import TrainRow
+from graphids.plan.blueprint import TrainRow
 
 # Identity attribute names on ``TrainRow.meta``; surfaced as ``graphids.{key}`` tags.
 _IDENTITY_KEYS = ("dataset", "group", "variant", "seed", "model_type", "scale")
@@ -52,7 +52,7 @@ def configure_tracking_uri() -> None:
     """
     if mlflow.config.is_tracking_uri_set():
         return
-    from graphids.config.catalog import lake_root
+    from graphids.paths import lake_root
 
     mlflow.set_tracking_uri(f"sqlite:///{lake_root().rstrip('/')}/mlflow.db")
 

@@ -43,7 +43,7 @@ _DepAny = Annotated[
 
 def _load_row(raw: str):
     """Parse single-row JSON (or ``-`` stdin) → validated ``Row`` via discriminated union."""
-    from graphids.graphids.config.blueprint import BlueprintArray
+    from graphids.plan.blueprint import BlueprintArray
 
     text = sys.stdin.read() if raw == "-" else raw
     return BlueprintArray.model_validate([json.loads(text)])[0]
@@ -54,8 +54,8 @@ def run_cli(
     plan: Annotated[
         str,
         typer.Argument(
-            help="Dotted module name under graphids.configs.plans "
-            "(e.g. 'supervised', 'ofat', 'ops.gat_taunorm_smoke'). "
+            help="Dotted module name under graphids.plan.plans "
+            "(e.g. 'supervised', 'ofat', 'smoke.gat_taunorm'). "
             "Calls module.build(dataset=..., seed=...).",
         ),
     ],
@@ -67,16 +67,16 @@ def run_cli(
 ) -> None:
     """Render a plan, validate, write the row array as JSON.
 
-    Imports ``graphids.configs.plans.<plan>`` and calls
+    Imports ``graphids.plan.plans.<plan>`` and calls
     ``build(dataset=..., seed=...)``. The blueprint is validated with
     Pydantic before serialization; render bugs surface here, not at
     SLURM submission.
     """
     import importlib
 
-    from graphids.graphids.config.blueprint import BlueprintArray
+    from graphids.plan.blueprint import BlueprintArray
 
-    mod = importlib.import_module(f"graphids.configs.plans.{plan}")
+    mod = importlib.import_module(f"graphids.plan.plans.{plan}")
     blueprint = BlueprintArray.model_validate(mod.build(dataset=dataset, seed=seed))
     out = blueprint.model_dump_json(indent=2) + "\n"
     if output is None:
@@ -88,10 +88,37 @@ def run_cli(
 
 @app.command("exec", rich_help_panel="Execution", no_args_is_help=True)
 def exec_cli(row: _RowOpt, ckpt_path: _CkptOpt = None) -> None:
-    """Execute one row in-process. Dispatches on ``row.action`` (fit | test | extract | analyze)."""
+    """Execute one row in-process. Dispatches on ``row.action`` (fit | test | extract | analyze | cache)."""
     from graphids.orchestrate import run_row
 
     run_row(_load_row(row), ckpt_path=ckpt_path)
+
+
+@app.command("cache", rich_help_panel="Execution", no_args_is_help=True)
+def cache_cli(
+    dataset: Annotated[str, typer.Option("--dataset", help="Dataset name (catalog key, e.g. hcrl_sa)")],
+    vocab_scope: Annotated[
+        str, typer.Option("--vocab-scope", help="train | all (cache partition)")
+    ] = "train",
+) -> None:
+    """Build the dataset cache for ``(dataset, vocab_scope)``. Idempotent.
+
+    Same body as a ``cache``-action row, runnable directly on a login node
+    (no SLURM ingest) for small datasets — or via ``graphids submit`` for
+    HCRL-scale builds.
+    """
+    from graphids.plan.blueprint import CacheRow, Resources
+    from graphids.orchestrate import cache
+
+    cache(
+        CacheRow(
+            name=f"cache_{dataset}_{vocab_scope}",
+            action="cache",
+            dataset=dataset,
+            vocab_scope=vocab_scope,  # type: ignore[arg-type]
+            resources=Resources(mode="cpu", length="short"),
+        )
+    )
 
 
 @app.command("submit", rich_help_panel="SLURM", no_args_is_help=True)

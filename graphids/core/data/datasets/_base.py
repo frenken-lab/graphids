@@ -24,7 +24,7 @@ from structlog import get_logger
 from torch_geometric.data import Data, InMemoryDataset
 
 from graphids._fs import atomic_save
-from graphids.config.constants import PREPROCESSING_VERSION
+from graphids.paths import PREPROCESSING_VERSION
 from graphids.core.data.preprocessing import scaler as scaler_mod
 from graphids.core.data.preprocessing.metadata import (
     load_metadata,
@@ -310,7 +310,7 @@ class BaseGraphSource:
     def resolved_lake_root(self) -> str:
         if self.lake_root:
             return self.lake_root
-        from graphids.config.catalog import lake_root
+        from graphids.paths import lake_root
 
         return lake_root()
 
@@ -330,7 +330,7 @@ class BaseGraphSource:
         )
 
     def build(self) -> DatasetState:
-        from graphids.config.catalog import cache_dir, data_dir, load_catalog
+        from graphids.paths import cache_dir, data_dir, load_catalog
 
         entry = load_catalog()[self.name]
         lake = self.resolved_lake_root()

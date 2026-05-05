@@ -31,7 +31,7 @@ from pathlib import Path
 from parsl.launchers import SrunLauncher
 from parsl.providers import SlurmProvider
 
-from graphids.graphids.config.configs.blueprint import Row, TrainRow
+from graphids.plan.blueprint import Row, TrainRow
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PROFILES = _REPO_ROOT / "configs" / "resources" / "submit_profiles.json"
@@ -59,7 +59,7 @@ def submit_row(
         raise RuntimeError("SLURM account unset — pass account= or set GRAPHIDS_SLURM_ACCOUNT")
     venv = venv_path or str(_REPO_ROOT / ".venv")
 
-    from graphids.config.catalog import lake_root
+    from graphids.paths import lake_root
 
     profile = dict(json.loads(_PROFILES.read_text())[row.resources.mode][cluster][length])
     delay = profile.pop("signal_delay_s", None)

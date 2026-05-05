@@ -17,7 +17,7 @@ import torch
 import torch.nn as nn
 from torch_geometric.nn import global_mean_pool
 
-from graphids.config.constants import ModelType
+from graphids.paths import ModelType
 
 from .._conv import InputEncoder, build_encoder_stack, conv_forward, resolve_edge_dim
 from .._detector import ScoreBasedDetectorMixin

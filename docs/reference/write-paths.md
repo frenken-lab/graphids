@@ -15,9 +15,9 @@
 
 ## Single Source of Truth
 
-`graphids/config/constants.py` declares write path constants. `graphids/config/settings.py` owns all `GRAPHIDS_*` env vars.
+`graphids/plan/constants.py` declares write path constants. `graphids/plan/settings.py` owns all `GRAPHIDS_*` env vars.
 
-Constants: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `PHASE_MARKERS` (all in `graphids/config/constants.py`). MLflow backend path (`mlflow.db`) and artifact subpath (`mlartifacts`) live in `graphids/_mlflow.py`.
+Constants: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `PHASE_MARKERS` (all in `graphids/plan/constants.py`). MLflow backend path (`mlflow.db`) and artifact subpath (`mlartifacts`) live in `graphids/_mlflow.py`.
 
 ## Filesystem Layout
 
@@ -27,7 +27,7 @@ Constants: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `PHASE_MARKERS` (all in `graphid
 |   +-- ablations/{group}/{variant}/
 |       +-- seed_{N}/                             <-- trainer.default_root_dir
 |           +-- checkpoints/
-|           |   +-- best_model.ckpt               <-- Sha256ModelCheckpoint (dirpath pinned in graphids/configs/compose.py:callbacks_base)
+|           |   +-- best_model.ckpt               <-- Sha256ModelCheckpoint (dirpath pinned in graphids/plan/compose.py:callbacks_base)
 |           |   +-- best_model.ckpt.sha256        <-- Sha256ModelCheckpoint (atomic_load reads on verify)
 |           |   +-- last.ckpt                     <-- Sha256ModelCheckpoint (save_last: true)
 |           |   +-- last.ckpt.sha256              <-- Sha256ModelCheckpoint
@@ -49,13 +49,13 @@ Constants: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `PHASE_MARKERS` (all in `graphid
 $TMPDIR/graphids-data/                           <-- per-job local SSD (ephemeral)
 ```
 
-Checkpoint dirpath is set in `graphids/configs/compose.py:callbacks_base` to `{run_dir}/checkpoints` (= `{trainer.default_root_dir}/checkpoints`). Without an explicit `dirpath`, Lightning's `pl.callbacks.ModelCheckpoint` writes under `default_root_dir/lightning_logs/version_N/checkpoints` — which the rest of graphids (resume, KD teacher loading) doesn't read; the explicit `dirpath` in the composer keeps the canonical location.
+Checkpoint dirpath is set in `graphids/plan/compose.py:callbacks_base` to `{run_dir}/checkpoints` (= `{trainer.default_root_dir}/checkpoints`). Without an explicit `dirpath`, Lightning's `pl.callbacks.ModelCheckpoint` writes under `default_root_dir/lightning_logs/version_N/checkpoints` — which the rest of graphids (resume, KD teacher loading) doesn't read; the explicit `dirpath` in the composer keeps the canonical location.
 
 ## Write Path Detail
 
 ### 1. Lightning Trainer
 
-All training writes land under `trainer.default_root_dir` from the rendered Python plan config (= `graphids.config.catalog.run_dir(...)`).
+All training writes land under `trainer.default_root_dir` from the rendered Python plan config (= `graphids.plan.catalog.run_dir(...)`).
 
 | What | Relative path | Who writes |
 |------|---------------|-----------|
@@ -123,9 +123,9 @@ python -m graphids exec --row '<row JSON>' [--ckpt-path X]
       test → _instantiate → trainer.test() → log_test_run → touch .test_complete
 
 # Per-checkpoint artifacts are an `analyze` blueprint row: author a plan
-# under graphids/configs/plans/ops/ whose build() emits one AnalyzeRow per
-# checkpoint, then run/exec/submit through the same chassis.
-python -m graphids run ops.analyze_<group> \
+# under graphids/plan/plans/{smoke,data}/ whose build() emits one AnalyzeRow
+# per checkpoint, then run/exec/submit through the same chassis.
+python -m graphids run smoke.analyze_<group> \
     --dataset <dataset> --seed <N> -o analyze.json
 jq -c '.[]' analyze.json | while read row; do
     python -m graphids exec --row "$row"   # or `submit --row "$row" --cluster ...`

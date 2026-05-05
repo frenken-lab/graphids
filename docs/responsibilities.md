@@ -1,19 +1,19 @@
 # Module Responsibilities
 
-**Plan modules** (`graphids/configs/plans/`) — Python files exposing
+**Plan modules** (`graphids/plan/plans/`) — Python files exposing
 `build(*, dataset: str, seed: int) -> list[dict]`. Each plan composes
 class-path specs + composers into rows that match the `BlueprintArray`
 schema.
 
-**Composer** (`graphids/configs/compose.py`) — single `compose(...)`
+**Composer** (`graphids/plan/compose.py`) — single `compose(...)`
 plus a thin `fusion(...)` wrapper. Takes bare `{class_path, init_args}`
 blocks (model, data, loss) and emits a frozen
-:class:`graphids.configs.row.RowSpec` whose `rendered` is a typed
-:class:`graphids.configs.blueprint.RenderedConfig` (Pydantic, frozen,
+:class:`graphids.plan.row.RowSpec` whose `rendered` is a typed
+:class:`graphids.plan.blueprint.RenderedConfig` (Pydantic, frozen,
 `extra="forbid"` — typo'd field at compose time raises
 `ValidationError`).
 
-**Lib** (`graphids/configs/lib.py`) — class-path string constants
+**Lib** (`graphids/plan/lib.py`) — class-path string constants
 (`GAT`, `VGAE`, `FOCAL`, …) + `spec(cls_path, **init_args)` helper +
 the four primitives that compose / validate (`can_bus` registry
 check, `graph_dm` conditional knobs, `fusion_dm` path derivation,
@@ -21,7 +21,7 @@ check, `graph_dm` conditional knobs, `fusion_dm` path derivation,
 primitives live with the model class itself (e.g. `GAT.__init__`'s
 `_SCALES` table), not duplicated here.
 
-**Pydantic / `BlueprintArray`** (`graphids/configs/blueprint.py`) —
+**Pydantic / `BlueprintArray`** (`graphids/plan/blueprint.py`) —
 validation gate. Each row is a discriminated union (`TrainRow` |
 `CmdRow` | `ExtractRow` | `AnalyzeRow`) with `extra="forbid"`.
 `TrainRow.rendered_config` is itself a typed `RenderedConfig`

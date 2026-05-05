@@ -1,6 +1,6 @@
 # Config Architecture
 
-> Python composition (`graphids/configs/`) → Pydantic validation
+> Python composition (`graphids/plan/`) → Pydantic validation
 > (`BlueprintArray`) → direct instantiation (`orchestrate._instantiate`).
 > For composer rules, env vars, path scheme, and observability wiring,
 > see `.claude/rules/config-system.md`.
@@ -16,14 +16,14 @@ was deleted. Don't reach for it. New plans are Python.
 python -m graphids run <plan> --dataset X --seed N [-o plan.json]
   -> __main__.py
   -> cli.commands:run_cli
-  -> importlib.import_module(f"graphids.configs.plans.{plan}")
+  -> importlib.import_module(f"graphids.plan.plans.{plan}")
   -> mod.build(dataset=X, seed=N)              # returns list[dict]
   -> BlueprintArray.model_validate(rendered)   # raises on schema drift
   -> sys.stdout / output file (JSON array)
 ```
 
-`<plan>` is a dotted module name under `graphids.configs.plans`
-(e.g. `unsupervised`, `ofat`, `ops.gat_taunorm_smoke`).
+`<plan>` is a dotted module name under `graphids.plan.plans`
+(e.g. `unsupervised`, `ofat`, `smoke.gat_taunorm`).
 
 ```
 python -m graphids exec --row '<row JSON>' [--ckpt-path X]
@@ -46,7 +46,7 @@ in `.claude/rules/single-submission-primitive.md`.
 ## 2. Composition layers
 
 ```
-graphids/configs/
+graphids/plan/
 ├── lib.py                # class-path string constants + spec(...) helper
 │                         # + composing primitives (can_bus, graph_dm,
 │                         #   fusion_dm, curriculum) + REWARD constant
@@ -62,7 +62,7 @@ graphids/configs/
     └── ops/              # one-shot ops plans (analyze / extract / smoke)
 ```
 
-Path math lives in `graphids/config/catalog.py` (separate `config`
+Path math lives in `graphids/plan/catalog.py` (separate `config`
 package — historical name, no shim). Composer + plans + lib import
 from there directly.
 
@@ -78,7 +78,7 @@ optional knobs), `fusion_dm` (`states_dir(...)` derivation), and
 `curriculum` (deepcopy + `reduction='none'` injection on the base loss).
 
 ```python
-from graphids.configs.lib import GAT, FOCAL, spec, can_bus, graph_dm
+from graphids.plan.lib import GAT, FOCAL, spec, can_bus, graph_dm
 
 spec(GAT, scale="large", dropout=0.3)
 graph_dm(source=can_bus(dataset="hcrl_sa", seed=42))
@@ -91,7 +91,7 @@ trainer_overrides, upstreams, ...)` returns a frozen `RowSpec` whose
 `rendered` is a typed `RenderedConfig` (Pydantic, frozen,
 `extra="forbid"`). The composer is the single site that:
 
-1. Computes `run_dir` via `graphids.config.catalog.run_dir(...)`.
+1. Computes `run_dir` via `graphids.plan.catalog.run_dir(...)`.
 2. Merges the optional `loss` block into `model.init_args.loss_fn`
    via an explicit `update` call — no deep-merge magic.
 3. Builds the universal callbacks trio (checkpoint, early_stopping,
@@ -122,7 +122,7 @@ over `dataset` / `seed` / `vgae_ckpt` since variants reference them.
 
 ## 3. Pydantic validation
 
-`graphids.configs.blueprint.BlueprintArray` is a `RootModel[list[Row]]`
+`graphids.plan.blueprint.BlueprintArray` is a `RootModel[list[Row]]`
 where `Row` is a discriminated union by `action`:
 
 | Action | Class | Notes |
@@ -165,7 +165,7 @@ shape with `class_path` instead of `_target_`.
 
 ## 5. Path scheme
 
-Path math lives in `graphids/config/catalog.py`. Plans + composer call
+Path math lives in `graphids/plan/catalog.py`. Plans + composer call
 `run_dir(dataset, group, variant, seed)` and `best_ckpt(...)` directly:
 
 ```
@@ -198,12 +198,12 @@ done
 
 ## 7. Adding a new plan
 
-1. Create `graphids/configs/plans/<name>.py` with
+1. Create `graphids/plan/plans/<name>.py` with
    `def build(*, dataset: str, seed: int) -> list[dict]`.
 2. Compose with `spec(...)` + composing primitives + `compose(...)`.
 3. Add a smoke entry in `tests/configs/test_plans_smoke.py::PLANS`.
 4. Done — `graphids run <name>` works immediately.
 
 If the plan needs new declarative state, add a field to the relevant
-row class in `graphids/configs/blueprint.py` (`extra="forbid"` will
+row class in `graphids/plan/blueprint.py` (`extra="forbid"` will
 reject unknown keys until you do).

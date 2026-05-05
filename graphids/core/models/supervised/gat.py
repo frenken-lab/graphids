@@ -23,7 +23,7 @@ from torch_geometric.nn import JumpingKnowledge, global_mean_pool
 from torch_geometric.nn.aggr import MultiAggregation
 from torch_geometric.utils import add_self_loops, remove_self_loops
 
-from graphids.config.constants import ModelType
+from graphids.paths import ModelType
 
 from .._conv import InputEncoder, _make_conv, conv_forward, resolve_edge_dim
 from ..base import GraphModuleBase, classification_test_metrics

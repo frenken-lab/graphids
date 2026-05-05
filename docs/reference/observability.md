@@ -32,7 +32,7 @@ Two stores: **MLflow** for run-level metadata + scalar metrics timeseries + devi
 | Layer | Tool | Where |
 |-------|------|-------|
 | Run metadata + scalar metrics | MLflow SQLite backend | `graphids/_mlflow.py` |
-| Per-epoch metrics | `MLflowTrainingCallback` | `graphids/configs/compose.py:callbacks_base.mlflow` |
+| Per-epoch metrics | `MLflowTrainingCallback` | `graphids/plan/compose.py:callbacks_base.mlflow` |
 | Device telemetry (GPU/CPU/mem) | MLflow system-metrics sampler (psutil + nvidia-ml-py) | `_mlflow.start_training_run` |
 | Structured logging | `_StructuredAdapter` -> `LoggingHandler` | `graphids/_otel.py` |
 | Traces + log events (per-run) | `traces.jsonl` via `ConsoleSpanExporter` | `{run_dir}/traces.jsonl` |
@@ -40,12 +40,12 @@ Two stores: **MLflow** for run-level metadata + scalar metrics timeseries + devi
 | Op-level profiling | PyTorchProfiler (chrome traces) | `python -m graphids submit --mode gpu --length short --command "python -m graphids profile"` |
 | SLURM job accounting | sacct summary + log rotation | `_epilog.sh` |
 | CUDA alloc config | `expandable_segments:True,garbage_collection_threshold:0.8` | `_preamble.sh` |
-| Mixed precision | `precision: 16-mixed` (default); fusion composer overrides to `32-true` (RL methods) | `graphids/configs/compose.py:trainer_base`; `graphids/configs/compose.py:fusion` (`_FUSION_TRAINER_OVERLAY`) |
+| Mixed precision | `precision: 16-mixed` (default); fusion composer overrides to `32-true` (RL methods) | `graphids/plan/compose.py:trainer_base`; `graphids/plan/compose.py:fusion` (`_FUSION_TRAINER_OVERLAY`) |
 | Gradient checkpointing | `use_reentrant=False` | `_conv.py` |
 
 ## MLflowTrainingCallback (`graphids/core/mlflow_callback.py`)
 
-Installed via `graphids.configs.compose:callbacks_base.mlflow`. Run lifecycle is owned by `_mlflow.start_training_run` (called from `orchestrate.run_row` before `trainer.fit`); this callback only writes into the active run.
+Installed via `graphids.plan.compose:callbacks_base.mlflow`. Run lifecycle is owned by `_mlflow.start_training_run` (called from `orchestrate.run_row` before `trainer.fit`); this callback only writes into the active run.
 
 - `on_train_epoch_end`: `mlflow.log_metrics({**trainer.callback_metrics, lr, early_stop.wait, early_stop.best_score}, step=current_epoch)` — passthrough, not a whitelist. The current model surface logs `train_loss`, `val_loss`; VGAE additionally logs per-component telemetry (`train_recon`, `train_canid`, `train_nbr`, `train_kl`) and per-class val splits (`val_loss_benign`, `val_loss_attack`); GAT/MLP/WAvg add `train_acc`/`val_acc`. Adding a `self.log(...)` call in any module flows to MLflow without callback changes.
 - `on_fit_end`: `log_final_fit(peak_vram_mb, epochs_run, best_ckpt_path, run_dir)` + `end_training_run("FINISHED")`

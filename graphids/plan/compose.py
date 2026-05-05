@@ -14,11 +14,11 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from graphids.config.catalog import best_ckpt
-from graphids.config.catalog import run_dir as _run_dir
-from graphids.graphids.config.blueprint import ClassPath, RenderedConfig, TrainerCfg
-from graphids.graphids.config.lib import fusion_dm
-from graphids.graphids.config.row import RowSpec
+from graphids.paths import best_ckpt
+from graphids.paths import run_dir as _run_dir
+from graphids.plan.blueprint import ClassPath, RenderedConfig, TrainerCfg
+from graphids.plan.lib import fusion_dm
+from graphids.plan.row import RowSpec
 
 
 def trainer_base() -> dict[str, Any]:

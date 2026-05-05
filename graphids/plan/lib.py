@@ -2,7 +2,7 @@
 
 Replaces the per-class primitive functions. Plans write::
 
-    from graphids.configs.lib import spec, GAT, FOCAL, graph_dm, can_bus
+    from graphids.plan.lib import spec, GAT, FOCAL, graph_dm, can_bus
     spec(GAT, scale="large", dropout=0.3)
     graph_dm(source=can_bus(dataset="hcrl_sa", seed=42))
 
@@ -22,8 +22,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from graphids.config.catalog import load_catalog
-from graphids.config.catalog import states_dir as _states_dir
+from graphids.paths import load_catalog
+from graphids.paths import states_dir as _states_dir
 
 # ---------------------------------------------------------------- class_paths
 

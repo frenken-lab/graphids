@@ -2,7 +2,7 @@
 
 Python-native composition + Pydantic validation + direct instantiation.
 `build(dataset, seed)` (a Python plan under
-`graphids/configs/plans/`) → `list[dict]` → `BlueprintArray.model_validate(...)`
+`graphids/plan/plans/`) → `list[dict]` → `BlueprintArray.model_validate(...)`
 → `graphids.orchestrate.run_row` (importlib `class_path` instantiation
 with signature-filtered kwargs).
 
@@ -15,15 +15,15 @@ The jsonnet layer (`gojsonnet` + `configs/*.libsonnet`) was deleted
 
 ## Composition rules
 
-- **Plans live at `graphids/configs/plans/<name>.py`** and expose
+- **Plans live at `graphids/plan/plans/<name>.py`** and expose
   `def build(*, dataset: str, seed: int) -> list[dict]`.
   `graphids run <name>` imports and calls.
-- **Composers** (`graphids/configs/compose/`) return a frozen
-  :class:`graphids.configs.row.RowSpec`. Its `rendered` field is a
+- **Composers** (`graphids/plan/compose/`) return a frozen
+  :class:`graphids.plan.row.RowSpec`. Its `rendered` field is a
   *locked* `ml_collections.ConfigDict` — `spec.rendered.trianer` (typo)
   raises with a "did you mean?" hint. Plan code must not mutate the
   rendered spec; build a new RowSpec or pass `trainer_overrides=`.
-- **Primitives** (`graphids/configs/primitives/`) return plain dicts of
+- **Primitives** (`graphids/plan/primitives/`) return plain dicts of
   the shape `{"<key>": {"class_path": ..., "init_args": ...}}`. The
   composer merges, locks, and emits.
 - **Loss fragments** are `{"loss_fn": {class_path, init_args}}` blocks
@@ -32,8 +32,8 @@ The jsonnet layer (`gojsonnet` + `configs/*.libsonnet`) was deleted
 
 ## Path layout
 
-Path math lives in `graphids/config/catalog.py` (legacy module name —
-re-exported from `graphids.configs.catalog`). Plans call
+Path math lives in `graphids/plan/catalog.py` (legacy module name —
+re-exported from `graphids.paths`). Plans call
 `run_dir(dataset, group, variant, seed)` and `best_ckpt(...)` directly;
 no native-callback bridge.
 
@@ -47,7 +47,7 @@ no native-callback bridge.
 
 Python `None` is a real value (e.g. `gradient_clip_val: None` for
 fusion's RL methods). Pydantic round-trips it as JSON `null` through the
-typed `RenderedConfig` (`graphids/configs/blueprint.py`). Don't replace
+typed `RenderedConfig` (`graphids/plan/blueprint.py`). Don't replace
 with sentinels.
 
 ## Environment variables

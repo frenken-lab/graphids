@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from graphids.config.catalog import best_ckpt, states_dir
-from graphids.graphids.config.compose import fusion
-from graphids.graphids.config.lib import BANDIT, DQN, MLP_FUSION, REWARD, WAVG_FUSION, spec
-from graphids.graphids.config.row import extract
+from graphids.paths import best_ckpt, states_dir
+from graphids.plan.compose import fusion
+from graphids.plan.lib import BANDIT, DQN, MLP_FUSION, REWARD, WAVG_FUSION, spec
+from graphids.plan.row import extract
 
 
 def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
