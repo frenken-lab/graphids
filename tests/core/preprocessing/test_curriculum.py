@@ -13,10 +13,8 @@ import pytest
 import torch
 from conftest import make_graph
 
-from graphids.core.data.preprocessing.curriculum import (
-    LinearRampSchedule,
-    score_random,
-)
+from graphids.core.data.preprocessing.curriculum import score_random
+from graphids.core.losses.curriculum import LinearRampSchedule
 
 
 def _mk_graphs(n=30):

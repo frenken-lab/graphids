@@ -26,8 +26,12 @@ honest — every callback now goes through `_instantiate` uniformly.
 
 ## `graphids.blueprint`
 
-`TrainRow` / `ExtractRow` / `BlueprintArray` — the validated row
-schema produced by `graphids run` and consumed by `graphids exec` /
-`graphids submit`. Single source of truth for what a stage needs.
+`TrainRow` / `ExtractRow` / `AnalyzeRow` / `CmdRow` / `BlueprintArray`
+— the validated row schema produced by `graphids run` and consumed by
+`graphids exec` / `graphids submit`. Single source of truth for what
+a stage needs. `AnalyzeRow` drives
+[`graphids.core.artifacts.Analyzer`](artifacts.md) directly — every
+field on the row is consumed by an entry in
+`graphids.core.artifacts.ARTIFACTS`.
 
 ::: graphids.blueprint

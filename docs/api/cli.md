@@ -11,7 +11,17 @@ for the architectural rule.
 | render | `graphids run <plan>`            | [`run`](#graphids.cli.run) |
 | exec   | `graphids exec --row <json>`     | [`exec`](#graphids.cli.exec) |
 | submit | `graphids submit --row <json>`   | [`submit`](#graphids.cli.submit) |
-| ops    | `graphids analyze` / `export` / `data` | [`analysis`](#graphids.cli.analysis), [`export`](#graphids.cli.export), [`data`](#graphids.cli.data) |
+
+There is no separate `ops` CLI surface. Ops jobs (per-checkpoint
+artifacts, fusion-feature extraction, ad-hoc shell) are blueprint
+actions — `analyze` / `extract` / `cmd` rows authored in a plan
+jsonnet and run/submitted through the same three commands.
+
+`exec` dispatches on `row.action` via
+[`graphids.orchestrate.run_row`](orchestrate.md#graphids.orchestrate.run_row):
+`fit` / `test` → train+eval; `extract` →
+fusion-feature cache build; `analyze` →
+[`graphids.core.artifacts.Analyzer`](artifacts.md).
 
 `app.py` owns the root Typer app + shared option types.
 `__main__.py` imports each submodule to register commands.

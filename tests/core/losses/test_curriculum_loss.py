@@ -12,8 +12,8 @@ import pytest
 import torch
 from torch_geometric.data import Batch, Data
 
-from graphids.core.data.preprocessing.curriculum import LinearRampSchedule
 from graphids.core.losses import CrossEntropyLoss, CurriculumWeightedLoss, FocalLoss
+from graphids.core.losses.curriculum import LinearRampSchedule
 
 
 def _mk_batch(difficulties: list[float], in_scope: list[bool], y_per_graph=None) -> Batch:

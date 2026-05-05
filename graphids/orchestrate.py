@@ -36,7 +36,7 @@ from mlflow.entities import LoggedModelInput
 
 from graphids._fs import atomic_load
 from graphids._mlflow import _find_logged_model_by_ckpt, identity_tags
-from graphids.blueprint import ExtractRow, Row, TrainRow
+from graphids.blueprint import AnalyzeRow, ExtractRow, Row, TrainRow
 from graphids.core.models.base import strip_orig_mod_prefix
 from graphids.runtime import setup
 
@@ -197,9 +197,19 @@ def extract(row: ExtractRow) -> None:
     )
 
 
+def analyze(row: AnalyzeRow) -> None:
+    """Run the per-checkpoint artifact pipeline on a single ckpt."""
+    from graphids.core.artifacts import Analyzer
+
+    Analyzer(row).run()
+
+
 def run_row(row: Row, *, ckpt_path: str | None = None) -> None:
     setup()
     if isinstance(row, ExtractRow):
         extract(row)
+        return
+    if isinstance(row, AnalyzeRow):
+        analyze(row)
         return
     {"fit": train, "test": evaluate}[row.action](row, ckpt_path=ckpt_path)

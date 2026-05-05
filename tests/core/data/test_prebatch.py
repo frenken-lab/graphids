@@ -1,92 +1,65 @@
-"""Pre-batching pipeline tests.
+"""Offline FFD packer — the live primitive backing the prebatch path.
 
-Tests the pre-batch path: NodeBudgetBatchSampler plans → Batch.from_data_list
-→ plain list of Batches → prebatched_loader.
+The prior live ``NodeBudgetBatchSampler`` was confirmed dead and removed in
+``graph_v2`` (see ``datamodule/sampler.py`` docstring). ``pack_offline`` is
+the surviving allocator. The dual node + edge budget is the load-bearing
+invariant per ``.claude/rules/critical-constraints.md`` — single-axis
+admission allowed edge-heavy OOMs.
 """
 
 from __future__ import annotations
 
+import pytest
 import torch
-from conftest import make_graph
-from torch_geometric.data import Batch
 
-from graphids.core.data.datamodule.graph import _prebatched_loader
-from graphids.core.data.datamodule.sampler import NodeBudgetBatchSampler
+from graphids.core.data.datamodule.sampler import pack_offline
 
 
-def _prebatch(graphs, budget):
-    """Helper: run sampler + collate, same logic as GraphDataModule."""
-    sizes = torch.tensor([g.num_nodes for g in graphs], dtype=torch.long)
-    sampler = NodeBudgetBatchSampler(
-        sizes,
-        max_num=budget,
-        shuffle=False,
-    )
-    plans = list(sampler)
-    return [Batch.from_data_list([graphs[i] for i in plan]) for plan in plans]
+def _sizes(seq: list[int]) -> torch.Tensor:
+    return torch.tensor(seq, dtype=torch.long)
 
 
-def _make_graphs(n_graphs=30, node_range=(4, 20)):
-    """Synthetic dataset with deterministic variable-size graphs."""
-    return [
-        make_graph(
-            num_nodes=node_range[0] + (i * 3) % (node_range[1] - node_range[0] + 1),
-            num_edges=(node_range[0] + (i * 3) % (node_range[1] - node_range[0] + 1)) * 2,
-        )
-        for i in range(n_graphs)
-    ]
+class TestPackOffline:
+    def test_all_graphs_placed_when_within_budget(self):
+        # INVARIANT: nothing dropped when every graph fits the node budget alone.
+        sizes = _sizes([4, 7, 5, 9, 3, 6])
+        bins = pack_offline(sizes, max_num=60)
+        placed = sorted(i for b in bins for i in b)
+        assert placed == list(range(len(sizes)))
 
+    def test_per_bin_node_budget_respected(self):
+        # INVARIANT: bin's node sum never exceeds max_num — the FFD invariant
+        # the packer is responsible for.
+        sizes = _sizes([4 + (i * 3) % 12 for i in range(50)])
+        bins = pack_offline(sizes, max_num=60)
+        for plan in bins:
+            assert int(sizes[plan].sum()) <= 60
 
-class TestPreBatch:
-    """Pre-batching correctness — graphs survive collation unchanged."""
+    def test_dual_budget_closes_on_either_axis(self):
+        # CONTRACT: when edge_sizes + max_edges supplied, a bin closes when
+        # adding a graph would exceed EITHER node OR edge budget. Regression
+        # against single-axis admission (edge-heavy OOMs — see
+        # critical-constraints.md).
+        sizes = _sizes([5] * 10)
+        edges = _sizes([200] * 10)  # tight on edges
+        bins = pack_offline(sizes, max_num=1000, edge_sizes=edges, max_edges=500)
+        for plan in bins:
+            assert int(sizes[plan].sum()) <= 1000
+            assert int(edges[plan].sum()) <= 500
 
-    def test_all_graphs_covered(self):
-        """INVARIANT: no graphs dropped when all fit within budget."""
-        graphs = _make_graphs(n_graphs=50, node_range=(4, 15))
-        batches = _prebatch(graphs, budget=60)  # max 15 < 60, all fit
+    def test_oversize_graph_skipped_not_raised(self):
+        # CONTRACT: a single graph that exceeds either budget is dropped with
+        # a logged warning; the rest still pack. Better than aborting an
+        # 8-hour fit because one graph is pathological.
+        sizes = _sizes([3, 100, 4])  # idx 1 oversize on nodes
+        bins = pack_offline(sizes, max_num=10)
+        placed = {i for b in bins for i in b}
+        assert placed == {0, 2}
 
-        total = sum(b.num_graphs for b in batches)
-        assert total == len(graphs), f"Pre-batched {total} graphs but dataset has {len(graphs)}"
-
-    def test_batches_respect_node_budget(self):
-        """INVARIANT: each batch has at most budget nodes."""
-        graphs = _make_graphs(n_graphs=50, node_range=(4, 15))
-        batches = _prebatch(graphs, budget=60)
-
-        for i, batch in enumerate(batches):
-            assert isinstance(batch, Batch)
-            assert batch.num_nodes <= 60, f"Batch {i} has {batch.num_nodes} nodes, budget is 60"
-
-    def test_node_features_preserved(self):
-        """INVARIANT: pre-batching preserves node feature values and order."""
-        graphs = _make_graphs(n_graphs=10, node_range=(5, 5))
-        batches = _prebatch(graphs, budget=25)
-
-        all_x_pre = torch.cat([b.x for b in batches], dim=0)
-        all_x_orig = torch.cat([g.x for g in graphs], dim=0)
-        assert all_x_pre.shape == all_x_orig.shape
-        assert torch.allclose(all_x_pre, all_x_orig)
-
-    def test_dataloader_yields_batches_directly(self):
-        """INVARIANT: prebatched_loader yields Batch objects, not nested."""
-        graphs = _make_graphs(n_graphs=20)
-        batches = _prebatch(graphs, budget=100)
-        loader = _prebatched_loader(batches, shuffle=False)
-
-        yielded = list(loader)
-        assert len(yielded) == len(batches)
-        assert all(isinstance(b, Batch) for b in yielded)
-
-    def test_shuffle_changes_batch_order(self):
-        """INVARIANT: shuffle=True permutes batch order across iterations."""
-        graphs = _make_graphs(n_graphs=60, node_range=(4, 10))
-        batches = _prebatch(graphs, budget=30)
-        loader = _prebatched_loader(batches, shuffle=True)
-
-        order_1 = [b.num_nodes for b in loader]
-        order_2 = [b.num_nodes for b in loader]
-
-        assert len(order_1) >= 5, "Need enough batches to test shuffle"
-        assert order_1 != order_2, "Two shuffled iterations produced identical order"
-
-
+    def test_invalid_budgets_rejected(self):
+        with pytest.raises(ValueError, match="max_num"):
+            pack_offline(_sizes([1, 2]), max_num=0)
+        with pytest.raises(ValueError, match="max_edges"):
+            pack_offline(_sizes([1, 2]), max_num=10, edge_sizes=_sizes([1, 2]))
+        with pytest.raises(ValueError, match="length"):
+            pack_offline(_sizes([1, 2, 3]), max_num=10, edge_sizes=_sizes([1, 2]), max_edges=10)

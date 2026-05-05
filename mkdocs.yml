@@ -127,6 +127,7 @@ nav:
       - Callbacks: api/callbacks.md
       - Data: api/data.md
       - Models: api/models.md
+      - Artifacts: api/artifacts.md
       - Config: api/config.md
       - SLURM: api/slurm.md
   - Decisions: decisions/README.md

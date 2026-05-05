@@ -3,6 +3,7 @@
 A blueprint is an ordered list of rows. Each row is one of:
     fit / test  → carries `rendered_config` + `upstreams` + `identity`
     extract     → one-shot fusion-feature extraction (idempotent on output_dir)
+    analyze     → per-checkpoint artifact generation (CKA / embeddings / …)
     cmd         → carries `command` only
 
 Validation is one call: `BlueprintArray.model_validate(rendered_array)`.
@@ -14,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, RootModel
+from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 
 
 class _StrictModel(BaseModel):
@@ -93,7 +94,68 @@ class ExtractRow(_StrictModel):
     val_fraction: float = 0.2
 
 
-Row = TrainRow | CmdRow | ExtractRow
+class AnalyzeRow(_StrictModel):
+    """Per-checkpoint artifact generation row.
+
+    Drives :class:`graphids.core.artifacts.Analyzer` directly — every field
+    here is consumed by an artifact in
+    :data:`graphids.core.artifacts.ARTIFACTS`. Add a new artifact ⇒ add one
+    row to that table; add new state ⇒ add one field here. The Analyzer's
+    constructor takes a row instance, not 30 kwargs.
+    """
+
+    name: str
+    action: Literal["analyze"]
+    resources: Resources
+
+    ckpt_path: str
+    dataset: str
+    model_type: Literal["vgae", "dgi", "gat", "fusion"]
+    output_dir: str
+    lake_root: str
+
+    embeddings: bool = True
+    attention: bool = False
+    cka: bool = False
+    landscape: bool = False
+    fusion_policy: bool = False
+
+    cka_teacher_ckpt: str = ""
+    cka_max_samples: int = 500
+
+    landscape_resolution: int = 51
+    landscape_scale: float = 1.0
+    landscape_max_graphs: int = 500
+
+    embedding_max_samples: int = 2000
+    attention_max_samples: int = 50
+
+    window_size: int = 100
+    stride: int = 100
+    batch_size: int = 256
+    seed: int = 42
+    vocab_scope: str = "train"
+
+    vgae_ckpt_path: str = ""
+    gat_ckpt_path: str = ""
+
+    @model_validator(mode="after")
+    def _validate_conditional_deps(self) -> AnalyzeRow:
+        if self.cka and not self.cka_teacher_ckpt:
+            raise ValueError("cka=true requires cka_teacher_ckpt")
+        if self.cka and self.model_type != "gat":
+            # CKA needs return_intermediate=True — only GATWithJK exposes it.
+            raise ValueError(
+                f"cka=true only supported for model_type='gat', got {self.model_type!r}"
+            )
+        if self.fusion_policy and not self.vgae_ckpt_path:
+            raise ValueError("fusion_policy=true requires vgae_ckpt_path")
+        if self.fusion_policy and not self.gat_ckpt_path:
+            raise ValueError("fusion_policy=true requires gat_ckpt_path")
+        return self
+
+
+Row = TrainRow | CmdRow | ExtractRow | AnalyzeRow
 
 
 class BlueprintArray(RootModel[list[Row]]):

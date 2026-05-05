@@ -76,7 +76,7 @@ def run_cli(
 
 @app.command("exec", rich_help_panel="Execution", no_args_is_help=True)
 def exec_cli(row: _RowOpt, ckpt_path: _CkptOpt = None) -> None:
-    """Execute one row in-process. Dispatches on ``row.action`` (fit | test | extract)."""
+    """Execute one row in-process. Dispatches on ``row.action`` (fit | test | extract | analyze)."""
     from graphids.orchestrate import run_row
 
     run_row(_load_row(row), ckpt_path=ckpt_path)

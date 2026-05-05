@@ -28,11 +28,12 @@ done
 python -m graphids submit --row "$row" --cluster cardinal \
     --depends-on-afterok 12345 --ckpt-path /path/to/upstream/best.ckpt
 
-# Analysis (auto-dispatches by ckpt class_path → model_type)
-python -m graphids analyze --ckpt-path path/to/checkpoints/best_model.ckpt --dataset hcrl_sa
-# Fusion models need upstream ckpts:
-python -m graphids analyze --ckpt-path fusion/checkpoints/best_model.ckpt --dataset hcrl_sa \
-    --vgae-ckpt vgae/checkpoints/best_model.ckpt --gat-ckpt gat/checkpoints/best_model.ckpt
+# Per-checkpoint artifacts (CKA / embeddings / loss landscape / fusion policy)
+# are an `analyze` blueprint action — author a plan under configs/plans/ops/
+# emitting one AnalyzeRow per checkpoint, then run/exec/submit like any row:
+python -m graphids run configs/plans/ops/analyze_gat.jsonnet \
+    --dataset hcrl_sa --seed 42 -o analyze.json
+jq -c '.[0]' analyze.json | xargs -I{} python -m graphids exec --row {}
 ```
 
 ## CLI Architecture
@@ -44,9 +45,9 @@ orchestrates multiple jobs.
 | Stage  | Command                                | Module                                   | What it does                                                                                           |
 | ------ | -------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | render | `graphids run <plan>`                  | `graphids/cli/run.py`                    | Renders plan jsonnet, validates as `BlueprintArray`, writes JSON to stdout.                            |
-| exec   | `graphids exec --row <json>`           | `graphids/cli/exec.py`                   | Executes one row in-process via `graphids.orchestrate.run_row`. Dispatches on `row.action` (fit/test). |
+| exec   | `graphids exec --row <json>`           | `graphids/cli/exec.py`                   | Executes one row in-process via `graphids.orchestrate.run_row`. Dispatches on `row.action` (fit/test/extract/analyze). |
 | submit | `graphids submit --row <json>`         | `graphids/cli/submit.py`                 | Submits one row to SLURM via Parsl `SlurmProvider`. Prints jid.                                        |
-| ops    | `graphids analyze` / `export` / `data` | `graphids/cli/{analysis,export,data}.py` | One-shot ops: ckpt analysis, HF push, cache rebuild.                                                   |
+| ops    | `analyze` / `cmd` / `extract` rows     | `configs/plans/ops/*.jsonnet`            | Ops are rows too — analyze ckpt, HF push, cache rebuild. Same run/exec/submit chassis.                 |
 
 `graphids/__main__.py` imports each submodule to register Typer commands.
 `app.py` owns the root app + shared option types.

@@ -128,7 +128,7 @@ trainer logger (MLflow callback handles metrics).
 | `config/catalog.py` | Dataset catalog (`load_catalog`, `dataset_names`), path helpers (`data_dir`, `cache_dir`) | No |
 | `orchestrate/config.py` | `ResolvedConfig`, `InstantiatedRun` | No |
 | `orchestrate/stage.py` | `build`, `train`, `evaluate` primitives | Yes |
-| `core/analysis/runner.py` | `run_single_analysis` — invoked by `graphids analyze` CLI | Yes |
+| `core/artifacts/analyzer.py` | `Analyzer(spec)` — invoked by `analyze` blueprint action via `orchestrate.analyze` | Yes |
 | `core/monitoring.py` | `SlurmResourceDetector` (OTel resource attrs) | No |
 | `core/mlflow_callback.py` | `MLflowTrainingCallback` (per-epoch metrics + finalize) | Yes |
 | `_mlflow.py` | `start_training_run`, `log_epoch_metrics`, `log_test_run`, lifecycle | Lazy |

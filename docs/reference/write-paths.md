@@ -28,7 +28,7 @@ Constants: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `PHASE_MARKERS` (all in `graphid
 |           |   +-- last.ckpt                     <-- Sha256ModelCheckpoint (save_last: true)
 |           |   +-- last.ckpt.sha256              <-- Sha256ModelCheckpoint
 |           +-- traces.jsonl                      <-- OTel spans (wire_file_exporters, SimpleSpanProcessor)
-|           +-- artifacts/                        <-- analysis outputs (written by `graphids analyze`, not the pipeline driver)
+|           +-- artifacts/                        <-- per-checkpoint artifact outputs (written by an `analyze` blueprint row)
 |           +-- .train_complete                   <-- phase marker (fit done; diagnostic only)
 |           +-- .test_complete                    <-- phase marker (test done; diagnostic only)
 |           +-- resolved.json                     <-- Pydantic-validated rendered config (cli/training._prepare)
@@ -79,7 +79,7 @@ existence, not these markers.
 |------|------|-----------|------|
 | Train phase marker | `{run_dir}/.train_complete` | `stage.py::train` after `trainer.fit` | `PHASE_MARKERS["train"]` |
 | Test phase marker | `{run_dir}/.test_complete` | `stage.py::evaluate` after `trainer.test` | `PHASE_MARKERS["test"]` |
-| Analysis artifacts | `{run_dir}/artifacts/` | `core/analysis/analyzer.py` via `python -m graphids analyze` (not pipeline) | `analyze.py` |
+| Analysis artifacts | `{run_dir}/artifacts/` | `core/artifacts/analyzer.py` via an `analyze` blueprint row (`orchestrate.analyze`) | `core/artifacts/` |
 
 ### 4. SLURM
 
@@ -123,9 +123,14 @@ python -m graphids fit --config <preset.jsonnet> --tla dataset=... --tla seed=..
 python -m graphids test --config <preset.jsonnet> --tla dataset=... --tla seed=...
 +- ... evaluate(...) -> trainer.test() -> touch .test_complete
 
-# Analysis is decoupled:
-python -m graphids analyze --ckpt-path <run_dir>/checkpoints/best_model.ckpt \
-    --dataset <dataset>
+# Per-checkpoint artifacts are an `analyze` blueprint row: author a plan
+# under configs/plans/ops/ that emits one AnalyzeRow per checkpoint, then
+# run/exec/submit through the same chassis.
+python -m graphids run configs/plans/ops/analyze_<group>.jsonnet \
+    --dataset <dataset> --seed <N> -o analyze.json
+jq -c '.[]' analyze.json | while read row; do
+    python -m graphids exec --row "$row"   # or `submit --row "$row" --cluster ...`
+done
 ```
 
 ## Env Var -> Path Mapping

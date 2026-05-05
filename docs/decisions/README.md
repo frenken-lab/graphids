@@ -11,7 +11,7 @@ Jsonnet replaced YAML chains for config composition; Hydra's defaults lists offe
 **0002 — Forced callbacks via explicit construction.**
 Stage configs that set `trainer.callbacks` silently dropped ModelCheckpoint/EarlyStopping (jsonnet list replacement). Critical callbacks now live in top-level namespaces (`checkpoint.*`, `early_stopping.*`) and are constructed by `instantiate._build_callbacks()`, immune to stage overrides.
 
-**0003 — Consolidate train/test/analyze into one SLURM job.** *(superseded 2026-04-15: pipeline deleted entirely — each ablation preset trains+evals in one job; analysis is a separate `graphids analyze` invocation.)*
+**0003 — Consolidate train/test/analyze into one SLURM job.** *(superseded 2026-04-15: pipeline deleted entirely — each ablation preset trains+evals in one job; analysis is a separate `analyze` blueprint row run through the same `run | exec | submit` chassis.)*
 Original context: separate SLURM jobs per phase caused analysis to run on CPU dagster workers and introduced process-boundary failures.
 
 **0004 — Keep custom VRAM probe, reject Lightning profilers.**
