@@ -81,4 +81,18 @@ See `.claude/rules/slurm-hpc.md`.
 Fusion uses a single `configs/models/fusion/` module that dispatches on
 the `fusion_method` TLA over the method libsonnets.
 
+## Lake-root data layout (current state, 2026-05-04)
+
+`/fs/ess/PAS1266/graphids/` contains only `dev/` (per-user run roots).
+No `raw/`, no `cache/`, no `mlflow.db`. Any training submission against
+`hcrl_sa` will die in `dataset.build()` →
+`vocab.scan_arb_ids("/fs/ess/PAS1266/graphids/raw/hcrl_sa/train_01_attack_free")`
+with `FileNotFoundError`. Restore the raw CSVs (or repoint the catalog)
+before submitting.
+
+Example failure (jid 47282855, ops.gat_taunorm_smoke): refactor paths
+all clean — Pydantic round-trip, `_ensure_runtime`, class-side
+`_SCALES`, `compose.callbacks_base` ran fine; failure was downstream
+data, not config.
+
 ## Rules (auto-loaded from `.claude/rules/`)
