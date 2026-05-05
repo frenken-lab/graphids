@@ -1,4 +1,4 @@
-"""OFAT (one-factor-at-a-time) plan — declarative axis sweeps.
+"""Supervised OFAT (one-factor-at-a-time) plan — declarative axis sweeps.
 
 The full ablation matrix lives in :data:`SWEEPS` (built inside
 ``build()`` so variants can close over ``dataset`` / ``seed`` / the
@@ -6,12 +6,8 @@ upstream VGAE checkpoint). Adding an ablation row = adding a dict
 entry; the row builder + emit loop don't change.
 
 Variant-key → fit/test row name is the variant key itself unless the
-entry carries an explicit ``"name"`` (used today for ``scaler/*`` and
-``id_encoding/*`` to avoid collisions with other axes).
-
-Subsumes the prior ``supervised`` / ``supervised_ablations`` plans —
-those were 1-row and 3-fit-only slices of this matrix. Reintroduce
-slicing later via a ``--variants`` CLI flag if needed.
+entry carries an explicit ``"name"`` (used today for ``id_encoding/*``
+to avoid collisions with other axes).
 """
 
 from __future__ import annotations
@@ -85,12 +81,6 @@ def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
                                   "upstreams": [{"role": "vgae",
                                                  "ckpt_path": vgae_ckpt,
                                                  "ckpt_tla": "vgae_ckpt_path"}]},
-        },
-        "scaler": {
-            "z_benign":      {"name": "scaler_z",      "loss": spec(FOCAL),
-                              "source_overrides": {"scaler_strategy": "z_benign"}},
-            "robust_benign": {"name": "scaler_robust", "loss": spec(FOCAL),
-                              "source_overrides": {"scaler_strategy": "robust_benign"}},
         },
         "id_encoding": {
             "lookup": {"name": "id_lookup", "loss": spec(FOCAL),

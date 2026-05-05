@@ -100,6 +100,18 @@ def submit_row(
     )
     provider.script_dir = str(script_dir)
 
+    # Auto-resolve test ckpt_path to the canonical fit output if caller didn't
+    # pass one — `{run_dir}/checkpoints/best_model.ckpt`. Without this, test
+    # rows submitted via `plans submit` run with random init and report garbage
+    # AUROCs. Path is deterministic from row meta, captured in the sbatch body
+    # at submit time → still drift-resistant per chassis-invariants.
+    if (
+        ckpt_path is None
+        and isinstance(row, TrainRow)
+        and row.action == "test"
+    ):
+        ckpt_path = f"{row.identity.run_dir}/checkpoints/best_model.ckpt"
+
     cmd_parts = ["python", "-m", "graphids", "exec", "--row", row.model_dump_json()]
     if ckpt_path:
         cmd_parts += ["--ckpt-path", ckpt_path]

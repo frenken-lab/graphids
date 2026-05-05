@@ -122,15 +122,19 @@ class UpstreamLineageCallback(Callback):
             )
 
 
-def _prepare(row: TrainRow, *, setup_stage: str) -> tuple[Any, Any, list, dict, torch.device]:
-    """Shared bootstrap: seed, build, dm.setup, prepare_from_datamodule."""
+def _prepare(row: TrainRow) -> tuple[Any, Any, list, dict, torch.device]:
+    """Shared bootstrap: seed, build, dm.setup, prepare_from_datamodule.
+
+    `dm.setup` is idempotent and stage-agnostic in this project (always
+    materializes train/val/test on first call), so we don't pass a stage.
+    """
     torch_geometric.seed_everything(row.meta.seed)
     model, dm, callbacks, kw = _build(row)
     device = torch.device(
         "cpu" if kw.get("accelerator") == "cpu"
         else "cuda" if torch.cuda.is_available() else "cpu"
     )
-    dm.setup(setup_stage)
+    dm.setup(None)
     model.prepare_from_datamodule(dm)
     return model, dm, callbacks, kw, device
 
@@ -155,7 +159,7 @@ def _trainer_kwargs(callbacks: list, row: TrainRow, kw: dict, phase: str) -> dic
 
 
 def train(row: TrainRow, *, ckpt_path: str | None = None) -> None:
-    model, dm, callbacks, kw, device = _prepare(row, setup_stage="fit")
+    model, dm, callbacks, kw, device = _prepare(row)
     model.to(device)  # before dataloader build — VRAM probe reads model.device
     if row.upstreams:
         callbacks.append(UpstreamLineageCallback(row))
@@ -165,18 +169,25 @@ def train(row: TrainRow, *, ckpt_path: str | None = None) -> None:
 
 
 def evaluate(row: TrainRow, *, ckpt_path: str | None = None) -> dict[str, float]:
-    model, dm, callbacks, kw, device = _prepare(row, setup_stage="test")
+    model, dm, callbacks, kw, device = _prepare(row)
 
     if ckpt_path:
         _load_state_into_model(ckpt_path, model)
 
     # VGAE/DGI calibration buffers (z-norm stats, SVDD center) refit at
-    # test-start from fit-phase data — not persisted in state_dict.
-    dm.setup("fit")
+    # test-start from fit-phase data — not persisted in state_dict. The dm
+    # already has train/val/test populated from _prepare.
     model.to(device)
+
+    # Build trainer BEFORE on_test_setup so the budget probe inside
+    # val_dataloader can reach `dm.trainer.lightning_module`. Lightning's
+    # public attach happens in trainer.test(); pre-wire manually.
+    trainer = pl.Trainer(**_trainer_kwargs(callbacks, row, kw, "test"))
+    dm.trainer = trainer
+    trainer.strategy.connect(model)
+
     model.on_test_setup(dm, device)
 
-    trainer = pl.Trainer(**_trainer_kwargs(callbacks, row, kw, "test"))
     # ckpt_path NOT passed — already restored above so calibration saw
     # trained weights. Lightning's ckpt-load would happen too late.
     trainer.test(model, datamodule=dm)

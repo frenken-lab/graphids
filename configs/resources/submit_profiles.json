@@ -15,16 +15,16 @@
   },
   "cpu": {
     "pitzer": {
-      "short": {"partition": "debug-cpu", "cores_per_node": 8, "mem_per_node": 16, "walltime": "01:00:00"},
-      "long":  {"partition": "cpu",       "cores_per_node": 8, "mem_per_node": 16, "walltime": "04:00:00"}
+      "short": {"partition": "debug-cpu", "cores_per_node": 16, "mem_per_node": 64, "walltime": "01:00:00"},
+      "long":  {"partition": "cpu",       "cores_per_node": 16, "mem_per_node": 64, "walltime": "04:00:00"}
     },
     "cardinal": {
-      "short": {"partition": "debug", "cores_per_node": 8, "mem_per_node": 16, "walltime": "01:00:00"},
-      "long":  {"partition": "cpu",   "cores_per_node": 8, "mem_per_node": 16, "walltime": "03:00:00"}
+      "short": {"partition": "debug", "cores_per_node": 16, "mem_per_node": 64, "walltime": "01:00:00"},
+      "long":  {"partition": "cpu",   "cores_per_node": 16, "mem_per_node": 64, "walltime": "03:00:00"}
     },
     "ascend": {
-      "short": {"partition": "debug", "cores_per_node": 8, "mem_per_node": 16, "walltime": "01:00:00"},
-      "long":  {"partition": "cpu",   "cores_per_node": 8, "mem_per_node": 16, "walltime": "04:00:00"}
+      "short": {"partition": "debug", "cores_per_node": 16, "mem_per_node": 64, "walltime": "01:00:00"},
+      "long":  {"partition": "cpu",   "cores_per_node": 16, "mem_per_node": 64, "walltime": "04:00:00"}
     }
   }
 }

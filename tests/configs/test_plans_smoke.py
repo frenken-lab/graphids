@@ -25,7 +25,7 @@ import graphids.cli.plans  # noqa: F401
 PLANS = [
     "ablations.unsupervised",
     "ablations.fusion",
-    "ablations.ofat",
+    "ablations.supervised",
     "smoke.gat_taunorm",
     "data.rebuild_cache",
 ]
@@ -50,7 +50,7 @@ def env_roots(tmp_path_factory):
 @pytest.mark.parametrize("plan_name", PLANS)
 def test_plan_builds(plan_name: str, env_roots):
     """``build(dataset, seed)`` returns rows that pass ``Plan`` validation."""
-    from graphids.cli.commands import mint_plan_id
+    from graphids.plan.identity import mint_plan_id
     from graphids.plan.schema import Plan
 
     mod = importlib.import_module(f"graphids.plan.plans.{plan_name}")
@@ -109,7 +109,7 @@ def test_identity_tags_carry_reproduction_contract(env_roots):
     are the inputs to that command. Missing one breaks reproduction silently.
     """
     from graphids._mlflow import identity_tags
-    from graphids.cli.commands import mint_plan_id
+    from graphids.plan.identity import mint_plan_id
     from graphids.plan.schema import Plan
 
     mod = importlib.import_module("graphids.plan.plans.smoke.gat_taunorm")

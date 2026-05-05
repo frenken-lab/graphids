@@ -1,63 +1,21 @@
-"""Four-step chassis: ``run`` → ``exec`` → ``submit`` (+ stdin / stdout pipe).
+"""Four-step chassis: ``run`` → ``exec`` → ``submit`` (+ ``cache`` shortcut).
 
 Each command is a thin Typer wrapper over one library call. Pipelines walk
 the rendered JSON externally (``jq -c '.rows[]' plan.json | while read row``) —
 renders are pure JSON per ``chassis-invariants.md``; the multi-row
-verb ``plans submit`` exists in ``cli/plans.py``.
-
-Usage:
-    graphids run supervised --dataset hcrl_sa --seed 42 -o plan.json
-    jq -c '.rows[]' plan.json | while read row; do
-        graphids submit --row "$row" --cluster pitzer
-    done
+verb ``plans submit`` exists in ``cli/plans/submit.py``.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import sys
-import time
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
 from graphids.cli.app import app
-
-
-def _git_sha() -> str:
-    """Short git SHA of the working tree, or ``"unknown"`` outside a repo / on
-    a corrupt checkout. Stamped onto fit/test rows at render time so MLflow
-    runs carry the reproduction-contract SHA (`git checkout <sha> && graphids
-    run <module> --filter <name>` regenerates the exact rendered config).
-    """
-    import subprocess
-
-    try:
-        out = subprocess.run(
-            ["git", "rev-parse", "--short=12", "HEAD"],
-            capture_output=True, text=True, check=True, cwd=Path(__file__).resolve().parent,
-        )
-        return out.stdout.strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return "unknown"
-
-
-def mint_plan_id() -> str:
-    """RFC 9562 UUIDv7 — 48-bit ms timestamp + 4-bit version + 74 bits random.
-
-    Lex-sortable == temporally-sortable, so ``ls plan_*.json | sort`` and
-    MLflow tag ranges over ``graphids.plan_id`` are temporally ordered.
-    """
-    ts_ms = int(time.time() * 1000)
-    rand = int.from_bytes(os.urandom(10), "big")
-    rand_a = (rand >> 64) & 0xFFF
-    rand_b = rand & ((1 << 62) - 1)
-    val = (ts_ms << 80) | (0x7 << 76) | (rand_a << 64) | (0b10 << 62) | rand_b
-    h = f"{val:032x}"
-    return f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}"
 
 # ── Typer option aliases (collapse the Annotated[T, typer.Option(...)] ladder) ──
 _RowOpt = Annotated[
@@ -101,9 +59,6 @@ _DepAny = Annotated[
 def _resolve_row(row: str | None, plan_file: Path | None, row_name: str | None):
     """Pick one row from either inline JSON (``--row``) or a plan file
     (``--plan`` + ``--row-name``). Validates as discriminated-union ``Row``.
-
-    Single-row contract — exactly one path; submit/exec still operates on
-    one row, the rule is not violated.
     """
     from pydantic import TypeAdapter
 
@@ -145,8 +100,8 @@ def run_cli(
             "Calls module.build(dataset=..., seed=...).",
         ),
     ],
-    dataset: Annotated[str, typer.Option("--dataset", help="Dataset (e.g. hcrl_sa)")],
-    seed: Annotated[int, typer.Option("--seed", help="Random seed")],
+    dataset: Annotated[str, typer.Option("--dataset", "-d", help="Dataset (e.g. hcrl_sa)")],
+    seed: Annotated[int, typer.Option("--seed", "-s", help="Random seed")],
     output: Annotated[
         Path | None, typer.Option("--output", "-o", help="Write JSON to file (default: stdout).")
     ] = None,
@@ -160,51 +115,21 @@ def run_cli(
         ),
     ] = None,
 ) -> None:
-    """Render a plan, validate, write the ``Plan`` JSON object.
+    """Render a plan, validate, write the ``Plan`` JSON object."""
+    from graphids.plan.render import render_plan
 
-    Imports ``graphids.plan.plans.<plan>`` and calls
-    ``build(dataset=..., seed=...)``. Mints a fresh ``plan_id`` (uuid7)
-    and threads it onto every row. Output JSON shape:
-    ``{plan_id, plan_module, plan_args, created_at, rows: [...]}``.
+    try:
+        plan_obj = render_plan(plan, dataset=dataset, seed=seed, filter_glob=filter_glob)
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from e
 
-    Render bugs surface here, not at SLURM submission.
-    """
-    import fnmatch
-    import importlib
-
-    from graphids.plan.schema import Plan
-
-    mod = importlib.import_module(f"graphids.plan.plans.{plan}")
-    rows = mod.build(dataset=dataset, seed=seed)
-    if filter_glob is not None:
-        kept = [r for r in rows if fnmatch.fnmatchcase(r["name"], filter_glob)]
-        if not kept:
-            names = ", ".join(r["name"] for r in rows)
-            raise typer.BadParameter(
-                f"--filter {filter_glob!r} matched 0/{len(rows)} rows. Available: {names}"
-            )
-        rows = kept
-    plan_id = mint_plan_id()
-    git_sha = _git_sha()
-    for r in rows:
-        r["plan_id"] = plan_id
-        if r.get("action") in {"fit", "test"}:
-            r["plan_module"] = plan
-            r["git_sha"] = git_sha
-    plan_obj = Plan.model_validate({
-        "plan_id": plan_id,
-        "plan_module": plan,
-        "plan_args": {"dataset": dataset, "seed": seed},
-        "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
-        "rows": rows,
-    })
     out = plan_obj.model_dump_json(indent=2) + "\n"
     if output is None:
         sys.stdout.write(out)
     else:
         output.write_text(out)
         print(
-            f"wrote {len(plan_obj)} rows (plan_id={plan_id}) to {output}",
+            f"wrote {len(plan_obj)} rows (plan_id={plan_obj.plan_id}) to {output}",
             file=sys.stderr,
         )
 
@@ -216,11 +141,7 @@ def exec_cli(
     row_name: _RowNameOpt = None,
     ckpt_path: _CkptOpt = None,
 ) -> None:
-    """Execute one row in-process. Dispatches on ``row.action`` (fit | test | extract | analyze | cache).
-
-    Specify the row via either ``--row '<json>'`` (or ``--row -`` for stdin)
-    or ``--plan plan.json --row-name NAME``. Single-row only.
-    """
+    """Execute one row in-process. Dispatches on ``row.action`` (fit | test | extract | analyze | cache)."""
     from graphids.orchestrate import run_row
 
     run_row(_resolve_row(row, plan, row_name), ckpt_path=ckpt_path)
@@ -233,14 +154,10 @@ def cache_cli(
         str, typer.Option("--vocab-scope", help="train | all (cache partition)")
     ] = "train",
 ) -> None:
-    """Build the dataset cache for ``(dataset, vocab_scope)``. Idempotent.
-
-    Same body as a ``cache``-action row, runnable directly on a login node
-    (no SLURM ingest) for small datasets — or via ``graphids submit`` for
-    HCRL-scale builds.
-    """
-    from graphids.plan.schema import CacheRow, Resources
+    """Build the dataset cache for ``(dataset, vocab_scope)``. Idempotent."""
     from graphids.orchestrate import cache
+    from graphids.plan.identity import mint_plan_id
+    from graphids.plan.schema import CacheRow, Resources
 
     cache(
         CacheRow(
@@ -265,12 +182,7 @@ def submit_cli(
     depends_on_afterok: _DepOk = None,
     depends_on_afterany: _DepAny = None,
 ) -> None:
-    """Submit one row to SLURM via Parsl SlurmProvider. Prints jid on stdout.
-
-    Specify the row via either ``--row '<json>'`` or
-    ``--plan plan.json --row-name NAME``. For bulk submission, see
-    ``graphids plans submit --plan FILE --cluster X``.
-    """
+    """Submit one row to SLURM via Parsl SlurmProvider. Prints jid on stdout."""
     from graphids.slurm.submit import submit_row
 
     jid = submit_row(

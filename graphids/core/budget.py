@@ -26,6 +26,7 @@ Public surface matches ``budget.py``: ``BudgetResult``, ``node_budget``,
 
 from __future__ import annotations
 
+import contextlib
 import math
 import os
 from dataclasses import dataclass
@@ -71,6 +72,25 @@ def _loss(out):
     return out
 
 
+@contextlib.contextmanager
+def _silent_log(model):
+    """Silence ``self.log(...)`` calls during the probe so warmup + profileit
+    backward passes don't pollute MLflow with non-training metric points.
+    Restores the original method on exit. Probe never calls ``optimizer.step()``,
+    so model weights are unchanged after probe even though grads are computed.
+    """
+    sentinel = object()
+    orig = model.__dict__.get("log", sentinel)
+    model.log = lambda *a, **k: None
+    try:
+        yield
+    finally:
+        if orig is sentinel:
+            del model.log
+        else:
+            model.log = orig
+
+
 def probe(
     model,
     train_dataset,
@@ -86,33 +106,37 @@ def probe(
         raise RuntimeError("budget probe requires CUDA + model + train_dataset")
 
     dev = model.device
-    step_fn = getattr(model, "_step", None) or model
+    # `forward()` returns architecture outputs (logits / latents / tuples), not
+    # a scalar loss — backward fails. Use `_step` if defined; otherwise route
+    # through `training_step` which returns a scalar loss for every model.
+    step_fn = getattr(model, "_step", None) or (lambda b: model.training_step(b, 0))
     batch = collect_batch(train_dataset, probe_nodes).clone().to(dev)
     V, E = int(batch.num_nodes), int(batch.num_edges)
 
     was_training = model.training
     model.train()
-    for _ in range(3):
-        _loss(step_fn(batch)).backward()
-        model.zero_grad(set_to_none=True)
-    torch.cuda.synchronize(dev)
+    with _silent_log(model):
+        for _ in range(3):
+            _loss(step_fn(batch)).backward()
+            model.zero_grad(set_to_none=True)
+        torch.cuda.synchronize(dev)
 
-    baseline = torch.cuda.memory_allocated(dev)
+        baseline = torch.cuda.memory_allocated(dev)
 
-    @profileit(device=dev.index if dev.index is not None else 0)
-    def _fwd():
-        with torch.no_grad():
-            _loss(step_fn(batch))
+        @profileit(device=dev.index if dev.index is not None else 0)
+        def _fwd():
+            with torch.no_grad():
+                _loss(step_fn(batch))
 
-    @profileit(device=dev.index if dev.index is not None else 0)
-    def _fwd_bwd():
-        _loss(step_fn(batch)).backward()
-        model.zero_grad(set_to_none=True)
+        @profileit(device=dev.index if dev.index is not None else 0)
+        def _fwd_bwd():
+            _loss(step_fn(batch)).backward()
+            model.zero_grad(set_to_none=True)
 
-    model.eval()
-    _, fwd_stats = _fwd()
-    model.train()
-    _, bwd_stats = _fwd_bwd()
+        model.eval()
+        _, fwd_stats = _fwd()
+        model.train()
+        _, bwd_stats = _fwd_bwd()
     model.train(was_training)
 
     peak = int(bwd_stats.max_allocated_gpu * _MB)

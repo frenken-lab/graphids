@@ -156,10 +156,13 @@ class GraphDataModule(pl.LightningDataModule):
         model = self.trainer.lightning_module if self.trainer is not None else None
         if torch.cuda.is_available() and model is None:
             raise RuntimeError("budget probe needs trainer + lightning_module")
+        # Probe on the same view training will iterate (label_filter='benign'
+        # for VGAE) so peak-VRAM estimate matches the actual workload.
+        view = self._train_view()
         self._budget = (
-            model.compute_budget(self._train, self.source.name)
+            model.compute_budget(view, self.source.name)
             if model is not None
-            else node_budget(self.source.name, train_dataset=self._train)
+            else node_budget(self.source.name, train_dataset=view)
         )
         return self._budget
 
