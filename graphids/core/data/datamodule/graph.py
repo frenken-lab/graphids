@@ -92,10 +92,15 @@ class GraphDataModule(pl.LightningDataModule):
         if self.label_filter is not None:
             raise ValueError("label_filter and difficulty are mutually exclusive")
         spec = self.difficulty
-        mod, _, fn = spec["class_path"].rpartition(".")
-        score_fn = getattr(importlib.import_module(mod), fn)
-        graphs = list(self._train)
-        scores = score_fn(graphs, **spec.get("init_args", {}))
+        if callable(spec):
+            score_fn = spec
+            graphs = list(self._train)
+            scores = score_fn(graphs)
+        else:
+            mod, _, fn = spec["class_path"].rpartition(".")
+            score_fn = getattr(importlib.import_module(mod), fn)
+            graphs = list(self._train)
+            scores = score_fn(graphs, **spec.get("init_args", {}))
         if not isinstance(scores, torch.Tensor):
             scores = torch.tensor(scores, dtype=torch.float)
         if scores.numel() != len(graphs):
@@ -160,7 +165,9 @@ class GraphDataModule(pl.LightningDataModule):
             raise RuntimeError("budget probe needs trainer + lightning_module")
         # Probe on the same view training will iterate (label_filter='benign'
         # for VGAE) so peak-VRAM estimate matches the actual workload.
-        view = self._train_view()
+        # Use difficulty-annotated graphs for the probe when curriculum is active;
+        # _train_view() returns the raw dataset without difficulty attached.
+        view = self._train_graphs if self._train_graphs is not None else self._train_view()
         min_steps = self.min_steps_per_epoch if self.min_steps_per_epoch > 1 else None
         self._budget = (
             model.compute_budget(view, self.source.name, min_steps=min_steps)

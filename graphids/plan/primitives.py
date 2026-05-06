@@ -28,30 +28,30 @@ from graphids.paths import states_dir as _states_dir
 # ---------------------------------------------------------------- class_paths
 
 # Models
-GAT          = "graphids.core.models.supervised.gat.GAT"
-VGAE         = "graphids.core.models.autoencoder.vgae.VGAE"
-DGI          = "graphids.core.models.autoencoder.dgi.DGI"
-BANDIT       = "graphids.core.models.fusion.bandit.BanditFusionModule"
-DQN          = "graphids.core.models.fusion.dqn.DQNFusionModule"
-MLP_FUSION   = "graphids.core.models.fusion.mlp.MLPFusionModule"
-WAVG_FUSION  = "graphids.core.models.fusion.weighted_avg.WeightedAvgModule"
+GAT = "graphids.core.models.supervised.gat.GAT"
+VGAE = "graphids.core.models.autoencoder.vgae.VGAE"
+DGI = "graphids.core.models.autoencoder.dgi.DGI"
+BANDIT = "graphids.core.models.fusion.bandit.BanditFusionModule"
+DQN = "graphids.core.models.fusion.dqn.DQNFusionModule"
+MLP_FUSION = "graphids.core.models.fusion.mlp.MLPFusionModule"
+WAVG_FUSION = "graphids.core.models.fusion.weighted_avg.WeightedAvgModule"
 
 # Losses
-FOCAL        = "graphids.core.losses.FocalLoss"
-CE           = "graphids.core.losses.CrossEntropyLoss"
-WEIGHTED_CE  = "graphids.core.losses.WeightedCrossEntropyLoss"
-VGAE_TASK    = "graphids.core.losses.VGAETaskLoss"
+FOCAL = "graphids.core.losses.FocalLoss"
+CE = "graphids.core.losses.CrossEntropyLoss"
+WEIGHTED_CE = "graphids.core.losses.WeightedCrossEntropyLoss"
+VGAE_TASK = "graphids.core.losses.VGAETaskLoss"
 CURRICULUM_LOSS = "graphids.core.losses.CurriculumWeightedLoss"
-LINEAR_RAMP  = "graphids.core.data.preprocessing.curriculum.LinearRampSchedule"
+LINEAR_RAMP = "graphids.core.curriculum.LinearRampSchedule"
 
 # Difficulty scorers
-SCORE_RANDOM = "graphids.core.data.preprocessing.curriculum.score_random"
-SCORE_VGAE   = "graphids.core.data.preprocessing.curriculum.score_vgae"
+SCORE_RANDOM = "graphids.core.data.preprocessing.curriculum.ScoreRandom"
+SCORE_VGAE = "graphids.core.data.preprocessing.curriculum.ScoreVGAE"
 
 # Data sources / datamodules
-CAN_BUS      = "graphids.core.data.datasets.can_bus.CANBusSource"
-GRAPH_DM     = "graphids.core.data.datamodule.GraphDataModule"
-FUSION_DM    = "graphids.core.data.datamodule.fusion.FusionDataModule"
+CAN_BUS = "graphids.core.data.datasets.can_bus.CANBusSource"
+GRAPH_DM = "graphids.core.data.datamodule.GraphDataModule"
+FUSION_DM = "graphids.core.data.datamodule.fusion.FusionDataModule"
 
 # Fusion reward shaping — methodological constant shared by bandit + dqn.
 # Not an ablation axis; if you need to override, do it inline at the call site
@@ -70,12 +70,14 @@ REWARD: dict[str, Any] = {
 
 # ------------------------------------------------------------------ spec helper
 
+
 def spec(cls_path: str, **init_args: Any) -> dict[str, Any]:
     """Build a ``{class_path, init_args}`` block. Defaults live with the class."""
     return {"class_path": cls_path, "init_args": init_args}
 
 
 # ------------------------------------------------------------ composing primitives
+
 
 def can_bus(*, dataset: str, seed: int, **overrides: Any) -> dict[str, Any]:
     """``CANBusSource`` block with registry validation.
@@ -84,9 +86,7 @@ def can_bus(*, dataset: str, seed: int, **overrides: Any) -> dict[str, Any]:
     """
     registry = load_catalog()
     if dataset not in registry:
-        raise ValueError(
-            f"unknown dataset: {dataset} (registry: {', '.join(sorted(registry))})"
-        )
+        raise ValueError(f"unknown dataset: {dataset} (registry: {', '.join(sorted(registry))})")
     init_args: dict[str, Any] = {
         "name": dataset,
         "seed": seed,
@@ -139,9 +139,7 @@ def fusion_dm(
     }
 
 
-def curriculum(
-    base: dict[str, Any], schedule: dict[str, Any] | None = None
-) -> dict[str, Any]:
+def curriculum(base: dict[str, Any], schedule: dict[str, Any] | None = None) -> dict[str, Any]:
     """Wrap ``base`` (a bare ``{class_path, init_args}`` block) in a curriculum loss.
 
     Forces ``reduction='none'`` on the base so the wrapper can apply

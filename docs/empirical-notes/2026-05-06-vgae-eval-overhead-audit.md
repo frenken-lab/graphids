@@ -21,6 +21,7 @@ O(N) on-device, fused with the already-present sum scatter. No concern at any sc
 ### 2. `tam_affinity` + `rayleigh_quotient` in `validation_step` — negligible
 
 Both are O(E) or O(E × d) scatter kernels:
+
 - `tam_affinity`: `cosine_similarity(z[src], z[dst])` + `scatter(sim, src, reduce="mean")` — one fused kernel per edge.
 - `rayleigh_quotient`: `(x[src] - x[dst]).pow(2).sum(dim=-1)` + two scatters (numerator, denominator) — operates on raw `batch.x`, no encode pass.
 
@@ -29,6 +30,7 @@ Not a concern at any realistic batch size.
 ### 3. `torch.quantile` × 4-8 per validation batch — low-medium on `set_02+`
 
 `validation_step` (`vgae.py:427-443`) calls `torch.quantile` up to 8 times per batch:
+
 - p50/p95/p99 over masked benign nodes → recon histogram (3 calls)
 - p50/p95/p99 over masked attack nodes → recon histogram (3 calls, if attacks present)
 - Same pattern over all-node affinity per class (2 more)
@@ -53,6 +55,7 @@ z, kl_per_node, mu = self.encode(batch.x, ...)
 ```
 
 `_score` is called from:
+
 - `score()` — every `test_step` batch
 - `extract_features()` — fusion feature extraction
 - `_fit_score_norm`'s second val_loader pass (calibration)
@@ -130,12 +133,12 @@ finally:
 
 `tests/core/models/test_vgae.py` has no tests for:
 
-| Path | What's missing |
-|---|---|
-| `validation_step` | No invariant test for the per-class histogram or discrimination-gap logging |
-| `_score` | No test for the 7-tuple return or that recon/affinity/rq are finite and shaped `[G]` |
-| `score()` | No test — the `score_norm_fitted` guard and the max-σ aggregation are untested |
-| `on_test_setup` / `_fit_score_norm` | No test for calibration with benign-only batches |
+| Path                                | What's missing                                                                       |
+| ----------------------------------- | ------------------------------------------------------------------------------------ |
+| `validation_step`                   | No invariant test for the per-class histogram or discrimination-gap logging          |
+| `_score`                            | No test for the 7-tuple return or that recon/affinity/rq are finite and shaped `[G]` |
+| `score()`                           | No test — the `score_norm_fitted` guard and the max-σ aggregation are untested       |
+| `on_test_setup` / `_fit_score_norm` | No test for calibration with benign-only batches                                     |
 
 Existing tests (`test_tam_affinity_shape`, `test_rayleigh_quotient_per_graph`) cover
 the primitives correctly. The integration path through `validation_step` and `score()`
@@ -149,14 +152,14 @@ aggregation would not be caught by the test suite.
 
 ## Summary
 
-| Issue | Severity | Datasets affected | Status |
-|---|---|---|---|
-| Double encode in `_score` (2× encoder per test step) | Medium | All, worst on `set_04` | Known; structurally necessary for calibration consistency |
-| `torch.quantile` × 4-8 per val batch | Low-medium | `set_02+` only | Acceptable; revisit if profiling shows >5% val overhead |
-| `tam_affinity` / `rq` / `recon_max` | Negligible | — | No action needed |
-| Z inconsistency: val monitoring (masked) vs. test scoring (unmasked) | Low | Dashboard only | Documented; not a scoring bug |
-| `_fit_score_norm` no exception-path training-state restore | Low | Calibration failures | **Fixed** `4851640` |
-| Zero tests for `validation_step`, `_score`, `score()`, calibration | Medium | Regression safety | **Partial** — `_score` + `score()` guard added `4851640`; `validation_step` + calibration still open |
+| Issue                                                                | Severity   | Datasets affected      | Status                                                                                               |
+| -------------------------------------------------------------------- | ---------- | ---------------------- | ---------------------------------------------------------------------------------------------------- |
+| Double encode in `_score` (2× encoder per test step)                 | Medium     | All, worst on `set_04` | Known; structurally necessary for calibration consistency                                            |
+| `torch.quantile` × 4-8 per val batch                                 | Low-medium | `set_02+` only         | Acceptable; revisit if profiling shows >5% val overhead                                              |
+| `tam_affinity` / `rq` / `recon_max`                                  | Negligible | —                      | No action needed                                                                                     |
+| Z inconsistency: val monitoring (masked) vs. test scoring (unmasked) | Low        | Dashboard only         | Documented; not a scoring bug                                                                        |
+| `_fit_score_norm` no exception-path training-state restore           | Low        | Calibration failures   | **Fixed** `4851640`                                                                                  |
+| Zero tests for `validation_step`, `_score`, `score()`, calibration   | Medium     | Regression safety      | **Partial** — `_score` + `score()` guard added `4851640`; `validation_step` + calibration still open |
 
 No blocking issues. Current overhead is acceptable for `hcrl_sa`. The double-encode
 in `_score` is the one to watch if `set_04` test throughput is slow — it's a known
@@ -172,12 +175,12 @@ Monitor switched to `val_recon_max_gap` for re-run (jid 47350308→47350312).
 
 kv = known vehicle · uv = unknown vehicle · ka = known attack · ua = unknown attack
 
-| metric | overall | t01 kv·ka | t02 uv·ka | t03 kv·ua | t04 uv·ua | t05 sup | t06 masq |
-|---|---|---|---|---|---|---|---|
-| AUROC | 0.621 | 0.555 | 0.488 | **0.834** | 0.615 | **0.000** | 0.524 |
-| AP | 0.115 | 0.045 | 0.078 | 0.163 | 0.167 | 0.000 | 0.378 |
-| recall | 0.727 | 0.590 | 0.633 | 0.885 | 0.749 | 0.000 | 0.755 |
-| p@0.95r | 0.093 | 0.044 | 0.080 | 0.060 | 0.064 | — | 0.355 |
+| metric  | overall | t01 kv·ka | t02 uv·ka | t03 kv·ua | t04 uv·ua | t05 sup   | t06 masq |
+| ------- | ------- | --------- | --------- | --------- | --------- | --------- | -------- |
+| AUROC   | 0.621   | 0.555     | 0.488     | **0.834** | 0.615     | **0.000** | 0.524    |
+| AP      | 0.115   | 0.045     | 0.078     | 0.163     | 0.167     | 0.000     | 0.378    |
+| recall  | 0.727   | 0.590     | 0.633     | 0.885     | 0.749     | 0.000     | 0.755    |
+| p@0.95r | 0.093   | 0.044     | 0.080     | 0.060     | 0.064     | —         | 0.355    |
 
 **Observations:**
 
@@ -194,3 +197,9 @@ kv = known vehicle · uv = unknown vehicle · ka = known attack · ua = unknown 
 - **t06 (masquerade, AP 0.378):** AP is the highest of any split despite AUROC near chance —
   the score distribution has a small high-scoring cluster that aligns with masquerade frames,
   but the threshold placement is poor. Ranking is informative; calibration is not.
+
+## set_02
+
+- re-ran with new monitor `val_recon_max_gap` basically same training stop
+- upped patience to 200 though will likely finish around 300
+- submitted sets 01, 03, and 04 as well wil just live with this

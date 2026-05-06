@@ -31,6 +31,7 @@ def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
         loss=spec(VGAE_TASK),
         monitor="val_recon_max_gap",
         meta=meta("vgae", "vgae"),
+        patience=200,
         trainer_overrides={"max_epochs": 600, "precision": "32-true"},
     )
     dgi = compose(

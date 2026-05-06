@@ -30,10 +30,13 @@ def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
     def fuse(variant: str, model: dict[str, Any]):
         return fusion(model=model, method=variant, meta=meta(variant))
 
-    bandit = fuse("bandit", spec(BANDIT, reward_kwargs=dict(REWARD)))
-    dqn = fuse("dqn", spec(DQN, reward_kwargs=dict(REWARD)))
-    mlp = fuse("mlp", spec(MLP_FUSION))
-    weighted_avg = fuse("weighted_avg", spec(WAVG_FUSION))
+    # state_dim = 18: VGAE (errors[3]+conf[1]+z_stats[4]+spike[1]+affinity[1]+rq[1]=11)
+    #                + GAT (probs[2]+conf[1]+emb_stats[4]=7) — sorted leaf concat in flatten_features.
+    _state_dim = 18
+    bandit = fuse("bandit", spec(BANDIT, state_dim=_state_dim, reward_kwargs=dict(REWARD)))
+    dqn = fuse("dqn", spec(DQN, state_dim=_state_dim, reward_kwargs=dict(REWARD)))
+    mlp = fuse("mlp", spec(MLP_FUSION, state_dim=_state_dim))
+    weighted_avg = fuse("weighted_avg", spec(WAVG_FUSION, state_dim=_state_dim))
 
     return [
         extract(
@@ -43,8 +46,12 @@ def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
             output_dir=extract_dir,
             seed=seed,
         ),
-        bandit.fit("bandit"),             bandit.test("bandit"),
-        dqn.fit("dqn"),                   dqn.test("dqn"),
-        mlp.fit("mlp"),                   mlp.test("mlp"),
-        weighted_avg.fit("weighted_avg"), weighted_avg.test("weighted_avg"),
+        bandit.fit("bandit"),
+        bandit.test("bandit"),
+        dqn.fit("dqn"),
+        dqn.test("dqn"),
+        mlp.fit("mlp"),
+        mlp.test("mlp"),
+        weighted_avg.fit("weighted_avg"),
+        weighted_avg.test("weighted_avg"),
     ]

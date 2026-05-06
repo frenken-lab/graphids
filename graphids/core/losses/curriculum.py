@@ -123,11 +123,8 @@ class CurriculumWeightedLoss(nn.Module):
                 "to read batch.difficulty and batch.in_scope"
             )
         if not hasattr(graph, "difficulty") or not hasattr(graph, "in_scope"):
-            raise ValueError(
-                "graph is missing curriculum attributes — datamodule must be "
-                "configured with a `difficulty` spec so Batch carries "
-                "difficulty + in_scope"
-            )
+            # val/test batches don't carry curriculum attributes — unweighted mean
+            return self.base_loss(logits, labels).mean()
         per_ex = self.base_loss(logits, labels)
         if per_ex.dim() != 1:
             raise ValueError(

@@ -18,7 +18,7 @@ class WeightedAvgModule(FusionModuleBase):
 
     automatic_optimization = True
 
-    def __init__(self, lr: float = 1e-2, decision_threshold: float = 0.5, state_dim: int = 15):
+    def __init__(self, lr: float = 1e-2, decision_threshold: float = 0.5, state_dim: int = 18):
         super().__init__(state_dim=state_dim, decision_threshold=decision_threshold)
         self._store_init_kwargs(locals())
         self.weight = nn.Parameter(torch.zeros(1))

@@ -126,10 +126,6 @@ def callbacks_base(
                 "filename": "best_model",
             },
         },
-        "device_stats": {
-            "class_path": "lightning.pytorch.callbacks.DeviceStatsMonitor",
-            "init_args": {"cpu_stats": False},
-        },
         "early_stopping": {
             "class_path": "lightning.pytorch.callbacks.EarlyStopping",
             "init_args": {"monitor": monitor, "mode": mode, "patience": patience},

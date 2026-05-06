@@ -34,7 +34,7 @@ class BanditFusionModule(RLFusionBase):
 
     def __init__(
         self,
-        state_dim: int = 15,
+        state_dim: int = 18,
         alpha_steps: int = 21,
         ucb_alpha: float = 1.0,
         lambda_reg: float = 1.0,
@@ -93,9 +93,7 @@ class BanditFusionModule(RLFusionBase):
         mu = torch.einsum("kd,nd->nk", self.theta, z)
         if training and self.ucb_alpha > 0:
             Az = torch.einsum("kij,nj->nki", self.A_inv, z)
-            ucb = self.ucb_alpha * torch.sqrt(
-                (z.unsqueeze(1) * Az).sum(dim=2).clamp(min=0.0)
-            )
+            ucb = self.ucb_alpha * torch.sqrt((z.unsqueeze(1) * Az).sum(dim=2).clamp(min=0.0))
             scores = mu + ucb
             self._ucb_widths.append(ucb.mean().item())
         else:
@@ -121,9 +119,7 @@ class BanditFusionModule(RLFusionBase):
 
     def _extra_metrics(self) -> dict:
         return {
-            "avg_ucb_width": float(np.mean(self._ucb_widths[-50:]))
-            if self._ucb_widths
-            else 0.0,
+            "avg_ucb_width": float(np.mean(self._ucb_widths[-50:])) if self._ucb_widths else 0.0,
         }
 
     # -- Sherman-Morrison ----------------------------------------------------

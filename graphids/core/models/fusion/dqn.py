@@ -26,7 +26,7 @@ from .base import RLFusionBase
 class DQNFusionModule(RLFusionBase):
     def __init__(
         self,
-        state_dim: int = 15,
+        state_dim: int = 18,
         alpha_steps: int = 21,
         lr: float = 1e-3,
         epsilon: float = 0.2,

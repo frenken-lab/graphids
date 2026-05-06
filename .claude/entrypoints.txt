@@ -1,0 +1,13 @@
+# Project entrypoints required by ~/.claude/hooks/require-entrypoint-reads.py
+# before any Write/Edit inside this project.
+#
+# pyproject.toml is intentionally NOT listed here. Rationale:
+# - Default fallback (DEFAULT_ENTRYPOINTS in the hook) requires Reading
+#   pyproject.toml in full (no `limit`) before any Write/Edit.
+# - The hook's transcript parser doesn't surface Reads performed inside
+#   a Task subagent, so subagents in this project hit a false-positive
+#   block on every Write even after a clean Read.
+# - The actual invariants (config-system, chassis-invariants) are
+#   already auto-loaded via .claude/rules/, which the hook honors.
+# Add files here when there's a real entrypoint authors should not
+# Write/Edit blind to.

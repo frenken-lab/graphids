@@ -38,8 +38,8 @@ from mlflow.entities import LoggedModelInput
 from graphids._fs import atomic_load
 from graphids._mlflow import _find_logged_model_by_ckpt, identity_tags
 from graphids.cli.app import configure_logging
-from graphids.plan.schema import AnalyzeRow, CacheRow, ExtractRow, Row, TrainRow
 from graphids.core.models.base import strip_orig_mod_prefix
+from graphids.plan.schema import AnalyzeRow, CacheRow, ExtractRow, Row, TrainRow
 
 
 @functools.cache
@@ -140,8 +140,7 @@ def _prepare(row: TrainRow) -> tuple[Any, Any, list, dict, torch.device]:
     torch_geometric.seed_everything(row.meta.seed)
     model, dm, callbacks, kw = _build(row)
     device = torch.device(
-        "cpu" if kw.get("accelerator") == "cpu"
-        else "cuda" if torch.cuda.is_available() else "cpu"
+        "cpu" if kw.get("accelerator") == "cpu" else "cuda" if torch.cuda.is_available() else "cpu"
     )
     dm.setup(None)
     model.prepare_from_datamodule(dm)
@@ -152,6 +151,9 @@ def _trainer_kwargs(callbacks: list, row: TrainRow, kw: dict, phase: str) -> dic
     plugins: list[Any] = []
     if os.environ.get("SLURM_JOB_ID"):
         plugins.append(SLURMEnvironment(auto_requeue=True, requeue_signal=signal.SIGUSR2))
+    import mlflow as _mlflow
+
+    _mlflow.enable_system_metrics_logging()
     logger = MLFlowLogger(
         experiment_name=f"graphids/{row.meta.dataset}/{row.meta.group}",
         run_name=row.identity.run_name,
@@ -163,6 +165,7 @@ def _trainer_kwargs(callbacks: list, row: TrainRow, kw: dict, phase: str) -> dic
         plugins=plugins or None,
         enable_progress_bar=False,
         num_sanity_val_steps=0,
+        inference_mode=(phase != "test"),
         **kw,
     )
 

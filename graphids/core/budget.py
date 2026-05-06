@@ -279,7 +279,7 @@ def _probe_body(
     fwd_time = 0.0
     candidate_peaks: list[tuple[int, int, int]] = []  # (V, E, peak)
 
-    with _silent_log(model):
+    with torch.enable_grad(), _silent_log(model):
         # Warmup on the first candidate so cuDNN has primed at least one shape.
         warm_batch = Batch.from_data_list(
             [train_dataset[i] for i in plans_0[candidate_indices[0]]]
@@ -352,7 +352,7 @@ def _probe_body(
         sci = int(plan1_V.argmax())
         sb = Batch.from_data_list([train_dataset[i] for i in plans_1[sci]]).to(dev)
         sanity_V, sanity_E = int(sb.num_nodes), int(sb.num_edges)
-        with _silent_log(model):
+        with torch.enable_grad(), _silent_log(model):
             sanity_peak = _measure_fwd_bwd(model, step_fn, sb, dev, debug_tag="sanity")
         del sb
         torch.cuda.empty_cache()

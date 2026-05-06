@@ -17,7 +17,7 @@ class MLPFusionModule(FusionModuleBase):
 
     def __init__(
         self,
-        state_dim: int = 15,
+        state_dim: int = 18,
         hidden_dims: tuple[int, ...] = (64, 32),
         lr: float = 1e-3,
         decision_threshold: float = 0.5,
