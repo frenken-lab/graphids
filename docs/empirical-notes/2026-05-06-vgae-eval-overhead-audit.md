@@ -122,9 +122,7 @@ finally:
         self.train()
 ```
 
-Not fixed in this session — the calibration raise is typically fatal to the test run
-anyway, so the model state mismatch is unlikely to matter in practice. Flagged for
-when `_fit_score_norm` gets hardened.
+**Fixed** (same session, `vgae.py`, commit `4851640`).
 
 ---
 
@@ -144,27 +142,8 @@ the primitives correctly. The integration path through `validation_step` and `sc
 is unvalidated — a future refactor of the benign/attack scatter or the z-norm
 aggregation would not be caught by the test suite.
 
-Suggested additions (deferred, not authored here):
-
-```python
-# INVARIANT: _score returns finite, per-graph tensors
-def test_score_output_shapes(model_and_conv):
-    model, _ = model_and_conv
-    batch = make_batch(3)
-    with torch.no_grad():
-        recon, recon_max, affinity, rq, mahal, kl, z = model._score(batch)
-    for name, t in [("recon", recon), ("recon_max", recon_max),
-                    ("affinity", affinity), ("rq", rq)]:
-        assert t.shape == (3,), f"{name} wrong shape"
-        assert torch.isfinite(t).all(), f"{name} non-finite"
-
-# INVARIANT: score() requires fitted norm; raises otherwise
-def test_score_requires_fitted_norm():
-    model = _make_vgae()
-    batch = make_batch(2)
-    with pytest.raises(RuntimeError, match="on_test_setup"):
-        model.score(batch)
-```
+**Fixed** (same session, `tests/core/models/test_vgae.py`, commit `4851640`):
+`test_score_output_shapes` and `test_score_requires_fitted_norm` added.
 
 ---
 
@@ -176,9 +155,42 @@ def test_score_requires_fitted_norm():
 | `torch.quantile` × 4-8 per val batch | Low-medium | `set_02+` only | Acceptable; revisit if profiling shows >5% val overhead |
 | `tam_affinity` / `rq` / `recon_max` | Negligible | — | No action needed |
 | Z inconsistency: val monitoring (masked) vs. test scoring (unmasked) | Low | Dashboard only | Documented; not a scoring bug |
-| `_fit_score_norm` no exception-path training-state restore | Low | Calibration failures | Fix with `try/finally` when hardening |
-| Zero tests for `validation_step`, `_score`, `score()`, calibration | Medium | Regression safety | Deferred; suggested stubs above |
+| `_fit_score_norm` no exception-path training-state restore | Low | Calibration failures | **Fixed** `4851640` |
+| Zero tests for `validation_step`, `_score`, `score()`, calibration | Medium | Regression safety | **Partial** — `_score` + `score()` guard added `4851640`; `validation_step` + calibration still open |
 
 No blocking issues. Current overhead is acceptable for `hcrl_sa`. The double-encode
 in `_score` is the one to watch if `set_04` test throughput is slow — it's a known
 2× encoder cost, not a bug.
+
+---
+
+## set_02 seed_42 baseline test results
+
+**Checkpoint:** GAD-NR arch, trained with `val_discrimination_ratio` monitor (job 47348301,
+epoch ~207, stopped by early stopping). Test job 47349220, 6m42s on V100.
+Monitor switched to `val_recon_max_gap` for re-run (jid 47350308→47350312).
+
+kv = known vehicle · uv = unknown vehicle · ka = known attack · ua = unknown attack
+
+| metric | overall | t01 kv·ka | t02 uv·ka | t03 kv·ua | t04 uv·ua | t05 sup | t06 masq |
+|---|---|---|---|---|---|---|---|
+| AUROC | 0.621 | 0.555 | 0.488 | **0.834** | 0.615 | **0.000** | 0.524 |
+| AP | 0.115 | 0.045 | 0.078 | 0.163 | 0.167 | 0.000 | 0.378 |
+| recall | 0.727 | 0.590 | 0.633 | 0.885 | 0.749 | 0.000 | 0.755 |
+| p@0.95r | 0.093 | 0.044 | 0.080 | 0.060 | 0.064 | — | 0.355 |
+
+**Observations:**
+
+- **t03 (kv·ua, AUROC 0.834):** strongest signal — model generalises to novel attack types on
+  familiar vehicles. The reconstruction budget is calibrated to the vehicle's normal graph
+  structure, so structural deviations from unknown attacks stand out.
+- **t02 (uv·ka, AUROC 0.488):** marginally below chance. Score distribution shifts on an
+  unseen vehicle's normal traffic; the threshold (calibrated on training vehicles) is in the
+  wrong tail. Expected to close once the supervised GAT stage provides vehicle-agnostic features.
+- **t05 (suppress, AUROC 0.000):** complete failure. Suppress attacks remove frames, producing
+  sparser graphs. The VGAE trained on benign-only data has likely seen sparse benign graphs;
+  reconstruction error doesn't spike. Hard structural blind spot for reconstruction-based
+  unsupervised detectors.
+- **t06 (masquerade, AP 0.378):** AP is the highest of any split despite AUROC near chance —
+  the score distribution has a small high-scoring cluster that aligns with masquerade frames,
+  but the threshold placement is poor. Ranking is informative; calibration is not.
