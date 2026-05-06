@@ -29,7 +29,7 @@ def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
         model=spec(VGAE),
         data=vgae_data,
         loss=spec(VGAE_TASK),
-        monitor="val_discrimination_ratio",
+        monitor="val_recon_max_gap",
         meta=meta("vgae", "vgae"),
         trainer_overrides={"max_epochs": 600, "precision": "32-true"},
     )

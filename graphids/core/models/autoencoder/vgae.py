@@ -543,50 +543,50 @@ class VGAE(ScoreBasedDetectorMixin):
         in :mod:`graphids.core.data.datamodule.graph`)."""
         was_training = self.training
         self.eval()
+        try:
+            mus: list[torch.Tensor] = []
+            for batch in val_loader:
+                batch = batch.clone().to(device)
+                y_g = batch.y.view(-1)
+                if not (y_g == 0).any():
+                    continue
+                ea = getattr(batch, "edge_attr", None) if self._uses_edge_attr else None
+                _z, _kl, mu = self.encode(
+                    batch.x,
+                    batch.edge_index,
+                    edge_attr=ea,
+                    batch=batch.batch,
+                    node_id=batch.node_id,
+                )
+                benign_node = y_g[batch.batch] == 0
+                mus.append(mu[benign_node].cpu())
+            if not mus:
+                raise RuntimeError("_fit_score_norm: no benign rows in val loader")
+            mu_all = torch.cat(mus, dim=0)
+            self.mu_mean.copy_(mu_all.mean(dim=0).to(self.mu_mean.device))
+            self.mu_std.copy_(mu_all.std(dim=0).clamp(min=1e-3).to(self.mu_std.device))
 
-        mus: list[torch.Tensor] = []
-        for batch in val_loader:
-            batch = batch.clone().to(device)
-            y_g = batch.y.view(-1)
-            if not (y_g == 0).any():
-                continue
-            ea = getattr(batch, "edge_attr", None) if self._uses_edge_attr else None
-            _z, _kl, mu = self.encode(
-                batch.x,
-                batch.edge_index,
-                edge_attr=ea,
-                batch=batch.batch,
-                node_id=batch.node_id,
-            )
-            benign_node = y_g[batch.batch] == 0
-            mus.append(mu[benign_node].cpu())
-        if not mus:
-            raise RuntimeError("_fit_score_norm: no benign rows in val loader")
-        mu_all = torch.cat(mus, dim=0)
-        self.mu_mean.copy_(mu_all.mean(dim=0).to(self.mu_mean.device))
-        self.mu_std.copy_(mu_all.std(dim=0).clamp(min=1e-3).to(self.mu_std.device))
+            accum: dict[str, list[torch.Tensor]] = {n: [] for n in self._SCORE_COMPONENTS}
+            for batch in val_loader:
+                batch = batch.clone().to(device)
+                y_g = batch.y.view(-1)
+                benign_g = y_g == 0
+                if not benign_g.any():
+                    continue
+                recon, recon_max, affinity, rq, _mahal, _kl, _z = self._score(batch)
+                accum["recon"].append(recon[benign_g].cpu())
+                accum["recon_max"].append(recon_max[benign_g].cpu())
+                accum["affinity"].append(affinity[benign_g].cpu())
+                accum["rq"].append(rq[benign_g].cpu())
 
-        accum: dict[str, list[torch.Tensor]] = {n: [] for n in self._SCORE_COMPONENTS}
-        for batch in val_loader:
-            batch = batch.clone().to(device)
-            y_g = batch.y.view(-1)
-            benign_g = y_g == 0
-            if not benign_g.any():
-                continue
-            recon, recon_max, affinity, rq, _mahal, _kl, _z = self._score(batch)
-            accum["recon"].append(recon[benign_g].cpu())
-            accum["recon_max"].append(recon_max[benign_g].cpu())
-            accum["affinity"].append(affinity[benign_g].cpu())
-            accum["rq"].append(rq[benign_g].cpu())
-
-        if was_training:
-            self.train()
-
-        n_total = sum(len(t) for t in accum["recon"])
-        if n_total < 100:
-            raise RuntimeError(f"_fit_score_norm: need >=100 benign val graphs, got {n_total}")
-        for name in self._SCORE_COMPONENTS:
-            cat = torch.cat(accum[name])
-            getattr(self, f"score_{name}_mean").copy_(cat.mean())
-            getattr(self, f"score_{name}_std").copy_(cat.std())
-        self.score_norm_fitted.fill_(True)
+            n_total = sum(len(t) for t in accum["recon"])
+            if n_total < 100:
+                raise RuntimeError(f"_fit_score_norm: need >=100 benign val graphs, got {n_total}")
+            for name in self._SCORE_COMPONENTS:
+                cat = torch.cat(accum[name])
+                getattr(self, f"score_{name}_mean").copy_(cat.mean())
+                getattr(self, f"score_{name}_std").copy_(cat.std())
+            self.score_norm_fitted.fill_(True)
+        finally:
+            if was_training:
+                self.train()

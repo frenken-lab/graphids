@@ -31,9 +31,9 @@ from graphids.paths import run_dir as _run_dir
 from graphids.plan.primitives import fusion_dm
 from graphids.plan.schema import ClassPath, RenderedConfig, TrainerCfg
 
-
 # ============================================================== RowSpec
 # Composer output. Not a row yet — call ``.fit()`` / ``.test()``.
+
 
 @dataclass(frozen=True)
 class RowSpec:
@@ -88,6 +88,7 @@ def _emit(action: str, name: str, spec: RowSpec, length: str) -> dict[str, Any]:
 
 # ============================================================== compose / fusion
 
+
 def trainer_base() -> dict[str, Any]:
     """Universal trainer defaults. ``callbacks`` filled by the composer."""
     return {
@@ -125,9 +126,17 @@ def callbacks_base(
                 "filename": "best_model",
             },
         },
+        "device_stats": {
+            "class_path": "lightning.pytorch.callbacks.DeviceStatsMonitor",
+            "init_args": {"cpu_stats": False},
+        },
         "early_stopping": {
             "class_path": "lightning.pytorch.callbacks.EarlyStopping",
             "init_args": {"monitor": monitor, "mode": mode, "patience": patience},
+        },
+        "learning_rate_monitor": {
+            "class_path": "lightning.pytorch.callbacks.LearningRateMonitor",
+            "init_args": {"logging_interval": "epoch"},
         },
         "mlflow": {
             "class_path": "graphids._mlflow.MLflowTrainingCallback",
@@ -255,6 +264,7 @@ def fusion(
 
 
 # ============================================================== one-shot row builders
+
 
 def extract(
     *,

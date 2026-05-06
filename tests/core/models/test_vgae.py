@@ -149,6 +149,35 @@ def test_rayleigh_quotient_per_graph():
     assert (rq >= 0).all()
 
 
+def test_score_output_shapes():
+    # CONTRACT: _score returns 7-tuple of finite per-graph tensors shaped [G].
+    model = _make_vgae()
+    model.eval()
+    batch = make_batch(3)
+    with torch.no_grad():
+        recon, recon_max, affinity, rq, mahal, kl, z = model._score(batch)
+    for name, t in [
+        ("recon", recon),
+        ("recon_max", recon_max),
+        ("affinity", affinity),
+        ("rq", rq),
+        ("mahal", mahal),
+        ("kl", kl),
+    ]:
+        assert t.shape == (3,), f"{name}: expected shape (3,), got {t.shape}"
+        assert torch.isfinite(t).all(), f"{name} contains non-finite values"
+    assert z.shape[0] == batch.x.size(0)
+
+
+def test_score_requires_fitted_norm():
+    # CONTRACT: score() raises RuntimeError when score_norm_fitted is False
+    # (i.e., on_test_setup has not been called).
+    model = _make_vgae()
+    batch = make_batch(2)
+    with pytest.raises(RuntimeError, match="on_test_setup"):
+        model.score(batch)
+
+
 @pytest.mark.slow
 class TestVGAEFastDevRun:
     def test_vgae(self, vgae_cfg):
