@@ -20,7 +20,7 @@ _LOSS_MODEL_TYPES = frozenset({"gat", "vgae"})
 
 # Loss params that historically lived at init_args top-level on VGAE.
 # Older checkpoints may still have these in saved hparams; new ones won't.
-_VGAE_LOSS_KEYS = frozenset({"kl_weight", "canid_weight", "nbr_weight", "k_neg"})
+_VGAE_LOSS_KEYS = frozenset({"kl_weight", "canid_weight", "nbr_weight", "edge_weight", "k_neg"})
 
 
 def build_loss(

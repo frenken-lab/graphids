@@ -40,7 +40,7 @@ def score_vgae(graphs: list, ckpt_path: str) -> torch.Tensor:
             scores: list[float] = []
             for batch in PyGDataLoader(graphs, batch_size=500):
                 batch = batch.clone().to(device, non_blocking=True)
-                cont, _canid, _nbr, _z, _kl = vgae(batch)
+                cont, _canid, _nbr, _z, _kl, _edge = vgae(batch)
                 node_mse = (cont - batch.x).pow(2).mean(dim=1)
                 graph_mse = scatter(node_mse, batch.batch, reduce="mean")
                 scores.extend(graph_mse.tolist())

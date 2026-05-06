@@ -57,7 +57,7 @@ def _ensure_runtime() -> None:
     # Disallow reduced-precision intermediate reductions in fp32 cuBLAS GEMM.
     # On V100 the default heuristic picks a kernel that saturates to fp32 max
     # for our [300K, 64] @ [64, 1791] sanity probe shape, producing NaN/Inf
-    # in canid_logits/nbr_logits despite finite z and finite weights. See
+    # in canid_logits despite finite z and finite weights. See
     # docs/empirical-notes/2026-05-06-vgae-cublas-overflow-v100.md.
     if torch.cuda.is_available():
         torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False

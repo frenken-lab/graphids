@@ -130,7 +130,7 @@ def _dump_intermediates(
             out = model._forward_tensors(
                 batch.x, batch.edge_index, batch.batch, edge_attr=ea, node_id=batch.node_id
             )
-        names = ("cont_out", "canid_logits", "nbr_logits", "z", "kl_per_node")
+        names = ("cont_out", "canid_logits", "nbr_pred", "z", "kl_per_node", "edge_logits")
         for name, t in zip(names, out):
             if isinstance(t, torch.Tensor):
                 # `isnan(t).sum()` allocates a [N]→int64 reduction (~4GB for
@@ -139,7 +139,9 @@ def _dump_intermediates(
                 diag[f"{name}_has_nan"] = bool(torch.isnan(t).any().item())
                 diag[f"{name}_has_inf"] = bool(torch.isinf(t).any().item())
                 diag[f"{name}_finite"] = not (diag[f"{name}_has_nan"] or diag[f"{name}_has_inf"])
-                diag[f"{name}_absmax"] = float(t.abs().nan_to_num(neginf=0).max().item()) if t.numel() else 0.0
+                diag[f"{name}_absmax"] = (
+                    float(t.abs().nan_to_num(neginf=0).max().item()) if t.numel() else 0.0
+                )
                 diag[f"{name}_shape"] = list(t.shape)
     log.error("nan_debug_intermediates", **diag)
 
@@ -163,8 +165,14 @@ def _measure_fwd_bwd(model, step_fn, batch, dev, *, debug_tag: str | None = None
                 cuda_state_sha=hash(bytes(pre_cuda_state.cpu().numpy().tobytes()[:32])),
                 note="restore via torch.set_rng_state + torch.cuda.set_rng_state",
             )
-            _dump_intermediates(model, batch, tag=debug_tag,
-                                cpu_state=pre_cpu_state, cuda_state=pre_cuda_state, dev=dev)
+            _dump_intermediates(
+                model,
+                batch,
+                tag=debug_tag,
+                cpu_state=pre_cpu_state,
+                cuda_state=pre_cuda_state,
+                dev=dev,
+            )
         raise
     model.zero_grad(set_to_none=True)
     torch.cuda.synchronize(dev)
@@ -417,15 +425,23 @@ def autosize_workers(
     torch.cuda.synchronize(model.device)
 
     n = min(batch.num_graphs, len(dataset))
-    t_io = Timer(
-        stmt="[ds[i] for i in range(n)]",
-        globals={"ds": dataset, "n": n},
-    ).blocked_autorange(min_run_time=0.1).median
+    t_io = (
+        Timer(
+            stmt="[ds[i] for i in range(n)]",
+            globals={"ds": dataset, "n": n},
+        )
+        .blocked_autorange(min_run_time=0.1)
+        .median
+    )
     graphs = batch.to_data_list()
-    t_coll = Timer(
-        stmt="Batch.from_data_list(graphs)",
-        globals={"Batch": Batch, "graphs": graphs},
-    ).blocked_autorange(min_run_time=0.1).median
+    t_coll = (
+        Timer(
+            stmt="Batch.from_data_list(graphs)",
+            globals={"Batch": Batch, "graphs": graphs},
+        )
+        .blocked_autorange(min_run_time=0.1)
+        .median
+    )
 
     t_gpu = result.t_fwd * result.backward_multiplier
     raw = math.ceil((t_io + t_coll) / t_gpu)

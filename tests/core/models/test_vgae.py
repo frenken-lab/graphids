@@ -55,7 +55,8 @@ class TestVGAEConvTypes:
         model, _ = model_and_conv
         batch = make_batch(3)
         n = batch.x.size(0)
-        cont, canid_logits, nbr_logits, z, kl = model._forward_tensors(
+        e = batch.edge_index.size(1)
+        cont, canid_logits, nbr_pred, z, kl, edge_logits = model._forward_tensors(
             batch.x,
             batch.edge_index,
             batch.batch,
@@ -64,21 +65,31 @@ class TestVGAEConvTypes:
         )
         assert cont.shape == (n, IN_CHANNELS)
         assert canid_logits.shape == (n, NUM_IDS)
-        assert nbr_logits.shape == (n, NUM_IDS)
+        # GAD-NR neighborhood decoder predicts neighbor-mean in latent space:
+        # output dim is latent_dim, NOT num_ids (the previous vocabulary-bag
+        # head; see 2026-05-06-drop-neighborhood-adopt-tam.md).
+        assert nbr_pred.shape == (n, model.hparams.latent_dim)
         assert z.shape[0] == n
         assert kl.shape == (n,)
+        # edge_logits is None when the conv stack doesn't consume edge_attr;
+        # otherwise [E, edge_dim] for the edge_decoder MLP.
+        if edge_logits is not None:
+            assert edge_logits.shape == (e, EDGE_DIM)
 
     def test_gradient_flow(self, model_and_conv):
         model, conv_type = model_and_conv
         batch = make_batch(2)
-        cont, canid_logits, nbr_logits, _z, kl = model._forward_tensors(
+        cont, canid_logits, nbr_pred, _z, kl, edge_logits = model._forward_tensors(
             batch.x,
             batch.edge_index,
             batch.batch,
             edge_attr=batch.edge_attr,
             node_id=batch.node_id,
         )
-        torch.autograd.backward(cont.sum() + canid_logits.sum() + nbr_logits.sum() + kl.sum())
+        graph_loss = cont.sum() + canid_logits.sum() + nbr_pred.sum() + kl.sum()
+        if edge_logits is not None:
+            graph_loss = graph_loss + edge_logits.sum()
+        torch.autograd.backward(graph_loss)
         # GPS encoder_bns have no gradient by design (batch norm in GPS path).
         # mask_token by design has requires_grad=False.
         # torchmetrics modules (roc_metric, test_metrics) have no learnable
@@ -103,6 +114,39 @@ class TestVGAEConvTypes:
             node_id=batch.node_id,
         )
         assert out[0].shape[0] == 18
+
+    def test_tam_affinity_shape(self, model_and_conv):
+        # CONTRACT: tam_affinity returns one scalar per node, finite, in [0, 2]
+        # (since 1 - cosine, with cosine ∈ [-1, 1]). Isolated source nodes are
+        # allowed (scatter-mean default = 0 → affinity = 1).
+        from graphids.core.models._score_primitives import tam_affinity
+
+        model, _ = model_and_conv
+        batch = make_batch(3)
+        with torch.no_grad():
+            _, _, _, z, _, _ = model._forward_tensors(
+                batch.x,
+                batch.edge_index,
+                batch.batch,
+                edge_attr=batch.edge_attr,
+                node_id=batch.node_id,
+            )
+            affinity = tam_affinity(z, batch.edge_index)
+        assert affinity.shape == (batch.x.size(0),)
+        assert torch.isfinite(affinity).all()
+        assert (affinity >= 0).all() and (affinity <= 2).all()
+
+
+def test_rayleigh_quotient_per_graph():
+    # CONTRACT: rayleigh_quotient returns one non-negative scalar per graph,
+    # finite, with shape [G] when batch index is supplied.
+    from graphids.core.models._score_primitives import rayleigh_quotient
+
+    batch = make_batch(3)
+    rq = rayleigh_quotient(batch.x, batch.edge_index, batch=batch.batch)
+    assert rq.shape == (3,)
+    assert torch.isfinite(rq).all()
+    assert (rq >= 0).all()
 
 
 @pytest.mark.slow
