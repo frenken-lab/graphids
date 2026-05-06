@@ -118,6 +118,9 @@ in the cuBLAS code path that picks reduced-precision intermediate accumulation
 for fp32 GEMM at this shape on Volta. Disabling it falls back to a strictly-fp32
 accumulation kernel that handles the shape correctly.
 
+Full fit ran to completion: jid 47317870 COMPLETED in 11:56, `last-v3.ckpt`
+(3.9 MB) saved, test row 47317871 auto-chained on afterok and started cleanly.
+
 **Permanent change.** Strict reductions stay on in `_ensure_runtime` for all
 runs — they only marginally affect throughput on Volta, never affect Ampere or
 Hopper meaningfully (those architectures' default kernels already accumulate
@@ -125,3 +128,168 @@ in fp32), and make Volta numerically uniform with the newer clusters. Net cost
 is negligible; net benefit is one fewer source of intermittent NaN.
 
 Workaround #1 (cap budget to ~64K) and #3 (move to Cardinal) not pursued.
+
+## Update — 2026-05-06 ~02:15 UTC — fit results + diagnosis + improvements
+
+### Results (plan_id `019dfb01-f45c-7dbe-b272-c3b2ffa236be`, set_03/seed_42)
+
+| metric | first (ep 12) | last (ep 178) | max | source |
+|---|---|---|---|---|
+| `val_discrimination_ratio` | 1.111 | 1.151 | **1.166** | benign-vs-attack score ratio (>1 = better) |
+| `val_loss` | 1.225 | 0.911 | — | reconstruction + canid CE + nbr BCE + KL |
+
+178 epochs (out of `max_epochs=600`). `EarlyStopping(monitor='val_discrimination_ratio', patience=100, mode='max')` fired — best metric stopped improving for 100 consecutive epochs.
+
+Test phase running at time of writing; AUROCs not yet appended.
+
+### Diagnosis — why ratio plateaus at ~1.17
+
+`val_discrimination_ratio = mean_score_attack / mean_score_benign` where score = mahalanobis-style distance in latent space. Random would give ratio ≈ 1.0. **1.17 is essentially noise above chance.** The model is barely separating benign from attack on val.
+
+Three plausible drivers, in order of likelihood:
+
+1. **Benign pool starvation.** `cache_metadata.json::train.attack_balance.benign = 1099` raw samples → ~105K windowed benign graphs. But benign-labeled samples in set_03 come from a single attack-free recording; **graph-level diversity is low**. VGAE overfits the benign manifold within a few dozen epochs, then `val_discrimination_ratio` plateaus because val benign and val attack both end up in the same dense reconstruction-error region. Compare to hcrl_sa where benign messages span multiple recordings and CAN-ID populations.
+
+2. **set_03 attack design = "stealth" attacks.** Per the can-train-and-test-v1.5 split design, set_03 includes `interval`, `rpm`, `speed`, `standstill` — timing/value perturbations on legitimate IDs, not novel injection. VGAE built on `(node_id, x_continuous)` reconstruction will struggle: the IDs are all in-vocab, the continuous-feature distribution shift is subtle. Set_01 (DoS, fuzzing) would exercise a stronger signal.
+
+3. **Defaults not tuned for set_03 graph sizes.** Train graphs have V_max=57, E_max=98 (per metadata). With `latent_dim=64` and `hidden_dim=64`, the encoder compresses to a vector roughly the same size as the input — minimal bottleneck, weak inductive pressure. On hcrl_sa with denser graphs the same dim choice is fine; here it's effectively an autoencoder with no compression.
+
+## Update — 2026-05-06 ~02:50 UTC — VGAE diagnosis across set_01..04
+
+All four can-train-and-test-v1.5 datasets fitted (set_01/04 needed `CUDA_LAUNCH_BLOCKING=1` to dodge an intermittent V100 vectorized-gather race; same code/data succeeded under sync execution).
+
+### Per-dataset training trajectory
+
+| ds      | epochs | train_recon ↓     | train_canid ↓     | train_nbr ↓       | train_kl ↑        | val_loss_benign | val_loss_attack | gap (att-ben) | ratio (att/ben) |
+|---------|-------:|-------------------|-------------------|-------------------|-------------------|----------------:|----------------:|--------------:|----------------:|
+| set_01  |    351 | 0.73 → **0.20**   | 2.95 → **1.47**   | 0.57 → **0.26**   | 0.92 → 1.74       |          0.704  |          0.894  |    **0.200**  |        **1.327** |
+| set_02  |    103 | 0.70 → **0.19**   | 3.45 → **2.33**   | 0.14 → **0.08**   | 1.26 → 2.23       |          0.735  |          0.819  |     0.076     |        1.130     |
+| set_03  |    179 | 0.78 → **0.22**   | 4.16 → **3.45**   | 0.19 → **0.05**   | 1.08 → 2.04       |          0.868  |          0.987  |     0.131     |        1.166     |
+| set_04  |    281 | 0.74 → **0.19**   | 3.48 → **2.19**   | 0.13 → **0.07**   | 1.17 → 1.91       |          0.754  |          0.773  |    **0.019**  |        **1.057** |
+
+### Q1: Is there actual separation between benign and attack?
+
+**Yes for set_01, marginal for set_02/set_03, near-zero for set_04.** The gap (mean reconstruction loss on val_attack minus val_benign) is the unambiguous signal: set_01 holds 0.20 (28% relative); set_04 holds 0.02 (2.5% relative — essentially noise). The discrimination ratio reformulation amplifies this in the wrong direction (small denominator inflates ratio for tiny gaps), making the metric look more healthy than it is.
+
+### Q2: Is the model actually training?
+
+**Yes.** Every reconstruction-side component drops monotonically: `train_recon` -73% (set_01), `train_canid` -50%, `train_nbr` -55%, `val_loss` -40%. Optimization is not stuck. **Learning rate is fine** (default 1e-3 Adam) — losses descend cleanly without the oscillation that high-LR causes or the plateau that low-LR causes. This is not an optimizer problem.
+
+### Q3: Then why is `val_discrimination_ratio` not separating?
+
+The model learns to **reconstruct everything in the data distribution**, not just benign. set_04 val_attack vs val_benign reconstruction loss is 0.77 vs 0.75 — VGAE has learned a generic CAN-frame autoencoder that handles attacks nearly as well as benign because:
+
+1. **kl_weight=0.01 is too low.** `train_kl` *increases* by 60-90% over training (1.08 → 2.04 on set_03) — the encoder is pulling the latent distribution further from N(0,I) to maximize reconstruction quality. With `kl_weight=0.01`, the prior penalty is dominated by reconstruction loss; the encoder uses high-variance latents as needed and pays almost nothing for it. Result: the latent space has **no structural prior**, so attack samples land in similarly-dense regions as benign and reconstruct comparably well.
+
+2. **The objective doesn't match the detection task.** Reconstruction-MSE is symmetric in features — it minimizes error on whatever distribution the data has. If attack-frame features are in-distribution (timing perturbations on legitimate CAN IDs, as in set_04's `interval`/`rpm`/`speed`/`standstill`), reconstruction error is just as low for attacks as benign. The CAN-ID prediction head (canid_classifier) *is* discriminative when attacks inject novel IDs (set_01's DoS/fuzzing) — but with `canid_weight=0.1` it's a minority contributor.
+
+3. **`label_filter='benign'` filtering may be inert.** Despite the filter, the model is still optimizing recon over all benign training graphs, so it learns the dominant CAN-frame distribution. Attack frames sit on the same low-dimensional manifold for set_04. This is the fundamental limitation of reconstruction-based anomaly detection on this data: when attacks share the input distribution with benign, the autoencoder generalizes to them.
+
+### Why set_01 separates and set_04 doesn't
+
+set_01's vocabulary is **53 IDs** vs set_04's **2049**. set_01 attacks include DoS and fuzzing — both inject CAN IDs not present in train benign, getting mapped to UNK (index 0) by the cache vocab. The encoder's `id_encoder` embedding for UNK plus the masked-`mask_id` slot are different from in-vocabulary embeddings → real per-graph distribution shift → recon error differential. set_04 attacks are stealth/timing perturbations on **in-vocabulary** IDs → no embedding shift → recon error is essentially the same as benign.
+
+This explains the dataset ordering exactly: set_01 (53 IDs, OOD-by-vocab attacks) >> set_03 (1791 IDs, mixed) ≈ set_02 (2049 IDs, mixed) > set_04 (2049 IDs, all in-vocab attacks).
+
+### Two downstream questions, answered
+
+**Q4: What about increasing `kl_weight` to force a tighter latent prior?**
+**A:** Marginal benefit, possibly negative. Tightening KL would push z toward N(0,I), which collapses representational capacity (toward "posterior collapse"). The encoder would reconstruct everything *worse* — not just attacks. Better to keep kl_weight low and either (a) shrink `latent_dim` (currently 64, almost no compression for 35-dim input × small graphs — try 8 or 16) which forces information bottleneck without distorting the loss, or (b) raise `canid_weight` from 0.1 → 1.0 so the discriminative head matters. (b) is the higher-leverage change for set_01-class attacks; both fail for set_04 because no objective re-weighting fixes a model that genuinely can't see attack-vs-benign in the data.
+
+**Q5: Why does `val_discrimination_ratio` (=mean_attack/mean_benign) keep monotonically improving on set_01 (1.20 → 1.33) but flatten on set_03 (1.11 → 1.16)?**
+**A:** set_01 has a much smaller benign val pool (`num_arb_ids=53` ⇒ low CAN-frame diversity) so `mean_benign` reconstruction loss drops faster as the model overfits the limited benign manifold; meanwhile `mean_attack` (vocab-shifted) stays higher because OOD CAN-IDs aren't in the training distribution at all. The ratio numerator stays high while the denominator drops → the ratio grows. set_03 attacks include a larger fraction of in-vocabulary ones, so `mean_attack` drops alongside `mean_benign` — both move together, ratio is roughly stationary near 1.16. **Caution:** set_01's 1.33 isn't necessarily a "better model" — it's partly a more-OOD attack distribution. Test-phase AUROC is the comparable metric across datasets; ratio is dataset-dependent.
+
+## Update — 2026-05-06 ~03:10 UTC — what's actually getting reconstructed, and where the signal lives
+
+### Q6: Training improves — what specifically is it getting better at?
+
+Three reconstruction-side targets, in order of relative drop on set_01:
+
+| component | first | last | drop | what it scores |
+|---|---|---|---|---|
+| `train_recon` | 0.73 | 0.20 | **−73%** | per-feature MSE on continuous `x` |
+| `train_nbr` | 0.57 | 0.26 | **−55%** | masked-node neighbor BCE |
+| `train_canid` | 2.95 | 1.47 | **−50%** | masked-node CAN-ID cross-entropy |
+| `train_kl` | 0.92 | **1.74** | **+90%** | KL of `q(z\|x)` from `N(0,I)` |
+
+The model gets steadily better at reconstructing continuous features, predicting masked CAN IDs, and predicting which nodes are neighbors of a masked node. **It pays for that by letting the latent distribution drift away from its prior** (`train_kl` doubles), because `kl_weight=0.01` makes the prior penalty negligible vs the recon terms. So the encoder uses high-variance latents — fine for reconstruction, useless for OOD detection (which assumes normal-density priors).
+
+### Q7: How distinct are attack vs benign windows? Graph stats first.
+
+Per cache_metadata.json:
+
+| dataset | train N (mean / max) | test_05 (suppress) | test_06 (masquerade) | other test sets |
+|---|---|---|---|---|
+| set_01 | 24.7 / 40 | 30.3 / 49 | 28.5 / 46 | 27-28 / 32-45 |
+| set_02 | 33.2 / 48 | 36.1 / 51 | 33.8 / 50 | 31-35 / 43-52 |
+| set_03 | 37.6 / 57 | **48.6 / 68** | **48.6 / 74** | 31-43 / 42-71 |
+| set_04 | 31.9 / 46 | 35.8 / 43 | 34.3 / 44 | 32-36 / 43-52 |
+
+**Raw edge count is exactly 98** because window_size=100 → 98 inter-frame chain edges; this is a windowing artifact, not a property of the data. **Unique (src, dst) transition pairs per graph DO vary** — that's the real edge-side signal:
+
+| dataset | train benign μ ± σ | train attack μ ± σ | gap |
+|---|---|---|---|
+| set_01 | 65.9 ± 5.1 | 71.6 ± 5.0 | +5.7 |
+| set_02 | 78.1 ± 6.9 | 78.3 ± 4.3 | +0.3 |
+| set_03 | 75.5 ± 4.7 | 78.7 ± 5.4 | +3.2 |
+| set_04 | 79.0 ± 4.8 | 82.4 ± 4.6 | +3.4 |
+
+For test_01 (known_vehicle_known_attack), set_01 and set_04 **flip sign** — attack windows have fewer unique transitions than benign (DoS-class attacks flood 1-2 IDs → many duplicate transitions in the chain → fewer distinct edges). The signal exists but sits within ~1σ of class variance, so it's a weak per-graph discriminator. Not zero, as I claimed earlier.
+
+Implications:
+- set_04 attack windows have node-count `33-36` vs train benign `31.9` — **3-13% relative shift**, well within natural benign variance. Naive reconstruction can't separate.
+- set_03 attack types `suppress`/`masquerade` push node count to 48.6 (29% above train) — those are the windows where set_03 will get the most signal at test time. Per-attack AUROC (already logged at test phase) should rank these high.
+- set_01's tiny vocab (53 IDs) means **attack windows that introduce DoS/fuzzing inject brand-new IDs** which inflate node count modestly AND tag the new IDs as UNK (vocab index 0). That's why set_01 separates: not because of node count alone, but because of the embedding-table OOD signal layered on top.
+
+### Q8: Is reconstruction a per-node mean, a per-graph aggregate, or per-feature distribution?
+
+Found out by reading `losses/autoencoder.py:104` and `models/autoencoder/vgae.py:289-296,344-363`:
+
+| where | formula | reduction |
+|---|---|---|
+| **train loss** (`train_recon`) | `F.mse_loss(cont_out, batch.x)` | **global mean** over nodes × features. Per-node and per-graph signal both **collapsed**. |
+| **val loss** (`val_loss`, `val_loss_benign/attack`) | `_per_graph_masked_recon` — `(cont - x).pow(2).mean(dim=-1)` per node, masked-sum per graph, divided by mask count | **per-graph mean** over masked nodes. Class means via `recon[mask_y].mean()`. |
+| **test score** (`score`) | `max-σ(recon, mahal, kl)` in z-norm space | **per-graph** scalar. The per-node `recon_per_node` is computed but **summed away** before the score. |
+
+Critical findings:
+1. **There is no edge-attribute reconstruction loss.** `nbr_logits` is a *neighbor identity* prediction (BCE over candidate next-IDs), not edge feature reconstruction. Edge features (`batch.edge_attr`) only feed the encoder via GAT attention — the model is never penalized for failing to reconstruct timing/payload patterns encoded on edges.
+2. **Per-node spike vs spread is invisible.** `recon_per_node` exists in `_per_graph_masked_recon`'s tensor — but it's immediately summed/meaned per graph. A window with one nuclear-anomalous node produces the same `recon` score as a window with all-slightly-anomalous nodes if their per-node sums match.
+3. We have **no logged statistic** that would tell us whether VGAE spikes on attack-injected nodes specifically or smears the error across the window. Need per-node error histograms or per-graph max/range of `recon_per_node` to know.
+
+### Two downstream questions, answered
+
+**Q9: If per-node error is reduced to a per-graph mean, are we losing the spike-vs-spread signal? Should we add a per-node max as a score component?**
+**A:** Yes, real signal loss. CAN-bus attacks (especially DoS, fuzzing, masquerade) typically inject 1-N malicious frames into an otherwise-normal 100-frame window — the textbook spike pattern. The per-graph mean `recon` is dominated by the 95+ benign frames; the few attack frames' high error is averaged away. Adding `recon_max = scatter(recon_per_node, batch.batch, reduce='max')` as a fourth dimension in `score = max-σ(recon, mahal, kl, recon_max)` (one-line change in `vgae._score`) would capture spike anomalies the current score discards. Likely the single highest-leverage code change for set_04 if attacks-as-spikes is the right model. For "spread" attacks (suppress: missing frames change distribution evenly) the mean is the right reduction; per-node max stays low. So adding it doesn't hurt the spread case — it strictly augments.
+
+**Q10: What does the constant `edge_count=98` invariant imply about VGAE's ability to use edge information?**
+**A:** Less than I claimed. The 98-edge figure is a *raw chain count* fixed by windowing (window=100 → 98 inter-frame edges), not a property of the data. **Distinct (src, dst) transitions per graph vary 65-82** across datasets and *do* differ by class (~3-6 edge gap, ~1σ relative to class variance) — see the table above. So topology is not signal-free; it's a weak per-graph discriminator that the GAT encoder can in principle exploit via attention over real (vs duplicate) transitions.
+
+What's still true: **there is no loss term that supervises edge feature reconstruction.** VGAE consumes `edge_attr` only via GAT attention; if timing-perturbation attacks (set_04 `interval`/`rpm`/`speed`/`standstill`) live in edge_attr deltas, the model has no objective to learn that. The `nbr_logits` head predicts node-identity neighbor classes — *related* to edge-pattern signal but not edge_attr reconstruction. `kl_weight=0.01` further means the latent isn't constrained. So the diagnosis stands directionally: edge_attr signal is under-supervised, just not "invisible". An edge-attr reconstruction head (Linear `[2*latent_dim → edge_feat_dim]` over endpoint pairs, MSE'd against `batch.edge_attr`) would directly target the timing signal — ~30 LOC.
+
+## Next steps — VGAE on can-train-and-test-v1.5 set_01..04
+
+Drawn from the Q1-Q10 diagnosis above. Ranked by expected per-set_04-gap leverage (set_04 is the hardest case and the one with no current signal). All are config or local code changes; none require touching the chassis.
+
+### Code changes (model/loss)
+
+1. **Add `recon_max` to the test score** — `_score` in `vgae.py` currently aggregates per-node reconstruction error to a per-graph mean, throwing away the spike pattern that DoS / fuzzing / masquerade attacks produce (1-N malicious frames in a 100-frame window). One line: `recon_max = scatter(recon_per_node, batch.batch, reduce='max')`; include alongside `recon`/`mahal`/`kl` in the `max-σ` score. Strictly augments — never hurts spread attacks (where per-node max stays low and the mean dominates), recovers spike attacks the current score discards. **Highest expected leverage for set_04 if attacks-as-spikes is the right model.**
+
+2. **Add an edge-attribute reconstruction head** — currently zero loss term supervises edge-feature recovery, even though edge_attr carries the only timing signal (set_04 attack types are timing perturbations on in-vocab IDs). `nn.Linear(2*latent_dim → edge_feat_dim)` over endpoint pairs `(z[edge_index[0]], z[edge_index[1]])`, MSE'd against `batch.edge_attr`, ~30 LOC in `vgae._build()` + `_forward_tensors()` + a new `edge_weight` term in `VGAETaskLoss`. Directly targets set_04's "VGAE has nothing to fit on" diagnosis. Worth one ablation row.
+
+3. **Bottleneck `latent_dim` 64 → 8 or 16** — train graphs have V≈30 nodes and 35-dim continuous features, so `latent_dim=64` is no compression at all. Forces the encoder to discard non-discriminative information. Single hparam override in `ablations.supervised`'s vgae spec. No model code change. Cheapest to try first.
+
+4. **Raise `canid_weight` 0.1 → 1.0 for vocab-OOD-attack datasets (set_01)** — the canid head IS discriminative when attacks inject novel CAN IDs (DoS / fuzzing). Currently weighted at 10% of recon, so its gradient signal is buried. Test on set_01 first since that's where it's actually doing work; expect set_04 to be unaffected (no vocab-OOD attacks).
+
+### Eval / monitoring changes
+
+5. **Drop `val_discrimination_ratio` from EarlyStopping monitor.** It's a derived metric (mean_attack / mean_benign) that inflates wildly on small-vocab datasets where the denominator collapses (set_01: 1.33 looks great but is 0.20 gap with 0.70 benign baseline). Switch to `val_discrimination_gap` (additive, dataset-comparable) or to a proper test-time AUROC computed on a held-out dev split.
+
+6. **Tighten `EarlyStopping.patience` 100 → 30** — set_01 fit 351 epochs to plateau at gap=0.20; the gap maxed around epoch 80 and never recovered. Saves ~70 epochs of compute per ablation row globally.
+
+7. **Log per-node reconstruction-error histograms during val** — answers "spike vs spread" empirically per dataset. ~10 LOC in `validation_step`: log min/max/p50/p95/p99 of `recon_per_node` for benign and attack subsets. Cheap, lets us decide whether action #1 is the right fix from data instead of priors.
+
+### Reporting decisions
+
+8. **Per-attack AUROC is the comparable metric across datasets, not `val_discrimination_ratio`.** It's already logged at test phase via `_log_per_attack_auroc`. Build the empirical results table from `test/{set}/auroc_per_attack/{attack}` once tests finish — that's what goes in the paper.
+
+9. **Set_04 should not anchor the VGAE narrative.** The diagnosis (in-vocab attacks + no edge-attr recon loss + no spike-aware score) explains why VGAE produces gap=0.02 on set_04. If actions #1-#2 don't move it, the honest paper reporting is: VGAE works on vocab-OOD attack regimes (set_01-class), is borderline on mixed regimes (set_02/03), and fails on pure timing-perturbation regimes (set_04). The supervised GAT path is the right tool for the latter; report it there.

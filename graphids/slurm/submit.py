@@ -88,6 +88,7 @@ def submit_row(
         "export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK",
         f'export MLFLOW_TRACKING_URI="sqlite:///{lake_root().rstrip("/")}/mlflow.db"',
         "export MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING=true",
+        "export CUDA_LAUNCH_BLOCKING=1",  # TEMP: trace OOB on set_01/set_04 — REMOVE
     ])
 
     provider = SlurmProvider(
