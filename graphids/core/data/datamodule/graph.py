@@ -56,6 +56,7 @@ class GraphDataModule(pl.LightningDataModule):
         label_filter: str | None = None,
         difficulty: dict | None = None,
         scope_label: int = 0,
+        min_steps_per_epoch: int = 1,
     ):
         super().__init__()
         self.source = dataset
@@ -66,6 +67,7 @@ class GraphDataModule(pl.LightningDataModule):
         self.label_filter = label_filter
         self.difficulty = difficulty
         self.scope_label = scope_label
+        self.min_steps_per_epoch = min_steps_per_epoch
         self._train: InMemoryDataset | None = None
         self._val: InMemoryDataset | None = None
         self._tests: dict[str, InMemoryDataset] = {}
@@ -159,10 +161,11 @@ class GraphDataModule(pl.LightningDataModule):
         # Probe on the same view training will iterate (label_filter='benign'
         # for VGAE) so peak-VRAM estimate matches the actual workload.
         view = self._train_view()
+        min_steps = self.min_steps_per_epoch if self.min_steps_per_epoch > 1 else None
         self._budget = (
-            model.compute_budget(view, self.source.name)
+            model.compute_budget(view, self.source.name, min_steps=min_steps)
             if model is not None
-            else node_budget(self.source.name, train_dataset=view)
+            else node_budget(self.source.name, train_dataset=view, min_steps=min_steps)
         )
         return self._budget
 
@@ -179,7 +182,9 @@ class GraphDataModule(pl.LightningDataModule):
 
     def _pack(self, graphs, sizes, edge_sizes) -> list[Batch]:
         b = self._budget_result()
-        plans = pack_offline(sizes, max_num=b.budget, edge_sizes=edge_sizes, max_edges=b.edge_budget)
+        plans = pack_offline(
+            sizes, max_num=b.budget, edge_sizes=edge_sizes, max_edges=b.edge_budget
+        )
         return [Batch.from_data_list([graphs[i] for i in p]) for p in plans]
 
     def _wrap(self, loader):
@@ -211,7 +216,9 @@ class GraphDataModule(pl.LightningDataModule):
             return self._fixed_loader(view, shuffle=True)
         if self._prebatched is None:
             graphs = self._train_graphs if self._train_graphs is not None else view
-            self._prebatched = self._pack(graphs, view.num_nodes_per_graph, view.num_edges_per_graph)
+            self._prebatched = self._pack(
+                graphs, view.num_nodes_per_graph, view.num_edges_per_graph
+            )
         return self._prebatched_dl(self._prebatched, shuffle=True)
 
     def val_dataloader(self):

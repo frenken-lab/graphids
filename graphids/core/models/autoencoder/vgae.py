@@ -537,34 +537,29 @@ class VGAE(ScoreBasedDetectorMixin):
 
     @torch.no_grad()
     def _fit_score_norm(self, val_loader, device: torch.device) -> None:
-        """Two-pass calibration on benign val."""
-        from torch_geometric.data import Batch as PyGBatch
-
+        """Two-pass calibration on benign val. Full-batch forward + boolean
+        mask on the resulting per-node / per-graph tensors — never decompose
+        the packed batch (matches the dataset-time benign filter convention
+        in :mod:`graphids.core.data.datamodule.graph`)."""
         was_training = self.training
         self.eval()
-
-        def _benign_subbatch(batch):
-            y = batch.y.view(-1)
-            benign_idx = (y == 0).nonzero(as_tuple=False).flatten().tolist()
-            if not benign_idx:
-                return None
-            return PyGBatch.from_data_list([batch.to_data_list()[i] for i in benign_idx])
 
         mus: list[torch.Tensor] = []
         for batch in val_loader:
             batch = batch.clone().to(device)
-            sub = _benign_subbatch(batch)
-            if sub is None:
+            y_g = batch.y.view(-1)
+            if not (y_g == 0).any():
                 continue
-            ea = getattr(sub, "edge_attr", None) if self._uses_edge_attr else None
+            ea = getattr(batch, "edge_attr", None) if self._uses_edge_attr else None
             _z, _kl, mu = self.encode(
-                sub.x,
-                sub.edge_index,
+                batch.x,
+                batch.edge_index,
                 edge_attr=ea,
-                batch=sub.batch,
-                node_id=sub.node_id,
+                batch=batch.batch,
+                node_id=batch.node_id,
             )
-            mus.append(mu.cpu())
+            benign_node = y_g[batch.batch] == 0
+            mus.append(mu[benign_node].cpu())
         if not mus:
             raise RuntimeError("_fit_score_norm: no benign rows in val loader")
         mu_all = torch.cat(mus, dim=0)
@@ -574,14 +569,15 @@ class VGAE(ScoreBasedDetectorMixin):
         accum: dict[str, list[torch.Tensor]] = {n: [] for n in self._SCORE_COMPONENTS}
         for batch in val_loader:
             batch = batch.clone().to(device)
-            sub = _benign_subbatch(batch)
-            if sub is None:
+            y_g = batch.y.view(-1)
+            benign_g = y_g == 0
+            if not benign_g.any():
                 continue
-            recon, recon_max, affinity, rq, _mahal, _kl, _z = self._score(sub)
-            accum["recon"].append(recon.cpu())
-            accum["recon_max"].append(recon_max.cpu())
-            accum["affinity"].append(affinity.cpu())
-            accum["rq"].append(rq.cpu())
+            recon, recon_max, affinity, rq, _mahal, _kl, _z = self._score(batch)
+            accum["recon"].append(recon[benign_g].cpu())
+            accum["recon_max"].append(recon_max[benign_g].cpu())
+            accum["affinity"].append(affinity[benign_g].cpu())
+            accum["rq"].append(rq[benign_g].cpu())
 
         if was_training:
             self.train()

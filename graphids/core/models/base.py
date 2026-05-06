@@ -148,9 +148,7 @@ class _ModelBase(pl.LightningModule):
             self.roc_metric.reset()
         names = getattr(self, "_test_set_names", None) or ["test"]
         if hasattr(self, "test_metrics"):
-            self._per_set_metrics = {
-                n: self.test_metrics.clone(prefix=f"test/{n}/") for n in names
-            }
+            self._per_set_metrics = {n: self.test_metrics.clone(prefix=f"test/{n}/") for n in names}
         # ``scores`` holds 1-D scores for threshold-flavor (VGAE/DGI) and (N,K)
         # probabilities for classifier-flavor (GAT/fusion). ``preds`` is
         # optional hard predictions when the model emits them directly.
@@ -208,9 +206,7 @@ class _ModelBase(pl.LightningModule):
                 class1 = probs[:, 1]
                 self._log_operating_points(class1, labels, prefix=f"test/{name}/")
                 if buf["attack_type"]:
-                    self._log_per_attack_auroc(
-                        name, class1, labels, torch.cat(buf["attack_type"])
-                    )
+                    self._log_per_attack_auroc(name, class1, labels, torch.cat(buf["attack_type"]))
             all_probs.append(probs)
             all_labels.append(labels)
         if all_probs:
@@ -379,7 +375,7 @@ class GraphModuleBase(_ModelBase):
 
     # -- VRAM budget ---------------------------------------------------------
 
-    def compute_budget(self, train_dataset, dataset_name: str) -> Any:
+    def compute_budget(self, train_dataset, dataset_name: str, min_steps: int | None = None) -> Any:
         """Probe-once VRAM budget. ``conv_type`` / ``heads`` are model
         properties, so the probe lives here — not on the DataModule, which
         would have to mirror them as parallel hp.
@@ -392,7 +388,7 @@ class GraphModuleBase(_ModelBase):
             from graphids.core.budget import node_budget
 
             self._budget_cache = node_budget(
-                dataset_name, model=self, train_dataset=train_dataset
+                dataset_name, model=self, train_dataset=train_dataset, min_steps=min_steps
             )
         return self._budget_cache
 
@@ -511,9 +507,7 @@ class GraphModuleBase(_ModelBase):
                 self.log_dict({f"{prefix}{k}": v for k, v in coll.compute().items()})
                 self._log_operating_points(scores, labels, prefix=prefix)
                 if buf["attack_type"]:
-                    self._log_per_attack_auroc(
-                        name, scores, labels, torch.cat(buf["attack_type"])
-                    )
+                    self._log_per_attack_auroc(name, scores, labels, torch.cat(buf["attack_type"]))
                 # Materialize derived preds so _finalize_test_predictions persists them.
                 buf["preds"] = [(scores >= self.test_threshold).long()]
         self._finalize_test_predictions()

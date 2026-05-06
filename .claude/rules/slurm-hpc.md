@@ -17,6 +17,39 @@
 - Heavy tests use `@pytest.mark.slurm` — auto-skipped on login nodes.
 - **Never run `pytest` on login nodes.** Submit a one-row ops job.
 
+## Rendered plan paths
+
+Rendered JSON plans are stored in the repo under `rendered/`, mirroring the
+lake-root path structure so any run can be re-submitted from a known location
+without searching:
+
+```
+rendered/{dataset}/{plan_module_as_path}/seed_{seed}.json
+```
+
+Examples:
+```bash
+gx run ablations.unsupervised -d hcrl_sa -s 42 \
+    -o rendered/hcrl_sa/ablations/unsupervised/seed_42.json
+gx run ablations.supervised   -d hcrl_sa -s 42 \
+    -o rendered/hcrl_sa/ablations/supervised/seed_42.json
+gx run smoke.gat_taunorm      -d hcrl_sa -s 0  \
+    -o rendered/hcrl_sa/smoke/gat_taunorm/seed_0.json
+```
+
+`rendered/` has a local `.gitignore` (`*` / `!.gitignore`) — plan JSONs
+are data artifacts, not source-controlled. The directory itself is tracked
+so the convention is visible in git.
+
+Re-submission from the canonical path:
+```bash
+source .env
+gx plans submit --plan rendered/hcrl_sa/ablations/unsupervised/seed_42.json -C pitzer
+# or single row:
+gx submit --plan rendered/hcrl_sa/ablations/unsupervised/seed_42.json \
+    --row-name vgae --cluster pitzer
+```
+
 ## Job submission — four-step chassis
 
 CLI surface is `graphids run | exec | submit`. No `python -m graphids

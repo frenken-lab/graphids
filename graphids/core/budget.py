@@ -195,6 +195,7 @@ def probe(
     train_dataset,
     *,
     quadratic: bool = False,
+    min_steps: int | None = None,
 ) -> BudgetResult:
     """Probe→pack→repack→sanity, on the actual prebatched workload.
 
@@ -236,10 +237,14 @@ def probe(
         torch.manual_seed(_PROBE_SEED)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(_PROBE_SEED)
-        return _probe_body(model, train_dataset, dev, pack_offline, quadratic=quadratic)
+        return _probe_body(
+            model, train_dataset, dev, pack_offline, quadratic=quadratic, min_steps=min_steps
+        )
 
 
-def _probe_body(model, train_dataset, dev, pack_offline, *, quadratic: bool) -> BudgetResult:
+def _probe_body(
+    model, train_dataset, dev, pack_offline, *, quadratic: bool, min_steps: int | None
+) -> BudgetResult:
     # forward() returns architecture outputs (logits/latents/tuples), not a
     # scalar loss — backward fails. Route through training_step which returns
     # a scalar loss for every model.
@@ -323,6 +328,15 @@ def _probe_body(model, train_dataset, dev, pack_offline, *, quadratic: bool) -> 
         per_node = activation / worst_V
         B1 = max(B0_nodes, int(headroom / per_node))
 
+    # Cap B1 to enforce a minimum step count per epoch. B0_nodes is the floor
+    # (can't pack smaller than the largest single graph), so the cap only bites
+    # when the VRAM budget would produce fewer steps than requested.
+    if min_steps is not None and min_steps > 1:
+        total_nodes = sum(sizes_list)
+        step_cap = total_nodes // min_steps
+        if step_cap > B0_nodes:
+            B1 = min(B1, step_cap)
+
     epn = worst_E / max(1, worst_V)
     edge_budget = max(B0_edges, int(B1 * epn * _EPN_HEADROOM))
 
@@ -392,10 +406,11 @@ def node_budget(
     train_dataset=None,
     conv_type: str | None = None,
     heads: int | None = None,
+    min_steps: int | None = None,
 ) -> BudgetResult:
     if conv_type is None and model is not None:
         conv_type = getattr(model.hparams, "conv_type", "gatv2")
-    return probe(model, train_dataset, quadratic=(conv_type == "gps"))
+    return probe(model, train_dataset, quadratic=(conv_type == "gps"), min_steps=min_steps)
 
 
 def _cpu_cap() -> int:

@@ -19,10 +19,15 @@ def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
         }
 
     data = graph_dm(source=can_bus(dataset=dataset, seed=seed), label_filter="benign")
+    vgae_data = graph_dm(
+        source=can_bus(dataset=dataset, seed=seed),
+        label_filter="benign",
+        min_steps_per_epoch=50,
+    )
 
     vgae = compose(
         model=spec(VGAE),
-        data=data,
+        data=vgae_data,
         loss=spec(VGAE_TASK),
         monitor="val_discrimination_ratio",
         meta=meta("vgae", "vgae"),
@@ -36,6 +41,8 @@ def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
         trainer_overrides={"max_epochs": 400},
     )
     return [
-        vgae.fit("vgae"), vgae.test("vgae"),
-        dgi.fit("dgi"),   dgi.test("dgi"),
+        vgae.fit("vgae"),
+        vgae.test("vgae"),
+        dgi.fit("dgi"),
+        dgi.test("dgi"),
     ]
