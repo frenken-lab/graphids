@@ -107,6 +107,7 @@ def plans_submit(
     )
 
     n_submitted = n_skipped = n_error = 0
+    fit_jid_by_name: dict[str, str] = {}  # name → jid for fit rows submitted this run
     for r in rows:
         st = status_by_row.get(r.name)
         rid = run_id_by_row.get(r.name, "?")
@@ -123,16 +124,35 @@ def plans_submit(
             n_skipped += 1
             continue
 
+        # Fit→test afterok chain (narrow, name-convention only — not a DAG runner).
+        # Per `compose._emit`, every test row is named `{fit_name}-test`. If the
+        # matching fit row was submitted in THIS invocation, chain on its jid so
+        # the test waits for ckpt + LM to exist. Test rows with no fit pair, or
+        # rows whose fit was --skip-finished, submit unchained.
+        afterok = None
+        if (
+            getattr(r, "action", None) == "test"
+            and r.name.endswith("-test")
+            and r.name[:-5] in fit_jid_by_name
+        ):
+            afterok = fit_jid_by_name[r.name[:-5]]
+
         if dry_run:
             prior = f" (prior status={st})" if st else ""
-            console.print(f"[cyan][would-submit][/cyan] {r.name:30s} cluster={cluster} length={length}{prior}")
+            chain = f" afterok={afterok}" if afterok else ""
+            console.print(f"[cyan][would-submit][/cyan] {r.name:30s} cluster={cluster} length={length}{prior}{chain}")
             n_submitted += 1
+            if getattr(r, "action", None) == "fit":
+                fit_jid_by_name[r.name] = "<dry-run>"
             continue
 
         try:
-            jid = submit_row(r, cluster=cluster, length=length)
-            console.print(f"[green][submitted][/green] {r.name:30s} jid={jid}")
+            jid = submit_row(r, cluster=cluster, length=length, depends_on_afterok=afterok)
+            chain = f" (afterok={afterok})" if afterok else ""
+            console.print(f"[green][submitted][/green] {r.name:30s} jid={jid}{chain}")
             n_submitted += 1
+            if getattr(r, "action", None) == "fit":
+                fit_jid_by_name[r.name] = jid
         except Exception as exc:  # noqa: BLE001 — surface any submit failure as one log line
             console.print(f"[red][error][/red] {r.name:30s} {exc}")
             n_error += 1

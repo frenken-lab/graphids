@@ -44,7 +44,8 @@ from graphids.core.models.base import strip_orig_mod_prefix
 
 @functools.cache
 def _ensure_runtime() -> None:
-    """spawn mp + ``file_system`` sharing + structlog. CUDA-safe + OSC-safe."""
+    """spawn mp + ``file_system`` sharing + structlog + strict cuBLAS reductions.
+    CUDA-safe + OSC-safe."""
     import torch.multiprocessing
 
     configure_logging()
@@ -53,6 +54,14 @@ def _ensure_runtime() -> None:
     except RuntimeError:
         pass
     torch.multiprocessing.set_sharing_strategy("file_system")
+    # Disallow reduced-precision intermediate reductions in fp32 cuBLAS GEMM.
+    # On V100 the default heuristic picks a kernel that saturates to fp32 max
+    # for our [300K, 64] @ [64, 1791] sanity probe shape, producing NaN/Inf
+    # in canid_logits/nbr_logits despite finite z and finite weights. See
+    # docs/empirical-notes/2026-05-06-vgae-cublas-overflow-v100.md.
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
+        torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
 
 
 def _instantiate(spec: dict[str, Any]) -> Any:
@@ -169,6 +178,13 @@ def train(row: TrainRow, *, ckpt_path: str | None = None) -> None:
 
 
 def evaluate(row: TrainRow, *, ckpt_path: str | None = None) -> dict[str, float]:
+    if ckpt_path is not None and not os.path.exists(ckpt_path):
+        raise FileNotFoundError(
+            f"test row {row.name!r}: ckpt_path does not exist: {ckpt_path}\n"
+            f"  → fit row may not have completed yet, or saved no best_model.ckpt "
+            f"(EarlyStopping monitor never improved). Check `gx plans show <plan_id>` "
+            f"and `gx plans where <plan_id> --row {row.name.removesuffix('-test') or row.name}`."
+        )
     model, dm, callbacks, kw, device = _prepare(row)
 
     if ckpt_path:
