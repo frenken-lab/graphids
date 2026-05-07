@@ -83,8 +83,22 @@ class FusionRewardCalculator(torch.nn.Module):
         return out
 
     def derive_scores(self, td: TensorDict) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return (anomaly_scores[N], gat_probs_pos[N])."""
-        anomaly = (td["vgae", "errors"] * self._vgae_weights).sum(dim=1).clamp(0.0, 1.0)
+        """Return (anomaly_scores[N], gat_probs_pos[N]).
+
+        ``anomaly`` was previously ``(errors @ weights).clamp(0, 1)`` —
+        saturated to 1.0 for nearly every sample because typical weighted
+        error magnitudes are O(1)–O(10), well above the clamp ceiling. That
+        broke the RL fusion path: at α≈0.5 the blended score
+        ``α·gat_prob + (1−α)·anomaly`` was ≥0.5 everywhere → predict-attack
+        on every sample → MCC≈0 even though AUROC was perfect (the ranking
+        was right but the threshold was uniformly above benigns). Replace
+        the clamp with the Möbius transform ``x/(1+x)``: bounded [0, 1) on
+        non-negative errors (recon, mahal, kl are all non-negative), strictly
+        monotonic, parameter-free, preserves rank ordering. This matches the
+        sigmoidal compression ``weighted_avg`` already uses on `recon_mean`.
+        """
+        weighted = (td["vgae", "errors"] * self._vgae_weights).sum(dim=1)
+        anomaly = weighted / (1.0 + weighted)
         gat_prob = td["gat", "probs"][:, 1]
         return anomaly, gat_prob
 
@@ -184,7 +198,10 @@ class MinimalFusionRewardCalculator(torch.nn.Module):
         return out
 
     def derive_scores(self, td: TensorDict) -> tuple[torch.Tensor, torch.Tensor]:
-        anomaly = (td["vgae", "errors"] * self._vgae_weights).sum(dim=1).clamp(0.0, 1.0)
+        # Same Möbius transform as legacy calculator — see its derive_scores
+        # docstring for the saturation bug being fixed.
+        weighted = (td["vgae", "errors"] * self._vgae_weights).sum(dim=1)
+        anomaly = weighted / (1.0 + weighted)
         gat_prob = td["gat", "probs"][:, 1]
         return anomaly, gat_prob
 
