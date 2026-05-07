@@ -57,6 +57,7 @@ class TrainerCfg(_StrictModel):
     callbacks: list[ClassPath]
     default_root_dir: str
     log_every_n_steps: int | None = None
+    reload_dataloaders_every_n_epochs: int = 0
 
 
 class RenderedConfig(_StrictModel):

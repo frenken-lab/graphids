@@ -202,6 +202,7 @@ _FUSION_TRAINER_OVERLAY: dict[str, Any] = {
     "gradient_clip_val": None,
     "max_epochs": 1500,
     "log_every_n_steps": 10,
+    "reload_dataloaders_every_n_epochs": 1,
 }
 
 

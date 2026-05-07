@@ -152,10 +152,19 @@ def _trainer_kwargs(callbacks: list, row: TrainRow, kw: dict, phase: str) -> dic
     if os.environ.get("SLURM_JOB_ID"):
         plugins.append(SLURMEnvironment(auto_requeue=True, requeue_signal=signal.SIGUSR2))
     import mlflow as _mlflow
+    from mlflow.exceptions import MlflowException as _MlflowException
 
+    from graphids._mlflow import configure_tracking_uri
+
+    configure_tracking_uri()
     _mlflow.enable_system_metrics_logging()
+    exp_name = f"graphids/{row.meta.dataset}/{row.meta.group}"
+    try:
+        _mlflow.MlflowClient().create_experiment(exp_name)
+    except _MlflowException:
+        pass  # already exists — concurrent job won the create race
     logger = MLFlowLogger(
-        experiment_name=f"graphids/{row.meta.dataset}/{row.meta.group}",
+        experiment_name=exp_name,
         run_name=row.identity.run_name,
         tags=identity_tags(row, phase),
     )
