@@ -81,15 +81,31 @@ def submit_row(
         script_dir, job_name = Path(lake_env) / "slurm" / "scripts" / row.name, row.name
     script_dir.mkdir(parents=True, exist_ok=True)
 
-    worker_init = " && ".join([
-        f'if [ -f "{venv}/../.env" ]; then source "{venv}/../.env"; fi',
-        f"source {venv}/bin/activate",
-        "export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK",
-        "export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK",
-        f'export MLFLOW_TRACKING_URI="sqlite:///{lake_root().rstrip("/")}/mlflow.db"',
-        "export MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING=true",
-        # "export CUDA_LAUNCH_BLOCKING=1",  # TEMP: trace OOB on set_01/set_04 — REMOVE
-    ])
+    # CPU-mode jobs (tiny fusion models, 18-dim / ~10K params) are dominated
+    # by OpenMP/MKL thread-spawn overhead when SLURM allocates 16 cores.
+    # Pin all three thread-pool vars to 1; CUDA kernels ignore them anyway.
+    if row.resources.mode == "cpu":
+        thread_exports = [
+            "export OMP_NUM_THREADS=1",
+            "export MKL_NUM_THREADS=1",
+            "export PYTORCH_NUM_THREADS=1",
+        ]
+    else:
+        thread_exports = [
+            "export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK",
+            "export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK",
+        ]
+
+    worker_init = " && ".join(
+        [
+            f'if [ -f "{venv}/../.env" ]; then source "{venv}/../.env"; fi',
+            f"source {venv}/bin/activate",
+            *thread_exports,
+            f'export MLFLOW_TRACKING_URI="sqlite:///{lake_root().rstrip("/")}/mlflow.db"',
+            "export MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING=true",
+            # "export CUDA_LAUNCH_BLOCKING=1",  # TEMP: trace OOB on set_01/set_04 — REMOVE
+        ]
+    )
 
     provider = SlurmProvider(
         **profile,
@@ -106,11 +122,7 @@ def submit_row(
     # rows submitted via `plans submit` run with random init and report garbage
     # AUROCs. Path is deterministic from row meta, captured in the sbatch body
     # at submit time → still drift-resistant per chassis-invariants.
-    if (
-        ckpt_path is None
-        and isinstance(row, TrainRow)
-        and row.action == "test"
-    ):
+    if ckpt_path is None and isinstance(row, TrainRow) and row.action == "test":
         ckpt_path = f"{row.identity.run_dir}/checkpoints/best_model.ckpt"
 
     cmd_parts = ["python", "-m", "graphids", "exec", "--row", row.model_dump_json()]

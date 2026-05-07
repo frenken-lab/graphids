@@ -216,7 +216,7 @@ def fusion(
     mode: str = "max",
     trainer_overrides: dict[str, Any] | None = None,
     patience: int = 40,
-    batch_size: int = 1024,
+    batch_size: int = 16384,
     episode_sample_size: int = 20_000,
     callback_extras: dict[str, Any] | None = None,
 ) -> RowSpec:
