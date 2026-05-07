@@ -391,3 +391,49 @@ vehicle profiles; the ID vocabulary loses its discriminative edge.
 id_lookup achieves the best R@99P macro-avg (0.267 vs 0.221 for none), driven by hcrl_sa
 (0.707 vs 0.499). The lookup encoding provides better high-precision recall on the
 dataset where ID space is most structured.
+
+---
+
+## Decision: GAT configuration for fusion training and large-scale runs
+
+**Verdict: `gat_loss=focal`, `gat_sampling=none`, `id_encoding=none`**
+
+All analysis below excludes hcrl_sa (toy dataset, single vehicle type, not representative
+of the target evaluation distribution).
+
+### gat_loss → focal
+
+`ce` achieves MCC=0.001 and R@99P=0.004 on set_04 despite AUROC=0.766. The model outputs
+a near-constant prediction at threshold — AUROC is blind to this because it is
+threshold-free, but MCC and R@99P expose it. `weighted_ce` has the same failure
+(R@99P=0.032 on set_04). Both collapse because set_04's timing-perturbation attacks
+have in-vocabulary IDs; uniform and inverse-frequency weighting push the model to
+over-predict attack even when attack signal is subtle, producing a degenerate threshold.
+
+`focal` avoids this: set_04 MCC=0.233, R@99P=0.128, consistent with the `none` baseline.
+`focal` also leads on AP macro-avg across set_01–04 (0.669 vs 0.664 for `none`), indicating
+better probability calibration across the full precision-recall curve. The fusion model
+receives GAT probs and confidence as input features; a GAT with a degenerate output
+distribution at threshold corrupts those features regardless of the fusion architecture.
+`none` is competitive on macro AUROC (0.711 vs 0.709) but `focal` is strictly safer
+on calibration with no AUROC penalty. `focal` is already hardcoded in `ablations/fusion.py`.
+
+### gat_sampling → none
+
+`curriculum_vgae` is worse than baseline on every metric except AUROC (gap 0.008).
+On set_04: MCC=0.139 vs 0.226, R@99P=0.044 vs 0.154. The VGAE scores timing-perturbation
+attacks as easy (IDs are in-vocab → low reconstruction error → low difficulty rank),
+so those samples are deprioritized in early epochs and the model never fully learns them.
+`curriculum_random` matches `none` on AUROC (0.710 vs 0.711) and MCC but is worse on
+R@99P (0.125 vs 0.151). No sampling variant beats `none` on any metric by more than
+single-seed noise. The mechanism adds a VGAE scoring pass each epoch plus DataLoader
+reconstruction; the cost is not justified by the evidence.
+
+### id_encoding → none
+
+`id_hash` and `id_lookup` are uniformly worse than `none` on set_01–04:
+AUROC −0.018/−0.019, AP −0.012, MCC −0.024/−0.003. The hcrl_sa lift (+0.069 AUROC for
+id_hash) is specific to that dataset's small, structured single-vehicle vocabulary.
+set_01–04 span multiple vehicles with ~2048 unique IDs; the vocabulary is too diverse
+for a fixed hash or lookup table to add signal beyond the learned embedding. Using `none`
+also keeps GAT features dataset-agnostic, which benefits fusion generalisation.
