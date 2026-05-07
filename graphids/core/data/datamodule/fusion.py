@@ -30,7 +30,7 @@ from graphids.core.data.extract import (
 log = get_logger(__name__)
 
 
-def _load_td(path: Path, which: str) -> TensorDict:
+def _load_td(path: Path, which: str) -> tuple[TensorDict, dict[int, str]]:
     blob = torch.load(path, map_location="cpu", weights_only=False)
     version = blob.get("version") if isinstance(blob, dict) else None
     if version != CACHE_VERSION:
@@ -38,7 +38,8 @@ def _load_td(path: Path, which: str) -> TensorDict:
             f"fusion {which} cache at {path} has version={version!r}, "
             f"expected {CACHE_VERSION}; re-run the ExtractRow"
         )
-    return TensorDict(blob["td"], batch_size=[blob["td"]["labels"].size(0)])
+    td = TensorDict(blob["td"], batch_size=[blob["td"]["labels"].size(0)])
+    return td, dict(blob.get("attack_type_names") or {0: "benign"})
 
 
 class FusionDataModule(pl.LightningDataModule):
@@ -56,6 +57,7 @@ class FusionDataModule(pl.LightningDataModule):
         self._batch_size = episode_sample_size if method in ("dqn", "bandit") else batch_size
         self.train_td: TensorDict | None = None
         self.val_td: TensorDict | None = None
+        self.attack_type_names: dict[int, str] = {0: "benign"}
 
     @property
     def steps_per_epoch(self) -> int:
@@ -77,8 +79,8 @@ class FusionDataModule(pl.LightningDataModule):
             if not p.exists():
                 raise FileNotFoundError(f"cached fusion states not found: {p}")
 
-        self.train_td = _load_td(train_path, "train")
-        self.val_td = _load_td(val_path, "val")
+        self.train_td, _ = _load_td(train_path, "train")
+        self.val_td, self.attack_type_names = _load_td(val_path, "val")
         log.info(
             "loaded_cached_states",
             dir=str(d),

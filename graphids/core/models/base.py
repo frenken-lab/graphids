@@ -118,6 +118,11 @@ class _ModelBase(pl.LightningModule):
             schema = getattr(first, "SCHEMA", None)
             if schema is not None:
                 names_map = getattr(schema, "attack_type_names", None)
+        # FusionDataModule has no test_datasets but exposes the schema's map
+        # directly — the cache was extracted upstream so the schema isn't
+        # reachable through a Dataset object here.
+        if names_map is None:
+            names_map = getattr(dm, "attack_type_names", None)
         self._attack_type_names = dict(names_map or {0: "benign"})
 
     # -- curriculum loss epoch sync ------------------------------------------

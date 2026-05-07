@@ -100,9 +100,7 @@ class FusionModuleBase(_ModelBase):
 
     def _supervised_loss(self, td, labels):
         scores = self.forward_scores(td)
-        loss = nn.functional.binary_cross_entropy(
-            scores.clamp(1e-7, 1 - 1e-7), labels.float()
-        )
+        loss = nn.functional.binary_cross_entropy(scores.clamp(1e-7, 1 - 1e-7), labels.float())
         return scores, loss
 
     def training_step(self, batch, batch_idx):
@@ -125,10 +123,12 @@ class FusionModuleBase(_ModelBase):
             return
         result = self.predict(td)
         preds, td_norm, alphas = result["preds"], result["td_norm"], result["alphas"]
-        rewards = self.reward_calc.compute(td_norm, preds, labels, alphas)
+        rewards, components = self.reward_calc.compute(td_norm, preds, labels, alphas)
         self.log("val_acc", (preds == labels).float().mean().item(), prog_bar=True)
         self.log("avg_reward", rewards.mean().item())
         self.log("avg_alpha", alphas.mean().item())
+        for k, v in components.items():
+            self.log(f"val_{k}", v.mean().item())
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
         td, labels = batch
@@ -238,7 +238,7 @@ class RLFusionBase(FusionModuleBase):
     def train_episode(self, features_td: TensorDict, labels: torch.Tensor) -> dict:
         actions, alphas, td_norm = self.select_action_batch(features_td, training=True)
         preds = (alphas > self.decision_threshold).long()
-        rewards = self.reward_calc.compute(td_norm, preds, labels, alphas)
+        rewards, components = self.reward_calc.compute(td_norm, preds, labels, alphas)
 
         obs = flatten_features(td_norm)  # CPU flat tensor for buffer
         self._after_act(actions, obs, rewards)
@@ -267,6 +267,7 @@ class RLFusionBase(FusionModuleBase):
             "avg_reward": rewards.mean().item(),
             "avg_alpha": alphas.mean().item(),
             "loss": self._learn_step(),
+            **{k: v.mean().item() for k, v in components.items()},
             **self._extra_metrics(),
         }
 

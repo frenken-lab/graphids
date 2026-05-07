@@ -28,7 +28,10 @@ VAL_FILENAME = "val_states.pt"
 # v4 — TensorDict cache shape; per-extractor named feature dicts replace the
 # flat [N, 15] state vector + LAYOUT offsets. Old caches are incompatible by
 # format (top-level keys changed); the version field forces re-extraction.
-CACHE_VERSION = 5  # v5: DGI extract_features now returns dict (pos_stats/conf/z_stats), not flat 8D tensor
+# v5: DGI extract_features now returns dict (pos_stats/conf/z_stats), not flat 8D tensor.
+# v6: per-graph ``attack_type`` propagated into the cache + ``attack_type_names``
+# stashed in the blob so fusion test_step can emit ``auroc_per_attack/{name}``.
+CACHE_VERSION = 6
 
 
 def _extract_states(
@@ -53,6 +56,7 @@ def _extract_states(
 
     chunks: list[TensorDict] = []
     labels_chunks: list[torch.Tensor] = []
+    attack_chunks: list[torch.Tensor] = []
     with ExitStack() as stack, torch.no_grad():
         for model in models.values():
             stack.enter_context(eval_mode(model))
@@ -64,9 +68,14 @@ def _extract_states(
             chunk = TensorDict(per_model, batch_size=[n])
             chunks.append(chunk)
             labels_chunks.append(batch.y)
+            at = getattr(batch, "attack_type", None)
+            if at is not None:
+                attack_chunks.append(at)
 
     td = torch.cat(chunks, dim=0)
     td["labels"] = torch.cat(labels_chunks)
+    if attack_chunks:
+        td["attack_type"] = torch.cat(attack_chunks)
     return td
 
 
@@ -134,9 +143,15 @@ def extract_states(
     train_td = train_td.cpu()
     val_td = val_td.cpu()
 
+    # Stash schema's attack code → name map so the fusion test path can emit
+    # ``auroc_per_attack/{name}`` keys (looked up in FusionDataModule).
+    schema = getattr(type(train_ds), "SCHEMA", None)
+    names_map = getattr(schema, "attack_type_names", None) if schema is not None else None
+
     out.mkdir(parents=True, exist_ok=True)
-    torch.save({"td": train_td.to_dict(), "version": CACHE_VERSION}, train_path)
-    torch.save({"td": val_td.to_dict(), "version": CACHE_VERSION}, val_path)
+    blob_extras = {"version": CACHE_VERSION, "attack_type_names": dict(names_map or {0: "benign"})}
+    torch.save({"td": train_td.to_dict(), **blob_extras}, train_path)
+    torch.save({"td": val_td.to_dict(), **blob_extras}, val_path)
 
     log.info(
         "states_saved",

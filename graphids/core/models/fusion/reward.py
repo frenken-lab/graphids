@@ -62,8 +62,15 @@ class FusionRewardCalculator(torch.nn.Module):
         preds: torch.Tensor,
         labels: torch.Tensor,
         alphas: torch.Tensor,
-    ) -> torch.Tensor:
-        """Vectorized reward. Returns [N]."""
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Vectorized reward. Returns ``(total[N], components)``.
+
+        ``components`` is a per-term breakdown of what each shaping term
+        contributed to ``total`` per graph (mutually-exclusive correct/wrong
+        terms zero out on the inactive branch). ``sum(components.values()) ==
+        total`` by construction. Used by callers to log per-component means
+        per epoch — diagnostic for which term the policy is exploiting.
+        """
         anomaly, gat_prob = self.derive_scores(td)
         vgae_conf = td["vgae", "conf"].squeeze(-1)
         gat_conf = td["gat", "conf"].squeeze(-1)
@@ -76,7 +83,6 @@ class FusionRewardCalculator(torch.nn.Module):
         max_score = torch.max(anomaly, gat_prob)
         confidence = torch.where(labels == 1, max_score, 1.0 - max_score)
         bonus = self._confidence_weight * confidence + self._combined_conf_weight * combined_conf
-        correct_reward = base + agreement + bonus
 
         disagreement = self._disagreement_penalty * (1.0 - agreement)
         fused = alphas * gat_prob + (1 - alphas) * anomaly
@@ -85,8 +91,16 @@ class FusionRewardCalculator(torch.nn.Module):
             self._overconf_penalty * fused,
             self._overconf_penalty * (1.0 - fused),
         )
-        wrong_reward = base + disagreement + overconf
-
-        total = torch.where(correct, correct_reward, wrong_reward)
         balance = self._balance_weight * (1.0 - (alphas - 0.5).abs() * 2)
-        return total + balance
+
+        zero = torch.zeros_like(base)
+        components = {
+            "r_classification": base,
+            "r_agreement": torch.where(correct, agreement, zero),
+            "r_confidence": torch.where(correct, bonus, zero),
+            "r_disagreement_penalty": torch.where(correct, zero, disagreement),
+            "r_overconfidence_penalty": torch.where(correct, zero, overconf),
+            "r_balance": balance,
+        }
+        total = sum(components.values())
+        return total, components
