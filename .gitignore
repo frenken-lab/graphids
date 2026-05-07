@@ -119,6 +119,7 @@ site/
 notebooks/node_modules/
 notebooks/deno.lock
 .claude/scheduled_tasks.lock
+.claude/bypasses.jsonl
 tmlr_output/
 users/
 .gitnexus
