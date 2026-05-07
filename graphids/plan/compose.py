@@ -201,7 +201,8 @@ _FUSION_TRAINER_OVERLAY: dict[str, Any] = {
     "precision": "32-true",
     "gradient_clip_val": None,
     "max_epochs": 1500,
-    "log_every_n_steps": 10,
+    "log_every_n_steps": 50,
+    "check_val_every_n_epoch": 5,
     "reload_dataloaders_every_n_epochs": 1,
 }
 
@@ -214,8 +215,8 @@ def fusion(
     monitor: str = "val_acc",
     mode: str = "max",
     trainer_overrides: dict[str, Any] | None = None,
-    patience: int = 200,
-    batch_size: int = 128,
+    patience: int = 40,
+    batch_size: int = 1024,
     episode_sample_size: int = 20_000,
     callback_extras: dict[str, Any] | None = None,
 ) -> RowSpec:
