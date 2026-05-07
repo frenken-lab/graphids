@@ -47,6 +47,9 @@ def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
     dqn = fuse("dqn", spec(DQN, state_dim=_state_dim, reward_kwargs=dict(REWARD)))
     mlp = fuse("mlp", spec(MLP_FUSION, state_dim=_state_dim))
     moe = fuse("moe", spec(MOE_FUSION, state_dim=_state_dim))
+    # Aux-loss ablation row — same model, aux_weight=0.0 (no load-balance pressure).
+    # Direct test of whether the Switch-style L_aux is the load-bearing piece for MoE.
+    moe_noaux = fuse("moe_noaux", spec(MOE_FUSION, state_dim=_state_dim, aux_weight=0.0))
     weighted_avg = fuse("weighted_avg", spec(WAVG_FUSION, state_dim=_state_dim))
 
     return [
@@ -65,6 +68,8 @@ def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
         mlp.test("mlp"),
         moe.fit("moe"),
         moe.test("moe"),
+        moe_noaux.fit("moe_noaux"),
+        moe_noaux.test("moe_noaux"),
         weighted_avg.fit("weighted_avg"),
         weighted_avg.test("weighted_avg"),
     ]
