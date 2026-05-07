@@ -58,6 +58,7 @@ class MoEFusionModule(FusionModuleBase):
         gate_hidden: tuple[int, ...] = (32,),
         lr: float = 1e-3,
         decision_threshold: float = 0.5,
+        aux_weight: float = 0.01,
     ):
         super().__init__(state_dim=state_dim, decision_threshold=decision_threshold)
         self._store_init_kwargs(locals())
@@ -79,8 +80,10 @@ class MoEFusionModule(FusionModuleBase):
         expert_scores = torch.sigmoid(torch.cat([h(x) for h in self.experts], dim=-1))
         weights = torch.softmax(self.gate(x), dim=-1)  # [N, K]
 
-        self._last_gate_weights = weights.detach()
-        self._last_expert_scores = expert_scores.detach()
+        # Cache UNDETACHED so _aux_loss can flow gradient through the gate;
+        # _log_gate_diagnostics detaches at point of use for logging.
+        self._last_gate_weights = weights
+        self._last_expert_scores = expert_scores
 
         mixed = (expert_scores * weights).sum(-1)
         return mixed.clamp(1e-7, 1 - 1e-7)
@@ -88,13 +91,22 @@ class MoEFusionModule(FusionModuleBase):
     def configure_optimizers(self):
         return optim.Adam(self.parameters(), lr=self.lr)
 
+    def _aux_loss(self) -> torch.Tensor:
+        """Load-balance aux for dense MoE (Switch Eq. 4, f_i := P_i since
+        dense routing has no dispatch). Min α at uniform, max α·K at collapse."""
+        if self._last_gate_weights is None:
+            return torch.tensor(0.0, device=self.device)
+        P = self._last_gate_weights.mean(dim=0)  # [K]
+        K = P.numel()
+        return K * (P * P).sum()
+
     # -- routing diagnostics -------------------------------------------------
 
     def _log_gate_diagnostics(self, prefix: str) -> None:
-        w = self._last_gate_weights
-        s = self._last_expert_scores
-        if w is None or s is None:
+        if self._last_gate_weights is None or self._last_expert_scores is None:
             return
+        w = self._last_gate_weights.detach()
+        s = self._last_expert_scores.detach()
         # Entropy: 0 = collapsed to one expert, log(K) = uniform routing.
         entropy = -(w * w.clamp_min(1e-9).log()).sum(-1).mean()
         self.log(f"{prefix}/gate_entropy", entropy.item())
@@ -108,7 +120,17 @@ class MoEFusionModule(FusionModuleBase):
         self.log(f"{prefix}/expert_disagreement", s.var(dim=-1).mean().item())
 
     def training_step(self, batch, batch_idx):
-        loss = super().training_step(batch, batch_idx)
+        # Explicit BCE + aux composition. We bypass the base class's thin
+        # automatic_optimization branch (which only handles BCE) so we can
+        # add the load-balance aux. Lightning still receives a single scalar
+        # loss; gradient flows through P (gate output) via aux.
+        td, labels = batch
+        _, bce = self._supervised_loss(td, labels)
+        aux = self._aux_loss()
+        loss = bce + self.aux_weight * aux
+        self.log("train/bce", bce)
+        self.log("train/aux", aux)
+        self.log("train_loss", loss)
         self._log_gate_diagnostics("train")
         return loss
 
