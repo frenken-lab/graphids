@@ -88,11 +88,34 @@ class FusionDataModule(pl.LightningDataModule):
         )
 
     def _batches(self, td: TensorDict, *, shuffle: bool):
+        # Returns a reusable iterable, not a bare generator.
+        #
+        # Lightning 2.6 calls iter(data_fetcher) TWICE at each epoch ≥1 when
+        # reload_dataloaders_every_n_epochs=1: once in FitLoop.setup_data() and
+        # once in TrainingEpochLoop.on_run_start().  Because generators are their
+        # own iterators (iter(gen) == gen), both calls share the same object.
+        # The first call prefetches batch 0 via _PrefetchDataFetcher, exhausting
+        # a 1-batch generator.  The second call finds nothing and sets done=True,
+        # causing all epochs after the first to process 0 batches.
+        #
+        # Returning an object with __iter__ + __len__ avoids both failure modes:
+        # - __iter__ creates a fresh generator on each call (no shared state).
+        # - __len__ makes sized_len() return a value, so _PrefetchDataFetcher
+        #   skips prefetching entirely (prefetch only runs when length is None).
+        batch_size = self._batch_size
         n = td.batch_size[0]
-        idx = torch.randperm(n) if shuffle else torch.arange(n)
-        for start in range(0, n, self._batch_size):
-            sub = td[idx[start : start + self._batch_size]]
-            yield sub.exclude("labels"), sub["labels"]
+
+        class _Batches:
+            def __len__(self):
+                return math.ceil(n / batch_size)
+
+            def __iter__(self):
+                idx = torch.randperm(n) if shuffle else torch.arange(n)
+                for start in range(0, n, batch_size):
+                    sub = td[idx[start : start + batch_size]]
+                    yield sub.exclude("labels"), sub["labels"]
+
+        return _Batches()
 
     def train_dataloader(self):
         return self._batches(self.train_td, shuffle=True)
