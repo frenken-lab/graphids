@@ -48,14 +48,26 @@ def build_mlp_body(state_dim: int, hidden_dim: int, num_layers: int) -> nn.Seque
 
 def flatten_features(td: TensorDict) -> torch.Tensor:
     """Concatenate every leaf tensor along the last dim. Stable order:
-    sorted nested-key path so the same TD always yields the same layout."""
-    leaves = sorted(td.keys(include_nested=True, leaves_only=True))
+    sorted nested-key path so the same TD always yields the same layout.
+
+    Only tuple-keyed (model-namespaced) leaves are concatenated. Top-level
+    str leaves are reserved for metadata (``labels``, ``attack_type``);
+    they pass through the TD untouched and reach ``test_step`` via
+    ``td.get(...)`` instead of being treated as features.
+    """
+    leaves = sorted(
+        k for k in td.keys(include_nested=True, leaves_only=True) if isinstance(k, tuple)
+    )
     return torch.cat([td[k] for k in leaves], dim=-1)
 
 
 def feature_dim(td: TensorDict) -> int:
     """Total flat feature dim implied by ``flatten_features(td)``."""
-    return sum(td[k].size(-1) for k in td.keys(include_nested=True, leaves_only=True))
+    return sum(
+        td[k].size(-1)
+        for k in td.keys(include_nested=True, leaves_only=True)
+        if isinstance(k, tuple)
+    )
 
 
 class FusionModuleBase(_ModelBase):
@@ -74,7 +86,7 @@ class FusionModuleBase(_ModelBase):
         self._store_init_kwargs(locals())
         self.register_buffer("alpha_values", torch.linspace(0, 1, alpha_steps))
         if reward_kwargs is not None:
-            self.reward_calc = FusionRewardCalculator(**reward_kwargs)
+            self.reward_calc = FusionRewardCalculator.from_kwargs(**reward_kwargs)
         self.test_metrics = classification_test_metrics(2)
 
     def configure_optimizers(self):

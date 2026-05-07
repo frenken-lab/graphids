@@ -45,6 +45,7 @@ from graphids.plan.primitives import (
     LINEAR_RAMP,
     MLP_FUSION,
     REWARD,
+    REWARD_MINIMAL,
     SCORE_RANDOM,
     SCORE_VGAE,
     VGAE,
@@ -92,4 +93,5 @@ __all__ = [
     "GRAPH_DM",
     "FUSION_DM",
     "REWARD",
+    "REWARD_MINIMAL",
 ]

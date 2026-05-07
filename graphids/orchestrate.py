@@ -219,6 +219,15 @@ def evaluate(row: TrainRow, *, ckpt_path: str | None = None) -> dict[str, float]
     # ckpt_path NOT passed — already restored above so calibration saw
     # trained weights. Lightning's ckpt-load would happen too late.
     trainer.test(model, datamodule=dm)
+    # Persist raw test predictions so post-hoc work (Platt/temperature scaling,
+    # threshold sweeps, calibration plots) can run without resubmitting fit.
+    preds = getattr(model, "_test_predictions", None)
+    if preds:
+        from pathlib import Path
+
+        out = Path(row.identity.run_dir) / "test_predictions.pt"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(preds, out)
     return {k: float(v) for k, v in trainer.callback_metrics.items()}
 
 

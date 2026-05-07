@@ -53,9 +53,15 @@ CAN_BUS = "graphids.core.data.datasets.can_bus.CANBusSource"
 GRAPH_DM = "graphids.core.data.datamodule.GraphDataModule"
 FUSION_DM = "graphids.core.data.datamodule.fusion.FusionDataModule"
 
-# Fusion reward shaping — methodological constant shared by bandit + dqn.
-# Not an ablation axis; if you need to override, do it inline at the call site
-# and update the paper.
+# Fusion reward shaping. Two variants — a fusion plan picks one by passing the
+# corresponding dict as ``reward_kwargs`` to the bandit/DQN spec.
+#
+# ``REWARD`` is the legacy 2-way (correct/incorrect) base reward with agreement
+# / confidence / disagreement / overconfidence / balance shaping terms. Pre-
+# 2026-05-07 default. Diagnosed (2026-05-06 fusion analysis) as the cause of
+# the all-benign equilibrium under 86% benign hcrl_sa and the constant-arm-20
+# RL collapse — the agreement bonus rewards the majority-class rule, and the
+# balance term penalizes the data-optimal alpha=1.0 direction.
 REWARD: dict[str, Any] = {
     "vgae_weights": [0.4, 0.3, 0.3],
     "correct": 3.0,
@@ -65,6 +71,22 @@ REWARD: dict[str, Any] = {
     "disagreement_penalty": -1.0,
     "overconf_penalty": -1.5,
     "balance_weight": 0.3,
+}
+
+# ``REWARD_MINIMAL`` — Phase 1.1 of the fusion improvement plan. PBRS-compliant
+# 4-way (TP/TN/FP/FN) base reward + attack-gated confidence bonus. No shaping
+# terms that violate Ng-Harada-Russell 1999 policy invariance. FN cost = 4×FP
+# cost encodes IDS F2-optimization (Davis & Goadrich 2006). Submit alongside
+# the legacy variant once Phase 0 diagnostic logging confirms r_agreement
+# dominance under the legacy reward.
+REWARD_MINIMAL: dict[str, Any] = {
+    "mode": "minimal",
+    "vgae_weights": [0.4, 0.3, 0.3],
+    "tp_reward": 3.0,
+    "tn_reward": 1.5,
+    "fp_cost": -1.5,
+    "fn_cost": -6.0,
+    "confidence_weight": 0.3,
 }
 
 
