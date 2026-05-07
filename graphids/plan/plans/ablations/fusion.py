@@ -1,6 +1,6 @@
 """Fusion plan.
 
-Emits one extract row + 4 method-specific (fit, test) pairs. Submit:
+Emits one extract row + 5 method-specific (fit, test) pairs. Submit:
 extract first, then chain method rows via ``--depends-on-afterok``.
 """
 
@@ -9,7 +9,17 @@ from __future__ import annotations
 from typing import Any
 
 from graphids.paths import best_ckpt, states_dir
-from graphids.plan import BANDIT, DQN, MLP_FUSION, REWARD, WAVG_FUSION, extract, fusion, spec
+from graphids.plan import (
+    BANDIT,
+    DQN,
+    MLP_FUSION,
+    MOE_FUSION,
+    REWARD,
+    WAVG_FUSION,
+    extract,
+    fusion,
+    spec,
+)
 
 
 def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
@@ -36,6 +46,7 @@ def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
     bandit = fuse("bandit", spec(BANDIT, state_dim=_state_dim, reward_kwargs=dict(REWARD)))
     dqn = fuse("dqn", spec(DQN, state_dim=_state_dim, reward_kwargs=dict(REWARD)))
     mlp = fuse("mlp", spec(MLP_FUSION, state_dim=_state_dim))
+    moe = fuse("moe", spec(MOE_FUSION, state_dim=_state_dim))
     weighted_avg = fuse("weighted_avg", spec(WAVG_FUSION, state_dim=_state_dim))
 
     return [
@@ -52,6 +63,8 @@ def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
         dqn.test("dqn"),
         mlp.fit("mlp"),
         mlp.test("mlp"),
+        moe.fit("moe"),
+        moe.test("moe"),
         weighted_avg.fit("weighted_avg"),
         weighted_avg.test("weighted_avg"),
     ]

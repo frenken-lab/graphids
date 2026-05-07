@@ -4,6 +4,7 @@ from .bandit import BanditFusionModule
 from .base import FusionModuleBase, RLFusionBase, flatten_features
 from .dqn import DQNFusionModule
 from .mlp import MLPFusionModule
+from .moe import MoEFusionModule
 from .weighted_avg import WeightedAvgModule
 
 __all__ = [
@@ -11,6 +12,7 @@ __all__ = [
     "DQNFusionModule",
     "FusionModuleBase",
     "MLPFusionModule",
+    "MoEFusionModule",
     "RLFusionBase",
     "WeightedAvgModule",
     "flatten_features",

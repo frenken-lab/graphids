@@ -34,6 +34,7 @@ DGI = "graphids.core.models.autoencoder.dgi.DGI"
 BANDIT = "graphids.core.models.fusion.bandit.BanditFusionModule"
 DQN = "graphids.core.models.fusion.dqn.DQNFusionModule"
 MLP_FUSION = "graphids.core.models.fusion.mlp.MLPFusionModule"
+MOE_FUSION = "graphids.core.models.fusion.moe.MoEFusionModule"
 WAVG_FUSION = "graphids.core.models.fusion.weighted_avg.WeightedAvgModule"
 
 # Losses
