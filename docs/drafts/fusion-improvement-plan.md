@@ -13,7 +13,26 @@ Two failure axes interact in the 2026-05-06 results: a **broken reward** (PBRS-v
 `vgae.extract_features` then thrown away). Don't mix the two fixes in one row — they have
 different blast radii and different acceptance criteria. Diagnose first (Phase 0), fix the
 reward without touching the cache (Phase 1–2), then decide whether the residual gap justifies
-extraction-pipeline changes (Phase 3–4). Phase 5 is the off-ramp if RL stays brittle.
+extraction-pipeline changes (Phase 3–4). Phase 5 is an architecture upgrade for per-sample
+gating, not a fallback — submittable in parallel with Phase 1+2 once MLP is the confirmed
+supervised baseline.
+
+> **2026-05-07 update — Phase 0 results in.** Clean hcrl_sa MLP baseline:
+> `AUROC=0.859, MCC=0.737, F1(attack)=0.738, recall=0.589, precision=0.987`.
+> Stratified per-attack: `auroc/dos=0.999`, `auroc/fuzzing=0.725`. Two findings revise
+> assumptions in this plan:
+>
+> 1. **MLP isn't broken.** MCC=0.737 with no reward shaping (BCE only) > weighted_avg's 0.622.
+>    The "MCC≈0 collapse" was specifically RL + biased reward shaping, **not** a
+>    fusion-architecture problem. MLP sees all 18 features and beats score-fusion. This
+>    reframes Phase 5.1 (MoE+BCE) from "off-ramp if RL fails" to "architecture upgrade for
+>    per-sample gating" — MLP already proved supervised over the full feature vector works.
+> 2. **Fuzzing, not suppress, is the binding subtype on data we can measure.** Suppress
+>    (attack_type=15) doesn't appear in any of the five datasets' train splits per the
+>    catalog (`hcrl_sa, set_01..04`). t05 stays an aspirational gate until the test-side
+>    pipeline is verified to surface it. Fuzzing is in **all five** datasets and accounts
+>    for the entire MLP AUROC gap on hcrl_sa (DOS=0.999 vs fuzzing=0.725). Phase 3
+>    acceptance criteria revised below.
 
 ## Choice space
 
@@ -24,7 +43,7 @@ extraction-pipeline changes (Phase 3–4). Phase 5 is the off-ramp if RL stays b
 | 2. Algorithm swap | new fusion variants (IQL/TD3+BC, threshold-as-action, BC warm-start) | no | new fusion classes | Phase 1 reward fix improves but doesn't close MCC gap |
 | 3. Bundled re-extract | quantiles + cross-encoder cosines + spectral, in one pass | **yes** (CACHE_VERSION 5→6) | extract only | Phase 1+2 plateau; suspect aggregate scalars are bottleneck |
 | 4. Per-node + 3rd encoder | JK-pool / full `H` in cache + GraphMAE/InfoGraph | **yes** | extract + fusion + new pretrain | Phase 3 closes some gap on set_01/04 but not t05 (suppress) |
-| 5. Drop RL, MoE-BCE | new fusion variant w/ supervised gating | no (Phase 1 cache) | new fusion class | RL collapse persists across reward fixes |
+| 5. MoE+BCE per-sample gate | new fusion variant w/ supervised gating | no (Phase 1 cache) | new fusion class | always — MLP-MCC > weighted_avg-MCC already proves supervised path; MoE adds per-sample gating |
 
 ---
 
@@ -42,15 +61,23 @@ confirms the all-benign-equilibrium diagnosis in `fusion-analysis-prep.md` §Fin
 > components to its return dict (auto-aggregated by Lightning); `validation_step` logs them
 > with `val_` prefix. `sum(components.values()) == total` by construction.
 
-### 0.2 MLP rerun (clean supervised baseline)  🟡 in flight — pitzer `47361091/2/3` (2026-05-07)
+### 0.2 MLP rerun (clean supervised baseline)  ✅ done — pitzer `47361196/7` (2026-05-07)
 The hcrl_sa MLP row from plan `019e0028` is Bug-2-era: 1 val epoch only. Resubmit on the
 post-Bug-2 chassis. This is the **lower bound** for any fusion-vs-supervised comparison; nothing
 downstream is publishable without it. Single submission, ~1h, no code change.
 **Acceptance:** clean MLP curve with full-epoch val_acc trajectory.
 
-> **Submitted as** plan_id `019e0338-f7f7-78de-8fe0-0f1527763a13` on commit `0949e8edb3e2`.
-> Chain: `47361091` (extract, gpu) → `47361092` (mlp fit, cpu) → `47361093` (mlp-test, cpu).
-> Re-extract is forced by CACHE_VERSION 5→6 from §0.3 below.
+> **Submission history:** initial chain on commit `0949e8e` (plan
+> `019e0338-f7f7-78de-8fe0-0f1527763a13`): `47361091` extract ✓ COMPLETED (42s); `47361092`
+> mlp fit FAILED (20s) — Phase 0's `attack_type` top-level leaf collided with
+> `flatten_features` mixing str + tuple keys in `sorted()`. Fixed in `1fad328`. Resubmitted
+> on plan `019e034a-ab22-73de-8150-d16994162f5f` reusing the v6 cache from the original
+> extract (no re-extract needed): `47361196` mlp fit (13:12, run `290c3cb`) → `47361197`
+> mlp-test (0:15, run `116d13e7`).
+>
+> **Result:** `AUROC=0.859, MCC=0.737, F1(attack)=0.738, recall=0.589, precision=0.987`.
+> 218 epochs, median 3.41 s/epoch. Per-attack stratification: dos=0.999, fuzzing=0.725.
+> See executive summary for plan-revising findings.
 
 ### 0.3 Stratified subtype metrics  ✅ done — commit `0949e8e` (2026-05-07)
 `fusion-research-notes.md` §2.3: aggregate AUROC on set_01/04 conflates injection / suppress /
@@ -60,7 +87,74 @@ nothing at train time; required to evaluate any later VGAE-leveraging change.
 > **Implemented as:** `extract.py` propagates `batch.attack_type` into the cache + stashes the
 > schema's name map. `FusionDataModule.attack_type_names` exposes it; `prepare_from_datamodule`
 > picks it up via fallback. Existing `_log_per_attack_auroc` (base.py:219) fires automatically
-> on the fusion test path. CACHE_VERSION 5→6 forces re-extract on first use.
+> on the fusion test path. CACHE_VERSION 5→6 forces re-extract on first use. Live on hcrl_sa
+> MLP (run `116d13e7`): `auroc_per_attack/dos=0.999`, `auroc_per_attack/fuzzing=0.725`.
+
+### 0.4 System-metrics sampler  📋 todo — small graphids-side change
+**Found 2026-05-07:** `MlflowClient().get_metric_history(run_id, "system/cpu_utilization_percentage")`
+returns empty for the just-completed mlp fit. Verified root cause: `mlflow.enable_system_metrics_logging()`
+flips a global flag (`MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING.set(True)`) read in exactly one
+place — `mlflow.tracking.fluent.start_run()` (`fluent.py:679`). Lightning's `MLFlowLogger`
+uses `MlflowClient.create_run()` directly, never the fluent path, so the global flag is set
+but no `SystemMetricsMonitor` ever spawns. Confirmed by inspecting `enable_system_metrics_logging`
+source + grepping `SystemMetricsMonitor` instantiation sites in installed mlflow-skinny 3.11.
+
+**Fix:** spawn the monitor manually in `MLflowTrainingCallback.on_train_start` /
+`on_test_start` (graphids/_mlflow.py), stop it in `on_fit_end` / `on_test_end`. No
+pyproject change (mlflow-skinny 3.11 ships everything required). Make `sampling_interval`
+a callback `__init__` argument (default 10s) so Phase 3+ can dial it back if SQLite
+contention surfaces.
+
+```python
+from mlflow.system_metrics.system_metrics_monitor import SystemMetricsMonitor
+
+class MLflowTrainingCallback(pl.Callback):
+    def __init__(self, *, system_metrics_interval: int = 10):
+        self._lm_model_id = None
+        self._stamped = False
+        self._sysmon = None
+        self._sm_interval = system_metrics_interval
+
+    def on_train_start(self, trainer, pl_module):
+        run_id, client = self._bind(trainer)
+        # ... existing LM lifecycle ...
+        self._sysmon = SystemMetricsMonitor(run_id, sampling_interval=self._sm_interval)
+        self._sysmon.start()
+
+    def on_fit_end(self, trainer, pl_module):
+        if self._sysmon is not None:
+            self._sysmon.finish()
+            self._sysmon = None
+        # ... existing finalize ...
+    # mirror in on_test_start / on_test_end
+```
+
+**Acceptance:** post-fix run shows `system/cpu_utilization_percentage`,
+`system/system_memory_usage_megabytes` keys via `get_metric_history`. Unblocks the Phase 3
+walltime budget question (§3.4) by replacing batch-count extrapolation with measured
+per-job CPU saturation.
+
+### 0.5 SQLite WAL mode on `mlflow.db`  📋 todo — one-shot ops
+Bug 1 (2026-05-06) was a SQLite race on concurrent `experiments.create()`; the fix was a
+try/except retry. The same shape of contention scales as concurrent fits grow. Phase 0+1
+sweep is small (≤4 jobs) but Phase 3's bundled re-extract + 4-method × 4-dataset × seeds
+sweep produces 30+ concurrent fit jobs writing per-epoch metrics + (post-§0.4)
+system metrics every 10s.
+
+**Mitigation: enable Write-Ahead Logging on `mlflow.db`.** One-shot `PRAGMA journal_mode=WAL`
+against the existing DB; persists across connections; allows readers + writers to coexist
+and reduces fsync frequency. No code change, no app-side risk, no migration. Single biggest
+concurrent-write hardening available without changing backend.
+
+```bash
+sqlite3 /fs/ess/PAS1266/graphids/mlflow.db "PRAGMA journal_mode=WAL;" && \
+sqlite3 /fs/ess/PAS1266/graphids/mlflow.db "PRAGMA journal_mode;"  # confirm: wal
+```
+
+**Acceptance:** `journal_mode` returns `wal` after the pragma; subsequent connections
+report `wal` (verified by re-running the read-back). If contention still surfaces in Phase 3,
+remaining options are (a) bumping `system_metrics_interval` from 10s to 60s, (b) switching
+the backend to PostgreSQL — defer until evidence.
 
 ---
 
@@ -206,17 +300,52 @@ ambiguity, would require SignNet stabilization).
 
 ### Phase 3 acceptance criteria
 
+Revised 2026-05-07 against actual Phase 0 baselines:
+
+- **(Primary, measurable now)** `auroc_per_attack/fuzzing` on hcrl_sa MLP improves
+  from baseline **0.725 → > 0.85**. Fuzzing is in every dataset; this is a metric we can
+  track across the whole ablation grid. The full 0.14 gap from aggregate AUROC=0.859 to
+  perfect on hcrl_sa is fuzzing — closing it is the single largest available gain.
 - WeightedAvg α moves off 1.000 — the cross-encoder feature gives the score-fusion blend
   something the two scalars don't produce. (Strong signal that §3.1 is doing its job.)
 - DQN/bandit `avg_alpha` per-batch std > 0 — per-sample variance from §3.1 + §3.3 breaks
   the constant-arm-20 collapse.
 - MLP MCC improves on set_01/04 — distribution-shape signal from §3.2 captures GAT's
-  systematic-failure regime.
-- t05 (suppress) AUROC > 0.5 — §3.3 spectral features carry the topology signal.
+  systematic-failure regime. Baseline pending (set_01-04 MLP not yet rerun on v6 cache).
+- **(Aspirational, not measurable until verified)** `t05 (suppress)` AUROC > 0.5 — §3.3
+  spectral features carry the topology signal. Suppress (attack_type=15) does not appear
+  in any of the five datasets' train splits per the catalog. Verify whether suppress
+  surfaces in the test partition of can-train-and-test-v1.5 before treating this as a
+  measurable gate; if not, this falls to Phase 4 / out of scope.
 
-If §3.3 doesn't move t05, fall back to **Phase 3.4** below.
+If §3.3 doesn't move fuzzing, fall back to **Phase 3.5** below.
 
-### 3.4 Suppress-fallback features (only if Phase 3 doesn't fix t05)
+### 3.4 Walltime budget gate (before any §3 multi-dataset submission)
+
+Phase 0 framework-overhead floor measured: **~46 ms/batch on cpu**, dominated by Lightning
+hooks + TD slicing + MLflow buffering — device-independent. Extrapolating to set_01-04 at
+default `batch_size=128, max_epochs=1500` (early-stop typically ~250 epochs):
+
+| Dataset | n_train | batches/epoch | est wall-time/run |
+|---|---|---|---|
+| hcrl_sa | 7,496   | 59    | ~13 min (observed) |
+| set_01  | 120,904 | 945   | **~3 hr** |
+| set_02  | 162,840 | 1,272 | **~4 hr** (matches the 2026-05-06 weighted_avg timeout) |
+| set_03  | 132,912 | 1,038 | **~3.3 hr** |
+| set_04  | 97,955  | 765   | **~2.5 hr** |
+
+4 fusion methods × 4 datasets × ≥1 seed ≈ ~50 hr CPU per ablation row. **Before §3 submits
+the full grid, do one of:** (a) profile a single set_02 mlp run on the v7 cache to confirm
+the floor holds at the new feature dim, (b) bump `batch_size` to 256 or 512 (cuts batches/
+epoch in half but leaves overhead-per-batch unchanged → maybe 2× speedup), (c) lower
+`max_epochs` from 1500 to 500 (EarlyStopping patience=200 dominates anyway), (d) accept the
+walltime budget and submit `length=long` (already 4hr) — but this is what timed out on
+set_02 last sweep.
+
+§0.4 system-metrics sampler is the prerequisite — without it, "is this CPU-bound or
+overhead-bound?" stays unverified and the choice between (a)/(b)/(c)/(d) above is a guess.
+
+### 3.5 Suppress-fallback features (only if Phase 3 doesn't fix the binding subtype)
 
 Two cheaper, two more expensive. Defer all four unless §3.1–§3.3 together fail t05.
 
@@ -300,12 +429,19 @@ defer 4.3 indefinitely.
 
 ---
 
-## Phase 5 — Off-ramp: drop RL, run MoE+BCE
+## Phase 5 — Architecture upgrade: per-sample gated MoE+BCE
 
-If Phase 1+2 don't close the MCC gap and Phase 3+4 don't either, the RL framing itself is
-the problem. The fusion setup has no temporal credit assignment — state is observed once
-per graph, action affects only that graph's prediction, reward is delivered immediately.
-TD(0) over this MDP is BCE with extra steps and a worse optimization surface.
+**Reframed 2026-05-07** from "off-ramp if RL fails" to "architecture upgrade." The
+hcrl_sa MLP run (MCC=0.737 vs weighted_avg's 0.622) already showed supervised over the
+full 18-dim feature vector beats score-fusion's two-scalar blend on calibration. So
+"supervised works" isn't a hypothesis to fall back to — it's confirmed. What MLP doesn't
+yet do is **per-sample gating**: it's a single dense pathway with no explicit "trust
+GAT here, trust VGAE there" mechanism. MoE+BCE adds that.
+
+The fusion setup has no temporal credit assignment — state is observed once per graph,
+action affects only that graph's prediction, reward is delivered immediately. TD(0) over
+this MDP is BCE with extra steps and a worse optimization surface. The MLP result confirms
+this in the data; MoE is the architectural articulation of "per-sample gating without RL."
 
 ### 5.1 Mixture-of-experts with learned router, BCE loss
 `fusion-research-notes.md` §5.2 — three experts (injection/fuzzy GAT-dominant; suppress
@@ -318,31 +454,40 @@ This is the architecturally honest answer to "why does RL keep collapsing." The 
 literature (Jacobs et al. 1991, Shazeer et al. 2017) is the right frame; RL is the wrong
 frame imposed onto a problem that doesn't need it.
 
+**Acceptance vs. MLP baseline:** MoE must beat MLP on either calibration (MCC) OR
+per-attack-type AUROC (`auroc_per_attack/fuzzing` is the binding subtype on hcrl_sa). If
+MoE matches MLP exactly, the gating mechanism added complexity without buying capability —
+keep MLP and put the implementation effort into Phase 3/4 features instead.
+
 **Paper narrative if 5.1 wins:** "We tried RL fusion (bandit/DQN/SAC) and discovered the
-fundamental issue — fusion is a contextual gating problem, not a sequential decision problem.
-Supervised gating (MoE) matches RL ranking and beats it on calibration, while being
-PBRS-immune by construction." Stronger than "we did RL fusion."
+fundamental issue — fusion is a contextual gating problem, not a sequential decision
+problem. Supervised gating (MoE) matches RL ranking and beats it on calibration via
+proper-scoring + per-sample expert routing — PBRS-immune by construction. RL is the wrong
+frame; the per-sample gate is the right one." Stronger than "we did RL fusion."
 
 ---
 
 ## Decision tree
 
 ```
-Phase 0 done → r_agreement dominates? ─yes→ Phase 1 sufficient (reward was the bug)
-                                       └no→ state is the bottleneck, jump to Phase 3
+Phase 0 done — hcrl_sa MLP baseline = AUROC 0.859, MCC 0.737, fuzzing 0.725
+            (commit 0949e8e + 1fad328; system-metrics + WAL pending §0.4/§0.5)
 
-Phase 1 done → bandit/DQN MCC > 0.5? ─yes→ Phase 2 optional polish
+Phase 1 done → bandit/DQN MCC > 0.5? ─yes→ reward was the bug; Phase 2 optional polish
                                       └no→ Phase 2.1 BC warm-start + Phase 2.2 IQL/TD3+BC
 
-Phase 2 done → set_01/04 gap closed? ─yes→ Phase 3 only if t05 is required (3.3 spectral may help)
-                                      └no→ Phase 3 bundled re-extract (3.1+3.2+3.3)
+Phase 2 done → bandit/DQN MCC ≥ MLP? ─yes→ RL competitive; Phase 3 still useful for fuzzing
+                                      └no→ Phase 3 bundled re-extract (3.1+3.2+3.3) is mandatory
 
-Phase 3 done → α moved off 1.0?    ─yes→ subsumption broken; if MCC gap persists → Phase 4.3 (3rd encoder)
-                                    └no→ Phase 4.2 per-node + cross-modal attention
-              t05 still 0.000?     ─yes→ Phase 3.4 fallback (motifs / per-edge / persistence)
-                                    └no→ paper-ready
+Phase 3 done → fuzzing AUROC > 0.85 on hcrl_sa MLP? ─yes→ binding subtype closed
+                                                     └no→ Phase 4.2 per-node + cross-modal
+              α moved off 1.0?                       ─yes→ subsumption broken
+                                                     └no→ Phase 4.3 third encoder (GraphMAE)
+              suppress reachable in any test set?   ─yes + low→ Phase 3.5 fallback
+                                                     └no/N.A.→ document as out-of-scope
 
-Any phase: RL still collapsing? ───→ Phase 5 MoE+BCE; reframe paper around supervised gating
+Phase 5 (MoE+BCE) — submit in PARALLEL with Phase 1+2, not as fallback
+                    Acceptance: MoE > MLP on MCC OR fuzzing AUROC; else keep MLP
 ```
 
 ## Open questions / verification tasks before each phase
@@ -366,9 +511,9 @@ Any phase: RL still collapsing? ───→ Phase 5 MoE+BCE; reframe paper arou
 - **(Blocks Phase 3.3 commitment) Eigvalue extraction shape.** Top-k / bottom-k requires
   fixed k across graphs of varying N. Decision: pad with zeros only if k > N (rare at our
   size), else truncate. Document the convention in the schema bump.
-- **(Blocks Phase 3.4.b commitment) Benign edge-AUC saturation.** Per-edge histogram features
+- **(Blocks Phase 3.5.b commitment) Benign edge-AUC saturation.** Per-edge histogram features
   collapse if VGAE achieves edge-AUC > 0.99 on benign — quantiles concentrate at the bounds.
-  Audit edge-AUC at extraction time on existing VGAE ckpts before re-extracting with §3.4.b
+  Audit edge-AUC at extraction time on existing VGAE ckpts before re-extracting with §3.5.b
   features.
 - **Storage budget for per-node caches.** Phase 4.1 ≈ 384 MB/dataset, 4.2 ≈ 128 MB/dataset
   (per the research note's appendix: 18 + 80 · 96 ≈ 7700 floats × 7.5K graphs × 4 bytes
@@ -393,19 +538,22 @@ Any phase: RL still collapsing? ───→ Phase 5 MoE+BCE; reframe paper arou
 
 | Phase | Files |
 |---|---|
-| 0.1 | `graphids/core/models/fusion/reward.py`, `graphids/_mlflow.py` |
-| 0.2 | none — resubmit existing plan |
-| 0.3 | `graphids/core/models/supervised/gat.py::test_step` (already wires `attack_type`); fusion test path |
-| 1.1 | `graphids/core/models/fusion/reward.py::compute` |
-| 1.2 | `graphids/core/models/fusion/reward.py` (additive component) |
-| 1.3 | new `analyze` action — Platt fit on val, apply to test |
+| 0.1 ✅ | `graphids/core/models/fusion/reward.py` (compute returns components), `graphids/core/models/fusion/base.py` (train_episode + validation_step unpack + log) — commit `0949e8e` |
+| 0.2 ✅ | none — resubmit existing plan; pitzer `47361196/7` |
+| 0.3 ✅ | `graphids/core/data/extract.py` (attack_type capture + names map + CACHE_VERSION 5→6), `graphids/core/data/datamodule/fusion.py` (load names map; expose attribute), `graphids/core/models/base.py::prepare_from_datamodule` (dm.attack_type_names fallback), `graphids/core/models/fusion/base.py::flatten_features` (filter to tuple-keyed leaves; fix `1fad328`) |
+| 0.4 📋 | `graphids/_mlflow.py::MLflowTrainingCallback.__init__/on_train_start/on_fit_end/on_test_start/on_test_end` (instantiate + lifecycle SystemMetricsMonitor); thread `system_metrics_interval` kwarg through |
+| 0.5 📋 | none — one-shot `sqlite3 .../mlflow.db "PRAGMA journal_mode=WAL"` |
+| 1.1 🟡 | `graphids/core/models/fusion/reward.py` (MinimalFusionRewardCalculator + from_kwargs factory), `graphids/core/models/fusion/base.py` (FusionModuleBase uses factory), `graphids/plan/primitives.py` (REWARD_MINIMAL), `graphids/plan/__init__.py` (re-export) — code complete, awaits Phase 0 confirmation |
+| 1.2 | `graphids/core/models/fusion/reward.py` (additive ranking component on MinimalFusionRewardCalculator) |
+| 1.3 | (a) `graphids/orchestrate.py::evaluate` test_predictions.pt persist — done 🟡; (b) new `analyze` action — Platt fit on val, apply to test |
 | 2.1 | new fusion variant or flag — BC pretrain in `fusion/{dqn,bandit}.py::on_fit_start` |
 | 2.2 | new `iql.py` / `td3bc.py` under `graphids/core/models/fusion/` |
 | 2.3 | new `threshold_policy.py` |
-| 3.1 | `gat.py::extract_features` (cosine + L2 + per-node cosine quantiles), `vgae.py::extract_features`, `extract.py::CACHE_VERSION` |
-| 3.2 | `gat.py`, `vgae.py` extract_features (replace 4-stat blocks with 5-quantile blocks), `plan/plans/ablations/fusion.py::_state_dim` |
+| 3.1 | `gat.py::extract_features` (cosine + L2 + per-node cosine quantiles), `vgae.py::extract_features`, `extract.py::CACHE_VERSION` 6→7 |
+| 3.2 | `gat.py`, `vgae.py` extract_features (replace 4-stat blocks with 5-quantile blocks; drop q05 for set_01/set_02), `plan/plans/ablations/fusion.py::_state_dim` |
 | 3.3 | `vgae.py::extract_features` (top-k eigvalues, gap, VN entropy), or new `graphids/core/data/spectral.py` helper |
-| 3.4 | (a) new `motifs.py` helper; (b) `vgae.py::extract_features` (per-edge histogram); (c) new `tda.py` helper + giotto-tda dep |
+| 3.4 | none — submission-config decision; profile run + walltime budget gate |
+| 3.5 | (a) new `motifs.py` helper; (b) `vgae.py::extract_features` (per-edge histogram); (c) new `tda.py` helper + giotto-tda dep |
 | 4.1 | `gat.py` forward + extract_features; cache version bump |
 | 4.2 | `gat.py`, `vgae.py` extract_features (full `H` return); new fusion variant w/ `GraphAttentionPool` |
 | 4.3 | new Stage-1.5 model under `graphids/core/models/ssl/` (GraphMAE or InfoGraph); new pretrain plan; extend `extract.py` to load 3rd model |

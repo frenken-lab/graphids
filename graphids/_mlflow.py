@@ -137,16 +137,17 @@ def _find_logged_model(
     res = client.search_logged_models(
         experiment_ids=[experiment_id],
         filter_string=build_search_filter(
-            dataset=dataset, group=group, variant=variant, seed=int(seed) if isinstance(seed, str) else seed
+            dataset=dataset,
+            group=group,
+            variant=variant,
+            seed=int(seed) if isinstance(seed, str) else seed,
         ),
         max_results=1,
     )
     return res[0] if res else None
 
 
-def _find_logged_model_by_ckpt(
-    client: MlflowClient, dataset: str, ckpt_path: str
-) -> Any | None:
+def _find_logged_model_by_ckpt(client: MlflowClient, dataset: str, ckpt_path: str) -> Any | None:
     """LM resolved by ``graphids.ckpt_path`` tag across per-axis experiments
     ``graphids/{dataset}/*``. Most-recent wins under resume duplicates.
 
@@ -199,9 +200,31 @@ class MLflowTrainingCallback(pl.Callback):
     every callback (Lightning's logger is the SoT for both).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, system_metrics_interval: int = 10) -> None:
         self._lm_model_id: str | None = None
         self._stamped = False
+        # SystemMetricsMonitor is keyed by run_id and runs as a daemon thread.
+        # Lightning's MLFlowLogger creates runs via MlflowClient (not the fluent
+        # mlflow.start_run path), so mlflow.enable_system_metrics_logging()
+        # alone never spawns a sampler — fluent.start_run is the only place
+        # that reads MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING. Wire it manually.
+        self._sysmon: Any = None
+        self._sm_interval = system_metrics_interval
+
+    def _start_sysmon(self, run_id: str) -> None:
+        try:
+            from mlflow.system_metrics.system_metrics_monitor import SystemMetricsMonitor
+        except ImportError:
+            return  # mlflow build without system_metrics; no-op
+        self._sysmon = SystemMetricsMonitor(run_id, sampling_interval=self._sm_interval)
+        self._sysmon.start()
+
+    def _stop_sysmon(self) -> None:
+        if self._sysmon is not None:
+            try:
+                self._sysmon.finish()
+            finally:
+                self._sysmon = None
 
     # ── helpers ──────────────────────────────────────────────────────
     @staticmethod
@@ -212,8 +235,7 @@ class MLflowTrainingCallback(pl.Callback):
     def _identity(client: MlflowClient, run_id: str) -> tuple[Any, dict[str, str]]:
         run = client.get_run(run_id)
         return run, {
-            k: run.data.tags[f"graphids.{k}"]
-            for k in ("dataset", "group", "variant", "seed")
+            k: run.data.tags[f"graphids.{k}"] for k in ("dataset", "group", "variant", "seed")
         }
 
     # ── train ────────────────────────────────────────────────────────
@@ -223,16 +245,17 @@ class MLflowTrainingCallback(pl.Callback):
         existing = _find_logged_model(client, run.info.experiment_id, **ident)
         if existing is not None:
             self._lm_model_id = existing.model_id
-            return
-        lm = client.create_logged_model(
-            experiment_id=run.info.experiment_id,
-            name=run.info.run_name,
-            source_run_id=run_id,
-            model_type=f"{type(pl_module).__module__}.{type(pl_module).__name__}",
-            tags={f"graphids.{k}": v for k, v in ident.items()},
-            params={"graphids.run_dir": run.data.tags["graphids.run_dir"]},
-        )
-        self._lm_model_id = lm.model_id
+        else:
+            lm = client.create_logged_model(
+                experiment_id=run.info.experiment_id,
+                name=run.info.run_name,
+                source_run_id=run_id,
+                model_type=f"{type(pl_module).__module__}.{type(pl_module).__name__}",
+                tags={f"graphids.{k}": v for k, v in ident.items()},
+                params={"graphids.run_dir": run.data.tags["graphids.run_dir"]},
+            )
+            self._lm_model_id = lm.model_id
+        self._start_sysmon(run_id)
 
     def on_train_epoch_end(self, trainer: Any, pl_module: Any) -> None:
         if self._stamped:
@@ -249,12 +272,16 @@ class MLflowTrainingCallback(pl.Callback):
         self._stamped = True
 
     def on_fit_end(self, trainer: Any, pl_module: Any) -> None:
+        self._stop_sysmon()
         run_id, client = self._bind(trainer)
         peak_mb = _peak_vram_mb(pl_module)
         if peak_mb > 0:
             client.log_metric(
-                run_id, "graphids.peak_vram_mb", peak_mb,
-                step=trainer.current_epoch, model_id=self._lm_model_id,
+                run_id,
+                "graphids.peak_vram_mb",
+                peak_mb,
+                step=trainer.current_epoch,
+                model_id=self._lm_model_id,
             )
         budget = getattr(pl_module, "_budget_cache", None)
         if budget is not None:
@@ -285,8 +312,10 @@ class MLflowTrainingCallback(pl.Callback):
             )
         self._lm_model_id = lm.model_id
         client.log_outputs(run_id=run_id, models=[LoggedModelOutput(model_id=lm.model_id, step=0)])
+        self._start_sysmon(run_id)
 
     def on_test_end(self, trainer: Any, pl_module: Any) -> None:
+        self._stop_sysmon()
         if self._lm_model_id is None:
             return
         run_id, client = self._bind(trainer)
@@ -296,7 +325,5 @@ class MLflowTrainingCallback(pl.Callback):
         ts = int(time.time() * 1000)
         client.log_batch(
             run_id,
-            metrics=[
-                Metric(k, v, ts, 0, model_id=self._lm_model_id) for k, v in metrics.items()
-            ],
+            metrics=[Metric(k, v, ts, 0, model_id=self._lm_model_id) for k, v in metrics.items()],
         )
