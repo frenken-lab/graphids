@@ -53,12 +53,13 @@ class TestGAT:
 class TestGATFastDevRun:
     @staticmethod
     def _make_module(cfg):
+        from graphids.core.models.supervised.gat_module import GATModule
+
         from graphids.core.losses.classification import (
             CrossEntropyLoss,
             FocalLoss,
             WeightedCrossEntropyLoss,
         )
-        from graphids.core.models.supervised.gat_module import GATModule
 
         loss_map = {
             "ce": lambda: CrossEntropyLoss(),
@@ -104,8 +105,9 @@ class TestGATFastDevRun:
 
 class TestGATCheckpointRoundtrip:
     def test_gat(self, gat_cfg, tmp_path):
-        from graphids.core.losses.classification import CrossEntropyLoss
         from graphids.core.models.supervised.gat_module import GATModule
+
+        from graphids.core.losses.classification import CrossEntropyLoss
 
         def _mk():
             return GATModule(

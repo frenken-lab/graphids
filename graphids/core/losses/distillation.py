@@ -34,6 +34,34 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from graphids._fs import atomic_load
+from graphids.core.models.base import strip_orig_mod_prefix
+
+
+def _load_teacher(ckpt_path: str, model: nn.Module) -> nn.Module:
+    """Load checkpoint weights into ``model`` in-place and return it.
+
+    Models that use lazy ``_build()`` (VGAE, GAT) are not constructed until
+    ``num_ids`` is known.  When the teacher is instantiated from the plan spec
+    it gets ``num_ids=0``, so ``_build()`` never fires and layer attributes like
+    ``_uses_edge_attr`` are missing.  We pull the resolved hparams from the
+    checkpoint and trigger ``_build()`` before loading weights.
+    """
+    ckpt = atomic_load(ckpt_path, map_location="cpu", weights_only=True)
+    if hasattr(model, "_built") and not model._built:
+        hp = ckpt.get("hyper_parameters", {})
+        for k in ("num_ids", "in_channels", "num_classes"):
+            if k in hp:
+                setattr(model, k, hp[k])
+                model.hparams[k] = hp[k]
+        model._build()
+        model._built = True
+    state = strip_orig_mod_prefix(ckpt.get("state_dict", ckpt))
+    remap = {k.replace("_orig_mod.", ""): k for k in model.state_dict()}
+    state = {remap.get(k, k): v for k, v in state.items()}
+    model.load_state_dict(state, strict=False)
+    return model
+
 
 def _attach_teacher(module: nn.Module, teacher: nn.Module) -> None:
     """Hold ``teacher`` on ``module`` without it showing up in ``_modules``.
@@ -72,11 +100,13 @@ class SoftLabelDistillation(nn.Module):
         ``forward(logits, labels, graph=None) → scalar``. Typical choices:
         :class:`~graphids.core.losses.classification.CrossEntropyLoss`,
         :class:`~graphids.core.losses.classification.FocalLoss`.
-    teacher:
-        The loaded teacher model (e.g. a large GAT's inner
-        ``nn.Module``). Must accept the same ``batch`` argument as the
-        student and return logits of the same shape. Held off Lightning's
-        auto-transfer path.
+    teacher_model:
+        A bare (unweighted) teacher model, already instantiated by
+        ``_instantiate`` from the ``teacher_spec`` plan key. Weights are
+        loaded from ``teacher_ckpt_path`` in ``__init__``. Held off
+        Lightning's auto-transfer path.
+    teacher_ckpt_path:
+        Path to the teacher checkpoint. Loaded on CPU inside ``__init__``.
     temperature, alpha:
         Standard Hinton KD hyperparameters.
     """
@@ -84,7 +114,8 @@ class SoftLabelDistillation(nn.Module):
     def __init__(
         self,
         base_loss: nn.Module,
-        teacher: nn.Module,
+        teacher_model: nn.Module,
+        teacher_ckpt_path: str,
         *,
         temperature: float = 4.0,
         alpha: float = 0.7,
@@ -93,6 +124,7 @@ class SoftLabelDistillation(nn.Module):
         self.base_loss = base_loss
         self.temperature = temperature
         self.alpha = alpha
+        teacher = _load_teacher(teacher_ckpt_path, teacher_model)
         _attach_teacher(self, teacher)
 
         # Populated on every forward() call so the training module can log them.
@@ -141,10 +173,15 @@ class FeatureDistillation(nn.Module):
         Typically :class:`~graphids.core.losses.autoencoder.VGAETaskLoss`.
         Contract: ``forward(student_outputs, batch) → scalar``. The
         wrapper forwards the exact same arguments to it.
-    teacher:
-        The loaded teacher VGAE inner model. Must accept positional args
-        ``(x, edge_index, batch_idx)`` plus kwargs ``edge_attr=`` and
-        ``node_id=``, matching ``GraphAutoencoderNeighborhood.forward``.
+    teacher_model:
+        A bare (unweighted) teacher VGAE model, already instantiated by
+        ``_instantiate`` from the ``teacher_spec`` plan key. Weights are
+        loaded from ``teacher_ckpt_path`` in ``__init__``. Must accept
+        positional args ``(x, edge_index, batch_idx)`` plus kwargs
+        ``edge_attr=`` and ``node_id=``, matching
+        ``GraphAutoencoderNeighborhood.forward``.
+    teacher_ckpt_path:
+        Path to the teacher checkpoint. Loaded on CPU inside ``__init__``.
     latent_weight, recon_weight, alpha:
         Dual-signal KD weights + convex combination weight.
     projection:
@@ -156,7 +193,8 @@ class FeatureDistillation(nn.Module):
     def __init__(
         self,
         base_loss: nn.Module,
-        teacher: nn.Module,
+        teacher_model: nn.Module,
+        teacher_ckpt_path: str,
         *,
         latent_weight: float = 1.0,
         recon_weight: float = 1.0,
@@ -169,26 +207,22 @@ class FeatureDistillation(nn.Module):
         self.recon_weight = recon_weight
         self.alpha = alpha
         self.projection = projection
+        teacher = _load_teacher(teacher_ckpt_path, teacher_model)
         _attach_teacher(self, teacher)
 
         # Populated on every forward() call so the training module can log them.
         self.last_task_loss: torch.Tensor | None = None
         self.last_kd_loss: torch.Tensor | None = None
 
-    def forward(self, student_outputs: tuple, batch) -> torch.Tensor:
-        task = self.base_loss(student_outputs, batch)
+    def forward(self, student_outputs: tuple, batch, mask=None) -> torch.Tensor:
+        task = self.base_loss(student_outputs, batch, mask=mask)
 
         cont_out, _canid, _nbr, z, _kl, _edge = student_outputs
-        edge_attr = getattr(batch, "edge_attr", None)
 
         t_cont, _, _, t_z, _, _t_edge = _run_teacher_on(
             batch.x.device,
             self.teacher,
-            batch.x,
-            batch.edge_index,
-            batch.batch,
-            edge_attr=edge_attr,
-            node_id=batch.node_id,
+            batch,
         )
 
         z_s = self.projection(z) if self.projection is not None else z

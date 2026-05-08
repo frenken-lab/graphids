@@ -9,12 +9,16 @@ function re-enters it.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from torch_geometric.loader import DataLoader as PyGDataLoader
 from torch_geometric.utils import scatter
+
+if TYPE_CHECKING:
+    from tensordict import TensorDict
 
 # ---------------------------------------------------------------------------
 # Result types
@@ -47,7 +51,7 @@ class LandscapeResult:
 class PolicyResult:
     alphas: np.ndarray
     labels: np.ndarray
-    q_values: np.ndarray
+    q_values: np.ndarray | None  # None for non-DQN models
 
 
 # ---------------------------------------------------------------------------
@@ -226,10 +230,7 @@ def _vgae_loss(model, dataloader, device: torch.device, cfg) -> float:
     total, count = 0.0, 0
     for batch in dataloader:
         batch = batch.clone().to(device)
-        edge_attr = getattr(batch, "edge_attr", None)
-        cont, _z, kl_per_node = model(
-            batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr, node_id=batch.node_id
-        )
+        cont, _canid, _nbr, _z, kl_per_node, _edge = model(batch)
         recon = F.mse_loss(cont, batch.x)
         loss = recon + kl_weight * kl_per_node.mean()
         total += loss.item() * batch.num_graphs
@@ -254,10 +255,7 @@ def _dgi_loss(model, dataloader, device: torch.device, _cfg) -> float:
     total, count = 0.0, 0
     for batch in dataloader:
         batch = batch.clone().to(device)
-        edge_attr = getattr(batch, "edge_attr", None)
-        pos_z, neg_z, summary = model(
-            batch.x, batch.edge_index, batch.batch, edge_attr=edge_attr, node_id=batch.node_id
-        )
+        pos_z, neg_z, summary = model(batch)
         loss = model.dgi_loss(pos_z, neg_z, summary, batch.batch)
         total += loss.item() * batch.num_graphs
         count += batch.num_graphs
@@ -317,13 +315,17 @@ def compute_landscape(
 # ---------------------------------------------------------------------------
 
 
-def compute_fusion_policy(
-    agent, states: torch.Tensor, labels: torch.Tensor
-) -> PolicyResult:
-    """Run the agent on pre-built fusion states; return alphas + Q-values + labels."""
-    result = agent.predict(states)
+def compute_fusion_policy(module, td: TensorDict, labels: torch.Tensor) -> PolicyResult:
+    """Run fusion module on pre-extracted val states; return alphas + Q-values + labels."""
+    from graphids.core.models.fusion.base import flatten_features
+
+    result = module.predict(td)
+    q_vals: np.ndarray | None = None
+    if hasattr(module, "q_values"):
+        flat_obs = flatten_features(result["td_norm"])
+        q_vals = module.q_values(flat_obs).cpu().numpy()
     return PolicyResult(
         alphas=result["alphas"].cpu().numpy(),
         labels=labels.cpu().numpy(),
-        q_values=agent.q_values(result["norm_states"]).cpu().numpy(),
+        q_values=q_vals,
     )

@@ -25,6 +25,7 @@ import from it directly.
 
 from graphids.plan.compose import (
     RowSpec,
+    analyze,
     callbacks_base,
     compose,
     extract,
@@ -38,6 +39,7 @@ from graphids.plan.primitives import (
     CURRICULUM_LOSS,
     DGI,
     DQN,
+    FEATURE_DISTILLATION,
     FOCAL,
     FUSION_DM,
     GAT,
@@ -49,6 +51,7 @@ from graphids.plan.primitives import (
     REWARD_MINIMAL,
     SCORE_RANDOM,
     SCORE_VGAE,
+    SOFT_LABEL_DISTILLATION,
     VGAE,
     VGAE_TASK,
     WAVG_FUSION,
@@ -63,6 +66,7 @@ from graphids.plan.primitives import (
 __all__ = [
     # compose
     "RowSpec",
+    "analyze",
     "compose",
     "fusion",
     "extract",
@@ -89,6 +93,8 @@ __all__ = [
     "VGAE_TASK",
     "CURRICULUM_LOSS",
     "LINEAR_RAMP",
+    "SOFT_LABEL_DISTILLATION",
+    "FEATURE_DISTILLATION",
     "SCORE_RANDOM",
     "SCORE_VGAE",
     "CAN_BUS",

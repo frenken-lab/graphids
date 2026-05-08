@@ -57,6 +57,7 @@ class FusionDataModule(pl.LightningDataModule):
         self._batch_size = episode_sample_size if method in ("dqn", "bandit") else batch_size
         self.train_td: TensorDict | None = None
         self.val_td: TensorDict | None = None
+        self._test_tds: dict[str, TensorDict] = {}
         self.attack_type_names: dict[int, str] = {0: "benign"}
 
     @property
@@ -81,11 +82,19 @@ class FusionDataModule(pl.LightningDataModule):
 
         self.train_td, _ = _load_td(train_path, "train")
         self.val_td, self.attack_type_names = _load_td(val_path, "val")
+
+        for p in sorted(d.glob("*_states.pt")):
+            if p.name in (TRAIN_FILENAME, VAL_FILENAME):
+                continue
+            name = p.stem.replace("_states", "")
+            self._test_tds[name], _ = _load_td(p, name)
+
         log.info(
             "loaded_cached_states",
             dir=str(d),
             train_n=self.train_td.batch_size[0],
             val_n=self.val_td.batch_size[0],
+            test_splits=list(self._test_tds.keys()),
             keys=list(self.train_td.keys(include_nested=True, leaves_only=True)),
         )
 
@@ -125,5 +134,11 @@ class FusionDataModule(pl.LightningDataModule):
     def val_dataloader(self):
         return self._batches(self.val_td, shuffle=False)
 
+    @property
+    def test_datasets(self) -> dict[str, TensorDict]:
+        return self._test_tds
+
     def test_dataloader(self):
+        if self._test_tds:
+            return [self._batches(td, shuffle=False) for td in self._test_tds.values()]
         return self.val_dataloader()

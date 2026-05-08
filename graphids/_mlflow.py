@@ -213,7 +213,9 @@ class MLflowTrainingCallback(pl.Callback):
 
     def _start_sysmon(self, run_id: str) -> None:
         try:
-            from mlflow.system_metrics.system_metrics_monitor import SystemMetricsMonitor
+            from mlflow.system_metrics.system_metrics_monitor import (
+                SystemMetricsMonitor,
+            )
         except ImportError:
             return  # mlflow build without system_metrics; no-op
         self._sysmon = SystemMetricsMonitor(run_id, sampling_interval=self._sm_interval)

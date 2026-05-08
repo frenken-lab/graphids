@@ -50,7 +50,7 @@ class VGAE(ScoreBasedDetectorMixin):
     def __init__(
         self,
         *,
-        loss_fn: nn.Module,
+        loss_fn: nn.Module | None = None,
         # --- architecture (latent_dim/hidden_dims=None → resolve from scale) ---
         conv_type: str = "gatv2",
         hidden_dims: list[int] | None = None,

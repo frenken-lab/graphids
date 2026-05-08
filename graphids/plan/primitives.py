@@ -44,6 +44,8 @@ WEIGHTED_CE = "graphids.core.losses.WeightedCrossEntropyLoss"
 VGAE_TASK = "graphids.core.losses.VGAETaskLoss"
 CURRICULUM_LOSS = "graphids.core.losses.CurriculumWeightedLoss"
 LINEAR_RAMP = "graphids.core.curriculum.LinearRampSchedule"
+SOFT_LABEL_DISTILLATION = "graphids.core.losses.SoftLabelDistillation"
+FEATURE_DISTILLATION = "graphids.core.losses.FeatureDistillation"
 
 # Difficulty scorers
 SCORE_RANDOM = "graphids.core.data.preprocessing.curriculum.ScoreRandom"
@@ -149,12 +151,13 @@ def fusion_dm(
     method: str,
     batch_size: int = 128,
     episode_sample_size: int = 20_000,
+    states_variant: str = "default",
 ) -> dict[str, Any]:
     """``FusionDataModule`` block — derives ``cached_states_dir`` from catalog."""
     return {
         "class_path": FUSION_DM,
         "init_args": {
-            "cached_states_dir": _states_dir(dataset, seed),
+            "cached_states_dir": _states_dir(dataset, seed, states_variant),
             "method": method,
             "batch_size": batch_size,
             "episode_sample_size": episode_sample_size,

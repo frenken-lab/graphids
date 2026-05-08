@@ -11,7 +11,7 @@ anywhere else in the tree.
 
 `run_root` is read from `$GRAPHIDS_RUN_ROOT` lazily; the path scheme is
 ``{run_root}/{dataset}/ablations/{group}/{variant}/seed_{N}`` (and
-``{run_root}/{dataset}/cached_states/seed_{N}`` for fusion).
+``{run_root}/{dataset}/cached_states/{variant}/seed_{N}`` for fusion).
 
 Import-safe: no external deps, no torch — usable from anywhere
 including login-node code paths.
@@ -108,9 +108,9 @@ def best_ckpt(dataset: str, group: str, variant: str, seed: int) -> str:
     return f"{run_dir(dataset, group, variant, seed)}/checkpoints/best_model.ckpt"
 
 
-def states_dir(dataset: str, seed: int) -> str:
+def states_dir(dataset: str, seed: int, variant: str = "default") -> str:
     """Fusion-states directory shared across the 4 fusion methods for a seed."""
-    return str(Path(_run_root()) / dataset / "cached_states" / f"seed_{int(seed)}")
+    return str(Path(_run_root()) / dataset / "cached_states" / variant / f"seed_{int(seed)}")
 
 
 # ---------------------------------------------------------------------------

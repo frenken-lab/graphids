@@ -44,9 +44,7 @@ def _run_embeddings(*, model, val_data, device, output_dir, spec: AnalyzeRow, **
 
 
 def _run_attention(*, model, val_data, device, output_dir, spec: AnalyzeRow, **_) -> None:
-    r = compute.compute_attention(
-        model, val_data, device, max_samples=spec.attention_max_samples
-    )
+    r = compute.compute_attention(model, val_data, device, max_samples=spec.attention_max_samples)
     if r is None:  # model has no GAT attention to extract
         return
     io.save_attention(output_dir, r)
@@ -65,9 +63,7 @@ def _run_cka(*, model, val_data, device, output_dir, spec: AnalyzeRow, **_) -> N
             torch.cuda.empty_cache()
 
 
-def _run_landscape(
-    *, model, val_data, device, output_dir, spec: AnalyzeRow, hparams, **_
-) -> None:
+def _run_landscape(*, model, val_data, device, output_dir, spec: AnalyzeRow, hparams, **_) -> None:
     r = compute.compute_landscape(
         model,
         spec.model_type,
@@ -84,17 +80,8 @@ def _run_landscape(
 
 
 def _run_fusion_policy(*, module, device, output_dir, spec: AnalyzeRow, **_) -> None:
-    states, labels = io.load_fusion_eval(
-        dataset=spec.dataset,
-        lake_root=spec.lake_root,
-        seed=spec.seed,
-        vgae_ckpt_path=spec.vgae_ckpt_path,
-        gat_ckpt_path=spec.gat_ckpt_path,
-        window_size=spec.window_size,
-        stride=spec.stride,
-        device=device,
-    )
-    r = compute.compute_fusion_policy(module.agent, states, labels)
+    td, labels = io.load_fusion_eval(dataset=spec.dataset, seed=spec.seed, device=device)
+    r = compute.compute_fusion_policy(module, td, labels)
     io.save_fusion_policy(output_dir, r)
 
 

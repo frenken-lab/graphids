@@ -264,6 +264,50 @@ def fusion(
 # ============================================================== one-shot row builders
 
 
+def analyze(
+    *,
+    name: str,
+    ckpt_path: str,
+    dataset: str,
+    model_type: str,
+    output_dir: str,
+    lake_root: str,
+    embeddings: bool = True,
+    attention: bool = False,
+    cka: bool = False,
+    cka_teacher_ckpt: str = "",
+    landscape: bool = False,
+    landscape_resolution: int = 51,
+    fusion_policy: bool = False,
+    vgae_ckpt_path: str = "",
+    gat_ckpt_path: str = "",
+    mode: str = "gpu",
+    length: str = "short",
+    seed: int = 42,
+) -> dict[str, Any]:
+    """One-shot per-checkpoint artifact row. plan_id injected by render_plan."""
+    return {
+        "name": name,
+        "action": "analyze",
+        "ckpt_path": ckpt_path,
+        "dataset": dataset,
+        "model_type": model_type,
+        "output_dir": output_dir,
+        "lake_root": lake_root,
+        "embeddings": embeddings,
+        "attention": attention,
+        "cka": cka,
+        "cka_teacher_ckpt": cka_teacher_ckpt,
+        "landscape": landscape,
+        "landscape_resolution": landscape_resolution,
+        "fusion_policy": fusion_policy,
+        "vgae_ckpt_path": vgae_ckpt_path,
+        "gat_ckpt_path": gat_ckpt_path,
+        "resources": {"mode": mode, "length": length},
+        "seed": seed,
+    }
+
+
 def extract(
     *,
     name: str,

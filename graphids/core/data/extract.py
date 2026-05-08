@@ -94,35 +94,14 @@ def extract_states(
 ) -> None:
     """Load model checkpoints, extract and cache fusion features.
 
-    Idempotent on ``output_dir``: if a valid cache (matching ``CACHE_VERSION``)
-    already exists, return without re-running extractors.
+    Idempotent per-file: each split's cache is checked independently so
+    re-running after adding test splits only extracts the missing files.
     """
-    out = Path(output_dir) / FUSION_STATES_DIR
-    train_path = out / TRAIN_FILENAME
-    val_path = out / VAL_FILENAME
-    if train_path.exists() and val_path.exists():
-        try:
-            v_train = torch.load(train_path, map_location="cpu", weights_only=False).get("version")
-            v_val = torch.load(val_path, map_location="cpu", weights_only=False).get("version")
-            if v_train == CACHE_VERSION and v_val == CACHE_VERSION:
-                log.info("cache_hit", output_dir=str(out), version=CACHE_VERSION)
-                return
-        except Exception as e:
-            log.warning("cache_check_failed", error=str(e))
-
     from graphids.core.data.datamodule.graph import GraphDataModule
     from graphids.core.data.datasets.can_bus import CANBusSource
     from graphids.core.models.base import safe_load_checkpoint
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    models = {}
-    for model_type, ckpt_path in checkpoints.items():
-        log.info("loading_model", model_type=model_type, ckpt=ckpt_path)
-        module = safe_load_checkpoint(model_type, Path(ckpt_path), map_location=device)
-        module.to(device).eval()
-        models[model_type] = module
-
+    # Build DM first so test split names are known before the idempotency check.
     source = CANBusSource(
         name=dataset,
         seed=seed,
@@ -131,32 +110,62 @@ def extract_states(
         val_fraction=val_fraction,
     )
     dm = GraphDataModule(dataset=source, dynamic_batching=False)
-    dm.setup("fit")
+    dm.setup(None)
+
+    out = Path(output_dir) / FUSION_STATES_DIR
+    train_path = out / TRAIN_FILENAME
+    val_path = out / VAL_FILENAME
+    test_paths = {name: out / f"{name}_states.pt" for name in dm.test_datasets.keys()}
+
+    def _version_ok(p: Path) -> bool:
+        if not p.exists():
+            return False
+        try:
+            return (
+                torch.load(p, map_location="cpu", weights_only=False).get("version")
+                == CACHE_VERSION
+            )
+        except Exception:
+            return False
+
+    if all(_version_ok(p) for p in [train_path, val_path, *test_paths.values()]):
+        log.info("cache_hit", output_dir=str(out), version=CACHE_VERSION)
+        return
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    models = {}
+    for model_type, ckpt_path in checkpoints.items():
+        log.info("loading_model", model_type=model_type, ckpt=ckpt_path)
+        module = safe_load_checkpoint(model_type, Path(ckpt_path), map_location=device)
+        module.to(device).eval()
+        models[model_type] = module
+
     train_ds, val_ds = dm.train_dataset, dm.val_dataset
-
-    log.info("extracting_train", n_graphs=len(train_ds), max_samples=max_samples)
-    train_td = _extract_states(models, list(train_ds), device, max_samples, batch_size)
-
-    log.info("extracting_val", n_graphs=len(val_ds), max_samples=max_val_samples)
-    val_td = _extract_states(models, list(val_ds), device, max_val_samples, batch_size)
-
-    train_td = train_td.cpu()
-    val_td = val_td.cpu()
 
     # Stash schema's attack code → name map so the fusion test path can emit
     # ``auroc_per_attack/{name}`` keys (looked up in FusionDataModule).
     schema = getattr(type(train_ds), "SCHEMA", None)
     names_map = getattr(schema, "attack_type_names", None) if schema is not None else None
+    blob_extras = {"version": CACHE_VERSION, "attack_type_names": dict(names_map or {0: "benign"})}
 
     out.mkdir(parents=True, exist_ok=True)
-    blob_extras = {"version": CACHE_VERSION, "attack_type_names": dict(names_map or {0: "benign"})}
-    torch.save({"td": train_td.to_dict(), **blob_extras}, train_path)
-    torch.save({"td": val_td.to_dict(), **blob_extras}, val_path)
 
-    log.info(
-        "states_saved",
-        output_dir=str(out),
-        train_n=train_td.batch_size[0],
-        val_n=val_td.batch_size[0],
-        keys=list(train_td.keys(include_nested=True, leaves_only=True)),
-    )
+    if not _version_ok(train_path):
+        log.info("extracting_train", n_graphs=len(train_ds), max_samples=max_samples)
+        train_td = _extract_states(models, list(train_ds), device, max_samples, batch_size).cpu()
+        torch.save({"td": train_td.to_dict(), **blob_extras}, train_path)
+
+    if not _version_ok(val_path):
+        log.info("extracting_val", n_graphs=len(val_ds), max_samples=max_val_samples)
+        val_td = _extract_states(models, list(val_ds), device, max_val_samples, batch_size).cpu()
+        torch.save({"td": val_td.to_dict(), **blob_extras}, val_path)
+
+    for name, test_ds in dm.test_datasets.items():
+        p = test_paths[name]
+        if not _version_ok(p):
+            n = len(test_ds)
+            log.info("extracting_test", split=name, n_graphs=n)
+            test_td = _extract_states(models, list(test_ds), device, n, batch_size).cpu()
+            torch.save({"td": test_td.to_dict(), **blob_extras}, p)
+
+    log.info("states_saved", output_dir=str(out), version=CACHE_VERSION)

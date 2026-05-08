@@ -52,7 +52,7 @@ class GAT(GraphModuleBase):
     def __init__(
         self,
         *,
-        loss_fn: nn.Module,
+        loss_fn: nn.Module | None = None,
         # --- architecture (None → resolve from ``scale`` preset) ---
         hidden: int | None = None,
         layers: int | None = None,

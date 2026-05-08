@@ -158,6 +158,7 @@ def test_run_filter_no_match_errors_with_available_names(env_roots):
 def _render_plan_to(env_roots, tmp_path) -> object:
     """Helper: render `smoke.gat_taunorm` to a tempdir, return Path."""
     import json as _json
+
     from typer.testing import CliRunner
 
     from graphids.cli.app import app
@@ -182,6 +183,7 @@ def _render_plan_to(env_roots, tmp_path) -> object:
 def test_plans_submit_dry_run_lists_all_rows(env_roots, tmp_path):
     """`plans submit --dry-run` enumerates every row without submitting."""
     from typer.testing import CliRunner
+
     from graphids.cli.app import app
 
     plan_path = _render_plan_to(env_roots, tmp_path)
@@ -199,6 +201,7 @@ def test_plans_submit_dry_run_lists_all_rows(env_roots, tmp_path):
 def test_plans_submit_filter_subsets_rows_for_dry_run(env_roots, tmp_path):
     """`plans submit --filter <glob> --dry-run` only enumerates matching rows."""
     from typer.testing import CliRunner
+
     from graphids.cli.app import app
 
     plan_path = _render_plan_to(env_roots, tmp_path)
@@ -222,6 +225,7 @@ def test_plans_submit_filter_subsets_rows_for_dry_run(env_roots, tmp_path):
 def test_plans_submit_filter_no_match_errors(env_roots, tmp_path):
     """`plans submit --filter <glob>` with 0 matches errors with available names."""
     from typer.testing import CliRunner
+
     from graphids.cli.app import app
 
     plan_path = _render_plan_to(env_roots, tmp_path)

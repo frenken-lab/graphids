@@ -23,7 +23,6 @@ from pathlib import Path
 import torch
 from tensordict import TensorDict
 
-
 _REWARD_KWARGS = {
     "vgae_weights": [0.4, 0.3, 0.3],
     "correct": 3.0,
