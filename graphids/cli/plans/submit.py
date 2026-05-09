@@ -51,7 +51,10 @@ def _mlflow_status_by_row(plan_id: str) -> tuple[dict[str, str], dict[str, str]]
 def plans_submit(
     plan: Annotated[Path, typer.Option("--plan", "-p", help="Rendered plan.json")],
     cluster: Annotated[str, typer.Option("--cluster", "-C", help="pitzer | cardinal | ascend")],
-    length: Annotated[str, typer.Option("--length", "-L", help="short | long")] = "long",
+    length: Annotated[
+        str | None,
+        typer.Option("--length", "-L", help="short | long (default: row's own resources.length)"),
+    ] = None,
     filter_glob: Annotated[
         str | None,
         typer.Option("--filter", "-f", help="fnmatch glob over row names"),
@@ -144,8 +147,9 @@ def plans_submit(
         if dry_run:
             prior = f" (prior status={st})" if st else ""
             chain = f" afterok={afterok}" if afterok else ""
+            eff_length = length or r.resources.length
             console.print(
-                f"[cyan][would-submit][/cyan] {r.name:30s} cluster={cluster} length={length}{prior}{chain}"
+                f"[cyan][would-submit][/cyan] {r.name:30s} cluster={cluster} length={eff_length}{prior}{chain}"
             )
             n_submitted += 1
             if action == "fit":
@@ -155,7 +159,9 @@ def plans_submit(
             continue
 
         try:
-            jid = submit_row(r, cluster=cluster, length=length, depends_on_afterok=afterok)
+            jid = submit_row(
+                r, cluster=cluster, length=length or r.resources.length, depends_on_afterok=afterok
+            )
             chain = f" (afterok={afterok})" if afterok else ""
             console.print(f"[green][submitted][/green] {r.name:30s} jid={jid}{chain}")
             n_submitted += 1

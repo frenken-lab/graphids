@@ -76,7 +76,7 @@ def compute_embeddings(
         batch = batch.clone().to(device)
         edge_attr = getattr(batch, "edge_attr", None)
         if model_type == "vgae":
-            z, _ = model.encode(batch.x, batch.edge_index, edge_attr, batch.batch, batch.node_id)
+            z, *_ = model.encode(batch.x, batch.edge_index, edge_attr, batch.batch, batch.node_id)
             emb = scatter(z, batch.batch, dim=0, reduce="mean")
         elif model_type == "dgi":
             z = model.encode(batch.x, batch.edge_index, edge_attr, batch.batch, batch.node_id)
@@ -169,11 +169,21 @@ def compute_cka(
     *,
     max_samples: int = 500,
 ) -> dict[str, float]:
-    """Layer-wise linear CKA between teacher and student over ``val_data``."""
+    """Full cross-matrix linear CKA between all teacher and student layers.
+
+    Returns keys teacher_{i}_student_{j} for every combination, giving an
+    n_teacher × n_student matrix. Previously used min(n_teacher, n_student)
+    and only compared corresponding pairs — this silently dropped teacher
+    layers that had no student counterpart (bug: 3-layer teacher × 2-layer
+    student only produced 2 values instead of 6).
+    """
     student_reps = _collect_reps(student, val_data, device, max_samples)
     teacher_reps = _collect_reps(teacher, val_data, device, max_samples)
-    n_layers = min(len(teacher_reps), len(student_reps))
-    return {f"layer_{i}": _linear_cka(teacher_reps[i], student_reps[i]) for i in range(n_layers)}
+    return {
+        f"teacher_{i}_student_{j}": _linear_cka(teacher_reps[i], student_reps[j])
+        for i in range(len(teacher_reps))
+        for j in range(len(student_reps))
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -324,8 +334,11 @@ def compute_fusion_policy(module, td: TensorDict, labels: torch.Tensor) -> Polic
     if hasattr(module, "q_values"):
         flat_obs = flatten_features(result["td_norm"])
         q_vals = module.q_values(flat_obs).cpu().numpy()
+    # RL models (Bandit/DQN) return alphas (mixing weights); non-RL models
+    # (MLP/MoE/WeightedAvg) return only fused_scores — use those as the signal.
+    alpha_tensor = result.get("alphas", result["fused_scores"])
     return PolicyResult(
-        alphas=result["alphas"].cpu().numpy(),
+        alphas=alpha_tensor.detach().cpu().numpy(),
         labels=labels.cpu().numpy(),
         q_values=q_vals,
     )

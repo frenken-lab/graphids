@@ -86,6 +86,7 @@ class Meta(_StrictModel):
     seed: int
     model_type: str
     scale: str
+    subdir: str = "ablations"
 
 
 class Upstream(_StrictModel):
@@ -227,7 +228,26 @@ class AnalyzeRow(_StrictModel):
         return self
 
 
-Row = TrainRow | CacheRow | ExtractRow | AnalyzeRow
+class HFPushRow(_StrictModel):
+    """Push a local file or directory to the HuggingFace Hub.
+
+    Idempotent: HfApi deduplicates by content hash when commit_message is stable.
+    CPU-only; no model instantiation, no MLflow run.
+    """
+
+    name: str
+    action: Literal["hf_push"]
+    plan_id: str
+    artifact_type: Literal["checkpoints", "cache", "states", "logs", "analysis"]
+    repo_id: str
+    repo_type: Literal["model", "dataset"] = "model"
+    local_path: str
+    path_in_repo: str
+    private: bool = True
+    resources: Resources
+
+
+Row = TrainRow | CacheRow | ExtractRow | AnalyzeRow | HFPushRow
 
 
 class Plan(_StrictModel):

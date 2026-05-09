@@ -76,7 +76,13 @@ def _emit(action: str, name: str, spec: RowSpec, length: str) -> dict[str, Any]:
         "action": action,
         "identity": {
             "run_name": f"{m['group']}_{m['variant']}_{m['dataset']}_seed{m['seed']}",
-            "run_dir": _run_dir(m["dataset"], m["group"], m["variant"], m["seed"]),
+            "run_dir": _run_dir(
+                m["dataset"],
+                m["group"],
+                m["variant"],
+                m["seed"],
+                subdir=m.get("subdir", "ablations"),
+            ),
             "jobname": f"{m['model_type']}-{m['scale']}-{m['variant']}",
         },
         "meta": dict(m),
@@ -165,7 +171,13 @@ def compose(
     ``model.init_args.loss_fn``. Pass ``loss=None`` for archetypes that
     bake the loss into the model class (DGI, fusion methods).
     """
-    rd = _run_dir(meta["dataset"], meta["group"], meta["variant"], meta["seed"])
+    rd = _run_dir(
+        meta["dataset"],
+        meta["group"],
+        meta["variant"],
+        meta["seed"],
+        subdir=meta.get("subdir", "ablations"),
+    )
 
     model_block = deepcopy(model)
     if loss is not None:
@@ -305,6 +317,31 @@ def analyze(
         "gat_ckpt_path": gat_ckpt_path,
         "resources": {"mode": mode, "length": length},
         "seed": seed,
+    }
+
+
+def hf_push(
+    *,
+    name: str,
+    artifact_type: str,
+    repo_id: str,
+    repo_type: str = "model",
+    local_path: str,
+    path_in_repo: str,
+    private: bool = True,
+    length: str = "short",
+) -> dict[str, Any]:
+    """One-shot HuggingFace Hub upload row. plan_id injected by render_plan."""
+    return {
+        "name": name,
+        "action": "hf_push",
+        "artifact_type": artifact_type,
+        "repo_id": repo_id,
+        "repo_type": repo_type,
+        "local_path": local_path,
+        "path_in_repo": path_in_repo,
+        "private": private,
+        "resources": {"mode": "cpu", "length": length},
     }
 
 

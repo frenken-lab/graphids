@@ -270,6 +270,42 @@ def cache(row: CacheRow) -> None:
     ).build()
 
 
+def hf_push(row: HFPushRow) -> None:
+    """Upload a local file or directory to the HuggingFace Hub."""
+    try:
+        from huggingface_hub import HfApi
+    except ImportError as e:
+        raise ImportError(
+            "huggingface_hub is required for hf_push rows. "
+            "Install it: uv pip install 'huggingface-hub>=0.24'"
+        ) from e
+
+    from pathlib import Path
+
+    api = HfApi()
+    api.create_repo(
+        repo_id=row.repo_id, repo_type=row.repo_type, private=row.private, exist_ok=True
+    )
+    p = Path(row.local_path)
+    if p.is_dir():
+        commit = api.upload_folder(
+            folder_path=str(p),
+            repo_id=row.repo_id,
+            repo_type=row.repo_type,
+            path_in_repo=row.path_in_repo,
+            commit_message=f"graphids: upload {row.name}",
+        )
+    else:
+        commit = api.upload_file(
+            path_or_fileobj=str(p),
+            path_in_repo=row.path_in_repo,
+            repo_id=row.repo_id,
+            repo_type=row.repo_type,
+            commit_message=f"graphids: upload {row.name}",
+        )
+    print(f"[hf_push] committed: {commit.commit_url}")
+
+
 def run_row(row: Row, *, ckpt_path: str | None = None) -> None:
     _ensure_runtime()
     if isinstance(row, ExtractRow):
@@ -280,5 +316,10 @@ def run_row(row: Row, *, ckpt_path: str | None = None) -> None:
         return
     if isinstance(row, CacheRow):
         cache(row)
+        return
+    from graphids.plan.schema import HFPushRow
+
+    if isinstance(row, HFPushRow):
+        hf_push(row)
         return
     {"fit": train, "test": evaluate}[row.action](row, ckpt_path=ckpt_path)

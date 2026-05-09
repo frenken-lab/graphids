@@ -61,7 +61,7 @@ def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
 
     teacher_gat_ckpt = best_ckpt(dataset, "teacher", "teacher_gat", seed)
 
-    # ── VGAE: embeddings + landscape — GPU short (21×21 = 441 passes) ───────
+    # ── VGAE: embeddings + landscape — CPU long (21×21 = 441 passes) ────────
     for group, variant in _VGAE_VARIANTS:
         ckpt = best_ckpt(dataset, group, variant, seed)
         if not _exists(ckpt):
@@ -79,12 +79,12 @@ def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
                 landscape=True,
                 landscape_resolution=21,
                 seed=seed,
-                mode="gpu",
-                length="short",
+                mode="cpu",
+                length="long",
             )
         )
 
-    # ── GAT: embeddings + attention + landscape (+ CKA) — GPU short ─────────
+    # ── GAT: embeddings + attention + landscape (+ CKA) — CPU long ──────────
     if not _exists(teacher_gat_ckpt):
         import warnings
 
@@ -114,8 +114,8 @@ def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
                     cka=not is_teacher,
                     cka_teacher_ckpt="" if is_teacher else teacher_gat_ckpt,
                     seed=seed,
-                    mode="gpu",
-                    length="short",
+                    mode="cpu",
+                    length="long",
                 )
             )
 

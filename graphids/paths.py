@@ -10,7 +10,8 @@ and ``best_ckpt(...)`` directly. Single source — no separate path scheme
 anywhere else in the tree.
 
 `run_root` is read from `$GRAPHIDS_RUN_ROOT` lazily; the path scheme is
-``{run_root}/{dataset}/ablations/{group}/{variant}/seed_{N}`` (and
+``{run_root}/{dataset}/{subdir}/{group}/{variant}/seed_{N}`` where
+``subdir`` defaults to ``"ablations"`` (and
 ``{run_root}/{dataset}/cached_states/{variant}/seed_{N}`` for fusion).
 
 Import-safe: no external deps, no torch — usable from anywhere
@@ -48,6 +49,9 @@ DATASET_REGISTRY_PATH: Path = CONFIG_DIR / "data" / "datasets.json"
 
 PREPROCESSING_VERSION: str = "10.0.0"
 CKPT_SUBPATH: str = "checkpoints/best_model.ckpt"
+
+# Groups whose run dirs live under training/ rather than ablations/.
+_TRAINING_GROUPS: frozenset[str] = frozenset({"teacher", "student_kd", "student_nokd"})
 LAST_CKPT_SUBPATH: str = "checkpoints/last.ckpt"
 PHASE_MARKERS: dict[str, str] = {
     "train": ".train_complete",
@@ -98,14 +102,21 @@ def _run_root() -> str:
     return rr
 
 
-def run_dir(dataset: str, group: str, variant: str, seed: int) -> str:
+def _group_subdir(group: str) -> str:
+    return "training" if group in _TRAINING_GROUPS else "ablations"
+
+
+def run_dir(dataset: str, group: str, variant: str, seed: int, *, subdir: str | None = None) -> str:
     """Per-(variant, seed) run directory under `$GRAPHIDS_RUN_ROOT`."""
-    return str(Path(_run_root()) / dataset / "ablations" / group / variant / f"seed_{int(seed)}")
+    _sub = subdir if subdir is not None else _group_subdir(group)
+    return str(Path(_run_root()) / dataset / _sub / group / variant / f"seed_{int(seed)}")
 
 
-def best_ckpt(dataset: str, group: str, variant: str, seed: int) -> str:
+def best_ckpt(
+    dataset: str, group: str, variant: str, seed: int, *, subdir: str | None = None
+) -> str:
     """Best-model checkpoint path. Suffix lives here so callers don't string-concat."""
-    return f"{run_dir(dataset, group, variant, seed)}/checkpoints/best_model.ckpt"
+    return f"{run_dir(dataset, group, variant, seed, subdir=subdir)}/checkpoints/best_model.ckpt"
 
 
 def states_dir(dataset: str, seed: int, variant: str = "default") -> str:

@@ -68,12 +68,20 @@ _FUSION_METHODS: list[tuple[str, dict[str, Any]]] = [
 
 def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
     # ------------------------------------------------------------------ ckpt paths
-    teacher_vgae_ckpt = best_ckpt(dataset, "teacher", "teacher_vgae", seed)
-    teacher_gat_ckpt = best_ckpt(dataset, "teacher", "teacher_gat", seed)
-    student_vgae_kd_ckpt = best_ckpt(dataset, "student_kd", "student_vgae_kd", seed)
-    student_gat_kd_ckpt = best_ckpt(dataset, "student_kd", "student_gat_kd", seed)
-    student_vgae_nokd_ckpt = best_ckpt(dataset, "student_nokd", "student_vgae_nokd", seed)
-    student_gat_nokd_ckpt = best_ckpt(dataset, "student_nokd", "student_gat_nokd", seed)
+    teacher_vgae_ckpt = best_ckpt(dataset, "teacher", "teacher_vgae", seed, subdir="training")
+    teacher_gat_ckpt = best_ckpt(dataset, "teacher", "teacher_gat", seed, subdir="training")
+    student_vgae_kd_ckpt = best_ckpt(
+        dataset, "student_kd", "student_vgae_kd", seed, subdir="training"
+    )
+    student_gat_kd_ckpt = best_ckpt(
+        dataset, "student_kd", "student_gat_kd", seed, subdir="training"
+    )
+    student_vgae_nokd_ckpt = best_ckpt(
+        dataset, "student_nokd", "student_vgae_nokd", seed, subdir="training"
+    )
+    student_gat_nokd_ckpt = best_ckpt(
+        dataset, "student_nokd", "student_gat_nokd", seed, subdir="training"
+    )
 
     # ------------------------------------------------------------------ data helpers
     def vgae_data() -> dict[str, Any]:
@@ -95,6 +103,7 @@ def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
             "seed": seed,
             "model_type": model_type,
             "scale": scale,
+            "subdir": "training",
         }
 
     # ------------------------------------------------------------------ fusion helper

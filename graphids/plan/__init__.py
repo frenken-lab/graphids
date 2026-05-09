@@ -30,6 +30,7 @@ from graphids.plan.compose import (
     compose,
     extract,
     fusion,
+    hf_push,
     trainer_base,
 )
 from graphids.plan.primitives import (
@@ -70,6 +71,7 @@ __all__ = [
     "compose",
     "fusion",
     "extract",
+    "hf_push",
     "trainer_base",
     "callbacks_base",
     # primitives — helpers

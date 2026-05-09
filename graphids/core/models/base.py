@@ -613,7 +613,11 @@ def safe_load_checkpoint(model_type: str, ckpt_path, *, map_location="cpu"):
     # legacy keys so old ckpts load cleanly.
     if "mask_token" in state_dict and "masker.mask_token" not in state_dict:
         state_dict["masker.mask_token"] = state_dict.pop("mask_token")
+    # Strip training-only submodules (e.g. loss_fn) that aren't present on the
+    # inference model but may have been saved into the checkpoint.
+    state_dict = {k: v for k, v in state_dict.items() if not k.startswith("loss_fn.")}
     module.load_state_dict(state_dict)
+    module.to(map_location)
 
     if hasattr(module, "on_load_checkpoint"):
         module.on_load_checkpoint(ckpt)
