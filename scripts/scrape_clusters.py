@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Scrape OSC cluster partition specs into configs/resources/clusters.json.
 
-Source of truth for ``submit_profiles.json`` sizing. Re-run when partitions
+Source of truth for ``slurm/submit._PROFILES`` sizing. Re-run when partitions
 change. Reads ``sinfo -M <cluster>`` for pitzer / cardinal / ascend; aggregates
 identical (partition, cores, mem_mb, walltime, gres) tuples and records node
 counts.
@@ -10,6 +10,7 @@ Usage:
     python scripts/scrape_clusters.py        # writes configs/resources/clusters.json
     python scripts/scrape_clusters.py --diff # show diff vs current file
 """
+
 from __future__ import annotations
 
 import argparse
@@ -52,7 +53,9 @@ def _parse_walltime(s: str) -> int | None:
 def scrape(cluster: str) -> list[dict]:
     out = subprocess.run(
         ["sinfo", "-M", cluster, "-h", "--format=%P|%D|%c|%m|%l|%G"],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
     bucket: dict[tuple, int] = defaultdict(int)
     rows: dict[tuple, dict] = {}
@@ -84,10 +87,7 @@ def scrape(cluster: str) -> list[dict]:
             "walltime_sec": wt_sec,
             "gres": gres_norm,
         }
-    return [
-        {**rows[k], "n_nodes": n}
-        for k, n in sorted(bucket.items())
-    ]
+    return [{**rows[k], "n_nodes": n} for k, n in sorted(bucket.items())]
 
 
 def main() -> int:
@@ -108,11 +108,15 @@ def main() -> int:
                 print(f"{OUT}: unchanged")
                 return 0
             import difflib
-            sys.stdout.writelines(difflib.unified_diff(
-                old.splitlines(keepends=True),
-                new_text.splitlines(keepends=True),
-                fromfile=str(OUT), tofile="(scraped)",
-            ))
+
+            sys.stdout.writelines(
+                difflib.unified_diff(
+                    old.splitlines(keepends=True),
+                    new_text.splitlines(keepends=True),
+                    fromfile=str(OUT),
+                    tofile="(scraped)",
+                )
+            )
         else:
             print(f"{OUT}: would create")
         return 0

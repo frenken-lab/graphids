@@ -50,8 +50,8 @@ def env_roots(tmp_path_factory):
 @pytest.mark.parametrize("plan_name", PLANS)
 def test_plan_builds(plan_name: str, env_roots):
     """``build(dataset, seed)`` returns rows that pass ``Plan`` validation."""
-    from graphids.plan.identity import mint_plan_id
-    from graphids.plan.schema import Plan
+    from graphids.plan.render import mint_plan_id
+    from graphids.plan.rows import Plan
 
     mod = importlib.import_module(f"graphids.plan.plans.{plan_name}")
     rows = mod.build(dataset="hcrl_sa", seed=42)
@@ -62,13 +62,15 @@ def test_plan_builds(plan_name: str, env_roots):
         if r.get("action") in {"fit", "test"}:
             r["plan_module"] = plan_name
             r["git_sha"] = "test_sha"
-    plan_obj = Plan.model_validate({
-        "plan_id": plan_id,
-        "plan_module": plan_name,
-        "plan_args": {"dataset": "hcrl_sa", "seed": 42},
-        "created_at": "2026-05-05T00:00:00+00:00",
-        "rows": rows,
-    })
+    plan_obj = Plan.model_validate(
+        {
+            "plan_id": plan_id,
+            "plan_module": plan_name,
+            "plan_args": {"dataset": "hcrl_sa", "seed": 42},
+            "created_at": "2026-05-05T00:00:00+00:00",
+            "rows": rows,
+        }
+    )
     assert len(plan_obj) == len(rows)
 
 
@@ -83,9 +85,7 @@ def test_run_filter_subsets_rows(env_roots):
     from graphids.cli.app import app
 
     runner = CliRunner()
-    full = runner.invoke(
-        app, ["run", "smoke.gat_taunorm", "--dataset", "hcrl_sa", "--seed", "42"]
-    )
+    full = runner.invoke(app, ["run", "smoke.gat_taunorm", "--dataset", "hcrl_sa", "--seed", "42"])
     assert full.exit_code == 0, full.stderr
     full_names = [r["name"] for r in __import__("json").loads(full.stdout)["rows"]]
     assert len(full_names) >= 2
@@ -93,8 +93,7 @@ def test_run_filter_subsets_rows(env_roots):
     target = full_names[0]
     filtered = runner.invoke(
         app,
-        ["run", "smoke.gat_taunorm", "--dataset", "hcrl_sa", "--seed", "42",
-         "--filter", target],
+        ["run", "smoke.gat_taunorm", "--dataset", "hcrl_sa", "--seed", "42", "--filter", target],
     )
     assert filtered.exit_code == 0, filtered.stderr
     filtered_rows = __import__("json").loads(filtered.stdout)["rows"]
@@ -109,8 +108,8 @@ def test_identity_tags_carry_reproduction_contract(env_roots):
     are the inputs to that command. Missing one breaks reproduction silently.
     """
     from graphids._mlflow import identity_tags
-    from graphids.plan.identity import mint_plan_id
-    from graphids.plan.schema import Plan
+    from graphids.plan.render import mint_plan_id
+    from graphids.plan.rows import Plan
 
     mod = importlib.import_module("graphids.plan.plans.smoke.gat_taunorm")
     rows = mod.build(dataset="hcrl_sa", seed=42)
@@ -120,13 +119,15 @@ def test_identity_tags_carry_reproduction_contract(env_roots):
         if r.get("action") in {"fit", "test"}:
             r["plan_module"] = "smoke.gat_taunorm"
             r["git_sha"] = "abc123def456"
-    plan_obj = Plan.model_validate({
-        "plan_id": plan_id,
-        "plan_module": "smoke.gat_taunorm",
-        "plan_args": {"dataset": "hcrl_sa", "seed": 42},
-        "created_at": "2026-05-05T00:00:00+00:00",
-        "rows": rows,
-    })
+    plan_obj = Plan.model_validate(
+        {
+            "plan_id": plan_id,
+            "plan_module": "smoke.gat_taunorm",
+            "plan_args": {"dataset": "hcrl_sa", "seed": 42},
+            "created_at": "2026-05-05T00:00:00+00:00",
+            "rows": rows,
+        }
+    )
     fit_row = next(r for r in plan_obj.rows if r.action == "fit")
     tags = identity_tags(fit_row, "fit")
 
@@ -147,8 +148,16 @@ def test_run_filter_no_match_errors_with_available_names(env_roots):
     runner = CliRunner()
     result = runner.invoke(
         app,
-        ["run", "smoke.gat_taunorm", "--dataset", "hcrl_sa", "--seed", "42",
-         "--filter", "nonexistent_row_*"],
+        [
+            "run",
+            "smoke.gat_taunorm",
+            "--dataset",
+            "hcrl_sa",
+            "--seed",
+            "42",
+            "--filter",
+            "nonexistent_row_*",
+        ],
     )
     assert result.exit_code != 0
     assert "matched 0/" in result.stderr
@@ -167,8 +176,7 @@ def _render_plan_to(env_roots, tmp_path) -> object:
     plan_path = tmp_path / "plan.json"
     res = runner.invoke(
         app,
-        ["run", "smoke.gat_taunorm", "--dataset", "hcrl_sa", "--seed", "42",
-         "-o", str(plan_path)],
+        ["run", "smoke.gat_taunorm", "--dataset", "hcrl_sa", "--seed", "42", "-o", str(plan_path)],
     )
     assert res.exit_code == 0, res.stderr
     assert plan_path.exists()
@@ -208,15 +216,25 @@ def test_plans_submit_filter_subsets_rows_for_dry_run(env_roots, tmp_path):
     runner = CliRunner()
     result = runner.invoke(
         app,
-        ["plans", "submit", "--plan", str(plan_path), "-C", "pitzer",
-         "--filter", "*-test", "--dry-run"],
+        [
+            "plans",
+            "submit",
+            "--plan",
+            str(plan_path),
+            "-C",
+            "pitzer",
+            "--filter",
+            "*-test",
+            "--dry-run",
+        ],
     )
     assert result.exit_code == 0, result.stderr
     assert "would-submit=1" in result.stdout
     assert "gat_taunorm-test" in result.stdout
     # the fit row was filtered out
     fit_lines = [
-        line for line in result.stdout.splitlines()
+        line
+        for line in result.stdout.splitlines()
         if "would-submit" in line and "gat_taunorm " in line and "-test" not in line
     ]
     assert fit_lines == [], f"fit row leaked through filter: {fit_lines}"
@@ -232,8 +250,17 @@ def test_plans_submit_filter_no_match_errors(env_roots, tmp_path):
     runner = CliRunner()
     result = runner.invoke(
         app,
-        ["plans", "submit", "--plan", str(plan_path), "-C", "pitzer",
-         "--filter", "no_such_row_*", "--dry-run"],
+        [
+            "plans",
+            "submit",
+            "--plan",
+            str(plan_path),
+            "-C",
+            "pitzer",
+            "--filter",
+            "no_such_row_*",
+            "--dry-run",
+        ],
     )
     assert result.exit_code != 0
     assert "matched 0/" in result.stderr

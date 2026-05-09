@@ -15,7 +15,7 @@ import torch
 from structlog import get_logger
 
 from graphids.core.models.base import eval_mode, safe_load_checkpoint
-from graphids.plan.schema import AnalyzeRow
+from graphids.plan.rows import AnalyzeRow
 
 from . import io
 from ._dispatch import ARTIFACTS, expected_outputs

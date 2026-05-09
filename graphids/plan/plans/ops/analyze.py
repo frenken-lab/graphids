@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from graphids.paths import best_ckpt, lake_root, run_dir
-from graphids.plan.compose import analyze
+from graphids.plan import analyze
 
 _LAKE_ROOT = lake_root()
 

@@ -16,19 +16,19 @@ from typing import Any
 
 from graphids.paths import best_ckpt
 from graphids.plan import (
-    CE,
-    FOCAL,
-    GAT,
-    SCORE_RANDOM,
-    SCORE_VGAE,
-    VGAE,
-    VGAE_TASK,
-    WEIGHTED_CE,
     can_bus,
-    compose,
+    ce,
     curriculum,
+    fit_row,
+    focal,
+    gat,
     graph_dm,
-    spec,
+    score_random,
+    score_vgae,
+    test_row,
+    vgae,
+    vgae_task,
+    weighted_ce,
 )
 
 
@@ -37,24 +37,27 @@ def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
 
     def gat_meta(group: str, variant: str) -> dict[str, Any]:
         return {
-            "group": group, "variant": variant,
-            "dataset": dataset, "seed": seed,
-            "model_type": "gat", "scale": "small",
+            "group": group,
+            "variant": variant,
+            "dataset": dataset,
+            "seed": seed,
+            "model_type": "gat",
+            "scale": "small",
         }
 
     def gat_row(
         group: str,
         variant: str,
         *,
-        loss: dict[str, Any],
-        difficulty: dict[str, Any] | None = None,
+        loss,
+        difficulty=None,
         source_overrides: dict[str, Any] | None = None,
         model_init_extra: dict[str, Any] | None = None,
         upstreams: list[dict[str, Any]] | None = None,
         trainer_overrides: dict[str, Any] | None = None,
-    ):
-        return compose(
-            model=spec(GAT, **(model_init_extra or {})),
+    ) -> dict[str, Any]:
+        return dict(
+            model=gat(**(model_init_extra or {})),
             data=graph_dm(
                 source=can_bus(dataset=dataset, seed=seed, **(source_overrides or {})),
                 difficulty=difficulty,
@@ -67,55 +70,65 @@ def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
 
     SWEEPS: dict[str, dict[str, dict[str, Any]]] = {
         "gat_loss": {
-            "focal":       {"loss": spec(FOCAL),
-                            "trainer_overrides": {"max_epochs": 200}},
-            "ce":          {"loss": spec(CE)},
-            "weighted_ce": {"loss": spec(WEIGHTED_CE, weights=[1.0, 5.0])},
+            "focal": {"loss": focal(), "trainer_overrides": {"max_epochs": 200}},
+            "ce": {"loss": ce()},
+            "weighted_ce": {"loss": weighted_ce(weights=[1.0, 5.0])},
         },
         "gat_sampling": {
-            "none":              {"loss": spec(FOCAL)},
-            "curriculum_random": {"loss": curriculum(spec(FOCAL)),
-                                  "difficulty": spec(SCORE_RANDOM, seed=seed)},
-            "curriculum_vgae":   {"loss": curriculum(spec(FOCAL)),
-                                  "difficulty": spec(SCORE_VGAE, ckpt_path=vgae_ckpt),
-                                  "upstreams": [{"role": "vgae",
-                                                 "ckpt_path": vgae_ckpt,
-                                                 "ckpt_tla": "vgae_ckpt_path"}]},
+            "none": {"loss": focal()},
+            "curriculum_random": {
+                "loss": curriculum(focal()),
+                "difficulty": score_random(seed=seed),
+            },
+            "curriculum_vgae": {
+                "loss": curriculum(focal()),
+                "difficulty": score_vgae(vgae_ckpt),
+                "upstreams": [
+                    {"role": "vgae", "ckpt_path": vgae_ckpt, "ckpt_tla": "vgae_ckpt_path"}
+                ],
+            },
         },
         "id_encoding": {
-            "lookup": {"name": "id_lookup", "loss": spec(FOCAL),
-                       "model_init_extra": {
-                           "id_encoder_class_path":
-                               "graphids.core.models.id_encoding.lookup.LookupIdEncoder",
-                       }},
-            "hash":   {"name": "id_hash",   "loss": spec(FOCAL),
-                       "model_init_extra": {
-                           "id_encoder_class_path":
-                               "graphids.core.models.id_encoding.hash_embedding.HashIdEncoder",
-                           "id_encoder_kwargs": {"num_buckets": 2048},
-                       }},
+            "lookup": {
+                "name": "id_lookup",
+                "loss": focal(),
+                "model_init_extra": {
+                    "id_encoder_class_path": "graphids.core.models.id_encoding.lookup.LookupIdEncoder",
+                },
+            },
+            "hash": {
+                "name": "id_hash",
+                "loss": focal(),
+                "model_init_extra": {
+                    "id_encoder_class_path": "graphids.core.models.id_encoding.hash_embedding.HashIdEncoder",
+                    "id_encoder_kwargs": {"num_buckets": 2048},
+                },
+            },
         },
     }
 
     # ----- unsupervised VGAE baseline (produces the ckpt curriculum_vgae reads) -
-    vgae = compose(
-        model=spec(VGAE),
+    vgae_kw = dict(
+        model=vgae(),
         data=graph_dm(source=can_bus(dataset=dataset, seed=seed), label_filter="benign"),
-        loss=spec(VGAE_TASK),
+        loss=vgae_task(),
         monitor="val_discrimination_ratio",
         meta={
-            "group": "unsupervised", "variant": "vgae",
-            "dataset": dataset, "seed": seed,
-            "model_type": "vgae", "scale": "small",
+            "group": "unsupervised",
+            "variant": "vgae",
+            "dataset": dataset,
+            "seed": seed,
+            "model_type": "vgae",
+            "scale": "small",
         },
         trainer_overrides={"max_epochs": 600, "precision": "32-true"},
     )
-    rows: list[dict[str, Any]] = [vgae.fit("vgae"), vgae.test("vgae")]
+    rows: list[dict[str, Any]] = [fit_row("vgae", **vgae_kw), test_row("vgae", **vgae_kw)]
 
     # ----- emit the sweep (fit + test per variant) ----------------------------
     for group, variants in SWEEPS.items():
         for variant, kwargs in variants.items():
             name = kwargs.pop("name", variant)
-            row = gat_row(group, variant, **kwargs)
-            rows.extend([row.fit(name), row.test(name)])
+            kw = gat_row(group, variant, **kwargs)
+            rows.extend([fit_row(name, **kw), test_row(name, **kw)])
     return rows

@@ -21,21 +21,24 @@ from graphids.cli.app import app
 _RowOpt = Annotated[
     str | None,
     typer.Option(
-        "--row", "-r",
+        "--row",
+        "-r",
         help="One row JSON. '-' for stdin. Mutually exclusive with --plan/--row-name.",
     ),
 ]
 _PlanFileOpt = Annotated[
     Path | None,
     typer.Option(
-        "--plan", "-p",
+        "--plan",
+        "-p",
         help="Path to a rendered plan.json. Use with --row-name to pick one row.",
     ),
 ]
 _RowNameOpt = Annotated[
     str | None,
     typer.Option(
-        "--row-name", "-n",
+        "--row-name",
+        "-n",
         help="Row name within --plan to operate on (single row, exact match).",
     ),
 ]
@@ -46,7 +49,7 @@ _ClusterOpt = Annotated[
     str, typer.Option("--cluster", "-C", help="Target cluster: pitzer | cardinal | ascend")
 ]
 _LengthOpt = Annotated[
-    str, typer.Option("--length", "-L", help="short | long (per submit_profiles.json)")
+    str, typer.Option("--length", "-L", help="short | long (per slurm/submit._PROFILES)")
 ]
 _DepOk = Annotated[
     str | None, typer.Option("--depends-on-afterok", help="SBATCH afterok dependency.")
@@ -62,7 +65,7 @@ def _resolve_row(row: str | None, plan_file: Path | None, row_name: str | None):
     """
     from pydantic import TypeAdapter
 
-    from graphids.plan.schema import Row
+    from graphids.plan.rows import Row
 
     inline = row is not None
     by_name = plan_file is not None or row_name is not None
@@ -70,9 +73,7 @@ def _resolve_row(row: str | None, plan_file: Path | None, row_name: str | None):
     if inline and by_name:
         raise typer.BadParameter("--row is mutually exclusive with --plan/--row-name")
     if not inline and not (plan_file is not None and row_name is not None):
-        raise typer.BadParameter(
-            "specify either --row '<json>' or --plan FILE --row-name NAME"
-        )
+        raise typer.BadParameter("specify either --row '<json>' or --plan FILE --row-name NAME")
 
     if inline:
         text = sys.stdin.read() if row == "-" else row
@@ -82,11 +83,11 @@ def _resolve_row(row: str | None, plan_file: Path | None, row_name: str | None):
     matches = [r for r in plan_obj["rows"] if r.get("name") == row_name]
     if not matches:
         names = ", ".join(r["name"] for r in plan_obj["rows"])
-        raise typer.BadParameter(
-            f"--row-name {row_name!r} not in {plan_file}. Available: {names}"
-        )
+        raise typer.BadParameter(f"--row-name {row_name!r} not in {plan_file}. Available: {names}")
     if len(matches) > 1:
-        raise typer.BadParameter(f"--row-name {row_name!r} matched {len(matches)} rows (must be unique)")
+        raise typer.BadParameter(
+            f"--row-name {row_name!r} matched {len(matches)} rows (must be unique)"
+        )
     return TypeAdapter(Row).validate_python(matches[0])
 
 
@@ -149,15 +150,17 @@ def exec_cli(
 
 @app.command("cache", rich_help_panel="Execution", no_args_is_help=True)
 def cache_cli(
-    dataset: Annotated[str, typer.Option("--dataset", help="Dataset name (catalog key, e.g. hcrl_sa)")],
+    dataset: Annotated[
+        str, typer.Option("--dataset", help="Dataset name (catalog key, e.g. hcrl_sa)")
+    ],
     vocab_scope: Annotated[
         str, typer.Option("--vocab-scope", help="train | all (cache partition)")
     ] = "train",
 ) -> None:
     """Build the dataset cache for ``(dataset, vocab_scope)``. Idempotent."""
     from graphids.orchestrate import cache
-    from graphids.plan.identity import mint_plan_id
-    from graphids.plan.schema import CacheRow, Resources
+    from graphids.plan.render import mint_plan_id
+    from graphids.plan.rows import CacheRow, Resources
 
     cache(
         CacheRow(

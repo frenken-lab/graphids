@@ -12,7 +12,8 @@ composer writes into the JSON or which kwargs a `class_path` will accept.
 |---|---|
 | [`schema.py`](schema.py) | Pydantic models — `Plan`, `TrainRow`, `CacheRow`, `ExtractRow`, `AnalyzeRow`, `RenderedConfig`, `ClassPath`, `TrainerCfg`. All `frozen=True, extra="forbid"`. |
 | [`compose.py`](compose.py) | `compose()` / `fusion()` → frozen `RowSpec`; `RowSpec.fit(name)` / `.test(name)` emit `TrainRow`-shaped dicts. `extract()` is the one-shot extraction-row builder. |
-| [`primitives.py`](primitives.py) | Bare `{class_path, init_args}` factories: `spec()`, `can_bus()`, `graph_dm()`, `fusion_dm()`, `curriculum()` + class-path string constants (`GAT`, `VGAE`, `FOCAL`, …). Only `can_bus()` does any validation (catalog membership, `primitives.py:85`). |
+| [`config.py`](config.py) | Typed discriminated-union configs: `GATCfg`, `VGAECfg`, `FocalLossCfg`, `GraphDMCfg`, … and their union aliases `ModelCfg`, `LossFn`, `DataCfg`, `DifficultyCfg`. All `frozen=True, extra="forbid"`. |
+| [`primitives.py`](primitives.py) | Typed factory functions: `gat()`, `vgae()`, `focal()`, `graph_dm()`, `fusion_dm()`, `curriculum()`, … Return frozen Pydantic configs. Only `can_bus()` does validation (catalog membership). |
 | [`render.py`](render.py) | `render_plan(plan_module, dataset=, seed=, filter_glob=)` — imports the plan module, calls `build()`, threads `plan_id` + `git_sha` + `plan_module` onto fit/test rows, validates as `Plan`. Single call site for `gx run` and `gx plans describe`. |
 | [`identity.py`](identity.py) | `mint_plan_id()` (UUIDv7, lex-sortable) + `git_sha()` (working-tree short SHA). |
 | [`plans/`](plans/) | User-authored `build(*, dataset, seed) -> list[dict]` modules. Existing axes: `ablations.{fusion,supervised,unsupervised}`, `data.rebuild_cache`, `smoke.gat_taunorm`. Add a new file here, name it after its axis. |
@@ -21,20 +22,20 @@ composer writes into the JSON or which kwargs a `class_path` will accept.
 
 - **render** — `gx run <plan_module> -d <dataset> -s <seed> -o plan.json`. Pure, login-node, JSON only. No SLURM, no MLflow, no network.
 - **submit** — `gx plans submit --plan plan.json -C pitzer`. Sbatch body is the literal `python -m graphids exec --row '<json>' [--ckpt-path X]`. Row JSON is frozen here ([`chassis-invariants.md`](../../.claude/rules/chassis-invariants.md) §2).
-- **exec** — compute node re-imports current source, walks `class_path` blocks via `graphids.orchestrate.run_row`, instantiates with signature-filtered kwargs, runs.
+- **exec** — compute node re-imports current source, `graphids.orchestrate.run_row` match-dispatches on the typed config tag (`cfg.type`) to instantiate model / loss / datamodule; callbacks still use `{class_path, init_args}` blocks via `_instantiate_callback`.
 
 ## Re-render decision table
 
-The boundary: **does the change alter what `compose()` writes into the JSON, or change which kwargs an existing `class_path` accepts in a non-default-compatible way?** YES → re-render. Otherwise the queued sbatch picks it up automatically on exec.
+The boundary: **does the change alter what `compose()` writes into the JSON, or change what the typed config fields mean at exec time?** YES → re-render. Otherwise the queued sbatch picks it up automatically on exec.
 
 | Source change in… | Re-render? | Why |
 |---|---|---|
-| `graphids/plan/{schema,compose,primitives,render,identity}.py` | **YES** | Composition output structure or identity tagging changes. |
+| `graphids/plan/{schema,compose,config,primitives,render,identity}.py` | **YES** | Composition output structure or identity tagging changes. |
 | `graphids/plan/plans/<your_plan>.py::build()` body | **YES** | The plan IS the producer of the JSON. |
-| Class `__init__` adds a new **required** kwarg | **YES** | Frozen `init_args` won't satisfy the new contract; `_instantiate` raises `TypeError`. |
-| Class `__init__` adds a new **optional** kwarg (with default) | NO | Re-import on exec picks up the new default; existing `init_args` inherits. |
-| Class `__init__` changes a default value | NO | Re-imported on exec — but ONLY if the render didn't pin the field. If `init_args` explicitly set the old default, the JSON wins. |
-| Class `__init__` renames an existing kwarg | **YES** | Pinned `init_args[<old_name>]` will fail signature filter. |
+| `build_model` / `build_loss` / `build_datamodule` in `orchestrate.py` adds a new **required** constructor kwarg | **YES** | Frozen config field won't satisfy the new contract. |
+| Constructor adds a new **optional** kwarg (with default) | NO | Re-import on exec picks up the new default; config field is absent → default applies. |
+| Constructor renames an existing kwarg | **YES** | Frozen config field name is in the row JSON; new name won't match. |
+| Callback `class_path` `__init__` adds a required kwarg | **YES** | `init_args` in the frozen JSON won't satisfy it. |
 | Model `forward()` / loss math / `training_step` internals | NO | Sbatch re-imports source on exec ([`chassis-invariants.md`](../../.claude/rules/chassis-invariants.md) §2). |
 | New file `core/models/_<helper>.py`, consumed only by an existing class internally | NO | No `class_path` reference in JSON ⇒ invisible to render. |
 | `graphids/cli/plans/*.py` (consumer of JSON) | NO | Consumer, not producer. |

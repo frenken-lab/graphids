@@ -22,47 +22,37 @@ from typing import Any
 
 from graphids.paths import best_ckpt, states_dir
 from graphids.plan import (
-    BANDIT,
-    DQN,
-    FEATURE_DISTILLATION,
-    FOCAL,
-    GAT,
-    MLP_FUSION,
-    MOE_FUSION,
+    FUSION_TRAINER,
     REWARD,
-    SOFT_LABEL_DISTILLATION,
-    VGAE,
-    VGAE_TASK,
-    WAVG_FUSION,
+    bandit,
     can_bus,
-    compose,
+    dqn,
     extract,
+    feature_distillation,
+    fit_row,
+    focal,
     fusion_dm,
+    gat,
     graph_dm,
-    spec,
+    mlp_fusion,
+    moe,
+    soft_label_distillation,
+    test_row,
+    vgae,
+    vgae_task,
+    weighted_avg,
 )
-
-# Matches _FUSION_TRAINER_OVERLAY in compose.py — reproduced here because
-# we call compose() directly to supply custom upstream ckpt paths.
-_FUSION_TRAINER: dict[str, Any] = {
-    "precision": "32-true",
-    "gradient_clip_val": None,
-    "max_epochs": 1500,
-    "log_every_n_steps": 50,
-    "check_val_every_n_epoch": 5,
-    "reload_dataloaders_every_n_epochs": 1,
-}
 
 # VGAE (11 features) + GAT (7 features) — see ablations/fusion.py for breakdown.
 _STATE_DIM = 18
 
-_FUSION_METHODS: list[tuple[str, dict[str, Any]]] = [
-    ("mlp", spec(MLP_FUSION, state_dim=_STATE_DIM)),
-    ("moe", spec(MOE_FUSION, state_dim=_STATE_DIM)),
-    ("moe_noaux", spec(MOE_FUSION, state_dim=_STATE_DIM, aux_weight=0.0)),
-    ("bandit", spec(BANDIT, state_dim=_STATE_DIM, reward_kwargs=dict(REWARD))),
-    ("dqn", spec(DQN, state_dim=_STATE_DIM, reward_kwargs=dict(REWARD))),
-    ("weighted_avg", spec(WAVG_FUSION, state_dim=_STATE_DIM)),
+_FUSION_METHODS = [
+    ("mlp", mlp_fusion(state_dim=_STATE_DIM)),
+    ("moe", moe(state_dim=_STATE_DIM)),
+    ("moe_noaux", moe(state_dim=_STATE_DIM, aux_weight=0.0)),
+    ("bandit", bandit(state_dim=_STATE_DIM, reward_kwargs=dict(REWARD))),
+    ("dqn", dqn(state_dim=_STATE_DIM, reward_kwargs=dict(REWARD))),
+    ("weighted_avg", weighted_avg(state_dim=_STATE_DIM)),
 ]
 
 
@@ -84,14 +74,14 @@ def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
     )
 
     # ------------------------------------------------------------------ data helpers
-    def vgae_data() -> dict[str, Any]:
+    def vgae_data():
         return graph_dm(
             source=can_bus(dataset=dataset, seed=seed),
             label_filter="benign",
             min_steps_per_epoch=50,
         )
 
-    def gat_data() -> dict[str, Any]:
+    def gat_data():
         return graph_dm(source=can_bus(dataset=dataset, seed=seed))
 
     # ------------------------------------------------------------------ meta helpers
@@ -107,24 +97,17 @@ def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
         }
 
     # ------------------------------------------------------------------ fusion helper
-    def fuse_track(
-        method: str,
-        model: dict[str, Any],
-        *,
-        track: str,
-        vgae_ckpt: str,
-        gat_ckpt: str,
-    ) -> Any:
-        """Compose one fusion row with explicit upstream ckpts and states_variant."""
+    def fuse_track(method: str, model, *, track: str, vgae_ckpt: str, gat_ckpt: str):
+        """Build kw dict for one fusion row with explicit upstream ckpts and states_variant."""
         variant = f"{method}_{track}"
-        return compose(
+        return dict(
             model=model,
             data=fusion_dm(dataset=dataset, seed=seed, method=method, states_variant=track),
             meta=meta(f"fusion_{track}", variant, "fusion", "small"),
             monitor="val_acc",
             mode="max",
             run_mode="cpu",
-            trainer_overrides=_FUSION_TRAINER,
+            trainer_overrides=FUSION_TRAINER,
             upstreams=[
                 {"role": "vgae", "ckpt_path": vgae_ckpt, "ckpt_tla": "vgae_ckpt_path"},
                 {"role": "gat", "ckpt_path": gat_ckpt, "ckpt_tla": "gat_ckpt_path"},
@@ -135,36 +118,39 @@ def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
 
     # ====================================================== Phase 1 — Teacher
-    teacher_vgae = compose(
-        model=spec(VGAE, scale="large"),
+    teacher_vgae_kw = dict(
+        model=vgae(scale="large"),
         data=vgae_data(),
-        loss=spec(VGAE_TASK),
+        loss=vgae_task(),
         monitor="val_discrimination_ratio",
         meta=meta("teacher", "teacher_vgae", "vgae", "large"),
         patience=200,
         trainer_overrides={"max_epochs": 600, "precision": "32-true"},
     )
-    rows += [teacher_vgae.fit("teacher_vgae"), teacher_vgae.test("teacher_vgae")]
+    rows += [
+        fit_row("teacher_vgae", **teacher_vgae_kw),
+        test_row("teacher_vgae", **teacher_vgae_kw),
+    ]
 
-    teacher_gat = compose(
-        model=spec(GAT, scale="large"),
+    teacher_gat_kw = dict(
+        model=gat(scale="large"),
         data=gat_data(),
-        loss=spec(FOCAL),
+        loss=focal(),
         meta=meta("teacher", "teacher_gat", "gat", "large"),
         trainer_overrides={"max_epochs": 200},
     )
-    rows += [teacher_gat.fit("teacher_gat"), teacher_gat.test("teacher_gat")]
+    rows += [fit_row("teacher_gat", **teacher_gat_kw), test_row("teacher_gat", **teacher_gat_kw)]
 
     # ====================================================== Phase 2 — Student with KD
-    student_vgae_kd = compose(
-        model=spec(VGAE, scale="small"),
+    student_vgae_kd_kw = dict(
+        model=vgae(scale="small"),
         data=vgae_data(),
-        loss=spec(
-            FEATURE_DISTILLATION,
-            base_loss=spec(VGAE_TASK),
-            teacher_model=spec(VGAE, scale="large"),
+        loss=feature_distillation(
+            base_loss=vgae_task(),
+            teacher_model=vgae(scale="large"),
             teacher_ckpt_path=teacher_vgae_ckpt,
-            projection=spec("torch.nn.Linear", in_features=64, out_features=128),
+            projection_in_features=64,
+            projection_out_features=128,
         ),
         monitor="val_discrimination_ratio",
         meta=meta("student_kd", "student_vgae_kd", "vgae", "small"),
@@ -178,15 +164,17 @@ def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
             }
         ],
     )
-    rows += [student_vgae_kd.fit("student_vgae_kd"), student_vgae_kd.test("student_vgae_kd")]
+    rows += [
+        fit_row("student_vgae_kd", **student_vgae_kd_kw),
+        test_row("student_vgae_kd", **student_vgae_kd_kw),
+    ]
 
-    student_gat_kd = compose(
-        model=spec(GAT, scale="small"),
+    student_gat_kd_kw = dict(
+        model=gat(scale="small"),
         data=gat_data(),
-        loss=spec(
-            SOFT_LABEL_DISTILLATION,
-            base_loss=spec(FOCAL),
-            teacher_model=spec(GAT, scale="large"),
+        loss=soft_label_distillation(
+            base_loss=focal(),
+            teacher_model=gat(scale="large"),
             teacher_ckpt_path=teacher_gat_ckpt,
         ),
         meta=meta("student_kd", "student_gat_kd", "gat", "small"),
@@ -199,31 +187,37 @@ def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
             }
         ],
     )
-    rows += [student_gat_kd.fit("student_gat_kd"), student_gat_kd.test("student_gat_kd")]
+    rows += [
+        fit_row("student_gat_kd", **student_gat_kd_kw),
+        test_row("student_gat_kd", **student_gat_kd_kw),
+    ]
 
     # ====================================================== Phase 3 — Student without KD
-    student_vgae_nokd = compose(
-        model=spec(VGAE, scale="small"),
+    student_vgae_nokd_kw = dict(
+        model=vgae(scale="small"),
         data=vgae_data(),
-        loss=spec(VGAE_TASK),
+        loss=vgae_task(),
         monitor="val_discrimination_ratio",
         meta=meta("student_nokd", "student_vgae_nokd", "vgae", "small"),
         patience=200,
         trainer_overrides={"max_epochs": 600, "precision": "32-true"},
     )
     rows += [
-        student_vgae_nokd.fit("student_vgae_nokd"),
-        student_vgae_nokd.test("student_vgae_nokd"),
+        fit_row("student_vgae_nokd", **student_vgae_nokd_kw),
+        test_row("student_vgae_nokd", **student_vgae_nokd_kw),
     ]
 
-    student_gat_nokd = compose(
-        model=spec(GAT, scale="small"),
+    student_gat_nokd_kw = dict(
+        model=gat(scale="small"),
         data=gat_data(),
-        loss=spec(FOCAL),
+        loss=focal(),
         meta=meta("student_nokd", "student_gat_nokd", "gat", "small"),
         trainer_overrides={"max_epochs": 200},
     )
-    rows += [student_gat_nokd.fit("student_gat_nokd"), student_gat_nokd.test("student_gat_nokd")]
+    rows += [
+        fit_row("student_gat_nokd", **student_gat_nokd_kw),
+        test_row("student_gat_nokd", **student_gat_nokd_kw),
+    ]
 
     # ====================================================== Phase 4 — Fusion (two tracks)
     for track, vgae_ckpt, gat_ckpt in [
@@ -240,8 +234,8 @@ def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
             )
         )
         for method, model in _FUSION_METHODS:
-            row = fuse_track(method, model, track=track, vgae_ckpt=vgae_ckpt, gat_ckpt=gat_ckpt)
+            kw = fuse_track(method, model, track=track, vgae_ckpt=vgae_ckpt, gat_ckpt=gat_ckpt)
             variant = f"{method}_{track}"
-            rows += [row.fit(variant), row.test(variant)]
+            rows += [fit_row(variant, **kw), test_row(variant, **kw)]
 
     return rows

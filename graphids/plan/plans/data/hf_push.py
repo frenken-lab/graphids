@@ -23,7 +23,7 @@ from graphids.paths import (
     run_dir,
     states_dir,
 )
-from graphids.plan.compose import hf_push
+from graphids.plan import hf_push
 
 CHECKPOINT_REPO = "buckeyeguy/graphids-checkpoints"
 DATA_REPO = "buckeyeguy/graphids-data"
@@ -46,7 +46,7 @@ _ABLATION_GAT_VARIANTS = [
 
 
 def _log_path(dataset: str, group: str, variant: str, seed: int) -> str:
-    scripts_dir = Path(run_dir(dataset, group, variant, seed)) / ".parsl_scripts"
+    scripts_dir = Path(run_dir(dataset, group, variant, seed)) / ".slurm_scripts"
     logs = sorted(scripts_dir.glob("*.stderr"))
     if not logs:
         raise FileNotFoundError(f"No .stderr log found in {scripts_dir}")

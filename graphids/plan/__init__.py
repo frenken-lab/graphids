@@ -1,107 +1,142 @@
-"""GraphIDS plan layer — Python plans → typed rows → JSON.
+"""GraphIDS plan layer — Python plans → typed row dicts → JSON.
 
-Pipeline (sort the files alphabetically; they read top-down)::
-
-    plans/<name>.py::build()              ← you write this
-        └── primitives  (spec, GAT, …)    ← leaves          (primitives.py)
-              └── compose() / fusion()    ← apex builder    (compose.py)
-                    └── RowSpec.fit/test  ← row emitter     (compose.py)
-                          └── schema.Plan ← typed contract  (schema.py)
-                                └── JSON → graphids exec
-
-Plan authors should import from this package — internal modules are an
-implementation detail.
+Plan authors import from this package:
 
     from graphids.plan import (
-        compose, fusion, extract,           # apex + one-shot row builders
-        spec, can_bus, graph_dm, curriculum,  # primitives
-        GAT, VGAE, FOCAL, CE, …,            # class-path constants
+        fit_row, test_row,                           # row builders
+        extract, analyze, hf_push,                   # one-shot ops rows
+        FUSION_TRAINER,                              # trainer overlay for fusion rows
+        gat, vgae, dgi,                              # model factories
+        focal, ce, weighted_ce, vgae_task,           # loss factories
+        curriculum, soft_label_distillation,         # compound loss factories
+        feature_distillation,
+        can_bus, graph_dm, fusion_dm,                # data factories
+        score_random, score_vgae,                    # difficulty scorer factories
+        REWARD, REWARD_MINIMAL,                      # RL reward-shaping dicts
     )
-
-The ``schema`` module (``Plan``, ``TrainRow``, …) is the validation
-contract for ``graphids run``/``exec``/``submit``; plan authors do not
-import from it directly.
 """
 
-from graphids.plan.compose import (
-    RowSpec,
-    analyze,
-    callbacks_base,
-    compose,
-    extract,
-    fusion,
-    hf_push,
-    trainer_base,
-)
 from graphids.plan.primitives import (
-    BANDIT,
-    CAN_BUS,
-    CE,
-    CURRICULUM_LOSS,
-    DGI,
-    DQN,
-    FEATURE_DISTILLATION,
-    FOCAL,
-    FUSION_DM,
-    GAT,
-    GRAPH_DM,
-    LINEAR_RAMP,
-    MLP_FUSION,
-    MOE_FUSION,
     REWARD,
     REWARD_MINIMAL,
-    SCORE_RANDOM,
-    SCORE_VGAE,
-    SOFT_LABEL_DISTILLATION,
-    VGAE,
-    VGAE_TASK,
-    WAVG_FUSION,
-    WEIGHTED_CE,
+    BanditCfg,
+    CANBusCfg,
+    CELossCfg,
+    CurriculumLossCfg,
+    DataCfg,
+    DGICfg,
+    DifficultyCfg,
+    DQNCfg,
+    FeatureDistillationCfg,
+    FocalLossCfg,
+    FusionDMCfg,
+    GATCfg,
+    GraphDMCfg,
+    LinearRampCfg,
+    LossFn,
+    MLPFusionCfg,
+    ModelCfg,
+    MoECfg,
+    ScoreRandomCfg,
+    ScoreVGAECfg,
+    SimpleLossFn,
+    SoftLabelDistillationCfg,
+    VGAECfg,
+    VGAETaskLossCfg,
+    WeightedAvgCfg,
+    WeightedCELossCfg,
+    bandit,
     can_bus,
+    ce,
     curriculum,
+    dgi,
+    dqn,
+    feature_distillation,
+    focal,
     fusion_dm,
+    gat,
     graph_dm,
-    spec,
+    mlp_fusion,
+    moe,
+    score_random,
+    score_vgae,
+    soft_label_distillation,
+    vgae,
+    vgae_task,
+    weighted_avg,
+    weighted_ce,
+)
+from graphids.plan.rows import (
+    FUSION_TRAINER,
+    analyze,
+    extract,
+    fit_row,
+    hf_push,
+    test_row,
 )
 
 __all__ = [
-    # compose
-    "RowSpec",
-    "analyze",
-    "compose",
-    "fusion",
+    # row builders
+    "fit_row",
+    "test_row",
+    # one-shot ops rows
     "extract",
+    "analyze",
     "hf_push",
-    "trainer_base",
-    "callbacks_base",
-    # primitives — helpers
-    "spec",
+    # fusion trainer overlay
+    "FUSION_TRAINER",
+    # model factories
+    "gat",
+    "vgae",
+    "dgi",
+    "bandit",
+    "dqn",
+    "mlp_fusion",
+    "moe",
+    "weighted_avg",
+    # loss factories
+    "focal",
+    "ce",
+    "weighted_ce",
+    "vgae_task",
+    "curriculum",
+    "soft_label_distillation",
+    "feature_distillation",
+    # data factories
     "can_bus",
     "graph_dm",
     "fusion_dm",
-    "curriculum",
-    # primitives — class paths
-    "GAT",
-    "VGAE",
-    "DGI",
-    "BANDIT",
-    "DQN",
-    "MLP_FUSION",
-    "MOE_FUSION",
-    "WAVG_FUSION",
-    "FOCAL",
-    "CE",
-    "WEIGHTED_CE",
-    "VGAE_TASK",
-    "CURRICULUM_LOSS",
-    "LINEAR_RAMP",
-    "SOFT_LABEL_DISTILLATION",
-    "FEATURE_DISTILLATION",
-    "SCORE_RANDOM",
-    "SCORE_VGAE",
-    "CAN_BUS",
-    "GRAPH_DM",
-    "FUSION_DM",
+    # difficulty scorer factories
+    "score_random",
+    "score_vgae",
+    # reward shaping dicts
     "REWARD",
     "REWARD_MINIMAL",
+    # config types (for type annotations in plan modules)
+    "ModelCfg",
+    "LossFn",
+    "SimpleLossFn",
+    "DataCfg",
+    "DifficultyCfg",
+    "GATCfg",
+    "VGAECfg",
+    "DGICfg",
+    "BanditCfg",
+    "DQNCfg",
+    "MLPFusionCfg",
+    "MoECfg",
+    "WeightedAvgCfg",
+    "FocalLossCfg",
+    "CELossCfg",
+    "WeightedCELossCfg",
+    "VGAETaskLossCfg",
+    "CurriculumLossCfg",
+    "LinearRampCfg",
+    "SoftLabelDistillationCfg",
+    "FeatureDistillationCfg",
+    "ScoreRandomCfg",
+    "ScoreVGAECfg",
+    "CANBusCfg",
+    "GraphDMCfg",
+    "FusionDMCfg",
 ]

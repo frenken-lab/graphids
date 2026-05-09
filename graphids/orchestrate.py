@@ -39,7 +39,14 @@ from graphids._fs import atomic_load
 from graphids._mlflow import _find_logged_model_by_ckpt, identity_tags
 from graphids.cli.app import configure_logging
 from graphids.core.models.base import strip_orig_mod_prefix
-from graphids.plan.schema import AnalyzeRow, CacheRow, ExtractRow, Row, TrainRow
+from graphids.plan.rows import (
+    AnalyzeRow,
+    CacheRow,
+    ExtractRow,
+    HFPushRow,
+    Row,
+    TrainRow,
+)
 
 
 @functools.cache
@@ -64,23 +71,16 @@ def _ensure_runtime() -> None:
         torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
 
 
-def _instantiate(spec: dict[str, Any]) -> Any:
-    """Build ``{class_path, init_args}``; recurses on nested ``class_path`` blocks."""
-    rec = lambda v: _instantiate(v) if isinstance(v, dict) and "class_path" in v else v  # noqa: E731
-    init_args = {k: rec(v) for k, v in spec.get("init_args", {}).items()}
+def _instantiate_callback(spec: dict[str, Any]) -> Any:
+    """Build a ``{class_path, init_args}`` callback block."""
     mod, _, attr = spec["class_path"].rpartition(".")
-    return getattr(importlib.import_module(mod), attr)(**init_args)
+    return getattr(importlib.import_module(mod), attr)(**spec.get("init_args", {}))
 
 
 def _build(row: TrainRow) -> tuple[Any, Any, list, dict]:
-    rc = row.rendered_config.model_dump()
-    callbacks = [_instantiate(spec) for spec in rc["callbacks"].values()]
-    return (
-        _instantiate(rc["model"]),
-        _instantiate(rc["data"]),
-        callbacks,
-        {k: v for k, v in rc["trainer"].items() if k != "callbacks"},
-    )
+    callbacks = [_instantiate_callback(cb) for cb in row.callbacks]
+    loss_fn = row.loss_fn.build() if row.loss_fn is not None else None
+    return row.model.build(loss_fn=loss_fn), row.data.build(), callbacks, dict(row.trainer)
 
 
 def _load_state_into_model(ckpt_path: str, model: torch.nn.Module) -> dict:
@@ -317,8 +317,6 @@ def run_row(row: Row, *, ckpt_path: str | None = None) -> None:
     if isinstance(row, CacheRow):
         cache(row)
         return
-    from graphids.plan.schema import HFPushRow
-
     if isinstance(row, HFPushRow):
         hf_push(row)
         return

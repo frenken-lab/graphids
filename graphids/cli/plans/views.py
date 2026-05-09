@@ -236,7 +236,7 @@ def plan_where(
         run_dir = r.data.tags.get("graphids.run_dir", "")
         row_name = r.data.tags.get("graphids.row_name") or (r.info.run_name or "")
         ckpt = Path(run_dir) / "checkpoints" / "best_model.ckpt"
-        scripts_dir = Path(run_dir) / ".parsl_scripts"
+        scripts_dir = Path(run_dir) / ".slurm_scripts"
         stderr_files = (
             sorted(scripts_dir.glob("*.stderr"), reverse=True) if scripts_dir.exists() else []
         )
@@ -427,7 +427,7 @@ def plan_health(
         elif mr.info.status == "FAILED":
             health = "FAILED"
             stderrs = (
-                sorted(Path(run_dir, ".parsl_scripts").glob("*.stderr"), reverse=True)
+                sorted(Path(run_dir, ".slurm_scripts").glob("*.stderr"), reverse=True)
                 if run_dir
                 else []
             )
@@ -443,7 +443,7 @@ def plan_health(
             else:
                 health = "ZOMBIE"
                 stderrs = (
-                    sorted(Path(run_dir, ".parsl_scripts").glob("*.stderr"), reverse=True)
+                    sorted(Path(run_dir, ".slurm_scripts").glob("*.stderr"), reverse=True)
                     if run_dir
                     else []
                 )
@@ -483,7 +483,7 @@ def plan_health(
             mr = mlflow_by_row.get(name)
             run_dir = mr.data.tags.get("graphids.run_dir", "") if mr else ""
             if run_dir:
-                stderrs = sorted(Path(run_dir, ".parsl_scripts").glob("*.stderr"), reverse=True)
+                stderrs = sorted(Path(run_dir, ".slurm_scripts").glob("*.stderr"), reverse=True)
                 if stderrs and stderrs[0].exists():
                     for line in stderrs[0].read_text(errors="replace").splitlines()[-tail:]:
                         console.print(f"    [dim]{line}[/dim]")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from graphids.plan import DGI, VGAE, VGAE_TASK, can_bus, compose, graph_dm, spec
+from graphids.plan import can_bus, dgi, fit_row, graph_dm, test_row, vgae, vgae_task
 
 
 def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
@@ -25,25 +25,25 @@ def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
         min_steps_per_epoch=50,
     )
 
-    vgae = compose(
-        model=spec(VGAE),
+    vgae_kw = dict(
+        model=vgae(),
         data=vgae_data,
-        loss=spec(VGAE_TASK),
+        loss=vgae_task(),
         monitor="val_recon_max_gap",
         meta=meta("vgae", "vgae"),
         patience=200,
         trainer_overrides={"max_epochs": 600, "precision": "32-true"},
     )
-    dgi = compose(
-        model=spec(DGI),
+    dgi_kw = dict(
+        model=dgi(),
         data=data,
         monitor="val_dgi_loss",
         meta=meta("dgi", "dgi"),
         trainer_overrides={"max_epochs": 400},
     )
     return [
-        vgae.fit("vgae"),
-        vgae.test("vgae"),
-        dgi.fit("dgi"),
-        dgi.test("dgi"),
+        fit_row("vgae", **vgae_kw),
+        test_row("vgae", **vgae_kw),
+        fit_row("dgi", **dgi_kw),
+        test_row("dgi", **dgi_kw),
     ]

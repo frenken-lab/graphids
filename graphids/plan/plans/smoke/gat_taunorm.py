@@ -7,14 +7,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from graphids.plan import FOCAL, GAT, can_bus, compose, graph_dm, spec
+from graphids.plan import can_bus, fit_row, focal, gat, graph_dm, test_row
 
 
 def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
-    gat_smoke = compose(
-        model=spec(GAT),
+    kw = dict(
+        model=gat(),
         data=graph_dm(source=can_bus(dataset=dataset, seed=seed)),
-        loss=spec(FOCAL),
+        loss=focal(),
         meta={
             "group": "lightning_migration_smoke",
             "variant": "gat_taunorm",
@@ -31,4 +31,4 @@ def build(*, dataset: str, seed: int) -> list[dict[str, Any]]:
             },
         },
     )
-    return [gat_smoke.fit("gat_taunorm"), gat_smoke.test("gat_taunorm")]
+    return [fit_row("gat_taunorm", **kw), test_row("gat_taunorm", **kw)]

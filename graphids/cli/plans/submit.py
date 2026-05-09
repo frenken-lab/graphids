@@ -87,7 +87,7 @@ def plans_submit(
         graphids plans submit --plan plan.json --cluster pitzer --filter 'focal*' --resume
         graphids plans submit --plan plan.json --cluster pitzer --dry-run
     """
-    from graphids.plan.schema import Plan
+    from graphids.plan.rows import Plan
     from graphids.slurm.submit import submit_row
 
     plan_obj = Plan.model_validate(json.loads(plan.read_text()))

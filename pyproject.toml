@@ -36,7 +36,6 @@ dependencies = [
     "alembic>=1.18",
     "nvidia-ml-py>=11.5",
     "mlflow-skinny>=2.17",
-    "parsl>=2024.10",
     "filelock>=3.13",
     "structlog>=24.0",
 ]
