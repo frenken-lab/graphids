@@ -1,60 +1,25 @@
-# Data Module
+# Core Data Layer
 
-```
-data/
-  __init__.py              # Public API: CANBusDataset, CANBusSource, GraphDataModule, FusionDataModule, DatasetState
-  state.py                 # DatasetState protocol + process-level get_or_build cache
-  extract.py               # Extract VGAE/GAT/DGI per-graph features into a TensorDict (fusion input)
-  preprocessing/
-    pipeline.py            # Domain-agnostic sliding-window -> PyG graphs (was graph_pipeline.py)
-    metadata.py            # cache_metadata.json schema + per-split merge writer
-    vocab.py               # Shared arb_id vocabulary + digest
-    scaler.py              # Per-column feature scalers (z_benign, robust_benign)
-    curriculum.py          # score_vgae / score_random + LinearRampSchedule (loss-end curriculum primitives)
-  datamodule/
-    graph.py               # GraphDataModule (Lightning) — used by VGAE + GAT stages
-    fusion.py              # FusionDataModule (Lightning) — serves the extract.py cache
-    sampler.py             # NodeBudgetBatchSampler + pack_offline (FFD)
-  datasets/
-    can_bus.py             # CAN bus adapter: taxonomy, feature schema, Polars exprs, dataset
-    wadi.py                # WaDi adapter (template)
-    epic.py                # EPIC adapter (template)
-```
+This package owns the path from raw dataset files to cached graph state.
+The responsibilities are split on purpose:
 
-Layering: `preprocessing/` writes durable cache artifacts (one shot per
-build); `datasets/` adapters compose the preprocessing pieces into a
-`DatasetState` (protocol in `state.py`); `datamodule/` consumes that
-state and owns DataLoader / batching / sampling policy. `extract.py` is
-a separate one-shot job (the first row of `configs/plans/fusion.jsonnet`)
-that runs trained upstream models over the cache and emits a TensorDict
-the fusion DataModule loads.
+- `datasets/` adapts a raw source into the common dataset contract.
+- `preprocessing/` turns rows into graph tables and cached tensors.
+- `state.py` keeps process-local dataset state in memory for reuse within
+  one Python process.
 
-## How it fits together
+## Current contract
 
-```
-Raw data (CSV/pcap)
-    |
-    |  Dataset adapter (e.g. datasets/can_bus.py)
-    |    - defines feature schema (column orders, Polars expressions)
-    |    - reads raw files, normalizes columns
-    |    - calls preprocessing/pipeline.py :: GraphPipeline.run() with its schema
-    v
-preprocessing/pipeline.py :: GraphPipeline.run()
-    - domain-agnostic 10-step pipeline
-    - windowing -> feature aggregation -> graph structure -> tensor packing
-    - outputs (Data, slices) for InMemoryDataset cache
-    |
-    v
-Cached .pt files (data_train.pt, data_test_<subdir>.pt) + cache_metadata.json
-    |
-    v
-DataModule (datamodule/graph.py | fusion.py)
-    - loads DatasetState via state.get_or_build(source)
-    - wraps in DataLoader with dynamic batching (datamodule/sampler.py)
-    - passed to Lightning Trainer
-```
+1. Dataset adapters define the domain schema: node identity, feature
+   expressions, edge policy, and labels.
+2. The preprocessing pipeline windowizes rows, builds graph tables,
+   applies graph transforms, and writes the durable cache.
+3. Runtime code reads the cached tensors and should not re-implement
+   preprocessing logic.
 
-## Adding a new dataset
+## See also
 
-See `datasets/README.md` for the step-by-step guide and `datasets/wadi.py` / `datasets/epic.py`
-for starter templates.
+- [`docs/reference/data-flow.md`](../../../docs/reference/data-flow.md)
+- [`docs/reference/write-paths.md`](../../../docs/reference/write-paths.md)
+- [`graphids/core/data/datasets/README.md`](datasets/README.md)
+- [`graphids/core/data/preprocessing/README.md`](preprocessing/README.md)

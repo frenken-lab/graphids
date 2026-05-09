@@ -180,3 +180,130 @@ def test_skewness_kurtosis_clamped():
     kurt_idx = NODE_COL_ORDER.index("kurtosis")
     assert g.x[:, skew_idx].abs().max() <= 10.0
     assert g.x[:, kurt_idx].abs().max() <= 10.0
+
+
+def test_build_tables_and_debug_artifacts(tmp_path):
+    """GraphPipeline.build_tables emits stage tables and optional parquet artifacts."""
+    import polars as pl
+
+    from graphids.core.data.datasets.can_bus import (
+        EDGE_BASE_COLS,
+        EDGE_COL_ORDER,
+        EDGE_STAT_EXPRS,
+        LABEL_EXPRS,
+        NODE_COL_ORDER,
+        NODE_STAT_EXPRS,
+    )
+    from graphids.core.data.preprocessing.pipeline import GraphPipeline
+
+    n_rows = 20
+    df = pl.DataFrame(
+        {
+            "timestamp": np.arange(n_rows, dtype=np.float64),
+            "node_id": pl.Series(([0, 1] * (n_rows // 2)), dtype=pl.Int64),
+            **{f"byte_{i}": np.zeros(n_rows, dtype=np.float32) for i in range(8)},
+            "entropy": np.zeros(n_rows, dtype=np.float32),
+            "attack": [0] * n_rows,
+            "attack_type": [0] * n_rows,
+        }
+    )
+    pipeline = GraphPipeline(
+        node_stat_exprs=NODE_STAT_EXPRS,
+        edge_stat_exprs=EDGE_STAT_EXPRS,
+        node_col_order=NODE_COL_ORDER,
+        edge_col_order=EDGE_COL_ORDER,
+        label_exprs=LABEL_EXPRS,
+        edge_base_cols=EDGE_BASE_COLS,
+        debug_artifacts_dir=tmp_path / "artifacts",
+    )
+    tables = pipeline.build_tables(df, window_size=10, stride=10)
+    assert tables.n_rows == n_rows
+    assert len(tables.node_stats) > 0
+    assert len(tables.edge_df) > 0
+    assert len(tables.labels) > 0
+    assert (tmp_path / "artifacts" / "01_windowed_rows.parquet").exists()
+    assert (tmp_path / "artifacts" / "11_node_stats_localized.parquet").exists()
+
+
+def test_edge_policy_explicit_direction():
+    """Custom edge policy should control src/dst construction explicitly."""
+    import polars as pl
+
+    from graphids.core.data.datasets.can_bus import (
+        EDGE_BASE_COLS,
+        EDGE_COL_ORDER,
+        EDGE_STAT_EXPRS,
+        LABEL_EXPRS,
+        NODE_COL_ORDER,
+        NODE_STAT_EXPRS,
+    )
+    from graphids.core.data.preprocessing.edge_policy import temporal_edge_policy
+    from graphids.core.data.preprocessing.pipeline import GraphPipeline
+
+    df = pl.DataFrame(
+        {
+            "timestamp": np.arange(6, dtype=np.float64),
+            "node_id": pl.Series([0, 1, 2, 3, 4, 5], dtype=pl.Int64),
+            **{f"byte_{i}": np.zeros(6, dtype=np.float32) for i in range(8)},
+            "entropy": np.zeros(6, dtype=np.float32),
+            "attack": [0] * 6,
+            "attack_type": [0] * 6,
+        }
+    )
+    pipeline = GraphPipeline(
+        node_stat_exprs=NODE_STAT_EXPRS,
+        edge_stat_exprs=EDGE_STAT_EXPRS,
+        node_col_order=NODE_COL_ORDER,
+        edge_col_order=EDGE_COL_ORDER,
+        label_exprs=LABEL_EXPRS,
+        edge_base_cols=EDGE_BASE_COLS,
+        edge_policy=temporal_edge_policy(dst_shift=1),
+    )
+    tables = pipeline.build_tables(df, window_size=6, stride=6)
+    assert len(tables.edge_df) > 0
+    assert (tables.edge_df["dst"] > tables.edge_df["src"]).all()
+
+
+def test_secondary_graph_transforms_are_composable():
+    """Secondary graph transforms can be composed for exploratory node stats."""
+    import polars as pl
+
+    from graphids.core.data.datasets.can_bus import (
+        EDGE_BASE_COLS,
+        EDGE_COL_ORDER,
+        EDGE_STAT_EXPRS,
+        LABEL_EXPRS,
+        NODE_COL_ORDER,
+        NODE_STAT_EXPRS,
+    )
+    from graphids.core.data.preprocessing.graph_ops import (
+        default_graph_transforms,
+        secondary_graph_transforms,
+    )
+    from graphids.core.data.preprocessing.pipeline import GraphPipeline
+
+    n_rows = 20
+    df = pl.DataFrame(
+        {
+            "timestamp": np.arange(n_rows, dtype=np.float64),
+            "node_id": pl.Series(([0, 1, 0, 2, 1] * 4), dtype=pl.Int64),
+            **{f"byte_{i}": np.zeros(n_rows, dtype=np.float32) for i in range(8)},
+            "entropy": np.zeros(n_rows, dtype=np.float32),
+            "attack": [0] * n_rows,
+            "attack_type": [0] * n_rows,
+        }
+    )
+    pipeline = GraphPipeline(
+        node_stat_exprs=NODE_STAT_EXPRS,
+        edge_stat_exprs=EDGE_STAT_EXPRS,
+        node_col_order=NODE_COL_ORDER + ["in_out_ratio", "neighbor_entropy"],
+        edge_col_order=EDGE_COL_ORDER,
+        label_exprs=LABEL_EXPRS,
+        edge_base_cols=EDGE_BASE_COLS,
+        graph_transforms=[*default_graph_transforms(), *secondary_graph_transforms()],
+    )
+    tables = pipeline.build_tables(df, window_size=10, stride=10)
+    assert "in_out_ratio" in tables.node_stats.columns
+    assert "neighbor_entropy" in tables.node_stats.columns
+    assert not tables.node_stats["in_out_ratio"].is_null().any()
+    assert not tables.node_stats["neighbor_entropy"].is_null().any()

@@ -1,35 +1,37 @@
-"""Sliding-window CSV → PyG Data graphs (v2 composition).
+"""Sliding-window tables and tensor packing for graph cache builds.
 
-Schema-driven (GraphSchema's Polars exprs + col orders) — same contract
-as v1 with three structural changes:
+Schema-driven (GraphSchema's Polars expressions + column orders).
 
-1. ``polars.DataFrame.to_torch(dtype=...)`` everywhere instead of
-   ``to_numpy().copy()`` + ``torch.from_numpy``. Polars handles the
-   contiguous copy and dtype coercion in one call.
-2. ``_slices_from_counts`` helper: per-group counts → cumulative slice
-   tensor. Used by both x/node_id and edge_index/edge_attr.
-3. The pipeline class is a thin schema-binding layer over module-level
-   functions. ``_aggregate``, ``_add_bidir``, ``_graph_structure``,
-   ``_build_pyg_data`` were instance methods only because they read
-   ``self.<schema_attr>`` — making the schema bits explicit kwargs lets
-   them stand alone and be tested in isolation.
-
-Triangle-count clustering coefficient stays Polars (no PyG primitive;
-per-graph NX loop over ~50K windows is 10-100× slower at preprocess time).
+Main APIs:
+- ``build_tables(df, window_size, stride)`` for staged DataFrame outputs
+- ``run(df, window_size, stride)`` for pre-collated PyG cache tensors
+- ``inspect(df, window_size, stride)`` to retrieve intermediate stages
 """
 
 from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
 
 import polars as pl
 import torch
 from structlog import get_logger
 from torch_geometric.data import Data
 
+from graphids.core.data.preprocessing.edge_policy import (
+    EdgePolicy,
+    temporal_edge_policy,
+)
+from graphids.core.data.preprocessing.graph_ops import (
+    GraphTransform,
+    default_graph_transforms,
+)
+
 log = get_logger(__name__)
 
 
 def _slices_from_counts(counts: pl.Series) -> torch.Tensor:
-    """Per-group counts → cumulative slice tensor ``[0, c0, c0+c1, ...]``."""
     return torch.cat(
         [
             torch.zeros(1, dtype=torch.long),
@@ -38,80 +40,31 @@ def _slices_from_counts(counts: pl.Series) -> torch.Tensor:
     )
 
 
-def _add_bidir(edge_df: pl.DataFrame) -> pl.DataFrame:
-    """``bidir=1.0`` if the reverse edge exists in the same window."""
-    pairs = edge_df.select("_wid", "src", "dst").unique()
-    return (
-        edge_df.join(
-            pairs.with_columns(pl.lit(True).alias("_rev")),
-            left_on=["_wid", "dst", "src"],
-            right_on=["_wid", "src", "dst"],
-            how="left",
-        )
-        .with_columns(pl.col("_rev").fill_null(False).cast(pl.Float32).alias("bidir"))
-        .drop("_rev")
-    )
+@dataclass(frozen=True)
+class WindowedRows:
+    rows: pl.DataFrame
+    n_rows: int
+    n_windows: int
+    max_wid: int
 
 
-def _graph_structure(node_stats: pl.DataFrame, edge_df: pl.DataFrame) -> pl.DataFrame:
-    """Clustering coefficient (triangle counting) + in/out degree."""
-    in_deg = (
-        edge_df.group_by(["_wid", "dst"])
-        .agg(pl.len().cast(pl.Float32).alias("in_degree"))
-        .rename({"dst": "node_id"})
-    )
-    out_deg = (
-        edge_df.group_by(["_wid", "src"])
-        .agg(pl.len().cast(pl.Float32).alias("out_degree"))
-        .rename({"src": "node_id"})
-    )
+@dataclass(frozen=True)
+class AggregatedTables:
+    node_stats: pl.DataFrame
+    edge_df: pl.DataFrame
+    labels: pl.DataFrame
 
-    pairs = pl.concat(
-        [
-            edge_df.select("_wid", pl.col("src").alias("u"), pl.col("dst").alias("v")),
-            edge_df.select("_wid", pl.col("dst").alias("u"), pl.col("src").alias("v")),
-        ]
-    ).unique(["_wid", "u", "v"])
 
-    triangles = (
-        pairs.join(
-            pairs.select("_wid", pl.col("u").alias("_mid"), pl.col("v").alias("w")),
-            left_on=["_wid", "v"],
-            right_on=["_wid", "_mid"],
-            how="inner",
-        )
-        .filter(pl.col("u") != pl.col("w"))
-        .join(pairs, left_on=["_wid", "u", "w"], right_on=["_wid", "u", "v"], how="semi")
-        .group_by(["_wid", "u"])
-        .agg((pl.len() / 2).cast(pl.Float32).alias("_tri"))
-        .rename({"u": "node_id"})
-    )
-    udeg = (
-        pairs.group_by(["_wid", "u"])
-        .agg(pl.len().cast(pl.Float32).alias("_undeg"))
-        .rename({"u": "node_id"})
-    )
-    cc = (
-        triangles.join(udeg, on=["_wid", "node_id"], how="right")
-        .fill_null(0)
-        .with_columns(
-            pl.when(pl.col("_undeg") > 1)
-            .then(2.0 * pl.col("_tri") / (pl.col("_undeg") * (pl.col("_undeg") - 1)))
-            .otherwise(0.0)
-            .cast(pl.Float32)
-            .alias("clustering_coeff")
-        )
-        .select("_wid", "node_id", "clustering_coeff")
-    )
-    return (
-        node_stats.update(cc, on=["_wid", "node_id"])
-        .update(in_deg, on=["_wid", "node_id"])
-        .update(out_deg, on=["_wid", "node_id"])
-    )
+@dataclass(frozen=True)
+class GraphTables:
+    node_stats: pl.DataFrame
+    edge_df: pl.DataFrame
+    labels: pl.DataFrame
+    n_rows: int
 
 
 class GraphPipeline:
-    """Sliding-window → PyG Data graphs. Schema-driven."""
+    """Composable time-series -> graph table -> tensor preprocessing pipeline."""
 
     def __init__(
         self,
@@ -122,6 +75,9 @@ class GraphPipeline:
         edge_col_order: tuple[str, ...],
         label_exprs: list[pl.Expr],
         edge_base_cols: list[str],
+        edge_policy: EdgePolicy | None = None,
+        graph_transforms: list[GraphTransform] | None = None,
+        debug_artifacts_dir: str | Path | None = None,
     ):
         self.node_stat_exprs = node_stat_exprs
         self.edge_stat_exprs = edge_stat_exprs
@@ -129,29 +85,48 @@ class GraphPipeline:
         self.edge_col_order = edge_col_order
         self.label_exprs = label_exprs
         self.edge_base_cols = edge_base_cols
+        self.edge_policy = edge_policy or temporal_edge_policy()
+        self.graph_transforms = graph_transforms or default_graph_transforms()
+        self.debug_artifacts_dir = Path(debug_artifacts_dir) if debug_artifacts_dir else None
         self.label_names = [e.meta.output_name() for e in label_exprs]
+        self.edge_feature_names = [e.meta.output_name() for e in edge_stat_exprs]
         assert self.label_names[0] == "y", f"first label expr must alias 'y', got {self.label_names[0]!r}"
 
-    def run(
-        self,
-        df: pl.DataFrame,
-        window_size: int,
-        stride: int,
-    ) -> tuple[Data, dict, int, int]:
-        df = df.with_row_index("_row").with_columns(pl.col("_row").cast(pl.Int64))
-        n_rows = len(df)
+    def _stage_summary(self, table: pl.DataFrame) -> dict[str, object]:
+        summary: dict[str, object] = {
+            "rows": table.height,
+            "columns": table.width,
+            "column_names": table.columns,
+        }
+        if "src" in table.columns:
+            summary["src_unique"] = int(table.select(pl.col("src").n_unique()).item())
+        if "dst" in table.columns:
+            summary["dst_unique"] = int(table.select(pl.col("dst").n_unique()).item())
+        if "_wid" in table.columns:
+            summary["windows"] = int(table.select(pl.col("_wid").n_unique()).item())
+        return summary
+
+    def _dump_stage(self, stage: str, table: pl.DataFrame) -> None:
+        if self.debug_artifacts_dir is None:
+            return
+        self.debug_artifacts_dir.mkdir(parents=True, exist_ok=True)
+        table.write_parquet(self.debug_artifacts_dir / f"{stage}.parquet")
+        (self.debug_artifacts_dir / f"{stage}.summary.json").write_text(
+            json.dumps(self._stage_summary(table), indent=2),
+            encoding="utf-8",
+        )
+
+    def _assign_windows(self, df: pl.DataFrame, window_size: int, stride: int) -> WindowedRows:
+        rows = df.with_row_index("_row").with_columns(pl.col("_row").cast(pl.Int64))
+        n_rows = len(rows)
         n_windows = max(0, (n_rows - window_size) // stride + 1)
-        if n_windows == 0:
-            log.warning("no_complete_windows", n_rows=n_rows, window_size=window_size)
-            return Data(), {}, 0, n_rows
-
-        log.info("windowing", n_windows=n_windows, window=window_size, stride=stride)
-        half = window_size // 2
         max_wid = (n_windows - 1) * stride
-        df = df.with_columns((pl.col("_row") % window_size < half).alias("_first_half"))
-        lf = df.lazy().sort("_row")
+        rows = rows.with_columns((pl.col("_row") % window_size < (window_size // 2)).alias("_first_half"))
+        self._dump_stage("01_windowed_rows", rows)
+        return WindowedRows(rows=rows, n_rows=n_rows, n_windows=n_windows, max_wid=max_wid)
 
-        # Fused single-scan aggregation
+    def _aggregate_nodes_labels(self, windowed: WindowedRows, *, window_size: int, stride: int) -> tuple[pl.DataFrame, pl.DataFrame]:
+        lf = windowed.rows.lazy().sort("_row")
         dyn = dict(every=f"{stride}i", period=f"{window_size}i", closed="left")
         node_lf = (
             lf.group_by_dynamic("_row", **dyn, group_by="node_id")
@@ -160,49 +135,78 @@ class GraphPipeline:
             .fill_nan(0)
             .rename({"_row": "_wid"})
         )
-        labels_lf = (
-            lf.group_by_dynamic("_row", **dyn).agg(*self.label_exprs).rename({"_row": "_wid"})
-        )
+        labels_lf = lf.group_by_dynamic("_row", **dyn).agg(*self.label_exprs).rename({"_row": "_wid"})
+        node_stats, labels = pl.collect_all([node_lf, labels_lf])
+        self._dump_stage("02_node_stats_raw", node_stats)
+        self._dump_stage("03_labels_raw", labels)
+        return node_stats, labels
+
+    def _generate_edges(self, windowed: WindowedRows, *, window_size: int, stride: int) -> pl.DataFrame:
+        lf = windowed.rows.lazy().sort("_row")
+        dyn = dict(every=f"{stride}i", period=f"{window_size}i", closed="left")
         edge_agg = [
-            pl.col("node_id").alias("src"),
-            pl.col("node_id").shift(-1).alias("dst"),
+            pl.col(self.edge_policy.src_col).alias(self.edge_policy.src_alias),
+            pl.col(self.edge_policy.dst_col)
+            .shift(self.edge_policy.dst_shift)
+            .alias(self.edge_policy.dst_alias),
             *self.edge_stat_exprs,
         ]
-        edge_cols = ["src", "dst"] + [e.meta.output_name() for e in self.edge_stat_exprs]
-        edge_lf = (
-            lf.select("_row", "node_id", "timestamp", *self.edge_base_cols)
+        edge_cols = [self.edge_policy.src_alias, self.edge_policy.dst_alias, *self.edge_feature_names]
+        base_select = ["_row", self.edge_policy.src_col]
+        if self.edge_policy.dst_col != self.edge_policy.src_col:
+            base_select.append(self.edge_policy.dst_col)
+        if "timestamp" not in base_select:
+            base_select.append("timestamp")
+        base_select.extend(c for c in self.edge_base_cols if c not in base_select)
+        edge_df = (
+            lf.select(*base_select)
             .group_by_dynamic("_row", **dyn)
             .agg(*edge_agg)
             .rename({"_row": "_wid"})
             .explode(edge_cols)
-            .filter(pl.col("dst").is_not_null() & pl.col("iat").is_not_null())
-            .with_columns(
-                pl.len().over(["_wid", "src", "dst"]).cast(pl.Float32).alias("edge_freq")
-            )
-        )
-        node_stats, labels, edge_df = pl.collect_all([node_lf, labels_lf, edge_lf])
+            .rename({self.edge_policy.src_alias: "src", self.edge_policy.dst_alias: "dst"})
+        ).collect()
+        filters = [pl.col("dst").is_not_null()]
+        filters.extend(pl.col(c).is_not_null() for c in self.edge_feature_names)
+        edge_df = edge_df.filter(pl.all_horizontal(*filters))
+        self._dump_stage("04_edges_generated", edge_df)
+        return edge_df
+
+    def _aggregate(self, windowed: WindowedRows, *, window_size: int, stride: int) -> AggregatedTables:
+        node_stats, labels = self._aggregate_nodes_labels(windowed, window_size=window_size, stride=stride)
+        edge_df = self._generate_edges(windowed, window_size=window_size, stride=stride)
         log.info("features_computed", stats=len(node_stats), edges=len(edge_df))
-        del df, lf
+        return AggregatedTables(node_stats=node_stats, edge_df=edge_df, labels=labels)
 
-        node_stats = node_stats.filter(pl.col("_wid") <= max_wid)
-        edge_df = edge_df.filter(pl.col("_wid") <= max_wid)
-        labels = labels.filter(pl.col("_wid") <= max_wid)
+    def _trim_complete_windows(self, tables: AggregatedTables, *, max_wid: int) -> AggregatedTables:
+        node_stats = tables.node_stats.filter(pl.col("_wid") <= max_wid)
+        edge_df = tables.edge_df.filter(pl.col("_wid") <= max_wid)
+        labels = tables.labels.filter(pl.col("_wid") <= max_wid)
+        self._dump_stage("05_node_stats_trimmed", node_stats)
+        self._dump_stage("06_edges_trimmed", edge_df)
+        self._dump_stage("07_labels_trimmed", labels)
+        return AggregatedTables(node_stats=node_stats, edge_df=edge_df, labels=labels)
 
-        edge_df = _add_bidir(edge_df)
-        node_stats = _graph_structure(node_stats, edge_df)
+    def _apply_graph_transforms(self, tables: AggregatedTables) -> AggregatedTables:
+        node_stats, edge_df = tables.node_stats, tables.edge_df
+        for i, transform in enumerate(self.graph_transforms, start=1):
+            node_stats, edge_df = transform.apply(node_stats, edge_df)
+            self._dump_stage(f"08_transform_{i:02d}_{transform.name}_node", node_stats)
+            self._dump_stage(f"08_transform_{i:02d}_{transform.name}_edge", edge_df)
+        return AggregatedTables(node_stats=node_stats, edge_df=edge_df, labels=tables.labels)
 
-        # Keep only windows with edges
-        node_stats = node_stats.filter(pl.col("_wid").is_in(edge_df["_wid"].unique()))
-        if len(node_stats) == 0:
-            log.warning("no_graphs_with_edges")
-            return Data(), {}, 0, n_rows
+    def _keep_windows_with_edges(self, tables: AggregatedTables) -> AggregatedTables:
+        node_stats = tables.node_stats.filter(pl.col("_wid").is_in(tables.edge_df["_wid"].unique()))
+        labels = tables.labels.filter(pl.col("_wid").is_in(node_stats["_wid"].unique()))
+        self._dump_stage("09_node_stats_with_edges", node_stats)
+        self._dump_stage("10_labels_with_edges", labels)
+        return AggregatedTables(node_stats=node_stats, edge_df=tables.edge_df, labels=labels)
 
-        # Pre-sort by node count → sequential page faults for sampler
+    def _localize_ids(self, tables: AggregatedTables) -> AggregatedTables:
+        node_stats, edge_df = tables.node_stats, tables.edge_df
         wid_sizes = node_stats.group_by("_wid").agg(pl.len().alias("_n"))
         node_stats = node_stats.join(wid_sizes, on="_wid").sort(["_n", "_wid"])
         edge_df = edge_df.join(wid_sizes, on="_wid").sort(["_n", "_wid"])
-
-        # Local IDs per window
         node_stats = node_stats.with_columns(
             (pl.cum_count("node_id").over("_wid") - 1).cast(pl.Int64).alias("_local_id")
         )
@@ -216,42 +220,116 @@ class GraphPipeline:
             on=["_wid", "dst"],
             how="left",
         )
+        self._dump_stage("11_node_stats_localized", node_stats)
+        self._dump_stage("12_edges_localized", edge_df)
+        return AggregatedTables(node_stats=node_stats, edge_df=edge_df, labels=tables.labels)
 
-        # Polars → torch via to_torch (no manual to_numpy().copy())
+    def _build_tables_internal(
+        self,
+        df: pl.DataFrame,
+        *,
+        window_size: int,
+        stride: int,
+        collect_stages: bool,
+    ) -> tuple[GraphTables, dict[str, pl.DataFrame]]:
+        stage_views: dict[str, pl.DataFrame] = {}
+        windowed = self._assign_windows(df, window_size, stride)
+        if collect_stages:
+            stage_views["windowed_rows"] = windowed.rows
+        if windowed.n_windows == 0:
+            log.warning("no_complete_windows", n_rows=windowed.n_rows, window_size=window_size)
+            return (
+                GraphTables(pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), windowed.n_rows),
+                stage_views,
+            )
+
+        log.info(
+            "edge_policy",
+            name=self.edge_policy.name,
+            src_col=self.edge_policy.src_col,
+            dst_col=self.edge_policy.dst_col,
+            dst_shift=self.edge_policy.dst_shift,
+        )
+        tables = self._aggregate(windowed, window_size=window_size, stride=stride)
+        if collect_stages:
+            stage_views["aggregated_node_stats"] = tables.node_stats
+            stage_views["aggregated_edges"] = tables.edge_df
+            stage_views["aggregated_labels"] = tables.labels
+        tables = self._trim_complete_windows(tables, max_wid=windowed.max_wid)
+        tables = self._apply_graph_transforms(tables)
+        if collect_stages:
+            stage_views["transformed_node_stats"] = tables.node_stats
+            stage_views["transformed_edges"] = tables.edge_df
+        tables = self._keep_windows_with_edges(tables)
+        if tables.node_stats.is_empty():
+            log.warning("no_graphs_with_edges")
+            return (
+                GraphTables(pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), windowed.n_rows),
+                stage_views,
+            )
+        tables = self._localize_ids(tables)
+        if collect_stages:
+            stage_views["localized_node_stats"] = tables.node_stats
+            stage_views["localized_edges"] = tables.edge_df
+            stage_views["labels"] = tables.labels
+        return (
+            GraphTables(
+                node_stats=tables.node_stats,
+                edge_df=tables.edge_df,
+                labels=tables.labels,
+                n_rows=windowed.n_rows,
+            ),
+            stage_views,
+        )
+
+    def build_tables(self, df: pl.DataFrame, window_size: int, stride: int) -> GraphTables:
+        tables, _ = self._build_tables_internal(
+            df,
+            window_size=window_size,
+            stride=stride,
+            collect_stages=False,
+        )
+        return tables
+
+    def inspect(self, df: pl.DataFrame, window_size: int, stride: int) -> dict[str, pl.DataFrame]:
+        _, stages = self._build_tables_internal(
+            df,
+            window_size=window_size,
+            stride=stride,
+            collect_stages=True,
+        )
+        return stages
+
+    def _to_pyg(self, tables: GraphTables) -> tuple[Data, dict, int, int]:
         x = (
-            node_stats.select(self.node_col_order)
+            tables.node_stats.select(self.node_col_order)
             .fill_null(0)
             .fill_nan(0)
             .to_torch(dtype=pl.Float32)
         )
-        node_id = node_stats.select("node_id").to_torch(dtype=pl.Int64).squeeze(-1)
+        node_id = tables.node_stats.select("node_id").to_torch(dtype=pl.Int64).squeeze(-1)
         edge_index = (
-            edge_df.select("src_local", "dst_local").to_torch(dtype=pl.Int64).t().contiguous()
+            tables.edge_df.select("src_local", "dst_local").to_torch(dtype=pl.Int64).t().contiguous()
         )
         edge_attr = (
-            edge_df.select(list(self.edge_col_order))
+            tables.edge_df.select(list(self.edge_col_order))
             .fill_null(0)
             .fill_nan(0)
             .to_torch(dtype=pl.Float32)
         )
-
-        kept_wids = node_stats.group_by("_wid", maintain_order=True).first().select("_wid")
+        kept_wids = tables.node_stats.group_by("_wid", maintain_order=True).first().select("_wid")
         num_graphs = len(kept_wids)
-        node_counts = node_stats.group_by("_wid", maintain_order=True).len()["len"]
-        edge_counts = edge_df.group_by("_wid", maintain_order=True).len()["len"]
+        node_counts = tables.node_stats.group_by("_wid", maintain_order=True).len()["len"]
+        edge_counts = tables.edge_df.group_by("_wid", maintain_order=True).len()["len"]
         node_slice = _slices_from_counts(node_counts)
         edge_slice = _slices_from_counts(edge_counts)
         graph_idx = torch.arange(num_graphs + 1, dtype=torch.long)
-
-        labels_aligned = kept_wids.join(labels, on="_wid", how="left").fill_null(0)
+        labels_aligned = kept_wids.join(tables.labels, on="_wid", how="left").fill_null(0)
         label_tensors = {
             n: labels_aligned.select(n).to_torch(dtype=pl.Int64).squeeze(-1)
             for n in self.label_names
         }
-
-        data = Data(
-            x=x, edge_index=edge_index, edge_attr=edge_attr, node_id=node_id, **label_tensors
-        )
+        data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, node_id=node_id, **label_tensors)
         slices = {
             "x": node_slice,
             "edge_index": edge_slice,
@@ -259,5 +337,12 @@ class GraphPipeline:
             "node_id": node_slice,
             **{n: graph_idx for n in self.label_names},
         }
+        return data, slices, num_graphs, tables.n_rows
+
+    def run(self, df: pl.DataFrame, window_size: int, stride: int) -> tuple[Data, dict, int, int]:
+        tables = self.build_tables(df, window_size, stride)
+        if tables.node_stats.is_empty():
+            return Data(), {}, 0, tables.n_rows
+        data, slices, num_graphs, n_rows = self._to_pyg(tables)
         log.info("graphs_built", count=num_graphs)
         return data, slices, num_graphs, n_rows

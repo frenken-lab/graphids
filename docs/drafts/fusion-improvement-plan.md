@@ -1,8 +1,8 @@
 # Fusion improvement plan — implementation staging
 
-> Synthesizes `docs/research-notes/fusion-research-notes.md` (theory),
+> Synthesizes `docs/drafts/fusion-research-notes.md` (theory),
 > `docs/empirical-notes/2026-05-06-fusion-analysis-prep.md` (what shipped + what failed),
-> and `docs/research-notes/more-fusion-notes.md` (state-bottleneck options A/B/C).
+> and `docs/drafts/more-fusion-notes.md` (state-bottleneck options A/B/C).
 > Action-oriented; staged so each phase has a defined off-ramp.
 
 ## Executive summary
@@ -261,7 +261,7 @@ implementation cost if §2.1+§2.2 don't close the calibration gap.
 `gat.extract_features` (gat.py:296) and `vgae.extract_features` (vgae.py:482) currently
 aggregate per-node embeddings to `[mean, std, max, min]` *before* the cache write. Per-node
 tensors are computed and dropped. The feature-research note
-(`docs/research-notes/fusion-rich-features.md`) recommends bundling **three** feature classes
+(`docs/drafts/fusion-rich-features.md`) recommends bundling **three** feature classes
 into one re-extraction pass — they share the cache-regen cost, and isolating them costs
 3× the SLURM time without giving 3× the information (the failure modes overlap). Bump
 `CACHE_VERSION = 5 → 6` once. State dim grows from 18 to ~48; trivially handled by existing

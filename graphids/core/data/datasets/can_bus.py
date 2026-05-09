@@ -6,14 +6,9 @@ graph-pipeline plumbing that just happens to live here:
   §1. CAN protocol constants    — byte layout (CAN-specific)
   §2. Attack taxonomy           — code/name maps (CAN-specific)
   §3. Domain feature expressions — Polars aggs over CAN data (CAN-specific)
-  §4. Topology placeholders     — filled by GraphPipeline (NOT CAN-specific)
-  §5. Tensor column orders      — final layouts (concat of §3 + §4)
-  §6. Payload parser            — hex → byte_0..7 + entropy (CAN-specific)
-  §7. Adapter classes           — _read_raw + _scan_vocab hooks
-
-If GraphPipeline ever auto-injects §4 (clustering_coeff, in/out degree)
-via a generic ``WithGraphTopology`` schema mixin, §4 disappears from
-this file and adapters only declare domain knowledge.
+  §4. Tensor column orders      — final layouts (domain + topology)
+  §5. Payload parser            — hex → byte_0..7 + entropy (CAN-specific)
+  §6. Adapter classes           — _read_raw + _scan_vocab hooks
 """
 
 from __future__ import annotations
@@ -25,7 +20,17 @@ from typing import Any, ClassVar
 import polars as pl
 from structlog import get_logger
 
-from graphids.core.data.datasets._base import BaseGraphDataset, BaseGraphSource, GraphSchema
+from graphids.core.data.datasets._base import (
+    BaseGraphDataset,
+    BaseGraphSource,
+    GraphSchema,
+)
+from graphids.core.data.preprocessing.edge_policy import temporal_edge_policy
+from graphids.core.data.preprocessing.graph_ops import (
+    default_graph_transforms,
+    secondary_graph_transforms,
+)
+from graphids.core.data.preprocessing.transforms import TOPOLOGY_NODE_PLACEHOLDER_EXPRS
 
 log = get_logger(__name__)
 
@@ -103,22 +108,7 @@ LABEL_EXPRS: list[pl.Expr] = [
 ]
 
 
-# ─── §4. Topology placeholders (filled by GraphPipeline, not CAN) ─────
-
-# These columns hold ``0.0`` until GraphPipeline._compute_graph_structure
-# overwrites them via ``DataFrame.update``. They live here only because
-# the schema must declare every column the tensor select reads from.
-# Move to a ``WithGraphTopology`` schema mixin to delete this section.
-TOPOLOGY_NODE_PLACEHOLDERS: list[pl.Expr] = [
-    pl.lit(0.0).alias("clustering_coeff"),
-    pl.lit(0.0).alias("in_degree"),
-    pl.lit(0.0).alias("out_degree"),
-]
-# bidir + edge_freq are filled inside the pipeline's edge aggregation
-# (no placeholder needed — they're added as real columns there).
-
-
-# ─── §5. Tensor column orders ─────────────────────────────────────────
+# ─── §4. Tensor column orders ─────────────────────────────────────────
 
 NODE_COL_ORDER = (
     [f"{c}_mean" for c in BYTE_COLS]
@@ -139,9 +129,13 @@ EDGE_COL_ORDER: tuple[str, ...] = (
 )
 N_EDGE_FEATURES = len(EDGE_COL_ORDER)
 
+CAN_EDGE_POLICY = temporal_edge_policy(src_col="node_id", dst_col="node_id", dst_shift=-1)
+CAN_GRAPH_TRANSFORMS = tuple(default_graph_transforms())
+CAN_OPTIONAL_GRAPH_TRANSFORMS = tuple(secondary_graph_transforms())
+
 
 CAN_SCHEMA = GraphSchema(
-    node_stat_exprs=DOMAIN_NODE_EXPRS + TOPOLOGY_NODE_PLACEHOLDERS,
+    node_stat_exprs=DOMAIN_NODE_EXPRS + TOPOLOGY_NODE_PLACEHOLDER_EXPRS,
     edge_stat_exprs=DOMAIN_EDGE_EXPRS,
     node_col_order=NODE_COL_ORDER,
     edge_col_order=EDGE_COL_ORDER,
@@ -150,10 +144,18 @@ CAN_SCHEMA = GraphSchema(
     vocab_column="arb_id",
     attack_type_codes=ATTACK_TYPE_CODES,
     attack_type_names=ATTACK_TYPE_NAMES,
+    edge_policy=CAN_EDGE_POLICY,
+    graph_transforms=CAN_GRAPH_TRANSFORMS,
 )
 
 
-# ─── §6. Payload parser ───────────────────────────────────────────────
+# Backward-compatible aliases used by preprocessing tests and downstream imports.
+NODE_STAT_EXPRS = CAN_SCHEMA.node_stat_exprs
+EDGE_STAT_EXPRS = DOMAIN_EDGE_EXPRS
+EDGE_BASE_COLS = BYTE_COLS
+
+
+# ─── §5. Payload parser ───────────────────────────────────────────────
 
 def parse_payload(lf: pl.LazyFrame) -> pl.LazyFrame:
     """Hex 16-char ``payload`` → ``byte_0..7`` (Float32) + Shannon ``entropy``.
@@ -175,7 +177,7 @@ def parse_payload(lf: pl.LazyFrame) -> pl.LazyFrame:
     return lf.with_columns(entropy)
 
 
-# ─── §7. Adapter classes ──────────────────────────────────────────────
+# ─── §6. Adapter classes ──────────────────────────────────────────────
 
 class CANBusDataset(BaseGraphDataset):
     """One graph = one sliding window of CAN messages.

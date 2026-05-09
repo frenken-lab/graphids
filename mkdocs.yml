@@ -115,6 +115,7 @@ nav:
       - Module responsibilities: responsibilities.md
       - Config system: reference/config-architecture.md
       - Data flow: reference/data-flow.md
+      - Fusion state: reference/fusion-state.md
       - Orchestration: reference/orchestration.md
       - Observability: reference/observability.md
       - Write paths: reference/write-paths.md
