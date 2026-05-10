@@ -1,5 +1,19 @@
 """Preprocessing primitives for cache build."""
 
+from graphids.core.data.discovery import (
+    CanonicalEntitySpec,
+    CanonicalFeatureFrameSpec,
+    CanonicalRegistry,
+    DiscoveryStore,
+    SignalHypothesisSpec,
+    SignalProfileSpec,
+    build_canonical_feature_frame,
+    build_signal_profiles,
+    initialize_hypotheses,
+    rank_signal_hypotheses,
+    rank_signal_profiles,
+)
+
 from .edge_policy import EdgePolicy, temporal_edge_policy
 from .graph_ops import (
     GraphTransform,
@@ -11,24 +25,11 @@ from .materialization import (
     GraphTables,
     build_graph_tables,
 )
-from graphids.core.data.discovery import (
-    CanonicalEntitySpec,
-    CanonicalFeatureFrameSpec,
-    CanonicalRegistry,
-    DiscoveryStore,
-    SignalHypothesisSpec,
-    SignalProfileSpec,
-    build_signal_profiles,
-    build_canonical_feature_frame,
-    initialize_hypotheses,
-    rank_signal_hypotheses,
-    rank_signal_profiles,
-)
 from .pyg import graph_tables_to_pyg
 from .representations import (
+    EntityRepresentationCfg,
     GraphRepresentationCfg,
     GraphRepresentationPlan,
-    EntityRepresentationCfg,
     MultiScaleRepresentationCfg,
     SnapshotRepresentationCfg,
     SnapshotSequenceRepresentationCfg,
@@ -37,8 +38,8 @@ from .representations import (
     representation_plan,
     representation_segment,
     representation_temporal_spec,
-    representation_window_defaults,
     representation_view,
+    representation_window_defaults,
 )
 from .scaler import (
     RobustBenignScalerCfg,
@@ -54,16 +55,17 @@ from .segments import (
     EntitySegmentCfg,
     GraphSegmentPlan,
     MultiScaleSegmentCfg,
+    SegmentCfg,
     Segmenter,
     SequenceSegmentCfg,
-    SegmentCfg,
-    WindowSegmenter,
     WindowedRows,
     WindowSegmentCfg,
+    WindowSegmenter,
     segment_kind,
     segment_plan,
 )
 from .temporal import TemporalGraphSpec, build_temporal_data, temporal_len
+from .transforms import TOPOLOGY_NODE_FEATURE_COLS, TOPOLOGY_NODE_PLACEHOLDER_EXPRS
 from .views import (
     EntityViewCfg,
     EventChunkViewCfg,
@@ -74,7 +76,6 @@ from .views import (
     ViewCfg,
     view_kind,
 )
-from .transforms import TOPOLOGY_NODE_FEATURE_COLS, TOPOLOGY_NODE_PLACEHOLDER_EXPRS
 
 __all__ = [
     "TOPOLOGY_NODE_FEATURE_COLS",

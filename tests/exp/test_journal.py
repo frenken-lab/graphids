@@ -6,9 +6,20 @@ from typer.testing import CliRunner
 
 
 def test_manifest_and_events_round_trip(tmp_path):
-    from graphids.exp.config import OutputConfig, ResourceConfig, RunConfig
-    from graphids.exp.config import FitRunPayload
-    from graphids.exp.journal import EventRecord, RunManifest, append_event, load_events, load_manifest, write_manifest
+    from graphids.exp.config import (
+        FitRunPayload,
+        OutputConfig,
+        ResourceConfig,
+        RunConfig,
+    )
+    from graphids.exp.journal import (
+        EventRecord,
+        RunManifest,
+        append_event,
+        load_events,
+        load_manifest,
+        write_manifest,
+    )
 
     run_dir = tmp_path / "run"
     run = RunConfig(
@@ -47,7 +58,12 @@ def test_manifest_and_events_round_trip(tmp_path):
 
 
 def test_exp_status_prints_summary(tmp_path):
-    from graphids.exp.journal import EventRecord, RunManifest, append_event, write_manifest
+    from graphids.exp.journal import (
+        EventRecord,
+        RunManifest,
+        append_event,
+        write_manifest,
+    )
 
     run_dir = tmp_path / "run"
     manifest = RunManifest(

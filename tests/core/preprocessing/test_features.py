@@ -41,7 +41,8 @@ def test_sliding_window_graphs_shapes_and_values():
         NODE_COL_ORDER,
         NODE_STAT_EXPRS,
     )
-    from graphids.core.data.preprocessing.pipeline import GraphPipeline, run as run_pipeline
+    from graphids.core.data.preprocessing.pipeline import GraphPipeline
+    from graphids.core.data.preprocessing.pipeline import run as run_pipeline
 
     n_rows = 20
     rng = np.random.default_rng(0)
@@ -96,7 +97,8 @@ def test_sliding_window_graphs_edge_freq():
         NODE_COL_ORDER,
         NODE_STAT_EXPRS,
     )
-    from graphids.core.data.preprocessing.pipeline import GraphPipeline, run as run_pipeline
+    from graphids.core.data.preprocessing.pipeline import GraphPipeline
+    from graphids.core.data.preprocessing.pipeline import run as run_pipeline
 
     # 10 rows, 2 node IDs → many repeated (src, dst) pairs
     node_ids = [0, 1, 0, 1, 0, 1, 0, 1, 0, 1]
@@ -144,7 +146,8 @@ def test_skewness_kurtosis_clamped():
         NODE_COL_ORDER,
         NODE_STAT_EXPRS,
     )
-    from graphids.core.data.preprocessing.pipeline import GraphPipeline, run as run_pipeline
+    from graphids.core.data.preprocessing.pipeline import GraphPipeline
+    from graphids.core.data.preprocessing.pipeline import run as run_pipeline
 
     # Extreme byte values: one constant column + one high-variance column
     # to provoke large skewness/kurtosis before clamping.
@@ -194,7 +197,10 @@ def test_build_tables_and_debug_artifacts(tmp_path):
         NODE_COL_ORDER,
         NODE_STAT_EXPRS,
     )
-    from graphids.core.data.preprocessing.pipeline import GraphPipeline, build_tables as build_pipeline_tables
+    from graphids.core.data.preprocessing.pipeline import GraphPipeline
+    from graphids.core.data.preprocessing.pipeline import (
+        build_tables as build_pipeline_tables,
+    )
 
     n_rows = 20
     df = pl.DataFrame(
@@ -238,7 +244,10 @@ def test_edge_policy_explicit_direction():
         NODE_STAT_EXPRS,
     )
     from graphids.core.data.preprocessing.edge_policy import temporal_edge_policy
-    from graphids.core.data.preprocessing.pipeline import GraphPipeline, build_tables as build_pipeline_tables
+    from graphids.core.data.preprocessing.pipeline import GraphPipeline
+    from graphids.core.data.preprocessing.pipeline import (
+        build_tables as build_pipeline_tables,
+    )
 
     df = pl.DataFrame(
         {
@@ -280,7 +289,10 @@ def test_secondary_graph_transforms_are_composable():
         default_graph_transforms,
         secondary_graph_transforms,
     )
-    from graphids.core.data.preprocessing.pipeline import GraphPipeline, build_tables as build_pipeline_tables
+    from graphids.core.data.preprocessing.pipeline import GraphPipeline
+    from graphids.core.data.preprocessing.pipeline import (
+        build_tables as build_pipeline_tables,
+    )
 
     n_rows = 20
     df = pl.DataFrame(

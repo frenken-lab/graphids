@@ -123,7 +123,7 @@ nav:
       - Prebatch timing: reference/prebatch-timing.md
       - PyTorch compat: reference/pytorch-compat.md
   - API Reference:
-      - Orchestrate: api/orchestrate.md
+      - Runtime: api/runtime.md
       - CLI: api/cli.md
       - Callbacks: api/callbacks.md
       - Data: api/data.md

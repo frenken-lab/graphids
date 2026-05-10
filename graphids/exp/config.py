@@ -6,19 +6,19 @@ instantiate it directly from CLI/YAML today.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 from omegaconf import OmegaConf
 from pydantic import BaseModel, ConfigDict, Field
 
-from graphids.exp.journal import RunManifest
 from graphids.core.data.preprocessing.representations import (
     GraphRepresentationCfg,
     SnapshotRepresentationCfg,
     representation_kind,
 )
+from graphids.exp.journal import RunManifest
 
 
 def _representation_payload(cfg: GraphRepresentationCfg) -> dict[str, Any]:
@@ -317,7 +317,7 @@ class ExperimentConfig(_StrictModel):
         )
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "ExperimentConfig":
+    def from_yaml(cls, path: str | Path) -> ExperimentConfig:
         cfg = OmegaConf.load(path)
         return cls.model_validate(OmegaConf.to_container(cfg, resolve=True))
 

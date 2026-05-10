@@ -10,10 +10,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import torch
 from structlog import get_logger
-from tensordict import TensorDict
 
-from graphids.core.models.base import safe_load_checkpoint
 from graphids.core.data.preprocessing.representations import GraphRepresentationCfg
+from graphids.core.models.base import safe_load_checkpoint
 
 from .compute import (
     AttentionResult,

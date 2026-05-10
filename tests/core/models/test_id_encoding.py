@@ -9,13 +9,13 @@ from __future__ import annotations
 import torch
 
 from graphids.core.models.id_encoding import (
+    UNK_INDEX,
+    HashIdEncoder,
+    LookupIdEncoder,
     build_id_encoder,
     encoding_plan,
     hash_encoding,
     lookup_encoding,
-    UNK_INDEX,
-    HashIdEncoder,
-    LookupIdEncoder,
 )
 
 

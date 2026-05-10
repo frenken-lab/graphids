@@ -25,8 +25,8 @@ from .._conv import (
     build_encoder_stack,
     conv_forward,
 )
-from ..base import ScoreBasedDetectorMixin
 from .._score_primitives import rayleigh_quotient, tam_affinity
+from ..base import ScoreBasedDetectorMixin
 from ..id_encoding import IdEncodingCfg
 
 

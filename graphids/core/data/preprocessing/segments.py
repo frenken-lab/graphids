@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
-from typing import Literal
+from typing import Literal, Protocol
 
 import polars as pl
 

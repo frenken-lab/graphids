@@ -2,8 +2,10 @@ from __future__ import annotations
 
 
 def test_experiment_config_propagates_representation_cfg():
+    from graphids.core.data.preprocessing.representations import (
+        SnapshotRepresentationCfg,
+    )
     from graphids.exp.config import ExperimentConfig
-    from graphids.core.data.preprocessing.representations import SnapshotRepresentationCfg
 
     cfg = ExperimentConfig(
         experiment_name="demo",
@@ -19,8 +21,15 @@ def test_experiment_config_propagates_representation_cfg():
 
 
 def test_runconfig_reports_representation_in_metadata():
-    from graphids.exp.config import ExtractRunPayload, OutputConfig, ResourceConfig, RunConfig
-    from graphids.core.data.preprocessing.representations import SnapshotRepresentationCfg
+    from graphids.core.data.preprocessing.representations import (
+        SnapshotRepresentationCfg,
+    )
+    from graphids.exp.config import (
+        ExtractRunPayload,
+        OutputConfig,
+        ResourceConfig,
+        RunConfig,
+    )
 
     run = RunConfig(
         name="demo",

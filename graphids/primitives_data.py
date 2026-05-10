@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from functools import partial
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from graphids.paths import load_catalog, trial_dir
 from graphids.core.data.preprocessing.representations import (
     GraphRepresentationCfg,
     SnapshotRepresentationCfg,
@@ -21,6 +20,10 @@ from graphids.core.data.preprocessing.scaler import (
     ScalerCfg,
     ZBenignScalerCfg,
 )
+from graphids.paths import load_catalog, trial_dir
+
+_DEFAULT_SCALER_CFG = ZBenignScalerCfg()
+_DEFAULT_REPRESENTATION_CFG = SnapshotRepresentationCfg()
 
 
 class _Cfg(BaseModel):
@@ -209,8 +212,8 @@ def can_bus(
     dataset: str,
     seed: int,
     val_fraction: float = 0.2,
-    scaler_cfg: ScalerCfg = ZBenignScalerCfg(),
-    representation_cfg: GraphRepresentationCfg = SnapshotRepresentationCfg(),
+    scaler_cfg: ScalerCfg = _DEFAULT_SCALER_CFG,
+    representation_cfg: GraphRepresentationCfg = _DEFAULT_REPRESENTATION_CFG,
 ) -> CANBusCfg:
     registry = load_catalog()
     if dataset not in registry:

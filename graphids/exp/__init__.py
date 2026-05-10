@@ -17,7 +17,14 @@ from graphids.exp.config import (
     ResourceConfig,
     RunConfig,
 )
-from graphids.exp.journal import EventRecord, RunManifest, append_event, load_events, load_manifest, write_manifest
+from graphids.exp.journal import (
+    EventRecord,
+    RunManifest,
+    append_event,
+    load_events,
+    load_manifest,
+    write_manifest,
+)
 
 __all__ = [
     "ExperimentConfig",

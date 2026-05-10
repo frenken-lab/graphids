@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+import polars as pl
 import torch
 from torch_geometric.data import Data
-
-import polars as pl
 
 from graphids.core.data.preprocessing.materialization import GraphTables
 

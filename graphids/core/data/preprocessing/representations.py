@@ -13,6 +13,7 @@ from .segments import (
     SequenceSegmentCfg,
     WindowSegmentCfg,
 )
+from .temporal import TemporalGraphSpec
 from .views import (
     EntityViewCfg,
     MultiScaleViewCfg,
@@ -21,7 +22,6 @@ from .views import (
     SnapshotViewCfg,
     ViewCfg,
 )
-from .temporal import TemporalGraphSpec
 
 
 @dataclass(frozen=True)

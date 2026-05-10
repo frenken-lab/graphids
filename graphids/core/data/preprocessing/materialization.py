@@ -9,15 +9,21 @@ from pathlib import Path
 import polars as pl
 from structlog import get_logger
 
-from graphids.core.data.preprocessing.edge_policy import EdgePolicy, temporal_edge_policy
-from graphids.core.data.preprocessing.graph_ops import GraphTransform, default_graph_transforms
+from graphids.core.data.preprocessing.edge_policy import (
+    EdgePolicy,
+    temporal_edge_policy,
+)
+from graphids.core.data.preprocessing.graph_ops import (
+    GraphTransform,
+    default_graph_transforms,
+)
 from graphids.core.data.preprocessing.segments import (
     EntitySegmentCfg,
     MultiScaleSegmentCfg,
     SequenceSegmentCfg,
+    WindowedRows,
     WindowSegmentCfg,
     WindowSegmenter,
-    WindowedRows,
 )
 
 log = get_logger(__name__)

@@ -3,18 +3,19 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Literal
 
 import torch
 from structlog import get_logger
 
-from graphids.core.models.base import eval_mode, safe_load_checkpoint
 from graphids.core.data.preprocessing.representations import (
     GraphRepresentationCfg,
     SnapshotRepresentationCfg,
 )
+from graphids.core.models.base import eval_mode, safe_load_checkpoint
 
 from . import compute, io
 

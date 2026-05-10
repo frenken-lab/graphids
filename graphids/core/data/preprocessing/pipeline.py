@@ -9,13 +9,16 @@ from torch_geometric.data import Data
 
 from graphids.core.data.preprocessing.edge_policy import EdgePolicy
 from graphids.core.data.preprocessing.graph_ops import GraphTransform
-from graphids.core.data.preprocessing.materialization import GraphTables, build_graph_tables
+from graphids.core.data.preprocessing.materialization import (
+    GraphTables,
+    build_graph_tables,
+)
+from graphids.core.data.preprocessing.pyg import graph_tables_to_pyg
 from graphids.core.data.preprocessing.representations import (
     GraphRepresentationCfg,
     SnapshotRepresentationCfg,
     representation_segment,
 )
-from graphids.core.data.preprocessing.pyg import graph_tables_to_pyg
 from graphids.core.data.preprocessing.segments import (
     EntitySegmentCfg,
     MultiScaleSegmentCfg,

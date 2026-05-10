@@ -7,8 +7,8 @@ write manifests and events around any callable run body.
 from __future__ import annotations
 
 import importlib
-from dataclasses import asdict, is_dataclass
 from collections.abc import Mapping
+from dataclasses import asdict, is_dataclass
 from inspect import signature
 from pathlib import Path
 from typing import Any
@@ -156,8 +156,7 @@ def run_stage(run: RunConfig) -> dict[str, Any] | None:
         )
         return {"stage": "extract", "output_dir": output_dir}
     if run.stage == "analyze":
-        from graphids.core.artifacts.analyzer import Analyzer
-        from graphids.core.artifacts.analyzer import AnalysisConfig
+        from graphids.core.artifacts.analyzer import AnalysisConfig, Analyzer
 
         run_cfg = run.payload.model_dump(mode="json")
         spec = AnalysisConfig(

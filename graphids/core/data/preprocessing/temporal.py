@@ -8,7 +8,10 @@ from typing import Any
 import polars as pl
 import torch
 
-from graphids.core.data.preprocessing.edge_policy import EdgePolicy, temporal_edge_policy
+from graphids.core.data.preprocessing.edge_policy import (
+    EdgePolicy,
+    temporal_edge_policy,
+)
 
 
 @dataclass(frozen=True)

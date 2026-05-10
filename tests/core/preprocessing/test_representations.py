@@ -12,11 +12,15 @@ from graphids.core.data.preprocessing.representations import (
     representation_plan,
     representation_segment,
     representation_temporal_spec,
-    representation_window_defaults,
     representation_view,
+    representation_window_defaults,
 )
 from graphids.core.data.preprocessing.segments import segment_kind
-from graphids.core.data.preprocessing.views import EventChunkViewCfg, RollingStreamViewCfg, view_kind
+from graphids.core.data.preprocessing.views import (
+    EventChunkViewCfg,
+    RollingStreamViewCfg,
+    view_kind,
+)
 
 
 def test_representation_kinds_are_explicit():

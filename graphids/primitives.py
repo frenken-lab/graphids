@@ -2,29 +2,6 @@
 
 from __future__ import annotations
 
-from graphids.primitives_data import (
-    REWARD,
-    CanonicalEntityCfg,
-    CanonicalRegistryCfg,
-    CANBusCfg,
-    DataCfg,
-    DifficultyCfg,
-    FusionDMCfg,
-    GraphDMCfg,
-    RobustBenignScalerCfg,
-    ScoreRandomCfg,
-    ScoreVGAECfg,
-    ZBenignScalerCfg,
-    can_bus,
-    canonical_entity,
-    canonical_registry,
-    robust_benign_scaler,
-    fusion_dm,
-    graph_dm,
-    score_random,
-    score_vgae,
-    z_benign_scaler,
-)
 from graphids.core.data.discovery import (
     CanonicalEntitySpec,
     CanonicalFeatureFrameSpec,
@@ -53,9 +30,10 @@ from graphids.core.data.preprocessing.representations import (
     representation_plan,
     representation_segment,
     representation_temporal_spec,
-    representation_window_defaults,
     representation_view,
+    representation_window_defaults,
 )
+from graphids.core.data.preprocessing.scaler import ScalerCfg, ScalerPlan
 from graphids.core.data.preprocessing.views import (
     EntityViewCfg,
     EventChunkViewCfg,
@@ -65,6 +43,40 @@ from graphids.core.data.preprocessing.views import (
     SnapshotViewCfg,
     ViewCfg,
     view_kind,
+)
+from graphids.core.models.id_encoding import (
+    HashEncodingCfg,
+    IdEncodingCfg,
+    IdEncodingPlan,
+    LookupEncodingCfg,
+    build_id_encoder,
+    encoding_kind,
+    encoding_plan,
+    hash_encoding,
+    lookup_encoding,
+)
+from graphids.primitives_data import (
+    REWARD,
+    CANBusCfg,
+    CanonicalEntityCfg,
+    CanonicalRegistryCfg,
+    DataCfg,
+    DifficultyCfg,
+    FusionDMCfg,
+    GraphDMCfg,
+    RobustBenignScalerCfg,
+    ScoreRandomCfg,
+    ScoreVGAECfg,
+    ZBenignScalerCfg,
+    can_bus,
+    canonical_entity,
+    canonical_registry,
+    fusion_dm,
+    graph_dm,
+    robust_benign_scaler,
+    score_random,
+    score_vgae,
+    z_benign_scaler,
 )
 from graphids.primitives_losses import (
     CELossCfg,
@@ -104,18 +116,6 @@ from graphids.primitives_models import (
     vgae,
     weighted_avg,
 )
-from graphids.core.models.id_encoding import (
-    HashEncodingCfg,
-    IdEncodingCfg,
-    IdEncodingPlan,
-    LookupEncodingCfg,
-    build_id_encoder,
-    encoding_kind,
-    encoding_plan,
-    hash_encoding,
-    lookup_encoding,
-)
-from graphids.core.data.preprocessing.scaler import ScalerCfg, ScalerPlan
 
 __all__ = [
     "gat",
