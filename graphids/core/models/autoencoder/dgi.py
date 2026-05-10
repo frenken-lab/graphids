@@ -19,8 +19,9 @@ from torch_geometric.nn import global_mean_pool
 
 from graphids.paths import ModelType
 
-from .._conv import InputEncoder, build_encoder_stack, conv_forward, resolve_edge_dim
-from .._detector import ScoreBasedDetectorMixin
+from .._conv import InputEncoder, build_encoder_stack, conv_forward
+from ..base import ScoreBasedDetectorMixin
+from ..id_encoding import IdEncodingCfg
 
 
 class DGI(ScoreBasedDetectorMixin):
@@ -49,6 +50,7 @@ class DGI(ScoreBasedDetectorMixin):
         gradient_checkpointing: bool = True,
         compile_model: bool = False,
         batch_norm: bool = True,
+        id_encoder_cfg: IdEncodingCfg | None = None,
         id_encoder_class_path: str = "graphids.core.models.id_encoding.LookupIdEncoder",
         id_encoder_kwargs: dict | None = None,
         # --- training ---
@@ -86,7 +88,7 @@ class DGI(ScoreBasedDetectorMixin):
     def _build(self):
         hp = self.hparams
         id_encoder = self._build_id_encoder()
-        edge_dim = resolve_edge_dim(hp.conv_type, hp.edge_dim)
+        edge_dim = hp.edge_dim if hp.conv_type in {"transformer", "gatv2", "gps"} else None
 
         self.dropout_rate = hp.dropout
         self.batch_norm = hp.batch_norm

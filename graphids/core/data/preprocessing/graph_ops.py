@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
-
 import polars as pl
 
 
@@ -14,17 +12,18 @@ class GraphTransform:
     """A declarative graph transform with explicit input/output columns."""
 
     name: str
-    applies_to: Literal["node", "edge", "graph"]
     requires: tuple[str, ...]
     produces: tuple[str, ...]
     fn: Callable[[pl.DataFrame, pl.DataFrame], tuple[pl.DataFrame, pl.DataFrame]]
 
     def apply(self, node_stats: pl.DataFrame, edge_df: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
-        missing = [c for c in self.requires if c not in set(node_stats.columns) | set(edge_df.columns)]
+        available = set(node_stats.columns) | set(edge_df.columns)
+        missing = [c for c in self.requires if c not in available]
         if missing:
             raise ValueError(f"transform {self.name!r} missing required columns: {missing!r}")
         next_node, next_edge = self.fn(node_stats, edge_df)
-        missing_out = [c for c in self.produces if c not in set(next_node.columns) | set(next_edge.columns)]
+        produced = set(next_node.columns) | set(next_edge.columns)
+        missing_out = [c for c in self.produces if c not in produced]
         if missing_out:
             raise ValueError(f"transform {self.name!r} did not produce columns: {missing_out!r}")
         return next_node, next_edge
@@ -36,9 +35,9 @@ def _add_edge_frequency(node_stats: pl.DataFrame, edge_df: pl.DataFrame) -> tupl
     )
 
 
-def _add_bidir(edge_df: pl.DataFrame) -> pl.DataFrame:
+def _add_bidir(node_stats: pl.DataFrame, edge_df: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
     pairs = edge_df.select("_wid", "src", "dst").unique()
-    return (
+    return node_stats, (
         edge_df.join(
             pairs.with_columns(pl.lit(True).alias("_rev")),
             left_on=["_wid", "dst", "src"],
@@ -48,10 +47,6 @@ def _add_bidir(edge_df: pl.DataFrame) -> pl.DataFrame:
         .with_columns(pl.col("_rev").fill_null(False).cast(pl.Float32).alias("bidir"))
         .drop("_rev")
     )
-
-
-def _add_bidir_transform(node_stats: pl.DataFrame, edge_df: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
-    return node_stats, _add_bidir(edge_df)
 
 
 def _add_graph_topology(node_stats: pl.DataFrame, edge_df: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
@@ -109,36 +104,21 @@ def _add_graph_topology(node_stats: pl.DataFrame, edge_df: pl.DataFrame) -> tupl
     return node_stats, edge_df
 
 
-def _add_in_out_ratio(node_stats: pl.DataFrame, edge_df: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
+def _add_secondary_node_stats(node_stats: pl.DataFrame, edge_df: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
+    total = pl.col("in_degree") + pl.col("out_degree")
+    p_out = pl.when(total > 0).then(pl.col("out_degree") / total).otherwise(0.0)
+    p_in = pl.when(total > 0).then(pl.col("in_degree") / total).otherwise(0.0)
     node_stats = node_stats.with_columns(
-        pl.when(pl.col("out_degree") > 0)
-        .then(pl.col("in_degree") / pl.col("out_degree"))
+        pl.when(pl.col("in_degree") > 0)
+        .then(pl.col("out_degree") / pl.col("in_degree"))
+        .otherwise(pl.col("out_degree"))
+        .cast(pl.Float32)
+        .alias("in_out_ratio"),
+        pl.when(total > 0)
+        .then(-pl.when(p_out > 0).then(p_out * p_out.log()).otherwise(0.0) - pl.when(p_in > 0).then(p_in * p_in.log()).otherwise(0.0))
         .otherwise(0.0)
         .cast(pl.Float32)
-        .alias("in_out_ratio")
-    )
-    return node_stats, edge_df
-
-
-def _add_neighbor_entropy(node_stats: pl.DataFrame, edge_df: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
-    counts = edge_df.group_by(["_wid", "src", "dst"]).agg(pl.len().cast(pl.Float32).alias("_cnt"))
-    totals = counts.group_by(["_wid", "src"]).agg(pl.sum("_cnt").alias("_tot"))
-    entropy = (
-        counts.join(totals, on=["_wid", "src"], how="left")
-        .with_columns((pl.col("_cnt") / pl.col("_tot")).alias("_p"))
-        .with_columns(
-            pl.when(pl.col("_p") > 0)
-            .then(-(pl.col("_p") * pl.col("_p").log()))
-            .otherwise(0.0)
-            .cast(pl.Float32)
-            .alias("_term")
-        )
-        .group_by(["_wid", "src"])
-        .agg(pl.sum("_term").cast(pl.Float32).alias("neighbor_entropy"))
-        .rename({"src": "node_id"})
-    )
-    node_stats = node_stats.join(entropy, on=["_wid", "node_id"], how="left").with_columns(
-        pl.col("neighbor_entropy").fill_null(0.0).cast(pl.Float32)
+        .alias("neighbor_entropy"),
     )
     return node_stats, edge_df
 
@@ -148,21 +128,18 @@ def default_graph_transforms() -> list[GraphTransform]:
     return [
         GraphTransform(
             name="edge_frequency",
-            applies_to="edge",
             requires=("_wid", "src", "dst"),
             produces=("edge_freq",),
             fn=_add_edge_frequency,
         ),
         GraphTransform(
             name="bidir",
-            applies_to="edge",
             requires=("_wid", "src", "dst"),
             produces=("bidir",),
-            fn=_add_bidir_transform,
+            fn=_add_bidir,
         ),
         GraphTransform(
             name="topology",
-            applies_to="graph",
             requires=("_wid", "node_id", "src", "dst"),
             produces=("clustering_coeff", "in_degree", "out_degree"),
             fn=_add_graph_topology,
@@ -171,20 +148,12 @@ def default_graph_transforms() -> list[GraphTransform]:
 
 
 def secondary_graph_transforms() -> list[GraphTransform]:
-    """Optional graph transforms for additional node-level statistics."""
+    """Additional exploratory graph transforms used in feature tests."""
     return [
         GraphTransform(
-            name="in_out_ratio",
-            applies_to="node",
+            name="secondary_node_stats",
             requires=("in_degree", "out_degree"),
-            produces=("in_out_ratio",),
-            fn=_add_in_out_ratio,
-        ),
-        GraphTransform(
-            name="neighbor_entropy",
-            applies_to="node",
-            requires=("_wid", "node_id", "src", "dst"),
-            produces=("neighbor_entropy",),
-            fn=_add_neighbor_entropy,
-        ),
+            produces=("in_out_ratio", "neighbor_entropy"),
+            fn=_add_secondary_node_stats,
+        )
     ]

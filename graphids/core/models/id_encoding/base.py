@@ -21,10 +21,8 @@ from torch import Tensor
 def build_encoder(class_path: str, num_ids: int, embedding_dim: int, **kwargs: Any) -> IdEncoder:
     """Resolve a dotted ``class_path`` and call ``from_vocab_size``.
 
-    Replaces ``_reflect.import_class`` for the runtime-dispatch encoder
-    construction in each model module's ``_build()``. ``num_ids`` is
-    data-dependent (populated by ``datamodule.setup``) so this can't move
-    into ``orchestrate._instantiate`` like ``loss_fn`` did.
+    ``num_ids`` is data-dependent (populated by ``datamodule.setup``), so
+    encoder construction stays at model-build time.
     """
     mod, _, cls_name = class_path.rpartition(".")
     cls = getattr(importlib.import_module(mod), cls_name)

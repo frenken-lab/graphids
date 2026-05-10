@@ -25,17 +25,16 @@ from torch_geometric.utils import add_self_loops, remove_self_loops
 
 from graphids.paths import ModelType
 
-from .._conv import InputEncoder, _make_conv, conv_forward, resolve_edge_dim
+from .._conv import InputEncoder, _make_conv, conv_forward
 from ..base import GraphModuleBase, classification_test_metrics
+from ..id_encoding import IdEncodingCfg
 
 
 class GAT(GraphModuleBase):
     """Collapsed GAT — arch + trainer-bridge in one ``nn.Module``.
 
-    Loss selection is decoupled: ``loss_fn`` is an ``nn.Module``
-    instantiated by :func:`graphids.orchestrate._instantiate` from the
-    rendered_config's ``model.init_args.loss_fn`` class_path block. When
-    the block resolves to a
+    Loss selection is decoupled: ``loss_fn`` is an ``nn.Module`` built
+    from the experiment config. When the block resolves to a
     :class:`~graphids.core.losses.distillation.SoftLabelDistillation`,
     training automatically becomes a KD run — no branching here.
 
@@ -66,6 +65,7 @@ class GAT(GraphModuleBase):
         proj_dim: int = 0,
         gradient_checkpointing: bool = True,
         compile_model: bool = False,
+        id_encoder_cfg: IdEncodingCfg | None = None,
         id_encoder_class_path: str = "graphids.core.models.id_encoding.LookupIdEncoder",
         id_encoder_kwargs: dict | None = None,
         # --- training ---
@@ -101,7 +101,7 @@ class GAT(GraphModuleBase):
     def _build(self):
         hp = self.hparams
         id_encoder = self._build_id_encoder()
-        edge_dim = resolve_edge_dim(hp.conv_type, hp.edge_dim)
+        edge_dim = hp.edge_dim if hp.conv_type in {"transformer", "gatv2", "gps"} else None
         pool_aggrs = list(hp.pool_aggrs) if hp.pool_aggrs else ["mean"]
 
         self.input_encoder = InputEncoder(
@@ -167,7 +167,7 @@ class GAT(GraphModuleBase):
         from graphids.core.losses.build import build_loss
 
         loss_cfg = hp.get("loss_config")
-        return {"loss_fn": build_loss("gat", loss_cfg, distillation_config=None)}
+        return {"loss_fn": build_loss("gat", loss_cfg)}
 
     # ------------------------------------------------------------------
     # Architecture primitives

@@ -1,21 +1,10 @@
-"""CAN bus dataset — protocol parser + domain features + adapter classes.
-
-Module is sectioned so a reader knows what's CAN-specific vs what's
-graph-pipeline plumbing that just happens to live here:
-
-  §1. CAN protocol constants    — byte layout (CAN-specific)
-  §2. Attack taxonomy           — code/name maps (CAN-specific)
-  §3. Domain feature expressions — Polars aggs over CAN data (CAN-specific)
-  §4. Tensor column orders      — final layouts (domain + topology)
-  §5. Payload parser            — hex → byte_0..7 + entropy (CAN-specific)
-  §6. Adapter classes           — _read_raw + _scan_vocab hooks
-"""
+"""CAN bus dataset adapter and schema."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 import polars as pl
 from structlog import get_logger
@@ -25,23 +14,22 @@ from graphids.core.data.datasets._base import (
     BaseGraphSource,
     GraphSchema,
 )
+from graphids.core.data.discovery.hypotheses import DiscoveryStore
+from graphids.core.data.state import DatasetState
 from graphids.core.data.preprocessing.edge_policy import temporal_edge_policy
-from graphids.core.data.preprocessing.graph_ops import (
-    default_graph_transforms,
-    secondary_graph_transforms,
+from graphids.core.data.preprocessing.graph_ops import default_graph_transforms
+from graphids.core.data.preprocessing.representations import (
+    TemporalRepresentationCfg,
+    representation_temporal_spec,
 )
+from graphids.core.data.preprocessing.temporal import TemporalGraphSpec, build_temporal_data
 from graphids.core.data.preprocessing.transforms import TOPOLOGY_NODE_PLACEHOLDER_EXPRS
 
 log = get_logger(__name__)
 
 
-# ─── §1. CAN protocol constants ───────────────────────────────────────
-
 N_BYTES = 8
 BYTE_COLS = [f"byte_{i}" for i in range(N_BYTES)]
-
-
-# ─── §2. Attack taxonomy ──────────────────────────────────────────────
 
 # Insertion order matters: ``_infer_attack_type`` does substring match and
 # returns the first hit, so longer/more-specific keys precede their prefixes.
@@ -65,10 +53,6 @@ ATTACK_TYPE_CODES: dict[str, int] = {
 ATTACK_TYPE_NAMES: dict[int, str] = {v: k for k, v in ATTACK_TYPE_CODES.items() if v != 0}
 ATTACK_TYPE_NAMES[0] = "benign"
 
-
-# ─── §3. Domain feature expressions (CAN-specific) ────────────────────
-
-# Per-node aggs within a window. Inputs: byte_0..7, entropy, _first_half, timestamp.
 DOMAIN_NODE_EXPRS: list[pl.Expr] = [
     *[pl.col(c).mean().alias(f"{c}_mean") for c in BYTE_COLS],
     *[pl.col(c).std().alias(f"{c}_std") for c in BYTE_COLS],
@@ -90,13 +74,11 @@ DOMAIN_NODE_EXPRS: list[pl.Expr] = [
     pl.col("timestamp").diff().std().fill_nan(0).cast(pl.Float32).alias("node_iat_std"),
 ]
 
-# Per-edge feature exprs (within window, after sort). Inputs: timestamp, byte_0..7.
 DOMAIN_EDGE_EXPRS: list[pl.Expr] = [
     pl.col("timestamp").diff().cast(pl.Float32).alias("iat"),
     *[pl.col(c).diff().abs().cast(pl.Float32).alias(f"{c}_diff") for c in BYTE_COLS],
 ]
 
-# Per-window labels: y (binary attack) + attack_type (multiclass mode).
 LABEL_EXPRS: list[pl.Expr] = [
     (pl.col("attack").max() > 0).cast(pl.Int64).alias("y"),
     pl.col("attack_type")
@@ -106,9 +88,6 @@ LABEL_EXPRS: list[pl.Expr] = [
     .fill_null(0)
     .alias("attack_type"),
 ]
-
-
-# ─── §4. Tensor column orders ─────────────────────────────────────────
 
 NODE_COL_ORDER = (
     [f"{c}_mean" for c in BYTE_COLS]
@@ -131,7 +110,6 @@ N_EDGE_FEATURES = len(EDGE_COL_ORDER)
 
 CAN_EDGE_POLICY = temporal_edge_policy(src_col="node_id", dst_col="node_id", dst_shift=-1)
 CAN_GRAPH_TRANSFORMS = tuple(default_graph_transforms())
-CAN_OPTIONAL_GRAPH_TRANSFORMS = tuple(secondary_graph_transforms())
 
 
 CAN_SCHEMA = GraphSchema(
@@ -148,19 +126,13 @@ CAN_SCHEMA = GraphSchema(
     graph_transforms=CAN_GRAPH_TRANSFORMS,
 )
 
-
-# Backward-compatible aliases used by preprocessing tests and downstream imports.
+# Backward-compatible schema aliases used by tests and downstream configs.
 NODE_STAT_EXPRS = CAN_SCHEMA.node_stat_exprs
-EDGE_STAT_EXPRS = DOMAIN_EDGE_EXPRS
-EDGE_BASE_COLS = BYTE_COLS
-
-
-# ─── §5. Payload parser ───────────────────────────────────────────────
+EDGE_STAT_EXPRS = CAN_SCHEMA.edge_stat_exprs
+EDGE_BASE_COLS = CAN_SCHEMA.edge_base_cols
 
 def parse_payload(lf: pl.LazyFrame) -> pl.LazyFrame:
-    """Hex 16-char ``payload`` → ``byte_0..7`` (Float32) + Shannon ``entropy``.
-    Idempotent: passes through if ``byte_0`` already present.
-    """
+    """Hex ``payload`` to ``byte_0..7`` plus Shannon entropy."""
     if "byte_0" in lf.collect_schema().names():
         return lf
     byte_exprs = [
@@ -177,15 +149,49 @@ def parse_payload(lf: pl.LazyFrame) -> pl.LazyFrame:
     return lf.with_columns(entropy)
 
 
-# ─── §6. Adapter classes ──────────────────────────────────────────────
+def infer_attack_type(csv: Path) -> int:
+    """Infer the attack code from filename/path substrings."""
+    s = csv.stem.lower() + " " + csv.parent.name.lower()
+    for kw, code in ATTACK_TYPE_CODES.items():
+        if kw in s:
+            return code
+    return 0
+
+
+def load_can_rows(raw_dir: Path, source_dirs: list[str]) -> pl.DataFrame:
+    """Load, normalize, and parse raw CAN CSVs from source dirs."""
+    if not source_dirs:
+        raise ValueError("source_dirs is empty; cannot load CAN rows")
+    frames: list[pl.LazyFrame] = []
+    for sub in source_dirs:
+        sub_path = raw_dir / sub
+        if not sub_path.is_dir():
+            raise FileNotFoundError(f"declared source_dir {sub!r} missing under {raw_dir}")
+        for csv_path in sorted(sub_path.rglob("*.csv")):
+            at = infer_attack_type(csv_path)
+            frames.append(
+                pl.scan_csv(csv_path).with_columns(
+                    pl.lit(at).alias("attack_type"),
+                    pl.lit(sub).alias("vehicle_id"),
+                )
+            )
+    if not frames:
+        raise ValueError(f"no CSVs under any of {source_dirs!r} in {raw_dir}")
+
+    combined = pl.concat(frames).sort("timestamp")
+    cols = combined.collect_schema().names()
+    renames = {
+        old: new
+        for old, new in (("arbitration_id", "arb_id"), ("data_field", "payload"))
+        if old in cols
+    }
+    if renames:
+        combined = combined.rename(renames)
+    return parse_payload(combined).collect()
+
 
 class CANBusDataset(BaseGraphDataset):
-    """One graph = one sliding window of CAN messages.
-
-    Nodes are arbitration IDs; edges are temporal adjacency (shift-1).
-    Only override is ``_read_raw``: lazy-scan declared source_dirs,
-    parse hex, tag attack_type from filename.
-    """
+    """One graph is one sliding window of CAN messages."""
 
     SCHEMA: ClassVar[GraphSchema] = CAN_SCHEMA
 
@@ -193,33 +199,14 @@ class CANBusDataset(BaseGraphDataset):
         if not self.source_dirs:
             raise ValueError(
                 f"CANBusDataset split={self.split!r} has no source_dirs; "
-                "caller must pass source_dirs=[...] (recursive raw_data_dir scan "
-                "would mix train+test → contamination)"
+                "caller must pass source_dirs=[...]"
             )
-        frames: list[pl.LazyFrame] = []
-        for sub in self.source_dirs:
-            sub_path = self.raw_data_dir / sub
-            if not sub_path.is_dir():
-                raise FileNotFoundError(f"declared source_dir {sub!r} missing under {self.raw_data_dir}")
-            for csv_path in sorted(sub_path.rglob("*.csv")):
-                at = self._infer_attack_type(csv_path)
-                frames.append(pl.scan_csv(csv_path).with_columns(pl.lit(at).alias("attack_type")))
-        if not frames:
-            raise ValueError(f"no CSVs under any of {self.source_dirs!r} in {self.raw_data_dir}")
-
-        combined = pl.concat(frames).sort("timestamp")
-        # HCRL CSVs use different names — alias to schema vocabulary.
-        cols = combined.collect_schema().names()
-        renames = {old: new for old, new in (("arbitration_id", "arb_id"), ("data_field", "payload"))
-                   if old in cols}
-        if renames:
-            combined = combined.rename(renames)
-        return parse_payload(combined).collect()
+        return load_can_rows(self.raw_data_dir, self.source_dirs)
 
 
 @dataclass(frozen=True)
 class CANBusSource(BaseGraphSource):
-    """Catalog → vocab-once → train/val/per-test-subdir CANBusDataset."""
+    """Catalog to train/val/test CANBusDataset builder."""
 
     KIND: ClassVar[str] = "canbus"
     DATASET_CLS: ClassVar[type[BaseGraphDataset]] = CANBusDataset
@@ -228,3 +215,123 @@ class CANBusSource(BaseGraphSource):
         from graphids.core.data.preprocessing.vocab import scan_arb_ids
 
         return scan_arb_ids(raw_dir, source_dirs)
+
+    def _post_build_artifacts(
+        self,
+        *,
+        root: Path,
+        raw: Path,
+        train_dirs: list[str],
+        present_test: list[str],
+        vocab: dict[str, int],
+        digest: str,
+    ) -> None:
+        from graphids.core.data.discovery.hypotheses import (
+            build_signal_profiles,
+            initialize_hypotheses,
+        )
+
+        del present_test, vocab, digest
+        profiles = build_signal_profiles(load_can_rows(raw, train_dirs))
+        store = DiscoveryStore(root=Path(root))
+        hypotheses = initialize_hypotheses(profiles)
+        store.write_profiles(profiles)
+        store.write_hypotheses(hypotheses)
+        store.write_manifest(profiles=profiles, hypotheses=hypotheses)
+
+
+@dataclass(frozen=True)
+class TemporalCANBusSource:
+    """Catalog to build temporal CAN event streams."""
+
+    KIND: ClassVar[str] = "canbus_temporal"
+    name: str
+    seed: int
+    lake_root: str | None = None
+    val_fraction: float = 0.2
+    vocab_scope: Literal["train", "all"] = "train"
+    representation_cfg: TemporalRepresentationCfg = field(default_factory=TemporalRepresentationCfg)
+
+    def resolved_lake_root(self) -> str:
+        if self.lake_root:
+            return self.lake_root
+        from graphids.paths import lake_root
+
+        return lake_root()
+
+    @property
+    def cache_key(self) -> str:
+        return (
+            f"{self.KIND}|{self.resolved_lake_root()}|{self.name}"
+            f"|v{self.val_fraction}|seed{self.seed}|voc:{self.vocab_scope}"
+            f"|repr:{self.representation_cfg.kind}"
+        )
+
+    def _scan_vocab(self, raw_dir: Path, source_dirs: list[str]) -> list[Any]:
+        from graphids.core.data.preprocessing.vocab import scan_arb_ids
+
+        return scan_arb_ids(raw_dir, source_dirs)
+
+    def build(self) -> DatasetState:
+        from graphids.core.data.preprocessing.vocab import persist_vocab
+        from graphids.paths import cache_dir, data_dir, load_catalog
+
+        entry = load_catalog()[self.name]
+        lake = self.resolved_lake_root()
+        raw = data_dir(lake, self.name)
+        root = cache_dir(lake, self.name) / f"temporal_voc_{self.vocab_scope}"
+
+        train_dirs = [
+            s for s in (entry.get("train_subdir"), entry.get("train_attack_subdir")) if s
+        ]
+        if not train_dirs:
+            raise ValueError(f"catalog entry {self.name!r} declares no train_subdir(s)")
+
+        present_test = [sd for sd in entry.get("test_subdirs", []) if (raw / sd).is_dir()]
+        scan_sources = list(train_dirs) + (present_test if self.vocab_scope == "all" else [])
+        vocab = {tok: i + 1 for i, tok in enumerate(self._scan_vocab(raw, scan_sources))}
+        Path(root).mkdir(parents=True, exist_ok=True)
+        persist_vocab(vocab, Path(root) / "vocab.json")
+
+        def _encode(df: pl.DataFrame) -> pl.DataFrame:
+            return df.with_columns(
+                pl.col("arb_id").replace_strict(vocab, default=0).cast(pl.Int64).alias("node_id")
+            )
+
+        spec = replace(
+            representation_temporal_spec(self.representation_cfg),
+            time_col=self.representation_cfg.time_col,
+            feature_cols=tuple(BYTE_COLS) + ("entropy",),
+            target_col="attack",
+            aux_label_cols=("attack_type",),
+        )
+
+        train_rows = _encode(load_can_rows(raw, train_dirs)).sort("timestamp")
+        n_rows = len(train_rows)
+        n_val = int(n_rows * self.val_fraction)
+        train_td = build_temporal_data(train_rows.head(max(0, n_rows - n_val)), spec)
+        val_td = build_temporal_data(train_rows.tail(n_val), spec)
+
+        tests = {
+            sd: build_temporal_data(_encode(load_can_rows(raw, [sd])).sort("timestamp"), spec)
+            for sd in present_test
+        }
+        return DatasetState(train=train_td, val=val_td, test=tests)
+
+
+__all__ = [
+    "ATTACK_TYPE_CODES",
+    "ATTACK_TYPE_NAMES",
+    "BYTE_COLS",
+    "NODE_STAT_EXPRS",
+    "EDGE_STAT_EXPRS",
+    "EDGE_BASE_COLS",
+    "LABEL_EXPRS",
+    "CAN_SCHEMA",
+    "CANBusDataset",
+    "CANBusSource",
+    "TemporalCANBusSource",
+    "parse_payload",
+    "infer_attack_type",
+    "load_can_rows",
+]

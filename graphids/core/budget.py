@@ -1,28 +1,4 @@
-"""Budget probe v4: one measurement + allocator baseline.
-
-The slope-fit was extracting fixed cost as the y-intercept of two probe
-points. The allocator already knows that number — ``torch.cuda.memory_allocated``
-after warmup IS the fixed cost (params + gradient buffers + optimizer state
-+ cuDNN workspace cache). Subtract it and divide. No polyfit, no roots.
-
-```
-peak       = baseline + activation(V)
-activation = peak - torch.cuda.memory_allocated()       (one measurement)
-per_node   = activation / V        (linear)
-per_v2     = activation / V²       (quadratic, GPS)
-budget     = solve(target = baseline + activation(V_budget))
-```
-
-Composes:
-- ``torch_geometric.profile.profileit`` → peak VRAM + step time
-- ``torch.cuda.memory_allocated`` → baseline (free, no probe)
-- ``torch.cuda.mem_get_info`` → free VRAM
-- ``torch.utils.benchmark.Timer`` → CPU timing for autosize_workers
-- ``os.sched_getaffinity`` → CPU cap
-
-Public surface matches ``budget.py``: ``BudgetResult``, ``node_budget``,
-``autosize_workers``, ``collect_batch``.
-"""
+"""GPU/CPU budget probe helpers."""
 
 from __future__ import annotations
 
@@ -84,11 +60,7 @@ def _loss(out):
 
 @contextlib.contextmanager
 def _silent_log(model):
-    """Silence ``self.log(...)`` calls during the probe so warmup + profileit
-    backward passes don't pollute MLflow with non-training metric points.
-    Restores the original method on exit. Probe never calls ``optimizer.step()``,
-    so model weights are unchanged after probe even though grads are computed.
-    """
+    """Silence ``self.log(...)`` during probe warmup and measurement."""
     sentinel = object()
     orig = model.__dict__.get("log", sentinel)
     model.log = lambda *a, **k: None
@@ -104,15 +76,7 @@ def _silent_log(model):
 def _dump_intermediates(
     model, batch, tag: str, *, cpu_state=None, cuda_state=None, dev=None
 ) -> None:
-    """Replay the FAILING forward (using saved RNG state) under no_grad and
-    report per-tensor finiteness + counts of NaN/Inf. Also reports parameter
-    finiteness to rule out weight corruption.
-
-    Without ``cpu_state``/``cuda_state``, the no_grad forward draws fresh
-    ``randn_like``/``rand`` samples → measures a DIFFERENT realization than
-    the one that NaN'd, which is what bit us before. Restoring RNG to the
-    pre-failure snapshot replays the exact failing draw.
-    """
+    """Replay a failing forward under saved RNG state and log tensor finiteness."""
     diag: dict = {"tag": tag, "V": int(batch.num_nodes), "E": int(batch.num_edges)}
     bad_params = []
     for name, p in model.named_parameters():
@@ -147,8 +111,7 @@ def _dump_intermediates(
 
 
 def _measure_fwd_bwd(model, step_fn, batch, dev, *, debug_tag: str | None = None) -> int:
-    """fwd+bwd one batch, return peak allocator bytes. Caller owns silencing
-    and train mode. ``debug_tag`` enables intermediate dump on ValueError."""
+    """Run one forward/backward pass and return peak allocator bytes."""
     torch.cuda.reset_peak_memory_stats(dev)
     torch.cuda.synchronize(dev)
     # Snapshot RNG immediately before the forward so a NaN can be replayed.
@@ -180,7 +143,7 @@ def _measure_fwd_bwd(model, step_fn, batch, dev, *, debug_tag: str | None = None
 
 
 def _measure_fwd(model, step_fn, batch, dev) -> tuple[int, float]:
-    """fwd-only one batch under no_grad. Returns (peak_bytes, wall_seconds)."""
+    """Run one forward pass under ``no_grad`` and return peak bytes + wall time."""
     torch.cuda.reset_peak_memory_stats(dev)
     torch.cuda.synchronize(dev)
     t0 = time.perf_counter()
@@ -197,29 +160,7 @@ def probe(
     quadratic: bool = False,
     min_steps: int | None = None,
 ) -> BudgetResult:
-    """Probe→pack→repack→sanity, on the actual prebatched workload.
-
-    Single-point linear extrapolation from a 10k-node synthetic sample to a
-    700k-node real batch was the v4 failure mode (CAN-bus dense graphs grow
-    super-linearly). Policy here:
-
-    1. Compute `B0 = max(g.num_nodes)` and `E0 = max(g.num_edges)` so
-       ``pack_offline`` cannot silently drop oversize singletons.
-    2. Pack with (B0, E0). Largest packed batch is ≥ the largest single graph,
-       so the probe runs at non-trivial real scale automatically.
-    3. Probe both the argmax-V and argmax-E packed batches (attention-driven
-       activation is E-dominated; argmax-V alone misses edge-heavy peaks).
-       Take the worst peak.
-    4. Subtract resident state (Adam optim = 2×params, cuDNN multi-shape
-       reserve = 5% of free) from headroom.
-    5. Compute B1 from MEASURED activation/V at real scale.
-    6. If B1 > B0, repack with B1 and run a sanity probe on the new largest
-       batch. Fail loud if it doesn't fit — the model+graph combo is too big
-       for the GPU, no amount of fudge helps.
-
-    Quadratic mode (GPS-style global attention) replaces step 5's per-node
-    fit with V² scaling — kept for symmetry though no shipping plan uses it.
-    """
+    """Estimate a packing budget from actual training graphs."""
     if not torch.cuda.is_available() or model is None or train_dataset is None:
         raise RuntimeError("budget probe requires CUDA + model + train_dataset")
 
@@ -245,9 +186,7 @@ def probe(
 def _probe_body(
     model, train_dataset, dev, pack_offline, *, quadratic: bool, min_steps: int | None
 ) -> BudgetResult:
-    # forward() returns architecture outputs (logits/latents/tuples), not a
-    # scalar loss — backward fails. Route through training_step which returns
-    # a scalar loss for every model.
+    # forward() returns outputs, not a scalar loss; route through training_step.
     step_fn = getattr(model, "_step", None) or (lambda b: model.training_step(b, 0))
     was_training = model.training
 

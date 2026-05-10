@@ -1,12 +1,4 @@
-"""Curriculum difficulty scorers — preprocessing only.
-
-Per-graph scalar scores produced **once** at ``dm.setup`` and attached
-as ``Data.difficulty`` on each train graph; PyG ``Batch.from_data_list``
-collates them automatically. The schedule + loss wrapper that consume
-``batch.difficulty`` live in :mod:`graphids.core.losses.curriculum`.
-
-New scorers are new free functions: ``f(graphs, **kwargs) -> Tensor``.
-"""
+"""Curriculum difficulty scorers used by the graph datamodule."""
 
 from __future__ import annotations
 
@@ -53,34 +45,6 @@ def score_vgae(graphs: list, ckpt_path: str) -> torch.Tensor:
 
 
 def score_random(graphs: list, seed: int = 0) -> torch.Tensor:
-    """Uniform random per-graph difficulty — control for the curriculum
-    *mechanism*, not "no curriculum".
-
-    Tests whether per-epoch reweighting/hiding contributes signal
-    independent of any learned difficulty ordering. Compare against the
-    no-wrapper baseline (regular CE/focal) and ``score_vgae``.
-    """
+    """Uniform random per-graph difficulty for curriculum control runs."""
     g = torch.Generator().manual_seed(int(seed))
     return torch.rand(len(graphs), generator=g)
-
-
-class ScoreRandom:
-    """Callable wrapper for ``score_random`` — lets the plan system instantiate
-    via ``spec(SCORE_RANDOM, seed=N)`` without passing ``graphs`` at construct time."""
-
-    def __init__(self, seed: int = 0) -> None:
-        self.seed = seed
-
-    def __call__(self, graphs: list) -> torch.Tensor:
-        return score_random(graphs, seed=self.seed)
-
-
-class ScoreVGAE:
-    """Callable wrapper for ``score_vgae`` — lets the plan system instantiate
-    via ``spec(SCORE_VGAE, ckpt_path=...)`` without passing ``graphs`` at construct time."""
-
-    def __init__(self, ckpt_path: str) -> None:
-        self.ckpt_path = ckpt_path
-
-    def __call__(self, graphs: list) -> torch.Tensor:
-        return score_vgae(graphs, ckpt_path=self.ckpt_path)

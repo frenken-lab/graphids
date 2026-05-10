@@ -1,4 +1,4 @@
-"""Graph convolution building blocks: input encoding, layer factories, forward helpers."""
+"""Graph convolution building blocks."""
 
 import torch
 import torch.nn as nn
@@ -13,19 +13,8 @@ from .id_encoding import IdEncoder
 _EDGE_ATTR_CONV_TYPES = frozenset(("transformer", "gatv2", "gps"))
 
 
-def resolve_edge_dim(conv_type: str, edge_dim: int | None) -> int | None:
-    """Return edge_dim if conv_type uses edge attributes, else None."""
-    return edge_dim if conv_type in _EDGE_ATTR_CONV_TYPES else None
-
-
 class InputEncoder(nn.Module):
-    """Shared input encoding for VGAE, GAT, and DGI.
-
-    Composes a pluggable ``IdEncoder`` (identity → vector) with an
-    optional continuous-feature projection. ``InputEncoder`` does not
-    branch on the identity-encoding strategy — that lives on the
-    encoder instance.
-    """
+    """Shared input encoding for VGAE, GAT, and DGI."""
 
     def __init__(
         self,
@@ -58,7 +47,7 @@ class InputEncoder(nn.Module):
 
 
 class _ProjectedGPS(nn.Module):
-    """Linear projection → GPSConv. Bridges dimension mismatch for GPS residuals."""
+    """Linear projection for GPSConv dimension mismatch."""
 
     def __init__(self, in_dim: int, channels: int, gps: GPSConv):
         super().__init__()
@@ -83,18 +72,13 @@ class _ProjectedGPS(nn.Module):
 def _make_conv(
     conv_type: str, in_dim: int, out_dim: int, heads: int, edge_dim: int | None = None, **kwargs
 ):
-    """Factory for graph convolution layers.
-
-    Supports: gat, gatv2, transformer, gps.
-    GPS wraps a GATv2Conv with global self-attention (Rampasek et al., 2022).
-    """
+    """Build one graph convolution layer."""
     if conv_type == "transformer":
         return TransformerConv(
             in_dim, out_dim, heads=heads, edge_dim=edge_dim, concat=True, **kwargs
         )
     elif conv_type == "gps":
-        # GPS requires in_dim == out_dim for residual connections.
-        # Inner GATv2Conv uses concat=False to preserve dimensionality.
+        # GPS requires matching residual dimensions.
         channels = out_dim * heads
         inner = GATv2Conv(
             channels,
@@ -121,14 +105,7 @@ def build_conv_stack(
     heads_first: int = 1,
     batch_norm: bool = True,
 ) -> tuple[nn.ModuleList, nn.ModuleList]:
-    """Build a stack of graph conv layers with optional GraphNorm.
-
-    Resolves multi-head output dimensions: if target_dim is divisible by heads,
-    uses target_dim // heads per head; otherwise falls back to heads=1.
-
-    Returns (conv_layers, norm_layers). norm_layers may be shorter than
-    conv_layers if batch_norm is False.
-    """
+    """Build a stack of graph conv layers with optional GraphNorm."""
     convs = nn.ModuleList()
     norms = nn.ModuleList()
     for i, target_dim in enumerate(target_dims):
@@ -154,13 +131,7 @@ def build_encoder_stack(
     encoder_heads: int = 1,
     batch_norm: bool = True,
 ) -> tuple[nn.ModuleList, nn.ModuleList, list[int]]:
-    """Normalize hidden_dims and build the encoder conv stack.
-
-    Shared by VGAE and DGI encoders. Returns (conv_layers, norm_layers,
-    encoder_targets) — the per-layer output-dim list, so callers can mirror
-    it for a decoder without re-deriving the normalization (use
-    ``encoder_targets[-1]`` for the latent-in dim).
-    """
+    """Normalize hidden_dims and build the encoder conv stack."""
     if hidden_dims is None or len(hidden_dims) == 0:
         hidden_dims = [max(128, latent_dim * 2), latent_dim]
     if len(hidden_dims) >= 2 and hidden_dims[-1] == latent_dim:
@@ -190,7 +161,7 @@ def _conv_forward_inner(
     dropout_p: float,
     training: bool,
 ) -> Tensor:
-    """Full conv block: conv → norm → activation → dropout."""
+    """Full conv block."""
     x = conv(x, edge_index, edge_attr) if edge_attr is not None else conv(x, edge_index)
     if bn is not None:
         x = bn(x, batch) if isinstance(bn, GraphNorm) else bn(x)
@@ -213,16 +184,10 @@ def conv_forward(
     training: bool = True,
     use_checkpointing: bool = False,
 ) -> Tensor:
-    """Apply a graph conv layer with optional norm, activation, and dropout.
-
-    When use_checkpointing is True, the entire block (conv + norm + activation +
-    dropout) is wrapped in a single checkpoint segment. This saves ~30-50% of
-    activation memory at the cost of recomputing the forward pass during backward.
-    Uses use_reentrant=False for torch.compile compatibility.
-    """
+    """Apply a graph conv layer with optional norm, activation, and dropout."""
     _is_gps = isinstance(conv, (GPSConv, _ProjectedGPS))
     if _is_gps:
-        # GPS has internal norm, activation, and dropout — run as-is
+        # GPS handles its own post-processing.
         return conv(x, edge_index, edge_attr=edge_attr, batch=batch)
     if use_checkpointing and x.requires_grad:
         return checkpoint(

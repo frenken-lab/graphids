@@ -1,16 +1,76 @@
-"""Cache-build artifacts: pipeline, metadata, vocab, scaler, curriculum scoring.
-
-Everything in this subpackage runs once per cache build (or once at
-DataModule setup, for curriculum scoring) and writes durable artifacts
-read later by datasets/datamodule. No DataLoader / batching code here —
-that lives in ``graphids.core.data.datamodule``.
-"""
+"""Preprocessing primitives for cache build."""
 
 from .edge_policy import EdgePolicy, temporal_edge_policy
 from .graph_ops import (
     GraphTransform,
     default_graph_transforms,
     secondary_graph_transforms,
+)
+from .materialization import (
+    AggregatedTables,
+    GraphTables,
+    build_graph_tables,
+)
+from graphids.core.data.discovery import (
+    CanonicalEntitySpec,
+    CanonicalFeatureFrameSpec,
+    CanonicalRegistry,
+    DiscoveryStore,
+    SignalHypothesisSpec,
+    SignalProfileSpec,
+    build_signal_profiles,
+    build_canonical_feature_frame,
+    initialize_hypotheses,
+)
+from .pyg import graph_tables_to_pyg
+from .representations import (
+    GraphRepresentationCfg,
+    GraphRepresentationPlan,
+    EntityRepresentationCfg,
+    MultiScaleRepresentationCfg,
+    SnapshotRepresentationCfg,
+    SnapshotSequenceRepresentationCfg,
+    TemporalRepresentationCfg,
+    representation_kind,
+    representation_plan,
+    representation_segment,
+    representation_temporal_spec,
+    representation_window_defaults,
+    representation_view,
+)
+from .scaler import (
+    RobustBenignScalerCfg,
+    ScalerCfg,
+    ScalerPlan,
+    ZBenignScalerCfg,
+    apply_from_cfg,
+    fit_from_cfg,
+    scaler_kind,
+    scaler_plan,
+)
+from .segments import (
+    EntitySegmentCfg,
+    GraphSegmentPlan,
+    MultiScaleSegmentCfg,
+    Segmenter,
+    SequenceSegmentCfg,
+    SegmentCfg,
+    WindowSegmenter,
+    WindowedRows,
+    WindowSegmentCfg,
+    segment_kind,
+    segment_plan,
+)
+from .temporal import TemporalGraphSpec, build_temporal_data, temporal_len
+from .views import (
+    EntityViewCfg,
+    EventChunkViewCfg,
+    MultiScaleViewCfg,
+    RollingStreamViewCfg,
+    SnapshotSequenceViewCfg,
+    SnapshotViewCfg,
+    ViewCfg,
+    view_kind,
 )
 from .transforms import TOPOLOGY_NODE_FEATURE_COLS, TOPOLOGY_NODE_PLACEHOLDER_EXPRS
 
@@ -22,4 +82,60 @@ __all__ = [
     "GraphTransform",
     "default_graph_transforms",
     "secondary_graph_transforms",
+    "AggregatedTables",
+    "GraphTables",
+    "build_graph_tables",
+    "graph_tables_to_pyg",
+    "SnapshotRepresentationCfg",
+    "SnapshotSequenceRepresentationCfg",
+    "MultiScaleRepresentationCfg",
+    "TemporalRepresentationCfg",
+    "EntityRepresentationCfg",
+    "GraphRepresentationCfg",
+    "GraphRepresentationPlan",
+    "representation_kind",
+    "representation_plan",
+    "representation_view",
+    "representation_segment",
+    "representation_temporal_spec",
+    "representation_window_defaults",
+    "ZBenignScalerCfg",
+    "RobustBenignScalerCfg",
+    "ScalerCfg",
+    "ScalerPlan",
+    "scaler_kind",
+    "scaler_plan",
+    "fit_from_cfg",
+    "apply_from_cfg",
+    "CanonicalEntitySpec",
+    "CanonicalFeatureFrameSpec",
+    "CanonicalRegistry",
+    "build_canonical_feature_frame",
+    "SignalProfileSpec",
+    "SignalHypothesisSpec",
+    "DiscoveryStore",
+    "build_signal_profiles",
+    "initialize_hypotheses",
+    "WindowSegmentCfg",
+    "SequenceSegmentCfg",
+    "MultiScaleSegmentCfg",
+    "EntitySegmentCfg",
+    "SegmentCfg",
+    "GraphSegmentPlan",
+    "WindowedRows",
+    "Segmenter",
+    "WindowSegmenter",
+    "segment_kind",
+    "segment_plan",
+    "TemporalGraphSpec",
+    "build_temporal_data",
+    "temporal_len",
+    "SnapshotViewCfg",
+    "SnapshotSequenceViewCfg",
+    "MultiScaleViewCfg",
+    "EntityViewCfg",
+    "EventChunkViewCfg",
+    "RollingStreamViewCfg",
+    "ViewCfg",
+    "view_kind",
 ]

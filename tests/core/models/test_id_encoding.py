@@ -9,6 +9,10 @@ from __future__ import annotations
 import torch
 
 from graphids.core.models.id_encoding import (
+    build_id_encoder,
+    encoding_plan,
+    hash_encoding,
+    lookup_encoding,
     UNK_INDEX,
     HashIdEncoder,
     LookupIdEncoder,
@@ -120,3 +124,17 @@ def test_hash_offsets_survive_checkpoint_roundtrip():
 
     node_id = torch.tensor([3, 7, 42])
     assert torch.allclose(enc_orig(node_id), enc_new(node_id))
+
+
+def test_id_encoding_config_helpers_round_trip():
+    cfg = lookup_encoding(embedding_dim=6, p_unk_drop=0.25)
+    plan = encoding_plan(cfg)
+    enc = build_id_encoder(cfg, num_ids=10)
+    assert plan.kind == "lookup"
+    assert enc.out_dim == 6
+
+    hcfg = hash_encoding(embedding_dim=7, k=3, seed=11, num_buckets=32)
+    hplan = encoding_plan(hcfg)
+    henc = build_id_encoder(hcfg, num_ids=10)
+    assert hplan.kind == "hash"
+    assert henc.out_dim == 7

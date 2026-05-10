@@ -26,7 +26,6 @@ _VGAE_LOSS_KEYS = frozenset({"kl_weight", "canid_weight", "nbr_weight", "edge_we
 def build_loss(
     model_type: str | None,
     loss_config: dict[str, Any] | None,
-    distillation_config: dict[str, Any] | None = None,  # noqa: ARG001 — kept for caller compat
 ):
     """Reconstruct an ``nn.Module`` loss for a reloaded checkpoint.
 

@@ -1,17 +1,4 @@
-"""Autoencoder-style losses as ``nn.Module`` with a uniform signature.
-
-``VGAETaskLoss`` is the recon + canid + KL + edge_recon loss that pairs
-with ``VGAE``'s 5-tuple forward output. Moving it out of the Lightning
-module is what lets KD compose with it as a drop-in wrapper
-(see :class:`graphids.core.losses.distillation.FeatureDistillation`).
-
-Signature contract: autoencoder losses take ``(student_outputs, batch)``
-where ``student_outputs`` is whatever tuple the student's forward returns.
-
-``num_ids`` is populated lazily by ``VGAEModule._build()`` from
-``datamodule.num_ids``, since the true dataset vocabulary size isn't
-known at ``instantiate`` time.
-"""
+"""Autoencoder-style losses with a uniform signature."""
 
 from __future__ import annotations
 

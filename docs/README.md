@@ -30,6 +30,9 @@ Work items are tracked as **GitHub issues** (`gh issue list`), not files.
 - **If you change the code, update the doc in the same session**
 - **Named by topic:** `cli-routes.md`, `write-paths.md`
 - **Deleted when** the subsystem is removed
+- Current maps worth reading first:
+  - [`reference/data-architecture.md`](reference/data-architecture.md)
+  - [`reference/config-architecture.md`](reference/config-architecture.md)
 
 ### Work Items (GitHub Issues)
 - **Created when:** work is deferred or a design question is identified

@@ -1,30 +1,24 @@
 # Core: Data
 
-All dataset, batching, and feature-pipeline machinery. Top-level
-modules:
+All dataset, preprocessing, representation, and discovery machinery.
 
-- **`budget`** — VRAM budget probe; sizes `max_nodes` + `max_edges`
-  for `NodeBudgetBatchSampler` before DataLoader construction.
-  Two-point linear fit of peak VRAM vs. batch size isolates the
-  scaling slope (`bpn_node`) from fixed overhead. GPS models use a
-  quadratic probe to capture attention's `O(V²)` blowup. See
-  [`critical-constraints.md`](https://github.com/frenken-lab/graphids/blob/main/.claude/rules/critical-constraints.md)
-  for the two-point probe invariant and `GRAPHIDS_BUDGET_SAFETY_MARGIN=0.95`.
-- **`sampler`** — dual-budget bin-packing. `NodeBudgetBatchSampler`
-  is the live sampler (bucket-shuffled, fresh each epoch);
-  `pack_offline` is the FFD prebatch path (~10–20% tighter, no
-  epoch randomness).
-- **`vocab`** — shared `arb_id → index` map across train/val/all
-  test subdirs so attack-injected IDs don't overflow the embedding
-  table sized for train. Index 0 reserved for UNK; SHA256 over
-  `(id, index)` pairs is the cache invariant.
-- **`datamodule`** — `GraphDataModule` / `FusionDataModule`. Single
-  `bind(*, model, device)` seam (replaces the old `_set_*` pair).
-  VRAM probe is delegated to the model via
-  `GraphModuleBase.compute_budget`.
-- **`scaler`**, **`cache`**, **`metadata`**, **`graph_pipeline`**,
-  **`fusion_states`**, **`curriculum`**, **`rebuild`** — supporting
-  pipeline stages.
+## Current layout
+
+- **`datasets/`** - raw source adapters and dataset/source builders.
+- **`discovery/`** - signal profiles, canonical entities, and provisional
+  hypotheses for cross-vehicle alignment.
+- **`preprocessing/`** - explicit representations, views, segments,
+  materialization, PyG packing, temporal streams, scaler config, vocab
+  config, and graph transforms.
+- **`datamodule/`** - training-time loaders and batching policy.
+- **`state.py`** - process-local dataset state for reuse within one Python
+  process.
+
+## What to read next
+
+- [`docs/reference/data-architecture.md`](../reference/data-architecture.md)
+- [`graphids/core/data/preprocessing`](../../graphids/core/data/preprocessing)
+- [`graphids/core/data/discovery`](../../graphids/core/data/discovery)
 
 ## `graphids.core.data`
 

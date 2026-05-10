@@ -6,9 +6,7 @@ under the model name (``vgae``, ``gat``, ...), stacks across batches, and saves
 the resulting nested TensorDict to disk. No flat state vector, no offsets —
 the fusion side reads keys directly.
 
-Invoked as the first row of ``configs/plans/fusion.jsonnet`` (an ``ExtractRow``);
-``graphids exec/submit`` dispatch routes through ``orchestrate.run_row`` →
-``orchestrate.extract`` → ``extract_states``. Idempotent on ``output_dir``.
+Invoked by the experiment extraction pipeline. Idempotent on ``output_dir``.
 """
 
 from __future__ import annotations
@@ -20,14 +18,15 @@ from structlog import get_logger
 from tensordict import TensorDict
 from torch_geometric.loader import DataLoader as PyGDataLoader
 
+from graphids.core.data.preprocessing.representations import (
+    GraphRepresentationCfg,
+    representation_window_defaults,
+)
+
 log = get_logger(__name__)
 
-FUSION_STATES_DIR = "fusion_states"
 TRAIN_FILENAME = "train_states.pt"
 VAL_FILENAME = "val_states.pt"
-# v4 — TensorDict cache shape; per-extractor named feature dicts replace the
-# flat [N, 15] state vector + LAYOUT offsets. Old caches are incompatible by
-# format (top-level keys changed); the version field forces re-extraction.
 # v5: DGI extract_features now returns dict (pos_stats/conf/z_stats), not flat 8D tensor.
 # v6: per-graph ``attack_type`` propagated into the cache + ``attack_type_names``
 # stashed in the blob so fusion test_step can emit ``auroc_per_attack/{name}``.
@@ -88,9 +87,8 @@ def extract_states(
     max_val_samples: int = 30_000,
     batch_size: int = 256,
     seed: int = 42,
-    window_size: int = 100,
-    stride: int = 100,
     val_fraction: float = 0.2,
+    representation_cfg: GraphRepresentationCfg,
 ) -> None:
     """Load model checkpoints, extract and cache fusion features.
 
@@ -102,17 +100,19 @@ def extract_states(
     from graphids.core.models.base import safe_load_checkpoint
 
     # Build DM first so test split names are known before the idempotency check.
+    window_size, stride = representation_window_defaults(representation_cfg)
     source = CANBusSource(
         name=dataset,
         seed=seed,
         window_size=window_size,
         stride=stride,
         val_fraction=val_fraction,
+        representation_cfg=representation_cfg,
     )
     dm = GraphDataModule(dataset=source, dynamic_batching=False)
     dm.setup(None)
 
-    out = Path(output_dir) / FUSION_STATES_DIR
+    out = Path(output_dir)
     train_path = out / TRAIN_FILENAME
     val_path = out / VAL_FILENAME
     test_paths = {name: out / f"{name}_states.pt" for name in dm.test_datasets.keys()}

@@ -1,16 +1,4 @@
-"""Offline FFD packer for variable-size graphs (v2).
-
-v1 also exported a live ``NodeBudgetBatchSampler`` class. That sampler
-was unreachable from ``GraphDataModule.train_dataloader`` (always shadowed
-by the prebatch branch when ``dynamic_batching=True``, and the fixed-batch
-branch when ``dynamic_batching=False``) — confirmed dead in v1 and dropped
-in ``graph_v2``. Only the offline packer survives.
-
-FFD: sort graphs by size desc, place each into the first bin that fits
-both budgets. ~10-20% tighter than greedy sequential. The dual budget
-(node + edge) is load-bearing per ``critical-constraints.md`` — single-axis
-admitted edge-heavy OOMs.
-"""
+"""Offline first-fit decreasing packer for variable-size graphs."""
 
 from __future__ import annotations
 
@@ -36,11 +24,7 @@ def pack_offline(
     edge_sizes: torch.Tensor | None = None,
     max_edges: int | None = None,
 ) -> list[list[int]]:
-    """First-fit-decreasing packing under dual node + edge budget.
-
-    Returns list of dataset-global index lists. Single-graph oversize
-    (exceeds either budget alone) is skipped with one summary warning.
-    """
+    """Pack graph indices under node and edge budgets."""
     if max_num <= 0:
         raise ValueError(f"max_num must be positive, got {max_num}")
     if edge_sizes is not None:

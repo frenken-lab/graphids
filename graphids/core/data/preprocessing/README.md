@@ -1,45 +1,30 @@
 # Preprocessing Pipeline
 
-`GraphPipeline` in [`pipeline.py`](pipeline.py) is the core cache-build
-pipeline for graph datasets. It converts a dataframe of timestamped rows
-into graph tables and, optionally, pre-collated PyG tensors.
+`GraphPipeline` is now a thin composer over explicit primitives.
 
-## What it does
+The relevant layers are:
 
-- assigns rows to sliding windows
-- aggregates node statistics and window labels
-- generates edges with the configured `EdgePolicy`
-- applies graph transforms such as bidirectional edges and topology
-  placeholders
-- remaps node IDs to local graph IDs
-- writes debug artifacts when `debug_artifacts_dir` is set
-- returns either staged tables or pre-collated tensors
+- `representations.py`
+  - public `snapshot` / `snapshot_sequence` / `multi_scale` / `temporal` /
+    `entity` configs
+  - bridges to views, segments, and temporal specs
+- `views.py`
+  - user-facing view configs
+- `segments.py`
+  - window, sequence, multi-scale, and entity segment primitives
+- `materialization.py`
+  - raw-row to graph-table materialization
+- `pyg.py`
+  - staged table to PyG tensor packing
+- `temporal.py`
+  - `TemporalData` stream construction
+- `graph_ops.py`
+  - reusable graph-table transforms
 
-## Key types
+`representation_cfg` is the primary selection surface. `window_size` and
+`stride` remain as compatibility knobs, but they are now derived from the
+representation config unless explicitly overridden.
 
-- `GraphPipeline` orchestrates the full flow
-- `EdgePolicy` defines how source and destination IDs are chosen
-- `GraphTransform` mutates node and edge tables after edge generation
-- `TOPOLOGY_NODE_PLACEHOLDER_EXPRS` reserves columns that are filled
-  later by topology-aware transforms
+For the package overview, see:
 
-## What it does not do
-
-- no model inference
-- no batching policy for training
-- no dataset-specific parsing
-
-Those concerns stay in dataset adapters or the runtime datamodule.
-
-## Inputs and outputs
-
-- Input: a normalized Polars `DataFrame` with `timestamp`, `node_id`,
-  and whatever raw columns the feature expressions need.
-- Output: `GraphTables` / `AggregatedTables`, or `Data` + `slices` when
-  `run()` is used.
-
-## See also
-
-- [`graphids/core/data/datasets/README.md`](../datasets/README.md)
-- [`graphids/core/data/preprocessing/transforms.py`](transforms.py)
-- [`docs/reference/data-flow.md`](../../../../docs/reference/data-flow.md)
+- [`docs/reference/data-architecture.md`](../../../../docs/reference/data-architecture.md)

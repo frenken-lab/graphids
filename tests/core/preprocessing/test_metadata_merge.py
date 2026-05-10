@@ -26,7 +26,7 @@ INVARIANTS = {
     "vocab_digest": "a" * 64,
     # Source of truth for required keys: graphids.core.data.preprocessing.metadata.INVARIANT_KEYS.
     # Co-update this fixture whenever that tuple grows.
-    "scaler_strategy": "standard",
+    "scaler_strategy": "z_benign",
 }
 
 
@@ -172,7 +172,7 @@ def test_load_metadata_rejects_v1(tmp_path):
     (tmp_path / "cache_metadata.json").write_text(
         json.dumps({"window_size": 100, "graph_stats": {"node_count": {"mean": 12}}})
     )
-    with pytest.raises(ValueError, match="schema version"):
+    with pytest.raises(ValueError, match="expected 3"):
         load_metadata(tmp_path)
 
 

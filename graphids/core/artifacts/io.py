@@ -1,10 +1,4 @@
-"""All filesystem I/O for the artifact pipeline.
-
-Loaders return torch / numpy structures; savers consume the dataclasses
-defined in :mod:`compute` and write to ``output_dir``. Compute primitives
-never touch the filesystem — split here so the pure pipeline can be
-exercised against in-memory fixtures.
-"""
+"""Filesystem I/O for the artifact pipeline."""
 
 from __future__ import annotations
 
@@ -16,8 +10,13 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import torch
 from structlog import get_logger
+from tensordict import TensorDict
 
 from graphids.core.models.base import safe_load_checkpoint
+from graphids.core.data.preprocessing.representations import (
+    GraphRepresentationCfg,
+    representation_window_defaults,
+)
 
 from .compute import (
     AttentionResult,
@@ -40,17 +39,13 @@ def load_val_data(
     dataset: str,
     vocab_scope: str,
     seed: int,
-    window_size: int,
-    stride: int,
+    representation_cfg: GraphRepresentationCfg,
 ) -> list:
-    """Load the val split through the same Source → ``get_or_build`` path
-    training/eval uses. ``val_fraction``, scaler strategy, and cache
-    digest live on ``CANBusSource``; there is no parallel declaration
-    for the analyzer to drift against.
-    """
+    """Load the val split through the same source/cache path as training."""
     from graphids.core.data.datasets.can_bus import CANBusSource
     from graphids.core.data.state import get_or_build
 
+    window_size, stride = representation_window_defaults(representation_cfg)
     state = get_or_build(
         CANBusSource(
             name=dataset,
@@ -59,6 +54,7 @@ def load_val_data(
             stride=stride,
             seed=seed,
             vocab_scope=vocab_scope,
+            representation_cfg=representation_cfg,
         )
     )
     val = list(state.val)
@@ -67,7 +63,7 @@ def load_val_data(
 
 
 def load_teacher(model_type: str, ckpt_path: str, device: torch.device) -> torch.nn.Module:
-    """Load and ``.eval()`` a teacher checkpoint for CKA."""
+    """Load a teacher checkpoint for analysis."""
     teacher = safe_load_checkpoint(model_type, ckpt_path, map_location=device)
     teacher.eval()
     return teacher
@@ -79,13 +75,13 @@ def load_fusion_eval(
     seed: int,
     device: torch.device,
 ) -> tuple:
-    """Load pre-extracted fusion val states from disk. Returns ``(td, labels)``."""
-    from tensordict import TensorDict  # noqa: F401 (type annotation)
-
+    """Load pre-extracted fusion validation tensors."""
     from graphids.core.data.datamodule.fusion import FusionDataModule
-    from graphids.paths import states_dir
+    from graphids.paths import trial_dir
 
-    dm = FusionDataModule(cached_states_dir=states_dir(dataset, seed))
+    dm = FusionDataModule(
+        cached_states_dir=trial_dir() / "cached_states" / dataset / "default" / f"seed_{int(seed)}"
+    )
     dm.setup("test")
     labels = dm.val_td["labels"].clone()
     td = dm.val_td.exclude("labels").to(device)

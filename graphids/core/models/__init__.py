@@ -1,9 +1,4 @@
-"""Models package for CAN-Graph.
-
-    from graphids.core.models.autoencoder import VGAE, DGI
-    from graphids.core.models.supervised import GATModule
-    from graphids.core.models.fusion import BanditFusionModule, DQNFusionModule
-"""
+"""Core model families and shared model base classes."""
 
 from . import autoencoder, fusion, supervised
 from .base import GraphModuleBase

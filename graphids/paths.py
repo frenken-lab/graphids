@@ -1,27 +1,23 @@
-"""Project-wide path scheme + dataset registry.
+"""Project-wide path helpers + dataset registry.
 
-Owns three related concerns:
+The custom per-run root has been retired in favor of Ray storage/trial
+primitives. The remaining helpers are thin naming wrappers that sit on top
+of Ray's experiment directory, checkpoint directory, and storage context.
+
+This module still owns:
 - dataset registry lookup (``load_catalog``, ``dataset_names``)
 - raw / cache paths under ``$GRAPHIDS_LAKE_ROOT`` (``data_dir``, ``cache_dir``)
-- run paths under ``$GRAPHIDS_RUN_ROOT`` (``run_dir``, ``best_ckpt``, ``states_dir``)
+- Ray-backed trial / checkpoint / artifact helpers
 
-Plans (``graphids.plan.plans.*``) and the composer call ``run_dir(...)``
-and ``best_ckpt(...)`` directly. Single source — no separate path scheme
-anywhere else in the tree.
-
-`run_root` is read from `$GRAPHIDS_RUN_ROOT` lazily; the path scheme is
-``{run_root}/{dataset}/{subdir}/{group}/{variant}/seed_{N}`` where
-``subdir`` defaults to ``"ablations"`` (and
-``{run_root}/{dataset}/cached_states/{variant}/seed_{N}`` for fusion).
-
-Import-safe: no external deps, no torch — usable from anywhere
-including login-node code paths.
+Import-safe: no torch, Ray imports are lazy, so this stays usable from
+login-node code paths and config composition.
 """
 
 from __future__ import annotations
 
 import json
 import os
+from contextlib import suppress
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
@@ -50,8 +46,7 @@ DATASET_REGISTRY_PATH: Path = CONFIG_DIR / "data" / "datasets.json"
 PREPROCESSING_VERSION: str = "10.0.0"
 CKPT_SUBPATH: str = "checkpoints/best_model.ckpt"
 
-# Groups whose run dirs live under training/ rather than ablations/.
-_TRAINING_GROUPS: frozenset[str] = frozenset({"teacher", "student_kd", "student_nokd"})
+# Phase markers are kept for filesystem probes and diagnostics.
 LAST_CKPT_SUBPATH: str = "checkpoints/last.ckpt"
 PHASE_MARKERS: dict[str, str] = {
     "train": ".train_complete",
@@ -68,7 +63,7 @@ def lake_root() -> str:
     """Resolve `$GRAPHIDS_LAKE_ROOT`, fail-fast if unset.
 
     Cross-user shared root: holds mlflow.db, cache/, mlartifacts/,
-    slurm_logs/. Distinct from `$GRAPHIDS_RUN_ROOT` (per-user run writes).
+    slurm_logs/. Distinct from Ray's run storage root (per-run writes).
     """
     lr = os.environ.get("GRAPHIDS_LAKE_ROOT")
     if not lr:
@@ -90,38 +85,45 @@ def cache_dir(lake_root: str, dataset: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Run-root paths (per-user experiment writes)
+# Ray-backed run / trial helpers
 # ---------------------------------------------------------------------------
 
 
-def _run_root() -> str:
-    """Resolve `$GRAPHIDS_RUN_ROOT`, fail-fast if unset."""
-    rr = os.environ.get("GRAPHIDS_RUN_ROOT")
-    if not rr:
-        raise RuntimeError("GRAPHIDS_RUN_ROOT unset — set it to the per-user experiment root")
-    return rr
+def _ray_context() -> Any | None:
+    """Return the active Ray Tune/Train context if one exists."""
+    with suppress(ImportError):
+        from ray import tune
+
+        with suppress(RuntimeError):
+            return tune.get_context()
+    with suppress(ImportError):
+        from ray import train
+
+        with suppress(RuntimeError):
+            return train.get_context()
+    return None
 
 
-def _group_subdir(group: str) -> str:
-    return "training" if group in _TRAINING_GROUPS else "ablations"
+def trial_dir() -> Path:
+    """Ray-backed experiment directory.
 
-
-def run_dir(dataset: str, group: str, variant: str, seed: int, *, subdir: str | None = None) -> str:
-    """Per-(variant, seed) run directory under `$GRAPHIDS_RUN_ROOT`."""
-    _sub = subdir if subdir is not None else _group_subdir(group)
-    return str(Path(_run_root()) / dataset / _sub / group / variant / f"seed_{int(seed)}")
-
-
-def best_ckpt(
-    dataset: str, group: str, variant: str, seed: int, *, subdir: str | None = None
-) -> str:
-    """Best-model checkpoint path. Suffix lives here so callers don't string-concat."""
-    return f"{run_dir(dataset, group, variant, seed, subdir=subdir)}/checkpoints/best_model.ckpt"
-
-
-def states_dir(dataset: str, seed: int, variant: str = "default") -> str:
-    """Fusion-states directory shared across the 4 fusion methods for a seed."""
-    return str(Path(_run_root()) / dataset / "cached_states" / variant / f"seed_{int(seed)}")
+    Inside Tune/Train this returns the native trial directory. Outside Ray it
+    falls back to a deterministic path under the default Ray results root.
+    """
+    ctx = _ray_context()
+    if ctx is not None:
+        try:
+            return Path(ctx.get_trial_dir())
+        except Exception:
+            pass
+    try:
+        storage = ctx.get_storage() if ctx is not None else None
+        path = getattr(storage, "storage_path", None) if storage is not None else None
+        if path:
+            return Path(path)
+    except Exception:
+        pass
+    return Path.home() / "ray_results"
 
 
 # ---------------------------------------------------------------------------

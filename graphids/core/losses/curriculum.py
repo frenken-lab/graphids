@@ -1,25 +1,4 @@
-"""Curriculum learning at the loss end: schedule + weighted-loss wrapper.
-
-Two pieces, both consumed at training-step time:
-
-- ``LinearRampSchedule``: pure callable
-  ``(epoch, difficulty, in_scope) -> weights``. Zero data dependencies.
-  Out-of-scope graphs always weight 1; in-scope graphs ramp from
-  ``start_ratio/end_ratio`` of the easiest at epoch 0 to all visible at
-  ``max_epochs - 1``.
-- ``CurriculumWeightedLoss``: wraps any per-example base loss
-  (``reduction='none'``); per forward, pulls the schedule's weights and
-  reduces ``per_ex * weights / weights.sum()``.
-
-Difficulty scoring (``score_vgae`` / ``score_random``) is preprocessing —
-see :mod:`graphids.core.data.preprocessing.curriculum`. Graphs carry
-``Data.difficulty`` + ``Data.in_scope`` from ``dm.setup``; PyG's
-``Batch.from_data_list`` collates them so the wrapper reads
-``batch.difficulty`` + ``batch.in_scope`` directly.
-
-Eval paths: construct a non-wrapped loss, OR call ``set_epoch`` past
-``schedule.max_epochs - 1`` so all weights default to 1.
-"""
+"""Curriculum scheduling and weighted losses."""
 
 from __future__ import annotations
 
@@ -91,16 +70,7 @@ class LinearRampSchedule:
 
 
 class CurriculumWeightedLoss(nn.Module):
-    """Per-example masking via ``(difficulty, schedule)``.
-
-    ``base_loss`` must produce per-example output (``reduction='none'``);
-    this wrapper does the reduction with schedule-derived weights.
-    ``schedule`` is any callable ``(epoch, difficulty, in_scope) -> weights``.
-
-    ``epoch`` set externally via :meth:`set_epoch` from a Lightning hook
-    (typically ``on_train_epoch_start``), keeping the loss forward
-    signature ``(logits, labels, graph)`` stable across the codebase.
-    """
+    """Per-example masking via ``(difficulty, schedule)``."""
 
     def __init__(self, base_loss: nn.Module, schedule):
         super().__init__()

@@ -1,7 +1,7 @@
 """Fusion model bases.
 
-All fusion modules consume a feature **TensorDict** (output of
-an ``ExtractRow`` in a fusion plan), not a flat state vector. Modules that need a
+All fusion modules consume a feature **TensorDict** from the new
+extraction pipeline, not a flat state vector. Modules that need a
 flat input (Q-network for DQN/Bandit, MLP) call ``flatten_features(td)``
 to concatenate every leaf tensor along the feature dim.
 
@@ -27,7 +27,6 @@ from .reward import FusionRewardCalculator
 
 __all__ = [
     "FusionModuleBase",
-    "FusionRewardCalculator",
     "RLFusionBase",
     "build_mlp_body",
     "flatten_features",
@@ -61,15 +60,6 @@ def flatten_features(td: TensorDict) -> torch.Tensor:
     return torch.cat([td[k] for k in leaves], dim=-1)
 
 
-def feature_dim(td: TensorDict) -> int:
-    """Total flat feature dim implied by ``flatten_features(td)``."""
-    return sum(
-        td[k].size(-1)
-        for k in td.keys(include_nested=True, leaves_only=True)
-        if isinstance(k, tuple)
-    )
-
-
 class FusionModuleBase(_ModelBase):
     automatic_optimization = False
 
@@ -86,7 +76,7 @@ class FusionModuleBase(_ModelBase):
         self._store_init_kwargs(locals())
         self.register_buffer("alpha_values", torch.linspace(0, 1, alpha_steps))
         if reward_kwargs is not None:
-            self.reward_calc = FusionRewardCalculator.from_kwargs(**reward_kwargs)
+            self.reward_calc = FusionRewardCalculator(**reward_kwargs)
         self.test_metrics = classification_test_metrics(2)
 
     def configure_optimizers(self):

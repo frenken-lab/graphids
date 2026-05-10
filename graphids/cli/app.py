@@ -1,8 +1,8 @@
 """Typer app + root callback. Login-node safe: no torch/model imports here.
 
 Owns the structlog configuration since this module is the login-node
-entry point that runs first; ``orchestrate`` imports
-:func:`configure_logging` from here for compute-side use too.
+entry point that runs first; compute-side code imports
+:func:`configure_logging` from here too.
 """
 
 from __future__ import annotations
@@ -66,3 +66,7 @@ def _main(
     configure_logging()
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
+
+
+# Register the new experiment surface when the shared CLI app is imported.
+import graphids.cli.exp  # noqa: E402,F401

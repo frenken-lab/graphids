@@ -1,15 +1,4 @@
-"""Classification losses as ``nn.Module`` with a uniform signature.
-
-Every classification loss in this file implements
-``forward(logits, labels, graph=None)`` so it can be composed with
-:class:`graphids.core.losses.distillation.SoftLabelDistillation` — the
-distillation wrapper passes ``graph`` through for the teacher forward,
-while non-distillation losses ignore it.
-
-Using ``nn.Module`` (rather than plain functions or ``nn.CrossEntropyLoss``
-directly) lets the same object be a drop-in replacement regardless of
-whether KD is active, which is the whole point of the Option B decoupling.
-"""
+"""Classification losses with a shared module signature."""
 
 from __future__ import annotations
 

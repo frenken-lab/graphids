@@ -1,23 +1,4 @@
-"""Cache metadata: load + validate + atomic per-split merge.
-
-One ``cache_metadata.json`` per dataset cache directory. Per-split
-accounting under ``splits[<name>]``; the writer holds a ``FileLock`` so
-train + N test-subdir processes can contribute without torn writes.
-
-This is the **filesystem cache descriptor**, not MLflow run metadata.
-MLflow tracks *which cache a run used* via the ``Dataset`` entity's digest
-tag; ``cache_metadata.json`` describes what the cache itself contains,
-with no run context. ``mlflow.log_dict`` / ``mlflow.data.Dataset`` /
-``MlflowClient.log_*`` all require an active run — cache build runs from
-CLI tools and one-shot ops jobs that have no run.
-
-Composition:
-- ``filelock.FileLock`` for the cross-process lock (same dep as
-  ``_base.process()`` uses; the v1 ``fcntl.flock`` was the odd one out).
-- ``_fs.atomic_write_text`` for the NFS-safe rename.
-- ``_aggregate`` is the single source of truth for totals; the validator
-  re-computes from ``splits`` instead of duplicating sums.
-"""
+"""Cache metadata contract for dataset builds."""
 
 from __future__ import annotations
 
@@ -43,9 +24,9 @@ INVARIANT_KEYS = (
 )
 
 
-def load_metadata(cache_dir: Path | str) -> dict[str, Any]:
-    """Read + version-gate ``cache_metadata.json``."""
-    path = Path(cache_dir) / "cache_metadata.json"
+def load_metadata(cache_dir: Path) -> dict[str, Any]:
+    """Read and version-gate ``cache_metadata.json``."""
+    path = cache_dir / "cache_metadata.json"
     if not path.exists():
         raise FileNotFoundError(f"cache_metadata.json missing at {path}; run rebuild-caches")
     meta = json.loads(path.read_text())
@@ -58,7 +39,6 @@ def load_metadata(cache_dir: Path | str) -> dict[str, Any]:
 
 
 def _aggregate(splits: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """Recompute totals from current ``splits``. Single source of truth."""
     n_train = splits.get("train", {}).get("num_graphs", 0)
     n_val = splits.get("val", {}).get("num_graphs", 0)
     n_test = sum(
@@ -81,7 +61,6 @@ def validate_metadata(
     test_subdirs: list[str] | None = None,
     preprocessing_version: str | None = None,
 ) -> list[str]:
-    """Return validation errors; empty list = valid."""
     errs: list[str] = []
 
     def expect(key: str, want: Any) -> None:
@@ -120,7 +99,7 @@ def validate_metadata(
 
 
 def merge_split_into_metadata(
-    cache_dir: Path | str,
+    cache_dir: Path,
     split_name: str,
     split_entry: dict[str, Any],
     *,
@@ -133,7 +112,6 @@ def merge_split_into_metadata(
     First writer seeds top-level fields; later writers must match
     invariants + dataset name or raise.
     """
-    cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     meta_path = cache_dir / "cache_metadata.json"
 

@@ -65,9 +65,7 @@ def test_fallback_binding_when_no_model(dataset, allow_fallback):
     # or pack_offline raises downstream when edge_sizes is passed.
     assert result.edge_budget is not None and result.edge_budget > 0
     # target_bytes must be non-zero so post-hoc utilization analysis has a
-    # denominator (logged as param ``graphids.budget_target_bytes`` at epoch 0
-    # by :class:`graphids._mlflow.MLflowTrainingCallback._stamp_run_config`,
-    # paired with metric ``graphids.peak_vram_mb`` at fit-end).
+    # denominator for tracking and Ray-side telemetry.
     assert result.target_bytes > 0
 
 

@@ -1,21 +1,9 @@
-"""Per-column feature scalers (v2 — pure torch).
-
-Two strategies, both fit on benign-only train rows:
-- ``z_benign``: ``torch.std_mean`` → params {mean, std}
-- ``robust_benign``: ``torch.quantile`` → params {median, iqr}
-
-v1 routed through sklearn ``StandardScaler`` / ``RobustScaler``. The
-sklearn estimators forced numpy round-trips on every fit/apply and
-pickled awkwardly. ``torch.std_mean`` and ``torch.quantile`` give the
-same statistics natively in tensor-land. Persisted scaler is a plain
-``dict[str, dict[str, Tensor]]``; ``torch.save`` is the codec.
-
-Strategy is implicit in which keys the params dict holds — no sentinel.
-
-Benign-only rationale: see ``~/plans/scaler-design-supervised-ood.md``.
-"""
+"""Per-column feature scalers for tensor-based graph preprocessing."""
 
 from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Literal
 
 import torch
 from torch import Tensor
@@ -23,6 +11,37 @@ from torch_geometric.data import Data
 
 STRATEGIES = ("z_benign", "robust_benign")
 _EPS = 1e-12
+
+
+@dataclass(frozen=True)
+class ZBenignScalerCfg:
+    kind: Literal["z_benign"] = "z_benign"
+
+
+@dataclass(frozen=True)
+class RobustBenignScalerCfg:
+    kind: Literal["robust_benign"] = "robust_benign"
+
+
+ScalerCfg = ZBenignScalerCfg | RobustBenignScalerCfg
+
+
+@dataclass(frozen=True)
+class ScalerPlan:
+    kind: Literal["z_benign", "robust_benign"]
+    cfg: ScalerCfg
+
+
+def scaler_kind(cfg: ScalerCfg) -> str:
+    if isinstance(cfg, ZBenignScalerCfg):
+        return "z_benign"
+    if isinstance(cfg, RobustBenignScalerCfg):
+        return "robust_benign"
+    raise TypeError(f"unsupported scaler config: {type(cfg)!r}")
+
+
+def scaler_plan(cfg: ScalerCfg) -> ScalerPlan:
+    return ScalerPlan(kind=scaler_kind(cfg), cfg=cfg)
 
 
 def _flat_rows(cum: Tensor, graph_idx: Tensor) -> Tensor:
@@ -63,6 +82,17 @@ def fit(
     return out
 
 
+def fit_from_cfg(
+    data: Data,
+    slices: dict[str, Tensor],
+    train_idx: Tensor,
+    *,
+    cfg: ScalerCfg,
+    keys: tuple[str, ...] = ("x", "edge_attr"),
+) -> dict[str, dict[str, Tensor]]:
+    return fit(data, slices, train_idx, strategy=scaler_kind(cfg), keys=keys)
+
+
 def apply(data: Data, scalers: dict[str, dict[str, Tensor]]) -> None:
     for key, p in scalers.items():
         t = getattr(data, key)
@@ -71,3 +101,8 @@ def apply(data: Data, scalers: dict[str, dict[str, Tensor]]) -> None:
         else:
             scaled = (t.float() - p["median"]) / p["iqr"]
         setattr(data, key, scaled.to(t.dtype))
+
+
+def apply_from_cfg(data: Data, scalers: dict[str, dict[str, Tensor]], *, cfg: ScalerCfg) -> None:
+    del cfg
+    apply(data, scalers)

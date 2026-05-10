@@ -8,13 +8,13 @@ import torch
 
 
 class TestInferAttackType:
-    """_infer_attack_type substring matching -- verify all attack codes."""
+    """attack type substring matching -- verify all attack codes."""
 
     @pytest.fixture
     def infer(self):
-        from graphids.core.data.datasets.can_bus import CANBusDataset
+        from graphids.core.data.datasets.can_bus import infer_attack_type
 
-        return CANBusDataset._infer_attack_type
+        return infer_attack_type
 
     @pytest.mark.parametrize(
         "stem,parent,expected",
@@ -82,7 +82,6 @@ class TestCANBusDatasetBuildGraphs:
             split="train",
             val_fraction=0.2,
             source_dirs=["train_01_attack_free"],
-            split_tag="train",
             window_size=50,
             stride=50,
             seed=42,

@@ -1,19 +1,8 @@
-"""BaseGraphDataset + BaseGraphSource (v2 composition).
-
-Compresses v1 by:
-- Inlining ``_load_num_ids``, ``_apply_train_val_split`` (one-liners) into ``__init__``.
-- ``_describe`` → ``_stats`` (3 lines instead of 7).
-- ``_build_split_entry`` → ``_split_entry`` (kwargs collapsed; only fields
-  the merger reads).
-- ``process()`` train/val merge factored — same logic, single ``_split_entry``
-  helper called twice.
-- Source dataclass + ``build()`` keeps the cross-split shared-vocab protocol;
-  comments dropped where the code reads itself.
-"""
+"""Base dataset and source primitives for graph preprocessing."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
@@ -31,7 +20,24 @@ from graphids.core.data.preprocessing.metadata import (
     load_metadata,
     merge_split_into_metadata,
 )
-from graphids.core.data.preprocessing.pipeline import GraphPipeline, GraphTables
+from graphids.core.data.preprocessing.pipeline import (
+    GraphPipeline,
+    GraphTables,
+    build_tables as build_pipeline_tables,
+    run as run_pipeline,
+)
+from graphids.core.data.preprocessing.representations import (
+    EntityRepresentationCfg,
+    GraphRepresentationCfg,
+    MultiScaleRepresentationCfg,
+    SequenceSegmentCfg,
+    SnapshotRepresentationCfg,
+    SnapshotSequenceRepresentationCfg,
+    TemporalRepresentationCfg,
+    representation_kind,
+    representation_segment,
+)
+from graphids.core.data.preprocessing.scaler import ScalerCfg, ZBenignScalerCfg, scaler_kind
 from graphids.core.data.preprocessing.vocab import persist_vocab
 from graphids.core.data.state import DatasetState
 from graphids.paths import PREPROCESSING_VERSION
@@ -82,13 +88,13 @@ class BaseGraphDataset(InMemoryDataset):
         val_fraction: float,
         split: str = "train",
         source_dirs: list[str] | None = None,
-        split_tag: str | None = None,
         window_size: int = 50,
         stride: int = 25,
         seed: int = 42,
         shared_vocab: dict | None = None,
         shared_vocab_digest: str | None = None,
-        scaler_strategy: str = "z_benign",
+        scaler_cfg: ScalerCfg = ZBenignScalerCfg(),
+        representation_cfg: GraphRepresentationCfg = SnapshotRepresentationCfg(),
         transform=None,
         pre_transform=None,
     ):
@@ -96,21 +102,17 @@ class BaseGraphDataset(InMemoryDataset):
         self.split = split
         self.val_fraction = val_fraction
         self.source_dirs = source_dirs
-        if split_tag is None:
-            if split in ("train", "val"):
-                split_tag = "train"
-            else:
-                raise ValueError(f"split_tag is required for split={split!r}")
-        self.split_tag = split_tag
         self.window_size = window_size
         self.stride = stride
         self.seed = seed
         self._shared_vocab = shared_vocab
         self._shared_vocab_digest = shared_vocab_digest
-        self.scaler_strategy = scaler_strategy
+        self.scaler_cfg = scaler_cfg
+        self.scaler_strategy = scaler_kind(scaler_cfg)
+        self.representation_cfg = representation_cfg
+        self.representation_kind = representation_kind(representation_cfg)
         super().__init__(str(root), transform, pre_transform)
         self.load(self.processed_paths[0])
-        # On-disk JSON key remains ``num_arb_ids`` for cache compatibility.
         self.num_ids = int(load_metadata(Path(self.root))["num_arb_ids"])
         if self.split in ("train", "val"):
             n = len(self)
@@ -134,8 +136,20 @@ class BaseGraphDataset(InMemoryDataset):
         return 0
 
     @property
+    def cache_split_name(self) -> str:
+        if self.split in ("train", "val"):
+            return "train"
+        if self.split == "test":
+            if not self.source_dirs or len(self.source_dirs) != 1:
+                raise ValueError(
+                    f"split={self.split!r} needs exactly one source_dir"
+                )
+            return f"test_{self.source_dirs[0]}"
+        return self.split
+
+    @property
     def processed_file_names(self) -> list[str]:
-        return [f"data_{self.split_tag}.pt"]
+        return [f"data_{self.cache_split_name}.pt"]
 
     @property
     def num_nodes_per_graph(self) -> torch.Tensor:
@@ -171,7 +185,7 @@ class BaseGraphDataset(InMemoryDataset):
                 gen = torch.Generator().manual_seed(self.seed)
                 perm = torch.randperm(num_graphs, generator=gen)
                 train_idx = perm[int(num_graphs * self.val_fraction):]
-                scaler = scaler_mod.fit(data, slices, train_idx, strategy=self.scaler_strategy)
+                scaler = scaler_mod.fit_from_cfg(data, slices, train_idx, cfg=self.scaler_cfg)
                 torch.save(scaler, scaler_path)
             else:
                 if not scaler_path.exists():
@@ -222,7 +236,7 @@ class BaseGraphDataset(InMemoryDataset):
             else:
                 merge_split_into_metadata(
                     Path(self.root),
-                    self.split_tag,
+                    self.cache_split_name,
                     self._split_entry(data, slices, None, num_raw, bytes_on_disk),
                     **common,
                 )
@@ -281,49 +295,46 @@ class BaseGraphDataset(InMemoryDataset):
 
     def build_graph_tables(self) -> GraphTables:
         """Return staged graph tables for exploratory analysis before tensor packing."""
-        df = self._read_raw()
+        return build_pipeline_tables(
+            self._graph_pipeline(),
+            self._with_vocab(self._read_raw()),
+            self.window_size,
+            self.stride,
+        )
+
+    def _build_graphs_from_df(self, df: pl.DataFrame, num_ids: int) -> tuple[Data, dict, int, int, int]:
+        data, slices, num_graphs, num_raw = run_pipeline(self._graph_pipeline(), df, self.window_size, self.stride)
+        del df
+        return data, slices, num_ids, num_graphs, num_raw
+
+    def _graph_pipeline(self) -> GraphPipeline:
+        segment_cfg = representation_segment(self.representation_cfg)
+        return GraphPipeline(
+            node_stat_exprs=self.SCHEMA.node_stat_exprs,
+            edge_stat_exprs=self.SCHEMA.edge_stat_exprs,
+            node_col_order=self.SCHEMA.node_col_order,
+            edge_col_order=self.SCHEMA.edge_col_order,
+            label_exprs=self.SCHEMA.label_exprs,
+            edge_base_cols=self.SCHEMA.edge_base_cols,
+            edge_policy=self.SCHEMA.edge_policy,
+            graph_transforms=list(self.SCHEMA.graph_transforms)
+            if self.SCHEMA.graph_transforms is not None
+            else None,
+            segment_cfg=segment_cfg,
+        )
+
+    def _with_vocab(self, df: pl.DataFrame) -> pl.DataFrame:
         if self._shared_vocab is None:
             raise ValueError(
                 f"{type(self).__name__} needs shared_vocab for split={self.split!r}; "
                 "build via the source's build() so vocab is scanned across splits"
             )
-        vocab = self._shared_vocab
-        df = df.with_columns(
+        return df.with_columns(
             pl.col(self.SCHEMA.vocab_column)
-            .replace_strict(vocab, default=0)
+            .replace_strict(self._shared_vocab, default=0)
             .cast(pl.Int64)
             .alias("node_id")
         )
-        pipe = GraphPipeline(
-            node_stat_exprs=self.SCHEMA.node_stat_exprs,
-            edge_stat_exprs=self.SCHEMA.edge_stat_exprs,
-            node_col_order=self.SCHEMA.node_col_order,
-            edge_col_order=self.SCHEMA.edge_col_order,
-            label_exprs=self.SCHEMA.label_exprs,
-            edge_base_cols=self.SCHEMA.edge_base_cols,
-            edge_policy=self.SCHEMA.edge_policy,
-            graph_transforms=list(self.SCHEMA.graph_transforms)
-            if self.SCHEMA.graph_transforms is not None
-            else None,
-        )
-        return pipe.build_tables(df, self.window_size, self.stride)
-
-    def _build_graphs_from_df(self, df: pl.DataFrame, num_ids: int) -> tuple[Data, dict, int, int, int]:
-        pipe = GraphPipeline(
-            node_stat_exprs=self.SCHEMA.node_stat_exprs,
-            edge_stat_exprs=self.SCHEMA.edge_stat_exprs,
-            node_col_order=self.SCHEMA.node_col_order,
-            edge_col_order=self.SCHEMA.edge_col_order,
-            label_exprs=self.SCHEMA.label_exprs,
-            edge_base_cols=self.SCHEMA.edge_base_cols,
-            edge_policy=self.SCHEMA.edge_policy,
-            graph_transforms=list(self.SCHEMA.graph_transforms)
-            if self.SCHEMA.graph_transforms is not None
-            else None,
-        )
-        data, slices, num_graphs, num_raw = pipe.run(df, self.window_size, self.stride)
-        del df
-        return data, slices, num_ids, num_graphs, num_raw
 
 
 @dataclass(frozen=True)
@@ -344,7 +355,8 @@ class BaseGraphSource:
     stride: int = 100
     val_fraction: float = 0.2
     seed: int = 42
-    scaler_strategy: str = "z_benign"
+    scaler_cfg: ScalerCfg = ZBenignScalerCfg()
+    representation_cfg: GraphRepresentationCfg = field(default_factory=SnapshotRepresentationCfg)
     vocab_scope: Literal["train", "all"] = "train"
 
     def resolved_lake_root(self) -> str:
@@ -360,7 +372,8 @@ class BaseGraphSource:
             f"{self.KIND}|{self.resolved_lake_root()}|{self.name}"
             f"|w{self.window_size}|s{self.stride}"
             f"|v{self.val_fraction}|seed{self.seed}"
-            f"|sc:{self.scaler_strategy}|voc:{self.vocab_scope}"
+            f"|sc:{scaler_kind(self.scaler_cfg)}|voc:{self.vocab_scope}"
+            f"|repr:{representation_kind(self.representation_cfg)}"
         )
 
     def _scan_vocab(self, raw_dir: Path, source_dirs: list[str]) -> list[Any]:
@@ -368,6 +381,19 @@ class BaseGraphSource:
             f"{type(self).__name__} must override _scan_vocab() to return "
             "sorted unique values of SCHEMA.vocab_column across all source_dirs."
         )
+
+    def _post_build_artifacts(
+        self,
+        *,
+        root: Path,
+        raw: Path,
+        train_dirs: list[str],
+        present_test: list[str],
+        vocab: dict[str, int],
+        digest: str,
+    ) -> None:
+        """Optional hook for discovery or sidecar artifacts."""
+        del root, raw, train_dirs, present_test, vocab, digest
 
     def build(self) -> DatasetState:
         from graphids.paths import cache_dir, data_dir, load_catalog
@@ -385,6 +411,14 @@ class BaseGraphSource:
         scan_sources = list(train_dirs) + (present_test if self.vocab_scope == "all" else [])
         vocab = {tok: i + 1 for i, tok in enumerate(self._scan_vocab(raw, scan_sources))}
         digest = persist_vocab(vocab, Path(root) / "vocab.json")
+        self._post_build_artifacts(
+            root=Path(root),
+            raw=raw,
+            train_dirs=train_dirs,
+            present_test=present_test,
+            vocab=vocab,
+            digest=digest,
+        )
 
         common = dict(
             window_size=self.window_size,
@@ -393,20 +427,18 @@ class BaseGraphSource:
             seed=self.seed,
             shared_vocab=vocab,
             shared_vocab_digest=digest,
-            scaler_strategy=self.scaler_strategy,
+            scaler_cfg=self.scaler_cfg,
+            representation_cfg=self.representation_cfg,
         )
         train = self.DATASET_CLS(
-            root=root, raw_dir=raw, split="train",
-            source_dirs=train_dirs, split_tag="train", **common,
+            root=root, raw_dir=raw, split="train", source_dirs=train_dirs, **common,
         )
         val = self.DATASET_CLS(
-            root=root, raw_dir=raw, split="val",
-            source_dirs=train_dirs, split_tag="train", **common,
+            root=root, raw_dir=raw, split="val", source_dirs=train_dirs, **common,
         )
         tests = {
             sd: self.DATASET_CLS(
-                root=root, raw_dir=raw, split="test",
-                source_dirs=[sd], split_tag=f"test_{sd}", **common,
+                root=root, raw_dir=raw, split="test", source_dirs=[sd], **common,
             )
             for sd in present_test
         }

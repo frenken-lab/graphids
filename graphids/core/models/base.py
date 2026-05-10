@@ -59,10 +59,9 @@ class _ModelBase(pl.LightningModule):
       kwarg onto ``self`` AND populates ``self.hparams`` via Lightning's
       ``save_hyperparameters`` (skipping ``nn.Module`` values which belong
       in ``state_dict``).
-    - ``prepare_from_datamodule(dm)`` — graphids-side hook called by
-      :func:`graphids.orchestrate.run_row` BEFORE ``trainer.fit/test`` so
-      lazy ``_build()`` runs with DM-supplied ``num_ids`` etc. Distinct
-      from Lightning's ``setup(stage)`` hook.
+    - ``prepare_from_datamodule(dm)`` — graphids-side hook called before
+      ``trainer.fit/test`` so lazy ``_build()`` runs with DM-supplied
+      ``num_ids`` etc. Distinct from Lightning's ``setup(stage)`` hook.
     - per-test-set ``test_step`` plumbing (``_record_test_batch`` /
       ``on_test_epoch_*``).
     - ``on_save_checkpoint`` injects ``class_path`` and strips
@@ -100,8 +99,7 @@ class _ModelBase(pl.LightningModule):
     # the dataloaders have been resolved. graphids needs the model lazily
     # built (with DM-supplied ``num_ids`` / ``in_channels`` / ``num_classes``)
     # BEFORE the dataloader is constructed because the budget probe requires
-    # an instantiated model. ``prepare_from_datamodule`` is the orchestrate-
-    # level hook that fills the pre-fit gap.
+    # an instantiated model. ``prepare_from_datamodule`` fills that pre-fit gap.
 
     def prepare_from_datamodule(self, dm) -> None:
         """Capture per-test-set names from the DM. Subclasses (e.g.
@@ -127,11 +125,7 @@ class _ModelBase(pl.LightningModule):
 
     # -- curriculum loss epoch sync ------------------------------------------
     #
-    # Curriculum-aware losses (``CurriculumWeightedLoss``) read the current
-    # epoch via ``set_epoch`` to evaluate the visibility schedule each step.
-    # Hooking it here keeps every classifier model curriculum-compatible
-    # without per-class plumbing — non-curriculum losses don't expose
-    # ``set_epoch`` so this is a no-op for them.
+    # Curriculum-aware losses read the current epoch via ``set_epoch``.
 
     def on_train_epoch_start(self) -> None:
         set_epoch = getattr(getattr(self, "loss_fn", None), "set_epoch", None)
@@ -139,10 +133,7 @@ class _ModelBase(pl.LightningModule):
             set_epoch(int(self.current_epoch))
 
     def on_test_setup(self, datamodule, device) -> None:
-        """Fired by orchestrate.evaluate after the model is on device + ckpt
-        loaded, before ``model.eval()`` + the test loop. Default no-op.
-        Score-based detectors (VGAE/DGI) override to fit calibration
-        buffers from a fit-phase loader."""
+        """Called before the test loop after the model is loaded."""
 
     # -- per-test-set evaluation (issue #26) ---------------------------------
 
@@ -154,9 +145,8 @@ class _ModelBase(pl.LightningModule):
         names = getattr(self, "_test_set_names", None) or ["test"]
         if hasattr(self, "test_metrics"):
             self._per_set_metrics = {n: self.test_metrics.clone(prefix=f"test/{n}/") for n in names}
-        # ``scores`` holds 1-D scores for threshold-flavor (VGAE/DGI) and (N,K)
-        # probabilities for classifier-flavor (GAT/fusion). ``preds`` is
-        # optional hard predictions when the model emits them directly.
+    # ``scores`` holds 1-D scores for threshold-flavor models and (N,K)
+    # probabilities for classifier-flavor models. ``preds`` is optional.
         self._test_buffers = {
             n: {"preds": [], "scores": [], "labels": [], "attack_type": []} for n in names
         }
@@ -370,9 +360,7 @@ def try_compile(model: nn.Module, *, conv_type: str | None = None, **kwargs) -> 
 class GraphModuleBase(_ModelBase):
     """Shared base for VGAE, GAT, DGI — lazy setup, threshold metrics.
 
-    Subclasses must implement ``_build()`` which constructs ``self.model`` and any
-    other architecture components using ``self.hparams`` (populated by
-    ``prepare_from_datamodule``).
+    Subclasses must implement ``_build()`` using ``self.hparams``.
     """
 
     automatic_optimization = True
@@ -381,14 +369,7 @@ class GraphModuleBase(_ModelBase):
     # -- VRAM budget ---------------------------------------------------------
 
     def compute_budget(self, train_dataset, dataset_name: str, min_steps: int | None = None) -> Any:
-        """Probe-once VRAM budget. ``conv_type`` / ``heads`` are model
-        properties, so the probe lives here — not on the DataModule, which
-        would have to mirror them as parallel hp.
-
-        ``BudgetResult`` is cached on the model: ``bpn_node`` / ``bpn_edge``
-        depend on the model + data, not on which split (train/val/test) is
-        packing right now, so val and test loaders reuse the train-time probe.
-        """
+        """Probe-once VRAM budget cached on the model."""
         if self._budget_cache is None:
             from graphids.core.budget import node_budget
 
@@ -400,14 +381,12 @@ class GraphModuleBase(_ModelBase):
     # -- prepare + optimizers ------------------------------------------------
 
     def prepare_from_datamodule(self, dm) -> None:
-        """Lazy-build with DM-supplied vocab / channel sizes, then capture
-        per-test-set names from the DM (via ``super``)."""
+        """Lazy-build with DM-supplied sizes, then capture test-set names."""
         already_built = getattr(self, "_built", False) or (
             getattr(self, "model", "_sentinel") not in (None, "_sentinel")
         )
         if not already_built:
-            # Mirror onto self AND into self.hparams so _build() (which reads
-            # ``self.hparams.num_ids`` etc.) sees the DM-resolved values.
+            # Mirror onto self and into hparams so _build() sees DM values.
             for k in ("num_ids", "in_channels", "num_classes"):
                 v = getattr(dm, k)
                 setattr(self, k, v)
@@ -420,14 +399,7 @@ class GraphModuleBase(_ModelBase):
         raise NotImplementedError
 
     def _init_post(self, locals_dict: dict) -> None:
-        """Default ``__init__`` tail for collapsed-arch subclasses.
-
-        Mirrors declared kwargs onto ``self`` (via ``_store_init_kwargs``),
-        normalizes ``id_encoder_kwargs`` (None → {}), and lazy-builds when
-        ``num_ids`` is already known (e.g. tests instantiate without a
-        datamodule). Sets ``self._built`` so ``prepare_from_datamodule``
-        doesn't re-build.
-        """
+        """Default ``__init__`` tail for subclasses."""
         self._store_init_kwargs(locals_dict)
         if hasattr(self, "id_encoder_kwargs"):
             self.id_encoder_kwargs = self.id_encoder_kwargs or {}
@@ -437,13 +409,13 @@ class GraphModuleBase(_ModelBase):
             self._built = True
 
     def _build_id_encoder(self, *, num_ids_offset: int = 0):
-        """Construct the ID encoder from ``self.hparams`` settings.
-
-        ``num_ids_offset`` adds reserved vocab slots (e.g. VGAE's mask_id).
-        """
-        from .id_encoding import build_encoder
+        """Construct the ID encoder from current hparams."""
+        from .id_encoding import build_encoder, build_id_encoder
 
         hp = self.hparams
+        cfg = getattr(hp, "id_encoder_cfg", None)
+        if cfg is not None:
+            return build_id_encoder(cfg, num_ids=hp.num_ids + num_ids_offset)
         return build_encoder(
             hp.id_encoder_class_path,
             hp.num_ids + num_ids_offset,
@@ -452,16 +424,13 @@ class GraphModuleBase(_ModelBase):
         )
 
     def configure_optimizers(self):
-        """Adam over all params, using ``self.hparams.lr`` /
-        ``self.hparams.weight_decay`` (with sensible defaults). No scheduler;
-        subclasses that need one override.
-        """
+        """Adam over all params using ``self.hparams.lr`` / ``weight_decay``."""
         lr = getattr(self.hparams, "lr", 1e-3)
         wd = getattr(self.hparams, "weight_decay", 0.0)
         return torch.optim.Adam(self.parameters(), lr=lr, weight_decay=wd)
 
     def _init_threshold_metrics(self):
-        """Call in ``__init__`` for modules that need a Youden-J threshold."""
+        """Initialize threshold metrics."""
         from ._metrics import BinaryYoudenJThreshold
 
         self.roc_metric = BinaryYoudenJThreshold()
@@ -527,6 +496,35 @@ class GraphModuleBase(_ModelBase):
             self.test_threshold = checkpoint["test_threshold"]
 
 
+class ScoreBasedDetectorMixin(GraphModuleBase):
+    """Mix-in for graph models that emit per-graph anomaly scores."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._init_threshold_metrics()
+        self.test_metrics = binary_test_metrics()
+
+    def score(self, batch) -> torch.Tensor:
+        """Per-graph anomaly score, higher = more anomalous."""
+        raise NotImplementedError
+
+    def test_step(self, batch, batch_idx, dataloader_idx: int = 0) -> None:
+        scores = self.score(batch)
+        self.roc_metric.update(scores.detach(), batch.y.detach())
+        self._record_test_batch(
+            dataloader_idx,
+            scores=scores,
+            labels=batch.y,
+            attack_type=getattr(batch, "attack_type", None),
+        )
+
+    def on_test_epoch_end(self) -> None:
+        self._log_thresholded_metrics()
+
+    def predict_step(self, batch, batch_idx) -> dict[str, torch.Tensor]:
+        return {"scores": self.score(batch), "labels": batch.y}
+
+
 # ---------------------------------------------------------------------------
 # Shared utilities
 # ---------------------------------------------------------------------------
@@ -576,15 +574,6 @@ def safe_load_checkpoint(model_type: str, ckpt_path, *, map_location="cpu"):
             f"Checkpoint {ckpt_path} missing 'class_path'. Re-train under the "
             "current LightningModule + on_save_checkpoint contract."
         )
-    # Legacy class_path remap: the *_module.py wrappers were collapsed into
-    # the arch class file (Phase 1+2). Old ckpts saved the wrapper path; new
-    # code only ships the collapsed class.
-    _LEGACY_CLASS_PATHS = {
-        "graphids.core.models.autoencoder.vgae_module.VGAEModule": "graphids.core.models.autoencoder.vgae.VGAE",
-        "graphids.core.models.autoencoder.dgi_module.DGIModule": "graphids.core.models.autoencoder.dgi.DGI",
-        "graphids.core.models.supervised.gat_module.GATModule": "graphids.core.models.supervised.gat.GAT",
-    }
-    dotted = _LEGACY_CLASS_PATHS.get(dotted, dotted)
     module_path, cls_name = dotted.rsplit(".", 1)
     cls = getattr(importlib.import_module(module_path), cls_name)
 
@@ -602,17 +591,6 @@ def safe_load_checkpoint(model_type: str, ckpt_path, *, map_location="cpu"):
     init_kwargs = {**hp, **extra_kwargs}
     module = cls(**init_kwargs)
     state_dict = strip_orig_mod_prefix(ckpt["state_dict"])
-    # Old wrapper ckpts prefixed every key with ``model.`` (the
-    # ``self.model = nn.Module(...)`` indirection collapsed away). Strip when
-    # the loaded class declares no top-level ``model`` attribute — there's
-    # no key collision because the new layer names don't start with ``model.``.
-    if not hasattr(module, "model") and any(k.startswith("model.") for k in state_dict):
-        state_dict = {k.removeprefix("model."): v for k, v in state_dict.items()}
-    # VGAE: ``mask_token`` was a top-level (frozen) Parameter; it's now the
-    # buffer ``masker.mask_token`` on a RandomNodeMasker submodule. Remap
-    # legacy keys so old ckpts load cleanly.
-    if "mask_token" in state_dict and "masker.mask_token" not in state_dict:
-        state_dict["masker.mask_token"] = state_dict.pop("mask_token")
     # Strip training-only submodules (e.g. loss_fn) that aren't present on the
     # inference model but may have been saved into the checkpoint.
     state_dict = {k: v for k, v in state_dict.items() if not k.startswith("loss_fn.")}

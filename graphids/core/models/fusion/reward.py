@@ -1,20 +1,8 @@
-"""Fusion reward calculator. Reads named keys from the feature TensorDict.
+"""Fusion reward calculator.
 
-Two reward variants share the same ``compute()`` API so RLFusionBase doesn't
-care which is in use:
-
-- ``FusionRewardCalculator`` — legacy 2-way (correct/incorrect) base reward
-  with agreement / confidence / disagreement / overconfidence / balance
-  shaping terms. Pre-2026-05-07.
-
-- ``MinimalFusionRewardCalculator`` — PBRS-compliant 4-way (TP/TN/FP/FN)
-  asymmetric base reward + attack-gated confidence bonus. No shaping terms
-  that violate Ng-Harada-Russell 1999 policy invariance. Phase 1.1 of the
-  fusion improvement plan.
-
-``FusionRewardCalculator.from_kwargs(**reward_kwargs)`` is the dispatch
-entry point — picks calculator class on the optional ``mode`` field
-(default ``"legacy"`` for backward compat).
+This module now exposes one reward primitive. The old mode switch and
+alternate reward class were deleted to keep the model layer honest:
+one calculator, one contract.
 """
 
 from __future__ import annotations
@@ -57,21 +45,6 @@ class FusionRewardCalculator(torch.nn.Module):
         self._disagreement_penalty = disagreement_penalty
         self._overconf_penalty = overconf_penalty
         self._balance_weight = balance_weight
-
-    @staticmethod
-    def from_kwargs(**reward_kwargs) -> FusionRewardCalculator:
-        """Factory: dispatch on ``mode`` (default ``"legacy"``).
-
-        ``mode`` is consumed here, not forwarded — calculator subclasses
-        don't accept it as a constructor arg. Existing rendered plans with
-        no ``mode`` field continue to receive ``FusionRewardCalculator``.
-        """
-        mode = reward_kwargs.pop("mode", "legacy")
-        if mode == "legacy":
-            return FusionRewardCalculator(**reward_kwargs)
-        if mode == "minimal":
-            return MinimalFusionRewardCalculator(**reward_kwargs)
-        raise ValueError(f"unknown reward mode: {mode!r} (expected 'legacy' or 'minimal')")
 
     def normalize(self, td: TensorDict) -> TensorDict:
         """Clamp confidence keys to [0, 1]. Returns a shallow-cloned TD."""
@@ -147,95 +120,6 @@ class FusionRewardCalculator(torch.nn.Module):
             "r_disagreement_penalty": torch.where(correct, zero, disagreement),
             "r_overconfidence_penalty": torch.where(correct, zero, overconf),
             "r_balance": balance,
-        }
-        total = sum(components.values())
-        return total, components
-
-
-class MinimalFusionRewardCalculator(torch.nn.Module):
-    """PBRS-compliant 4-way (TP/TN/FP/FN) reward + attack-gated confidence bonus.
-
-    No ``balance`` / ``agreement`` / ``disagreement_penalty`` / ``combined_conf``
-    shaping — those violate Ng-Harada-Russell 1999 policy invariance and were
-    diagnosed (2026-05-06 fusion analysis) as the cause of the all-benign
-    equilibrium under 86% benign and the constant-arm-20 RL collapse.
-
-    Asymmetric FN/FP costs encode IDS deployment context: missed attacks
-    (FN) cost ~4× false alarms (FP) per F2-optimization (Davis & Goadrich
-    2006). Confidence bonus gated to attack predictions only — no benign
-    inflation that would re-create the majority-class equilibrium.
-
-    Same ``compute()`` signature as ``FusionRewardCalculator`` so the
-    caller is reward-class-agnostic. Components dict uses the same key set
-    as the legacy calculator (zero-fills the inactive shaping terms) for
-    uniform MLflow logging across reward variants.
-    """
-
-    def __init__(
-        self,
-        *,
-        vgae_weights: list[float] | tuple[float, ...],
-        tp_reward: float = 3.0,
-        tn_reward: float = 1.5,
-        fp_cost: float = -1.5,
-        fn_cost: float = -6.0,
-        confidence_weight: float = 0.3,
-    ) -> None:
-        super().__init__()
-        self.register_buffer("_vgae_weights", torch.tensor(vgae_weights, dtype=torch.float32))
-        self._tp_reward = tp_reward
-        self._tn_reward = tn_reward
-        self._fp_cost = fp_cost
-        self._fn_cost = fn_cost
-        self._confidence_weight = confidence_weight
-
-    def normalize(self, td: TensorDict) -> TensorDict:
-        out = td.clone(recurse=False)
-        out["vgae"] = td["vgae"].clone(recurse=False)
-        out["gat"] = td["gat"].clone(recurse=False)
-        out["vgae", "conf"] = td["vgae", "conf"].clamp(0.0, 1.0)
-        out["gat", "conf"] = td["gat", "conf"].clamp(0.0, 1.0)
-        return out
-
-    def derive_scores(self, td: TensorDict) -> tuple[torch.Tensor, torch.Tensor]:
-        # Same Möbius transform as legacy calculator — see its derive_scores
-        # docstring for the saturation bug being fixed.
-        weighted = (td["vgae", "errors"] * self._vgae_weights).sum(dim=1)
-        anomaly = weighted / (1.0 + weighted)
-        gat_prob = td["gat", "probs"][:, 1]
-        return anomaly, gat_prob
-
-    def compute(
-        self,
-        td: TensorDict,
-        preds: torch.Tensor,
-        labels: torch.Tensor,
-        alphas: torch.Tensor,
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        _, gat_prob = self.derive_scores(td)
-        attack_lbl = labels == 1
-        attack_pred = preds == 1
-        tp = attack_lbl & attack_pred
-        tn = (~attack_lbl) & (~attack_pred)
-        fp = (~attack_lbl) & attack_pred
-        fn = attack_lbl & (~attack_pred)
-
-        zero = torch.zeros_like(gat_prob)
-        base = (
-            torch.where(tp, torch.full_like(zero, self._tp_reward), zero)
-            + torch.where(tn, torch.full_like(zero, self._tn_reward), zero)
-            + torch.where(fp, torch.full_like(zero, self._fp_cost), zero)
-            + torch.where(fn, torch.full_like(zero, self._fn_cost), zero)
-        )
-        conf_bonus = self._confidence_weight * gat_prob * attack_pred.float()
-
-        components = {
-            "r_classification": base,
-            "r_agreement": zero,
-            "r_confidence": conf_bonus,
-            "r_disagreement_penalty": zero,
-            "r_overconfidence_penalty": zero,
-            "r_balance": zero,
         }
         total = sum(components.values())
         return total, components

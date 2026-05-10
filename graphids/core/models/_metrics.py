@@ -1,13 +1,7 @@
-"""MetricCollection factories + custom Metrics shared by every model family.
-
-Both factories read from a single :data:`REGISTRY` of metric specs so
-binary and multiclass collections stay in lockstep — adding a metric is
-one row, not nine sites. Custom Metrics live alongside the factories.
-"""
+"""MetricCollection factories + custom metrics shared by every model family."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any
 
 import torch
@@ -60,63 +54,71 @@ class BinaryYoudenJThreshold(Metric):
         return thr[torch.argmax(tpr - fpr)]
 
 
-@dataclass(frozen=True)
-class MetricSpec:
-    """``threshold``: binary supports ``threshold=`` kwarg.
-    ``averaged``: multiclass fans out to macro/weighted + per-class.
-    ``aggregate_avg``: multiclass ``average=`` for non-averaged metrics
-    (``"micro"`` for accuracy; ``None`` to omit). ``extra``: kwargs
-    forwarded to both ctors (e.g. ``thresholds=None`` for AP)."""
-
-    name: str
-    binary_cls: type
-    multi_cls: type
-    threshold: bool = True
-    averaged: bool = True
-    aggregate_avg: str | None = None
-    extra: dict = field(default_factory=dict)
-
-
-REGISTRY: tuple[MetricSpec, ...] = (
-    MetricSpec("accuracy", BinaryAccuracy, MulticlassAccuracy, averaged=False, aggregate_avg="micro"),
-    MetricSpec("f1", BinaryF1Score, MulticlassF1Score),
-    MetricSpec("precision", BinaryPrecision, MulticlassPrecision),
-    MetricSpec("recall", BinaryRecall, MulticlassRecall),
-    MetricSpec("specificity", BinarySpecificity, MulticlassSpecificity),
-    MetricSpec("mcc", BinaryMatthewsCorrCoef, MulticlassMatthewsCorrCoef, averaged=False),
-    MetricSpec("auroc", BinaryAUROC, MulticlassAUROC, threshold=False),
-    MetricSpec("ap", BinaryAveragePrecision, MulticlassAveragePrecision, threshold=False, extra={"thresholds": None}),
-    MetricSpec("ece", BinaryCalibrationError, MulticlassCalibrationError, threshold=False, averaged=False),
-)
-
-
 def binary_test_metrics(threshold: float = 0.5) -> MetricCollection:
-    """Binary collection. ``preds`` must be float in [0, 1]; hard-pred
-    metrics apply ``threshold`` internally. Rebuild after Youden-J for
-    threshold-flavor models; pass ``decision_threshold`` for fusion."""
-    items: dict = {}
-    for s in REGISTRY:
-        kw = {**s.extra, **({"threshold": threshold} if s.threshold else {})}
-        items[s.name] = s.binary_cls(**kw)
-    return MetricCollection(items)
+    """Binary collection. ``preds`` must be float in [0, 1]."""
+    return MetricCollection(
+        {
+            "accuracy": BinaryAccuracy(threshold=threshold),
+            "f1": BinaryF1Score(threshold=threshold),
+            "precision": BinaryPrecision(threshold=threshold),
+            "recall": BinaryRecall(threshold=threshold),
+            "specificity": BinarySpecificity(threshold=threshold),
+            "mcc": BinaryMatthewsCorrCoef(threshold=threshold),
+            "auroc": BinaryAUROC(),
+            "ap": BinaryAveragePrecision(thresholds=None),
+            "ece": BinaryCalibrationError(),
+        }
+    )
 
 
 def classification_test_metrics(num_classes: int) -> MetricCollection:
-    """Multiclass collection: aggregate scalar + macro/weighted + per-class.
-    ``probs`` is ``(N, K)`` float. ``ClasswiseWrapper`` flat-merges per-class
-    keys. Missing classes return 0 F1 (torchmetrics #1494) — report
-    ``weighted`` alongside ``macro``."""
+    """Multiclass collection: aggregate scalar + macro/weighted + per-class."""
     labels = ["benign", "attack"] if num_classes == 2 else [f"class_{i}" for i in range(num_classes)]
-    items: dict = {}
-    for s in REGISTRY:
-        base = {"num_classes": num_classes, **s.extra}
-        if not s.averaged:
-            avg_kw = {"average": s.aggregate_avg} if s.aggregate_avg else {}
-            items[s.name] = s.multi_cls(**base, **avg_kw)
-            continue
-        for avg in ("macro", "weighted"):
-            items[f"{s.name}_{avg}"] = s.multi_cls(**base, average=avg)
-        items[f"{s.name}_pc"] = ClasswiseWrapper(
-            s.multi_cls(**base, average=None), labels=labels, prefix=f"{s.name}_per_class/"
-        )
+    items: dict[str, Metric] = {
+        "accuracy": MulticlassAccuracy(num_classes=num_classes, average="micro"),
+        "f1_macro": MulticlassF1Score(num_classes=num_classes, average="macro"),
+        "f1_weighted": MulticlassF1Score(num_classes=num_classes, average="weighted"),
+        "f1_pc": ClasswiseWrapper(
+            MulticlassF1Score(num_classes=num_classes, average=None),
+            labels=labels,
+            prefix="f1_per_class/",
+        ),
+        "precision_macro": MulticlassPrecision(num_classes=num_classes, average="macro"),
+        "precision_weighted": MulticlassPrecision(num_classes=num_classes, average="weighted"),
+        "precision_pc": ClasswiseWrapper(
+            MulticlassPrecision(num_classes=num_classes, average=None),
+            labels=labels,
+            prefix="precision_per_class/",
+        ),
+        "recall_macro": MulticlassRecall(num_classes=num_classes, average="macro"),
+        "recall_weighted": MulticlassRecall(num_classes=num_classes, average="weighted"),
+        "recall_pc": ClasswiseWrapper(
+            MulticlassRecall(num_classes=num_classes, average=None),
+            labels=labels,
+            prefix="recall_per_class/",
+        ),
+        "specificity_macro": MulticlassSpecificity(num_classes=num_classes, average="macro"),
+        "specificity_weighted": MulticlassSpecificity(num_classes=num_classes, average="weighted"),
+        "specificity_pc": ClasswiseWrapper(
+            MulticlassSpecificity(num_classes=num_classes, average=None),
+            labels=labels,
+            prefix="specificity_per_class/",
+        ),
+        "mcc": MulticlassMatthewsCorrCoef(num_classes=num_classes),
+        "auroc_macro": MulticlassAUROC(num_classes=num_classes, average="macro"),
+        "auroc_weighted": MulticlassAUROC(num_classes=num_classes, average="weighted"),
+        "auroc_pc": ClasswiseWrapper(
+            MulticlassAUROC(num_classes=num_classes, average=None),
+            labels=labels,
+            prefix="auroc_per_class/",
+        ),
+        "ap_macro": MulticlassAveragePrecision(num_classes=num_classes, average="macro"),
+        "ap_weighted": MulticlassAveragePrecision(num_classes=num_classes, average="weighted"),
+        "ap_pc": ClasswiseWrapper(
+            MulticlassAveragePrecision(num_classes=num_classes, average=None),
+            labels=labels,
+            prefix="ap_per_class/",
+        ),
+        "ece": MulticlassCalibrationError(num_classes=num_classes),
+    }
     return MetricCollection(items)

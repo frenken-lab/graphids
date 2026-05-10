@@ -1,10 +1,4 @@
-"""Shared vocabulary scan + persist (v2).
-
-Index 0 reserved for UNK. Real IDs start at 1. Per-split vocab is wrong:
-test subdirs can hold IDs absent from train, leaving the embedding table
-under-sized. The ``Source.build()`` flow scans once and pipes the same
-vocab to every split.
-"""
+"""Vocabulary scan, digest, persist, and load primitives."""
 
 from __future__ import annotations
 
@@ -20,13 +14,8 @@ from graphids._fs import atomic_write_text
 UNK_INDEX = 0
 
 
-def scan_arb_ids(raw_dir: Path | str, source_dirs: list[str]) -> list[Any]:
-    """Sorted unique ``arb_id`` across every CSV under every source_dir.
-
-    Tolerates both HCRL ``arbitration_id`` and the in-schema ``arb_id``
-    column name.
-    """
-    raw_dir = Path(raw_dir)
+def scan_arb_ids(raw_dir: Path, source_dirs: list[str]) -> list[Any]:
+    """Sorted unique ``arb_id`` across every CSV under ``source_dirs``."""
     if not source_dirs:
         raise ValueError("source_dirs is empty; cannot scan for arb_ids")
     frames: list[pl.LazyFrame] = []
@@ -39,7 +28,9 @@ def scan_arb_ids(raw_dir: Path | str, source_dirs: list[str]) -> list[Any]:
             cols = lf.collect_schema().names()
             col = "arbitration_id" if "arbitration_id" in cols else "arb_id"
             if col not in cols:
-                raise ValueError(f"{csv_path} has neither arbitration_id nor arb_id; got {cols!r}")
+                raise ValueError(
+                    f"{csv_path} has neither arbitration_id nor arb_id; got {cols!r}"
+                )
             frames.append(lf.select(pl.col(col).alias("arb_id")))
     if not frames:
         raise ValueError(f"No CSVs under {source_dirs!r} in {raw_dir}")
@@ -47,7 +38,7 @@ def scan_arb_ids(raw_dir: Path | str, source_dirs: list[str]) -> list[Any]:
 
 
 def vocab_digest(vocab: dict[Any, int]) -> str:
-    """SHA256 over (id, index) pairs sorted by index — stable, dict-order insensitive."""
+    """SHA256 over ``(id, index)`` pairs sorted by index."""
     canon = json.dumps(
         sorted(((str(k), v) for k, v in vocab.items()), key=lambda kv: kv[1]),
         sort_keys=True,
@@ -55,9 +46,8 @@ def vocab_digest(vocab: dict[Any, int]) -> str:
     return hashlib.sha256(canon.encode()).hexdigest()
 
 
-def persist_vocab(vocab: dict[Any, int], path: Path | str) -> str:
-    """Atomic write; return digest."""
-    path = Path(path)
+def persist_vocab(vocab: dict[Any, int], path: Path) -> str:
+    """Atomic write and return the digest."""
     digest = vocab_digest(vocab)
     payload = {
         "digest": digest,
@@ -68,10 +58,7 @@ def persist_vocab(vocab: dict[Any, int], path: Path | str) -> str:
     return digest
 
 
-def load_vocab(path: Path | str) -> tuple[dict[str, int], str]:
-    """Return ``(entries, digest)``. Keys are str (JSON constraint) — cast
-    before piping into polars ``replace_strict`` against numeric columns
-    or every row routes silently to UNK.
-    """
-    payload = json.loads(Path(path).read_text())
+def load_vocab(path: Path) -> tuple[dict[str, int], str]:
+    """Return ``(entries, digest)`` from a persisted vocab file."""
+    payload = json.loads(path.read_text())
     return payload["entries"], payload["digest"]

@@ -10,8 +10,6 @@ ship callbacks that encode graphids-specific policy:
   at fit-end (rescales final ``fc_layers[-1]`` row-wise by ``‖w_c‖^τ``).
 - ``VRAMDriftCallback``: warn-once when free VRAM shrinks past threshold
   across epoch boundaries.
-
-``MLflowTrainingCallback`` lives in ``graphids._mlflow`` (single source).
 """
 
 from __future__ import annotations

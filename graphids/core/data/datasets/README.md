@@ -1,16 +1,16 @@
 # Adding a Dataset Adapter
 
-A dataset adapter connects a raw data source to the generic
+A dataset adapter connects a raw data source to
 `graphids.core.data.preprocessing.pipeline.GraphPipeline`.
-You provide the domain knowledge; the pipeline handles windowing, graph construction,
-and tensor packing.
+You provide the domain schema; the pipeline handles windowing, graph
+construction, and tensor packing.
 
 ## What you need to define
 
 ### 1. Node identity
 
-What are your graph nodes? Each row in your DataFrame must have a `node_id` column
-(Int64) identifying which node that measurement belongs to.
+Each row in your DataFrame needs a `node_id` column identifying the
+graph node for that measurement.
 
 | Domain | Nodes | node_id source |
 |--------|-------|----------------|
@@ -19,7 +19,7 @@ What are your graph nodes? Each row in your DataFrame must have a `node_id` colu
 
 ### 2. Feature schema
 
-Define the tensor column layout — what features each node/edge carries:
+Define the tensor column layout:
 
 ```python
 NODE_COL_ORDER = ["feat_mean", "feat_std", "feat_range", ...]  # determines x.shape[1]
@@ -28,7 +28,7 @@ EDGE_COL_ORDER = ("iat", "correlation", ...)                    # determines edg
 
 ### 3. Polars expressions
 
-These tell the pipeline *how* to compute features from raw data within each window:
+These tell the pipeline how to compute features within each window:
 
 ```python
 # Per-node stats: group_by([_wid, node_id]).agg(NODE_STAT_EXPRS)
@@ -53,14 +53,12 @@ LABEL_EXPRS = [
 ]
 ```
 
-**Important:** `clustering_coeff`, `in_degree`, `out_degree` placeholders must be included
-in `NODE_STAT_EXPRS` (recommend using `TOPOLOGY_NODE_PLACEHOLDER_EXPRS` from
-`graphids.core.data.preprocessing.transforms`). The pipeline overwrites them with
-values computed from the actual graph structure (triangle counting + degree counts in Polars).
+Include `clustering_coeff`, `in_degree`, and `out_degree` in
+`NODE_STAT_EXPRS` by using `TOPOLOGY_NODE_PLACEHOLDER_EXPRS`.
 
 ### 4. Edge policy + graph transforms
 
-Edge source/destination semantics are explicit and modular:
+Edge source/destination semantics are explicit:
 
 ```python
 from graphids.core.data.preprocessing.edge_policy import temporal_edge_policy
@@ -70,25 +68,20 @@ EDGE_POLICY = temporal_edge_policy(src_col="node_id", dst_col="node_id", dst_shi
 GRAPH_TRANSFORMS = tuple(default_graph_transforms())  # edge_freq, bidir, topology
 ```
 
-You can append optional secondary transforms (`in_out_ratio`, `neighbor_entropy`)
-for exploratory runs if your `NODE_COL_ORDER` includes their output columns.
-
 ### 5. Dataset class
 
 Subclass `InMemoryDataset` and implement:
 
 - `_read_raw()` — load CSVs, normalize columns, return a DataFrame with
   `timestamp`, `node_id`, and whatever your expressions reference
-- `_build_graphs()` — build vocab if needed, call `sliding_window_graphs()`
-  with your schema constants
-- `process()` — NFS-locked cache build (copy the pattern from `can_bus.py`)
+- `_build_graphs()` — build vocab if needed, then call the shared pipeline
+- `process()` — NFS-locked cache build
 
 ### 6. Wire it up
 
 1. Add your class to `datasets/__init__.py`
 2. Add a registry entry in `configs/datasets/dataset_registry.json`
-3. Use it: `python -m graphids fit --config ... --tla 'dataset="your_dataset"'`
-   with `dataset_cls` pointing to your adapter
+3. Use it with `dataset_cls` pointing to your adapter
 
 ## The pipeline contract
 
@@ -103,13 +96,12 @@ Subclass `InMemoryDataset` and implement:
 | *(your feature cols)* | Float32 | Whatever your expressions reference |
 
 `build_tables()` returns staged DataFrames (`node_stats`, `edge_df`,
-`labels`). `run()` returns `(Data, slices, num_graphs, n_rows)` in
-pre-collated format.
+`labels`). `run()` returns pre-collated tensors.
 
 ## ICS datasets: wide-to-long conversion
 
-CAN bus data is naturally long-format (one row per message per CAN ID). ICS datasets
-like WaDi and EPIC are wide-format (one row per timestep, one column per sensor).
+CAN bus data is naturally long-format. ICS datasets like WaDi and EPIC
+are wide-format and should be melted to long format first.
 
 To reuse the pipeline, melt wide to long:
 
@@ -124,7 +116,7 @@ lf = lf.unpivot(
 )
 ```
 
-Then `node_id` = dense integer per sensor name (via `vocab_from_column`).
+Then `node_id` is a dense integer per sensor name.
 
 ## Reference implementation
 

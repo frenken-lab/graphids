@@ -1,25 +1,8 @@
-"""GraphDataModule v2: minimal Lightning + PyG composition.
-
-Built from the primitives we already pay for: ``pl.LightningDataModule``,
-``torch_geometric.loader.DataLoader``, ``torch_geometric.loader.PrefetchLoader``,
-``torch_geometric.data.Batch``. No private loader factories, no
-``_loader_cache`` keyed on ``id()``, no fixed-vs-dynamic dual paths, no
-unreachable live-sampler branch.
-
-What the DM actually does:
-1. ``setup`` → ``get_or_build`` → optional curriculum attribute attach.
-2. Train: pre-pack via FFD (``pack_offline``) into a list of ``Batch``,
-   shuffle batch order each epoch through a plain ``torch.utils.data.DataLoader``.
-3. Val/Test on CUDA: same pre-pack against the trainer's budget probe.
-4. Val/Test on CPU: PyG ``DataLoader`` at fixed ``batch_size``.
-5. ``label_filter='benign'`` is a PyG ``ds[idx]`` index-select view.
-
-The live ``NodeBudgetBatchSampler`` path is gone — it was unreachable
-in v1 (always shadowed by the prebatch branch) and the prebatch packer
-gives ~10-20% tighter batches anyway.
-"""
+"""Lightning data module for graph datasets."""
 
 from __future__ import annotations
+
+from collections.abc import Callable
 
 import lightning.pytorch as pl
 import torch
@@ -34,9 +17,7 @@ from graphids.core.data.state import get_or_build
 
 
 def _file_system_worker(_id: int) -> None:
-    """spawn workers must call set_sharing_strategy at module level (lambdas
-    aren't picklable). Used by every PyG DataLoader below.
-    """
+    """Set shared-memory mode for spawned loader workers."""
     mp.set_sharing_strategy("file_system")
 
 
@@ -54,7 +35,7 @@ class GraphDataModule(pl.LightningDataModule):
         prefetch_factor: int = 2,
         dynamic_batching: bool = True,
         label_filter: str | None = None,
-        difficulty: dict | None = None,
+        difficulty: Callable[..., torch.Tensor] | None = None,
         scope_label: int = 0,
         min_steps_per_epoch: int = 1,
     ):
@@ -74,7 +55,6 @@ class GraphDataModule(pl.LightningDataModule):
         self._train_graphs: list | None = None
         self._prebatched: list[Batch] | None = None
         self._budget = None
-        self._autosize_info: dict | None = None
 
     # ── Lightning lifecycle ─────────────────────────────────────────────
 
@@ -87,20 +67,12 @@ class GraphDataModule(pl.LightningDataModule):
             self._attach_curriculum()
 
     def _attach_curriculum(self) -> None:
-        import importlib
-
         if self.label_filter is not None:
             raise ValueError("label_filter and difficulty are mutually exclusive")
-        spec = self.difficulty
-        if callable(spec):
-            score_fn = spec
-            graphs = list(self._train)
-            scores = score_fn(graphs)
-        else:
-            mod, _, fn = spec["class_path"].rpartition(".")
-            score_fn = getattr(importlib.import_module(mod), fn)
-            graphs = list(self._train)
-            scores = score_fn(graphs, **spec.get("init_args", {}))
+        score_fn = self.difficulty
+        assert score_fn is not None
+        graphs = list(self._train)
+        scores = score_fn(graphs)
         if not isinstance(scores, torch.Tensor):
             scores = torch.tensor(scores, dtype=torch.float)
         if scores.numel() != len(graphs):
@@ -152,21 +124,12 @@ class GraphDataModule(pl.LightningDataModule):
 
     # ── Helpers ─────────────────────────────────────────────────────────
 
-    def _device(self):
-        if not torch.cuda.is_available() or self.trainer is None:
-            return None
-        return self.trainer.strategy.root_device
-
     def _budget_result(self):
         if self._budget is not None:
             return self._budget
         model = self.trainer.lightning_module if self.trainer is not None else None
         if torch.cuda.is_available() and model is None:
             raise RuntimeError("budget probe needs trainer + lightning_module")
-        # Probe on the same view training will iterate (label_filter='benign'
-        # for VGAE) so peak-VRAM estimate matches the actual workload.
-        # Use difficulty-annotated graphs for the probe when curriculum is active;
-        # _train_view() returns the raw dataset without difficulty attached.
         view = self._train_graphs if self._train_graphs is not None else self._train_view()
         min_steps = self.min_steps_per_epoch if self.min_steps_per_epoch > 1 else None
         self._budget = (
@@ -194,13 +157,14 @@ class GraphDataModule(pl.LightningDataModule):
         )
         return [Batch.from_data_list([graphs[i] for i in p]) for p in plans]
 
-    def _wrap(self, loader):
-        dev = self._device()
-        return PrefetchLoader(loader, device=dev) if dev is not None else loader
-
     def _fixed_loader(self, ds, *, shuffle: bool):
         nw = self.num_workers if self.num_workers is not None else 2
-        kw = dict(num_workers=nw, pin_memory=self._device() is None)
+        device = (
+            self.trainer.strategy.root_device
+            if torch.cuda.is_available() and self.trainer is not None
+            else None
+        )
+        kw = dict(num_workers=nw, pin_memory=device is None)
         if nw > 0:
             kw.update(
                 persistent_workers=True,
@@ -208,12 +172,21 @@ class GraphDataModule(pl.LightningDataModule):
                 worker_init_fn=_file_system_worker,
                 prefetch_factor=self.prefetch_factor,
             )
-        return self._wrap(DataLoader(ds, batch_size=max(8, self.batch_size), shuffle=shuffle, **kw))
+        loader = DataLoader(
+            ds, batch_size=max(8, self.batch_size), shuffle=shuffle, **kw
+        )
+        return PrefetchLoader(loader, device=device) if device is not None else loader
 
     def _prebatched_dl(self, batches: list[Batch], *, shuffle: bool):
-        return self._wrap(
-            TorchDataLoader(batches, batch_size=None, shuffle=shuffle, collate_fn=_clone)
+        device = (
+            self.trainer.strategy.root_device
+            if torch.cuda.is_available() and self.trainer is not None
+            else None
         )
+        loader = TorchDataLoader(
+            batches, batch_size=None, shuffle=shuffle, collate_fn=_clone
+        )
+        return PrefetchLoader(loader, device=device) if device is not None else loader
 
     # ── DataLoader hooks ────────────────────────────────────────────────
 
@@ -235,9 +208,7 @@ class GraphDataModule(pl.LightningDataModule):
         return [self._eval_loader(ds) for ds in self._tests.values()]
 
     def train_eval_dataloader(self):
-        """Train split with eval-style fixed-batch loader (no probe). Used
-        by SVDD calibration / centroid stats — batch-boundary-invariant.
-        """
+        """Eval-style train loader for calibration and centroid stats."""
         return self._fixed_loader(self._train_view(), shuffle=False)
 
     def _eval_loader(self, ds):

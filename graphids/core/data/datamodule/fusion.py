@@ -1,14 +1,4 @@
-"""Fusion DataModule (v2): pre-extracted TensorDict → batched (features, labels).
-
-Loads the cache produced by an ``ExtractRow`` (``configs/plans/fusion.jsonnet``).
-Yields ``(features_td, labels)`` per step where ``features_td`` is the
-nested TensorDict minus the ``labels`` leaf — keyed by upstream model
-name (e.g. ``td["vgae", "errors"]``).
-
-Composition: TensorDict's native indexing + ``td.exclude("labels")``.
-Bandit/DQN modes use a single big "batch" of size ``episode_sample_size``
-(RL methods consume an episode at a time, not gradient steps).
-"""
+"""Fusion data module for pre-extracted TensorDict caches."""
 
 from __future__ import annotations
 
@@ -22,7 +12,6 @@ from tensordict import TensorDict
 
 from graphids.core.data.extract import (
     CACHE_VERSION,
-    FUSION_STATES_DIR,
     TRAIN_FILENAME,
     VAL_FILENAME,
 )
@@ -36,25 +25,45 @@ def _load_td(path: Path, which: str) -> tuple[TensorDict, dict[int, str]]:
     if version != CACHE_VERSION:
         raise RuntimeError(
             f"fusion {which} cache at {path} has version={version!r}, "
-            f"expected {CACHE_VERSION}; re-run the ExtractRow"
+            f"expected {CACHE_VERSION}; re-run extraction"
         )
     td = TensorDict(blob["td"], batch_size=[blob["td"]["labels"].size(0)])
     return td, dict(blob.get("attack_type_names") or {0: "benign"})
 
 
+class _TensorDictBatches:
+    def __init__(self, td: TensorDict, batch_size: int, *, shuffle: bool):
+        self._td = td
+        self._batch_size = batch_size
+        self._shuffle = shuffle
+
+    def __len__(self):
+        return math.ceil(self._td.batch_size[0] / self._batch_size)
+
+    def __iter__(self):
+        n = self._td.batch_size[0]
+        idx = torch.randperm(n) if self._shuffle else torch.arange(n)
+        for start in range(0, n, self._batch_size):
+            sub = self._td[idx[start : start + self._batch_size]]
+            yield sub.exclude("labels"), sub["labels"]
+
+
 class FusionDataModule(pl.LightningDataModule):
     def __init__(
         self,
-        cached_states_dir: str = "",
+        cached_states_dir: Path | None = None,
         method: str = "bandit",
         batch_size: int = 128,
         episode_sample_size: int = 20000,
     ):
         super().__init__()
-        self.cached_states_dir = cached_states_dir
+        self.cached_states_dir = (
+            Path(cached_states_dir) if cached_states_dir is not None else None
+        )
         self.method = method
-        # RL methods consume one big episode-sized chunk; gradient methods step.
-        self._batch_size = episode_sample_size if method in ("dqn", "bandit") else batch_size
+        self._batch_size = (
+            episode_sample_size if method in ("dqn", "bandit") else batch_size
+        )
         self.train_td: TensorDict | None = None
         self.val_td: TensorDict | None = None
         self._test_tds: dict[str, TensorDict] = {}
@@ -67,14 +76,11 @@ class FusionDataModule(pl.LightningDataModule):
     def setup(self, stage: str | None = None) -> None:
         if self.train_td is not None:
             return
-        if not self.cached_states_dir:
+        if self.cached_states_dir is None:
             raise ValueError(
-                "cached_states_dir is required — submit the ExtractRow first "
-                "or chain via 'graphids submit --depends-on-afterok <jid>'"
+                "cached_states_dir is required — run extraction first"
             )
-        d = Path(self.cached_states_dir)
-        if not (d / TRAIN_FILENAME).exists():
-            d = d / FUSION_STATES_DIR
+        d = self.cached_states_dir
         train_path, val_path = d / TRAIN_FILENAME, d / VAL_FILENAME
         for p in (train_path, val_path):
             if not p.exists():
@@ -98,41 +104,11 @@ class FusionDataModule(pl.LightningDataModule):
             keys=list(self.train_td.keys(include_nested=True, leaves_only=True)),
         )
 
-    def _batches(self, td: TensorDict, *, shuffle: bool):
-        # Returns a reusable iterable, not a bare generator.
-        #
-        # Lightning 2.6 calls iter(data_fetcher) TWICE at each epoch ≥1 when
-        # reload_dataloaders_every_n_epochs=1: once in FitLoop.setup_data() and
-        # once in TrainingEpochLoop.on_run_start().  Because generators are their
-        # own iterators (iter(gen) == gen), both calls share the same object.
-        # The first call prefetches batch 0 via _PrefetchDataFetcher, exhausting
-        # a 1-batch generator.  The second call finds nothing and sets done=True,
-        # causing all epochs after the first to process 0 batches.
-        #
-        # Returning an object with __iter__ + __len__ avoids both failure modes:
-        # - __iter__ creates a fresh generator on each call (no shared state).
-        # - __len__ makes sized_len() return a value, so _PrefetchDataFetcher
-        #   skips prefetching entirely (prefetch only runs when length is None).
-        batch_size = self._batch_size
-        n = td.batch_size[0]
-
-        class _Batches:
-            def __len__(self):
-                return math.ceil(n / batch_size)
-
-            def __iter__(self):
-                idx = torch.randperm(n) if shuffle else torch.arange(n)
-                for start in range(0, n, batch_size):
-                    sub = td[idx[start : start + batch_size]]
-                    yield sub.exclude("labels"), sub["labels"]
-
-        return _Batches()
-
     def train_dataloader(self):
-        return self._batches(self.train_td, shuffle=True)
+        return _TensorDictBatches(self.train_td, self._batch_size, shuffle=True)
 
     def val_dataloader(self):
-        return self._batches(self.val_td, shuffle=False)
+        return _TensorDictBatches(self.val_td, self._batch_size, shuffle=False)
 
     @property
     def test_datasets(self) -> dict[str, TensorDict]:
@@ -140,5 +116,8 @@ class FusionDataModule(pl.LightningDataModule):
 
     def test_dataloader(self):
         if self._test_tds:
-            return [self._batches(td, shuffle=False) for td in self._test_tds.values()]
+            return [
+                _TensorDictBatches(td, self._batch_size, shuffle=False)
+                for td in self._test_tds.values()
+            ]
         return self.val_dataloader()

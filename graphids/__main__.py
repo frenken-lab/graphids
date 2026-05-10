@@ -1,17 +1,12 @@
 """CLI entry point: ``python -m graphids <subcommand>``.
 
-Surface (the four-step chassis):
-  Plans:     run     render+validate plan.jsonnet → JSON array
-  Execution: exec    run one row in-process
-  SLURM:     submit  submit one row via Parsl SlurmProvider; prints jid
+Current surface:
+  Experiment: exp    inspect manifests / status for the new experiment seam
 """
 
 from __future__ import annotations
 
-import graphids.cli.commands  # noqa: F401  -- registers run/exec/submit/cache on `app`
-import graphids.cli.plans  # noqa: F401  -- registers `plans` sub-app (list / show)
-import graphids.cli.shortcuts  # noqa: F401  -- registers q/cancel/tail-latest/logs
-import graphids.cli.test  # noqa: F401  -- registers `test` sub-app (unit / smoke)
+import graphids.cli.exp  # noqa: F401  -- registers new experiment-manifest surface
 from graphids.cli.app import app
 
 

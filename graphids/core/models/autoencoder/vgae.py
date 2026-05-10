@@ -24,18 +24,17 @@ from .._conv import (
     build_conv_stack,
     build_encoder_stack,
     conv_forward,
-    resolve_edge_dim,
 )
-from .._detector import ScoreBasedDetectorMixin
+from ..base import ScoreBasedDetectorMixin
 from .._score_primitives import rayleigh_quotient, tam_affinity
+from ..id_encoding import IdEncodingCfg
 
 
 class VGAE(ScoreBasedDetectorMixin):
     """Collapsed VGAE — arch + trainer-bridge in one ``nn.Module``.
 
-    Loss selection is decoupled: ``loss_fn`` is an ``nn.Module``
-    instantiated by :func:`graphids.orchestrate._instantiate` from the
-    rendered_config's ``model.init_args.loss_fn`` class_path block.
+    Loss selection is decoupled: ``loss_fn`` is an ``nn.Module`` built
+    from experiment config.
 
     Anomaly score = max-σ over four components (masked recon mean,
     masked recon max, TAM affinity, Rayleigh quotient). Calibration
@@ -64,6 +63,7 @@ class VGAE(ScoreBasedDetectorMixin):
         compile_model: bool = False,
         batch_norm: bool = True,
         mlp_hidden: int | None = None,
+        id_encoder_cfg: IdEncodingCfg | None = None,
         id_encoder_class_path: str = "graphids.core.models.id_encoding.LookupIdEncoder",
         id_encoder_kwargs: dict | None = None,
         # --- training ---
@@ -111,7 +111,7 @@ class VGAE(ScoreBasedDetectorMixin):
         hp = self.hparams
         # +1 vocab slot for the reserved mask_id (= num_ids).
         id_encoder = self._build_id_encoder(num_ids_offset=1)
-        edge_dim = resolve_edge_dim(hp.conv_type, hp.edge_dim)
+        edge_dim = hp.edge_dim if hp.conv_type in {"transformer", "gatv2", "gps"} else None
 
         self.input_encoder = InputEncoder(
             id_encoder=id_encoder,
@@ -219,7 +219,7 @@ class VGAE(ScoreBasedDetectorMixin):
         from graphids.core.losses.build import _VGAE_LOSS_KEYS, build_loss
 
         loss_cfg = {k: hp[k] for k in _VGAE_LOSS_KEYS if k in hp}
-        return {"loss_fn": build_loss("vgae", loss_cfg, distillation_config=None)}
+        return {"loss_fn": build_loss("vgae", loss_cfg)}
 
     # ------------------------------------------------------------------
     # Architecture primitives

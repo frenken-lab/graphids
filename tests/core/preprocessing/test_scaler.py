@@ -1,22 +1,20 @@
-"""Scaler module contract: strategy dispatch, benign-fit behavior, round-trip.
-
-Regression / contract tests guarding the 2026-04-25 promotion of scaling
-out of ``datasets/can_bus.py`` into ``core/data/scaler.py``. sklearn's
-StandardScaler / RobustScaler internals aren't tested here — that's
-sklearn's job.
-"""
+"""Scaler module contract: strategy dispatch, benign-fit behavior, round-trip."""
 
 from __future__ import annotations
 
-import io
 from pathlib import Path
 
 import pytest
 import torch
-from sklearn.preprocessing import RobustScaler, StandardScaler
 from torch_geometric.data import Data
 
 from graphids.core.data.preprocessing import scaler as scaler_mod
+from graphids.core.data.preprocessing.scaler import (
+    RobustBenignScalerCfg,
+    ZBenignScalerCfg,
+    fit_from_cfg,
+    scaler_plan,
+)
 
 
 def _fixture(num_graphs: int = 6, nodes_per: int = 4, n_feat: int = 3, seed: int = 0):
@@ -44,21 +42,19 @@ def test_z_benign_filters_attack_rows_from_fit():
     # CONTRACT: row-selection must actually filter. If the benign filter
     # were a no-op, the fitted feature-0 mean would equal the all-rows
     # mean. Differential test against the all-rows reference, not a
-    # formula mirror. (The prior z_joint strategy that exposed this same
-    # contract via STRATEGIES dispatch was removed; we now compute the
-    # all-rows reference directly from the fixture's tensors.)
+    # formula mirror.
     data, slices, train_idx = _fixture()
     benign = scaler_mod.fit(data, slices, train_idx, strategy="z_benign", keys=("x",))
-    assert isinstance(benign["x"], StandardScaler)
+    assert set(benign["x"]) == {"mean", "std"}
     all_rows_mean_feat0 = float(data.x[:, 0].mean())
-    assert abs(all_rows_mean_feat0 - benign["x"].mean_[0]) > 1.0
+    assert abs(all_rows_mean_feat0 - float(benign["x"]["mean"][0])) > 1.0
 
 
-def test_robust_benign_returns_robust_scaler():
-    # CONTRACT: STRATEGIES table dispatches to the right sklearn class.
+def test_robust_benign_returns_robust_stats():
+    # CONTRACT: robust strategy must emit median/IQR stats, not mean/std.
     data, slices, train_idx = _fixture()
     fitted = scaler_mod.fit(data, slices, train_idx, strategy="robust_benign", keys=("x",))
-    assert isinstance(fitted["x"], RobustScaler)
+    assert set(fitted["x"]) == {"median", "iqr"}
 
 
 def test_unknown_strategy_raises():
@@ -68,8 +64,7 @@ def test_unknown_strategy_raises():
 
 
 def test_torch_save_load_round_trip(tmp_path: Path):
-    # CONTRACT: torch.save on a dict of sklearn estimators round-trips
-    # — the whole persistence layer is "no wrapper class needed".
+    # CONTRACT: torch.save on a dict of tensor stats round-trips.
     data, slices, train_idx = _fixture()
     fitted = scaler_mod.fit(data, slices, train_idx, strategy="z_benign", keys=("x",))
     path = tmp_path / "feature_scaler.pt"
@@ -91,3 +86,17 @@ def test_apply_preserves_dtype():
     fitted = scaler_mod.fit(data, slices, train_idx, strategy="z_benign", keys=("x",))
     scaler_mod.apply(data, fitted)
     assert data.x.dtype == torch.float32
+
+
+def test_scaler_config_helpers_round_trip():
+    zcfg = ZBenignScalerCfg()
+    zplan = scaler_plan(zcfg)
+    assert zplan.kind == "z_benign"
+
+    rcfg = RobustBenignScalerCfg()
+    rplan = scaler_plan(rcfg)
+    assert rplan.kind == "robust_benign"
+
+    data, slices, train_idx = _fixture()
+    fitted = fit_from_cfg(data, slices, train_idx, cfg=zcfg, keys=("x",))
+    assert "x" in fitted
