@@ -3,9 +3,9 @@
 Per-checkpoint artifact generation: embeddings, GAT attention weights,
 teacher↔student CKA, loss-landscape grids, fusion-policy traces. Driven
 by `AnalysisConfig` and dispatched directly through
-`graphids.exp.runtime.run_stage` → `Analyzer(spec).run()`.
+`graphids.exp.runtime.run_stage` to `Analyzer(spec).run()`.
 
-Distinct from [`graphids.analysis`](#graphids.analysis), which owns
+Distinct from `graphids.analysis`, which owns
 cross-run statistical comparison from the MLflow catalog (no torch,
 login-safe).
 
@@ -43,15 +43,14 @@ automatically — no parallel declaration to update.
 ## Reuse with training/eval
 
 `io.load_val_data` goes through `CANBusSource` → `state.get_or_build`
-— the same path
-[`GraphDataModule.setup`](data.md#graphids.core.data.datamodule.graph)
-takes during training. `val_fraction`, scaler strategy, and cache digest
+— the same path `GraphDataModule.setup` takes during training.
+`val_fraction`, scaler strategy, and cache digest
 live on the source dataclass; the analyzer picks up changes there
 automatically with no parallel declaration.
 
 `io.load_teacher` and the student ckpt load in `Analyzer.run` both go
 through
-[`safe_load_checkpoint`](models.md#graphids.core.models.base.safe_load_checkpoint)
+`safe_load_checkpoint`
 — the canonical "ckpt → module" registry. `io.load_fusion_eval` wraps
 the same `FusionDataModule` training/eval uses.
 

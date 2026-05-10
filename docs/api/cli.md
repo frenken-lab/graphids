@@ -10,9 +10,9 @@ state store, reproduction contract, render purity).
 
 | Stage  | Command                  | Module                   |
 |--------|--------------------------|--------------------------|
-| config | `graphids exp config <yaml>`  | [`config`](#graphids.cli.config) |
-| launch | `graphids exp launch <yaml>`  | [`launch`](#graphids.cli.launch) |
-| status | `graphids exp status <run>`    | [`status`](#graphids.cli.status) |
+| config | `graphids exp config <yaml>`  | `config` |
+| launch | `graphids exp launch <yaml>`  | `launch` |
+| status | `graphids exp status <run>`    | `status` |
 
 There is no separate `ops` CLI surface. The run config itself carries
 the stage and the stage-specific payload, so `fit` / `test` / `extract`

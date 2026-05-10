@@ -18,8 +18,8 @@ Typical fields:
 
 Code surface:
 
-- [`graphids/core/data/datasets/can_bus.py`](../../graphids/core/data/datasets/can_bus.py)
-- [`graphids/core/data/datasets/_base.py`](../../graphids/core/data/datasets/_base.py)
+- `graphids/core/data/datasets/can_bus.py`
+- `graphids/core/data/datasets/_base.py`
 
 ## 2. Representations
 
@@ -33,7 +33,7 @@ The primary public representation kinds are:
 
 Representation configs live in:
 
-- [`graphids/core/data/preprocessing/representations.py`](../../graphids/core/data/preprocessing/representations.py)
+- `graphids/core/data/preprocessing/representations.py`
 
 They bridge to:
 
@@ -56,11 +56,11 @@ Examples:
 
 Code surface:
 
-- [`graphids/core/data/preprocessing/views.py`](../../graphids/core/data/preprocessing/views.py)
-- [`graphids/core/data/preprocessing/segments.py`](../../graphids/core/data/preprocessing/segments.py)
-- [`graphids/core/data/preprocessing/materialization.py`](../../graphids/core/data/preprocessing/materialization.py)
-- [`graphids/core/data/preprocessing/pyg.py`](../../graphids/core/data/preprocessing/pyg.py)
-- [`graphids/core/data/preprocessing/temporal.py`](../../graphids/core/data/preprocessing/temporal.py)
+- `graphids/core/data/preprocessing/views.py`
+- `graphids/core/data/preprocessing/segments.py`
+- `graphids/core/data/preprocessing/materialization.py`
+- `graphids/core/data/preprocessing/pyg.py`
+- `graphids/core/data/preprocessing/temporal.py`
 
 ## 4. Discovery and hypotheses
 
@@ -77,9 +77,9 @@ Typical records:
 
 Code surface:
 
-- [`graphids/core/data/discovery/hypotheses.py`](../../graphids/core/data/discovery/hypotheses.py)
-- [`graphids/core/data/discovery/canonical.py`](../../graphids/core/data/discovery/canonical.py)
-- [`graphids/core/data/discovery/layout.py`](../../graphids/core/data/discovery/layout.py)
+- `graphids/core/data/discovery/hypotheses.py`
+- `graphids/core/data/discovery/canonical.py`
+- `graphids/core/data/discovery/layout.py`
 
 ## 5. Selection rule
 
