@@ -57,18 +57,12 @@ class CANBusCfg(_Cfg):
     type: Literal["can_bus"] = "can_bus"
     name: str
     seed: int
-    window_size: int | None = None
-    stride: int | None = None
     val_fraction: float = 0.2
     scaler_cfg: ScalerCfg = Field(default_factory=ZBenignScalerCfg)
     representation_cfg: GraphRepresentationCfg = Field(default_factory=SnapshotRepresentationCfg)
 
     def resolved_window_size_stride(self) -> tuple[int, int]:
-        default_window_size, default_stride = representation_window_defaults(self.representation_cfg)
-        return (
-            self.window_size if self.window_size is not None else default_window_size,
-            self.stride if self.stride is not None else default_stride,
-        )
+        return representation_window_defaults(self.representation_cfg)
 
 
 class GraphDMCfg(_Cfg):
@@ -84,13 +78,9 @@ class GraphDMCfg(_Cfg):
         from graphids.core.data.datasets.can_bus import CANBusSource
         if representation_kind(self.source.representation_cfg) == "temporal":
             raise ValueError("GraphDMCfg requires a non-temporal representation_cfg; use temporal_dm")
-        window_size, stride = self.source.resolved_window_size_stride()
-
         source = CANBusSource(
             name=self.source.name,
             seed=self.source.seed,
-            window_size=window_size,
-            stride=stride,
             val_fraction=self.source.val_fraction,
             scaler_cfg=self.source.scaler_cfg,
             representation_cfg=self.source.representation_cfg,
@@ -218,8 +208,6 @@ def can_bus(
     *,
     dataset: str,
     seed: int,
-    window_size: int | None = None,
-    stride: int | None = None,
     val_fraction: float = 0.2,
     scaler_cfg: ScalerCfg = ZBenignScalerCfg(),
     representation_cfg: GraphRepresentationCfg = SnapshotRepresentationCfg(),
@@ -227,12 +215,9 @@ def can_bus(
     registry = load_catalog()
     if dataset not in registry:
         raise ValueError(f"unknown dataset: {dataset} (registry: {', '.join(sorted(registry))})")
-    default_window_size, default_stride = representation_window_defaults(representation_cfg)
     return CANBusCfg(
         name=dataset,
         seed=seed,
-        window_size=window_size if window_size is not None else default_window_size,
-        stride=stride if stride is not None else default_stride,
         val_fraction=val_fraction,
         scaler_cfg=scaler_cfg,
         representation_cfg=representation_cfg,

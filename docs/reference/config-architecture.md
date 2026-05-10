@@ -1,12 +1,15 @@
 # Config Architecture
 
+> Status: **historical archive**
+
 > Python composition (`graphids/plan/`) → Pydantic validation
-> (`Plan`) → direct instantiation (`orchestrate._instantiate`).
+> (`Plan`) → direct instantiation (`graphids.exp.runtime._resolve_spec`).
 > For composer rules, env vars, path scheme, and observability wiring,
 > see `.claude/rules/config-system.md`.
 
 The pre-2026-05-04 jsonnet layer (`gojsonnet` + `configs/*.libsonnet`)
-was deleted. Don't reach for it. New plans are Python.
+was deleted. Don't reach for it. The row-based execution examples below
+are preserved for reference history.
 
 ---
 
@@ -26,8 +29,8 @@ python -m graphids run <plan> --dataset X --seed N [-o plan.json]
 (e.g. `unsupervised`, `ofat`, `smoke.gat_taunorm`).
 
 ```
-python -m graphids exec --row '<row JSON>' [--ckpt-path X]
-  -> orchestrate.run_row(row)                  # in-process dispatch
+python -m graphids exp launch <experiment.yaml>
+  -> graphids.exp.runtime.launch_run(run)
 ```
 
 ```
@@ -148,12 +151,12 @@ since per-class kwargs aren't worth enumerating in a schema.
 
 ## 4. Direct instantiation
 
-`graphids.orchestrate._instantiate(spec)` walks `{class_path, init_args}`
-blocks recursively:
+`graphids.exp.runtime._resolve_spec(spec)` walks `{class_path,
+init_args}` blocks recursively:
 
 ```python
-def _instantiate(spec):
-    rec = lambda v: _instantiate(v) if isinstance(v, dict) and "class_path" in v else v
+def _resolve_spec(spec):
+    rec = lambda v: _resolve_spec(v) if isinstance(v, dict) and "class_path" in v else v
     init = {k: rec(v) for k, v in spec.get("init_args", {}).items()}
     mod, _, attr = spec["class_path"].rpartition(".")
     return getattr(importlib.import_module(mod), attr)(**init)

@@ -21,9 +21,9 @@ The relevant layers are:
 - `graph_ops.py`
   - reusable graph-table transforms
 
-`representation_cfg` is the primary selection surface. `window_size` and
-`stride` remain as compatibility knobs, but they are now derived from the
-representation config unless explicitly overridden.
+`representation_cfg` is the primary selection surface. The pipeline
+derives an explicit `segment_cfg` from it before materialization, so the
+materializer only sees the concrete sample shape it needs to build.
 
 For the package overview, see:
 

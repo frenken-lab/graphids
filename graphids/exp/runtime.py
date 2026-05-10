@@ -6,12 +6,15 @@ write manifests and events around any callable run body.
 
 from __future__ import annotations
 
+import importlib
 from dataclasses import asdict, is_dataclass
+from collections.abc import Mapping
+from inspect import signature
 from pathlib import Path
 from typing import Any
 
 from graphids._mlflow import make_logger
-from graphids.exp.config import AnalyzeConfig, ExtractConfig, RunConfig, RunSummary
+from graphids.exp.config import RunConfig, RunSummary
 from graphids.exp.journal import (
     EventRecord,
     append_event,
@@ -31,51 +34,158 @@ def _payload(obj: Any) -> dict[str, Any]:
     return {"value": repr(obj)}
 
 
+def _resolve_spec(spec: Any) -> Any:
+    if hasattr(spec, "model_dump") and not isinstance(spec, Mapping):
+        spec = spec.model_dump(mode="json")
+    if isinstance(spec, list):
+        return [_resolve_spec(item) for item in spec]
+    if not isinstance(spec, Mapping):
+        return spec
+
+    if "class_path" in spec:
+        class_path = str(spec["class_path"])
+        module_path, _, class_name = class_path.rpartition(".")
+        cls = getattr(importlib.import_module(module_path), class_name)
+        init_args = {k: _resolve_spec(v) for k, v in dict(spec.get("init_args") or {}).items()}
+        return cls(**init_args)
+
+    if "type" in spec:
+        from graphids import primitives as primitive_mod
+
+        factory = getattr(primitive_mod, str(spec["type"]), None)
+        if callable(factory):
+            kwargs = {k: _resolve_spec(v) for k, v in spec.items() if k != "type"}
+            return factory(**kwargs)
+
+    return {k: _resolve_spec(v) for k, v in spec.items()}
+
+
+def _build_component(spec: Any, **build_kwargs: Any) -> Any:
+    resolved = _resolve_spec(spec)
+    builder = getattr(resolved, "build", None)
+    if callable(builder):
+        if build_kwargs:
+            params = signature(builder).parameters
+            filtered = {k: v for k, v in build_kwargs.items() if k in params}
+            try:
+                return builder(**filtered)
+            except TypeError:
+                pass
+        return builder()
+    return resolved
+
+
+def _run_fit_or_test(action: str, cfg: Mapping[str, Any], *, ckpt_path: str | None = None) -> Any:
+    import lightning.pytorch as pl
+
+    if "data" not in cfg or "model" not in cfg:
+        raise ValueError(f"{action} requires data and model config blocks")
+
+    data = _build_component(cfg["data"])
+    if hasattr(data, "setup"):
+        data.setup(None)
+
+    loss_fn = _build_component(cfg["loss_fn"]) if cfg.get("loss_fn") is not None else None
+    model_spec = _resolve_spec(cfg["model"])
+    if hasattr(model_spec, "build"):
+        model = model_spec.build(loss_fn=loss_fn) if loss_fn is not None else model_spec.build()
+    else:
+        model = model_spec
+
+    if hasattr(model, "prepare_from_datamodule"):
+        model.prepare_from_datamodule(data)
+
+    trainer_cfg = _resolve_spec(cfg.get("trainer", {}))
+    if not isinstance(trainer_cfg, Mapping):
+        raise TypeError("trainer config must resolve to a mapping of Trainer kwargs")
+    trainer_kwargs = dict(trainer_cfg)
+    callbacks = cfg.get("callbacks") or {}
+    if isinstance(callbacks, Mapping):
+        callback_specs = callbacks.values()
+    else:
+        callback_specs = callbacks
+    if callback_specs:
+        trainer_kwargs["callbacks"] = [_build_component(cb) for cb in callback_specs]
+
+    seed = cfg.get("seed_everything", cfg.get("seed"))
+    if seed is not None:
+        pl.seed_everything(int(seed), workers=True)
+
+    trainer = pl.Trainer(**trainer_kwargs)
+    if action == "fit":
+        trainer.fit(model, datamodule=data)
+        return {"stage": "fit", "trainer": trainer.__class__.__name__}
+
+    test_ckpt = cfg.get("ckpt_path", ckpt_path)
+    if test_ckpt in ("", None):
+        test_ckpt = None
+    trainer.test(model, datamodule=data, ckpt_path=test_ckpt)
+    return {"stage": "test", "trainer": trainer.__class__.__name__, "ckpt_path": test_ckpt}
+
+
 def run_stage(run: RunConfig) -> dict[str, Any] | None:
     """Default stage dispatcher for experiment launches.
 
-    Fit/test are not wired yet in the new primitives layer; extract/analyze
-    can already run off the new config objects.
+    Fit/test, extract, and analyze all run directly from the typed
+    experiment config objects.
     """
     if run.stage in {"fit", "test"}:
-        raise NotImplementedError(
-            f"stage {run.stage!r} is not wired to the new primitive runner yet"
-        )
+        payload = run.payload.model_dump(mode="json")
+        return _run_fit_or_test(run.stage, payload, ckpt_path=payload.get("ckpt_path"))
     if run.stage == "extract":
         from graphids.core.data.extract import extract_states
 
-        spec = ExtractConfig.model_validate(
-            {
-                **run.config,
-                "name": run.name,
-                "action": "extract",
-                "plan_id": run.plan_id or run.name,
-                "resources": run.resources.model_dump(mode="json"),
-            }
-        )
+        run_cfg = run.payload.model_dump(mode="json")
+        checkpoints = run_cfg.get("checkpoints") or run_cfg.get("extractor_ckpts")
+        if checkpoints is None:
+            raise ValueError("extract requires checkpoints or extractor_ckpts")
+        dataset = run_cfg.get("dataset")
+        output_dir = run_cfg.get("output_dir")
+        if not dataset or not output_dir:
+            raise ValueError("extract requires dataset and output_dir")
         extract_states(
-            checkpoints=spec.extractor_ckpts,
-            dataset=spec.dataset,
-            output_dir=spec.output_dir,
-            max_samples=spec.max_samples,
-            max_val_samples=spec.max_val_samples,
-            batch_size=spec.batch_size,
-            seed=spec.seed,
-            val_fraction=spec.val_fraction,
-            representation_cfg=spec.representation_cfg,
+            checkpoints=checkpoints,
+            dataset=dataset,
+            output_dir=output_dir,
+            max_samples=int(run_cfg.get("max_samples", 150_000)),
+            max_val_samples=int(run_cfg.get("max_val_samples", 30_000)),
+            batch_size=int(run_cfg.get("batch_size", 256)),
+            seed=int(run_cfg.get("seed", run.seed)),
+            val_fraction=float(run_cfg.get("val_fraction", 0.2)),
+            representation_cfg=run.representation_cfg,
         )
-        return {"stage": "extract", "output_dir": spec.output_dir}
+        return {"stage": "extract", "output_dir": output_dir}
     if run.stage == "analyze":
         from graphids.core.artifacts.analyzer import Analyzer
+        from graphids.core.artifacts.analyzer import AnalysisConfig
 
-        spec = AnalyzeConfig.model_validate(
-            {
-                **run.config,
-                "name": run.name,
-                "action": "analyze",
-                "plan_id": run.plan_id or run.name,
-                "resources": run.resources.model_dump(mode="json"),
-            }
+        run_cfg = run.payload.model_dump(mode="json")
+        spec = AnalysisConfig(
+            name=run_cfg.get("name", run.name),
+            plan_id=run_cfg.get("plan_id", run.plan_id or run.name),
+            ckpt_path=str(run_cfg.get("ckpt_path", "")),
+            dataset=str(run_cfg.get("dataset", run.dataset or "")),
+            model_type=str(run_cfg.get("model_type", "gat")),
+            output_dir=str(run_cfg.get("output_dir", "")),
+            lake_root=str(run_cfg.get("lake_root", "")),
+            embeddings=bool(run_cfg.get("embeddings", True)),
+            attention=bool(run_cfg.get("attention", False)),
+            cka=bool(run_cfg.get("cka", False)),
+            landscape=bool(run_cfg.get("landscape", False)),
+            fusion_policy=bool(run_cfg.get("fusion_policy", False)),
+            cka_teacher_ckpt=str(run_cfg.get("cka_teacher_ckpt", "")),
+            cka_max_samples=int(run_cfg.get("cka_max_samples", 500)),
+            landscape_resolution=int(run_cfg.get("landscape_resolution", 51)),
+            landscape_scale=float(run_cfg.get("landscape_scale", 1.0)),
+            landscape_max_graphs=int(run_cfg.get("landscape_max_graphs", 500)),
+            embedding_max_samples=int(run_cfg.get("embedding_max_samples", 2000)),
+            attention_max_samples=int(run_cfg.get("attention_max_samples", 50)),
+            batch_size=int(run_cfg.get("batch_size", 256)),
+            seed=int(run_cfg.get("seed", run.seed)),
+            vocab_scope=str(run_cfg.get("vocab_scope", "train")),
+            representation_cfg=run.representation_cfg,
+            vgae_ckpt_path=str(run_cfg.get("vgae_ckpt_path", "")),
+            gat_ckpt_path=str(run_cfg.get("gat_ckpt_path", "")),
         )
         Analyzer(spec).run()
         return {"stage": "analyze", "output_dir": spec.output_dir}

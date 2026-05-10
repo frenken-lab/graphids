@@ -20,7 +20,6 @@ from torch_geometric.loader import DataLoader as PyGDataLoader
 
 from graphids.core.data.preprocessing.representations import (
     GraphRepresentationCfg,
-    representation_window_defaults,
 )
 
 log = get_logger(__name__)
@@ -100,12 +99,9 @@ def extract_states(
     from graphids.core.models.base import safe_load_checkpoint
 
     # Build DM first so test split names are known before the idempotency check.
-    window_size, stride = representation_window_defaults(representation_cfg)
     source = CANBusSource(
         name=dataset,
         seed=seed,
-        window_size=window_size,
-        stride=stride,
         val_fraction=val_fraction,
         representation_cfg=representation_cfg,
     )

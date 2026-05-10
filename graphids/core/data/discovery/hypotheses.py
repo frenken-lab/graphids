@@ -9,6 +9,8 @@ from typing import Literal
 
 import polars as pl
 
+from .ranking import rank_signal_hypotheses, rank_signal_profiles
+
 
 def _byte_cols(df: pl.DataFrame, *, prefix: str = "byte_") -> list[str]:
     cols = [c for c in df.columns if c.startswith(prefix)]
@@ -171,3 +173,11 @@ class DiscoveryStore:
 
     def load_hypotheses(self) -> pl.DataFrame:
         return pl.read_parquet(self.hypotheses_path())
+
+    def rank_profiles(self) -> pl.DataFrame:
+        """Return ranked signal profiles from the stored profile table."""
+        return rank_signal_profiles(self.load_profiles())
+
+    def rank_hypotheses(self) -> pl.DataFrame:
+        """Return ranked profiles joined to the stored hypothesis table."""
+        return rank_signal_hypotheses(self.load_profiles(), self.load_hypotheses())

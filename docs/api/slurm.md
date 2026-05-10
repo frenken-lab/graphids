@@ -2,17 +2,17 @@
 
 `graphids submit` is the only caller of `parsl.providers.SlurmProvider`.
 The sbatch script body is the literal command
-`python -m graphids exec --row '<json>' [--ckpt-path X]`, wrapped by
-`SrunLauncher`. **No closure pickle** — code fixes committed after
-submission DO reach a pending job, since the job re-imports current
-source at exec time.
+`python -m graphids exp launch <yaml>` (or the equivalent runtime entry
+point used by the launcher), wrapped by `SrunLauncher`. **No closure
+pickle** — code fixes committed after submission DO reach a pending
+job, since the job re-imports current source at exec time.
 
 Profiles in `configs/resources/submit_profiles.json`
 (`[mode][cluster][length]`) hold Parsl `SlurmProvider` kwargs
 verbatim — `submit_row` splats them with `**profile`. Preempt-resume
 runs via SIGUSR2 (USR2 because NCCL catches USR1) — Lightning's
 `SLURMEnvironment(auto_requeue=True, requeue_signal=SIGUSR2)` plugin
-(wired in `graphids.orchestrate._trainer_kwargs`) calls
+(wired in the fit/test runtime's trainer setup) calls
 `scontrol requeue $SLURM_JOB_ID`, same job ID, downstream `afterok`
 chains stay valid.
 

@@ -88,8 +88,6 @@ class BaseGraphDataset(InMemoryDataset):
         val_fraction: float,
         split: str = "train",
         source_dirs: list[str] | None = None,
-        window_size: int = 50,
-        stride: int = 25,
         seed: int = 42,
         shared_vocab: dict | None = None,
         shared_vocab_digest: str | None = None,
@@ -102,8 +100,6 @@ class BaseGraphDataset(InMemoryDataset):
         self.split = split
         self.val_fraction = val_fraction
         self.source_dirs = source_dirs
-        self.window_size = window_size
-        self.stride = stride
         self.seed = seed
         self._shared_vocab = shared_vocab
         self._shared_vocab_digest = shared_vocab_digest
@@ -111,6 +107,9 @@ class BaseGraphDataset(InMemoryDataset):
         self.scaler_strategy = scaler_kind(scaler_cfg)
         self.representation_cfg = representation_cfg
         self.representation_kind = representation_kind(representation_cfg)
+        self.window_size, self.stride = (
+            self._resolved_window_size_stride(representation_cfg)
+        )
         super().__init__(str(root), transform, pre_transform)
         self.load(self.processed_paths[0])
         self.num_ids = int(load_metadata(Path(self.root))["num_arb_ids"])
@@ -134,6 +133,12 @@ class BaseGraphDataset(InMemoryDataset):
             if kw in s:
                 return code
         return 0
+
+    @staticmethod
+    def _resolved_window_size_stride(representation_cfg: GraphRepresentationCfg) -> tuple[int, int]:
+        from graphids.core.data.preprocessing.representations import representation_window_defaults
+
+        return representation_window_defaults(representation_cfg)
 
     @property
     def cache_split_name(self) -> str:
@@ -298,12 +303,10 @@ class BaseGraphDataset(InMemoryDataset):
         return build_pipeline_tables(
             self._graph_pipeline(),
             self._with_vocab(self._read_raw()),
-            self.window_size,
-            self.stride,
         )
 
     def _build_graphs_from_df(self, df: pl.DataFrame, num_ids: int) -> tuple[Data, dict, int, int, int]:
-        data, slices, num_graphs, num_raw = run_pipeline(self._graph_pipeline(), df, self.window_size, self.stride)
+        data, slices, num_graphs, num_raw = run_pipeline(self._graph_pipeline(), df)
         del df
         return data, slices, num_ids, num_graphs, num_raw
 
@@ -320,6 +323,7 @@ class BaseGraphDataset(InMemoryDataset):
             graph_transforms=list(self.SCHEMA.graph_transforms)
             if self.SCHEMA.graph_transforms is not None
             else None,
+            representation_cfg=self.representation_cfg,
             segment_cfg=segment_cfg,
         )
 
@@ -351,13 +355,23 @@ class BaseGraphSource:
 
     name: str
     lake_root: str | None = None
-    window_size: int = 100
-    stride: int = 100
     val_fraction: float = 0.2
     seed: int = 42
     scaler_cfg: ScalerCfg = ZBenignScalerCfg()
     representation_cfg: GraphRepresentationCfg = field(default_factory=SnapshotRepresentationCfg)
     vocab_scope: Literal["train", "all"] = "train"
+
+    @property
+    def window_size(self) -> int:
+        from graphids.core.data.preprocessing.representations import representation_window_defaults
+
+        return representation_window_defaults(self.representation_cfg)[0]
+
+    @property
+    def stride(self) -> int:
+        from graphids.core.data.preprocessing.representations import representation_window_defaults
+
+        return representation_window_defaults(self.representation_cfg)[1]
 
     def resolved_lake_root(self) -> str:
         if self.lake_root:
@@ -421,8 +435,6 @@ class BaseGraphSource:
         )
 
         common = dict(
-            window_size=self.window_size,
-            stride=self.stride,
             val_fraction=self.val_fraction,
             seed=self.seed,
             shared_vocab=vocab,

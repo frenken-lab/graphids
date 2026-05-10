@@ -30,12 +30,13 @@ validation gate. Each row is a discriminated union (`TrainRow` |
 `callbacks: dict[str, ClassPath]`) — validation is structural
 end-to-end. Render bugs surface here before SLURM sees them.
 
-**Orchestrate** (`graphids/orchestrate.py`) — `run_row(row)` dispatches
-on `row.action` (fit/test/extract/analyze). For training rows,
-`_instantiate` walks nested `class_path` blocks via importlib with
+**Experiment runtime** (`graphids/exp/runtime.py`) —
+`launch_run(run)` dispatches on the typed `RunConfig.stage`
+(`fit`/`test`/`extract`/`analyze`). For training rows,
+`_resolve_spec` walks nested `class_path` blocks via importlib with
 signature-filtered kwargs and returns the trainer / model / datamodule.
-Owns module-level runtime setup (`_ensure_runtime`: spawn mp + tensor
-sharing strategy + structlog).
+Owns module-level runtime setup around manifest writing, MLflow logging,
+and the stage dispatch helpers.
 
 **SLURM** (`graphids/slurm/`, `graphids/cli/commands.py`) — one Typer
 command: `graphids submit --row <json>` submits a single blueprint row
@@ -44,7 +45,8 @@ via Parsl `SlurmProvider`. Library entrypoint:
 `configs/resources/submit_profiles.json` keyed `[mode][cluster][length]`
 where each leaf is a `parsl.providers.SlurmProvider` kwargs dict.
 Preempt-resume delegated to Lightning's `SLURMEnvironment(auto_requeue=True,
-requeue_signal=SIGUSR2)` plugin (wired by `orchestrate._trainer_kwargs`).
+requeue_signal=SIGUSR2)` plugin (wired by the experiment runtime's
+trainer setup).
 
 The pipeline is strictly one-directional:
 
@@ -59,7 +61,7 @@ graphids exec --row <json>   (login-node smoke / non-SLURM)
 graphids submit --row <json> (SLURM via Parsl; sbatch carries the literal
                               `python -m graphids exec --row '...'` cmd)
     ↓
-orchestrate.run_row → trainer.fit / trainer.test / extract / analyze
+exp.runtime.launch_run → trainer.fit / trainer.test / extract / analyze
 ```
 
 > Authoritative detail: `.claude/rules/config-system.md`,

@@ -87,8 +87,9 @@ The primary user-facing control surface is now:
 
 - `representation_cfg`
 
-Legacy `window_size` / `stride` knobs still exist for compatibility, but
-they are derived from the representation config unless explicitly overridden.
+Window sizes and strides are resolved from the representation config at the
+pipeline boundary, which derives an explicit segment config before
+materialization.
 
 ## 6. Training flow
 

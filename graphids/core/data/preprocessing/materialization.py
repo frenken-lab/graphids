@@ -316,8 +316,6 @@ def _build_graph_tables_windowed(
 def build_graph_tables(
     df: pl.DataFrame,
     *,
-    window_size: int,
-    stride: int,
     node_stat_exprs: list[pl.Expr],
     label_exprs: list[pl.Expr],
     edge_policy: EdgePolicy | None = None,
@@ -329,7 +327,7 @@ def build_graph_tables(
 ) -> GraphTables:
     """Compose the graph preprocessing primitives into staged graph tables."""
     if segment_cfg is None:
-        segment_cfg = WindowSegmentCfg(window_size=window_size, stride=stride)
+        raise ValueError("build_graph_tables requires an explicit segment_cfg")
     if isinstance(segment_cfg, MultiScaleSegmentCfg):
         out: list[GraphTables] = []
         offset = 0
@@ -401,15 +399,17 @@ def build_graph_tables(
             },
         )
 
-    return _build_graph_tables_windowed(
-        df,
-        window_size=window_size,
-        stride=stride,
-        node_stat_exprs=node_stat_exprs,
-        label_exprs=label_exprs,
-        edge_policy=edge_policy,
-        edge_stat_exprs=edge_stat_exprs,
-        edge_base_cols=edge_base_cols,
-        graph_transforms=graph_transforms,
-        debug_artifacts_dir=debug_artifacts_dir,
-    )
+    if isinstance(segment_cfg, WindowSegmentCfg):
+        return _build_graph_tables_windowed(
+            df,
+            window_size=segment_cfg.window_size,
+            stride=segment_cfg.stride,
+            node_stat_exprs=node_stat_exprs,
+            label_exprs=label_exprs,
+            edge_policy=edge_policy,
+            edge_stat_exprs=edge_stat_exprs,
+            edge_base_cols=edge_base_cols,
+            graph_transforms=graph_transforms,
+            debug_artifacts_dir=debug_artifacts_dir,
+        )
+    raise TypeError(f"unsupported segment config: {type(segment_cfg)!r}")

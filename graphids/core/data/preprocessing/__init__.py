@@ -21,6 +21,8 @@ from graphids.core.data.discovery import (
     build_signal_profiles,
     build_canonical_feature_frame,
     initialize_hypotheses,
+    rank_signal_hypotheses,
+    rank_signal_profiles,
 )
 from .pyg import graph_tables_to_pyg
 from .representations import (
@@ -116,6 +118,8 @@ __all__ = [
     "DiscoveryStore",
     "build_signal_profiles",
     "initialize_hypotheses",
+    "rank_signal_profiles",
+    "rank_signal_hypotheses",
     "WindowSegmentCfg",
     "SequenceSegmentCfg",
     "MultiScaleSegmentCfg",

@@ -16,6 +16,6 @@ At a glance:
 - `state.py` keeps process-local dataset state in memory for reuse within
   one Python process.
 
-The training path now treats representation config as the primary surface;
-window sizes and strides are derived from that config unless explicitly
-overridden for compatibility.
+The training path now treats representation config as the primary surface.
+Window sizes and strides are resolved from the selected representation
+instead of being passed around as the primary API.

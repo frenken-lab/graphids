@@ -38,8 +38,6 @@ def _frame(n_rows: int = 20) -> pl.DataFrame:
 def test_sequence_branch_tags_materialized_tables():
     tables = build_graph_tables(
         _frame(),
-        window_size=5,
-        stride=5,
         node_stat_exprs=NODE_STAT_EXPRS,
         label_exprs=LABEL_EXPRS,
         edge_stat_exprs=EDGE_STAT_EXPRS,
@@ -57,8 +55,6 @@ def test_sequence_branch_tags_materialized_tables():
 def test_multiscale_branch_tags_materialized_tables():
     tables = build_graph_tables(
         _frame(),
-        window_size=5,
-        stride=5,
         node_stat_exprs=NODE_STAT_EXPRS,
         label_exprs=LABEL_EXPRS,
         edge_stat_exprs=EDGE_STAT_EXPRS,
@@ -76,8 +72,6 @@ def test_multiscale_branch_tags_materialized_tables():
 def test_entity_branch_tags_materialized_tables():
     tables = build_graph_tables(
         _frame(),
-        window_size=5,
-        stride=5,
         node_stat_exprs=NODE_STAT_EXPRS,
         label_exprs=LABEL_EXPRS,
         edge_stat_exprs=EDGE_STAT_EXPRS,

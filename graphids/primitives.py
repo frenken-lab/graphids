@@ -38,6 +38,8 @@ from graphids.core.data.discovery import (
     build_canonical_feature_frame,
     build_signal_profiles,
     initialize_hypotheses,
+    rank_signal_hypotheses,
+    rank_signal_profiles,
 )
 from graphids.core.data.preprocessing.representations import (
     EntityRepresentationCfg,
@@ -169,6 +171,8 @@ __all__ = [
     "build_signal_profiles",
     "build_canonical_feature_frame",
     "initialize_hypotheses",
+    "rank_signal_profiles",
+    "rank_signal_hypotheses",
     "graph_dm",
     "fusion_dm",
     "score_random",

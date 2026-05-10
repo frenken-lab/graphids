@@ -64,7 +64,7 @@ def test_sliding_window_graphs_shapes_and_values():
         label_exprs=LABEL_EXPRS,
         edge_base_cols=EDGE_BASE_COLS,
     )
-    data, slices, num_graphs, _ = run_pipeline(pipeline, df, window_size=10, stride=5)
+    data, slices, num_graphs, _ = run_pipeline(pipeline, df)
     assert num_graphs > 0
     g = _get_graph(data, slices, 0)
     assert g.x.shape[1] == N_NODE_FEATURES
@@ -118,7 +118,7 @@ def test_sliding_window_graphs_edge_freq():
         label_exprs=LABEL_EXPRS,
         edge_base_cols=EDGE_BASE_COLS,
     )
-    data, slices, num_graphs, _ = run_pipeline(pipeline, df, window_size=10, stride=10)
+    data, slices, num_graphs, _ = run_pipeline(pipeline, df)
     assert num_graphs == 1
     g = _get_graph(data, slices, 0)
     freq_idx = EDGE_COL_ORDER.index("edge_freq")
@@ -173,7 +173,7 @@ def test_skewness_kurtosis_clamped():
         label_exprs=LABEL_EXPRS,
         edge_base_cols=EDGE_BASE_COLS,
     )
-    data, slices, num_graphs, _ = run_pipeline(pipeline, df, window_size=50, stride=50)
+    data, slices, num_graphs, _ = run_pipeline(pipeline, df)
     assert num_graphs > 0
     g = _get_graph(data, slices, 0)
     skew_idx = NODE_COL_ORDER.index("skewness")
@@ -216,7 +216,7 @@ def test_build_tables_and_debug_artifacts(tmp_path):
         edge_base_cols=EDGE_BASE_COLS,
         debug_artifacts_dir=tmp_path / "artifacts",
     )
-    tables = build_pipeline_tables(pipeline, df, window_size=10, stride=10)
+    tables = build_pipeline_tables(pipeline, df)
     assert tables.n_rows == n_rows
     assert len(tables.node_stats) > 0
     assert len(tables.edge_df) > 0
@@ -259,7 +259,7 @@ def test_edge_policy_explicit_direction():
         edge_base_cols=EDGE_BASE_COLS,
         edge_policy=temporal_edge_policy(dst_shift=1),
     )
-    tables = build_pipeline_tables(pipeline, df, window_size=6, stride=6)
+    tables = build_pipeline_tables(pipeline, df)
     assert len(tables.edge_df) > 0
     assert (tables.edge_df["dst"] > tables.edge_df["src"]).all()
 
@@ -302,7 +302,7 @@ def test_secondary_graph_transforms_are_composable():
         edge_base_cols=EDGE_BASE_COLS,
         graph_transforms=[*default_graph_transforms(), *secondary_graph_transforms()],
     )
-    tables = build_pipeline_tables(pipeline, df, window_size=10, stride=10)
+    tables = build_pipeline_tables(pipeline, df)
     assert "in_out_ratio" in tables.node_stats.columns
     assert "neighbor_entropy" in tables.node_stats.columns
     assert not tables.node_stats["in_out_ratio"].is_null().any()

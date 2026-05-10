@@ -9,8 +9,8 @@ The current canonical overview lives in:
 Legacy training details that still matter:
 
 - raw CAN rows are normalized, parsed, and cached before graph materialization
-- the preprocessed cache still supports `window_size` / `stride` for
-  compatibility
+- graph materialization receives an explicit segment config derived from
+  `representation_cfg` at the pipeline boundary
 - the runtime loader still uses budget-aware batching for variable-size graphs
 
 What changed:

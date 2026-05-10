@@ -19,6 +19,7 @@ from .layout import (
     MaterializedViewSpec,
     RawEventTableSpec,
 )
+from .ranking import rank_signal_hypotheses, rank_signal_profiles
 
 __all__ = [
     "CanonicalEntitySpec",
@@ -34,4 +35,6 @@ __all__ = [
     "DataLayerLayout",
     "build_signal_profiles",
     "initialize_hypotheses",
+    "rank_signal_profiles",
+    "rank_signal_hypotheses",
 ]

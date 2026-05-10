@@ -13,10 +13,7 @@ from structlog import get_logger
 from tensordict import TensorDict
 
 from graphids.core.models.base import safe_load_checkpoint
-from graphids.core.data.preprocessing.representations import (
-    GraphRepresentationCfg,
-    representation_window_defaults,
-)
+from graphids.core.data.preprocessing.representations import GraphRepresentationCfg
 
 from .compute import (
     AttentionResult,
@@ -45,13 +42,10 @@ def load_val_data(
     from graphids.core.data.datasets.can_bus import CANBusSource
     from graphids.core.data.state import get_or_build
 
-    window_size, stride = representation_window_defaults(representation_cfg)
     state = get_or_build(
         CANBusSource(
             name=dataset,
             lake_root=lake_root,
-            window_size=window_size,
-            stride=stride,
             seed=seed,
             vocab_scope=vocab_scope,
             representation_cfg=representation_cfg,

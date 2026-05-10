@@ -1,9 +1,4 @@
-"""Segment primitives for alternate dataset views.
-
-The current graph pipeline treats one sliding window as one graph sample.
-These primitives let us describe richer sample shapes without baking that
-choice into the CAN adapter or graph builder.
-"""
+"""Public segment primitives for alternate dataset views."""
 
 from __future__ import annotations
 

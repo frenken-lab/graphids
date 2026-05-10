@@ -104,32 +104,24 @@ existence, not these markers.
 
 ### 6. MLflow Store
 
-`{lake_root}/mlflow.db` — MLflow SQLite backend (runs, params, metrics, tags). Written by `graphids/_mlflow.py::log_run` at the end of `orchestrate/stage.py::evaluate`. Each run is an MLflow row keyed by `run_name = {group}_{variant}_{dataset}_seed{N}[_{cluster}]`. Artifacts (if any) land under `{lake_root}/mlartifacts/{exp_id}/{run_id}/`. Browse via the OSC OnDemand MLflow app pointed at the SQLite URI.
+`{lake_root}/mlflow.db` — MLflow SQLite backend (runs, params, metrics, tags). Written by `graphids/_mlflow.py::log_run` from the experiment runtime after each launchable run completes. Each run is keyed by the run name in `RunConfig`. Artifacts (if any) land under `{lake_root}/mlartifacts/{exp_id}/{run_id}/`. Browse via the OSC OnDemand MLflow app pointed at the SQLite URI.
 
 ## Execution Order
 
 ```
-SLURM JOB (compute node) — sbatch carries: python -m graphids exec --row '<json>' [--ckpt-path X]
+SLURM JOB (compute node) — sbatch carries: python -m graphids exp launch <experiment.yaml>
 -------------------------------------------------------------------------------------------------
 _preamble.sh (env, venv)
-python -m graphids exec --row '<row JSON>' [--ckpt-path X]
-+- Plan.model_validate([row]) → typed Row
-+- orchestrate.run_row(row, ckpt_path=...)
-    match row.action:
-      fit  → _instantiate(rendered_config) → trainer/model/datamodule
-             _mlflow.start_training_run (per-axis experiment, run_name = identity)
-             trainer.fit() → MLflowTrainingCallback.on_fit_end → FINISHED
-             touch .train_complete
-      test → _instantiate → trainer.test() → log_test_run → touch .test_complete
+python -m graphids exp launch <experiment.yaml>
++- ExperimentConfig.from_yaml(path) → typed RunConfig
++- graphids.exp.runtime.launch_run(run)
+    fit/test → _resolve_spec(config) → trainer/model/datamodule
+             logger setup → trainer.fit() / trainer.test()
+             MLflowTrainingCallback.on_fit_end → FINISHED
+             manifest + events updated
 
-# Per-checkpoint artifacts are an `analyze` blueprint row: author a plan
-# under graphids/plan/plans/{smoke,data}/ whose build() emits one AnalyzeRow
-# per checkpoint, then run/exec/submit through the same chassis.
-python -m graphids run smoke.analyze_<group> \
-    --dataset <dataset> --seed <N> -o analyze.json
-jq -c '.rows[]' analyze.json | while read row; do
-    python -m graphids exec --row "$row"   # or `submit --row "$row" --cluster ...`
-done
+# Per-checkpoint artifacts are launched from the typed experiment surface:
+python -m graphids exp launch analyze.yaml
 ```
 
 ## Env Var -> Path Mapping

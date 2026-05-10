@@ -1,9 +1,4 @@
-"""View primitives for turning raw CAN/event data into graph samples.
-
-The current pipeline is snapshot-window based. This module drafts a small
-set of view configs so we can support alternate dataset lenses without
-hard-coding them into the schema adapter or the graph pipeline.
-"""
+"""Public view primitives for turning raw CAN/event data into graph samples."""
 
 from __future__ import annotations
 
@@ -12,7 +7,7 @@ from typing import Literal
 
 
 class _ViewCfg:
-    """Marker base for future typed view configs."""
+    """Marker base for public typed view configs."""
 
 
 @dataclass(frozen=True)

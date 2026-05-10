@@ -7,6 +7,7 @@ from typer.testing import CliRunner
 
 def test_manifest_and_events_round_trip(tmp_path):
     from graphids.exp.config import OutputConfig, ResourceConfig, RunConfig
+    from graphids.exp.config import FitRunPayload
     from graphids.exp.journal import EventRecord, RunManifest, append_event, load_events, load_manifest, write_manifest
 
     run_dir = tmp_path / "run"
@@ -16,7 +17,10 @@ def test_manifest_and_events_round_trip(tmp_path):
         dataset="hcrl_sa",
         seed=42,
         git_sha="abc123",
-        config={"foo": "bar"},
+        payload=FitRunPayload(
+            model={"class_path": "graphids.primitives_models.GATCfg"},
+            data={"class_path": "graphids.primitives_data.CANBusCfg"},
+        ),
         resources=ResourceConfig(),
         outputs=OutputConfig(run_dir=str(run_dir)),
     )
@@ -27,7 +31,7 @@ def test_manifest_and_events_round_trip(tmp_path):
         stage=run.stage,
         git_sha=run.git_sha,
         run_dir=run.outputs.run_dir,
-        config={"config": run.config},
+        config={"payload": run.payload.model_dump(mode="json")},
         outputs={"run_dir": run.outputs.run_dir},
     )
     write_manifest(run.outputs.run_dir, manifest)

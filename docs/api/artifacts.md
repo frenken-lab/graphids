@@ -2,8 +2,8 @@
 
 Per-checkpoint artifact generation: embeddings, GAT attention weights,
 teacher↔student CKA, loss-landscape grids, fusion-policy traces. Driven
-by `AnalyzeRow` (a blueprint action) and dispatched through
-`graphids.orchestrate.analyze` → `Analyzer(spec).run()`.
+by `AnalysisConfig` and dispatched directly through
+`graphids.exp.runtime.run_stage` → `Analyzer(spec).run()`.
 
 Distinct from [`graphids.analysis`](#graphids.analysis), which owns
 cross-run statistical comparison from the MLflow catalog (no torch,
@@ -34,7 +34,7 @@ one new compute fn, and one new save fn.
 3. Add an `Artifact("X", "x.npz", frozenset({...}), _run_X)` row to
    `_dispatch.ARTIFACTS` and a `_run_X` glue fn that wires load →
    compute → save.
-4. Add a toggle field on `AnalyzeRow` (default off, or default-on for the
+4. Add a toggle field on `AnalysisConfig` (default off, or default-on for the
    model types in `applies_to` via `default_toggles_for`).
 
 `expected_outputs(spec)` and `Analyzer.run()` derive from `ARTIFACTS`
@@ -58,10 +58,10 @@ the same `FusionDataModule` training/eval uses.
 ## Manifest sidecar
 
 `Analyzer.run()` writes `analysis_manifest.json` next to the artifacts:
-the rendered `AnalyzeRow` identity, expected outputs (derived from
-`expected_outputs(spec)`), and which actually exist on disk after
-the run. Useful as provenance when an `analyze` row was submitted via
-SLURM and the output dir is the only artifact left.
+the rendered analysis identity, expected outputs (derived from
+`expected_outputs(spec)`), and which actually exist on disk after the
+run. Useful as provenance when an `analyze` run was submitted via SLURM
+and the output dir is the only artifact left.
 
 ## `graphids.core.artifacts`
 

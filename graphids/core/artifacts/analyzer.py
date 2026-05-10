@@ -3,21 +3,54 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import Any, Callable, Literal
 
 import torch
 from structlog import get_logger
 
 from graphids.core.models.base import eval_mode, safe_load_checkpoint
-from graphids.exp.config import AnalyzeConfig
+from graphids.core.data.preprocessing.representations import (
+    GraphRepresentationCfg,
+    SnapshotRepresentationCfg,
+)
 
 from . import compute, io
 
 log = get_logger(__name__)
 
 MANIFEST_NAME = "analysis_manifest.json"
+
+
+@dataclass(frozen=True)
+class AnalysisConfig:
+    name: str
+    action: Literal["analyze"] = "analyze"
+    plan_id: str = ""
+    ckpt_path: str = ""
+    dataset: str = ""
+    model_type: Literal["vgae", "dgi", "gat", "fusion"] = "gat"
+    output_dir: str = ""
+    lake_root: str = ""
+    embeddings: bool = True
+    attention: bool = False
+    cka: bool = False
+    landscape: bool = False
+    fusion_policy: bool = False
+    cka_teacher_ckpt: str = ""
+    cka_max_samples: int = 500
+    landscape_resolution: int = 51
+    landscape_scale: float = 1.0
+    landscape_max_graphs: int = 500
+    embedding_max_samples: int = 2000
+    attention_max_samples: int = 50
+    batch_size: int = 256
+    seed: int = 42
+    vocab_scope: str = "train"
+    representation_cfg: GraphRepresentationCfg = field(default_factory=SnapshotRepresentationCfg)
+    vgae_ckpt_path: str = ""
+    gat_ckpt_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -28,7 +61,7 @@ class Artifact:
     run: Callable[..., None]
 
 
-def _run_embeddings(*, model, val_data, device, output_dir, spec: "AnalyzeConfig", **_) -> None:
+def _run_embeddings(*, model, val_data, device, output_dir, spec: AnalysisConfig, **_) -> None:
     r = compute.compute_embeddings(
         model,
         val_data,
@@ -40,14 +73,14 @@ def _run_embeddings(*, model, val_data, device, output_dir, spec: "AnalyzeConfig
     io.save_embeddings(output_dir, r)
 
 
-def _run_attention(*, model, val_data, device, output_dir, spec: "AnalyzeConfig", **_) -> None:
+def _run_attention(*, model, val_data, device, output_dir, spec: AnalysisConfig, **_) -> None:
     r = compute.compute_attention(model, val_data, device, max_samples=spec.attention_max_samples)
     if r is None:
         return
     io.save_attention(output_dir, r)
 
 
-def _run_cka(*, model, val_data, device, output_dir, spec: "AnalyzeConfig", **_) -> None:
+def _run_cka(*, model, val_data, device, output_dir, spec: AnalysisConfig, **_) -> None:
     teacher = io.load_teacher("gat", spec.cka_teacher_ckpt, device)
     try:
         scores = compute.compute_cka(
@@ -60,7 +93,7 @@ def _run_cka(*, model, val_data, device, output_dir, spec: "AnalyzeConfig", **_)
             torch.cuda.empty_cache()
 
 
-def _run_landscape(*, model, val_data, device, output_dir, spec: "AnalyzeConfig", hparams, **_) -> None:
+def _run_landscape(*, model, val_data, device, output_dir, spec: AnalysisConfig, hparams, **_) -> None:
     r = compute.compute_landscape(
         model,
         spec.model_type,
@@ -76,7 +109,7 @@ def _run_landscape(*, model, val_data, device, output_dir, spec: "AnalyzeConfig"
     io.save_landscape(output_dir, r)
 
 
-def _run_fusion_policy(*, module, device, output_dir, spec: "AnalyzeConfig", **_) -> None:
+def _run_fusion_policy(*, module, device, output_dir, spec: AnalysisConfig, **_) -> None:
     td, labels = io.load_fusion_eval(dataset=spec.dataset, seed=spec.seed, device=device)
     r = compute.compute_fusion_policy(module, td, labels)
     io.save_fusion_policy(output_dir, r)
@@ -96,7 +129,7 @@ ARTIFACTS: tuple[Artifact, ...] = (
 )
 
 
-def expected_outputs(spec: AnalyzeConfig) -> tuple[str, ...]:
+def expected_outputs(spec: AnalysisConfig) -> tuple[str, ...]:
     out: list[str] = []
     for a in ARTIFACTS:
         if getattr(spec, a.name):
@@ -107,7 +140,7 @@ def expected_outputs(spec: AnalyzeConfig) -> tuple[str, ...]:
 class Analyzer:
     """Generate analysis artifacts from a trained checkpoint."""
 
-    def __init__(self, spec: AnalyzeConfig):
+    def __init__(self, spec: AnalysisConfig):
         self.spec = spec
         if not Path(spec.ckpt_path).exists():
             raise FileNotFoundError(f"Checkpoint not found: {spec.ckpt_path}")

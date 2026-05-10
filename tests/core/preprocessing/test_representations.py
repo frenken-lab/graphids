@@ -15,6 +15,8 @@ from graphids.core.data.preprocessing.representations import (
     representation_window_defaults,
     representation_view,
 )
+from graphids.core.data.preprocessing.segments import segment_kind
+from graphids.core.data.preprocessing.views import EventChunkViewCfg, RollingStreamViewCfg, view_kind
 
 
 def test_representation_kinds_are_explicit():
@@ -26,30 +28,25 @@ def test_representation_kinds_are_explicit():
 
 
 def test_representation_view_bridge():
-    assert representation_view(SnapshotRepresentationCfg()).__class__.__name__ == "SnapshotViewCfg"
+    assert view_kind(representation_view(SnapshotRepresentationCfg())) == "snapshot"
     assert (
-        representation_view(SnapshotSequenceRepresentationCfg()).__class__.__name__
-        == "SnapshotSequenceViewCfg"
+        view_kind(representation_view(SnapshotSequenceRepresentationCfg()))
+        == "snapshot_sequence"
     )
-    assert (
-        representation_view(MultiScaleRepresentationCfg()).__class__.__name__
-        == "MultiScaleViewCfg"
-    )
-    assert representation_view(TemporalRepresentationCfg()).__class__.__name__ == "RollingStreamViewCfg"
-    assert representation_view(EntityRepresentationCfg()).__class__.__name__ == "EntityViewCfg"
+    assert view_kind(representation_view(MultiScaleRepresentationCfg())) == "multi_scale"
+    assert view_kind(representation_view(TemporalRepresentationCfg())) == "rolling_stream"
+    assert view_kind(representation_view(EntityRepresentationCfg())) == "entity"
+    assert view_kind(EventChunkViewCfg()) == "event_chunk"
+    assert view_kind(RollingStreamViewCfg()) == "rolling_stream"
 
 
 def test_representation_segment_bridge():
-    assert representation_segment(SnapshotRepresentationCfg()).__class__.__name__ == "WindowSegmentCfg"
+    assert segment_kind(representation_segment(SnapshotRepresentationCfg())) == "window"
     assert (
-        representation_segment(SnapshotSequenceRepresentationCfg()).__class__.__name__
-        == "SequenceSegmentCfg"
+        segment_kind(representation_segment(SnapshotSequenceRepresentationCfg())) == "sequence"
     )
-    assert (
-        representation_segment(MultiScaleRepresentationCfg()).__class__.__name__
-        == "MultiScaleSegmentCfg"
-    )
-    assert representation_segment(EntityRepresentationCfg()).__class__.__name__ == "EntitySegmentCfg"
+    assert segment_kind(representation_segment(MultiScaleRepresentationCfg())) == "multi_scale"
+    assert segment_kind(representation_segment(EntityRepresentationCfg())) == "entity"
 
 
 def test_representation_temporal_bridge():

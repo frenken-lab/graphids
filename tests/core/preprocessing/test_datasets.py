@@ -82,8 +82,6 @@ class TestCANBusDatasetBuildGraphs:
             split="train",
             val_fraction=0.2,
             source_dirs=["train_01_attack_free"],
-            window_size=50,
-            stride=50,
             seed=42,
             shared_vocab=vocab,
             shared_vocab_digest=digest,
