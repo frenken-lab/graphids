@@ -1,4 +1,4 @@
-"""Offline first-fit decreasing packer for variable-size graphs."""
+"""Offline next-fit decreasing packer for variable-size graphs."""
 
 from __future__ import annotations
 
@@ -24,7 +24,12 @@ def pack_offline(
     edge_sizes: torch.Tensor | None = None,
     max_edges: int | None = None,
 ) -> list[list[int]]:
-    """Pack graph indices under node and edge budgets."""
+    """Pack graph indices under node and edge budgets.
+
+    The sorted next-fit strategy is intentionally linear after sorting. Exact
+    first-fit gives slightly tighter bins, but it is quadratic on large cached
+    graph datasets and can spend minutes on CPU before the first GPU step.
+    """
     if max_num <= 0:
         raise ValueError(f"max_num must be positive, got {max_num}")
     if edge_sizes is not None:
@@ -40,6 +45,7 @@ def pack_offline(
     order = torch.argsort(sizes, descending=True).tolist()
 
     bins: list[_Bin] = []
+    current = _Bin()
     skipped = 0
     for i in order:
         n_i = int(sizes[i])
@@ -47,14 +53,18 @@ def pack_offline(
         if n_i > max_num or (max_edges is not None and e_i > max_edges):
             skipped += 1
             continue
-        for b in bins:
-            if b.n_sum + n_i <= max_num and (max_edges is None or b.e_sum + e_i <= max_edges):
-                b.indices.append(i)
-                b.n_sum += n_i
-                b.e_sum += e_i
-                break
-        else:
-            bins.append(_Bin(indices=[i], n_sum=n_i, e_sum=e_i))
+        fits_current = current.n_sum + n_i <= max_num and (
+            max_edges is None or current.e_sum + e_i <= max_edges
+        )
+        if current.indices and not fits_current:
+            bins.append(current)
+            current = _Bin()
+        current.indices.append(i)
+        current.n_sum += n_i
+        current.e_sum += e_i
+
+    if current.indices:
+        bins.append(current)
 
     if skipped:
         log.warning(

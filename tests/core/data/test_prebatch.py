@@ -1,4 +1,4 @@
-"""Offline FFD packer — the live primitive backing the prebatch path.
+"""Offline graph packer — the live primitive backing the prebatch path.
 
 The prior live ``NodeBudgetBatchSampler`` was confirmed dead and removed in
 ``graph_v2`` (see ``datamodule/sampler.py`` docstring). ``pack_offline`` is
@@ -63,3 +63,8 @@ class TestPackOffline:
             pack_offline(_sizes([1, 2]), max_num=10, edge_sizes=_sizes([1, 2]))
         with pytest.raises(ValueError, match="length"):
             pack_offline(_sizes([1, 2, 3]), max_num=10, edge_sizes=_sizes([1, 2]), max_edges=10)
+
+    def test_large_pack_stays_linear_in_bin_count(self):
+        sizes = _sizes([10] * 10_000)
+        bins = pack_offline(sizes, max_num=100)
+        assert len(bins) == 1_000
