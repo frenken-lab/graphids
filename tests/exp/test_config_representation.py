@@ -95,8 +95,23 @@ def test_snapshot_sequence_smoke_config_resolves_to_fit_payload():
     assert representation_kind(data.source.representation_cfg) == "snapshot_sequence"
     assert data.batch_size == 1
     assert data.num_workers == 0
+    assert data.dynamic_batching is True
     assert data.require_cache is True
     assert data.min_steps_per_epoch == 2
+
+
+def test_snapshot_sequence_real_config_uses_budgeted_batches():
+    from graphids.core.data.preprocessing.representations import representation_kind
+    from graphids.exp import runtime
+    from graphids.exp.config import ExperimentConfig
+
+    cfg = ExperimentConfig.from_yaml("configs/experiments/gat_snapshot_sequence_real.yml")
+    run = cfg.build_run(name=cfg.experiment_name, stage=cfg.stage, config=cfg.config)
+
+    data = runtime._build_component(run.payload.data)
+    assert representation_kind(data.source.representation_cfg) == "snapshot_sequence"
+    assert data.dynamic_batching is True
+    assert data.min_steps_per_epoch > 1
 
 
 def test_snapshot_sequence_cache_config_resolves_to_cache_payload(monkeypatch):

@@ -36,7 +36,7 @@ config:
     batch_size: 1
     min_steps_per_epoch: 2
     num_workers: 0
-    dynamic_batching: false
+    dynamic_batching: true
     require_cache: true
   model:
     type: gat
