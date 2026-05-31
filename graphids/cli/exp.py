@@ -9,6 +9,7 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Annotated
 
+import mlflow
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -16,6 +17,7 @@ from rich.table import Table
 from graphids.cli.app import app
 from graphids.exp.config import ExperimentConfig
 from graphids.exp.journal import load_manifest
+from graphids.exp.results import query_result_view, result_rows_as_json, sort_rows
 from graphids.exp.runtime import launch_run, summarize_run
 
 exp_app = typer.Typer(
@@ -84,3 +86,56 @@ def launch(
     if result is not None:
         payload = asdict(result) if is_dataclass(result) else {"result": str(result)}
         console.print_json(data=payload)
+
+
+@exp_app.command("results")
+def results(
+    view: Annotated[str, typer.Option("--view", "-v", help="Result view in configs/result_views.yml")] = "fusion",
+    dataset: Annotated[
+        list[str] | None,
+        typer.Option("--dataset", "-d", help="Dataset to query; repeat for multiple datasets"),
+    ] = None,
+    variant: Annotated[
+        list[str] | None,
+        typer.Option("--variant", help="Variant to include; repeat for multiple variants"),
+    ] = None,
+    all_runs: Annotated[bool, typer.Option("--all", help="Show all matching runs, not latest per variant")] = False,
+    tracking_uri: Annotated[str | None, typer.Option("--tracking-uri", help="Override MLflow tracking URI")] = None,
+    output_format: Annotated[str, typer.Option("--format", help="table or json")] = "table",
+) -> None:
+    """Query configured MLflow result views."""
+    if tracking_uri:
+        mlflow.set_tracking_uri(tracking_uri)
+    datasets = dataset or ["hcrl_sa", "set_01", "set_02", "set_03", "set_04"]
+    rows = sort_rows(
+        query_result_view(
+            view=view,
+            datasets=datasets,
+            variants=variant,
+            latest=not all_runs,
+        )
+    )
+    if output_format == "json":
+        console.print_json(data=result_rows_as_json(rows))
+        return
+    if output_format != "table":
+        raise typer.BadParameter("--format must be table or json")
+
+    table = Table(title=f"{view} results", show_lines=False)
+    base_cols = ["dataset", "variant", "status", "run_id"]
+    metric_cols = list(rows[0].metrics) if rows else []
+    for col in [*base_cols, *metric_cols]:
+        table.add_column(col)
+    for row in rows:
+        payload = row.flat()
+        values = []
+        for col in [*base_cols, *metric_cols]:
+            value = payload.get(col)
+            if isinstance(value, float):
+                values.append(f"{value:.4f}")
+            elif value is None:
+                values.append("n/a")
+            else:
+                values.append(str(value))
+        table.add_row(*values)
+    console.print(table)

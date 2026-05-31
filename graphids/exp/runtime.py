@@ -13,7 +13,7 @@ from inspect import signature
 from pathlib import Path
 from typing import Any
 
-from graphids._mlflow import make_logger
+from graphids._mlflow import MLflowSystemMetricsCallback, make_logger
 from graphids.exp.config import RunConfig, RunSummary
 from graphids.exp.journal import (
     EventRecord,
@@ -75,7 +75,13 @@ def _build_component(spec: Any, **build_kwargs: Any) -> Any:
     return resolved
 
 
-def _run_fit_or_test(action: str, cfg: Mapping[str, Any], *, ckpt_path: str | None = None) -> Any:
+def _run_fit_or_test(
+    action: str,
+    cfg: Mapping[str, Any],
+    *,
+    ckpt_path: str | None = None,
+    logger: Any | None = None,
+) -> Any:
     import lightning.pytorch as pl
 
     if "data" not in cfg or "model" not in cfg:
@@ -106,6 +112,12 @@ def _run_fit_or_test(action: str, cfg: Mapping[str, Any], *, ckpt_path: str | No
         callback_specs = callbacks
     if callback_specs:
         trainer_kwargs["callbacks"] = [_build_component(cb) for cb in callback_specs]
+    if logger is not None:
+        trainer_kwargs.setdefault("logger", logger)
+        callbacks = list(trainer_kwargs.get("callbacks") or [])
+        if not any(isinstance(cb, MLflowSystemMetricsCallback) for cb in callbacks):
+            callbacks.append(MLflowSystemMetricsCallback())
+        trainer_kwargs["callbacks"] = callbacks
 
     seed = cfg.get("seed_everything", cfg.get("seed"))
     if seed is not None:
@@ -123,7 +135,7 @@ def _run_fit_or_test(action: str, cfg: Mapping[str, Any], *, ckpt_path: str | No
     return {"stage": "test", "trainer": trainer.__class__.__name__, "ckpt_path": test_ckpt}
 
 
-def run_stage(run: RunConfig) -> dict[str, Any] | None:
+def run_stage(run: RunConfig, logger: Any | None = None) -> dict[str, Any] | None:
     """Default stage dispatcher for experiment launches.
 
     Fit/test, extract, and analyze all run directly from the typed
@@ -131,7 +143,12 @@ def run_stage(run: RunConfig) -> dict[str, Any] | None:
     """
     if run.stage in {"fit", "test"}:
         payload = run.payload.model_dump(mode="json")
-        return _run_fit_or_test(run.stage, payload, ckpt_path=payload.get("ckpt_path"))
+        return _run_fit_or_test(
+            run.stage,
+            payload,
+            ckpt_path=payload.get("ckpt_path"),
+            logger=logger,
+        )
     if run.stage == "extract":
         from graphids.core.data.extract import extract_states
 
@@ -193,6 +210,31 @@ def run_stage(run: RunConfig) -> dict[str, Any] | None:
     raise ValueError(f"unknown stage: {run.stage!r}")
 
 
+def _make_run_logger(
+    run: RunConfig,
+    *,
+    run_id: str | None = None,
+) -> Any:
+    return make_logger(
+        experiment_name=f"graphids/{run.dataset or 'unknown'}/{run.stage}",
+        run_name=run.name,
+        tags=run.mlflow_tags(),
+        artifact_location=str(run.outputs.mlflow_dir()),
+        run_id=run_id,
+    )
+
+
+def _run_stage_with_existing_mlflow_run(run: RunConfig, run_id: str) -> dict[str, Any] | None:
+    """Ray-safe stage entrypoint.
+
+    MLflow logger objects are process-local and should not be serialized into
+    Ray workers. Pass the existing run id instead, then bind a fresh
+    ``MLFlowLogger`` in the worker to that run.
+    """
+    logger = _make_run_logger(run, run_id=run_id)
+    return run_stage(run, logger=logger)
+
+
 def launch_run(
     run: RunConfig,
 ) -> RunSummary:
@@ -203,12 +245,7 @@ def launch_run(
             import ray  # noqa: F401
         except ImportError:
             backend = "local"
-    logger = make_logger(
-        experiment_name=f"graphids/{run.dataset or 'unknown'}/{run.stage}",
-        run_name=run.name,
-        tags=run.mlflow_tags(),
-        artifact_location=str(run.outputs.mlflow_dir()),
-    )
+    logger = _make_run_logger(run)
     logger.log_hyperparams(run.mlflow_hparams(backend=backend))
     manifest = run.journal_manifest(status="running")
     write_manifest(run.outputs.run_dir, manifest, name=run.outputs.manifest_name)
@@ -228,9 +265,11 @@ def launch_run(
             import ray
 
             ray.init(ignore_reinit_error=True, include_dashboard=False)
-            result = ray.get(ray.remote(run_stage).remote(run))
+            if logger.run_id is None:
+                raise RuntimeError("MLflow logger did not create a run id before Ray launch")
+            result = ray.get(ray.remote(_run_stage_with_existing_mlflow_run).remote(run, logger.run_id))
         else:
-            result = run_stage(run)
+            result = run_stage(run, logger=logger)
         if logger.run_id is not None:
             logger.experiment.set_terminated(logger.run_id, status="FINISHED")
         append_event(

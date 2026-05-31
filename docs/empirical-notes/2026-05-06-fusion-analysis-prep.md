@@ -349,10 +349,9 @@ not captured here even though they finished**. They live in MLflow
 from scratch every session, use the canonical query tool:
 
 ```bash
-python scripts/results.py --view fusion                    # all datasets, all variants
-python scripts/results.py --view fusion --dataset set_01   # filter
-python scripts/results.py --view gat --variant focal       # different model group
-python scripts/results.py --list-views                     # see profiles
+graphids exp results --view fusion                    # all datasets, all variants
+graphids exp results --view fusion --dataset set_01   # filter
+graphids exp results --view gat --variant focal       # different model group
 ```
 
 View profiles are config-driven in `configs/result_views.yml`. Adding a new

@@ -1,4 +1,4 @@
-# Per-group result views for scripts/results.py.
+# Per-group result views for `graphids exp results`.
 #
 # Each entry declares (a) base graphids-tag filter, (b) ordered metric keys
 # to print. CLI flags compose with the base filter (CLI overrides win).
@@ -9,7 +9,7 @@
 # REGISTRY for classifier-flavor; binary_test_metrics for threshold-flavor).
 #
 # To inspect what keys a run actually has:
-#     python scripts/results.py --view <name> --format json | jq '.[0]'
+#     graphids exp results --view <name> --format json | jq '.[0]'
 
 fusion:
   filter:
