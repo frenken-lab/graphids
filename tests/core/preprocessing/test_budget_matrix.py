@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
-from graphids.core.budget import BudgetResult, node_budget
+from graphids.core.budget import BudgetResult, _dataset_size_stats, node_budget
 
 DATASETS = ["hcrl_ch", "hcrl_sa", "set_01"]
 
@@ -99,3 +99,16 @@ def test_auto_mode_prefers_probe_when_prereqs_exist(monkeypatch):
     assert calls["train_dataset"] is train_dataset
     assert calls["quadratic"] is False
     assert calls["min_steps"] == 9
+
+
+def test_budget_size_stats_use_cached_graph_counts():
+    """Cached graph datasets expose size tensors; budget code should not iterate graphs."""
+
+    class _Dataset:
+        num_nodes_per_graph = [10, 25, 5]
+        num_edges_per_graph = [30, 100, 15]
+
+        def __iter__(self):
+            raise AssertionError("budget size stats should use cached graph counts")
+
+    assert _dataset_size_stats(_Dataset()) == (25, 100, 40, 145 / 40)
