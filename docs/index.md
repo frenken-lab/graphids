@@ -8,9 +8,9 @@ edge deployment.
 ## Where to start
 
 - **[Module responsibilities](responsibilities.md)** — one-page map of
-  what every layer owns (plan → render → validate → exec/submit).
-- **[Config system](reference/config-architecture.md)** — how a
-  Python plan under `graphids/plan/plans/` becomes a trained model.
+  what every layer owns from experiment YAML through runtime execution.
+- **[Config system](reference/config-architecture.md)** — how an
+  experiment YAML becomes a cache build, training run, or analysis job.
 - **[Data architecture](reference/data-architecture.md)** — raw rows,
   explicit representations, materialized views, and discovery/hypotheses.
 - **[Decisions](decisions/README.md)** — the ADR log. Permanent

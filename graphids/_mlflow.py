@@ -37,11 +37,13 @@ def make_logger(
 ) -> MLFlowLogger:
     """Create the Lightning MLflow logger used by training and evaluation."""
     configure_tracking_uri()
+    tracking_uri = mlflow.get_tracking_uri()
     if system_metrics:
         mlflow.enable_system_metrics_logging()
     return MLFlowLogger(
         experiment_name=experiment_name,
         run_name=run_name,
+        tracking_uri=tracking_uri,
         tags=tags or {},
         artifact_location=artifact_location,
         run_id=run_id,

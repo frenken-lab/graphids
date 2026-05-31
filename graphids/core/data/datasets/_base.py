@@ -23,26 +23,35 @@ from graphids.core.data.preprocessing.metadata import (
 from graphids.core.data.preprocessing.pipeline import (
     GraphPipeline,
     GraphTables,
+)
+from graphids.core.data.preprocessing.pipeline import (
     build_tables as build_pipeline_tables,
+)
+from graphids.core.data.preprocessing.pipeline import (
     run as run_pipeline,
 )
 from graphids.core.data.preprocessing.representations import (
-    EntityRepresentationCfg,
     GraphRepresentationCfg,
-    MultiScaleRepresentationCfg,
-    SequenceSegmentCfg,
     SnapshotRepresentationCfg,
-    SnapshotSequenceRepresentationCfg,
-    TemporalRepresentationCfg,
+    representation_digest,
     representation_kind,
+    representation_payload,
     representation_segment,
+    representation_window_defaults,
 )
-from graphids.core.data.preprocessing.scaler import ScalerCfg, ZBenignScalerCfg, scaler_kind
+from graphids.core.data.preprocessing.scaler import (
+    ScalerCfg,
+    ZBenignScalerCfg,
+    scaler_kind,
+)
 from graphids.core.data.preprocessing.vocab import persist_vocab
 from graphids.core.data.state import DatasetState
 from graphids.paths import PREPROCESSING_VERSION
 
 log = get_logger(__name__)
+
+_DEFAULT_SCALER_CFG = ZBenignScalerCfg()
+_DEFAULT_REPRESENTATION_CFG = SnapshotRepresentationCfg()
 
 
 def _stats(t: torch.Tensor) -> dict[str, float | int]:
@@ -91,8 +100,8 @@ class BaseGraphDataset(InMemoryDataset):
         seed: int = 42,
         shared_vocab: dict | None = None,
         shared_vocab_digest: str | None = None,
-        scaler_cfg: ScalerCfg = ZBenignScalerCfg(),
-        representation_cfg: GraphRepresentationCfg = SnapshotRepresentationCfg(),
+        scaler_cfg: ScalerCfg = _DEFAULT_SCALER_CFG,
+        representation_cfg: GraphRepresentationCfg = _DEFAULT_REPRESENTATION_CFG,
         transform=None,
         pre_transform=None,
     ):
@@ -136,8 +145,6 @@ class BaseGraphDataset(InMemoryDataset):
 
     @staticmethod
     def _resolved_window_size_stride(representation_cfg: GraphRepresentationCfg) -> tuple[int, int]:
-        from graphids.core.data.preprocessing.representations import representation_window_defaults
-
         return representation_window_defaults(representation_cfg)
 
     @property
@@ -209,6 +216,9 @@ class BaseGraphDataset(InMemoryDataset):
                 "seed": self.seed,
                 "vocab_digest": self._shared_vocab_digest,
                 "scaler_strategy": self.scaler_strategy,
+                "representation_kind": self.representation_kind,
+                "representation_digest": representation_digest(self.representation_cfg),
+                "representation_cfg": representation_payload(self.representation_cfg),
             }
             common = dict(
                 invariants=invariants,
@@ -363,14 +373,10 @@ class BaseGraphSource:
 
     @property
     def window_size(self) -> int:
-        from graphids.core.data.preprocessing.representations import representation_window_defaults
-
         return representation_window_defaults(self.representation_cfg)[0]
 
     @property
     def stride(self) -> int:
-        from graphids.core.data.preprocessing.representations import representation_window_defaults
-
         return representation_window_defaults(self.representation_cfg)[1]
 
     def resolved_lake_root(self) -> str:
@@ -382,13 +388,41 @@ class BaseGraphSource:
 
     @property
     def cache_key(self) -> str:
+        repr_digest = representation_digest(self.representation_cfg)
         return (
             f"{self.KIND}|{self.resolved_lake_root()}|{self.name}"
             f"|w{self.window_size}|s{self.stride}"
             f"|v{self.val_fraction}|seed{self.seed}"
             f"|sc:{scaler_kind(self.scaler_cfg)}|voc:{self.vocab_scope}"
-            f"|repr:{representation_kind(self.representation_cfg)}"
+            f"|repr:{representation_kind(self.representation_cfg)}:{repr_digest}"
         )
+
+    def cache_root_path(self) -> Path:
+        from graphids.paths import cache_dir
+
+        lake = self.resolved_lake_root()
+        repr_slug = (
+            f"{representation_kind(self.representation_cfg)}_"
+            f"{representation_digest(self.representation_cfg)}"
+        )
+        return cache_dir(lake, self.name) / f"{repr_slug}_voc_{self.vocab_scope}"
+
+    def cache_ready(self) -> bool:
+        from graphids.paths import data_dir, load_catalog
+
+        entry = load_catalog()[self.name]
+        lake = self.resolved_lake_root()
+        raw = data_dir(lake, self.name)
+        root = self.cache_root_path()
+        processed = root / "processed"
+        train_dirs = [s for s in (entry.get("train_subdir"), entry.get("train_attack_subdir")) if s]
+        if not train_dirs:
+            return False
+        present_test = [sd for sd in entry.get("test_subdirs", []) if (raw / sd).is_dir()]
+        expected = [processed / "data_train.pt"] + [
+            processed / f"data_test_{sd}.pt" for sd in present_test
+        ]
+        return (processed / ".complete").is_file() and all(path.is_file() for path in expected)
 
     def _scan_vocab(self, raw_dir: Path, source_dirs: list[str]) -> list[Any]:
         raise NotImplementedError(
@@ -410,11 +444,11 @@ class BaseGraphSource:
         del root, raw, train_dirs, present_test, vocab, digest
 
     def build(self) -> DatasetState:
-        from graphids.paths import cache_dir, data_dir, load_catalog
+        from graphids.paths import data_dir, load_catalog
 
         entry = load_catalog()[self.name]
         lake = self.resolved_lake_root()
-        root = cache_dir(lake, self.name) / f"voc_{self.vocab_scope}"
+        root = self.cache_root_path()
         raw = data_dir(lake, self.name)
 
         train_dirs = [s for s in (entry.get("train_subdir"), entry.get("train_attack_subdir")) if s]

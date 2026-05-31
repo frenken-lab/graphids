@@ -20,6 +20,7 @@ class _Cfg(BaseModel):
 class GATCfg(_Cfg):
     type: Literal["gat"] = "gat"
     scale: Literal["small", "large"] = "small"
+    sequence_pool: Literal["auto", "flat", "mean", "attention", "gru"] = "auto"
     id_encoder_cfg: IdEncodingCfg | None = None
     id_encoder_class_path: str | None = None
     id_encoder_kwargs: dict[str, Any] = Field(default_factory=dict)
@@ -27,7 +28,11 @@ class GATCfg(_Cfg):
     def build(self, *, loss_fn: Any = None) -> Any:
         from graphids.core.models.supervised.gat import GAT
 
-        kwargs: dict[str, Any] = {"loss_fn": loss_fn, "scale": self.scale}
+        kwargs: dict[str, Any] = {
+            "loss_fn": loss_fn,
+            "scale": self.scale,
+            "sequence_pool": self.sequence_pool,
+        }
         if self.id_encoder_cfg is not None:
             kwargs["id_encoder_cfg"] = self.id_encoder_cfg
         if self.id_encoder_class_path is not None:
@@ -145,12 +150,14 @@ ModelCfg = Annotated[
 def gat(
     scale: str = "small",
     *,
+    sequence_pool: str = "auto",
     id_encoder_cfg: IdEncodingCfg | None = None,
     id_encoder_class_path: str | None = None,
     id_encoder_kwargs: dict[str, Any] | None = None,
 ) -> GATCfg:
     return GATCfg(
         scale=scale,
+        sequence_pool=sequence_pool,
         id_encoder_cfg=id_encoder_cfg,
         id_encoder_class_path=id_encoder_class_path,
         id_encoder_kwargs=id_encoder_kwargs or {},

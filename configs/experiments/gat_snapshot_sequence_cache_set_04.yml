@@ -1,0 +1,39 @@
+experiment_name: gat_snapshot_sequence_cache_set_04
+dataset: set_04
+seed: 42
+plan_id: gat_snapshot_sequence_cache_set_04
+stage: cache
+representation_cfg:
+  kind: snapshot_sequence
+  window_size: 100
+  stride: 100
+  sequence_length: 3
+  sequence_stride: 1
+resources:
+  backend: local
+  cluster: pitzer
+  partition: cpu
+  accelerator: cpu
+  num_workers: 0
+  cpus_per_worker: 8
+  gpus_per_worker: 0.0
+  memory_gb: 96
+  time_limit: "04:00:00"
+  account: pas1266
+config:
+  data:
+    type: graph_dm
+    source:
+      type: can_bus
+      dataset: set_04
+      seed: 42
+      representation_cfg:
+        kind: snapshot_sequence
+        window_size: 100
+        stride: 100
+        sequence_length: 3
+        sequence_stride: 1
+    batch_size: 1
+    min_steps_per_epoch: 1
+    num_workers: 0
+    dynamic_batching: true

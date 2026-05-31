@@ -15,6 +15,7 @@ from graphids.core.data.datasets.can_bus import (
     NODE_STAT_EXPRS,
 )
 from graphids.core.data.preprocessing.materialization import build_graph_tables
+from graphids.core.data.preprocessing.pyg import graph_tables_to_pyg
 from graphids.core.data.preprocessing.segments import (
     EntitySegmentCfg,
     MultiScaleSegmentCfg,
@@ -47,9 +48,31 @@ def test_sequence_branch_tags_materialized_tables():
         debug_artifacts_dir=None,
         segment_cfg=SequenceSegmentCfg(window_size=5, stride=5, sequence_length=3, sequence_stride=1),
     )
+    assert tables.node_stats.select("_wid").n_unique() == 2
+    assert tables.labels.height == 2
+    assert set(tables.node_stats.select("sequence_step").unique()["sequence_step"].to_list()) == {
+        0,
+        1,
+        2,
+    }
+    assert "snapshot_wid" in tables.node_stats.columns
     assert "sequence_length" in tables.node_stats.columns
     assert "sequence_length" in tables.edge_df.columns
     assert "sequence_length" in tables.labels.columns
+    assert "sequence_stride" in tables.labels.columns
+
+    data, slices, num_graphs, _ = graph_tables_to_pyg(
+        tables,
+        node_col_order=NODE_COL_ORDER,
+        edge_col_order=EDGE_COL_ORDER,
+        label_exprs=LABEL_EXPRS,
+    )
+    assert num_graphs == 2
+    assert data.sequence_id.tolist() == [0, 1]
+    assert data.sequence_length.tolist() == [3, 3]
+    assert data.sequence_stride.tolist() == [1, 1]
+    first_start, first_end = slices["node_sequence_step"][0], slices["node_sequence_step"][1]
+    assert set(data.node_sequence_step[first_start:first_end].tolist()) == {0, 1, 2}
 
 
 def test_multiscale_branch_tags_materialized_tables():

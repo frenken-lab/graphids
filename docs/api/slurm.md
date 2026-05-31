@@ -1,8 +1,19 @@
 # SLURM
 
-This page is archival only.
+The live SLURM surface is `gx exp submit <experiment.yml>`.
 
-The live repository no longer ships a `graphids.slurm` package, so
-`mkdocstrings` cannot render a module reference here. Historical
-submission-flow notes remain in the architecture docs, but this page no
-longer points at a live API target.
+Implementation lives in `graphids.exp.slurm` and is exposed through
+`graphids.cli.exp.submit`. It validates an `ExperimentConfig`, renders an
+sbatch script under the configured SLURM log directory, and submits it with
+`sbatch`.
+
+Useful commands:
+
+```bash
+gx exp submit configs/experiments/gat_snapshot_sequence_real.yml -C pitzer
+gx exp submit configs/experiments/gat_snapshot_sequence_real.yml -C pitzer --dry-run
+```
+
+## `graphids.exp.slurm`
+
+::: graphids.exp.slurm

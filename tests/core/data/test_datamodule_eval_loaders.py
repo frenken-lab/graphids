@@ -77,3 +77,24 @@ class TestEvalLoadersCpuOnly:
         dm.test_dataloader()
         dm.val_dataloader()
         assert dm._budget is None
+
+
+def test_require_cache_fails_before_building():
+    import pytest
+
+    class MissingCacheSource:
+        name = "dummy"
+
+        def cache_ready(self):
+            return False
+
+        def cache_root_path(self):
+            return "/tmp/missing-cache"
+
+        def build(self):
+            raise AssertionError("build should not run when require_cache=True")
+
+    dm = GraphDataModule(MissingCacheSource(), require_cache=True)
+
+    with pytest.raises(RuntimeError, match="required graph cache is missing"):
+        dm.setup(None)

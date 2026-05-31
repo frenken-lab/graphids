@@ -38,6 +38,7 @@ class GraphDataModule(pl.LightningDataModule):
         difficulty: Callable[..., torch.Tensor] | None = None,
         scope_label: int = 0,
         min_steps_per_epoch: int = 1,
+        require_cache: bool = False,
     ):
         super().__init__()
         self.source = dataset
@@ -49,6 +50,7 @@ class GraphDataModule(pl.LightningDataModule):
         self.difficulty = difficulty
         self.scope_label = scope_label
         self.min_steps_per_epoch = min_steps_per_epoch
+        self.require_cache = require_cache
         self._train: InMemoryDataset | None = None
         self._val: InMemoryDataset | None = None
         self._tests: dict[str, InMemoryDataset] = {}
@@ -61,6 +63,10 @@ class GraphDataModule(pl.LightningDataModule):
     def setup(self, stage: str | None = None) -> None:
         if self._train is not None:
             return
+        cache_ready = getattr(self.source, "cache_ready", None)
+        if self.require_cache and callable(cache_ready) and not cache_ready():
+            cache_root = getattr(self.source, "cache_root_path", lambda: "<unknown>")()
+            raise RuntimeError(f"required graph cache is missing or incomplete: {cache_root}")
         st = get_or_build(self.source)
         self._train, self._val, self._tests = st.train, st.val, st.test
         if self.difficulty is not None:
@@ -128,8 +134,6 @@ class GraphDataModule(pl.LightningDataModule):
         if self._budget is not None:
             return self._budget
         model = self.trainer.lightning_module if self.trainer is not None else None
-        if torch.cuda.is_available() and model is None:
-            raise RuntimeError("budget probe needs trainer + lightning_module")
         view = self._train_graphs if self._train_graphs is not None else self._train_view()
         min_steps = self.min_steps_per_epoch if self.min_steps_per_epoch > 1 else None
         self._budget = (

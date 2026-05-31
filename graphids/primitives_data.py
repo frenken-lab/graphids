@@ -67,14 +67,27 @@ class CANBusCfg(_Cfg):
     def resolved_window_size_stride(self) -> tuple[int, int]:
         return representation_window_defaults(self.representation_cfg)
 
+    @property
+    def window_size(self) -> int:
+        return self.resolved_window_size_stride()[0]
+
+    @property
+    def stride(self) -> int:
+        return self.resolved_window_size_stride()[1]
+
 
 class GraphDMCfg(_Cfg):
     type: Literal["graph_dm"] = "graph_dm"
     source: CANBusCfg
+    batch_size: int = 32
+    num_workers: int | None = None
+    prefetch_factor: int = 2
+    dynamic_batching: bool = True
     label_filter: str | None = None
     difficulty: DifficultyCfg | None = None
     scope_label: int = 0
     min_steps_per_epoch: int = 1
+    require_cache: bool = False
 
     def build(self) -> Any:
         from graphids.core.data.datamodule.graph import GraphDataModule
@@ -91,10 +104,15 @@ class GraphDMCfg(_Cfg):
         difficulty = self.difficulty.build() if self.difficulty is not None else None
         return GraphDataModule(
             dataset=source,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            prefetch_factor=self.prefetch_factor,
+            dynamic_batching=self.dynamic_batching,
             label_filter=self.label_filter,
             difficulty=difficulty,
             scope_label=self.scope_label,
             min_steps_per_epoch=self.min_steps_per_epoch,
+            require_cache=self.require_cache,
         )
 
 
@@ -241,6 +259,7 @@ def graph_dm(
     label_filter: str | None = None,
     difficulty: DifficultyCfg | None = None,
     scope_label: int = 0,
+    require_cache: bool = False,
     **overrides: Any,
 ) -> GraphDMCfg:
     return GraphDMCfg(
@@ -248,6 +267,7 @@ def graph_dm(
         label_filter=label_filter,
         difficulty=difficulty,
         scope_label=scope_label,
+        require_cache=require_cache,
         **overrides,
     )
 

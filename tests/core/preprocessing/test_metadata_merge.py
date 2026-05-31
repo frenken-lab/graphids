@@ -27,6 +27,9 @@ INVARIANTS = {
     # Source of truth for required keys: graphids.core.data.preprocessing.metadata.INVARIANT_KEYS.
     # Co-update this fixture whenever that tuple grows.
     "scaler_strategy": "z_benign",
+    "representation_kind": "snapshot",
+    "representation_digest": "b" * 12,
+    "representation_cfg": {"kind": "snapshot", "window_size": 100, "stride": 100},
 }
 
 
@@ -172,7 +175,7 @@ def test_load_metadata_rejects_v1(tmp_path):
     (tmp_path / "cache_metadata.json").write_text(
         json.dumps({"window_size": 100, "graph_stats": {"node_count": {"mean": 12}}})
     )
-    with pytest.raises(ValueError, match="expected 3"):
+    with pytest.raises(ValueError, match="expected 4"):
         load_metadata(tmp_path)
 
 

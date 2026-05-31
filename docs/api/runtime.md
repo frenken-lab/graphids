@@ -6,6 +6,7 @@ stage-specific work directly:
 
 - `fit` / `test` → Lightning trainer launch with config-driven data/model
   instantiation
+- `cache` → materialize the configured graph cache
 - `extract` → feature extraction over configured checkpoints and dataset
 - `analyze` → per-checkpoint artifact generation through
   `graphids.core.artifacts.analyzer.Analyzer`

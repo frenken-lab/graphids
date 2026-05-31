@@ -6,6 +6,7 @@ instantiate it directly from CLI/YAML today.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -29,6 +30,35 @@ def _representation_payload(cfg: GraphRepresentationCfg) -> dict[str, Any]:
     raise TypeError(f"unsupported representation config: {type(cfg)!r}")
 
 
+def _json_payload(value: Any) -> Any:
+    if is_dataclass(value):
+        value = asdict(value)
+    elif hasattr(value, "model_dump"):
+        value = value.model_dump(mode="json")
+    if isinstance(value, Mapping):
+        return {str(k): _json_payload(v) for k, v in value.items()}
+    if isinstance(value, tuple | list):
+        return [_json_payload(v) for v in value]
+    return value
+
+
+def _find_data_representation_payload(value: Any) -> dict[str, Any] | None:
+    if hasattr(value, "model_dump") and not isinstance(value, Mapping):
+        value = value.model_dump(mode="json")
+    if not isinstance(value, Mapping):
+        return None
+    if "representation_cfg" in value:
+        payload = _json_payload(value["representation_cfg"])
+        if not isinstance(payload, dict):
+            raise TypeError("data representation_cfg must resolve to a mapping")
+        return payload
+    for nested in value.values():
+        found = _find_data_representation_payload(nested)
+        if found is not None:
+            return found
+    return None
+
+
 def _payload(cfg: RunPayload) -> dict[str, Any]:
     if hasattr(cfg, "model_dump"):
         return cfg.model_dump(mode="json")
@@ -47,11 +77,16 @@ class ResourceConfig(_StrictModel):
     """Execution resources for a run."""
 
     backend: Literal["local", "ray"] = "local"
+    cluster: str | None = None
+    partition: str | None = None
     accelerator: Literal["cpu", "gpu"] = "cpu"
     num_workers: int = 0
     cpus_per_worker: int = 1
     gpus_per_worker: float = 0.0
     memory_gb: int | None = None
+    time_limit: str | None = None
+    gres: str | None = None
+    account: str | None = None
 
 
 class FitRunPayload(_StrictModel):
@@ -64,6 +99,13 @@ class FitRunPayload(_StrictModel):
     loss_fn: dict[str, Any] | None = None
     seed_everything: int | None = None
     ckpt_path: str | None = None
+
+
+class CacheRunPayload(_StrictModel):
+    """Typed payload for cache-build launches."""
+
+    data: dict[str, Any] = Field(default_factory=dict)
+    seed_everything: int | None = None
 
 
 class ExtractRunPayload(_StrictModel):
@@ -109,7 +151,7 @@ class AnalyzeRunPayload(_StrictModel):
     gat_ckpt_path: str = ""
 
 
-RunPayload = FitRunPayload | ExtractRunPayload | AnalyzeRunPayload
+RunPayload = FitRunPayload | CacheRunPayload | ExtractRunPayload | AnalyzeRunPayload
 
 
 class OutputConfig(_StrictModel):
@@ -246,6 +288,15 @@ class ExperimentConfig(_StrictModel):
     ) -> RunConfig:
         cfg = {**self.config, **(config or {})}
         payload: RunPayload
+        if stage in {"fit", "test", "cache"}:
+            data_representation = _find_data_representation_payload(cfg.get("data", {}))
+            if data_representation is not None:
+                run_representation = _json_payload(_representation_payload(self.representation_cfg))
+                if data_representation != run_representation:
+                    raise ValueError(
+                        "fit/test/cache data.source.representation_cfg must match top-level "
+                        "representation_cfg so run metadata and materialized data cannot drift"
+                    )
         if stage in {"fit", "test"}:
             payload = FitRunPayload.model_validate(
                 {
@@ -256,6 +307,13 @@ class ExperimentConfig(_StrictModel):
                     "loss_fn": cfg.get("loss_fn"),
                     "seed_everything": cfg.get("seed_everything", self.seed),
                     "ckpt_path": cfg.get("ckpt_path"),
+                }
+            )
+        elif stage == "cache":
+            payload = CacheRunPayload.model_validate(
+                {
+                    "data": cfg.get("data", {}),
+                    "seed_everything": cfg.get("seed_everything", self.seed),
                 }
             )
         elif stage == "extract":

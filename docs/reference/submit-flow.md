@@ -1,32 +1,59 @@
 # Submit Flow
 
-> Status: **historical archive** | Companion: `runtime.md`
+> Status: **current**
 
-This page preserves the old SLURM submission story for reference. The
-live experiment path now goes through `graphids.exp.runtime.launch_run`
-and `graphids exp launch <experiment.yaml>`.
+The live submit path is experiment-YAML based.
 
-The legacy model was row-based and plan-driven; the current model is
-typed and launch-driven. The architectural guarantee that remains is the
-same: the compute node re-imports source at execution time, so code
-committed after submission is still visible to the job.
+## Local Launch
 
-## Historical shape
+```bash
+gx exp launch configs/experiments/gat_snapshot_sequence_real.yml
+```
 
-- Render a plan.
-- Submit one job per rendered unit.
-- Re-import source on the compute node.
-- Resume preemption by letting Lightning requeue the current job.
+Flow:
 
-## Current shape
+1. Load and validate `ExperimentConfig`.
+2. Build a `RunConfig`.
+3. Call `graphids.exp.runtime.launch_run`.
+4. Write run journal and MLflow state.
+5. Dispatch by `stage`.
 
-1. Validate an `ExperimentConfig`.
-2. Launch it through `graphids.exp.runtime.launch_run`.
-3. Write a manifest and event log for the run.
+## SLURM Submit
 
-## Files of interest
+```bash
+gx exp submit configs/experiments/gat_snapshot_sequence_real.yml -C pitzer
+```
+
+Flow:
+
+1. Load and validate `ExperimentConfig`.
+2. Build a `RunConfig` as a submit-time validation check.
+3. Render an sbatch script with resource directives from `resources`.
+4. Write the script to `{slurm_log_dir}/scripts/{experiment_name}.sbatch`.
+5. Submit it with `sbatch`.
+
+The compute node then runs:
+
+```bash
+python -m graphids exp launch /abs/path/to/experiment.yml
+```
+
+## Dry Run
+
+```bash
+gx exp submit configs/experiments/gat_snapshot_sequence_real.yml -C pitzer --dry-run
+```
+
+This prints the sbatch script and does not submit.
+
+## Files Of Interest
 
 - `graphids/cli/exp.py`
 - `graphids/exp/config.py`
 - `graphids/exp/runtime.py`
-- `graphids/slurm/submit.py`
+- `graphids/exp/slurm.py`
+- `scripts/slurm/_preamble.sh`
+- `scripts/slurm/_epilog.sh`
+
+The old `gx run`, `gx exec --row`, `gx submit --row`, and
+`gx plans submit` path is historical and should not be used for new runs.

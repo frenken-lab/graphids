@@ -1,0 +1,56 @@
+experiment_name: gat_snapshot_sequence_smoke
+dataset: set_01
+seed: 42
+plan_id: gat_snapshot_sequence_smoke
+stage: fit
+representation_cfg:
+  kind: snapshot_sequence
+  window_size: 100
+  stride: 100
+  sequence_length: 3
+  sequence_stride: 1
+resources:
+  backend: local
+  cluster: pitzer
+  partition: gpu
+  accelerator: gpu
+  num_workers: 0
+  cpus_per_worker: 8
+  gpus_per_worker: 1.0
+  memory_gb: 96
+  time_limit: "02:00:00"
+  account: pas1266
+config:
+  data:
+    type: graph_dm
+    source:
+      type: can_bus
+      dataset: set_01
+      seed: 42
+      representation_cfg:
+        kind: snapshot_sequence
+        window_size: 100
+        stride: 100
+        sequence_length: 3
+        sequence_stride: 1
+    batch_size: 1
+    min_steps_per_epoch: 2
+    num_workers: 0
+    dynamic_batching: false
+    require_cache: true
+  model:
+    type: gat
+    scale: small
+    sequence_pool: gru
+  loss_fn:
+    type: ce
+  trainer:
+    accelerator: auto
+    devices: 1
+    max_epochs: 1
+    limit_train_batches: 2
+    limit_val_batches: 1
+    enable_checkpointing: false
+    enable_progress_bar: false
+    enable_model_summary: false
+    num_sanity_val_steps: 0

@@ -15,6 +15,7 @@ GATConv ignores.
 from __future__ import annotations
 
 import math
+from typing import Literal
 
 import torch
 import torch.nn as nn
@@ -62,6 +63,7 @@ class GAT(GraphModuleBase):
         conv_type: str = "gatv2",
         edge_dim: int = 11,
         pool_aggrs: list[str] | None = None,
+        sequence_pool: Literal["auto", "flat", "mean", "attention", "gru"] = "auto",
         proj_dim: int = 0,
         gradient_checkpointing: bool = True,
         compile_model: bool = False,
@@ -148,6 +150,21 @@ class GAT(GraphModuleBase):
         else:
             self.pool = None
             fc_input_dim = jk_out_dim
+        self.sequence_pool = hp.sequence_pool
+        self.sequence_attention = (
+            nn.Sequential(
+                nn.Linear(fc_input_dim, fc_input_dim),
+                nn.Tanh(),
+                nn.Linear(fc_input_dim, 1),
+            )
+            if hp.sequence_pool == "attention"
+            else None
+        )
+        self.sequence_gru = (
+            nn.GRU(fc_input_dim, fc_input_dim, batch_first=True)
+            if hp.sequence_pool == "gru"
+            else None
+        )
 
         self.fc_layers = nn.ModuleList()
         for _ in range(hp.fc_layers - 1):
@@ -177,6 +194,52 @@ class GAT(GraphModuleBase):
         if self.pool is not None:
             return self.pool(x, batch)
         return global_mean_pool(x, batch)
+
+    def _pool_graph_embeddings(self, x, data, batch):
+        sequence_step = getattr(data, "node_sequence_step", None)
+        mode = self.sequence_pool
+        if sequence_step is None or mode == "flat":
+            return self._pool(x, batch)
+        if mode == "auto":
+            mode = "mean"
+
+        sequence_step = sequence_step.to(batch.device).long()
+        num_graphs = int(batch.max().item()) + 1 if batch.numel() else 0
+        num_steps = int(sequence_step.max().item()) + 1 if sequence_step.numel() else 1
+        step_batch = batch.long() * num_steps + sequence_step
+        step_emb = self._pool(x, step_batch)
+        expected = num_graphs * num_steps
+        if step_emb.size(0) < expected:
+            pad = step_emb.new_zeros(expected - step_emb.size(0), step_emb.size(1))
+            step_emb = torch.cat([step_emb, pad], dim=0)
+        step_emb = step_emb[:expected].view(num_graphs, num_steps, -1)
+
+        present = torch.zeros(num_graphs, num_steps, dtype=torch.bool, device=x.device)
+        present[batch.long(), sequence_step] = True
+
+        if mode == "mean":
+            denom = present.sum(dim=1).clamp_min(1).to(step_emb.dtype).unsqueeze(-1)
+            return (step_emb * present.unsqueeze(-1).to(step_emb.dtype)).sum(dim=1) / denom
+        if mode == "attention":
+            if self.sequence_attention is None:
+                raise RuntimeError("sequence_pool='attention' requires sequence_attention head")
+            scores = self.sequence_attention(step_emb).squeeze(-1)
+            scores = scores.masked_fill(~present, -torch.inf)
+            weights = torch.softmax(scores, dim=1).nan_to_num(0.0)
+            return (step_emb * weights.unsqueeze(-1)).sum(dim=1)
+        if mode == "gru":
+            if self.sequence_gru is None:
+                raise RuntimeError("sequence_pool='gru' requires sequence_gru head")
+            lengths = present.sum(dim=1).clamp_min(1).cpu()
+            packed = nn.utils.rnn.pack_padded_sequence(
+                step_emb,
+                lengths,
+                batch_first=True,
+                enforce_sorted=False,
+            )
+            _, hidden = self.sequence_gru(packed)
+            return hidden[-1]
+        raise ValueError(f"unsupported sequence_pool={self.sequence_pool!r}")
 
     def forward(
         self,
@@ -228,7 +291,7 @@ class GAT(GraphModuleBase):
         if return_intermediate:
             return xs
         x = self.jk(xs)
-        x = self._pool(x, batch)
+        x = self._pool_graph_embeddings(x, data, batch)
         if return_embedding:
             emb = x.clone()
             for layer in self.fc_layers:

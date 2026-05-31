@@ -1,136 +1,143 @@
 # GraphIDS Write Path Inventory
 
-> Audited 2026-04-09. Jsonnet refs swept 2026-05-04. Some surrounding
-> orchestration details (`stage.py`, `_otel.py`, `_TrainingJob`,
-> `cli/training.py`) predate the four-step chassis rebuild and should
-> be cross-checked against the current source — the file-tree section
-> below remains accurate; the prose may not.
+> Status: **current**
 
-## The Rule
+## Rule
 
-- **Code** lives in `~/graphids/` (NFS). Read-only at runtime.
-- **ALL runtime writes** go to `/fs/ess/PAS1266/graphids/` (ESS), routed via `GRAPHIDS_LAKE_ROOT`.
-- **Scratch** (`/fs/scratch/PAS1266/`) is for transient data: staged data copies.
-- **Nothing** should write to the repo directory. Ever.
+- Source code lives in the repo and should be read-only at runtime.
+- Shared persistent data lives under `$GRAPHIDS_LAKE_ROOT`.
+- Per-run manifests, events, checkpoints, and artifacts live under the
+  resolved run directory.
+- SLURM text logs live under the configured SLURM log directory.
 
-## Single Source of Truth
+## Roots
 
-`graphids/plan/constants.py` declares write path constants. `graphids/plan/settings.py` owns all `GRAPHIDS_*` env vars.
+| Root | Default/current behavior | Owner |
+|---|---|---|
+| Repo | `/users/PAS2022/rf15/graphids` | source code |
+| Lake | `$GRAPHIDS_LAKE_ROOT`, typically `/fs/ess/PAS1266/graphids` | raw data, caches, MLflow DB |
+| Runs | `Path.home() / "ray_results"` outside Ray | run journals, checkpoints, artifacts |
+| SLURM logs | `GRAPHIDS_SLURM_LOG_DIR`, `.env`, or `{lake_root}/slurm`; current jobs use `/fs/ess/PAS1266/graphids/slurm_logs` | sbatch scripts, stdout, stderr |
 
-Constants: `CKPT_SUBPATH`, `LAST_CKPT_SUBPATH`, `PHASE_MARKERS` (all in `graphids/plan/constants.py`). MLflow backend path (`mlflow.db`) and artifact subpath (`mlartifacts`) live in `graphids/_mlflow.py`.
+Relevant code:
+
+- `graphids/paths.py`: lake, cache, run, and catalog helpers.
+- `graphids/exp/config.py`: `OutputConfig` and run-directory resolution.
+- `graphids/exp/slurm.py`: SLURM script/log path resolution.
+- `graphids/_mlflow.py`: MLflow tracking URI.
 
 ## Filesystem Layout
 
-```
-/fs/ess/PAS1266/graphids/                        <-- $GRAPHIDS_LAKE_ROOT (persistent, shared)
-+-- dev/{user}/{dataset}/
-|   +-- ablations/{group}/{variant}/
-|       +-- seed_{N}/                             <-- trainer.default_root_dir
-|           +-- checkpoints/
-|           |   +-- best_model.ckpt               <-- Sha256ModelCheckpoint (dirpath pinned in graphids/plan/compose.py:callbacks_base)
-|           |   +-- best_model.ckpt.sha256        <-- Sha256ModelCheckpoint (atomic_load reads on verify)
-|           |   +-- last.ckpt                     <-- Sha256ModelCheckpoint (save_last: true)
-|           |   +-- last.ckpt.sha256              <-- Sha256ModelCheckpoint
-|           +-- traces.jsonl                      <-- OTel spans (wire_file_exporters, SimpleSpanProcessor)
-|           +-- artifacts/                        <-- per-checkpoint artifact outputs (written by an `analyze` blueprint row)
-|           +-- .train_complete                   <-- phase marker (fit done; diagnostic only)
-|           +-- .test_complete                    <-- phase marker (test done; diagnostic only)
-|           +-- resolved.json                     <-- Pydantic-validated rendered config (cli/training._prepare)
-|           +-- overrides.json                    <-- TLA dict + --set payload (cli/training._prepare)
-+-- mlflow.db                                    <-- MLflow SQLite backend (runs + params + metrics + tags)
-+-- mlartifacts/{exp_id}/{run_id}/               <-- MLflow artifact store (per-experiment per-run)
-+-- raw/{dataset}/                               <-- source CSV data
-+-- cache/v{ver}/{dataset}/                      <-- preprocessed graph .pt files
-+-- slurm/                                       <-- SLURM stdout/stderr (default)
+```text
+$GRAPHIDS_LAKE_ROOT/
+  raw/{dataset}/
+  cache/v{PREPROCESSING_VERSION}/{dataset}/
+  mlflow.db
+  slurm_logs/
+    scripts/{experiment_name}.sbatch
+    {experiment_name}_{job_id}.out
+    {experiment_name}_{job_id}.err
 
-/fs/scratch/PAS1266/                             <-- transient (90-day purge)
-+-- graphids-data/                               <-- staged data (scratch -> TMPDIR)
-
-$TMPDIR/graphids-data/                           <-- per-job local SSD (ephemeral)
+~/ray_results/{dataset}/{experiment_name}/{run_name}/
+  .graphids/
+    manifest.json
+    events.jsonl
+  checkpoints/
+    best_model.ckpt
+    best_model.ckpt.sha256
+    last.ckpt
+    last.ckpt.sha256
+  artifacts/
+  .mlflow/
 ```
 
-Checkpoint dirpath is set in `graphids/plan/compose.py:callbacks_base` to `{run_dir}/checkpoints` (= `{trainer.default_root_dir}/checkpoints`). Without an explicit `dirpath`, Lightning's `pl.callbacks.ModelCheckpoint` writes under `default_root_dir/lightning_logs/version_N/checkpoints` — which the rest of graphids (resume, KD teacher loading) doesn't read; the explicit `dirpath` in the composer keeps the canonical location.
+Checkpoint files exist only when the experiment config enables checkpointing
+and includes a checkpoint callback.
 
-## Write Path Detail
+## Cache Paths
 
-### 1. Lightning Trainer
+Graph caches are versioned by `graphids.paths.PREPROCESSING_VERSION`.
 
-All training writes land under `trainer.default_root_dir` from the rendered Python plan config (= `graphids.plan.catalog.run_dir(...)`).
+Snapshot and snapshot-sequence graph caches currently live under:
 
-| What | Relative path | Who writes |
-|------|---------------|-----------|
-| Best checkpoint | `checkpoints/best_model.ckpt` | `graphids.core.callbacks.Sha256ModelCheckpoint` (Lightning ckpt format — `state_dict` + `hyper_parameters`; `class_path` injected by `_ModelBase.on_save_checkpoint` for `safe_load_checkpoint` dispatch) |
-| Best ckpt sha256 | `checkpoints/best_model.ckpt.sha256` | `Sha256ModelCheckpoint` (post-save sidecar; `atomic_load` verifies on read) |
-| Resume checkpoint | `checkpoints/last.ckpt` | `Sha256ModelCheckpoint` (`save_last: true`) |
-| Train/val predictions | `predictions/{train,val}.pt` | `orchestrate.stage.train` after `trainer.fit` |
-| Per-test-set predictions | `predictions/test/{set_name}.pt` | `orchestrate.stage.evaluate` |
-| OTel spans + log events | `traces.jsonl` | `wire_file_exporters` -> `BatchSpanProcessor` -> `ConsoleSpanExporter` |
+```text
+{lake_root}/cache/v{PREPROCESSING_VERSION}/{dataset}/{representation_kind}_{representation_digest}_voc_{scope}/
+  processed/
+    data_train.pt
+    data_test_<split>.pt
+    .complete
+  cache_metadata.json
+```
 
-### 2. Training-time tracking
+The representation digest is part of the cache path and cache key, so changing
+representation settings creates a distinct cache.
 
-`graphids/_mlflow.py::start_training_run` opens the MLflow run in `stage.train` before `trainer.fit`, logs params + tags + cache digest, and enables the MLflow system-metrics sampler (psutil + nvidia-ml-py, 5s interval).
+## Run Journals
 
-`graphids/_mlflow.py::MLflowTrainingCallback` (a `pl.Callback`) forwards every key in `trainer.callback_metrics` (whatever the model logged via `self.log(...)`) to MLflow at `step=epoch` via `on_train_epoch_end`, stamps `peak_vram_mb` + LoggedModel registration at `on_fit_end`. Run lifecycle (open/close FINISHED|FAILED) is owned by `orchestrate.train`/`evaluate`, not the callback.
+`graphids.exp.runtime.launch_run` writes:
 
-`graphids/_otel.py::wire_file_exporters` wires the `traces.jsonl` span exporter (Phase B). Structured-log events emitted via `log.info("event_name", ...)` land here alongside the single `training.fit` span. Wandb Weave OTLP export is optional when `WANDB_API_KEY` is set.
+| File | Purpose |
+|---|---|
+| `.graphids/manifest.json` | resolved run identity, config, outputs, status, failure |
+| `.graphids/events.jsonl` | launch, finish, and failure events |
 
-### 3. Phase Markers
+`gx exp status <run_dir>` reads these files.
 
-Diagnostic only — resume is authoritative on `checkpoints/best_model.ckpt`
-existence, not these markers.
+## MLflow
 
-| What | Path | Who writes | Code |
-|------|------|-----------|------|
-| Train phase marker | `{run_dir}/.train_complete` | `stage.py::train` after `trainer.fit` | `PHASE_MARKERS["train"]` |
-| Test phase marker | `{run_dir}/.test_complete` | `stage.py::evaluate` after `trainer.test` | `PHASE_MARKERS["test"]` |
-| Analysis artifacts | `{run_dir}/artifacts/` | `core/artifacts/analyzer.py` via an `analyze` blueprint row (`orchestrate.analyze`) | `core/artifacts/` |
+`graphids._mlflow.configure_tracking_uri()` defaults MLflow to:
 
-### 4. SLURM
+```text
+sqlite:///{lake_root}/mlflow.db
+```
 
-| What | Path | Who writes |
-|------|------|-----------|
-| Job stdout/stderr | `{slurm_log_dir}/{name}_%j.{out,err}` | sbatch/OS |
+`graphids.exp.runtime.launch_run` creates an MLflow logger, logs run
+hyperparameters/tags, and marks the run `FINISHED` or `FAILED`. For Lightning
+`fit` and `test`, final callback metrics are explicitly logged after the
+trainer returns.
 
-`slurm_log_dir` defaults to `{lake_root}/slurm` (`settings.py:46`); override via `GRAPHIDS_SLURM_LOG_DIR`.
+MLflow system metrics are sampled by `MLflowSystemMetricsCallback` for
+Lightning-created runs.
 
-### 5. Data / Preprocessing
+## SLURM
 
-| What | Path | Who writes |
-|------|------|-----------|
-| Graph cache .pt files | `{lake_root}/cache/v{ver}/{dataset}/processed/data_*.pt` | `core/data/io.py::atomic_save` |
-| Cache metadata (v2) | `{lake_root}/cache/v{ver}/{dataset}/cache_metadata.json` | `core/data/metadata.py::merge_split_into_metadata` |
-| NFS advisory lock | `{cache_dir}/processed/.lock` | `core/data/io.py::nfs_lock` |
-| Metadata merge lock | `{cache_dir}/.metadata_lock` | `core/data/metadata.py` (fcntl.flock) |
+`gx exp submit <yaml>` writes one script per experiment name:
 
-### 6. MLflow Store
+```text
+{slurm_log_dir}/scripts/{experiment_name}.sbatch
+```
 
-`{lake_root}/mlflow.db` — MLflow SQLite backend (runs, params, metrics, tags). Written by `graphids/_mlflow.py::log_run` from the experiment runtime after each launchable run completes. Each run is keyed by the run name in `RunConfig`. Artifacts (if any) land under `{lake_root}/mlartifacts/{exp_id}/{run_id}/`. Browse via the OSC OnDemand MLflow app pointed at the SQLite URI.
+The script runs:
+
+```bash
+cd /users/PAS2022/rf15/graphids
+source scripts/slurm/_preamble.sh
+python -m graphids exp launch /abs/path/to/config.yml
+source scripts/slurm/_epilog.sh
+```
+
+Stdout/stderr go to:
+
+```text
+{slurm_log_dir}/{experiment_name}_%j.out
+{slurm_log_dir}/{experiment_name}_%j.err
+```
 
 ## Execution Order
 
+```text
+gx exp submit <yaml>
+  -> ExperimentConfig.from_yaml
+  -> build RunConfig for validation
+  -> write sbatch script
+  -> sbatch
+
+compute node:
+  -> scripts/slurm/_preamble.sh
+  -> python -m graphids exp launch <yaml>
+  -> ExperimentConfig.from_yaml
+  -> launch_run
+  -> run_stage
+  -> manifest/events + MLflow
+  -> scripts/slurm/_epilog.sh
 ```
-SLURM JOB (compute node) — sbatch carries: python -m graphids exp launch <experiment.yaml>
--------------------------------------------------------------------------------------------------
-_preamble.sh (env, venv)
-python -m graphids exp launch <experiment.yaml>
-+- ExperimentConfig.from_yaml(path) → typed RunConfig
-+- graphids.exp.runtime.launch_run(run)
-    fit/test → _resolve_spec(config) → trainer/model/datamodule
-             logger setup → trainer.fit() / trainer.test()
-             MLflowTrainingCallback.on_fit_end → FINISHED
-             manifest + events updated
-
-# Per-checkpoint artifacts are launched from the typed experiment surface:
-python -m graphids exp launch analyze.yaml
-```
-
-## Env Var -> Path Mapping
-
-| Env var | Default | Set in | Controls |
-|---------|---------|--------|----------|
-| `GRAPHIDS_LAKE_ROOT` | `"experimentruns"` (relative) | `.env` -> `/fs/ess/PAS1266/graphids` | All experiment IO |
-| `GRAPHIDS_SLURM_LOG_DIR` | `{lake_root}/slurm` (derived) | `.env` | SLURM stdout/stderr |
-| `GRAPHIDS_LAKE_WRITE` | `false` | `.env` (set to `1` in SLURM jobs) | Guards lake writes |
-| `MLFLOW_TRACKING_URI` | `sqlite:///{lake_root}/mlflow.db` | derived by `_mlflow.ensure_tracking_uri` | MLflow backend |
-| `WANDB_API_KEY` | (none) | `.env` | Enables Wandb Weave OTLP export |
-| `TMPDIR` | (SLURM sets) | OS | Per-job local SSD |

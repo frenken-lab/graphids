@@ -19,6 +19,10 @@ def _slices_from_counts(counts: pl.Series) -> torch.Tensor:
     )
 
 
+def _optional_tensor(df: pl.DataFrame, col: str, *, dtype) -> torch.Tensor:
+    return df.select(col).fill_null(0).fill_nan(0).to_torch(dtype=dtype).squeeze(-1)
+
+
 def graph_tables_to_pyg(
     tables: GraphTables,
     *,
@@ -44,12 +48,52 @@ def graph_tables_to_pyg(
         n: labels_aligned.select(n).to_torch(dtype=pl.Int64).squeeze(-1)
         for n in label_names
     }
-    data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, node_id=node_id, **label_tensors)
+    extra_tensors: dict[str, torch.Tensor] = {}
+    extra_slices: dict[str, torch.Tensor] = {}
+    node_optional_cols = {
+        "sequence_id": "node_sequence_id",
+        "sequence_step": "node_sequence_step",
+        "sequence_length": "node_sequence_length",
+        "sequence_stride": "node_sequence_stride",
+        "snapshot_wid": "node_snapshot_wid",
+    }
+    for col, attr in node_optional_cols.items():
+        if col in tables.node_stats.columns:
+            extra_tensors[attr] = _optional_tensor(tables.node_stats, col, dtype=pl.Int64)
+            extra_slices[attr] = node_slice
+
+    edge_optional_cols = {
+        "sequence_id": "edge_sequence_id",
+        "sequence_step": "edge_sequence_step",
+        "sequence_length": "edge_sequence_length",
+        "sequence_stride": "edge_sequence_stride",
+        "snapshot_wid": "edge_snapshot_wid",
+    }
+    for col, attr in edge_optional_cols.items():
+        if col in tables.edge_df.columns:
+            extra_tensors[attr] = _optional_tensor(tables.edge_df, col, dtype=pl.Int64)
+            extra_slices[attr] = edge_slice
+
+    graph_optional_cols = ("sequence_id", "sequence_length", "sequence_stride")
+    for col in graph_optional_cols:
+        if col in labels_aligned.columns:
+            extra_tensors[col] = _optional_tensor(labels_aligned, col, dtype=pl.Int64)
+            extra_slices[col] = graph_idx
+
+    data = Data(
+        x=x,
+        edge_index=edge_index,
+        edge_attr=edge_attr,
+        node_id=node_id,
+        **label_tensors,
+        **extra_tensors,
+    )
     slices = {
         "x": node_slice,
         "edge_index": edge_slice,
         "edge_attr": edge_slice,
         "node_id": node_slice,
         **{n: graph_idx for n in label_names},
+        **extra_slices,
     }
     return data, slices, num_graphs, tables.n_rows

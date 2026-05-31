@@ -1,68 +1,61 @@
 # Module Responsibilities
 
-**Plan modules** (`graphids/plan/plans/`) — Python files exposing
-`build(*, dataset: str, seed: int) -> list[dict]`. Each plan composes
-class-path specs + composers into rows that match the `Plan`
-schema.
+**Experiment configs** (`configs/experiments/*.yml`) define one launchable
+unit: dataset, stage, representation, resources, and the stage-specific
+payload under `config`.
 
-**Composer** (`graphids/plan/compose.py`) — single `compose(...)`
-plus a thin `fusion(...)` wrapper, the `RowSpec` frozen dataclass
-(composer's typed return value), and the `extract(...)` one-shot
-row builder. Takes bare `{class_path, init_args}` blocks (model,
-data, loss) and emits a frozen `RowSpec` whose `rendered` is a typed
-:class:`graphids.plan.schema.RenderedConfig` (Pydantic, frozen,
-`extra="forbid"` — typo'd field at compose time raises
-`ValidationError`).
+**Typed config** (`graphids/exp/config.py`) validates YAML and builds a
+`RunConfig`. It owns the contract for `ExperimentConfig`, `ResourceConfig`,
+stage payloads, output paths, MLflow tags/params, and the representation drift
+check between top-level metadata and `data.source`.
 
-**Primitives** (`graphids/plan/primitives.py`) — class-path string
-constants (`GAT`, `VGAE`, `FOCAL`, …) + `spec(cls_path, **init_args)`
-helper + the four primitives that compose / validate (`can_bus`
-registry check, `graph_dm` conditional knobs, `fusion_dm` path
-derivation, `curriculum` deepcopy + reduction injection). Defaults
-for trivial primitives live with the model class itself (e.g.
-`GAT.__init__`'s `_SCALES` table), not duplicated here.
+**Primitives** (`graphids/primitives*.py`) are the public object factory
+surface for YAML specs. Data, model, loss, scaler, representation, ID
+encoding, and discovery primitives live here or are re-exported here.
 
-**Schema / `Plan`** (`graphids/plan/schema.py`) —
-validation gate. Each row is a discriminated union (`TrainRow` |
-`CacheRow` | `ExtractRow` | `AnalyzeRow`) with `extra="forbid"`.
-`TrainRow.rendered_config` is itself a typed `RenderedConfig`
-(`model: ClassPath`, `data: ClassPath`, `trainer: TrainerCfg`,
-`callbacks: dict[str, ClassPath]`) — validation is structural
-end-to-end. Render bugs surface here before SLURM sees them.
+**Experiment runtime** (`graphids/exp/runtime.py`) owns launch lifecycle and
+stage dispatch. It writes the manifest/events journal, creates the MLflow
+logger, builds config-driven objects, runs Lightning for `fit`/`test`,
+materializes caches for `cache`, and calls extraction/analyzer code for
+`extract`/`analyze`.
 
-**Experiment runtime** (`graphids/exp/runtime.py`) —
-`launch_run(run)` dispatches on the typed `RunConfig.stage`
-(`fit`/`test`/`extract`/`analyze`). For training rows,
-`_resolve_spec` walks nested `class_path` blocks via importlib with
-signature-filtered kwargs and returns the trainer / model / datamodule.
-Owns module-level runtime setup around manifest writing, MLflow logging,
-and the stage dispatch helpers.
+**SLURM submit** (`graphids/exp/slurm.py`, `graphids/cli/exp.py`) validates an
+experiment YAML, renders an sbatch script, and submits it. The compute node
+runs `python -m graphids exp launch <yaml>` after sourcing
+`scripts/slurm/_preamble.sh`.
 
-**SLURM** (`graphids/slurm/`, `graphids/cli/commands.py`) — one Typer
-command: `graphids submit --row <json>` submits a single blueprint row
-via Parsl `SlurmProvider`. Library entrypoint:
-`graphids.slurm.submit.submit_row()`. Reads
-`configs/resources/submit_profiles.json` keyed `[mode][cluster][length]`
-where each leaf is a `parsl.providers.SlurmProvider` kwargs dict.
-Preempt-resume delegated to Lightning's `SLURMEnvironment(auto_requeue=True,
-requeue_signal=SIGUSR2)` plugin (wired by the experiment runtime's
-trainer setup).
+**Data sources and datamodules** (`graphids/core/data/`) own raw CAN loading,
+representation selection, cache paths, materialization, metadata, and
+Lightning dataloaders. `GraphDataModule(require_cache=True)` fails fast when a
+training config expects a cache that is missing or incomplete.
 
-The pipeline is strictly one-directional:
+**Preprocessing** (`graphids/core/data/preprocessing/`) turns raw rows into
+materialized graph views. Snapshot, snapshot-sequence, multi-scale, temporal,
+and entity representations are explicit. Snapshot-sequence materialization
+stores sequence metadata on graph/node/edge tensors.
 
-```
-plan.build(dataset, seed) → list[dict]
-    ↓
-Plan.model_validate
-    ↓
-graphids run → JSON array on stdout / file
-    ↓
-graphids exec --row <json>   (login-node smoke / non-SLURM)
-graphids submit --row <json> (SLURM via Parsl; sbatch carries the literal
-                              `python -m graphids exec --row '...'` cmd)
-    ↓
-exp.runtime.launch_run → trainer.fit / trainer.test / extract / analyze
+**Models** (`graphids/core/models/`) own Lightning modules and metrics. The
+GAT now supports sequence-aware graph pooling through `sequence_pool`.
+
+**Callbacks** (`graphids/core/callbacks.py`) hold graphids-specific Lightning
+policy such as `Sha256ModelCheckpoint`, tau-norm, and VRAM drift warnings.
+
+**MLflow** (`graphids/_mlflow.py`) resolves the shared tracking URI, builds the
+Lightning MLflow logger, and starts/stops MLflow system-metrics monitoring for
+Lightning-created runs.
+
+The live flow is:
+
+```text
+configs/experiments/<run>.yml
+    -> ExperimentConfig.from_yaml
+    -> ExperimentConfig.build_run
+    -> gx exp launch OR gx exp submit
+    -> graphids.exp.runtime.launch_run
+    -> run_stage: cache | fit | test | extract | analyze
+    -> MLflow + .graphids/manifest.json + .graphids/events.jsonl
 ```
 
-> Authoritative detail: `.claude/rules/config-system.md`,
-> `.claude/rules/chassis-invariants.md`.
+The old `graphids/plan` row renderer, `gx run`, `gx plans submit`, and
+`graphids/orchestrate.py` row dispatcher are historical and should not be used
+for new work.

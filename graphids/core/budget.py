@@ -27,6 +27,13 @@ _PROBE_SEED = int(os.environ.get("GRAPHIDS_PROBE_SEED", "20260506"))
 # epoch, each potentially triggering a cuDNN benchmark allocation. 5% covers
 # typical growth on V100/H100. Tighten if log shows headroom unused.
 _CUDNN_RESERVE = float(os.environ.get("GRAPHIDS_BUDGET_CUDNN_RESERVE", "0.05"))
+_HEURISTIC_BPN = int(os.environ.get("GRAPHIDS_BUDGET_BYTES_PER_NODE", str(256 * 1024)))
+_HEURISTIC_BPE = int(os.environ.get("GRAPHIDS_BUDGET_BYTES_PER_EDGE", str(32 * 1024)))
+_HEURISTIC_GPS_BPN2 = float(os.environ.get("GRAPHIDS_BUDGET_GPS_BYTES_PER_NODE2", "32768"))
+_DEFAULT_TARGET_BYTES = int(
+    os.environ.get("GRAPHIDS_BUDGET_DEFAULT_TARGET_BYTES", str(8 * 1024**3))
+)
+_DEFAULT_EDGES_PER_NODE = float(os.environ.get("GRAPHIDS_BUDGET_EDGES_PER_NODE", "4.0"))
 _MB = 1024 * 1024
 
 
@@ -181,6 +188,91 @@ def probe(
         return _probe_body(
             model, train_dataset, dev, pack_offline, quadratic=quadratic, min_steps=min_steps
         )
+
+
+def _target_bytes() -> int:
+    if torch.cuda.is_available():
+        try:
+            free = int(torch.cuda.mem_get_info()[0])
+        except Exception:  # pragma: no cover - defensive around mocked CUDA
+            free = _DEFAULT_TARGET_BYTES
+    else:
+        free = _DEFAULT_TARGET_BYTES
+    return max(1, int(free * _SAFETY))
+
+
+def _dataset_size_stats(train_dataset) -> tuple[int, int, int, float]:
+    if train_dataset is None:
+        return 1, 1, 0, _DEFAULT_EDGES_PER_NODE
+    sizes: list[int] = []
+    edge_sizes: list[int] = []
+    for graph in train_dataset:
+        sizes.append(int(graph.num_nodes))
+        edge_sizes.append(int(graph.num_edges))
+    if not sizes:
+        raise RuntimeError("budget heuristic: train_dataset is empty")
+    total_nodes = sum(sizes)
+    total_edges = sum(edge_sizes)
+    epn = total_edges / max(1, total_nodes)
+    return max(sizes), max(edge_sizes), total_nodes, max(epn, 1.0)
+
+
+def _heuristic_budget(
+    dataset: str,
+    *,
+    train_dataset=None,
+    quadratic: bool = False,
+    heads: int | None = None,
+    min_steps: int | None = None,
+    binding: str = "heuristic",
+) -> BudgetResult:
+    """Return a deterministic node/edge budget without running the model.
+
+    This intentionally solves the robust packing problem, not exact model
+    memory prediction. The empirical probe is still preferred when CUDA, the
+    model, and the train dataset are all available.
+    """
+    target = _target_bytes()
+    max_nodes, max_edges, total_nodes, epn = _dataset_size_stats(train_dataset)
+    reserve = int(target * _CUDNN_RESERVE)
+    usable = max(1, target - reserve)
+
+    if quadratic:
+        head_factor = max(1.0, float(heads or 1) / 4.0)
+        budget = int(math.sqrt(usable / (_HEURISTIC_GPS_BPN2 * head_factor)))
+    else:
+        per_node = _HEURISTIC_BPN + int(epn * _HEURISTIC_BPE)
+        budget = int(usable / max(1, per_node))
+    budget = max(max_nodes, budget, 1)
+
+    if min_steps is not None and min_steps > 1 and total_nodes > 0:
+        step_cap = total_nodes // min_steps
+        if step_cap > max_nodes:
+            budget = min(budget, step_cap)
+
+    edge_budget = max(max_edges, int(budget * epn * _EPN_HEADROOM), 1)
+    log.info(
+        "budget_heuristic",
+        dataset=dataset,
+        quadratic=quadratic,
+        target_mb=target // _MB,
+        budget_nodes=budget,
+        budget_edges=edge_budget,
+        max_nodes=max_nodes,
+        max_edges=max_edges,
+        edges_per_node=round(epn, 2),
+        binding=binding,
+    )
+    return BudgetResult(
+        budget=budget,
+        edge_budget=edge_budget,
+        binding=binding,
+        target_bytes=target,
+    )
+
+
+def _can_probe(model, train_dataset) -> bool:
+    return torch.cuda.is_available() and model is not None and train_dataset is not None
 
 
 def _probe_body(
@@ -349,7 +441,33 @@ def node_budget(
 ) -> BudgetResult:
     if conv_type is None and model is not None:
         conv_type = getattr(model.hparams, "conv_type", "gatv2")
-    return probe(model, train_dataset, quadratic=(conv_type == "gps"), min_steps=min_steps)
+    quadratic = conv_type == "gps"
+    mode = os.environ.get("GRAPHIDS_BUDGET_MODE", "auto").lower()
+    strict_probe = os.environ.get("GRAPHIDS_BUDGET_STRICT_PROBE", "0") == "1"
+    if mode in {"probe", "measured", "auto"} and _can_probe(model, train_dataset):
+        try:
+            return probe(model, train_dataset, quadratic=quadratic, min_steps=min_steps)
+        except Exception:
+            if strict_probe or mode in {"probe", "measured"}:
+                raise
+            log.warning("budget_probe_failed_using_heuristic", dataset=dataset, exc_info=True)
+            return _heuristic_budget(
+                dataset,
+                train_dataset=train_dataset,
+                quadratic=quadratic,
+                heads=heads,
+                min_steps=min_steps,
+                binding="probe_failed_heuristic",
+            )
+    if mode in {"probe", "measured"} and strict_probe:
+        raise RuntimeError("budget probe requires CUDA + model + train_dataset")
+    return _heuristic_budget(
+        dataset,
+        train_dataset=train_dataset,
+        quadratic=quadratic,
+        heads=heads,
+        min_steps=min_steps,
+    )
 
 
 def _cpu_cap() -> int:

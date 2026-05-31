@@ -75,6 +75,29 @@ def _build_component(spec: Any, **build_kwargs: Any) -> Any:
     return resolved
 
 
+def _scalar_metrics(metrics: Mapping[str, Any]) -> dict[str, float]:
+    """Convert Lightning callback metrics to logger-friendly scalars."""
+    out: dict[str, float] = {}
+    for key, value in metrics.items():
+        item = value
+        detach = getattr(item, "detach", None)
+        if callable(detach):
+            item = detach()
+        cpu = getattr(item, "cpu", None)
+        if callable(cpu):
+            item = cpu()
+        scalar = getattr(item, "item", None)
+        if callable(scalar):
+            try:
+                out[str(key)] = float(scalar())
+                continue
+            except (TypeError, ValueError, RuntimeError):
+                continue
+        if isinstance(item, int | float):
+            out[str(key)] = float(item)
+    return out
+
+
 def _run_fit_or_test(
     action: str,
     cfg: Mapping[str, Any],
@@ -126,13 +149,41 @@ def _run_fit_or_test(
     trainer = pl.Trainer(**trainer_kwargs)
     if action == "fit":
         trainer.fit(model, datamodule=data)
-        return {"stage": "fit", "trainer": trainer.__class__.__name__}
+        metrics = _scalar_metrics(trainer.callback_metrics)
+        if logger is not None and metrics:
+            logger.log_metrics(metrics, step=trainer.global_step)
+        return {"stage": "fit", "trainer": trainer.__class__.__name__, "metrics": metrics}
 
     test_ckpt = cfg.get("ckpt_path", ckpt_path)
     if test_ckpt in ("", None):
         test_ckpt = None
     trainer.test(model, datamodule=data, ckpt_path=test_ckpt)
-    return {"stage": "test", "trainer": trainer.__class__.__name__, "ckpt_path": test_ckpt}
+    metrics = _scalar_metrics(trainer.callback_metrics)
+    if logger is not None and metrics:
+        logger.log_metrics(metrics, step=trainer.global_step)
+    return {
+        "stage": "test",
+        "trainer": trainer.__class__.__name__,
+        "ckpt_path": test_ckpt,
+        "metrics": metrics,
+    }
+
+
+def _run_cache(cfg: Mapping[str, Any]) -> dict[str, Any]:
+    if "data" not in cfg:
+        raise ValueError("cache requires a data config block")
+    data = _build_component(cfg["data"])
+    if hasattr(data, "setup"):
+        data.setup(None)
+    source = getattr(data, "source", data)
+    cache_root = getattr(source, "cache_root_path", None)
+    cache_ready = getattr(source, "cache_ready", None)
+    return {
+        "stage": "cache",
+        "cache_key": str(getattr(source, "cache_key", "")),
+        "cache_root": str(cache_root()) if callable(cache_root) else "",
+        "cache_ready": bool(cache_ready()) if callable(cache_ready) else True,
+    }
 
 
 def run_stage(run: RunConfig, logger: Any | None = None) -> dict[str, Any] | None:
@@ -149,6 +200,9 @@ def run_stage(run: RunConfig, logger: Any | None = None) -> dict[str, Any] | Non
             ckpt_path=payload.get("ckpt_path"),
             logger=logger,
         )
+    if run.stage == "cache":
+        payload = run.payload.model_dump(mode="json")
+        return _run_cache(payload)
     if run.stage == "extract":
         from graphids.core.data.extract import extract_states
 
@@ -205,7 +259,7 @@ def run_stage(run: RunConfig, logger: Any | None = None) -> dict[str, Any] | Non
         )
         Analyzer(spec).run()
         return {"stage": "analyze", "output_dir": spec.output_dir}
-    if run.stage in {"cache", "hf_push"}:
+    if run.stage == "hf_push":
         raise NotImplementedError(f"stage {run.stage!r} is not wired yet")
     raise ValueError(f"unknown stage: {run.stage!r}")
 

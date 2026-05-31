@@ -15,15 +15,16 @@ from graphids.core.data.datasets._base import (
     GraphSchema,
 )
 from graphids.core.data.discovery.hypotheses import DiscoveryStore
-from graphids.core.data.state import DatasetState
 from graphids.core.data.preprocessing.edge_policy import temporal_edge_policy
 from graphids.core.data.preprocessing.graph_ops import default_graph_transforms
 from graphids.core.data.preprocessing.representations import (
     TemporalRepresentationCfg,
+    representation_digest,
     representation_temporal_spec,
 )
-from graphids.core.data.preprocessing.temporal import TemporalGraphSpec, build_temporal_data
+from graphids.core.data.preprocessing.temporal import build_temporal_data
 from graphids.core.data.preprocessing.transforms import TOPOLOGY_NODE_PLACEHOLDER_EXPRS
+from graphids.core.data.state import DatasetState
 
 log = get_logger(__name__)
 
@@ -264,7 +265,7 @@ class TemporalCANBusSource:
         return (
             f"{self.KIND}|{self.resolved_lake_root()}|{self.name}"
             f"|v{self.val_fraction}|seed{self.seed}|voc:{self.vocab_scope}"
-            f"|repr:{self.representation_cfg.kind}"
+            f"|repr:{self.representation_cfg.kind}:{representation_digest(self.representation_cfg)}"
         )
 
     def _scan_vocab(self, raw_dir: Path, source_dirs: list[str]) -> list[Any]:
@@ -279,7 +280,10 @@ class TemporalCANBusSource:
         entry = load_catalog()[self.name]
         lake = self.resolved_lake_root()
         raw = data_dir(lake, self.name)
-        root = cache_dir(lake, self.name) / f"temporal_voc_{self.vocab_scope}"
+        root = (
+            cache_dir(lake, self.name)
+            / f"temporal_{representation_digest(self.representation_cfg)}_voc_{self.vocab_scope}"
+        )
 
         train_dirs = [
             s for s in (entry.get("train_subdir"), entry.get("train_attack_subdir")) if s

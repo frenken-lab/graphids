@@ -180,6 +180,52 @@ def test_ray_stage_binds_existing_mlflow_run(monkeypatch, tmp_path):
     assert captured["logger_kwargs"]["experiment_name"] == "graphids/hcrl_sa/fit"
 
 
+def test_run_stage_cache_builds_data_only(monkeypatch, tmp_path):
+    from graphids.exp import runtime
+    from graphids.exp.config import (
+        CacheRunPayload,
+        OutputConfig,
+        ResourceConfig,
+        RunConfig,
+    )
+
+    captured: dict[str, object] = {}
+
+    class DummySource:
+        cache_key = "dummy-cache-key"
+
+        def cache_root_path(self):
+            return tmp_path / "cache-root"
+
+        def cache_ready(self):
+            return True
+
+    class DummyData:
+        source = DummySource()
+
+        def setup(self, stage):
+            captured["setup_stage"] = stage
+
+    monkeypatch.setattr(runtime, "_build_component", lambda spec: DummyData())
+
+    run = RunConfig(
+        name="cache-demo",
+        stage="cache",
+        dataset="set_01",
+        payload=CacheRunPayload(data={"type": "dummy_data"}),
+        resources=ResourceConfig(),
+        outputs=OutputConfig(run_dir=tmp_path / "run"),
+    )
+
+    assert runtime.run_stage(run) == {
+        "stage": "cache",
+        "cache_key": "dummy-cache-key",
+        "cache_root": str(tmp_path / "cache-root"),
+        "cache_ready": True,
+    }
+    assert captured["setup_stage"] is None
+
+
 def test_manifest_and_events_round_trip(tmp_path):
     from graphids.exp.config import (
         FitRunPayload,

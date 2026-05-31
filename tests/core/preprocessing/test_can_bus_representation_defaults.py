@@ -66,3 +66,47 @@ def test_can_bus_cfg_resolves_representation_defaults():
         ),
     )
     assert cfg.resolved_window_size_stride() == (12, 4)
+
+
+def test_cache_keys_include_full_representation_identity():
+    from graphids.core.data.datasets.can_bus import CANBusSource
+
+    a = CANBusSource(
+        name="dummy",
+        seed=7,
+        lake_root="/tmp/graphids-test",
+        representation_cfg=SnapshotSequenceRepresentationCfg(
+            window_size=12,
+            stride=4,
+            sequence_length=2,
+        ),
+    )
+    b = CANBusSource(
+        name="dummy",
+        seed=7,
+        lake_root="/tmp/graphids-test",
+        representation_cfg=SnapshotSequenceRepresentationCfg(
+            window_size=12,
+            stride=4,
+            sequence_length=4,
+        ),
+    )
+    assert a.cache_key != b.cache_key
+
+
+def test_multiscale_cache_keys_include_window_sizes():
+    from graphids.core.data.datasets.can_bus import CANBusSource
+
+    a = CANBusSource(
+        name="dummy",
+        seed=7,
+        lake_root="/tmp/graphids-test",
+        representation_cfg=MultiScaleRepresentationCfg(window_sizes=(50, 100), stride=50),
+    )
+    b = CANBusSource(
+        name="dummy",
+        seed=7,
+        lake_root="/tmp/graphids-test",
+        representation_cfg=MultiScaleRepresentationCfg(window_sizes=(50, 100, 200), stride=50),
+    )
+    assert a.cache_key != b.cache_key

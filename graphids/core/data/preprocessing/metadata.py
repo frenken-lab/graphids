@@ -11,7 +11,7 @@ from filelock import FileLock
 
 from graphids._fs import atomic_write_text
 
-METADATA_SCHEMA_VERSION = 3
+METADATA_SCHEMA_VERSION = 4
 
 INVARIANT_KEYS = (
     "preprocessing_version",
@@ -21,6 +21,9 @@ INVARIANT_KEYS = (
     "seed",
     "vocab_digest",
     "scaler_strategy",
+    "representation_kind",
+    "representation_digest",
+    "representation_cfg",
 )
 
 

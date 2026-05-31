@@ -19,6 +19,7 @@ from graphids.exp.config import ExperimentConfig
 from graphids.exp.journal import load_manifest
 from graphids.exp.results import query_result_view, result_rows_as_json, sort_rows
 from graphids.exp.runtime import launch_run, summarize_run
+from graphids.exp.slurm import submit_experiment
 
 exp_app = typer.Typer(
     name="exp",
@@ -86,6 +87,39 @@ def launch(
     if result is not None:
         payload = asdict(result) if is_dataclass(result) else {"result": str(result)}
         console.print_json(data=payload)
+
+
+@exp_app.command("submit")
+def submit(
+    path: Annotated[Path, typer.Argument(help="YAML experiment config")],
+    cluster: Annotated[str | None, typer.Option("--cluster", "-C", help="SLURM cluster override")] = None,
+    partition: Annotated[str | None, typer.Option("--partition", "-p", help="SLURM partition override")] = None,
+    time_limit: Annotated[str | None, typer.Option("--time", "-t", help="SLURM walltime override")] = None,
+    gres: Annotated[str | None, typer.Option("--gres", help="SLURM gres override")] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Print the sbatch script without submitting")] = False,
+) -> None:
+    """Submit one experiment YAML as a SLURM batch job."""
+    exp_cfg = ExperimentConfig.from_yaml(path)
+    result = submit_experiment(
+        exp_cfg,
+        path,
+        cluster=cluster,
+        partition=partition,
+        time_limit=time_limit,
+        gres=gres,
+        dry_run=dry_run,
+    )
+    if dry_run:
+        typer.echo(result.script, nl=False)
+        return
+    console.print_json(
+        data={
+            "job_id": result.job_id,
+            "script_path": str(result.script_path),
+            "command": list(result.command),
+            "stdout": result.stdout.strip(),
+        }
+    )
 
 
 @exp_app.command("results")

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+import json
+from dataclasses import asdict, dataclass
 from typing import Annotated, Literal
 
 from pydantic import Field
@@ -105,6 +107,17 @@ def representation_kind(cfg: GraphRepresentationCfg) -> str:
     if isinstance(cfg, EntityRepresentationCfg):
         return "entity"
     raise TypeError(f"unsupported representation config: {type(cfg)!r}")
+
+
+def representation_payload(cfg: GraphRepresentationCfg) -> dict[str, object]:
+    """Stable JSON-serializable payload for cache identity and metadata."""
+    return asdict(cfg)
+
+
+def representation_digest(cfg: GraphRepresentationCfg) -> str:
+    """Short stable digest for paths and cache keys."""
+    payload = json.dumps(representation_payload(cfg), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
 
 
 def representation_window_defaults(cfg: GraphRepresentationCfg) -> tuple[int, int]:

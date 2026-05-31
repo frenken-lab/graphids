@@ -4,7 +4,7 @@ The current typed config surface is split between:
 
 - `graphids.exp.config` for run and
   experiment configs plus typed stage payloads (`FitRunPayload`,
-  `ExtractRunPayload`, `AnalyzeRunPayload`)
+  `CacheRunPayload`, `ExtractRunPayload`, `AnalyzeRunPayload`)
 - `graphids.primitives` for data,
   model, loss, scaler, representation, and discovery primitives
 

@@ -319,6 +319,136 @@ def _build_graph_tables_windowed(
     )
 
 
+def _build_graph_tables_sequence(
+    df: pl.DataFrame,
+    *,
+    cfg: SequenceSegmentCfg,
+    node_stat_exprs: list[pl.Expr],
+    label_exprs: list[pl.Expr],
+    edge_policy: EdgePolicy | None = None,
+    edge_stat_exprs: list[pl.Expr],
+    edge_base_cols: list[str],
+    graph_transforms: list[GraphTransform] | None = None,
+    debug_artifacts_dir: str | Path | None = None,
+) -> GraphTables:
+    """Build one training sample from each ordered sequence of snapshot graphs."""
+    base = _build_graph_tables_windowed(
+        df,
+        window_size=cfg.window_size,
+        stride=cfg.stride,
+        node_stat_exprs=node_stat_exprs,
+        label_exprs=label_exprs,
+        edge_policy=edge_policy,
+        edge_stat_exprs=edge_stat_exprs,
+        edge_base_cols=edge_base_cols,
+        graph_transforms=graph_transforms,
+        debug_artifacts_dir=debug_artifacts_dir,
+    )
+    if base.node_stats.is_empty():
+        return base
+
+    window_ids = base.node_stats.select("_wid").unique().sort("_wid")["_wid"].to_list()
+    sequence_length = int(cfg.sequence_length)
+    sequence_stride = max(1, int(cfg.sequence_stride))
+    if sequence_length <= 0:
+        raise ValueError("SequenceSegmentCfg.sequence_length must be positive")
+    if len(window_ids) < sequence_length:
+        return GraphTables(pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), base.n_rows)
+
+    sequence_rows = [
+        {
+            "sequence_id": sequence_id,
+            "sequence_step": step,
+            "sequence_length": sequence_length,
+            "sequence_stride": sequence_stride,
+            "snapshot_wid": int(window_ids[start + step]),
+        }
+        for sequence_id, start in enumerate(
+            range(0, len(window_ids) - sequence_length + 1, sequence_stride)
+        )
+        for step in range(sequence_length)
+    ]
+    if not sequence_rows:
+        return GraphTables(pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), base.n_rows)
+
+    sequence_map = pl.DataFrame(sequence_rows).with_columns(
+        pl.col("sequence_id").cast(pl.Int64),
+        pl.col("sequence_step").cast(pl.Int64),
+        pl.col("sequence_length").cast(pl.Int64),
+        pl.col("sequence_stride").cast(pl.Int64),
+        pl.col("snapshot_wid").cast(pl.Int64),
+    )
+    node_counts = base.node_stats.group_by("_wid").agg(pl.len().alias("_node_count")).rename(
+        {"_wid": "snapshot_wid"}
+    )
+    sequence_map = (
+        sequence_map.join(node_counts, on="snapshot_wid", how="inner")
+        .sort(["sequence_id", "sequence_step"])
+        .with_columns(
+            (
+                pl.col("_node_count").cum_sum().over("sequence_id")
+                - pl.col("_node_count")
+            )
+            .cast(pl.Int64)
+            .alias("node_offset")
+        )
+    )
+
+    node_stats = (
+        sequence_map.join(base.node_stats.rename({"_wid": "snapshot_wid"}), on="snapshot_wid")
+        .with_columns(
+            pl.col("sequence_id").alias("_wid"),
+            (pl.col("_local_id") + pl.col("node_offset")).cast(pl.Int64).alias("_local_id"),
+        )
+        .drop("node_offset", "_node_count")
+        .sort(["sequence_id", "sequence_step", "_local_id"])
+    )
+    edge_df = (
+        sequence_map.join(base.edge_df.rename({"_wid": "snapshot_wid"}), on="snapshot_wid")
+        .with_columns(
+            pl.col("sequence_id").alias("_wid"),
+            (pl.col("src_local") + pl.col("node_offset")).cast(pl.Int64).alias("src_local"),
+            (pl.col("dst_local") + pl.col("node_offset")).cast(pl.Int64).alias("dst_local"),
+        )
+        .drop("node_offset", "_node_count")
+        .sort(["sequence_id", "sequence_step", "src_local", "dst_local"])
+    )
+    label_cols = [c for c in base.labels.columns if c != "_wid"]
+    if label_cols:
+        labels = (
+            sequence_map.select(
+                "sequence_id",
+                "sequence_length",
+                "sequence_stride",
+                "snapshot_wid",
+            )
+            .join(base.labels.rename({"_wid": "snapshot_wid"}), on="snapshot_wid")
+            .group_by("sequence_id", "sequence_length", "sequence_stride", maintain_order=True)
+            .agg([pl.col(c).max().alias(c) for c in label_cols])
+            .with_columns(pl.col("sequence_id").alias("_wid"))
+            .select("_wid", "sequence_id", "sequence_length", "sequence_stride", *label_cols)
+        )
+    else:
+        labels = sequence_map.select(
+            "sequence_id", "sequence_length", "sequence_stride"
+        ).unique(maintain_order=True).with_columns(pl.col("sequence_id").alias("_wid")).select(
+            "_wid", "sequence_id", "sequence_length", "sequence_stride"
+        )
+    log.info(
+        "sequences_expanded",
+        sequences=labels.height,
+        sequence_rows=sequence_map.height,
+        node_rows=node_stats.height,
+        edge_rows=edge_df.height,
+    )
+    return GraphTables(
+        node_stats=node_stats,
+        edge_df=edge_df,
+        labels=labels,
+        n_rows=base.n_rows,
+    )
+
+
 def build_graph_tables(
     df: pl.DataFrame,
     *,
@@ -370,10 +500,9 @@ def build_graph_tables(
         )
 
     if isinstance(segment_cfg, SequenceSegmentCfg):
-        return _build_graph_tables_windowed(
+        return _build_graph_tables_sequence(
             df,
-            window_size=segment_cfg.window_size + (segment_cfg.sequence_length - 1) * segment_cfg.sequence_stride * segment_cfg.stride,
-            stride=max(1, segment_cfg.sequence_stride * segment_cfg.stride),
+            cfg=segment_cfg,
             node_stat_exprs=node_stat_exprs,
             label_exprs=label_exprs,
             edge_policy=edge_policy,
@@ -381,10 +510,6 @@ def build_graph_tables(
             edge_base_cols=edge_base_cols,
             graph_transforms=graph_transforms,
             debug_artifacts_dir=debug_artifacts_dir,
-            tags={
-                "sequence_length": segment_cfg.sequence_length,
-                "sequence_stride": segment_cfg.sequence_stride,
-            },
         )
 
     if isinstance(segment_cfg, EntitySegmentCfg):
