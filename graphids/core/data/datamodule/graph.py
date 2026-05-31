@@ -26,6 +26,20 @@ def _clone(x):
     return x.clone() if hasattr(x, "clone") else x
 
 
+class _PackedGraphDataset(torch.utils.data.Dataset):
+    """Build packed PyG batches lazily from graph index plans."""
+
+    def __init__(self, graphs, plans: list[list[int]]):
+        self.graphs = graphs
+        self.plans = plans
+
+    def __len__(self) -> int:
+        return len(self.plans)
+
+    def __getitem__(self, idx: int) -> Batch:
+        return Batch.from_data_list([self.graphs[i] for i in self.plans[idx]])
+
+
 class GraphDataModule(pl.LightningDataModule):
     def __init__(
         self,
@@ -55,7 +69,7 @@ class GraphDataModule(pl.LightningDataModule):
         self._val: InMemoryDataset | None = None
         self._tests: dict[str, InMemoryDataset] = {}
         self._train_graphs: list | None = None
-        self._prebatched: list[Batch] | None = None
+        self._train_plans: list[list[int]] | None = None
         self._budget = None
 
     # ── Lightning lifecycle ─────────────────────────────────────────────
@@ -154,12 +168,11 @@ class GraphDataModule(pl.LightningDataModule):
             raise RuntimeError("label_filter='benign' yielded empty train set")
         return ds[idx]
 
-    def _pack(self, graphs, sizes, edge_sizes) -> list[Batch]:
+    def _pack(self, sizes, edge_sizes) -> list[list[int]]:
         b = self._budget_result()
-        plans = pack_offline(
+        return pack_offline(
             sizes, max_num=b.budget, edge_sizes=edge_sizes, max_edges=b.edge_budget
         )
-        return [Batch.from_data_list([graphs[i] for i in p]) for p in plans]
 
     def _fixed_loader(self, ds, *, shuffle: bool):
         nw = self.num_workers if self.num_workers is not None else 2
@@ -181,14 +194,17 @@ class GraphDataModule(pl.LightningDataModule):
         )
         return PrefetchLoader(loader, device=device) if device is not None else loader
 
-    def _prebatched_dl(self, batches: list[Batch], *, shuffle: bool):
+    def _prebatched_dl(self, graphs, plans: list[list[int]], *, shuffle: bool):
         device = (
             self.trainer.strategy.root_device
             if torch.cuda.is_available() and self.trainer is not None
             else None
         )
         loader = TorchDataLoader(
-            batches, batch_size=None, shuffle=shuffle, collate_fn=_clone
+            _PackedGraphDataset(graphs, plans),
+            batch_size=None,
+            shuffle=shuffle,
+            collate_fn=_clone,
         )
         return PrefetchLoader(loader, device=device) if device is not None else loader
 
@@ -198,12 +214,10 @@ class GraphDataModule(pl.LightningDataModule):
         view = self._train_view()
         if not self.dynamic_batching:
             return self._fixed_loader(view, shuffle=True)
-        if self._prebatched is None:
-            graphs = self._train_graphs if self._train_graphs is not None else view
-            self._prebatched = self._pack(
-                graphs, view.num_nodes_per_graph, view.num_edges_per_graph
-            )
-        return self._prebatched_dl(self._prebatched, shuffle=True)
+        graphs = self._train_graphs if self._train_graphs is not None else view
+        if self._train_plans is None:
+            self._train_plans = self._pack(view.num_nodes_per_graph, view.num_edges_per_graph)
+        return self._prebatched_dl(graphs, self._train_plans, shuffle=True)
 
     def val_dataloader(self):
         return self._eval_loader(self._val)
@@ -218,7 +232,8 @@ class GraphDataModule(pl.LightningDataModule):
     def _eval_loader(self, ds):
         if self.dynamic_batching and torch.cuda.is_available():
             return self._prebatched_dl(
-                self._pack(ds, ds.num_nodes_per_graph, ds.num_edges_per_graph),
+                ds,
+                self._pack(ds.num_nodes_per_graph, ds.num_edges_per_graph),
                 shuffle=False,
             )
         return self._fixed_loader(ds, shuffle=False)
