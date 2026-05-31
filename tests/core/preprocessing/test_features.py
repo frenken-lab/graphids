@@ -27,6 +27,14 @@ def _get_graph(data, slices, idx):
     )
 
 
+def _snapshot(window_size: int):
+    from graphids.core.data.preprocessing.representations import (
+        SnapshotRepresentationCfg,
+    )
+
+    return SnapshotRepresentationCfg(window_size=window_size, stride=window_size)
+
+
 def test_sliding_window_graphs_shapes_and_values():
     """GraphPipeline produces Data objects with correct shapes and edge features."""
     import polars as pl
@@ -64,6 +72,7 @@ def test_sliding_window_graphs_shapes_and_values():
         edge_col_order=EDGE_COL_ORDER,
         label_exprs=LABEL_EXPRS,
         edge_base_cols=EDGE_BASE_COLS,
+        representation_cfg=_snapshot(n_rows),
     )
     data, slices, num_graphs, _ = run_pipeline(pipeline, df)
     assert num_graphs > 0
@@ -119,6 +128,7 @@ def test_sliding_window_graphs_edge_freq():
         edge_col_order=EDGE_COL_ORDER,
         label_exprs=LABEL_EXPRS,
         edge_base_cols=EDGE_BASE_COLS,
+        representation_cfg=_snapshot(10),
     )
     data, slices, num_graphs, _ = run_pipeline(pipeline, df)
     assert num_graphs == 1
@@ -175,6 +185,7 @@ def test_skewness_kurtosis_clamped():
         edge_col_order=EDGE_COL_ORDER,
         label_exprs=LABEL_EXPRS,
         edge_base_cols=EDGE_BASE_COLS,
+        representation_cfg=_snapshot(n_rows),
     )
     data, slices, num_graphs, _ = run_pipeline(pipeline, df)
     assert num_graphs > 0
@@ -221,6 +232,7 @@ def test_build_tables_and_debug_artifacts(tmp_path):
         label_exprs=LABEL_EXPRS,
         edge_base_cols=EDGE_BASE_COLS,
         debug_artifacts_dir=tmp_path / "artifacts",
+        representation_cfg=_snapshot(n_rows),
     )
     tables = build_pipeline_tables(pipeline, df)
     assert tables.n_rows == n_rows
@@ -267,6 +279,7 @@ def test_edge_policy_explicit_direction():
         label_exprs=LABEL_EXPRS,
         edge_base_cols=EDGE_BASE_COLS,
         edge_policy=temporal_edge_policy(dst_shift=1),
+        representation_cfg=_snapshot(6),
     )
     tables = build_pipeline_tables(pipeline, df)
     assert len(tables.edge_df) > 0
@@ -313,6 +326,7 @@ def test_secondary_graph_transforms_are_composable():
         label_exprs=LABEL_EXPRS,
         edge_base_cols=EDGE_BASE_COLS,
         graph_transforms=[*default_graph_transforms(), *secondary_graph_transforms()],
+        representation_cfg=_snapshot(n_rows),
     )
     tables = build_pipeline_tables(pipeline, df)
     assert "in_out_ratio" in tables.node_stats.columns

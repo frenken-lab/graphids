@@ -9,6 +9,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
+from ._validation import require_non_negative, require_positive
 from .segments import (
     EntitySegmentCfg,
     MultiScaleSegmentCfg,
@@ -34,6 +35,10 @@ class SnapshotRepresentationCfg:
     window_size: int = 100
     stride: int = 100
 
+    def __post_init__(self) -> None:
+        require_positive("window_size", self.window_size)
+        require_positive("stride", self.stride)
+
 
 @dataclass(frozen=True)
 class SnapshotSequenceRepresentationCfg:
@@ -45,6 +50,12 @@ class SnapshotSequenceRepresentationCfg:
     sequence_length: int = 4
     sequence_stride: int = 1
 
+    def __post_init__(self) -> None:
+        require_positive("window_size", self.window_size)
+        require_positive("stride", self.stride)
+        require_positive("sequence_length", self.sequence_length)
+        require_positive("sequence_stride", self.sequence_stride)
+
 
 @dataclass(frozen=True)
 class MultiScaleRepresentationCfg:
@@ -53,6 +64,13 @@ class MultiScaleRepresentationCfg:
     kind: Literal["multi_scale"] = "multi_scale"
     window_sizes: tuple[int, ...] = (50, 100, 200)
     stride: int = 100
+
+    def __post_init__(self) -> None:
+        if not self.window_sizes:
+            raise ValueError("window_sizes must not be empty")
+        for window_size in self.window_sizes:
+            require_positive("window_sizes", window_size)
+        require_positive("stride", self.stride)
 
 
 @dataclass(frozen=True)
@@ -64,6 +82,12 @@ class TemporalRepresentationCfg:
     binary_target: bool = True
     history_messages: int | None = None
 
+    def __post_init__(self) -> None:
+        if not self.time_col:
+            raise ValueError("time_col must not be empty")
+        if self.history_messages is not None:
+            require_positive("history_messages", self.history_messages)
+
 
 @dataclass(frozen=True)
 class EntityRepresentationCfg:
@@ -74,6 +98,14 @@ class EntityRepresentationCfg:
     anchor_value: str | int | None = None
     history_window_size: int = 100
     future_window_size: int = 0
+
+    def __post_init__(self) -> None:
+        if not self.anchor_column:
+            raise ValueError("anchor_column must not be empty")
+        require_non_negative("history_window_size", self.history_window_size)
+        require_non_negative("future_window_size", self.future_window_size)
+        if self.history_window_size + self.future_window_size <= 0:
+            raise ValueError("history_window_size and future_window_size cannot both be zero")
 
 
 GraphRepresentationCfg = Annotated[

@@ -7,6 +7,8 @@ from typing import Literal, Protocol
 
 import polars as pl
 
+from ._validation import require_non_negative, require_positive
+
 
 @dataclass(frozen=True)
 class WindowSegmentCfg:
@@ -14,6 +16,10 @@ class WindowSegmentCfg:
 
     window_size: int
     stride: int
+
+    def __post_init__(self) -> None:
+        require_positive("window_size", self.window_size)
+        require_positive("stride", self.stride)
 
 
 @dataclass(frozen=True)
@@ -25,6 +31,12 @@ class SequenceSegmentCfg:
     sequence_length: int = 4
     sequence_stride: int = 1
 
+    def __post_init__(self) -> None:
+        require_positive("window_size", self.window_size)
+        require_positive("stride", self.stride)
+        require_positive("sequence_length", self.sequence_length)
+        require_positive("sequence_stride", self.sequence_stride)
+
 
 @dataclass(frozen=True)
 class MultiScaleSegmentCfg:
@@ -32,6 +44,13 @@ class MultiScaleSegmentCfg:
 
     window_sizes: tuple[int, ...]
     stride: int
+
+    def __post_init__(self) -> None:
+        if not self.window_sizes:
+            raise ValueError("window_sizes must not be empty")
+        for window_size in self.window_sizes:
+            require_positive("window_sizes", window_size)
+        require_positive("stride", self.stride)
 
 
 @dataclass(frozen=True)
@@ -42,6 +61,14 @@ class EntitySegmentCfg:
     anchor_value: str | int | None = None
     history_window_size: int = 100
     future_window_size: int = 0
+
+    def __post_init__(self) -> None:
+        if not self.anchor_column:
+            raise ValueError("anchor_column must not be empty")
+        require_non_negative("history_window_size", self.history_window_size)
+        require_non_negative("future_window_size", self.future_window_size)
+        if self.history_window_size + self.future_window_size <= 0:
+            raise ValueError("history_window_size and future_window_size cannot both be zero")
 
 
 SegmentCfg = WindowSegmentCfg | SequenceSegmentCfg | MultiScaleSegmentCfg | EntitySegmentCfg
@@ -78,6 +105,10 @@ class WindowSegmenter:
 
     window_size: int
     stride: int
+
+    def __post_init__(self) -> None:
+        require_positive("window_size", self.window_size)
+        require_positive("stride", self.stride)
 
     def segment(self, df: pl.DataFrame) -> WindowedRows:
         rows = df.with_row_index("_row").with_columns(pl.col("_row").cast(pl.Int64))

@@ -91,6 +91,8 @@ def test_run_stage_attaches_launch_logger(monkeypatch, tmp_path):
     class DummyTrainer:
         def __init__(self, **kwargs):
             captured["trainer_kwargs"] = kwargs
+            self.callback_metrics = {}
+            self.global_step = 0
 
         def fit(self, model, datamodule):
             captured["fit_model"] = model
@@ -128,7 +130,7 @@ def test_run_stage_attaches_launch_logger(monkeypatch, tmp_path):
 
     result = runtime.run_stage(run, logger=logger)
 
-    assert result == {"stage": "fit", "trainer": "DummyTrainer"}
+    assert result == {"stage": "fit", "trainer": "DummyTrainer", "metrics": {}}
     assert captured["trainer_kwargs"]["logger"] is logger
     callbacks = captured["trainer_kwargs"]["callbacks"]
     assert any(isinstance(cb, MLflowSystemMetricsCallback) for cb in callbacks)
@@ -146,6 +148,7 @@ def test_ray_stage_binds_existing_mlflow_run(monkeypatch, tmp_path):
     )
 
     captured: dict[str, object] = {}
+    monkeypatch.setenv("GRAPHIDS_LAKE_ROOT", str(tmp_path / "lake"))
 
     def fake_make_logger(**kwargs):
         captured["logger_kwargs"] = kwargs
@@ -178,6 +181,9 @@ def test_ray_stage_binds_existing_mlflow_run(monkeypatch, tmp_path):
     assert captured["logger"] is not None
     assert captured["logger_kwargs"]["run_id"] == "existing-run-id"
     assert captured["logger_kwargs"]["experiment_name"] == "graphids/hcrl_sa/fit"
+    assert captured["logger_kwargs"]["artifact_location"] == str(
+        tmp_path / "lake" / "mlartifacts" / "hcrl_sa" / "fit"
+    )
 
 
 def test_run_stage_cache_builds_data_only(monkeypatch, tmp_path):

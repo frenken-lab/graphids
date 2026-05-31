@@ -24,6 +24,13 @@ from graphids.exp.journal import (
 )
 
 
+def _mlflow_artifact_location(run: RunConfig) -> str:
+    from graphids.paths import lake_root
+
+    dataset = run.dataset or "unknown"
+    return str(Path(lake_root()) / "mlartifacts" / dataset / run.stage)
+
+
 def _payload(obj: Any) -> dict[str, Any]:
     if hasattr(obj, "model_dump"):
         return obj.model_dump(mode="json")
@@ -273,7 +280,7 @@ def _make_run_logger(
         experiment_name=f"graphids/{run.dataset or 'unknown'}/{run.stage}",
         run_name=run.name,
         tags=run.mlflow_tags(),
-        artifact_location=str(run.outputs.mlflow_dir()),
+        artifact_location=_mlflow_artifact_location(run),
         run_id=run_id,
     )
 

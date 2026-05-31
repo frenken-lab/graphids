@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from graphids.core.data.preprocessing.representations import (
     EntityRepresentationCfg,
     MultiScaleRepresentationCfg,
@@ -19,6 +21,7 @@ from graphids.core.data.preprocessing.segments import segment_kind
 from graphids.core.data.preprocessing.views import (
     EventChunkViewCfg,
     RollingStreamViewCfg,
+    SnapshotSequenceViewCfg,
     view_kind,
 )
 
@@ -78,3 +81,30 @@ def test_representation_window_defaults_are_derived():
     assert representation_window_defaults(
         EntityRepresentationCfg(history_window_size=9, future_window_size=2)
     ) == (12, 2)
+
+
+@pytest.mark.parametrize(
+    "factory, message",
+    [
+        (lambda: SnapshotRepresentationCfg(window_size=0), "window_size must be positive"),
+        (
+            lambda: SnapshotSequenceRepresentationCfg(sequence_length=0),
+            "sequence_length must be positive",
+        ),
+        (lambda: MultiScaleRepresentationCfg(window_sizes=()), "window_sizes must not be empty"),
+        (lambda: TemporalRepresentationCfg(time_col=""), "time_col must not be empty"),
+        (
+            lambda: EntityRepresentationCfg(history_window_size=0, future_window_size=0),
+            "cannot both be zero",
+        ),
+        (lambda: SnapshotSequenceViewCfg(sequence_stride=0), "sequence_stride must be positive"),
+        (
+            lambda: EventChunkViewCfg(message_count=None, duration_ms=None),
+            "message_count or duration_ms is required",
+        ),
+        (lambda: RollingStreamViewCfg(prediction_horizon=0), "prediction_horizon must be positive"),
+    ],
+)
+def test_representation_and_view_configs_validate_impossible_values(factory, message):
+    with pytest.raises(ValueError, match=message):
+        factory()

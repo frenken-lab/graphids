@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+from graphids.core.data.preprocessing.views import ViewKind
+
 
 @dataclass(frozen=True)
 class RawEventTableSpec:
@@ -31,7 +33,7 @@ class MaterializedViewSpec:
 
     root: Path
     name: str = "materialized_views"
-    view_kind: Literal["snapshot", "snapshot_sequence", "multi_scale", "temporal", "entity"] = "snapshot"
+    view_kind: ViewKind = "snapshot"
     partition_cols: tuple[str, ...] = ("vehicle_id", "view_kind", "split")
     format: Literal["parquet", "sqlite", "duckdb"] = "parquet"
     key_cols: tuple[str, ...] = ("vehicle_id", "canonical_id", "timestamp")

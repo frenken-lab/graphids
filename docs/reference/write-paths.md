@@ -15,8 +15,8 @@
 | Root | Default/current behavior | Owner |
 |---|---|---|
 | Repo | `/users/PAS2022/rf15/graphids` | source code |
-| Lake | `$GRAPHIDS_LAKE_ROOT`, typically `/fs/ess/PAS1266/graphids` | raw data, caches, MLflow DB |
-| Runs | `Path.home() / "ray_results"` outside Ray | run journals, checkpoints, artifacts |
+| Lake | `$GRAPHIDS_LAKE_ROOT`, typically `/fs/ess/PAS1266/graphids` | raw data, caches, MLflow DB, MLflow artifacts |
+| Runs | `Path.home() / "ray_results"` outside Ray | run journals, checkpoints, non-MLflow artifacts |
 | SLURM logs | `GRAPHIDS_SLURM_LOG_DIR`, `.env`, or `{lake_root}/slurm`; current jobs use `/fs/ess/PAS1266/graphids/slurm_logs` | sbatch scripts, stdout, stderr |
 
 Relevant code:
@@ -33,6 +33,7 @@ $GRAPHIDS_LAKE_ROOT/
   raw/{dataset}/
   cache/v{PREPROCESSING_VERSION}/{dataset}/
   mlflow.db
+  mlartifacts/{dataset}/{stage}/
   slurm_logs/
     scripts/{experiment_name}.sbatch
     {experiment_name}_{job_id}.out
@@ -48,7 +49,6 @@ $GRAPHIDS_LAKE_ROOT/
     last.ckpt
     last.ckpt.sha256
   artifacts/
-  .mlflow/
 ```
 
 Checkpoint files exist only when the experiment config enables checkpointing
@@ -95,6 +95,12 @@ sqlite:///{lake_root}/mlflow.db
 hyperparameters/tags, and marks the run `FINISHED` or `FAILED`. For Lightning
 `fit` and `test`, final callback metrics are explicitly logged after the
 trainer returns.
+
+MLflow artifact roots are explicit lake paths:
+
+```text
+{lake_root}/mlartifacts/{dataset}/{stage}/
+```
 
 MLflow system metrics are sampled by `MLflowSystemMetricsCallback` for
 Lightning-created runs.
