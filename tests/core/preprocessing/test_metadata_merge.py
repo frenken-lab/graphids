@@ -30,6 +30,11 @@ INVARIANTS = {
     "representation_kind": "snapshot",
     "representation_digest": "b" * 12,
     "representation_cfg": {"kind": "snapshot", "window_size": 100, "stride": 100},
+    "vocab_scope": "train",
+    "split_policy": "blocked_tail_v4",
+    "split_unit": "dense_base_window",
+    "split_embargo": 0,
+    "split_plan_digest": "c" * 12,
 }
 
 
@@ -190,6 +195,81 @@ def test_validate_metadata_clean(tmp_path):
     )
     meta = load_metadata(tmp_path)
     assert validate_metadata(meta, dataset="hcrl_sa") == []
+
+
+def test_cache_audit_reports_clean_split(tmp_path):
+    from graphids.core.data.preprocessing.cache_audit import audit_cache_metadata
+
+    audit = {
+        "graph_index_overlap": 0,
+        "base_unit_overlap": 0,
+        "raw_interval_intersections": 0,
+        "source_boundary_violations": 2,
+    }
+    merge_split_into_metadata(
+        tmp_path,
+        "train",
+        {**_entry(100), "label_balance": {"0": 80, "1": 20}, "split_audit": audit},
+        invariants=INVARIANTS,
+        dataset_name="hcrl_sa",
+        num_arb_ids=128,
+    )
+    merge_split_into_metadata(
+        tmp_path,
+        "val",
+        {
+            "num_graphs": 25,
+            "label_balance": {"0": 20, "1": 5},
+            "derived_from": "train",
+            "split_audit": audit,
+        },
+        invariants=INVARIANTS,
+        dataset_name="hcrl_sa",
+        num_arb_ids=128,
+    )
+
+    result = audit_cache_metadata(tmp_path)
+
+    assert result["ok"] is True
+    assert result["audit"]["base_unit_overlap"] == 0
+    assert result["warnings"] == ["2 source-boundary-crossing graph(s) were detected"]
+
+
+def test_cache_audit_fails_on_overlap(tmp_path):
+    from graphids.core.data.preprocessing.cache_audit import audit_cache_metadata
+
+    audit = {
+        "graph_index_overlap": 0,
+        "base_unit_overlap": 1,
+        "raw_interval_intersections": 0,
+        "source_boundary_violations": 0,
+    }
+    merge_split_into_metadata(
+        tmp_path,
+        "train",
+        {**_entry(100), "label_balance": {"0": 80, "1": 20}, "split_audit": audit},
+        invariants=INVARIANTS,
+        dataset_name="hcrl_sa",
+        num_arb_ids=128,
+    )
+    merge_split_into_metadata(
+        tmp_path,
+        "val",
+        {
+            "num_graphs": 25,
+            "label_balance": {"0": 20, "1": 5},
+            "derived_from": "train",
+            "split_audit": audit,
+        },
+        invariants=INVARIANTS,
+        dataset_name="hcrl_sa",
+        num_arb_ids=128,
+    )
+
+    result = audit_cache_metadata(tmp_path)
+
+    assert result["ok"] is False
+    assert "split_audit.base_unit_overlap=1; expected 0" in result["errors"]
 
 
 def test_validate_metadata_catches_missing_test_subdirs(tmp_path):

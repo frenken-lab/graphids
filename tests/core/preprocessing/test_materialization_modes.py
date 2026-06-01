@@ -20,6 +20,7 @@ from graphids.core.data.preprocessing.segments import (
     EntitySegmentCfg,
     MultiScaleSegmentCfg,
     SequenceSegmentCfg,
+    WindowSegmentCfg,
 )
 
 
@@ -56,6 +57,10 @@ def test_sequence_branch_tags_materialized_tables():
         2,
     }
     assert "snapshot_wid" in tables.node_stats.columns
+    assert "window_start_row" in tables.labels.columns
+    assert "window_end_row" in tables.labels.columns
+    assert tables.labels["window_start_row"].to_list() == [0, 5]
+    assert tables.labels["window_end_row"].to_list() == [15, 20]
     assert "sequence_length" in tables.node_stats.columns
     assert "sequence_length" in tables.edge_df.columns
     assert "sequence_length" in tables.labels.columns
@@ -71,8 +76,48 @@ def test_sequence_branch_tags_materialized_tables():
     assert data.sequence_id.tolist() == [0, 1]
     assert data.sequence_length.tolist() == [3, 3]
     assert data.sequence_stride.tolist() == [1, 1]
+    assert data.target_snapshot_wid.tolist() == [10, 15]
+    assert data.window_start_row.tolist() == [0, 5]
+    assert data.window_end_row.tolist() == [15, 20]
     first_start, first_end = slices["node_sequence_step"][0], slices["node_sequence_step"][1]
     assert set(data.node_sequence_step[first_start:first_end].tolist()) == {0, 1, 2}
+
+
+def test_sequence_labels_use_target_window_not_any_context_window():
+    context_only_attack = _frame().with_columns(
+        pl.when(pl.arange(0, pl.len()) < 5).then(pl.lit(1)).otherwise(pl.lit(0)).alias("attack")
+    )
+    tables = build_graph_tables(
+        context_only_attack,
+        node_stat_exprs=NODE_STAT_EXPRS,
+        label_exprs=LABEL_EXPRS,
+        edge_stat_exprs=EDGE_STAT_EXPRS,
+        edge_base_cols=EDGE_BASE_COLS,
+        edge_policy=None,
+        graph_transforms=None,
+        debug_artifacts_dir=None,
+        segment_cfg=SequenceSegmentCfg(window_size=5, stride=5, sequence_length=3, sequence_stride=1),
+    )
+    assert tables.labels["y"].to_list() == [0, 0]
+
+    target_attack = _frame().with_columns(
+        pl.when((pl.arange(0, pl.len()) >= 10) & (pl.arange(0, pl.len()) < 15))
+        .then(pl.lit(1))
+        .otherwise(pl.lit(0))
+        .alias("attack")
+    )
+    tables = build_graph_tables(
+        target_attack,
+        node_stat_exprs=NODE_STAT_EXPRS,
+        label_exprs=LABEL_EXPRS,
+        edge_stat_exprs=EDGE_STAT_EXPRS,
+        edge_base_cols=EDGE_BASE_COLS,
+        edge_policy=None,
+        graph_transforms=None,
+        debug_artifacts_dir=None,
+        segment_cfg=SequenceSegmentCfg(window_size=5, stride=5, sequence_length=3, sequence_stride=1),
+    )
+    assert tables.labels["y"].to_list() == [1, 0]
 
 
 def test_multiscale_branch_tags_materialized_tables():
@@ -90,6 +135,30 @@ def test_multiscale_branch_tags_materialized_tables():
     assert "scale_id" in tables.node_stats.columns
     assert "scale_window_size" in tables.node_stats.columns
     assert tables.node_stats.select("scale_id").n_unique() == 2
+
+
+def test_window_metadata_tracks_source_boundary_counts():
+    frame = _frame().with_columns(
+        pl.when(pl.arange(0, pl.len()) < 10)
+        .then(pl.lit("a"))
+        .otherwise(pl.lit("b"))
+        .alias("source_file"),
+        pl.lit("train").alias("source_dir"),
+    )
+    tables = build_graph_tables(
+        frame,
+        node_stat_exprs=NODE_STAT_EXPRS,
+        label_exprs=LABEL_EXPRS,
+        edge_stat_exprs=EDGE_STAT_EXPRS,
+        edge_base_cols=EDGE_BASE_COLS,
+        edge_policy=None,
+        graph_transforms=None,
+        debug_artifacts_dir=None,
+        segment_cfg=WindowSegmentCfg(window_size=20, stride=20),
+    )
+
+    assert tables.labels["source_dir_n_unique"].to_list() == [1]
+    assert tables.labels["source_file_n_unique"].to_list() == [2]
 
 
 def test_entity_branch_tags_materialized_tables():

@@ -116,6 +116,7 @@ def test_snapshot_sequence_real_config_uses_budgeted_batches():
 
 def test_snapshot_sequence_cache_config_resolves_to_cache_payload(monkeypatch):
     from graphids.core.data.preprocessing.representations import representation_kind
+    from graphids.core.data.preprocessing.splits import split_policy_digest
     from graphids.exp import runtime
     from graphids.exp.config import CacheRunPayload, ExperimentConfig
 
@@ -128,7 +129,15 @@ def test_snapshot_sequence_cache_config_resolves_to_cache_payload(monkeypatch):
     assert representation_kind(run.representation_cfg) == "snapshot_sequence"
     data = runtime._build_component(run.payload.data)
     assert representation_kind(data.source.representation_cfg) == "snapshot_sequence"
-    assert data.source.cache_root_path().name == "snapshot_sequence_32e9bbb5f88a_voc_train"
+    split_digest = split_policy_digest(
+        data.source.representation_cfg,
+        val_fraction=data.source.val_fraction,
+        seed=data.source.seed,
+    )
+    assert (
+        data.source.cache_root_path().name
+        == f"snapshot_sequence_32e9bbb5f88a_voc_train_split_{split_digest}"
+    )
 
 
 def test_runtime_runs_snapshot_sequence_training_smoke(monkeypatch, tmp_path):

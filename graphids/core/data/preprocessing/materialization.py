@@ -70,6 +70,23 @@ def _dump_stage(debug_dir: Path | None, stage: str, table: pl.DataFrame) -> None
     )
 
 
+def _window_meta_exprs(window_size: int, stride: int) -> list[pl.Expr]:
+    return [
+        pl.col("_wid").cast(pl.Int64).alias("window_start_row"),
+        (pl.col("_wid") + window_size).cast(pl.Int64).alias("window_end_row"),
+        (pl.col("_wid") // stride).cast(pl.Int64).alias("window_ordinal"),
+    ]
+
+
+def _source_count_exprs(cols: list[str]) -> list[pl.Expr]:
+    out: list[pl.Expr] = []
+    if "source_dir" in cols:
+        out.append(pl.col("source_dir").n_unique().cast(pl.Int64).alias("source_dir_n_unique"))
+    if "source_file" in cols:
+        out.append(pl.col("source_file").n_unique().cast(pl.Int64).alias("source_file_n_unique"))
+    return out
+
+
 def _aggregate_nodes_labels(
     windowed: WindowedRows,
     *,
@@ -80,6 +97,7 @@ def _aggregate_nodes_labels(
     debug_dir: Path | None = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     lf = windowed.rows.lazy().sort("_row")
+    cols = windowed.rows.columns
     dyn = dict(every=f"{stride}i", period=f"{window_size}i", closed="left")
     node_lf = (
         lf.group_by_dynamic("_row", **dyn, group_by="node_id")
@@ -87,8 +105,14 @@ def _aggregate_nodes_labels(
         .fill_null(0)
         .fill_nan(0)
         .rename({"_row": "_wid"})
+        .with_columns(*_window_meta_exprs(window_size, stride))
     )
-    labels_lf = lf.group_by_dynamic("_row", **dyn).agg(*label_exprs).rename({"_row": "_wid"})
+    labels_lf = (
+        lf.group_by_dynamic("_row", **dyn)
+        .agg(*label_exprs, *_source_count_exprs(cols))
+        .rename({"_row": "_wid"})
+        .with_columns(*_window_meta_exprs(window_size, stride))
+    )
     node_stats, labels = pl.collect_all([node_lf, labels_lf])
     _dump_stage(debug_dir, "02_node_stats_raw", node_stats)
     _dump_stage(debug_dir, "03_labels_raw", labels)
@@ -127,6 +151,7 @@ def _generate_edges(
         .rename({"_row": "_wid"})
         .explode(edge_cols)
         .rename({edge_policy.src_alias: "src", edge_policy.dst_alias: "dst"})
+        .with_columns(*_window_meta_exprs(window_size, stride))
     ).collect()
     filters = [pl.col("dst").is_not_null()]
     filters.extend(pl.col(c).is_not_null() for c in edge_feature_names)
@@ -413,26 +438,111 @@ def _build_graph_tables_sequence(
         .drop("node_offset", "_node_count")
         .sort(["sequence_id", "sequence_step", "src_local", "dst_local"])
     )
-    label_cols = [c for c in base.labels.columns if c != "_wid"]
-    if label_cols:
-        labels = (
-            sequence_map.select(
-                "sequence_id",
-                "sequence_length",
-                "sequence_stride",
-                "snapshot_wid",
+    meta_cols = (
+        "window_start_row",
+        "window_end_row",
+        "window_ordinal",
+        "source_dir_n_unique",
+        "source_file_n_unique",
+    )
+    label_cols = [c for c in base.labels.columns if c != "_wid" and c not in meta_cols]
+    meta_aggs = []
+    if "window_start_row" in base.labels.columns:
+        meta_aggs.append(pl.col("window_start_row").min().alias("window_start_row"))
+    if "window_end_row" in base.labels.columns:
+        meta_aggs.append(pl.col("window_end_row").max().alias("window_end_row"))
+    if "window_ordinal" in base.labels.columns:
+        meta_aggs.append(pl.col("window_ordinal").min().alias("window_ordinal"))
+    if "source_dir_n_unique" in base.labels.columns:
+        meta_aggs.append(pl.col("source_dir_n_unique").max().alias("source_dir_n_unique"))
+    if "source_file_n_unique" in base.labels.columns:
+        meta_aggs.append(pl.col("source_file_n_unique").max().alias("source_file_n_unique"))
+    target_map = sequence_map.filter(
+        pl.col("sequence_step") == pl.col("sequence_length") - 1
+    ).select(
+        "sequence_id",
+        "sequence_length",
+        "sequence_stride",
+        pl.col("snapshot_wid").alias("target_snapshot_wid"),
+    )
+    context_map = sequence_map.select(
+        "sequence_id",
+        "sequence_length",
+        "sequence_stride",
+        "snapshot_wid",
+    )
+    base_labels = base.labels.rename({"_wid": "snapshot_wid"})
+    if label_cols or meta_aggs:
+        select_cols = [
+            "_wid",
+            "sequence_id",
+            "sequence_length",
+            "sequence_stride",
+            "target_snapshot_wid",
+            *label_cols,
+            *meta_cols,
+        ]
+        target_cols = [
+            "sequence_id",
+            "sequence_length",
+            "sequence_stride",
+            "target_snapshot_wid",
+            *label_cols,
+        ]
+        target_labels = (
+            target_map.join(
+                base_labels,
+                left_on="target_snapshot_wid",
+                right_on="snapshot_wid",
             )
-            .join(base.labels.rename({"_wid": "snapshot_wid"}), on="snapshot_wid")
-            .group_by("sequence_id", "sequence_length", "sequence_stride", maintain_order=True)
-            .agg([pl.col(c).max().alias(c) for c in label_cols])
-            .with_columns(pl.col("sequence_id").alias("_wid"))
-            .select("_wid", "sequence_id", "sequence_length", "sequence_stride", *label_cols)
+            .select(
+                *(
+                    c
+                    for c in target_cols
+                    if c
+                    in {
+                        "sequence_id",
+                        "sequence_length",
+                        "sequence_stride",
+                        "target_snapshot_wid",
+                    }
+                    or c in base.labels.columns
+                )
+            )
+        )
+        if meta_aggs:
+            context_meta = (
+                context_map.join(base_labels, on="snapshot_wid")
+                .group_by("sequence_id", "sequence_length", "sequence_stride", maintain_order=True)
+                .agg(meta_aggs)
+            )
+            labels = target_labels.join(
+                context_meta,
+                on=["sequence_id", "sequence_length", "sequence_stride"],
+            )
+        else:
+            labels = target_labels
+        labels = (
+            labels.with_columns(pl.col("sequence_id").alias("_wid"))
+            .select(
+                *(
+                    c
+                    for c in select_cols
+                    if c in base.labels.columns
+                    or c
+                    in {
+                        "_wid",
+                        "sequence_id",
+                        "sequence_length",
+                        "sequence_stride",
+                        "target_snapshot_wid",
+                    }
+                )
+            )
         )
     else:
-        labels = sequence_map.select(
-            "sequence_id", "sequence_length", "sequence_stride"
-        ).unique(maintain_order=True).with_columns(pl.col("sequence_id").alias("_wid")).select(
-            "_wid", "sequence_id", "sequence_length", "sequence_stride"
+        labels = target_map.with_columns(pl.col("sequence_id").alias("_wid")).select(
+            "_wid", "sequence_id", "sequence_length", "sequence_stride", "target_snapshot_wid"
         )
     log.info(
         "sequences_expanded",

@@ -15,6 +15,7 @@ from rich.console import Console
 from rich.table import Table
 
 from graphids.cli.app import app
+from graphids.core.data.preprocessing.cache_audit import audit_cache_metadata
 from graphids.exp.config import ExperimentConfig
 from graphids.exp.journal import load_manifest
 from graphids.exp.results import query_result_view, result_rows_as_json, sort_rows
@@ -70,6 +71,44 @@ def manifest(
     if manifest is None:
         raise typer.BadParameter(f"no manifest found in {run_dir}")
     console.print_json(data=manifest.model_dump(mode="json"))
+
+
+@exp_app.command("cache-audit")
+def cache_audit(
+    cache_root: Annotated[Path, typer.Argument(help="Graph cache root containing cache_metadata.json")],
+    output_format: Annotated[str, typer.Option("--format", help="table or json")] = "table",
+) -> None:
+    """Audit built graph-cache split metadata for train/val leakage."""
+    result = audit_cache_metadata(cache_root)
+    if output_format == "json":
+        console.print_json(data=result)
+    else:
+        table = Table(title="cache split audit", show_lines=False)
+        table.add_column("field")
+        table.add_column("value")
+        for key in (
+            "cache_root",
+            "dataset",
+            "representation_kind",
+            "split_policy",
+            "split_unit",
+            "split_embargo",
+            "split_plan_digest",
+            "vocab_scope",
+            "num_train_graphs",
+            "num_val_graphs",
+        ):
+            table.add_row(key, str(result.get(key)))
+        for key, value in (result.get("audit") or {}).items():
+            table.add_row(f"audit.{key}", str(value))
+        for warning in result["warnings"]:
+            table.add_row("warning", warning)
+        for error in result["errors"]:
+            table.add_row("error", error)
+        table.add_row("ok", str(result["ok"]))
+        console.print(table)
+    if not result["ok"]:
+        raise typer.Exit(code=1)
 
 
 @exp_app.command("launch")

@@ -24,6 +24,11 @@ INVARIANT_KEYS = (
     "representation_kind",
     "representation_digest",
     "representation_cfg",
+    "vocab_scope",
+    "split_policy",
+    "split_unit",
+    "split_embargo",
+    "split_plan_digest",
 )
 
 

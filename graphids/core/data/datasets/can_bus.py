@@ -174,6 +174,8 @@ def load_can_rows(raw_dir: Path, source_dirs: list[str]) -> pl.DataFrame:
                 pl.scan_csv(csv_path).with_columns(
                     pl.lit(at).alias("attack_type"),
                     pl.lit(sub).alias("vehicle_id"),
+                    pl.lit(sub).alias("source_dir"),
+                    pl.lit(str(csv_path.relative_to(raw_dir))).alias("source_file"),
                 )
             )
     if not frames:

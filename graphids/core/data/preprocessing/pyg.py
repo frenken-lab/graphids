@@ -56,6 +56,9 @@ def graph_tables_to_pyg(
         "sequence_length": "node_sequence_length",
         "sequence_stride": "node_sequence_stride",
         "snapshot_wid": "node_snapshot_wid",
+        "window_start_row": "node_window_start_row",
+        "window_end_row": "node_window_end_row",
+        "window_ordinal": "node_window_ordinal",
     }
     for col, attr in node_optional_cols.items():
         if col in tables.node_stats.columns:
@@ -68,13 +71,29 @@ def graph_tables_to_pyg(
         "sequence_length": "edge_sequence_length",
         "sequence_stride": "edge_sequence_stride",
         "snapshot_wid": "edge_snapshot_wid",
+        "window_start_row": "edge_window_start_row",
+        "window_end_row": "edge_window_end_row",
+        "window_ordinal": "edge_window_ordinal",
     }
     for col, attr in edge_optional_cols.items():
         if col in tables.edge_df.columns:
             extra_tensors[attr] = _optional_tensor(tables.edge_df, col, dtype=pl.Int64)
             extra_slices[attr] = edge_slice
 
-    graph_optional_cols = ("sequence_id", "sequence_length", "sequence_stride")
+    extra_tensors["graph_wid"] = _optional_tensor(kept_wids, "_wid", dtype=pl.Int64)
+    extra_slices["graph_wid"] = graph_idx
+
+    graph_optional_cols = (
+        "sequence_id",
+        "sequence_length",
+        "sequence_stride",
+        "target_snapshot_wid",
+        "window_start_row",
+        "window_end_row",
+        "window_ordinal",
+        "source_dir_n_unique",
+        "source_file_n_unique",
+    )
     for col in graph_optional_cols:
         if col in labels_aligned.columns:
             extra_tensors[col] = _optional_tensor(labels_aligned, col, dtype=pl.Int64)
