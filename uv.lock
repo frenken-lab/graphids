@@ -465,6 +465,7 @@ dependencies = [
     { name = "pyarrow" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
+    { name = "pyg-lib" },
     { name = "pyyaml" },
     { name = "ray", extra = ["train", "tune"] },
     { name = "scikit-learn" },
@@ -523,6 +524,7 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=14.0.0" },
     { name = "pydantic", specifier = ">=2.10" },
     { name = "pydantic-settings", specifier = ">=2.0" },
+    { name = "pyg-lib", index = "https://data.pyg.org/whl/torch-2.8.0+cu128.html" },
     { name = "pygod", marker = "extra == 'baselines'", specifier = ">=1.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pyyaml", specifier = ">=6.0" },
@@ -535,10 +537,10 @@ requires-dist = [
     { name = "tensordict", specifier = ">=0.6" },
     { name = "torch", specifier = ">=2.8.0,<2.9" },
     { name = "torch-cka", marker = "extra == 'analysis'", specifier = ">=0.21" },
-    { name = "torch-cluster", index = "https://data.pyg.org/whl/torch-2.8.0+cu126.html" },
+    { name = "torch-cluster", index = "https://data.pyg.org/whl/torch-2.8.0+cu128.html" },
     { name = "torch-geometric", specifier = ">=2.7.0" },
-    { name = "torch-scatter", index = "https://data.pyg.org/whl/torch-2.8.0+cu126.html" },
-    { name = "torch-sparse", index = "https://data.pyg.org/whl/torch-2.8.0+cu126.html" },
+    { name = "torch-scatter", index = "https://data.pyg.org/whl/torch-2.8.0+cu128.html" },
+    { name = "torch-sparse", index = "https://data.pyg.org/whl/torch-2.8.0+cu128.html" },
     { name = "torchmetrics", specifier = ">=1.8.0" },
     { name = "torchrl", specifier = ">=0.6" },
     { name = "typer", extras = ["all"], specifier = ">=0.12" },
@@ -1522,6 +1524,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pyg-lib"
+version = "0.6.0+pt28cu128"
+source = { registry = "https://data.pyg.org/whl/torch-2.8.0+cu128.html" }
+wheels = [
+    { url = "https://data.pyg.org/whl/torch-2.8.0%2Bcu128/pyg_lib-0.6.0%2Bpt28cu128-cp312-cp312-manylinux_2_28_x86_64.whl" },
+    { url = "https://data.pyg.org/whl/torch-2.8.0%2Bcu128/pyg_lib-0.6.0%2Bpt28cu128-cp312-cp312-win_amd64.whl" },
+]
+
+[[package]]
 name = "pygments"
 version = "2.19.2"
 source = { registry = "https://pypi.org/simple" }
@@ -2035,14 +2046,14 @@ wheels = [
 
 [[package]]
 name = "torch-cluster"
-version = "1.6.3+pt28cu126"
-source = { registry = "https://data.pyg.org/whl/torch-2.8.0+cu126.html" }
+version = "1.6.3+pt28cu128"
+source = { registry = "https://data.pyg.org/whl/torch-2.8.0+cu128.html" }
 dependencies = [
     { name = "scipy" },
 ]
 wheels = [
-    { url = "https://data.pyg.org/whl/torch-2.8.0%2Bcu126/torch_cluster-1.6.3%2Bpt28cu126-cp312-cp312-linux_x86_64.whl" },
-    { url = "https://data.pyg.org/whl/torch-2.8.0%2Bcu126/torch_cluster-1.6.3%2Bpt28cu126-cp312-cp312-win_amd64.whl" },
+    { url = "https://data.pyg.org/whl/torch-2.8.0%2Bcu128/torch_cluster-1.6.3%2Bpt28cu128-cp312-cp312-linux_x86_64.whl" },
+    { url = "https://data.pyg.org/whl/torch-2.8.0%2Bcu128/torch_cluster-1.6.3%2Bpt28cu128-cp312-cp312-win_amd64.whl" },
 ]
 
 [[package]]
@@ -2067,23 +2078,23 @@ wheels = [
 
 [[package]]
 name = "torch-scatter"
-version = "2.1.2+pt28cu126"
-source = { registry = "https://data.pyg.org/whl/torch-2.8.0+cu126.html" }
+version = "2.1.2+pt28cu128"
+source = { registry = "https://data.pyg.org/whl/torch-2.8.0+cu128.html" }
 wheels = [
-    { url = "https://data.pyg.org/whl/torch-2.8.0%2Bcu126/torch_scatter-2.1.2%2Bpt28cu126-cp312-cp312-linux_x86_64.whl" },
-    { url = "https://data.pyg.org/whl/torch-2.8.0%2Bcu126/torch_scatter-2.1.2%2Bpt28cu126-cp312-cp312-win_amd64.whl" },
+    { url = "https://data.pyg.org/whl/torch-2.8.0%2Bcu128/torch_scatter-2.1.2%2Bpt28cu128-cp312-cp312-linux_x86_64.whl" },
+    { url = "https://data.pyg.org/whl/torch-2.8.0%2Bcu128/torch_scatter-2.1.2%2Bpt28cu128-cp312-cp312-win_amd64.whl" },
 ]
 
 [[package]]
 name = "torch-sparse"
-version = "0.6.18+pt28cu126"
-source = { registry = "https://data.pyg.org/whl/torch-2.8.0+cu126.html" }
+version = "0.6.18+pt28cu128"
+source = { registry = "https://data.pyg.org/whl/torch-2.8.0+cu128.html" }
 dependencies = [
     { name = "scipy" },
 ]
 wheels = [
-    { url = "https://data.pyg.org/whl/torch-2.8.0%2Bcu126/torch_sparse-0.6.18%2Bpt28cu126-cp312-cp312-linux_x86_64.whl" },
-    { url = "https://data.pyg.org/whl/torch-2.8.0%2Bcu126/torch_sparse-0.6.18%2Bpt28cu126-cp312-cp312-win_amd64.whl" },
+    { url = "https://data.pyg.org/whl/torch-2.8.0%2Bcu128/torch_sparse-0.6.18%2Bpt28cu128-cp312-cp312-linux_x86_64.whl" },
+    { url = "https://data.pyg.org/whl/torch-2.8.0%2Bcu128/torch_sparse-0.6.18%2Bpt28cu128-cp312-cp312-win_amd64.whl" },
 ]
 
 [[package]]

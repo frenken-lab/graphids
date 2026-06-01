@@ -21,6 +21,7 @@ class GATCfg(_Cfg):
     type: Literal["gat"] = "gat"
     scale: Literal["small", "large"] = "small"
     sequence_pool: Literal["auto", "flat", "mean", "attention", "gru"] = "auto"
+    gradient_checkpointing: bool = True
     id_encoder_cfg: IdEncodingCfg | None = None
     id_encoder_class_path: str | None = None
     id_encoder_kwargs: dict[str, Any] = Field(default_factory=dict)
@@ -32,6 +33,7 @@ class GATCfg(_Cfg):
             "loss_fn": loss_fn,
             "scale": self.scale,
             "sequence_pool": self.sequence_pool,
+            "gradient_checkpointing": self.gradient_checkpointing,
         }
         if self.id_encoder_cfg is not None:
             kwargs["id_encoder_cfg"] = self.id_encoder_cfg
@@ -151,6 +153,7 @@ def gat(
     scale: str = "small",
     *,
     sequence_pool: str = "auto",
+    gradient_checkpointing: bool = True,
     id_encoder_cfg: IdEncodingCfg | None = None,
     id_encoder_class_path: str | None = None,
     id_encoder_kwargs: dict[str, Any] | None = None,
@@ -158,6 +161,7 @@ def gat(
     return GATCfg(
         scale=scale,
         sequence_pool=sequence_pool,
+        gradient_checkpointing=gradient_checkpointing,
         id_encoder_cfg=id_encoder_cfg,
         id_encoder_class_path=id_encoder_class_path,
         id_encoder_kwargs=id_encoder_kwargs or {},

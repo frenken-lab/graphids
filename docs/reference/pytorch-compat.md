@@ -20,9 +20,10 @@ PyTorch version ←→ PyG extension wheels (torch-scatter, torch-sparse, torch-
 |-----------|---------|--------|
 | Python | 3.12.4 | OSC `module load python/3.12` |
 | PyTorch | 2.8.0 (bundled cu128) | PyPI (default index) |
-| torch-scatter | 2.1.2+pt28cu126 | `data.pyg.org/whl/torch-2.8.0+cu126.html` |
-| torch-sparse | 0.6.18+pt28cu126 | same flat index |
-| torch-cluster | 1.6.3+pt28cu126 | same flat index |
+| torch-scatter | 2.1.2+pt28cu128 | `data.pyg.org/whl/torch-2.8.0+cu128.html` |
+| torch-sparse | 0.6.18+pt28cu128 | same flat index |
+| torch-cluster | 1.6.3+pt28cu128 | same flat index |
+| pyg-lib | 0.6.0+pt28cu128 | same flat index |
 | torch-geometric | 2.7.0 | PyPI |
 | RAPIDS | Not integrated — removed. Single uv env. |
 

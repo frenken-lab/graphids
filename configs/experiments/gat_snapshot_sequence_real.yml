@@ -34,7 +34,7 @@ config:
         sequence_length: 3
         sequence_stride: 1
     batch_size: 1
-    min_steps_per_epoch: 128
+    min_steps_per_epoch: 64
     num_workers: 0
     dynamic_batching: true
     require_cache: true

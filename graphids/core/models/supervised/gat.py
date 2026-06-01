@@ -22,7 +22,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import JumpingKnowledge, global_mean_pool
 from torch_geometric.nn.aggr import MultiAggregation
-from torch_geometric.utils import add_self_loops, remove_self_loops
 
 from graphids.paths import ModelType
 
@@ -119,12 +118,11 @@ class GAT(GraphModuleBase):
         self._uses_edge_attr = self.input_encoder._uses_edge_attr
         self._proj_dim = hp.proj_dim
 
-        # GATv2Conv runs remove_self_loops + add_self_loops inside its forward,
-        # which creates edge-count-shaped intermediates inside the checkpoint
-        # region. Pre-add self-loops once here and disable inside each layer
-        # so the checkpoint region sees a stable edge_index.
-        self._prepend_self_loops = hp.conv_type == "gatv2"
-        conv_kwargs: dict = {"add_self_loops": False} if self._prepend_self_loops else {}
+        # Keep GATv2Conv's native self-loop handling. A prior manual
+        # remove_self_loops/add_self_loops rewrite was meant to stabilize
+        # checkpointed shapes, but on V100 + snapshot_sequence batches it
+        # produced intermittent CUDA illegal-memory-access failures.
+        conv_kwargs: dict = {}
 
         self.convs = nn.ModuleList()
         for i in range(hp.layers):
@@ -253,17 +251,6 @@ class GAT(GraphModuleBase):
         node_id = data.node_id
 
         x = self.input_encoder(x, node_id)
-
-        if self._prepend_self_loops:
-            num_nodes = x.size(0)
-            if edge_attr is not None:
-                edge_index, edge_attr = remove_self_loops(edge_index, edge_attr)
-                edge_index, edge_attr = add_self_loops(
-                    edge_index, edge_attr, fill_value="mean", num_nodes=num_nodes
-                )
-            else:
-                edge_index, _ = remove_self_loops(edge_index)
-                edge_index, _ = add_self_loops(edge_index, num_nodes=num_nodes)
 
         attention_weights = [] if return_attention_weights else None
 

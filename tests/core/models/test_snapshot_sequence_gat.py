@@ -78,3 +78,9 @@ def test_gat_sequence_pooling_return_embedding_shape():
     logits, emb = model(_batch(), return_embedding=True)
     assert logits.shape == (2, 2)
     assert emb.shape[0] == 2
+
+
+def test_gatv2_uses_native_self_loop_handling():
+    model = _model("gru")
+    assert not hasattr(model, "_prepend_self_loops")
+    assert all(getattr(conv, "add_self_loops", None) is True for conv in model.convs)

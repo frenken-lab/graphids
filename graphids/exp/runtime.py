@@ -300,6 +300,11 @@ def launch_run(
     run: RunConfig,
 ) -> RunSummary:
     """Run one launchable config with manifest/event tracking."""
+    if run.stage in {"fit", "test"} and run.resources.accelerator == "gpu":
+        from graphids.runtime_checks import assert_pyg_cuda_extensions_match
+
+        assert_pyg_cuda_extensions_match()
+
     backend = run.resources.backend
     if backend == "ray":
         try:

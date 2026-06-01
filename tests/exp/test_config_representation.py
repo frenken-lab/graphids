@@ -111,7 +111,7 @@ def test_snapshot_sequence_real_config_uses_budgeted_batches():
     data = runtime._build_component(run.payload.data)
     assert representation_kind(data.source.representation_cfg) == "snapshot_sequence"
     assert data.dynamic_batching is True
-    assert data.min_steps_per_epoch > 1
+    assert data.min_steps_per_epoch == 64
 
 
 def test_snapshot_sequence_cache_config_resolves_to_cache_payload(monkeypatch):
