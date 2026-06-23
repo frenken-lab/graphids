@@ -9,28 +9,19 @@ from typing import Any, ClassVar, Literal
 import polars as pl
 import torch
 from filelock import FileLock
-from structlog import get_logger
 from torch_geometric.data import Data, InMemoryDataset
 
 from graphids._fs import atomic_save
 from graphids.core.data.preprocessing import scaler as scaler_mod
 from graphids.core.data.preprocessing.edge_policy import EdgePolicy
 from graphids.core.data.preprocessing.graph_ops import GraphTransform
-from graphids.core.data.preprocessing.materialization import (
-    GraphTables,
-    build_graph_tables,
-)
-from graphids.core.data.preprocessing.metadata import (
-    load_metadata,
-    merge_split_into_metadata,
-)
+from graphids.core.data.preprocessing.materialization import build_graph_tables
 from graphids.core.data.preprocessing.pyg import graph_tables_to_pyg
 from graphids.core.data.preprocessing.representations import (
     GraphRepresentationCfg,
     SnapshotRepresentationCfg,
     representation_digest,
     representation_kind,
-    representation_payload,
     representation_window_defaults,
 )
 from graphids.core.data.preprocessing.scaler import (
@@ -39,40 +30,14 @@ from graphids.core.data.preprocessing.scaler import (
     scaler_kind,
 )
 from graphids.core.data.preprocessing.splits import (
-    SPLIT_POLICY,
-    audit_split_plan,
     build_blocked_split_plan,
-    split_embargo_width,
     split_policy_digest,
 )
 from graphids.core.data.preprocessing.vocab import persist_vocab
 from graphids.core.data.state import DatasetState
-from graphids.paths import PREPROCESSING_VERSION
-
-log = get_logger(__name__)
 
 _DEFAULT_SCALER_CFG = ZBenignScalerCfg()
 _DEFAULT_REPRESENTATION_CFG = SnapshotRepresentationCfg()
-
-
-def _stats(t: torch.Tensor) -> dict[str, float | int]:
-    if t.numel() == 0:
-        return {"min": 0, "max": 0, "mean": 0.0, "p95": 0.0, "p99": 0.0}
-    return {
-        "min": int(t.min()),
-        "max": int(t.max()),
-        "mean": float(t.mean()),
-        "p95": float(t.quantile(0.95)),
-        "p99": float(t.quantile(0.99)),
-    }
-
-
-def _balance(t: torch.Tensor) -> dict[str, int]:
-    out: dict[str, int] = {}
-    for value in t.tolist():
-        key = str(int(value))
-        out[key] = out.get(key, 0) + 1
-    return out
 
 
 @dataclass(frozen=True)
@@ -84,8 +49,6 @@ class GraphSchema:
     label_exprs: list[pl.Expr]
     edge_base_cols: list[str]
     vocab_column: str
-    attack_type_codes: dict[str, int] | None = None
-    attack_type_names: dict[int, str] | None = None
     edge_policy: EdgePolicy | None = None
     graph_transforms: tuple[GraphTransform, ...] | None = None
 
@@ -130,12 +93,10 @@ class BaseGraphDataset(InMemoryDataset):
         self.representation_cfg = representation_cfg
         self.representation_kind = representation_kind(representation_cfg)
         self._split_plan = None
-        self.window_size, self.stride = (
-            self._resolved_window_size_stride(representation_cfg)
-        )
+        self.window_size, self.stride = representation_window_defaults(representation_cfg)
         super().__init__(str(root), transform, pre_transform)
         self.load(self.processed_paths[0])
-        self.num_ids = int(load_metadata(Path(self.root))["num_arb_ids"])
+        self.num_ids = int(getattr(self._data, "num_ids", len(shared_vocab or {}) + 1))
         if self.split in ("train", "val"):
             self._split_plan = build_blocked_split_plan(
                 self._data,
@@ -152,19 +113,6 @@ class BaseGraphDataset(InMemoryDataset):
         raise NotImplementedError(
             f"{type(self).__name__}._read_raw must return a long-format pl.DataFrame"
         )
-
-    # ── default ────────────────────────────────────────────────────────
-    def _infer_attack_type(self, csv: Path) -> int:
-        codes = self.SCHEMA.attack_type_codes or {}
-        s = csv.stem.lower() + " " + csv.parent.name.lower()
-        for kw, code in codes.items():
-            if kw in s:
-                return code
-        return 0
-
-    @staticmethod
-    def _resolved_window_size_stride(representation_cfg: GraphRepresentationCfg) -> tuple[int, int]:
-        return representation_window_defaults(representation_cfg)
 
     @property
     def cache_split_name(self) -> str:
@@ -209,7 +157,7 @@ class BaseGraphDataset(InMemoryDataset):
             if tensor_path.exists() and marker.exists():
                 return
 
-            data, slices, num_arb_ids, num_graphs, num_raw = self._build_graphs()
+            data, slices, _num_raw = self._build_graphs()
 
             scaler_path = Path(self.processed_dir) / "feature_scaler.pt"
             split_plan = (
@@ -238,124 +186,10 @@ class BaseGraphDataset(InMemoryDataset):
                 scaler = torch.load(scaler_path, map_location="cpu", weights_only=False)
             scaler_mod.apply(data, scaler)
             atomic_save([data, slices], tensor_path)
-
-            invariants = {
-                "preprocessing_version": PREPROCESSING_VERSION,
-                "window_size": self.window_size,
-                "stride": self.stride,
-                "val_fraction": self.val_fraction,
-                "seed": self.seed,
-                "vocab_digest": self._shared_vocab_digest,
-                "scaler_strategy": self.scaler_strategy,
-                "representation_kind": self.representation_kind,
-                "representation_digest": representation_digest(self.representation_cfg),
-                "representation_cfg": representation_payload(self.representation_cfg),
-                "vocab_scope": self.vocab_scope,
-            }
-            if split_plan is None:
-                split_meta = {
-                    "split_policy": SPLIT_POLICY,
-                    "split_unit": "dense_base_window",
-                    "split_embargo": split_embargo_width(self.representation_cfg),
-                    "split_plan_digest": split_policy_digest(
-                        self.representation_cfg,
-                        val_fraction=self.val_fraction,
-                        seed=self.seed,
-                    ),
-                }
-            else:
-                split_meta = split_plan.metadata()
-            invariants.update(
-                {
-                    "split_policy": split_meta["split_policy"],
-                    "split_unit": split_meta["split_unit"],
-                    "split_embargo": split_meta["split_embargo"],
-                    "split_plan_digest": split_meta["split_plan_digest"],
-                }
-            )
-            common = dict(
-                invariants=invariants,
-                dataset_name=Path(self.root).name,
-                num_arb_ids=num_arb_ids,
-            )
-            bytes_on_disk = tensor_path.stat().st_size
-
-            if self.split == "train":
-                if split_plan is None:
-                    raise RuntimeError("train split missing SplitPlan")
-                train_idx, val_idx = split_plan.train_idx, split_plan.val_idx
-                split_audit = audit_split_plan(split_plan)
-                merge_split_into_metadata(
-                    Path(self.root),
-                    "train",
-                    {
-                        **self._split_entry(data, slices, train_idx, num_raw, bytes_on_disk),
-                        **split_plan.metadata(),
-                        "split_audit": split_audit,
-                    },
-                    **common,
-                )
-                merge_split_into_metadata(
-                    Path(self.root),
-                    "val",
-                    {
-                        **self._split_entry(data, slices, val_idx, num_raw, bytes_on_disk),
-                        "derived_from": "train",
-                        "val_fraction_seed": [self.val_fraction, self.seed],
-                        "num_raw_samples": 0,
-                        "bytes_on_disk": 0,
-                        **split_plan.metadata(),
-                        "split_audit": split_audit,
-                    },
-                    **common,
-                )
-            else:
-                merge_split_into_metadata(
-                    Path(self.root),
-                    self.cache_split_name,
-                    self._split_entry(data, slices, None, num_raw, bytes_on_disk),
-                    **common,
-                )
             marker.write_text("ok")
 
-    def _split_entry(
-        self,
-        data: Data,
-        slices: dict,
-        indices: torch.Tensor | None,
-        num_raw: int,
-        bytes_on_disk: int,
-    ) -> dict:
-        node_diffs = (slices["x"][1:] - slices["x"][:-1]).float()
-        edge_diffs = (slices["edge_index"][1:] - slices["edge_index"][:-1]).float()
-        attack = data.attack_type
-        if indices is not None:
-            idx = torch.as_tensor(indices, dtype=torch.long)
-            node_diffs = node_diffs.index_select(0, idx)
-            edge_diffs = edge_diffs.index_select(0, idx)
-            attack = attack.index_select(0, idx)
-
-        names = self.SCHEMA.attack_type_names or {0: "benign"}
-        balance: dict[str, int] = {}
-        for t in attack.tolist():
-            name = names.get(int(t), f"unknown_{int(t)}")
-            balance[name] = balance.get(name, 0) + 1
-
-        entry: dict = {
-            "num_graphs": int(node_diffs.numel()),
-            "graph_stats": {"node_count": _stats(node_diffs), "edge_count": _stats(edge_diffs)},
-            "label_balance": _balance(data.y.index_select(0, idx) if indices is not None else data.y),
-            "attack_balance": balance,
-            "num_raw_samples": int(num_raw),
-            "bytes_on_disk": int(bytes_on_disk),
-        }
-        if self.source_dirs is not None:
-            entry["source_dirs"] = list(self.source_dirs)
-        return entry
-
-    def _build_graphs(self) -> tuple[Data, dict, int, int, int]:
+    def _build_graphs(self) -> tuple[Data, dict, int]:
         df = self._read_raw()
-        log.info("raw_loaded", rows=len(df))
         if self._shared_vocab is None:
             raise ValueError(
                 f"{type(self).__name__} needs shared_vocab for split={self.split!r}; "
@@ -370,22 +204,7 @@ class BaseGraphDataset(InMemoryDataset):
         )
         return self._build_graphs_from_df(df, len(vocab) + 1)
 
-    def build_graph_tables(self) -> GraphTables:
-        """Return staged graph tables for exploratory analysis before tensor packing."""
-        return build_graph_tables(
-            self._with_vocab(self._read_raw()),
-            node_stat_exprs=self.SCHEMA.node_stat_exprs,
-            label_exprs=self.SCHEMA.label_exprs,
-            edge_policy=self.SCHEMA.edge_policy,
-            edge_stat_exprs=self.SCHEMA.edge_stat_exprs,
-            edge_base_cols=self.SCHEMA.edge_base_cols,
-            graph_transforms=list(self.SCHEMA.graph_transforms)
-            if self.SCHEMA.graph_transforms is not None
-            else None,
-            representation_cfg=self.representation_cfg,
-        )
-
-    def _build_graphs_from_df(self, df: pl.DataFrame, num_ids: int) -> tuple[Data, dict, int, int, int]:
+    def _build_graphs_from_df(self, df: pl.DataFrame, num_ids: int) -> tuple[Data, dict, int]:
         tables = build_graph_tables(
             df,
             node_stat_exprs=self.SCHEMA.node_stat_exprs,
@@ -400,27 +219,16 @@ class BaseGraphDataset(InMemoryDataset):
         )
         del df
         if tables.node_stats.is_empty():
-            return Data(), {}, num_ids, 0, tables.n_rows
+            return Data(num_ids=num_ids), {}, tables.n_rows
         data, slices, num_graphs, num_raw = graph_tables_to_pyg(
             tables,
             node_col_order=self.SCHEMA.node_col_order,
             edge_col_order=self.SCHEMA.edge_col_order,
             label_exprs=self.SCHEMA.label_exprs,
         )
-        return data, slices, num_ids, num_graphs, num_raw
-
-    def _with_vocab(self, df: pl.DataFrame) -> pl.DataFrame:
-        if self._shared_vocab is None:
-            raise ValueError(
-                f"{type(self).__name__} needs shared_vocab for split={self.split!r}; "
-                "build via the source's build() so vocab is scanned across splits"
-            )
-        return df.with_columns(
-            pl.col(self.SCHEMA.vocab_column)
-            .replace_strict(self._shared_vocab, default=0)
-            .cast(pl.Int64)
-            .alias("node_id")
-        )
+        del num_graphs
+        data.num_ids = num_ids
+        return data, slices, num_raw
 
 
 @dataclass(frozen=True)
@@ -443,14 +251,6 @@ class BaseGraphSource:
     representation_cfg: GraphRepresentationCfg = field(default_factory=SnapshotRepresentationCfg)
     vocab_scope: Literal["train", "all"] = "train"
 
-    @property
-    def window_size(self) -> int:
-        return representation_window_defaults(self.representation_cfg)[0]
-
-    @property
-    def stride(self) -> int:
-        return representation_window_defaults(self.representation_cfg)[1]
-
     def resolved_lake_root(self) -> str:
         if self.lake_root:
             return self.lake_root
@@ -461,9 +261,10 @@ class BaseGraphSource:
     @property
     def cache_key(self) -> str:
         repr_digest = representation_digest(self.representation_cfg)
+        window_size, stride = representation_window_defaults(self.representation_cfg)
         return (
             f"{self.KIND}|{self.resolved_lake_root()}|{self.name}"
-            f"|w{self.window_size}|s{self.stride}"
+            f"|w{window_size}|s{stride}"
             f"|v{self.val_fraction}|seed{self.seed}"
             f"|sc:{scaler_kind(self.scaler_cfg)}|voc:{self.vocab_scope}"
             f"|repr:{representation_kind(self.representation_cfg)}:{repr_digest}"

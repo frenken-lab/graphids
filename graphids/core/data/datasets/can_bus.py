@@ -24,7 +24,7 @@ log = get_logger(__name__)
 N_BYTES = 8
 BYTE_COLS = [f"byte_{i}" for i in range(N_BYTES)]
 
-# Insertion order matters: ``_infer_attack_type`` does substring match and
+# Insertion order matters: ``infer_attack_type`` does substring match and
 # returns the first hit, so longer/more-specific keys precede their prefixes.
 ATTACK_TYPE_CODES: dict[str, int] = {
     "normal": 0, "attack_free": 0, "benign": 0,
@@ -118,8 +118,6 @@ CAN_SCHEMA = GraphSchema(
     label_exprs=LABEL_EXPRS,
     edge_base_cols=BYTE_COLS,  # byte diffs need byte_0..7
     vocab_column="arb_id",
-    attack_type_codes=ATTACK_TYPE_CODES,
-    attack_type_names=ATTACK_TYPE_NAMES,
     edge_policy=CAN_EDGE_POLICY,
     graph_transforms=CAN_GRAPH_TRANSFORMS,
 )
@@ -237,7 +235,6 @@ class CANBusSource(BaseGraphSource):
         hypotheses = initialize_hypotheses(profiles)
         store.write_profiles(profiles)
         store.write_hypotheses(hypotheses)
-        store.write_manifest(profiles=profiles, hypotheses=hypotheses)
 
 __all__ = [
     "ATTACK_TYPE_CODES",

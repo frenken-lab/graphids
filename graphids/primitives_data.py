@@ -112,41 +112,6 @@ class GraphDMCfg(_Cfg):
         )
 
 
-class CanonicalEntityCfg(_Cfg):
-    type: Literal["canonical_entity"] = "canonical_entity"
-    canonical_id: str
-    name: str
-    aliases: tuple[str, ...] = ()
-    vehicle_aliases: dict[str, tuple[str, ...]] = Field(default_factory=dict)
-    kind: Literal["signal", "message", "state", "entity"] = "signal"
-    description: str | None = None
-
-
-class CanonicalRegistryCfg(_Cfg):
-    type: Literal["canonical_registry"] = "canonical_registry"
-    entities: tuple[CanonicalEntityCfg, ...]
-
-    def build(self) -> Any:
-        from graphids.core.data.discovery.canonical import (
-            CanonicalEntitySpec,
-            CanonicalRegistry,
-        )
-
-        return CanonicalRegistry(
-            entities=tuple(
-                CanonicalEntitySpec(
-                    canonical_id=e.canonical_id,
-                    name=e.name,
-                    aliases=e.aliases,
-                    vehicle_aliases=e.vehicle_aliases,
-                    kind=e.kind,
-                    description=e.description,
-                )
-                for e in self.entities
-            )
-        )
-
-
 class FusionDMCfg(_Cfg):
     type: Literal["fusion_dm"] = "fusion_dm"
     cached_states_dir: Path
@@ -236,29 +201,6 @@ def graph_dm(
         require_cache=require_cache,
         **overrides,
     )
-
-
-def canonical_entity(
-    *,
-    canonical_id: str,
-    name: str,
-    aliases: tuple[str, ...] = (),
-    vehicle_aliases: dict[str, tuple[str, ...]] | None = None,
-    kind: Literal["signal", "message", "state", "entity"] = "signal",
-    description: str | None = None,
-) -> CanonicalEntityCfg:
-    return CanonicalEntityCfg(
-        canonical_id=canonical_id,
-        name=name,
-        aliases=aliases,
-        vehicle_aliases=vehicle_aliases or {},
-        kind=kind,
-        description=description,
-    )
-
-
-def canonical_registry(*, entities: tuple[CanonicalEntityCfg, ...]) -> CanonicalRegistryCfg:
-    return CanonicalRegistryCfg(entities=entities)
 
 
 def fusion_dm(
