@@ -110,14 +110,11 @@ def test_snapshot_overlap_uses_embargo_when_stride_is_smaller_than_window():
     plan = build_blocked_split_plan(data, slices, cfg, val_fraction=0.2, seed=42)
 
     assert split_embargo_width(cfg) == 1
-    assert plan.train_units == tuple(range(7))
-    assert plan.embargo_units == (7,)
-    assert plan.val_units == (8, 9)
     assert plan.train_idx.tolist() == list(range(7))
     assert plan.val_idx.tolist() == [8, 9]
 
 
-def test_validation_block_moves_earlier_when_tail_is_single_class():
+def test_validation_uses_tail_block():
     cfg = SnapshotRepresentationCfg(window_size=5, stride=5)
     data = Data(
         x=torch.zeros((10, 1)),
@@ -135,10 +132,9 @@ def test_validation_block_moves_earlier_when_tail_is_single_class():
     }
 
     plan = build_blocked_split_plan(data, slices, cfg, val_fraction=0.3, seed=42)
-    val_labels = data.y[plan.val_idx].tolist()
 
-    assert plan.val_units == (2, 3, 4)
-    assert set(val_labels) == {0, 1}
+    assert plan.train_idx.tolist() == list(range(7))
+    assert plan.val_idx.tolist() == [7, 8, 9]
 
 
 def test_audit_reports_raw_interval_intersections():
@@ -167,7 +163,7 @@ def test_audit_reports_raw_interval_intersections():
     assert audit_split_plan(plan)["raw_interval_intersections"] == 0
 
 
-def test_source_boundary_violating_graphs_are_reported():
+def test_split_audit_reports_only_leakage_invariants():
     cfg = SnapshotRepresentationCfg(window_size=5, stride=5)
     data = Data(
         x=torch.zeros((6, 1)),
@@ -175,7 +171,6 @@ def test_source_boundary_violating_graphs_are_reported():
         edge_attr=torch.zeros((6, 1)),
         y=torch.zeros(6, dtype=torch.long),
         graph_wid=torch.arange(6, dtype=torch.long),
-        source_file_n_unique=torch.tensor([1, 1, 2, 1, 2, 1], dtype=torch.long),
     )
     slices = {
         "x": torch.arange(7, dtype=torch.long),
@@ -183,12 +178,18 @@ def test_source_boundary_violating_graphs_are_reported():
         "edge_attr": torch.arange(7, dtype=torch.long),
         "y": torch.arange(7, dtype=torch.long),
         "graph_wid": torch.arange(7, dtype=torch.long),
-        "source_file_n_unique": torch.arange(7, dtype=torch.long),
     }
 
     plan = build_blocked_split_plan(data, slices, cfg, val_fraction=0.5, seed=42)
     audit = audit_split_plan(plan)
 
-    assert 2 in plan.train_idx.tolist()
-    assert 4 in plan.val_idx.tolist()
-    assert audit["source_boundary_violations"] == 2
+    assert set(audit) == {
+        "graph_index_overlap",
+        "base_unit_overlap",
+        "raw_interval_intersections",
+    }
+    assert audit == {
+        "graph_index_overlap": 0,
+        "base_unit_overlap": 0,
+        "raw_interval_intersections": 0,
+    }

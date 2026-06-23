@@ -1,10 +1,8 @@
-"""Graph table materialization from windowed preprocessing primitives."""
+"""Raw CAN rows to graph tables."""
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
-from pathlib import Path
 
 import polars as pl
 from structlog import get_logger
@@ -17,23 +15,13 @@ from graphids.core.data.preprocessing.graph_ops import (
     GraphTransform,
     default_graph_transforms,
 )
-from graphids.core.data.preprocessing.segments import (
-    EntitySegmentCfg,
-    MultiScaleSegmentCfg,
-    SequenceSegmentCfg,
-    WindowedRows,
-    WindowSegmentCfg,
-    WindowSegmenter,
+from graphids.core.data.preprocessing.representations import (
+    GraphRepresentationCfg,
+    SnapshotRepresentationCfg,
+    SnapshotSequenceRepresentationCfg,
 )
 
 log = get_logger(__name__)
-
-
-@dataclass(frozen=True)
-class AggregatedTables:
-    node_stats: pl.DataFrame
-    edge_df: pl.DataFrame
-    labels: pl.DataFrame
 
 
 @dataclass(frozen=True)
@@ -44,30 +32,8 @@ class GraphTables:
     n_rows: int
 
 
-def _stage_summary(table: pl.DataFrame) -> dict[str, object]:
-    summary: dict[str, object] = {
-        "rows": table.height,
-        "columns": table.width,
-        "column_names": table.columns,
-    }
-    if "src" in table.columns:
-        summary["src_unique"] = int(table.select(pl.col("src").n_unique()).item())
-    if "dst" in table.columns:
-        summary["dst_unique"] = int(table.select(pl.col("dst").n_unique()).item())
-    if "_wid" in table.columns:
-        summary["windows"] = int(table.select(pl.col("_wid").n_unique()).item())
-    return summary
-
-
-def _dump_stage(debug_dir: Path | None, stage: str, table: pl.DataFrame) -> None:
-    if debug_dir is None:
-        return
-    debug_dir.mkdir(parents=True, exist_ok=True)
-    table.write_parquet(debug_dir / f"{stage}.parquet")
-    (debug_dir / f"{stage}.summary.json").write_text(
-        json.dumps(_stage_summary(table), indent=2),
-        encoding="utf-8",
-    )
+def _empty(n_rows: int) -> GraphTables:
+    return GraphTables(pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), n_rows)
 
 
 def _window_meta_exprs(window_size: int, stride: int) -> list[pl.Expr]:
@@ -78,26 +44,15 @@ def _window_meta_exprs(window_size: int, stride: int) -> list[pl.Expr]:
     ]
 
 
-def _source_count_exprs(cols: list[str]) -> list[pl.Expr]:
-    out: list[pl.Expr] = []
-    if "source_dir" in cols:
-        out.append(pl.col("source_dir").n_unique().cast(pl.Int64).alias("source_dir_n_unique"))
-    if "source_file" in cols:
-        out.append(pl.col("source_file").n_unique().cast(pl.Int64).alias("source_file_n_unique"))
-    return out
-
-
-def _aggregate_nodes_labels(
-    windowed: WindowedRows,
+def _aggregate_nodes_and_labels(
+    rows: pl.DataFrame,
     *,
-    node_stat_exprs: list[pl.Expr],
-    label_exprs: list[pl.Expr],
     window_size: int,
     stride: int,
-    debug_dir: Path | None = None,
+    node_stat_exprs: list[pl.Expr],
+    label_exprs: list[pl.Expr],
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
-    lf = windowed.rows.lazy().sort("_row")
-    cols = windowed.rows.columns
+    lf = rows.lazy().sort("_row")
     dyn = dict(every=f"{stride}i", period=f"{window_size}i", closed="left")
     node_lf = (
         lf.group_by_dynamic("_row", **dyn, group_by="node_id")
@@ -107,141 +62,77 @@ def _aggregate_nodes_labels(
         .rename({"_row": "_wid"})
         .with_columns(*_window_meta_exprs(window_size, stride))
     )
-    labels_lf = (
+    label_lf = (
         lf.group_by_dynamic("_row", **dyn)
-        .agg(*label_exprs, *_source_count_exprs(cols))
+        .agg(*label_exprs)
         .rename({"_row": "_wid"})
         .with_columns(*_window_meta_exprs(window_size, stride))
     )
-    node_stats, labels = pl.collect_all([node_lf, labels_lf])
-    _dump_stage(debug_dir, "02_node_stats_raw", node_stats)
-    _dump_stage(debug_dir, "03_labels_raw", labels)
-    return node_stats, labels
+    return tuple(pl.collect_all([node_lf, label_lf]))  # type: ignore[return-value]
 
 
 def _generate_edges(
-    windowed: WindowedRows,
+    rows: pl.DataFrame,
     *,
+    window_size: int,
+    stride: int,
     edge_policy: EdgePolicy,
     edge_stat_exprs: list[pl.Expr],
     edge_base_cols: list[str],
-    edge_feature_names: list[str],
-    window_size: int,
-    stride: int,
-    debug_dir: Path | None = None,
 ) -> pl.DataFrame:
-    lf = windowed.rows.lazy().sort("_row")
+    lf = rows.lazy().sort("_row")
     dyn = dict(every=f"{stride}i", period=f"{window_size}i", closed="left")
-    edge_agg = [
-        pl.col(edge_policy.src_col).alias(edge_policy.src_alias),
-        pl.col(edge_policy.dst_col).shift(-edge_policy.dst_shift).alias(edge_policy.dst_alias),
-        *edge_stat_exprs,
-    ]
-    edge_cols = [edge_policy.src_alias, edge_policy.dst_alias, *edge_feature_names]
-    base_select = ["_row", edge_policy.src_col]
+    edge_names = [expr.meta.output_name() for expr in edge_stat_exprs]
+    base_cols = ["_row", edge_policy.src_col]
     if edge_policy.dst_col != edge_policy.src_col:
-        base_select.append(edge_policy.dst_col)
-    if "timestamp" not in base_select:
-        base_select.append("timestamp")
-    base_select.extend(c for c in edge_base_cols if c not in base_select)
+        base_cols.append(edge_policy.dst_col)
+    if "timestamp" not in base_cols:
+        base_cols.append("timestamp")
+    base_cols.extend(c for c in edge_base_cols if c not in base_cols)
+
     edge_df = (
-        lf.select(*base_select)
+        lf.select(*base_cols)
         .group_by_dynamic("_row", **dyn)
-        .agg(*edge_agg)
+        .agg(
+            pl.col(edge_policy.src_col).alias(edge_policy.src_alias),
+            pl.col(edge_policy.dst_col).shift(-edge_policy.dst_shift).alias(edge_policy.dst_alias),
+            *edge_stat_exprs,
+        )
         .rename({"_row": "_wid"})
-        .explode(edge_cols)
+        .explode(edge_policy.src_alias, edge_policy.dst_alias, *edge_names)
         .rename({edge_policy.src_alias: "src", edge_policy.dst_alias: "dst"})
         .with_columns(*_window_meta_exprs(window_size, stride))
     ).collect()
-    filters = [pl.col("dst").is_not_null()]
-    filters.extend(pl.col(c).is_not_null() for c in edge_feature_names)
-    edge_df = edge_df.filter(pl.all_horizontal(*filters))
-    _dump_stage(debug_dir, "04_edges_generated", edge_df)
-    return edge_df
-
-
-def _aggregate(
-    windowed: WindowedRows,
-    *,
-    node_stat_exprs: list[pl.Expr],
-    label_exprs: list[pl.Expr],
-    edge_policy: EdgePolicy,
-    edge_stat_exprs: list[pl.Expr],
-    edge_base_cols: list[str],
-    edge_feature_names: list[str],
-    window_size: int,
-    stride: int,
-    debug_dir: Path | None = None,
-) -> AggregatedTables:
-    node_stats, labels = _aggregate_nodes_labels(
-        windowed,
-        node_stat_exprs=node_stat_exprs,
-        label_exprs=label_exprs,
-        window_size=window_size,
-        stride=stride,
-        debug_dir=debug_dir,
+    return edge_df.filter(
+        pl.col("dst").is_not_null(),
+        *(pl.col(c).is_not_null() for c in edge_names),
     )
-    edge_df = _generate_edges(
-        windowed,
-        edge_policy=edge_policy,
-        edge_stat_exprs=edge_stat_exprs,
-        edge_base_cols=edge_base_cols,
-        edge_feature_names=edge_feature_names,
-        window_size=window_size,
-        stride=stride,
-        debug_dir=debug_dir,
+
+
+def _complete_windows(tables: GraphTables, *, max_wid: int) -> GraphTables:
+    return GraphTables(
+        tables.node_stats.filter(pl.col("_wid") <= max_wid),
+        tables.edge_df.filter(pl.col("_wid") <= max_wid),
+        tables.labels.filter(pl.col("_wid") <= max_wid),
+        tables.n_rows,
     )
-    log.info("features_computed", stats=len(node_stats), edges=len(edge_df))
-    return AggregatedTables(node_stats=node_stats, edge_df=edge_df, labels=labels)
 
 
-def _trim_complete_windows(
-    tables: AggregatedTables,
-    *,
-    max_wid: int,
-    debug_dir: Path | None = None,
-) -> AggregatedTables:
-    node_stats = tables.node_stats.filter(pl.col("_wid") <= max_wid)
-    edge_df = tables.edge_df.filter(pl.col("_wid") <= max_wid)
-    labels = tables.labels.filter(pl.col("_wid") <= max_wid)
-    _dump_stage(debug_dir, "05_node_stats_trimmed", node_stats)
-    _dump_stage(debug_dir, "06_edges_trimmed", edge_df)
-    _dump_stage(debug_dir, "07_labels_trimmed", labels)
-    return AggregatedTables(node_stats=node_stats, edge_df=edge_df, labels=labels)
-
-
-def _apply_graph_transforms(
-    tables: AggregatedTables,
-    *,
-    graph_transforms: list[GraphTransform],
-    debug_dir: Path | None = None,
-) -> AggregatedTables:
+def _apply_transforms(tables: GraphTables, graph_transforms: list[GraphTransform]) -> GraphTables:
     node_stats, edge_df = tables.node_stats, tables.edge_df
-    for i, transform in enumerate(graph_transforms, start=1):
+    for transform in graph_transforms:
         node_stats, edge_df = transform.apply(node_stats, edge_df)
-        _dump_stage(debug_dir, f"08_transform_{i:02d}_{transform.name}_node", node_stats)
-        _dump_stage(debug_dir, f"08_transform_{i:02d}_{transform.name}_edge", edge_df)
-    return AggregatedTables(node_stats=node_stats, edge_df=edge_df, labels=tables.labels)
+    return GraphTables(node_stats, edge_df, tables.labels, tables.n_rows)
 
 
-def _keep_windows_with_edges(
-    tables: AggregatedTables,
-    *,
-    debug_dir: Path | None = None,
-) -> AggregatedTables:
+def _keep_windows_with_edges(tables: GraphTables) -> GraphTables:
     edge_wids = tables.edge_df.select("_wid").unique()
     node_stats = tables.node_stats.join(edge_wids, on="_wid", how="semi")
     labels = tables.labels.join(node_stats.select("_wid").unique(), on="_wid", how="semi")
-    _dump_stage(debug_dir, "09_node_stats_with_edges", node_stats)
-    _dump_stage(debug_dir, "10_labels_with_edges", labels)
-    return AggregatedTables(node_stats=node_stats, edge_df=tables.edge_df, labels=labels)
+    return GraphTables(node_stats, tables.edge_df, labels, tables.n_rows)
 
 
-def _localize_ids(
-    tables: AggregatedTables,
-    *,
-    debug_dir: Path | None = None,
-) -> AggregatedTables:
+def _localize_ids(tables: GraphTables) -> GraphTables:
     node_stats, edge_df = tables.node_stats, tables.edge_df
     wid_sizes = node_stats.group_by("_wid").agg(pl.len().alias("_n"))
     node_stats = node_stats.join(wid_sizes, on="_wid").sort(["_n", "_wid"])
@@ -259,142 +150,77 @@ def _localize_ids(
         on=["_wid", "dst"],
         how="left",
     )
-    _dump_stage(debug_dir, "11_node_stats_localized", node_stats)
-    _dump_stage(debug_dir, "12_edges_localized", edge_df)
-    return AggregatedTables(node_stats=node_stats, edge_df=edge_df, labels=tables.labels)
+    return GraphTables(node_stats, edge_df, tables.labels, tables.n_rows)
 
 
-def _with_tags(table: pl.DataFrame, tags: dict[str, object]) -> pl.DataFrame:
-    if table.is_empty() or not tags:
-        return table
-    return table.with_columns([pl.lit(value).alias(name) for name, value in tags.items()])
-
-
-def _offset_wids(tables: AggregatedTables, offset: int) -> AggregatedTables:
-    if offset == 0:
-        return tables
-    return AggregatedTables(
-        node_stats=tables.node_stats.with_columns((pl.col("_wid") + offset).alias("_wid")),
-        edge_df=tables.edge_df.with_columns((pl.col("_wid") + offset).alias("_wid")),
-        labels=tables.labels.with_columns((pl.col("_wid") + offset).alias("_wid")),
-    )
-
-
-def _build_graph_tables_windowed(
+def _snapshot_tables(
     df: pl.DataFrame,
     *,
     window_size: int,
     stride: int,
     node_stat_exprs: list[pl.Expr],
     label_exprs: list[pl.Expr],
-    edge_policy: EdgePolicy | None = None,
+    edge_policy: EdgePolicy,
     edge_stat_exprs: list[pl.Expr],
     edge_base_cols: list[str],
-    graph_transforms: list[GraphTransform] | None = None,
-    debug_artifacts_dir: str | Path | None = None,
-    tags: dict[str, object] | None = None,
+    graph_transforms: list[GraphTransform],
 ) -> GraphTables:
-    debug_dir = Path(debug_artifacts_dir) if debug_artifacts_dir else None
-    segment = WindowSegmenter(window_size, stride).segment(df)
-    _dump_stage(debug_dir, "01_windowed_rows", segment.rows)
-    if segment.n_windows == 0:
-        log.warning("no_complete_windows", n_rows=segment.n_rows, window_size=window_size)
-        return GraphTables(pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), segment.n_rows)
-
-    edge_policy = edge_policy or temporal_edge_policy()
-    graph_transforms = graph_transforms or default_graph_transforms()
-    log.info(
-        "edge_policy",
-        name=edge_policy.name,
-        src_col=edge_policy.src_col,
-        dst_col=edge_policy.dst_col,
-        dst_shift=edge_policy.dst_shift,
+    rows = (
+        df.with_row_index("_row")
+        .with_columns(pl.col("_row").cast(pl.Int64))
+        .with_columns((pl.col("_row") % window_size < (window_size // 2)).alias("_first_half"))
     )
-    edge_feature_names = [e.meta.output_name() for e in edge_stat_exprs]
-    tables = _aggregate(
-        segment,
-        node_stat_exprs=node_stat_exprs,
-        label_exprs=label_exprs,
-        edge_policy=edge_policy,
-        edge_stat_exprs=edge_stat_exprs,
-        edge_base_cols=edge_base_cols,
-        edge_feature_names=edge_feature_names,
+    n_rows = len(rows)
+    n_windows = max(0, (n_rows - window_size) // stride + 1)
+    if n_windows == 0:
+        log.warning("no_complete_windows", n_rows=n_rows, window_size=window_size)
+        return _empty(n_rows)
+
+    node_stats, labels = _aggregate_nodes_and_labels(
+        rows,
         window_size=window_size,
         stride=stride,
-        debug_dir=debug_dir,
-    )
-    tables = _trim_complete_windows(tables, max_wid=segment.max_wid, debug_dir=debug_dir)
-    tables = _apply_graph_transforms(tables, graph_transforms=graph_transforms, debug_dir=debug_dir)
-    tables = _keep_windows_with_edges(tables, debug_dir=debug_dir)
-    if tables.node_stats.is_empty():
-        log.warning("no_graphs_with_edges")
-        return GraphTables(pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), segment.n_rows)
-    tables = _localize_ids(tables, debug_dir=debug_dir)
-    if tags:
-        tables = AggregatedTables(
-            node_stats=_with_tags(tables.node_stats, tags),
-            edge_df=_with_tags(tables.edge_df, tags),
-            labels=_with_tags(tables.labels, tags),
-        )
-    return GraphTables(
-        node_stats=tables.node_stats,
-        edge_df=tables.edge_df,
-        labels=tables.labels,
-        n_rows=segment.n_rows,
-    )
-
-
-def _build_graph_tables_sequence(
-    df: pl.DataFrame,
-    *,
-    cfg: SequenceSegmentCfg,
-    node_stat_exprs: list[pl.Expr],
-    label_exprs: list[pl.Expr],
-    edge_policy: EdgePolicy | None = None,
-    edge_stat_exprs: list[pl.Expr],
-    edge_base_cols: list[str],
-    graph_transforms: list[GraphTransform] | None = None,
-    debug_artifacts_dir: str | Path | None = None,
-) -> GraphTables:
-    """Build one training sample from each ordered sequence of snapshot graphs."""
-    base = _build_graph_tables_windowed(
-        df,
-        window_size=cfg.window_size,
-        stride=cfg.stride,
         node_stat_exprs=node_stat_exprs,
         label_exprs=label_exprs,
+    )
+    edge_df = _generate_edges(
+        rows,
+        window_size=window_size,
+        stride=stride,
         edge_policy=edge_policy,
         edge_stat_exprs=edge_stat_exprs,
         edge_base_cols=edge_base_cols,
-        graph_transforms=graph_transforms,
-        debug_artifacts_dir=debug_artifacts_dir,
     )
-    if base.node_stats.is_empty():
-        return base
+    tables = GraphTables(node_stats, edge_df, labels, n_rows)
+    tables = _complete_windows(tables, max_wid=(n_windows - 1) * stride)
+    tables = _apply_transforms(tables, graph_transforms)
+    tables = _keep_windows_with_edges(tables)
+    if tables.node_stats.is_empty():
+        log.warning("no_graphs_with_edges")
+        return _empty(n_rows)
+    return _localize_ids(tables)
 
+
+def _sequence_tables(base: GraphTables, cfg: SnapshotSequenceRepresentationCfg) -> GraphTables:
     window_ids = base.node_stats.select("_wid").unique().sort("_wid")["_wid"].to_list()
-    sequence_length = int(cfg.sequence_length)
-    sequence_stride = max(1, int(cfg.sequence_stride))
-    if sequence_length <= 0:
-        raise ValueError("SequenceSegmentCfg.sequence_length must be positive")
-    if len(window_ids) < sequence_length:
-        return GraphTables(pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), base.n_rows)
+    if len(window_ids) < cfg.sequence_length:
+        return _empty(base.n_rows)
 
     sequence_rows = [
         {
-            "sequence_id": sequence_id,
+            "sequence_id": sid,
             "sequence_step": step,
-            "sequence_length": sequence_length,
-            "sequence_stride": sequence_stride,
+            "sequence_length": cfg.sequence_length,
+            "sequence_stride": cfg.sequence_stride,
             "snapshot_wid": int(window_ids[start + step]),
         }
-        for sequence_id, start in enumerate(
-            range(0, len(window_ids) - sequence_length + 1, sequence_stride)
+        for sid, start in enumerate(
+            range(0, len(window_ids) - cfg.sequence_length + 1, cfg.sequence_stride)
         )
-        for step in range(sequence_length)
+        for step in range(cfg.sequence_length)
     ]
     if not sequence_rows:
-        return GraphTables(pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), base.n_rows)
+        return _empty(base.n_rows)
 
     sequence_map = pl.DataFrame(sequence_rows).with_columns(
         pl.col("sequence_id").cast(pl.Int64),
@@ -410,10 +236,7 @@ def _build_graph_tables_sequence(
         sequence_map.join(node_counts, on="snapshot_wid", how="inner")
         .sort(["sequence_id", "sequence_step"])
         .with_columns(
-            (
-                pl.col("_node_count").cum_sum().over("sequence_id")
-                - pl.col("_node_count")
-            )
+            (pl.col("_node_count").cum_sum().over("sequence_id") - pl.col("_node_count"))
             .cast(pl.Int64)
             .alias("node_offset")
         )
@@ -438,125 +261,38 @@ def _build_graph_tables_sequence(
         .drop("node_offset", "_node_count")
         .sort(["sequence_id", "sequence_step", "src_local", "dst_local"])
     )
-    meta_cols = (
-        "window_start_row",
-        "window_end_row",
-        "window_ordinal",
-        "source_dir_n_unique",
-        "source_file_n_unique",
-    )
-    label_cols = [c for c in base.labels.columns if c != "_wid" and c not in meta_cols]
-    meta_aggs = []
-    if "window_start_row" in base.labels.columns:
-        meta_aggs.append(pl.col("window_start_row").min().alias("window_start_row"))
-    if "window_end_row" in base.labels.columns:
-        meta_aggs.append(pl.col("window_end_row").max().alias("window_end_row"))
-    if "window_ordinal" in base.labels.columns:
-        meta_aggs.append(pl.col("window_ordinal").min().alias("window_ordinal"))
-    if "source_dir_n_unique" in base.labels.columns:
-        meta_aggs.append(pl.col("source_dir_n_unique").max().alias("source_dir_n_unique"))
-    if "source_file_n_unique" in base.labels.columns:
-        meta_aggs.append(pl.col("source_file_n_unique").max().alias("source_file_n_unique"))
-    target_map = sequence_map.filter(
-        pl.col("sequence_step") == pl.col("sequence_length") - 1
-    ).select(
+
+    target = sequence_map.filter(pl.col("sequence_step") == cfg.sequence_length - 1).select(
         "sequence_id",
         "sequence_length",
         "sequence_stride",
         pl.col("snapshot_wid").alias("target_snapshot_wid"),
     )
-    context_map = sequence_map.select(
-        "sequence_id",
-        "sequence_length",
-        "sequence_stride",
-        "snapshot_wid",
-    )
-    base_labels = base.labels.rename({"_wid": "snapshot_wid"})
-    if label_cols or meta_aggs:
-        select_cols = [
-            "_wid",
-            "sequence_id",
-            "sequence_length",
-            "sequence_stride",
-            "target_snapshot_wid",
-            *label_cols,
-            *meta_cols,
-        ]
-        target_cols = [
-            "sequence_id",
-            "sequence_length",
-            "sequence_stride",
-            "target_snapshot_wid",
-            *label_cols,
-        ]
-        target_labels = (
-            target_map.join(
-                base_labels,
-                left_on="target_snapshot_wid",
-                right_on="snapshot_wid",
-            )
-            .select(
-                *(
-                    c
-                    for c in target_cols
-                    if c
-                    in {
-                        "sequence_id",
-                        "sequence_length",
-                        "sequence_stride",
-                        "target_snapshot_wid",
-                    }
-                    or c in base.labels.columns
-                )
-            )
+    base_labels = base.labels.rename({"_wid": "target_snapshot_wid"})
+    labels = target.join(base_labels, on="target_snapshot_wid", how="left")
+    context_meta = (
+        sequence_map.select("sequence_id", "snapshot_wid")
+        .join(base.labels.rename({"_wid": "snapshot_wid"}), on="snapshot_wid", how="left")
+        .group_by("sequence_id", maintain_order=True)
+        .agg(
+            pl.col("window_start_row").min().alias("window_start_row"),
+            pl.col("window_end_row").max().alias("window_end_row"),
+            pl.col("window_ordinal").min().alias("window_ordinal"),
         )
-        if meta_aggs:
-            context_meta = (
-                context_map.join(base_labels, on="snapshot_wid")
-                .group_by("sequence_id", "sequence_length", "sequence_stride", maintain_order=True)
-                .agg(meta_aggs)
-            )
-            labels = target_labels.join(
-                context_meta,
-                on=["sequence_id", "sequence_length", "sequence_stride"],
-            )
-        else:
-            labels = target_labels
-        labels = (
-            labels.with_columns(pl.col("sequence_id").alias("_wid"))
-            .select(
-                *(
-                    c
-                    for c in select_cols
-                    if c in base.labels.columns
-                    or c
-                    in {
-                        "_wid",
-                        "sequence_id",
-                        "sequence_length",
-                        "sequence_stride",
-                        "target_snapshot_wid",
-                    }
-                )
-            )
-        )
-    else:
-        labels = target_map.with_columns(pl.col("sequence_id").alias("_wid")).select(
-            "_wid", "sequence_id", "sequence_length", "sequence_stride", "target_snapshot_wid"
-        )
-    log.info(
-        "sequences_expanded",
-        sequences=labels.height,
-        sequence_rows=sequence_map.height,
-        node_rows=node_stats.height,
-        edge_rows=edge_df.height,
     )
-    return GraphTables(
-        node_stats=node_stats,
-        edge_df=edge_df,
-        labels=labels,
-        n_rows=base.n_rows,
+    labels = (
+        labels.join(context_meta, on="sequence_id", how="left", suffix="_context")
+        .with_columns(pl.col("sequence_id").alias("_wid"))
+        .drop("window_start_row", "window_end_row", "window_ordinal")
+        .rename(
+            {
+                "window_start_row_context": "window_start_row",
+                "window_end_row_context": "window_end_row",
+                "window_ordinal_context": "window_ordinal",
+            }
+        )
     )
+    return GraphTables(node_stats, edge_df, labels, base.n_rows)
 
 
 def build_graph_tables(
@@ -568,89 +304,33 @@ def build_graph_tables(
     edge_stat_exprs: list[pl.Expr],
     edge_base_cols: list[str],
     graph_transforms: list[GraphTransform] | None = None,
-    debug_artifacts_dir: str | Path | None = None,
-    segment_cfg: WindowSegmentCfg | SequenceSegmentCfg | MultiScaleSegmentCfg | EntitySegmentCfg | None = None,
+    representation_cfg: GraphRepresentationCfg,
 ) -> GraphTables:
-    """Compose the graph preprocessing primitives into staged graph tables."""
-    if segment_cfg is None:
-        raise ValueError("build_graph_tables requires an explicit segment_cfg")
-    if isinstance(segment_cfg, MultiScaleSegmentCfg):
-        out: list[GraphTables] = []
-        offset = 0
-        for scale_id, scale_window_size in enumerate(segment_cfg.window_sizes):
-            tables = _build_graph_tables_windowed(
-                df,
-                window_size=scale_window_size,
-                stride=segment_cfg.stride,
-                node_stat_exprs=node_stat_exprs,
-                label_exprs=label_exprs,
-                edge_policy=edge_policy,
-                edge_stat_exprs=edge_stat_exprs,
-                edge_base_cols=edge_base_cols,
-                graph_transforms=graph_transforms,
-                debug_artifacts_dir=debug_artifacts_dir,
-                tags={"scale_id": scale_id, "scale_window_size": scale_window_size},
-            )
-            if tables.node_stats.is_empty():
-                continue
-            out.append(GraphTables(
-                node_stats=tables.node_stats.with_columns((pl.col("_wid") + offset).alias("_wid")),
-                edge_df=tables.edge_df.with_columns((pl.col("_wid") + offset).alias("_wid")),
-                labels=tables.labels.with_columns((pl.col("_wid") + offset).alias("_wid")),
-                n_rows=tables.n_rows,
-            ))
-            offset += int(tables.node_stats.select(pl.col("_wid").max()).item()) + 1
-        if not out:
-            return GraphTables(pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), len(df))
-        return GraphTables(
-            node_stats=pl.concat([t.node_stats for t in out], how="vertical"),
-            edge_df=pl.concat([t.edge_df for t in out], how="vertical"),
-            labels=pl.concat([t.labels for t in out], how="vertical"),
-            n_rows=len(df),
-        )
-
-    if isinstance(segment_cfg, SequenceSegmentCfg):
-        return _build_graph_tables_sequence(
+    edge_policy = edge_policy or temporal_edge_policy()
+    graph_transforms = graph_transforms or default_graph_transforms()
+    if isinstance(representation_cfg, SnapshotRepresentationCfg):
+        return _snapshot_tables(
             df,
-            cfg=segment_cfg,
+            window_size=representation_cfg.window_size,
+            stride=representation_cfg.stride,
             node_stat_exprs=node_stat_exprs,
             label_exprs=label_exprs,
             edge_policy=edge_policy,
             edge_stat_exprs=edge_stat_exprs,
             edge_base_cols=edge_base_cols,
             graph_transforms=graph_transforms,
-            debug_artifacts_dir=debug_artifacts_dir,
         )
-
-    if isinstance(segment_cfg, EntitySegmentCfg):
-        return _build_graph_tables_windowed(
+    if isinstance(representation_cfg, SnapshotSequenceRepresentationCfg):
+        base = _snapshot_tables(
             df,
-            window_size=segment_cfg.history_window_size + segment_cfg.future_window_size + 1,
-            stride=max(1, segment_cfg.future_window_size or 1),
+            window_size=representation_cfg.window_size,
+            stride=representation_cfg.stride,
             node_stat_exprs=node_stat_exprs,
             label_exprs=label_exprs,
             edge_policy=edge_policy,
             edge_stat_exprs=edge_stat_exprs,
             edge_base_cols=edge_base_cols,
             graph_transforms=graph_transforms,
-            debug_artifacts_dir=debug_artifacts_dir,
-            tags={
-                "anchor_column": segment_cfg.anchor_column,
-                "anchor_value": segment_cfg.anchor_value if segment_cfg.anchor_value is not None else "",
-            },
         )
-
-    if isinstance(segment_cfg, WindowSegmentCfg):
-        return _build_graph_tables_windowed(
-            df,
-            window_size=segment_cfg.window_size,
-            stride=segment_cfg.stride,
-            node_stat_exprs=node_stat_exprs,
-            label_exprs=label_exprs,
-            edge_policy=edge_policy,
-            edge_stat_exprs=edge_stat_exprs,
-            edge_base_cols=edge_base_cols,
-            graph_transforms=graph_transforms,
-            debug_artifacts_dir=debug_artifacts_dir,
-        )
-    raise TypeError(f"unsupported segment config: {type(segment_cfg)!r}")
+        return base if base.node_stats.is_empty() else _sequence_tables(base, representation_cfg)
+    raise TypeError(f"unsupported representation config: {type(representation_cfg)!r}")

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from graphids.core.data.preprocessing.views import ViewKind
+ViewKind = Literal["snapshot", "snapshot_sequence"]
 
 
 @dataclass(frozen=True)

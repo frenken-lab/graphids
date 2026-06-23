@@ -11,8 +11,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from graphids.core.data.preprocessing.representations import (
     GraphRepresentationCfg,
     SnapshotRepresentationCfg,
-    TemporalRepresentationCfg,
-    representation_kind,
     representation_window_defaults,
 )
 from graphids.core.data.preprocessing.scaler import (
@@ -92,8 +90,6 @@ class GraphDMCfg(_Cfg):
     def build(self) -> Any:
         from graphids.core.data.datamodule.graph import GraphDataModule
         from graphids.core.data.datasets.can_bus import CANBusSource
-        if representation_kind(self.source.representation_cfg) == "temporal":
-            raise ValueError("GraphDMCfg requires a non-temporal representation_cfg; use temporal_dm")
         source = CANBusSource(
             name=self.source.name,
             seed=self.source.seed,
@@ -114,36 +110,6 @@ class GraphDMCfg(_Cfg):
             min_steps_per_epoch=self.min_steps_per_epoch,
             require_cache=self.require_cache,
         )
-
-
-class TemporalCANBusCfg(_Cfg):
-    type: Literal["can_bus_temporal"] = "can_bus_temporal"
-    name: str
-    seed: int
-    val_fraction: float = 0.2
-    vocab_scope: Literal["train", "all"] = "train"
-    representation_cfg: TemporalRepresentationCfg = Field(default_factory=TemporalRepresentationCfg)
-
-
-class TemporalDMCfg(_Cfg):
-    type: Literal["temporal_dm"] = "temporal_dm"
-    source: TemporalCANBusCfg
-    batch_size: int = 256
-
-    def build(self) -> Any:
-        from graphids.core.data.datamodule.temporal import TemporalDataModule
-        from graphids.core.data.datasets.can_bus import TemporalCANBusSource
-        if representation_kind(self.source.representation_cfg) != "temporal":
-            raise ValueError("TemporalDMCfg requires a temporal representation_cfg")
-
-        source = TemporalCANBusSource(
-            name=self.source.name,
-            seed=self.source.seed,
-            val_fraction=self.source.val_fraction,
-            vocab_scope=self.source.vocab_scope,
-            representation_cfg=self.source.representation_cfg,
-        )
-        return TemporalDataModule(dataset=source, batch_size=self.batch_size)
 
 
 class CanonicalEntityCfg(_Cfg):
@@ -200,7 +166,7 @@ class FusionDMCfg(_Cfg):
 
 
 DataCfg = Annotated[
-    GraphDMCfg | TemporalDMCfg | FusionDMCfg,
+    GraphDMCfg | FusionDMCfg,
     Field(discriminator="type"),
 ]
 
@@ -270,34 +236,6 @@ def graph_dm(
         require_cache=require_cache,
         **overrides,
     )
-
-
-def temporal_can_bus(
-    *,
-    dataset: str,
-    seed: int,
-    val_fraction: float = 0.2,
-    vocab_scope: Literal["train", "all"] = "train",
-    representation_cfg: TemporalRepresentationCfg | None = None,
-) -> TemporalCANBusCfg:
-    registry = load_catalog()
-    if dataset not in registry:
-        raise ValueError(f"unknown dataset: {dataset} (registry: {', '.join(sorted(registry))})")
-    return TemporalCANBusCfg(
-        name=dataset,
-        seed=seed,
-        val_fraction=val_fraction,
-        vocab_scope=vocab_scope,
-        representation_cfg=representation_cfg or TemporalRepresentationCfg(),
-    )
-
-
-def temporal_dm(
-    *,
-    source: TemporalCANBusCfg,
-    batch_size: int = 256,
-) -> TemporalDMCfg:
-    return TemporalDMCfg(source=source, batch_size=batch_size)
 
 
 def canonical_entity(

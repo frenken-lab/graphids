@@ -1,4 +1,4 @@
-"""Explicit graph-representation configs for training and discovery."""
+"""Graph representation configs used by preprocessing."""
 
 from __future__ import annotations
 
@@ -9,41 +9,25 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
-from ._validation import require_non_negative, require_positive
-from .segments import (
-    EntitySegmentCfg,
-    MultiScaleSegmentCfg,
-    SequenceSegmentCfg,
-    WindowSegmentCfg,
-)
-from .temporal import TemporalGraphSpec
-from .views import (
-    EntityViewCfg,
-    MultiScaleViewCfg,
-    RollingStreamViewCfg,
-    SnapshotSequenceViewCfg,
-    SnapshotViewCfg,
-    ViewCfg,
-)
+
+def _positive(name: str, value: int) -> None:
+    if value <= 0:
+        raise ValueError(f"{name} must be positive")
 
 
 @dataclass(frozen=True)
 class SnapshotRepresentationCfg:
-    """One graph per sliding window."""
-
     kind: Literal["snapshot"] = "snapshot"
     window_size: int = 100
     stride: int = 100
 
     def __post_init__(self) -> None:
-        require_positive("window_size", self.window_size)
-        require_positive("stride", self.stride)
+        _positive("window_size", self.window_size)
+        _positive("stride", self.stride)
 
 
 @dataclass(frozen=True)
 class SnapshotSequenceRepresentationCfg:
-    """Ordered sequence of snapshot graphs."""
-
     kind: Literal["snapshot_sequence"] = "snapshot_sequence"
     window_size: int = 100
     stride: int = 100
@@ -51,195 +35,30 @@ class SnapshotSequenceRepresentationCfg:
     sequence_stride: int = 1
 
     def __post_init__(self) -> None:
-        require_positive("window_size", self.window_size)
-        require_positive("stride", self.stride)
-        require_positive("sequence_length", self.sequence_length)
-        require_positive("sequence_stride", self.sequence_stride)
-
-
-@dataclass(frozen=True)
-class MultiScaleRepresentationCfg:
-    """Parallel snapshots at multiple window sizes."""
-
-    kind: Literal["multi_scale"] = "multi_scale"
-    window_sizes: tuple[int, ...] = (50, 100, 200)
-    stride: int = 100
-
-    def __post_init__(self) -> None:
-        if not self.window_sizes:
-            raise ValueError("window_sizes must not be empty")
-        for window_size in self.window_sizes:
-            require_positive("window_sizes", window_size)
-        require_positive("stride", self.stride)
-
-
-@dataclass(frozen=True)
-class TemporalRepresentationCfg:
-    """Event stream representation built as PyG ``TemporalData``."""
-
-    kind: Literal["temporal"] = "temporal"
-    time_col: str = "timestamp"
-    binary_target: bool = True
-    history_messages: int | None = None
-
-    def __post_init__(self) -> None:
-        if not self.time_col:
-            raise ValueError("time_col must not be empty")
-        if self.history_messages is not None:
-            require_positive("history_messages", self.history_messages)
-
-
-@dataclass(frozen=True)
-class EntityRepresentationCfg:
-    """Entity-centric representation centered on one signal or message family."""
-
-    kind: Literal["entity"] = "entity"
-    anchor_column: str = "node_id"
-    anchor_value: str | int | None = None
-    history_window_size: int = 100
-    future_window_size: int = 0
-
-    def __post_init__(self) -> None:
-        if not self.anchor_column:
-            raise ValueError("anchor_column must not be empty")
-        require_non_negative("history_window_size", self.history_window_size)
-        require_non_negative("future_window_size", self.future_window_size)
-        if self.history_window_size + self.future_window_size <= 0:
-            raise ValueError("history_window_size and future_window_size cannot both be zero")
+        _positive("window_size", self.window_size)
+        _positive("stride", self.stride)
+        _positive("sequence_length", self.sequence_length)
+        _positive("sequence_stride", self.sequence_stride)
 
 
 GraphRepresentationCfg = Annotated[
-    SnapshotRepresentationCfg
-    | SnapshotSequenceRepresentationCfg
-    | MultiScaleRepresentationCfg
-    | TemporalRepresentationCfg
-    | EntityRepresentationCfg,
+    SnapshotRepresentationCfg | SnapshotSequenceRepresentationCfg,
     Field(discriminator="kind"),
 ]
 
 
-@dataclass(frozen=True)
-class GraphRepresentationPlan:
-    """Resolved representation kind and config payload."""
-
-    kind: Literal["snapshot", "snapshot_sequence", "multi_scale", "temporal", "entity"]
-    cfg: GraphRepresentationCfg
-
-
 def representation_kind(cfg: GraphRepresentationCfg) -> str:
-    """Stable label for logging and config routing."""
-    if isinstance(cfg, SnapshotRepresentationCfg):
-        return "snapshot"
-    if isinstance(cfg, SnapshotSequenceRepresentationCfg):
-        return "snapshot_sequence"
-    if isinstance(cfg, MultiScaleRepresentationCfg):
-        return "multi_scale"
-    if isinstance(cfg, TemporalRepresentationCfg):
-        return "temporal"
-    if isinstance(cfg, EntityRepresentationCfg):
-        return "entity"
-    raise TypeError(f"unsupported representation config: {type(cfg)!r}")
+    return cfg.kind
 
 
 def representation_payload(cfg: GraphRepresentationCfg) -> dict[str, object]:
-    """Stable JSON-serializable payload for cache identity and metadata."""
     return asdict(cfg)
 
 
 def representation_digest(cfg: GraphRepresentationCfg) -> str:
-    """Short stable digest for paths and cache keys."""
     payload = json.dumps(representation_payload(cfg), sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
 
 
 def representation_window_defaults(cfg: GraphRepresentationCfg) -> tuple[int, int]:
-    """Derive legacy window knobs from the explicit representation config."""
-    if isinstance(cfg, SnapshotRepresentationCfg):
-        return cfg.window_size, cfg.stride
-    if isinstance(cfg, SnapshotSequenceRepresentationCfg):
-        return cfg.window_size, cfg.stride
-    if isinstance(cfg, MultiScaleRepresentationCfg):
-        return min(cfg.window_sizes), cfg.stride
-    if isinstance(cfg, EntityRepresentationCfg):
-        return (
-            cfg.history_window_size + cfg.future_window_size + 1,
-            max(1, cfg.future_window_size or 1),
-        )
-    if isinstance(cfg, TemporalRepresentationCfg):
-        return 100, 100
-    raise TypeError(f"unsupported representation config: {type(cfg)!r}")
-
-
-def representation_plan(cfg: GraphRepresentationCfg) -> GraphRepresentationPlan:
-    """Wrap a representation config with its stable kind label."""
-    return GraphRepresentationPlan(kind=representation_kind(cfg), cfg=cfg)
-
-
-def representation_view(cfg: GraphRepresentationCfg) -> ViewCfg:
-    """Map a representation config to the corresponding public view config."""
-    if isinstance(cfg, SnapshotRepresentationCfg):
-        return SnapshotViewCfg(window_size=cfg.window_size, stride=cfg.stride)
-    if isinstance(cfg, SnapshotSequenceRepresentationCfg):
-        return SnapshotSequenceViewCfg(
-            window_size=cfg.window_size,
-            stride=cfg.stride,
-            sequence_length=cfg.sequence_length,
-            sequence_stride=cfg.sequence_stride,
-        )
-    if isinstance(cfg, MultiScaleRepresentationCfg):
-        return MultiScaleViewCfg(window_sizes=cfg.window_sizes, stride=cfg.stride)
-    if isinstance(cfg, TemporalRepresentationCfg):
-        return RollingStreamViewCfg(
-            history_messages=cfg.history_messages or 500,
-            prediction_horizon=1,
-        )
-    if isinstance(cfg, EntityRepresentationCfg):
-        return EntityViewCfg(
-            anchor_column=cfg.anchor_column,
-            anchor_value=cfg.anchor_value,
-            history_window_size=cfg.history_window_size,
-            future_window_size=cfg.future_window_size,
-        )
-    raise TypeError(f"unsupported representation config: {type(cfg)!r}")
-
-
-def representation_segment(
-    cfg: GraphRepresentationCfg,
-) -> WindowSegmentCfg | SequenceSegmentCfg | MultiScaleSegmentCfg | EntitySegmentCfg:
-    """Map a representation config to the corresponding segment primitive."""
-    if isinstance(cfg, SnapshotRepresentationCfg):
-        return WindowSegmentCfg(window_size=cfg.window_size, stride=cfg.stride)
-    if isinstance(cfg, SnapshotSequenceRepresentationCfg):
-        return SequenceSegmentCfg(
-            window_size=cfg.window_size,
-            stride=cfg.stride,
-            sequence_length=cfg.sequence_length,
-            sequence_stride=cfg.sequence_stride,
-        )
-    if isinstance(cfg, MultiScaleRepresentationCfg):
-        return MultiScaleSegmentCfg(window_sizes=cfg.window_sizes, stride=cfg.stride)
-    if isinstance(cfg, EntityRepresentationCfg):
-        return EntitySegmentCfg(
-            anchor_column=cfg.anchor_column,
-            anchor_value=cfg.anchor_value,
-            history_window_size=cfg.history_window_size,
-            future_window_size=cfg.future_window_size,
-        )
-    raise TypeError(
-        f"representation {type(cfg).__name__} does not map to a segment primitive"
-    )
-
-
-def representation_temporal_spec(cfg: GraphRepresentationCfg) -> TemporalGraphSpec:
-    """Map a representation config to the temporal-stream spec."""
-    if isinstance(cfg, TemporalRepresentationCfg):
-        return TemporalGraphSpec(
-            time_col=cfg.time_col,
-            binary_target=cfg.binary_target,
-            feature_cols=(),
-            target_col="attack",
-            aux_label_cols=("attack_type",),
-        )
-    raise TypeError(
-        f"representation {type(cfg).__name__} does not map to a temporal spec"
-    )
+    return cfg.window_size, cfg.stride

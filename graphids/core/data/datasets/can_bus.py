@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar
 
 import polars as pl
 from structlog import get_logger
@@ -17,14 +17,6 @@ from graphids.core.data.datasets._base import (
 from graphids.core.data.discovery.hypotheses import DiscoveryStore
 from graphids.core.data.preprocessing.edge_policy import temporal_edge_policy
 from graphids.core.data.preprocessing.graph_ops import default_graph_transforms
-from graphids.core.data.preprocessing.representations import (
-    TemporalRepresentationCfg,
-    representation_digest,
-    representation_temporal_spec,
-)
-from graphids.core.data.preprocessing.temporal import build_temporal_data
-from graphids.core.data.preprocessing.transforms import TOPOLOGY_NODE_PLACEHOLDER_EXPRS
-from graphids.core.data.state import DatasetState
 
 log = get_logger(__name__)
 
@@ -111,6 +103,11 @@ N_EDGE_FEATURES = len(EDGE_COL_ORDER)
 
 CAN_EDGE_POLICY = temporal_edge_policy(src_col="node_id", dst_col="node_id", dst_shift=-1)
 CAN_GRAPH_TRANSFORMS = tuple(default_graph_transforms())
+TOPOLOGY_NODE_PLACEHOLDER_EXPRS: list[pl.Expr] = [
+    pl.lit(0.0).alias("clustering_coeff"),
+    pl.lit(0.0).alias("in_degree"),
+    pl.lit(0.0).alias("out_degree"),
+]
 
 
 CAN_SCHEMA = GraphSchema(
@@ -242,89 +239,6 @@ class CANBusSource(BaseGraphSource):
         store.write_hypotheses(hypotheses)
         store.write_manifest(profiles=profiles, hypotheses=hypotheses)
 
-
-@dataclass(frozen=True)
-class TemporalCANBusSource:
-    """Catalog to build temporal CAN event streams."""
-
-    KIND: ClassVar[str] = "canbus_temporal"
-    name: str
-    seed: int
-    lake_root: str | None = None
-    val_fraction: float = 0.2
-    vocab_scope: Literal["train", "all"] = "train"
-    representation_cfg: TemporalRepresentationCfg = field(default_factory=TemporalRepresentationCfg)
-
-    def resolved_lake_root(self) -> str:
-        if self.lake_root:
-            return self.lake_root
-        from graphids.paths import lake_root
-
-        return lake_root()
-
-    @property
-    def cache_key(self) -> str:
-        return (
-            f"{self.KIND}|{self.resolved_lake_root()}|{self.name}"
-            f"|v{self.val_fraction}|seed{self.seed}|voc:{self.vocab_scope}"
-            f"|repr:{self.representation_cfg.kind}:{representation_digest(self.representation_cfg)}"
-        )
-
-    def _scan_vocab(self, raw_dir: Path, source_dirs: list[str]) -> list[Any]:
-        from graphids.core.data.preprocessing.vocab import scan_arb_ids
-
-        return scan_arb_ids(raw_dir, source_dirs)
-
-    def build(self) -> DatasetState:
-        from graphids.core.data.preprocessing.vocab import persist_vocab
-        from graphids.paths import cache_dir, data_dir, load_catalog
-
-        entry = load_catalog()[self.name]
-        lake = self.resolved_lake_root()
-        raw = data_dir(lake, self.name)
-        root = (
-            cache_dir(lake, self.name)
-            / f"temporal_{representation_digest(self.representation_cfg)}_voc_{self.vocab_scope}"
-        )
-
-        train_dirs = [
-            s for s in (entry.get("train_subdir"), entry.get("train_attack_subdir")) if s
-        ]
-        if not train_dirs:
-            raise ValueError(f"catalog entry {self.name!r} declares no train_subdir(s)")
-
-        present_test = [sd for sd in entry.get("test_subdirs", []) if (raw / sd).is_dir()]
-        scan_sources = list(train_dirs) + (present_test if self.vocab_scope == "all" else [])
-        vocab = {tok: i + 1 for i, tok in enumerate(self._scan_vocab(raw, scan_sources))}
-        Path(root).mkdir(parents=True, exist_ok=True)
-        persist_vocab(vocab, Path(root) / "vocab.json")
-
-        def _encode(df: pl.DataFrame) -> pl.DataFrame:
-            return df.with_columns(
-                pl.col("arb_id").replace_strict(vocab, default=0).cast(pl.Int64).alias("node_id")
-            )
-
-        spec = replace(
-            representation_temporal_spec(self.representation_cfg),
-            time_col=self.representation_cfg.time_col,
-            feature_cols=tuple(BYTE_COLS) + ("entropy",),
-            target_col="attack",
-            aux_label_cols=("attack_type",),
-        )
-
-        train_rows = _encode(load_can_rows(raw, train_dirs)).sort("timestamp")
-        n_rows = len(train_rows)
-        n_val = int(n_rows * self.val_fraction)
-        train_td = build_temporal_data(train_rows.head(max(0, n_rows - n_val)), spec)
-        val_td = build_temporal_data(train_rows.tail(n_val), spec)
-
-        tests = {
-            sd: build_temporal_data(_encode(load_can_rows(raw, [sd])).sort("timestamp"), spec)
-            for sd in present_test
-        }
-        return DatasetState(train=train_td, val=val_td, test=tests)
-
-
 __all__ = [
     "ATTACK_TYPE_CODES",
     "ATTACK_TYPE_NAMES",
@@ -336,7 +250,6 @@ __all__ = [
     "CAN_SCHEMA",
     "CANBusDataset",
     "CANBusSource",
-    "TemporalCANBusSource",
     "parse_payload",
     "infer_attack_type",
     "load_can_rows",

@@ -16,27 +16,21 @@ from graphids._fs import atomic_save
 from graphids.core.data.preprocessing import scaler as scaler_mod
 from graphids.core.data.preprocessing.edge_policy import EdgePolicy
 from graphids.core.data.preprocessing.graph_ops import GraphTransform
+from graphids.core.data.preprocessing.materialization import (
+    GraphTables,
+    build_graph_tables,
+)
 from graphids.core.data.preprocessing.metadata import (
     load_metadata,
     merge_split_into_metadata,
 )
-from graphids.core.data.preprocessing.pipeline import (
-    GraphPipeline,
-    GraphTables,
-)
-from graphids.core.data.preprocessing.pipeline import (
-    build_tables as build_pipeline_tables,
-)
-from graphids.core.data.preprocessing.pipeline import (
-    run as run_pipeline,
-)
+from graphids.core.data.preprocessing.pyg import graph_tables_to_pyg
 from graphids.core.data.preprocessing.representations import (
     GraphRepresentationCfg,
     SnapshotRepresentationCfg,
     representation_digest,
     representation_kind,
     representation_payload,
-    representation_segment,
     representation_window_defaults,
 )
 from graphids.core.data.preprocessing.scaler import (
@@ -378,32 +372,42 @@ class BaseGraphDataset(InMemoryDataset):
 
     def build_graph_tables(self) -> GraphTables:
         """Return staged graph tables for exploratory analysis before tensor packing."""
-        return build_pipeline_tables(
-            self._graph_pipeline(),
+        return build_graph_tables(
             self._with_vocab(self._read_raw()),
-        )
-
-    def _build_graphs_from_df(self, df: pl.DataFrame, num_ids: int) -> tuple[Data, dict, int, int, int]:
-        data, slices, num_graphs, num_raw = run_pipeline(self._graph_pipeline(), df)
-        del df
-        return data, slices, num_ids, num_graphs, num_raw
-
-    def _graph_pipeline(self) -> GraphPipeline:
-        segment_cfg = representation_segment(self.representation_cfg)
-        return GraphPipeline(
             node_stat_exprs=self.SCHEMA.node_stat_exprs,
-            edge_stat_exprs=self.SCHEMA.edge_stat_exprs,
-            node_col_order=self.SCHEMA.node_col_order,
-            edge_col_order=self.SCHEMA.edge_col_order,
             label_exprs=self.SCHEMA.label_exprs,
-            edge_base_cols=self.SCHEMA.edge_base_cols,
             edge_policy=self.SCHEMA.edge_policy,
+            edge_stat_exprs=self.SCHEMA.edge_stat_exprs,
+            edge_base_cols=self.SCHEMA.edge_base_cols,
             graph_transforms=list(self.SCHEMA.graph_transforms)
             if self.SCHEMA.graph_transforms is not None
             else None,
             representation_cfg=self.representation_cfg,
-            segment_cfg=segment_cfg,
         )
+
+    def _build_graphs_from_df(self, df: pl.DataFrame, num_ids: int) -> tuple[Data, dict, int, int, int]:
+        tables = build_graph_tables(
+            df,
+            node_stat_exprs=self.SCHEMA.node_stat_exprs,
+            label_exprs=self.SCHEMA.label_exprs,
+            edge_policy=self.SCHEMA.edge_policy,
+            edge_stat_exprs=self.SCHEMA.edge_stat_exprs,
+            edge_base_cols=self.SCHEMA.edge_base_cols,
+            graph_transforms=list(self.SCHEMA.graph_transforms)
+            if self.SCHEMA.graph_transforms is not None
+            else None,
+            representation_cfg=self.representation_cfg,
+        )
+        del df
+        if tables.node_stats.is_empty():
+            return Data(), {}, num_ids, 0, tables.n_rows
+        data, slices, num_graphs, num_raw = graph_tables_to_pyg(
+            tables,
+            node_col_order=self.SCHEMA.node_col_order,
+            edge_col_order=self.SCHEMA.edge_col_order,
+            label_exprs=self.SCHEMA.label_exprs,
+        )
+        return data, slices, num_ids, num_graphs, num_raw
 
     def _with_vocab(self, df: pl.DataFrame) -> pl.DataFrame:
         if self._shared_vocab is None:
