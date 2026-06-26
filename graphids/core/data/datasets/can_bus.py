@@ -15,8 +15,6 @@ from graphids.core.data.datasets._base import (
     GraphSchema,
 )
 from graphids.core.data.discovery.hypotheses import DiscoveryStore
-from graphids.core.data.preprocessing.edge_policy import temporal_edge_policy
-from graphids.core.data.preprocessing.graph_ops import default_graph_transforms
 
 log = get_logger(__name__)
 
@@ -101,8 +99,6 @@ EDGE_COL_ORDER: tuple[str, ...] = (
 )
 N_EDGE_FEATURES = len(EDGE_COL_ORDER)
 
-CAN_EDGE_POLICY = temporal_edge_policy(src_col="node_id", dst_col="node_id", dst_shift=-1)
-CAN_GRAPH_TRANSFORMS = tuple(default_graph_transforms())
 TOPOLOGY_NODE_PLACEHOLDER_EXPRS: list[pl.Expr] = [
     pl.lit(0.0).alias("clustering_coeff"),
     pl.lit(0.0).alias("in_degree"),
@@ -118,8 +114,6 @@ CAN_SCHEMA = GraphSchema(
     label_exprs=LABEL_EXPRS,
     edge_base_cols=BYTE_COLS,  # byte diffs need byte_0..7
     vocab_column="arb_id",
-    edge_policy=CAN_EDGE_POLICY,
-    graph_transforms=CAN_GRAPH_TRANSFORMS,
 )
 
 # Backward-compatible schema aliases used by tests and downstream configs.

@@ -37,9 +37,9 @@ Representation configs live in:
 
 They bridge to:
 
-- view configs
-- segment configs
-- temporal stream specs
+- snapshot representation configs
+- snapshot-sequence representation configs
+- leakage-safe split policy metadata
 
 ## 3. Materialized views
 
@@ -50,17 +50,13 @@ Examples:
 
 - snapshot graphs
 - snapshot sequences
-- multi-scale views
-- temporal streams
-- entity-centric views
 
 Code surface:
 
-- `graphids/core/data/preprocessing/views.py`
-- `graphids/core/data/preprocessing/segments.py`
+- `graphids/core/data/preprocessing/representations.py`
 - `graphids/core/data/preprocessing/materialization.py`
 - `graphids/core/data/preprocessing/pyg.py`
-- `graphids/core/data/preprocessing/temporal.py`
+- `graphids/core/data/preprocessing/splits.py`
 
 ## 4. Discovery and hypotheses
 

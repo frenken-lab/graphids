@@ -2,32 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
-
 import polars as pl
-
-
-@dataclass(frozen=True)
-class GraphTransform:
-    """A declarative graph transform with explicit input/output columns."""
-
-    name: str
-    requires: tuple[str, ...]
-    produces: tuple[str, ...]
-    fn: Callable[[pl.DataFrame, pl.DataFrame], tuple[pl.DataFrame, pl.DataFrame]]
-
-    def apply(self, node_stats: pl.DataFrame, edge_df: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
-        available = set(node_stats.columns) | set(edge_df.columns)
-        missing = [c for c in self.requires if c not in available]
-        if missing:
-            raise ValueError(f"transform {self.name!r} missing required columns: {missing!r}")
-        next_node, next_edge = self.fn(node_stats, edge_df)
-        produced = set(next_node.columns) | set(next_edge.columns)
-        missing_out = [c for c in self.produces if c not in produced]
-        if missing_out:
-            raise ValueError(f"transform {self.name!r} did not produce columns: {missing_out!r}")
-        return next_node, next_edge
 
 
 def _add_edge_frequency(node_stats: pl.DataFrame, edge_df: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
@@ -105,56 +80,11 @@ def _add_graph_topology(node_stats: pl.DataFrame, edge_df: pl.DataFrame) -> tupl
     return node_stats, edge_df
 
 
-def _add_secondary_node_stats(node_stats: pl.DataFrame, edge_df: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
-    total = pl.col("in_degree") + pl.col("out_degree")
-    p_out = pl.when(total > 0).then(pl.col("out_degree") / total).otherwise(0.0)
-    p_in = pl.when(total > 0).then(pl.col("in_degree") / total).otherwise(0.0)
-    node_stats = node_stats.with_columns(
-        pl.when(pl.col("in_degree") > 0)
-        .then(pl.col("out_degree") / pl.col("in_degree"))
-        .otherwise(pl.col("out_degree"))
-        .cast(pl.Float32)
-        .alias("in_out_ratio"),
-        pl.when(total > 0)
-        .then(-pl.when(p_out > 0).then(p_out * p_out.log()).otherwise(0.0) - pl.when(p_in > 0).then(p_in * p_in.log()).otherwise(0.0))
-        .otherwise(0.0)
-        .cast(pl.Float32)
-        .alias("neighbor_entropy"),
-    )
-    return node_stats, edge_df
-
-
-def default_graph_transforms() -> list[GraphTransform]:
-    """Default graph transforms used in cache builds."""
-    return [
-        GraphTransform(
-            name="edge_frequency",
-            requires=("_wid", "src", "dst"),
-            produces=("edge_freq",),
-            fn=_add_edge_frequency,
-        ),
-        GraphTransform(
-            name="bidir",
-            requires=("_wid", "src", "dst"),
-            produces=("bidir",),
-            fn=_add_bidir,
-        ),
-        GraphTransform(
-            name="topology",
-            requires=("_wid", "node_id", "src", "dst"),
-            produces=("clustering_coeff", "in_degree", "out_degree"),
-            fn=_add_graph_topology,
-        ),
-    ]
-
-
-def secondary_graph_transforms() -> list[GraphTransform]:
-    """Additional exploratory graph transforms used in feature tests."""
-    return [
-        GraphTransform(
-            name="secondary_node_stats",
-            requires=("in_degree", "out_degree"),
-            produces=("in_out_ratio", "neighbor_entropy"),
-            fn=_add_secondary_node_stats,
-        )
-    ]
+def apply_default_graph_transforms(
+    node_stats: pl.DataFrame,
+    edge_df: pl.DataFrame,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Add the graph features consumed by the CAN schema."""
+    node_stats, edge_df = _add_edge_frequency(node_stats, edge_df)
+    node_stats, edge_df = _add_bidir(node_stats, edge_df)
+    return _add_graph_topology(node_stats, edge_df)

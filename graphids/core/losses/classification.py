@@ -20,12 +20,7 @@ def _reduce(x: torch.Tensor, reduction: str) -> torch.Tensor:
 
 
 class CrossEntropyLoss(nn.Module):
-    """Plain cross-entropy. Ignores ``graph``.
-
-    ``reduction='none'`` returns per-example loss — used by
-    :class:`graphids.core.losses.curriculum.CurriculumWeightedLoss` to
-    apply per-example masking before reduction.
-    """
+    """Plain cross-entropy. Ignores ``graph``."""
 
     def __init__(self, reduction: str = "mean"):
         super().__init__()

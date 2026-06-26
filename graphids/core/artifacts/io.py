@@ -41,11 +41,11 @@ def load_val_data(
     from graphids.core.data.datasets.can_bus import CANBusSource
     from graphids.core.data.state import get_or_build
 
+    del seed
     state = get_or_build(
         CANBusSource(
             name=dataset,
             lake_root=lake_root,
-            seed=seed,
             vocab_scope=vocab_scope,
             representation_cfg=representation_cfg,
         )

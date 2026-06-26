@@ -2,8 +2,8 @@
 
 After the Phase-1 collapse, ``VGAE`` is the single class — arch + trainer
 bridge in one ``nn.Module``. Tensor-form forward is exposed as
-``_forward_tensors`` (used by ``score_vgae`` and these unit tests);
-``forward(batch)`` is the trainer-facing entry point.
+``_forward_tensors`` for focused architecture tests; ``forward(batch)`` is
+the trainer-facing entry point.
 """
 
 from __future__ import annotations

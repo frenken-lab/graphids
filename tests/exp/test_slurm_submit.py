@@ -78,39 +78,3 @@ def test_exp_submit_dry_run_cli(monkeypatch):
     assert result.exit_code == 0
     assert "#SBATCH --clusters=pitzer" in result.stdout
     assert "python -m graphids exp launch" in result.stdout
-
-
-def test_exp_cache_audit_cli(tmp_path):
-    from typer.testing import CliRunner
-
-    from graphids.cli.app import app
-    from graphids.core.data.preprocessing.metadata import merge_split_into_metadata
-    from tests.core.preprocessing.test_metadata_merge import INVARIANTS, _entry
-
-    audit = {
-        "graph_index_overlap": 0,
-        "base_unit_overlap": 0,
-        "raw_interval_intersections": 0,
-        "source_boundary_violations": 0,
-    }
-    merge_split_into_metadata(
-        tmp_path,
-        "train",
-        {**_entry(10), "split_audit": audit},
-        invariants=INVARIANTS,
-        dataset_name="set_01",
-        num_arb_ids=16,
-    )
-    merge_split_into_metadata(
-        tmp_path,
-        "val",
-        {"num_graphs": 2, "derived_from": "train", "split_audit": audit},
-        invariants=INVARIANTS,
-        dataset_name="set_01",
-        num_arb_ids=16,
-    )
-
-    result = CliRunner().invoke(app, ["exp", "cache-audit", str(tmp_path), "--format", "json"])
-
-    assert result.exit_code == 0
-    assert '"ok": true' in result.stdout

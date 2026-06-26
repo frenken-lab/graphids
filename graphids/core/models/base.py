@@ -123,15 +123,6 @@ class _ModelBase(pl.LightningModule):
             names_map = getattr(dm, "attack_type_names", None)
         self._attack_type_names = dict(names_map or {0: "benign"})
 
-    # -- curriculum loss epoch sync ------------------------------------------
-    #
-    # Curriculum-aware losses read the current epoch via ``set_epoch``.
-
-    def on_train_epoch_start(self) -> None:
-        set_epoch = getattr(getattr(self, "loss_fn", None), "set_epoch", None)
-        if callable(set_epoch):
-            set_epoch(int(self.current_epoch))
-
     def on_test_setup(self, datamodule, device) -> None:
         """Called before the test loop after the model is loaded."""
 

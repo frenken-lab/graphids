@@ -91,8 +91,6 @@ def graph_tables_to_pyg(
         "window_start_row",
         "window_end_row",
         "window_ordinal",
-        "source_dir_n_unique",
-        "source_file_n_unique",
     )
     for col in graph_optional_cols:
         if col in labels_aligned.columns:

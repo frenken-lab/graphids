@@ -13,7 +13,7 @@ from graphids.core.data.preprocessing.scaler import (
     RobustBenignScalerCfg,
     ZBenignScalerCfg,
     fit_from_cfg,
-    scaler_plan,
+    scaler_kind,
 )
 
 
@@ -90,12 +90,10 @@ def test_apply_preserves_dtype():
 
 def test_scaler_config_helpers_round_trip():
     zcfg = ZBenignScalerCfg()
-    zplan = scaler_plan(zcfg)
-    assert zplan.kind == "z_benign"
+    assert scaler_kind(zcfg) == "z_benign"
 
     rcfg = RobustBenignScalerCfg()
-    rplan = scaler_plan(rcfg)
-    assert rplan.kind == "robust_benign"
+    assert scaler_kind(rcfg) == "robust_benign"
 
     data, slices, train_idx = _fixture()
     fitted = fit_from_cfg(data, slices, train_idx, cfg=zcfg, keys=("x",))

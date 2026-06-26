@@ -65,7 +65,6 @@ class TestCANBusDatasetBuildGraphs:
 
     def test_produces_valid_data_objects(self, tmp_path):
         from graphids.core.data.datasets.can_bus import CANBusDataset
-        from graphids.core.data.preprocessing.metadata import load_metadata
         from graphids.core.data.preprocessing.vocab import persist_vocab, scan_arb_ids
 
         self._write_minimal_csv(tmp_path / "raw" / "train_01_attack_free" / "normal.csv")
@@ -83,7 +82,6 @@ class TestCANBusDatasetBuildGraphs:
             split="train",
             val_fraction=0.2,
             source_dirs=["train_01_attack_free"],
-            seed=42,
             shared_vocab=vocab,
             shared_vocab_digest=digest,
         )
@@ -100,6 +98,3 @@ class TestCANBusDatasetBuildGraphs:
         assert g.x.shape[0] < 2048
         assert g.edge_index.max() < g.x.shape[0]
         assert not torch.isnan(g.x).any()
-        meta = load_metadata(tmp_path / "processed")
-        assert meta["splits"]["train"]["split_audit"]["graph_index_overlap"] == 0
-        assert meta["splits"]["train"]["split_audit"]["base_unit_overlap"] == 0

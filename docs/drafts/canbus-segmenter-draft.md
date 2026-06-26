@@ -32,6 +32,6 @@ What should stay separate:
 - graph feature construction
 - tensor packing
 
-The main thing to decompose next is the sample-shape decision.
-Today that decision lives inside `GraphPipeline`; that is the bundling
-that blocks snapshot-sequence and multi-scale views from being first-class.
+The sample-shape decision has since moved to `representation_cfg` and
+`build_graph_tables`. Snapshot and snapshot-sequence are first-class; the
+other segment families in this draft remain future work.

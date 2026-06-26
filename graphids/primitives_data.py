@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from functools import partial
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -26,32 +25,6 @@ _DEFAULT_REPRESENTATION_CFG = SnapshotRepresentationCfg()
 
 class _Cfg(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class ScoreRandomCfg(_Cfg):
-    type: Literal["score_random"] = "score_random"
-    seed: int = 0
-
-    def build(self) -> Any:
-        from graphids.core.data.preprocessing.curriculum import score_random
-
-        return partial(score_random, seed=self.seed)
-
-
-class ScoreVGAECfg(_Cfg):
-    type: Literal["score_vgae"] = "score_vgae"
-    ckpt_path: str
-
-    def build(self) -> Any:
-        from graphids.core.data.preprocessing.curriculum import score_vgae
-
-        return partial(score_vgae, ckpt_path=self.ckpt_path)
-
-
-DifficultyCfg = Annotated[
-    ScoreRandomCfg | ScoreVGAECfg,
-    Field(discriminator="type"),
-]
 
 
 class CANBusCfg(_Cfg):
@@ -82,8 +55,6 @@ class GraphDMCfg(_Cfg):
     prefetch_factor: int = 2
     dynamic_batching: bool = True
     label_filter: str | None = None
-    difficulty: DifficultyCfg | None = None
-    scope_label: int = 0
     min_steps_per_epoch: int = 1
     require_cache: bool = False
 
@@ -92,12 +63,10 @@ class GraphDMCfg(_Cfg):
         from graphids.core.data.datasets.can_bus import CANBusSource
         source = CANBusSource(
             name=self.source.name,
-            seed=self.source.seed,
             val_fraction=self.source.val_fraction,
             scaler_cfg=self.source.scaler_cfg,
             representation_cfg=self.source.representation_cfg,
         )
-        difficulty = self.difficulty.build() if self.difficulty is not None else None
         return GraphDataModule(
             dataset=source,
             batch_size=self.batch_size,
@@ -105,8 +74,6 @@ class GraphDMCfg(_Cfg):
             prefetch_factor=self.prefetch_factor,
             dynamic_batching=self.dynamic_batching,
             label_filter=self.label_filter,
-            difficulty=difficulty,
-            scope_label=self.scope_label,
             min_steps_per_epoch=self.min_steps_per_epoch,
             require_cache=self.require_cache,
         )
@@ -148,14 +115,6 @@ REWARD: dict[str, Any] = {
 }
 
 
-def score_random(seed: int = 0) -> ScoreRandomCfg:
-    return ScoreRandomCfg(seed=seed)
-
-
-def score_vgae(ckpt_path: str) -> ScoreVGAECfg:
-    return ScoreVGAECfg(ckpt_path=ckpt_path)
-
-
 def can_bus(
     *,
     dataset: str,
@@ -188,16 +147,12 @@ def graph_dm(
     *,
     source: CANBusCfg,
     label_filter: str | None = None,
-    difficulty: DifficultyCfg | None = None,
-    scope_label: int = 0,
     require_cache: bool = False,
     **overrides: Any,
 ) -> GraphDMCfg:
     return GraphDMCfg(
         source=source,
         label_filter=label_filter,
-        difficulty=difficulty,
-        scope_label=scope_label,
         require_cache=require_cache,
         **overrides,
     )

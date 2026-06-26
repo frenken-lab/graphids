@@ -64,22 +64,3 @@ def test_initialize_hypotheses_produces_empty_provisional_table(tmp_path):
     assert store.write_hypotheses(hyps).exists()
     assert store.load_profiles().shape[0] == 2
     assert store.load_hypotheses().shape[0] == 2
-
-
-def test_discovery_store_ranks_profiles_and_hypotheses(tmp_path):
-    from graphids.core.data.discovery.hypotheses import (
-        DiscoveryStore,
-        build_signal_profiles,
-        initialize_hypotheses,
-    )
-
-    profiles = build_signal_profiles(_frame())
-    hyps = initialize_hypotheses(profiles)
-    store = DiscoveryStore(tmp_path)
-    store.write_profiles(profiles)
-    store.write_hypotheses(hyps)
-
-    ranked_profiles = store.rank_profiles()
-    ranked_hypotheses = store.rank_hypotheses()
-    assert "ranking_score" in ranked_profiles.columns
-    assert "candidate_canonical_id" in ranked_hypotheses.columns

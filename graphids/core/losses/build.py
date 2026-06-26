@@ -2,9 +2,9 @@
 
 Single consumer: :func:`graphids.core.models.base.safe_load_checkpoint`.
 ``loss_fn: nn.Module`` is excluded from saved hparams (it's a Module, not a
-config value), so when a checkpoint is reloaded — for fusion-teacher caching,
-curriculum-VGAE scoring, or distillation-teacher pickup — the loss has to be
-rebuilt from saved hparam keys.
+config value), so when a checkpoint is reloaded — for fusion-teacher caching
+or distillation-teacher pickup — the loss has to be rebuilt from saved hparam
+keys.
 
 For new (post-class_path-lift) ckpts, hparams won't carry loss-shaping keys
 (libsonnets emit a ``loss_fn`` class_path block consumed at instantiate, not

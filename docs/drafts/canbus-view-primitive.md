@@ -11,24 +11,18 @@ These are the files that define the live snapshot pipeline today:
   - CAN-specific schema, raw CSV normalization, payload parsing, attack-type inference.
 - `graphids/graphids/core/data/datasets/_base.py`
   - shared dataset/cache control plane, metadata merge, vocab/scaler wiring, split handling.
-- `graphids/graphids/core/data/preprocessing/pipeline.py`
-  - sliding-window graph construction, table aggregation, graph transforms, tensor packing.
+- `graphids/graphids/core/data/preprocessing/representations.py`
+  - supported graph representation configs.
+- `graphids/graphids/core/data/preprocessing/materialization.py`
+  - sliding-window and snapshot-sequence graph table construction.
+- `graphids/graphids/core/data/preprocessing/pyg.py`
+  - staged graph-table tensor packing.
 - `graphids/graphids/core/data/preprocessing/graph_ops.py`
   - default graph transforms applied after window aggregation.
-- `graphids/graphids/core/data/preprocessing/temporal.py`
-  - temporal event-graph builder for PyG `TemporalData`.
-- `graphids/graphids/core/data/preprocessing/canonical.py`
-  - shared canonical entity registry and long-form feature-table builder for cross-vehicle alignment.
-- `graphids/graphids/core/data/preprocessing/edge_policy.py`
-  - edge construction policy for temporal adjacency.
-- `graphids/graphids/core/data/preprocessing/metadata.py`
-  - cache metadata contract and merge semantics.
 - `graphids/graphids/core/data/preprocessing/vocab.py`
   - shared vocabulary scan/persist/load primitives.
 - `graphids/graphids/core/data/datamodule/graph.py`
   - Lightning datamodule that consumes the processed snapshot graphs.
-- `graphids/graphids/core/data/datamodule/temporal.py`
-  - Lightning datamodule that serves `TemporalData` via PyG's `TemporalDataLoader`.
 
 Drafted views:
 

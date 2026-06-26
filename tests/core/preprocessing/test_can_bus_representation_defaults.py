@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 from graphids.core.data.preprocessing.representations import (
-    EntityRepresentationCfg,
-    MultiScaleRepresentationCfg,
     SnapshotRepresentationCfg,
     SnapshotSequenceRepresentationCfg,
 )
@@ -33,28 +31,6 @@ def test_can_bus_defaults_follow_sequence_representation(monkeypatch):
     assert cfg.stride == 4
 
 
-def test_can_bus_defaults_follow_multiscale_representation(monkeypatch):
-    monkeypatch.setattr("graphids.primitives_data.load_catalog", _catalog)
-    cfg = can_bus(
-        dataset="dummy",
-        seed=7,
-        representation_cfg=MultiScaleRepresentationCfg(window_sizes=(16, 32, 64), stride=8),
-    )
-    assert cfg.window_size == 16
-    assert cfg.stride == 8
-
-
-def test_can_bus_defaults_follow_entity_representation(monkeypatch):
-    monkeypatch.setattr("graphids.primitives_data.load_catalog", _catalog)
-    cfg = can_bus(
-        dataset="dummy",
-        seed=7,
-        representation_cfg=EntityRepresentationCfg(history_window_size=9, future_window_size=2),
-    )
-    assert cfg.window_size == 12
-    assert cfg.stride == 2
-
-
 def test_can_bus_cfg_resolves_representation_defaults():
     cfg = CANBusCfg(
         name="dummy",
@@ -73,7 +49,6 @@ def test_cache_keys_include_full_representation_identity():
 
     a = CANBusSource(
         name="dummy",
-        seed=7,
         lake_root="/tmp/graphids-test",
         representation_cfg=SnapshotSequenceRepresentationCfg(
             window_size=12,
@@ -83,30 +58,11 @@ def test_cache_keys_include_full_representation_identity():
     )
     b = CANBusSource(
         name="dummy",
-        seed=7,
         lake_root="/tmp/graphids-test",
         representation_cfg=SnapshotSequenceRepresentationCfg(
             window_size=12,
             stride=4,
             sequence_length=4,
         ),
-    )
-    assert a.cache_key != b.cache_key
-
-
-def test_multiscale_cache_keys_include_window_sizes():
-    from graphids.core.data.datasets.can_bus import CANBusSource
-
-    a = CANBusSource(
-        name="dummy",
-        seed=7,
-        lake_root="/tmp/graphids-test",
-        representation_cfg=MultiScaleRepresentationCfg(window_sizes=(50, 100), stride=50),
-    )
-    b = CANBusSource(
-        name="dummy",
-        seed=7,
-        lake_root="/tmp/graphids-test",
-        representation_cfg=MultiScaleRepresentationCfg(window_sizes=(50, 100, 200), stride=50),
     )
     assert a.cache_key != b.cache_key

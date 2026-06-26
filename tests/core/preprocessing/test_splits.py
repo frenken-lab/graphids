@@ -22,12 +22,10 @@ from graphids.core.data.preprocessing.representations import (
     SnapshotRepresentationCfg,
     SnapshotSequenceRepresentationCfg,
 )
-from graphids.core.data.preprocessing.segments import SequenceSegmentCfg
 from graphids.core.data.preprocessing.splits import (
-    audit_split_plan,
-    build_blocked_split_plan,
     graph_touched_base_units,
     split_embargo_width,
+    split_graph_indices,
 )
 
 
@@ -44,6 +42,21 @@ def _frame(n_rows: int = 100) -> pl.DataFrame:
     )
 
 
+def _touched_units(touched: list[tuple[int, ...]], idx: torch.Tensor) -> set[int]:
+    return {unit for graph_idx in idx.tolist() for unit in touched[graph_idx]}
+
+
+def _raw_intervals(data: Data, idx: torch.Tensor) -> list[tuple[int, int]]:
+    return [
+        (int(data.window_start_row[graph_idx]), int(data.window_end_row[graph_idx]))
+        for graph_idx in idx.tolist()
+    ]
+
+
+def _has_interval_overlap(left: list[tuple[int, int]], right: list[tuple[int, int]]) -> bool:
+    return any(start < right_end and right_start < end for start, end in left for right_start, right_end in right)
+
+
 def test_snapshot_sequence_split_has_no_underlying_window_overlap():
     cfg = SnapshotSequenceRepresentationCfg(
         window_size=5,
@@ -57,15 +70,7 @@ def test_snapshot_sequence_split_has_no_underlying_window_overlap():
         label_exprs=LABEL_EXPRS,
         edge_stat_exprs=EDGE_STAT_EXPRS,
         edge_base_cols=EDGE_BASE_COLS,
-        edge_policy=None,
-        graph_transforms=None,
-        debug_artifacts_dir=None,
-        segment_cfg=SequenceSegmentCfg(
-            window_size=cfg.window_size,
-            stride=cfg.stride,
-            sequence_length=cfg.sequence_length,
-            sequence_stride=cfg.sequence_stride,
-        ),
+        representation_cfg=cfg,
     )
     data, slices, _, _ = graph_tables_to_pyg(
         tables,
@@ -74,20 +79,16 @@ def test_snapshot_sequence_split_has_no_underlying_window_overlap():
         label_exprs=LABEL_EXPRS,
     )
 
-    plan = build_blocked_split_plan(data, slices, cfg, val_fraction=0.2, seed=42)
+    train_idx, val_idx = split_graph_indices(data, slices, cfg, val_fraction=0.2)
     touched = graph_touched_base_units(data, slices)
-    train_units = {
-        unit for graph_idx in plan.train_idx.tolist() for unit in touched[graph_idx]
-    }
-    val_units = {
-        unit for graph_idx in plan.val_idx.tolist() for unit in touched[graph_idx]
-    }
+    train_units = _touched_units(touched, train_idx)
+    val_units = _touched_units(touched, val_idx)
 
-    assert plan.embargo_width == 2
-    assert len(plan.train_idx) > 0
-    assert len(plan.val_idx) > 0
+    assert split_embargo_width(cfg) == 2
+    assert len(train_idx) > 0
+    assert len(val_idx) > 0
     assert train_units.isdisjoint(val_units)
-    assert audit_split_plan(plan)["raw_interval_intersections"] == 0
+    assert not _has_interval_overlap(_raw_intervals(data, train_idx), _raw_intervals(data, val_idx))
 
 
 def test_snapshot_overlap_uses_embargo_when_stride_is_smaller_than_window():
@@ -107,11 +108,11 @@ def test_snapshot_overlap_uses_embargo_when_stride_is_smaller_than_window():
         "graph_wid": torch.arange(11, dtype=torch.long),
     }
 
-    plan = build_blocked_split_plan(data, slices, cfg, val_fraction=0.2, seed=42)
+    train_idx, val_idx = split_graph_indices(data, slices, cfg, val_fraction=0.2)
 
     assert split_embargo_width(cfg) == 1
-    assert plan.train_idx.tolist() == list(range(7))
-    assert plan.val_idx.tolist() == [8, 9]
+    assert train_idx.tolist() == list(range(7))
+    assert val_idx.tolist() == [8, 9]
 
 
 def test_validation_uses_tail_block():
@@ -131,13 +132,13 @@ def test_validation_uses_tail_block():
         "graph_wid": torch.arange(11, dtype=torch.long),
     }
 
-    plan = build_blocked_split_plan(data, slices, cfg, val_fraction=0.3, seed=42)
+    train_idx, val_idx = split_graph_indices(data, slices, cfg, val_fraction=0.3)
 
-    assert plan.train_idx.tolist() == list(range(7))
-    assert plan.val_idx.tolist() == [7, 8, 9]
+    assert train_idx.tolist() == list(range(7))
+    assert val_idx.tolist() == [7, 8, 9]
 
 
-def test_audit_reports_raw_interval_intersections():
+def test_overlapping_raw_windows_are_separated_by_embargo():
     cfg = SnapshotRepresentationCfg(window_size=10, stride=5)
     data = Data(
         x=torch.zeros((4, 1)),
@@ -158,12 +159,12 @@ def test_audit_reports_raw_interval_intersections():
         "window_end_row": torch.arange(5, dtype=torch.long),
     }
 
-    plan = build_blocked_split_plan(data, slices, cfg, val_fraction=0.5, seed=42)
+    train_idx, val_idx = split_graph_indices(data, slices, cfg, val_fraction=0.5)
 
-    assert audit_split_plan(plan)["raw_interval_intersections"] == 0
+    assert not _has_interval_overlap(_raw_intervals(data, train_idx), _raw_intervals(data, val_idx))
 
 
-def test_split_audit_reports_only_leakage_invariants():
+def test_split_indices_are_disjoint_by_graph_and_base_unit():
     cfg = SnapshotRepresentationCfg(window_size=5, stride=5)
     data = Data(
         x=torch.zeros((6, 1)),
@@ -180,16 +181,8 @@ def test_split_audit_reports_only_leakage_invariants():
         "graph_wid": torch.arange(7, dtype=torch.long),
     }
 
-    plan = build_blocked_split_plan(data, slices, cfg, val_fraction=0.5, seed=42)
-    audit = audit_split_plan(plan)
+    train_idx, val_idx = split_graph_indices(data, slices, cfg, val_fraction=0.5)
+    touched = graph_touched_base_units(data, slices)
 
-    assert set(audit) == {
-        "graph_index_overlap",
-        "base_unit_overlap",
-        "raw_interval_intersections",
-    }
-    assert audit == {
-        "graph_index_overlap": 0,
-        "base_unit_overlap": 0,
-        "raw_interval_intersections": 0,
-    }
+    assert set(train_idx.tolist()).isdisjoint(val_idx.tolist())
+    assert _touched_units(touched, train_idx).isdisjoint(_touched_units(touched, val_idx))

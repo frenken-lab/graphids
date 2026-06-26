@@ -7,14 +7,7 @@ from dataclasses import dataclass
 import polars as pl
 from structlog import get_logger
 
-from graphids.core.data.preprocessing.edge_policy import (
-    EdgePolicy,
-    temporal_edge_policy,
-)
-from graphids.core.data.preprocessing.graph_ops import (
-    GraphTransform,
-    default_graph_transforms,
-)
+from graphids.core.data.preprocessing.graph_ops import apply_default_graph_transforms
 from graphids.core.data.preprocessing.representations import (
     GraphRepresentationCfg,
     SnapshotRepresentationCfg,
@@ -76,31 +69,25 @@ def _generate_edges(
     *,
     window_size: int,
     stride: int,
-    edge_policy: EdgePolicy,
     edge_stat_exprs: list[pl.Expr],
     edge_base_cols: list[str],
 ) -> pl.DataFrame:
     lf = rows.lazy().sort("_row")
     dyn = dict(every=f"{stride}i", period=f"{window_size}i", closed="left")
     edge_names = [expr.meta.output_name() for expr in edge_stat_exprs]
-    base_cols = ["_row", edge_policy.src_col]
-    if edge_policy.dst_col != edge_policy.src_col:
-        base_cols.append(edge_policy.dst_col)
-    if "timestamp" not in base_cols:
-        base_cols.append("timestamp")
+    base_cols = ["_row", "node_id", "timestamp"]
     base_cols.extend(c for c in edge_base_cols if c not in base_cols)
 
     edge_df = (
         lf.select(*base_cols)
         .group_by_dynamic("_row", **dyn)
         .agg(
-            pl.col(edge_policy.src_col).alias(edge_policy.src_alias),
-            pl.col(edge_policy.dst_col).shift(-edge_policy.dst_shift).alias(edge_policy.dst_alias),
+            pl.col("node_id").alias("src"),
+            pl.col("node_id").shift(1).alias("dst"),
             *edge_stat_exprs,
         )
         .rename({"_row": "_wid"})
-        .explode(edge_policy.src_alias, edge_policy.dst_alias, *edge_names)
-        .rename({edge_policy.src_alias: "src", edge_policy.dst_alias: "dst"})
+        .explode("src", "dst", *edge_names)
         .with_columns(*_window_meta_exprs(window_size, stride))
     ).collect()
     return edge_df.filter(
@@ -116,13 +103,6 @@ def _complete_windows(tables: GraphTables, *, max_wid: int) -> GraphTables:
         tables.labels.filter(pl.col("_wid") <= max_wid),
         tables.n_rows,
     )
-
-
-def _apply_transforms(tables: GraphTables, graph_transforms: list[GraphTransform]) -> GraphTables:
-    node_stats, edge_df = tables.node_stats, tables.edge_df
-    for transform in graph_transforms:
-        node_stats, edge_df = transform.apply(node_stats, edge_df)
-    return GraphTables(node_stats, edge_df, tables.labels, tables.n_rows)
 
 
 def _keep_windows_with_edges(tables: GraphTables) -> GraphTables:
@@ -160,10 +140,8 @@ def _snapshot_tables(
     stride: int,
     node_stat_exprs: list[pl.Expr],
     label_exprs: list[pl.Expr],
-    edge_policy: EdgePolicy,
     edge_stat_exprs: list[pl.Expr],
     edge_base_cols: list[str],
-    graph_transforms: list[GraphTransform],
 ) -> GraphTables:
     rows = (
         df.with_row_index("_row")
@@ -187,13 +165,13 @@ def _snapshot_tables(
         rows,
         window_size=window_size,
         stride=stride,
-        edge_policy=edge_policy,
         edge_stat_exprs=edge_stat_exprs,
         edge_base_cols=edge_base_cols,
     )
     tables = GraphTables(node_stats, edge_df, labels, n_rows)
     tables = _complete_windows(tables, max_wid=(n_windows - 1) * stride)
-    tables = _apply_transforms(tables, graph_transforms)
+    node_stats, edge_df = apply_default_graph_transforms(tables.node_stats, tables.edge_df)
+    tables = GraphTables(node_stats, edge_df, tables.labels, tables.n_rows)
     tables = _keep_windows_with_edges(tables)
     if tables.node_stats.is_empty():
         log.warning("no_graphs_with_edges")
@@ -300,37 +278,23 @@ def build_graph_tables(
     *,
     node_stat_exprs: list[pl.Expr],
     label_exprs: list[pl.Expr],
-    edge_policy: EdgePolicy | None = None,
     edge_stat_exprs: list[pl.Expr],
     edge_base_cols: list[str],
-    graph_transforms: list[GraphTransform] | None = None,
     representation_cfg: GraphRepresentationCfg,
 ) -> GraphTables:
-    edge_policy = edge_policy or temporal_edge_policy()
-    graph_transforms = graph_transforms or default_graph_transforms()
-    if isinstance(representation_cfg, SnapshotRepresentationCfg):
-        return _snapshot_tables(
-            df,
-            window_size=representation_cfg.window_size,
-            stride=representation_cfg.stride,
-            node_stat_exprs=node_stat_exprs,
-            label_exprs=label_exprs,
-            edge_policy=edge_policy,
-            edge_stat_exprs=edge_stat_exprs,
-            edge_base_cols=edge_base_cols,
-            graph_transforms=graph_transforms,
-        )
-    if isinstance(representation_cfg, SnapshotSequenceRepresentationCfg):
+    if isinstance(representation_cfg, SnapshotRepresentationCfg | SnapshotSequenceRepresentationCfg):
         base = _snapshot_tables(
             df,
             window_size=representation_cfg.window_size,
             stride=representation_cfg.stride,
             node_stat_exprs=node_stat_exprs,
             label_exprs=label_exprs,
-            edge_policy=edge_policy,
             edge_stat_exprs=edge_stat_exprs,
             edge_base_cols=edge_base_cols,
-            graph_transforms=graph_transforms,
         )
+    else:
+        raise TypeError(f"unsupported representation config: {type(representation_cfg)!r}")
+
+    if isinstance(representation_cfg, SnapshotSequenceRepresentationCfg):
         return base if base.node_stats.is_empty() else _sequence_tables(base, representation_cfg)
-    raise TypeError(f"unsupported representation config: {type(representation_cfg)!r}")
+    return base

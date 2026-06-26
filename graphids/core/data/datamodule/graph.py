@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 import lightning.pytorch as pl
 import torch
 import torch.multiprocessing as mp
@@ -49,8 +47,6 @@ class GraphDataModule(pl.LightningDataModule):
         prefetch_factor: int = 2,
         dynamic_batching: bool = True,
         label_filter: str | None = None,
-        difficulty: Callable[..., torch.Tensor] | None = None,
-        scope_label: int = 0,
         min_steps_per_epoch: int = 1,
         require_cache: bool = False,
     ):
@@ -61,8 +57,6 @@ class GraphDataModule(pl.LightningDataModule):
         self.prefetch_factor = prefetch_factor
         self.dynamic_batching = dynamic_batching
         self.label_filter = label_filter
-        self.difficulty = difficulty
-        self.scope_label = scope_label
         self.min_steps_per_epoch = min_steps_per_epoch
         self.require_cache = require_cache
         self._train: InMemoryDataset | None = None
@@ -83,27 +77,6 @@ class GraphDataModule(pl.LightningDataModule):
             raise RuntimeError(f"required graph cache is missing or incomplete: {cache_root}")
         st = get_or_build(self.source)
         self._train, self._val, self._tests = st.train, st.val, st.test
-        if self.difficulty is not None:
-            self._attach_curriculum()
-
-    def _attach_curriculum(self) -> None:
-        if self.label_filter is not None:
-            raise ValueError("label_filter and difficulty are mutually exclusive")
-        score_fn = self.difficulty
-        assert score_fn is not None
-        graphs = list(self._train)
-        scores = score_fn(graphs)
-        if not isinstance(scores, torch.Tensor):
-            scores = torch.tensor(scores, dtype=torch.float)
-        if scores.numel() != len(graphs):
-            raise ValueError(f"got {scores.numel()} scores for {len(graphs)} graphs")
-        in_scope = torch.tensor(
-            [int(g.y[0]) == int(self.scope_label) for g in graphs], dtype=torch.bool
-        )
-        for i, g in enumerate(graphs):
-            g.difficulty = scores[i].view(1)
-            g.in_scope = in_scope[i].view(1)
-        self._train_graphs = graphs
 
     # ── Properties (after setup) ────────────────────────────────────────
 

@@ -1,30 +1,15 @@
-# Preprocessing Pipeline
+# Graph Preprocessing
 
-`GraphPipeline` is now a thin composer over explicit primitives.
+This package keeps the graph cache path small and explicit:
 
-The relevant layers are:
+- `representations.py` defines the supported graph shapes:
+  `snapshot` and `snapshot_sequence`.
+- `materialization.py` turns raw CAN rows into staged graph tables.
+- `graph_ops.py` adds the fixed edge and topology features consumed by
+  the CAN schema.
+- `pyg.py` packs staged tables into pre-collated PyG tensors.
+- `splits.py` builds leakage-safe train/validation graph indices.
 
-- `representations.py`
-  - public `snapshot` / `snapshot_sequence` / `multi_scale` / `temporal` /
-    `entity` configs
-  - bridges to views, segments, and temporal specs
-- `views.py`
-  - user-facing view configs
-- `segments.py`
-  - window, sequence, multi-scale, and entity segment primitives
-- `materialization.py`
-  - raw-row to graph-table materialization
-- `pyg.py`
-  - staged table to PyG tensor packing
-- `temporal.py`
-  - `TemporalData` stream construction
-- `graph_ops.py`
-  - reusable graph-table transforms
-
-`representation_cfg` is the primary selection surface. The pipeline
-derives an explicit `segment_cfg` from it before materialization, so the
-materializer only sees the concrete sample shape it needs to build.
-
-For the package overview, see:
-
-- [`docs/reference/data-architecture.md`](../../../../docs/reference/data-architecture.md)
+`representation_cfg` is the selection surface. Dataset code passes it to
+`build_graph_tables`, which either emits one graph per complete window or
+combines consecutive snapshot windows into a sequence graph.

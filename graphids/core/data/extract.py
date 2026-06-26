@@ -98,10 +98,10 @@ def extract_states(
     from graphids.core.data.datasets.can_bus import CANBusSource
     from graphids.core.models.base import safe_load_checkpoint
 
+    del seed
     # Build DM first so test split names are known before the idempotency check.
     source = CANBusSource(
         name=dataset,
-        seed=seed,
         val_fraction=val_fraction,
         representation_cfg=representation_cfg,
     )

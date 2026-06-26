@@ -69,31 +69,6 @@ SimpleLossFn = Annotated[
 ]
 
 
-class LinearRampCfg(_Cfg):
-    type: Literal["linear_ramp"] = "linear_ramp"
-    start_ratio: float = 1.0
-    end_ratio: float = 10.0
-    max_epochs: int = 300
-
-
-class CurriculumLossCfg(_Cfg):
-    type: Literal["curriculum"] = "curriculum"
-    base_loss: SimpleLossFn
-    schedule: LinearRampCfg = Field(default_factory=LinearRampCfg)
-
-    def build(self) -> Any:
-        from graphids.core.losses import CurriculumWeightedLoss
-        from graphids.core.losses.curriculum import LinearRampSchedule
-
-        base = self.base_loss.model_copy(update={"reduction": "none"}).build()
-        schedule = LinearRampSchedule(
-            start_ratio=self.schedule.start_ratio,
-            end_ratio=self.schedule.end_ratio,
-            max_epochs=self.schedule.max_epochs,
-        )
-        return CurriculumWeightedLoss(base_loss=base, schedule=schedule)
-
-
 class SoftLabelDistillationCfg(_Cfg):
     type: Literal["soft_label_distillation"] = "soft_label_distillation"
     base_loss: SimpleLossFn
@@ -149,7 +124,6 @@ LossFn = Annotated[
     | CELossCfg
     | WeightedCELossCfg
     | VGAETaskLossCfg
-    | CurriculumLossCfg
     | SoftLabelDistillationCfg
     | FeatureDistillationCfg,
     Field(discriminator="type"),
@@ -183,16 +157,6 @@ def vgae_task(
         nbr_weight=nbr_weight,
         edge_weight=edge_weight,
         k_neg=k_neg,
-    )
-
-
-def curriculum(
-    base: SimpleLossFn,
-    schedule: LinearRampCfg | None = None,
-) -> CurriculumLossCfg:
-    return CurriculumLossCfg(
-        base_loss=base,
-        schedule=schedule if schedule is not None else LinearRampCfg(),
     )
 
 

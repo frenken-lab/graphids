@@ -1,10 +1,4 @@
-"""``reduction`` kwarg on classification losses.
-
-Step 3a of the curriculum-primitives loss-masking redesign: the curriculum
-wrapper needs per-example loss output. Each base classification loss
-gains an opt-in ``reduction`` constructor arg (``'mean'`` default
-preserves all prior call sites).
-"""
+"""``reduction`` kwarg on classification losses."""
 
 from __future__ import annotations
 
@@ -37,8 +31,7 @@ class TestReductionParity:
         assert out.shape == (8,)
 
     def test_cross_entropy_mean_eq_none_mean(self):
-        # CONTRACT: 'mean' is the per-example mean. Curriculum wrapper relies on
-        # this to substitute its own weighted reduction without changing scale.
+        # CONTRACT: 'mean' is the per-example mean.
         logits, labels = _xent_inputs()
         m = CrossEntropyLoss(reduction="mean")(logits, labels)
         n = CrossEntropyLoss(reduction="none")(logits, labels)
@@ -73,8 +66,7 @@ class TestReductionParity:
     def test_weighted_ce_mean_is_weighted_mean(self):
         # CONTRACT: 'mean' for WeightedCE is weighted mean (sum / Σweights[labels]).
         # This is PyTorch's behavior (F.cross_entropy with weight + reduction='mean')
-        # — we preserve it. The curriculum wrapper, when it cares about parity,
-        # should reduce with reduction='none' explicitly and apply its own weights.
+        # — we preserve it.
         logits, labels = _xent_inputs(c=2)
         weights = [1.0, 5.0]
         m = WeightedCrossEntropyLoss(weights=weights)(logits, labels)

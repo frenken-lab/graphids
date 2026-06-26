@@ -57,8 +57,6 @@ _VARIANT_LABELS: dict[str, str] = {
     "ce": "Cross-Entropy",
     "focal": "Focal",
     "weighted_ce": "Weighted CE",
-    "curriculum_random": "Curriculum (rand.)",
-    "curriculum_vgae": "Curriculum (VGAE)",
     "none": "No sampling",
     "hash": "Hash encoding",
     "lookup": "Lookup encoding",
