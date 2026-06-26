@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from graphids.core.data.preprocessing.representations import (
     GraphRepresentationCfg,
-    SnapshotRepresentationCfg,
+    TemporalRepresentationCfg,
     representation_kind,
 )
 from graphids.exp.journal import RunManifest
@@ -191,7 +191,7 @@ class RunConfig(_StrictModel):
     seed: int = 42
     plan_id: str | None = None
     git_sha: str = "unknown"
-    representation_cfg: GraphRepresentationCfg = Field(default_factory=SnapshotRepresentationCfg)
+    representation_cfg: GraphRepresentationCfg = Field(default_factory=TemporalRepresentationCfg)
     payload: RunPayload = Field(default_factory=FitRunPayload)
     resources: ResourceConfig = Field(default_factory=ResourceConfig)
     outputs: OutputConfig
@@ -265,7 +265,7 @@ class ExperimentConfig(_StrictModel):
     seed: int = 42
     git_sha: str = "unknown"
     plan_id: str | None = None
-    representation_cfg: GraphRepresentationCfg = Field(default_factory=SnapshotRepresentationCfg)
+    representation_cfg: GraphRepresentationCfg = Field(default_factory=TemporalRepresentationCfg)
     config: dict[str, Any] = Field(default_factory=dict)
     resources: ResourceConfig = Field(default_factory=ResourceConfig)
     stage: Literal["fit", "test", "extract", "analyze", "cache", "hf_push"] = "fit"

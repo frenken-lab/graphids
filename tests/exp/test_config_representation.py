@@ -1,6 +1,17 @@
 from __future__ import annotations
 
 
+def test_experiment_config_defaults_to_temporal_representation():
+    from graphids.core.data.preprocessing.representations import representation_kind
+    from graphids.exp.config import ExperimentConfig
+
+    cfg = ExperimentConfig(experiment_name="demo", dataset="toy")
+    run = cfg.build_run(name="demo-run", stage="extract")
+
+    assert representation_kind(cfg.representation_cfg) == "temporal"
+    assert representation_kind(run.representation_cfg) == "temporal"
+
+
 def test_experiment_config_propagates_representation_cfg():
     from graphids.core.data.preprocessing.representations import (
         SnapshotRepresentationCfg,

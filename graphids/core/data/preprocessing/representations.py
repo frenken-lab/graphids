@@ -1,4 +1,4 @@
-"""Graph representation configs used by preprocessing."""
+"""Data representation configs used by preprocessing."""
 
 from __future__ import annotations
 
@@ -13,6 +13,11 @@ from pydantic import Field
 def _positive(name: str, value: int) -> None:
     if value <= 0:
         raise ValueError(f"{name} must be positive")
+
+
+@dataclass(frozen=True)
+class TemporalRepresentationCfg:
+    kind: Literal["temporal"] = "temporal"
 
 
 @dataclass(frozen=True)
@@ -42,7 +47,7 @@ class SnapshotSequenceRepresentationCfg:
 
 
 GraphRepresentationCfg = Annotated[
-    SnapshotRepresentationCfg | SnapshotSequenceRepresentationCfg,
+    TemporalRepresentationCfg | SnapshotRepresentationCfg | SnapshotSequenceRepresentationCfg,
     Field(discriminator="kind"),
 ]
 
@@ -61,4 +66,6 @@ def representation_digest(cfg: GraphRepresentationCfg) -> str:
 
 
 def representation_window_defaults(cfg: GraphRepresentationCfg) -> tuple[int, int]:
+    if isinstance(cfg, TemporalRepresentationCfg):
+        raise ValueError("temporal representation does not have window_size/stride")
     return cfg.window_size, cfg.stride

@@ -7,6 +7,7 @@ import pytest
 from graphids.core.data.preprocessing.representations import (
     SnapshotRepresentationCfg,
     SnapshotSequenceRepresentationCfg,
+    TemporalRepresentationCfg,
     representation_digest,
     representation_kind,
     representation_payload,
@@ -15,6 +16,7 @@ from graphids.core.data.preprocessing.representations import (
 
 
 def test_representation_identity_defaults_and_validation_are_stable():
+    temporal = TemporalRepresentationCfg()
     snapshot = SnapshotRepresentationCfg(window_size=11, stride=7)
     sequence = SnapshotSequenceRepresentationCfg(
         window_size=12,
@@ -23,6 +25,8 @@ def test_representation_identity_defaults_and_validation_are_stable():
         sequence_stride=2,
     )
 
+    assert representation_kind(temporal) == "temporal"
+    assert representation_payload(temporal) == {"kind": "temporal"}
     assert representation_kind(snapshot) == "snapshot"
     assert representation_kind(sequence) == "snapshot_sequence"
     assert representation_payload(sequence) == {
@@ -37,6 +41,8 @@ def test_representation_identity_defaults_and_validation_are_stable():
     assert representation_digest(sequence) != representation_digest(
         SnapshotSequenceRepresentationCfg(sequence_length=4)
     )
+    with pytest.raises(ValueError, match="does not have window_size/stride"):
+        representation_window_defaults(temporal)
 
     invalid_configs = (
         lambda: SnapshotRepresentationCfg(window_size=0),

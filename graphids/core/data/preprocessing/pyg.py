@@ -1,4 +1,4 @@
-"""PyG tensor packing primitives for staged graph tables."""
+"""Legacy PyG tensor packing primitives for staged graph tables."""
 
 from __future__ import annotations
 

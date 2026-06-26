@@ -1,4 +1,4 @@
-"""Raw CAN rows to graph tables."""
+"""Legacy raw CAN rows to windowed graph tables."""
 
 from __future__ import annotations
 

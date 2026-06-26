@@ -1,4 +1,4 @@
-"""Composable graph transforms over node/edge preprocessing tables."""
+"""Legacy graph transforms over node/edge preprocessing tables."""
 
 from __future__ import annotations
 

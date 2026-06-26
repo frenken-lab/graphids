@@ -9,7 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from graphids.core.data.preprocessing.representations import (
     GraphRepresentationCfg,
-    SnapshotRepresentationCfg,
+    TemporalRepresentationCfg,
+    representation_kind,
     representation_window_defaults,
 )
 from graphids.core.data.preprocessing.scaler import (
@@ -20,7 +21,7 @@ from graphids.core.data.preprocessing.scaler import (
 from graphids.paths import load_catalog, trial_dir
 
 _DEFAULT_SCALER_CFG = ZBenignScalerCfg()
-_DEFAULT_REPRESENTATION_CFG = SnapshotRepresentationCfg()
+_DEFAULT_REPRESENTATION_CFG = TemporalRepresentationCfg()
 
 
 class _Cfg(BaseModel):
@@ -33,7 +34,7 @@ class CANBusCfg(_Cfg):
     seed: int
     val_fraction: float = 0.2
     scaler_cfg: ScalerCfg = Field(default_factory=ZBenignScalerCfg)
-    representation_cfg: GraphRepresentationCfg = Field(default_factory=SnapshotRepresentationCfg)
+    representation_cfg: GraphRepresentationCfg = Field(default_factory=TemporalRepresentationCfg)
 
     def resolved_window_size_stride(self) -> tuple[int, int]:
         return representation_window_defaults(self.representation_cfg)
@@ -59,6 +60,8 @@ class GraphDMCfg(_Cfg):
     require_cache: bool = False
 
     def build(self) -> Any:
+        if representation_kind(self.source.representation_cfg) == "temporal":
+            raise ValueError("graph_dm requires a snapshot representation; use temporal_dm for temporal data")
         from graphids.core.data.datamodule.graph import GraphDataModule
         from graphids.core.data.datasets.can_bus import CANBusSource
         source = CANBusSource(
@@ -77,6 +80,29 @@ class GraphDMCfg(_Cfg):
             min_steps_per_epoch=self.min_steps_per_epoch,
             require_cache=self.require_cache,
         )
+
+
+class TemporalDMCfg(_Cfg):
+    type: Literal["temporal_dm"] = "temporal_dm"
+    source: CANBusCfg
+    batch_size: int = 256
+    val_warmup_events: int = 0
+    test_warmup_events: int = 0
+
+    def build(self) -> Any:
+        from graphids.core.data.datamodule.temporal import TemporalDataModule
+        from graphids.core.data.datasets.can_bus import CANBusTemporalSource
+
+        if representation_kind(self.source.representation_cfg) != "temporal":
+            raise ValueError("temporal_dm requires representation_cfg.kind='temporal'")
+        source = CANBusTemporalSource(
+            name=self.source.name,
+            val_fraction=self.source.val_fraction,
+            representation_cfg=self.source.representation_cfg,
+            val_warmup_events=self.val_warmup_events,
+            test_warmup_events=self.test_warmup_events,
+        )
+        return TemporalDataModule(dataset=source, batch_size=self.batch_size)
 
 
 class FusionDMCfg(_Cfg):
@@ -98,7 +124,7 @@ class FusionDMCfg(_Cfg):
 
 
 DataCfg = Annotated[
-    GraphDMCfg | FusionDMCfg,
+    TemporalDMCfg | GraphDMCfg | FusionDMCfg,
     Field(discriminator="type"),
 ]
 
@@ -156,6 +182,14 @@ def graph_dm(
         require_cache=require_cache,
         **overrides,
     )
+
+
+def temporal_dm(
+    *,
+    source: CANBusCfg,
+    **overrides: Any,
+) -> TemporalDMCfg:
+    return TemporalDMCfg(source=source, **overrides)
 
 
 def fusion_dm(

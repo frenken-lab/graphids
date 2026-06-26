@@ -7,14 +7,29 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import polars as pl
+from filelock import FileLock
 from structlog import get_logger
 
+from graphids._fs import atomic_save
 from graphids.core.data.datasets._base import (
     BaseGraphDataset,
     BaseGraphSource,
     GraphSchema,
 )
 from graphids.core.data.discovery.hypotheses import DiscoveryStore
+from graphids.core.data.preprocessing.representations import (
+    TemporalRepresentationCfg,
+    representation_digest,
+    representation_kind,
+)
+from graphids.core.data.preprocessing.temporal import (
+    build_temporal_event_table,
+    prepare_temporal_eval_table,
+    split_temporal_train_val_tables,
+    temporal_to_pyg,
+)
+from graphids.core.data.preprocessing.vocab import persist_vocab
+from graphids.core.data.state import DatasetState
 
 log = get_logger(__name__)
 
@@ -126,7 +141,7 @@ def parse_payload(lf: pl.LazyFrame) -> pl.LazyFrame:
     if "byte_0" in lf.collect_schema().names():
         return lf
     byte_exprs = [
-        pl.col("payload").str.slice(i * 2, 2).str.to_integer(base=16, strict=False)
+        pl.col("payload").cast(pl.Utf8).str.slice(i * 2, 2).str.to_integer(base=16, strict=False)
         .fill_null(0).cast(pl.Float32).alias(f"byte_{i}")
         for i in range(N_BYTES)
     ]
@@ -230,6 +245,149 @@ class CANBusSource(BaseGraphSource):
         store.write_profiles(profiles)
         store.write_hypotheses(hypotheses)
 
+
+@dataclass(frozen=True)
+class CANBusTemporalSource:
+    """Catalog to train/val/test CAN ``TemporalData`` cache builder."""
+
+    KIND: ClassVar[str] = "canbus"
+
+    name: str
+    lake_root: str | None = None
+    val_fraction: float = 0.2
+    representation_cfg: TemporalRepresentationCfg = TemporalRepresentationCfg()
+    vocab_scope: str = "train"
+    val_warmup_events: int = 0
+    test_warmup_events: int = 0
+
+    def resolved_lake_root(self) -> str:
+        if self.lake_root:
+            return self.lake_root
+        from graphids.paths import lake_root
+
+        return lake_root()
+
+    @property
+    def cache_key(self) -> str:
+        repr_digest = representation_digest(self.representation_cfg)
+        return (
+            f"{self.KIND}|{self.resolved_lake_root()}|{self.name}"
+            f"|v{self.val_fraction}"
+            f"|vw{self.val_warmup_events}|tw{self.test_warmup_events}"
+            f"|voc:{self.vocab_scope}"
+            f"|repr:{representation_kind(self.representation_cfg)}:{repr_digest}"
+        )
+
+    def cache_root_path(self) -> Path:
+        from graphids.paths import cache_dir
+
+        lake = self.resolved_lake_root()
+        repr_slug = (
+            f"{representation_kind(self.representation_cfg)}_"
+            f"{representation_digest(self.representation_cfg)}"
+        )
+        return (
+            cache_dir(lake, self.name)
+            / (
+                f"{repr_slug}_voc_{self.vocab_scope}_val_{self.val_fraction:g}"
+                f"_vw_{self.val_warmup_events}_tw_{self.test_warmup_events}"
+            )
+        )
+
+    def cache_ready(self) -> bool:
+        from graphids.paths import data_dir, load_catalog
+
+        entry = load_catalog()[self.name]
+        lake = self.resolved_lake_root()
+        raw = data_dir(lake, self.name)
+        processed = self.cache_root_path() / "processed"
+        train_dirs = [s for s in (entry.get("train_subdir"), entry.get("train_attack_subdir")) if s]
+        if not train_dirs:
+            return False
+        present_test = [sd for sd in entry.get("test_subdirs", []) if (raw / sd).is_dir()]
+        expected = [processed / "data_train.pt", processed / "data_val.pt"] + [
+            processed / f"data_test_{sd}.pt" for sd in present_test
+        ]
+        return (processed / ".complete").is_file() and all(path.is_file() for path in expected)
+
+    def _scan_vocab(self, raw_dir: Path, source_dirs: list[str]) -> list[Any]:
+        from graphids.core.data.preprocessing.vocab import scan_arb_ids
+
+        return scan_arb_ids(raw_dir, source_dirs)
+
+    def _load_temporal_data(self, path: Path):
+        import torch
+
+        return torch.load(path, map_location="cpu", mmap=True, weights_only=False)
+
+    def _mapped_rows(self, raw: Path, source_dirs: list[str], vocab: dict[str, int]) -> pl.DataFrame:
+        rows = load_can_rows(raw, source_dirs)
+        return rows.with_columns(
+            pl.col(CAN_SCHEMA.vocab_column)
+            .replace_strict(vocab, default=0)
+            .cast(pl.Int64)
+            .alias("node_id")
+        )
+
+    def _pack_rows(self, rows: pl.DataFrame):
+        table = build_temporal_event_table(rows)
+        table = prepare_temporal_eval_table(
+            table,
+            split_name="test",
+            warmup_events=self.test_warmup_events,
+        )
+        return temporal_to_pyg(table)
+
+    def _pack_train_val(self, rows: pl.DataFrame):
+        table = build_temporal_event_table(rows)
+        train_table, val_table = split_temporal_train_val_tables(
+            table,
+            val_fraction=self.val_fraction,
+            val_warmup_events=self.val_warmup_events,
+        )
+        return temporal_to_pyg(train_table), temporal_to_pyg(val_table)
+
+    def build(self) -> DatasetState:
+        from graphids.paths import data_dir, load_catalog
+
+        entry = load_catalog()[self.name]
+        lake = self.resolved_lake_root()
+        raw = data_dir(lake, self.name)
+        root = self.cache_root_path()
+        processed = root / "processed"
+        processed.mkdir(parents=True, exist_ok=True)
+
+        with FileLock(str(processed / ".lock")):
+            train_dirs = [s for s in (entry.get("train_subdir"), entry.get("train_attack_subdir")) if s]
+            if not train_dirs:
+                raise ValueError(f"catalog entry {self.name!r} declares no train_subdir(s)")
+
+            present_test = [sd for sd in entry.get("test_subdirs", []) if (raw / sd).is_dir()]
+            scan_sources = list(train_dirs) + (present_test if self.vocab_scope == "all" else [])
+            vocab = {tok: i + 1 for i, tok in enumerate(self._scan_vocab(raw, scan_sources))}
+            persist_vocab(vocab, Path(root) / "vocab.json")
+
+            train_path = processed / "data_train.pt"
+            val_path = processed / "data_val.pt"
+            if not (train_path.exists() and val_path.exists()):
+                train, val = self._pack_train_val(self._mapped_rows(raw, train_dirs, vocab))
+                atomic_save(train, train_path)
+                atomic_save(val, val_path)
+
+            test_paths: dict[str, Path] = {}
+            for sd in present_test:
+                path = processed / f"data_test_{sd}.pt"
+                test_paths[sd] = path
+                if not path.exists():
+                    atomic_save(self._pack_rows(self._mapped_rows(raw, [sd], vocab)), path)
+
+            (processed / ".complete").write_text("ok")
+        return DatasetState(
+            train=self._load_temporal_data(train_path),
+            val=self._load_temporal_data(val_path),
+            test={sd: self._load_temporal_data(path) for sd, path in test_paths.items()},
+        )
+
 __all__ = [
     "ATTACK_TYPE_CODES",
     "ATTACK_TYPE_NAMES",
@@ -241,6 +399,7 @@ __all__ = [
     "CAN_SCHEMA",
     "CANBusDataset",
     "CANBusSource",
+    "CANBusTemporalSource",
     "parse_payload",
     "infer_attack_type",
     "load_can_rows",

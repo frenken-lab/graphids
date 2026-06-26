@@ -11,6 +11,7 @@ from graphids.core.data.preprocessing.representations import (
     GraphRepresentationCfg,
     SnapshotRepresentationCfg,
     SnapshotSequenceRepresentationCfg,
+    TemporalRepresentationCfg,
     representation_kind,
     representation_window_defaults,
 )
@@ -33,11 +34,13 @@ from graphids.primitives_data import (
     FusionDMCfg,
     GraphDMCfg,
     RobustBenignScalerCfg,
+    TemporalDMCfg,
     ZBenignScalerCfg,
     can_bus,
     fusion_dm,
     graph_dm,
     robust_benign_scaler,
+    temporal_dm,
     z_benign_scaler,
 )
 from graphids.primitives_losses import (
@@ -96,6 +99,7 @@ __all__ = [
     "robust_benign_scaler",
     "SnapshotRepresentationCfg",
     "SnapshotSequenceRepresentationCfg",
+    "TemporalRepresentationCfg",
     "GraphRepresentationCfg",
     "representation_kind",
     "representation_window_defaults",
@@ -103,6 +107,7 @@ __all__ = [
     "build_signal_profiles",
     "initialize_hypotheses",
     "graph_dm",
+    "temporal_dm",
     "fusion_dm",
     "REWARD",
     "ModelCfg",
@@ -137,5 +142,6 @@ __all__ = [
     "CANBusCfg",
     "ScalerCfg",
     "GraphDMCfg",
+    "TemporalDMCfg",
     "FusionDMCfg",
 ]
