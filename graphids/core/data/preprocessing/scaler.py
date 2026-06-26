@@ -57,6 +57,8 @@ def fit(
     if strategy not in STRATEGIES:
         raise ValueError(f"unknown strategy {strategy!r}; expected {STRATEGIES}")
     benign = train_idx[data.y[train_idx] == 0]
+    if benign.numel() == 0:
+        raise ValueError("cannot fit benign scaler: train split contains no benign graphs")
     out: dict[str, dict[str, Tensor]] = {}
     for key in keys:
         t = getattr(data, key, None)

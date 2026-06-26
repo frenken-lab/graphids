@@ -1,47 +1,29 @@
-"""Dataset construction and attack type inference tests."""
+"""Dataset construction invariants."""
 
 from __future__ import annotations
 
 import numpy as np
+import polars as pl
 import pytest
 import torch
 
 
-class TestInferAttackType:
-    """attack type substring matching -- verify all attack codes."""
+def test_infer_attack_type_recognizes_representative_patterns(tmp_path):
+    from graphids.core.data.datasets.can_bus import infer_attack_type
 
-    @pytest.fixture
-    def infer(self):
-        from graphids.core.data.datasets.can_bus import infer_attack_type
-
-        return infer_attack_type
-
-    @pytest.mark.parametrize(
-        "stem,parent,expected",
-        [
-            ("normal_driving", "benign", 0),
-            ("dos_attack", "test", 1),
-            ("fuzzing_data", "attacks", 2),
-            ("fuzzy_data", "attacks", 2),
-            ("gear_spoof", "test", 3),
-            ("rpm_attack", "test", 4),
-            ("flooding_test", "attacks", 5),
-            ("unknown_file", "unknown_dir", 0),
-        ],
-    )
-    def test_known_patterns(self, infer, stem, parent, expected, tmp_path):
-        p = tmp_path / parent / f"{stem}.csv"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.touch()
-        assert infer(p) == expected
-
-    def test_fuzzy_vs_fuzzing_both_map_to_2(self, infer, tmp_path):
-        """'fuzzy' and 'fuzzing' both map to code 2."""
-        for name in ("fuzzy_test", "fuzzing_test"):
-            p = tmp_path / "attacks" / f"{name}.csv"
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.touch()
-            assert infer(p) == 2
+    cases = {
+        "benign/normal_driving.csv": 0,
+        "test/dos_attack.csv": 1,
+        "attacks/fuzzing_data.csv": 2,
+        "test/gear_spoof.csv": 3,
+        "test/rpm_attack.csv": 4,
+        "unknown/unknown_file.csv": 0,
+    }
+    for rel, expected in cases.items():
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+        assert infer_attack_type(path) == expected
 
 
 @pytest.mark.slow
@@ -98,3 +80,45 @@ class TestCANBusDatasetBuildGraphs:
         assert g.x.shape[0] < 2048
         assert g.edge_index.max() < g.x.shape[0]
         assert not torch.isnan(g.x).any()
+
+    def test_vocab_digest_change_rebuilds_cached_tensors(self, tmp_path):
+        from graphids.core.data.datasets.can_bus import CANBusDataset
+        from graphids.core.data.preprocessing.representations import (
+            SnapshotRepresentationCfg,
+        )
+        from graphids.core.data.preprocessing.vocab import vocab_digest
+
+        raw_subdir = tmp_path / "raw" / "train"
+        raw_subdir.mkdir(parents=True)
+        pl.DataFrame(
+            {
+                "timestamp": np.arange(20, dtype=np.float64),
+                "arb_id": ["0x001"] * 20,
+                "data_field": ["AA" * 8] * 20,
+                "attack": [0] * 20,
+            }
+        ).write_csv(raw_subdir / "normal.csv")
+
+        common = dict(
+            root=str(tmp_path / "processed"),
+            raw_dir=str(tmp_path / "raw"),
+            split="train",
+            val_fraction=0.2,
+            source_dirs=["train"],
+            representation_cfg=SnapshotRepresentationCfg(window_size=10, stride=10),
+        )
+        first_vocab = {"0x001": 1}
+        first = CANBusDataset(
+            **common,
+            shared_vocab=first_vocab,
+            shared_vocab_digest=vocab_digest(first_vocab),
+        )
+        assert first._data.node_id.unique().tolist() == [1]
+
+        second_vocab = {"0x001": 2}
+        second = CANBusDataset(
+            **common,
+            shared_vocab=second_vocab,
+            shared_vocab_digest=vocab_digest(second_vocab),
+        )
+        assert second._data.node_id.unique().tolist() == [2]

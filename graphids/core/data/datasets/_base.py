@@ -11,7 +11,7 @@ import torch
 from filelock import FileLock
 from torch_geometric.data import Data, InMemoryDataset
 
-from graphids._fs import atomic_save
+from graphids._fs import atomic_save, atomic_write_text
 from graphids.core.data.preprocessing import scaler as scaler_mod
 from graphids.core.data.preprocessing.materialization import build_graph_tables
 from graphids.core.data.preprocessing.pyg import graph_tables_to_pyg
@@ -87,7 +87,8 @@ class BaseGraphDataset(InMemoryDataset):
         self.representation_cfg = representation_cfg
         self.representation_kind = representation_kind(representation_cfg)
         self.window_size, self.stride = representation_window_defaults(representation_cfg)
-        super().__init__(str(root), transform, pre_transform)
+        force_reload = self._cache_is_vocab_stale(Path(root))
+        super().__init__(str(root), transform, pre_transform, force_reload=force_reload)
         self.load(self.processed_paths[0])
         self.num_ids = int(getattr(self._data, "num_ids", len(shared_vocab or {}) + 1))
         if self.split in ("train", "val"):
@@ -142,11 +143,26 @@ class BaseGraphDataset(InMemoryDataset):
             path, map_location="cpu", mmap=True, weights_only=False
         )
 
+    def _vocab_digest_path(self, tensor_path: Path) -> Path:
+        return tensor_path.with_suffix(tensor_path.suffix + ".vocab_digest")
+
+    def _cache_vocab_matches(self, tensor_path: Path) -> bool:
+        if self._shared_vocab_digest is None:
+            return True
+        digest_path = self._vocab_digest_path(tensor_path)
+        return digest_path.exists() and digest_path.read_text().strip() == self._shared_vocab_digest
+
+    def _cache_is_vocab_stale(self, root: Path) -> bool:
+        if self._shared_vocab_digest is None:
+            return False
+        tensor_path = root / "processed" / self.processed_file_names[0]
+        return tensor_path.exists() and not self._cache_vocab_matches(tensor_path)
+
     def process(self) -> None:
         with FileLock(str(Path(self.processed_dir) / ".lock")):
             marker = Path(self.processed_dir) / ".complete"
             tensor_path = Path(self.processed_paths[0])
-            if tensor_path.exists() and marker.exists():
+            if tensor_path.exists() and marker.exists() and self._cache_vocab_matches(tensor_path):
                 return
 
             data, slices, _num_raw = self._build_graphs()
@@ -177,6 +193,11 @@ class BaseGraphDataset(InMemoryDataset):
                 scaler = torch.load(scaler_path, map_location="cpu", weights_only=False)
             scaler_mod.apply(data, scaler)
             atomic_save([data, slices], tensor_path)
+            if self._shared_vocab_digest is not None:
+                atomic_write_text(
+                    self._vocab_digest_path(tensor_path),
+                    self._shared_vocab_digest + "\n",
+                )
             marker.write_text("ok")
 
     def _build_graphs(self) -> tuple[Data, dict, int]:

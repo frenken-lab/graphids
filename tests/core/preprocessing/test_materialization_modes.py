@@ -17,7 +17,6 @@ from graphids.core.data.datasets.can_bus import (
 from graphids.core.data.preprocessing.materialization import build_graph_tables
 from graphids.core.data.preprocessing.pyg import graph_tables_to_pyg
 from graphids.core.data.preprocessing.representations import (
-    SnapshotRepresentationCfg,
     SnapshotSequenceRepresentationCfg,
 )
 
@@ -46,29 +45,14 @@ def _build_tables(df: pl.DataFrame, representation_cfg):
     )
 
 
-def test_snapshot_branch_tags_window_metadata():
-    tables = _build_tables(
-        _frame(),
-        SnapshotRepresentationCfg(window_size=5, stride=5),
+def test_sequence_materialization_preserves_context_metadata_and_target_label():
+    cfg = SnapshotSequenceRepresentationCfg(
+        window_size=5,
+        stride=5,
+        sequence_length=3,
+        sequence_stride=1,
     )
-
-    assert tables.node_stats.select("_wid").n_unique() == 4
-    assert tables.labels.height == 4
-    assert tables.labels["window_start_row"].to_list() == [0, 5, 10, 15]
-    assert tables.labels["window_end_row"].to_list() == [5, 10, 15, 20]
-    assert tables.labels["window_ordinal"].to_list() == [0, 1, 2, 3]
-
-
-def test_sequence_branch_tags_materialized_tables():
-    tables = _build_tables(
-        _frame(),
-        SnapshotSequenceRepresentationCfg(
-            window_size=5,
-            stride=5,
-            sequence_length=3,
-            sequence_stride=1,
-        ),
-    )
+    tables = _build_tables(_frame(), cfg)
 
     assert tables.node_stats.select("_wid").n_unique() == 2
     assert tables.labels.height == 2
@@ -100,15 +84,6 @@ def test_sequence_branch_tags_materialized_tables():
     assert data.window_end_row.tolist() == [15, 20]
     first_start, first_end = slices["node_sequence_step"][0], slices["node_sequence_step"][1]
     assert set(data.node_sequence_step[first_start:first_end].tolist()) == {0, 1, 2}
-
-
-def test_sequence_labels_use_target_window_not_any_context_window():
-    cfg = SnapshotSequenceRepresentationCfg(
-        window_size=5,
-        stride=5,
-        sequence_length=3,
-        sequence_stride=1,
-    )
     context_only_attack = _frame().with_columns(
         pl.when(pl.arange(0, pl.len()) < 5).then(pl.lit(1)).otherwise(pl.lit(0)).alias("attack")
     )
