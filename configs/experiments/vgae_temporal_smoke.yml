@@ -1,0 +1,49 @@
+experiment_name: vgae_temporal_smoke
+dataset: set_01
+seed: 42
+plan_id: vgae_temporal_smoke
+stage: fit
+representation_cfg:
+  kind: temporal
+resources:
+  backend: local
+  cluster: pitzer
+  partition: gpu
+  accelerator: gpu
+  num_workers: 0
+  cpus_per_worker: 8
+  gpus_per_worker: 1.0
+  memory_gb: 96
+  time_limit: "02:00:00"
+  account: pas1266
+config:
+  data:
+    type: temporal_dm
+    source:
+      type: can_bus
+      dataset: set_01
+      seed: 42
+      representation_cfg:
+        kind: temporal
+    batch_size: 512
+    val_warmup_events: 64
+    test_warmup_events: 64
+  model:
+    type: vgae
+    scale: small
+  loss_fn:
+    type: vgae_task
+    kl_weight: 0.01
+    canid_weight: 0.1
+    nbr_weight: 0.1
+    edge_weight: 0.0
+  trainer:
+    accelerator: auto
+    devices: 1
+    max_epochs: 1
+    limit_train_batches: 2
+    limit_val_batches: 1
+    enable_checkpointing: false
+    enable_progress_bar: false
+    enable_model_summary: false
+    num_sanity_val_steps: 0

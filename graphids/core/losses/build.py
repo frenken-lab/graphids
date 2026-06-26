@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-_LOSS_MODEL_TYPES = frozenset({"gat", "vgae"})
+_LOSS_MODEL_TYPES = frozenset({"gat", "vgae", "temporal_event_classifier"})
 
 # Loss params that historically lived at init_args top-level on VGAE.
 # Older checkpoints may still have these in saved hparams; new ones won't.
@@ -44,7 +44,7 @@ def build_loss(
 
     cfg = dict(loss_config or {})
 
-    if model_type == "gat":
+    if model_type in {"gat", "temporal_event_classifier"}:
         loss_type = cfg.pop("type", "ce")
         if loss_type == "focal":
             return FocalLoss(gamma=cfg.get("gamma", 2.0))

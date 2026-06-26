@@ -67,6 +67,7 @@ from graphids.primitives_models import (
     MLPFusionCfg,
     ModelCfg,
     MoECfg,
+    TemporalEventClassifierCfg,
     VGAECfg,
     WeightedAvgCfg,
     bandit,
@@ -75,12 +76,14 @@ from graphids.primitives_models import (
     gat,
     mlp_fusion,
     moe,
+    temporal_event_classifier,
     vgae,
     weighted_avg,
 )
 
 __all__ = [
     "gat",
+    "temporal_event_classifier",
     "vgae",
     "dgi",
     "bandit",
@@ -115,6 +118,7 @@ __all__ = [
     "SimpleLossFn",
     "DataCfg",
     "GATCfg",
+    "TemporalEventClassifierCfg",
     "VGAECfg",
     "DGICfg",
     "BanditCfg",

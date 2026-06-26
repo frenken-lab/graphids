@@ -44,6 +44,27 @@ class GATCfg(_Cfg):
         return GAT(**kwargs)
 
 
+class TemporalEventClassifierCfg(_Cfg):
+    type: Literal["temporal_event_classifier"] = "temporal_event_classifier"
+    scale: Literal["small", "large"] = "small"
+    hidden: int | None = None
+    layers: int | None = None
+    embedding_dim: int | None = None
+    dropout: float = 0.2
+
+    def build(self, *, loss_fn: Any = None) -> Any:
+        from graphids.core.models.temporal import TemporalEventClassifier
+
+        return TemporalEventClassifier(
+            loss_fn=loss_fn,
+            scale=self.scale,
+            hidden=self.hidden,
+            layers=self.layers,
+            embedding_dim=self.embedding_dim,
+            dropout=self.dropout,
+        )
+
+
 class VGAECfg(_Cfg):
     type: Literal["vgae"] = "vgae"
     scale: Literal["small", "large"] = "small"
@@ -144,7 +165,15 @@ class WeightedAvgCfg(_Cfg):
 
 
 ModelCfg = Annotated[
-    GATCfg | VGAECfg | DGICfg | BanditCfg | DQNCfg | MLPFusionCfg | MoECfg | WeightedAvgCfg,
+    GATCfg
+    | TemporalEventClassifierCfg
+    | VGAECfg
+    | DGICfg
+    | BanditCfg
+    | DQNCfg
+    | MLPFusionCfg
+    | MoECfg
+    | WeightedAvgCfg,
     Field(discriminator="type"),
 ]
 
@@ -165,6 +194,23 @@ def gat(
         id_encoder_cfg=id_encoder_cfg,
         id_encoder_class_path=id_encoder_class_path,
         id_encoder_kwargs=id_encoder_kwargs or {},
+    )
+
+
+def temporal_event_classifier(
+    scale: str = "small",
+    *,
+    hidden: int | None = None,
+    layers: int | None = None,
+    embedding_dim: int | None = None,
+    dropout: float = 0.2,
+) -> TemporalEventClassifierCfg:
+    return TemporalEventClassifierCfg(
+        scale=scale,
+        hidden=hidden,
+        layers=layers,
+        embedding_dim=embedding_dim,
+        dropout=dropout,
     )
 
 

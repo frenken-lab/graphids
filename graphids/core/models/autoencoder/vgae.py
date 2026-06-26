@@ -28,6 +28,7 @@ from .._conv import (
 from .._score_primitives import rayleigh_quotient, tam_affinity
 from ..base import ScoreBasedDetectorMixin
 from ..id_encoding import IdEncodingCfg
+from ..temporal.adapters import is_temporal_batch, temporal_to_static_graph
 
 
 class VGAE(ScoreBasedDetectorMixin):
@@ -301,6 +302,8 @@ class VGAE(ScoreBasedDetectorMixin):
         return cont_out, canid_logits, nbr_pred, z, kl_per_node, edge_logits
 
     def forward(self, batch):
+        if is_temporal_batch(batch):
+            return self.score(batch)
         edge_attr = getattr(batch, "edge_attr", None)
         return self._forward_tensors(
             batch.x,
@@ -309,6 +312,22 @@ class VGAE(ScoreBasedDetectorMixin):
             edge_attr=edge_attr,
             node_id=batch.node_id,
         )
+
+    def _temporal_event_components(self, batch):
+        temporal = temporal_to_static_graph(batch)
+        graph = temporal.graph
+        cont, _canid, _nbr, z, _kl, _edge_logits = self._forward_tensors(
+            graph.x,
+            graph.edge_index,
+            graph.batch,
+            edge_attr=None,
+            node_id=graph.node_id,
+        )
+        node_recon = (cont - graph.x).pow(2).mean(dim=-1)
+        node_affinity = tam_affinity(z, graph.edge_index)
+        event_recon = 0.5 * (node_recon[temporal.src] + node_recon[temporal.dst])
+        event_affinity = 0.5 * (node_affinity[temporal.src] + node_affinity[temporal.dst])
+        return temporal, event_recon, event_affinity
 
     def _masked_forward(self, batch):
         """Training-shape random-masked forward. Returns (outputs, mask)."""
@@ -355,6 +374,22 @@ class VGAE(ScoreBasedDetectorMixin):
     # ------------------------------------------------------------------
 
     def training_step(self, batch, _idx):
+        if is_temporal_batch(batch):
+            temporal = temporal_to_static_graph(batch)
+            outputs, mask = self._masked_forward(temporal.graph)
+            loss = self.loss_fn(outputs, temporal.graph, mask=mask)
+            bs = int(temporal.labels.numel())
+            self.log("train_loss", loss, batch_size=bs)
+
+            task_loss = self._task_loss_module()
+            if task_loss.last_recon is not None:
+                self.log("train_recon", task_loss.last_recon, batch_size=bs)
+                self.log("train_canid", task_loss.last_canid, batch_size=bs)
+                self.log("train_kl", task_loss.last_kl, batch_size=bs)
+                if task_loss.last_nbr is not None:
+                    self.log("train_nbr", task_loss.last_nbr, batch_size=bs)
+            return loss
+
         outputs, mask = self._masked_forward(batch)
         loss = self.loss_fn(outputs, batch, mask=mask)
         bs = batch.num_graphs
@@ -374,6 +409,24 @@ class VGAE(ScoreBasedDetectorMixin):
         return loss
 
     def validation_step(self, batch, _idx):
+        if is_temporal_batch(batch):
+            temporal, recon, affinity = self._temporal_event_components(batch)
+            score = recon + affinity
+            mask = temporal.scored_mask
+            if not mask.any():
+                return None
+            labels = temporal.labels[mask]
+            scores = score[mask]
+            bs = int(labels.numel())
+            self.log("val_loss", scores.mean(), batch_size=bs)
+            self.log("val_recon_mean", recon[mask].mean(), batch_size=bs)
+            self.log("val_affinity_mean", affinity[mask].mean(), batch_size=bs)
+            if labels.unique().numel() >= 2:
+                from torchmetrics.functional.classification import binary_auroc
+
+                self.log("val_auroc", binary_auroc(scores, labels.long()), batch_size=bs)
+            return None
+
         (cont, _canid, _nbr, z, _kl, _e), mask = self._masked_forward(batch)
         recon, recon_max, recon_per_node = self._per_graph_masked_recon(
             cont, batch.x, mask, batch.batch, return_components=True
@@ -509,6 +562,14 @@ class VGAE(ScoreBasedDetectorMixin):
     def score(self, batch) -> torch.Tensor:
         """Per-graph anomaly score: max-σ over (recon, recon_max, TAM affinity, RQ)
         in the calibrated z-norm space."""
+        if is_temporal_batch(batch):
+            _temporal, recon, affinity = self._temporal_event_components(batch)
+            if bool(self.score_norm_fitted):
+                eps = 1e-6
+                recon = (recon - self.score_recon_mean) / (self.score_recon_std + eps)
+                affinity = (affinity - self.score_affinity_mean) / (self.score_affinity_std + eps)
+            return torch.stack([recon, affinity], dim=0).amax(dim=0)
+
         if not bool(self.score_norm_fitted):
             raise RuntimeError(
                 "VGAE scoring requires on_test_setup() to have run. "
@@ -532,8 +593,74 @@ class VGAE(ScoreBasedDetectorMixin):
     def on_test_setup(self, datamodule, device) -> None:
         """Fit z-norm calibration buffers from benign val if not already
         populated. Idempotent: skips if a calibrated ckpt was reloaded."""
+        val_data = getattr(datamodule, "val_data", None)
+        if val_data is not None and is_temporal_batch(val_data):
+            if not bool(self.score_norm_fitted):
+                self._fit_temporal_score_norm(datamodule.val_dataloader(), device)
+            return
         if not bool(self.score_norm_fitted):
             self._fit_score_norm(datamodule.val_dataloader(), device)
+
+    @torch.no_grad()
+    def _fit_temporal_score_norm(self, val_loader, device: torch.device) -> None:
+        was_training = self.training
+        self.eval()
+        try:
+            recon_values: list[torch.Tensor] = []
+            affinity_values: list[torch.Tensor] = []
+            for batch in val_loader:
+                batch = batch.clone().to(device)
+                temporal, recon, affinity = self._temporal_event_components(batch)
+                benign = (temporal.labels == 0) & temporal.scored_mask
+                if not benign.any():
+                    continue
+                recon_values.append(recon[benign].detach().cpu())
+                affinity_values.append(affinity[benign].detach().cpu())
+            if not recon_values:
+                raise RuntimeError("_fit_temporal_score_norm: no benign scored val events")
+            recon = torch.cat(recon_values)
+            affinity = torch.cat(affinity_values)
+            self.score_recon_mean.copy_(recon.mean())
+            self.score_recon_std.copy_(recon.std(unbiased=False).clamp(min=1e-6))
+            self.score_affinity_mean.copy_(affinity.mean())
+            self.score_affinity_std.copy_(affinity.std(unbiased=False).clamp(min=1e-6))
+            self.score_recon_max_mean.copy_(self.score_recon_mean)
+            self.score_recon_max_std.copy_(self.score_recon_std)
+            self.score_rq_mean.zero_()
+            self.score_rq_std.fill_(1.0)
+            self.score_norm_fitted.fill_(True)
+        finally:
+            if was_training:
+                self.train()
+
+    def test_step(self, batch, _idx, dataloader_idx: int = 0) -> None:
+        if not is_temporal_batch(batch):
+            return super().test_step(batch, _idx, dataloader_idx=dataloader_idx)
+        temporal = temporal_to_static_graph(batch)
+        scores = self.score(batch)
+        mask = temporal.scored_mask
+        if not mask.any():
+            return None
+        labels = temporal.labels[mask]
+        scores = scores[mask]
+        self.roc_metric.update(scores.detach(), labels.detach())
+        self._record_test_batch(
+            dataloader_idx,
+            scores=scores,
+            labels=labels,
+            attack_type=temporal.attack_type[mask] if temporal.attack_type is not None else None,
+        )
+        return None
+
+    def predict_step(self, batch, batch_idx) -> dict[str, torch.Tensor]:
+        if not is_temporal_batch(batch):
+            return super().predict_step(batch, batch_idx)
+        scores = self.score(batch)
+        out = {"scores": scores, "labels": batch.y}
+        event_id = getattr(batch, "event_id", None)
+        if event_id is not None:
+            out["event_id"] = event_id
+        return out
 
     @torch.no_grad()
     def _fit_score_norm(self, val_loader, device: torch.device) -> None:

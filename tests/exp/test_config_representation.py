@@ -145,6 +145,35 @@ def test_snapshot_sequence_cache_config_resolves_to_cache_payload(monkeypatch):
     )
 
 
+def test_temporal_smoke_configs_resolve_without_window_or_budget_knobs():
+    from graphids.core.data.preprocessing.representations import representation_kind
+    from graphids.exp import runtime
+    from graphids.exp.config import ExperimentConfig
+
+    for path, model_type in (
+        ("configs/experiments/gat_temporal_smoke.yml", "gat"),
+        ("configs/experiments/vgae_temporal_smoke.yml", "vgae"),
+    ):
+        raw = open(path).read()
+        assert "window_size" not in raw
+        assert "stride" not in raw
+        assert "dynamic_batching" not in raw
+
+        cfg = ExperimentConfig.from_yaml(path)
+        run = cfg.build_run(name=cfg.experiment_name, stage=cfg.stage, config=cfg.config)
+
+        assert representation_kind(run.representation_cfg) == "temporal"
+        assert run.payload.model["type"] == model_type
+        data = runtime._build_component(run.payload.data)
+        from graphids.core.data.datamodule.temporal import TemporalDataModule
+
+        assert isinstance(data, TemporalDataModule)
+        assert representation_kind(data.source.representation_cfg) == "temporal"
+        assert data.batch_size == 512
+        assert data.source.val_warmup_events == 64
+        assert data.source.test_warmup_events == 64
+
+
 def test_runtime_runs_snapshot_sequence_training_smoke(monkeypatch, tmp_path):
     import lightning.pytorch as pl
     import torch

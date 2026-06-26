@@ -28,6 +28,7 @@ from graphids.paths import ModelType
 from .._conv import InputEncoder, _make_conv, conv_forward
 from ..base import GraphModuleBase, classification_test_metrics
 from ..id_encoding import IdEncodingCfg
+from ..temporal.adapters import is_temporal_batch, temporal_to_static_graph
 
 
 class GAT(GraphModuleBase):
@@ -171,6 +172,13 @@ class GAT(GraphModuleBase):
             self.fc_layers.append(nn.Dropout(p=hp.dropout))
         self.fc_layers.append(nn.Linear(fc_input_dim, hp.num_classes))
 
+        self.temporal_event_head = nn.Sequential(
+            nn.Linear((2 * jk_out_dim) + hp.in_channels, fc_input_dim),
+            nn.ReLU(),
+            nn.Dropout(p=hp.dropout),
+            nn.Linear(fc_input_dim, hp.num_classes),
+        )
+
         if hp.compile_model:
             from ..base import try_compile
 
@@ -246,6 +254,11 @@ class GAT(GraphModuleBase):
         return_attention_weights=False,
         return_embedding=False,
     ):
+        if is_temporal_batch(data):
+            if return_intermediate or return_attention_weights or return_embedding:
+                raise ValueError("temporal GAT forward only supports event logits")
+            return self.forward_temporal(data)
+
         x, edge_index, batch = data.x, data.edge_index, data.batch
         edge_attr = getattr(data, "edge_attr", None) if self._uses_edge_attr else None
         node_id = data.node_id
@@ -288,11 +301,54 @@ class GAT(GraphModuleBase):
             x = layer(x)
         return x
 
+    def _node_embeddings(self, data):
+        x, edge_index, batch = data.x, data.edge_index, data.batch
+        node_id = data.node_id
+        x = self.input_encoder(x, node_id)
+        xs = []
+        for conv in self.convs:
+            x = conv_forward(
+                conv,
+                x,
+                edge_index,
+                None,
+                batch=batch,
+                dropout_p=self.dropout,
+                training=self.training,
+                use_checkpointing=self.use_checkpointing,
+            )
+            xs.append(x)
+        return self.jk(xs)
+
+    def forward_temporal(self, batch):
+        temporal = temporal_to_static_graph(batch)
+        node_z = self._node_embeddings(temporal.graph)
+        event_z = torch.cat(
+            [node_z[temporal.src], node_z[temporal.dst], batch.msg.float()],
+            dim=-1,
+        )
+        return self.temporal_event_head(event_z)
+
     # ------------------------------------------------------------------
     # Trainer-bridge hooks
     # ------------------------------------------------------------------
 
     def training_step(self, batch, _idx):
+        if is_temporal_batch(batch):
+            logits = self(batch)
+            temporal = temporal_to_static_graph(batch)
+            mask = temporal.scored_mask
+            if not mask.any():
+                return logits.sum() * 0.0
+            labels = temporal.labels[mask]
+            logits = logits[mask]
+            loss = self.loss_fn(logits, labels, graph=batch)
+            acc = (logits.argmax(1) == labels).float().mean()
+            bs = int(labels.numel())
+            self.log("train_loss", loss, batch_size=bs)
+            self.log("train_acc", acc, batch_size=bs)
+            return loss
+
         logits = self(batch)
         loss = self.loss_fn(logits, batch.y, graph=batch)
         acc = (logits.argmax(1) == batch.y).float().mean()
@@ -306,6 +362,25 @@ class GAT(GraphModuleBase):
         return loss
 
     def validation_step(self, batch, _idx):
+        if is_temporal_batch(batch):
+            logits = self(batch)
+            temporal = temporal_to_static_graph(batch)
+            mask = temporal.scored_mask
+            if not mask.any():
+                return None
+            labels = temporal.labels[mask]
+            logits = logits[mask]
+            loss = self.loss_fn(logits, labels, graph=batch)
+            probs = F.softmax(logits, dim=1)
+            acc = (probs.argmax(1) == labels).float().mean()
+            bs = int(labels.numel())
+            self.log("val_loss", loss, batch_size=bs)
+            self.log("val_acc", acc, batch_size=bs)
+            if probs.shape[1] == 2:
+                self._val_probs.append(probs[:, 1].detach().cpu())
+                self._val_labels.append(labels.detach().cpu())
+            return None
+
         logits = self(batch)
         loss = self.loss_fn(logits, batch.y, graph=batch)
         probs = F.softmax(logits, dim=1)
@@ -328,6 +403,24 @@ class GAT(GraphModuleBase):
         self._val_labels.clear()
 
     def test_step(self, batch, _idx, dataloader_idx=0):
+        if is_temporal_batch(batch):
+            logits = self(batch)
+            temporal = temporal_to_static_graph(batch)
+            mask = temporal.scored_mask
+            if not mask.any():
+                return None
+            logits = logits[mask]
+            labels = temporal.labels[mask]
+            probs = F.softmax(logits, dim=1)
+            self._record_test_batch(
+                dataloader_idx,
+                preds=probs.argmax(1),
+                scores=probs,
+                labels=labels,
+                attack_type=temporal.attack_type[mask] if temporal.attack_type is not None else None,
+            )
+            return None
+
         logits = self(batch)
         probs = F.softmax(logits, dim=1)
         self._record_test_batch(
@@ -339,6 +432,15 @@ class GAT(GraphModuleBase):
         )
 
     def predict_step(self, batch, _idx):
+        if is_temporal_batch(batch):
+            logits = self(batch)
+            probs = F.softmax(logits, dim=1)
+            out = {"preds": logits.argmax(1), "scores": probs[:, 1], "labels": batch.y}
+            event_id = getattr(batch, "event_id", None)
+            if event_id is not None:
+                out["event_id"] = event_id
+            return out
+
         logits = self(batch)
         scores = F.softmax(logits, dim=1)[:, 1]
         return {"preds": logits.argmax(1), "scores": scores, "labels": batch.y}

@@ -29,6 +29,18 @@ class TemporalDataModule(pl.LightningDataModule):
 
         return TemporalDataLoader(data, batch_size=self.batch_size)
 
+    def _all_data(self) -> list[object]:
+        data = [d for d in (self._train, self._val) if d is not None]
+        data.extend(self._tests.values())
+        return data
+
+    @staticmethod
+    def _max_tensor_value(data, key: str) -> int:
+        tensor = getattr(data, key, None)
+        if tensor is None or tensor.numel() == 0:
+            return 0
+        return int(tensor.max().item())
+
     @property
     def train_data(self):
         assert self._train is not None
@@ -42,6 +54,32 @@ class TemporalDataModule(pl.LightningDataModule):
     @property
     def test_data(self) -> dict[str, object]:
         return self._tests
+
+    @property
+    def test_datasets(self) -> dict[str, object]:
+        """Compatibility name used by model test-set bookkeeping."""
+        return self._tests
+
+    @property
+    def num_ids(self) -> int:
+        """Embedding table size for temporal source/destination ids."""
+        max_id = 0
+        for data in self._all_data():
+            max_id = max(max_id, self._max_tensor_value(data, "src"), self._max_tensor_value(data, "dst"))
+        return max_id + 1
+
+    @property
+    def in_channels(self) -> int:
+        if self._train is None:
+            raise RuntimeError("TemporalDataModule.setup() must run before reading in_channels")
+        return int(self._train.msg.shape[1])
+
+    @property
+    def num_classes(self) -> int:
+        max_label = 0
+        for data in self._all_data():
+            max_label = max(max_label, self._max_tensor_value(data, "y"))
+        return max(2, max_label + 1)
 
     def train_dataloader(self):
         return self._loader(self._train)
