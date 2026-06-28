@@ -98,46 +98,52 @@ def query_result_view(
     spec = load_result_view(view, path=view_path)
     base_filter = dict(spec["filter"])
     metrics = list(spec["metrics"])
-    group = str(base_filter.get("group") or view)
+    group_filter = base_filter.get("group")
+    group = str(group_filter or view)
     phase = str(base_filter.get("phase") or "test")
     client = MlflowClient()
 
     rows: list[ResultRow] = []
     for dataset in datasets:
-        exp = client.get_experiment_by_name(f"graphids/{dataset}/{group}")
-        if exp is None:
-            continue
+        if group_filter:
+            exp = client.get_experiment_by_name(f"graphids/{dataset}/{group}")
+            experiments = [] if exp is None else [exp]
+        else:
+            experiments = client.search_experiments(filter_string=f"name LIKE 'graphids/{dataset}/%'")
         filters = {**base_filter, "phase": phase, "status": status}
         filter_string = _filter_string(filters)
-        runs = client.search_runs(
-            [exp.experiment_id],
-            filter_string=filter_string,
-            order_by=["attributes.start_time DESC"],
-            max_results=1000,
-        )
         seen: set[str] = set()
-        for run in runs:
-            tags = run.data.tags
-            variant = tags.get("graphids.variant") or tags.get("graphids.row_name") or ""
-            if variants is not None and variant not in variants:
-                continue
-            if latest and variant in seen:
-                continue
-            seen.add(variant)
-            row_metrics = {key: _metric_value(run.data.metrics, key) for key in metrics}
-            rows.append(
-                ResultRow(
-                    dataset=dataset,
-                    group=group,
-                    variant=variant,
-                    phase=phase,
-                    run_id=run.info.run_id,
-                    status=run.info.status,
-                    run_name=tags.get("mlflow.runName", ""),
-                    start_time=run.info.start_time,
-                    metrics=row_metrics,
-                )
+        for exp in experiments:
+            runs = client.search_runs(
+                [exp.experiment_id],
+                filter_string=filter_string,
+                order_by=["attributes.start_time DESC"],
+                max_results=1000,
             )
+            for run in runs:
+                tags = run.data.tags
+                row_group = tags.get("graphids.group") or exp.name.rsplit("/", 1)[-1]
+                variant = tags.get("graphids.variant") or tags.get("graphids.row_name") or ""
+                key = f"{row_group}:{variant}"
+                if variants is not None and variant not in variants:
+                    continue
+                if latest and key in seen:
+                    continue
+                seen.add(key)
+                row_metrics = {metric: _metric_value(run.data.metrics, metric) for metric in metrics}
+                rows.append(
+                    ResultRow(
+                        dataset=dataset,
+                        group=row_group,
+                        variant=variant,
+                        phase=phase,
+                        run_id=run.info.run_id,
+                        status=run.info.status,
+                        run_name=tags.get("mlflow.runName", ""),
+                        start_time=run.info.start_time,
+                        metrics=row_metrics,
+                    )
+                )
     return rows
 
 

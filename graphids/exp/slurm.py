@@ -6,7 +6,6 @@ import math
 import os
 import re
 import subprocess
-import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -171,10 +170,7 @@ def submit_experiment(
     dry_run: bool = False,
     sbatch: str = "sbatch",
 ) -> SlurmSubmitResult:
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message="`get_trial_dir` is meant to only be called")
-        warnings.filterwarnings("ignore", message="`get_storage` is meant to only be called")
-        cfg.build_run(name=cfg.experiment_name, stage=cfg.stage, config=cfg.config)
+    cfg.build_run(name=cfg.experiment_name, stage=cfg.stage, config=cfg.config)
     script_path, script = build_slurm_script(
         cfg,
         yaml_path,

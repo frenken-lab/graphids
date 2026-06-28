@@ -1,7 +1,7 @@
 """Execution helpers for the new experiment seam.
 
-Ray/Hydra can attach here later. For now this module gives us a single place to
-write manifests and events around any callable run body.
+This module turns a resolved GraphIDS run config into Lightning execution with
+MLflow logging and manifest/event tracking.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ from inspect import signature
 from pathlib import Path
 from typing import Any
 
-from graphids._mlflow import MLflowSystemMetricsCallback, make_logger
 from graphids.exp.config import RunConfig, RunSummary
 from graphids.exp.journal import (
     EventRecord,
@@ -143,6 +142,8 @@ def _run_fit_or_test(
     if callback_specs:
         trainer_kwargs["callbacks"] = [_build_component(cb) for cb in callback_specs]
     if logger is not None:
+        from graphids._mlflow import MLflowSystemMetricsCallback
+
         trainer_kwargs.setdefault("logger", logger)
         callbacks = list(trainer_kwargs.get("callbacks") or [])
         if not any(isinstance(cb, MLflowSystemMetricsCallback) for cb in callbacks):
@@ -176,29 +177,8 @@ def _run_fit_or_test(
     }
 
 
-def _run_cache(cfg: Mapping[str, Any]) -> dict[str, Any]:
-    if "data" not in cfg:
-        raise ValueError("cache requires a data config block")
-    data = _build_component(cfg["data"])
-    if hasattr(data, "setup"):
-        data.setup(None)
-    source = getattr(data, "source", data)
-    cache_root = getattr(source, "cache_root_path", None)
-    cache_ready = getattr(source, "cache_ready", None)
-    return {
-        "stage": "cache",
-        "cache_key": str(getattr(source, "cache_key", "")),
-        "cache_root": str(cache_root()) if callable(cache_root) else "",
-        "cache_ready": bool(cache_ready()) if callable(cache_ready) else True,
-    }
-
-
 def run_stage(run: RunConfig, logger: Any | None = None) -> dict[str, Any] | None:
-    """Default stage dispatcher for experiment launches.
-
-    Fit/test, extract, and analyze all run directly from the typed
-    experiment config objects.
-    """
+    """Default stage dispatcher for experiment launches."""
     if run.stage in {"fit", "test"}:
         payload = run.payload.model_dump(mode="json")
         return _run_fit_or_test(
@@ -207,67 +187,6 @@ def run_stage(run: RunConfig, logger: Any | None = None) -> dict[str, Any] | Non
             ckpt_path=payload.get("ckpt_path"),
             logger=logger,
         )
-    if run.stage == "cache":
-        payload = run.payload.model_dump(mode="json")
-        return _run_cache(payload)
-    if run.stage == "extract":
-        from graphids.core.data.extract import extract_states
-
-        run_cfg = run.payload.model_dump(mode="json")
-        checkpoints = run_cfg.get("checkpoints") or run_cfg.get("extractor_ckpts")
-        if checkpoints is None:
-            raise ValueError("extract requires checkpoints or extractor_ckpts")
-        dataset = run_cfg.get("dataset")
-        output_dir = run_cfg.get("output_dir")
-        if not dataset or not output_dir:
-            raise ValueError("extract requires dataset and output_dir")
-        extract_states(
-            checkpoints=checkpoints,
-            dataset=dataset,
-            output_dir=output_dir,
-            max_samples=int(run_cfg.get("max_samples", 150_000)),
-            max_val_samples=int(run_cfg.get("max_val_samples", 30_000)),
-            batch_size=int(run_cfg.get("batch_size", 256)),
-            seed=int(run_cfg.get("seed", run.seed)),
-            val_fraction=float(run_cfg.get("val_fraction", 0.2)),
-            representation_cfg=run.representation_cfg,
-        )
-        return {"stage": "extract", "output_dir": output_dir}
-    if run.stage == "analyze":
-        from graphids.core.artifacts.analyzer import AnalysisConfig, Analyzer
-
-        run_cfg = run.payload.model_dump(mode="json")
-        spec = AnalysisConfig(
-            name=run_cfg.get("name", run.name),
-            plan_id=run_cfg.get("plan_id", run.plan_id or run.name),
-            ckpt_path=str(run_cfg.get("ckpt_path", "")),
-            dataset=str(run_cfg.get("dataset", run.dataset or "")),
-            model_type=str(run_cfg.get("model_type", "gat")),
-            output_dir=str(run_cfg.get("output_dir", "")),
-            lake_root=str(run_cfg.get("lake_root", "")),
-            embeddings=bool(run_cfg.get("embeddings", True)),
-            attention=bool(run_cfg.get("attention", False)),
-            cka=bool(run_cfg.get("cka", False)),
-            landscape=bool(run_cfg.get("landscape", False)),
-            fusion_policy=bool(run_cfg.get("fusion_policy", False)),
-            cka_teacher_ckpt=str(run_cfg.get("cka_teacher_ckpt", "")),
-            cka_max_samples=int(run_cfg.get("cka_max_samples", 500)),
-            landscape_resolution=int(run_cfg.get("landscape_resolution", 51)),
-            landscape_scale=float(run_cfg.get("landscape_scale", 1.0)),
-            landscape_max_graphs=int(run_cfg.get("landscape_max_graphs", 500)),
-            embedding_max_samples=int(run_cfg.get("embedding_max_samples", 2000)),
-            attention_max_samples=int(run_cfg.get("attention_max_samples", 50)),
-            batch_size=int(run_cfg.get("batch_size", 256)),
-            seed=int(run_cfg.get("seed", run.seed)),
-            vocab_scope=str(run_cfg.get("vocab_scope", "train")),
-            representation_cfg=run.representation_cfg,
-            vgae_ckpt_path=str(run_cfg.get("vgae_ckpt_path", "")),
-            gat_ckpt_path=str(run_cfg.get("gat_ckpt_path", "")),
-        )
-        Analyzer(spec).run()
-        return {"stage": "analyze", "output_dir": spec.output_dir}
-    if run.stage == "hf_push":
-        raise NotImplementedError(f"stage {run.stage!r} is not wired yet")
     raise ValueError(f"unknown stage: {run.stage!r}")
 
 
@@ -276,6 +195,8 @@ def _make_run_logger(
     *,
     run_id: str | None = None,
 ) -> Any:
+    from graphids._mlflow import make_logger
+
     return make_logger(
         experiment_name=f"graphids/{run.dataset or 'unknown'}/{run.stage}",
         run_name=run.name,
@@ -283,17 +204,6 @@ def _make_run_logger(
         artifact_location=_mlflow_artifact_location(run),
         run_id=run_id,
     )
-
-
-def _run_stage_with_existing_mlflow_run(run: RunConfig, run_id: str) -> dict[str, Any] | None:
-    """Ray-safe stage entrypoint.
-
-    MLflow logger objects are process-local and should not be serialized into
-    Ray workers. Pass the existing run id instead, then bind a fresh
-    ``MLFlowLogger`` in the worker to that run.
-    """
-    logger = _make_run_logger(run, run_id=run_id)
-    return run_stage(run, logger=logger)
 
 
 def launch_run(
@@ -305,14 +215,8 @@ def launch_run(
 
         assert_pyg_cuda_extensions_match()
 
-    backend = run.resources.backend
-    if backend == "ray":
-        try:
-            import ray  # noqa: F401
-        except ImportError:
-            backend = "local"
     logger = _make_run_logger(run)
-    logger.log_hyperparams(run.mlflow_hparams(backend=backend))
+    logger.log_hyperparams(run.mlflow_hparams())
     manifest = run.journal_manifest(status="running")
     write_manifest(run.outputs.run_dir, manifest, name=run.outputs.manifest_name)
     append_event(
@@ -321,21 +225,13 @@ def launch_run(
             status="running",
             stage=run.stage,
             message="launch_started",
-            details={"backend": backend},
+            details={},
         ),
         name=run.outputs.events_name,
     )
 
     try:
-        if backend == "ray":
-            import ray
-
-            ray.init(ignore_reinit_error=True, include_dashboard=False)
-            if logger.run_id is None:
-                raise RuntimeError("MLflow logger did not create a run id before Ray launch")
-            result = ray.get(ray.remote(_run_stage_with_existing_mlflow_run).remote(run, logger.run_id))
-        else:
-            result = run_stage(run, logger=logger)
+        result = run_stage(run, logger=logger)
         if logger.run_id is not None:
             logger.experiment.set_terminated(logger.run_id, status="FINISHED")
         append_event(

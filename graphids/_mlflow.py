@@ -5,7 +5,7 @@ This module is intentionally thin:
 - construct an MLflow logger
 - keep system-metrics enabled when requested
 
-Everything else now belongs in Ray, Lightning, or the experiment code.
+Everything else belongs in Lightning or the experiment code.
 """
 
 from __future__ import annotations

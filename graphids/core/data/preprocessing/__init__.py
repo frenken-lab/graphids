@@ -1,16 +1,11 @@
-"""Core graph preprocessing."""
+"""Core temporal preprocessing."""
 
-from .materialization import GraphTables, build_graph_tables
-from .pyg import graph_tables_to_pyg
 from .representations import (
-    GraphRepresentationCfg,
-    SnapshotRepresentationCfg,
-    SnapshotSequenceRepresentationCfg,
+    RepresentationCfg,
     TemporalRepresentationCfg,
     representation_digest,
     representation_kind,
     representation_payload,
-    representation_window_defaults,
 )
 from .temporal import (
     add_temporal_split_masks,
@@ -22,17 +17,11 @@ from .temporal import (
 )
 
 __all__ = [
-    "GraphTables",
-    "build_graph_tables",
-    "graph_tables_to_pyg",
-    "GraphRepresentationCfg",
-    "SnapshotRepresentationCfg",
-    "SnapshotSequenceRepresentationCfg",
+    "RepresentationCfg",
     "TemporalRepresentationCfg",
     "representation_digest",
     "representation_kind",
     "representation_payload",
-    "representation_window_defaults",
     "add_temporal_split_masks",
     "assert_temporal_splits_disjoint",
     "build_temporal_event_table",

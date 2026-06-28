@@ -1,21 +1,9 @@
-"""MetricCollection factories + custom metrics shared by every model family."""
+"""MetricCollection factories shared by temporal classifier models."""
 
 from __future__ import annotations
 
-from typing import Any
-
-import torch
 from torchmetrics import Metric, MetricCollection
 from torchmetrics.classification import (
-    BinaryAccuracy,
-    BinaryAUROC,
-    BinaryAveragePrecision,
-    BinaryCalibrationError,
-    BinaryF1Score,
-    BinaryMatthewsCorrCoef,
-    BinaryPrecision,
-    BinaryRecall,
-    BinarySpecificity,
     MulticlassAccuracy,
     MulticlassAUROC,
     MulticlassAveragePrecision,
@@ -26,49 +14,7 @@ from torchmetrics.classification import (
     MulticlassRecall,
     MulticlassSpecificity,
 )
-from torchmetrics.functional.classification import binary_roc
-from torchmetrics.utilities.data import dim_zero_cat
 from torchmetrics.wrappers import ClasswiseWrapper
-
-
-class BinaryYoudenJThreshold(Metric):
-    """Pools (preds, target); ``compute()`` returns the Youden-J threshold."""
-
-    full_state_update = False
-
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self.add_state("preds", default=[], dist_reduce_fx="cat")
-        self.add_state("target", default=[], dist_reduce_fx="cat")
-
-    def update(self, preds: torch.Tensor, target: torch.Tensor) -> None:
-        self.preds.append(preds)
-        self.target.append(target)
-
-    def compute(self) -> torch.Tensor:
-        p = dim_zero_cat(self.preds)
-        t = dim_zero_cat(self.target).long()
-        fpr, tpr, thr = binary_roc(p, t)
-        if thr.numel() < 2:
-            return torch.tensor(float("nan"), device=thr.device)
-        return thr[torch.argmax(tpr - fpr)]
-
-
-def binary_test_metrics(threshold: float = 0.5) -> MetricCollection:
-    """Binary collection. ``preds`` must be float in [0, 1]."""
-    return MetricCollection(
-        {
-            "accuracy": BinaryAccuracy(threshold=threshold),
-            "f1": BinaryF1Score(threshold=threshold),
-            "precision": BinaryPrecision(threshold=threshold),
-            "recall": BinaryRecall(threshold=threshold),
-            "specificity": BinarySpecificity(threshold=threshold),
-            "mcc": BinaryMatthewsCorrCoef(threshold=threshold),
-            "auroc": BinaryAUROC(),
-            "ap": BinaryAveragePrecision(thresholds=None),
-            "ece": BinaryCalibrationError(),
-        }
-    )
 
 
 def classification_test_metrics(num_classes: int) -> MetricCollection:

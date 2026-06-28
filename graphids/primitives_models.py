@@ -10,38 +10,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from graphids.core.models.id_encoding import IdEncodingCfg
-
-
 class _Cfg(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class GATCfg(_Cfg):
-    type: Literal["gat"] = "gat"
-    scale: Literal["small", "large"] = "small"
-    sequence_pool: Literal["auto", "flat", "mean", "attention", "gru"] = "auto"
-    gradient_checkpointing: bool = True
-    id_encoder_cfg: IdEncodingCfg | None = None
-    id_encoder_class_path: str | None = None
-    id_encoder_kwargs: dict[str, Any] = Field(default_factory=dict)
-
-    def build(self, *, loss_fn: Any = None) -> Any:
-        from graphids.core.models.supervised.gat import GAT
-
-        kwargs: dict[str, Any] = {
-            "loss_fn": loss_fn,
-            "scale": self.scale,
-            "sequence_pool": self.sequence_pool,
-            "gradient_checkpointing": self.gradient_checkpointing,
-        }
-        if self.id_encoder_cfg is not None:
-            kwargs["id_encoder_cfg"] = self.id_encoder_cfg
-        if self.id_encoder_class_path is not None:
-            kwargs["id_encoder_class_path"] = self.id_encoder_class_path
-        if self.id_encoder_kwargs:
-            kwargs["id_encoder_kwargs"] = self.id_encoder_kwargs
-        return GAT(**kwargs)
 
 
 class TemporalEventClassifierCfg(_Cfg):
@@ -65,136 +35,60 @@ class TemporalEventClassifierCfg(_Cfg):
         )
 
 
-class VGAECfg(_Cfg):
-    type: Literal["vgae"] = "vgae"
+class TemporalGATCfg(_Cfg):
+    type: Literal["temporal_gat"] = "temporal_gat"
     scale: Literal["small", "large"] = "small"
-    id_encoder_cfg: IdEncodingCfg | None = None
-    id_encoder_class_path: str | None = None
-    id_encoder_kwargs: dict[str, Any] = Field(default_factory=dict)
+    hidden: int | None = None
+    layers: int | None = None
+    heads: int | None = None
+    embedding_dim: int | None = None
+    dropout: float = 0.2
 
     def build(self, *, loss_fn: Any = None) -> Any:
-        from graphids.core.models.autoencoder.vgae import VGAE
+        from graphids.core.models.temporal import TemporalGAT
 
-        kwargs: dict[str, Any] = {"loss_fn": loss_fn, "scale": self.scale}
-        if self.id_encoder_cfg is not None:
-            kwargs["id_encoder_cfg"] = self.id_encoder_cfg
-        if self.id_encoder_class_path is not None:
-            kwargs["id_encoder_class_path"] = self.id_encoder_class_path
-        if self.id_encoder_kwargs:
-            kwargs["id_encoder_kwargs"] = self.id_encoder_kwargs
-        return VGAE(**kwargs)
-
-
-class DGICfg(_Cfg):
-    type: Literal["dgi"] = "dgi"
-    scale: Literal["small", "large"] = "small"
-    id_encoder_cfg: IdEncodingCfg | None = None
-    id_encoder_class_path: str | None = None
-    id_encoder_kwargs: dict[str, Any] = Field(default_factory=dict)
-
-    def build(self, *, loss_fn: Any = None) -> Any:
-        from graphids.core.models.autoencoder.dgi import DGI
-
-        kwargs: dict[str, Any] = {"scale": self.scale}
-        if self.id_encoder_cfg is not None:
-            kwargs["id_encoder_cfg"] = self.id_encoder_cfg
-        if self.id_encoder_class_path is not None:
-            kwargs["id_encoder_class_path"] = self.id_encoder_class_path
-        if self.id_encoder_kwargs:
-            kwargs["id_encoder_kwargs"] = self.id_encoder_kwargs
-        return DGI(**kwargs)
-
-
-class BanditCfg(_Cfg):
-    type: Literal["bandit"] = "bandit"
-    state_dim: int
-    reward_kwargs: dict[str, Any] = Field(default_factory=dict)
-
-    def build(self, *, loss_fn: Any = None) -> Any:
-        from graphids.core.models.fusion.bandit import BanditFusionModule
-
-        return BanditFusionModule(
-            state_dim=self.state_dim,
-            reward_kwargs=self.reward_kwargs or None,
+        return TemporalGAT(
+            loss_fn=loss_fn,
+            scale=self.scale,
+            hidden=self.hidden,
+            layers=self.layers,
+            heads=self.heads,
+            embedding_dim=self.embedding_dim,
+            dropout=self.dropout,
         )
 
 
-class DQNCfg(_Cfg):
-    type: Literal["dqn"] = "dqn"
-    state_dim: int
-    reward_kwargs: dict[str, Any] = Field(default_factory=dict)
+class TemporalVGAECfg(_Cfg):
+    type: Literal["temporal_vgae"] = "temporal_vgae"
+    scale: Literal["small", "large"] = "small"
+    hidden: int | None = None
+    layers: int | None = None
+    embedding_dim: int | None = None
+    latent_dim: int | None = None
+    dropout: float = 0.1
+    kl_weight: float = 0.01
 
     def build(self, *, loss_fn: Any = None) -> Any:
-        from graphids.core.models.fusion.dqn import DQNFusionModule
+        from graphids.core.models.temporal import TemporalVGAE
 
-        return DQNFusionModule(
-            state_dim=self.state_dim,
-            reward_kwargs=self.reward_kwargs or None,
+        del loss_fn
+        return TemporalVGAE(
+            scale=self.scale,
+            hidden=self.hidden,
+            layers=self.layers,
+            embedding_dim=self.embedding_dim,
+            latent_dim=self.latent_dim,
+            dropout=self.dropout,
+            kl_weight=self.kl_weight,
         )
-
-
-class MLPFusionCfg(_Cfg):
-    type: Literal["mlp_fusion"] = "mlp_fusion"
-    state_dim: int
-
-    def build(self, *, loss_fn: Any = None) -> Any:
-        from graphids.core.models.fusion.mlp import MLPFusionModule
-
-        return MLPFusionModule(state_dim=self.state_dim)
-
-
-class MoECfg(_Cfg):
-    type: Literal["moe"] = "moe"
-    state_dim: int
-    aux_weight: float = 0.01
-
-    def build(self, *, loss_fn: Any = None) -> Any:
-        from graphids.core.models.fusion.moe import MoEFusionModule
-
-        return MoEFusionModule(state_dim=self.state_dim, aux_weight=self.aux_weight)
-
-
-class WeightedAvgCfg(_Cfg):
-    type: Literal["weighted_avg"] = "weighted_avg"
-    state_dim: int
-
-    def build(self, *, loss_fn: Any = None) -> Any:
-        from graphids.core.models.fusion.weighted_avg import WeightedAvgModule
-
-        return WeightedAvgModule(state_dim=self.state_dim)
 
 
 ModelCfg = Annotated[
-    GATCfg
-    | TemporalEventClassifierCfg
-    | VGAECfg
-    | DGICfg
-    | BanditCfg
-    | DQNCfg
-    | MLPFusionCfg
-    | MoECfg
-    | WeightedAvgCfg,
+    TemporalEventClassifierCfg
+    | TemporalGATCfg
+    | TemporalVGAECfg,
     Field(discriminator="type"),
 ]
-
-
-def gat(
-    scale: str = "small",
-    *,
-    sequence_pool: str = "auto",
-    gradient_checkpointing: bool = True,
-    id_encoder_cfg: IdEncodingCfg | None = None,
-    id_encoder_class_path: str | None = None,
-    id_encoder_kwargs: dict[str, Any] | None = None,
-) -> GATCfg:
-    return GATCfg(
-        scale=scale,
-        sequence_pool=sequence_pool,
-        gradient_checkpointing=gradient_checkpointing,
-        id_encoder_cfg=id_encoder_cfg,
-        id_encoder_class_path=id_encoder_class_path,
-        id_encoder_kwargs=id_encoder_kwargs or {},
-    )
 
 
 def temporal_event_classifier(
@@ -214,51 +108,41 @@ def temporal_event_classifier(
     )
 
 
-def vgae(
+def temporal_gat(
     scale: str = "small",
     *,
-    id_encoder_cfg: IdEncodingCfg | None = None,
-    id_encoder_class_path: str | None = None,
-    id_encoder_kwargs: dict[str, Any] | None = None,
-) -> VGAECfg:
-    return VGAECfg(
+    hidden: int | None = None,
+    layers: int | None = None,
+    heads: int | None = None,
+    embedding_dim: int | None = None,
+    dropout: float = 0.2,
+) -> TemporalGATCfg:
+    return TemporalGATCfg(
         scale=scale,
-        id_encoder_cfg=id_encoder_cfg,
-        id_encoder_class_path=id_encoder_class_path,
-        id_encoder_kwargs=id_encoder_kwargs or {},
+        hidden=hidden,
+        layers=layers,
+        heads=heads,
+        embedding_dim=embedding_dim,
+        dropout=dropout,
     )
 
 
-def dgi(
+def temporal_vgae(
     scale: str = "small",
     *,
-    id_encoder_cfg: IdEncodingCfg | None = None,
-    id_encoder_class_path: str | None = None,
-    id_encoder_kwargs: dict[str, Any] | None = None,
-) -> DGICfg:
-    return DGICfg(
+    hidden: int | None = None,
+    layers: int | None = None,
+    embedding_dim: int | None = None,
+    latent_dim: int | None = None,
+    dropout: float = 0.1,
+    kl_weight: float = 0.01,
+) -> TemporalVGAECfg:
+    return TemporalVGAECfg(
         scale=scale,
-        id_encoder_cfg=id_encoder_cfg,
-        id_encoder_class_path=id_encoder_class_path,
-        id_encoder_kwargs=id_encoder_kwargs or {},
+        hidden=hidden,
+        layers=layers,
+        embedding_dim=embedding_dim,
+        latent_dim=latent_dim,
+        dropout=dropout,
+        kl_weight=kl_weight,
     )
-
-
-def bandit(state_dim: int, *, reward_kwargs: dict[str, Any] | None = None) -> BanditCfg:
-    return BanditCfg(state_dim=state_dim, reward_kwargs=reward_kwargs or {})
-
-
-def dqn(state_dim: int, *, reward_kwargs: dict[str, Any] | None = None) -> DQNCfg:
-    return DQNCfg(state_dim=state_dim, reward_kwargs=reward_kwargs or {})
-
-
-def mlp_fusion(state_dim: int) -> MLPFusionCfg:
-    return MLPFusionCfg(state_dim=state_dim)
-
-
-def moe(state_dim: int, *, aux_weight: float = 0.01) -> MoECfg:
-    return MoECfg(state_dim=state_dim, aux_weight=aux_weight)
-
-
-def weighted_avg(state_dim: int) -> WeightedAvgCfg:
-    return WeightedAvgCfg(state_dim=state_dim)

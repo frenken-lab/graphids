@@ -1,7 +1,7 @@
 """Typed experiment config objects.
 
-This is intentionally framework-agnostic so we can feed it from Hydra later or
-instantiate it directly from CLI/YAML today.
+This is intentionally framework-agnostic: CLI, SLURM, and future adapters
+consume the same domain config.
 """
 
 from __future__ import annotations
@@ -11,18 +11,20 @@ from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from omegaconf import OmegaConf
+import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 from graphids.core.data.preprocessing.representations import (
-    GraphRepresentationCfg,
+    RepresentationCfg,
     TemporalRepresentationCfg,
     representation_kind,
 )
 from graphids.exp.journal import RunManifest
 
+Stage = Literal["fit", "test"]
 
-def _representation_payload(cfg: GraphRepresentationCfg) -> dict[str, Any]:
+
+def _representation_payload(cfg: RepresentationCfg) -> dict[str, Any]:
     if is_dataclass(cfg):
         return asdict(cfg)
     if hasattr(cfg, "model_dump"):
@@ -59,7 +61,7 @@ def _find_data_representation_payload(value: Any) -> dict[str, Any] | None:
     return None
 
 
-def _payload(cfg: RunPayload) -> dict[str, Any]:
+def _payload(cfg: Any) -> dict[str, Any]:
     if hasattr(cfg, "model_dump"):
         return cfg.model_dump(mode="json")
     if is_dataclass(cfg):
@@ -76,11 +78,9 @@ class _StrictModel(BaseModel):
 class ResourceConfig(_StrictModel):
     """Execution resources for a run."""
 
-    backend: Literal["local", "ray"] = "local"
     cluster: str | None = None
     partition: str | None = None
     accelerator: Literal["cpu", "gpu"] = "cpu"
-    num_workers: int = 0
     cpus_per_worker: int = 1
     gpus_per_worker: float = 0.0
     memory_gb: int | None = None
@@ -101,57 +101,7 @@ class FitRunPayload(_StrictModel):
     ckpt_path: str | None = None
 
 
-class CacheRunPayload(_StrictModel):
-    """Typed payload for cache-build launches."""
-
-    data: dict[str, Any] = Field(default_factory=dict)
-    seed_everything: int | None = None
-
-
-class ExtractRunPayload(_StrictModel):
-    """Typed payload for ``extract`` launches."""
-
-    dataset: str = ""
-    output_dir: str = ""
-    checkpoints: dict[str, str] | None = None
-    extractor_ckpts: dict[str, str] | None = None
-    max_samples: int = 150_000
-    max_val_samples: int = 30_000
-    batch_size: int = 256
-    seed: int | None = None
-    val_fraction: float = 0.2
-
-
-class AnalyzeRunPayload(_StrictModel):
-    """Typed payload for ``analyze`` launches."""
-
-    name: str = ""
-    plan_id: str = ""
-    ckpt_path: str = ""
-    dataset: str = ""
-    model_type: Literal["vgae", "dgi", "gat", "fusion"] = "gat"
-    output_dir: str = ""
-    lake_root: str = ""
-    embeddings: bool = True
-    attention: bool = False
-    cka: bool = False
-    landscape: bool = False
-    fusion_policy: bool = False
-    cka_teacher_ckpt: str = ""
-    cka_max_samples: int = 500
-    landscape_resolution: int = 51
-    landscape_scale: float = 1.0
-    landscape_max_graphs: int = 500
-    embedding_max_samples: int = 2000
-    attention_max_samples: int = 50
-    batch_size: int = 256
-    seed: int = 42
-    vocab_scope: str = "train"
-    vgae_ckpt_path: str = ""
-    gat_ckpt_path: str = ""
-
-
-RunPayload = FitRunPayload | CacheRunPayload | ExtractRunPayload | AnalyzeRunPayload
+RunPayload = FitRunPayload
 
 
 class OutputConfig(_StrictModel):
@@ -186,12 +136,12 @@ class RunConfig(_StrictModel):
     """Resolved launch config for a single run."""
 
     name: str
-    stage: Literal["fit", "test", "extract", "analyze", "cache", "hf_push"]
+    stage: Stage
     dataset: str | None = None
     seed: int = 42
     plan_id: str | None = None
     git_sha: str = "unknown"
-    representation_cfg: GraphRepresentationCfg = Field(default_factory=TemporalRepresentationCfg)
+    representation_cfg: RepresentationCfg = Field(default_factory=TemporalRepresentationCfg)
     payload: RunPayload = Field(default_factory=FitRunPayload)
     resources: ResourceConfig = Field(default_factory=ResourceConfig)
     outputs: OutputConfig
@@ -211,7 +161,7 @@ class RunConfig(_StrictModel):
         tags["graphids.representation"] = representation_kind(self.representation_cfg)
         return tags
 
-    def mlflow_hparams(self, *, backend: str) -> dict[str, Any]:
+    def mlflow_hparams(self) -> dict[str, Any]:
         return {
             "graphids.stage": self.stage,
             "graphids.dataset": self.dataset or "",
@@ -219,7 +169,6 @@ class RunConfig(_StrictModel):
             "graphids.plan_id": self.plan_id or "",
             "graphids.git_sha": self.git_sha,
             "graphids.run_dir": str(self.outputs.run_dir),
-            "graphids.backend": backend,
             "graphids.representation": representation_kind(self.representation_cfg),
             "graphids.representation_cfg": _representation_payload(self.representation_cfg),
             "graphids.payload": _payload(self.payload),
@@ -256,8 +205,8 @@ class RunConfig(_StrictModel):
 class ExperimentConfig(_StrictModel):
     """Top-level experiment description.
 
-    This is the future Hydra entrypoint: compose here, then resolve to one or
-    more RunConfig objects.
+    This is the domain entrypoint: compose here, then resolve to one
+    ``RunConfig``.
     """
 
     experiment_name: str
@@ -265,10 +214,10 @@ class ExperimentConfig(_StrictModel):
     seed: int = 42
     git_sha: str = "unknown"
     plan_id: str | None = None
-    representation_cfg: GraphRepresentationCfg = Field(default_factory=TemporalRepresentationCfg)
+    representation_cfg: RepresentationCfg = Field(default_factory=TemporalRepresentationCfg)
     config: dict[str, Any] = Field(default_factory=dict)
     resources: ResourceConfig = Field(default_factory=ResourceConfig)
-    stage: Literal["fit", "test", "extract", "analyze", "cache", "hf_push"] = "fit"
+    stage: Stage = "fit"
 
     def _run_dir(self, name: str, *, output_suffix: str | None = None) -> Path:
         from graphids.paths import trial_dir
@@ -282,85 +231,31 @@ class ExperimentConfig(_StrictModel):
         self,
         *,
         name: str,
-        stage: Literal["fit", "test", "extract", "analyze", "cache", "hf_push"],
+        stage: Stage,
         config: dict[str, Any] | None = None,
         output_suffix: str | None = None,
     ) -> RunConfig:
         cfg = {**self.config, **(config or {})}
         payload: RunPayload
-        if stage in {"fit", "test", "cache"}:
-            data_representation = _find_data_representation_payload(cfg.get("data", {}))
-            if data_representation is not None:
-                run_representation = _json_payload(_representation_payload(self.representation_cfg))
-                if data_representation != run_representation:
-                    raise ValueError(
-                        "fit/test/cache data.source.representation_cfg must match top-level "
-                        "representation_cfg so run metadata and materialized data cannot drift"
-                    )
-        if stage in {"fit", "test"}:
-            payload = FitRunPayload.model_validate(
-                {
-                    "model": cfg.get("model", {}),
-                    "data": cfg.get("data", {}),
-                    "trainer": cfg.get("trainer", {}),
-                    "callbacks": cfg.get("callbacks", {}),
-                    "loss_fn": cfg.get("loss_fn"),
-                    "seed_everything": cfg.get("seed_everything", self.seed),
-                    "ckpt_path": cfg.get("ckpt_path"),
-                }
-            )
-        elif stage == "cache":
-            payload = CacheRunPayload.model_validate(
-                {
-                    "data": cfg.get("data", {}),
-                    "seed_everything": cfg.get("seed_everything", self.seed),
-                }
-            )
-        elif stage == "extract":
-            payload = ExtractRunPayload.model_validate(
-                {
-                    "dataset": cfg.get("dataset", self.dataset),
-                    "output_dir": cfg.get("output_dir", ""),
-                    "checkpoints": cfg.get("checkpoints"),
-                    "extractor_ckpts": cfg.get("extractor_ckpts"),
-                    "max_samples": cfg.get("max_samples", 150_000),
-                    "max_val_samples": cfg.get("max_val_samples", 30_000),
-                    "batch_size": cfg.get("batch_size", 256),
-                    "seed": cfg.get("seed", self.seed),
-                    "val_fraction": cfg.get("val_fraction", 0.2),
-                }
-            )
-        elif stage == "analyze":
-            payload = AnalyzeRunPayload.model_validate(
-                {
-                    "name": name,
-                    "plan_id": self.plan_id or name,
-                    "ckpt_path": cfg.get("ckpt_path", ""),
-                    "dataset": cfg.get("dataset", self.dataset),
-                    "model_type": cfg.get("model_type", "gat"),
-                    "output_dir": cfg.get("output_dir", ""),
-                    "lake_root": cfg.get("lake_root", ""),
-                    "embeddings": cfg.get("embeddings", True),
-                    "attention": cfg.get("attention", False),
-                    "cka": cfg.get("cka", False),
-                    "landscape": cfg.get("landscape", False),
-                    "fusion_policy": cfg.get("fusion_policy", False),
-                    "cka_teacher_ckpt": cfg.get("cka_teacher_ckpt", ""),
-                    "cka_max_samples": cfg.get("cka_max_samples", 500),
-                    "landscape_resolution": cfg.get("landscape_resolution", 51),
-                    "landscape_scale": cfg.get("landscape_scale", 1.0),
-                    "landscape_max_graphs": cfg.get("landscape_max_graphs", 500),
-                    "embedding_max_samples": cfg.get("embedding_max_samples", 2000),
-                    "attention_max_samples": cfg.get("attention_max_samples", 50),
-                    "batch_size": cfg.get("batch_size", 256),
-                    "seed": cfg.get("seed", self.seed),
-                    "vocab_scope": cfg.get("vocab_scope", "train"),
-                    "vgae_ckpt_path": cfg.get("vgae_ckpt_path", ""),
-                    "gat_ckpt_path": cfg.get("gat_ckpt_path", ""),
-                }
-            )
-        else:
-            raise NotImplementedError(f"stage {stage!r} is not wired yet")
+        data_representation = _find_data_representation_payload(cfg.get("data", {}))
+        if data_representation is not None:
+            run_representation = _json_payload(_representation_payload(self.representation_cfg))
+            if data_representation != run_representation:
+                raise ValueError(
+                    "fit/test data.source.representation_cfg must match top-level "
+                    "representation_cfg so run metadata and materialized data cannot drift"
+                )
+        payload = FitRunPayload.model_validate(
+            {
+                "model": cfg.get("model", {}),
+                "data": cfg.get("data", {}),
+                "trainer": cfg.get("trainer", {}),
+                "callbacks": cfg.get("callbacks", {}),
+                "loss_fn": cfg.get("loss_fn"),
+                "seed_everything": cfg.get("seed_everything", self.seed),
+                "ckpt_path": cfg.get("ckpt_path"),
+            }
+        )
         return RunConfig(
             name=name,
             stage=stage,
@@ -376,8 +271,8 @@ class ExperimentConfig(_StrictModel):
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> ExperimentConfig:
-        cfg = OmegaConf.load(path)
-        return cls.model_validate(OmegaConf.to_container(cfg, resolve=True))
+        cfg = yaml.safe_load(Path(path).read_text()) or {}
+        return cls.model_validate(cfg)
 
 
 @dataclass(frozen=True, slots=True)

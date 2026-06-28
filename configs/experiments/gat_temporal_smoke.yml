@@ -6,11 +6,9 @@ stage: fit
 representation_cfg:
   kind: temporal
 resources:
-  backend: local
   cluster: pitzer
   partition: gpu
   accelerator: gpu
-  num_workers: 0
   cpus_per_worker: 8
   gpus_per_worker: 1.0
   memory_gb: 96
@@ -29,9 +27,8 @@ config:
     val_warmup_events: 64
     test_warmup_events: 64
   model:
-    type: gat
+    type: temporal_gat
     scale: small
-    gradient_checkpointing: false
   loss_fn:
     type: ce
   trainer:

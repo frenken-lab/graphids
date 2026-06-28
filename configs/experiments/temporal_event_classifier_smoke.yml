@@ -1,20 +1,14 @@
-experiment_name: gat_snapshot_sequence_smoke
+experiment_name: temporal_event_classifier_smoke
 dataset: set_01
 seed: 42
-plan_id: gat_snapshot_sequence_smoke
+plan_id: temporal_event_classifier_smoke
 stage: fit
 representation_cfg:
-  kind: snapshot_sequence
-  window_size: 100
-  stride: 100
-  sequence_length: 3
-  sequence_stride: 1
+  kind: temporal
 resources:
-  backend: local
   cluster: pitzer
   partition: gpu
   accelerator: gpu
-  num_workers: 0
   cpus_per_worker: 8
   gpus_per_worker: 1.0
   memory_gb: 96
@@ -22,26 +16,19 @@ resources:
   account: pas1266
 config:
   data:
-    type: graph_dm
+    type: temporal_dm
     source:
       type: can_bus
       dataset: set_01
       seed: 42
       representation_cfg:
-        kind: snapshot_sequence
-        window_size: 100
-        stride: 100
-        sequence_length: 3
-        sequence_stride: 1
-    batch_size: 1
-    min_steps_per_epoch: 2
-    num_workers: 0
-    dynamic_batching: true
-    require_cache: true
+        kind: temporal
+    batch_size: 512
+    val_warmup_events: 64
+    test_warmup_events: 64
   model:
-    type: gat
+    type: temporal_event_classifier
     scale: small
-    sequence_pool: gru
   loss_fn:
     type: ce
   trainer:

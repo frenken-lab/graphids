@@ -1,9 +1,9 @@
-"""Pluggable identity-encoding strategies for graph nodes.
+"""Pluggable identity-encoding strategies for event/node IDs.
 
 An ``IdEncoder`` maps a ``node_id`` LongTensor to per-node embedding
 vectors. Subclasses implement different strategies (lookup table,
-k-probe hash, ...) behind a uniform interface so VGAE / GAT / DGI do
-not know which strategy is in use.
+k-probe hash, ...) behind a uniform interface so temporal models do not
+know which strategy is in use.
 
 Research basis: ``~/plans/oov-embedding-handling.md``.
 """

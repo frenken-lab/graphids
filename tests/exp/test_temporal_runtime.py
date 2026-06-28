@@ -71,7 +71,7 @@ def _install_temporal_smoke_data(monkeypatch):
     return runtime
 
 
-def _run_fit_smoke(tmp_path, *, model: dict, loss_fn: dict):
+def _run_fit_smoke(tmp_path, *, model: dict, loss_fn: dict | None):
     from graphids.exp import runtime
     from graphids.exp.config import FitRunPayload, OutputConfig, RunConfig
 
@@ -114,31 +114,21 @@ def test_runtime_runs_temporal_event_classifier_smoke(monkeypatch, tmp_path):
     assert {"train_loss", "train_acc", "val_loss", "val_acc"} <= set(result["metrics"])
 
 
-def test_runtime_runs_gat_on_temporal_data(monkeypatch, tmp_path):
+def test_runtime_runs_temporal_gat_smoke(monkeypatch, tmp_path):
     _install_temporal_smoke_data(monkeypatch)
     result = _run_fit_smoke(
         tmp_path,
-        model={
-            "type": "gat",
-            "scale": "small",
-            "gradient_checkpointing": False,
-        },
+        model={"type": "temporal_gat", "hidden": 8, "layers": 1, "heads": 2, "embedding_dim": 4},
         loss_fn={"type": "ce"},
     )
     assert {"train_loss", "train_acc", "val_loss", "val_acc"} <= set(result["metrics"])
 
 
-def test_runtime_runs_vgae_on_temporal_data(monkeypatch, tmp_path):
+def test_runtime_runs_temporal_vgae_smoke(monkeypatch, tmp_path):
     _install_temporal_smoke_data(monkeypatch)
     result = _run_fit_smoke(
         tmp_path,
-        model={"type": "vgae", "scale": "small"},
-        loss_fn={
-            "type": "vgae_task",
-            "kl_weight": 0.01,
-            "canid_weight": 0.1,
-            "nbr_weight": 0.1,
-            "edge_weight": 0.0,
-        },
+        model={"type": "temporal_vgae", "hidden": 8, "layers": 1, "embedding_dim": 4, "latent_dim": 4},
+        loss_fn=None,
     )
     assert {"train_loss", "train_recon", "val_loss", "val_recon_mean"} <= set(result["metrics"])

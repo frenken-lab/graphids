@@ -4,7 +4,7 @@ import mlflow
 from typer.testing import CliRunner
 
 
-def _log_fusion_run(
+def _log_temporal_run(
     *,
     tracking_uri: str,
     dataset: str,
@@ -13,12 +13,12 @@ def _log_fusion_run(
     fuzzing: float | None = None,
 ) -> str:
     mlflow.set_tracking_uri(tracking_uri)
-    mlflow.set_experiment(f"graphids/{dataset}/fusion")
-    with mlflow.start_run(run_name=f"fusion_{variant}_{dataset}_seed42") as run:
+    mlflow.set_experiment(f"graphids/{dataset}/temporal")
+    with mlflow.start_run(run_name=f"temporal_{variant}_{dataset}_seed42") as run:
         mlflow.set_tags(
             {
                 "graphids.phase": "test",
-                "graphids.group": "fusion",
+                "graphids.group": "temporal",
                 "graphids.variant": variant,
                 "graphids.dataset": dataset,
             }
@@ -34,17 +34,17 @@ def test_query_result_view_latest_per_variant(tmp_path):
     from graphids.exp.results import query_result_view
 
     tracking_uri = f"sqlite:///{tmp_path / 'mlflow.db'}"
-    old_run = _log_fusion_run(tracking_uri=tracking_uri, dataset="hcrl_sa", variant="moe", mcc=0.1)
-    latest_run = _log_fusion_run(
+    old_run = _log_temporal_run(tracking_uri=tracking_uri, dataset="hcrl_sa", variant="temporal_gat", mcc=0.1)
+    latest_run = _log_temporal_run(
         tracking_uri=tracking_uri,
         dataset="hcrl_sa",
-        variant="moe",
+        variant="temporal_gat",
         mcc=0.9,
         fuzzing=0.8,
     )
     mlflow.set_tracking_uri(tracking_uri)
 
-    rows = query_result_view(view="fusion", datasets=["hcrl_sa"])
+    rows = query_result_view(view="any", datasets=["hcrl_sa"])
 
     assert len(rows) == 1
     assert rows[0].run_id == latest_run
@@ -57,10 +57,10 @@ def test_exp_results_cli_json(tmp_path):
     from graphids.cli.app import app
 
     tracking_uri = f"sqlite:///{tmp_path / 'mlflow.db'}"
-    run_id = _log_fusion_run(
+    run_id = _log_temporal_run(
         tracking_uri=tracking_uri,
         dataset="hcrl_sa",
-        variant="mlp",
+        variant="temporal_gat",
         mcc=0.7,
     )
 
@@ -75,7 +75,7 @@ def test_exp_results_cli_json(tmp_path):
             "--dataset",
             "hcrl_sa",
             "--variant",
-            "mlp",
+            "temporal_gat",
             "--format",
             "json",
         ],

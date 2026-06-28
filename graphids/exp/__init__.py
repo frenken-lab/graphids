@@ -5,13 +5,11 @@ It intentionally stays small:
 
 - ``config``: typed experiment/run config objects
 - ``journal``: manifest + event log utilities
-- ``runtime``: execution helpers that can later switch to Ray/Hydra
+- ``runtime``: Lightning execution with MLflow/journal tracking
 """
 
 from graphids.exp.config import (
-    AnalyzeRunPayload,
     ExperimentConfig,
-    ExtractRunPayload,
     FitRunPayload,
     OutputConfig,
     ResourceConfig,
@@ -29,8 +27,6 @@ from graphids.exp.journal import (
 __all__ = [
     "ExperimentConfig",
     "FitRunPayload",
-    "ExtractRunPayload",
-    "AnalyzeRunPayload",
     "OutputConfig",
     "ResourceConfig",
     "RunConfig",

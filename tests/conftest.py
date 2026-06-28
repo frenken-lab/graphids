@@ -1,4 +1,4 @@
-"""Shared test fixtures. All graph/config construction lives here — no duplication."""
+"""Shared test fixtures."""
 
 from __future__ import annotations
 
@@ -49,17 +49,10 @@ def make_variable_batch(sizes: list[int]) -> Batch:
 
 @pytest.fixture(scope="session")
 def base_cfg():
-    """Session-scoped SimpleNamespace with only the fields tests actually read.
-
-    Architecture kwargs for VGAEModule / GATModule / GATWithJK — not identity,
-    not infra, not constants (use NUM_IDS / IN_CHANNELS / EDGE_DIM directly).
-    Clone before mutating.
-    """
+    """Session-scoped SimpleNamespace with only the fields tests actually read."""
     import types
     return types.SimpleNamespace(
-        # VGAE
         hidden_dims=[32, 16], latent_dim=16, heads=2, embedding_dim=4,
-        # GAT
         hidden=16, layers=2, fc_layers=2,
         loss_fn="ce", focal_gamma=2.0, loss_weight=10.0,
         num_classes=2,

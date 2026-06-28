@@ -27,21 +27,19 @@ def _temporal_batch() -> TemporalData:
     )
 
 
-def test_gat_consumes_temporal_event_batches():
+def test_temporal_gat_consumes_temporal_event_batches():
     from graphids.core.losses import CrossEntropyLoss
-    from graphids.core.models.supervised.gat import GAT
+    from graphids.core.models.temporal import TemporalGAT
 
-    model = GAT(
+    model = TemporalGAT(
         loss_fn=CrossEntropyLoss(),
         hidden=8,
-        layers=2,
+        layers=1,
         heads=2,
-        fc_layers=2,
         embedding_dim=4,
         dropout=0.0,
         num_ids=4,
         in_channels=4,
-        gradient_checkpointing=False,
     )
     batch = _temporal_batch()
 
@@ -54,34 +52,27 @@ def test_gat_consumes_temporal_event_batches():
     assert any(p.grad is not None for p in model.parameters() if p.requires_grad)
 
 
-def test_vgae_consumes_temporal_event_batches():
-    from graphids.core.losses import VGAETaskLoss
-    from graphids.core.models.autoencoder.vgae import VGAE
+def test_temporal_vgae_consumes_temporal_event_batches():
+    from graphids.core.models.temporal import TemporalVGAE
 
-    model = VGAE(
-        loss_fn=VGAETaskLoss(),
-        hidden_dims=[8],
-        latent_dim=8,
-        heads=2,
+    model = TemporalVGAE(
+        hidden=8,
+        layers=1,
         embedding_dim=4,
+        latent_dim=4,
         dropout=0.0,
         num_ids=4,
         in_channels=4,
-        gradient_checkpointing=False,
-        batch_norm=False,
     )
     batch = _temporal_batch()
 
+    out = model(batch)
     loss = model.training_step(batch, 0)
     scores = model.score(batch)
-    model._fit_temporal_score_norm([batch], torch.device("cpu"))
-    normalized_scores = model.score(batch)
     loss.backward()
 
+    assert tuple(out["recon"].shape) == (4, 4)
     assert torch.isfinite(loss)
     assert tuple(scores.shape) == (4,)
     assert torch.isfinite(scores).all()
-    assert tuple(normalized_scores.shape) == (4,)
-    assert torch.isfinite(normalized_scores).all()
-    assert bool(model.score_norm_fitted)
     assert any(p.grad is not None for p in model.parameters() if p.requires_grad)

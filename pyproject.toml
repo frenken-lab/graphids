@@ -39,8 +39,6 @@ dependencies = [
     "mlflow-skinny>=2.17",
     "filelock>=3.13",
     "structlog>=24.0",
-    "ray[train,tune]>=2.55.1",
-    "hydra-core>=1.3.2",
 ]
 
 [project.optional-dependencies]

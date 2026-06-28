@@ -138,100 +138,6 @@ def test_run_stage_attaches_launch_logger(monkeypatch, tmp_path):
     assert captured["workers"] is True
 
 
-def test_ray_stage_binds_existing_mlflow_run(monkeypatch, tmp_path):
-    from graphids.exp import runtime
-    from graphids.exp.config import (
-        FitRunPayload,
-        OutputConfig,
-        ResourceConfig,
-        RunConfig,
-    )
-
-    captured: dict[str, object] = {}
-    monkeypatch.setenv("GRAPHIDS_LAKE_ROOT", str(tmp_path / "lake"))
-
-    def fake_make_logger(**kwargs):
-        captured["logger_kwargs"] = kwargs
-        return object()
-
-    def fake_run_stage(run, logger=None):
-        captured["run"] = run
-        captured["logger"] = logger
-        return {"stage": run.stage}
-
-    monkeypatch.setattr(runtime, "make_logger", fake_make_logger)
-    monkeypatch.setattr(runtime, "run_stage", fake_run_stage)
-
-    run = RunConfig(
-        name="demo",
-        stage="fit",
-        dataset="hcrl_sa",
-        payload=FitRunPayload(
-            model={"type": "dummy_model"},
-            data={"type": "dummy_data"},
-        ),
-        resources=ResourceConfig(backend="ray"),
-        outputs=OutputConfig(run_dir=tmp_path / "run"),
-    )
-
-    result = runtime._run_stage_with_existing_mlflow_run(run, "existing-run-id")
-
-    assert result == {"stage": "fit"}
-    assert captured["run"] is run
-    assert captured["logger"] is not None
-    assert captured["logger_kwargs"]["run_id"] == "existing-run-id"
-    assert captured["logger_kwargs"]["experiment_name"] == "graphids/hcrl_sa/fit"
-    assert captured["logger_kwargs"]["artifact_location"] == str(
-        tmp_path / "lake" / "mlartifacts" / "hcrl_sa" / "fit"
-    )
-
-
-def test_run_stage_cache_builds_data_only(monkeypatch, tmp_path):
-    from graphids.exp import runtime
-    from graphids.exp.config import (
-        CacheRunPayload,
-        OutputConfig,
-        ResourceConfig,
-        RunConfig,
-    )
-
-    captured: dict[str, object] = {}
-
-    class DummySource:
-        cache_key = "dummy-cache-key"
-
-        def cache_root_path(self):
-            return tmp_path / "cache-root"
-
-        def cache_ready(self):
-            return True
-
-    class DummyData:
-        source = DummySource()
-
-        def setup(self, stage):
-            captured["setup_stage"] = stage
-
-    monkeypatch.setattr(runtime, "_build_component", lambda spec: DummyData())
-
-    run = RunConfig(
-        name="cache-demo",
-        stage="cache",
-        dataset="set_01",
-        payload=CacheRunPayload(data={"type": "dummy_data"}),
-        resources=ResourceConfig(),
-        outputs=OutputConfig(run_dir=tmp_path / "run"),
-    )
-
-    assert runtime.run_stage(run) == {
-        "stage": "cache",
-        "cache_key": "dummy-cache-key",
-        "cache_root": str(tmp_path / "cache-root"),
-        "cache_ready": True,
-    }
-    assert captured["setup_stage"] is None
-
-
 def test_manifest_and_events_round_trip(tmp_path):
     from graphids.exp.config import (
         FitRunPayload,
@@ -256,7 +162,7 @@ def test_manifest_and_events_round_trip(tmp_path):
         seed=42,
         git_sha="abc123",
         payload=FitRunPayload(
-            model={"class_path": "graphids.primitives_models.GATCfg"},
+            model={"class_path": "graphids.primitives_models.TemporalGATCfg"},
             data={"class_path": "graphids.primitives_data.CANBusCfg"},
         ),
         resources=ResourceConfig(),
@@ -345,7 +251,6 @@ dataset: hcrl_sa
 seed: 123
 stage: fit
 resources:
-  backend: local
 config:
   seed_everything: 123
   model:

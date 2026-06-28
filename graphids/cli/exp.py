@@ -9,7 +9,6 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Annotated
 
-import mlflow
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -17,13 +16,11 @@ from rich.table import Table
 from graphids.cli.app import app
 from graphids.exp.config import ExperimentConfig
 from graphids.exp.journal import load_manifest
-from graphids.exp.results import query_result_view, result_rows_as_json, sort_rows
-from graphids.exp.runtime import launch_run, summarize_run
 from graphids.exp.slurm import submit_experiment
 
 exp_app = typer.Typer(
     name="exp",
-    help="Experiment manifests, status, and future Ray/Hydra launch surface.",
+    help="Experiment config, launch, SLURM submission, status, and results.",
     no_args_is_help=True,
 )
 app.add_typer(exp_app, name="exp")
@@ -34,7 +31,7 @@ console = Console()
 def config(
     path: Annotated[Path, typer.Argument(help="YAML config file to validate as ExperimentConfig")],
 ) -> None:
-    """Load a YAML config through OmegaConf and validate it as ``ExperimentConfig``."""
+    """Load a YAML config and validate it as ``ExperimentConfig``."""
     console.print_json(data=ExperimentConfig.from_yaml(path).model_dump(mode="json"))
 
 
@@ -43,6 +40,8 @@ def status(
     run_dir: Annotated[Path, typer.Argument(help="Run directory to inspect")],
 ) -> None:
     """Print manifest + latest event summary for one run."""
+    from graphids.exp.runtime import summarize_run
+
     summary = summarize_run(run_dir)
     if summary is None:
         raise typer.BadParameter(f"no manifest found in {run_dir}")
@@ -83,6 +82,8 @@ def launch(
         stage=exp_cfg.stage,
         config=exp_cfg.config,
     )
+    from graphids.exp.runtime import launch_run
+
     result = launch_run(run)
     if result is not None:
         payload = asdict(result) if is_dataclass(result) else {"result": str(result)}
@@ -124,7 +125,7 @@ def submit(
 
 @exp_app.command("results")
 def results(
-    view: Annotated[str, typer.Option("--view", "-v", help="Result view in configs/result_views.yml")] = "fusion",
+    view: Annotated[str, typer.Option("--view", "-v", help="Result view in configs/result_views.yml")] = "any",
     dataset: Annotated[
         list[str] | None,
         typer.Option("--dataset", "-d", help="Dataset to query; repeat for multiple datasets"),
@@ -138,7 +139,11 @@ def results(
     output_format: Annotated[str, typer.Option("--format", help="table or json")] = "table",
 ) -> None:
     """Query configured MLflow result views."""
+    from graphids.exp.results import query_result_view, result_rows_as_json, sort_rows
+
     if tracking_uri:
+        import mlflow
+
         mlflow.set_tracking_uri(tracking_uri)
     datasets = dataset or ["hcrl_sa", "set_01", "set_02", "set_03", "set_04"]
     rows = sort_rows(

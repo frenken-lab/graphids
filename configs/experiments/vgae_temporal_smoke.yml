@@ -6,11 +6,9 @@ stage: fit
 representation_cfg:
   kind: temporal
 resources:
-  backend: local
   cluster: pitzer
   partition: gpu
   accelerator: gpu
-  num_workers: 0
   cpus_per_worker: 8
   gpus_per_worker: 1.0
   memory_gb: 96
@@ -29,14 +27,9 @@ config:
     val_warmup_events: 64
     test_warmup_events: 64
   model:
-    type: vgae
+    type: temporal_vgae
     scale: small
-  loss_fn:
-    type: vgae_task
     kl_weight: 0.01
-    canid_weight: 0.1
-    nbr_weight: 0.1
-    edge_weight: 0.0
   trainer:
     accelerator: auto
     devices: 1

@@ -9,15 +9,11 @@ from __future__ import annotations
 from .datasets import (
     ATTACK_TYPE_CODES,
     ATTACK_TYPE_NAMES,
-    CANBusDataset,
-    CANBusSource,
     CANBusTemporalSource,
 )
 from .state import DatasetState, clear_cache, get_or_build
 
 __all__ = [
-    "CANBusDataset",
-    "CANBusSource",
     "CANBusTemporalSource",
     "DatasetState",
     "get_or_build",
@@ -28,7 +24,7 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    if name in {"GraphDataModule", "FusionDataModule", "TemporalDataModule"}:
+    if name == "TemporalDataModule":
         from . import datamodule
 
         return getattr(datamodule, name)
@@ -36,4 +32,4 @@ def __getattr__(name: str):
 
 
 def __dir__() -> list[str]:
-    return sorted(set(__all__) | {"GraphDataModule", "FusionDataModule", "TemporalDataModule"})
+    return sorted(set(__all__) | {"TemporalDataModule"})

@@ -5,52 +5,10 @@
 #
 # Adding a new model group: copy a block, edit `filter.group` to match what
 # `meta.group` is set to in the plan module, edit `metrics` to match what
-# the model's test_step actually logs (see graphids/core/models/_metrics.py
-# REGISTRY for classifier-flavor; binary_test_metrics for threshold-flavor).
+# the model's test_step actually logs.
 #
 # To inspect what keys a run actually has:
 #     graphids exp results --view <name> --format json | jq '.[0]'
-
-fusion:
-  filter:
-    group: fusion
-    phase: test
-  metrics:
-    - test/test/auroc_macro
-    - test/test/mcc
-    - test/test/f1_per_class/attack
-    - test/test/recall_per_class/attack
-    - test/test/precision_per_class/attack
-    - test/test/auroc_per_attack/dos
-    - test/test/auroc_per_attack/fuzzing
-    - test/test/auroc_per_attack_macro
-
-gat:
-  filter:
-    group: gat_loss
-    phase: test
-  metrics:
-    - test/test/auroc_macro
-    - test/test/mcc
-    - test/test/f1_per_class/attack
-    - test/test/recall_per_class/attack
-    - test/test/precision_per_class/attack
-    - test/test/auroc_per_attack_macro
-
-# Threshold-flavor models — VGAE, DGI. Metric set differs from classifier
-# flavor: binary_test_metrics emits test/{set}/auroc, mcc, ap, accuracy,
-# f1, recall, precision, specificity, ece. No per-class keys.
-unsupervised:
-  filter:
-    group: unsupervised
-    phase: test
-  metrics:
-    - test/test/auroc
-    - test/test/mcc
-    - test/test/f1
-    - test/test/recall
-    - test/test/precision
-    - test/test/best_threshold
 
 # Catch-all: no group filter, all phases, classifier-flavor metric defaults.
 # Override --group, --variant, --phase from the CLI to scope.

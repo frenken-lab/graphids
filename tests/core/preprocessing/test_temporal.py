@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+from types import SimpleNamespace
 
 import polars as pl
 import pytest
@@ -165,3 +166,20 @@ def test_can_temporal_source_uses_train_only_vocab_for_unseen_test_ids(tmp_path,
     assert state.test["test"].is_warmup.tolist() == [True, False]
     assert state.test["test"].is_scored.tolist() == [False, True]
     assert state.test["test"].msg.shape[1] == len(TEMPORAL_MSG_COL_ORDER)
+
+
+def test_can_temporal_source_rejects_non_temporal_representation():
+    from graphids.core.data.datasets.can_bus import CANBusTemporalSource
+
+    with pytest.raises(ValueError, match="representation_cfg.kind='temporal'"):
+        CANBusTemporalSource(
+            name="dummy",
+            representation_cfg=SimpleNamespace(kind="snapshot"),
+        )
+
+
+def test_can_temporal_source_rejects_unknown_vocab_scope():
+    from graphids.core.data.datasets.can_bus import CANBusTemporalSource
+
+    with pytest.raises(ValueError, match="vocab_scope"):
+        CANBusTemporalSource(name="dummy", vocab_scope="split")

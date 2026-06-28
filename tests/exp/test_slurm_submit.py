@@ -7,7 +7,7 @@ def test_build_slurm_script_uses_experiment_resources(monkeypatch, tmp_path):
 
     monkeypatch.setenv("GRAPHIDS_SLURM_LOG_DIR", str(tmp_path / "slurm"))
     cfg = ExperimentConfig(
-        experiment_name="sequence smoke",
+        experiment_name="temporal smoke",
         dataset="set_01",
         resources=ResourceConfig(
             cluster="pitzer",
@@ -19,9 +19,9 @@ def test_build_slurm_script_uses_experiment_resources(monkeypatch, tmp_path):
             account="pas1266",
         ),
     )
-    path, script = build_slurm_script(cfg, "configs/experiments/gat_snapshot_sequence_smoke.yml")
+    path, script = build_slurm_script(cfg, "configs/experiments/gat_temporal_smoke.yml")
 
-    assert path == tmp_path / "slurm" / "scripts" / "sequence_smoke.sbatch"
+    assert path == tmp_path / "slurm" / "scripts" / "temporal_smoke.sbatch"
     assert "#SBATCH --clusters=pitzer" in script
     assert "#SBATCH --partition=gpu" in script
     assert "#SBATCH --gres=gpu:1" in script
@@ -52,12 +52,12 @@ def test_submit_experiment_writes_script_and_calls_sbatch(monkeypatch, tmp_path)
     monkeypatch.setenv("GRAPHIDS_SLURM_LOG_DIR", str(tmp_path / "slurm"))
     monkeypatch.setattr(subprocess, "run", fake_run)
     cfg = ExperimentConfig(
-        experiment_name="sequence-smoke",
+        experiment_name="temporal-smoke",
         dataset="set_01",
         resources=ResourceConfig(accelerator="gpu", gpus_per_worker=1.0, account="pas1266"),
     )
 
-    result = submit_experiment(cfg, "configs/experiments/gat_snapshot_sequence_smoke.yml")
+    result = submit_experiment(cfg, "configs/experiments/gat_temporal_smoke.yml")
 
     assert result.job_id == "12345"
     assert result.script_path.is_file()
@@ -72,7 +72,7 @@ def test_exp_submit_dry_run_cli(monkeypatch):
     monkeypatch.setenv("GRAPHIDS_SLURM_LOG_DIR", "/tmp/graphids-slurm-test")
     result = CliRunner().invoke(
         app,
-        ["exp", "submit", "configs/experiments/gat_snapshot_sequence_smoke.yml", "--dry-run"],
+        ["exp", "submit", "configs/experiments/gat_temporal_smoke.yml", "--dry-run"],
     )
 
     assert result.exit_code == 0

@@ -1,23 +1,18 @@
 """Project-wide path helpers + dataset registry.
 
-The custom per-run root has been retired in favor of Ray storage/trial
-primitives. The remaining helpers are thin naming wrappers that sit on top
-of Ray's experiment directory, checkpoint directory, and storage context.
-
 This module still owns:
 - dataset registry lookup (``load_catalog``, ``dataset_names``)
 - raw / cache paths under ``$GRAPHIDS_LAKE_ROOT`` (``data_dir``, ``cache_dir``)
-- Ray-backed trial / checkpoint / artifact helpers
+- run-root helpers for local and SLURM launches
 
-Import-safe: no torch, Ray imports are lazy, so this stays usable from
-login-node code paths and config composition.
+Import-safe: no torch imports, so this stays usable from login-node code
+paths and config composition.
 """
 
 from __future__ import annotations
 
 import json
 import os
-from contextlib import suppress
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
@@ -26,11 +21,8 @@ from typing import Any, Literal
 # Type aliases
 # ---------------------------------------------------------------------------
 
-# Concrete Literal — Pydantic needs this for field validation. Each model
-# module annotates its `model_type` arg with this so the rendered_config's
-# value is checked at instantiation. (Fusion methods aren't model_types in
-# this sense; their identity is `model_type='fusion'` + a `method` field.)
-ModelType = Literal["vgae", "dgi", "gat", "fusion"]
+# Concrete Literal — Pydantic needs this for field validation.
+ModelType = Literal["temporal_event_classifier", "temporal_gat", "temporal_vgae"]
 
 
 # ---------------------------------------------------------------------------
@@ -62,8 +54,7 @@ PHASE_MARKERS: dict[str, str] = {
 def lake_root() -> str:
     """Resolve `$GRAPHIDS_LAKE_ROOT`, fail-fast if unset.
 
-    Cross-user shared root: holds mlflow.db, cache/, mlartifacts/,
-    slurm_logs/. Distinct from Ray's run storage root (per-run writes).
+    Cross-user shared root: holds mlflow.db, cache/, mlartifacts/, slurm/.
     """
     lr = os.environ.get("GRAPHIDS_LAKE_ROOT")
     if not lr:
@@ -85,45 +76,21 @@ def cache_dir(lake_root: str, dataset: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Ray-backed run / trial helpers
+# Run-root helpers
 # ---------------------------------------------------------------------------
 
 
-def _ray_context() -> Any | None:
-    """Return the active Ray Tune/Train context if one exists."""
-    with suppress(ImportError):
-        from ray import tune
-
-        with suppress(RuntimeError):
-            return tune.get_context()
-    with suppress(ImportError):
-        from ray import train
-
-        with suppress(RuntimeError):
-            return train.get_context()
-    return None
-
-
 def trial_dir() -> Path:
-    """Ray-backed experiment directory.
+    """Root for GraphIDS run directories.
 
-    Inside Tune/Train this returns the native trial directory. Outside Ray it
-    falls back to a deterministic path under the default Ray results root.
+    Override with ``GRAPHIDS_RUN_ROOT``. Otherwise use ``$GRAPHIDS_LAKE_ROOT/runs``
+    when available, falling back to ``<project>/runs`` for local development.
     """
-    ctx = _ray_context()
-    if ctx is not None:
-        try:
-            return Path(ctx.get_trial_dir())
-        except Exception:
-            pass
-    try:
-        storage = ctx.get_storage() if ctx is not None else None
-        path = getattr(storage, "storage_path", None) if storage is not None else None
-        if path:
-            return Path(path)
-    except Exception:
-        pass
-    return Path.home() / "ray_results"
+    if override := os.environ.get("GRAPHIDS_RUN_ROOT"):
+        return Path(override)
+    if lake := os.environ.get("GRAPHIDS_LAKE_ROOT"):
+        return Path(lake) / "runs"
+    return PROJECT_ROOT / "runs"
 
 
 # ---------------------------------------------------------------------------
