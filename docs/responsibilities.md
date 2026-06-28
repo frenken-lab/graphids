@@ -13,16 +13,19 @@ check between top-level metadata and `data.source`.
 surface for YAML specs. Data, model, loss, scaler, representation, ID
 encoding, and discovery primitives live here or are re-exported here.
 
-**Experiment runtime** (`graphids/exp/runtime.py`) owns launch lifecycle and
-stage dispatch. It writes the manifest/events journal, creates the MLflow
-logger, builds config-driven objects, runs Lightning for `fit`/`test`,
-materializes caches for `cache`, and calls extraction/analyzer code for
-`extract`/`analyze`.
+**Ray backend** (`graphids/exp/ray_backend.py`) owns driver-side launch. It
+translates GraphIDS run metadata to Ray Train configs, starts or connects to
+Ray, and reports Ray result metrics.
+
+**Ray backend** (`graphids/exp/ray_backend.py`) owns driver launch, Ray worker lifecycle,
+object construction from YAML specs, journal/offline-ingest writes, and Lightning
+`fit`/`test` execution with Ray Train.
 
 **SLURM submit** (`graphids/exp/slurm.py`, `graphids/cli/exp.py`) validates an
-experiment YAML, renders an sbatch script, and submits it. The compute node
-runs `python -m graphids exp launch <yaml>` after sourcing
-`scripts/slurm/_preamble.sh`.
+experiment YAML, renders a Ray allocation sbatch script, and submits it. The
+allocation starts Ray head/workers and runs
+`python -m graphids exp launch <yaml> --address "${RAY_ADDRESS}"` after
+sourcing `scripts/slurm/_preamble.sh`.
 
 **Data sources and datamodules** (`graphids/core/data/`) own raw CAN loading,
 representation selection, cache paths, materialization, metadata, and
@@ -51,8 +54,9 @@ configs/experiments/<run>.yml
     -> ExperimentConfig.from_yaml
     -> ExperimentConfig.build_run
     -> gx exp launch OR gx exp submit
-    -> graphids.exp.runtime.launch_run
-    -> run_stage: cache | fit | test | extract | analyze
+    -> graphids.exp.ray_backend.launch_run
+    -> graphids.exp.ray_backend worker loop
+    -> fit | test
     -> MLflow + .graphids/manifest.json + .graphids/events.jsonl
 ```
 

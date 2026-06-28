@@ -35,14 +35,15 @@ $GRAPHIDS_LAKE_ROOT/
   mlflow.db
   mlartifacts/{dataset}/{stage}/
   slurm_logs/
-    scripts/{experiment_name}.sbatch
-    {experiment_name}_{job_id}.out
-    {experiment_name}_{job_id}.err
+    scripts/ray-{experiment_name}.sbatch
+    ray-{experiment_name}_{job_id}.out
+    ray-{experiment_name}_{job_id}.err
 
 ~/ray_results/{dataset}/{experiment_name}/{run_name}/
   .graphids/
     manifest.json
     events.jsonl
+    mlflow_ingest.json
   checkpoints/
     best_model.ckpt
     best_model.ckpt.sha256
@@ -74,27 +75,40 @@ representation settings creates a distinct cache.
 
 ## Run Journals
 
-`graphids.exp.runtime.launch_run` writes:
+Ray Train workers run through `graphids.exp.ray_backend`, which writes:
 
 | File | Purpose |
 |---|---|
 | `.graphids/manifest.json` | resolved run identity, config, outputs, status, failure |
-| `.graphids/events.jsonl` | launch, finish, and failure events |
+| `.graphids/events.jsonl` | worker, Ray result, finish, and failure events |
+| `.graphids/mlflow_ingest.json` | offline MLflow payload replayed by `gx exp ingest` |
 
 `gx exp status <run_dir>` reads these files.
 
 ## MLflow
 
-`graphids._mlflow.configure_tracking_uri()` defaults MLflow to:
+Training runs default to offline MLflow mode. They do not write to the shared
+MLflow SQLite database during `fit`/`test`; instead they write
+`.graphids/mlflow_ingest.json` in the run directory. A separate single-writer
+ingest step serializes completed runs into MLflow:
+
+```bash
+gx exp ingest <run_dir>
+gx exp ingest-root <root>
+```
+
+`GRAPHIDS_MLFLOW_MODE=online` restores the live MLflow logger for controlled
+debug runs. In online mode, `graphids._mlflow.configure_tracking_uri()` defaults
+MLflow to:
 
 ```text
 sqlite:///{lake_root}/mlflow.db
 ```
 
-`graphids.exp.runtime.launch_run` creates an MLflow logger, logs run
-hyperparameters/tags, and marks the run `FINISHED` or `FAILED`. For Lightning
-`fit` and `test`, final callback metrics are explicitly logged after the
-trainer returns.
+`gx exp ingest` creates the MLflow run, logs tags/params/final metrics, copies
+run artifacts, and marks the run `FINISHED` or `FAILED`. For Lightning `fit`
+and `test`, final callback metrics are captured after the trainer returns and
+stored in the ingest payload.
 
 MLflow artifact roots are explicit lake paths:
 
@@ -102,31 +116,31 @@ MLflow artifact roots are explicit lake paths:
 {lake_root}/mlartifacts/{dataset}/{stage}/
 ```
 
-MLflow system metrics are sampled by `MLflowSystemMetricsCallback` for
-Lightning-created runs.
+MLflow system metrics are sampled by `MLflowSystemMetricsCallback` only when
+`GRAPHIDS_MLFLOW_MODE=online`.
 
 ## SLURM
 
-`gx exp submit <yaml>` writes one script per experiment name:
+`gx exp submit <yaml>` writes one Ray allocation script per experiment name:
 
 ```text
-{slurm_log_dir}/scripts/{experiment_name}.sbatch
+{slurm_log_dir}/scripts/ray-{experiment_name}.sbatch
 ```
 
-The script runs:
+The script starts a Ray head and workers inside the SLURM allocation, then runs:
 
 ```bash
 cd /users/PAS2022/rf15/graphids
 source scripts/slurm/_preamble.sh
-python -m graphids exp launch /abs/path/to/config.yml
+python -m graphids exp launch /abs/path/to/config.yml --address "${RAY_ADDRESS}"
 source scripts/slurm/_epilog.sh
 ```
 
 Stdout/stderr go to:
 
 ```text
-{slurm_log_dir}/{experiment_name}_%j.out
-{slurm_log_dir}/{experiment_name}_%j.err
+{slurm_log_dir}/ray-{experiment_name}_%j.out
+{slurm_log_dir}/ray-{experiment_name}_%j.err
 ```
 
 ## Execution Order
@@ -140,10 +154,12 @@ gx exp submit <yaml>
 
 compute node:
   -> scripts/slurm/_preamble.sh
-  -> python -m graphids exp launch <yaml>
+  -> start Ray head/workers in the allocation
+  -> python -m graphids exp launch <yaml> --address ${RAY_ADDRESS}
   -> ExperimentConfig.from_yaml
-  -> launch_run
-  -> run_stage
+  -> ray_backend.launch_run
+  -> ray_backend worker loop
+  -> fit | test
   -> manifest/events + MLflow
   -> scripts/slurm/_epilog.sh
 ```

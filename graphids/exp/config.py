@@ -7,7 +7,7 @@ consume the same domain config.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -127,9 +127,6 @@ class OutputConfig(_StrictModel):
 
     def checkpoint_path(self) -> Path:
         return self.run_dir / self.checkpoint_dir
-
-    def mlflow_dir(self) -> Path:
-        return self.run_dir / ".mlflow"
 
 
 class RunConfig(_StrictModel):
@@ -272,17 +269,8 @@ class ExperimentConfig(_StrictModel):
     @classmethod
     def from_yaml(cls, path: str | Path) -> ExperimentConfig:
         cfg = yaml.safe_load(Path(path).read_text()) or {}
+        if cfg.get("resources") is None:
+            cfg["resources"] = {}
+        if cfg.get("config") is None:
+            cfg["config"] = {}
         return cls.model_validate(cfg)
-
-
-@dataclass(frozen=True, slots=True)
-class RunSummary:
-    """Minimal status summary for UI/readout code."""
-
-    run_dir: str
-    status: str
-    stage: str
-    name: str
-    last_event: str | None = None
-    error: str | None = None
-    extra: dict[str, Any] = field(default_factory=dict)

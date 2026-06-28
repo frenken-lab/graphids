@@ -16,7 +16,7 @@ encode policy Lightning's stock callbacks don't:
 `pl.callbacks.EarlyStopping` is wired straight from the libsonnet —
 graphids no longer ships its own.
 
-`MLflowTrainingCallback` (in [`graphids._mlflow`](runtime.md))
+`MLflowTrainingCallback` (in [`graphids._mlflow`](callbacks.md))
 forwards per-epoch metrics + run-config + LoggedModel registration; it
 is registered alongside but lives in the MLflow surface for
 discoverability.

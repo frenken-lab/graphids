@@ -40,9 +40,10 @@ gx disk
 configs/experiments/<run>.yml
     -> graphids.exp.config.ExperimentConfig
     -> graphids.exp.config.RunConfig
-    -> graphids.exp.runtime.launch_run
-    -> run_stage: cache | fit | test | extract | analyze
-    -> MLflow + .graphids/manifest.json + .graphids/events.jsonl
+    -> graphids.exp.ray_backend.launch_run
+    -> run_stage: fit | test
+    -> .graphids/manifest.json + .graphids/events.jsonl + .graphids/mlflow_ingest.json
+    -> gx exp ingest <run_dir> writes MLflow serially after training
 ```
 
 `gx exp submit` uses `graphids.exp.slurm` to render an sbatch script that
@@ -59,13 +60,13 @@ No Parsl row submission is used in the live path.
 | Area | Files |
 |---|---|
 | Experiment schema | `graphids/exp/config.py` |
-| Runtime dispatch | `graphids/exp/runtime.py` |
+| Ray launch | `graphids/exp/ray_backend.py` |
 | SLURM submit | `graphids/exp/slurm.py`, `graphids/cli/exp.py` |
 | Primitives | `graphids/primitives.py`, `graphids/primitives_data.py`, `graphids/primitives_models.py`, `graphids/primitives_losses.py` |
 | Data/cache | `graphids/core/data/`, `graphids/core/data/preprocessing/` |
 | Models | `graphids/core/models/` |
 | Callbacks | `graphids/core/callbacks.py` |
-| MLflow | `graphids/_mlflow.py` |
+| MLflow ingest | `graphids/exp/ingest.py`, `graphids/_mlflow.py` |
 
 ## Config Contract
 
@@ -76,19 +77,14 @@ Experiment YAML contains:
 - `resources`
 - stage payload under `config`
 
-For `fit`, `test`, and `cache`, the config layer verifies that
+For `fit` and `test`, the config layer verifies that
 `config.data.source.representation_cfg` matches the top-level
 `representation_cfg`.
 
-Supported runtime stages:
+Supported Ray stages:
 
-- `cache`: build graph cache for the configured data source.
 - `fit`: run Lightning training.
 - `test`: run Lightning test.
-- `extract`: precompute fusion states.
-- `analyze`: generate checkpoint artifacts.
-
-`hf_push` exists in the schema but is not wired in runtime.
 
 ## Data Layout
 
@@ -99,7 +95,7 @@ It holds:
 
 - `raw/{dataset}/` source CSVs
 - `cache/v{PREPROCESSING_VERSION}/{dataset}/...` materialized graph caches
-- `mlflow.db` MLflow backend
+- `mlflow.db` MLflow backend populated by serialized `gx exp ingest`
 - `slurm_logs/` sbatch scripts and stdout/stderr
 
 Run directories default to:
@@ -109,8 +105,8 @@ Run directories default to:
 ```
 
 Each run directory contains `.graphids/manifest.json`,
-`.graphids/events.jsonl`, and, for training runs, `checkpoints/` when
-checkpointing is enabled.
+`.graphids/events.jsonl`, `.graphids/mlflow_ingest.json`, and, for training
+runs, `checkpoints/` when checkpointing is enabled.
 
 ## Snapshot-Sequence Path
 
@@ -125,14 +121,6 @@ representation_cfg:
   sequence_stride: 1
 ```
 
-Cache jobs materialize ordered sequences of snapshot graphs. GAT training can
-consume that metadata with `sequence_pool: gru`, `mean`, `attention`, `flat`,
-or `auto`.
-
-Training configs that rely on prebuilt caches should set:
-
-```yaml
-require_cache: true
-```
-
-The datamodule then fails fast if the cache is missing or incomplete.
+Data sources materialize ordered sequences of snapshot graphs in the versioned
+cache tree. GAT training can consume that metadata with `sequence_pool: gru`,
+`mean`, `attention`, `flat`, or `auto`.

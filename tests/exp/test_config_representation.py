@@ -14,8 +14,8 @@ def test_experiment_config_defaults_to_temporal_representation():
 
 def test_temporal_smoke_configs_resolve_without_window_or_budget_knobs():
     from graphids.core.data.preprocessing.representations import representation_kind
-    from graphids.exp import runtime
     from graphids.exp.config import ExperimentConfig
+    from graphids.exp.ray_backend import build_component
 
     for path, model_type in (
         ("configs/experiments/temporal_event_classifier_smoke.yml", "temporal_event_classifier"),
@@ -32,7 +32,7 @@ def test_temporal_smoke_configs_resolve_without_window_or_budget_knobs():
 
         assert representation_kind(run.representation_cfg) == "temporal"
         assert run.payload.model["type"] == model_type
-        data = runtime._build_component(run.payload.data)
+        data = build_component(run.payload.data)
         from graphids.core.data.datamodule.temporal import TemporalDataModule
 
         assert isinstance(data, TemporalDataModule)

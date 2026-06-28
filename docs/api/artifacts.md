@@ -3,7 +3,7 @@
 Per-checkpoint artifact generation: embeddings, GAT attention weights,
 teacher↔student CKA, loss-landscape grids, fusion-policy traces. Driven
 by `AnalysisConfig` and dispatched directly through
-`graphids.exp.runtime.run_stage` to `Analyzer(spec).run()`.
+`graphids.exp.ray_backend` to `Analyzer(spec).run()`.
 
 Distinct from `graphids.analysis`, which owns
 cross-run statistical comparison from the MLflow catalog (no torch,

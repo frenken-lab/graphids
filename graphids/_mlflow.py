@@ -3,7 +3,7 @@
 This module is intentionally thin:
 - resolve the shared tracking URI
 - construct an MLflow logger
-- keep system-metrics enabled when requested
+- provide the optional online-mode system-metrics callback
 
 Everything else belongs in Lightning or the experiment code.
 """
@@ -33,13 +33,10 @@ def make_logger(
     tags: dict[str, str] | None = None,
     artifact_location: str | None = None,
     run_id: str | None = None,
-    system_metrics: bool = True,
 ) -> MLFlowLogger:
     """Create the Lightning MLflow logger used by training and evaluation."""
     configure_tracking_uri()
     tracking_uri = mlflow.get_tracking_uri()
-    if system_metrics:
-        mlflow.enable_system_metrics_logging()
     return MLFlowLogger(
         experiment_name=experiment_name,
         run_name=run_name,

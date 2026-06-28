@@ -118,12 +118,15 @@ def build_slurm_script(
     partition: str | None = None,
     time_limit: str | None = None,
     gres: str | None = None,
+    nodes: int = 1,
+    ray_port: int = 6379,
 ) -> tuple[Path, str]:
+    """Build a SLURM script that starts Ray inside one allocation."""
     yaml_abs = Path(yaml_path).resolve()
     if not yaml_abs.is_file():
         raise FileNotFoundError(f"experiment YAML not found: {yaml_abs}")
 
-    job_name = _slug(cfg.experiment_name)
+    job_name = _slug(f"ray-{cfg.experiment_name}")
     log_dir = _log_dir()
     script_dir = _script_dir()
     script_path = script_dir / f"{job_name}.sbatch"
@@ -137,12 +140,16 @@ def build_slurm_script(
         time_limit=time_limit,
         gres=gres,
     )
+    directives[0] = f"#SBATCH --nodes={max(1, int(nodes))}"
+    directives[1] = "#SBATCH --ntasks-per-node=1"
     directives.extend(
         [
             f"#SBATCH --output={stdout_path}",
             f"#SBATCH --error={stderr_path}",
         ]
     )
+    gpus = _gpus(cfg)
+    cpus = max(1, int(cfg.resources.cpus_per_worker))
     script = "\n".join(
         [
             "#!/usr/bin/env bash",
@@ -151,7 +158,38 @@ def build_slurm_script(
             "set -euo pipefail",
             f"cd {PROJECT_ROOT}",
             "source scripts/slurm/_preamble.sh",
-            f"python -m graphids exp launch {yaml_abs}",
+            "",
+            f"RAY_PORT=${{GRAPHIDS_RAY_PORT:-{int(ray_port)}}}",
+            f"RAY_LOG_DIR={log_dir}/ray_${{SLURM_JOB_ID}}",
+            'mkdir -p "${RAY_LOG_DIR}"',
+            'mapfile -t RAY_NODES < <(scontrol show hostnames "${SLURM_JOB_NODELIST}")',
+            'HEAD_NODE="${RAY_NODES[0]}"',
+            'HEAD_IP=$(srun --nodes=1 --ntasks=1 -w "${HEAD_NODE}" hostname --ip-address | awk \'{print $1}\')',
+            'RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}"',
+            "cleanup_ray() {",
+            '  for NODE in "${RAY_NODES[@]}"; do',
+            '    srun --nodes=1 --ntasks=1 -w "${NODE}" ray stop --force >/dev/null 2>&1 || true &',
+            "  done",
+            "  wait || true",
+            "}",
+            "trap cleanup_ray EXIT",
+            "",
+            "cleanup_ray",
+            'srun --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \\',
+            '  ray start --head --node-ip-address="${HEAD_IP}" --port="${RAY_PORT}" \\',
+            f'    --num-cpus={cpus} --num-gpus={gpus} --temp-dir="${{RAY_LOG_DIR}}/head" \\',
+            '    --block >"${RAY_LOG_DIR}/head.log" 2>&1 &',
+            "sleep 10",
+            "",
+            'for NODE in "${RAY_NODES[@]:1}"; do',
+            '  srun --nodes=1 --ntasks=1 -w "${NODE}" \\',
+            '    ray start --address="${RAY_ADDRESS}" \\',
+            f'      --num-cpus={cpus} --num-gpus={gpus} --temp-dir="${{RAY_LOG_DIR}}/${{NODE}}" \\',
+            '      --block >"${RAY_LOG_DIR}/${NODE}.log" 2>&1 &',
+            "done",
+            "sleep 10",
+            "",
+            f'python -m graphids exp launch {yaml_abs} --address "${{RAY_ADDRESS}}"',
             "source scripts/slurm/_epilog.sh",
             "",
         ]
@@ -167,6 +205,7 @@ def submit_experiment(
     partition: str | None = None,
     time_limit: str | None = None,
     gres: str | None = None,
+    nodes: int = 1,
     dry_run: bool = False,
     sbatch: str = "sbatch",
 ) -> SlurmSubmitResult:
@@ -178,6 +217,7 @@ def submit_experiment(
         partition=partition,
         time_limit=time_limit,
         gres=gres,
+        nodes=nodes,
     )
     command: Sequence[str] = (sbatch, str(script_path))
     if dry_run:

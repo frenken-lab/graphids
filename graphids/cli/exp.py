@@ -5,7 +5,7 @@ This is the first replacement surface for the old row/submit mental model.
 
 from __future__ import annotations
 
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated
 
@@ -15,7 +15,9 @@ from rich.table import Table
 
 from graphids.cli.app import app
 from graphids.exp.config import ExperimentConfig
+from graphids.exp.ingest import discover_ingest_payloads, ingest_many, ingest_run
 from graphids.exp.journal import load_manifest
+from graphids.exp.ray_backend import launch_run
 from graphids.exp.slurm import submit_experiment
 
 exp_app = typer.Typer(
@@ -40,7 +42,7 @@ def status(
     run_dir: Annotated[Path, typer.Argument(help="Run directory to inspect")],
 ) -> None:
     """Print manifest + latest event summary for one run."""
-    from graphids.exp.runtime import summarize_run
+    from graphids.exp.ray_backend import summarize_run
 
     summary = summarize_run(run_dir)
     if summary is None:
@@ -74,20 +76,21 @@ def manifest(
 @exp_app.command("launch")
 def launch(
     path: Annotated[Path, typer.Argument(help="YAML experiment config")],
+    address: Annotated[str | None, typer.Option("--address", help="Existing Ray cluster address")] = None,
 ) -> None:
-    """Launch one experiment config through the new primitive surface."""
+    """Launch one experiment config through Ray Train."""
     exp_cfg = ExperimentConfig.from_yaml(path)
     run = exp_cfg.build_run(
         name=exp_cfg.experiment_name,
         stage=exp_cfg.stage,
         config=exp_cfg.config,
     )
-    from graphids.exp.runtime import launch_run
 
-    result = launch_run(run)
-    if result is not None:
-        payload = asdict(result) if is_dataclass(result) else {"result": str(result)}
-        console.print_json(data=payload)
+    try:
+        result = launch_run(run, address=address)
+    except RuntimeError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print_json(data=asdict(result))
 
 
 @exp_app.command("submit")
@@ -97,9 +100,10 @@ def submit(
     partition: Annotated[str | None, typer.Option("--partition", "-p", help="SLURM partition override")] = None,
     time_limit: Annotated[str | None, typer.Option("--time", "-t", help="SLURM walltime override")] = None,
     gres: Annotated[str | None, typer.Option("--gres", help="SLURM gres override")] = None,
+    nodes: Annotated[int, typer.Option("--nodes", help="Number of SLURM nodes in the Ray allocation")] = 1,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Print the sbatch script without submitting")] = False,
 ) -> None:
-    """Submit one experiment YAML as a SLURM batch job."""
+    """Submit one experiment YAML as a Ray Train SLURM job."""
     exp_cfg = ExperimentConfig.from_yaml(path)
     result = submit_experiment(
         exp_cfg,
@@ -108,6 +112,7 @@ def submit(
         partition=partition,
         time_limit=time_limit,
         gres=gres,
+        nodes=nodes,
         dry_run=dry_run,
     )
     if dry_run:
@@ -178,3 +183,38 @@ def results(
                 values.append(str(value))
         table.add_row(*values)
     console.print(table)
+
+
+@exp_app.command("ingest")
+def ingest(
+    run_dir: Annotated[Path, typer.Argument(help="Run directory with .graphids/mlflow_ingest.json")],
+    tracking_uri: Annotated[str | None, typer.Option("--tracking-uri", help="Override MLflow tracking URI")] = None,
+    no_artifacts: Annotated[bool, typer.Option("--no-artifacts", help="Skip artifact upload/copy")] = False,
+    force: Annotated[bool, typer.Option("--force", help="Create a new MLflow run even if this run_dir was ingested")] = False,
+) -> None:
+    """Serialize one offline GraphIDS run into MLflow."""
+    result = ingest_run(
+        run_dir,
+        tracking_uri=tracking_uri,
+        log_artifacts=not no_artifacts,
+        skip_existing=not force,
+    )
+    console.print_json(data=asdict(result))
+
+
+@exp_app.command("ingest-root")
+def ingest_root(
+    root: Annotated[Path, typer.Argument(help="Directory tree containing GraphIDS run directories")],
+    tracking_uri: Annotated[str | None, typer.Option("--tracking-uri", help="Override MLflow tracking URI")] = None,
+    no_artifacts: Annotated[bool, typer.Option("--no-artifacts", help="Skip artifact upload/copy")] = False,
+    force: Annotated[bool, typer.Option("--force", help="Create new MLflow runs even if run_dirs were ingested")] = False,
+) -> None:
+    """Serialize all offline GraphIDS runs below a root into MLflow."""
+    payloads = discover_ingest_payloads(root)
+    results = ingest_many(
+        payloads,
+        tracking_uri=tracking_uri,
+        log_artifacts=not no_artifacts,
+        skip_existing=not force,
+    )
+    console.print_json(data=[asdict(result) for result in results])

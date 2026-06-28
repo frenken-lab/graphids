@@ -2,10 +2,10 @@
 
 > Status: **current**
 
-GraphIDS has three live observability surfaces:
+GraphIDS has three observability surfaces:
 
-- MLflow SQLite for params, tags, metrics, and system metrics.
-- `.graphids/` journals in each run directory for launch status.
+- Per-run `.graphids/` journals and offline MLflow ingest payloads.
+- MLflow SQLite for post-run params, tags, metrics, and artifacts.
 - SLURM stdout/stderr logs for process text.
 
 ## Run Directory
@@ -15,6 +15,7 @@ GraphIDS has three live observability surfaces:
   .graphids/
     manifest.json
     events.jsonl
+    mlflow_ingest.json
   checkpoints/
   artifacts/
 ```
@@ -25,6 +26,22 @@ GraphIDS has three live observability surfaces:
 ## MLflow
 
 By default:
+
+```text
+GRAPHIDS_MLFLOW_MODE=offline
+```
+
+Training and evaluation jobs do not write to the shared MLflow SQLite database
+while running. They write `.graphids/mlflow_ingest.json`; a separate serialized
+step replays that payload into MLflow:
+
+```bash
+gx exp ingest <run_dir>
+gx exp ingest-root <root>
+```
+
+For controlled debugging, `GRAPHIDS_MLFLOW_MODE=online` restores the live
+Lightning `MLFlowLogger`. In either path, the default MLflow tracking URI is:
 
 ```text
 sqlite:///$GRAPHIDS_LAKE_ROOT/mlflow.db
@@ -70,7 +87,7 @@ graphids.payload/*
 graphids.resource/*
 ```
 
-Nested payload fields are flattened by Lightning's `MLFlowLogger`.
+Nested payload fields are flattened by `gx exp ingest`.
 
 ### Metrics
 
@@ -84,11 +101,12 @@ val_acc
 val_auroc
 ```
 
-`graphids.exp.runtime` explicitly logs final `trainer.callback_metrics` after
-`fit` and `test`, so short runs still leave final metric values.
+`graphids.exp.ray_backend` captures final `trainer.callback_metrics` after `fit`
+and `test` into the offline ingest payload, so short runs still leave final
+metric values.
 
-System metrics are sampled through `MLflowSystemMetricsCallback` when a
-Lightning run starts.
+System metrics are sampled through `MLflowSystemMetricsCallback` only in
+`GRAPHIDS_MLFLOW_MODE=online`.
 
 ## SLURM Logs
 

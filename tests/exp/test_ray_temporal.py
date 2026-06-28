@@ -7,7 +7,8 @@ def _install_temporal_smoke_data(monkeypatch):
     from torch_geometric.data import TemporalData
     from torch_geometric.loader import TemporalDataLoader
 
-    from graphids.exp import runtime
+    from graphids.exp import ray_backend
+    from graphids.exp.ray_backend import build_component as original_build
 
     def temporal(labels: list[int], *, scored: list[bool] | None = None) -> TemporalData:
         n = len(labels)
@@ -60,20 +61,18 @@ def _install_temporal_smoke_data(monkeypatch):
         def test_dataloader(self):
             return [TemporalDataLoader(self.test_data["holdout"], batch_size=2)]
 
-    original_build = runtime._build_component
-
     def build_component(spec, **build_kwargs):
         if isinstance(spec, dict) and spec.get("type") == "temporal_smoke_data":
             return TemporalSmokeData()
         return original_build(spec, **build_kwargs)
 
-    monkeypatch.setattr(runtime, "_build_component", build_component)
-    return runtime
+    monkeypatch.setattr(ray_backend, "build_component", build_component)
+    return ray_backend
 
 
 def _run_fit_smoke(tmp_path, *, model: dict, loss_fn: dict | None):
-    from graphids.exp import runtime
     from graphids.exp.config import FitRunPayload, OutputConfig, RunConfig
+    from graphids.exp.ray_backend import _build_lightning_run
 
     run = RunConfig(
         name=f"temporal-{model['type']}-smoke",
@@ -99,10 +98,15 @@ def _run_fit_smoke(tmp_path, *, model: dict, loss_fn: dict | None):
         outputs=OutputConfig(run_dir=tmp_path / f"temporal-{model['type']}-smoke"),
     )
 
-    return runtime.run_stage(run)
+    return _build_lightning_run(
+        run.stage,
+        run.payload.model_dump(mode="json"),
+        logger=None,
+        ray=False,
+    )
 
 
-def test_runtime_runs_temporal_event_classifier_smoke(monkeypatch, tmp_path):
+def test_ray_backend_runs_temporal_event_classifier_smoke(monkeypatch, tmp_path):
     _install_temporal_smoke_data(monkeypatch)
     result = _run_fit_smoke(
         tmp_path,
@@ -114,7 +118,7 @@ def test_runtime_runs_temporal_event_classifier_smoke(monkeypatch, tmp_path):
     assert {"train_loss", "train_acc", "val_loss", "val_acc"} <= set(result["metrics"])
 
 
-def test_runtime_runs_temporal_gat_smoke(monkeypatch, tmp_path):
+def test_ray_backend_runs_temporal_gat_smoke(monkeypatch, tmp_path):
     _install_temporal_smoke_data(monkeypatch)
     result = _run_fit_smoke(
         tmp_path,
@@ -124,7 +128,7 @@ def test_runtime_runs_temporal_gat_smoke(monkeypatch, tmp_path):
     assert {"train_loss", "train_acc", "val_loss", "val_acc"} <= set(result["metrics"])
 
 
-def test_runtime_runs_temporal_vgae_smoke(monkeypatch, tmp_path):
+def test_ray_backend_runs_temporal_vgae_smoke(monkeypatch, tmp_path):
     _install_temporal_smoke_data(monkeypatch)
     result = _run_fit_smoke(
         tmp_path,

@@ -123,7 +123,7 @@ nav:
       - Prebatch timing: reference/prebatch-timing.md
       - PyTorch compat: reference/pytorch-compat.md
   - API Reference:
-      - Runtime: api/runtime.md
+      - Ray launcher: api/ray-backend.md
       - CLI: api/cli.md
       - Callbacks: api/callbacks.md
       - Data: api/data.md

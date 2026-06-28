@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-def test_build_slurm_script_uses_experiment_resources(monkeypatch, tmp_path):
+def test_build_slurm_script_starts_ray_allocation(monkeypatch, tmp_path):
     from graphids.exp.config import ExperimentConfig, ResourceConfig
     from graphids.exp.slurm import build_slurm_script
 
@@ -19,16 +19,27 @@ def test_build_slurm_script_uses_experiment_resources(monkeypatch, tmp_path):
             account="pas1266",
         ),
     )
-    path, script = build_slurm_script(cfg, "configs/experiments/gat_temporal_smoke.yml")
+    path, script = build_slurm_script(
+        cfg,
+        "configs/experiments/gat_temporal_smoke.yml",
+        nodes=2,
+    )
 
-    assert path == tmp_path / "slurm" / "scripts" / "temporal_smoke.sbatch"
+    assert path == tmp_path / "slurm" / "scripts" / "ray-temporal_smoke.sbatch"
+    assert "#SBATCH --nodes=2" in script
+    assert "#SBATCH --ntasks-per-node=1" in script
+    assert "#SBATCH --job-name=ray-temporal_smoke" in script
     assert "#SBATCH --clusters=pitzer" in script
     assert "#SBATCH --partition=gpu" in script
     assert "#SBATCH --gres=gpu:1" in script
     assert "#SBATCH --cpus-per-task=4" in script
     assert "#SBATCH --time=00:30:00" in script
     assert "#SBATCH --account=pas1266" in script
+    assert "ray start --head" in script
+    assert 'ray start --address="${RAY_ADDRESS}"' in script
+    assert "trap cleanup_ray EXIT" in script
     assert "python -m graphids exp launch" in script
+    assert "--address \"${RAY_ADDRESS}\"" in script
 
 
 def test_submit_experiment_writes_script_and_calls_sbatch(monkeypatch, tmp_path):
@@ -57,7 +68,7 @@ def test_submit_experiment_writes_script_and_calls_sbatch(monkeypatch, tmp_path)
         resources=ResourceConfig(accelerator="gpu", gpus_per_worker=1.0, account="pas1266"),
     )
 
-    result = submit_experiment(cfg, "configs/experiments/gat_temporal_smoke.yml")
+    result = submit_experiment(cfg, "configs/experiments/gat_temporal_smoke.yml", nodes=2)
 
     assert result.job_id == "12345"
     assert result.script_path.is_file()
@@ -77,4 +88,5 @@ def test_exp_submit_dry_run_cli(monkeypatch):
 
     assert result.exit_code == 0
     assert "#SBATCH --clusters=pitzer" in result.stdout
+    assert "ray start --head" in result.stdout
     assert "python -m graphids exp launch" in result.stdout

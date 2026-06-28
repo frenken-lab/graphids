@@ -1,9 +1,9 @@
 # CLI
 
-The current experiment surface is **validate → launch/submit → inspect**.
+The current experiment surface is **validate → Ray launch/submit → inspect**.
 Validation is pure YAML/Pydantic checking; launch runs one typed
-`ExperimentConfig` in-process; submit wraps that launch in an sbatch script;
-inspect reads the run manifest and event log.
+`ExperimentConfig` through Ray Train; submit wraps that launch in a Ray
+allocation sbatch script; inspect reads the run manifest and event log.
 See [`chassis-invariants.md`](https://github.com/frenken-lab/graphids/blob/main/.claude/rules/chassis-invariants.md)
 for the four architectural properties (drift resistance, MLflow as
 state store, reproduction contract, render purity).
@@ -18,9 +18,9 @@ state store, reproduction contract, render purity).
 | results | `graphids exp results` | `results` |
 
 There is no separate `ops` CLI surface. The run config itself carries
-the stage and the stage-specific payload, so `fit` / `test` / `extract`
-/ `analyze` all go through [`graphids.exp.runtime.launch_run`](runtime.md)
-and the run manifest records the exact config that launched.
+the stage and the stage-specific payload, so `fit` and `test` go through
+`graphids.exp.ray_backend.launch_run`, and the run manifest records the exact
+config that launched.
 
 `app.py` owns the root Typer app + shared option types.
 `__main__.py` imports each submodule to register commands.

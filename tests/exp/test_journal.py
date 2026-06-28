@@ -65,18 +65,12 @@ def test_mlflow_system_metrics_callback_lifecycle(monkeypatch):
     ]
 
 
-def test_run_stage_attaches_launch_logger(monkeypatch, tmp_path):
+def test_build_lightning_run_attaches_logger(monkeypatch):
     import sys
     import types
 
     from graphids._mlflow import MLflowSystemMetricsCallback
-    from graphids.exp import runtime
-    from graphids.exp.config import (
-        FitRunPayload,
-        OutputConfig,
-        ResourceConfig,
-        RunConfig,
-    )
+    from graphids.exp import ray_backend
 
     captured: dict[str, object] = {}
 
@@ -111,24 +105,20 @@ def test_run_stage_attaches_launch_logger(monkeypatch, tmp_path):
     lightning_pkg.pytorch = DummyLightning
     monkeypatch.setitem(sys.modules, "lightning", lightning_pkg)
     monkeypatch.setitem(sys.modules, "lightning.pytorch", DummyLightning)
-    monkeypatch.setattr(runtime, "_build_component", lambda spec: DummyData())
-    monkeypatch.setattr(runtime, "_resolve_spec", lambda spec: {} if spec == {} else DummyModel())
+    monkeypatch.setattr(ray_backend, "build_component", lambda spec: DummyData())
+    monkeypatch.setattr(ray_backend, "resolve_spec", lambda spec: {} if spec == {} else DummyModel())
 
     logger = object()
-    run = RunConfig(
-        name="demo",
-        stage="fit",
-        dataset="hcrl_sa",
-        payload=FitRunPayload(
-            model={"type": "dummy_model"},
-            data={"type": "dummy_data"},
-            seed_everything=123,
-        ),
-        resources=ResourceConfig(),
-        outputs=OutputConfig(run_dir=tmp_path / "run"),
+    result = ray_backend._build_lightning_run(
+        "fit",
+        {
+            "model": {"type": "dummy_model"},
+            "data": {"type": "dummy_data"},
+            "seed_everything": 123,
+        },
+        logger=logger,
+        ray=False,
     )
-
-    result = runtime.run_stage(run, logger=logger)
 
     assert result == {"stage": "fit", "trainer": "DummyTrainer", "metrics": {}}
     assert captured["trainer_kwargs"]["logger"] is logger
@@ -179,7 +169,7 @@ def test_manifest_and_events_round_trip(tmp_path):
         outputs={"run_dir": str(run.outputs.run_dir)},
     )
     write_manifest(run.outputs.run_dir, manifest)
-    append_event(run.outputs.run_dir, EventRecord(status="running", stage="fit", message="launch_started"))
+    append_event(run.outputs.run_dir, EventRecord(status="running", stage="fit", message="worker_started"))
     append_event(run.outputs.run_dir, EventRecord(status="finished", stage="fit", message="fit_finished"))
 
     loaded = load_manifest(run.outputs.run_dir)
@@ -187,7 +177,7 @@ def test_manifest_and_events_round_trip(tmp_path):
     assert loaded is not None
     assert loaded.name == "demo"
     assert loaded.status == "created"
-    assert [e.message for e in events] == ["launch_started", "fit_finished"]
+    assert [e.message for e in events] == ["worker_started", "fit_finished"]
 
 
 def test_exp_status_prints_summary(tmp_path):
@@ -221,18 +211,19 @@ def test_exp_status_prints_summary(tmp_path):
     assert "fit_failed" in result.stdout
 
 
-def test_exp_launch_loads_yaml_and_invokes_runtime(monkeypatch, tmp_path):
+def test_exp_launch_loads_yaml_and_invokes_ray_backend(monkeypatch, tmp_path):
     import graphids.cli.exp as exp_cli
     import graphids.paths as paths
     from graphids.cli.app import app
-    from graphids.exp.config import RunSummary
+    from graphids.exp.ray_backend import RunSummary
 
     captured: dict[str, object] = {}
     run_root = tmp_path / "runs"
     monkeypatch.setattr(paths, "trial_dir", lambda: run_root)
 
-    def fake_launch_run(run):
+    def fake_launch_run(run, *, address=None):
         captured["run"] = run
+        captured["address"] = address
         return RunSummary(
             run_dir=str(run.outputs.run_dir),
             status="finished",
@@ -268,6 +259,7 @@ config:
     assert result.exit_code == 0, result.stderr
     assert '"status": "finished"' in result.stdout
     run = captured["run"]
+    assert captured["address"] is None
     assert run.name == "smoke"
     assert run.stage == "fit"
     assert run.dataset == "hcrl_sa"
