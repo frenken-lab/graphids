@@ -169,6 +169,7 @@ def build_slurm_script(
             'HEAD_NODE="${RAY_NODES[0]}"',
             'HEAD_IP=$(srun --nodes=1 --ntasks=1 -w "${HEAD_NODE}" hostname --ip-address | awk \'{print $1}\')',
             'RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}"',
+            "export RAY_ADDRESS",
             "cleanup_ray() {",
             '  if ((${#RAY_START_PIDS[@]})); then',
             '    kill "${RAY_START_PIDS[@]}" >/dev/null 2>&1 || true',
