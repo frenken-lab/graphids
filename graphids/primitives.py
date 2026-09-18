@@ -28,15 +28,18 @@ from graphids.primitives_models import (
     ModelCfg,
     TemporalEventClassifierCfg,
     TemporalGATCfg,
+    TemporalRNNClassifierCfg,
     TemporalVGAECfg,
     temporal_event_classifier,
     temporal_gat,
+    temporal_rnn_classifier,
     temporal_vgae,
 )
 
 __all__ = [
     "temporal_event_classifier",
     "temporal_gat",
+    "temporal_rnn_classifier",
     "temporal_vgae",
     "focal",
     "ce",
@@ -52,6 +55,7 @@ __all__ = [
     "DataCfg",
     "TemporalEventClassifierCfg",
     "TemporalGATCfg",
+    "TemporalRNNClassifierCfg",
     "TemporalVGAECfg",
     "FocalLossCfg",
     "CELossCfg",

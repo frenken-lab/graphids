@@ -15,7 +15,11 @@ from __future__ import annotations
 
 from typing import Any
 
-_LOSS_MODEL_TYPES = frozenset({"temporal_event_classifier", "temporal_gat"})
+_LOSS_MODEL_TYPES = frozenset({
+    "temporal_event_classifier",
+    "temporal_gat",
+    "temporal_rnn_classifier",
+})
 
 
 def build_loss(
@@ -37,7 +41,7 @@ def build_loss(
 
     cfg = dict(loss_config or {})
 
-    if model_type in {"temporal_event_classifier", "temporal_gat"}:
+    if model_type in _LOSS_MODEL_TYPES:
         loss_type = cfg.pop("type", "ce")
         if loss_type == "focal":
             return FocalLoss(gamma=cfg.get("gamma", 2.0))

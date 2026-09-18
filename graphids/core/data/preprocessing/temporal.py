@@ -351,5 +351,8 @@ def temporal_to_pyg(table: pl.DataFrame) -> TemporalData:
     )
     if "split_name" in table.columns:
         names = table["split_name"].unique().to_list()
-        data.split_name = str(names[0]) if len(names) == 1 else "mixed"
+        # ``TemporalData`` treats normal attributes as event fields and slices
+        # them in ``TemporalDataLoader``. Keep this human-readable label as
+        # object metadata; the tensor split contract is ``split_id``.
+        object.__setattr__(data, "split_name", str(names[0]) if len(names) == 1 else "mixed")
     return data

@@ -7,7 +7,7 @@ The live submit path is experiment-YAML based.
 ## Ray Launch
 
 ```bash
-gx exp launch configs/experiments/gat_snapshot_sequence_real.yml
+gx exp launch configs/experiments/temporal_event_classifier_smoke.yml
 ```
 
 Flow:
@@ -21,7 +21,7 @@ Flow:
 ## SLURM Submit
 
 ```bash
-gx exp submit configs/experiments/gat_snapshot_sequence_real.yml -C pitzer
+gx exp submit configs/experiments/temporal_event_classifier_smoke.yml -C pitzer
 ```
 
 Flow:
@@ -41,7 +41,7 @@ python -m graphids exp launch /abs/path/to/experiment.yml --address "${RAY_ADDRE
 ## Dry Run
 
 ```bash
-gx exp submit configs/experiments/gat_snapshot_sequence_real.yml -C pitzer --dry-run
+gx exp submit configs/experiments/temporal_event_classifier_smoke.yml -C pitzer --dry-run
 ```
 
 This prints the sbatch script and does not submit.

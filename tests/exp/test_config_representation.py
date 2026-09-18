@@ -19,6 +19,7 @@ def test_temporal_smoke_configs_resolve_without_window_or_budget_knobs():
 
     for path, model_type in (
         ("configs/experiments/temporal_event_classifier_smoke.yml", "temporal_event_classifier"),
+        ("configs/experiments/rnn_temporal_smoke.yml", "temporal_rnn_classifier"),
         ("configs/experiments/gat_temporal_smoke.yml", "temporal_gat"),
         ("configs/experiments/vgae_temporal_smoke.yml", "temporal_vgae"),
     ):

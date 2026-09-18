@@ -101,6 +101,11 @@ def test_temporal_train_val_split_is_stream_local_and_masks_warmup():
     assert data.is_warmup.tolist() == [True]
     assert data.is_scored.tolist() == [False]
 
+    from torch_geometric.loader import TemporalDataLoader
+
+    batch = next(iter(TemporalDataLoader(data, batch_size=1)))
+    assert batch.y.tolist() == [0]
+
 
 def test_temporal_eval_table_marks_warmup_per_stream():
     table = prepare_temporal_eval_table(

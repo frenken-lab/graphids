@@ -1,9 +1,8 @@
 # GraphIDS
 
-CAN bus intrusion detection via a 3-stage knowledge distillation chain:
-VGAE (unsupervised reconstruction) → GAT (supervised classification) →
-fusion. Large models compress into small models via KD auxiliaries for
-edge deployment.
+CAN bus intrusion detection over temporal CAN event streams. The live training
+path materializes raw CAN rows as PyG `TemporalData`, then trains temporal
+event models through the Ray-backed experiment runner.
 
 ## Where to start
 

@@ -11,10 +11,10 @@ retired.
 Experiment configs live under `configs/experiments/`.
 
 ```bash
-gx exp config configs/experiments/gat_snapshot_sequence_real.yml
-gx exp launch configs/experiments/gat_snapshot_sequence_real.yml
-gx exp submit configs/experiments/gat_snapshot_sequence_real.yml -C pitzer
-gx exp status ~/ray_results/set_01/gat_snapshot_sequence_real/gat_snapshot_sequence_real
+gx exp config configs/experiments/temporal_event_classifier_smoke.yml
+gx exp launch configs/experiments/temporal_event_classifier_smoke.yml
+gx exp submit configs/experiments/temporal_event_classifier_smoke.yml -C pitzer
+gx exp status "$GRAPHIDS_LAKE_ROOT/runs/set_01/temporal_event_classifier_smoke/temporal_event_classifier_smoke"
 ```
 
 The YAML contains:
@@ -114,26 +114,40 @@ source scripts/slurm/_epilog.sh
 `--dry-run` prints the script without submitting. The submit command has
 resource overrides for cluster, partition, walltime, gres, and node count.
 
-## 6. Current Snapshot-Sequence Path
+## 6. Current Temporal Path
 
 The current cache/training line uses:
 
 ```yaml
 representation_cfg:
-  kind: snapshot_sequence
-  window_size: 100
-  stride: 100
-  sequence_length: 3
-  sequence_stride: 1
+  kind: temporal
+config:
+  data:
+    type: temporal_dm
+    source:
+      type: can_bus
+      dataset: set_01
+      seed: 42
+      representation_cfg:
+        kind: temporal
+    batch_size: 512
+    val_warmup_events: 64
+    test_warmup_events: 64
+  model:
+    type: temporal_event_classifier
+    scale: small
 ```
 
-The preprocessing layer builds ordered sequences of snapshot graphs and
-attaches sequence metadata to graph, node, and edge tensors. The GAT can
-consume this through `sequence_pool`, currently including `auto`, `flat`,
-`mean`, `attention`, and `gru`.
+The preprocessing layer builds temporal event tables and packs them as PyG
+`TemporalData`. The primary batch unit is an event count, not a graph node or
+edge budget. Validation and test splits may include warmup events, which are
+fed through the model but excluded from metrics through `is_scored`.
 
-Training configs select a dataset and representation; the data source maps
-that to the versioned cache path.
+Available temporal model types are `temporal_event_classifier`,
+`temporal_rnn_classifier`, `temporal_gat`, and `temporal_vgae`.
+
+Training configs select a dataset and temporal representation; the data source
+maps that to the versioned cache path under `$GRAPHIDS_LAKE_ROOT/cache`.
 
 ## 7. Adding A Run
 

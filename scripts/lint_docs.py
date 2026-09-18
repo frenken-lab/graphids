@@ -88,11 +88,12 @@ def check_nav_symmetry() -> list[str]:
     nav_paths: set[str] = set()
     collect_nav_files(cfg.get("nav", []), nav_paths)
 
-    # Top-level docs/README.md (GitHub landing page) and drafts/ scratchpad
-    # are intentionally not in nav (matching ``exclude_docs`` in mkdocs.yml).
+    # Top-level docs/README.md (GitHub landing page), drafts/ scratchpad, and
+    # empirical-notes/ archive are intentionally not in nav (matching
+    # ``exclude_docs`` in mkdocs.yml).
     # Sub-section READMEs (e.g. decisions/README.md) ARE in nav and stay required.
     def _excluded(rel: str) -> bool:
-        return rel == "README.md" or rel.startswith("drafts/")
+        return rel == "README.md" or rel.startswith("drafts/") or rel.startswith("empirical-notes/")
 
     on_disk = {
         str(p.relative_to(DOCS).as_posix())

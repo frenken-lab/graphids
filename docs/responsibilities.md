@@ -28,17 +28,20 @@ allocation starts Ray head/workers and runs
 sourcing `scripts/slurm/_preamble.sh`.
 
 **Data sources and datamodules** (`graphids/core/data/`) own raw CAN loading,
-representation selection, cache paths, materialization, metadata, and
-Lightning dataloaders. `GraphDataModule(require_cache=True)` fails fast when a
-training config expects a cache that is missing or incomplete.
+temporal representation selection, cache paths, metadata, and Lightning
+dataloaders. `CANBusTemporalSource` builds train/validation/test
+`TemporalData` caches, and `TemporalDataModule` serves them through PyG's
+`TemporalDataLoader`.
 
-**Preprocessing** (`graphids/core/data/preprocessing/`) turns raw rows into
-materialized graph views. Snapshot, snapshot-sequence, multi-scale, temporal,
-and entity representations are explicit. Snapshot-sequence materialization
-stores sequence metadata on graph/node/edge tensors.
+**Preprocessing** (`graphids/core/data/preprocessing/`) turns normalized CAN
+rows into temporal event tables and PyG `TemporalData`. The live
+representation is `kind: temporal`; windowed graph materialization and graph
+budgeting are no longer part of the primary training path.
 
 **Models** (`graphids/core/models/`) own Lightning modules and metrics. The
-GAT now supports sequence-aware graph pooling through `sequence_pool`.
+live model families consume temporal event batches: stateless event
+classification, stateful recurrent classification, causal event attention, and
+temporal VGAE-style event reconstruction.
 
 **Callbacks** (`graphids/core/callbacks.py`) hold graphids-specific Lightning
 policy such as `Sha256ModelCheckpoint`, tau-norm, and VRAM drift warnings.

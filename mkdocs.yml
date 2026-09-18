@@ -1,5 +1,5 @@
 site_name: GraphIDS
-site_description: CAN bus intrusion detection via graph neural network knowledge distillation.
+site_description: CAN bus intrusion detection over temporal event streams.
 site_author: Robert Frenken
 site_url: https://frenken-lab.github.io/graphids/
 
@@ -16,6 +16,7 @@ copyright: Copyright &copy; 2024-2026 Robert Frenken
 exclude_docs: |
   /README.md
   /drafts/
+  /empirical-notes/
 
 theme:
   name: material
@@ -114,8 +115,9 @@ nav:
   - Architecture:
       - Module responsibilities: responsibilities.md
       - Config system: reference/config-architecture.md
+      - Data architecture: reference/data-architecture.md
       - Data flow: reference/data-flow.md
-      - Fusion state: reference/fusion-state.md
+      - Fusion state (historical): reference/fusion-state.md
       - Orchestration: reference/orchestration.md
       - Observability: reference/observability.md
       - Write paths: reference/write-paths.md
@@ -131,4 +133,6 @@ nav:
       - Artifacts: api/artifacts.md
       - Config: api/config.md
       - SLURM: api/slurm.md
-  - Decisions: decisions/README.md
+  - Decisions:
+      - Overview: decisions/README.md
+      - PBRS fusion reward: decisions/0012-pbrs-fusion-reward.md

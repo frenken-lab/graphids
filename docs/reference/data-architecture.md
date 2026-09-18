@@ -1,101 +1,106 @@
 # Data Architecture
 
-This is the current GraphIDS data layout after the preprocessing refactor.
+This is the current GraphIDS data layout after the temporal refactor.
 
 ## 1. Raw storage
 
-Source of truth: immutable CAN/CPS rows.
+Source of truth: immutable CAN/CPS CSV rows under
+`$GRAPHIDS_LAKE_ROOT/raw/<dataset>/`.
 
 Typical fields:
 
-- `vehicle_id`
 - `timestamp`
-- `arb_id`
-- `payload`
+- `arb_id` or `arbitration_id`
+- `payload` or `data_field`
 - `attack`
-- `attack_type`
-- provenance fields from the source
+- inferred `attack_type`
+- source provenance from the catalog path
 
 Code surface:
 
 - `graphids/core/data/datasets/can_bus.py`
-- `graphids/core/data/datasets/_base.py`
+- `configs/data/datasets.json`
 
-## 2. Representations
+## 2. Representation
 
-The primary public representation kinds are:
+The live public representation is:
 
-- `snapshot`
-- `snapshot_sequence`
-- `multi_scale`
-- `temporal`
-- `entity`
+```yaml
+representation_cfg:
+  kind: temporal
+```
 
-Representation configs live in:
-
-- `graphids/core/data/preprocessing/representations.py`
-
-They bridge to:
-
-- snapshot representation configs
-- snapshot-sequence representation configs
-- leakage-safe split policy metadata
-
-## 3. Materialized views
-
-Training-facing materializations are derived from raw storage through the
-selected representation.
-
-Examples:
-
-- snapshot graphs
-- snapshot sequences
+`TemporalRepresentationCfg` is the only active representation config. New
+experiment configs should not expose `window_size`, `stride`, graph budgets, or
+snapshot-sequence knobs.
 
 Code surface:
 
 - `graphids/core/data/preprocessing/representations.py`
-- `graphids/core/data/preprocessing/materialization.py`
-- `graphids/core/data/preprocessing/pyg.py`
-- `graphids/core/data/preprocessing/splits.py`
+- `graphids/primitives_data.py`
 
-## 4. Discovery and hypotheses
+## 3. Temporal event table
 
-This layer stores signal profiles and provisional canonical mappings.
-It is where hidden-DBC cross-vehicle alignment lives.
+Raw CAN rows are sorted per stream and converted into one event per row.
 
-Typical records:
+The event table carries:
 
-- raw signal profile tables
-- canonical hypotheses
-- confidence
-- evidence
-- provenance
+- `event_id`
+- `vehicle_id`, `source_dir`, `source_file`, `row_index`
+- `timestamp`
+- `src_id`, `dst_id`
+- `src_raw`, `dst_raw`
+- unknown-ID flags and hash buckets
+- `stream_id`
+- `reset_after`
+- payload bytes, byte deltas, inter-arrival time, entropy
+- `y`
+- `attack_type`
+
+Splitting is chronological within each `stream_id`. Validation and test tables
+also carry `split_id`, `is_warmup`, and `is_scored` masks so metrics can ignore
+warmup events.
+
+Code surface:
+
+- `graphids/core/data/preprocessing/temporal.py`
+
+## 4. PyG packing and cache
+
+Temporal event tables are packed as PyG `TemporalData`:
+
+```text
+src, dst, t, msg, y, attack_type, stream_id, reset_after, event_id
+```
+
+Optional split tensors include `split_id`, `is_warmup`, and `is_scored`.
+Non-tensor metadata is kept out of the event store so `TemporalDataLoader` can
+slice batches safely.
+
+`CANBusTemporalSource` writes versioned caches under
+`$GRAPHIDS_LAKE_ROOT/cache/v<PREPROCESSING_VERSION>/<dataset>/...`.
+
+Code surface:
+
+- `graphids/core/data/datasets/can_bus.py`
+- `graphids/core/data/state.py`
+
+## 5. Data modules
+
+`TemporalDataModule` is the training-facing datamodule. It loads or builds the
+temporal cache, exposes `num_ids`, `in_channels`, and `num_classes`, and serves
+train/validation/test streams through PyG `TemporalDataLoader`.
+
+Code surface:
+
+- `graphids/core/data/datamodule/temporal.py`
+
+## 6. Discovery and hypotheses
+
+The discovery layer stores signal profiles and provisional canonical mappings.
+It is independent of the temporal training surface.
 
 Code surface:
 
 - `graphids/core/data/discovery/hypotheses.py`
-- `graphids/core/data/discovery/canonical.py`
-- `graphids/core/data/discovery/layout.py`
 
-## 5. Selection rule
-
-The primary user-facing control surface is now:
-
-- `representation_cfg`
-
-Window sizes and strides are resolved from the representation config at the
-pipeline boundary, which derives an explicit segment config before
-materialization.
-
-## 6. Training flow
-
-Recommended read order:
-
-1. raw storage
-2. representation selection
-3. materialized views
-4. hypothesis annotations
-
-The training path should consume the materialized view that matches the
-representation, while the discovery path writes the signal profile and
-hypothesis tables alongside the cache.

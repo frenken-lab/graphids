@@ -10,6 +10,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+
 class _Cfg(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -58,6 +59,27 @@ class TemporalGATCfg(_Cfg):
         )
 
 
+class TemporalRNNClassifierCfg(_Cfg):
+    type: Literal["temporal_rnn_classifier"] = "temporal_rnn_classifier"
+    scale: Literal["small", "large"] = "small"
+    hidden: int | None = None
+    layers: int | None = None
+    embedding_dim: int | None = None
+    dropout: float = 0.2
+
+    def build(self, *, loss_fn: Any = None) -> Any:
+        from graphids.core.models.temporal import TemporalRNNClassifier
+
+        return TemporalRNNClassifier(
+            loss_fn=loss_fn,
+            scale=self.scale,
+            hidden=self.hidden,
+            layers=self.layers,
+            embedding_dim=self.embedding_dim,
+            dropout=self.dropout,
+        )
+
+
 class TemporalVGAECfg(_Cfg):
     type: Literal["temporal_vgae"] = "temporal_vgae"
     scale: Literal["small", "large"] = "small"
@@ -86,6 +108,7 @@ class TemporalVGAECfg(_Cfg):
 ModelCfg = Annotated[
     TemporalEventClassifierCfg
     | TemporalGATCfg
+    | TemporalRNNClassifierCfg
     | TemporalVGAECfg,
     Field(discriminator="type"),
 ]
@@ -122,6 +145,23 @@ def temporal_gat(
         hidden=hidden,
         layers=layers,
         heads=heads,
+        embedding_dim=embedding_dim,
+        dropout=dropout,
+    )
+
+
+def temporal_rnn_classifier(
+    scale: str = "small",
+    *,
+    hidden: int | None = None,
+    layers: int | None = None,
+    embedding_dim: int | None = None,
+    dropout: float = 0.2,
+) -> TemporalRNNClassifierCfg:
+    return TemporalRNNClassifierCfg(
+        scale=scale,
+        hidden=hidden,
+        layers=layers,
         embedding_dim=embedding_dim,
         dropout=dropout,
     )
