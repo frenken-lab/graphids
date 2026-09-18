@@ -37,12 +37,14 @@ def test_build_slurm_script_starts_ray_allocation(monkeypatch, tmp_path):
     assert "#SBATCH --account=pas1266" in script
     assert "export SLURM_CPUS_PER_TASK=4" in script
     assert 'RAY_PORT=${GRAPHIDS_RAY_PORT:-$((20000 + SLURM_JOB_ID % 30000))}' in script
+    assert 'RAY_DASHBOARD_AGENT_PORT="$((50000 + SLURM_JOB_ID % 10000))"' in script
     assert 'RAY_TMP_DIR="${TMPDIR:-/tmp}/graphids-ray-${SLURM_JOB_ID}"' in script
     assert "RAY_START_PIDS=()" in script
     assert "export RAY_ADDRESS" in script
     assert "ray stop --force" not in script
     assert "ray start --head" in script
     assert "--include-dashboard=false" in script
+    assert '--dashboard-agent-listen-port="${RAY_DASHBOARD_AGENT_PORT}"' in script
     assert '--temp-dir="${RAY_TMP_DIR}/head"' in script
     assert 'RAY_START_PIDS+=("$!")' in script
     assert 'ray start --address="${RAY_ADDRESS}"' in script
