@@ -35,7 +35,12 @@ def test_build_slurm_script_starts_ray_allocation(monkeypatch, tmp_path):
     assert "#SBATCH --cpus-per-task=4" in script
     assert "#SBATCH --time=00:30:00" in script
     assert "#SBATCH --account=pas1266" in script
+    assert "export SLURM_CPUS_PER_TASK=4" in script
+    assert 'RAY_TMP_DIR="${TMPDIR:-/tmp}/graphids-ray-${SLURM_JOB_ID}"' in script
+    assert "RAY_START_PIDS=()" in script
     assert "ray start --head" in script
+    assert '--temp-dir="${RAY_TMP_DIR}/head"' in script
+    assert 'RAY_START_PIDS+=("$!")' in script
     assert 'ray start --address="${RAY_ADDRESS}"' in script
     assert "trap cleanup_ray EXIT" in script
     assert "python -m graphids exp launch" in script
