@@ -1,0 +1,41 @@
+experiment_name: temporal_anomaly_vgae_hcrl_sa_test
+dataset: hcrl_sa
+seed: 42
+plan_id: temporal_anomaly_final_2026_09_26
+stage: test
+representation_cfg:
+  kind: temporal
+resources:
+  cluster: pitzer
+  partition: gpu
+  accelerator: gpu
+  cpus_per_worker: 8
+  gpus_per_worker: 1.0
+  memory_gb: 96
+  time_limit: "04:00:00"
+  account: pas1266
+config:
+  ckpt_path: "{trial_dir}/hcrl_sa/temporal_anomaly_vgae_hcrl_sa_train/temporal_anomaly_vgae_hcrl_sa_train/checkpoints/best_model.ckpt"
+  data:
+    type: temporal_dm
+    source:
+      type: can_bus
+      dataset: hcrl_sa
+      seed: 42
+      train_source_mode: attack_free
+      representation_cfg:
+        kind: temporal
+    batch_size: 512
+    val_warmup_events: 64
+    test_warmup_events: 64
+  model:
+    type: temporal_vgae
+    scale: small
+    kl_weight: 0.01
+  trainer:
+    accelerator: auto
+    devices: 1
+    enable_checkpointing: false
+    enable_progress_bar: false
+    enable_model_summary: false
+    num_sanity_val_steps: 0

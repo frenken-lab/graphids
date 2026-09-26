@@ -72,6 +72,21 @@ def _payload(cfg: Any) -> dict[str, Any]:
     raise TypeError(f"unsupported run payload: {type(cfg)!r}")
 
 
+class _FormatDefaults(dict[str, str]):
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
+
+
+def _format_strings(value: Any, replacements: Mapping[str, str]) -> Any:
+    if isinstance(value, str):
+        return value.format_map(_FormatDefaults(replacements))
+    if isinstance(value, Mapping):
+        return {k: _format_strings(v, replacements) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_format_strings(v, replacements) for v in value]
+    return value
+
+
 def _current_git_sha() -> str:
     from graphids.paths import PROJECT_ROOT
 
@@ -252,6 +267,20 @@ class ExperimentConfig(_StrictModel):
         output_suffix: str | None = None,
     ) -> RunConfig:
         cfg = {**self.config, **(config or {})}
+        run_dir = self._run_dir(name, output_suffix=output_suffix)
+        from graphids.paths import trial_dir
+
+        cfg = _format_strings(
+            cfg,
+            {
+                "trial_dir": str(trial_dir()),
+                "run_dir": str(run_dir),
+                "dataset": self.dataset,
+                "experiment_name": self.experiment_name,
+                "name": name,
+                "stage": stage,
+            },
+        )
         payload: RunPayload
         data_representation = _find_data_representation_payload(cfg.get("data", {}))
         if data_representation is not None:
@@ -282,7 +311,7 @@ class ExperimentConfig(_StrictModel):
             representation_cfg=self.representation_cfg,
             payload=payload,
             resources=self.resources,
-            outputs=OutputConfig(run_dir=self._run_dir(name, output_suffix=output_suffix)),
+            outputs=OutputConfig(run_dir=run_dir),
         )
 
     @classmethod
