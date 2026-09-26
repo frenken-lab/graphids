@@ -122,6 +122,7 @@ class CANBusTemporalSource:
     val_fraction: float = 0.2
     representation_cfg: TemporalRepresentationCfg = TemporalRepresentationCfg()
     vocab_scope: str = "train"
+    train_source_mode: str = "mixed"
     val_warmup_events: int = 0
     test_warmup_events: int = 0
 
@@ -130,6 +131,8 @@ class CANBusTemporalSource:
             raise ValueError("CANBusTemporalSource requires representation_cfg.kind='temporal'")
         if self.vocab_scope not in {"train", "all"}:
             raise ValueError("vocab_scope must be 'train' or 'all'")
+        if self.train_source_mode not in {"mixed", "attack_free"}:
+            raise ValueError("train_source_mode must be 'mixed' or 'attack_free'")
         if self.val_warmup_events < 0 or self.test_warmup_events < 0:
             raise ValueError("warmup event counts must be non-negative")
 
@@ -151,6 +154,7 @@ class CANBusTemporalSource:
             f"|v{self.val_fraction}"
             f"|vw{self.val_warmup_events}|tw{self.test_warmup_events}"
             f"|voc:{self.vocab_scope}"
+            f"|train:{self.train_source_mode}"
             f"|repr:{representation_kind(self.representation_cfg)}:{repr_digest}"
         )
 
@@ -166,13 +170,21 @@ class CANBusTemporalSource:
             f"{representation_kind(self.representation_cfg)}_"
             f"{representation_digest(self.representation_cfg)}"
         )
+        train_suffix = "" if self.train_source_mode == "mixed" else f"_train_{self.train_source_mode}"
         return (
             cache_dir(lake, self.name)
             / (
                 f"{repr_slug}_voc_{self.vocab_scope}_val_{self.val_fraction:g}"
                 f"_vw_{self.val_warmup_events}_tw_{self.test_warmup_events}"
+                f"{train_suffix}"
             )
         )
+
+    def _train_dirs(self, entry: dict[str, Any]) -> list[str]:
+        train_subdir = entry.get("train_subdir")
+        if self.train_source_mode == "attack_free":
+            return [train_subdir] if train_subdir else []
+        return [s for s in (train_subdir, entry.get("train_attack_subdir")) if s]
 
     def cache_ready(self) -> bool:
         from graphids.paths import data_dir, load_catalog
@@ -181,7 +193,7 @@ class CANBusTemporalSource:
         lake = self.resolved_lake_root()
         raw = data_dir(lake, self.name)
         processed = self.cache_root_path() / "processed"
-        train_dirs = [s for s in (entry.get("train_subdir"), entry.get("train_attack_subdir")) if s]
+        train_dirs = self._train_dirs(entry)
         if not train_dirs:
             return False
         present_test = [sd for sd in entry.get("test_subdirs", []) if (raw / sd).is_dir()]
@@ -238,7 +250,7 @@ class CANBusTemporalSource:
         processed.mkdir(parents=True, exist_ok=True)
 
         with FileLock(str(processed / ".lock")):
-            train_dirs = [s for s in (entry.get("train_subdir"), entry.get("train_attack_subdir")) if s]
+            train_dirs = self._train_dirs(entry)
             if not train_dirs:
                 raise ValueError(f"catalog entry {self.name!r} declares no train_subdir(s)")
 

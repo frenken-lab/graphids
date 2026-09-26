@@ -21,6 +21,7 @@ config:
       type: can_bus
       dataset: set_03
       seed: 42
+      train_source_mode: mixed
       representation_cfg:
         kind: temporal
     batch_size: 512

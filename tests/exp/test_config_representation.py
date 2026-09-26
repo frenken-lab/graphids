@@ -84,3 +84,26 @@ def test_temporal_smoke_configs_resolve_without_window_or_budget_knobs():
         assert data.batch_size == 512
         assert data.source.val_warmup_events == 64
         assert data.source.test_warmup_events == 64
+        assert data.source.train_source_mode == "mixed"
+
+
+def test_temporal_data_config_accepts_attack_free_train_source_mode():
+    from graphids.core.data.preprocessing.representations import representation_kind
+    from graphids.exp.ray_backend import build_component
+
+    data = build_component(
+        {
+            "type": "temporal_dm",
+            "source": {
+                "type": "can_bus",
+                "dataset": "hcrl_sa",
+                "seed": 42,
+                "train_source_mode": "attack_free",
+                "representation_cfg": {"kind": "temporal"},
+            },
+            "batch_size": 128,
+        }
+    )
+
+    assert data.source.train_source_mode == "attack_free"
+    assert representation_kind(data.source.representation_cfg) == "temporal"

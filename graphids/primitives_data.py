@@ -25,6 +25,7 @@ class CANBusCfg(_Cfg):
     name: str
     seed: int
     val_fraction: float = 0.2
+    train_source_mode: Literal["mixed", "attack_free"] = "mixed"
     representation_cfg: RepresentationCfg = Field(default_factory=TemporalRepresentationCfg)
 
 
@@ -45,6 +46,7 @@ class TemporalDMCfg(_Cfg):
             name=self.source.name,
             val_fraction=self.source.val_fraction,
             representation_cfg=self.source.representation_cfg,
+            train_source_mode=self.source.train_source_mode,
             val_warmup_events=self.val_warmup_events,
             test_warmup_events=self.test_warmup_events,
         )
@@ -59,6 +61,7 @@ def can_bus(
     dataset: str,
     seed: int,
     val_fraction: float = 0.2,
+    train_source_mode: Literal["mixed", "attack_free"] = "mixed",
     representation_cfg: RepresentationCfg = _DEFAULT_REPRESENTATION_CFG,
 ) -> CANBusCfg:
     registry = load_catalog()
@@ -68,6 +71,7 @@ def can_bus(
         name=dataset,
         seed=seed,
         val_fraction=val_fraction,
+        train_source_mode=train_source_mode,
         representation_cfg=representation_cfg,
     )
 

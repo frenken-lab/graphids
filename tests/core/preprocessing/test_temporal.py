@@ -173,6 +173,58 @@ def test_can_temporal_source_uses_train_only_vocab_for_unseen_test_ids(tmp_path,
     assert state.test["test"].msg.shape[1] == len(TEMPORAL_MSG_COL_ORDER)
 
 
+def test_can_temporal_source_can_train_on_attack_free_subdir_only(tmp_path, monkeypatch):
+    from graphids.core.data.datasets.can_bus import CANBusTemporalSource
+
+    raw = tmp_path / "raw"
+    _write_can_csv(
+        raw / "train_clean" / "normal.csv",
+        [
+            [0.0, "0x001", "0102030405060708", 0],
+            [0.1, "0x002", "0203040506070809", 0],
+        ],
+    )
+    _write_can_csv(
+        raw / "train_attack" / "dos.csv",
+        [
+            [0.0, "0x999", "0908070605040302", 1],
+            [0.1, "0x998", "0807060504030201", 1],
+        ],
+    )
+    _write_can_csv(
+        raw / "test" / "attack.csv",
+        [
+            [0.0, "0x001", "0102030405060708", 0],
+            [0.1, "0x999", "0908070605040302", 1],
+        ],
+    )
+
+    monkeypatch.setattr(
+        "graphids.paths.load_catalog",
+        lambda: {
+            "dummy": {
+                "train_subdir": "train_clean",
+                "train_attack_subdir": "train_attack",
+                "test_subdirs": ["test"],
+            }
+        },
+    )
+    monkeypatch.setattr("graphids.paths.data_dir", lambda lake, name: raw)
+    monkeypatch.setattr("graphids.paths.cache_dir", lambda lake, name: tmp_path / "cache" / name)
+
+    state = CANBusTemporalSource(
+        name="dummy",
+        lake_root="lake",
+        train_source_mode="attack_free",
+        val_fraction=0.5,
+    ).build()
+
+    assert state.train.y.tolist() == [0]
+    assert state.val.y.tolist() == [0]
+    assert state.test["test"].y.tolist() == [0, 1]
+    assert state.test["test"].dst.tolist() == [1, 0]
+
+
 def test_can_temporal_source_rejects_non_temporal_representation():
     from graphids.core.data.datasets.can_bus import CANBusTemporalSource
 
@@ -190,11 +242,20 @@ def test_can_temporal_source_rejects_unknown_vocab_scope():
         CANBusTemporalSource(name="dummy", vocab_scope="split")
 
 
+def test_can_temporal_source_rejects_unknown_train_source_mode():
+    from graphids.core.data.datasets.can_bus import CANBusTemporalSource
+
+    with pytest.raises(ValueError, match="train_source_mode"):
+        CANBusTemporalSource(name="dummy", train_source_mode="semi_supervised")
+
+
 def test_can_temporal_source_cache_key_includes_preprocessing_version():
     from graphids.core.data.datasets.can_bus import CANBusTemporalSource
     from graphids.paths import PREPROCESSING_VERSION
 
-    source = CANBusTemporalSource(name="dummy", lake_root="lake")
+    source = CANBusTemporalSource(name="dummy", lake_root="lake", train_source_mode="attack_free")
 
     assert f"|pre:{PREPROCESSING_VERSION}|" in source.cache_key
     assert "|voc:train|" in source.cache_key
+    assert "|train:attack_free|" in source.cache_key
+    assert source.cache_root_path().name.endswith("_train_attack_free")
