@@ -40,7 +40,7 @@ def test_build_slurm_script_starts_ray_allocation(monkeypatch, tmp_path):
     assert "RAY_PORT=${GRAPHIDS_RAY_PORT:-${RAY_BASE_PORT}}" in script
     assert 'RAY_OBJECT_MANAGER_PORT="$((RAY_BASE_PORT + 1))"' in script
     assert 'RAY_NODE_MANAGER_PORT="$((RAY_BASE_PORT + 2))"' in script
-    assert 'RAY_CLIENT_SERVER_PORT="$((RAY_BASE_PORT + 3))"' in script
+    assert "RAY_CLIENT_SERVER_PORT" not in script
     assert 'RAY_DASHBOARD_AGENT_PORT="$((RAY_BASE_PORT + 4))"' in script
     assert 'RAY_DASHBOARD_AGENT_GRPC_PORT="$((RAY_BASE_PORT + 5))"' in script
     assert 'RAY_RUNTIME_ENV_AGENT_PORT="$((RAY_BASE_PORT + 6))"' in script
@@ -55,7 +55,7 @@ def test_build_slurm_script_starts_ray_allocation(monkeypatch, tmp_path):
     assert "--include-dashboard=false" in script
     assert '--object-manager-port="${RAY_OBJECT_MANAGER_PORT}"' in script
     assert '--node-manager-port="${RAY_NODE_MANAGER_PORT}"' in script
-    assert '--ray-client-server-port="${RAY_CLIENT_SERVER_PORT}"' in script
+    assert "--ray-client-server-port" not in script
     assert '--dashboard-agent-listen-port="${RAY_DASHBOARD_AGENT_PORT}"' in script
     assert '--dashboard-agent-grpc-port="${RAY_DASHBOARD_AGENT_GRPC_PORT}"' in script
     assert '--runtime-env-agent-port="${RAY_RUNTIME_ENV_AGENT_PORT}"' in script
