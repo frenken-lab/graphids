@@ -109,6 +109,40 @@ def test_temporal_data_config_accepts_attack_free_train_source_mode():
     assert representation_kind(data.source.representation_cfg) == "temporal"
 
 
+def test_temporal_hybrid_smoke_configs_parse():
+    from graphids.core.data.preprocessing.representations import representation_kind
+    from graphids.exp.config import ExperimentConfig
+    from graphids.exp.ray_backend import build_component
+
+    paths = [
+        "configs/experiments/temporal_hybrid_memory_smoke.yml",
+        "configs/experiments/temporal_hybrid_gru_smoke.yml",
+        "configs/experiments/temporal_hybrid_ssm_smoke.yml",
+        "configs/experiments/temporal_hybrid_anomaly_smoke.yml",
+    ]
+    for path in paths:
+        cfg = ExperimentConfig.from_yaml(path)
+        run = cfg.build_run(name=cfg.experiment_name, stage=cfg.stage, config=cfg.config)
+
+        assert representation_kind(run.representation_cfg) == "temporal"
+        assert run.payload.model["type"] == "temporal_hybrid"
+        data = build_component(run.payload.data)
+        from graphids.core.data.datamodule.temporal import TemporalDataModule
+
+        assert isinstance(data, TemporalDataModule)
+        assert representation_kind(data.source.representation_cfg) == "temporal"
+        assert data.batch_size == 512
+
+    anomaly_cfg = ExperimentConfig.from_yaml("configs/experiments/temporal_hybrid_anomaly_smoke.yml")
+    anomaly_run = anomaly_cfg.build_run(
+        name=anomaly_cfg.experiment_name,
+        stage=anomaly_cfg.stage,
+        config=anomaly_cfg.config,
+    )
+    assert anomaly_run.payload.data["source"]["train_source_mode"] == "attack_free"
+    assert anomaly_run.payload.loss_fn is None
+
+
 def test_config_string_placeholders_resolve_against_run_paths(monkeypatch, tmp_path):
     import graphids.paths as paths_mod
     from graphids.exp.config import ExperimentConfig

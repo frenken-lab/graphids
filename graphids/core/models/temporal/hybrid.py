@@ -1,0 +1,599 @@
+"""Composable temporal hybrid model for CAN event streams."""
+
+from __future__ import annotations
+
+from typing import Any, Literal
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from graphids.core.losses import CrossEntropyLoss
+from graphids.core.models.base import classification_test_metrics
+
+from .base import TemporalModuleBase
+
+Objective = Literal["supervised", "anomaly", "joint"]
+
+
+class TemporalInputEncoder(nn.Module):
+    """Encode event bytes/features plus source and destination ID embeddings."""
+
+    def __init__(
+        self,
+        *,
+        num_ids: int,
+        in_channels: int,
+        embedding_dim: int,
+        hidden: int,
+        dropout: float,
+    ):
+        super().__init__()
+        self.src_embedding = nn.Embedding(max(1, int(num_ids)), int(embedding_dim))
+        self.dst_embedding = nn.Embedding(max(1, int(num_ids)), int(embedding_dim))
+        input_dim = int(in_channels) + (2 * int(embedding_dim))
+        self.proj = nn.Sequential(
+            nn.Linear(input_dim, int(hidden)),
+            nn.LayerNorm(int(hidden)),
+            nn.GELU(),
+            nn.Dropout(float(dropout)),
+        )
+
+    def forward(self, batch) -> torch.Tensor:
+        src = batch.src.clamp_min(0).clamp_max(self.src_embedding.num_embeddings - 1).long()
+        dst = batch.dst.clamp_min(0).clamp_max(self.dst_embedding.num_embeddings - 1).long()
+        x = torch.cat([batch.msg.float(), self.src_embedding(src), self.dst_embedding(dst)], dim=-1)
+        return self.proj(x)
+
+
+class TemporalIdMemory(nn.Module):
+    """TGN-style per-ID memory updated causally after each event."""
+
+    def __init__(self, *, num_ids: int, hidden: int):
+        super().__init__()
+        self.num_ids = max(1, int(num_ids))
+        self.hidden = int(hidden)
+        self.update_cell = nn.GRUCell(self.hidden, self.hidden)
+        self.mix = nn.Sequential(
+            nn.Linear(self.hidden * 2, self.hidden),
+            nn.LayerNorm(self.hidden),
+            nn.GELU(),
+        )
+
+    def initial_state(self, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        return torch.zeros(self.num_ids, self.hidden, device=device, dtype=dtype)
+
+    def ensure_state(self, state: torch.Tensor | None, ref: torch.Tensor) -> torch.Tensor:
+        if state is None or state.device != ref.device or state.dtype != ref.dtype:
+            return self.initial_state(device=ref.device, dtype=ref.dtype)
+        if state.shape != (self.num_ids, self.hidden):
+            return self.initial_state(device=ref.device, dtype=ref.dtype)
+        return state
+
+    def read_context(self, state: torch.Tensor, src: torch.Tensor, dst: torch.Tensor) -> torch.Tensor:
+        src_idx = src.clamp_min(0).clamp_max(self.num_ids - 1).long()
+        dst_idx = dst.clamp_min(0).clamp_max(self.num_ids - 1).long()
+        return self.mix(torch.cat([state[src_idx], state[dst_idx]], dim=-1))
+
+    def update_one(
+        self,
+        state: torch.Tensor,
+        src: torch.Tensor,
+        dst: torch.Tensor,
+        message: torch.Tensor,
+    ) -> torch.Tensor:
+        src_idx = int(src.clamp_min(0).clamp_max(self.num_ids - 1).item())
+        dst_idx = int(dst.clamp_min(0).clamp_max(self.num_ids - 1).item())
+        src_new = self.update_cell(message.unsqueeze(0), state[src_idx].unsqueeze(0)).squeeze(0)
+        src_mask = F.one_hot(
+            torch.tensor(src_idx, device=state.device),
+            num_classes=self.num_ids,
+        ).to(dtype=state.dtype).unsqueeze(-1)
+        after_src = (state * (1.0 - src_mask)) + (src_new.unsqueeze(0) * src_mask)
+
+        dst_new = self.update_cell(message.unsqueeze(0), after_src[dst_idx].unsqueeze(0)).squeeze(0)
+        dst_mask = F.one_hot(
+            torch.tensor(dst_idx, device=state.device),
+            num_classes=self.num_ids,
+        ).to(dtype=state.dtype).unsqueeze(-1)
+        return (after_src * (1.0 - dst_mask)) + (dst_new.unsqueeze(0) * dst_mask)
+
+
+class _SsmLiteCell(nn.Module):
+    """Small gated recurrent state-space-like block with causal linear-time scans."""
+
+    def __init__(self, hidden: int, dropout: float):
+        super().__init__()
+        self.in_proj = nn.Linear(hidden, hidden)
+        self.decay_proj = nn.Linear(hidden, hidden)
+        self.gate_proj = nn.Linear(hidden, hidden)
+        self.out_proj = nn.Linear(hidden, hidden)
+        self.norm = nn.LayerNorm(hidden)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor, state: torch.Tensor | None) -> tuple[torch.Tensor, torch.Tensor]:
+        if state is None:
+            state = torch.zeros_like(x)
+        decay = torch.sigmoid(self.decay_proj(x))
+        gate = torch.sigmoid(self.gate_proj(x))
+        candidate = torch.tanh(self.in_proj(x))
+        next_state = decay * state + gate * candidate
+        out = self.out_proj(next_state)
+        return self.norm(x + self.dropout(out)), next_state
+
+
+class TemporalStreamBackbone(nn.Module):
+    """Configurable causal stream backbone."""
+
+    def __init__(self, *, backbone_type: str, hidden: int, layers: int, dropout: float):
+        super().__init__()
+        self.backbone_type = str(backbone_type)
+        self.hidden = int(hidden)
+        self.layers = max(1, int(layers))
+        self.dropout = nn.Dropout(float(dropout))
+
+        if self.backbone_type == "none":
+            self.cells = nn.ModuleList()
+        elif self.backbone_type == "gru":
+            self.cells = nn.ModuleList([nn.GRUCell(self.hidden, self.hidden) for _ in range(self.layers)])
+        elif self.backbone_type == "ssm_lite":
+            self.cells = nn.ModuleList([_SsmLiteCell(self.hidden, float(dropout)) for _ in range(self.layers)])
+        elif self.backbone_type == "mamba":
+            try:
+                import mamba_ssm  # noqa: F401
+            except ImportError as exc:  # pragma: no cover - depends on optional external package.
+                raise ImportError(
+                    "backbone.type='mamba' requires the optional 'mamba_ssm' package. "
+                    "Install it explicitly or use backbone.type='ssm_lite'."
+                ) from exc
+            raise NotImplementedError("backbone.type='mamba' is reserved for the optional backend.")
+        else:
+            raise ValueError("backbone.type must be one of: none, gru, ssm_lite, mamba")
+
+    def reset_state(self) -> torch.Tensor | None:
+        return None
+
+    def step(
+        self,
+        x: torch.Tensor,
+        state: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        if self.backbone_type == "none":
+            return x, None
+        if state is None:
+            state = x.new_zeros((self.layers, self.hidden))
+        h = x
+        next_layers: list[torch.Tensor] = []
+        for layer_idx, cell in enumerate(self.cells):
+            if self.backbone_type == "gru":
+                h = cell(h.unsqueeze(0), state[layer_idx].unsqueeze(0)).squeeze(0)
+                h = self.dropout(h)
+                next_layers.append(h)
+            else:
+                h, next_state = cell(h, state[layer_idx])
+                next_layers.append(next_state)
+        return h, torch.stack(next_layers, dim=0)
+
+
+class TemporalHybridModel(TemporalModuleBase):
+    """Hybrid classifier/anomaly detector with ID memory and stream backbones."""
+
+    _SCALES: dict[str, dict[str, int]] = {
+        "small": {"hidden": 64, "layers": 1, "embedding_dim": 16},
+        "large": {"hidden": 128, "layers": 2, "embedding_dim": 32},
+    }
+
+    def __init__(
+        self,
+        *,
+        loss_fn: nn.Module | None = None,
+        scale: str = "small",
+        objective: Objective = "supervised",
+        input: dict[str, Any] | None = None,
+        memory: dict[str, Any] | None = None,
+        backbone: dict[str, Any] | None = None,
+        heads: dict[str, bool] | None = None,
+        loss_weights: dict[str, float] | None = None,
+        anomaly_score_weights: dict[str, float] | None = None,
+        lr: float = 1e-3,
+        weight_decay: float = 1e-4,
+        model_type: str = "temporal_hybrid",
+        dataset: str = "",
+        seed: int = 42,
+        num_ids: int = 0,
+        in_channels: int = 0,
+        num_classes: int = 2,
+    ):
+        if objective not in {"supervised", "anomaly", "joint"}:
+            raise ValueError("objective must be one of: supervised, anomaly, joint")
+        preset = self._SCALES.get(scale, self._SCALES["small"])
+        input = dict(input or {})
+        backbone = dict(backbone or {})
+        memory = dict(memory or {})
+        heads = dict(heads or {})
+        loss_weights = dict(loss_weights or {})
+        anomaly_score_weights = dict(anomaly_score_weights or {})
+
+        input.setdefault("hidden", preset["hidden"])
+        input.setdefault("embedding_dim", preset["embedding_dim"])
+        input.setdefault("dropout", 0.1)
+        backbone.setdefault("type", "gru")
+        backbone.setdefault("layers", preset["layers"])
+        backbone.setdefault("dropout", input["dropout"])
+        memory.setdefault("type", "tgn")
+        memory.setdefault("enabled", True)
+        memory.setdefault("reset_on_stream_end", True)
+
+        default_ssl = objective in {"anomaly", "joint"}
+        heads.setdefault("classification", objective in {"supervised", "joint"})
+        heads.setdefault("next_id", default_ssl)
+        heads.setdefault("iat", default_ssl)
+        heads.setdefault("payload_delta", default_ssl)
+
+        loss_weights.setdefault("classification", 1.0)
+        loss_weights.setdefault("next_id", 0.2)
+        loss_weights.setdefault("iat", 0.1)
+        loss_weights.setdefault("payload_delta", 0.1)
+        anomaly_score_weights.setdefault("next_id", 1.0)
+        anomaly_score_weights.setdefault("iat", 1.0)
+        anomaly_score_weights.setdefault("payload_delta", 1.0)
+
+        if objective == "anomaly" and loss_fn is not None:
+            raise ValueError("objective='anomaly' trains self-supervised heads and does not accept loss_fn")
+        if heads.get("classification", False) and loss_fn is None:
+            loss_fn = CrossEntropyLoss()
+
+        super().__init__()
+        self.log_binary_score_metrics = objective in {"anomaly", "joint"} or any(
+            heads.get(k, False) for k in ("next_id", "iat", "payload_delta")
+        )
+        self.test_metrics = classification_test_metrics(num_classes)
+        self._train_state: dict[str, torch.Tensor | None] | None = None
+        self._val_state: dict[str, torch.Tensor | None] | None = None
+        self._test_states: dict[int, dict[str, torch.Tensor | None] | None] = {}
+        self._val_cls_probs: list[torch.Tensor] = []
+        self._val_cls_labels: list[torch.Tensor] = []
+        self._val_anom_scores: list[torch.Tensor] = []
+        self._val_anom_labels: list[torch.Tensor] = []
+        self._init_post(locals())
+
+    @property
+    def classification_enabled(self) -> bool:
+        return bool(self.hparams.heads.get("classification", False))
+
+    @property
+    def anomaly_enabled(self) -> bool:
+        heads = self.hparams.heads
+        return any(bool(heads.get(k, False)) for k in ("next_id", "iat", "payload_delta"))
+
+    def _build(self) -> None:
+        hp = self.hparams
+        hidden = int(hp.input["hidden"])
+        self.encoder = TemporalInputEncoder(
+            num_ids=int(hp.num_ids),
+            in_channels=int(hp.in_channels),
+            embedding_dim=int(hp.input["embedding_dim"]),
+            hidden=hidden,
+            dropout=float(hp.input["dropout"]),
+        )
+        self.memory = (
+            TemporalIdMemory(num_ids=int(hp.num_ids), hidden=hidden)
+            if bool(hp.memory.get("enabled", True))
+            else None
+        )
+        self.backbone = TemporalStreamBackbone(
+            backbone_type=str(hp.backbone.get("type", "gru")),
+            hidden=hidden,
+            layers=int(hp.backbone.get("layers", 1)),
+            dropout=float(hp.backbone.get("dropout", hp.input["dropout"])),
+        )
+        self.classifier = nn.Linear(hidden, int(hp.num_classes)) if self.classification_enabled else None
+        self.next_id_head = nn.Linear(hidden, int(hp.num_ids)) if hp.heads.get("next_id", False) else None
+        self.iat_head = nn.Sequential(nn.Linear(hidden, 1), nn.Softplus()) if hp.heads.get("iat", False) else None
+        payload_dim = self._payload_delta_dim(int(hp.in_channels))
+        self.payload_delta_head = (
+            nn.Linear(hidden, payload_dim) if hp.heads.get("payload_delta", False) else None
+        )
+        self.test_metrics = classification_test_metrics(int(hp.num_classes))
+
+    @staticmethod
+    def _rebuild_excluded_kwargs(hp: dict) -> dict:
+        if hp.get("objective") == "anomaly":
+            return {}
+        if dict(hp.get("heads") or {}).get("classification", False):
+            from graphids.core.losses.build import build_loss
+
+            return {"loss_fn": build_loss("temporal_hybrid", hp.get("loss_config"))}
+        return {}
+
+    @staticmethod
+    def _payload_delta_slice(in_channels: int) -> slice:
+        if in_channels >= 16:
+            return slice(8, 16)
+        return slice(0, in_channels)
+
+    @classmethod
+    def _payload_delta_dim(cls, in_channels: int) -> int:
+        s = cls._payload_delta_slice(in_channels)
+        return int(s.stop - s.start)
+
+    @staticmethod
+    def _detach_state(
+        state: dict[str, torch.Tensor | None] | None,
+    ) -> dict[str, torch.Tensor | None] | None:
+        if state is None:
+            return None
+        return {k: (None if v is None else v.detach()) for k, v in state.items()}
+
+    def _initial_state_like(self, encoded: torch.Tensor) -> dict[str, torch.Tensor | None]:
+        memory = self.memory.ensure_state(None, encoded) if self.memory is not None else None
+        return {"memory": memory, "backbone": None}
+
+    def _targets(self, batch) -> dict[str, torch.Tensor]:
+        n = int(batch.dst.numel())
+        device = batch.dst.device
+        valid_next = torch.zeros(n, dtype=torch.bool, device=device)
+        if n > 1:
+            reset_after = getattr(batch, "reset_after", None)
+            if reset_after is None:
+                reset_after = torch.zeros(n, dtype=torch.bool, device=device)
+            else:
+                reset_after = reset_after.to(device=device, dtype=torch.bool)
+            valid_next[:-1] = ~reset_after[:-1]
+
+        next_id = batch.dst.clone().long()
+        if n > 1:
+            next_id[:-1] = batch.dst[1:].long()
+        t = getattr(batch, "t", None)
+        iat = batch.msg.new_zeros(n)
+        if t is not None and n > 1:
+            iat[:-1] = (t[1:].to(device=device, dtype=batch.msg.dtype) - t[:-1].to(device=device, dtype=batch.msg.dtype)).clamp_min(0)
+        payload_slice = self._payload_delta_slice(int(self.hparams.in_channels))
+        payload_delta = batch.msg[:, payload_slice].float().clone()
+        if n > 1:
+            payload_delta[:-1] = batch.msg[1:, payload_slice].float()
+        return {"valid_next": valid_next, "next_id": next_id, "iat": iat, "payload_delta": payload_delta}
+
+    def _forward_with_state(
+        self,
+        batch,
+        state: dict[str, torch.Tensor | None] | None = None,
+    ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor | None]]:
+        encoded = self.encoder(batch)
+        if encoded.numel() == 0:
+            empty = encoded.new_empty((0, int(self.hparams.input["hidden"])))
+            out = self._heads_from_features(empty, batch)
+            next_state = self._initial_state_like(encoded)
+            return out, next_state
+
+        current_state = self._initial_state_like(encoded) if state is None else dict(state)
+        if self.memory is not None:
+            current_state["memory"] = self.memory.ensure_state(current_state.get("memory"), encoded)
+
+        reset_after = getattr(batch, "reset_after", None)
+        if reset_after is None:
+            reset_after = torch.zeros(encoded.size(0), dtype=torch.bool, device=encoded.device)
+        else:
+            reset_after = reset_after.to(device=encoded.device, dtype=torch.bool)
+
+        outputs: list[torch.Tensor] = []
+        memory_state = current_state.get("memory")
+        backbone_state = current_state.get("backbone")
+        reset_memory = bool(self.hparams.memory.get("reset_on_stream_end", True))
+
+        for idx in range(encoded.size(0)):
+            x_t = encoded[idx]
+            if self.memory is not None and memory_state is not None:
+                mem_ctx = self.memory.read_context(memory_state, batch.src[idx], batch.dst[idx])
+                x_t = x_t + mem_ctx
+            z_t, backbone_state = self.backbone.step(x_t, backbone_state)
+            outputs.append(z_t)
+            if self.memory is not None and memory_state is not None:
+                memory_state = self.memory.update_one(memory_state, batch.src[idx], batch.dst[idx], z_t)
+            if bool(reset_after[idx].item()):
+                backbone_state = self.backbone.reset_state()
+                if self.memory is not None and reset_memory:
+                    memory_state = self.memory.initial_state(device=encoded.device, dtype=encoded.dtype)
+
+        features = torch.stack(outputs, dim=0)
+        next_state = {"memory": memory_state, "backbone": backbone_state}
+        return self._heads_from_features(features, batch), next_state
+
+    def _heads_from_features(self, features: torch.Tensor, batch) -> dict[str, torch.Tensor]:
+        out: dict[str, torch.Tensor] = {"features": features}
+        if self.classifier is not None:
+            out["logits"] = self.classifier(features)
+        if self.next_id_head is not None:
+            out["next_id_logits"] = self.next_id_head(features)
+        if self.iat_head is not None:
+            out["iat_pred"] = self.iat_head(features).squeeze(-1)
+        if self.payload_delta_head is not None:
+            out["payload_delta_pred"] = self.payload_delta_head(features)
+        if self.anomaly_enabled:
+            components = self._anomaly_components(out, batch)
+            out.update(components)
+            out["anomaly_score"] = self._weighted_anomaly_score(components)
+        return out
+
+    def forward_temporal(self, batch, state=None) -> dict[str, torch.Tensor]:
+        out, _state = self._forward_with_state(batch, self._detach_state(state))
+        return out
+
+    def forward(self, batch) -> dict[str, torch.Tensor]:
+        return self.forward_temporal(batch)
+
+    def _classification_loss(self, logits: torch.Tensor, labels: torch.Tensor, batch) -> torch.Tensor:
+        return self.loss_fn(logits, labels, graph=batch)
+
+    def _anomaly_components(self, out: dict[str, torch.Tensor], batch) -> dict[str, torch.Tensor]:
+        targets = self._targets(batch)
+        valid_next = targets["valid_next"]
+        components: dict[str, torch.Tensor] = {"valid_next": valid_next}
+        if "next_id_logits" in out:
+            nll = F.cross_entropy(out["next_id_logits"], targets["next_id"], reduction="none")
+            components["next_id_nll"] = torch.where(valid_next, nll, torch.zeros_like(nll))
+        if "iat_pred" in out:
+            err = F.smooth_l1_loss(out["iat_pred"], targets["iat"], reduction="none")
+            components["iat_error"] = torch.where(valid_next, err, torch.zeros_like(err))
+        if "payload_delta_pred" in out:
+            err = F.smooth_l1_loss(
+                out["payload_delta_pred"],
+                targets["payload_delta"],
+                reduction="none",
+            ).mean(dim=-1)
+            components["payload_delta_error"] = torch.where(valid_next, err, torch.zeros_like(err))
+        return components
+
+    def _weighted_anomaly_score(self, components: dict[str, torch.Tensor]) -> torch.Tensor:
+        score: torch.Tensor | None = None
+        weights = self.hparams.anomaly_score_weights
+        mapping = {
+            "next_id": "next_id_nll",
+            "iat": "iat_error",
+            "payload_delta": "payload_delta_error",
+        }
+        for name, key in mapping.items():
+            if key not in components:
+                continue
+            weighted = components[key] * float(weights.get(name, 1.0))
+            score = weighted if score is None else score + weighted
+        if score is None:
+            raise RuntimeError("anomaly score requested but no anomaly heads are enabled")
+        return score
+
+    def _loss_terms(self, out: dict[str, torch.Tensor], batch) -> dict[str, torch.Tensor]:
+        mask = self.scored_mask(batch)
+        terms: dict[str, torch.Tensor] = {}
+        weights = self.hparams.loss_weights
+        if self.classification_enabled and "logits" in out and mask.any():
+            labels = batch.y[mask].long()
+            terms["classification"] = self._classification_loss(out["logits"][mask], labels, batch)
+        if self.anomaly_enabled:
+            valid = out["valid_next"].bool() & mask
+            if valid.any():
+                if "next_id_nll" in out:
+                    terms["next_id"] = out["next_id_nll"][valid].mean()
+                if "iat_error" in out:
+                    terms["iat"] = out["iat_error"][valid].mean()
+                if "payload_delta_error" in out:
+                    terms["payload_delta"] = out["payload_delta_error"][valid].mean()
+        if not terms:
+            terms["zero"] = out["features"].sum() * 0.0
+        terms["total"] = sum(
+            value * float(weights.get(name, 1.0))
+            for name, value in terms.items()
+            if name != "total"
+        )
+        return terms
+
+    def on_train_epoch_start(self) -> None:
+        self._train_state = None
+
+    def on_validation_epoch_start(self) -> None:
+        self._val_state = None
+        self._val_cls_probs.clear()
+        self._val_cls_labels.clear()
+        self._val_anom_scores.clear()
+        self._val_anom_labels.clear()
+
+    def on_test_epoch_start(self) -> None:
+        super().on_test_epoch_start()
+        self._test_states = {}
+
+    def training_step(self, batch, _idx):
+        out, state = self._forward_with_state(batch, self._detach_state(self._train_state))
+        self._train_state = self._detach_state(state)
+        terms = self._loss_terms(out, batch)
+        mask = self.scored_mask(batch)
+        bs = max(1, int(mask.sum().item()))
+        self.log("train_loss", terms["total"], batch_size=bs)
+        for name, value in terms.items():
+            if name in {"total", "zero"}:
+                continue
+            self.log(f"train_{name}_loss", value, batch_size=bs)
+        if self.classification_enabled and "logits" in out and mask.any():
+            labels = batch.y[mask].long()
+            acc = (out["logits"][mask].argmax(1) == labels).float().mean()
+            self.log("train_acc", acc, batch_size=int(labels.numel()))
+        return terms["total"]
+
+    def validation_step(self, batch, _idx):
+        out, state = self._forward_with_state(batch, self._detach_state(self._val_state))
+        self._val_state = self._detach_state(state)
+        terms = self._loss_terms(out, batch)
+        mask = self.scored_mask(batch)
+        if not mask.any():
+            return None
+        labels = batch.y[mask].long()
+        bs = int(labels.numel())
+        self.log("val_loss", terms["total"], batch_size=bs)
+        if self.classification_enabled and "logits" in out:
+            probs = F.softmax(out["logits"][mask], dim=1)
+            self.log("val_acc", (probs.argmax(1) == labels).float().mean(), batch_size=bs)
+            if probs.shape[1] == 2:
+                self._val_cls_probs.append(probs[:, 1].detach().cpu())
+                self._val_cls_labels.append(labels.detach().cpu())
+        if self.anomaly_enabled and "anomaly_score" in out:
+            self._val_anom_scores.append(out["anomaly_score"][mask].detach().cpu())
+            self._val_anom_labels.append(labels.detach().cpu())
+        return None
+
+    def on_validation_epoch_end(self) -> None:
+        from torchmetrics.functional.classification import binary_auroc
+
+        if self._val_cls_probs:
+            labels = torch.cat(self._val_cls_labels)
+            if labels.unique().numel() >= 2:
+                self.log("val_cls_auroc", binary_auroc(torch.cat(self._val_cls_probs), labels))
+        if self._val_anom_scores:
+            labels = torch.cat(self._val_anom_labels)
+            if labels.unique().numel() >= 2:
+                self.log("val_anomaly_auroc", binary_auroc(torch.cat(self._val_anom_scores), labels))
+        self._val_cls_probs.clear()
+        self._val_cls_labels.clear()
+        self._val_anom_scores.clear()
+        self._val_anom_labels.clear()
+
+    def test_step(self, batch, _idx, dataloader_idx=0):
+        out, state = self._forward_with_state(
+            batch,
+            self._detach_state(self._test_states.get(dataloader_idx)),
+        )
+        self._test_states[dataloader_idx] = self._detach_state(state)
+        mask = self.scored_mask(batch)
+        if not mask.any():
+            return None
+        labels = batch.y[mask].long()
+        attack_type = getattr(batch, "attack_type", None)
+        attack_type = attack_type[mask] if attack_type is not None else None
+        if self.classification_enabled and "logits" in out:
+            probs = F.softmax(out["logits"][mask], dim=1)
+            self._record_test_batch(
+                dataloader_idx,
+                preds=probs.argmax(1),
+                scores=probs,
+                labels=labels,
+                attack_type=attack_type,
+            )
+        if self.anomaly_enabled and "anomaly_score" in out:
+            self._record_binary_score_batch(
+                dataloader_idx,
+                scores=out["anomaly_score"][mask],
+                labels=labels,
+                attack_type=attack_type,
+            )
+        return None
+
+    def predict_step(self, batch, _idx):
+        out = self(batch)
+        result: dict[str, torch.Tensor] = {"labels": batch.y}
+        if "logits" in out:
+            probs = F.softmax(out["logits"], dim=1)
+            result["preds"] = probs.argmax(1)
+            result["class_scores"] = probs[:, 1] if probs.shape[1] == 2 else probs
+        if "anomaly_score" in out:
+            result["scores"] = out["anomaly_score"]
+        event_id = getattr(batch, "event_id", None)
+        if event_id is not None:
+            result["event_id"] = event_id
+        return result

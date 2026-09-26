@@ -51,6 +51,9 @@ class _ModelBase(pl.LightningModule):
         self._test_buffers = {
             n: {"preds": [], "scores": [], "labels": [], "attack_type": []} for n in names
         }
+        self._binary_score_buffers = {
+            n: {"scores": [], "labels": [], "attack_type": []} for n in names
+        }
         self._test_predictions: dict[str, dict[str, torch.Tensor]] = {}
 
     def _record_test_batch(
@@ -63,6 +66,19 @@ class _ModelBase(pl.LightningModule):
         buf["labels"].append(labels.detach().cpu())
         if preds is not None:
             buf["preds"].append(preds.detach().cpu())
+        if attack_type is not None:
+            buf["attack_type"].append(attack_type.detach().cpu())
+
+    def _record_binary_score_batch(self, dataloader_idx: int, *, scores, labels, attack_type=None) -> None:
+        names = getattr(self, "_test_set_names", ["test"])
+        name = names[dataloader_idx] if dataloader_idx < len(names) else names[-1]
+        if not hasattr(self, "_binary_score_buffers"):
+            self._binary_score_buffers = {
+                n: {"scores": [], "labels": [], "attack_type": []} for n in names
+            }
+        buf = self._binary_score_buffers[name]
+        buf["scores"].append(scores.detach().cpu())
+        buf["labels"].append(labels.detach().cpu())
         if attack_type is not None:
             buf["attack_type"].append(attack_type.detach().cpu())
 
@@ -103,10 +119,15 @@ class _ModelBase(pl.LightningModule):
     def _log_binary_score_metrics(self) -> None:
         if not getattr(self, "log_binary_score_metrics", False):
             return
-        if not getattr(self, "_test_buffers", None):
+        binary_buffers = getattr(self, "_binary_score_buffers", None)
+        if binary_buffers and any(buf["scores"] for buf in binary_buffers.values()):
+            buffers = binary_buffers
+        else:
+            buffers = getattr(self, "_test_buffers", None)
+        if not buffers:
             return
         all_scores, all_labels = [], []
-        for name, buf in self._test_buffers.items():
+        for name, buf in buffers.items():
             if not buf["scores"]:
                 continue
             scores = torch.cat(buf["scores"]).float().flatten()

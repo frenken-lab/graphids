@@ -18,6 +18,7 @@ from typing import Any
 _LOSS_MODEL_TYPES = frozenset({
     "temporal_event_classifier",
     "temporal_gat",
+    "temporal_hybrid",
     "temporal_rnn_classifier",
 })
 
