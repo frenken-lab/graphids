@@ -42,6 +42,7 @@ class TemporalVGAE(TemporalModuleBase):
         embedding_dim = embedding_dim if embedding_dim is not None else preset.get("embedding_dim", 16)
         latent_dim = latent_dim if latent_dim is not None else preset.get("latent_dim", 32)
         super().__init__()
+        self.log_binary_score_metrics = True
         self._init_post(locals())
 
     def _build(self) -> None:

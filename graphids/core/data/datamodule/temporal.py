@@ -61,6 +61,10 @@ class TemporalDataModule(pl.LightningDataModule):
         return self._tests
 
     @property
+    def attack_type_names(self) -> dict[int, str]:
+        return dict(getattr(self.source, "attack_type_names", {0: "benign"}))
+
+    @property
     def num_ids(self) -> int:
         """Embedding table size for temporal source/destination ids."""
         max_id = 0

@@ -68,6 +68,7 @@ class _ModelBase(pl.LightningModule):
 
     def on_test_epoch_end(self) -> None:
         self._log_classifier_metrics()
+        self._log_binary_score_metrics()
         self._finalize_test_predictions()
 
     def _log_classifier_metrics(self) -> None:
@@ -98,6 +99,124 @@ class _ModelBase(pl.LightningModule):
             self.log_dict(self.test_metrics.compute())
             if pooled_p.ndim == 2 and pooled_p.shape[1] == 2:
                 self._log_operating_points(pooled_p[:, 1], pooled_l, prefix="test/")
+
+    def _log_binary_score_metrics(self) -> None:
+        if not getattr(self, "log_binary_score_metrics", False):
+            return
+        if not getattr(self, "_test_buffers", None):
+            return
+        all_scores, all_labels = [], []
+        for name, buf in self._test_buffers.items():
+            if not buf["scores"]:
+                continue
+            scores = torch.cat(buf["scores"]).float().flatten()
+            labels = torch.cat(buf["labels"]).long().flatten()
+            self._log_binary_score_set(scores, labels, prefix=f"test/{name}/")
+            if buf["attack_type"]:
+                self._log_per_attack_auroc(name, scores, labels, torch.cat(buf["attack_type"]).flatten())
+            all_scores.append(scores)
+            all_labels.append(labels)
+        if all_scores:
+            self._log_binary_score_set(
+                torch.cat(all_scores),
+                torch.cat(all_labels),
+                prefix="test/",
+            )
+
+    def _log_binary_score_set(self, scores: torch.Tensor, labels: torch.Tensor, *, prefix: str) -> None:
+        if scores.numel() == 0 or labels.unique().numel() < 2:
+            return
+        from torchmetrics.functional.classification import (
+            binary_auroc,
+            binary_average_precision,
+        )
+
+        metrics = {
+            f"{prefix}auroc": float(binary_auroc(scores, labels)),
+            f"{prefix}auroc_macro": float(binary_auroc(scores, labels)),
+            f"{prefix}ap": float(binary_average_precision(scores, labels)),
+            f"{prefix}ap_macro": float(binary_average_precision(scores, labels)),
+        }
+        metrics.update(self._binary_score_operating_points(scores, labels, prefix=prefix))
+        self.log_dict({k: v for k, v in metrics.items() if not math.isnan(v)})
+
+    def _binary_score_operating_points(
+        self,
+        scores: torch.Tensor,
+        labels: torch.Tensor,
+        *,
+        prefix: str,
+        min_recall: float = 0.95,
+        min_precision: float = 0.99,
+    ) -> dict[str, float]:
+        labels_bool = labels.bool()
+        positives = int(labels_bool.sum().item())
+        negatives = int((~labels_bool).sum().item())
+        if positives == 0 or negatives == 0:
+            return {}
+
+        candidates: list[tuple[float, float, float, int, int, int, int]] = []
+        for threshold in torch.unique(scores).sort(descending=True).values.tolist():
+            preds = scores >= float(threshold)
+            tp = int((preds & labels_bool).sum().item())
+            fp = int((preds & ~labels_bool).sum().item())
+            fn = positives - tp
+            tn = negatives - fp
+            if tp + fp == 0:
+                continue
+            precision = tp / (tp + fp)
+            recall = tp / positives
+            candidates.append((precision, recall, float(threshold), tp, fp, tn, fn))
+
+        metrics: dict[str, float] = {}
+        recall_candidates = [c for c in candidates if c[1] >= min_recall]
+        if recall_candidates:
+            precision, recall, threshold, tp, fp, tn, fn = max(
+                recall_candidates,
+                key=lambda c: (c[0], c[2]),
+            )
+            suffix = f"at_{min_recall:g}recall"
+            metrics[f"{prefix}precision_{suffix}"] = precision
+            metrics[f"{prefix}threshold_{suffix}"] = threshold
+            metrics.update(self._threshold_metric_values(prefix, suffix, tp, fp, tn, fn))
+
+        precision_candidates = [c for c in candidates if c[0] >= min_precision]
+        if precision_candidates:
+            precision, recall, threshold, tp, fp, tn, fn = max(
+                precision_candidates,
+                key=lambda c: (c[1], c[2]),
+            )
+            suffix = f"at_{min_precision:g}precision"
+            metrics[f"{prefix}recall_{suffix}"] = recall
+            metrics[f"{prefix}threshold_{suffix}"] = threshold
+            metrics.update(self._threshold_metric_values(prefix, suffix, tp, fp, tn, fn))
+        return metrics
+
+    @staticmethod
+    def _threshold_metric_values(
+        prefix: str,
+        suffix: str,
+        tp: int,
+        fp: int,
+        tn: int,
+        fn: int,
+    ) -> dict[str, float]:
+        attack_f1_den = (2 * tp) + fp + fn
+        benign_f1_den = (2 * tn) + fp + fn
+        mcc_den = math.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+        attack_f1 = math.nan if attack_f1_den == 0 else (2 * tp) / attack_f1_den
+        benign_f1 = math.nan if benign_f1_den == 0 else (2 * tn) / benign_f1_den
+        macro_f1 = (
+            math.nan
+            if math.isnan(attack_f1) or math.isnan(benign_f1)
+            else (attack_f1 + benign_f1) / 2
+        )
+        return {
+            f"{prefix}mcc_{suffix}": math.nan if mcc_den == 0 else ((tp * tn) - (fp * fn)) / mcc_den,
+            f"{prefix}f1_attack_{suffix}": attack_f1,
+            f"{prefix}f1_benign_{suffix}": benign_f1,
+            f"{prefix}f1_macro_{suffix}": macro_f1,
+        }
 
     def _log_per_attack_auroc(
         self,

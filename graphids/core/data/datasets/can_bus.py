@@ -142,14 +142,21 @@ class CANBusTemporalSource:
 
     @property
     def cache_key(self) -> str:
+        from graphids.paths import PREPROCESSING_VERSION
+
         repr_digest = representation_digest(self.representation_cfg)
         return (
             f"{self.KIND}|{self.resolved_lake_root()}|{self.name}"
+            f"|pre:{PREPROCESSING_VERSION}"
             f"|v{self.val_fraction}"
             f"|vw{self.val_warmup_events}|tw{self.test_warmup_events}"
             f"|voc:{self.vocab_scope}"
             f"|repr:{representation_kind(self.representation_cfg)}:{repr_digest}"
         )
+
+    @property
+    def attack_type_names(self) -> dict[int, str]:
+        return dict(ATTACK_TYPE_NAMES)
 
     def cache_root_path(self) -> Path:
         from graphids.paths import cache_dir

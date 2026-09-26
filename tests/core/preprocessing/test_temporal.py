@@ -188,3 +188,13 @@ def test_can_temporal_source_rejects_unknown_vocab_scope():
 
     with pytest.raises(ValueError, match="vocab_scope"):
         CANBusTemporalSource(name="dummy", vocab_scope="split")
+
+
+def test_can_temporal_source_cache_key_includes_preprocessing_version():
+    from graphids.core.data.datasets.can_bus import CANBusTemporalSource
+    from graphids.paths import PREPROCESSING_VERSION
+
+    source = CANBusTemporalSource(name="dummy", lake_root="lake")
+
+    assert f"|pre:{PREPROCESSING_VERSION}|" in source.cache_key
+    assert "|voc:train|" in source.cache_key

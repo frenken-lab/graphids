@@ -26,6 +26,7 @@ def _temporal(labels: list[int]) -> TemporalData:
 
 class _Source:
     cache_key = "temporal-dm-test"
+    attack_type_names = {0: "benign", 2: "fuzzing"}
 
     def build(self):
         return type(
@@ -49,6 +50,7 @@ def test_temporal_datamodule_exposes_event_schema_and_named_tests():
     assert dm.num_classes == 2
     assert list(dm.test_data) == ["holdout"]
     assert list(dm.test_datasets) == ["holdout"]
+    assert dm.attack_type_names == {0: "benign", 2: "fuzzing"}
 
     batch = next(iter(dm.train_dataloader()))
     assert batch.y.numel() == 2
