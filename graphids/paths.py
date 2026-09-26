@@ -46,6 +46,29 @@ PHASE_MARKERS: dict[str, str] = {
 }
 
 
+@lru_cache(maxsize=1)
+def _dotenv_values() -> dict[str, str]:
+    path = PROJECT_ROOT / ".env"
+    if not path.is_file():
+        return {}
+    values: dict[str, str] = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line.removeprefix("export ").strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip("'\"")
+    return values
+
+
+def _env_value(key: str) -> str | None:
+    return os.environ.get(key) or _dotenv_values().get(key)
+
+
 # ---------------------------------------------------------------------------
 # Lake-root paths (raw CSVs, preprocessed caches)
 # ---------------------------------------------------------------------------
@@ -56,7 +79,7 @@ def lake_root() -> str:
 
     Cross-user shared root: holds mlflow.db, cache/, mlartifacts/, slurm/.
     """
-    lr = os.environ.get("GRAPHIDS_LAKE_ROOT")
+    lr = _env_value("GRAPHIDS_LAKE_ROOT")
     if not lr:
         raise RuntimeError("GRAPHIDS_LAKE_ROOT unset — set it to the shared data lake root")
     return lr
@@ -86,9 +109,9 @@ def trial_dir() -> Path:
     Override with ``GRAPHIDS_RUN_ROOT``. Otherwise use ``$GRAPHIDS_LAKE_ROOT/runs``
     when available, falling back to ``<project>/runs`` for local development.
     """
-    if override := os.environ.get("GRAPHIDS_RUN_ROOT"):
+    if override := _env_value("GRAPHIDS_RUN_ROOT"):
         return Path(override)
-    if lake := os.environ.get("GRAPHIDS_LAKE_ROOT"):
+    if lake := _env_value("GRAPHIDS_LAKE_ROOT"):
         return Path(lake) / "runs"
     return PROJECT_ROOT / "runs"
 

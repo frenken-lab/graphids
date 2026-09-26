@@ -6,6 +6,7 @@ consume the same domain config.
 
 from __future__ import annotations
 
+import subprocess
 from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -69,6 +70,24 @@ def _payload(cfg: Any) -> dict[str, Any]:
     if isinstance(cfg, dict):
         return cfg
     raise TypeError(f"unsupported run payload: {type(cfg)!r}")
+
+
+def _current_git_sha() -> str:
+    from graphids.paths import PROJECT_ROOT
+
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=PROJECT_ROOT,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    sha = completed.stdout.strip()
+    return sha or "unknown"
 
 
 class _StrictModel(BaseModel):
@@ -273,4 +292,6 @@ class ExperimentConfig(_StrictModel):
             cfg["resources"] = {}
         if cfg.get("config") is None:
             cfg["config"] = {}
+        if not cfg.get("git_sha") or cfg.get("git_sha") == "unknown":
+            cfg["git_sha"] = _current_git_sha()
         return cls.model_validate(cfg)

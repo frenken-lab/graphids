@@ -12,6 +12,49 @@ def test_experiment_config_defaults_to_temporal_representation():
     assert representation_kind(run.representation_cfg) == "temporal"
 
 
+def test_experiment_config_from_yaml_resolves_git_sha(monkeypatch, tmp_path):
+    import graphids.exp.config as config_mod
+    from graphids.exp.config import ExperimentConfig
+
+    monkeypatch.setattr(config_mod, "_current_git_sha", lambda: "abc123")
+    path = tmp_path / "experiment.yml"
+    path.write_text(
+        """
+experiment_name: demo
+dataset: toy
+config: {}
+resources: {}
+""".lstrip()
+    )
+
+    cfg = ExperimentConfig.from_yaml(path)
+    run = cfg.build_run(name=cfg.experiment_name, stage=cfg.stage, config=cfg.config)
+
+    assert cfg.git_sha == "abc123"
+    assert run.git_sha == "abc123"
+
+
+def test_experiment_config_from_yaml_preserves_explicit_git_sha(monkeypatch, tmp_path):
+    import graphids.exp.config as config_mod
+    from graphids.exp.config import ExperimentConfig
+
+    monkeypatch.setattr(config_mod, "_current_git_sha", lambda: "abc123")
+    path = tmp_path / "experiment.yml"
+    path.write_text(
+        """
+experiment_name: demo
+dataset: toy
+git_sha: explicit456
+config: {}
+resources: {}
+""".lstrip()
+    )
+
+    cfg = ExperimentConfig.from_yaml(path)
+
+    assert cfg.git_sha == "explicit456"
+
+
 def test_temporal_smoke_configs_resolve_without_window_or_budget_knobs():
     from graphids.core.data.preprocessing.representations import representation_kind
     from graphids.exp.config import ExperimentConfig
