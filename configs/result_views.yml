@@ -20,3 +20,14 @@ any:
     - test/test/mcc
     - test/test/auroc_per_attack/fuzzing
     - test/test/f1_per_class/attack
+
+fit_baselines:
+  filter:
+    phase: fit
+  metrics:
+    - train_loss
+    - val_loss
+    - val_acc
+    - val_auroc
+    - val_recon_mean
+    - val_kl_mean
