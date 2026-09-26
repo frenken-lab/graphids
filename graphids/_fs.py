@@ -46,14 +46,22 @@ def atomic_save(obj: Any, path: Path) -> None:
     """
     import torch  # heavy — keep out of module scope so _fs stays import-light
 
-    tmp = path.with_suffix(".tmp")
-    torch.save(obj, str(tmp))
-    fd = os.open(str(tmp), os.O_RDONLY)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    os.close(fd)
+    tmp = Path(tmp_name)
     try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    tmp.rename(path)
+        torch.save(obj, str(tmp))
+        fd = os.open(str(tmp), os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        tmp.rename(path)
+    except BaseException:
+        if tmp.exists():
+            tmp.unlink()
+        raise
     path.with_suffix(path.suffix + ".sha256").write_text(_sha256_file(path) + "\n")
     _fsync_dir(path.parent)
 

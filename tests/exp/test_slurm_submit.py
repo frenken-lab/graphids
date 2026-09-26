@@ -36,15 +36,32 @@ def test_build_slurm_script_starts_ray_allocation(monkeypatch, tmp_path):
     assert "#SBATCH --time=00:30:00" in script
     assert "#SBATCH --account=pas1266" in script
     assert "export SLURM_CPUS_PER_TASK=4" in script
-    assert 'RAY_PORT=${GRAPHIDS_RAY_PORT:-$((20000 + SLURM_JOB_ID % 30000))}' in script
-    assert 'RAY_DASHBOARD_AGENT_PORT="$((50000 + SLURM_JOB_ID % 10000))"' in script
+    assert "RAY_BASE_PORT=${GRAPHIDS_RAY_BASE_PORT:-$((20000 + (SLURM_JOB_ID % 200) * 200))}" in script
+    assert "RAY_PORT=${GRAPHIDS_RAY_PORT:-${RAY_BASE_PORT}}" in script
+    assert 'RAY_OBJECT_MANAGER_PORT="$((RAY_BASE_PORT + 1))"' in script
+    assert 'RAY_NODE_MANAGER_PORT="$((RAY_BASE_PORT + 2))"' in script
+    assert 'RAY_CLIENT_SERVER_PORT="$((RAY_BASE_PORT + 3))"' in script
+    assert 'RAY_DASHBOARD_AGENT_PORT="$((RAY_BASE_PORT + 4))"' in script
+    assert 'RAY_DASHBOARD_AGENT_GRPC_PORT="$((RAY_BASE_PORT + 5))"' in script
+    assert 'RAY_RUNTIME_ENV_AGENT_PORT="$((RAY_BASE_PORT + 6))"' in script
+    assert 'RAY_METRICS_EXPORT_PORT="$((RAY_BASE_PORT + 7))"' in script
+    assert 'RAY_MIN_WORKER_PORT="$((RAY_BASE_PORT + 20))"' in script
+    assert 'RAY_MAX_WORKER_PORT="$((RAY_BASE_PORT + 119))"' in script
     assert 'RAY_TMP_DIR="${TMPDIR:-/tmp}/graphids-ray-${SLURM_JOB_ID}"' in script
     assert "RAY_START_PIDS=()" in script
     assert "export RAY_ADDRESS" in script
     assert "ray stop --force" not in script
     assert "ray start --head" in script
     assert "--include-dashboard=false" in script
+    assert '--object-manager-port="${RAY_OBJECT_MANAGER_PORT}"' in script
+    assert '--node-manager-port="${RAY_NODE_MANAGER_PORT}"' in script
+    assert '--ray-client-server-port="${RAY_CLIENT_SERVER_PORT}"' in script
     assert '--dashboard-agent-listen-port="${RAY_DASHBOARD_AGENT_PORT}"' in script
+    assert '--dashboard-agent-grpc-port="${RAY_DASHBOARD_AGENT_GRPC_PORT}"' in script
+    assert '--runtime-env-agent-port="${RAY_RUNTIME_ENV_AGENT_PORT}"' in script
+    assert '--metrics-export-port="${RAY_METRICS_EXPORT_PORT}"' in script
+    assert '--min-worker-port="${RAY_MIN_WORKER_PORT}"' in script
+    assert '--max-worker-port="${RAY_MAX_WORKER_PORT}"' in script
     assert '--temp-dir="${RAY_TMP_DIR}/head"' in script
     assert 'RAY_START_PIDS+=("$!")' in script
     assert 'ray start --address="${RAY_ADDRESS}"' in script
