@@ -24,6 +24,7 @@ any:
 fit_baselines:
   filter:
     phase: fit
+    plan_id: temporal_baseline_2026_09_26
   metrics:
     - train_loss
     - val_loss
