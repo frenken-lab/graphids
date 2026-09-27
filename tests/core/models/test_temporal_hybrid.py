@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import torch
 from torch_geometric.data import TemporalData
 
@@ -41,9 +42,13 @@ def _hybrid(**overrides):
         scale="small",
         objective=params.get("objective", "supervised"),
         input={"hidden": 8, "embedding_dim": 4, "dropout": 0.0},
-        memory={"type": "tgn", "enabled": True, "reset_on_stream_end": True},
-        backbone={"type": params.get("backbone_type", "gru"), "layers": 1, "dropout": 0.0},
+        memory=params.get("memory", {"type": "tgn", "enabled": True, "reset_on_stream_end": True}),
+        backbone=params.get("backbone", {"type": params.get("backbone_type", "gru"), "layers": 1, "dropout": 0.0}),
         heads=params.get("heads"),
+        anomaly=params.get("anomaly"),
+        rhythm=params.get("rhythm"),
+        motif=params.get("motif"),
+        loss_fn=params.get("loss_fn"),
         loss_weights={"classification": 1.0, "next_id": 0.2, "iat": 0.1, "payload_delta": 0.1},
         num_ids=4,
         in_channels=4,
@@ -141,6 +146,34 @@ def test_temporal_hybrid_reset_after_clears_backbone_and_memory_state():
     assert state["backbone"] is None
     assert state["memory"] is not None
     assert torch.count_nonzero(state["memory"]) == 0
+    assert state["last_seen"] is not None
+    assert torch.all(state["last_seen"] < 0)
+
+
+def test_temporal_hybrid_rich_context_and_nll_heads_backpropagate():
+    model = _hybrid(
+        objective="joint",
+        backbone_type="ssm_lite",
+        memory={"type": "tgn", "enabled": True, "reset_on_stream_end": True, "time_encoding_dim": 4},
+        heads={"classification": True, "next_id": True, "iat": True, "payload_delta": True},
+        anomaly={"mode": "nll"},
+        rhythm={"enabled": True},
+        motif={"enabled": True, "length": 3, "embedding_dim": 4, "time_dim": 4},
+    )
+    batch = _temporal_batch()
+
+    out, state = model._forward_with_state(batch, None)
+    loss = model.training_step(batch, 0)
+    loss.backward()
+
+    assert "iat_nll" in out
+    assert "payload_delta_nll" in out
+    assert tuple(out["anomaly_score"].shape) == (5,)
+    assert state["rhythm"] is not None
+    assert state["motif_ids"] is not None
+    assert state["motif_iats"] is not None
+    assert torch.isfinite(loss)
+    assert any(p.grad is not None for p in model.parameters() if p.requires_grad)
 
 
 def test_temporal_hybrid_checkpoint_loads_without_loss_fn_for_anomaly(tmp_path):
@@ -164,3 +197,37 @@ def test_temporal_hybrid_checkpoint_loads_without_loss_fn_for_anomaly(tmp_path):
     assert isinstance(loaded, TemporalHybridModel)
     assert loaded.hparams.objective == "anomaly"
     assert loaded(_temporal_batch())["anomaly_score"].shape == (5,)
+
+
+def test_temporal_hybrid_rejects_invalid_objective_head_combos():
+    from graphids.core.losses import CrossEntropyLoss
+
+    with pytest.raises(ValueError, match="objective='supervised' requires heads.classification=true"):
+        _hybrid(objective="supervised", heads={"classification": False})
+
+    with pytest.raises(ValueError, match="objective='anomaly' requires heads.classification=false"):
+        _hybrid(objective="anomaly", heads={"classification": True})
+
+    with pytest.raises(ValueError, match="objective='anomaly' requires at least one anomaly head"):
+        _hybrid(
+            objective="anomaly",
+            heads={"next_id": False, "iat": False, "payload_delta": False},
+        )
+
+    with pytest.raises(ValueError, match="objective='joint' requires at least one anomaly head"):
+        _hybrid(
+            objective="joint",
+            heads={
+                "classification": True,
+                "next_id": False,
+                "iat": False,
+                "payload_delta": False,
+            },
+        )
+
+    with pytest.raises(ValueError, match="does not accept loss_fn"):
+        _hybrid(
+            objective="anomaly",
+            heads={"next_id": True, "iat": True, "payload_delta": True},
+            loss_fn=CrossEntropyLoss(),
+        )

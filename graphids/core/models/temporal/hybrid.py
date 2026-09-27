@@ -14,6 +14,12 @@ from graphids.core.models.base import classification_test_metrics
 from .base import TemporalModuleBase
 
 Objective = Literal["supervised", "anomaly", "joint"]
+_ANOMALY_HEADS = ("next_id", "iat", "payload_delta")
+_ANOMALY_MODES = {"regression", "nll"}
+
+
+def _drop_none(values: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in values.items() if v is not None}
 
 
 class TemporalInputEncoder(nn.Module):
@@ -46,16 +52,48 @@ class TemporalInputEncoder(nn.Module):
         return self.proj(x)
 
 
+class TemporalTimeEncoder(nn.Module):
+    """Sinusoidal encoding for positive elapsed times."""
+
+    def __init__(self, dim: int):
+        super().__init__()
+        self.dim = max(1, int(dim))
+        half = max(1, (self.dim + 1) // 2)
+        self.register_buffer("freqs", torch.logspace(0, 3, steps=half), persistent=False)
+
+    def forward(self, delta: torch.Tensor) -> torch.Tensor:
+        x = torch.log1p(delta.float().clamp_min(0)).unsqueeze(-1) / self.freqs
+        encoded = torch.cat([torch.sin(x), torch.cos(x)], dim=-1)
+        return encoded[..., : self.dim]
+
+
 class TemporalIdMemory(nn.Module):
     """TGN-style per-ID memory updated causally after each event."""
 
-    def __init__(self, *, num_ids: int, hidden: int):
+    def __init__(
+        self,
+        *,
+        num_ids: int,
+        hidden: int,
+        use_source: bool = True,
+        use_destination: bool = True,
+        time_encoding_dim: int = 0,
+    ):
         super().__init__()
         self.num_ids = max(1, int(num_ids))
         self.hidden = int(hidden)
+        self.use_source = bool(use_source)
+        self.use_destination = bool(use_destination)
+        self.time_encoding_dim = max(0, int(time_encoding_dim))
         self.update_cell = nn.GRUCell(self.hidden, self.hidden)
+        self.time_encoder = (
+            TemporalTimeEncoder(self.time_encoding_dim) if self.time_encoding_dim > 0 else None
+        )
+        context_dim = (self.hidden if self.use_source else 0) + (self.hidden if self.use_destination else 0)
+        context_dim += 2 * self.time_encoding_dim
+        self._has_context = context_dim > 0
         self.mix = nn.Sequential(
-            nn.Linear(self.hidden * 2, self.hidden),
+            nn.Linear(max(1, context_dim), self.hidden),
             nn.LayerNorm(self.hidden),
             nn.GELU(),
         )
@@ -70,10 +108,43 @@ class TemporalIdMemory(nn.Module):
             return self.initial_state(device=ref.device, dtype=ref.dtype)
         return state
 
-    def read_context(self, state: torch.Tensor, src: torch.Tensor, dst: torch.Tensor) -> torch.Tensor:
+    def initial_last_seen(self, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        return torch.full((self.num_ids,), -1.0, device=device, dtype=dtype)
+
+    def ensure_last_seen(self, last_seen: torch.Tensor | None, ref: torch.Tensor) -> torch.Tensor:
+        if last_seen is None or last_seen.device != ref.device or last_seen.dtype != ref.dtype:
+            return self.initial_last_seen(device=ref.device, dtype=ref.dtype)
+        if last_seen.shape != (self.num_ids,):
+            return self.initial_last_seen(device=ref.device, dtype=ref.dtype)
+        return last_seen
+
+    def read_context(
+        self,
+        state: torch.Tensor,
+        last_seen: torch.Tensor | None,
+        src: torch.Tensor,
+        dst: torch.Tensor,
+        t: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if not self._has_context:
+            return state.new_zeros(self.hidden)
         src_idx = src.clamp_min(0).clamp_max(self.num_ids - 1).long()
         dst_idx = dst.clamp_min(0).clamp_max(self.num_ids - 1).long()
-        return self.mix(torch.cat([state[src_idx], state[dst_idx]], dim=-1))
+        parts: list[torch.Tensor] = []
+        if self.use_source:
+            parts.append(state[src_idx])
+        if self.use_destination:
+            parts.append(state[dst_idx])
+        if self.time_encoder is not None:
+            assert last_seen is not None
+            now = state.new_tensor(0.0) if t is None else t.to(device=state.device, dtype=state.dtype)
+            src_last = last_seen[src_idx]
+            dst_last = last_seen[dst_idx]
+            src_elapsed = torch.where(src_last >= 0, now - src_last, torch.zeros_like(now))
+            dst_elapsed = torch.where(dst_last >= 0, now - dst_last, torch.zeros_like(now))
+            parts.append(self.time_encoder(src_elapsed).reshape(-1))
+            parts.append(self.time_encoder(dst_elapsed).reshape(-1))
+        return self.mix(torch.cat(parts, dim=-1))
 
     def update_one(
         self,
@@ -97,6 +168,125 @@ class TemporalIdMemory(nn.Module):
             num_classes=self.num_ids,
         ).to(dtype=state.dtype).unsqueeze(-1)
         return (after_src * (1.0 - dst_mask)) + (dst_new.unsqueeze(0) * dst_mask)
+
+    def update_last_seen(
+        self,
+        last_seen: torch.Tensor,
+        src: torch.Tensor,
+        dst: torch.Tensor,
+        t: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if t is None:
+            return last_seen
+        src_idx = int(src.clamp_min(0).clamp_max(self.num_ids - 1).item())
+        dst_idx = int(dst.clamp_min(0).clamp_max(self.num_ids - 1).item())
+        now = t.to(device=last_seen.device, dtype=last_seen.dtype)
+        src_mask = F.one_hot(torch.tensor(src_idx, device=last_seen.device), num_classes=self.num_ids).bool()
+        dst_mask = F.one_hot(torch.tensor(dst_idx, device=last_seen.device), num_classes=self.num_ids).bool()
+        updated = torch.where(src_mask, now, last_seen)
+        return torch.where(dst_mask, now, updated)
+
+
+class TemporalRhythmContext(nn.Module):
+    """Causal rolling IAT summaries for source and destination IDs."""
+
+    def __init__(self, *, num_ids: int, hidden: int):
+        super().__init__()
+        self.num_ids = max(1, int(num_ids))
+        self.hidden = int(hidden)
+        self.proj = nn.Sequential(
+            nn.Linear(6, self.hidden),
+            nn.LayerNorm(self.hidden),
+            nn.GELU(),
+        )
+
+    def initial_state(self, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        return torch.zeros(self.num_ids, 3, device=device, dtype=dtype)
+
+    def ensure_state(self, state: torch.Tensor | None, ref: torch.Tensor) -> torch.Tensor:
+        if state is None or state.device != ref.device or state.dtype != ref.dtype:
+            return self.initial_state(device=ref.device, dtype=ref.dtype)
+        if state.shape != (self.num_ids, 3):
+            return self.initial_state(device=ref.device, dtype=ref.dtype)
+        return state
+
+    def read_context(self, state: torch.Tensor, src: torch.Tensor, dst: torch.Tensor) -> torch.Tensor:
+        src_idx = src.clamp_min(0).clamp_max(self.num_ids - 1).long()
+        dst_idx = dst.clamp_min(0).clamp_max(self.num_ids - 1).long()
+        return self.proj(torch.cat([self._features(state[src_idx]), self._features(state[dst_idx])], dim=-1))
+
+    @staticmethod
+    def _features(stats: torch.Tensor) -> torch.Tensor:
+        count = stats[0].clamp_min(0)
+        mean = stats[1]
+        variance = torch.where(count > 1, stats[2] / (count - 1).clamp_min(1), torch.zeros_like(count))
+        return torch.stack([torch.log1p(count), mean, torch.sqrt(variance.clamp_min(0))])
+
+    def update_one(self, state: torch.Tensor, src: torch.Tensor, dst: torch.Tensor, iat: torch.Tensor) -> torch.Tensor:
+        updated = self._update_id(state, src, iat)
+        return self._update_id(updated, dst, iat)
+
+    def _update_id(self, state: torch.Tensor, idx: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
+        pos = int(idx.clamp_min(0).clamp_max(self.num_ids - 1).item())
+        old = state[pos]
+        val = value.to(device=state.device, dtype=state.dtype).clamp_min(0)
+        count = old[0] + 1.0
+        delta = val - old[1]
+        mean = old[1] + (delta / count)
+        m2 = old[2] + delta * (val - mean)
+        replacement = torch.stack([count, mean, m2])
+        mask = F.one_hot(torch.tensor(pos, device=state.device), num_classes=self.num_ids).to(state.dtype).unsqueeze(-1)
+        return (state * (1.0 - mask)) + (replacement.unsqueeze(0) * mask)
+
+
+class TemporalMotifContext(nn.Module):
+    """Encode recent destination-ID and IAT motifs from the current stream."""
+
+    def __init__(self, *, num_ids: int, hidden: int, length: int, embedding_dim: int, time_dim: int):
+        super().__init__()
+        self.num_ids = max(1, int(num_ids))
+        self.hidden = int(hidden)
+        self.length = max(1, int(length))
+        self.embedding = nn.Embedding(self.num_ids, int(embedding_dim))
+        self.time_encoder = TemporalTimeEncoder(max(1, int(time_dim)))
+        input_dim = self.length * (int(embedding_dim) + max(1, int(time_dim)))
+        self.proj = nn.Sequential(
+            nn.Linear(input_dim, self.hidden),
+            nn.LayerNorm(self.hidden),
+            nn.GELU(),
+        )
+
+    def initial_ids(self, *, device: torch.device) -> torch.Tensor:
+        return torch.zeros(self.length, device=device, dtype=torch.long)
+
+    def initial_iats(self, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        return torch.zeros(self.length, device=device, dtype=dtype)
+
+    def ensure_ids(self, ids: torch.Tensor | None, ref: torch.Tensor) -> torch.Tensor:
+        if ids is None or ids.device != ref.device or ids.shape != (self.length,):
+            return self.initial_ids(device=ref.device)
+        return ids.long()
+
+    def ensure_iats(self, iats: torch.Tensor | None, ref: torch.Tensor) -> torch.Tensor:
+        if iats is None or iats.device != ref.device or iats.dtype != ref.dtype or iats.shape != (self.length,):
+            return self.initial_iats(device=ref.device, dtype=ref.dtype)
+        return iats
+
+    def read_context(self, ids: torch.Tensor, iats: torch.Tensor) -> torch.Tensor:
+        encoded_ids = self.embedding(ids.clamp_min(0).clamp_max(self.num_ids - 1).long()).flatten()
+        encoded_iats = self.time_encoder(iats).flatten()
+        return self.proj(torch.cat([encoded_ids, encoded_iats], dim=-1))
+
+    def update_one(
+        self,
+        ids: torch.Tensor,
+        iats: torch.Tensor,
+        dst: torch.Tensor,
+        iat: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        next_id = dst.clamp_min(0).clamp_max(self.num_ids - 1).long().reshape(1)
+        next_iat = iat.to(device=iats.device, dtype=iats.dtype).clamp_min(0).reshape(1)
+        return torch.cat([ids[1:], next_id]), torch.cat([iats[1:], next_iat])
 
 
 class _SsmLiteCell(nn.Module):
@@ -193,6 +383,9 @@ class TemporalHybridModel(TemporalModuleBase):
         memory: dict[str, Any] | None = None,
         backbone: dict[str, Any] | None = None,
         heads: dict[str, bool] | None = None,
+        anomaly: dict[str, Any] | None = None,
+        rhythm: dict[str, Any] | None = None,
+        motif: dict[str, Any] | None = None,
         loss_weights: dict[str, float] | None = None,
         anomaly_score_weights: dict[str, float] | None = None,
         lr: float = 1e-3,
@@ -207,10 +400,13 @@ class TemporalHybridModel(TemporalModuleBase):
         if objective not in {"supervised", "anomaly", "joint"}:
             raise ValueError("objective must be one of: supervised, anomaly, joint")
         preset = self._SCALES.get(scale, self._SCALES["small"])
-        input = dict(input or {})
-        backbone = dict(backbone or {})
-        memory = dict(memory or {})
-        heads = dict(heads or {})
+        input = _drop_none(dict(input or {}))
+        backbone = _drop_none(dict(backbone or {}))
+        memory = _drop_none(dict(memory or {}))
+        heads = _drop_none(dict(heads or {}))
+        anomaly = _drop_none(dict(anomaly or {}))
+        rhythm = _drop_none(dict(rhythm or {}))
+        motif = _drop_none(dict(motif or {}))
         loss_weights = dict(loss_weights or {})
         anomaly_score_weights = dict(anomaly_score_weights or {})
 
@@ -223,6 +419,17 @@ class TemporalHybridModel(TemporalModuleBase):
         memory.setdefault("type", "tgn")
         memory.setdefault("enabled", True)
         memory.setdefault("reset_on_stream_end", True)
+        memory.setdefault("use_source", True)
+        memory.setdefault("use_destination", True)
+        memory.setdefault("time_encoding_dim", 0)
+        anomaly.setdefault("mode", "regression")
+        anomaly.setdefault("min_log_scale", -7.0)
+        anomaly.setdefault("max_log_scale", 5.0)
+        rhythm.setdefault("enabled", False)
+        motif.setdefault("enabled", False)
+        motif.setdefault("length", 3)
+        motif.setdefault("embedding_dim", max(2, int(input["embedding_dim"]) // 2))
+        motif.setdefault("time_dim", max(2, int(input["embedding_dim"]) // 2))
 
         default_ssl = objective in {"anomaly", "joint"}
         heads.setdefault("classification", objective in {"supervised", "joint"})
@@ -238,8 +445,16 @@ class TemporalHybridModel(TemporalModuleBase):
         anomaly_score_weights.setdefault("iat", 1.0)
         anomaly_score_weights.setdefault("payload_delta", 1.0)
 
-        if objective == "anomaly" and loss_fn is not None:
-            raise ValueError("objective='anomaly' trains self-supervised heads and does not accept loss_fn")
+        self._validate_modular_config(
+            objective=objective,
+            memory=memory,
+            backbone=backbone,
+            heads=heads,
+            anomaly=anomaly,
+            rhythm=rhythm,
+            motif=motif,
+            loss_fn=loss_fn,
+        )
         if heads.get("classification", False) and loss_fn is None:
             loss_fn = CrossEntropyLoss()
 
@@ -264,7 +479,61 @@ class TemporalHybridModel(TemporalModuleBase):
     @property
     def anomaly_enabled(self) -> bool:
         heads = self.hparams.heads
-        return any(bool(heads.get(k, False)) for k in ("next_id", "iat", "payload_delta"))
+        return any(bool(heads.get(k, False)) for k in _ANOMALY_HEADS)
+
+    @staticmethod
+    def _enabled_anomaly_heads(heads: dict[str, Any]) -> list[str]:
+        return [name for name in _ANOMALY_HEADS if bool(heads.get(name, False))]
+
+    @classmethod
+    def _validate_modular_config(
+        cls,
+        *,
+        objective: Objective,
+        memory: dict[str, Any],
+        backbone: dict[str, Any],
+        heads: dict[str, Any],
+        anomaly: dict[str, Any],
+        rhythm: dict[str, Any],
+        motif: dict[str, Any],
+        loss_fn: nn.Module | None,
+    ) -> None:
+        if str(memory.get("type", "tgn")) != "tgn":
+            raise ValueError("memory.type must be 'tgn'")
+        if int(memory.get("time_encoding_dim", 0)) < 0:
+            raise ValueError("memory.time_encoding_dim must be non-negative")
+        if str(backbone.get("type", "gru")) not in {"none", "gru", "ssm_lite", "mamba"}:
+            raise ValueError("backbone.type must be one of: none, gru, ssm_lite, mamba")
+        if str(anomaly.get("mode", "regression")) not in _ANOMALY_MODES:
+            raise ValueError("anomaly.mode must be one of: regression, nll")
+        if float(anomaly.get("min_log_scale", -7.0)) > float(anomaly.get("max_log_scale", 5.0)):
+            raise ValueError("anomaly.min_log_scale must be <= anomaly.max_log_scale")
+        if int(motif.get("length", 1)) < 1:
+            raise ValueError("motif.length must be positive")
+        if int(motif.get("embedding_dim", 1)) < 1:
+            raise ValueError("motif.embedding_dim must be positive")
+        if int(motif.get("time_dim", 1)) < 1:
+            raise ValueError("motif.time_dim must be positive")
+
+        classification = bool(heads.get("classification", False))
+        anomaly_heads = cls._enabled_anomaly_heads(heads)
+        if objective == "supervised":
+            if not classification:
+                raise ValueError("objective='supervised' requires heads.classification=true")
+            return
+        if objective == "anomaly":
+            if loss_fn is not None:
+                raise ValueError("objective='anomaly' trains self-supervised heads and does not accept loss_fn")
+            if classification:
+                raise ValueError("objective='anomaly' requires heads.classification=false")
+            if not anomaly_heads:
+                raise ValueError("objective='anomaly' requires at least one anomaly head")
+            return
+        if objective == "joint":
+            if not classification:
+                raise ValueError("objective='joint' requires heads.classification=true")
+            if not anomaly_heads:
+                raise ValueError("objective='joint' requires at least one anomaly head")
 
     def _build(self) -> None:
         hp = self.hparams
@@ -277,8 +546,30 @@ class TemporalHybridModel(TemporalModuleBase):
             dropout=float(hp.input["dropout"]),
         )
         self.memory = (
-            TemporalIdMemory(num_ids=int(hp.num_ids), hidden=hidden)
+            TemporalIdMemory(
+                num_ids=int(hp.num_ids),
+                hidden=hidden,
+                use_source=bool(hp.memory.get("use_source", True)),
+                use_destination=bool(hp.memory.get("use_destination", True)),
+                time_encoding_dim=int(hp.memory.get("time_encoding_dim", 0)),
+            )
             if bool(hp.memory.get("enabled", True))
+            else None
+        )
+        self.rhythm = (
+            TemporalRhythmContext(num_ids=int(hp.num_ids), hidden=hidden)
+            if bool(hp.rhythm.get("enabled", False))
+            else None
+        )
+        self.motif = (
+            TemporalMotifContext(
+                num_ids=int(hp.num_ids),
+                hidden=hidden,
+                length=int(hp.motif.get("length", 3)),
+                embedding_dim=int(hp.motif.get("embedding_dim", max(2, hidden // 8))),
+                time_dim=int(hp.motif.get("time_dim", max(2, hidden // 8))),
+            )
+            if bool(hp.motif.get("enabled", False))
             else None
         )
         self.backbone = TemporalStreamBackbone(
@@ -289,11 +580,21 @@ class TemporalHybridModel(TemporalModuleBase):
         )
         self.classifier = nn.Linear(hidden, int(hp.num_classes)) if self.classification_enabled else None
         self.next_id_head = nn.Linear(hidden, int(hp.num_ids)) if hp.heads.get("next_id", False) else None
-        self.iat_head = nn.Sequential(nn.Linear(hidden, 1), nn.Softplus()) if hp.heads.get("iat", False) else None
+        anomaly_mode = str(hp.anomaly.get("mode", "regression"))
+        if hp.heads.get("iat", False):
+            self.iat_head = (
+                nn.Linear(hidden, 2)
+                if anomaly_mode == "nll"
+                else nn.Sequential(nn.Linear(hidden, 1), nn.Softplus())
+            )
+        else:
+            self.iat_head = None
         payload_dim = self._payload_delta_dim(int(hp.in_channels))
-        self.payload_delta_head = (
-            nn.Linear(hidden, payload_dim) if hp.heads.get("payload_delta", False) else None
-        )
+        if hp.heads.get("payload_delta", False):
+            out_dim = payload_dim * 2 if anomaly_mode == "nll" else payload_dim
+            self.payload_delta_head = nn.Linear(hidden, out_dim)
+        else:
+            self.payload_delta_head = None
         self.test_metrics = classification_test_metrics(int(hp.num_classes))
 
     @staticmethod
@@ -327,7 +628,18 @@ class TemporalHybridModel(TemporalModuleBase):
 
     def _initial_state_like(self, encoded: torch.Tensor) -> dict[str, torch.Tensor | None]:
         memory = self.memory.ensure_state(None, encoded) if self.memory is not None else None
-        return {"memory": memory, "backbone": None}
+        last_seen = self.memory.ensure_last_seen(None, encoded) if self.memory is not None else None
+        rhythm = self.rhythm.ensure_state(None, encoded) if getattr(self, "rhythm", None) is not None else None
+        motif_ids = self.motif.ensure_ids(None, encoded) if getattr(self, "motif", None) is not None else None
+        motif_iats = self.motif.ensure_iats(None, encoded) if getattr(self, "motif", None) is not None else None
+        return {
+            "memory": memory,
+            "last_seen": last_seen,
+            "rhythm": rhythm,
+            "motif_ids": motif_ids,
+            "motif_iats": motif_iats,
+            "backbone": None,
+        }
 
     def _targets(self, batch) -> dict[str, torch.Tensor]:
         n = int(batch.dst.numel())
@@ -347,12 +659,26 @@ class TemporalHybridModel(TemporalModuleBase):
         t = getattr(batch, "t", None)
         iat = batch.msg.new_zeros(n)
         if t is not None and n > 1:
-            iat[:-1] = (t[1:].to(device=device, dtype=batch.msg.dtype) - t[:-1].to(device=device, dtype=batch.msg.dtype)).clamp_min(0)
+            iat[:-1] = (
+                t[1:].to(device=device, dtype=batch.msg.dtype)
+                - t[:-1].to(device=device, dtype=batch.msg.dtype)
+            ).clamp_min(0)
         payload_slice = self._payload_delta_slice(int(self.hparams.in_channels))
         payload_delta = batch.msg[:, payload_slice].float().clone()
         if n > 1:
             payload_delta[:-1] = batch.msg[1:, payload_slice].float()
         return {"valid_next": valid_next, "next_id": next_id, "iat": iat, "payload_delta": payload_delta}
+
+    def _event_iat(self, batch, idx: int, ref: torch.Tensor) -> torch.Tensor:
+        if int(self.hparams.in_channels) > 16 and batch.msg.shape[1] > 16:
+            return batch.msg[idx, 16].to(device=ref.device, dtype=ref.dtype).clamp_min(0)
+        t = getattr(batch, "t", None)
+        if t is not None and idx > 0:
+            return (
+                t[idx].to(device=ref.device, dtype=ref.dtype)
+                - t[idx - 1].to(device=ref.device, dtype=ref.dtype)
+            ).clamp_min(0)
+        return ref.new_tensor(0.0)
 
     def _forward_with_state(
         self,
@@ -369,6 +695,12 @@ class TemporalHybridModel(TemporalModuleBase):
         current_state = self._initial_state_like(encoded) if state is None else dict(state)
         if self.memory is not None:
             current_state["memory"] = self.memory.ensure_state(current_state.get("memory"), encoded)
+            current_state["last_seen"] = self.memory.ensure_last_seen(current_state.get("last_seen"), encoded)
+        if self.rhythm is not None:
+            current_state["rhythm"] = self.rhythm.ensure_state(current_state.get("rhythm"), encoded)
+        if self.motif is not None:
+            current_state["motif_ids"] = self.motif.ensure_ids(current_state.get("motif_ids"), encoded)
+            current_state["motif_iats"] = self.motif.ensure_iats(current_state.get("motif_iats"), encoded)
 
         reset_after = getattr(batch, "reset_after", None)
         if reset_after is None:
@@ -378,25 +710,65 @@ class TemporalHybridModel(TemporalModuleBase):
 
         outputs: list[torch.Tensor] = []
         memory_state = current_state.get("memory")
+        last_seen = current_state.get("last_seen")
+        rhythm_state = current_state.get("rhythm")
+        motif_ids = current_state.get("motif_ids")
+        motif_iats = current_state.get("motif_iats")
         backbone_state = current_state.get("backbone")
         reset_memory = bool(self.hparams.memory.get("reset_on_stream_end", True))
+        t = getattr(batch, "t", None)
 
         for idx in range(encoded.size(0)):
             x_t = encoded[idx]
+            iat_t = self._event_iat(batch, idx, x_t)
             if self.memory is not None and memory_state is not None:
-                mem_ctx = self.memory.read_context(memory_state, batch.src[idx], batch.dst[idx])
+                mem_ctx = self.memory.read_context(
+                    memory_state,
+                    last_seen,
+                    batch.src[idx],
+                    batch.dst[idx],
+                    None if t is None else t[idx],
+                )
                 x_t = x_t + mem_ctx
+            if self.rhythm is not None and rhythm_state is not None:
+                x_t = x_t + self.rhythm.read_context(rhythm_state, batch.src[idx], batch.dst[idx])
+            if self.motif is not None and motif_ids is not None and motif_iats is not None:
+                x_t = x_t + self.motif.read_context(motif_ids, motif_iats)
             z_t, backbone_state = self.backbone.step(x_t, backbone_state)
             outputs.append(z_t)
             if self.memory is not None and memory_state is not None:
                 memory_state = self.memory.update_one(memory_state, batch.src[idx], batch.dst[idx], z_t)
+                if last_seen is not None:
+                    last_seen = self.memory.update_last_seen(
+                        last_seen,
+                        batch.src[idx],
+                        batch.dst[idx],
+                        None if t is None else t[idx],
+                    )
+            if self.rhythm is not None and rhythm_state is not None:
+                rhythm_state = self.rhythm.update_one(rhythm_state, batch.src[idx], batch.dst[idx], iat_t)
+            if self.motif is not None and motif_ids is not None and motif_iats is not None:
+                motif_ids, motif_iats = self.motif.update_one(motif_ids, motif_iats, batch.dst[idx], iat_t)
             if bool(reset_after[idx].item()):
                 backbone_state = self.backbone.reset_state()
                 if self.memory is not None and reset_memory:
                     memory_state = self.memory.initial_state(device=encoded.device, dtype=encoded.dtype)
+                    last_seen = self.memory.initial_last_seen(device=encoded.device, dtype=encoded.dtype)
+                if self.rhythm is not None:
+                    rhythm_state = self.rhythm.initial_state(device=encoded.device, dtype=encoded.dtype)
+                if self.motif is not None:
+                    motif_ids = self.motif.initial_ids(device=encoded.device)
+                    motif_iats = self.motif.initial_iats(device=encoded.device, dtype=encoded.dtype)
 
         features = torch.stack(outputs, dim=0)
-        next_state = {"memory": memory_state, "backbone": backbone_state}
+        next_state = {
+            "memory": memory_state,
+            "last_seen": last_seen,
+            "rhythm": rhythm_state,
+            "motif_ids": motif_ids,
+            "motif_iats": motif_iats,
+            "backbone": backbone_state,
+        }
         return self._heads_from_features(features, batch), next_state
 
     def _heads_from_features(self, features: torch.Tensor, batch) -> dict[str, torch.Tensor]:
@@ -406,9 +778,20 @@ class TemporalHybridModel(TemporalModuleBase):
         if self.next_id_head is not None:
             out["next_id_logits"] = self.next_id_head(features)
         if self.iat_head is not None:
-            out["iat_pred"] = self.iat_head(features).squeeze(-1)
+            iat_raw = self.iat_head(features)
+            if str(self.hparams.anomaly.get("mode", "regression")) == "nll":
+                out["iat_loc"] = iat_raw[:, 0]
+                out["iat_log_scale"] = self._clamped_log_scale(iat_raw[:, 1])
+            else:
+                out["iat_pred"] = iat_raw.squeeze(-1)
         if self.payload_delta_head is not None:
-            out["payload_delta_pred"] = self.payload_delta_head(features)
+            payload_raw = self.payload_delta_head(features)
+            if str(self.hparams.anomaly.get("mode", "regression")) == "nll":
+                loc, log_scale = payload_raw.chunk(2, dim=-1)
+                out["payload_delta_loc"] = loc
+                out["payload_delta_log_scale"] = self._clamped_log_scale(log_scale)
+            else:
+                out["payload_delta_pred"] = payload_raw
         if self.anomaly_enabled:
             components = self._anomaly_components(out, batch)
             out.update(components)
@@ -425,6 +808,19 @@ class TemporalHybridModel(TemporalModuleBase):
     def _classification_loss(self, logits: torch.Tensor, labels: torch.Tensor, batch) -> torch.Tensor:
         return self.loss_fn(logits, labels, graph=batch)
 
+    def _clamped_log_scale(self, raw: torch.Tensor) -> torch.Tensor:
+        return raw.clamp(
+            min=float(self.hparams.anomaly.get("min_log_scale", -7.0)),
+            max=float(self.hparams.anomaly.get("max_log_scale", 5.0)),
+        )
+
+    @staticmethod
+    def _gaussian_nll(target: torch.Tensor, loc: torch.Tensor, log_scale: torch.Tensor) -> torch.Tensor:
+        inv_scale = torch.exp(-log_scale)
+        return 0.5 * ((target - loc) * inv_scale).pow(2) + log_scale + 0.5 * torch.log(
+            target.new_tensor(2.0 * torch.pi)
+        )
+
     def _anomaly_components(self, out: dict[str, torch.Tensor], batch) -> dict[str, torch.Tensor]:
         targets = self._targets(batch)
         valid_next = targets["valid_next"]
@@ -432,10 +828,21 @@ class TemporalHybridModel(TemporalModuleBase):
         if "next_id_logits" in out:
             nll = F.cross_entropy(out["next_id_logits"], targets["next_id"], reduction="none")
             components["next_id_nll"] = torch.where(valid_next, nll, torch.zeros_like(nll))
-        if "iat_pred" in out:
+        if "iat_loc" in out and "iat_log_scale" in out:
+            target = torch.log1p(targets["iat"].float())
+            nll = self._gaussian_nll(target, out["iat_loc"], out["iat_log_scale"])
+            components["iat_nll"] = torch.where(valid_next, nll, torch.zeros_like(nll))
+        elif "iat_pred" in out:
             err = F.smooth_l1_loss(out["iat_pred"], targets["iat"], reduction="none")
             components["iat_error"] = torch.where(valid_next, err, torch.zeros_like(err))
-        if "payload_delta_pred" in out:
+        if "payload_delta_loc" in out and "payload_delta_log_scale" in out:
+            nll = self._gaussian_nll(
+                targets["payload_delta"].float(),
+                out["payload_delta_loc"],
+                out["payload_delta_log_scale"],
+            ).mean(dim=-1)
+            components["payload_delta_nll"] = torch.where(valid_next, nll, torch.zeros_like(nll))
+        elif "payload_delta_pred" in out:
             err = F.smooth_l1_loss(
                 out["payload_delta_pred"],
                 targets["payload_delta"],
@@ -449,8 +856,10 @@ class TemporalHybridModel(TemporalModuleBase):
         weights = self.hparams.anomaly_score_weights
         mapping = {
             "next_id": "next_id_nll",
-            "iat": "iat_error",
-            "payload_delta": "payload_delta_error",
+            "iat": "iat_nll" if "iat_nll" in components else "iat_error",
+            "payload_delta": (
+                "payload_delta_nll" if "payload_delta_nll" in components else "payload_delta_error"
+            ),
         }
         for name, key in mapping.items():
             if key not in components:
@@ -473,9 +882,13 @@ class TemporalHybridModel(TemporalModuleBase):
             if valid.any():
                 if "next_id_nll" in out:
                     terms["next_id"] = out["next_id_nll"][valid].mean()
-                if "iat_error" in out:
+                if "iat_nll" in out:
+                    terms["iat"] = out["iat_nll"][valid].mean()
+                elif "iat_error" in out:
                     terms["iat"] = out["iat_error"][valid].mean()
-                if "payload_delta_error" in out:
+                if "payload_delta_nll" in out:
+                    terms["payload_delta"] = out["payload_delta_nll"][valid].mean()
+                elif "payload_delta_error" in out:
                     terms["payload_delta"] = out["payload_delta_error"][valid].mean()
         if not terms:
             terms["zero"] = out["features"].sum() * 0.0

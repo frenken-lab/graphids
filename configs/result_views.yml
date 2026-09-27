@@ -32,3 +32,36 @@ fit_baselines:
     - val_auroc
     - val_recon_mean
     - val_kl_mean
+
+hybrid_supervised_final:
+  filter:
+    phase: test
+    plan_id: temporal_supervised_hybrid_final_2026_09_27
+  metrics:
+    - test/test/auroc_macro
+    - test/test/mcc
+    - test/test/precision_at_0.95recall
+    - test/test/recall_at_0.99precision
+    - test/test/auroc_per_attack_macro
+
+hybrid_anomaly_final:
+  filter:
+    phase: test
+    plan_id: temporal_anomaly_hybrid_final_2026_09_27
+  metrics:
+    - test/auroc_macro
+    - test/ap_macro
+    - test/mcc_at_0.95recall
+    - test/f1_attack_at_0.95recall
+    - test/f1_macro_at_0.95recall
+
+hybrid_joint_final:
+  filter:
+    phase: test
+    plan_id: temporal_joint_hybrid_final_2026_09_27
+  metrics:
+    - test/test/auroc_macro
+    - test/test/mcc
+    - test/auroc_macro
+    - test/ap_macro
+    - test/mcc_at_0.95recall

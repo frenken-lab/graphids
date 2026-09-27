@@ -1,8 +1,8 @@
-experiment_name: temporal_hybrid_ssm_smoke
+experiment_name: temporal_supervised_hybrid_ssm_lite_memory_set_01_test
 dataset: set_01
 seed: 42
-plan_id: temporal_hybrid_ssm_smoke
-stage: fit
+plan_id: temporal_supervised_hybrid_final_2026_09_27
+stage: test
 representation_cfg:
   kind: temporal
 resources:
@@ -12,9 +12,10 @@ resources:
   cpus_per_worker: 8
   gpus_per_worker: 1.0
   memory_gb: 96
-  time_limit: "02:00:00"
+  time_limit: "04:00:00"
   account: pas1266
 config:
+  ckpt_path: "{trial_dir}/set_01/temporal_supervised_hybrid_ssm_lite_memory_set_01_train/temporal_supervised_hybrid_ssm_lite_memory_set_01_train/checkpoints/best_model.ckpt"
   data:
     type: temporal_dm
     source:
@@ -24,58 +25,29 @@ config:
       train_source_mode: mixed
       representation_cfg:
         kind: temporal
-    batch_size: 64
+    batch_size: 512
     val_warmup_events: 64
     test_warmup_events: 64
   model:
     type: temporal_hybrid
     scale: small
-    objective: joint
-    input:
-      hidden: 32
-      embedding_dim: 8
-      dropout: 0.0
+    objective: supervised
     memory:
       type: tgn
       enabled: true
       reset_on_stream_end: true
-      time_encoding_dim: 4
     backbone:
       type: ssm_lite
       layers: 1
-      dropout: 0.0
+      dropout: 0.1
     heads:
       classification: true
-      next_id: true
-      iat: true
-      payload_delta: true
-    anomaly:
-      mode: nll
-    rhythm:
-      enabled: true
-    motif:
-      enabled: true
-      length: 3
-      embedding_dim: 4
-      time_dim: 4
-    loss_weights:
-      classification: 1.0
-      next_id: 0.2
-      iat: 0.1
-      payload_delta: 0.1
-    anomaly_score_weights:
-      next_id: 1.0
-      iat: 1.0
-      payload_delta: 1.0
-  loss_fn:
-    type: ce
   trainer:
     accelerator: auto
     devices: 1
-    max_epochs: 1
-    limit_train_batches: 2
-    limit_val_batches: 2
     enable_checkpointing: false
     enable_progress_bar: false
     enable_model_summary: false
     num_sanity_val_steps: 0
+  loss_fn:
+    type: ce

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 
 def test_experiment_config_defaults_to_temporal_representation():
     from graphids.core.data.preprocessing.representations import representation_kind
@@ -10,6 +12,23 @@ def test_experiment_config_defaults_to_temporal_representation():
 
     assert representation_kind(cfg.representation_cfg) == "temporal"
     assert representation_kind(run.representation_cfg) == "temporal"
+    assert run.mlflow_tags()["graphids.phase"] == "fit"
+    assert run.mlflow_tags()["graphids.group"] == "fit"
+    assert run.mlflow_tags()["graphids.variant"] == "demo-run"
+
+
+def test_hybrid_result_views_load():
+    from graphids.exp.results import load_result_view
+
+    supervised = load_result_view("hybrid_supervised_final")
+    anomaly = load_result_view("hybrid_anomaly_final")
+    joint = load_result_view("hybrid_joint_final")
+
+    assert supervised["filter"]["plan_id"] == "temporal_supervised_hybrid_final_2026_09_27"
+    assert anomaly["filter"]["plan_id"] == "temporal_anomaly_hybrid_final_2026_09_27"
+    assert joint["filter"]["plan_id"] == "temporal_joint_hybrid_final_2026_09_27"
+    assert "test/test/auroc_macro" in supervised["metrics"]
+    assert "test/auroc_macro" in anomaly["metrics"]
 
 
 def test_experiment_config_from_yaml_resolves_git_sha(monkeypatch, tmp_path):
@@ -81,7 +100,8 @@ def test_temporal_smoke_configs_resolve_without_window_or_budget_knobs():
 
         assert isinstance(data, TemporalDataModule)
         assert representation_kind(data.source.representation_cfg) == "temporal"
-        assert data.batch_size == 512
+        expected_batch_size = 64 if path.endswith(("temporal_hybrid_ssm_smoke.yml", "temporal_hybrid_anomaly_smoke.yml")) else 512
+        assert data.batch_size == expected_batch_size
         assert data.source.val_warmup_events == 64
         assert data.source.test_warmup_events == 64
         assert data.source.train_source_mode == "mixed"
@@ -131,7 +151,8 @@ def test_temporal_hybrid_smoke_configs_parse():
 
         assert isinstance(data, TemporalDataModule)
         assert representation_kind(data.source.representation_cfg) == "temporal"
-        assert data.batch_size == 512
+        expected_batch_size = 64 if path.endswith(("temporal_hybrid_ssm_smoke.yml", "temporal_hybrid_anomaly_smoke.yml")) else 512
+        assert data.batch_size == expected_batch_size
 
     anomaly_cfg = ExperimentConfig.from_yaml("configs/experiments/temporal_hybrid_anomaly_smoke.yml")
     anomaly_run = anomaly_cfg.build_run(
@@ -141,6 +162,64 @@ def test_temporal_hybrid_smoke_configs_parse():
     )
     assert anomaly_run.payload.data["source"]["train_source_mode"] == "attack_free"
     assert anomaly_run.payload.loss_fn is None
+
+
+def test_temporal_hybrid_primitive_rejects_invalid_objective_head_combos():
+    from pydantic import ValidationError
+
+    from graphids.primitives import temporal_hybrid
+
+    with pytest.raises(ValidationError, match="objective='supervised' requires heads.classification=true"):
+        temporal_hybrid(objective="supervised", heads={"classification": False})
+
+    with pytest.raises(ValidationError, match="objective='anomaly' requires heads.classification=false"):
+        temporal_hybrid(objective="anomaly", heads={"classification": True})
+
+    with pytest.raises(ValidationError, match="objective='anomaly' requires at least one anomaly head"):
+        temporal_hybrid(
+            objective="anomaly",
+            heads={"next_id": False, "iat": False, "payload_delta": False},
+        )
+
+    with pytest.raises(ValidationError, match="objective='joint' requires at least one anomaly head"):
+        temporal_hybrid(
+            objective="joint",
+            heads={
+                "classification": True,
+                "next_id": False,
+                "iat": False,
+                "payload_delta": False,
+            },
+        )
+
+    with pytest.raises(ValidationError, match="memory.time_encoding_dim must be non-negative"):
+        temporal_hybrid(objective="supervised", memory={"time_encoding_dim": -1})
+
+    with pytest.raises(ValidationError, match="motif.length must be positive"):
+        temporal_hybrid(objective="supervised", motif={"enabled": True, "length": 0})
+
+    with pytest.raises(ValidationError, match="anomaly.min_log_scale must be <= anomaly.max_log_scale"):
+        temporal_hybrid(objective="supervised", anomaly={"min_log_scale": 1.0, "max_log_scale": 0.0})
+
+    with pytest.raises(ValidationError, match="motif.embedding_dim must be positive"):
+        temporal_hybrid(objective="supervised", motif={"enabled": True, "embedding_dim": 0})
+
+
+def test_temporal_hybrid_primitive_accepts_rich_modular_options():
+    from graphids.primitives import temporal_hybrid
+
+    cfg = temporal_hybrid(
+        objective="joint",
+        memory={"time_encoding_dim": 4},
+        anomaly={"mode": "nll"},
+        rhythm={"enabled": True},
+        motif={"enabled": True, "length": 3, "embedding_dim": 4, "time_dim": 4},
+    )
+
+    assert cfg.memory.time_encoding_dim == 4
+    assert cfg.anomaly.mode == "nll"
+    assert cfg.rhythm.enabled is True
+    assert cfg.motif.length == 3
 
 
 def test_config_string_placeholders_resolve_against_run_paths(monkeypatch, tmp_path):
@@ -177,12 +256,14 @@ def test_final_temporal_configs_parse_and_encode_protocols(monkeypatch, tmp_path
     monkeypatch.setattr(paths_mod, "trial_dir", lambda: tmp_path / "runs")
     final_paths = sorted(Path("configs/experiments/final").glob("**/*.yml"))
 
-    assert len(final_paths) == 40
+    assert len(final_paths) == 80
 
     supervised = [p for p in final_paths if "/supervised/" in str(p)]
     anomaly = [p for p in final_paths if "/anomaly/" in str(p)]
-    assert len(supervised) == 30
-    assert len(anomaly) == 10
+    joint = [p for p in final_paths if "/joint/" in str(p)]
+    assert len(supervised) == 50
+    assert len(anomaly) == 20
+    assert len(joint) == 10
 
     train_runs = {}
     test_runs = {}
@@ -199,19 +280,45 @@ def test_final_temporal_configs_parse_and_encode_protocols(monkeypatch, tmp_path
         assert trainer["enable_progress_bar"] is False
 
         if "supervised" in path.parts:
-            assert cfg.plan_id == "temporal_supervised_final_2026_09_26"
+            assert cfg.plan_id in {
+                "temporal_supervised_final_2026_09_26",
+                "temporal_supervised_hybrid_final_2026_09_27",
+            }
             assert source["train_source_mode"] == "mixed"
             assert run.payload.model["type"] in {
                 "temporal_event_classifier",
                 "temporal_gat",
+                "temporal_hybrid",
                 "temporal_rnn_classifier",
             }
+            if run.payload.model["type"] == "temporal_hybrid":
+                assert run.payload.model["objective"] == "supervised"
+                assert run.payload.model["memory"]["enabled"] is True
+                assert run.payload.model["backbone"]["type"] in {"gru", "ssm_lite"}
             assert run.payload.loss_fn == {"type": "ce"}
-        else:
-            assert cfg.plan_id == "temporal_anomaly_final_2026_09_26"
+        elif "anomaly" in path.parts:
+            assert cfg.plan_id in {
+                "temporal_anomaly_final_2026_09_26",
+                "temporal_anomaly_hybrid_final_2026_09_27",
+            }
             assert source["train_source_mode"] == "attack_free"
-            assert run.payload.model["type"] == "temporal_vgae"
+            assert run.payload.model["type"] in {"temporal_vgae", "temporal_hybrid"}
+            if run.payload.model["type"] == "temporal_hybrid":
+                assert run.payload.model["objective"] == "anomaly"
+                assert run.payload.model["anomaly"]["mode"] == "nll"
+                assert run.payload.model["rhythm"]["enabled"] is True
+                assert run.payload.model["motif"]["enabled"] is True
             assert run.payload.loss_fn is None
+        else:
+            assert "joint" in path.parts
+            assert cfg.plan_id == "temporal_joint_hybrid_final_2026_09_27"
+            assert source["train_source_mode"] == "mixed"
+            assert run.payload.model["type"] == "temporal_hybrid"
+            assert run.payload.model["objective"] == "joint"
+            assert run.payload.model["anomaly"]["mode"] == "nll"
+            assert run.payload.model["rhythm"]["enabled"] is True
+            assert run.payload.model["motif"]["enabled"] is True
+            assert run.payload.loss_fn == {"type": "ce"}
 
         if cfg.stage == "fit":
             assert trainer["max_epochs"] == 20
@@ -229,8 +336,8 @@ def test_final_temporal_configs_parse_and_encode_protocols(monkeypatch, tmp_path
             assert run.payload.ckpt_path.endswith("/checkpoints/best_model.ckpt")
             test_runs[cfg.experiment_name] = run
 
-    assert len(train_runs) == 20
-    assert len(test_runs) == 20
+    assert len(train_runs) == 40
+    assert len(test_runs) == 40
     for test_name, test_run in test_runs.items():
         train_name = test_name.removesuffix("_test") + "_train"
         assert train_name in train_runs

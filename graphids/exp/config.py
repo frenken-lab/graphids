@@ -179,6 +179,9 @@ class RunConfig(_StrictModel):
 
     def mlflow_tags(self) -> dict[str, str]:
         tags = {
+            "graphids.phase": self.stage,
+            "graphids.group": self.stage,
+            "graphids.variant": self.name,
             "graphids.stage": self.stage,
             "graphids.run_dir": str(self.outputs.run_dir),
             "graphids.git_sha": self.git_sha,

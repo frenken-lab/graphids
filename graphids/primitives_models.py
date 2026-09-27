@@ -6,9 +6,9 @@ plan authors and launch code don't need the old ``graphids.plan`` namespace.
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class _Cfg(BaseModel):
@@ -115,6 +115,9 @@ class TemporalHybridMemoryCfg(_Cfg):
     type: Literal["tgn"] = "tgn"
     enabled: bool = True
     reset_on_stream_end: bool = True
+    use_source: bool = True
+    use_destination: bool = True
+    time_encoding_dim: int = 0
 
 
 class TemporalHybridBackboneCfg(_Cfg):
@@ -130,6 +133,23 @@ class TemporalHybridHeadsCfg(_Cfg):
     payload_delta: bool | None = None
 
 
+class TemporalHybridAnomalyCfg(_Cfg):
+    mode: Literal["regression", "nll"] = "regression"
+    min_log_scale: float = -7.0
+    max_log_scale: float = 5.0
+
+
+class TemporalHybridRhythmCfg(_Cfg):
+    enabled: bool = False
+
+
+class TemporalHybridMotifCfg(_Cfg):
+    enabled: bool = False
+    length: int = 3
+    embedding_dim: int | None = None
+    time_dim: int | None = None
+
+
 class TemporalHybridCfg(_Cfg):
     type: Literal["temporal_hybrid"] = "temporal_hybrid"
     scale: Literal["small", "large"] = "small"
@@ -138,8 +158,52 @@ class TemporalHybridCfg(_Cfg):
     memory: TemporalHybridMemoryCfg = Field(default_factory=TemporalHybridMemoryCfg)
     backbone: TemporalHybridBackboneCfg = Field(default_factory=TemporalHybridBackboneCfg)
     heads: TemporalHybridHeadsCfg = Field(default_factory=TemporalHybridHeadsCfg)
+    anomaly: TemporalHybridAnomalyCfg = Field(default_factory=TemporalHybridAnomalyCfg)
+    rhythm: TemporalHybridRhythmCfg = Field(default_factory=TemporalHybridRhythmCfg)
+    motif: TemporalHybridMotifCfg = Field(default_factory=TemporalHybridMotifCfg)
     loss_weights: dict[str, float] = Field(default_factory=dict)
     anomaly_score_weights: dict[str, float] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_objective_heads(self) -> Self:
+        default_ssl = self.objective in {"anomaly", "joint"}
+        classification = (
+            self.objective in {"supervised", "joint"}
+            if self.heads.classification is None
+            else self.heads.classification
+        )
+        anomaly_heads = {
+            "next_id": default_ssl if self.heads.next_id is None else self.heads.next_id,
+            "iat": default_ssl if self.heads.iat is None else self.heads.iat,
+            "payload_delta": (
+                default_ssl if self.heads.payload_delta is None else self.heads.payload_delta
+            ),
+        }
+        has_anomaly_head = any(anomaly_heads.values())
+
+        if self.objective == "supervised" and not classification:
+            raise ValueError("objective='supervised' requires heads.classification=true")
+        if self.objective == "anomaly":
+            if classification:
+                raise ValueError("objective='anomaly' requires heads.classification=false")
+            if not has_anomaly_head:
+                raise ValueError("objective='anomaly' requires at least one anomaly head")
+        if self.objective == "joint":
+            if not classification:
+                raise ValueError("objective='joint' requires heads.classification=true")
+            if not has_anomaly_head:
+                raise ValueError("objective='joint' requires at least one anomaly head")
+        if self.memory.time_encoding_dim < 0:
+            raise ValueError("memory.time_encoding_dim must be non-negative")
+        if self.anomaly.min_log_scale > self.anomaly.max_log_scale:
+            raise ValueError("anomaly.min_log_scale must be <= anomaly.max_log_scale")
+        if self.motif.length < 1:
+            raise ValueError("motif.length must be positive")
+        if self.motif.embedding_dim is not None and self.motif.embedding_dim < 1:
+            raise ValueError("motif.embedding_dim must be positive")
+        if self.motif.time_dim is not None and self.motif.time_dim < 1:
+            raise ValueError("motif.time_dim must be positive")
+        return self
 
     def build(self, *, loss_fn: Any = None) -> Any:
         from graphids.core.models.temporal import TemporalHybridModel
@@ -152,6 +216,9 @@ class TemporalHybridCfg(_Cfg):
             memory=self.memory.model_dump(),
             backbone=self.backbone.model_dump(exclude_none=True),
             heads=self.heads.model_dump(exclude_none=True),
+            anomaly=self.anomaly.model_dump(),
+            rhythm=self.rhythm.model_dump(),
+            motif=self.motif.model_dump(exclude_none=True),
             loss_weights=dict(self.loss_weights),
             anomaly_score_weights=dict(self.anomaly_score_weights),
         )
@@ -249,6 +316,9 @@ def temporal_hybrid(
     memory: dict[str, Any] | TemporalHybridMemoryCfg | None = None,
     backbone: dict[str, Any] | TemporalHybridBackboneCfg | None = None,
     heads: dict[str, Any] | TemporalHybridHeadsCfg | None = None,
+    anomaly: dict[str, Any] | TemporalHybridAnomalyCfg | None = None,
+    rhythm: dict[str, Any] | TemporalHybridRhythmCfg | None = None,
+    motif: dict[str, Any] | TemporalHybridMotifCfg | None = None,
     loss_weights: dict[str, float] | None = None,
     anomaly_score_weights: dict[str, float] | None = None,
 ) -> TemporalHybridCfg:
@@ -259,6 +329,9 @@ def temporal_hybrid(
         memory=TemporalHybridMemoryCfg.model_validate(memory or {}),
         backbone=TemporalHybridBackboneCfg.model_validate(backbone or {}),
         heads=TemporalHybridHeadsCfg.model_validate(heads or {}),
+        anomaly=TemporalHybridAnomalyCfg.model_validate(anomaly or {}),
+        rhythm=TemporalHybridRhythmCfg.model_validate(rhythm or {}),
+        motif=TemporalHybridMotifCfg.model_validate(motif or {}),
         loss_weights=dict(loss_weights or {}),
         anomaly_score_weights=dict(anomaly_score_weights or {}),
     )
