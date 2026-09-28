@@ -160,6 +160,7 @@ def test_temporal_hybrid_smoke_configs_parse():
         assert representation_kind(data.source.representation_cfg) == "temporal"
         expected_batch_size = 64 if path.endswith(("temporal_hybrid_ssm_smoke.yml", "temporal_hybrid_anomaly_smoke.yml")) else 512
         assert data.batch_size == expected_batch_size
+        assert run.payload.model.get("compile", {"enabled": False})["enabled"] is False
 
     anomaly_cfg = ExperimentConfig.from_yaml("configs/experiments/temporal_hybrid_anomaly_smoke.yml")
     anomaly_run = anomaly_cfg.build_run(
@@ -221,12 +222,27 @@ def test_temporal_hybrid_primitive_accepts_rich_modular_options():
         anomaly={"mode": "nll"},
         rhythm={"enabled": True},
         motif={"enabled": True, "length": 3, "embedding_dim": 4, "time_dim": 4},
+        compile={"enabled": True, "mode": "reduce-overhead"},
     )
 
     assert cfg.memory.time_encoding_dim == 4
     assert cfg.anomaly.mode == "nll"
     assert cfg.rhythm.enabled is True
     assert cfg.motif.length == 3
+    assert cfg.compile.enabled is True
+    assert cfg.compile.mode == "reduce-overhead"
+
+
+def test_temporal_hybrid_diagnostic_profile_enables_compile():
+    from graphids.exp.config import ExperimentConfig
+
+    cfg = ExperimentConfig.from_yaml(
+        "configs/experiments/diagnostics/temporal_joint_hybrid_ssm_lite_rich_set_01_profile.yml"
+    )
+    run = cfg.build_run(name=cfg.experiment_name, stage=cfg.stage, config=cfg.config)
+
+    assert run.payload.model["type"] == "temporal_hybrid"
+    assert run.payload.model["compile"] == {"enabled": True, "mode": "reduce-overhead"}
 
 
 def test_config_string_placeholders_resolve_against_run_paths(monkeypatch, tmp_path):
@@ -302,6 +318,7 @@ def test_final_temporal_configs_parse_and_encode_protocols(monkeypatch, tmp_path
                 assert run.payload.model["objective"] == "supervised"
                 assert run.payload.model["memory"]["enabled"] is True
                 assert run.payload.model["backbone"]["type"] in {"gru", "ssm_lite"}
+                assert run.payload.model.get("compile", {"enabled": False})["enabled"] is False
             assert run.payload.loss_fn == {"type": "ce"}
         elif "anomaly" in path.parts:
             assert cfg.plan_id in {
@@ -315,6 +332,7 @@ def test_final_temporal_configs_parse_and_encode_protocols(monkeypatch, tmp_path
                 assert run.payload.model["anomaly"]["mode"] == "nll"
                 assert run.payload.model["rhythm"]["enabled"] is True
                 assert run.payload.model["motif"]["enabled"] is True
+                assert run.payload.model.get("compile", {"enabled": False})["enabled"] is False
             assert run.payload.loss_fn is None
         else:
             assert "joint" in path.parts
@@ -325,6 +343,7 @@ def test_final_temporal_configs_parse_and_encode_protocols(monkeypatch, tmp_path
             assert run.payload.model["anomaly"]["mode"] == "nll"
             assert run.payload.model["rhythm"]["enabled"] is True
             assert run.payload.model["motif"]["enabled"] is True
+            assert run.payload.model.get("compile", {"enabled": False})["enabled"] is False
             assert run.payload.loss_fn == {"type": "ce"}
 
         if cfg.stage == "fit":

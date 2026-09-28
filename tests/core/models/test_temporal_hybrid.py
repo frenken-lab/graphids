@@ -49,12 +49,115 @@ def _hybrid(**overrides):
         anomaly=params.get("anomaly"),
         rhythm=params.get("rhythm"),
         motif=params.get("motif"),
+        compile=params.get("compile"),
         loss_fn=params.get("loss_fn"),
         loss_weights={"classification": 1.0, "next_id": 0.2, "iat": 0.1, "payload_delta": 0.1},
         num_ids=4,
-        in_channels=4,
+        in_channels=params.get("in_channels", 4),
         num_classes=2,
     )
+
+
+def _reference_forward_with_state(model, batch, state=None):
+    encoded = model.encoder(batch)
+    if encoded.numel() == 0:
+        empty = encoded.new_empty((0, int(model.hparams.input["hidden"])))
+        return model._heads_from_features(empty, batch), model._initial_state_like(encoded)
+
+    current_state = model._initial_state_like(encoded) if state is None else dict(state)
+    if model.memory is not None:
+        current_state["memory"] = model.memory.ensure_state(current_state.get("memory"), encoded)
+        current_state["last_seen"] = model.memory.ensure_last_seen(current_state.get("last_seen"), encoded)
+    if model.rhythm is not None:
+        current_state["rhythm"] = model.rhythm.ensure_state(current_state.get("rhythm"), encoded)
+    if model.motif is not None:
+        current_state["motif_ids"] = model.motif.ensure_ids(current_state.get("motif_ids"), encoded)
+        current_state["motif_iats"] = model.motif.ensure_iats(current_state.get("motif_iats"), encoded)
+
+    reset_after = getattr(batch, "reset_after", None)
+    if reset_after is None:
+        reset_after = torch.zeros(encoded.size(0), dtype=torch.bool, device=encoded.device)
+    else:
+        reset_after = reset_after.to(device=encoded.device, dtype=torch.bool)
+
+    outputs = []
+    memory_state = current_state.get("memory")
+    last_seen = current_state.get("last_seen")
+    rhythm_state = current_state.get("rhythm")
+    motif_ids = current_state.get("motif_ids")
+    motif_iats = current_state.get("motif_iats")
+    backbone_state = current_state.get("backbone")
+    reset_memory = bool(model.hparams.memory.get("reset_on_stream_end", True))
+    t = getattr(batch, "t", None)
+
+    for idx in range(encoded.size(0)):
+        x_t = encoded[idx]
+        iat_t = model._event_iat(batch, idx, x_t)
+        if model.memory is not None and memory_state is not None:
+            x_t = x_t + model.memory.read_context(
+                memory_state,
+                last_seen,
+                batch.src[idx],
+                batch.dst[idx],
+                None if t is None else t[idx],
+            )
+        if model.rhythm is not None and rhythm_state is not None:
+            x_t = x_t + model.rhythm.read_context(rhythm_state, batch.src[idx], batch.dst[idx])
+        if model.motif is not None and motif_ids is not None and motif_iats is not None:
+            x_t = x_t + model.motif.read_context(motif_ids, motif_iats)
+        z_t, backbone_state = model.backbone.step(x_t, backbone_state)
+        outputs.append(z_t)
+        if model.memory is not None and memory_state is not None:
+            memory_state = model.memory.update_one(memory_state, batch.src[idx], batch.dst[idx], z_t)
+            if last_seen is not None:
+                last_seen = model.memory.update_last_seen(last_seen, batch.src[idx], batch.dst[idx], None if t is None else t[idx])
+        if model.rhythm is not None and rhythm_state is not None:
+            rhythm_state = model.rhythm.update_one(rhythm_state, batch.src[idx], batch.dst[idx], iat_t)
+        if model.motif is not None and motif_ids is not None and motif_iats is not None:
+            motif_ids, motif_iats = model.motif.update_one(motif_ids, motif_iats, batch.dst[idx], iat_t)
+        if reset_after[idx]:
+            backbone_state = model.backbone.reset_state()
+            if model.memory is not None and reset_memory:
+                memory_state = model.memory.initial_state(device=encoded.device, dtype=encoded.dtype)
+                last_seen = model.memory.initial_last_seen(device=encoded.device, dtype=encoded.dtype)
+            if model.rhythm is not None:
+                rhythm_state = model.rhythm.initial_state(device=encoded.device, dtype=encoded.dtype)
+            if model.motif is not None:
+                motif_ids = model.motif.initial_ids(device=encoded.device)
+                motif_iats = model.motif.initial_iats(device=encoded.device, dtype=encoded.dtype)
+
+    features = torch.stack(outputs, dim=0)
+    next_state = {
+        "memory": memory_state,
+        "last_seen": last_seen,
+        "rhythm": rhythm_state,
+        "motif_ids": motif_ids,
+        "motif_iats": motif_iats,
+        "backbone": backbone_state,
+    }
+    return model._heads_from_features(features, batch), next_state
+
+
+def _assert_state_equal(actual, expected):
+    assert actual.keys() == expected.keys()
+    for key, actual_value in actual.items():
+        expected_value = expected[key]
+        if actual_value is None or expected_value is None:
+            assert actual_value is expected_value
+        elif actual_value.is_floating_point():
+            assert torch.allclose(actual_value, expected_value)
+        else:
+            assert torch.equal(actual_value, expected_value)
+
+
+def _assert_outputs_equal(actual, expected):
+    assert actual.keys() == expected.keys()
+    for key, actual_value in actual.items():
+        expected_value = expected[key]
+        if actual_value.is_floating_point():
+            assert torch.allclose(actual_value, expected_value)
+        else:
+            assert torch.equal(actual_value, expected_value)
 
 
 def _old_memory_update(memory, state, src, dst, message):
@@ -146,6 +249,115 @@ def test_temporal_hybrid_rhythm_indexed_updates_match_old_one_hot_semantics():
         expected = _old_rhythm_update(rhythm, expected, dst[idx], iats[idx])
         actual = rhythm.update_one(actual, src[idx], dst[idx], iats[idx])
         assert torch.allclose(actual, expected)
+
+
+@pytest.mark.parametrize(
+    "reset_after",
+    [
+        [False, False, False, False, False],
+        [False, False, False, False, True],
+        [False, True, False, False, False],
+    ],
+)
+def test_temporal_hybrid_segment_scan_matches_reference_loop(reset_after):
+    model = _hybrid(
+        objective="joint",
+        backbone_type="ssm_lite",
+        memory={"type": "tgn", "enabled": True, "reset_on_stream_end": True, "time_encoding_dim": 4},
+        heads={"classification": True, "next_id": True, "iat": True, "payload_delta": True},
+        anomaly={"mode": "nll"},
+        rhythm={"enabled": True},
+        motif={"enabled": True, "length": 3, "embedding_dim": 4, "time_dim": 4},
+    )
+    batch = _temporal_batch(reset_after)
+
+    actual_out, actual_state = model._forward_with_state(batch, None)
+    expected_out, expected_state = _reference_forward_with_state(model, batch, None)
+
+    _assert_outputs_equal(actual_out, expected_out)
+    _assert_state_equal(actual_state, expected_state)
+
+
+def test_temporal_hybrid_vectorized_iat_matches_event_iat_payload_timestamp_and_missing_timestamp():
+    payload_model = _hybrid(objective="supervised", heads={"classification": True}, in_channels=17)
+    payload_batch = TemporalData(
+        src=torch.tensor([0, 1, 2]),
+        dst=torch.tensor([1, 2, 3]),
+        t=torch.tensor([0.0, 10.0, 11.0]),
+        msg=torch.stack([torch.arange(17), torch.arange(17) + 2, torch.arange(17) + 4]).float(),
+        y=torch.tensor([0, 1, 0]),
+    )
+    ref = payload_batch.msg
+    expected = torch.stack([payload_model._event_iat(payload_batch, idx, ref[idx]) for idx in range(3)])
+    assert torch.equal(payload_model._prepare_scan_batch(payload_batch, ref)["iat"], expected)
+
+    timestamp_model = _hybrid(objective="supervised", heads={"classification": True})
+    timestamp_batch = _temporal_batch([False, False, False, False, False])
+    ref = timestamp_batch.msg
+    expected = torch.stack([timestamp_model._event_iat(timestamp_batch, idx, ref[idx]) for idx in range(5)])
+    assert torch.equal(timestamp_model._prepare_scan_batch(timestamp_batch, ref)["iat"], expected)
+
+    missing_timestamp_batch = TemporalData(
+        src=torch.tensor([0, 1, 2]),
+        dst=torch.tensor([1, 2, 3]),
+        msg=torch.ones(3, 4),
+        y=torch.tensor([0, 1, 0]),
+    )
+    ref = missing_timestamp_batch.msg
+    expected = torch.stack(
+        [timestamp_model._event_iat(missing_timestamp_batch, idx, ref[idx]) for idx in range(3)]
+    )
+    assert torch.equal(timestamp_model._prepare_scan_batch(missing_timestamp_batch, ref)["iat"], expected)
+
+
+def test_temporal_hybrid_compile_dispatch_invokes_torch_compile_and_falls_back(monkeypatch):
+    original_disabled = type(_hybrid())._compiled_scan_disabled
+    original_warned = type(_hybrid())._compiled_scan_warned
+    try:
+        type(_hybrid())._compiled_scan_disabled = False
+        type(_hybrid())._compiled_scan_warned = False
+        calls = {"compile": 0, "wrapped": 0}
+
+        def fake_compile(fn, *, mode, fullgraph):
+            calls["compile"] += 1
+            assert mode == "reduce-overhead"
+            assert fullgraph is False
+
+            def wrapped(*args, **kwargs):
+                calls["wrapped"] += 1
+                return fn(*args, **kwargs)
+
+            return wrapped
+
+        monkeypatch.setattr(torch, "compile", fake_compile)
+        model = _hybrid(
+            objective="supervised",
+            heads={"classification": True},
+            compile={"enabled": True, "mode": "reduce-overhead"},
+        )
+        out = model(_temporal_batch([False, False, False, False, False]))
+        assert tuple(out["features"].shape) == (5, 8)
+        assert calls == {"compile": 1, "wrapped": 1}
+
+        type(model)._compiled_scan_disabled = False
+        type(model)._compiled_scan_warned = False
+
+        def raising_compile(*_args, **_kwargs):
+            raise RuntimeError("compile unavailable")
+
+        monkeypatch.setattr(torch, "compile", raising_compile)
+        fallback_model = _hybrid(
+            objective="supervised",
+            heads={"classification": True},
+            compile={"enabled": True, "mode": "reduce-overhead"},
+        )
+        with pytest.warns(RuntimeWarning, match="compiled scan failed"):
+            fallback_out = fallback_model(_temporal_batch([False, False, False, False, False]))
+        assert tuple(fallback_out["features"].shape) == (5, 8)
+        assert type(fallback_model)._compiled_scan_disabled is True
+    finally:
+        type(_hybrid())._compiled_scan_disabled = original_disabled
+        type(_hybrid())._compiled_scan_warned = original_warned
 
 
 def test_temporal_hybrid_mid_batch_reset_matches_fresh_suffix_state():

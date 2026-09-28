@@ -150,6 +150,11 @@ class TemporalHybridMotifCfg(_Cfg):
     time_dim: int | None = None
 
 
+class TemporalHybridCompileCfg(_Cfg):
+    enabled: bool = False
+    mode: str = "reduce-overhead"
+
+
 class TemporalHybridCfg(_Cfg):
     type: Literal["temporal_hybrid"] = "temporal_hybrid"
     scale: Literal["small", "large"] = "small"
@@ -161,6 +166,7 @@ class TemporalHybridCfg(_Cfg):
     anomaly: TemporalHybridAnomalyCfg = Field(default_factory=TemporalHybridAnomalyCfg)
     rhythm: TemporalHybridRhythmCfg = Field(default_factory=TemporalHybridRhythmCfg)
     motif: TemporalHybridMotifCfg = Field(default_factory=TemporalHybridMotifCfg)
+    compile: TemporalHybridCompileCfg = Field(default_factory=TemporalHybridCompileCfg)
     loss_weights: dict[str, float] = Field(default_factory=dict)
     anomaly_score_weights: dict[str, float] = Field(default_factory=dict)
 
@@ -219,6 +225,7 @@ class TemporalHybridCfg(_Cfg):
             anomaly=self.anomaly.model_dump(),
             rhythm=self.rhythm.model_dump(),
             motif=self.motif.model_dump(exclude_none=True),
+            compile=self.compile.model_dump(),
             loss_weights=dict(self.loss_weights),
             anomaly_score_weights=dict(self.anomaly_score_weights),
         )
@@ -319,6 +326,7 @@ def temporal_hybrid(
     anomaly: dict[str, Any] | TemporalHybridAnomalyCfg | None = None,
     rhythm: dict[str, Any] | TemporalHybridRhythmCfg | None = None,
     motif: dict[str, Any] | TemporalHybridMotifCfg | None = None,
+    compile: dict[str, Any] | TemporalHybridCompileCfg | None = None,
     loss_weights: dict[str, float] | None = None,
     anomaly_score_weights: dict[str, float] | None = None,
 ) -> TemporalHybridCfg:
@@ -332,6 +340,7 @@ def temporal_hybrid(
         anomaly=TemporalHybridAnomalyCfg.model_validate(anomaly or {}),
         rhythm=TemporalHybridRhythmCfg.model_validate(rhythm or {}),
         motif=TemporalHybridMotifCfg.model_validate(motif or {}),
+        compile=TemporalHybridCompileCfg.model_validate(compile or {}),
         loss_weights=dict(loss_weights or {}),
         anomaly_score_weights=dict(anomaly_score_weights or {}),
     )
