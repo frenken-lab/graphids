@@ -33,6 +33,9 @@ class TemporalDMCfg(_Cfg):
     type: Literal["temporal_dm"] = "temporal_dm"
     source: CANBusCfg
     batch_size: int = 256
+    num_workers: int = 0
+    pin_memory: bool = False
+    persistent_workers: bool = False
     val_warmup_events: int = 0
     test_warmup_events: int = 0
 
@@ -50,7 +53,13 @@ class TemporalDMCfg(_Cfg):
             val_warmup_events=self.val_warmup_events,
             test_warmup_events=self.test_warmup_events,
         )
-        return TemporalDataModule(dataset=source, batch_size=self.batch_size)
+        return TemporalDataModule(
+            dataset=source,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            persistent_workers=self.persistent_workers,
+        )
 
 
 DataCfg = Annotated[TemporalDMCfg, Field(discriminator="type")]

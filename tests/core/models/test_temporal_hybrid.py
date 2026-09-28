@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 import torch
+import torch.nn.functional as F
 from torch_geometric.data import TemporalData
 
 
@@ -54,6 +55,122 @@ def _hybrid(**overrides):
         in_channels=4,
         num_classes=2,
     )
+
+
+def _old_memory_update(memory, state, src, dst, message):
+    src_idx = int(src.clamp_min(0).clamp_max(memory.num_ids - 1).item())
+    dst_idx = int(dst.clamp_min(0).clamp_max(memory.num_ids - 1).item())
+    src_new = memory.update_cell(message.unsqueeze(0), state[src_idx].unsqueeze(0)).squeeze(0)
+    src_mask = F.one_hot(torch.tensor(src_idx, device=state.device), num_classes=memory.num_ids).to(
+        dtype=state.dtype
+    ).unsqueeze(-1)
+    after_src = (state * (1.0 - src_mask)) + (src_new.unsqueeze(0) * src_mask)
+
+    dst_new = memory.update_cell(message.unsqueeze(0), after_src[dst_idx].unsqueeze(0)).squeeze(0)
+    dst_mask = F.one_hot(torch.tensor(dst_idx, device=state.device), num_classes=memory.num_ids).to(
+        dtype=state.dtype
+    ).unsqueeze(-1)
+    return (after_src * (1.0 - dst_mask)) + (dst_new.unsqueeze(0) * dst_mask)
+
+
+def _old_last_seen_update(memory, last_seen, src, dst, t):
+    src_idx = int(src.clamp_min(0).clamp_max(memory.num_ids - 1).item())
+    dst_idx = int(dst.clamp_min(0).clamp_max(memory.num_ids - 1).item())
+    now = t.to(device=last_seen.device, dtype=last_seen.dtype)
+    src_mask = F.one_hot(torch.tensor(src_idx, device=last_seen.device), num_classes=memory.num_ids).bool()
+    dst_mask = F.one_hot(torch.tensor(dst_idx, device=last_seen.device), num_classes=memory.num_ids).bool()
+    updated = torch.where(src_mask, now, last_seen)
+    return torch.where(dst_mask, now, updated)
+
+
+def _old_rhythm_update(rhythm, state, idx, value):
+    pos = int(idx.clamp_min(0).clamp_max(rhythm.num_ids - 1).item())
+    old = state[pos]
+    val = value.to(device=state.device, dtype=state.dtype).clamp_min(0)
+    count = old[0] + 1.0
+    delta = val - old[1]
+    mean = old[1] + (delta / count)
+    m2 = old[2] + delta * (val - mean)
+    replacement = torch.stack([count, mean, m2])
+    mask = F.one_hot(torch.tensor(pos, device=state.device), num_classes=rhythm.num_ids).to(
+        state.dtype
+    ).unsqueeze(-1)
+    return (state * (1.0 - mask)) + (replacement.unsqueeze(0) * mask)
+
+
+def test_temporal_hybrid_memory_indexed_updates_match_old_one_hot_semantics():
+    from graphids.core.models.temporal.hybrid import TemporalIdMemory
+
+    torch.manual_seed(7)
+    memory = TemporalIdMemory(num_ids=4, hidden=5)
+    expected = torch.randn(4, 5)
+    actual = expected.clone()
+    src = torch.tensor([1, 3, 2, 9])
+    dst = torch.tensor([1, 1, -4, 2])
+    messages = torch.randn(4, 5)
+
+    for idx in range(src.numel()):
+        expected = _old_memory_update(memory, expected, src[idx], dst[idx], messages[idx])
+        actual = memory.update_one(actual, src[idx], dst[idx], messages[idx])
+        assert torch.allclose(actual, expected)
+
+
+def test_temporal_hybrid_last_seen_indexed_updates_match_old_time_aware_semantics():
+    from graphids.core.models.temporal.hybrid import TemporalIdMemory
+
+    memory = TemporalIdMemory(num_ids=4, hidden=3, time_encoding_dim=2)
+    expected = memory.initial_last_seen(device=torch.device("cpu"), dtype=torch.float32)
+    actual = expected.clone()
+    src = torch.tensor([0, 2, 2, 8])
+    dst = torch.tensor([1, 2, -3, 3])
+    times = torch.tensor([0.25, 1.5, 3.0, 7.5])
+
+    for idx in range(src.numel()):
+        expected = _old_last_seen_update(memory, expected, src[idx], dst[idx], times[idx])
+        actual = memory.update_last_seen(actual, src[idx], dst[idx], times[idx])
+        assert torch.equal(actual, expected)
+
+
+def test_temporal_hybrid_rhythm_indexed_updates_match_old_one_hot_semantics():
+    from graphids.core.models.temporal.hybrid import TemporalRhythmContext
+
+    rhythm = TemporalRhythmContext(num_ids=4, hidden=6)
+    expected = rhythm.initial_state(device=torch.device("cpu"), dtype=torch.float32)
+    actual = expected.clone()
+    src = torch.tensor([1, 1, 6, 2])
+    dst = torch.tensor([1, 3, 2, -5])
+    iats = torch.tensor([0.4, 1.2, 0.0, 2.5])
+
+    for idx in range(src.numel()):
+        expected = _old_rhythm_update(rhythm, expected, src[idx], iats[idx])
+        expected = _old_rhythm_update(rhythm, expected, dst[idx], iats[idx])
+        actual = rhythm.update_one(actual, src[idx], dst[idx], iats[idx])
+        assert torch.allclose(actual, expected)
+
+
+def test_temporal_hybrid_mid_batch_reset_matches_fresh_suffix_state():
+    model = _hybrid(objective="supervised", heads={"classification": True})
+    batch = _temporal_batch([False, True, False, False, False])
+    suffix = TemporalData(
+        src=batch.src[2:],
+        dst=batch.dst[2:],
+        t=batch.t[2:],
+        msg=batch.msg[2:],
+        y=batch.y[2:],
+        attack_type=batch.attack_type[2:],
+        stream_id=batch.stream_id[2:],
+        reset_after=batch.reset_after[2:],
+        event_id=batch.event_id[2:],
+        is_scored=batch.is_scored[2:],
+    )
+
+    full_out, full_state = model._forward_with_state(batch, None)
+    suffix_out, suffix_state = model._forward_with_state(suffix, None)
+
+    assert torch.allclose(full_out["features"][2:], suffix_out["features"])
+    assert torch.allclose(full_state["memory"], suffix_state["memory"])
+    assert torch.equal(full_state["last_seen"], suffix_state["last_seen"])
+    assert torch.allclose(full_state["backbone"], suffix_state["backbone"])
 
 
 def test_temporal_hybrid_builds_from_primitive_and_consumes_temporal_data():

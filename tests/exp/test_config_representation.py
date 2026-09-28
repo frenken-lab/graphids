@@ -122,11 +122,18 @@ def test_temporal_data_config_accepts_attack_free_train_source_mode():
                 "representation_cfg": {"kind": "temporal"},
             },
             "batch_size": 128,
+            "num_workers": 2,
+            "pin_memory": True,
+            "persistent_workers": True,
         }
     )
 
     assert data.source.train_source_mode == "attack_free"
     assert representation_kind(data.source.representation_cfg) == "temporal"
+    assert data.batch_size == 128
+    assert data.num_workers == 2
+    assert data.pin_memory is True
+    assert data.persistent_workers is True
 
 
 def test_temporal_hybrid_smoke_configs_parse():

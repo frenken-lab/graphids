@@ -26,6 +26,9 @@ config:
       representation_cfg:
         kind: temporal
     batch_size: 512
+    num_workers: 7
+    pin_memory: true
+    persistent_workers: true
     val_warmup_events: 64
     test_warmup_events: 64
   model:

@@ -153,21 +153,16 @@ class TemporalIdMemory(nn.Module):
         dst: torch.Tensor,
         message: torch.Tensor,
     ) -> torch.Tensor:
-        src_idx = int(src.clamp_min(0).clamp_max(self.num_ids - 1).item())
-        dst_idx = int(dst.clamp_min(0).clamp_max(self.num_ids - 1).item())
+        src_idx = src.to(device=state.device).clamp_min(0).clamp_max(self.num_ids - 1).long()
+        dst_idx = dst.to(device=state.device).clamp_min(0).clamp_max(self.num_ids - 1).long()
         src_new = self.update_cell(message.unsqueeze(0), state[src_idx].unsqueeze(0)).squeeze(0)
-        src_mask = F.one_hot(
-            torch.tensor(src_idx, device=state.device),
-            num_classes=self.num_ids,
-        ).to(dtype=state.dtype).unsqueeze(-1)
-        after_src = (state * (1.0 - src_mask)) + (src_new.unsqueeze(0) * src_mask)
+        after_src = state.clone()
+        after_src[src_idx] = src_new
 
         dst_new = self.update_cell(message.unsqueeze(0), after_src[dst_idx].unsqueeze(0)).squeeze(0)
-        dst_mask = F.one_hot(
-            torch.tensor(dst_idx, device=state.device),
-            num_classes=self.num_ids,
-        ).to(dtype=state.dtype).unsqueeze(-1)
-        return (after_src * (1.0 - dst_mask)) + (dst_new.unsqueeze(0) * dst_mask)
+        updated = after_src.clone()
+        updated[dst_idx] = dst_new
+        return updated
 
     def update_last_seen(
         self,
@@ -178,13 +173,13 @@ class TemporalIdMemory(nn.Module):
     ) -> torch.Tensor:
         if t is None:
             return last_seen
-        src_idx = int(src.clamp_min(0).clamp_max(self.num_ids - 1).item())
-        dst_idx = int(dst.clamp_min(0).clamp_max(self.num_ids - 1).item())
+        src_idx = src.to(device=last_seen.device).clamp_min(0).clamp_max(self.num_ids - 1).long()
+        dst_idx = dst.to(device=last_seen.device).clamp_min(0).clamp_max(self.num_ids - 1).long()
         now = t.to(device=last_seen.device, dtype=last_seen.dtype)
-        src_mask = F.one_hot(torch.tensor(src_idx, device=last_seen.device), num_classes=self.num_ids).bool()
-        dst_mask = F.one_hot(torch.tensor(dst_idx, device=last_seen.device), num_classes=self.num_ids).bool()
-        updated = torch.where(src_mask, now, last_seen)
-        return torch.where(dst_mask, now, updated)
+        updated = last_seen.clone()
+        updated[src_idx] = now
+        updated[dst_idx] = now
+        return updated
 
 
 class TemporalRhythmContext(nn.Module):
@@ -227,7 +222,7 @@ class TemporalRhythmContext(nn.Module):
         return self._update_id(updated, dst, iat)
 
     def _update_id(self, state: torch.Tensor, idx: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
-        pos = int(idx.clamp_min(0).clamp_max(self.num_ids - 1).item())
+        pos = idx.to(device=state.device).clamp_min(0).clamp_max(self.num_ids - 1).long()
         old = state[pos]
         val = value.to(device=state.device, dtype=state.dtype).clamp_min(0)
         count = old[0] + 1.0
@@ -235,8 +230,9 @@ class TemporalRhythmContext(nn.Module):
         mean = old[1] + (delta / count)
         m2 = old[2] + delta * (val - mean)
         replacement = torch.stack([count, mean, m2])
-        mask = F.one_hot(torch.tensor(pos, device=state.device), num_classes=self.num_ids).to(state.dtype).unsqueeze(-1)
-        return (state * (1.0 - mask)) + (replacement.unsqueeze(0) * mask)
+        updated = state.clone()
+        updated[pos] = replacement
+        return updated
 
 
 class TemporalMotifContext(nn.Module):
@@ -707,6 +703,8 @@ class TemporalHybridModel(TemporalModuleBase):
             reset_after = torch.zeros(encoded.size(0), dtype=torch.bool, device=encoded.device)
         else:
             reset_after = reset_after.to(device=encoded.device, dtype=torch.bool)
+        reset_points = reset_after.nonzero(as_tuple=False).flatten().tolist()
+        reset_cursor = 0
 
         outputs: list[torch.Tensor] = []
         memory_state = current_state.get("memory")
@@ -749,7 +747,9 @@ class TemporalHybridModel(TemporalModuleBase):
                 rhythm_state = self.rhythm.update_one(rhythm_state, batch.src[idx], batch.dst[idx], iat_t)
             if self.motif is not None and motif_ids is not None and motif_iats is not None:
                 motif_ids, motif_iats = self.motif.update_one(motif_ids, motif_iats, batch.dst[idx], iat_t)
-            if bool(reset_after[idx].item()):
+            should_reset = reset_cursor < len(reset_points) and idx == reset_points[reset_cursor]
+            if should_reset:
+                reset_cursor += 1
                 backbone_state = self.backbone.reset_state()
                 if self.memory is not None and reset_memory:
                     memory_state = self.memory.initial_state(device=encoded.device, dtype=encoded.dtype)

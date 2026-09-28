@@ -1,7 +1,7 @@
-experiment_name: temporal_joint_hybrid_ssm_lite_rich_set_04_train
-dataset: set_04
+experiment_name: temporal_joint_hybrid_ssm_lite_rich_set_01_profile
+dataset: set_01
 seed: 42
-plan_id: temporal_joint_hybrid_final_2026_09_27
+plan_id: temporal_joint_hybrid_profile_2026_09_28
 stage: fit
 representation_cfg:
   kind: temporal
@@ -12,14 +12,14 @@ resources:
   cpus_per_worker: 8
   gpus_per_worker: 1.0
   memory_gb: 96
-  time_limit: "12:00:00"
+  time_limit: "02:00:00"
   account: pas1266
 config:
   data:
     type: temporal_dm
     source:
       type: can_bus
-      dataset: set_04
+      dataset: set_01
       seed: 42
       train_source_mode: mixed
       representation_cfg:
@@ -69,7 +69,9 @@ config:
   trainer:
     accelerator: auto
     devices: 1
-    max_epochs: 20
+    max_epochs: 3
+    limit_train_batches: 100
+    limit_val_batches: 25
     enable_checkpointing: true
     enable_progress_bar: false
     enable_model_summary: false

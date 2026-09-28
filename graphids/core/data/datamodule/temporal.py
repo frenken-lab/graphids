@@ -10,10 +10,21 @@ from graphids.core.data.state import get_or_build
 class TemporalDataModule(pl.LightningDataModule):
     """Serve temporal event streams with PyG's TemporalDataLoader."""
 
-    def __init__(self, dataset, batch_size: int = 256):
+    def __init__(
+        self,
+        dataset,
+        batch_size: int = 256,
+        *,
+        num_workers: int = 0,
+        pin_memory: bool = False,
+        persistent_workers: bool = False,
+    ):
         super().__init__()
         self.source = dataset
         self.batch_size = batch_size
+        self.num_workers = int(num_workers)
+        self.pin_memory = bool(pin_memory)
+        self.persistent_workers = bool(persistent_workers)
         self._train = None
         self._val = None
         self._tests: dict[str, object] = {}
@@ -27,7 +38,13 @@ class TemporalDataModule(pl.LightningDataModule):
     def _loader(self, data):
         from torch_geometric.loader import TemporalDataLoader
 
-        return TemporalDataLoader(data, batch_size=self.batch_size)
+        return TemporalDataLoader(
+            data,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            persistent_workers=self.persistent_workers,
+        )
 
     def _all_data(self) -> list[object]:
         data = [d for d in (self._train, self._val) if d is not None]

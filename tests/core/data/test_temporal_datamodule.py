@@ -59,3 +59,34 @@ def test_temporal_datamodule_exposes_event_schema_and_named_tests():
     test_loaders = dm.test_dataloader()
     assert len(test_loaders) == 1
     assert sum(int(batch.y.numel()) for batch in test_loaders[0]) == 3
+
+
+def test_temporal_datamodule_passes_temporal_loader_resource_kwargs(monkeypatch):
+    clear_cache()
+    captured = []
+
+    class _FakeTemporalDataLoader:
+        def __init__(self, data, **kwargs):
+            self.data = data
+            self.kwargs = kwargs
+            captured.append(kwargs)
+
+    monkeypatch.setattr("torch_geometric.loader.TemporalDataLoader", _FakeTemporalDataLoader)
+    dm = TemporalDataModule(
+        _Source(),
+        batch_size=7,
+        num_workers=3,
+        pin_memory=True,
+        persistent_workers=True,
+    )
+    dm.setup(None)
+
+    loader = dm.train_dataloader()
+
+    assert loader.kwargs == {
+        "batch_size": 7,
+        "num_workers": 3,
+        "pin_memory": True,
+        "persistent_workers": True,
+    }
+    assert captured == [loader.kwargs]
