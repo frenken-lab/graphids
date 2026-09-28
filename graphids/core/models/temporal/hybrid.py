@@ -826,6 +826,37 @@ class TemporalHybridModel(TemporalModuleBase):
         features = torch.stack(outputs, dim=0) if outputs else encoded.new_empty((0, encoded.size(-1)))
         return features, memory_state, last_seen, rhythm_state, motif_ids, motif_iats, backbone_state
 
+    @staticmethod
+    def _clone_scan_result(
+        result: tuple[
+            torch.Tensor,
+            torch.Tensor | None,
+            torch.Tensor | None,
+            torch.Tensor | None,
+            torch.Tensor | None,
+            torch.Tensor | None,
+            torch.Tensor | None,
+        ],
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+    ]:
+        features, memory_state, last_seen, rhythm_state, motif_ids, motif_iats, backbone_state = result
+        return (
+            features.clone(),
+            None if memory_state is None else memory_state.clone(),
+            None if last_seen is None else last_seen.clone(),
+            None if rhythm_state is None else rhythm_state.clone(),
+            None if motif_ids is None else motif_ids.clone(),
+            None if motif_iats is None else motif_iats.clone(),
+            None if backbone_state is None else backbone_state.clone(),
+        )
+
     @classmethod
     def _disable_compiled_scan(cls, exc: Exception) -> None:
         cls._compiled_scan_disabled = True
@@ -899,7 +930,7 @@ class TemporalHybridModel(TemporalModuleBase):
                 )
 
         try:
-            return self._compiled_scan_segment(
+            result = self._compiled_scan_segment(
                 encoded,
                 src_idx,
                 dst_idx,
@@ -912,6 +943,7 @@ class TemporalHybridModel(TemporalModuleBase):
                 motif_iats,
                 backbone_state,
             )
+            return self._clone_scan_result(result)
         except Exception as exc:  # pragma: no cover - backend/environment specific.
             type(self)._disable_compiled_scan(exc)
             self._compiled_scan_segment = None
