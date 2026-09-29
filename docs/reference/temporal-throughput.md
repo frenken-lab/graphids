@@ -78,3 +78,7 @@ Keep `16 lanes x 32 chunk` as the speed baseline until a new treatment both:
 Do not increase `stream_lanes` past the number of active streams available in
 the profiled training batches unless the loader or dataset sharding is changed
 to guarantee 512 real train events per step.
+
+Retired diagnostic configs for slower AMP treatments and the invalid
+`32 lanes x 16 chunk` geometry should stay out of the active config tree. The
+September 29 empirical note keeps those results as historical provenance.
