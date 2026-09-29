@@ -50,4 +50,8 @@ class TemporalModuleBase(_ModelBase):
         mask = getattr(batch, "is_scored", None)
         if mask is None:
             return torch.ones_like(batch.y, dtype=torch.bool)
-        return mask.bool()
+        mask = mask.bool()
+        valid = getattr(batch, "valid_mask", None)
+        if valid is not None:
+            mask = mask & valid.bool()
+        return mask.reshape(-1)

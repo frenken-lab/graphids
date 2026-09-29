@@ -53,6 +53,10 @@ class TemporalBatchProfilerCallback(pl.Callback):
 
     @staticmethod
     def _event_count(batch: object) -> int:
+        valid_mask = batch.get("valid_mask") if isinstance(batch, Mapping) else getattr(batch, "valid_mask", None)
+        valid_numel = getattr(valid_mask, "sum", None)
+        if callable(valid_numel):
+            return int(valid_mask.bool().sum().item())
         dst = batch.get("dst") if isinstance(batch, Mapping) else getattr(batch, "dst", None)
         numel = getattr(dst, "numel", None)
         if not callable(numel):

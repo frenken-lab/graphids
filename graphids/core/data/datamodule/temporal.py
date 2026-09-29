@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import lightning.pytorch as pl
 
+from graphids.core.data.datamodule.stream_lanes import TemporalStreamLaneLoader
 from graphids.core.data.state import get_or_build
 
 
@@ -15,6 +16,9 @@ class TemporalDataModule(pl.LightningDataModule):
         dataset,
         batch_size: int = 256,
         *,
+        batch_mode: str = "events",
+        stream_lanes: int | None = None,
+        chunk_size: int | None = None,
         num_workers: int = 0,
         pin_memory: bool = False,
         persistent_workers: bool = False,
@@ -22,9 +26,19 @@ class TemporalDataModule(pl.LightningDataModule):
         super().__init__()
         self.source = dataset
         self.batch_size = batch_size
+        self.batch_mode = str(batch_mode)
+        self.stream_lanes = None if stream_lanes is None else int(stream_lanes)
+        self.chunk_size = None if chunk_size is None else int(chunk_size)
         self.num_workers = int(num_workers)
         self.pin_memory = bool(pin_memory)
         self.persistent_workers = bool(persistent_workers)
+        if self.batch_mode not in {"events", "stream_lanes"}:
+            raise ValueError("batch_mode must be one of: events, stream_lanes")
+        if self.batch_mode == "stream_lanes":
+            if self.stream_lanes is None or self.stream_lanes < 2:
+                raise ValueError("stream_lanes must be >= 2 for batch_mode='stream_lanes'")
+            if self.chunk_size is None or self.chunk_size < 1:
+                raise ValueError("chunk_size must be positive for batch_mode='stream_lanes'")
         self._train = None
         self._val = None
         self._tests: dict[str, object] = {}
@@ -103,6 +117,14 @@ class TemporalDataModule(pl.LightningDataModule):
         return max(2, max_label + 1)
 
     def train_dataloader(self):
+        if self.batch_mode == "stream_lanes":
+            assert self.stream_lanes is not None
+            assert self.chunk_size is not None
+            return TemporalStreamLaneLoader(
+                self._train,
+                stream_lanes=self.stream_lanes,
+                chunk_size=self.chunk_size,
+            )
         return self._loader(self._train)
 
     def val_dataloader(self):

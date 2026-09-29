@@ -754,7 +754,166 @@ class TemporalHybridModel(TemporalModuleBase):
             "backbone": None,
         }
 
+    def _initial_lane_state_like(self, encoded: torch.Tensor) -> dict[str, torch.Tensor | None]:
+        lanes = int(encoded.size(0))
+        flat_ref = encoded.reshape(-1, encoded.size(-1))
+        state = self._initial_state_like(flat_ref)
+        if state["memory"] is not None:
+            state["memory"] = state["memory"].unsqueeze(0).expand(lanes, -1, -1).clone()
+        if state["last_seen"] is not None:
+            state["last_seen"] = state["last_seen"].unsqueeze(0).expand(lanes, -1).clone()
+        if state["rhythm"] is not None:
+            state["rhythm"] = state["rhythm"].unsqueeze(0).expand(lanes, -1, -1).clone()
+        if state["motif_ids"] is not None:
+            state["motif_ids"] = state["motif_ids"].unsqueeze(0).expand(lanes, -1).clone()
+        if state["motif_iats"] is not None:
+            state["motif_iats"] = state["motif_iats"].unsqueeze(0).expand(lanes, -1).clone()
+        state["prev_t"] = torch.full((lanes,), -1.0, device=encoded.device, dtype=encoded.dtype)
+        return state
+
+    def _ensure_lane_state(
+        self,
+        state: dict[str, torch.Tensor | None] | None,
+        encoded: torch.Tensor,
+    ) -> dict[str, torch.Tensor | None]:
+        lanes = int(encoded.size(0))
+        current = self._initial_lane_state_like(encoded) if state is None else dict(state)
+        initial = self._initial_lane_state_like(encoded)
+        for key, value in initial.items():
+            current_value = current.get(key)
+            if current_value is None or value is None:
+                current[key] = value if current_value is None else current_value
+                continue
+            if current_value.device != value.device or current_value.dtype != value.dtype or current_value.shape != value.shape:
+                current[key] = value
+        backbone = current.get("backbone")
+        if backbone is not None and (
+            backbone.device != encoded.device
+            or backbone.dtype != encoded.dtype
+            or backbone.shape[1:] != (lanes, encoded.size(-1))
+        ):
+            current["backbone"] = None
+        return current
+
+    @staticmethod
+    def _reset_lane_rows(value: torch.Tensor | None, reset_mask: torch.Tensor, replacement: torch.Tensor | None) -> torch.Tensor | None:
+        if value is None or replacement is None or not reset_mask.any():
+            return value
+        updated = value.clone()
+        updated[reset_mask] = replacement[reset_mask]
+        return updated
+
+    @staticmethod
+    def _reset_backbone_lanes(
+        value: torch.Tensor | None,
+        reset_mask: torch.Tensor,
+        *,
+        lanes: int,
+        hidden: int,
+    ) -> torch.Tensor | None:
+        if value is None or not reset_mask.any():
+            return value
+        updated = value.clone()
+        updated[:, reset_mask, :] = torch.zeros(
+            (value.size(0), int(reset_mask.sum().item()), hidden),
+            device=value.device,
+            dtype=value.dtype,
+        )
+        return updated
+
+    def _lane_memory_context(
+        self,
+        memory_state: torch.Tensor,
+        last_seen: torch.Tensor | None,
+        lane_idx: torch.Tensor,
+        src_idx: torch.Tensor,
+        dst_idx: torch.Tensor,
+        t: torch.Tensor | None,
+    ) -> torch.Tensor:
+        assert self.memory is not None
+        if not self.memory._has_context:
+            return memory_state.new_zeros((lane_idx.numel(), self.memory.hidden))
+        parts: list[torch.Tensor] = []
+        src_rows = memory_state[lane_idx, src_idx]
+        dst_rows = memory_state[lane_idx, dst_idx]
+        if self.memory.use_source:
+            parts.append(src_rows)
+        if self.memory.use_destination:
+            parts.append(dst_rows)
+        if self.memory.time_encoder is not None:
+            assert last_seen is not None
+            now = memory_state.new_zeros(lane_idx.numel()) if t is None else t.to(device=memory_state.device, dtype=memory_state.dtype)
+            src_last = last_seen[lane_idx, src_idx]
+            dst_last = last_seen[lane_idx, dst_idx]
+            src_elapsed = torch.where(src_last >= 0, now - src_last, torch.zeros_like(now))
+            dst_elapsed = torch.where(dst_last >= 0, now - dst_last, torch.zeros_like(now))
+            parts.append(self.memory.time_encoder(src_elapsed))
+            parts.append(self.memory.time_encoder(dst_elapsed))
+        return self.memory.mix(torch.cat(parts, dim=-1))
+
+    def _lane_rhythm_context(
+        self,
+        rhythm_state: torch.Tensor,
+        lane_idx: torch.Tensor,
+        src_idx: torch.Tensor,
+        dst_idx: torch.Tensor,
+    ) -> torch.Tensor:
+        assert self.rhythm is not None
+
+        def features(rows: torch.Tensor) -> torch.Tensor:
+            count = rows[:, 0].clamp_min(0)
+            mean = rows[:, 1]
+            variance = torch.where(count > 1, rows[:, 2] / (count - 1).clamp_min(1), torch.zeros_like(count))
+            return torch.stack([torch.log1p(count), mean, torch.sqrt(variance.clamp_min(0))], dim=-1)
+
+        src_rows = rhythm_state[lane_idx, src_idx]
+        dst_rows = rhythm_state[lane_idx, dst_idx]
+        return self.rhythm.proj(torch.cat([features(src_rows), features(dst_rows)], dim=-1))
+
+    def _lane_motif_context(
+        self,
+        motif_ids: torch.Tensor,
+        motif_iats: torch.Tensor,
+        lane_idx: torch.Tensor,
+    ) -> torch.Tensor:
+        assert self.motif is not None
+        ids = motif_ids[lane_idx].clamp_min(0).clamp_max(self.motif.num_ids - 1).long()
+        iats = motif_iats[lane_idx]
+        encoded_ids = self.motif.embedding(ids).flatten(start_dim=1)
+        encoded_iats = self.motif.time_encoder(iats).flatten(start_dim=1)
+        return self.motif.proj(torch.cat([encoded_ids, encoded_iats], dim=-1))
+
+    def _lane_targets(self, batch) -> dict[str, torch.Tensor]:
+        valid = batch.valid_mask.bool()
+        lanes, chunk = valid.shape
+        device = batch.dst.device
+        valid_next = torch.zeros((lanes, chunk), dtype=torch.bool, device=device)
+        if chunk > 1:
+            valid_next[:, :-1] = valid[:, :-1] & valid[:, 1:] & ~batch.reset_after[:, :-1].bool()
+        next_id = batch.dst.clone().long()
+        if chunk > 1:
+            next_id[:, :-1] = batch.dst[:, 1:].long()
+
+        iat = batch.msg.new_zeros((lanes, chunk))
+        if int(self.hparams.in_channels) > 16 and batch.msg.shape[-1] > 16:
+            iat = batch.msg[..., 16].to(device=device, dtype=batch.msg.dtype).clamp_min(0)
+        elif chunk > 1:
+            iat[:, 1:] = (batch.t[:, 1:].to(dtype=batch.msg.dtype) - batch.t[:, :-1].to(dtype=batch.msg.dtype)).clamp_min(0)
+
+        payload_slice = self._payload_delta_slice(int(self.hparams.in_channels))
+        payload_delta = batch.msg[..., payload_slice].float().clone()
+        if chunk > 1:
+            payload_delta[:, :-1] = batch.msg[:, 1:, payload_slice].float()
+        return {
+            "valid_next": valid_next.reshape(-1),
+            "next_id": next_id.reshape(-1),
+            "iat": iat.reshape(-1),
+            "payload_delta": payload_delta.reshape(lanes * chunk, -1),
+        }
+
     def _targets(self, batch) -> dict[str, torch.Tensor]:
+        if getattr(batch, "valid_mask", None) is not None:
+            return self._lane_targets(batch)
         n = int(batch.dst.numel())
         device = batch.dst.device
         valid_next = torch.zeros(n, dtype=torch.bool, device=device)
@@ -926,11 +1085,152 @@ class TemporalHybridModel(TemporalModuleBase):
         features = torch.stack(outputs, dim=0) if outputs else encoded.new_empty((0, encoded.size(-1)))
         return features, memory_state, last_seen, rhythm_state, motif_ids, motif_iats, backbone_state
 
+    def _forward_lane_with_state(
+        self,
+        batch,
+        state: dict[str, torch.Tensor | None] | None = None,
+    ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor | None]]:
+        encoded = self.encoder(batch)
+        lanes, chunk, hidden = encoded.shape
+        current_state = self._ensure_lane_state(state, encoded)
+        initial_state = self._initial_lane_state_like(encoded)
+
+        lane_reset = batch.lane_reset.to(device=encoded.device, dtype=torch.bool)
+        lane_end = batch.lane_stream_end.to(device=encoded.device, dtype=torch.bool)
+        memory_state = self._reset_lane_rows(current_state.get("memory"), lane_reset, initial_state.get("memory"))
+        last_seen = self._reset_lane_rows(current_state.get("last_seen"), lane_reset, initial_state.get("last_seen"))
+        rhythm_state = self._reset_lane_rows(current_state.get("rhythm"), lane_reset, initial_state.get("rhythm"))
+        motif_ids = self._reset_lane_rows(current_state.get("motif_ids"), lane_reset, initial_state.get("motif_ids"))
+        motif_iats = self._reset_lane_rows(current_state.get("motif_iats"), lane_reset, initial_state.get("motif_iats"))
+        prev_t = self._reset_lane_rows(current_state.get("prev_t"), lane_reset, initial_state.get("prev_t"))
+        backbone_state = self._reset_backbone_lanes(
+            current_state.get("backbone"),
+            lane_reset,
+            lanes=lanes,
+            hidden=hidden,
+        )
+
+        valid = batch.valid_mask.to(device=encoded.device, dtype=torch.bool)
+        src_idx_all = batch.src.to(device=encoded.device).clamp_min(0).clamp_max(int(self.hparams.num_ids) - 1).long()
+        dst_idx_all = batch.dst.to(device=encoded.device).clamp_min(0).clamp_max(int(self.hparams.num_ids) - 1).long()
+        t_all = batch.t.to(device=encoded.device, dtype=encoded.dtype)
+        if int(self.hparams.in_channels) > 16 and batch.msg.shape[-1] > 16:
+            iat_all = batch.msg[..., 16].to(device=encoded.device, dtype=encoded.dtype).clamp_min(0)
+        else:
+            assert prev_t is not None
+            previous_t = torch.cat([prev_t.view(lanes, 1), t_all[:, :-1]], dim=1)
+            seen_previous = torch.cat(
+                [prev_t.ge(0).view(lanes, 1), valid[:, :-1] if chunk > 1 else valid[:, :0]],
+                dim=1,
+            )
+            iat_all = torch.where(seen_previous, (t_all - previous_t).clamp_min(0), encoded.new_zeros((lanes, chunk)))
+
+        features_2d = encoded.new_zeros((lanes, chunk, hidden))
+        lane_ids_all = torch.arange(lanes, device=encoded.device)
+
+        for step_idx in range(chunk):
+            active = valid[:, step_idx]
+            if not active.any():
+                continue
+            lane_idx = lane_ids_all[active]
+            src_idx = src_idx_all[active, step_idx]
+            dst_idx = dst_idx_all[active, step_idx]
+            iat_t = iat_all[active, step_idx]
+            t_t = t_all[active, step_idx]
+            x_t = encoded[active, step_idx]
+
+            if self.memory is not None and memory_state is not None:
+                x_t = x_t + self._lane_memory_context(memory_state, last_seen, lane_idx, src_idx, dst_idx, t_t)
+            if self.rhythm is not None and rhythm_state is not None:
+                x_t = x_t + self._lane_rhythm_context(rhythm_state, lane_idx, src_idx, dst_idx)
+            if self.motif is not None and motif_ids is not None and motif_iats is not None:
+                x_t = x_t + self._lane_motif_context(motif_ids, motif_iats, lane_idx)
+
+            active_backbone = None if backbone_state is None else backbone_state[:, active, :]
+            z_t, next_backbone = self.backbone.step(x_t, active_backbone)
+            features_2d[active, step_idx] = z_t
+            if next_backbone is not None:
+                if backbone_state is None:
+                    backbone_state = encoded.new_zeros((next_backbone.size(0), lanes, hidden))
+                else:
+                    backbone_state = backbone_state.clone()
+                backbone_state[:, active, :] = next_backbone
+
+            same_id = src_idx == dst_idx
+            if self.memory is not None and memory_state is not None:
+                src_rows = memory_state[lane_idx, src_idx]
+                dst_rows = memory_state[lane_idx, dst_idx]
+                src_new = self.memory.update_cell(z_t, src_rows)
+                dst_input = torch.where(same_id.unsqueeze(-1), src_new, dst_rows)
+                dst_new = self.memory.update_cell(z_t, dst_input)
+                memory_state = memory_state.clone()
+                memory_state[lane_idx, src_idx] = src_new
+                memory_state[lane_idx, dst_idx] = dst_new
+                if last_seen is not None:
+                    now = t_t.to(device=last_seen.device, dtype=last_seen.dtype)
+                    last_seen = last_seen.clone()
+                    last_seen[lane_idx, src_idx] = now
+                    last_seen[lane_idx, dst_idx] = now
+            if self.rhythm is not None and rhythm_state is not None:
+                src_rows = rhythm_state[lane_idx, src_idx]
+                dst_rows = rhythm_state[lane_idx, dst_idx]
+                src_new = torch.stack(
+                    [self.rhythm._updated_row(src_rows[row], iat_t[row]) for row in range(src_rows.size(0))],
+                    dim=0,
+                )
+                dst_base = torch.where(same_id.view(-1, 1), src_new, dst_rows)
+                dst_new = torch.stack(
+                    [self.rhythm._updated_row(dst_base[row], iat_t[row]) for row in range(dst_base.size(0))],
+                    dim=0,
+                )
+                rhythm_state = rhythm_state.clone()
+                rhythm_state[lane_idx, src_idx] = src_new
+                rhythm_state[lane_idx, dst_idx] = dst_new
+            if self.motif is not None and motif_ids is not None and motif_iats is not None:
+                motif_ids = motif_ids.clone()
+                motif_iats = motif_iats.clone()
+                motif_ids[lane_idx] = torch.cat(
+                    [motif_ids[lane_idx, 1:], dst_idx.to(device=motif_ids.device).view(-1, 1)],
+                    dim=1,
+                )
+                motif_iats[lane_idx] = torch.cat(
+                    [motif_iats[lane_idx, 1:], iat_t.to(device=motif_iats.device, dtype=motif_iats.dtype).view(-1, 1)],
+                    dim=1,
+                )
+            if prev_t is not None:
+                prev_t = prev_t.clone()
+                prev_t[lane_idx] = t_t.to(device=prev_t.device, dtype=prev_t.dtype)
+
+        reset_memory = bool(self.hparams.memory.get("reset_on_stream_end", True))
+        if lane_end.any():
+            backbone_state = self._reset_backbone_lanes(backbone_state, lane_end, lanes=lanes, hidden=hidden)
+            if self.memory is not None and reset_memory:
+                memory_state = self._reset_lane_rows(memory_state, lane_end, initial_state.get("memory"))
+                last_seen = self._reset_lane_rows(last_seen, lane_end, initial_state.get("last_seen"))
+            rhythm_state = self._reset_lane_rows(rhythm_state, lane_end, initial_state.get("rhythm"))
+            motif_ids = self._reset_lane_rows(motif_ids, lane_end, initial_state.get("motif_ids"))
+            motif_iats = self._reset_lane_rows(motif_iats, lane_end, initial_state.get("motif_iats"))
+            prev_t = self._reset_lane_rows(prev_t, lane_end, initial_state.get("prev_t"))
+
+        features = features_2d.reshape(lanes * chunk, hidden)
+        next_state = {
+            "memory": memory_state,
+            "last_seen": last_seen,
+            "rhythm": rhythm_state,
+            "motif_ids": motif_ids,
+            "motif_iats": motif_iats,
+            "prev_t": prev_t,
+            "backbone": backbone_state,
+        }
+        return self._heads_from_features(features, batch), next_state
+
     def _forward_with_state(
         self,
         batch,
         state: dict[str, torch.Tensor | None] | None = None,
     ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor | None]]:
+        if getattr(batch, "valid_mask", None) is not None:
+            return self._forward_lane_with_state(batch, state)
         encoded = self.encoder(batch)
         if encoded.numel() == 0:
             empty = encoded.new_empty((0, int(self.hparams.input["hidden"])))
@@ -1119,10 +1419,11 @@ class TemporalHybridModel(TemporalModuleBase):
 
     def _loss_terms(self, out: dict[str, torch.Tensor], batch) -> dict[str, torch.Tensor]:
         mask = self.scored_mask(batch)
+        labels_all = batch.y.reshape(-1)
         terms: dict[str, torch.Tensor] = {}
         weights = self.hparams.loss_weights
         if self.classification_enabled and "logits" in out and mask.any():
-            labels = batch.y[mask].long()
+            labels = labels_all[mask].long()
             terms["classification"] = self._classification_loss(out["logits"][mask], labels, batch)
         if self.anomaly_enabled:
             valid = out["valid_next"].bool() & mask
@@ -1172,7 +1473,7 @@ class TemporalHybridModel(TemporalModuleBase):
                 continue
             self.log(f"train_{name}_loss", value, batch_size=bs)
         if self.classification_enabled and "logits" in out and mask.any():
-            labels = batch.y[mask].long()
+            labels = batch.y.reshape(-1)[mask].long()
             acc = (out["logits"][mask].argmax(1) == labels).float().mean()
             self.log("train_acc", acc, batch_size=int(labels.numel()))
         return terms["total"]
@@ -1184,7 +1485,7 @@ class TemporalHybridModel(TemporalModuleBase):
         mask = self.scored_mask(batch)
         if not mask.any():
             return None
-        labels = batch.y[mask].long()
+        labels = batch.y.reshape(-1)[mask].long()
         bs = int(labels.numel())
         self.log("val_loss", terms["total"], batch_size=bs)
         if self.classification_enabled and "logits" in out:
@@ -1223,9 +1524,9 @@ class TemporalHybridModel(TemporalModuleBase):
         mask = self.scored_mask(batch)
         if not mask.any():
             return None
-        labels = batch.y[mask].long()
+        labels = batch.y.reshape(-1)[mask].long()
         attack_type = getattr(batch, "attack_type", None)
-        attack_type = attack_type[mask] if attack_type is not None else None
+        attack_type = attack_type.reshape(-1)[mask] if attack_type is not None else None
         if self.classification_enabled and "logits" in out:
             probs = F.softmax(out["logits"][mask], dim=1)
             self._record_test_batch(
@@ -1246,7 +1547,7 @@ class TemporalHybridModel(TemporalModuleBase):
 
     def predict_step(self, batch, _idx):
         out = self(batch)
-        result: dict[str, torch.Tensor] = {"labels": batch.y}
+        result: dict[str, torch.Tensor] = {"labels": batch.y.reshape(-1)}
         if "logits" in out:
             probs = F.softmax(out["logits"], dim=1)
             result["preds"] = probs.argmax(1)
@@ -1255,5 +1556,5 @@ class TemporalHybridModel(TemporalModuleBase):
             result["scores"] = out["anomaly_score"]
         event_id = getattr(batch, "event_id", None)
         if event_id is not None:
-            result["event_id"] = event_id
+            result["event_id"] = event_id.reshape(-1)
         return result

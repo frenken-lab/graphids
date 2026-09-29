@@ -31,6 +31,63 @@ def _temporal_batch(reset_after: list[bool] | None = None) -> TemporalData:
     )
 
 
+def _lane_semantic_data() -> TemporalData:
+    msg = torch.zeros(6, 17, dtype=torch.float32)
+    msg[:, :4] = torch.tensor(
+        [
+            [0.0, 0.1, 0.0, 1.0],
+            [1.0, 0.1, 1.0, 1.0],
+            [0.0, 0.2, 0.0, 1.0],
+            [1.0, 0.2, 1.0, 1.0],
+            [0.0, 0.3, 0.0, 1.0],
+            [1.0, 0.3, 1.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    msg[:, 8:12] = msg[:, :4].roll(1, dims=0)
+    msg[:, 16] = torch.tensor([0.0, 1.0, 1.0, 0.0, 1.0, 1.0])
+    return TemporalData(
+        src=torch.tensor([0, 1, 1, 2, 3, 3], dtype=torch.long),
+        dst=torch.tensor([1, 1, 2, 3, 3, 0], dtype=torch.long),
+        t=torch.tensor([0.0, 1.0, 2.0, 10.0, 11.0, 12.0]),
+        msg=msg,
+        y=torch.tensor([0, 1, 0, 1, 0, 1], dtype=torch.long),
+        attack_type=torch.tensor([0, 2, 0, 2, 0, 2], dtype=torch.long),
+        stream_id=torch.tensor([0, 0, 0, 1, 1, 1], dtype=torch.long),
+        reset_after=torch.tensor([False, False, True, False, False, True]),
+        event_id=torch.arange(6, dtype=torch.long),
+        is_scored=torch.ones(6, dtype=torch.bool),
+    )
+
+
+def _slice_temporal(data: TemporalData, mask: torch.Tensor) -> TemporalData:
+    return TemporalData(
+        src=data.src[mask],
+        dst=data.dst[mask],
+        t=data.t[mask],
+        msg=data.msg[mask],
+        y=data.y[mask],
+        attack_type=data.attack_type[mask],
+        stream_id=data.stream_id[mask],
+        reset_after=data.reset_after[mask],
+        event_id=data.event_id[mask],
+        is_scored=data.is_scored[mask],
+    )
+
+
+_RAW_FORWARD_KEYS = {
+    "features",
+    "logits",
+    "next_id_logits",
+    "iat_loc",
+    "iat_log_scale",
+    "iat_pred",
+    "payload_delta_loc",
+    "payload_delta_log_scale",
+    "payload_delta_pred",
+}
+
+
 def _hybrid(**overrides):
     from graphids.core.models.temporal import TemporalHybridModel
 
@@ -474,6 +531,78 @@ def test_temporal_hybrid_rich_context_and_nll_heads_backpropagate():
     assert state["rhythm"] is not None
     assert state["motif_ids"] is not None
     assert state["motif_iats"] is not None
+    assert torch.isfinite(loss)
+    assert any(p.grad is not None for p in model.parameters() if p.requires_grad)
+
+
+def test_temporal_hybrid_lane_batch_matches_independent_rich_streams():
+    from graphids.core.data.datamodule.stream_lanes import TemporalStreamLaneLoader
+
+    model = _hybrid(
+        objective="joint",
+        backbone_type="ssm_lite",
+        memory={"type": "tgn", "enabled": True, "reset_on_stream_end": True, "time_encoding_dim": 4},
+        heads={"classification": True, "next_id": True, "iat": True, "payload_delta": True},
+        anomaly={"mode": "nll"},
+        rhythm={"enabled": True},
+        motif={"enabled": True, "length": 3, "embedding_dim": 4, "time_dim": 4},
+        in_channels=17,
+    )
+    data = _lane_semantic_data()
+
+    expected_by_event = {}
+    for stream_id in [0, 1]:
+        stream = _slice_temporal(data, data.stream_id == stream_id)
+        out, _state = model._forward_with_state(stream, None)
+        for pos, event_id in enumerate(stream.event_id.tolist()):
+            expected_by_event[event_id] = {
+                key: value[pos].detach()
+                for key, value in out.items()
+                if key in _RAW_FORWARD_KEYS and value.ndim > 0
+            }
+
+    state = None
+    actual_by_event = {}
+    for batch in TemporalStreamLaneLoader(data, stream_lanes=2, chunk_size=2):
+        out, state = model._forward_with_state(batch, model._detach_state(state))
+        flat_ids = batch.event_id.reshape(-1)
+        flat_valid = batch.valid_mask.reshape(-1)
+        for pos in flat_valid.nonzero(as_tuple=False).flatten().tolist():
+            actual_by_event[int(flat_ids[pos].item())] = {
+                key: value[pos].detach()
+                for key, value in out.items()
+                if key in _RAW_FORWARD_KEYS and value.ndim > 0
+            }
+
+    assert actual_by_event.keys() == expected_by_event.keys()
+    for event_id, expected in expected_by_event.items():
+        actual = actual_by_event[event_id]
+        for key, expected_value in expected.items():
+            assert key in actual
+            if expected_value.is_floating_point():
+                assert torch.allclose(actual[key], expected_value, atol=1e-6)
+            else:
+                assert torch.equal(actual[key], expected_value)
+
+
+def test_temporal_hybrid_lane_batch_loss_backward_is_finite():
+    from graphids.core.data.datamodule.stream_lanes import TemporalStreamLaneLoader
+
+    model = _hybrid(
+        objective="joint",
+        backbone_type="ssm_lite",
+        memory={"type": "tgn", "enabled": True, "reset_on_stream_end": True, "time_encoding_dim": 4},
+        heads={"classification": True, "next_id": True, "iat": True, "payload_delta": True},
+        anomaly={"mode": "nll"},
+        rhythm={"enabled": True},
+        motif={"enabled": True, "length": 3, "embedding_dim": 4, "time_dim": 4},
+        in_channels=17,
+    )
+    batch = next(iter(TemporalStreamLaneLoader(_lane_semantic_data(), stream_lanes=2, chunk_size=2)))
+
+    loss = model.training_step(batch, 0)
+    loss.backward()
+
     assert torch.isfinite(loss)
     assert any(p.grad is not None for p in model.parameters() if p.requires_grad)
 

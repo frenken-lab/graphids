@@ -136,6 +136,42 @@ def test_temporal_data_config_accepts_attack_free_train_source_mode():
     assert data.persistent_workers is True
 
 
+def test_temporal_data_config_accepts_and_validates_stream_lanes():
+    from pydantic import ValidationError
+
+    from graphids.exp.ray_backend import build_component
+    from graphids.primitives import can_bus, temporal_dm
+
+    source = can_bus(dataset="hcrl_sa", seed=42, representation_cfg={"kind": "temporal"})
+    cfg = temporal_dm(source=source, batch_mode="stream_lanes", stream_lanes=4, chunk_size=16)
+    data = cfg.build()
+
+    assert data.batch_mode == "stream_lanes"
+    assert data.stream_lanes == 4
+    assert data.chunk_size == 16
+
+    built = build_component(
+        {
+            "type": "temporal_dm",
+            "source": {
+                "type": "can_bus",
+                "dataset": "hcrl_sa",
+                "seed": 42,
+                "representation_cfg": {"kind": "temporal"},
+            },
+            "batch_mode": "stream_lanes",
+            "stream_lanes": 4,
+            "chunk_size": 16,
+        }
+    )
+    assert built.batch_mode == "stream_lanes"
+
+    with pytest.raises(ValidationError, match="stream_lanes must be >= 2"):
+        temporal_dm(source=source, batch_mode="stream_lanes", stream_lanes=1, chunk_size=16)
+    with pytest.raises(ValidationError, match="chunk_size must be positive"):
+        temporal_dm(source=source, batch_mode="stream_lanes", stream_lanes=2, chunk_size=0)
+
+
 def test_temporal_hybrid_smoke_configs_parse():
     from graphids.core.data.preprocessing.representations import representation_kind
     from graphids.exp.config import ExperimentConfig
@@ -250,6 +286,31 @@ def test_temporal_hybrid_diagnostic_profile_uses_profiler_without_compile():
         "log_every_n_batches": 10,
         "sync_cuda": True,
     }
+
+
+def test_temporal_hybrid_lane_profile_configs_parse():
+    from graphids.exp.config import ExperimentConfig
+
+    baseline = ExperimentConfig.from_yaml(
+        "configs/experiments/diagnostics/temporal_joint_hybrid_ssm_lite_rich_set_01_profile.yml"
+    )
+    lane = ExperimentConfig.from_yaml(
+        "configs/experiments/diagnostics/temporal_joint_hybrid_ssm_lite_rich_set_01_lanes_profile.yml"
+    )
+    amp = ExperimentConfig.from_yaml(
+        "configs/experiments/diagnostics/temporal_joint_hybrid_ssm_lite_rich_set_01_lanes_amp_profile.yml"
+    )
+
+    baseline_run = baseline.build_run(name=baseline.experiment_name, stage=baseline.stage, config=baseline.config)
+    lane_run = lane.build_run(name=lane.experiment_name, stage=lane.stage, config=lane.config)
+    amp_run = amp.build_run(name=amp.experiment_name, stage=amp.stage, config=amp.config)
+
+    assert baseline_run.payload.data.get("batch_mode", "events") == "events"
+    assert lane_run.payload.data["batch_mode"] == "stream_lanes"
+    assert lane_run.payload.data["stream_lanes"] >= 2
+    assert lane_run.payload.data["chunk_size"] >= 1
+    assert lane_run.payload.trainer["enable_checkpointing"] is False
+    assert amp_run.payload.trainer["precision"] == "16-mixed"
 
 
 def test_config_string_placeholders_resolve_against_run_paths(monkeypatch, tmp_path):
