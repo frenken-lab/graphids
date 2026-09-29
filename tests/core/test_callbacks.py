@@ -107,3 +107,74 @@ def test_temporal_batch_profiler_no_cuda_path_does_not_synchronize(monkeypatch):
         8,
         {"on_step": True, "on_epoch": False, "logger": True, "prog_bar": False},
     ) in module.logged
+
+
+def test_temporal_batch_profiler_logs_lane_utilization(monkeypatch):
+    import graphids.core.callbacks as callbacks_mod
+    from graphids.core.callbacks import TemporalBatchProfilerCallback
+
+    times = iter([1.0, 2.0])
+    struct_log = _DummyLog()
+    monkeypatch.setattr(callbacks_mod.time, "perf_counter", lambda: next(times))
+    monkeypatch.setattr(callbacks_mod.log, "info", struct_log.info)
+    monkeypatch.setattr(callbacks_mod.torch.cuda, "is_available", lambda: False)
+
+    callback = TemporalBatchProfilerCallback(warmup_batches=0, log_every_n_batches=1)
+    trainer = SimpleNamespace(current_epoch=0)
+    module = _DummyModule()
+    batch = SimpleNamespace(valid_mask=torch.tensor([[True, True], [True, False], [False, False]]))
+
+    _run_train_batch(callback, trainer, module, batch, 0)
+
+    logged = {name: value for name, value, _kwargs in module.logged}
+    assert logged["profile/train_events"] == 3
+    assert logged["profile/train_lane_capacity_events"] == 6
+    assert logged["profile/train_active_lanes"] == 2
+    assert logged["profile/train_padding_events"] == 3
+    assert logged["profile/train_padding_fraction"] == 0.5
+    assert struct_log.records[0][1]["train_active_lanes"] == 2
+
+
+def test_temporal_batch_profiler_warns_or_fails_on_expected_event_mismatch(monkeypatch):
+    import pytest
+
+    import graphids.core.callbacks as callbacks_mod
+    from graphids.core.callbacks import TemporalBatchProfilerCallback
+
+    times = iter([1.0, 2.0, 3.0, 4.0])
+    warnings = _DummyLog()
+    monkeypatch.setattr(callbacks_mod.time, "perf_counter", lambda: next(times))
+    monkeypatch.setattr(callbacks_mod.log, "warning", warnings.info)
+    monkeypatch.setattr(callbacks_mod.torch.cuda, "is_available", lambda: False)
+
+    trainer = SimpleNamespace(current_epoch=0)
+    module = _DummyModule()
+    batch = SimpleNamespace(valid_mask=torch.tensor([[True, False]]))
+
+    callback = TemporalBatchProfilerCallback(
+        warmup_batches=0,
+        log_every_n_batches=1,
+        expected_train_events=2,
+    )
+    _run_train_batch(callback, trainer, module, batch, 0)
+    assert warnings.records == [
+        (
+            "temporal_batch_event_mismatch",
+            {
+                "prefix": "profile",
+                "expected_train_events": 2,
+                "train_events": 1,
+                "epoch": 0,
+                "batch_idx": 0,
+            },
+        )
+    ]
+
+    callback = TemporalBatchProfilerCallback(
+        warmup_batches=0,
+        log_every_n_batches=1,
+        expected_train_events=2,
+        fail_on_event_mismatch=True,
+    )
+    with pytest.raises(RuntimeError, match="expected 2 but observed 1"):
+        _run_train_batch(callback, trainer, module, batch, 1)

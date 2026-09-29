@@ -46,6 +46,22 @@ Do not compare raw `profile/train_events_per_sec` across runs with different
 `profile/train_events`. Smaller event counts can make batch time look better
 without measuring the same amount of work.
 
+Stream-lane profile configs enforce this invariant with
+`expected_train_events: 512` and `fail_on_event_mismatch: true` on
+`TemporalBatchProfilerCallback`.
+
+For lane batches, also inspect:
+
+```text
+profile/train_active_lanes
+profile/train_lane_capacity_events
+profile/train_padding_events
+profile/train_padding_fraction
+```
+
+High padding or too few active lanes means the nominal lane geometry is not
+delivering the requested amount of work per profiled step.
+
 ## Failed Geometry Probe
 
 The `32 lanes x 16 chunk` probe completed, but it did not preserve the 512-event

@@ -38,14 +38,19 @@ class TemporalBatchProfilerCallback(pl.Callback):
     warmup_batches: int = 5
     log_every_n_batches: int = 10
     sync_cuda: bool = True
+    expected_train_events: int | None = None
+    fail_on_event_mismatch: bool = False
     _train_batches_seen: int = field(init=False, default=0)
     _batch_start_s: float | None = field(init=False, default=None)
     _previous_batch_end_s: float | None = field(init=False, default=None)
     _data_wait_s: float = field(init=False, default=0.0)
+    _event_mismatch_warned: bool = field(init=False, default=False)
 
     def __post_init__(self) -> None:
         self.warmup_batches = max(0, int(self.warmup_batches))
         self.log_every_n_batches = max(1, int(self.log_every_n_batches))
+        if self.expected_train_events is not None:
+            self.expected_train_events = max(1, int(self.expected_train_events))
 
     def _sync_cuda(self) -> None:
         if self.sync_cuda and torch.cuda.is_available():
@@ -62,6 +67,45 @@ class TemporalBatchProfilerCallback(pl.Callback):
         if not callable(numel):
             return 0
         return int(numel())
+
+    @staticmethod
+    def _lane_stats(batch: object) -> dict[str, float | int]:
+        valid_mask = batch.get("valid_mask") if isinstance(batch, Mapping) else getattr(batch, "valid_mask", None)
+        if valid_mask is None or not hasattr(valid_mask, "bool"):
+            return {}
+        valid = valid_mask.bool()
+        if valid.ndim < 2:
+            return {}
+        capacity = int(valid.numel())
+        events = int(valid.sum().item())
+        active_lanes = int(valid.any(dim=1).sum().item())
+        padding_events = capacity - events
+        return {
+            "train_lane_capacity_events": capacity,
+            "train_active_lanes": active_lanes,
+            "train_padding_events": padding_events,
+            "train_padding_fraction": 0.0 if capacity <= 0 else padding_events / capacity,
+        }
+
+    def _check_expected_events(self, *, events: int, trainer: pl.Trainer, batch_idx: int) -> None:
+        if self.expected_train_events is None or events == self.expected_train_events:
+            return
+        message = (
+            f"{self.prefix}/train_events expected {self.expected_train_events} "
+            f"but observed {events} at epoch={trainer.current_epoch} batch_idx={batch_idx}"
+        )
+        if self.fail_on_event_mismatch:
+            raise RuntimeError(message)
+        if not self._event_mismatch_warned:
+            log.warning(
+                "temporal_batch_event_mismatch",
+                prefix=self.prefix,
+                expected_train_events=self.expected_train_events,
+                train_events=events,
+                epoch=trainer.current_epoch,
+                batch_idx=batch_idx,
+            )
+            self._event_mismatch_warned = True
 
     def on_train_batch_start(
         self,
@@ -102,6 +146,7 @@ class TemporalBatchProfilerCallback(pl.Callback):
 
         batch_s = max(0.0, end_s - start_s)
         events = self._event_count(batch)
+        self._check_expected_events(events=events, trainer=trainer, batch_idx=batch_idx)
         events_per_sec = 0.0 if batch_s <= 0.0 else events / batch_s
         metrics = {
             f"{self.prefix}/train_batch_ms": batch_s * 1000.0,
@@ -109,19 +154,30 @@ class TemporalBatchProfilerCallback(pl.Callback):
             f"{self.prefix}/train_events_per_sec": events_per_sec,
             f"{self.prefix}/train_events": events,
         }
+        lane_stats = self._lane_stats(batch)
+        metrics.update({f"{self.prefix}/{name}": value for name, value in lane_stats.items()})
         for name, value in metrics.items():
             pl_module.log(name, value, on_step=True, on_epoch=False, logger=True, prog_bar=False)
 
+        log_payload = {
+            "prefix": self.prefix,
+            "train_batch": self._train_batches_seen,
+            "epoch": trainer.current_epoch,
+            "batch_idx": batch_idx,
+            "train_batch_ms": round(metrics[f"{self.prefix}/train_batch_ms"], 3),
+            "train_data_wait_ms": round(metrics[f"{self.prefix}/train_data_wait_ms"], 3),
+            "train_events_per_sec": round(events_per_sec, 3),
+            "train_events": events,
+        }
+        log_payload.update(
+            {
+                name: round(value, 3) if isinstance(value, float) else value
+                for name, value in lane_stats.items()
+            }
+        )
         log.info(
             "temporal_batch_profile",
-            prefix=self.prefix,
-            train_batch=self._train_batches_seen,
-            epoch=trainer.current_epoch,
-            batch_idx=batch_idx,
-            train_batch_ms=round(metrics[f"{self.prefix}/train_batch_ms"], 3),
-            train_data_wait_ms=round(metrics[f"{self.prefix}/train_data_wait_ms"], 3),
-            train_events_per_sec=round(events_per_sec, 3),
-            train_events=events,
+            **log_payload,
         )
 
 

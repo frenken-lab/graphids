@@ -87,5 +87,7 @@ config:
         warmup_batches: 5
         log_every_n_batches: 10
         sync_cuda: true
+        expected_train_events: 512
+        fail_on_event_mismatch: true
   loss_fn:
     type: ce

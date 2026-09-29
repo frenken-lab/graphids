@@ -311,10 +311,14 @@ def test_temporal_hybrid_lane_profile_configs_parse():
     assert lane_run.payload.data["chunk_size"] >= 1
     assert lane_run.payload.trainer["enable_checkpointing"] is False
     assert lane_run.payload.data["stream_lanes"] * lane_run.payload.data["chunk_size"] == 512
+    assert lane_run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == 512
+    assert lane_run.payload.callbacks["profiler"]["init_args"]["fail_on_event_mismatch"] is True
     assert lane16_run.payload.data["batch_mode"] == "stream_lanes"
     assert lane16_run.payload.data["stream_lanes"] == 16
     assert lane16_run.payload.data["chunk_size"] == 32
     assert lane16_run.payload.data["stream_lanes"] * lane16_run.payload.data["chunk_size"] == 512
+    assert lane16_run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == 512
+    assert lane16_run.payload.callbacks["profiler"]["init_args"]["fail_on_event_mismatch"] is True
 
 
 def test_config_string_placeholders_resolve_against_run_paths(monkeypatch, tmp_path):
