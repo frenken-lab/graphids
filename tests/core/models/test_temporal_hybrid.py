@@ -49,7 +49,6 @@ def _hybrid(**overrides):
         anomaly=params.get("anomaly"),
         rhythm=params.get("rhythm"),
         motif=params.get("motif"),
-        compile=params.get("compile"),
         loss_fn=params.get("loss_fn"),
         loss_weights={"classification": 1.0, "next_id": 0.2, "iat": 0.1, "payload_delta": 0.1},
         num_ids=4,
@@ -278,6 +277,30 @@ def test_temporal_hybrid_segment_scan_matches_reference_loop(reset_after):
     _assert_state_equal(actual_state, expected_state)
 
 
+def test_temporal_hybrid_rich_scan_uses_sparse_row_overlay(monkeypatch):
+    model = _hybrid(
+        objective="joint",
+        backbone_type="ssm_lite",
+        memory={"type": "tgn", "enabled": True, "reset_on_stream_end": True, "time_encoding_dim": 4},
+        heads={"classification": True, "next_id": True, "iat": True, "payload_delta": True},
+        anomaly={"mode": "nll"},
+        rhythm={"enabled": True},
+        motif={"enabled": True, "length": 3, "embedding_dim": 4, "time_dim": 4},
+    )
+
+    def forbidden_full_state_update(*_args, **_kwargs):
+        raise AssertionError("scan should update row overlays, not clone full states per event")
+
+    monkeypatch.setattr(model.memory, "_update_one_indexed", forbidden_full_state_update)
+    monkeypatch.setattr(model.rhythm, "_update_one_indexed", forbidden_full_state_update)
+
+    out, state = model._forward_with_state(_temporal_batch([False, False, False, False, False]), None)
+
+    assert tuple(out["features"].shape) == (5, 8)
+    assert state["memory"] is not None
+    assert state["rhythm"] is not None
+
+
 def test_temporal_hybrid_vectorized_iat_matches_event_iat_payload_timestamp_and_missing_timestamp():
     payload_model = _hybrid(objective="supervised", heads={"classification": True}, in_channels=17)
     payload_batch = TemporalData(
@@ -308,56 +331,6 @@ def test_temporal_hybrid_vectorized_iat_matches_event_iat_payload_timestamp_and_
         [timestamp_model._event_iat(missing_timestamp_batch, idx, ref[idx]) for idx in range(3)]
     )
     assert torch.equal(timestamp_model._prepare_scan_batch(missing_timestamp_batch, ref)["iat"], expected)
-
-
-def test_temporal_hybrid_compile_dispatch_invokes_torch_compile_and_falls_back(monkeypatch):
-    original_disabled = type(_hybrid())._compiled_scan_disabled
-    original_warned = type(_hybrid())._compiled_scan_warned
-    try:
-        type(_hybrid())._compiled_scan_disabled = False
-        type(_hybrid())._compiled_scan_warned = False
-        calls = {"compile": 0, "wrapped": 0}
-
-        def fake_compile(fn, *, mode, fullgraph):
-            calls["compile"] += 1
-            assert mode == "reduce-overhead"
-            assert fullgraph is False
-
-            def wrapped(*args, **kwargs):
-                calls["wrapped"] += 1
-                return fn(*args, **kwargs)
-
-            return wrapped
-
-        monkeypatch.setattr(torch, "compile", fake_compile)
-        model = _hybrid(
-            objective="supervised",
-            heads={"classification": True},
-            compile={"enabled": True, "mode": "reduce-overhead"},
-        )
-        out = model(_temporal_batch([False, False, False, False, False]))
-        assert tuple(out["features"].shape) == (5, 8)
-        assert calls == {"compile": 1, "wrapped": 1}
-
-        type(model)._compiled_scan_disabled = False
-        type(model)._compiled_scan_warned = False
-
-        def raising_compile(*_args, **_kwargs):
-            raise RuntimeError("compile unavailable")
-
-        monkeypatch.setattr(torch, "compile", raising_compile)
-        fallback_model = _hybrid(
-            objective="supervised",
-            heads={"classification": True},
-            compile={"enabled": True, "mode": "reduce-overhead"},
-        )
-        with pytest.warns(RuntimeWarning, match="compiled scan failed"):
-            fallback_out = fallback_model(_temporal_batch([False, False, False, False, False]))
-        assert tuple(fallback_out["features"].shape) == (5, 8)
-        assert type(fallback_model)._compiled_scan_disabled is True
-    finally:
-        type(_hybrid())._compiled_scan_disabled = original_disabled
-        type(_hybrid())._compiled_scan_warned = original_warned
 
 
 def test_temporal_hybrid_mid_batch_reset_matches_fresh_suffix_state():

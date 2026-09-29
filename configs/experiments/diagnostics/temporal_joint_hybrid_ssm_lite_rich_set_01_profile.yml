@@ -57,9 +57,6 @@ config:
       length: 3
       embedding_dim: 8
       time_dim: 8
-    compile:
-      enabled: true
-      mode: reduce-overhead
     loss_weights:
       classification: 1.0
       next_id: 0.2
@@ -92,5 +89,12 @@ config:
         mode: min
         save_top_k: 1
         save_last: true
+    profiler:
+      class_path: graphids.core.callbacks.TemporalBatchProfilerCallback
+      init_args:
+        prefix: profile
+        warmup_batches: 5
+        log_every_n_batches: 10
+        sync_cuda: true
   loss_fn:
     type: ce

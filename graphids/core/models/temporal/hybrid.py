@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
 from typing import Any, Literal
 
 import torch
@@ -157,6 +156,44 @@ class TemporalIdMemory(nn.Module):
             parts.append(self.time_encoder(dst_elapsed).reshape(-1))
         return self.mix(torch.cat(parts, dim=-1))
 
+    def _read_context_rows(
+        self,
+        src_row: torch.Tensor,
+        dst_row: torch.Tensor,
+        src_last_seen: torch.Tensor | None,
+        dst_last_seen: torch.Tensor | None,
+        t: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if not self._has_context:
+            return src_row.new_zeros(self.hidden)
+        parts: list[torch.Tensor] = []
+        if self.use_source:
+            parts.append(src_row)
+        if self.use_destination:
+            parts.append(dst_row)
+        if self.time_encoder is not None:
+            assert src_last_seen is not None
+            assert dst_last_seen is not None
+            now = src_row.new_tensor(0.0) if t is None else t.to(device=src_row.device, dtype=src_row.dtype)
+            src_elapsed = torch.where(src_last_seen >= 0, now - src_last_seen, torch.zeros_like(now))
+            dst_elapsed = torch.where(dst_last_seen >= 0, now - dst_last_seen, torch.zeros_like(now))
+            parts.append(self.time_encoder(src_elapsed).reshape(-1))
+            parts.append(self.time_encoder(dst_elapsed).reshape(-1))
+        return self.mix(torch.cat(parts, dim=-1))
+
+    def _updated_rows(
+        self,
+        src_row: torch.Tensor,
+        dst_row: torch.Tensor,
+        message: torch.Tensor,
+        *,
+        same_id: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        src_new = self.update_cell(message.unsqueeze(0), src_row.unsqueeze(0)).squeeze(0)
+        dst_input = src_new if same_id else dst_row
+        dst_new = self.update_cell(message.unsqueeze(0), dst_input.unsqueeze(0)).squeeze(0)
+        return src_new, dst_new
+
     def update_one(
         self,
         state: torch.Tensor,
@@ -247,7 +284,10 @@ class TemporalRhythmContext(nn.Module):
         src_idx: torch.Tensor,
         dst_idx: torch.Tensor,
     ) -> torch.Tensor:
-        return self.proj(torch.cat([self._features(state[src_idx]), self._features(state[dst_idx])], dim=-1))
+        return self._read_context_rows(state[src_idx], state[dst_idx])
+
+    def _read_context_rows(self, src_row: torch.Tensor, dst_row: torch.Tensor) -> torch.Tensor:
+        return self.proj(torch.cat([self._features(src_row), self._features(dst_row)], dim=-1))
 
     @staticmethod
     def _features(stats: torch.Tensor) -> torch.Tensor:
@@ -276,16 +316,30 @@ class TemporalRhythmContext(nn.Module):
         return self._update_id_indexed(state, pos, value)
 
     def _update_id_indexed(self, state: torch.Tensor, pos: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
-        old = state[pos]
-        val = value.to(device=state.device, dtype=state.dtype).clamp_min(0)
+        replacement = self._updated_row(state[pos], value)
+        updated = state.clone()
+        updated[pos] = replacement
+        return updated
+
+    def _updated_row(self, old: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
+        val = value.to(device=old.device, dtype=old.dtype).clamp_min(0)
         count = old[0] + 1.0
         delta = val - old[1]
         mean = old[1] + (delta / count)
         m2 = old[2] + delta * (val - mean)
-        replacement = torch.stack([count, mean, m2])
-        updated = state.clone()
-        updated[pos] = replacement
-        return updated
+        return torch.stack([count, mean, m2])
+
+    def _updated_rows(
+        self,
+        src_row: torch.Tensor,
+        dst_row: torch.Tensor,
+        value: torch.Tensor,
+        *,
+        same_id: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        src_new = self._updated_row(src_row, value)
+        dst_new = self._updated_row(src_new if same_id else dst_row, value)
+        return src_new, dst_new
 
 
 class TemporalMotifContext(nn.Module):
@@ -427,9 +481,6 @@ class TemporalStreamBackbone(nn.Module):
 class TemporalHybridModel(TemporalModuleBase):
     """Hybrid classifier/anomaly detector with ID memory and stream backbones."""
 
-    _compiled_scan_disabled = False
-    _compiled_scan_warned = False
-
     _SCALES: dict[str, dict[str, int]] = {
         "small": {"hidden": 64, "layers": 1, "embedding_dim": 16},
         "large": {"hidden": 128, "layers": 2, "embedding_dim": 32},
@@ -448,7 +499,6 @@ class TemporalHybridModel(TemporalModuleBase):
         anomaly: dict[str, Any] | None = None,
         rhythm: dict[str, Any] | None = None,
         motif: dict[str, Any] | None = None,
-        compile: dict[str, Any] | None = None,
         loss_weights: dict[str, float] | None = None,
         anomaly_score_weights: dict[str, float] | None = None,
         lr: float = 1e-3,
@@ -470,7 +520,6 @@ class TemporalHybridModel(TemporalModuleBase):
         anomaly = _drop_none(dict(anomaly or {}))
         rhythm = _drop_none(dict(rhythm or {}))
         motif = _drop_none(dict(motif or {}))
-        compile = _drop_none(dict(compile or {}))
         loss_weights = dict(loss_weights or {})
         anomaly_score_weights = dict(anomaly_score_weights or {})
 
@@ -494,8 +543,6 @@ class TemporalHybridModel(TemporalModuleBase):
         motif.setdefault("length", 3)
         motif.setdefault("embedding_dim", max(2, int(input["embedding_dim"]) // 2))
         motif.setdefault("time_dim", max(2, int(input["embedding_dim"]) // 2))
-        compile.setdefault("enabled", False)
-        compile.setdefault("mode", "reduce-overhead")
 
         default_ssl = objective in {"anomaly", "joint"}
         heads.setdefault("classification", objective in {"supervised", "joint"})
@@ -536,7 +583,6 @@ class TemporalHybridModel(TemporalModuleBase):
         self._val_cls_labels: list[torch.Tensor] = []
         self._val_anom_scores: list[torch.Tensor] = []
         self._val_anom_labels: list[torch.Tensor] = []
-        self._compiled_scan_segment = None
         self._init_post(locals())
 
     @property
@@ -767,107 +813,6 @@ class TemporalHybridModel(TemporalModuleBase):
             reset_after = reset_after.to(device=ref.device, dtype=torch.bool)
         return {"src_idx": src_idx, "dst_idx": dst_idx, "iat": iat, "t": t_cast, "reset_after": reset_after}
 
-    def _scan_segment_eager(
-        self,
-        encoded: torch.Tensor,
-        src_idx: torch.Tensor,
-        dst_idx: torch.Tensor,
-        iat: torch.Tensor,
-        t: torch.Tensor | None,
-        memory_state: torch.Tensor | None,
-        last_seen: torch.Tensor | None,
-        rhythm_state: torch.Tensor | None,
-        motif_ids: torch.Tensor | None,
-        motif_iats: torch.Tensor | None,
-        backbone_state: torch.Tensor | None,
-    ) -> tuple[
-        torch.Tensor,
-        torch.Tensor | None,
-        torch.Tensor | None,
-        torch.Tensor | None,
-        torch.Tensor | None,
-        torch.Tensor | None,
-        torch.Tensor | None,
-    ]:
-        outputs: list[torch.Tensor] = []
-        for idx in range(encoded.size(0)):
-            x_t = encoded[idx]
-            iat_t = iat[idx]
-            t_t = None if t is None else t[idx]
-            if self.memory is not None and memory_state is not None:
-                mem_ctx = self.memory._read_context_indexed(
-                    memory_state,
-                    last_seen,
-                    src_idx[idx],
-                    dst_idx[idx],
-                    t_t,
-                )
-                x_t = x_t + mem_ctx
-            if self.rhythm is not None and rhythm_state is not None:
-                x_t = x_t + self.rhythm._read_context_indexed(rhythm_state, src_idx[idx], dst_idx[idx])
-            if self.motif is not None and motif_ids is not None and motif_iats is not None:
-                x_t = x_t + self.motif.read_context(motif_ids, motif_iats)
-            z_t, backbone_state = self.backbone.step(x_t, backbone_state)
-            outputs.append(z_t)
-            if self.memory is not None and memory_state is not None:
-                memory_state = self.memory._update_one_indexed(memory_state, src_idx[idx], dst_idx[idx], z_t)
-                if last_seen is not None:
-                    last_seen = self.memory._update_last_seen_indexed(
-                        last_seen,
-                        src_idx[idx],
-                        dst_idx[idx],
-                        t_t,
-                    )
-            if self.rhythm is not None and rhythm_state is not None:
-                rhythm_state = self.rhythm._update_one_indexed(rhythm_state, src_idx[idx], dst_idx[idx], iat_t)
-            if self.motif is not None and motif_ids is not None and motif_iats is not None:
-                motif_ids, motif_iats = self.motif._update_one_indexed(motif_ids, motif_iats, dst_idx[idx], iat_t)
-
-        features = torch.stack(outputs, dim=0) if outputs else encoded.new_empty((0, encoded.size(-1)))
-        return features, memory_state, last_seen, rhythm_state, motif_ids, motif_iats, backbone_state
-
-    @staticmethod
-    def _clone_scan_result(
-        result: tuple[
-            torch.Tensor,
-            torch.Tensor | None,
-            torch.Tensor | None,
-            torch.Tensor | None,
-            torch.Tensor | None,
-            torch.Tensor | None,
-            torch.Tensor | None,
-        ],
-    ) -> tuple[
-        torch.Tensor,
-        torch.Tensor | None,
-        torch.Tensor | None,
-        torch.Tensor | None,
-        torch.Tensor | None,
-        torch.Tensor | None,
-        torch.Tensor | None,
-    ]:
-        features, memory_state, last_seen, rhythm_state, motif_ids, motif_iats, backbone_state = result
-        return (
-            features.clone(),
-            None if memory_state is None else memory_state.clone(),
-            None if last_seen is None else last_seen.clone(),
-            None if rhythm_state is None else rhythm_state.clone(),
-            None if motif_ids is None else motif_ids.clone(),
-            None if motif_iats is None else motif_iats.clone(),
-            None if backbone_state is None else backbone_state.clone(),
-        )
-
-    @classmethod
-    def _disable_compiled_scan(cls, exc: Exception) -> None:
-        cls._compiled_scan_disabled = True
-        if not cls._compiled_scan_warned:
-            warnings.warn(
-                f"TemporalHybridModel compiled scan failed; falling back to eager scan: {exc}",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            cls._compiled_scan_warned = True
-
     def _scan_segment(
         self,
         encoded: torch.Tensor,
@@ -890,76 +835,96 @@ class TemporalHybridModel(TemporalModuleBase):
         torch.Tensor | None,
         torch.Tensor | None,
     ]:
-        compile_cfg = dict(self.hparams.get("compile") or {})
-        if not bool(compile_cfg.get("enabled", False)) or type(self)._compiled_scan_disabled:
-            return self._scan_segment_eager(
-                encoded,
-                src_idx,
-                dst_idx,
-                iat,
-                t,
-                memory_state,
-                last_seen,
-                rhythm_state,
-                motif_ids,
-                motif_iats,
-                backbone_state,
-            )
+        outputs: list[torch.Tensor] = []
+        src_ids = [int(value) for value in src_idx.detach().cpu().tolist()]
+        dst_ids = [int(value) for value in dst_idx.detach().cpu().tolist()]
+        memory_rows: dict[int, torch.Tensor] = {}
+        last_seen_values: dict[int, torch.Tensor] = {}
+        rhythm_rows: dict[int, torch.Tensor] = {}
 
-        if self._compiled_scan_segment is None:
-            try:
-                self._compiled_scan_segment = torch.compile(
-                    self._scan_segment_eager,
-                    mode=str(compile_cfg.get("mode", "reduce-overhead")),
-                    fullgraph=False,
-                )
-            except Exception as exc:  # pragma: no cover - backend/environment specific.
-                type(self)._disable_compiled_scan(exc)
-                return self._scan_segment_eager(
-                    encoded,
-                    src_idx,
-                    dst_idx,
-                    iat,
-                    t,
-                    memory_state,
-                    last_seen,
-                    rhythm_state,
-                    motif_ids,
-                    motif_iats,
-                    backbone_state,
-                )
+        def memory_row(row_id: int) -> torch.Tensor:
+            assert memory_state is not None
+            row = memory_rows.get(row_id)
+            return memory_state[row_id] if row is None else row
 
-        try:
-            result = self._compiled_scan_segment(
-                encoded,
-                src_idx,
-                dst_idx,
-                iat,
-                t,
-                memory_state,
-                last_seen,
-                rhythm_state,
-                motif_ids,
-                motif_iats,
-                backbone_state,
-            )
-            return self._clone_scan_result(result)
-        except Exception as exc:  # pragma: no cover - backend/environment specific.
-            type(self)._disable_compiled_scan(exc)
-            self._compiled_scan_segment = None
-            return self._scan_segment_eager(
-                encoded,
-                src_idx,
-                dst_idx,
-                iat,
-                t,
-                memory_state,
-                last_seen,
-                rhythm_state,
-                motif_ids,
-                motif_iats,
-                backbone_state,
-            )
+        def last_seen_value(row_id: int) -> torch.Tensor:
+            assert last_seen is not None
+            value = last_seen_values.get(row_id)
+            return last_seen[row_id] if value is None else value
+
+        def rhythm_row(row_id: int) -> torch.Tensor:
+            assert rhythm_state is not None
+            row = rhythm_rows.get(row_id)
+            return rhythm_state[row_id] if row is None else row
+
+        for idx in range(encoded.size(0)):
+            x_t = encoded[idx]
+            iat_t = iat[idx]
+            t_t = None if t is None else t[idx]
+            src_id = src_ids[idx]
+            dst_id = dst_ids[idx]
+            same_id = src_id == dst_id
+            if self.memory is not None and memory_state is not None:
+                mem_ctx = self.memory._read_context_rows(
+                    memory_row(src_id),
+                    memory_row(dst_id),
+                    None if last_seen is None else last_seen_value(src_id),
+                    None if last_seen is None else last_seen_value(dst_id),
+                    t_t,
+                )
+                x_t = x_t + mem_ctx
+            if self.rhythm is not None and rhythm_state is not None:
+                x_t = x_t + self.rhythm._read_context_rows(rhythm_row(src_id), rhythm_row(dst_id))
+            if self.motif is not None and motif_ids is not None and motif_iats is not None:
+                x_t = x_t + self.motif.read_context(motif_ids, motif_iats)
+            z_t, backbone_state = self.backbone.step(x_t, backbone_state)
+            outputs.append(z_t)
+            if self.memory is not None and memory_state is not None:
+                src_new, dst_new = self.memory._updated_rows(
+                    memory_row(src_id),
+                    memory_row(dst_id),
+                    z_t,
+                    same_id=same_id,
+                )
+                memory_rows[src_id] = src_new
+                memory_rows[dst_id] = dst_new
+                if last_seen is not None and t_t is not None:
+                    now = t_t.to(device=last_seen.device, dtype=last_seen.dtype)
+                    last_seen_values[src_id] = now
+                    last_seen_values[dst_id] = now
+            if self.rhythm is not None and rhythm_state is not None:
+                src_new, dst_new = self.rhythm._updated_rows(
+                    rhythm_row(src_id),
+                    rhythm_row(dst_id),
+                    iat_t,
+                    same_id=same_id,
+                )
+                rhythm_rows[src_id] = src_new
+                rhythm_rows[dst_id] = dst_new
+            if self.motif is not None and motif_ids is not None and motif_iats is not None:
+                motif_ids, motif_iats = self.motif._update_one_indexed(motif_ids, motif_iats, dst_idx[idx], iat_t)
+
+        if memory_rows and memory_state is not None:
+            row_ids = torch.tensor(list(memory_rows), device=memory_state.device, dtype=torch.long)
+            rows = torch.stack([memory_rows[row_id] for row_id in memory_rows], dim=0)
+            materialized_memory = memory_state.clone()
+            materialized_memory[row_ids] = rows
+            memory_state = materialized_memory
+        if last_seen_values and last_seen is not None:
+            row_ids = torch.tensor(list(last_seen_values), device=last_seen.device, dtype=torch.long)
+            values = torch.stack([last_seen_values[row_id] for row_id in last_seen_values], dim=0)
+            materialized_last_seen = last_seen.clone()
+            materialized_last_seen[row_ids] = values
+            last_seen = materialized_last_seen
+        if rhythm_rows and rhythm_state is not None:
+            row_ids = torch.tensor(list(rhythm_rows), device=rhythm_state.device, dtype=torch.long)
+            rows = torch.stack([rhythm_rows[row_id] for row_id in rhythm_rows], dim=0)
+            materialized_rhythm = rhythm_state.clone()
+            materialized_rhythm[row_ids] = rows
+            rhythm_state = materialized_rhythm
+
+        features = torch.stack(outputs, dim=0) if outputs else encoded.new_empty((0, encoded.size(-1)))
+        return features, memory_state, last_seen, rhythm_state, motif_ids, motif_iats, backbone_state
 
     def _forward_with_state(
         self,
