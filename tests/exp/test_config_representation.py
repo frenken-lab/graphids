@@ -300,10 +300,18 @@ def test_temporal_hybrid_lane_profile_configs_parse():
     amp = ExperimentConfig.from_yaml(
         "configs/experiments/diagnostics/temporal_joint_hybrid_ssm_lite_rich_set_01_lanes_amp_profile.yml"
     )
+    lane16 = ExperimentConfig.from_yaml(
+        "configs/experiments/diagnostics/temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_profile.yml"
+    )
+    lane32 = ExperimentConfig.from_yaml(
+        "configs/experiments/diagnostics/temporal_joint_hybrid_ssm_lite_rich_set_01_lanes32_chunk16_profile.yml"
+    )
 
     baseline_run = baseline.build_run(name=baseline.experiment_name, stage=baseline.stage, config=baseline.config)
     lane_run = lane.build_run(name=lane.experiment_name, stage=lane.stage, config=lane.config)
     amp_run = amp.build_run(name=amp.experiment_name, stage=amp.stage, config=amp.config)
+    lane16_run = lane16.build_run(name=lane16.experiment_name, stage=lane16.stage, config=lane16.config)
+    lane32_run = lane32.build_run(name=lane32.experiment_name, stage=lane32.stage, config=lane32.config)
 
     assert baseline_run.payload.data.get("batch_mode", "events") == "events"
     assert lane_run.payload.data["batch_mode"] == "stream_lanes"
@@ -311,6 +319,15 @@ def test_temporal_hybrid_lane_profile_configs_parse():
     assert lane_run.payload.data["chunk_size"] >= 1
     assert lane_run.payload.trainer["enable_checkpointing"] is False
     assert amp_run.payload.trainer["precision"] == "16-mixed"
+    assert lane_run.payload.data["stream_lanes"] * lane_run.payload.data["chunk_size"] == 512
+    assert lane16_run.payload.data["batch_mode"] == "stream_lanes"
+    assert lane16_run.payload.data["stream_lanes"] == 16
+    assert lane16_run.payload.data["chunk_size"] == 32
+    assert lane16_run.payload.data["stream_lanes"] * lane16_run.payload.data["chunk_size"] == 512
+    assert lane32_run.payload.data["batch_mode"] == "stream_lanes"
+    assert lane32_run.payload.data["stream_lanes"] == 32
+    assert lane32_run.payload.data["chunk_size"] == 16
+    assert lane32_run.payload.data["stream_lanes"] * lane32_run.payload.data["chunk_size"] == 512
 
 
 def test_config_string_placeholders_resolve_against_run_paths(monkeypatch, tmp_path):

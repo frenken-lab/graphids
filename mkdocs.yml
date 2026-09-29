@@ -123,6 +123,7 @@ nav:
       - Write paths: reference/write-paths.md
       - Submit flow: reference/submit-flow.md
       - Prebatch timing: reference/prebatch-timing.md
+      - Temporal throughput: reference/temporal-throughput.md
       - PyTorch compat: reference/pytorch-compat.md
   - API Reference:
       - Ray launcher: api/ray-backend.md
