@@ -159,8 +159,52 @@ class HybridScanMixin:
             )
             iat_all = torch.where(seen_previous, (t_all - previous_t).clamp_min(0), encoded.new_zeros((lanes, chunk)))
 
+        if self.memory is None and self.rhythm is None and self.motif is None:
+            features_2d, backbone_state = self.backbone.forward_sequence(encoded, backbone_state, valid)
+            if prev_t is not None and valid.any():
+                widths = valid.long().sum(dim=1)
+                has_events = widths > 0
+                if has_events.any():
+                    prev_t = prev_t.clone()
+                    event_lanes = torch.arange(lanes, device=encoded.device)[has_events]
+                    last_pos = widths[has_events] - 1
+                    prev_t[event_lanes] = t_all[event_lanes, last_pos].to(device=prev_t.device, dtype=prev_t.dtype)
+            reset_memory = bool(self.hparams.memory.get("reset_on_stream_end", True))
+            if lane_end.any():
+                backbone_state = self._reset_backbone_lanes(backbone_state, lane_end, lanes=lanes, hidden=hidden)
+                if self.memory is not None and reset_memory:
+                    memory_state = self._reset_lane_rows(memory_state, lane_end, initial_state.get("memory"))
+                    last_seen = self._reset_lane_rows(last_seen, lane_end, initial_state.get("last_seen"))
+                rhythm_state = self._reset_lane_rows(rhythm_state, lane_end, initial_state.get("rhythm"))
+                motif_ids = self._reset_lane_rows(motif_ids, lane_end, initial_state.get("motif_ids"))
+                motif_iats = self._reset_lane_rows(motif_iats, lane_end, initial_state.get("motif_iats"))
+                prev_t = self._reset_lane_rows(prev_t, lane_end, initial_state.get("prev_t"))
+            features = features_2d.reshape(lanes * chunk, hidden)
+            next_state = {
+                "memory": memory_state,
+                "last_seen": last_seen,
+                "rhythm": rhythm_state,
+                "motif_ids": motif_ids,
+                "motif_iats": motif_iats,
+                "prev_t": prev_t,
+                "backbone": backbone_state,
+            }
+            return self._heads_from_features(features, batch), next_state
+
         features_2d = encoded.new_zeros((lanes, chunk, hidden))
         lane_ids_all = torch.arange(lanes, device=encoded.device)
+        if memory_state is not None:
+            memory_state = memory_state.clone()
+        if last_seen is not None:
+            last_seen = last_seen.clone()
+        if rhythm_state is not None:
+            rhythm_state = rhythm_state.clone()
+        if motif_ids is not None:
+            motif_ids = motif_ids.clone()
+        if motif_iats is not None:
+            motif_iats = motif_iats.clone()
+        if backbone_state is not None:
+            backbone_state = backbone_state.clone()
 
         for step_idx in range(chunk):
             active = valid[:, step_idx]
@@ -174,11 +218,54 @@ class HybridScanMixin:
             x_t = encoded[active, step_idx]
 
             if self.memory is not None and memory_state is not None:
-                x_t = x_t + self._lane_memory_context(memory_state, last_seen, lane_idx, src_idx, dst_idx, t_t)
+                assert last_seen is not None
+                src_rows = memory_state[lane_idx, src_idx]
+                dst_rows = memory_state[lane_idx, dst_idx]
+                src_last = last_seen[lane_idx, src_idx]
+                dst_last = last_seen[lane_idx, dst_idx]
+                if self.memory._has_context:
+                    parts: list[torch.Tensor] = []
+                    if self.memory.use_source:
+                        parts.append(src_rows)
+                    if self.memory.use_destination:
+                        parts.append(dst_rows)
+                    if self.memory.time_encoder is not None:
+                        now = t_t.to(device=memory_state.device, dtype=memory_state.dtype)
+                        src_elapsed = torch.where(src_last >= 0, now - src_last, torch.zeros_like(now))
+                        dst_elapsed = torch.where(dst_last >= 0, now - dst_last, torch.zeros_like(now))
+                        parts.append(self.memory.time_encoder(src_elapsed))
+                        parts.append(self.memory.time_encoder(dst_elapsed))
+                    x_t = x_t + self.memory.mix(torch.cat(parts, dim=-1))
             if self.rhythm is not None and rhythm_state is not None:
-                x_t = x_t + self._lane_rhythm_context(rhythm_state, lane_idx, src_idx, dst_idx)
+                src_rows = rhythm_state[lane_idx, src_idx]
+                dst_rows = rhythm_state[lane_idx, dst_idx]
+                src_count = src_rows[:, 0].clamp_min(0)
+                src_variance = torch.where(
+                    src_count > 1,
+                    src_rows[:, 2] / (src_count - 1).clamp_min(1),
+                    torch.zeros_like(src_count),
+                )
+                dst_count = dst_rows[:, 0].clamp_min(0)
+                dst_variance = torch.where(
+                    dst_count > 1,
+                    dst_rows[:, 2] / (dst_count - 1).clamp_min(1),
+                    torch.zeros_like(dst_count),
+                )
+                src_features = torch.stack(
+                    [torch.log1p(src_count), src_rows[:, 1], torch.sqrt(src_variance.clamp_min(0))],
+                    dim=-1,
+                )
+                dst_features = torch.stack(
+                    [torch.log1p(dst_count), dst_rows[:, 1], torch.sqrt(dst_variance.clamp_min(0))],
+                    dim=-1,
+                )
+                x_t = x_t + self.rhythm.proj(torch.cat([src_features, dst_features], dim=-1))
             if self.motif is not None and motif_ids is not None and motif_iats is not None:
-                x_t = x_t + self._lane_motif_context(motif_ids, motif_iats, lane_idx)
+                ids = motif_ids[lane_idx]
+                iats = motif_iats[lane_idx]
+                encoded_ids = self.motif.embedding(ids.clamp_min(0).clamp_max(self.motif.num_ids - 1).long()).flatten(start_dim=1)
+                encoded_iats = self.motif.time_encoder(iats).flatten(start_dim=1)
+                x_t = x_t + self.motif.proj(torch.cat([encoded_ids, encoded_iats], dim=-1))
 
             active_backbone = None if backbone_state is None else backbone_state[:, active, :]
             z_t, next_backbone = self.backbone.step(x_t, active_backbone)
@@ -186,8 +273,6 @@ class HybridScanMixin:
             if next_backbone is not None:
                 if backbone_state is None:
                     backbone_state = encoded.new_zeros((next_backbone.size(0), lanes, hidden))
-                else:
-                    backbone_state = backbone_state.clone()
                 backbone_state[:, active, :] = next_backbone
 
             same_id = src_idx == dst_idx
@@ -197,43 +282,39 @@ class HybridScanMixin:
                 src_new = self.memory.update_cell(z_t, src_rows)
                 dst_input = torch.where(same_id.unsqueeze(-1), src_new, dst_rows)
                 dst_new = self.memory.update_cell(z_t, dst_input)
-                memory_state = memory_state.clone()
                 memory_state[lane_idx, src_idx] = src_new
                 memory_state[lane_idx, dst_idx] = dst_new
                 if last_seen is not None:
                     now = t_t.to(device=last_seen.device, dtype=last_seen.dtype)
-                    last_seen = last_seen.clone()
                     last_seen[lane_idx, src_idx] = now
                     last_seen[lane_idx, dst_idx] = now
             if self.rhythm is not None and rhythm_state is not None:
                 src_rows = rhythm_state[lane_idx, src_idx]
                 dst_rows = rhythm_state[lane_idx, dst_idx]
-                src_new = torch.stack(
-                    [self.rhythm._updated_row(src_rows[row], iat_t[row]) for row in range(src_rows.size(0))],
-                    dim=0,
-                )
-                dst_base = torch.where(same_id.view(-1, 1), src_new, dst_rows)
-                dst_new = torch.stack(
-                    [self.rhythm._updated_row(dst_base[row], iat_t[row]) for row in range(dst_base.size(0))],
-                    dim=0,
-                )
-                rhythm_state = rhythm_state.clone()
+                src_new, dst_new = self.rhythm._updated_rows_indexed_batch(src_rows, dst_rows, iat_t, same_id)
                 rhythm_state[lane_idx, src_idx] = src_new
                 rhythm_state[lane_idx, dst_idx] = dst_new
             if self.motif is not None and motif_ids is not None and motif_iats is not None:
-                motif_ids = motif_ids.clone()
-                motif_iats = motif_iats.clone()
-                motif_ids[lane_idx] = torch.cat(
-                    [motif_ids[lane_idx, 1:], dst_idx.to(device=motif_ids.device).view(-1, 1)],
+                current_ids = motif_ids[lane_idx]
+                current_iats = motif_iats[lane_idx]
+                next_ids = torch.cat(
+                    [current_ids[:, 1:], dst_idx.to(device=motif_ids.device).view(-1, 1)],
                     dim=1,
                 )
-                motif_iats[lane_idx] = torch.cat(
-                    [motif_iats[lane_idx, 1:], iat_t.to(device=motif_iats.device, dtype=motif_iats.dtype).view(-1, 1)],
+                next_iats = torch.cat(
+                    [current_iats[:, 1:], iat_t.to(device=motif_iats.device, dtype=motif_iats.dtype).view(-1, 1)],
                     dim=1,
                 )
-            if prev_t is not None:
+                motif_ids[lane_idx] = next_ids
+                motif_iats[lane_idx] = next_iats
+        if prev_t is not None and valid.any():
+            widths = valid.long().sum(dim=1)
+            has_events = widths > 0
+            if has_events.any():
                 prev_t = prev_t.clone()
-                prev_t[lane_idx] = t_t.to(device=prev_t.device, dtype=prev_t.dtype)
+                event_lanes = lane_ids_all[has_events]
+                last_pos = widths[has_events] - 1
+                prev_t[event_lanes] = t_all[event_lanes, last_pos].to(device=prev_t.device, dtype=prev_t.dtype)
 
         reset_memory = bool(self.hparams.memory.get("reset_on_stream_end", True))
         if lane_end.any():

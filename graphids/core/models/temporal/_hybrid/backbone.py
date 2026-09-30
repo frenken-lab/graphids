@@ -68,15 +68,84 @@ class TemporalStreamBackbone(nn.Module):
         if self.backbone_type == "none":
             return x, None
         if state is None:
-            state = x.new_zeros((self.layers, self.hidden))
+            shape = (self.layers, self.hidden) if x.ndim == 1 else (self.layers, x.size(0), self.hidden)
+            state = x.new_zeros(shape)
         h = x
         next_layers: list[torch.Tensor] = []
         for layer_idx, cell in enumerate(self.cells):
             if self.backbone_type == "gru":
-                h = cell(h.unsqueeze(0), state[layer_idx].unsqueeze(0)).squeeze(0)
+                h = cell(h, state[layer_idx])
                 h = self.dropout(h)
                 next_layers.append(h)
             else:
                 h, next_state = cell(h, state[layer_idx])
                 next_layers.append(next_state)
+        return h, torch.stack(next_layers, dim=0)
+
+    def forward_sequence(
+        self,
+        x: torch.Tensor,
+        state: torch.Tensor | None,
+        valid_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        if self.backbone_type == "none":
+            return x, None
+        if self.backbone_type == "gru":
+            return self._forward_gru_sequence(x, state, valid_mask)
+        return self._forward_ssm_lite_sequence(x, state, valid_mask)
+
+    def _initial_sequence_state(self, x: torch.Tensor, state: torch.Tensor | None) -> torch.Tensor:
+        if state is not None:
+            return state
+        return x.new_zeros((self.layers, x.size(0), self.hidden))
+
+    def _forward_gru_sequence(
+        self,
+        x: torch.Tensor,
+        state: torch.Tensor | None,
+        valid_mask: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        state = self._initial_sequence_state(x, state)
+        h = x
+        next_layers: list[torch.Tensor] = []
+        for layer_idx, cell in enumerate(self.cells):
+            prev = state[layer_idx]
+            outputs: list[torch.Tensor] = []
+            for step_idx in range(h.size(1)):
+                proposed = cell(h[:, step_idx], prev)
+                proposed = self.dropout(proposed)
+                if valid_mask is not None:
+                    active = valid_mask[:, step_idx].view(-1, 1)
+                    proposed = torch.where(active, proposed, prev)
+                outputs.append(proposed)
+                prev = proposed
+            h = torch.stack(outputs, dim=1)
+            next_layers.append(prev)
+        return h, torch.stack(next_layers, dim=0)
+
+    def _forward_ssm_lite_sequence(
+        self,
+        x: torch.Tensor,
+        state: torch.Tensor | None,
+        valid_mask: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        state = self._initial_sequence_state(x, state)
+        h = x
+        next_layers: list[torch.Tensor] = []
+        for layer_idx, cell in enumerate(self.cells):
+            prev = state[layer_idx]
+            decay = torch.sigmoid(cell.decay_proj(h))
+            gate = torch.sigmoid(cell.gate_proj(h))
+            candidate = torch.tanh(cell.in_proj(h))
+            states: list[torch.Tensor] = []
+            for step_idx in range(h.size(1)):
+                proposed = decay[:, step_idx] * prev + gate[:, step_idx] * candidate[:, step_idx]
+                if valid_mask is not None:
+                    active = valid_mask[:, step_idx].view(-1, 1)
+                    proposed = torch.where(active, proposed, prev)
+                states.append(proposed)
+                prev = proposed
+            state_sequence = torch.stack(states, dim=1)
+            h = cell.norm(h + cell.dropout(cell.out_proj(state_sequence)))
+            next_layers.append(prev)
         return h, torch.stack(next_layers, dim=0)

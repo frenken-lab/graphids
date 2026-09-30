@@ -117,7 +117,10 @@ MLflow artifact roots are explicit lake paths:
 ```
 
 MLflow system metrics are sampled by `MLflowSystemMetricsCallback` only when
-`GRAPHIDS_MLFLOW_MODE=online`.
+`GRAPHIDS_MLFLOW_MODE=online`. Offline diagnostic profiles can still record
+aggregate `resource/*` CPU/RSS/GPU metrics through `ResourceUtilizationCallback`
+because those values are copied from final `trainer.callback_metrics` into
+`.graphids/mlflow_ingest.json`.
 
 ## SLURM
 

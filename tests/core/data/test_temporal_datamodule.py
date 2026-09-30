@@ -134,13 +134,47 @@ def test_temporal_stream_lane_loader_masks_padding_and_marks_lane_resets():
     assert batches[-1].is_scored[batches[-1].valid_mask.logical_not()].any().item() is False
 
 
+def test_temporal_stream_lane_prebuild_matches_lazy_batches():
+    from dataclasses import fields
+
+    from graphids.core.data.datamodule.stream_lanes import TemporalStreamLaneLoader
+
+    lazy = list(TemporalStreamLaneLoader(_multi_stream_temporal(), stream_lanes=2, chunk_size=2))
+    prebuilt = list(
+        TemporalStreamLaneLoader(
+            _multi_stream_temporal(),
+            stream_lanes=2,
+            chunk_size=2,
+            num_workers=2,
+            prebuild_batches=3,
+        )
+    )
+
+    assert len(prebuilt) == len(lazy)
+    for expected, actual in zip(lazy, prebuilt, strict=True):
+        for field in fields(expected):
+            assert torch.equal(getattr(actual, field.name), getattr(expected, field.name))
+
+
 def test_temporal_datamodule_stream_lanes_only_changes_train_loader():
     clear_cache()
-    dm = TemporalDataModule(_Source(), batch_mode="stream_lanes", stream_lanes=2, chunk_size=2)
+    dm = TemporalDataModule(
+        _Source(),
+        batch_mode="stream_lanes",
+        stream_lanes=2,
+        chunk_size=2,
+        num_workers=2,
+        prebuild_batches=3,
+    )
     dm.setup(None)
 
-    train_batch = next(iter(dm.train_dataloader()))
-    val_batch = next(iter(dm.val_dataloader()))
+    train_loader = dm.train_dataloader()
+    train_batches = list(train_loader)
+    val_dm = TemporalDataModule(_Source(), batch_mode="stream_lanes", stream_lanes=2, chunk_size=2)
+    val_dm.setup(None)
+    val_batch = next(iter(val_dm.val_dataloader()))
 
-    assert tuple(train_batch.valid_mask.shape) == (2, 2)
+    assert train_loader.num_workers == 2
+    assert train_loader.prebuild_batches == 3
+    assert tuple(train_batches[0].valid_mask.shape) == (2, 2)
     assert val_batch.y.ndim == 1

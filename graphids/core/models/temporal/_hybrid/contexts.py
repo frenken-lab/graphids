@@ -270,6 +270,26 @@ class TemporalRhythmContext(nn.Module):
         m2 = old[2] + delta * (val - mean)
         return torch.stack([count, mean, m2])
 
+    def _updated_rows_batch(self, old: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
+        val = value.to(device=old.device, dtype=old.dtype).clamp_min(0)
+        count = old[:, 0] + 1.0
+        delta = val - old[:, 1]
+        mean = old[:, 1] + (delta / count)
+        m2 = old[:, 2] + delta * (val - mean)
+        return torch.stack([count, mean, m2], dim=-1)
+
+    def _updated_rows_indexed_batch(
+        self,
+        src_rows: torch.Tensor,
+        dst_rows: torch.Tensor,
+        value: torch.Tensor,
+        same_id: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        src_new = self._updated_rows_batch(src_rows, value)
+        dst_base = torch.where(same_id.view(-1, 1), src_new, dst_rows)
+        dst_new = self._updated_rows_batch(dst_base, value)
+        return src_new, dst_new
+
     def _updated_rows(
         self,
         src_row: torch.Tensor,

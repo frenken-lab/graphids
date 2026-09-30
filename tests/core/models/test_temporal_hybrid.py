@@ -585,6 +585,53 @@ def test_temporal_hybrid_lane_batch_matches_independent_rich_streams():
                 assert torch.equal(actual[key], expected_value)
 
 
+def test_temporal_hybrid_lane_batch_matches_independent_context_free_streams():
+    from graphids.core.data.datamodule.stream_lanes import TemporalStreamLaneLoader
+
+    model = _hybrid(
+        backbone_type="ssm_lite",
+        memory={"enabled": False},
+        rhythm={"enabled": False},
+        motif={"enabled": False},
+        in_channels=17,
+    )
+    data = _lane_semantic_data()
+
+    expected_by_event = {}
+    for stream_id in [0, 1]:
+        stream = _slice_temporal(data, data.stream_id == stream_id)
+        out, _state = model._forward_with_state(stream, None)
+        for pos, event_id in enumerate(stream.event_id.tolist()):
+            expected_by_event[event_id] = {
+                key: value[pos].detach()
+                for key, value in out.items()
+                if key in _RAW_FORWARD_KEYS and value.ndim > 0
+            }
+
+    state = None
+    actual_by_event = {}
+    for batch in TemporalStreamLaneLoader(data, stream_lanes=2, chunk_size=2):
+        out, state = model._forward_with_state(batch, model._detach_state(state))
+        flat_ids = batch.event_id.reshape(-1)
+        flat_valid = batch.valid_mask.reshape(-1)
+        for pos in flat_valid.nonzero(as_tuple=False).flatten().tolist():
+            actual_by_event[int(flat_ids[pos].item())] = {
+                key: value[pos].detach()
+                for key, value in out.items()
+                if key in _RAW_FORWARD_KEYS and value.ndim > 0
+            }
+
+    assert actual_by_event.keys() == expected_by_event.keys()
+    for event_id, expected in expected_by_event.items():
+        actual = actual_by_event[event_id]
+        for key, expected_value in expected.items():
+            assert key in actual
+            if expected_value.is_floating_point():
+                assert torch.allclose(actual[key], expected_value, atol=1e-6)
+            else:
+                assert torch.equal(actual[key], expected_value)
+
+
 def test_temporal_hybrid_lane_batch_loss_backward_is_finite():
     from graphids.core.data.datamodule.stream_lanes import TemporalStreamLaneLoader
 

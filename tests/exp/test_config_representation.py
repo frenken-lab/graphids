@@ -143,12 +143,21 @@ def test_temporal_data_config_accepts_and_validates_stream_lanes():
     from graphids.primitives import can_bus, temporal_dm
 
     source = can_bus(dataset="hcrl_sa", seed=42, representation_cfg={"kind": "temporal"})
-    cfg = temporal_dm(source=source, batch_mode="stream_lanes", stream_lanes=4, chunk_size=16)
+    cfg = temporal_dm(
+        source=source,
+        batch_mode="stream_lanes",
+        stream_lanes=4,
+        chunk_size=16,
+        num_workers=2,
+        prebuild_batches=5,
+    )
     data = cfg.build()
 
     assert data.batch_mode == "stream_lanes"
     assert data.stream_lanes == 4
     assert data.chunk_size == 16
+    assert data.num_workers == 2
+    assert data.prebuild_batches == 5
 
     built = build_component(
         {
@@ -162,9 +171,12 @@ def test_temporal_data_config_accepts_and_validates_stream_lanes():
             "batch_mode": "stream_lanes",
             "stream_lanes": 4,
             "chunk_size": 16,
+            "num_workers": 2,
+            "prebuild_batches": 5,
         }
     )
     assert built.batch_mode == "stream_lanes"
+    assert built.prebuild_batches == 5
 
     with pytest.raises(ValidationError, match="stream_lanes must be >= 2"):
         temporal_dm(source=source, batch_mode="stream_lanes", stream_lanes=1, chunk_size=16)
@@ -307,18 +319,114 @@ def test_temporal_hybrid_lane_profile_configs_parse():
 
     assert baseline_run.payload.data.get("batch_mode", "events") == "events"
     assert lane_run.payload.data["batch_mode"] == "stream_lanes"
+    assert lane_run.resources.memory_gb == 24
     assert lane_run.payload.data["stream_lanes"] >= 2
     assert lane_run.payload.data["chunk_size"] >= 1
+    assert lane_run.payload.data["num_workers"] == 4
+    assert lane_run.payload.data["prebuild_batches"] == 8
     assert lane_run.payload.trainer["enable_checkpointing"] is False
     assert lane_run.payload.data["stream_lanes"] * lane_run.payload.data["chunk_size"] == 512
+    assert lane_run.payload.callbacks["profiler"]["class_path"] == (
+        "graphids.core.callbacks.TemporalBatchProfilerCallback"
+    )
     assert lane_run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == 512
     assert lane_run.payload.callbacks["profiler"]["init_args"]["fail_on_event_mismatch"] is True
+    assert lane_run.payload.callbacks["resources"]["class_path"] == (
+        "graphids.core.callbacks.ResourceUtilizationCallback"
+    )
+    assert lane_run.payload.callbacks["resources"]["init_args"]["sample_interval_s"] == 5
     assert lane16_run.payload.data["batch_mode"] == "stream_lanes"
+    assert lane16_run.resources.memory_gb == 24
     assert lane16_run.payload.data["stream_lanes"] == 16
     assert lane16_run.payload.data["chunk_size"] == 32
+    assert lane16_run.payload.data["num_workers"] == 4
+    assert lane16_run.payload.data["prebuild_batches"] == 8
     assert lane16_run.payload.data["stream_lanes"] * lane16_run.payload.data["chunk_size"] == 512
+    assert lane16_run.payload.callbacks["profiler"]["class_path"] == (
+        "graphids.core.callbacks.TemporalBatchProfilerCallback"
+    )
     assert lane16_run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == 512
     assert lane16_run.payload.callbacks["profiler"]["init_args"]["fail_on_event_mismatch"] is True
+    assert lane16_run.payload.callbacks["resources"]["class_path"] == (
+        "graphids.core.callbacks.ResourceUtilizationCallback"
+    )
+    assert lane16_run.payload.callbacks["resources"]["init_args"]["sample_interval_s"] == 5
+
+
+def test_temporal_hybrid_lane16_chunk_sweep_profiles_parse():
+    from graphids.exp.config import ExperimentConfig
+
+    for chunk_size, expected_events in [(64, 1024), (128, 2048), (256, 4096)]:
+        cfg = ExperimentConfig.from_yaml(
+            "configs/experiments/diagnostics/"
+            f"temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk{chunk_size}_profile.yml"
+        )
+        run = cfg.build_run(name=cfg.experiment_name, stage=cfg.stage, config=cfg.config)
+
+        assert run.resources.memory_gb == 24
+        assert run.payload.data["batch_mode"] == "stream_lanes"
+        assert run.payload.data["stream_lanes"] == 16
+        assert run.payload.data["chunk_size"] == chunk_size
+        assert run.payload.data["batch_size"] == expected_events
+        assert run.payload.data["num_workers"] == 4
+        assert run.payload.data["prebuild_batches"] == 8
+        assert run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == expected_events
+        assert run.payload.callbacks["profiler"]["init_args"]["fail_on_event_mismatch"] is True
+        assert run.payload.callbacks["resources"]["class_path"] == (
+            "graphids.core.callbacks.ResourceUtilizationCallback"
+        )
+
+
+def test_temporal_hybrid_throughput_lever_profiles_parse():
+    from graphids.exp.config import ExperimentConfig
+
+    compile_cfg = ExperimentConfig.from_yaml(
+        "configs/experiments/diagnostics/"
+        "temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_compile_profile.yml"
+    )
+    large_cfg = ExperimentConfig.from_yaml(
+        "configs/experiments/diagnostics/"
+        "temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_large_profile.yml"
+    )
+
+    compile_run = compile_cfg.build_run(
+        name=compile_cfg.experiment_name,
+        stage=compile_cfg.stage,
+        config=compile_cfg.config,
+    )
+    large_run = large_cfg.build_run(
+        name=large_cfg.experiment_name,
+        stage=large_cfg.stage,
+        config=large_cfg.config,
+    )
+
+    for run in (compile_run, large_run):
+        assert run.resources.memory_gb == 24
+        assert run.payload.data["batch_mode"] == "stream_lanes"
+        assert run.payload.data["stream_lanes"] == 16
+        assert run.payload.data["chunk_size"] == 32
+        assert run.payload.data["num_workers"] == 4
+        assert run.payload.data["prebuild_batches"] == 8
+        assert run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == 512
+        assert run.payload.callbacks["resources"]["class_path"] == (
+            "graphids.core.callbacks.ResourceUtilizationCallback"
+        )
+
+    assert compile_run.payload.callbacks["compile"]["class_path"] == (
+        "graphids.core.callbacks.TorchCompileCallback"
+    )
+    assert compile_run.payload.callbacks["compile"]["init_args"] == {
+        "method_name": "_forward_with_state",
+        "backend": "inductor",
+        "mode": "reduce-overhead",
+        "fullgraph": False,
+        "dynamic": False,
+    }
+    assert large_run.payload.model["scale"] == "large"
+    assert large_run.payload.model["input"]["hidden"] == 128
+    assert large_run.payload.model["input"]["embedding_dim"] == 32
+    assert large_run.payload.model["backbone"]["layers"] == 2
+    assert large_run.payload.model["memory"]["time_encoding_dim"] == 8
 
 
 def test_config_string_placeholders_resolve_against_run_paths(monkeypatch, tmp_path):

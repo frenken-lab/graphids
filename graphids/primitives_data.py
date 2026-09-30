@@ -37,6 +37,7 @@ class TemporalDMCfg(_Cfg):
     stream_lanes: int | None = None
     chunk_size: int | None = None
     num_workers: int = 0
+    prebuild_batches: int = 0
     pin_memory: bool = False
     persistent_workers: bool = False
     val_warmup_events: int = 0
@@ -72,6 +73,7 @@ class TemporalDMCfg(_Cfg):
             stream_lanes=self.stream_lanes,
             chunk_size=self.chunk_size,
             num_workers=self.num_workers,
+            prebuild_batches=self.prebuild_batches,
             pin_memory=self.pin_memory,
             persistent_workers=self.persistent_workers,
         )

@@ -407,6 +407,257 @@ The final 32x16 probe values above use the latest event blocks ending at
 `2026-09-29T20:06:21+00:00` for control and `2026-09-29T20:05:08+00:00` for
 treatment.
 
+## Resource Telemetry and Chunk Scaling Sweep
+
+The next diagnostic pass added offline resource telemetry to the active lane
+profiles and reduced the active lane-profile memory request from `96G` to
+`24G`. The telemetry callback writes final `resource/*` CPU/RSS/GPU aggregate
+metrics into `.graphids/mlflow_ingest.json`.
+
+Validation:
+
+```text
+uv run pytest tests/core/test_callbacks.py -q
+7 passed
+
+uv run pytest tests/exp/test_config_representation.py -q -k 'temporal_hybrid or stream_lanes or diagnostic_profile'
+6 passed, 8 deselected
+
+uv run ruff check graphids/core/callbacks.py tests/core/test_callbacks.py tests/exp/test_config_representation.py
+All checks passed
+```
+
+The updated `16 lanes x 32 chunk` baseline was submitted as SLURM job
+`55196954` and completed successfully:
+
+```text
+config      = temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_profile.yml
+geometry    = 16 lanes x 32 chunk
+state       = COMPLETED
+elapsed     = 00:04:26
+exit code   = 0:0
+```
+
+Final baseline metrics:
+
+```text
+profile/train_events             = 512
+profile/train_active_lanes       = 16
+profile/train_padding_fraction   = 0.0
+profile/train_events_per_sec     = 1519.294
+resource/gpu_util_percent_mean   = 17.222
+resource/gpu_util_percent_max    = 21.0
+resource/gpu_mem_gib_max         = 1.090
+resource/rss_gib_max             = 4.152
+```
+
+Because GPU utilization and memory use were low, a chunk-size scaling sweep kept
+`stream_lanes: 16` and increased per-lane chunk length:
+
+```text
+16 lanes x 64 chunk    SLURM job 55199474
+16 lanes x 128 chunk   SLURM job 55199475
+16 lanes x 256 chunk   SLURM job 55199476
+```
+
+All three jobs completed with top-level SLURM state `COMPLETED` and exit code
+`0:0`.
+
+Final sweep metrics:
+
+```text
+geometry    events  events/sec  gpu util mean/max  gpu mem max  rss max
+16 x 32        512    1519.294     17.2% / 21.0%      1.090 GiB  4.152 GiB
+16 x 64       1024    1557.144     19.7% / 23.0%      1.095 GiB  4.172 GiB
+16 x 128      2048    1563.292     20.4% / 22.0%      1.109 GiB  4.186 GiB
+16 x 256      4096    1572.428     20.5% / 22.0%      1.133 GiB  4.216 GiB
+```
+
+Status: **PASS** for stability under the `24G` request, but **FAIL** as a major
+GPU-efficiency improvement. Larger chunks preserve `profile/train_active_lanes =
+16` and `profile/train_padding_fraction = 0.0`, but they improve final
+events/sec by only about 3.5% from `16 x 32` to `16 x 256`. GPU utilization
+plateaus around 20%, and GPU memory remains near 1.1 GiB.
+
+Conclusion: the diagnostic is not memory-capacity limited. The next throughput
+work should focus on making each event more compute dense or reducing
+small-kernel/framework overhead: larger model/backbone A/Bs, `torch.compile`
+A/Bs, and fusion in the temporal scan/backbone path. Running multiple same-GPU
+copies may improve node occupancy for independent trials, but it is not the
+first choice for faster single-model learning because gradient averaging and
+failure isolation add orchestration complexity.
+
+## Throughput Lever Follow-up
+
+Two follow-up diagnostics tested the first low-risk throughput levers on the
+stable `16 lanes x 32 chunk` geometry.
+
+The compile treatment added a `TorchCompileCallback` targeting the model's
+`_forward_with_state` method:
+
+```text
+config      = temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_compile_profile.yml
+SLURM job   = 55205789
+state       = CANCELLED by 35950
+elapsed     = 00:10:09
+```
+
+The callback logged:
+
+```text
+torch_compile_enabled backend=inductor mode=reduce-overhead target_method=_forward_with_state
+```
+
+but the job did not reach the first `temporal_batch_profile` line or write final
+metrics after about 10 minutes. It was cancelled to avoid burning the full GPU
+allocation. Status: **FAIL** as a practical speed treatment. Broad inductor
+compilation of the dynamic scan/state-update path is too expensive or stalls
+before useful work for this diagnostic shape.
+
+The compute-density treatment increased model width/depth while holding the
+same 512-event lane geometry:
+
+```text
+config      = temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_large_profile.yml
+SLURM job   = 55205790
+state       = COMPLETED
+elapsed     = 00:04:32
+exit code   = 0:0
+```
+
+Model treatment:
+
+```text
+scale                         = large
+input.hidden                  = 128
+input.embedding_dim           = 32
+memory.time_encoding_dim      = 8
+backbone.layers               = 2
+motif.embedding_dim/time_dim  = 16
+```
+
+Final metrics:
+
+```text
+profile/train_events             = 512
+profile/train_active_lanes       = 16
+profile/train_padding_fraction   = 0.0
+profile/train_events_per_sec     = 1405.797
+resource/gpu_util_percent_mean   = 18.436
+resource/gpu_util_percent_max    = 21.0
+resource/gpu_mem_gib_max         = 1.121
+resource/rss_gib_max             = 4.163
+```
+
+Status: **FAIL** for throughput. The larger/deeper model is stable under the
+`24G` request but is slower than the `16 x 32` small-model baseline and does not
+raise GPU utilization. This argues against simply widening the diagnostic model
+as the next efficiency fix.
+
+Next action: inspect and optimize the lane scan/state-update implementation.
+The hot path still performs per-step clones and indexed updates across temporal
+state. Fusion or vectorization there is a better target than more batch size,
+more model width, or broad `torch.compile`.
+
+## Lane Scan Optimization Follow-up
+
+The next implementation pass targeted the lane scan/state-update overhead
+directly:
+
+- added batched rhythm row updates;
+- added a context-free lane sequence path that precomputes SSM-lite projections
+  across `[lanes, chunk, hidden]`;
+- changed rich lane state updates from per-step full-state clones to one cloned
+  state per chunk with in-place indexed updates;
+- added stream-lane batch prebuilding controlled by `num_workers` and
+  `prebuild_batches`; the active lane diagnostic configs now use `num_workers:
+  4` and `prebuild_batches: 8`.
+
+Validation:
+
+```text
+uv run pytest tests/core/data/test_temporal_datamodule.py -q
+6 passed
+
+uv run pytest tests/core/models/test_temporal_hybrid.py -q
+20 passed
+
+uv run pytest tests/exp/test_config_representation.py -q
+16 passed
+
+uv run ruff check graphids/core/models/temporal/_hybrid/scan.py graphids/core/models/temporal/_hybrid/backbone.py graphids/core/models/temporal/_hybrid/contexts.py graphids/core/data/datamodule/stream_lanes.py graphids/core/data/datamodule/temporal.py graphids/primitives_data.py tests/core/data/test_temporal_datamodule.py tests/core/models/test_temporal_hybrid.py tests/exp/test_config_representation.py
+All checks passed
+```
+
+An intermediate sparse-overlay implementation was submitted first:
+
+```text
+config      = temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_profile.yml
+SLURM job   = 55231925
+state       = COMPLETED
+elapsed     = 00:04:59
+exit code   = 0:0
+```
+
+Final overlay metrics:
+
+```text
+profile/train_events             = 512
+profile/train_active_lanes       = 16
+profile/train_padding_fraction   = 0.0
+profile/train_batch_ms           = 451.738
+profile/train_data_wait_ms       = 1.529
+profile/train_events_per_sec     = 1133.401
+resource/gpu_util_percent_mean   = 16.452
+resource/gpu_util_percent_max    = 19.0
+resource/gpu_mem_gib_max         = 1.094
+resource/rss_gib_max             = 5.896
+```
+
+Status: **FAIL**. Although prebuilding reduced data wait, the sparse overlay
+used CPU dictionary/list bookkeeping inside the CUDA step loop and regressed
+throughput below the prior `1519.294 events/sec` baseline.
+
+The corrected implementation removes that CPU overlay and uses one clone per
+chunk plus in-place indexed updates. It was submitted as:
+
+```text
+config      = temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_profile.yml
+SLURM job   = 55232073
+state       = COMPLETED
+elapsed     = 00:03:45
+exit code   = 0:0
+```
+
+Final corrected metrics:
+
+```text
+profile/train_events             = 512
+profile/train_active_lanes       = 16
+profile/train_padding_fraction   = 0.0
+profile/train_batch_ms           = 228.493
+profile/train_data_wait_ms       = 1.205
+profile/train_events_per_sec     = 2240.772
+resource/gpu_util_percent_mean   = 17.207
+resource/gpu_util_percent_max    = 20.0
+resource/gpu_mem_gib_max         = 1.094
+resource/rss_gib_max             = 5.900
+```
+
+Status: **PASS** for equal-work throughput. The corrected scan path improves
+throughput by about `1.475x` over the previous `1519.294 events/sec` `16 x 32`
+baseline and reduces batch time from `336.999 ms` to `228.493 ms`.
+
+Status remains **FAIL** for materially increasing GPU utilization or VRAM use:
+GPU utilization stayed near 17-20%, and GPU memory stayed near 1.1 GiB. RSS
+increased from roughly `4.152 GiB` to `5.900 GiB`, consistent with prebuilt
+lane batches and one cloned state per chunk.
+
+Conclusion: eliminating avoidable clone/data-wait overhead is valuable, but the
+workload still does not saturate the GPU. The next efficiency target should be
+larger fused computation inside the recurrent scan/backbone path, not more CPU
+prebuilding or chunk-size scaling.
+
 ## SLURM Logs
 
 Logs are written under:

@@ -20,6 +20,7 @@ class TemporalDataModule(pl.LightningDataModule):
         stream_lanes: int | None = None,
         chunk_size: int | None = None,
         num_workers: int = 0,
+        prebuild_batches: int = 0,
         pin_memory: bool = False,
         persistent_workers: bool = False,
     ):
@@ -30,6 +31,7 @@ class TemporalDataModule(pl.LightningDataModule):
         self.stream_lanes = None if stream_lanes is None else int(stream_lanes)
         self.chunk_size = None if chunk_size is None else int(chunk_size)
         self.num_workers = int(num_workers)
+        self.prebuild_batches = int(prebuild_batches)
         self.pin_memory = bool(pin_memory)
         self.persistent_workers = bool(persistent_workers)
         if self.batch_mode not in {"events", "stream_lanes"}:
@@ -124,6 +126,8 @@ class TemporalDataModule(pl.LightningDataModule):
                 self._train,
                 stream_lanes=self.stream_lanes,
                 chunk_size=self.chunk_size,
+                num_workers=self.num_workers,
+                prebuild_batches=self.prebuild_batches,
             )
         return self._loader(self._train)
 

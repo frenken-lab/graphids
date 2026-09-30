@@ -105,8 +105,17 @@ val_auroc
 and `test` into the offline ingest payload, so short runs still leave final
 metric values.
 
-System metrics are sampled through `MLflowSystemMetricsCallback` only in
-`GRAPHIDS_MLFLOW_MODE=online`.
+Offline diagnostic runs can include
+`graphids.core.callbacks.ResourceUtilizationCallback`. It samples CPU percent,
+process RSS, and, when NVML is available, GPU utilization and memory while the
+trainer runs. Final aggregate metrics such as `resource/cpu_percent_mean`,
+`resource/rss_gib_max`, `resource/gpu_util_percent_max`, and
+`resource/gpu_mem_gib_max` are written into `.graphids/mlflow_ingest.json` with
+the rest of the final callback metrics. If NVML is unavailable, the callback
+continues with CPU/RSS metrics.
+
+MLflow's own system metrics are sampled through `MLflowSystemMetricsCallback`
+only in `GRAPHIDS_MLFLOW_MODE=online`.
 
 ## SLURM Logs
 

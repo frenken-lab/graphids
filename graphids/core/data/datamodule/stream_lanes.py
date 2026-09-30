@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -45,13 +46,30 @@ class TemporalStreamLaneBatch:
         return int(self.valid_mask.sum().item())
 
 
+@dataclass(frozen=True)
+class _LaneBatchItem:
+    lane_idx: int
+    stream_idx: int
+    offset: int
+    end: int
+    lane_reset: bool
+    stream_end: bool
+
+
+@dataclass(frozen=True)
+class _LaneBatchPlan:
+    items: tuple[_LaneBatchItem, ...]
+
+
 class TemporalStreamLaneLoader:
     """Deterministically pack independent streams into fixed temporal lanes."""
 
-    def __init__(self, data, *, stream_lanes: int, chunk_size: int):
+    def __init__(self, data, *, stream_lanes: int, chunk_size: int, num_workers: int = 0, prebuild_batches: int = 0):
         self.data = data
         self.stream_lanes = int(stream_lanes)
         self.chunk_size = int(chunk_size)
+        self.num_workers = max(0, int(num_workers))
+        self.prebuild_batches = max(0, int(prebuild_batches))
         if self.stream_lanes < 2:
             raise ValueError("stream_lanes must be >= 2 for batch_mode='stream_lanes'")
         if self.chunk_size < 1:
@@ -122,80 +140,139 @@ class TemporalStreamLaneLoader:
             reset_after=torch.zeros((lanes, chunk), dtype=torch.bool, device=device),
         )
 
-    def __iter__(self) -> Iterator[TemporalStreamLaneBatch]:
+    def _event_tensors(self) -> dict[str, torch.Tensor]:
+        n = int(self.data.dst.numel())
+        return {
+            "t": self._event_tensor(
+                self.data,
+                "t",
+                torch.zeros(n, dtype=self.data.msg.dtype, device=self.data.dst.device),
+            ),
+            "attack_type": self._event_tensor(
+                self.data,
+                "attack_type",
+                torch.zeros(n, dtype=torch.long, device=self.data.dst.device),
+            ),
+            "event_id": self._event_tensor(
+                self.data,
+                "event_id",
+                torch.arange(n, dtype=torch.long, device=self.data.dst.device),
+            ),
+            "is_scored": self._event_tensor(
+                self.data,
+                "is_scored",
+                torch.ones(n, dtype=torch.bool, device=self.data.dst.device),
+            ),
+            "stream_id": self._event_tensor(
+                self.data,
+                "stream_id",
+                torch.zeros(n, dtype=torch.long, device=self.data.dst.device),
+            ),
+            "reset_after": self._event_tensor(
+                self.data,
+                "reset_after",
+                torch.zeros(n, dtype=torch.bool, device=self.data.dst.device),
+            ),
+        }
+
+    def _iter_plans(self) -> Iterator[_LaneBatchPlan]:
         active: list[tuple[int, int] | None] = [None] * self.stream_lanes
         next_stream = 0
 
-        t = self._event_tensor(
-            self.data,
-            "t",
-            torch.zeros(int(self.data.dst.numel()), dtype=self.data.msg.dtype, device=self.data.dst.device),
-        )
-        attack_type = self._event_tensor(
-            self.data,
-            "attack_type",
-            torch.zeros(int(self.data.dst.numel()), dtype=torch.long, device=self.data.dst.device),
-        )
-        event_id = self._event_tensor(
-            self.data,
-            "event_id",
-            torch.arange(int(self.data.dst.numel()), dtype=torch.long, device=self.data.dst.device),
-        )
-        is_scored = self._event_tensor(
-            self.data,
-            "is_scored",
-            torch.ones(int(self.data.dst.numel()), dtype=torch.bool, device=self.data.dst.device),
-        )
-        stream_ids = self._event_tensor(
-            self.data,
-            "stream_id",
-            torch.zeros(int(self.data.dst.numel()), dtype=torch.long, device=self.data.dst.device),
-        )
-        reset_after = self._event_tensor(
-            self.data,
-            "reset_after",
-            torch.zeros(int(self.data.dst.numel()), dtype=torch.bool, device=self.data.dst.device),
-        )
-
         while next_stream < len(self._streams) or any(slot is not None for slot in active):
-            batch = self._empty_batch()
+            lane_resets = [False] * self.stream_lanes
             for lane_idx, slot in enumerate(active):
                 if slot is None and next_stream < len(self._streams):
                     active[lane_idx] = (next_stream, 0)
-                    batch.lane_reset[lane_idx] = True
+                    lane_resets[lane_idx] = True
                     next_stream += 1
 
+            items: list[_LaneBatchItem] = []
             for lane_idx, slot in enumerate(active):
                 if slot is None:
                     continue
                 stream_idx, offset = slot
                 stream = self._streams[stream_idx]
                 end = min(offset + self.chunk_size, int(stream.numel()))
-                take = stream[offset:end].to(device=self.data.dst.device)
-                width = int(take.numel())
-                if width == 0:
+                if end <= offset:
                     active[lane_idx] = None
-                    batch.lane_stream_end[lane_idx] = True
                     continue
+                stream_end = end >= int(stream.numel())
+                items.append(
+                    _LaneBatchItem(
+                        lane_idx=lane_idx,
+                        stream_idx=stream_idx,
+                        offset=offset,
+                        end=end,
+                        lane_reset=lane_resets[lane_idx],
+                        stream_end=stream_end,
+                    )
+                )
+                active[lane_idx] = None if stream_end else (stream_idx, end)
 
-                sl = slice(0, width)
-                batch.src[lane_idx, sl] = self.data.src[take]
-                batch.dst[lane_idx, sl] = self.data.dst[take]
-                batch.t[lane_idx, sl] = t[take]
-                batch.msg[lane_idx, sl] = self.data.msg[take]
-                batch.y[lane_idx, sl] = self.data.y[take]
-                batch.attack_type[lane_idx, sl] = attack_type[take]
-                batch.event_id[lane_idx, sl] = event_id[take]
-                batch.is_scored[lane_idx, sl] = is_scored[take].bool()
-                batch.stream_id[lane_idx, sl] = stream_ids[take].long()
-                batch.reset_after[lane_idx, sl] = reset_after[take].bool()
-                batch.valid_mask[lane_idx, sl] = True
+            yield _LaneBatchPlan(tuple(items))
 
-                if end >= int(stream.numel()):
-                    active[lane_idx] = None
-                    batch.lane_stream_end[lane_idx] = True
-                    batch.reset_after[lane_idx, width - 1] = True
-                else:
-                    active[lane_idx] = (stream_idx, end)
+    def _batch_from_plan(
+        self,
+        plan: _LaneBatchPlan,
+        tensors: dict[str, torch.Tensor],
+    ) -> TemporalStreamLaneBatch:
+        batch = self._empty_batch()
+        for item in plan.items:
+            stream = self._streams[item.stream_idx]
+            take = stream[item.offset:item.end].to(device=self.data.dst.device)
+            width = int(take.numel())
+            if width == 0:
+                continue
 
-            yield batch
+            lane_idx = item.lane_idx
+            sl = slice(0, width)
+            batch.lane_reset[lane_idx] = item.lane_reset
+            batch.src[lane_idx, sl] = self.data.src[take]
+            batch.dst[lane_idx, sl] = self.data.dst[take]
+            batch.t[lane_idx, sl] = tensors["t"][take]
+            batch.msg[lane_idx, sl] = self.data.msg[take]
+            batch.y[lane_idx, sl] = self.data.y[take]
+            batch.attack_type[lane_idx, sl] = tensors["attack_type"][take]
+            batch.event_id[lane_idx, sl] = tensors["event_id"][take]
+            batch.is_scored[lane_idx, sl] = tensors["is_scored"][take].bool()
+            batch.stream_id[lane_idx, sl] = tensors["stream_id"][take].long()
+            batch.reset_after[lane_idx, sl] = tensors["reset_after"][take].bool()
+            batch.valid_mask[lane_idx, sl] = True
+
+            if item.stream_end:
+                batch.lane_stream_end[lane_idx] = True
+                batch.reset_after[lane_idx, width - 1] = True
+        return batch
+
+    def _iter_prebuilt(
+        self,
+        plans: Iterator[_LaneBatchPlan],
+        tensors: dict[str, torch.Tensor],
+    ) -> Iterator[TemporalStreamLaneBatch]:
+        pending: list[Future[TemporalStreamLaneBatch]] = []
+        window = max(1, self.prebuild_batches)
+
+        def fill(executor: ThreadPoolExecutor) -> None:
+            while len(pending) < window:
+                try:
+                    plan = next(plans)
+                except StopIteration:
+                    return
+                pending.append(executor.submit(self._batch_from_plan, plan, tensors))
+
+        with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
+            fill(executor)
+            while pending:
+                future = pending.pop(0)
+                yield future.result()
+                fill(executor)
+
+    def __iter__(self) -> Iterator[TemporalStreamLaneBatch]:
+        tensors = self._event_tensors()
+        plans = self._iter_plans()
+        if self.num_workers <= 0 or self.prebuild_batches <= 0:
+            for plan in plans:
+                yield self._batch_from_plan(plan, tensors)
+            return
+        yield from self._iter_prebuilt(plans, tensors)
