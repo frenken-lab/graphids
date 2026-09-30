@@ -130,6 +130,7 @@ class FitRunPayload(_StrictModel):
     data: dict[str, Any] = Field(default_factory=dict)
     trainer: dict[str, Any] = Field(default_factory=dict)
     callbacks: dict[str, Any] = Field(default_factory=dict)
+    compile: dict[str, Any] | None = None
     loss_fn: dict[str, Any] | None = None
     seed_everything: int | None = None
     ckpt_path: str | None = None
@@ -299,6 +300,7 @@ class ExperimentConfig(_StrictModel):
                 "data": cfg.get("data", {}),
                 "trainer": cfg.get("trainer", {}),
                 "callbacks": cfg.get("callbacks", {}),
+                "compile": cfg.get("compile"),
                 "loss_fn": cfg.get("loss_fn"),
                 "seed_everything": cfg.get("seed_everything", self.seed),
                 "ckpt_path": cfg.get("ckpt_path"),

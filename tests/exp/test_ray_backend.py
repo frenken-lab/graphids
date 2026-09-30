@@ -26,10 +26,6 @@ def test_launch_run_builds_real_ray_trainer_config(monkeypatch, tmp_path):
         def __init__(self, **kwargs):
             captured["run_config"] = kwargs
 
-    class FakeCheckpointConfig:
-        def __init__(self, **kwargs):
-            captured["checkpoint_config"] = kwargs
-
     class FakeTorchTrainer:
         def __init__(self, train_loop_per_worker, **kwargs):
             captured["train_loop_per_worker"] = train_loop_per_worker
@@ -42,7 +38,6 @@ def test_launch_run_builds_real_ray_trainer_config(monkeypatch, tmp_path):
     monkeypatch.setattr(ray, "init", lambda **kwargs: captured.setdefault("ray_init", kwargs))
     monkeypatch.setattr(ray.train, "ScalingConfig", FakeScalingConfig)
     monkeypatch.setattr(ray.train, "RunConfig", FakeRunConfig)
-    monkeypatch.setattr(ray.train, "CheckpointConfig", FakeCheckpointConfig)
     monkeypatch.setattr(ray.train.torch, "TorchTrainer", FakeTorchTrainer)
     monkeypatch.setattr(
         ray_backend,
@@ -87,15 +82,10 @@ def test_launch_run_builds_real_ray_trainer_config(monkeypatch, tmp_path):
         "use_gpu": True,
         "resources_per_worker": {"CPU": 4, "GPU": 1.0},
     }
-    assert captured["checkpoint_config"] == {
-        "num_to_keep": 3,
-        "checkpoint_score_attribute": "val_loss",
-        "checkpoint_score_order": "min",
-    }
     ray_run_config = captured["run_config"]
     assert ray_run_config["storage_path"] == str(run.outputs.run_dir.parent)
     assert ray_run_config["name"] == run.outputs.run_dir.name
-    assert ray_run_config["checkpoint_config"] is not None
+    assert "checkpoint_config" not in ray_run_config
     assert captured["trainer_kwargs"]["train_loop_config"]["run"]["name"] == "ray-demo"
 
 
@@ -180,3 +170,74 @@ def test_build_lightning_run_configures_lightning_for_ray(monkeypatch):
     assert any(isinstance(plugin, FakeRayLightningEnvironment) for plugin in kwargs["plugins"])
     assert any(isinstance(callback, FakeRayTrainReportCallback) for callback in kwargs["callbacks"])
     assert captured["prepared"] is not None
+
+
+def test_build_lightning_run_uses_lightning_module_compile(monkeypatch):
+    import sys
+    import types
+
+    from graphids.exp import ray_backend
+
+    captured: dict[str, object] = {}
+
+    class DummyData:
+        def setup(self, stage):
+            captured["setup_stage"] = stage
+
+    class DummyModel:
+        def compile(self, **kwargs):
+            captured["compile_kwargs"] = kwargs
+
+    class DummyTrainer:
+        def __init__(self, **kwargs):
+            captured["trainer_kwargs"] = kwargs
+            self.callback_metrics = {}
+            self.global_step = 0
+
+        def fit(self, model, datamodule):
+            captured["fit"] = (model, datamodule)
+
+    class DummyLightning:
+        Trainer = DummyTrainer
+
+        @staticmethod
+        def seed_everything(seed, workers):
+            del seed, workers
+
+    lightning_pkg = types.ModuleType("lightning")
+    lightning_pkg.__path__ = []
+    lightning_pkg.pytorch = DummyLightning
+    monkeypatch.setitem(sys.modules, "lightning", lightning_pkg)
+    monkeypatch.setitem(sys.modules, "lightning.pytorch", DummyLightning)
+    monkeypatch.setattr(ray_backend, "build_component", lambda spec: DummyData())
+
+    def resolve_spec(spec):
+        if isinstance(spec, dict) and spec.get("type") == "dummy_model":
+            return DummyModel()
+        return spec
+
+    monkeypatch.setattr(ray_backend, "resolve_spec", resolve_spec)
+
+    ray_backend._build_lightning_run(
+        "fit",
+        {
+            "data": {"type": "dummy_data"},
+            "model": {"type": "dummy_model"},
+            "compile": {
+                "backend": "inductor",
+                "mode": "reduce-overhead",
+                "fullgraph": False,
+                "dynamic": False,
+            },
+        },
+        logger=None,
+        ray=False,
+    )
+
+    assert captured["compile_kwargs"] == {
+        "backend": "inductor",
+        "mode": "reduce-overhead",
+        "fullgraph": False,
+        "dynamic": False,
+    }
+    assert captured["fit"][0].__class__.__name__ == "DummyModel"

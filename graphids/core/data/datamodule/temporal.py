@@ -8,6 +8,10 @@ from graphids.core.data.datamodule.stream_lanes import TemporalStreamLaneLoader
 from graphids.core.data.state import get_or_build
 
 
+def _identity_collate(batch):
+    return batch
+
+
 class TemporalDataModule(pl.LightningDataModule):
     """Serve temporal event streams with PyG's TemporalDataLoader."""
 
@@ -54,13 +58,19 @@ class TemporalDataModule(pl.LightningDataModule):
     def _loader(self, data):
         from torch_geometric.loader import TemporalDataLoader
 
-        return TemporalDataLoader(
-            data,
-            batch_size=self.batch_size,
-            num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-            persistent_workers=self.persistent_workers,
-        )
+        kwargs = self._torch_loader_kwargs()
+        return TemporalDataLoader(data, batch_size=self.batch_size, **kwargs)
+
+    def _torch_loader_kwargs(self) -> dict[str, object]:
+        kwargs: dict[str, object] = {
+            "num_workers": self.num_workers,
+            "pin_memory": self.pin_memory,
+        }
+        if self.num_workers > 0:
+            kwargs["persistent_workers"] = self.persistent_workers
+            if self.prebuild_batches > 0:
+                kwargs["prefetch_factor"] = self.prebuild_batches
+        return kwargs
 
     def _all_data(self) -> list[object]:
         data = [d for d in (self._train, self._val) if d is not None]
@@ -122,12 +132,20 @@ class TemporalDataModule(pl.LightningDataModule):
         if self.batch_mode == "stream_lanes":
             assert self.stream_lanes is not None
             assert self.chunk_size is not None
-            return TemporalStreamLaneLoader(
+            dataset = TemporalStreamLaneLoader(
                 self._train,
                 stream_lanes=self.stream_lanes,
                 chunk_size=self.chunk_size,
-                num_workers=self.num_workers,
-                prebuild_batches=self.prebuild_batches,
+            )
+            if self.num_workers <= 0 and not self.pin_memory:
+                return dataset
+            from torch.utils.data import DataLoader
+
+            return DataLoader(
+                dataset,
+                batch_size=None,
+                collate_fn=_identity_collate,
+                **self._torch_loader_kwargs(),
             )
         return self._loader(self._train)
 

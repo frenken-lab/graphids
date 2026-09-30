@@ -171,7 +171,8 @@ The useful changes were:
   per step;
 - update active lane rows with vectorized indexed assignments;
 - batch rhythm row updates;
-- prebuild stream-lane batches with `num_workers: 4` and `prebuild_batches: 8`.
+- prefetch stream-lane batches through PyTorch `DataLoader` workers with
+  `num_workers: 4` and `prebuild_batches: 8`.
 
 An intermediate sparse-overlay version completed as job `55231925`, but it
 regressed to `1133.401 events/sec` because CPU dictionary/list bookkeeping ran

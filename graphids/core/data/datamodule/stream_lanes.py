@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Iterator
-from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
 import torch
+from torch.utils.data import Dataset
 
 
 @dataclass
@@ -41,6 +41,13 @@ class TemporalStreamLaneBatch:
         }
         return type(self)(**values)
 
+    def pin_memory(self) -> TemporalStreamLaneBatch:
+        try:
+            values = {field: getattr(self, field).pin_memory() for field in self.__dataclass_fields__}
+        except RuntimeError:
+            return self
+        return type(self)(**values)
+
     @property
     def num_valid_events(self) -> int:
         return int(self.valid_mask.sum().item())
@@ -61,21 +68,20 @@ class _LaneBatchPlan:
     items: tuple[_LaneBatchItem, ...]
 
 
-class TemporalStreamLaneLoader:
-    """Deterministically pack independent streams into fixed temporal lanes."""
+class TemporalStreamLaneLoader(Dataset[TemporalStreamLaneBatch]):
+    """Map-style dataset that packs independent streams into fixed temporal lanes."""
 
-    def __init__(self, data, *, stream_lanes: int, chunk_size: int, num_workers: int = 0, prebuild_batches: int = 0):
+    def __init__(self, data, *, stream_lanes: int, chunk_size: int):
         self.data = data
         self.stream_lanes = int(stream_lanes)
         self.chunk_size = int(chunk_size)
-        self.num_workers = max(0, int(num_workers))
-        self.prebuild_batches = max(0, int(prebuild_batches))
         if self.stream_lanes < 2:
             raise ValueError("stream_lanes must be >= 2 for batch_mode='stream_lanes'")
         if self.chunk_size < 1:
             raise ValueError("chunk_size must be positive for batch_mode='stream_lanes'")
         self._streams = self._partition_streams(data)
-        self._length = self._compute_length()
+        self._tensors = self._event_tensors()
+        self._plans = tuple(self._iter_plans())
 
     @staticmethod
     def _partition_streams(data) -> list[torch.Tensor]:
@@ -88,26 +94,8 @@ class TemporalStreamLaneLoader:
             streams.setdefault(int(sid), []).append(event_idx)
         return [torch.tensor(indices, dtype=torch.long) for indices in streams.values()]
 
-    def _compute_length(self) -> int:
-        active: list[tuple[int, int] | None] = [None] * self.stream_lanes
-        next_stream = 0
-        emitted = 0
-        while next_stream < len(self._streams) or any(slot is not None for slot in active):
-            for lane_idx, slot in enumerate(active):
-                if slot is None and next_stream < len(self._streams):
-                    active[lane_idx] = (next_stream, 0)
-                    next_stream += 1
-            for lane_idx, slot in enumerate(active):
-                if slot is None:
-                    continue
-                stream_idx, offset = slot
-                next_offset = offset + self.chunk_size
-                active[lane_idx] = None if next_offset >= self._streams[stream_idx].numel() else (stream_idx, next_offset)
-            emitted += 1
-        return emitted
-
     def __len__(self) -> int:
-        return self._length
+        return len(self._plans)
 
     @staticmethod
     def _event_tensor(data, name: str, default: torch.Tensor) -> torch.Tensor:
@@ -245,34 +233,9 @@ class TemporalStreamLaneLoader:
                 batch.reset_after[lane_idx, width - 1] = True
         return batch
 
-    def _iter_prebuilt(
-        self,
-        plans: Iterator[_LaneBatchPlan],
-        tensors: dict[str, torch.Tensor],
-    ) -> Iterator[TemporalStreamLaneBatch]:
-        pending: list[Future[TemporalStreamLaneBatch]] = []
-        window = max(1, self.prebuild_batches)
-
-        def fill(executor: ThreadPoolExecutor) -> None:
-            while len(pending) < window:
-                try:
-                    plan = next(plans)
-                except StopIteration:
-                    return
-                pending.append(executor.submit(self._batch_from_plan, plan, tensors))
-
-        with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
-            fill(executor)
-            while pending:
-                future = pending.pop(0)
-                yield future.result()
-                fill(executor)
+    def __getitem__(self, index: int) -> TemporalStreamLaneBatch:
+        return self._batch_from_plan(self._plans[index], self._tensors)
 
     def __iter__(self) -> Iterator[TemporalStreamLaneBatch]:
-        tensors = self._event_tensors()
-        plans = self._iter_plans()
-        if self.num_workers <= 0 or self.prebuild_batches <= 0:
-            for plan in plans:
-                yield self._batch_from_plan(plan, tensors)
-            return
-        yield from self._iter_prebuilt(plans, tensors)
+        for idx in range(len(self)):
+            yield self[idx]

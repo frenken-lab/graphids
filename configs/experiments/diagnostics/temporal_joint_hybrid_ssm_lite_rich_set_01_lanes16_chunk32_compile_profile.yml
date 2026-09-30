@@ -80,15 +80,12 @@ config:
     enable_progress_bar: false
     enable_model_summary: false
     num_sanity_val_steps: 0
+  compile:
+    backend: inductor
+    mode: reduce-overhead
+    fullgraph: false
+    dynamic: false
   callbacks:
-    compile:
-      class_path: graphids.core.callbacks.TorchCompileCallback
-      init_args:
-        method_name: _forward_with_state
-        backend: inductor
-        mode: reduce-overhead
-        fullgraph: false
-        dynamic: false
     profiler:
       class_path: graphids.core.callbacks.TemporalBatchProfilerCallback
       init_args:
@@ -99,8 +96,9 @@ config:
         expected_train_events: 512
         fail_on_event_mismatch: true
     resources:
-      class_path: graphids.core.callbacks.ResourceUtilizationCallback
+      class_path: graphids._mlflow.MLflowSystemMetricsSummaryCallback
       init_args:
-        sample_interval_s: 5
+        sampling_interval: 5
+        tracking_dir: "{run_dir}/.graphids/system_metrics_mlflow"
   loss_fn:
     type: ce

@@ -332,9 +332,12 @@ def test_temporal_hybrid_lane_profile_configs_parse():
     assert lane_run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == 512
     assert lane_run.payload.callbacks["profiler"]["init_args"]["fail_on_event_mismatch"] is True
     assert lane_run.payload.callbacks["resources"]["class_path"] == (
-        "graphids.core.callbacks.ResourceUtilizationCallback"
+        "graphids._mlflow.MLflowSystemMetricsSummaryCallback"
     )
-    assert lane_run.payload.callbacks["resources"]["init_args"]["sample_interval_s"] == 5
+    assert lane_run.payload.callbacks["resources"]["init_args"] == {
+        "sampling_interval": 5,
+        "tracking_dir": str(lane_run.outputs.run_dir / ".graphids" / "system_metrics_mlflow"),
+    }
     assert lane16_run.payload.data["batch_mode"] == "stream_lanes"
     assert lane16_run.resources.memory_gb == 24
     assert lane16_run.payload.data["stream_lanes"] == 16
@@ -348,9 +351,12 @@ def test_temporal_hybrid_lane_profile_configs_parse():
     assert lane16_run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == 512
     assert lane16_run.payload.callbacks["profiler"]["init_args"]["fail_on_event_mismatch"] is True
     assert lane16_run.payload.callbacks["resources"]["class_path"] == (
-        "graphids.core.callbacks.ResourceUtilizationCallback"
+        "graphids._mlflow.MLflowSystemMetricsSummaryCallback"
     )
-    assert lane16_run.payload.callbacks["resources"]["init_args"]["sample_interval_s"] == 5
+    assert lane16_run.payload.callbacks["resources"]["init_args"] == {
+        "sampling_interval": 5,
+        "tracking_dir": str(lane16_run.outputs.run_dir / ".graphids" / "system_metrics_mlflow"),
+    }
 
 
 def test_temporal_hybrid_lane16_chunk_sweep_profiles_parse():
@@ -373,8 +379,12 @@ def test_temporal_hybrid_lane16_chunk_sweep_profiles_parse():
         assert run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == expected_events
         assert run.payload.callbacks["profiler"]["init_args"]["fail_on_event_mismatch"] is True
         assert run.payload.callbacks["resources"]["class_path"] == (
-            "graphids.core.callbacks.ResourceUtilizationCallback"
+            "graphids._mlflow.MLflowSystemMetricsSummaryCallback"
         )
+        assert run.payload.callbacks["resources"]["init_args"] == {
+            "sampling_interval": 5,
+            "tracking_dir": str(run.outputs.run_dir / ".graphids" / "system_metrics_mlflow"),
+        }
 
 
 def test_temporal_hybrid_throughput_lever_profiles_parse():
@@ -409,14 +419,15 @@ def test_temporal_hybrid_throughput_lever_profiles_parse():
         assert run.payload.data["prebuild_batches"] == 8
         assert run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == 512
         assert run.payload.callbacks["resources"]["class_path"] == (
-            "graphids.core.callbacks.ResourceUtilizationCallback"
+            "graphids._mlflow.MLflowSystemMetricsSummaryCallback"
         )
+        assert run.payload.callbacks["resources"]["init_args"] == {
+            "sampling_interval": 5,
+            "tracking_dir": str(run.outputs.run_dir / ".graphids" / "system_metrics_mlflow"),
+        }
 
-    assert compile_run.payload.callbacks["compile"]["class_path"] == (
-        "graphids.core.callbacks.TorchCompileCallback"
-    )
-    assert compile_run.payload.callbacks["compile"]["init_args"] == {
-        "method_name": "_forward_with_state",
+    assert "compile" not in compile_run.payload.callbacks
+    assert compile_run.payload.compile == {
         "backend": "inductor",
         "mode": "reduce-overhead",
         "fullgraph": False,

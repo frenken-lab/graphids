@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 from types import SimpleNamespace
 
 import torch
@@ -181,164 +180,95 @@ def test_temporal_batch_profiler_warns_or_fails_on_expected_event_mismatch(monke
         _run_train_batch(callback, trainer, module, batch, 1)
 
 
-def test_resource_utilization_callback_records_cpu_rss_aggregates(monkeypatch):
-    import graphids.core.callbacks as callbacks_mod
-    from graphids.core.callbacks import ResourceUtilizationCallback
+def test_mlflow_system_metrics_summary_maps_cpu_memory_and_gpu_histories(monkeypatch):
+    from graphids import _mlflow
+    from graphids._mlflow import MLflowSystemMetricsSummaryCallback
 
-    class MemoryInfo:
-        rss = 2 * 1024**3
+    histories = {
+        "system/cpu_utilization_percentage": [10.0, 30.0],
+        "system/system_memory_usage_megabytes": [1024.0, 2048.0],
+        "system/gpu_0_utilization_percentage": [20.0, 80.0],
+        "system/gpu_1_utilization_percentage": [40.0, 60.0],
+        "system/gpu_0_memory_usage_megabytes": [1024.0, 3072.0],
+        "system/gpu_1_memory_usage_megabytes": [2048.0, 4096.0],
+        "system/gpu_0_memory_usage_percentage": [12.5, 37.5],
+        "system/gpu_1_memory_usage_percentage": [25.0, 50.0],
+    }
 
-    class Process:
-        def __init__(self) -> None:
-            self.cpu_values = iter([0.0, 10.0, 30.0])
+    class FakeClient:
+        def __init__(self, tracking_uri=None):
+            assert tracking_uri == "/tmp/mlflow"
 
-        def cpu_percent(self, interval=None):
-            del interval
-            return next(self.cpu_values)
+        def get_run(self, run_id):
+            assert run_id == "run-1"
+            return SimpleNamespace(data=SimpleNamespace(metrics={key: values[-1] for key, values in histories.items()}))
 
-        def memory_info(self):
-            return MemoryInfo()
+        def get_metric_history(self, run_id, key):
+            assert run_id == "run-1"
+            return [SimpleNamespace(value=value) for value in histories.get(key, [])]
 
-    fake_psutil = SimpleNamespace(Process=Process)
-    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
-    monkeypatch.setattr(callbacks_mod.time, "monotonic", iter([0.0, 5.0]).__next__)
-
-    callback = ResourceUtilizationCallback(sample_interval_s=5, include_gpu=False)
+    monkeypatch.setattr(_mlflow, "MlflowClient", FakeClient)
+    callback = MLflowSystemMetricsSummaryCallback(sample_interval_s=5)
+    callback._run_id = "run-1"
+    callback._resolved_tracking_uri = "/tmp/mlflow"
+    monkeypatch.setattr(callback, "_stop_run", lambda: None)
     trainer = SimpleNamespace(callback_metrics={})
-    module = _DummyModule()
 
-    callback.on_fit_start(trainer, module)
-    callback.on_fit_end(trainer, module)
+    callback.on_fit_end(trainer, _DummyModule())
 
     assert trainer.callback_metrics["resource/samples"] == 2.0
     assert trainer.callback_metrics["resource/cpu_percent_mean"] == 20.0
     assert trainer.callback_metrics["resource/cpu_percent_max"] == 30.0
+    assert trainer.callback_metrics["resource/rss_gib_mean"] == 1.5
     assert trainer.callback_metrics["resource/rss_gib_max"] == 2.0
-
-
-def test_resource_utilization_callback_records_gpu_aggregates(monkeypatch):
-    import graphids.core.callbacks as callbacks_mod
-    from graphids.core.callbacks import ResourceUtilizationCallback
-
-    class Process:
-        def cpu_percent(self, interval=None):
-            del interval
-            return 0.0
-
-        def memory_info(self):
-            return SimpleNamespace(rss=1024**3)
-
-    class FakeNvml:
-        def __init__(self) -> None:
-            self.util_values = iter([20, 80])
-
-        def nvmlInit(self) -> None:
-            return None
-
-        def nvmlDeviceGetCount(self) -> int:
-            return 1
-
-        def nvmlDeviceGetHandleByIndex(self, idx: int) -> int:
-            return idx
-
-        def nvmlDeviceGetUtilizationRates(self, handle):
-            del handle
-            return SimpleNamespace(gpu=next(self.util_values))
-
-        def nvmlDeviceGetMemoryInfo(self, handle):
-            del handle
-            return SimpleNamespace(used=3 * 1024**3, free=5 * 1024**3, total=8 * 1024**3)
-
-    monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=Process))
-    monkeypatch.setitem(sys.modules, "pynvml", FakeNvml())
-    monkeypatch.setattr(callbacks_mod.time, "monotonic", iter([0.0, 5.0]).__next__)
-
-    callback = ResourceUtilizationCallback(sample_interval_s=5)
-    trainer = SimpleNamespace(callback_metrics={})
-    module = _DummyModule()
-
-    callback.on_fit_start(trainer, module)
-    callback.on_fit_end(trainer, module)
-
     assert trainer.callback_metrics["resource/gpu_util_percent_mean"] == 50.0
     assert trainer.callback_metrics["resource/gpu_util_percent_max"] == 80.0
-    assert trainer.callback_metrics["resource/gpu_mem_gib_max"] == 3.0
-    assert trainer.callback_metrics["resource/gpu_mem_free_gib_min"] == 5.0
-    assert trainer.callback_metrics["resource/gpu_mem_total_gib_max"] == 8.0
-    assert trainer.callback_metrics["resource/gpu_mem_percent_max"] == 37.5
+    assert trainer.callback_metrics["resource/gpu_mem_gib_max"] == 4.0
+    assert trainer.callback_metrics["resource/gpu_mem_percent_max"] == 50.0
 
 
-def test_resource_utilization_callback_continues_without_nvml(monkeypatch):
-    import graphids.core.callbacks as callbacks_mod
-    from graphids.core.callbacks import ResourceUtilizationCallback
+def test_mlflow_system_metrics_summary_publishes_cpu_without_gpu_histories(monkeypatch):
+    from graphids import _mlflow
+    from graphids._mlflow import MLflowSystemMetricsSummaryCallback
 
-    class Process:
-        def cpu_percent(self, interval=None):
-            del interval
-            return 12.0
-
-        def memory_info(self):
-            return SimpleNamespace(rss=1024**3)
-
-    warnings = _DummyLog()
-    monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=Process))
-    monkeypatch.setitem(sys.modules, "pynvml", None)
-    monkeypatch.setattr(callbacks_mod.time, "monotonic", iter([0.0, 5.0]).__next__)
-    monkeypatch.setattr(callbacks_mod.log, "warning", warnings.info)
-
-    callback = ResourceUtilizationCallback(sample_interval_s=5)
-    trainer = SimpleNamespace(callback_metrics={})
-    module = _DummyModule()
-
-    callback.on_fit_start(trainer, module)
-    callback.on_fit_end(trainer, module)
-
-    assert trainer.callback_metrics["resource/cpu_percent_max"] == 12.0
-    assert "resource/gpu_util_percent_mean" not in trainer.callback_metrics
-    assert warnings.records[0][0] == "resource_utilization_nvml_unavailable"
-
-
-def test_torch_compile_callback_compiles_named_method(monkeypatch):
-    import graphids.core.callbacks as callbacks_mod
-    from graphids.core.callbacks import TorchCompileCallback
-
-    calls: list[tuple[object, dict]] = []
-
-    def fake_compile(target, **kwargs):
-        calls.append((target, kwargs))
-
-        def compiled(*args, **compiled_kwargs):
-            return target(*args, **compiled_kwargs)
-
-        return compiled
-
-    class Module:
-        def hot_path(self):
-            return "ok"
-
-    monkeypatch.setattr(callbacks_mod.torch, "compile", fake_compile)
-    callback = TorchCompileCallback(method_name="hot_path", backend="inductor", mode="reduce-overhead", dynamic=False)
-    trainer = SimpleNamespace(callback_metrics={})
-    module = Module()
-
-    callback.on_fit_start(trainer, module)
-
-    assert module.hot_path() == "ok"
-    assert trainer.callback_metrics["compile/enabled"] == 1.0
-    assert calls[0][1] == {
-        "fullgraph": False,
-        "backend": "inductor",
-        "mode": "reduce-overhead",
-        "dynamic": False,
+    histories = {
+        "system/cpu_utilization_percentage": [12.0],
+        "system/system_memory_usage_megabytes": [1024.0],
     }
 
+    class FakeClient:
+        def __init__(self, tracking_uri=None):
+            del tracking_uri
 
-def test_torch_compile_callback_can_fail_soft_for_missing_method():
-    from graphids.core.callbacks import TorchCompileCallback
+        def get_run(self, run_id):
+            del run_id
+            return SimpleNamespace(data=SimpleNamespace(metrics={key: values[-1] for key, values in histories.items()}))
 
-    callback = TorchCompileCallback(method_name="missing", fail_on_error=False)
+        def get_metric_history(self, run_id, key):
+            del run_id
+            return [SimpleNamespace(value=value) for value in histories.get(key, [])]
+
+    monkeypatch.setattr(_mlflow, "MlflowClient", FakeClient)
+    callback = MLflowSystemMetricsSummaryCallback(sample_interval_s=5)
+    callback._run_id = "run-1"
+    callback._resolved_tracking_uri = "/tmp/mlflow"
+    monkeypatch.setattr(callback, "_stop_run", lambda: None)
     trainer = SimpleNamespace(callback_metrics={})
 
-    callback.on_fit_start(trainer, SimpleNamespace())
+    callback.on_test_end(trainer, _DummyModule())
 
-    assert trainer.callback_metrics == {}
+    assert trainer.callback_metrics["resource/samples"] == 1.0
+    assert trainer.callback_metrics["resource/cpu_percent_max"] == 12.0
+    assert trainer.callback_metrics["resource/rss_gib_max"] == 1.0
+    assert "resource/gpu_util_percent_mean" not in trainer.callback_metrics
+
+
+def test_resource_utilization_callback_is_mlflow_summary_compatibility_shim():
+    from graphids._mlflow import MLflowSystemMetricsSummaryCallback
+    from graphids.core.callbacks import ResourceUtilizationCallback
+
+    callback = ResourceUtilizationCallback(sample_interval_s=5, include_gpu=False)
+
+    assert isinstance(callback, MLflowSystemMetricsSummaryCallback)
+    assert callback.sampling_interval == 5
+    assert callback.include_gpu is False

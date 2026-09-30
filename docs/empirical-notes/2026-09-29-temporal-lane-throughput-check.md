@@ -492,8 +492,8 @@ failure isolation add orchestration complexity.
 Two follow-up diagnostics tested the first low-risk throughput levers on the
 stable `16 lanes x 32 chunk` geometry.
 
-The compile treatment added a `TorchCompileCallback` targeting the model's
-`_forward_with_state` method:
+The compile treatment used native `LightningModule.compile()` on the temporal
+hybrid module:
 
 ```text
 config      = temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_compile_profile.yml
@@ -502,10 +502,10 @@ state       = CANCELLED by 35950
 elapsed     = 00:10:09
 ```
 
-The callback logged:
+The run used:
 
 ```text
-torch_compile_enabled backend=inductor mode=reduce-overhead target_method=_forward_with_state
+backend=inductor mode=reduce-overhead fullgraph=false dynamic=false
 ```
 
 but the job did not reach the first `temporal_batch_profile` line or write final
@@ -569,9 +569,9 @@ directly:
   across `[lanes, chunk, hidden]`;
 - changed rich lane state updates from per-step full-state clones to one cloned
   state per chunk with in-place indexed updates;
-- added stream-lane batch prebuilding controlled by `num_workers` and
-  `prebuild_batches`; the active lane diagnostic configs now use `num_workers:
-  4` and `prebuild_batches: 8`.
+- moved stream-lane batch prefetching onto PyTorch `DataLoader` workers,
+  controlled by `num_workers` and `prebuild_batches`; the active lane
+  diagnostic configs now use `num_workers: 4` and `prebuild_batches: 8`.
 
 Validation:
 

@@ -91,8 +91,9 @@ config:
         expected_train_events: 2048
         fail_on_event_mismatch: true
     resources:
-      class_path: graphids.core.callbacks.ResourceUtilizationCallback
+      class_path: graphids._mlflow.MLflowSystemMetricsSummaryCallback
       init_args:
-        sample_interval_s: 5
+        sampling_interval: 5
+        tracking_dir: "{run_dir}/.graphids/system_metrics_mlflow"
   loss_fn:
     type: ce

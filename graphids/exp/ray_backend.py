@@ -129,6 +129,25 @@ def _scalar_metrics(metrics: Mapping[str, Any]) -> dict[str, float]:
     return out
 
 
+def _compile_model_if_requested(model: Any, cfg: Mapping[str, Any]) -> None:
+    compile_cfg = cfg.get("compile")
+    if compile_cfg in (None, False):
+        return
+    if compile_cfg is True:
+        compile_kwargs: dict[str, Any] = {}
+    else:
+        resolved = resolve_spec(compile_cfg)
+        if not isinstance(resolved, Mapping):
+            raise TypeError("compile config must resolve to a mapping")
+        compile_kwargs = dict(resolved)
+        if compile_kwargs.pop("enabled", True) is False:
+            return
+    compile_method = getattr(model, "compile", None)
+    if not callable(compile_method):
+        raise TypeError(f"{type(model).__name__} does not support LightningModule.compile()")
+    compile_method(**compile_kwargs)
+
+
 def _build_lightning_run(
     stage: str,
     cfg: Mapping[str, Any],
@@ -154,6 +173,7 @@ def _build_lightning_run(
 
     if hasattr(model, "prepare_from_datamodule"):
         model.prepare_from_datamodule(data)
+    _compile_model_if_requested(model, cfg)
 
     trainer_cfg = resolve_spec(cfg.get("trainer", {}))
     if not isinstance(trainer_cfg, Mapping):
@@ -292,8 +312,8 @@ def _worker_loop(config: dict[str, Any]) -> None:
 def probe_ray_train_imports() -> dict[str, str]:
     """Import the Ray APIs GraphIDS relies on and return their module paths."""
     try:
-        from ray.train import CheckpointConfig, ScalingConfig
         from ray.train import RunConfig as RayRunConfig
+        from ray.train import ScalingConfig
         from ray.train.lightning import (
             RayDDPStrategy,
             RayLightningEnvironment,
@@ -307,7 +327,6 @@ def probe_ray_train_imports() -> dict[str, str]:
     return {
         "RunConfig": RayRunConfig.__module__,
         "ScalingConfig": ScalingConfig.__module__,
-        "CheckpointConfig": CheckpointConfig.__module__,
         "TorchTrainer": TorchTrainer.__module__,
         "prepare_trainer": prepare_trainer.__module__,
         "RayDDPStrategy": RayDDPStrategy.__module__,
@@ -320,8 +339,8 @@ def launch_run(run: RunConfig, *, address: str | None = None) -> RunSummary:
     """Run a GraphIDS experiment through Ray Train."""
     try:
         import ray
-        from ray.train import CheckpointConfig, ScalingConfig
         from ray.train import RunConfig as RayRunConfig
+        from ray.train import ScalingConfig
         from ray.train.torch import TorchTrainer
     except ModuleNotFoundError as exc:
         raise RuntimeError("Ray is not installed. Install the project dependencies before launching experiments.") from exc
@@ -339,24 +358,6 @@ def launch_run(run: RunConfig, *, address: str | None = None) -> RunSummary:
 
     run_dir = Path(run.outputs.run_dir)
     ray_run_kwargs: dict[str, Any] = {"storage_path": str(run_dir.parent), "name": run_dir.name}
-    callbacks = run.payload.callbacks or {}
-    callback_values = callbacks.values() if isinstance(callbacks, Mapping) else callbacks
-    for callback in callback_values:
-        if not isinstance(callback, Mapping):
-            continue
-        callback_type = str(callback.get("type") or callback.get("class_path") or "")
-        if "checkpoint" not in callback_type.lower():
-            continue
-        checkpoint_kwargs: dict[str, Any] = {}
-        if isinstance(callback.get("save_top_k"), int) and callback["save_top_k"] > 0:
-            checkpoint_kwargs["num_to_keep"] = callback["save_top_k"]
-        if isinstance(callback.get("monitor"), str):
-            checkpoint_kwargs["checkpoint_score_attribute"] = callback["monitor"]
-        if callback.get("mode") in {"min", "max"}:
-            checkpoint_kwargs["checkpoint_score_order"] = callback["mode"]
-        if checkpoint_kwargs:
-            ray_run_kwargs["checkpoint_config"] = CheckpointConfig(**checkpoint_kwargs)
-        break
 
     result = TorchTrainer(
         _worker_loop,
