@@ -57,6 +57,8 @@ class TemporalHybridModel(HybridRuntimeMixin, HybridScanMixin, HybridStateMixin,
         anomaly: dict[str, Any] | None = None,
         rhythm: dict[str, Any] | None = None,
         motif: dict[str, Any] | None = None,
+        profiling: dict[str, Any] | None = None,
+        scan: dict[str, Any] | None = None,
         loss_weights: dict[str, float] | None = None,
         anomaly_score_weights: dict[str, float] | None = None,
         lr: float = 1e-3,
@@ -78,6 +80,8 @@ class TemporalHybridModel(HybridRuntimeMixin, HybridScanMixin, HybridStateMixin,
         anomaly = _drop_none(dict(anomaly or {}))
         rhythm = _drop_none(dict(rhythm or {}))
         motif = _drop_none(dict(motif or {}))
+        profiling = _drop_none(dict(profiling or {}))
+        scan = _drop_none(dict(scan or {}))
         loss_weights = dict(loss_weights or {})
         anomaly_score_weights = dict(anomaly_score_weights or {})
 
@@ -101,6 +105,13 @@ class TemporalHybridModel(HybridRuntimeMixin, HybridScanMixin, HybridStateMixin,
         motif.setdefault("length", 3)
         motif.setdefault("embedding_dim", max(2, int(input["embedding_dim"]) // 2))
         motif.setdefault("time_dim", max(2, int(input["embedding_dim"]) // 2))
+        profiling.setdefault("phase_timing", False)
+        profiling.setdefault("prefix", "profile")
+        profiling.setdefault("sync_cuda", True)
+        profiling.setdefault("warmup_steps", 5)
+        profiling.setdefault("log_every_n_steps", 10)
+        scan.setdefault("backend", "eager")
+        scan.setdefault("profile_subphases", False)
 
         default_ssl = objective in {"anomaly", "joint"}
         heads.setdefault("classification", objective in {"supervised", "joint"})
@@ -124,6 +135,7 @@ class TemporalHybridModel(HybridRuntimeMixin, HybridScanMixin, HybridStateMixin,
             anomaly=anomaly,
             rhythm=rhythm,
             motif=motif,
+            scan=scan,
             loss_fn=loss_fn,
         )
         if heads.get("classification", False) and loss_fn is None:
@@ -167,6 +179,7 @@ class TemporalHybridModel(HybridRuntimeMixin, HybridScanMixin, HybridStateMixin,
         anomaly: dict[str, Any],
         rhythm: dict[str, Any],
         motif: dict[str, Any],
+        scan: dict[str, Any],
         loss_fn: nn.Module | None,
     ) -> None:
         if str(memory.get("type", "tgn")) != "tgn":
@@ -185,6 +198,8 @@ class TemporalHybridModel(HybridRuntimeMixin, HybridScanMixin, HybridStateMixin,
             raise ValueError("motif.embedding_dim must be positive")
         if int(motif.get("time_dim", 1)) < 1:
             raise ValueError("motif.time_dim must be positive")
+        if str(scan.get("backend", "eager")) not in {"eager", "lane_fastpath", "fused_memory", "compiled_inner"}:
+            raise ValueError("scan.backend must be one of: eager, lane_fastpath, fused_memory, compiled_inner")
 
         classification = bool(heads.get("classification", False))
         anomaly_heads = cls._enabled_anomaly_heads(heads)

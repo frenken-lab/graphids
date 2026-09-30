@@ -71,17 +71,25 @@ class _LaneBatchPlan:
 class TemporalStreamLaneLoader(Dataset[TemporalStreamLaneBatch]):
     """Map-style dataset that packs independent streams into fixed temporal lanes."""
 
-    def __init__(self, data, *, stream_lanes: int, chunk_size: int):
+    def __init__(
+        self,
+        data,
+        *,
+        stream_lanes: int,
+        chunk_size: int,
+        drop_partial_batches: bool = False,
+    ):
         self.data = data
         self.stream_lanes = int(stream_lanes)
         self.chunk_size = int(chunk_size)
+        self.drop_partial_batches = bool(drop_partial_batches)
         if self.stream_lanes < 2:
             raise ValueError("stream_lanes must be >= 2 for batch_mode='stream_lanes'")
         if self.chunk_size < 1:
             raise ValueError("chunk_size must be positive for batch_mode='stream_lanes'")
         self._streams = self._partition_streams(data)
         self._tensors = self._event_tensors()
-        self._plans = tuple(self._iter_plans())
+        self._plans = tuple(self._filter_plans(self._iter_plans()))
 
     @staticmethod
     def _partition_streams(data) -> list[torch.Tensor]:
@@ -199,6 +207,19 @@ class TemporalStreamLaneLoader(Dataset[TemporalStreamLaneBatch]):
                 active[lane_idx] = None if stream_end else (stream_idx, end)
 
             yield _LaneBatchPlan(tuple(items))
+
+    @staticmethod
+    def _plan_events(plan: _LaneBatchPlan) -> int:
+        return sum(item.end - item.offset for item in plan.items)
+
+    def _filter_plans(self, plans: Iterator[_LaneBatchPlan]) -> Iterator[_LaneBatchPlan]:
+        if not self.drop_partial_batches:
+            yield from plans
+            return
+        expected = self.stream_lanes * self.chunk_size
+        for plan in plans:
+            if self._plan_events(plan) == expected:
+                yield plan
 
     def _batch_from_plan(
         self,

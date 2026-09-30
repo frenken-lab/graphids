@@ -108,6 +108,8 @@ def _hybrid(**overrides):
         motif=params.get("motif"),
         loss_fn=params.get("loss_fn"),
         loss_weights={"classification": 1.0, "next_id": 0.2, "iat": 0.1, "payload_delta": 0.1},
+        profiling=params.get("profiling"),
+        scan=params.get("scan"),
         num_ids=4,
         in_channels=params.get("in_channels", 4),
         num_classes=2,
@@ -334,6 +336,119 @@ def test_temporal_hybrid_segment_scan_matches_reference_loop(reset_after):
     _assert_state_equal(actual_state, expected_state)
 
 
+@pytest.mark.parametrize("backend", ["lane_fastpath", "fused_memory", "compiled_inner"])
+def test_temporal_hybrid_lane_scan_backend_matches_reference_loop(backend):
+    model = _hybrid(
+        objective="joint",
+        backbone_type="ssm_lite",
+        memory={"type": "tgn", "enabled": True, "reset_on_stream_end": True, "time_encoding_dim": 4},
+        heads={"classification": True, "next_id": True, "iat": True, "payload_delta": True},
+        anomaly={"mode": "nll"},
+        rhythm={"enabled": True},
+        motif={"enabled": True, "length": 3, "embedding_dim": 4, "time_dim": 4},
+        in_channels=17,
+        scan={"backend": backend, "profile_subphases": True},
+    )
+    from graphids.core.data.datamodule.stream_lanes import TemporalStreamLaneLoader
+
+    batch = next(iter(TemporalStreamLaneLoader(_lane_semantic_data(), stream_lanes=2, chunk_size=2)))
+    actual_out, actual_state = model._forward_with_state(batch, None)
+
+    reference = _hybrid(
+        objective="joint",
+        backbone_type="ssm_lite",
+        memory={"type": "tgn", "enabled": True, "reset_on_stream_end": True, "time_encoding_dim": 4},
+        heads={"classification": True, "next_id": True, "iat": True, "payload_delta": True},
+        anomaly={"mode": "nll"},
+        rhythm={"enabled": True},
+        motif={"enabled": True, "length": 3, "embedding_dim": 4, "time_dim": 4},
+        in_channels=17,
+    )
+    reference.load_state_dict(model.state_dict())
+    expected_out, expected_state = reference._forward_with_state(batch, None)
+
+    _assert_outputs_equal(actual_out, expected_out)
+    _assert_state_equal(actual_state, expected_state)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {
+            "memory": {"type": "tgn", "enabled": True, "reset_on_stream_end": True, "time_encoding_dim": 4},
+            "rhythm": {"enabled": True},
+            "motif": {"enabled": False},
+        },
+        {
+            "memory": {"type": "tgn", "enabled": True, "reset_on_stream_end": True, "time_encoding_dim": 4},
+            "rhythm": {"enabled": False},
+            "motif": {"enabled": True, "length": 3, "embedding_dim": 4, "time_dim": 4},
+        },
+        {
+            "memory": {"enabled": False},
+            "rhythm": {"enabled": True},
+            "motif": {"enabled": True, "length": 3, "embedding_dim": 4, "time_dim": 4},
+        },
+        {
+            "memory": {"type": "tgn", "enabled": True, "reset_on_stream_end": True, "time_encoding_dim": 4},
+            "rhythm": {"enabled": False},
+            "motif": {"enabled": False},
+        },
+        {
+            "memory": {"enabled": False},
+            "rhythm": {"enabled": False},
+            "motif": {"enabled": False},
+        },
+        {
+            "memory": {"enabled": False},
+            "rhythm": {"enabled": False},
+            "motif": {"enabled": False},
+            "backbone": {"type": "none", "layers": 1, "dropout": 0.0},
+        },
+    ],
+)
+def test_temporal_hybrid_lane_scan_module_variants_match_eager(overrides):
+    from graphids.core.data.datamodule.stream_lanes import TemporalStreamLaneLoader
+
+    base = {
+        "objective": "joint",
+        "backbone_type": "ssm_lite",
+        "heads": {"classification": True, "next_id": True, "iat": True, "payload_delta": True},
+        "anomaly": {"mode": "nll"},
+        "in_channels": 17,
+    }
+    base.update(overrides)
+    model = _hybrid(**base, scan={"backend": "lane_fastpath", "profile_subphases": True})
+    batch = next(iter(TemporalStreamLaneLoader(_lane_semantic_data(), stream_lanes=2, chunk_size=2)))
+    actual_out, actual_state = model._forward_with_state(batch, None)
+
+    reference = _hybrid(**base)
+    reference.load_state_dict(model.state_dict())
+    expected_out, expected_state = reference._forward_with_state(batch, None)
+
+    _assert_outputs_equal(actual_out, expected_out)
+    _assert_state_equal(actual_state, expected_state)
+
+
+def test_temporal_id_memory_batch_update_matches_gru_cell_path():
+    from graphids.core.models.temporal._hybrid.contexts import TemporalIdMemory
+
+    memory = TemporalIdMemory(num_ids=4, hidden=8)
+    message = torch.randn(5, 8)
+    src_rows = torch.randn(5, 8)
+    dst_rows = torch.randn(5, 8)
+    same_id = torch.tensor([False, True, False, True, False])
+
+    src_expected = memory.update_cell(message, src_rows)
+    dst_input = torch.where(same_id.view(-1, 1), src_expected, dst_rows)
+    dst_expected = memory.update_cell(message, dst_input)
+
+    src_actual, dst_actual = memory.update_src_dst_batch(message, src_rows, dst_rows, same_id)
+
+    assert torch.allclose(src_actual, src_expected, atol=1e-6)
+    assert torch.allclose(dst_actual, dst_expected, atol=1e-6)
+
+
 def test_temporal_hybrid_rich_scan_uses_sparse_row_overlay(monkeypatch):
     model = _hybrid(
         objective="joint",
@@ -452,6 +567,31 @@ def test_temporal_hybrid_supervised_backpropagates_ce_loss():
     assert tuple(out["logits"].shape) == (5, 2)
     assert torch.isfinite(loss)
     assert any(p.grad is not None for p in model.parameters() if p.requires_grad)
+
+
+def test_temporal_hybrid_phase_timing_logs_training_step_breakdown(monkeypatch):
+    model = _hybrid(
+        objective="joint",
+        backbone_type="ssm_lite",
+        heads={"classification": True, "next_id": True, "iat": True, "payload_delta": True},
+        profiling={"phase_timing": True, "warmup_steps": 0, "log_every_n_steps": 1},
+    )
+    logged = {}
+    monkeypatch.setattr(model, "log", lambda name, value, *args, **kwargs: logged.setdefault(name, value))
+
+    loss = model.training_step(_temporal_batch(), 0)
+
+    assert torch.isfinite(loss)
+    for name in [
+        "profile/train_phase_encode_ms",
+        "profile/train_phase_scan_ms",
+        "profile/train_phase_heads_ms",
+        "profile/train_phase_forward_ms",
+        "profile/train_phase_loss_ms",
+        "profile/train_phase_heads_loss_ms",
+    ]:
+        assert name in logged
+        assert float(logged[name]) >= 0.0
 
 
 def test_temporal_hybrid_anomaly_scores_and_backpropagates_self_supervised_loss():

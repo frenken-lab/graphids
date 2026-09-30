@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .encoders import TemporalTimeEncoder
 
@@ -122,6 +123,51 @@ class TemporalIdMemory(nn.Module):
             parts.append(self.time_encoder(dst_elapsed).reshape(-1))
         return self.mix(torch.cat(parts, dim=-1))
 
+    def read_context_rows_batch(
+        self,
+        src_rows: torch.Tensor,
+        dst_rows: torch.Tensor,
+        src_last: torch.Tensor | None,
+        dst_last: torch.Tensor | None,
+        now: torch.Tensor,
+    ) -> torch.Tensor:
+        if not self._has_context:
+            return src_rows.new_zeros(src_rows.shape)
+        if (
+            self.use_source
+            and self.use_destination
+            and self.time_encoder is not None
+            and src_last is not None
+            and dst_last is not None
+        ):
+            elapsed = torch.stack(
+                [
+                    torch.where(src_last >= 0, now - src_last, torch.zeros_like(now)),
+                    torch.where(dst_last >= 0, now - dst_last, torch.zeros_like(now)),
+                ],
+                dim=-1,
+            )
+            encoded_time = self.time_encoder(elapsed).flatten(start_dim=1)
+            context = src_rows.new_empty((src_rows.size(0), (2 * self.hidden) + encoded_time.size(-1)))
+            context[:, : self.hidden] = src_rows
+            context[:, self.hidden : 2 * self.hidden] = dst_rows
+            context[:, 2 * self.hidden :] = encoded_time.to(device=src_rows.device, dtype=src_rows.dtype)
+            return self.mix(context)
+
+        parts: list[torch.Tensor] = []
+        if self.use_source:
+            parts.append(src_rows)
+        if self.use_destination:
+            parts.append(dst_rows)
+        if self.time_encoder is not None:
+            assert src_last is not None
+            assert dst_last is not None
+            src_elapsed = torch.where(src_last >= 0, now - src_last, torch.zeros_like(now))
+            dst_elapsed = torch.where(dst_last >= 0, now - dst_last, torch.zeros_like(now))
+            parts.append(self.time_encoder(src_elapsed))
+            parts.append(self.time_encoder(dst_elapsed))
+        return self.mix(torch.cat(parts, dim=-1))
+
     def _updated_rows(
         self,
         src_row: torch.Tensor,
@@ -134,6 +180,53 @@ class TemporalIdMemory(nn.Module):
         dst_input = src_new if same_id else dst_row
         dst_new = self.update_cell(message.unsqueeze(0), dst_input.unsqueeze(0)).squeeze(0)
         return src_new, dst_new
+
+    def _gru_cell_batch_with_input_projection(self, gi: torch.Tensor, rows: torch.Tensor) -> torch.Tensor:
+        gh = F.linear(rows, self.update_cell.weight_hh, self.update_cell.bias_hh)
+        i_r, i_z, i_n = gi.chunk(3, dim=-1)
+        h_r, h_z, h_n = gh.chunk(3, dim=-1)
+        reset = torch.sigmoid(i_r + h_r)
+        update = torch.sigmoid(i_z + h_z)
+        candidate = torch.tanh(i_n + reset * h_n)
+        return candidate + update * (rows - candidate)
+
+    def _gru_cell_batch(self, message: torch.Tensor, rows: torch.Tensor) -> torch.Tensor:
+        gi = F.linear(message, self.update_cell.weight_ih, self.update_cell.bias_ih)
+        return self._gru_cell_batch_with_input_projection(gi, rows)
+
+    def update_src_dst_batch(
+        self,
+        message: torch.Tensor,
+        src_rows: torch.Tensor,
+        dst_rows: torch.Tensor,
+        same_id: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        gi = F.linear(message, self.update_cell.weight_ih, self.update_cell.bias_ih)
+        src_new = self._gru_cell_batch_with_input_projection(gi, src_rows)
+        dst_input = torch.where(same_id.view(-1, 1), src_new, dst_rows)
+        dst_new = self._gru_cell_batch_with_input_projection(gi, dst_input)
+        return src_new, dst_new
+
+    def compiled_update_src_dst_batch(
+        self,
+        message: torch.Tensor,
+        src_rows: torch.Tensor,
+        dst_rows: torch.Tensor,
+        same_id: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if not message.is_cuda or not hasattr(torch, "compile"):
+            return self.update_src_dst_batch(message, src_rows, dst_rows, same_id)
+        compiled = getattr(self, "_compiled_update_src_dst_batch", None)
+        if compiled is None:
+            compiled = torch.compile(
+                self.update_src_dst_batch,
+                backend="inductor",
+                mode="reduce-overhead",
+                fullgraph=False,
+                dynamic=False,
+            )
+            self._compiled_update_src_dst_batch = compiled
+        return compiled(message, src_rows, dst_rows, same_id)
 
     def update_one(
         self,
@@ -230,12 +323,38 @@ class TemporalRhythmContext(nn.Module):
     def _read_context_rows(self, src_row: torch.Tensor, dst_row: torch.Tensor) -> torch.Tensor:
         return self.proj(torch.cat([self._features(src_row), self._features(dst_row)], dim=-1))
 
+    def read_context_rows_batch(self, src_rows: torch.Tensor, dst_rows: torch.Tensor) -> torch.Tensor:
+        return self.proj(self._features_batch_pair(src_rows, dst_rows))
+
     @staticmethod
     def _features(stats: torch.Tensor) -> torch.Tensor:
         count = stats[0].clamp_min(0)
         mean = stats[1]
         variance = torch.where(count > 1, stats[2] / (count - 1).clamp_min(1), torch.zeros_like(count))
         return torch.stack([torch.log1p(count), mean, torch.sqrt(variance.clamp_min(0))])
+
+    @staticmethod
+    def _features_batch_pair(src_rows: torch.Tensor, dst_rows: torch.Tensor) -> torch.Tensor:
+        src_count = src_rows[:, 0].clamp_min(0)
+        src_variance = torch.where(
+            src_count > 1,
+            src_rows[:, 2] / (src_count - 1).clamp_min(1),
+            torch.zeros_like(src_count),
+        )
+        dst_count = dst_rows[:, 0].clamp_min(0)
+        dst_variance = torch.where(
+            dst_count > 1,
+            dst_rows[:, 2] / (dst_count - 1).clamp_min(1),
+            torch.zeros_like(dst_count),
+        )
+        features = src_rows.new_empty((src_rows.size(0), 6))
+        features[:, 0] = torch.log1p(src_count)
+        features[:, 1] = src_rows[:, 1]
+        features[:, 2] = torch.sqrt(src_variance.clamp_min(0))
+        features[:, 3] = torch.log1p(dst_count)
+        features[:, 4] = dst_rows[:, 1]
+        features[:, 5] = torch.sqrt(dst_variance.clamp_min(0))
+        return features
 
     def update_one(self, state: torch.Tensor, src: torch.Tensor, dst: torch.Tensor, iat: torch.Tensor) -> torch.Tensor:
         src_idx = src.to(device=state.device).clamp_min(0).clamp_max(self.num_ids - 1).long()
@@ -276,7 +395,11 @@ class TemporalRhythmContext(nn.Module):
         delta = val - old[:, 1]
         mean = old[:, 1] + (delta / count)
         m2 = old[:, 2] + delta * (val - mean)
-        return torch.stack([count, mean, m2], dim=-1)
+        updated = old.new_empty(old.shape)
+        updated[:, 0] = count
+        updated[:, 1] = mean
+        updated[:, 2] = m2
+        return updated
 
     def _updated_rows_indexed_batch(
         self,

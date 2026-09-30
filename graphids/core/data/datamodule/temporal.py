@@ -27,6 +27,7 @@ class TemporalDataModule(pl.LightningDataModule):
         prebuild_batches: int = 0,
         pin_memory: bool = False,
         persistent_workers: bool = False,
+        drop_partial_lane_batches: bool = False,
     ):
         super().__init__()
         self.source = dataset
@@ -38,6 +39,7 @@ class TemporalDataModule(pl.LightningDataModule):
         self.prebuild_batches = int(prebuild_batches)
         self.pin_memory = bool(pin_memory)
         self.persistent_workers = bool(persistent_workers)
+        self.drop_partial_lane_batches = bool(drop_partial_lane_batches)
         if self.batch_mode not in {"events", "stream_lanes"}:
             raise ValueError("batch_mode must be one of: events, stream_lanes")
         if self.batch_mode == "stream_lanes":
@@ -136,6 +138,7 @@ class TemporalDataModule(pl.LightningDataModule):
                 self._train,
                 stream_lanes=self.stream_lanes,
                 chunk_size=self.chunk_size,
+                drop_partial_batches=self.drop_partial_lane_batches,
             )
             if self.num_workers <= 0 and not self.pin_memory:
                 return dataset

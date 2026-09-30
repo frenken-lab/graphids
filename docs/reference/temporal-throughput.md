@@ -5,14 +5,17 @@ profile and the constraints for future throughput A/B tests.
 
 ## Current Baseline
 
-Use the FP32 stream-lane profile with 16 lanes and 32 events per lane:
+Use the FP32 strict-rich stream-lane profile with 16 lanes and 32 events per
+lane:
 
 ```text
-configs/experiments/diagnostics/temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_profile.yml
+configs/experiments/diagnostics/temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_strict_rich_profile.yml
 ```
 
 This is the current speed baseline for `set_01` rich joint
-`temporal_hybrid` throughput probes.
+`temporal_hybrid` throughput probes. The non-strict
+`temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_profile.yml`
+remains the base geometry profile for historical comparisons.
 
 The profile keeps:
 
@@ -23,25 +26,24 @@ The profile keeps:
 - profiler callback settings
 - trainer budget: `limit_train_batches: 100`, `max_epochs: 3`
 
-The current measured baseline from the September 30, 2026 lane-scan optimization
-run is:
+The current measured strict rich baseline from the September 30, 2026 feature
+ablation run is:
 
 ```text
 geometry                         = 16 lanes x 32 chunk
-profile/train_events_per_sec     = 2240.772
-profile/train_batch_ms           = 228.493
-profile/train_data_wait_ms       = 1.205
 profile/train_events             = 512
-resource/gpu_util_percent_mean   = 17.207
-resource/gpu_util_percent_max    = 20.0
-resource/gpu_mem_gib_max         = 1.094
-resource/rss_gib_max             = 5.900
+profile/train_padding_fraction   = 0.0
+final events/sec                 = 2568.81
+epoch 2 median events/sec        = 2602.36
+train_loss                       = 1.746
+val_loss                         = 1.459
 ```
 
-This replaced the September 29, 2026 `16 x 32` baseline of `1519.294
-events/sec`. The gain came from reducing scan/state-update overhead, not from
-better GPU occupancy: GPU utilization remains around 17-20%, and GPU memory
-remains near 1.1 GiB.
+This replaced the earlier September 30, 2026 rich strict baseline of
+`2267.660 events/sec`, improving final throughput by about `13.3%` and the
+epoch 2 median by about `14.8%`. It also replaced the September 29, 2026
+`16 x 32` baseline of `1519.294 events/sec`. The gain came from reducing
+scan/state-update overhead, not from lane widening.
 
 ## A/B Rules
 
@@ -196,6 +198,233 @@ occupancy or higher VRAM use. The next throughput work should fuse larger
 compute regions in the recurrent scan/backbone path or test a backend that can
 run the recurrence as fewer, larger kernels.
 
+## Active Follow-up Diagnostics
+
+The next diagnostic configs keep the `16 lanes x 32 chunk` and
+`profile/train_events = 512` invariant:
+
+- `temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_phase_profile.yml`
+  enables opt-in phase timing for encode, scan, heads, forward, loss, and
+  heads+loss. Use it before changing scan/backbone code.
+- `temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_workers0_profile.yml`
+  disables DataLoader workers and prefetching to confirm whether the current
+  prebuild path is still buying measurable throughput.
+- `temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_persistent_profile.yml`
+  keeps `num_workers: 4` and `prebuild_batches: 8`, but enables persistent
+  workers to isolate worker startup/reuse effects.
+
+Promote a data-side treatment only if it preserves finite losses and improves
+equal-work `profile/train_events_per_sec` against the current `2568.81`
+events/sec strict rich baseline. If phase timing shows scan time dominates while
+`profile/train_data_wait_ms` stays near 1-2 ms, stop increasing prefetch depth
+and target recurrent scan/backbone fusion instead.
+
+### September 30 Follow-up Results
+
+The first submission exposed a diagnostic-data issue: multi-worker stream-lane
+runs could surface a partial lane batch (`352` events) while
+`fail_on_event_mismatch` expected `512`. The stream-lane loader now has an
+opt-in `drop_partial_lane_batches` switch, and the active lane diagnostic
+configs enable it.
+
+Successful resubmissions:
+
+| Config | SLURM job | Events/sec | Batch ms | Data wait ms | GPU util mean/max | GPU mem max | RSS max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `lanes16_chunk32_profile` | `55234519` | `2233.770` | `229.209` | `1.168` | `15.9% / 20.0%` | `1.159 GiB` | `52.513 GiB` |
+| `lanes16_chunk32_phase_profile` | `55234504` | `2175.233` | `235.377` | `1.166` | `16.4% / 20.0%` | `1.159 GiB` | `37.683 GiB` |
+| `lanes16_chunk32_persistent_profile` | `55234505` | `2190.822` | `233.702` | `1.142` | `15.7% / 20.0%` | `1.159 GiB` | `52.509 GiB` |
+| `lanes16_chunk32_workers0_profile` | `55234298` | `2276.320` | `224.924` | `14.344` | `16.6% / 20.0%` | `1.142 GiB` | `29.244 GiB` |
+
+The phase profile shows the forward pass is dominated by scan time:
+
+```text
+profile/train_phase_encode_ms      = 0.389
+profile/train_phase_scan_ms        = 111.984
+profile/train_phase_heads_loss_ms  = 1.954
+profile/train_phase_forward_ms     = 113.723
+```
+
+Conclusion: worker prefetching still reduces measured data wait, but it does
+not improve final equal-work throughput versus the no-worker diagnostic on this
+run. The bottleneck remains inside the recurrent scan/backbone path, not CPU
+batch construction.
+
+## Scan Backend Diagnostics
+
+The next scan-throughput pass adds opt-in `model.scan` backends while keeping
+the default `eager` path behavior-compatible:
+
+- `backend: lane_fastpath` uses the common all-valid lane chunk shape to avoid
+  active-lane gather/scatter and uses flattened lane-ID row addressing.
+- `backend: fused_memory` adds the lane fast path plus batched TGN memory source
+  and destination GRU updates.
+- `backend: compiled_inner` adds the fused-memory path and applies a narrow
+  `torch.compile` A/B to the batched memory update on CUDA, with CPU fallback.
+
+Diagnostic configs:
+
+- `temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_lane_fastpath_profile.yml`
+- `temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_fused_memory_profile.yml`
+- `temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_compiled_inner_profile.yml`
+
+All preserve `16 lanes x 32 chunk`, `profile/train_events = 512`, and
+`drop_partial_lane_batches: true`. They also enable phase timing and scan
+subphase timing. Promote a backend only if losses remain finite, event-count
+invariants hold, `profile/train_phase_scan_ms` falls, and equal-work throughput
+beats the current `2233.770 events/sec` baseline.
+
+### September 30 Scan Backend Submissions
+
+Submitted on September 30, 2026:
+
+| Config | SLURM job | Treatment |
+| --- | ---: | --- |
+| `lanes16_chunk32_lane_fastpath_profile` | `55237253` | all-valid lane fast path, flattened lane-ID row addressing, scan subphase timing |
+| `lanes16_chunk32_fused_memory_profile` | `55237254` | lane fast path plus batched TGN source/destination GRU memory update |
+| `lanes16_chunk32_compiled_inner_profile` | `55237252` | fused-memory path plus narrow CUDA `torch.compile` A/B for the batched memory update |
+
+All three top-level jobs completed with exit code `0:0`:
+
+| Config | SLURM job | State | Elapsed |
+| --- | ---: | --- | ---: |
+| `lanes16_chunk32_lane_fastpath_profile` | `55237253` | `COMPLETED` | `00:03:56` |
+| `lanes16_chunk32_fused_memory_profile` | `55237254` | `COMPLETED` | `00:03:53` |
+| `lanes16_chunk32_compiled_inner_profile` | `55237252` | `COMPLETED` | `00:04:01` |
+
+Final logged metrics:
+
+| Config | Events/sec | Batch ms | Data wait ms | Scan ms | GPU util mean/max | GPU mem max | RSS max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `lane_fastpath` | `2218.192` | `230.819` | `1.472` | `117.792` | `13.2% / 16.0%` | `1.159 GiB` | `40.886 GiB` |
+| `fused_memory` | `2157.131` | `237.352` | `1.327` | `119.900` | `14.6% / 18.0%` | `1.159 GiB` | `37.319 GiB` |
+| `compiled_inner` | `2325.474` | `220.170` | `0.995` | `120.619` | `11.8% / 18.0%` | `1.194 GiB` | `48.216 GiB` |
+
+Final scan subphase timings:
+
+| Config | Memory ctx | Rhythm ctx | Motif ctx | Backbone | Memory update | Rhythm update | Motif update |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `lane_fastpath` | `19.567` | `19.208` | `14.715` | `14.068` | `13.206` | `14.827` | `6.964` |
+| `fused_memory` | `17.980` | `18.529` | `13.709` | `13.785` | `20.820` | `13.961` | `6.472` |
+| `compiled_inner` | `18.866` | `18.799` | `13.990` | `14.182` | `18.015` | `14.609` | `6.824` |
+
+Status: **do not promote by default yet**. `compiled_inner` beat the
+`2233.770 events/sec` baseline, but measured scan time rose from the phase
+baseline (`111.984 ms`) to `120.619 ms`; the improvement may be noise, lower
+data wait, timing-instrumentation effects, or compile-side behavior rather than
+a confirmed recurrent-scan win. `lane_fastpath` and `fused_memory` were slower
+than the current baseline. The subphase breakdown shows memory/rhythm context
+and updates remain the largest fused targets.
+
+### Context and Update Micro-optimization Submissions
+
+The next code pass targeted those scan subphases directly:
+
+- batched source/destination elapsed-time memory context uses one time-encoder
+  call and a preallocated common-path context tensor;
+- batched TGN memory update reuses the GRU input projection for source and
+  destination updates;
+- batched rhythm context/update helpers avoid small stack/cat allocations.
+
+Validation:
+
+```text
+uv run pytest tests/core/models/test_temporal_hybrid.py -q
+25 passed
+
+uv run ruff check graphids/core/models/temporal/_hybrid/contexts.py graphids/core/models/temporal/_hybrid/scan.py tests/core/models/test_temporal_hybrid.py
+All checks passed
+```
+
+Submitted on September 30, 2026. All completed at the top level with exit code
+`0:0`:
+
+| Config | SLURM job | State | Elapsed |
+| --- | ---: | --- | ---: |
+| `lanes16_chunk32_lane_fastpath_profile` | `55238250` | `COMPLETED` | `00:03:49` |
+| `lanes16_chunk32_fused_memory_profile` | `55238251` | `COMPLETED` | `00:03:30` |
+| `lanes16_chunk32_compiled_inner_profile` | `55238252` | `COMPLETED` | `00:04:23` |
+
+Final logged metrics:
+
+| Config | Events/sec | Batch ms | Data wait ms | Scan ms | GPU util mean/max | GPU mem max | RSS max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `lane_fastpath` | `2267.660` | `225.783` | `1.188` | `114.537` | `14.2% / 18.0%` | `1.159 GiB` | `94.271 GiB` |
+| `fused_memory` | `2121.101` | `241.384` | `1.344` | `123.222` | `14.6% / 18.0%` | `1.159 GiB` | `47.725 GiB` |
+| `compiled_inner` | `2280.270` | `224.535` | `0.986` | `122.151` | `11.7% / 17.0%` | `1.192 GiB` | `36.766 GiB` |
+
+Final scan subphase timings:
+
+| Config | Memory ctx | Rhythm ctx | Motif ctx | Backbone | Memory update | Rhythm update | Motif update |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `lane_fastpath` | `18.421` | `19.788` | `13.421` | `13.449` | `12.190` | `16.150` | `6.610` |
+| `fused_memory` | `19.295` | `19.929` | `13.751` | `13.364` | `19.052` | `16.141` | `6.713` |
+| `compiled_inner` | `18.633` | `19.979` | `13.711` | `13.860` | `17.778` | `16.568` | `6.627` |
+
+Status: **repeat before promoting**. `lane_fastpath` and `compiled_inner`
+both beat the `2233.770 events/sec` baseline, but gains are modest and scan
+time still does not beat the earlier phase baseline (`111.984 ms`).
+`lane_fastpath` is the cleaner candidate because it avoids compile overhead and
+reduced memory-update time, but its RSS max was an outlier. Repeat
+`lane_fastpath` without scan subphase timing before making it the default.
+
+## Lane-Scaling Workers0 Diagnostics
+
+The next diagnostic isolated lane scaling with the clean `lane_fastpath`
+backend and no phase or scan subphase timing. All three configs used
+`num_workers: 0`, `prebuild_batches: 0`, `pin_memory: false`,
+`drop_partial_lane_batches: true`, and `fail_on_event_mismatch: true`.
+
+Submitted on September 30, 2026:
+
+| Config | SLURM job | Geometry | Expected events | State | Elapsed |
+| --- | ---: | --- | ---: | --- | ---: |
+| `lanes32_chunk16_lane_fastpath_workers0_profile` | `55240966` | `32 x 16` | `512` | `COMPLETED` | `00:01:21` |
+| `lanes64_chunk8_lane_fastpath_workers0_profile` | `55240967` | `64 x 8` | `512` | `COMPLETED` | `00:01:25` |
+| `lanes32_chunk32_lane_fastpath_workers0_profile` | `55240968` | `32 x 32` | `1024` | `COMPLETED` | `00:01:21` |
+
+Outcome: all three runs produced zero training batches. Lightning reported:
+
+```text
+Total length of `TemporalStreamLaneLoader` across ranks is zero.
+`Trainer.fit` stopped: No training batches.
+```
+
+No profiler metrics or final losses were logged for these runs, so they fail
+the validity rule: `profile/train_events` is absent rather than equal to the
+expected event count, and `profile/train_padding_fraction` is absent rather than
+`0.0`. The `64 x 8` job logged one system-metrics sample before exit
+(`resource/gpu_util_percent_mean = 0.0`, `resource/gpu_mem_gib_max = 1.093`,
+`resource/rss_gib_max = 28.033`), but that is startup/idle telemetry, not
+training throughput.
+
+Conclusion: under strict full-batch diagnostics, the `set_01` stream
+distribution cannot support widened lane geometries at 32 or 64 lanes with the
+current loader. Do not promote lane widening or add worker variants from this
+matrix. Further lane-scaling tests need a loader/dataset change that can
+guarantee full widened-lane batches before throughput is meaningful.
+
+## Strict Feature Ablation Results
+
+The September 30, 2026 strict feature-ablation matrix is the current reference
+for rich feature cost. All runs reached `max_epochs=3` with `train_events=512`
+and `train_padding_fraction=0.0`.
+
+| Variant | SLURM job | Epoch 2 median eps | Final eps | Train loss | Val loss |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `rich` | `55242488` | `2602.36` | `2568.81` | `1.746` | `1.459` |
+| `minus_motif` | `55242495` | `3128.97` | `3129.65` | `1.264` | `1.114` |
+| `minus_rhythm` | `55242500` | `3311.96` | `3315.82` | `1.325` | `1.216` |
+| `minus_memory` | `55242508` | `4230.88` | `4230.16` | `1.554` | `1.239` |
+| `memory_only` | `55242513` | `4023.18` | `4021.14` | `1.310` | `1.123` |
+| `backbone_only` | `55242520` | `20275.07` | `20169.79` | `1.495` | `1.188` |
+| `backbone_none` | `55242564` | `45038.00` | `45907.58` | `2.248` | `2.029` |
+
+The rich strict run improved over the previous `2267.660 events/sec` reference
+by about `13.3%` on final throughput and `14.8%` on the epoch 2 median. The
+phase probe job `55242574` finished at `2404.17 events/sec` with subphase timing
+enabled and measured `scan = 108.25 ms` inside `forward = 110.10 ms`.
+
 ## Failed Geometry Probe
 
 The `32 lanes x 16 chunk` probe completed, but it did not preserve the 512-event
@@ -229,6 +458,82 @@ Do not increase `stream_lanes` past the number of active streams available in
 the profiled training batches unless the loader or dataset sharding is changed
 to guarantee 512 real train events per step.
 
-Retired diagnostic configs for slower AMP treatments and the invalid
-`32 lanes x 16 chunk` geometry should stay out of the active config tree. The
-September 29 empirical note keeps those results as historical provenance.
+Retired diagnostic configs for slower AMP treatments and the old non-strict
+invalid `32 lanes x 16 chunk` probe should stay out of the active config tree.
+The September 29 empirical note keeps those results as historical provenance;
+the strict workers0 lane-scaling configs above remain only as unsupported
+geometry diagnostics.
+
+## Clear Scan Improvement Targets
+
+The current rich lane implementation already does the first round of obvious
+fusion: `_lane_step_context` computes shared `flat_src`/`flat_dst` row indices
+once, uses flattened memory/rhythm state in the lane fast path, and carries
+gathered rows forward to `_write_lane_step_updates`. The main loop also clones
+lane state once per chunk rather than once per step. See
+`graphids/core/models/temporal/_hybrid/scan.py`.
+
+The remaining profile is dominated by 32 recurrent iterations of small indexed
+gathers, projections, updates, and writes. The strict phase probe measured:
+
+| Subphase | Time |
+| --- | ---: |
+| memory context | `18.21 ms` |
+| memory update | `10.39 ms` |
+| rhythm context | `19.01 ms` |
+| rhythm update | `14.62 ms` |
+| motif context | `12.66 ms` |
+| motif update | `6.05 ms` |
+| backbone | `12.78 ms` |
+
+Prioritize targets in this order:
+
+1. **Fused rich context path.** Combine memory, rhythm, and motif context
+   construction into one helper that returns the summed context and all update
+   rows. This is partly structured already, but the three modules still launch
+   separate gather/projection paths each step.
+2. **Fused update/write path.** Memory, last-seen, rhythm, motif, and backbone
+   state writes touch different tensors after `z_t` exists. A narrower writer
+   should reduce per-step assignment overhead and avoid extra motif clones.
+3. **Motif rolling-state update.** The current motif update clones
+   `current_ids` and `current_iats` per step before writing shifted rows. This
+   is a small but clean target because it is pure lane-local state.
+4. **Rhythm context/update microkernel.** Rhythm is cheap mathematically but
+   still costs about `33.6 ms` combined in the phase probe, suggesting launch
+   and small tensor overhead. It is a good candidate for a custom indexed
+   elementwise kernel if Python/PyTorch fusion stalls.
+5. **Backbone/state write separation.** Backbone math is only about
+   `12.8 ms`; do not redesign it first. The better target is reducing how many
+   small operations surround each `backbone.step`.
+
+Do not prioritize lane widening on `set_01`; strict widened-lane diagnostics
+produce no full training batches or invalid partial batches. Do not pursue broad
+`torch.compile` of the dynamic scan as the main path; the useful compile result
+was narrow and noisy, while broad compile failed to reach useful profiler output
+within the short diagnostic budget. Consider Triton/CUDA only after the Python
+rich context/update fusion has been measured and scan remains dominant.
+
+### Working-Tree Cleanup Status
+
+The first cleanup pass is implemented in
+`graphids/core/models/temporal/_hybrid/scan.py` and locally verified:
+
+- flattened source/destination lane row indices are precomputed once per chunk;
+- full-chunk all-valid lane-fastpath status is computed once per chunk;
+- subphase timing calls are gated out of the hot path when disabled;
+- motif lane state is shifted in place instead of cloning active rows.
+
+Verification:
+
+```text
+uv run pytest tests/core/models/test_temporal_hybrid.py -q
+31 passed, 4 warnings
+
+uv run ruff check graphids/core/models/temporal/_hybrid/scan.py tests/core/models/test_temporal_hybrid.py
+All checks passed
+```
+
+Do not promote this over the `2568.81 events/sec` strict-rich baseline until a
+strict SLURM profile confirms an equal-work throughput win. The first submitted
+benchmark for this cleanup is SLURM job `55246546`; it was still `PENDING`
+for priority at last check.

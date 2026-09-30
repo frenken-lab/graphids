@@ -2,10 +2,237 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
 
 
+@dataclass(slots=True)
+class _LaneStepGather:
+    active: torch.Tensor
+    lane_idx: torch.Tensor
+    src_idx: torch.Tensor
+    dst_idx: torch.Tensor
+    iat_t: torch.Tensor
+    t_t: torch.Tensor
+    flat_src: torch.Tensor
+    flat_dst: torch.Tensor
+    same_id: torch.Tensor
+    all_lanes_active: bool
+    memory_src_rows: torch.Tensor | None = None
+    memory_dst_rows: torch.Tensor | None = None
+    rhythm_src_rows: torch.Tensor | None = None
+    rhythm_dst_rows: torch.Tensor | None = None
+
+
 class HybridScanMixin:
+    def _lane_step_context(
+        self,
+        *,
+        encoded: torch.Tensor,
+        valid: torch.Tensor,
+        src_idx_all: torch.Tensor,
+        dst_idx_all: torch.Tensor,
+        iat_all: torch.Tensor,
+        t_all: torch.Tensor,
+        lane_ids_all: torch.Tensor,
+        step_idx: int,
+        num_ids: int,
+        use_lane_fastpath: bool,
+        full_chunk_fastpath: bool,
+        profile_scan_subphases: bool,
+        memory_state: torch.Tensor | None,
+        last_seen: torch.Tensor | None,
+        rhythm_state: torch.Tensor | None,
+        motif_ids: torch.Tensor | None,
+        motif_iats: torch.Tensor | None,
+        memory_flat: torch.Tensor | None,
+        last_seen_flat: torch.Tensor | None,
+        rhythm_flat: torch.Tensor | None,
+        flat_src_all: torch.Tensor | None,
+        flat_dst_all: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, _LaneStepGather | None]:
+        active = valid[:, step_idx]
+        if full_chunk_fastpath:
+            all_lanes_active = True
+        elif not active.any():
+            return encoded.new_empty((0, encoded.size(-1))), None
+        else:
+            all_lanes_active = bool(use_lane_fastpath and active.all())
+
+        if all_lanes_active:
+            lane_idx = lane_ids_all
+            src_idx = src_idx_all[:, step_idx]
+            dst_idx = dst_idx_all[:, step_idx]
+            iat_t = iat_all[:, step_idx]
+            t_t = t_all[:, step_idx]
+            x_t = encoded[:, step_idx]
+        else:
+            lane_idx = lane_ids_all[active]
+            src_idx = src_idx_all[active, step_idx]
+            dst_idx = dst_idx_all[active, step_idx]
+            iat_t = iat_all[active, step_idx]
+            t_t = t_all[active, step_idx]
+            x_t = encoded[active, step_idx]
+
+        if flat_src_all is not None and flat_dst_all is not None:
+            if all_lanes_active:
+                flat_src = flat_src_all[:, step_idx]
+                flat_dst = flat_dst_all[:, step_idx]
+            else:
+                flat_src = flat_src_all[active, step_idx]
+                flat_dst = flat_dst_all[active, step_idx]
+        else:
+            flat_src = lane_idx * num_ids + src_idx
+            flat_dst = lane_idx * num_ids + dst_idx
+        gathered = _LaneStepGather(
+            active=active,
+            lane_idx=lane_idx,
+            src_idx=src_idx,
+            dst_idx=dst_idx,
+            iat_t=iat_t,
+            t_t=t_t,
+            flat_src=flat_src,
+            flat_dst=flat_dst,
+            same_id=src_idx == dst_idx,
+            all_lanes_active=all_lanes_active,
+        )
+
+        if self.memory is not None and memory_state is not None:
+            subphase_start = self._scan_subphase_start() if profile_scan_subphases else None
+            assert last_seen is not None
+            if memory_flat is not None and last_seen_flat is not None:
+                src_rows = memory_flat[flat_src]
+                dst_rows = memory_flat[flat_dst]
+                src_last = last_seen_flat[flat_src]
+                dst_last = last_seen_flat[flat_dst]
+            else:
+                src_rows = memory_state[lane_idx, src_idx]
+                dst_rows = memory_state[lane_idx, dst_idx]
+                src_last = last_seen[lane_idx, src_idx]
+                dst_last = last_seen[lane_idx, dst_idx]
+            gathered.memory_src_rows = src_rows
+            gathered.memory_dst_rows = dst_rows
+            if self.memory._has_context:
+                now = t_t.to(device=memory_state.device, dtype=memory_state.dtype)
+                x_t = x_t + self.memory.read_context_rows_batch(src_rows, dst_rows, src_last, dst_last, now)
+            if profile_scan_subphases:
+                self._scan_subphase_end("memory_context", subphase_start)
+
+        if self.rhythm is not None and rhythm_state is not None:
+            subphase_start = self._scan_subphase_start() if profile_scan_subphases else None
+            if rhythm_flat is not None:
+                src_rows = rhythm_flat[flat_src]
+                dst_rows = rhythm_flat[flat_dst]
+            else:
+                src_rows = rhythm_state[lane_idx, src_idx]
+                dst_rows = rhythm_state[lane_idx, dst_idx]
+            gathered.rhythm_src_rows = src_rows
+            gathered.rhythm_dst_rows = dst_rows
+            x_t = x_t + self.rhythm.read_context_rows_batch(src_rows, dst_rows)
+            if profile_scan_subphases:
+                self._scan_subphase_end("rhythm_context", subphase_start)
+
+        if self.motif is not None and motif_ids is not None and motif_iats is not None:
+            subphase_start = self._scan_subphase_start() if profile_scan_subphases else None
+            ids = motif_ids[lane_idx]
+            iats = motif_iats[lane_idx]
+            encoded_ids = self.motif.embedding(ids.clamp_min(0).clamp_max(self.motif.num_ids - 1).long()).flatten(
+                start_dim=1
+            )
+            encoded_iats = self.motif.time_encoder(iats).flatten(start_dim=1)
+            x_t = x_t + self.motif.proj(torch.cat([encoded_ids, encoded_iats], dim=-1))
+            if profile_scan_subphases:
+                self._scan_subphase_end("motif_context", subphase_start)
+
+        return x_t, gathered
+
+    def _write_lane_step_updates(
+        self,
+        *,
+        gathered: _LaneStepGather,
+        z_t: torch.Tensor,
+        memory_state: torch.Tensor | None,
+        last_seen: torch.Tensor | None,
+        rhythm_state: torch.Tensor | None,
+        motif_ids: torch.Tensor | None,
+        motif_iats: torch.Tensor | None,
+        memory_flat: torch.Tensor | None,
+        last_seen_flat: torch.Tensor | None,
+        rhythm_flat: torch.Tensor | None,
+        use_fused_memory: bool,
+        use_compiled_memory: bool,
+        profile_scan_subphases: bool,
+    ) -> None:
+        if self.memory is not None and memory_state is not None:
+            subphase_start = self._scan_subphase_start() if profile_scan_subphases else None
+            assert gathered.memory_src_rows is not None
+            assert gathered.memory_dst_rows is not None
+            if use_compiled_memory:
+                src_new, dst_new = self.memory.compiled_update_src_dst_batch(
+                    z_t,
+                    gathered.memory_src_rows,
+                    gathered.memory_dst_rows,
+                    gathered.same_id,
+                )
+            elif use_fused_memory:
+                src_new, dst_new = self.memory.update_src_dst_batch(
+                    z_t,
+                    gathered.memory_src_rows,
+                    gathered.memory_dst_rows,
+                    gathered.same_id,
+                )
+            else:
+                src_new = self.memory.update_cell(z_t, gathered.memory_src_rows)
+                dst_input = torch.where(gathered.same_id.unsqueeze(-1), src_new, gathered.memory_dst_rows)
+                dst_new = self.memory.update_cell(z_t, dst_input)
+
+            if memory_flat is not None:
+                memory_flat[gathered.flat_src] = src_new
+                memory_flat[gathered.flat_dst] = dst_new
+            else:
+                memory_state[gathered.lane_idx, gathered.src_idx] = src_new
+                memory_state[gathered.lane_idx, gathered.dst_idx] = dst_new
+            if last_seen is not None:
+                now = gathered.t_t.to(device=last_seen.device, dtype=last_seen.dtype)
+                if last_seen_flat is not None:
+                    last_seen_flat[gathered.flat_src] = now
+                    last_seen_flat[gathered.flat_dst] = now
+                else:
+                    last_seen[gathered.lane_idx, gathered.src_idx] = now
+                    last_seen[gathered.lane_idx, gathered.dst_idx] = now
+            if profile_scan_subphases:
+                self._scan_subphase_end("memory_update", subphase_start)
+
+        if self.rhythm is not None and rhythm_state is not None:
+            subphase_start = self._scan_subphase_start() if profile_scan_subphases else None
+            assert gathered.rhythm_src_rows is not None
+            assert gathered.rhythm_dst_rows is not None
+            src_new, dst_new = self.rhythm._updated_rows_indexed_batch(
+                gathered.rhythm_src_rows,
+                gathered.rhythm_dst_rows,
+                gathered.iat_t,
+                gathered.same_id,
+            )
+            if rhythm_flat is not None:
+                rhythm_flat[gathered.flat_src] = src_new
+                rhythm_flat[gathered.flat_dst] = dst_new
+            else:
+                rhythm_state[gathered.lane_idx, gathered.src_idx] = src_new
+                rhythm_state[gathered.lane_idx, gathered.dst_idx] = dst_new
+            if profile_scan_subphases:
+                self._scan_subphase_end("rhythm_update", subphase_start)
+
+        if self.motif is not None and motif_ids is not None and motif_iats is not None:
+            subphase_start = self._scan_subphase_start() if profile_scan_subphases else None
+            for motif_pos in range(motif_ids.size(1) - 1):
+                motif_ids[gathered.lane_idx, motif_pos] = motif_ids[gathered.lane_idx, motif_pos + 1]
+                motif_iats[gathered.lane_idx, motif_pos] = motif_iats[gathered.lane_idx, motif_pos + 1]
+            motif_ids[gathered.lane_idx, -1] = gathered.dst_idx.to(device=motif_ids.device)
+            motif_iats[gathered.lane_idx, -1] = gathered.iat_t.to(device=motif_iats.device, dtype=motif_iats.dtype)
+            if profile_scan_subphases:
+                self._scan_subphase_end("motif_update", subphase_start)
+
     def _scan_segment(
         self,
         encoded: torch.Tensor,
@@ -124,7 +351,10 @@ class HybridScanMixin:
         batch,
         state: dict[str, torch.Tensor | None] | None = None,
     ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor | None]]:
+        phase_start = self._phase_start()
         encoded = self.encoder(batch)
+        self._phase_end("encode", phase_start)
+        phase_start = self._phase_start()
         lanes, chunk, hidden = encoded.shape
         current_state = self._ensure_lane_state(state, encoded)
         initial_state = self._initial_lane_state_like(encoded)
@@ -189,7 +419,11 @@ class HybridScanMixin:
                 "prev_t": prev_t,
                 "backbone": backbone_state,
             }
-            return self._heads_from_features(features, batch), next_state
+            self._phase_end("scan", phase_start)
+            heads_start = self._phase_start()
+            out = self._heads_from_features(features, batch)
+            self._phase_end("heads", heads_start)
+            return out, next_state
 
         features_2d = encoded.new_zeros((lanes, chunk, hidden))
         lane_ids_all = torch.arange(lanes, device=encoded.device)
@@ -206,107 +440,93 @@ class HybridScanMixin:
         if backbone_state is not None:
             backbone_state = backbone_state.clone()
 
+        scan_cfg = dict(getattr(self.hparams, "scan", {}) or {})
+        scan_backend = str(scan_cfg.get("backend", "eager"))
+        use_lane_fastpath = scan_backend in {"lane_fastpath", "fused_memory", "compiled_inner"}
+        use_fused_memory = scan_backend in {"fused_memory", "compiled_inner"}
+        use_compiled_memory = scan_backend == "compiled_inner"
+        profile_scan_subphases = self._scan_subphase_timing_enabled()
+        num_ids = int(self.hparams.num_ids)
+        memory_flat = memory_state.reshape(lanes * num_ids, hidden) if use_lane_fastpath and memory_state is not None else None
+        last_seen_flat = last_seen.reshape(lanes * num_ids) if use_lane_fastpath and last_seen is not None else None
+        rhythm_flat = rhythm_state.reshape(lanes * num_ids, 3) if use_lane_fastpath and rhythm_state is not None else None
+        full_chunk_fastpath = bool(use_lane_fastpath and valid.all())
+        if use_lane_fastpath:
+            lane_offsets = lane_ids_all.view(lanes, 1) * num_ids
+            flat_src_all = lane_offsets + src_idx_all
+            flat_dst_all = lane_offsets + dst_idx_all
+        else:
+            flat_src_all = None
+            flat_dst_all = None
+
         for step_idx in range(chunk):
-            active = valid[:, step_idx]
-            if not active.any():
+            x_t, gathered = self._lane_step_context(
+                encoded=encoded,
+                valid=valid,
+                src_idx_all=src_idx_all,
+                dst_idx_all=dst_idx_all,
+                iat_all=iat_all,
+                t_all=t_all,
+                lane_ids_all=lane_ids_all,
+                step_idx=step_idx,
+                num_ids=num_ids,
+                use_lane_fastpath=use_lane_fastpath,
+                full_chunk_fastpath=full_chunk_fastpath,
+                profile_scan_subphases=profile_scan_subphases,
+                memory_state=memory_state,
+                last_seen=last_seen,
+                rhythm_state=rhythm_state,
+                motif_ids=motif_ids,
+                motif_iats=motif_iats,
+                memory_flat=memory_flat,
+                last_seen_flat=last_seen_flat,
+                rhythm_flat=rhythm_flat,
+                flat_src_all=flat_src_all,
+                flat_dst_all=flat_dst_all,
+            )
+            if gathered is None:
                 continue
-            lane_idx = lane_ids_all[active]
-            src_idx = src_idx_all[active, step_idx]
-            dst_idx = dst_idx_all[active, step_idx]
-            iat_t = iat_all[active, step_idx]
-            t_t = t_all[active, step_idx]
-            x_t = encoded[active, step_idx]
 
-            if self.memory is not None and memory_state is not None:
-                assert last_seen is not None
-                src_rows = memory_state[lane_idx, src_idx]
-                dst_rows = memory_state[lane_idx, dst_idx]
-                src_last = last_seen[lane_idx, src_idx]
-                dst_last = last_seen[lane_idx, dst_idx]
-                if self.memory._has_context:
-                    parts: list[torch.Tensor] = []
-                    if self.memory.use_source:
-                        parts.append(src_rows)
-                    if self.memory.use_destination:
-                        parts.append(dst_rows)
-                    if self.memory.time_encoder is not None:
-                        now = t_t.to(device=memory_state.device, dtype=memory_state.dtype)
-                        src_elapsed = torch.where(src_last >= 0, now - src_last, torch.zeros_like(now))
-                        dst_elapsed = torch.where(dst_last >= 0, now - dst_last, torch.zeros_like(now))
-                        parts.append(self.memory.time_encoder(src_elapsed))
-                        parts.append(self.memory.time_encoder(dst_elapsed))
-                    x_t = x_t + self.memory.mix(torch.cat(parts, dim=-1))
-            if self.rhythm is not None and rhythm_state is not None:
-                src_rows = rhythm_state[lane_idx, src_idx]
-                dst_rows = rhythm_state[lane_idx, dst_idx]
-                src_count = src_rows[:, 0].clamp_min(0)
-                src_variance = torch.where(
-                    src_count > 1,
-                    src_rows[:, 2] / (src_count - 1).clamp_min(1),
-                    torch.zeros_like(src_count),
-                )
-                dst_count = dst_rows[:, 0].clamp_min(0)
-                dst_variance = torch.where(
-                    dst_count > 1,
-                    dst_rows[:, 2] / (dst_count - 1).clamp_min(1),
-                    torch.zeros_like(dst_count),
-                )
-                src_features = torch.stack(
-                    [torch.log1p(src_count), src_rows[:, 1], torch.sqrt(src_variance.clamp_min(0))],
-                    dim=-1,
-                )
-                dst_features = torch.stack(
-                    [torch.log1p(dst_count), dst_rows[:, 1], torch.sqrt(dst_variance.clamp_min(0))],
-                    dim=-1,
-                )
-                x_t = x_t + self.rhythm.proj(torch.cat([src_features, dst_features], dim=-1))
-            if self.motif is not None and motif_ids is not None and motif_iats is not None:
-                ids = motif_ids[lane_idx]
-                iats = motif_iats[lane_idx]
-                encoded_ids = self.motif.embedding(ids.clamp_min(0).clamp_max(self.motif.num_ids - 1).long()).flatten(start_dim=1)
-                encoded_iats = self.motif.time_encoder(iats).flatten(start_dim=1)
-                x_t = x_t + self.motif.proj(torch.cat([encoded_ids, encoded_iats], dim=-1))
-
-            active_backbone = None if backbone_state is None else backbone_state[:, active, :]
+            subphase_start = self._scan_subphase_start() if profile_scan_subphases else None
+            if backbone_state is None:
+                active_backbone = None
+            elif gathered.all_lanes_active:
+                active_backbone = backbone_state
+            else:
+                active_backbone = backbone_state[:, gathered.active, :]
             z_t, next_backbone = self.backbone.step(x_t, active_backbone)
-            features_2d[active, step_idx] = z_t
+            if profile_scan_subphases:
+                self._scan_subphase_end("backbone", subphase_start)
+            if gathered.all_lanes_active:
+                features_2d[:, step_idx] = z_t
+            else:
+                features_2d[gathered.active, step_idx] = z_t
             if next_backbone is not None:
+                subphase_start = self._scan_subphase_start() if profile_scan_subphases else None
                 if backbone_state is None:
                     backbone_state = encoded.new_zeros((next_backbone.size(0), lanes, hidden))
-                backbone_state[:, active, :] = next_backbone
+                if gathered.all_lanes_active:
+                    backbone_state = next_backbone
+                else:
+                    backbone_state[:, gathered.active, :] = next_backbone
+                if profile_scan_subphases:
+                    self._scan_subphase_end("backbone_write", subphase_start)
 
-            same_id = src_idx == dst_idx
-            if self.memory is not None and memory_state is not None:
-                src_rows = memory_state[lane_idx, src_idx]
-                dst_rows = memory_state[lane_idx, dst_idx]
-                src_new = self.memory.update_cell(z_t, src_rows)
-                dst_input = torch.where(same_id.unsqueeze(-1), src_new, dst_rows)
-                dst_new = self.memory.update_cell(z_t, dst_input)
-                memory_state[lane_idx, src_idx] = src_new
-                memory_state[lane_idx, dst_idx] = dst_new
-                if last_seen is not None:
-                    now = t_t.to(device=last_seen.device, dtype=last_seen.dtype)
-                    last_seen[lane_idx, src_idx] = now
-                    last_seen[lane_idx, dst_idx] = now
-            if self.rhythm is not None and rhythm_state is not None:
-                src_rows = rhythm_state[lane_idx, src_idx]
-                dst_rows = rhythm_state[lane_idx, dst_idx]
-                src_new, dst_new = self.rhythm._updated_rows_indexed_batch(src_rows, dst_rows, iat_t, same_id)
-                rhythm_state[lane_idx, src_idx] = src_new
-                rhythm_state[lane_idx, dst_idx] = dst_new
-            if self.motif is not None and motif_ids is not None and motif_iats is not None:
-                current_ids = motif_ids[lane_idx]
-                current_iats = motif_iats[lane_idx]
-                next_ids = torch.cat(
-                    [current_ids[:, 1:], dst_idx.to(device=motif_ids.device).view(-1, 1)],
-                    dim=1,
-                )
-                next_iats = torch.cat(
-                    [current_iats[:, 1:], iat_t.to(device=motif_iats.device, dtype=motif_iats.dtype).view(-1, 1)],
-                    dim=1,
-                )
-                motif_ids[lane_idx] = next_ids
-                motif_iats[lane_idx] = next_iats
+            self._write_lane_step_updates(
+                gathered=gathered,
+                z_t=z_t,
+                memory_state=memory_state,
+                last_seen=last_seen,
+                rhythm_state=rhythm_state,
+                motif_ids=motif_ids,
+                motif_iats=motif_iats,
+                memory_flat=memory_flat,
+                last_seen_flat=last_seen_flat,
+                rhythm_flat=rhythm_flat,
+                use_fused_memory=use_fused_memory,
+                use_compiled_memory=use_compiled_memory,
+                profile_scan_subphases=profile_scan_subphases,
+            )
         if prev_t is not None and valid.any():
             widths = valid.long().sum(dim=1)
             has_events = widths > 0
@@ -337,7 +557,11 @@ class HybridScanMixin:
             "prev_t": prev_t,
             "backbone": backbone_state,
         }
-        return self._heads_from_features(features, batch), next_state
+        self._phase_end("scan", phase_start)
+        heads_start = self._phase_start()
+        out = self._heads_from_features(features, batch)
+        self._phase_end("heads", heads_start)
+        return out, next_state
 
     def _forward_with_state(
         self,
@@ -346,11 +570,17 @@ class HybridScanMixin:
     ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor | None]]:
         if getattr(batch, "valid_mask", None) is not None:
             return self._forward_lane_with_state(batch, state)
+        phase_start = self._phase_start()
         encoded = self.encoder(batch)
+        self._phase_end("encode", phase_start)
+        phase_start = self._phase_start()
         if encoded.numel() == 0:
             empty = encoded.new_empty((0, int(self.hparams.input["hidden"])))
-            out = self._heads_from_features(empty, batch)
             next_state = self._initial_state_like(encoded)
+            self._phase_end("scan", phase_start)
+            heads_start = self._phase_start()
+            out = self._heads_from_features(empty, batch)
+            self._phase_end("heads", heads_start)
             return out, next_state
 
         current_state = self._initial_state_like(encoded) if state is None else dict(state)
@@ -431,4 +661,8 @@ class HybridScanMixin:
             "motif_iats": motif_iats,
             "backbone": backbone_state,
         }
-        return self._heads_from_features(features, batch), next_state
+        self._phase_end("scan", phase_start)
+        heads_start = self._phase_start()
+        out = self._heads_from_features(features, batch)
+        self._phase_end("heads", heads_start)
+        return out, next_state

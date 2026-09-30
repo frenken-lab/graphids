@@ -40,6 +40,7 @@ class TemporalDMCfg(_Cfg):
     prebuild_batches: int = 0
     pin_memory: bool = False
     persistent_workers: bool = False
+    drop_partial_lane_batches: bool = False
     val_warmup_events: int = 0
     test_warmup_events: int = 0
 
@@ -76,6 +77,7 @@ class TemporalDMCfg(_Cfg):
             prebuild_batches=self.prebuild_batches,
             pin_memory=self.pin_memory,
             persistent_workers=self.persistent_workers,
+            drop_partial_lane_batches=self.drop_partial_lane_batches,
         )
 
 

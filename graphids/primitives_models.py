@@ -150,6 +150,19 @@ class TemporalHybridMotifCfg(_Cfg):
     time_dim: int | None = None
 
 
+class TemporalHybridProfilingCfg(_Cfg):
+    phase_timing: bool = False
+    prefix: str = "profile"
+    sync_cuda: bool = True
+    warmup_steps: int = 5
+    log_every_n_steps: int = 10
+
+
+class TemporalHybridScanCfg(_Cfg):
+    backend: Literal["eager", "lane_fastpath", "fused_memory", "compiled_inner"] = "eager"
+    profile_subphases: bool = False
+
+
 class TemporalHybridCfg(_Cfg):
     type: Literal["temporal_hybrid"] = "temporal_hybrid"
     scale: Literal["small", "large"] = "small"
@@ -161,6 +174,8 @@ class TemporalHybridCfg(_Cfg):
     anomaly: TemporalHybridAnomalyCfg = Field(default_factory=TemporalHybridAnomalyCfg)
     rhythm: TemporalHybridRhythmCfg = Field(default_factory=TemporalHybridRhythmCfg)
     motif: TemporalHybridMotifCfg = Field(default_factory=TemporalHybridMotifCfg)
+    profiling: TemporalHybridProfilingCfg = Field(default_factory=TemporalHybridProfilingCfg)
+    scan: TemporalHybridScanCfg = Field(default_factory=TemporalHybridScanCfg)
     loss_weights: dict[str, float] = Field(default_factory=dict)
     anomaly_score_weights: dict[str, float] = Field(default_factory=dict)
 
@@ -219,6 +234,8 @@ class TemporalHybridCfg(_Cfg):
             anomaly=self.anomaly.model_dump(),
             rhythm=self.rhythm.model_dump(),
             motif=self.motif.model_dump(exclude_none=True),
+            profiling=self.profiling.model_dump(),
+            scan=self.scan.model_dump(),
             loss_weights=dict(self.loss_weights),
             anomaly_score_weights=dict(self.anomaly_score_weights),
         )
@@ -319,6 +336,8 @@ def temporal_hybrid(
     anomaly: dict[str, Any] | TemporalHybridAnomalyCfg | None = None,
     rhythm: dict[str, Any] | TemporalHybridRhythmCfg | None = None,
     motif: dict[str, Any] | TemporalHybridMotifCfg | None = None,
+    profiling: dict[str, Any] | TemporalHybridProfilingCfg | None = None,
+    scan: dict[str, Any] | TemporalHybridScanCfg | None = None,
     loss_weights: dict[str, float] | None = None,
     anomaly_score_weights: dict[str, float] | None = None,
 ) -> TemporalHybridCfg:
@@ -332,6 +351,8 @@ def temporal_hybrid(
         anomaly=TemporalHybridAnomalyCfg.model_validate(anomaly or {}),
         rhythm=TemporalHybridRhythmCfg.model_validate(rhythm or {}),
         motif=TemporalHybridMotifCfg.model_validate(motif or {}),
+        profiling=TemporalHybridProfilingCfg.model_validate(profiling or {}),
+        scan=TemporalHybridScanCfg.model_validate(scan or {}),
         loss_weights=dict(loss_weights or {}),
         anomaly_score_weights=dict(anomaly_score_weights or {}),
     )

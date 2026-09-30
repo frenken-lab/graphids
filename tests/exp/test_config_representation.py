@@ -324,6 +324,7 @@ def test_temporal_hybrid_lane_profile_configs_parse():
     assert lane_run.payload.data["chunk_size"] >= 1
     assert lane_run.payload.data["num_workers"] == 4
     assert lane_run.payload.data["prebuild_batches"] == 8
+    assert lane_run.payload.data["drop_partial_lane_batches"] is True
     assert lane_run.payload.trainer["enable_checkpointing"] is False
     assert lane_run.payload.data["stream_lanes"] * lane_run.payload.data["chunk_size"] == 512
     assert lane_run.payload.callbacks["profiler"]["class_path"] == (
@@ -344,6 +345,7 @@ def test_temporal_hybrid_lane_profile_configs_parse():
     assert lane16_run.payload.data["chunk_size"] == 32
     assert lane16_run.payload.data["num_workers"] == 4
     assert lane16_run.payload.data["prebuild_batches"] == 8
+    assert lane16_run.payload.data["drop_partial_lane_batches"] is True
     assert lane16_run.payload.data["stream_lanes"] * lane16_run.payload.data["chunk_size"] == 512
     assert lane16_run.payload.callbacks["profiler"]["class_path"] == (
         "graphids.core.callbacks.TemporalBatchProfilerCallback"
@@ -376,6 +378,7 @@ def test_temporal_hybrid_lane16_chunk_sweep_profiles_parse():
         assert run.payload.data["batch_size"] == expected_events
         assert run.payload.data["num_workers"] == 4
         assert run.payload.data["prebuild_batches"] == 8
+        assert run.payload.data["drop_partial_lane_batches"] is True
         assert run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == expected_events
         assert run.payload.callbacks["profiler"]["init_args"]["fail_on_event_mismatch"] is True
         assert run.payload.callbacks["resources"]["class_path"] == (
@@ -417,6 +420,7 @@ def test_temporal_hybrid_throughput_lever_profiles_parse():
         assert run.payload.data["chunk_size"] == 32
         assert run.payload.data["num_workers"] == 4
         assert run.payload.data["prebuild_batches"] == 8
+        assert run.payload.data["drop_partial_lane_batches"] is True
         assert run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == 512
         assert run.payload.callbacks["resources"]["class_path"] == (
             "graphids._mlflow.MLflowSystemMetricsSummaryCallback"
@@ -438,6 +442,206 @@ def test_temporal_hybrid_throughput_lever_profiles_parse():
     assert large_run.payload.model["input"]["embedding_dim"] == 32
     assert large_run.payload.model["backbone"]["layers"] == 2
     assert large_run.payload.model["memory"]["time_encoding_dim"] == 8
+
+
+def test_temporal_hybrid_phase_profile_config_parse():
+    from graphids.exp.config import ExperimentConfig
+
+    cfg = ExperimentConfig.from_yaml(
+        "configs/experiments/diagnostics/"
+        "temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_phase_profile.yml"
+    )
+    run = cfg.build_run(name=cfg.experiment_name, stage=cfg.stage, config=cfg.config)
+
+    assert run.resources.memory_gb == 24
+    assert run.payload.data["batch_mode"] == "stream_lanes"
+    assert run.payload.data["stream_lanes"] == 16
+    assert run.payload.data["chunk_size"] == 32
+    assert run.payload.data["num_workers"] == 4
+    assert run.payload.data["prebuild_batches"] == 8
+    assert run.payload.data["drop_partial_lane_batches"] is True
+    assert run.payload.model["profiling"] == {
+        "phase_timing": True,
+        "prefix": "profile",
+        "sync_cuda": True,
+        "warmup_steps": 5,
+        "log_every_n_steps": 10,
+    }
+    assert run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == 512
+    assert run.payload.callbacks["profiler"]["init_args"]["fail_on_event_mismatch"] is True
+
+
+def test_temporal_hybrid_data_side_profile_configs_parse():
+    from graphids.exp.config import ExperimentConfig
+
+    cases = {
+        "workers0": {
+            "path": "temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_workers0_profile.yml",
+            "num_workers": 0,
+            "prebuild_batches": 0,
+            "pin_memory": False,
+            "persistent_workers": False,
+        },
+        "persistent": {
+            "path": "temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_persistent_profile.yml",
+            "num_workers": 4,
+            "prebuild_batches": 8,
+            "pin_memory": True,
+            "persistent_workers": True,
+        },
+    }
+    for expected in cases.values():
+        cfg = ExperimentConfig.from_yaml(f"configs/experiments/diagnostics/{expected['path']}")
+        run = cfg.build_run(name=cfg.experiment_name, stage=cfg.stage, config=cfg.config)
+
+        assert run.resources.memory_gb == 24
+        assert run.payload.data["batch_mode"] == "stream_lanes"
+        assert run.payload.data["stream_lanes"] == 16
+        assert run.payload.data["chunk_size"] == 32
+        assert run.payload.data["batch_size"] == 512
+        assert run.payload.data["num_workers"] == expected["num_workers"]
+        assert run.payload.data["prebuild_batches"] == expected["prebuild_batches"]
+        assert run.payload.data["pin_memory"] is expected["pin_memory"]
+        assert run.payload.data["persistent_workers"] is expected["persistent_workers"]
+        assert run.payload.data["drop_partial_lane_batches"] is True
+        assert run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == 512
+        assert run.payload.callbacks["profiler"]["init_args"]["fail_on_event_mismatch"] is True
+
+
+def test_temporal_hybrid_scan_backend_profile_configs_parse():
+    from graphids.exp.config import ExperimentConfig
+
+    cases = {
+        "lane_fastpath": "temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_lane_fastpath_profile.yml",
+        "fused_memory": "temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_fused_memory_profile.yml",
+        "compiled_inner": "temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_compiled_inner_profile.yml",
+    }
+    for backend, path in cases.items():
+        cfg = ExperimentConfig.from_yaml(f"configs/experiments/diagnostics/{path}")
+        run = cfg.build_run(name=cfg.experiment_name, stage=cfg.stage, config=cfg.config)
+
+        assert run.resources.memory_gb == 24
+        assert run.payload.data["batch_mode"] == "stream_lanes"
+        assert run.payload.data["stream_lanes"] == 16
+        assert run.payload.data["chunk_size"] == 32
+        assert run.payload.data["batch_size"] == 512
+        assert run.payload.data["drop_partial_lane_batches"] is True
+        assert run.payload.model["scan"] == {"backend": backend, "profile_subphases": True}
+        assert run.payload.model["profiling"]["phase_timing"] is True
+        assert run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == 512
+        assert run.payload.callbacks["profiler"]["init_args"]["fail_on_event_mismatch"] is True
+
+
+def test_temporal_hybrid_strict_ablation_profile_configs_parse():
+    from graphids.exp.config import ExperimentConfig
+
+    cases = {
+        "rich": (True, True, True, "ssm_lite"),
+        "minus_motif": (True, True, False, "ssm_lite"),
+        "minus_rhythm": (True, False, True, "ssm_lite"),
+        "minus_memory": (False, True, True, "ssm_lite"),
+        "memory_only": (True, False, False, "ssm_lite"),
+        "backbone_only": (False, False, False, "ssm_lite"),
+        "backbone_none": (False, False, False, "none"),
+    }
+    for variant, (memory_enabled, rhythm_enabled, motif_enabled, backbone_type) in cases.items():
+        cfg = ExperimentConfig.from_yaml(
+            "configs/experiments/diagnostics/"
+            f"temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_strict_{variant}_profile.yml"
+        )
+        run = cfg.build_run(name=cfg.experiment_name, stage=cfg.stage, config=cfg.config)
+
+        assert run.resources.memory_gb == 24
+        assert run.payload.data["batch_mode"] == "stream_lanes"
+        assert run.payload.data["stream_lanes"] == 16
+        assert run.payload.data["chunk_size"] == 32
+        assert run.payload.data["batch_size"] == 512
+        assert run.payload.data["num_workers"] == 0
+        assert run.payload.data["prebuild_batches"] == 0
+        assert run.payload.data["pin_memory"] is False
+        assert run.payload.data["persistent_workers"] is False
+        assert run.payload.data["drop_partial_lane_batches"] is True
+        assert run.payload.model["scan"] == {"backend": "lane_fastpath"}
+        assert "profiling" not in run.payload.model
+        assert run.payload.model["memory"]["enabled"] is memory_enabled
+        assert run.payload.model["rhythm"]["enabled"] is rhythm_enabled
+        assert run.payload.model["motif"]["enabled"] is motif_enabled
+        assert run.payload.model["backbone"]["type"] == backbone_type
+        assert run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == 512
+        assert run.payload.callbacks["profiler"]["init_args"]["fail_on_event_mismatch"] is True
+
+
+def test_temporal_hybrid_strict_rich_phase_profile_config_parse():
+    from graphids.exp.config import ExperimentConfig
+
+    cfg = ExperimentConfig.from_yaml(
+        "configs/experiments/diagnostics/"
+        "temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_strict_rich_phase_profile.yml"
+    )
+    run = cfg.build_run(name=cfg.experiment_name, stage=cfg.stage, config=cfg.config)
+
+    assert run.payload.data["batch_mode"] == "stream_lanes"
+    assert run.payload.data["stream_lanes"] == 16
+    assert run.payload.data["chunk_size"] == 32
+    assert run.payload.data["batch_size"] == 512
+    assert run.payload.data["num_workers"] == 0
+    assert run.payload.data["prebuild_batches"] == 0
+    assert run.payload.data["pin_memory"] is False
+    assert run.payload.data["drop_partial_lane_batches"] is True
+    assert run.payload.model["scan"] == {"backend": "lane_fastpath", "profile_subphases": True}
+    assert run.payload.model["profiling"]["phase_timing"] is True
+    assert run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == 512
+    assert run.payload.callbacks["profiler"]["init_args"]["fail_on_event_mismatch"] is True
+
+
+def test_temporal_hybrid_lane_scaling_lane_fastpath_workers0_configs_parse():
+    from graphids.exp.config import ExperimentConfig
+
+    cases = {
+        "temporal_joint_hybrid_ssm_lite_rich_set_01_lanes32_chunk16_lane_fastpath_workers0_profile.yml": {
+            "stream_lanes": 32,
+            "chunk_size": 16,
+            "batch_size": 512,
+            "expected_events": 512,
+        },
+        "temporal_joint_hybrid_ssm_lite_rich_set_01_lanes64_chunk8_lane_fastpath_workers0_profile.yml": {
+            "stream_lanes": 64,
+            "chunk_size": 8,
+            "batch_size": 512,
+            "expected_events": 512,
+        },
+        "temporal_joint_hybrid_ssm_lite_rich_set_01_lanes32_chunk32_lane_fastpath_workers0_profile.yml": {
+            "stream_lanes": 32,
+            "chunk_size": 32,
+            "batch_size": 1024,
+            "expected_events": 1024,
+        },
+    }
+    for path, expected in cases.items():
+        cfg = ExperimentConfig.from_yaml(f"configs/experiments/diagnostics/{path}")
+        run = cfg.build_run(name=cfg.experiment_name, stage=cfg.stage, config=cfg.config)
+
+        assert run.resources.memory_gb == 24
+        assert run.payload.data["batch_mode"] == "stream_lanes"
+        assert run.payload.data["stream_lanes"] == expected["stream_lanes"]
+        assert run.payload.data["chunk_size"] == expected["chunk_size"]
+        assert run.payload.data["batch_size"] == expected["batch_size"]
+        assert run.payload.data["num_workers"] == 0
+        assert run.payload.data["prebuild_batches"] == 0
+        assert run.payload.data["pin_memory"] is False
+        assert run.payload.data["persistent_workers"] is False
+        assert run.payload.data["drop_partial_lane_batches"] is True
+        assert run.payload.model["scan"] == {"backend": "lane_fastpath"}
+        assert "profiling" not in run.payload.model
+        assert run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == expected["expected_events"]
+        assert run.payload.callbacks["profiler"]["init_args"]["fail_on_event_mismatch"] is True
+        assert run.payload.callbacks["resources"]["class_path"] == (
+            "graphids._mlflow.MLflowSystemMetricsSummaryCallback"
+        )
+        assert run.payload.callbacks["resources"]["init_args"] == {
+            "sampling_interval": 5,
+            "tracking_dir": str(run.outputs.run_dir / ".graphids" / "system_metrics_mlflow"),
+        }
 
 
 def test_config_string_placeholders_resolve_against_run_paths(monkeypatch, tmp_path):

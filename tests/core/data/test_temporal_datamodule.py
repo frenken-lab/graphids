@@ -134,6 +134,22 @@ def test_temporal_stream_lane_loader_masks_padding_and_marks_lane_resets():
     assert batches[-1].is_scored[batches[-1].valid_mask.logical_not()].any().item() is False
 
 
+def test_temporal_stream_lane_loader_can_drop_partial_batches():
+    from graphids.core.data.datamodule.stream_lanes import TemporalStreamLaneLoader
+
+    batches = list(
+        TemporalStreamLaneLoader(
+            _multi_stream_temporal(),
+            stream_lanes=2,
+            chunk_size=2,
+            drop_partial_batches=True,
+        )
+    )
+
+    assert batches
+    assert all(int(batch.valid_mask.sum().item()) == 4 for batch in batches)
+
+
 def test_temporal_stream_lane_loader_is_map_style_dataset():
     from graphids.core.data.datamodule.stream_lanes import TemporalStreamLaneLoader
 
