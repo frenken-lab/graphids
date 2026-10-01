@@ -880,19 +880,288 @@ uv run ruff check graphids/core/models/temporal/_hybrid/scan.py tests/core/model
 All checks passed
 ```
 
-Status: **implemented, not yet benchmark-promoted**. The semantic tests confirm
-equivalence to the reference scan paths, but this pass still needs a strict
-`16 lanes x 32 chunk` SLURM profile before replacing the `2568.81 events/sec`
-strict-rich baseline.
-
 Strict-rich benchmark submission:
 
 ```text
 config      = temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_strict_rich_profile.yml
 SLURM job   = 55246546
-state       = PENDING at last check
-reason      = Priority
+state       = COMPLETED
+exit code   = 0:0
+elapsed     = 00:03:34
+submit      = 2026-09-30T16:16:05
+start/end   = 2026-09-30T16:50:58 / 2026-09-30T16:54:32
+git sha     = 4eadb6baf0ce1e4c454ba96d704955707c03e720
+run dir     = /fs/ess/PAS1266/graphids/dev/rf15/set_01/temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_strict_rich_profile/temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_strict_rich_profile
 ```
+
+The run emitted a Ray snapshot warning because the same output directory already
+contained checkpoints. The project code does not call `ray.train.get_checkpoint`,
+so the profiler samples are treated as a fresh throughput measurement. Keep the
+warning attached to the run because checkpoint/loss interpretation is otherwise
+easy to confuse.
+
+Final logged metrics:
+
+| Metric | Value |
+| --- | ---: |
+| `profile/train_events` | `512.0` |
+| `profile/train_active_lanes` | `16.0` |
+| `profile/train_padding_fraction` | `0.0` |
+| `profile/train_events_per_sec` | `2755.051` |
+| `profile/train_batch_ms` | `185.840` |
+| `profile/train_data_wait_ms` | `27.729` |
+| `resource/gpu_util_percent_mean/max` | `15.7% / 18.0%` |
+| `resource/gpu_mem_gib_max` | `1.142` |
+| `resource/rss_gib_max` | `25.928` |
+| `train_loss` | `1.147` |
+| `val_loss` | `1.030` |
+
+Stable profiler sample medians:
+
+| Epoch | Median events/sec | Median batch ms | Median data wait ms |
+| ---: | ---: | ---: | ---: |
+| `0` | `2770.514` | `184.835` | `17.699` |
+| `1` | `2769.144` | `184.895` | `14.416` |
+| `2` | `2772.259` | `184.687` | `14.605` |
+
+Status: **PASS and promote as current strict-rich baseline**. The cleanup
+preserved the equal-work invariant (`512` events, no padding) and improved final
+throughput from `2568.81` to `2755.05 events/sec` (`+7.2%`). The epoch 2 median
+improved from `2602.36` to `2772.26 events/sec` (`+6.5%`). Against the earlier
+`2267.660 events/sec` strict-rich baseline, the final gain is about `21.5%`.
+
+## Next Throughput Implementation Analysis
+
+The latest result validates the low-risk lane scan cleanup, but it did not
+change the basic bottleneck: GPU utilization is still only about `15.7%` mean /
+`18.0%` max, while data wait is low after warmup. The remaining throughput work
+should continue to reduce the 32-step rich scan's small gather/projection/update
+kernel count rather than increasing loader workers, prefetch depth, or lane
+width.
+
+Recommended implementation order:
+
+1. Fuse the rich context builder for memory, rhythm, and motif into one
+   per-step helper that gathers source/destination rows once, accumulates the
+   context contribution in a preallocated tensor, and returns the rows needed by
+   the update path. This is the highest-probability next win because the phase
+   probe measured context reads as the largest combined rich cost.
+2. Fuse post-backbone updates into one writer that updates memory, last-seen,
+   rhythm, motif, and backbone state from the same `_LaneStepGather`/`z_t`
+   bundle. The current split writer still launches separate indexed writes for
+   each state family.
+3. Add a clean phase-profile rerun after those two changes. If `scan` remains
+   dominant and rhythm still costs roughly `33 ms` combined context/update,
+   prototype a narrow custom indexed rhythm kernel. Do this after Python/PyTorch
+   fusion, not before.
+4. Fix the Ray output naming before more repeated A/Bs. The next submission
+   should use a unique run/output suffix or clear the prior run directory so
+   checkpoint snapshots cannot pollute the audit trail.
+
+Do not spend the next pass on lane widening for `set_01`; strict widened-lane
+jobs produced zero full training batches or invalid partial batches. Do not make
+`compiled_inner` the main path yet; its previous win was tiny and noisier than
+the plain lane-fastpath cleanup.
+
+## Fused Context/Write Implementation Pass
+
+The next implementation pass is now in the working tree:
+
+- added a batched `TemporalMotifContext.read_context_batch` helper so lane scan
+  no longer reconstructs motif context inline;
+- changed lane scan context accumulation to clone the encoded step once and add
+  memory/rhythm/motif contexts in place;
+- replaced flat lane-state advanced indexing with explicit `index_select` and
+  `index_copy_` calls for memory, last-seen, and rhythm state;
+- added a unique strict benchmark config,
+  `temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_fused_context_profile.yml`,
+  to avoid reusing the prior Ray output/checkpoint directory.
+
+Local verification:
+
+```text
+uv run pytest tests/core/models/test_temporal_hybrid.py -q
+31 passed, 4 warnings
+
+uv run pytest tests/core/models/test_temporal_hybrid.py -q -k 'lane_scan or batch_update or sparse_row_overlay'
+11 passed, 20 deselected
+
+uv run ruff check graphids/core/models/temporal/_hybrid/scan.py graphids/core/models/temporal/_hybrid/contexts.py tests/core/models/test_temporal_hybrid.py
+All checks passed
+```
+
+Fused-context benchmark:
+
+```text
+config      = temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_fused_context_profile.yml
+SLURM job   = 55279425
+state       = COMPLETED
+exit code   = 0:0
+elapsed     = 00:05:08
+submit      = 2026-10-01T11:32:12
+start/end   = 2026-10-01T11:32:33 / 2026-10-01T11:37:41
+git sha     = 4eadb6baf0ce1e4c454ba96d704955707c03e720
+run dir     = /fs/ess/PAS1266/graphids/dev/rf15/set_01/temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_fused_context_profile/temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_fused_context_profile
+```
+
+Final logged metrics:
+
+| Metric | Value |
+| --- | ---: |
+| `profile/train_events` | `512.0` |
+| `profile/train_active_lanes` | `16.0` |
+| `profile/train_padding_fraction` | `0.0` |
+| `profile/train_events_per_sec` | `2825.696` |
+| `profile/train_batch_ms` | `181.194` |
+| `profile/train_data_wait_ms` | `14.272` |
+| `resource/gpu_util_percent_mean/max` | `15.8% / 19.0%` |
+| `resource/gpu_mem_gib_max` | `1.142` |
+| `resource/rss_gib_max` | `37.806` |
+| `train_loss` | `1.330` |
+| `val_loss` | `1.167` |
+
+Stable profiler sample medians:
+
+| Epoch | Median events/sec | Median batch ms | Median data wait ms |
+| ---: | ---: | ---: | ---: |
+| `0` | `2836.492` | `180.505` | `14.619` |
+| `1` | `2834.533` | `180.630` | `14.195` |
+| `2` | `2829.216` | `180.969` | `14.400` |
+
+Status: **PASS and promote as current strict-rich baseline**. The fused-context
+implementation preserved the strict equal-work invariant and improved final
+throughput from `2755.05` to `2825.70 events/sec` (`+2.6%`). The epoch 2 median
+improved from `2772.26` to `2829.22 events/sec` (`+2.1%`). Against the
+pre-cleanup `2568.81 events/sec` rich baseline, the final gain is about `10.0%`.
+
+Next target: the scan is still underutilizing the GPU (`15.8%` mean /
+`19.0%` max). The next implementation pass should use a phase/subphase profile
+on the fused-context code, then decide whether to fuse the post-backbone writer
+more aggressively or prototype the narrow rhythm update/context kernel.
+
+## Post-55279425 Writer-Fusion Pass
+
+The next throughput pass is implemented in the working tree:
+
+- added a unique fused-context phase profile,
+  `temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_fused_context_phase_profile.yml`,
+  with `phase_timing: true`, scan subphase timing, `lane_fastpath`, and the
+  strict `16 lanes x 32 chunk` equal-work data settings;
+- added a separate no-subphase strict A/B config,
+  `temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_writer_fusion_profile.yml`,
+  so the writer-fusion benchmark will not reuse the `55279425` Ray output path;
+- moved feature, backbone-state, memory, last-seen, rhythm, and motif writes
+  behind one post-`backbone.step` `_write_lane_step_state` helper while keeping
+  the historical subphase metric names (`backbone_write`, `memory_update`,
+  `rhythm_update`, `motif_update`);
+- replaced motif rolling updates in the lane fastpath with row slice assignment
+  while preserving the causal shift-left then append-current-destination
+  semantics for partial active-lane batches.
+
+Local verification:
+
+```text
+uv run pytest tests/core/models/test_temporal_hybrid.py -q
+32 passed, 4 warnings
+
+uv run pytest tests/core/models/test_temporal_hybrid.py -q -k 'lane_scan or batch_update or sparse_row_overlay'
+12 passed, 20 deselected
+
+uv run pytest tests/exp/test_config_representation.py -q -k 'fused_context or phase_profile or strict_ablation'
+5 passed, 20 deselected
+
+uv run ruff check graphids/core/models/temporal/_hybrid/scan.py graphids/core/models/temporal/_hybrid/contexts.py tests/core/models/test_temporal_hybrid.py tests/exp/test_config_representation.py
+All checks passed!
+
+uv run python scripts/lint_docs.py
+docs lint OK (6 directive targets, 61 markdown files)
+```
+
+Fused-context phase-profile submission:
+
+```text
+config      = temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_fused_context_phase_profile.yml
+SLURM job   = 55279729
+state       = COMPLETED
+exit code   = 0:0
+elapsed     = 00:03:43
+submit      = 2026-10-01T11:48:26
+start/end   = 2026-10-01T11:51:11 / 2026-10-01T11:54:54
+git sha     = 4eadb6baf0ce1e4c454ba96d704955707c03e720
+run dir     = /fs/ess/PAS1266/graphids/dev/rf15/set_01/temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_fused_context_phase_profile/temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_fused_context_phase_profile
+```
+
+Final phase-profile metrics:
+
+| Metric | Value |
+| --- | ---: |
+| `profile/train_events` | `512.0` |
+| `profile/train_active_lanes` | `16.0` |
+| `profile/train_padding_fraction` | `0.0` |
+| `profile/train_events_per_sec` | `2524.535` |
+| `profile/train_batch_ms` | `202.810` |
+| `profile/train_data_wait_ms` | `14.999` |
+| `profile/train_phase_scan_ms` | `102.653` |
+| `profile/train_phase_scan_memory_context_ms` | `18.240` |
+| `profile/train_phase_scan_rhythm_context_ms` | `18.782` |
+| `profile/train_phase_scan_motif_context_ms` | `13.073` |
+| `profile/train_phase_scan_backbone_ms` | `12.628` |
+| `profile/train_phase_scan_backbone_write_ms` | `0.411` |
+| `profile/train_phase_scan_memory_update_ms` | `9.985` |
+| `profile/train_phase_scan_rhythm_update_ms` | `14.097` |
+| `profile/train_phase_scan_motif_update_ms` | `4.540` |
+| `resource/gpu_util_percent_mean/max` | `15.5% / 18.0%` |
+| `resource/gpu_mem_gib_max` | `1.142` |
+| `resource/rss_gib_max` | `28.514` |
+| `train_loss` | `1.396` |
+| `val_loss` | `1.184` |
+
+The phase profile confirms that scan still dominates and that rhythm
+context/update plus memory context remain the largest rich-context costs.
+
+Writer-fusion strict benchmark:
+
+```text
+config      = temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_writer_fusion_profile.yml
+SLURM job   = 55280466
+state       = COMPLETED
+exit code   = 0:0
+elapsed     = 00:03:39
+submit      = 2026-10-01T12:04:06
+start/end   = 2026-10-01T12:04:17 / 2026-10-01T12:07:56
+git sha     = 4eadb6baf0ce1e4c454ba96d704955707c03e720
+run dir     = /fs/ess/PAS1266/graphids/dev/rf15/set_01/temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_writer_fusion_profile/temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_writer_fusion_profile
+```
+
+Final logged metrics:
+
+| Metric | Value |
+| --- | ---: |
+| `profile/train_events` | `512.0` |
+| `profile/train_active_lanes` | `16.0` |
+| `profile/train_padding_fraction` | `0.0` |
+| `profile/train_events_per_sec` | `2873.714` |
+| `profile/train_batch_ms` | `178.167` |
+| `profile/train_data_wait_ms` | `14.899` |
+| `resource/gpu_util_percent_mean/max` | `16.2% / 19.0%` |
+| `resource/gpu_mem_gib_max` | `1.142` |
+| `resource/rss_gib_max` | `31.959` |
+| `train_loss` | `1.125` |
+| `val_loss` | `1.016` |
+
+Stable profiler sample medians:
+
+| Epoch | Median events/sec | Median batch ms | Median data wait ms |
+| ---: | ---: | ---: | ---: |
+| `0` | `2872.446` | `178.245` | `15.284` |
+| `1` | `2884.122` | `177.524` | `14.984` |
+| `2` | `2887.055` | `177.344` | `14.939` |
+
+Status: **PASS and promote as current strict-rich baseline**. The writer-fusion
+implementation preserved the strict equal-work invariant and improved final
+throughput from `2825.70` to `2873.71 events/sec` (`+1.7%`). The epoch 2 median
+improved from `2829.22` to `2887.05 events/sec` (`+2.0%`). Against the
+pre-cleanup `2568.81 events/sec` rich baseline, the final gain is about `11.9%`.
 
 ## SLURM Logs
 

@@ -508,28 +508,25 @@ def test_temporal_hybrid_data_side_profile_configs_parse():
         assert run.payload.callbacks["profiler"]["init_args"]["fail_on_event_mismatch"] is True
 
 
-def test_temporal_hybrid_scan_backend_profile_configs_parse():
+def test_temporal_hybrid_scan_subphase_profile_config_parse():
     from graphids.exp.config import ExperimentConfig
 
-    cases = {
-        "lane_fastpath": "temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_lane_fastpath_profile.yml",
-        "fused_memory": "temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_fused_memory_profile.yml",
-        "compiled_inner": "temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_compiled_inner_profile.yml",
-    }
-    for backend, path in cases.items():
-        cfg = ExperimentConfig.from_yaml(f"configs/experiments/diagnostics/{path}")
-        run = cfg.build_run(name=cfg.experiment_name, stage=cfg.stage, config=cfg.config)
+    cfg = ExperimentConfig.from_yaml(
+        "configs/experiments/diagnostics/"
+        "temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_lane_fastpath_profile.yml"
+    )
+    run = cfg.build_run(name=cfg.experiment_name, stage=cfg.stage, config=cfg.config)
 
-        assert run.resources.memory_gb == 24
-        assert run.payload.data["batch_mode"] == "stream_lanes"
-        assert run.payload.data["stream_lanes"] == 16
-        assert run.payload.data["chunk_size"] == 32
-        assert run.payload.data["batch_size"] == 512
-        assert run.payload.data["drop_partial_lane_batches"] is True
-        assert run.payload.model["scan"] == {"backend": backend, "profile_subphases": True}
-        assert run.payload.model["profiling"]["phase_timing"] is True
-        assert run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == 512
-        assert run.payload.callbacks["profiler"]["init_args"]["fail_on_event_mismatch"] is True
+    assert run.resources.memory_gb == 24
+    assert run.payload.data["batch_mode"] == "stream_lanes"
+    assert run.payload.data["stream_lanes"] == 16
+    assert run.payload.data["chunk_size"] == 32
+    assert run.payload.data["batch_size"] == 512
+    assert run.payload.data["drop_partial_lane_batches"] is True
+    assert run.payload.model["scan"] == {"profile_subphases": True}
+    assert run.payload.model["profiling"]["phase_timing"] is True
+    assert run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == 512
+    assert run.payload.callbacks["profiler"]["init_args"]["fail_on_event_mismatch"] is True
 
 
 def test_temporal_hybrid_strict_ablation_profile_configs_parse():
@@ -561,7 +558,7 @@ def test_temporal_hybrid_strict_ablation_profile_configs_parse():
         assert run.payload.data["pin_memory"] is False
         assert run.payload.data["persistent_workers"] is False
         assert run.payload.data["drop_partial_lane_batches"] is True
-        assert run.payload.model["scan"] == {"backend": "lane_fastpath"}
+        assert "scan" not in run.payload.model
         assert "profiling" not in run.payload.model
         assert run.payload.model["memory"]["enabled"] is memory_enabled
         assert run.payload.model["rhythm"]["enabled"] is rhythm_enabled
@@ -588,8 +585,83 @@ def test_temporal_hybrid_strict_rich_phase_profile_config_parse():
     assert run.payload.data["prebuild_batches"] == 0
     assert run.payload.data["pin_memory"] is False
     assert run.payload.data["drop_partial_lane_batches"] is True
-    assert run.payload.model["scan"] == {"backend": "lane_fastpath", "profile_subphases": True}
+    assert run.payload.model["scan"] == {"profile_subphases": True}
     assert run.payload.model["profiling"]["phase_timing"] is True
+    assert run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == 512
+    assert run.payload.callbacks["profiler"]["init_args"]["fail_on_event_mismatch"] is True
+
+
+def test_temporal_hybrid_fused_context_profile_config_parse():
+    from graphids.exp.config import ExperimentConfig
+
+    cfg = ExperimentConfig.from_yaml(
+        "configs/experiments/diagnostics/"
+        "temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_fused_context_profile.yml"
+    )
+    run = cfg.build_run(name=cfg.experiment_name, stage=cfg.stage, config=cfg.config)
+
+    assert cfg.experiment_name.endswith("_fused_context_profile")
+    assert cfg.plan_id == "temporal_hybrid_fused_context_profile_2026_10_01"
+    assert run.payload.data["batch_mode"] == "stream_lanes"
+    assert run.payload.data["stream_lanes"] == 16
+    assert run.payload.data["chunk_size"] == 32
+    assert run.payload.data["batch_size"] == 512
+    assert run.payload.data["num_workers"] == 0
+    assert run.payload.data["prebuild_batches"] == 0
+    assert run.payload.data["pin_memory"] is False
+    assert run.payload.data["drop_partial_lane_batches"] is True
+    assert "scan" not in run.payload.model
+    assert "profiling" not in run.payload.model
+    assert run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == 512
+    assert run.payload.callbacks["profiler"]["init_args"]["fail_on_event_mismatch"] is True
+
+
+def test_temporal_hybrid_fused_context_phase_profile_config_parse():
+    from graphids.exp.config import ExperimentConfig
+
+    cfg = ExperimentConfig.from_yaml(
+        "configs/experiments/diagnostics/"
+        "temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_fused_context_phase_profile.yml"
+    )
+    run = cfg.build_run(name=cfg.experiment_name, stage=cfg.stage, config=cfg.config)
+
+    assert cfg.experiment_name.endswith("_fused_context_phase_profile")
+    assert cfg.plan_id == "temporal_hybrid_fused_context_phase_profile_2026_10_01"
+    assert run.payload.data["batch_mode"] == "stream_lanes"
+    assert run.payload.data["stream_lanes"] == 16
+    assert run.payload.data["chunk_size"] == 32
+    assert run.payload.data["batch_size"] == 512
+    assert run.payload.data["num_workers"] == 0
+    assert run.payload.data["prebuild_batches"] == 0
+    assert run.payload.data["pin_memory"] is False
+    assert run.payload.data["drop_partial_lane_batches"] is True
+    assert run.payload.model["scan"] == {"profile_subphases": True}
+    assert run.payload.model["profiling"]["phase_timing"] is True
+    assert run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == 512
+    assert run.payload.callbacks["profiler"]["init_args"]["fail_on_event_mismatch"] is True
+
+
+def test_temporal_hybrid_writer_fusion_profile_config_parse():
+    from graphids.exp.config import ExperimentConfig
+
+    cfg = ExperimentConfig.from_yaml(
+        "configs/experiments/diagnostics/"
+        "temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_writer_fusion_profile.yml"
+    )
+    run = cfg.build_run(name=cfg.experiment_name, stage=cfg.stage, config=cfg.config)
+
+    assert cfg.experiment_name.endswith("_writer_fusion_profile")
+    assert cfg.plan_id == "temporal_hybrid_writer_fusion_profile_2026_10_01"
+    assert run.payload.data["batch_mode"] == "stream_lanes"
+    assert run.payload.data["stream_lanes"] == 16
+    assert run.payload.data["chunk_size"] == 32
+    assert run.payload.data["batch_size"] == 512
+    assert run.payload.data["num_workers"] == 0
+    assert run.payload.data["prebuild_batches"] == 0
+    assert run.payload.data["pin_memory"] is False
+    assert run.payload.data["drop_partial_lane_batches"] is True
+    assert "scan" not in run.payload.model
+    assert "profiling" not in run.payload.model
     assert run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == 512
     assert run.payload.callbacks["profiler"]["init_args"]["fail_on_event_mismatch"] is True
 
@@ -631,7 +703,7 @@ def test_temporal_hybrid_lane_scaling_lane_fastpath_workers0_configs_parse():
         assert run.payload.data["pin_memory"] is False
         assert run.payload.data["persistent_workers"] is False
         assert run.payload.data["drop_partial_lane_batches"] is True
-        assert run.payload.model["scan"] == {"backend": "lane_fastpath"}
+        assert "scan" not in run.payload.model
         assert "profiling" not in run.payload.model
         assert run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == expected["expected_events"]
         assert run.payload.callbacks["profiler"]["init_args"]["fail_on_event_mismatch"] is True

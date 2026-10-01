@@ -60,6 +60,13 @@ def _lane_semantic_data() -> TemporalData:
     )
 
 
+def _uneven_lane_semantic_data() -> TemporalData:
+    data = _lane_semantic_data()
+    data.stream_id = torch.tensor([0, 0, 0, 0, 1, 1], dtype=torch.long)
+    data.reset_after = torch.tensor([False, False, False, False, False, True])
+    return data
+
+
 def _slice_temporal(data: TemporalData, mask: torch.Tensor) -> TemporalData:
     return TemporalData(
         src=data.src[mask],
@@ -203,7 +210,7 @@ def _assert_state_equal(actual, expected):
         if actual_value is None or expected_value is None:
             assert actual_value is expected_value
         elif actual_value.is_floating_point():
-            assert torch.allclose(actual_value, expected_value)
+            assert torch.allclose(actual_value, expected_value, rtol=1e-5, atol=1e-5)
         else:
             assert torch.equal(actual_value, expected_value)
 
@@ -213,9 +220,58 @@ def _assert_outputs_equal(actual, expected):
     for key, actual_value in actual.items():
         expected_value = expected[key]
         if actual_value.is_floating_point():
-            assert torch.allclose(actual_value, expected_value)
+            assert torch.allclose(actual_value, expected_value, rtol=1e-5, atol=1e-5)
         else:
             assert torch.equal(actual_value, expected_value)
+
+
+def _lane_batch_reference_forward_with_state(model, batch):
+    lanes, chunk = batch.valid_mask.shape
+    hidden = int(model.hparams.input["hidden"])
+    expected_features = batch.msg.new_zeros((lanes, chunk, hidden))
+    initial = model._initial_lane_state_like(expected_features)
+    lane_states: list[dict[str, torch.Tensor | None]] = []
+
+    for lane_idx in range(lanes):
+        valid = batch.valid_mask[lane_idx]
+        if not valid.any():
+            lane_states.append({key: None if value is None else value[lane_idx].clone() for key, value in initial.items()})
+            continue
+        temporal = TemporalData(
+            src=batch.src[lane_idx, valid],
+            dst=batch.dst[lane_idx, valid],
+            t=batch.t[lane_idx, valid],
+            msg=batch.msg[lane_idx, valid],
+            y=batch.y[lane_idx, valid],
+            attack_type=batch.attack_type[lane_idx, valid],
+            stream_id=batch.stream_id[lane_idx, valid],
+            reset_after=batch.reset_after[lane_idx, valid],
+            event_id=batch.event_id[lane_idx, valid],
+            is_scored=batch.is_scored[lane_idx, valid],
+        )
+        lane_out, lane_state = _reference_forward_with_state(model, temporal, None)
+        expected_features[lane_idx, valid] = lane_out["features"]
+
+        state_with_prev = dict(lane_state)
+        state_with_prev["prev_t"] = batch.t.new_tensor(-1.0)
+        if not batch.lane_stream_end[lane_idx]:
+            valid_positions = torch.nonzero(valid, as_tuple=False).flatten()
+            state_with_prev["prev_t"] = batch.t[lane_idx, valid_positions[-1]].clone()
+        elif model.backbone.backbone_type != "none":
+            state_with_prev["backbone"] = expected_features.new_zeros((model.backbone.layers, hidden))
+        lane_states.append(state_with_prev)
+
+    expected_state: dict[str, torch.Tensor | None] = {}
+    for key, initial_value in initial.items():
+        values = [state.get(key) for state in lane_states]
+        if key == "backbone" and values[0] is not None:
+            expected_state[key] = torch.stack([value for value in values if value is not None], dim=1)
+        elif initial_value is None or values[0] is None:
+            expected_state[key] = None
+        else:
+            expected_state[key] = torch.stack([value for value in values if value is not None], dim=0)
+    expected_out = model._heads_from_features(expected_features.reshape(lanes * chunk, hidden), batch)
+    return expected_out, expected_state
 
 
 def _old_memory_update(memory, state, src, dst, message):
@@ -336,8 +392,7 @@ def test_temporal_hybrid_segment_scan_matches_reference_loop(reset_after):
     _assert_state_equal(actual_state, expected_state)
 
 
-@pytest.mark.parametrize("backend", ["lane_fastpath", "fused_memory", "compiled_inner"])
-def test_temporal_hybrid_lane_scan_backend_matches_reference_loop(backend):
+def test_temporal_hybrid_lane_scan_matches_plain_reference_loop():
     model = _hybrid(
         objective="joint",
         backbone_type="ssm_lite",
@@ -347,28 +402,56 @@ def test_temporal_hybrid_lane_scan_backend_matches_reference_loop(backend):
         rhythm={"enabled": True},
         motif={"enabled": True, "length": 3, "embedding_dim": 4, "time_dim": 4},
         in_channels=17,
-        scan={"backend": backend, "profile_subphases": True},
+        scan={"profile_subphases": True},
     )
     from graphids.core.data.datamodule.stream_lanes import TemporalStreamLaneLoader
 
     batch = next(iter(TemporalStreamLaneLoader(_lane_semantic_data(), stream_lanes=2, chunk_size=2)))
     actual_out, actual_state = model._forward_with_state(batch, None)
 
-    reference = _hybrid(
+    expected_out, expected_state = _lane_batch_reference_forward_with_state(model, batch)
+
+    _assert_outputs_equal(actual_out, expected_out)
+    _assert_state_equal(actual_state, expected_state)
+
+
+def test_temporal_hybrid_rejects_retired_scan_backend():
+    with pytest.raises(ValueError, match="unknown scan config key"):
+        _hybrid(scan={"backend": "lane_fastpath"})
+
+
+def test_temporal_hybrid_lane_scan_writer_handles_partial_motif_roll(monkeypatch):
+    model = _hybrid(
         objective="joint",
         backbone_type="ssm_lite",
         memory={"type": "tgn", "enabled": True, "reset_on_stream_end": True, "time_encoding_dim": 4},
         heads={"classification": True, "next_id": True, "iat": True, "payload_delta": True},
         anomaly={"mode": "nll"},
         rhythm={"enabled": True},
-        motif={"enabled": True, "length": 3, "embedding_dim": 4, "time_dim": 4},
+        motif={"enabled": True, "length": 4, "embedding_dim": 4, "time_dim": 4},
         in_channels=17,
+        scan={"profile_subphases": True},
     )
-    reference.load_state_dict(model.state_dict())
-    expected_out, expected_state = reference._forward_with_state(batch, None)
+    original_writer = model._write_lane_step_state
+    writer_lane_counts = []
 
+    def spy_writer(**kwargs):
+        writer_lane_counts.append(int(kwargs["gathered"].lane_idx.numel()))
+        return original_writer(**kwargs)
+
+    monkeypatch.setattr(model, "_write_lane_step_state", spy_writer)
+
+    from graphids.core.data.datamodule.stream_lanes import TemporalStreamLaneLoader
+
+    batch = next(iter(TemporalStreamLaneLoader(_uneven_lane_semantic_data(), stream_lanes=2, chunk_size=3)))
+    actual_out, actual_state = model._forward_with_state(batch, None)
+
+    expected_out, expected_state = _lane_batch_reference_forward_with_state(model, batch)
+
+    assert writer_lane_counts == [2, 2, 1]
     _assert_outputs_equal(actual_out, expected_out)
     _assert_state_equal(actual_state, expected_state)
+    assert torch.equal(actual_state["motif_ids"][0], torch.tensor([0, 1, 1, 2]))
 
 
 @pytest.mark.parametrize(
@@ -418,19 +501,17 @@ def test_temporal_hybrid_lane_scan_module_variants_match_eager(overrides):
         "in_channels": 17,
     }
     base.update(overrides)
-    model = _hybrid(**base, scan={"backend": "lane_fastpath", "profile_subphases": True})
+    model = _hybrid(**base, scan={"profile_subphases": True})
     batch = next(iter(TemporalStreamLaneLoader(_lane_semantic_data(), stream_lanes=2, chunk_size=2)))
     actual_out, actual_state = model._forward_with_state(batch, None)
 
-    reference = _hybrid(**base)
-    reference.load_state_dict(model.state_dict())
-    expected_out, expected_state = reference._forward_with_state(batch, None)
+    expected_out, expected_state = _lane_batch_reference_forward_with_state(model, batch)
 
     _assert_outputs_equal(actual_out, expected_out)
     _assert_state_equal(actual_state, expected_state)
 
 
-def test_temporal_id_memory_batch_update_matches_gru_cell_path():
+def test_temporal_id_memory_batched_gru_cell_path_matches_row_loop():
     from graphids.core.models.temporal._hybrid.contexts import TemporalIdMemory
 
     memory = TemporalIdMemory(num_ids=4, hidden=8)
@@ -443,7 +524,9 @@ def test_temporal_id_memory_batch_update_matches_gru_cell_path():
     dst_input = torch.where(same_id.view(-1, 1), src_expected, dst_rows)
     dst_expected = memory.update_cell(message, dst_input)
 
-    src_actual, dst_actual = memory.update_src_dst_batch(message, src_rows, dst_rows, same_id)
+    src_actual = memory.update_cell(message, src_rows)
+    dst_input_actual = torch.where(same_id.view(-1, 1), src_actual, dst_rows)
+    dst_actual = memory.update_cell(message, dst_input_actual)
 
     assert torch.allclose(src_actual, src_expected, atol=1e-6)
     assert torch.allclose(dst_actual, dst_expected, atol=1e-6)

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from .encoders import TemporalTimeEncoder
 
@@ -180,53 +179,6 @@ class TemporalIdMemory(nn.Module):
         dst_input = src_new if same_id else dst_row
         dst_new = self.update_cell(message.unsqueeze(0), dst_input.unsqueeze(0)).squeeze(0)
         return src_new, dst_new
-
-    def _gru_cell_batch_with_input_projection(self, gi: torch.Tensor, rows: torch.Tensor) -> torch.Tensor:
-        gh = F.linear(rows, self.update_cell.weight_hh, self.update_cell.bias_hh)
-        i_r, i_z, i_n = gi.chunk(3, dim=-1)
-        h_r, h_z, h_n = gh.chunk(3, dim=-1)
-        reset = torch.sigmoid(i_r + h_r)
-        update = torch.sigmoid(i_z + h_z)
-        candidate = torch.tanh(i_n + reset * h_n)
-        return candidate + update * (rows - candidate)
-
-    def _gru_cell_batch(self, message: torch.Tensor, rows: torch.Tensor) -> torch.Tensor:
-        gi = F.linear(message, self.update_cell.weight_ih, self.update_cell.bias_ih)
-        return self._gru_cell_batch_with_input_projection(gi, rows)
-
-    def update_src_dst_batch(
-        self,
-        message: torch.Tensor,
-        src_rows: torch.Tensor,
-        dst_rows: torch.Tensor,
-        same_id: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        gi = F.linear(message, self.update_cell.weight_ih, self.update_cell.bias_ih)
-        src_new = self._gru_cell_batch_with_input_projection(gi, src_rows)
-        dst_input = torch.where(same_id.view(-1, 1), src_new, dst_rows)
-        dst_new = self._gru_cell_batch_with_input_projection(gi, dst_input)
-        return src_new, dst_new
-
-    def compiled_update_src_dst_batch(
-        self,
-        message: torch.Tensor,
-        src_rows: torch.Tensor,
-        dst_rows: torch.Tensor,
-        same_id: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        if not message.is_cuda or not hasattr(torch, "compile"):
-            return self.update_src_dst_batch(message, src_rows, dst_rows, same_id)
-        compiled = getattr(self, "_compiled_update_src_dst_batch", None)
-        if compiled is None:
-            compiled = torch.compile(
-                self.update_src_dst_batch,
-                backend="inductor",
-                mode="reduce-overhead",
-                fullgraph=False,
-                dynamic=False,
-            )
-            self._compiled_update_src_dst_batch = compiled
-        return compiled(message, src_rows, dst_rows, same_id)
 
     def update_one(
         self,
@@ -462,6 +414,11 @@ class TemporalMotifContext(nn.Module):
     def read_context(self, ids: torch.Tensor, iats: torch.Tensor) -> torch.Tensor:
         encoded_ids = self.embedding(ids.clamp_min(0).clamp_max(self.num_ids - 1).long()).flatten()
         encoded_iats = self.time_encoder(iats).flatten()
+        return self.proj(torch.cat([encoded_ids, encoded_iats], dim=-1))
+
+    def read_context_batch(self, ids: torch.Tensor, iats: torch.Tensor) -> torch.Tensor:
+        encoded_ids = self.embedding(ids.clamp_min(0).clamp_max(self.num_ids - 1).long()).flatten(start_dim=1)
+        encoded_iats = self.time_encoder(iats).flatten(start_dim=1)
         return self.proj(torch.cat([encoded_ids, encoded_iats], dim=-1))
 
     def update_one(

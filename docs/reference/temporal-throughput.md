@@ -26,24 +26,28 @@ The profile keeps:
 - profiler callback settings
 - trainer budget: `limit_train_batches: 100`, `max_epochs: 3`
 
-The current measured strict rich baseline from the September 30, 2026 feature
-ablation run is:
+The current measured strict rich baseline from SLURM job `55280466` is:
 
 ```text
 geometry                         = 16 lanes x 32 chunk
 profile/train_events             = 512
 profile/train_padding_fraction   = 0.0
-final events/sec                 = 2568.81
-epoch 2 median events/sec        = 2602.36
-train_loss                       = 1.746
-val_loss                         = 1.459
+final events/sec                 = 2873.71
+epoch 2 median events/sec        = 2887.05
+train_loss                       = 1.125
+val_loss                         = 1.016
+gpu util mean/max                = 16.2% / 19.0%
+gpu mem max                      = 1.142 GiB
+rss max                          = 31.959 GiB
 ```
 
-This replaced the earlier September 30, 2026 rich strict baseline of
-`2267.660 events/sec`, improving final throughput by about `13.3%` and the
-epoch 2 median by about `14.8%`. It also replaced the September 29, 2026
-`16 x 32` baseline of `1519.294 events/sec`. The gain came from reducing
-scan/state-update overhead, not from lane widening.
+This replaced the October 1, 2026 fused-context baseline of
+`2825.70 events/sec`, improving final throughput by about `1.7%` and the epoch
+2 median by about `2.0%`. Against the September 30, 2026 feature-ablation rich
+strict baseline of `2568.81 events/sec`, the final gain is about `11.9%`. The
+gain came from reducing scan/state-update overhead, not from lane widening. The
+writer-fusion lane scan is now the single lane-batch implementation; the public
+`model.scan` surface is profiling-only.
 
 ## A/B Rules
 
@@ -214,10 +218,10 @@ The next diagnostic configs keep the `16 lanes x 32 chunk` and
   workers to isolate worker startup/reuse effects.
 
 Promote a data-side treatment only if it preserves finite losses and improves
-equal-work `profile/train_events_per_sec` against the current `2568.81`
+equal-work `profile/train_events_per_sec` against the current `2873.71`
 events/sec strict rich baseline. If phase timing shows scan time dominates while
-`profile/train_data_wait_ms` stays near 1-2 ms, stop increasing prefetch depth
-and target recurrent scan/backbone fusion instead.
+`profile/train_data_wait_ms` stays small relative to batch time, stop increasing
+prefetch depth and target recurrent scan/backbone fusion instead.
 
 ### September 30 Follow-up Results
 
@@ -250,10 +254,10 @@ not improve final equal-work throughput versus the no-worker diagnostic on this
 run. The bottleneck remains inside the recurrent scan/backbone path, not CPU
 batch construction.
 
-## Scan Backend Diagnostics
+## Historical Scan Backend Diagnostics
 
-The next scan-throughput pass adds opt-in `model.scan` backends while keeping
-the default `eager` path behavior-compatible:
+This historical scan-throughput pass tested an opt-in backend matrix that has
+since been retired from the active config/API surface:
 
 - `backend: lane_fastpath` uses the common all-valid lane chunk shape to avoid
   active-lane gather/scatter and uses flattened lane-ID row addressing.
@@ -268,11 +272,10 @@ Diagnostic configs:
 - `temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_fused_memory_profile.yml`
 - `temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_compiled_inner_profile.yml`
 
-All preserve `16 lanes x 32 chunk`, `profile/train_events = 512`, and
-`drop_partial_lane_batches: true`. They also enable phase timing and scan
-subphase timing. Promote a backend only if losses remain finite, event-count
-invariants hold, `profile/train_phase_scan_ms` falls, and equal-work throughput
-beats the current `2233.770 events/sec` baseline.
+All preserved `16 lanes x 32 chunk`, `profile/train_events = 512`, and
+`drop_partial_lane_batches: true`. They also enabled phase timing and scan
+subphase timing. The retired configs remain benchmark history only; do not add
+these backend names to new active configs.
 
 ### September 30 Scan Backend Submissions
 
@@ -370,10 +373,10 @@ reduced memory-update time, but its RSS max was an outlier. Repeat
 
 ## Lane-Scaling Workers0 Diagnostics
 
-The next diagnostic isolated lane scaling with the clean `lane_fastpath`
-backend and no phase or scan subphase timing. All three configs used
-`num_workers: 0`, `prebuild_batches: 0`, `pin_memory: false`,
-`drop_partial_lane_batches: true`, and `fail_on_event_mismatch: true`.
+The next diagnostic isolated lane scaling with the flattened lane scan and no
+phase or scan subphase timing. All three configs used `num_workers: 0`,
+`prebuild_batches: 0`, `pin_memory: false`, `drop_partial_lane_batches: true`,
+and `fail_on_event_mismatch: true`.
 
 Submitted on September 30, 2026:
 
@@ -408,7 +411,8 @@ guarantee full widened-lane batches before throughput is meaningful.
 
 The September 30, 2026 strict feature-ablation matrix is the current reference
 for rich feature cost. All runs reached `max_epochs=3` with `train_events=512`
-and `train_padding_fraction=0.0`.
+and `train_padding_fraction=0.0`. Job `55246546` then promoted the cleanup
+baseline for the full rich variant.
 
 | Variant | SLURM job | Epoch 2 median eps | Final eps | Train loss | Val loss |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -419,11 +423,22 @@ and `train_padding_fraction=0.0`.
 | `memory_only` | `55242513` | `4023.18` | `4021.14` | `1.310` | `1.123` |
 | `backbone_only` | `55242520` | `20275.07` | `20169.79` | `1.495` | `1.188` |
 | `backbone_none` | `55242564` | `45038.00` | `45907.58` | `2.248` | `2.029` |
+| `rich cleanup` | `55246546` | `2772.26` | `2755.05` | `1.147` | `1.030` |
+| `rich fused_context` | `55279425` | `2829.22` | `2825.70` | `1.330` | `1.167` |
+| `rich writer_fusion` | `55280466` | `2887.05` | `2873.71` | `1.125` | `1.016` |
 
-The rich strict run improved over the previous `2267.660 events/sec` reference
-by about `13.3%` on final throughput and `14.8%` on the epoch 2 median. The
-phase probe job `55242574` finished at `2404.17 events/sec` with subphase timing
-enabled and measured `scan = 108.25 ms` inside `forward = 110.10 ms`.
+The original rich strict run improved over the previous `2267.660 events/sec`
+reference by about `13.3%` on final throughput and `14.8%` on the epoch 2
+median. The phase probe job `55242574` finished at `2404.17 events/sec` with
+subphase timing enabled and measured `scan = 108.25 ms` inside
+`forward = 110.10 ms`.
+
+The cleanup run improved the full rich result from `2568.81` to `2755.05`
+events/sec (`+7.2%`) while preserving the 512-event, zero-padding invariant.
+The fused-context run improved the cleanup result to `2825.70` events/sec
+(`+2.6%`) with the same invariant.
+The writer-fusion run improved the fused-context result to `2873.71` events/sec
+(`+1.7%`) while preserving the same invariant.
 
 ## Failed Geometry Probe
 
@@ -533,7 +548,36 @@ uv run ruff check graphids/core/models/temporal/_hybrid/scan.py tests/core/model
 All checks passed
 ```
 
-Do not promote this over the `2568.81 events/sec` strict-rich baseline until a
-strict SLURM profile confirms an equal-work throughput win. The first submitted
-benchmark for this cleanup is SLURM job `55246546`; it was still `PENDING`
-for priority at last check.
+The first submitted benchmark for this cleanup, SLURM job `55246546`, completed
+successfully and became the cleanup strict-rich baseline:
+
+```text
+final events/sec          = 2755.05
+epoch 2 median events/sec = 2772.26
+profile/train_events      = 512
+padding fraction          = 0.0
+```
+
+Next implementation work should fuse the rich context builder and post-backbone
+state writer before considering custom kernels. Also use a unique Ray output
+name or clear the prior output directory for repeated A/Bs, because job
+`55246546` reused a directory that already contained Ray checkpoint metadata.
+
+The first fused-context implementation pass was benchmarked with:
+
+```text
+configs/experiments/diagnostics/temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_fused_context_profile.yml
+```
+
+It keeps the current strict geometry and uses a distinct experiment name so the
+Ray run does not reuse `55246546` checkpoint metadata. SLURM job `55279425`
+completed successfully and became the fused-context strict-rich baseline.
+
+The follow-up writer-fusion pass was benchmarked with:
+
+```text
+configs/experiments/diagnostics/temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_writer_fusion_profile.yml
+```
+
+SLURM job `55280466` completed successfully with `512` train events and
+zero padding, improving the final strict-rich baseline to `2873.71 events/sec`.

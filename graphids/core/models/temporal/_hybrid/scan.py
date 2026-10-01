@@ -26,6 +26,21 @@ class _LaneStepGather:
 
 
 class HybridScanMixin:
+    @staticmethod
+    def _add_lane_context(base: torch.Tensor, current: torch.Tensor | None, context: torch.Tensor) -> torch.Tensor:
+        if current is None:
+            current = base.clone()
+        current.add_(context.to(device=current.device, dtype=current.dtype))
+        return current
+
+    @staticmethod
+    def _flat_index_select(rows: torch.Tensor, index: torch.Tensor) -> torch.Tensor:
+        return rows.index_select(0, index)
+
+    @staticmethod
+    def _flat_index_copy(rows: torch.Tensor, index: torch.Tensor, values: torch.Tensor) -> None:
+        rows.index_copy_(0, index, values.to(device=rows.device, dtype=rows.dtype))
+
     def _lane_step_context(
         self,
         *,
@@ -38,7 +53,6 @@ class HybridScanMixin:
         lane_ids_all: torch.Tensor,
         step_idx: int,
         num_ids: int,
-        use_lane_fastpath: bool,
         full_chunk_fastpath: bool,
         profile_scan_subphases: bool,
         memory_state: torch.Tensor | None,
@@ -58,7 +72,7 @@ class HybridScanMixin:
         elif not active.any():
             return encoded.new_empty((0, encoded.size(-1))), None
         else:
-            all_lanes_active = bool(use_lane_fastpath and active.all())
+            all_lanes_active = bool(active.all())
 
         if all_lanes_active:
             lane_idx = lane_ids_all
@@ -98,14 +112,16 @@ class HybridScanMixin:
             all_lanes_active=all_lanes_active,
         )
 
+        x_with_context: torch.Tensor | None = None
+
         if self.memory is not None and memory_state is not None:
             subphase_start = self._scan_subphase_start() if profile_scan_subphases else None
             assert last_seen is not None
             if memory_flat is not None and last_seen_flat is not None:
-                src_rows = memory_flat[flat_src]
-                dst_rows = memory_flat[flat_dst]
-                src_last = last_seen_flat[flat_src]
-                dst_last = last_seen_flat[flat_dst]
+                src_rows = self._flat_index_select(memory_flat, flat_src)
+                dst_rows = self._flat_index_select(memory_flat, flat_dst)
+                src_last = self._flat_index_select(last_seen_flat, flat_src)
+                dst_last = self._flat_index_select(last_seen_flat, flat_dst)
             else:
                 src_rows = memory_state[lane_idx, src_idx]
                 dst_rows = memory_state[lane_idx, dst_idx]
@@ -115,43 +131,43 @@ class HybridScanMixin:
             gathered.memory_dst_rows = dst_rows
             if self.memory._has_context:
                 now = t_t.to(device=memory_state.device, dtype=memory_state.dtype)
-                x_t = x_t + self.memory.read_context_rows_batch(src_rows, dst_rows, src_last, dst_last, now)
+                memory_context = self.memory.read_context_rows_batch(src_rows, dst_rows, src_last, dst_last, now)
+                x_with_context = self._add_lane_context(x_t, x_with_context, memory_context)
             if profile_scan_subphases:
                 self._scan_subphase_end("memory_context", subphase_start)
 
         if self.rhythm is not None and rhythm_state is not None:
             subphase_start = self._scan_subphase_start() if profile_scan_subphases else None
             if rhythm_flat is not None:
-                src_rows = rhythm_flat[flat_src]
-                dst_rows = rhythm_flat[flat_dst]
+                src_rows = self._flat_index_select(rhythm_flat, flat_src)
+                dst_rows = self._flat_index_select(rhythm_flat, flat_dst)
             else:
                 src_rows = rhythm_state[lane_idx, src_idx]
                 dst_rows = rhythm_state[lane_idx, dst_idx]
             gathered.rhythm_src_rows = src_rows
             gathered.rhythm_dst_rows = dst_rows
-            x_t = x_t + self.rhythm.read_context_rows_batch(src_rows, dst_rows)
+            x_with_context = self._add_lane_context(x_t, x_with_context, self.rhythm.read_context_rows_batch(src_rows, dst_rows))
             if profile_scan_subphases:
                 self._scan_subphase_end("rhythm_context", subphase_start)
 
         if self.motif is not None and motif_ids is not None and motif_iats is not None:
             subphase_start = self._scan_subphase_start() if profile_scan_subphases else None
-            ids = motif_ids[lane_idx]
-            iats = motif_iats[lane_idx]
-            encoded_ids = self.motif.embedding(ids.clamp_min(0).clamp_max(self.motif.num_ids - 1).long()).flatten(
-                start_dim=1
-            )
-            encoded_iats = self.motif.time_encoder(iats).flatten(start_dim=1)
-            x_t = x_t + self.motif.proj(torch.cat([encoded_ids, encoded_iats], dim=-1))
+            motif_context = self.motif.read_context_batch(motif_ids[lane_idx], motif_iats[lane_idx])
+            x_with_context = self._add_lane_context(x_t, x_with_context, motif_context)
             if profile_scan_subphases:
                 self._scan_subphase_end("motif_context", subphase_start)
 
-        return x_t, gathered
+        return x_t if x_with_context is None else x_with_context, gathered
 
-    def _write_lane_step_updates(
+    def _write_lane_step_state(
         self,
         *,
         gathered: _LaneStepGather,
+        features_2d: torch.Tensor,
+        step_idx: int,
         z_t: torch.Tensor,
+        next_backbone: torch.Tensor | None,
+        backbone_state: torch.Tensor | None,
         memory_state: torch.Tensor | None,
         last_seen: torch.Tensor | None,
         rhythm_state: torch.Tensor | None,
@@ -160,44 +176,45 @@ class HybridScanMixin:
         memory_flat: torch.Tensor | None,
         last_seen_flat: torch.Tensor | None,
         rhythm_flat: torch.Tensor | None,
-        use_fused_memory: bool,
-        use_compiled_memory: bool,
         profile_scan_subphases: bool,
-    ) -> None:
+    ) -> torch.Tensor | None:
+        if gathered.all_lanes_active:
+            features_2d[:, step_idx] = z_t
+        else:
+            features_2d[gathered.active, step_idx] = z_t
+
+        if next_backbone is not None:
+            subphase_start = self._scan_subphase_start() if profile_scan_subphases else None
+            if backbone_state is None:
+                backbone_state = features_2d.new_zeros(
+                    (next_backbone.size(0), features_2d.size(0), features_2d.size(-1))
+                )
+            if gathered.all_lanes_active:
+                backbone_state = next_backbone
+            else:
+                backbone_state[:, gathered.active, :] = next_backbone
+            if profile_scan_subphases:
+                self._scan_subphase_end("backbone_write", subphase_start)
+
         if self.memory is not None and memory_state is not None:
             subphase_start = self._scan_subphase_start() if profile_scan_subphases else None
             assert gathered.memory_src_rows is not None
             assert gathered.memory_dst_rows is not None
-            if use_compiled_memory:
-                src_new, dst_new = self.memory.compiled_update_src_dst_batch(
-                    z_t,
-                    gathered.memory_src_rows,
-                    gathered.memory_dst_rows,
-                    gathered.same_id,
-                )
-            elif use_fused_memory:
-                src_new, dst_new = self.memory.update_src_dst_batch(
-                    z_t,
-                    gathered.memory_src_rows,
-                    gathered.memory_dst_rows,
-                    gathered.same_id,
-                )
-            else:
-                src_new = self.memory.update_cell(z_t, gathered.memory_src_rows)
-                dst_input = torch.where(gathered.same_id.unsqueeze(-1), src_new, gathered.memory_dst_rows)
-                dst_new = self.memory.update_cell(z_t, dst_input)
+            src_new = self.memory.update_cell(z_t, gathered.memory_src_rows)
+            dst_input = torch.where(gathered.same_id.unsqueeze(-1), src_new, gathered.memory_dst_rows)
+            dst_new = self.memory.update_cell(z_t, dst_input)
 
             if memory_flat is not None:
-                memory_flat[gathered.flat_src] = src_new
-                memory_flat[gathered.flat_dst] = dst_new
+                self._flat_index_copy(memory_flat, gathered.flat_src, src_new)
+                self._flat_index_copy(memory_flat, gathered.flat_dst, dst_new)
             else:
                 memory_state[gathered.lane_idx, gathered.src_idx] = src_new
                 memory_state[gathered.lane_idx, gathered.dst_idx] = dst_new
             if last_seen is not None:
                 now = gathered.t_t.to(device=last_seen.device, dtype=last_seen.dtype)
                 if last_seen_flat is not None:
-                    last_seen_flat[gathered.flat_src] = now
-                    last_seen_flat[gathered.flat_dst] = now
+                    self._flat_index_copy(last_seen_flat, gathered.flat_src, now)
+                    self._flat_index_copy(last_seen_flat, gathered.flat_dst, now)
                 else:
                     last_seen[gathered.lane_idx, gathered.src_idx] = now
                     last_seen[gathered.lane_idx, gathered.dst_idx] = now
@@ -215,8 +232,8 @@ class HybridScanMixin:
                 gathered.same_id,
             )
             if rhythm_flat is not None:
-                rhythm_flat[gathered.flat_src] = src_new
-                rhythm_flat[gathered.flat_dst] = dst_new
+                self._flat_index_copy(rhythm_flat, gathered.flat_src, src_new)
+                self._flat_index_copy(rhythm_flat, gathered.flat_dst, dst_new)
             else:
                 rhythm_state[gathered.lane_idx, gathered.src_idx] = src_new
                 rhythm_state[gathered.lane_idx, gathered.dst_idx] = dst_new
@@ -225,13 +242,15 @@ class HybridScanMixin:
 
         if self.motif is not None and motif_ids is not None and motif_iats is not None:
             subphase_start = self._scan_subphase_start() if profile_scan_subphases else None
-            for motif_pos in range(motif_ids.size(1) - 1):
-                motif_ids[gathered.lane_idx, motif_pos] = motif_ids[gathered.lane_idx, motif_pos + 1]
-                motif_iats[gathered.lane_idx, motif_pos] = motif_iats[gathered.lane_idx, motif_pos + 1]
+            if motif_ids.size(1) > 1:
+                motif_ids[gathered.lane_idx, :-1] = motif_ids[gathered.lane_idx, 1:]
+                motif_iats[gathered.lane_idx, :-1] = motif_iats[gathered.lane_idx, 1:]
             motif_ids[gathered.lane_idx, -1] = gathered.dst_idx.to(device=motif_ids.device)
             motif_iats[gathered.lane_idx, -1] = gathered.iat_t.to(device=motif_iats.device, dtype=motif_iats.dtype)
             if profile_scan_subphases:
                 self._scan_subphase_end("motif_update", subphase_start)
+
+        return backbone_state
 
     def _scan_segment(
         self,
@@ -440,24 +459,15 @@ class HybridScanMixin:
         if backbone_state is not None:
             backbone_state = backbone_state.clone()
 
-        scan_cfg = dict(getattr(self.hparams, "scan", {}) or {})
-        scan_backend = str(scan_cfg.get("backend", "eager"))
-        use_lane_fastpath = scan_backend in {"lane_fastpath", "fused_memory", "compiled_inner"}
-        use_fused_memory = scan_backend in {"fused_memory", "compiled_inner"}
-        use_compiled_memory = scan_backend == "compiled_inner"
         profile_scan_subphases = self._scan_subphase_timing_enabled()
         num_ids = int(self.hparams.num_ids)
-        memory_flat = memory_state.reshape(lanes * num_ids, hidden) if use_lane_fastpath and memory_state is not None else None
-        last_seen_flat = last_seen.reshape(lanes * num_ids) if use_lane_fastpath and last_seen is not None else None
-        rhythm_flat = rhythm_state.reshape(lanes * num_ids, 3) if use_lane_fastpath and rhythm_state is not None else None
-        full_chunk_fastpath = bool(use_lane_fastpath and valid.all())
-        if use_lane_fastpath:
-            lane_offsets = lane_ids_all.view(lanes, 1) * num_ids
-            flat_src_all = lane_offsets + src_idx_all
-            flat_dst_all = lane_offsets + dst_idx_all
-        else:
-            flat_src_all = None
-            flat_dst_all = None
+        memory_flat = memory_state.reshape(lanes * num_ids, hidden) if memory_state is not None else None
+        last_seen_flat = last_seen.reshape(lanes * num_ids) if last_seen is not None else None
+        rhythm_flat = rhythm_state.reshape(lanes * num_ids, 3) if rhythm_state is not None else None
+        full_chunk_fastpath = bool(valid.all())
+        lane_offsets = lane_ids_all.view(lanes, 1) * num_ids
+        flat_src_all = lane_offsets + src_idx_all
+        flat_dst_all = lane_offsets + dst_idx_all
 
         for step_idx in range(chunk):
             x_t, gathered = self._lane_step_context(
@@ -470,7 +480,6 @@ class HybridScanMixin:
                 lane_ids_all=lane_ids_all,
                 step_idx=step_idx,
                 num_ids=num_ids,
-                use_lane_fastpath=use_lane_fastpath,
                 full_chunk_fastpath=full_chunk_fastpath,
                 profile_scan_subphases=profile_scan_subphases,
                 memory_state=memory_state,
@@ -497,24 +506,14 @@ class HybridScanMixin:
             z_t, next_backbone = self.backbone.step(x_t, active_backbone)
             if profile_scan_subphases:
                 self._scan_subphase_end("backbone", subphase_start)
-            if gathered.all_lanes_active:
-                features_2d[:, step_idx] = z_t
-            else:
-                features_2d[gathered.active, step_idx] = z_t
-            if next_backbone is not None:
-                subphase_start = self._scan_subphase_start() if profile_scan_subphases else None
-                if backbone_state is None:
-                    backbone_state = encoded.new_zeros((next_backbone.size(0), lanes, hidden))
-                if gathered.all_lanes_active:
-                    backbone_state = next_backbone
-                else:
-                    backbone_state[:, gathered.active, :] = next_backbone
-                if profile_scan_subphases:
-                    self._scan_subphase_end("backbone_write", subphase_start)
 
-            self._write_lane_step_updates(
+            backbone_state = self._write_lane_step_state(
                 gathered=gathered,
+                features_2d=features_2d,
+                step_idx=step_idx,
                 z_t=z_t,
+                next_backbone=next_backbone,
+                backbone_state=backbone_state,
                 memory_state=memory_state,
                 last_seen=last_seen,
                 rhythm_state=rhythm_state,
@@ -523,8 +522,6 @@ class HybridScanMixin:
                 memory_flat=memory_flat,
                 last_seen_flat=last_seen_flat,
                 rhythm_flat=rhythm_flat,
-                use_fused_memory=use_fused_memory,
-                use_compiled_memory=use_compiled_memory,
                 profile_scan_subphases=profile_scan_subphases,
             )
         if prev_t is not None and valid.any():

@@ -159,7 +159,6 @@ class TemporalHybridProfilingCfg(_Cfg):
 
 
 class TemporalHybridScanCfg(_Cfg):
-    backend: Literal["eager", "lane_fastpath", "fused_memory", "compiled_inner"] = "eager"
     profile_subphases: bool = False
 
 

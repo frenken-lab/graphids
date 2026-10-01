@@ -26,9 +26,7 @@ Supported top-level knobs:
 - `anomaly`: `mode: regression | nll` plus optional log-scale clamps
 - `rhythm`: optional causal per-ID IAT summary branch
 - `motif`: optional recent destination-ID/IAT motif branch
-- `scan`: optional scan backend controls, with
-  `backend: eager | lane_fastpath | fused_memory | compiled_inner` and
-  `profile_subphases`
+- `scan`: optional scan profiling controls, currently `profile_subphases`
 - `loss_weights` and `anomaly_score_weights`
 
 Head defaults follow the objective. Supervised runs enable the classification
@@ -42,8 +40,9 @@ source and destination ID memories. `memory.use_source` and
 `memory.use_destination` support memory ablations. `anomaly.mode: nll` changes
 the IAT and payload-delta anomaly terms from SmoothL1 errors to Gaussian
 negative log-likelihoods; next-ID remains categorical NLL in both modes.
-`scan.backend` defaults to `eager`; non-default backends are opt-in throughput
-diagnostics that preserve the public output and recurrent state contract.
+Lane-batched inputs use the promoted strict-rich scan path by default.
+`scan.profile_subphases` enables scan subphase timing when phase profiling is
+also enabled.
 
 Canonical smoke examples live in `configs/experiments/temporal_hybrid_*_smoke.yml`.
 Final benchmark-matrix configs are intentionally separate from the core smoke

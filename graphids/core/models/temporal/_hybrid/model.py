@@ -110,7 +110,6 @@ class TemporalHybridModel(HybridRuntimeMixin, HybridScanMixin, HybridStateMixin,
         profiling.setdefault("sync_cuda", True)
         profiling.setdefault("warmup_steps", 5)
         profiling.setdefault("log_every_n_steps", 10)
-        scan.setdefault("backend", "eager")
         scan.setdefault("profile_subphases", False)
 
         default_ssl = objective in {"anomaly", "joint"}
@@ -198,9 +197,10 @@ class TemporalHybridModel(HybridRuntimeMixin, HybridScanMixin, HybridStateMixin,
             raise ValueError("motif.embedding_dim must be positive")
         if int(motif.get("time_dim", 1)) < 1:
             raise ValueError("motif.time_dim must be positive")
-        if str(scan.get("backend", "eager")) not in {"eager", "lane_fastpath", "fused_memory", "compiled_inner"}:
-            raise ValueError("scan.backend must be one of: eager, lane_fastpath, fused_memory, compiled_inner")
-
+        unknown_scan_keys = set(scan) - {"profile_subphases"}
+        if unknown_scan_keys:
+            keys = ", ".join(sorted(unknown_scan_keys))
+            raise ValueError(f"unknown scan config key(s): {keys}")
         classification = bool(heads.get("classification", False))
         anomaly_heads = cls._enabled_anomaly_heads(heads)
         if objective == "supervised":

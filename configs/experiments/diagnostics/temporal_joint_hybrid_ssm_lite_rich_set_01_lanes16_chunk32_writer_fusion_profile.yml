@@ -1,7 +1,7 @@
-experiment_name: temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_compiled_inner_profile
+experiment_name: temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_writer_fusion_profile
 dataset: set_01
 seed: 42
-plan_id: temporal_hybrid_lane16_chunk32_compiled_inner_profile_2026_09_30
+plan_id: temporal_hybrid_writer_fusion_profile_2026_10_01
 stage: fit
 representation_cfg:
   kind: temporal
@@ -28,9 +28,9 @@ config:
     batch_mode: stream_lanes
     stream_lanes: 16
     chunk_size: 32
-    num_workers: 4
-    prebuild_batches: 8
-    pin_memory: true
+    num_workers: 0
+    prebuild_batches: 0
+    pin_memory: false
     persistent_workers: false
     drop_partial_lane_batches: true
     val_warmup_events: 64
@@ -62,15 +62,6 @@ config:
       length: 3
       embedding_dim: 8
       time_dim: 8
-    profiling:
-      phase_timing: true
-      prefix: profile
-      sync_cuda: true
-      warmup_steps: 5
-      log_every_n_steps: 10
-    scan:
-      backend: compiled_inner
-      profile_subphases: true
     loss_weights:
       classification: 1.0
       next_id: 0.2

@@ -1,7 +1,7 @@
-experiment_name: temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_fused_memory_profile
+experiment_name: temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_fused_context_phase_profile
 dataset: set_01
 seed: 42
-plan_id: temporal_hybrid_lane16_chunk32_fused_memory_profile_2026_09_30
+plan_id: temporal_hybrid_fused_context_phase_profile_2026_10_01
 stage: fit
 representation_cfg:
   kind: temporal
@@ -28,9 +28,9 @@ config:
     batch_mode: stream_lanes
     stream_lanes: 16
     chunk_size: 32
-    num_workers: 4
-    prebuild_batches: 8
-    pin_memory: true
+    num_workers: 0
+    prebuild_batches: 0
+    pin_memory: false
     persistent_workers: false
     drop_partial_lane_batches: true
     val_warmup_events: 64
@@ -69,7 +69,6 @@ config:
       warmup_steps: 5
       log_every_n_steps: 10
     scan:
-      backend: fused_memory
       profile_subphases: true
     loss_weights:
       classification: 1.0

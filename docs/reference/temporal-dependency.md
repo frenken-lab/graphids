@@ -182,240 +182,57 @@ B. fused update writer:
 
 Then benchmark module ablations. If rich-state modules are still necessary and scan remains dominant, only then consider a Triton kernel for the indexed state machine.
 
-## Implementation Check: September 30, 2026
+## Current Lane Scan Path
 
-The current lane scan has already implemented the first layer of this plan:
+Lane-batched `TemporalStreamLaneBatch` inputs now use one invariant rich scan
+implementation whenever `valid_mask` is present. The path uses flattened
+lane/ID row indices for memory, last-seen, and rhythm state, keeps partial
+active-lane handling, and performs state writes through `_write_lane_step_state`
+after `backbone.step`. Plain non-lane `TemporalData` scans remain supported for
+compatibility and reference tests, but they are not a separate optimized backend.
 
-- `_lane_step_context` computes shared `flat_src`/`flat_dst` row indices once per
-  timestep;
-- the `lane_fastpath` backend uses flattened lane-ID addressing for memory,
-  last-seen, and rhythm state;
-- gathered memory/rhythm rows are retained on `_LaneStepGather` and reused by
-  `_write_lane_step_updates`;
-- lane memory/rhythm/motif/backbone state is cloned once per chunk, not once per
-  timestep;
-- batched memory and rhythm helpers handle source/destination row updates.
-
-That means the remaining target is not generic "add lane batching." It is the
-smaller hot path left inside the 32-step recurrent loop:
+The scan still follows strict causal ordering:
 
 ```text
 per step:
   gather memory/last_seen/rhythm/motif rows
-  run three small context builders
+  build memory, rhythm, and motif context from pre-update state
   run backbone.step
-  run memory/rhythm/motif updates
-  write state rows back
+  write backbone, memory, last_seen, rhythm, and motif state updates
 ```
 
-The strict rich phase probe measured `scan = 108.25 ms` inside
-`forward = 110.10 ms`; subphase timing was:
+Subphase profiling is controlled only by `model.scan.profile_subphases` and is
+useful when phase timing is also enabled. The current stable subphase names are:
 
-| Subphase | Time |
-| --- | ---: |
-| memory context | `18.21 ms` |
-| memory update | `10.39 ms` |
-| rhythm context | `19.01 ms` |
-| rhythm update | `14.62 ms` |
-| motif context | `12.66 ms` |
-| motif update | `6.05 ms` |
-| backbone | `12.78 ms` |
+- `memory_context`
+- `rhythm_context`
+- `motif_context`
+- `backbone`
+- `backbone_write`
+- `memory_update`
+- `rhythm_update`
+- `motif_update`
 
-Clear next targets:
+The promoted strict-rich implementation comes from the writer-fusion diagnostic
+that preserved `16 lanes x 32 chunk`, `512` train events, and zero padding. Do
+not reintroduce a public scan-backend matrix for throughput experiments; add
+focused diagnostic configs around profiling or feature ablations instead.
 
-1. Fuse the rich context path more aggressively. The code shares row indices,
-   but memory, rhythm, and motif still execute as separate gather/projection
-   paths each timestep.
-2. Fuse update/writeback after `z_t`. Memory, last-seen, rhythm, motif, and
-   backbone updates write different state tensors, so the dependency barrier is
-   `backbone.step`, not each individual writer.
-3. Remove motif-update cloning in the lane path or replace it with a fixed-size
-   rolling-buffer representation.
-4. Treat rhythm as the first custom-kernel candidate if PyTorch-level fusion
-   stalls. Its math is simple, but context plus update still costs about
-   `33.6 ms`.
-5. Avoid full block-parallel redesign until these implementation fusions are
-   exhausted; strict causality across repeated IDs is still the main semantic
-   constraint.
+## Remaining Optimization Targets
 
-### Working-Tree Follow-up
+The lane scan has already implemented the first layer of fusion:
 
-The first implementation pass has been applied locally:
+- `_lane_step_context` computes shared `flat_src`/`flat_dst` row indices once per
+  timestep.
+- Flattened lane-ID addressing is used for memory, last-seen, and rhythm state.
+- Gathered memory/rhythm rows are retained on `_LaneStepGather` and reused by
+  `_write_lane_step_state`.
+- Lane memory/rhythm/motif/backbone state is cloned once per chunk, not once per
+  timestep.
+- Motif history rolls in place for active lanes.
 
-- precomputed `flat_src_all` / `flat_dst_all` for lane-fastpath backends;
-- one per-chunk `full_chunk_fastpath` check instead of per-step `active.all()`;
-- no scan subphase timing helper calls when subphase profiling is disabled;
-- in-place motif history shifts rather than per-step active-row clones.
-
-Verification:
-
-```text
-uv run pytest tests/core/models/test_temporal_hybrid.py -q
-31 passed, 4 warnings
-
-uv run ruff check graphids/core/models/temporal/_hybrid/scan.py tests/core/models/test_temporal_hybrid.py
-All checks passed
-```
-
-This preserves current strict causal semantics. It still needs a strict
-`16 lanes x 32 chunk` benchmark before it should be treated as a new speed
-baseline.
-
-
-
-  ## Summary
-  Reduce temporal hybrid scan time by targeting the real hot path: repeated per-timestep context reads, small tensor ops, and indexed state updates inside `graphids/core/models/temporal/_hybrid/
-  scan.py`. Do not pursue lane widening or input pinning as primary fixes. The current `set_01` train split only supports 18 streams, so `16 lanes x 32 chunk` remains the valid strict diagnostic
-  geometry.
-
-  The goal is to preserve current rich-model semantics while reducing scan overhead through two staged implementation passes:
-
-  1. Fuse context gathering/construction across memory, rhythm, and motif.
-  2. Fuse state update/writeback across memory, last_seen, rhythm, motif, and backbone state where dependencies allow.
-
-  Only consider Triton/CUDA after measuring that Python/PyTorch gather/scatter overhead remains dominant after these fusions.
-
-  ## Key Changes
-
-  ### 1. Establish Scan Dependency Boundaries
-  Use the current 7 scan operations as the optimization contract:
-
-  | Phase | Depends On | Can Run Across Lanes | Can Run With |
-  | --- | --- | ---: | --- |
-  | `memory_context` | memory rows, last_seen, time | yes | rhythm/motif context |
-  | `rhythm_context` | rhythm rows | yes | memory/motif context |
-  | `motif_context` | lane motif state | yes | memory/rhythm context |
-  | `backbone` | summed context input, backbone state | yes across lanes, sequential over time | after contexts |
-  | `memory_update` | `z_t`, memory rows | yes | rhythm/motif update |
-  | `rhythm_update` | `iat_t`, rhythm rows | yes | memory/motif update |
-  | `motif_update` | `dst_t`, `iat_t` | yes | can be prepared before/after backbone |
-
-  Keep strict causal semantics: contexts at timestep `t` must read pre-update state; updates from timestep `t` become visible at `t+1`.
-
-  ### 2. Add a Fused Context Builder
-  Create a helper used inside the lane scan loop that performs shared indexing once per timestep:
-
-  ```python
-  flat_src = lane_idx * num_ids + src_idx
-  flat_dst = lane_idx * num_ids + dst_idx
-  same_id = src_idx == dst_idx
-  ```
-
-  The helper should gather all context inputs in one place:
-
-  - memory src/dst rows from `memory_flat` or `memory_state`;
-  - last_seen src/dst values;
-  - rhythm src/dst rows from `rhythm_flat` or `rhythm_state`;
-  - motif ids/iats from `motif_ids[lane_idx]` and `motif_iats[lane_idx]`.
-
-  It should return:
-
-  ```python
-  context_t: Tensor  # summed memory + rhythm + motif context, shape [active_lanes, hidden]
-  gathered: lightweight object/dict containing rows/indices needed later by update
-  ```
-
-  Do not change module math in this pass. Continue using existing `read_context_rows_batch`, rhythm projection, motif embedding/time/proj, and memory mix. The immediate win is fewer duplicated
-  gathers, fewer temporary branches, and one clear context pathway.
-
-  ### 3. Add a Fused Update Writer
-  After `z_t = backbone(x_t, state)`, use the gathered context object from step 2 to update all mutable states through one helper.
-
-  The helper should:
-
-  - update memory src/dst rows using the selected backend behavior:
-    - `lane_fastpath`: current two-GRUCell logic;
-    - `fused_memory`: `update_src_dst_batch`;
-    - `compiled_inner`: `compiled_update_src_dst_batch`;
-  - update `last_seen` for src/dst;
-  - update rhythm src/dst rows with `_updated_rows_indexed_batch`;
-  - shift/write motif ids/iats for each active lane;
-  - write updated rows back through `memory_flat`, `last_seen_flat`, and `rhythm_flat` when available.
-
-  Keep the current `src == dst` semantics exactly:
-  - memory destination update reads `src_new` when `same_id`;
-  - rhythm destination update reads `src_new` when `same_id`.
-
-  ### 4. Add Focused Ablation Diagnostics
-  Add configs, not defaults, for strict `16 lanes x 32 chunk` diagnostics:
-
-  - `rich`: current best `lane_fastpath` reference.
-  - `minus_motif`: disable motif only.
-  - `minus_rhythm`: disable rhythm only.
-  - `minus_memory`: disable TGN memory only.
-  - `memory_only`: memory enabled, rhythm/motif disabled.
-  - `backbone_only`: memory/rhythm/motif disabled, same backbone.
-  - `backbone_none`: no memory/rhythm/motif/backbone, heads only sanity probe.
-
-  Use:
-
-  ```yaml
-  batch_mode: stream_lanes
-  stream_lanes: 16
-  chunk_size: 32
-  batch_size: 512
-  drop_partial_lane_batches: true
-  model.scan.backend: lane_fastpath
-  num_workers: 0
-  prebuild_batches: 0
-  pin_memory: false
-  expected_train_events: 512
-  fail_on_event_mismatch: true
-  ```
-
-  Run two kinds of measurements:
-
-  - Throughput configs without subphase timing for events/sec.
-  - Phase/subphase configs only for the best or most informative variants.
-
-  ### 5. Triton/CUDA Gate
-  Do not start with Triton/CUDA. Promote it only if fused PyTorch still shows scan dominated by indexed state work.
-
-  Candidate custom-kernel boundary:
-
-  ```python
-  fused_indexed_state_step(
-      encoded_t,
-      src_idx,
-      dst_idx,
-      iat_t,
-      t_t,
-      lane_idx,
-      memory_state,
-      last_seen,
-      rhythm_state,
-      motif_ids,
-      motif_iats,
-      backbone_state,
-      weights_or_preprojected_inputs,
-  ) -> context_or_z_t, updated_state_parts
-  ```
-
-  The first realistic custom target should be narrower than full scan:
-
-  - shared gather of memory/rhythm/last_seen rows;
-  - rhythm feature/update math;
-  - motif shift/update;
-  - last_seen writeback;
-  - maybe memory GRU elementwise update if hidden size is fixed and backward strategy is clear.
-
-  Avoid custom kernels for dense projections initially:
-  - Linear;
-  - LayerNorm;
-  - GELU;
-  - embedding lookup;
-  - general GRU/SSM projection matmuls.
-
-  Those should stay in PyTorch/cuBLAS unless a later benchmark proves launch overhead dominates them.
-
-  ### 6. Block-Parallel State Research Track
-  Treat block-parallel state as a model-design experiment, not an implementation optimization.
-
-  Evaluate only after fused scan work:
-
-  - **ID-conflict-free blocks:** parallelize events in a block only when their src/dst IDs do not conflict. Preserves semantics, but scheduling may be complex and block sizes may be small.
-  - **Lagged block reads:** read state once at block start, compute several timesteps in parallel, apply updates after block. Fast, but changes causal semantics.
-  - **Associative state redesign:** replace GRU/motif/rhythm updates with composable operations for prefix-scan style parallelism. Large modeling change.
-  - **Backbone-only block parallelism:** use `forward_sequence` when ID memory/rhythm/motif are disabled or delayed. Useful as an ablation, not a rich-model replacement.
-
-  Do not mix block-parallel changes with fusion benchmarking; they answer different questions.
+The remaining hot path is the small sequential per-timestep loop. Keep future
+experiments focused on preserving strict causal semantics while reducing context
+construction and indexed state-write overhead. Consider Triton/CUDA only after
+PyTorch-level fusion is exhausted and a fresh strict benchmark still shows scan
+time dominated by indexed state work.

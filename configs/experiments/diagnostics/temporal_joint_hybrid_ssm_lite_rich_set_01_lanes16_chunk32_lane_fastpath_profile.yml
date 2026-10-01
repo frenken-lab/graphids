@@ -69,7 +69,6 @@ config:
       warmup_steps: 5
       log_every_n_steps: 10
     scan:
-      backend: lane_fastpath
       profile_subphases: true
     loss_weights:
       classification: 1.0
