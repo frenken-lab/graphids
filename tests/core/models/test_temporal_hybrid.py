@@ -392,7 +392,12 @@ def test_temporal_hybrid_segment_scan_matches_reference_loop(reset_after):
     _assert_state_equal(actual_state, expected_state)
 
 
-def test_temporal_hybrid_lane_scan_matches_plain_reference_loop():
+@pytest.mark.parametrize("rhythm_kernel,device", [("torch", "cpu"), ("triton", "cpu"), ("triton", "cuda")])
+def test_temporal_hybrid_lane_scan_matches_plain_reference_loop(rhythm_kernel, device):
+    if device == "cuda":
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA unavailable")
+        pytest.importorskip("triton")
     model = _hybrid(
         objective="joint",
         backbone_type="ssm_lite",
@@ -402,15 +407,23 @@ def test_temporal_hybrid_lane_scan_matches_plain_reference_loop():
         rhythm={"enabled": True},
         motif={"enabled": True, "length": 3, "embedding_dim": 4, "time_dim": 4},
         in_channels=17,
-        scan={"profile_subphases": True},
+        scan={"profile_subphases": True, "rhythm_kernel": rhythm_kernel},
     )
+    model = model.to(device)
     from graphids.core.data.datamodule.stream_lanes import TemporalStreamLaneLoader
 
     batch = next(iter(TemporalStreamLaneLoader(_lane_semantic_data(), stream_lanes=2, chunk_size=2)))
+    batch = batch.to(device)
     actual_out, actual_state = model._forward_with_state(batch, None)
 
     expected_out, expected_state = _lane_batch_reference_forward_with_state(model, batch)
 
+    if device == "cuda":
+        assert not getattr(model, "_rhythm_kernel_failed", False)
+        actual_out["features"].sum().backward()
+        for parameter in model.rhythm.proj.parameters():
+            assert parameter.grad is not None
+            assert torch.isfinite(parameter.grad).all()
     _assert_outputs_equal(actual_out, expected_out)
     _assert_state_equal(actual_state, expected_state)
 
@@ -932,3 +945,209 @@ def test_temporal_hybrid_rejects_invalid_objective_head_combos():
             heads={"next_id": True, "iat": True, "payload_delta": True},
             loss_fn=CrossEntropyLoss(),
         )
+
+
+@pytest.mark.parametrize("kernel", ["bad", "", None])
+def test_temporal_hybrid_rejects_unknown_rhythm_kernel(kernel):
+    if kernel is None:
+        assert _hybrid(scan={"rhythm_kernel": kernel}).hparams.scan["rhythm_kernel"] == "torch"
+    else:
+        with pytest.raises(ValueError, match="rhythm_kernel"):
+            _hybrid(scan={"rhythm_kernel": kernel})
+
+
+def test_triton_rhythm_features_and_repeated_updates():
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA unavailable")
+    pytest.importorskip("triton")
+    from graphids.core.models.temporal._hybrid.kernels.rhythm import (
+        rhythm_features_update_triton,
+    )
+
+    rhythm = _hybrid(rhythm={"enabled": True}).rhythm
+    rows = torch.tensor([[0, 0, 0], [1, 2, 0], [4, 3, 6], [2, 1, -1]], device="cuda", dtype=torch.float32)
+    expected = rows.repeat(3, 1)
+    actual = expected.clone()
+    # Repeated logical IDs belong to disjoint lane slices; vectors are strided.
+    src = torch.tensor([[0, 2], [5, 5], [10, 8]], device="cuda")
+    dst = torch.tensor([[1, 2], [5, 7], [11, 9]], device="cuda")
+    iats = torch.tensor([[-2., 1.], [0., 4.], [3., -1.]], device="cuda")
+    for _ in range(3):
+        for step in range(2):
+            si, di, value = src[:, step], dst[:, step], iats[:, step]
+            same = si == di
+            sr, dr = expected[si], expected[di]
+            features = rhythm._features_batch_pair(sr, dr)
+            sn, dn = rhythm._updated_rows_indexed_batch(sr, dr, value, same)
+            expected[si] = sn
+            expected[di] = dn
+            result = rhythm_features_update_triton(actual, si, di, value, same)
+            torch.testing.assert_close(result, features, rtol=1e-5, atol=1e-6)
+            torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+    empty = src.new_empty(0)
+    assert rhythm_features_update_triton(actual, empty, empty, iats.new_empty(0), empty.bool()).shape == (0, 6)
+
+
+@pytest.mark.parametrize("dim", [1, 3, 4, 5])
+def test_triton_context_time_features(dim):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA unavailable")
+    pytest.importorskip("triton")
+    from graphids.core.models.temporal._hybrid.encoders import TemporalTimeEncoder
+    from graphids.core.models.temporal._hybrid.kernels.time_features import (
+        memory_time_features_triton,
+        time_features_triton,
+    )
+
+    encoder = TemporalTimeEncoder(dim).cuda()
+    values = torch.tensor([[-1., 0., 1e-8, 1e-4, 1., 10000.]], device="cuda").repeat(3, 1)[:, ::2]
+    actual = time_features_triton(values, encoder.freqs, dim)
+    torch.testing.assert_close(actual, encoder(values).flatten(1), rtol=1e-5, atol=1e-6)
+    last = torch.tensor([-1., 4., 2., 8.], device="cuda")
+    src = torch.tensor([[0, 2], [1, 3], [2, 2]], device="cuda")[:, 0]
+    dst = torch.tensor([[0, 2], [3, 3], [2, 2]], device="cuda")[:, 0]
+    now = torch.tensor([[1., 0.], [3., 0.], [12., 0.]], device="cuda")[:, 0]
+    elapsed = torch.stack([torch.where(last[si] >= 0, now - last[si], 0) for si in (src, dst)], -1)
+    result = memory_time_features_triton(last, src, dst, now, encoder.freqs, dim)
+    torch.testing.assert_close(result, encoder(elapsed).flatten(1), rtol=1e-5, atol=1e-6)
+    assert time_features_triton(values[:0], encoder.freqs, dim).shape == (0, 3 * dim)
+
+
+@pytest.mark.parametrize("length", [1, 3, 4])
+def test_triton_context_motif_writer(length):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA unavailable")
+    pytest.importorskip("triton")
+    from graphids.core.models.temporal._hybrid.kernels.rhythm import (
+        rhythm_features_update_triton,
+    )
+
+    ids = torch.arange(4 * length, device="cuda").reshape(4, length)
+    iats = ids.float()
+    expected_ids, expected_iats = ids.clone(), iats.clone()
+    lanes = torch.tensor([0, 2], device="cuda")
+    src = torch.tensor([0, 8], device="cuda")
+    dst = torch.tensor([0, 9], device="cuda")
+    dest = torch.tensor([0, 1], device="cuda")
+    values = torch.tensor([-2., 3.], device="cuda")
+    state = torch.zeros(16, 3, device="cuda")
+    for _ in range(3):
+        if length > 1:
+            expected_ids[lanes, :-1] = expected_ids[lanes, 1:]
+            expected_iats[lanes, :-1] = expected_iats[lanes, 1:]
+        expected_ids[lanes, -1] = dest
+        expected_iats[lanes, -1] = values
+        rhythm_features_update_triton(
+            state, src, dst, values, src == dst,
+            motif_ids=ids, motif_iats=iats, lane_idx=lanes, dst_idx=dest,
+        )
+        torch.testing.assert_close(ids, expected_ids)
+        torch.testing.assert_close(iats, expected_iats)
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+@pytest.mark.parametrize("options", [
+    {"time_kernel": "triton"},
+    {"rhythm_kernel": "triton", "motif_writer": "triton"},
+    {"rhythm_kernel": "triton", "time_kernel": "triton", "motif_writer": "triton"},
+])
+def test_triton_context_lane_outputs_states_and_gradients(device, options):
+    if device == "cuda":
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA unavailable")
+        pytest.importorskip("triton")
+    from graphids.core.data.datamodule.stream_lanes import TemporalStreamLaneLoader
+
+    params = dict(
+        objective="joint", backbone_type="ssm_lite", in_channels=17,
+        memory={"type": "tgn", "enabled": True, "time_encoding_dim": 3},
+        rhythm={"enabled": True},
+        motif={"enabled": True, "length": 3, "embedding_dim": 4, "time_dim": 5},
+    )
+    actual_model = _hybrid(**params, scan=options).to(device)
+    reference = _hybrid(**params).to(device)
+    reference.load_state_dict(actual_model.state_dict())
+    actual_state = expected_state = None
+    actual_loss = expected_loss = 0
+    for batch in TemporalStreamLaneLoader(_uneven_lane_semantic_data(), stream_lanes=2, chunk_size=3):
+        batch = batch.to(device)
+        actual, actual_state = actual_model._forward_with_state(batch, actual_state)
+        expected, expected_state = reference._forward_with_state(batch, expected_state)
+        _assert_outputs_equal(actual, expected)
+        _assert_state_equal(actual_state, expected_state)
+        actual_loss = actual_loss + actual["features"].square().sum() + actual["logits"].square().sum()
+        expected_loss = expected_loss + expected["features"].square().sum() + expected["logits"].square().sum()
+    actual_loss.backward()
+    expected_loss.backward()
+    for (name, parameter), (_, ref_parameter) in zip(actual_model.named_parameters(), reference.named_parameters()):
+        if ref_parameter.grad is None:
+            assert parameter.grad is None, name
+        else:
+            assert parameter.grad is not None, name
+            torch.testing.assert_close(parameter.grad, ref_parameter.grad, rtol=1e-4, atol=2e-5, msg=name)
+    if device == "cuda":
+        for kind in ("rhythm", "memory_time", "motif_time"):
+            assert not getattr(actual_model, f"_{kind}_kernel_failed", False)
+
+
+@pytest.mark.parametrize("options", [
+    {"time_kernel": "bad"}, {"motif_writer": "bad"}, {"motif_writer": "triton"},
+])
+def test_triton_context_scan_validation(options):
+    with pytest.raises(ValueError):
+        _hybrid(scan=options)
+
+
+@pytest.mark.parametrize("backbone", ["gru", "ssm_lite"])
+def test_continuous_lane_chunks_match_full_recording_reference(backbone):
+    from graphids.core.data.datamodule.stream_lanes import TemporalStreamLaneLoader
+
+    data = _lane_semantic_data()
+    model = _hybrid(in_channels=17, backbone_type=backbone, rhythm={"enabled": True},
+                    motif={"enabled": True, "length": 3, "embedding_dim": 4, "time_dim": 4}).eval()
+    state = None
+    observed = {}
+    with torch.no_grad():
+        for batch in TemporalStreamLaneLoader(data, stream_lanes=4, chunk_size=2):
+            out, state = model._forward_with_state(batch, state)
+            for idx, features in zip(batch.source_index[batch.valid_mask].tolist(),
+                                     out["features"][batch.valid_mask.reshape(-1)], strict=True):
+                observed[idx] = features
+        for sid in data.stream_id.unique():
+            mask = data.stream_id == sid
+            temporal = _slice_temporal(data, mask)
+            expected, _ = _reference_forward_with_state(model, temporal)
+            actual = torch.stack([observed[i] for i in mask.nonzero().flatten().tolist()])
+            torch.testing.assert_close(actual, expected["features"], rtol=1e-5, atol=1e-6)
+        assert state["rhythm"].eq(0).all()
+        assert state["memory"].eq(0).all()
+        assert state["motif_ids"].eq(0).all()
+
+
+def test_warmup_only_batches_skip_optimizer_and_preserve_weights(tmp_path):
+    import lightning.pytorch as pl
+    from torch.utils.data import DataLoader
+
+    from graphids.core.data.datamodule.stream_lanes import TemporalStreamLaneLoader
+
+    data = _lane_semantic_data()
+    dataset = TemporalStreamLaneLoader(data, stream_lanes=2, chunk_size=1,
+                                      stream_execution="segmented", segment_events=2, segment_warmup_events=2)
+    # Exercise real replay batches with no scored lanes.
+    batches = [b for b in dataset if b.warmup_mask.any() and not b.is_scored.any()]
+    assert batches
+    model = _hybrid(in_channels=17)
+    original = {k: v.clone() for k, v in model.state_dict().items()}
+    steps = []
+    class StepCounter(pl.Callback):
+        def on_before_optimizer_step(self, trainer, pl_module, optimizer):
+            steps.append(trainer.global_step)
+    trainer = pl.Trainer(accelerator="cpu", devices=1, max_epochs=1,
+                         callbacks=[StepCounter()], logger=False, enable_checkpointing=False,
+                         enable_progress_bar=False, enable_model_summary=False,
+                         default_root_dir=tmp_path, limit_val_batches=0)
+    trainer.fit(model, train_dataloaders=DataLoader(batches, batch_size=None))
+    assert not steps
+    assert model._train_state is not None
+    for k, v in model.state_dict().items():
+        torch.testing.assert_close(v, original[k], rtol=0, atol=0)

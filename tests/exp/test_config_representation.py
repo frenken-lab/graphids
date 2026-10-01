@@ -839,3 +839,86 @@ def test_final_temporal_configs_parse_and_encode_protocols(monkeypatch, tmp_path
         train_name = test_name.removesuffix("_test") + "_train"
         assert train_name in train_runs
         assert test_run.payload.ckpt_path == str(train_runs[train_name].outputs.checkpoint_path() / "best_model.ckpt")
+
+
+def test_temporal_hybrid_triton_rhythm_strict_profile_config_parse():
+    from graphids.exp.config import ExperimentConfig
+
+    cfg = ExperimentConfig.from_yaml(
+        "configs/experiments/diagnostics/"
+        "temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_triton_rhythm_profile.yml"
+    )
+    run = cfg.build_run(name=cfg.experiment_name, stage=cfg.stage, config=cfg.config)
+    from graphids.primitives_models import TemporalHybridCfg
+
+    assert TemporalHybridCfg.model_validate(run.payload.model).scan.rhythm_kernel == "triton"
+    assert run.payload.model["scan"] == {"rhythm_kernel": "triton"}
+    assert run.payload.data["stream_lanes"] == 16
+    assert run.payload.data["chunk_size"] == 32
+    assert run.payload.data["drop_partial_lane_batches"] is True
+    profiler = run.payload.callbacks["profiler"]["init_args"]
+    assert profiler["expected_train_events"] == 512
+    assert profiler["fail_on_event_mismatch"] is True
+
+
+def test_temporal_hybrid_triton_rhythm_primitive_validation():
+    from pydantic import ValidationError
+
+    from graphids.primitives import temporal_hybrid
+
+    assert temporal_hybrid().scan.rhythm_kernel == "torch"
+    assert temporal_hybrid(scan={"rhythm_kernel": "triton"}).scan.rhythm_kernel == "triton"
+    with pytest.raises(ValidationError, match="rhythm_kernel"):
+        temporal_hybrid(scan={"rhythm_kernel": "unknown"})
+
+
+def test_temporal_hybrid_triton_context_strict_profile():
+    from graphids.exp.config import ExperimentConfig
+    from graphids.primitives_models import TemporalHybridCfg, TemporalHybridScanCfg
+
+    cfg = ExperimentConfig.from_yaml(
+        "configs/experiments/diagnostics/"
+        "temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_triton_context_profile.yml"
+    )
+    run = cfg.build_run(name=cfg.experiment_name, stage=cfg.stage, config=cfg.config)
+    model = TemporalHybridCfg.model_validate(run.payload.model)
+    assert model.scan.time_kernel == model.scan.motif_writer == model.scan.rhythm_kernel == "triton"
+    assert run.payload.data["stream_lanes"] * run.payload.data["chunk_size"] == 512
+    assert run.payload.data["drop_partial_lane_batches"] is True
+    assert run.payload.callbacks["profiler"]["init_args"]["expected_train_events"] == 512
+    assert run.payload.callbacks["profiler"]["init_args"]["fail_on_event_mismatch"] is True
+    assert TemporalHybridScanCfg().time_kernel == TemporalHybridScanCfg().motif_writer == "torch"
+    for options in ({"time_kernel": "bad"}, {"motif_writer": "bad"}, {"motif_writer": "triton"}):
+        with pytest.raises(ValueError):
+            TemporalHybridScanCfg.model_validate(options)
+
+
+def test_full_coverage_comparison_configs():
+    from pathlib import Path
+
+    import yaml
+
+    from graphids.exp.config import ExperimentConfig
+    from graphids.exp.ray_backend import resolve_spec
+
+    root = Path(__file__).resolve().parents[2]
+    for path in (root / "configs/experiments/comparisons").glob("*.yml"):
+        experiment = ExperimentConfig.from_yaml(path)
+        obj = yaml.safe_load(path.read_text())
+        data = resolve_spec(obj["config"]["data"])
+        assert experiment.resources.memory_gb == 32
+        assert experiment.resources.cpus_per_worker == 8
+        assert experiment.resources.gpus_per_worker == 1.0
+        assert data.chunk_size == 32
+        assert data.val_prefix_events == 8192
+        assert data.eval_batch_mode == "stream_lanes"
+        assert not data.drop_partial_lane_batches
+        assert data.segment_events == 2048
+        assert data.segment_warmup_events == 256
+        if "epoch" in path.stem:
+            assert data.coverage_policy == "full"
+            assert obj["config"]["trainer"]["limit_train_batches"] == 1.0
+        else:
+            assert data.coverage_policy == "diagnostic"
+        if data.stream_execution == "continuous":
+            assert data.stream_lanes == 18

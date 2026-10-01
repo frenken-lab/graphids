@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 
 import torch
@@ -23,9 +24,35 @@ class _LaneStepGather:
     memory_dst_rows: torch.Tensor | None = None
     rhythm_src_rows: torch.Tensor | None = None
     rhythm_dst_rows: torch.Tensor | None = None
+    rhythm_updated: bool = False
+    motif_updated: bool = False
 
 
 class HybridScanMixin:
+    def _try_time_kernel(self, kind: str, values: torch.Tensor, *args):
+        """Use fixed time features on supported inputs; disable failed launches once.
+
+        Gradient-bearing timestamps/IATs keep the PyTorch encoder. Memory rows
+        and learned projections are never passed into this non-autograd kernel.
+        """
+        failure_attr = f"_{kind}_time_kernel_failed"
+        if (self.hparams.scan.get("time_kernel", "torch") != "triton"
+                or getattr(self, failure_attr, False) or not values.is_cuda
+                or values.dtype != torch.float32 or values.requires_grad):
+            return None
+        try:
+            from .kernels.time_features import (
+                memory_time_features_triton,
+                time_features_triton,
+            )
+
+            kernel = memory_time_features_triton if kind == "memory" else time_features_triton
+            return kernel(values, *args)
+        except Exception as exc:
+            setattr(self, failure_attr, True)
+            warnings.warn(f"Triton {kind} time kernel unavailable; using torch: {exc}", RuntimeWarning, stacklevel=2)
+            return None
+
     @staticmethod
     def _add_lane_context(base: torch.Tensor, current: torch.Tensor | None, context: torch.Tensor) -> torch.Tensor:
         if current is None:
@@ -120,39 +147,94 @@ class HybridScanMixin:
             if memory_flat is not None and last_seen_flat is not None:
                 src_rows = self._flat_index_select(memory_flat, flat_src)
                 dst_rows = self._flat_index_select(memory_flat, flat_dst)
-                src_last = self._flat_index_select(last_seen_flat, flat_src)
-                dst_last = self._flat_index_select(last_seen_flat, flat_dst)
+                encoded_time = None
+                if self.memory.use_source and self.memory.use_destination and self.memory.time_encoder is not None:
+                    encoded_time = self._try_time_kernel(
+                        "memory", last_seen_flat, flat_src, flat_dst, t_t,
+                        self.memory.time_encoder.freqs, self.memory.time_encoder.dim,
+                    )
+                # The fused time path gathers timestamps itself, avoiding two
+                # additional index_select launches. Memory gathers retain autograd.
+                src_last = None if encoded_time is not None else self._flat_index_select(last_seen_flat, flat_src)
+                dst_last = None if encoded_time is not None else self._flat_index_select(last_seen_flat, flat_dst)
             else:
                 src_rows = memory_state[lane_idx, src_idx]
                 dst_rows = memory_state[lane_idx, dst_idx]
+                encoded_time = None
                 src_last = last_seen[lane_idx, src_idx]
                 dst_last = last_seen[lane_idx, dst_idx]
             gathered.memory_src_rows = src_rows
             gathered.memory_dst_rows = dst_rows
             if self.memory._has_context:
                 now = t_t.to(device=memory_state.device, dtype=memory_state.dtype)
-                memory_context = self.memory.read_context_rows_batch(src_rows, dst_rows, src_last, dst_last, now)
+                memory_context = self.memory.read_context_rows_batch(
+                    src_rows, dst_rows, src_last, dst_last, now, encoded_time=encoded_time,
+                )
                 x_with_context = self._add_lane_context(x_t, x_with_context, memory_context)
             if profile_scan_subphases:
                 self._scan_subphase_end("memory_context", subphase_start)
 
+        # Advanced indexing owns these snapshots. The optional rhythm writer
+        # can now mutate motif history without changing current context or the
+        # ID indices saved by embedding backward.
+        motif_ids_snapshot = None if motif_ids is None else motif_ids[lane_idx]
+        motif_iats_snapshot = None if motif_iats is None else motif_iats[lane_idx]
+
         if self.rhythm is not None and rhythm_state is not None:
             subphase_start = self._scan_subphase_start() if profile_scan_subphases else None
-            if rhythm_flat is not None:
-                src_rows = self._flat_index_select(rhythm_flat, flat_src)
-                dst_rows = self._flat_index_select(rhythm_flat, flat_dst)
+            features = None
+            if (
+                self.hparams.scan.get("rhythm_kernel", "torch") == "triton"
+                and not getattr(self, "_rhythm_kernel_failed", False)
+                and rhythm_flat is not None
+                and rhythm_flat.is_cuda
+                and rhythm_flat.dtype == torch.float32
+            ):
+                try:
+                    from .kernels.rhythm import rhythm_features_update_triton
+
+                    fuse_motif = (
+                        self.hparams.scan.get("motif_writer", "torch") == "triton"
+                        and self.motif is not None and motif_ids is not None and motif_iats is not None
+                        and motif_iats.dtype == torch.float32 and not motif_iats.requires_grad
+                    )
+                    features = rhythm_features_update_triton(
+                        rhythm_flat, flat_src, flat_dst, iat_t, gathered.same_id,
+                        **({"motif_ids": motif_ids, "motif_iats": motif_iats,
+                            "lane_idx": lane_idx, "dst_idx": dst_idx} if fuse_motif else {}),
+                    )
+                except Exception as exc:
+                    # Import/compilation/launch failures before execution use torch.
+                    self._rhythm_kernel_failed = True
+                    warnings.warn(f"Triton rhythm kernel unavailable; using torch: {exc}", RuntimeWarning, stacklevel=2)
+                else:
+                    gathered.rhythm_updated = True
+                    gathered.motif_updated = fuse_motif
+            if features is None:
+                if rhythm_flat is not None:
+                    src_rows = self._flat_index_select(rhythm_flat, flat_src)
+                    dst_rows = self._flat_index_select(rhythm_flat, flat_dst)
+                else:
+                    src_rows = rhythm_state[lane_idx, src_idx]
+                    dst_rows = rhythm_state[lane_idx, dst_idx]
+                gathered.rhythm_src_rows = src_rows
+                gathered.rhythm_dst_rows = dst_rows
+                rhythm_context = self.rhythm.read_context_rows_batch(src_rows, dst_rows)
             else:
-                src_rows = rhythm_state[lane_idx, src_idx]
-                dst_rows = rhythm_state[lane_idx, dst_idx]
-            gathered.rhythm_src_rows = src_rows
-            gathered.rhythm_dst_rows = dst_rows
-            x_with_context = self._add_lane_context(x_t, x_with_context, self.rhythm.read_context_rows_batch(src_rows, dst_rows))
+                rhythm_context = self.rhythm.proj(features)
+            x_with_context = self._add_lane_context(x_t, x_with_context, rhythm_context)
             if profile_scan_subphases:
                 self._scan_subphase_end("rhythm_context", subphase_start)
 
         if self.motif is not None and motif_ids is not None and motif_iats is not None:
             subphase_start = self._scan_subphase_start() if profile_scan_subphases else None
-            motif_context = self.motif.read_context_batch(motif_ids[lane_idx], motif_iats[lane_idx])
+            assert motif_ids_snapshot is not None and motif_iats_snapshot is not None
+            encoded_time = self._try_time_kernel(
+                "motif", motif_iats_snapshot, self.motif.time_encoder.freqs, self.motif.time_encoder.dim,
+            )
+            motif_context = self.motif.read_context_batch(
+                motif_ids_snapshot, motif_iats_snapshot, encoded_time=encoded_time,
+            )
             x_with_context = self._add_lane_context(x_t, x_with_context, motif_context)
             if profile_scan_subphases:
                 self._scan_subphase_end("motif_context", subphase_start)
@@ -221,7 +303,7 @@ class HybridScanMixin:
             if profile_scan_subphases:
                 self._scan_subphase_end("memory_update", subphase_start)
 
-        if self.rhythm is not None and rhythm_state is not None:
+        if self.rhythm is not None and rhythm_state is not None and not gathered.rhythm_updated:
             subphase_start = self._scan_subphase_start() if profile_scan_subphases else None
             assert gathered.rhythm_src_rows is not None
             assert gathered.rhythm_dst_rows is not None
@@ -240,7 +322,7 @@ class HybridScanMixin:
             if profile_scan_subphases:
                 self._scan_subphase_end("rhythm_update", subphase_start)
 
-        if self.motif is not None and motif_ids is not None and motif_iats is not None:
+        if self.motif is not None and motif_ids is not None and motif_iats is not None and not gathered.motif_updated:
             subphase_start = self._scan_subphase_start() if profile_scan_subphases else None
             if motif_ids.size(1) > 1:
                 motif_ids[gathered.lane_idx, :-1] = motif_ids[gathered.lane_idx, 1:]
@@ -379,7 +461,10 @@ class HybridScanMixin:
         initial_state = self._initial_lane_state_like(encoded)
 
         lane_reset = batch.lane_reset.to(device=encoded.device, dtype=torch.bool)
-        lane_end = batch.lane_stream_end.to(device=encoded.device, dtype=torch.bool)
+        section_end = getattr(batch, "lane_section_end", None)
+        lane_end = (batch.lane_stream_end if section_end is None else section_end).to(
+            device=encoded.device, dtype=torch.bool
+        )
         memory_state = self._reset_lane_rows(current_state.get("memory"), lane_reset, initial_state.get("memory"))
         last_seen = self._reset_lane_rows(current_state.get("last_seen"), lane_reset, initial_state.get("last_seen"))
         rhythm_state = self._reset_lane_rows(current_state.get("rhythm"), lane_reset, initial_state.get("rhythm"))

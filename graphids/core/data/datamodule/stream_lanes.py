@@ -1,10 +1,8 @@
-"""Lane-batched temporal event iteration."""
-
+"""Ordered lane batches with recording-owned labels and optional section replay."""
 from __future__ import annotations
 
-from collections import OrderedDict
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import torch
@@ -13,12 +11,7 @@ from torch.utils.data import Dataset
 
 @dataclass
 class TemporalStreamLaneBatch:
-    """A fixed-lane batch of independent temporal streams.
-
-    Event tensors are shaped ``[lanes, chunk_size, ...]``. ``valid_mask`` marks
-    real events; padded slots carry neutral values and must not affect loss or
-    metrics.
-    """
+    """Padding never advances state. Sections reset independently of recordings."""
 
     src: torch.Tensor
     dst: torch.Tensor
@@ -33,20 +26,27 @@ class TemporalStreamLaneBatch:
     lane_reset: torch.Tensor
     lane_stream_end: torch.Tensor
     reset_after: torch.Tensor
+    source_index: torch.Tensor | None = None
+    successor_index: torch.Tensor | None = None
+    successor_dst: torch.Tensor | None = None
+    successor_msg: torch.Tensor | None = None
+    lane_section_end: torch.Tensor | None = None
+    warmup_mask: torch.Tensor | None = None
+
+    def _map(self, fn):
+        return type(self)(**{
+            field: None if getattr(self, field) is None else fn(getattr(self, field))
+            for field in self.__dataclass_fields__
+        })
 
     def to(self, device: torch.device | str, *args: Any, **kwargs: Any) -> TemporalStreamLaneBatch:
-        values = {
-            field: getattr(self, field).to(device, *args, **kwargs)
-            for field in self.__dataclass_fields__
-        }
-        return type(self)(**values)
+        return self._map(lambda value: value.to(device, *args, **kwargs))
 
     def pin_memory(self) -> TemporalStreamLaneBatch:
         try:
-            values = {field: getattr(self, field).pin_memory() for field in self.__dataclass_fields__}
+            return self._map(lambda value: value.pin_memory())
         except RuntimeError:
             return self
-        return type(self)(**values)
 
     @property
     def num_valid_events(self) -> int:
@@ -54,13 +54,41 @@ class TemporalStreamLaneBatch:
 
 
 @dataclass(frozen=True)
+class StreamDescriptor:
+    """A slice for cached sorted data, or stable tensor indices for interleaving."""
+
+    stream_id: int
+    start: int
+    length: int
+    indices: torch.Tensor | None = None
+
+    def take(self, start: int, end: int):
+        if self.indices is None:
+            return slice(self.start + start, self.start + end)
+        return self.indices[start:end]
+
+    def source_indices(self, start: int, end: int):
+        if self.indices is None:
+            return torch.arange(self.start + start, self.start + end)
+        return self.indices[start:end]
+
+
+@dataclass(frozen=True)
+class SectionDescriptor:
+    stream_idx: int
+    warmup_start: int
+    core_start: int
+    core_end: int
+
+
+@dataclass(frozen=True)
 class _LaneBatchItem:
     lane_idx: int
-    stream_idx: int
+    section_idx: int
     offset: int
     end: int
     lane_reset: bool
-    stream_end: bool
+    section_end: bool
 
 
 @dataclass(frozen=True)
@@ -69,194 +97,175 @@ class _LaneBatchPlan:
 
 
 class TemporalStreamLaneLoader(Dataset[TemporalStreamLaneBatch]):
-    """Map-style dataset that packs independent streams into fixed temporal lanes."""
+    """Map-style ordered plans: workers materialize batches without owning state.
 
-    def __init__(
-        self,
-        data,
-        *,
-        stream_lanes: int,
-        chunk_size: int,
-        drop_partial_batches: bool = False,
-    ):
+    Continuous recordings retain lane state between chunks (gradients detach).
+    Experimental sections own disjoint cores, replay preceding unscored context,
+    and may occupy multiple lanes for the same parent recording.
+    """
+
+    def __init__(self, data, *, stream_lanes: int, chunk_size: int,
+                 drop_partial_batches: bool = False, stream_execution: str = "continuous",
+                 segment_events: int = 2048, segment_warmup_events: int = 256,
+                 seed: int = 42):
         self.data = data
         self.stream_lanes = int(stream_lanes)
         self.chunk_size = int(chunk_size)
         self.drop_partial_batches = bool(drop_partial_batches)
-        if self.stream_lanes < 2:
-            raise ValueError("stream_lanes must be >= 2 for batch_mode='stream_lanes'")
-        if self.chunk_size < 1:
-            raise ValueError("chunk_size must be positive for batch_mode='stream_lanes'")
+        if self.stream_lanes < 2 or self.chunk_size < 1:
+            raise ValueError("stream_lanes must be >= 2 and chunk_size must be positive")
+        if stream_execution not in {"continuous", "segmented"}:
+            raise ValueError("stream_execution must be continuous or segmented")
+        if segment_events < 1 or segment_warmup_events < 0:
+            raise ValueError("segment_events must be positive; warmup must be nonnegative")
         self._streams = self._partition_streams(data)
+        sections = []
+        for idx, stream in enumerate(self._streams):
+            width = stream.length if stream_execution == "continuous" else segment_events
+            for start in range(0, stream.length, width):
+                sections.append(SectionDescriptor(
+                    idx, max(0, start - segment_warmup_events), start,
+                    min(start + width, stream.length),
+                ))
+        if stream_execution == "segmented":
+            order = torch.randperm(len(sections), generator=torch.Generator().manual_seed(seed))
+            sections = [sections[i] for i in order.tolist()]
+        self.sections = tuple(sections)
         self._tensors = self._event_tensors()
+        self.diagnostic_gaps = 0
         self._plans = tuple(self._filter_plans(self._iter_plans()))
 
     @staticmethod
-    def _partition_streams(data) -> list[torch.Tensor]:
+    def _partition_streams(data) -> list[StreamDescriptor]:
         n = int(data.dst.numel())
-        stream_id = getattr(data, "stream_id", None)
-        if stream_id is None:
-            stream_id = torch.zeros(n, dtype=torch.long)
-        streams: OrderedDict[int, list[int]] = OrderedDict()
-        for event_idx, sid in enumerate(stream_id.detach().cpu().tolist()):
-            streams.setdefault(int(sid), []).append(event_idx)
-        return [torch.tensor(indices, dtype=torch.long) for indices in streams.values()]
+        if not n:
+            return []
+        ids = getattr(data, "stream_id", None)
+        if ids is None:
+            return [StreamDescriptor(0, 0, n)]
+        ids = ids.detach().cpu()
+        runs, counts = torch.unique_consecutive(ids, return_counts=True)
+        if runs.unique().numel() == runs.numel():
+            result, offset = [], 0
+            for sid, count in zip(runs.tolist(), counts.tolist(), strict=True):
+                result.append(StreamDescriptor(sid, offset, count))
+                offset += count
+            return result
+        # Stable grouping retains chronological input order without Python event lists.
+        order = torch.argsort(ids, stable=True)
+        runs, counts = torch.unique_consecutive(ids[order], return_counts=True)
+        result, offset = [], 0
+        for sid, count in zip(runs.tolist(), counts.tolist(), strict=True):
+            result.append(StreamDescriptor(sid, 0, count, order[offset:offset + count]))
+            offset += count
+        return result
 
     def __len__(self) -> int:
         return len(self._plans)
 
-    @staticmethod
-    def _event_tensor(data, name: str, default: torch.Tensor) -> torch.Tensor:
-        value = getattr(data, name, None)
-        return default if value is None else value
+    def _event_tensors(self):
+        # Defaults are scalar/batch-sized, never dataset-sized temporary tensors.
+        return {name: getattr(self.data, name, None) for name in
+                ("src", "dst", "t", "msg", "y", "attack_type", "event_id", "is_scored", "stream_id", "reset_after")}
 
-    def _empty_batch(self) -> TemporalStreamLaneBatch:
-        lanes = self.stream_lanes
-        chunk = self.chunk_size
-        n = int(self.data.dst.numel())
+    def _empty_batch(self):
+        shape = (self.stream_lanes, self.chunk_size)
         device = self.data.dst.device
-        msg_shape = tuple(self.data.msg.shape[1:])
-        t_default = torch.zeros(n, dtype=self.data.msg.dtype, device=device)
-        attack_default = torch.zeros(n, dtype=torch.long, device=device)
-        event_default = torch.arange(n, dtype=torch.long, device=device)
-
+        def zeros(dtype=torch.long, tail=()):
+            return torch.zeros((*shape, *tail), dtype=dtype, device=device)
         return TemporalStreamLaneBatch(
-            src=torch.zeros((lanes, chunk), dtype=self.data.src.dtype, device=device),
-            dst=torch.zeros((lanes, chunk), dtype=self.data.dst.dtype, device=device),
-            t=torch.zeros((lanes, chunk), dtype=t_default.dtype, device=device),
-            msg=torch.zeros((lanes, chunk, *msg_shape), dtype=self.data.msg.dtype, device=device),
-            y=torch.zeros((lanes, chunk), dtype=self.data.y.dtype, device=device),
-            attack_type=torch.zeros((lanes, chunk), dtype=attack_default.dtype, device=device),
-            event_id=torch.full((lanes, chunk), -1, dtype=event_default.dtype, device=device),
-            is_scored=torch.zeros((lanes, chunk), dtype=torch.bool, device=device),
-            stream_id=torch.full((lanes, chunk), -1, dtype=torch.long, device=device),
-            valid_mask=torch.zeros((lanes, chunk), dtype=torch.bool, device=device),
-            lane_reset=torch.zeros(lanes, dtype=torch.bool, device=device),
-            lane_stream_end=torch.zeros(lanes, dtype=torch.bool, device=device),
-            reset_after=torch.zeros((lanes, chunk), dtype=torch.bool, device=device),
+            src=zeros(self.data.src.dtype), dst=zeros(self.data.dst.dtype),
+            t=zeros(self.data.t.dtype if self._tensors["t"] is not None else self.data.msg.dtype),
+            msg=zeros(self.data.msg.dtype, self.data.msg.shape[1:]), y=zeros(self.data.y.dtype),
+            attack_type=zeros(), event_id=zeros().fill_(-1), is_scored=zeros(torch.bool),
+            stream_id=zeros().fill_(-1), valid_mask=zeros(torch.bool),
+            lane_reset=torch.zeros(self.stream_lanes, dtype=torch.bool, device=device),
+            lane_stream_end=torch.zeros(self.stream_lanes, dtype=torch.bool, device=device),
+            reset_after=zeros(torch.bool), source_index=zeros().fill_(-1),
+            successor_index=zeros().fill_(-1), successor_dst=zeros(self.data.dst.dtype),
+            successor_msg=zeros(self.data.msg.dtype, self.data.msg.shape[1:]),
+            lane_section_end=torch.zeros(self.stream_lanes, dtype=torch.bool, device=device),
+            warmup_mask=zeros(torch.bool),
         )
 
-    def _event_tensors(self) -> dict[str, torch.Tensor]:
-        n = int(self.data.dst.numel())
-        return {
-            "t": self._event_tensor(
-                self.data,
-                "t",
-                torch.zeros(n, dtype=self.data.msg.dtype, device=self.data.dst.device),
-            ),
-            "attack_type": self._event_tensor(
-                self.data,
-                "attack_type",
-                torch.zeros(n, dtype=torch.long, device=self.data.dst.device),
-            ),
-            "event_id": self._event_tensor(
-                self.data,
-                "event_id",
-                torch.arange(n, dtype=torch.long, device=self.data.dst.device),
-            ),
-            "is_scored": self._event_tensor(
-                self.data,
-                "is_scored",
-                torch.ones(n, dtype=torch.bool, device=self.data.dst.device),
-            ),
-            "stream_id": self._event_tensor(
-                self.data,
-                "stream_id",
-                torch.zeros(n, dtype=torch.long, device=self.data.dst.device),
-            ),
-            "reset_after": self._event_tensor(
-                self.data,
-                "reset_after",
-                torch.zeros(n, dtype=torch.bool, device=self.data.dst.device),
-            ),
-        }
-
     def _iter_plans(self) -> Iterator[_LaneBatchPlan]:
-        active: list[tuple[int, int] | None] = [None] * self.stream_lanes
-        next_stream = 0
-
-        while next_stream < len(self._streams) or any(slot is not None for slot in active):
-            lane_resets = [False] * self.stream_lanes
-            for lane_idx, slot in enumerate(active):
-                if slot is None and next_stream < len(self._streams):
-                    active[lane_idx] = (next_stream, 0)
-                    lane_resets[lane_idx] = True
-                    next_stream += 1
-
-            items: list[_LaneBatchItem] = []
-            for lane_idx, slot in enumerate(active):
+        active = [None] * self.stream_lanes
+        next_section = 0
+        while next_section < len(self.sections) or any(slot is not None for slot in active):
+            resets = [False] * self.stream_lanes
+            for lane, slot in enumerate(active):
+                if slot is None and next_section < len(self.sections):
+                    section = self.sections[next_section]
+                    active[lane] = (next_section, section.warmup_start)
+                    resets[lane] = True
+                    next_section += 1
+            items = []
+            for lane, slot in enumerate(active):
                 if slot is None:
                     continue
-                stream_idx, offset = slot
-                stream = self._streams[stream_idx]
-                end = min(offset + self.chunk_size, int(stream.numel()))
-                if end <= offset:
-                    active[lane_idx] = None
-                    continue
-                stream_end = end >= int(stream.numel())
-                items.append(
-                    _LaneBatchItem(
-                        lane_idx=lane_idx,
-                        stream_idx=stream_idx,
-                        offset=offset,
-                        end=end,
-                        lane_reset=lane_resets[lane_idx],
-                        stream_end=stream_end,
-                    )
-                )
-                active[lane_idx] = None if stream_end else (stream_idx, end)
-
+                idx, offset = slot
+                section = self.sections[idx]
+                # Replay ends at a batch boundary even for non-aligned settings,
+                # so detached state prevents gradients crossing into replay.
+                boundary = section.core_start if offset < section.core_start else section.core_end
+                end = min(offset + self.chunk_size, boundary)
+                done = end == section.core_end
+                items.append(_LaneBatchItem(lane, idx, offset, end, resets[lane], done))
+                active[lane] = None if done else (idx, end)
             yield _LaneBatchPlan(tuple(items))
 
-    @staticmethod
-    def _plan_events(plan: _LaneBatchPlan) -> int:
-        return sum(item.end - item.offset for item in plan.items)
-
-    def _filter_plans(self, plans: Iterator[_LaneBatchPlan]) -> Iterator[_LaneBatchPlan]:
-        if not self.drop_partial_batches:
-            yield from plans
-            return
-        expected = self.stream_lanes * self.chunk_size
+    def _filter_plans(self, plans):
+        skipped = set()
         for plan in plans:
-            if self._plan_events(plan) == expected:
-                yield plan
-
-    def _batch_from_plan(
-        self,
-        plan: _LaneBatchPlan,
-        tensors: dict[str, torch.Tensor],
-    ) -> TemporalStreamLaneBatch:
-        batch = self._empty_batch()
-        for item in plan.items:
-            stream = self._streams[item.stream_idx]
-            take = stream[item.offset:item.end].to(device=self.data.dst.device)
-            width = int(take.numel())
-            if width == 0:
+            if self.drop_partial_batches and sum(i.end - i.offset for i in plan.items) != self.stream_lanes * self.chunk_size:
+                skipped.update(i.lane_idx for i in plan.items)
+                self.diagnostic_gaps += sum(i.end - i.offset for i in plan.items)
                 continue
+            yield _LaneBatchPlan(tuple(replace(i, lane_reset=True) if i.lane_idx in skipped else i for i in plan.items))
+            skipped.difference_update(i.lane_idx for i in plan.items)
 
-            lane_idx = item.lane_idx
-            sl = slice(0, width)
-            batch.lane_reset[lane_idx] = item.lane_reset
-            batch.src[lane_idx, sl] = self.data.src[take]
-            batch.dst[lane_idx, sl] = self.data.dst[take]
-            batch.t[lane_idx, sl] = tensors["t"][take]
-            batch.msg[lane_idx, sl] = self.data.msg[take]
-            batch.y[lane_idx, sl] = self.data.y[take]
-            batch.attack_type[lane_idx, sl] = tensors["attack_type"][take]
-            batch.event_id[lane_idx, sl] = tensors["event_id"][take]
-            batch.is_scored[lane_idx, sl] = tensors["is_scored"][take].bool()
-            batch.stream_id[lane_idx, sl] = tensors["stream_id"][take].long()
-            batch.reset_after[lane_idx, sl] = tensors["reset_after"][take].bool()
-            batch.valid_mask[lane_idx, sl] = True
-
-            if item.stream_end:
-                batch.lane_stream_end[lane_idx] = True
-                batch.reset_after[lane_idx, width - 1] = True
+    def __getitem__(self, index):
+        batch = self._empty_batch()
+        for item in self._plans[index].items:
+            section = self.sections[item.section_idx]
+            stream = self._streams[section.stream_idx]
+            take = stream.take(item.offset, item.end)
+            if isinstance(take, torch.Tensor):
+                take = take.to(self.data.dst.device)
+            width = item.end - item.offset
+            lane, sl = item.lane_idx, slice(0, width)
+            source = stream.source_indices(item.offset, item.end).to(self.data.dst.device)
+            for name, tensor in self._tensors.items():
+                if tensor is not None:
+                    getattr(batch, name)[lane, sl] = tensor[take]
+            batch.source_index[lane, sl] = source
+            if self._tensors["event_id"] is None:
+                batch.event_id[lane, sl] = source
+            batch.stream_id[lane, sl] = stream.stream_id
+            batch.valid_mask[lane, sl] = True
+            warmup = torch.arange(item.offset, item.end, device=source.device) < section.core_start
+            batch.warmup_mask[lane, sl] = warmup
+            batch.is_scored[lane, sl] = ~warmup
+            batch.lane_reset[lane] = item.lane_reset
+            successor_end = min(item.end, stream.length - 1)
+            successor_width = max(0, successor_end - item.offset)
+            if successor_width:
+                nxt = stream.take(item.offset + 1, successor_end + 1)
+                if isinstance(nxt, torch.Tensor):
+                    nxt = nxt.to(source.device)
+                target_sl = slice(0, successor_width)
+                batch.successor_index[lane, target_sl] = stream.source_indices(item.offset + 1, successor_end + 1).to(source.device)
+                batch.successor_dst[lane, target_sl] = self.data.dst[nxt]
+                batch.successor_msg[lane, target_sl] = self.data.msg[nxt]
+            # Evaluation's scoring warmup is already marked in source data.
+            if self._tensors["is_scored"] is not None:
+                batch.is_scored[lane, sl] &= self._tensors["is_scored"][take].bool()
+            if item.section_end:
+                batch.lane_section_end[lane] = True
+                batch.lane_stream_end[lane] = item.end == stream.length
+                batch.reset_after[lane, width - 1] = True
         return batch
 
-    def __getitem__(self, index: int) -> TemporalStreamLaneBatch:
-        return self._batch_from_plan(self._plans[index], self._tensors)
-
-    def __iter__(self) -> Iterator[TemporalStreamLaneBatch]:
+    def __iter__(self):
         for idx in range(len(self)):
             yield self[idx]

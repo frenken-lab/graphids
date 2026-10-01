@@ -28,6 +28,12 @@ class TemporalDataModule(pl.LightningDataModule):
         pin_memory: bool = False,
         persistent_workers: bool = False,
         drop_partial_lane_batches: bool = False,
+        coverage_policy: str = "full",
+        stream_execution: str = "continuous",
+        segment_events: int = 2048,
+        segment_warmup_events: int = 256,
+        eval_batch_mode: str = "events",
+        val_prefix_events: int | None = None,
     ):
         super().__init__()
         self.source = dataset
@@ -47,6 +53,25 @@ class TemporalDataModule(pl.LightningDataModule):
                 raise ValueError("stream_lanes must be >= 2 for batch_mode='stream_lanes'")
             if self.chunk_size is None or self.chunk_size < 1:
                 raise ValueError("chunk_size must be positive for batch_mode='stream_lanes'")
+        self.coverage_policy = coverage_policy
+        self.stream_execution = stream_execution
+        self.segment_events = segment_events
+        self.segment_warmup_events = segment_warmup_events
+        self.eval_batch_mode = eval_batch_mode
+        self.val_prefix_events = val_prefix_events
+        if coverage_policy not in {"full", "diagnostic"}:
+            raise ValueError("coverage_policy must be full or diagnostic")
+        if stream_execution not in {"continuous", "segmented"}:
+            raise ValueError("stream_execution must be continuous or segmented")
+        if eval_batch_mode not in {"events", "stream_lanes"}:
+            raise ValueError("eval_batch_mode must be events or stream_lanes")
+        if stream_execution == "segmented" and batch_mode != "stream_lanes":
+            raise ValueError("segmented execution requires stream_lanes")
+        if eval_batch_mode == "stream_lanes" and (stream_lanes is None or chunk_size is None):
+            raise ValueError("lane evaluation requires stream_lanes and chunk_size")
+        if coverage_policy == "full" and batch_mode == "stream_lanes" and drop_partial_lane_batches:
+            raise ValueError("full coverage requires drop_partial_lane_batches: false")
+        self._train_lane_dataset = None
         self._train = None
         self._val = None
         self._tests: dict[str, object] = {}
@@ -56,6 +81,14 @@ class TemporalDataModule(pl.LightningDataModule):
             return
         st = get_or_build(self.source)
         self._train, self._val, self._tests = st.train, st.val, st.test
+        if self.val_prefix_events is not None:
+            import torch
+            streams = TemporalStreamLaneLoader._partition_streams(self._val)
+            indices = torch.cat([s.source_indices(0, min(s.length, self.val_prefix_events)) for s in streams])
+            self._val = self._val[indices.to(self._val.dst.device)]
+            # Prefix truncation creates new true split terminals.
+            for stream in TemporalStreamLaneLoader._partition_streams(self._val):
+                self._val.reset_after[stream.source_indices(stream.length - 1, stream.length)] = True
 
     def _loader(self, data):
         from torch_geometric.loader import TemporalDataLoader
@@ -130,29 +163,37 @@ class TemporalDataModule(pl.LightningDataModule):
             max_label = max(max_label, self._max_tensor_value(data, "y"))
         return max(2, max_label + 1)
 
-    def train_dataloader(self):
-        if self.batch_mode == "stream_lanes":
-            assert self.stream_lanes is not None
-            assert self.chunk_size is not None
-            dataset = TemporalStreamLaneLoader(
-                self._train,
-                stream_lanes=self.stream_lanes,
-                chunk_size=self.chunk_size,
-                drop_partial_batches=self.drop_partial_lane_batches,
-            )
-            if self.num_workers <= 0 and not self.pin_memory:
-                return dataset
-            from torch.utils.data import DataLoader
+    def _lane_loader(self, data, *, training=False):
+        from torch.utils.data import DataLoader
 
-            return DataLoader(
-                dataset,
-                batch_size=None,
-                collate_fn=_identity_collate,
-                **self._torch_loader_kwargs(),
+        if training and self._train_lane_dataset is not None:
+            dataset = self._train_lane_dataset
+        else:
+            dataset = TemporalStreamLaneLoader(
+                data, stream_lanes=self.stream_lanes, chunk_size=self.chunk_size,
+                drop_partial_batches=self.drop_partial_lane_batches if training else False,
+                stream_execution=self.stream_execution if training else "continuous",
+                segment_events=self.segment_events, segment_warmup_events=self.segment_warmup_events,
             )
+            if training:
+                self._train_lane_dataset = dataset
+        # Sequential sampler + ordered DataLoader results keep state independent of prefetch.
+        return DataLoader(dataset, batch_size=None, collate_fn=_identity_collate,
+                          shuffle=False, **self._torch_loader_kwargs())
+
+    def train_dataloader(self):
+        trainer = getattr(self, "trainer", None)
+        if self.batch_mode == "stream_lanes" and self.coverage_policy == "full" and trainer is not None:
+            from graphids.core.data.datamodule.coverage import TemporalCoverageAudit
+            if not any(isinstance(cb, TemporalCoverageAudit) and cb.require_complete for cb in trainer.callbacks):
+                trainer.callbacks.append(TemporalCoverageAudit())
+        if self.batch_mode == "stream_lanes":
+            return self._lane_loader(self._train, training=True)
         return self._loader(self._train)
 
     def val_dataloader(self):
+        if self.eval_batch_mode == "stream_lanes":
+            return self._lane_loader(self._val)
         return self._loader(self._val)
 
     def test_dataloader(self):

@@ -111,6 +111,9 @@ class TemporalHybridModel(HybridRuntimeMixin, HybridScanMixin, HybridStateMixin,
         profiling.setdefault("warmup_steps", 5)
         profiling.setdefault("log_every_n_steps", 10)
         scan.setdefault("profile_subphases", False)
+        scan.setdefault("rhythm_kernel", "torch")
+        scan.setdefault("time_kernel", "torch")
+        scan.setdefault("motif_writer", "torch")
 
         default_ssl = objective in {"anomaly", "joint"}
         heads.setdefault("classification", objective in {"supervised", "joint"})
@@ -197,7 +200,14 @@ class TemporalHybridModel(HybridRuntimeMixin, HybridScanMixin, HybridStateMixin,
             raise ValueError("motif.embedding_dim must be positive")
         if int(motif.get("time_dim", 1)) < 1:
             raise ValueError("motif.time_dim must be positive")
-        unknown_scan_keys = set(scan) - {"profile_subphases"}
+        if scan.get("rhythm_kernel", "torch") not in ("torch", "triton"):
+            raise ValueError("scan.rhythm_kernel must be torch or triton")
+        for key in ("time_kernel", "motif_writer"):
+            if scan.get(key, "torch") not in ("torch", "triton"):
+                raise ValueError(f"scan.{key} must be torch or triton")
+        if scan.get("motif_writer") == "triton" and scan.get("rhythm_kernel") != "triton":
+            raise ValueError("scan.motif_writer=triton requires rhythm_kernel=triton")
+        unknown_scan_keys = set(scan) - {"profile_subphases", "rhythm_kernel", "time_kernel", "motif_writer"}
         if unknown_scan_keys:
             keys = ", ".join(sorted(unknown_scan_keys))
             raise ValueError(f"unknown scan config key(s): {keys}")

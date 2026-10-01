@@ -129,24 +129,31 @@ class TemporalIdMemory(nn.Module):
         src_last: torch.Tensor | None,
         dst_last: torch.Tensor | None,
         now: torch.Tensor,
+        *,
+        encoded_time: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        """Mix differentiable memory rows with optional fixed time features.
+
+        A lane kernel may supply source-then-destination time features; the
+        trainable mix and memory-row gradients still use normal PyTorch.
+        """
         if not self._has_context:
             return src_rows.new_zeros(src_rows.shape)
         if (
             self.use_source
             and self.use_destination
             and self.time_encoder is not None
-            and src_last is not None
-            and dst_last is not None
+            and (encoded_time is not None or (src_last is not None and dst_last is not None))
         ):
-            elapsed = torch.stack(
-                [
-                    torch.where(src_last >= 0, now - src_last, torch.zeros_like(now)),
-                    torch.where(dst_last >= 0, now - dst_last, torch.zeros_like(now)),
-                ],
-                dim=-1,
-            )
-            encoded_time = self.time_encoder(elapsed).flatten(start_dim=1)
+            if encoded_time is None:
+                elapsed = torch.stack(
+                    [
+                        torch.where(src_last >= 0, now - src_last, torch.zeros_like(now)),
+                        torch.where(dst_last >= 0, now - dst_last, torch.zeros_like(now)),
+                    ],
+                    dim=-1,
+                )
+                encoded_time = self.time_encoder(elapsed).flatten(start_dim=1)
             context = src_rows.new_empty((src_rows.size(0), (2 * self.hidden) + encoded_time.size(-1)))
             context[:, : self.hidden] = src_rows
             context[:, self.hidden : 2 * self.hidden] = dst_rows
@@ -416,9 +423,16 @@ class TemporalMotifContext(nn.Module):
         encoded_iats = self.time_encoder(iats).flatten()
         return self.proj(torch.cat([encoded_ids, encoded_iats], dim=-1))
 
-    def read_context_batch(self, ids: torch.Tensor, iats: torch.Tensor) -> torch.Tensor:
+    def read_context_batch(
+        self, ids: torch.Tensor, iats: torch.Tensor, *, encoded_time: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Project the pre-event history, optionally using fused fixed time features.
+
+        ID lookup remains in PyTorch so embedding gradients accumulate normally.
+        Callers that mutate history must pass an independent ID snapshot.
+        """
         encoded_ids = self.embedding(ids.clamp_min(0).clamp_max(self.num_ids - 1).long()).flatten(start_dim=1)
-        encoded_iats = self.time_encoder(iats).flatten(start_dim=1)
+        encoded_iats = self.time_encoder(iats).flatten(start_dim=1) if encoded_time is None else encoded_time
         return self.proj(torch.cat([encoded_ids, encoded_iats], dim=-1))
 
     def update_one(

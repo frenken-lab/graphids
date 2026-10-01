@@ -39,6 +39,10 @@ def lane_targets(batch, *, in_channels: int) -> dict[str, torch.Tensor]:
     payload_delta = batch.msg[..., payload_slice].float().clone()
     if chunk > 1:
         payload_delta[:, :-1] = batch.msg[:, 1:, payload_slice].float()
+    if getattr(batch, "successor_index", None) is not None:
+        valid_next = valid & (batch.successor_index >= 0)
+        next_id = batch.successor_dst.long()
+        payload_delta = batch.successor_msg[..., payload_slice].float()
     return {
         "valid_next": valid_next.reshape(-1),
         "next_id": next_id.reshape(-1),

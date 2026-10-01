@@ -136,3 +136,31 @@ def test_ray_backend_runs_temporal_vgae_smoke(monkeypatch, tmp_path):
         loss_fn=None,
     )
     assert {"train_loss", "train_recon", "val_loss", "val_recon_mean"} <= set(result["metrics"])
+
+
+def test_launch_seeds_before_model_construction(monkeypatch, tmp_path):
+    import torch
+
+    from graphids.exp import ray_backend
+
+    _install_temporal_smoke_data(monkeypatch)
+    original = ray_backend.resolve_spec
+    initialized = []
+    def capture(spec):
+        if isinstance(spec, dict) and spec.get("type") == "temporal_event_classifier":
+            initialized.append(torch.rand(5))
+        return original(spec)
+    monkeypatch.setattr(ray_backend, "resolve_spec", capture)
+    cfg = {
+        "seed_everything": 42,
+        "data": {"type": "temporal_smoke_data"},
+        "model": {"type": "temporal_event_classifier", "hidden": 8, "layers": 1, "embedding_dim": 4},
+        "loss_fn": {"type": "ce"},
+        "trainer": {"accelerator": "cpu", "devices": 1, "max_epochs": 1,
+                    "limit_train_batches": 1, "limit_val_batches": 0, "logger": False,
+                    "enable_checkpointing": False, "enable_progress_bar": False,
+                    "enable_model_summary": False, "default_root_dir": str(tmp_path)},
+    }
+    for _ in range(2):
+        ray_backend._build_lightning_run("fit", cfg, logger=None, ray=False)
+    torch.testing.assert_close(initialized[0], initialized[1], rtol=0, atol=0)

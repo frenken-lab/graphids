@@ -160,6 +160,10 @@ def _build_lightning_run(
     if "data" not in cfg or "model" not in cfg:
         raise ValueError(f"{stage} requires data and model config blocks")
 
+    seed = cfg.get("seed_everything", cfg.get("seed"))
+    if seed is not None:
+        pl.seed_everything(int(seed), workers=True)
+
     data = build_component(cfg["data"])
     if hasattr(data, "setup"):
         data.setup(None)
@@ -213,11 +217,17 @@ def _build_lightning_run(
         trainer_kwargs["plugins"] = plugins
         callbacks.append(RayTrainReportCallback())
         trainer_kwargs.setdefault("enable_checkpointing", False)
-    trainer_kwargs["callbacks"] = callbacks
+    if stage == "fit" and getattr(data, "batch_mode", None) == "stream_lanes":
+        from graphids.core.data.datamodule.coverage import (
+            TemporalCoverageAudit,
+            validate_full_lane_settings,
+        )
 
-    seed = cfg.get("seed_everything", cfg.get("seed"))
-    if seed is not None:
-        pl.seed_everything(int(seed), workers=True)
+        full = data.coverage_policy == "full"
+        if full:
+            validate_full_lane_settings(trainer_kwargs)
+        callbacks.append(TemporalCoverageAudit(require_complete=full))
+    trainer_kwargs["callbacks"] = callbacks
 
     trainer = pl.Trainer(**trainer_kwargs)
     if ray:

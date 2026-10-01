@@ -41,6 +41,12 @@ class TemporalDMCfg(_Cfg):
     pin_memory: bool = False
     persistent_workers: bool = False
     drop_partial_lane_batches: bool = False
+    coverage_policy: Literal["full", "diagnostic"] = "full"
+    stream_execution: Literal["continuous", "segmented"] = "continuous"
+    segment_events: int = Field(default=2048, ge=1)
+    segment_warmup_events: int = Field(default=256, ge=0)
+    eval_batch_mode: Literal["events", "stream_lanes"] = "events"
+    val_prefix_events: int | None = Field(default=None, ge=1)
     val_warmup_events: int = 0
     test_warmup_events: int = 0
 
@@ -51,6 +57,12 @@ class TemporalDMCfg(_Cfg):
                 raise ValueError("stream_lanes must be >= 2 for batch_mode='stream_lanes'")
             if self.chunk_size is None or self.chunk_size < 1:
                 raise ValueError("chunk_size must be positive for batch_mode='stream_lanes'")
+            if self.coverage_policy == "full" and self.drop_partial_lane_batches:
+                raise ValueError("full coverage requires drop_partial_lane_batches: false")
+        if self.stream_execution == "segmented" and self.batch_mode != "stream_lanes":
+            raise ValueError("segmented execution requires stream_lanes")
+        if self.eval_batch_mode == "stream_lanes" and (self.stream_lanes is None or self.chunk_size is None):
+            raise ValueError("lane evaluation requires stream_lanes and chunk_size")
         return self
 
     def build(self) -> Any:
@@ -78,6 +90,13 @@ class TemporalDMCfg(_Cfg):
             pin_memory=self.pin_memory,
             persistent_workers=self.persistent_workers,
             drop_partial_lane_batches=self.drop_partial_lane_batches,
+            coverage_policy=self.coverage_policy,
+            stream_execution=self.stream_execution,
+            segment_events=self.segment_events,
+            segment_warmup_events=self.segment_warmup_events,
+            eval_batch_mode=self.eval_batch_mode,
+            val_prefix_events=self.val_prefix_events,
+
         )
 
 

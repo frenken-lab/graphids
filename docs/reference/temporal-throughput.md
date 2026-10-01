@@ -581,3 +581,66 @@ configs/experiments/diagnostics/temporal_joint_hybrid_ssm_lite_rich_set_01_lanes
 
 SLURM job `55280466` completed successfully with `512` train events and
 zero padding, improving the final strict-rich baseline to `2873.71 events/sec`.
+
+## Full-Coverage Training and Experimental Sections
+
+Production lane training defaults to `coverage_policy: full` and
+`stream_execution: continuous`. A recording owns its lane state until completion;
+32-event chunks detach gradients but do not reset GRU memory, backbone state,
+rhythm statistics, or motif history. Chunks are therefore not independent examples.
+The exact `set_01` comparison uses 18 lanes × 32 events so all recordings start
+concurrently. Short streams and tails are included; padding affects neither state
+nor losses. Event-mode loading retains its existing behavior.
+
+Full coverage requires `drop_partial_lane_batches: false`, unrestricted
+`limit_train_batches: 1.0`, `max_steps: -1`, sequential ordered sampling, and one
+training process/GPU. Distributed index sharding, overfit sampling, and fast-dev
+limits are rejected. Worker prefetch only materializes ordered map-style plans;
+workers never own recurrent state. Deliberately limited smoke/profile configs use
+`coverage_policy: diagnostic`. Dropped diagnostic chunks count as history gaps and
+force affected lanes to reset before resuming.
+
+`stream_execution: segmented` is explicitly experimental. Cores own at most
+`segment_events: 2048` unique scored events. Each section replays at most
+`segment_warmup_events: 256` preceding training events from the same recording,
+starts from reset state, and resets at section completion. The deterministic
+seed-42 shuffled queue allows different sections of one recording in different
+lanes; chunks within each section remain chronological. Replay advances state
+but contributes neither loss nor scored coverage. Warmup-only batches skip backward
+and optimizer calls. Mixed batches use only scored events in their loss.
+Gradients detach at every chunk boundary, including replay chunks.
+
+Finite replay approximates full-recording state: it cannot recover arbitrary GRU
+memory or cumulative rhythm statistics. Segmented training stays opt-in regardless
+of pilot throughput or validation results. A section end is distinct from a real
+recording end. Loader metadata supplies source indices and actual recording
+successor IDs/payloads, including chunk and section boundaries. Successors never
+cross recording/split terminals; terminal events still train classification.
+Legacy synthetic batches without metadata retain batch-local successor labels.
+The existing IAT target values/definition are unchanged.
+
+Every full lane run automatically attaches `TemporalCoverageAudit`. It checks core
+and chunk ownership before training and uses CPU bitmaps to count scored source
+indices during each epoch. Reports under `coverage/epoch-N.json` include expected,
+observed, unique, missing, duplicate, unexpected, per-stream and per-class coverage,
+replay events, successor coverage, occupancy, padding, and end-to-end scored
+throughput. Incomplete production epochs fail. Exceptions persist interrupted
+reports; report-writing failures warn while preserving the original exception.
+
+Comparison configs are in `configs/experiments/comparisons/`. Run them on one GPU
+with `python -m graphids.exp.temporal_comparison CONFIG --output DIR`. The runner
+loads only the training/validation caches, verifies 12,090,403 training events,
+18 recordings, and 57,108 attacks, seeds before constructing the model, saves
+`checkpoints/final.ckpt`, then restores it for continuous lane evaluation on the
+first 8,192 validation events per recording. The existing 64-event scoring warmup
+remains unscored. Evaluation drops no batches and loads no test data. Reports
+include initial weight digests, validation losses, class counts, AUROC availability,
+and GPU telemetry. The expected recording-successor count is 12,090,385.
+
+Choose 64 section lanes only if the short diagnostics improve end-to-end **scored**
+throughput by at least 3%; otherwise choose 32. Replay is reported separately.
+Full epoch jobs request separate Pitzer allocations with one GPU, eight CPUs,
+32 GiB RAM, and eight hours. Compare the two full-coverage workloads directly.
+The historical strict 512-event prefix probes above are diagnostic workloads and
+are not equivalent training epochs. One epoch per mode is a quality pilot and
+cannot establish that approximate state should replace continuous training.

@@ -91,6 +91,17 @@ class HybridRuntimeMixin:
         super().on_test_epoch_start()
         self._test_states = {}
 
+    def on_train_batch_start(self, batch, batch_idx):
+        self._warmup_only_batch = not bool(self.scored_mask(batch).any())
+
+    def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure=None):
+        if getattr(self, "_warmup_only_batch", False):
+            # Execute the forward closure to advance state, but never enter optimizer.step.
+            if optimizer_closure is not None:
+                optimizer_closure()
+            return
+        return super().optimizer_step(epoch, batch_idx, optimizer, optimizer_closure)
+
     def training_step(self, batch, _idx):
         if self._phase_timing_enabled():
             self._train_phase_timings_s = {}
@@ -98,6 +109,8 @@ class HybridRuntimeMixin:
         out, state = self._forward_with_state(batch, self._detach_state(self._train_state))
         self._phase_end("forward", forward_start)
         self._train_state = self._detach_state(state)
+        if not self.scored_mask(batch).any():
+            return None  # State advanced; Lightning skips backward and optimizer (including decay).
         loss_start = self._phase_start()
         terms = self._loss_terms(out, batch)
         mask = self.scored_mask(batch)
@@ -125,6 +138,9 @@ class HybridRuntimeMixin:
         labels = batch.y.reshape(-1)[mask].long()
         bs = int(labels.numel())
         self.log("val_loss", terms["total"], batch_size=bs)
+        for name, value in terms.items():
+            if name not in {"total", "zero"}:
+                self.log(f"val_{name}_loss", value, batch_size=bs)
         if self.classification_enabled and "logits" in out:
             probs = F.softmax(out["logits"][mask], dim=1)
             self.log("val_acc", (probs.argmax(1) == labels).float().mean(), batch_size=bs)
@@ -139,6 +155,12 @@ class HybridRuntimeMixin:
     def on_validation_epoch_end(self) -> None:
         from torchmetrics.functional.classification import binary_auroc
 
+        collected = self._val_cls_labels or self._val_anom_labels
+        if collected:
+            counts = torch.bincount(torch.cat(collected), minlength=2)
+            for cls, count in enumerate(counts):
+                self.log(f"val_class_{cls}_events", count.float())
+            self.log("val_auroc_available", float((counts > 0).sum() >= 2))
         if self._val_cls_probs:
             labels = torch.cat(self._val_cls_labels)
             if labels.unique().numel() >= 2:

@@ -160,6 +160,15 @@ class TemporalHybridProfilingCfg(_Cfg):
 
 class TemporalHybridScanCfg(_Cfg):
     profile_subphases: bool = False
+    rhythm_kernel: Literal["torch", "triton"] = "torch"
+    time_kernel: Literal["torch", "triton"] = "torch"
+    motif_writer: Literal["torch", "triton"] = "torch"
+
+    @model_validator(mode="after")
+    def _validate_motif_writer(self) -> Self:
+        if self.motif_writer == "triton" and self.rhythm_kernel != "triton":
+            raise ValueError("scan.motif_writer=triton requires rhythm_kernel=triton")
+        return self
 
 
 class TemporalHybridCfg(_Cfg):

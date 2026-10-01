@@ -1163,6 +1163,219 @@ throughput from `2825.70` to `2873.71 events/sec` (`+1.7%`). The epoch 2 median
 improved from `2829.22` to `2887.05 events/sec` (`+2.0%`). Against the
 pre-cleanup `2568.81 events/sec` rich baseline, the final gain is about `11.9%`.
 
+## Triton Rhythm Kernel — October 1, 2026
+
+Implemented an opt-in float32 Triton kernel for the lane scan rhythm path.
+One launch gathers source/destination rhythm rows, emits their pre-update
+features, applies the Welford updates, and writes state back. Self-edges apply
+two updates to the same row. The trainable `rhythm.proj` remains in PyTorch.
+The lane writer skips rhythm updates already performed by the kernel.
+
+Enable with `model.scan.rhythm_kernel: triton`. The default remains `torch`;
+CPU, unsupported inputs, and synchronous import/compilation/launch failures
+use the PyTorch path. Only the lane scan uses this kernel. CUDA execution
+errors reported asynchronously are not covered by the synchronous fallback.
+
+Strict benchmark:
+
+```text
+config      = temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_triton_rhythm_profile.yml
+SLURM job   = 55282240
+cluster     = pitzer
+state       = COMPLETED
+exit code   = 0:0
+elapsed     = 00:03:19
+start/end   = 2026-10-01T13:35:28 / 2026-10-01T13:38:47 (America/New_York)
+base commit = 4560d95e55f48297b8aa3732d0bc27d9aecb207e (plus uncommitted kernel changes)
+stack       = torch 2.8.0+cu128 / triton 3.4.0
+run dir     = /fs/ess/PAS1266/graphids/dev/rf15/set_01/temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_triton_rhythm_profile/temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_triton_rhythm_profile
+stderr      = /fs/ess/PAS1266/graphids/slurm_logs/ray-temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_triton_rhythm_profile_55282240.err
+```
+
+The job ran GPU correctness checks before starting the experiment. Earlier
+attempts `55282167` and `55282185` stopped on a test assertion targeting a
+`Sequential` projection as a `Linear`, and a missing primitive scan-schema
+field, respectively. Both were corrected before the successful benchmark.
+
+Final reported metrics:
+
+| Metric | Value |
+| --- | ---: |
+| `profile/train_events` | `512.0` |
+| `profile/train_active_lanes` | `16.0` |
+| `profile/train_lane_capacity_events` | `512.0` |
+| `profile/train_padding_events` | `0.0` |
+| `profile/train_padding_fraction` | `0.0` |
+| `profile/train_events_per_sec` | `3218.282` |
+| `profile/train_batch_ms` | `159.091` |
+| `profile/train_data_wait_ms` | `14.385` |
+| `resource/gpu_util_percent_mean/max` | `15.72% / 18.0%` |
+| `resource/gpu_mem_gib_max` | `1.142` |
+| `resource/rss_gib_max` | `24.438` |
+| `train_loss` | `1.274` |
+| `val_loss` | `1.107` |
+
+Stable profiler sample medians:
+
+| Epoch | Samples | Median events/sec | Median batch ms | Median data wait ms |
+| ---: | ---: | ---: | ---: | ---: |
+| `0` | `9` | `3229.152` | `158.556` | `13.809` |
+| `1` | `10` | `3242.437` | `157.906` | `14.319` |
+| `2` | `10` | `3218.478` | `159.082` | `14.385` |
+
+All 29 logged samples have `512` events, `16` active lanes, and `0` padding.
+Their mean throughput is `3219.727 events/sec`. No rhythm kernel fallback was
+reported. The final throughput improves over writer-fusion job `55280466`
+(`2873.714 events/sec`) by **12.0%**; the epoch 2 median improves from
+`2887.055` to `3218.478 events/sec` by **11.5%**.
+
+Verification:
+
+- Local model suite: `35 passed, 2 skipped` (CUDA unavailable locally).
+- GPU checks: `4 passed`; covers wrapper features/state equivalence, repeated
+  updates, self-edges, strided lane vectors, negative IAT, empty inputs, lane
+  reference semantics, and finite projection gradients.
+- Config/primitive validation: `4 passed, 23 deselected`; accepts the new
+  diagnostic config and rejects unknown kernel values.
+- Ruff, documentation lint, and `git diff --check`: passed.
+
+Status: **PASS as the current opt-in strict-rich benchmark**. Keep the default
+PyTorch path; this is one successful Triton benchmark, not a repeated paired
+A/B experiment. Loss values are included for context, not as evidence of
+training-quality equivalence.
+
+### Next Narrow Kernel Candidates
+
+The first three candidates were subsequently implemented and benchmarked in
+the Triton Time Features and Motif Writer section below.
+
+These are implementation candidates inferred from the current code, not
+measured speedups. The earlier phase-profile job `55279729` predates the rhythm
+kernel; rerun a phase profile with Triton rhythm enabled before treating its
+subphase costs as the current bottleneck. Use an uninstrumented strict A/B run
+for acceptance because subphase synchronization adds overhead.
+
+| Priority | Scope | PyTorch boundary and validation |
+| ---: | --- | --- |
+| `1` | Memory time features: gather last-seen timestamps, mask unseen IDs, clamp elapsed time, apply `log1p`, encode sine/cosine, and pack source/destination time features in one launch. | Keep memory-row gathers, `memory.mix`, and GRU updates in PyTorch. Time-encoder frequencies are fixed buffers. Test unseen IDs, self-edges, negative elapsed times, odd encoding dimensions, partial lanes, and dtype/layout equivalence. |
+| `2` | Motif time features: fuse `log1p`, frequency division, sine/cosine, and truncation for the active lanes' IAT history. | Keep embedding lookup and `motif.proj` in PyTorch. Reuse the time-encoding kernel where practical. Preserve pre-update history and feature order. The history length is only `3`, so launch savings need measurement. |
+| `3` | Extend the existing rhythm launch to shift/append motif IDs and IATs, and optionally write last-seen timestamps. | Read motif context before mutating its history; preserve independent ID snapshots used by embedding backward. Preserve the current lane writer's IAT semantics and partial-lane masking. Extending an existing launch is preferable to assuming a separate tiny writer kernel will pay off. |
+| `4` | SSM-lite pointwise recurrence: fuse sigmoid/tanh and `next_state = decay * state + gate * candidate` after the three linear projections. | Keep projections, output projection, dropout, and normalization in PyTorch. This candidate requires an explicit backward and output/parameter/state-gradient equivalence tests, so it is a larger step than the non-trainable time-feature kernels. |
+
+Memory rows depend on previous GRU outputs and carry gradients. A raw Triton
+memory gather/scatter cannot replace their PyTorch operations without backward
+support. Trainable custom kernels need an explicit autograd registration, as
+shown in the [PyTorch Triton integration tutorial](https://docs.pytorch.org/tutorials/recipes/torch_compile_user_defined_triton_kernel_tutorial.html).
+A full GRU kernel or full scan fusion is outside the next narrow pass.
+
+Recommended next implementation: **memory time-feature fusion**, followed by
+motif time-feature fusion if the refreshed profile supports it. Keep each
+change opt-in, preserve the `512` events / `0` padding / `16 x 32` invariant,
+and compare against the Triton rhythm benchmark above.
+
+## Triton Time Features and Motif Writer — October 1, 2026
+
+Implemented the first three narrow candidates above, with comments/docstrings
+explaining fixed time features, feature order, and pre-event history ownership:
+
+- Memory time features gather source/destination last-seen timestamps, mask
+  unseen IDs, clamp negative elapsed time, and fuse `log1p`, frequency division,
+  sine/cosine, and feature packing. Memory rows, GRU updates, `memory.mix`, and
+  timestamp writes remain in PyTorch.
+- Motif time features fuse the same fixed sinusoidal encoding for the IAT
+  history. ID embedding lookup and `motif.proj` remain in PyTorch.
+- The rhythm kernel optionally shifts/appends motif IDs and IATs in its existing
+  launch. The scan takes independent history snapshots first, so context sees
+  the old history and embedding backward retains the correct indices. The
+  writer skips the motif update when the kernel already performed it.
+
+The time kernels preserve sine-then-cosine feature order, including odd encoding
+dimensions. Their `log1p` calculation includes a rounding correction for tiny
+positive IATs. All wrappers support empty active-lane inputs and preserve the
+PyTorch fallback for unsupported inputs or synchronous kernel failures.
+Gradient-bearing time inputs keep the PyTorch encoder; memory and embedding
+gradients never pass through these non-autograd kernels.
+
+Enable all three candidates alongside rhythm fusion:
+
+```yaml
+model:
+  scan:
+    rhythm_kernel: triton
+    time_kernel: triton
+    motif_writer: triton
+```
+
+`time_kernel` controls both memory and motif time features. `motif_writer`
+requires `rhythm_kernel: triton` because it extends that launch. All three
+options still default to `torch`; CPU and non-lane scans retain PyTorch behavior.
+Last-seen timestamp writes were optional in the candidate and remain unchanged.
+
+Strict benchmark:
+
+```text
+config      = temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_triton_context_profile.yml
+SLURM job   = 55282541
+cluster/node = pitzer / p0225
+state       = COMPLETED
+exit code   = 0:0
+elapsed     = 00:03:58
+start/end   = 2026-10-01T13:50:06 / 2026-10-01T13:54:04 (America/New_York)
+base commit = 4560d95e55f48297b8aa3732d0bc27d9aecb207e (plus uncommitted kernel changes)
+run dir     = /fs/ess/PAS1266/graphids/dev/rf15/set_01/temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_triton_context_profile/temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_triton_context_profile
+stderr      = /fs/ess/PAS1266/graphids/slurm_logs/ray-temporal_joint_hybrid_ssm_lite_rich_set_01_lanes16_chunk32_triton_context_profile_55282541.err
+```
+
+The allocation ran the expanded GPU correctness suite before training.
+
+| Final reported metric | Value |
+| --- | ---: |
+| `profile/train_events` | `512.0` |
+| `profile/train_active_lanes` | `16.0` |
+| `profile/train_lane_capacity_events` | `512.0` |
+| `profile/train_padding_events` | `0.0` |
+| `profile/train_padding_fraction` | `0.0` |
+| `profile/train_events_per_sec` | `3317.020` |
+| `profile/train_batch_ms` | `154.355` |
+| `profile/train_data_wait_ms` | `15.049` |
+| `resource/gpu_util_percent_mean/max` | `14.76% / 17.0%` |
+| `resource/gpu_mem_gib_max` | `1.142` |
+| `resource/rss_gib_max` | `27.242` |
+| `train_loss` | `1.786` |
+| `val_loss` | `1.493` |
+
+| Epoch | Samples | Median events/sec | Median batch ms | Median data wait ms |
+| ---: | ---: | ---: | ---: | ---: |
+| `0` | `9` | `3352.314` | `152.730` | `14.260` |
+| `1` | `10` | `3346.015` | `153.018` | `14.883` |
+| `2` | `10` | `3329.341` | `153.786` | `14.907` |
+
+All 29 logged samples preserved `512` events, `16` active lanes, and `0`
+padding. Mean sampled throughput was `3340.245 events/sec`; no Triton fallback
+was reported. Final throughput improved by **3.1%** over rhythm-only job
+`55282240` (`3218.282 events/sec`) and **15.4%** over writer-fusion job
+`55280466` (`2873.714 events/sec`). The epoch 2 median improved by **3.4%** over
+rhythm-only (`3218.478 events/sec`).
+
+Verification:
+
+- Local model suite: `41 passed, 12 skipped` (CUDA unavailable locally).
+- GPU suite before training: `20 passed, 33 deselected`. Tests cover fixed time
+  features for dimensions `1`, `3`, `4`, and `5`; unseen IDs, negative elapsed
+  time, tiny IATs, strided/empty inputs; repeated motif writes for lengths `1`,
+  `3`, and `4`; and lane output/state/parameter-gradient equivalence against
+  PyTorch with partial lanes, carried state, and independent scan options.
+- Config tests: `5 passed, 23 deselected`, including primitive validation and
+  rejection of a Triton motif writer without a Triton rhythm kernel.
+- Ruff, documentation lint, and `git diff --check`: passed.
+
+Status: **PASS as the current opt-in strict-rich benchmark**. These are combined
+results; individual candidate speedups were not measured. The rhythm-only job
+ran on `p0243`, whereas this job ran on `p0225`, so the `3.1%` incremental gain
+is an observed comparison rather than a repeated same-node paired estimate.
+Defaults remain PyTorch. The next profiling pass should measure the remaining
+trainable projection/backbone work before adding a custom backward kernel.
+
 ## SLURM Logs
 
 Logs are written under:
@@ -1178,3 +1391,55 @@ ls -lt /fs/ess/PAS1266/graphids/slurm_logs/*5512162*
 tail -n 120 /fs/ess/PAS1266/graphids/slurm_logs/ray-temporal_joint_hybrid_ssm_lite_rich_set_01_profile_55121622.err
 tail -n 120 /fs/ess/PAS1266/graphids/slurm_logs/ray-temporal_joint_hybrid_ssm_lite_rich_set_01_lanes_profile_55121623.err
 ```
+
+<!-- temporal-full-coverage:begin -->
+## Full-Coverage Recording / Section Pilot — October 1, 2026
+
+Implemented continuous full-coverage lane training and opt-in experimental sections.
+Preflight verified **12,090,403 source events across 18 streams**, including
+**57,108 attacks**, and **12,090,385 recording-successor targets**. Core/chunk
+ownership passes for continuous (48,877 batches) and segmented (5,913 sections;
+1,509,120 replay events) plans. The historical 512-event prefix profiles remain
+explicit diagnostics, not equivalent full-epoch workloads.
+
+Local verification: 157 data/model/config/launch tests passed, 12 CUDA tests
+skipped locally. Ruff, documentation lint, and whitespace checks passed. Pitzer
+GPU verification in job **55283557**: **169 passed**, including all partial-lane
+Triton options. Later coverage/report regression checks also passed.
+
+Both short diagnostics used the identical seed-42 section queue, started with
+weight digest `97c56a70e1ed403d242a2393cf45ca7eb2a035e1e4a747690ec53e55021b4337`,
+and scored the same first 256 section cores. No duplicate, unexpected, scored
+warmup/padding events, or dropped batches were observed.
+
+| Diagnostic metric | 32 lanes × 32 events | 64 lanes × 32 events |
+| --- | ---: | ---: |
+| Unique scored events | 524,288 | 524,288 |
+| Replay events | 65,536 | 65,536 |
+| Scored events/sec including replay and training overhead | 6,068.27 | 11,374.47 |
+| Padding | 0 | 0 |
+
+Selected **64 lanes**: end-to-end scored throughput improved **87.4%**, exceeding
+the required 3%. These short diagnostics deliberately do not cover the entire
+cache. Their limited-epoch audits disclose the omitted events.
+
+The bounded validation prefixes contain **146,304 benign scored events and zero
+attacks** after the existing 64-event per-recording warmup. Classification and
+anomaly AUROC are therefore **unavailable**. This limits the quality comparison.
+
+Full-epoch results are **pending**. Separate Pitzer allocations, each with one
+GPU, eight CPUs, 32 GiB RAM, and an eight-hour limit:
+
+- Continuous 18-lane exact epoch: **55283636**.
+- Experimental 64-lane segmented epoch: **55283637**.
+- Dependent result publication: **55283638**, runs only after both epochs succeed.
+
+Artifacts and immutable training code snapshot:
+`/fs/ess/PAS1266/graphids/dev/rf15/set_01/full_coverage_20261001_144158/`.
+Each epoch writes a coverage JSON and final checkpoint, then restores that
+checkpoint for the same continuous first-8,192-events-per-recording validation.
+The result job replaces this bounded note section with the full measured table.
+No test data is loaded. One epoch per mode is a quality pilot; finite replay
+cannot guarantee recovery of GRU memory or cumulative rhythm statistics.
+Segmented training remains opt-in.
+<!-- temporal-full-coverage:end -->

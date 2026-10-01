@@ -24,7 +24,6 @@ from graphids.core.data.preprocessing.temporal import (
 from graphids.core.data.preprocessing.vocab import persist_vocab
 from graphids.core.data.state import DatasetState
 
-
 N_BYTES = 8
 BYTE_COLS = [f"byte_{i}" for i in range(N_BYTES)]
 
