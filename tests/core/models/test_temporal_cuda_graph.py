@@ -12,11 +12,12 @@ from graphids.core.models.temporal import TemporalHybridModel
 from graphids.core.models.temporal._hybrid.cuda_graph import (
     ScoredCudaGraph,
     eligibility_reason,
+    mixed_scored_index,
 )
 
 
-def batch(channels=17):
-    lanes, chunk = 2, 32
+def batch(channels=17, lanes=2):
+    chunk = 32
     shape = (lanes, chunk)
     return TemporalStreamLaneBatch(
         src=torch.randint(0, 4, shape),
@@ -125,6 +126,82 @@ def test_cpu_graph_falls_back_and_keeps_checkpoint_keys():
     assert m.cuda_graph_report()["fallback_batches"] == {"cpu": 1}
     m.on_load_checkpoint({})
     assert m.cuda_graph_report() == {"enabled": False}
+
+
+def test_mixed_index_requires_fixed_shape_and_no_boundaries():
+    b = batch(lanes=256)
+    b.is_scored[0].zero_()
+    b.warmup_mask = ~b.is_scored
+    index = mixed_scored_index(b)
+    assert index is not None and index.numel() == 8160
+    assert index[0] == 32 and index[-1] == 8191
+    b.is_scored[1, 0] = False
+    assert mixed_scored_index(b) is None
+    b.is_scored[1, 0] = True
+    b.lane_reset[0] = True
+    assert mixed_scored_index(b) is None
+
+
+def test_graph_setting_prepares_common_mixed_batch():
+    m = model()
+    b = batch(lanes=256)
+    b.is_scored[0].zero_()
+    b.warmup_mask = ~b.is_scored
+    m.on_before_batch_transfer(b, 0)
+    assert m._cuda_graph_reason == "warmup_or_mixed"
+    assert m._cpu_scored_index is not None
+    assert m._cpu_scored_index.numel() == 8160
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_mixed_graph_outputs_gradients_and_adam():
+    torch.manual_seed(512)
+    eager = model(dropout=0.0).cuda()
+    captured = copy.deepcopy(eager)
+    cpu_batch = batch(lanes=256)
+    cpu_batch.is_scored[0].zero_()
+    cpu_batch.warmup_mask = ~cpu_batch.is_scored
+    scored_index = mixed_scored_index(cpu_batch)
+    assert scored_index is not None
+    b = cpu_batch.to("cuda")
+    with torch.no_grad():
+        _, eager_state = eager._forward_with_state(b)
+    graph_state = {k: None if v is None else v.clone() for k, v in eager_state.items()}
+    eager_opt, graph_opt = eager.configure_optimizers(), captured.configure_optimizers()
+    graph = ScoredCudaGraph()
+    regular = batch(lanes=256).to("cuda")
+    captured._cpu_scored_events = regular.y.numel()
+    assert graph.run(captured, regular, graph_state, None) is not None, graph.setup_error
+    for _ in range(2):
+        eager_opt.zero_grad(set_to_none=True)
+        graph_opt.zero_grad(set_to_none=True)
+        out, next_state = eager._forward_with_state(b, eager_state)
+        terms = eager._loss_terms(out, b)
+        captured._cpu_scored_events = 8160
+        captured._cpu_scored_index = scored_index
+        result = graph.run(captured, b, graph_state, "warmup_or_mixed")
+        assert result is not None, graph.mixed_setup_error
+        mixed_out, mixed_state, mixed_terms = result
+        assert_tensors(mixed_out, out)
+        assert_tensors(mixed_state, next_state)
+        assert_tensors(mixed_terms, terms)
+        terms["total"].backward()
+        mixed_terms["total"].backward()
+        assert_tensors(
+            dict(captured.named_parameters()), dict(eager.named_parameters()), gradients=True
+        )
+        assert_tensors(
+            dict((n, p.grad) for n, p in captured.named_parameters()),
+            dict((n, p.grad) for n, p in eager.named_parameters()), gradients=True,
+        )
+        eager_opt.step()
+        graph_opt.step()
+        assert_tensors(captured.state_dict(), eager.state_dict(), gradients=True)
+        for actual, expected in zip(graph_opt.state.values(), eager_opt.state.values(), strict=True):
+            assert_tensors(actual, expected, gradients=True)
+        eager_state, graph_state = eager._detach_state(next_state), mixed_state
+    assert graph.report()["mixed_replays"] == 2
+    assert graph.report()["scored_replay_events"] == 24512
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")

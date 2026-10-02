@@ -102,11 +102,17 @@ class HybridRuntimeMixin:
         self._test_states = {}
 
     def on_before_batch_transfer(self, batch, dataloader_idx):
-        from .cuda_graph import eligibility_reason
+        from .cuda_graph import eligibility_reason, mixed_scored_index
 
         if self.training:
             self._cpu_scored_events = int(self.scored_mask(batch).sum())
             self._cuda_graph_reason = eligibility_reason(batch)
+            self._cpu_scored_index = (
+                mixed_scored_index(batch)
+                if self.hparams.scan.get("cuda_graph", False)
+                and self._cuda_graph_reason == "warmup_or_mixed"
+                else None
+            )
         return batch
 
     def on_load_checkpoint(self, checkpoint):

@@ -27,6 +27,7 @@ _BATCH_FIELDS = (
     "successor_dst",
     "successor_msg",
 )
+_MIXED_SCORED_EVENTS = 8160
 
 
 def eligibility_reason(batch) -> str | None:
@@ -69,9 +70,30 @@ def eligibility_reason(batch) -> str | None:
     return None
 
 
+def mixed_scored_index(batch) -> torch.Tensor | None:
+    """CPU indices for one fixed-shape mixed case with no state boundaries."""
+    valid, scored = getattr(batch, "valid_mask", None), getattr(batch, "is_scored", None)
+    if valid is None or scored is None or valid.device.type != "cpu" or scored.device.type != "cpu":
+        return None
+    if tuple(valid.shape) != (256, 32) or not bool(valid.all()):
+        return None
+    index = scored.reshape(-1).nonzero().reshape(-1)
+    if index.numel() != _MIXED_SCORED_EVENTS:
+        return None
+    for name in ("lane_reset", "lane_stream_end", "lane_section_end", "reset_after"):
+        value = getattr(batch, name, None)
+        if value is not None and (value.device.type != "cpu" or bool(value.any())):
+            return None
+    successor = getattr(batch, "successor_index", None)
+    if successor is None or successor.device.type != "cpu" or not bool((successor.reshape(-1)[index] >= 0).all()):
+        return None
+    return index
+
+
 class _ScoredAdapter(nn.Module):
-    def __init__(self, model, batch, state):
+    def __init__(self, model, batch, state, *, mixed=False):
         super().__init__()
+        self.mixed = mixed
         self.model = (
             model  # Shared parameters must be explicit inputs to graphed autograd.
         )
@@ -85,21 +107,26 @@ class _ScoredAdapter(nn.Module):
         self.output_keys = ()
         self.term_keys = ()
 
-    def inputs(self, batch, state):
-        return tuple(getattr(batch, key) for key in self.batch_keys) + tuple(
+    def inputs(self, batch, state, scored_index=None):
+        values = tuple(getattr(batch, key) for key in self.batch_keys) + tuple(
             state[key] for key in self.state_keys
         )
+        return values + ((scored_index,) if self.mixed else ())
 
     def forward(self, *inputs):
         batch = SimpleNamespace(
             **dict(zip(self.batch_keys, inputs[: len(self.batch_keys)], strict=True))
         )
         state = dict(self.empty_state)
-        state.update(zip(self.state_keys, inputs[len(self.batch_keys) :], strict=True))
+        state_end = len(self.batch_keys) + len(self.state_keys)
+        state.update(zip(self.state_keys, inputs[len(self.batch_keys) : state_end], strict=True))
         out, next_state = self.model._forward_lane_with_state(
             batch, state, regular_scored=True
         )
-        terms = self.model._loss_terms(out, batch, regular_scored=True)
+        terms = self.model._loss_terms(
+            out, batch, regular_scored=not self.mixed,
+            scored_index=inputs[-1] if self.mixed else None,
+        )
         self.output_keys = tuple(out)
         self.term_keys = tuple(terms)
         return (
@@ -139,18 +166,27 @@ class ScoredCudaGraph:
 
     def __init__(self):
         self.adapter = None
+        self.mixed_adapter = None
         self.grad_hooks = []
         self.signature = None
+        self.mixed_signature = None
         self.disabled = False
+        self.mixed_disabled = False
         self.setup_error = None
+        self.mixed_setup_error = None
         self.capture_seconds = 0.0
         self.replays = 0
+        self.mixed_replays = 0
         self.scored_replay_events = 0
         self.scored_events = 0
         self.fallbacks = Counter()
 
     def run(self, model, batch, state, reason):
         self.scored_events += int(getattr(model, "_cpu_scored_events", 0))
+        mixed = (reason == "warmup_or_mixed"
+                 and getattr(model, "_cpu_scored_index", None) is not None)
+        if mixed:
+            reason = None
         if reason is None:
             if not batch.msg.is_cuda:
                 reason = "cpu"
@@ -162,18 +198,23 @@ class ScoredCudaGraph:
                 model.backbone.backbone_type != "none" and state.get("backbone") is None
             ):
                 reason = "uninitialized_state"
-            elif self.disabled:
-                reason = "capture_disabled"
+            elif (mixed and self.mixed_disabled) or (not mixed and self.disabled):
+                reason = "mixed_capture_disabled" if mixed else "capture_disabled"
         if reason is not None:
             self.fallbacks[reason] += 1
             return None
-        candidate = self.adapter or _ScoredAdapter(model, batch, state)
-        inputs = candidate.inputs(batch, state)
+        adapter = self.mixed_adapter if mixed else self.adapter
+        candidate = adapter or _ScoredAdapter(model, batch, state, mixed=mixed)
+        scored_index = (model._cpu_scored_index.to(device=batch.msg.device, non_blocking=True)
+                        if mixed else None)
+        inputs = candidate.inputs(batch, state, scored_index)
         signature = _signature(inputs)
-        if self.adapter is not None and signature != self.signature:
-            self.fallbacks["geometry_changed"] += 1
+        saved_signature = self.mixed_signature if mixed else self.signature
+        if adapter is not None and signature != saved_signature:
+            key = "mixed_geometry_changed" if mixed else "geometry_changed"
+            self.fallbacks[key] += 1
             return None
-        if self.adapter is None:
+        if adapter is None:
             started = time.perf_counter()
             buffers = [(buf, buf.clone()) for buf in model.buffers()]
             grads = [(p, p.grad) for p in model.parameters()]
@@ -194,17 +235,27 @@ class ScoredCudaGraph:
                 # make_graphed_callables returns reusable gradient buffers.
                 # Autograd can adopt them as Parameter.grad on the first backward;
                 # own those gradients before another replay or accumulation.
-                self.grad_hooks = [
-                    parameter.register_hook(lambda grad: grad.clone())
-                    for parameter in model.parameters()
-                    if parameter.requires_grad
-                ]
-                self.adapter = candidate
-                self.signature = signature
+                if not self.grad_hooks:
+                    self.grad_hooks = [
+                        parameter.register_hook(lambda grad: grad.clone())
+                        for parameter in model.parameters()
+                        if parameter.requires_grad
+                    ]
+                if mixed:
+                    self.mixed_adapter = candidate
+                    self.mixed_signature = signature
+                else:
+                    self.adapter = candidate
+                    self.signature = signature
             except Exception as exc:
-                self.disabled = True
-                self.setup_error = traceback.format_exc()
-                self.fallbacks["capture_setup_failed"] += 1
+                if mixed:
+                    self.mixed_disabled = True
+                    self.mixed_setup_error = traceback.format_exc()
+                else:
+                    self.disabled = True
+                    self.setup_error = traceback.format_exc()
+                key = "mixed_capture_setup_failed" if mixed else "capture_setup_failed"
+                self.fallbacks[key] += 1
                 warnings.warn(
                     f"CUDA graph setup failed; using eager batches: {exc}",
                     RuntimeWarning,
@@ -219,9 +270,14 @@ class ScoredCudaGraph:
                         parameter.grad = grad
                 self.capture_seconds += time.perf_counter() - started
         # Never catch replay errors: a recording batch may already have executed.
-        result = self.adapter.unpack(self.adapter(*inputs))
+        adapter = self.mixed_adapter if mixed else self.adapter
+        result = adapter.unpack(adapter(*inputs))
         self.replays += 1
-        self.scored_replay_events += batch.y.numel()
+        if mixed:
+            self.mixed_replays += 1
+            self.scored_replay_events += _MIXED_SCORED_EVENTS
+        else:
+            self.scored_replay_events += batch.y.numel()
         return result
 
     def close(self):
@@ -229,16 +285,20 @@ class ScoredCudaGraph:
             hook.remove()
         self.grad_hooks.clear()
         self.adapter = None
+        self.mixed_adapter = None
 
     def report(self):
         return {
             "capture_seconds": self.capture_seconds,
             "replays": self.replays,
+            "mixed_replays": self.mixed_replays,
             "scored_replay_events": self.scored_replay_events,
             "scored_events": self.scored_events,
             "scored_replay_fraction": self.scored_replay_events
             / max(1, self.scored_events),
             "fallback_batches": dict(self.fallbacks),
             "disabled": self.disabled,
+            "mixed_disabled": self.mixed_disabled,
+            "mixed_setup_error": self.mixed_setup_error,
             "setup_error": self.setup_error,
         }

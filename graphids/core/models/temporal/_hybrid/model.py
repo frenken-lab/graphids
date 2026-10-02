@@ -162,6 +162,7 @@ class TemporalHybridModel(HybridRuntimeMixin, HybridScanMixin, HybridStateMixin,
         self._optimizer_steps = 0
         self._warmup_only_batch = False
         self._cpu_scored_events = 0
+        self._cpu_scored_index = None
         self._cuda_graph_reason = "metadata_not_checked"
         self._train_phase_timings_s = {}
         self._init_post(locals())
@@ -372,27 +373,35 @@ class TemporalHybridModel(HybridRuntimeMixin, HybridScanMixin, HybridStateMixin,
             raise RuntimeError("anomaly score requested but no anomaly heads are enabled")
         return score
 
-    def _loss_terms(self, out: dict[str, torch.Tensor], batch, *, regular_scored: bool = False) -> dict[str, torch.Tensor]:
+    def _loss_terms(self, out: dict[str, torch.Tensor], batch, *, regular_scored: bool = False,
+                    scored_index: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
         mask = self.scored_mask(batch)
         labels_all = batch.y.reshape(-1)
         terms: dict[str, torch.Tensor] = {}
         weights = self.hparams.loss_weights
-        if self.classification_enabled and "logits" in out and (regular_scored or mask.any()):
-            labels = (labels_all if regular_scored else labels_all[mask]).long()
-            terms["classification"] = self._classification_loss((out["logits"] if regular_scored else out["logits"][mask]), labels, batch)
+        def select(values: torch.Tensor, selection: torch.Tensor) -> torch.Tensor:
+            if regular_scored:
+                return values
+            if scored_index is not None:
+                return values.index_select(0, scored_index)
+            return values[selection]
+
+        if self.classification_enabled and "logits" in out and (regular_scored or scored_index is not None or mask.any()):
+            labels = select(labels_all, mask).long()
+            terms["classification"] = self._classification_loss(select(out["logits"], mask), labels, batch)
         if self.anomaly_enabled:
             valid = out["valid_next"].bool() & mask
-            if regular_scored or valid.any():
+            if regular_scored or scored_index is not None or valid.any():
                 if "next_id_nll" in out:
-                    terms["next_id"] = (out["next_id_nll"] if regular_scored else out["next_id_nll"][valid]).mean()
+                    terms["next_id"] = select(out["next_id_nll"], valid).mean()
                 if "iat_nll" in out:
-                    terms["iat"] = (out["iat_nll"] if regular_scored else out["iat_nll"][valid]).mean()
+                    terms["iat"] = select(out["iat_nll"], valid).mean()
                 elif "iat_error" in out:
-                    terms["iat"] = (out["iat_error"] if regular_scored else out["iat_error"][valid]).mean()
+                    terms["iat"] = select(out["iat_error"], valid).mean()
                 if "payload_delta_nll" in out:
-                    terms["payload_delta"] = (out["payload_delta_nll"] if regular_scored else out["payload_delta_nll"][valid]).mean()
+                    terms["payload_delta"] = select(out["payload_delta_nll"], valid).mean()
                 elif "payload_delta_error" in out:
-                    terms["payload_delta"] = (out["payload_delta_error"] if regular_scored else out["payload_delta_error"][valid]).mean()
+                    terms["payload_delta"] = select(out["payload_delta_error"], valid).mean()
         if not terms:
             terms["zero"] = out["features"].sum() * 0.0
         terms["total"] = sum(

@@ -1617,3 +1617,118 @@ Continuous checkpoint validation took 21.33s (eager checkpoint) and 20.87s (grap
 
 **Selected:** `configs/experiments/comparisons/temporal_set_01_segmented_lanes256_epoch.yml` now enables `model.scan.cuda_graph: true`, with `ssm_kernel: torch`. The public default remains false, continuous training remains the default policy, and segmented execution remains experimental. The lower full-epoch replay fraction reflects strict fallback for mixed batches and boundaries; higher GPU utilization is supporting evidence rather than the acceptance criterion.
 <!-- /cuda-graph-training-results -->
+
+## Graph-Enabled Timeline Follow-up — October 2, 2026
+
+Pitzer job `55314331` completed on `p0226` (V100) with artifacts in
+`/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/graph_timeline_20261002_01`.
+The uninstrumented and instrumented trials each used the same first 1,024
+sections, 256 lanes, 32-event chunks, two ordered workers, and the selected
+CUDA graph implementation. Both scored 2,094,541 unique events, performed 280
+Adam updates, and had identical bounded validation loss (1.64064169). Coverage
+had no missing, duplicate, unexpected, or incorrectly scored events.
+
+The uninstrumented trial achieved **58,167.3 scored events/sec** in 36.01 s,
+including 1.43 s of graph capture. The instrumented trial took 47.01 s; its
+throughput is excluded from speed comparisons. Replay covered 1,351,680
+scored events (64.53%). Fallback scored-event counts were 353,280 (16.87%)
+for warmup or mixed batches, 356,813 (17.04%) for partial lanes, and 32,768
+(1.56%) for lane section ends. The corresponding fallback batch counts were
+75, 44, and 4. These scored-event counts sum with replay events to the full
+2,094,541 scored events; batch counts alone obscure the partial-lane cost.
+
+The eight-batch CPU/CUDA trace covers replaying batches (16 graph launches for
+forward and backward). Its 500.3 ms window contains 236.9 ms of GPU kernel,
+copy, or memset activity (47.3%); 39.7 ms in DataLoader `__next__` scopes; and
+60.8 ms between the marked training batch scopes. These intervals overlap, so
+they are not additive. CUDA runtime scopes include 185.6 ms in
+`cudaMemcpyAsync`, 103.3 ms in `cudaGraphLaunch`, and 40.3 ms in
+`cudaStreamSynchronize`. Runtime call duration does not directly measure PCIe
+transfer time, and profiler overhead raises fit time, so these are diagnostic
+trace observations rather than production bottleneck percentages.
+
+The trace shows a material host/device gap even on graph replay batches, while
+the event accounting shows two comparably large eligibility opportunities.
+The next controlled measurement should separate pure warmup from mixed batches
+and profile fallback batches before selecting one masked graph variant. A speed
+change should retain the same section queue, coverage, Adam update count, final
+weights, and optimizer state checks used for graph acceptance.
+
+### Fallback batch trace
+
+The follow-up used the same 1,024-section configuration. Job `55314744`
+captured batches 2–49; job `55314941` captured batches 192–239. Artifacts are
+under `/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/graph_fallback_timeline_20261002_01`
+and `/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/graph_fallback_late_20261002_01`.
+The CPU loader was also iterated without training to locate fallback batches;
+its 288 batch reasons matched the training report exactly: 165 graph eligible,
+67 mixed scored, 8 warmup only, 44 partial lanes, and 4 section ends.
+
+The early 48-batch trace contained 6 warmup-only and 42 graph-eligible batches.
+The late trace contained 23 mixed scored, 24 graph-eligible, and 1 partial-lane
+batch. Measured batch-scope time in the late **instrumented** window was
+7,205.5 ms for mixed scored (313.3 ms/batch), 1,290.2 ms for graph eligible
+(53.8 ms/batch), and 338.8 ms for the single partial-lane batch. The late
+9,231.8 ms window had 1,354.1 ms of GPU activity (14.7%), 261.9 ms in
+DataLoader `__next__`, and 395.4 ms between batch scopes. CUDA runtime scopes
+included 157,041 ordinary kernel launches and 48 graph launches. These
+profiler-inflated timings and overlapping scopes are diagnostic; they are not
+production speed ratios or an additive wall-time decomposition.
+
+The first implementation candidate should be a fixed-geometry masked graph for
+**mixed scored batches**. They contain 353,280 scored events (16.87% of this
+workload) and dominate the late fallback trace. Warmup-only batches have no
+optimizer step and should retain their distinct behavior. Partial-lane batches
+carry a similar 356,813 scored events, but most cluster at the end of the
+section queue; measure them in a separate late-window trace before choosing a
+second graph variant. Keep the existing 256-lane graph run as the comparison
+baseline and require identical coverage, updates, final weights, and Adam
+state before evaluating throughput.
+
+### Mixed scored graph implementation and acceptance
+
+The mixed variant captures batches with
+256 lanes, 32 events per lane, and exactly 8,160 scored events. CPU metadata
+supplies ordered fixed-size scored indices to the captured loss. Other mixed
+shapes, lane resets and endings, partial lanes, and warmup-only batches keep
+their existing eager behavior; warmup-only batches still skip Adam. The graph
+captures the scan, heads, losses, and backward while Lightning retains Adam.
+Both graph variants own replayed outputs, state, and gradients. After
+acceptance, mixed capture was folded into the existing `model.scan.cuda_graph`
+setting; the separate experimental flag and benchmark runners were removed.
+
+GPU correctness job `55315378` passed 81 tests, including regular-then-mixed
+capture on one model, mixed outputs and state, losses, gradients, and Adam
+updates. Local CPU tests, Ruff, and `git diff --check` passed. An initial
+benchmark attempt found and corrected an over-restrictive `warmup_mask`
+eligibility check before any mixed replay was accepted. The final benchmark
+artifacts are under
+`/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/mixed_graph_pairs_20261002_02`.
+
+Three alternating 2,048-section pairs used identical initial weights and
+section queues, 256 lanes, two ordered workers, and the selected graph path as
+control. Each trial scored 4,184,982 unique events and performed 568 Adam
+updates, with no coverage violations. The treatment replayed 82 mixed batches
+per trial, raising scored replay coverage from 45.6% to 61.6%. Paired scored
+throughput gains were **15.5%, 10.3%, and 12.9%** (median **12.9%**). Final
+model weights and complete Adam state matched bit-for-bit in every pair.
+
+Full-epoch job `55315992` completed on one V100 allocation, running control
+then treatment sequentially. Both scored 12,090,403 unique events, covered all
+12,090,385 eligible successor targets, performed 1,712 Adam updates, and had
+zero missing, duplicate, unexpected, or incorrectly scored warmup/padding
+events. Initial weights and section queues matched; final model weights and
+Adam state matched bit-for-bit. Bounded checkpoint validation loss was
+identical at 0.57940954.
+
+| Treatment | Scored events/sec | Fit (s) | Capture (s) | Total / mixed replays | Scored replay fraction | Torch allocated / reserved peak (MiB) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Existing graph | 48,472.5 | 249.43 | 1.325 | 421 / 0 | 28.5% | 183.4 / 358.0 |
+| Mixed graph | 55,267.0 | 218.76 | 2.497 | 680 / 259 | 46.0% | 213.6 / 536.0 |
+
+The complete-epoch gain was **14.0%**, including capture setup, and passed the
+3% gate. The selected
+`configs/experiments/comparisons/temporal_set_01_segmented_lanes256_epoch.yml`
+continues to enable `cuda_graph: true`, which now includes mixed capture. The
+public graph default remains false and continuous training remains the default
+execution policy.
