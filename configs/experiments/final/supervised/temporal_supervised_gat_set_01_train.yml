@@ -21,6 +21,8 @@ config:
       type: can_bus
       dataset: set_01
       seed: 42
+      val_split: recordings
+      split_seed: 42
       train_source_mode: mixed
       representation_cfg:
         kind: temporal

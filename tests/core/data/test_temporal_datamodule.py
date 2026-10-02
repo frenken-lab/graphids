@@ -182,3 +182,29 @@ def test_temporal_datamodule_stream_lanes_only_changes_train_loader():
     assert train_loader.prefetch_factor == 3
     assert tuple(train_batches[0].valid_mask.shape) == (2, 2)
     assert val_batch.y.ndim == 1
+
+
+def test_temporal_lane_evaluation_covers_each_named_test_continuously():
+    from graphids.core.data.datamodule.stream_lanes import TemporalStreamLaneLoader
+
+    clear_cache()
+    dm = TemporalDataModule(
+        _Source(), batch_mode="stream_lanes", stream_lanes=2, chunk_size=2,
+        stream_execution="segmented", segment_events=2, segment_warmup_events=1,
+        eval_batch_mode="stream_lanes", val_prefix_events=1,
+    )
+    dm.setup(None)
+    dm._tests = {"first": _multi_stream_temporal(), "second": _multi_stream_temporal()}
+
+    loaders = dm.test_dataloader()
+    assert len(loaders) == 2
+    for loader in loaders:
+        assert isinstance(loader.dataset, TemporalStreamLaneLoader)
+        assert len(loader.dataset.sections) == 3
+        assert all(section.core_start == 0 for section in loader.dataset.sections)
+        batches = list(loader)
+        seen = torch.cat([b.event_id[b.valid_mask] for b in batches])
+        assert sorted(seen.tolist()) == list(range(7))
+        assert sum(int(b.is_scored.sum()) for b in batches) == 6
+        successors = torch.cat([b.successor_index[b.valid_mask] for b in batches])
+        assert int((successors >= 0).sum()) == 4

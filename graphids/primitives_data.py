@@ -26,6 +26,8 @@ class CANBusCfg(_Cfg):
     seed: int
     val_fraction: float = 0.2
     train_source_mode: Literal["mixed", "attack_free"] = "mixed"
+    val_split: Literal["chronological", "recordings"] = "chronological"
+    split_seed: int = 42
     representation_cfg: RepresentationCfg = Field(default_factory=TemporalRepresentationCfg)
 
 
@@ -63,6 +65,8 @@ class TemporalDMCfg(_Cfg):
             raise ValueError("segmented execution requires stream_lanes")
         if self.eval_batch_mode == "stream_lanes" and (self.stream_lanes is None or self.chunk_size is None):
             raise ValueError("lane evaluation requires stream_lanes and chunk_size")
+        if self.source.val_split == "recordings" and self.val_prefix_events is not None:
+            raise ValueError("recording validation requires complete streams; remove val_prefix_events")
         return self
 
     def build(self) -> Any:
@@ -76,6 +80,8 @@ class TemporalDMCfg(_Cfg):
             val_fraction=self.source.val_fraction,
             representation_cfg=self.source.representation_cfg,
             train_source_mode=self.source.train_source_mode,
+            val_split=self.source.val_split,
+            split_seed=self.source.split_seed,
             val_warmup_events=self.val_warmup_events,
             test_warmup_events=self.test_warmup_events,
         )
@@ -109,6 +115,8 @@ def can_bus(
     seed: int,
     val_fraction: float = 0.2,
     train_source_mode: Literal["mixed", "attack_free"] = "mixed",
+    val_split: Literal["chronological", "recordings"] = "chronological",
+    split_seed: int = 42,
     representation_cfg: RepresentationCfg = _DEFAULT_REPRESENTATION_CFG,
 ) -> CANBusCfg:
     registry = load_catalog()
@@ -119,6 +127,8 @@ def can_bus(
         seed=seed,
         val_fraction=val_fraction,
         train_source_mode=train_source_mode,
+        val_split=val_split,
+        split_seed=split_seed,
         representation_cfg=representation_cfg,
     )
 

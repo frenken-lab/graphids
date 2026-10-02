@@ -59,6 +59,8 @@ class TemporalDataModule(pl.LightningDataModule):
         self.segment_warmup_events = segment_warmup_events
         self.eval_batch_mode = eval_batch_mode
         self.val_prefix_events = val_prefix_events
+        if getattr(dataset, "val_split", None) == "recordings" and val_prefix_events is not None:
+            raise ValueError("recording validation requires complete streams; remove val_prefix_events")
         if coverage_policy not in {"full", "diagnostic"}:
             raise ValueError("coverage_policy must be full or diagnostic")
         if stream_execution not in {"continuous", "segmented"}:
@@ -198,5 +200,6 @@ class TemporalDataModule(pl.LightningDataModule):
 
     def test_dataloader(self):
         if self._tests:
-            return [self._loader(td) for td in self._tests.values()]
+            loader = self._lane_loader if self.eval_batch_mode == "stream_lanes" else self._loader
+            return [loader(td) for td in self._tests.values()]
         return self.val_dataloader()

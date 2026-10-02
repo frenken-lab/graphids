@@ -54,6 +54,8 @@ def run_comparison(config_path, output, *, section_limit=None, profile=False):
     pl.seed_everything(int(seed if seed is not None else 42), workers=True)
     data_cfg = resolve_spec(cfg["data"])
     source_spec = data_cfg.source
+    if source_spec.val_split != "chronological":
+        raise ValueError("this historical throughput comparison requires the original chronological cache; use the experiment runner for recording holdouts")
     from graphids.core.data.datasets.can_bus import CANBusTemporalSource
     source = CANBusTemporalSource(name=source_spec.name, val_fraction=source_spec.val_fraction,
                                  representation_cfg=source_spec.representation_cfg,

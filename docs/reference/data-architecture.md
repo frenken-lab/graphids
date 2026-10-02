@@ -57,13 +57,29 @@ The event table carries:
 - `y`
 - `attack_type`
 
-Splitting is chronological within each `stream_id`. Validation and test tables
-also carry `split_id`, `is_warmup`, and `is_scored` masks so metrics can ignore
-warmup events.
+The default `source.val_split: chronological` splits within each `stream_id`.
+The set_01 final training configs use `source.val_split: recordings`: whole
+training-source recordings are held out by content hash, stratified by attack
+family, with duplicate files assigned once. `source.split_seed: 42` fixes the
+assignment independently of the model seed. `val_fraction` targets a fraction
+of recordings in each family; small families can produce a larger holdout.
+
+Recording holdouts require benign and attack events after validation warmup
+and keep attack examples in mixed training. If the available training
+recordings cannot support that split, preprocessing fails instead of using
+test recordings. Attack-free training retains only attack-free training
+recordings while using the same attack-inclusive validation assignments.
+The default vocabulary is fitted on the final training assignments only for
+this policy. Validation-only and test-only IDs map to the unknown ID.
+
+Validation and test tables carry `split_id`, `is_warmup`, and `is_scored`
+masks so metrics can ignore warmup events. Recording holdouts require full
+validation streams; `val_prefix_events` is rejected for this policy.
 
 Code surface:
 
 - `graphids/core/data/preprocessing/temporal.py`
+- `graphids/core/data/datasets/recording_split.py`
 
 ## 4. PyG packing and cache
 
@@ -79,6 +95,10 @@ slice batches safely.
 
 `CANBusTemporalSource` writes versioned caches under
 `$GRAPHIDS_LAKE_ROOT/cache/v<PREPROCESSING_VERSION>/<dataset>/...`.
+Recording caches have a separate `_split_recordings_v1_seed_<seed>` suffix
+and persist `split_manifest.json` with source hashes, duplicate aliases,
+assignments, class counts, and a digest. Existing chronological caches and
+throughput artifacts retain their original paths.
 
 Code surface:
 
@@ -103,4 +123,3 @@ It is independent of the temporal training surface.
 Code surface:
 
 - `graphids/core/data/discovery/hypotheses.py`
-

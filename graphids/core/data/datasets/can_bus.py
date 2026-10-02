@@ -9,13 +9,14 @@ from typing import Any, ClassVar
 import polars as pl
 from filelock import FileLock
 
-from graphids._fs import atomic_save
+from graphids._fs import atomic_save, atomic_write_text
 from graphids.core.data.preprocessing.representations import (
     TemporalRepresentationCfg,
     representation_digest,
     representation_kind,
 )
 from graphids.core.data.preprocessing.temporal import (
+    add_temporal_split_masks,
     build_temporal_event_table,
     prepare_temporal_eval_table,
     split_temporal_train_val_tables,
@@ -76,7 +77,7 @@ def infer_attack_type(csv: Path) -> int:
     return 0
 
 
-def load_can_rows(raw_dir: Path, source_dirs: list[str]) -> pl.DataFrame:
+def load_can_rows(raw_dir: Path, source_dirs: list[str], *, source_files: list[str] | None = None) -> pl.DataFrame:
     """Load, normalize, and parse raw CAN CSVs from source dirs."""
     if not source_dirs:
         raise ValueError("source_dirs is empty; cannot load CAN rows")
@@ -86,6 +87,8 @@ def load_can_rows(raw_dir: Path, source_dirs: list[str]) -> pl.DataFrame:
         if not sub_path.is_dir():
             raise FileNotFoundError(f"declared source_dir {sub!r} missing under {raw_dir}")
         for csv_path in sorted(sub_path.rglob("*.csv")):
+            if source_files is not None and str(csv_path.relative_to(raw_dir)) not in source_files:
+                continue
             at = infer_attack_type(csv_path)
             frames.append(
                 pl.scan_csv(csv_path).with_columns(
@@ -98,7 +101,7 @@ def load_can_rows(raw_dir: Path, source_dirs: list[str]) -> pl.DataFrame:
     if not frames:
         raise ValueError(f"no CSVs under any of {source_dirs!r} in {raw_dir}")
 
-    combined = pl.concat(frames).sort("timestamp")
+    combined = pl.concat(frames).sort("timestamp", maintain_order=source_files is not None)
     cols = combined.collect_schema().names()
     renames = {
         old: new
@@ -122,6 +125,8 @@ class CANBusTemporalSource:
     representation_cfg: TemporalRepresentationCfg = TemporalRepresentationCfg()
     vocab_scope: str = "train"
     train_source_mode: str = "mixed"
+    val_split: str = "chronological"
+    split_seed: int = 42
     val_warmup_events: int = 0
     test_warmup_events: int = 0
 
@@ -132,6 +137,10 @@ class CANBusTemporalSource:
             raise ValueError("vocab_scope must be 'train' or 'all'")
         if self.train_source_mode not in {"mixed", "attack_free"}:
             raise ValueError("train_source_mode must be 'mixed' or 'attack_free'")
+        if self.val_split not in {"chronological", "recordings"}:
+            raise ValueError("val_split must be 'chronological' or 'recordings'")
+        if not 0 <= self.val_fraction < 1 or (self.val_split == "recordings" and self.val_fraction == 0):
+            raise ValueError("invalid val_fraction for validation policy")
         if self.val_warmup_events < 0 or self.test_warmup_events < 0:
             raise ValueError("warmup event counts must be non-negative")
 
@@ -154,6 +163,7 @@ class CANBusTemporalSource:
             f"|vw{self.val_warmup_events}|tw{self.test_warmup_events}"
             f"|voc:{self.vocab_scope}"
             f"|train:{self.train_source_mode}"
+            f"|split:{self.val_split}:{self.split_seed}"
             f"|repr:{representation_kind(self.representation_cfg)}:{repr_digest}"
         )
 
@@ -170,12 +180,13 @@ class CANBusTemporalSource:
             f"{representation_digest(self.representation_cfg)}"
         )
         train_suffix = "" if self.train_source_mode == "mixed" else f"_train_{self.train_source_mode}"
+        split_suffix = "" if self.val_split == "chronological" else f"_split_recordings_v1_seed_{self.split_seed}"
         return (
             cache_dir(lake, self.name)
             / (
                 f"{repr_slug}_voc_{self.vocab_scope}_val_{self.val_fraction:g}"
                 f"_vw_{self.val_warmup_events}_tw_{self.test_warmup_events}"
-                f"{train_suffix}"
+                f"{train_suffix}{split_suffix}"
             )
         )
 
@@ -199,7 +210,10 @@ class CANBusTemporalSource:
         expected = [processed / "data_train.pt", processed / "data_val.pt"] + [
             processed / f"data_test_{sd}.pt" for sd in present_test
         ]
-        return (processed / ".complete").is_file() and all(path.is_file() for path in expected)
+        metadata_ready = self.val_split != "recordings" or (
+            (processed.parent / "split_manifest.json").is_file() and (processed.parent / "vocab.json").is_file()
+        )
+        return metadata_ready and (processed / ".complete").is_file() and all(path.is_file() for path in expected)
 
     def _scan_vocab(self, raw_dir: Path, source_dirs: list[str]) -> list[Any]:
         from graphids.core.data.preprocessing.vocab import scan_arb_ids
@@ -254,6 +268,8 @@ class CANBusTemporalSource:
                 raise ValueError(f"catalog entry {self.name!r} declares no train_subdir(s)")
 
             present_test = [sd for sd in entry.get("test_subdirs", []) if (raw / sd).is_dir()]
+            if self.val_split == "recordings":
+                return self._build_recording_cache(raw, root, entry, present_test)
             scan_sources = list(train_dirs) + (present_test if self.vocab_scope == "all" else [])
             vocab = {tok: i + 1 for i, tok in enumerate(self._scan_vocab(raw, scan_sources))}
             persist_vocab(vocab, Path(root) / "vocab.json")
@@ -278,6 +294,61 @@ class CANBusTemporalSource:
             val=self._load_temporal_data(val_path),
             test={sd: self._load_temporal_data(path) for sd, path in test_paths.items()},
         )
+
+    def _build_recording_cache(self, raw: Path, root: Path, entry: dict, present_test: list[str]) -> DatasetState:
+        """Materialize whole-recording holdouts with a training-only vocabulary."""
+        import json
+
+        from graphids.core.data.datasets.recording_split import recording_manifest
+        from graphids.core.data.preprocessing.vocab import load_vocab
+
+        processed = root / "processed"
+        manifest_path = root / "split_manifest.json"
+        train_path, val_path = processed / "data_train.pt", processed / "data_val.pt"
+        if not (processed / ".complete").is_file() or not all(
+            (processed / f"data_test_{sd}.pt").is_file() for sd in present_test
+        ):
+            manifest = recording_manifest(raw, entry, fraction=self.val_fraction, seed=self.split_seed,
+                                          warmup=self.val_warmup_events, train_source_mode=self.train_source_mode)
+            # An interrupted build is resumed only against the exact same inputs.
+            if manifest_path.exists() and json.loads(manifest_path.read_text())["digest"] != manifest["digest"]:
+                raise ValueError("recording split manifest changed; use a fresh cache directory")
+            atomic_write_text(manifest_path, json.dumps(manifest, indent=2) + "\n")
+            paths = {split: [r["source_file"] for r in manifest["recordings"] if r["split"] == split]
+                     for split in ("train", "val")}
+            dirs = sorted({Path(p).parts[0] for p in paths["train"] + paths["val"]})
+            train_rows = load_can_rows(raw, dirs, source_files=paths["train"])
+            tokens = train_rows["arb_id"].unique().sort().to_list()
+            if self.vocab_scope == "all":
+                tokens = sorted(set(tokens) | set(load_can_rows(raw, dirs, source_files=paths["val"])["arb_id"].to_list())
+                                | set(self._scan_vocab(raw, present_test) if present_test else []))
+            vocab = {tok: i + 1 for i, tok in enumerate(tokens)}
+            vocab_path = root / "vocab.json"
+            if vocab_path.exists() and load_vocab(vocab_path)[0] != {str(k): v for k, v in vocab.items()}:
+                raise ValueError("recording vocabulary changed; use a fresh cache directory")
+            persist_vocab(vocab, vocab_path)
+
+            def pack(rows, split, warmup):
+                rows = rows.with_columns(pl.col("arb_id").replace_strict(vocab, default=0).cast(pl.Int64).alias("node_id"))
+                table = add_temporal_split_masks(build_temporal_event_table(rows), split_name=split, warmup_events=warmup)
+                return temporal_to_pyg(table)
+
+            if not train_path.exists():
+                atomic_save(pack(train_rows, "train", 0), train_path)
+            del train_rows
+            if not val_path.exists():
+                val = pack(load_can_rows(raw, dirs, source_files=paths["val"]), "val", self.val_warmup_events)
+                val.event_id += sum(r["events"] for r in manifest["recordings"] if r["split"] == "train")
+                atomic_save(val, val_path)
+            for sd in present_test:
+                path = processed / f"data_test_{sd}.pt"
+                if not path.exists():
+                    atomic_save(self._pack_rows(self._mapped_rows(raw, [sd], vocab)), path)
+            atomic_write_text(processed / ".complete", "ok")
+        if not manifest_path.is_file() or not (root / "vocab.json").is_file():
+            raise ValueError("recording cache is missing its split manifest or vocabulary")
+        return DatasetState(train=self._load_temporal_data(train_path), val=self._load_temporal_data(val_path),
+                            test={sd: self._load_temporal_data(processed / f"data_test_{sd}.pt") for sd in present_test})
 
 __all__ = [
     "ATTACK_TYPE_CODES",
