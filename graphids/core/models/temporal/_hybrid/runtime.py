@@ -241,6 +241,9 @@ class HybridRuntimeMixin:
                 scores=probs,
                 labels=labels,
                 attack_type=attack_type,
+                event_id=batch.event_id.reshape(-1)[mask],
+                times=batch.t.reshape(-1)[mask],
+                streams=batch.stream_id.reshape(-1)[mask],
             )
         if self.anomaly_enabled and "anomaly_score" in out:
             self._record_binary_score_batch(

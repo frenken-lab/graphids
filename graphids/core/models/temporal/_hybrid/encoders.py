@@ -17,11 +17,12 @@ class TemporalInputEncoder(nn.Module):
         embedding_dim: int,
         hidden: int,
         dropout: float,
+        use_id_embeddings: bool = True,
     ):
         super().__init__()
-        self.src_embedding = nn.Embedding(max(1, int(num_ids)), int(embedding_dim))
-        self.dst_embedding = nn.Embedding(max(1, int(num_ids)), int(embedding_dim))
-        input_dim = int(in_channels) + (2 * int(embedding_dim))
+        self.src_embedding = nn.Embedding(max(1, int(num_ids)), int(embedding_dim)) if use_id_embeddings else None
+        self.dst_embedding = nn.Embedding(max(1, int(num_ids)), int(embedding_dim)) if use_id_embeddings else None
+        input_dim = int(in_channels) + (2 * int(embedding_dim) if use_id_embeddings else 0)
         self.proj = nn.Sequential(
             nn.Linear(input_dim, int(hidden)),
             nn.LayerNorm(int(hidden)),
@@ -30,9 +31,11 @@ class TemporalInputEncoder(nn.Module):
         )
 
     def forward(self, batch) -> torch.Tensor:
-        src = batch.src.clamp_min(0).clamp_max(self.src_embedding.num_embeddings - 1).long()
-        dst = batch.dst.clamp_min(0).clamp_max(self.dst_embedding.num_embeddings - 1).long()
-        x = torch.cat([batch.msg.float(), self.src_embedding(src), self.dst_embedding(dst)], dim=-1)
+        x = batch.msg.float()
+        if self.src_embedding is not None and self.dst_embedding is not None:
+            src = batch.src.clamp_min(0).clamp_max(self.src_embedding.num_embeddings - 1).long()
+            dst = batch.dst.clamp_min(0).clamp_max(self.dst_embedding.num_embeddings - 1).long()
+            x = torch.cat([x, self.src_embedding(src), self.dst_embedding(dst)], dim=-1)
         return self.proj(x)
 
 

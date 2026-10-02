@@ -334,7 +334,10 @@ class ExperimentConfig(_StrictModel):
         data_representation = _find_data_representation_payload(cfg.get("data", {}))
         if data_representation is not None:
             run_representation = _json_payload(_representation_payload(self.representation_cfg))
-            if data_representation != run_representation:
+            resolved_data_representation = _json_payload(_representation_payload(
+                TemporalRepresentationCfg(**data_representation)
+            ))
+            if resolved_data_representation != run_representation:
                 raise ValueError(
                     "fit/test data.source.representation_cfg must match top-level "
                     "representation_cfg so run metadata and materialized data cannot drift"

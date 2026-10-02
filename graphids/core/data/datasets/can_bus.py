@@ -28,6 +28,26 @@ from graphids.core.data.state import DatasetState
 N_BYTES = 8
 BYTE_COLS = [f"byte_{i}" for i in range(N_BYTES)]
 
+# Vehicle assignments published in can-train-and-test-v1.5/README.md.
+# Suppress/masquerade directories combine scenarios and have no single identity.
+CAN_TRAIN_TEST_VEHICLES: dict[str, tuple[str, str]] = {
+    "set_01": ("chevrolet_impala", "chevrolet_silverado"),
+    "set_02": ("chevrolet_traverse", "subaru_forester"),
+    "set_03": ("chevrolet_silverado", "subaru_forester"),
+    "set_04": ("subaru_forester", "chevrolet_traverse"),
+}
+
+
+def declared_vehicle_id(dataset: str, source_dir: str) -> str:
+    pair = CAN_TRAIN_TEST_VEHICLES.get(dataset)
+    if pair is None:
+        return source_dir
+    if source_dir.startswith("train_") or source_dir.startswith(("test_01_", "test_03_")):
+        return pair[0]
+    if source_dir.startswith(("test_02_", "test_04_")):
+        return pair[1]
+    return source_dir
+
 # Insertion order matters: ``infer_attack_type`` does substring match and
 # returns the first hit, so longer/more-specific keys precede their prefixes.
 ATTACK_TYPE_CODES: dict[str, int] = {
@@ -77,7 +97,8 @@ def infer_attack_type(csv: Path) -> int:
     return 0
 
 
-def load_can_rows(raw_dir: Path, source_dirs: list[str], *, source_files: list[str] | None = None) -> pl.DataFrame:
+def load_can_rows(raw_dir: Path, source_dirs: list[str], *, source_files: list[str] | None = None,
+                  preserve_id_text: bool = False) -> pl.DataFrame:
     """Load, normalize, and parse raw CAN CSVs from source dirs."""
     if not source_dirs:
         raise ValueError("source_dirs is empty; cannot load CAN rows")
@@ -90,10 +111,15 @@ def load_can_rows(raw_dir: Path, source_dirs: list[str], *, source_files: list[s
             if source_files is not None and str(csv_path.relative_to(raw_dir)) not in source_files:
                 continue
             at = infer_attack_type(csv_path)
+            scan = pl.scan_csv(csv_path, infer_schema_length=0) if preserve_id_text else pl.scan_csv(csv_path)
+            typed = [pl.col("timestamp").cast(pl.Float64, strict=False)] if preserve_id_text else []
+            if preserve_id_text and "attack" in scan.collect_schema().names():
+                typed.append(pl.col("attack").cast(pl.Int64, strict=False))
             frames.append(
-                pl.scan_csv(csv_path).with_columns(
+                scan.with_columns(
+                    *typed,
                     pl.lit(at).alias("attack_type"),
-                    pl.lit(sub).alias("vehicle_id"),
+                    pl.lit(declared_vehicle_id(raw_dir.name, sub)).alias("vehicle_id"),
                     pl.lit(sub).alias("source_dir"),
                     pl.lit(str(csv_path.relative_to(raw_dir))).alias("source_file"),
                 )
@@ -133,6 +159,8 @@ class CANBusTemporalSource:
     def __post_init__(self) -> None:
         if representation_kind(self.representation_cfg) != "temporal":
             raise ValueError("CANBusTemporalSource requires representation_cfg.kind='temporal'")
+        if self.representation_cfg.features == "behavioral" and self.val_split != "recordings":
+            raise ValueError("behavioral features require whole-recording validation")
         if self.vocab_scope not in {"train", "all"}:
             raise ValueError("vocab_scope must be 'train' or 'all'")
         if self.train_source_mode not in {"mixed", "attack_free"}:
@@ -241,7 +269,7 @@ class CANBusTemporalSource:
             split_name="test",
             warmup_events=self.test_warmup_events,
         )
-        return temporal_to_pyg(table)
+        return temporal_to_pyg(table, features=self.representation_cfg.features)
 
     def _pack_train_val(self, rows: pl.DataFrame):
         table = build_temporal_event_table(rows)
@@ -250,7 +278,8 @@ class CANBusTemporalSource:
             val_fraction=self.val_fraction,
             val_warmup_events=self.val_warmup_events,
         )
-        return temporal_to_pyg(train_table), temporal_to_pyg(val_table)
+        return (temporal_to_pyg(train_table, features=self.representation_cfg.features),
+                temporal_to_pyg(val_table, features=self.representation_cfg.features))
 
     def build(self) -> DatasetState:
         from graphids.paths import data_dir, load_catalog
@@ -331,7 +360,7 @@ class CANBusTemporalSource:
             def pack(rows, split, warmup):
                 rows = rows.with_columns(pl.col("arb_id").replace_strict(vocab, default=0).cast(pl.Int64).alias("node_id"))
                 table = add_temporal_split_masks(build_temporal_event_table(rows), split_name=split, warmup_events=warmup)
-                return temporal_to_pyg(table)
+                return temporal_to_pyg(table, features=self.representation_cfg.features)
 
             if not train_path.exists():
                 atomic_save(pack(train_rows, "train", 0), train_path)

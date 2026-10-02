@@ -128,6 +128,9 @@ class TemporalDataModule(pl.LightningDataModule):
     @property
     def num_ids(self) -> int:
         """Embedding table size for temporal source/destination ids."""
+        declared = getattr(self.source, "num_ids", None)
+        if declared is not None:
+            return int(declared)
         max_id = 0
         for data in self._all_data():
             max_id = max(max_id, self._max_tensor_value(data, "src"), self._max_tensor_value(data, "dst"))

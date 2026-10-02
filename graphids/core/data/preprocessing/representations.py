@@ -11,6 +11,7 @@ from typing import Literal
 @dataclass(frozen=True)
 class TemporalRepresentationCfg:
     kind: Literal["temporal"] = "temporal"
+    features: Literal["raw", "behavioral"] = "raw"
 
 
 RepresentationCfg = TemporalRepresentationCfg
@@ -21,7 +22,11 @@ def representation_kind(cfg: RepresentationCfg) -> str:
 
 
 def representation_payload(cfg: RepresentationCfg) -> dict[str, object]:
-    return asdict(cfg)
+    payload = asdict(cfg)
+    # Preserve the existing raw cache identity; behavioral caches get a new digest.
+    if payload.get("features") == "raw":
+        payload.pop("features")
+    return payload
 
 
 def representation_digest(cfg: RepresentationCfg) -> str:

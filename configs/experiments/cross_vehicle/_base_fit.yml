@@ -1,0 +1,25 @@
+extends: ../_base/final_supervised_hybrid_ssm_lite_fit.yml
+dataset: cross_vehicle
+plan_id: cross_vehicle_leave_one_out_v1
+config:
+  data:
+    batch_mode: stream_lanes
+    stream_lanes: 16
+    chunk_size: 128
+    eval_batch_mode: stream_lanes
+    num_workers: 4
+    pin_memory: true
+    persistent_workers: true
+  model:
+    input:
+      use_id_embeddings: false
+    memory:
+      enabled: true
+    heads:
+      classification: true
+      next_id: false
+      iat: false
+      payload_delta: false
+  trainer:
+    max_epochs: 2
+    use_distributed_sampler: false

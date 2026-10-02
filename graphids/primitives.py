@@ -9,9 +9,11 @@ from graphids.core.data.preprocessing.representations import (
 )
 from graphids.primitives_data import (
     CANBusCfg,
+    CrossVehicleCfg,
     DataCfg,
     TemporalDMCfg,
     can_bus,
+    cross_vehicle,
     temporal_dm,
 )
 from graphids.primitives_losses import (
@@ -55,6 +57,7 @@ __all__ = [
     "ce",
     "weighted_ce",
     "can_bus",
+    "cross_vehicle",
     "TemporalRepresentationCfg",
     "RepresentationCfg",
     "representation_kind",
@@ -79,5 +82,6 @@ __all__ = [
     "CELossCfg",
     "WeightedCELossCfg",
     "CANBusCfg",
+    "CrossVehicleCfg",
     "TemporalDMCfg",
 ]

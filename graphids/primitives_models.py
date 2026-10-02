@@ -111,6 +111,7 @@ class TemporalHybridInputCfg(_Cfg):
     embedding_dim: int | None = None
     hidden: int | None = None
     dropout: float = 0.1
+    use_id_embeddings: bool = True
 
 
 class TemporalHybridMemoryCfg(_Cfg):

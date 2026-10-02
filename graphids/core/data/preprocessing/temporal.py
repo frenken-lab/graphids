@@ -22,6 +22,9 @@ TEMPORAL_MSG_COL_ORDER: tuple[str, ...] = (
     "src_unknown_bucket",
     "dst_unknown_bucket",
 )
+BEHAVIORAL_MSG_COL_ORDER: tuple[str, ...] = (
+    "log_iat", "log_id_iat", "id_period_deviation", "payload_change_fraction", "id_first_seen",
+)
 
 
 def _hash_bucket(value: object, *, num_buckets: int) -> int:
@@ -124,6 +127,31 @@ def build_temporal_event_table(
         .alias("iat"),
         *delta_exprs,
     )
+    id_keys = ["stream_id", "dst_raw"]
+    previous_time = pl.col("timestamp").shift(1).over(id_keys)
+    table = table.with_columns(
+        (pl.col("timestamp") - previous_time).fill_null(0).clip(lower_bound=0).cast(pl.Float32).alias("id_iat"),
+        previous_time.is_null().cast(pl.Float32).alias("id_first_seen"),
+        *[
+            pl.col(c).shift(1).over(id_keys).alias(f"_previous_{c}")
+            for c in TEMPORAL_BYTE_COLS
+        ],
+    )
+    # The period reference contains earlier occurrences only, never the current interval.
+    prior_period = pl.col("id_iat").shift(1).rolling_mean(window_size=8, min_samples=1).over(id_keys)
+    table = table.with_columns(
+        pl.col("iat").clip(lower_bound=0).log1p().cast(pl.Float32).alias("log_iat"),
+        pl.col("id_iat").log1p().cast(pl.Float32).alias("log_id_iat"),
+        pl.when(prior_period > 0)
+        .then((pl.col("id_iat") - prior_period).abs() / (prior_period.abs() + 1e-6))
+        .otherwise(0.0).fill_null(0).clip(upper_bound=100)
+        .cast(pl.Float32).alias("id_period_deviation"),
+        (pl.sum_horizontal([
+            (pl.col(c) != pl.col(f"_previous_{c}")).cast(pl.Float32)
+            for c in TEMPORAL_BYTE_COLS
+        ]) / len(TEMPORAL_BYTE_COLS))
+        .fill_null(0).cast(pl.Float32).alias("payload_change_fraction"),
+    ).drop(*[f"_previous_{c}" for c in TEMPORAL_BYTE_COLS])
     table = table.with_columns(
         (pl.col("src_id") == 0).alias("src_is_unknown"),
         (pl.col("dst_id") == 0).alias("dst_is_unknown"),
@@ -163,6 +191,7 @@ def build_temporal_event_table(
         "stream_id",
         "reset_after",
         *msg_feature_cols,
+        *BEHAVIORAL_MSG_COL_ORDER,
         "y",
         "attack_type",
     )
@@ -326,7 +355,7 @@ def _tensor(df: pl.DataFrame, cols: str | list[str], *, dtype) -> torch.Tensor:
     return tensor.squeeze(-1) if isinstance(cols, str) else tensor
 
 
-def temporal_to_pyg(table: pl.DataFrame) -> TemporalData:
+def temporal_to_pyg(table: pl.DataFrame, *, features: str = "raw") -> TemporalData:
     """Pack a temporal event table into PyG ``TemporalData`` tensors."""
     optional_tensors = {}
     optional_specs = {
@@ -341,7 +370,7 @@ def temporal_to_pyg(table: pl.DataFrame) -> TemporalData:
         src=_tensor(table, "src_id", dtype=pl.Int64),
         dst=_tensor(table, "dst_id", dtype=pl.Int64),
         t=_tensor(table, "timestamp", dtype=pl.Float32),
-        msg=_tensor(table, list(TEMPORAL_MSG_COL_ORDER), dtype=pl.Float32),
+        msg=_tensor(table, list(BEHAVIORAL_MSG_COL_ORDER if features == "behavioral" else TEMPORAL_MSG_COL_ORDER), dtype=pl.Float32),
         y=_tensor(table, "y", dtype=pl.Int64),
         attack_type=_tensor(table, "attack_type", dtype=pl.Int64),
         stream_id=_tensor(table, "stream_id", dtype=pl.Int64),

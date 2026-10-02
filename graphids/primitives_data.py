@@ -43,9 +43,32 @@ class CANBusCfg(_Cfg):
         )
 
 
+class CrossVehicleCfg(_Cfg):
+    type: Literal["cross_vehicle"] = "cross_vehicle"
+    held_out_vehicle: Literal["chevrolet_silverado", "subaru_forester", "chevrolet_traverse"]
+    source_vehicle: Literal["chevrolet_impala", "chevrolet_silverado", "subaru_forester", "chevrolet_traverse"] | None = None
+    val_fraction: float = 0.2
+    split_seed: int = 42
+    val_split: Literal["recordings"] = "recordings"
+    representation_cfg: RepresentationCfg = Field(default_factory=TemporalRepresentationCfg)
+
+    def build(self, *, val_warmup_events: int = 64, test_warmup_events: int = 64) -> Any:
+        from graphids.core.data.datasets.cross_vehicle import CrossVehicleTemporalSource
+
+        return CrossVehicleTemporalSource(
+            held_out_vehicle=self.held_out_vehicle,
+            source_vehicle=self.source_vehicle,
+            val_fraction=self.val_fraction,
+            split_seed=self.split_seed,
+            representation_cfg=self.representation_cfg,
+            val_warmup_events=val_warmup_events,
+            test_warmup_events=test_warmup_events,
+        )
+
+
 class TemporalDMCfg(_Cfg):
     type: Literal["temporal_dm"] = "temporal_dm"
-    source: CANBusCfg
+    source: CANBusCfg | CrossVehicleCfg = Field(discriminator="type")
     batch_size: int = 256
     batch_mode: Literal["events", "stream_lanes"] = "events"
     stream_lanes: int | None = None
@@ -108,6 +131,18 @@ def can_bus(
         val_split=val_split,
         split_seed=split_seed,
         representation_cfg=representation_cfg,
+    )
+
+
+def cross_vehicle(
+    *, held_out_vehicle: str, val_fraction: float = 0.2, split_seed: int = 42,
+    source_vehicle: str | None = None,
+    representation_cfg: RepresentationCfg = _DEFAULT_REPRESENTATION_CFG,
+) -> CrossVehicleCfg:
+    return CrossVehicleCfg(
+        held_out_vehicle=held_out_vehicle, source_vehicle=source_vehicle,
+        val_fraction=val_fraction,
+        split_seed=split_seed, representation_cfg=representation_cfg,
     )
 
 

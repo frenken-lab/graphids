@@ -1,0 +1,13 @@
+extends: _base_fit.yml
+experiment_name: silverado_raw_fit
+config:
+  data:
+    source:
+      type: cross_vehicle
+      held_out_vehicle: chevrolet_silverado
+      representation_cfg:
+        kind: temporal
+        features: raw
+  model:
+    input:
+      use_id_embeddings: true

@@ -49,7 +49,8 @@ class _ModelBase(pl.LightningModule):
         if hasattr(self, "test_metrics"):
             self._per_set_metrics = {n: self.test_metrics.clone(prefix=f"test/{n}/") for n in names}
         self._test_buffers = {
-            n: {"preds": [], "scores": [], "labels": [], "attack_type": []} for n in names
+            n: {"preds": [], "scores": [], "labels": [], "attack_type": [],
+                "event_id": [], "times": [], "streams": []} for n in names
         }
         self._binary_score_buffers = {
             n: {"scores": [], "labels": [], "attack_type": []} for n in names
@@ -57,7 +58,8 @@ class _ModelBase(pl.LightningModule):
         self._test_predictions: dict[str, dict[str, torch.Tensor]] = {}
 
     def _record_test_batch(
-        self, dataloader_idx: int, *, scores, labels, preds=None, attack_type=None
+        self, dataloader_idx: int, *, scores, labels, preds=None, attack_type=None,
+        event_id=None, times=None, streams=None,
     ) -> None:
         names = getattr(self, "_test_set_names", ["test"])
         name = names[dataloader_idx] if dataloader_idx < len(names) else names[-1]
@@ -68,6 +70,9 @@ class _ModelBase(pl.LightningModule):
             buf["preds"].append(preds.detach().cpu())
         if attack_type is not None:
             buf["attack_type"].append(attack_type.detach().cpu())
+        for name, value in (("event_id", event_id), ("times", times), ("streams", streams)):
+            if value is not None:
+                buf[name].append(value.detach().cpu())
 
     def _record_binary_score_batch(self, dataloader_idx: int, *, scores, labels, attack_type=None) -> None:
         names = getattr(self, "_test_set_names", ["test"])
@@ -176,37 +181,37 @@ class _ModelBase(pl.LightningModule):
         if positives == 0 or negatives == 0:
             return {}
 
-        candidates: list[tuple[float, float, float, int, int, int, int]] = []
-        for threshold in torch.unique(scores).sort(descending=True).values.tolist():
-            preds = scores >= float(threshold)
-            tp = int((preds & labels_bool).sum().item())
-            fp = int((preds & ~labels_bool).sum().item())
-            fn = positives - tp
-            tn = negatives - fp
-            if tp + fp == 0:
-                continue
-            precision = tp / (tp + fp)
-            recall = tp / positives
-            candidates.append((precision, recall, float(threshold), tp, fp, tn, fn))
+        order = torch.argsort(scores, descending=True, stable=True)
+        sorted_scores = scores[order]
+        sorted_labels = labels_bool[order].long()
+        ends = torch.cat((sorted_scores[1:] != sorted_scores[:-1],
+                          torch.ones(1, dtype=torch.bool, device=scores.device))).nonzero().flatten()
+        tp_all = sorted_labels.cumsum(0)[ends]
+        fp_all = ends + 1 - tp_all
+        precision_all = tp_all / (tp_all + fp_all)
+        recall_all = tp_all / positives
+
+        def candidate(index: int) -> tuple[float, float, float, int, int, int, int]:
+            tp, fp = int(tp_all[index]), int(fp_all[index])
+            return (float(precision_all[index]), float(recall_all[index]),
+                    float(sorted_scores[ends[index]]), tp, fp, negatives - fp, positives - tp)
 
         metrics: dict[str, float] = {}
-        recall_candidates = [c for c in candidates if c[1] >= min_recall]
-        if recall_candidates:
-            precision, recall, threshold, tp, fp, tn, fn = max(
-                recall_candidates,
-                key=lambda c: (c[0], c[2]),
-            )
+        recall_mask = recall_all >= min_recall
+        if bool(recall_mask.any()):
+            best = precision_all[recall_mask].max()
+            index = int((recall_mask & (precision_all == best)).nonzero()[0])
+            precision, recall, threshold, tp, fp, tn, fn = candidate(index)
             suffix = f"at_{min_recall:g}recall"
             metrics[f"{prefix}precision_{suffix}"] = precision
             metrics[f"{prefix}threshold_{suffix}"] = threshold
             metrics.update(self._threshold_metric_values(prefix, suffix, tp, fp, tn, fn))
 
-        precision_candidates = [c for c in candidates if c[0] >= min_precision]
-        if precision_candidates:
-            precision, recall, threshold, tp, fp, tn, fn = max(
-                precision_candidates,
-                key=lambda c: (c[1], c[2]),
-            )
+        precision_mask = precision_all >= min_precision
+        if bool(precision_mask.any()):
+            best = recall_all[precision_mask].max()
+            index = int((precision_mask & (recall_all == best)).nonzero()[0])
+            precision, recall, threshold, tp, fp, tn, fn = candidate(index)
             suffix = f"at_{min_precision:g}precision"
             metrics[f"{prefix}recall_{suffix}"] = recall
             metrics[f"{prefix}threshold_{suffix}"] = threshold

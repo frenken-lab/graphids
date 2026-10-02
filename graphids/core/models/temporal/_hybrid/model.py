@@ -185,6 +185,7 @@ class TemporalHybridModel(HybridRuntimeMixin, HybridScanMixin, HybridStateMixin,
             embedding_dim=int(hp.input["embedding_dim"]),
             hidden=hidden,
             dropout=float(hp.input["dropout"]),
+            use_id_embeddings=bool(hp.input.get("use_id_embeddings", True)),
         )
         self.memory = (
             TemporalIdMemory(

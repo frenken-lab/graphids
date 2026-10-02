@@ -1,0 +1,6 @@
+extends: silverado_behavioral_fit.yml
+experiment_name: silverado_impala_only_behavioral_fit
+config:
+  data:
+    source:
+      source_vehicle: chevrolet_impala
