@@ -19,10 +19,15 @@ from graphids.core.data.datamodule.coverage import (
     TemporalCoverageAudit,
     validate_full_lane_settings,
 )
-from graphids.core.data.datamodule.temporal import TemporalDataModule
 from graphids.core.data.state import DatasetState
 from graphids.exp.config import ExperimentConfig
-from graphids.exp.ray_backend import _scalar_metrics, build_component, resolve_spec
+from graphids.exp.runtime import (
+    _scalar_metrics,
+    build_model,
+    resolve_spec,
+    seed_run,
+    trainer_components,
+)
 
 
 class CachedComparisonSource:
@@ -46,25 +51,17 @@ def weight_digest(model):
 
 def run_comparison(config_path, output, *, section_limit=None, profile=False):
     experiment = ExperimentConfig.from_yaml(config_path)
-    run = experiment.build_run(name=experiment.experiment_name, stage="fit", config=experiment.config)
+    output = Path(output).resolve()
+    run = experiment.build_run(name=experiment.experiment_name, stage="fit", run_dir=output)
+    run.write_config()
     cfg = run.payload.model_dump(mode="json")
-    output = Path(output)
-    output.mkdir(parents=True, exist_ok=True)
-    seed = cfg.get("seed_everything")
-    pl.seed_everything(int(seed if seed is not None else 42), workers=True)
+    seed_run(cfg)
     data_cfg = resolve_spec(cfg["data"])
     source_spec = data_cfg.source
     if source_spec.val_split != "chronological":
         raise ValueError("this historical throughput comparison requires the original chronological cache; use the experiment runner for recording holdouts")
-    from graphids.core.data.datasets.can_bus import CANBusTemporalSource
-    source = CANBusTemporalSource(name=source_spec.name, val_fraction=source_spec.val_fraction,
-                                 representation_cfg=source_spec.representation_cfg,
-                                 train_source_mode=source_spec.train_source_mode,
-                                 val_warmup_events=data_cfg.val_warmup_events,
-                                 test_warmup_events=data_cfg.test_warmup_events)
-    cache = source.cache_root_path() / "processed"
-    options = data_cfg.model_dump(exclude={"type", "source", "val_warmup_events", "test_warmup_events"})
-    dm = TemporalDataModule(CachedComparisonSource(cache), **options)
+    cache = data_cfg.build_source().cache_root_path() / "processed"
+    dm = data_cfg.build(dataset=CachedComparisonSource(cache))
     dm.setup()
     if section_limit is not None:
         if data_cfg.coverage_policy != "diagnostic" or data_cfg.stream_execution != "segmented":
@@ -80,21 +77,14 @@ def run_comparison(config_path, output, *, section_limit=None, profile=False):
     counts = torch.bincount(dm.train_data.y.long(), minlength=2)
     if dm.train_data.num_events != 12_090_403 or streams.numel() != 18 or int(counts[1]) != 57_108:
         raise ValueError(f"unexpected set_01 cache: {dm.train_data.num_events} events, {streams.numel()} streams, {counts.tolist()} classes")
-    loss_fn = build_component(cfg["loss_fn"]) if cfg.get("loss_fn") else None
-    model_spec = resolve_spec(cfg["model"])
-    model = model_spec.build(loss_fn=loss_fn)
-    model.prepare_from_datamodule(dm)
+    model = build_model(cfg, dm)
     initial_digest = weight_digest(model)
-    kwargs = dict(cfg["trainer"])
+    kwargs = trainer_components(cfg)
     full = dm.coverage_policy == "full"
     if full:
         validate_full_lane_settings(kwargs)
     audit = TemporalCoverageAudit(output, require_complete=full)
-    callbacks = []
-    for spec in cfg.get("callbacks", {}).values():
-        # Output stays in this allocation's unique directory.
-        spec = json.loads(json.dumps(spec).replace(str(run.outputs.run_dir), str(output)))
-        callbacks.append(build_component(spec))
+    callbacks = kwargs["callbacks"]
     callbacks.append(audit)
     if profile:
         from graphids.exp.temporal_profile import TemporalTimeline

@@ -1,5 +1,8 @@
 # Open Items
 
+> Historical record of a retired architecture. The live path uses experiment YAML,
+> shared runtime construction, and Ray Train; see `docs/reference/config-architecture.md`.
+
 This file is now a closure record for the representation-first refactor.
 
 ## Completed in this pass

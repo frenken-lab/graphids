@@ -1,13 +1,14 @@
-"""Shared test fixtures."""
+"""Shared test execution settings."""
 
 from __future__ import annotations
 
-import copy
 import os
 
 import pytest
 import torch
-from torch_geometric.data import Batch, Data
+
+# Synthetic CPU cases are slower when PyTorch starts a large thread pool.
+torch.set_num_threads(1)
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
@@ -17,53 +18,3 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     for item in items:
         if "slurm" in item.keywords:
             item.add_marker(skip)
-
-NUM_IDS = 10
-IN_CHANNELS = 35
-EDGE_DIM = 11
-N_NODES = 8  # fixed default — tests must not assume random sizes
-
-
-def make_graph(num_nodes: int = N_NODES, num_edges: int = 12) -> Data:
-    """Synthetic CAN-bus-like graph: all continuous features + separate node_id."""
-    x = torch.rand(num_nodes, IN_CHANNELS)
-    node_id = torch.randint(0, NUM_IDS, (num_nodes,))
-    edge_index = torch.stack([
-        torch.randint(0, num_nodes, (num_edges,)),
-        torch.randint(0, num_nodes, (num_edges,)),
-    ])
-    edge_attr = torch.rand(num_edges, EDGE_DIM)
-    return Data(x=x, edge_index=edge_index, edge_attr=edge_attr,
-                node_id=node_id, y=torch.tensor([1]))
-
-
-def make_batch(n_graphs: int = 4) -> Batch:
-    """Batch of fixed-size graphs. Deterministic — no random node counts."""
-    return Batch.from_data_list([make_graph() for _ in range(n_graphs)])
-
-
-def make_variable_batch(sizes: list[int]) -> Batch:
-    """Batch of explicitly-sized graphs for variable-size tests."""
-    return Batch.from_data_list([make_graph(num_nodes=n, num_edges=n * 2) for n in sizes])
-
-
-@pytest.fixture(scope="session")
-def base_cfg():
-    """Session-scoped SimpleNamespace with only the fields tests actually read."""
-    import types
-    return types.SimpleNamespace(
-        hidden_dims=[32, 16], latent_dim=16, heads=2, embedding_dim=4,
-        hidden=16, layers=2, fc_layers=2,
-        loss_fn="ce", focal_gamma=2.0, loss_weight=10.0,
-        num_classes=2,
-    )
-
-
-@pytest.fixture()
-def vgae_cfg(base_cfg):
-    return copy.deepcopy(base_cfg)
-
-
-@pytest.fixture()
-def gat_cfg(base_cfg):
-    return copy.deepcopy(base_cfg)

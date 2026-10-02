@@ -3,13 +3,16 @@
 The current typed config surface is split between:
 
 - `graphids.exp.config` for run and
-  experiment configs plus typed stage payloads (`FitRunPayload`,
-  `CacheRunPayload`, `ExtractRunPayload`, `AnalyzeRunPayload`)
+  experiment configs plus the typed fit/test payload (`FitRunPayload`)
 - `graphids.primitives` for data,
-  model, loss, scaler, representation, and discovery primitives
+  model, loss, and temporal representation primitives
 
 The older plan-chassis documentation is kept as historical reference in
 [`docs/reference/orchestration.md`](../reference/orchestration.md).
+
+Experiments may extend one relative base YAML. See
+[configuration composition](../reference/config-architecture.md) for merge
+rules, expanded config snapshots, and standalone compatibility.
 
 ## `temporal_hybrid`
 
@@ -26,7 +29,8 @@ Supported top-level knobs:
 - `anomaly`: `mode: regression | nll` plus optional log-scale clamps
 - `rhythm`: optional causal per-ID IAT summary branch
 - `motif`: optional recent destination-ID/IAT motif branch
-- `scan`: optional scan profiling controls, currently `profile_subphases`
+- `scan`: `profile_subphases`, optional `rhythm_kernel`, `time_kernel`,
+  `motif_writer`, `ssm_kernel`, and `cuda_graph`
 - `loss_weights` and `anomaly_score_weights`
 
 Head defaults follow the objective. Supervised runs enable the classification

@@ -14,7 +14,7 @@ Experiment configs live under `configs/experiments/`.
 gx exp config configs/experiments/temporal_event_classifier_smoke.yml
 gx exp launch configs/experiments/temporal_event_classifier_smoke.yml
 gx exp submit configs/experiments/temporal_event_classifier_smoke.yml -C pitzer
-gx exp status "$GRAPHIDS_LAKE_ROOT/runs/set_01/temporal_event_classifier_smoke/temporal_event_classifier_smoke"
+gx exp status "$GRAPHIDS_RUN_ROOT/set_01/temporal_event_classifier_smoke/temporal_event_classifier_smoke"
 ```
 
 The YAML contains:
@@ -29,7 +29,36 @@ Supported stages are currently `fit` and `test`.
 ## 2. Typed Boundary
 
 `graphids.exp.config.ExperimentConfig.from_yaml(path)` loads YAML and validates
-it with Pydantic.
+it with Pydantic. Optional `extends` selects one base YAML relative to the
+experiment file. Shared partial configs live in `configs/experiments/_base/`;
+launch a leaf experiment rather than a base.
+
+```yaml
+extends: ../_base/comparisons.yml
+experiment_name: temporal_set_01_segmented_lanes256_epoch
+dataset: set_01
+stage: fit
+config:
+  data:
+    source:
+      dataset: set_01
+    stream_lanes: 256
+    chunk_size: 32
+    coverage_policy: full
+    stream_execution: segmented
+```
+
+Mappings merge recursively. Child scalars, lists, and explicit nulls replace
+inherited values. Changing a component's `type` or `class_path` replaces that
+whole component so obsolete arguments cannot leak into it. Missing bases,
+cycles, and non-mapping YAML fail with the source paths. Bases may themselves
+extend a base; there are no templates, list merges, or deletion directives.
+Existing standalone experiment YAML remains supported.
+
+Use `load_experiment_yaml(path)` when a runner needs an expanded dictionary;
+use `ExperimentConfig.from_yaml(path)` for validation. Benchmark variants are
+written as expanded standalone YAML. Every executed run saves
+`resolved-run.yml`, loadable as `RunConfig`, with concrete output paths.
 
 Important classes:
 
@@ -47,7 +76,7 @@ from silently drifting.
 ## 3. Primitives
 
 `graphids.primitives` is the public primitive module. It re-exports data,
-model, loss, scaler, representation, ID-encoding, and discovery primitives.
+model, loss, and temporal representation primitives.
 
 Primitive config objects are Pydantic models with `extra="forbid"`:
 
@@ -62,7 +91,9 @@ Ray launch instantiation accepts either:
 - dictionaries with `class_path` and optional `init_args`, resolved by
   importlib.
 
-`graphids.exp.ray_backend` owns that resolution as part of launching. This lets
+`graphids.exp.runtime` owns resolution, seeding, model preparation, callbacks,
+and trainer kwargs for both Ray launch and cache-only temporal comparisons.
+Existing imports from `graphids.exp.ray_backend` remain available. This lets
 YAML use compact primitive specs for common objects and explicit class paths for
 callbacks without putting import logic in the YAML loader or CLI.
 
@@ -98,14 +129,18 @@ completed runs into MLflow.
 `gx exp submit <yaml> -C pitzer` uses `graphids.exp.slurm`:
 
 1. Validate the YAML by building a `RunConfig`.
-2. Render an sbatch script under `{slurm_log_dir}/scripts/`.
-3. Submit that script with `sbatch`.
+2. Expand and save a standalone config under `{slurm_log_dir}/scripts/`, named
+   by experiment and configuration content hash.
+3. Render an sbatch script pointing to that snapshot and submit it with `sbatch`.
+
+Later base or leaf edits do not change a queued job's configuration. Model
+source still comes from the selected code checkout.
 
 The sbatch body starts a Ray head and workers inside the allocation, then runs
 the Ray driver:
 
 ```bash
-cd /users/PAS2022/rf15/graphids
+cd /users/PAS2022/rf15/projects/lab/graphids
 source scripts/slurm/_preamble.sh
 python -m graphids exp launch /abs/path/to/config.yml --address "${RAY_ADDRESS}"
 source scripts/slurm/_epilog.sh
@@ -144,7 +179,7 @@ edge budget. Validation and test splits may include warmup events, which are
 fed through the model but excluded from metrics through `is_scored`.
 
 Available temporal model types are `temporal_event_classifier`,
-`temporal_rnn_classifier`, `temporal_gat`, and `temporal_vgae`.
+`temporal_rnn_classifier`, `temporal_gat`, `temporal_vgae`, and `temporal_hybrid`.
 
 Training configs select a dataset and temporal representation; the data source
 maps that to the versioned cache path under `$GRAPHIDS_LAKE_ROOT/cache`.

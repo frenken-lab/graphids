@@ -12,11 +12,9 @@
 
 set -euo pipefail
 cd /users/PAS2022/rf15/projects/lab/graphids
-source scripts/slurm/_preamble.sh
-export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
+source scripts/slurm/_diagnostic.sh
 : "${COMPARISON_ROOT:?set COMPARISON_ROOT to a unique result directory}"
-mkdir -p "$COMPARISON_ROOT"
-python -c 'import torch; assert torch.cuda.is_available(), "CUDA correctness must run on a GPU"'
+diagnostic_init "$COMPARISON_ROOT"
 python -m pytest tests/core/data tests/core/models tests/exp -q > "$COMPARISON_ROOT/gpu-correctness.txt" 2>&1
 python -m graphids.exp.temporal_comparison configs/experiments/comparisons/temporal_set_01_segmented_lanes32_diagnostic.yml --output "$COMPARISON_ROOT/diagnostic32"
 python -m graphids.exp.temporal_comparison configs/experiments/comparisons/temporal_set_01_segmented_lanes64_diagnostic.yml --output "$COMPARISON_ROOT/diagnostic64"

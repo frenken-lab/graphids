@@ -7,7 +7,7 @@ def _install_temporal_smoke_data(monkeypatch):
     from torch_geometric.data import TemporalData
     from torch_geometric.loader import TemporalDataLoader
 
-    from graphids.exp import ray_backend
+    from graphids.exp import ray_backend, runtime
     from graphids.exp.ray_backend import build_component as original_build
 
     def temporal(labels: list[int], *, scored: list[bool] | None = None) -> TemporalData:
@@ -66,7 +66,7 @@ def _install_temporal_smoke_data(monkeypatch):
             return TemporalSmokeData()
         return original_build(spec, **build_kwargs)
 
-    monkeypatch.setattr(ray_backend, "build_component", build_component)
+    monkeypatch.setattr(runtime, "build_component", build_component)
     return ray_backend
 
 
@@ -141,16 +141,16 @@ def test_ray_backend_runs_temporal_vgae_smoke(monkeypatch, tmp_path):
 def test_launch_seeds_before_model_construction(monkeypatch, tmp_path):
     import torch
 
-    from graphids.exp import ray_backend
+    from graphids.exp import ray_backend, runtime
 
     _install_temporal_smoke_data(monkeypatch)
-    original = ray_backend.resolve_spec
+    original = runtime.resolve_spec
     initialized = []
     def capture(spec):
         if isinstance(spec, dict) and spec.get("type") == "temporal_event_classifier":
             initialized.append(torch.rand(5))
         return original(spec)
-    monkeypatch.setattr(ray_backend, "resolve_spec", capture)
+    monkeypatch.setattr(runtime, "resolve_spec", capture)
     cfg = {
         "seed_everything": 42,
         "data": {"type": "temporal_smoke_data"},

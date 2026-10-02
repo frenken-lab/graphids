@@ -12,7 +12,7 @@ gx exp launch configs/experiments/temporal_event_classifier_smoke.yml
 
 Flow:
 
-1. Load and validate `ExperimentConfig`.
+1. Expand any relative base YAML and validate `ExperimentConfig`.
 2. Build a `RunConfig`.
 3. Call `graphids.exp.ray_backend.launch_run`.
 4. Ray Train schedules the worker.
@@ -26,16 +26,17 @@ gx exp submit configs/experiments/temporal_event_classifier_smoke.yml -C pitzer
 
 Flow:
 
-1. Load and validate `ExperimentConfig`.
+1. Expand any relative base YAML and validate `ExperimentConfig`.
 2. Build a `RunConfig` as a submit-time validation check.
 3. Render a Ray allocation sbatch script with resource directives from `resources`.
-4. Write the script to `{slurm_log_dir}/scripts/ray-{experiment_name}.sbatch`.
+4. Write the script to `{slurm_log_dir}/scripts/ray-{experiment_name}.sbatch`
+   and an expanded config snapshot named by experiment and content hash.
 5. Submit it with `sbatch`.
 
 The compute node then runs:
 
 ```bash
-python -m graphids exp launch /abs/path/to/experiment.yml --address "${RAY_ADDRESS}"
+python -m graphids exp launch /abs/path/to/expanded-snapshot.yml --address "${RAY_ADDRESS}"
 ```
 
 ## Dry Run
@@ -44,7 +45,8 @@ python -m graphids exp launch /abs/path/to/experiment.yml --address "${RAY_ADDRE
 gx exp submit configs/experiments/temporal_event_classifier_smoke.yml -C pitzer --dry-run
 ```
 
-This prints the sbatch script and does not submit.
+This prints the sbatch script without writing config snapshots, scripts, or
+submitting jobs. The printed snapshot path is created by actual submission.
 
 ## Files Of Interest
 

@@ -37,7 +37,9 @@ def test_write_ingest_payload_records_run_identity(tmp_path):
 
 def test_ingest_run_creates_mlflow_run(tmp_path):
     from mlflow.tracking import MlflowClient
+    from typer.testing import CliRunner
 
+    from graphids.cli.app import app
     from graphids.exp.ingest import ingest_run, write_ingest_payload
 
     run = _run_config(tmp_path)
@@ -54,19 +56,7 @@ def test_ingest_run_creates_mlflow_run(tmp_path):
     rows = client.search_runs([exp.experiment_id], filter_string="tags.`graphids.tracking_mode` = 'offline'")
     assert len(rows) == 1
     assert rows[0].data.metrics["val_loss"] == 0.25
-
-
-def test_exp_ingest_cli_json(tmp_path):
-    from typer.testing import CliRunner
-
-    from graphids.cli.app import app
-    from graphids.exp.ingest import write_ingest_payload
-
-    run = _run_config(tmp_path)
-    write_ingest_payload(run, status="FINISHED", metrics={"val_loss": 0.25})
-    tracking_uri = f"sqlite:///{tmp_path / 'mlflow.db'}"
-
-    result = CliRunner().invoke(
+    cli = CliRunner().invoke(
         app,
         [
             "exp",
@@ -78,5 +68,5 @@ def test_exp_ingest_cli_json(tmp_path):
         ],
     )
 
-    assert result.exit_code == 0, result.stderr
-    assert '"status": "ingested"' in result.stdout
+    assert cli.exit_code == 0, cli.stderr
+    assert '"status": "skipped"' in cli.stdout

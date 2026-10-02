@@ -118,3 +118,30 @@ def test_exp_submit_dry_run_cli(monkeypatch):
     assert "#SBATCH --clusters=pitzer" in result.stdout
     assert "ray start --head" in result.stdout
     assert "python -m graphids exp launch" in result.stdout
+
+
+def test_submission_freezes_expanded_yaml_and_dry_run_does_not_write(monkeypatch, tmp_path):
+    import subprocess
+
+    import yaml
+
+    from graphids.exp.config import ExperimentConfig
+    from graphids.exp.slurm import submit_experiment
+
+    monkeypatch.setenv("GRAPHIDS_SLURM_LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout="Submitted batch job 123\n"))
+    base = tmp_path / "base.yml"
+    base.write_text("config:\n  trainer:\n    max_epochs: 3\n")
+    leaf = tmp_path / "leaf.yml"
+    leaf.write_text("extends: base.yml\nexperiment_name: frozen\ndataset: set_01\ngit_sha: test\n")
+    cfg = ExperimentConfig.from_yaml(leaf)
+    submit_experiment(cfg, leaf, dry_run=True)
+    assert not (tmp_path / "logs").exists()
+    result = submit_experiment(cfg, leaf)
+    snapshot, = (tmp_path / "logs/scripts").glob("*.yml")
+    assert str(snapshot) in result.script
+    assert "extends" not in yaml.safe_load(snapshot.read_text())
+    base.write_text("config:\n  trainer:\n    max_epochs: 99\n")
+    assert ExperimentConfig.from_yaml(snapshot).config["trainer"]["max_epochs"] == 3
+    submit_experiment(ExperimentConfig.from_yaml(leaf), leaf)
+    assert len(list((tmp_path / "logs/scripts").glob("*.yml"))) == 2

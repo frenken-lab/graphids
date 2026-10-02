@@ -17,7 +17,7 @@ import typer
 
 app = typer.Typer(
     name="graphids",
-    help="GraphIDS: CAN Bus Intrusion Detection via Knowledge Distillation",
+    help="GraphIDS: CAN Bus Intrusion Detection with Temporal Models",
     no_args_is_help=True,
     pretty_exceptions_enable=False,
 )

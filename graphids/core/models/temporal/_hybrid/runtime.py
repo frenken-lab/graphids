@@ -77,12 +77,14 @@ class HybridRuntimeMixin:
             **{name.rsplit("/", 1)[-1]: round(value, 3) for name, value in metrics.items()},
         )
 
-    def on_fit_start(self) -> None:
-        # Lightning may move parameters between CPU and CUDA between fit calls.
-        graph = getattr(self, "_scored_cuda_graph", None)
-        if graph is not None:
-            graph.close()
+    def _close_cuda_graph(self) -> None:
+        if self._scored_cuda_graph is not None:
+            self._scored_cuda_graph.close()
         object.__setattr__(self, "_scored_cuda_graph", None)
+
+    def on_fit_start(self) -> None:
+        # Lightning may move parameters between CPU and CUDA between fits.
+        self._close_cuda_graph()
         self._optimizer_steps = 0
 
     def on_train_epoch_start(self) -> None:
@@ -108,26 +110,23 @@ class HybridRuntimeMixin:
         return batch
 
     def on_load_checkpoint(self, checkpoint):
-        graph = getattr(self, "_scored_cuda_graph", None)
-        if graph is not None:
-            graph.close()
-        object.__setattr__(self, "_scored_cuda_graph", None)
+        self._close_cuda_graph()
 
     def cuda_graph_report(self):
-        graph = getattr(self, "_scored_cuda_graph", None)
+        graph = self._scored_cuda_graph
         return graph.report() if graph is not None else {"enabled": False}
 
     def on_train_batch_start(self, batch, batch_idx):
         self._warmup_only_batch = not bool(self.scored_mask(batch).any())
 
     def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure=None):
-        if getattr(self, "_warmup_only_batch", False):
+        if self._warmup_only_batch:
             # Execute the forward closure to advance state, but never enter optimizer.step.
             if optimizer_closure is not None:
                 optimizer_closure()
             return
         result = super().optimizer_step(epoch, batch_idx, optimizer, optimizer_closure)
-        self._optimizer_steps = getattr(self, "_optimizer_steps", 0) + 1
+        self._optimizer_steps = self._optimizer_steps + 1
         return result
 
     def training_step(self, batch, _idx):
@@ -138,12 +137,12 @@ class HybridRuntimeMixin:
         if self.hparams.scan.get("cuda_graph", False):
             from .cuda_graph import ScoredCudaGraph
 
-            graph = getattr(self, "_scored_cuda_graph", None)
+            graph = self._scored_cuda_graph
             if graph is None:
                 graph = ScoredCudaGraph()
                 object.__setattr__(self, "_scored_cuda_graph", graph)
             graphed = graph.run(self, batch, self._detach_state(self._train_state),
-                                getattr(self, "_cuda_graph_reason", "metadata_not_checked"))
+                                self._cuda_graph_reason)
         if graphed is None:
             out, state = self._forward_with_state(batch, self._detach_state(self._train_state))
         else:

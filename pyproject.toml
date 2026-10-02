@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "graphids"
 version = "1.0.0"
-description = "CAN Bus Intrusion Detection via Graph Neural Networks and Knowledge Distillation"
+description = "CAN Bus Intrusion Detection with Temporal Models"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "torch>=2.8.0,<2.9",
@@ -16,30 +16,17 @@ dependencies = [
     "torch-cluster",
     "pyg-lib",
     "torchmetrics>=1.8.0",
-    "torchrl>=0.6",
-    "tensordict>=0.6",
     "numpy>=1.26.4",
     "polars>=1.0.0",
-    "pandas>=2.2.3",
-    "pyarrow>=14.0.0",
     "pydantic>=2.10",
-    "pydantic-settings>=2.0",
     "pyyaml>=6.0",
     "psutil>=6.0.0",
-    "scipy>=1.13.0",
-    "networkx>=3.2",
-    "scikit-learn>=1.5.0",
-    "optuna>=4.0",
-    "fastapi>=0.115",
-    "uvicorn>=0.30",
-    "duckdb>=1.0.0",
-    "typer[all]>=0.12",
-    "alembic>=1.18",
+    "typer>=0.12",
     "nvidia-ml-py>=11.5",
     "mlflow-skinny>=2.17",
     "filelock>=3.13",
     "structlog>=24.0",
-    "ray[train,tune]>=2.55",
+    "ray[train]>=2.55",
 ]
 
 [project.optional-dependencies]
@@ -95,17 +82,9 @@ warn_return_any = true
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = "graphids.plan.*"
-disallow_untyped_defs = true
-
-[[tool.mypy.overrides]]
 module = [
     "torch.*",
     "torch_geometric.*",
     "torchmetrics.*",
-    "optuna.*",
-    "sklearn.*",
-    "umap.*",
-    "seaborn.*",
 ]
 ignore_missing_imports = true

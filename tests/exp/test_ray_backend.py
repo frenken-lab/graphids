@@ -6,7 +6,7 @@ def test_launch_run_builds_real_ray_trainer_config(monkeypatch, tmp_path):
     import ray.train
     import ray.train.torch
 
-    from graphids.exp import ray_backend
+    from graphids.exp import ray_backend, runtime
     from graphids.exp.config import (
         FitRunPayload,
         OutputConfig,
@@ -93,7 +93,7 @@ def test_build_lightning_run_configures_lightning_for_ray(monkeypatch):
     import sys
     import types
 
-    from graphids.exp import ray_backend
+    from graphids.exp import ray_backend, runtime
 
     captured: dict[str, object] = {}
 
@@ -141,14 +141,14 @@ def test_build_lightning_run_configures_lightning_for_ray(monkeypatch):
     monkeypatch.setitem(sys.modules, "lightning", lightning_pkg)
     monkeypatch.setitem(sys.modules, "lightning.pytorch", DummyLightning)
     monkeypatch.setitem(sys.modules, "ray.train.lightning", ray_lightning_mod)
-    monkeypatch.setattr(ray_backend, "build_component", lambda spec: DummyData())
+    monkeypatch.setattr(runtime, "build_component", lambda spec: DummyData())
 
     def resolve_spec(spec):
         if isinstance(spec, dict) and spec.get("type") == "dummy_model":
             return DummyModel()
         return spec
 
-    monkeypatch.setattr(ray_backend, "resolve_spec", resolve_spec)
+    monkeypatch.setattr(runtime, "resolve_spec", resolve_spec)
 
     result = ray_backend._build_lightning_run(
         "fit",
@@ -176,7 +176,7 @@ def test_build_lightning_run_uses_lightning_module_compile(monkeypatch):
     import sys
     import types
 
-    from graphids.exp import ray_backend
+    from graphids.exp import ray_backend, runtime
 
     captured: dict[str, object] = {}
 
@@ -209,14 +209,14 @@ def test_build_lightning_run_uses_lightning_module_compile(monkeypatch):
     lightning_pkg.pytorch = DummyLightning
     monkeypatch.setitem(sys.modules, "lightning", lightning_pkg)
     monkeypatch.setitem(sys.modules, "lightning.pytorch", DummyLightning)
-    monkeypatch.setattr(ray_backend, "build_component", lambda spec: DummyData())
+    monkeypatch.setattr(runtime, "build_component", lambda spec: DummyData())
 
     def resolve_spec(spec):
         if isinstance(spec, dict) and spec.get("type") == "dummy_model":
             return DummyModel()
         return spec
 
-    monkeypatch.setattr(ray_backend, "resolve_spec", resolve_spec)
+    monkeypatch.setattr(runtime, "resolve_spec", resolve_spec)
 
     ray_backend._build_lightning_run(
         "fit",

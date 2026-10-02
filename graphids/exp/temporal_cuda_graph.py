@@ -5,13 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
-import subprocess
-import sys
 from pathlib import Path
 
-import yaml
-
-from graphids.exp.temporal_lane_sweep import validate_trial
+from graphids.exp.config import load_experiment_yaml
+from graphids.exp.trials import run_trial, validate_trial
 
 
 def select_pairs(pairs):
@@ -39,11 +36,7 @@ def select_pairs(pairs):
 
 def run_pairs(root):
     root.mkdir(parents=True, exist_ok=True)
-    base = yaml.safe_load(
-        Path(
-            "configs/experiments/comparisons/temporal_set_01_segmented_lanes256_scaling_diagnostic.yml"
-        ).read_text()
-    )
+    base = load_experiment_yaml("configs/experiments/comparisons/temporal_set_01_segmented_lanes256_scaling_diagnostic.yml")
     base["config"]["data"].update(
         num_workers=2, prebuild_batches=2, persistent_workers=True
     )
@@ -56,24 +49,7 @@ def run_pairs(root):
             config = json.loads(json.dumps(base))
             config["experiment_name"] = "temporal_cuda_" + name
             config["config"]["model"]["scan"]["cuda_graph"] = enabled
-            path = root / (name + ".yml")
-            path.write_text(yaml.safe_dump(config, sort_keys=False))
-            output = root / name
-            subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "graphids.exp.temporal_comparison",
-                    str(path),
-                    "--output",
-                    str(output),
-                    "--section-limit",
-                    "2048",
-                ],
-                check=True,
-            )
-            results[enabled] = json.loads((output / "comparison.json").read_text())
-            validate_trial(results[enabled], pairs[0][0] if pairs else None)
+            results[enabled] = run_trial(root, name, config=config, section_limit=2048, reference=pairs[0][0] if pairs else None)
             (root / "progress.json").write_text(
                 json.dumps({"latest": name, "result": results[enabled]}, indent=2)
                 + "\n"

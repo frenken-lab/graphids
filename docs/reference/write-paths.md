@@ -14,9 +14,9 @@
 
 | Root | Default/current behavior | Owner |
 |---|---|---|
-| Repo | `/users/PAS2022/rf15/graphids` | source code |
+| Repo | `/users/PAS2022/rf15/projects/lab/graphids` | source code |
 | Lake | `$GRAPHIDS_LAKE_ROOT`, typically `/fs/ess/PAS1266/graphids` | raw data, caches, MLflow DB, MLflow artifacts |
-| Runs | `Path.home() / "ray_results"` outside Ray | run journals, checkpoints, non-MLflow artifacts |
+| Runs | `GRAPHIDS_RUN_ROOT`, otherwise `{lake_root}/runs`, otherwise `{repo}/runs` | run journals, checkpoints, non-MLflow artifacts |
 | SLURM logs | `GRAPHIDS_SLURM_LOG_DIR`, `.env`, or `{lake_root}/slurm`; current jobs use `/fs/ess/PAS1266/graphids/slurm_logs` | sbatch scripts, stdout, stderr |
 
 Relevant code:
@@ -36,10 +36,12 @@ $GRAPHIDS_LAKE_ROOT/
   mlartifacts/{dataset}/{stage}/
   slurm_logs/
     scripts/ray-{experiment_name}.sbatch
+    scripts/{experiment_name}-{config_hash}.yml
     ray-{experiment_name}_{job_id}.out
     ray-{experiment_name}_{job_id}.err
 
-~/ray_results/{dataset}/{experiment_name}/{run_name}/
+$GRAPHIDS_RUN_ROOT/{dataset}/{experiment_name}/{run_name}/
+  resolved-run.yml
   .graphids/
     manifest.json
     events.jsonl
@@ -59,12 +61,13 @@ and includes a checkpoint callback.
 
 Graph caches are versioned by `graphids.paths.PREPROCESSING_VERSION`.
 
-Snapshot and snapshot-sequence graph caches currently live under:
+Temporal event caches live under:
 
 ```text
 {lake_root}/cache/v{PREPROCESSING_VERSION}/{dataset}/{representation_kind}_{representation_digest}_voc_{scope}/
   processed/
     data_train.pt
+    data_val.pt
     data_test_<split>.pt
     .complete
   cache_metadata.json
@@ -79,6 +82,7 @@ Ray Train workers run through `graphids.exp.ray_backend`, which writes:
 
 | File | Purpose |
 |---|---|
+| `resolved-run.yml` | expanded `RunConfig` including payload, resources, and output paths |
 | `.graphids/manifest.json` | resolved run identity, config, outputs, status, failure |
 | `.graphids/events.jsonl` | worker, Ray result, finish, and failure events |
 | `.graphids/mlflow_ingest.json` | offline MLflow payload replayed by `gx exp ingest` |

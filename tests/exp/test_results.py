@@ -31,6 +31,7 @@ def _log_temporal_run(
 
 
 def test_query_result_view_latest_per_variant(tmp_path):
+    from graphids.cli.app import app
     from graphids.exp.results import query_result_view
 
     tracking_uri = f"sqlite:///{tmp_path / 'mlflow.db'}"
@@ -51,21 +52,7 @@ def test_query_result_view_latest_per_variant(tmp_path):
     assert rows[0].run_id != old_run
     assert rows[0].metrics["test/test/mcc"] == 0.9
     assert rows[0].metrics["test/test/auroc_per_attack/fuzzing"] == 0.8
-
-
-def test_exp_results_cli_json(tmp_path):
-    from graphids.cli.app import app
-
-    tracking_uri = f"sqlite:///{tmp_path / 'mlflow.db'}"
-    run_id = _log_temporal_run(
-        tracking_uri=tracking_uri,
-        dataset="hcrl_sa",
-        variant="temporal_gat",
-        mcc=0.7,
-    )
-
-    runner = CliRunner()
-    result = runner.invoke(
+    cli = CliRunner().invoke(
         app,
         [
             "exp",
@@ -81,6 +68,6 @@ def test_exp_results_cli_json(tmp_path):
         ],
     )
 
-    assert result.exit_code == 0, result.stderr
-    assert run_id in result.stdout
-    assert '"test/test/mcc": 0.7' in result.stdout
+    assert cli.exit_code == 0, cli.stderr
+    assert latest_run in cli.stdout
+    assert '"test/test/mcc": 0.9' in cli.stdout

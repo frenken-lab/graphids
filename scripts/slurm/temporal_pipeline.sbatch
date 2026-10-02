@@ -11,11 +11,9 @@
 #SBATCH --job-name=temporal-pipeline-256
 set -euo pipefail
 cd "${PIPELINE_CODE_ROOT:-/users/PAS2022/rf15/projects/lab/graphids}"
-source scripts/slurm/_preamble.sh
-export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
+source scripts/slurm/_diagnostic.sh
 : "${PIPELINE_ROOT:?set PIPELINE_ROOT}"
-mkdir -p "$PIPELINE_ROOT"
-python -c 'import torch; assert torch.cuda.is_available()'
+diagnostic_init "$PIPELINE_ROOT"
 python -m pytest tests/core/data tests/core/models/test_temporal_hybrid.py tests/core/models/test_temporal_ssm_kernel.py -q > "$PIPELINE_ROOT/correctness.txt" 2>&1
 args=()
 if [[ "${PIPELINE_FUSION:-0}" == 1 ]]; then args+=(--fusion); fi

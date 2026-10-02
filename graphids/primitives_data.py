@@ -6,6 +6,7 @@ from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from graphids.config_validation import validate_lane_config
 from graphids.core.data.preprocessing.representations import (
     RepresentationCfg,
     TemporalRepresentationCfg,
@@ -31,6 +32,17 @@ class CANBusCfg(_Cfg):
     representation_cfg: RepresentationCfg = Field(default_factory=TemporalRepresentationCfg)
 
 
+    def build(self, *, val_warmup_events: int = 0, test_warmup_events: int = 0) -> Any:
+        from graphids.core.data.datasets.can_bus import CANBusTemporalSource
+
+        return CANBusTemporalSource(
+            **self.model_dump(exclude={"type", "seed", "representation_cfg"}),
+            representation_cfg=self.representation_cfg,
+            val_warmup_events=val_warmup_events,
+            test_warmup_events=test_warmup_events,
+        )
+
+
 class TemporalDMCfg(_Cfg):
     type: Literal["temporal_dm"] = "temporal_dm"
     source: CANBusCfg
@@ -54,56 +66,22 @@ class TemporalDMCfg(_Cfg):
 
     @model_validator(mode="after")
     def _validate_batch_mode(self) -> Self:
-        if self.batch_mode == "stream_lanes":
-            if self.stream_lanes is None or self.stream_lanes < 2:
-                raise ValueError("stream_lanes must be >= 2 for batch_mode='stream_lanes'")
-            if self.chunk_size is None or self.chunk_size < 1:
-                raise ValueError("chunk_size must be positive for batch_mode='stream_lanes'")
-            if self.coverage_policy == "full" and self.drop_partial_lane_batches:
-                raise ValueError("full coverage requires drop_partial_lane_batches: false")
-        if self.stream_execution == "segmented" and self.batch_mode != "stream_lanes":
-            raise ValueError("segmented execution requires stream_lanes")
-        if self.eval_batch_mode == "stream_lanes" and (self.stream_lanes is None or self.chunk_size is None):
-            raise ValueError("lane evaluation requires stream_lanes and chunk_size")
-        if self.source.val_split == "recordings" and self.val_prefix_events is not None:
-            raise ValueError("recording validation requires complete streams; remove val_prefix_events")
+        validate_lane_config(self, val_split=self.source.val_split)
         return self
 
-    def build(self) -> Any:
-        from graphids.core.data.datamodule.temporal import TemporalDataModule
-        from graphids.core.data.datasets.can_bus import CANBusTemporalSource
-
-        if representation_kind(self.source.representation_cfg) != "temporal":
-            raise ValueError("temporal_dm requires representation_cfg.kind='temporal'")
-        source = CANBusTemporalSource(
-            name=self.source.name,
-            val_fraction=self.source.val_fraction,
-            representation_cfg=self.source.representation_cfg,
-            train_source_mode=self.source.train_source_mode,
-            val_split=self.source.val_split,
-            split_seed=self.source.split_seed,
+    def build_source(self) -> Any:
+        return self.source.build(
             val_warmup_events=self.val_warmup_events,
             test_warmup_events=self.test_warmup_events,
         )
-        return TemporalDataModule(
-            dataset=source,
-            batch_size=self.batch_size,
-            batch_mode=self.batch_mode,
-            stream_lanes=self.stream_lanes,
-            chunk_size=self.chunk_size,
-            num_workers=self.num_workers,
-            prebuild_batches=self.prebuild_batches,
-            pin_memory=self.pin_memory,
-            persistent_workers=self.persistent_workers,
-            drop_partial_lane_batches=self.drop_partial_lane_batches,
-            coverage_policy=self.coverage_policy,
-            stream_execution=self.stream_execution,
-            segment_events=self.segment_events,
-            segment_warmup_events=self.segment_warmup_events,
-            eval_batch_mode=self.eval_batch_mode,
-            val_prefix_events=self.val_prefix_events,
 
-        )
+    def build(self, *, dataset: Any = None) -> Any:
+        from graphids.core.data.datamodule.temporal import TemporalDataModule
+
+        if representation_kind(self.source.representation_cfg) != "temporal":
+            raise ValueError("temporal_dm requires representation_cfg.kind='temporal'")
+        options = self.model_dump(exclude={"type", "source", "val_warmup_events", "test_warmup_events"})
+        return TemporalDataModule(dataset=self.build_source() if dataset is None else dataset, **options)
 
 
 DataCfg = Annotated[TemporalDMCfg, Field(discriminator="type")]

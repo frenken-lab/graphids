@@ -1,98 +1,20 @@
 # GraphIDS SLURM / HPC Conventions
 
-## Environment
+OSC Pitzer/Cardinal/Ascend use account PAS1266, Python 3.12, and the project
+`.venv`. Source `scripts/slurm/_preamble.sh` inside allocations. GPU diagnostics
+share `_diagnostic.sh`; keep each script's resource and correctness gates.
 
-- **Cluster**: OSC Pitzer / Cardinal / Ascend (RHEL 9, SLURM)
-- **Account**: PAS1266 (`$GRAPHIDS_SLURM_ACCOUNT` in `.env`). `source .env` before submitting on a login node.
-- **GPU**: Pitzer 2x V100 / Cardinal H100 / Ascend A100. See `~/.claude/projects/-users-PAS2022-rf15-graphids/memory/reference_osc_gpu_clusters.md`.
-- **Python**: 3.12 via `module load python/3.12`, uv venv `.venv/`
-- **Home**: `/users/PAS2022/rf15/` (NFS, permanent)
-- **Scratch**: `/fs/scratch/PAS1266/` (GPFS, 90-day purge)
+- Never run pytest or training workloads on login nodes. Use a SLURM allocation.
+- Static lint, git, config inspection, and dry-run rendering are login-node safe.
+- Submit experiments with `gx exp submit CONFIG -C pitzer`; `--dry-run` prints
+  the allocation script without writing snapshots or submitting.
+- Submission saves expanded YAML next to the script. This freezes config,
+  while Python source still comes from the chosen checkout.
+- Use an immutable code snapshot for performance comparisons. Trials run in
+  fresh processes on the same GPU with identical weights and owned workloads.
+- SLURM logs belong under the configured log root; results and checkpoints
+  belong under `GRAPHIDS_RUN_ROOT`. Use unique diagnostic output directories.
+- Read raw CSVs and caches directly from the persistent ESS lake. Reintroduce
+  staging only after measurements show I/O limits; do not call retired commands.
 
-## Rules
-
-- Spawn/fork CUDA rule: see `critical-constraints.md`.
-- Test on small datasets (`hcrl_sa`) before large ones (`set_02`+).
-- SLURM logs go to `slurm_logs/`; experiment outputs to `{RUN_ROOT}/...`.
-- Heavy tests use `@pytest.mark.slurm` — auto-skipped on login nodes.
-- **Never run `pytest` on login nodes.** Submit a one-row ops job.
-
-## Rendered plan paths
-
-Rendered JSON plans are stored in the repo under `rendered/`, mirroring the
-lake-root path structure so any run can be re-submitted from a known location
-without searching:
-
-```
-rendered/{dataset}/{plan_module_as_path}/seed_{seed}.json
-```
-
-Examples:
-```bash
-gx run ablations.unsupervised -d hcrl_sa -s 42 \
-    -o rendered/hcrl_sa/ablations/unsupervised/seed_42.json
-gx run ablations.supervised   -d hcrl_sa -s 42 \
-    -o rendered/hcrl_sa/ablations/supervised/seed_42.json
-gx run smoke.gat_taunorm      -d hcrl_sa -s 0  \
-    -o rendered/hcrl_sa/smoke/gat_taunorm/seed_0.json
-```
-
-`rendered/` has a local `.gitignore` (`*` / `!.gitignore`) — plan JSONs
-are data artifacts, not source-controlled. The directory itself is tracked
-so the convention is visible in git.
-
-Re-submission from the canonical path:
-```bash
-source .env
-gx plans submit --plan rendered/hcrl_sa/ablations/unsupervised/seed_42.json -C pitzer
-# or single row:
-gx submit --plan rendered/hcrl_sa/ablations/unsupervised/seed_42.json \
-    --row-name vgae --cluster pitzer
-```
-
-## Job submission — four-step chassis
-
-CLI surface is `graphids run | exec | submit`. No `python -m graphids
-fit/test`, no submitit, no `--mode` ops shortcut — every job is a row.
-See `chassis-invariants.md` for the architectural properties that
-constrain the SLURM submission flow.
-
-The sbatch script body is a literal bash string:
-`python -m graphids exec --row '<json>' [--ckpt-path X]`. **No pickle**
-of Python closures — code fixes committed after submission DO reach a
-pending job, because the job re-imports current source at exec time.
-
-### One-shot ops
-
-Ops jobs (test runs, cache rebuilds, analysis) are still rows — author
-a small plan module under `graphids/plan/plans/{smoke,data}/` whose `build()`
-emits a single row with the right `action`/`command`/`resources`, then
-run the same `graphids run | submit` pair.
-
-### Profiles
-
-Source of truth: `configs/resources/submit_profiles.json`, keyed
-`[mode][cluster][length]`. Keys map directly to `SlurmProvider` kwargs
-— `submit_row` splats them with `**profile`. `signal_delay_s` is the
-one extension: becomes `#SBATCH --signal=USR2@N` so Lightning's
-`SLURMEnvironment(auto_requeue=True, requeue_signal=SIGUSR2)` plugin
-(wired in `orchestrate._trainer_kwargs`) fires before walltime.
-
-### Preemption auto-resume
-
-Profiles set `signal_delay_s=300` → `--signal=USR2@300`. Five minutes
-before walltime, Lightning's `SLURMEnvironment` calls
-`scontrol requeue $SLURM_JOB_ID` — same job ID, downstream `afterok`
-deps stay valid. (USR2 because NCCL catches USR1.)
-
-## Login node safety
-
-**Safe**: import checks, `graphids run -o plan.json` (pure render), DuckDB, git, ruff.
-**SLURM-only**: anything importing torch, instantiating a model, hitting CUDA, pytest, cache rebuilds.
-
-## Data I/O
-
-Jobs read raw CSVs + cache tensors directly from ESS NFS
-(`/fs/ess/PAS1266/graphids/{raw,cache}/`). Direct NFS is fast enough for
-the working set; if I/O-bound later, add a real staging command —
-don't paper over with a silent eval.
+See `docs/reference/submit-flow.md` for the live submission path.

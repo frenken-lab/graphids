@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
-import os
 import re
+import shlex
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
+
 from graphids.exp.config import ExperimentConfig
-from graphids.paths import PROJECT_ROOT
+from graphids.paths import PROJECT_ROOT, env_value, slurm_log_dir
 
 
 @dataclass(frozen=True)
@@ -29,38 +32,18 @@ def _slug(value: str) -> str:
 
 
 def _log_dir() -> Path:
-    if override := os.environ.get("GRAPHIDS_SLURM_LOG_DIR"):
-        return Path(override)
-    dotenv = _dotenv_values()
-    if override := dotenv.get("GRAPHIDS_SLURM_LOG_DIR"):
-        return Path(override)
-    if lake_root := os.environ.get("GRAPHIDS_LAKE_ROOT"):
-        return Path(lake_root) / "slurm"
-    if lake_root := dotenv.get("GRAPHIDS_LAKE_ROOT"):
-        return Path(lake_root) / "slurm"
-    return PROJECT_ROOT / "slurm"
+    return slurm_log_dir()
 
 
 def _script_dir() -> Path:
     return _log_dir() / "scripts"
 
 
-def _dotenv_values() -> dict[str, str]:
-    path = PROJECT_ROOT / ".env"
-    if not path.is_file():
-        return {}
-    values: dict[str, str] = {}
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line.removeprefix("export ").strip()
-        if "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        values[key.strip()] = value.strip().strip("'\"")
-    return values
+def _submission_yaml(cfg: ExperimentConfig) -> tuple[Path, str]:
+    expanded = yaml.safe_dump(cfg.model_dump(mode="json"), sort_keys=False)
+    digest = hashlib.sha256(expanded.encode()).hexdigest()[:16]
+    path = _script_dir() / f"{_slug(cfg.experiment_name)}-{digest}.yml"
+    return path, expanded
 
 
 def _gpus(cfg: ExperimentConfig) -> int:
@@ -84,11 +67,9 @@ def _sbatch_directives(
     resolved_partition = partition or resources.partition or ("gpu" if gpus else "cpu")
     resolved_time = time_limit or resources.time_limit or "01:00:00"
     resolved_gres = gres or resources.gres or (f"gpu:{gpus}" if gpus else None)
-    dotenv = _dotenv_values()
     resolved_account = (
         resources.account
-        or os.environ.get("GRAPHIDS_SLURM_ACCOUNT")
-        or dotenv.get("GRAPHIDS_SLURM_ACCOUNT")
+        or env_value("GRAPHIDS_SLURM_ACCOUNT")
     )
 
     lines = [
@@ -126,6 +107,7 @@ def build_slurm_script(
     if not yaml_abs.is_file():
         raise FileNotFoundError(f"experiment YAML not found: {yaml_abs}")
 
+    yaml_abs, _ = _submission_yaml(cfg)
     job_name = _slug(f"ray-{cfg.experiment_name}")
     log_dir = _log_dir()
     script_dir = _script_dir()
@@ -156,7 +138,7 @@ def build_slurm_script(
             *directives,
             "",
             "set -euo pipefail",
-            f"cd {PROJECT_ROOT}",
+            f"cd {shlex.quote(str(PROJECT_ROOT))}",
             "source scripts/slurm/_preamble.sh",
             "",
             f"export SLURM_CPUS_PER_TASK={cpus}",
@@ -214,7 +196,7 @@ def build_slurm_script(
             "done",
             "sleep 10",
             "",
-            f'python -m graphids exp launch {yaml_abs} --address "${{RAY_ADDRESS}}"',
+            f'python -m graphids exp launch {shlex.quote(str(yaml_abs))} --address "${{RAY_ADDRESS}}"',
             "source scripts/slurm/_epilog.sh",
             "",
         ]
@@ -249,6 +231,8 @@ def submit_experiment(
         return SlurmSubmitResult(command=tuple(command), script_path=script_path, script=script)
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path, expanded = _submission_yaml(cfg)
+    config_path.write_text(expanded)
     script_path.write_text(script)
     completed = subprocess.run(
         command,

@@ -1,5 +1,8 @@
 # Experiment-framework evaluation
 
+> Historical record of a retired architecture. The live path uses experiment YAML,
+> shared runtime construction, and Ray Train; see `docs/reference/config-architecture.md`.
+
 **Status:** 2026-05-05, decision shipped. Spike still pending. Compressed
 2026-05-07 — full per-framework comparison archived in
 `git log --follow` history.

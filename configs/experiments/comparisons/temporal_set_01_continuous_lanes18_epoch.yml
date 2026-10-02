@@ -1,110 +1,22 @@
+extends: ../_base/comparisons.yml
 experiment_name: temporal_set_01_continuous_lanes18_epoch
 dataset: set_01
-seed: 42
 plan_id: full_coverage_temporal_2026_10_01
 stage: fit
-representation_cfg:
-  kind: temporal
 resources:
-  cluster: pitzer
-  partition: gpu
-  accelerator: gpu
-  cpus_per_worker: 8
-  gpus_per_worker: 1.0
-  memory_gb: 32
   time_limit: 08:00:00
-  account: pas1266
 config:
   data:
-    type: temporal_dm
     coverage_policy: full
     source:
-      type: can_bus
       dataset: set_01
-      seed: 42
-      train_source_mode: mixed
-      representation_cfg:
-        kind: temporal
-    batch_size: 512
-    batch_mode: stream_lanes
     stream_lanes: 18
     chunk_size: 32
     num_workers: 0
     prebuild_batches: 0
-    pin_memory: false
     persistent_workers: false
-    drop_partial_lane_batches: false
-    val_warmup_events: 64
-    test_warmup_events: 64
     stream_execution: continuous
-    segment_events: 2048
-    segment_warmup_events: 256
-    eval_batch_mode: stream_lanes
     val_prefix_events: 8192
-  model:
-    type: temporal_hybrid
-    scale: small
-    objective: joint
-    memory:
-      type: tgn
-      enabled: true
-      reset_on_stream_end: true
-      time_encoding_dim: 4
-    backbone:
-      type: ssm_lite
-      layers: 1
-      dropout: 0.1
-    heads:
-      classification: true
-      next_id: true
-      iat: true
-      payload_delta: true
-    anomaly:
-      mode: nll
-    scan:
-      rhythm_kernel: triton
-      time_kernel: triton
-      motif_writer: triton
-    rhythm:
-      enabled: true
-    motif:
-      enabled: true
-      length: 3
-      embedding_dim: 8
-      time_dim: 8
-    loss_weights:
-      classification: 1.0
-      next_id: 0.2
-      iat: 0.1
-      payload_delta: 0.1
-    anomaly_score_weights:
-      next_id: 1.0
-      iat: 1.0
-      payload_delta: 1.0
   trainer:
-    accelerator: auto
-    devices: 1
-    max_epochs: 1
     limit_train_batches: 1.0
-    limit_val_batches: 1.0
-    enable_checkpointing: true
-    enable_progress_bar: false
-    enable_model_summary: false
-    num_sanity_val_steps: 0
-    default_root_dir: '{run_dir}'
     check_val_every_n_epoch: 2
-  callbacks:
-    resources:
-      class_path: graphids._mlflow.MLflowSystemMetricsSummaryCallback
-      init_args:
-        sampling_interval: 5
-        tracking_dir: '{run_dir}/.graphids/system_metrics_mlflow'
-    last:
-      class_path: lightning.pytorch.callbacks.ModelCheckpoint
-      init_args:
-        dirpath: '{run_dir}/checkpoints'
-        save_top_k: 0
-        save_last: true
-        save_on_train_epoch_end: true
-  loss_fn:
-    type: ce

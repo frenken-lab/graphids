@@ -6,6 +6,7 @@ consume the same domain config.
 
 from __future__ import annotations
 
+import copy
 import subprocess
 from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
@@ -23,6 +24,42 @@ from graphids.core.data.preprocessing.representations import (
 from graphids.exp.journal import RunManifest
 
 Stage = Literal["fit", "test"]
+
+
+def merge_config(base: Mapping[str, Any], child: Mapping[str, Any]) -> dict[str, Any]:
+    """Merge overrides without carrying arguments across component identities."""
+    if any(key in child and child[key] != base.get(key) for key in ("type", "class_path")):
+        return copy.deepcopy(dict(child))
+    result = copy.deepcopy(dict(base))
+    for key, value in child.items():
+        previous = result.get(key)
+        result[key] = (
+            merge_config(previous, value)
+            if isinstance(previous, Mapping) and isinstance(value, Mapping)
+            else copy.deepcopy(value)
+        )
+    return result
+
+
+def load_experiment_yaml(path: str | Path, _parents: tuple[Path, ...] = ()) -> dict[str, Any]:
+    """Expand a single relative base before validating the experiment."""
+    path = Path(path).resolve()
+    if path in _parents:
+        chain = " -> ".join(str(p) for p in (*_parents, path))
+        raise ValueError(f"experiment inheritance cycle: {chain}")
+    try:
+        value = yaml.safe_load(path.read_text())
+    except FileNotFoundError as exc:
+        parent = f" (extended by {_parents[-1]})" if _parents else ""
+        raise FileNotFoundError(f"experiment YAML not found: {path}{parent}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"experiment YAML must be a mapping: {path}")
+    if "extends" not in value:
+        return value
+    base = value.pop("extends")
+    if not isinstance(base, str) or not base.strip():
+        raise ValueError(f"extends must be one non-empty file path: {path}")
+    return merge_config(load_experiment_yaml(path.parent / base, (*_parents, path)), value)
 
 
 def _representation_payload(cfg: RepresentationCfg) -> dict[str, Any]:
@@ -178,6 +215,13 @@ class RunConfig(_StrictModel):
     resources: ResourceConfig = Field(default_factory=ResourceConfig)
     outputs: OutputConfig
 
+    def write_config(self) -> Path:
+        """Persist the fully resolved run, independent of YAML base files."""
+        path = self.outputs.run_dir / "resolved-run.yml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(yaml.safe_dump(self.model_dump(mode="json"), sort_keys=False))
+        return path
+
     def mlflow_tags(self) -> dict[str, str]:
         tags = {
             "graphids.phase": self.stage,
@@ -269,9 +313,10 @@ class ExperimentConfig(_StrictModel):
         stage: Stage,
         config: dict[str, Any] | None = None,
         output_suffix: str | None = None,
+        run_dir: str | Path | None = None,
     ) -> RunConfig:
         cfg = {**self.config, **(config or {})}
-        run_dir = self._run_dir(name, output_suffix=output_suffix)
+        run_dir = Path(run_dir) if run_dir is not None else self._run_dir(name, output_suffix=output_suffix)
         from graphids.paths import trial_dir
 
         cfg = _format_strings(
@@ -321,7 +366,7 @@ class ExperimentConfig(_StrictModel):
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> ExperimentConfig:
-        cfg = yaml.safe_load(Path(path).read_text()) or {}
+        cfg = load_experiment_yaml(path)
         if cfg.get("resources") is None:
             cfg["resources"] = {}
         if cfg.get("config") is None:

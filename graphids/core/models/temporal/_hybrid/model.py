@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from graphids.config_validation import validate_hybrid_config
 from graphids.core.losses import CrossEntropyLoss
 from graphids.core.models.base import classification_test_metrics
 
@@ -30,7 +31,6 @@ from .targets import (
 
 Objective = Literal["supervised", "anomaly", "joint"]
 _ANOMALY_HEADS = ("next_id", "iat", "payload_delta")
-_ANOMALY_MODES = {"regression", "nll"}
 
 
 def _drop_none(values: dict[str, Any]) -> dict[str, Any]:
@@ -132,7 +132,7 @@ class TemporalHybridModel(HybridRuntimeMixin, HybridScanMixin, HybridStateMixin,
         anomaly_score_weights.setdefault("iat", 1.0)
         anomaly_score_weights.setdefault("payload_delta", 1.0)
 
-        self._validate_modular_config(
+        validate_hybrid_config(
             objective=objective,
             memory=memory,
             backbone=backbone,
@@ -158,6 +158,12 @@ class TemporalHybridModel(HybridRuntimeMixin, HybridScanMixin, HybridStateMixin,
         self._val_cls_labels: list[torch.Tensor] = []
         self._val_anom_scores: list[torch.Tensor] = []
         self._val_anom_labels: list[torch.Tensor] = []
+        object.__setattr__(self, "_scored_cuda_graph", None)
+        self._optimizer_steps = 0
+        self._warmup_only_batch = False
+        self._cpu_scored_events = 0
+        self._cuda_graph_reason = "metadata_not_checked"
+        self._train_phase_timings_s = {}
         self._init_post(locals())
 
     @property
@@ -168,73 +174,6 @@ class TemporalHybridModel(HybridRuntimeMixin, HybridScanMixin, HybridStateMixin,
     def anomaly_enabled(self) -> bool:
         heads = self.hparams.heads
         return any(bool(heads.get(k, False)) for k in _ANOMALY_HEADS)
-
-    @staticmethod
-    def _enabled_anomaly_heads(heads: dict[str, Any]) -> list[str]:
-        return [name for name in _ANOMALY_HEADS if bool(heads.get(name, False))]
-
-    @classmethod
-    def _validate_modular_config(
-        cls,
-        *,
-        objective: Objective,
-        memory: dict[str, Any],
-        backbone: dict[str, Any],
-        heads: dict[str, Any],
-        anomaly: dict[str, Any],
-        rhythm: dict[str, Any],
-        motif: dict[str, Any],
-        scan: dict[str, Any],
-        loss_fn: nn.Module | None,
-    ) -> None:
-        if str(memory.get("type", "tgn")) != "tgn":
-            raise ValueError("memory.type must be 'tgn'")
-        if int(memory.get("time_encoding_dim", 0)) < 0:
-            raise ValueError("memory.time_encoding_dim must be non-negative")
-        if str(backbone.get("type", "gru")) not in {"none", "gru", "ssm_lite", "mamba"}:
-            raise ValueError("backbone.type must be one of: none, gru, ssm_lite, mamba")
-        if str(anomaly.get("mode", "regression")) not in _ANOMALY_MODES:
-            raise ValueError("anomaly.mode must be one of: regression, nll")
-        if float(anomaly.get("min_log_scale", -7.0)) > float(anomaly.get("max_log_scale", 5.0)):
-            raise ValueError("anomaly.min_log_scale must be <= anomaly.max_log_scale")
-        if int(motif.get("length", 1)) < 1:
-            raise ValueError("motif.length must be positive")
-        if int(motif.get("embedding_dim", 1)) < 1:
-            raise ValueError("motif.embedding_dim must be positive")
-        if int(motif.get("time_dim", 1)) < 1:
-            raise ValueError("motif.time_dim must be positive")
-        if scan.get("rhythm_kernel", "torch") not in ("torch", "triton"):
-            raise ValueError("scan.rhythm_kernel must be torch or triton")
-        for key in ("time_kernel", "motif_writer", "ssm_kernel"):
-            if scan.get(key, "torch") not in ("torch", "triton"):
-                raise ValueError(f"scan.{key} must be torch or triton")
-        if scan.get("motif_writer") == "triton" and scan.get("rhythm_kernel") != "triton":
-            raise ValueError("scan.motif_writer=triton requires rhythm_kernel=triton")
-        if scan.get("ssm_kernel") == "triton" and backbone.get("type") != "ssm_lite":
-            raise ValueError("scan.ssm_kernel=triton requires backbone.type=ssm_lite")
-        unknown_scan_keys = set(scan) - {"profile_subphases", "rhythm_kernel", "time_kernel", "motif_writer", "ssm_kernel", "cuda_graph"}
-        if unknown_scan_keys:
-            keys = ", ".join(sorted(unknown_scan_keys))
-            raise ValueError(f"unknown scan config key(s): {keys}")
-        classification = bool(heads.get("classification", False))
-        anomaly_heads = cls._enabled_anomaly_heads(heads)
-        if objective == "supervised":
-            if not classification:
-                raise ValueError("objective='supervised' requires heads.classification=true")
-            return
-        if objective == "anomaly":
-            if loss_fn is not None:
-                raise ValueError("objective='anomaly' trains self-supervised heads and does not accept loss_fn")
-            if classification:
-                raise ValueError("objective='anomaly' requires heads.classification=false")
-            if not anomaly_heads:
-                raise ValueError("objective='anomaly' requires at least one anomaly head")
-            return
-        if objective == "joint":
-            if not classification:
-                raise ValueError("objective='joint' requires heads.classification=true")
-            if not anomaly_heads:
-                raise ValueError("objective='joint' requires at least one anomaly head")
 
     def _build(self) -> None:
         hp = self.hparams

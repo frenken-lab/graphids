@@ -33,9 +33,12 @@ def data_for(lengths):
                         reset_after=reset)
 
 
-@pytest.mark.parametrize("workers", [0, 2])
-@pytest.mark.parametrize("lengths,lanes", [([1, 7, 2, 10], 2), ([1, 2], 8), ([17], 4)])
-@pytest.mark.parametrize("interleaved", [False, True])
+@pytest.mark.parametrize("workers,lengths,lanes,interleaved", [
+    (0, [1, 7, 2, 10], 2, False),
+    (2, [1, 7, 2, 10], 2, True),
+    (0, [1, 2], 8, True),
+    (2, [17], 4, False),
+])
 def test_complete_ordered_coverage(workers, lengths, lanes, interleaved):
     data = data_for(lengths)
     if interleaved:

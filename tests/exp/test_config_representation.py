@@ -904,7 +904,7 @@ def test_full_coverage_comparison_configs():
     root = Path(__file__).resolve().parents[2]
     for path in (root / "configs/experiments/comparisons").glob("*.yml"):
         experiment = ExperimentConfig.from_yaml(path)
-        obj = yaml.safe_load(path.read_text())
+        obj = experiment.model_dump(mode="json")
         data = resolve_spec(obj["config"]["data"])
         assert experiment.resources.memory_gb == 32
         assert experiment.resources.cpus_per_worker == 8

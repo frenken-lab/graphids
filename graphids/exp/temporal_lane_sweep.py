@@ -3,33 +3,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
-import sys
 from pathlib import Path
 
-from graphids.exp.temporal_results import load_result
+from graphids.exp.trials import run_trial
+from graphids.exp.trials import validate_trial as validate_trial
 
 LANES = (64, 128, 256, 512, 1024)
-
-
-def validate_trial(result, reference=None):
-    coverage = result["coverage"]
-    for key in ("duplicate", "unexpected", "incorrectly_scored_warmup_or_padding",
-                "duplicate_successor_targets", "unexpected_successor_targets"):
-        if coverage[key]:
-            raise ValueError(f"invalid sweep coverage: {key}")
-    if coverage["unique"] != result["planned_scored_events"]:
-        raise ValueError("trial missed scored core events")
-    if coverage["observed_successor_targets"] != result["planned_successor_targets"]:
-        raise ValueError("trial missed eligible successor targets")
-    if coverage["warmup_events"] != result["planned_warmup_events"]:
-        raise ValueError("trial missed replay events")
-    if reference is not None:
-        for key in ("initial_weight_sha256", "section_queue_sha256", "planned_scored_events", "planned_warmup_events", "planned_successor_targets"):
-            if result[key] != reference[key]:
-                raise ValueError(f"sweep trials differ in {key}")
-        if result["cuda_device"] != reference["cuda_device"]:
-            raise ValueError("sweep trials must use the same GPU model")
 
 
 def should_try_1024(rate256, rate512):
@@ -97,12 +76,8 @@ def run_sweep(root, config_dir, note=None):
             skipped = True
             break
         config = config_dir / f"temporal_set_01_segmented_lanes{lanes}_scaling_diagnostic.yml"
-        out = root / f"lanes{lanes}"
-        # Fresh process per geometry avoids CUDA allocator and telemetry carryover.
-        subprocess.run([sys.executable, "-m", "graphids.exp.temporal_comparison", str(config),
-                        "--output", str(out), "--section-limit", "2048"], check=True)
-        result = load_result(root, f"lanes{lanes}")
-        validate_trial(result, results.get(64))
+        # Fresh processes avoid allocator and telemetry carryover.
+        result = run_trial(root, f"lanes{lanes}", config_path=config, section_limit=2048, reference=results.get(64))
         results[lanes] = result
         print(f"sweep_trial_complete lanes={lanes} scored_rate={result['coverage']['scored_events_per_second']}", flush=True)
     return publish(root, results, note, skipped_1024=skipped)

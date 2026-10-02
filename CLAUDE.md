@@ -1,7 +1,7 @@
 # GraphIDS: CAN Bus Intrusion Detection
 
 GraphIDS trains and evaluates CAN bus intrusion-detection models over
-materialized graph caches. The current launch surface is typed experiment YAML,
+materialized temporal event caches. The current launch surface is typed experiment YAML,
 not the retired `graphids/plan` row chassis.
 
 ## Key Commands
@@ -10,28 +10,21 @@ The CLI is `graphids` or its short alias `gx`.
 
 ```bash
 # Validate one experiment YAML.
-gx exp config configs/experiments/gat_snapshot_sequence_real.yml
+gx exp config configs/experiments/gat_temporal_smoke.yml
 
-# Run locally/in-process.
-gx exp launch configs/experiments/gat_snapshot_sequence_real.yml
+# Launch through Ray Train.
+gx exp launch configs/experiments/gat_temporal_smoke.yml
 
 # Submit to SLURM.
-gx exp submit configs/experiments/gat_snapshot_sequence_real.yml -C pitzer
-gx exp submit configs/experiments/gat_snapshot_sequence_real.yml -C pitzer --dry-run
+gx exp submit configs/experiments/gat_temporal_smoke.yml -C pitzer
+gx exp submit configs/experiments/gat_temporal_smoke.yml -C pitzer --dry-run
 
 # Inspect run state.
-gx exp status ~/ray_results/set_01/gat_snapshot_sequence_real/gat_snapshot_sequence_real
-gx exp manifest ~/ray_results/set_01/gat_snapshot_sequence_real/gat_snapshot_sequence_real
+gx exp status "$GRAPHIDS_RUN_ROOT/set_01/gat_temporal_smoke/gat_temporal_smoke"
+gx exp manifest "$GRAPHIDS_RUN_ROOT/set_01/gat_temporal_smoke/gat_temporal_smoke"
 
 # Query configured result views.
-gx exp results --view fusion
-
-# Cluster helpers.
-gx q
-gx qpend
-gx qhist
-gx nodes
-gx disk
+gx exp results
 ```
 
 ## Current Architecture
@@ -60,6 +53,8 @@ No Parsl row submission is used in the live path.
 | Area | Files |
 |---|---|
 | Experiment schema | `graphids/exp/config.py` |
+| Shared experiment construction | `graphids/exp/runtime.py` |
+| Shared benchmark trials | `graphids/exp/trials.py` |
 | Ray launch | `graphids/exp/ray_backend.py` |
 | SLURM submit | `graphids/exp/slurm.py`, `graphids/cli/exp.py` |
 | Primitives | `graphids/primitives.py`, `graphids/primitives_data.py`, `graphids/primitives_models.py`, `graphids/primitives_losses.py` |
@@ -69,6 +64,12 @@ No Parsl row submission is used in the live path.
 | MLflow ingest | `graphids/exp/ingest.py`, `graphids/_mlflow.py` |
 
 ## Config Contract
+
+Experiment YAML may `extends` one relative base file under
+`configs/experiments/_base/`. Mappings merge, scalars/lists/null replace, and
+changed component types replace the whole component. Load through
+`ExperimentConfig.from_yaml`; benchmark variants and submitted snapshots are
+expanded standalone YAML. Shared validation lives in `graphids/config_validation.py`.
 
 Experiment YAML contains:
 
@@ -94,33 +95,28 @@ Supported Ray stages:
 It holds:
 
 - `raw/{dataset}/` source CSVs
-- `cache/v{PREPROCESSING_VERSION}/{dataset}/...` materialized graph caches
+- `cache/v{PREPROCESSING_VERSION}/{dataset}/...` materialized temporal event caches
 - `mlflow.db` MLflow backend populated by serialized `gx exp ingest`
 - `slurm_logs/` sbatch scripts and stdout/stderr
 
 Run directories default to:
 
 ```text
-~/ray_results/{dataset}/{experiment_name}/{run_name}/
+$GRAPHIDS_RUN_ROOT/{dataset}/{experiment_name}/{run_name}/
 ```
 
-Each run directory contains `.graphids/manifest.json`,
+Run roots fall back to `{lake_root}/runs`, then `{repo}/runs`. Diagnostic
+artifacts belong under `$GRAPHIDS_RUN_ROOT/experimentruns/`, outside the repo.
+
+Each run directory contains `resolved-run.yml`, `.graphids/manifest.json`,
 `.graphids/events.jsonl`, `.graphids/mlflow_ingest.json`, and, for training
 runs, `checkpoints/` when checkpointing is enabled.
 
-## Snapshot-Sequence Path
+## Temporal Training
 
-Current sequence experiments use:
-
-```yaml
-representation_cfg:
-  kind: snapshot_sequence
-  window_size: 100
-  stride: 100
-  sequence_length: 3
-  sequence_stride: 1
-```
-
-Data sources materialize ordered sequences of snapshot graphs in the versioned
-cache tree. GAT training can consume that metadata with `sequence_pool: gru`,
-`mean`, `attention`, `flat`, or `auto`.
+The live representation is `kind: temporal`. Models include the event
+classifier, RNN, GAT, VGAE, and hybrid. Lane training uses continuous recording
+state by default; segmented execution and CUDA graphs remain optional.
+Preserve coverage, successor metadata, warmup masks, checkpoint keys, and
+capture storage ownership when refactoring. Run pytest and GPU workloads in
+SLURM allocations; static lint and config inspection are login-node safe.

@@ -1,7 +1,7 @@
 """Model primitive configs and factories.
 
 This is the model half of the public primitive API. It stays root-level so
-plan authors and launch code don't need the old ``graphids.plan`` namespace.
+experiment authors and launch code share one typed model surface.
 """
 
 from __future__ import annotations
@@ -9,6 +9,8 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from graphids.config_validation import validate_hybrid_config, validate_scan_config
 
 
 class _Cfg(BaseModel):
@@ -168,8 +170,7 @@ class TemporalHybridScanCfg(_Cfg):
 
     @model_validator(mode="after")
     def _validate_motif_writer(self) -> Self:
-        if self.motif_writer == "triton" and self.rhythm_kernel != "triton":
-            raise ValueError("scan.motif_writer=triton requires rhythm_kernel=triton")
+        validate_scan_config(self.model_dump())
         return self
 
 
@@ -191,45 +192,11 @@ class TemporalHybridCfg(_Cfg):
 
     @model_validator(mode="after")
     def _validate_objective_heads(self) -> Self:
-        if self.scan.ssm_kernel == "triton" and self.backbone.type != "ssm_lite":
-            raise ValueError("scan.ssm_kernel=triton requires backbone.type=ssm_lite")
-        default_ssl = self.objective in {"anomaly", "joint"}
-        classification = (
-            self.objective in {"supervised", "joint"}
-            if self.heads.classification is None
-            else self.heads.classification
+        validate_hybrid_config(
+            objective=self.objective,
+            **{name: getattr(self, name).model_dump(exclude_none=True)
+               for name in ("memory", "backbone", "heads", "anomaly", "motif", "scan")},
         )
-        anomaly_heads = {
-            "next_id": default_ssl if self.heads.next_id is None else self.heads.next_id,
-            "iat": default_ssl if self.heads.iat is None else self.heads.iat,
-            "payload_delta": (
-                default_ssl if self.heads.payload_delta is None else self.heads.payload_delta
-            ),
-        }
-        has_anomaly_head = any(anomaly_heads.values())
-
-        if self.objective == "supervised" and not classification:
-            raise ValueError("objective='supervised' requires heads.classification=true")
-        if self.objective == "anomaly":
-            if classification:
-                raise ValueError("objective='anomaly' requires heads.classification=false")
-            if not has_anomaly_head:
-                raise ValueError("objective='anomaly' requires at least one anomaly head")
-        if self.objective == "joint":
-            if not classification:
-                raise ValueError("objective='joint' requires heads.classification=true")
-            if not has_anomaly_head:
-                raise ValueError("objective='joint' requires at least one anomaly head")
-        if self.memory.time_encoding_dim < 0:
-            raise ValueError("memory.time_encoding_dim must be non-negative")
-        if self.anomaly.min_log_scale > self.anomaly.max_log_scale:
-            raise ValueError("anomaly.min_log_scale must be <= anomaly.max_log_scale")
-        if self.motif.length < 1:
-            raise ValueError("motif.length must be positive")
-        if self.motif.embedding_dim is not None and self.motif.embedding_dim < 1:
-            raise ValueError("motif.embedding_dim must be positive")
-        if self.motif.time_dim is not None and self.motif.time_dim < 1:
-            raise ValueError("motif.time_dim must be positive")
         return self
 
     def build(self, *, loss_fn: Any = None) -> Any:

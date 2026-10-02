@@ -41,7 +41,7 @@ Code surfaces: `graphids/core/data/datasets/can_bus.py`,
 These are complete cached streams, with 64 warmup events per evaluation
 stream. Counts were recomputed from `is_scored` and `y`, not inferred from
 filenames. The artifacts are
-`experimentruns/cuda_graph_2026_10_01/methodology_audit.json` and
+`/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/cuda_graph_2026_10_01/methodology_audit.json` and
 `raw_duplicate_audit.json`.
 
 | Split | Streams | Scored benign | Scored attack | Warmup |
@@ -256,7 +256,7 @@ warmup. The old checkpoints belong to the previous split and require fresh
 training to use this holdout correctly.
 
 Cache build and verification artifacts are under
-`experimentruns/recording_validation_2026_10_01/`. The fixed manifest digest is
+`/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/recording_validation_2026_10_01/`. The fixed manifest digest is
 `a26025c6bfb8b79566cfa9fd825dbbe7bc7892d7046c6b4c8b20d40662dfa785`.
 
 The CPU cache build completed on Pitzer in 188.76 seconds. Counts recomputed

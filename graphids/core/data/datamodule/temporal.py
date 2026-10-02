@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import lightning.pytorch as pl
 
+from graphids.config_validation import validate_lane_config
 from graphids.core.data.datamodule.stream_lanes import TemporalStreamLaneLoader
 from graphids.core.data.state import get_or_build
 
@@ -46,33 +47,13 @@ class TemporalDataModule(pl.LightningDataModule):
         self.pin_memory = bool(pin_memory)
         self.persistent_workers = bool(persistent_workers)
         self.drop_partial_lane_batches = bool(drop_partial_lane_batches)
-        if self.batch_mode not in {"events", "stream_lanes"}:
-            raise ValueError("batch_mode must be one of: events, stream_lanes")
-        if self.batch_mode == "stream_lanes":
-            if self.stream_lanes is None or self.stream_lanes < 2:
-                raise ValueError("stream_lanes must be >= 2 for batch_mode='stream_lanes'")
-            if self.chunk_size is None or self.chunk_size < 1:
-                raise ValueError("chunk_size must be positive for batch_mode='stream_lanes'")
         self.coverage_policy = coverage_policy
         self.stream_execution = stream_execution
         self.segment_events = segment_events
         self.segment_warmup_events = segment_warmup_events
         self.eval_batch_mode = eval_batch_mode
         self.val_prefix_events = val_prefix_events
-        if getattr(dataset, "val_split", None) == "recordings" and val_prefix_events is not None:
-            raise ValueError("recording validation requires complete streams; remove val_prefix_events")
-        if coverage_policy not in {"full", "diagnostic"}:
-            raise ValueError("coverage_policy must be full or diagnostic")
-        if stream_execution not in {"continuous", "segmented"}:
-            raise ValueError("stream_execution must be continuous or segmented")
-        if eval_batch_mode not in {"events", "stream_lanes"}:
-            raise ValueError("eval_batch_mode must be events or stream_lanes")
-        if stream_execution == "segmented" and batch_mode != "stream_lanes":
-            raise ValueError("segmented execution requires stream_lanes")
-        if eval_batch_mode == "stream_lanes" and (stream_lanes is None or chunk_size is None):
-            raise ValueError("lane evaluation requires stream_lanes and chunk_size")
-        if coverage_policy == "full" and batch_mode == "stream_lanes" and drop_partial_lane_batches:
-            raise ValueError("full coverage requires drop_partial_lane_batches: false")
+        validate_lane_config(self, val_split=getattr(dataset, "val_split", None))
         self._train_lane_dataset = None
         self._train = None
         self._val = None

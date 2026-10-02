@@ -1,5 +1,8 @@
 # Chassis Invariants
 
+> Historical rules for the retired plan/row chassis. For current edits use
+> `config-system.md`, `slurm-hpc.md`, and `docs/reference/submit-flow.md`.
+
 The CLI shape may grow (multi-row verbs, resume flags, batch operations).
 **These four properties stay.** Each protects something concrete; breaking
 one breaks reproduction or correctness.

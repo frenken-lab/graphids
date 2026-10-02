@@ -1572,7 +1572,7 @@ before the completed benchmark.
 <!-- cuda-graph-training-results -->
 ## CUDA Graph Training — October 1, 2026
 
-Artifacts: `experimentruns/cuda_graph_2026_10_01/`. The final implementation captures the regular scored scan, heads, losses, and backward using a module adapter. Lightning retains Adam and logging. Owned state, metrics, and parameter gradients prevent replay storage from corrupting retained values or accumulated gradients. The public flag defaults to false; SSM fusion remains disabled.
+Artifacts: `/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/cuda_graph_2026_10_01/`. The final implementation captures the regular scored scan, heads, losses, and backward using a module adapter. Lightning retains Adam and logging. Owned state, metrics, and parameter gradients prevent replay storage from corrupting retained values or accumulated gradients. The public flag defaults to false; SSM fusion remains disabled.
 
 The separate two-worker profile captured eight batches at 256 lanes with ordered prefetch. Its instrumented window was 2,831.0 ms, with 232.1 ms of device activity (8.2%). Uninstrumented scored throughput was 40,311.7 events/sec; instrumented throughput was 8,341.1 events/sec. Instrumented timing is excluded from selection.
 

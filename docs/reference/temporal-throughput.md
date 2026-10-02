@@ -732,7 +732,9 @@ pairs in fresh processes, alternating eager/graph order on one GPU. Each treatme
 uses the same initial weights and first 2,048 shuffled sections, two ordered
 workers, and two prefetched batches per worker. Experimental SSM fusion stays off.
 `scripts/slurm/temporal_cuda_graph.sbatch` gates these comparisons on CUDA
-correctness tests. Set `GRAPH_ROOT` to a shared output directory and optionally
+correctness tests. Set `GRAPH_ROOT` to a unique absolute path under `$GRAPHIDS_RUN_ROOT/experimentruns/`
+(for example, `/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/cuda_graph_YYYY_MM_DD`)
+and optionally
 `GRAPH_CODE_ROOT` to a code snapshot. The runner reports capture seconds, replay
 and fallback counts, scored replay fraction, actual Adam steps, updates/sec,
 end-to-end scored events/sec, telemetry, peak memory, coverage, and continuous

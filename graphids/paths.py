@@ -65,8 +65,12 @@ def _dotenv_values() -> dict[str, str]:
     return values
 
 
-def _env_value(key: str) -> str | None:
+def env_value(key: str) -> str | None:
     return os.environ.get(key) or _dotenv_values().get(key)
+
+
+# Compatibility for existing callers of the former private helper.
+_env_value = env_value
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +83,7 @@ def lake_root() -> str:
 
     Cross-user shared root: holds mlflow.db, cache/, mlartifacts/, slurm/.
     """
-    lr = _env_value("GRAPHIDS_LAKE_ROOT")
+    lr = env_value("GRAPHIDS_LAKE_ROOT")
     if not lr:
         raise RuntimeError("GRAPHIDS_LAKE_ROOT unset — set it to the shared data lake root")
     return lr
@@ -109,11 +113,19 @@ def trial_dir() -> Path:
     Override with ``GRAPHIDS_RUN_ROOT``. Otherwise use ``$GRAPHIDS_LAKE_ROOT/runs``
     when available, falling back to ``<project>/runs`` for local development.
     """
-    if override := _env_value("GRAPHIDS_RUN_ROOT"):
+    if override := env_value("GRAPHIDS_RUN_ROOT"):
         return Path(override)
-    if lake := _env_value("GRAPHIDS_LAKE_ROOT"):
+    if lake := env_value("GRAPHIDS_LAKE_ROOT"):
         return Path(lake) / "runs"
     return PROJECT_ROOT / "runs"
+
+
+def slurm_log_dir() -> Path:
+    if override := env_value("GRAPHIDS_SLURM_LOG_DIR"):
+        return Path(override)
+    if lake := env_value("GRAPHIDS_LAKE_ROOT"):
+        return Path(lake) / "slurm"
+    return PROJECT_ROOT / "slurm"
 
 
 # ---------------------------------------------------------------------------

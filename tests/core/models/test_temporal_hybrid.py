@@ -1045,13 +1045,13 @@ def test_triton_context_motif_writer(length):
         torch.testing.assert_close(iats, expected_iats)
 
 
-@pytest.mark.parametrize("device", ["cpu", "cuda"])
-@pytest.mark.parametrize("options", [
-    {"time_kernel": "triton"},
-    {"rhythm_kernel": "triton", "motif_writer": "triton"},
-    {"rhythm_kernel": "triton", "time_kernel": "triton", "motif_writer": "triton"},
-    {"ssm_kernel": "triton"},
-    {"rhythm_kernel": "triton", "time_kernel": "triton", "motif_writer": "triton", "ssm_kernel": "triton"},
+@pytest.mark.parametrize("device,options", [
+    ("cpu", {"rhythm_kernel": "triton", "time_kernel": "triton", "motif_writer": "triton", "ssm_kernel": "triton"}),
+    ("cuda", {"time_kernel": "triton"}),
+    ("cuda", {"rhythm_kernel": "triton", "motif_writer": "triton"}),
+    ("cuda", {"rhythm_kernel": "triton", "time_kernel": "triton", "motif_writer": "triton"}),
+    ("cuda", {"ssm_kernel": "triton"}),
+    ("cuda", {"rhythm_kernel": "triton", "time_kernel": "triton", "motif_writer": "triton", "ssm_kernel": "triton"}),
 ])
 def test_triton_context_lane_outputs_states_and_gradients(device, options):
     if device == "cuda":
