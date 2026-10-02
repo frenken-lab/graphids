@@ -451,6 +451,8 @@ class HybridScanMixin:
         self,
         batch,
         state: dict[str, torch.Tensor | None] | None = None,
+        *,
+        regular_scored: bool = False,
     ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor | None]]:
         phase_start = self._phase_start()
         encoded = self.encoder(batch)
@@ -465,19 +467,28 @@ class HybridScanMixin:
         lane_end = (batch.lane_stream_end if section_end is None else section_end).to(
             device=encoded.device, dtype=torch.bool
         )
-        memory_state = self._reset_lane_rows(current_state.get("memory"), lane_reset, initial_state.get("memory"))
-        last_seen = self._reset_lane_rows(current_state.get("last_seen"), lane_reset, initial_state.get("last_seen"))
-        rhythm_state = self._reset_lane_rows(current_state.get("rhythm"), lane_reset, initial_state.get("rhythm"))
-        motif_ids = self._reset_lane_rows(current_state.get("motif_ids"), lane_reset, initial_state.get("motif_ids"))
-        motif_iats = self._reset_lane_rows(current_state.get("motif_iats"), lane_reset, initial_state.get("motif_iats"))
-        prev_t = self._reset_lane_rows(current_state.get("prev_t"), lane_reset, initial_state.get("prev_t"))
-        backbone_state = self._reset_backbone_lanes(
-            current_state.get("backbone"),
-            lane_reset,
-            lanes=lanes,
-            hidden=hidden,
-        )
-
+        if regular_scored:
+            assert state is not None
+            memory_state = current_state.get("memory")
+            last_seen = current_state.get("last_seen")
+            rhythm_state = current_state.get("rhythm")
+            motif_ids = current_state.get("motif_ids")
+            motif_iats = current_state.get("motif_iats")
+            prev_t = current_state.get("prev_t")
+            backbone_state = current_state.get("backbone")
+        else:
+            memory_state = self._reset_lane_rows(current_state.get("memory"), lane_reset, initial_state.get("memory"))
+            last_seen = self._reset_lane_rows(current_state.get("last_seen"), lane_reset, initial_state.get("last_seen"))
+            rhythm_state = self._reset_lane_rows(current_state.get("rhythm"), lane_reset, initial_state.get("rhythm"))
+            motif_ids = self._reset_lane_rows(current_state.get("motif_ids"), lane_reset, initial_state.get("motif_ids"))
+            motif_iats = self._reset_lane_rows(current_state.get("motif_iats"), lane_reset, initial_state.get("motif_iats"))
+            prev_t = self._reset_lane_rows(current_state.get("prev_t"), lane_reset, initial_state.get("prev_t"))
+            backbone_state = self._reset_backbone_lanes(
+                current_state.get("backbone"),
+                lane_reset,
+                lanes=lanes,
+                hidden=hidden,
+            )
         valid = batch.valid_mask.to(device=encoded.device, dtype=torch.bool)
         src_idx_all = batch.src.to(device=encoded.device).clamp_min(0).clamp_max(int(self.hparams.num_ids) - 1).long()
         dst_idx_all = batch.dst.to(device=encoded.device).clamp_min(0).clamp_max(int(self.hparams.num_ids) - 1).long()
@@ -495,7 +506,9 @@ class HybridScanMixin:
 
         if self.memory is None and self.rhythm is None and self.motif is None:
             features_2d, backbone_state = self.backbone.forward_sequence(encoded, backbone_state, valid)
-            if prev_t is not None and valid.any():
+            if regular_scored and prev_t is not None:
+                prev_t = t_all[:, -1].clone()
+            elif prev_t is not None and valid.any():
                 widths = valid.long().sum(dim=1)
                 has_events = widths > 0
                 if has_events.any():
@@ -504,7 +517,7 @@ class HybridScanMixin:
                     last_pos = widths[has_events] - 1
                     prev_t[event_lanes] = t_all[event_lanes, last_pos].to(device=prev_t.device, dtype=prev_t.dtype)
             reset_memory = bool(self.hparams.memory.get("reset_on_stream_end", True))
-            if lane_end.any():
+            if not regular_scored and lane_end.any():
                 backbone_state = self._reset_backbone_lanes(backbone_state, lane_end, lanes=lanes, hidden=hidden)
                 if self.memory is not None and reset_memory:
                     memory_state = self._reset_lane_rows(memory_state, lane_end, initial_state.get("memory"))
@@ -549,7 +562,7 @@ class HybridScanMixin:
         memory_flat = memory_state.reshape(lanes * num_ids, hidden) if memory_state is not None else None
         last_seen_flat = last_seen.reshape(lanes * num_ids) if last_seen is not None else None
         rhythm_flat = rhythm_state.reshape(lanes * num_ids, 3) if rhythm_state is not None else None
-        full_chunk_fastpath = bool(valid.all())
+        full_chunk_fastpath = regular_scored or bool(valid.all())
         lane_offsets = lane_ids_all.view(lanes, 1) * num_ids
         flat_src_all = lane_offsets + src_idx_all
         flat_dst_all = lane_offsets + dst_idx_all
@@ -609,7 +622,9 @@ class HybridScanMixin:
                 rhythm_flat=rhythm_flat,
                 profile_scan_subphases=profile_scan_subphases,
             )
-        if prev_t is not None and valid.any():
+        if regular_scored and prev_t is not None:
+            prev_t = t_all[:, -1].clone()
+        elif prev_t is not None and valid.any():
             widths = valid.long().sum(dim=1)
             has_events = widths > 0
             if has_events.any():
@@ -619,7 +634,7 @@ class HybridScanMixin:
                 prev_t[event_lanes] = t_all[event_lanes, last_pos].to(device=prev_t.device, dtype=prev_t.dtype)
 
         reset_memory = bool(self.hparams.memory.get("reset_on_stream_end", True))
-        if lane_end.any():
+        if not regular_scored and lane_end.any():
             backbone_state = self._reset_backbone_lanes(backbone_state, lane_end, lanes=lanes, hidden=hidden)
             if self.memory is not None and reset_memory:
                 memory_state = self._reset_lane_rows(memory_state, lane_end, initial_state.get("memory"))

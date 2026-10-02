@@ -644,3 +644,113 @@ Full epoch jobs request separate Pitzer allocations with one GPU, eight CPUs,
 The historical strict 512-event prefix probes above are diagnostic workloads and
 are not equivalent training epochs. One epoch per mode is a quality pilot and
 cannot establish that approximate state should replace continuous training.
+
+### Wider Section-Lane Sweep
+
+`python -m graphids.exp.temporal_lane_sweep OUTPUT_DIR` repeats 64 lanes as a
+baseline, then measures 128, 256, and 512 lanes sequentially on the same GPU.
+It tries 1,024 lanes only when 512 improves scored throughput over 256 by at least
+3%. Every geometry owns the same first 2,048 sections of the seed-42 queue; chunks
+remain 32 events and replay remains at most 256 events. The comparison runner's
+`--section-limit` is accepted only for diagnostic segmented runs. It truncates
+section ownership rather than imposing geometry-dependent batch limits.
+
+The sweep verifies identical initial weights, queue fingerprints, planned scored
+and replay events, and eligible successor coverage. Each geometry runs in a fresh
+process and saves its checkpoint and continuous bounded validation result. Reports
+include end-to-end scored throughput, padding, GPU utilization, NVML VRAM usage,
+and PyTorch peak allocated/reserved memory. Use
+`scripts/slurm/temporal_lane_sweep.sbatch` with a unique `SWEEP_ROOT` to run the
+checks and sweep on Pitzer. An optional `SWEEP_CODE_ROOT` selects an immutable code
+snapshot; the default is the project checkout.
+
+The selected lane count is a performance candidate. Production geometry remains
+unchanged: increasing the scored batch size reduces optimizer updates for the
+same number of events. The benign-only validation prefixes cannot establish
+attack generalization or AUROC, even when their validation losses improve.
+
+### Bounded CPU/CUDA Timeline
+
+The comparison runner's `--profile` option captures eight training batches after
+16 waiting batches and four profiler warmup batches. It writes a Chrome/Perfetto
+trace, a CPU operator table, and a device activity summary under `profile/`.
+The device summary counts overlapping kernels and transfers once; CPU operator
+totals may overlap and must not be added into a wall-time breakdown.
+
+`scripts/slurm/temporal_timeline.sbatch` runs paired uninstrumented and instrumented
+256-lane diagnostics over the same first 256 shuffled sections. Set `PROFILE_ROOT`
+to a unique result directory and optionally `PROFILE_CODE_ROOT` to a code snapshot.
+Use the uninstrumented scored throughput for speed comparisons: trace collection
+and shape recording can materially slow small-operation workloads. This diagnostic
+retains the existing model, objectives, optimizer, state handling, and Triton options.
+
+### Fixed-Geometry Pipeline Diagnostics
+
+`python -m graphids.exp.temporal_pipeline_ab OUTPUT_DIR` compares zero, two, and
+four ordered loader workers at 256 lanes, then repeats the zero-worker baseline.
+Each fresh-process trial owns the same first 1,024 sections. Worker trials use
+two prefetched batches per worker and persistent workers. The new full-coverage
+`temporal_set_01_segmented_lanes256_epoch.yml` uses two workers based on the measured
+prefetch comparison; continuous execution remains the default training policy.
+
+The runner's `--fusion` option compares the reference SSM pointwise calculation
+with `model.scan.ssm_kernel: triton`, repeating both treatments. This optional
+float32 CUDA kernel fuses sigmoid/tanh, gated state accumulation, and its first-order
+analytic backward. Projections, dropout, normalization, chunk detachment, and
+state ownership remain in PyTorch. CPU, strided inputs, other dtypes, and unavailable
+Triton use the reference expression. It requires an SSM-lite backbone; the
+context-free sequence path still uses its existing PyTorch implementation.
+Higher-order gradients through the fused recurrence are unsupported.
+
+`scripts/slurm/temporal_pipeline.sbatch` checks CUDA correctness before running
+these diagnostics. Set `PIPELINE_ROOT`, optionally `PIPELINE_CODE_ROOT`, and
+`PIPELINE_FUSION=1` for the fusion treatment. Both diagnostics verify queue and
+initial-weight fingerprints, scored/replay ownership, and successor coverage.
+
+### Opt-in CUDA Graph Training
+
+`model.scan.cuda_graph: false` is the default. The opt-in path uses a module
+adapter with [`torch.cuda.make_graphed_callables`](https://docs.pytorch.org/docs/2.8/generated/torch.cuda.make_graphed_callables.html) to capture the lane scan, heads,
+losses, and backward. Lightning still owns Adam, gradient accumulation, logging,
+and checkpoints. Continuous training remains the default; the benchmark uses
+experimental segmented execution at 256 lanes and 32 events per chunk.
+
+Eligibility is checked on CPU before batch transfer. Only full, entirely scored
+chunks with initialized state, successor metadata for every event, and no resets,
+section endings, or recording terminals replay. Warmup, mixed and partial batches,
+boundaries, CPU execution, validation, and other geometries use eager execution.
+The IAT targets retain the existing definition. Capture uses owned inputs and
+preserves RNG, buffers, gradients, and live recording state. Retained state and
+metrics own their storage. Parameter gradient hooks clone replay gradients outside
+capture so later replays preserve accumulated gradients; reset and checkpoint
+loading remove these hooks. The adapter adds no checkpoint keys and is discarded
+when loading a checkpoint or starting another fit. Setup failures disable capture;
+replay errors propagate to interrupted coverage reporting without retrying a batch.
+
+`python -m graphids.exp.temporal_cuda_graph OUTPUT_DIR` runs three sequential
+pairs in fresh processes, alternating eager/graph order on one GPU. Each treatment
+uses the same initial weights and first 2,048 shuffled sections, two ordered
+workers, and two prefetched batches per worker. Experimental SSM fusion stays off.
+`scripts/slurm/temporal_cuda_graph.sbatch` gates these comparisons on CUDA
+correctness tests. Set `GRAPH_ROOT` to a shared output directory and optionally
+`GRAPH_CODE_ROOT` to a code snapshot. The runner reports capture seconds, replay
+and fallback counts, scored replay fraction, actual Adam steps, updates/sec,
+end-to-end scored events/sec, telemetry, peak memory, coverage, and continuous
+checkpoint validation. Profiling is a separate run and is excluded from selection.
+
+The bounded gate requires at least 3% median end-to-end scored throughput gain
+and positive gains in at least two pairs. Full eager and graph epochs then run in
+separate Pitzer allocations using `scripts/slurm/temporal_cuda_graph_epoch.sbatch`
+(one GPU, eight CPUs, 32 GiB, eight hours); set `GRAPH_EPOCH_CONFIG` and `GRAPH_ROOT`.
+Enable the selected 256-lane configuration only after full coverage and at least
+3% full-epoch improvement. Coverage must include 12,090,403 unique events, 57,108
+attacks, and 12,090,385 eligible successor targets, with no ownership errors.
+The existing continuous validation uses 8,192-event prefixes and 64 warmup events;
+one-class prefixes report class counts and unavailable AUROCs.
+
+The selected 256-lane epoch configuration enables CUDA Graphs after CUDA
+correctness, complete epoch coverage, and a 23.8% full-epoch throughput gain
+passed. The three-pair median gain was 28.9%. See the
+[throughput note](../empirical-notes/2026-09-29-temporal-lane-throughput-check.md)
+for timings, replay/fallback fractions, memory, coverage, and checkpoint validation.
+The public default remains false.

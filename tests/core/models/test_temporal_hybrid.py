@@ -1050,6 +1050,8 @@ def test_triton_context_motif_writer(length):
     {"time_kernel": "triton"},
     {"rhythm_kernel": "triton", "motif_writer": "triton"},
     {"rhythm_kernel": "triton", "time_kernel": "triton", "motif_writer": "triton"},
+    {"ssm_kernel": "triton"},
+    {"rhythm_kernel": "triton", "time_kernel": "triton", "motif_writer": "triton", "ssm_kernel": "triton"},
 ])
 def test_triton_context_lane_outputs_states_and_gradients(device, options):
     if device == "cuda":
@@ -1092,6 +1094,7 @@ def test_triton_context_lane_outputs_states_and_gradients(device, options):
 
 @pytest.mark.parametrize("options", [
     {"time_kernel": "bad"}, {"motif_writer": "bad"}, {"motif_writer": "triton"},
+    {"ssm_kernel": "bad"}, {"ssm_kernel": "triton"},
 ])
 def test_triton_context_scan_validation(options):
     with pytest.raises(ValueError):
@@ -1151,3 +1154,48 @@ def test_warmup_only_batches_skip_optimizer_and_preserve_weights(tmp_path):
     assert model._train_state is not None
     for k, v in model.state_dict().items():
         torch.testing.assert_close(v, original[k], rtol=0, atol=0)
+
+
+@pytest.mark.parametrize('device', ['cpu', 'cuda'])
+def test_ssm_fusion_full_chunks_joint_loss_and_gradients(device):
+    if device == 'cuda' and not torch.cuda.is_available():
+        pytest.skip('CUDA unavailable')
+    from graphids.core.data.datamodule.stream_lanes import TemporalStreamLaneLoader
+    from graphids.core.models.temporal import TemporalHybridModel
+
+    generator = torch.Generator().manual_seed(42)
+    n = 193
+    data = TemporalData(
+        src=torch.randint(0, 4, (n,), generator=generator),
+        dst=torch.randint(0, 4, (n,), generator=generator),
+        t=torch.arange(n, dtype=torch.float32),
+        msg=torch.randn(n, 17, generator=generator) * 0.1,
+        y=torch.arange(n) % 2,
+        stream_id=torch.tensor([0] * 97 + [1] * 65 + [2] * 31),
+        is_scored=torch.ones(n, dtype=torch.bool),
+    )
+    data.msg[:, 16] = 0.2
+    kwargs = dict(num_ids=4, in_channels=17, num_classes=2, objective='joint',
+                  input={'hidden': 64, 'embedding_dim': 16, 'dropout': 0},
+                  backbone={'type': 'ssm_lite', 'layers': 1, 'dropout': 0},
+                  memory={'time_encoding_dim': 4}, rhythm={'enabled': True}, motif={'enabled': True})
+    actual = TemporalHybridModel(**kwargs, scan={'ssm_kernel': 'triton'}).to(device)
+    expected = TemporalHybridModel(**kwargs).to(device)
+    expected.load_state_dict(actual.state_dict())
+    actual_state = expected_state = None
+    for batch in TemporalStreamLaneLoader(data, stream_lanes=3, chunk_size=32):
+        batch = batch.to(device)
+        out, actual_state = actual._forward_with_state(batch, actual._detach_state(actual_state))
+        ref, expected_state = expected._forward_with_state(batch, expected._detach_state(expected_state))
+        _assert_outputs_equal(out, ref)
+        _assert_state_equal(actual_state, expected_state)
+        actual_loss = actual._loss_terms(out, batch)['total']
+        expected_loss = expected._loss_terms(ref, batch)['total']
+        torch.testing.assert_close(actual_loss, expected_loss, rtol=1e-4, atol=2e-5)
+        actual_loss.backward()
+        expected_loss.backward()
+        for (name, param), (_, ref_param) in zip(actual.named_parameters(), expected.named_parameters(), strict=True):
+            if ref_param.grad is not None:
+                torch.testing.assert_close(param.grad, ref_param.grad, rtol=3e-4, atol=3e-5, msg=name)
+        actual.zero_grad(set_to_none=True)
+        expected.zero_grad(set_to_none=True)

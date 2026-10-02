@@ -44,7 +44,7 @@ def weight_digest(model):
     return digest.hexdigest()
 
 
-def run_comparison(config_path, output):
+def run_comparison(config_path, output, *, section_limit=None, profile=False):
     experiment = ExperimentConfig.from_yaml(config_path)
     run = experiment.build_run(name=experiment.experiment_name, stage="fit", config=experiment.config)
     cfg = run.payload.model_dump(mode="json")
@@ -64,6 +64,15 @@ def run_comparison(config_path, output):
     options = data_cfg.model_dump(exclude={"type", "source", "val_warmup_events", "test_warmup_events"})
     dm = TemporalDataModule(CachedComparisonSource(cache), **options)
     dm.setup()
+    if section_limit is not None:
+        if data_cfg.coverage_policy != "diagnostic" or data_cfg.stream_execution != "segmented":
+            raise ValueError("section limits require diagnostic segmented execution")
+        if section_limit < 1:
+            raise ValueError("section_limit must be positive")
+        dm.train_dataloader()
+        dataset = dm._train_lane_dataset
+        dataset.sections = dataset.sections[:section_limit]
+        dataset._plans = tuple(dataset._filter_plans(dataset._iter_plans()))
     # Freeze the cache acceptance criteria before any benchmark.
     streams = torch.unique(dm.train_data.stream_id)
     counts = torch.bincount(dm.train_data.y.long(), minlength=2)
@@ -85,23 +94,48 @@ def run_comparison(config_path, output):
         spec = json.loads(json.dumps(spec).replace(str(run.outputs.run_dir), str(output)))
         callbacks.append(build_component(spec))
     callbacks.append(audit)
+    if profile:
+        from graphids.exp.temporal_profile import TemporalTimeline
+        callbacks.append(TemporalTimeline(output / "profile"))
     kwargs.update(default_root_dir=str(output), logger=False, callbacks=callbacks)
     trainer = pl.Trainer(**kwargs)
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
     started = time.perf_counter()
     trainer.fit(model, datamodule=dm)
     fit_seconds = time.perf_counter() - started
     if full and (audit.last_report is None or not audit.last_report["complete"]):
         raise RuntimeError("production comparison did not finish a complete training epoch")
+    cuda_peak = {
+        "allocated_mib": torch.cuda.max_memory_allocated() / 2**20,
+        "reserved_mib": torch.cuda.max_memory_reserved() / 2**20,
+    } if torch.cuda.is_available() else None
+    dataset = dm._train_lane_dataset
+    section_plan = [vars(section) for section in dataset.sections]
     checkpoint = output / "checkpoints" / "final.ckpt"
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     trainer.save_checkpoint(checkpoint)
     train_metrics = _scalar_metrics(trainer.callback_metrics)
+    graph_report = model.cuda_graph_report()
+    optimizer_steps = int(getattr(model, "_optimizer_steps", 0))
     # Restore and evaluate the saved checkpoint using the same continuous prefixes.
     validation_started = time.perf_counter()
     trainer.validate(model, datamodule=dm, ckpt_path=str(checkpoint), verbose=False)
     metrics = {**train_metrics, **_scalar_metrics(trainer.callback_metrics)}
     report = {
         "config": str(config_path), "checkpoint": str(checkpoint), "initial_weight_sha256": initial_digest,
+        "section_limit": section_limit,
+        "section_queue_sha256": hashlib.sha256(json.dumps(section_plan, sort_keys=True).encode()).hexdigest(),
+        "planned_scored_events": sum(section.core_end - section.core_start for section in dataset.sections),
+        "planned_warmup_events": sum(section.core_start - section.warmup_start for section in dataset.sections),
+        "planned_successor_targets": sum(
+            section.core_end - section.core_start - int(section.core_end == dataset._streams[section.stream_idx].length)
+            for section in dataset.sections
+        ),
+        "cuda_peak_memory": cuda_peak,
+        "cuda_graph": graph_report, "optimizer_steps": optimizer_steps,
+        "optimizer_updates_per_second": optimizer_steps / fit_seconds,
+        "end_to_end_scored_events_per_second": audit.last_report["unique"] / fit_seconds,
         "fit_wall_seconds": fit_seconds, "validation_wall_seconds": time.perf_counter() - validation_started,
         "coverage": audit.last_report, "metrics": metrics,
         "validation_auroc_note": "available" if metrics.get("val_auroc_available") else "unavailable: validation scoring prefixes contain one class",
@@ -118,11 +152,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("config", type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--section-limit", type=int)
+    parser.add_argument("--profile", action="store_true", help="capture eight CPU/CUDA batches after warmup")
     args = parser.parse_args()
     def interrupted(signum, frame):
         raise InterruptedError(f"comparison interrupted by signal {signum}")
     signal.signal(signal.SIGTERM, interrupted)
-    run_comparison(args.config, args.output)
+    run_comparison(args.config, args.output, section_limit=args.section_limit, profile=args.profile)
 
 
 if __name__ == "__main__":

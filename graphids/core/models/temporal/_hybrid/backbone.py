@@ -9,7 +9,7 @@ import torch.nn as nn
 class _SsmLiteCell(nn.Module):
     """Small gated recurrent state-space-like block with causal linear-time scans."""
 
-    def __init__(self, hidden: int, dropout: float):
+    def __init__(self, hidden: int, dropout: float, *, ssm_kernel: str = "torch"):
         super().__init__()
         self.in_proj = nn.Linear(hidden, hidden)
         self.decay_proj = nn.Linear(hidden, hidden)
@@ -17,14 +17,14 @@ class _SsmLiteCell(nn.Module):
         self.out_proj = nn.Linear(hidden, hidden)
         self.norm = nn.LayerNorm(hidden)
         self.dropout = nn.Dropout(dropout)
+        self.ssm_kernel = ssm_kernel
 
     def forward(self, x: torch.Tensor, state: torch.Tensor | None) -> tuple[torch.Tensor, torch.Tensor]:
         if state is None:
             state = torch.zeros_like(x)
-        decay = torch.sigmoid(self.decay_proj(x))
-        gate = torch.sigmoid(self.gate_proj(x))
-        candidate = torch.tanh(self.in_proj(x))
-        next_state = decay * state + gate * candidate
+        from .kernels.ssm import ssm_recurrence
+        next_state = ssm_recurrence(self.decay_proj(x), self.gate_proj(x), self.in_proj(x), state,
+                                    kernel=self.ssm_kernel)
         out = self.out_proj(next_state)
         return self.norm(x + self.dropout(out)), next_state
 
@@ -32,7 +32,8 @@ class _SsmLiteCell(nn.Module):
 class TemporalStreamBackbone(nn.Module):
     """Configurable causal stream backbone."""
 
-    def __init__(self, *, backbone_type: str, hidden: int, layers: int, dropout: float):
+    def __init__(self, *, backbone_type: str, hidden: int, layers: int, dropout: float,
+                 ssm_kernel: str = "torch"):
         super().__init__()
         self.backbone_type = str(backbone_type)
         self.hidden = int(hidden)
@@ -44,7 +45,7 @@ class TemporalStreamBackbone(nn.Module):
         elif self.backbone_type == "gru":
             self.cells = nn.ModuleList([nn.GRUCell(self.hidden, self.hidden) for _ in range(self.layers)])
         elif self.backbone_type == "ssm_lite":
-            self.cells = nn.ModuleList([_SsmLiteCell(self.hidden, float(dropout)) for _ in range(self.layers)])
+            self.cells = nn.ModuleList([_SsmLiteCell(self.hidden, float(dropout), ssm_kernel=ssm_kernel) for _ in range(self.layers)])
         elif self.backbone_type == "mamba":
             try:
                 import mamba_ssm  # noqa: F401

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Literal
 
 import torch
@@ -114,6 +115,8 @@ class TemporalHybridModel(HybridRuntimeMixin, HybridScanMixin, HybridStateMixin,
         scan.setdefault("rhythm_kernel", "torch")
         scan.setdefault("time_kernel", "torch")
         scan.setdefault("motif_writer", "torch")
+        scan.setdefault("ssm_kernel", "torch")
+        scan.setdefault("cuda_graph", False)
 
         default_ssl = objective in {"anomaly", "joint"}
         heads.setdefault("classification", objective in {"supervised", "joint"})
@@ -202,12 +205,14 @@ class TemporalHybridModel(HybridRuntimeMixin, HybridScanMixin, HybridStateMixin,
             raise ValueError("motif.time_dim must be positive")
         if scan.get("rhythm_kernel", "torch") not in ("torch", "triton"):
             raise ValueError("scan.rhythm_kernel must be torch or triton")
-        for key in ("time_kernel", "motif_writer"):
+        for key in ("time_kernel", "motif_writer", "ssm_kernel"):
             if scan.get(key, "torch") not in ("torch", "triton"):
                 raise ValueError(f"scan.{key} must be torch or triton")
         if scan.get("motif_writer") == "triton" and scan.get("rhythm_kernel") != "triton":
             raise ValueError("scan.motif_writer=triton requires rhythm_kernel=triton")
-        unknown_scan_keys = set(scan) - {"profile_subphases", "rhythm_kernel", "time_kernel", "motif_writer"}
+        if scan.get("ssm_kernel") == "triton" and backbone.get("type") != "ssm_lite":
+            raise ValueError("scan.ssm_kernel=triton requires backbone.type=ssm_lite")
+        unknown_scan_keys = set(scan) - {"profile_subphases", "rhythm_kernel", "time_kernel", "motif_writer", "ssm_kernel", "cuda_graph"}
         if unknown_scan_keys:
             keys = ", ".join(sorted(unknown_scan_keys))
             raise ValueError(f"unknown scan config key(s): {keys}")
@@ -273,6 +278,7 @@ class TemporalHybridModel(HybridRuntimeMixin, HybridScanMixin, HybridStateMixin,
             hidden=hidden,
             layers=int(hp.backbone.get("layers", 1)),
             dropout=float(hp.backbone.get("dropout", hp.input["dropout"])),
+            ssm_kernel=str(hp.scan.get("ssm_kernel", "torch")),
         )
         self.classifier = nn.Linear(hidden, int(hp.num_classes)) if self.classification_enabled else None
         self.next_id_head = nn.Linear(hidden, int(hp.num_ids)) if hp.heads.get("next_id", False) else None
@@ -376,9 +382,7 @@ class TemporalHybridModel(HybridRuntimeMixin, HybridScanMixin, HybridStateMixin,
     @staticmethod
     def _gaussian_nll(target: torch.Tensor, loc: torch.Tensor, log_scale: torch.Tensor) -> torch.Tensor:
         inv_scale = torch.exp(-log_scale)
-        return 0.5 * ((target - loc) * inv_scale).pow(2) + log_scale + 0.5 * torch.log(
-            target.new_tensor(2.0 * torch.pi)
-        )
+        return 0.5 * ((target - loc) * inv_scale).pow(2) + log_scale + 0.5 * math.log(2.0 * math.pi)
 
     def _anomaly_components(self, out: dict[str, torch.Tensor], batch) -> dict[str, torch.Tensor]:
         targets = self._targets(batch)
@@ -429,27 +433,27 @@ class TemporalHybridModel(HybridRuntimeMixin, HybridScanMixin, HybridStateMixin,
             raise RuntimeError("anomaly score requested but no anomaly heads are enabled")
         return score
 
-    def _loss_terms(self, out: dict[str, torch.Tensor], batch) -> dict[str, torch.Tensor]:
+    def _loss_terms(self, out: dict[str, torch.Tensor], batch, *, regular_scored: bool = False) -> dict[str, torch.Tensor]:
         mask = self.scored_mask(batch)
         labels_all = batch.y.reshape(-1)
         terms: dict[str, torch.Tensor] = {}
         weights = self.hparams.loss_weights
-        if self.classification_enabled and "logits" in out and mask.any():
-            labels = labels_all[mask].long()
-            terms["classification"] = self._classification_loss(out["logits"][mask], labels, batch)
+        if self.classification_enabled and "logits" in out and (regular_scored or mask.any()):
+            labels = (labels_all if regular_scored else labels_all[mask]).long()
+            terms["classification"] = self._classification_loss((out["logits"] if regular_scored else out["logits"][mask]), labels, batch)
         if self.anomaly_enabled:
             valid = out["valid_next"].bool() & mask
-            if valid.any():
+            if regular_scored or valid.any():
                 if "next_id_nll" in out:
-                    terms["next_id"] = out["next_id_nll"][valid].mean()
+                    terms["next_id"] = (out["next_id_nll"] if regular_scored else out["next_id_nll"][valid]).mean()
                 if "iat_nll" in out:
-                    terms["iat"] = out["iat_nll"][valid].mean()
+                    terms["iat"] = (out["iat_nll"] if regular_scored else out["iat_nll"][valid]).mean()
                 elif "iat_error" in out:
-                    terms["iat"] = out["iat_error"][valid].mean()
+                    terms["iat"] = (out["iat_error"] if regular_scored else out["iat_error"][valid]).mean()
                 if "payload_delta_nll" in out:
-                    terms["payload_delta"] = out["payload_delta_nll"][valid].mean()
+                    terms["payload_delta"] = (out["payload_delta_nll"] if regular_scored else out["payload_delta_nll"][valid]).mean()
                 elif "payload_delta_error" in out:
-                    terms["payload_delta"] = out["payload_delta_error"][valid].mean()
+                    terms["payload_delta"] = (out["payload_delta_error"] if regular_scored else out["payload_delta_error"][valid]).mean()
         if not terms:
             terms["zero"] = out["features"].sum() * 0.0
         terms["total"] = sum(

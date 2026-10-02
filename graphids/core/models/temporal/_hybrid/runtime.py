@@ -77,6 +77,14 @@ class HybridRuntimeMixin:
             **{name.rsplit("/", 1)[-1]: round(value, 3) for name, value in metrics.items()},
         )
 
+    def on_fit_start(self) -> None:
+        # Lightning may move parameters between CPU and CUDA between fit calls.
+        graph = getattr(self, "_scored_cuda_graph", None)
+        if graph is not None:
+            graph.close()
+        object.__setattr__(self, "_scored_cuda_graph", None)
+        self._optimizer_steps = 0
+
     def on_train_epoch_start(self) -> None:
         self._train_state = None
 
@@ -91,6 +99,24 @@ class HybridRuntimeMixin:
         super().on_test_epoch_start()
         self._test_states = {}
 
+    def on_before_batch_transfer(self, batch, dataloader_idx):
+        from .cuda_graph import eligibility_reason
+
+        if self.training:
+            self._cpu_scored_events = int(self.scored_mask(batch).sum())
+            self._cuda_graph_reason = eligibility_reason(batch)
+        return batch
+
+    def on_load_checkpoint(self, checkpoint):
+        graph = getattr(self, "_scored_cuda_graph", None)
+        if graph is not None:
+            graph.close()
+        object.__setattr__(self, "_scored_cuda_graph", None)
+
+    def cuda_graph_report(self):
+        graph = getattr(self, "_scored_cuda_graph", None)
+        return graph.report() if graph is not None else {"enabled": False}
+
     def on_train_batch_start(self, batch, batch_idx):
         self._warmup_only_batch = not bool(self.scored_mask(batch).any())
 
@@ -100,19 +126,35 @@ class HybridRuntimeMixin:
             if optimizer_closure is not None:
                 optimizer_closure()
             return
-        return super().optimizer_step(epoch, batch_idx, optimizer, optimizer_closure)
+        result = super().optimizer_step(epoch, batch_idx, optimizer, optimizer_closure)
+        self._optimizer_steps = getattr(self, "_optimizer_steps", 0) + 1
+        return result
 
     def training_step(self, batch, _idx):
         if self._phase_timing_enabled():
             self._train_phase_timings_s = {}
         forward_start = self._phase_start()
-        out, state = self._forward_with_state(batch, self._detach_state(self._train_state))
+        graphed = None
+        if self.hparams.scan.get("cuda_graph", False):
+            from .cuda_graph import ScoredCudaGraph
+
+            graph = getattr(self, "_scored_cuda_graph", None)
+            if graph is None:
+                graph = ScoredCudaGraph()
+                object.__setattr__(self, "_scored_cuda_graph", graph)
+            graphed = graph.run(self, batch, self._detach_state(self._train_state),
+                                getattr(self, "_cuda_graph_reason", "metadata_not_checked"))
+        if graphed is None:
+            out, state = self._forward_with_state(batch, self._detach_state(self._train_state))
+        else:
+            out, state, terms = graphed
         self._phase_end("forward", forward_start)
         self._train_state = self._detach_state(state)
         if not self.scored_mask(batch).any():
             return None  # State advanced; Lightning skips backward and optimizer (including decay).
         loss_start = self._phase_start()
-        terms = self._loss_terms(out, batch)
+        if graphed is None:
+            terms = self._loss_terms(out, batch)
         mask = self.scored_mask(batch)
         bs = max(1, int(mask.sum().item()))
         self._phase_end("loss", loss_start)

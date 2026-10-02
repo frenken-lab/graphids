@@ -1395,51 +1395,225 @@ tail -n 120 /fs/ess/PAS1266/graphids/slurm_logs/ray-temporal_joint_hybrid_ssm_li
 <!-- temporal-full-coverage:begin -->
 ## Full-Coverage Recording / Section Pilot — October 1, 2026
 
-Implemented continuous full-coverage lane training and opt-in experimental sections.
-Preflight verified **12,090,403 source events across 18 streams**, including
-**57,108 attacks**, and **12,090,385 recording-successor targets**. Core/chunk
-ownership passes for continuous (48,877 batches) and segmented (5,913 sections;
-1,509,120 replay events) plans. The historical 512-event prefix profiles remain
-explicit diagnostics, not equivalent full-epoch workloads.
+Artifacts: `/fs/ess/PAS1266/graphids/dev/rf15/set_01/full_coverage_20261001_144158`. Each mode trained one complete epoch on 12,090,403 events across 18 recordings, including 57,108 attacks. Both audits found zero missing, duplicate, unexpected, or scored replay/padding events and covered all 12,090,385 successor targets.
 
-Local verification: 157 data/model/config/launch tests passed, 12 CUDA tests
-skipped locally. Ruff, documentation lint, and whitespace checks passed. Pitzer
-GPU verification in job **55283557**: **169 passed**, including all partial-lane
-Triton options. Later coverage/report regression checks also passed.
+The seed-42 section diagnostics measured 6068.27 scored events/sec with 32 lanes and 11374.47 with 64 lanes (+87.44%). Selected **64 lanes** using the ≥3% rule. These rates count scored events and include replay and loader/optimizer overhead.
 
-Both short diagnostics used the identical seed-42 section queue, started with
-weight digest `97c56a70e1ed403d242a2393cf45ca7eb2a035e1e4a747690ec53e55021b4337`,
-and scored the same first 256 section cores. No duplicate, unexpected, scored
-warmup/padding events, or dropped batches were observed.
-
-| Diagnostic metric | 32 lanes × 32 events | 64 lanes × 32 events |
+| Metric | Continuous, 18 lanes | Experimental sections |
 | --- | ---: | ---: |
-| Unique scored events | 524,288 | 524,288 |
-| Replay events | 65,536 | 65,536 |
-| Scored events/sec including replay and training overhead | 6,068.27 | 11,374.47 |
-| Padding | 0 | 0 |
+| Full epoch fit wall time (s) | 9817.5507 | 1065.8545 |
+| Training audit wall time (s) | 9815.4372 | 1063.7218 |
+| End-to-end scored events/sec | 1231.7743 | 11366.1326 |
+| Replay events | 0 | 1509120 |
+| Replay / scored events | 0.0000 | 0.1248 |
+| Mean active lanes | 7.7303 | 63.5458 |
+| Lane occupancy | 0.4295 | 0.9929 |
+| Padding events | 16062749 | 97501 |
+| Padding fraction | 0.5705 | 0.0071 |
+| resource/gpu_util_percent_mean | 16.4504 | 18.0849 |
+| resource/gpu_util_percent_max | 20.0000 | 21.0000 |
+| resource/gpu_mem_gib_max | 0.6776 | 0.7002 |
+| train_loss | 0.1902 | 0.3845 |
+| val_loss | 0.3590 | 0.3865 |
+| val_classification_loss | 0.0000 | 0.0005 |
+| val_next_id_loss | 1.0775 | 1.5060 |
+| val_iat_loss | -4.6737 | -5.1730 |
+| val_payload_delta_loss | 6.1090 | 6.0213 |
+| val_cls_auroc | unavailable | unavailable |
+| val_anomaly_auroc | unavailable | unavailable |
+| val_class_0_events | 146304.0000 | 146304.0000 |
+| val_class_1_events | 0.0000 | 0.0000 |
 
-Selected **64 lanes**: end-to-end scored throughput improved **87.4%**, exceeding
-the required 3%. These short diagnostics deliberately do not cover the entire
-cache. Their limited-epoch audits disclose the omitted events.
+Per-class scored coverage in both modes: benign **12,033,295 / 12,033,295**; attack **57,108 / 57,108**. Per-recording coverage is recorded in each epoch JSON.
 
-The bounded validation prefixes contain **146,304 benign scored events and zero
-attacks** after the existing 64-event per-recording warmup. Classification and
-anomaly AUROC are therefore **unavailable**. This limits the quality comparison.
+Both models started from weight SHA-256 `97c56a70e1ed403d242a2393cf45ca7eb2a035e1e4a747690ec53e55021b4337`. Continuous GPU: `Tesla V100-PCIE-16GB`; segmented GPU: `Tesla V100-PCIE-16GB`.
 
-Full-epoch results are **pending**. Separate Pitzer allocations, each with one
-GPU, eight CPUs, 32 GiB RAM, and an eight-hour limit:
+Each saved `checkpoints/final.ckpt` was restored and evaluated continuously on the first 8,192 validation events per recording, retaining the 64-event unscored warmup. No dropped evaluation batches or test data. AUROC is unavailable when scored prefixes contain only one class; the table discloses those class counts.
 
-- Continuous 18-lane exact epoch: **55283636**.
-- Experimental 64-lane segmented epoch: **55283637**.
-- Dependent result publication: **55283638**, runs only after both epochs succeed.
-
-Artifacts and immutable training code snapshot:
-`/fs/ess/PAS1266/graphids/dev/rf15/set_01/full_coverage_20261001_144158/`.
-Each epoch writes a coverage JSON and final checkpoint, then restores that
-checkpoint for the same continuous first-8,192-events-per-recording validation.
-The result job replaces this bounded note section with the full measured table.
-No test data is loaded. One epoch per mode is a quality pilot; finite replay
-cannot guarantee recovery of GRU memory or cumulative rhythm statistics.
-Segmented training remains opt-in.
+This compares complete coverage modes directly. The old strict 512-event prefix benchmark is a different diagnostic workload. One epoch per mode is a quality pilot. Finite replay cannot recover arbitrary GRU memory or cumulative rhythm statistics; segmented training remains opt-in.
 <!-- temporal-full-coverage:end -->
+
+## Segmented Lane Scaling — October 1, 2026
+
+Artifacts: `/fs/ess/PAS1266/graphids/dev/rf15/set_01/segmented_scaling_20261001_152142`. Each trial processes the same first 2,048 seed-42 sections, with 32-event chunks, 2,048-event cores, and up to 256 replay events. Trials start from identical weights and run sequentially on one GPU allocation.
+
+| Lanes | Scored events/sec | Gain vs previous | GPU mean / peak | NVML VRAM peak (MB) | Torch allocated / reserved peak (MiB) | Fit wall (s) | Padding | Val loss |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 64 | 9,671.9 | — | 15.0% / 18.0% | 714.9 | 47.5 / 52.0 | 433.3 | 0.24% | 0.5383 |
+| 128 | 18,447.3 | +90.7% | 15.5% / 18.0% | 761.0 | 77.2 / 96.0 | 227.3 | 0.24% | 0.7133 |
+| 256 | 31,579.6 | +71.2% | 14.5% / 20.0% | 823.9 | 137.0 / 156.0 | 133.0 | 0.24% | 0.8662 |
+| 512 | 44,298.3 | +40.3% | 14.3% / 28.0% | 960.2 | 256.7 / 286.0 | 94.9 | 0.24% | 1.4103 |
+| 1024 | 59,302.7 | +33.9% | 16.1% / 36.0% | 1211.9 | 496.2 / 526.0 | 71.1 | 0.24% | 2.9889 |
+
+Each trial scored **4,184,982 unique events** and processed **522,240 replay events**. No duplicated, unexpected, scored replay/padding, or omitted planned core events were observed.
+
+Performance candidate under the ≥3% rule: **1024 lanes**. This is a throughput candidate; production settings remain unchanged. Increasing lanes reduces optimizer updates per scored workload. Validation uses the same continuous 8,192-event prefixes with 64-event scoring warmup, containing 146,304 benign scored events and zero attacks. Both AUROCs are unavailable, so this sweep cannot establish attack generalization.
+
+GPU: `Tesla V100-PCIE-16GB`. Initial weights: `97c56a70e1ed403d242a2393cf45ca7eb2a035e1e4a747690ec53e55021b4337`. Section queue: `b81cd395e403ce14560a9883ba3d15b3b3a3375852339306e7afd9613a9b2606`.
+
+## 256-Lane CPU/CUDA Timeline — October 1, 2026
+
+Pitzer job `55285760` completed successfully on `p0240` (V100 16 GB), in
+`00:03:25`. Results are under
+`/fs/ess/PAS1266/graphids/dev/rf15/set_01/timeline_lanes256_20261001_162808`.
+The paired runs used identical initial weights and the same first 256 shuffled
+sections: 524,288 scored events, 65,536 replay events, no padding, duplicates,
+unexpected events, or incorrectly scored replay. Model, optimizer, loss weights,
+32-event chunks, and all three Triton options were unchanged.
+
+The uninstrumented run achieved **32,497.8 scored events/sec**, with a 16.56-second
+fit, 13% mean / 20% peak sampled GPU utilization, and approximately 824 MB total
+GPU memory use. This short run contains only three telemetry samples. Both runs
+produced identical bounded validation loss (`7.2002149`); this deliberately short
+training diagnostic does not establish model quality.
+
+The profiler captured eight scored batches after 16 waiting and four warmup
+batches. Artifacts are `instrumented/profile/trace.json` (Chrome/Perfetto),
+`operators.txt`, and `summary.json`. The 3.154-second captured window contained:
+
+- 51,632 CUDA kernel launch calls, approximately **6,454 per batch**;
+- 225.7 ms of kernel activity and 246.8 ms of combined kernel/copy/memset
+  activity, counting concurrent device events once;
+- 337.3 ms inside CUDA kernel launch calls;
+- 925.7 ms total CPU DataLoader scope time over the eight profiler steps;
+- approximately 4.2 ms in explicit CUDA stream synchronization calls;
+- many small matrix, elementwise, indexed state, and autograd operations.
+
+The device active fraction was 7.8% **in the instrumented window**, not a production
+utilization estimate. CPU scope totals overlap and must not be added as an
+additive decomposition. In particular, Lightning's `Optimizer.step#Adam.step`
+scope includes its closure (forward/backward); its large CPU self time does not
+prove that Adam parameter updates dominate. The instrumented fit took 91.63
+seconds, including substantial trace export and analysis overhead, so its
+throughput is unsuitable for speed comparisons.
+
+Diagnosis: the training pipeline is limited primarily by host dispatch/framework
+work surrounding thousands of tiny recurrent operations, with CPU batch
+construction another material cost. Explicit synchronization and host-to-device
+transfer are not the leading costs in this trace. This supports optimizing the
+pipeline at fixed 256-lane geometry rather than increasing batch size solely to
+raise utilization.
+
+Next measurements should compare ordered loader prefetch at fixed section ownership
+against the workers0 baseline, and measure a narrower fused or CUDA Graph path
+for repeated trainable scan operations. Loader prefetch may hide materialization
+cost but can compete with host dispatch for CPU time. CUDA Graph capture requires
+stable addresses, shape/mask handling, and removal of captured CPU scalar control
+flow. Preserve state/output/gradient equivalence and successor coverage for either
+change. Broad compile and larger-model probes remain historical failed treatments;
+this timeline does not establish a speedup for either proposed optimization.
+
+Verification: local relevant tests `88 passed, 12 skipped`; GPU model and timeline
+checks `57 passed`; Ruff, documentation lint, and `git diff --check` passed.
+
+## Ordered Prefetch at 256 Lanes — October 1, 2026
+
+Pitzer job `55286081` completed on `p0240` in `00:06:21`. Artifacts:
+`/fs/ess/PAS1266/graphids/dev/rf15/set_01/prefetch_lanes256_20261001_165106`. All trials used the same first 1,024 seed-42 sections,
+identical initial weights, 256 lanes, 32-event chunks, the existing optimizer,
+and the existing Triton rhythm/time/motif options.
+
+| Treatment | Scored events/sec | Fit wall (s) | GPU utilization mean | NVML VRAM peak (MB) | Val loss |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| workers0 | 33,283.2 | 63.39 | 14.2% | 823.9 | 1.6406417 |
+| workers2 | 43,680.4 | 48.49 | 20.6% | 823.9 | 1.6406417 |
+| workers4 | 43,239.6 | 49.10 | 20.4% | 823.9 | 1.6406417 |
+| workers0_repeat | 34,480.7 | 61.21 | 16.9% | 823.9 | 1.6406417 |
+
+Two workers improved scored throughput by **28.9%** versus the mean of the
+two zero-worker baselines. Four workers did not improve on two. Adopt two workers,
+two prefetched batches per worker, persistent workers, and ordered delivery for
+the new `temporal_set_01_segmented_lanes256_epoch.yml` config. Pinning stays disabled.
+
+Each trial scored 2,094,541 unique events and replayed
+261,120 events. Planned successors were all observed; no
+duplicates, unexpected events, or scored replay/padding occurred. The same short
+final sections produced 0.154% padding in every trial.
+Validation loss was identical across all four runs. This bounded diagnostic
+establishes a pipeline speed gain, not attack generalization; selected validation
+prefixes remain benign-only. Continuous training remains the default.
+
+## SSM Pointwise Fusion at 256 Lanes — October 1, 2026
+
+Pitzer job `55286150` completed on `p0242` in `00:06:51`. Artifacts:
+`/fs/ess/PAS1266/graphids/dev/rf15/set_01/ssm_fusion_lanes256_20261001_165709`. Each trial used the same first 1,024 sections, identical
+initial weights, zero loader workers, and the existing model size, optimizer,
+loss weights, and rhythm/time/motif Triton options. The optional SSM kernel fuses
+pointwise gates/state accumulation and its first-order backward.
+
+| Treatment | Scored events/sec | Fit wall (s) | GPU utilization mean | NVML VRAM peak (MB) | Val loss |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| torch | 32,952.0 | 64.18 | 14.9% | 823.9 | 1.6406417 |
+| fused | 32,887.1 | 64.13 | 14.8% | 823.9 | 1.5002415 |
+| torch_repeat | 34,520.0 | 61.11 | 16.2% | 823.9 | 1.6406417 |
+| fused_repeat | 34,111.3 | 61.86 | 16.4% | 823.9 | 1.5002415 |
+
+Mean reference throughput was 33,736.0; fused throughput was 33,499.2
+scored events/sec (-0.70%). **Do not enable this kernel in the selected
+256-lane config:** the repeated diagnostic does not demonstrate a speed gain.
+The implementation remains opt-in with a PyTorch fallback, and no CUDA Graph
+speedup is claimed. The accepted treatment is ordered two-worker prefetch.
+
+Both modes covered exactly their planned scored cores, replay, and successors,
+with no duplicate/unexpected events or incorrectly scored replay/padding. The
+fused training runs reproduced a different validation loss from the reference.
+The gradient tests establish agreement within float32 tolerances; they do not
+establish identical optimization trajectories after hundreds of updates. These
+benign-only bounded validation losses cannot establish attack generalization.
+
+Verification before benchmarking: GPU data/model/kernel checks `122 passed`.
+Additional job `55286235` passed the 32-event rich-model joint-loss/state/gradient
+comparison on both CPU and GPU (`2 passed`). That test includes partial lanes,
+unequal recording lengths, true recording terminals, and detached state carried
+across chunks. A preliminary submission (`55286123`) was cancelled after catching
+a missing public config schema entry, which was corrected and regression-tested
+before the completed benchmark.
+
+<!-- cuda-graph-training-results -->
+## CUDA Graph Training — October 1, 2026
+
+Artifacts: `experimentruns/cuda_graph_2026_10_01/`. The final implementation captures the regular scored scan, heads, losses, and backward using a module adapter. Lightning retains Adam and logging. Owned state, metrics, and parameter gradients prevent replay storage from corrupting retained values or accumulated gradients. The public flag defaults to false; SSM fusion remains disabled.
+
+The separate two-worker profile captured eight batches at 256 lanes with ordered prefetch. Its instrumented window was 2,831.0 ms, with 232.1 ms of device activity (8.2%). Uninstrumented scored throughput was 40,311.7 events/sec; instrumented throughput was 8,341.1 events/sec. Instrumented timing is excluded from selection.
+
+CUDA verification passed 82 tests, including consecutive 32-event chunks, every output/loss/state component, gradients, Adam moments and updates, dropout RNG preservation and fresh randomness, replay storage ownership, boundary transitions, warmup optimizer skipping, setup failure, checkpoint reload, and gradient accumulation. CPU data/model/configuration/launch checks, Ruff, documentation lint, and shell syntax checks passed. FP32 tolerances were outputs/state/losses `rtol=1e-4, atol=2e-5` and gradients/updates `rtol=3e-4, atol=3e-5`.
+
+Three pairs ran sequentially on one V100 allocation, alternating treatment order. Each trial used identical initial weights, the same first 2,048 shuffled sections, 256 lanes, two ordered workers, and 32-event chunks. End-to-end fit timing includes capture initialization.
+
+| Pair | Treatment | Scored events/sec | Adam updates/sec | Fit (s) | Capture (s) | Replays / scored replay fraction | Torch allocated / reserved peak (MiB) | GPU mean / peak | NVML VRAM peak (MiB) |
+| ---: | --- | ---: | ---: | ---: | ---: | --- | --- | --- | ---: |
+| 1 | eager | 44,639.3 | 6.059 | 93.75 | 0.000 | — | 137.0 / 156.0 | 21.3% / 25.0% | 823.9 |
+| 1 | graph | 54,850.6 | 7.445 | 76.30 | 1.377 | 233 / 45.6% | 183.4 / 358.0 | 24.1% / 73.0% | 1123.8 |
+| 2 | eager | 38,715.5 | 5.255 | 108.10 | 0.000 | — | 137.0 / 156.0 | 18.7% / 23.0% | 823.9 |
+| 2 | graph | 54,295.9 | 7.369 | 77.08 | 1.264 | 233 / 45.6% | 183.4 / 358.0 | 26.6% / 69.0% | 1123.8 |
+| 3 | eager | 44,379.8 | 6.023 | 94.30 | 0.000 | — | 137.0 / 156.0 | 21.3% / 25.0% | 823.9 |
+| 3 | graph | 57,215.0 | 7.765 | 73.14 | 1.253 | 233 / 45.6% | 183.4 / 358.0 | 32.3% / 74.0% | 1123.8 |
+
+Paired gains: 22.9%, 40.2%, 28.9%; median **28.9%**. All three pairs improved, passing the 3% bounded gate. Each trial performed **568 Adam updates**, scored **4,184,982 unique events**, processed **522,240 warmup events**, and covered **4,184,974 eligible successor targets**, without missing planned events, duplicates, unexpected events, or scored warmup/padding. Diagnostic prefixes intentionally do not cover the entire training cache.
+
+Graph fallback counts were identical across the three runs: `{'warmup_or_mixed': 266, 'lane_section_end': 14, 'partial_lanes': 63}`. Capture succeeded without setup errors. Only 45.6% of scored events replayed because eligibility excludes mixed warmup/scored batches, section endings, and partial lanes. Initialization did not change weights, live stream state, RNG progression, optimizer state, or coverage.
+
+Validation reloads the saved checkpoints and follows the existing continuous 8,192-event prefixes with 64-event warmup. All prefixes contain 146,304 benign scored events and zero attacks; both AUROCs are unavailable. These prefixes cannot establish attack generalization.
+
+Both full epochs completed in separate, sequential Pitzer allocations (one V100, eight CPUs, 32 GiB, eight hours requested). Both scored **12,090,403 unique events**, including **57,108 attacks**, and covered **12,090,385 eligible successor targets**. Missing, duplicate, unexpected, and incorrectly scored warmup/padding counts were all zero. Initial weights and complete section queues matched. Both performed **1,712 Adam updates**. Final checkpoint model weights and Adam optimizer state match bit-for-bit; parameter groups and model state keys also match.
+
+| Treatment | End-to-end scored events/sec | Adam updates/sec | Fit (s) | Capture (s) | Replays / scored replay fraction | Torch allocated / reserved peak (MiB) | GPU mean / peak | NVML VRAM peak (MiB) |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- | ---: |
+| eager | 40,581.0 | 5.746 | 297.93 | 0.000 | — | 137.0 / 156.0 | 20.1% / 24.0% | 823.9 |
+| graph | 50,244.6 | 7.115 | 240.63 | 1.358 | 421 / 28.5% | 183.4 / 358.0 | 22.8% / 70.0% | 1123.8 |
+
+Full-epoch throughput improved **23.8%**, with capture initialization included, passing the 3% gate. Full graph fallback counts: `{'warmup_or_mixed': 1160, 'lane_section_end': 51, 'partial_lanes': 88}`. Capture succeeded without setup failures. Training warmup overhead was 12.5%; all replay warmup remained unscored.
+
+| Checkpoint validation metric | Eager | Graph |
+| --- | ---: | ---: |
+| `val_loss` | 0.57940954 | 0.57940954 |
+| `val_classification_loss` | 0.00088775 | 0.00088775 |
+| `val_next_id_loss` | 2.19622231 | 2.19622231 |
+| `val_iat_loss` | -4.67115545 | -4.67115545 |
+| `val_payload_delta_loss` | 6.06392908 | 6.06392908 |
+| `val_acc` | 1.00000000 | 1.00000000 |
+
+Continuous checkpoint validation took 21.33s (eager checkpoint) and 20.87s (graph checkpoint). Each scored 146,304 benign events and zero attacks; both AUROCs remain unavailable. Checkpoints and complete coverage reports are saved under `eager_epoch/` and `graph_epoch/` in the artifact directory.
+
+**Selected:** `configs/experiments/comparisons/temporal_set_01_segmented_lanes256_epoch.yml` now enables `model.scan.cuda_graph: true`, with `ssm_kernel: torch`. The public default remains false, continuous training remains the default policy, and segmented execution remains experimental. The lower full-epoch replay fraction reflects strict fallback for mixed batches and boundaries; higher GPU utilization is supporting evidence rather than the acceptance criterion.
+<!-- /cuda-graph-training-results -->

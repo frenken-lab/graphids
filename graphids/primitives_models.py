@@ -163,6 +163,8 @@ class TemporalHybridScanCfg(_Cfg):
     rhythm_kernel: Literal["torch", "triton"] = "torch"
     time_kernel: Literal["torch", "triton"] = "torch"
     motif_writer: Literal["torch", "triton"] = "torch"
+    ssm_kernel: Literal["torch", "triton"] = "torch"
+    cuda_graph: bool = False
 
     @model_validator(mode="after")
     def _validate_motif_writer(self) -> Self:
@@ -189,6 +191,8 @@ class TemporalHybridCfg(_Cfg):
 
     @model_validator(mode="after")
     def _validate_objective_heads(self) -> Self:
+        if self.scan.ssm_kernel == "triton" and self.backbone.type != "ssm_lite":
+            raise ValueError("scan.ssm_kernel=triton requires backbone.type=ssm_lite")
         default_ssl = self.objective in {"anomaly", "joint"}
         classification = (
             self.objective in {"supervised", "joint"}
