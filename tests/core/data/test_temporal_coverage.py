@@ -113,6 +113,16 @@ def test_drop_partial_requires_diagnostic():
                        drop_partial_lane_batches=True, coverage_policy="diagnostic")
 
 
+def test_validation_can_use_narrower_lanes_than_training():
+    data = data_for([7, 11, 13])
+    dm = TemporalDataModule(None, batch_mode="stream_lanes", stream_lanes=256, chunk_size=32,
+                            eval_batch_mode="stream_lanes", eval_stream_lanes=3, eval_chunk_size=5)
+    loader = dm._lane_loader(data, training=False)
+    assert loader.dataset.stream_lanes == 3
+    assert loader.dataset.chunk_size == 5
+    assert loader.dataset.stream_lanes * loader.dataset.chunk_size == 15
+
+
 def test_bitmap_detects_missing_duplicate_unexpected():
     bitmap = CoverageBitmap(11)
     bitmap.add([0, 1, 1, 8, -1, 11])

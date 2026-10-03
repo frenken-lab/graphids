@@ -98,13 +98,16 @@ def _build_lightning_run(
         data.setup(None)
     model = build_model(cfg, data)
     trainer_kwargs = trainer_components(cfg)
+    if os.environ.get("GRAPHIDS_RUN_DIR"):
+        trainer_kwargs.setdefault("default_root_dir", os.environ["GRAPHIDS_RUN_DIR"])
     callbacks = trainer_kwargs["callbacks"]
-    if logger is not None:
+    if logger is not None or getattr(getattr(data, "source", None), "KIND", None) == "cross_vehicle":
         from graphids._mlflow import MLflowSystemMetricsCallback
 
-        trainer_kwargs["logger"] = logger
+        if logger is not None:
+            trainer_kwargs["logger"] = logger
         callbacks.append(MLflowSystemMetricsCallback())
-    else:
+    if logger is None:
         trainer_kwargs.setdefault("logger", False)
 
     if ray:
@@ -136,7 +139,9 @@ def _build_lightning_run(
         full = data.coverage_policy == "full"
         if full:
             validate_full_lane_settings(trainer_kwargs)
-        callbacks.append(TemporalCoverageAudit(require_complete=full))
+        callbacks.append(TemporalCoverageAudit(
+            report_dir=os.environ.get("GRAPHIDS_RUN_DIR"), require_complete=full,
+        ))
     trainer_kwargs["callbacks"] = callbacks
 
     trainer = pl.Trainer(**trainer_kwargs)
@@ -170,6 +175,7 @@ def _worker_loop(config: dict[str, Any]) -> None:
     if mode not in {"disabled", "online"}:
         os.environ["GRAPHIDS_MLFLOW_MODE"] = "offline"
     run = RunConfig.model_validate(config["run"])
+    os.environ["GRAPHIDS_RUN_DIR"] = str(run.outputs.run_dir)
     run.write_config()
 
     if run.stage in {"fit", "test"} and run.resources.accelerator == "gpu":

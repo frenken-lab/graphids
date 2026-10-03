@@ -136,6 +136,8 @@ def test_pilot_gate_uses_all_three_held_out_vehicles():
 def test_lane_predictions_keep_event_order_metadata(tmp_path):
     import lightning.pytorch as lightning
 
+    from graphids._mlflow import MLflowSystemMetricsCallback
+
     raw = tmp_path / "raw"
     for set_name in ("set_01", "set_02", "set_04"):
         for i in range(2):
@@ -161,10 +163,28 @@ def test_lane_predictions_keep_event_order_metadata(tmp_path):
     model = TemporalHybridModel(objective="supervised", input={"use_id_embeddings": False},
                                 memory={"enabled": False}, backbone={"type": "gru"})
     model.prepare_from_datamodule(dm)
+    phase_callback = MLflowSystemMetricsCallback(phase_output=tmp_path / "phases.json")
     trainer = lightning.Trainer(accelerator="cpu", devices=1, logger=False,
+                                callbacks=[phase_callback],
                                 enable_checkpointing=False, enable_progress_bar=False,
                                 enable_model_summary=False)
     trainer.test(model, datamodule=dm)
+    assert [row["phase"] for row in phase_callback.phase_summaries] == list(dm._tests)
+    assert all(row["scored_events"] >= 0 for row in phase_callback.phase_summaries)
     for name, data in dm.test_data.items():
         scored = score_partition(data, model._test_predictions[name])
         assert scored["scores"].numel() == int(data.is_scored.sum())
+    continuous = {name: {key: value.clone() for key, value in prediction.items()}
+                  for name, prediction in model._test_predictions.items()}
+    dm.eval_stream_execution = "exact_replay"
+    dm.segment_events = 3
+    trainer.test(model, datamodule=dm)
+    for name, prediction in model._test_predictions.items():
+        current_order = __import__("torch").argsort(prediction["event_id"])
+        original_order = __import__("torch").argsort(continuous[name]["event_id"])
+        assert prediction["event_id"][current_order].tolist() == continuous[name]["event_id"][original_order].tolist()
+        assert __import__("torch").allclose(prediction["scores"][current_order],
+                                              continuous[name]["scores"][original_order], atol=1e-6)
+        for key in ("labels", "times", "streams", "attack_type"):
+            assert __import__("torch").equal(prediction[key][current_order],
+                                               continuous[name][key][original_order])

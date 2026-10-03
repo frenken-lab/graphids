@@ -47,7 +47,7 @@ class CrossVehicleCfg(_Cfg):
     type: Literal["cross_vehicle"] = "cross_vehicle"
     held_out_vehicle: Literal["chevrolet_silverado", "subaru_forester", "chevrolet_traverse"]
     source_vehicle: Literal["chevrolet_impala", "chevrolet_silverado", "subaru_forester", "chevrolet_traverse"] | None = None
-    val_fraction: float = 0.2
+    val_fraction: float = 0.1
     split_seed: int = 42
     val_split: Literal["recordings"] = "recordings"
     representation_cfg: RepresentationCfg = Field(default_factory=TemporalRepresentationCfg)
@@ -83,6 +83,8 @@ class TemporalDMCfg(_Cfg):
     segment_events: int = Field(default=2048, ge=1)
     segment_warmup_events: int = Field(default=256, ge=0)
     eval_batch_mode: Literal["events", "stream_lanes"] = "events"
+    eval_stream_lanes: int | None = None
+    eval_chunk_size: int | None = None
     val_prefix_events: int | None = Field(default=None, ge=1)
     val_warmup_events: int = 0
     test_warmup_events: int = 0
@@ -135,7 +137,7 @@ def can_bus(
 
 
 def cross_vehicle(
-    *, held_out_vehicle: str, val_fraction: float = 0.2, split_seed: int = 42,
+    *, held_out_vehicle: str, val_fraction: float = 0.1, split_seed: int = 42,
     source_vehicle: str | None = None,
     representation_cfg: RepresentationCfg = _DEFAULT_REPRESENTATION_CFG,
 ) -> CrossVehicleCfg:

@@ -1,18 +1,29 @@
 extends: ../_base/final_supervised_hybrid_ssm_lite_fit.yml
 dataset: cross_vehicle
-plan_id: cross_vehicle_leave_one_out_v1
+plan_id: cross_vehicle_leave_one_out_v2
 config:
   data:
+    source:
+      val_fraction: 0.1
     batch_mode: stream_lanes
-    stream_lanes: 16
-    chunk_size: 128
+    stream_lanes: 1024
+    chunk_size: 32
+    stream_execution: segmented
+    segment_events: 2048
+    segment_warmup_events: 256
     eval_batch_mode: stream_lanes
-    num_workers: 4
-    pin_memory: true
+    eval_stream_lanes: 32
+    eval_chunk_size: 256
+    num_workers: 2
+    prebuild_batches: 2
+    pin_memory: false
     persistent_workers: true
   model:
     input:
       use_id_embeddings: false
+    scan:
+      cuda_graph: false
+      ssm_kernel: torch
     memory:
       enabled: true
     heads:

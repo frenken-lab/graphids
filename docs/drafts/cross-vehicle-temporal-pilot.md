@@ -77,12 +77,71 @@ provided frame labels and is not included in this pilot.
 
 ## Training budget and baseline interpretation
 
+### Revised pilot (v2; fits running)
+
+The revised cross-vehicle source split uses whole content-grouped recordings and
+targets 10% of source events per vehicle. It requires scored benign and attack
+events in each vehicle's validation partition and attacked training data in
+each vehicle. The versioned split manifest records hashes, class counts,
+represented attack families, and actual proportions. At seed 42, the achieved
+pooled validation fractions are 9.9936% (Silverado holdout), 9.9681%
+(Forester holdout), and 9.9532% (Traverse holdout). The held-out vehicle's
+calibration and test captures remain separate. Training now requests 1,024
+segmented lanes and 32-event chunks. This changes optimizer-step count, so
+results must be labeled as a new pilot. Phase metrics are written to
+`.graphids/phase_metrics.json` for fits and alongside evaluator reports for
+evaluation. A missing GPU sample appears as `null` with sample count zero.
+
+CUDA graph replay exhausted a 16 GiB V100 during the first behavioral fit.
+The failed attempts were archived under `runs/cross_vehicle_v2/failed_cuda_graph`.
+The matched six-run v2 configuration disables CUDA graphs. A 40-batch V100
+preflight completed for both variants with 1,024 lanes: raw peak allocated
+memory was 5.44 GiB and behavioral peak was 10.38 GiB. These are preflight
+measurements, not full-fit results.
+
+Submitted v2 fit jobs: Silverado raw `55349133`, behavioral `55349139`;
+Forester raw `55349140`, behavioral `55349141`; Traverse raw `55349144`,
+behavioral `55349152`. Their paired evaluator jobs are `55349153`–`55349158`,
+followed by comparison job `55349159` only after all six evaluations succeed.
+The comparison will be written to
+`/fs/ess/PAS1266/graphids/runs/cross_vehicle_v2/comparison.json`.
+The complete lane plans contain 1,296, 1,368, and 1,152 optimizer steps per
+epoch for the Silverado, Forester, and Traverse holdouts respectively; the
+expected two-epoch totals are 2,592, 2,736, and 2,304. Full-run coverage and
+actual global steps still require confirmation from the running jobs.
+
+The measurements and decisions below describe the completed 256-lane baseline.
+
+An exact section replay prototype is available through the lane loader's
+`exact_replay` mode. It reconstructs each section's full causal state by
+replaying its recording from the beginning, scores each event once, and matches
+continuous scores in the small cross-vehicle regression test. For a recording
+with `N` events and section width `W`, it processes approximately
+`N²/(2W)` prefix events. This sequential reconstruction cost makes it
+unsuitable for checkpoint selection or full target reports; those remain on
+continuous evaluation pending a more efficient state snapshot implementation
+and V100 lane sweep.
+
 The six pooled fits run for **two complete epochs**, with a 12-hour limit per
 job. Depending on the held-out vehicle, each epoch contains about 21–26 million
 source training messages and 14–16 million source validation messages. The
 shared supervised base config allows 20 epochs; the cross-vehicle config
 overrides that limit to two to check the full data, training, and evaluation
 pipeline at matched compute cost.
+
+Training uses 256 segmented lanes with 32-event chunks, 2,048-event cores,
+up to 256 unscored replay events per section, two ordered loader workers with
+two prefetched batches, and CUDA graph capture for eligible batches. Source
+validation and target evaluation remain continuous. The segmented training
+path changes the number of optimizer updates and approximates long-running
+state across section boundaries; interpret this pilot accordingly. The
+Validation and target scoring use 32 continuous lanes with 256-event chunks,
+matching the much smaller number of independent recordings without changing
+the model's causal scoring order. Cached binary class and raw-ID vocabulary
+sizes avoid scanning target test tensors during fit setup. The
+256-lane training geometry passed the full-epoch throughput and correctness checks on
+`set_01`. The 1,024-lane diagnostic improved throughput but reduced optimizer
+updates and had worse bounded validation loss, so it is not selected here.
 
 These runs are screening experiments, not fully trained quality baselines.
 Two passes may undertrain the classifier, especially on rare attack labels, and

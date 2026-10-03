@@ -10,6 +10,11 @@ Everything else belongs in Lightning or the experiment code.
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -67,12 +72,135 @@ class MLflowSystemMetricsCallback(pl.Callback):
         *,
         sampling_interval: int = 10,
         samples_before_logging: int = 1,
+        phase_output: str | Path | None = None,
     ) -> None:
         self.sampling_interval = sampling_interval
         self.samples_before_logging = samples_before_logging
         self._monitor: Any | None = None
+        self.phase_output = Path(phase_output) if phase_output else None
+        self.phase_summaries: list[dict[str, Any]] = []
+        self._phase: dict[str, Any] | None = None
+        self._trainer: pl.Trainer | None = None
+
+    def _sample_gpu(self) -> None:
+        if self._phase is None:
+            return
+        now = time.monotonic()
+        if now - self._phase.get("last_sample_clock", float("-inf")) < self.sampling_interval:
+            return
+        self._phase["last_sample_clock"] = now
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=3, check=True,
+            )
+            for line in result.stdout.splitlines():
+                util, memory = (float(part.strip()) for part in line.split(",")[:2])
+                self._phase["gpu_samples"].append((util, memory / _MIB_PER_GIB))
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+
+    def _begin_phase(self, name: str) -> None:
+        self._end_phase()
+        self._phase = {"phase": name, "started_at": datetime.now(UTC).isoformat(),
+                       "start_clock": time.monotonic(), "scored_events": 0, "gpu_samples": [],
+                       "lane_capacity": 0, "valid_events": 0, "active_lanes": 0,
+                       "lane_batches": 0}
+        self._sample_gpu()
+
+    def _batch_phase(self, batch: Any) -> None:
+        if self._phase is None:
+            return
+        mask = getattr(batch, "is_scored", None)
+        if mask is not None:
+            self._phase["scored_events"] += int(mask.sum().item())
+        valid = getattr(batch, "valid_mask", None)
+        if valid is not None:
+            self._phase["lane_capacity"] += valid.numel()
+            self._phase["valid_events"] += int(valid.sum().item())
+            self._phase["active_lanes"] += int(valid.any(dim=1).sum().item())
+            self._phase["lane_batches"] += 1
+        self._sample_gpu()
+
+    def _end_phase(self) -> None:
+        if self._phase is None:
+            return
+        self._sample_gpu()
+        phase = self._phase
+        elapsed = time.monotonic() - phase["start_clock"]
+        samples = phase["gpu_samples"]
+        row = {"phase": phase["phase"], "started_at": phase["started_at"],
+               "ended_at": datetime.now(UTC).isoformat(), "wall_seconds": elapsed,
+               "scored_events": phase["scored_events"],
+               "events_per_second": phase["scored_events"] / elapsed if elapsed else None,
+               "lane_occupancy": (phase["valid_events"] / phase["lane_capacity"]
+                                  if phase["lane_capacity"] else None),
+               "mean_active_lanes": (phase["active_lanes"] / phase["lane_batches"]
+                                     if phase["lane_batches"] else None),
+               "gpu_sample_count": len(samples),
+               "gpu_utilization_mean": sum(s[0] for s in samples) / len(samples) if samples else None,
+               "gpu_utilization_max": max(s[0] for s in samples) if samples else None,
+               "gpu_memory_gib_peak": max(s[1] for s in samples) if samples else None}
+        self.phase_summaries.append(row)
+        self._phase = None
+        logger = getattr(self._trainer, "logger", None)
+        if logger and hasattr(logger, "log_metrics"):
+            logger.log_metrics(
+                {f"phase/{row['phase']}/{key}": value for key, value in row.items()
+                 if key in {"wall_seconds", "scored_events", "events_per_second",
+                            "lane_occupancy", "mean_active_lanes",
+                            "gpu_sample_count", "gpu_utilization_mean", "gpu_utilization_max",
+                            "gpu_memory_gib_peak"} and value is not None},
+                step=getattr(self._trainer, "global_step", 0),
+            )
+        if self.phase_output:
+            self.phase_output.parent.mkdir(parents=True, exist_ok=True)
+            self.phase_output.write_text(json.dumps(self.phase_summaries, indent=2) + "\n")
+
+    def on_train_epoch_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        self._begin_phase(f"train_epoch_{trainer.current_epoch + 1}")
+
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx) -> None:
+        self._batch_phase(batch)
+
+    def on_train_epoch_end(self, trainer, pl_module) -> None:
+        self._end_phase()
+
+    def on_validation_epoch_start(self, trainer, pl_module) -> None:
+        if not trainer.sanity_checking:
+            self._begin_phase(f"source_validation_epoch_{trainer.current_epoch + 1}")
+
+    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0) -> None:
+        if not trainer.sanity_checking:
+            self._batch_phase(batch)
+
+    def on_validation_epoch_end(self, trainer, pl_module) -> None:
+        if not trainer.sanity_checking:
+            self._end_phase()
+
+    def on_test_epoch_start(self, trainer, pl_module) -> None:
+        self._end_phase()
+
+    def on_test_batch_start(self, trainer, pl_module, batch, batch_idx, dataloader_idx=0) -> None:
+        name = list(getattr(trainer.datamodule, "_tests", {}))
+        if dataloader_idx < len(name):
+            desired = name[dataloader_idx]
+            if self._phase is None or self._phase["phase"] != desired:
+                self._begin_phase(desired)
+        elif self._phase is None:
+            self._begin_phase("evaluation")
+
+    def on_test_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0) -> None:
+        self._batch_phase(batch)
+
+    def on_test_epoch_end(self, trainer, pl_module) -> None:
+        self._end_phase()
 
     def _start(self, trainer: pl.Trainer) -> None:
+        self._trainer = trainer
+        if self.phase_output is None:
+            root = Path(os.environ.get("GRAPHIDS_RUN_DIR", trainer.default_root_dir))
+            self.phase_output = root / ".graphids" / "phase_metrics.json"
         if self._monitor is not None:
             return
         logger = getattr(trainer, "logger", None)
@@ -107,12 +235,19 @@ class MLflowSystemMetricsCallback(pl.Callback):
         self._start(trainer)
 
     def on_fit_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        self._end_phase()
+        self.phase_summaries.append({"phase": "fit_complete", "optimizer_steps": trainer.global_step,
+                                     "ended_at": datetime.now(UTC).isoformat()})
+        if self.phase_output:
+            self.phase_output.parent.mkdir(parents=True, exist_ok=True)
+            self.phase_output.write_text(json.dumps(self.phase_summaries, indent=2) + "\n")
         self._stop()
 
     def on_test_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         self._start(trainer)
 
     def on_test_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        self._end_phase()
         self._stop()
 
     def on_exception(

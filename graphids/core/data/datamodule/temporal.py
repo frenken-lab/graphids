@@ -34,6 +34,9 @@ class TemporalDataModule(pl.LightningDataModule):
         segment_events: int = 2048,
         segment_warmup_events: int = 256,
         eval_batch_mode: str = "events",
+        eval_stream_execution: str = "continuous",
+        eval_stream_lanes: int | None = None,
+        eval_chunk_size: int | None = None,
         val_prefix_events: int | None = None,
     ):
         super().__init__()
@@ -52,6 +55,9 @@ class TemporalDataModule(pl.LightningDataModule):
         self.segment_events = segment_events
         self.segment_warmup_events = segment_warmup_events
         self.eval_batch_mode = eval_batch_mode
+        self.eval_stream_execution = eval_stream_execution
+        self.eval_stream_lanes = self.stream_lanes if eval_stream_lanes is None else int(eval_stream_lanes)
+        self.eval_chunk_size = self.chunk_size if eval_chunk_size is None else int(eval_chunk_size)
         self.val_prefix_events = val_prefix_events
         validate_lane_config(self, val_split=getattr(dataset, "val_split", None))
         self._train_lane_dataset = None
@@ -144,6 +150,9 @@ class TemporalDataModule(pl.LightningDataModule):
 
     @property
     def num_classes(self) -> int:
+        declared = getattr(self.source, "num_classes", None)
+        if declared is not None:
+            return int(declared)
         max_label = 0
         for data in self._all_data():
             max_label = max(max_label, self._max_tensor_value(data, "y"))
@@ -156,9 +165,11 @@ class TemporalDataModule(pl.LightningDataModule):
             dataset = self._train_lane_dataset
         else:
             dataset = TemporalStreamLaneLoader(
-                data, stream_lanes=self.stream_lanes, chunk_size=self.chunk_size,
+                data,
+                stream_lanes=self.stream_lanes if training else self.eval_stream_lanes,
+                chunk_size=self.chunk_size if training else self.eval_chunk_size,
                 drop_partial_batches=self.drop_partial_lane_batches if training else False,
-                stream_execution=self.stream_execution if training else "continuous",
+                stream_execution=self.stream_execution if training else self.eval_stream_execution,
                 segment_events=self.segment_events, segment_warmup_events=self.segment_warmup_events,
             )
             if training:

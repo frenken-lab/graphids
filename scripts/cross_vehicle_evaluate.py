@@ -14,6 +14,7 @@ import lightning.pytorch as pl
 import torch
 from torchmetrics.functional.classification import binary_average_precision
 
+from graphids._mlflow import MLflowSystemMetricsCallback
 from graphids.exp.config import ExperimentConfig
 from graphids.exp.runtime import build_component, build_model
 
@@ -152,7 +153,8 @@ def main() -> None:
     model = build_model(config, dm)
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     model.load_state_dict(checkpoint["state_dict"], strict=True)
-    trainer = pl.Trainer(accelerator="auto", devices=1, logger=False,
+    phase_callback = MLflowSystemMetricsCallback(phase_output=args.output.with_suffix(".phases.json"))
+    trainer = pl.Trainer(accelerator="auto", devices=1, logger=False, callbacks=[phase_callback],
                          enable_checkpointing=False, enable_progress_bar=False)
     trainer.test(model, datamodule=dm)
     partitions = {name: score_partition(data, model._test_predictions[name])
@@ -164,6 +166,7 @@ def main() -> None:
     report = {
         "config": str(args.config.resolve()), "checkpoint": str(args.checkpoint.resolve()),
         "fpr_target": args.fpr, "refractory_s": args.refractory_s,
+        "phase_metrics": phase_callback.phase_summaries,
         "source_calibration_events": int((source["labels"] == 0).sum()),
         "target_calibration_events": int((calibration["labels"] == 0).sum()),
         "zero_shot": {name: metrics(p, source_threshold, fpr=args.fpr,

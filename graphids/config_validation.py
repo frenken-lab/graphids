@@ -25,6 +25,11 @@ def validate_lane_config(options: Any, *, val_split: str | None = None) -> None:
         raise ValueError("segmented execution requires stream_lanes")
     if options.eval_batch_mode == "stream_lanes" and (options.stream_lanes is None or options.chunk_size is None):
         raise ValueError("lane evaluation requires stream_lanes and chunk_size")
+    eval_lanes = options.eval_stream_lanes if options.eval_stream_lanes is not None else options.stream_lanes
+    eval_chunk = options.eval_chunk_size if options.eval_chunk_size is not None else options.chunk_size
+    if options.eval_batch_mode == "stream_lanes" and (eval_lanes is None or eval_lanes < 2
+                                                     or eval_chunk is None or eval_chunk < 1):
+        raise ValueError("lane evaluation requires positive eval_stream_lanes and eval_chunk_size")
     if val_split == "recordings" and options.val_prefix_events is not None:
         raise ValueError("recording validation requires complete streams; remove val_prefix_events")
 

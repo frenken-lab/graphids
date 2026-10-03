@@ -114,8 +114,8 @@ class TemporalStreamLaneLoader(Dataset[TemporalStreamLaneBatch]):
         self.drop_partial_batches = bool(drop_partial_batches)
         if self.stream_lanes < 2 or self.chunk_size < 1:
             raise ValueError("stream_lanes must be >= 2 and chunk_size must be positive")
-        if stream_execution not in {"continuous", "segmented"}:
-            raise ValueError("stream_execution must be continuous or segmented")
+        if stream_execution not in {"continuous", "segmented", "exact_replay"}:
+            raise ValueError("stream_execution must be continuous, segmented, or exact_replay")
         if segment_events < 1 or segment_warmup_events < 0:
             raise ValueError("segment_events must be positive; warmup must be nonnegative")
         self._streams = self._partition_streams(data)
@@ -124,7 +124,7 @@ class TemporalStreamLaneLoader(Dataset[TemporalStreamLaneBatch]):
             width = stream.length if stream_execution == "continuous" else segment_events
             for start in range(0, stream.length, width):
                 sections.append(SectionDescriptor(
-                    idx, max(0, start - segment_warmup_events), start,
+                    idx, 0 if stream_execution == "exact_replay" else max(0, start - segment_warmup_events), start,
                     min(start + width, stream.length),
                 ))
         if stream_execution == "segmented":

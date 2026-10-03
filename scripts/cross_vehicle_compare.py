@@ -11,16 +11,20 @@ VARIANTS = ("raw", "behavioral")
 ATTACK_SETS = ("target_known_attack", "target_unknown_attack")
 
 
-def load_reports(directory: Path) -> dict[str, dict[str, dict]]:
+def load_reports(directory: Path, *, run_suffix: str = "") -> dict[str, dict[str, dict]]:
     reports = {}
     for fold in FOLDS:
         reports[fold] = {}
         for variant in VARIANTS:
             name = f"{fold}_{variant}_fit"
-            path = directory / name / name / "cross_vehicle_report.json"
+            run_name = name + run_suffix
+            path = directory / run_name / run_name / "cross_vehicle_report.json"
             report = json.loads(path.read_text())
             if Path(report["config"]).stem != name:
                 raise ValueError(f"report/config mismatch: {path}")
+            fit_phases = path.parent / ".graphids" / "phase_metrics.json"
+            if fit_phases.is_file():
+                report["fit_phase_metrics"] = json.loads(fit_phases.read_text())
             reports[fold][variant] = report
     return reports
 
@@ -32,6 +36,13 @@ def summarize(reports: dict[str, dict[str, dict]]) -> dict:
         "normal_false_alerts_per_hour_limit": "max(raw * 1.25, raw + 1)",
         "required_recall_gain_folds": 2,
     }}
+    summary["phase_metrics"] = {
+        fold: {variant: {
+            "fit": report.get("fit_phase_metrics"),
+            "evaluation": report.get("phase_metrics"),
+        } for variant, report in variants.items()}
+        for fold, variants in reports.items()
+    }
     for regime in ("zero_shot", "normal_target_adaptation"):
         ap_gains = recall_gains = 0
         alarm_ok = True
@@ -74,8 +85,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run_root", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--run-suffix", default="")
     args = parser.parse_args()
-    report = summarize(load_reports(args.run_root))
+    report = summarize(load_reports(args.run_root, run_suffix=args.run_suffix))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n")
 

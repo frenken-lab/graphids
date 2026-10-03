@@ -124,12 +124,19 @@ class TemporalCoverageAudit(pl.Callback):
         self.batches += 1
         if self.batches % 1000 == 0:
             elapsed = time.perf_counter() - self.started
-            print("temporal_coverage_progress " + json.dumps({
+            progress = {
                 "epoch": trainer.current_epoch, "batches": self.batches,
                 "scored_events": self.events.observed, "warmup_events": self.warmup,
                 "wall_seconds": elapsed,
                 "scored_events_per_second": self.events.observed / max(elapsed, 1e-9),
-            }), flush=True)
+            }
+            if callable(getattr(pl_module, "cuda_graph_report", None)):
+                graph = pl_module.cuda_graph_report()
+                progress["cuda_graph"] = {
+                    key: graph.get(key) for key in
+                    ("replays", "mixed_replays", "scored_replay_fraction", "fallback_batches", "disabled", "mixed_disabled")
+                }
+            print("temporal_coverage_progress " + json.dumps(progress), flush=True)
 
     def report(self, trainer, *, interrupted=False):
         if self.events is None:

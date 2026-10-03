@@ -1,5 +1,5 @@
 extends: _base_fit.yml
-experiment_name: silverado_raw_fit
+experiment_name: silverado_raw_fit_v2
 config:
   data:
     source:

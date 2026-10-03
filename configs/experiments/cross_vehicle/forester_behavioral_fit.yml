@@ -1,5 +1,5 @@
 extends: _base_fit.yml
-experiment_name: forester_behavioral_fit
+experiment_name: forester_behavioral_fit_v2
 representation_cfg:
   kind: temporal
   features: behavioral

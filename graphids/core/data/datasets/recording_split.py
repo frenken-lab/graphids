@@ -19,6 +19,7 @@ def recording_manifest(
     seed: int,
     warmup: int,
     train_source_mode: str,
+    policy: str = "recordings",
 ) -> dict:
     """Use training directories only; never select individual attack windows.
 
@@ -92,30 +93,62 @@ def recording_manifest(
     def order(record):
         return hashlib.sha256(f"{seed}:{record['sha256']}".encode()).hexdigest()
 
-    strata: dict[tuple, list[dict]] = defaultdict(list)
-    for record in records:
-        strata[(bool(record["attacks"]), record["family"])].append(record)
-    for stratum in strata.values():
-        eligible = sorted(
-            (
-                r
-                for r in stratum
-                if r["scored_attacks"] or (not r["attacks"] and r["scored_benign"])
-            ),
-            key=order,
-        )
-        count = min(max(0, len(stratum) - 1), math.ceil(len(stratum) * fraction))
-        for record in eligible[:count]:
-            record["split"] = "val"
+    if policy == "event_target_v2":
+        # Select whole content groups by event count. Search the best mandatory
+        # two-class seed, then add groups only when they improve target error.
+        target = fraction * sum(r["events"] for r in records)
+        eligible = [r for r in records if r["scored_benign"] or r["scored_attacks"]]
+        attack = [r for r in eligible if r["scored_attacks"]]
+        benign = [r for r in eligible if r["scored_benign"]]
+        candidates = []
+        for a in attack:
+            for b in benign:
+                chosen = {a["sha256"], b["sha256"]}
+                if not any(r["attacks"] and r["sha256"] not in chosen for r in records):
+                    continue
+                selected = [r for r in records if r["sha256"] in chosen]
+                candidates.append((abs(sum(r["events"] for r in selected) - target),
+                                   tuple(sorted(order(r) for r in selected)), chosen))
+        if not candidates:
+            raise ValueError("cannot retain attacked training data and both scored validation classes")
+        chosen = min(candidates)[2]
+        total = sum(r["events"] for r in records if r["sha256"] in chosen)
+        for record in sorted(eligible, key=order):
+            if record["sha256"] in chosen:
+                continue
+            if record["attacks"] and not any(r["attacks"] and r["sha256"] not in chosen
+                                                  and r is not record for r in records):
+                continue
+            new_total = total + record["events"]
+            if abs(new_total - target) < abs(total - target):
+                chosen.add(record["sha256"])
+                total = new_total
+        for record in records:
+            if record["sha256"] in chosen:
+                record["split"] = "val"
+    elif policy == "recordings":
+        strata: dict[tuple, list[dict]] = defaultdict(list)
+        for record in records:
+            strata[(bool(record["attacks"]), record["family"])].append(record)
+        for stratum in strata.values():
+            eligible = sorted(
+                (r for r in stratum if r["scored_attacks"] or (not r["attacks"] and r["scored_benign"])),
+                key=order,
+            )
+            count = min(max(0, len(stratum) - 1), math.ceil(len(stratum) * fraction))
+            for record in eligible[:count]:
+                record["split"] = "val"
+    else:
+        raise ValueError(f"unknown recording split policy: {policy}")
 
     # Families with a single recording can still support a pooled holdout,
     # provided an attack-bearing training recording remains.
-    if not any(r["split"] == "val" and r["scored_attacks"] for r in records):
+    if policy == "recordings" and not any(r["split"] == "val" and r["scored_attacks"] for r in records):
         attacked = sorted((r for r in records if r["attacks"]), key=order)
         eligible = [r for r in attacked if r["scored_attacks"]]
         if len(attacked) >= 2 and eligible:
             eligible[0]["split"] = "val"
-    if not any(r["split"] == "val" and r["scored_benign"] for r in records):
+    if policy == "recordings" and not any(r["split"] == "val" and r["scored_benign"] for r in records):
         benign = sorted(
             (r for r in records if not r["attacks"] and r["scored_benign"]), key=order
         )
@@ -143,14 +176,27 @@ def recording_manifest(
     if train_source_mode == "mixed" and not sum(r["attacks"] for r in train):
         raise ValueError("recording holdout leaves no attacked training recording")
     payload = {
-        "version": 1,
-        "policy": "recordings",
+        "version": 2 if policy == "event_target_v2" else 1,
+        "policy": policy,
         "split_seed": seed,
         "val_fraction": fraction,
         "val_warmup_events": warmup,
         "train_source_mode": train_source_mode,
         "recordings": records,
     }
+    if policy == "event_target_v2":
+        available = sum(r["events"] for r in records if r["split"] != "excluded")
+        selected = sum(r["events"] for r in val)
+        payload["event_summary"] = {
+            "total_events": available, "validation_events": selected,
+            "validation_fraction": selected / available,
+            "train_events": sum(r["events"] for r in train),
+            "validation_scored_benign": sum(r["scored_benign"] for r in val),
+            "validation_scored_attacks": sum(r["scored_attacks"] for r in val),
+            "train_scored_benign": sum(r["scored_benign"] for r in train),
+            "train_scored_attacks": sum(r["scored_attacks"] for r in train),
+            "validation_attack_families": sorted({r["family"] for r in val if r["scored_attacks"]}),
+        }
     payload["digest"] = hashlib.sha256(
         json.dumps(payload, sort_keys=True).encode()
     ).hexdigest()

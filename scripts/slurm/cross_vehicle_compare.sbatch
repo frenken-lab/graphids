@@ -11,4 +11,4 @@
 set -euo pipefail
 export SKIP_CUDA_CONF=1
 source scripts/slurm/_preamble.sh
-python -m scripts.cross_vehicle_compare "$1" "$2"
+python -m scripts.cross_vehicle_compare "$@"

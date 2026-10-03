@@ -77,7 +77,7 @@ class CrossVehicleTemporalSource:
     source_vehicle: str | None = None
     lake_root: str | None = None
     representation_cfg: TemporalRepresentationCfg = field(default_factory=TemporalRepresentationCfg)
-    val_fraction: float = 0.2
+    val_fraction: float = 0.1
     split_seed: int = 42
     val_warmup_events: int = 64
     test_warmup_events: int = 64
@@ -99,7 +99,14 @@ class CrossVehicleTemporalSource:
 
     @property
     def num_ids(self) -> int | None:
-        return LOCAL_ID_CAPACITY + 1 if self.representation_cfg.features == "behavioral" else None
+        if self.representation_cfg.features == "behavioral":
+            return LOCAL_ID_CAPACITY + 1
+        vocab_path = self.cache_root_path() / "vocab.json"
+        return len(json.loads(vocab_path.read_text())["entries"]) + 1 if vocab_path.is_file() else None
+
+    @property
+    def num_classes(self) -> int:
+        return 2
 
     @property
     def cache_key(self) -> str:
@@ -114,7 +121,7 @@ class CrossVehicleTemporalSource:
     def cache_root_path(self) -> Path:
         from graphids.paths import cache_dir
         return (cache_dir(self.resolved_lake_root(), "cross_vehicle") /
-                f"v2_{self.held_out_vehicle}_from_{self.source_vehicle or 'pooled'}_"
+                f"v3_events_{self.held_out_vehicle}_from_{self.source_vehicle or 'pooled'}_"
                 f"{representation_digest(self.representation_cfg)}_"
                 f"seed{self.split_seed}_val{self.val_fraction:g}_"
                 f"warm{self.val_warmup_events}_{self.test_warmup_events}")
@@ -145,7 +152,8 @@ class CrossVehicleTemporalSource:
                 source_sets = [name for name, pair in CAN_TRAIN_TEST_VEHICLES.items()
                                if pair[0] != self.held_out_vehicle and
                                (self.source_vehicle is None or pair[0] == self.source_vehicle)]
-                manifest = {"version": 1, "held_out_vehicle": self.held_out_vehicle,
+                manifest = {"version": 2, "policy": "event_target_v2_per_source_vehicle",
+                            "held_out_vehicle": self.held_out_vehicle,
                             "source_vehicle": self.source_vehicle,
                             "source_sets": source_sets, "target_set": target_set,
                             "calibration_set": calibration_set, "source_manifests": {}}
@@ -157,8 +165,11 @@ class CrossVehicleTemporalSource:
                         raw, catalog[set_name], fraction=self.val_fraction,
                         seed=self.split_seed, warmup=self.val_warmup_events,
                         train_source_mode="mixed",
+                        policy="event_target_v2",
                     )
                     manifest["source_manifests"][set_name] = split
+                    if not split["event_summary"]["train_scored_attacks"]:
+                        raise ValueError(f"{set_name} has no attacked training events")
                     for partition, destination in (("train", train_frames), ("val", val_frames)):
                         files = [r["source_file"] for r in split["recordings"] if r["split"] == partition]
                         dirs = sorted({Path(name).parts[0] for name in files})
@@ -191,6 +202,18 @@ class CrossVehicleTemporalSource:
                 manifest["calibration_files"] = calibration_files
                 manifest["normal_test_files"] = normal_test_files
                 manifest["target_files"] = target_files
+                source_records = [r for split in manifest["source_manifests"].values()
+                                  for r in split["recordings"]]
+                source_events = sum(r["events"] for r in source_records)
+                val_records = [r for r in source_records if r["split"] == "val"]
+                manifest["source_event_summary"] = {
+                    "total_events": source_events,
+                    "validation_events": sum(r["events"] for r in val_records),
+                    "validation_fraction": sum(r["events"] for r in val_records) / source_events,
+                    "validation_scored_benign": sum(r["scored_benign"] for r in val_records),
+                    "validation_scored_attacks": sum(r["scored_attacks"] for r in val_records),
+                    "validation_attack_families": sorted({r["family"] for r in val_records if r["scored_attacks"]}),
+                }
                 manifest["digest"] = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
 
                 train_rows = pl.concat(train_frames, how="vertical")
