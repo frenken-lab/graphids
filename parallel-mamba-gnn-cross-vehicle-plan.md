@@ -83,6 +83,12 @@ This path can reduce per-event overhead but cannot turn the full model's
 nonlinear feedback into an ordinary parallel prefix scan while preserving
 its exact outputs.
 
+The GRU is the current per-ID update choice, not an established optimum or
+a measured standalone bottleneck. The whole read → backbone → write path
+is serial within a lane. Benchmark its subphases before attributing runtime
+to `GRUCell` specifically. A fused GRU kernel can reduce launch overhead
+while keeping the same recurrence; it does not remove the dependency.
+
 ### Priority B: a new temporal variant that can scan over time
 
 Remove learned per-ID memory from the temporal input path and retain causal,
@@ -128,6 +134,20 @@ the current two-epoch pilot cannot establish convergence. If learned
 memory is essential to quality, retain Priority A or test a finite-lag
 approximation under a distinct model name. Do not call the approximation
 exact recurrence parallelization.
+
+**B4: replace per-ID GRU memory without discarding per-ID state.** Test an
+input-gated affine update (for example minGRU/SRU-style) as a distinct
+model: compute each ID's update coefficients from observed event features
+and fixed context, then scan the subsequence of events touching that ID.
+An ID can be both source and destination, so define and preserve the two
+ordered writes at such events. Compare against a fused original GRU and a
+memory-off variant. If the coefficients consume the current backbone output
+`z_t`, or if the backbone input still reads newly updated per-ID memory,
+the joint model retains the cross-event feedback cycle and cannot be
+parallelized by independent per-ID scans. Break that cycle deliberately
+(for example, read scanned per-ID history in a later layer), then measure
+the changed model's quality and full-fit speed. This keeps explicit per-ID
+state while making the recurrence scan eligible.
 
 Adopt a parallel variant only if it passes sequence/step/gradient tests and
 improves uninstrumented full-epoch scored throughput by at least 1.5× at
@@ -290,6 +310,8 @@ before opening the held-out attack-test reports.
 - Mamba paper: https://arxiv.org/abs/2312.00752
 - Official implementation and current backend requirements: https://github.com/state-spaces/mamba
 - Mamba-2 / structured state-space duality: https://arxiv.org/abs/2405.21060
+- Parallel minGRU/minLSTM: https://arxiv.org/abs/2410.01201
+- Simple Recurrent Unit: https://aclanthology.org/D18-1477/
 - Neural Relational Inference: https://arxiv.org/abs/1802.04687
 - Conditional Neural Processes: https://arxiv.org/abs/1807.01613
 - can-train-and-test: https://doi.org/10.1016/j.cose.2024.103777
