@@ -1,7 +1,6 @@
 """Mine raw CAN relationships and export standalone tracking diagnostics."""
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import statistics
@@ -10,15 +9,14 @@ from collections import Counter, defaultdict
 from dataclasses import asdict
 from pathlib import Path
 
-from graphids.can_patterns import (
+from graphids.core.data.datasets.can_bus import declared_vehicle_id
+from graphids.core.data.discovery.behavior.patterns import (
     MinerConfig,
     PatternMiner,
     PatternTracker,
     TrackerState,
     load_capture,
 )
-from graphids.core.data.datasets.can_bus import declared_vehicle_id
-from graphids.paths import lake_root
 
 SETS = ("set_01", "set_02", "set_03", "set_04")
 
@@ -162,18 +160,10 @@ def run_set(raw: Path, out: Path, config: MinerConfig, include_attacks: bool = T
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--raw-root", type=Path, default=None)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--normal-only", action="store_true", help="skip attack diagnostics")
-    parser.add_argument("--sets", nargs="+", choices=SETS, default=SETS)
-    args = parser.parse_args()
-    root = args.raw_root or Path(lake_root()) / "raw"
-    for name in args.sets:
-        report = run_set(root / name, args.output / name,
-                         MinerConfig(), not args.normal_only)
-        print(f"{name}: {report['patterns']} patterns; {report['runtime_seconds']:.1f}s")
+    """Run the unified version-2 behavior discovery pipeline."""
+    from scripts.mine_can_behavior import main as behavior_main
 
+    behavior_main()
 
 if __name__ == "__main__":
     main()

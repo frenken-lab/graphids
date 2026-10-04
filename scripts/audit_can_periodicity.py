@@ -11,7 +11,7 @@ import statistics
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from graphids.can_dynamics import quantile
+from graphids.core.data.discovery.behavior.dynamics import quantile
 from graphids.paths import lake_root
 
 SETS = ("set_01", "set_02", "set_03", "set_04")

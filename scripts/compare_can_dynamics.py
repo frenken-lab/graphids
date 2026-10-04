@@ -1,16 +1,18 @@
 """Compare three reference-conditioned CAN dynamics on frozen normal splits."""
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import time
 from collections import Counter
 from pathlib import Path
 
-from graphids.can_dynamics import DynamicsConfig, fit_dynamics, score_events
-from graphids.can_patterns import Capture, load_capture
-from graphids.paths import lake_root
+from graphids.core.data.discovery.behavior.dynamics import (
+    DynamicsConfig,
+    fit_dynamics,
+    score_events,
+)
+from graphids.core.data.discovery.behavior.patterns import Capture, load_capture
 
 SETS = ("set_01", "set_02", "set_03", "set_04")
 METHODS = ("timing", "phase", "change_coupling")
@@ -130,19 +132,10 @@ def run_set(raw: Path, frozen: Path, out: Path, config: DynamicsConfig) -> dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--raw-root", type=Path, default=None)
-    parser.add_argument("--pilot-root", type=Path, required=True,
-                        help="directory containing the frozen per-set assignment.json files")
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--sets", nargs="+", choices=SETS, default=SETS)
-    args = parser.parse_args()
-    raw_root = args.raw_root or Path(lake_root()) / "raw"
-    for name in args.sets:
-        report = run_set(raw_root / name, args.pilot_root / name, args.output / name,
-                         DynamicsConfig())
-        print(name, report["rule_counts"], f"{report['runtime_seconds']:.1f}s", flush=True)
+    """Run the unified version-2 behavior discovery pipeline."""
+    from scripts.mine_can_behavior import main as behavior_main
 
+    behavior_main()
 
 if __name__ == "__main__":
     main()

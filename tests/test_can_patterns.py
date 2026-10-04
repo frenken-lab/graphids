@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from graphids.can_patterns import (
+from graphids.core.data.discovery.behavior.patterns import (
     Capture,
     Event,
     MinerConfig,

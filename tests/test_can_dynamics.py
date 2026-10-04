@@ -5,7 +5,7 @@ import hashlib
 import json
 from dataclasses import asdict
 
-from graphids.can_dynamics import (
+from graphids.core.data.discovery.behavior.dynamics import (
     DynamicsConfig,
     DynamicsProfile,
     PairRule,
@@ -13,7 +13,7 @@ from graphids.can_dynamics import (
     fit_dynamics,
     score_events,
 )
-from graphids.can_patterns import Capture, Event
+from graphids.core.data.discovery.behavior.patterns import Capture, Event
 from scripts.compare_can_dynamics import run_set
 
 
@@ -91,7 +91,7 @@ def test_runner_uses_frozen_references_and_labels_deletion(tmp_path):
 
 
 def test_deletion_rederives_payload_changes(tmp_path):
-    from graphids.can_patterns import load_capture
+    from graphids.core.data.discovery.behavior.patterns import load_capture
 
     path = tmp_path / "capture.csv"
     with path.open("w", newline="") as handle:
@@ -112,3 +112,22 @@ def test_bus_load_selects_mode_specific_deadline():
     high = score_events([event(0, "X"), event(.01, "Y"), event(.02, "A")], 0, .2, profile)
     assert sum(row["timing"] for row in low) == 0
     assert sum(row["timing"] for row in high) == 1
+
+
+def test_pair_candidates_must_appear_in_both_references():
+    cfg = DynamicsConfig(min_id_samples=3, min_pair_samples=3,
+                         max_candidate_ids=2, max_pair_lag=.02,
+                         sample_per_stream=100, min_control_gain=.1)
+    captures = []
+    for name, offset, with_extra in [('first', 0, False), ('second', .1, True)]:
+        events = []
+        for i in range(30):
+            t = i + offset
+            events.extend([event(t, 'A'), event(t + .01, 'B')])
+            if with_extra:
+                events.extend(event(t + .02 + j * .001, 'X') for j in range(20))
+        events.sort(key=lambda item: item.timestamp)
+        captures.append(Capture(name, name, events, events[0].timestamp,
+                                events[-1].timestamp, len(events), {1: len(events)}))
+    profile = fit_dynamics(captures, cfg)
+    assert any(rule.trigger == 'A' and rule.target == 'B' for rule in profile.phase)

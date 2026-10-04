@@ -5,8 +5,6 @@ All time values are seconds. Captures are independent; no state crosses files.
 from __future__ import annotations
 
 import bisect
-import csv
-import hashlib
 import math
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
@@ -42,48 +40,17 @@ class Capture:
 
 
 def load_capture(path: Path, *, drop_interval: tuple[str, float, float] | None = None) -> Capture:
-    """Read raw CSV; optionally omit an ID over a synthetic deletion interval."""
-    with path.open("rb") as source_handle:
-        digest = hashlib.file_digest(source_handle, "sha256").hexdigest()
-    frames: list[tuple[float, int, str, str, int]] = []
-    lengths: Counter[int] = Counter()
-    previous_timestamp = -math.inf
-    decreasing_timestamps = 0
-    invalid_payloads = 0
-    raw_lengths: Counter[int] = Counter()
-    with path.open(newline="") as handle:
-        reader = csv.DictReader(handle)
-        if not {"timestamp", "arbitration_id", "data_field"} <= set(reader.fieldnames or []):
-            raise ValueError(f"missing raw CAN columns: {path}")
-        for ordinal, row in enumerate(reader):
-            stamp = float(row["timestamp"])
-            if not math.isfinite(stamp):
-                raise ValueError(f"nonfinite timestamp: {path}:{ordinal + 2}")
-            if stamp < previous_timestamp:
-                decreasing_timestamps += 1
-            previous_timestamp = stamp
-            arb_id = row["arbitration_id"].strip()
-            if drop_interval is not None and (arb_id == drop_interval[0]
-                                              and drop_interval[1] <= stamp < drop_interval[2]):
-                continue
-            payload = row["data_field"].strip()
-            if len(payload) % 2 or any(c not in "0123456789abcdefABCDEF" for c in payload):
-                invalid_payloads += 1
-            length = len(payload) // 2
-            lengths[length] += 1
-            raw_lengths[len(payload)] += 1
-            frames.append((stamp, ordinal, arb_id, payload, length))
-    frames.sort(key=lambda frame: (frame[0], frame[1]))
-    events: list[Event] = []
-    last: dict[str, str] = {}
-    for stamp, ordinal, arb_id, payload, length in frames:
-        events.append(Event(stamp, arb_id, "arrival", length, ordinal, len(payload)))
-        if arb_id in last and last[arb_id] != payload:
-            events.append(Event(stamp, arb_id, "change", length, ordinal, len(payload)))
-        last[arb_id] = payload
-    return Capture(str(path), digest, events, events[0].timestamp if events else 0.0,
-                   events[-1].timestamp if events else 0.0, len(frames), dict(sorted(lengths.items())),
-                   decreasing_timestamps, invalid_payloads, dict(sorted(raw_lengths.items())))
+    """Compatibility view of the shared parsed capture."""
+    from .capture import derive_events
+    from .capture import load_capture as read_capture
+
+    raw = read_capture(path, drop_interval=drop_interval)
+    lengths = {frame.ordinal: frame.raw_payload_chars for frame in raw.frames}
+    events = [Event(stamp, arb_id, kind, lengths[ordinal] // 2, ordinal, lengths[ordinal])
+              for stamp, ordinal, arb_id, kind in derive_events(raw.frames)]
+    return Capture(raw.source, raw.sha256, events, raw.start, raw.end, len(raw.frames),
+                   raw.payload_lengths, raw.decreasing_timestamps, raw.invalid_payloads,
+                   raw.raw_payload_chars)
 
 
 @dataclass(frozen=True)

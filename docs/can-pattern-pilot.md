@@ -1,5 +1,7 @@
 # CAN relationship pilot
 
+> Historical pilot: the active CLI now runs the unified version-2 discovery pipeline. See [CAN behavior discovery](behavior-discovery.md). The commands and report fields below describe the original pilot run.
+
 Run `python scripts/mine_can_patterns.py --output OUTPUT_DIR` from the repository root. The runner reads the raw `set_01` through `set_04` CSVs under `GRAPHIDS_LAKE_ROOT/raw` by default. `--raw-root` overrides that directory. `--sets set_03 set_04` selects a subset of sets. `--normal-only` runs the selected normal partitions without attack diagnostics.
 
 Each set uses a deterministic two reference, one calibration, one normal test assignment. When filenames include two accessory and two attack-free captures, the first of each type is a reference; the second accessory is calibration and the second attack-free is normal test. `assignment.json` records these roles and SHA256 hashes before attack scoring. The miner reads only the two reference captures. No graph snapshots or Graph-Mamba package are required.

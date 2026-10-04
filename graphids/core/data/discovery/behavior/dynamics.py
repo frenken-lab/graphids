@@ -8,7 +8,7 @@ import statistics
 from collections import Counter, defaultdict, deque
 from dataclasses import asdict, dataclass, field
 
-from graphids.can_patterns import Capture, Event
+from graphids.core.data.discovery.behavior.patterns import Capture, Event
 
 
 def quantile(values: list[float], fraction: float) -> float:
@@ -41,7 +41,7 @@ class DynamicsConfig:
     synthetic_min_seconds: float = 3.0
 
 
-@dataclass
+@dataclass(frozen=True)
 class TimingRule:
     arb_id: str
     all_limit: float
@@ -51,7 +51,7 @@ class TimingRule:
     reference_medians: list[float]
 
 
-@dataclass
+@dataclass(frozen=True)
 class PairRule:
     trigger: str
     target: str
@@ -137,8 +137,11 @@ def _lag_sample(targets: list[float], triggers: list[float],
 
 def _pairs(captures: list[Capture], kind: str, config: DynamicsConfig,
            rejected: list[dict]) -> list[PairRule]:
-    counts = Counter(e.arb_id for capture in captures for e in capture.events if e.kind == kind)
-    ids = sorted(counts, key=lambda key: (-counts[key], key))[:config.max_candidate_ids]
+    per_capture = [Counter(e.arb_id for e in capture.events if e.kind == kind)
+                   for capture in captures]
+    shared = set.intersection(*(set(counts) for counts in per_capture))
+    counts = Counter({key: sum(counts[key] for counts in per_capture) for key in shared})
+    ids = sorted(shared, key=lambda key: (-counts[key], key))[:config.max_candidate_ids]
     streams = [_times(capture, kind, set(ids)) for capture in captures]
     shifted_streams = []
     for capture, stream in zip(captures, streams, strict=True):
