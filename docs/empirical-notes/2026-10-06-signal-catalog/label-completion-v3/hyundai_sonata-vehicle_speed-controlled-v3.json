@@ -1,0 +1,301 @@
+{
+  "adaptive_budget": 8,
+  "assessable": true,
+  "candidate_families_scored": 29,
+  "dbc_sha256": "41deaf3142e86b6928f0f89fb968a710dae74ced5dbf47c897bc8c69cd2108ba",
+  "detailed_family_ids": {
+    "baseline": [
+      [
+        null,
+        "386",
+        8
+      ],
+      [
+        null,
+        "4F1",
+        4
+      ],
+      [
+        null,
+        "394",
+        8
+      ],
+      [
+        null,
+        "421",
+        8
+      ],
+      [
+        null,
+        "356",
+        8
+      ],
+      [
+        null,
+        "130",
+        8
+      ],
+      [
+        null,
+        "220",
+        8
+      ],
+      [
+        null,
+        "140",
+        8
+      ]
+    ],
+    "expanded_search": [
+      [
+        null,
+        "386",
+        8
+      ],
+      [
+        null,
+        "4F1",
+        4
+      ],
+      [
+        null,
+        "394",
+        8
+      ],
+      [
+        null,
+        "421",
+        8
+      ],
+      [
+        null,
+        "356",
+        8
+      ],
+      [
+        null,
+        "130",
+        8
+      ],
+      [
+        null,
+        "220",
+        8
+      ],
+      [
+        null,
+        "140",
+        8
+      ]
+    ],
+    "relation_fixed_pool": [
+      [
+        null,
+        "386",
+        8
+      ],
+      [
+        null,
+        "4F1",
+        4
+      ],
+      [
+        null,
+        "394",
+        8
+      ],
+      [
+        null,
+        "421",
+        8
+      ],
+      [
+        null,
+        "356",
+        8
+      ],
+      [
+        null,
+        "130",
+        8
+      ],
+      [
+        null,
+        "220",
+        8
+      ],
+      [
+        null,
+        "140",
+        8
+      ]
+    ],
+    "relation_with_reopening": [
+      [
+        null,
+        "386",
+        8
+      ],
+      [
+        null,
+        "4F1",
+        4
+      ],
+      [
+        null,
+        "394",
+        8
+      ],
+      [
+        null,
+        "421",
+        8
+      ],
+      [
+        null,
+        "356",
+        8
+      ],
+      [
+        null,
+        "130",
+        8
+      ],
+      [
+        null,
+        "220",
+        8
+      ],
+      [
+        null,
+        "140",
+        8
+      ]
+    ]
+  },
+  "development_hashes": [
+    "3666dca66a4a263e641de8aa17f2fa320c7f8f8a1d51b638069b3b478e106436",
+    "b171fe7f2d2a7bbc3a5d874d7e1e3f1ef2dc0923e975fd5832318eba80fe1cce"
+  ],
+  "fitting_hashes": [
+    "c4a46c3aec810a5665e7a2dbcae8f8dc1207a19942c6c34d9afe88feb2730528",
+    "a07e0d3d3c560ae93d2fb09293554a939713d1bfd789cd720a4306c7b30790f8"
+  ],
+  "hidden_role": "vehicle_speed",
+  "manifest_hash": "4c210e286cb71b8591982de213031b1d3595dbb680cc548fffcb341afc62cf6a",
+  "oracle_id": {
+    "abstained": true,
+    "exact_layout_rank": null,
+    "exact_layout_top_1": false,
+    "exact_layout_top_8": false,
+    "held_out_affine_raw_agreement": false,
+    "id_rank": 23,
+    "id_top_1": false,
+    "id_top_5": false,
+    "id_top_8": false,
+    "role_rank_conditional_on_exact_layout": null
+  },
+  "reference_layouts_evaluation_only": [
+    {
+      "arb_id": "52A",
+      "bus": null,
+      "confidence": 1.0,
+      "endian": "little",
+      "evidence": [
+        "dbc",
+        "/tmp/graphids_can_prospective_cohort/HYUNDAI_SONATA.dbc"
+      ],
+      "label_hypotheses": [
+        [
+          "CF_Clu_VehicleSpeed",
+          1.0
+        ]
+      ],
+      "limit": 0.0,
+      "mux_start": null,
+      "mux_value": null,
+      "payload_length": 8,
+      "reference_support": [],
+      "role": "known",
+      "signed": false,
+      "start": 0,
+      "width": 8
+    }
+  ],
+  "relation_family_scores": [],
+  "relation_gate": {
+    "source_gate": "eligible",
+    "source_supporting_vehicles": [
+      "HONDA_CIVIC",
+      "SUBARU_FORESTER"
+    ],
+    "status": "unavailable",
+    "target_anchor": null
+  },
+  "schema": "dbc-label-completion-controlled-v3",
+  "transition_trace": {
+    "baseline_abstained": true,
+    "baseline_detailed": false,
+    "baseline_exact_generated": null,
+    "baseline_exact_retained": false,
+    "baseline_role_rank": null,
+    "initial_id_rank": 23,
+    "initial_pool": true,
+    "oracle_id_affine_raw_agreement": false,
+    "oracle_id_exact_generated": true,
+    "oracle_id_exact_rank": null,
+    "oracle_id_exact_retained": false
+  },
+  "v2_1_case_sha256": "afa20c941e241d661b7b6eed510e4a4b5c26882436b6936a247984300ded1c9a",
+  "variants": {
+    "baseline": {
+      "abstained": true,
+      "exact_layout_rank": null,
+      "exact_layout_top_1": false,
+      "exact_layout_top_8": false,
+      "held_out_affine_raw_agreement": false,
+      "id_rank": 23,
+      "id_top_1": false,
+      "id_top_5": false,
+      "id_top_8": false,
+      "role_rank_conditional_on_exact_layout": null
+    },
+    "expanded_search": {
+      "abstained": true,
+      "exact_layout_rank": null,
+      "exact_layout_top_1": false,
+      "exact_layout_top_8": false,
+      "held_out_affine_raw_agreement": false,
+      "id_rank": null,
+      "id_top_1": false,
+      "id_top_5": false,
+      "id_top_8": false,
+      "role_rank_conditional_on_exact_layout": null
+    },
+    "relation_fixed_pool": {
+      "abstained": true,
+      "exact_layout_rank": null,
+      "exact_layout_top_1": false,
+      "exact_layout_top_8": false,
+      "held_out_affine_raw_agreement": false,
+      "id_rank": null,
+      "id_top_1": false,
+      "id_top_5": false,
+      "id_top_8": false,
+      "role_rank_conditional_on_exact_layout": null
+    },
+    "relation_with_reopening": {
+      "abstained": true,
+      "exact_layout_rank": null,
+      "exact_layout_top_1": false,
+      "exact_layout_top_8": false,
+      "held_out_affine_raw_agreement": false,
+      "id_rank": null,
+      "id_top_1": false,
+      "id_top_5": false,
+      "id_top_8": false,
+      "role_rank_conditional_on_exact_layout": null
+    }
+  },
+  "vehicle": "HYUNDAI_SONATA"
+}

@@ -1,0 +1,394 @@
+{
+  "adaptive_budget": 16,
+  "assessable": false,
+  "candidate_families_scored": 43,
+  "dbc_sha256": "d874be4545d5b8ee21868cf96c5f4af6d6fcfc578497b73209d0e579379bd153",
+  "detailed_family_ids": {
+    "baseline": [
+      [
+        null,
+        "309",
+        8
+      ],
+      [
+        null,
+        "255",
+        8
+      ],
+      [
+        null,
+        "324",
+        8
+      ],
+      [
+        null,
+        "191",
+        8
+      ],
+      [
+        null,
+        "94",
+        8
+      ],
+      [
+        null,
+        "130",
+        8
+      ],
+      [
+        null,
+        "326",
+        8
+      ],
+      [
+        null,
+        "1EA",
+        8
+      ]
+    ],
+    "expanded_search": [
+      [
+        null,
+        "309",
+        8
+      ],
+      [
+        null,
+        "255",
+        8
+      ],
+      [
+        null,
+        "324",
+        8
+      ],
+      [
+        null,
+        "191",
+        8
+      ],
+      [
+        null,
+        "94",
+        8
+      ],
+      [
+        null,
+        "130",
+        8
+      ],
+      [
+        null,
+        "326",
+        8
+      ],
+      [
+        null,
+        "1EA",
+        8
+      ],
+      [
+        null,
+        "40C",
+        8
+      ],
+      [
+        null,
+        "158",
+        8
+      ],
+      [
+        null,
+        "14A",
+        8
+      ],
+      [
+        null,
+        "17C",
+        8
+      ],
+      [
+        null,
+        "374",
+        8
+      ],
+      [
+        null,
+        "320",
+        8
+      ],
+      [
+        null,
+        "1D0",
+        8
+      ],
+      [
+        null,
+        "221",
+        6
+      ]
+    ],
+    "relation_fixed_pool": [
+      [
+        null,
+        "309",
+        8
+      ],
+      [
+        null,
+        "255",
+        8
+      ],
+      [
+        null,
+        "324",
+        8
+      ],
+      [
+        null,
+        "191",
+        8
+      ],
+      [
+        null,
+        "94",
+        8
+      ],
+      [
+        null,
+        "130",
+        8
+      ],
+      [
+        null,
+        "326",
+        8
+      ],
+      [
+        null,
+        "1EA",
+        8
+      ],
+      [
+        null,
+        "40C",
+        8
+      ],
+      [
+        null,
+        "158",
+        8
+      ],
+      [
+        null,
+        "14A",
+        8
+      ],
+      [
+        null,
+        "17C",
+        8
+      ],
+      [
+        null,
+        "374",
+        8
+      ],
+      [
+        null,
+        "320",
+        8
+      ],
+      [
+        null,
+        "1D0",
+        8
+      ],
+      [
+        null,
+        "221",
+        6
+      ]
+    ],
+    "relation_with_reopening": [
+      [
+        null,
+        "309",
+        8
+      ],
+      [
+        null,
+        "255",
+        8
+      ],
+      [
+        null,
+        "324",
+        8
+      ],
+      [
+        null,
+        "191",
+        8
+      ],
+      [
+        null,
+        "94",
+        8
+      ],
+      [
+        null,
+        "130",
+        8
+      ],
+      [
+        null,
+        "326",
+        8
+      ],
+      [
+        null,
+        "1EA",
+        8
+      ],
+      [
+        null,
+        "40C",
+        8
+      ],
+      [
+        null,
+        "158",
+        8
+      ],
+      [
+        null,
+        "14A",
+        8
+      ],
+      [
+        null,
+        "17C",
+        8
+      ],
+      [
+        null,
+        "374",
+        8
+      ],
+      [
+        null,
+        "320",
+        8
+      ],
+      [
+        null,
+        "1D0",
+        8
+      ],
+      [
+        null,
+        "221",
+        6
+      ]
+    ]
+  },
+  "development_hashes": [
+    "02b9c5b03dcbd5f1e7de23e545d9ce272af0120a068fd5293c14f74aedd963de",
+    "08b6996851acab99f4770a95be9fc90f88b69de0193ba496055b88667b7a11b7"
+  ],
+  "fitting_hashes": [
+    "aa717512fea3f11bf39857494f5d23efacc391c166d6f7b8600b003a67083a23",
+    "8b5b1c8353db1991a2d67e4e5aedd7ea0f24abbbad64c32d9976fef877b00067"
+  ],
+  "hidden_role": "accelerator_pedal",
+  "manifest_hash": "4c210e286cb71b8591982de213031b1d3595dbb680cc548fffcb341afc62cf6a",
+  "oracle_id": {
+    "abstained": true,
+    "exact_layout_rank": null,
+    "exact_layout_top_1": false,
+    "exact_layout_top_8": false,
+    "held_out_affine_raw_agreement": false,
+    "id_rank": null,
+    "id_top_1": false,
+    "id_top_5": false,
+    "id_top_8": false,
+    "role_rank_conditional_on_exact_layout": null
+  },
+  "reference_layouts_evaluation_only": [],
+  "relation_family_scores": [],
+  "relation_gate": {
+    "source_gate": "rejected",
+    "source_supporting_vehicles": [
+      "SUBARU_FORESTER"
+    ],
+    "status": "unavailable",
+    "target_anchor": null
+  },
+  "schema": "dbc-label-completion-controlled-v3",
+  "transition_trace": {
+    "baseline_abstained": true,
+    "baseline_detailed": false,
+    "baseline_exact_generated": null,
+    "baseline_exact_retained": false,
+    "baseline_role_rank": null,
+    "initial_id_rank": null,
+    "initial_pool": false,
+    "oracle_id_affine_raw_agreement": false,
+    "oracle_id_exact_generated": false,
+    "oracle_id_exact_rank": null,
+    "oracle_id_exact_retained": false
+  },
+  "v2_1_case_sha256": "a881c84849c29ec509afd98bf3eeb2d1ef2206df0bda9e3e63e3359957ee946e",
+  "variants": {
+    "baseline": {
+      "abstained": true,
+      "exact_layout_rank": null,
+      "exact_layout_top_1": false,
+      "exact_layout_top_8": false,
+      "held_out_affine_raw_agreement": false,
+      "id_rank": null,
+      "id_top_1": false,
+      "id_top_5": false,
+      "id_top_8": false,
+      "role_rank_conditional_on_exact_layout": null
+    },
+    "expanded_search": {
+      "abstained": true,
+      "exact_layout_rank": null,
+      "exact_layout_top_1": false,
+      "exact_layout_top_8": false,
+      "held_out_affine_raw_agreement": false,
+      "id_rank": null,
+      "id_top_1": false,
+      "id_top_5": false,
+      "id_top_8": false,
+      "role_rank_conditional_on_exact_layout": null
+    },
+    "relation_fixed_pool": {
+      "abstained": true,
+      "exact_layout_rank": null,
+      "exact_layout_top_1": false,
+      "exact_layout_top_8": false,
+      "held_out_affine_raw_agreement": false,
+      "id_rank": null,
+      "id_top_1": false,
+      "id_top_5": false,
+      "id_top_8": false,
+      "role_rank_conditional_on_exact_layout": null
+    },
+    "relation_with_reopening": {
+      "abstained": true,
+      "exact_layout_rank": null,
+      "exact_layout_top_1": false,
+      "exact_layout_top_8": false,
+      "held_out_affine_raw_agreement": false,
+      "id_rank": null,
+      "id_top_1": false,
+      "id_top_5": false,
+      "id_top_8": false,
+      "role_rank_conditional_on_exact_layout": null
+    }
+  },
+  "vehicle": "HONDA_CIVIC"
+}
