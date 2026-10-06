@@ -7,12 +7,12 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from graphids.core.data.discovery.behavior.dynamics import (
+from can_discovery.relationships.behavior.dynamics import (
     DynamicsConfig,
     fit_dynamics,
     score_events,
 )
-from graphids.core.data.discovery.behavior.patterns import Capture, load_capture
+from can_discovery.preprocessing.capture import Capture, load_capture
 
 SETS = ("set_01", "set_02", "set_03", "set_04")
 METHODS = ("timing", "phase", "change_coupling")

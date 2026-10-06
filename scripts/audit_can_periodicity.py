@@ -11,8 +11,8 @@ import statistics
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from graphids.core.data.discovery.behavior.dynamics import quantile
-from graphids.paths import lake_root
+from can_discovery.paths import raw_root
+from can_discovery.relationships.behavior.dynamics import quantile
 
 SETS = ("set_01", "set_02", "set_03", "set_04")
 BANDS = (0.005, 0.01, 0.0125, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 5.0)
@@ -184,11 +184,11 @@ def main() -> None:
     parser.add_argument("--pilot-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    raw_root = args.raw_root or Path(lake_root()) / "raw"
+    data_root = args.raw_root or raw_root()
     results = {}
     for name in SETS:
         assignment = json.loads((args.pilot_root / name / "assignment.json").read_text())
-        results[name] = audit_set(raw_root / name, assignment)
+        results[name] = audit_set(data_root / name, assignment)
         print(name, results[name]["stable_id_count_all_four_files"], flush=True)
     cross_set_bands = set.intersection(*[set(result["period_bands_all_four_files"])
                                          for result in results.values()])

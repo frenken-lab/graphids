@@ -5,7 +5,7 @@ import hashlib
 import json
 from dataclasses import asdict
 
-from graphids.core.data.discovery.behavior.dynamics import (
+from can_discovery.relationships.behavior.dynamics import (
     DynamicsConfig,
     DynamicsProfile,
     PairRule,
@@ -13,12 +13,19 @@ from graphids.core.data.discovery.behavior.dynamics import (
     fit_dynamics,
     score_events,
 )
-from graphids.core.data.discovery.behavior.patterns import Capture, Event
+from can_discovery.preprocessing.capture import Capture, Event
 from scripts.compare_can_dynamics import run_set
 
 
 def event(t, key, kind="arrival"):
     return Event(t, key, kind, 1)
+
+
+def event_capture(name, events):
+    capture = Capture(name, name, (), events[0].timestamp, events[-1].timestamp,
+                      0, 0, {}, {})
+    object.__setattr__(capture, '_events', tuple(events))
+    return capture
 
 
 def test_three_scores_and_recording_reset():
@@ -49,7 +56,7 @@ def test_fit_retains_stable_phase_and_change_coupling():
             t = i + offset
             events.extend([event(t, "A"), event(t + .01, "A", "change"),
                            event(t + .03, "B"), event(t + .04, "B", "change")])
-        return Capture(name, name, events, events[0].timestamp, events[-1].timestamp, 24, {1: 24})
+        return event_capture(name, events)
     profile = fit_dynamics([capture("ref1", 0), capture("ref2", .2)], cfg)
     assert any(rule.trigger == "A" and rule.target == "B" for rule in profile.phase)
     assert any(rule.trigger == "A" and rule.target == "B" for rule in profile.change_coupling)
@@ -91,7 +98,7 @@ def test_runner_uses_frozen_references_and_labels_deletion(tmp_path):
 
 
 def test_deletion_rederives_payload_changes(tmp_path):
-    from graphids.core.data.discovery.behavior.patterns import load_capture
+    from can_discovery.preprocessing.capture import load_capture
 
     path = tmp_path / "capture.csv"
     with path.open("w", newline="") as handle:
@@ -127,7 +134,6 @@ def test_pair_candidates_must_appear_in_both_references():
             if with_extra:
                 events.extend(event(t + .02 + j * .001, 'X') for j in range(20))
         events.sort(key=lambda item: item.timestamp)
-        captures.append(Capture(name, name, events, events[0].timestamp,
-                                events[-1].timestamp, len(events), {1: len(events)}))
+        captures.append(event_capture(name, events))
     profile = fit_dynamics(captures, cfg)
     assert any(rule.trigger == 'A' and rule.target == 'B' for rule in profile.phase)

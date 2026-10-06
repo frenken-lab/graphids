@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from graphids.core.data.discovery.behavior import (
+from can_discovery import (
     BehaviorConfig,
     BehaviorProfile,
     BehaviorState,
@@ -16,13 +16,23 @@ from graphids.core.data.discovery.behavior import (
     load_capture,
     score_capture,
 )
-from graphids.core.data.discovery.behavior.dynamics import DynamicsConfig
-from graphids.core.data.discovery.behavior.motifs import (
+from can_discovery.decoding.signals import FieldCandidate
+from can_discovery.relationships.behavior.dynamics import DynamicsConfig
+from can_discovery.relationships.behavior.motifs import (
     MotifRule,
     MotifState,
     MotifTracker,
 )
-from graphids.core.data.discovery.behavior.runner import assign, run_set
+from can_discovery.relationships.physical import (
+    CandidateCombination,
+    RoleHypothesis,
+    SourceFactorValidation,
+    SourceRoleCalibration,
+)
+from can_discovery.relationships.physical.physics_factors import (
+    FactorEvidence,
+)
+from can_discovery.runner import assign, run_set
 
 
 def _write(path: Path, shift: int = 0, *, attacked: bool = False):
@@ -55,15 +65,46 @@ def test_profile_is_reference_only_versioned_and_graph_ready(tmp_path):
     assert profile.node_keys == ('A', 'B')
     assert profile.payload and profile.fields and profile.relations
     assert BehaviorProfile.from_dict(json.loads(json.dumps(profile.to_dict()))).to_dict() == profile.to_dict()
+    evidence = FactorEvidence('speed_acceleration', ('speed', 'acceleration'),
+                              'supported', .2, .02, 2, 1, 120, residual_quality=.4,
+                              members=(0, 1))
+    extended = replace(profile, physical_factor_evidence=(evidence,),
+                       source_factor_validation=(SourceFactorValidation(
+                           'speed_acceleration', ('civic', 'prius'), .1,
+                           (('civic', 1, 2, .4), ('prius', 1, 3, .3))),))
+    assert BehaviorProfile.from_dict(json.loads(json.dumps(extended.to_dict()))).to_dict() == extended.to_dict()
+    assert profile.version == 11
+    assert not any(key.startswith('candidate_graph') for key in profile.to_dict())
+    assert 'candidate_graph_artifact' not in profile.to_dict()['config']
+    assert 'layout_evidence' not in profile.to_dict()
+    assert 'role_evidence' not in profile.to_dict()
+    for old_version in (7, 8, 9, 10):
+        with pytest.raises(ValueError, match='regenerate a version-11 profile'):
+            BehaviorProfile.from_dict({**profile.to_dict(), 'version': old_version})
+    from can_discovery.decoding.signals import _bit_positions
+    assert all(not (_bit_positions(left.start, left.width, left.endian) &
+                    _bit_positions(right.start, right.width, right.endian))
+               for index, left in enumerate(profile.fields)
+               for right in profile.fields[index + 1:]
+               if (left.bus, left.arb_id, left.payload_length) ==
+                  (right.bus, right.arb_id, right.payload_length))
+    with pytest.raises(ValueError, match="version is unsupported"):
+        BehaviorProfile.from_dict({**profile.to_dict(), 'version': 3})
+    with pytest.raises(ValueError, match="version is unsupported"):
+        BehaviorProfile.from_dict({**profile.to_dict(), 'version': 4})
     features, scores = next(score_capture(refs[0], profile))
     assert len(features.node) == profile.config.max_nodes
     assert len(features.relation) == profile.config.max_relations
     assert len(features.motif) == profile.config.max_motifs
     assert features.node_mask == (True, True, False, False)
-    assert scores.to_dict().keys() == {'timing', 'payload', 'field', 'relation', 'motif'}
+    assert scores.to_dict().keys() == {'timing', 'payload', 'field', 'relation', 'motif', 'physical'}
     attack = tmp_path / 'attack.csv'
     _write(attack, 1, attacked=True)
     assert fit_profile(refs, _config()).to_dict() == profile.to_dict()
+    calibration = (SourceRoleCalibration('speed', 1.0, .5, .2,
+                                         ('honda', 'toyota'), 4, 20),)
+    calibrated = fit_profile(refs, _config(), source_calibration=calibration)
+    assert BehaviorProfile.from_dict(calibrated.to_dict()).source_role_calibration == calibration
     assert list(score_capture(load_capture(attack), profile))[0] == list(score_capture(refs[1], profile))[0]
     with pytest.raises(ValueError, match='attack'):
         fit_profile([refs[0], load_capture(attack)], _config())
@@ -84,6 +125,45 @@ def test_empty_bins_deadline_and_reset(tmp_path):
     BehaviorTracker.step(first, .05, profile, BehaviorState())
 
 
+def test_runtime_physical_score_is_weighted_over_null_combination(tmp_path):
+    paths = [tmp_path / 'ref1.csv', tmp_path / 'ref2.csv']
+    _write(paths[0])
+    _write(paths[1], 1)
+    refs = [load_capture(path) for path in paths]
+    profile = fit_profile(refs, _config())
+    field = FieldCandidate('A', 0, 8, 'little', False, 'unknown', 0, 1,
+                           (40, 40), (('unknown', 1.0),), (), 1)
+    hypothesis = RoleHypothesis(field, 'speed', 1, (40, 40),
+                                ('bounded_updates',), update_limit=0)
+    profile = replace(profile, physical_hypotheses=(hypothesis,),
+                      physical_combinations=(
+                          CandidateCombination((0, None, None, None, None, None, None),
+                                               .75, 1, ()),
+                          CandidateCombination((None,) * 7, .25, 0, ())))
+    features, scores, _ = BehaviorTracker.step(refs[0].frames[:4], .2, profile,
+                                               BehaviorState())
+    assert scores.physical == pytest.approx(.75)
+    assert features.node[profile.node_keys.index('A')][-1] == pytest.approx(.75)
+
+
+def test_new_lateral_role_remains_discovery_only_at_runtime(tmp_path):
+    paths = [tmp_path / 'ref1.csv', tmp_path / 'ref2.csv']
+    _write(paths[0])
+    _write(paths[1], 1)
+    refs = [load_capture(path) for path in paths]
+    profile = fit_profile(refs, _config())
+    field = FieldCandidate('A', 0, 8, 'little', False, 'unknown', 0, 1,
+                           (40, 40), (('unknown', 1.0),), (), 1)
+    hypothesis = RoleHypothesis(field, 'yaw', 1, (40, 40),
+                                ('bounded_updates',), update_limit=0)
+    profile = replace(profile, physical_hypotheses=(hypothesis,),
+                      physical_combinations=(CandidateCombination(
+                          (None,) * 7 + (0, None), 1, 1, (), runtime_weight=1),))
+    _, scores, _ = BehaviorTracker.step(refs[0].frames[:4], .2, profile,
+                                        BehaviorState())
+    assert scores.physical == 0
+
+
 def test_motif_fork_constraints_and_expiry():
     rule = MotifRule('fork', ('A|change', 'B|change', 'C|change'),
                      ((0, 1, 0, .1), (0, 2, 0, .15)), .2, (10, 10), .9, .1)
@@ -97,21 +177,23 @@ def test_motif_fork_constraints_and_expiry():
     assert completed == [0] and overdue == [1]
 
 
-def test_runner_verifies_frozen_assignment_and_writes_v2(tmp_path):
+def test_runner_verifies_frozen_assignment_and_writes_v5(tmp_path):
     raw = tmp_path / 'set_01'
     for shift, name in enumerate(('accessory-1', 'accessory-2', 'attack-free-1', 'attack-free-2')):
         _write(raw / 'train_01_attack_free' / f'{name}.csv', shift)
     frozen = tmp_path / 'frozen'
     frozen.mkdir()
     (frozen / 'assignment.json').write_text(json.dumps(assign(raw)))
-    report = run_set(raw, tmp_path / 'out', frozen=frozen, config=_config(), include_attacks=False)
-    assert report['version'] == 2
+    report = run_set(raw, tmp_path / 'out', frozen=frozen, config=_config())
+    assert report['version'] == 11
+    assert json.loads((tmp_path / 'out' / 'profile.json').read_text())['version'] == report['version']
+    assert report['layout_summary'] and report['role_summary']
     assert (tmp_path / 'out' / 'profile.json').exists()
     assert report['results']['normal_test'][0]['bins'] > 0
     test_path = raw / report['assignment']['normal_test'][0]['path']
     test_path.write_text('changed')
     with pytest.raises(ValueError, match='hash changed'):
-        run_set(raw, tmp_path / 'out2', frozen=frozen, config=_config(), include_attacks=False)
+        run_set(raw, tmp_path / 'out2', frozen=frozen, config=_config())
 
 
 def test_runner_rejects_duplicate_normal_files_across_train_dirs(tmp_path):
@@ -126,7 +208,7 @@ def test_runner_rejects_duplicate_normal_files_across_train_dirs(tmp_path):
 
 
 def test_motif_root_sampling_does_not_alias_one_periodic_phase():
-    from graphids.core.data.discovery.behavior.motifs import _count
+    from can_discovery.relationships.behavior.motifs import _count
 
     roots = [float(index) for index in range(100)]
     targets = [float(index) + .01 for index in range(100) if index % 5 == 1]
