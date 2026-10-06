@@ -1,0 +1,4383 @@
+{
+  "dbc_annotations": {
+    "assessable": true,
+    "hidden_reference_used_for_evaluation_only": true,
+    "reference_layouts": [
+      {
+        "arb_id": "309",
+        "bus": null,
+        "confidence": 1.0,
+        "endian": "big",
+        "evidence": [
+          "dbc",
+          "/tmp/graphids_can_prospective_cohort/HONDA_CIVIC.dbc"
+        ],
+        "label_hypotheses": [
+          [
+            "CAR_SPEED",
+            1.0
+          ]
+        ],
+        "limit": 0.0,
+        "mux_start": null,
+        "mux_value": null,
+        "payload_length": 8,
+        "reference_support": [],
+        "role": "known",
+        "signed": false,
+        "start": 0,
+        "width": 16
+      }
+    ]
+  },
+  "dbc_sha256": "d874be4545d5b8ee21868cf96c5f4af6d6fcfc578497b73209d0e579379bd153",
+  "detailed_families": [
+    {
+      "ambiguity": true,
+      "arb_id": "324",
+      "bus": null,
+      "candidate_layouts": [
+        {
+          "layout": {
+            "arb_id": "324",
+            "bus": null,
+            "confidence": 1.0,
+            "endian": "big",
+            "evidence": [
+              "tokenizer:can_d"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 18,
+            "width": 14
+          },
+          "rank": 1,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 1.0989572662640472
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 1.0428155339805827
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.634251968503937
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.634251968503937
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5641732283464567
+            }
+          ],
+          "score": 1.0428155339805827
+        },
+        {
+          "layout": {
+            "arb_id": "324",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 27,
+            "width": 10
+          },
+          "rank": 2,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.9987147177419354
+            },
+            {
+              "rank": 2,
+              "role": "engine_rpm",
+              "score": 0.8917671291592583
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.600984251968504
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.600984251968504
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5505905511811024
+            }
+          ],
+          "score": 0.9987147177419354
+        },
+        {
+          "layout": {
+            "arb_id": "324",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 27,
+            "width": 11
+          },
+          "rank": 3,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.9987147177419354
+            },
+            {
+              "rank": 2,
+              "role": "engine_rpm",
+              "score": 0.8917671291592583
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.600984251968504
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.600984251968504
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5505905511811024
+            }
+          ],
+          "score": 0.9987147177419354
+        },
+        {
+          "layout": {
+            "arb_id": "324",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 27,
+            "width": 12
+          },
+          "rank": 4,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.9987147177419354
+            },
+            {
+              "rank": 2,
+              "role": "engine_rpm",
+              "score": 0.8917671291592583
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.600984251968504
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.600984251968504
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5505905511811024
+            }
+          ],
+          "score": 0.9987147177419354
+        },
+        {
+          "layout": {
+            "arb_id": "324",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 27,
+            "width": 13
+          },
+          "rank": 5,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.9987147177419354
+            },
+            {
+              "rank": 2,
+              "role": "engine_rpm",
+              "score": 0.8917671291592583
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.600984251968504
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.600984251968504
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5505905511811024
+            }
+          ],
+          "score": 0.9987147177419354
+        },
+        {
+          "layout": {
+            "arb_id": "324",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 27,
+            "width": 8
+          },
+          "rank": 6,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.9987147177419354
+            },
+            {
+              "rank": 2,
+              "role": "engine_rpm",
+              "score": 0.6717671291592583
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.600984251968504
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.600984251968504
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5505905511811024
+            }
+          ],
+          "score": 0.9987147177419354
+        },
+        {
+          "layout": {
+            "arb_id": "324",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 27,
+            "width": 9
+          },
+          "rank": 7,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.9987147177419354
+            },
+            {
+              "rank": 2,
+              "role": "engine_rpm",
+              "score": 0.6717671291592583
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.600984251968504
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.600984251968504
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5505905511811024
+            }
+          ],
+          "score": 0.9987147177419354
+        },
+        {
+          "layout": {
+            "arb_id": "324",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "big",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 12,
+            "width": 16
+          },
+          "rank": 8,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.9945087888273536
+            },
+            {
+              "rank": 2,
+              "role": "engine_rpm",
+              "score": 0.9826190250478261
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.6490157480314961
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.6490157480314961
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.616732283464567
+            }
+          ],
+          "score": 0.9945087888273536
+        }
+      ],
+      "candidate_pool_size": 4386,
+      "dbc_anchor_conflicts": [],
+      "null_layout": {
+        "rank": null,
+        "reason": "insufficient_or_ambiguous_evidence"
+      },
+      "payload_length": 8,
+      "protocol_bits": [],
+      "rank": 1,
+      "score": 1.0428155339805827
+    },
+    {
+      "ambiguity": true,
+      "arb_id": "309",
+      "bus": null,
+      "candidate_layouts": [
+        {
+          "layout": {
+            "arb_id": "309",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "big",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 0,
+            "width": 16
+          },
+          "rank": 1,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 1.0466281642480642
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9394628099173554
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5734251968503937
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5734251968503937
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.47500000000000003
+            }
+          ],
+          "score": 0.9394628099173554
+        },
+        {
+          "layout": {
+            "arb_id": "309",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "big",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 1,
+            "width": 15
+          },
+          "rank": 2,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 1.0466281642480642
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9394628099173554
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5734251968503937
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5734251968503937
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.47500000000000003
+            }
+          ],
+          "score": 0.9394628099173554
+        },
+        {
+          "layout": {
+            "arb_id": "309",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "big",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 1,
+            "width": 16
+          },
+          "rank": 3,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 1.0466281642480642
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9394628099173554
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5734251968503937
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5734251968503937
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.47500000000000003
+            }
+          ],
+          "score": 0.9394628099173554
+        },
+        {
+          "layout": {
+            "arb_id": "309",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "big",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 0,
+            "width": 15
+          },
+          "rank": 4,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 1.0435101655681471
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9391794569067295
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5742125984251969
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5742125984251969
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.4773622047244095
+            }
+          ],
+          "score": 0.9391794569067295
+        },
+        {
+          "layout": {
+            "arb_id": "309",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "big",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 1,
+            "width": 14
+          },
+          "rank": 5,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 1.0435101655681471
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9391794569067295
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5742125984251969
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5742125984251969
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.4773622047244095
+            }
+          ],
+          "score": 0.9391794569067295
+        },
+        {
+          "layout": {
+            "arb_id": "309",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "big",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 0,
+            "width": 14
+          },
+          "rank": 6,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 1.0363575696654939
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9391134751773049
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.575
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.575
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.48208661417322834
+            }
+          ],
+          "score": 0.9391134751773049
+        },
+        {
+          "layout": {
+            "arb_id": "309",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "big",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 1,
+            "width": 13
+          },
+          "rank": 7,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 1.0363575696654939
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9391134751773049
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.575
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.575
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.48208661417322834
+            }
+          ],
+          "score": 0.9391134751773049
+        },
+        {
+          "layout": {
+            "arb_id": "309",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "big",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 0,
+            "width": 12
+          },
+          "rank": 8,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 1.0186324468875352
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9383962264150942
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5820866141732284
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5820866141732284
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.49862204724409454
+            }
+          ],
+          "score": 0.9383962264150942
+        }
+      ],
+      "candidate_pool_size": 5320,
+      "dbc_anchor_conflicts": [],
+      "null_layout": {
+        "rank": null,
+        "reason": "insufficient_or_ambiguous_evidence"
+      },
+      "payload_length": 8,
+      "protocol_bits": [],
+      "rank": 2,
+      "score": 0.9357028695968035
+    },
+    {
+      "ambiguity": true,
+      "arb_id": "191",
+      "bus": null,
+      "candidate_layouts": [
+        {
+          "layout": {
+            "arb_id": "191",
+            "bus": null,
+            "confidence": 1.0,
+            "endian": "big",
+            "evidence": [
+              "tokenizer:can_d"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 24,
+            "width": 16
+          },
+          "rank": 1,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 0.9381065596372438
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9103112840466925
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.6870078740157481
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.6870078740157481
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.6326771653543308
+            }
+          ],
+          "score": 0.9103112840466925
+        },
+        {
+          "layout": {
+            "arb_id": "191",
+            "bus": null,
+            "confidence": 1.0,
+            "endian": "little",
+            "evidence": [
+              "tokenizer:can_d"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 24,
+            "width": 16
+          },
+          "rank": 2,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 0.9381065596372438
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9103112840466925
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.6870078740157481
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.6870078740157481
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.6326771653543308
+            }
+          ],
+          "score": 0.9103112840466925
+        },
+        {
+          "layout": {
+            "arb_id": "191",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 25,
+            "width": 15
+          },
+          "rank": 3,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 0.8041184716731467
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.7961657157676347
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.6222440944881892
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.6222440944881892
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5789370078740159
+            }
+          ],
+          "score": 0.7961657157676347
+        },
+        {
+          "layout": {
+            "arb_id": "191",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 25,
+            "width": 16
+          },
+          "rank": 4,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 0.8041184716731467
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.7961657157676347
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.6222440944881892
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.6222440944881892
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5789370078740159
+            }
+          ],
+          "score": 0.7961657157676347
+        },
+        {
+          "layout": {
+            "arb_id": "191",
+            "bus": null,
+            "confidence": 1.0,
+            "endian": "big",
+            "evidence": [
+              "tokenizer:can_d"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 32,
+            "width": 8
+          },
+          "rank": 5,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.7849999999999999
+            },
+            {
+              "rank": 2,
+              "role": "accelerator_pedal",
+              "score": 0.6933070866141733
+            },
+            {
+              "rank": 3,
+              "role": "throttle_plate",
+              "score": 0.6933070866141733
+            },
+            {
+              "rank": 4,
+              "role": "brake_input",
+              "score": 0.6586614173228347
+            },
+            {
+              "rank": 5,
+              "role": "engine_rpm",
+              "score": 0.5573622047244094
+            }
+          ],
+          "score": 0.7849999999999999
+        },
+        {
+          "layout": {
+            "arb_id": "191",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "big",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 24,
+            "width": 15
+          },
+          "rank": 6,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 0.7959330844015217
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.7808937143227814
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.6120078740157481
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.6120078740157481
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5647637795275591
+            }
+          ],
+          "score": 0.7808937143227814
+        },
+        {
+          "layout": {
+            "arb_id": "191",
+            "bus": null,
+            "confidence": 1.0,
+            "endian": "big",
+            "evidence": [
+              "tokenizer:can_d"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 24,
+            "width": 8
+          },
+          "rank": 7,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.7693749999999999
+            },
+            {
+              "rank": 2,
+              "role": "accelerator_pedal",
+              "score": 0.6893700787401575
+            },
+            {
+              "rank": 3,
+              "role": "throttle_plate",
+              "score": 0.6893700787401575
+            },
+            {
+              "rank": 4,
+              "role": "brake_input",
+              "score": 0.6492125984251969
+            },
+            {
+              "rank": 5,
+              "role": "engine_rpm",
+              "score": 0.5516584645669291
+            }
+          ],
+          "score": 0.7693749999999999
+        },
+        {
+          "layout": {
+            "arb_id": "191",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 26,
+            "width": 14
+          },
+          "rank": 8,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 0.7505925421472213
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.7497264004149378
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.6206692913385828
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.6206692913385828
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5812992125984253
+            }
+          ],
+          "score": 0.7497264004149378
+        }
+      ],
+      "candidate_pool_size": 3644,
+      "dbc_anchor_conflicts": [],
+      "null_layout": {
+        "rank": null,
+        "reason": "insufficient_or_ambiguous_evidence"
+      },
+      "payload_length": 8,
+      "protocol_bits": [],
+      "rank": 3,
+      "score": 0.9103112840466925
+    },
+    {
+      "ambiguity": true,
+      "arb_id": "255",
+      "bus": null,
+      "candidate_layouts": [
+        {
+          "layout": {
+            "arb_id": "255",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 16,
+            "width": 16
+          },
+          "rank": 1,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 0.95611419450947
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9283189189189189
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.6238188976377954
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.6238188976377954
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5694881889763781
+            }
+          ],
+          "score": 0.9283189189189189
+        },
+        {
+          "layout": {
+            "arb_id": "255",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "big",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 16,
+            "width": 16
+          },
+          "rank": 2,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 0.9522231932106884
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9244279176201373
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.6238188976377954
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.6238188976377954
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5694881889763781
+            }
+          ],
+          "score": 0.9244279176201373
+        },
+        {
+          "layout": {
+            "arb_id": "255",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "big",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 8,
+            "width": 16
+          },
+          "rank": 3,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 0.9514811544696617
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9165992647058823
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5923228346456693
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5923228346456693
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5340551181102362
+            }
+          ],
+          "score": 0.9165992647058823
+        },
+        {
+          "layout": {
+            "arb_id": "255",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 8,
+            "width": 16
+          },
+          "rank": 4,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 0.9514811544696617
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9165992647058823
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5923228346456693
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5923228346456693
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5340551181102362
+            }
+          ],
+          "score": 0.9165992647058823
+        },
+        {
+          "layout": {
+            "arb_id": "255",
+            "bus": null,
+            "confidence": 1.0,
+            "endian": "big",
+            "evidence": [
+              "tokenizer:can_d"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 24,
+            "width": 8
+          },
+          "rank": 5,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.9017708333333334
+            },
+            {
+              "rank": 2,
+              "role": "accelerator_pedal",
+              "score": 0.6948818897637795
+            },
+            {
+              "rank": 3,
+              "role": "throttle_plate",
+              "score": 0.6948818897637795
+            },
+            {
+              "rank": 4,
+              "role": "engine_rpm",
+              "score": 0.6769676837270342
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.6586614173228347
+            }
+          ],
+          "score": 0.9017708333333334
+        },
+        {
+          "layout": {
+            "arb_id": "255",
+            "bus": null,
+            "confidence": 1.0,
+            "endian": "big",
+            "evidence": [
+              "tokenizer:can_d"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 0,
+            "width": 8
+          },
+          "rank": 6,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.8900367647058822
+            },
+            {
+              "rank": 2,
+              "role": "accelerator_pedal",
+              "score": 0.6877952755905513
+            },
+            {
+              "rank": 3,
+              "role": "throttle_plate",
+              "score": 0.6877952755905513
+            },
+            {
+              "rank": 4,
+              "role": "engine_rpm",
+              "score": 0.6609816465956461
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.6539370078740159
+            }
+          ],
+          "score": 0.8900367647058822
+        },
+        {
+          "layout": {
+            "arb_id": "255",
+            "bus": null,
+            "confidence": 1.0,
+            "endian": "big",
+            "evidence": [
+              "tokenizer:can_d"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 16,
+            "width": 8
+          },
+          "rank": 7,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.8900367647058822
+            },
+            {
+              "rank": 2,
+              "role": "accelerator_pedal",
+              "score": 0.6909448818897639
+            },
+            {
+              "rank": 3,
+              "role": "throttle_plate",
+              "score": 0.6909448818897639
+            },
+            {
+              "rank": 4,
+              "role": "engine_rpm",
+              "score": 0.6666509379342288
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.6539370078740159
+            }
+          ],
+          "score": 0.8900367647058822
+        },
+        {
+          "layout": {
+            "arb_id": "255",
+            "bus": null,
+            "confidence": 1.0,
+            "endian": "big",
+            "evidence": [
+              "tokenizer:can_d"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 8,
+            "width": 8
+          },
+          "rank": 8,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.8900367647058822
+            },
+            {
+              "rank": 2,
+              "role": "accelerator_pedal",
+              "score": 0.6712598425196851
+            },
+            {
+              "rank": 3,
+              "role": "throttle_plate",
+              "score": 0.6712598425196851
+            },
+            {
+              "rank": 4,
+              "role": "engine_rpm",
+              "score": 0.6609816465956461
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.6374015748031496
+            }
+          ],
+          "score": 0.8900367647058822
+        }
+      ],
+      "candidate_pool_size": 3260,
+      "dbc_anchor_conflicts": [],
+      "null_layout": {
+        "rank": null,
+        "reason": "insufficient_or_ambiguous_evidence"
+      },
+      "payload_length": 8,
+      "protocol_bits": [
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55
+      ],
+      "rank": 4,
+      "score": 0.9017708333333334
+    },
+    {
+      "ambiguity": true,
+      "arb_id": "130",
+      "bus": null,
+      "candidate_layouts": [
+        {
+          "layout": {
+            "arb_id": "130",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 30,
+            "width": 15
+          },
+          "rank": 1,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.9677872474747476
+            },
+            {
+              "rank": 2,
+              "role": "engine_rpm",
+              "score": 0.8787739600731729
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5954724409448819
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5954724409448819
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5364173228346457
+            }
+          ],
+          "score": 0.9677872474747476
+        },
+        {
+          "layout": {
+            "arb_id": "130",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 30,
+            "width": 16
+          },
+          "rank": 2,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.9677872474747476
+            },
+            {
+              "rank": 2,
+              "role": "engine_rpm",
+              "score": 0.8787739600731729
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5954724409448819
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5954724409448819
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5364173228346457
+            }
+          ],
+          "score": 0.9677872474747476
+        },
+        {
+          "layout": {
+            "arb_id": "130",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 29,
+            "width": 16
+          },
+          "rank": 3,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.9674842171717172
+            },
+            {
+              "rank": 2,
+              "role": "engine_rpm",
+              "score": 0.8855575439433707
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5875984251968503
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5875984251968503
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5246062992125984
+            }
+          ],
+          "score": 0.9674842171717172
+        },
+        {
+          "layout": {
+            "arb_id": "130",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 31,
+            "width": 14
+          },
+          "rank": 4,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.9663731060606061
+            },
+            {
+              "rank": 2,
+              "role": "engine_rpm",
+              "score": 0.8716905273204488
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5923228346456694
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5923228346456694
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5364173228346457
+            }
+          ],
+          "score": 0.9663731060606061
+        },
+        {
+          "layout": {
+            "arb_id": "130",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 31,
+            "width": 15
+          },
+          "rank": 5,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.9663731060606061
+            },
+            {
+              "rank": 2,
+              "role": "engine_rpm",
+              "score": 0.8716905273204488
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5923228346456694
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5923228346456694
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5364173228346457
+            }
+          ],
+          "score": 0.9663731060606061
+        },
+        {
+          "layout": {
+            "arb_id": "130",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 31,
+            "width": 16
+          },
+          "rank": 6,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.9663731060606061
+            },
+            {
+              "rank": 2,
+              "role": "engine_rpm",
+              "score": 0.8716905273204488
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5923228346456694
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5923228346456694
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5364173228346457
+            }
+          ],
+          "score": 0.9663731060606061
+        },
+        {
+          "layout": {
+            "arb_id": "130",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 32,
+            "width": 13
+          },
+          "rank": 7,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.9317652027027029
+            },
+            {
+              "rank": 2,
+              "role": "engine_rpm",
+              "score": 0.8654979782932539
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5978346456692913
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5978346456692913
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.570222687007874
+            }
+          ],
+          "score": 0.9317652027027029
+        },
+        {
+          "layout": {
+            "arb_id": "130",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 32,
+            "width": 14
+          },
+          "rank": 8,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.9317652027027029
+            },
+            {
+              "rank": 2,
+              "role": "engine_rpm",
+              "score": 0.8654979782932539
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5978346456692913
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5978346456692913
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.570222687007874
+            }
+          ],
+          "score": 0.9317652027027029
+        }
+      ],
+      "candidate_pool_size": 4716,
+      "dbc_anchor_conflicts": [],
+      "null_layout": {
+        "rank": null,
+        "reason": "insufficient_or_ambiguous_evidence"
+      },
+      "payload_length": 8,
+      "protocol_bits": [],
+      "rank": 5,
+      "score": 0.865829655983265
+    },
+    {
+      "ambiguity": true,
+      "arb_id": "158",
+      "bus": null,
+      "candidate_layouts": [
+        {
+          "layout": {
+            "arb_id": "158",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "big",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 0,
+            "width": 15
+          },
+          "rank": 1,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 1.0472428275130687
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.94007747318236
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5757874015748032
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5757874015748032
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.4773622047244095
+            }
+          ],
+          "score": 0.94007747318236
+        },
+        {
+          "layout": {
+            "arb_id": "158",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "big",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 1,
+            "width": 14
+          },
+          "rank": 2,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 1.0472428275130687
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.94007747318236
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5757874015748032
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5757874015748032
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.4773622047244095
+            }
+          ],
+          "score": 0.94007747318236
+        },
+        {
+          "layout": {
+            "arb_id": "158",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "big",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 0,
+            "width": 16
+          },
+          "rank": 3,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 1.0470282863926874
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9398629320619785
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5757874015748032
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5757874015748032
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.4773622047244095
+            }
+          ],
+          "score": 0.9398629320619785
+        },
+        {
+          "layout": {
+            "arb_id": "158",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "big",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 1,
+            "width": 15
+          },
+          "rank": 4,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 1.0470282863926874
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9398629320619785
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5757874015748032
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5757874015748032
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.4773622047244095
+            }
+          ],
+          "score": 0.9398629320619785
+        },
+        {
+          "layout": {
+            "arb_id": "158",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "big",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 0,
+            "width": 13
+          },
+          "rank": 5,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 1.0368155230596177
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9395714285714287
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.579724409448819
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.579724409448819
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.48681102362204726
+            }
+          ],
+          "score": 0.9395714285714287
+        },
+        {
+          "layout": {
+            "arb_id": "158",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "big",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 1,
+            "width": 12
+          },
+          "rank": 6,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 1.0368155230596177
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9395714285714287
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.579724409448819
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.579724409448819
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.48681102362204726
+            }
+          ],
+          "score": 0.9395714285714287
+        },
+        {
+          "layout": {
+            "arb_id": "158",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "big",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 0,
+            "width": 14
+          },
+          "rank": 7,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 1.0423525266382276
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.939439140811456
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5757874015748032
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5757874015748032
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.47972440944881894
+            }
+          ],
+          "score": 0.939439140811456
+        },
+        {
+          "layout": {
+            "arb_id": "158",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "big",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 1,
+            "width": 13
+          },
+          "rank": 8,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 1.0423525266382276
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.939439140811456
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5757874015748032
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5757874015748032
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.47972440944881894
+            }
+          ],
+          "score": 0.939439140811456
+        }
+      ],
+      "candidate_pool_size": 2192,
+      "dbc_anchor_conflicts": [
+        {
+          "arb_id": "158",
+          "bus": null,
+          "confidence": 1.0,
+          "endian": "big",
+          "evidence": [
+            "dbc",
+            "/tmp/graphids_can_prospective_cohort/HONDA_CIVIC.dbc"
+          ],
+          "label_hypotheses": [
+            [
+              "ENGINE_RPM",
+              1.0
+            ]
+          ],
+          "limit": 0.0,
+          "mux_start": null,
+          "mux_value": null,
+          "payload_length": 8,
+          "reference_support": [],
+          "role": "known",
+          "signed": false,
+          "start": 16,
+          "width": 16
+        }
+      ],
+      "null_layout": {
+        "rank": null,
+        "reason": "insufficient_or_ambiguous_evidence"
+      },
+      "payload_length": 8,
+      "protocol_bits": [],
+      "rank": 6,
+      "score": 0.859025735294118
+    },
+    {
+      "ambiguity": true,
+      "arb_id": "1D0",
+      "bus": null,
+      "candidate_layouts": [
+        {
+          "layout": {
+            "arb_id": "1D0",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 29,
+            "width": 14
+          },
+          "rank": 1,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 1.0744753743142175
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9729793113220915
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5726377952755906
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5726377952755906
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.4773622047244095
+            }
+          ],
+          "score": 0.9729793113220915
+        },
+        {
+          "layout": {
+            "arb_id": "1D0",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 27,
+            "width": 16
+          },
+          "rank": 2,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 1.0787180601919923
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9729700286959293
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5750000000000001
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5750000000000001
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.4773622047244095
+            }
+          ],
+          "score": 0.9729700286959293
+        },
+        {
+          "layout": {
+            "arb_id": "1D0",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 31,
+            "width": 12
+          },
+          "rank": 3,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 1.0602820183191386
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9729591836734695
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5836614173228347
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5836614173228347
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.4962598425196851
+            }
+          ],
+          "score": 0.9729591836734695
+        },
+        {
+          "layout": {
+            "arb_id": "1D0",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 28,
+            "width": 15
+          },
+          "rank": 4,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 1.0787018362289524
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9729538047328894
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5750000000000001
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5750000000000001
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.4773622047244095
+            }
+          ],
+          "score": 0.9729538047328894
+        },
+        {
+          "layout": {
+            "arb_id": "1D0",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 30,
+            "width": 13
+          },
+          "rank": 5,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 1.067272866217594
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9728634173986965
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5757874015748031
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5757874015748031
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.4844488188976378
+            }
+          ],
+          "score": 0.9728634173986965
+        },
+        {
+          "layout": {
+            "arb_id": "1D0",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 32,
+            "width": 11
+          },
+          "rank": 6,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 1.0415847126252076
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9726870748299319
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5923228346456694
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5923228346456694
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5151574803149607
+            }
+          ],
+          "score": 0.9726870748299319
+        },
+        {
+          "layout": {
+            "arb_id": "1D0",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "big",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 0,
+            "width": 11
+          },
+          "rank": 7,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 1.0210979877515312
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9394444444444445
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.580511811023622
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.580511811023622
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.4962598425196851
+            }
+          ],
+          "score": 0.9394444444444445
+        },
+        {
+          "layout": {
+            "arb_id": "1D0",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "big",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 15,
+            "width": 11
+          },
+          "rank": 8,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 1.0225153105861768
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.9394444444444445
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5883858267716535
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5883858267716535
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5033464566929133
+            }
+          ],
+          "score": 0.9394444444444445
+        }
+      ],
+      "candidate_pool_size": 5614,
+      "dbc_anchor_conflicts": [],
+      "null_layout": {
+        "rank": null,
+        "reason": "insufficient_or_ambiguous_evidence"
+      },
+      "payload_length": 8,
+      "protocol_bits": [],
+      "rank": 7,
+      "score": 0.8129757785467129
+    },
+    {
+      "ambiguity": true,
+      "arb_id": "326",
+      "bus": null,
+      "candidate_layouts": [
+        {
+          "layout": {
+            "arb_id": "326",
+            "bus": null,
+            "confidence": 1.0,
+            "endian": "big",
+            "evidence": [
+              "tokenizer:can_d"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 8,
+            "width": 8
+          },
+          "rank": 1,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.7598750000000003
+            },
+            {
+              "rank": 2,
+              "role": "accelerator_pedal",
+              "score": 0.6484251968503937
+            },
+            {
+              "rank": 3,
+              "role": "throttle_plate",
+              "score": 0.6484251968503937
+            },
+            {
+              "rank": 4,
+              "role": "engine_rpm",
+              "score": 0.5875127952755909
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5830708661417323
+            }
+          ],
+          "score": 0.7598750000000003
+        },
+        {
+          "layout": {
+            "arb_id": "326",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 0,
+            "width": 16
+          },
+          "rank": 2,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 0.7907416949537571
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.7317653170010012
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5702755905511812
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5702755905511812
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.49862204724409454
+            }
+          ],
+          "score": 0.7317653170010012
+        },
+        {
+          "layout": {
+            "arb_id": "326",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 1,
+            "width": 15
+          },
+          "rank": 3,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 0.7815376307425121
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.7239785756244019
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5742125984251968
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5742125984251968
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5033464566929133
+            }
+          ],
+          "score": 0.7239785756244019
+        },
+        {
+          "layout": {
+            "arb_id": "326",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 1,
+            "width": 16
+          },
+          "rank": 4,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "engine_rpm",
+              "score": 0.7815376307425121
+            },
+            {
+              "rank": 2,
+              "role": "vehicle_speed",
+              "score": 0.7239785756244019
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5742125984251968
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5742125984251968
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.5033464566929133
+            }
+          ],
+          "score": 0.7239785756244019
+        },
+        {
+          "layout": {
+            "arb_id": "326",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 47,
+            "width": 16
+          },
+          "rank": 5,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.7226562500000001
+            },
+            {
+              "rank": 2,
+              "role": "engine_rpm",
+              "score": 0.6823228346456695
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5812992125984252
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5812992125984252
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.4938976377952756
+            }
+          ],
+          "score": 0.7226562500000001
+        },
+        {
+          "layout": {
+            "arb_id": "326",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 48,
+            "width": 15
+          },
+          "rank": 6,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.7226562500000001
+            },
+            {
+              "rank": 2,
+              "role": "engine_rpm",
+              "score": 0.6823228346456695
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5812992125984252
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5812992125984252
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.4938976377952756
+            }
+          ],
+          "score": 0.7226562500000001
+        },
+        {
+          "layout": {
+            "arb_id": "326",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "big",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 48,
+            "width": 16
+          },
+          "rank": 7,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.7226562500000001
+            },
+            {
+              "rank": 2,
+              "role": "engine_rpm",
+              "score": 0.6823228346456695
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5812992125984252
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5812992125984252
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.4938976377952756
+            }
+          ],
+          "score": 0.7226562500000001
+        },
+        {
+          "layout": {
+            "arb_id": "326",
+            "bus": null,
+            "confidence": 0.5,
+            "endian": "little",
+            "evidence": [
+              "contiguous_enumeration"
+            ],
+            "label_hypotheses": [
+              [
+                "unknown",
+                1.0
+              ]
+            ],
+            "limit": 0.0,
+            "mux_start": null,
+            "mux_value": null,
+            "payload_length": 8,
+            "reference_support": [
+              512,
+              512
+            ],
+            "role": "unknown",
+            "signed": false,
+            "start": 48,
+            "width": 16
+          },
+          "rank": 8,
+          "role_evidence": [
+            "continuous_motion",
+            "bounded_updates"
+          ],
+          "role_hypotheses": [
+            {
+              "rank": 1,
+              "role": "vehicle_speed",
+              "score": 0.7226562500000001
+            },
+            {
+              "rank": 2,
+              "role": "engine_rpm",
+              "score": 0.6823228346456695
+            },
+            {
+              "rank": 3,
+              "role": "accelerator_pedal",
+              "score": 0.5812992125984252
+            },
+            {
+              "rank": 4,
+              "role": "throttle_plate",
+              "score": 0.5812992125984252
+            },
+            {
+              "rank": 5,
+              "role": "brake_input",
+              "score": 0.4938976377952756
+            }
+          ],
+          "score": 0.7226562500000001
+        }
+      ],
+      "candidate_pool_size": 2126,
+      "dbc_anchor_conflicts": [],
+      "null_layout": {
+        "rank": null,
+        "reason": "insufficient_or_ambiguous_evidence"
+      },
+      "payload_length": 8,
+      "protocol_bits": [],
+      "rank": 8,
+      "score": 0.7598750000000003
+    }
+  ],
+  "development_hashes": [
+    "02b9c5b03dcbd5f1e7de23e545d9ce272af0120a068fd5293c14f74aedd963de",
+    "08b6996851acab99f4770a95be9fc90f88b69de0193ba496055b88667b7a11b7"
+  ],
+  "fitting_hashes": [
+    "aa717512fea3f11bf39857494f5d23efacc391c166d6f7b8600b003a67083a23",
+    "8b5b1c8353db1991a2d67e4e5aedd7ea0f24abbbad64c32d9976fef877b00067"
+  ],
+  "hidden_role": "vehicle_speed",
+  "manifest_hash": "4c210e286cb71b8591982de213031b1d3595dbb680cc548fffcb341afc62cf6a",
+  "message_family_hypotheses": [
+    {
+      "arb_id": "324",
+      "bus": null,
+      "payload_length": 8,
+      "rank": 1,
+      "score": 1.0428155339805827
+    },
+    {
+      "arb_id": "309",
+      "bus": null,
+      "payload_length": 8,
+      "rank": 2,
+      "score": 0.9357028695968035
+    },
+    {
+      "arb_id": "191",
+      "bus": null,
+      "payload_length": 8,
+      "rank": 3,
+      "score": 0.9103112840466925
+    },
+    {
+      "arb_id": "255",
+      "bus": null,
+      "payload_length": 8,
+      "rank": 4,
+      "score": 0.9017708333333334
+    },
+    {
+      "arb_id": "130",
+      "bus": null,
+      "payload_length": 8,
+      "rank": 5,
+      "score": 0.865829655983265
+    },
+    {
+      "arb_id": "158",
+      "bus": null,
+      "payload_length": 8,
+      "rank": 6,
+      "score": 0.859025735294118
+    },
+    {
+      "arb_id": "1D0",
+      "bus": null,
+      "payload_length": 8,
+      "rank": 7,
+      "score": 0.8129757785467129
+    },
+    {
+      "arb_id": "326",
+      "bus": null,
+      "payload_length": 8,
+      "rank": 8,
+      "score": 0.7598750000000003
+    },
+    {
+      "arb_id": "94",
+      "bus": null,
+      "payload_length": 8,
+      "rank": 9,
+      "score": 0.7178448275862068
+    },
+    {
+      "arb_id": "40C",
+      "bus": null,
+      "payload_length": 8,
+      "rank": 10,
+      "score": 0.610342261904762
+    },
+    {
+      "arb_id": "18F",
+      "bus": null,
+      "payload_length": 7,
+      "rank": 11,
+      "score": 0.5976562500000001
+    },
+    {
+      "arb_id": "1EA",
+      "bus": null,
+      "payload_length": 8,
+      "rank": 12,
+      "score": 0.54
+    },
+    {
+      "arb_id": "14A",
+      "bus": null,
+      "payload_length": 8,
+      "rank": 13,
+      "score": 0.4699733231707317
+    },
+    {
+      "arb_id": "1A4",
+      "bus": null,
+      "payload_length": 8,
+      "rank": 14,
+      "score": 0.42835227272727283
+    },
+    {
+      "arb_id": "37C",
+      "bus": null,
+      "payload_length": 8,
+      "rank": 15,
+      "score": 0.37765625
+    },
+    {
+      "arb_id": "40F",
+      "bus": null,
+      "payload_length": 8,
+      "rank": 16,
+      "score": 0.37609375
+    },
+    {
+      "arb_id": "17C",
+      "bus": null,
+      "payload_length": 8,
+      "rank": 17,
+      "score": 0.24921875000000002
+    },
+    {
+      "arb_id": "1E7",
+      "bus": null,
+      "payload_length": 4,
+      "rank": 18,
+      "score": 0.18546875
+    },
+    {
+      "arb_id": "3A1",
+      "bus": null,
+      "payload_length": 8,
+      "rank": 19,
+      "score": 0.18281250000000002
+    },
+    {
+      "arb_id": "320",
+      "bus": null,
+      "payload_length": 8,
+      "rank": 20,
+      "score": 0.17609374999999997
+    },
+    {
+      "arb_id": "374",
+      "bus": null,
+      "payload_length": 8,
+      "rank": 21,
+      "score": 0.17531249999999995
+    },
+    {
+      "arb_id": "221",
+      "bus": null,
+      "payload_length": 6,
+      "rank": 22,
+      "score": 0.158125
+    },
+    {
+      "arb_id": "454",
+      "bus": null,
+      "payload_length": 8,
+      "rank": 23,
+      "score": 0.14484374999999997
+    },
+    {
+      "arb_id": "1AB",
+      "bus": null,
+      "payload_length": 3,
+      "rank": 24,
+      "score": 0.07812499999999997
+    },
+    {
+      "arb_id": "516",
+      "bus": null,
+      "payload_length": 8,
+      "rank": 25,
+      "score": 0.06249999999999997
+    }
+  ],
+  "metrics": {
+    "abstained": true,
+    "exact_layout_pool_coverage": true,
+    "exact_layout_rank_conditional_on_id_top_8": 1,
+    "exact_layout_top_1": true,
+    "exact_layout_top_8": true,
+    "held_out_raw_value_agreement": true,
+    "id_rank": 2,
+    "id_top_1": false,
+    "id_top_5": true,
+    "id_top_8": true,
+    "role_rank": 2
+  },
+  "review_ledger": {
+    "dbc_edit": false,
+    "physical_verification": false,
+    "proposed_name": "vehicle_speed",
+    "status": "role hypothesis"
+  },
+  "schema": "dbc-label-completion-case-v2",
+  "vehicle": "HONDA_CIVIC"
+}

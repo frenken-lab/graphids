@@ -1,0 +1,424 @@
+{
+  "cases": [
+    {
+      "dbc_sha256": "d874be4545d5b8ee21868cf96c5f4af6d6fcfc578497b73209d0e579379bd153",
+      "exact_layout_rank": null,
+      "fitting_hashes": [
+        "aa717512fea3f11bf39857494f5d23efacc391c166d6f7b8600b003a67083a23",
+        "8b5b1c8353db1991a2d67e4e5aedd7ea0f24abbbad64c32d9976fef877b00067"
+      ],
+      "id_rank": null,
+      "id_top_1": false,
+      "id_top_5": false,
+      "layout_candidates_on_reference_id": [],
+      "reference_message_families": [
+        [
+          "1E7",
+          4
+        ]
+      ],
+      "role": "brake_input",
+      "validation_hashes": [
+        "02b9c5b03dcbd5f1e7de23e545d9ce272af0120a068fd5293c14f74aedd963de"
+      ],
+      "value_equivalent_rank": null,
+      "vehicle": "HONDA_CIVIC"
+    },
+    {
+      "dbc_sha256": "d874be4545d5b8ee21868cf96c5f4af6d6fcfc578497b73209d0e579379bd153",
+      "exact_layout_rank": null,
+      "fitting_hashes": [
+        "aa717512fea3f11bf39857494f5d23efacc391c166d6f7b8600b003a67083a23",
+        "8b5b1c8353db1991a2d67e4e5aedd7ea0f24abbbad64c32d9976fef877b00067"
+      ],
+      "id_rank": 1,
+      "id_top_1": true,
+      "id_top_5": true,
+      "layout_candidates_on_reference_id": [
+        {
+          "arb_id": "158",
+          "endian": "big",
+          "payload_length": 8,
+          "rank": 1,
+          "score": 0.8837321855571499,
+          "signed": false,
+          "start": 20,
+          "status": "unknown",
+          "width": 12
+        },
+        {
+          "arb_id": "158",
+          "endian": "big",
+          "payload_length": 8,
+          "rank": 6,
+          "score": 0.44432624461339043,
+          "signed": false,
+          "start": 2,
+          "status": "unknown",
+          "width": 14
+        },
+        {
+          "arb_id": "158",
+          "endian": "big",
+          "payload_length": 8,
+          "rank": 7,
+          "score": 0.4415485885028767,
+          "signed": false,
+          "start": 3,
+          "status": "unknown",
+          "width": 13
+        },
+        {
+          "arb_id": "158",
+          "endian": "big",
+          "payload_length": 8,
+          "rank": 13,
+          "score": 0.4261566306996174,
+          "signed": false,
+          "start": 34,
+          "status": "unknown",
+          "width": 14
+        },
+        {
+          "arb_id": "158",
+          "endian": "big",
+          "payload_length": 8,
+          "rank": 16,
+          "score": 0.40043254116497606,
+          "signed": false,
+          "start": 4,
+          "status": "unknown",
+          "width": 12
+        }
+      ],
+      "reference_message_families": [
+        [
+          "158",
+          8
+        ],
+        [
+          "17C",
+          8
+        ]
+      ],
+      "role": "engine_rpm",
+      "validation_hashes": [
+        "02b9c5b03dcbd5f1e7de23e545d9ce272af0120a068fd5293c14f74aedd963de"
+      ],
+      "value_equivalent_rank": 1,
+      "vehicle": "HONDA_CIVIC"
+    },
+    {
+      "dbc_sha256": "d874be4545d5b8ee21868cf96c5f4af6d6fcfc578497b73209d0e579379bd153",
+      "exact_layout_rank": null,
+      "fitting_hashes": [
+        "aa717512fea3f11bf39857494f5d23efacc391c166d6f7b8600b003a67083a23",
+        "8b5b1c8353db1991a2d67e4e5aedd7ea0f24abbbad64c32d9976fef877b00067"
+      ],
+      "id_rank": 2,
+      "id_top_1": false,
+      "id_top_5": true,
+      "layout_candidates_on_reference_id": [
+        {
+          "arb_id": "309",
+          "endian": "big",
+          "payload_length": 8,
+          "rank": 2,
+          "score": 0.8418804920913885,
+          "signed": false,
+          "start": 2,
+          "status": "unknown",
+          "width": 14
+        },
+        {
+          "arb_id": "309",
+          "endian": "little",
+          "payload_length": 8,
+          "rank": 7,
+          "score": 0.4516762177650431,
+          "signed": false,
+          "start": 8,
+          "status": "unknown",
+          "width": 15
+        }
+      ],
+      "reference_message_families": [
+        [
+          "309",
+          8
+        ]
+      ],
+      "role": "vehicle_speed",
+      "validation_hashes": [
+        "02b9c5b03dcbd5f1e7de23e545d9ce272af0120a068fd5293c14f74aedd963de"
+      ],
+      "value_equivalent_rank": 2,
+      "vehicle": "HONDA_CIVIC"
+    },
+    {
+      "dbc_sha256": "41deaf3142e86b6928f0f89fb968a710dae74ced5dbf47c897bc8c69cd2108ba",
+      "exact_layout_rank": null,
+      "fitting_hashes": [
+        "c4a46c3aec810a5665e7a2dbcae8f8dc1207a19942c6c34d9afe88feb2730528",
+        "a07e0d3d3c560ae93d2fb09293554a939713d1bfd789cd720a4306c7b30790f8"
+      ],
+      "id_rank": null,
+      "id_top_1": false,
+      "id_top_5": false,
+      "layout_candidates_on_reference_id": [],
+      "reference_message_families": [
+        [
+          "52A",
+          8
+        ]
+      ],
+      "role": "vehicle_speed",
+      "validation_hashes": [
+        "3666dca66a4a263e641de8aa17f2fa320c7f8f8a1d51b638069b3b478e106436"
+      ],
+      "value_equivalent_rank": null,
+      "vehicle": "HYUNDAI_SONATA"
+    },
+    {
+      "dbc_sha256": "4fc99eacee1ab9ad883eda4c61fc95c187d6f2ccac7d32dd8ee8218bde034c2e",
+      "exact_layout_rank": null,
+      "fitting_hashes": [
+        "a9975de2ab093c33f1969d6d09a629adaf22adcb3482d2675b2602ec26a7074b",
+        "6cad45af9704cc786e26b825b8d7f013d97cef1cbbf30c78fe6b99f9ab17ed19"
+      ],
+      "id_rank": 3,
+      "id_top_1": false,
+      "id_top_5": true,
+      "layout_candidates_on_reference_id": [
+        {
+          "arb_id": "138",
+          "endian": "big",
+          "payload_length": 8,
+          "rank": 3,
+          "score": 0.7684742647058823,
+          "signed": false,
+          "start": 52,
+          "status": "unknown",
+          "width": 4
+        },
+        {
+          "arb_id": "138",
+          "endian": "big",
+          "payload_length": 8,
+          "rank": 5,
+          "score": 0.7528860294117649,
+          "signed": false,
+          "start": 60,
+          "status": "unknown",
+          "width": 4
+        }
+      ],
+      "reference_message_families": [
+        [
+          "138",
+          8
+        ],
+        [
+          "139",
+          8
+        ]
+      ],
+      "role": "brake_input",
+      "validation_hashes": [
+        "0413f863c9f0184e0f9632a3cea04aef3ddf1eefb27a468c3f507e1116b0ebdd"
+      ],
+      "value_equivalent_rank": 3,
+      "vehicle": "SUBARU_FORESTER"
+    },
+    {
+      "dbc_sha256": "4fc99eacee1ab9ad883eda4c61fc95c187d6f2ccac7d32dd8ee8218bde034c2e",
+      "exact_layout_rank": null,
+      "fitting_hashes": [
+        "a9975de2ab093c33f1969d6d09a629adaf22adcb3482d2675b2602ec26a7074b",
+        "6cad45af9704cc786e26b825b8d7f013d97cef1cbbf30c78fe6b99f9ab17ed19"
+      ],
+      "id_rank": 5,
+      "id_top_1": false,
+      "id_top_5": true,
+      "layout_candidates_on_reference_id": [
+        {
+          "arb_id": "40",
+          "endian": "little",
+          "payload_length": 8,
+          "rank": 5,
+          "score": 0.8371599172332256,
+          "signed": false,
+          "start": 16,
+          "status": "unknown",
+          "width": 11
+        },
+        {
+          "arb_id": "48",
+          "endian": "little",
+          "payload_length": 8,
+          "rank": 6,
+          "score": 0.8302625882352942,
+          "signed": false,
+          "start": 40,
+          "status": "unknown",
+          "width": 11
+        },
+        {
+          "arb_id": "48",
+          "endian": "big",
+          "payload_length": 8,
+          "rank": 7,
+          "score": 0.8135479876160991,
+          "signed": false,
+          "start": 16,
+          "status": "unknown",
+          "width": 8
+        }
+      ],
+      "reference_message_families": [
+        [
+          "40",
+          8
+        ],
+        [
+          "48",
+          8
+        ]
+      ],
+      "role": "engine_rpm",
+      "validation_hashes": [
+        "0413f863c9f0184e0f9632a3cea04aef3ddf1eefb27a468c3f507e1116b0ebdd"
+      ],
+      "value_equivalent_rank": 5,
+      "vehicle": "SUBARU_FORESTER"
+    },
+    {
+      "dbc_sha256": "4fc99eacee1ab9ad883eda4c61fc95c187d6f2ccac7d32dd8ee8218bde034c2e",
+      "exact_layout_rank": null,
+      "fitting_hashes": [
+        "a9975de2ab093c33f1969d6d09a629adaf22adcb3482d2675b2602ec26a7074b",
+        "6cad45af9704cc786e26b825b8d7f013d97cef1cbbf30c78fe6b99f9ab17ed19"
+      ],
+      "id_rank": 5,
+      "id_top_1": false,
+      "id_top_5": true,
+      "layout_candidates_on_reference_id": [
+        {
+          "arb_id": "139",
+          "endian": "little",
+          "payload_length": 8,
+          "rank": 5,
+          "score": 0.9646803366762179,
+          "signed": false,
+          "start": 16,
+          "status": "unknown",
+          "width": 10
+        }
+      ],
+      "reference_message_families": [
+        [
+          "139",
+          8
+        ]
+      ],
+      "role": "vehicle_speed",
+      "validation_hashes": [
+        "0413f863c9f0184e0f9632a3cea04aef3ddf1eefb27a468c3f507e1116b0ebdd"
+      ],
+      "value_equivalent_rank": null,
+      "vehicle": "SUBARU_FORESTER"
+    },
+    {
+      "dbc_sha256": "46e237fbab80e285b0e979e16b8d135695cc016b7c29e1c1ef152968391487c7",
+      "exact_layout_rank": null,
+      "fitting_hashes": [
+        "b0224eb663446fc808a7e8278d87612e5b7d443a00b2a02c4e4bdd1bf0707fa8",
+        "b02f54f72932009d7ef36734a2cba4e0ae80381bb875cc4eee3a60abd260f016"
+      ],
+      "id_rank": 4,
+      "id_top_1": false,
+      "id_top_5": true,
+      "layout_candidates_on_reference_id": [
+        {
+          "arb_id": "1C4",
+          "endian": "big",
+          "payload_length": 8,
+          "rank": 4,
+          "score": 0.9432010083267407,
+          "signed": false,
+          "start": 3,
+          "status": "unknown",
+          "width": 13
+        }
+      ],
+      "reference_message_families": [
+        [
+          "1C4",
+          8
+        ]
+      ],
+      "role": "engine_rpm",
+      "validation_hashes": [
+        "c7a0cb6158a1c3a46088d1878039609024356b77757367a992c2d5caa1315929"
+      ],
+      "value_equivalent_rank": 4,
+      "vehicle": "TOYOTA_PRIUS"
+    },
+    {
+      "dbc_sha256": "46e237fbab80e285b0e979e16b8d135695cc016b7c29e1c1ef152968391487c7",
+      "exact_layout_rank": null,
+      "fitting_hashes": [
+        "b0224eb663446fc808a7e8278d87612e5b7d443a00b2a02c4e4bdd1bf0707fa8",
+        "b02f54f72932009d7ef36734a2cba4e0ae80381bb875cc4eee3a60abd260f016"
+      ],
+      "id_rank": 3,
+      "id_top_1": false,
+      "id_top_5": true,
+      "layout_candidates_on_reference_id": [
+        {
+          "arb_id": "B4",
+          "endian": "big",
+          "payload_length": 8,
+          "rank": 3,
+          "score": 1.0417214484679667,
+          "signed": false,
+          "start": 42,
+          "status": "unknown",
+          "width": 14
+        },
+        {
+          "arb_id": "B4",
+          "endian": "little",
+          "payload_length": 8,
+          "rank": 13,
+          "score": 0.44234042553191477,
+          "signed": false,
+          "start": 38,
+          "status": "unknown",
+          "width": 8
+        }
+      ],
+      "reference_message_families": [
+        [
+          "B4",
+          8
+        ]
+      ],
+      "role": "vehicle_speed",
+      "validation_hashes": [
+        "c7a0cb6158a1c3a46088d1878039609024356b77757367a992c2d5caa1315929"
+      ],
+      "value_equivalent_rank": 3,
+      "vehicle": "TOYOTA_PRIUS"
+    }
+  ],
+  "id_match_definition": "same_arbitration_id_and_payload_length_as_observed_dbc_annotation",
+  "scope": "historical_development_leave_one_role_out",
+  "source": "existing_dbc_assisted_catalog_v1",
+  "summary": {
+    "assessable_cases": 9,
+    "exact_layout_found": 0,
+    "id_top_1": 1,
+    "id_top_5": 7
+  }
+}
