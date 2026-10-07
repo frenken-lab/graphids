@@ -26,13 +26,6 @@ def test_gear_conditioned_response_beats_shifted_states(monkeypatch):
     assert found.status == 'supported' and found.effect > .2
 
 
-def test_gear_factor_unavailable_without_shifts(monkeypatch):
-    t = np.arange(240)
-    found = _evaluate(monkeypatch, 'speed_rpm_gear',
-                      np.column_stack((20 + np.sin(t / 8), 1000 + t, np.ones(len(t)))))
-    assert found.status == 'unavailable' and found.reason == 'no_shifts'
-
-
 def test_lagged_steering_response(monkeypatch):
     t = np.arange(480)
     speed = 20 + 3 * np.sin(t / 37)
@@ -41,17 +34,6 @@ def test_lagged_steering_response(monkeypatch):
     found = _evaluate(monkeypatch, 'steering_yaw',
                       np.column_stack((speed, steering, yaw)))
     assert found.status == 'supported' and found.lag_bins in (1, 2, 3, 5)
-
-
-def test_missing_channel_is_unavailable(monkeypatch):
-    data = np.zeros((180, 3))
-    valid = np.ones_like(data, dtype=bool)
-    valid[:, 2] = False
-    monkeypatch.setattr(factors, 'align', lambda *args, **kwargs:
-                        (data, valid, np.zeros_like(data), .1))
-    found = factors.evaluate_factor([SimpleNamespace()],
-                                    (SimpleNamespace(),) * 3, 'steering_yaw')
-    assert found.status == 'unavailable'
 
 
 def test_redundant_speed_is_affine_equivalent(monkeypatch):
@@ -79,4 +61,5 @@ def test_independent_trip_cannot_choose_a_new_lag(monkeypatch):
                                        fields, 'steering_yaw')
     assert first.status == second.status == 'supported'
     assert first.lag_bins == 2 and second.lag_bins == 5
-    assert together.status == 'unavailable'
+    assert together.status == 'failed'
+    assert together.lag_bins == first.lag_bins

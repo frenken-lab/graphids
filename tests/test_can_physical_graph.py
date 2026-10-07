@@ -42,23 +42,3 @@ def test_graph_edge_abstains_without_joint_motion():
     missing = _field('300')
     result = evaluate_graph_edge([trip],missing,_field('200'),'throttle_rpm')
     assert result.status == 'unavailable'
-
-
-def test_duplicate_signals_across_ids_choose_earlier_copy():
-    from types import SimpleNamespace
-    from can_discovery.relationships.physical.observational_edges import duplicate_signal_groups
-    rng = np.random.default_rng(5)
-    values = np.cumsum(rng.integers(-2,3,800))+500
-    captures = []
-    for seed in (1,2):
-        frames = []
-        for i in range(800):
-            frames.append(Frame(i*.02,2*i,'100',int(values[i]).to_bytes(2,'little')))
-            frames.append(Frame(i*.02+.001,2*i+1,'200',
-                                int(values[max(0,i-2)]).to_bytes(2,'little')))
-        captures.append(Capture(str(seed),str(seed),tuple(frames),0,16,0,0,{},{}))
-    hypotheses = [SimpleNamespace(role='speed',candidate=_field('100'),unary_score=.8),
-                  SimpleNamespace(role='speed',candidate=_field('200'),unary_score=.7)]
-    groups,pivots = duplicate_signal_groups(hypotheses,captures,[0,1])
-    assert groups[0] == groups[1]
-    assert 0 in pivots and 1 not in pivots

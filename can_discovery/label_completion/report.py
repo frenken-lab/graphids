@@ -7,11 +7,12 @@ from collections import Counter
 from pathlib import Path
 
 from .baseline import ROLES
-from .full_search import verify_staged_manifest
-from .manifest import (
+from .case import TRACKS
+from ..manifests.label_completion import (
     artifact_hash,
     file_hash,
     verify_manifest,
+    verify_staged_manifest,
 )
 from .progressive_v6 import SCHEMA
 
@@ -81,7 +82,10 @@ def _near_layout_ranks(case: dict, case_dir: Path
     return (best[0], best[1], joint_min) if best else (None, None, None)
 
 
-def aggregate(manifest_path: Path, source_manifest_path: Path, case_dir: Path) -> dict:
+def aggregate(manifest_path: Path, source_manifest_path: Path, case_dir: Path,
+              track: str = 'dbc_assisted') -> dict:
+    if track not in TRACKS:
+        raise ValueError(f'unknown evidence track: {track}')
     manifest = json.loads(manifest_path.read_text())
     source = json.loads(source_manifest_path.read_text())
     verify_staged_manifest(source, manifest)
@@ -92,6 +96,7 @@ def aggregate(manifest_path: Path, source_manifest_path: Path, case_dir: Path) -
             path = case_dir / f"{entry['vehicle'].lower()}-{role}-case.json"
             case = json.loads(path.read_text())
             if (case['schema'] != SCHEMA
+                    or case.get('track') != track
                     or case['vehicle'] != entry['vehicle'] or case['role'] != role
                     or case['manifest_hash'] != artifact_hash(source)
                     or case['staged_manifest_hash'] != artifact_hash(manifest)):
@@ -153,7 +158,7 @@ def aggregate(manifest_path: Path, source_manifest_path: Path, case_dir: Path) -
         point['joint_id_near_recovered'] = sum(
             row['near_joint_review_cost'] is not None and
             row['near_joint_review_cost'] <= point['budget'] for row in rows)
-    return {'schema': SCHEMA, 'kind': 'development_summary',
+    return {'schema': SCHEMA, 'track': track, 'kind': 'development_summary',
         'manifest_hash': artifact_hash(source),
         'staged_manifest_hash': artifact_hash(manifest),
         'cases': rows, 'metrics': {
@@ -184,13 +189,18 @@ def aggregate(manifest_path: Path, source_manifest_path: Path, case_dir: Path) -
 
 def report(summary: dict) -> str:
     m = summary['metrics']
-    lines = ['# Progressive value classes and source evidence, development v6', '',
+    track = summary['track']
+    evidence = ("No DBC labels or DBC-trained votes enter fitting or ranking. "
+                "The requested role still supplies a hand-written score profile. "
+                "The historical CAN-D baseline is DBC-assisted and is shown only as a comparison."
+                if track == 'unsupervised' else
+                "Known other-role target DBC fields exclude overlapping layouts. "
+                "Source contrast and speed–RPM relationship votes are used only when "
+                "their source gates pass.")
+    lines = [f'# Label completion development: {track}', '',
         'This evaluation reranks the complete candidate pools prepared by the current workflow. Affine-equivalent '
         'value trajectories are grouped within each message ID while preserving all '
-        'bit layouts and their exact DBC ranks. The source contrast model uses '
-        'other vehicles only and must pass leave-one-vehicle-out tests. The '
-        'speed–RPM relationship votes only after replication on source fitting '
-        'and development routes. A failed gate contributes zero. Scores are '
+        'bit layouts and their exact DBC ranks. ' + evidence + ' Scores are '
         'ranking values, not calibrated probabilities.', '',
         'The hidden target annotation is read only after ranking. All 20 cases '
         'abstain from DBC edits and physical verification; final routes remain sealed.', '',

@@ -7,7 +7,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from can_discovery.cohort import load_graph_cohort, split_paths
+from can_discovery.manifests.graph import load_graph_cohort, split_paths
 from can_discovery.decoding.dbc import evaluate_discovery, load_dbc_fields
 from can_discovery.decoding.signals import (
     FieldCandidate,

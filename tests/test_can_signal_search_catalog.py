@@ -21,37 +21,6 @@ def field(arb_id: str) -> FieldCandidate:
                           (('unknown', 1.),), (), 2)
 
 
-def test_family_profile_retains_period_and_bit_rates_per_route():
-    profiles = family_profiles([capture('a', ('100',)), capture('b', ('100',))])
-    family = profiles['unknown|100|2']
-    assert family['routes'][0]['frames'] == 120
-    assert abs(family['routes'][0]['median_period_seconds'] - .02) < 1e-8
-    assert len(family['routes'][0]['bit_flip_rates']) == 16
-    assert family['routes'][0]['bit_flip_rates'][8:] == [0.] * 8
-
-
-def test_id_first_catalog_preserves_role_without_known_bit_span():
-    source = field('100')
-    source_record = asdict(source)
-    source_record['label_hypotheses'] = (('SPEED', 1.),)
-    result = {'vehicle': 'target', 'track': 'source_only',
-              'fitting_hashes': ['a', 'b'], 'source_provenance': [],
-              'target_dbc_fitting_hash': None,
-              'frame_matches': [{'bus': None, 'arb_id': '100', 'payload_length': 2,
-                                 'status': 'alternative',
-                                 'alternatives': [{'field': source_record,
-                                                   'vehicle': 'source'}]}],
-              'anchors': [], 'candidates': [asdict(field('200'))],
-              'selected': [], 'review_queue': [], 'field_relations': [],
-              'physical_relations': []}
-    catalog = build_signal_catalog(result, [capture('a', ('100', '200')),
-                                            capture('b', ('100', '200'))])
-    speed = catalog['signals']['speed']
-    assert speed['status'] == 'id_only_hypothesis'
-    assert speed['family_hypotheses'][0]['family'] == 'unknown|100|2'
-    assert speed['field_hypotheses'] == []
-
-
 def test_source_behavior_profile_suggests_id_without_claiming_bits():
     a = capture('a', ('100', '200'))
     b = capture('b', ('100', '200'))

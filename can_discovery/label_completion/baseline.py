@@ -10,24 +10,12 @@ import numpy as np
 
 from ..decoding.dbc import load_dbc_fields
 from ..decoding.signals import FieldCandidate, _bit_positions, discover_fields
+from ..decoding.tokenization import tokenize
 from ..preprocessing.capture import Capture
-from ..relationships.physical.unary_roles import _role_score
+from ..preprocessing.traces import MessageTrace
+from ..scoring.role_guided import ROLES, _score, _series
+from ..scoring.dbc_labels import DBC_NAMES
 from ..relationships.shared.signal_time import align, observations
-
-ROLES = ('accelerator_pedal', 'brake_input', 'throttle_plate',
-         'engine_rpm', 'vehicle_speed')
-UNARY_ROLE = {'accelerator_pedal': 'throttle', 'brake_input': 'brake',
-              'throttle_plate': 'throttle', 'engine_rpm': 'rpm',
-              'vehicle_speed': 'speed'}
-DBC_NAMES = {
-    'accelerator_pedal': frozenset(('GAS_PEDAL', 'GAS_PEDAL_ALT', 'PEDAL_GAS',
-        'ACCEL_PEDAL_POS', 'ACCELERATOR_PEDAL', 'THROTTLE_PEDAL')),
-    'brake_input': frozenset(('BRAKE_AMOUNT', 'BRAKE_PEDAL', 'BRAKE_PEDAL_POS',
-        'BRAKE_PRESSURE', 'BRAKE_PRESSURE1', 'BRAKE_PRESSURE2', 'BRAKE_1', 'BRAKE_2')),
-    'throttle_plate': frozenset(('THROTTLE_PLATE_POSITION', 'THROTTLE_POSITION')),
-    'engine_rpm': frozenset(('ENGINE_RPM', 'RPM', 'CLUSTER_ENGINE_RPM')),
-    'vehicle_speed': frozenset(('SPEED', 'CAR_SPEED', 'CF_CLU_VEHICLESPEED')),
-}
 
 FAMILY_BUDGET = 64
 DETAIL_FAMILIES = 8
@@ -104,53 +92,21 @@ def rank_families(rows: list[tuple[FieldCandidate, float]]) -> list[dict]:
 
 def enumerate_layouts(template: FieldCandidate, protocol_bits: set[int],
                       max_width: int = 32):
-    """Contiguous interpretations up to ``max_width`` in both byte orders."""
-    length = template.payload_length * 8
-    for endian in ('little', 'big'):
-        for width in range(1, min(max_width, length) + 1):
-            for start in range(length - width + 1):
-                positions = _bit_positions(start, width, endian)
-                if positions & protocol_bits:
-                    continue
-                for signed in ((False,) if width == 1 else (False, True)):
-                    yield FieldCandidate(template.arb_id, start, width, endian, signed,
-                        'unknown', 0., .5, template.reference_support,
-                        (('unknown', 1.),), ('contiguous_enumeration',),
-                        template.payload_length, bus=template.bus)
+    """Adapt the shared exhaustive tokenizer to baseline field candidates."""
+    trace = MessageTrace(template.arb_id, template.payload_length, template.bus,
+                         (), ())
+    for layout in tokenize(trace, method='exhaustive', max_width=max_width,
+                           excluded_bits=protocol_bits).candidates():
+        yield FieldCandidate(template.arb_id, layout.start, layout.width,
+            layout.endian, layout.signed, 'unknown', 0., .5,
+            template.reference_support, (('unknown', 1.),),
+            ('contiguous_enumeration',), template.payload_length, bus=template.bus)
 
 
 def compatible_layouts(rows: list[dict], limit: int = LAYOUT_BUDGET) -> list[dict]:
     # Each row is a one-field layout hypothesis. Overlap is allowed between
     # alternatives, never inside one alternative.
     return sorted(rows, key=lambda r: (-r['score'], repr(layout_key(r['field']))))[:limit]
-
-
-def _series(fitting: list[Capture], family: tuple, cap: int = 128):
-    out = []
-    for capture in fitting:
-        frames = [f for f in capture.frames if f.payload is not None and
-                  (f.bus or capture.known_bus, f.arb_id.upper(), len(f.payload)) == family]
-        if len(frames) > cap:
-            frames = [frames[int(i)] for i in np.linspace(0, len(frames)-1, cap, dtype=int)]
-        payloads = [f.payload for f in frames]
-        out.append((np.asarray([f.timestamp for f in frames]),
-                    np.asarray([int.from_bytes(p, 'little') for p in payloads], dtype=np.uint64),
-                    np.asarray([int.from_bytes(p, 'big') for p in payloads], dtype=np.uint64)))
-    return out
-
-
-def _score(field: FieldCandidate, samples: list, role: str):
-    shift = (field.payload_length * 8 - field.start - field.width
-             if field.endian == 'big' else field.start)
-    series = []
-    for times, little, big in samples:
-        values = ((big if field.endian == 'big' else little) >> shift) & ((1 << field.width) - 1)
-        values = values.astype(np.float64)
-        if field.signed:
-            values = np.where(values >= 1 << (field.width - 1), values - (1 << field.width), values)
-        series.append((times, values))
-    score, evidence = _role_score(UNARY_ROLE[role], series, field)
-    return score, evidence
 
 
 def _protocol(registry, family: tuple) -> set[int]:

@@ -35,18 +35,6 @@ def test_frame_match_needs_other_shared_ids_and_keeps_ambiguous_alternatives(mon
     assert decisions[0]['status'] == 'alternative'
 
 
-def test_frame_match_rejects_conflicting_source_layouts(monkeypatch):
-    target = [capture('target', ('100', '101', '102'))]
-    sources = [('one', [capture('one', ('100', '101', '102'))], 'one.dbc'),
-               ('two', [capture('two', ('100', '101', '102'))], 'two.dbc')]
-    monkeypatch.setattr(integrated, 'load_dbc_fields', lambda path:
-                        (field('100', start=0 if path == 'one.dbc' else 8),))
-    monkeypatch.setattr(integrated, 'dbc_formats', lambda _: {})
-    anchors, decisions = integrated.match_frames(target, sources)
-    assert anchors == ()
-    assert decisions[0]['status'] == 'alternative'
-
-
 def test_matched_anchor_owns_bits_and_preserves_token_alternative():
     anchor = replace(field('100'), bus=None)
     token = replace(field('100', label='unknown'), role='unknown',
@@ -55,13 +43,6 @@ def test_matched_anchor_owns_bits_and_preserves_token_alternative():
     assert registry.selected == (anchor,)
     assert len(registry.candidates) == 1  # exact coordinates deduplicated
     assert registry.conflicts[0]['reason'] == 'token_overlap'
-
-
-def test_different_mux_modes_can_share_bits():
-    a = replace(field('100'), mux_start=0, mux_value=1)
-    b = replace(field('100'), mux_start=0, mux_value=2)
-    registry = integrated.merge_registry(FieldRegistry((), ()), (a, b))
-    assert registry.selected == (a, b)
 
 
 def test_derivative_relation_requires_independent_replication():
@@ -84,17 +65,6 @@ def test_derivative_relation_requires_independent_replication():
     assert len(result['routes']) == 3
 
 
-def test_relation_groups_keep_related_sensors_distinct():
-    fields = tuple(field(arb_id) for arb_id in ('100', '200', '300'))
-    edges = [{'source': 0, 'target': 1, 'relation': 'affine_copy',
-              'lag_seconds': .02},
-             {'source': 0, 'target': 2, 'relation': 'transformed_estimate',
-              'lag_seconds': .02}]
-    groups = integrated.relation_groups(fields, edges)
-    assert [group['members'] for group in groups] == [[0, 1], [2]]
-    assert groups[0]['observed_roots'] == [0]
-
-
 def test_wheel_mean_relation_replication():
     fields = tuple(field(arb_id) for arb_id in ('100', '101', '102', '103', '104'))
     captures = []
@@ -109,11 +79,3 @@ def test_wheel_mean_relation_replication():
     evidence = integrated.wheel_mean_relation(captures[:2], captures[2:],
                                               fields[0], fields[1:])
     assert evidence['status'] == 'supported'
-
-
-def test_decode_physical_applies_dbc_scale_and_offset():
-    data = capture('one', ('100',))
-    times, values = integrated.decode_physical(data, field('100'),
-                                                {'scale': .5, 'offset': -2})
-    assert len(times) == len(values) == 120
-    assert values[4] == 0

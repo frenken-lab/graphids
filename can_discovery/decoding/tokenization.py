@@ -6,21 +6,7 @@ from itertools import product
 
 import numpy as np
 
-from .capture import Capture
-from .message_types import classify_messages
-
-
-@dataclass(frozen=True, slots=True)
-class MessageTrace:
-    arb_id: str
-    payload_length: int
-    bus: str | None
-    samples: tuple[tuple[bytes, ...], ...]
-    source_hashes: tuple[str, ...]
-
-    @property
-    def support(self) -> tuple[int, ...]:
-        return tuple(map(len, self.samples))
+from ..preprocessing.traces import MessageTrace
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,37 +44,39 @@ class LayoutAlternative:
     unresolved_bits: tuple[int, ...]
 
 
-def prepare_traces(captures: list[Capture], *, max_ids: int = 64,
-                   samples_per_capture: int = 1000,
-                   only_ids: tuple[str, ...] | None = None) -> tuple[MessageTrace, ...]:
-    if len(captures) < 2 or len({c.sha256 for c in captures}) != len(captures):
-        raise ValueError('independent reference captures are required')
-    kinds = {m.arb_id: m.kind for m in classify_messages(captures)}
-    grouped = []
-    for capture in captures:
-        mapping = {}
-        for frame in capture.frames:
-            if frame.payload is None or not 1 <= len(frame.payload) <= 8:
-                continue
-            key = (frame.arb_id, len(frame.payload), frame.bus or capture.known_bus)
-            mapping.setdefault(key, []).append(frame.payload)
-        grouped.append(mapping)
-    common = set.intersection(*(set(g) for g in grouped))
-    if only_ids is not None:
-        ids = {x.upper().zfill(3) for x in only_ids}
-        common = {key for key in common if key[0].upper().zfill(3) in ids}
-    common = {key for key in common if kinds.get(key[0]) not in ('iso_tp', 'j1939_transport')}
-    ranked = sorted(common, key=lambda key: (-sum(len(g[key]) for g in grouped), str(key)))[:max_ids]
-    out = []
-    for arb_id, length, bus in ranked:
-        samples = []
-        for group in grouped:
-            values = group[(arb_id, length, bus)]
-            if len(values) > samples_per_capture:
-                values = [values[int(i)] for i in np.linspace(0, len(values)-1, samples_per_capture, dtype=int)]
-            samples.append(tuple(values))
-        out.append(MessageTrace(arb_id, length, bus, tuple(samples), tuple(c.sha256 for c in captures)))
-    return tuple(out)
+@dataclass(frozen=True, slots=True)
+class FieldLayout:
+    start: int
+    width: int
+    endian: str
+    signed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ExhaustiveTokenizationResult:
+    """Lazy alternatives for one field, not a whole-message partition."""
+    trace: MessageTrace
+    method: str
+    max_width: int
+    excluded_bits: frozenset[int]
+
+    def candidates(self):
+        length = self.trace.payload_length * 8
+        seen = set()
+        for endian in ('little', 'big'):
+            for width in range(1, min(self.max_width, length) + 1):
+                for start in range(length - width + 1):
+                    bits = (frozenset(range(start, start + width)) if endian == 'little'
+                            else frozenset((pos // 8) * 8 + 7 - pos % 8
+                                           for pos in range(start, start + width)))
+                    if bits & self.excluded_bits:
+                        continue
+                    for signed in ((False,) if width == 1 else (False, True)):
+                        identity = (bits, 'single_bit' if width == 1 else endian, signed)
+                        if identity in seen:
+                            continue
+                        seen.add(identity)
+                        yield FieldLayout(start, width, endian, signed)
 
 
 def _features(trace: MessageTrace):
@@ -230,9 +218,16 @@ def _can_d_spans(conditional, rates, length, beta):
 
 def tokenize(trace: MessageTrace, method: str = 'can_d', *, beta: float = .5,
              bycan_eps: float = .22, bycan_min_samples: int = 2,
-             source_model=None, max_layouts: int = 1) -> TokenizationResult:
-    if method not in ('can_d', 'supervised_can_d', 'bit_flip', 'bycan'):
+             source_model=None, max_layouts: int = 1, max_width: int = 64,
+             excluded_bits=()) -> TokenizationResult | ExhaustiveTokenizationResult:
+    """Infer a message partition or lazily enumerate unscored field layouts."""
+    if method not in ('can_d', 'supervised_can_d', 'bit_flip', 'bycan', 'exhaustive'):
         raise ValueError(f'unknown tokenizer: {method}')
+    if method == 'exhaustive':
+        if not 1 <= max_width <= 64:
+            raise ValueError('max_width must be between 1 and 64')
+        return ExhaustiveTokenizationResult(trace, method, max_width,
+                                            frozenset(excluded_bits))
     if method == 'supervised_can_d' and source_model is None:
         raise ValueError('supervised_can_d requires an explicit source model')
     if not 1 <= max_layouts <= 8:

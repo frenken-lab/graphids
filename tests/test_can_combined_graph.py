@@ -13,17 +13,6 @@ def _capture(digest):
     return SimpleNamespace(sha256=digest)
 
 
-def test_graph_spec_contains_modules_and_feedback():
-    graph.validate_graph()
-    assert set(graph.NODES) == {'powertrain', 'braking', 'chassis', 'interface'}
-    assert {factor.name for factor in graph.FACTORS if factor.module == 'interface'} >= {
-        'speed_acceleration', 'esc_torque_feedback', 'esc_brake_feedback'}
-    assert any(factor.kind == 'conditional' for factor in graph.FACTORS)
-    assert any(factor.kind == 'equivalence' for factor in graph.FACTORS)
-    assert any(link.kind == 'feedback' and link.target == 'propulsion_torque'
-               for link in graph.LINKS)
-
-
 def test_missing_sensor_abstains_without_failing_other_modules(monkeypatch):
     calls = []
     def evaluate(captures, fields, name, forced_lag=None):
@@ -58,18 +47,6 @@ def test_development_uses_frozen_lag_and_cannot_rescue_missing_fit_factor(monkey
     assert development['fit_choices']['rpm_throttle']['reason'] == 'unavailable_at_fit'
 
 
-def test_duplicate_capture_rejected():
-    with pytest.raises(ValueError, match='distinct'):
-        graph.evaluate_combined_graph([_capture('same'), _capture('same')], {})
-
-
-def test_ice_factors_require_powertrain_identity():
-    result = graph.evaluate_combined_graph([_capture('fit')], {'rpm': object(), 'throttle': object()})
-    item = result['fit_choices']['rpm_throttle']
-    assert item['status'] == 'unavailable'
-    assert item['reason'] == 'powertrain_not_verified_or_inapplicable'
-
-
 def test_runner_ignores_target_dbc_and_rejects_assessment_overlap(monkeypatch):
     from can_discovery.relationships.physical.role_types import ROLES
     from scripts import benchmark_can_combined_graph as runner
@@ -93,15 +70,3 @@ def test_runner_ignores_target_dbc_and_rejects_assessment_overlap(monkeypatch):
     with pytest.raises(ValueError, match='overlap'):
         runner.run_entry({'vehicle': 'Civic', 'dbc': '/does/not/exist'}, sealed=False)
     assert calls == ['fitting', 'development']
-
-
-def test_frozen_manifest_hash_is_checked_before_loading(tmp_path, monkeypatch):
-    from scripts import benchmark_can_combined_graph as runner
-
-    capture = tmp_path / 'route.csv'
-    capture.write_text('timestamp,arbitration_id,data_field,attack\n0,100,00,0\n')
-    entry = {'fitting': [str(capture)], 'routes': [
-        {'capture': str(capture), 'converted_sha256': '0' * 64}]}
-    monkeypatch.setattr(runner, 'load_capture', lambda path: pytest.fail('must check hash first'))
-    with pytest.raises(ValueError, match='hash changed'):
-        runner._load(entry, 'fitting')

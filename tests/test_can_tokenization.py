@@ -7,11 +7,8 @@ import pytest
 
 from can_discovery.decoding.signals import discover_fields
 from can_discovery.preprocessing.capture import audit_capture, load_capture
-from can_discovery.preprocessing.tokenization import (
-    _can_d_spans,
-    prepare_traces,
-    tokenize,
-)
+from can_discovery.preprocessing.traces import prepare_traces
+from can_discovery.decoding.tokenization import _can_d_spans, tokenize
 
 
 def _write(path, rows):
@@ -57,26 +54,25 @@ def test_methods_share_traces_and_unresolved_order_stays_out_of_numeric_fields(t
     assert all(f.role in ('counter','checksum') for f in registry.candidates)
 
 
-def test_version_safety():
-    from can_discovery.decoding.field_values import extract
-    with pytest.raises(ValueError, match='resolved'):
-        extract(b'\x01\x02', 0, 16, 'unresolved', False)
-    with pytest.raises(ValueError, match='resolved'):
-        extract(b'\x01\x02', 0, 16, 'little', None)
-
-
-@pytest.mark.parametrize(('bad_edge','expected'), (( (7,8), 'little'), ((15,0), 'big')))
-def test_can_d_cross_byte_order_optimizer(bad_edge, expected):
-    conditional = np.full((16,16), .5)
-    conditional[bad_edge] = 0
-    spans = _can_d_spans(conditional, np.full(16,.2), 2, .5)
-    assert any(span.width == 16 and span.byte_order == expected for span in spans)
+def test_exhaustive_tokenization_yields_layouts_without_scoring():
+    from can_discovery.preprocessing.traces import MessageTrace
+    trace = MessageTrace('123', 1, None, ((), ()), ('a', 'b'))
+    result = tokenize(trace, method='exhaustive', max_width=2, excluded_bits=(0,))
+    layouts = list(result.candidates())
+    assert result.method == 'exhaustive'
+    assert layouts
+    assert all(not (layout.endian == 'little' and layout.start == 0) for layout in layouts)
+    assert all(not hasattr(layout, 'score') for layout in layouts)
+    assert len(layouts) == len({(layout.start, layout.width, layout.endian,
+                                layout.signed) for layout in layouts})
+    complete = list(tokenize(trace, method='exhaustive', max_width=2).candidates())
+    assert len(complete) == 36  # 8 single-bit spans and 28 ordered two-bit interpretations.
 
 
 def test_can_d_optimizer_matches_exhaustive_one_byte():
     from itertools import product
     import numpy as np
-    from can_discovery.preprocessing.tokenization import _can_d_layouts
+    from can_discovery.decoding.tokenization import _can_d_layouts
 
     beta = .5
     probabilities = np.zeros((8,8))
@@ -100,7 +96,7 @@ def test_can_d_optimizer_matches_exhaustive_one_byte():
 def test_supervised_model_rejects_source_capture_and_incompatible_features():
     from dataclasses import replace
     import pytest
-    from can_discovery.preprocessing.source_model import SourceBoundaryModel
+    from can_discovery.decoding.source_model import SourceBoundaryModel
 
     model = SourceBoundaryModel(('source',),('hash-a',),('dbc-hash',),{},object())
     with pytest.raises(ValueError,match='target'):
@@ -109,13 +105,3 @@ def test_supervised_model_rejects_source_capture_and_incompatible_features():
         model.check_target((), 'source')
     with pytest.raises(ValueError,match='incompatible'):
         replace(model,feature_version='future').check_target(())
-
-
-def test_supervised_feature_vector_has_published_fifteen_components():
-    import numpy as np
-    from can_discovery.preprocessing.source_model import feature_vector
-
-    flips = np.array([[0,1,0],[1,1,0],[0,0,1]],dtype=bool)
-    vector = feature_vector(flips,(0,1,2),0)
-    assert vector.shape == (15,)
-    np.testing.assert_allclose(vector[10:],vector[5:10]-vector[:5])

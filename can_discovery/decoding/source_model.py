@@ -11,8 +11,9 @@ import pickle
 
 import numpy as np
 
-from .tokenization import MessageTrace, _features
-from ..decoding.signals import _bit_positions
+from ..preprocessing.traces import MessageTrace, prepare_traces
+from .tokenization import _features
+from .signals import _bit_positions
 
 FEATURE_VERSION = 'can-d-flip-15-v1'
 
@@ -83,7 +84,14 @@ class SourceBoundaryModel:
 
     @classmethod
     def load(cls, path: Path):
-        model = pickle.loads(path.read_bytes())
+        class _ModelUnpickler(pickle.Unpickler):
+            def find_class(self, module, name):
+                if module == 'can_discovery.preprocessing.source_model' and name == 'SourceBoundaryModel':
+                    return cls
+                return super().find_class(module, name)
+
+        with path.open('rb') as handle:
+            model = _ModelUnpickler(handle).load()
         if not isinstance(model, cls):
             raise ValueError('invalid source boundary model')
         model.check_target(())
@@ -91,7 +99,7 @@ class SourceBoundaryModel:
 
 
 def _examples(traces, fields):
-    from ..decoding.field_values import extract
+    from .field_values import extract
     vectors, labels, weights = [], [], []
     by_family = {}
     for field in fields:
@@ -128,8 +136,8 @@ def _examples(traces, fields):
 def train_source_model(vehicles: list[tuple[str, list, Path]], *, samples_per_capture=1000):
     """Each source tuple contains name, three normal captures, and its DBC path."""
     from sklearn.ensemble import RandomForestClassifier
-    from ..decoding.dbc import load_dbc_fields
-    from .tokenization import prepare_traces
+    from .dbc import load_dbc_fields
+    from ..preprocessing.traces import prepare_traces
     names, hashes, dbc_hashes = [], [], []
     train_x, train_y, train_w = [], [], []
     validation_sets = []

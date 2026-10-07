@@ -10,8 +10,9 @@ from pathlib import Path
 from can_discovery.decoding.dbc import load_dbc_fields
 from can_discovery.decoding.signals import _bit_positions
 from can_discovery.preprocessing.capture import audit_captures, load_capture
-from can_discovery.preprocessing.tokenization import prepare_traces, tokenize
-from can_discovery.preprocessing.source_model import train_source_model
+from can_discovery.preprocessing.traces import prepare_traces
+from can_discovery.decoding.tokenization import tokenize
+from can_discovery.decoding.source_model import train_source_model
 
 
 def _candidate_recall(results, truth, held_out):

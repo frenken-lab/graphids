@@ -1,29 +1,9 @@
 """Pinned five-route manifests and immutable artifact helpers."""
 from __future__ import annotations
 
-import hashlib
-import json
 from pathlib import Path
 
-
-def artifact_hash(value: dict) -> str:
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'),
-                                     allow_nan=False).encode()).hexdigest()
-
-
-def file_hash(path: Path) -> str:
-    with Path(path).open('rb') as handle:
-        return hashlib.file_digest(handle, 'sha256').hexdigest()
-
-
-def write_artifact(path: Path, value: dict) -> str:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    encoded = json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + '\n'
-    if path.exists() and path.read_text() != encoded:
-        raise ValueError(f'immutable artifact already exists: {path}')
-    path.write_text(encoded)
-    return artifact_hash(value)
+from .common import artifact_hash, file_hash, write_artifact
 
 
 def freeze_manifest(entries: list[dict]) -> dict:
@@ -71,3 +51,20 @@ def verify_manifest(manifest: dict, *, include_final: bool = False) -> None:
         for item in items:
             if file_hash(Path(item['path'])) != item['sha256']:
                 raise ValueError(f"input hash changed: {item['path']}")
+
+
+def verify_staged_manifest(source: dict, staged: dict) -> None:
+    """Require identical cohort, split order, and pinned content hashes."""
+    if len(source['vehicles']) != len(staged['vehicles']):
+        raise ValueError('staged manifest vehicle count mismatch')
+    for original, copied in zip(source['vehicles'], staged['vehicles']):
+        if original['vehicle'] != copied['vehicle']:
+            raise ValueError('staged vehicle order mismatch')
+        if original['dbc']['sha256'] != copied['dbc']['sha256']:
+            raise ValueError('staged DBC hash mismatch')
+        for split in ('fitting', 'development', 'final'):
+            if [x['sha256'] for x in original['routes'][split]] != [
+                    x['sha256'] for x in copied['routes'][split]]:
+                raise ValueError(f'staged {split} hash mismatch')
+        if original['routes']['final'] != copied['routes']['final']:
+            raise ValueError('sealed final route changed in staged manifest')

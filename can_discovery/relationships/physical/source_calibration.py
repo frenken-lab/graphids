@@ -42,7 +42,8 @@ class SourceFactorValidation:
 
 
 def fit_source_factor_validation(sources: list[tuple], *,
-                                 target_vehicle: str) -> tuple[SourceFactorValidation, ...]:
+                                 target_vehicle: str,
+                                 diagnostics: list[dict] | None = None) -> tuple[SourceFactorValidation, ...]:
     """Validate source DBC factors on independent validation trips.
 
     Sources may be legacy ``(vehicle, three_trips, dbc)`` records or explicit
@@ -83,13 +84,31 @@ def fit_source_factor_validation(sources: list[tuple], *,
                     by_role[role] = (activity, field)
         for name, roles in FACTOR_ROLES.items():
             if any(role not in by_role for role in roles):
+                if diagnostics is not None:
+                    diagnostics.append({'vehicle': vehicle, 'factor': name,
+                                        'fields': {}, 'status': 'unavailable',
+                                        'reason': 'missing_role',
+                                        'missing_roles': [role for role in roles if role not in by_role]})
                 continue
             chosen = tuple(by_role[role][1] for role in roles)
             fitted = evaluate_factor(fitting, chosen, name)
             held_results = [evaluate_factor([trip], chosen, name, forced_lag=fitted.lag_bins)
                             for trip in validation]
-            if all(fitted.status == held.status == 'supported' and
-                   fitted.direction == held.direction for held in held_results):
+            passed = all(fitted.status == held.status == 'supported' and
+                         fitted.direction == held.direction for held in held_results)
+            if diagnostics is not None:
+                from dataclasses import asdict
+                diagnostics.append({'vehicle': vehicle, 'factor': name,
+                                    'fields': {role: field.label_hypotheses[0][0]
+                                               for role, field in zip(roles, chosen, strict=True)},
+                                    'status': 'supported' if passed else 'failed',
+                                    'reason': ('source_trip_replication_passed' if passed else
+                                               'fitting_' + fitted.reason if fitted.status == 'unavailable' else
+                                               'fitting_factor_failed' if fitted.status != 'supported' else
+                                               'validation_factor_or_direction_failed'),
+                                    'fitting': asdict(fitted),
+                                    'validation': [asdict(held) for held in held_results]})
+            if passed:
                 reports[name].append((vehicle, held_results[0]))
     validated = []
     for name, entries in reports.items():

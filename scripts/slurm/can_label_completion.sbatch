@@ -16,6 +16,7 @@ source .venv/bin/activate
 export OPENBLAS_NUM_THREADS=1
 export OMP_NUM_THREADS=1
 : "${PHASE:?submit with --export=ALL,PHASE=prepare or PHASE=rank}"
+: "${TRACK:?submit with --export=ALL,TRACK=unsupervised or TRACK=dbc_assisted}"
 case "${PHASE}" in
   prepare|rank) ;;
   *) echo "PHASE must be prepare or rank" >&2; exit 2 ;;
@@ -24,4 +25,4 @@ python -m scripts.run_can_label_completion "${PHASE}" \
   docs/empirical-notes/2026-10-06-signal-catalog/label-completion-manifest-v5-stage.json \
   docs/empirical-notes/2026-10-06-signal-catalog/label-completion-manifest-v2.json \
   "${CAN_LABEL_OUTPUT_DIR:?set CAN_LABEL_OUTPUT_DIR outside the repository}" \
-  --case-index "${SLURM_ARRAY_TASK_ID}"
+  --case-index "${SLURM_ARRAY_TASK_ID}" --track "${TRACK}"

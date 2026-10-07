@@ -1,4 +1,4 @@
-"""Progressive full-pool label completion, one vehicle-role case per task."""
+"""Rank one prepared vehicle-role case within its evidence track."""
 from __future__ import annotations
 
 import gzip
@@ -9,181 +9,37 @@ from collections import defaultdict
 from dataclasses import asdict
 from pathlib import Path
 
-from ..decoding.dbc import load_dbc_fields
 from ..decoding.signals import FieldCandidate
 from ..preprocessing.capture import load_capture
-from .baseline import (
-    DBC_NAMES,
-    ROLES,
-    _active,
-    _score,
-    _series,
-    _value_equivalent,
-    key,
-    layout_key,
+from .baseline import ROLES, _value_equivalent, layout_key
+from ..scoring.role_guided import _score, _series
+from ..scoring.dbc_assisted import (
+    candidate_votes,
+    contrast_gate,
+    relation_gate,
+    target_relation_samples,
 )
-from .full_search import case_specs, verify_staged_manifest
-from .manifest import (
+from ..scoring.composition import rank_evidence, score_record
+from ..scoring.physical import physical_factor_evidence
+from ..scoring import dbc_assisted
+from .case import SCHEMA as PREPARATION_SCHEMA, TRACKS, case_specs
+from ..manifests.label_completion import (
     artifact_hash,
     file_hash,
     verify_manifest,
+    verify_staged_manifest,
     write_artifact,
 )
 from .progressive_v6 import (
-    RELATION_MIN_NET,
-    RELATION_SOURCE_VEHICLES,
-    RELATION_WEIGHT,
     SCHEMA,
-    anchor_series,
-    candidate_features,
     decoded_values,
     field_from_row,
-    fit_contrast,
-    relation_net,
     trajectory_signature,
 )
 
 
 def _family(row: dict) -> tuple:
     return row['bus'], row['arb_id'], row['payload_length']
-
-
-def _row(field: FieldCandidate, score: float | None = None) -> dict:
-    return {'bus': field.bus, 'arb_id': field.arb_id,
-            'payload_length': field.payload_length, 'start': field.start,
-            'width': field.width, 'endian': field.endian,
-            'signed': field.signed, 'score': score}
-
-
-def _source_examples(vehicle: str, role: str, fitting, case: dict, baseline: dict):
-    """Annotated positives and high-ranking nonreference competitors."""
-    positives = []
-    negatives = []
-    samples = {}
-    references = [FieldCandidate(**row) for row in
-                  baseline['dbc_annotations']['reference_layouts']]
-    for field in references:
-        family = key(field)
-        samples.setdefault(family, _series(fitting, family))
-        score, _ = _score(field_from_row(_row(field)), samples[family], role)
-        if math.isfinite(score):
-            positives.append(candidate_features(_row(field),
-                decoded_values(_row(field), samples[family]), score))
-    truth_families = {key(field) for field in references}
-    competitors = []
-    for family in case['families']:
-        coordinates = _family(family)
-        if coordinates in truth_families or not family['top_layouts']:
-            continue
-        top = family['top_layouts'][0]
-        row = {**top, 'bus': family['bus'], 'arb_id': family['arb_id'],
-               'payload_length': family['payload_length']}
-        samples.setdefault(coordinates, _series(fitting, coordinates))
-        features = candidate_features(row, decoded_values(row, samples[coordinates]),
-                                      top['score'])
-        if np_isfinite(features):
-            competitors.append((family['family_rank'], coordinates, top['score'], features))
-    negatives = [item[3] for item in competitors[:8]]
-    return {'vehicle': vehicle, 'positives': positives, 'negatives': negatives,
-            'competitors': competitors, 'truth_families': truth_families,
-            'baseline_id_rank': case['reference_id_rank_evaluation_only']}
-
-
-def np_isfinite(features) -> bool:
-    return bool(all(math.isfinite(float(value)) for value in features))
-
-
-def contrast_gate(target: str, role: str, loaded: dict, full_dir: Path,
-                  baseline_dir: Path) -> tuple[object | None, dict]:
-    source_rows = []
-    for vehicle, data in loaded.items():
-        if vehicle == target:
-            continue
-        fitting, _, _ = data
-        case_path = full_dir / f'{vehicle.lower()}-{role}-prepared.json'
-        base_path = baseline_dir / f'{vehicle.lower()}-{role}-baseline.json'
-        case = json.loads(case_path.read_text())
-        baseline = json.loads(base_path.read_text())
-        if not case['assessable']:
-            continue
-        source_rows.append(_source_examples(vehicle, role, fitting, case, baseline))
-    source_vehicles = [row['vehicle'] for row in source_rows
-                       if row['positives'] and len(row['negatives']) >= 4]
-    if len(source_vehicles) < 3:
-        return None, {'status': 'rejected', 'reason': 'fewer_than_three_source_vehicles',
-                      'source_vehicles': source_vehicles}
-    checks = []
-    for held in source_rows:
-        training = [row for row in source_rows if row['vehicle'] != held['vehicle']]
-        model = fit_contrast([p for row in training for p in row['positives']],
-                             [n for row in training for n in row['negatives']])
-        if model is None or not held['competitors'] or not held['positives']:
-            return None, {'status': 'rejected', 'reason': 'source_fold_unavailable',
-                          'source_vehicles': source_vehicles}
-        # The held source's reference is used here only to assess the fold.
-        # Its candidate family score is taken from its frozen v5 ID ranking.
-        margins = [model.adjustment(p) for p in held['positives']]
-        competitor_adjustments = [model.adjustment(item[3]) for item in held['competitors']]
-        contrast = min(margins) - max(competitor_adjustments, default=0.)
-        checks.append({'vehicle': held['vehicle'], 'positive_vs_hard_negative_margin': contrast,
-                       'positive_adjustments': margins,
-                       'max_competitor_adjustment': max(competitor_adjustments, default=0.)})
-    # A source model must distinguish at least one annotated positive from
-    # high-scoring competitors in every held vehicle. A failed gate has no vote.
-    if any(row['positive_vs_hard_negative_margin'] <= 0 for row in checks):
-        return None, {'status': 'rejected', 'reason': 'leave_one_vehicle_out_hard_negative_gate',
-                      'source_vehicles': source_vehicles, 'checks': checks}
-    model = fit_contrast([p for row in source_rows for p in row['positives']],
-                         [n for row in source_rows for n in row['negatives']])
-    return model, {'status': 'eligible', 'source_vehicles': source_vehicles,
-                   'checks': checks, 'positive_count': sum(len(r['positives']) for r in source_rows),
-                   'hard_competitor_count': sum(len(r['negatives']) for r in source_rows)}
-
-
-def _active_anchor(fields: tuple[FieldCandidate, ...], role: str, fitting):
-    options = [field for field in fields
-               if field.label_hypotheses[0][0].upper() in DBC_NAMES[role]
-               and _active(field, fitting)]
-    return sorted(options, key=layout_key)[0] if options else None
-
-
-def relation_gate(target: str, role: str, loaded: dict):
-    if role not in ('vehicle_speed', 'engine_rpm'):
-        return None, {'status': 'not_applicable'}
-    other = 'engine_rpm' if role == 'vehicle_speed' else 'vehicle_speed'
-    target_fitting, _, target_dbc = loaded[target]
-    target_anchor = _active_anchor(load_dbc_fields(target_dbc), other, target_fitting)
-    if target_anchor is None:
-        return None, {'status': 'rejected', 'reason': 'target_anchor_unavailable'}
-    supporters = []
-    diagnostics = []
-    for vehicle, (fitting, development, dbc) in loaded.items():
-        if vehicle == target:
-            continue
-        source_fields = load_dbc_fields(dbc)
-        candidate = _active_anchor(source_fields, role, fitting)
-        anchor = _active_anchor(source_fields, other, fitting)
-        if candidate is None or anchor is None:
-            diagnostics.append({'vehicle': vehicle, 'status': 'unavailable'})
-            continue
-        route_nets = []
-        for capture in [*fitting, *development]:
-            family = key(candidate)
-            sampled = _series([capture], family)
-            route_nets.append(relation_net(decoded_values(_row(candidate), sampled),
-                                           anchor_series([capture], anchor)))
-        passed = all(net is not None and net >= RELATION_MIN_NET for net in route_nets)
-        diagnostics.append({'vehicle': vehicle,
-                            'status': 'supported' if passed else 'rejected',
-                            'route_nets': route_nets})
-        if passed:
-            supporters.append(vehicle)
-    if len(supporters) < RELATION_SOURCE_VEHICLES:
-        return None, {'status': 'rejected', 'reason': 'source_replication_gate',
-                      'supporters': supporters, 'diagnostics': diagnostics}
-    return target_anchor, {'status': 'eligible', 'supporters': supporters,
-                           'diagnostics': diagnostics,
-                           'target_anchor': asdict(target_anchor)}
 
 
 def _cluster_families(families: list[dict], fitting) -> list[dict]:
@@ -212,7 +68,10 @@ def _cluster_families(families: list[dict], fitting) -> list[dict]:
 
 
 def run(manifest_path: Path, source_manifest_path: Path, full_dir: Path,
-        baseline_dir: Path, output_dir: Path, case_index: int) -> dict:
+        baseline_dir: Path, output_dir: Path, case_index: int,
+        track: str = 'dbc_assisted') -> dict:
+    if track not in TRACKS:
+        raise ValueError(f'unknown evidence track: {track}')
     manifest = json.loads(manifest_path.read_text())
     source_manifest = json.loads(source_manifest_path.read_text())
     verify_staged_manifest(source_manifest, manifest)
@@ -226,15 +85,21 @@ def run(manifest_path: Path, source_manifest_path: Path, full_dir: Path,
     fitting, _, _ = loaded[target]
     v5_path = full_dir / f'{target.lower()}-{role}-prepared.json'
     v5 = json.loads(v5_path.read_text())
-    if v5['schema'] != 'dbc-label-completion-preparation-v1':
+    if v5['schema'] != PREPARATION_SCHEMA:
         raise ValueError('preparation schema mismatch')
+    if v5['track'] != track:
+        raise ValueError('preparation evidence track mismatch')
     if v5['manifest_hash'] != artifact_hash(source_manifest):
         raise ValueError('v5 manifest mismatch')
     if file_hash(Path(v5['candidate_pool_path'])) != v5['candidate_pool_sha256']:
         raise ValueError('candidate pool hash changed')
-    contrast, contrast_evidence = contrast_gate(target, role, loaded, full_dir, baseline_dir)
-    anchor, relation_evidence = relation_gate(target, role, loaded)
-    target_anchor_samples = anchor_series(fitting, anchor) if anchor else None
+    if track == 'dbc_assisted':
+        contrast, contrast_evidence = contrast_gate(target, role, loaded, full_dir, baseline_dir)
+        anchor, relation_evidence = relation_gate(target, role, loaded)
+    else:
+        contrast, contrast_evidence = None, {'status': 'not_applicable', 'reason': 'unsupervised_track'}
+        anchor, relation_evidence = None, {'status': 'not_applicable', 'reason': 'unsupervised_track'}
+    target_anchor_samples = target_relation_samples(fitting, anchor)
     target_family_samples = {}
     groups = defaultdict(dict)
     pool_count = 0
@@ -247,11 +112,14 @@ def run(manifest_path: Path, source_manifest_path: Path, full_dir: Path,
             samples = target_family_samples[family]
             series = decoded_values(row, samples)
             signature = trajectory_signature(series)
-            features = candidate_features(row, series, row['score'])
-            contrast_vote = contrast.adjustment(features) if contrast else 0.
-            relation = relation_net(series, target_anchor_samples) if anchor else None
-            relation_vote = (RELATION_WEIGHT * relation if relation is not None else 0.)
-            joint = row['score'] + contrast_vote + relation_vote
+            contrast_vote, relation_vote, relation, contrast_valid = (
+                candidate_votes(row, series, contrast, target_anchor_samples)
+                if track == 'dbc_assisted' else (0., 0., None, False))
+            scoring = score_record(rank_evidence(
+                row['score'], contrast_vote, relation_vote, relation,
+                assisted=track == 'dbc_assisted', contrast_available=contrast is not None,
+                contrast_valid=contrast_valid))
+            joint = scoring['score']
             classes = groups[family]
             bucket = classes.setdefault(signature, {'members': [], 'best': None,
                 'best_score': -math.inf, 'best_unary_score': -math.inf,
@@ -262,7 +130,8 @@ def run(manifest_path: Path, source_manifest_path: Path, full_dir: Path,
             bucket['best_contrast_score'] = max(
                 bucket['best_contrast_score'], row['score'] + contrast_vote)
             if joint > bucket['best_score']:
-                bucket.update({'best': row, 'best_score': joint,
+                bucket.update({'best': {**row, 'joint_score_evidence': scoring['evidence']},
+                               'best_score': joint,
                                'contrast_vote': contrast_vote,
                                'relation_net': relation})
             pool_count += 1
@@ -294,6 +163,7 @@ def run(manifest_path: Path, source_manifest_path: Path, full_dir: Path,
         all_classes = list(groups[family].values())
         family_rows.append({'bus': old['bus'], 'arb_id': old['arb_id'],
             'payload_length': old['payload_length'],
+            'timing_evidence': old['timing_evidence'],
             'initial_rank': old['family_rank'],
             'unary_family_score': max((row['best_unary_score'] for row in all_classes),
                                       default=None),
@@ -369,7 +239,19 @@ def run(manifest_path: Path, source_manifest_path: Path, full_dir: Path,
     best_exact = min(exact, key=lambda row: (row['new_id_rank'], row['class_rank'],
                                             row['within_class_rank'])) if exact else None
     clusters = _cluster_families([row for row in family_rows if row['best_layout']], fitting)
-    result = {'schema': SCHEMA, 'vehicle': target, 'role': role,
+    wheel_evidence = None
+    if role == 'vehicle_speed' and track == 'dbc_assisted':
+        candidate = next((field_from_row(row['best_layout']) for row in family_rows
+                          if row['best_layout']), None)
+        wheels = [field for field in dbc_assisted.load_dbc_fields(loaded[target][2])
+                  if field.label_hypotheses[0][0].upper().startswith('WHEEL_SPEED')]
+        if candidate is not None and wheels:
+            wheel_evidence = [asdict(physical_factor_evidence(
+                fitting, 'wheel_speed', (candidate, wheel))) for wheel in wheels]
+        else:
+            wheel_evidence = [asdict(physical_factor_evidence(
+                fitting, 'wheel_speed', None))]
+    result = {'schema': SCHEMA, 'track': track, 'vehicle': target, 'role': role,
         'manifest_hash': artifact_hash(source_manifest),
         'staged_manifest_hash': artifact_hash(manifest),
         'v5_case_sha256': file_hash(v5_path),
@@ -378,6 +260,7 @@ def run(manifest_path: Path, source_manifest_path: Path, full_dir: Path,
         'class_artifact_sha256': file_hash(class_path),
         'source_contrast': contrast_evidence,
         'relationship_gate': relation_evidence,
+        'wheel_speed_evidence_diagnostic_only': wheel_evidence,
         'scored_layout_count': pool_count, 'trajectory_class_count': len(class_rows),
         'families': family_rows,
         'cross_id_value_clusters': clusters,

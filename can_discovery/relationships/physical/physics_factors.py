@@ -148,7 +148,7 @@ def evaluate_factor(captures: list[Capture], fields: tuple[FieldCandidate, ...],
             sign = -1 if name == 'speed_brake' else 1
             if np.std(target[mask]) < 1e-8 or np.std(feature[mask]) < 1e-8:
                 return FactorEvidence(name, roles, 'unavailable', reason='no_excitation')
-        best = (0., 0., 0, 0, 0., 0)
+        best = None
         for lag in ((forced_lag,) if forced_lag is not None else (1, 2, 3, 5)):
             keep = mask & np.roll(mask, lag)
             keep[:lag] = False
@@ -159,9 +159,9 @@ def evaluate_factor(captures: list[Capture], fields: tuple[FieldCandidate, ...],
             control_keep[:control_shift + lag] = False
             effect, direction, quality = _gain(target, baseline, shifted, control_keep, sign)
             control, _, _ = _gain(target, baseline, np.roll(shifted, control_shift), control_keep, sign)
-            if effect - control > best[0] - best[1]:
+            if best is None or effect - control > best[0] - best[1]:
                 best = (effect, control, lag, direction, quality, int(control_keep.sum()))
-        if best[-1] < 80:
+        if best is None or best[-1] < 80:
             return FactorEvidence(name, roles, 'unavailable', reason='insufficient_joint_samples')
         trip_results.append(best)
     if not trip_results:

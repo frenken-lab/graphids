@@ -1,91 +1,42 @@
-"""Exhaustive development search, one pinned vehicle-role case per process."""
+"""Run one pinned vehicle-role case for a declared evidence track."""
 from __future__ import annotations
 
 import gzip
 import json
 import math
 import os
+from dataclasses import asdict
 from pathlib import Path
 
-from ..decoding.dbc import load_dbc_fields
-from ..decoding.signals import (
-    _bit_positions,
-    discover_fields,
-)
+from ..decoding.signals import discover_fields
+from ..prepare import prepare_families
+from ..scoring.dbc_assisted import filter_known_role_anchors, other_role_anchors
+from ..scoring.id_priority import motion_id_priority
+from ..scoring.role_guided import score_family
+from ..scoring.timing import arrival_timing_evidence
 from ..preprocessing.capture import load_capture
 from .baseline import (
-    DBC_NAMES,
     ROLES,
-    _protocol,
     _reference_fields,
-    _score,
-    _series,
     attach_role_ranks,
-    enumerate_layouts,
-    interpretation_key,
     key,
     layout_key,
     mine_case,
-    overlaps,
-    rank_families,
 )
-from .manifest import (
+from ..manifests.label_completion import (
     artifact_hash,
     file_hash,
     verify_manifest,
+    verify_staged_manifest,
     write_artifact,
 )
 
-SCHEMA = 'dbc-label-completion-preparation-v1'
-
-
-def score_family(group: dict, role: str, fitting, registry, anchors,
-                 max_width: int = 64) -> dict:
-    """Score every admissible interpretation without the retired diversity policy."""
-    family = group['bus'], group['arb_id'], group['payload_length']
-    proposals = [f for f in registry.candidates if key(f) == family
-                 and f.role == 'unknown' and f.signed is not None]
-    if not proposals:
-        raise ValueError(f'no proposals for detailed family {family}')
-    protocol = set(group['protocol_bits'])
-    samples = _series(fitting, family)
-    options = {}
-    for field in [*proposals, *enumerate_layouts(proposals[0], protocol,
-                                                 max_width=max_width)]:
-        if any(overlaps(field, anchor) for anchor in anchors):
-            continue
-        if _bit_positions(field.start, field.width, field.endian) & protocol:
-            continue
-        identity = interpretation_key(field)
-        if identity in options:
-            continue
-        score, _ = _score(field, samples, role)
-        if math.isfinite(score):
-            options[identity] = {'field': field, 'score': float(score)}
-    ordered = sorted(options.values(), key=lambda r: (-r['score'],
-                     repr(layout_key(r['field']))))
-    return {'pool_size': len(ordered), 'ordered': ordered}
+SCHEMA = 'dbc-label-completion-preparation-v4'
+TRACKS = ('unsupervised', 'dbc_assisted')
 
 
 def case_specs(manifest: dict) -> list[tuple[dict, str]]:
     return [(entry, role) for entry in manifest['vehicles'] for role in ROLES]
-
-
-def rank_all_families(registry, fitting, anchors, role: str) -> list[dict]:
-    grouped = {}
-    for field in registry.candidates:
-        if field.role == 'unknown' and field.signed is not None:
-            grouped.setdefault(key(field), []).append(field)
-    ranked = []
-    for family, fields in grouped.items():
-        samples = _series(fitting, family)
-        for field in fields:
-            if any(overlaps(field, anchor) for anchor in anchors):
-                continue
-            score, _ = _score(field, samples, role)
-            if math.isfinite(score):
-                ranked.append((field, score))
-    return rank_families(ranked)
 
 
 def write_full_pool(path: Path, groups: list[tuple[dict, dict]]) -> str:
@@ -104,7 +55,8 @@ def write_full_pool(path: Path, groups: list[tuple[dict, dict]]) -> str:
                                   'payload_length': field.payload_length,
                                   'layout_rank': rank, 'start': field.start,
                                   'width': field.width, 'endian': field.endian,
-                                  'signed': field.signed, 'score': item['score']}
+                                  'signed': field.signed, 'score': item['score'],
+                                  'score_evidence': item['evidence']}
                         stream.write((json.dumps(record, sort_keys=True,
                             separators=(',', ':'), allow_nan=False) + '\n').encode())
         digest = file_hash(temporary)
@@ -120,25 +72,10 @@ def write_full_pool(path: Path, groups: list[tuple[dict, dict]]) -> str:
             temporary.unlink()
 
 
-def verify_staged_manifest(source: dict, staged: dict) -> None:
-    """Require identical cohort, split order, and pinned content hashes."""
-    if len(source['vehicles']) != len(staged['vehicles']):
-        raise ValueError('staged manifest vehicle count mismatch')
-    for original, copied in zip(source['vehicles'], staged['vehicles']):
-        if original['vehicle'] != copied['vehicle']:
-            raise ValueError('staged vehicle order mismatch')
-        if original['dbc']['sha256'] != copied['dbc']['sha256']:
-            raise ValueError('staged DBC hash mismatch')
-        for split in ('fitting', 'development', 'final'):
-            if [x['sha256'] for x in original['routes'][split]] != [
-                    x['sha256'] for x in copied['routes'][split]]:
-                raise ValueError(f'staged {split} hash mismatch')
-        if original['routes']['final'] != copied['routes']['final']:
-            raise ValueError('sealed final route changed in staged manifest')
-
-
 def run(manifest_path: Path, output_dir: Path, case_index: int,
-        source_manifest_path: Path) -> dict:
+        source_manifest_path: Path, track: str = 'dbc_assisted') -> dict:
+    if track not in TRACKS:
+        raise ValueError(f'unknown evidence track: {track}')
     manifest = json.loads(manifest_path.read_text())
     source_manifest = json.loads(source_manifest_path.read_text())
     verify_staged_manifest(source_manifest, manifest)
@@ -150,32 +87,52 @@ def run(manifest_path: Path, output_dir: Path, case_index: int,
     vehicle = entry['vehicle']
     fitting = [load_capture(Path(item['path'])) for item in entry['routes']['fitting']]
     development = [load_capture(Path(item['path'])) for item in entry['routes']['development']]
-    # A large bound removes the earlier 64-family truncation. The eligible set
-    # still follows prepare_traces' common-route and transport filters.
-    registry = discover_fields(fitting, max_ids=1_000_000, max_layouts=8)
-    annotations = load_dbc_fields(Path(entry['dbc']['path']))
-    anchors = [field for field in annotations
-               if field.label_hypotheses[0][0].upper() not in DBC_NAMES[role]
-               and any(field.label_hypotheses[0][0].upper() in names
-                       for names in DBC_NAMES.values())]
-    families = rank_all_families(registry, fitting, anchors, role)
+    # Eligibility is capture-based; a tokenizer cannot admit or reject a family.
+    prepared_families = prepare_families(fitting)
+    id_priority = (motion_id_priority(prepared_families, fitting)
+                   if role == 'vehicle_speed' else [])
+    priority_by_family = {(row['bus'], row['arb_id'], row['payload_length']): row
+                          for row in id_priority}
+    if id_priority:
+        prepared_families = tuple(sorted(prepared_families, key=lambda item:
+            priority_by_family[(item.trace.bus, item.trace.arb_id.upper(),
+                                item.trace.payload_length)]['rank']))
+    anchors = (other_role_anchors(Path(entry['dbc']['path']), role)
+               if track == 'dbc_assisted' else ())
     scored_groups = []
-    for family in families:
-        coordinates = (family['bus'], family['arb_id'], family['payload_length'])
-        result = score_family({**family,
-            'protocol_bits': sorted(_protocol(registry, coordinates))},
-            role, fitting, registry, anchors, max_width=64)
-        scored_groups.append((family, result))
+    for prepared in prepared_families:
+        trace = prepared.trace
+        family = {'bus': trace.bus, 'arb_id': trace.arb_id,
+                  'payload_length': trace.payload_length,
+                  'protocol_bits': sorted(prepared.protocol_bits)}
+        layouts = prepared.layouts(max_width=64)
+        if track == 'dbc_assisted':
+            layouts = filter_known_role_anchors(layouts, family, anchors)
+        result = score_family(family, layouts, role, fitting)
+        if result['ordered']:
+            scored_groups.append((family, result))
+    scored_groups.sort(key=lambda item: (-item[1]['ordered'][0]['score'],
+                        repr((item[0]['bus'], item[0]['arb_id'],
+                              item[0]['payload_length']))))
+    families = []
+    for rank, (family, result) in enumerate(scored_groups, 1):
+        family['rank'] = rank
+        family['score'] = result['ordered'][0]['score']
+        families.append(family)
 
     # Candidate ranks are complete before the hidden reference is opened.
     pool_path = output_dir / f'{vehicle.lower()}-{role}-pool.jsonl.gz'
     pool_hash = write_full_pool(pool_path, scored_groups)
     references = list(_reference_fields(Path(entry['dbc']['path']), role, fitting, development))
+    reference_priority_rank = min((row['rank'] for row in id_priority
+        if any((row['bus'], row['arb_id'], row['payload_length']) == key(field)
+               for field in references)), default=None)
     baseline_registry = discover_fields(fitting, max_ids=64, max_layouts=8)
     baseline = attach_role_ranks(mine_case(vehicle, role, fitting, development,
                                           Path(entry['dbc']['path']), baseline_registry), fitting)
     baseline['manifest_hash'] = artifact_hash(source_manifest)
     baseline['schema'] = 'dbc-label-completion-baseline-control-v1'
+    baseline['track'] = 'dbc_assisted'
     write_artifact(output_dir / f'{vehicle.lower()}-{role}-baseline.json', baseline)
     family_rows = []
     for family, result in scored_groups:
@@ -187,6 +144,11 @@ def run(manifest_path: Path, output_dir: Path, case_index: int,
         family_rows.append({'family_rank': family['rank'],
             'bus': family['bus'], 'arb_id': family['arb_id'],
             'payload_length': family['payload_length'],
+            'id_priority_rank': priority_by_family.get(
+                (family['bus'], family['arb_id'].upper(), family['payload_length']), {}).get('rank'),
+            'id_priority_score': priority_by_family.get(
+                (family['bus'], family['arb_id'].upper(), family['payload_length']), {}).get('priority'),
+            'timing_evidence': asdict(arrival_timing_evidence(fitting, family_key)),
             'retrieval_score': family['score'],
             'candidate_count': result['pool_size'],
             'reference_exact_rank_evaluation_only': min(exact_ranks) if exact_ranks else None,
@@ -201,7 +163,7 @@ def run(manifest_path: Path, output_dir: Path, case_index: int,
                                   for row in family_rows
                                   if row['reference_exact_rank_evaluation_only'] is not None),
                                  default=None)
-    summary = {'schema': SCHEMA, 'case_index': case_index,
+    summary = {'schema': SCHEMA, 'track': track, 'case_index': case_index,
         'vehicle': vehicle, 'hidden_role': role,
         'manifest_hash': artifact_hash(source_manifest),
         'staged_manifest_hash': artifact_hash(manifest),
@@ -211,6 +173,13 @@ def run(manifest_path: Path, output_dir: Path, case_index: int,
         'candidate_pool_path': str(pool_path),
         'candidate_pool_sha256': pool_hash,
         'eligible_family_count': len(families),
+        'id_priority': {'method': 'cross_capture_motion_activity_v1',
+                        'role': 'vehicle_speed', 'families': id_priority,
+                        'reference_rank_evaluation_only': reference_priority_rank,
+                        'reference_in_top_32_evaluation_only': (
+                            reference_priority_rank <= 32
+                            if reference_priority_rank is not None else None)}
+                       if id_priority else None,
         'scored_layout_count': sum(result['pool_size'] for _, result in scored_groups),
         'layout_width_limit': 64,
         'assessable': bool(references),

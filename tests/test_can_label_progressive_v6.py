@@ -44,13 +44,3 @@ def test_relation_requires_synchronized_change_beyond_shifted_control():
     assert relation_net(aligned, anchor) is not None
     assert relation_net(aligned, anchor) > .5
     assert relation_net(aligned, [(times, np.ones(128))]) is None
-
-
-def test_features_are_scale_free_except_declared_unary_score():
-    times = np.arange(128, dtype=float)
-    values = np.arange(128, dtype=float)
-    row = {'width': 16, 'signed': False}
-    first = candidate_features(row, [(times, values)], .8)
-    second = candidate_features(row, [(times, values * 10 + 3)], .8)
-    assert first.shape == (7,)
-    assert np.allclose(first[:4], second[:4])

@@ -10,7 +10,7 @@ import numpy as np
 from ..decoding.signals import FieldCandidate
 from ..relationships.shared.signal_time import observations
 
-SCHEMA = 'dbc-label-completion-v6-consolidated-v1'
+SCHEMA = 'dbc-label-completion-v6-consolidated-v2'
 CONTRAST_WEIGHT = .15
 RELATION_WEIGHT = .15
 RELATION_MIN_NET = .04

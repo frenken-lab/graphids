@@ -15,8 +15,9 @@ The [pipeline and module contracts](../docs/can-discovery-pipeline.md) define th
 
 | Package | Responsibility |
 | --- | --- |
-| `preprocessing/` | Capture loading, message classification, tokenization, and source boundary models. |
-| `decoding/` | Field candidates, raw value decoding, and DBC evaluation. |
+| `preprocessing/` | Capture loading and per-family trace construction. |
+| `decoding/` | Transport classification, CAN-D and other structural inference, source boundary models, field candidates, raw value decoding, and DBC evaluation. |
+| `scoring/` | DBC-free role-guided scores and separate DBC-assisted anchors and source evidence. |
 | `relationships/behavior/` | Timing and motif evidence learned from observations. |
 | `relationships/physical/` | Physical roles, factors, calibration, and experimental graphs. |
 | `relationships/shared/` | Field identity, alignment, lag joins, and common evidence records. |
@@ -27,12 +28,13 @@ Decoding is one possible input to relationship discovery, not a prerequisite for
 
 The standalone normal-profile experiment has been retired. The reusable timing and motif analyses remain in `relationships/behavior/`, and structural and physical discovery still have independent benchmark runners.
 
-The current DBC annotation completion command is `python -m scripts.run_can_label_completion`. Run `prepare` for every vehicle-role case, then `rank` for every case, then `report`. Each phase takes the staged manifest, pinned source manifest, and an output directory outside the repository; case phases also require `--case-index`. Preparation generates the baseline control and exhaustive candidate pool internally. The rank phase retains v6 value classes and source-gated evidence. Final routes remain sealed; historical development results have not passed the final-assessment gate.
+The current DBC annotation completion command is `python -m scripts.run_can_label_completion`. Run `prepare` for every vehicle-role case, then `rank` for every case, then `report`. Every command requires `--track unsupervised` or `--track dbc_assisted`, the staged manifest, pinned source manifest, and a fresh output root outside the repository; case phases also require `--case-index`. Artifacts are separated under `OUTPUT_DIR/unsupervised/` and `OUTPUT_DIR/dbc_assisted/`. Preparation admits message families directly from valid fitting frames present in both captures and excludes transport traffic. It calls `decoding.tokenization.tokenize(method='exhaustive')` to generate lazy, unscored field layouts, then scores them in `scoring.role_guided.score_family`. `can_discovery.prepare` builds unscored families and layouts; `label_completion.case` orchestrates vehicle-role artifacts and evaluation. The `unsupervised` track uses no DBC labels or DBC-trained votes for fitting or ranking, but it remains **role-guided** by a hand-written score profile. The `dbc_assisted` track calls `scoring.dbc_assisted` to exclude known other-role anchors and apply source contrast and speed–RPM relationship votes when their gates pass. DBC references are opened for evaluation only after each track's candidate scores have been fixed and are never fed back into the unsupervised track. CAN-D tokenization is used only by a separate DBC-assisted baseline control; it cannot gate either exhaustive candidate pool. Final routes remain sealed; historical development results have not passed the final-assessment gate.
 
-For the pinned four-vehicle cohort, submit all 20 `prepare` cases before any `rank` cases. Use `scripts/slurm/can_label_completion.sbatch` with `PHASE=prepare` or `PHASE=rank` and `CAN_LABEL_OUTPUT_DIR` set outside the repository. After all rank cases complete, run:
+For the pinned four-vehicle cohort, submit all 20 `prepare` cases for each track before that track's `rank` cases. Use `scripts/slurm/can_label_completion.sbatch` with `PHASE=prepare` or `PHASE=rank`, `TRACK=unsupervised` or `TRACK=dbc_assisted`, and `CAN_LABEL_OUTPUT_DIR` set outside the repository. After all rank cases complete for a track, run:
 
 ```bash
-python -m scripts.run_can_label_completion report STAGED_MANIFEST SOURCE_MANIFEST OUTPUT_DIR
+python -m scripts.run_can_label_completion report STAGED_MANIFEST SOURCE_MANIFEST OUTPUT_DIR --track unsupervised
+python -m scripts.run_can_label_completion report STAGED_MANIFEST SOURCE_MANIFEST OUTPUT_DIR --track dbc_assisted
 ```
 
 The generated artifacts use a new consolidated schema. Historical v2–v6 reports and summaries are retained for comparison; their per-case data was pruned from the repository.
@@ -80,3 +82,11 @@ The prospective cohort preparation command freezes five device-distinct routes p
   /tmp/graphids_can_prospective_cohort/prospective-manifest.json \
   --prospective --output-dir /tmp/graphids_can_prospective_benchmark --max-ids 64
 ```
+
+Manifest code is centralized in `can_discovery/manifests/`: `common.py` owns content hashes and immutable JSON writes; `label_completion.py` owns the five-route sealed-final schema and staged-manifest checks; `iterative.py` owns iterative-round splits; and `graph.py` loads graph benchmark cohorts. These schemas remain separate because their split and final-route rules differ.
+
+For the `vehicle_speed` label-completion case, `scoring.id_priority` computes a DBC-free execution order before layout scoring. It compares non-protocol bit-change activity across IDs and across two-byte lanes within an ID, requiring the association in both fitting captures. The prepared artifact records the priority order and its evaluation-only DBC-reference rank. Every eligible family still receives exhaustive layout scoring; priority is not a semantic label or an exclusion gate.
+
+Scoring terms now use `scoring.evidence.ScoreEvidence` and `scoring.composition`: the unary payload score, source contrast adjustment, and speed–RPM relationship adjustment remain individually recorded and sum to the prior ranking value. `scoring.timing` records family arrival cadence in prepared artifacts with zero ranking weight. `scoring.physical` adapts the existing joint physical evaluators and marks missing role candidates unavailable; its result receives no ranking weight until source-only calibration and independent validation establish one. The candidate pool and ranked-case schemas were advanced for the new evidence records. PicaCAN's graph matcher remains a separate experimental method rather than a term silently merged into this score.
+
+For DBC-assisted `vehicle_speed` cases, ranking also records a diagnostic wheel-speed factor between the top speed hypothesis and each known wheel-speed DBC field. It uses fitting captures and has zero ranking weight; the unsupervised track never opens those target DBC wheel fields. This diagnostic must be calibrated on independent source vehicles and checked on development routes before it can become a ranking term.

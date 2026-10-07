@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
-from .capture import Capture
+from ..preprocessing.capture import Capture
 
 
 @dataclass(frozen=True, slots=True)

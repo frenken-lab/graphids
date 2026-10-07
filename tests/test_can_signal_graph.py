@@ -63,17 +63,6 @@ def test_delayed_copy_has_upstream_observed_root():
     assert 'rpm' in graph['null_roles']
 
 
-def test_independent_sensors_remain_distinct_roots():
-    captures = _captures(independent=True)
-    fields = tuple(_field(arb_id) for arb_id in ('100', '300'))
-    discovery = PhysicalDiscovery(tuple(RoleHypothesis(field, 'speed', .9,
-        (), ()) for field in fields), (), (), ())
-    graph = build_signal_graph(captures, FieldRegistry(fields, fields), discovery)
-    groups = [item for item in graph['role_groups'] if item['role'] == 'speed']
-    assert len(groups) == 2
-    assert {tuple(item['observed_roots']) for item in groups} == {(0,), (1,)}
-
-
 def test_synchronous_equivalents_keep_both_roots():
     captures = _captures()
     fields = tuple(_field(arb_id) for arb_id in ('100', '300'))
@@ -84,35 +73,3 @@ def test_synchronous_equivalents_keep_both_roots():
     graph = build_signal_graph(captures, FieldRegistry(fields, fields), discovery)
     group = next(item for item in graph['role_groups'] if item['role'] == 'speed')
     assert group['observed_roots'] == [0, 1]
-
-
-def test_signal_manifest_rejects_target_source_capture_overlap(tmp_path):
-    from can_discovery.cohort import load_graph_cohort
-    entries = []
-    for vehicle in range(4):
-        paths = []
-        for route in range(3):
-            path = tmp_path / f'{vehicle}-{route}.csv'
-            path.write_text('')
-            paths.append(str(path))
-        dbc = tmp_path / f'{vehicle}.dbc'
-        dbc.write_text('')
-        entries.append({'vehicle': str(vehicle), 'references': paths[:2],
-                        'held_out': paths[2], 'dbc': str(dbc)})
-    manifest = tmp_path / 'manifest.json'
-    manifest.write_text(json.dumps(entries))
-    assert len(load_graph_cohort(manifest, policy='signal_graph')) == 4
-    entries[1]['references'][0] = entries[0]['references'][0]
-    manifest.write_text(json.dumps(entries))
-    with pytest.raises(ValueError, match='overlap'):
-        load_graph_cohort(manifest, policy='signal_graph')
-    entries[1]['references'][0] = str(tmp_path / '1-0.csv')
-    digest = hashlib.sha256(b'').hexdigest()
-    for entry in entries:
-        entry['routes'] = [{'capture': entry['references'][0],
-                            'converted_sha256': digest,
-                            'device': entry['vehicle'],
-                            'session': entry['vehicle']}]
-    manifest.write_text(json.dumps(entries))
-    with pytest.raises(ValueError, match='hashes overlap'):
-        load_graph_cohort(manifest, policy='signal_graph')

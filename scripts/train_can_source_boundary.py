@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from can_discovery.preprocessing.capture import load_capture
-from can_discovery.preprocessing.source_model import train_source_model
+from can_discovery.decoding.source_model import train_source_model
 
 
 def main():

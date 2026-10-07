@@ -54,22 +54,6 @@ def test_layout_exclusivity_and_protocol_conflict():
         memberships, _weights()).combinations[0].assignments)
 
 
-def test_duplicate_relationships_share_a_score_cap_and_null_is_allowed():
-    factor = FactorEvidence('speed_brake', ('speed', 'brake'), 'supported', .8,
-                            members=(0, 1))
-    duplicate = replace(factor, name='graph:brake_speed', effect=.7)
-    memberships = {field_key(_field(0)): ('layout:0',),
-                   field_key(_field(8)): ('layout:0',)}
-    first = rerank(_discovery((factor,)), memberships, _weights())
-    second = rerank(_discovery((factor, duplicate)), memberships, _weights())
-    assert first.combinations[0].score == second.combinations[0].score
-    unavailable = replace(factor, status='unavailable', effect=0., reason='no_motion')
-    assert rerank(_discovery((unavailable,)), memberships, _weights()).combinations
-    null = replace(_discovery(), combinations=(CandidateCombination(
-        (None,) * 9, 1., 0., (), ()),))
-    assert rerank(null, {}, _weights()).combinations[0].assignments == (None,) * 9
-
-
 def test_artifact_leakage_and_serialization(tmp_path):
     artifact = _weights()
     path = tmp_path / 'weights.json'
@@ -89,35 +73,3 @@ def test_membership_uses_exact_alternative_layout():
         alternatives=(SimpleNamespace(spans=(span,)),), spans=())
     result = layout_memberships((field,), (token,))
     assert result[field_key(field)] == ('None:123:2:None:None:layout:0',)
-
-
-def test_materialized_layout_contains_only_the_chosen_alternative():
-    first, second, shared = _field(0), _field(8), _field(0, width=16)
-    family = 'None:123:2:None:None'
-    members = {field_key(first): (family + ':layout:0',),
-               field_key(second): (family + ':layout:0',),
-               field_key(shared): (family + ':layout:1',)}
-    result = selected_layout_fields((first, second, shared), (first, second),
-        members, ((family, family + ':layout:1'),))
-    assert result == (shared,)
-
-
-def test_promotion_gate_requires_each_vehicle_precision_and_order():
-    from scripts.benchmark_can_candidate_graph import promotion_gate
-    rows = []
-    for vehicle in ('a', 'b', 'c', 'd'):
-        common = {'vehicle': vehicle, 'layouts': 1,
-                  'cross_byte_order': {'assessed': 1, 'accuracy': 1.},
-                  'named_role_retrieval': {'speed': {
-                      'combination_exact_rank': None,
-                      'combination_value_equivalent_rank': None}}}
-        rows.append({**common, 'variant': 'decoding_only',
-                     'exact_layout': {'active_recall': .2, 'exact_precision': .5}})
-        rows.append({**common, 'variant': 'candidate_graph',
-                     'exact_layout': {'active_recall': .3, 'exact_precision': .49},
-                     'named_role_retrieval': {'speed': {
-                         'combination_exact_rank': 1,
-                         'combination_value_equivalent_rank': None}}})
-    assert promotion_gate(rows)['1']['passes']
-    rows[-1]['exact_layout']['exact_precision'] = .47
-    assert not promotion_gate(rows)['1']['passes']

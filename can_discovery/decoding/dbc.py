@@ -11,8 +11,30 @@ from .signals import FieldCandidate, _bit_positions
 
 
 def _dbc_start(start: int, byte_order: str) -> int:
-    # cantools uses sawtooth DBC bit numbering for Motorola signals.
-    return start if byte_order == "little_endian" else (start // 8) * 8 + 7 - start % 8
+    """Convert cantools' DBC bit number to our raw extractor coordinate."""
+    if byte_order == "little_endian":
+        return start
+    if byte_order == "big_endian":
+        # DBC numbers Motorola bits from the most significant end of a byte.
+        return (start // 8) * 8 + 7 - start % 8
+    raise ValueError(f"unsupported DBC byte order: {byte_order}")
+
+
+def _signal_fields(message, signal, path: Path) -> tuple[FieldCandidate, ...]:
+    """Represent each DBC mux mode as a separate raw-field candidate."""
+    mux_start = None
+    if signal.multiplexer_signal is not None:
+        selector = message.get_signal_by_name(signal.multiplexer_signal)
+        mux_start = _dbc_start(selector.start, selector.byte_order)
+    modes = tuple(signal.multiplexer_ids or ()) if mux_start is not None else (None,)
+    if mux_start is not None and not modes:
+        raise ValueError(f"multiplexed signal has no selector values: {message.name}.{signal.name}")
+    return tuple(FieldCandidate(
+        format(message.frame_id, "X"), _dbc_start(signal.start, signal.byte_order),
+        signal.length, "little" if signal.byte_order == "little_endian" else "big",
+        signal.is_signed, "known", 0.0, 1.0, (),
+        ((signal.name, 1.0),), ("dbc", str(path)), message.length,
+        mux_start, mode) for mode in modes)
 
 
 def load_dbc_fields(path: Path) -> tuple[FieldCandidate, ...]:
@@ -22,18 +44,8 @@ def load_dbc_fields(path: Path) -> tuple[FieldCandidate, ...]:
     db = cantools.database.load_file(str(path), strict=False)
     fields = []
     for message in db.messages:
-        arb_id = format(message.frame_id, "X")
         for signal in message.signals:
-            fields.append(FieldCandidate(
-                arb_id, _dbc_start(signal.start, signal.byte_order), signal.length,
-                "little" if signal.byte_order == "little_endian" else "big",
-                signal.is_signed, "known", 0.0, 1.0, (),
-                ((signal.name, 1.0),), ("dbc", str(path)), message.length,
-                _dbc_start(message.get_signal_by_name(signal.multiplexer_signal).start,
-                           message.get_signal_by_name(signal.multiplexer_signal).byte_order)
-                if signal.multiplexer_signal else None,
-                signal.multiplexer_ids[0] if signal.multiplexer_ids and
-                len(signal.multiplexer_ids) == 1 else None))
+            fields.extend(_signal_fields(message, signal, path))
     return tuple(fields)
 
 

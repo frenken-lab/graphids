@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 
 from can_discovery.preprocessing.capture import audit_captures, load_capture
-from can_discovery.preprocessing.tokenization import prepare_traces, tokenize
+from can_discovery.preprocessing.traces import prepare_traces
+from can_discovery.decoding.tokenization import tokenize
 
 
 def main():

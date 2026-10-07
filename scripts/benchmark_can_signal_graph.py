@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-from can_discovery.cohort import load_graph_cohort, split_paths
+from can_discovery.manifests.graph import load_graph_cohort, split_paths
 from can_discovery.decoding.dbc import evaluate_discovery, load_dbc_fields
 from can_discovery.decoding.field_values import extract
 from can_discovery.decoding.signals import (

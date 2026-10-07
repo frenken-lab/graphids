@@ -7,7 +7,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..preprocessing.capture import Capture
-from ..preprocessing.tokenization import TokenizationResult, prepare_traces, tokenize
+from ..preprocessing.traces import prepare_traces
+from .tokenization import TokenizationResult, tokenize
 from .field_values import extract
 
 
@@ -196,6 +197,9 @@ def discover_fields(captures: list[Capture], *, max_ids: int = 64,
                     only_ids: tuple[str, ...] | None = None,
                     method: str = 'can_d', source_model=None,
                     max_layouts: int = 1) -> FieldRegistry:
+    if method == 'exhaustive':
+        raise ValueError('exhaustive tokenization yields individual layouts; '
+                         'score them with a task-specific scorer')
     traces = prepare_traces(captures, max_ids=max_ids,
                             samples_per_capture=samples_per_id, only_ids=only_ids)
     results = tuple(tokenize(trace, method, source_model=source_model,

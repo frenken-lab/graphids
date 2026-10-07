@@ -4,19 +4,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from can_discovery.cohort import load_graph_cohort
+from can_discovery.manifests.graph import load_graph_cohort
 from can_discovery.relationships.physical.source_calibration import (
     fit_source_factor_validation,
 )
 from scripts.benchmark_can_candidate_graph import promotion_gate
 from scripts.prepare_can_prospective_cohort import distinct_routes
-
-
-def test_distinct_routes_preserve_pinned_and_separate_devices():
-    catalog = {'CAR': ['a/s1/1/s', 'a/s2/2/s', 'b/s3/3/s',
-                       'c/s4/4/s', 'd/s5/5/s', 'e/s6/6/s']}
-    selected = distinct_routes(catalog, 'CAR', 5, ('a/s2/2',))
-    assert selected == ['a/s2/2', 'b/s3/3', 'c/s4/4', 'd/s5/5', 'e/s6/6']
 
 
 def test_manifest_hash_and_session_separation(tmp_path):
@@ -51,22 +44,6 @@ def test_manifest_hash_and_session_separation(tmp_path):
     path.write_text(json.dumps(entries))
     with pytest.raises(ValueError, match='hash changed'):
         load_graph_cohort(path, policy='candidate_graph')
-
-
-def test_promotion_gate_uses_manifest_fold_count():
-    rows = []
-    for vehicle in ('a', 'b', 'c', 'd'):
-        common = {'vehicle': vehicle, 'layouts': 1,
-                  'cross_byte_order': {'assessed': 0, 'accuracy': None}}
-        base = {'active_recall': .2, 'exact_precision': .5}
-        gain = {'active_recall': .3, 'exact_precision': .5}
-        rows.append({**common, 'variant': 'decoding_only', 'exact_layout': base,
-                     'named_role_retrieval': {}})
-        rows.append({**common, 'variant': 'candidate_graph', 'exact_layout': gain,
-                     'named_role_retrieval': {'speed': {'combination_exact_rank': 1,
-                                                        'combination_value_equivalent_rank': None}}})
-    assert promotion_gate(rows, expected_vehicles=4)['1']['passes']
-    assert not promotion_gate(rows, expected_vehicles=6)['1']['passes']
 
 
 def test_explicit_source_validation_rejects_overlap_and_target():

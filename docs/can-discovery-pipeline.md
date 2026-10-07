@@ -14,9 +14,12 @@ Multiplexing inference experiments and their command-line runners have been reti
 
 | Stage | Input | Output | Current implementation |
 | --- | --- | --- | --- |
-| Provenance and grouping | Recordings of timestamped frames | Audited `Capture`s and `(bus, ID, length)` families | `preprocessing.capture`, `preprocessing.tokenization.prepare_traces` |
+| Provenance and grouping | Recordings of timestamped frames | Audited `Capture`s and `(bus, ID, length)` families | `preprocessing.capture`, `preprocessing.traces.prepare_traces` |
+| Reusable layout preparation | Fitting captures | Eligible families, observed protocol bits, and lazy unscored exhaustive layouts | `can_discovery.prepare.prepare_families` |
+| Label completion case | Prepared families and one declared evidence track | Scored vehicle-role case artifacts and DBC evaluation | `label_completion.case` |
 | Message behavior | Audited captures | Per-ID timing, payload-change, and motif evidence | `relationships.behavior` |
-| Structural field inference | Per-family frame sequences | Nonoverlapping spans, alternative layouts, uncovered bits, support, method and parameters | `preprocessing.tokenization.tokenize`; `can_d`, `supervised_can_d`, `bit_flip`, `bycan` are selectable methods |
+| Structural field inference | Per-family frame sequences | Nonoverlapping spans, alternative layouts, uncovered bits, support, method and parameters | `decoding.tokenization.tokenize`; `can_d`, `supervised_can_d`, `bit_flip`, `bycan` are selectable partition methods |
+| Exhaustive field generation | One eligible message family | Lazy, unscored individual field layouts that may overlap | `decoding.tokenization.tokenize(method='exhaustive')` |
 | Candidate generation | Structural results and unsampled protocol checks | `FieldRegistry.candidates`, `selected`, tokenizations, conflicts | `decoding.signals.discover_fields` |
 | Candidate values | A candidate and frames of its family | Timestamped raw numeric observations, where byte order and signedness permit extraction | `decoding.field_values.extract`, `relationships.shared.signal_time` |
 | Relationship evidence | Message histories or candidate value series | Typed timing, value, redundancy, predictive, or physical-factor evidence with support and controls | `relationships.behavior`, `relationships.physical` |

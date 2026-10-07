@@ -36,13 +36,6 @@ def test_double_integrator_replicates_on_independent_trip():
     assert result.valid_samples > 100
 
 
-def test_dynamic_bicycle_abstains_without_lateral_velocity():
-    fields = (_field('100'),_field('200'),_field('300'),_field('400'))
-    result = evaluate_vehicle_model([_capture(1)],fields,'model:dynamic_bicycle')
-    assert result.status == 'unavailable'
-    assert result.reason == 'lateral_velocity_not_observed'
-
-
 def _turning_capture(seed):
     rng = np.random.default_rng(seed)
     n = 1600

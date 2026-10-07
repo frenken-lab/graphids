@@ -8,7 +8,7 @@ import sys
 import time
 from pathlib import Path
 
-from can_discovery.cohort import load_graph_cohort, split_paths
+from can_discovery.manifests.graph import load_graph_cohort, split_paths
 from can_discovery.preprocessing.capture import load_capture
 from can_discovery.relationships.physical.candidate_graph import fit_graph_weights
 
