@@ -7,12 +7,12 @@ import time
 from collections import Counter
 from pathlib import Path
 
+from can_discovery.preprocessing.capture import Capture, load_capture
 from can_discovery.relationships.behavior.dynamics import (
     DynamicsConfig,
     fit_dynamics,
     score_events,
 )
-from can_discovery.preprocessing.capture import Capture, load_capture
 
 SETS = ("set_01", "set_02", "set_03", "set_04")
 METHODS = ("timing", "phase", "change_coupling")
@@ -129,13 +129,3 @@ def run_set(raw: Path, frozen: Path, out: Path, config: DynamicsConfig) -> dict:
                         "Normal-file session independence is not proven by hashes."]}
     (out / "report.json").write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
     return report
-
-
-def main() -> None:
-    """Run the unified version-2 behavior discovery pipeline."""
-    from scripts.mine_can_behavior import main as behavior_main
-
-    behavior_main()
-
-if __name__ == "__main__":
-    main()

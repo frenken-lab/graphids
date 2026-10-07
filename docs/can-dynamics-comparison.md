@@ -1,8 +1,10 @@
+> Historical experiment record. Commands for standalone patterns, STUMPY, catch22, or PCMCI referenced here were retired from the active package.
+
 # CAN dynamics comparison
 
 > Historical pilot: the active CLI now runs the unified version-2 discovery pipeline. See [CAN behavior discovery](behavior-discovery.md). The commands and report fields below describe the original pilot run.
 
-Run `python scripts/compare_can_dynamics.py --pilot-root PILOT_DIR --output OUTPUT_DIR` from the repository root. The pilot directory must contain the frozen `assignment.json` for each set from `mine_can_patterns.py`. The runner verifies every normal-file SHA256 before fitting or scoring. Use `--raw-root` and `--sets` to override the default lake path and select sets.
+This is a historical comparison. The standalone command was retired with the normal-profile runner; `scripts.compare_can_dynamics.run_set` remains available for targeted research and tests. Previously, the command ran from the repository root. The pilot directory must contain the frozen `assignment.json` for each set from `mine_can_patterns.py`. The runner verifies every normal-file SHA256 before fitting or scoring. Use `--raw-root` and `--sets` to override the default lake path and select sets.
 
 This separate reference-conditioned experiment fits three rule families on the two reference files only:
 

@@ -8,7 +8,6 @@ import pytest
 
 from can_discovery.decoding.signals import FieldCandidate, FieldRegistry
 from can_discovery.preprocessing.capture import Capture, Frame
-from can_discovery.preprocessing.tokenization import MessageTrace, tokenize
 from can_discovery.relationships.physical.role_types import (
     PhysicalDiscovery,
     RoleHypothesis,
@@ -17,8 +16,6 @@ from can_discovery.relationships.physical.signal_graph import (
     _edge,
     _field_layouts,
     build_signal_graph,
-    conditional_field_candidates,
-    conditional_layouts,
 )
 
 
@@ -57,6 +54,8 @@ def test_delayed_copy_has_upstream_observed_root():
     discovery = PhysicalDiscovery(tuple(RoleHypothesis(field, 'speed', .9-i*.1,
         (), ()) for i, field in enumerate(fields)), (), (), ())
     graph = build_signal_graph(captures, FieldRegistry(fields, fields), discovery)
+    assert graph['version'] == 2
+    assert 'conditional_layouts' not in graph
     group = next(item for item in graph['role_groups'] if item['role'] == 'speed')
     assert group['members'] == [0, 1]
     assert group['observed_roots'] == [0]
@@ -87,39 +86,8 @@ def test_synchronous_equivalents_keep_both_roots():
     assert group['observed_roots'] == [0, 1]
 
 
-def test_conditional_layouts_preserve_mode_alternatives():
-    rng = np.random.default_rng(4)
-    captures = []
-    samples = []
-    for seed in (1, 2):
-        frames = []
-        payloads = []
-        for i in range(240):
-            mode = (i // 80) % 2
-            value = int(rng.integers(0, 65536))
-            payload = bytes([mode]) + value.to_bytes(2, 'little')
-            payloads.append(payload)
-            frames.append(Frame(i*.02, i, '400', payload))
-        captures.append(Capture(str(seed), str(seed), tuple(frames), 0., 4.8,
-                                0, 0, {}, {}))
-        samples.append(tuple(payloads))
-    trace = MessageTrace('400', 3, None, tuple(samples), ('1', '2'))
-    registry = FieldRegistry((), (), (tokenize(trace, max_layouts=8),))
-    modes = conditional_layouts(registry, captures)
-    assert len(modes) == 1
-    assert modes[0]['selector_byte'] == 0
-    assert {item['value'] for item in modes[0]['modes']} == {0, 1}
-    assert all(item['alternatives'] for item in modes[0]['modes'])
-    fields = conditional_field_candidates(modes, captures)
-    assert fields
-    assert {field.mux_value for field in fields} == {0, 1}
-    assert all(field.mux_start == 0 for field in fields)
-    assert all(field.start >= 8 for field in fields)
-    assert all(_field_layouts(list(fields), registry, modes))
-
-
 def test_signal_manifest_rejects_target_source_capture_overlap(tmp_path):
-    from scripts.benchmark_can_signal_graph import _signal_entries
+    from can_discovery.cohort import load_graph_cohort
     entries = []
     for vehicle in range(4):
         paths = []
@@ -133,11 +101,11 @@ def test_signal_manifest_rejects_target_source_capture_overlap(tmp_path):
                         'held_out': paths[2], 'dbc': str(dbc)})
     manifest = tmp_path / 'manifest.json'
     manifest.write_text(json.dumps(entries))
-    assert len(_signal_entries(manifest, None)) == 4
+    assert len(load_graph_cohort(manifest, policy='signal_graph')) == 4
     entries[1]['references'][0] = entries[0]['references'][0]
     manifest.write_text(json.dumps(entries))
     with pytest.raises(ValueError, match='overlap'):
-        _signal_entries(manifest, None)
+        load_graph_cohort(manifest, policy='signal_graph')
     entries[1]['references'][0] = str(tmp_path / '1-0.csv')
     digest = hashlib.sha256(b'').hexdigest()
     for entry in entries:
@@ -147,4 +115,4 @@ def test_signal_manifest_rejects_target_source_capture_overlap(tmp_path):
                             'session': entry['vehicle']}]
     manifest.write_text(json.dumps(entries))
     with pytest.raises(ValueError, match='hashes overlap'):
-        _signal_entries(manifest, None)
+        load_graph_cohort(manifest, policy='signal_graph')

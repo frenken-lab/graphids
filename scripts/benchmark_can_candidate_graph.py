@@ -2,63 +2,15 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import subprocess
 import sys
 import time
 from pathlib import Path
 
+from can_discovery.cohort import load_graph_cohort, split_paths
 from can_discovery.preprocessing.capture import load_capture
 from can_discovery.relationships.physical.candidate_graph import fit_graph_weights
-
-
-def _entries(path: Path, forester_dir: Path | None) -> list[dict]:
-    entries = json.loads(path.read_text())
-    if forester_dir is not None:
-        forester = {'vehicle': 'SUBARU_FORESTER',
-                'references': [str(forester_dir / 'reference_1.csv'),
-                               str(forester_dir / 'reference_2.csv')],
-                'held_out': str(forester_dir / 'reference_3.csv'),
-                'dbc': str(forester_dir / 'subaru_global_2017.dbc')}
-        entries.append(forester)
-    if len(entries) < 4 or len({item['vehicle'].casefold() for item in entries}) != len(entries):
-        raise ValueError('benchmark requires at least four distinct vehicles')
-    for item in entries:
-        fitting = item.get('fitting', item.get('references', ()))
-        validation = item.get('validation', [item['held_out']] if 'held_out' in item else ())
-        final = item.get('final', item.get('held_out'))
-        if len(fitting) != 2 or not validation or not final:
-            raise ValueError('each vehicle needs two fitting, validation, and final captures')
-        if ('fitting' in item or 'validation' in item or 'final' in item) and len(set((*fitting, *validation, final))) != len(fitting) + len(validation) + 1:
-            raise ValueError('capture roles must be disjoint')
-        for path in (*fitting, *validation, final, item['dbc']):
-            if not Path(path).is_file():
-                raise FileNotFoundError(path)
-        if 'routes' in item:
-            if [record['capture'] for record in item['routes']] != [*fitting, *validation, final]:
-                raise ValueError('manifest capture roles disagree with route records')
-            for record in item['routes']:
-                path = Path(record['capture'])
-                if record.get('vehicle') != item['vehicle'] or record.get('bus') != 0:
-                    raise ValueError('manifest vehicle or bus mismatch')
-                if not record.get('dataset_revision') or not record.get('opendbc_revision'):
-                    raise ValueError('manifest lacks source revisions')
-                if len(record.get('compressed_sha256', '')) != 64:
-                    raise ValueError('manifest lacks compressed segment hash')
-                if hashlib.sha256(path.read_bytes()).hexdigest() != record['converted_sha256']:
-                    raise ValueError(f'converted capture hash changed: {path}')
-                if len({record['device'] for record in item['routes']}) != len(item['routes']):
-                    raise ValueError('manifest routes must use distinct devices')
-                if len({record['session'] for record in item['routes']}) != len(item['routes']):
-                    raise ValueError('manifest routes must use distinct sessions')
-                if hashlib.sha256(Path(item['dbc']).read_bytes()).hexdigest() != record['dbc_sha256']:
-                    raise ValueError('DBC hash changed')
-    if any('routes' in item for item in entries):
-        hashes = [record['converted_sha256'] for item in entries for record in item.get('routes', ())]
-        if len(hashes) != len(set(hashes)):
-            raise ValueError('source and target captures overlap')
-    return entries
 
 
 def _metrics(result: dict) -> dict:
@@ -136,11 +88,12 @@ def main() -> None:
     parser.add_argument('--max-ids', type=int, default=64)
     parser.add_argument('--only-vehicle', help='run one fold from the manifest')
     args = parser.parse_args()
-    entries = _entries(args.benchmark_manifest, None if args.prospective else args.forester_dir)
+    entries = load_graph_cohort(args.benchmark_manifest,
+        None if args.prospective else args.forester_dir, policy='candidate_graph')
     args.output_dir.mkdir(parents=True, exist_ok=True)
     source_manifest = args.output_dir / 'source-manifest.json'
     source_manifest.write_text(json.dumps([{'vehicle': item['vehicle'],
-        'captures': item.get('fitting', item.get('references')), 'dbc': item['dbc']} for item in entries], indent=2) + '\n')
+        'captures': split_paths(item, 'fitting'), 'dbc': item['dbc']} for item in entries], indent=2) + '\n')
     full_manifest = args.output_dir / 'benchmark-manifest.json'
     full_manifest.write_text(json.dumps(entries, indent=2) + '\n')
     rows = []
@@ -149,8 +102,8 @@ def main() -> None:
         if args.only_vehicle and vehicle.casefold() != args.only_vehicle.casefold():
             continue
         sources = [(item['vehicle'],
-                    [load_capture(Path(path)) for path in item.get('fitting', item.get('references'))],
-                    [load_capture(Path(path)) for path in item.get('validation', [item['held_out']] if 'held_out' in item else ())],
+                    [load_capture(Path(path)) for path in split_paths(item, 'fitting')],
+                    [load_capture(Path(path)) for path in split_paths(item, 'validation')],
                     Path(item['dbc'])) for item in entries if item is not target]
         started = time.perf_counter()
         artifact = fit_graph_weights(sources, target_vehicle=vehicle)

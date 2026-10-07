@@ -1,0 +1,145 @@
+{
+  "schema": "dbc-label-completion-manifest-v2",
+  "vehicles": [
+    {
+      "dbc": {
+        "path": "/fs/ess/PAS1266/graphids/dbc_label_completion_v5_inputs/TOYOTA_PRIUS.dbc",
+        "sha256": "46e237fbab80e285b0e979e16b8d135695cc016b7c29e1c1ef152968391487c7"
+      },
+      "routes": {
+        "development": [
+          {
+            "path": "/fs/ess/PAS1266/graphids/dbc_label_completion_v5_inputs/TOYOTA_PRIUS_dev_1.csv",
+            "sha256": "c7a0cb6158a1c3a46088d1878039609024356b77757367a992c2d5caa1315929"
+          },
+          {
+            "path": "/fs/ess/PAS1266/graphids/dbc_label_completion_v5_inputs/TOYOTA_PRIUS_dev_2.csv",
+            "sha256": "37ff87b4eff225b3340597e0f682fb002f4ac25944cc665cb9fc8f1accb6cc24"
+          }
+        ],
+        "final": [
+          {
+            "path": "/tmp/graphids_can_prospective_cohort/TOYOTA_PRIUS_final.csv",
+            "sha256": "f45a3f9ee0468ccb22741fe9d9005d9bfc75e2d6c0df0c429cf8e5f51b41eb37"
+          }
+        ],
+        "fitting": [
+          {
+            "path": "/fs/ess/PAS1266/graphids/dbc_label_completion_v5_inputs/TOYOTA_PRIUS_fit_1.csv",
+            "sha256": "b0224eb663446fc808a7e8278d87612e5b7d443a00b2a02c4e4bdd1bf0707fa8"
+          },
+          {
+            "path": "/fs/ess/PAS1266/graphids/dbc_label_completion_v5_inputs/TOYOTA_PRIUS_fit_2.csv",
+            "sha256": "b02f54f72932009d7ef36734a2cba4e0ae80381bb875cc4eee3a60abd260f016"
+          }
+        ]
+      },
+      "vehicle": "TOYOTA_PRIUS"
+    },
+    {
+      "dbc": {
+        "path": "/fs/ess/PAS1266/graphids/dbc_label_completion_v5_inputs/HONDA_CIVIC.dbc",
+        "sha256": "d874be4545d5b8ee21868cf96c5f4af6d6fcfc578497b73209d0e579379bd153"
+      },
+      "routes": {
+        "development": [
+          {
+            "path": "/fs/ess/PAS1266/graphids/dbc_label_completion_v5_inputs/HONDA_CIVIC_dev_1.csv",
+            "sha256": "02b9c5b03dcbd5f1e7de23e545d9ce272af0120a068fd5293c14f74aedd963de"
+          },
+          {
+            "path": "/fs/ess/PAS1266/graphids/dbc_label_completion_v5_inputs/HONDA_CIVIC_dev_2.csv",
+            "sha256": "08b6996851acab99f4770a95be9fc90f88b69de0193ba496055b88667b7a11b7"
+          }
+        ],
+        "final": [
+          {
+            "path": "/tmp/graphids_can_prospective_cohort/HONDA_CIVIC_final.csv",
+            "sha256": "d738274e4e1f167a8ef2958e892e359c9de4004ea24a0a7f26b7dd0efcf311df"
+          }
+        ],
+        "fitting": [
+          {
+            "path": "/fs/ess/PAS1266/graphids/dbc_label_completion_v5_inputs/HONDA_CIVIC_fit_1.csv",
+            "sha256": "aa717512fea3f11bf39857494f5d23efacc391c166d6f7b8600b003a67083a23"
+          },
+          {
+            "path": "/fs/ess/PAS1266/graphids/dbc_label_completion_v5_inputs/HONDA_CIVIC_fit_2.csv",
+            "sha256": "8b5b1c8353db1991a2d67e4e5aedd7ea0f24abbbad64c32d9976fef877b00067"
+          }
+        ]
+      },
+      "vehicle": "HONDA_CIVIC"
+    },
+    {
+      "dbc": {
+        "path": "/fs/ess/PAS1266/graphids/dbc_label_completion_v5_inputs/HYUNDAI_SONATA.dbc",
+        "sha256": "41deaf3142e86b6928f0f89fb968a710dae74ced5dbf47c897bc8c69cd2108ba"
+      },
+      "routes": {
+        "development": [
+          {
+            "path": "/fs/ess/PAS1266/graphids/dbc_label_completion_v5_inputs/HYUNDAI_SONATA_dev_1.csv",
+            "sha256": "3666dca66a4a263e641de8aa17f2fa320c7f8f8a1d51b638069b3b478e106436"
+          },
+          {
+            "path": "/fs/ess/PAS1266/graphids/dbc_label_completion_v5_inputs/HYUNDAI_SONATA_dev_2.csv",
+            "sha256": "b171fe7f2d2a7bbc3a5d874d7e1e3f1ef2dc0923e975fd5832318eba80fe1cce"
+          }
+        ],
+        "final": [
+          {
+            "path": "/tmp/graphids_can_prospective_cohort/HYUNDAI_SONATA_final.csv",
+            "sha256": "f766aedb4cf9c7b9def05901df9811908a062b27ed9ccab934d9140e60165f10"
+          }
+        ],
+        "fitting": [
+          {
+            "path": "/fs/ess/PAS1266/graphids/dbc_label_completion_v5_inputs/HYUNDAI_SONATA_fit_1.csv",
+            "sha256": "c4a46c3aec810a5665e7a2dbcae8f8dc1207a19942c6c34d9afe88feb2730528"
+          },
+          {
+            "path": "/fs/ess/PAS1266/graphids/dbc_label_completion_v5_inputs/HYUNDAI_SONATA_fit_2.csv",
+            "sha256": "a07e0d3d3c560ae93d2fb09293554a939713d1bfd789cd720a4306c7b30790f8"
+          }
+        ]
+      },
+      "vehicle": "HYUNDAI_SONATA"
+    },
+    {
+      "dbc": {
+        "path": "/fs/ess/PAS1266/graphids/dbc_label_completion_v5_inputs/SUBARU_FORESTER.dbc",
+        "sha256": "4fc99eacee1ab9ad883eda4c61fc95c187d6f2ccac7d32dd8ee8218bde034c2e"
+      },
+      "routes": {
+        "development": [
+          {
+            "path": "/fs/ess/PAS1266/graphids/dbc_label_completion_v5_inputs/SUBARU_FORESTER_dev_1.csv",
+            "sha256": "0413f863c9f0184e0f9632a3cea04aef3ddf1eefb27a468c3f507e1116b0ebdd"
+          },
+          {
+            "path": "/fs/ess/PAS1266/graphids/dbc_label_completion_v5_inputs/SUBARU_FORESTER_dev_2.csv",
+            "sha256": "02663935d862e995fe5b476d00fca90cd723e3aaccb56a6f897b26c6308eace7"
+          }
+        ],
+        "final": [
+          {
+            "path": "/tmp/graphids_can_prospective_cohort/SUBARU_FORESTER_final.csv",
+            "sha256": "6cde84ee2d9f5d2d2f95ab49e03a2471e89bf689ba15eb785ab8dd39063ac345"
+          }
+        ],
+        "fitting": [
+          {
+            "path": "/fs/ess/PAS1266/graphids/dbc_label_completion_v5_inputs/SUBARU_FORESTER_fit_1.csv",
+            "sha256": "a9975de2ab093c33f1969d6d09a629adaf22adcb3482d2675b2602ec26a7074b"
+          },
+          {
+            "path": "/fs/ess/PAS1266/graphids/dbc_label_completion_v5_inputs/SUBARU_FORESTER_fit_2.csv",
+            "sha256": "6cad45af9704cc786e26b825b8d7f013d97cef1cbbf30c78fe6b99f9ab17ed19"
+          }
+        ]
+      },
+      "vehicle": "SUBARU_FORESTER"
+    }
+  ]
+}

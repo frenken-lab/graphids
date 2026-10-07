@@ -1,13 +1,13 @@
-# CAN behavior discovery module
+# Historical CAN behavior profile experiment
 
-`can_discovery` is the standalone research package for CAN behavior discovery and evaluation. GraphIDS model integration is a separate experiment. The active normal-data CLI is `python scripts/mine_can_behavior.py --pilot-root ASSIGNMENTS --output OUTPUT` (or omit `--pilot-root` to create a deterministic 2/1/1 assignment). Add `--source-manifest /path/to/sources.json` to calibrate physical roles from other DBC-backed vehicles and `--source-benchmark-manifest /path/to/benchmarks.json` to activate factors independently validated on third source trips. `scripts/prepare_can_source_calibration.py` creates pinned example manifests. Structural signal discovery lives in `decoding/signals.py`. `discover_fields` creates one candidate registry with a broad hypothesis pool and a conservative nonoverlapping layout view; profile fitting shares that registry with physical-role ranking.
+This page archives the retired version-11 normal-profile experiment. Its `can_discovery.behavior` package and `scripts/mine_can_behavior.py` runner were removed. The reusable `relationships.behavior` timing and motif modules remain, as do the structural and physical benchmark runners. The APIs and commands below describe historical artifacts and are no longer executable.
 
 ## Import map
 
 - `can_discovery.preprocessing`: `capture` (raw frames and a lazy event view), `message_types`.
 - `can_discovery.decoding`: `signals`, `field_values`, `dbc`.
 - `can_discovery.relationships`: `behavior/` for timing and motifs, `physical/` for roles and factors, and `shared/` for alignment and evidence records.
-- `can_discovery.behavior`: profile fitting, payload rules, tracking, and normal-reference orchestration. The `can_discovery` root re-exports the normal-profile API. Profiles from versions 7–10 must be regenerated; the loader accepts version 11.
+- `can_discovery.behavior`: profile fitting, payload rules, tracking, and normal-reference orchestration. The `can_discovery` root formerly re-exported the normal-profile API. Profiles from versions 7–10 must be regenerated; the loader accepts version 11.
 
 ## Contract
 
@@ -24,7 +24,7 @@ Timing, payload, and field candidates require support in both reference captures
 
 Directed relations use the dynamics pilot's cross-capture support and shifted-stream control. The template library composes accepted pairs into bounded pairs, chains, forks, joins, and returns; each motif is checked across references against a within-capture circular-shift control. The exploratory tracker evaluates timestamps and emits overdue evidence only after the relevant deadline. Capacity settings bound node, relation, motif, and active-prefix counts; `prefix_dropped` exposes tracker overflow. These relations are statistical dependencies, not physical causality.
 
-The normal-data runner verifies every frozen normal-role hash before fitting. `profile.json` contains definitions from references only; `tables/*.jsonl` contains exploratory features and evidence for disjoint calibration and normal-test files; `report.json` records counts, positive-evidence bins per hour, and normal exposure. Positive evidence is not a calibrated alert threshold. Output version 11 is separate from historical pilot artifacts. The active runner does not read attack files; no graph-mamba model or temporal dataset preprocessing consumes this output.
+The normal-data runner verifies every frozen normal-role hash before fitting. `profile.json` contains definitions from references only; `tables/*.jsonl` contains exploratory features and evidence for disjoint calibration and normal-test files; `report.json` records counts, positive-evidence bins per hour, and normal exposure. Positive evidence is not a calibrated alert threshold. Output version 11 is separate from historical pilot artifacts. The historical runner did not read attack files; no graph-mamba model or temporal dataset preprocessing consumes this output.
 
 The pinned four-vehicle structural audit and cross-vehicle held-out results are in [the version-5 empirical note](empirical-notes/2026-10-04-compositional-can-v5.md). `scripts/benchmark_can_physical_vehicles.py` reruns Prius, Civic, and Sonata from the `benchmarks.json` emitted by `scripts/prepare_can_source_calibration.py`.
 

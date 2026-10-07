@@ -58,10 +58,6 @@ def test_methods_share_traces_and_unresolved_order_stays_out_of_numeric_fields(t
 
 
 def test_version_safety():
-    from can_discovery.profile import BehaviorProfile
-    for version in (7, 8, 9, 10):
-        with pytest.raises(ValueError, match='regenerate a version-11 profile'):
-            BehaviorProfile.from_dict({'version': version})
     from can_discovery.decoding.field_values import extract
     with pytest.raises(ValueError, match='resolved'):
         extract(b'\x01\x02', 0, 16, 'unresolved', False)

@@ -4,10 +4,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from can_discovery.cohort import load_graph_cohort
 from can_discovery.relationships.physical.source_calibration import (
     fit_source_factor_validation,
 )
-from scripts.benchmark_can_candidate_graph import _entries, promotion_gate
+from scripts.benchmark_can_candidate_graph import promotion_gate
 from scripts.prepare_can_prospective_cohort import distinct_routes
 
 
@@ -40,16 +41,16 @@ def test_manifest_hash_and_session_separation(tmp_path):
                         'final': routes[4]['capture'], 'dbc': str(dbc), 'routes': routes})
     path = tmp_path / 'manifest.json'
     path.write_text(json.dumps(entries))
-    assert len(_entries(path, None)) == 4
+    assert len(load_graph_cohort(path, policy='candidate_graph')) == 4
     entries[0]['routes'][4]['session'] = entries[0]['routes'][0]['session']
     path.write_text(json.dumps(entries))
     with pytest.raises(ValueError, match='distinct sessions'):
-        _entries(path, None)
+        load_graph_cohort(path, policy='candidate_graph')
     entries[0]['routes'][4]['session'] = 'new'
     entries[0]['routes'][4]['converted_sha256'] = 'wrong'
     path.write_text(json.dumps(entries))
     with pytest.raises(ValueError, match='hash changed'):
-        _entries(path, None)
+        load_graph_cohort(path, policy='candidate_graph')
 
 
 def test_promotion_gate_uses_manifest_fold_count():

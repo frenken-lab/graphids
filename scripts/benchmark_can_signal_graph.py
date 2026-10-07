@@ -13,11 +13,11 @@ from pathlib import Path
 
 import numpy as np
 
+from can_discovery.cohort import load_graph_cohort, split_paths
 from can_discovery.decoding.dbc import evaluate_discovery, load_dbc_fields
 from can_discovery.decoding.field_values import extract
 from can_discovery.decoding.signals import (
     FieldCandidate,
-    FieldRegistry,
     _bit_positions,
     discover_fields,
 )
@@ -31,71 +31,20 @@ from can_discovery.relationships.physical import (
 )
 from can_discovery.relationships.physical.signal_graph import (
     build_signal_graph,
-    conditional_field_candidates,
-    conditional_layouts,
 )
-
-
-def _signal_entries(path: Path, forester_dir: Path | None) -> list[dict]:
-    entries = json.loads(path.read_text())
-    if forester_dir is not None:
-        entries.append({'vehicle': 'SUBARU_FORESTER',
-            'references': [str(forester_dir / 'reference_1.csv'),
-                           str(forester_dir / 'reference_2.csv')],
-            'held_out': str(forester_dir / 'reference_3.csv'),
-            'dbc': str(forester_dir / 'subaru_global_2017.dbc')})
-    if len(entries) < 4 or len({e['vehicle'].casefold() for e in entries}) != len(entries):
-        raise ValueError('at least four distinct vehicles are required')
-    capture_paths = []
-    manifest_hashes = []
-    for entry in entries:
-        fitting = entry.get('fitting', entry.get('references', ()))
-        validation = entry.get('validation', [entry['held_out']]
-                               if 'held_out' in entry else ())
-        final = entry.get('final', entry.get('held_out'))
-        if len(fitting) != 2 or not validation or not final:
-            raise ValueError('each vehicle needs fitting, validation, and final routes')
-        if ('fitting' in entry or 'validation' in entry or 'final' in entry) and \
-                len(set((*fitting, *validation, final))) != len(fitting)+len(validation)+1:
-            raise ValueError('capture roles must be disjoint')
-        for capture in (*fitting, *validation, final):
-            if not Path(capture).is_file():
-                raise FileNotFoundError(capture)
-        capture_paths.extend(set((*fitting, *validation, final)))
-        if not Path(entry['dbc']).is_file():
-            raise FileNotFoundError(entry['dbc'])
-        for route in entry.get('routes', ()):
-            capture = Path(route['capture'])
-            if route['capture'] not in (*fitting, *validation, final):
-                raise ValueError('route is outside declared capture roles')
-            if hashlib.sha256(capture.read_bytes()).hexdigest() != route['converted_sha256']:
-                raise ValueError('capture hash differs from manifest')
-            manifest_hashes.append(route['converted_sha256'])
-        if 'routes' in entry:
-            routes = entry['routes']
-            if (len({r['device'] for r in routes}) != len(routes) or
-                len({r['session'] for r in routes}) != len(routes)):
-                raise ValueError('routes must have distinct devices and sessions')
-    if len(capture_paths) != len(set(capture_paths)):
-        raise ValueError('source and target capture paths overlap')
-    if len(manifest_hashes) != len(set(manifest_hashes)):
-        raise ValueError('source and target capture hashes overlap')
-    return entries
 
 
 def run(entries: list[dict], target: dict, *, max_ids: int = 64) -> dict:
     vehicle = target['vehicle']
-    fitting_paths = target.get('fitting', target.get('references'))
-    validation_paths = target.get('validation', [target['held_out']]
-                                  if 'held_out' in target else ())
+    fitting_paths = split_paths(target, 'fitting')
+    validation_paths = split_paths(target, 'validation')
     fitting = [load_capture(Path(path)) for path in fitting_paths]
     validation = [load_capture(Path(path)) for path in validation_paths]
     if len({c.sha256 for c in (*fitting, *validation)}) != len(fitting)+len(validation):
         raise ValueError('fitting and validation captures must be distinct')
     sources = [(entry['vehicle'],
-                [load_capture(Path(path)) for path in entry.get('fitting', entry.get('references'))],
-                [load_capture(Path(path)) for path in entry.get('validation',
-                    [entry['held_out']] if 'held_out' in entry else ())],
+                [load_capture(Path(path)) for path in split_paths(entry, 'fitting')],
+                [load_capture(Path(path)) for path in split_paths(entry, 'validation')],
                 Path(entry['dbc'])) for entry in entries if entry is not target]
     target_hashes = {c.sha256 for c in (*fitting, *validation)}
     if any(c.sha256 in target_hashes for _, source_fits, source_validation, _ in sources
@@ -107,16 +56,11 @@ def run(entries: list[dict], target: dict, *, max_ids: int = 64) -> dict:
                                          target_vehicle=vehicle)
     factors = fit_source_factor_validation(sources, target_vehicle=vehicle)
     registry = discover_fields(fitting, max_ids=max_ids, max_layouts=8)
-    modes = conditional_layouts(registry, fitting)
-    conditional = conditional_field_candidates(modes, fitting)
-    registry = FieldRegistry(registry.candidates + conditional, registry.selected,
-                             registry.tokenizations, registry.conflicts)
     discovery = fit_physical_roles(fitting, max_ids=max_ids,
                                    candidates=registry.candidates,
                                    source_calibration=calibration,
                                    validated_factors=factors)
-    result = build_signal_graph([*fitting, *validation], registry, discovery,
-                                modes=modes)
+    result = build_signal_graph([*fitting, *validation], registry, discovery)
     result.update({'vehicle': vehicle, 'fitting_hashes': [c.sha256 for c in fitting],
                    'validation_hashes': [c.sha256 for c in validation],
                    'selected_fields': [asdict(field) for field in registry.selected],
@@ -145,11 +89,9 @@ def evaluate(result: dict, target: dict) -> dict:
                      not in expected):
         raise ValueError('target DBC hash differs from frozen manifest')
     truth = load_dbc_fields(Path(target['dbc']))
-    validation_paths = target.get('validation', [target['held_out']]
-                                  if 'held_out' in target else ())
+    validation_paths = split_paths(target, 'validation')
     validation = load_capture(Path(validation_paths[0]))
-    fitting = [load_capture(Path(path)) for path in target.get('fitting',
-               target.get('references'))]
+    fitting = [load_capture(Path(path)) for path in split_paths(target, 'fitting')]
     def payload_index(captures):
         grouped = {}
         for capture in captures:
@@ -179,15 +121,6 @@ def evaluate(result: dict, target: dict) -> dict:
                 return _dbc_role(reference.label_hypotheses[0][0])
         return None
     truth_roles = [exact_truth_role(field) for field in fields]
-    mux_truth = [reference for reference in truth if reference.mux_start is not None]
-    mux_matches = sum(any(field.arb_id.upper() == reference.arb_id.upper() and
-        field.payload_length == reference.payload_length and
-        field.mux_start == reference.mux_start and
-        field.mux_value == reference.mux_value and
-        field.endian == reference.endian and field.signed == reference.signed and
-        _bit_positions(field.start, field.width, field.endian) ==
-        _bit_positions(reference.start, reference.width, reference.endian)
-        for field in pool) for reference in mux_truth)
     edge_assessment = {'assessed': 0, 'same_role': 0, 'different_role': 0,
                        'unassessable': 0}
     for edge in result['field_edges']:
@@ -260,8 +193,6 @@ def evaluate(result: dict, target: dict) -> dict:
                            for rank in (exact_rank, value_rank))}
     return {'dbc_sha256': hashlib.sha256(Path(target['dbc']).read_bytes()).hexdigest(),
             'selected_layout': layout, 'candidate_pool': candidate,
-            'conditional_layout': {'dbc_fields': len(mux_truth),
-                                   'exact_candidate_fields': mux_matches},
             'named_roles': named,
             'field_edge_semantics': edge_assessment,
             'supported_field_edges': sum(edge['status'] == 'supported'
@@ -283,8 +214,8 @@ def main() -> None:
                         help='open target DBC only after the graph is fully fitted')
     parser.add_argument('--output-dir', type=Path, required=True)
     args = parser.parse_args()
-    entries = _signal_entries(args.benchmark_manifest,
-                       None if args.prospective else args.forester_dir)
+    entries = load_graph_cohort(args.benchmark_manifest,
+                       None if args.prospective else args.forester_dir, policy='signal_graph')
     args.output_dir.mkdir(parents=True, exist_ok=True)
     summary = []
     for target in entries:
@@ -294,7 +225,7 @@ def main() -> None:
         result = run(entries, target, max_ids=args.max_ids)
         if args.evaluate_dbc:
             result['evaluation'] = evaluate(result, target)
-        output = args.output_dir / f'{vehicle.lower()}-signal_graph-v1.json'
+        output = args.output_dir / f'{vehicle.lower()}-signal_graph-v2.json'
         output.write_text(json.dumps(result, indent=2) + '\n')
         summary.append({'vehicle': vehicle, 'artifact': str(output),
                         'fields': len(result['fields']),

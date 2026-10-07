@@ -15,10 +15,8 @@ from ...decoding.signals import (
     FieldCandidate,
     FieldRegistry,
     _bit_positions,
-    _infer_signed,
 )
 from ...preprocessing.capture import Capture
-from ...preprocessing.tokenization import MessageTrace, tokenize
 from ..shared.field_analysis import field_key
 from ..shared.signal_time import align
 from .candidate_graph import layout_memberships
@@ -159,129 +157,13 @@ def _layout_records(registry: FieldRegistry) -> list[dict]:
     return records
 
 
-def conditional_layouts(registry: FieldRegistry, captures: list[Capture],
-                        *, max_layouts: int = 8, min_mode_frames: int = 40) -> list[dict]:
-    """Infer conservative byte-wide modes; unresolved families simply abstain."""
-    out = []
-    for result in registry.tokenizations:
-        trace = result.trace
-        family = [[frame.payload for frame in capture.frames
-                   if frame.payload is not None and frame.arb_id == trace.arb_id
-                   and len(frame.payload) == trace.payload_length and
-                   (frame.bus or capture.known_bus) == trace.bus]
-                  for capture in captures]
-        for byte in range(trace.payload_length):
-            modes = set().union(*(set(p[byte] for p in trip) for trip in family))
-            if not 2 <= len(modes) <= 4:
-                continue
-            if any(any(sum(p[byte] == mode for p in trip) < min_mode_frames
-                       for mode in modes) for trip in family):
-                continue
-            # A selector should switch much less frequently than ordinary data.
-            if any(np.mean(np.diff([p[byte] for p in trip]) != 0) > .2
-                   for trip in family):
-                continue
-            mode_records = []
-            for mode in sorted(modes):
-                samples = tuple(tuple(p for p in trip if p[byte] == mode)[:1000]
-                                for trip in family)
-                conditional = tokenize(MessageTrace(trace.arb_id, trace.payload_length,
-                    trace.bus, samples, trace.source_hashes), max_layouts=max_layouts)
-                mode_records.append({'value': mode, 'support': tuple(map(len, samples)),
-                    'alternatives': [{'cost': alt.cost,
-                        'spans': [asdict(span) for span in alt.spans
-                                  if not set(span.physical_bits) &
-                                  set(range(byte*8, byte*8+8))]}
-                        for alt in conditional.alternatives]})
-            out.append({'bus': trace.bus, 'arb_id': trace.arb_id,
-                        'payload_length': trace.payload_length,
-                        'selector_byte': byte, 'modes': mode_records,
-                        'status': 'candidate_only'})
-            break
-    return out
-
-
-def conditional_field_candidates(layouts: list[dict],
-                                 captures: list[Capture]) -> tuple[FieldCandidate, ...]:
-    """Turn supported mode layouts into conditional field hypotheses."""
-    fields = []
-    seen = set()
-    for record in layouts:
-        selector = record['selector_byte']
-        for mode in record['modes']:
-            samples = [[frame.payload for frame in capture.frames
-                        if frame.payload is not None and
-                        frame.arb_id == record['arb_id'] and
-                        len(frame.payload) == record['payload_length'] and
-                        (frame.bus or capture.known_bus) == record['bus'] and
-                        frame.payload[selector] == mode['value']]
-                       for capture in captures]
-            for alternative in mode['alternatives']:
-                for span in alternative['spans']:
-                    endian = span['byte_order']
-                    if endian == 'unresolved':
-                        continue
-                    bits = span['physical_bits']
-                    if endian == 'little':
-                        mapped = {(bit//8)*8 + 7-bit%8 for bit in bits}
-                        if max(mapped)-min(mapped)+1 != len(mapped):
-                            continue
-                        start = min(mapped)
-                    else:
-                        start = min(bits)
-                    key = (record['bus'], record['arb_id'], record['payload_length'],
-                           selector, mode['value'], start, len(bits), endian)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    try:
-                        signed = _infer_signed(samples, start, len(bits), endian)
-                    except (ValueError, OverflowError):
-                        signed = None
-                    fields.append(FieldCandidate(record['arb_id'], start, len(bits),
-                        endian, signed, 'unknown', 0., 1.,
-                        tuple(map(len, samples)), (('unknown', 1.),),
-                        ('conditional_layout',), record['payload_length'],
-                        selector*8, mode['value'], record['bus']))
-    return tuple(fields)
-
-
-def _field_layouts(fields: list[FieldCandidate], registry: FieldRegistry,
-                   modes: list[dict]) -> list[list[str]]:
-    ordinary = layout_memberships(tuple(fields), registry.tokenizations)
-    output = []
-    for field in fields:
-        if field.mux_start is None:
-            output.append(list(ordinary.get(field_key(field), ())))
-            continue
-        candidates = []
-        for record in modes:
-            if (record['bus'], record['arb_id'], record['payload_length'],
-                record['selector_byte']*8) != (field.bus, field.arb_id,
-                    field.payload_length, field.mux_start):
-                continue
-            for mode in record['modes']:
-                if mode['value'] != field.mux_value:
-                    continue
-                for rank, alternative in enumerate(mode['alternatives']):
-                    for span in alternative['spans']:
-                        if span['byte_order'] != field.endian or \
-                                len(span['physical_bits']) != field.width:
-                            continue
-                        bits = span['physical_bits']
-                        matches = (min(bits) == field.start if field.endian == 'big'
-                                   else min((bit//8)*8+7-bit%8 for bit in bits) ==
-                                   field.start)
-                        if matches:
-                            candidates.append(f'{field.arb_id}:mux{record["selector_byte"]}'
-                                              f'={mode["value"]}:layout{rank}')
-        output.append(candidates)
-    return output
+def _field_layouts(fields: list[FieldCandidate], registry: FieldRegistry) -> list[list[str]]:
+    memberships = layout_memberships(tuple(fields), registry.tokenizations)
+    return [list(memberships.get(field_key(field), ())) for field in fields]
 
 
 def build_signal_graph(captures: list[Capture], registry: FieldRegistry,
-                       discovery: PhysicalDiscovery, *, max_per_role: int = 6,
-                       modes: list[dict] | None = None) -> dict:
+                       discovery: PhysicalDiscovery, *, max_per_role: int = 6) -> dict:
     """Build a bounded graph using fitting and development-validation routes."""
     if len(captures) < 2 or len({c.sha256 for c in captures}) != len(captures):
         raise ValueError('independent fitting and validation captures are required')
@@ -292,8 +174,7 @@ def build_signal_graph(captures: list[Capture], registry: FieldRegistry,
         for hypothesis in ranked[:max_per_role]:
             selected.setdefault(_key(hypothesis.candidate), hypothesis.candidate)
     fields = list(selected.values())
-    modes = modes if modes is not None else conditional_layouts(registry, captures)
-    field_layouts = _field_layouts(fields, registry, modes)
+    field_layouts = _field_layouts(fields, registry)
     index = {_key(field): i for i, field in enumerate(fields)}
     memberships = {role: [] for role in ROLES}
     unary = {role: {} for role in ROLES}
@@ -368,9 +249,8 @@ def build_signal_graph(captures: list[Capture], registry: FieldRegistry,
                                **asdict(evidence)})
         else:
             role_edges.append({'name': name, 'status': 'unsupported'})
-    return {'version': 1, 'capture_hashes': [c.sha256 for c in captures],
+    return {'version': 2, 'capture_hashes': [c.sha256 for c in captures],
             'layout_candidates': _layout_records(registry),
-            'conditional_layouts': modes,
             'layout_conflicts': list(registry.conflicts),
             'fields': [asdict(field) for field in fields],
             'field_layouts': field_layouts,

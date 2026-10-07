@@ -7,40 +7,49 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
+from can_discovery.cohort import load_graph_cohort, split_paths
 from can_discovery.decoding.dbc import evaluate_discovery, load_dbc_fields
-from can_discovery.decoding.signals import FieldCandidate, _bit_positions, discover_fields
-from can_discovery.relationships.shared.field_analysis import field_key
+from can_discovery.decoding.signals import (
+    FieldCandidate,
+    _bit_positions,
+    discover_fields,
+)
 from can_discovery.engineering.integrated import (
-    dbc_formats, derivative_relation, discover_with_anchors, field_relations, match_frames,
-    observed_families, relation_groups, wheel_mean_relation,
+    dbc_formats,
+    derivative_relation,
+    discover_with_anchors,
+    field_relations,
+    match_frames,
+    observed_families,
+    relation_groups,
+    wheel_mean_relation,
 )
 from can_discovery.engineering.signal_catalog import (
-    behavior_priority_families, build_signal_catalog, family_profiles,
+    behavior_priority_families,
+    build_signal_catalog,
+    family_profiles,
     source_role_prototypes,
 )
 from can_discovery.preprocessing.capture import load_capture
-from can_discovery.relationships.physical.physics_factors import FACTOR_ROLES, evaluate_factor
+from can_discovery.relationships.physical.physics_factors import (
+    FACTOR_ROLES,
+    evaluate_factor,
+)
+from can_discovery.relationships.shared.field_analysis import field_key
 from can_discovery.relationships.shared.signal_time import observations
-from scripts.benchmark_can_signal_graph import _signal_entries
 
 
 def _captures(paths: list[str]) -> list:
     return [load_capture(Path(path)) for path in paths]
 
 
-def _paths(entry: dict, key: str) -> list[str]:
-    if key == 'fitting':
-        return entry.get('fitting', entry.get('references', []))
-    return entry.get('validation', [entry['held_out']] if 'held_out' in entry else [])
-
-
 def run(entries: list[dict], target: dict, *, track: str,
         max_ids: int = 64) -> dict:
     if track not in ('source_only', 'dbc_assisted'):
         raise ValueError(track)
-    fitting = _captures(_paths(target, 'fitting'))
-    validation = _captures(_paths(target, 'validation'))
-    sources = [(entry['vehicle'], _captures(_paths(entry, 'fitting')),
+    fitting = _captures(split_paths(target, 'fitting'))
+    validation = _captures(split_paths(target, 'validation'))
+    sources = [(entry['vehicle'], _captures(split_paths(entry, 'fitting')),
                 entry['dbc']) for entry in entries if entry is not target]
     source_prototypes = source_role_prototypes(sources)
     hashes = [capture.sha256 for capture in (*fitting, *validation)]
@@ -220,8 +229,8 @@ def evaluate(result: dict, target: dict) -> dict:
     """Use target truth only after run has returned; assisted anchors are excluded."""
     truth = load_dbc_fields(Path(target['dbc']))
     if result['track'] == 'dbc_assisted':
-        fitting = _captures(_paths(target, 'fitting'))
-        validation = _captures(_paths(target, 'validation'))[0]
+        fitting = _captures(split_paths(target, 'fitting'))
+        validation = _captures(split_paths(target, 'validation'))[0]
         # This DBC-free pool prevents assisted anchors from inflating recovery.
         blind = discover_fields(fitting, max_ids=result['max_ids'], max_layouts=8)
         proposals = [(FieldCandidate(**option['field']), decision['arb_id'],
@@ -243,7 +252,7 @@ def evaluate(result: dict, target: dict) -> dict:
             candidates = [field for field in blind.candidates
                           if field.arb_id.upper() == known.arb_id.upper() and
                           field.payload_length == known.payload_length]
-            def exact(field: FieldCandidate) -> bool:
+            def exact(field: FieldCandidate, known: FieldCandidate = known) -> bool:
                 return (field.endian == known.endian and field.signed == known.signed and
                         _bit_positions(field.start, field.width, field.endian) ==
                         _bit_positions(known.start, known.width, known.endian))
@@ -262,8 +271,8 @@ def evaluate(result: dict, target: dict) -> dict:
                 'source_name_top_5': sum(row['source_name_rank'] is not None and
                                          row['source_name_rank'] <= 5 for row in rows),
                 'fields': rows}
-    validation = _captures(_paths(target, 'validation'))[0]
-    fitting = _captures(_paths(target, 'fitting'))
+    validation = _captures(split_paths(target, 'validation'))[0]
+    fitting = _captures(split_paths(target, 'fitting'))
     baseline = discover_fields(fitting, max_ids=result['max_ids'], max_layouts=8)
     selected = tuple(FieldCandidate(**record) for record in result['selected'])
     candidates = tuple(FieldCandidate(**record) for record in result['candidates'])
@@ -284,7 +293,7 @@ def main() -> None:
     parser.add_argument('--max-ids', type=int, default=64)
     parser.add_argument('--evaluate-dbc', action='store_true')
     args = parser.parse_args()
-    entries = _signal_entries(args.benchmark_manifest, None)
+    entries = load_graph_cohort(args.benchmark_manifest, policy='signal_graph')
     args.output_dir.mkdir(parents=True, exist_ok=True)
     summary = []
     for target in entries:
@@ -293,7 +302,7 @@ def main() -> None:
         for track in (('source_only', 'dbc_assisted') if args.track == 'both'
                       else (args.track,)):
             result = run(entries, target, track=track, max_ids=args.max_ids)
-            catalog = build_signal_catalog(result, _captures(_paths(target, 'fitting')))
+            catalog = build_signal_catalog(result, _captures(split_paths(target, 'fitting')))
             if args.evaluate_dbc:
                 result['evaluation'] = evaluate(result, target)
             path = args.output_dir / f"{target['vehicle'].lower()}-{track}-integrated-v1.json"

@@ -102,11 +102,12 @@ def rank_families(rows: list[tuple[FieldCandidate, float]]) -> list[dict]:
             for i, (family, score) in enumerate(ordered, 1)]
 
 
-def enumerate_layouts(template: FieldCandidate, protocol_bits: set[int]):
-    """Every contiguous 1–32-bit interpretation in both extractor byte orders."""
+def enumerate_layouts(template: FieldCandidate, protocol_bits: set[int],
+                      max_width: int = 32):
+    """Contiguous interpretations up to ``max_width`` in both byte orders."""
     length = template.payload_length * 8
     for endian in ('little', 'big'):
-        for width in range(1, min(32, length) + 1):
+        for width in range(1, min(max_width, length) + 1):
             for start in range(length - width + 1):
                 positions = _bit_positions(start, width, endian)
                 if positions & protocol_bits:
