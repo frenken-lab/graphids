@@ -19,5 +19,6 @@ event models through the Ray-backed experiment runner.
 ## Source
 
 - Repo: <https://github.com/frenken-lab/graphids>
+- CAN decoding and relationship research: [can-discovery](https://github.com/frenken-lab/can-discovery) (private lab repository).
 - Runtime docs (this site): built from
   [`docs/`](https://github.com/frenken-lab/graphids/tree/main/docs).

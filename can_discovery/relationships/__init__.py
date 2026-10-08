@@ -1,1 +1,0 @@
-"""CAN behavior relationships components."""

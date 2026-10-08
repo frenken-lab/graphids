@@ -44,7 +44,7 @@ graphids = "graphids.__main__:main"
 gx = "graphids.__main__:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["graphids", "can_discovery"]
+packages = ["graphids"]
 
 [tool.uv.sources]
 torch-scatter = { index = "pyg-cu128" }
