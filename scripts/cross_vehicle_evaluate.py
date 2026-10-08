@@ -89,6 +89,7 @@ def score_partition(data, predictions: dict) -> dict[str, torch.Tensor]:
             set(predictions["event_id"].tolist()) != set(data.event_id[mask].tolist())):
         raise ValueError("prediction event IDs do not match the scored partition")
     return {
+        "event_id": predictions["event_id"].long(),
         "scores": scores,
         "labels": predictions["labels"].long(),
         "times": predictions["times"].double(),
@@ -142,6 +143,7 @@ def main() -> None:
     parser.add_argument("output", type=Path)
     parser.add_argument("--fpr", type=float, default=0.001)
     parser.add_argument("--refractory-s", type=float, default=1.0)
+    parser.add_argument("--save-event-scores", action="store_true")
     args = parser.parse_args()
 
     experiment = ExperimentConfig.from_yaml(args.config)
@@ -176,6 +178,9 @@ def main() -> None:
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
+    if args.save_event_scores:
+        torch.save({"source_validation": source, "target_calibration": calibration,
+                    **partitions}, args.output.with_suffix(".scores.pt"))
 
 
 if __name__ == "__main__":

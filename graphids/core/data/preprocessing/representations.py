@@ -11,7 +11,7 @@ from typing import Literal
 @dataclass(frozen=True)
 class TemporalRepresentationCfg:
     kind: Literal["temporal"] = "temporal"
-    features: Literal["raw", "behavioral"] = "raw"
+    features: Literal["raw", "behavioral", "behavioral_timing", "behavioral_payload"] = "raw"
 
 
 RepresentationCfg = TemporalRepresentationCfg

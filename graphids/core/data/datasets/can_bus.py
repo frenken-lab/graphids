@@ -71,7 +71,7 @@ ATTACK_TYPE_NAMES: dict[int, str] = {v: k for k, v in ATTACK_TYPE_CODES.items() 
 ATTACK_TYPE_NAMES[0] = "benign"
 
 def parse_payload(lf: pl.LazyFrame) -> pl.LazyFrame:
-    """Hex ``payload`` to ``byte_0..7`` plus Shannon entropy."""
+    """Hex ``payload`` to bytes, retaining the observed payload length."""
     if "byte_0" in lf.collect_schema().names():
         return lf
     byte_exprs = [
@@ -79,7 +79,8 @@ def parse_payload(lf: pl.LazyFrame) -> pl.LazyFrame:
         .fill_null(0).cast(pl.Float32).alias(f"byte_{i}")
         for i in range(N_BYTES)
     ]
-    lf = lf.with_columns(byte_exprs)
+    lf = lf.with_columns(*byte_exprs, (pl.col("payload").cast(pl.Utf8).str.len_chars() // 2)
+                         .clip(upper_bound=N_BYTES).cast(pl.Int32).alias("payload_len"))
     bcols = [pl.col(c) for c in BYTE_COLS]
     row_sum = pl.sum_horizontal(bcols).clip(1e-12, None)
     entropy = pl.sum_horizontal(
@@ -159,7 +160,7 @@ class CANBusTemporalSource:
     def __post_init__(self) -> None:
         if representation_kind(self.representation_cfg) != "temporal":
             raise ValueError("CANBusTemporalSource requires representation_cfg.kind='temporal'")
-        if self.representation_cfg.features == "behavioral" and self.val_split != "recordings":
+        if self.representation_cfg.features.startswith("behavioral") and self.val_split != "recordings":
             raise ValueError("behavioral features require whole-recording validation")
         if self.vocab_scope not in {"train", "all"}:
             raise ValueError("vocab_scope must be 'train' or 'all'")

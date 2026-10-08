@@ -25,6 +25,11 @@ TEMPORAL_MSG_COL_ORDER: tuple[str, ...] = (
 BEHAVIORAL_MSG_COL_ORDER: tuple[str, ...] = (
     "log_iat", "log_id_iat", "id_period_deviation", "payload_change_fraction", "id_first_seen",
 )
+BEHAVIORAL_FEATURE_COLUMNS = {
+    "behavioral": BEHAVIORAL_MSG_COL_ORDER,
+    "behavioral_timing": ("log_iat", "log_id_iat", "id_period_deviation", "id_first_seen"),
+    "behavioral_payload": ("payload_change_fraction", "id_first_seen"),
+}
 
 
 def _hash_bucket(value: object, *, num_buckets: int) -> int:
@@ -90,6 +95,7 @@ def build_temporal_event_table(
             "vehicle_id": "",
             "source_dir": "",
             "source_file": "",
+            "payload_len": 8,
         },
     )
     df = _ensure_columns(df, {col: 0.0 for col in TEMPORAL_BYTE_COLS})
@@ -103,6 +109,7 @@ def build_temporal_event_table(
         pl.col("attack_type").fill_null(0).cast(pl.Int64),
         *(pl.col(c).fill_null(0).cast(pl.Float32) for c in TEMPORAL_BYTE_COLS),
         pl.col("entropy").fill_null(0).cast(pl.Float32),
+        pl.col("payload_len").fill_null(0).clip(0, 8).cast(pl.Int32),
     )
     streams = rows.select(stream_keys).unique(maintain_order=True).with_row_index("stream_id")
     rows = (
@@ -111,8 +118,9 @@ def build_temporal_event_table(
         .sort(["stream_id", "timestamp", "row_index"])
     )
 
+    id_keys = ["stream_id", "dst_raw"]
     delta_exprs = [
-        (pl.col(c) - pl.col(c).shift(1).over("stream_id"))
+        (pl.col(c) - pl.col(c).shift(1).over(id_keys))
         .fill_null(0)
         .cast(pl.Float32)
         .alias(f"{c}_delta")
@@ -127,7 +135,6 @@ def build_temporal_event_table(
         .alias("iat"),
         *delta_exprs,
     )
-    id_keys = ["stream_id", "dst_raw"]
     previous_time = pl.col("timestamp").shift(1).over(id_keys)
     table = table.with_columns(
         (pl.col("timestamp") - previous_time).fill_null(0).clip(lower_bound=0).cast(pl.Float32).alias("id_iat"),
@@ -136,6 +143,7 @@ def build_temporal_event_table(
             pl.col(c).shift(1).over(id_keys).alias(f"_previous_{c}")
             for c in TEMPORAL_BYTE_COLS
         ],
+        pl.col("payload_len").shift(1).over(id_keys).alias("_previous_payload_len"),
     )
     # The period reference contains earlier occurrences only, never the current interval.
     prior_period = pl.col("id_iat").shift(1).rolling_mean(window_size=8, min_samples=1).over(id_keys)
@@ -146,12 +154,15 @@ def build_temporal_event_table(
         .then((pl.col("id_iat") - prior_period).abs() / (prior_period.abs() + 1e-6))
         .otherwise(0.0).fill_null(0).clip(upper_bound=100)
         .cast(pl.Float32).alias("id_period_deviation"),
-        (pl.sum_horizontal([
-            (pl.col(c) != pl.col(f"_previous_{c}")).cast(pl.Float32)
-            for c in TEMPORAL_BYTE_COLS
-        ]) / len(TEMPORAL_BYTE_COLS))
-        .fill_null(0).cast(pl.Float32).alias("payload_change_fraction"),
-    ).drop(*[f"_previous_{c}" for c in TEMPORAL_BYTE_COLS])
+        pl.when(pl.col("id_first_seen") > 0).then(0.0).otherwise(
+            pl.sum_horizontal([
+                (((pl.col("payload_len") > i) != (pl.col("_previous_payload_len") > i))
+                 | ((pl.col("payload_len") > i) & (pl.col("_previous_payload_len") > i)
+                    & (pl.col(c) != pl.col(f"_previous_{c}")))).cast(pl.Float32)
+                for i, c in enumerate(TEMPORAL_BYTE_COLS)
+            ]) / pl.max_horizontal(pl.col("payload_len"), pl.col("_previous_payload_len"), pl.lit(1))
+        ).fill_null(0).cast(pl.Float32).alias("payload_change_fraction"),
+    ).drop("_previous_payload_len", *[f"_previous_{c}" for c in TEMPORAL_BYTE_COLS])
     table = table.with_columns(
         (pl.col("src_id") == 0).alias("src_is_unknown"),
         (pl.col("dst_id") == 0).alias("dst_is_unknown"),
@@ -370,7 +381,7 @@ def temporal_to_pyg(table: pl.DataFrame, *, features: str = "raw") -> TemporalDa
         src=_tensor(table, "src_id", dtype=pl.Int64),
         dst=_tensor(table, "dst_id", dtype=pl.Int64),
         t=_tensor(table, "timestamp", dtype=pl.Float32),
-        msg=_tensor(table, list(BEHAVIORAL_MSG_COL_ORDER if features == "behavioral" else TEMPORAL_MSG_COL_ORDER), dtype=pl.Float32),
+        msg=_tensor(table, list(BEHAVIORAL_FEATURE_COLUMNS.get(features, TEMPORAL_MSG_COL_ORDER)), dtype=pl.Float32),
         y=_tensor(table, "y", dtype=pl.Int64),
         attack_type=_tensor(table, "attack_type", dtype=pl.Int64),
         stream_id=_tensor(table, "stream_id", dtype=pl.Int64),

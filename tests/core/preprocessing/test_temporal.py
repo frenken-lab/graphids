@@ -52,7 +52,7 @@ def test_temporal_event_table_preserves_transitions_unknowns_and_resets():
     assert table["dst_unknown_bucket"].to_list()[4] > 0
     assert table["reset_after"].to_list() == [False, False, True, False, True]
     assert table["iat"].to_list() == pytest.approx([0.0, 0.1, 0.3, 0.0, 0.3])
-    assert table["byte_0_delta"].to_list() == [0.0, 4.0, 4.0, 0.0, 2.0]
+    assert table["byte_0_delta"].to_list() == [0.0] * 5
     assert table.select("vehicle_id", "source_dir", "source_file").rows()[0] == (
         "veh_a",
         "train",
@@ -72,6 +72,20 @@ def test_temporal_to_pyg_emits_event_tensor_contract():
     assert data.reset_after.tolist() == [False, False, True, False, True]
     assert data.event_id.tolist() == [0, 1, 2, 3, 4]
     assert tuple(data.msg.shape) == (5, len(TEMPORAL_MSG_COL_ORDER))
+
+
+def test_payload_history_uses_same_id_and_observed_length():
+    rows = pl.DataFrame({
+        "timestamp": [0.0, 0.1, 0.2, 0.3],
+        "arb_id": ["a", "b", "a", "a"],
+        "node_id": [1, 2, 1, 1],
+        "byte_0": [1, 99, 2, 2],
+        "byte_1": [0, 99, 0, 7],
+        "payload_len": [1, 2, 1, 2],
+    })
+    table = build_temporal_event_table(rows)
+    assert table["byte_0_delta"].to_list() == [0, 0, 1, 0]
+    assert table["payload_change_fraction"].to_list() == [0, 0, 1, 0.5]
 
 
 def test_temporal_train_val_split_is_stream_local_and_masks_warmup():

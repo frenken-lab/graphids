@@ -11,4 +11,4 @@
 
 set -euo pipefail
 source scripts/slurm/_preamble.sh
-python -m scripts.cross_vehicle_evaluate "$1" "$2" "$3"
+python -m scripts.cross_vehicle_evaluate "$1" "$2" "$3" "${@:4}"

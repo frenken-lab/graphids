@@ -35,7 +35,7 @@ PROJECT_ROOT: Path = Path(__file__).resolve().parents[1]
 CONFIG_DIR: Path = PROJECT_ROOT / "configs"
 DATASET_REGISTRY_PATH: Path = CONFIG_DIR / "data" / "datasets.json"
 
-PREPROCESSING_VERSION: str = "10.0.0"
+PREPROCESSING_VERSION: str = "11.0.0"
 CKPT_SUBPATH: str = "checkpoints/best_model.ckpt"
 
 # Phase markers are kept for filesystem probes and diagnostics.

@@ -99,7 +99,7 @@ class CrossVehicleTemporalSource:
 
     @property
     def num_ids(self) -> int | None:
-        if self.representation_cfg.features == "behavioral":
+        if self.representation_cfg.features.startswith("behavioral"):
             return LOCAL_ID_CAPACITY + 1
         vocab_path = self.cache_root_path() / "vocab.json"
         return len(json.loads(vocab_path.read_text())["entries"]) + 1 if vocab_path.is_file() else None
@@ -229,7 +229,7 @@ class CrossVehicleTemporalSource:
                         pl.col("timestamp") - pl.col("timestamp").min().over(["vehicle_id", "source_file"])
                     ).alias("timestamp"))
                     keys = pl.concat_str([pl.col("vehicle_id"), pl.col("arb_id").cast(pl.Utf8)], separator="::")
-                    if self.representation_cfg.features == "behavioral":
+                    if self.representation_cfg.features.startswith("behavioral"):
                         rows = assign_local_ids(rows)
                     else:
                         rows = rows.with_columns(keys.replace_strict(vocab, default=0).cast(pl.Int64).alias("node_id"))
