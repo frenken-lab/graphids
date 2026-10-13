@@ -14,13 +14,13 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from graphids.core.data.preprocessing.representations import (
     RepresentationCfg,
-    TemporalRepresentationCfg,
     representation_kind,
 )
+from graphids.core.data.snapshots.preprocessing import CANSnapshotRepresentationCfg
 from graphids.exp.journal import RunManifest
 
 Stage = Literal["fit", "test"]
@@ -28,7 +28,9 @@ Stage = Literal["fit", "test"]
 
 def merge_config(base: Mapping[str, Any], child: Mapping[str, Any]) -> dict[str, Any]:
     """Merge overrides without carrying arguments across component identities."""
-    if any(key in child and child[key] != base.get(key) for key in ("type", "class_path")):
+    if any(
+        key in child and child[key] != base.get(key) for key in ("type", "class_path")
+    ):
         return copy.deepcopy(dict(child))
     result = copy.deepcopy(dict(base))
     for key, value in child.items():
@@ -41,7 +43,9 @@ def merge_config(base: Mapping[str, Any], child: Mapping[str, Any]) -> dict[str,
     return result
 
 
-def load_experiment_yaml(path: str | Path, _parents: tuple[Path, ...] = ()) -> dict[str, Any]:
+def load_experiment_yaml(
+    path: str | Path, _parents: tuple[Path, ...] = ()
+) -> dict[str, Any]:
     """Expand a single relative base before validating the experiment."""
     path = Path(path).resolve()
     if path in _parents:
@@ -59,7 +63,9 @@ def load_experiment_yaml(path: str | Path, _parents: tuple[Path, ...] = ()) -> d
     base = value.pop("extends")
     if not isinstance(base, str) or not base.strip():
         raise ValueError(f"extends must be one non-empty file path: {path}")
-    return merge_config(load_experiment_yaml(path.parent / base, (*_parents, path)), value)
+    return merge_config(
+        load_experiment_yaml(path.parent / base, (*_parents, path)), value
+    )
 
 
 def _representation_payload(cfg: RepresentationCfg) -> dict[str, Any]:
@@ -172,6 +178,22 @@ class FitRunPayload(_StrictModel):
     seed_everything: int | None = None
     ckpt_path: str | None = None
 
+    @model_validator(mode="after")
+    def validate_components(self):
+        from graphids.migration import reject_retired
+
+        reject_retired(self.model)
+        reject_retired(self.data)
+        if self.model.get("type") == "vehicle_graph_mamba_joint":
+            from graphids.primitives_models import VehicleGraphMambaJointCfg
+
+            VehicleGraphMambaJointCfg.model_validate(self.model)
+        if self.data.get("type") == "can_snapshot_dm":
+            from graphids.primitives_data import CANSnapshotDMCfg
+
+            CANSnapshotDMCfg.model_validate(self.data)
+        return self
+
 
 RunPayload = FitRunPayload
 
@@ -210,7 +232,9 @@ class RunConfig(_StrictModel):
     seed: int = 42
     plan_id: str | None = None
     git_sha: str = "unknown"
-    representation_cfg: RepresentationCfg = Field(default_factory=TemporalRepresentationCfg)
+    representation_cfg: RepresentationCfg = Field(
+        default_factory=CANSnapshotRepresentationCfg
+    )
     payload: RunPayload = Field(default_factory=FitRunPayload)
     resources: ResourceConfig = Field(default_factory=ResourceConfig)
     outputs: OutputConfig
@@ -249,7 +273,9 @@ class RunConfig(_StrictModel):
             "graphids.git_sha": self.git_sha,
             "graphids.run_dir": str(self.outputs.run_dir),
             "graphids.representation": representation_kind(self.representation_cfg),
-            "graphids.representation_cfg": _representation_payload(self.representation_cfg),
+            "graphids.representation_cfg": _representation_payload(
+                self.representation_cfg
+            ),
             "graphids.payload": _payload(self.payload),
             **{
                 f"graphids.resource.{k}": v
@@ -257,7 +283,9 @@ class RunConfig(_StrictModel):
             },
         }
 
-    def journal_manifest(self, *, status: str, failure: str | None = None) -> RunManifest:
+    def journal_manifest(
+        self, *, status: str, failure: str | None = None
+    ) -> RunManifest:
         return RunManifest(
             run_id=self.name,
             name=self.name,
@@ -293,7 +321,9 @@ class ExperimentConfig(_StrictModel):
     seed: int = 42
     git_sha: str = "unknown"
     plan_id: str | None = None
-    representation_cfg: RepresentationCfg = Field(default_factory=TemporalRepresentationCfg)
+    representation_cfg: RepresentationCfg = Field(
+        default_factory=CANSnapshotRepresentationCfg
+    )
     config: dict[str, Any] = Field(default_factory=dict)
     resources: ResourceConfig = Field(default_factory=ResourceConfig)
     stage: Stage = "fit"
@@ -316,7 +346,11 @@ class ExperimentConfig(_StrictModel):
         run_dir: str | Path | None = None,
     ) -> RunConfig:
         cfg = {**self.config, **(config or {})}
-        run_dir = Path(run_dir) if run_dir is not None else self._run_dir(name, output_suffix=output_suffix)
+        run_dir = (
+            Path(run_dir)
+            if run_dir is not None
+            else self._run_dir(name, output_suffix=output_suffix)
+        )
         from graphids.paths import trial_dir
 
         cfg = _format_strings(
@@ -333,10 +367,14 @@ class ExperimentConfig(_StrictModel):
         payload: RunPayload
         data_representation = _find_data_representation_payload(cfg.get("data", {}))
         if data_representation is not None:
-            run_representation = _json_payload(_representation_payload(self.representation_cfg))
-            resolved_data_representation = _json_payload(_representation_payload(
-                TemporalRepresentationCfg(**data_representation)
-            ))
+            run_representation = _json_payload(
+                _representation_payload(self.representation_cfg)
+            )
+            resolved_data_representation = _json_payload(
+                _representation_payload(
+                    CANSnapshotRepresentationCfg(**data_representation)
+                )
+            )
             if resolved_data_representation != run_representation:
                 raise ValueError(
                     "fit/test data.source.representation_cfg must match top-level "

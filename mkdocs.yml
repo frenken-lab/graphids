@@ -1,5 +1,5 @@
 site_name: GraphIDS
-site_description: CAN bus intrusion detection over temporal event streams.
+site_description: CAN intrusion detection with shared graph-Mamba models.
 site_author: Robert Frenken
 site_url: https://frenken-lab.github.io/graphids/
 
@@ -113,6 +113,7 @@ plugins:
 nav:
   - Home: index.md
   - Architecture:
+      - Graph Mamba: reference/graph-mamba.md
       - Module responsibilities: responsibilities.md
       - Config system: reference/config-architecture.md
       - Data architecture: reference/data-architecture.md
@@ -122,9 +123,9 @@ nav:
       - Observability: reference/observability.md
       - Write paths: reference/write-paths.md
       - Submit flow: reference/submit-flow.md
-      - Prebatch timing: reference/prebatch-timing.md
-      - Temporal throughput: reference/temporal-throughput.md
-      - Temporal dependency: reference/temporal-dependency.md
+      - Prebatch timing (historical): reference/prebatch-timing.md
+      - Temporal throughput (historical): reference/temporal-throughput.md
+      - Temporal dependency (historical): reference/temporal-dependency.md
       - PyTorch compat: reference/pytorch-compat.md
   - API Reference:
       - Ray launcher: api/ray-backend.md

@@ -1,8 +1,12 @@
 # GraphIDS
 
-CAN bus intrusion detection over temporal CAN event streams. The live training
-path materializes raw CAN rows as PyG `TemporalData`, then trains temporal
-event models through the Ray-backed experiment runner.
+CAN bus intrusion detection with a shared graph-Mamba model. Causal physical-time
+snapshots feed per-ID temporal Mamba blocks, a same-time graph readout, and
+separate classification and normal-forecasting heads. The Ray-backed experiment
+runner supports pooled CAN datasets and data parallel training.
+
+Read [Graph Mamba training and evaluation](reference/graph-mamba.md) for the
+recording manifest, architecture, migration, and functional gates.
 
 ## Where to start
 

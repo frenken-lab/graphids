@@ -17,7 +17,7 @@ import typer
 
 app = typer.Typer(
     name="graphids",
-    help="GraphIDS: CAN Bus Intrusion Detection with Temporal Models",
+    help="GraphIDS: CAN intrusion detection with shared graph-Mamba models",
     no_args_is_help=True,
     pretty_exceptions_enable=False,
 )
@@ -69,4 +69,5 @@ def _main(
 
 
 # Register the new experiment surface when the shared CLI app is imported.
+import graphids.cli.can  # noqa: E402,F401
 import graphids.cli.exp  # noqa: E402,F401

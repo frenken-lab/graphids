@@ -1,5 +1,7 @@
 # Temporal Throughput Baseline
 
+> Historical event-model architecture. The current path is documented in [Graph Mamba](graph-mamba.md).
+
 This page records the current speed baseline for the temporal hybrid diagnostic
 profile and the constraints for future throughput A/B tests.
 

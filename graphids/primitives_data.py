@@ -1,156 +1,50 @@
-"""Data primitive configs and dataset registry helpers."""
+"""Snapshot stream batching and pooled CAN data configuration."""
 
-from __future__ import annotations
+from typing import Annotated, Literal
 
-from typing import Annotated, Any, Literal, Self
+from pydantic import BaseModel, ConfigDict, Field
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-from graphids.config_validation import validate_lane_config
-from graphids.core.data.preprocessing.representations import (
-    RepresentationCfg,
-    TemporalRepresentationCfg,
-    representation_kind,
-)
-from graphids.paths import load_catalog
-
-_DEFAULT_REPRESENTATION_CFG = TemporalRepresentationCfg()
+from graphids.core.data.snapshots.preprocessing import CANSnapshotRepresentationCfg
 
 
 class _Cfg(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class CANBusCfg(_Cfg):
-    type: Literal["can_bus"] = "can_bus"
-    name: str
-    seed: int
-    val_fraction: float = 0.2
-    train_source_mode: Literal["mixed", "attack_free"] = "mixed"
-    val_split: Literal["chronological", "recordings"] = "chronological"
-    split_seed: int = 42
-    representation_cfg: RepresentationCfg = Field(default_factory=TemporalRepresentationCfg)
-
-
-    def build(self, *, val_warmup_events: int = 0, test_warmup_events: int = 0) -> Any:
-        from graphids.core.data.datasets.can_bus import CANBusTemporalSource
-
-        return CANBusTemporalSource(
-            **self.model_dump(exclude={"type", "seed", "representation_cfg"}),
-            representation_cfg=self.representation_cfg,
-            val_warmup_events=val_warmup_events,
-            test_warmup_events=test_warmup_events,
-        )
-
-
-class CrossVehicleCfg(_Cfg):
-    type: Literal["cross_vehicle"] = "cross_vehicle"
-    held_out_vehicle: Literal["chevrolet_silverado", "subaru_forester", "chevrolet_traverse"]
-    source_vehicle: Literal["chevrolet_impala", "chevrolet_silverado", "subaru_forester", "chevrolet_traverse"] | None = None
-    val_fraction: float = 0.1
-    split_seed: int = 42
-    val_split: Literal["recordings"] = "recordings"
-    representation_cfg: RepresentationCfg = Field(default_factory=TemporalRepresentationCfg)
-
-    def build(self, *, val_warmup_events: int = 64, test_warmup_events: int = 64) -> Any:
-        from graphids.core.data.datasets.cross_vehicle import CrossVehicleTemporalSource
-
-        return CrossVehicleTemporalSource(
-            held_out_vehicle=self.held_out_vehicle,
-            source_vehicle=self.source_vehicle,
-            val_fraction=self.val_fraction,
-            split_seed=self.split_seed,
-            representation_cfg=self.representation_cfg,
-            val_warmup_events=val_warmup_events,
-            test_warmup_events=test_warmup_events,
-        )
-
-
-class TemporalDMCfg(_Cfg):
-    type: Literal["temporal_dm"] = "temporal_dm"
-    source: CANBusCfg | CrossVehicleCfg = Field(discriminator="type")
-    batch_size: int = 256
-    batch_mode: Literal["events", "stream_lanes"] = "events"
-    stream_lanes: int | None = None
-    chunk_size: int | None = None
-    num_workers: int = 0
-    prebuild_batches: int = 0
-    pin_memory: bool = False
-    persistent_workers: bool = False
-    drop_partial_lane_batches: bool = False
-    coverage_policy: Literal["full", "diagnostic"] = "full"
-    stream_execution: Literal["continuous", "segmented"] = "continuous"
-    segment_events: int = Field(default=2048, ge=1)
-    segment_warmup_events: int = Field(default=256, ge=0)
-    eval_batch_mode: Literal["events", "stream_lanes"] = "events"
-    eval_stream_lanes: int | None = None
-    eval_chunk_size: int | None = None
-    val_prefix_events: int | None = Field(default=None, ge=1)
-    val_warmup_events: int = 0
-    test_warmup_events: int = 0
-
-    @model_validator(mode="after")
-    def _validate_batch_mode(self) -> Self:
-        validate_lane_config(self, val_split=self.source.val_split)
-        return self
-
-    def build_source(self) -> Any:
-        return self.source.build(
-            val_warmup_events=self.val_warmup_events,
-            test_warmup_events=self.test_warmup_events,
-        )
-
-    def build(self, *, dataset: Any = None) -> Any:
-        from graphids.core.data.datamodule.temporal import TemporalDataModule
-
-        if representation_kind(self.source.representation_cfg) != "temporal":
-            raise ValueError("temporal_dm requires representation_cfg.kind='temporal'")
-        options = self.model_dump(exclude={"type", "source", "val_warmup_events", "test_warmup_events"})
-        return TemporalDataModule(dataset=self.build_source() if dataset is None else dataset, **options)
-
-
-DataCfg = Annotated[TemporalDMCfg, Field(discriminator="type")]
-
-
-def can_bus(
-    *,
-    dataset: str,
-    seed: int,
-    val_fraction: float = 0.2,
-    train_source_mode: Literal["mixed", "attack_free"] = "mixed",
-    val_split: Literal["chronological", "recordings"] = "chronological",
-    split_seed: int = 42,
-    representation_cfg: RepresentationCfg = _DEFAULT_REPRESENTATION_CFG,
-) -> CANBusCfg:
-    registry = load_catalog()
-    if dataset not in registry:
-        raise ValueError(f"unknown dataset: {dataset} (registry: {', '.join(sorted(registry))})")
-    return CANBusCfg(
-        name=dataset,
-        seed=seed,
-        val_fraction=val_fraction,
-        train_source_mode=train_source_mode,
-        val_split=val_split,
-        split_seed=split_seed,
-        representation_cfg=representation_cfg,
+class CANSnapshotDMCfg(_Cfg):
+    type: Literal["can_snapshot_dm"] = "can_snapshot_dm"
+    manifest_path: str
+    datasets: list[str]
+    representation_cfg: CANSnapshotRepresentationCfg = Field(
+        default_factory=CANSnapshotRepresentationCfg
     )
+    sequence_bins: int = Field(default=128, ge=1)
+    warmup_bins: int = Field(default=128, ge=0)
+    stream_batch_size: int = Field(default=1, ge=1)
+    eval_chunk_bins: int = Field(default=256, ge=1)
+    num_workers: int = Field(default=0, ge=0)
+    seed: int = 42
+    context_withholding: float = Field(default=0.25, ge=0, le=1)
+    neighbor_cap: int = Field(default=8, ge=1)
+    retention_seconds: float = Field(default=1.0, gt=0)
+    anchor_capacity: int | None = Field(default=None, ge=1)
+    transient_capacity: int | None = Field(default=None, ge=1)
+    max_node_bin_tokens: int = Field(default=131072, ge=1)
+    max_graph_messages: int = Field(default=1048576, ge=1)
+    max_snapshot_bytes: int = Field(default=4 * 1024**3, ge=1)
+    cache_root: str | None = None
+
+    def build(self):
+        from graphids.core.data.snapshots.datamodule import CANSnapshotDataModule
+
+        values = self.model_dump(exclude={"type", "representation_cfg"})
+        return CANSnapshotDataModule(
+            **values, representation_cfg=self.representation_cfg
+        )
 
 
-def cross_vehicle(
-    *, held_out_vehicle: str, val_fraction: float = 0.1, split_seed: int = 42,
-    source_vehicle: str | None = None,
-    representation_cfg: RepresentationCfg = _DEFAULT_REPRESENTATION_CFG,
-) -> CrossVehicleCfg:
-    return CrossVehicleCfg(
-        held_out_vehicle=held_out_vehicle, source_vehicle=source_vehicle,
-        val_fraction=val_fraction,
-        split_seed=split_seed, representation_cfg=representation_cfg,
-    )
+def can_snapshot_dm(**kwargs) -> CANSnapshotDMCfg:
+    return CANSnapshotDMCfg(**kwargs)
 
 
-def temporal_dm(
-    *,
-    source: CANBusCfg,
-    **overrides: Any,
-) -> TemporalDMCfg:
-    return TemporalDMCfg(source=source, **overrides)
+DataCfg = Annotated[CANSnapshotDMCfg, Field(discriminator="type")]

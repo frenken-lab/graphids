@@ -1,27 +1,17 @@
-# Core: Data
+# CAN snapshots and recording manifests
 
-All dataset, preprocessing, representation, and discovery machinery.
+Versioned recording manifests assign disjoint source and target roles, explicit
+label/normality provenance, and content hashes. Snapshot caches preserve causal
+features, empty bins and partial-bin exposure. Immutable vehicle context stores
+reference profiles and bounded graph topology. Stream batching and distributed
+schedules preserve recording-local state and expose scored work.
 
-## Current layout
+See [training and evaluation](../reference/graph-mamba.md).
 
-- **`datasets/`** - raw source adapters and dataset/source builders.
-- **`discovery/`** - signal profiles, canonical entities, and provisional
-  hypotheses for cross-vehicle alignment.
-- **`preprocessing/`** - explicit representations, views, segments,
-  materialization, PyG packing, temporal streams, scaler config, vocab
-  config, and graph transforms.
-- **`datamodule/`** - training-time loaders and batching policy.
-- **`state.py`** - process-local dataset state for reuse within one Python
-  process.
+::: graphids.core.data.snapshots.manifest
 
-## What to read next
+::: graphids.core.data.snapshots.datamodule
 
-- [`docs/reference/data-architecture.md`](../reference/data-architecture.md)
-- [`graphids/core/data/preprocessing`](../../graphids/core/data/preprocessing)
-- [`graphids/core/data/discovery`](../../graphids/core/data/discovery)
+::: graphids.core.data.snapshots.online
 
-## `graphids.core.data`
-
-::: graphids.core.data
-    options:
-      show_submodules: true
+::: graphids.primitives_data

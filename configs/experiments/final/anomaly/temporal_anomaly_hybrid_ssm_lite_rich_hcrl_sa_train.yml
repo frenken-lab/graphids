@@ -1,9 +1,0 @@
-extends: ../../_base/final_anomaly_hybrid_ssm_lite_fit.yml
-experiment_name: temporal_anomaly_hybrid_ssm_lite_rich_hcrl_sa_train
-dataset: hcrl_sa
-plan_id: temporal_anomaly_hybrid_final_2026_09_27
-stage: fit
-config:
-  data:
-    source:
-      dataset: hcrl_sa

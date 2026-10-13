@@ -1,0 +1,6 @@
+extends: graph_mamba_joint.yml
+experiment_name: graph_mamba_joint_cardinal
+resources:
+  cluster: cardinal
+  partition: gpu
+  gres: "gpu:h100:1"

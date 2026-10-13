@@ -46,11 +46,20 @@ def _submission_yaml(cfg: ExperimentConfig) -> tuple[Path, str]:
     return path, expanded
 
 
+def _workers(cfg: ExperimentConfig) -> int:
+    devices = cfg.config.get("trainer", {}).get("devices", 1)
+    return devices if isinstance(devices, int) and devices > 0 else 1
+
+
+def _cpus(cfg: ExperimentConfig) -> int:
+    return max(1, int(cfg.resources.cpus_per_worker)) * _workers(cfg)
+
+
 def _gpus(cfg: ExperimentConfig) -> int:
     requested = int(math.ceil(float(cfg.resources.gpus_per_worker)))
     if cfg.resources.accelerator == "gpu":
-        return max(1, requested)
-    return max(0, requested)
+        return max(1, requested) * _workers(cfg)
+    return max(0, requested) * _workers(cfg)
 
 
 def _sbatch_directives(
@@ -67,10 +76,7 @@ def _sbatch_directives(
     resolved_partition = partition or resources.partition or ("gpu" if gpus else "cpu")
     resolved_time = time_limit or resources.time_limit or "01:00:00"
     resolved_gres = gres or resources.gres or (f"gpu:{gpus}" if gpus else None)
-    resolved_account = (
-        resources.account
-        or env_value("GRAPHIDS_SLURM_ACCOUNT")
-    )
+    resolved_account = resources.account or env_value("GRAPHIDS_SLURM_ACCOUNT")
 
     lines = [
         "#SBATCH --nodes=1",
@@ -78,7 +84,7 @@ def _sbatch_directives(
         f"#SBATCH --job-name={job_name}",
         f"#SBATCH --partition={resolved_partition}",
         f"#SBATCH --time={resolved_time}",
-        f"#SBATCH --cpus-per-task={max(1, int(resources.cpus_per_worker))}",
+        f"#SBATCH --cpus-per-task={_cpus(cfg)}",
     ]
     if cluster or resources.cluster:
         lines.append(f"#SBATCH --clusters={cluster or resources.cluster}")
@@ -131,7 +137,7 @@ def build_slurm_script(
         ]
     )
     gpus = _gpus(cfg)
-    cpus = max(1, int(cfg.resources.cpus_per_worker))
+    cpus = _cpus(cfg)
     script = "\n".join(
         [
             "#!/usr/bin/env bash",
@@ -158,11 +164,11 @@ def build_slurm_script(
             "RAY_START_PIDS=()",
             'mapfile -t RAY_NODES < <(scontrol show hostnames "${SLURM_JOB_NODELIST}")',
             'HEAD_NODE="${RAY_NODES[0]}"',
-            'HEAD_IP=$(srun --nodes=1 --ntasks=1 -w "${HEAD_NODE}" hostname --ip-address | awk \'{print $1}\')',
+            "HEAD_IP=$(srun --nodes=1 --ntasks=1 -w \"${HEAD_NODE}\" hostname --ip-address | awk '{print $1}')",
             'RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}"',
             "export RAY_ADDRESS",
             "cleanup_ray() {",
-            '  if ((${#RAY_START_PIDS[@]})); then',
+            "  if ((${#RAY_START_PIDS[@]})); then",
             '    kill "${RAY_START_PIDS[@]}" >/dev/null 2>&1 || true',
             '    wait "${RAY_START_PIDS[@]}" >/dev/null 2>&1 || true',
             "  fi",
@@ -173,7 +179,7 @@ def build_slurm_script(
             'mkdir -p "${RAY_LOG_DIR}" "${RAY_TMP_DIR}"',
             'srun --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \\',
             '  ray start --head --node-ip-address="${HEAD_IP}" --port="${RAY_PORT}" \\',
-            '    --include-dashboard=false \\',
+            "    --include-dashboard=false \\",
             '    --object-manager-port="${RAY_OBJECT_MANAGER_PORT}" \\',
             '    --node-manager-port="${RAY_NODE_MANAGER_PORT}" \\',
             '    --dashboard-agent-listen-port="${RAY_DASHBOARD_AGENT_PORT}" \\',
@@ -228,7 +234,9 @@ def submit_experiment(
     )
     command: Sequence[str] = (sbatch, str(script_path))
     if dry_run:
-        return SlurmSubmitResult(command=tuple(command), script_path=script_path, script=script)
+        return SlurmSubmitResult(
+            command=tuple(command), script_path=script_path, script=script
+        )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
     config_path, expanded = _submission_yaml(cfg)

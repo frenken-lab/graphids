@@ -1,3 +1,5 @@
+> Historical temporal-stack notes. For current graph–Mamba implementation status and next-session work, read [NEXT_STEPS.md](NEXT_STEPS.md).
+
 Yes. Now that the execution path is healthy and the 20-run fit matrix exists, the next step should not be “more jobs” yet. I’d move into a publication-readiness audit in this order:
 
 **1. Validate Methodology**

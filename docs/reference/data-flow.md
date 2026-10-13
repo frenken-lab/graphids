@@ -1,5 +1,7 @@
 # Pipeline Data Flow
 
+> Historical event-model architecture. The current path is documented in [Graph Mamba](graph-mamba.md).
+
 The live training data flow is temporal:
 
 ```text

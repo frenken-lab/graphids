@@ -86,13 +86,23 @@ class MLflowSystemMetricsCallback(pl.Callback):
         if self._phase is None:
             return
         now = time.monotonic()
-        if now - self._phase.get("last_sample_clock", float("-inf")) < self.sampling_interval:
+        if (
+            now - self._phase.get("last_sample_clock", float("-inf"))
+            < self.sampling_interval
+        ):
             return
         self._phase["last_sample_clock"] = now
         try:
             result = subprocess.run(
-                ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used", "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, timeout=3, check=True,
+                [
+                    "nvidia-smi",
+                    "--query-gpu=utilization.gpu,memory.used",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=True,
             )
             for line in result.stdout.splitlines():
                 util, memory = (float(part.strip()) for part in line.split(",")[:2])
@@ -102,24 +112,33 @@ class MLflowSystemMetricsCallback(pl.Callback):
 
     def _begin_phase(self, name: str) -> None:
         self._end_phase()
-        self._phase = {"phase": name, "started_at": datetime.now(UTC).isoformat(),
-                       "start_clock": time.monotonic(), "scored_events": 0, "gpu_samples": [],
-                       "lane_capacity": 0, "valid_events": 0, "active_lanes": 0,
-                       "lane_batches": 0}
+        self._phase = {
+            "phase": name,
+            "started_at": datetime.now(UTC).isoformat(),
+            "start_clock": time.monotonic(),
+            "scored_events": 0,
+            "scored_bins": 0,
+            "scored_seconds": 0.0,
+            "gpu_samples": [],
+            "node_bin_capacity": 0,
+            "live_node_bins": 0,
+            "graph_message_slots": 0,
+        }
         self._sample_gpu()
 
     def _batch_phase(self, batch: Any) -> None:
         if self._phase is None:
             return
-        mask = getattr(batch, "is_scored", None)
+        mask = getattr(batch, "scored", None)
         if mask is not None:
-            self._phase["scored_events"] += int(mask.sum().item())
-        valid = getattr(batch, "valid_mask", None)
-        if valid is not None:
-            self._phase["lane_capacity"] += valid.numel()
-            self._phase["valid_events"] += int(valid.sum().item())
-            self._phase["active_lanes"] += int(valid.any(dim=1).sum().item())
-            self._phase["lane_batches"] += 1
+            self._phase["scored_bins"] += int(mask.sum().item())
+            self._phase["scored_events"] += int((batch.event_count * mask).sum().item())
+            self._phase["scored_seconds"] += float((batch.exposure * mask).sum().item())
+            self._phase["node_bin_capacity"] += batch.live.numel()
+            self._phase["live_node_bins"] += int(batch.live.sum().item())
+            self._phase["graph_message_slots"] += (
+                int(batch.edge_mask.sum().item()) * batch.x.shape[1]
+            )
         self._sample_gpu()
 
     def _end_phase(self) -> None:
@@ -129,35 +148,65 @@ class MLflowSystemMetricsCallback(pl.Callback):
         phase = self._phase
         elapsed = time.monotonic() - phase["start_clock"]
         samples = phase["gpu_samples"]
-        row = {"phase": phase["phase"], "started_at": phase["started_at"],
-               "ended_at": datetime.now(UTC).isoformat(), "wall_seconds": elapsed,
-               "scored_events": phase["scored_events"],
-               "events_per_second": phase["scored_events"] / elapsed if elapsed else None,
-               "lane_occupancy": (phase["valid_events"] / phase["lane_capacity"]
-                                  if phase["lane_capacity"] else None),
-               "mean_active_lanes": (phase["active_lanes"] / phase["lane_batches"]
-                                     if phase["lane_batches"] else None),
-               "gpu_sample_count": len(samples),
-               "gpu_utilization_mean": sum(s[0] for s in samples) / len(samples) if samples else None,
-               "gpu_utilization_max": max(s[0] for s in samples) if samples else None,
-               "gpu_memory_gib_peak": max(s[1] for s in samples) if samples else None}
+        row = {
+            "phase": phase["phase"],
+            "started_at": phase["started_at"],
+            "ended_at": datetime.now(UTC).isoformat(),
+            "wall_seconds": elapsed,
+            "scored_events": phase["scored_events"],
+            "events_per_second": phase["scored_events"] / elapsed if elapsed else None,
+            "scored_bins": phase["scored_bins"],
+            "scored_seconds": phase["scored_seconds"],
+            "bins_per_second": phase["scored_bins"] / elapsed if elapsed else None,
+            "node_bin_occupancy": (
+                phase["live_node_bins"] / phase["node_bin_capacity"]
+                if phase["node_bin_capacity"]
+                else None
+            ),
+            "graph_message_slots": phase["graph_message_slots"],
+            "gpu_sample_count": len(samples),
+            "gpu_utilization_mean": sum(s[0] for s in samples) / len(samples)
+            if samples
+            else None,
+            "gpu_utilization_max": max(s[0] for s in samples) if samples else None,
+            "gpu_memory_gib_peak": max(s[1] for s in samples) if samples else None,
+        }
         self.phase_summaries.append(row)
         self._phase = None
         logger = getattr(self._trainer, "logger", None)
         if logger and hasattr(logger, "log_metrics"):
             logger.log_metrics(
-                {f"phase/{row['phase']}/{key}": value for key, value in row.items()
-                 if key in {"wall_seconds", "scored_events", "events_per_second",
-                            "lane_occupancy", "mean_active_lanes",
-                            "gpu_sample_count", "gpu_utilization_mean", "gpu_utilization_max",
-                            "gpu_memory_gib_peak"} and value is not None},
+                {
+                    f"phase/{row['phase']}/{key}": value
+                    for key, value in row.items()
+                    if key
+                    in {
+                        "wall_seconds",
+                        "scored_events",
+                        "events_per_second",
+                        "scored_bins",
+                        "scored_seconds",
+                        "bins_per_second",
+                        "node_bin_occupancy",
+                        "graph_message_slots",
+                        "gpu_sample_count",
+                        "gpu_utilization_mean",
+                        "gpu_utilization_max",
+                        "gpu_memory_gib_peak",
+                    }
+                    and value is not None
+                },
                 step=getattr(self._trainer, "global_step", 0),
             )
         if self.phase_output:
             self.phase_output.parent.mkdir(parents=True, exist_ok=True)
-            self.phase_output.write_text(json.dumps(self.phase_summaries, indent=2) + "\n")
+            self.phase_output.write_text(
+                json.dumps(self.phase_summaries, indent=2) + "\n"
+            )
 
-    def on_train_epoch_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+    def on_train_epoch_start(
+        self, trainer: pl.Trainer, pl_module: pl.LightningModule
+    ) -> None:
         self._begin_phase(f"train_epoch_{trainer.current_epoch + 1}")
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx) -> None:
@@ -170,7 +219,9 @@ class MLflowSystemMetricsCallback(pl.Callback):
         if not trainer.sanity_checking:
             self._begin_phase(f"source_validation_epoch_{trainer.current_epoch + 1}")
 
-    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0) -> None:
+    def on_validation_batch_end(
+        self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0
+    ) -> None:
         if not trainer.sanity_checking:
             self._batch_phase(batch)
 
@@ -181,8 +232,10 @@ class MLflowSystemMetricsCallback(pl.Callback):
     def on_test_epoch_start(self, trainer, pl_module) -> None:
         self._end_phase()
 
-    def on_test_batch_start(self, trainer, pl_module, batch, batch_idx, dataloader_idx=0) -> None:
-        name = list(getattr(trainer.datamodule, "_tests", {}))
+    def on_test_batch_start(
+        self, trainer, pl_module, batch, batch_idx, dataloader_idx=0
+    ) -> None:
+        name = list(getattr(trainer.datamodule, "test_data", {}))
         if dataloader_idx < len(name):
             desired = name[dataloader_idx]
             if self._phase is None or self._phase["phase"] != desired:
@@ -190,7 +243,9 @@ class MLflowSystemMetricsCallback(pl.Callback):
         elif self._phase is None:
             self._begin_phase("evaluation")
 
-    def on_test_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0) -> None:
+    def on_test_batch_end(
+        self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0
+    ) -> None:
         self._batch_phase(batch)
 
     def on_test_epoch_end(self, trainer, pl_module) -> None:
@@ -231,16 +286,25 @@ class MLflowSystemMetricsCallback(pl.Callback):
         finally:
             self._monitor = None
 
-    def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+    def on_train_start(
+        self, trainer: pl.Trainer, pl_module: pl.LightningModule
+    ) -> None:
         self._start(trainer)
 
     def on_fit_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         self._end_phase()
-        self.phase_summaries.append({"phase": "fit_complete", "optimizer_steps": trainer.global_step,
-                                     "ended_at": datetime.now(UTC).isoformat()})
+        self.phase_summaries.append(
+            {
+                "phase": "fit_complete",
+                "optimizer_steps": trainer.global_step,
+                "ended_at": datetime.now(UTC).isoformat(),
+            }
+        )
         if self.phase_output:
             self.phase_output.parent.mkdir(parents=True, exist_ok=True)
-            self.phase_output.write_text(json.dumps(self.phase_summaries, indent=2) + "\n")
+            self.phase_output.write_text(
+                json.dumps(self.phase_summaries, indent=2) + "\n"
+            )
         self._stop()
 
     def on_test_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
@@ -308,7 +372,11 @@ class MLflowSystemMetricsSummaryCallback(pl.Callback):
     def _resolve_tracking_uri(self, trainer: pl.Trainer) -> str:
         if self.tracking_uri:
             return self.tracking_uri
-        tracking_dir = Path(self.tracking_dir) if self.tracking_dir else self._default_tracking_dir(trainer)
+        tracking_dir = (
+            Path(self.tracking_dir)
+            if self.tracking_dir
+            else self._default_tracking_dir(trainer)
+        )
         tracking_dir.mkdir(parents=True, exist_ok=True)
         return str(tracking_dir)
 
@@ -329,7 +397,9 @@ class MLflowSystemMetricsSummaryCallback(pl.Callback):
             self._resolved_tracking_uri = tracking_uri
             self._set_tracking_uri(tracking_uri)
             mlflow.set_system_metrics_sampling_interval(self.sampling_interval)
-            mlflow.set_system_metrics_samples_before_logging(self.samples_before_logging)
+            mlflow.set_system_metrics_samples_before_logging(
+                self.samples_before_logging
+            )
             mlflow.set_experiment(self.experiment_name)
             nested = mlflow.active_run() is not None
             run = mlflow.start_run(
@@ -403,13 +473,17 @@ class MLflowSystemMetricsSummaryCallback(pl.Callback):
         metrics: dict[str, float] = {}
         sample_counts: list[int] = []
 
-        cpu_values = self._metric_history_values(client, run_id, "system/cpu_utilization_percentage")
+        cpu_values = self._metric_history_values(
+            client, run_id, "system/cpu_utilization_percentage"
+        )
         if cpu_values:
             sample_counts.append(len(cpu_values))
             metrics[f"{self.prefix}/cpu_percent_mean"] = self._mean(cpu_values)
             metrics[f"{self.prefix}/cpu_percent_max"] = max(cpu_values)
 
-        memory_values = self._metric_history_values(client, run_id, "system/system_memory_usage_megabytes")
+        memory_values = self._metric_history_values(
+            client, run_id, "system/system_memory_usage_megabytes"
+        )
         if memory_values:
             sample_counts.append(len(memory_values))
             gib_values = [value / _MIB_PER_GIB for value in memory_values]
@@ -421,29 +495,41 @@ class MLflowSystemMetricsSummaryCallback(pl.Callback):
             gpu_mem_gib_values: list[float] = []
             gpu_mem_percent_values: list[float] = []
             for key in sorted(keys):
-                if key.startswith("system/gpu_") and key.endswith("_utilization_percentage"):
+                if key.startswith("system/gpu_") and key.endswith(
+                    "_utilization_percentage"
+                ):
                     values = self._metric_history_values(client, run_id, key)
                     if values:
                         sample_counts.append(len(values))
                         gpu_util_values.extend(values)
-                elif key.startswith("system/gpu_") and key.endswith("_memory_usage_megabytes"):
+                elif key.startswith("system/gpu_") and key.endswith(
+                    "_memory_usage_megabytes"
+                ):
                     values = self._metric_history_values(client, run_id, key)
                     if values:
                         sample_counts.append(len(values))
-                        gpu_mem_gib_values.extend(value / _MIB_PER_GIB for value in values)
-                elif key.startswith("system/gpu_") and key.endswith("_memory_usage_percentage"):
+                        gpu_mem_gib_values.extend(
+                            value / _MIB_PER_GIB for value in values
+                        )
+                elif key.startswith("system/gpu_") and key.endswith(
+                    "_memory_usage_percentage"
+                ):
                     values = self._metric_history_values(client, run_id, key)
                     if values:
                         sample_counts.append(len(values))
                         gpu_mem_percent_values.extend(values)
 
             if gpu_util_values:
-                metrics[f"{self.prefix}/gpu_util_percent_mean"] = self._mean(gpu_util_values)
+                metrics[f"{self.prefix}/gpu_util_percent_mean"] = self._mean(
+                    gpu_util_values
+                )
                 metrics[f"{self.prefix}/gpu_util_percent_max"] = max(gpu_util_values)
             if gpu_mem_gib_values:
                 metrics[f"{self.prefix}/gpu_mem_gib_max"] = max(gpu_mem_gib_values)
             if gpu_mem_percent_values:
-                metrics[f"{self.prefix}/gpu_mem_percent_max"] = max(gpu_mem_percent_values)
+                metrics[f"{self.prefix}/gpu_mem_percent_max"] = max(
+                    gpu_mem_percent_values
+                )
 
         if sample_counts:
             metrics[f"{self.prefix}/samples"] = float(max(sample_counts))

@@ -1,5 +1,7 @@
 # Data Architecture
 
+> Historical event-model architecture. The current path is documented in [Graph Mamba](graph-mamba.md).
+
 This is the current GraphIDS data layout after the temporal refactor.
 
 ## 1. Raw storage

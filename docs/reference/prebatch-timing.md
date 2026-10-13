@@ -1,5 +1,7 @@
 # Pre-batch Timing Rationale — hcrl_sa (probe 2026-04-07)
 
+> Historical event-model architecture. The current path is documented in [Graph Mamba](graph-mamba.md).
+
 Justifies the choice of prebatched training + workers=0 over per-step collation
 with workers. Numbers are from a single probe run; see `data-flow.md` for current
 architecture.

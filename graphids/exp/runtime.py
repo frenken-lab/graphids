@@ -16,12 +16,17 @@ def resolve_spec(spec: Any) -> Any:
         return [resolve_spec(item) for item in spec]
     if not isinstance(spec, Mapping):
         return spec
+    from graphids.migration import reject_retired
+
+    reject_retired(dict(spec))
 
     if "class_path" in spec:
         class_path = str(spec["class_path"])
         module_path, _, class_name = class_path.rpartition(".")
         cls = getattr(importlib.import_module(module_path), class_name)
-        init_args = {k: resolve_spec(v) for k, v in dict(spec.get("init_args") or {}).items()}
+        init_args = {
+            k: resolve_spec(v) for k, v in dict(spec.get("init_args") or {}).items()
+        }
         return cls(**init_args)
 
     if "type" in spec:
@@ -88,7 +93,9 @@ def _compile_model_if_requested(model: Any, cfg: Mapping[str, Any]) -> None:
             return
     compile_method = getattr(model, "compile", None)
     if not callable(compile_method):
-        raise TypeError(f"{type(model).__name__} does not support LightningModule.compile()")
+        raise TypeError(
+            f"{type(model).__name__} does not support LightningModule.compile()"
+        )
     compile_method(**compile_kwargs)
 
 
@@ -101,10 +108,16 @@ def seed_run(cfg: Mapping[str, Any]) -> None:
 
 
 def build_model(cfg: Mapping[str, Any], data: Any) -> Any:
-    loss_fn = build_component(cfg["loss_fn"]) if cfg.get("loss_fn") is not None else None
+    loss_fn = (
+        build_component(cfg["loss_fn"]) if cfg.get("loss_fn") is not None else None
+    )
     model_spec = resolve_spec(cfg["model"])
     if hasattr(model_spec, "build"):
-        model = model_spec.build(loss_fn=loss_fn) if loss_fn is not None else model_spec.build()
+        model = (
+            model_spec.build(loss_fn=loss_fn)
+            if loss_fn is not None
+            else model_spec.build()
+        )
     else:
         model = model_spec
     if hasattr(model, "prepare_from_datamodule"):

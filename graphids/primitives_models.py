@@ -1,338 +1,61 @@
-"""Model primitive configs and factories.
+"""Typed configuration for the shared graph-Mamba detector."""
 
-This is the model half of the public primitive API. It stays root-level so
-experiment authors and launch code share one typed model surface.
-"""
-
-from __future__ import annotations
-
-from typing import Annotated, Any, Literal, Self
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-from graphids.config_validation import validate_hybrid_config, validate_scan_config
 
 
 class _Cfg(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class TemporalEventClassifierCfg(_Cfg):
-    type: Literal["temporal_event_classifier"] = "temporal_event_classifier"
-    scale: Literal["small", "large"] = "small"
-    hidden: int | None = None
-    layers: int | None = None
-    embedding_dim: int | None = None
-    dropout: float = 0.2
-
-    def build(self, *, loss_fn: Any = None) -> Any:
-        from graphids.core.models.temporal import TemporalEventClassifier
-
-        return TemporalEventClassifier(
-            loss_fn=loss_fn,
-            scale=self.scale,
-            hidden=self.hidden,
-            layers=self.layers,
-            embedding_dim=self.embedding_dim,
-            dropout=self.dropout,
-        )
-
-
-class TemporalGATCfg(_Cfg):
-    type: Literal["temporal_gat"] = "temporal_gat"
-    scale: Literal["small", "large"] = "small"
-    hidden: int | None = None
-    layers: int | None = None
-    heads: int | None = None
-    embedding_dim: int | None = None
-    dropout: float = 0.2
-
-    def build(self, *, loss_fn: Any = None) -> Any:
-        from graphids.core.models.temporal import TemporalGAT
-
-        return TemporalGAT(
-            loss_fn=loss_fn,
-            scale=self.scale,
-            hidden=self.hidden,
-            layers=self.layers,
-            heads=self.heads,
-            embedding_dim=self.embedding_dim,
-            dropout=self.dropout,
-        )
-
-
-class TemporalRNNClassifierCfg(_Cfg):
-    type: Literal["temporal_rnn_classifier"] = "temporal_rnn_classifier"
-    scale: Literal["small", "large"] = "small"
-    hidden: int | None = None
-    layers: int | None = None
-    embedding_dim: int | None = None
-    dropout: float = 0.2
-
-    def build(self, *, loss_fn: Any = None) -> Any:
-        from graphids.core.models.temporal import TemporalRNNClassifier
-
-        return TemporalRNNClassifier(
-            loss_fn=loss_fn,
-            scale=self.scale,
-            hidden=self.hidden,
-            layers=self.layers,
-            embedding_dim=self.embedding_dim,
-            dropout=self.dropout,
-        )
-
-
-class TemporalVGAECfg(_Cfg):
-    type: Literal["temporal_vgae"] = "temporal_vgae"
-    scale: Literal["small", "large"] = "small"
-    hidden: int | None = None
-    layers: int | None = None
-    embedding_dim: int | None = None
-    latent_dim: int | None = None
-    dropout: float = 0.1
-    kl_weight: float = 0.01
-
-    def build(self, *, loss_fn: Any = None) -> Any:
-        from graphids.core.models.temporal import TemporalVGAE
-
-        del loss_fn
-        return TemporalVGAE(
-            scale=self.scale,
-            hidden=self.hidden,
-            layers=self.layers,
-            embedding_dim=self.embedding_dim,
-            latent_dim=self.latent_dim,
-            dropout=self.dropout,
-            kl_weight=self.kl_weight,
-        )
-
-
-class TemporalHybridInputCfg(_Cfg):
-    embedding_dim: int | None = None
-    hidden: int | None = None
-    dropout: float = 0.1
-    use_id_embeddings: bool = True
-
-
-class TemporalHybridMemoryCfg(_Cfg):
-    type: Literal["tgn"] = "tgn"
-    enabled: bool = True
-    reset_on_stream_end: bool = True
-    use_source: bool = True
-    use_destination: bool = True
-    time_encoding_dim: int = 0
-
-
-class TemporalHybridBackboneCfg(_Cfg):
-    type: Literal["none", "gru", "ssm_lite", "mamba"] = "gru"
-    layers: int | None = None
-    dropout: float = 0.1
-
-
-class TemporalHybridHeadsCfg(_Cfg):
-    classification: bool | None = None
-    next_id: bool | None = None
-    iat: bool | None = None
-    payload_delta: bool | None = None
-
-
-class TemporalHybridAnomalyCfg(_Cfg):
-    mode: Literal["regression", "nll"] = "regression"
-    min_log_scale: float = -7.0
-    max_log_scale: float = 5.0
-
-
-class TemporalHybridRhythmCfg(_Cfg):
-    enabled: bool = False
-
-
-class TemporalHybridMotifCfg(_Cfg):
-    enabled: bool = False
-    length: int = 3
-    embedding_dim: int | None = None
-    time_dim: int | None = None
-
-
-class TemporalHybridProfilingCfg(_Cfg):
-    phase_timing: bool = False
-    prefix: str = "profile"
-    sync_cuda: bool = True
-    warmup_steps: int = 5
-    log_every_n_steps: int = 10
-
-
-class TemporalHybridScanCfg(_Cfg):
-    profile_subphases: bool = False
-    rhythm_kernel: Literal["torch", "triton"] = "torch"
-    time_kernel: Literal["torch", "triton"] = "torch"
-    motif_writer: Literal["torch", "triton"] = "torch"
-    ssm_kernel: Literal["torch", "triton"] = "torch"
-    cuda_graph: bool = False
-
-    @model_validator(mode="after")
-    def _validate_motif_writer(self) -> Self:
-        validate_scan_config(self.model_dump())
-        return self
-
-
-class TemporalHybridCfg(_Cfg):
-    type: Literal["temporal_hybrid"] = "temporal_hybrid"
-    scale: Literal["small", "large"] = "small"
-    objective: Literal["supervised", "anomaly", "joint"] = "supervised"
-    input: TemporalHybridInputCfg = Field(default_factory=TemporalHybridInputCfg)
-    memory: TemporalHybridMemoryCfg = Field(default_factory=TemporalHybridMemoryCfg)
-    backbone: TemporalHybridBackboneCfg = Field(default_factory=TemporalHybridBackboneCfg)
-    heads: TemporalHybridHeadsCfg = Field(default_factory=TemporalHybridHeadsCfg)
-    anomaly: TemporalHybridAnomalyCfg = Field(default_factory=TemporalHybridAnomalyCfg)
-    rhythm: TemporalHybridRhythmCfg = Field(default_factory=TemporalHybridRhythmCfg)
-    motif: TemporalHybridMotifCfg = Field(default_factory=TemporalHybridMotifCfg)
-    profiling: TemporalHybridProfilingCfg = Field(default_factory=TemporalHybridProfilingCfg)
-    scan: TemporalHybridScanCfg = Field(default_factory=TemporalHybridScanCfg)
+class VehicleGraphMambaJointCfg(_Cfg):
+    type: Literal["vehicle_graph_mamba_joint"] = "vehicle_graph_mamba_joint"
+    width: int = Field(default=128, ge=1)
+    layers: int = Field(default=2, ge=1)
+    d_state: int = Field(default=16, ge=1)
+    d_conv: Literal[2, 3, 4] = 4
+    expand: int = Field(default=2, ge=1)
+    dropout: float = Field(default=0.1, ge=0, lt=1)
+    backend: Literal["official", "reference"] = "official"
+    graph_enabled: bool = True
+    classification: bool = True
+    forecasting: bool = True
+    learning_rate: float = Field(default=0.001, gt=0)
+    weight_decay: float = Field(default=0.01, ge=0)
     loss_weights: dict[str, float] = Field(default_factory=dict)
-    anomaly_score_weights: dict[str, float] = Field(default_factory=dict)
+    alert_quantile: float = Field(default=0.999, gt=0, lt=1)
+    schema_version: Literal[1] = 1
 
     @model_validator(mode="after")
-    def _validate_objective_heads(self) -> Self:
-        validate_hybrid_config(
-            objective=self.objective,
-            **{name: getattr(self, name).model_dump(exclude_none=True)
-               for name in ("memory", "backbone", "heads", "anomaly", "motif", "scan")},
-        )
+    def validate_objectives(self):
+        import math
+
+        if not (self.classification or self.forecasting):
+            raise ValueError("at least one detection objective must be enabled")
+        for name, value in self.loss_weights.items():
+            if (
+                name not in {"classification", "count", "change", "new_id"}
+                or not math.isfinite(value)
+                or value < 0
+            ):
+                raise ValueError(
+                    "loss_weights must name classification/count/change/new_id and be finite and nonnegative"
+                )
         return self
 
-    def build(self, *, loss_fn: Any = None) -> Any:
-        from graphids.core.models.temporal import TemporalHybridModel
+    def build(self, *, loss_fn=None):
+        if loss_fn is not None:
+            raise ValueError(
+                "graph-Mamba defines separate classification/forecast losses; use loss_weights"
+            )
+        from graphids.core.models.graph_mamba import VehicleGraphMambaJoint
 
-        return TemporalHybridModel(
-            loss_fn=loss_fn,
-            scale=self.scale,
-            objective=self.objective,
-            input=self.input.model_dump(exclude_none=True),
-            memory=self.memory.model_dump(),
-            backbone=self.backbone.model_dump(exclude_none=True),
-            heads=self.heads.model_dump(exclude_none=True),
-            anomaly=self.anomaly.model_dump(),
-            rhythm=self.rhythm.model_dump(),
-            motif=self.motif.model_dump(exclude_none=True),
-            profiling=self.profiling.model_dump(),
-            scan=self.scan.model_dump(),
-            loss_weights=dict(self.loss_weights),
-            anomaly_score_weights=dict(self.anomaly_score_weights),
-        )
+        return VehicleGraphMambaJoint(**self.model_dump(exclude={"type"}))
 
 
-ModelCfg = Annotated[
-    TemporalEventClassifierCfg
-    | TemporalGATCfg
-    | TemporalRNNClassifierCfg
-    | TemporalVGAECfg
-    | TemporalHybridCfg,
-    Field(discriminator="type"),
-]
+def vehicle_graph_mamba_joint(**kwargs) -> VehicleGraphMambaJointCfg:
+    return VehicleGraphMambaJointCfg(**kwargs)
 
 
-def temporal_event_classifier(
-    scale: str = "small",
-    *,
-    hidden: int | None = None,
-    layers: int | None = None,
-    embedding_dim: int | None = None,
-    dropout: float = 0.2,
-) -> TemporalEventClassifierCfg:
-    return TemporalEventClassifierCfg(
-        scale=scale,
-        hidden=hidden,
-        layers=layers,
-        embedding_dim=embedding_dim,
-        dropout=dropout,
-    )
-
-
-def temporal_gat(
-    scale: str = "small",
-    *,
-    hidden: int | None = None,
-    layers: int | None = None,
-    heads: int | None = None,
-    embedding_dim: int | None = None,
-    dropout: float = 0.2,
-) -> TemporalGATCfg:
-    return TemporalGATCfg(
-        scale=scale,
-        hidden=hidden,
-        layers=layers,
-        heads=heads,
-        embedding_dim=embedding_dim,
-        dropout=dropout,
-    )
-
-
-def temporal_rnn_classifier(
-    scale: str = "small",
-    *,
-    hidden: int | None = None,
-    layers: int | None = None,
-    embedding_dim: int | None = None,
-    dropout: float = 0.2,
-) -> TemporalRNNClassifierCfg:
-    return TemporalRNNClassifierCfg(
-        scale=scale,
-        hidden=hidden,
-        layers=layers,
-        embedding_dim=embedding_dim,
-        dropout=dropout,
-    )
-
-
-def temporal_vgae(
-    scale: str = "small",
-    *,
-    hidden: int | None = None,
-    layers: int | None = None,
-    embedding_dim: int | None = None,
-    latent_dim: int | None = None,
-    dropout: float = 0.1,
-    kl_weight: float = 0.01,
-) -> TemporalVGAECfg:
-    return TemporalVGAECfg(
-        scale=scale,
-        hidden=hidden,
-        layers=layers,
-        embedding_dim=embedding_dim,
-        latent_dim=latent_dim,
-        dropout=dropout,
-        kl_weight=kl_weight,
-    )
-
-
-def temporal_hybrid(
-    scale: str = "small",
-    *,
-    objective: str = "supervised",
-    input: dict[str, Any] | TemporalHybridInputCfg | None = None,
-    memory: dict[str, Any] | TemporalHybridMemoryCfg | None = None,
-    backbone: dict[str, Any] | TemporalHybridBackboneCfg | None = None,
-    heads: dict[str, Any] | TemporalHybridHeadsCfg | None = None,
-    anomaly: dict[str, Any] | TemporalHybridAnomalyCfg | None = None,
-    rhythm: dict[str, Any] | TemporalHybridRhythmCfg | None = None,
-    motif: dict[str, Any] | TemporalHybridMotifCfg | None = None,
-    profiling: dict[str, Any] | TemporalHybridProfilingCfg | None = None,
-    scan: dict[str, Any] | TemporalHybridScanCfg | None = None,
-    loss_weights: dict[str, float] | None = None,
-    anomaly_score_weights: dict[str, float] | None = None,
-) -> TemporalHybridCfg:
-    return TemporalHybridCfg(
-        scale=scale,
-        objective=objective,
-        input=TemporalHybridInputCfg.model_validate(input or {}),
-        memory=TemporalHybridMemoryCfg.model_validate(memory or {}),
-        backbone=TemporalHybridBackboneCfg.model_validate(backbone or {}),
-        heads=TemporalHybridHeadsCfg.model_validate(heads or {}),
-        anomaly=TemporalHybridAnomalyCfg.model_validate(anomaly or {}),
-        rhythm=TemporalHybridRhythmCfg.model_validate(rhythm or {}),
-        motif=TemporalHybridMotifCfg.model_validate(motif or {}),
-        profiling=TemporalHybridProfilingCfg.model_validate(profiling or {}),
-        scan=TemporalHybridScanCfg.model_validate(scan or {}),
-        loss_weights=dict(loss_weights or {}),
-        anomaly_score_weights=dict(anomaly_score_weights or {}),
-    )
+ModelCfg = Annotated[VehicleGraphMambaJointCfg, Field(discriminator="type")]

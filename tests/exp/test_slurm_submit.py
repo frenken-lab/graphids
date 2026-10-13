@@ -21,7 +21,7 @@ def test_build_slurm_script_starts_ray_allocation(monkeypatch, tmp_path):
     )
     path, script = build_slurm_script(
         cfg,
-        "configs/experiments/gat_temporal_smoke.yml",
+        "configs/experiments/graph_mamba_joint.yml",
         nodes=2,
     )
 
@@ -96,7 +96,7 @@ def test_submit_experiment_writes_script_and_calls_sbatch(monkeypatch, tmp_path)
         resources=ResourceConfig(accelerator="gpu", gpus_per_worker=1.0, account="pas1266"),
     )
 
-    result = submit_experiment(cfg, "configs/experiments/gat_temporal_smoke.yml", nodes=2)
+    result = submit_experiment(cfg, "configs/experiments/graph_mamba_joint.yml", nodes=2)
 
     assert result.job_id == "12345"
     assert result.script_path.is_file()
@@ -111,11 +111,11 @@ def test_exp_submit_dry_run_cli(monkeypatch):
     monkeypatch.setenv("GRAPHIDS_SLURM_LOG_DIR", "/tmp/graphids-slurm-test")
     result = CliRunner().invoke(
         app,
-        ["exp", "submit", "configs/experiments/gat_temporal_smoke.yml", "--dry-run"],
+        ["exp", "submit", "configs/experiments/graph_mamba_joint.yml", "--dry-run"],
     )
 
     assert result.exit_code == 0
-    assert "#SBATCH --clusters=pitzer" in result.stdout
+    assert "#SBATCH --clusters=ascend" in result.stdout
     assert "ray start --head" in result.stdout
     assert "python -m graphids exp launch" in result.stdout
 

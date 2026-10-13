@@ -1,9 +1,0 @@
-extends: ../../_base/final_supervised_hybrid_gru_fit.yml
-experiment_name: temporal_supervised_hybrid_gru_memory_set_03_train
-dataset: set_03
-plan_id: temporal_supervised_hybrid_final_2026_09_27
-stage: fit
-config:
-  data:
-    source:
-      dataset: set_03

@@ -1,21 +1,11 @@
-"""Root public primitive API for GraphIDS."""
-
-from __future__ import annotations
+"""Public graph-Mamba model and CAN snapshot primitives."""
 
 from graphids.core.data.preprocessing.representations import (
     RepresentationCfg,
-    TemporalRepresentationCfg,
     representation_kind,
 )
-from graphids.primitives_data import (
-    CANBusCfg,
-    CrossVehicleCfg,
-    DataCfg,
-    TemporalDMCfg,
-    can_bus,
-    cross_vehicle,
-    temporal_dm,
-)
+from graphids.core.data.snapshots.preprocessing import CANSnapshotRepresentationCfg
+from graphids.primitives_data import CANSnapshotDMCfg, DataCfg, can_snapshot_dm
 from graphids.primitives_losses import (
     CELossCfg,
     FocalLossCfg,
@@ -28,60 +18,26 @@ from graphids.primitives_losses import (
 )
 from graphids.primitives_models import (
     ModelCfg,
-    TemporalEventClassifierCfg,
-    TemporalGATCfg,
-    TemporalHybridAnomalyCfg,
-    TemporalHybridBackboneCfg,
-    TemporalHybridCfg,
-    TemporalHybridHeadsCfg,
-    TemporalHybridInputCfg,
-    TemporalHybridMemoryCfg,
-    TemporalHybridMotifCfg,
-    TemporalHybridRhythmCfg,
-    TemporalRNNClassifierCfg,
-    TemporalVGAECfg,
-    temporal_event_classifier,
-    temporal_gat,
-    temporal_hybrid,
-    temporal_rnn_classifier,
-    temporal_vgae,
+    VehicleGraphMambaJointCfg,
+    vehicle_graph_mamba_joint,
 )
 
 __all__ = [
-    "temporal_event_classifier",
-    "temporal_gat",
-    "temporal_hybrid",
-    "temporal_rnn_classifier",
-    "temporal_vgae",
-    "focal",
-    "ce",
-    "weighted_ce",
-    "can_bus",
-    "cross_vehicle",
-    "TemporalRepresentationCfg",
     "RepresentationCfg",
     "representation_kind",
-    "temporal_dm",
+    "CANSnapshotRepresentationCfg",
+    "CANSnapshotDMCfg",
+    "DataCfg",
+    "can_snapshot_dm",
     "ModelCfg",
+    "VehicleGraphMambaJointCfg",
+    "vehicle_graph_mamba_joint",
+    "CELossCfg",
+    "FocalLossCfg",
+    "WeightedCELossCfg",
     "LossFn",
     "SimpleLossFn",
-    "DataCfg",
-    "TemporalEventClassifierCfg",
-    "TemporalGATCfg",
-    "TemporalHybridCfg",
-    "TemporalHybridInputCfg",
-    "TemporalHybridMemoryCfg",
-    "TemporalHybridBackboneCfg",
-    "TemporalHybridHeadsCfg",
-    "TemporalHybridAnomalyCfg",
-    "TemporalHybridRhythmCfg",
-    "TemporalHybridMotifCfg",
-    "TemporalRNNClassifierCfg",
-    "TemporalVGAECfg",
-    "FocalLossCfg",
-    "CELossCfg",
-    "WeightedCELossCfg",
-    "CANBusCfg",
-    "CrossVehicleCfg",
-    "TemporalDMCfg",
+    "ce",
+    "focal",
+    "weighted_ce",
 ]

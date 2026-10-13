@@ -1,5 +1,7 @@
 Yes. The scan decomposes cleanly into a dependency graph. The key is that **not all 7 operations are equally “sequential.”** Some are causal across time, but many are only sequential because the current Python/PyTorch loop launches them one by one.
 
+> Historical event-model architecture. The current path is documented in [Graph Mamba](graph-mamba.md).
+
 For one timestep, the actual order is:
 
 ```text

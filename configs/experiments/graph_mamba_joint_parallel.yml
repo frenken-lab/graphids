@@ -1,0 +1,9 @@
+extends: graph_mamba_joint.yml
+experiment_name: graph_mamba_joint_parallel
+resources:
+  cpus_per_worker: 4
+  gres: "gpu:a100:2"
+config:
+  trainer:
+    devices: 2
+    use_distributed_sampler: false

@@ -1,9 +1,0 @@
-extends: ../_base/baselines_rnn_classifier.yml
-experiment_name: temporal_baseline_rnn_set_03
-dataset: set_03
-plan_id: temporal_baseline_2026_09_26
-stage: fit
-config:
-  data:
-    source:
-      dataset: set_03

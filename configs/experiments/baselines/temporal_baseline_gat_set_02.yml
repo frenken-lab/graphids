@@ -1,9 +1,0 @@
-extends: ../_base/baselines_gat.yml
-experiment_name: temporal_baseline_gat_set_02
-dataset: set_02
-plan_id: temporal_baseline_2026_09_26
-stage: fit
-config:
-  data:
-    source:
-      dataset: set_02

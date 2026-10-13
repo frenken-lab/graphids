@@ -4,7 +4,7 @@ Public API:
     import graphids.core  # lazy-loaded
 """
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 
 _lazy_submodules = {"core"}
 

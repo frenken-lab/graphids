@@ -1,67 +1,62 @@
-# Per-group result views for `graphids exp results`.
-#
-# Each entry declares (a) base graphids-tag filter, (b) ordered metric keys
-# to print. CLI flags compose with the base filter (CLI overrides win).
-#
-# Adding a new model group: copy a block, edit `filter.group` to match what
-# `meta.group` is set to in the plan module, edit `metrics` to match what
-# the model's test_step actually logs.
-#
-# To inspect what keys a run actually has:
-#     graphids exp results --view <name> --format json | jq '.[0]'
-
-# Catch-all: no group filter, all phases, classifier-flavor metric defaults.
-# Override --group, --variant, --phase from the CLI to scope.
 any:
   filter:
     phase: test
   metrics:
-    - test/test/auroc_macro
-    - test/test/mcc
-    - test/test/auroc_per_attack/fuzzing
-    - test/test/f1_per_class/attack
-
+  - test/zero-shot/classification_ap_macro
+  - test/zero-shot/anomaly_ap_macro
+  - test/conditioned/classification_ap_macro
+  - test/conditioned/anomaly_ap_macro
+  - test/test/auroc_macro
+  - test/test/mcc
+  - test/test/auroc_per_attack/fuzzing
+  - test/test/f1_per_class/attack
 fit_baselines:
   filter:
     phase: fit
     plan_id: temporal_baseline_2026_09_26
   metrics:
-    - train_loss
-    - val_loss
-    - val_acc
-    - val_auroc
-    - val_recon_mean
-    - val_kl_mean
-
+  - train_loss
+  - val_loss
+  - val_acc
+  - val_auroc
+  - val_recon_mean
+  - val_kl_mean
 hybrid_supervised_final:
   filter:
     phase: test
     plan_id: temporal_supervised_hybrid_final_2026_09_27
   metrics:
-    - test/test/auroc_macro
-    - test/test/mcc
-    - test/test/precision_at_0.95recall
-    - test/test/recall_at_0.99precision
-    - test/test/auroc_per_attack_macro
-
+  - test/test/auroc_macro
+  - test/test/mcc
+  - test/test/precision_at_0.95recall
+  - test/test/recall_at_0.99precision
+  - test/test/auroc_per_attack_macro
 hybrid_anomaly_final:
   filter:
     phase: test
     plan_id: temporal_anomaly_hybrid_final_2026_09_27
   metrics:
-    - test/auroc_macro
-    - test/ap_macro
-    - test/mcc_at_0.95recall
-    - test/f1_attack_at_0.95recall
-    - test/f1_macro_at_0.95recall
-
+  - test/auroc_macro
+  - test/ap_macro
+  - test/mcc_at_0.95recall
+  - test/f1_attack_at_0.95recall
+  - test/f1_macro_at_0.95recall
 hybrid_joint_final:
   filter:
     phase: test
     plan_id: temporal_joint_hybrid_final_2026_09_27
   metrics:
-    - test/test/auroc_macro
-    - test/test/mcc
-    - test/auroc_macro
-    - test/ap_macro
-    - test/mcc_at_0.95recall
+  - test/test/auroc_macro
+  - test/test/mcc
+  - test/auroc_macro
+  - test/ap_macro
+  - test/mcc_at_0.95recall
+graph_mamba:
+  filter:
+    phase: test
+    variant: graph_mamba_joint_test
+  metrics:
+  - test/zero-shot/classification_ap_macro
+  - test/zero-shot/anomaly_ap_macro
+  - test/conditioned/classification_ap_macro
+  - test/conditioned/anomaly_ap_macro

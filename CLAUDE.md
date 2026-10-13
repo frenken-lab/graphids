@@ -1,7 +1,6 @@
 # GraphIDS: CAN Bus Intrusion Detection
 
-GraphIDS trains and evaluates CAN bus intrusion-detection models over
-materialized temporal event caches. The current launch surface is typed experiment YAML,
+GraphIDS trains and evaluates one shared graph-Mamba detector over causal CAN snapshots. The current launch surface is typed experiment YAML,
 not the retired `graphids/plan` row chassis.
 
 ## Key Commands
@@ -10,18 +9,18 @@ The CLI is `graphids` or its short alias `gx`.
 
 ```bash
 # Validate one experiment YAML.
-gx exp config configs/experiments/gat_temporal_smoke.yml
+gx exp config configs/experiments/graph_mamba_joint.yml
 
 # Launch through Ray Train.
-gx exp launch configs/experiments/gat_temporal_smoke.yml
+gx exp launch configs/experiments/graph_mamba_joint.yml
 
 # Submit to SLURM.
-gx exp submit configs/experiments/gat_temporal_smoke.yml -C pitzer
-gx exp submit configs/experiments/gat_temporal_smoke.yml -C pitzer --dry-run
+gx exp submit configs/experiments/graph_mamba_joint.yml -C ascend
+gx exp submit configs/experiments/graph_mamba_joint.yml -C ascend --dry-run
 
 # Inspect run state.
-gx exp status "$GRAPHIDS_RUN_ROOT/set_01/gat_temporal_smoke/gat_temporal_smoke"
-gx exp manifest "$GRAPHIDS_RUN_ROOT/set_01/gat_temporal_smoke/gat_temporal_smoke"
+gx exp status "$GRAPHIDS_RUN_ROOT/pooled_can/graph_mamba_joint/graph_mamba_joint"
+gx exp manifest "$GRAPHIDS_RUN_ROOT/pooled_can/graph_mamba_joint/graph_mamba_joint"
 
 # Query configured result views.
 gx exp results
@@ -112,11 +111,20 @@ Each run directory contains `resolved-run.yml`, `.graphids/manifest.json`,
 `.graphids/events.jsonl`, `.graphids/mlflow_ingest.json`, and, for training
 runs, `checkpoints/` when checkpointing is enabled.
 
-## Temporal Training
+## Graph Mamba Training
 
-The live representation is `kind: temporal`. Models include the event
-classifier, RNN, GAT, VGAE, and hybrid. Lane training uses continuous recording
-state by default; segmented execution and CUDA graphs remain optional.
-Preserve coverage, successor metadata, warmup masks, checkpoint keys, and
-capture storage ownership when refactoring. Run pytest and GPU workloads in
-SLURM allocations; static lint and config inspection are login-node safe.
+The sole model is `vehicle_graph_mamba_joint`; the representation is `can_snapshot`
+and the data primitive is `can_snapshot_dm`. See `docs/reference/graph-mamba.md`.
+Stream batching groups live ID segments within a GPU. Data parallel training
+assigns independent recording episodes to GPUs; do not split chronological
+state across ranks or use a padding distributed sampler for evaluation.
+
+Raw recording manifests must declare reviewed provenance, hashes, clock units,
+normality, labels, and disjoint reference/query roles. Do not infer supervision
+from filenames, silently sort decreasing clocks, or truncate capacity overflow.
+Preserve bin/forecast alignment, both Mamba caches, node generations and scored
+coverage. The archived event-model stack is at `graphids-temporal-legacy`.
+
+Run pytest and GPU workloads in SLURM allocations; static lint and config
+inspection are login-node safe. Production requires the pinned Mamba CUDA
+backend. The explicit reference backend is for correctness diagnostics only.

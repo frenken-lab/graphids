@@ -101,7 +101,12 @@ def _build_lightning_run(
     if os.environ.get("GRAPHIDS_RUN_DIR"):
         trainer_kwargs.setdefault("default_root_dir", os.environ["GRAPHIDS_RUN_DIR"])
     callbacks = trainer_kwargs["callbacks"]
-    if logger is not None or getattr(getattr(data, "source", None), "KIND", None) == "cross_vehicle":
+    writer = True
+    if ray and (logger is not None or hasattr(data, "manifest")):
+        from ray import train
+
+        writer = train.get_context().get_world_rank() == 0
+    if writer and (logger is not None or hasattr(data, "manifest")):
         from graphids._mlflow import MLflowSystemMetricsCallback
 
         if logger is not None:
@@ -121,6 +126,8 @@ def _build_lightning_run(
         trainer_kwargs["accelerator"] = "auto"
         trainer_kwargs["devices"] = "auto"
         trainer_kwargs["strategy"] = RayDDPStrategy()
+        if hasattr(data, "train_sampler"):
+            trainer_kwargs["use_distributed_sampler"] = False
         plugins = trainer_kwargs.get("plugins")
         if plugins is None:
             plugins = []
@@ -130,18 +137,6 @@ def _build_lightning_run(
         trainer_kwargs["plugins"] = plugins
         callbacks.append(RayTrainReportCallback())
         trainer_kwargs.setdefault("enable_checkpointing", False)
-    if stage == "fit" and getattr(data, "batch_mode", None) == "stream_lanes":
-        from graphids.core.data.datamodule.coverage import (
-            TemporalCoverageAudit,
-            validate_full_lane_settings,
-        )
-
-        full = data.coverage_policy == "full"
-        if full:
-            validate_full_lane_settings(trainer_kwargs)
-        callbacks.append(TemporalCoverageAudit(
-            report_dir=os.environ.get("GRAPHIDS_RUN_DIR"), require_complete=full,
-        ))
     trainer_kwargs["callbacks"] = callbacks
 
     trainer = pl.Trainer(**trainer_kwargs)
@@ -153,7 +148,11 @@ def _build_lightning_run(
         metrics = _scalar_metrics(trainer.callback_metrics)
         if logger is not None and metrics:
             logger.log_metrics(metrics, step=trainer.global_step)
-        return {"stage": "fit", "trainer": trainer.__class__.__name__, "metrics": metrics}
+        return {
+            "stage": "fit",
+            "trainer": trainer.__class__.__name__,
+            "metrics": metrics,
+        }
 
     if stage == "test":
         ckpt_path = cfg.get("ckpt_path") or None
@@ -161,7 +160,12 @@ def _build_lightning_run(
         metrics = _scalar_metrics(trainer.callback_metrics)
         if logger is not None and metrics:
             logger.log_metrics(metrics, step=trainer.global_step)
-        return {"stage": "test", "trainer": trainer.__class__.__name__, "ckpt_path": ckpt_path, "metrics": metrics}
+        return {
+            "stage": "test",
+            "trainer": trainer.__class__.__name__,
+            "ckpt_path": ckpt_path,
+            "metrics": metrics,
+        }
 
     raise ValueError(f"unknown stage: {stage!r}")
 
@@ -176,37 +180,59 @@ def _worker_loop(config: dict[str, Any]) -> None:
         os.environ["GRAPHIDS_MLFLOW_MODE"] = "offline"
     run = RunConfig.model_validate(config["run"])
     os.environ["GRAPHIDS_RUN_DIR"] = str(run.outputs.run_dir)
-    run.write_config()
+    writer = train.get_context().get_world_rank() == 0
+    if writer:
+        run.write_config()
 
     if run.stage in {"fit", "test"} and run.resources.accelerator == "gpu":
-        from graphids.runtime_checks import assert_pyg_cuda_extensions_match
+        if run.payload.model.get("type") == "vehicle_graph_mamba_joint":
+            from graphids.runtime_checks import assert_mamba_backend
 
-        assert_pyg_cuda_extensions_match()
+            if run.payload.model.get("backend", "official") == "official":
+                assert_mamba_backend()
 
-    logger = _make_logger(run) if mode == "online" else None
+    logger = _make_logger(run) if mode == "online" and writer else None
     if logger is not None:
         logger.log_hyperparams(run.mlflow_hparams())
-    elif mode == "offline":
+    elif mode == "offline" and writer:
         write_ingest_payload(run, status="RUNNING")
 
     manifest = run.journal_manifest(status="running")
-    write_manifest(run.outputs.run_dir, manifest, name=run.outputs.manifest_name)
-    append_event(run.outputs.run_dir, EventRecord(status="running", stage=run.stage, message="worker_started"))
+    if writer:
+        write_manifest(run.outputs.run_dir, manifest, name=run.outputs.manifest_name)
+        append_event(
+            run.outputs.run_dir,
+            EventRecord(status="running", stage=run.stage, message="worker_started"),
+        )
 
     try:
-        result = _build_lightning_run(run.stage, run.payload.model_dump(mode="json"), logger=logger, ray=True)
+        result = _build_lightning_run(
+            run.stage, run.payload.model_dump(mode="json"), logger=logger, ray=True
+        )
         metrics = result.get("metrics", {}) if isinstance(result, Mapping) else {}
         if logger is not None and logger.run_id is not None:
             logger.experiment.set_terminated(logger.run_id, status="FINISHED")
-        elif mode == "offline":
-            write_ingest_payload(run, status="FINISHED", metrics=metrics, result=_jsonish(result))
+        elif mode == "offline" and writer:
+            write_ingest_payload(
+                run, status="FINISHED", metrics=metrics, result=_jsonish(result)
+            )
 
-        append_event(
-            run.outputs.run_dir,
-            EventRecord(status="finished", stage=run.stage, message="run_finished", details=_jsonish(result)),
-            name=run.outputs.events_name,
-        )
-        write_manifest(run.outputs.run_dir, manifest.model_copy(update={"status": "finished"}), name=run.outputs.manifest_name)
+        if writer:
+            append_event(
+                run.outputs.run_dir,
+                EventRecord(
+                    status="finished",
+                    stage=run.stage,
+                    message="run_finished",
+                    details=_jsonish(result),
+                ),
+                name=run.outputs.events_name,
+            )
+            write_manifest(
+                run.outputs.run_dir,
+                manifest.model_copy(update={"status": "finished"}),
+                name=run.outputs.manifest_name,
+            )
         try:
             ingest_payload = load_ingest_payload(run.outputs.run_dir)
             metrics = {
@@ -221,18 +247,24 @@ def _worker_loop(config: dict[str, Any]) -> None:
         failure = f"{type(exc).__name__}: {exc}"
         if logger is not None and logger.run_id is not None:
             logger.experiment.set_terminated(logger.run_id, status="FAILED")
-        elif mode == "offline":
+        elif mode == "offline" and writer:
             write_ingest_payload(run, status="FAILED", failure=failure)
-        append_event(
-            run.outputs.run_dir,
-            EventRecord(status="failed", stage=run.stage, message="run_failed", details={"failure": failure}),
-            name=run.outputs.events_name,
-        )
-        write_manifest(
-            run.outputs.run_dir,
-            manifest.model_copy(update={"status": "failed", "failure": failure}),
-            name=run.outputs.manifest_name,
-        )
+        if writer:
+            append_event(
+                run.outputs.run_dir,
+                EventRecord(
+                    status="failed",
+                    stage=run.stage,
+                    message="run_failed",
+                    details={"failure": failure},
+                ),
+                name=run.outputs.events_name,
+            )
+            write_manifest(
+                run.outputs.run_dir,
+                manifest.model_copy(update={"status": "failed", "failure": failure}),
+                name=run.outputs.manifest_name,
+            )
         raise
 
 
@@ -249,7 +281,9 @@ def probe_ray_train_imports() -> dict[str, str]:
         )
         from ray.train.torch import TorchTrainer
     except ModuleNotFoundError as exc:
-        raise RuntimeError("Ray is not installed. Install the project dependencies before launching experiments.") from exc
+        raise RuntimeError(
+            "Ray is not installed. Install the project dependencies before launching experiments."
+        ) from exc
 
     return {
         "RunConfig": RayRunConfig.__module__,
@@ -270,7 +304,9 @@ def launch_run(run: RunConfig, *, address: str | None = None) -> RunSummary:
         from ray.train import ScalingConfig
         from ray.train.torch import TorchTrainer
     except ModuleNotFoundError as exc:
-        raise RuntimeError("Ray is not installed. Install the project dependencies before launching experiments.") from exc
+        raise RuntimeError(
+            "Ray is not installed. Install the project dependencies before launching experiments."
+        ) from exc
 
     if not ray.is_initialized():
         ray.init(address=address, ignore_reinit_error=True)
@@ -279,12 +315,17 @@ def launch_run(run: RunConfig, *, address: str | None = None) -> RunSummary:
     devices = run.payload.trainer.get("devices")
     num_workers = devices if isinstance(devices, int) and devices > 1 else 1
     use_gpu = resources.accelerator == "gpu" or float(resources.gpus_per_worker) > 0
-    resources_per_worker: dict[str, float | int] = {"CPU": max(1, int(resources.cpus_per_worker))}
+    resources_per_worker: dict[str, float | int] = {
+        "CPU": max(1, int(resources.cpus_per_worker))
+    }
     if float(resources.gpus_per_worker) > 0:
         resources_per_worker["GPU"] = float(resources.gpus_per_worker)
 
     run_dir = Path(run.outputs.run_dir)
-    ray_run_kwargs: dict[str, Any] = {"storage_path": str(run_dir.parent), "name": run_dir.name}
+    ray_run_kwargs: dict[str, Any] = {
+        "storage_path": str(run_dir.parent),
+        "name": run_dir.name,
+    }
 
     result = TorchTrainer(
         _worker_loop,
@@ -303,13 +344,18 @@ def launch_run(run: RunConfig, *, address: str | None = None) -> RunSummary:
             status="finished",
             stage=run.stage,
             message="ray_result",
-            details={"path": str(getattr(result, "path", "") or ""), "metrics": _jsonish(getattr(result, "metrics", {}) or {})},
+            details={
+                "path": str(getattr(result, "path", "") or ""),
+                "metrics": _jsonish(getattr(result, "metrics", {}) or {}),
+            },
         ),
         name=run.outputs.events_name,
     )
     summary = summarize_run(run.outputs.run_dir)
     if summary is None:
-        raise RuntimeError(f"Ray run finished without a GraphIDS manifest: {run.outputs.run_dir}")
+        raise RuntimeError(
+            f"Ray run finished without a GraphIDS manifest: {run.outputs.run_dir}"
+        )
     return summary
 
 

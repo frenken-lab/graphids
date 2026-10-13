@@ -1,0 +1,53 @@
+experiment_name: graph_mamba_joint
+dataset: pooled_can
+seed: 42
+stage: fit
+representation_cfg:
+  kind: can_snapshot
+  bin_seconds: 0.01
+  schema_version: 1
+resources:
+  cluster: ascend
+  partition: nextgen
+  account: pas1266
+  accelerator: gpu
+  cpus_per_worker: 8
+  gpus_per_worker: 1
+  memory_gb: 64
+  time_limit: "02:00:00"
+  gres: "gpu:a100:1"
+config:
+  model:
+    type: vehicle_graph_mamba_joint
+    backend: official
+  data:
+    type: can_snapshot_dm
+    # Replace with a provenance-reviewed manifest; the audit does not assign roles.
+    manifest_path: "{trial_dir}/can-recording-manifest.json"
+    datasets: [hcrl_ch, hcrl_sa, set_01, set_02, set_03, set_04]
+    representation_cfg:
+      kind: can_snapshot
+      bin_seconds: 0.01
+      schema_version: 1
+    sequence_bins: 128
+    warmup_bins: 128
+    stream_batch_size: 1
+    eval_chunk_bins: 256
+    context_withholding: 0.25
+  trainer:
+    max_epochs: 10
+    devices: 1
+    precision: 32-true
+    use_distributed_sampler: false
+    enable_progress_bar: false
+    enable_checkpointing: true
+    num_sanity_val_steps: 0
+    default_root_dir: "{run_dir}"
+  callbacks:
+    checkpoint:
+      class_path: graphids.core.callbacks.Sha256ModelCheckpoint
+      init_args:
+        dirpath: "{run_dir}/checkpoints"
+        filename: last_joint
+        save_last: true
+        save_top_k: 0

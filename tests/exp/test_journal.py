@@ -28,11 +28,21 @@ def test_mlflow_system_metrics_callback_lifecycle(monkeypatch):
     system_metrics_mod = types.ModuleType("mlflow.system_metrics")
     system_metrics_mod.system_metrics_monitor = monitor_mod
     monkeypatch.setitem(sys.modules, "mlflow.system_metrics", system_metrics_mod)
-    monkeypatch.setitem(sys.modules, "mlflow.system_metrics.system_metrics_monitor", monitor_mod)
-    monkeypatch.setattr(_mlflow.mlflow, "get_tracking_uri", lambda: "sqlite:////tmp/mlflow.db")
+    monkeypatch.setitem(
+        sys.modules, "mlflow.system_metrics.system_metrics_monitor", monitor_mod
+    )
+    monkeypatch.setattr(
+        _mlflow.mlflow, "get_tracking_uri", lambda: "sqlite:////tmp/mlflow.db"
+    )
 
-    trainer = types.SimpleNamespace(logger=types.SimpleNamespace(run_id="abc123"))
-    cb = _mlflow.MLflowSystemMetricsCallback(sampling_interval=7, samples_before_logging=2)
+    trainer = types.SimpleNamespace(
+        logger=types.SimpleNamespace(run_id="abc123"),
+        default_root_dir="/tmp/graphids-mlflow-test",
+        global_step=0,
+    )
+    cb = _mlflow.MLflowSystemMetricsCallback(
+        sampling_interval=7, samples_before_logging=2
+    )
 
     cb.on_train_start(trainer, object())
     cb.on_fit_end(trainer, object())
@@ -106,7 +116,9 @@ def test_build_lightning_run_attaches_logger(monkeypatch):
     monkeypatch.setitem(sys.modules, "lightning", lightning_pkg)
     monkeypatch.setitem(sys.modules, "lightning.pytorch", DummyLightning)
     monkeypatch.setattr(ray_backend, "build_component", lambda spec: DummyData())
-    monkeypatch.setattr(ray_backend, "resolve_spec", lambda spec: {} if spec == {} else DummyModel())
+    monkeypatch.setattr(
+        ray_backend, "resolve_spec", lambda spec: {} if spec == {} else DummyModel()
+    )
 
     logger = object()
     result = ray_backend._build_lightning_run(
@@ -152,8 +164,10 @@ def test_manifest_and_events_round_trip(tmp_path):
         seed=42,
         git_sha="abc123",
         payload=FitRunPayload(
-            model={"class_path": "graphids.primitives_models.TemporalGATCfg"},
-            data={"class_path": "graphids.primitives_data.CANBusCfg"},
+            model={
+                "class_path": "graphids.primitives_models.VehicleGraphMambaJointCfg"
+            },
+            data={"class_path": "graphids.primitives_data.CANSnapshotDMCfg"},
         ),
         resources=ResourceConfig(),
         outputs=OutputConfig(run_dir=str(run_dir)),
@@ -169,8 +183,14 @@ def test_manifest_and_events_round_trip(tmp_path):
         outputs={"run_dir": str(run.outputs.run_dir)},
     )
     write_manifest(run.outputs.run_dir, manifest)
-    append_event(run.outputs.run_dir, EventRecord(status="running", stage="fit", message="worker_started"))
-    append_event(run.outputs.run_dir, EventRecord(status="finished", stage="fit", message="fit_finished"))
+    append_event(
+        run.outputs.run_dir,
+        EventRecord(status="running", stage="fit", message="worker_started"),
+    )
+    append_event(
+        run.outputs.run_dir,
+        EventRecord(status="finished", stage="fit", message="fit_finished"),
+    )
 
     loaded = load_manifest(run.outputs.run_dir)
     events = load_events(run.outputs.run_dir)
@@ -200,7 +220,9 @@ def test_exp_status_prints_summary(tmp_path):
         status="running",
     )
     write_manifest(run_dir, manifest)
-    append_event(run_dir, EventRecord(status="failed", stage="fit", message="fit_failed"))
+    append_event(
+        run_dir, EventRecord(status="failed", stage="fit", message="fit_failed")
+    )
 
     runner = CliRunner()
     from graphids.cli.app import app

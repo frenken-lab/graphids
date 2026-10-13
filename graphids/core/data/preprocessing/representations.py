@@ -1,20 +1,12 @@
-"""Data representation configs used by preprocessing."""
-
-from __future__ import annotations
+"""Versioned causal CAN snapshot representation identity."""
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass
-from typing import Literal
+from dataclasses import asdict
 
+from graphids.core.data.snapshots.preprocessing import CANSnapshotRepresentationCfg
 
-@dataclass(frozen=True)
-class TemporalRepresentationCfg:
-    kind: Literal["temporal"] = "temporal"
-    features: Literal["raw", "behavioral", "behavioral_timing", "behavioral_payload"] = "raw"
-
-
-RepresentationCfg = TemporalRepresentationCfg
+RepresentationCfg = CANSnapshotRepresentationCfg
 
 
 def representation_kind(cfg: RepresentationCfg) -> str:
@@ -22,13 +14,11 @@ def representation_kind(cfg: RepresentationCfg) -> str:
 
 
 def representation_payload(cfg: RepresentationCfg) -> dict[str, object]:
-    payload = asdict(cfg)
-    # Preserve the existing raw cache identity; behavioral caches get a new digest.
-    if payload.get("features") == "raw":
-        payload.pop("features")
-    return payload
+    return asdict(cfg)
 
 
 def representation_digest(cfg: RepresentationCfg) -> str:
-    payload = json.dumps(representation_payload(cfg), sort_keys=True, separators=(",", ":"))
-    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+    payload = json.dumps(
+        representation_payload(cfg), sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]

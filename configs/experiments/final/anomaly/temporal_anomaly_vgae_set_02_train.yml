@@ -1,9 +1,0 @@
-extends: ../../_base/final_anomaly_vgae_fit.yml
-experiment_name: temporal_anomaly_vgae_set_02_train
-dataset: set_02
-plan_id: temporal_anomaly_final_2026_09_26
-stage: fit
-config:
-  data:
-    source:
-      dataset: set_02

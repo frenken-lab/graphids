@@ -4,17 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "graphids"
-version = "1.0.0"
-description = "CAN Bus Intrusion Detection with Temporal Models"
+version = "2.0.0"
+description = "CAN intrusion detection with shared graph-Mamba models"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "torch>=2.8.0,<2.9",
-    "torch-geometric>=2.7.0",
     "lightning>=2.6",
-    "torch-scatter",
-    "torch-sparse",
-    "torch-cluster",
-    "pyg-lib",
     "torchmetrics>=1.8.0",
     "numpy>=1.26.4",
     "polars>=1.0.0",
@@ -30,9 +25,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+mamba = [
+    "mamba-ssm @ git+https://github.com/state-spaces/mamba.git@10b5d6358f27966f6a40e4bf0baa17a460688128",
+    "causal-conv1d==1.6.1",
+    "transformers>=4.41,<5",
+    "ninja>=1.11",
+    "packaging>=24",
+    "setuptools>=70",
+    "wheel>=0.44",
+]
 analysis = ["umap-learn>=0.5", "seaborn>=0.13", "torch-cka>=0.21", "huggingface-hub>=0.24"]
 dev = ["pytest>=7.0.0", "httpx>=0.27", "ruff>=0.4"]
-baselines = ["pygod>=1.1"]
 db = ["psycopg[binary]>=3.1"]
 decoding = [
     "cantools>=42,<43",
@@ -45,18 +48,6 @@ gx = "graphids.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["graphids"]
-
-[tool.uv.sources]
-torch-scatter = { index = "pyg-cu128" }
-torch-sparse = { index = "pyg-cu128" }
-torch-cluster = { index = "pyg-cu128" }
-pyg-lib = { index = "pyg-cu128" }
-
-[[tool.uv.index]]
-name = "pyg-cu128"
-url = "https://data.pyg.org/whl/torch-2.8.0+cu128.html"
-explicit = true
-format = "flat"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -88,7 +79,6 @@ warn_unused_configs = true
 [[tool.mypy.overrides]]
 module = [
     "torch.*",
-    "torch_geometric.*",
     "torchmetrics.*",
 ]
 ignore_missing_imports = true

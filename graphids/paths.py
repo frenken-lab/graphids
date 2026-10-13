@@ -22,7 +22,7 @@ from typing import Any, Literal
 # ---------------------------------------------------------------------------
 
 # Concrete Literal — Pydantic needs this for field validation.
-ModelType = Literal["temporal_event_classifier", "temporal_gat", "temporal_vgae"]
+ModelType = Literal["vehicle_graph_mamba_joint"]
 
 
 # ---------------------------------------------------------------------------
@@ -35,7 +35,7 @@ PROJECT_ROOT: Path = Path(__file__).resolve().parents[1]
 CONFIG_DIR: Path = PROJECT_ROOT / "configs"
 DATASET_REGISTRY_PATH: Path = CONFIG_DIR / "data" / "datasets.json"
 
-PREPROCESSING_VERSION: str = "11.0.0"
+PREPROCESSING_VERSION: str = "12.0.0"
 CKPT_SUBPATH: str = "checkpoints/best_model.ckpt"
 
 # Phase markers are kept for filesystem probes and diagnostics.
