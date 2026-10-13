@@ -2,6 +2,22 @@
 
 Handoff date: 2026-10-13. Start with this document, [the implementation guide](docs/reference/graph-mamba.md), and [the research/implementation plan](vehicle-graph-mamba-joint-plan.md). `Future_steps.md` describes the historical temporal stack.
 
+The follow-on [recording review](docs/empirical-notes/2026-10-13-graph-mamba-recording-review.md)
+froze a reviewed, 12-capture Impala-to-Forester normal/DoS pilot manifest at
+`/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/graph-mamba-real-data-review-v1/can-recording-manifest-v1.json`.
+It checks complete correspondence to pinned original logs, curator label hashes,
+disjoint acquisition intervals, and sampled partial reuse. Session means original
+acquisition capture, not independently established driving trip/day. The broader
+all-six review remains open. Ascend A100 pilot job `7819680` was submitted;
+check its status and `graph-mamba-real-pilot-v1/pilot.json` before launching again.
+CPU source preflight job `56109538` completed and warmed the shared pilot cache;
+its results are under `graph-mamba-real-pilot-v1/preflight/`. Source capacity is
+64 anchors / 64 transients; 1,099 training windows passed packing checks, with
+maxima of 13,312 node-bin tokens and 104,448 messages. The largest source array
+cache is 762,469,234 bytes. The A100 job remains queued for priority, with no
+start estimate at the latest check. The diagnostic fits only 32 windows and
+evaluates whole recordings in both modes; it cannot establish detection quality.
+
 ## Current state
 
 GraphIDS 2.0 replaces all five old model families with a shared CAN graph–Mamba classifier and normal forecaster. Causal snapshots, immutable reference contexts, continuous inference, checkpoint calibration, stream batching, and data parallel training are implemented. Legacy code and checkpoints require an isolated checkout of `graphids-temporal-legacy` (`daa218eb262fb1c9f9dde067f68d4cc5309d3213`). Existing external data and run artifacts were preserved.
@@ -33,7 +49,7 @@ Evidence lives outside Git at:
   ray-7818517.log
 ```
 
-## First priority: establish a reviewed real-data manifest
+## Broader priority: extend the reviewed real-data manifest
 
 Read `compatibility.json` and [the earlier data audit](docs/empirical-notes/2026-10-03-vehicle-graph-mamba-data-audit.md). The inventory found 81 exact duplicate aliases. Clock/payload errors were:
 
@@ -51,7 +67,12 @@ Read `compatibility.json` and [the earlier data audit](docs/empirical-notes/2026
 3. Produce a version-1 recording manifest with disjoint session roles and target vehicles excluded from source training. Target reference, calibration, normal test, and attack test partitions must follow the documented contract. Set `provenance_reviewed: true` only after review, not to bypass the gate.
 4. Select only verified source families in the experiment config. The default all-six preset is not permission to launch all six before this review. A small defensible subset is a better first real-data pilot.
 
-The audit is an inventory, not an automatic split generator. No raw-data corrections or reviewed real-data manifest were produced this session.
+The original audit is an inventory, not an automatic split generator. The new
+review found 109 candidate reuse pairs across 252 canonical captures, including
+normal captures reused in attack files. Only the small documented subset is
+reviewed. No raw files were corrected, sorted, or truncated. Selected original
+DoS logs have microsecond clock backsteps already sorted by the upstream curator;
+this curation is explicitly recorded in `pilot-provenance.json`.
 
 ## Then run a source pilot
 
@@ -89,4 +110,4 @@ python -m pytest
 python scripts/graph_mamba_gate.py --output /path/to/new-session-gate
 ```
 
-Use `backend: reference` only for explicit diagnostic checks. Production requires working CUDA selective-scan and causal-convolution extensions. No Slurm jobs were left running at this handoff.
+Use `backend: reference` only for explicit diagnostic checks. Production requires working CUDA selective-scan and causal-convolution extensions. The historical cutover left no jobs running; the follow-on pilot/preflight jobs above must be checked before rerunning.
