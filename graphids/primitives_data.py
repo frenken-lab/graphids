@@ -4,6 +4,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from graphids.core.data.snapshots.policy import ReferencePolicy
 from graphids.core.data.snapshots.preprocessing import CANSnapshotRepresentationCfg
 
 
@@ -23,6 +24,7 @@ class CANSnapshotDMCfg(_Cfg):
     stream_batch_size: int = Field(default=1, ge=1)
     eval_chunk_bins: int = Field(default=256, ge=1)
     num_workers: int = Field(default=0, ge=0)
+    pin_memory: bool = False
     seed: int = 42
     context_withholding: float = Field(default=0.25, ge=0, le=1)
     neighbor_cap: int = Field(default=8, ge=1)
@@ -33,6 +35,7 @@ class CANSnapshotDMCfg(_Cfg):
     max_graph_messages: int = Field(default=1048576, ge=1)
     max_snapshot_bytes: int = Field(default=4 * 1024**3, ge=1)
     cache_root: str | None = None
+    reference_policy: ReferencePolicy = Field(default_factory=ReferencePolicy)
 
     def build(self):
         from graphids.core.data.snapshots.datamodule import CANSnapshotDataModule

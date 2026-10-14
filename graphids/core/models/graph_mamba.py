@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -11,6 +13,12 @@ from torch import nn
 from torch.nn import functional as F
 
 from graphids.core.data.snapshots.batch import CANSnapshotBatch
+from graphids.core.data.snapshots.execution import execution_plan
+from graphids.core.data.snapshots.policy import ReferencePolicy
+
+from .calibration import CalibrationBundle, weights_digest
+from .mamba_chunk import mamba_chunk
+from .score_columns import ScoreBlock, ScoreTable
 
 
 @dataclass
@@ -19,7 +27,9 @@ class GraphMambaState:
     context_digest: str = ""
     caches: dict = field(default_factory=dict)
     pending: dict = field(default_factory=dict)
-    version: int = 1
+    layers: list = field(default_factory=list)
+    scratch: list = field(default_factory=list)
+    version: int = 2
     last_bin: int = -1
 
 
@@ -73,6 +83,7 @@ class VehicleGraphMambaJoint(pl.LightningModule):
         expand=2,
         dropout=0.1,
         backend="official",
+        stream_execution="chunked",
         graph_enabled=True,
         classification=True,
         forecasting=True,
@@ -81,6 +92,8 @@ class VehicleGraphMambaJoint(pl.LightningModule):
         loss_weights=None,
         alert_quantile=0.999,
         schema_version=1,
+        reference_policy=None,
+        legacy_calibration_replay=False,
     ):
         super().__init__()
         if schema_version != 1 or backend not in ("official", "reference"):
@@ -93,7 +106,11 @@ class VehicleGraphMambaJoint(pl.LightningModule):
             )
         if not 0 < alert_quantile < 1:
             raise ValueError("alert_quantile must be in (0,1)")
+        if stream_execution not in ("chunked", "recurrent"):
+            raise ValueError("stream_execution must be chunked or recurrent")
         self.save_hyperparameters()
+        self.reference_policy = ReferencePolicy.parse(reference_policy)
+        self.calibration_bundles = {}
         self.input_proj = nn.Linear(23 + 4 + 2, width)
         self.temporal_norms = nn.ModuleList(nn.LayerNorm(width) for _ in range(layers))
         if backend == "official":
@@ -132,12 +149,29 @@ class VehicleGraphMambaJoint(pl.LightningModule):
         self._validation_scores = []
         self._test_outputs = []
         self._train_coverage = []
+        self.phase_timings = {}
 
     def prepare_from_datamodule(self, dm):
         if getattr(dm, "in_channels", None) != 23:
             raise ValueError(
                 "vehicle_graph_mamba_joint requires the version-1 CAN snapshot datamodule"
             )
+        if self.reference_policy != dm.reference_policy:
+            raise ValueError("model and datamodule reference policies differ")
+        import hashlib
+        import json
+        from dataclasses import asdict
+
+        self.source_manifest_digest = hashlib.sha256(
+            json.dumps(
+                [
+                    asdict(r)
+                    for r in dm.manifest.records
+                    if r.role.startswith(("train_", "val_"))
+                ],
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
         self.data_manifest_digest = dm.manifest.digest
         self._test_set_names = tuple(dm.test_data)
         self._recordings = dm.records
@@ -152,44 +186,31 @@ class VehicleGraphMambaJoint(pl.LightningModule):
             ),
             -1,
         ).to(batch.x.dtype)
+        if not self.reference_policy.profiles:
+            profiles = torch.zeros_like(profiles)
+        if not self.reference_policy.reference_flags:
+            flags = torch.zeros_like(flags)
         return self.input_proj(torch.cat((batch.x, profiles, flags), -1))
 
     def encode(self, batch):
         tokens = self._tokens(batch)
-        b, t, n, d = tokens.shape
-        segments = {}
-        # Loop over stream segments, not timesteps. Each group uses a full CUDA scan.
-        for bi in range(b):
-            for ni in range(n):
-                valid = batch.live[bi, :, ni].detach().cpu().tolist()
-                generations = batch.generation[bi, :, ni].detach().cpu().tolist()
-                start = 0
-                while start < t:
-                    if not valid[start]:
-                        start += 1
-                        continue
-                    stop = start + 1
-                    while (
-                        stop < t
-                        and valid[stop]
-                        and generations[stop] == generations[start]
-                    ):
-                        stop += 1
-                    segments.setdefault(stop - start, []).append((bi, ni, start, stop))
-                    start = stop
-        h = torch.zeros_like(tokens)
-        for _, group in segments.items():
-            x = torch.stack(
-                [tokens[bi, start:stop, ni] for bi, ni, start, stop in group]
-            )
+        flat = tokens.flatten(0, 2)
+        h = torch.zeros_like(flat)
+        for group in execution_plan(batch).groups:
+            indices = group.indices.to(tokens.device, non_blocking=True)
+            x = flat[indices]
             for norm, block in zip(self.temporal_norms, self.temporal, strict=True):
                 x = x + self.dropout(block(norm(x)))
-            for i, (bi, ni, start, stop) in enumerate(group):
-                h[bi, start:stop, ni] = x[i]
-        return h
+            h = h.index_copy(0, indices.flatten(), x.flatten(0, 1))
+        return h.reshape_as(tokens)
 
     def _heads(self, h, batch):
-        h = self.graph(h, batch, graph_enabled=self.hparams.graph_enabled)
+        h = self.graph(
+            h,
+            batch,
+            graph_enabled=self.hparams.graph_enabled
+            and self.reference_policy.graph_edges,
+        )
         live = batch.live.unsqueeze(-1)
         mean = (h * live).sum(2) / live.sum(2).clamp_min(1)
         maximum = (
@@ -199,8 +220,19 @@ class VehicleGraphMambaJoint(pl.LightningModule):
         )
         maximum = torch.where(live.any(2), maximum, torch.zeros_like(maximum))
         pooled = torch.cat((mean, maximum), -1)
+        classifier_pool = pooled
+        if self.reference_policy.recent_classifier_pooling:
+            recent = live & (
+                (batch.counts > 0) | ~batch.in_reference[:, None]
+            ).unsqueeze(-1)
+            recent_mean = (h * recent).sum(2) / recent.sum(2).clamp_min(1)
+            recent_max = h.masked_fill(~recent, torch.finfo(h.dtype).min).max(2).values
+            recent_max = torch.where(
+                recent.any(2), recent_max, torch.zeros_like(recent_max)
+            )
+            classifier_pool = torch.cat((recent_mean, recent_max), -1)
         return {
-            "classification_logits": self.classifier(pooled).squeeze(-1),
+            "classification_logits": self.classifier(classifier_pool).squeeze(-1),
             "count_rate": F.softplus(self.count_head(h).squeeze(-1)) + 1e-6,
             "change_logits": self.change_head(h).squeeze(-1),
             "new_id_rate": F.softplus(self.new_id_head(pooled).squeeze(-1)) + 1e-6,
@@ -337,132 +369,198 @@ class VehicleGraphMambaJoint(pl.LightningModule):
         if self.training:
             raise ValueError("streaming inference requires eval mode")
         state = state or GraphMambaState()
-        key, digest = batch.recording_keys[0], batch.context_digests[0]
+        if state.version != 2:
+            raise ValueError(
+                "version-1 live state is incompatible; reset the stream state"
+            )
+        key, digest = (
+            batch.recording_keys[0],
+            batch.context_digests[0] + ":" + self.reference_policy.digest,
+        )
         if (state.recording, state.context_digest) != (key, digest):
             state = GraphMambaState(key, digest)
-        if state.last_bin >= 0 and int(batch.bin_indices[0, 0]) != state.last_bin + 1:
+        plan = execution_plan(batch)
+        bins = plan.bins[0]
+        if (state.last_bin >= 0 and int(bins[0]) != state.last_bin + 1) or (
+            len(bins) > 1 and not ((bins[1:] - bins[:-1]) == 1).all()
+        ):
             raise ValueError(
                 "stream bins must be contiguous; reset explicitly at a new inference episode"
             )
         tokens = self._tokens(batch)
-        t, n = batch.live.shape[1:]
-        all_outputs = []
-        surprises = []
-        eligible_scores = []
-        component_masks = []
-        for ti in range(t):
-            live_nodes = batch.live[0, ti].nonzero().flatten().tolist()
-            active = {
-                (batch.node_keys[0][ni], int(batch.generation[0, ti, ni]))
-                for ni in live_nodes
-            }
-            state.caches = {k: v for k, v in state.caches.items() if k in active}
-            h = tokens.new_zeros(1, 1, n, tokens.shape[-1])
-            if live_nodes:
-                x = tokens[0, ti, live_nodes].unsqueeze(1)
-                caches = []
-                for ni in live_nodes:
-                    cache_key = (
-                        batch.node_keys[0][ni],
-                        int(batch.generation[0, ti, ni]),
-                    )
-                    if cache_key not in state.caches:
-                        state.caches[cache_key] = [
-                            block.allocate_inference_cache(1, 1)
-                            for block in self.temporal
-                        ]
-                    caches.append(state.caches[cache_key])
-                for layer, (norm, block) in enumerate(
-                    zip(self.temporal_norms, self.temporal, strict=True)
-                ):
-                    conv = torch.cat([c[layer][0] for c in caches])
-                    ssm = torch.cat([c[layer][1] for c in caches])
-                    y, conv, ssm = block.step(norm(x), conv, ssm)
-                    x = x + y
-                    for ci, cache in enumerate(caches):
-                        cache[layer] = (
-                            conv[ci : ci + 1].clone(),
-                            ssm[ci : ci + 1].clone(),
-                        )
-                h[0, 0, live_nodes] = x[:, 0]
-            single = self._slice_bin(batch, ti)
-            output = self._heads(h, single)
-            all_outputs.append(output)
-            terms = tokens.new_zeros(3)
-            component_mask = torch.zeros(3, dtype=torch.bool, device=tokens.device)
-            forecast_eligible = False
-            if state.pending and float(batch.exposure[0, ti]) > 0:
-                prior = state.pending
-                matched = [
-                    (ni, prior["nodes"][node])
-                    for ni in live_nodes
-                    if (
-                        node := (
-                            batch.node_keys[0][ni],
-                            int(batch.generation[0, ti, ni]),
-                        )
-                    )
-                    in prior["nodes"]
-                ]
-                if matched:
-                    component_mask[0] = True
-                    rates = torch.stack([pred[0] for ni, pred in matched])
-                    targets = torch.stack(
-                        [batch.counts[0, ti, ni] for ni, pred in matched]
-                    )
-                    terms[0] = self.poisson_surprise(
-                        rates, targets, batch.exposure[0, ti]
-                    ).max()
-                    payload = [
-                        (ni, pred)
-                        for ni, pred in matched
-                        if batch.payload_observed[0, ti, ni]
-                    ]
-                    if payload:
-                        component_mask[1] = True
-                        terms[1] = torch.stack(
-                            [
-                                F.binary_cross_entropy_with_logits(
-                                    pred[1],
-                                    batch.payload_change[0, ti, ni],
-                                    reduction="none",
-                                )
-                                for ni, pred in payload
-                            ]
-                        ).max()
-                terms[2] = self.poisson_surprise(
-                    prior["new_id"], batch.new_ids[0, ti], batch.exposure[0, ti]
+        _, t, n, _ = tokens.shape
+        final_nodes = [int(i) for i in plan.live[0, -1].nonzero()[0]]
+        final_keys = [
+            (batch.node_keys[0][ni], int(plan.generation[0, -1, ni]))
+            for ni in final_nodes
+        ]
+        next_slots = {identity: slot for slot, identity in enumerate(final_keys)}
+        max_live = int(plan.live.sum(-1).max())
+        capacity = batch.state_capacity or max(1, max_live, len(state.caches))
+        if max(len(state.caches), len(next_slots), max_live) > capacity:
+            raise ValueError(
+                "live state capacity exceeded; observations were not truncated"
+            )
+        if not state.layers or state.layers[0][0].shape[0] < capacity:
+            previous = state.layers
+            state.layers = [
+                block.allocate_inference_cache(capacity, 1) for block in self.temporal
+            ]
+            for old, new in zip(previous, state.layers):
+                for src, dst in zip(old, new):
+                    dst[: src.shape[0]].copy_(src)
+            state.scratch = [
+                block.allocate_inference_cache(capacity, 1) for block in self.temporal
+            ]
+        flat = tokens.flatten(0, 2)
+        h = torch.zeros_like(flat)
+        for group in plan.groups:
+            indices = group.indices.to(tokens.device, non_blocking=True)
+            x = flat[indices]
+            carried, old_slots, finishing, slots = [], [], [], []
+            for gi, (_, ni, start, stop, generation) in enumerate(group.segments):
+                identity = (batch.node_keys[0][ni], generation)
+                if start == 0 and identity in state.caches:
+                    carried.append(gi)
+                    old_slots.append(state.caches[identity])
+                if stop == t:
+                    finishing.append(gi)
+                    slots.append(next_slots[identity])
+
+            def index(values):
+                return torch.tensor(values, device=tokens.device, dtype=torch.long)
+
+            carried, old_slots, finishing, slots = map(
+                index, (carried, old_slots, finishing, slots)
+            )
+            for layer, (norm, block) in enumerate(
+                zip(self.temporal_norms, self.temporal, strict=True)
+            ):
+                conv, ssm = block.allocate_inference_cache(
+                    len(group.segments), x.shape[1]
                 )
-                forecast_eligible = True
-                component_mask[2] = True
-            surprises.append(terms)
-            component_masks.append(component_mask)
-            eligible_scores.append(forecast_eligible)
-            state.pending = {
-                "nodes": {
-                    (batch.node_keys[0][ni], int(batch.generation[0, ti, ni])): (
-                        output["count_rate"][0, 0, ni],
-                        output["change_logits"][0, 0, ni],
+                conv.index_copy_(
+                    0, carried, state.layers[layer][0].index_select(0, old_slots)
+                )
+                ssm.index_copy_(
+                    0, carried, state.layers[layer][1].index_select(0, old_slots)
+                )
+                normalized = norm(x)
+                if self.hparams.stream_execution == "chunked":
+                    y, conv, ssm = mamba_chunk(
+                        block,
+                        normalized,
+                        conv,
+                        ssm,
+                        official=self.hparams.backend == "official",
                     )
-                    for ni in live_nodes
-                },
-                "new_id": output["new_id_rate"][0, 0],
-            }
-        outputs = {
-            name: torch.cat([o[name] for o in all_outputs], 1)
-            for name in all_outputs[0]
+                else:
+                    outputs = []
+                    for ti in range(x.shape[1]):
+                        y, conv, ssm = block.step(normalized[:, ti : ti + 1], conv, ssm)
+                        outputs.append(y)
+                    y = torch.cat(outputs, 1)
+                x = x + y
+                state.scratch[layer][0].index_copy_(
+                    0, slots, conv.index_select(0, finishing)
+                )
+                state.scratch[layer][1].index_copy_(
+                    0, slots, ssm.index_select(0, finishing)
+                )
+            h.index_copy_(0, indices.flatten(), x.flatten(0, 1))
+        output = self._heads(h.reshape_as(tokens), batch)
+        self._forecast_scores(output, batch, state, plan, final_nodes, final_keys)
+        state.layers, state.scratch = state.scratch, state.layers
+        state.caches = next_slots
+        state.last_bin = int(bins[-1])
+        return output, state
+
+    def _forecast_scores(self, output, batch, state, plan, final_nodes, final_keys):
+        """Match prior forecasts to current identities, including the chunk edge."""
+        b, t, n = batch.live.shape
+        rates = torch.zeros_like(output["count_rate"])
+        changes = torch.zeros_like(output["change_logits"])
+        matched = torch.zeros_like(batch.live)
+        rates[:, 1:] = output["count_rate"][:, :-1]
+        changes[:, 1:] = output["change_logits"][:, :-1]
+        matched[:, 1:] = (
+            batch.live[:, 1:]
+            & batch.live[:, :-1]
+            & (batch.generation[:, 1:] == batch.generation[:, :-1])
+        )
+        prior_new = torch.zeros_like(output["new_id_rate"])
+        prior_new[:, 1:] = output["new_id_rate"][:, :-1]
+        eligible = batch.exposure > 0
+        eligible[:, 0] &= bool(state.pending)
+        if state.pending:
+            prior_new[:, 0] = state.pending["new_id"]
+            prior_map = state.pending["identities"]
+            current, previous = [], []
+            for ni in plan.live[0, 0].nonzero()[0]:
+                identity = (batch.node_keys[0][ni], int(plan.generation[0, 0, ni]))
+                if identity in prior_map:
+                    current.append(int(ni))
+                    previous.append(prior_map[identity])
+            ci = torch.tensor(current, device=batch.x.device, dtype=torch.long)
+            pi = torch.tensor(previous, device=batch.x.device, dtype=torch.long)
+            rates[0, 0, ci] = state.pending["count"].index_select(0, pi)
+            changes[0, 0, ci] = state.pending["change"].index_select(0, pi)
+            matched[0, 0, ci] = True
+        matched &= eligible[..., None]
+        payload = matched & batch.payload_observed
+        count = self.poisson_surprise(
+            rates, batch.counts, batch.exposure[..., None].to(rates.dtype)
+        )
+        change = F.binary_cross_entropy_with_logits(
+            changes, batch.payload_change, reduction="none"
+        )
+
+        def maximum(values, mask):
+            # Support recordings/chunks with no live IDs.
+            if n == 0:
+                return values.new_zeros(b, t)
+            return (
+                values.masked_fill(~mask, -torch.inf)
+                .max(-1)
+                .values.masked_fill(~mask.any(-1), 0)
+            )
+
+        components = torch.stack(
+            (
+                maximum(count, matched),
+                maximum(change, payload),
+                self.poisson_surprise(
+                    prior_new, batch.new_ids, batch.exposure
+                ).masked_fill(~eligible, 0),
+            ),
+            -1,
+        )
+        components = components.to(output["count_rate"].dtype)
+        masks = torch.stack((matched.any(-1), payload.any(-1), eligible), -1)
+        mode = "conditioned" if bool(batch.context_present[0]) else "zero-shot"
+        bundle = self.calibration_bundles.get(mode)
+        center, scale = self.score_center, self.score_scale
+        if bundle:
+            center = components.new_tensor(bundle.center)
+            scale = components.new_tensor(bundle.scale)
+
+        output.update(
+            anomaly_components=components,
+            anomaly_component_mask=masks,
+            anomaly_eligible=eligible,
+            anomaly_score=(
+                ((components - center) / scale)
+                * masks
+                * (components.new_tensor(bundle.available) if bundle else 1)
+            ).sum(-1),
+        )
+        nodes = torch.tensor(final_nodes, device=batch.x.device, dtype=torch.long)
+        state.pending = {
+            "identities": {identity: i for i, identity in enumerate(final_keys)},
+            "count": output["count_rate"][0, -1].index_select(0, nodes).clone(),
+            "change": output["change_logits"][0, -1].index_select(0, nodes).clone(),
+            "new_id": output["new_id_rate"][:, -1].clone(),
         }
-        outputs["anomaly_components"] = torch.stack(surprises).unsqueeze(0)
-        outputs["anomaly_component_mask"] = torch.stack(component_masks).unsqueeze(0)
-        outputs["anomaly_eligible"] = torch.tensor(
-            eligible_scores, device=tokens.device
-        ).unsqueeze(0)
-        outputs["anomaly_score"] = (
-            ((outputs["anomaly_components"] - self.score_center) / self.score_scale)
-            * outputs["anomaly_component_mask"]
-        ).sum(-1)
-        state.last_bin = int(batch.bin_indices[0, -1])
-        return outputs, state
 
     @staticmethod
     def _slice_bin(batch, t):
@@ -482,6 +580,8 @@ class VehicleGraphMambaJoint(pl.LightningModule):
                     getattr(batch, f.name)[:, t : t + 1]
                     if isinstance(getattr(batch, f.name), torch.Tensor)
                     and f.name not in static
+                    else None
+                    if f.name == "execution"
                     else getattr(batch, f.name)
                 )
                 for f in fields(batch)
@@ -489,60 +589,40 @@ class VehicleGraphMambaJoint(pl.LightningModule):
         )
 
     def _evaluate(self, batch, loader_idx, stage):
-        if not batch.scored.any():
-            return  # distributed schedule placeholder, no state or coverage
-        state = self._eval_states.get(loader_idx)
-        output, state = self.stream(batch, state)
-        self._eval_states[loader_idx] = state
-        probability = torch.sigmoid(output["classification_logits"])
-        mask = batch.scored
-        for t in mask[0].nonzero().flatten().tolist():
-            row = {
-                "recording": batch.recording_keys[0],
-                "dataset": batch.dataset_keys[0],
-                "vehicle": self._recordings[batch.recording_keys[0]].vehicle,
-                "role": self._recordings[batch.recording_keys[0]].role,
-                "context": batch.context_digests[0],
-                "bin": int(batch.bin_indices[0, t]),
-                "close": float(batch.closes[0, t]),
-                "exposure": float(batch.exposure[0, t]),
-                "classification": float(probability[0, t]),
-                "anomaly": float(output["anomaly_score"][0, t]),
-                "anomaly_components": output["anomaly_components"][0, t].cpu().tolist(),
-                "anomaly_component_mask": output["anomaly_component_mask"][0, t]
-                .cpu()
-                .tolist(),
-                "anomaly_eligible": bool(output["anomaly_eligible"][0, t]),
-                "label": int(batch.labels[0, t]),
-                "normal": bool(batch.normal[0, t]),
-                "events": int(batch.event_count[0, t]),
-                "live_nodes": int(batch.live[0, t].sum()),
-                "silent_anchors": int(
-                    (
-                        batch.in_reference[0]
-                        & batch.live[0, t]
-                        & (batch.counts[0, t] == 0)
-                    ).sum()
-                ),
-                "unavailable_payload_fields": int(
-                    (batch.live[0, t, :, None] & (batch.x[0, t, :, 12:20] == 0)).sum()
-                ),
-                "alert": bool(
-                    (
-                        self.hparams.classification
-                        and probability[0, t] >= self.alert_thresholds[0]
-                    )
-                    or (
-                        self.hparams.forecasting
-                        and output["anomaly_eligible"][0, t]
-                        and output["anomaly_score"][0, t] >= self.alert_thresholds[1]
-                    )
-                ),
-            }
-            if stage == "val":
-                self._validation_scores.append(row)
-            else:
-                self._test_outputs.append(row)
+        if not execution_plan(batch).scored.any():
+            return  # distributed placeholder never advances state
+        with self._timed(f"{stage}/inference_and_collection"):
+            output, state = self.stream(batch, self._eval_states.get(loader_idx))
+            self._eval_states[loader_idx] = state
+            block = ScoreBlock.from_batch(self, batch, output)
+        (self._validation_scores if stage == "val" else self._test_outputs).append(
+            block
+        )
+
+    @contextmanager
+    def _timed(self, name):
+        wall, cpu = time.perf_counter(), time.process_time()
+        try:
+            yield
+        finally:
+            entry = self.phase_timings.setdefault(
+                name, {"wall_seconds": 0.0, "cpu_seconds": 0.0, "calls": 0}
+            )
+            entry["wall_seconds"] += time.perf_counter() - wall
+            entry["cpu_seconds"] += time.process_time() - cpu
+            entry["calls"] += 1
+
+    def _gather_scores(self, blocks):
+        if not torch.distributed.is_initialized():
+            return ScoreTable(blocks)
+        rank = torch.distributed.get_rank()
+        gathered = [None] * torch.distributed.get_world_size() if rank == 0 else None
+        torch.distributed.gather_object(blocks, gathered, dst=0)
+        return (
+            ScoreTable([block for part in gathered for block in part])
+            if rank == 0
+            else None
+        )
 
     def on_validation_epoch_start(self):
         self._eval_states = {}
@@ -553,69 +633,55 @@ class VehicleGraphMambaJoint(pl.LightningModule):
         self._evaluate(batch, 0, "val")
 
     def on_validation_epoch_end(self):
-        rows = self._validation_scores
+        with self._timed("val/gather"):
+            table = self._gather_scores(self._validation_scores)
+        metrics = {}
+        if table is not None:
+            table.check_unique("validation")
+            with self._timed("val/calibration"):
+                table.calibrate(self)
+            with self._timed("val/metrics"):
+                metrics = table.log_metrics(self, "val", emit_to_model=False)
         if torch.distributed.is_initialized():
-            gathered = [None] * torch.distributed.get_world_size()
-            torch.distributed.all_gather_object(gathered, rows)
-            rows = [row for part in gathered for row in part]
-        unique = {(r["recording"], r["context"], r["bin"]): r for r in rows}
-        if len(unique) != len(rows):
-            raise ValueError("duplicate scored validation bins across workers")
-        rows = list(unique.values())
-        normal = [r for r in rows if r["normal"] and r["anomaly_eligible"]]
-        if normal:
-            components = torch.tensor(
-                [r["anomaly_components"] for r in normal], device=self.device
-            )
-            masks = torch.tensor(
-                [r["anomaly_component_mask"] for r in normal], device=self.device
-            )
-            for component in range(3):
-                valid_values = components[masks[:, component], component]
-                if valid_values.numel():
-                    self.score_center[component] = valid_values.mean()
-                    self.score_scale[component] = valid_values.std(
-                        unbiased=False
-                    ).clamp_min(1e-4)
-            anomaly = (
-                ((components - self.score_center) / self.score_scale) * masks
-            ).sum(-1)
-            cls = torch.tensor(
-                [r["classification"] for r in normal], device=self.device
-            )
-            self.alert_thresholds.copy_(
-                torch.stack(
-                    (
-                        torch.quantile(cls, self.hparams.alert_quantile),
-                        torch.quantile(anomaly, self.hparams.alert_quantile),
-                    )
-                )
-            )
-            self.calibrated.fill_(True)
-            for row in rows:
-                component = self.score_center.new_tensor(row["anomaly_components"])
-                row["anomaly"] = float(
-                    (
-                        ((component - self.score_center) / self.score_scale)
-                        * component.new_tensor(row["anomaly_component_mask"])
-                    ).sum()
-                )
-                row["alert"] = bool(
-                    (
-                        self.hparams.classification
-                        and row["classification"] >= self.alert_thresholds[0]
-                    )
-                    or (
-                        self.hparams.forecasting
-                        and row["anomaly_eligible"]
-                        and row["anomaly"] >= self.alert_thresholds[1]
-                    )
-                )
-        self._log_metrics(rows, "val")
+            objects = [
+                {k: v.to_dict() for k, v in self.calibration_bundles.items()},
+                metrics,
+            ]
+            torch.distributed.broadcast_object_list(objects, src=0)
+            self.calibration_bundles = {
+                k: CalibrationBundle(**v) for k, v in objects[0].items()
+            }
+            metrics = objects[1]
+            for buffer in (
+                self.score_center,
+                self.score_scale,
+                self.alert_thresholds,
+                self.calibrated,
+            ):
+                torch.distributed.broadcast(buffer, src=0)
+        # Checkpoint callbacks run on every rank; each needs the same global metric.
+        for name, value in metrics.items():
+            self.log(name, value, sync_dist=False)
 
     def on_test_epoch_start(self):
         self._eval_states = {}
         self._test_outputs = []
+        if not self.calibration_bundles and not self.hparams.legacy_calibration_replay:
+            raise ValueError(
+                "legacy pooled calibration requires explicit legacy_calibration_replay or fresh source validation"
+            )
+        if self.calibration_bundles and set(self.calibration_bundles) != {
+            "zero-shot",
+            "conditioned",
+        }:
+            raise ValueError("missing calibration mode; both modes are required")
+        for mode, bundle in self.calibration_bundles.items():
+            bundle.validate(
+                weights_digest(self),
+                self.source_manifest_digest,
+                self.reference_policy.digest,
+                mode,
+            )
         if not bool(self.calibrated):
             raise ValueError(
                 "test requires a checkpoint calibrated on verified-normal source validation"
@@ -625,12 +691,11 @@ class VehicleGraphMambaJoint(pl.LightningModule):
         self._evaluate(batch, dataloader_idx, "test")
 
     def on_test_epoch_end(self):
-        rows = self._test_outputs
-        if torch.distributed.is_initialized():
-            gathered = [None] * torch.distributed.get_world_size()
-            torch.distributed.all_gather_object(gathered, rows)
-            rows = [row for part in gathered for row in part]
-        keys = [(r["recording"], r["context"], r["bin"]) for r in rows]
+        with self._timed("test/gather"):
+            rows = self._gather_scores(self._test_outputs)
+        if rows is None:
+            return
+        keys = rows.keys()
         expected = set()
         dm = self.trainer.datamodule
         for dataset in dm.test_data.values():
@@ -646,7 +711,14 @@ class VehicleGraphMambaJoint(pl.LightningModule):
             raise ValueError(
                 "duplicate scored bins across data-parallel evaluation workers"
             )
-        self._log_metrics(rows, "test")
+        if self.calibration_bundles:
+            rows.apply_bundles(
+                self.calibration_bundles,
+                classification=self.hparams.classification,
+                forecasting=self.hparams.forecasting,
+            )
+        with self._timed("test/metrics"):
+            self._log_metrics(rows, "test")
         if self.trainer.is_global_zero:
             import json
             import os
@@ -656,109 +728,87 @@ class VehicleGraphMambaJoint(pl.LightningModule):
                 / "artifacts"
             )
             root.mkdir(parents=True, exist_ok=True)
-            (root / "bin-scores.jsonl").write_text(
-                "".join(json.dumps(row) + "\n" for row in rows)
-            )
-            (root / "coverage.json").write_text(
+            (root / "calibration-v2.json").write_text(
                 json.dumps(
-                    {
-                        "complete": True,
-                        "expected_bins": len(expected),
-                        "scored_bins": len(keys),
-                        "duplicate_bins": 0,
-                        "missing_bins": 0,
-                        "scored_event_observations": sum(r["events"] for r in rows),
-                        "classification_bins": sum(r["label"] >= 0 for r in rows),
-                        "anomaly_bins": sum(r["anomaly_eligible"] for r in rows),
-                        "terminal_zero_exposure_bins": sum(
-                            r["exposure"] == 0 for r in rows
-                        ),
-                        "manifest_digest": dm.manifest.digest,
-                    },
+                    {k: v.to_dict() for k, v in self.calibration_bundles.items()},
                     indent=2,
                 )
             )
-
-    def _log_metrics(self, rows, prefix):
-        from torchmetrics.functional.classification import binary_average_precision
-
-        macro = {}
-        datasets = sorted({r["dataset"] for r in rows})
-        for dataset in datasets:
-            selected = [
-                r
-                for r in rows
-                if r["dataset"] == dataset and r["role"] != "target_calibration"
-            ]
-            for mode in ("zero-shot", "conditioned"):
-                group = [
-                    r
-                    for r in selected
-                    if (r["context"] == "zero-shot") == (mode == "zero-shot")
-                ]
-                normal = [r for r in group if r["normal"]]
-                hours = sum(r["exposure"] for r in normal) / 3600
-                base = f"{prefix}/{dataset}/{mode}"
-                self.log(f"{base}/scored_bins", float(len(group)), sync_dist=False)
-                self.log(f"{base}/normal_hours", hours, sync_dist=False)
-                if hours:
-                    # Initial alert policy emits one candidate alert per closed bin.
-                    self.log(
-                        f"{base}/false_alerts_per_hour",
-                        sum(r["alert"] for r in normal) / hours,
-                        sync_dist=False,
-                    )
-                for score in ("classification", "anomaly"):
-                    if not (
-                        self.hparams.classification
-                        if score == "classification"
-                        else self.hparams.forecasting
-                    ):
-                        continue
-                    eligible = [
-                        r
-                        for r in group
-                        if r["label"] >= 0
-                        and (score != "anomaly" or r["anomaly_eligible"])
-                    ]
-                    if {r["label"] for r in eligible} == {0, 1}:
-                        p = torch.tensor(
-                            [r[score] for r in eligible], device=self.device
-                        )
-                        y = torch.tensor(
-                            [r["label"] for r in eligible], device=self.device
-                        )
-                        ap = binary_average_precision(p, y)
-                        macro.setdefault((mode, score), []).append(ap)
-                        self.log(
-                            f"{base}/{score}_ap",
-                            ap,
-                            sync_dist=False,
-                        )
-                        for vehicle in sorted({r["vehicle"] for r in eligible}):
-                            subset = [r for r in eligible if r["vehicle"] == vehicle]
-                            if {r["label"] for r in subset} == {0, 1}:
-                                vp = torch.tensor(
-                                    [r[score] for r in subset], device=self.device
-                                )
-                                vy = torch.tensor(
-                                    [r["label"] for r in subset], device=self.device
-                                )
-                                self.log(
-                                    f"{base}/{vehicle}/{score}_ap",
-                                    binary_average_precision(vp, vy),
-                                    sync_dist=False,
-                                )
-        for (mode, score), values in macro.items():
-            stack = torch.stack(values)
-            self.log(f"{prefix}/{mode}/{score}_ap_macro", stack.mean(), sync_dist=False)
-            self.log(
-                f"{prefix}/{mode}/{score}_ap_worst_dataset",
-                stack.min(),
-                sync_dist=False,
+            report = rows.report(
+                self.calibration_bundles,
+                classification=self.hparams.classification,
+                forecasting=self.hparams.forecasting,
             )
+            report["calibration_track"] = (
+                "source-normal" if self.calibration_bundles else "legacy-pooled-replay"
+            )
+            (root / "metrics-v2.json").write_text(json.dumps(report, indent=2))
+            if "conditioned" in self.calibration_bundles:
+                target_bundle = CalibrationBundle.fit(
+                    rows,
+                    checkpoint_hash=self.calibration_bundles[
+                        "conditioned"
+                    ].checkpoint_hash,
+                    source_manifest=self.source_manifest_digest,
+                    reference_policy=self.reference_policy.digest,
+                    mode="conditioned",
+                    source=self.calibration_bundles["conditioned"],
+                    quantile=self.hparams.alert_quantile,
+                )
+                tracks = dict(self.calibration_bundles, conditioned=target_bundle)
+                (root / "target-calibration-v2.json").write_text(
+                    json.dumps(target_bundle.to_dict(), indent=2)
+                )
+                (root / "target-calibrated-metrics-v2.json").write_text(
+                    json.dumps(
+                        rows.report(
+                            tracks,
+                            classification=self.hparams.classification,
+                            forecasting=self.hparams.forecasting,
+                        ),
+                        indent=2,
+                    )
+                )
+            with self._timed("test/artifacts"):
+                with (root / "bin-scores.jsonl").open("w") as handle:
+                    for row in rows:
+                        handle.write(json.dumps(row) + "\n")
+                (root / "coverage.json").write_text(
+                    json.dumps(
+                        {
+                            "complete": True,
+                            "expected_bins": len(expected),
+                            "scored_bins": len(keys),
+                            "duplicate_bins": 0,
+                            "missing_bins": 0,
+                            "scored_event_observations": int(
+                                rows.column("events").sum()
+                            ),
+                            "classification_bins": int(
+                                (rows.column("label") >= 0).sum()
+                            ),
+                            "anomaly_bins": int(rows.column("anomaly_eligible").sum()),
+                            "terminal_zero_exposure_bins": int(
+                                (rows.column("exposure") == 0).sum()
+                            ),
+                            "manifest_digest": dm.manifest.digest,
+                        },
+                        indent=2,
+                    )
+                )
+
+    def _log_metrics(self, table, prefix):
+        table.log_metrics(self, prefix)
 
     def on_save_checkpoint(self, checkpoint):
+        from dataclasses import asdict
+
+        checkpoint.setdefault("hyper_parameters", {})["reference_policy"] = asdict(
+            self.reference_policy
+        )
+        checkpoint["calibration_v2"] = {
+            k: v.to_dict() for k, v in self.calibration_bundles.items()
+        }
         checkpoint["graphids_schema"] = {
             "model": "vehicle_graph_mamba_joint",
             "version": 1,
@@ -767,6 +817,10 @@ class VehicleGraphMambaJoint(pl.LightningModule):
         }
 
     def on_load_checkpoint(self, checkpoint):
+        self.calibration_bundles = {
+            k: CalibrationBundle(**v)
+            for k, v in checkpoint.get("calibration_v2", {}).items()
+        }
         schema = checkpoint.get("graphids_schema", {})
         if (
             schema.get("model") != "vehicle_graph_mamba_joint"

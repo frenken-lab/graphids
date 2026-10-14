@@ -63,3 +63,19 @@ def test_removed_model_names_have_migration_errors():
     ]:
         with pytest.raises(ValueError, match="graphids-temporal-legacy"):
             reject_retired({"type": name})
+
+
+def test_learning_run_uses_full_epochs_and_source_checkpoint_selection():
+    cfg = ExperimentConfig.from_yaml(
+        "configs/experiments/graph_mamba_ctat_learning.yml"
+    )
+    run = cfg.build_run(name="learning", stage="fit")
+    assert run.payload.trainer["max_epochs"] == 10
+    assert isinstance(run.payload.trainer["limit_train_batches"], float)
+    assert run.payload.trainer["limit_train_batches"] == 1.0
+    checkpoint = run.payload.callbacks["checkpoint"]["init_args"]
+    assert checkpoint["monitor"] == "val/zero-shot/classification_ap_macro"
+    assert checkpoint["mode"] == "max"
+    assert checkpoint["save_top_k"] == 1 and checkpoint["save_last"]
+    assert not checkpoint["enable_version_counter"]
+    assert run.payload.data["datasets"] == ["set_01"]

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass, fields
 
 import torch
 
 from .context import VehicleBehaviorContext
+from .execution import ExecutionPlan
+from .policy import ReferencePolicy
 from .preprocessing import SnapshotRecording
 
 
@@ -37,17 +40,36 @@ class CANSnapshotBatch:
     node_keys: tuple[tuple[str, ...], ...]
     bin_indices: torch.Tensor
 
+    execution: ExecutionPlan | None = None
+    state_capacity: int | None = None
+
+    def pin_memory(self):
+        return type(self)(
+            **{
+                f.name: getattr(self, f.name).pin_memory()
+                if isinstance(getattr(self, f.name), torch.Tensor)
+                else getattr(self, f.name)
+                for f in fields(self)
+            }
+        )
+
     def to(self, device, **kwargs):
+        plan = self.execution or ExecutionPlan.build(self)
         return type(self)(
             **{
                 f.name: (
                     getattr(self, f.name).to(device, **kwargs)
                     if isinstance(getattr(self, f.name), torch.Tensor)
+                    else plan
+                    if f.name == "execution"
                     else getattr(self, f.name)
                 )
                 for f in fields(self)
             }
         )
+
+
+_CONTEXT_MAPPINGS = OrderedDict()
 
 
 def recording_batch(
@@ -60,7 +82,9 @@ def recording_batch(
     neighbor_cap: int = 8,
     anchor_capacity: int = 128,
     transient_capacity: int = 128,
+    reference_policy=None,
 ) -> CANSnapshotBatch:
+    policy = ReferencePolicy.parse(reference_policy)
     stop = len(snapshot.closes) if stop is None else stop
     if start < 0 or stop > len(snapshot.closes) or stop <= start or warmup < 0:
         raise ValueError("invalid snapshot window")
@@ -70,8 +94,10 @@ def recording_batch(
     selected = [
         i
         for i, key in enumerate(snapshot.ids)
-        if key in anchors or snapshot.live[s, i].any()
+        if (key in anchors and policy.persistent_anchors) or snapshot.live[s, i].any()
     ]
+    if not selected:
+        selected = [0]  # masked storage for an empty live set
     keys = tuple(snapshot.ids[i] for i in selected)
     n = len(keys)
     if len(anchors) > anchor_capacity:
@@ -90,21 +116,42 @@ def recording_batch(
     edge_mask = torch.zeros(n, neighbor_cap, dtype=torch.bool)
     x = torch.from_numpy(snapshot.features[s][:, selected].copy())
     if context:
+        canonical = x
         x = (x - torch.from_numpy(context.center.copy())) / torch.from_numpy(
             context.scale.copy()
         )
+        if not policy.normalization:
+            x = canonical
         if context.neighbors.shape[1] != neighbor_cap:
             raise ValueError("context and model neighbor capacity differ")
-        for ci, key in enumerate(context.anchor_ids):
-            i = local[key]
-            profiles[i] = torch.from_numpy(context.profiles[ci].copy())
-            for slot in range(neighbor_cap):
-                if context.edge_mask[ci, slot]:
-                    neighbors[i, slot] = local[
-                        context.anchor_ids[context.neighbors[ci, slot]]
-                    ]
-                    edges[i, slot] = torch.from_numpy(context.edges[ci, slot].copy())
-                    edge_mask[i, slot] = True
+        mapping_key = (context.digest, keys, neighbor_cap)
+        if mapping_key not in _CONTEXT_MAPPINGS:
+            for ci, key in enumerate(context.anchor_ids):
+                if key not in local:
+                    continue
+                i = local[key]
+                profiles[i] = torch.from_numpy(context.profiles[ci].copy())
+                for slot in range(neighbor_cap):
+                    if (
+                        context.edge_mask[ci, slot]
+                        and context.anchor_ids[context.neighbors[ci, slot]] in local
+                    ):
+                        neighbors[i, slot] = local[
+                            context.anchor_ids[context.neighbors[ci, slot]]
+                        ]
+                        edges[i, slot] = torch.from_numpy(
+                            context.edges[ci, slot].copy()
+                        )
+                        edge_mask[i, slot] = True
+            _CONTEXT_MAPPINGS[mapping_key] = (profiles, neighbors, edges, edge_mask)
+            if len(_CONTEXT_MAPPINGS) > 128:
+                _CONTEXT_MAPPINGS.popitem(last=False)
+        else:
+            profiles, neighbors, edges, edge_mask = _CONTEXT_MAPPINGS[mapping_key]
+        _CONTEXT_MAPPINGS.move_to_end(mapping_key)
+        profiles, neighbors, edges, edge_mask = (
+            value.clone() for value in (profiles, neighbors, edges, edge_mask)
+        )
     x[~live] = 0
     scored = torch.arange(stop - start) >= warmup
     # Classification covers terminal observations even when the recording ends
@@ -141,6 +188,7 @@ def recording_batch(
         (context.digest if context else "zero-shot",),
         (keys,),
         torch.arange(start, stop).unsqueeze(0),
+        state_capacity=anchor_capacity + transient_capacity,
     )
 
 
@@ -167,6 +215,14 @@ def collate_snapshots(items: list[CANSnapshotBatch]) -> CANSnapshotBatch:
         "edge_mask",
     }
     for f in fields(CANSnapshotBatch):
+        if f.name == "execution":
+            result[f.name] = None
+            continue
+        if f.name == "state_capacity":
+            result[f.name] = (
+                max((item.state_capacity or 0 for item in items), default=0) or None
+            )
+            continue
         values = [getattr(item, f.name) for item in items]
         if not isinstance(values[0], torch.Tensor):
             result[f.name] = tuple(v for group in values for v in group)

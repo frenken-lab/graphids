@@ -11,9 +11,7 @@ from graphids.core.data.snapshots.batch import CANSnapshotBatch
 from graphids.core.models.graph_mamba import VehicleGraphMambaJoint
 
 
-def run(root, bins, nodes, neighbors, width):
-    torch.set_num_threads(2)
-    torch.manual_seed(42)
+def capacity_batch(bins, nodes, neighbors):
     b, t, n, k = 1, bins, nodes, neighbors
     x = torch.rand(b, t, n, 23, device="cuda")
     x[..., 12:20] = 1
@@ -50,6 +48,14 @@ def run(root, bins, nodes, neighbors, width):
         times,
     )
     batch.neighbors = batch.neighbors.unsqueeze(0)
+    return batch
+
+
+def run(root, bins, nodes, neighbors, width):
+    torch.set_num_threads(2)
+    torch.manual_seed(42)
+    batch = capacity_batch(bins, nodes, neighbors)
+    b, t, n, k = 1, bins, nodes, neighbors
     net = VehicleGraphMambaJoint(width=width, backend="official").cuda()
     optimizer = torch.optim.AdamW(net.parameters(), lr=0.001)
     for _ in range(2):
@@ -72,6 +78,13 @@ def run(root, bins, nodes, neighbors, width):
         raise AssertionError(
             "worst-geometry preflight exceeds 85% device memory budget"
         )
+    net.eval()
+    with torch.inference_mode():
+        net.stream(batch)
+        torch.cuda.synchronize()
+    stream_reserved = torch.cuda.max_memory_reserved()
+    if stream_reserved > total * 0.85:
+        raise AssertionError("chunk inference exceeds 85% device memory budget")
     report = {
         "device": torch.cuda.get_device_name(),
         "bins": t,
@@ -82,6 +95,7 @@ def run(root, bins, nodes, neighbors, width):
         "graph_messages": b * t * n * k,
         "allocated_bytes": allocated,
         "reserved_bytes": reserved,
+        "training_and_stream_reserved_bytes": stream_reserved,
         "device_bytes": total,
         "step_seconds": time.monotonic() - began,
         "loss": float(loss),

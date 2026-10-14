@@ -21,6 +21,8 @@ config:
     type: vehicle_graph_mamba_joint
     backend: official
   data:
+    num_workers: 2
+    pin_memory: true
     type: can_snapshot_dm
     # Replace with a provenance-reviewed manifest; the audit does not assign roles.
     manifest_path: "{trial_dir}/can-recording-manifest.json"

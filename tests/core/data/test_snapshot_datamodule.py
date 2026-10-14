@@ -115,3 +115,60 @@ def test_manifest_content_changes_invalidate_cache(tmp_path):
             datasets=["set_01", "hcrl_sa"],
             cache_root=str(tmp_path / "cache"),
         ).setup()
+
+
+@pytest.mark.slurm
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA pinned memory required")
+def test_worker_prefetch_memmap_and_pinned_batch_parity(tmp_path):
+    path = fixture_manifest(tmp_path / "fixtures")
+    dm = CANSnapshotDataModule(
+        manifest_path=str(path),
+        datasets=["set_01", "hcrl_sa"],
+        cache_root=str(tmp_path / "cache"),
+        num_workers=2,
+        pin_memory=True,
+    )
+    dm.setup()
+    from types import SimpleNamespace
+
+    # A connected Lightning trainer can contain unpicklable active iterators.
+    dm.trainer = SimpleNamespace(unpicklable=lambda: None)
+    # All loader families honor the same worker settings.
+    loaders = [dm.train_dataloader(), dm.val_dataloader(), *dm.test_dataloader()]
+    assert all(
+        loader.num_workers == 2 and loader.persistent_workers for loader in loaders
+    )
+    iterator = iter(loaders[1])
+    try:
+        batch = next(iterator)
+        expected = dm.collate([dm.val_data[0]])
+        torch.testing.assert_close(batch.x, expected.x)
+        assert batch.x.is_pinned()
+        actual = dm.transfer_batch_to_device(batch, torch.device("cuda"), 0)
+        torch.testing.assert_close(actual.x.cpu(), expected.x)
+        assert actual.execution is not None
+    finally:
+        iterator._shutdown_workers()
+
+
+def test_preflight_identity_covers_geometry_but_not_loader_settings(tmp_path):
+    from dataclasses import replace
+
+    from scripts.graph_mamba_real_pilot import packing_fingerprint
+
+    path = fixture_manifest(tmp_path / "fixtures")
+    dm = CANSnapshotDataModule(
+        manifest_path=str(path),
+        datasets=["set_01", "hcrl_sa"],
+        cache_root=str(tmp_path / "cache"),
+    )
+    dm.setup()
+    expected = packing_fingerprint(dm, "driver-v1")
+    dm.num_workers, dm.pin_memory = 2, True
+    assert packing_fingerprint(dm, "driver-v1") == expected
+    dm.representation_cfg = replace(dm.representation_cfg, bin_seconds=0.02)
+    assert packing_fingerprint(dm, "driver-v1") != expected
+    dm.representation_cfg = replace(dm.representation_cfg, bin_seconds=0.01)
+    assert packing_fingerprint(dm, "driver-v2") != expected
+    dm.transient_capacity *= 2
+    assert packing_fingerprint(dm, "driver-v1") != expected

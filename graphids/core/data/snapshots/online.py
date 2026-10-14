@@ -10,6 +10,7 @@ import numpy as np
 from .batch import recording_batch
 from .context import VehicleBehaviorContext
 from .manifest import Recording
+from .policy import ReferencePolicy
 from .preprocessing import FEATURES, CANSnapshotRepresentationCfg, SnapshotRecording
 
 
@@ -58,7 +59,9 @@ class CausalCANBinner:
         anchor_capacity=128,
         retention_seconds=1.0,
         state: CANFeatureState | None = None,
+        reference_policy=None,
     ):
+        self.reference_policy = ReferencePolicy.parse(reference_policy)
         self.recording, self.context = recording, context
         self.cfg = representation_cfg or CANSnapshotRepresentationCfg()
         self.transient_capacity, self.anchor_capacity = (
@@ -68,7 +71,11 @@ class CausalCANBinner:
         self.retention_seconds = retention_seconds
         self.anchors = tuple(context.anchor_ids) if context else ()
         self.state = state or CANFeatureState()
-        digest = context.digest if context else "zero-shot"
+        digest = (
+            (context.digest if context else "zero-shot")
+            + ":"
+            + self.reference_policy.digest
+        )
         if self.state.recording_key and (
             self.state.recording_key,
             self.state.context_digest,
@@ -83,7 +90,7 @@ class CausalCANBinner:
             or retention_seconds <= 0
         ):
             raise ValueError("invalid online capacity/retention contract")
-        for key in self.anchors:
+        for key in self.anchors if self.reference_policy.persistent_anchors else ():
             self.state.streams.setdefault(key, _Stream(0))
 
     def push(
@@ -108,7 +115,11 @@ class CausalCANBinner:
                 self.cfg.bin_seconds,
             )
         if arb_id not in s.streams:
-            if len(s.streams) - len(self.anchors) >= self.transient_capacity:
+            if (
+                arb_id not in self.anchors
+                and sum(key not in self.anchors for key in s.streams)
+                >= self.transient_capacity
+            ):
                 raise ValueError(
                     "online transient overflow; event was not silently discarded"
                 )
@@ -138,7 +149,7 @@ class CausalCANBinner:
         expired = [
             key
             for key, stream in s.streams.items()
-            if key not in self.anchors
+            if (key not in self.anchors or not self.reference_policy.persistent_anchors)
             and stream.count == 0
             and cutoff - stream.last_time > self.retention_seconds
         ]
@@ -207,6 +218,7 @@ class CausalCANBinner:
             self.context,
             anchor_capacity=self.anchor_capacity,
             transient_capacity=self.transient_capacity,
+            reference_policy=self.reference_policy,
             neighbor_cap=self.context.neighbors.shape[-1] if self.context else 8,
         )
         batch.bin_indices.fill_(s.bin_index)

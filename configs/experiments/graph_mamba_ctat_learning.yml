@@ -1,0 +1,37 @@
+extends: graph_mamba_ctat_pilot.yml
+experiment_name: graph_mamba_ctat_learning_10ep_seed42
+# First source-learning run on the reviewed Impala -> Forester cohort.
+# All 1,099 source windows each epoch; target scores never select checkpoints.
+resources:
+  memory_gb: 64
+  partition: debug-nextgen
+  time_limit: "00:30:00"
+config:
+  trainer:
+    max_epochs: 10
+    limit_train_batches: 1.0
+    check_val_every_n_epoch: 1
+    log_every_n_steps: 25
+    logger:
+      class_path: lightning.pytorch.loggers.CSVLogger
+      init_args:
+        save_dir: "{run_dir}"
+        name: metrics
+        version: seed42
+        flush_logs_every_n_steps: 25
+  callbacks:
+    checkpoint:
+      class_path: graphids.core.callbacks.Sha256ModelCheckpoint
+      init_args:
+        dirpath: "{run_dir}/checkpoints"
+        filename: best
+        monitor: val/zero-shot/classification_ap_macro
+        mode: max
+        save_last: true
+        save_top_k: 1
+        auto_insert_metric_name: false
+        enable_version_counter: false
+    learning_curve:
+      class_path: graphids.core.callbacks.GraphMambaLearningCurveCallback
+      init_args:
+        output_path: "{run_dir}/artifacts/learning-curve.json"

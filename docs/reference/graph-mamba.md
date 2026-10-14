@@ -93,6 +93,56 @@ unique windows limit the balanced schedule and omitted windows rotate across
 epochs. Report this sampled work rather than claiming every source bin is
 scored in each training epoch.
 
+## Chunk execution and CPU loading
+
+`stream_execution: chunked` is the default for both single-bin online input and
+whole-recording validation. Independent ID/generation segments run through
+state-carrying Mamba-1 scans, followed by chunk-wide graph readout and heads.
+The wrapper retains convolution history and adds the incoming SSM state's
+analytic decay contribution to the official zero-initialized scan. Correction
+work is tiled to a 64 MiB temporary budget. The pinned backend is unchanged.
+`stream_execution: recurrent` uses batched one-bin Mamba updates for diagnosis;
+it shares vectorized forecasting and scoring with the chunk path.
+
+State retains only live boundary identities in bounded batched caches; expired
+and reborn IDs cannot inherit history. Runtime `GraphMambaState` is version 2;
+version-1 live states require an explicit reset. Existing model checkpoints
+remain schema version 1 and load without weight migration. Recording/context
+changes reset state, while gaps and replay in the same episode are rejected.
+
+Training uses CPU-discovered segment indices with differentiable tensor gather
+and scatter. Frozen context-to-local-node mappings use a bounded worker-local
+LRU; model activations and optimizer-dependent values are never cached.
+
+`num_workers` applies to training, validation and all test loaders. Workers
+spawn safely, omit the attached Lightning trainer when serialized, reopen
+read-only snapshot memmaps lazily, and use persistent workers with prefetching.
+`pin_memory: true` enables custom-batch pinning and nonblocking CUDA transfers.
+Library defaults remain zero workers and unpinned memory; GPU presets select
+two workers and pinning. Short one-pass evaluations can be faster with zero
+workers because every test loader starts its own pool; benchmark the actual
+workload before increasing workers or stream batch size.
+
+Score collection transfers numeric columns in bulk. Rank zero calibrates on
+source-normal validation, broadcasts calibrated buffers, and computes metrics
+from gathered compact columns. JSONL and coverage retain their existing fields.
+The pilot records preparation, optimizer batches, validation, calibration,
+metrics and artifact timings separately. Packing preflight evidence is reused
+only when manifest, representation, packing configuration and implementation
+fingerprints match; source hash verification still runs.
+
+On one Ascend A100, the 2026-10-14 real-checkpoint gate scored all 385,808 target
+bins in 53.26 s, compared with the original 3,721.82 s. Every score matched within
+`rtol=2e-4, atol=2e-5`, with no alert disagreements. A complete fresh 32-step
+pilot with two workers took 163.63 s, including full source validation and both
+target modes. These are execution measurements, not detection-quality evidence.
+
+Use `scripts/graph_mamba_benchmark.py` for a five-trial warm benchmark and optional
+whole-target comparison against saved JSONL scores. Use
+`scripts/graph_mamba_parallel_gate.py --mode native` under two-rank `torchrun`
+for distributed calibration/coverage, or `--mode ray` for the public two-GPU
+fit path. Store each run under a new external output directory.
+
 ## Fits, scores and gates
 
 Start with the YAML presets `graph_mamba_joint`, `graph_mamba_joint_test`,
@@ -149,3 +199,85 @@ artifacts and checkpoint files remain untouched. Legacy model weights and
 event schemas are incompatible with graph-Mamba and must not be silently loaded
 or migrated. GraphIDS 2.0 removes the five old model families and lane-specific
 APIs once the functional gates pass.
+
+### Corrected evaluation and frozen reference diagnostics (v2)
+
+`score_columns.raw_average_precision` ranks FP64 raw scores with a stable sort
+and groups ties before integrating precision over recall increments. It never
+sigmoids forecast scores. Unknown labels and `target_calibration` are excluded
+from AP; reports explicitly identify groups lacking both classes. Vehicle AP
+pools normal and attack test recordings across registry dataset names. Dataset
+and recording breakdowns remain available. The macro metric averages vehicles.
+
+`CalibrationBundle` v2 binds calibration to a SHA256 of learned checkpoint
+parameters (excluding calibration buffers), the source-only recording manifest,
+reference policy, inference mode and calibration track. Each source mode fits
+its own three component statistics and two thresholds at quantile 0.999, with a
+1e-4 scale floor. Classification uses every scored verified-normal bin;
+forecast calibration also requires exposure, prior forecasts and component
+availability. Missing modes fail. Unavailable components are recorded and
+excluded. Bundles serialize as primitive checkpoint metadata without changing
+learned parameter shapes. Historical pooled buffers can only be used with
+`legacy_calibration_replay=True`; fresh source validation upgrades an old
+checkpoint without retraining.
+
+The separate target-normal-calibrated conditioned track retains source component
+statistics and fits only thresholds from verified-normal `target_calibration`.
+Scores and AP therefore stay identical to the source-calibrated track. Strict
+zero-shot remains source-only. Report alert counts are classification-only,
+anomaly-only, overlapping and combined **bin alerts**, with normal exposure and
+per-head normal bin alerts/hour; they do not measure incidents.
+
+`ReferencePolicy` controls profile inputs, canonical/reference normalization,
+cross-ID messages, anchor persistence, reference flags and classifier pooling.
+Defaults preserve full conditioning. Recent classifier pooling excludes silent
+reference anchors from the classifier while keeping all forecast pooling
+unchanged. Metadata and raw contexts remain available for auditing hidden
+inputs. Expiring references retain reference membership; snapshots are rebuilt,
+missing neighbors are masked, and cache/state identities include the policy.
+The model and data policies must agree.
+
+Run `scripts/graph_mamba_conditioning_diagnostics.py --help` inside a Slurm
+allocation. It first corrects retained target scores, then replays source
+validation and freezes a bundle before each intervention's target evaluation.
+Its versioned JSON report combines strict and target-calibrated baselines,
+source and target intervention effects on matching eligible bins, coverage,
+raw components and score distributions. The full-reference trial also supplies
+the reference-free baseline. Lifecycle eligibility differences are reported
+separately. Target effects can include interactions and do not select a winning
+intervention.
+
+Historical anomaly-AP curves are affected by automatic sigmoid conversion.
+Recompute only checkpoints or raw scores that were retained; intermediate
+epoch values cannot be reconstructed. The completed learning experiment retains
+its original epoch-4 selection rule. The separate
+`graph_mamba_ctat_learning_corrected.yml` next-run preset maximizes
+`val/source_min_vehicle_macro_ap`: the minimum of the four source vehicle-macro
+APs over both heads and modes. Equal values keep the earlier checkpoint.
+Forester is now diagnostic evidence. Broader transfer claims require reviewed
+additional vehicles and a new independent holdout.
+
+
+The v2 audit found that the completed run's `last.ckpt` duplicates its epoch-4
+best file. Ray's per-epoch snapshots retain the actual final weights and all
+intermediate epochs, so their corrected source curves can be replayed without
+inventing metrics. The corrected next-run preset uses a separate unmonitored
+`final_checkpoint` callback to save current weights even when monitored AP does
+not improve. Learning-curve metadata reads the configured checkpoint metric.
+Distributed validation broadcasts global metrics to every rank for checkpoint
+callbacks as well as broadcasting calibration bundles.
+
+The full report and raw evidence are under
+`/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/graph-mamba-conditioning-v2/`.
+Use `scripts/graph_mamba_recompute_curve.py` only with an inventory of retained,
+SHA256-checked checkpoints. Its source curve preserves the original selection;
+only the actual final snapshot receives an additional diagnostic target replay.
+
+
+Evaluation also rejects score tables whose calibration bundles are missing or
+assigned to the wrong inference mode. Anomaly bin alerts require at least one
+component that is both present in the bin and available in source calibration;
+a zero or negative threshold cannot turn a componentless bin into an alert.
+These masks are applied during collection, replay and reporting. Disabled heads
+are marked `disabled`, contribute no AP or alerts, and are omitted from score
+distributions in both strict and target-calibrated reports.

@@ -3,6 +3,8 @@ experiment_name: graph_mamba_ctat_pilot
 # Capture-level Impala -> Forester normal/DoS diagnostic, not quality acceptance.
 config:
   data:
+    num_workers: 2
+    pin_memory: true
     manifest_path: /fs/ess/PAS1266/graphids/dev/rf15/experimentruns/graph-mamba-real-data-review-v1/can-recording-manifest-v1.json
     datasets: [set_01]
     cache_root: /fs/ess/PAS1266/graphids/dev/rf15/experimentruns/graph-mamba-real-pilot-v1/cache

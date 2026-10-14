@@ -64,6 +64,7 @@ def build_snapshots(
     *,
     anchor_ids: tuple[str, ...] = (),
     retention_seconds: float = 1.0,
+    persistent_anchors: bool = True,
     max_snapshot_bytes: int = 4 * 1024**3,
 ) -> SnapshotRecording:
     if retention_seconds <= 0:
@@ -125,14 +126,14 @@ def build_snapshots(
                 born[i] = True
             # Expiry is decided at each closed cutoff, matching streaming.
             if (
-                i >= len(anchor_ids)
+                (i >= len(anchor_ids) or not persistent_anchors)
                 and t
                 and not was_live[i]
                 and np.isfinite(last_time[i])
                 and i not in restarted
             ):
                 gens[i] += 1
-                new_ids[t] += 1
+                new_ids[t] += i >= len(anchor_ids)
                 restarted.add(i)
                 previous.pop(i, None)
                 last_time[i] = -np.inf
@@ -161,7 +162,8 @@ def build_snapshots(
             bin_labels.append(row["label"])
             row_index += 1
         active = born & ((closes[t] - last_time) <= retention_seconds)
-        active[: len(anchor_ids)] = True
+        if persistent_anchors:
+            active[: len(anchor_ids)] = True
         # A just-observed ID remains eligible even in a long partial bin.
         active |= counts[t] > 0
         live[t] = active

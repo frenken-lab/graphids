@@ -2,21 +2,72 @@
 
 Handoff date: 2026-10-13. Start with this document, [the implementation guide](docs/reference/graph-mamba.md), and [the research/implementation plan](vehicle-graph-mamba-joint-plan.md). `Future_steps.md` describes the historical temporal stack.
 
-The follow-on [recording review](docs/empirical-notes/2026-10-13-graph-mamba-recording-review.md)
-froze a reviewed, 12-capture Impala-to-Forester normal/DoS pilot manifest at
+The reviewed 12-capture Impala-to-Forester pilot manifest remains at
 `/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/graph-mamba-real-data-review-v1/can-recording-manifest-v1.json`.
-It checks complete correspondence to pinned original logs, curator label hashes,
-disjoint acquisition intervals, and sampled partial reuse. Session means original
-acquisition capture, not independently established driving trip/day. The broader
-all-six review remains open. Ascend A100 pilot job `7819680` was submitted;
-check its status and `graph-mamba-real-pilot-v1/pilot.json` before launching again.
-CPU source preflight job `56109538` completed and warmed the shared pilot cache;
-its results are under `graph-mamba-real-pilot-v1/preflight/`. Source capacity is
-64 anchors / 64 transients; 1,099 training windows passed packing checks, with
-maxima of 13,312 node-bin tokens and 104,448 messages. The largest source array
-cache is 762,469,234 bytes. The A100 job remains queued for priority, with no
-start estimate at the latest check. The diagnostic fits only 32 windows and
-evaluates whole recordings in both modes; it cannot establish detection quality.
+The original Ascend job `7819680` completed successfully: 32 optimizer steps,
+full source validation, and 385,808 target bins in both modes with no missing or
+duplicate bins. Its 1h49m runtime was dominated by per-bin streaming evaluation.
+This diagnostic does not establish trained detection quality; the broader
+all-six provenance review remains open.
+
+The 2026-10-14 vectorization replaces per-bin CUDA scalar reads and per-node
+cache copying with state-carrying chunk scans, batched caches, bulk scoring and
+calibration. It preserves weights, checkpoint schema, coverage and thresholds.
+Real-checkpoint job `7834020` compared every target bin against the original
+scores: zero tolerance violations, zero alert disagreements. Target evaluation
+fell from 3,721.82 s to 53.26 s with zero loader workers. The full two-worker
+pilot `7834149` completed in 163.63 s: fit plus full source validation 46.82 s,
+target evaluation 103.98 s, 32 optimizer steps, and complete target coverage.
+Worker startup dominates much of the difference between these target timings.
+Source validation inference was 15.20 s; calibration was 0.13 s.
+
+Evidence is outside Git at:
+
+```text
+/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/graph-mamba-vectorized-v1/
+  checkpoint-eval/benchmark.json
+  checkpoint-eval/operators.txt
+  checkpoint-eval/artifacts/coverage.json
+  pilot-worker-fixed/pilot.json
+  memory/memory-gate.json
+  regression-7834191.log
+  acceptance.json
+  implementation.patch
+```
+
+Warm 256-bin inference measured 13.07 ms versus the previous 2.92 s. Warm
+batch-one training measured 19.44 ms versus the previous 30.43 ms. Maximum
+training and chunk-inference geometry reserved 5.65 GB on an A100 40 GB.
+The latest single-GPU regression passed 87 tests, including CUDA, nonzero-cache
+chunk carry, tiled initial-state correction, lifecycle reuse, gradient parity,
+and spawned/pinned loader workers attached to a trainer. All results record
+HEAD plus a dirty worktree; the implementation changes are not yet committed.
+
+Same-node two-GPU Ascend job `7834136` passed native training synchronization,
+distributed calibration/coverage against a single-rank reference, and a public
+Ray fit on two A100-SXM4-80GB devices. Reports are in `ddp-training/`,
+`ddp-evaluation/`, and `ray-two-gpu/` under the evidence directory above.
+The full one-GPU pilot Slurm allocation lasted 3m07s including interpreter
+startup and worker cleanup; the in-script runtime above was 2m44s.
+
+The first full-source learning run, Ascend job `7835011`, completed successfully
+(exit 0) in 11m45s: 10 full epochs and 10,990 optimizer steps. Output is
+`/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/graph-mamba-learning-10ep-v1/`.
+`learning-run.json` records fit/test completion; `fit/artifacts/learning-curve.json`
+records every epoch. Mean training loss fell from 0.6541 to 0.3573. Epoch 4 was
+selected by source zero-shot classification AP (0.9999995); held-out target
+scores were evaluated only after source checkpoint selection.
+
+The historical v1 Forester results (superseded by the v2 audit below) showed a transfer/calibration gap despite learning:
+zero-shot classification/anomaly AP were 0.99899/0.47825; conditioned AP were
+0.67125/0.86177. Combined candidate false alerts/hour were 6,551.52 zero-shot
+and 774.10 conditioned over 0.15889 normal hours. These are bin-level OR alerts,
+not grouped incidents or classifier-only false alarms. All 385,808 expected
+bins were scored, with no duplicates or missing bins. Audit classification vs
+forecast contributions, mode-dependent calibration and source/target feature
+shifts before extending epochs or tuning on the target. Keep target scores out
+of source checkpoint selection. Both best and final optimizer checkpoints are
+preserved under `fit/checkpoints/`.
 
 ## Current state
 
@@ -80,7 +131,7 @@ this curation is explicitly recorded in `pilot-provenance.json`.
 2. Check dense recording-cache feasibility. `max_snapshot_bytes` defaults to 4 GiB and fails before allocation. Long captures or fuzzing with many distinct IDs may need a chunked/streaming cache implementation; do not blindly raise the limit or split evaluation in a way that resets carried state.
 3. Fit a small reviewed source manifest on one Ascend A100, restore its checkpoint, and evaluate whole target recordings in both modes. Inspect expected-versus-scored coverage, duplicate counts, eligibility masks, terminal bins, sampled training work, and per-dataset/per-vehicle results.
 4. Keep classifier and forecast scores separate. Thresholds and normalization come from source-normal validation. Target calibration is a declared partition and is not used to refit primary evaluator thresholds. Single-bin candidate alerts do not yet implement persistence/cooldown.
-5. Validate a same-node two-GPU Ray fit and Cardinal H100 execution before relying on those paths for larger jobs. Native two-rank synchronization and single-GPU Ray have already passed.
+5. Validate Cardinal H100 execution before relying on that platform for larger jobs. Same-node two-GPU native and Ray A100 gates have now passed.
 
 Current zero-shot inference uses a self-only graph; reference-conditioned inference supplies relational context. The forecasting encoder is trained jointly with supervised labels, so this is not a purely unsupervised detector. Forecast heads predict counts, arrivals, and payload change, not full payload bytes.
 
@@ -110,4 +161,60 @@ python -m pytest
 python scripts/graph_mamba_gate.py --output /path/to/new-session-gate
 ```
 
-Use `backend: reference` only for explicit diagnostic checks. Production requires working CUDA selective-scan and causal-convolution extensions. The historical cutover left no jobs running; the follow-on pilot/preflight jobs above must be checked before rerunning.
+Use `backend: reference` only for explicit diagnostic checks. Production requires working CUDA selective-scan and causal-convolution extensions. The historical cutover, both one-GPU pilots, and the new two-GPU native/Ray gate have completed. Learning job `7835011` also completed; review its transfer/calibration results above before submitting another source-learning fit.
+
+
+## Corrected evaluation and conditioning audit, 2026-10-14 (v2)
+
+The corrected human report is
+`/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/graph-mamba-conditioning-v2/final/report-v2.txt`.
+`final-report-v2.json` contains all vehicle/dataset/recording breakdowns, both
+calibration tracks, per-head bin alerts, distributions and coverage. All eight
+predeclared interventions are accounted for; full reference also supplies the
+reference-free baseline. Each policy scored all 385,808 expected target bins.
+Source validation and calibration were replayed separately before target use.
+Original artifacts and epoch-4 selection remain unchanged. Forester is now
+known diagnostic evidence, not an independent holdout.
+
+Saved-score AP corrected with historical pooled normalization is
+0.99887668/0.97970199 (classification/anomaly, zero-shot) and
+0.65128708/0.99816880 (conditioned). With corrected per-mode source calibration,
+anomaly AP is 0.98681100 zero-shot and 0.97852997 conditioned. Classification AP
+is unchanged by threshold calibration. Target-normal threshold fitting leaves
+scores/AP unchanged; it does not reliably improve normal-test bin alert rates.
+
+At selected epoch 4, removing graph messages raises target classification AP
+to 0.97743439; expiring reference anchors raises it to 0.99908586. Expiry also
+reduces source anomaly AP from 0.99803473 to 0.99407209 and increases primary
+target false-bin alerts/hour. Recent classifier pooling (reference IDs observed
+in the current bin; all live transients retained) raises target classification
+AP to 0.81921039 and leaves every saved forecast component/score unchanged over
+214,408 source and 385,808 target bins. Persistence, graph messages and pooling
+interact; these interventions do not establish a unique cause. Source validation
+supports broader follow-up of profile and graph-message ablations under the
+minimum-of-four AP criterion; target ranking does not select an intervention.
+
+The original `last.ckpt` is byte-identical to epoch-4 `best.ckpt`, not the final
+weights. Ray retained all ten epoch snapshots. The true final snapshot is
+`fit/checkpoint_2026-10-14_14-32-21.050864/checkpoint.ckpt` under the original
+learning run. Slurm job 7837833 recomputed all ten source epochs from retained
+weights and evaluated the actual epoch-10 checkpoint. Its target classification
+AP is 0.99883301 zero-shot and 0.99786863 conditioned. The severe conditioned
+classification failure is therefore specific to selected epoch 4. This finding
+does not replace the original checkpoint using target results. Corrected curves
+and source scores are under `graph-mamba-conditioning-v2/corrected-curve/`.
+Historical curve values are explicitly annotated as affected by sigmoid.
+
+Use `configs/experiments/graph_mamba_ctat_learning_corrected.yml` for a future
+run. It monitors `val/source_min_vehicle_macro_ap` and independently saves the
+final weights every epoch, including when monitored AP declines or ties. The
+completed experiment's original preset/rule remains intact. Learning-curve
+metadata now reports the configured selection metric and evaluation version.
+
+Validation: the final full regression passed 114 tests including official CUDA;
+final targeted checks covered checkpoint ties and nonfinite unknown/ineligible
+scores. Two CPU ranks inside Slurm matched single-rank calibration, received
+identical global checkpoint metrics, and covered all 1,920 synthetic bins.
+A two-GPU job never received an allocation and was canceled; no new two-GPU
+claim is made. Ruff and whitespace checks passed. Additional reviewed vehicles
+and a new independent holdout are needed before broader generalization claims.

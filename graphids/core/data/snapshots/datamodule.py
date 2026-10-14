@@ -17,6 +17,7 @@ from torch.utils.data import DataLoader, Dataset, Sampler
 from .batch import collate_snapshots, recording_batch
 from .context import build_context
 from .manifest import CANRecordingManifest
+from .policy import ReferencePolicy
 from .preprocessing import (
     CANSnapshotRepresentationCfg,
     SnapshotRecording,
@@ -50,6 +51,7 @@ class EpisodeDataset(Dataset):
             neighbor_cap=self.dm.neighbor_cap,
             anchor_capacity=self.dm.anchor_capacity,
             transient_capacity=self.dm.transient_capacity,
+            reference_policy=self.dm.reference_policy,
         )
         work = batch.live.numel()
         messages = batch.edge_mask.sum().item() * batch.x.shape[1]
@@ -156,6 +158,7 @@ class CANSnapshotDataModule(pl.LightningDataModule):
         stream_batch_size: int = 1,
         eval_chunk_bins: int = 256,
         num_workers: int = 0,
+        pin_memory: bool = False,
         seed: int = 42,
         context_withholding: float = 0.25,
         neighbor_cap: int = 8,
@@ -166,6 +169,7 @@ class CANSnapshotDataModule(pl.LightningDataModule):
         max_graph_messages: int = 1048576,
         max_snapshot_bytes: int = 4 * 1024**3,
         cache_root: str | None = None,
+        reference_policy=None,
     ):
         super().__init__()
         self.manifest_path, self.datasets = manifest_path, tuple(datasets)
@@ -176,6 +180,7 @@ class CANSnapshotDataModule(pl.LightningDataModule):
             eval_chunk_bins,
             num_workers,
         )
+        self.pin_memory = pin_memory
         self.seed, self.context_withholding, self.neighbor_cap = (
             seed,
             context_withholding,
@@ -193,6 +198,7 @@ class CANSnapshotDataModule(pl.LightningDataModule):
         self.max_snapshot_bytes = max_snapshot_bytes
         self.cache_root = Path(cache_root) if cache_root else None
         self._setup = False
+        self.reference_policy = ReferencePolicy.parse(reference_policy)
         self._snapshots = {}
         self._contexts = {}
         if not datasets or len(set(datasets)) != len(datasets):
@@ -208,6 +214,7 @@ class CANSnapshotDataModule(pl.LightningDataModule):
             )
             < 1
             or warmup_bins < 0
+            or num_workers < 0
         ):
             raise ValueError(
                 "snapshot dimensions/budgets must be positive and warmup nonnegative"
@@ -331,6 +338,13 @@ class CANSnapshotDataModule(pl.LightningDataModule):
                     "cfg": asdict(self.representation_cfg),
                     "retention": self.retention_seconds,
                     "anchors": context.anchor_ids if context else (),
+                    # Only lifecycle controls affect canonical snapshots. Other
+                    # controls apply to copied batches or model inputs.
+                    "reference_policy": ReferencePolicy(
+                        persistent_anchors=self.reference_policy.persistent_anchors
+                        if context
+                        else True
+                    ).digest,
                 },
                 sort_keys=True,
             ).encode()
@@ -347,6 +361,7 @@ class CANSnapshotDataModule(pl.LightningDataModule):
                         self.representation_cfg,
                         anchor_ids=context.anchor_ids if context else (),
                         retention_seconds=self.retention_seconds,
+                        persistent_anchors=self.reference_policy.persistent_anchors,
                         max_snapshot_bytes=self.max_snapshot_bytes,
                     )
                     for name, value in vars(snapshot).items():
@@ -383,6 +398,7 @@ class CANSnapshotDataModule(pl.LightningDataModule):
                 rec,
                 self.representation_cfg,
                 anchor_ids=context.anchor_ids if context else (),
+                persistent_anchors=self.reference_policy.persistent_anchors,
                 retention_seconds=self.retention_seconds,
                 max_snapshot_bytes=self.max_snapshot_bytes,
             )
@@ -442,8 +458,24 @@ class CANSnapshotDataModule(pl.LightningDataModule):
                     )
         return entries
 
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_snapshots"] = {}  # workers reopen read-only memmaps lazily
+        state["trainer"] = None  # Lightning owns iterators/CUDA state: never pickle it
+        return state
+
     def transfer_batch_to_device(self, batch, device, dataloader_idx):
-        return batch.to(device)
+        return batch.to(device, non_blocking=self.pin_memory)
+
+    def _loader_options(self):
+        options = dict(num_workers=self.num_workers, pin_memory=self.pin_memory)
+        if self.num_workers:
+            options.update(
+                persistent_workers=True,
+                prefetch_factor=2,
+                multiprocessing_context="spawn",
+            )
+        return options
 
     def collate(self, items):
         batch = collate_snapshots(items)
@@ -460,7 +492,7 @@ class CANSnapshotDataModule(pl.LightningDataModule):
             self.train_data,
             batch_size=self.stream_batch_size,
             sampler=self.train_sampler,
-            num_workers=self.num_workers,
+            **self._loader_options(),
             collate_fn=self.collate,
         )
 
@@ -468,6 +500,7 @@ class CANSnapshotDataModule(pl.LightningDataModule):
         return DataLoader(
             self.val_data,
             batch_size=1,
+            **self._loader_options(),
             sampler=RecordingEvalSampler(self.val_data),
             collate_fn=self.collate,
         )
@@ -479,6 +512,7 @@ class CANSnapshotDataModule(pl.LightningDataModule):
             DataLoader(
                 data,
                 batch_size=1,
+                **self._loader_options(),
                 sampler=RecordingEvalSampler(data),
                 collate_fn=self.collate,
             )

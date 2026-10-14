@@ -4,6 +4,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from graphids.core.data.snapshots.policy import ReferencePolicy
+
 
 class _Cfg(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -18,6 +20,7 @@ class VehicleGraphMambaJointCfg(_Cfg):
     expand: int = Field(default=2, ge=1)
     dropout: float = Field(default=0.1, ge=0, lt=1)
     backend: Literal["official", "reference"] = "official"
+    stream_execution: Literal["chunked", "recurrent"] = "chunked"
     graph_enabled: bool = True
     classification: bool = True
     forecasting: bool = True
@@ -26,6 +29,8 @@ class VehicleGraphMambaJointCfg(_Cfg):
     loss_weights: dict[str, float] = Field(default_factory=dict)
     alert_quantile: float = Field(default=0.999, gt=0, lt=1)
     schema_version: Literal[1] = 1
+    reference_policy: ReferencePolicy = Field(default_factory=ReferencePolicy)
+    legacy_calibration_replay: bool = False
 
     @model_validator(mode="after")
     def validate_objectives(self):
