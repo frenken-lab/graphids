@@ -40,16 +40,40 @@ backpropagation. History resets at recording boundaries. Training and inference
 use the same functional scan; inference wraps it in `no_grad`. Unknown labels
 remain unknown and are excluded from supervised loss.
 
-`stream_batch_size` selects 1, 2, 4 or 8 independent recordings on one GPU. The
+`stream_batch_size` selects 1 to 16 independent recordings on one GPU, limited
+by the distinct reviewed training recordings available. The
 scheduler batches equal-length chunks and groups short tails by their exact
 length, replacing completed recordings with fresh streams. It never inserts
 fake events, replays warmup rows or drops tails. `chunk_events * stream_batch_size`
-must be at most 8192. `effective_batch_events` defaults to 8192: each optimizer
+must fit both `max_microbatch_events` (default 16384) and
+`effective_batch_events` (default 16384). Raise the explicit microbatch cap
+when testing more streams at a fixed chunk length; it can be configured up to
+262144 events for at most 16 streams. Each optimizer
 window declares its complete eligible classification and normal-payload target
 counts on the CPU, and each objective uses its own denominator across all chunks.
-The final partial window uses its actual eligible counts. Use
+Groups can split between independent streams to fill optimizer windows, without
+splitting their chronological chunks. The final partial window uses its actual
+eligible counts. Use
 `accumulate_grad_batches=1`; accumulation belongs to the data schedule.
-`warmup_events` must be zero.
+The retired `warmup_events` argument has been removed.
+
+CPU preparation supplies routing indices plus recording, source, row and incoming
+ID-history provenance. Each cache retains only compact first-appearance metadata;
+dense routing exists only for scheduled chunks. Host timestamp metadata avoids
+GPU scalar reads during continuity checks. An independent serial graph/routing/loss oracle lives in test support; the
+unused `scan(reference=...)` argument has been removed. Model
+execution packs disjoint recording banks, batches projections and heads, and
+uses tiled matrix products for attention. Unknown/future ID slots receive zero
+attention mass, including frames with entirely empty history.
+
+`num_workers` (default 2) controls CPU preparation; pinned memory defaults to true. Explicitly select zero workers for synchronous CPU diagnostics. `prefetch_factor` (default 2) and
+`persistent_workers` (default true) apply only with workers enabled. Workers
+never perform CUDA operations. `cuda_prefetch` (default false) opts training into
+a main-process loader that stages one future optimizer window on a dedicated
+CUDA copy stream; use `pin_memory: true` for asynchronous host transfers. The
+loader remains a `DataLoader` for Lightning. CPU execution and the synchronous
+path remain available, and loader seeding uses a private RNG. Prefetched windows
+count toward the same GPU memory ceiling as model activations.
 
 The model clips gradients to norm 1 before each AdamW update. Checkpoints may be
 saved only after complete epoch coverage, including source/config identities,
@@ -155,21 +179,49 @@ at most two hours and runs official/reference correctness, source-only benchmark
 and a tiny complete synthetic fit through `gx exp launch` and Ray/Lightning.
 It does not run a complete source learning epoch or target evaluation.
 
-The matrix covers chunks 256, 512, 1024 and 2048 with 1, 2, 4 or 8 independent
-streams, omitting microbatches above 8192 events. Each configuration resets
-weights, optimizer, history and RNG. The same initial weight SHA256 is asserted
-for every trial. Timed segments include verified normal traffic and positive
-attack frames from both vehicles; earlier recording history is replayed from
-row zero and cloned separately for each configuration. Context preparation is
-reported separately from steady training throughput. Reported throughput includes CPU preparation,
-pinned transfers, forward, backward and optimizer work; the JSON records memory,
-step time and projected source epoch time. The baseline uses the archived graph
-readout with the same correct continuous scan at 512 events and one stream.
-The fastest valid configuration under 32 GiB reserved memory gets a bounded
-PyTorch CPU/CUDA trace and operator table. Selection uses throughput only.
+The gate resolves defaults from the selected experiment YAML and measures only
+requested configurations. The default ten-recording cohort includes both reviewed
+vehicles, normal traffic and attacks, with 65,536 scored frames per recording
+(655,360 total) and continuous preceding history. Three independently reset
+repetitions use identical weights, optimizer, recording histories and RNG.
+At the production 16,384-event optimizer window this means 40 updates.
 
+```bash
+python scripts/event_model_gate.py --mode gpu --output <external-directory>
+# Explicit larger-chunk comparison at a common optimizer window:
+python scripts/event_model_gate.py --mode benchmark --chunks 16384 32768 65536 \
+  --streams 1 --max-microbatch-events 65536 --effective-events 65536 \
+  --events-per-recording 65536 --output <external-directory>
+```
 
-The selected source preset uses `chunk_events: 2048`, `stream_batch_size: 4`,
-`effective_batch_events: 8192`, and FP32. See the bounded implementation results
-in `docs/empirical-notes/2026-10-16-event-pipeline-consolidation.md` for measured
-throughput, memory, CPU/CUDA breakdown and the limits of epoch-time projections.
+Supported overrides include `--workers`, `--cuda-prefetch` / `--no-cuda-prefetch`,
+`--chunks`, `--streams`, `--effective-events`, `--max-microbatch-events`,
+`--events-per-recording`, `--repeats` and `--no-profiles`. Sweeps must explicitly
+raise their microbatch and optimizer-window limits where needed; invalid requests
+are errors. OOM configurations are recorded without shrinking them. Correctness
+failures abort the gate. Historical `pipeline`, `--pipeline`, control and `--steps`
+interfaces have been removed; their original source is preserved externally.
+
+Throughput timing synchronizes at measurement boundaries. Separate profiles
+record CUDA-event phases, CPU/CUDA operators, transfers and launch gaps for each
+successful requested configuration. The 32 GiB reserved-memory ceiling includes
+prefetched tensors. Graph attention uses 256 MiB temporary tiles and Mamba
+incoming-state correction retains its 64 MiB bound and official CUDA operators.
+The GPU mode also runs a bounded public Ray/Lightning fit using production
+settings and synthetic source data.
+
+The measured production defaults are 16,384-event chunks, one stream, a
+16,384-event optimizer window, two persistent workers, prefetch factor two,
+pinned memory, CUDA prefetch off, graph capacity 2,097,152 and FP32. The earlier
+full-pipeline measurement was approximately 344k events/s versus 243k for the
+serial baseline at equal optimizer exposure, with 3.87 GiB reserved memory.
+A larger-chunk comparison at a common 65,536-event optimizer window found 32K
+chunks 4.9% slower and 64K chunks 16.7% slower than 16K.
+
+Detailed historical results remain in `docs/empirical-notes/`, including
+`2026-10-16-event-batched-pipeline.md` and `2026-10-16-event-larger-chunks.md`.
+`docs/empirical-notes/2026-10-16-event-runtime-consolidation.md` records
+corrected independent verification: the earlier
+`scan(reference=True)` switch did not select a separate graph implementation.
+Historical timings remain measurements of their recorded configurations; those
+particular parity comparisons were not independent.

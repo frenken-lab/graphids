@@ -55,12 +55,6 @@ def load_experiment_yaml(
     try:
         value = yaml.safe_load(path.read_text())
     except FileNotFoundError as exc:
-        from graphids.migration import RETIRED_EXPERIMENTS
-
-        if path.name in RETIRED_EXPERIMENTS:
-            raise ValueError(
-                f"retired experiment {path.name}: restore archives/snapshot-2026-10-16.tar.gz in a separate directory; use configs/experiments/graph_mamba_events_source.yml"
-            ) from exc
         parent = f" (extended by {_parents[-1]})" if _parents else ""
         raise FileNotFoundError(f"experiment YAML not found: {path}{parent}") from exc
     if not isinstance(value, dict):
@@ -158,15 +152,6 @@ def _current_git_sha() -> str:
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    @model_validator(mode="before")
-    @classmethod
-    def reject_retired_representation(cls, value):
-        if isinstance(value, dict):
-            rep = value.get("representation_cfg")
-            if isinstance(rep, dict) and rep.get("kind") == "can_snapshot":
-                parse_representation(rep)
-        return value
-
 
 class ResourceConfig(_StrictModel):
     """Execution resources for a run."""
@@ -196,10 +181,6 @@ class FitRunPayload(_StrictModel):
 
     @model_validator(mode="after")
     def validate_components(self):
-        from graphids.migration import reject_retired
-
-        reject_retired(self.model)
-        reject_retired(self.data)
         if self.model.get("type") == "event_graph_mamba":
             from graphids.primitives_models import EventGraphMambaCfg
 

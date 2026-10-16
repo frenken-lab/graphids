@@ -113,23 +113,24 @@ plugins:
 nav:
   - Home: index.md
   - Architecture:
-      - Snapshot archive: reference/snapshot-archive.md
-      - Retired snapshot architecture: reference/graph-mamba.md
-      - Missed attack diagnostics: reference/missed-attack-diagnostics.md
       - Message-preserving graph-Mamba: reference/graph-mamba-events.md
       - Module responsibilities: responsibilities.md
       - Config system: reference/config-architecture.md
       - Data architecture: reference/data-architecture.md
       - Data flow: reference/data-flow.md
-      - Fusion state (historical): reference/fusion-state.md
       - Orchestration: reference/orchestration.md
       - Observability: reference/observability.md
       - Write paths: reference/write-paths.md
       - Submit flow: reference/submit-flow.md
+      - PyTorch compat: reference/pytorch-compat.md
+  - Historical and archives:
+      - Snapshot archive: reference/snapshot-archive.md
+      - Retired snapshot architecture: reference/graph-mamba.md
+      - Missed attack diagnostics: reference/missed-attack-diagnostics.md
+      - Fusion state (historical): reference/fusion-state.md
       - Prebatch timing (historical): reference/prebatch-timing.md
       - Temporal throughput (historical): reference/temporal-throughput.md
       - Temporal dependency (historical): reference/temporal-dependency.md
-      - PyTorch compat: reference/pytorch-compat.md
   - API Reference:
       - Ray launcher: api/ray-backend.md
       - CLI: api/cli.md

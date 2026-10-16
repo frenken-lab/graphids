@@ -12,8 +12,6 @@ RepresentationCfg = CANEventRepresentationCfg
 
 
 def parse_representation(value):
-    if isinstance(value, dict) and value.get("kind") == "can_snapshot":
-        raise ValueError("can_snapshot retired; restore archives/snapshot-2026-10-16.tar.gz; use can_event")
     return TypeAdapter(RepresentationCfg).validate_python(value)
 
 

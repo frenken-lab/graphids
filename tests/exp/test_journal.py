@@ -80,7 +80,7 @@ def test_build_lightning_run_attaches_logger(monkeypatch):
     import types
 
     from graphids._mlflow import MLflowSystemMetricsCallback
-    from graphids.exp import ray_backend
+    from graphids.exp import ray_backend, runtime
 
     captured: dict[str, object] = {}
 
@@ -115,9 +115,9 @@ def test_build_lightning_run_attaches_logger(monkeypatch):
     lightning_pkg.pytorch = DummyLightning
     monkeypatch.setitem(sys.modules, "lightning", lightning_pkg)
     monkeypatch.setitem(sys.modules, "lightning.pytorch", DummyLightning)
-    monkeypatch.setattr(ray_backend, "build_component", lambda spec: DummyData())
+    monkeypatch.setattr(runtime, "build_component", lambda spec: DummyData())
     monkeypatch.setattr(
-        ray_backend, "resolve_spec", lambda spec: {} if spec == {} else DummyModel()
+        runtime, "resolve_spec", lambda spec: {} if spec == {} else DummyModel()
     )
 
     logger = object()

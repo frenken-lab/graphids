@@ -17,4 +17,4 @@ tar -xzf archives/snapshot-2026-10-16.tar.gz -C snapshot-reproduction
 
 Use that directory's configuration, lockfile, tests and scripts. Snapshot weights
 and calibration are incompatible with the active event model. The active runtime
-rejects retired primitive and class-path configurations with this archive reference.
+supports only current primitives; restore historical configurations with their archived source.

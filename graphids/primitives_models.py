@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from graphids import event_defaults as defaults
+
 
 class _Cfg(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -22,7 +24,7 @@ class EventGraphMambaCfg(_Cfg):
     weight_decay: float = Field(default=0.01, ge=0)
     payload_weight: float = Field(default=1.0, ge=0, allow_inf_nan=False)
     node_capacity: int = Field(default=512, ge=1)
-    max_graph_tokens: int = Field(default=1048576, ge=1)
+    max_graph_tokens: int = Field(default=defaults.MAX_GRAPH_TOKENS, ge=1)
     schema_version: Literal[1] = 1
 
     def build(self, *, loss_fn=None):

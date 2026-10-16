@@ -4,6 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from graphids import event_defaults as defaults
 from graphids.core.data.events.representation import CANEventRepresentationCfg
 
 
@@ -19,19 +20,24 @@ class CANEventDMCfg(_Cfg):
     representation_cfg: CANEventRepresentationCfg = Field(
         default_factory=CANEventRepresentationCfg
     )
-    chunk_events: int = Field(default=512, ge=1)
-    warmup_events: Literal[0] = 0
-    stream_batch_size: Literal[1, 2, 4, 8] = 1
-    effective_batch_events: int = Field(default=8192, ge=1)
-    num_workers: int = Field(default=0, ge=0)
-    pin_memory: bool = False
+    chunk_events: int = Field(default=defaults.CHUNK_EVENTS, ge=1)
+    stream_batch_size: int = Field(default=defaults.STREAM_BATCH_SIZE, ge=1, le=16)
+    max_microbatch_events: int = Field(
+        default=defaults.MAX_MICROBATCH_EVENTS, ge=1, le=262144
+    )
+    effective_batch_events: int = Field(default=defaults.EFFECTIVE_BATCH_EVENTS, ge=1)
+    num_workers: int = Field(default=defaults.NUM_WORKERS, ge=0)
+    pin_memory: bool = defaults.PIN_MEMORY
+    prefetch_factor: int = Field(default=defaults.PREFETCH_FACTOR, ge=1)
+    persistent_workers: bool = defaults.PERSISTENT_WORKERS
+    cuda_prefetch: bool = defaults.CUDA_PREFETCH
 
     @model_validator(mode="after")
     def validate_microbatch(self):
         events = self.chunk_events * self.stream_batch_size
-        if events > 8192 or events > self.effective_batch_events:
+        if events > self.max_microbatch_events or events > self.effective_batch_events:
             raise ValueError(
-                "microbatch must contain at most 8192 events and fit effective_batch_events"
+                "microbatch must fit max_microbatch_events and effective_batch_events"
             )
         return self
 

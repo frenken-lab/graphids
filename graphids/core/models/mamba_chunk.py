@@ -75,38 +75,42 @@ def mamba_chunk(block, x, conv, state, *, official, differentiable_state=True):
         delta_softplus=True,
         return_last_state=True,
     )
-    cumulative = F.softplus(
-        dt.float() + block.dt_proj.bias.float()[None, :, None]
-    ).cumsum(-1)
-    tile = max(1, _WORKSPACE_BYTES // (3 * streams * inner * size * 4))
-    corrections = []
-    final_parts = []
-    delta = F.softplus(dt.float() + block.dt_proj.bias.float()[None, :, None])
-    for lo in range(0, length, tile):
-        hi = min(length, lo + tile)
-        decay = torch.exp(cumulative[:, :, lo:hi, None] * A[None, :, None, :])
-        correction = (
-            decay
-            * state.float()[:, :, None, :]
-            * C[:, None, :, lo:hi].transpose(-1, -2).float()
-        ).sum(-1)
-        corrections.append(correction.to(y.dtype))
-        # The official operator intentionally omits gradients for last_state.
-        # Reconstruct it functionally when differentiable outgoing state is needed.
-        if torch.is_grad_enabled() and differentiable_state:
-            end_decay = torch.exp(
-                (cumulative[:, :, -1:] - cumulative[:, :, lo:hi])[:, :, :, None]
-                * A[None, :, None, :]
-            )
-            updates = (delta[:, :, lo:hi] * u[:, :, lo:hi].float())[:, :, :, None]
-            final_parts.append(
-                (end_decay * updates * B[:, None, :, lo:hi].transpose(-1, -2)).sum(2)
-            )
-    y = y + torch.cat(corrections, -1)
-    if final_parts:
-        final_state = torch.stack(final_parts).sum(0)
-    final_state = (
-        final_state + torch.exp(cumulative[:, :, -1, None] * A[None]) * state.float()
-    )
+    with torch.profiler.record_function("mamba.incoming_state_correction"):
+        cumulative = F.softplus(
+            dt.float() + block.dt_proj.bias.float()[None, :, None]
+        ).cumsum(-1)
+        tile = max(1, _WORKSPACE_BYTES // (3 * streams * inner * size * 4))
+        corrections = []
+        final_parts = []
+        delta = F.softplus(dt.float() + block.dt_proj.bias.float()[None, :, None])
+        for lo in range(0, length, tile):
+            hi = min(length, lo + tile)
+            decay = torch.exp(cumulative[:, :, lo:hi, None] * A[None, :, None, :])
+            correction = (
+                decay
+                * state.float()[:, :, None, :]
+                * C[:, None, :, lo:hi].transpose(-1, -2).float()
+            ).sum(-1)
+            corrections.append(correction.to(y.dtype))
+            # The official operator intentionally omits gradients for last_state.
+            # Reconstruct it functionally when differentiable outgoing state is needed.
+            if torch.is_grad_enabled() and differentiable_state:
+                end_decay = torch.exp(
+                    (cumulative[:, :, -1:] - cumulative[:, :, lo:hi])[:, :, :, None]
+                    * A[None, :, None, :]
+                )
+                updates = (delta[:, :, lo:hi] * u[:, :, lo:hi].float())[:, :, :, None]
+                final_parts.append(
+                    (end_decay * updates * B[:, None, :, lo:hi].transpose(-1, -2)).sum(
+                        2
+                    )
+                )
+        y = y + torch.cat(corrections, -1)
+        if final_parts:
+            final_state = torch.stack(final_parts).sum(0)
+        final_state = (
+            final_state
+            + torch.exp(cumulative[:, :, -1, None] * A[None]) * state.float()
+        )
     y = y * F.silu(z)
     return block.out_proj(y.transpose(1, 2)), final_conv, final_state.to(state.dtype)

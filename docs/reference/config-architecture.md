@@ -44,14 +44,21 @@ representation_cfg:
 config:
   model:
     type: event_graph_mamba
+    max_graph_tokens: 2097152
   data:
     type: can_event_dm
     manifest_path: /path/to/reviewed-manifest.json
     datasets: [set_01, set_03]
     cache_root: /path/to/event-cache
-    chunk_events: 2048
-    stream_batch_size: 4
-    effective_batch_events: 8192
+    chunk_events: 16384
+    stream_batch_size: 1
+    effective_batch_events: 16384
+    max_microbatch_events: 16384
+    num_workers: 2
+    prefetch_factor: 2
+    persistent_workers: true
+    cuda_prefetch: false
+    pin_memory: true
   trainer:
     devices: 1
     precision: 32-true
@@ -169,9 +176,11 @@ Use `accumulate_grad_batches=1`; configure checkpoint selection with
 
 Only epoch-boundary resume is supported through `config.ckpt_path`. The model
 rejects source/config mismatches and checkpoints without complete epoch identity.
-Retired representation, model and loss factories point to the verified snapshot
-archive. Historical datasets, results, clock repairs and reviewed manifests remain
-in place.
+Constructor and typed-config defaults share `graphids/event_defaults.py` and
+match the production preset. Historical factories and migration registries have
+been removed; unknown primitives fail during construction, and missing YAML
+reports its path. Historical source remains in the verified snapshot archive.
+Datasets, results, clock repairs and reviewed manifests remain in place.
 
 ## 7. Adding A Run
 

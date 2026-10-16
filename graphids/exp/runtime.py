@@ -16,10 +16,6 @@ def resolve_spec(spec: Any) -> Any:
         return [resolve_spec(item) for item in spec]
     if not isinstance(spec, Mapping):
         return spec
-    from graphids.migration import reject_retired
-
-    reject_retired(dict(spec))
-
     if "class_path" in spec:
         class_path = str(spec["class_path"])
         module_path, _, class_name = class_path.rpartition(".")
@@ -36,6 +32,7 @@ def resolve_spec(spec: Any) -> Any:
         if callable(factory):
             kwargs = {k: resolve_spec(v) for k, v in spec.items() if k != "type"}
             return factory(**kwargs)
+        raise ValueError(f"unknown primitive: {spec['type']!r}")
 
     return {k: resolve_spec(v) for k, v in spec.items()}
 

@@ -19,6 +19,7 @@ import torch
 from filelock import FileLock
 from torch.utils.data import DataLoader, Dataset
 
+from graphids import event_defaults as defaults
 from graphids.core.data.recordings import (
     CANRecordingManifest,
     Recording,
@@ -101,6 +102,68 @@ def materialize_events(rec: Recording, root: Path):
 
 
 @dataclass
+class EventRouting:
+    recording: str
+    source_digest: str
+    row_start: int
+    incoming_ids: tuple[int, ...]
+    event_ids: tuple[int, ...]
+    ids: tuple[int, ...]
+    previous: torch.Tensor
+    own: torch.Tensor
+    final: torch.Tensor
+
+    def to(self, device, **kwargs):
+        return replace(
+            self,
+            **{
+                k: v.to(device, **kwargs)
+                for k, v in vars(self).items()
+                if isinstance(v, torch.Tensor)
+            },
+        )
+
+    def pin_memory(self):
+        return replace(
+            self,
+            **{
+                k: v.pin_memory()
+                for k, v in vars(self).items()
+                if isinstance(v, torch.Tensor)
+            },
+        )
+
+
+def prepare_routing(recording, digest, start, event_ids, incoming_ids):
+    ids = list(incoming_ids)
+    mapping = {key: i for i, key in enumerate(ids)}
+    slots = []
+    for key in event_ids:
+        if key not in mapping:
+            mapping[key] = len(ids)
+            ids.append(key)
+        slots.append(mapping[key])
+    latest = np.full(len(ids), -1, dtype=np.int64)
+    latest[: len(incoming_ids)] = np.arange(len(incoming_ids))
+    previous = np.empty((len(slots), len(ids)), dtype=np.int64)
+    own = np.empty(len(slots), dtype=np.int64)
+    for i, slot in enumerate(slots):
+        previous[i], own[i] = latest, latest[slot]
+        latest[slot] = len(incoming_ids) + i
+    return EventRouting(
+        recording,
+        digest,
+        start,
+        incoming_ids,
+        event_ids,
+        tuple(ids),
+        torch.from_numpy(previous),
+        torch.from_numpy(own),
+        torch.from_numpy(latest),
+    )
+
+
+@dataclass
 class CANEventBatch:
     recording: str
     source_digest: str
@@ -119,10 +182,13 @@ class CANEventBatch:
     ]  # same IDs on CPU, avoiding per-event GPU synchronizations
 
     recording_end: bool = False
+    routing: EventRouting | None = None
+    host_timestamps: tuple[float, ...] = ()
 
     def to(self, device, **kwargs):
         return replace(
             self,
+            routing=self.routing.to(device, **kwargs) if self.routing else None,
             **{
                 name: value.to(device, **kwargs)
                 for name, value in vars(self).items()
@@ -133,6 +199,7 @@ class CANEventBatch:
     def pin_memory(self):
         return replace(
             self,
+            routing=self.routing.pin_memory() if self.routing else None,
             **{
                 name: value.pin_memory()
                 for name, value in vars(self).items()
@@ -148,6 +215,8 @@ class CANEventBatch:
             row_start=self.row_start + start,
             recording_end=self.recording_end and stop == len(self.ids),
             routing_ids=self.routing_ids[start:stop],
+            routing=None,
+            host_timestamps=self.host_timestamps[start:stop],
             **{
                 name: value[start:stop]
                 for name, value in vars(self).items()
@@ -166,6 +235,11 @@ class EventRecording:
             name: np.load(self.path / f"{name}.npy", mmap_mode="r", allow_pickle=False)
             for name in COLUMNS
         }
+        # Compact first-appearance prefix metadata; never cache dense routing.
+        unique, first = np.unique(self.arrays["ids"], return_index=True)
+        order = np.argsort(first)
+        self.first_rows = first[order]
+        self.first_ids = unique[order]
         if any(len(a) != self.count for a in self.arrays.values()):
             raise ValueError("incomplete event cache")
 
@@ -182,7 +256,7 @@ class EventRecording:
         previous = np.array(arrays["times"][max(0, start - 1) : stop - 1])
         gaps = physical - previous if start else np.r_[0.0, np.diff(physical)]
         times = np.stack((physical - arrays["times"][0], gaps), -1)
-        return CANEventBatch(
+        batch = CANEventBatch(
             rec.key,
             self.digest,
             start,
@@ -199,17 +273,25 @@ class EventRecording:
             tuple(arrays["ids"][start:stop].tolist()),
             stop == self.count,
         )
+        batch.host_timestamps = tuple(physical.tolist())
+        batch.routing = prepare_routing(
+            rec.key,
+            self.digest,
+            start,
+            batch.routing_ids,
+            tuple(self.first_ids[self.first_rows < start].tolist()),
+        )
+        return batch
 
 
 class EventChunks(Dataset):
-    def __init__(self, recordings, chunk_events, warmup_events=0):
+    def __init__(self, recordings, chunk_events):
         self.recordings, self.windows = recordings, []
         for index, rec in enumerate(recordings):
             self.windows.extend(
                 (index, start, min(rec.count, start + chunk_events))
                 for start in range(0, rec.count, chunk_events)
             )
-        self.warmup_events = warmup_events
 
     def __len__(self):
         return len(self.windows)
@@ -243,7 +325,13 @@ class EventStreamWindows(Dataset):
     warmup replay or padding. Metadata only is retained by the scheduler.
     """
 
-    def __init__(self, recordings, chunk_events, streams=1, effective_events=8192):
+    def __init__(
+        self,
+        recordings,
+        chunk_events,
+        streams=defaults.STREAM_BATCH_SIZE,
+        effective_events=defaults.EFFECTIVE_BATCH_EVENTS,
+    ):
         self.recordings, self.windows = recordings, []
         pending = iter(range(len(recordings)))
         active = [
@@ -266,15 +354,23 @@ class EventStreamWindows(Dataset):
                     if replacement is not None:
                         following.append((replacement, 0))
             for group in by_length.values():
-                count = sum(stop - start for _, start, stop in group)
-                if groups and events + count > effective_events:
-                    self.windows.append(groups)
-                    groups, events = [], 0
-                groups.append(group)
-                events += count
-                if events == effective_events:
-                    self.windows.append(groups)
-                    groups, events = [], 0
+                length = group[0][2] - group[0][1]
+                if length > effective_events:
+                    raise ValueError(
+                        "effective window must cover one chronological chunk"
+                    )
+                while group:
+                    fitting = (effective_events - events) // length
+                    if not fitting:
+                        self.windows.append(groups)
+                        groups, events = [], 0
+                        continue
+                    part, group = group[:fitting], group[fitting:]
+                    groups.append(part)
+                    events += len(part) * length
+                    if events == effective_events:
+                        self.windows.append(groups)
+                        groups, events = [], 0
             active = following
         if groups:
             self.windows.append(groups)
@@ -299,6 +395,50 @@ class EventStreamWindows(Dataset):
         )
 
 
+class EventTrainingLoader(DataLoader):
+    """Stage one future optimizer window in the main process only."""
+
+    def __init__(self, *args, cuda_prefetch=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.cuda_prefetch = cuda_prefetch
+
+    def __iter__(self):
+        source = super().__iter__()
+        if not self.cuda_prefetch or not torch.cuda.is_available():
+            yield from source
+            return
+        device = torch.device("cuda", torch.cuda.current_device())
+        copy_stream = torch.cuda.Stream(device=device)
+
+        def stage():
+            try:
+                window = next(source)
+            except StopIteration:
+                return None
+            with torch.cuda.stream(copy_stream):
+                return window.to(device, non_blocking=True)
+
+        try:
+            upcoming = stage()
+            while upcoming is not None:
+                current = torch.cuda.current_stream(device)
+                current.wait_stream(copy_stream)
+                window = upcoming
+                for group in window.groups:
+                    for batch in group:
+                        for obj in (batch, batch.routing):
+                            if obj is not None:
+                                for value in vars(obj).values():
+                                    if isinstance(value, torch.Tensor):
+                                        value.record_stream(current)
+                upcoming = stage()
+                yield window
+        finally:
+            # Also covers early exit and exceptions during CPU preparation.
+            copy_stream.synchronize()
+            source = None
+
+
 class CANEventDataModule(pl.LightningDataModule):
     """Explicit source-only learning path; no handcrafted reference features.
 
@@ -313,36 +453,40 @@ class CANEventDataModule(pl.LightningDataModule):
         datasets,
         cache_root,
         representation_cfg=None,
-        chunk_events=512,
-        warmup_events=0,
-        stream_batch_size=1,
-        effective_batch_events=8192,
-        num_workers=0,
-        pin_memory=False,
+        chunk_events=defaults.CHUNK_EVENTS,
+        stream_batch_size=defaults.STREAM_BATCH_SIZE,
+        effective_batch_events=defaults.EFFECTIVE_BATCH_EVENTS,
+        max_microbatch_events=defaults.MAX_MICROBATCH_EVENTS,
+        num_workers=defaults.NUM_WORKERS,
+        pin_memory=defaults.PIN_MEMORY,
+        prefetch_factor=defaults.PREFETCH_FACTOR,
+        persistent_workers=defaults.PERSISTENT_WORKERS,
+        cuda_prefetch=defaults.CUDA_PREFETCH,
     ):
         super().__init__()
         self.manifest_path, self.datasets = manifest_path, datasets
         self.cache_root = Path(cache_root)
         self.representation_cfg = representation_cfg or CANEventRepresentationCfg()
-        if warmup_events:
-            raise ValueError(
-                "warmup_events retired: continuous history scores every row once; set warmup_events=0"
-            )
         if (
-            stream_batch_size not in (1, 2, 4, 8)
-            or chunk_events * stream_batch_size > 8192
+            not 1 <= stream_batch_size <= 16
+            or not 1 <= max_microbatch_events <= 262144
+            or chunk_events * stream_batch_size > max_microbatch_events
         ):
             raise ValueError(
-                "use 1, 2, 4 or 8 streams and at most 8192 events per microbatch"
+                "use 1 to 16 streams within max_microbatch_events (at most 262144)"
             )
+        self.max_microbatch_events = max_microbatch_events
         if effective_batch_events < chunk_events * stream_batch_size:
             raise ValueError("effective batch must cover one microbatch")
-        self.chunk_events, self.warmup_events = chunk_events, warmup_events
+        self.chunk_events = chunk_events
         self.stream_batch_size, self.effective_batch_events = (
             stream_batch_size,
             effective_batch_events,
         )
         self.num_workers, self.pin_memory = num_workers, pin_memory
+        self.prefetch_factor = prefetch_factor
+        self.persistent_workers = persistent_workers
+        self.cuda_prefetch = cuda_prefetch
         self.train_sampler = None  # disable Lightning's automatic padded DDP sampler
         self.event_recordings = {}
 
@@ -383,7 +527,24 @@ class CANEventDataModule(pl.LightningDataModule):
         records = [
             r for r in self.event_recordings.values() if r.recording.role == role
         ]
-        return DataLoader(
+        loader = EventTrainingLoader if training else DataLoader
+        options = (
+            {
+                "cuda_prefetch": self.cuda_prefetch
+                and (
+                    self.trainer is None
+                    or self.trainer.strategy.root_device.type == "cuda"
+                )
+            }
+            if training
+            else {}
+        )
+        if self.num_workers:
+            options.update(
+                prefetch_factor=self.prefetch_factor,
+                persistent_workers=self.persistent_workers,
+            )
+        return loader(
             EventStreamWindows(
                 records,
                 self.chunk_events,
@@ -392,6 +553,7 @@ class CANEventDataModule(pl.LightningDataModule):
             )
             if training
             else EventChunks(records, self.chunk_events),
+            **options,
             batch_size=None,
             shuffle=False,
             num_workers=self.num_workers,

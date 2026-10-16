@@ -53,10 +53,9 @@ No Parsl row submission is used in the live path.
 |---|---|
 | Experiment schema | `graphids/exp/config.py` |
 | Shared experiment construction | `graphids/exp/runtime.py` |
-| Shared benchmark trials | `graphids/exp/trials.py` |
 | Ray launch | `graphids/exp/ray_backend.py` |
 | SLURM submit | `graphids/exp/slurm.py`, `graphids/cli/exp.py` |
-| Primitives | `graphids/primitives.py`, `graphids/primitives_data.py`, `graphids/primitives_models.py`, `graphids/primitives_losses.py` |
+| Primitives | `graphids/primitives.py`, `graphids/primitives_data.py`, `graphids/primitives_models.py` |
 | Data/cache | `graphids/core/data/`, `graphids/core/data/preprocessing/` |
 | Models | `graphids/core/models/` |
 | Callbacks | `graphids/core/callbacks.py` |
@@ -78,7 +77,7 @@ Experiment YAML contains:
 - stage payload under `config`
 
 For `fit` and `test`, the config layer verifies that
-`config.data.source.representation_cfg` matches the top-level
+`config.data.representation_cfg` matches the top-level
 `representation_cfg`.
 
 Supported Ray stages:

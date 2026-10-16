@@ -80,7 +80,7 @@ def test_all_frames_payload_lengths_tied_timestamps_and_order_survive(tmp_path):
 
 def test_chunks_have_exact_scored_coverage_and_real_preceding_time(tmp_path):
     _, events = event_record(tmp_path)
-    data = EventChunks([events], chunk_events=2, warmup_events=3)
+    data = EventChunks([events], chunk_events=2)
     rows = []
     for i in range(len(data)):
         batch = data[i]
@@ -140,8 +140,9 @@ def test_future_frames_and_new_ids_do_not_change_earlier_scores(tmp_path):
     altered.ids[3:] = 2**29 - 1
     altered.times[3:] += 10
     altered.routing_ids = tuple(int(x) for x in altered.ids)
+    altered.routing = None
     net = model().eval()
-    a, b = net(batch), net(altered)
+    a, b = net.scan([batch])[0][0], net.scan([altered])[0][0]
     for name in a:
         torch.testing.assert_close(a[name][:3], b[name][:3])
     # The injected frame actually reaches the model: changing it changes its score.
@@ -158,7 +159,7 @@ def test_payload_prediction_cannot_see_current_payload(tmp_path):
     altered = replace(batch, payload=batch.payload.clone())
     altered.payload[1] = 0
     net = model().eval()
-    a, b = net(batch), net(altered)
+    a, b = net.scan([batch])[0][0], net.scan([altered])[0][0]
     torch.testing.assert_close(a["payload_logits"][:2], b["payload_logits"][:2])
     assert not torch.allclose(a["payload_logits"][2], b["payload_logits"][2])
 
@@ -253,7 +254,9 @@ def source_dm(tmp_path):
         datasets=["set_01"],
         cache_root=str(tmp_path / "cache"),
         chunk_events=2,
-        warmup_events=0,
+        num_workers=0,
+        pin_memory=False,
+        persistent_workers=False,
     )
     dm.setup()
     assert len(dm.event_recordings) == 2
@@ -317,7 +320,7 @@ def test_typed_configuration_resolves_and_rejects_mixed_contracts():
         == 8
     )
     changed = dict(cfg.config["data"], representation_cfg={"kind": "can_snapshot"})
-    with pytest.raises(ValueError, match="retired; restore archives"):
+    with pytest.raises(ValueError, match="can_event"):
         cfg.build_run(name="bad", stage="fit", config={"data": changed})
     with pytest.raises(ValueError, match="one device"):
         cfg.build_run(name="bad", stage="fit", config={"trainer": {"devices": 2}})
@@ -384,7 +387,9 @@ def test_official_lightning_gpu_fit_and_complete_validation(tmp_path):
 
         def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
             assert next(pl_module.parameters()).is_cuda
-            assert all(b.payload.is_cuda and b.ids.is_cuda for g in batch.groups for b in g)
+            assert all(
+                b.payload.is_cuda and b.ids.is_cuda for g in batch.groups for b in g
+            )
             self.seen += 1
 
     device_check = DeviceCheck()

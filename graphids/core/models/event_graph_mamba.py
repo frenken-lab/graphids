@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import lightning.pytorch as pl
@@ -18,9 +18,12 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from graphids import event_defaults as defaults
 from graphids.core.metrics import raw_average_precision
 
 from .mamba_chunk import mamba_chunk
+
+_GRAPH_WORKSPACE_BYTES = 256 * 1024**2
 
 
 @dataclass
@@ -50,7 +53,7 @@ class EventGraphMamba(pl.LightningModule):
         weight_decay=0.01,
         payload_weight=1.0,
         node_capacity=512,
-        max_graph_tokens=1048576,
+        max_graph_tokens=defaults.MAX_GRAPH_TOKENS,
         schema_version=1,
     ):
         super().__init__()
@@ -140,33 +143,49 @@ class EventGraphMamba(pl.LightningModule):
         ), header
 
     def _routing(self, batch, state):
-        # CPU indices depend only on IDs encountered so far. Future slots have
-        # a false mask and contribute neither keys nor normalization mass.
-        ids = list(state.ids)
-        mapping = {key: i for i, key in enumerate(ids)}
-        current = []
-        for key in batch.routing_ids:
-            if key not in mapping:
-                mapping[key] = len(ids)
-                ids.append(key)
-            current.append(mapping[key])
-        n, t = len(ids), len(current)
-        if n > self.hparams.node_capacity:
+        prepared = batch.routing
+        if prepared is not None:
+            if (
+                prepared.recording,
+                prepared.source_digest,
+                prepared.row_start,
+                prepared.event_ids,
+                prepared.incoming_ids,
+            ) != (
+                batch.recording,
+                batch.source_digest,
+                batch.row_start,
+                batch.routing_ids,
+                state.ids,
+            ):
+                raise ValueError("prepared routing provenance/history mismatch")
+            if len(prepared.ids) > self.hparams.node_capacity:
+                raise ValueError(
+                    "event node capacity exceeded; no IDs were silently evicted"
+                )
+            if len(prepared.ids) * len(batch.ids) > self.hparams.max_graph_tokens:
+                raise ValueError(
+                    "event graph capacity exceeded; use smaller event chunks"
+                )
+            return prepared.ids, prepared.previous, prepared.own, prepared.final
+        # Check capacity before the shared CPU helper allocates dense indices.
+        from graphids.core.data.events.data import prepare_routing
+
+        ids = tuple(dict.fromkeys((*state.ids, *batch.routing_ids)))
+        if len(ids) > self.hparams.node_capacity:
             raise ValueError(
                 "event node capacity exceeded; no IDs were silently evicted"
             )
-        if n * t > self.hparams.max_graph_tokens:
+        if len(ids) * len(batch.ids) > self.hparams.max_graph_tokens:
             raise ValueError("event graph capacity exceeded; use smaller event chunks")
-        initial = np.full(n, -1, dtype=np.int64)
-        initial[: len(state.ids)] = np.arange(len(state.ids))
-        previous = np.empty((t, n), dtype=np.int64)
-        own = np.empty(t, dtype=np.int64)
-        offset = len(state.ids)
-        for i, slot in enumerate(current):
-            previous[i] = initial
-            own[i] = initial[slot]
-            initial[slot] = offset + i
-        return tuple(ids), previous, own, initial
+        route = prepare_routing(
+            batch.recording,
+            batch.source_digest,
+            batch.row_start,
+            batch.routing_ids,
+            state.ids,
+        )
+        return route.ids, route.previous, route.own, route.final
 
     @staticmethod
     def _gather_rows(bank, index):
@@ -176,52 +195,98 @@ class EventGraphMamba(pl.LightningModule):
             *index.shape, bank.shape[-1]
         )
 
-    def _readout(self, h, header, batch, state):
-        ids, previous, own, final = self._routing(batch, state)
-        past = state.nodes if state.nodes is not None else h.new_empty((0, h.shape[-1]))
-        bank = torch.cat((past, h), 0)
-        index = torch.as_tensor(previous, device=h.device)
-        mask = index >= 0
-        logits = (
-            self.query(h)[:, None]
-            * self._gather_rows(self.key(bank), index.clamp_min(0))
-        ).sum(-1) / math.sqrt(h.shape[-1])
-        weights = logits.masked_fill(~mask, torch.finfo(logits.dtype).min).softmax(-1)
-        weights = weights * mask
-        aggregate = (
-            weights[..., None] * self._gather_rows(self.value(bank), index.clamp_min(0))
-        ).sum(1)
+    def _readout_batched(self, h, header, batches, states, routes):
+        """Pack banks with disjoint offsets; tile attention under 256 MiB."""
+        width = h.shape[-1]
+        banks, previous, own, final, offsets = [], [], [], [], []
+        offset = 0
+        max_ids = max(len(r[0]) for r in routes)
+        for i, (state, route) in enumerate(zip(states, routes, strict=True)):
+            ids, prev, local_own, local_final = route
+            past = state.nodes if state.nodes is not None else h.new_empty((0, width))
+            bank = torch.cat((past, h[i]), 0)
+            banks.append(bank)
+            offsets.append(offset)
+            prev = torch.as_tensor(prev, device=h.device)
+            # Sentinel -1 remains invalid after packing and padding.
+            prev = torch.where(prev >= 0, prev + offset, -1)
+            previous.append(F.pad(prev, (0, max_ids - len(ids)), value=-1))
+            local_own = torch.as_tensor(local_own, device=h.device)
+            own.append(torch.where(local_own >= 0, local_own + offset, -1))
+            final.append(torch.as_tensor(local_final, device=h.device) + offset)
+            offset += len(bank)
+        bank = torch.cat(banks)
+        # Split once before tile gathers. Autograd combines these local bank
+        # gradients once; gathering from the full packed bank in every tile
+        # otherwise zeros a streams-times-larger gradient buffer for each tile.
+        bank_lengths = [len(b) for b in banks]
+        keys = self.key(bank).split(bank_lengths)
+        values = self.value(bank).split(bank_lengths)
+        queries = self.query(h).flatten(0, 1)
+        index = torch.stack(previous).flatten(0, 1)
+        # Two gathered banks plus attention/backward workspace per tile.
+        tile = max(
+            1, _GRAPH_WORKSPACE_BYTES // (4 * max_ids * width * h.element_size())
+        )
+
+        def gather_tile(parts, lo, hi):
+            pieces = []
+            length = h.shape[1]
+            for stream in range(lo // length, (hi - 1) // length + 1):
+                start, stop = max(lo, stream * length), min(hi, (stream + 1) * length)
+                local = index[start:stop] - offsets[stream]
+                pieces.append(self._gather_rows(parts[stream], local.clamp_min(0)))
+            return pieces[0] if len(pieces) == 1 else torch.cat(pieces)
+
+        aggregates = []
+        for lo in range(0, len(queries), tile):
+            ix = index[lo : lo + tile]
+            mask = ix >= 0
+            hi = min(len(queries), lo + tile)
+            k = gather_tile(keys, lo, hi)
+            logits = torch.bmm(k, queries[lo : lo + tile, :, None]).squeeze(-1)
+            logits = logits / math.sqrt(width)
+            weights = logits.masked_fill(~mask, torch.finfo(logits.dtype).min).softmax(
+                -1
+            )
+            # Entirely empty history produces exactly zero aggregate.
+            weights = weights * mask
+            v = gather_tile(values, lo, hi)
+            aggregates.append(torch.bmm(weights[:, None], v).squeeze(1))
+        aggregate = torch.cat(aggregates).reshape_as(h)
         z = self.graph_norm(
             h
             + torch.sigmoid(self.graph_gate(torch.cat((h, aggregate), -1))) * aggregate
         )
-        own_index = torch.as_tensor(own, device=h.device)
+        own_index = torch.stack(own)
         previous_id = (
-            self._gather_rows(bank, own_index.clamp_min(0)) * (own_index >= 0)[:, None]
+            self._gather_rows(bank, own_index.clamp_min(0))
+            * (own_index >= 0)[..., None]
         )
-        preceding_bus = (
-            state.previous_bus
-            if state.previous_bus is not None
-            else h.new_zeros(h.shape[-1])
+        preceding = torch.stack(
+            [
+                s.previous_bus if s.previous_bus is not None else h.new_zeros(width)
+                for s in states
+            ]
         )
-        previous_bus = torch.cat((preceding_bus[None], h[:-1]), 0)
-        payload_logits = self.payload_head(
-            torch.cat((previous_bus, previous_id, header), -1)
-        ).reshape(-1, 8, 256)
-        output = dict(
-            classification_logits=self.classifier(z).squeeze(-1),
-            payload_logits=payload_logits,
-        )
-        nodes = self._gather_rows(bank, torch.as_tensor(final, device=h.device))
-        return output, ids, nodes
+        previous_bus = torch.cat((preceding[:, None], h[:, :-1]), 1)
+        payload = self.payload_head(torch.cat((previous_bus, previous_id, header), -1))
+        payload = payload.reshape(*h.shape[:2], 8, 256)
+        classification = self.classifier(z).squeeze(-1)
+        outputs = [
+            dict(classification_logits=classification[i], payload_logits=payload[i])
+            for i in range(len(batches))
+        ]
+        nodes = [self._gather_rows(bank, ix) for ix in final]
+        return outputs, nodes
 
     def forward(self, batch):
-        fields, header = self.fields(batch)
-        h = self.input_proj(fields)[None]
-        for norm, block in zip(self.norms, self.temporal, strict=True):
-            h = h + self.dropout(block(norm(h)))
-        output, _, _ = self._readout(h[0], header, batch, EventGraphMambaState())
-        return output
+        # Stateless execution intentionally accepts arbitrary physical slices.
+        # Prepared routes describe recording-prefix history, which is absent here.
+        outputs, _ = self._execute(
+            [replace(batch, routing=None)], [EventGraphMambaState()], detach=False
+        )
+        return outputs[0]
 
     def _validate_state(self, batch, state):
         if state.recording:
@@ -236,9 +301,13 @@ class EventGraphMamba(pl.LightningModule):
             raise ValueError(
                 "event stream is not contiguous: duplicate or missing rows"
             )
-        if float(batch.timestamps[0]) < state.last_timestamp:
+        first_timestamp = (
+            batch.host_timestamps[0]
+            if batch.host_timestamps
+            else float(batch.timestamps[0])
+        )
+        if first_timestamp < state.last_timestamp:
             raise ValueError("event stream clock decreased")
-        self._routing(batch, state)
 
     def scan(self, batches, states=None, *, detach=False):
         """Differentiable equal-length independent streams, with explicit state.
@@ -246,15 +315,36 @@ class EventGraphMamba(pl.LightningModule):
         Detach only returned learned history for truncated backpropagation;
         current chunk outputs retain their complete parameter gradients.
         """
-        states = states or [EventGraphMambaState() for _ in batches]
-        if len(states) != len(batches) or len({len(b.ids) for b in batches}) != 1:
+        states = (
+            states if states is not None else [EventGraphMambaState() for _ in batches]
+        )
+        if (
+            not batches
+            or any(len(b.ids) == 0 for b in batches)
+            or len(states) != len(batches)
+            or len({len(b.ids) for b in batches}) != 1
+        ):
             raise ValueError("scan requires one state per equal-length stream")
         if len({(b.recording, b.source_digest) for b in batches}) != len(batches):
             raise ValueError("independent streams must name distinct recordings")
         for batch, state in zip(batches, states, strict=True):
             self._validate_state(batch, state)
-        encoded = [self.fields(b) for b in batches]
-        h = self.input_proj(torch.stack([f for f, _ in encoded]))
+        return self._execute(batches, states, detach=detach)
+
+    def _execute(self, batches, states, *, detach):
+        routes = [self._routing(b, s) for b, s in zip(batches, states, strict=True)]
+        # Encode all independent frames in a single field/projection operation.
+        from types import SimpleNamespace
+
+        packed = SimpleNamespace(
+            **{
+                name: torch.cat([getattr(b, name) for b in batches])
+                for name in ("ids", "lengths", "times", "payload")
+            }
+        )
+        fields, header = self.fields(packed)
+        h = self.input_proj(fields).reshape(len(batches), len(batches[0].ids), -1)
+        header = header.reshape(len(batches), len(batches[0].ids), -1)
         caches = []
         for i, (norm, block) in enumerate(zip(self.norms, self.temporal, strict=True)):
             incoming = [
@@ -274,9 +364,12 @@ class EventGraphMamba(pl.LightningModule):
             )
             caches.append((conv, memory))
             h = h + self.dropout(out)
-        outputs, following = [], []
-        for i, (batch, state) in enumerate(zip(batches, states, strict=True)):
-            output, ids, nodes = self._readout(h[i], encoded[i][1], batch, state)
+        outputs, nodes_by_stream = self._readout_batched(
+            h, header, batches, states, routes
+        )
+        following = []
+        for i, batch in enumerate(batches):
+            ids, nodes = routes[i][0], nodes_by_stream[i]
 
             def learn(x):
                 return x.detach() if detach else x
@@ -286,14 +379,15 @@ class EventGraphMamba(pl.LightningModule):
                     batch.recording,
                     batch.source_digest,
                     batch.row_start + len(batch.ids),
-                    float(batch.timestamps[-1]),
+                    batch.host_timestamps[-1]
+                    if batch.host_timestamps
+                    else float(batch.timestamps[-1]),
                     [(learn(c[i : i + 1]), learn(m[i : i + 1])) for c, m in caches],
                     ids,
                     learn(nodes),
                     learn(h[i, -1]),
                 )
             )
-            outputs.append(output)
         return outputs, following
 
     @torch.no_grad()
@@ -306,25 +400,45 @@ class EventGraphMamba(pl.LightningModule):
         return outputs[0], states[0]
 
     def loss_sums(self, output, batch):
-        known = batch.scored & (batch.labels >= 0)
-        cls = F.binary_cross_entropy_with_logits(
-            output["classification_logits"],
-            batch.labels.clamp_min(0).float(),
-            reduction="none",
+        return self.batched_loss_sums([output], [batch])
+
+    def batched_loss_sums(self, outputs, batches):
+        """One classification reduction and one eligible normal-byte reduction."""
+        logits = torch.cat([o["classification_logits"] for o in outputs])
+        labels = torch.cat([b.labels for b in batches])
+        scored = torch.cat([b.scored for b in batches])
+        known = scored & (labels >= 0)
+        cls = (
+            F.binary_cross_entropy_with_logits(
+                logits, labels.clamp_min(0).float(), reduction="none"
+            )
+            * known
+        ).sum()
+        eligible = [
+            (o, b)
+            for o, b in zip(outputs, batches, strict=True)
+            if b.verified_normal and b.payload_length_verified
+        ]
+        # Preserve a connected zero even when the entire objective is masked.
+        payload = sum(
+            (o["payload_logits"].reshape(-1)[:1].sum() * 0 for o in outputs),
+            logits.new_zeros(()),
         )
-        valid = torch.arange(8, device=batch.ids.device)[None] < batch.lengths[:, None]
-        valid = (
-            valid
-            & batch.scored[:, None]
-            & batch.verified_normal
-            & batch.payload_length_verified
-        )
-        byte_nll = F.cross_entropy(
-            output["payload_logits"].flatten(0, 1),
-            batch.payload.long().flatten(),
-            reduction="none",
-        ).reshape(-1, 8)
-        return (cls * known).sum(), known.sum(), (byte_nll * valid).sum(), valid.sum()
+        count = torch.zeros((), dtype=torch.long, device=logits.device)
+        if eligible:
+            predictions = torch.cat([o["payload_logits"] for o, _ in eligible])
+            targets = torch.cat([b.payload for _, b in eligible]).long()
+            lengths = torch.cat([b.lengths for _, b in eligible])
+            selected = torch.cat([b.scored for _, b in eligible])
+            valid = (
+                torch.arange(8, device=logits.device)[None] < lengths[:, None]
+            ) & selected[:, None]
+            nll = F.cross_entropy(
+                predictions.flatten(0, 1), targets.flatten(), reduction="none"
+            ).reshape(-1, 8)
+            payload = payload + (nll * valid).sum()
+            count = valid.sum()
+        return cls, known.sum(), payload, count
 
     def losses(self, output, batch):
         cls, nc, payload, npayload = self.loss_sums(output, batch)
@@ -356,22 +470,20 @@ class EventGraphMamba(pl.LightningModule):
                 for b in batches
             ]
             outputs, states = self.scan(batches, incoming, detach=True)
-            losses = []
-            for batch, output, state in zip(batches, outputs, states, strict=True):
+            for batch, state in zip(batches, states, strict=True):
                 if batch.row_start != self._training_coverage.get(batch.recording, 0):
                     raise ValueError("duplicate/missing scored training rows")
                 self._training_coverage[batch.recording] = state.next_row
-                cls, _, payload, _ = self.loss_sums(output, batch)
-                cls = cls / max(1, window.classification_targets)
-                payload = payload / max(1, window.payload_targets)
-                cls_total += cls.detach()
-                payload_total += payload.detach()
-                losses.append(cls + self.hparams.payload_weight * payload)
                 if batch.recording_end:
                     self._training_states.pop(batch.recording, None)
                 else:
                     self._training_states[batch.recording] = state
-            self.manual_backward(torch.stack(losses).sum())
+            cls, _, payload, _ = self.batched_loss_sums(outputs, batches)
+            cls = cls / max(1, window.classification_targets)
+            payload = payload / max(1, window.payload_targets)
+            cls_total += cls.detach()
+            payload_total += payload.detach()
+            self.manual_backward(cls + self.hparams.payload_weight * payload)
         self.clip_gradients(
             optimizer, gradient_clip_val=1.0, gradient_clip_algorithm="norm"
         )
@@ -582,7 +694,11 @@ class EventGraphMamba(pl.LightningModule):
         dm = self.trainer.datamodule
         return {
             name: getattr(dm, name)
-            for name in ("chunk_events", "stream_batch_size", "effective_batch_events")
+            for name in (
+                "chunk_events",
+                "stream_batch_size",
+                "effective_batch_events",
+            )
         }
 
     def on_train_start(self):

@@ -26,7 +26,7 @@ config:
     # Frame BCE plus normal-only categorical byte likelihood.
     payload_weight: 1.0
     node_capacity: 512
-    max_graph_tokens: 1048576
+    max_graph_tokens: 2097152
   data:
     type: can_event_dm
     manifest_path: /fs/ess/PAS1266/graphids/dev/rf15/experimentruns/graph-mamba-multiattack-review-v1/can-recording-manifest-v1.json
@@ -35,10 +35,14 @@ config:
     representation_cfg:
       kind: can_event
       schema_version: 1
-    chunk_events: 2048
-    stream_batch_size: 4
-    effective_batch_events: 8192
-    num_workers: 0
+    chunk_events: 16384
+    stream_batch_size: 1
+    effective_batch_events: 16384
+    max_microbatch_events: 16384
+    num_workers: 2
+    prefetch_factor: 2
+    persistent_workers: true
+    cuda_prefetch: false
     pin_memory: true
   trainer:
     accelerator: gpu
